@@ -1,0 +1,200 @@
+/* The features grid's pictures. The grid and tiles are page markup
+   (src/page.css, .features-grid); everything here sits inside a Stage. */
+
+.bt-fill {
+  width: 100%;
+}
+
+.bt-center {
+  display: flex;
+  justify-content: center;
+}
+
+.bt-left {
+  display: flex;
+  justify-content: flex-start;
+}
+
+.bt-stage .ss-stage {
+  overflow: hidden;
+  background: transparent;
+  --ss-font: 'Inter', system-ui, -apple-system, sans-serif;
+}
+
+.bt-strong {
+  font-size: 13px;
+  font-weight: 550;
+  color: var(--ss-text-strong);
+}
+
+.bt-faint {
+  font-size: 12px;
+  color: var(--ss-text-faint);
+}
+
+.bt-good {
+  font-size: 13px;
+  font-weight: 550;
+  color: var(--ss-success-text);
+}
+
+.bt-mono {
+  font-family: var(--ss-mono);
+  font-size: 12px;
+}
+
+/* One card look for the small pictures: a surface on the tile, pinned a
+   gutter in from the left and top, running off the bottom when it is tall */
+.bt-card {
+  position: absolute;
+  left: 24px;
+  top: 8px;
+  box-sizing: border-box;
+  padding: 14px 16px;
+  border-radius: 12px;
+  background: var(--ss-surface);
+  box-shadow: var(--ss-shadow-ground);
+}
+
+/* ---- Coordination: a row of windows (window-row) ---- */
+
+.bt-wr {
+  & .bt-wr-win {
+    position: absolute;
+    top: 24px;
+    width: 300px;
+    height: 300px;
+  }
+
+  & .bt-wr-win--hero {
+    z-index: 1;
+    box-shadow: var(--ss-shadow-hero);
+  }
+
+  & .bt-wr-body {
+    display: grid;
+    gap: 12px;
+    padding: 18px 20px 0;
+  }
+
+  & .bt-wr-label {
+    color: var(--ss-text);
+    font-size: 13px;
+    transition: color 0.3s ease;
+  }
+
+  & .bt-wr-step[data-on] .bt-wr-label {
+    color: var(--ss-text-strong);
+  }
+
+  & .bt-wr-foot {
+    margin-top: 4px;
+    padding-top: 14px;
+    border-top: 1px solid var(--ss-line);
+  }
+
+  & .ss-window__title {
+    font-family: var(--ss-mono);
+    font-size: 11.5px;
+  }
+}
+
+/* ---- Crown: the coordinator and its lease ---- */
+
+.bt-crown {
+  right: -24px;
+  display: grid;
+  gap: 14px;
+}
+
+.bt-crown-name {
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+  font-size: 13px;
+}
+
+.bt-crown-lease {
+  display: grid;
+  gap: 6px;
+  padding-top: 12px;
+  border-top: 1px solid var(--ss-line);
+}
+
+.bt-meter {
+  width: 100%;
+}
+
+/* ---- Owner: a bot's signed owner card ---- */
+
+.bt-owner {
+  left: 20px;
+  right: 20px;
+  display: grid;
+  gap: 10px;
+}
+
+.bt-owner-head,
+.bt-owner-line,
+.bt-owner-sig {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+}
+
+.bt-owner-sig {
+  padding-top: 10px;
+  border-top: 1px solid var(--ss-line);
+}
+
+/* ---- Trust: who may tell an agent what ---- */
+
+.bt-trust {
+  right: -24px;
+  display: grid;
+  gap: 10px;
+  padding-right: 40px;
+}
+
+.bt-trust-row {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 12px;
+  opacity: 0;
+  transform: translateY(4px);
+  transition: opacity 0.4s cubic-bezier(0.25, 0.8, 0.25, 1), transform 0.6s cubic-bezier(0.25, 0.8, 0.25, 1);
+}
+
+.bt-trust[data-on] .bt-trust-row {
+  opacity: 1;
+  transform: none;
+}
+
+/* ---- Delegation: a question that goes to the crown ---- */
+
+.bt-deleg {
+  width: 372px;
+  display: grid;
+  gap: 12px;
+}
+
+.bt-deleg-q,
+.bt-deleg-a {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+}
+
+.bt-deleg-icon {
+  flex: none;
+  margin: 0 4px;
+  color: var(--ss-icon);
+}
+
+.bt-deleg-foot {
+  display: flex;
+  gap: 8px;
+  padding-top: 12px;
+  border-top: 1px solid var(--ss-line);
+}
