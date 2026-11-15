@@ -1651,6 +1651,8 @@ async def post_as_bot(client: MattermostAdapter | None, message: str, channel_id
     await _posted(client, post)
     await _as_guest(client, uid, guest, post)
     word = a2a.word(message) or ""
+    if word == "DONE" and post.root_id:
+        _in_background(_task_closed(client, post.root_id))  # RT-6.9
     return await _claimed(client, post.root_id or root_id, message, uid, _with_unreachable(
         _with_unmentioned(await slim.post(client, post), removed, await _unasked(client, message, uid), word),
         await _unreachable(client, message, post),
@@ -1732,9 +1734,41 @@ async def reply_as_bot(client: MattermostAdapter | None, root_id: str, message: 
     await _posted(client, post)
     await _as_guest(client, uid, guest, post)
     word = a2a.word(message) or ""
+    if word == "DONE" and post.root_id:
+        _in_background(_task_closed(client, post.root_id))  # RT-6.9
     return await _claimed(client, post.root_id or root_id, message, uid, _with_unreachable(
         _with_unmentioned(await slim.post(client, post), removed, await _unasked(client, message, uid), word),
         await _unreachable(client, message, post), word))
+
+
+def _in_background(coro: Any) -> None:
+    """Bookkeeping that must not hold up the tool's answer."""
+    task = asyncio.get_running_loop().create_task(coro)
+    _background.add(task)
+    task.add_done_callback(_background.discard)
+
+
+async def _task_closed(client: MattermostAdapter, root_id: str) -> None:
+    """RT-6.9: this agent posted DONE in a thread whose root is an agent's
+    TASK: closed between agents when no human posted in the thread, else with
+    a human. One read of the thread; when it fails nothing is counted. A TASK
+    this agent posted itself counts nothing; the summary counts a thread once
+    per part (the root's id stays in the local counter file). Never raises."""
+    try:
+        thread = await client.thread(root_id)
+        posts = list(thread.posts)
+        root = next((p for p in posts if p.id == thread.root_id), None)
+        if root is None or root.kind != "TASK" or root.user_id == await _my_id(client):
+            return  # no task, or one this agent gave itself
+        classes = dict(zip((p.id for p in posts), await gate.author_classes(client, posts), strict=True))
+        if classes[root.id] not in gate.AGENTS:
+            return
+        human = any(classes[p.id] == gate.TRUSTED
+                    or (classes[p.id] == gate.OTHER and not p.from_webhook and not p.type)
+                    for p in posts)
+        stats.record("task_done", id=root_id, human=int(human))  # the id stays local: one per thread
+    except Exception as exc:  # noqa: BLE001 — unread: nothing counted
+        log.info("task close of %s not counted: %s", root_id, exc)
 
 
 async def _take_files(client: MattermostAdapter, files: list[str] | None, channel_id: str,
@@ -2061,7 +2095,7 @@ remind.advance = _advance_queue  # type: ignore[assignment]
 async def _post_ask(client: MattermostAdapter, me: Any, *, to: str, head: str, need: str,
                     context: str, recommendation: str, decision: str, where: str,
                     blocking: bool, answers: list[str], root_id: str,
-                    human: str = "") -> dict[str, Any]:
+                    human: str = "", forwarded: bool = False) -> dict[str, Any]:
     """Post and record an ask to `to` (RT-6.11 step 1); with human, a
     question to the 👑 `to` that falls back to that human (RT-6.25 step 3)."""
     # The question is the card's title, so it stands in the card; the text
@@ -2096,7 +2130,9 @@ async def _post_ask(client: MattermostAdapter, me: Any, *, to: str, head: str, n
     post = await client.post(text, props=shown)
     asks.add(me.id, post.id, to, post.id, title=head, question=human, blocking=blocking,
              answers=answers or None)
-    stats.record("ask", id=post.id)  # RT-6.9
+    # RT-6.9: coord marks a question to the 👑 (RT-6.25), else it reached a human.
+    # forwarded: the server's ask for a question the 👑 left open, which counts already.
+    stats.record("ask", id=post.id, **({"coord": 1} if human else {}), **({"forwarded": 1} if forwarded else {}))
     out = await slim.post(client, post)
     out["ask"] = post.id
     if root_id:
@@ -2131,8 +2167,9 @@ async def _ask_fallback(_port: Any, question: str, human: str, coord: str) -> st
                  f"{wait} min. The question has it in full."),
         recommendation="", decision="", where=f"ask {question}",
         blocking=asks.questions(me.id).get(question, "").endswith(" 1"),
-        answers=[], root_id=question)
+        answers=[], root_id=question, forwarded=True)
     asks.resolve(me.id, question)
+    stats.record("forwarded", id=question)  # RT-6.9: the question closes; the new ask reached a human
     try:
         await client.add_reaction(question, a2a.done_reaction())
         _get_inbox().notify(askroute.KIND, (
@@ -2353,6 +2390,7 @@ async def wait_for_events(
         debug.delivered_via(e.post.id, "returned by wait_for_events")  # RT-6.31
     await _typing_for_task(events, payload)
     await _note_delivered(events, payload)
+    _note_heard(events, payload)
     await _crown_events(events, payload)
     await _note_unanswered(events, payload)
     if not raw:
@@ -2366,6 +2404,35 @@ async def wait_for_events(
     if _confirmed is not None and (uid := await _my_id(_get_client())) and any(time.time() - at < asks.APPROVAL_SEC for _, at, _, _ in asks.waiting(uid)):
         payload.append({"kind": "hint", "text": ASK_PUSH_HINT})
     return _out("wait_for_events", payload)
+
+
+def _note_heard(events: list[Any], items: list[dict[str, Any]], *, pushed: bool = False) -> None:
+    """RT-6.9: one real hand-over to the agent (a push that went out, what
+    wait_for_events returned) as `heard`: whether an agent's and a human's
+    post or reaction was in it, by the server-verified class (RT-6.8; a human
+    is trusted or not, a webhook or system post is neither), and the human
+    posts (not reactions), trusted and not apart. Gated posts (RT-6.16) and an
+    agent's quiet context line (RT-6.6 step 9) are data, never counted; nor
+    are the server's own events."""
+    agent = human = False
+    trusted = other = 0
+    for e, i in zip(events, items, strict=False):
+        if e.kind in OWN_EVENTS or e.gated or i.get("gated") or i.get("quiet"):
+            continue
+        if i.get("from_agent"):
+            agent = True
+            continue
+        if not i.get("from_trusted_human") and (e.post.from_webhook or e.post.type):
+            continue
+        human = True
+        if e.kind != "reaction":
+            if i.get("from_trusted_human"):
+                trusted += 1
+            else:
+                other += 1
+    if agent or human:
+        stats.record("heard", agent=int(agent), human=int(human), trusted=trusted, other=other,
+                     **({"pushed": 1} if pushed else {}))
 
 
 def _human_task(event: Any, item: dict[str, Any]) -> bool:
@@ -2587,6 +2654,7 @@ async def _event_items(events: list[Any], raw: bool = False) -> list[dict[str, A
         # a reaction): advice, never approval (from_agent, as any agent's).
         if uid and root and cls in gate.AGENTS and root in questions:
             item["advice"] = root
+            stats.record("advice", id=root)  # RT-6.9: the 👑 settled it (first one counts)
         if uid and root and cls == gate.TRUSTED and asks.expired(
                 uid, root, e.post.create_at / 1000, thread=e.kind != "reaction"):
             item["expired"] = True
@@ -2598,7 +2666,8 @@ async def _event_items(events: list[Any], raw: bool = False) -> list[dict[str, A
             got = asks.answered(uid, root, e.post.create_at / 1000,
                                 thread=e.kind != "reaction")
             if got:
-                stats.record("answer", id=got[0], wait=got[1])
+                # `at`: the answer's own time, for the saved waiting (RT-6.9).
+                stats.record("answer", id=got[0], wait=got[1], at=int(e.post.create_at / 1000))
         if raw:
             item |= {"post": e.post.json(), "channel": e.channel.json() if e.channel else None}
         else:
@@ -2732,6 +2801,7 @@ async def _crown_returned() -> None:
 async def _pushed_later(item: dict[str, Any]) -> None:
     if isinstance(item, _PushItem):
         await _note_unanswered([item.event], [item])
+        _note_heard([item.event], [item], pushed=True)  # RT-6.9: handed over now
 
 
 lease.on_crown(_crown_returned)
@@ -2814,6 +2884,8 @@ async def _push_delivered(item: dict[str, Any]) -> None:
             else:
                 await _typing_for_task(batch.events, batch.items)
         await _note_delivered([item.event], [item])
+        if item.get(channel.PUSHED):  # held for the digest, quiet, dropped: not handed over (RT-6.9)
+            _note_heard([item.event], [item], pushed=True)
         if item.get(channel.PUSHED):  # held for the digest or dropped: nobody asked it yet
             await _note_unanswered([item.event], [item])
         stats.record("push", name=item["kind"], chars=len(json.dumps(item, ensure_ascii=False)))
@@ -3007,6 +3079,10 @@ def _fixed() -> overhead.Fixed:
         skill_chars = 0
     return overhead.Fixed(len(mcp.instructions or ""), sum(len(f.__doc__ or "") for f in tools),
                           skill_chars)
+
+
+# A day's STATS part (RT-6.9 step 2) carries the same version and fixed text.
+stats.set_source(lambda: (VERSION, _fixed()))
 
 
 def _keep_on_exit() -> None:
