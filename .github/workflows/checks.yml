@@ -11,9 +11,13 @@ permissions:
   contents: read
 
 jobs:
+  # Every job has a timeout-minutes so a hang fails in minutes rather than
+  # holding the runner to GitHub's 6 h default. Each is a wide margin over the
+  # job's usual run (in brackets), not a target: a slow runner must still pass.
   docs:
     name: docs in step with code
     runs-on: ubuntu-latest
+    timeout-minutes: 10   # ~5 s
     steps:
       - uses: actions/checkout@v4
         with:
@@ -34,6 +38,9 @@ jobs:
 
   tests:
     runs-on: ubuntu-latest
+    # The suite takes 7-8 min in CI. This bounds a hang (a stuck test once held
+    # the runner to GitHub's 6 h default), with room for a slow runner.
+    timeout-minutes: 20
     steps:
       - uses: actions/checkout@v4
       - uses: astral-sh/setup-uv@v6
@@ -45,6 +52,7 @@ jobs:
   opencode-plugin:
     name: OpenCode plugin (node)
     runs-on: ubuntu-latest
+    timeout-minutes: 10   # ~15 s
     steps:
       - uses: actions/checkout@v4
       - uses: actions/setup-node@v4
@@ -57,6 +65,7 @@ jobs:
   pi-extension:
     name: pi extension (node)
     runs-on: ubuntu-latest
+    timeout-minutes: 10   # ~10 s
     steps:
       - uses: actions/checkout@v4
       - uses: actions/setup-node@v4
@@ -69,6 +78,7 @@ jobs:
   site:
     name: promo site builds (site/)
     runs-on: ubuntu-latest
+    timeout-minutes: 10   # ~20 s
     steps:
       - uses: actions/checkout@v4
       - uses: actions/setup-node@v4
@@ -86,6 +96,7 @@ jobs:
 
   lint:
     runs-on: ubuntu-latest
+    timeout-minutes: 10   # ~45 s
     steps:
       - uses: actions/checkout@v4
       - uses: astral-sh/setup-uv@v6
