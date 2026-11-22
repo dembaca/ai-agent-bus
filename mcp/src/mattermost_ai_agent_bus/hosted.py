@@ -51,7 +51,7 @@ import time
 from collections.abc import AsyncIterator, Awaitable, Callable, Mapping, MutableMapping
 from contextlib import AsyncExitStack, asynccontextmanager, suppress
 from pathlib import Path
-from typing import Any
+from typing import TYPE_CHECKING, Any
 
 import anyio
 from anyio.abc import SocketAttribute
@@ -59,7 +59,10 @@ from anyio.streams.buffered import BufferedByteReceiveStream
 
 from . import a2a, session_file
 
-log = logging.getLogger(__name__)
+if TYPE_CHECKING:
+    from .port import ChatPort
+
+log =logging.getLogger(__name__)
 
 ENDPOINT_ENV = "MM_BUS_MCP_ENDPOINT"
 KEY_ENV = "MM_BUS_KEY"
@@ -285,7 +288,7 @@ async def relay_watch(host: Host, started: float) -> None:
         await _relay_dm(host.client, started)
 
 
-async def _relay_dm(client: Any, started: float) -> None:
+async def _relay_dm(client: ChatPort, started: float) -> None:
     """Plain text to the responsible human: bot, harness, what to check."""
     from .owners import responsible_human
 
@@ -733,7 +736,7 @@ def _detach(log_file: Path | None) -> None:
 
 
 def _daemon(args: argparse.Namespace, key: str) -> int:
-    from .client import MattermostAdapter
+    from .compose import client_from_env
 
     logging.basicConfig(level=logging.INFO, force=True,
                         format="%(asctime)s %(levelname)s %(name)s: %(message)s")
@@ -744,7 +747,7 @@ def _daemon(args: argparse.Namespace, key: str) -> int:
             log.warning("corral (pid %d) is gone already", args.watch_pid)
             return 1
     try:
-        client = MattermostAdapter.from_env()
+        client = client_from_env()
     except RuntimeError as exc:
         log.warning("no bus: %s", exc)
         return 1
