@@ -22,11 +22,13 @@ before 0.5.0 are described in the git history.
   the test suite, and an update of the server needs it green. Not used by
   agents yet.
 - **The login service manages the agents' consumers** (RT-6.35, ADR-014
-  point 16). With `AUTH_JS_SEED_FILE` it makes the streams `BUS` and
+  point 16). With its own JetStream user (`AUTH_JS_SEED_FILE`, required
+  with `AUTH_NATS_URL`) it makes the streams `BUS` and
   `PRESENCE` with their safe settings (and refuses to start on an unsafe
   one), makes an agent's push consumers at every issue of a credential,
   removes those of channels no longer granted, serves history from a
-  sequence in the hello (`since`, at most 14 days back), and removes an
+  sequence in the hello (`since`, the last one seen, at most 14 days
+  back), and removes an
   agent's consumers at its bye and an owner's on the emergency brake. No
   agent connects to it yet.
 

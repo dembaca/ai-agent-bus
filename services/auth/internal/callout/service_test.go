@@ -76,7 +76,13 @@ listen: "127.0.0.1:-1"
 jetstream { store_dir: "`+t.TempDir()+`" }
 accounts {
   AUTH { users: [ { nkey: "`+svcPub+`" } ] }
-  BUS { jetstream: enabled, users: [ { user: admin, password: pwd } ] }
+  BUS { jetstream: enabled, users: [ { user: admin, password: pwd },
+    # The login service's own JetStream user with the minimal rights that
+    # services/auth/README.md and RT-6.35 document.
+    { user: jsmin, password: pwd, permissions: {
+      publish: [ "$JS.API.STREAM.CREATE.BUS", "$JS.API.STREAM.INFO.BUS", "$JS.API.CONSUMER.*.BUS", "$JS.API.CONSUMER.*.BUS.>",
+        "$JS.API.STREAM.CREATE.PRESENCE", "$JS.API.STREAM.INFO.PRESENCE", "$JS.API.CONSUMER.*.PRESENCE", "$JS.API.CONSUMER.*.PRESENCE.>" ]
+      subscribe: [ "_INBOX.>" ] } } ] }
   OTHER { users: [ { user: other, password: pwd } ] }
 }
 authorization {
@@ -84,7 +90,7 @@ authorization {
   auth_callout {
     issuer: "`+issuerPub+`"
     account: AUTH
-    auth_users: [ "`+svcPub+`", other, admin ]
+    auth_users: [ "`+svcPub+`", other, admin, jsmin ]
     xkey: "`+xkeyPub+`"
   }
 }

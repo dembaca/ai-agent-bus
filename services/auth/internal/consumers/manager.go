@@ -19,6 +19,16 @@ import (
 	"github.com/nats-io/nats.go"
 )
 
+// Metadata keys of the consumers: agent and owner on all of them; on the
+// presence consumer also the channels of the credential (comma separated)
+// and the server's time of the last login.
+const (
+	metaAgent    = "agent"
+	metaOwner    = "owner"
+	metaChannels = "channels"
+	metaLogin    = "login"
+)
+
 // DeliverPrefix starts the subjects push consumers deliver to.
 const DeliverPrefix = "deliver"
 
@@ -29,6 +39,9 @@ const (
 	byeTimeout               = 10 * time.Second
 	sweepTimeout             = 30 * time.Second
 	maxIgnoredLogged         = 16
+	// maxScanned bounds the fallback that looks for an agent's consumers
+	// by listing the names of a stream.
+	maxScanned = 10000
 )
 
 // Config of a Manager.
@@ -44,6 +57,9 @@ type Config struct {
 	BrakeInterval time.Duration
 	Log           *slog.Logger
 	Now           func() time.Time // the clock; nil: time.Now
+	// BeforeBye is a hook for tests: WatchByes calls it with the agent after
+	// it read a bye and before it removes anything.
+	BeforeBye func(agent string)
 }
 
 var (
@@ -58,7 +74,13 @@ type Manager struct {
 	js    nats.JetStreamContext
 	cfg   Config
 	log   *slog.Logger
-	locks sync.Map // agent -> *sync.Mutex
+	lmu   sync.Mutex
+	locks map[string]*agentLock // only agents somebody holds or waits for
+}
+
+type agentLock struct {
+	mu   sync.Mutex
+	refs int
 }
 
 // New returns a Manager on nc, a connection in the tenant account with
@@ -89,7 +111,7 @@ func New(nc *nats.Conn, cfg Config) (*Manager, error) {
 	if err != nil {
 		return nil, fmt.Errorf("consumers: %w", err)
 	}
-	return &Manager{nc: nc, js: js, cfg: cfg, log: log}, nil
+	return &Manager{nc: nc, js: js, cfg: cfg, log: log, locks: map[string]*agentLock{}}, nil
 }
 
 // apiError is an error answer of the JetStream API.
@@ -104,8 +126,9 @@ func (e *apiError) Error() string {
 }
 
 const (
-	errStreamNameInUse = 10058
-	errStreamNotFound  = 10059
+	errStreamNameInUse  = 10058
+	errStreamNotFound   = 10059
+	errConsumerNotFound = 10014
 )
 
 // api calls a JetStream API subject with a JSON request and decodes the
@@ -210,11 +233,14 @@ func (m *Manager) desired(agent string, channels []string) []spec {
 	return out
 }
 
-func (m *Manager) config(w spec, agent, owner string) *nats.ConsumerConfig {
+func (m *Manager) config(w spec, agent, owner string, channels []string) *nats.ConsumerConfig {
 	c := &nats.ConsumerConfig{
 		Durable: w.name, DeliverSubject: w.deliver, AckPolicy: nats.AckNonePolicy,
 		DeliverPolicy: nats.DeliverNewPolicy, InactiveThreshold: m.cfg.InactiveThreshold,
-		Metadata: map[string]string{"agent": agent, "owner": owner},
+		Metadata: map[string]string{metaAgent: agent, metaOwner: owner},
+	}
+	if w.presence {
+		c.Metadata[metaChannels] = strings.Join(channels, ",")
 	}
 	if len(w.filters) == 1 {
 		c.FilterSubject = w.filters[0]
@@ -228,9 +254,16 @@ func (m *Manager) config(w spec, agent, owner string) *nats.ConsumerConfig {
 }
 
 func filtersOf(c nats.ConsumerConfig) []string {
-	f := append([]string(nil), c.FilterSubjects...)
+	set := map[string]bool{}
+	for _, f := range c.FilterSubjects {
+		set[f] = true
+	}
 	if c.FilterSubject != "" {
-		f = append(f, c.FilterSubject)
+		set[c.FilterSubject] = true
+	}
+	f := make([]string, 0, len(set))
+	for k := range set {
+		f = append(f, k)
 	}
 	sort.Strings(f)
 	return f
@@ -251,15 +284,31 @@ func same(have, want nats.ConsumerConfig) bool {
 	return have.DeliverSubject == want.DeliverSubject && have.AckPolicy == nats.AckNonePolicy &&
 		!have.FlowControl && have.Heartbeat == 0 && have.DeliverGroup == "" &&
 		have.InactiveThreshold == want.InactiveThreshold &&
-		have.Metadata["agent"] == want.Metadata["agent"] && have.Metadata["owner"] == want.Metadata["owner"] &&
+		have.Metadata[metaAgent] == want.Metadata[metaAgent] && have.Metadata[metaOwner] == want.Metadata[metaOwner] &&
+		have.Metadata[metaChannels] == want.Metadata[metaChannels] &&
 		(want.DeliverPolicy != nats.DeliverLastPerSubjectPolicy || have.DeliverPolicy == want.DeliverPolicy)
 }
 
+// lock takes the agent's lock and returns the unlock. The entry of an agent
+// nobody holds or waits for is dropped, so the map does not grow.
 func (m *Manager) lock(agent string) func() {
-	l, _ := m.locks.LoadOrStore(agent, &sync.Mutex{})
-	mu := l.(*sync.Mutex)
-	mu.Lock()
-	return mu.Unlock
+	m.lmu.Lock()
+	e := m.locks[agent]
+	if e == nil {
+		e = &agentLock{}
+		m.locks[agent] = e
+	}
+	e.refs++
+	m.lmu.Unlock()
+	e.mu.Lock()
+	return func() {
+		e.mu.Unlock()
+		m.lmu.Lock()
+		if e.refs--; e.refs == 0 {
+			delete(m.locks, agent)
+		}
+		m.lmu.Unlock()
+	}
 }
 
 // Reconcile makes the push consumers of an agent so that they match its
@@ -307,29 +356,30 @@ func (m *Manager) Reconcile(ctx context.Context, agent, owner string, channels [
 	for _, w := range want {
 		wanted[w.stream+"/"+w.name] = true
 	}
-	have := map[string]bool{}
+	// What the agent had before: the presence consumer says which channels.
+	pres, err := m.info(ctx, PresenceStream, agent+"_presence")
+	if err != nil {
+		return err
+	}
+	if pres != nil && pres.Config.Metadata[metaAgent] != agent {
+		return fmt.Errorf("consumers: %s belongs to another agent", pres.Name)
+	}
+	stamp := ""
 	var jobs []func() error
-	for _, st := range []string{BusStream, PresenceStream} {
-		names, err := m.names(ctx, st)
-		if err != nil {
-			return err
+	for _, c := range m.previous(ctx, agent, pres) {
+		if wanted[c.stream+"/"+c.name] {
+			continue
 		}
-		for _, n := range names {
-			if !strings.HasPrefix(n, agent+"_") {
-				continue
+		jobs = append(jobs, func() error {
+			if ok, err := m.deleteOwned(ctx, c.stream, c.name, agent, time.Time{}); err != nil || !ok {
+				return err
 			}
-			have[st+"/"+n] = true
-			if !wanted[st+"/"+n] {
-				st, n := st, n
-				jobs = append(jobs, func() error {
-					if err := m.delete(ctx, st, n); err != nil {
-						return err
-					}
-					m.log.Info("consumers", "event", "removed", "agent", agent, "consumer", n, "reason", "no longer in the credential")
-					return nil
-				})
-			}
-		}
+			m.log.Info("consumers", "event", "removed", "agent", agent, "consumer", c.name, "reason", "no longer in the credential")
+			return nil
+		})
+	}
+	if pres != nil && !pres.Ts.IsZero() {
+		stamp = pres.Ts.UTC().Format(time.RFC3339Nano) // the server's time of this login
 	}
 	// The consumers are independent, and each call waits for the server to
 	// write to disk: do them at once, a login has little time.
@@ -338,40 +388,130 @@ func (m *Manager) Reconcile(ctx context.Context, agent, owner string, channels [
 	}
 	jobs = nil
 	for _, w := range want {
-		w := w
 		jobs = append(jobs, func() error {
-			return m.ensureConsumer(ctx, w, agent, owner, starts, have[w.stream+"/"+w.name])
+			return m.ensureConsumer(ctx, w, agent, owner, chans, starts, stamp)
 		})
 	}
 	return parallel(jobs)
 }
 
-func (m *Manager) ensureConsumer(ctx context.Context, w spec, agent, owner string, starts map[string]uint64, exists bool) error {
+type named struct{ stream, name string }
+
+// previous returns the consumers the agent may have from before: the
+// channel consumers its presence consumer records, or, when that is missing
+// or records nothing, the ones found by a bounded scan of the names. Callers
+// check each one's metadata.
+func (m *Manager) previous(ctx context.Context, agent string, pres *consumerInfo) []named {
+	if pres != nil {
+		if chs, ok := pres.Config.Metadata[metaChannels]; ok {
+			var out []named
+			for _, ch := range splitChannels(chs) {
+				out = append(out, named{BusStream, agent + "_ch_" + ch})
+			}
+			return append(out, named{BusStream, agent + "_dm"}, named{PresenceStream, agent + "_presence"})
+		}
+	}
+	return m.scan(ctx, agent)
+}
+
+func splitChannels(s string) []string {
+	var out []string
+	for _, ch := range strings.Split(s, ",") {
+		if channelRE.MatchString(ch) {
+			out = append(out, ch)
+		}
+	}
+	return out
+}
+
+// scan is the fallback: the consumers of both streams whose name starts with
+// the agent's (candidates only: they are checked by their metadata), looking
+// at no more than maxScanned names of a stream.
+func (m *Manager) scan(ctx context.Context, agent string) []named {
+	var out []named
+	for _, st := range []string{BusStream, PresenceStream} {
+		names, truncated, err := m.names(ctx, st, maxScanned)
+		if err != nil {
+			m.log.Warn("consumers", "event", "scan failed", "stream", st, "reason", err.Error())
+			continue
+		}
+		if truncated {
+			m.log.Warn("consumers", "event", "scan stopped", "stream", st, "limit", maxScanned)
+		}
+		for _, n := range names {
+			if strings.HasPrefix(n, agent+"_") {
+				out = append(out, named{st, n})
+			}
+		}
+	}
+	return out
+}
+
+// deleteOwned deletes the consumer when its metadata says it is the agent's
+// and, with a non-zero before, when it was made before then. It says whether
+// it deleted.
+func (m *Manager) deleteOwned(ctx context.Context, stream, name, agent string, before time.Time) (bool, error) {
+	ci, err := m.info(ctx, stream, name)
+	if err != nil || ci == nil {
+		return false, err
+	}
+	if ci.Config.Metadata[metaAgent] != agent || (!before.IsZero() && !ci.Created.Before(before)) {
+		return false, nil
+	}
+	return true, m.delete(ctx, stream, name)
+}
+
+// consumerInfo is a consumer with the server's time of the answer.
+type consumerInfo struct {
+	nats.ConsumerInfo
+	Ts time.Time `json:"ts"`
+}
+
+// info reads one consumer; nil when there is none.
+func (m *Manager) info(ctx context.Context, stream, name string) (*consumerInfo, error) {
+	var ci consumerInfo
+	err := m.api(ctx, "$JS.API.CONSUMER.INFO."+stream+"."+name, nil, &ci)
+	switch {
+	case isAPI(err, errConsumerNotFound):
+		return nil, nil
+	case err != nil:
+		return nil, fmt.Errorf("consumer %s: %w", name, err)
+	}
+	return &ci, nil
+}
+
+func (m *Manager) ensureConsumer(ctx context.Context, w spec, agent, owner string, chans []string, starts map[string]uint64, stamp string) error {
 	if err := ctx.Err(); err != nil {
 		return err
 	}
-	cfg := m.config(w, agent, owner)
+	cfg := m.config(w, agent, owner, chans)
 	seq, restart := starts[w.channel]
 	restart = restart && w.channel != ""
-	if exists {
-		ci, err := m.js.ConsumerInfo(w.stream, w.name, nats.Context(ctx))
-		switch {
-		case errors.Is(err, nats.ErrConsumerNotFound):
-		case err != nil:
-			return fmt.Errorf("consumer %s: %w", w.name, err)
-		default:
-			if !restart && same(ci.Config, *cfg) {
+	ci, err := m.info(ctx, w.stream, w.name)
+	if err != nil {
+		return err
+	}
+	if ci != nil {
+		if ci.Config.Metadata[metaAgent] != agent {
+			return fmt.Errorf("consumer %s belongs to another agent", w.name)
+		}
+		if w.presence && !restart {
+			// Kept or updated, with the time of this login: a bye the server
+			// stamped before it must not remove the consumer.
+			if stamp != "" {
+				cfg.Metadata[metaLogin] = stamp
+			}
+			if _, err := m.js.UpdateConsumer(w.stream, cfg, nats.Context(ctx)); err == nil {
+				if !same(ci.Config, *cfg) {
+					m.log.Info("consumers", "event", "updated", "agent", agent, "consumer", w.name)
+				}
 				return nil
 			}
-			if !restart && w.presence && ci.Config.Metadata["owner"] == owner {
-				if _, err := m.js.UpdateConsumer(w.stream, cfg, nats.Context(ctx)); err == nil {
-					m.log.Info("consumers", "event", "updated", "agent", agent, "consumer", w.name)
-					return nil
-				}
-			}
-			if err := m.delete(ctx, w.stream, w.name); err != nil {
-				return err
-			}
+		} else if !restart && same(ci.Config, *cfg) {
+			return nil
+		}
+		if err := m.delete(ctx, w.stream, w.name); err != nil {
+			return err
 		}
 	}
 	if restart {
@@ -402,16 +542,18 @@ func parallel(jobs []func() error) error {
 	return nil
 }
 
-// start sets the start of cfg to stream sequence seq, but not further back
-// than MaxHistory: when the message at seq (or the first one after it) is
-// older, the start is by time, at now minus MaxHistory.
-func (m *Manager) start(ctx context.Context, cfg *nats.ConsumerConfig, seq uint64) error {
+// start makes cfg start after the stream sequence last (the last one the
+// agent has seen), at last+1, but not further back than MaxHistory: when the
+// message there (or the first one after it) is older, the start is by time,
+// at now minus MaxHistory.
+func (m *Manager) start(ctx context.Context, cfg *nats.ConsumerConfig, last uint64) error {
 	si, err := m.js.StreamInfo(BusStream, nats.Context(ctx))
 	if err != nil {
 		return fmt.Errorf("stream %s: %w", BusStream, err)
 	}
+	seq := last + 1
 	if seq > si.State.LastSeq {
-		return nil // nothing there yet: from the next message on
+		return nil // nothing after it yet: from the next message on
 	}
 	if seq < si.State.FirstSeq {
 		seq = si.State.FirstSeq
@@ -430,20 +572,23 @@ func (m *Manager) start(ctx context.Context, cfg *nats.ConsumerConfig, seq uint6
 	return nil
 }
 
-// names lists the consumer names of a stream.
-func (m *Manager) names(ctx context.Context, stream string) ([]string, error) {
-	var all []string
+// names lists the consumer names of a stream, at most limit of them;
+// truncated says there were more.
+func (m *Manager) names(ctx context.Context, stream string, limit int) (all []string, truncated bool, err error) {
 	for {
 		var r struct {
 			Total     int      `json:"total"`
 			Consumers []string `json:"consumers"`
 		}
 		if err := m.api(ctx, "$JS.API.CONSUMER.NAMES."+stream, map[string]int{"offset": len(all)}, &r); err != nil {
-			return nil, fmt.Errorf("consumers of %s: %w", stream, err)
+			return nil, false, fmt.Errorf("consumers of %s: %w", stream, err)
 		}
 		all = append(all, r.Consumers...)
+		if len(all) >= limit && len(all) < r.Total {
+			return all, true, nil
+		}
 		if len(r.Consumers) == 0 || len(all) >= r.Total {
-			return all, nil
+			return all, false, nil
 		}
 	}
 }
@@ -480,25 +625,33 @@ func (m *Manager) Remove(ctx context.Context, agent string) error {
 
 // RemoveBefore deletes the consumers of an agent made before the given time
 // (the server's time of its bye; zero: all of them). A bye handled late, after
-// the same agent logged in again, so leaves the new login's consumers alone.
+// the same agent logged in again, so leaves the new login's consumers alone:
+// the presence consumer carries the server's time of the last login, and a
+// login at or after the bye ends it. The consumers are found by their names,
+// from the channels the presence consumer records, and by their metadata, not
+// by a prefix.
 func (m *Manager) RemoveBefore(ctx context.Context, agent string, before time.Time) error {
 	if !agentRE.MatchString(agent) {
 		return fmt.Errorf("consumers: invalid agent name")
 	}
 	defer m.lock(agent)()
+	pres, err := m.info(ctx, PresenceStream, agent+"_presence")
+	if err != nil {
+		return err
+	}
+	if pres != nil && !before.IsZero() && pres.Config.Metadata[metaAgent] == agent {
+		if t, err := time.Parse(time.RFC3339Nano, pres.Config.Metadata[metaLogin]); err == nil && !t.Before(before) {
+			m.log.Info("consumers", "event", "bye ignored", "agent", agent, "reason", "logged in again since")
+			return nil
+		}
+	}
 	n := 0
-	for _, st := range []string{BusStream, PresenceStream} {
-		cis, err := m.list(ctx, st)
+	for _, c := range m.previous(ctx, agent, pres) {
+		ok, err := m.deleteOwned(ctx, c.stream, c.name, agent, before)
 		if err != nil {
 			return err
 		}
-		for _, ci := range cis {
-			if !strings.HasPrefix(ci.Name, agent+"_") || (!before.IsZero() && !ci.Created.Before(before)) {
-				continue
-			}
-			if err := m.delete(ctx, st, ci.Name); err != nil {
-				return err
-			}
+		if ok {
 			n++
 		}
 	}
@@ -582,10 +735,15 @@ func (m *Manager) WatchByes(ctx context.Context) error {
 		if json.Unmarshal(msg.Data, &body) != nil || body.Status != "bye" || !agentRE.MatchString(agent) {
 			return
 		}
-		at := time.Now()
-		if md, err := msg.Metadata(); err == nil {
-			at = md.Timestamp // the server's time of the bye
+		if m.cfg.BeforeBye != nil {
+			m.cfg.BeforeBye(agent)
 		}
+		md, err := msg.Metadata()
+		if err != nil {
+			m.log.Warn("consumers", "event", "bye ignored", "agent", agent, "reason", "no JetStream metadata")
+			return
+		}
+		at := md.Timestamp // the server's time of the bye
 		cctx, cancel := context.WithTimeout(ctx, byeTimeout)
 		defer cancel()
 		if err := m.RemoveBefore(cctx, agent, at); err != nil && ctx.Err() == nil {

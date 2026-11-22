@@ -101,7 +101,10 @@ type Service struct {
 	consumers Consumers // nil: none are made
 }
 
-// SetConsumers sets the consumer management; nil (the default) makes none.
+// SetConsumers sets the consumer management. nil (the default) makes none and
+// is for unit tests of this package only: the service's wiring (app.RunCallout)
+// always sets it, since a credential without consumer management is not
+// reconciled or braked.
 func (s *Service) SetConsumers(c Consumers) {
 	s.cmu.Lock()
 	defer s.cmu.Unlock()

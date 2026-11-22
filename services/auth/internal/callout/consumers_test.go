@@ -9,9 +9,12 @@ import (
 	"context"
 	"encoding/json"
 	"errors"
+	"fmt"
 	"log/slog"
 	"os"
 	"strings"
+	"sync"
+	"sync/atomic"
 	"testing"
 	"time"
 
@@ -223,15 +226,16 @@ func TestEnsureStreamsSizesAreConfigurable(t *testing.T) {
 
 func TestEnsureStreamsRefusesAnUnsafeStream(t *testing.T) {
 	for name, c := range map[string]struct{ stream, cfg string }{
-		"BUS acknowledges":         {"BUS", strings.Replace(busStreamCfg, `"no_ack":true`, `"no_ack":false`, 1)},
-		"BUS allows schedules":     {"BUS", strings.Replace(busStreamCfg, `"allow_msg_schedules":false`, `"allow_msg_schedules":true`, 1)},
-		"BUS allows rollups":       {"BUS", strings.NewReplacer(`"allow_rollup_hdrs":false`, `"allow_rollup_hdrs":true`, `"deny_purge":true`, `"deny_purge":false`).Replace(busStreamCfg)},
-		"BUS allows deletes":       {"BUS", strings.Replace(busStreamCfg, `"deny_delete":true`, `"deny_delete":false`, 1)},
-		"BUS allows purges":        {"BUS", strings.Replace(busStreamCfg, `"deny_purge":true`, `"deny_purge":false`, 1)},
-		"BUS without a size limit": {"BUS", strings.Replace(busStreamCfg, `"max_bytes":1073741824`, `"max_bytes":-1`, 1)},
-		"PRESENCE keeps many":      {"PRESENCE", strings.Replace(presenceStreamCfg, `"max_msgs_per_subject":1`, `"max_msgs_per_subject":5`, 1)},
-		"PRESENCE keeps all":       {"PRESENCE", strings.Replace(presenceStreamCfg, `"max_msgs_per_subject":1,`, ``, 1)},
-		"PRESENCE acknowledges":    {"PRESENCE", strings.Replace(presenceStreamCfg, `"no_ack":true`, `"no_ack":false`, 1)},
+		"BUS acknowledges":           {"BUS", strings.Replace(busStreamCfg, `"no_ack":true`, `"no_ack":false`, 1)},
+		"BUS allows schedules":       {"BUS", strings.Replace(busStreamCfg, `"allow_msg_schedules":false`, `"allow_msg_schedules":true`, 1)},
+		"BUS allows rollups":         {"BUS", strings.NewReplacer(`"allow_rollup_hdrs":false`, `"allow_rollup_hdrs":true`, `"deny_purge":true`, `"deny_purge":false`).Replace(busStreamCfg)},
+		"BUS allows deletes":         {"BUS", strings.Replace(busStreamCfg, `"deny_delete":true`, `"deny_delete":false`, 1)},
+		"BUS allows purges":          {"BUS", strings.Replace(busStreamCfg, `"deny_purge":true`, `"deny_purge":false`, 1)},
+		"BUS takes deliver subjects": {"BUS", strings.Replace(busStreamCfg, `"subjects":["bus.>"]`, `"subjects":["bus.>","deliver.>"]`, 1)},
+		"BUS without a size limit":   {"BUS", strings.Replace(busStreamCfg, `"max_bytes":1073741824`, `"max_bytes":-1`, 1)},
+		"PRESENCE keeps many":        {"PRESENCE", strings.Replace(presenceStreamCfg, `"max_msgs_per_subject":1`, `"max_msgs_per_subject":5`, 1)},
+		"PRESENCE keeps all":         {"PRESENCE", strings.Replace(presenceStreamCfg, `"max_msgs_per_subject":1,`, ``, 1)},
+		"PRESENCE acknowledges":      {"PRESENCE", strings.Replace(presenceStreamCfg, `"no_ack":true`, `"no_ack":false`, 1)},
 	} {
 		t.Run(name, func(t *testing.T) {
 			l := newLabCfg(t, nil, 0, nil)
@@ -358,10 +362,11 @@ func TestFewerChannelsRemoveTheDroppedConsumerAndNarrowPresence(t *testing.T) {
 
 func TestSinceStartsAtTheSequenceOfAGrantedChannel(t *testing.T) {
 	c := newConsumerLab(t, nil)
-	c.publish("bus.ch.home.agent-other", "m1")
+	seq1 := c.publish("bus.ch.home.agent-other", "m1")
 	seq2 := c.publish("bus.ch.home.agent-other", "m2")
 	c.publish("bus.ch.home.agent-other", "m3")
-	a, err := c.login("alice", newHost(), Hello{Home: "home", Since: map[string]uint64{"home": seq2}})
+	// since is exclusive: the last sequence the agent has seen.
+	a, err := c.login("alice", newHost(), Hello{Home: "home", Since: map[string]uint64{"home": seq1}})
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -371,9 +376,9 @@ func TestSinceStartsAtTheSequenceOfAGrantedChannel(t *testing.T) {
 	}
 	got := take(c.listen(a, "deliver."+a.name+".ch.home"), time.Second)
 	if len(got) != 2 || string(got[0].Data) != "m2" || string(got[1].Data) != "m3" {
-		t.Fatalf("history delivered: %d messages", len(got))
+		t.Fatalf("history delivered: %d messages (m1, the one seen, must not be among them)", len(got))
 	}
-	// A renewal with a since again restarts the consumer at that sequence.
+	// A renewal with a since again restarts the consumer after that sequence.
 }
 
 func TestSinceIsIgnoredForAChannelNotInTheCredential(t *testing.T) {
@@ -417,7 +422,7 @@ func TestSinceNeverReachesBackFurtherThan14Days(t *testing.T) {
 	// 13 days later the messages are young enough: by sequence.
 	clock = now.Add(13 * 24 * time.Hour)
 	ci := reconcile("agent-young", first)
-	if ci.Config.DeliverPolicy != nats.DeliverByStartSequencePolicy || ci.Config.OptStartSeq != first {
+	if ci.Config.DeliverPolicy != nats.DeliverByStartSequencePolicy || ci.Config.OptStartSeq != first+1 {
 		t.Errorf("13 days: %+v", ci.Config)
 	}
 	// 15 days later they are too old: by time, at now minus 14 days.
@@ -428,7 +433,12 @@ func TestSinceNeverReachesBackFurtherThan14Days(t *testing.T) {
 		ci.Config.OptStartTime.Sub(cutoff).Abs() > time.Second {
 		t.Errorf("15 days: %+v", ci.Config)
 	}
-	// A sequence below the stream's first or beyond its last is no error.
+	// The last seen being the last one: nothing to replay, from new messages.
+	ci = reconcile("agent-caught-up", first+1)
+	if ci.Config.DeliverPolicy != nats.DeliverNewPolicy {
+		t.Errorf("last seen is the last: %+v", ci.Config)
+	}
+	// A sequence beyond the stream's last is no error.
 	ci = reconcile("agent-ahead", 1000)
 	if ci.Config.DeliverPolicy != nats.DeliverNewPolicy {
 		t.Errorf("beyond the last: %+v", ci.Config)
@@ -622,5 +632,234 @@ func TestEndToEndAnAgentReadsAPostOfAnother(t *testing.T) {
 		if !seen[w] {
 			t.Errorf("bob did not receive %q (got %v)", w, seen)
 		}
+	}
+}
+
+// The bye is stamped by the server and the watcher handles it late, after the
+// same agent logged in again: the consumers of the new login stay. A watcher
+// that took the local clock would remove them.
+func TestAByeHandledAfterAReloginLeavesTheConsumers(t *testing.T) {
+	block, reached := make(chan struct{}), make(chan string, 4)
+	var once sync.Once
+	release := func() { once.Do(func() { close(block) }) }
+	t.Cleanup(release)
+	c := newConsumerLab(t, func(cfg *consumers.Config) {
+		cfg.BeforeBye = func(agent string) { reached <- agent; <-block }
+	})
+	c.setup()
+	ctx, cancel := context.WithCancel(context.Background())
+	t.Cleanup(cancel)
+	if err := c.mgr.WatchByes(ctx); err != nil {
+		t.Fatal(err)
+	}
+	host := newHost()
+	alice, err := c.login("alice", host, Hello{Home: "home"})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := alice.nc.Publish("presence."+alice.name, []byte(`{"status":"bye"}`)); err != nil {
+		t.Fatal(err)
+	}
+	select {
+	case <-reached:
+	case <-time.After(3 * time.Second):
+		t.Fatal("the watcher did not see the bye")
+	}
+	time.Sleep(50 * time.Millisecond)
+	if _, err := c.login("alice", host, Hello{Home: "home"}); err != nil { // the handler still waits
+		t.Fatal(err)
+	}
+	release()
+	waitFor(t, "the late bye is handled", func() bool { return strings.Contains(c.logs.String(), "logged in again since") })
+	if n := len(c.consumersOf(alice)); n != 3 {
+		t.Errorf("the late bye removed the new login's consumers: %d left", n)
+	}
+}
+
+// A guest channel replaced by another, the number of filters unchanged: the
+// presence consumer follows, the old channel's consumer goes, the new one is made.
+func TestSwappingAGuestChannelChangesThePresenceFilters(t *testing.T) {
+	c := newConsumerLab(t, nil)
+	c.setup()
+	c.chat.Channels["bob"] = []string{"home", "ga", "gb"}
+	host := newHost()
+	bob, err := c.login("bob", host, Hello{Home: "home", Guests: []string{"ga"}})
+	if err != nil {
+		t.Fatal(err)
+	}
+	filters := func() string {
+		pc := c.info("PRESENCE", bob.name+"_presence")
+		return strings.Join(append(append([]string{}, pc.Config.FilterSubjects...), pc.Config.FilterSubject), " ")
+	}
+	if f := filters(); !strings.Contains(f, "crown.ga.") || strings.Contains(f, "crown.gb.") {
+		t.Fatalf("before: %s", f)
+	}
+	if _, err := c.login("bob", host, Hello{Home: "home", Guests: []string{"gb"}}); err != nil {
+		t.Fatal(err)
+	}
+	if f := filters(); strings.Contains(f, "crown.ga.") || !strings.Contains(f, "crown.gb.") {
+		t.Errorf("after: %s", f)
+	}
+	if c.info("BUS", bob.name+"_ch_ga") != nil {
+		t.Error("the consumer of the replaced guest channel is still there")
+	}
+	if c.info("BUS", bob.name+"_ch_gb") == nil {
+		t.Error("no consumer for the new guest channel")
+	}
+	if ch := c.info("PRESENCE", bob.name+"_presence").Config.Metadata["channels"]; ch != "gb,home" {
+		t.Errorf("channels recorded: %q", ch)
+	}
+}
+
+// Agent names where one is the other's prefix plus "_": a bye or a reconcile
+// of one never touches the other's consumers, found by metadata not by name.
+func TestAgentsWhoseNamesShareAPrefixDoNotShareConsumers(t *testing.T) {
+	c := newConsumerLab(t, nil)
+	ctx := ctx5(t)
+	for _, a := range []string{"x", "x_y"} {
+		if err := c.mgr.Reconcile(ctx, a, "alice", []string{"home"}, nil); err != nil {
+			t.Fatal(err)
+		}
+	}
+	count := func(prefix string) (n int) {
+		for _, st := range []string{"BUS", "PRESENCE"} {
+			for name := range c.js.ConsumerNames(st) {
+				if strings.HasPrefix(name, prefix) {
+					n++
+				}
+			}
+		}
+		return n
+	}
+	// x's reconcile with no channels must not remove x_y's.
+	if err := c.mgr.Reconcile(ctx, "x", "alice", nil, nil); err != nil {
+		t.Fatal(err)
+	}
+	if c.info("BUS", "x_y_ch_home") == nil || c.info("BUS", "x_ch_home") != nil {
+		t.Fatal("reconcile of x touched x_y or kept its own dropped channel")
+	}
+	if err := c.mgr.Remove(ctx, "x"); err != nil {
+		t.Fatal(err)
+	}
+	if c.info("BUS", "x_y_ch_home") == nil || c.info("BUS", "x_y_dm") == nil || c.info("PRESENCE", "x_y_presence") == nil {
+		t.Errorf("removing x removed x_y's consumers (%d left)", count("x_y_"))
+	}
+	if count("x_") != 3 {
+		t.Errorf("x left %d consumers beside x_y's three", count("x_")-3)
+	}
+	// The fallback, with no presence consumer to read, goes by metadata too:
+	// a consumer of x_y's name that is not x_y's own is not deleted.
+	if _, err := c.js.AddConsumer("BUS", &nats.ConsumerConfig{Durable: "x_foreign", DeliverSubject: "deliver.foreign",
+		FilterSubject: "bus.ch.home.*", AckPolicy: nats.AckNonePolicy, Metadata: map[string]string{"agent": "other"}}); err != nil {
+		t.Fatal(err)
+	}
+	if err := c.mgr.Remove(ctx, "x"); err != nil {
+		t.Fatal(err)
+	}
+	if c.info("BUS", "x_foreign") == nil {
+		t.Error("the fallback removed a consumer by its name prefix")
+	}
+}
+
+// A bye costs a handful of calls, not a listing: with many other agents'
+// consumers present only the leaver's go, and CONSUMER.LIST is never called
+// while its presence consumer tells the names.
+func TestAByeWithManyOtherConsumersRemovesOnlyTheLeaversAndListsNothing(t *testing.T) {
+	c := newConsumerLab(t, nil)
+	ctx := ctx5(t)
+	for i := range 30 {
+		if err := c.mgr.Reconcile(ctx, fmt.Sprintf("other%d", i), "alice", []string{"home"}, nil); err != nil {
+			t.Fatal(err)
+		}
+	}
+	if err := c.mgr.Reconcile(ctx, "leaver", "alice", []string{"home", "a", "b"}, nil); err != nil {
+		t.Fatal(err)
+	}
+	var lists, names atomic.Int32
+	for subj, n := range map[string]*atomic.Int32{"$JS.API.CONSUMER.LIST.>": &lists, "$JS.API.CONSUMER.NAMES.>": &names} {
+		sub, err := c.nc.Subscribe(subj, func(*nats.Msg) { n.Add(1) })
+		if err != nil {
+			t.Fatal(err)
+		}
+		t.Cleanup(func() { _ = sub.Unsubscribe() })
+	}
+	_ = c.nc.Flush()
+	if err := c.mgr.Reconcile(ctx, "leaver", "alice", []string{"home", "a"}, nil); err != nil { // b dropped
+		t.Fatal(err)
+	}
+	if c.info("BUS", "leaver_ch_b") != nil {
+		t.Error("the dropped channel's consumer is still there")
+	}
+	if err := c.mgr.Remove(ctx, "leaver"); err != nil {
+		t.Fatal(err)
+	}
+	_ = c.nc.Flush()
+	time.Sleep(100 * time.Millisecond)
+	if lists.Load() != 0 || names.Load() != 0 {
+		t.Errorf("reconcile and remove listed consumers: %d LIST, %d NAMES", lists.Load(), names.Load())
+	}
+	left := 0
+	for _, st := range []string{"BUS", "PRESENCE"} {
+		for n := range c.js.ConsumerNames(st) {
+			if strings.HasPrefix(n, "leaver_") {
+				t.Errorf("%s left", n)
+			}
+			if strings.HasPrefix(n, "other") {
+				left++
+			}
+		}
+	}
+	if left != 30*3 {
+		t.Errorf("%d consumers of the others left, want %d", left, 90)
+	}
+}
+
+// The login service's own JetStream user needs no more than the rights the
+// README and RT-6.35 name: everything the manager does works with them.
+func TestTheDocumentedMinimalRightsSuffice(t *testing.T) {
+	l := newLabCfg(t, nil, 2800*time.Millisecond, nil)
+	denied := make(chan error, 16)
+	nc, err := nats.Connect(l.url, nats.UserInfo("jsmin", "pwd"),
+		nats.ErrorHandler(func(_ *nats.Conn, _ *nats.Subscription, err error) { denied <- err }))
+	if err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(nc.Close)
+	mgr, err := consumers.New(nc, consumers.Config{Bus: "bus", Presence: "presence", Log: slogTo(l.logs)})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := mgr.EnsureStreams(ctx5(t)); err != nil {
+		t.Fatalf("EnsureStreams: %v", err)
+	}
+	if err := mgr.EnsureStreams(ctx5(t)); err != nil {
+		t.Fatalf("EnsureStreams on existing streams: %v", err)
+	}
+	ctx, cancel := context.WithCancel(context.Background())
+	t.Cleanup(cancel)
+	if err := mgr.WatchByes(ctx); err != nil {
+		t.Fatalf("WatchByes: %v", err)
+	}
+	l.svc.SetConsumers(mgr)
+	c := &cl{lab: l, mgr: mgr}
+	c.nc, c.js = l.admin()
+	a, err := c.login("alice", newHost(), Hello{Home: "home"})
+	if err != nil {
+		t.Fatalf("login: %v", err)
+	}
+	if n := len(c.consumersOf(a)); n != 3 {
+		t.Fatalf("%d consumers", n)
+	}
+	if err := mgr.SweepBrake(ctx5(t), NewBrake("", nil)); err != nil {
+		t.Fatalf("SweepBrake: %v", err)
+	}
+	if err := a.nc.Publish("presence."+a.name, []byte(`{"status":"bye"}`)); err != nil {
+		t.Fatal(err)
+	}
+	waitFor(t, "alice's consumers removed by her bye", func() bool { return len(c.consumersOf(a)) == 0 })
+	select {
+	case err := <-denied:
+		t.Errorf("the minimal user was refused: %v", err)
+	default:
 	}
 }

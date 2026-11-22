@@ -38,10 +38,10 @@ type Settings struct {
 	NATSCertFile   string // client certificate, with NATSKeyFile, if the server asks for one
 	NATSKeyFile    string
 	BrakeFile      string
-	// Consumer management, optional: the user nkey seed of the service's
+	// Consumer management, required: the user nkey seed of the service's
 	// user in the tenant account, with JetStream API rights, and the server
-	// it connects to (default NATSURL). Without the seed no consumers are
-	// made.
+	// it connects to (default NATSURL). Credentials carry the deliver
+	// subjects; without consumer management nobody reconciles or brakes them.
 	JSSeedFile     string
 	JSURL          string
 	Callout        callout.Config
@@ -85,8 +85,8 @@ func LoadSettings(getenv func(string) string) (Settings, bool, error) {
 	s.BrakeFile = get("AUTH_BRAKE_FILE")
 	s.JSSeedFile = get("AUTH_JS_SEED_FILE")
 	s.JSURL = get("AUTH_JS_URL")
-	if s.JSSeedFile == "" && s.JSURL != "" {
-		return Settings{}, true, fmt.Errorf("%w: AUTH_JS_URL without AUTH_JS_SEED_FILE", ErrConfig)
+	if s.JSSeedFile == "" {
+		return Settings{}, true, fmt.Errorf("%w: AUTH_JS_SEED_FILE must be set with AUTH_NATS_URL: without consumer management credentials would carry deliver subjects nobody reconciles or brakes", ErrConfig)
 	}
 	if s.JSURL == "" {
 		s.JSURL = s.NATSURL
@@ -150,6 +150,9 @@ func LoadSettings(getenv func(string) string) (Settings, bool, error) {
 // RunCallout starts the callout and serves until ctx ends. Errors before it
 // serves wrap ErrConfig when the configuration is at fault.
 func RunCallout(ctx context.Context, s Settings, log *slog.Logger) error {
+	if s.JSSeedFile == "" {
+		return fmt.Errorf("%w: AUTH_JS_SEED_FILE must be set", ErrConfig)
+	}
 	issuer, err := seed(s.IssuerSeedFile, "AUTH_ISSUER_SEED_FILE")
 	if err != nil {
 		return err
@@ -164,11 +167,9 @@ func RunCallout(ctx context.Context, s Settings, log *slog.Logger) error {
 	if err != nil {
 		return err
 	}
-	var jsUser nkeys.KeyPair
-	if s.JSSeedFile != "" {
-		if jsUser, err = seed(s.JSSeedFile, "AUTH_JS_SEED_FILE"); err != nil {
-			return err
-		}
+	jsUser, err := seed(s.JSSeedFile, "AUTH_JS_SEED_FILE")
+	if err != nil {
+		return err
 	}
 	mmToken, err := secret(s.MattermostFile, "AUTH_MATTERMOST_TOKEN_FILE")
 	if err != nil {
@@ -224,28 +225,24 @@ func RunCallout(ctx context.Context, s Settings, log *slog.Logger) error {
 		return fmt.Errorf("NATS: %w", err)
 	}
 	defer nc.Close()
-	if jsUser == nil {
-		log.Warn("no consumer management: AUTH_JS_SEED_FILE is not set, agents get credentials but no consumers to read from")
-	} else {
-		jsnc, err := connect(s.JSURL, "authd-js", jsUser)
-		if err != nil {
-			return fmt.Errorf("NATS (JetStream): %w", err)
-		}
-		defer jsnc.Close()
-		mgr, err := consumers.New(jsnc, consumers.Config{Bus: s.Callout.Subjects.Prefix, Presence: s.Callout.Subjects.Presence, Log: log})
-		if err != nil {
-			return fmt.Errorf("%w: %v", ErrConfig, err)
-		}
-		if err := mgr.EnsureStreams(startCtx); err != nil {
-			return fmt.Errorf("streams: %w", err)
-		}
-		if err := mgr.WatchByes(ctx); err != nil {
-			return err
-		}
-		mgr.WatchBrake(ctx, brake)
-		svc.SetConsumers(mgr)
-		log.Info("consumer management on", "bus", s.Callout.Subjects.Prefix, "presence", s.Callout.Subjects.Presence)
+	jsnc, err := connect(s.JSURL, "authd-js", jsUser)
+	if err != nil {
+		return fmt.Errorf("NATS (JetStream): %w", err)
 	}
+	defer jsnc.Close()
+	mgr, err := consumers.New(jsnc, consumers.Config{Bus: s.Callout.Subjects.Prefix, Presence: s.Callout.Subjects.Presence, Log: log})
+	if err != nil {
+		return fmt.Errorf("%w: %v", ErrConfig, err)
+	}
+	if err := mgr.EnsureStreams(startCtx); err != nil {
+		return fmt.Errorf("streams: %w", err)
+	}
+	if err := mgr.WatchByes(ctx); err != nil {
+		return err
+	}
+	mgr.WatchBrake(ctx, brake)
+	svc.SetConsumers(mgr)
+	log.Info("consumer management on", "bus", s.Callout.Subjects.Prefix, "presence", s.Callout.Subjects.Presence)
 	log.Info("auth callout serving", "account", s.Callout.Account, "binding", s.Binding)
 	return svc.Serve(ctx, nc)
 }

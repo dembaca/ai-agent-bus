@@ -92,7 +92,7 @@ func checkStream(name, subject string, got map[string]any) error {
 		}
 	}
 	for _, k := range []string{"mirror", "sources", "republish"} {
-		if got[k] != nil {
+		if set(got[k]) {
 			bad = append(bad, k+" is set")
 		}
 	}
@@ -102,8 +102,16 @@ func checkStream(name, subject string, got map[string]any) error {
 	if num("max_msg_size") <= 0 {
 		bad = append(bad, "no max_msg_size")
 	}
-	if num("max_age") <= 0 {
-		bad = append(bad, "no max_age")
+	if got["retention"] != "limits" {
+		bad = append(bad, "retention is not limits")
+	}
+	maxAge := time.Duration(num("max_age"))
+	limit := MaxHistory
+	if name == PresenceStream {
+		limit = PresenceMaxAge
+	}
+	if maxAge <= 0 || maxAge > limit {
+		bad = append(bad, fmt.Sprintf("max_age is not within 0 and %s", limit))
 	}
 	if got["discard"] != "old" {
 		bad = append(bad, "discard is not old")
@@ -111,17 +119,27 @@ func checkStream(name, subject string, got map[string]any) error {
 	if name == PresenceStream && num("max_msgs_per_subject") != 1 {
 		bad = append(bad, "max_msgs_per_subject is not 1")
 	}
-	has := false
-	if subs, ok := got["subjects"].([]any); ok {
-		for _, s := range subs {
-			has = has || s == subject
-		}
+	if set(got["subject_transform"]) {
+		bad = append(bad, "subject_transform is set")
 	}
-	if !has {
-		bad = append(bad, "subject "+subject+" is not bound")
+	if subs, ok := got["subjects"].([]any); !ok || len(subs) != 1 || subs[0] != subject {
+		bad = append(bad, "subjects are not exactly "+subject)
 	}
 	if len(bad) > 0 {
 		return fmt.Errorf("%w: %s: %s", ErrUnsafeStream, name, strings.Join(bad, ", "))
 	}
 	return nil
+}
+
+// set says whether a JSON value is there and not empty.
+func set(v any) bool {
+	switch x := v.(type) {
+	case nil:
+		return false
+	case []any:
+		return len(x) > 0
+	case map[string]any:
+		return len(x) > 0
+	}
+	return true
 }
