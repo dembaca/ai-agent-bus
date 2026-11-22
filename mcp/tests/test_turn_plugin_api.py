@@ -318,7 +318,7 @@ async def test_handoff_hands_back_the_own_posts(api, monkeypatch, tmp_path):
     assert (await h.get("/v1/handoff?runtime=pi")).json() == {"context": ""}
 
 
-SKILL = "---\nname: mattermost-ai-agent-bus\ndescription: x\n---\n\n# Mattermost AI agent bus\n\nRule one.\n"
+SKILL = "---\nname: ai-agent-bus\ndescription: x\n---\n\n# Mattermost AI agent bus\n\nRule one.\n"
 
 
 async def test_handoff_hands_back_the_skill_verbatim(api, monkeypatch, tmp_path):
@@ -353,7 +353,7 @@ async def test_handoff_reloads_a_skill_the_cap_would_cut(api, monkeypatch):
     h = await api(client)
     text = (await h.get("/v1/handoff?runtime=claude-code")).json()["context"]
     assert len(text) <= turnend.CAPPED["claude-code"][0]
-    assert "Load the skill `mattermost-ai-agent-bus:mattermost-ai-agent-bus` with the Skill tool" in text
+    assert "Load the skill `ai-agent-bus:ai-agent-bus` with the Skill tool" in text
     assert "there is no `question` argument" in text and "one question per ask" in text
     assert "reply_in_thread" in text and "`**done:**`" in text and "one sentence" in text
     assert "## Contract" not in text and text.count("] RESULT · ") == 3

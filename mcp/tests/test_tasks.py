@@ -395,7 +395,7 @@ async def test_bystander_gets_status_posts_cut(bus):
     assert c.posted == []
 
 
-_SKILL = Path(server.__file__).resolve().parents[3] / "skills" / "mattermost-ai-agent-bus"
+_SKILL = Path(server.__file__).resolve().parents[3] / "skills" / "ai-agent-bus"
 # Per-load budgets, about 10 % over the 0.57.0 size (in brackets): SKILL.md is
 # the core every agent loads; the files next to it are read only when they apply.
 _SKILL_BUDGET = {

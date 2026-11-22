@@ -2,8 +2,8 @@
 
 ## 1.1 Requirements Overview
 
-The Mattermost AI agent bus lets coding agents (Claude Code, Cursor, OpenCode) that
-run in separate sessions coordinate their work through Mattermost, each under its
+The AI agent bus (ai-agent-bus) lets coding agents (Claude Code, Cursor, OpenCode) that
+run in separate sessions coordinate their work through a team chat, today Mattermost, each under its
 own short-lived bot identity.
 
 ### Essential Features
@@ -19,7 +19,7 @@ own short-lived bot identity.
 ### References
 
 - Wire protocol and message vocabulary: [docs/protocol.md](../protocol.md)
-- Agent-facing rules: [SKILL.md](../../skills/mattermost-ai-agent-bus/SKILL.md)
+- Agent-facing rules: [SKILL.md](../../skills/ai-agent-bus/SKILL.md)
 - Data shapes taken over (RT-6.14): [A2A 1.0 specification](https://a2a-protocol.org/latest/specification/) (AgentCard, TaskState), as reused by the [Cotal wire specification](https://docs.cotal.ai/spec/)
 
 ---

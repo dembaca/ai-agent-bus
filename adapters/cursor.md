@@ -12,7 +12,7 @@ Remove what the old setup left behind, or the session runs two bots:
   (`mm-session-start.sh` registered a bot and wrote its token into Cursor's
   environment; `mm-session-end.sh` unregistered it), and
 - an older `mattermost` entry in the global `~/.cursor/mcp.json` next to the
-  `mattermost-agent-bus` one below.
+  `ai-agent-bus` one below.
 
 `cursor-agent -p` (headless) needs a working login first: `cursor-agent login`, or
 `CURSOR_API_KEY` in its environment. Not yet tested live with the bus.
@@ -20,10 +20,10 @@ Remove what the old setup left behind, or the session runs two bots:
 ## Skill
 
 Copy or symlink this repo’s whole skill directory,
-[`skills/mattermost-ai-agent-bus/`](../skills/mattermost-ai-agent-bus/), into your
-Cursor skills directory (e.g. `.cursor/skills/mattermost-ai-agent-bus/`), or point
+[`skills/ai-agent-bus/`](../skills/ai-agent-bus/), into your
+Cursor skills directory (e.g. `.cursor/skills/ai-agent-bus/`), or point
 agents at the clone path. Not only `SKILL.md`: it points to the files next to it,
-here [`runtime-no-hooks.md`](../skills/mattermost-ai-agent-bus/runtime-no-hooks.md).
+here [`runtime-no-hooks.md`](../skills/ai-agent-bus/runtime-no-hooks.md).
 
 ## MCP
 
@@ -33,12 +33,12 @@ the global `~/.cursor/mcp.json`):
 ```json
 {
   "mcpServers": {
-    "mattermost-agent-bus": {
+    "ai-agent-bus": {
       "type": "stdio",
       "command": "uv",
       "args": [
         "run", "--locked",
-        "--project", "${userHome}/src/mattermost-ai-agent-bus/mcp",
+        "--project", "${userHome}/src/ai-agent-bus/mcp",
         "mattermost-ai-agent-bus-mcp"
       ],
       "env": {
@@ -68,7 +68,7 @@ the global `~/.cursor/mcp.json`):
   "command": "sh",
   "args": [
     "-c",
-    "MM_REG_SECRET=\"$(gopass show -o bus/registrar)\" exec uv run --locked --project \"$HOME/src/mattermost-ai-agent-bus/mcp\" mattermost-ai-agent-bus-mcp"
+    "MM_REG_SECRET=\"$(gopass show -o bus/registrar)\" exec uv run --locked --project \"$HOME/src/ai-agent-bus/mcp\" mattermost-ai-agent-bus-mcp"
   ],
   ```
 
@@ -98,8 +98,8 @@ servers: the second one leaves the first one's endpoint file alone and warns in
 There are no turn hooks here: no `Stop` check, no listen window from a hook, and no
 channel push (Claude Code only). The agent hears the bus only when it looks, with
 `wait_for_events`, so the skill asks it to check before each new activity, not only
-at the end ([SKILL.md, *Staying reachable*](../skills/mattermost-ai-agent-bus/SKILL.md#staying-reachable),
-[runtime-no-hooks.md](../skills/mattermost-ai-agent-bus/runtime-no-hooks.md);
+at the end ([SKILL.md, *Staying reachable*](../skills/ai-agent-bus/SKILL.md#staying-reachable),
+[runtime-no-hooks.md](../skills/ai-agent-bus/runtime-no-hooks.md);
 differences: [arc42 §7.2](../docs/arc42/07-deployment-view.md#72-environment-differences)).
 
 After a turn, a Cursor agent can keep a listen window itself with

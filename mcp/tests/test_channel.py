@@ -45,7 +45,7 @@ def test_enabled_by_the_start_flag_or_the_override(monkeypatch):
     assert not channel.enabled()
 
 
-ENTRY = "plugin:mattermost-ai-agent-bus@mattermost-ai-agent-bus"
+ENTRY = "plugin:ai-agent-bus@ai-agent-bus"
 
 
 @pytest.mark.parametrize("argv, on", [

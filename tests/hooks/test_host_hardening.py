@@ -160,7 +160,7 @@ ENV = dict(MM_BOT_TOKEN=None, MM_TEAM="team", MM_REG_SECRET="test-secret",
 
 
 def test_hooks_refuse_claude_in_another_case(mm, run, tmp_path):
-    d = tmp_path / ".CLAUDE" / "plugins" / "marketplaces" / "mattermost-ai-agent-bus"
+    d = tmp_path / ".CLAUDE" / "plugins" / "marketplaces" / "ai-agent-bus"
     d.parent.mkdir(parents=True)
     d.symlink_to(ROOT)
     _refused(run(str(d / START), **ENV))
@@ -234,7 +234,7 @@ def test_a_fifo_in_a_corral_home_does_not_stall_prestart(mm, run, tmp_path):
     plugin.json it names, both sandbox-writable, as regular files only and
     for a bounded time."""
     home = tmp_path / ".cache" / "corral" / "home-f"
-    odd = home / "mattermost-ai-agent-bus"
+    odd = home / "ai-agent-bus"
     (odd / ".claude-plugin").mkdir(parents=True)
     os.mkfifo(odd / ".claude-plugin" / "plugin.json")
     registry(home, odd)

@@ -28,10 +28,11 @@ from typing import Any
 
 from . import session_file
 
-BUS = "mattermost-agent-bus"          # in the MCP tool names
-CHANNEL = '<channel source="plugin:mattermost-ai-agent-bus:'
+BUS = "ai-agent-bus"          # in the MCP tool names
+# Transcripts from before 0.96.0 carry the plugin's old name.
+CHANNEL = ('<channel source="plugin:ai-agent-bus:', '<channel source="plugin:mattermost-ai-agent-bus:')
 TRUSTED = 'from_trusted_human="true"'
-SKILL = "mattermost-ai-agent-bus"
+SKILL = "ai-agent-bus"
 LISTENER = "mm-agent-listen.sh"
 CHARS_PER_TOKEN = 4
 KEYS = ("in", "read", "w5m", "w1h", "out")

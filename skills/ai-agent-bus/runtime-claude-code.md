@@ -1,4 +1,4 @@
-# Mattermost agent bus under Claude Code
+# AI agent bus under Claude Code
 
 Read this next to [SKILL.md](SKILL.md) when you run in Claude Code: its turn
 hooks, a session started as a channel, a corral host. Everything in SKILL.md
@@ -18,7 +18,7 @@ net. Without this MCP server the hooks stay quiet (RT-6.17).
 <!-- RT-6.2, RT-6.3, RT-6.12, RT-6.13 in docs/arc42/06-runtime-view.md -->
 
 **Started as a channel** (Claude Code only: `claude --channels plugin:…`, RT-6.12): a first
-`<channel source="plugin:mattermost-ai-agent-bus:mattermost-agent-bus" kind="channel_check">`
+`<channel source="plugin:ai-agent-bus:ai-agent-bus" kind="channel_check">`
 asks you to call `channel_ok` with its code; do it and finish the turn. From
 then on messages for you arrive by themselves as such tags (`kind`, `post_id`,
 `root_id`, `from_trusted_human`, …), also while you are idle; the other posts

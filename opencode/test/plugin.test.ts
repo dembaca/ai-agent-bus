@@ -304,7 +304,7 @@ test("RT-6.20: mcp.transform adds the server and skill.transform the skill, neve
   const skill = fx.skills.get(SKILL)
   assert.equal(skill.name, SKILL)
   assert.equal(skill.path, join(REPO, "skills", SKILL, "SKILL.md"))
-  assert.match(skill.description, /^Generic Mattermost agent bus: .* coordination\.$/)
+  assert.match(skill.description, /^Generic AI agent bus over Mattermost: .* coordination\.$/)
   assert.ok(!skill.content.startsWith("---") && skill.content.includes("Staying reachable"))
   await fx.cleanup()
 

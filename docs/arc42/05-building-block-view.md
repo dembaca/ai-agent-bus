@@ -29,7 +29,7 @@ fail open (quality goal 1).
 | Turn hooks | Presence per turn; block the end of a turn for drain, sign-off and listen window; hand the handoff state back after compaction (`hooks/`). Ask the MCP server's hook API for every bus value, as does the background listener (RT-6.17) | IF-05 |
 | OpenCode plugin | The Turn hooks' and the listener's part in an OpenCode 2.x session (plugin API V2, RT-6.20): adds the MCP server and the skill to OpenCode's config, sets the presence per turn, asks the hook API at the end of a turn (drain, sign-off) and while the session is idle (wake-up), hands the handoff state back after a compaction. Holds no token and no logic of its own: the MCP server decides and words it (`opencode/`) | IF-09 |
 | pi extension | The same part in a pi session (`@earendil-works/pi-coding-agent` 1.3, RT-6.27, ADR-009 phase 3): registers the MCP server and the skill for the session, sets the presence per turn, asks the hook API when a run has settled (drain, sign-off) and keeps one long poll open for the session's life (wake-up as a user message), reports the context use for the status (ADR-008), hands the handoff state back after a compaction. Holds no token and no logic of its own (`pi/`) | IF-10 |
-| Agent skill | Contract and coordination manifest for the agent (`skills/mattermost-ai-agent-bus/`) | IF-07 |
+| Agent skill | Contract and coordination manifest for the agent (`skills/ai-agent-bus/`) | IF-07 |
 
 ### Decomposition Rationale
 

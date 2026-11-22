@@ -1,7 +1,7 @@
 {
-  "name": "opencode-mattermost-agent-bus",
+  "name": "opencode-ai-agent-bus",
   "private": true,
-  "description": "The Mattermost agent bus as an OpenCode plugin (plugin API V2, OpenCode 2.x): see adapters/opencode.md",
+  "description": "The AI agent bus (chat: Mattermost) as an OpenCode plugin (plugin API V2, OpenCode 2.x): see adapters/opencode.md",
   "type": "module",
   "main": "server.ts",
   "license": "MIT",

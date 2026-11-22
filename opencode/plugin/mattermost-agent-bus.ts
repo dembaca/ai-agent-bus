@@ -42,10 +42,10 @@ import { homedir } from "node:os"
 import { basename, dirname, join } from "node:path"
 import { fileURLToPath } from "node:url"
 
-export const SERVER = "mattermost-agent-bus"
-export const SKILL = "mattermost-ai-agent-bus"
+export const SERVER = "ai-agent-bus"
+export const SKILL = "ai-agent-bus"
 // Marks the input this plugin sends, so the prompt hook tells it from the human's.
-export const MARK = "mattermost-agent-bus"
+export const MARK = "ai-agent-bus"
 const QUICK_MS = 3000
 // /v1/turn-end reads several channels (the Stop hook's 8 s).
 const SLOW_MS = 8000

@@ -1,6 +1,6 @@
 # OpenCode plugin
 
-The Mattermost agent bus as an OpenCode plugin (plugin API V2, OpenCode 2.x; OpenCode
+The AI agent bus (chat: Mattermost) as an OpenCode plugin (plugin API V2, OpenCode 2.x; OpenCode
 1.x is not supported). `server.ts` is the entry OpenCode loads for a `plugins` entry
 naming this directory. Install and options: [adapters/opencode.md](../adapters/opencode.md);
 behaviour: [arc42 §6.20](../docs/arc42/06-runtime-view.md#620-opencode-turn-cycle-through-its-plugin).

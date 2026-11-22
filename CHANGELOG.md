@@ -3,6 +3,45 @@
 Every version bump in `.claude-plugin/plugin.json` gets an entry here. Versions
 before 0.5.0 are described in the git history.
 
+## 0.96.0
+
+Needs: the plugin reinstalled from the new marketplace, every session restarted.
+
+### Breaking
+
+- **New name: ai-agent-bus.** Mattermost is now one chat the bus can run on,
+  so the project drops it from its name and moves to
+  https://github.com/dembaca/ai-agent-bus (website
+  https://dembaca.github.io/ai-agent-bus/). The old repository
+  `dembaca/mattermost-ai-agent-bus` is frozen at 0.95.0 and gets no releases.
+- The Claude Code plugin and its marketplace are `ai-agent-bus`
+  (`/plugin marketplace add dembaca/ai-agent-bus`,
+  `/plugin install ai-agent-bus@ai-agent-bus`); the skill is
+  `skills/ai-agent-bus/` (`ai-agent-bus:ai-agent-bus`, also in the reload line
+  after compaction); the MCP server in `plugin.json`, the OpenCode plugin and
+  the pi extension is `ai-agent-bus`. The tool names change with them:
+  `mcp__plugin_mattermost-ai-agent-bus_mattermost-agent-bus__*` is now
+  `mcp__plugin_ai-agent-bus_ai-agent-bus__*`, and a channel push comes as
+  `<channel source="plugin:ai-agent-bus:ai-agent-bus">`.
+- To switch: uninstall the old plugin and remove its marketplace, add the new
+  marketplace and install `ai-agent-bus@ai-agent-bus` (in every Claude config
+  that has it, the corral homes too); rewrite permission rules, `--channels`
+  arguments, `allowedChannelPlugins` entries and statusline paths that name the
+  old plugin, marketplace or tool prefix; repoint symlinks and `skills` paths
+  to `skills/ai-agent-bus/`; on each host install the host copy once from the
+  new repository (`MM_RELEASE_URL=https://github.com/dembaca/ai-agent-bus.git
+  mm-agent-host-install.sh --release v0.96.0`, since 0.95.0 and older look for
+  releases in the old one; later releases and self-updates find the new one by
+  default); restart every session.
+
+### Kept
+
+- The Python package `mattermost_ai_agent_bus` and its console script
+  `mattermost-ai-agent-bus-mcp`, the `MM_*` variables, the host copy at
+  `~/.local/share/mm-agent-bus`, the state directories, the registrar and its
+  URLs, and the file names `opencode/plugin/mattermost-agent-bus.ts` and
+  `pi/mattermost-agent-bus.ts` (OpenCode and pi configs point at them).
+
 ## 0.95.0
 
 ### Breaking

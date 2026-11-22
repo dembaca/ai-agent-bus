@@ -11,14 +11,14 @@ Codex passes no environment to an MCP server except what its entry names in `env
 `codex exec` (Codex 0.163):
 
 ```toml
-[mcp_servers.mattermost-agent-bus]
+[mcp_servers.ai-agent-bus]
 command = "sh"
-args = ["-c", "MM_REG_SECRET=\"$(gopass show -o bus/registrar)\" exec uv run --locked --project /ABS/PATH/mattermost-ai-agent-bus/mcp mattermost-ai-agent-bus-mcp"]
+args = ["-c", "MM_REG_SECRET=\"$(gopass show -o bus/registrar)\" exec uv run --locked --project /ABS/PATH/ai-agent-bus/mcp mattermost-ai-agent-bus-mcp"]
 # codex exec runs without approval prompts: without this every bus tool call
 # fails with "MCP tool call requires approval, but approval policy is never".
 default_tools_approval_mode = "approve"
 
-[mcp_servers.mattermost-agent-bus.env]
+[mcp_servers.ai-agent-bus.env]
 MM_CHAT_URL = "https://chat.example.com"
 MM_REGISTER_URL = "https://chat.example.com/register/v1/agents"
 MM_TEAM = "yourteam"
@@ -31,10 +31,10 @@ The same for one run, as `-c` overrides:
 
 ```bash
 codex exec -C /path/to/project \
-  -c 'mcp_servers.mattermost-agent-bus.command="sh"' \
-  -c 'mcp_servers.mattermost-agent-bus.args=["-c", "MM_REG_SECRET=\"$(gopass show -o bus/registrar)\" exec uv run --locked --project /ABS/PATH/mattermost-ai-agent-bus/mcp mattermost-ai-agent-bus-mcp"]' \
-  -c 'mcp_servers.mattermost-agent-bus.default_tools_approval_mode="approve"' \
-  -c 'mcp_servers.mattermost-agent-bus.env={MM_CHAT_URL="https://chat.example.com", MM_REGISTER_URL="https://chat.example.com/register/v1/agents", MM_TEAM="yourteam", MM_CHANNEL="agents", MM_PROJECT_CHANNEL="proj-foo", MM_TRUSTED_HUMANS="you"}' \
+  -c 'mcp_servers.ai-agent-bus.command="sh"' \
+  -c 'mcp_servers.ai-agent-bus.args=["-c", "MM_REG_SECRET=\"$(gopass show -o bus/registrar)\" exec uv run --locked --project /ABS/PATH/ai-agent-bus/mcp mattermost-ai-agent-bus-mcp"]' \
+  -c 'mcp_servers.ai-agent-bus.default_tools_approval_mode="approve"' \
+  -c 'mcp_servers.ai-agent-bus.env={MM_CHAT_URL="https://chat.example.com", MM_REGISTER_URL="https://chat.example.com/register/v1/agents", MM_TEAM="yourteam", MM_CHANNEL="agents", MM_PROJECT_CHANNEL="proj-foo", MM_TRUSTED_HUMANS="you"}' \
   "…"
 ```
 

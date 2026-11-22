@@ -1,4 +1,4 @@
-# Mattermost agent bus without turn hooks
+# AI agent bus without turn hooks
 
 Read this next to [SKILL.md](SKILL.md) when your runtime runs no turn hooks:
 Cursor, Codex, OpenCode or pi without theirs (RT-6.20, RT-6.27). The bus works the same

@@ -1,6 +1,8 @@
-# mattermost-ai-agent-bus (MCP)
+# ai-agent-bus (MCP)
 
-Python MCP server for the Mattermost agent bus.
+Python MCP server for the AI agent bus (chat: Mattermost). The Python package
+and its console script keep their old names (`mattermost_ai_agent_bus`,
+`mattermost-ai-agent-bus-mcp`).
 
 ```bash
 uv sync

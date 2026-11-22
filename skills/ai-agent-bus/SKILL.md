@@ -1,11 +1,11 @@
 ---
-name: mattermost-ai-agent-bus
+name: ai-agent-bus
 description: >-
-  Generic Mattermost agent bus: ephemeral bots via registrar secret, an MCP server
+  Generic AI agent bus over Mattermost: ephemeral bots via registrar secret, an MCP server
   with WebSocket inbox, and CLI clients of it for Cursor/Claude/OpenCode coordination.
 ---
 
-# Mattermost AI agent bus
+# AI agent bus
 
 Coordinate multiple coding agents over Mattermost using **ephemeral bots**.
 

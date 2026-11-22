@@ -830,7 +830,7 @@ def test_asks_go_on_the_bus_even_when_asked_in_the_terminal():
 
     from mattermost_ai_agent_bus import server
 
-    skill = Path(server.__file__).resolve().parents[3] / "skills" / "mattermost-ai-agent-bus" / "SKILL.md"
+    skill = Path(server.__file__).resolve().parents[3] / "skills" / "ai-agent-bus" / "SKILL.md"
     assert "even when you also asked in your terminal\nor UI" in skill.read_text()
     assert "even when you also asked in your terminal or UI" in server._instructions()
 

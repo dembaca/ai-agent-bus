@@ -46,8 +46,8 @@ import { homedir } from "node:os"
 import { basename, dirname, join } from "node:path"
 import { fileURLToPath } from "node:url"
 
-export const SERVER = "mattermost-agent-bus"
-export const SKILL = "mattermost-ai-agent-bus"
+export const SERVER = "ai-agent-bus"
+export const SKILL = "ai-agent-bus"
 const QUICK_MS = 3000
 // /v1/turn-end reads several channels (the Stop hook's 8 s).
 const SLOW_MS = 8000
@@ -245,7 +245,7 @@ export function mcpConfig(root: string, workspace: string, env: Env = {}) {
     cwd: workspace,
     exposure: "direct" as const,
     timeout: MCP_TIMEOUT_SEC,
-    description: "Mattermost agent bus: post, reply, wait for events, ask a human (skill mattermost-ai-agent-bus)",
+    description: "Mattermost agent bus: post, reply, wait for events, ask a human (skill ai-agent-bus)",
   }
 }
 

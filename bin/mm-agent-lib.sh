@@ -729,7 +729,7 @@ mm_responsible_name() {
   printf '%s' "$r"
 }
 
-# Newest version of the mattermost-ai-agent-bus Claude Code plugin installed on
+# Newest version of the ai-agent-bus Claude Code plugin installed on
 # this machine: the host's own Claude config and every corral private home.
 # For a version notice only (arc42 §7.1): a sandbox can write the corral homes,
 # and by default ~/.claude too, so nothing read here may decide which code runs
@@ -744,7 +744,7 @@ mm_newest_plugin_version() {
            "$HOME"/.cache/corral/home-*/.claude/plugins/installed_plugins.json; do
     (( SECONDS < deadline )) || break
     mm_read_file "$f" 1048576 | jq -r '.. | objects | select(has("installPath")) | .installPath
-           | select(type == "string" and test("mattermost-ai-agent-bus"))' 2>/dev/null || true
+           | select(type == "string" and test("ai-agent-bus"))' 2>/dev/null || true
   done | head -n 64 | while read -r d; do
     (( SECONDS < deadline )) || break
     v="$(mm_tree_version "$d")"
@@ -769,7 +769,7 @@ mm_newer_plugin() {
   printf '%s' "$want"
 }
 
-# Version of a mattermost-ai-agent-bus tree (checkout, plugin or host copy).
+# Version of a ai-agent-bus tree (checkout, plugin or host copy).
 mm_tree_version() {
   local v
   v="$(mm_read_file "$1/.claude-plugin/plugin.json" | jq -r '.version // "?"' 2>/dev/null)" || v=""
@@ -953,7 +953,7 @@ mm_release_target() {
 # tests) out of every sandbox's reach.
 mm_release_url() {
   local u
-  MM_REL_URL="${MM_RELEASE_URL:-https://github.com/dembaca/mattermost-ai-agent-bus.git}" MM_REL_ERR=""
+  MM_REL_URL="${MM_RELEASE_URL:-https://github.com/dembaca/ai-agent-bus.git}" MM_REL_ERR=""
   case "$MM_REL_URL" in
     https://*)
       [[ "$MM_REL_URL" =~ ^https://[A-Za-z0-9.-]+(:[0-9]+)?(/[A-Za-z0-9._~%+-]+)+/?$ ]] && return 0

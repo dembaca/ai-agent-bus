@@ -1,6 +1,6 @@
 # pi extension
 
-The Mattermost agent bus as a pi extension (pi-coding-agent 1.3,
+The AI agent bus (chat: Mattermost) as a pi extension (pi-coding-agent 1.3,
 `@earendil-works/pi-coding-agent`; type-checked locally against 1.3.0's declarations,
 CI runs no tsc). `mattermost-agent-bus.ts` is the file pi loads.
 Install: [adapters/pi.md](../adapters/pi.md); behaviour:

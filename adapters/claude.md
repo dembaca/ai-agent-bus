@@ -6,11 +6,11 @@ The repo is its own plugin marketplace, so skill **and** MCP server arrive toget
 no absolute paths, no symlinks:
 
 ```
-/plugin marketplace add dembaca/mattermost-ai-agent-bus
-/plugin install mattermost-ai-agent-bus@mattermost-ai-agent-bus
+/plugin marketplace add dembaca/ai-agent-bus
+/plugin install ai-agent-bus@ai-agent-bus
 ```
 
-`/plugin update` keeps it current. For automatic updates turn on "Enable auto-update" under `/plugin` → Marketplaces → `mattermost-ai-agent-bus` (off by default for a third-party marketplace), or set `"autoUpdate": true` on its `extraKnownMarketplaces` entry in `~/.claude/settings.json`. An update applies to the next session; a running one names it in the turn-end banner ([arc42 §6.2](../docs/arc42/06-runtime-view.md#62-end-of-a-turn-drain-sign-off-listen)). The bundled MCP server resolves its own location via
+`/plugin update` keeps it current. For automatic updates turn on "Enable auto-update" under `/plugin` → Marketplaces → `ai-agent-bus` (off by default for a third-party marketplace), or set `"autoUpdate": true` on its `extraKnownMarketplaces` entry in `~/.claude/settings.json`. An update applies to the next session; a running one names it in the turn-end banner ([arc42 §6.2](../docs/arc42/06-runtime-view.md#62-end-of-a-turn-drain-sign-off-listen)). The bundled MCP server resolves its own location via
 `${CLAUDE_PLUGIN_ROOT}`, so nothing points at your clone.
 
 <details>
@@ -18,9 +18,9 @@ no absolute paths, no symlinks:
 
 ```bash
 mkdir -p ~/.claude/skills
-ln -sfn /path/to/mattermost-ai-agent-bus/skills/mattermost-ai-agent-bus \
-  ~/.claude/skills/mattermost-ai-agent-bus
-export MM_AGENT_BUS_ROOT="/path/to/mattermost-ai-agent-bus"
+ln -sfn /path/to/ai-agent-bus/skills/ai-agent-bus \
+  ~/.claude/skills/ai-agent-bus
+export MM_AGENT_BUS_ROOT="/path/to/ai-agent-bus"
 ```
 
 Link the whole skill directory, not only `SKILL.md`: the skill points to files next
@@ -29,8 +29,8 @@ to it (`runtime-claude-code.md`, `coordinator.md`, `self-registration.md`).
 MCP server, if you want it without the plugin:
 
 ```bash
-claude mcp add mattermost-agent-bus -- \
-  uv run --project /path/to/mattermost-ai-agent-bus/mcp mattermost-ai-agent-bus-mcp
+claude mcp add ai-agent-bus -- \
+  uv run --project /path/to/ai-agent-bus/mcp mattermost-ai-agent-bus-mcp
 ```
 
 </details>
@@ -63,7 +63,7 @@ export MM_PROJECT_CHANNEL=proj-foo     # optional, must already exist
 A secret in Claude Code's environment is in the agent's shell as well (as before
 0.40.0). To keep it in the MCP server alone, add the server by hand instead of the
 plugin's, with a command that reads it itself, e.g.
-`claude mcp add mattermost-agent-bus -- sh -c 'MM_REG_SECRET="$(gopass show -o bus/registrar)" exec uv run --project /path/to/mattermost-ai-agent-bus/mcp mattermost-ai-agent-bus-mcp'`.
+`claude mcp add ai-agent-bus -- sh -c 'MM_REG_SECRET="$(gopass show -o bus/registrar)" exec uv run --project /path/to/ai-agent-bus/mcp mattermost-ai-agent-bus-mcp'`.
 
 The skill keys off `MM_BUS_MCP_ENDPOINT` (a corral session, whose token stays on the host,
 [arc42 §6.18](../docs/arc42/06-runtime-view.md#618-keyless-host-managed-session)) or

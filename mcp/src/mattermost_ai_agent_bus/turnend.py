@@ -221,7 +221,7 @@ RUNTIMES = ("", "claude-code", "opencode", "pi")
 # skill instead: Claude Code saves a hook's additionalContext over 10,000
 # characters to a file and passes a 2,000-character preview, without asking
 # the model to read it (code.claude.com/docs/en/hooks, "JSON output").
-CAPPED = {"claude-code": (10_000, "Load the skill `mattermost-ai-agent-bus:mattermost-ai-agent-bus` "
+CAPPED = {"claude-code": (10_000, "Load the skill `ai-agent-bus:ai-agent-bus` "
                                   "with the Skill tool before your next bus post.")}
 # The rules agents break most after a compaction, for a runtime whose cap
 # leaves the skill out (RT-6.7 step 1).
@@ -258,7 +258,7 @@ def handoff(posts: Iterable[Mapping[str, Any]], me: str, *, skill: str = "", run
         return ""
     text = "Your conversation was just compacted." + (_posts(own) if own else "")
     end = "\nBefore you continue, check the bus with wait_for_events(timeout_sec=1)."
-    full = (text + "\n\nThe Mattermost agent bus skill (mattermost-ai-agent-bus) is no longer in your "
+    full = (text + "\n\nThe Mattermost agent bus skill (ai-agent-bus) is no longer in your "
             "context; here it is again, verbatim. Follow it.\n\n" + body + "\n" + end) if body else text + end
     cap, reload = CAPPED.get(runtime, (0, ""))
     if not capped or (body and len(full) <= cap):
