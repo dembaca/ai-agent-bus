@@ -66,6 +66,9 @@ type Config struct {
 	// background refresh and from Verify at once, so it must be safe for
 	// concurrent use.
 	KeyFetchError func(error)
+	// Binding decides whether `sub` may stand for the chat account of that
+	// name, after the chat lookup. Nil: Open.
+	Binding NameBinding
 }
 
 // withDefaults fills the defaults in and checks every value. It returns the
@@ -107,6 +110,9 @@ func (c Config) withDefaults() (Config, error) {
 		c.UnknownKeyRefresh = DefaultUnknownKeyRefresh
 	case c.UnknownKeyRefresh < MinUnknownKeyRefresh:
 		return Config{}, fmt.Errorf("UnknownKeyRefresh: %s is less than %s", c.UnknownKeyRefresh, MinUnknownKeyRefresh)
+	}
+	if c.Binding == nil {
+		c.Binding = Open{}
 	}
 	if c.KeyRefresh <= 0 {
 		c.KeyRefresh = DefaultKeyRefresh

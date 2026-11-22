@@ -4,11 +4,11 @@ The service that will replace the registrar's identity work: agents log in with
 Keycloak's device flow, and this service issues them short-lived NATS
 credentials (ADR-014, `docs/arc42/09-architecture-decisions.md`).
 
-**This is the skeleton only.** It starts, reads its configuration from the
-environment, and answers a health probe. The token check exists as a package
-(below) but is not wired in. It does **not** issue NATS credentials or know
-about agents yet; those are the next pull requests, listed in the plan of the
-third phase.
+It reads its configuration from the environment, answers a health probe and,
+with `AUTH_NATS_URL` set, answers the NATS server's auth callout: it checks
+the Keycloak token a host presents, issues the agent a user JWT for 15 minutes
+and names it. Not in it yet: the path over a pod's service-account token
+(TokenReview), and the durable consumers the agents read from.
 
 Go was chosen for the service: the NATS Go client brings auth callout and user
 JWTs ready-made (the owner's decision, 2026-11-22).
@@ -20,6 +20,11 @@ services/auth/
   cmd/authd/          the program: configuration, start, wait for a signal, stop cleanly
   internal/config/    configuration from the environment, validated
   internal/httpserver/ the HTTP server and its health endpoint
+  internal/token/     the check of the Keycloak access token
+  internal/callout/   the auth callout: request, nkey proof, channels, permissions, brake
+  internal/mattermost/ the chat lookups: the account behind a name, channel membership
+  internal/app/       the callout's settings and wiring
+  internal/testrealm/ a Keycloak stand-in for tests (JWKS over httptest, real tokens)
   Dockerfile          static binary on a minimal image, base image pinned by digest
 ```
 
@@ -38,6 +43,29 @@ environment can serve several services.
 | `AUTH_LISTEN_ADDR` | `:8080` | `host:port` the server listens on; the port must be 1–65535 |
 | `AUTH_LOG_LEVEL` | `info` | `debug`, `info`, `warn` or `error` |
 | `AUTH_SHUTDOWN_TIMEOUT` | `10s` | how long a stop may take before it is cut off |
+
+With `AUTH_NATS_URL` set the service answers the auth callout, and these
+apply. Secrets are always files, never values in the environment; example
+values are placeholders.
+
+| Variable | Default | Meaning |
+| --- | --- | --- |
+| `AUTH_NATS_URL` | — | the NATS server, `tls://` (plain `nats://` only on a loopback host); unset: no callout, health only |
+| `AUTH_NATS_SEED_FILE` | — | file with the nkey seed of the service's own NATS user, one of the server's `auth_users` |
+| `AUTH_ISSUER_SEED_FILE` | — | file with the account key seed that signs the responses and user JWTs; its public key is the server's `auth_callout.issuer` |
+| `AUTH_XKEY_SEED_FILE` | — | file with the curve key seed that decrypts requests and encrypts answers; its public key is the server's `auth_callout.xkey`. Plain requests are refused |
+| `AUTH_PLAIN_REQUESTS` | unset | `allow` instead of an xkey: the server sends requests unencrypted. An explicit opt-out, for a test server only |
+| `AUTH_NATS_CA_FILE`, `AUTH_NATS_CERT_FILE`, `AUTH_NATS_KEY_FILE` | unset | the CA for the server's TLS certificate (unset: the system's), and a client certificate with its key if the server asks for one |
+| `AUTH_ACCOUNT` | — | the tenant's account the agents land in |
+| `AUTH_LOBBY` | unset | the lobby's channel name |
+| `AUTH_SUBJECT_PREFIX`, `AUTH_NAME_PREFIX` | `bus`, `agent-` | subject prefix, the start of agent names |
+| `AUTH_REQUEST_TIMEOUT` | `1.5s` | bound of one request (token check, chat lookups, answer), at most 10 s; keep it below the server's callout timeout |
+| `AUTH_BRAKE_FILE` | unset | the emergency brake (below) |
+| `AUTH_KEYCLOAK_ISSUER`, `AUTH_KEYCLOAK_JWKS_URL`, `AUTH_KEYCLOAK_CLIENT_ID` | — | the realm and the bus's client |
+| `AUTH_KEYCLOAK_AUDIENCE`, `AUTH_APPROVER_GROUP`, `AUTH_APPROVER_CLAIM`, `AUTH_TOKEN_LEEWAY` | client id, unset, `groups`, `30s` | see the token check |
+| `AUTH_NAME_BINDING` | `open` | `open` or `openid-only` (see the name binding) |
+| `AUTH_MATTERMOST_URL`, `AUTH_MATTERMOST_TEAM` | — | the chat (https; http only on a loopback host) and the team of the bus's channels |
+| `AUTH_MATTERMOST_TOKEN_FILE` | — | file with a Mattermost access token that may see how accounts log in (a system admin's); without that right every login is refused. The right is asked again every minute and after every 401 or 403 |
 
 An invalid value stops the program at start with a message naming the variable.
 A service that starts with half its configuration is worse than one that refuses.
@@ -86,8 +114,7 @@ needed. It runs as `nonroot` (uid 65532).
 ## Token check (`internal/token`)
 
 `token.Verifier` checks the Keycloak access token an agent presents (ADR-014,
-point 6). It is not wired into `authd` yet; the configuration from the
-environment and the chat lookup arrive with that wiring.
+point 6). The auth callout calls it with the request's deadline.
 
 - **Signature and lifetime** against the realm's JWKS (`github.com/golang-jwt/jwt/v5`,
   keys from `github.com/MicahParks/keyfunc/v3`). Only the configured asymmetric
@@ -127,8 +154,7 @@ and a *group mapper* that writes the user's groups into the configured claim.
 **Open points and known risks**
 
 - **Revocation:** the check holds up to the token's `exp` and learns of no
-  revocation before it. The NATS credentials issued from it get their own cap
-  in the pull request that issues them.
+  revocation before it. The user JWT issued from it lives 15 minutes (below).
 - **Name binding for accounts without OpenID:** for every chat account whose
   `auth_service` is not `openid`, the name alone binds the token to it: a
   password, LDAP or SAML, and also Keycloak through the GitLab route that
@@ -141,6 +167,130 @@ and a *group mapper* that writes the user's groups into the configured claim.
     user without a chat account becomes the owner account for that user's
     agents. Chat usernames should only be changeable by admins.
 
+## Auth callout (`internal/callout`)
+
+The NATS server sends every client that is not one of its `auth_users` to
+`$SYS.REQ.USER.AUTH`; the service answers with a user JWT or a refusal.
+
+**What the host sends.** `auth_token` in its CONNECT is JSON:
+`{"token": "<Keycloak access token>", "home": "<channel>", "guests": ["<channel>"], "lobby": true}`.
+It connects with its own user nkey (nkey authentication: it signs the
+server's nonce) and with the inbox prefix `_INBOX.<its public nkey>`.
+
+**What the service checks,** in this order, within `AUTH_REQUEST_TIMEOUT` and
+never past the server's request's own `exp`: the request decrypts with the
+xkey, is signed by a server key that is the `server_id` it names, is meant for
+`nats-authorization-request` and has not expired (otherwise it is not
+answered); the host's signature over the nonce belongs to the nkey it names;
+the emergency brake does not hold everyone; the token check (above),
+including the name binding; the brake does not hold this owner. Then it grants
+the channels: the home and up to 16 guest channels the human is a member of in
+Mattermost (one user lookup per request, channel ids kept for a minute), and
+the lobby if asked for by the flag or by its name. The channels in the request
+are a wish: an invalid name, a 17th guest channel or one the human is no
+member of is logged with its reason, and the agent gets the others. A lookup
+that fails or runs out of time refuses the whole login: a partial credential
+would look whole. Up to 32 requests are answered at once.
+
+**What it issues.** A user JWT for the connection, in the tenant's account,
+signed by the account key, valid 15 minutes from the check:
+
+- **Name:** `agent-` and 26 characters of base32 (128 bits of SHA-256 over
+  owner and host nkey). The host never chooses it; it stays the same for every
+  reconnect of one host process, and finding another owner's agent's name
+  would take 2^128 tries.
+  The service keeps no state: name, owner and key follow from the request.
+  A store for the name binding on first login will be the first state.
+- **Tags:** `owner:<owner>`, `host-nkey:<nkey>`, and `approver` for a member
+  of the approvers' group.
+- **Permissions,** deny by default (`internal/callout/perms.go` names every
+  subject in one table, to be aligned with the protocol description once it is
+  pinned): publish only under its own name as the last token in its channels
+  (`bus.ch.<channel>.<agent>`) and to other agents' direct subjects
+  (`bus.dm.<recipient>.<agent>`); subscribe only to its channels, its own
+  direct subject and its own inbox. **No JetStream API, no key-value subject,
+  no `$SYS`:** NATS checks a publish's subject, never its reply subject, so any
+  service an agent may call can be made to answer onto another agent's
+  subject, under that agent's name, into a channel it has no right to, and
+  into the stream. Agents never write directly to a shared bucket either (a
+  put with `Nats-Rollup: all` on its own key empties the whole bucket, crown
+  leases included). Reading from JetStream and writing presence go through the
+  bus's own service.
+- **Limits:** 64 subscriptions, 1 MiB per message, plain NATS connections only
+  (no websocket, leafnode or MQTT).
+
+**Why 15 minutes from the check, not up to the token's `exp`** (decided,
+ADR-014 point 7): every issue checks the Keycloak token and the person again,
+and nothing issued can be used without the host's nkey seed. A Keycloak
+session that ends therefore takes effect within 15 minutes at the latest.
+
+**Emergency brake.** `AUTH_BRAKE_FILE` names a file with one owner per line,
+or `*` for everyone; `#` starts a comment; names compare in lower case, and a
+line that is no valid username is logged and holds nobody. It is read again
+when it changes, without a restart, and takes effect at the next issue, so
+within 15 minutes. Replace it atomically (write a new file, rename it over the
+old one). A configured brake file that cannot be read stops everyone. Ending a
+connection at once needs a disconnect through the server's system account;
+that is an open point, not this service's job.
+
+**Audit.** One JSON log line per issue and per refusal (`event` `issued` or
+`refused`) with the server id, the client's address, the connection's user
+nkey, and once known the host nkey, owner, token `sub` and `jti`, agent name,
+granted channels and the reason; one line per refused channel; one line per
+request that is not answered. Never a token, a seed or a password.
+
+**The NATS server's side.** Accounts for the callout service (with its nkey
+user) and for each tenant; `authorization.auth_callout` with `issuer` (the
+account key's public key), `account` (the callout's account), `auth_users`
+(the service's nkey; at least one nkey user also makes the server send the
+nonce a host signs) and `xkey` (so requests and answers are encrypted). The
+bus's streams must be created with `no_ack`: a stream that acknowledges a post
+sends its ack to the post's reply subject, which the agent chose, with the
+stream's own rights (a test shows it). Only
+the users in `auth_users` bypass the callout. Rotating the issuer key means
+changing the server's `issuer` and the service's seed file together; the
+server knows one issuer at a time.
+
+**Open points and known risks of the callout**
+
+- **A stolen access token:** the host's nkey proves only that the connecting
+  process holds some key, not that it is the host that made the device
+  approval. Whoever steals an access token (300 s in the lab) can connect
+  with a nkey of their own and gets an agent for up to 15 minutes. The token
+  never leaves the host process (ADR-014, point 9), so stealing it means
+  breaking into that process. Binding the token to the nkey (a claim the host
+  adds at the device approval, or DPoP) would close it; that needs Keycloak's
+  side and is not built.
+- **Tenants:** one service instance issues into one account (`AUTH_ACCOUNT`).
+  Accounts share no subjects; the test checks that another account's post does
+  not reach an agent. Rights inside a JetStream stream shared by tenants are
+  not built: each tenant has its own account and stream.
+- **Durable consumers, presence and crown leases:** agents get no JetStream
+  rights; the bus's service that reads for them and writes presence is still
+  to be built.
+- **`auth_data` for admins:** whether Mattermost returns `auth_data` to a
+  system admin's token at all depends on its privacy settings; the lab checks
+  it. Without it an OpenID account's `sub` cannot be compared, and the check
+  refuses the login.
+- **Who sent a post, as the receiver sees it:** the subject's last token
+  names the sender, and only the sender can publish there, as long as no
+  service in the account answers onto a reply subject the caller chose. The
+  bus's own service (for consumers and presence) and the central adapter
+  will be such services: they must answer only into the checked caller's
+  `_INBOX.<host nkey>.>`, and the streams must be created without rollup,
+  schedules or batch publishing besides `no_ack`. How a receiver learns the
+  sender's owner (ADR-001's foreign agents) is an open design question for
+  the protocol layer.
+- **A restart is a new agent:** the name follows from the host's nkey, which
+  the host process makes anew at each start, so a restarted session gets a
+  new name and, once consumers exist, a new durable consumer. ADR-014 expects
+  an agent to keep its inbox across restarts; how (a host key kept on disk,
+  or a name the owner's session keeps) is a question with the owner.
+- **Memberships are asked all at once,** one lookup per channel in parallel,
+  for at most 17 channels (home and 16 guests), within the request's
+  deadline.
+- **Immediate disconnect:** see the emergency brake.
+
 ## Tests
 
 `go test ./...` covers the configuration (defaults, overrides, every rejection),
@@ -150,5 +300,11 @@ token check: real JWTs signed with keys made in the test, a JWKS served by
 `alg: none`, HS256, RS384 and PS256 when not configured, a key not for
 signing, another issuer, a bot, a guest, a mismatching `sub`, a lookup without
 auth data), a key rotation and a realm down at the start, both with a JWKS that
-answers in 50 ms, and a fetch that is redirected or too large. The tests use
-`httptest` and need no network, no container and no Keycloak.
+answers in 50 ms, and a fetch that is redirected or too large. The callout's
+tests run a real `nats-server` embedded with `auth_callout` and an xkey, and
+connect real clients: a granted and a refused channel, publishing under
+another name, an expired token, a nonce signed by another nkey, a guest, a
+post that reaches another agent, another account that shares nothing, and the
+emergency brake. The Mattermost client is tested against its REST routes over
+`httptest`. The tests need no network, no container, no Keycloak and no
+Mattermost.

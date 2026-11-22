@@ -2,18 +2,19 @@
 // flow and receive short-lived NATS credentials from it (ADR-014,
 // docs/arc42/09-architecture-decisions.md).
 //
-// The skeleton starts, reads its configuration, serves a health probe and
-// stops on SIGINT or SIGTERM. Token checks and credential issuing come with
-// the following pull requests.
+// It reads its configuration, serves a health probe and, with AUTH_NATS_URL
+// set, answers the NATS server's auth callout; it stops on SIGINT or SIGTERM.
 package main
 
 import (
 	"context"
+	"errors"
 	"log/slog"
 	"os"
 	"os/signal"
 	"syscall"
 
+	"github.com/dembaca/ai-agent-bus/services/auth/internal/app"
 	"github.com/dembaca/ai-agent-bus/services/auth/internal/config"
 	"github.com/dembaca/ai-agent-bus/services/auth/internal/httpserver"
 )
@@ -38,6 +39,11 @@ func run(getenv func(string) string) int {
 	logger := slog.New(slog.NewJSONHandler(os.Stdout, nil))
 
 	cfg, err := config.Load(getenv)
+	if err != nil {
+		logger.Error("configuration", "err", err.Error())
+		return exitConfigError
+	}
+	callout, withCallout, err := app.LoadSettings(getenv)
 	if err != nil {
 		logger.Error("configuration", "err", err.Error())
 		return exitConfigError
@@ -71,8 +77,32 @@ func run(getenv func(string) string) int {
 
 	srv := httpserver.New(httpserver.Config{Logger: logger})
 
+	// The callout runs beside the health server; when it fails, the whole
+	// service stops, so the platform restarts it rather than keeping a
+	// healthy-looking process that issues nothing.
+	calloutErr := make(chan error, 1)
+	if withCallout {
+		go func() {
+			err := app.RunCallout(ctx, callout, logger)
+			calloutErr <- err
+			if err != nil {
+				stop()
+			}
+		}()
+	} else {
+		logger.Warn("no auth callout: AUTH_NATS_URL is not set")
+		calloutErr <- nil
+	}
+
 	if err := httpserver.Run(ctx, srv, ln, cfg.ShutdownTimeout, logger); err != nil {
 		logger.Error("server", "err", err.Error())
+		return exitFailure
+	}
+	if err := <-calloutErr; err != nil {
+		logger.Error("auth callout", "err", err.Error())
+		if errors.Is(err, app.ErrConfig) {
+			return exitConfigError
+		}
 		return exitFailure
 	}
 
