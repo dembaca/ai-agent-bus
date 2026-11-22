@@ -3,6 +3,36 @@
 Every version bump in `.claude-plugin/plugin.json` gets an entry here. Versions
 before 0.5.0 are described in the git history.
 
+## 0.95.0
+
+### Breaking
+
+- `bus_info`'s `crown` is now the name of the home whose crown the agent holds
+  (`~<home>`) or `false`, no longer `true`/`false`: a caller that tests for the
+  value `true` must test for truth instead. No hook, plugin or script of the
+  bus reads it.
+
+### Changed
+
+- **The crown belongs to its home** (the coordinator election,
+  [RT-6.6](docs/arc42/06-runtime-view.md); ADR-002; #258): an agent whose
+  `MM_PROJECT_CHANNEL_ID` pointed to another channel than the one its home's
+  name gives could claim a crown in that channel and act as its coordinator
+  there (the 👑 prefix, the ask-mode acknowledgement, the mandate read).
+  `MM_PROJECT_CHANNEL_ID` now counts only while its channel has the home's
+  name (a channel the chat refuses counts as another; a read that fails for a
+  passing reason keeps the id); the crown file records its home and a crown of
+  another home counts nowhere; every crowned post decides by its own channel;
+  the coordinator's duties follow the home-bound crown.
+
+### Docs
+
+- The decision record for agent traffic over NATS (ADR-014) records the
+  owner's decisions of 2026-11-22 on the login: a resumed session keeps its
+  approval while the refresh token is valid; offline tokens with 30 idle days
+  for the bus's client only; the host uses each refresh token once, without
+  reuse detection; the login service in Go; four later points open (#260).
+
 ## 0.94.1
 
 ### Fixed
