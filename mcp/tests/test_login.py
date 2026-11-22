@@ -23,7 +23,20 @@ SECRETS = ("access-secret", "refresh-secret")
 def jwt(user: str, **extra) -> str:
     def seg(obj):
         return base64.urlsafe_b64encode(json.dumps(obj).encode()).rstrip(b"=").decode()
-    return f"{seg({'alg': 'none'})}.{seg({'preferred_username': user, **extra})}.sig"
+    claims = {"preferred_username": user, "iss": ISSUER, "azp": "agent-bus",
+              "realm_access": {"roles": ["offline_access"]}, **extra}
+    return f"{seg({'alg': 'none'})}.{seg(claims)}.sig"
+
+
+def stored(store, human="alice", issuer=ISSUER, client="agent-bus"):
+    """The refresh token stored for (issuer, client, human), or None."""
+    raw = store.load(keystore.refresh_entry(issuer, client, human))
+    return json.loads(raw)["token"] if raw else None
+
+
+def put(store, token, human="alice", issuer=ISSUER, client="agent-bus"):
+    store.save(keystore.refresh_entry(issuer, client, human), json.dumps(
+        {"issuer": issuer, "client_id": client, "human": human, "token": token}))
 
 
 # --- settings -------------------------------------------------------------------
@@ -163,17 +176,22 @@ class Script:
         self.n = 0
         self.invalid_grant = False
         self.device_requests = 0
+        self.revoked: list[str] = []
 
     def __call__(self, request: httpx.Request) -> httpx.Response:
         path = request.url.path
         if path.endswith("openid-configuration"):
             return httpx.Response(200, json={
-                "device_authorization_endpoint": f"{ISSUER}/device",
-                "token_endpoint": f"{ISSUER}/token"})
+                "issuer": ISSUER, "device_authorization_endpoint": f"{ISSUER}/device",
+                "token_endpoint": f"{ISSUER}/token", "revocation_endpoint": f"{ISSUER}/revoke"})
         form = dict(x.split("=", 1) for x in request.content.decode().split("&"))
+        if path.endswith("/revoke"):
+            self.revoked.append(form["token"])
+            assert form["token_type_hint"] == "refresh_token" and form["client_id"] == "agent-bus"
+            return httpx.Response(200)
         if path.endswith("/device"):
             self.device_requests += 1
-            assert form["scope"] == "openid+offline_access" and form["client_id"] == "agent-bus"
+            assert form["scope"] == "offline_access" and form["client_id"] == "agent-bus"
             return httpx.Response(200, json={
                 "device_code": "dc", "user_code": "ABCD-EFGH", "expires_in": 600, "interval": 5,
                 "verification_uri": f"{ISSUER}/device-page",
@@ -200,6 +218,9 @@ class Note:
         self.events: list[str] = []
         self.grants: list[login.DeviceGrant] = []
 
+    async def start(self):
+        self.events.append("start")
+
     async def waiting(self, grant):
         self.events.append("waiting")
         self.grants.append(grant)
@@ -217,13 +238,13 @@ async def test_first_approval_stores_the_refresh_token_and_serves_the_token_unti
     first = await lg.access_token()
     assert login.payload_of(first)["preferred_username"] == "alice"
     assert note.events == ["waiting", "settled:approved"]
-    assert store.load(keystore.REFRESH_TOKEN) == "refresh-secret-1"
+    assert stored(store) == "refresh-secret-1"
     clock[0] += 200
     assert await lg.access_token() == first          # 100 s left: kept
     clock[0] += 50
     second = await lg.access_token()                 # 50 s left: refreshed
     assert second != first
-    assert store.load(keystore.REFRESH_TOKEN) == "refresh-secret-2"
+    assert stored(store) == "refresh-secret-2"
     assert script.refreshed == ["refresh-secret-1"]
     assert script.device_requests == 1
 
@@ -260,7 +281,7 @@ async def test_denied_and_expired_settle_the_ask_and_keep_nothing(error, exc, ou
     with pytest.raises(exc):
         await lg.access_token()
     assert note.events == ["waiting", f"settled:{outcome}"]
-    assert store.load(keystore.REFRESH_TOKEN) is None
+    assert stored(store) is None
 
 
 async def test_another_person_is_refused_dropped_and_reported_without_token_content(caplog):
@@ -269,7 +290,7 @@ async def test_another_person_is_refused_dropped_and_reported_without_token_cont
     with caplog.at_level(logging.DEBUG), pytest.raises(login.WrongHuman) as err:
         await lg.access_token()
     assert note.events == ["waiting", "refused", "settled:refused"]
-    assert store.load(keystore.REFRESH_TOKEN) is None
+    assert stored(store) is None
     assert lg._tokens.access == ""
     leaked = caplog.text + str(err.value) + repr(err.value)
     assert not any(s in leaked for s in SECRETS) and "mallory" not in leaked
@@ -283,7 +304,7 @@ async def test_another_person_after_a_refresh_is_refused_too():
     clock[0] += 290
     with pytest.raises(login.WrongHuman):
         await lg.access_token()
-    assert store.load(keystore.REFRESH_TOKEN) is None and lg._tokens.access == ""
+    assert stored(store) is None and lg._tokens.access == ""
 
 
 async def test_a_resumed_refresh_token_needs_no_approval():
@@ -298,13 +319,13 @@ async def test_a_resumed_refresh_token_needs_no_approval():
 async def test_invalid_grant_drops_the_stored_token_and_starts_a_new_approval():
     script, note = Script(), Note()
     store = keystore.Ephemeral()
-    store.save(keystore.REFRESH_TOKEN, "stale")
+    put(store, "stale")
     script.invalid_grant = True
     lg = mk(store, transport=httpx.MockTransport(script), notifier=note)
     script.refreshed.append("stale")
     await lg.access_token()
     assert note.events == ["waiting", "settled:approved"]
-    assert store.load(keystore.REFRESH_TOKEN) == "refresh-secret-1"
+    assert stored(store) == "refresh-secret-1"
 
 
 async def test_without_a_responsible_human_there_is_no_approval():
@@ -370,3 +391,429 @@ async def test_a_refusal_goes_to_the_dm_without_a_name_or_token(state):
     await login_notice.DMNotifier(lambda: asyncio.sleep(0, chat), lambda: "alice").refused()
     (dm,) = chat.posted
     assert dm["channel_id"] == "dmu1" and "not you" in dm["message"]
+
+
+# --- sessions of one OS user: one lock, one token per (issuer, client, human) ----
+
+async def test_two_logins_on_one_directory_take_turns_and_ask_for_one_approval(tmp_path):
+    script, note = Script(), Note()
+    files = keystore.HostFile(tmp_path / "login")
+    one = mk(files, transport=httpx.MockTransport(script), notifier=note)
+    two = mk(keystore.HostFile(tmp_path / "login"), transport=httpx.MockTransport(script), notifier=note)
+    first, second = await asyncio.gather(one.access_token(), two.access_token())
+    for token in (first, second):
+        assert login.payload_of(token)["preferred_username"] == "alice"
+    assert script.device_requests == 1 and note.events == ["waiting", "settled:approved"]
+    # the second used the token the first stored, once; nothing was refreshed twice
+    assert script.refreshed == ["refresh-secret-1"]
+    assert stored(files) == "refresh-secret-2"
+
+
+async def test_a_token_another_process_stored_meanwhile_is_used_not_the_old_one(tmp_path):
+    script, clock = Script(), [0.0]
+    files = keystore.HostFile(tmp_path / "login")
+    one = mk(files, transport=httpx.MockTransport(script), notifier=Note(), now=lambda: clock[0])
+    two = mk(files, transport=httpx.MockTransport(script), notifier=Note(), now=lambda: clock[0])
+    await one.access_token()
+    await two.access_token()          # refreshes refresh-secret-1, stores -2
+    clock[0] += 290
+    await one.access_token()          # loads -2 under the lock, never the -1 it once held
+    assert script.refreshed == ["refresh-secret-1", "refresh-secret-2"]
+    assert script.device_requests == 1
+
+
+def test_the_file_lock_is_exclusive_per_entry_and_released(tmp_path):
+    files = keystore.HostFile(tmp_path / "login")
+    a = files.try_lock("refresh_a")
+    assert a is not None
+    assert keystore.HostFile(tmp_path / "login").try_lock("refresh_a") is None
+    other = files.try_lock("refresh_b")
+    assert other is not None
+    files.unlock(other)
+    files.unlock(a)
+    again = keystore.HostFile(tmp_path / "login").try_lock("refresh_a")
+    assert again is not None
+    files.unlock(again)
+
+
+async def test_the_token_is_stored_per_issuer_client_and_human(tmp_path):
+    script, files = Script(), keystore.HostFile(tmp_path / "login")
+    await mk(files, transport=httpx.MockTransport(script), notifier=Note()).access_token()
+    names = {keystore.refresh_entry(ISSUER, "agent-bus", "alice"),
+             keystore.refresh_entry(ISSUER, "agent-bus", "bob"),
+             keystore.refresh_entry(ISSUER, "other", "alice"),
+             keystore.refresh_entry("https://kc2.example.test/realms/bus", "agent-bus", "alice")}
+    assert len(names) == 4
+    assert keystore.refresh_entry(ISSUER + "/", "agent-bus", " Alice ") == keystore.refresh_entry(
+        ISSUER, "agent-bus", "alice")
+    # bob's login finds nothing of alice's: a new approval, not alice's token
+    note = Note()
+    bob = Script(user="bob")
+    await mk(files, human="bob", transport=httpx.MockTransport(bob), notifier=note).access_token()
+    assert note.events == ["waiting", "settled:approved"] and bob.refreshed == []
+    assert stored(files, "alice") == "refresh-secret-1" and stored(files, "bob") == "refresh-secret-1"
+
+
+async def test_a_file_whose_recorded_values_differ_is_treated_as_missing(tmp_path, caplog):
+    files = keystore.HostFile(tmp_path / "login")
+    entry = keystore.refresh_entry(ISSUER, "agent-bus", "alice")
+    files.save(entry, json.dumps({"issuer": "https://elsewhere.example.test/realms/x",
+                                  "client_id": "agent-bus", "human": "alice", "token": "foreign"}))
+    script, note = Script(), Note()
+    with caplog.at_level(logging.WARNING):
+        await mk(files, transport=httpx.MockTransport(script), notifier=note).access_token()
+    assert script.refreshed == [] and note.events == ["waiting", "settled:approved"]
+    assert "foreign" not in caplog.text
+
+
+async def test_an_empty_human_is_rejected_before_any_request():
+    seen: list[str] = []
+
+    def handler(request):
+        seen.append(str(request.url))
+        return httpx.Response(500)
+
+    store = keystore.Ephemeral()
+    lg = mk(store, human="  ", transport=httpx.MockTransport(handler), notifier=Note())
+    with pytest.raises(login.LoginError):
+        await lg.access_token()
+    assert seen == []
+
+
+# --- discovery and the token's claims are bound to the issuer ---------------------
+
+def _discovery(**changes):
+    doc = {"issuer": ISSUER, "device_authorization_endpoint": f"{ISSUER}/device",
+           "token_endpoint": f"{ISSUER}/token"}
+    doc.update(changes)
+    return doc
+
+
+@pytest.mark.parametrize("changes", [
+    {"issuer": "https://evil.example.test/realms/bus"},
+    {"token_endpoint": "https://evil.example.test/token"},
+    {"device_authorization_endpoint": "http://kc.example.test/device"},
+    {"revocation_endpoint": "https://evil.example.test/revoke"}])
+async def test_discovery_must_name_the_issuer_and_stay_on_its_host(changes):
+    def handler(request):
+        return httpx.Response(200, json=_discovery(**changes))
+
+    note = Note()
+    lg = mk(transport=httpx.MockTransport(handler), notifier=note)
+    with pytest.raises(login.LoginError):
+        await lg.access_token()
+    assert note.events == []
+
+
+@pytest.mark.parametrize("claims", [
+    {"iss": "https://evil.example.test/realms/bus"}, {"azp": "another-client"},
+    {"realm_access": {"roles": []}}, {"realm_access": None}])
+async def test_the_access_token_must_carry_issuer_client_and_role(claims):
+    class Odd(Script):
+        def _tokens(self):
+            self.n += 1
+            return httpx.Response(200, json={
+                "access_token": jwt("alice", **claims), "expires_in": 300, "refresh_token": "refresh-secret"})
+
+    store = keystore.Ephemeral()
+    with pytest.raises(login.LoginError) as err:
+        await mk(store, transport=httpx.MockTransport(Odd()), notifier=Note()).access_token()
+    assert not isinstance(err.value, login.WrongHuman)
+    assert stored(store) is None
+
+
+async def test_a_response_without_a_refresh_token_is_a_clear_error():
+    class NoRefresh(Script):
+        def _tokens(self):
+            return httpx.Response(200, json={"access_token": jwt("alice"), "expires_in": 300})
+
+    with pytest.raises(login.LoginError, match="no refresh token"):
+        await mk(transport=httpx.MockTransport(NoRefresh()), notifier=Note()).access_token()
+
+
+async def test_a_wrong_person_is_revoked_in_keycloak_and_dropped():
+    script, store = Script(user="mallory"), keystore.Ephemeral()
+    with pytest.raises(login.WrongHuman):
+        await mk(store, transport=httpx.MockTransport(script), notifier=Note()).access_token()
+    assert script.revoked == ["refresh-secret-1"]
+    assert stored(store) is None and stored(store, "mallory") is None
+
+
+async def test_a_failing_revocation_does_not_hide_the_refusal(caplog):
+    class NoRevoke(Script):
+        def __call__(self, request):
+            if request.url.path.endswith("/revoke"):
+                return httpx.Response(503)
+            return super().__call__(request)
+
+    with caplog.at_level(logging.WARNING), pytest.raises(login.WrongHuman):
+        await mk(transport=httpx.MockTransport(NoRevoke(user="mallory")), notifier=Note()).access_token()
+    assert "not revoked" in caplog.text
+
+
+async def test_a_verification_link_off_the_issuer_is_not_sent():
+    class Phish(Script):
+        def __call__(self, request):
+            if request.url.path.endswith("/device"):
+                return httpx.Response(200, json={
+                    "device_code": "dc", "user_code": "ABCD", "expires_in": 600,
+                    "verification_uri": "https://evil.example.test/device",
+                    "verification_uri_complete": "https://evil.example.test/device?c=1"})
+            return super().__call__(request)
+
+    note = Note()
+    with pytest.raises(login.LoginError):
+        await mk(transport=httpx.MockTransport(Phish()), notifier=note).access_token()
+    assert note.events == []
+
+
+def test_repr_of_a_grant_has_neither_link_nor_code():
+    grant = login.DeviceGrant("https://kc/device", "https://kc/device?user_code=ABCD-EFGH", "ABCD-EFGH", 600)
+    assert "kc" not in repr(grant) and "ABCD" not in repr(grant)
+
+
+def test_an_odd_error_code_becomes_a_generic_text():
+    def resp(body):
+        return httpx.Response(400, json=body)
+
+    assert login._error_of({"error": "invalid_grant"}, resp({})) == "invalid_grant"
+    for odd in ("Bad Thing", "x" * 40, "refresh-secret-1", "a<b>", 5):
+        assert login._error_of({"error": odd}, resp({})) == "HTTP 400"
+
+
+# --- polling survives a bad moment; approvals do not follow each other --------------
+
+async def test_a_network_error_or_a_5xx_while_polling_backs_off_and_goes_on():
+    script, waits, clock = Script(), [], [0.0]
+    flaky = [httpx.ConnectError("down"), 503, httpx.ConnectError("down"), 502]
+
+    def handler(request):
+        if request.url.path.endswith("/token") and flaky:
+            nxt = flaky.pop(0)
+            if isinstance(nxt, Exception):
+                raise nxt
+            return httpx.Response(nxt)
+        return script(request)
+
+    async def sleep(s):
+        waits.append(s)
+        clock[0] += s
+
+    lg = login.Login(login.Settings(ISSUER, "agent-bus"), store=keystore.Ephemeral(), human=lambda: "alice",
+                     http=httpx.AsyncClient(transport=httpx.MockTransport(handler)), notifier=Note(),
+                     sleep=sleep, now=lambda: clock[0])
+    await lg.access_token()
+    assert waits == [5, 10, 20, 40, 60, 5]   # doubling up to 60 s, then the interval after an answer
+
+
+async def test_polling_ends_at_the_codes_expiry_even_when_keycloak_stays_down():
+    clock = [0.0]
+
+    def handler(request):
+        if request.url.path.endswith("/token"):
+            raise httpx.ConnectError("down")
+        return Script()(request)
+
+    async def sleep(s):
+        clock[0] += s
+
+    note = Note()
+    lg = login.Login(login.Settings(ISSUER, "agent-bus"), store=keystore.Ephemeral(), human=lambda: "alice",
+                     http=httpx.AsyncClient(transport=httpx.MockTransport(handler)), notifier=note,
+                     sleep=sleep, now=lambda: clock[0])
+    with pytest.raises(login.ApprovalExpired):
+        await lg.access_token()
+    assert note.events == ["waiting", "settled:expired"]
+
+
+async def test_callers_share_one_approval_and_a_denial_starts_a_cool_down():
+    script, note, clock = Script(device_errors=("access_denied",)), Note(), [0.0]
+    lg = mk(transport=httpx.MockTransport(script), notifier=note, now=lambda: clock[0])
+    results = await asyncio.gather(*(lg.access_token() for _ in range(3)), return_exceptions=True)
+    assert isinstance(results[0], login.ApprovalDenied)
+    assert all(isinstance(r, login.LoginError) and not isinstance(r, login.ApprovalDenied)
+               for r in results[1:])
+    assert script.device_requests == 1
+    clock[0] += login.COOLDOWN_SEC + 1
+    await lg.access_token()           # the cool-down is over: a new approval
+    assert script.device_requests == 2
+
+
+async def test_callers_waiting_for_a_successful_approval_share_its_token():
+    script = Script()
+    lg = mk(transport=httpx.MockTransport(script), notifier=Note())
+    tokens = await asyncio.gather(*(lg.access_token() for _ in range(4)))
+    assert len(set(tokens)) == 1 and script.device_requests == 1
+
+
+async def test_start_is_idempotent(monkeypatch):
+    monkeypatch.setenv("MM_LOGIN_ISSUER", ISSUER)
+    monkeypatch.setenv("MM_LOGIN_CLIENT_ID", "agent-bus")
+    ran = []
+
+    async def run(self):
+        ran.append(self)
+        await asyncio.sleep(0)   # ends at once: a done task must not allow a second login
+
+    monkeypatch.setattr(login.Login, "run", run)
+    try:
+        first = login.start(lambda: asyncio.sleep(0, None))
+        await first
+        assert login.start(lambda: asyncio.sleep(0, None)) is first
+        assert len(ran) == 1
+    finally:
+        login.stop()
+
+
+# --- the wiring: who starts the login, with which store and notifier --------------
+
+class _Spy:
+    """Replaces Login.run: notes that it ran and never ends, as a login waiting for a human."""
+
+    def __init__(self, monkeypatch):
+        self.started = asyncio.Event()
+        self.stopped: list[bool] = []
+        self.cancelled = False
+        spy = self
+
+        async def run(self):
+            spy.started.set()
+            try:
+                await asyncio.Event().wait()
+            except asyncio.CancelledError:
+                spy.cancelled = True
+                raise
+
+        monkeypatch.setattr(login.Login, "run", run)
+        real_stop = login.stop
+
+        def stop():
+            spy.stopped.append(True)
+            real_stop()
+
+        monkeypatch.setattr(login, "stop", stop)
+
+
+def _login_env(monkeypatch, tmp_path):
+    monkeypatch.setenv("MM_LOGIN_ISSUER", ISSUER)
+    monkeypatch.setenv("MM_LOGIN_CLIENT_ID", "agent-bus")
+    monkeypatch.setenv("XDG_STATE_HOME", str(tmp_path))
+
+
+def _check_current():
+    lg = login.current()
+    assert lg is not None
+    assert isinstance(lg._store, keystore.HostFile)       # the refresh token persists on the host
+    assert lg._notifier is not None                       # the human is told, never nobody
+    assert isinstance(lg._notifier, login_notice.DMNotifier)
+
+
+async def _quiet_services(monkeypatch):
+    from mattermost_ai_agent_bus import attest, hookapi, lease, release
+
+    async def forever(*a, **kw):
+        await asyncio.Event().wait()
+
+    class API:
+        endpoint = "http://127.0.0.1:1"
+
+        def __init__(self, *a, **kw):
+            pass
+
+        async def start(self, **kw):
+            pass
+
+        async def close(self):
+            pass
+
+    monkeypatch.setattr(hookapi, "HookAPI", API)
+    monkeypatch.setattr(lease, "heartbeat", forever)
+    monkeypatch.setattr(attest, "start", forever)
+    monkeypatch.setattr(release, "check_loop", forever)
+
+
+async def test_hosted_services_start_the_login_without_waiting_and_stop_it(monkeypatch, tmp_path):
+    from mattermost_ai_agent_bus import hosted
+    _login_env(monkeypatch, tmp_path)
+    await _quiet_services(monkeypatch)
+    spy = _Spy(monkeypatch)
+    async with hosted.services("k" * 64, object()):   # type: ignore[arg-type]
+        await asyncio.wait_for(spy.started.wait(), 2)  # the task runs, the session is already inside
+        _check_current()
+        assert spy.stopped == []
+    assert spy.stopped == [True] and login.current() is None
+    await asyncio.sleep(0)
+    assert spy.cancelled
+
+
+async def test_the_server_lifespan_starts_the_login_without_waiting_and_stops_it(monkeypatch, tmp_path):
+    from mattermost_ai_agent_bus import attest, lease, release, server
+    _login_env(monkeypatch, tmp_path)
+    await _quiet_services(monkeypatch)
+    monkeypatch.setattr(server, "HOSTED", False)
+
+    async def no_api():
+        return None
+
+    monkeypatch.setattr(server, "_start_hook_api", no_api)
+    monkeypatch.setattr(server, "_attest_start", lease.heartbeat)
+    assert attest and release
+    spy = _Spy(monkeypatch)
+    async with server._lifespan(None):
+        await asyncio.wait_for(spy.started.wait(), 2)
+        _check_current()
+        assert spy.stopped == []
+    assert spy.stopped == [True] and login.current() is None
+    await asyncio.sleep(0)
+    assert spy.cancelled
+
+
+async def test_without_login_settings_neither_wiring_starts_anything(monkeypatch, tmp_path):
+    from mattermost_ai_agent_bus import hosted
+    monkeypatch.delenv("MM_LOGIN_ISSUER", raising=False)
+    monkeypatch.delenv("MM_LOGIN_CLIENT_ID", raising=False)
+    await _quiet_services(monkeypatch)
+    spy = _Spy(monkeypatch)
+    async with hosted.services("k" * 64, object()):   # type: ignore[arg-type]
+        await asyncio.sleep(0)
+        assert not spy.started.is_set() and login.current() is None
+    assert spy.stopped == []
+
+
+# --- the notice: an ask that fails, an orphan ----------------------------------------
+
+async def test_a_failing_ask_in_the_home_does_not_abort_the_approval(state, caplog):
+    class NoHome(FakeChat):
+        async def post(self, message, channel_id=None, **kw):
+            if channel_id is None:
+                raise RuntimeError("home is down")
+            return await super().post(message, channel_id=channel_id, **kw)
+
+    chat = NoHome(people={"u1": "alice"}, post_id="ask1")
+    note = login_notice.DMNotifier(lambda: asyncio.sleep(0, chat), lambda: "alice")
+    grant = login.DeviceGrant("https://kc/device", "https://kc/device?user_code=ABCD", "ABCD", 600)
+    with caplog.at_level(logging.WARNING):
+        await note.waiting(grant)                      # no exception
+    assert len(chat.posted) == 1 and chat.posted[0]["channel_id"] == "dmu1"
+    assert "was not posted" in caplog.text
+    await note.settled("approved")                     # nothing to settle, no error
+
+
+async def test_an_orphaned_ask_is_settled_at_start(state):
+    chat = FakeChat(people={"u1": "alice"}, post_id="ask1")
+    old = login_notice.DMNotifier(lambda: asyncio.sleep(0, chat), lambda: "alice")
+    await old.waiting(login.DeviceGrant("https://kc/d", "https://kc/d?c=1", "ABCD", 600))
+    asks.add(chat.me.id, "other", "alice", "other", title="Something else")   # not the login's
+    assert asks.is_open(chat.me.id, "ask1")
+    # the session ended mid-approval; a new process starts
+    fresh = login_notice.DMNotifier(lambda: asyncio.sleep(0, chat), lambda: "alice")
+    await fresh.start()
+    assert not asks.is_open(chat.me.id, "ask1") and asks.is_open(chat.me.id, "other")
+    await fresh.start()                                 # nothing left, no error
+
+
+async def test_run_settles_an_orphan_before_it_asks_for_a_token():
+    note = Note()
+    lg = mk(transport=httpx.MockTransport(Script()), notifier=note)
+    await lg.run()
+    assert note.events[0] == "start"

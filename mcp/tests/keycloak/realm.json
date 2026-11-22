@@ -30,7 +30,8 @@
         "oauth2.device.authorization.grant.enabled": "true"
       },
       "defaultClientScopes": [
-        "basic"
+        "basic",
+        "roles"
       ],
       "optionalClientScopes": [
         "offline_access"
@@ -92,7 +93,8 @@
         "oauth2.device.code.lifespan": "5"
       },
       "defaultClientScopes": [
-        "basic"
+        "basic",
+        "roles"
       ],
       "optionalClientScopes": [
         "offline_access"

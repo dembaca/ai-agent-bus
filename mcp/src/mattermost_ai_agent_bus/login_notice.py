@@ -59,9 +59,28 @@ class DMNotifier:
         await client.post(DM_TEXT.format(bot=me.username, link=link, code=grant.user_code,
                                          minutes=max(1, grant.expires_in // 60)), channel_id=dm)
         # The home: the ask says nothing but that the approval waits in the DM.
-        post = await client.post(ASK_TEXT.format(human=human), props=a2a.props(kind=a2a.ASK))
-        asks.add(me.id, post.id, human, post.id, title=ASK_TITLE)
-        self._ask = post.id
+        # The DM is out: a failing ask must not end the approval.
+        try:
+            post = await client.post(ASK_TEXT.format(human=human), props=a2a.props(kind=a2a.ASK))
+            asks.add(me.id, post.id, human, post.id, title=ASK_TITLE)
+            self._ask = post.id
+        except Exception as exc:  # noqa: BLE001
+            log.warning("login: the ask in the home was not posted (%s)", type(exc).__name__)
+
+    async def start(self) -> None:
+        """An ask left open by a session that ended mid-approval is settled."""
+        client = await self._get_client()
+        if client is None:
+            return
+        me = await client.get_me()
+        heads = asks.titles(me.id)
+        for post_id in asks.open_asks(me.id):
+            if heads.get(post_id) == ASK_TITLE and post_id != self._ask:
+                asks.resolve(me.id, post_id)
+                try:
+                    await client.add_reaction(post_id, a2a.done_reaction())
+                except Exception as exc:  # noqa: BLE001
+                    log.warning("login: an old ask got no mark (%s)", type(exc).__name__)
 
     async def settled(self, outcome: str) -> None:
         ask, self._ask = self._ask, ""

@@ -138,3 +138,22 @@ def test_both_stores_fit_the_protocol(tmp_path):
         s.delete(keystore.NKEY_SEED)
         assert s.load(keystore.NKEY_SEED) is None
     assert isinstance(Path(tmp_path), Path)
+
+
+def test_hostfile_syncs_its_directory_after_a_replace_and_a_delete(tmp_path, monkeypatch):
+    synced = []
+    real = os.fsync
+    monkeypatch.setattr(os, "fsync", lambda fd: (synced.append(stat.S_ISDIR(os.fstat(fd).st_mode)), real(fd))[1])
+    s = keystore.HostFile(tmp_path / "login")
+    s.save("refresh_token", SECRET)
+    assert synced == [False, True]      # the file, then the directory
+    s.delete("refresh_token")
+    assert synced[-1] is True
+
+
+def test_ephemeral_lock_is_exclusive_per_name():
+    s = keystore.Ephemeral()
+    h = s.try_lock("a")
+    assert h is not None and s.try_lock("a") is None and s.try_lock("b") is not None
+    s.unlock(h)
+    assert s.try_lock("a") is not None

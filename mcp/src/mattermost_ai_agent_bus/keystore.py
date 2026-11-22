@@ -12,6 +12,8 @@ content.
 
 from __future__ import annotations
 
+import fcntl
+import hashlib
 import os
 import re
 import stat
@@ -21,9 +23,17 @@ from typing import Protocol
 
 from . import session_file
 
-REFRESH_TOKEN = "refresh_token"
 NKEY_SEED = "nkey_seed"
-_NAME_RE = re.compile(r"^[a-z_]{1,32}$")
+_NAME_RE = re.compile(r"^[a-z_]{1,40}$")
+
+
+def refresh_entry(issuer: str, client_id: str, human: str) -> str:
+    """The entry of one refresh token: its name carries a hash of the issuer,
+    the client and the human (letters only, as entry names are), so a token of
+    another realm, client or person is never the one found."""
+    raw = "\0".join((issuer.rstrip("/"), client_id, human.strip().casefold()))
+    digest = hashlib.sha256(raw.encode("utf-8")).hexdigest()[:20]
+    return "refresh_" + "".join(chr(ord("a") + int(c, 16)) for c in digest)
 
 
 class KeyStoreError(Exception):
@@ -40,12 +50,29 @@ class KeyStore(Protocol):
 
     def delete(self, name: str) -> None: ...
 
+    def try_lock(self, name: str) -> object | None:
+        """Take the lock of entry `name` without blocking: a handle, or None
+        when another holder (process or object) has it."""
+        ...
+
+    def unlock(self, handle: object) -> None: ...
+
 
 class Ephemeral:
     """In memory only: gone with the process (the nkey is new per process)."""
 
     def __init__(self) -> None:
         self._values: dict[str, str] = {}
+        self._locked: set[str] = set()
+
+    def try_lock(self, name: str) -> object | None:
+        if name in self._locked:
+            return None
+        self._locked.add(name)
+        return name
+
+    def unlock(self, handle: object) -> None:
+        self._locked.discard(str(handle))
 
     def load(self, name: str) -> str | None:
         return self._values.get(name)
@@ -131,6 +158,7 @@ class HostFile:
                 fh.flush()
                 os.fsync(fh.fileno())
             os.replace(tmp, path)  # a symlink in its place is replaced, never followed
+            self._fsync_dir()
         except BaseException:
             try:
                 os.unlink(tmp)
@@ -138,9 +166,37 @@ class HostFile:
                 pass
             raise
 
+    def _fsync_dir(self) -> None:
+        fd = os.open(self.directory, os.O_RDONLY | getattr(os, "O_DIRECTORY", 0))
+        try:
+            os.fsync(fd)
+        finally:
+            os.close(fd)
+
     def delete(self, name: str) -> None:
         path = self._path(name)
         try:
             os.unlink(path)
         except FileNotFoundError:
-            pass
+            return
+        self._fsync_dir()
+
+    def try_lock(self, name: str) -> object | None:
+        """flock on a lock file of its own per entry, so that processes of one
+        OS user take turns at load, refresh and store. Never blocks."""
+        path = self._path(name).with_name(f".{name}.lock")
+        self._check_dir(create=True)
+        fd = os.open(path, os.O_RDWR | os.O_CREAT | os.O_NOFOLLOW, 0o600)
+        try:
+            fcntl.flock(fd, fcntl.LOCK_EX | fcntl.LOCK_NB)
+        except OSError:
+            os.close(fd)
+            return None
+        return fd
+
+    def unlock(self, handle: object) -> None:
+        if isinstance(handle, int):
+            try:
+                fcntl.flock(handle, fcntl.LOCK_UN)
+            finally:
+                os.close(handle)

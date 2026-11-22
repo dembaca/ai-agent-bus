@@ -8,6 +8,11 @@ on:
     paths:
       - 'mcp/src/mattermost_ai_agent_bus/login*.py'
       - 'mcp/src/mattermost_ai_agent_bus/keystore.py'
+      - 'mcp/src/mattermost_ai_agent_bus/owners.py'
+      - 'mcp/src/mattermost_ai_agent_bus/asks.py'
+      - 'mcp/src/mattermost_ai_agent_bus/session_file.py'
+      - 'mcp/src/mattermost_ai_agent_bus/server.py'
+      - 'mcp/src/mattermost_ai_agent_bus/hosted.py'
       - 'mcp/tests/test_login_keycloak.py'
       - 'mcp/tests/keycloak/**'
       - 'mcp/pyproject.toml'
@@ -17,6 +22,11 @@ on:
     paths:
       - 'mcp/src/mattermost_ai_agent_bus/login*.py'
       - 'mcp/src/mattermost_ai_agent_bus/keystore.py'
+      - 'mcp/src/mattermost_ai_agent_bus/owners.py'
+      - 'mcp/src/mattermost_ai_agent_bus/asks.py'
+      - 'mcp/src/mattermost_ai_agent_bus/session_file.py'
+      - 'mcp/src/mattermost_ai_agent_bus/server.py'
+      - 'mcp/src/mattermost_ai_agent_bus/hosted.py'
       - 'mcp/tests/test_login_keycloak.py'
       - 'mcp/tests/keycloak/**'
       - 'mcp/pyproject.toml'

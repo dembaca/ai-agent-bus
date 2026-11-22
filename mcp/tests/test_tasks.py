@@ -462,10 +462,11 @@ _INSTRUCTION_BUDGET = {
     # + 80 each, RT-6.2 step 2: a post from the bus is answered in its thread, never only in the terminal.
     # + 70 each, RT-6.33: how to send a file (attach, mm-agent-post.sh --file).
     # + 110 each, RT-6.2 step 2: with the result on the bus, one sentence in the terminal.
-    "self-registering": (2580, 2930, 3080),   # (1860, 2128, 2267)
-    "host-managed": (2410, 2740, 2890),       # (1680, 1948, 2087); + get_file (RT-6.23)
-    "hosted": (2530, 2880, 3030),             # (1806, 2074, 2213)
-    "unavailable": (2730, 3080, 3230),        # (1987, 2255, 2394)
+    # + 120 each, RT-6.34: the host's login-approval ask is not the agent's, a reaction approves nothing.
+    "self-registering": (2700, 3050, 3200),   # (1860, 2128, 2267)
+    "host-managed": (2530, 2860, 3010),       # (1680, 1948, 2087); + get_file (RT-6.23)
+    "hosted": (2650, 3000, 3150),             # (1806, 2074, 2213)
+    "unavailable": (2850, 3200, 3350),        # (1987, 2255, 2394)
 }
 
 

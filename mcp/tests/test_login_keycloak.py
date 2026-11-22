@@ -1,5 +1,6 @@
 """The device flow against a real Keycloak (RT-6.34): no fake of the flow. The test plays the
-human by driving Keycloak's own HTML forms. Needs docker; skipped without it.
+human by driving Keycloak's own HTML forms. Needs docker: skipped unless MM_TEST_KEYCLOAK=1 (keycloak.yml
+sets it), and with it, no docker or a container that does not start is a failure, not a skip.
 
 Image pinned exactly, realm from tests/keycloak/realm.json (public client `agent-bus`, device
 grant only, consent required, audience and group mappers; users alice and mallory; device code
@@ -7,8 +8,9 @@ lifespan 10 s). Run: `uv run --directory mcp pytest -q -m keycloak`.
 """
 
 import asyncio
-import os
 import html
+import json
+import os
 import re
 import shutil
 import subprocess
@@ -47,7 +49,7 @@ def issuer() -> Iterator[str]:
     if os.environ.get("MM_TEST_KEYCLOAK") != "1":
         pytest.skip("MM_TEST_KEYCLOAK=1 is not set (keycloak.yml sets it)")
     if not _docker_ok():
-        pytest.skip("docker is not available")
+        pytest.fail("MM_TEST_KEYCLOAK=1 is set but docker is not available")
     name = f"mm-login-kc-{uuid.uuid4().hex[:8]}"
     run = subprocess.run(
         ["docker", "run", "-d", "--rm", "--name", name, "-p", "127.0.0.1::8080",
@@ -56,7 +58,7 @@ def issuer() -> Iterator[str]:
          IMAGE, "start-dev", "--import-realm"],
         capture_output=True, text=True, timeout=600)
     if run.returncode != 0:
-        pytest.skip(f"keycloak container did not start: {run.stderr.strip()[:200]}")
+        pytest.fail(f"keycloak container did not start: {run.stderr.strip()[:200]}")
     try:
         mapping = subprocess.run(["docker", "port", name, "8080/tcp"], capture_output=True, text=True,
                                  check=True).stdout.split()[0]
@@ -183,6 +185,12 @@ class Human:
         self.events.append("refused")
 
 
+def stored(store: keystore.KeyStore, issuer: str, human: str = "alice", client: str = CLIENT) -> str | None:
+    """The refresh token stored for (issuer, client, human), or None."""
+    raw = store.load(keystore.refresh_entry(issuer, client, human))
+    return json.loads(raw)["token"] if raw else None
+
+
 def make(issuer: str, store: keystore.KeyStore, human: str, who: Human, **kw) -> login.Login:
     return login.Login(login.Settings(issuer, CLIENT, kw.pop("nkey", "ephemeral")), store=store,
                        human=lambda: human, notifier=who, **kw)
@@ -195,8 +203,9 @@ async def test_first_approval_delivers_a_token_for_the_client(issuer):
     assert claims["preferred_username"] == "alice"
     assert CLIENT in (claims["aud"] if isinstance(claims["aud"], list) else [claims["aud"]])
     assert claims["azp"] == CLIENT and claims["groups"] == ["approvers"]
+    assert claims["iss"] == issuer and "offline_access" in claims["realm_access"]["roles"]
     assert who.events == ["waiting", "settled:approved"]
-    assert store.load(keystore.REFRESH_TOKEN)
+    assert stored(store, issuer)
 
 
 class Recorder(httpx.AsyncHTTPTransport):
@@ -205,11 +214,15 @@ class Recorder(httpx.AsyncHTTPTransport):
     def __init__(self) -> None:
         super().__init__()
         self.sent: list[str] = []
+        self.revoked: list[str] = []
 
     async def handle_async_request(self, request: httpx.Request) -> httpx.Response:
         m = re.search(rb"(?:^|&)refresh_token=([^&]+)", request.content)
         if m:
             self.sent.append(m.group(1).decode())
+        m = re.search(rb"(?:^|&)token=([^&]+)", request.content)
+        if m and request.url.path.endswith("/revoke"):
+            self.revoked.append(m.group(1).decode())
         return await super().handle_async_request(request)
 
 
@@ -217,22 +230,52 @@ async def test_refresh_rotates_and_the_old_token_is_never_used_again(issuer):
     store, who, clock, rec = keystore.Ephemeral(), Human("alice"), [time.time()], Recorder()
     lg = make(issuer, store, "alice", who, now=lambda: clock[0], http=httpx.AsyncClient(transport=rec))
     first = await lg.access_token()
-    r1 = store.load(keystore.REFRESH_TOKEN)
+    r1 = stored(store, issuer)
     clock[0] += 290  # 10 s left in the host's view: a refresh
     second = await lg.access_token()
-    r2 = store.load(keystore.REFRESH_TOKEN)
+    r2 = stored(store, issuer)
     assert second != first and r1 and r2 and r1 != r2
     assert who.events == ["waiting", "settled:approved"]  # no second approval
     clock[0] += 290
     await lg.access_token()
-    r3 = store.load(keystore.REFRESH_TOKEN)
+    r3 = stored(store, issuer)
     assert r3 and r3 not in (r1, r2)
     assert rec.sent == [r1, r2]  # each one sent once, never again once replaced
+
+
+async def test_two_logins_on_one_directory_both_get_a_token_after_one_approval(issuer, tmp_path):
+    files, who, rec = keystore.HostFile(tmp_path / "login"), Human("alice"), Recorder()
+    one = make(issuer, files, "alice", who, http=httpx.AsyncClient(transport=rec))
+    two = make(issuer, keystore.HostFile(tmp_path / "login"), "alice", who, http=httpx.AsyncClient(transport=rec))
+    first, second = await asyncio.gather(one.access_token(), two.access_token())
+    for token in (first, second):
+        assert login.payload_of(token)["preferred_username"] == "alice"
+    assert who.events == ["waiting", "settled:approved"]  # one approval
+    assert len(rec.sent) == 1  # the second refreshed with what the first stored, not with its own old one
+
+
+async def test_a_refresh_token_is_never_sent_twice_across_two_logins(issuer, tmp_path):
+    files, who, rec, clock = keystore.HostFile(tmp_path / "login"), Human("alice"), Recorder(), [time.time()]
+    one = make(issuer, files, "alice", who, now=lambda: clock[0], http=httpx.AsyncClient(transport=rec))
+    two = make(issuer, files, "alice", Human("alice", answer=False), now=lambda: clock[0],
+               http=httpx.AsyncClient(transport=rec))
+    await one.access_token()
+    r1 = stored(files, issuer)
+    clock[0] += 290
+    await one.access_token()          # sends r1, stores r2
+    r2 = stored(files, issuer)
+    await two.access_token()          # a second Login on the same file: it sends r2, never r1
+    clock[0] += 290
+    await one.access_token()          # and the first goes on with what the second stored
+    assert r1 and r2 and rec.sent[:2] == [r1, r2]
+    assert len(rec.sent) == len(set(rec.sent)) == 3
+    assert who.events == ["waiting", "settled:approved"]
 
 
 async def test_a_stored_refresh_token_resumes_without_a_new_approval(issuer, tmp_path):
     files = keystore.HostFile(tmp_path / "login")
     await make(issuer, files, "alice", Human("alice")).access_token()
+    assert stored(files, issuer)
     again = Human("alice", answer=False)
     token = await make(issuer, files, "alice", again).access_token()
     assert login.payload_of(token)["preferred_username"] == "alice"
@@ -241,7 +284,8 @@ async def test_a_stored_refresh_token_resumes_without_a_new_approval(issuer, tmp
 
 async def test_a_revoked_refresh_token_starts_a_new_approval(issuer):
     store = keystore.Ephemeral()
-    store.save(keystore.REFRESH_TOKEN, "not-a-token-keycloak-knows")
+    store.save(keystore.refresh_entry(issuer, CLIENT, "alice"), json.dumps(
+        {"issuer": issuer, "client_id": CLIENT, "human": "alice", "token": "not-a-token-keycloak-knows"}))
     who = Human("alice")
     await make(issuer, store, "alice", who).access_token()
     assert who.events == ["waiting", "settled:approved"]
@@ -252,7 +296,7 @@ async def test_a_denied_approval(issuer):
     with pytest.raises(login.ApprovalDenied):
         await make(issuer, store, "alice", who).access_token()
     assert who.events == ["waiting", "settled:denied"]
-    assert store.load(keystore.REFRESH_TOKEN) is None
+    assert stored(store, issuer) is None
 
 
 async def test_an_expired_code(issuer):
@@ -262,7 +306,7 @@ async def test_an_expired_code(issuer):
     with pytest.raises(login.ApprovalExpired):
         await short.access_token()  # this client's device codes live 5 s
     assert who.events == ["waiting", "settled:expired"]
-    assert store.load(keystore.REFRESH_TOKEN) is None
+    assert stored(store, issuer) is None
 
 
 async def test_approval_by_another_user_is_refused_and_the_tokens_are_dropped(issuer, caplog):
@@ -271,8 +315,22 @@ async def test_approval_by_another_user_is_refused_and_the_tokens_are_dropped(is
     with pytest.raises(login.WrongHuman):
         await lg.access_token()
     assert who.events == ["waiting", "refused", "settled:refused"]
-    assert store.load(keystore.REFRESH_TOKEN) is None
+    assert stored(store, issuer) is None
     assert re.search(r"eyJ", caplog.text) is None
+
+
+async def test_mallorys_refresh_token_is_revoked_in_keycloak(issuer):
+    store, who, rec = keystore.Ephemeral(), Human("mallory"), Recorder()
+    lg = make(issuer, store, "alice", who, http=httpx.AsyncClient(transport=rec))
+    with pytest.raises(login.WrongHuman):
+        await lg.access_token()
+    assert len(rec.revoked) == 1
+    # a refresh with the token that was revoked now fails
+    async with httpx.AsyncClient() as client:
+        meta = (await client.get(f"{issuer}/.well-known/openid-configuration")).json()
+        resp = await client.post(meta["token_endpoint"], data={
+            "grant_type": "refresh_token", "refresh_token": rec.revoked[0], "client_id": CLIENT})
+    assert resp.status_code == 400 and resp.json()["error"] == "invalid_grant"
 
 
 @pytest.mark.parametrize("nkey", ["ephemeral", "host"])
@@ -284,4 +342,4 @@ async def test_both_nkey_stores_with_a_real_login(issuer, tmp_path, nkey):
     again = make(issuer, files, "alice", Human("alice", answer=False), nkey=nkey)
     assert (again.nkey().public_key == public) is (nkey == "host")
     assert (files.load(keystore.NKEY_SEED) is not None) is (nkey == "host")
-    assert files.load(keystore.REFRESH_TOKEN)  # the refresh token persists either way
+    assert stored(files, issuer)  # the refresh token persists either way
