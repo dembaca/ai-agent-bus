@@ -8,6 +8,8 @@ import (
 	"errors"
 	"fmt"
 	"log/slog"
+	"net"
+	"net/url"
 	"os"
 	"strings"
 	"time"
@@ -66,6 +68,9 @@ func LoadSettings(getenv func(string) string) (Settings, bool, error) {
 	}
 	if (s.XKeySeedFile == "") == !s.PlainRequests {
 		return Settings{}, true, fmt.Errorf("%w: AUTH_XKEY_SEED_FILE must be set (or, to accept unencrypted requests, AUTH_PLAIN_REQUESTS=allow instead)", ErrConfig)
+	}
+	if err := natsURLSecure(s.NATSURL); err != nil {
+		return Settings{}, true, fmt.Errorf("%w: AUTH_NATS_URL: %v", ErrConfig, err)
 	}
 	if (s.NATSCertFile == "") != (s.NATSKeyFile == "") {
 		return Settings{}, true, fmt.Errorf("%w: AUTH_NATS_CERT_FILE and AUTH_NATS_KEY_FILE go together", ErrConfig)
@@ -192,6 +197,26 @@ func RunCallout(ctx context.Context, s Settings, log *slog.Logger) error {
 	defer nc.Close()
 	log.Info("auth callout serving", "account", s.Callout.Account, "binding", s.Binding)
 	return svc.Serve(ctx, nc)
+}
+
+// natsURLSecure: every URL of the list must be tls:// (or wss://), except on
+// a loopback host, since the callout's connection carries hosts' tokens.
+func natsURLSecure(urls string) error {
+	for _, raw := range strings.Split(urls, ",") {
+		u, err := url.Parse(strings.TrimSpace(raw))
+		if err != nil || u.Host == "" {
+			return fmt.Errorf("%q is not a URL", raw)
+		}
+		if u.Scheme == "tls" || u.Scheme == "wss" {
+			continue
+		}
+		h := u.Hostname()
+		if ip := net.ParseIP(h); h == "localhost" || (ip != nil && ip.IsLoopback()) {
+			continue
+		}
+		return fmt.Errorf("%q: tls:// required off a loopback host", raw)
+	}
+	return nil
 }
 
 func secret(path, name string) (string, error) {

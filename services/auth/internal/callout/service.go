@@ -151,11 +151,7 @@ func (s *Service) handle(ctx context.Context, m *nats.Msg) {
 	}
 	who := []any{"server_id", req.Server.ID, "client_host", req.ClientInformation.Host, "user_nkey", req.UserNkey}
 
-	deadline := now.Add(s.cfg.Timeout)
-	if exp := time.Unix(req.Expires, 0).Add(-answerMargin); exp.Before(deadline) {
-		deadline = exp
-	}
-	ctx, cancel := context.WithDeadline(ctx, deadline)
+	ctx, cancel := context.WithDeadline(ctx, deadline(now, s.cfg.Timeout, req.Expires))
 	defer cancel()
 	userJWT, more, err := s.authorize(ctx, req, now)
 	who = append(who, more...)
@@ -185,6 +181,16 @@ func (s *Service) handle(ctx context.Context, m *nats.Msg) {
 		return
 	}
 	_ = m.Respond([]byte(out))
+}
+
+// deadline is the end of one request's work: the timeout, but never past the
+// server's own request expiry, less the time to send the answer.
+func deadline(now time.Time, timeout time.Duration, expires int64) time.Time {
+	d := now.Add(timeout)
+	if exp := time.Unix(expires, 0).Add(-answerMargin); exp.Before(d) {
+		d = exp
+	}
+	return d
 }
 
 // open decrypts a request the server encrypted to this service's xkey. With

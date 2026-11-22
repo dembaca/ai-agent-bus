@@ -6,6 +6,7 @@ import (
 	"errors"
 	"net/http"
 	"net/http/httptest"
+	"net/url"
 	"strings"
 	"sync/atomic"
 	"testing"
@@ -202,5 +203,30 @@ func TestAnErrorIsNoAnswer(t *testing.T) {
 func TestPlainHTTPOnlyOnLoopback(t *testing.T) {
 	if _, err := New(context.Background(), "http://chat.example", "lab", "tok"); err == nil {
 		t.Fatal("plain http to another host accepted")
+	}
+}
+
+func TestOnlyHTTPSOrLoopback(t *testing.T) {
+	for raw, want := range map[string]bool{
+		"https://chat.example": true, "http://127.0.0.1:8065": true, "http://localhost": true, "http://[::1]:80": true,
+		"http://chat.example": false, "http://10.0.0.1": false, "ftp://chat.example": false,
+	} {
+		u, _ := url.Parse(raw)
+		if secure(u) != want {
+			t.Errorf("%s: %v", raw, !want)
+		}
+	}
+}
+
+func TestAFailedProbeMeansNotVisible(t *testing.T) {
+	ctx := context.Background()
+	srv := server(t, true)
+	c, err := New(ctx, srv.URL, "lab", "tok")
+	if err != nil || !c.AuthVisible() {
+		t.Fatalf("%v, %v", c, err)
+	}
+	srv.Close()
+	if err := c.checkAuth(ctx); err == nil || c.AuthVisible() {
+		t.Fatalf("after a failed probe: %v, visible %v", err, c.AuthVisible())
 	}
 }

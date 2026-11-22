@@ -6,6 +6,8 @@ import (
 	"errors"
 	"fmt"
 	"log/slog"
+	"os"
+	"path/filepath"
 	"strings"
 	"sync"
 	"testing"
@@ -400,5 +402,40 @@ func TestOnlyValidChannelNamesReachTheChat(t *testing.T) {
 	}
 	if !strings.Contains(l.logs.String(), "more than 16 guest channels") {
 		t.Errorf("log:\n%s", l.logs.String())
+	}
+}
+
+func TestTheServersExpiryCapsTheDeadline(t *testing.T) {
+	now := time.Unix(1000, 0)
+	if d := deadline(now, 1500*time.Millisecond, 1001); !d.Equal(time.Unix(1001, 0).Add(-answerMargin)) {
+		t.Fatalf("capped by exp: %s", d.Sub(now))
+	}
+	if d := deadline(now, 1500*time.Millisecond, 1010); !d.Equal(now.Add(1500 * time.Millisecond)) {
+		t.Fatalf("the timeout: %s", d.Sub(now))
+	}
+}
+
+func TestTheBrakeComparesOwnersInLowerCase(t *testing.T) {
+	path := filepath.Join(t.TempDir(), "brake")
+	if err := os.WriteFile(path, []byte("Alice\n"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	var warned []string
+	b := NewBrake(path, func(line string) { warned = append(warned, line) })
+	for _, owner := range []string{"alice", "ALICE", "Alice"} {
+		if b.Check(owner) != ErrStopped {
+			t.Errorf("%s not stopped", owner)
+		}
+	}
+	if b.Check("bob") != nil {
+		t.Error("bob stopped")
+	}
+	if err := os.WriteFile(path, []byte("not a name!\nbob\n"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	later := time.Now().Add(time.Minute)
+	_ = os.Chtimes(path, later, later)
+	if b.Check("bob") != ErrStopped || len(warned) != 1 {
+		t.Fatalf("bob: %v, warned %q", b.Check("bob"), warned)
 	}
 }

@@ -50,7 +50,7 @@ values are placeholders.
 
 | Variable | Default | Meaning |
 | --- | --- | --- |
-| `AUTH_NATS_URL` | — | the NATS server; unset: no callout, health only |
+| `AUTH_NATS_URL` | — | the NATS server, `tls://` (plain `nats://` only on a loopback host); unset: no callout, health only |
 | `AUTH_NATS_SEED_FILE` | — | file with the nkey seed of the service's own NATS user, one of the server's `auth_users` |
 | `AUTH_ISSUER_SEED_FILE` | — | file with the account key seed that signs the responses and user JWTs; its public key is the server's `auth_callout.issuer` |
 | `AUTH_XKEY_SEED_FILE` | — | file with the curve key seed that decrypts requests and encrypts answers; its public key is the server's `auth_callout.xkey`. Plain requests are refused |
@@ -273,9 +273,22 @@ server knows one issuer at a time.
   it. Without it an OpenID account's `sub` cannot be compared, and the check
   refuses the login.
 - **Who sent a post, as the receiver sees it:** the subject's last token
-  names the sender, and only the sender can publish there. How a receiver
-  learns the sender's owner (for ADR-001's foreign agents) is an open design
-  question for the protocol layer.
+  names the sender, and only the sender can publish there, as long as no
+  service in the account answers onto a reply subject the caller chose. The
+  bus's own service (for consumers and presence) and the central adapter
+  will be such services: they must answer only into the checked caller's
+  `_INBOX.<host nkey>.>`, and the streams must be created without rollup,
+  schedules or batch publishing besides `no_ack`. How a receiver learns the
+  sender's owner (ADR-001's foreign agents) is an open design question for
+  the protocol layer.
+- **A restart is a new agent:** the name follows from the host's nkey, which
+  the host process makes anew at each start, so a restarted session gets a
+  new name and, once consumers exist, a new durable consumer. ADR-014 expects
+  an agent to keep its inbox across restarts; how (a host key kept on disk,
+  or a name the owner's session keeps) is a question with the owner.
+- **Memberships are asked all at once,** one lookup per channel in parallel,
+  for at most 17 channels (home and 16 guests), within the request's
+  deadline.
 - **Immediate disconnect:** see the emergency brake.
 
 ## Tests

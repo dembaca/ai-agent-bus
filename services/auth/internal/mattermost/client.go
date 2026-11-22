@@ -176,27 +176,54 @@ func (c *Client) Memberships(ctx context.Context, username string, channels []st
 	if err != nil {
 		return nil, err
 	}
+	// One lookup per channel, all at once: a host's channels cost one round
+	// trip, not one per channel, within the request's deadline.
+	var (
+		wg    sync.WaitGroup
+		mu    sync.Mutex
+		first error
+	)
 	for _, name := range channels {
-		id, err := c.channelID(ctx, name)
-		if errors.Is(err, errNotFound) {
-			continue
-		}
-		if err != nil {
-			return nil, fmt.Errorf("channel %q: %w", name, err)
-		}
-		var m struct {
-			UserID string `json:"user_id"`
-		}
-		err = c.get(ctx, "/api/v4/channels/"+url.PathEscape(id)+"/members/"+url.PathEscape(u.ID), &m)
-		switch {
-		case errors.Is(err, errNotFound):
-		case err != nil:
-			return nil, fmt.Errorf("channel %q: %w", name, err)
-		default:
-			out[name] = m.UserID == u.ID
-		}
+		wg.Go(func() {
+			member, err := c.member(ctx, name, u.ID)
+			mu.Lock()
+			defer mu.Unlock()
+			switch {
+			case err != nil && first == nil:
+				first = fmt.Errorf("channel %q: %w", name, err)
+			case err == nil:
+				out[name] = member
+			}
+		})
+	}
+	wg.Wait()
+	if first != nil {
+		return nil, first
 	}
 	return out, nil
+}
+
+// member: an unknown channel or a missing membership is false; an error means
+// the answer is unknown.
+func (c *Client) member(ctx context.Context, channel, userID string) (bool, error) {
+	id, err := c.channelID(ctx, channel)
+	if errors.Is(err, errNotFound) {
+		return false, nil
+	}
+	if err != nil {
+		return false, err
+	}
+	var m struct {
+		UserID string `json:"user_id"`
+	}
+	err = c.get(ctx, "/api/v4/channels/"+url.PathEscape(id)+"/members/"+url.PathEscape(userID), &m)
+	switch {
+	case errors.Is(err, errNotFound):
+		return false, nil
+	case err != nil:
+		return false, err
+	}
+	return m.UserID == userID, nil
 }
 
 func (c *Client) channelID(ctx context.Context, name string) (string, error) {
