@@ -14,6 +14,7 @@ package callout
 
 import (
 	"encoding/json"
+	"errors"
 	"fmt"
 	"strings"
 	"sync"
@@ -25,11 +26,11 @@ import (
 
 const (
 	busStreamCfg = `{"name":"BUS","subjects":["bus.>"],"retention":"limits","storage":"file","discard":"old",
-"max_age":1209600000000000,"max_msg_size":65536,"num_replicas":1,"no_ack":true,"duplicate_window":100000000,
+"max_age":1209600000000000,"max_bytes":1073741824,"max_msg_size":65536,"num_replicas":1,"no_ack":true,"duplicate_window":100000000,
 "allow_direct":false,"mirror_direct":false,"deny_delete":true,"deny_purge":true,"allow_rollup_hdrs":false,
 "allow_msg_ttl":false,"allow_msg_counter":false,"allow_atomic":false,"allow_msg_schedules":false,"allow_batched":false}`
 	presenceStreamCfg = `{"name":"PRESENCE","subjects":["presence.>"],"retention":"limits","storage":"file","discard":"old",
-"max_msgs_per_subject":1,"max_msg_size":4096,"num_replicas":1,"no_ack":true,"duplicate_window":100000000,
+"max_age":86400000000000,"max_msgs_per_subject":1,"max_bytes":16777216,"max_msg_size":4096,"num_replicas":1,"no_ack":true,"duplicate_window":100000000,
 "allow_direct":false,"mirror_direct":false,"deny_delete":true,"deny_purge":true,"allow_rollup_hdrs":false,
 "allow_msg_ttl":false,"allow_msg_counter":false,"allow_atomic":false,"allow_msg_schedules":false,"allow_batched":false}`
 )
@@ -63,24 +64,33 @@ func (n *native) stream(name, cfg string) {
 }
 
 // login is what the login service does for an agent: one push consumer per
-// channel, one for its direct messages, one for presence.
+// channel, one for its direct messages, one for presence: every agent's
+// presence, but crown claims only of its own channels (ADR-014 point 16).
 func (n *native) login(ag *agent, channels ...string) (delivers []string) {
 	n.t.Helper()
-	add := func(stream, suffix, filter string, dp nats.DeliverPolicy) {
-		_, err := n.js.AddConsumer(stream, &nats.ConsumerConfig{
+	add := func(stream, suffix string, filters []string, dp nats.DeliverPolicy) {
+		cfg := &nats.ConsumerConfig{
 			Durable: ag.name + "_" + strings.ReplaceAll(suffix, ".", "_"), DeliverSubject: "deliver." + ag.name + "." + suffix,
-			FilterSubject: filter, AckPolicy: nats.AckNonePolicy, DeliverPolicy: dp, InactiveThreshold: time.Hour,
-		})
+			AckPolicy: nats.AckNonePolicy, DeliverPolicy: dp, InactiveThreshold: time.Hour,
+		}
+		if len(filters) == 1 {
+			cfg.FilterSubject = filters[0]
+		} else {
+			cfg.FilterSubjects = filters
+		}
+		_, err := n.js.AddConsumer(stream, cfg)
 		if err != nil {
 			n.t.Fatalf("consumer %s: %v", suffix, err)
 		}
 		delivers = append(delivers, "deliver."+ag.name+"."+suffix)
 	}
+	presence := []string{"presence.*"}
 	for _, ch := range channels {
-		add("BUS", "ch."+ch, "bus.ch."+ch+".*", nats.DeliverNewPolicy)
+		add("BUS", "ch."+ch, []string{"bus.ch." + ch + ".*"}, nats.DeliverNewPolicy)
+		presence = append(presence, "presence.crown."+ch+".*")
 	}
-	add("BUS", "dm", "bus.dm."+ag.name+".*", nats.DeliverNewPolicy)
-	add("PRESENCE", "presence", "presence.>", nats.DeliverLastPerSubjectPolicy)
+	add("BUS", "dm", []string{"bus.dm." + ag.name + ".*"}, nats.DeliverNewPolicy)
+	add("PRESENCE", "presence", presence, nats.DeliverLastPerSubjectPolicy)
 	return delivers
 }
 
@@ -212,7 +222,11 @@ func (n *native) audit() {
 		cnt := 0
 		for seq := si.State.FirstSeq; seq <= si.State.LastSeq && seq > 0; seq++ {
 			m, err := n.js.GetMsg(st, seq)
+			if errors.Is(err, nats.ErrMsgNotFound) && st == "PRESENCE" {
+				continue // replaced: one message per subject
+			}
 			if err != nil {
+				n.t.Errorf("audit: %s seq %d not read: %v", st, seq, err)
 				continue
 			}
 			cnt++
@@ -259,12 +273,67 @@ func TestNativeConfigAsCreated(t *testing.T) {
 		var v struct {
 			Config json.RawMessage `json:"config"`
 		}
-		_ = json.Unmarshal(r.Data, &v)
+		if err := json.Unmarshal(r.Data, &v); err != nil {
+			t.Fatal(err)
+		}
 		t.Logf("%s config: %s", st, v.Config)
+		// What the server kept, not what was asked: a misspelt or ignored
+		// switch would show here.
+		var got map[string]any
+		if err := json.Unmarshal(v.Config, &got); err != nil {
+			t.Fatal(err)
+		}
+		want := map[string]any{"no_ack": true, "deny_delete": true, "deny_purge": true}
+		for _, k := range []string{"allow_direct", "mirror_direct", "allow_rollup_hdrs", "allow_msg_ttl",
+			"allow_msg_counter", "allow_atomic", "allow_msg_schedules", "allow_batched"} {
+			want[k] = false
+		}
+		for k, w := range want {
+			if g, present := got[k]; (present || w == true) && g != w {
+				t.Errorf("%s: %s = %v, want %v", st, k, g, w)
+			}
+		}
+		if mb, _ := got["max_bytes"].(float64); mb <= 0 {
+			t.Errorf("%s: max_bytes = %v, want a limit", st, got["max_bytes"])
+		}
+		if ma, _ := got["max_age"].(float64); ma <= 0 {
+			t.Errorf("%s: max_age = %v, want a limit", st, got["max_age"])
+		}
+		if mps, _ := got["max_msgs_per_subject"].(float64); st == "PRESENCE" && mps != 1 {
+			t.Errorf("PRESENCE: max_msgs_per_subject = %v, want 1", got["max_msgs_per_subject"])
+		}
 	}
-	ci, _ := n.js.ConsumerInfo("BUS", n.b.name+"_ch_home")
-	c, _ := json.Marshal(ci.Config)
-	t.Logf("consumer: %s", n.names(string(c)))
+	for _, c := range []struct{ stream, name string }{{"BUS", n.b.name + "_ch_home"}, {"BUS", n.b.name + "_dm"}, {"PRESENCE", n.b.name + "_presence"}} {
+		ci, err := n.js.ConsumerInfo(c.stream, c.name)
+		if err != nil {
+			t.Fatalf("consumer %s: %v", c.name, err)
+		}
+		cfg, _ := json.Marshal(ci.Config)
+		t.Logf("consumer: %s", n.names(string(cfg)))
+		if ci.Config.AckPolicy != nats.AckNonePolicy || ci.Config.FlowControl || !strings.HasPrefix(ci.Config.DeliverSubject, "deliver."+n.b.name+".") {
+			t.Errorf("consumer %s: ack %v, flow control %v, deliver %s", c.name, ci.Config.AckPolicy, ci.Config.FlowControl, ci.Config.DeliverSubject)
+		}
+	}
+}
+
+// The presence consumer shows every agent's presence but crown claims only of
+// the agent's own channels: a claim names its channel, and so would tell who
+// is in a channel the agent is not in.
+func TestNativePresenceShowsCrownsOnlyOfOwnChannels(t *testing.T) {
+	n := newNative(t, busStreamCfg) // alice: home; bob: home and secret
+	n.bobPosts("presence."+n.b.name, "bob online")
+	n.bobPosts("presence.crown.secret."+n.b.name, "claim in secret")
+	n.bobPosts("presence.crown.home."+n.b.name, "claim in home")
+	seen := map[string]bool{}
+	for _, g := range take(n.aIn, 500*time.Millisecond) {
+		seen[g.Subject] = true
+	}
+	if !seen["presence."+n.b.name] || !seen["presence.crown.home."+n.b.name] {
+		t.Errorf("alice misses bob's presence or his claim in home: %v", seen)
+	}
+	if seen["presence.crown.secret."+n.b.name] {
+		t.Error("alice was delivered a crown claim of a channel she is not in")
+	}
 }
 
 // Own posts with a reply subject set to somebody else's subject: the stream

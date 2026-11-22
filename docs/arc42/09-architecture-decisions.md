@@ -3309,7 +3309,10 @@ separately.
       `<presence>.crown.<channel>.<name>` (both prefixes are settings of the
       login service, `bus` and `presence`). An agent may publish only on
       those with its own name. Readers take the sender from the subject
-      alone, never from a header or the body.
+      alone, never from a header or the body. `<bus>.dm.*.<name>` admits any
+      recipient token, on purpose: an agent may write to any agent of its
+      tenant, as on the bus today, and a recipient that does not exist has no
+      consumer, so the message reaches nobody.
     - **Agents never talk to JetStream.** No right on `$JS`, `$KV`, `$SYS` or
       `_INBOX`. An agent reads only through push consumers the login service
       makes for it: ack policy none, no flow control, the deliver subject
@@ -3318,14 +3321,37 @@ separately.
       consumer). Its only subscribe right is `deliver.<name>.>`.
     - **Streams do not acknowledge** (`no_ack`), and every `allow_*` switch
       is off (rollup, message TTL, counters, atomic and batched publish,
-      schedules, direct get), with `deny_delete` and `deny_purge`. With
+      schedules, direct get), with `deny_delete` and `deny_purge`, and each
+      stream has a size limit (`max_bytes`, besides its age and message size
+      limits) with `discard: old`, so no agent can fill the disk. With
       acknowledgements, schedules or rollups the forgery succeeds again; the
       test checks all three as controls.
     - **Presence and crowns are a stream of their own** (`PRESENCE`, one
       message per subject), not a key-value bucket. Each agent writes only
       its own subjects; nobody can overwrite or delete another's. The crown
-      of a channel goes to the claim with the lowest stream sequence, not to
-      a compare-and-set.
+      of a channel goes to the claim with the lowest stream sequence among
+      the agents whose presence is fresh, not to a compare-and-set (below).
+
+    **The crown and stale entries.** The presence stream keeps one message
+    per subject, so a renewed claim moves behind every other, and nothing an
+    agent can do removes another's. The rules that keep a crashed holder
+    from holding the crown for ever:
+    - An agent's presence is fresh while its last `<presence>.<name>`
+      message is younger than 90 s (three heartbeats at 30 s); the time is
+      the server's, from the message's metadata, never the sender's.
+    - The holder of a channel's crown is the lowest claim sequence among
+      the claimants whose presence is fresh. A holder that stops beating
+      loses the crown within 90 s, to the next claim in sequence order; a
+      holder keeps its place only by beating, not by claiming again.
+    - Orphaned subjects disappear by the presence stream's `max_age`
+      (24 h): a live agent's heartbeat stays young, everything else ages
+      out. Nobody deletes single entries, not even the login service
+      (`deny_delete`); a stale entry is harmless meanwhile, since only fresh
+      presence counts. A claim ages out too, so a holder renews its claim
+      before 24 h and thereby moves behind the other fresh claims: the crown
+      may change hands about once a day. This is accepted for the lab; if it
+      matters, the crown order moves to a stream without an age limit whose
+      claims the login service removes at sign-off.
 
     **Consumer management in the login service** (designed here, built with
     the NATS adapter, phase 3):
@@ -3337,6 +3363,19 @@ separately.
       "new messages only", unless the agent's hello asks for history: then
       the start is the stream sequence the hello names (the agent's last
       seen sequence), within the stream's 14 days.
+    - The presence consumer delivers every agent's presence
+      (`<presence>.*`) but crown claims only of the agent's own channels
+      (`<presence>.crown.<channel>.*` for each of them): a claim names its
+      channel, so a wider filter would tell who is in channels the agent is
+      not in. The test checks this.
+    - **Read rights follow the credential, not the subscribe right.** The
+      subscribe right is `deliver.<name>.>` whatever the channels, so what an
+      agent reads depends only on the consumers that exist. At every issue of
+      a credential (each login and each 15-minute renewal) the login service
+      compares the agent's consumers with the credential's channels and
+      removes every consumer of a channel that is no longer in it. A human
+      removed from a channel thus stops their agent reading it at the next
+      renewal, within 15 min, as for writing.
     - The login service, not the agent, removes them: when the agent leaves
       a channel (that channel's consumer), at sign-off (all of them), and
       when the emergency brake is pulled (all of every agent it names). A

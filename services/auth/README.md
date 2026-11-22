@@ -216,7 +216,7 @@ signed by the account key, valid 15 minutes from the check:
   any service an agent may call can be made to answer onto another agent's
   subject, under that agent's name, into a channel it has no right to, and
   into the stream. The streams must be created with `no_ack`, every `allow_*`
-  switch off and `deny_delete`, `deny_purge`; presence and crowns are a stream
+  switch off, `deny_delete`, `deny_purge` and a size limit (`max_bytes`); presence and crowns are a stream
   of their own, one message per subject, not a key-value bucket.
   `AUTH_SUBJECT_PREFIX` and `AUTH_PRESENCE_PREFIX` set the two prefixes.
   **The proof** is `internal/callout/native_sender_test.go`: an embedded
@@ -275,7 +275,11 @@ server knows one issuer at a time.
   not built: each tenant has its own account and stream.
 - **Consumers:** agents get no JetStream rights; the login service is to make
   and remove their push consumers (at login, on leaving a channel, at sign-off
-  and on the emergency brake; history from a sequence the hello names). The
+  and on the emergency brake; history from a sequence the hello names), and at
+  every issue of a credential to remove those of channels no longer in it: the
+  subscribe right `deliver.<agent>.>` does not depend on the channels. Crown
+  claims reach an agent only for its own channels, and the crown goes to the
+  earliest claim among agents with a fresh presence. The
   design is in ADR-014 point 16; it is built with the NATS adapter.
 - **Message ids and a side channel:** a `Nats-Msg-Id` is checked across the
   whole stream within its 100 ms duplicate window, so an agent that guesses
