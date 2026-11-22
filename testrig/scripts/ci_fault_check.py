@@ -38,7 +38,18 @@ def main() -> int:
     assert cut["connection_closed"], cut
     # A cut loses whatever it prevented: the report names the closed
     # connection *and* the count, never a zero that hides it.
-    assert cut["measured"]["loss"]["value"] is not None, cut["measured"]["loss"]
+    loss = cut["measured"]["loss"]["value"]
+    assert loss is not None and loss > 0, cut["measured"]["loss"]
+
+    # A failed write is neither sent nor lost (fourth re-check): loss must be
+    # exactly the frames sent minus the frames that arrived.
+    paced = subprocess.run(
+        [sys.executable, "-m", "bus_testrig.cli", "echo-run",
+         "--fault", "cut", "--after", "3", "--count", "10", "--send-interval", "0.05"],
+        capture_output=True, text=True, check=True,
+    )
+    p = json.loads(paced.stdout)
+    assert p["measured"]["loss"]["value"] == 1, p["measured"]["loss"]
 
     print("faulted run reports its loss; a cut reports the closed connection and what it lost")
     return 0

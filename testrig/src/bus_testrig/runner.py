@@ -232,6 +232,11 @@ async def echo_run(count: int = 20, fault: ProxyFault | None = None,
                         await client.send(str(seq))
                         run.sent_frames += 1  # written, not merely intended
                     except websockets.ConnectionClosed:
+                        # The write failed, so this frame never left the
+                        # harness: it is neither sent nor lost. Counting it as
+                        # lost made the loss one too high on every cut with a
+                        # pace (fourth re-check).
+                        run.sent.pop()
                         run.closed = "ConnectionClosed during send"
                         break
                     # Yield even without a pace (review point 7): a tight send

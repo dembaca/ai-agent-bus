@@ -146,6 +146,17 @@ async def test_echo_run_survives_a_cut_and_counts_what_it_lost():
     assert report["measured"]["loss"]["value"] == 7, report["measured"]["loss"]
 
 
+async def test_a_failed_write_is_not_counted_as_lost():
+    """Fourth re-check: a frame whose write failed never left the harness, so
+    it is neither sent nor lost. With a pace and a cut the loss is exactly
+    `sent_frames - arrived`, and 1 for this run."""
+    run = await echo_run(count=10, fault=ProxyFault(kind="cut", after=3), send_interval=0.05)
+    m = run.measure()
+    assert m["loss"]["value"] == run.sent_frames - len(run.received), (m["loss"], run.sent_frames,
+                                                                      len(run.received))
+    assert m["loss"]["value"] == 1, (m["loss"], run.sent_frames, len(run.received))
+
+
 async def test_a_slow_sender_invents_no_loss():
     """Review point 2: with `--send-interval 0.3` the settle window used to run
     during sending and report 4 of 5 frames as lost."""
