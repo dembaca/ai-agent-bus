@@ -109,8 +109,9 @@ async def test_blackhole_counts_each_frame_once():
 
 
 async def test_a_cut_aborts_without_a_close_frame():
-    """Review point 3: a network cut is not a clean close. The client must see
-    the connection drop, not close code 1000."""
+    """Review point 3/5: a network cut is not a clean close. Only
+    `ConnectionClosedError` may arrive, and it must carry no close frame on
+    either side."""
     import websockets.exceptions as wx
 
     async def echo(conn):
@@ -125,12 +126,29 @@ async def test_a_cut_aborts_without_a_close_frame():
                 await client.send("0")
                 assert await asyncio.wait_for(client.recv(), 1) == "0"
                 await client.send("1")
-                with pytest.raises((wx.ConnectionClosedError, wx.ConnectionClosedOK,
-                                    ConnectionResetError, asyncio.TimeoutError)):
+                with pytest.raises(wx.ConnectionClosedError) as caught:
                     for _ in range(5):
                         await asyncio.wait_for(client.recv(), 1)
+                assert caught.value.rcvd is None and caught.value.sent is None
     finally:
         server.close()
+
+
+async def test_echo_run_survives_a_cut_and_names_it():
+    """Review point 1: `--fault cut` used to crash with a traceback. The run
+    reports the closed connection and counts no losses."""
+    run = await echo_run(count=5, fault=ProxyFault(kind="cut", after=1))
+    report = run.report()
+    assert report["connection_closed"], report
+    assert report["measured"]["loss"]["value"] == 0
+
+
+async def test_a_slow_sender_invents_no_loss():
+    """Review point 2: with `--send-interval 0.3` the settle window used to run
+    during sending and report 4 of 5 frames as lost."""
+    run = await echo_run(count=5, send_interval=0.3)
+    assert run.measure()["loss"]["value"] == 0
+    assert run.sent_frames == 5
 
 
 async def test_a_stall_delays_application_frames_only():

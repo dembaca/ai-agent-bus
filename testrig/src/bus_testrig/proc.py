@@ -5,8 +5,8 @@ produce honestly from inside: a fake kill leaves the victim running, and a fake
 cut leaves the socket usable. Both are done for real here, on processes this
 harness started.
 
-  kill      SIGKILL, then wait for the process to be gone and check that the
-            other side sees it (the exit code and the closed stream)
+  kill      SIGKILL, then wait for the process to be gone (by its exit status
+            when the caller can observe it, else by pid liveness)
   blackhole and cut are the proxy's (`proxy.FrameProxy`): a blackhole keeps the
             socket open and silent, a cut aborts the transport with no close
             frame. Neither needs the operating system, so `proc` does not offer
@@ -83,9 +83,19 @@ def kill(pid: int, *, sig: int = signal.SIGKILL, wait_s: float = 5.0,
 
 
 def kill_child(child: Any) -> Killed:
-    """`kill` for a `subprocess.Popen` this harness owns: waits for the child
-    to be reaped, so a zombie does not count as a survivor."""
-    return kill(child.pid, calls=lambda: child.poll() is not None)
+    """`kill` for a `subprocess.Popen` this harness owns.
+
+    Waits for the child to be reaped, so a zombie does not count as a survivor,
+    and reports the child's **real** return code: a process that had already
+    ended with its own code keeps it, and only one this call actually killed
+    reports the signal. Reporting `-sig` for both hid which had happened.
+    """
+    before = child.poll()
+    if before is not None:
+        return Killed(returncode=before, waited_s=0.0)
+    result = kill(child.pid, calls=lambda: child.poll() is not None)
+    return Killed(returncode=child.returncode if child.returncode is not None
+                  else result.returncode, waited_s=result.waited_s)
 
 
 def network_cut_supported() -> str:

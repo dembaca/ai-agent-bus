@@ -15,8 +15,11 @@ The faults the proxy can produce:
              inside each connection and are **not** delayed here, so a heartbeat
              does not see a stall: for "the peer notices the connection is gone"
              use `cut`, and do not read `stall` as a network fault
-  blackhole  nothing is delivered any more and the connection is not closed:
-             the peer keeps a socket it believes healthy (pings go unanswered)
+  blackhole  server-to-client delivery stops and the connection is not closed:
+             the client keeps a socket it believes healthy. Only that one
+             direction goes silent, pings are still answered, so a heartbeat
+             does not notice. Silencing both directions (pause_reading) belongs
+             to the follow-up PR that drives the bus
   cut        the transport is aborted with no close frame, as a dead network
              does: the peer sees the connection drop, not a clean close
 
@@ -157,6 +160,11 @@ class FrameProxy:
                 if close_code is None:
                     close_code = upstream.close_code
                     close_reason = upstream.close_reason or ""
+        except Exception as exc:  # noqa: BLE001 — a cut ends the connection; that is the fault
+            from websockets.exceptions import ConnectionClosed
+
+            if not isinstance(exc, (ConnectionClosed, ConnectionResetError, OSError)):
+                raise
         finally:
             state.cancel()
             if close_code is not None:

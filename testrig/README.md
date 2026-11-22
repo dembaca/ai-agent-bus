@@ -27,6 +27,12 @@ Two kinds of fault, deliberately in two different places:
 inside each `websockets` connection and are not delayed, so a heartbeat does not
 see a stall — use `cut` for "the peer notices the connection is gone".
 
+`blackhole` silences the server-to-client direction only and keeps the
+connection open; pings are still answered, so a client does not notice on its
+own. Silencing both directions is open, and belongs to the follow-up PR that
+drives the bus (acceptance there: a client with a 0.5 s ping interval and a
+0.5 s timeout must close).
+
 The proxy is why "duplicated" and "reordered" are measurable at all. Today it
 sits in front of the harness's own echo endpoint, not in front of the bus: the
 bus derives REST and WebSocket from one base URL, and the proxy speaks only

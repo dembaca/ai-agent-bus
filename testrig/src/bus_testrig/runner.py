@@ -19,6 +19,8 @@ import time
 from dataclasses import dataclass, field
 from typing import Any
 
+import websockets
+
 from . import measurands
 from .proxy import FrameProxy, ProxyFault
 
@@ -64,6 +66,9 @@ class Run:
     fault_params: dict[str, Any] = field(default_factory=dict)
     send_interval: float = 0.0
     commit: str = ""
+    closed: str = ""  # set when a fault ended the connection (a cut)
+    #: how many frames the run had sent when it stopped sending
+    sent_frames: int = 0
 
     def send(self, seq: int) -> Sent:
         item = Sent(seq=seq, at=time.monotonic())
@@ -86,7 +91,10 @@ class Run:
         by_seq = {s.seq: s for s in self.sent}
         open_latencies = sorted((r.at - by_seq[seq].at) * 1000.0
                                 for seq, r in self.received.items() if seq in by_seq)
-        lost = sum(1 for seq in by_seq if seq not in self.received)
+        # A cut is not a loss (re-point 1): when the connection ended, the
+        # frames that never arrived are unsent or undeliverable, and the report
+        # names `connection_closed`. Only a run that stayed connected can lose.
+        lost = 0 if self.closed else sum(1 for seq in by_seq if seq not in self.received)
         dupes = sum(r.copies - 1 for r in self.received.values())
         return {
             "loss": lost,
@@ -128,8 +136,10 @@ class Run:
             "fault_params": self.fault_params,
             "send_interval_s": self.send_interval,
             "count": self.count,
+            "sent_frames": self.sent_frames or len(self.sent),
             "commit": self.commit,
             "duration_s": round(self.ended - self.started, 3) if self.ended else None,
+            "connection_closed": self.closed or None,
             "measured": self.measure(),
         }
 
@@ -146,11 +156,14 @@ async def echo_run(count: int = 20, fault: ProxyFault | None = None,
     A frame counts as arrived when its seq comes back; the reader stops when
     every seq arrived or `deadline` passed, so a stall is not a loss (point 5).
     """
-    import websockets
-
     async def echo(conn: Any) -> None:
-        async for frame in conn:
-            await conn.send(frame)
+        # A fault closes this connection on purpose; that is not an error of
+        # the echo endpoint, and a traceback on stderr would bury the report.
+        try:
+            async for frame in conn:
+                await conn.send(frame)
+        except websockets.ConnectionClosed:
+            return
 
     server = await websockets.serve(echo, "127.0.0.1", 0)
     port = server.sockets[0].getsockname()[1]
@@ -161,26 +174,37 @@ async def echo_run(count: int = 20, fault: ProxyFault | None = None,
                             "reorder_max_wait": fault.reorder_max_wait} if fault else {},
               send_interval=send_interval)
     run.started = time.monotonic()
+    # The settle window must outlast every silence the fault can produce, and
+    # it starts only when the sender is done: a window that runs during sending
+    # reports frames still in flight as losses (re-point 2 in the re-check).
     stall = fault.stall_sec if fault is not None and fault.kind == "stall" else 0.0
+    reorder_wait = fault.reorder_max_wait if fault is not None else 0.0
+    settle = max(stall, reorder_wait, send_interval) + 0.3
+    sent_all = asyncio.Event()
     try:
         async with FrameProxy(f"ws://127.0.0.1:{port}", fault) as proxy:
             async with websockets.connect(proxy.url) as client:
 
                 async def read() -> None:
-                    # Read past completeness (review point 1): stopping at the
-                    # first sighting of every seq undercounted duplicates by
-                    # one per frame, because the copies arrive after it. The
-                    # run ends on quiet, not on completeness.
-                    quiet = asyncio.get_running_loop().time()
-                    # The window must outlast the longest expected silence: a
-                    # stall of `stall_sec` is silence, not the end of the run
-                    # (review point 5, which a fixed 0.2 s window broke again).
-                    settle = max(0.2, stall + 0.3)
+                    """Read until the sender is done and the channel has been
+                    quiet for `settle`: stopping at completeness undercounted
+                    duplicates, stopping during sending invented losses."""
+                    quiet = None
                     while True:
+                        if quiet is None and not sent_all.is_set():
+                            await sent_all.wait()
+                            quiet = asyncio.get_running_loop().time()
+                        left = settle if quiet is None else quiet + settle - asyncio.get_running_loop().time()
                         try:
-                            raw = await asyncio.wait_for(client.recv(), timeout=quiet + settle
-                                                         - asyncio.get_running_loop().time())
+                            raw = await asyncio.wait_for(client.recv(), timeout=max(left, 0.01))
                         except asyncio.TimeoutError:
+                            if sent_all.is_set():
+                                return
+                            continue
+                        except websockets.ConnectionClosed as exc:
+                            # A cut ends the connection (re-point 1). The report
+                            # says so; unsent frames are named apart from losses.
+                            run.closed = type(exc).__name__
                             return
                         try:
                             run.arrive(int(raw))
@@ -191,11 +215,16 @@ async def echo_run(count: int = 20, fault: ProxyFault | None = None,
                 reader = asyncio.create_task(read())
                 for seq in range(count):
                     run.send(seq)
-                    await client.send(str(seq))
+                    try:
+                        await client.send(str(seq))
+                        run.sent_frames += 1  # written, not merely intended
+                    except websockets.ConnectionClosed:
+                        run.closed = "ConnectionClosed during send"
+                        break
                     # Yield even without a pace (review point 7): a tight send
-                    # loop starved the reader, so the measured latency was the
-                    # sender's queue, not the channel's.
+                    # loop starved the reader.
                     await asyncio.sleep(send_interval if send_interval else 0)
+                sent_all.set()
                 await reader
     finally:
         server.close()
