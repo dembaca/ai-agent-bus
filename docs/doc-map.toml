@@ -48,6 +48,14 @@ paths = ["pi/*"]
 docs = ["docs/arc42/06-runtime-view.md", "adapters/pi.md"]
 
 [[rule]]
+name = "login service: configuration, health, image"
+paths = ["services/auth/*"]
+docs = [
+  "docs/arc42/05-building-block-view.md",
+  "docs/arc42/07-deployment-view.md",
+]
+
+[[rule]]
 name = "version bump"
 paths = [".claude-plugin/plugin.json"]
 docs = ["CHANGELOG.md"]
