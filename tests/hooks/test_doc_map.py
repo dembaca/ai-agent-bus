@@ -92,12 +92,33 @@ def test_a_rule_without_exclude_still_works():
     assert hits(rule, "bin/mm-agent-sweep.sh") == ["bin/mm-agent-sweep.sh"]
 
 
+def test_a_malformed_rule_is_reported():
+    """A string where a list belongs would be iterated character by character, and
+    the rule would silently claim nothing. Reported, not tolerated."""
+    good = {"name": "t", "paths": ["bin/*"], "docs": ["docs/x.md"]}
+    assert doc_check.doc_map_rule_error(good) == ""
+    assert doc_check.doc_map_rule_error({**good, "exclude": ["*_test.go"]}) == ""
+    assert doc_check.doc_map_rule_error({**good, "exclude": "*_test.go"}) == (
+        "exclude must be a list of strings"
+    )
+    assert doc_check.doc_map_rule_error({**good, "exclude": [1]}) == (
+        "exclude must be a list of strings"
+    )
+    assert doc_check.doc_map_rule_error({**good, "paths": "bin/*"}) == (
+        "paths must be a list of strings"
+    )
+    assert doc_check.doc_map_rule_error({**good, "docs": "docs/x.md"}) == (
+        "docs must be a list of strings"
+    )
+
+
 # --- the map that ships -------------------------------------------------------
 
 def test_every_rule_is_well_formed():
     for name, rule in rules().items():
         assert rule["paths"], name
         assert rule["docs"], name
+        assert doc_check.doc_map_rule_error(rule) == "", name
 
 
 def test_every_rule_has_a_doc_that_exists():
@@ -118,6 +139,25 @@ def test_the_login_service_rule_ignores_its_own_tests():
                  "services/auth/internal/config/config.go") == [
         "services/auth/internal/config/config.go"
     ]
+
+
+def test_product_code_with_test_in_its_name_stays_covered():
+    """The exclusion must not be widened into "*test*": that would silently drop
+    services/auth/internal/testrealm/realm.go, real code that happens to live in a
+    directory with 'test' in its name. Pinned so a later loosening fails here."""
+    rule = rules()["login service: configuration, health, image"]
+    real_code = [
+        "services/auth/internal/testrealm/realm.go",   # exists
+        "services/auth/internal/contest/handler.go",   # shape of the same trap
+        "services/auth/internal/latest/reader.go",     # ditto
+    ]
+    for path in real_code:
+        assert hits(rule, path) == [path], path
+
+    # The same paths under an over-broad exclude would fall out, which is what this
+    # guards against: prove the test would notice.
+    broad = {**rule, "exclude": ["*test*"]}
+    assert hits(broad, "services/auth/internal/testrealm/realm.go") == []
 
 
 def test_the_other_rules_keep_their_meaning():

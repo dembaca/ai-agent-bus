@@ -67,6 +67,22 @@ def repo_files() -> list[str]:
 
 # --- doc-map ----------------------------------------------------------------
 
+def doc_map_rule_error(rule: dict) -> str:
+    """What is wrong with a rule's shape, '' when nothing is.
+
+    A malformed rule is reported rather than tolerated: `exclude` as a string
+    instead of a list would be iterated character by character, so `"*_test.go"`
+    excludes nothing specific and the rule silently stops claiming any file — a
+    check that never fires is worse than one that complains.
+    """
+    for key in ("paths", "docs", "exclude"):
+        if key not in rule:
+            continue
+        if not isinstance(rule[key], list) or not all(isinstance(v, str) for v in rule[key]):
+            return f"{key} must be a list of strings"
+    return ""
+
+
 def doc_map_hits(rule: dict, changed: set[str]) -> list[str]:
     """The changed files a rule answers for, sorted.
 
@@ -90,6 +106,10 @@ def check_doc_map(base: str) -> None:
     changed |= set(git("ls-files", "--others", "--exclude-standard").splitlines())
     rules = tomllib.loads(DOC_MAP.read_text())["rule"]
     for rule in rules:
+        shape = doc_map_rule_error(rule)
+        if shape:
+            error(DOC_MAP, None, f"doc-map [{rule.get('name', '?')}]: {shape}")
+            continue
         hits = doc_map_hits(rule, changed)
         if hits and not any(d in changed for d in rule["docs"]):
             error(
