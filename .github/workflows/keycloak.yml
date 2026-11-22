@@ -1,0 +1,61 @@
+name: keycloak login
+
+# The host's login against a real Keycloak container (RT-6.34). Only these
+# tests, with docker; the rest of the MCP tests run in checks.yml.
+on:
+  push:
+    branches: [main]
+    paths:
+      - 'mcp/src/mattermost_ai_agent_bus/login*.py'
+      - 'mcp/src/mattermost_ai_agent_bus/keystore.py'
+      - 'mcp/src/mattermost_ai_agent_bus/owners.py'
+      - 'mcp/src/mattermost_ai_agent_bus/asks.py'
+      - 'mcp/src/mattermost_ai_agent_bus/session_file.py'
+      - 'mcp/src/mattermost_ai_agent_bus/server.py'
+      - 'mcp/src/mattermost_ai_agent_bus/hosted.py'
+      - 'mcp/tests/test_login_keycloak.py'
+      - 'mcp/tests/keycloak/**'
+      - 'mcp/pyproject.toml'
+      - 'mcp/uv.lock'
+      - '.github/workflows/keycloak.yml'
+  pull_request:
+    paths:
+      - 'mcp/src/mattermost_ai_agent_bus/login*.py'
+      - 'mcp/src/mattermost_ai_agent_bus/keystore.py'
+      - 'mcp/src/mattermost_ai_agent_bus/owners.py'
+      - 'mcp/src/mattermost_ai_agent_bus/asks.py'
+      - 'mcp/src/mattermost_ai_agent_bus/session_file.py'
+      - 'mcp/src/mattermost_ai_agent_bus/server.py'
+      - 'mcp/src/mattermost_ai_agent_bus/hosted.py'
+      - 'mcp/tests/test_login_keycloak.py'
+      - 'mcp/tests/keycloak/**'
+      - 'mcp/pyproject.toml'
+      - 'mcp/uv.lock'
+      - '.github/workflows/keycloak.yml'
+
+permissions:
+  contents: read
+
+jobs:
+  keycloak:
+    name: device flow against Keycloak 26.4.2
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+    steps:
+      # Pinned by commit SHA with the version in a comment, as auth.yml does.
+      - uses: actions/checkout@11bd71901bbe5b1630ceea73d27597364c9af683  # v4.2.2
+        with:
+          persist-credentials: false
+
+      # uv from PyPI at a fixed version: no action of this repository's
+      # workflows has a pinned uv setup to copy.
+      - name: uv
+        run: python3 -m pip install --user "uv==0.13.4"
+
+      - name: pull the pinned Keycloak image
+        run: docker pull quay.io/keycloak/keycloak:26.4.2
+
+      - name: login against a real Keycloak
+        env:
+          MM_TEST_KEYCLOAK: "1"
+        run: uv run --directory mcp --locked pytest -q -m keycloak tests/test_login_keycloak.py -v -rs -s

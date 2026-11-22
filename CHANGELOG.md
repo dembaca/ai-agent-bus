@@ -3,6 +3,15 @@
 Every version bump in `.claude-plugin/plugin.json` gets an entry here. Versions
 before 0.5.0 are described in the git history.
 
+## Unreleased
+
+- **Host login to Keycloak, building block only** (ADR-014, RT-6.34). With
+  `MM_LOGIN_ISSUER` and `MM_LOGIN_CLIENT_ID` set, the host process (and a
+  server outside corral) logs in with the device flow, keeps the refresh token
+  and the NATS user key in a store (`MM_LOGIN_NKEY=ephemeral|host`), and sends
+  the approval link to the responsible human by DM only. Nothing uses it yet;
+  unset, nothing changes.
+
 ## 0.96.0
 
 Needs: the plugin reinstalled from the new marketplace, host copy from the new repo, every session restarted.
