@@ -3392,6 +3392,28 @@ separately.
     - Only the login service holds rights on the JetStream API; it is the
       trust anchor, as it already is for names and credentials.
 
+    **The message format, version 1** (the bus's own, point 2; built in
+    `mcp/src/…/natsbus.py`). Every body is JSON with `"v": 1`; a reader
+    drops an unknown version or a malformed body and logs it without its
+    content. A message is at most 64 KiB, the streams' message size.
+    - Channel and direct messages: `kind` `post`, `reaction` or
+      `unreaction`; `text`; `root`, the stream sequence of a thread's root
+      post (a reply), else null; `ref` and `emoji` for a reaction, `ref`
+      being the stream sequence of the post it reacts to; `props`, a flat
+      object of the bus's own fields (`x_…`, as today). A thread and a
+      reaction are thus fields of the format, so the agents' tools stay as
+      they are (point 3).
+    - Presence: `status` `online`, `away` or `bye`, every 30 s; a crown
+      claim has no other field.
+    - Never in the body: the sender (the subject's last token), the time and
+      the sequence (JetStream's metadata, the server's). No `Nats-Msg-Id`
+      (condition 1).
+    - The host computes its own name like the login service (`agent-` and
+      the first 16 bytes of sha256 over owner and host nkey, base32); the
+      name in the credential is the authority: when the server refuses the
+      host's subscription to its own deliver subjects, the names differ,
+      and the host stops with an error instead of sending.
+
     **Conditions** the model holds under (each one is part of the test):
     1. **Message ids are stream-wide.** An agent that guesses another's
        `Nats-Msg-Id` within the duplicate window (100 ms) suppresses that

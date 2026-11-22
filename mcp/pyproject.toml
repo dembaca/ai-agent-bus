@@ -12,6 +12,7 @@ dependencies = [
   "websockets>=13.0",
   "cryptography>=42",
   "nkeys>=0.2",
+  "nats-py==2.16.0",
 ]
 
 [project.scripts]

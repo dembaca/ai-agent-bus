@@ -26,6 +26,8 @@ ALLOWED = {
     "lease.py": "custom status, crown and roster: the lease, read and written through client.py",
     "selfupdate.py": "the registrar's release record over HTTP, read on the host by the installer and the "
                      "release check, never by the server (RT-6.32)",
+    "natsbus.py": "the NATS transport: its own message format v1 has a props object, no Mattermost carrier "
+                  "(ADR-014 point 16)",
     "login.py": "Keycloak's device flow and token endpoint over HTTP: no chat carrier (RT-6.34)",
 }
 # Keys that are a carrier wherever they appear.

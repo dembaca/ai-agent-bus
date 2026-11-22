@@ -31,6 +31,13 @@ before 0.5.0 are described in the git history.
   back), and removes an
   agent's consumers at its bye and an owner's on the emergency brake. No
   agent connects to it yet.
+- **The NATS transport in the MCP server, not wired yet** (ADR-014
+  point 16): `natsbus.py` with the bus's own message format v1 (posts,
+  thread roots and reactions by stream sequence), the connection with the
+  host login's token and nkey, the literal deliver subscriptions, gap
+  detection, heartbeat and crown. The host stops when the credential carries
+  another name than the one it computes. New dependency `nats-py` 2.16.0;
+  CI runs its tests against nats-server 2.15.3.
 
 ## 0.96.0
 
