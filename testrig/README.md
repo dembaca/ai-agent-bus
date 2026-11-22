@@ -20,8 +20,12 @@ Two kinds of fault, deliberately in two different places:
 | Fault | Where | Why there |
 |---|---|---|
 | Server killed (`SIGKILL`) | the operating system, on a process the harness started (`proc.kill_child`) | a fake kill leaves the victim running; the point is that the process is **gone** |
-| Network cut | a process's own network namespace where the platform allows it (`proc.network_cut_supported`) | a socket the harness merely stops reading still accepts writes; the process must really lose its network. Where the platform cannot, the run says so instead of pretending |
-| Frame dropped, duplicated, reordered, stalled, blackholed | a WebSocket proxy in front of the endpoint (`proxy.FrameProxy`) | a real Mattermost cannot be made to duplicate or reorder a frame on demand. The proxy relays **the server's own bytes** and only decides when and how often the client sees them: the message stays real, its delivery does not |
+| Network cut | the proxy aborts the transport with no close frame (`--fault cut`) | a socket the harness merely stops reading still accepts writes, and a clean close is not a cut; the peer must see the connection drop |
+| Frame dropped, duplicated, reordered, stalled, blackholed, cut | a WebSocket proxy in front of the endpoint (`proxy.FrameProxy`) | a real Mattermost cannot be made to duplicate or reorder a frame on demand. The proxy relays **the server's own bytes** and only decides whether, when and how often the client sees them: the message stays real, its delivery does not |
+
+`stall` delays **application** frames. Control frames (ping/pong) are handled
+inside each `websockets` connection and are not delayed, so a heartbeat does not
+see a stall — use `cut` for "the peer notices the connection is gone".
 
 The proxy is why "duplicated" and "reordered" are measurable at all. Today it
 sits in front of the harness's own echo endpoint, not in front of the bus: the

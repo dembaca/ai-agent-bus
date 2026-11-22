@@ -5,7 +5,7 @@ build-backend = "hatchling.build"
 [project]
 name = "agent-bus-testrig"
 version = "0.1.0"
-description = "Fault-run harness for the agent bus: injects failures, measures what the build order compares"
+description = "Fault-run harness: injects failures into a message channel and measures what the build order compares"
 readme = "README.md"
 requires-python = ">=3.11"
 license = "MIT"

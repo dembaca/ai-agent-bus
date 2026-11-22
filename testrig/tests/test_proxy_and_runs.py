@@ -57,19 +57,19 @@ async def test_no_fault_delivers_everything_in_order():
 
 
 async def test_drop_loses_exactly_the_faulted_frames():
-    """`after=1, every=2` faults the sent frames 1, 3, 5, 7, 9 (0-based):
-    the frames 0, 2, 4, 6, 8 stay, in order."""
+    """`after=1` lets frame 0 pass without counting it; `every=2` then faults
+    the sent frames 2, 4, 6 and 8, so 0, 1, 3, 5, 7, 9 arrive, in order."""
     got, proxy = await _relay("drop", after=1, every=2)
-    assert got == ["0", "2", "4", "6", "8"]
-    assert (proxy.received, proxy.forwarded, proxy.altered) == (10, 5, 5)
+    assert got == ["0", "1", "3", "5", "7", "9"]
+    assert (proxy.received, proxy.forwarded, proxy.altered) == (10, 6, 4)
 
 
 async def test_duplicate_doubles_exactly_the_faulted_frames():
     got, proxy = await _relay("duplicate", after=1, every=2)
-    assert got == ["0", "1", "1", "2", "3", "3", "4", "5", "5",
-                   "6", "7", "7", "8", "9", "9"]
+    assert got == ["0", "1", "2", "2", "3", "4", "4", "5", "6", "6", "7", "8", "8", "9"]
+    assert len(got) == 14  # 10 frames, 4 of them doubled
     assert sorted(got) == got  # duplicating changes how often, not the order
-    assert (proxy.received, proxy.altered) == (10, 5)
+    assert (proxy.received, proxy.altered) == (10, 4)
 
 
 async def test_reorder_swaps_without_losing_or_repeating():
@@ -98,6 +98,116 @@ async def test_blackhole_keeps_the_socket_and_delivers_nothing():
     got, proxy = await _relay("blackhole", count=5, after=0)
     assert got == []
     assert proxy.received == 5 and proxy.forwarded == 0
+
+
+async def test_blackhole_counts_each_frame_once():
+    """Review point: `_applies` ran twice for blackhole, so `after=3` let only
+    frame 0 through. With one call it lets exactly 0, 1 and 2 through."""
+    got, proxy = await _relay("blackhole", count=6, after=3)
+    assert got == ["0", "1", "2"]
+    assert (proxy.received, proxy.forwarded, proxy.altered) == (6, 3, 3)
+
+
+async def test_a_cut_aborts_without_a_close_frame():
+    """Review point 3: a network cut is not a clean close. The client must see
+    the connection drop, not close code 1000."""
+    import websockets.exceptions as wx
+
+    async def echo(conn):
+        async for frame in conn:
+            await conn.send(frame)
+
+    server = await websockets.serve(echo, "127.0.0.1", 0)
+    port = server.sockets[0].getsockname()[1]
+    try:
+        async with FrameProxy(f"ws://127.0.0.1:{port}", ProxyFault(kind="cut", after=1)) as proxy:
+            async with websockets.connect(proxy.url) as client:
+                await client.send("0")
+                assert await asyncio.wait_for(client.recv(), 1) == "0"
+                await client.send("1")
+                with pytest.raises((wx.ConnectionClosedError, wx.ConnectionClosedOK,
+                                    ConnectionResetError, asyncio.TimeoutError)):
+                    for _ in range(5):
+                        await asyncio.wait_for(client.recv(), 1)
+    finally:
+        server.close()
+
+
+async def test_a_stall_delays_application_frames_only():
+    """Review point 11, answered honestly: `stall` delays application frames.
+    Control frames are handled inside each `websockets` connection, so a
+    heartbeat does **not** see a stall, and this harness does not claim it
+    does. "The peer notices the connection is gone" is `cut`, tested separately.
+    """
+    async def echo(conn):
+        async for frame in conn:
+            await conn.send(frame)
+
+    server = await websockets.serve(echo, "127.0.0.1", 0)
+    port = server.sockets[0].getsockname()[1]
+    try:
+        async with FrameProxy(f"ws://127.0.0.1:{port}",
+                              ProxyFault(kind="stall", after=1, stall_sec=0.3)) as proxy:
+            async with websockets.connect(proxy.url, ping_interval=0.1,
+                                          ping_timeout=0.2) as client:
+                await client.send("0")
+                assert await asyncio.wait_for(client.recv(), 1) == "0"
+                began = asyncio.get_running_loop().time()
+                await client.send("1")
+                # Still connected across the stall: the heartbeat kept working.
+                assert await asyncio.wait_for(client.recv(), 2) == "1"
+                assert asyncio.get_running_loop().time() - began >= 0.3
+    finally:
+        server.close()
+
+
+async def test_the_close_code_travels_from_the_server_to_the_client():
+    """Review point 10: the server closes with 4001, the client must see 4001,
+    not the proxy's own 1011."""
+
+    async def refusing(conn):
+        await conn.close(4001, "wrong key")
+
+    server = await websockets.serve(refusing, "127.0.0.1", 0)
+    port = server.sockets[0].getsockname()[1]
+    try:
+        async with FrameProxy(f"ws://127.0.0.1:{port}") as proxy:
+            async with websockets.connect(proxy.url) as client:
+                with pytest.raises(websockets.exceptions.ConnectionClosed) as caught:
+                    await asyncio.wait_for(client.recv(), 2)
+                assert caught.value.rcvd.code == 4001
+                assert caught.value.rcvd.reason == "wrong key"
+    finally:
+        server.close()
+
+
+async def test_only_faults_frames_the_predicate_accepts():
+    """Review point 14: `only` decides which frames fault, and `every` counts
+    those, not all frames."""
+    async def echo(conn):
+        async for frame in conn:
+            await conn.send(frame)
+
+    def is_posted(frame):
+        return isinstance(frame, str) and frame.startswith("posted")
+
+    server = await websockets.serve(echo, "127.0.0.1", 0)
+    port = server.sockets[0].getsockname()[1]
+    try:
+        async with FrameProxy(f"ws://127.0.0.1:{port}",
+                              ProxyFault(kind="drop", after=0, every=1, only=is_posted)) as proxy:
+            async with websockets.connect(proxy.url) as client:
+                for frame in ("typing", "posted-1", "hello", "posted-2"):
+                    await client.send(frame)
+                got = []
+                try:
+                    for _ in range(6):
+                        got.append(await asyncio.wait_for(client.recv(), 0.3))
+                except asyncio.TimeoutError:
+                    pass
+                assert got == ["typing", "hello"]  # only the two `posted` frames dropped
+    finally:
+        server.close()
 
 
 async def test_two_clients_do_not_share_reorder_state():
@@ -198,19 +308,18 @@ def test_a_run_cannot_report_a_name_the_file_does_not_declare():
 
 
 def test_a_measured_id_without_a_formula_is_an_error(tmp_path):
-    """Renaming must be safe, dropping a formula must not (review point 8)."""
+    """Renaming must be safe; declaring a `measured` id the harness cannot
+    compute must raise, not report 0 (review point 8)."""
     src = measurands.FILE.read_text()
-    renamed = src.replace('id = "loss"', 'id = "verlust"')
     path = tmp_path / "measurands.toml"
-    path.write_text(renamed)
-    rows = measurands.load(path)
-    assert "verlust" in [m.id for m in rows]
+    path.write_text(src.replace('id = "loss"', 'id = "verlust"'))
+    assert "verlust" in [m.id for m in measurands.load(path)]
     run = Run(name="x")
     run.send(0)
     run.arrive(0)
-    # The file the run reads is the real one, so asking it for its own rows is
-    # still consistent; the renamed copy only proves loading follows `id`.
     assert set(run.measure()) == set(measurands.ids())
+    with pytest.raises(RuntimeError, match="no formula"):
+        run.measure(path)
 
 
 def test_the_file_is_well_formed():
@@ -236,6 +345,9 @@ def test_kill_really_ends_a_process():
             child.kill()
 
 
-def test_network_cut_says_when_it_cannot():
+def test_no_namespace_cut_is_claimed():
+    """The harness must not advertise a capability it does not have (review
+    point 3): it offers the proxy's cut and says the namespace one is absent."""
     status = proc.network_cut_supported()
-    assert status == "" or "network namespace" in status
+    assert "--fault cut" in status
+    assert "not implemented" in status

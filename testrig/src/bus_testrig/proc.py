@@ -7,21 +7,21 @@ harness started.
 
   kill      SIGKILL, then wait for the process to be gone and check that the
             other side sees it (the exit code and the closed stream)
-  blackhole the socket stays open and nothing passes: a peer that believes it
-            is connected to a server that no longer answers
+  blackhole and cut are the proxy's (`proxy.FrameProxy`): a blackhole keeps the
+            socket open and silent, a cut aborts the transport with no close
+            frame. Neither needs the operating system, so `proc` does not offer
+            them, and `network_cut_supported` says so.
 
 Cutting one process's network in a way that leaves other processes alone
-needs a network namespace per process. On Linux a run can have it; on other
-platforms it cannot without root, and this harness never asks for root. Where
-it cannot, `network_cut_supported` says so and a run reports that the fault
-was not produced, rather than reporting a number nobody measured.
+needs a network namespace per process, which this harness does not implement
+(and would not, without asking for root). A run cuts the connection through
+the proxy instead, which is the part a peer observes.
 """
 
 from __future__ import annotations
 
 import os
 import signal
-import socket
 import sys
 import time
 from dataclasses import dataclass
@@ -89,22 +89,12 @@ def kill_child(child: Any) -> Killed:
 
 
 def network_cut_supported() -> str:
-    """'' when a run can cut one process's network, else why it cannot."""
-    if sys.platform.startswith("linux"):
-        return ""
-    return (f"no per-process network namespace on {sys.platform}; "
-            "cutting the network would take other processes with it")
-
-
-def blackhole_supported() -> str:
-    """The in-process variant of a cut is always available: it needs nothing
-    but a socket this process owns."""
-    return ""
-
-
-def blackhole(sock: socket.socket) -> None:
-    """Keep a socket open and pass nothing: the peer sees a live connection
-    that never answers. Implemented by shrinking the buffers to their minimum
-    and pausing the reader, which the caller controls: the socket is not
-    closed, which is the point."""
-    sock.setsockopt(socket.SOL_SOCKET, socket.SO_RCVBUF, 1)
+    """This harness does not cut a process's network itself: that needs a
+    network namespace per process, and on anything but Linux without root it
+    would take other processes with it. A run cuts the *connection* through the
+    proxy instead (`proxy`, `--fault cut`), which needs nothing from the OS and
+    is what a peer can actually observe. This function says so, so no caller
+    believes a namespace cut exists here.
+    """
+    return ("cut the connection through the proxy (--fault cut); "
+            "a per-process network namespace is not implemented here")

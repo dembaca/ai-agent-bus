@@ -61,6 +61,8 @@ class Run:
     ended: float = 0.0
     target: str = "echo"
     fault: str = "none"
+    fault_params: dict[str, Any] = field(default_factory=dict)
+    send_interval: float = 0.0
     commit: str = ""
 
     def send(self, seq: int) -> Sent:
@@ -93,14 +95,14 @@ class Run:
             "duplicates": dupes,
         }
 
-    def measure(self) -> dict[str, dict[str, Any]]:
+    def measure(self, path: Any = None) -> dict[str, dict[str, Any]]:
         """Every measurand in the file, by `id`, measured or named as not.
 
         Raises when the file declares a `measured` id this run has no formula
         for: that is a broken harness, not a zero."""
         values = self._values()
         out: dict[str, dict[str, Any]] = {}
-        for m in measurands.load():
+        for m in (measurands.load(path) if path is not None else measurands.load()):
             if not m.measurable:
                 out[m.id] = {"name": m.name, "value": None, "unit": m.unit,
                              "status": m.status, "why": m.why}
@@ -123,6 +125,8 @@ class Run:
             "run": self.name,
             "target": self.target,
             "fault": self.fault,
+            "fault_params": self.fault_params,
+            "send_interval_s": self.send_interval,
             "count": self.count,
             "commit": self.commit,
             "duration_s": round(self.ended - self.started, 3) if self.ended else None,
@@ -151,32 +155,47 @@ async def echo_run(count: int = 20, fault: ProxyFault | None = None,
     server = await websockets.serve(echo, "127.0.0.1", 0)
     port = server.sockets[0].getsockname()[1]
     run = Run(name="echo-run", count=count, target="echo",
-              fault=fault.kind if fault else "none")
+              fault=fault.kind if fault else "none",
+              fault_params={"every": fault.every, "after": fault.after,
+                            "stall_sec": fault.stall_sec,
+                            "reorder_max_wait": fault.reorder_max_wait} if fault else {},
+              send_interval=send_interval)
     run.started = time.monotonic()
     stall = fault.stall_sec if fault is not None and fault.kind == "stall" else 0.0
-    # A stall delays every faulted frame; the reader must outlast them all.
-    deadline = max(1.0, float(count) * (stall + 0.02) + 1.0)
     try:
         async with FrameProxy(f"ws://127.0.0.1:{port}", fault) as proxy:
             async with websockets.connect(proxy.url) as client:
 
                 async def read() -> None:
-                    while len(run.received) < count:
+                    # Read past completeness (review point 1): stopping at the
+                    # first sighting of every seq undercounted duplicates by
+                    # one per frame, because the copies arrive after it. The
+                    # run ends on quiet, not on completeness.
+                    quiet = asyncio.get_running_loop().time()
+                    # The window must outlast the longest expected silence: a
+                    # stall of `stall_sec` is silence, not the end of the run
+                    # (review point 5, which a fixed 0.2 s window broke again).
+                    settle = max(0.2, stall + 0.3)
+                    while True:
                         try:
-                            raw = await asyncio.wait_for(client.recv(), timeout=deadline)
+                            raw = await asyncio.wait_for(client.recv(), timeout=quiet + settle
+                                                         - asyncio.get_running_loop().time())
                         except asyncio.TimeoutError:
                             return
                         try:
                             run.arrive(int(raw))
                         except ValueError:
                             continue  # a frame the harness did not send
+                        quiet = asyncio.get_running_loop().time()
 
                 reader = asyncio.create_task(read())
                 for seq in range(count):
                     run.send(seq)
                     await client.send(str(seq))
-                    if send_interval:
-                        await asyncio.sleep(send_interval)
+                    # Yield even without a pace (review point 7): a tight send
+                    # loop starved the reader, so the measured latency was the
+                    # sender's queue, not the channel's.
+                    await asyncio.sleep(send_interval if send_interval else 0)
                 await reader
     finally:
         server.close()

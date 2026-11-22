@@ -16,6 +16,7 @@ import asyncio
 import json
 import subprocess
 import sys
+from pathlib import Path
 
 from . import measurands, runner
 from .proxy import KINDS, ProxyFault
@@ -24,7 +25,8 @@ from .proxy import KINDS, ProxyFault
 def _commit() -> str:
     try:
         out = subprocess.run(["git", "rev-parse", "--short", "HEAD"], capture_output=True,
-                             text=True, timeout=5, check=False)
+                             text=True, timeout=5, check=False,
+                             cwd=Path(__file__).resolve().parents[2])
     except (OSError, subprocess.SubprocessError):
         return ""
     return out.stdout.strip() if out.returncode == 0 else ""

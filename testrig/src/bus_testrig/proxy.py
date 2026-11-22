@@ -10,13 +10,19 @@ The faults the proxy can produce:
   drop       a frame is discarded
   duplicate  the same frame is delivered twice
   reorder    a frame is held back and released after the next one
-  stall      delivery pauses for `stall_sec`, then resumes (pongs too, so a
-             heartbeat sees the silence)
+  stall      application frames pause for `stall_sec`, then delivery resumes.
+             Control frames (ping/pong) are handled by the `websockets` library
+             inside each connection and are **not** delayed here, so a heartbeat
+             does not see a stall: for "the peer notices the connection is gone"
+             use `cut`, and do not read `stall` as a network fault
   blackhole  nothing is delivered any more and the connection is not closed:
-             the peer keeps a socket it believes healthy
+             the peer keeps a socket it believes healthy (pings go unanswered)
+  cut        the transport is aborted with no close frame, as a dead network
+             does: the peer sees the connection drop, not a clean close
 
-The process faults are not the proxy's: killing a process and cutting its
-network are the operating system's (`proc`), never simulated in-process.
+Killing a process is the operating system's (`proc`), never simulated
+in-process. A network cut is the proxy's `cut`, because what a peer must see is
+an aborted transport, and `blackhole`/`cut` need nothing from the OS.
 
 The proxy only speaks WebSocket today. The bus derives REST and WebSocket from
 one base URL, so it cannot be put in front of the bus unchanged; passing HTTP
@@ -30,7 +36,7 @@ import asyncio
 from dataclasses import dataclass
 from typing import Any, Callable
 
-KINDS = ("drop", "duplicate", "reorder", "stall", "blackhole")
+KINDS = ("drop", "duplicate", "reorder", "stall", "blackhole", "cut")
 
 # The state `reorder` keeps is per connection, not per proxy (review point 9):
 # two clients through one proxy must not swap each other's frames.
@@ -70,6 +76,7 @@ class ConnState:
     """One connection's fault state: the count and a frame held for reorder."""
 
     n: int = 0
+    matched: int = 0
     held: Frame = None
     release: asyncio.TimerHandle | None = None
 
@@ -116,27 +123,47 @@ class FrameProxy:
         """One client connection: a matching connection upstream, frames
         relayed both ways until **either** side closes.
 
-        `gather` used to wait for both directions, so a client that left kept
-        the proxy waiting for a server that stayed (review point 10). Waiting
-        for the first one to finish and then closing the other is right: a
-        connection is over when either end says so.
+        The server's close code travels to the client (review point 10): a
+        proxy that ends every connection with its own 1011 turns "4001, wrong
+        key" into "internal error" and hides why a relay was refused. The code
+        is read inside the upstream context, where it is set, and carried out.
         """
         from websockets.asyncio.client import connect
 
         state = ConnState()
+        close_code: int | None = None
+        close_reason = ""
         try:
             async with connect(self.upstream) as upstream:
                 tasks = {asyncio.create_task(self._client_to_upstream(client, upstream)),
                          asyncio.create_task(self._upstream_to_client(upstream, client, state))}
-                _done, pending = await asyncio.wait(tasks, return_when=asyncio.FIRST_COMPLETED)
-                for task in pending:
-                    task.cancel()
-                await asyncio.gather(*pending, return_exceptions=True)
+                await asyncio.wait(tasks, return_when=asyncio.FIRST_COMPLETED)
                 for task in tasks:
-                    if not task.cancelled() and task.exception() is not None:
-                        raise task.exception()  # type: ignore[misc]
+                    if not task.done():
+                        task.cancel()
+                await asyncio.gather(*tasks, return_exceptions=True)
+                # A server close arrives two ways: as this connection's own
+                # `close_code`, or as the exception its reader got. Both carry
+                # the code the client must see (review point 10).
+                for task in tasks:
+                    if task.cancelled() or task.exception() is None:
+                        continue
+                    exc = task.exception()
+                    rcvd = getattr(exc, "rcvd", None)
+                    if rcvd is not None and getattr(rcvd, "code", None) is not None:
+                        close_code, close_reason = rcvd.code, rcvd.reason or ""
+                        continue
+                    raise exc  # type: ignore[misc]
+                if close_code is None:
+                    close_code = upstream.close_code
+                    close_reason = upstream.close_reason or ""
         finally:
             state.cancel()
+            if close_code is not None:
+                try:
+                    await client.close(close_code, close_reason)
+                except Exception:  # noqa: BLE001 — the client may be gone already
+                    pass
 
     async def _client_to_upstream(self, client: Any, upstream: Any) -> None:
         async for frame in client:
@@ -168,8 +195,11 @@ class FrameProxy:
         if state.n <= fault.after:
             return False
         if fault.only is not None and not fault.only(frame):
-            return False
-        return state.n % fault.every == 0
+            return False  # a frame the predicate excludes is never faulted
+        # `every` counts the frames the predicate lets through, not all frames:
+        # otherwise a run with `only=` could fault almost nothing.
+        state.matched += 1
+        return state.matched % fault.every == 0  # every n-th *matching* frame
 
     async def _deliver(self, frame: Frame, client: Any, state: ConnState) -> None:
         """Deliver one server frame, subject to the fault.
@@ -181,15 +211,21 @@ class FrameProxy:
         held frame is released).
         """
         fault = self.fault
-        if fault is not None and fault.kind == "blackhole" and self._applies(frame, state):
-            self.altered += 1
-            return  # silence, and the connection stays open
-        if not self._applies(frame, state):
+        applies = self._applies(frame, state)  # once per frame, never twice
+        if not applies:
             await client.send(frame)
             self.forwarded += 1
             return
         self.altered += 1
         if fault is None:  # unreachable: `_applies` is False without a fault
+            return
+        if fault.kind == "blackhole":
+            return  # silence, and the connection stays open
+        if fault.kind == "cut":
+            # No close frame: abort the transport the way a dead network does.
+            transport = getattr(client, "transport", None)
+            if transport is not None:
+                transport.abort()
             return
         if fault.kind == "drop":
             return
