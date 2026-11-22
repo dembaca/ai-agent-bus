@@ -14,13 +14,16 @@ import (
 //
 //	channel post      <prefix>.ch.<channel>.<sender>
 //	direct message    <prefix>.dm.<recipient>.<sender>
-//	presence          $KV.<bucket>.<agent>
 //	own inbox         _INBOX.<host nkey>.>  (the host knows it before it connects)
-//	durable consumer  <stream>/<agent>, created by the bus, not by the agent
+//
+// No JetStream API, no key-value subject, no $SYS: NATS checks only the
+// subject of a publish, never its reply subject, so any service an agent may
+// call can be made to answer onto another agent's subject, under that
+// agent's name (the reply-subject forgery the review of PR #8 showed). What
+// an agent reads from JetStream and what it writes to shared buckets goes
+// through the bus's own service, not through this credential.
 type Subjects struct {
-	Prefix   string // subject prefix, a setting (ADR-014, point 2)
-	Stream   string // the tenant's stream of channel and direct traffic
-	Presence string // the key-value bucket of presence and crown leases
+	Prefix string // subject prefix, a setting (ADR-014, point 2)
 }
 
 // token is a NATS subject token the bus uses: no wildcards, no dots, no
@@ -38,9 +41,9 @@ func checkToken(s string) error {
 }
 
 // permissions are what an agent may do: publish only under its own name as
-// the last token, in the channels it was granted, to other agents' direct
-// subjects; subscribe only to those channels and its own direct subject.
-// Nothing else, so the server, not the message, says who sent it.
+// the last token, in the channels it was granted and to other agents' direct
+// subjects; subscribe only to those channels, its own direct subject and its
+// own inbox. Nothing else, so the server, not the message, says who sent it.
 func (s Subjects) permissions(agent, hostNkey string, channels []string) jwt.Permissions {
 	var p jwt.Permissions
 	for _, ch := range channels {
@@ -49,19 +52,6 @@ func (s Subjects) permissions(agent, hostNkey string, channels []string) jwt.Per
 	}
 	p.Pub.Allow.Add(s.Prefix + ".dm.*." + agent)
 	p.Sub.Allow.Add(s.Prefix + ".dm." + agent + ".*")
-
-	// Its durable consumer, read and acknowledge only; creating or changing
-	// a consumer would let it choose what it reads.
-	p.Pub.Allow.Add("$JS.API.CONSUMER.INFO." + s.Stream + "." + agent)
-	p.Pub.Allow.Add("$JS.API.CONSUMER.MSG.NEXT." + s.Stream + "." + agent)
-	p.Pub.Allow.Add("$JS.ACK." + s.Stream + "." + agent + ".>")
-
-	// Its own presence entry; everyone's may be read.
-	p.Pub.Allow.Add("$KV." + s.Presence + "." + agent)
-	p.Pub.Allow.Add("$JS.API.DIRECT.GET.KV_" + s.Presence + ".>")
-
-	// Replies to its own requests: it connects with the inbox prefix
-	// _INBOX.<its nkey>, which it knows before it has a name.
 	p.Sub.Allow.Add("_INBOX." + hostNkey + ".>")
 	return p
 }

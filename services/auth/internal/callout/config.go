@@ -11,8 +11,6 @@ const (
 	DefaultTimeout    = 1500 * time.Millisecond
 	DefaultNamePrefix = "agent-"
 	DefaultPrefix     = "bus"
-	DefaultStream     = "BUS"
-	DefaultPresence   = "presence"
 )
 
 // Config is the callout's part of the service's configuration. Keys are not
@@ -40,12 +38,6 @@ func (c Config) WithDefaults() Config {
 	if c.Subjects.Prefix == "" {
 		c.Subjects.Prefix = DefaultPrefix
 	}
-	if c.Subjects.Stream == "" {
-		c.Subjects.Stream = DefaultStream
-	}
-	if c.Subjects.Presence == "" {
-		c.Subjects.Presence = DefaultPresence
-	}
 	if c.Timeout == 0 {
 		c.Timeout = DefaultTimeout
 	}
@@ -61,8 +53,7 @@ func (c Config) check() error {
 			return fmt.Errorf("callout: lobby %q: %w", c.Lobby, err)
 		}
 	}
-	for what, v := range map[string]string{"name prefix": c.NamePrefix, "subject prefix": c.Subjects.Prefix,
-		"stream": c.Subjects.Stream, "presence bucket": c.Subjects.Presence} {
+	for what, v := range map[string]string{"name prefix": c.NamePrefix, "subject prefix": c.Subjects.Prefix} {
 		if v == "" || !plain(v) {
 			return fmt.Errorf("callout: %s %q: letters, digits, - and _ only", what, v)
 		}

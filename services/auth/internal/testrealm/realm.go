@@ -117,12 +117,15 @@ func (c *Chat) User(_ context.Context, name string) (token.User, error) {
 	return token.User{}, token.ErrNoSuchUser
 }
 
-// Member implements callout.Channels.
-func (c *Chat) Member(_ context.Context, channel, name string) (bool, error) {
-	for _, ch := range c.Channels[name] {
-		if ch == channel {
-			return true, nil
+// Memberships implements callout.Channels.
+func (c *Chat) Memberships(_ context.Context, name string, channels []string) (map[string]bool, error) {
+	out := map[string]bool{}
+	for _, want := range channels {
+		for _, ch := range c.Channels[name] {
+			if ch == want {
+				out[want] = true
+			}
 		}
 	}
-	return false, nil
+	return out, nil
 }

@@ -16,7 +16,7 @@ import (
 func env(over map[string]string) func(string) string {
 	base := map[string]string{
 		"AUTH_NATS_URL": "nats://127.0.0.1:4222", "AUTH_NATS_SEED_FILE": "/run/secrets/nats",
-		"AUTH_ISSUER_SEED_FILE": "/run/secrets/issuer", "AUTH_ACCOUNT": "BUS",
+		"AUTH_ISSUER_SEED_FILE": "/run/secrets/issuer", "AUTH_XKEY_SEED_FILE": "/run/secrets/xkey", "AUTH_ACCOUNT": "BUS",
 		"AUTH_KEYCLOAK_ISSUER": "https://kc.example/realms/x", "AUTH_KEYCLOAK_JWKS_URL": "https://kc.example/certs",
 		"AUTH_KEYCLOAK_CLIENT_ID": "agent-bus", "AUTH_MATTERMOST_URL": "https://chat.example",
 		"AUTH_MATTERMOST_TEAM": "team", "AUTH_MATTERMOST_TOKEN_FILE": "/run/secrets/mm",
@@ -48,12 +48,19 @@ func TestSettings(t *testing.T) {
 	if s, _, _ := LoadSettings(env(nil)); s.Token.Binding != (token.Open{}) {
 		t.Fatalf("default binding %T", s.Token.Binding)
 	}
+	if s, _, err := LoadSettings(env(map[string]string{"AUTH_XKEY_SEED_FILE": "", "AUTH_PLAIN_REQUESTS": "allow"})); err != nil || !s.PlainRequests {
+		t.Fatalf("explicit plain requests: %+v, %v", s.PlainRequests, err)
+	}
 	for name, over := range map[string]map[string]string{
 		"no account":     {"AUTH_ACCOUNT": ""},
 		"no issuer seed": {"AUTH_ISSUER_SEED_FILE": ""},
 		"no chat token":  {"AUTH_MATTERMOST_TOKEN_FILE": ""},
 		"bad timeout":    {"AUTH_REQUEST_TIMEOUT": "soon"},
 		"bad binding":    {"AUTH_NAME_BINDING": "first-login"},
+		"no xkey":        {"AUTH_XKEY_SEED_FILE": ""},
+		"xkey and plain": {"AUTH_PLAIN_REQUESTS": "allow"},
+		"plain, wrongly": {"AUTH_XKEY_SEED_FILE": "", "AUTH_PLAIN_REQUESTS": "yes"},
+		"cert, no key":   {"AUTH_NATS_CERT_FILE": "/run/secrets/cert"},
 	} {
 		if _, _, err := LoadSettings(env(over)); !errors.Is(err, ErrConfig) {
 			t.Errorf("%s: %v", name, err)

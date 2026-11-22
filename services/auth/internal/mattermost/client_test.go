@@ -7,7 +7,9 @@ import (
 	"net/http"
 	"net/http/httptest"
 	"strings"
+	"sync/atomic"
 	"testing"
+	"time"
 
 	"github.com/dembaca/ai-agent-bus/services/auth/internal/token"
 )
@@ -15,6 +17,15 @@ import (
 // server answers the few REST routes the client uses, as Mattermost does:
 // auth_service and auth_data only for an admin's token.
 func server(t *testing.T, adminToken bool) *httptest.Server {
+	t.Helper()
+	var admin atomic.Bool
+	admin.Store(adminToken)
+	return serverWith(t, &admin, nil)
+}
+
+// serverWith answers with the admin right as admin says at each request;
+// fail, if set, answers a user lookup with that status instead.
+func serverWith(t *testing.T, admin *atomic.Bool, fail *atomic.Int32) *httptest.Server {
 	t.Helper()
 	users := map[string]map[string]any{
 		"alice": {"id": "u1", "username": "alice", "roles": "system_user", "auth_service": "openid", "auth_data": "sub-1"},
@@ -33,11 +44,15 @@ func server(t *testing.T, adminToken bool) *httptest.Server {
 		switch {
 		case p == "/api/v4/users/me":
 			roles := "system_user"
-			if adminToken {
+			if admin.Load() {
 				roles = "system_user system_admin"
 			}
 			send(map[string]any{"id": "me", "roles": roles})
 		case strings.HasPrefix(p, "/api/v4/users/username/"):
+			if fail != nil && fail.Load() != 0 {
+				http.Error(w, "", int(fail.Load()))
+				return
+			}
 			u, ok := users[strings.TrimPrefix(p, "/api/v4/users/username/")]
 			if !ok {
 				http.NotFound(w, r)
@@ -47,7 +62,7 @@ func server(t *testing.T, adminToken bool) *httptest.Server {
 			for k, v := range u {
 				c[k] = v
 			}
-			if !adminToken {
+			if !admin.Load() {
 				c["auth_service"], c["auth_data"] = "", ""
 			}
 			send(c)
@@ -108,25 +123,18 @@ func TestWithoutAdminRightsHowAccountsLogInIsUnknown(t *testing.T) {
 	}
 }
 
-func TestMembership(t *testing.T) {
+func TestMemberships(t *testing.T) {
 	ctx := context.Background()
 	c, err := New(ctx, server(t, true).URL, "lab", "tok")
 	if err != nil {
 		t.Fatal(err)
 	}
-	for _, tc := range []struct {
-		channel, user string
-		want          bool
-	}{
-		{"home", "alice", true},
-		{"other", "alice", false},
-		{"missing", "alice", false},
-		{"home", "nobody", false},
-	} {
-		got, err := c.Member(ctx, tc.channel, tc.user)
-		if err != nil || got != tc.want {
-			t.Errorf("%s in %s: %v, %v", tc.user, tc.channel, got, err)
-		}
+	got, err := c.Memberships(ctx, "alice", []string{"home", "other", "missing"})
+	if err != nil || !got["home"] || got["other"] || got["missing"] {
+		t.Fatalf("alice: %v, %v", got, err)
+	}
+	if got, err := c.Memberships(ctx, "nobody", []string{"home"}); err != nil || got["home"] {
+		t.Fatalf("nobody: %v, %v", got, err)
 	}
 }
 
@@ -138,5 +146,61 @@ func TestABadTokenOrURLStopsTheStart(t *testing.T) {
 	}
 	if _, err := New(ctx, "https://user:pw@chat.example", "lab", "tok"); err == nil {
 		t.Error("URL with user info accepted")
+	}
+}
+
+func TestTheRightToSeeHowAccountsLogInIsAskedAgain(t *testing.T) {
+	ctx := context.Background()
+	var admin atomic.Bool
+	var fail atomic.Int32
+	admin.Store(true)
+	c, err := New(ctx, serverWith(t, &admin, &fail).URL, "lab", "tok")
+	if err != nil {
+		t.Fatal(err)
+	}
+	clock := time.Now()
+	c.now = func() time.Time { return clock }
+	if u, _ := c.User(ctx, "alice"); !u.AuthKnown {
+		t.Fatal("admin token: auth not known")
+	}
+	// The right is withdrawn: within the minute the old answer stands ...
+	admin.Store(false)
+	if u, _ := c.User(ctx, "alice"); !u.AuthKnown {
+		t.Fatal("asked again before the minute")
+	}
+	// ... a 403 makes the next lookup ask again ...
+	fail.Store(http.StatusForbidden)
+	if _, err := c.User(ctx, "alice"); err == nil || !strings.Contains(err.Error(), "HTTP 403") {
+		t.Fatalf("403: %v", err)
+	}
+	fail.Store(0)
+	if u, _ := c.User(ctx, "alice"); u.AuthKnown || u.AuthService != "" {
+		t.Fatalf("after a 403: %+v", u)
+	}
+	// ... and after a minute it is asked anyway.
+	admin.Store(true)
+	clock = clock.Add(2 * time.Minute)
+	if u, _ := c.User(ctx, "alice"); !u.AuthKnown {
+		t.Fatal("not asked again after a minute")
+	}
+}
+
+func TestAnErrorIsNoAnswer(t *testing.T) {
+	ctx := context.Background()
+	var admin atomic.Bool
+	var fail atomic.Int32
+	c, err := New(ctx, serverWith(t, &admin, &fail).URL, "lab", "tok")
+	if err != nil {
+		t.Fatal(err)
+	}
+	fail.Store(http.StatusInternalServerError)
+	if _, err := c.Memberships(ctx, "alice", []string{"home"}); err == nil || !strings.Contains(err.Error(), "HTTP 500") {
+		t.Fatalf("500: %v", err)
+	}
+}
+
+func TestPlainHTTPOnlyOnLoopback(t *testing.T) {
+	if _, err := New(context.Background(), "http://chat.example", "lab", "tok"); err == nil {
+		t.Fatal("plain http to another host accepted")
 	}
 }

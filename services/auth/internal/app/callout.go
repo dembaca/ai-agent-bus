@@ -29,7 +29,11 @@ type Settings struct {
 	NATSURL        string
 	NATSSeedFile   string // the service's own NATS user (an auth_user)
 	IssuerSeedFile string // the account key that signs responses and user JWTs
-	XKeySeedFile   string // decrypts requests; empty: the server sends them plain
+	XKeySeedFile   string // decrypts requests; required unless PlainRequests
+	PlainRequests  bool   // AUTH_PLAIN_REQUESTS=allow: the server sends requests unencrypted
+	NATSCAFile     string // CA for the server's TLS certificate; empty: the system's
+	NATSCertFile   string // client certificate, with NATSKeyFile, if the server asks for one
+	NATSKeyFile    string
 	BrakeFile      string
 	Callout        callout.Config
 	Token          token.Config
@@ -50,16 +54,28 @@ func LoadSettings(getenv func(string) string) (Settings, bool, error) {
 	s.NATSSeedFile = get("AUTH_NATS_SEED_FILE")
 	s.IssuerSeedFile = get("AUTH_ISSUER_SEED_FILE")
 	s.XKeySeedFile = get("AUTH_XKEY_SEED_FILE")
+	s.NATSCAFile = get("AUTH_NATS_CA_FILE")
+	s.NATSCertFile = get("AUTH_NATS_CERT_FILE")
+	s.NATSKeyFile = get("AUTH_NATS_KEY_FILE")
+	switch v := get("AUTH_PLAIN_REQUESTS"); v {
+	case "":
+	case "allow":
+		s.PlainRequests = true
+	default:
+		return Settings{}, true, fmt.Errorf("%w: AUTH_PLAIN_REQUESTS: only \"allow\", got %q", ErrConfig, v)
+	}
+	if (s.XKeySeedFile == "") == !s.PlainRequests {
+		return Settings{}, true, fmt.Errorf("%w: AUTH_XKEY_SEED_FILE must be set (or, to accept unencrypted requests, AUTH_PLAIN_REQUESTS=allow instead)", ErrConfig)
+	}
+	if (s.NATSCertFile == "") != (s.NATSKeyFile == "") {
+		return Settings{}, true, fmt.Errorf("%w: AUTH_NATS_CERT_FILE and AUTH_NATS_KEY_FILE go together", ErrConfig)
+	}
 	s.BrakeFile = get("AUTH_BRAKE_FILE")
 	s.Callout = callout.Config{
 		Account:    get("AUTH_ACCOUNT"),
 		Lobby:      get("AUTH_LOBBY"),
 		NamePrefix: get("AUTH_NAME_PREFIX"),
-		Subjects: callout.Subjects{
-			Prefix:   get("AUTH_SUBJECT_PREFIX"),
-			Stream:   get("AUTH_STREAM"),
-			Presence: get("AUTH_PRESENCE_BUCKET"),
-		},
+		Subjects:   callout.Subjects{Prefix: get("AUTH_SUBJECT_PREFIX")},
 	}
 	s.Token = token.Config{
 		Issuer:        get("AUTH_KEYCLOAK_ISSUER"),
@@ -146,13 +162,30 @@ func RunCallout(ctx context.Context, s Settings, log *slog.Logger) error {
 	if err != nil {
 		return fmt.Errorf("%w: %v", ErrConfig, err)
 	}
-	svc, err := callout.New(s.Callout, issuer, xkey, v, mm, callout.NewBrake(s.BrakeFile), log)
+	brake := callout.NewBrake(s.BrakeFile, func(line string) {
+		log.Warn("emergency brake: a line that is no username holds nobody", "line", line)
+	})
+	svc, err := callout.New(s.Callout, issuer, xkey, v, mm, brake, log)
 	if err != nil {
 		return fmt.Errorf("%w: %v", ErrConfig, err)
 	}
 	pub, _ := user.PublicKey()
-	nc, err := nats.Connect(s.NATSURL, nats.Name("authd"), nats.Nkey(pub, user.Sign),
-		nats.MaxReconnects(-1), nats.ReconnectWait(2*time.Second))
+	opts := []nats.Option{nats.Name("authd"), nats.Nkey(pub, user.Sign),
+		nats.MaxReconnects(-1), nats.ReconnectWait(2 * time.Second),
+		nats.DisconnectErrHandler(func(_ *nats.Conn, err error) {
+			log.Warn("NATS disconnected", "reason", fmt.Sprint(err))
+		}),
+		nats.ReconnectHandler(func(nc *nats.Conn) { log.Info("NATS reconnected", "server", nc.ConnectedUrlRedacted()) }),
+		nats.ErrorHandler(func(_ *nats.Conn, _ *nats.Subscription, err error) {
+			log.Error("NATS error", "reason", err.Error())
+		})}
+	if s.NATSCAFile != "" {
+		opts = append(opts, nats.RootCAs(s.NATSCAFile))
+	}
+	if s.NATSCertFile != "" {
+		opts = append(opts, nats.ClientCert(s.NATSCertFile, s.NATSKeyFile))
+	}
+	nc, err := nats.Connect(s.NATSURL, opts...)
 	if err != nil {
 		return fmt.Errorf("NATS: %w", err)
 	}

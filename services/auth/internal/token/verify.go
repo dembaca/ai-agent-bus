@@ -57,6 +57,8 @@ type Identity struct {
 	Owner string
 	// Subject is the token's `sub`.
 	Subject string
+	// ID is the token's `jti`, for the audit log; empty when it has none.
+	ID string
 	// Approver is true when the token lists the approvers' group. It is the
 	// upper bound only: the session's trusted list selects within it.
 	Approver bool
@@ -126,6 +128,7 @@ func (v *Verifier) Verify(ctx context.Context, raw string) (Identity, error) {
 		Subject:  sub,
 		Approver: v.inApproverGroup(claims),
 		Expires:  exp.Time,
+		ID:       jti(claims),
 	}, nil
 }
 
@@ -225,4 +228,9 @@ func empty(v any) bool {
 		return len(x) == 0
 	}
 	return false
+}
+
+func jti(claims jwt.MapClaims) string {
+	s, _ := claims["jti"].(string)
+	return s
 }

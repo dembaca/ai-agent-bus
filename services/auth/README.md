@@ -53,17 +53,19 @@ values are placeholders.
 | `AUTH_NATS_URL` | — | the NATS server; unset: no callout, health only |
 | `AUTH_NATS_SEED_FILE` | — | file with the nkey seed of the service's own NATS user, one of the server's `auth_users` |
 | `AUTH_ISSUER_SEED_FILE` | — | file with the account key seed that signs the responses and user JWTs; its public key is the server's `auth_callout.issuer` |
-| `AUTH_XKEY_SEED_FILE` | unset | file with the curve key seed that decrypts requests; its public key is the server's `auth_callout.xkey`. Unset: plain requests; set: plain ones are refused |
+| `AUTH_XKEY_SEED_FILE` | — | file with the curve key seed that decrypts requests and encrypts answers; its public key is the server's `auth_callout.xkey`. Plain requests are refused |
+| `AUTH_PLAIN_REQUESTS` | unset | `allow` instead of an xkey: the server sends requests unencrypted. An explicit opt-out, for a test server only |
+| `AUTH_NATS_CA_FILE`, `AUTH_NATS_CERT_FILE`, `AUTH_NATS_KEY_FILE` | unset | the CA for the server's TLS certificate (unset: the system's), and a client certificate with its key if the server asks for one |
 | `AUTH_ACCOUNT` | — | the tenant's account the agents land in |
 | `AUTH_LOBBY` | unset | the lobby's channel name |
-| `AUTH_SUBJECT_PREFIX`, `AUTH_STREAM`, `AUTH_PRESENCE_BUCKET`, `AUTH_NAME_PREFIX` | `bus`, `BUS`, `presence`, `agent-` | subject prefix, the tenant's stream, the presence bucket, the start of agent names |
+| `AUTH_SUBJECT_PREFIX`, `AUTH_NAME_PREFIX` | `bus`, `agent-` | subject prefix, the start of agent names |
 | `AUTH_REQUEST_TIMEOUT` | `1.5s` | bound of one request (token check, chat lookups, answer), at most 10 s; keep it below the server's callout timeout |
 | `AUTH_BRAKE_FILE` | unset | the emergency brake (below) |
 | `AUTH_KEYCLOAK_ISSUER`, `AUTH_KEYCLOAK_JWKS_URL`, `AUTH_KEYCLOAK_CLIENT_ID` | — | the realm and the bus's client |
 | `AUTH_KEYCLOAK_AUDIENCE`, `AUTH_APPROVER_GROUP`, `AUTH_APPROVER_CLAIM`, `AUTH_TOKEN_LEEWAY` | client id, unset, `groups`, `30s` | see the token check |
 | `AUTH_NAME_BINDING` | `open` | `open` or `openid-only` (see the name binding) |
-| `AUTH_MATTERMOST_URL`, `AUTH_MATTERMOST_TEAM` | — | the chat and the team of the bus's channels |
-| `AUTH_MATTERMOST_TOKEN_FILE` | — | file with a Mattermost access token that may see how accounts log in (a system admin's); without that right every login is refused |
+| `AUTH_MATTERMOST_URL`, `AUTH_MATTERMOST_TEAM` | — | the chat (https; http only on a loopback host) and the team of the bus's channels |
+| `AUTH_MATTERMOST_TOKEN_FILE` | — | file with a Mattermost access token that may see how accounts log in (a system admin's); without that right every login is refused. The right is asked again every minute and after every 401 or 403 |
 
 An invalid value stops the program at start with a message naming the variable.
 A service that starts with half its configuration is worse than one that refuses.
@@ -175,21 +177,28 @@ The NATS server sends every client that is not one of its `auth_users` to
 It connects with its own user nkey (nkey authentication: it signs the
 server's nonce) and with the inbox prefix `_INBOX.<its public nkey>`.
 
-**What the service checks,** in this order, within `AUTH_REQUEST_TIMEOUT`:
-the request is signed by the server (and decrypted with the xkey); the host's
-signature over the nonce belongs to the nkey it names; the emergency brake
-does not hold everyone; the token check (above), including the name binding;
-the brake does not hold this owner. Then it grants the channels: the home and
-guest channels the human is a member of in Mattermost, and the lobby if asked.
-The channels in the request are a wish; each refused one is logged with its
-reason, and the agent gets the others.
+**What the service checks,** in this order, within `AUTH_REQUEST_TIMEOUT` and
+never past the server's request's own `exp`: the request decrypts with the
+xkey, is signed by a server key that is the `server_id` it names, is meant for
+`nats-authorization-request` and has not expired (otherwise it is not
+answered); the host's signature over the nonce belongs to the nkey it names;
+the emergency brake does not hold everyone; the token check (above),
+including the name binding; the brake does not hold this owner. Then it grants
+the channels: the home and up to 16 guest channels the human is a member of in
+Mattermost (one user lookup per request, channel ids kept for a minute), and
+the lobby if asked for by the flag or by its name. The channels in the request
+are a wish: an invalid name, a 17th guest channel or one the human is no
+member of is logged with its reason, and the agent gets the others. A lookup
+that fails or runs out of time refuses the whole login: a partial credential
+would look whole. Up to 32 requests are answered at once.
 
 **What it issues.** A user JWT for the connection, in the tenant's account,
 signed by the account key, valid 15 minutes from the check:
 
-- **Name:** `agent-` and the first 12 hex digits of SHA-256 over owner and host
-  nkey. The host never chooses it; it stays the same for every reconnect of
-  one host process and is practically never another owner's agent's name.
+- **Name:** `agent-` and 26 characters of base32 (128 bits of SHA-256 over
+  owner and host nkey). The host never chooses it; it stays the same for every
+  reconnect of one host process, and finding another owner's agent's name
+  would take 2^128 tries.
   The service keeps no state: name, owner and key follow from the request.
   A store for the name binding on first login will be the first state.
 - **Tags:** `owner:<owner>`, `host-nkey:<nkey>`, and `approver` for a member
@@ -198,10 +207,17 @@ signed by the account key, valid 15 minutes from the check:
   subject in one table, to be aligned with the protocol description once it is
   pinned): publish only under its own name as the last token in its channels
   (`bus.ch.<channel>.<agent>`) and to other agents' direct subjects
-  (`bus.dm.<recipient>.<agent>`); subscribe only to its channels and its own
-  direct subject; read and acknowledge its own durable consumer, never create
-  or change one; write its own presence entry, read everyone's; its own
-  inbox.
+  (`bus.dm.<recipient>.<agent>`); subscribe only to its channels, its own
+  direct subject and its own inbox. **No JetStream API, no key-value subject,
+  no `$SYS`:** NATS checks a publish's subject, never its reply subject, so any
+  service an agent may call can be made to answer onto another agent's
+  subject, under that agent's name, into a channel it has no right to, and
+  into the stream. Agents never write directly to a shared bucket either (a
+  put with `Nats-Rollup: all` on its own key empties the whole bucket, crown
+  leases included). Reading from JetStream and writing presence go through the
+  bus's own service.
+- **Limits:** 64 subscriptions, 1 MiB per message, plain NATS connections only
+  (no websocket, leafnode or MQTT).
 
 **Why 15 minutes from the check, not up to the token's `exp`** (decided,
 ADR-014 point 7): every issue checks the Keycloak token and the person again,
@@ -209,21 +225,28 @@ and nothing issued can be used without the host's nkey seed. A Keycloak
 session that ends therefore takes effect within 15 minutes at the latest.
 
 **Emergency brake.** `AUTH_BRAKE_FILE` names a file with one owner per line,
-or `*` for everyone; `#` starts a comment. It is read again when it changes,
-without a restart, and takes effect at the next issue, so within 15 minutes.
-A configured brake file that cannot be read stops everyone. Ending a
+or `*` for everyone; `#` starts a comment; names compare in lower case, and a
+line that is no valid username is logged and holds nobody. It is read again
+when it changes, without a restart, and takes effect at the next issue, so
+within 15 minutes. Replace it atomically (write a new file, rename it over the
+old one). A configured brake file that cannot be read stops everyone. Ending a
 connection at once needs a disconnect through the server's system account;
 that is an open point, not this service's job.
 
 **Audit.** One JSON log line per issue and per refusal (`event` `issued` or
-`refused`) with the host nkey, owner, agent name, granted channels and the
-reason; one line per refused channel. Never a token, a seed or a password.
+`refused`) with the server id, the client's address, the connection's user
+nkey, and once known the host nkey, owner, token `sub` and `jti`, agent name,
+granted channels and the reason; one line per refused channel; one line per
+request that is not answered. Never a token, a seed or a password.
 
 **The NATS server's side.** Accounts for the callout service (with its nkey
 user) and for each tenant; `authorization.auth_callout` with `issuer` (the
 account key's public key), `account` (the callout's account), `auth_users`
 (the service's nkey; at least one nkey user also makes the server send the
-nonce a host signs) and `xkey` (so requests and answers are encrypted). Only
+nonce a host signs) and `xkey` (so requests and answers are encrypted). The
+bus's streams must be created with `no_ack`: a stream that acknowledges a post
+sends its ack to the post's reply subject, which the agent chose, with the
+stream's own rights (a test shows it). Only
 the users in `auth_users` bypass the callout. Rotating the issuer key means
 changing the server's `issuer` and the service's seed file together; the
 server knows one issuer at a time.
@@ -242,8 +265,17 @@ server knows one issuer at a time.
   Accounts share no subjects; the test checks that another account's post does
   not reach an agent. Rights inside a JetStream stream shared by tenants are
   not built: each tenant has its own account and stream.
-- **Durable consumers:** an agent may read only its own consumer; who creates
-  it, with a filter that matches the granted channels, is still to be built.
+- **Durable consumers, presence and crown leases:** agents get no JetStream
+  rights; the bus's service that reads for them and writes presence is still
+  to be built.
+- **`auth_data` for admins:** whether Mattermost returns `auth_data` to a
+  system admin's token at all depends on its privacy settings; the lab checks
+  it. Without it an OpenID account's `sub` cannot be compared, and the check
+  refuses the login.
+- **Who sent a post, as the receiver sees it:** the subject's last token
+  names the sender, and only the sender can publish there. How a receiver
+  learns the sender's owner (for ADR-001's foreign agents) is an open design
+  question for the protocol layer.
 - **Immediate disconnect:** see the emergency brake.
 
 ## Tests

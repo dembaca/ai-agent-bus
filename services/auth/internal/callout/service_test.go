@@ -48,7 +48,12 @@ func (s *syncBuffer) String() string {
 	return s.b.String()
 }
 
-func newLab(t *testing.T) *lab {
+func newLab(t *testing.T) *lab { return newLabWith(t, nil, 0) }
+
+// newLabWith runs every test with JetStream on in the bus's account, as in
+// the lab; wrap, if set, wraps the chat's channel answers (delays, failures),
+// and timeout, if set, is the service's request timeout.
+func newLabWith(t *testing.T, wrap func(Channels) Channels, timeout time.Duration) *lab {
 	t.Helper()
 	issuer, _ := nkeys.CreateAccount()
 	issuerPub, _ := issuer.PublicKey()
@@ -61,9 +66,10 @@ func newLab(t *testing.T) *lab {
 	conf := filepath.Join(t.TempDir(), "nats.conf")
 	err := os.WriteFile(conf, []byte(`
 listen: "127.0.0.1:-1"
+jetstream { store_dir: "`+t.TempDir()+`" }
 accounts {
   AUTH { users: [ { nkey: "`+svcPub+`" } ] }
-  BUS {}
+  BUS { jetstream: enabled, users: [ { user: admin, password: pwd } ] }
   OTHER { users: [ { user: other, password: pwd } ] }
 }
 authorization {
@@ -71,7 +77,7 @@ authorization {
   auth_callout {
     issuer: "`+issuerPub+`"
     account: AUTH
-    auth_users: [ "`+svcPub+`", other ]
+    auth_users: [ "`+svcPub+`", other, admin ]
     xkey: "`+xkeyPub+`"
   }
 }
@@ -104,8 +110,13 @@ authorization {
 		t.Fatal(err)
 	}
 
-	svc, err := New(Config{Account: "BUS", Lobby: "lobby"}.WithDefaults(), issuer, xkey,
-		l.realm.Verifier(l.chat), l.chat, NewBrake(l.brake), slog.New(slog.NewJSONHandler(l.logs, nil)))
+	var ch Channels = l.chat
+	if wrap != nil {
+		ch = wrap(ch)
+	}
+	cfg := Config{Account: "BUS", Lobby: "lobby", Timeout: timeout}.WithDefaults()
+	svc, err := New(cfg, issuer, xkey, l.realm.Verifier(l.chat), ch, NewBrake(l.brake, nil),
+		slog.New(slog.NewJSONHandler(l.logs, nil)))
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -301,6 +312,14 @@ func TestTheEmergencyBrake(t *testing.T) {
 	set("*\n")
 	if try() == nil {
 		t.Fatal("connected while everyone is stopped")
+	}
+	set("ALICE\n") // names compare in lower case
+	if try() == nil {
+		t.Fatal("a stopped owner connected, named in upper case")
+	}
+	set("") // empty: nobody held, so the next refusal is the missing file's
+	if err := try(); err != nil {
+		t.Fatalf("an empty brake stopped: %v", err)
 	}
 	_ = os.Remove(l.brake)
 	if try() == nil {
