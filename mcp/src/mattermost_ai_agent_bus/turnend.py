@@ -38,7 +38,7 @@ def drain(pending: int, channels: Iterable[Mapping[str, Any]]) -> dict[str, Any]
     """Unread messages wait: collect them before the turn ends (RT-6.2 step 1)."""
     rows = list(channels)[:5]
     fyi = sum(int(r.get("fyi") or 0) for r in rows)
-    reason = f"You have {pending} unread message(s) on the Mattermost agent bus"
+    reason = f"You have {pending} unread message(s) on the AI agent bus"
     if fyi > 0:
         reason += f", {max(pending - fyi, 0)} needing action, the rest fyi"
     reason += (". Call wait_for_events (timeout_sec 1-3) to collect them, handle or "
@@ -258,12 +258,12 @@ def handoff(posts: Iterable[Mapping[str, Any]], me: str, *, skill: str = "", run
         return ""
     text = "Your conversation was just compacted." + (_posts(own) if own else "")
     end = "\nBefore you continue, check the bus with wait_for_events(timeout_sec=1)."
-    full = (text + "\n\nThe Mattermost agent bus skill (ai-agent-bus) is no longer in your "
+    full = (text + "\n\nThe AI agent bus skill (ai-agent-bus) is no longer in your "
             "context; here it is again, verbatim. Follow it.\n\n" + body + "\n" + end) if body else text + end
     cap, reload = CAPPED.get(runtime, (0, ""))
     if not capped or (body and len(full) <= cap):
         return full
-    return (text + "\n\nThe Mattermost agent bus skill is no longer in your context. " + reload + "\n"
+    return (text + "\n\nThe AI agent bus skill is no longer in your context. " + reload + "\n"
             + RULES + end)
 
 
@@ -278,6 +278,6 @@ def _posts(own: list[Mapping[str, Any]]) -> str:
     # A coordinator's HELLO starts with 👑 (RT-6.6 step 3).
     hello = next((p.get("id") for p in own
                   if not p.get("root_id") and a2a.word(str(p.get("message") or "")) == "HELLO"), None)
-    return (" Your own latest posts on the Mattermost agent bus "
+    return (" Your own latest posts on the AI agent bus "
             "(work channel), newest first, are your handoff state:\n" + "\n".join(lines)
             + (f"\nYour HELLO thread: root {hello}; read it with get_thread for more." if hello else ""))

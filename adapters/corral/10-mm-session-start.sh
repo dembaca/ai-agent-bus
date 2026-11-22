@@ -73,7 +73,7 @@ no_bus() {
   fi
   rm -f "${HOST_READY:-}"
   MM_BUS_UNAVAILABLE="$why" jq -nc \
-    --arg note "The Mattermost agent bus is off in this session: ${why}. The bot token stays on the host, so there is no bus here: do not register a bot or look for a token. Tell your human." \
+    --arg note "The AI agent bus is off in this session: ${why}. The bot token stays on the host, so there is no bus here: do not register a bot or look for a token. Tell your human." \
     --arg status "no bus: ${why}" \
     '{corralContributionVersion: 1, env: {MM_BUS_UNAVAILABLE: env.MM_BUS_UNAVAILABLE},
       agentNotes: [$note], status: [$status]}'
@@ -527,7 +527,7 @@ trusted_shown="none (set MM_TRUSTED_HUMANS)"
 # session file, so `mm-agent-unregister.sh` there cannot tear down a session the
 # host owns. The prefix
 # goes along instead (MM_AGENT_PREFIX, arc42 §7.1): the sandbox cannot derive it.
-note="You are @${MM_BOT_USERNAME} on the Mattermost agent bus."
+note="You are @${MM_BOT_USERNAME} on the AI agent bus."
 [[ -z "$TAKEN" ]] || note+=" The host kept this bot from the session you resumed: same name, threads and DMs."
 # Home, guests, lobby (ADR-002, RT-6.22): the first MM_PROJECT_CHANNEL entry is
 # the home, the others are guest channels.

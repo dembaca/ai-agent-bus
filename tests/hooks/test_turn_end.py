@@ -494,12 +494,12 @@ def test_drain_ranks_fyi_posts(mm, run):
             ("can you review #5?", None, OTHER)], strict=True):
         post.update(message=message, props=props, user_id=user)
     r = run(STOP)
-    assert r.blocked and "3 unread message(s) on the Mattermost agent bus, 2 needing action" in r.reason
+    assert r.blocked and "3 unread message(s) on the AI agent bus, 2 needing action" in r.reason
     assert "fyi=1" in r.reason
     for post in mm.dm_posts:
         post["props"] = None
     r = run(STOP)
-    assert "3 unread message(s) on the Mattermost agent bus." in r.reason and "fyi" not in r.reason
+    assert "3 unread message(s) on the AI agent bus." in r.reason and "fyi" not in r.reason
 
 
 def test_trusted_humans_plain_post_is_for_the_coordinator(mm, run):

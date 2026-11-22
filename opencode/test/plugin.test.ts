@@ -720,7 +720,7 @@ test("RT-6.20 (RT-6.7): after a compaction the own posts come back as context, n
   assert.deepEqual(paths(), ["GET /v1/handoff", "POST /v1/stat"])
   assert.deepEqual(rest()[1].body, { k: "compact", chars: 39 })
   assert.deepEqual(fx.sent, [{ sessionID: "s1", text: "Your conversation was just compacted. …",
-    description: "Mattermost agent bus: your latest posts", metadata: { [MARK]: "context" }, delivery: "steer",
+    description: "AI agent bus: your latest posts", metadata: { [MARK]: "context" }, delivery: "steer",
     resume: false }])
   // The long poll goes on.
   await until(() => held.length === 1, "long poll")

@@ -1,4 +1,4 @@
-// OpenCode plugin: the Mattermost agent bus in OpenCode sessions (RT-6.20 in
+// OpenCode plugin: the AI agent bus in OpenCode sessions (RT-6.20 in
 // docs/arc42/06-runtime-view.md; install: adapters/opencode.md). Plugin API V2
 // (OpenCode 2.x); OpenCode 1.x (plugin API V1) is not supported.
 //
@@ -384,7 +384,7 @@ export async function setup(ctx: Plugin.Context) {
       const t = turn(id)
       t.sent = text
       if (kind !== "context") t.turn = true
-      await ctx.session.synthetic({ sessionID: id, text, description: description || "Mattermost agent bus",
+      await ctx.session.synthetic({ sessionID: id, text, description: description || "AI agent bus",
         metadata: { [MARK]: kind }, delivery: kind === "context" ? "steer" : "queue", resume: kind !== "context" } as any)
       return true
     } catch {
@@ -490,7 +490,7 @@ export async function setup(ctx: Plugin.Context) {
     const text = String(r?.context || "")
     if (!text) return
     await stat("compact", { chars: text.length })
-    await send(id, text, "context", "Mattermost agent bus: your latest posts")
+    await send(id, text, "context", "AI agent bus: your latest posts")
   }
 
   // A pause the loop ends early when something changes (nudge): a turn ended,
@@ -541,7 +541,7 @@ export async function setup(ctx: Plugin.Context) {
     t.busy = true
     t.byBus = true
     await stat("wake", { reason: String(r.reason || "") })
-    if (await send(id, String(r.text), "wake", "Mattermost agent bus: wake-up")) {
+    if (await send(id, String(r.text), "wake", "AI agent bus: wake-up")) {
       // Requested before the stat, and not after an interrupt that came meanwhile
       // (it cleared `busy` and requested idle): working never follows that idle.
       const working = t.busy ? presence("working") : Promise.resolve()

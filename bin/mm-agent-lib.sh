@@ -743,6 +743,8 @@ mm_newest_plugin_version() {
   for f in "$HOME/.claude/plugins/installed_plugins.json" \
            "$HOME"/.cache/corral/home-*/.claude/plugins/installed_plugins.json; do
     (( SECONDS < deadline )) || break
+    # A substring on purpose: it also finds the same plugin under its name
+    # before 0.96.0 (mattermost-ai-agent-bus).
     mm_read_file "$f" 1048576 | jq -r '.. | objects | select(has("installPath")) | .installPath
            | select(type == "string" and test("ai-agent-bus"))' 2>/dev/null || true
   done | head -n 64 | while read -r d; do

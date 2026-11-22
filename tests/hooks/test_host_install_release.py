@@ -133,6 +133,9 @@ def test_release_installs_a_signed_tag_and_switches(run, tmp_path, keys):
     assert (dest.parent / "src.git").is_dir() and not (dest.parent / ".install.lock").exists()
     # RT-6.29 step 5, RT-6.20: the signed tree carries the harness plugins too.
     assert (dest / "opencode" / "server.ts").is_file() and (dest / "pi" / "mattermost-agent-bus.ts").is_file()
+    # RT-6.29, RT-6.7: and the skill under its name since 0.96.0, which OpenCode
+    # and pi hand back after a compaction.
+    assert (dest / "skills" / "ai-agent-bus" / "SKILL.md").is_file()
 
     nxt = bump(VERSION)
     set_version(origin, nxt)

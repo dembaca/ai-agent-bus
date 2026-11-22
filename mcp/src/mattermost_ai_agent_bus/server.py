@@ -69,6 +69,8 @@ def _installed_versions() -> list[str]:
     def walk(node: Any) -> None:
         if isinstance(node, dict):
             path = node.get("installPath")
+            # A substring on purpose: it also finds the same plugin under its
+            # name before 0.96.0 (mattermost-ai-agent-bus).
             if isinstance(path, str) and "ai-agent-bus" in path:
                 try:
                     found.append(json.loads(

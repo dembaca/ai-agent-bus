@@ -1,4 +1,4 @@
-// pi extension: the Mattermost agent bus in pi sessions (RT-6.27 in
+// pi extension: the AI agent bus in pi sessions (RT-6.27 in
 // docs/arc42/06-runtime-view.md; install: adapters/pi.md; ADR-009 phase 3).
 // Written against pi-coding-agent 1.3.0: its docs/extensions.md and the
 // declarations of `ExtensionAPI` and its events (dist/core/extensions/types.d.ts).
@@ -245,7 +245,7 @@ export function mcpConfig(root: string, workspace: string, env: Env = {}) {
     cwd: workspace,
     exposure: "direct" as const,
     timeout: MCP_TIMEOUT_SEC,
-    description: "Mattermost agent bus: post, reply, wait for events, ask a human (skill ai-agent-bus)",
+    description: "AI agent bus: post, reply, wait for events, ask a human (skill ai-agent-bus)",
   }
 }
 

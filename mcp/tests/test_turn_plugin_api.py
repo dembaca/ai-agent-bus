@@ -77,7 +77,7 @@ async def test_turn_end_drains_signs_off_then_goes_idle(api, unread_rows):
     unread_rows[:] = [("dm", 2), ("chan", 1)]
     got = (await h.get("/v1/turn-end?push=1")).json()
     assert got["action"] == "drain" and got["pending"] == 3
-    assert got["reason"].startswith("You have 3 unread message(s) on the Mattermost agent bus, "
+    assert got["reason"].startswith("You have 3 unread message(s) on the AI agent bus, "
                                     "2 needing action, the rest fyi. Call wait_for_events")
     assert "Pending per channel:\ndm\tO\tpending=2\nchan\tO\tpending=1\tfyi=1" in got["reason"]
     assert got["banner"] == "\U0001F4E8 Collecting 3 unread Mattermost message(s)"

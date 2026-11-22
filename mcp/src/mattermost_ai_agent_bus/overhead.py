@@ -28,7 +28,9 @@ from typing import Any
 
 from . import session_file
 
-BUS = "ai-agent-bus"          # in the MCP tool names
+# In the MCP tool names; a server added by hand (claude mcp add, Codex, Cursor)
+# may still run under its key from before 0.96.0.
+BUS = ("ai-agent-bus", "mattermost-agent-bus")
 # Transcripts from before 0.96.0 carry the plugin's old name.
 CHANNEL = ('<channel source="plugin:ai-agent-bus:', '<channel source="plugin:mattermost-ai-agent-bus:')
 TRUSTED = 'from_trusted_human="true"'
@@ -38,6 +40,10 @@ CHARS_PER_TOKEN = 4
 KEYS = ("in", "read", "w5m", "w1h", "out")
 _FUNCTION = re.compile(r"<function>.*?</function>", re.S)
 _TOOL_USE_ID = re.compile(r"<tool-use-id>([^<]+)</tool-use-id>")
+
+
+def _bus(text: str) -> bool:
+    return any(b in text for b in BUS)
 
 
 @dataclass
@@ -136,7 +142,7 @@ def measure(path: str | Path, since: float, fixed: Fixed,
             resident, pending = 0, []
         elif kind == "attachment":
             a = e.get("attachment") or {}
-            if a.get("type") == "deferred_tools_delta" and any(BUS in n for n in a.get("addedNames", [])):
+            if a.get("type") == "deferred_tools_delta" and any(_bus(n) for n in a.get("addedNames", [])):
                 deferred = True
             elif a.get("type") == "queued_command" and str(a.get("prompt", "")).startswith(CHANNEL):
                 if TRUSTED not in a["prompt"]:
@@ -161,7 +167,7 @@ def measure(path: str | Path, since: float, fixed: Fixed,
                     if what in ("bus", "listener"):
                         resident += len(body)
                     elif what == "search":
-                        resident += sum(len(f) for f in _FUNCTION.findall(body) if BUS in f)
+                        resident += sum(len(f) for f in _FUNCTION.findall(body) if _bus(f))
                 continue
             origin = e.get("origin")
             origin = origin.get("kind") if isinstance(origin, dict) else origin
@@ -193,7 +199,7 @@ def measure(path: str | Path, since: float, fixed: Fixed,
                 if not isinstance(c, dict) or c.get("type") != "tool_use":
                     continue
                 name, inp = c.get("name", ""), c.get("input") or {}
-                if BUS in name:
+                if _bus(name):
                     ids[c.get("id", "")] = "bus"
                 elif name == "Bash" and LISTENER in str(inp.get("command", "")):
                     ids[c.get("id", "")] = "listener"

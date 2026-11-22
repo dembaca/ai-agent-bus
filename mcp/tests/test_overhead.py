@@ -94,6 +94,18 @@ def test_requests_the_bus_caused_count_whole(tmp_path):
     assert r["bus"] == r["all"]
 
 
+@pytest.mark.parametrize("prefix", [BUS, "mcp__mattermost-agent-bus__"])
+def test_a_server_added_by_hand_under_its_old_key_still_counts(tmp_path, prefix):
+    """RT-6.9: a server added by hand before 0.96.0 runs on under the key
+    mattermost-agent-bus; its rounds are the bus's as before."""
+    t = Transcript()
+    t.user("check the bus", origin="human")
+    t.request(("m1", prefix + "wait_for_events", {"timeout_sec": 1}))
+    t.results(("m1", "[]"))
+    t.request()                                   # after a bus result only
+    assert measure(t, tmp_path)["bus_req"] == 1
+
+
 def test_a_trusted_humans_message_is_work(tmp_path):
     """RT-6.9: a prompt over the bus stands for one typed in the terminal."""
     t = Transcript()
