@@ -1,0 +1,73 @@
+# The measurands of the fault runs, in one place.
+#
+# Condition 3 of the build order's approval: this file exists so that matching
+# the measurement plan of the fourth phase (brought in by another agent) is a
+# RENAME, not a rebuild. Change a `name` here and everywhere that name is
+# printed changes with it; nothing else in the harness knows these strings.
+#
+# `source` says where the number comes from in the acceptance table of
+# ADR-014 (phase 4), so that a measurand is never invented here: the run
+# measures what the acceptance will compare, nothing else.
+#
+# `status` is `measured` for what today's bus can produce, and
+# `not_yet_measurable` for what only exists on the NATS side. A
+# `not_yet_measurable` measurand is still reported, with null values and the
+# reason, so the report has the same shape before and after the switch.
+
+[[measurand]]
+name = "loss"
+source = "Delivery, ADR-014 phase 4"
+unit = "posts"
+status = "measured"
+what = "Posts a run sent that never reached the receiving side."
+
+[[measurand]]
+name = "latency_p50_ms"
+source = "Delivery, ADR-014 phase 4 (95th percentile wait no worse than today)"
+unit = "ms"
+status = "measured"
+what = "Median time from send to arrival at the receiver."
+
+[[measurand]]
+name = "latency_p95_ms"
+source = "Delivery, ADR-014 phase 4"
+unit = "ms"
+status = "measured"
+what = "95th percentile time from send to arrival at the receiver."
+
+[[measurand]]
+name = "duplicates"
+source = "Delivery, ADR-014 phase 4 (nothing handled twice)"
+unit = "posts"
+status = "measured"
+what = "Posts that arrived more than once at the receiver."
+
+[[measurand]]
+name = "takeover_p95_s"
+source = "Roles and coordinator, ADR-014 phase 4 (30 s is a new target, not today's)"
+unit = "s"
+status = "measured"
+what = "95th percentile time from a hard stop of the coordinator to the crown being held again."
+
+[[measurand]]
+name = "handled_twice_or_missing"
+source = "Roles and coordinator, ADR-014 phase 4"
+unit = "events"
+status = "measured"
+what = "Coordinator events handled twice or not at all after a takeover."
+
+[[measurand]]
+name = "device_approvals"
+source = "Device approvals, ADR-014 phase 4"
+unit = "approvals"
+status = "not_yet_measurable"
+why = "Today's bus has no device approval; it arrives with the login service on the NATS side."
+what = "How often a human had to approve a login during a run."
+
+[[measurand]]
+name = "forgeries_refused"
+source = "Identity, ADR-014 phase 4"
+unit = "cases"
+status = "not_yet_measurable"
+why = "The forgery cases need the login service and the NATS permission model."
+what = "Forgery and replay cases refused out of those tried."
