@@ -9,6 +9,7 @@ lifespan 10 s). Run: `uv run --directory mcp pytest -q -m keycloak`.
 import asyncio
 import os
 import html
+import http.cookiejar
 import re
 import shutil
 import subprocess
@@ -92,9 +93,19 @@ class _Form(HTMLParser):
             self.forms[-1][bucket][a["name"]] = a.get("value") or ""
 
 
+class _LoopbackCookies(http.cookiejar.DefaultCookiePolicy):
+    """Keycloak 26 marks its session cookies Secure; the test realm runs on
+    plain http on loopback, where a browser sends them anyway and Python's
+    cookie jar would not (Keycloak then answers 400, no session)."""
+
+    def return_ok_secure(self, cookie, request):  # type: ignore[no-untyped-def]
+        return True
+
+
 async def play_human(link: str, user: str, *, approve: bool = True) -> None:
     """Open the approval link, log in and answer the consent page, as a person in a browser."""
-    async with httpx.AsyncClient(follow_redirects=True, timeout=30) as browser:
+    jar = http.cookiejar.CookieJar(policy=_LoopbackCookies())
+    async with httpx.AsyncClient(follow_redirects=True, timeout=30, cookies=jar) as browser:
         page = await browser.get(link)
         for _ in range(8):
             parser = _Form()
@@ -105,6 +116,8 @@ async def play_human(link: str, user: str, *, approve: bool = True) -> None:
                   f"{[(f['action'].split('?')[0], sorted(f['fields']), sorted(f['buttons'])) for f in parser.forms]}",
                   flush=True)
             if not parser.forms:
+                if page.status_code >= 400:
+                    print(f"play_human[{user}]: {page.text[:300]!r}", flush=True)
                 return
             form = parser.forms[0]
             data = dict(form["fields"])
