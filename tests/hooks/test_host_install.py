@@ -40,13 +40,18 @@ def uv(tmp_path, fail: bool | str = False) -> dict:
 
 
 START = "adapters/corral/10-mm-session-start.sh"
-VERSION = json.loads((ROOT / ".claude-plugin" / "plugin.json").read_text())["version"]
+PLUGIN = json.loads((ROOT / ".claude-plugin" / "plugin.json").read_text())
+VERSION = PLUGIN["version"]
+NAME = PLUGIN["name"]
 
 
 def registry(home, install_path) -> None:
+    """Register an install the way Claude Code does: the plugin by the name in
+    its plugin.json, then its path. The path is deliberately never what names
+    the plugin, so a test can install from a directory of any name."""
     f = home / ".claude" / "plugins" / "installed_plugins.json"
     f.parent.mkdir(parents=True, exist_ok=True)
-    f.write_text(json.dumps({"plugins": {"ai-agent-bus@x": [
+    f.write_text(json.dumps({"plugins": {f"{NAME}@x": [
         {"installPath": str(install_path)}]}}))
 
 
@@ -395,19 +400,79 @@ def tree(at, version=VERSION):
     for part in ("bin", "adapters/corral"):
         shutil.copytree(ROOT / part, at / part)
     (at / ".claude-plugin").mkdir(parents=True)
-    (at / ".claude-plugin" / "plugin.json").write_text(json.dumps({"version": version}))
+    (at / ".claude-plugin" / "plugin.json").write_text(
+        json.dumps({"name": NAME, "version": version}))
     return at
 
 
+def _decoy(tmp_path, name):
+    """An install path that is not this plugin: its name says so, its directory
+    below tmp_path must not matter."""
+    d = tmp_path / name
+    (d / ".claude-plugin").mkdir(parents=True)
+    (d / ".claude-plugin" / "plugin.json").write_text(
+        json.dumps({"name": name, "version": "99.9.9"}))
+    return d
+
+
+def registry_in(home, install_path, key=None) -> None:
+    f = home / ".claude" / "plugins" / "installed_plugins.json"
+    f.parent.mkdir(parents=True, exist_ok=True)
+    plugins = json.loads(f.read_text())["plugins"] if f.exists() else {}
+    plugins.setdefault(key or f"{NAME}@x", []).append({"installPath": str(install_path)})
+    f.write_text(json.dumps({"plugins": plugins}))
+
+
+def test_a_plugin_under_a_plain_folder_is_found(run, tmp_path):
+    """Issue #5: an install deep in a tree with no part of the plugin name in
+    its path is still found, because the registry key names the plugin.
+
+    In a corral session the test's tmp_path lies under the checkout (conftest),
+    and there the path itself contains the name: the case would then pass with
+    the old path-substring lookup and prove nothing. It skips instead of
+    passing quietly, so the gap is visible."""
+    deep = tmp_path / "src" / "bus"
+    # Only the install path decides, not ROOT. In CI ROOT is
+    # .../ai-agent-bus/ai-agent-bus; testing ROOT here would skip the case in CI,
+    # the one place it must run.
+    if "ai-agent-bus" in str(deep):
+        pytest.skip("tmp_path lies under a path that contains the plugin name "
+                    "(a corral session with the checkout named after the plugin); "
+                    "this case needs an install path without it")
+    shutil.copytree(ROOT / ".claude-plugin", deep / ".claude-plugin")
+    (deep / ".claude-plugin" / "plugin.json").write_text(
+        json.dumps({"name": NAME, "version": "0.91.2"}))
+    registry_in(tmp_path, deep)
+    dest = tmp_path / "host" / "current"
+    tree(dest, "0.90.0")
+
+    c = run(INSTALL, "--check", MM_BUS_HOST_DIR=str(dest),
+            MM_RELEASE_URL=str(tmp_path / "no-repo"))
+    assert "plugin:     0.91.2" in c.stdout, c.stdout
+
+
 def test_installs_from_its_own_checkout_and_checks_the_plugin_version(run, tmp_path):
-    registry(tmp_path, ROOT)
+    """Issue #5 from the other side: a tree is installed from its own checkout,
+    then two other plugins are registered whose directory holds this plugin's
+    name. Neither may be reported as the installed one, whatever the checkout is
+    called."""
+    registry_in(tmp_path, ROOT)
     dest = tmp_path / "current"
-    assert run(INSTALL, "--check", MM_BUS_HOST_DIR=str(dest), MM_RELEASE_URL=str(tmp_path / "no-repo")).code != 0
     c = clone(tmp_path)
-    r = run(str(c / INSTALL), **uv(tmp_path), MM_BUS_HOST_DIR=str(dest))
+    r = run(str(c / INSTALL), **uv(tmp_path), MM_BUS_HOST_DIR=str(dest),
+            MM_RELEASE_URL=str(tmp_path / "no-repo"))
     assert r.code == 0 and f"from: {c.resolve()}" in r.stdout
-    c = run(INSTALL, "--check", MM_BUS_HOST_DIR=str(dest), MM_RELEASE_URL=str(tmp_path / "no-repo"))
-    assert c.code == 0 and f"plugin:     {VERSION}" in c.stdout
+
+    # Two installs whose directory holds the plugin's name but that are other
+    # plugins: a path substring reported 99.9.9 for these.
+    for decoy in ("other/nested-ai-agent-bus", "ai-agent-bus-bundle"):
+        registry_in(tmp_path, _decoy(tmp_path, decoy), key=f"{decoy}@m")
+
+    c = run(INSTALL, "--check", MM_BUS_HOST_DIR=str(dest),
+            MM_RELEASE_URL=str(tmp_path / "no-repo"))
+    assert c.code == 0, c.stdout + c.stderr
+    assert f"plugin:     {VERSION}" in c.stdout, c.stdout
+    assert "99.9.9" not in c.stdout
 
 
 def planted(home, version="99.0.0"):

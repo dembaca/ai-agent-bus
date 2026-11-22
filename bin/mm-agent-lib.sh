@@ -743,10 +743,17 @@ mm_newest_plugin_version() {
   for f in "$HOME/.claude/plugins/installed_plugins.json" \
            "$HOME"/.cache/corral/home-*/.claude/plugins/installed_plugins.json; do
     (( SECONDS < deadline )) || break
-    # A substring on purpose: it also finds the same plugin under its name
-    # before 0.96.0 (mattermost-ai-agent-bus).
-    mm_read_file "$f" 1048576 | jq -r '.. | objects | select(has("installPath")) | .installPath
-           | select(type == "string" and test("ai-agent-bus"))' 2>/dev/null || true
+    # The plugin is named by the registry key, "<plugin>@<marketplace>", not by
+    # its directory: a checkout in /src/bus or a worktree called ci-robustness
+    # counts as much as one called ai-agent-bus. The name before 0.96.0 is
+    # matched too, so an install of the old plugin is still seen. A path
+    # substring guessed at this and also caught other plugins whose directory
+    # happened to contain the name.
+    mm_read_file "$f" 1048576 | jq -r '
+      (.plugins // {}) | objects | to_entries
+      | map(select(.key | test("^(mattermost-)?ai-agent-bus(@|$)")))
+      | .[].value | .. | objects | select(has("installPath")) | .installPath
+      | select(type == "string")' 2>/dev/null || true
   done | head -n 64 | while read -r d; do
     (( SECONDS < deadline )) || break
     v="$(mm_tree_version "$d")"
