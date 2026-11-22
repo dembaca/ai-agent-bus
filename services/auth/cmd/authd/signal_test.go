@@ -1,6 +1,7 @@
 package main
 
 import (
+	"bufio"
 	"bytes"
 	"encoding/json"
 	"errors"
@@ -156,18 +157,45 @@ func TestSIGINTStopsWithExitZero(t *testing.T) {
 
 // TestSecondSignalEndsTheProcess is finding 8: while a stop is under way, a
 // second signal must end the program at once. The session's stop is slow here
-// (a held connection), so the second signal is what actually ends it.
+// (a connection in flight), so the second signal is what actually ends it.
+//
+// The connection must be provably in flight before the first signal, or the
+// graceful stop has nothing to wait for and returns 0 before the second signal
+// arrives (this failed about 1 run in 12 in CI). It is made provable without a
+// sleep:
+//
+//   - the request is a POST to /healthz, which the mux answers 405 before
+//     reading a body, and it carries `Expect: 100-continue`, so Go sends that
+//     answer before the body arrives. Without the Expect header Go withholds
+//     the response until the body is read, and the client would block;
+//   - the request announces a body (Content-Length) and sends none, so after
+//     the 405 the server still waits for that body. A GET does not work: Go
+//     withholds its response until the body is read.
+//   - the client reads the 405. That answer proves the server has this
+//     connection and is serving it, and the missing body keeps the connection
+//     active, which is what Shutdown waits for.
 func TestSecondSignalEndsTheProcess(t *testing.T) {
 	cmd, _, addr := startAuthd(t)
 
-	// Hold a connection open mid-request, so the graceful stop has to wait
-	// for it and the process is still alive when the second signal arrives.
 	conn, err := net.Dial("tcp", addr)
 	if err != nil {
 		t.Fatalf("dial: %v", err)
 	}
 	defer func() { _ = conn.Close() }()
-	_, _ = conn.Write([]byte("GET /healthz HTTP/1.1\r\nHost: localhost\r\nContent-Length: 100\r\n\r\n"))
+	if _, err := conn.Write([]byte("POST /healthz HTTP/1.1\r\nHost: localhost\r\n" +
+		"Expect: 100-continue\r\nContent-Length: 100\r\n\r\n")); err != nil {
+		t.Fatalf("write request: %v", err)
+	}
+
+	// Read the 405: the connection is now in the server's hands for sure.
+	_ = conn.SetReadDeadline(time.Now().Add(10 * time.Second))
+	status, err := bufio.NewReader(conn).ReadString('\n')
+	if err != nil {
+		t.Fatalf("no answer to the held request: %v", err)
+	}
+	if !strings.Contains(status, "405") {
+		t.Fatalf("status = %q, want 405 for a POST to /healthz", strings.TrimSpace(status))
+	}
 
 	if err := cmd.Process.Signal(syscall.SIGTERM); err != nil {
 		t.Fatalf("first SIGTERM: %v", err)
