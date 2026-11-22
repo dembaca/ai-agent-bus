@@ -188,11 +188,11 @@ func classify(err error, claims jwt.MapClaims) error {
 	switch {
 	case errors.Is(err, jwt.ErrTokenRequiredClaimMissing):
 		switch {
-		case claims["exp"] == nil:
+		case empty(claims["exp"]):
 			return ErrExpired
-		case claims["iss"] == nil:
+		case empty(claims["iss"]):
 			return ErrIssuer
-		case claims["aud"] == nil:
+		case empty(claims["aud"]):
 			return ErrAudience
 		}
 		return ErrInvalid
@@ -205,4 +205,18 @@ func classify(err error, claims jwt.MapClaims) error {
 	default:
 		return ErrInvalid
 	}
+}
+
+// empty: a claim that is missing, null, "" or [] (the library takes each for
+// missing).
+func empty(v any) bool {
+	switch x := v.(type) {
+	case nil:
+		return true
+	case string:
+		return x == ""
+	case []any:
+		return len(x) == 0
+	}
+	return false
 }

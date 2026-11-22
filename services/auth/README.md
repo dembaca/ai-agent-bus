@@ -89,7 +89,8 @@ environment and the chat lookup arrive with that wiring.
   keys from `github.com/MicahParks/keyfunc/v3`). Only the configured asymmetric
   methods pass (default RS256), also when the JWKS names no `alg`, so
   `alg: none` and an HS256 token keyed with the public key fail. The token must
-  name a key id (`kid`) of a signing key (`use: sig`). `iss` must be the realm
+  name a key id (`kid`) of a signing key: a key with `use: enc` or without
+  `use` is never taken. `iss` must be the realm
   exactly; `exp` is required; `exp`, `nbf` and `iat` allow a clock skew of 30 s
   by default, 60 s at most. A token over 16 KiB is refused unparsed.
 - **The bus's client:** `aud` (a string or a list) must contain the configured
@@ -106,8 +107,9 @@ environment and the chat lookup arrive with that wiring.
   (default `groups`) sets `Identity.Approver`. It never refuses a start; the
   session's trusted list selects within it.
 - **Keys:** the JWKS is fetched hourly, and when a token names an unknown key,
-  at most once a minute; a token with an unknown key in between is refused at
-  once. Each fetch has 10 s, follows no redirect and reads at most 1 MiB. A
+  at most once a minute. A token with an unknown key in between is refused at
+  once when the next fetch is more than 10 s away, and otherwise waits for it;
+  the caller bounds `Verify` with a deadline of its own. Each fetch has 10 s, follows no redirect and reads at most 1 MiB. A
   realm that is down at the start is fetched again on the first token. Failed
   fetches go to `Config.KeyFetchError` for the caller to log.
 - Errors are one reason each (`ErrAudience`, `ErrExpired`, `ErrGuest`, …),
@@ -123,10 +125,17 @@ and a *group mapper* that writes the user's groups into the configured claim.
 - **Revocation:** the check holds up to the token's `exp` and learns of no
   revocation before it. The NATS credentials issued from it get their own cap
   in the pull request that issues them.
-- **Name binding for accounts without OpenID:** for a chat account that logs in
-  by password, LDAP or SAML, the name alone binds the token to it. That is safe
-  only with a realm that allows no self-registration and no change of
-  usernames; otherwise someone could take a chat user's name in the realm.
+- **Name binding for accounts without OpenID:** for every chat account whose
+  `auth_service` is not `openid`, the name alone binds the token to it: a
+  password, LDAP or SAML, and also Keycloak through the GitLab route that
+  Mattermost Team Edition uses. That holds only as far as the realm's names
+  can be trusted:
+  - no self-registration and no change of usernames in the realm;
+  - no identity brokering or federation that takes names from outside, and
+    realm admins trusted as far as the chat's owners;
+  - the other way round: whoever renames a chat account to the name of a realm
+    user without a chat account becomes the owner account for that user's
+    agents. Chat usernames should only be changeable by admins.
 
 ## Tests
 

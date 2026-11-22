@@ -62,7 +62,9 @@ type Config struct {
 	// DefaultKeyRefresh.
 	KeyRefresh time.Duration
 	// KeyFetchError, if set, hears of every JWKS fetch that failed, for the
-	// caller to log. The package itself never logs.
+	// caller to log. The package itself never logs. It is called from the
+	// background refresh and from Verify at once, so it must be safe for
+	// concurrent use.
 	KeyFetchError func(error)
 }
 

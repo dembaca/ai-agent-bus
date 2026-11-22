@@ -35,6 +35,7 @@ type realm struct {
 	mu      sync.Mutex
 	keys    map[string]*rsa.PrivateKey // kid → key, what the JWKS serves
 	noAlg   bool                       // serve the keys without "alg", as some realms do
+	use     string                     // "use" of the served keys: "sig" unless set, "-" for none
 	delay   time.Duration              // answer time of the JWKS endpoint
 	down    atomic.Bool                // answer 503
 	fetches atomic.Int32
@@ -75,7 +76,7 @@ func (r *realm) key(kid string) *rsa.PrivateKey {
 func (r *realm) serveJWKS(w http.ResponseWriter, _ *http.Request) {
 	r.fetches.Add(1)
 	r.mu.Lock()
-	delay, noAlg := r.delay, r.noAlg
+	delay, noAlg, use := r.delay, r.noAlg, r.use
 	b64 := base64.RawURLEncoding.EncodeToString
 	var keys []map[string]string
 	for kid, k := range r.keys {
@@ -85,6 +86,13 @@ func (r *realm) serveJWKS(w http.ResponseWriter, _ *http.Request) {
 		}
 		if !noAlg {
 			jwk["alg"] = "RS256"
+		}
+		switch use {
+		case "":
+		case "-":
+			delete(jwk, "use")
+		default:
+			jwk["use"] = use
 		}
 		keys = append(keys, jwk)
 	}
@@ -258,6 +266,9 @@ func TestRefusedTokens(t *testing.T) {
 		{"another issuer", edited(func(c jwt.MapClaims) { c["iss"] = r.srv.URL + "/realms/other" }), ErrIssuer},
 		{"the issuer with a trailing slash", edited(func(c jwt.MapClaims) { c["iss"] = r.issuer() + "/" }), ErrIssuer},
 		{"no iss", edited(func(c jwt.MapClaims) { delete(c, "iss") }), ErrIssuer},
+		{"iss empty", edited(func(c jwt.MapClaims) { c["iss"] = "" }), ErrIssuer},
+		{"aud an empty list", edited(func(c jwt.MapClaims) { c["aud"] = []string{} }), ErrAudience},
+		{"aud empty", edited(func(c jwt.MapClaims) { c["aud"] = "" }), ErrAudience},
 		{"a stranger's key under a known kid", func() string { return sign(t, r.claims(), "k1", stranger) }, ErrInvalid},
 		{"a key the realm does not publish", func() string { return sign(t, r.claims(), "k9", stranger) }, ErrInvalid},
 		{"no kid", func() string { return sign(t, r.claims(), "", r.key("k1")) }, ErrInvalid},
@@ -314,6 +325,19 @@ func TestOnlyTheConfiguredMethodsPass(t *testing.T) {
 	both := verifier(t, r, human(nil), func(c *Config) { c.Algorithms = []string{"RS256", "PS256"} })
 	if _, err := both.Verify(context.Background(), signWith(t, jwt.SigningMethodPS256, r.claims(), "k1", r.key("k1"))); err != nil {
 		t.Fatalf("PS256 configured: %v", err)
+	}
+}
+
+// Only signing keys count: a key for encryption, or one that says nothing of
+// its use, is never taken, even without "alg" in the JWKS.
+func TestOnlySigningKeysCount(t *testing.T) {
+	for _, use := range []string{"enc", "-"} {
+		r := newRealm(t)
+		r.noAlg, r.use = true, use
+		v := verifier(t, r, human(nil), nil)
+		if _, err := v.Verify(context.Background(), r.token(nil)); err != ErrInvalid {
+			t.Errorf("use %q: %v", use, err)
+		}
 	}
 }
 

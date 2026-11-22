@@ -47,8 +47,8 @@ func newKeys(ctx context.Context, cfg Config) (keyfunc.Keyfunc, error) {
 		HTTPURLs: map[string]jwkset.Storage{cfg.JWKSURL: store},
 		// This bounds the wait for a refresh slot and the fetch itself. A slot
 		// further away than this is refused at once (rate.Limiter.Wait does
-		// not sleep past a deadline), so a token with an unknown key in
-		// between waits for nothing.
+		// not sleep past a deadline); one at most this far away is waited
+		// for. The caller bounds Verify with a deadline of its own.
 		RateLimitWaitMax:  jwksTimeout,
 		RefreshUnknownKID: rate.NewLimiter(rate.Every(cfg.UnknownKeyRefresh), 1),
 	})
