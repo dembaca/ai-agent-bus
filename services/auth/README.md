@@ -34,12 +34,14 @@ environment can serve several services.
 
 | Variable | Default | Meaning |
 | --- | --- | --- |
-| `AUTH_LISTEN_ADDR` | `:8080` | `host:port` the server listens on |
+| `AUTH_LISTEN_ADDR` | `:8080` | `host:port` the server listens on; the port must be 1–65535 |
 | `AUTH_LOG_LEVEL` | `info` | `debug`, `info`, `warn` or `error` |
 | `AUTH_SHUTDOWN_TIMEOUT` | `10s` | how long a stop may take before it is cut off |
 
 An invalid value stops the program at start with a message naming the variable.
 A service that starts with half its configuration is worse than one that refuses.
+A taken port is a start failure too, but exit code 1 rather than the
+configuration's 2: the configuration was fine.
 
 ## Endpoints
 
@@ -75,8 +77,10 @@ the running service should change only when this repository changes. When a
 base image needs updating, the digest changes in the same pull request that
 says why.
 
-The container runs as an unprivileged user (uid 10001) on a minimal image, with
-no shell and no package manager in the final stage.
+The final stage is `gcr.io/distroless/static-debian12:nonroot`: a Debian root
+filesystem with the CA certificates and `/etc/passwd` and nothing else — no
+shell, no package manager, no libc. The binary is static, so nothing else is
+needed. It runs as `nonroot` (uid 65532).
 
 ## Tests
 

@@ -15,6 +15,15 @@ import (
 // "dev" until then.
 var Version = "dev"
 
+// Config is what the server needs; it is smaller than config.Config on
+// purpose, so this package does not depend on how the values are read.
+type Config struct {
+	// ListenAddr is the address Run binds when it is given no listener.
+	// The caller that already has a listener passes it to Run instead.
+	ListenAddr string
+	Logger     *slog.Logger
+}
+
 // New returns the service's HTTP server.
 //
 // It carries the health endpoint and nothing else; the auth-callout and
@@ -39,13 +48,6 @@ func New(cfg Config) *http.Server {
 	}
 }
 
-// Config is what the server needs; it is smaller than config.Config on
-// purpose, so this package does not depend on how the values are read.
-type Config struct {
-	ListenAddr string
-	Logger     *slog.Logger
-}
-
 type healthResponse struct {
 	Status  string `json:"status"`
 	Service string `json:"service"`
@@ -65,16 +67,24 @@ func healthz(w http.ResponseWriter, r *http.Request) {
 	})
 }
 
-// Run serves until ctx is cancelled, then stops gracefully and returns. A
-// stop that outlives ShutdownTimeout is cut off and reported as an error.
-func Run(ctx context.Context, srv *http.Server, shutdownTimeout time.Duration, logger *slog.Logger) error {
-	errCh := make(chan error, 1)
+// Bind opens the listener the service serves on. Splitting it from Run lets a
+// caller report a taken port before it announces a start, and lets a test
+// hand Run a listener it already holds, with no port race.
+func Bind(addr string) (net.Listener, error) {
+	return net.Listen("tcp", addr)
+}
 
-	ln, err := net.Listen("tcp", srv.Addr)
-	if err != nil {
-		return err
+// Run serves on ln until ctx is cancelled, then stops gracefully and returns.
+//
+// A stop that outlives shutdownTimeout is cut off and returned as
+// context.DeadlineExceeded. The listener is closed in every case, so a caller
+// may Bind and Run without leaking a socket.
+func Run(ctx context.Context, srv *http.Server, ln net.Listener, shutdownTimeout time.Duration, logger *slog.Logger) error {
+	if logger == nil {
+		logger = slog.Default()
 	}
 
+	errCh := make(chan error, 1)
 	go func() {
 		logger.Info("listening", "addr", ln.Addr().String())
 		errCh <- srv.Serve(ln)
@@ -97,6 +107,9 @@ func Run(ctx context.Context, srv *http.Server, shutdownTimeout time.Duration, l
 
 	if err := srv.Shutdown(shutdownCtx); err != nil {
 		_ = srv.Close()
+		if errors.Is(err, context.DeadlineExceeded) {
+			return err
+		}
 		return err
 	}
 	return nil

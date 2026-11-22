@@ -1,4 +1,4 @@
-# The login service, built as a static binary and shipped on a minimal image.
+# The login service, built as a static binary and shipped on a distroless image.
 #
 # The build context is services/auth/, so the module's own go.mod is the only
 # one used:
@@ -29,17 +29,14 @@ RUN CGO_ENABLED=0 GOOS=linux go build \
         -o /out/authd ./cmd/authd
 
 # --- run ---------------------------------------------------------------------
-FROM alpine:3.22@sha256:49340b346798875b5592e5d420241f2f9cfba5f47e62ebb1446a1b34734e898f AS run
-
-# CA certificates for the Keycloak calls that arrive with the next pull
-# request, and nothing else: no shell tooling, no package manager at runtime.
-RUN apk add --no-cache ca-certificates \
-    && addgroup -g 10001 -S authd \
-    && adduser -u 10001 -S -G authd -H -s /sbin/nologin authd
+# distroless/static-debian12 is a Debian root filesystem with the CA
+# certificates and /etc/passwd and nothing else: no shell, no package manager,
+# no libc. :nonroot runs as uid 65532.
+FROM gcr.io/distroless/static-debian12:nonroot@sha256:afa5c872c891853ca7fcf1f12c3edb23f7eeef36189728842dd51042ff57f7ab
 
 COPY --from=build /out/authd /usr/local/bin/authd
 
-USER 10001:10001
+USER nonroot:nonroot
 EXPOSE 8080
 
 # No HEALTHCHECK: probes belong to the platform that runs the container (the

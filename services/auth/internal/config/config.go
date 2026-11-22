@@ -9,7 +9,9 @@ package config
 import (
 	"fmt"
 	"log/slog"
+	"net"
 	"os"
+	"strconv"
 	"strings"
 	"time"
 )
@@ -76,14 +78,51 @@ func Load(getenv func(string) string) (Config, error) {
 }
 
 func validateListenAddr(addr string) error {
-	// A bare port such as ":8080" and "127.0.0.1:8080" are both valid; an
-	// empty host is allowed. Only a missing port is rejected, since it leaves
-	// the server listening nowhere predictable.
-	idx := strings.LastIndex(addr, ":")
-	if idx < 0 || idx == len(addr)-1 {
-		return fmt.Errorf("must be host:port, got %q", addr)
+	// A bare port such as ":8080", "127.0.0.1:8080" and "[::1]:8080" are all
+	// valid; an empty host is allowed, it means every interface.
+	host, port, err := net.SplitHostPort(addr)
+	if err != nil {
+		return fmt.Errorf("must be host:port, got %q: %w", addr, err)
+	}
+
+	n, err := strconv.Atoi(port)
+	if err != nil {
+		return fmt.Errorf("port must be a number, got %q", port)
+	}
+	if n < 1 || n > 65535 {
+		return fmt.Errorf("port must be between 1 and 65535, got %d", n)
+	}
+
+	// A host that is neither empty nor a literal address must be a name the
+	// resolver accepts; this catches "a b" and stray brackets without
+	// resolving anything.
+	if host != "" && net.ParseIP(host) == nil && !validHostname(host) {
+		return fmt.Errorf("host must be an address or a host name, got %q", host)
 	}
 	return nil
+}
+
+// validHostname accepts the letters, digits, dots and hyphens of a DNS name.
+// It does not resolve: whether the name exists is the network's answer, not
+// a configuration error.
+func validHostname(host string) bool {
+	if len(host) > 253 {
+		return false
+	}
+	for _, label := range strings.Split(host, ".") {
+		if label == "" || len(label) > 63 {
+			return false
+		}
+		for i, r := range label {
+			switch {
+			case r >= 'a' && r <= 'z', r >= 'A' && r <= 'Z', r >= '0' && r <= '9':
+			case r == '-' && i > 0 && i < len(label)-1:
+			default:
+				return false
+			}
+		}
+	}
+	return true
 }
 
 func parseLogLevel(s string) (slog.Level, error) {

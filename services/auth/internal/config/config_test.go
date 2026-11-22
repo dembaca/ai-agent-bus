@@ -85,14 +85,58 @@ func TestLogLevels(t *testing.T) {
 	}
 }
 
+func TestRejectListenAddr(t *testing.T) {
+	cases := []string{
+		"localhost", // no port
+		"127.0.0.1", // no port
+		"host:abc",  // port is not a number
+		":99999",    // port out of range
+		":0",        // port 0 means "any free port", not a fixed one
+		"a:b:c",     // too many colons
+	}
+
+	for _, addr := range cases {
+		t.Run(addr, func(t *testing.T) {
+			cfg, err := Load(env(map[string]string{"AUTH_LISTEN_ADDR": addr}))
+			if err == nil {
+				t.Fatalf("Load accepted AUTH_LISTEN_ADDR=%q, got %+v", addr, cfg)
+			}
+			if !strings.Contains(err.Error(), "AUTH_LISTEN_ADDR") {
+				t.Errorf("error %q does not name AUTH_LISTEN_ADDR", err)
+			}
+		})
+	}
+}
+
+func TestAcceptListenAddr(t *testing.T) {
+	cases := []string{
+		":8080",
+		"127.0.0.1:8080",
+		"localhost:8080",
+		"[::1]:8080",
+		"0.0.0.0:1",
+		"127.0.0.1:65535",
+	}
+
+	for _, addr := range cases {
+		t.Run(addr, func(t *testing.T) {
+			cfg, err := Load(env(map[string]string{"AUTH_LISTEN_ADDR": addr}))
+			if err != nil {
+				t.Fatalf("Load rejected AUTH_LISTEN_ADDR=%q: %v", addr, err)
+			}
+			if cfg.ListenAddr != addr {
+				t.Errorf("ListenAddr = %q, want %q", cfg.ListenAddr, addr)
+			}
+		})
+	}
+}
+
 func TestRejections(t *testing.T) {
 	cases := map[string]map[string]string{
-		"log level unknown":     {"AUTH_LOG_LEVEL": "verbose"},
-		"listen addr no port":   {"AUTH_LISTEN_ADDR": "localhost"},
-		"listen addr bare host": {"AUTH_LISTEN_ADDR": "127.0.0.1"},
-		"timeout unparsable":    {"AUTH_SHUTDOWN_TIMEOUT": "soon"},
-		"timeout zero":          {"AUTH_SHUTDOWN_TIMEOUT": "0s"},
-		"timeout negative":      {"AUTH_SHUTDOWN_TIMEOUT": "-5s"},
+		"log level unknown":  {"AUTH_LOG_LEVEL": "verbose"},
+		"timeout unparsable": {"AUTH_SHUTDOWN_TIMEOUT": "soon"},
+		"timeout zero":       {"AUTH_SHUTDOWN_TIMEOUT": "0s"},
+		"timeout negative":   {"AUTH_SHUTDOWN_TIMEOUT": "-5s"},
 	}
 
 	for name, values := range cases {

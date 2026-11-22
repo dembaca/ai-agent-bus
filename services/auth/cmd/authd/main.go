@@ -33,14 +33,19 @@ func main() {
 // run is main with the environment injected, so the configuration path is
 // testable without touching the process environment.
 func run(getenv func(string) string) int {
+	// JSON from the first line on, a refused configuration included: one
+	// format for everything this program writes.
+	logger := slog.New(slog.NewJSONHandler(os.Stdout, nil))
+
 	cfg, err := config.Load(getenv)
 	if err != nil {
-		// No logger yet: the configuration may be what is wrong.
-		slog.Error("configuration", "err", err)
+		logger.Error("configuration", "err", err.Error())
 		return exitConfigError
 	}
 
-	logger := slog.New(slog.NewJSONHandler(os.Stdout, &slog.HandlerOptions{
+	// The level is known only now; a fresh handler keeps the first line above
+	// at its default level, which is the one an operator wants to see.
+	logger = slog.New(slog.NewJSONHandler(os.Stdout, &slog.HandlerOptions{
 		Level: cfg.LogLevel,
 	}))
 	logger.Info("starting", "service", "authd", "version", httpserver.Version)
@@ -48,13 +53,26 @@ func run(getenv func(string) string) int {
 	ctx, stop := signal.NotifyContext(context.Background(), os.Interrupt, syscall.SIGTERM)
 	defer stop()
 
+	// Bind before announcing readiness: a taken port is a start failure, not
+	// a line saying the service is up.
+	ln, err := httpserver.Bind(cfg.ListenAddr)
+	if err != nil {
+		logger.Error("bind", "addr", cfg.ListenAddr, "err", err.Error())
+		return exitFailure
+	}
+
 	srv := httpserver.New(httpserver.Config{
 		ListenAddr: cfg.ListenAddr,
 		Logger:     logger,
 	})
 
-	if err := httpserver.Run(ctx, srv, cfg.ShutdownTimeout, logger); err != nil {
-		logger.Error("server", "err", err)
+	err = httpserver.Run(ctx, srv, ln, cfg.ShutdownTimeout, logger)
+	// Release the signal handler as soon as the stop has begun, so a second
+	// signal ends the program the usual way instead of being swallowed.
+	stop()
+
+	if err != nil {
+		logger.Error("server", "err", err.Error())
 		return exitFailure
 	}
 
