@@ -15,19 +15,17 @@ import (
 // "dev" until then.
 var Version = "dev"
 
-// Config is what the server needs; it is smaller than config.Config on
-// purpose, so this package does not depend on how the values are read.
+// Config is what the server needs besides its listener.
 type Config struct {
-	// ListenAddr is the address Run binds when it is given no listener.
-	// The caller that already has a listener passes it to Run instead.
-	ListenAddr string
-	Logger     *slog.Logger
+	Logger *slog.Logger
 }
 
 // New returns the service's HTTP server.
 //
 // It carries the health endpoint and nothing else; the auth-callout and
 // device-flow handlers arrive with the pull requests that implement them.
+// The address is not part of the server: Run serves on the listener it is
+// given, so there is one place that decides where the service listens.
 func New(cfg Config) *http.Server {
 	logger := cfg.Logger
 	if logger == nil {
@@ -38,7 +36,6 @@ func New(cfg Config) *http.Server {
 	mux.HandleFunc("GET /healthz", healthz)
 
 	return &http.Server{
-		Addr:              cfg.ListenAddr,
 		Handler:           mux,
 		ReadHeaderTimeout: 5 * time.Second,
 		ReadTimeout:       15 * time.Second,
@@ -105,11 +102,12 @@ func Run(ctx context.Context, srv *http.Server, ln net.Listener, shutdownTimeout
 	shutdownCtx, cancel := context.WithTimeout(context.Background(), shutdownTimeout)
 	defer cancel()
 
+	// Shutdown waits for in-flight requests and, when the deadline passes,
+	// returns without closing them: the connection would stay open and the
+	// caller would keep waiting. Close cuts them off, which is what the
+	// deadline promises.
 	if err := srv.Shutdown(shutdownCtx); err != nil {
 		_ = srv.Close()
-		if errors.Is(err, context.DeadlineExceeded) {
-			return err
-		}
 		return err
 	}
 	return nil

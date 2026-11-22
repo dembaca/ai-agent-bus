@@ -51,27 +51,27 @@ func run(getenv func(string) string) int {
 	logger.Info("starting", "service", "authd", "version", httpserver.Version)
 
 	ctx, stop := signal.NotifyContext(context.Background(), os.Interrupt, syscall.SIGTERM)
-	defer stop()
+	// Release the handler as soon as the stop begins, not when it ends: a
+	// second signal during a slow stop then ends the program the usual way
+	// instead of being swallowed, which is what an operator expects of
+	// "press again to force".
+	go func() {
+		<-ctx.Done()
+		stop()
+	}()
 
 	// Bind before announcing readiness: a taken port is a start failure, not
 	// a line saying the service is up.
 	ln, err := httpserver.Bind(cfg.ListenAddr)
 	if err != nil {
+		stop()
 		logger.Error("bind", "addr", cfg.ListenAddr, "err", err.Error())
 		return exitFailure
 	}
 
-	srv := httpserver.New(httpserver.Config{
-		ListenAddr: cfg.ListenAddr,
-		Logger:     logger,
-	})
+	srv := httpserver.New(httpserver.Config{Logger: logger})
 
-	err = httpserver.Run(ctx, srv, ln, cfg.ShutdownTimeout, logger)
-	// Release the signal handler as soon as the stop has begun, so a second
-	// signal ends the program the usual way instead of being swallowed.
-	stop()
-
-	if err != nil {
+	if err := httpserver.Run(ctx, srv, ln, cfg.ShutdownTimeout, logger); err != nil {
 		logger.Error("server", "err", err.Error())
 		return exitFailure
 	}

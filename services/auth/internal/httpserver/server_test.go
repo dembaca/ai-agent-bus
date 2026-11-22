@@ -226,15 +226,25 @@ func TestRunStopsOnCancelledContextBeforeServing(t *testing.T) {
 }
 
 // TestRunCutsOffASlowHandler is finding 6: a request that outlives the
-// shutdown timeout must be cut off and reported, not waited for forever.
+// shutdown timeout must be cut off, not left hanging. Shutdown alone returns
+// DeadlineExceeded and leaves the request running, so the test also proves the
+// connection is closed: the waiting client must come back with an error, and
+// that must happen before the handler is released.
 func TestRunCutsOffASlowHandler(t *testing.T) {
 	ln, err := Bind("127.0.0.1:0")
 	if err != nil {
 		t.Fatalf("Bind: %v", err)
 	}
+	addr := ln.Addr().String()
 
 	release := make(chan struct{})
-	t.Cleanup(func() { close(release) })
+	t.Cleanup(func() {
+		select {
+		case <-release:
+		default:
+			close(release)
+		}
+	})
 
 	srv := New(Config{Logger: quietLogger()})
 	mux := http.NewServeMux()
@@ -250,15 +260,21 @@ func TestRunCutsOffASlowHandler(t *testing.T) {
 	done := make(chan error, 1)
 	go func() { done <- Run(ctx, srv, ln, 50*time.Millisecond, quietLogger()) }()
 
+	// The client's result, so the test can tell "cut off" from "still waiting".
 	client := testClient()
+	clientErr := make(chan error, 1)
+	clientStarted := make(chan struct{})
 	go func() {
-		resp, err := client.Get("http://" + ln.Addr().String() + "/slow")
+		close(clientStarted)
+		resp, err := client.Get("http://" + addr + "/slow")
 		if err == nil {
 			_, _ = io.ReadAll(resp.Body)
 			_ = resp.Body.Close()
 		}
+		clientErr <- err
 	}()
-	// Give the handler a moment to start, so Shutdown has something to wait for.
+	<-clientStarted
+	// Let the handler start, so Shutdown has something to wait for.
 	time.Sleep(100 * time.Millisecond)
 
 	cancel()
@@ -269,6 +285,17 @@ func TestRunCutsOffASlowHandler(t *testing.T) {
 		}
 	case <-time.After(10 * time.Second):
 		t.Fatal("Run never returned after the shutdown timeout")
+	}
+
+	// The handler is still blocked on release, so only Close can have ended
+	// the request. It must have ended it, with an error.
+	select {
+	case err := <-clientErr:
+		if err == nil {
+			t.Error("the slow request returned a response, want a closed connection")
+		}
+	case <-time.After(2 * time.Second):
+		t.Fatal("the slow request is still hanging after Run returned: Close did not cut it off")
 	}
 }
 
