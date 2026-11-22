@@ -1,63 +1,75 @@
 # The measurands of the fault runs, in one place.
 #
-# Condition 3 of the build order's approval: this file exists so that matching
-# the measurement plan of the fourth phase (brought in by another agent) is a
-# RENAME, not a rebuild. Change a `name` here and everywhere that name is
-# printed changes with it; nothing else in the harness knows these strings.
+# Every entry has a fixed `id` and a free `name` (points 8 of the review):
+# the harness computes and reports by `id`, and only the report prints `name`.
+# Renaming therefore changes what a human reads, never what the code does,
+# and the match with another measurement plan is a rename, not a rebuild.
 #
-# `source` says where the number comes from in the acceptance table of
-# ADR-014 (phase 4), so that a measurand is never invented here: the run
-# measures what the acceptance will compare, nothing else.
+# `source` cites the acceptance row of ADR-014 (phase 4) a measurand belongs
+# to, so that a measurand is never invented here: the run measures what the
+# acceptance will compare, and nothing else.
 #
-# `status` is `measured` for what today's bus can produce, and
-# `not_yet_measurable` for what only exists on the NATS side. A
-# `not_yet_measurable` measurand is still reported, with null values and the
-# reason, so the report has the same shape before and after the switch.
+# `status`:
+#   measured            the harness computes it from a run
+#   not_yet_measurable  this bus cannot produce it yet; reported as null with
+#                       `why`, so the report keeps the same shape either way
+#
+# `unit` is printed verbatim. Frames, not "posts": what a run sends through a
+# message channel is a frame (point 15 of the review).
 
 [[measurand]]
-name = "loss"
+id = "loss"
+name = "Loss"
 source = "Delivery, ADR-014 phase 4"
-unit = "posts"
+unit = "frames"
 status = "measured"
-what = "Posts a run sent that never reached the receiving side."
+what = "Frames a run sent that never reached the receiving side."
 
 [[measurand]]
-name = "latency_p50_ms"
+id = "latency_p50"
+name = "Latency, median"
 source = "Delivery, ADR-014 phase 4 (95th percentile wait no worse than today)"
 unit = "ms"
 status = "measured"
 what = "Median time from send to arrival at the receiver."
 
 [[measurand]]
-name = "latency_p95_ms"
+id = "latency_p95"
+name = "Latency, 95th percentile"
 source = "Delivery, ADR-014 phase 4"
 unit = "ms"
 status = "measured"
 what = "95th percentile time from send to arrival at the receiver."
 
 [[measurand]]
-name = "duplicates"
+id = "duplicates"
+name = "Duplicates"
 source = "Delivery, ADR-014 phase 4 (nothing handled twice)"
-unit = "posts"
+unit = "frames"
 status = "measured"
-what = "Posts that arrived more than once at the receiver."
+what = "Frames that arrived more than once at the receiver."
 
 [[measurand]]
-name = "takeover_p95_s"
+id = "takeover_p95"
+name = "Coordinator take-over, 95th percentile"
 source = "Roles and coordinator, ADR-014 phase 4 (30 s is a new target, not today's)"
 unit = "s"
-status = "measured"
+status = "not_yet_measurable"
+why = "The harness has no bus and no coordinator yet: it cannot stop one and watch the crown pass (follow-up PR)."
 what = "95th percentile time from a hard stop of the coordinator to the crown being held again."
 
 [[measurand]]
-name = "handled_twice_or_missing"
+id = "handled_twice_or_missing"
+name = "Events handled twice or not at all"
 source = "Roles and coordinator, ADR-014 phase 4"
 unit = "events"
-status = "measured"
-what = "Coordinator events handled twice or not at all after a takeover."
+status = "not_yet_measurable"
+why = "Needs a running bus whose coordinator events the harness can count (follow-up PR)."
+what = "Coordinator events handled twice or not at all after a take-over."
 
 [[measurand]]
-name = "device_approvals"
+id = "device_approvals"
+name = "Device approvals"
 source = "Device approvals, ADR-014 phase 4"
 unit = "approvals"
 status = "not_yet_measurable"
@@ -65,7 +77,8 @@ why = "Today's bus has no device approval; it arrives with the login service on 
 what = "How often a human had to approve a login during a run."
 
 [[measurand]]
-name = "forgeries_refused"
+id = "forgeries_refused"
+name = "Forgery cases refused"
 source = "Identity, ADR-014 phase 4"
 unit = "cases"
 status = "not_yet_measurable"

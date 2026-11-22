@@ -1,9 +1,9 @@
 """The measurands the runs collect, read from `measurands.toml`.
 
-Nothing in the harness spells a measurand's name: every name comes from the
-file beside this package (condition 3 of the build order's approval). A name
-that a run collects but the file does not declare is a bug, and so is a
-declared name the report does not carry.
+A measurand has a fixed `id` and a free `name` (review point 8): the harness
+computes and reports by `id`, only the printed report uses `name`. Renaming
+therefore cannot break a run silently, and a run that declares an `id` no
+formula produces is a hard error, not a silent zero.
 """
 
 from __future__ import annotations
@@ -12,8 +12,12 @@ import tomllib
 from dataclasses import dataclass
 from pathlib import Path
 
-# src/bus_testrig/measurands.py -> testrig/measurands.toml
-FILE = Path(__file__).resolve().parents[2] / "measurands.toml"
+_HERE = Path(__file__).resolve().parent
+# The source tree keeps it beside the package (`testrig/measurands.toml`), a
+# wheel carries it inside (`bus_testrig/measurands.toml`, pyproject's
+# force-include): both are looked for, source tree first.
+FILE = next(p for p in (_HERE.parents[1] / "measurands.toml", _HERE / "measurands.toml")
+            if p.exists())
 
 MEASURED = "measured"
 NOT_YET = "not_yet_measurable"
@@ -21,6 +25,7 @@ NOT_YET = "not_yet_measurable"
 
 @dataclass(frozen=True)
 class Measurand:
+    id: str
     name: str
     source: str
     unit: str
@@ -34,9 +39,12 @@ class Measurand:
 
 
 def load(path: Path = FILE) -> list[Measurand]:
-    """The file's measurands in order. Raises on a missing or malformed file
-    and on a status the harness does not know: a run must never silently
-    report a number under an unknown label."""
+    """The file's measurands in order.
+
+    Raises on a missing or malformed file, on an unknown status, and on an
+    `id` declared twice: a run must never report a number under an unknown
+    label or let one id stand for two rows.
+    """
     with path.open("rb") as fh:
         data = tomllib.load(fh)
     rows = data.get("measurand")
@@ -45,20 +53,21 @@ def load(path: Path = FILE) -> list[Measurand]:
     out: list[Measurand] = []
     seen: set[str] = set()
     for row in rows:
-        for key in ("name", "source", "unit", "status", "what"):
+        for key in ("id", "name", "source", "unit", "status", "what"):
             if not row.get(key):
                 raise ValueError(f"{path}: a measurand without {key!r}: {row}")
         if row["status"] not in (MEASURED, NOT_YET):
-            raise ValueError(f"{path}: {row['name']}: unknown status {row['status']!r}")
+            raise ValueError(f"{path}: {row['id']}: unknown status {row['status']!r}")
         if row["status"] == NOT_YET and not row.get("why"):
-            raise ValueError(f"{path}: {row['name']}: not_yet_measurable needs a 'why'")
-        if row["name"] in seen:
-            raise ValueError(f"{path}: {row['name']} declared twice")
-        seen.add(row["name"])
-        out.append(Measurand(name=row["name"], source=row["source"], unit=row["unit"],
-                             status=row["status"], what=row["what"], why=row.get("why", "")))
+            raise ValueError(f"{path}: {row['id']}: not_yet_measurable needs a 'why'")
+        if row["id"] in seen:
+            raise ValueError(f"{path}: id {row['id']!r} declared twice")
+        seen.add(row["id"])
+        out.append(Measurand(id=row["id"], name=row["name"], source=row["source"],
+                             unit=row["unit"], status=row["status"], what=row["what"],
+                             why=row.get("why", "")))
     return out
 
 
-def names(path: Path = FILE) -> list[str]:
-    return [m.name for m in load(path)]
+def ids(path: Path = FILE) -> list[str]:
+    return [m.id for m in load(path)]

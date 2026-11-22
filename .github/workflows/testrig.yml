@@ -3,6 +3,9 @@ name: testrig
 # The fault-run harness has its own project and its own job (condition 1 of
 # the build order's approval): a move that touches mcp/pyproject.toml does not
 # touch this, and a change here runs only here.
+#
+# Actions are pinned to a commit SHA (review point 16): a tag can be moved, a
+# SHA cannot, and this job runs on every PR.
 
 on:
   push:
@@ -17,32 +20,28 @@ permissions:
 jobs:
   harness:
     runs-on: ubuntu-latest
+    timeout-minutes: 10
     defaults:
       run:
         working-directory: testrig
     steps:
-      - uses: actions/checkout@v4
-      - uses: astral-sh/setup-uv@v6
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262  # v4
+        with:
+          persist-credentials: false
+      - uses: astral-sh/setup-uv@d0d8abe699bfb85fec6de9f7adb5ae17292296ff  # v6
+        with:
+          enable-cache: true
 
       - name: ruff
-        run: uvx ruff@0.17.2 check
+        run: uvx --from ruff@0.17.2 ruff check
 
       - name: tests
-        run: uv run --extra dev pytest -q
+        run: uv run --locked --group dev pytest -q
 
       # The harness must run where the Lab does, and must be runnable where it
-      # does not: the dry run proves the second half on every build.
-      - name: dry run, no Lab and no server
-        run: uv run bus-testrig dry-run
+      # does not: the echo run proves the second half on every build.
+      - name: echo run, no Lab and no server
+        run: uv run --locked bus-testrig echo-run
 
       - name: a fault really changes the numbers
-        run: |
-          set -euo pipefail
-          out="$(uv run bus-testrig dry-run --fault drop --after 1 --count 10)"
-          python3 - "$out" <<'PY'
-          import json, sys
-          m = json.loads(sys.argv[1])["measured"]
-          assert m["loss"]["value"] > 0, m["loss"]
-          assert m["device_approvals"]["status"] == "not_yet_measurable", m["device_approvals"]
-          print("faulted run reports a loss and names what it cannot measure yet")
-          PY
+        run: uv run --locked python scripts/ci_fault_check.py

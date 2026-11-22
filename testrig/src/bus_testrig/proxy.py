@@ -1,31 +1,40 @@
 """Faults, injected where they can be injected honestly.
 
-Condition 2 of the build order's approval: duplicating a message and
-reordering one cannot be provoked at a real Mattermost, so the injection sits
-in a WebSocket proxy the bus talks to instead of the server. The frames stay
-the server's own bytes: the proxy forwards what it received and only decides
-*when* and *how often* the client sees them.
+A real Mattermost cannot be made to duplicate or reorder a frame on demand, so
+those faults sit in a WebSocket proxy the client talks to instead of the
+server. The frames stay the server's own bytes: the proxy forwards what it
+received and only decides whether, when and how often the client sees them.
 
-What the proxy can do to the server-to-client direction, and nothing more:
+The faults the proxy can produce:
 
-  drop      a frame is discarded (a silently lost message)
-  duplicate the same frame is delivered twice
-  reorder   a frame is held back and released after the next one
-  stall     delivery pauses for `stall_sec`, then resumes
+  drop       a frame is discarded
+  duplicate  the same frame is delivered twice
+  reorder    a frame is held back and released after the next one
+  stall      delivery pauses for `stall_sec`, then resumes (pongs too, so a
+             heartbeat sees the silence)
+  blackhole  nothing is delivered any more and the connection is not closed:
+             the peer keeps a socket it believes healthy
 
-The process faults are not the proxy's: ending the server and cutting the
-network are the operating system's, done by a run with a signal and a real
-socket (see `proc`). Neither is simulated in-process.
+The process faults are not the proxy's: killing a process and cutting its
+network are the operating system's (`proc`), never simulated in-process.
+
+The proxy only speaks WebSocket today. The bus derives REST and WebSocket from
+one base URL, so it cannot be put in front of the bus unchanged; passing HTTP
+through and faulting only `/api/v4/websocket` belongs to the follow-up PR that
+drives the bus (review point 2).
 """
 
 from __future__ import annotations
 
 import asyncio
-import random
-from dataclasses import dataclass, field
-from typing import Any
+from dataclasses import dataclass
+from typing import Any, Callable
 
-KINDS = ("drop", "duplicate", "reorder", "stall")
+KINDS = ("drop", "duplicate", "reorder", "stall", "blackhole")
+
+# The state `reorder` keeps is per connection, not per proxy (review point 9):
+# two clients through one proxy must not swap each other's frames.
+Frame = Any
 
 
 @dataclass
@@ -35,6 +44,9 @@ class ProxyFault:
     `after`: the first n frames pass untouched (the handshake).
     `every`: two or more lets the rest through, so a run can measure both the
     faulted and the unaffected share.
+    `only`: a predicate on the frame; `None` faults every frame that passes
+    `every`. Deciding *which* frames to fault belongs here, not in an unused
+    random seed (review point 14).
     """
 
     kind: str
@@ -42,10 +54,7 @@ class ProxyFault:
     stall_sec: float = 0.5
     reorder_max_wait: float = 0.2
     after: int = 0
-    seed: int = 0
-    _rng: random.Random = field(init=False, repr=False)
-    _n: int = field(default=0, init=False)
-    _held: Any = field(default=None, init=False, repr=False)
+    only: Callable[[Frame], bool] | None = None
 
     def __post_init__(self) -> None:
         if self.kind not in KINDS:
@@ -54,19 +63,28 @@ class ProxyFault:
             raise ValueError("every must be >= 1")
         if self.stall_sec < 0:
             raise ValueError("stall_sec must be >= 0")
-        self._rng = random.Random(self.seed)
 
-    def applies(self) -> bool:
-        self._n += 1
-        return self._n > self.after and self._n % self.every == 0
+
+@dataclass
+class ConnState:
+    """One connection's fault state: the count and a frame held for reorder."""
+
+    n: int = 0
+    held: Frame = None
+    release: asyncio.TimerHandle | None = None
+
+    def cancel(self) -> None:
+        if self.release is not None:
+            self.release.cancel()
+            self.release = None
 
 
 class FrameProxy:
-    """A WebSocket proxy in front of the bus's socket.
+    """A WebSocket proxy in front of a WebSocket server, for frame faults.
 
-    The run hands the bus the proxy's URL instead of the server's, so the bus
-    speaks its ordinary WebSocket and does not know anything sits between.
-    The client's frames go upstream untouched; only the server's direction is
+    The client is handed the proxy's URL instead of the server's, so it speaks
+    its ordinary WebSocket and does not know anything sits between. The
+    client's frames go upstream untouched; only the server's direction is
     faulted.
     """
 
@@ -88,74 +106,91 @@ class FrameProxy:
         return self
 
     async def __aexit__(self, *_exc: Any) -> None:
-        # Stop accepting, but do not wait for connections to drain: a run
-        # ends with its faults, and a client that dropped half a connection
-        # would otherwise hold the harness open. `wait_closed` is bounded.
         self._server.close()
         try:
             await asyncio.wait_for(self._server.wait_closed(), timeout=2.0)
-        except (asyncio.TimeoutError, Exception):  # noqa: BLE001 — teardown is best effort
-            pass
+        except asyncio.TimeoutError:
+            pass  # a connection a run abandoned must not hold the harness open
 
     async def _handle(self, client: Any) -> None:
         """One client connection: a matching connection upstream, frames
-        relayed both ways until either side closes."""
+        relayed both ways until **either** side closes.
+
+        `gather` used to wait for both directions, so a client that left kept
+        the proxy waiting for a server that stayed (review point 10). Waiting
+        for the first one to finish and then closing the other is right: a
+        connection is over when either end says so.
+        """
         from websockets.asyncio.client import connect
 
-        async with connect(self.upstream) as upstream:
-            await asyncio.gather(
-                self._client_to_upstream(client, upstream),
-                self._upstream_to_client(upstream, client),
-            )
+        state = ConnState()
+        try:
+            async with connect(self.upstream) as upstream:
+                tasks = {asyncio.create_task(self._client_to_upstream(client, upstream)),
+                         asyncio.create_task(self._upstream_to_client(upstream, client, state))}
+                _done, pending = await asyncio.wait(tasks, return_when=asyncio.FIRST_COMPLETED)
+                for task in pending:
+                    task.cancel()
+                await asyncio.gather(*pending, return_exceptions=True)
+                for task in tasks:
+                    if not task.cancelled() and task.exception() is not None:
+                        raise task.exception()  # type: ignore[misc]
+        finally:
+            state.cancel()
 
     async def _client_to_upstream(self, client: Any, upstream: Any) -> None:
         async for frame in client:
             await upstream.send(frame)
 
-    async def _release_held(self, client: Any) -> None:
-        """Send a frame `reorder` is still holding, if any. Called on a timer
-        and when the upstream ends, so a held frame is delayed, never lost."""
-        fault = self.fault
-        if fault is None or fault._held is None:
+    async def _upstream_to_client(self, upstream: Any, client: Any, state: ConnState) -> None:
+        async for frame in upstream:
+            self.received += 1
+            await self._deliver(frame, client, state)
+        await self._flush(client, state)
+
+    async def _flush(self, client: Any, state: ConnState) -> None:
+        """Release a frame `reorder` still holds when the server stops."""
+        if state.held is None:
             return
-        held, fault._held = fault._held, None
+        held, state.held = state.held, None
+        state.cancel()
         try:
             await client.send(held)
             self.forwarded += 1
         except Exception:  # noqa: BLE001 — the client left; that is the run's fault
             return
 
-    async def _upstream_to_client(self, upstream: Any, client: Any) -> None:
-        async for frame in upstream:
-            self.received += 1
-            await self._deliver(frame, client)
-        # A frame held by `reorder` when the server stops is still delivered:
-        # the fault changes the order, never drops.
-        if self.fault is not None and self.fault._held is not None:
-            held, self.fault._held = self.fault._held, None
-            try:
-                await client.send(held)
-            except Exception:  # noqa: BLE001 — the client left; the run's fault
-                return
-            self.forwarded += 1
+    def _applies(self, frame: Frame, state: ConnState) -> bool:
+        fault = self.fault
+        if fault is None:
+            return False
+        state.n += 1
+        if state.n <= fault.after:
+            return False
+        if fault.only is not None and not fault.only(frame):
+            return False
+        return state.n % fault.every == 0
 
-    async def _deliver(self, frame: Any, client: Any) -> None:
-        """Deliver one server frame, subject to `fault`.
+    async def _deliver(self, frame: Frame, client: Any, state: ConnState) -> None:
+        """Deliver one server frame, subject to the fault.
 
-        Invariant: every frame the proxy received is sent **exactly once**,
-        unless the fault is `duplicate`. A fault changes *when* a frame goes
-        out or *whether* it goes out, never how often — which is what makes
-        drop, reorder and stall measurable separately from duplication.
+        Invariant: a frame goes out at most once unless the fault is
+        `duplicate` (review point 18: a reorder under `every=2` may hold a
+        frame that the next applies-check does not see, and the timer must
+        then release it — which is why the timer is cancelled whenever the
+        held frame is released).
         """
         fault = self.fault
-        # Nothing is released here on the way in: `reorder` decides below, so
-        # that a held frame really swaps with its successor instead of being
-        # flushed just before it.
-        if fault is None or not fault.applies():
+        if fault is not None and fault.kind == "blackhole" and self._applies(frame, state):
+            self.altered += 1
+            return  # silence, and the connection stays open
+        if not self._applies(frame, state):
             await client.send(frame)
             self.forwarded += 1
             return
         self.altered += 1
+        if fault is None:  # unreachable: `_applies` is False without a fault
+            return
         if fault.kind == "drop":
             return
         if fault.kind == "duplicate":
@@ -164,16 +199,14 @@ class FrameProxy:
             self.forwarded += 2
             return
         if fault.kind == "reorder":
-            # Swap this frame with the next one: the held frame goes out
-            # second. If no next frame comes, the timer releases it, so a
-            # trailing frame is delayed, never lost.
-            if fault._held is None:
-                fault._held = frame
-                asyncio.get_running_loop().call_later(
+            if state.held is None:
+                state.held = frame
+                state.release = asyncio.get_running_loop().call_later(
                     fault.reorder_max_wait,
-                    lambda: asyncio.ensure_future(self._release_held(client)))
+                    lambda: asyncio.ensure_future(self._release(client, state)))
                 return
-            held, fault._held = fault._held, None
+            held, state.held = state.held, None
+            state.cancel()
             await client.send(frame)
             await client.send(held)
             self.forwarded += 2
@@ -182,3 +215,8 @@ class FrameProxy:
             await asyncio.sleep(fault.stall_sec)
             await client.send(frame)
             self.forwarded += 1
+
+    async def _release(self, client: Any, state: ConnState) -> None:
+        """A frame held by `reorder` whose successor never came: send it, so a
+        trailing frame is delayed, never lost."""
+        await self._flush(client, state)

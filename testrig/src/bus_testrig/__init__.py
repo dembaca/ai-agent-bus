@@ -1,8 +1,9 @@
-"""Fault runs for the agent bus (phase 1 comparison, phase 4 acceptance).
+"""Fault runs for the agent bus.
 
-The harness measures the bus itself, never a stand-in for it: real processes,
-real sockets, and the server's own frames relayed by a proxy only when timing
-is the fault. See `measurands.toml` for what is measured and why.
+This harness measures its own echo loop today (`runner.echo_run`): a real
+`websockets` server, the real proxy in front of it and its own client. Driving
+the bus itself is the follow-up PR. See `measurands.toml` for what is measured
+and why.
 """
 
-__all__ = ["measurands", "proxy", "runner", "proc"]
+__all__ = ["cli", "measurands", "proc", "proxy", "runner"]

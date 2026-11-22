@@ -1,19 +1,19 @@
-"""Runs: send messages, fault the bus, measure what arrived.
+"""Runs: send frames, fault the channel, measure what arrived.
 
-The harness sends through the bus's own public surface and reads what came
-out, so it measures the code under test rather than a copy of its logic. Its
-faults are the operating system's where they can be (a signal, a socket
-closed under a process) and the proxy's where only timing can produce them
-(a duplicated or reordered frame).
+This harness measures **its own echo loop** today: a real `websockets` server,
+the real proxy in front of it and the harness's own client. It does not drive
+the bus yet — that is the follow-up PR, and every text here says so rather
+than implying otherwise (review point 1).
 
-`dry_run` exercises the whole flow against a local echo endpoint the harness
-starts itself: no Lab, no vexing server, no network. It is what proves the
-harness runs where the Lab is unavailable (condition 4 of the approval).
+The measurement is independent of when a test reads: `Sent` and `Received`
+are recorded at the moment each side acts, so a slow reader cannot inflate a
+latency and a stall cannot be mistaken for a loss.
 """
 
 from __future__ import annotations
 
 import asyncio
+import math
 import statistics
 import time
 from dataclasses import dataclass, field
@@ -25,11 +25,8 @@ from .proxy import FrameProxy, ProxyFault
 
 @dataclass
 class Sent:
-    """One message a run sent, and what became of it."""
-
     seq: int
     at: float
-    payload: str = ""
 
 
 @dataclass
@@ -39,79 +36,112 @@ class Received:
     copies: int = 1
 
 
+def _pct(ordered: list[float], p: float) -> float:
+    """The p-th percentile of an already ordered list, nearest rank.
+
+    `ceil(p/100 * n) - 1` (review point 6): n = 1 gives the only value, and
+    n = 100 at p = 95 gives index 94, not 95. The old `round(p/100*n + 0.5)-1`
+    was one off for most n.
+    """
+    if not ordered:
+        raise ValueError("empty list")
+    rank = math.ceil(p / 100.0 * len(ordered)) - 1
+    return ordered[max(0, min(rank, len(ordered) - 1))]
+
+
 @dataclass
 class Run:
-    """One fault run's bookkeeping and its measurements.
-
-    `sent` and `received` are enough for every `measured` measurand in
-    `measurands.toml`: loss, latency, duplicates. The coordinator rows
-    (`takeover_*`, `handled_twice_or_missing`) are recorded by the caller in
-    `takeovers` and `handled`, since only the caller knows when it killed the
-    coordinator and what it then observed.
-    """
+    """One fault run's bookkeeping and its measurements."""
 
     name: str
     count: int = 100
     sent: list[Sent] = field(default_factory=list)
     received: dict[int, Received] = field(default_factory=dict)
-    takeovers: list[float] = field(default_factory=list)
-    handled: dict[str, int] = field(default_factory=dict)  # event id -> times handled
     started: float = 0.0
     ended: float = 0.0
+    target: str = "echo"
+    fault: str = "none"
+    commit: str = ""
 
     def send(self, seq: int) -> Sent:
         item = Sent(seq=seq, at=time.monotonic())
         self.sent.append(item)
         return item
 
-    def arrive(self, seq: int) -> None:
+    def arrive(self, seq: int, at: float | None = None) -> None:
         hit = self.received.get(seq)
         if hit is None:
-            self.received[seq] = Received(seq=seq, at=time.monotonic())
+            self.received[seq] = Received(seq=seq, at=at if at is not None else time.monotonic())
         else:
             hit.copies += 1
 
-    def measure(self) -> dict[str, dict[str, Any]]:
-        """Every measurand in the file, measured or named as not measurable.
+    def _values(self) -> dict[str, float | None]:
+        """The formulas, by measurand `id` (review point 8: never by name).
 
-        Returns `{name: {"value": ..., "unit": ..., "status": ...}}`, so the
-        report is the same shape before and after the switch and a rename in
-        the file is a rename everywhere.
+        A measurand whose data this run did not collect is `None`, never 0 —
+        a zero would read as "nothing was lost" when nothing was measured.
         """
-        out: dict[str, dict[str, Any]] = {}
-        latency = sorted((r.at - self.sent[i].at) * 1000.0
-                         for i, r in self.received.items() if i < len(self.sent))
-        lost = sum(1 for s in self.sent if s.seq not in self.received)
+        by_seq = {s.seq: s for s in self.sent}
+        open_latencies = sorted((r.at - by_seq[seq].at) * 1000.0
+                                for seq, r in self.received.items() if seq in by_seq)
+        lost = sum(1 for seq in by_seq if seq not in self.received)
         dupes = sum(r.copies - 1 for r in self.received.values())
-        twice_or_missing = sum(1 for n in self.handled.values() if n != 1)
-        values: dict[str, Any] = {
+        return {
             "loss": lost,
-            "latency_p50_ms": round(statistics.median(latency), 1) if latency else None,
-            "latency_p95_ms": round(_pct(latency, 95), 1) if latency else None,
+            "latency_p50": statistics.median(open_latencies) if open_latencies else None,
+            "latency_p95": _pct(open_latencies, 95) if open_latencies else None,
             "duplicates": dupes,
-            "takeover_p95_s": round(_pct(sorted(self.takeovers), 95), 1) if self.takeovers else None,
-            "handled_twice_or_missing": twice_or_missing,
         }
+
+    def measure(self) -> dict[str, dict[str, Any]]:
+        """Every measurand in the file, by `id`, measured or named as not.
+
+        Raises when the file declares a `measured` id this run has no formula
+        for: that is a broken harness, not a zero."""
+        values = self._values()
+        out: dict[str, dict[str, Any]] = {}
         for m in measurands.load():
-            if m.measurable:
-                out[m.name] = {"value": values.get(m.name), "unit": m.unit, "status": m.status}
-            else:
-                out[m.name] = {"value": None, "unit": m.unit, "status": m.status, "why": m.why}
+            if not m.measurable:
+                out[m.id] = {"name": m.name, "value": None, "unit": m.unit,
+                             "status": m.status, "why": m.why}
+                continue
+            if m.id not in values:
+                raise RuntimeError(f"{m.id} is 'measured' in the file, but no formula computes it")
+            value = values[m.id]
+            out[m.id] = {
+                "name": m.name,
+                "value": None if value is None else round(value, 1),
+                "unit": m.unit,
+                "status": m.status,
+            }
         return out
 
+    def report(self) -> dict[str, Any]:
+        """What `bus-testrig` prints (review point 15): the run's context with
+        its numbers, so a number is never read without what produced it."""
+        return {
+            "run": self.name,
+            "target": self.target,
+            "fault": self.fault,
+            "count": self.count,
+            "commit": self.commit,
+            "duration_s": round(self.ended - self.started, 3) if self.ended else None,
+            "measured": self.measure(),
+        }
 
-def _pct(ordered: list[float], p: float) -> float:
-    """The p-th percentile of an already ordered list (nearest rank)."""
-    if not ordered:
-        raise ValueError("empty list")
-    rank = max(1, round(p / 100.0 * len(ordered) + 0.5) - 1)
-    return ordered[min(rank, len(ordered) - 1)]
 
-
-async def dry_run(count: int = 20, fault: ProxyFault | None = None) -> Run:
+async def echo_run(count: int = 20, fault: ProxyFault | None = None,
+                   send_interval: float = 0.0) -> Run:
     """The whole flow with no Lab and no server: an echo endpoint the harness
-    starts, the proxy in front of it, and the harness's own client reading
-    back. A message counts as arrived when its seq comes back."""
+    starts, the proxy in front of it, and the harness's own client.
+
+    The reader runs as its own task **before** the first send (review point 7):
+    a sender that also reads pays for its own queue, which made 20 frames look
+    like 1.8 ms and 2000 like 62 ms. `send_interval` paces the sender.
+
+    A frame counts as arrived when its seq comes back; the reader stops when
+    every seq arrived or `deadline` passed, so a stall is not a loss (point 5).
+    """
     import websockets
 
     async def echo(conn: Any) -> None:
@@ -120,22 +150,35 @@ async def dry_run(count: int = 20, fault: ProxyFault | None = None) -> Run:
 
     server = await websockets.serve(echo, "127.0.0.1", 0)
     port = server.sockets[0].getsockname()[1]
-    run = Run(name="dry-run", count=count)
+    run = Run(name="echo-run", count=count, target="echo",
+              fault=fault.kind if fault else "none")
     run.started = time.monotonic()
+    stall = fault.stall_sec if fault is not None and fault.kind == "stall" else 0.0
+    # A stall delays every faulted frame; the reader must outlast them all.
+    deadline = max(1.0, float(count) * (stall + 0.02) + 1.0)
     try:
         async with FrameProxy(f"ws://127.0.0.1:{port}", fault) as proxy:
             async with websockets.connect(proxy.url) as client:
+
+                async def read() -> None:
+                    while len(run.received) < count:
+                        try:
+                            raw = await asyncio.wait_for(client.recv(), timeout=deadline)
+                        except asyncio.TimeoutError:
+                            return
+                        try:
+                            run.arrive(int(raw))
+                        except ValueError:
+                            continue  # a frame the harness did not send
+
+                reader = asyncio.create_task(read())
                 for seq in range(count):
                     run.send(seq)
                     await client.send(str(seq))
-                try:
-                    while True:
-                        raw = await asyncio.wait_for(client.recv(), timeout=0.5)
-                        run.arrive(int(raw))
-                except (asyncio.TimeoutError, websockets.ConnectionClosed):
-                    pass
+                    if send_interval:
+                        await asyncio.sleep(send_interval)
+                await reader
     finally:
         server.close()
-        await server.wait_closed()
         run.ended = time.monotonic()
     return run
