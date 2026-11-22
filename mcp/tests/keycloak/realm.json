@@ -4,7 +4,7 @@
   "sslRequired": "none",
   "registrationAllowed": false,
   "attributes": {
-    "oauth2DeviceCodeLifespan": "600",
+    "oauth2DeviceCodeLifespan": "90",
     "oauth2DevicePollingInterval": "1"
   },
   "accessTokenLifespan": 300,

@@ -99,6 +99,11 @@ async def play_human(link: str, user: str, *, approve: bool = True) -> None:
         for _ in range(8):
             parser = _Form()
             parser.feed(page.text)
+            # What the simulated human sees, for the CI log: no secrets here,
+            # the test realm's pages only.
+            print(f"play_human[{user}]: {page.status_code} {page.url.path} forms="
+                  f"{[(f['action'].split('?')[0], sorted(f['fields']), sorted(f['buttons'])) for f in parser.forms]}",
+                  flush=True)
             if not parser.forms:
                 return
             form = parser.forms[0]

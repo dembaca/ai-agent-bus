@@ -48,4 +48,4 @@ jobs:
       - name: login against a real Keycloak
         env:
           MM_TEST_KEYCLOAK: "1"
-        run: uv run --directory mcp --locked pytest -q -m keycloak tests/test_login_keycloak.py -rs -s
+        run: uv run --directory mcp --locked pytest -q -m keycloak tests/test_login_keycloak.py -v -rs -s
