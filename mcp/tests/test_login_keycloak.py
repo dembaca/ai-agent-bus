@@ -9,7 +9,6 @@ lifespan 10 s). Run: `uv run --directory mcp pytest -q -m keycloak`.
 import asyncio
 import os
 import html
-import http.cookiejar
 import re
 import shutil
 import subprocess
@@ -93,20 +92,41 @@ class _Form(HTMLParser):
             self.forms[-1][bucket][a["name"]] = a.get("value") or ""
 
 
-class _LoopbackCookies(http.cookiejar.DefaultCookiePolicy):
-    """Keycloak 26 marks its session cookies Secure; the test realm runs on
-    plain http on loopback, where a browser sends them anyway and Python's
-    cookie jar would not (Keycloak then answers 400, no session)."""
+class _Browser:
+    """Just enough of a browser for Keycloak's forms: it follows redirects and
+    keeps every cookie it is given, whatever its Secure, SameSite or domain
+    attributes (Keycloak 26 marks its session cookies Secure, and the test
+    realm runs on plain http on loopback, where Python's cookie jar would drop
+    them and Keycloak would answer "Restart login cookie not found")."""
 
-    def return_ok_secure(self, cookie, request):  # type: ignore[no-untyped-def]
-        return True
+    def __init__(self, client: httpx.AsyncClient) -> None:
+        self.client = client
+        self.cookies: dict[str, str] = {}
+
+    async def go(self, method: str, url: str, data: dict | None = None) -> httpx.Response:
+        for _ in range(10):
+            headers = {"Cookie": "; ".join(f"{k}={v}" for k, v in self.cookies.items())} if self.cookies else {}
+            resp = await self.client.request(method, url, data=data, headers=headers)
+            for raw in resp.headers.get_list("set-cookie"):
+                name, _, rest = raw.partition("=")
+                value = rest.split(";", 1)[0]
+                if value and "max-age=0" not in raw.lower():
+                    self.cookies[name.strip()] = value
+                else:
+                    self.cookies.pop(name.strip(), None)
+            if resp.status_code in (301, 302, 303, 307, 308) and "location" in resp.headers:
+                url = str(resp.url.join(resp.headers["location"]))
+                method, data = ("GET", None) if resp.status_code in (301, 302, 303) else (method, data)
+                continue
+            return resp
+        raise AssertionError("too many redirects")
 
 
 async def play_human(link: str, user: str, *, approve: bool = True) -> None:
     """Open the approval link, log in and answer the consent page, as a person in a browser."""
-    jar = http.cookiejar.CookieJar(policy=_LoopbackCookies())
-    async with httpx.AsyncClient(follow_redirects=True, timeout=30, cookies=jar) as browser:
-        page = await browser.get(link)
+    async with httpx.AsyncClient(follow_redirects=False, timeout=30) as client:
+        browser = _Browser(client)
+        page = await browser.go("GET", link)
         for _ in range(8):
             parser = _Form()
             parser.feed(page.text)
@@ -120,9 +140,7 @@ async def play_human(link: str, user: str, *, approve: bool = True) -> None:
                     body = page.text.split("<body", 1)[-1]
                     text = " ".join(re.sub(r"<script.*?</script>|<style.*?</style>|<[^>]+>", " ", body,
                                            flags=re.S).split())
-                    hops = [f"{r.status_code} {r.url.path}?{r.url.query.decode()[:80]}" for r in page.history]
-                    print(f"play_human[{user}]: link={link.split('?')[0]} hops={hops} text={text[:400]!r}",
-                          flush=True)
+                    print(f"play_human[{user}]: cookies={sorted(browser.cookies)} text={text[:400]!r}", flush=True)
                 return
             form = parser.forms[0]
             data = dict(form["fields"])
@@ -132,7 +150,7 @@ async def play_human(link: str, user: str, *, approve: bool = True) -> None:
                 want = "accept" if approve else "cancel"
                 assert want in form["buttons"], f"no {want} button: {sorted(form['buttons'])}"
                 data[want] = form["buttons"][want] or ("Yes" if approve else "No")
-            page = await browser.post(str(page.url.join(form["action"])), data=data)
+            page = await browser.go("POST", str(page.url.join(form["action"])), data=data)
         raise AssertionError("Keycloak's forms did not end")
 
 
