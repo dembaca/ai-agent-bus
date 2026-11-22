@@ -36,7 +36,9 @@ before 0.5.0 are described in the git history.
   thread roots and reactions by stream sequence), the connection with the
   host login's token and nkey, the literal deliver subscriptions, gap
   detection, heartbeat and crown. The host stops when the credential carries
-  another name than the one it computes. New dependency `nats-py` 2.16.0;
+  another name than the one it computes; every send waits for the server's
+  answer, so a refused one is an error. The login service takes `since`
+  for direct messages under the key `@dm`. New dependency `nats-py` 2.16.0;
   CI runs its tests against nats-server 2.15.3.
 
 ## 0.96.0

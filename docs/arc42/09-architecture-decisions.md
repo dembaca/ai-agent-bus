@@ -3393,18 +3393,30 @@ separately.
       trust anchor, as it already is for names and credentials.
 
     **The message format, version 1** (the bus's own, point 2; built in
-    `mcp/src/…/natsbus.py`). Every body is JSON with `"v": 1`; a reader
-    drops an unknown version or a malformed body and logs it without its
-    content. A message is at most 64 KiB, the streams' message size.
+    `mcp/src/…/natsbus.py`). Every body is UTF-8 JSON with `"v": 1`, no
+    duplicate key, no `NaN` or `Infinity` (Go refuses them, and a lost
+    message must not look delivered), no lone surrogate; a reader drops an
+    unknown version or a malformed body and logs it without its content. A
+    message is at most 64 KiB, the streams' message size.
     - Channel and direct messages: `kind` `post`, `reaction` or
       `unreaction`; `text`; `root`, the stream sequence of a thread's root
       post (a reply), else null; `ref` and `emoji` for a reaction, `ref`
-      being the stream sequence of the post it reacts to; `props`, a flat
-      object of the bus's own fields (`x_…`, as today). A thread and a
+      being the stream sequence of the post it reacts to, `emoji` one line of
+      at most 64 characters; `props`, a flat object of the bus's own fields,
+      every key starting with `x_` (so no body can carry what only the
+      server may say, such as `from_trusted_human` or `mandated`). A thread and a
       reaction are thus fields of the format, so the agents' tools stay as
       they are (point 3).
     - Presence: `status` `online`, `away` or `bye`, every 30 s; a crown
-      claim has no other field.
+      claim has no other field. Freshness counts by the server's time: the
+      host's "now" is the newest server timestamp it has seen, never its own
+      clock; claims and presence older than 24 h are forgotten, as the
+      stream forgets them.
+    - The host connects only over `tls://` (`nats://` on a loopback host
+      only), binds every delivery to its own consumer (stream and consumer
+      in JetStream's reply subject), confirms every send with a round trip
+      (a refused one is an error, not a silent loss), and reconnects with a
+      fresh token before its 15-minute credential runs out.
     - Never in the body: the sender (the subject's last token), the time and
       the sequence (JetStream's metadata, the server's). No `Nats-Msg-Id`
       (condition 1).

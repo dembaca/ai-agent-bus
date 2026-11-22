@@ -168,14 +168,29 @@ class FakeLogin:
         return NKey(public_key=bytes(kp.public_key).decode(), sign=lambda n: bytes(kp.sign(n)))
 
 
+_BUS_KW = ("gap_reconnect_sec", "renew_sec", "on_fatal", "heartbeat_sec", "send_wait_sec")
+
+
 def _unit_bus(**kw: Any) -> tuple[NatsBus, list[Event]]:
     events: list[Event] = []
-    bus = NatsBus(_settings(**kw), FakeLogin(), "alice", events.append)
+    bus_kw = {k: kw.pop(k) for k in _BUS_KW if k in kw}
+    bus = NatsBus(_settings(**kw), FakeLogin(), "alice", events.append, **bus_kw)
     return bus, events
 
 
-def _reply(sseq: int, cseq: int) -> str:
-    return f"$JS.ACK.BUS.c.1.{sseq}.{cseq}.{int(time.time() * 1e9)}.0"
+def _reply(bus: NatsBus, where: str, sseq: int, cseq: int, t: float | None = None) -> str:
+    """The JetStream reply subject of the bus's own consumer for `where`."""
+    consumer = f"{bus.name}_dm" if where == "dm" else f"{bus.name}_ch_{where}"
+    return f"$JS.ACK.BUS.{consumer}.1.{sseq}.{cseq}.{int((time.time() if t is None else t) * 1e9)}.0"
+
+
+def _presence_reply(bus: NatsBus, sseq: int, cseq: int, t: float) -> str:
+    return f"$JS.ACK.PRESENCE.{bus.name}_presence.1.{sseq}.{cseq}.{int(t * 1e9)}.0"
+
+
+class FakeMsg:
+    def __init__(self, subject: str, reply: str | None, data: bytes) -> None:
+        self.subject, self.reply, self.data = subject, reply, data
 
 
 def test_crown_rule() -> None:
@@ -208,33 +223,64 @@ async def test_unit_deliver_drops_and_gap(caplog: pytest.LogCaptureFixture) -> N
     ok = encode(Message("post", "SECRET-TEXT"))
     subj = "bus.ch.home.agent-x"
     await bus._on_deliver("home", subj, None, ok)  # no JetStream metadata
-    await bus._on_deliver("home", subj, _reply(10, 1), b"SECRET-TEXT not json")  # malformed
-    await bus._on_deliver("home", "bus.ch.other.agent-x", _reply(11, 2), ok)  # wrong channel
-    await bus._on_deliver("home", "bus.ch.home.a.b", _reply(11, 3), ok)  # too many tokens
+    await bus._on_deliver("home", subj, _reply(bus, "home", 10, 1), b"SECRET-TEXT not json")  # malformed
+    await bus._on_deliver("home", "bus.ch.other.agent-x", _reply(bus, "home", 11, 2), ok)  # wrong channel
+    await bus._on_deliver("home", "bus.ch.home.a.b", _reply(bus, "home", 11, 3), ok)  # too many tokens
     assert events == []
     assert "SECRET-TEXT" not in caplog.text
-    await bus._on_deliver("home", subj, _reply(12, 4), ok)
+    await bus._on_deliver("home", subj, _reply(bus, "home", 12, 4), ok)
     assert [(e.where, e.sender, e.stream_seq) for e in events] == [("home", "agent-x", 12)]
-    await bus._on_deliver("home", subj, _reply(12, 5), ok)  # a repeat of 12: dropped
+    await bus._on_deliver("home", subj, _reply(bus, "home", 12, 5), ok)  # a repeat of 12: dropped
     assert len(events) == 1 and bus.since() == {"home": 12}
     # consumer sequence 5 -> 7: a gap. The message is dropped, `since` stays, a reconnect is asked for.
     assert not bus._wake.is_set()
-    await bus._on_deliver("home", subj, _reply(14, 7), ok)
+    await bus._on_deliver("home", subj, _reply(bus, "home", 14, 7), ok)
     assert len(events) == 1 and bus.since() == {"home": 12} and bus._wake.is_set()
-    await bus._on_deliver("home", subj, _reply(15, 8), ok)  # still dropped until the reconnect
+    await bus._on_deliver("home", subj, _reply(bus, "home", 15, 8), ok)  # still dropped until the reconnect
     assert len(events) == 1
-    # A second gap within the interval: logged, no second reconnect, the message is accepted.
+    # A second gap within the interval: no second reconnect now, but the channel stays
+    # stale and a reconnect is scheduled for when the interval is over (never lost for good).
     bus._wake.clear()
-    bus._stale.clear()
-    await bus._on_deliver("home", subj, _reply(20, 12), ok)
-    assert not bus._wake.is_set() and len(events) == 2 and bus.since() == {"home": 20}
+    await bus._on_deliver("home", subj, _reply(bus, "home", 20, 12), ok)
+    assert not bus._wake.is_set() and len(events) == 1 and bus.since() == {"home": 12}
+    assert "home" in bus._stale and bus._gap_task is not None and not bus._gap_task.done()
+    bus._gap_task.cancel()
+
+
+async def test_gap_within_the_limit_reconnects_when_the_wait_is_over() -> None:
+    bus, events = _unit_bus(gap_reconnect_sec=0.2)
+    ok = encode(Message("post", "x"))
+    subj = "bus.ch.home.agent-x"
+    await bus._on_deliver("home", subj, _reply(bus, "home", 1, 1), ok)
+    await bus._on_deliver("home", subj, _reply(bus, "home", 3, 3), ok)  # gap: reconnect now
+    assert bus._wake.is_set()
+    bus._wake.clear()
+    await bus._on_deliver("home", subj, _reply(bus, "home", 5, 5), ok)  # gap within 0.2 s: held back
+    assert not bus._wake.is_set() and "home" in bus._stale and len(events) == 1
+    await asyncio.wait_for(bus._wake.wait(), 2)  # the wait is over: the reconnect is asked for
+    assert bus.since() == {"home": 1}  # `since` is the last accepted one: the gap is replayed
+    await bus._on_deliver("home", subj, _reply(bus, "home", 6, 6), ok)
+    assert len(events) == 1  # still stale until the reconnect really happens
+
+
+async def test_dm_gap_and_since_key() -> None:
+    bus, events = _unit_bus()
+    ok = encode(Message("post", "hi"))
+    subj = f"bus.dm.{bus.name}.agent-y"
+    await bus._on_deliver("dm", subj, _reply(bus, "dm", 7, 1), ok)
+    assert bus.since() == {"@dm": 7}
+    assert json.loads(build_hello("T", "home", (), False, bus.since()))["since"] == {"@dm": 7}
+    await bus._on_deliver("dm", subj, _reply(bus, "dm", 9, 3), ok)  # a DM was lost
+    assert bus._wake.is_set() and len(events) == 1 and bus.since() == {"@dm": 7}
+    await bus._on_deliver("dm", subj, _reply(bus, "dm", 7, 4), ok)  # a repeat from since
+    assert len(events) == 1
 
 
 async def test_unit_dm_event_and_repr() -> None:
     bus, events = _unit_bus()
-    await bus._on_deliver("dm", f"bus.dm.{bus.name}.agent-y", _reply(3, 1), encode(Message("post", "hi")))
+    await bus._on_deliver("dm", f"bus.dm.{bus.name}.agent-y", _reply(bus, "dm", 3, 1), encode(Message("post", "hi")))
     assert [(e.where, e.sender) for e in events] == [("dm", "agent-y")]
-    await bus._on_deliver("dm", "bus.dm.someone-else.agent-y", _reply(4, 2), encode(Message("post", "hi")))
+    await bus._on_deliver("dm", "bus.dm.someone-else.agent-y", _reply(bus, "dm", 4, 2), encode(Message("post", "hi")))
     assert len(events) == 1
     assert "tok-" not in repr(bus) and "seed" not in repr(bus).lower()
 
@@ -259,6 +305,251 @@ async def test_publish_when_not_connected() -> None:
     bus, _ = _unit_bus()
     with pytest.raises(natsbus.NatsBusError):
         await bus.post("home", "x")
+
+
+# --- unit: NaN, strict decoding, binding, TLS, clocks ------------------------------------------
+
+def test_no_nan_or_infinity_on_the_wire() -> None:
+    for bad in (float("nan"), float("inf"), float("-inf")):
+        with pytest.raises(MessageError):
+            encode(Message("post", "x", props={"x_f": bad}))
+    for body in (b'{"v":1,"kind":"post","text":"x","props":{"x_f":NaN}}',
+                 b'{"v":1,"kind":"post","text":"x","props":{"x_f":Infinity}}',
+                 b'{"v":1,"kind":"post","text":"x","props":{"x_f":-Infinity}}',
+                 b'{"v":1,"kind":"post","text":"x","props":{"x_f":1e999}}'):
+        with pytest.raises(MessageError):
+            decode(body)
+    with pytest.raises(MessageError):
+        decode_presence(b'{"v":1,"status":"online","n":NaN}')
+    assert decode(encode(Message("post", "x", props={"x_f": 1.5}))).props == {"x_f": 1.5}
+
+
+def test_all_encoders_forbid_nan(monkeypatch: pytest.MonkeyPatch) -> None:
+    seen: list[Any] = []
+    real = json.dumps
+
+    def spy(obj: Any, **kw: Any) -> str:
+        seen.append(kw.get("allow_nan"))
+        return real(obj, **kw)
+
+    monkeypatch.setattr(natsbus.json, "dumps", spy)
+    encode(Message("post", "x"))
+    encode_presence("online")
+    encode_claim()
+    assert seen == [False, False, False]
+
+
+@pytest.mark.parametrize("body", [
+    b'{"v":1,"kind":"post","text":"x","props":{"from_trusted_human":true}}',
+    b'{"v":1,"kind":"post","text":"x","props":{"mandated":true}}',
+    b'{"v":1,"kind":"post","text":"x","props":{"X_a":1}}',
+    b'{"v":1,"kind":"post","text":"\\ud800"}',  # lone surrogate in text
+    b'{"v":1,"kind":"post","text":"x","props":{"x_a":"\\udc00"}}',
+    b'{"v":1,"kind":"post","text":"x","props":{"x_\\ud800":"a"}}',
+    b'{"v":1,"kind":"reaction","text":"","ref":3,"emoji":"\\ud83d"}',
+    b'{"v":1,"kind":"post","text":"\xff\xfe"}',  # not UTF-8
+    b'{"v":1,"kind":"post","text":"caf\xe9"}',  # Latin-1
+    b'{"v":1,"kind":"post","text":"a","text":"b"}',  # duplicate key
+    b'{"v":1,"v":1,"kind":"post","text":"a"}',
+    b'{"v":1,"kind":"post","text":"x","props":{"x_a":1,"x_a":2}}',
+    b'{"v":1,"kind":"reaction","text":"","ref":3,"emoji":""}',
+    b'{"v":1,"kind":"reaction","text":"","ref":3,"emoji":"a\\nb"}',
+    b'{"v":1,"kind":"reaction","text":"","ref":3,"emoji":"a\\r"}',
+    b'{"v":1,"kind":"reaction","text":"","ref":3,"emoji":"' + b"a" * 65 + b'"}',
+])
+def test_decoder_is_strict(body: bytes) -> None:
+    with pytest.raises(MessageError):
+        decode(body)
+
+
+def test_decoder_accepts_the_limits() -> None:
+    m = decode(b'{"v":1,"kind":"reaction","text":"","ref":3,"emoji":"' + b"a" * 64 + b'"}')
+    assert m.emoji == "a" * 64
+    assert decode('{"v":1,"kind":"post","text":"hé \U0001f600","props":{"x_k":"ü"}}'.encode()).text == "hé \U0001f600"
+
+
+def test_encoder_is_strict_too() -> None:
+    for m in (Message("post", "x", props={"from_trusted_human": True}), Message("post", "\ud800"),
+              Message("reaction", ref=1, emoji="a\nb"), Message("reaction", ref=1, emoji="a" * 65)):
+        with pytest.raises(MessageError):
+            encode(m)
+
+
+def test_parse_ack_binds_stream_and_consumer() -> None:
+    v1 = "$JS.ACK.BUS.me_dm.1.17.5.1795388483779185000.0"
+    v2 = "$JS.ACK._.HASH.BUS.me_dm.1.17.5.1795388483779185000.0.tok"
+    v2d = "$JS.ACK.dom.HASH.BUS.me_dm.1.17.5.1795388483779185000.0"  # 11 tokens
+    for r in (v1, v2, v2d):
+        assert parse_ack(r, "BUS", "me_dm") is not None
+        assert parse_ack(r, "PRESENCE", "me_dm") is None  # another stream
+        assert parse_ack(r, "BUS", "other_dm") is None  # another consumer
+        assert parse_ack(r, "BUS", "me_ch_home") is None
+        assert parse_ack(r) is not None  # unbound: as before
+
+
+async def test_deliver_drops_a_reply_of_another_consumer(caplog: pytest.LogCaptureFixture) -> None:
+    caplog.set_level(logging.INFO)
+    bus, events = _unit_bus()
+    ok = encode(Message("post", "x"))
+    t = int(time.time() * 1e9)
+    for reply in (f"$JS.ACK.BUS.someone_ch_home.1.5.1.{t}.0",  # another agent's consumer
+                  f"$JS.ACK.BUS.{bus.name}_ch_other.1.5.1.{t}.0",  # another channel's
+                  f"$JS.ACK.BUS.{bus.name}_dm.1.5.1.{t}.0",
+                  f"$JS.ACK.PRESENCE.{bus.name}_ch_home.1.5.1.{t}.0"):
+        await bus._on_deliver("home", "bus.ch.home.agent-x", reply, ok)
+    assert events == [] and bus.since() == {} and bus._server_now == 0.0
+    assert caplog.text.count("dropped a message") == 4
+    await bus._on_deliver("home", "bus.ch.home.agent-x", _reply(bus, "home", 5, 1), ok)
+    assert len(events) == 1
+    # a presence message of a forged consumer is dropped too
+    await bus._on_presence_msg(FakeMsg(f"presence.{bus.name}", f"$JS.ACK.PRESENCE.x_presence.1.1.1.{t}.0",
+                                       encode_presence("online")))
+    assert bus.presence_snapshot() == {}
+
+
+def test_tls_or_loopback_only() -> None:
+    for ok in ("tls://nats.example.org:4222", "nats://localhost:4222", "nats://127.0.0.1:4222",
+               "nats://127.9.9.9", "nats://[::1]:4222", "tls://10.0.0.5:4222"):
+        NatsSettings(servers=(ok,), home="home")
+    for bad in ("nats://nats.example.org:4222", "nats://10.0.0.5:4222", "nats://127.0.0.1.evil.org",
+                "ws://localhost:80", "localhost:4222", "http://localhost", "nats://", "tls://", ""):
+        with pytest.raises(ValueError):
+            NatsSettings(servers=(bad,), home="home")
+    with pytest.raises(ValueError):
+        NatsSettings(servers=("tls://ok.example.org", "nats://remote.example.org"), home="home")
+    # also when settings were built around the check
+    s = NatsSettings(servers=("nats://127.0.0.1:1",), home="home")
+    object.__setattr__(s, "servers", ("nats://remote.example.org:4222",))
+    with pytest.raises(ValueError):
+        NatsBus(s, FakeLogin(), "alice", lambda e: None)
+
+
+T0 = 1_800_000_000.0
+
+
+async def _presence(bus: NatsBus, who: str, seq: int, t: float, status: str = "online") -> None:
+    await bus._on_presence_msg(FakeMsg(f"presence.{who}", _presence_reply(bus, seq, seq, t),
+                                       encode_presence(status)))
+
+
+async def _claim(bus: NatsBus, who: str, ch: str, seq: int, t: float) -> None:
+    await bus._on_presence_msg(FakeMsg(f"presence.crown.{ch}.{who}", _presence_reply(bus, seq, seq, t),
+                                       encode_claim()))
+
+
+@pytest.mark.parametrize("local", [T0 + 1e9, T0 - 1e9, T0 - 90 + 10, T0 + 5])
+async def test_crown_uses_server_time_not_the_local_clock(monkeypatch: pytest.MonkeyPatch, local: float) -> None:
+    monkeypatch.setattr(time, "time", lambda: local)  # the host's clock is wrong
+    bus, _ = _unit_bus()
+    await _presence(bus, "agent-a", 1, T0 - 100)  # last seen 100 s before the newest server time
+    await _claim(bus, "agent-a", "home", 2, T0 - 100)
+    await _claim(bus, "agent-b", "home", 3, T0 - 5)
+    await _presence(bus, "agent-b", 4, T0)
+    assert bus.presence_snapshot() == {"agent-a": (T0 - 100, "online"), "agent-b": (T0, "online")}
+    assert bus.holder("home") == "agent-b"  # a is stale by server time, whatever the local clock says
+    await _presence(bus, "agent-a", 5, T0 + 10)  # a beats again
+    assert bus.holder("home") == "agent-a"  # now fresh, the lowest claim
+    await _presence(bus, "agent-z", 6, T0 + 200)  # the server clock moves on: both stale
+    assert bus.holder("home") is None
+
+
+async def test_claims_and_presence_age_out_after_24_hours() -> None:
+    bus, _ = _unit_bus()
+    await _presence(bus, "agent-old", 1, T0)
+    await _claim(bus, "agent-old", "home", 2, T0)
+    await _claim(bus, "agent-old", "other", 3, T0)
+    await _presence(bus, "agent-new", 4, T0 + 3600)
+    await _claim(bus, "agent-new", "home", 5, T0 + 3600)
+    assert "agent-old" in bus.presence_snapshot() and bus._claims["home"]["agent-old"] == 2
+    await _presence(bus, "agent-new", 6, T0 + natsbus.MAX_AGE_SEC + 10)  # agent-old is now over 24 h old
+    assert set(bus.presence_snapshot()) == {"agent-new"}
+    assert bus._claims == {"home": {"agent-new": 5}} or "agent-old" not in bus._claims.get("home", {})
+    assert "other" not in bus._claims and ("home", "agent-old") not in bus._claim_at
+    # a claim of the 24 h edge: its own age counts, not the presence's
+    await _presence(bus, "agent-new", 7, T0 + natsbus.MAX_AGE_SEC + 3600 + 10)
+    assert bus._claims == {} and bus._claim_at == {}
+
+
+async def test_server_time_comes_from_any_delivery() -> None:
+    bus, _ = _unit_bus()
+    await bus._on_deliver("home", "bus.ch.home.agent-x", _reply(bus, "home", 1, 1, t=T0), encode(Message("post", "x")))
+    assert bus._server_now == T0
+    await bus._on_deliver("home", "bus.ch.home.agent-x", _reply(bus, "home", 2, 2, t=T0 - 50), b"junk")
+    assert bus._server_now == T0  # never goes back
+
+
+async def test_send_checks_the_channel_locally() -> None:
+    bus, _ = _unit_bus(guests=("g1",))
+    bus._connected = True  # a send must fail before touching the connection
+    for coro in (bus.post("other", "x"), bus.react("other", 1, "x"), bus.unreact("other", 1, "x"),
+                 bus.claim("other")):
+        with pytest.raises(natsbus.NatsBusError, match="asked for"):
+            await coro
+
+
+async def test_no_answer_from_the_server_is_an_error_not_a_success() -> None:
+    """A send counts only when the server answered the round trip after it: a flush
+    that times out (the server said nothing) makes the send fail."""
+    bus, _ = _unit_bus()
+    sent: list[str] = []
+
+    class Silent:
+        async def publish(self, subject: str, body: bytes) -> None:
+            sent.append(subject)
+
+        async def flush(self, timeout: float = 10) -> None:
+            raise asyncio.TimeoutError
+
+    bus._nc, bus._connected = Silent(), True  # type: ignore[assignment]
+    with pytest.raises(natsbus.NatsBusError, match="publish failed"):
+        await bus.post("home", "x")
+    assert sent  # it was sent, and still counts as failed
+
+
+async def test_name_mismatch_in_a_reconnect_reaches_the_caller(monkeypatch: pytest.MonkeyPatch) -> None:
+    fatal: list[Exception] = []
+    bus, _ = _unit_bus(on_fatal=fatal.append)
+
+    async def boom() -> None:
+        raise NameMismatch("x")
+
+    monkeypatch.setattr(bus, "_open", boom)
+    bus._connected = True
+    task = asyncio.create_task(bus._supervise())
+    bus._wake.set()
+    await asyncio.wait_for(task, 2)
+    assert len(fatal) == 1 and isinstance(fatal[0], NameMismatch)
+    for _ in range(2):  # every later send raises it
+        with pytest.raises(NameMismatch):
+            await bus.post("home", "x")
+    with pytest.raises(NameMismatch):
+        await bus.dm("agent-b", "x")
+
+
+async def test_cancel_during_connect_closes_the_half_open_client(monkeypatch: pytest.MonkeyPatch) -> None:
+    entered = asyncio.Event()
+    clients: list[Any] = []
+
+    class HangingClient:
+        def __init__(self) -> None:
+            self.closed = False
+            clients.append(self)
+
+        async def connect(self, *a: Any, **k: Any) -> None:
+            entered.set()
+            await asyncio.sleep(3600)
+
+        async def close(self) -> None:
+            self.closed = True
+
+    monkeypatch.setattr(natsbus, "NatsClient", HangingClient)
+    bus, _ = _unit_bus()
+    task = asyncio.create_task(bus._open())
+    await asyncio.wait_for(entered.wait(), 2)
+    task.cancel()
+    with pytest.raises(asyncio.CancelledError):
+        await task
+    assert len(clients) == 1 and clients[0].closed and bus._nc is None
 
 
 # --- against a real nats-server --------------------------------------------------------------------
@@ -324,12 +615,13 @@ class Rig:
         self.url, self.admin, self.names, self.logins = url, admin, names, logins
         self.buses: list[NatsBus] = []
 
-    async def agent(self, who: str, channels: list[str] | None = None, **kw: Any) -> tuple[NatsBus, list[Event]]:
+    async def agent(self, who: str, channels: list[str] | None = None, bus_kw: dict[str, Any] | None = None,
+                    **kw: Any) -> tuple[NatsBus, list[Event]]:
         channels = channels or ["home"]
         login = self.logins[who]
         events: list[Event] = []
         bus = NatsBus(NatsSettings(servers=(self.url,), home=channels[0], guests=tuple(channels[1:]), **kw),
-                      login, who, events.append, heartbeat_sec=0.2)
+                      login, who, events.append, **{"heartbeat_sec": 0.2, **(bus_kw or {})})
         assert bus.name == self.names[who]
         await _login_service(self.admin, bus.name, channels, {})
         await bus.start()
@@ -536,3 +828,74 @@ async def test_a_name_the_credential_does_not_carry_stops_the_bus(rig: Rig) -> N
     # The right name starts and announces itself.
     right, _ = await rig.agent("alice")
     await until(lambda: f"presence.{right.name}" in seen)
+
+
+async def test_a_refused_publish_is_not_a_success(rig: Rig, caplog: pytest.LogCaptureFixture) -> None:
+    caplog.set_level(logging.INFO)
+    seen: list[str] = []
+
+    async def tap(msg: Any) -> None:
+        seen.append(msg.subject)
+
+    await rig.admin.subscribe("bus.>", cb=tap)
+    await rig.admin.subscribe("presence.crown.>", cb=tap)
+    await rig.admin.flush()
+    # `extra` is a channel the bus asked for, but the static permissions only grant `home`.
+    alice, _ = await rig.agent("alice", ["home", "extra"])
+    with pytest.raises(natsbus.NatsBusError, match="refused"):
+        await alice.post("extra", "SECRET-CONTENT")
+    with pytest.raises(natsbus.NatsBusError, match="refused"):
+        await alice.react("extra", 1, "thumbsup")
+    with pytest.raises(natsbus.NatsBusError, match="refused"):
+        await alice.claim("extra")
+    # not asked for at all: refused locally, before anything is published
+    with pytest.raises(natsbus.NatsBusError, match="asked for"):
+        await alice.post("elsewhere", "SECRET-CONTENT")
+    assert seen == []  # nothing reached the stream
+    assert "SECRET-CONTENT" not in caplog.text
+    # the connection is fine, and a granted channel still works
+    await alice.post("home", "fine")
+    await alice.claim("home")
+    await rig.admin.flush()
+    await until(lambda: f"bus.ch.home.{alice.name}" in seen and f"presence.crown.home.{alice.name}" in seen)
+
+
+async def test_the_bus_renews_before_the_credential_expires(rig: Rig) -> None:
+    bob_login = rig.logins["bob"]
+    bob_ref: list[NatsBus] = []
+
+    async def at_login(call: int) -> None:
+        if call >= 2:  # what the login service does at each login
+            await _login_service(rig.admin, rig.names["bob"], ["home"], {"home": bob_ref[0].since().get("home", 0)})
+
+    bob_login.hook = at_login
+    alice, _ = await rig.agent("alice")
+    bob, b_ev = await rig.agent("bob", bus_kw={"renew_sec": 0.6})
+    bob_ref.append(bob)
+    sent: list[str] = []
+    stop = asyncio.Event()
+
+    async def talk(bus: NatsBus, who: str) -> None:
+        i = 0
+        while not stop.is_set():
+            text = f"{who}{i}"
+            await bus.post("home", text)  # never "not connected", also during the renewal
+            sent.append(text)
+            i += 1
+            await asyncio.sleep(0.02)
+
+    talkers = [asyncio.create_task(talk(alice, "a")), asyncio.create_task(talk(bob, "b"))]
+    await until(lambda: bob_login.calls >= 2 and bob._connected, timeout=10)  # renewed on its own
+    first_after = len(sent)
+    await asyncio.sleep(0.3)
+    stop.set()
+    await asyncio.gather(*talkers)  # raises if a send failed
+    assert len(sent) > first_after
+    last = sent[-1]
+    await until(lambda: any(e.message.text == last for e in b_ev))
+    await asyncio.sleep(0.2)
+    got = [e.message.text for e in b_ev if e.where == "home"]
+    assert sorted(got) == sorted(set(got)), "a message twice"
+    assert set(got) == set(sent), "a message lost in the renewal"
+    seqs = [e.stream_seq for e in b_ev if e.where == "home"]
+    assert seqs == sorted(seqs)

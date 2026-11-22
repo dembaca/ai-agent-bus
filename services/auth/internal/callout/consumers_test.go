@@ -381,6 +381,73 @@ func TestSinceStartsAtTheSequenceOfAGrantedChannel(t *testing.T) {
 	// A renewal with a since again restarts the consumer after that sequence.
 }
 
+func TestSinceRestartsTheDirectMessageConsumer(t *testing.T) {
+	c := newConsumerLab(t, nil)
+	c.setup()
+	host := newHost()
+	a, err := c.login("alice", host, Hello{Home: "home"})
+	if err != nil {
+		t.Fatal(err)
+	}
+	dm := "bus.dm." + a.name + ".agent-other"
+	seq1 := c.publish(dm, "d1")
+	seq2 := c.publish(dm, "d2")
+	c.publish(dm, "d3")
+	// since["@dm"] is exclusive too: the consumer restarts after seq1.
+	a, err = c.login("alice", host, Hello{Home: "home", Since: map[string]uint64{"@dm": seq1}})
+	if err != nil {
+		t.Fatal(err)
+	}
+	ci := c.info("BUS", a.name+"_dm")
+	if ci.Config.DeliverPolicy != nats.DeliverByStartSequencePolicy || ci.Config.OptStartSeq != seq2 {
+		t.Fatalf("%+v", ci.Config)
+	}
+	got := take(c.listen(a, "deliver."+a.name+".dm"), time.Second)
+	if len(got) != 2 || string(got[0].Data) != "d2" || string(got[1].Data) != "d3" {
+		t.Fatalf("history delivered: %d messages", len(got))
+	}
+	if c.info("BUS", a.name+"_ch_@dm") != nil {
+		t.Error("a channel consumer for @dm")
+	}
+	// The key can never be a channel: the callout refuses "@" in a channel name.
+	for _, ch := range []string{"@dm", "a@b", "dm@"} {
+		if checkToken(ch) == nil {
+			t.Errorf("checkToken accepts %q", ch)
+		}
+	}
+}
+
+// since["@dm"] restarts only the agent's own direct-message consumer, which
+// holds only messages to that agent: another agent's direct messages never
+// come with it, and the other agent's consumer keeps its place.
+func TestSinceForDirectMessagesOnlyTouchesTheOwn(t *testing.T) {
+	c := newConsumerLab(t, nil)
+	c.setup()
+	ha, hb := newHost(), newHost()
+	a, err := c.login("alice", ha, Hello{Home: "home"})
+	if err != nil {
+		t.Fatal(err)
+	}
+	b, err := c.login("bob", hb, Hello{Home: "home"})
+	if err != nil {
+		t.Fatal(err)
+	}
+	bobBefore := c.info("BUS", b.name+"_dm")
+	c.publish("bus.dm."+b.name+".agent-other", "for bob")
+	c.publish("bus.dm."+a.name+".agent-other", "for alice")
+	if a, err = c.login("alice", ha, Hello{Home: "home", Since: map[string]uint64{"@dm": 1}}); err != nil {
+		t.Fatal(err)
+	}
+	got := take(c.listen(a, "deliver."+a.name+".dm"), time.Second)
+	if len(got) != 1 || string(got[0].Data) != "for alice" {
+		t.Fatalf("alice's history: %d messages", len(got))
+	}
+	bobAfter := c.info("BUS", b.name+"_dm")
+	if bobAfter == nil || !bobAfter.Created.Equal(bobBefore.Created) || bobAfter.Config.DeliverPolicy != bobBefore.Config.DeliverPolicy {
+		t.Error("alice's since moved bob's direct-message consumer")
+	}
+}
+
 func TestSinceIsIgnoredForAChannelNotInTheCredential(t *testing.T) {
 	c := newConsumerLab(t, nil)
 	c.setup()

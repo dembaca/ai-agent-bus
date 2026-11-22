@@ -72,6 +72,10 @@ type Config struct {
 	BeforeRecord func(agent string) error
 }
 
+// SinceDM is the key of Reconcile's since map for the direct-message
+// consumer. It cannot collide with a channel name (channelRE).
+const SinceDM = "@dm"
+
 var (
 	agentRE   = regexp.MustCompile(`^[A-Za-z0-9][A-Za-z0-9_-]{0,127}$`)
 	channelRE = regexp.MustCompile(`^[a-z0-9][a-z0-9_-]{0,63}$`)
@@ -223,6 +227,7 @@ func (m *Manager) ensure(ctx context.Context, name, cfg, subject string) error {
 type spec struct {
 	stream, name, deliver string
 	channel               string // "": not a channel consumer
+	dm                    bool   // the direct-message consumer (since key SinceDM)
 	presence              bool
 	filters               []string
 }
@@ -236,7 +241,7 @@ func (m *Manager) desired(agent string, channels []string) []spec {
 		filters = append(filters, m.cfg.Presence+".crown."+ch+".*")
 	}
 	out = append(out,
-		spec{stream: BusStream, name: agent + "_dm", deliver: DeliverPrefix + "." + agent + ".dm",
+		spec{stream: BusStream, name: agent + "_dm", dm: true, deliver: DeliverPrefix + "." + agent + ".dm",
 			filters: []string{m.cfg.Bus + ".dm." + agent + ".*"}},
 		spec{stream: PresenceStream, name: agent + "_presence", presence: true,
 			deliver: DeliverPrefix + "." + agent + ".presence", filters: filters})
@@ -327,7 +332,7 @@ func (m *Manager) lock(agent string) func() {
 // a channel no longer in channels is deleted; the presence consumer is
 // updated when its filters differ. since maps a channel to the stream
 // sequence to start from (the agent's last seen); it counts only for a channel
-// in channels, and never reaches back further than MaxHistory. It returns
+// in channels (or the key SinceDM, for the direct-message consumer), and never reaches back further than MaxHistory. It returns
 // when everything is done or ctx ends.
 func (m *Manager) Reconcile(ctx context.Context, agent, owner string, channels []string, since map[string]uint64) error {
 	if !agentRE.MatchString(agent) {
@@ -350,7 +355,7 @@ func (m *Manager) Reconcile(ctx context.Context, agent, owner string, channels [
 	for ch, seq := range since {
 		switch {
 		case seq == 0:
-		case seen[ch]:
+		case ch == SinceDM || seen[ch]:
 			starts[ch] = seq
 		default:
 			if ignored++; ignored <= maxIgnoredLogged {
@@ -529,8 +534,12 @@ func (m *Manager) ensureConsumer(ctx context.Context, w spec, agent, owner strin
 		return err
 	}
 	cfg := m.config(w, agent, owner, chans)
-	seq, restart := starts[w.channel]
-	restart = restart && w.channel != ""
+	key := w.channel
+	if w.dm {
+		key = SinceDM
+	}
+	seq, restart := starts[key]
+	restart = restart && key != ""
 	ci, err := m.info(ctx, w.stream, w.name)
 	if err != nil {
 		return err

@@ -26,11 +26,14 @@ import asyncio
 import base64
 import hashlib
 import inspect
+import ipaddress
 import json
 import logging
+import math
 import random
 import re
 import time
+from urllib.parse import urlsplit
 from collections.abc import Awaitable, Callable, Mapping
 from dataclasses import dataclass, field
 from typing import Any, Protocol
@@ -45,12 +48,18 @@ MAX_BODY = 65536  # the BUS stream's max_msg_size
 HEARTBEAT_SEC = 30.0
 PRESENCE_FRESH_SEC = 90.0  # a holder's last presence must be younger than this
 GAP_RECONNECT_SEC = 30.0  # at most one reconnect for a gap within this time
+MAX_AGE_SEC = 86400.0  # the PRESENCE stream's max_age: older claims and presence are gone
+RENEW_SEC = 14 * 60.0  # the login service's credential lives 15 minutes: renew a minute before
+SEND_WAIT_SEC = 10.0  # a send waits this long for a planned reconnect
+BUS_STREAM = "BUS"
+PRESENCE_STREAM = "PRESENCE"
 DELIVER = "deliver"  # consumers.DeliverPrefix / callout.DeliverPrefix
 
 CHANNEL_RE = re.compile(r"^[a-z0-9][a-z0-9_-]{0,63}$")  # Go checkToken
 AGENT_RE = re.compile(r"^[A-Za-z0-9][A-Za-z0-9_-]{0,127}$")  # Go consumers.agentRE
 PREFIX_RE = re.compile(r"^[A-Za-z0-9_-]+$")
 
+_PUBLISH_DENIED_RE = re.compile(r'permissions violation for publish to "([^"]*)"', re.IGNORECASE)
 _KINDS = ("post", "reaction", "unreaction")
 _STATUSES = ("online", "away", "bye")
 
@@ -101,6 +110,15 @@ def _seq(v: object) -> bool:
     return isinstance(v, int) and not isinstance(v, bool) and v >= 1
 
 
+def _wellformed(s: str) -> bool:
+    """False for a string with a lone surrogate: it has no UTF-8 form."""
+    try:
+        s.encode("utf-8")
+    except UnicodeEncodeError:
+        return False
+    return True
+
+
 def _check(m: Message) -> None:
     if m.kind not in _KINDS:
         raise MessageError("unknown kind")
@@ -108,9 +126,15 @@ def _check(m: Message) -> None:
         raise MessageError("text is not a string")
     if m.root is not None and not _seq(m.root):
         raise MessageError("root is not a sequence")
+    if not _wellformed(m.text):
+        raise MessageError("text is not valid Unicode")
     for k, v in m.props.items():
         if not isinstance(k, str) or not isinstance(v, str | int | float | bool):
             raise MessageError("props hold only strings and simple values")
+        if not k.startswith("x_"):
+            raise MessageError("props keys start with x_")
+        if not _wellformed(k) or (isinstance(v, str) and not _wellformed(v)):
+            raise MessageError("props are not valid Unicode")
     if m.kind == "post":
         if m.ref is not None or m.emoji is not None:
             raise MessageError("a post has no ref or emoji")
@@ -119,25 +143,62 @@ def _check(m: Message) -> None:
             raise MessageError("a reaction needs ref")
         if not isinstance(m.emoji, str) or not m.emoji:
             raise MessageError("a reaction needs an emoji")
+        if len(m.emoji) > 64 or m.emoji.splitlines() != [m.emoji]:
+            raise MessageError("an emoji is one line of at most 64 characters")
+        if not _wellformed(m.emoji):
+            raise MessageError("emoji is not valid Unicode")
         if m.text != "" or m.root is not None:
             raise MessageError("a reaction has no text or root")
 
 
+def _dumps(obj: object, ensure_ascii: bool = True) -> str:
+    """JSON for the wire: never NaN or Infinity (not JSON, other readers refuse them)."""
+    try:
+        return json.dumps(obj, ensure_ascii=ensure_ascii, separators=(",", ":"), allow_nan=False)
+    except ValueError:
+        raise MessageError("a number is not representable in JSON") from None
+
+
 def encode(m: Message) -> bytes:
     _check(m)
-    body = json.dumps({"v": 1, "kind": m.kind, "text": m.text, "root": m.root, "ref": m.ref,
-                       "emoji": m.emoji, "props": m.props}, ensure_ascii=False,
-                      separators=(",", ":")).encode()
+    body = _dumps({"v": 1, "kind": m.kind, "text": m.text, "root": m.root, "ref": m.ref,
+                   "emoji": m.emoji, "props": m.props}, ensure_ascii=False).encode()
     if len(body) > MAX_BODY:
         raise MessageError(f"message is {len(body)} bytes, more than {MAX_BODY}")
     return body
+
+
+def _constant(name: str) -> Any:
+    raise MessageError("NaN and Infinity are not JSON")
+
+
+def _float(text: str) -> float:
+    f = float(text)
+    if not math.isfinite(f):
+        raise MessageError("a number is out of range")
+    return f
+
+
+def _pairs(pairs: list[tuple[str, Any]]) -> dict[str, Any]:
+    out: dict[str, Any] = {}
+    for k, v in pairs:
+        if k in out:
+            raise MessageError("duplicate key")
+        out[k] = v
+    return out
 
 
 def _obj(data: bytes) -> dict[str, Any]:
     if len(data) > MAX_BODY:
         raise MessageError("body too big")
     try:
-        obj = json.loads(data)
+        text = data.decode("utf-8")  # strict: no replacement characters, no other encoding
+    except UnicodeDecodeError:
+        raise MessageError("body is not UTF-8") from None
+    try:
+        obj = json.loads(text, parse_constant=_constant, parse_float=_float, object_pairs_hook=_pairs)
+    except MessageError:
+        raise
     except (ValueError, RecursionError):
         raise MessageError("body is not JSON") from None
     if not isinstance(obj, dict):
@@ -164,7 +225,7 @@ def decode(data: bytes) -> Message:
 def encode_presence(status: str) -> bytes:
     if status not in _STATUSES:
         raise MessageError("unknown status")
-    return json.dumps({"v": 1, "status": status}, separators=(",", ":")).encode()
+    return _dumps({"v": 1, "status": status}).encode()
 
 
 def decode_presence(data: bytes) -> str:
@@ -175,7 +236,7 @@ def decode_presence(data: bytes) -> str:
 
 
 def encode_claim() -> bytes:
-    return b'{"v":1}'
+    return _dumps({"v": 1}).encode()
 
 
 def decode_claim(data: bytes) -> None:
@@ -191,15 +252,18 @@ class Ack:
     time: float  # the server's timestamp, seconds since the epoch
 
 
-def parse_ack(reply: str | None) -> Ack | None:
+def parse_ack(reply: str | None, stream: str | None = None, consumer: str | None = None) -> Ack | None:
     """`$JS.ACK.<stream>.<consumer>.<delivered>.<sseq>.<cseq>.<ts ns>.<pending>`, or with
-    domain and account hash in front (and a token behind). None: not JetStream's."""
+    domain and account hash in front (and a token behind). None: not JetStream's, or,
+    when `stream` and `consumer` are given, not the reply of that consumer."""
     if not reply:
         return None
     t = reply.split(".")
     if t[:2] != ["$JS", "ACK"] or len(t) not in (9, 11, 12):
         return None
     i = 4 if len(t) == 9 else 6
+    if (stream is not None and t[i - 2] != stream) or (consumer is not None and t[i - 1] != consumer):
+        return None
     try:
         sseq, cseq, ns = int(t[i + 1]), int(t[i + 2]), int(t[i + 3])
     except ValueError:
@@ -265,6 +329,23 @@ def build_hello(token: str, home: str, guests: tuple[str, ...], lobby: bool,
 
 # --- the bus ---------------------------------------------------------------------------------------
 
+def _check_server(url: str) -> None:
+    """tls:// anywhere; nats:// (no TLS) only to this machine."""
+    parts = urlsplit(url)
+    host = parts.hostname or ""
+    if parts.scheme == "tls" and host:
+        return
+    if parts.scheme == "nats" and host:
+        if host == "localhost":
+            return
+        try:
+            if ipaddress.ip_address(host).is_loopback:
+                return
+        except ValueError:
+            pass
+    raise ValueError("a NATS server URL is tls://, or nats:// to a loopback host only")
+
+
 @dataclass(frozen=True)
 class NatsSettings:
     servers: tuple[str, ...]
@@ -275,6 +356,10 @@ class NatsSettings:
     bus: str = "bus"
     presence: str = "presence"
     name_prefix: str = "agent-"
+
+    def __post_init__(self) -> None:
+        for url in self.servers:
+            _check_server(url)  # the access token goes over this connection
 
 
 @dataclass(frozen=True)
@@ -292,34 +377,53 @@ class LoginLike(Protocol):
 
 
 EventCallback = Callable[[Event], Awaitable[None] | None]
+FatalCallback = Callable[[NatsBusError], Awaitable[None] | None]
+DM_SINCE = "@dm"  # the key of `since` for direct messages (no channel name can look like it)
 
 
 class NatsBus:
     def __init__(self, settings: NatsSettings, login: LoginLike, owner: str, on_event: EventCallback,
                  *, heartbeat_sec: float = HEARTBEAT_SEC, gap_reconnect_sec: float = GAP_RECONNECT_SEC,
-                 connect_timeout: float = 5.0) -> None:
+                 connect_timeout: float = 5.0, renew_sec: float = RENEW_SEC,
+                 send_wait_sec: float = SEND_WAIT_SEC, on_fatal: FatalCallback | None = None) -> None:
         for what, v in (("bus", settings.bus), ("presence", settings.presence)):
             if not PREFIX_RE.match(v) or v == DELIVER:
                 raise ValueError(f"invalid {what} prefix")
+        for url in settings.servers:
+            _check_server(url)
         self._s = settings
         self._login = login
         self._owner = owner
         self._on_event = on_event
+        self._on_fatal = on_fatal
         self._heartbeat_sec = heartbeat_sec
         self._gap_sec = gap_reconnect_sec
         self._connect_timeout = connect_timeout
+        self._renew_sec = renew_sec
+        self._send_wait = send_wait_sec
         self._name: str | None = None
         self._nc: NatsClient | None = None
         self._connected = False
         self._stopping = False
+        self._fatal: NatsBusError | None = None
         self._wake = asyncio.Event()
+        self._ready = asyncio.Event()  # cleared during a planned reconnect: sends wait for it
+        self._ready.set()
+        self._planned = False
         self._tasks: list[asyncio.Task[None]] = []
+        self._renew_task: asyncio.Task[None] | None = None
+        self._gap_task: asyncio.Task[None] | None = None
+        self._send_lock = asyncio.Lock()
+        self._denied: list[str] = []  # subjects the server refused a publish on
         self._gaps = GapTracker()
         self._last_gap_reconnect = -1e18
         self._stale: set[str] = set()  # channels with a gap, dropped until the reconnect
-        self._last_seq: dict[str, int] = {}  # channel -> last stream sequence delivered
+        self._last_seq: dict[str, int] = {}  # channel (or "dm") -> last stream sequence delivered
+        self._server_now = 0.0  # the newest server timestamp seen: the host's "now"
+        self._last_prune = 0.0
         self._presence: dict[str, tuple[float, str]] = {}
         self._claims: dict[str, dict[str, int]] = {}
+        self._claim_at: dict[tuple[str, str], float] = {}  # (channel, agent) -> server time of the claim
 
     def __repr__(self) -> str:
         return f"NatsBus(name={self._name!r}, connected={self._connected})"
@@ -342,7 +446,10 @@ class NatsBus:
         return out
 
     def since(self) -> dict[str, int]:
-        return {ch: self._last_seq[ch] for ch in self.channels if self._last_seq.get(ch)}
+        out = {ch: self._last_seq[ch] for ch in self.channels if self._last_seq.get(ch)}
+        if self._last_seq.get("dm"):
+            out[DM_SINCE] = self._last_seq["dm"]
+        return out
 
     # --- lifecycle ---------------------------------------------------------------
     async def start(self) -> None:
@@ -356,6 +463,8 @@ class NatsBus:
     async def stop(self) -> None:
         self._stopping = True
         self._wake.set()
+        self._ready.set()
+        self._cancel_timers()
         for t in self._tasks:
             t.cancel()
         await asyncio.gather(*self._tasks, return_exceptions=True)
@@ -374,6 +483,12 @@ class NatsBus:
                 pass
         self._connected = False
         self._nc = None
+
+    def _cancel_timers(self) -> None:
+        for t in (self._renew_task, self._gap_task):
+            if t is not None and t is not asyncio.current_task():
+                t.cancel()
+        self._renew_task = self._gap_task = None
 
     # --- connection ----------------------------------------------------------------
     async def _open(self) -> None:
@@ -398,29 +513,40 @@ class NatsBus:
         refused: list[str] = []
 
         async def error(exc: Exception) -> None:
-            if "permissions violation" in str(exc).lower():
+            text = str(exc)
+            if "permissions violation" in text.lower():
                 refused.append("permissions violation")
+                m = _PUBLISH_DENIED_RE.search(text)
+                if m:
+                    self._denied = [*self._denied[-63:], m.group(1)]
             log.warning("nats bus: %s", type(exc).__name__)
 
-        await nc.connect(list(self._s.servers), token=hello, signature_cb=sign, allow_reconnect=False,
-                         connect_timeout=int(self._connect_timeout), error_cb=error,
-                         disconnected_cb=lost, closed_cb=lost)
+        try:
+            await nc.connect(list(self._s.servers), token=hello, signature_cb=sign, allow_reconnect=False,
+                             connect_timeout=int(self._connect_timeout), error_cb=error,
+                             disconnected_cb=lost, closed_cb=lost)
+        except BaseException:  # also a cancellation: no half-open client is left behind
+            try:
+                await nc.close()
+            except Exception:
+                pass
+            raise
         del hello
         self._nc = nc
         self._gaps.reset()
         self._stale.clear()
+        self._cancel_gap_timer()  # this connection starts from `since`: the held-back gap is covered
         name = self.name
         try:
             for ch in self.channels:
                 await nc.subscribe(f"{DELIVER}.{name}.ch.{ch}", cb=self._handler(ch))
             await nc.subscribe(f"{DELIVER}.{name}.dm", cb=self._handler("dm"))
             await nc.subscribe(f"{DELIVER}.{name}.presence", cb=self._on_presence_msg)
-            # The server answers a refused SUB with -ERR before the PONG of this
-            # flush: a refusal of the own deliver subjects means the credential
-            # carries another name than the computed one (the credential is the
-            # authority). Nothing has been published yet.
-            await nc.flush()
-            await nc.flush()  # a second round trip: every -ERR before it has been handled
+            # The server answers a refused SUB with -ERR before the PONG of a flush: a
+            # refusal of the own deliver subjects means the credential carries another name
+            # than the computed one (the credential is the authority). Nothing has been
+            # published yet.
+            await self._sync(nc)
             if refused:
                 raise NameMismatch("the credential's agent name is not the computed one; nothing sent")
             await nc.publish(f"{self._s.presence}.{name}", encode_presence("online"))
@@ -433,6 +559,36 @@ class NatsBus:
         if nc.is_closed:  # lost while subscribing
             self._connected = False
             self._wake.set()
+        else:
+            self._schedule_renew()
+
+    @staticmethod
+    async def _sync(nc: NatsClient) -> None:
+        """Two round trips, so that every -ERR the server sent for what came before has
+        been handled when this returns. One flush is not enough: its PING is queued behind
+        the client's own buffered writes, and the PONG that resolves it may answer a PING
+        that was already on the wire before them (nats-py matches PONGs to flushes in
+        order), so an -ERR for the writes may still be on its way. The second PING is
+        sent only after the first PONG, and the server answers in order."""
+        await nc.flush()
+        await nc.flush()
+
+    def _schedule_renew(self) -> None:
+        if self._renew_task is not None:
+            self._renew_task.cancel()
+        self._renew_task = asyncio.create_task(self._renew_after())
+
+    async def _renew_after(self) -> None:
+        await asyncio.sleep(self._renew_sec)
+        if not self._stopping:
+            log.info("nats bus: renewing the connection before its credential expires")
+            self._planned = True
+            self._wake.set()
+
+    def _cancel_gap_timer(self) -> None:
+        if self._gap_task is not None and self._gap_task is not asyncio.current_task():
+            self._gap_task.cancel()
+        self._gap_task = None
 
     async def _supervise(self) -> None:
         while not self._stopping:
@@ -440,6 +596,9 @@ class NatsBus:
             self._wake.clear()
             if self._stopping:
                 return
+            if self._planned:
+                self._planned = False
+                self._ready.clear()  # a send now waits for the new connection
             old, self._nc, self._connected = self._nc, None, False
             if old is not None:
                 try:
@@ -447,21 +606,37 @@ class NatsBus:
                 except Exception:
                     pass
             delay = 1.0
-            while not self._stopping:
-                try:
-                    await self._open()
-                    log.info("nats bus: reconnected")
-                    break
-                except asyncio.CancelledError:
-                    raise
-                except NameMismatch:
-                    log.error("nats bus: the credential's agent name is not the computed one; stopped")
-                    self._stopping = True
-                    return
-                except Exception as exc:
-                    log.warning("nats bus: reconnect failed: %s", type(exc).__name__)
-                    await asyncio.sleep(delay * random.uniform(0.5, 1.0))
-                    delay = min(delay * 2, 30.0)
+            try:
+                while not self._stopping:
+                    try:
+                        await self._open()
+                        log.info("nats bus: reconnected")
+                        break
+                    except asyncio.CancelledError:
+                        raise
+                    except NameMismatch as exc:
+                        log.error("nats bus: the credential's agent name is not the computed one; stopped")
+                        self._fatal = exc
+                        self._stopping = True
+                        self._cancel_timers()
+                        await self._notify_fatal(exc)
+                        return
+                    except Exception as exc:
+                        log.warning("nats bus: reconnect failed: %s", type(exc).__name__)
+                        await asyncio.sleep(delay * random.uniform(0.5, 1.0))
+                        delay = min(delay * 2, 30.0)
+            finally:
+                self._ready.set()
+
+    async def _notify_fatal(self, exc: NatsBusError) -> None:
+        if self._on_fatal is None:
+            return
+        try:
+            res = self._on_fatal(exc)
+            if inspect.isawaitable(res):
+                await res
+        except Exception as err:
+            log.warning("nats bus: on_fatal callback failed: %s", type(err).__name__)
 
     async def _heartbeat(self) -> None:
         while True:
@@ -475,14 +650,30 @@ class NatsBus:
 
     # --- sending ---------------------------------------------------------------------
     async def _publish(self, subject: str, body: bytes) -> None:
+        """Publish and wait until the server has handled it: a publish the server refuses
+        (no right on the subject) is an error here, not a silent success."""
+        if self._fatal is not None:
+            raise self._fatal
+        if (self._nc is None or not self._connected) and not self._ready.is_set():
+            try:  # a planned reconnect is under way
+                await asyncio.wait_for(self._ready.wait(), self._send_wait)
+            except TimeoutError:
+                pass
+            if self._fatal is not None:
+                raise self._fatal
         nc = self._nc
         if nc is None or not self._connected:
             raise NatsBusError("not connected")
-        try:
-            await nc.publish(subject, body)  # never a Nats-Msg-Id header
-            await nc.flush()
-        except Exception as exc:
-            raise NatsBusError(f"publish failed: {type(exc).__name__}") from None
+        async with self._send_lock:
+            self._denied = [d for d in self._denied if d != subject]
+            try:
+                await nc.publish(subject, body)  # never a Nats-Msg-Id header
+                await self._sync(nc)
+            except Exception as exc:
+                raise NatsBusError(f"publish failed: {type(exc).__name__}") from None
+            if subject in self._denied:
+                self._denied = [d for d in self._denied if d != subject]
+                raise NatsBusError("publish refused by the server: no permission for it")
 
     @staticmethod
     def _channel(ch: str) -> str:
@@ -490,18 +681,25 @@ class NatsBus:
             raise ValueError("invalid channel name")
         return ch
 
+    def _asked(self, ch: str) -> str:
+        """A channel this bus asked the login service for (home, guests, the lobby)."""
+        self._channel(ch)
+        if ch not in self.channels:
+            raise NatsBusError("not a channel this bus asked for; nothing sent")
+        return ch
+
     async def post(self, channel: str, text: str, root: int | None = None,
                    props: dict[str, Prop] | None = None) -> None:
         body = encode(Message("post", text, root=root, props=props or {}))
-        await self._publish(f"{self._s.bus}.ch.{self._channel(channel)}.{self.name}", body)
+        await self._publish(f"{self._s.bus}.ch.{self._asked(channel)}.{self.name}", body)
 
     async def react(self, channel: str, ref: int, emoji: str) -> None:
         body = encode(Message("reaction", ref=ref, emoji=emoji))
-        await self._publish(f"{self._s.bus}.ch.{self._channel(channel)}.{self.name}", body)
+        await self._publish(f"{self._s.bus}.ch.{self._asked(channel)}.{self.name}", body)
 
     async def unreact(self, channel: str, ref: int, emoji: str) -> None:
         body = encode(Message("unreaction", ref=ref, emoji=emoji))
-        await self._publish(f"{self._s.bus}.ch.{self._channel(channel)}.{self.name}", body)
+        await self._publish(f"{self._s.bus}.ch.{self._asked(channel)}.{self.name}", body)
 
     def _dm_subject(self, recipient: str) -> str:
         if not AGENT_RE.match(recipient):
@@ -519,15 +717,17 @@ class NatsBus:
                                                     ref=ref, emoji=emoji)))
 
     async def claim(self, channel: str) -> None:
-        await self._publish(f"{self._s.presence}.crown.{self._channel(channel)}.{self.name}", encode_claim())
+        await self._publish(f"{self._s.presence}.crown.{self._asked(channel)}.{self.name}", encode_claim())
 
     def presence_snapshot(self) -> dict[str, tuple[float, str]]:
         """agent -> (server time, status) of the last presence message of each."""
         return dict(self._presence)
 
     def holder(self, channel: str, now: float | None = None) -> str | None:
+        """The crown of a channel. "Now" is the newest server timestamp this host has seen,
+        never its own clock (which may be wrong)."""
         return crown_holder(self._claims.get(channel, {}), self._presence,
-                            time.time() if now is None else now)
+                            self._server_now if now is None else now)
 
     # --- receiving ----------------------------------------------------------------------
     def _handler(self, where: str) -> Callable[[Any], Awaitable[None]]:
@@ -535,11 +735,33 @@ class NatsBus:
             await self._on_deliver(where, msg.subject, msg.reply, msg.data)
         return handle
 
-    async def _on_deliver(self, where: str, subject: str, reply: str | None, data: bytes) -> None:
-        ack = parse_ack(reply)
-        if ack is None:
-            log.warning("nats bus: dropped a message on %s without JetStream metadata", where)
+    def _see(self, server_time: float) -> None:
+        """Advance the host's server clock, and drop what the stream's max_age drops."""
+        if server_time <= self._server_now:
             return
+        self._server_now = server_time
+        if server_time - self._last_prune < 60.0:
+            return
+        self._last_prune = server_time
+        cut = server_time - MAX_AGE_SEC
+        for agent, (t, _) in list(self._presence.items()):
+            if t < cut:
+                del self._presence[agent]
+        for ch, claims in list(self._claims.items()):
+            for agent in list(claims):
+                if self._claim_at.get((ch, agent), 0.0) < cut:
+                    del claims[agent]
+                    self._claim_at.pop((ch, agent), None)
+            if not claims:
+                del self._claims[ch]
+
+    async def _on_deliver(self, where: str, subject: str, reply: str | None, data: bytes) -> None:
+        consumer = f"{self.name}_dm" if where == "dm" else f"{self.name}_ch_{where}"
+        ack = parse_ack(reply, BUS_STREAM, consumer)
+        if ack is None:
+            log.warning("nats bus: dropped a message on %s without this consumer's JetStream metadata", where)
+            return
+        self._see(ack.time)
         gap = self._gaps.observe(where, ack.consumer_seq)  # every delivery counts, dropped or not
         tokens = subject.split(".")
         sender = tokens[-1]
@@ -547,14 +769,13 @@ class NatsBus:
         if tokens[:-1] != expect or not AGENT_RE.match(sender):
             log.warning("nats bus: dropped a message on %s with an unexpected subject", where)
             return
-        if gap and self._gap(where):
-            return
+        if gap:
+            self._gap(where)
         if where in self._stale:
             return
-        if where != "dm":
-            if ack.stream_seq <= self._last_seq.get(where, 0):
-                return  # a repeat after a restart from `since`
-            self._last_seq[where] = ack.stream_seq
+        if ack.stream_seq <= self._last_seq.get(where, 0):
+            return  # a repeat after a restart from `since`
+        self._last_seq[where] = ack.stream_seq
         try:
             message = decode(data)
         except MessageError as exc:
@@ -568,24 +789,34 @@ class NatsBus:
         except Exception as exc:
             log.warning("nats bus: event callback failed: %s", type(exc).__name__)
 
-    def _gap(self, where: str) -> bool:
-        """A gap on `where`. True: drop the message, a reconnect with `since` follows."""
+    def _gap(self, where: str) -> None:
+        """A gap on `where`: it is dropped (stale) until a reconnect restarts it from
+        `since`. At most one reconnect per gap interval: within it, the reconnect is
+        scheduled for when the interval is over, so the gap is never lost for good."""
+        self._stale.add(where)
         now = time.monotonic()
-        if now - self._last_gap_reconnect < self._gap_sec:
-            log.warning("nats bus: gap on %s, reconnect held back", where)
-            return False
-        log.warning("nats bus: gap on %s, reconnecting with since", where)
-        self._last_gap_reconnect = now
-        if where != "dm":
-            self._stale.add(where)
-        self._wake.set()
-        return True
+        wait = self._gap_sec - (now - self._last_gap_reconnect)
+        if wait <= 0:
+            log.warning("nats bus: gap on %s, reconnecting with since", where)
+            self._last_gap_reconnect = now
+            self._wake.set()
+            return
+        log.warning("nats bus: gap on %s, reconnect held back %.0f s", where, wait)
+        if self._gap_task is None or self._gap_task.done():
+            self._gap_task = asyncio.create_task(self._gap_reconnect_after(wait))
+
+    async def _gap_reconnect_after(self, wait: float) -> None:
+        await asyncio.sleep(wait)
+        if not self._stopping:
+            self._last_gap_reconnect = time.monotonic()
+            self._wake.set()
 
     async def _on_presence_msg(self, msg: Any) -> None:
-        ack = parse_ack(msg.reply)
+        ack = parse_ack(msg.reply, PRESENCE_STREAM, f"{self.name}_presence")
         if ack is None:
-            log.warning("nats bus: dropped a presence message without JetStream metadata")
+            log.warning("nats bus: dropped a presence message without this consumer's JetStream metadata")
             return
+        self._see(ack.time)
         t = msg.subject.split(".")
         p = self._s.presence
         try:
@@ -596,6 +827,7 @@ class NatsBus:
                 claims = self._claims.setdefault(t[2], {})
                 if ack.stream_seq > claims.get(t[3], 0):
                     claims[t[3]] = ack.stream_seq
+                    self._claim_at[(t[2], t[3])] = ack.time
             else:
                 log.warning("nats bus: dropped a presence message with an unexpected subject")
         except MessageError as exc:
