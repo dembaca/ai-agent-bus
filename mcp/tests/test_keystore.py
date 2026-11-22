@@ -157,3 +157,20 @@ def test_ephemeral_lock_is_exclusive_per_name():
     assert h is not None and s.try_lock("a") is None and s.try_lock("b") is not None
     s.unlock(h)
     assert s.try_lock("a") is not None
+
+
+def test_try_lock_reports_a_held_lock_as_none_and_any_other_error_as_an_error(tmp_path, monkeypatch):
+    import errno
+    files = keystore.HostFile(tmp_path / "login")
+
+    def busy(fd, op):
+        raise BlockingIOError(errno.EWOULDBLOCK, "held")
+    monkeypatch.setattr(keystore.fcntl, "flock", busy)
+    assert files.try_lock("refresh_a") is None
+
+    def no_locks(fd, op):
+        raise OSError(errno.ENOLCK, "No locks available")
+    monkeypatch.setattr(keystore.fcntl, "flock", no_locks)
+    with pytest.raises(OSError) as err:
+        files.try_lock("refresh_a")
+    assert err.value.errno == errno.ENOLCK

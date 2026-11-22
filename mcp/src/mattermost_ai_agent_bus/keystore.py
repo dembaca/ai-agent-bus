@@ -189,9 +189,12 @@ class HostFile:
         fd = os.open(path, os.O_RDWR | os.O_CREAT | os.O_NOFOLLOW, 0o600)
         try:
             fcntl.flock(fd, fcntl.LOCK_EX | fcntl.LOCK_NB)
+        except BlockingIOError:
+            os.close(fd)
+            return None  # another holder: the caller tries again
         except OSError:
             os.close(fd)
-            return None
+            raise  # no locking here at all (ENOLCK on NFS or SMB): the caller goes on without
         return fd
 
     def unlock(self, handle: object) -> None:

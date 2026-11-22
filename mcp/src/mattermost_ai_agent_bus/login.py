@@ -7,8 +7,9 @@ nothing. It delivers
 * `access_token()`: a Keycloak access token with at least 60 s left, from the
   OAuth 2.0 device authorization grant (RFC 8628) on the first login and the
   refresh token grant afterwards. The client is public, no secret. Each
-  refresh token is used once: the new one from every response is stored at
-  once (Keycloak's reuse detection is off by decision, ADR-014 point 7).
+  refresh token is used once: the new one from every response is stored as
+  soon as the token's issuer, client and person have been checked, and never
+  sent again (Keycloak's reuse detection is off by decision, ADR-014 point 7).
 * `nkey()`: the host's NATS user key, its public key and a `sign(nonce)`; the
   seed stays here (the login service's auth callout, services/auth/README.md,
   checks the signature over the server's nonce).
@@ -62,7 +63,7 @@ SLOW_DOWN_SEC = 5  # RFC 8628 3.5
 DEFAULT_INTERVAL_SEC = 5
 HTTP_TIMEOUT_SEC = 20.0
 MAX_BACKOFF_SEC = 60  # growing wait after a network error or a 5xx while polling
-COOLDOWN_SEC = 60  # after a denial, an expiry or a refusal, no new approval for this long
+COOLDOWN_SEC = 60  # after any approval that failed, no new approval for this long
 LOCK_POLL_SEC = 0.2
 NKEY_ENV = "MM_LOGIN_NKEY"
 NKEY_STORES = ("ephemeral", "host")
@@ -194,7 +195,8 @@ class NKey:
 @dataclass(repr=False)
 class _Tokens:
     access: str = ""
-    expires_at: float = 0.0
+    expires_at: float = 0.0  # monotonic clock
+    exp: float = 0.0  # the token's own exp, wall clock: the monotonic one stands still while the machine sleeps
 
     def __repr__(self) -> str:
         return "_Tokens(<hidden>)"
@@ -219,6 +221,7 @@ class Login:
                  human: Callable[[], str] = owners.responsible_human,
                  http: httpx.AsyncClient | None = None,
                  now: Callable[[], float] = time.monotonic,
+                 wall: Callable[[], float] = time.time,
                  sleep: Callable[[float], Awaitable[None]] = asyncio.sleep) -> None:
         self.settings = settings
         self._store = store if store is not None else keystore.HostFile()
@@ -229,6 +232,7 @@ class Login:
         self._human = human
         self._http = http
         self._now = now
+        self._wall = wall
         self._sleep = sleep
         self._tokens = _Tokens()
         self._endpoints: dict[str, str] | None = None
@@ -278,7 +282,7 @@ class Login:
         or (the first time, or after invalid_grant) a new device approval.
         Callers wait for the one running approval and share its result."""
         async with self._lock:
-            if self._tokens.access and self._tokens.expires_at - self._now() >= MIN_LEFT_SEC:
+            if self._fresh():
                 return self._tokens.access
             self._tokens = _Tokens()
             human = self._human().strip()
@@ -301,8 +305,20 @@ class Login:
                 if wait > 0:
                     raise LoginError(f"the last approval {self._cooldown_why}; "
                                      f"a new one starts in {int(wait) + 1} s")
-                await self._approve(human)
+                try:
+                    await self._approve(human)
+                except LoginError:
+                    # Any failure, not only a denial: else every call would
+                    # send a new DM and leave a new session open in Keycloak.
+                    if self._cooldown_until <= self._now():
+                        self._cool_down("failed")
+                    raise
                 return self._tokens.access
+
+    def _fresh(self) -> bool:
+        t = self._tokens
+        return bool(t.access) and t.expires_at - self._now() >= MIN_LEFT_SEC \
+            and t.exp - self._wall() >= MIN_LEFT_SEC
 
     @contextlib.asynccontextmanager
     async def _file_lock(self, entry: str) -> AsyncIterator[None]:
@@ -531,10 +547,6 @@ class Login:
         if not isinstance(refresh, str) or not refresh:
             raise LoginError("the token response has no refresh token (is the offline_access scope allowed?)")
         claims = payload_of(access)
-        if str(claims.get("iss", "")).rstrip("/") != self.settings.issuer:
-            raise LoginError("the access token comes from another issuer")
-        if claims.get("azp") != self.settings.client_id:
-            raise LoginError("the access token was issued to another client")
         who = claims.get("preferred_username")
         if not human or not isinstance(who, str) or who.casefold() != human.casefold():
             await self._revoke(refresh)
@@ -547,15 +559,30 @@ class Login:
                 except Exception as exc:  # noqa: BLE001
                     log.warning("login: the human was not told (%s)", type(exc).__name__)
             raise WrongHuman("the approving person is not the responsible human")
-        access_info = claims.get("realm_access")
-        roles = access_info.get("roles") if isinstance(access_info, dict) else None
-        if not isinstance(roles, list) or ROLE not in roles:
-            raise LoginError(f"the access token does not carry the realm role {ROLE}")
+        try:
+            if str(claims.get("iss", "")).rstrip("/") != self.settings.issuer:
+                raise LoginError("the access token comes from another issuer")
+            if claims.get("azp") != self.settings.client_id:
+                raise LoginError("the access token was issued to another client")
+            access_info = claims.get("realm_access")
+            roles = access_info.get("roles") if isinstance(access_info, dict) else None
+            if not isinstance(roles, list) or ROLE not in roles:
+                raise LoginError(f"the access token does not carry the realm role {ROLE}")
+        except LoginError:
+            # Never stored, so never used: revoked, or its session stays open in Keycloak.
+            await self._revoke(refresh)
+            raise
         self._store_refresh(refresh, human)
-        self._tokens = _Tokens(access=access, expires_at=self._now() + _int(body.get("expires_in"), 60))
+        lifetime = _int(body.get("expires_in"), 60)
+        exp = claims.get("exp")
+        self._tokens = _Tokens(
+            access=access, expires_at=self._now() + lifetime,
+            exp=float(exp) if isinstance(exp, (int, float)) and not isinstance(exp, bool)
+            else self._wall() + lifetime)
 
     async def _revoke(self, refresh_token: str) -> None:
-        """A wrong person's refresh token is revoked in Keycloak, best effort."""
+        """A refresh token that is not kept (another person's, or a token that
+        failed its checks) is revoked in Keycloak, best effort."""
         try:
             url = (await self._discover()).get("revocation_endpoint")
             if not url:
@@ -564,9 +591,9 @@ class Login:
             resp = await self._post(url, {"token": refresh_token, "token_type_hint": "refresh_token",
                                           "client_id": self.settings.client_id})
             if resp.status_code != 200:
-                log.warning("login: the wrong person's token was not revoked (HTTP %s)", resp.status_code)
+                log.warning("login: the dropped token was not revoked (HTTP %s)", resp.status_code)
         except LoginError as exc:
-            log.warning("login: the wrong person's token was not revoked (%s)", exc)
+            log.warning("login: the dropped token was not revoked (%s)", exc)
 
     async def run(self) -> None:
         """Background task: log in once at start (a stored refresh token needs

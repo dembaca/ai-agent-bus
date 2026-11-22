@@ -4,6 +4,7 @@ real Keycloak is in test_login_keycloak.py."""
 
 import asyncio
 import base64
+import errno
 import json
 import logging
 
@@ -466,6 +467,15 @@ async def test_a_file_whose_recorded_values_differ_is_treated_as_missing(tmp_pat
     assert "foreign" not in caplog.text
 
 
+async def test_a_file_recorded_for_another_human_is_treated_as_missing(tmp_path):
+    files = keystore.HostFile(tmp_path / "login")
+    files.save(keystore.refresh_entry(ISSUER, "agent-bus", "alice"), json.dumps(
+        {"issuer": ISSUER, "client_id": "agent-bus", "human": "bob", "token": "bobs-token"}))
+    script, note = Script(), Note()
+    await mk(files, transport=httpx.MockTransport(script), notifier=note).access_token()
+    assert script.refreshed == [] and note.events == ["waiting", "settled:approved"]
+
+
 async def test_an_empty_human_is_rejected_before_any_request():
     seen: list[str] = []
 
@@ -551,14 +561,19 @@ async def test_a_failing_revocation_does_not_hide_the_refusal(caplog):
     assert "not revoked" in caplog.text
 
 
-async def test_a_verification_link_off_the_issuer_is_not_sent():
+@pytest.mark.parametrize("links", [
+    {"verification_uri": "https://evil.example.test/device",
+     "verification_uri_complete": "https://evil.example.test/device?c=1"},
+    {"verification_uri": "https://evil.example.test/device",
+     "verification_uri_complete": f"{ISSUER}/device?c=1"},
+    {"verification_uri": f"{ISSUER}/device",
+     "verification_uri_complete": "https://evil.example.test/device?c=1"}])
+async def test_a_verification_link_off_the_issuer_is_not_sent(links):
     class Phish(Script):
         def __call__(self, request):
             if request.url.path.endswith("/device"):
                 return httpx.Response(200, json={
-                    "device_code": "dc", "user_code": "ABCD", "expires_in": 600,
-                    "verification_uri": "https://evil.example.test/device",
-                    "verification_uri_complete": "https://evil.example.test/device?c=1"})
+                    "device_code": "dc", "user_code": "ABCD", "expires_in": 600, **links})
             return super().__call__(request)
 
     note = Note()
@@ -817,3 +832,62 @@ async def test_run_settles_an_orphan_before_it_asks_for_a_token():
     lg = mk(transport=httpx.MockTransport(Script()), notifier=note)
     await lg.run()
     assert note.events[0] == "start"
+
+
+# --- the re-check: a lock that fails, a machine that slept, any failed approval ---
+
+async def test_a_file_system_without_locks_logs_and_goes_on_without_the_lock(tmp_path, monkeypatch, caplog):
+    def no_locks(fd, op):
+        raise OSError(errno.ENOLCK, "No locks available")
+    monkeypatch.setattr(keystore.fcntl, "flock", no_locks)
+    files, script = keystore.HostFile(tmp_path / "login"), Script()
+    with caplog.at_level(logging.WARNING):
+        token = await asyncio.wait_for(
+            mk(files, transport=httpx.MockTransport(script), notifier=Note()).access_token(), timeout=5)
+    assert login.payload_of(token)["preferred_username"] == "alice"
+    assert "lock is not taken (OSError)" in caplog.text
+    assert stored(files) == "refresh-secret-1"
+
+
+async def test_after_the_machine_slept_the_tokens_own_expiry_counts():
+    # The monotonic clock stands still while the machine sleeps; the wall clock does not.
+    wall = [1_000_000.0]
+
+    class WithExp(Script):
+        def _tokens(self):
+            self.n += 1
+            return httpx.Response(200, json={
+                "access_token": jwt("alice", n=self.n, exp=int(wall[0]) + 300), "expires_in": 300,
+                "refresh_token": f"refresh-secret-{self.n}"})
+
+    script = WithExp()
+    lg = mk(transport=httpx.MockTransport(script), notifier=Note(), now=lambda: 0.0, wall=lambda: wall[0])
+    first = await lg.access_token()
+    assert await lg.access_token() == first
+    wall[0] += 3600  # an hour asleep: monotonic time did not move
+    second = await lg.access_token()
+    assert second != first and script.refreshed == ["refresh-secret-1"]
+
+
+async def test_any_failed_approval_cools_down_and_revokes_the_token_it_got():
+    class NoRole(Script):
+        def _tokens(self):
+            self.n += 1
+            return httpx.Response(200, json={
+                "access_token": jwt("alice", realm_access={"roles": []}), "expires_in": 300,
+                "refresh_token": f"refresh-secret-{self.n}"})
+
+    script, note, clock = NoRole(), Note(), [0.0]
+    store = keystore.Ephemeral()
+    lg = mk(store, transport=httpx.MockTransport(script), notifier=note, now=lambda: clock[0])
+    with pytest.raises(login.LoginError, match="realm role"):
+        await lg.access_token()
+    assert script.revoked == ["refresh-secret-1"] and stored(store) is None
+    assert note.events == ["waiting", "settled:failed"]
+    with pytest.raises(login.LoginError, match="a new one starts in"):
+        await lg.access_token()
+    assert script.device_requests == 1 and note.events == ["waiting", "settled:failed"]
+    clock[0] += login.COOLDOWN_SEC + 1
+    with pytest.raises(login.LoginError, match="realm role"):
+        await lg.access_token()
+    assert script.device_requests == 2
