@@ -117,7 +117,12 @@ async def play_human(link: str, user: str, *, approve: bool = True) -> None:
                   flush=True)
             if not parser.forms:
                 if page.status_code >= 400:
-                    print(f"play_human[{user}]: {page.text[:300]!r}", flush=True)
+                    body = page.text.split("<body", 1)[-1]
+                    text = " ".join(re.sub(r"<script.*?</script>|<style.*?</style>|<[^>]+>", " ", body,
+                                           flags=re.S).split())
+                    hops = [f"{r.status_code} {r.url.path}?{r.url.query.decode()[:80]}" for r in page.history]
+                    print(f"play_human[{user}]: link={link.split('?')[0]} hops={hops} text={text[:400]!r}",
+                          flush=True)
                 return
             form = parser.forms[0]
             data = dict(form["fields"])
