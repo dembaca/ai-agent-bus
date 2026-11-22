@@ -1,11 +1,16 @@
 package callout
 
-// Proof of concept: is the sender of a bus message unforgeable with native
-// NATS means alone? The candidate: the sender is the last token of the
-// subject, an agent may publish only under its own name, reads only what push
-// consumers (made by the login service, here the admin connection) deliver to
-// deliver.<own name>.>, and has no JetStream, key-value, system or inbox
-// subject at all. Streams do not acknowledge (no_ack).
+// The standing proof of the permission model: the sender of a bus message is
+// unforgeable with native NATS means alone. The sender is the last token of
+// the subject, an agent may publish only under its own name, reads only what
+// push consumers (made by the login service, here the admin connection)
+// deliver to deliver.<own name>.>, and has no JetStream, key-value, system or
+// inbox subject at all. Streams do not acknowledge (no_ack) and every allow_*
+// is off.
+//
+// The suite runs on every update of the NATS server. Checked with
+// nats-server v2.15.3 (go.mod); an update of the server is allowed only after
+// this suite is green (ADR-014).
 
 import (
 	"encoding/json"
@@ -99,7 +104,7 @@ func (n *native) listen(ag *agent, delivers []string) chan *nats.Msg {
 func newNative(t *testing.T, busCfg string) *native {
 	t.Helper()
 	n := &native{t: t, bobSent: map[string]bool{}}
-	n.l = newLabCfg(t, nil, 0, func(c *Config) { c.Subjects.Native = true })
+	n.l = newLabCfg(t, nil, 0, nil)
 	n.nc, n.js = n.l.admin()
 	n.stream("BUS", busCfg)
 	n.stream("PRESENCE", presenceStreamCfg)
@@ -610,7 +615,9 @@ func TestNativeControlsWhatTheSettingsClose(t *testing.T) {
 			t.Logf("bob was delivered: Subject=%s Header=%v Data=%.90q", n.names(g.Subject), g.Header, g.Data)
 			forged = forged || g.Subject == "bus.ch.secret.agent-victim"
 		}
-		t.Logf("with allow_msg_schedules a scheduled message reached the secret channel under a foreign name: %v", forged)
+		if !forged {
+			t.Error("no scheduled forgery: the control did not reproduce the hole")
+		}
 	})
 	t.Run("rollups allowed", func(t *testing.T) {
 		cfg := strings.NewReplacer(`"allow_rollup_hdrs":false`, `"allow_rollup_hdrs":true`, `"deny_purge":true`, `"deny_purge":false`).Replace(busStreamCfg)
@@ -633,7 +640,7 @@ func TestNativeControlsWhatTheSettingsClose(t *testing.T) {
 // deliver subject; a wildcard subscription above it leaves it waiting (the
 // messages are kept, not lost).
 func TestNativeAConsumerWaitsForItsLiteralSubject(t *testing.T) {
-	l := newLabCfg(t, nil, 0, func(c *Config) { c.Subjects.Native = true })
+	l := newLabCfg(t, nil, 0, nil)
 	n := &native{t: t, l: l, bobSent: map[string]bool{}}
 	n.nc, n.js = l.admin()
 	n.stream("BUS", busStreamCfg)

@@ -80,7 +80,7 @@ func LoadSettings(getenv func(string) string) (Settings, bool, error) {
 		Account:    get("AUTH_ACCOUNT"),
 		Lobby:      get("AUTH_LOBBY"),
 		NamePrefix: get("AUTH_NAME_PREFIX"),
-		Subjects:   callout.Subjects{Prefix: get("AUTH_SUBJECT_PREFIX")},
+		Subjects:   callout.Subjects{Prefix: get("AUTH_SUBJECT_PREFIX"), Presence: get("AUTH_PRESENCE_PREFIX")},
 	}
 	s.Token = token.Config{
 		Issuer:        get("AUTH_KEYCLOAK_ISSUER"),

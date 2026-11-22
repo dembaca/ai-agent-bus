@@ -58,7 +58,7 @@ values are placeholders.
 | `AUTH_NATS_CA_FILE`, `AUTH_NATS_CERT_FILE`, `AUTH_NATS_KEY_FILE` | unset | the CA for the server's TLS certificate (unset: the system's), and a client certificate with its key if the server asks for one |
 | `AUTH_ACCOUNT` | — | the tenant's account the agents land in |
 | `AUTH_LOBBY` | unset | the lobby's channel name |
-| `AUTH_SUBJECT_PREFIX`, `AUTH_NAME_PREFIX` | `bus`, `agent-` | subject prefix, the start of agent names |
+| `AUTH_SUBJECT_PREFIX`, `AUTH_PRESENCE_PREFIX`, `AUTH_NAME_PREFIX` | `bus`, `presence`, `agent-` | subject prefix of channels and direct messages, of presence and crown claims (must differ, and neither may be `deliver`), the start of agent names |
 | `AUTH_REQUEST_TIMEOUT` | `1.5s` | bound of one request (token check, chat lookups, answer), at most 10 s; keep it below the server's callout timeout |
 | `AUTH_BRAKE_FILE` | unset | the emergency brake (below) |
 | `AUTH_KEYCLOAK_ISSUER`, `AUTH_KEYCLOAK_JWKS_URL`, `AUTH_KEYCLOAK_CLIENT_ID` | — | the realm and the bus's client |
@@ -175,7 +175,7 @@ The NATS server sends every client that is not one of its `auth_users` to
 **What the host sends.** `auth_token` in its CONNECT is JSON:
 `{"token": "<Keycloak access token>", "home": "<channel>", "guests": ["<channel>"], "lobby": true}`.
 It connects with its own user nkey (nkey authentication: it signs the
-server's nonce) and with the inbox prefix `_INBOX.<its public nkey>`.
+server's nonce). It needs no inbox: agents have no `_INBOX` right.
 
 **What the service checks,** in this order, within `AUTH_REQUEST_TIMEOUT` and
 never past the server's request's own `exp`: the request decrypts with the
@@ -203,19 +203,27 @@ signed by the account key, valid 15 minutes from the check:
   A store for the name binding on first login will be the first state.
 - **Tags:** `owner:<owner>`, `host-nkey:<nkey>`, and `approver` for a member
   of the approvers' group.
-- **Permissions,** deny by default (`internal/callout/perms.go` names every
-  subject in one table, to be aligned with the protocol description once it is
-  pinned): publish only under its own name as the last token in its channels
-  (`bus.ch.<channel>.<agent>`) and to other agents' direct subjects
-  (`bus.dm.<recipient>.<agent>`); subscribe only to its channels, its own
-  direct subject and its own inbox. **No JetStream API, no key-value subject,
-  no `$SYS`:** NATS checks a publish's subject, never its reply subject, so any
-  service an agent may call can be made to answer onto another agent's
+- **Permissions,** deny by default, the one model of ADR-014 point 16
+  (`internal/callout/perms.go` names every subject in one table, to be aligned
+  with the protocol description once it is pinned). Publish only with its own
+  name as the last token: in its channels (`bus.ch.<channel>.<agent>`), to
+  other agents' direct subjects (`bus.dm.<recipient>.<agent>`), its presence
+  (`presence.<agent>`) and its crown claims (`presence.crown.<channel>.<agent>`).
+  Subscribe only to its own deliver subjects (`deliver.<agent>.>`), where the
+  push consumers the login service makes deliver; the agent subscribes to each
+  by its literal name. **No JetStream API, no key-value subject, no `$SYS`,
+  no `_INBOX`:** NATS checks a publish's subject, never its reply subject, so
+  any service an agent may call can be made to answer onto another agent's
   subject, under that agent's name, into a channel it has no right to, and
-  into the stream. Agents never write directly to a shared bucket either (a
-  put with `Nats-Rollup: all` on its own key empties the whole bucket, crown
-  leases included). Reading from JetStream and writing presence go through the
-  bus's own service.
+  into the stream. The streams must be created with `no_ack`, every `allow_*`
+  switch off and `deny_delete`, `deny_purge`; presence and crowns are a stream
+  of their own, one message per subject, not a key-value bucket.
+  `AUTH_SUBJECT_PREFIX` and `AUTH_PRESENCE_PREFIX` set the two prefixes.
+  **The proof** is `internal/callout/native_sender_test.go`: an embedded
+  nats-server (the version in `go.mod`, 2.15.3) with this callout, attacked
+  on every subject and header, with controls that show the forgery succeeds
+  once acknowledgements, schedules or rollups are allowed. An update of the
+  NATS server is allowed only after this suite is green on it.
 - **Limits:** 64 subscriptions, 1 MiB per message, plain NATS connections only
   (no websocket, leafnode or MQTT).
 
@@ -265,20 +273,24 @@ server knows one issuer at a time.
   Accounts share no subjects; the test checks that another account's post does
   not reach an agent. Rights inside a JetStream stream shared by tenants are
   not built: each tenant has its own account and stream.
-- **Durable consumers, presence and crown leases:** agents get no JetStream
-  rights; the bus's service that reads for them and writes presence is still
-  to be built.
+- **Consumers:** agents get no JetStream rights; the login service is to make
+  and remove their push consumers (at login, on leaving a channel, at sign-off
+  and on the emergency brake; history from a sequence the hello names). The
+  design is in ADR-014 point 16; it is built with the NATS adapter.
+- **Message ids and a side channel:** a `Nats-Msg-Id` is checked across the
+  whole stream within its 100 ms duplicate window, so an agent that guesses
+  another's id suppresses that message: honest clients send none. With
+  expectation headers an agent learns whether and when a channel it cannot
+  read had posts, not what; only a stream per channel closes that.
 - **`auth_data` for admins:** whether Mattermost returns `auth_data` to a
   system admin's token at all depends on its privacy settings; the lab checks
   it. Without it an OpenID account's `sub` cannot be compared, and the check
   refuses the login.
 - **Who sent a post, as the receiver sees it:** the subject's last token
-  names the sender, and only the sender can publish there, as long as no
-  service in the account answers onto a reply subject the caller chose. The
-  bus's own service (for consumers and presence) and the central adapter
-  will be such services: they must answer only into the checked caller's
-  `_INBOX.<host nkey>.>`, and the streams must be created without rollup,
-  schedules or batch publishing besides `no_ack`. How a receiver learns the
+  names the sender, and only the sender can publish there: agents talk to no
+  service, and the streams do not acknowledge (ADR-014 point 16). A receiver
+  takes the sender from the subject alone, never from a header or the body.
+  How a receiver learns the
   sender's owner (ADR-001's foreign agents) is an open design question for
   the protocol layer.
 - **A restart is a new agent:** the name follows from the host's nkey, which

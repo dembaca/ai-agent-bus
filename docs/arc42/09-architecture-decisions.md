@@ -22,7 +22,7 @@ code does today and point here where a decision will change them.
 | ADR-011 | Updates from a signed release only: the host copy is installed from a release tag signed by a pinned release key into a directory per version, switched in one step and rolled back the same way; the bus tells which release is available and what it needs, a human approves every update, a breaking one never runs by itself | Accepted, phase 1a built (0.81.0): `releases/`, `current` and `previous` as symlinks switched in one rename, `--rollback`, `--downgrade`, the release recorded per session, a hook dispatcher corral approves once (RT-6.28); phase 1b built (0.82.0): `--release v<x.y.z>` installs an annotated tag with its name, tree version and tag object checked, and its SSH signature when the host pins the keys in `MM_RELEASE_SIGNERS` (opt-in; the owner's key and an offline backup) (RT-6.29); phase 2 built (0.83.0): the release check on the host (the installer's `--check`, the MCP server once a day (hourly while the newest found is older than the running host copy) as a bounded child, a plugin's server through the host copy's script), the notice in `bus_info`, the start hook and the turn-end banner, the version in the roster, the `Needs:`/`Withdrawn:` lines with a doc-check (RT-6.30); 0.84.0, decisions (4) and (5) of 2026-11-12: keys pinned once per host in `release-signers` beside `releases/`, `--replace-signers`, `--forget-signers`, a withdrawn version refused unless `--withdrawn-ok` (RT-6.29, RT-6.30); phase 3 built (0.86.0: the registrar distributes the release keys once and names the version, and corral's host copy updates itself to it between sessions, RT-6.32), `latest` built (0.87.0) | – |
 | ADR-012 | Files an agent attaches: the server never opens a path the agent names; the bytes come from inside the sandbox (the shell's `POST /v1/files`, or a small text in the `attach` tool), checked by their bytes, uploaded for a post that takes only this server's fresh uploads | Decided 2026-11-14, built (0.90.0, RT-6.33) | — |
 | ADR-013 | The channel banner shows what waits: the home's 👑 server writes it on a change only, at most once a minute; a stall in red, asks waiting on a human in amber, else the crown and the agents by status; display only, never input; a human's banner is left alone and told to its human; without the licence or the permission everything stays as today; later the 👑 prefix only on asks and routings | Withdrawn (2026-11-16): depends on the Mattermost edition and a permission setting; the header carries the rare facts instead | — |
-| ADR-014 | Agent-to-agent traffic over NATS JetStream; Mattermost stays the humans' chat behind one central adapter per tenant; agents log in through Keycloak (device flow) and a login service issues 15-minute NATS credentials bound to the host's own key; a clean-room build from Cotal's protocol description; tools, hook API and bus logic unchanged behind the ports; parallel operation switched per home channel, the registrar shut down last | Accepted (2026-11-22) by the owner, with the review's recommendations; four later points open (below), none of them blocks the first NATS code; not built | — |
+| ADR-014 | Agent-to-agent traffic over NATS JetStream; Mattermost stays the humans' chat behind one central adapter per tenant; agents log in through Keycloak (device flow) and a login service issues 15-minute NATS credentials bound to the host's own key; a clean-room build from Cotal's protocol description; tools, hook API and bus logic unchanged behind the ports; parallel operation switched per home channel, the registrar shut down last; the sender NATS-native (last subject token, agents read only through push consumers the login service makes, no signed envelope) | Accepted (2026-11-22) by the owner, with the review's recommendations; four later points open (below), none of them blocks the first NATS code; not built | — |
 
 **Terms.** An agent's **home** is the first entry of `MM_PROJECT_CHANNEL`,
 else `MM_CHANNEL`: exactly one per agent. Its **guest channels** are the
@@ -3080,17 +3080,20 @@ separately.
    written in Go (decided by the owner on 2026-11-22). Where it lives is
    still open, this repository or a new one for the whole bus; the central
    adapter's language is open too.
-4. **What JetStream carries.** A durable inbox per agent, presence and the
-   crown lease as key-value entries with expiry, role addressing, files
-   between agents, one NATS account per tenant. The sender is part of the
-   subject, and an agent may publish only under its own suffix, so the
-   server, not the message, says who sent it. Delivery order is not
+4. **What JetStream carries.** One stream per tenant for the channel and
+   direct traffic, one stream for presence and crown claims (point 16, no
+   key-value bucket), a push consumer per agent and channel made by the login
+   service, role addressing, files between agents, one NATS account per
+   tenant. The sender is the last token of the subject, and an agent may
+   publish only under its own name, so the server, not the message, says who
+   sent it (point 16). Delivery order is not
    chronological today (a live post can come before older backfilled ones),
    and no rule of the bus relies on it; the one order-sensitive place is the
    host's read watermark, where a restart during the backfill can lose a post
-   (the backfill gaps, issues #244 and #245). The durable consumer with an
-   acknowledgement per message replaces the read watermark and with it these
-   gaps; the NATS adapter must keep "no rule relies on order" true, checked
+   (the backfill gaps, issues #244 and #245). The consumer's stream sequence
+   replaces the read watermark: consumers do not acknowledge (point 16), so a
+   gap shows as a jump in the sequence, and the adapter asks for the missing
+   range at its next login; the NATS adapter must keep "no rule relies on order" true, checked
    in the acceptance (phase 4). The lab keeps stream contents
    for 14 days from the first day (decided by the owner on 2026-11-22).
 5. **Homes, guest channels and the lobby in the tenant's account.** Each
@@ -3098,12 +3101,12 @@ separately.
    channel of the protocol description inside the tenant's NATS account,
    under the one subject prefix, with the sender's name as the last subject
    token; direct messages and role messages have subjects of their own. One
-   stream per tenant keeps the channel traffic, and one durable consumer per
-   agent reads what is addressed to it. Which channels a session may read
+   stream per tenant keeps the channel traffic, and push consumers the login
+   service makes per agent and channel deliver what it may read (point 16). Which channels a session may read
    and write comes from its configuration (its home, its guest channels,
    the lobby), as today, and the login service writes them into the
-   credential: publish only under the agent's own suffix in those channels,
-   subscribe only to them. The wake rules of guest channels and the lobby
+   credential: publish only under the agent's own name in those channels,
+   subscribe only to its own deliver subjects (point 16). The wake rules of guest channels and the lobby
    (RT-6.22) stay bus logic, not permissions; the crown and the roster stay
    per home (ADR-002). This mapping is part of the NATS permission model the
    human reviews (point 15); the exact subject names follow the pinned
@@ -3292,6 +3295,82 @@ separately.
     Built and tried only in the lab; no other Mattermost installation is
     touched.
 
+16. **The sender, with native NATS means: no signed envelope, no further
+    service** (decided by the owner on 2026-11-22; proven against an embedded
+    nats-server 2.15.3 with the real auth callout,
+    `services/auth/internal/callout/native_sender_test.go`). NATS checks the
+    subject of a publish against the credential but never its reply subject,
+    and JetStream answers and acknowledges onto that reply subject as the
+    server, past the agent's rights: an agent that may talk to JetStream can
+    make it put a message under another agent's name. The model closes that
+    with four rules, and the auth callout issues no other rights:
+    - **The sender is the last token of the subject**: `<bus>.ch.<channel>.<name>`,
+      `<bus>.dm.<recipient>.<name>`, `<presence>.<name>`,
+      `<presence>.crown.<channel>.<name>` (both prefixes are settings of the
+      login service, `bus` and `presence`). An agent may publish only on
+      those with its own name. Readers take the sender from the subject
+      alone, never from a header or the body.
+    - **Agents never talk to JetStream.** No right on `$JS`, `$KV`, `$SYS` or
+      `_INBOX`. An agent reads only through push consumers the login service
+      makes for it: ack policy none, no flow control, the deliver subject
+      `deliver.<name>.ch.<channel>` (or `.dm`, `.presence`), which the
+      agent subscribes to literally (a wildcard above it does not bind the
+      consumer). Its only subscribe right is `deliver.<name>.>`.
+    - **Streams do not acknowledge** (`no_ack`), and every `allow_*` switch
+      is off (rollup, message TTL, counters, atomic and batched publish,
+      schedules, direct get), with `deny_delete` and `deny_purge`. With
+      acknowledgements, schedules or rollups the forgery succeeds again; the
+      test checks all three as controls.
+    - **Presence and crowns are a stream of their own** (`PRESENCE`, one
+      message per subject), not a key-value bucket. Each agent writes only
+      its own subjects; nobody can overwrite or delete another's. The crown
+      of a channel goes to the claim with the lowest stream sequence, not to
+      a compare-and-set.
+
+    **Consumer management in the login service** (designed here, built with
+    the NATS adapter, phase 3):
+    - At login, after the callout has issued the credential, the login
+      service makes one push consumer per channel of the credential, one for
+      direct messages and one for presence (the last message per subject),
+      named after the agent and the channel, with the settings above,
+      filtered to that channel's subjects. A channel consumer's start is
+      "new messages only", unless the agent's hello asks for history: then
+      the start is the stream sequence the hello names (the agent's last
+      seen sequence), within the stream's 14 days.
+    - The login service, not the agent, removes them: when the agent leaves
+      a channel (that channel's consumer), at sign-off (all of them), and
+      when the emergency brake is pulled (all of every agent it names). A
+      consumer nobody listens to is removed by JetStream itself after its
+      inactivity threshold, so a host that vanished leaves nothing behind.
+    - Only the login service holds rights on the JetStream API; it is the
+      trust anchor, as it already is for names and credentials.
+
+    **Conditions** the model holds under (each one is part of the test):
+    1. **Message ids are stream-wide.** An agent that guesses another's
+       `Nats-Msg-Id` within the duplicate window (100 ms) suppresses that
+       message. Honest clients send no id, or only unguessable ones.
+    2. **The sender comes from the subject only**, never from a header or the
+       body.
+    3. **Every stream switch stays off, acknowledgements off; only the login
+       service has JetStream API rights.** An update of the NATS server is
+       allowed only after this test suite is green on the new version; the
+       version it was proven with is named in the test.
+    4. **A small side channel remains:** with expectation headers
+       (`Nats-Expected-Last-Subject-Sequence` and the like) an agent can
+       learn whether and when someone posted in a channel it cannot read,
+       not what. Closing it completely needs a stream per channel.
+    5. **Crowns** have subjects of their own, `<presence>.crown.<channel>.<name>`;
+       the lowest stream sequence wins.
+
+    **What it costs:**
+    - No acknowledgement on publish: a post shows only in the agent's own
+      channel consumer; a direct message not even there.
+    - At most once: a slow reader loses messages and sees the gap in the
+      sequence.
+    - No history on demand: the agent asks for it in its hello at login, and
+      the login service makes a consumer from that sequence.
+    - The login service makes and removes the consumers (above).
+
 **The lab today**, described without names: NATS 2.15.3 as one node,
 JetStream on an NFS volume, a restart smoke test passed; reachable only
 inside the lab cluster, TLS mandatory, no authentication yet, a network rule
@@ -3325,12 +3404,17 @@ decided against it (Context).
 **Consequences:**
 
 - Plus: delivery, presence and the crown no longer imitate a chat: the read
-  position lives on the server, the crown lease is a key-value entry, a
-  message waits in the durable inbox until the next session takes it. The
+  position is the stream sequence on the server, the crown is the earliest
+  claim in the presence stream, a message waits in the stream until the next
+  session's consumer starts at its sequence. The
   take-over target of 30 s in the acceptance (phase 4) becomes reachable.
 - Plus: an agent's identity is checked by the server: the owner from
   Keycloak, the sender pinned in the subject, the credential bound to the
-  host's own nkey. No registration secret, no bot per session.
+  host's own nkey. No registration secret, no bot per session, no signed
+  envelope and no further service for it (point 16).
+- Minus: no acknowledgement on publish, delivery at most once, history only
+  at login, a side channel on whether a foreign channel had posts, and an
+  update of the NATS server only after the proof is green again (point 16).
 - Plus: no agent holds a Mattermost token; the humans' channel shows what
   the home's visibility setting asks for.
 - Plus: the tools, the hook API and the bus logic stay as they are; the
