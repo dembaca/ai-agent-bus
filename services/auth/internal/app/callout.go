@@ -18,6 +18,7 @@ import (
 	"github.com/nats-io/nkeys"
 
 	"github.com/dembaca/ai-agent-bus/services/auth/internal/callout"
+	"github.com/dembaca/ai-agent-bus/services/auth/internal/consumers"
 	"github.com/dembaca/ai-agent-bus/services/auth/internal/mattermost"
 	"github.com/dembaca/ai-agent-bus/services/auth/internal/token"
 )
@@ -37,6 +38,12 @@ type Settings struct {
 	NATSCertFile   string // client certificate, with NATSKeyFile, if the server asks for one
 	NATSKeyFile    string
 	BrakeFile      string
+	// Consumer management, required: the user nkey seed of the service's
+	// user in the tenant account, with JetStream API rights, and the server
+	// it connects to (default NATSURL). Credentials carry the deliver
+	// subjects; without consumer management nobody reconciles or brakes them.
+	JSSeedFile     string
+	JSURL          string
 	Callout        callout.Config
 	Token          token.Config
 	Binding        string // "open" or "openid-only"
@@ -76,6 +83,17 @@ func LoadSettings(getenv func(string) string) (Settings, bool, error) {
 		return Settings{}, true, fmt.Errorf("%w: AUTH_NATS_CERT_FILE and AUTH_NATS_KEY_FILE go together", ErrConfig)
 	}
 	s.BrakeFile = get("AUTH_BRAKE_FILE")
+	s.JSSeedFile = get("AUTH_JS_SEED_FILE")
+	s.JSURL = get("AUTH_JS_URL")
+	if s.JSSeedFile == "" {
+		return Settings{}, true, fmt.Errorf("%w: AUTH_JS_SEED_FILE must be set with AUTH_NATS_URL: without consumer management credentials would carry deliver subjects nobody reconciles or brakes", ErrConfig)
+	}
+	if s.JSURL == "" {
+		s.JSURL = s.NATSURL
+	}
+	if err := natsURLSecure(s.JSURL); err != nil {
+		return Settings{}, true, fmt.Errorf("%w: AUTH_JS_URL: %v", ErrConfig, err)
+	}
 	s.Callout = callout.Config{
 		Account:    get("AUTH_ACCOUNT"),
 		Lobby:      get("AUTH_LOBBY"),
@@ -132,6 +150,9 @@ func LoadSettings(getenv func(string) string) (Settings, bool, error) {
 // RunCallout starts the callout and serves until ctx ends. Errors before it
 // serves wrap ErrConfig when the configuration is at fault.
 func RunCallout(ctx context.Context, s Settings, log *slog.Logger) error {
+	if s.JSSeedFile == "" {
+		return fmt.Errorf("%w: AUTH_JS_SEED_FILE must be set", ErrConfig)
+	}
 	issuer, err := seed(s.IssuerSeedFile, "AUTH_ISSUER_SEED_FILE")
 	if err != nil {
 		return err
@@ -143,6 +164,10 @@ func RunCallout(ctx context.Context, s Settings, log *slog.Logger) error {
 		}
 	}
 	user, err := seed(s.NATSSeedFile, "AUTH_NATS_SEED_FILE")
+	if err != nil {
+		return err
+	}
+	jsUser, err := seed(s.JSSeedFile, "AUTH_JS_SEED_FILE")
 	if err != nil {
 		return err
 	}
@@ -174,27 +199,50 @@ func RunCallout(ctx context.Context, s Settings, log *slog.Logger) error {
 	if err != nil {
 		return fmt.Errorf("%w: %v", ErrConfig, err)
 	}
-	pub, _ := user.PublicKey()
-	opts := []nats.Option{nats.Name("authd"), nats.Nkey(pub, user.Sign),
-		nats.MaxReconnects(-1), nats.ReconnectWait(2 * time.Second),
-		nats.DisconnectErrHandler(func(_ *nats.Conn, err error) {
-			log.Warn("NATS disconnected", "reason", fmt.Sprint(err))
-		}),
-		nats.ReconnectHandler(func(nc *nats.Conn) { log.Info("NATS reconnected", "server", nc.ConnectedUrlRedacted()) }),
-		nats.ErrorHandler(func(_ *nats.Conn, _ *nats.Subscription, err error) {
-			log.Error("NATS error", "reason", err.Error())
-		})}
-	if s.NATSCAFile != "" {
-		opts = append(opts, nats.RootCAs(s.NATSCAFile))
+	connect := func(url, name string, kp nkeys.KeyPair) (*nats.Conn, error) {
+		pub, _ := kp.PublicKey()
+		opts := []nats.Option{nats.Name(name), nats.Nkey(pub, kp.Sign),
+			nats.MaxReconnects(-1), nats.ReconnectWait(2 * time.Second),
+			nats.DisconnectErrHandler(func(_ *nats.Conn, err error) {
+				log.Warn("NATS disconnected", "connection", name, "reason", fmt.Sprint(err))
+			}),
+			nats.ReconnectHandler(func(nc *nats.Conn) {
+				log.Info("NATS reconnected", "connection", name, "server", nc.ConnectedUrlRedacted())
+			}),
+			nats.ErrorHandler(func(_ *nats.Conn, _ *nats.Subscription, err error) {
+				log.Error("NATS error", "connection", name, "reason", err.Error())
+			})}
+		if s.NATSCAFile != "" {
+			opts = append(opts, nats.RootCAs(s.NATSCAFile))
+		}
+		if s.NATSCertFile != "" {
+			opts = append(opts, nats.ClientCert(s.NATSCertFile, s.NATSKeyFile))
+		}
+		return nats.Connect(url, opts...)
 	}
-	if s.NATSCertFile != "" {
-		opts = append(opts, nats.ClientCert(s.NATSCertFile, s.NATSKeyFile))
-	}
-	nc, err := nats.Connect(s.NATSURL, opts...)
+	nc, err := connect(s.NATSURL, "authd", user)
 	if err != nil {
 		return fmt.Errorf("NATS: %w", err)
 	}
 	defer nc.Close()
+	jsnc, err := connect(s.JSURL, "authd-js", jsUser)
+	if err != nil {
+		return fmt.Errorf("NATS (JetStream): %w", err)
+	}
+	defer jsnc.Close()
+	mgr, err := consumers.New(jsnc, consumers.Config{Bus: s.Callout.Subjects.Prefix, Presence: s.Callout.Subjects.Presence, Log: log})
+	if err != nil {
+		return fmt.Errorf("%w: %v", ErrConfig, err)
+	}
+	if err := mgr.EnsureStreams(startCtx); err != nil {
+		return fmt.Errorf("streams: %w", err)
+	}
+	if err := mgr.WatchByes(ctx); err != nil {
+		return err
+	}
+	mgr.WatchBrake(ctx, brake)
+	svc.SetConsumers(mgr)
+	log.Info("consumer management on", "bus", s.Callout.Subjects.Prefix, "presence", s.Callout.Subjects.Presence)
 	log.Info("auth callout serving", "account", s.Callout.Account, "binding", s.Binding)
 	return svc.Serve(ctx, nc)
 }

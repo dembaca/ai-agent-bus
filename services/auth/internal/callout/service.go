@@ -15,6 +15,7 @@ import (
 	"errors"
 	"fmt"
 	"log/slog"
+	"sync"
 	"time"
 
 	"github.com/nats-io/jwt/v2"
@@ -63,6 +64,18 @@ type Hello struct {
 	Home   string   `json:"home,omitempty"`
 	Guests []string `json:"guests,omitempty"`
 	Lobby  bool     `json:"lobby,omitempty"`
+	// Since asks, per channel, for history: the stream sequence the host
+	// saw last. It counts only for a granted channel.
+	Since map[string]uint64 `json:"since,omitempty"`
+}
+
+// Consumers makes the push consumers an agent reads from (consumers.Manager).
+// The service calls it after it built a credential and before it answers:
+// an error refuses the login, since a credential without its consumers would
+// look whole. It also removes the consumers of channels no longer in the
+// credential.
+type Consumers interface {
+	Reconcile(ctx context.Context, agent, owner string, channels []string, since map[string]uint64) error
 }
 
 // Reasons a connection is refused, besides those of the token check. The
@@ -83,6 +96,25 @@ type Service struct {
 	log      *slog.Logger
 	now      func() time.Time
 	pending  chan struct{}
+
+	cmu       sync.RWMutex
+	consumers Consumers // nil: none are made
+}
+
+// SetConsumers sets the consumer management. nil (the default) makes none and
+// is for unit tests of this package only: the service's wiring (app.RunCallout)
+// always sets it, since a credential without consumer management is not
+// reconciled or braked.
+func (s *Service) SetConsumers(c Consumers) {
+	s.cmu.Lock()
+	defer s.cmu.Unlock()
+	s.consumers = c
+}
+
+func (s *Service) consumerHook() Consumers {
+	s.cmu.RLock()
+	defer s.cmu.RUnlock()
+	return s.consumers
 }
 
 // New returns a service. issuer is the account's signing key pair (its
@@ -276,7 +308,15 @@ func (s *Service) authorize(ctx context.Context, req *jwt.AuthorizationRequestCl
 		return "", who, fmt.Errorf("user JWT invalid: %w", errs[0])
 	}
 	userJWT, err := uc.Encode(s.issuer)
-	return userJWT, who, err
+	if err != nil {
+		return "", who, err
+	}
+	if c := s.consumerHook(); c != nil {
+		if err := c.Reconcile(ctx, agent, id.Owner, channels, hello.Since); err != nil {
+			return "", who, fmt.Errorf("consumers could not be made: %w", err)
+		}
+	}
+	return userJWT, who, nil
 }
 
 // grant keeps of the asked-for channels those the human is a member of, and

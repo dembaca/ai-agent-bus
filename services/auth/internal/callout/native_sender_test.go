@@ -22,17 +22,14 @@ import (
 	"time"
 
 	"github.com/nats-io/nats.go"
+
+	"github.com/dembaca/ai-agent-bus/services/auth/internal/consumers"
 )
 
-const (
-	busStreamCfg = `{"name":"BUS","subjects":["bus.>"],"retention":"limits","storage":"file","discard":"old",
-"max_age":1209600000000000,"max_bytes":1073741824,"max_msg_size":65536,"num_replicas":1,"no_ack":true,"duplicate_window":100000000,
-"allow_direct":false,"mirror_direct":false,"deny_delete":true,"deny_purge":true,"allow_rollup_hdrs":false,
-"allow_msg_ttl":false,"allow_msg_counter":false,"allow_atomic":false,"allow_msg_schedules":false,"allow_batched":false}`
-	presenceStreamCfg = `{"name":"PRESENCE","subjects":["presence.>"],"retention":"limits","storage":"file","discard":"old",
-"max_age":86400000000000,"max_msgs_per_subject":1,"max_bytes":16777216,"max_msg_size":4096,"num_replicas":1,"no_ack":true,"duplicate_window":100000000,
-"allow_direct":false,"mirror_direct":false,"deny_delete":true,"deny_purge":true,"allow_rollup_hdrs":false,
-"allow_msg_ttl":false,"allow_msg_counter":false,"allow_atomic":false,"allow_msg_schedules":false,"allow_batched":false}`
+// The stream configurations are the production ones (consumers package).
+var (
+	busStreamCfg      = consumers.BusStreamJSON("bus", 0)
+	presenceStreamCfg = consumers.PresenceStreamJSON("presence", 0)
 )
 
 type tapped struct {

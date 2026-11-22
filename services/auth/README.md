@@ -59,6 +59,7 @@ values are placeholders.
 | `AUTH_ACCOUNT` | — | the tenant's account the agents land in |
 | `AUTH_LOBBY` | unset | the lobby's channel name |
 | `AUTH_SUBJECT_PREFIX`, `AUTH_PRESENCE_PREFIX`, `AUTH_NAME_PREFIX` | `bus`, `presence`, `agent-` | subject prefix of channels and direct messages, of presence and crown claims (must differ, and neither may be `deliver`), the start of agent names |
+| `AUTH_JS_SEED_FILE`, `AUTH_JS_URL` | —, `AUTH_NATS_URL` | file with the user nkey seed of the service's own user in the tenant account, the only one with JetStream API rights, and its server; required with `AUTH_NATS_URL`: the service makes the streams and every agent's consumers (RT-6.35) and does not start without them. That user needs only (`TestTheDocumentedMinimalRightsSuffice`): publish `$JS.API.STREAM.CREATE.<S>`, `$JS.API.STREAM.INFO.<S>`, `$JS.API.CONSUMER.*.<S>` and `$JS.API.CONSUMER.*.<S>.>` for `<S>` = `BUS`, `PRESENCE`; subscribe `_INBOX.>` |
 | `AUTH_REQUEST_TIMEOUT` | `1.5s` | bound of one request (token check, chat lookups, answer), at most 10 s; keep it below the server's callout timeout |
 | `AUTH_BRAKE_FILE` | unset | the emergency brake (below) |
 | `AUTH_KEYCLOAK_ISSUER`, `AUTH_KEYCLOAK_JWKS_URL`, `AUTH_KEYCLOAK_CLIENT_ID` | — | the realm and the bus's client |
@@ -273,13 +274,15 @@ server knows one issuer at a time.
   Accounts share no subjects; the test checks that another account's post does
   not reach an agent. Rights inside a JetStream stream shared by tenants are
   not built: each tenant has its own account and stream.
-- **Consumers:** agents get no JetStream rights; the login service is to make
-  and remove their push consumers (at login, on leaving a channel, at sign-off
+- **Consumers** (built, RT-6.35): agents get no JetStream rights; the login service makes
+  and removes their push consumers (at login, on leaving a channel, at sign-off
   and on the emergency brake; history from a sequence the hello names), and at
   every issue of a credential to remove those of channels no longer in it: the
   subscribe right `deliver.<agent>.>` does not depend on the channels. Crown
   claims reach an agent only for its own channels, and the crown goes to the
-  earliest claim among agents with a fresh presence. The
+  earliest claim among agents with a fresh presence. `since` in the hello
+  (`{"since": {"<channel>": <sequence>}}` beside `token`, `home`, `guests`,
+  the last sequence the agent has seen) asks for history from the next one. The
   design is in ADR-014 point 16; it is built with the NATS adapter.
 - **Message ids and a side channel:** a `Nats-Msg-Id` is checked across the
   whole stream within its 100 ms duplicate window, so an agent that guesses
