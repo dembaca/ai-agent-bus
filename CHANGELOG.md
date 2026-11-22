@@ -3,6 +3,62 @@
 Every version bump in `.claude-plugin/plugin.json` gets an entry here. Versions
 before 0.5.0 are described in the git history.
 
+## 0.96.0
+
+Needs: the plugin reinstalled from the new marketplace, host copy from the new repo, every session restarted.
+
+### Breaking
+
+- **New name: ai-agent-bus.** Mattermost is now one chat the bus can run on,
+  so the project drops it from its name and moves to
+  https://github.com/dembaca/ai-agent-bus (website
+  https://dembaca.github.io/ai-agent-bus/). The old repository
+  `dembaca/mattermost-ai-agent-bus` is frozen at 0.95.0 and gets no releases.
+- The Claude Code plugin and its marketplace are `ai-agent-bus`
+  (`/plugin marketplace add dembaca/ai-agent-bus`,
+  `/plugin install ai-agent-bus@ai-agent-bus`); the skill is
+  `skills/ai-agent-bus/` (`ai-agent-bus:ai-agent-bus`, also in the reload line
+  after compaction); the MCP server in `plugin.json`, the OpenCode plugin and
+  the pi extension is `ai-agent-bus`. The tool names change with them:
+  `mcp__plugin_mattermost-ai-agent-bus_mattermost-agent-bus__*` is now
+  `mcp__plugin_ai-agent-bus_ai-agent-bus__*`, and a channel push comes as
+  `<channel source="plugin:ai-agent-bus:ai-agent-bus">`.
+- Hosts on 0.95.0 learn nothing of the move: their release check reads the old
+  repository. The switch is by hand:
+  - Uninstall the old plugin and remove its marketplace, add the new
+    marketplace and install `ai-agent-bus@ai-agent-bus`, in every Claude config
+    that has it, the corral homes too.
+  - Rewrite what names the old plugin, marketplace, MCP server or tool prefix:
+    permission rules, `--channels` arguments, `allowedChannelPlugins` entries,
+    statusline paths, and `enabledPlugins` and `extraKnownMarketplaces` in the
+    `.claude/settings.json` that other repositories check in. In OpenCode and
+    pi the MCP server is `ai-agent-bus` too, so their tool names and permission
+    rules change the same way.
+  - A server added by hand (`claude mcp add`, Codex's
+    `[mcp_servers.mattermost-agent-bus]`, Cursor) keeps running under its old
+    key; re-add it as `ai-agent-bus` to get the new tool names.
+  - Local checkouts: `git remote set-url origin` to the new repository, and
+    `MM_AGENT_BUS_ROOT`, symlinks and `skills` paths to
+    `skills/ai-agent-bus/`. An `MM_RELEASE_URL` that names the old repository
+    goes.
+  - On each host install the host copy once with the installer from a clone
+    of the new repository checked out at `v0.96.0`:
+    `bin/mm-agent-host-install.sh --release v0.96.0`, without
+    `MM_RELEASE_URL`. The installer of 0.95.0 does not do: it unpacks only the
+    files it knows, so its copy of 0.96.0 lacks `skills/ai-agent-bus/`, and a
+    second run calls it current. Later releases and self-updates find the new
+    repository by default.
+  - Restart every session.
+- The runtime texts call it the AI agent bus.
+
+### Kept
+
+- The Python package `mattermost_ai_agent_bus` and its console script
+  `mattermost-ai-agent-bus-mcp`, the `MM_*` variables, the host copy at
+  `~/.local/share/mm-agent-bus`, the state directories, the registrar and its
+  URLs, and the file names `opencode/plugin/mattermost-agent-bus.ts` and
+  `pi/mattermost-agent-bus.ts` (OpenCode and pi configs point at them).
+
 ## 0.95.0
 
 ### Breaking

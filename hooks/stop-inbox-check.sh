@@ -227,7 +227,7 @@ if [[ "$pending" -gt 0 && "$DRAINS" -lt "$MAX_DRAIN" ]]; then
                    + (if (.fyi // 0) > 0 then "\tfyi=\(.fyi)" else "" end)' <<<"$MM_BUS_BODY" 2>/dev/null)"
   # Ranked by intent (RT-6.14): an agent's fyi post needs no answer.
   fyi="$(awk -F'fyi=' 'NF > 1 { n += $2 } END { print n + 0 }' <<<"$detail")"
-  reason="You have ${pending} unread message(s) on the Mattermost agent bus"
+  reason="You have ${pending} unread message(s) on the AI agent bus"
   if (( fyi > 0 )); then
     reason+=", $(( pending > fyi ? pending - fyi : 0 )) needing action, the rest fyi"
   fi

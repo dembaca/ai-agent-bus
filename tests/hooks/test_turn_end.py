@@ -98,7 +98,7 @@ def test_no_window_after_a_bye_in_backticks(mm, run):
         assert r.passed and window(run) == {}, bye
 
 
-BUS_PROMPT = json.dumps({"prompt": '<channel source="plugin:mattermost-ai-agent-bus:mattermost-agent-bus" kind="dm">hi</channel>'})
+BUS_PROMPT = json.dumps({"prompt": '<channel source="plugin:ai-agent-bus:ai-agent-bus" kind="dm">hi</channel>'})
 
 
 def test_turn_woken_by_the_channel_needs_no_signoff(mm, run):
@@ -494,12 +494,12 @@ def test_drain_ranks_fyi_posts(mm, run):
             ("can you review #5?", None, OTHER)], strict=True):
         post.update(message=message, props=props, user_id=user)
     r = run(STOP)
-    assert r.blocked and "3 unread message(s) on the Mattermost agent bus, 2 needing action" in r.reason
+    assert r.blocked and "3 unread message(s) on the AI agent bus, 2 needing action" in r.reason
     assert "fyi=1" in r.reason
     for post in mm.dm_posts:
         post["props"] = None
     r = run(STOP)
-    assert "3 unread message(s) on the Mattermost agent bus." in r.reason and "fyi" not in r.reason
+    assert "3 unread message(s) on the AI agent bus." in r.reason and "fyi" not in r.reason
 
 
 def test_trusted_humans_plain_post_is_for_the_coordinator(mm, run):
@@ -653,12 +653,12 @@ def test_listener_wakes_for_a_reaction_to_an_open_ask(mm, run):
 
 def newer_plugin(tmp_path, version="99.0.0"):
     import json
-    d = tmp_path / "cache" / "mattermost-ai-agent-bus" / version
+    d = tmp_path / "cache" / "ai-agent-bus" / version
     (d / ".claude-plugin").mkdir(parents=True)
     (d / ".claude-plugin" / "plugin.json").write_text(json.dumps({"version": version}))
     reg = tmp_path / ".claude" / "plugins" / "installed_plugins.json"
     reg.parent.mkdir(parents=True, exist_ok=True)
-    reg.write_text(json.dumps({"plugins": {"mattermost-ai-agent-bus@x": [{"installPath": str(d)}]}}))
+    reg.write_text(json.dumps({"plugins": {"ai-agent-bus@x": [{"installPath": str(d)}]}}))
 
 
 def test_a_newer_installed_plugin_is_named_once_when_the_turn_ends(mm, run, tmp_path):

@@ -16,7 +16,7 @@ is not done until the docs say what the code now does:
   and from at least one test in `tests/hooks/` (hook behaviour) or `mcp/tests/`
   (MCP server behaviour). A new scenario needs a test.
 - **The website is product copy too.** [`site/`](site) (published at
-  https://dembaca.github.io/mattermost-ai-agent-bus/) promises features, a
+  https://dembaca.github.io/ai-agent-bus/) promises features, a
   harness matrix, security answers and a quick start. A PR that adds or changes
   a feature, a harness's support, a security property or an install step
   updates `site/index.html` and its illustrations in the same PR, or says in

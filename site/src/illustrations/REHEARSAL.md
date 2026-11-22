@@ -51,7 +51,7 @@ filmed.
 
 ## Not checked (do these before relying on it)
 
-- `node scripts/film.mjs "<preview>/mattermost-ai-agent-bus/" --select '.hc' --gate`
+- `node scripts/film.mjs "<preview>/ai-agent-bus/" --select '.hc' --gate`
   at 1440 and `--width 390`, plus `--dark` and `--reduced`; then each bento
   tile (`--select '.bt-stage'`).
 - Hero: that the hover toolbar sits whole over the ask at both widths, the

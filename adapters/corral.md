@@ -36,7 +36,7 @@ rests on GitHub over https and on the tag object this host pinned:
 # ~/.profile or similar, on the host; one public key per line
 export MM_RELEASE_SIGNERS='ssh-ed25519 AAAA…owner release key
 ssh-ed25519 AAAA…backup release key'
-# optional: MM_RELEASE_URL (default https://github.com/dembaca/mattermost-ai-agent-bus.git)
+# optional: MM_RELEASE_URL (default https://github.com/dembaca/ai-agent-bus.git)
 
 ~/.local/share/mm-agent-bus/current/bin/mm-agent-host-install.sh --release v0.82.0
 ```
@@ -111,8 +111,8 @@ The output, `--check` and the start hook say `signed release v<x.y.z>`,
 corral, from a git clone no session works in, after reviewing it:
 
 ```bash
-git clone https://github.com/dembaca/mattermost-ai-agent-bus ~/src/mattermost-ai-agent-bus
-cd ~/src/mattermost-ai-agent-bus    # later: git pull; review it (git log -p, git diff), then rerun
+git clone https://github.com/dembaca/ai-agent-bus ~/src/ai-agent-bus
+cd ~/src/ai-agent-bus    # later: git pull; review it (git log -p, git diff), then rerun
 bin/mm-agent-host-install.sh        # or: mm-agent-host-install.sh --from <clone>
 ```
 

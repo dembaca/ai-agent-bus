@@ -87,7 +87,7 @@ RELAY_WARN_SEC = 300.0
 # the harness whose plugin entry is set up by hand.
 ADAPTER_DOCS = {"claude": "adapters/claude.md", "pi": "adapters/pi.md", "opencode": "adapters/opencode.md"}
 ADAPTER_DOC = "adapters/opencode.md"
-DOCS_URL = "https://github.com/dembaca/mattermost-ai-agent-bus/blob/main/"
+DOCS_URL = "https://github.com/dembaca/ai-agent-bus/blob/main/"
 _HARNESS = re.compile(r"[a-z0-9][a-z0-9._-]{0,31}")
 # Set once RELAY_WARN_SEC passed without a handshake: the host process's start
 # (epoch s); a later handshake clears it (relay_warning).
@@ -139,7 +139,7 @@ def main(argv: list[str] | None = None) -> None:
 
 
 def _fail(message: str) -> int:
-    print(f"mattermost-agent-bus: {message}", file=sys.stderr, flush=True)
+    print(f"ai-agent-bus: {message}", file=sys.stderr, flush=True)
     return 1
 
 

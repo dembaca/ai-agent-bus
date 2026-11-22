@@ -65,7 +65,7 @@ def test_compaction_reloads_the_skill_within_the_cap(mm, run):
     for _ in range(2):
         c = context(run(COMPACT))
         assert 0 < len(c) <= 10_000
-        assert "Load the skill `mattermost-ai-agent-bus:mattermost-ai-agent-bus` with the Skill tool" in c
+        assert "Load the skill `ai-agent-bus:ai-agent-bus` with the Skill tool" in c
         assert "there is no `question` argument" in c and "## Contract" not in c
         mm.own_post("IDLE · done: a", 9000)
     assert "] IDLE · done: a" in c

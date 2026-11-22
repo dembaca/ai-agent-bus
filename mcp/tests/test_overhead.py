@@ -8,7 +8,7 @@ import pytest
 
 from mattermost_ai_agent_bus import overhead, session_file, stats
 
-BUS = "mcp__plugin_mattermost-ai-agent-bus_mattermost-agent-bus__"
+BUS = "mcp__plugin_ai-agent-bus_ai-agent-bus__"
 FIXED = overhead.Fixed(instructions=400, tools=4000, skill=20000)
 T0 = "2026-10-24T10:00:00.000Z"
 
@@ -77,7 +77,7 @@ def test_requests_the_bus_caused_count_whole(tmp_path):
     """RT-6.9 step 2: an agent's message, the Stop hook, the listener and a round
     after bus tool results only: their whole usage is overhead."""
     t = Transcript()
-    t.user('<channel source="plugin:mattermost-ai-agent-bus:mattermost-agent-bus" kind="mention" '
+    t.user('<channel source="plugin:ai-agent-bus:ai-agent-bus" kind="mention" '
            'from_trusted_human="false">@me ACK?</channel>', origin="channel", meta=True)
     t.request(("m1", BUS + "reply_in_thread", {"root_id": "r", "message": "ACK"}))
     t.results(("m1", '{"id":"p"}'))
@@ -94,10 +94,22 @@ def test_requests_the_bus_caused_count_whole(tmp_path):
     assert r["bus"] == r["all"]
 
 
+@pytest.mark.parametrize("prefix", [BUS, "mcp__mattermost-agent-bus__"])
+def test_a_server_added_by_hand_under_its_old_key_still_counts(tmp_path, prefix):
+    """RT-6.9: a server added by hand before 0.96.0 runs on under the key
+    mattermost-agent-bus; its rounds are the bus's as before."""
+    t = Transcript()
+    t.user("check the bus", origin="human")
+    t.request(("m1", prefix + "wait_for_events", {"timeout_sec": 1}))
+    t.results(("m1", "[]"))
+    t.request()                                   # after a bus result only
+    assert measure(t, tmp_path)["bus_req"] == 1
+
+
 def test_a_trusted_humans_message_is_work(tmp_path):
     """RT-6.9: a prompt over the bus stands for one typed in the terminal."""
     t = Transcript()
-    t.user('<channel source="plugin:mattermost-ai-agent-bus:mattermost-agent-bus" kind="dm" '
+    t.user('<channel source="plugin:ai-agent-bus:ai-agent-bus" kind="dm" '
            'from_trusted_human="true">please fix the bug</channel>', origin="channel", meta=True)
     t.request()
     assert measure(t, tmp_path)["bus_req"] == 0
@@ -111,7 +123,7 @@ def test_bus_data_stays_in_the_context_until_compaction(tmp_path):
                                                    "addedNames": [BUS + "get_thread"]}})
     t.user("look at the thread", origin="human")
     t.request(("s1", "ToolSearch", {"query": "select:get_thread"}),
-              ("k1", "Skill", {"skill": "mattermost-ai-agent-bus:mattermost-ai-agent-bus"}))
+              ("k1", "Skill", {"skill": "ai-agent-bus:ai-agent-bus"}))
     schema = '<function>{"name": "' + BUS + 'get_thread"}</function>'
     t.results(("s1", f"<functions>{schema}<function>other</function></functions>"), ("k1", "loaded"))
     t.request(("g1", BUS + "get_thread", {"post_id": "x" * 26}), ("b1", "Bash", {"command": "ls"}))

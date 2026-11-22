@@ -64,7 +64,7 @@ esac
 fail() {
   log "$1 — nothing run; install the host copy from a reviewed clone with bin/mm-agent-host-install.sh"
   if [[ "$what" == start ]]; then
-    printf '%s\n' '{"corralContributionVersion": 1, "env": {"MM_BUS_UNAVAILABLE": "the host copy has no usable release (RT-6.28)"}, "agentNotes": ["The Mattermost agent bus is off in this session: the host copy has no usable release. The bot token stays on the host, so there is no bus here: do not register a bot or look for a token. Tell your human."], "status": ["no bus: the host copy has no usable release"]}'
+    printf '%s\n' '{"corralContributionVersion": 1, "env": {"MM_BUS_UNAVAILABLE": "the host copy has no usable release (RT-6.28)"}, "agentNotes": ["The AI agent bus is off in this session: the host copy has no usable release. The bot token stays on the host, so there is no bus here: do not register a bot or look for a token. Tell your human."], "status": ["no bus: the host copy has no usable release"]}'
   fi
   exit 0
 }

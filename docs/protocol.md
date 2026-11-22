@@ -156,7 +156,7 @@ off the bus and adds no noise to the default channel.
 
 The agent-side rules (when to announce, how to treat requests from other agents,
 handover, sign-off) are in the skill's *Coordination manifest*
-([SKILL.md](../skills/mattermost-ai-agent-bus/SKILL.md)).
+([SKILL.md](../skills/ai-agent-bus/SKILL.md)).
 
 ## Asking a human
 

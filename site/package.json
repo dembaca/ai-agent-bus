@@ -1,9 +1,9 @@
 {
-  "name": "mattermost-ai-agent-bus-site",
+  "name": "ai-agent-bus-site",
   "private": true,
   "version": "0.0.0",
   "type": "module",
-  "description": "Promo site for mattermost-ai-agent-bus, published on GitHub Pages.",
+  "description": "Promo site for ai-agent-bus, published on GitHub Pages.",
   "license": "MIT",
   "engines": {
     "node": ">=20.19"

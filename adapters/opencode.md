@@ -27,9 +27,9 @@ refused (`configured plugin path must be a directory`):
   "$schema": "https://opencode.ai/config.json",
   "plugins": [
     {
-      "package": "file:///ABS/PATH/mattermost-ai-agent-bus/opencode",
+      "package": "file:///ABS/PATH/ai-agent-bus/opencode",
       "options": {
-        "command": ["sh", "-c", "MM_REG_SECRET=\"$(gopass show -o bus/registrar)\" exec uv run --locked --project /ABS/PATH/mattermost-ai-agent-bus/mcp mattermost-ai-agent-bus-mcp"]
+        "command": ["sh", "-c", "MM_REG_SECRET=\"$(gopass show -o bus/registrar)\" exec uv run --locked --project /ABS/PATH/ai-agent-bus/mcp mattermost-ai-agent-bus-mcp"]
       }
     }
   ]
@@ -41,7 +41,7 @@ Without options, per project, a symlink (it finds this checkout, its `mcp/` and
 
 ```bash
 mkdir -p .opencode/plugins
-ln -s /ABS/PATH/mattermost-ai-agent-bus/opencode/plugin/mattermost-agent-bus.ts \
+ln -s /ABS/PATH/ai-agent-bus/opencode/plugin/mattermost-agent-bus.ts \
   .opencode/plugins/mattermost-agent-bus.ts
 ```
 
@@ -56,7 +56,7 @@ the secret), `waitSec` (how long the server holds the plugin's long poll, 10 to 
 50), `retrySec` (the pause after a failed poll, default 15; `replaced` doubles it).
 `pollSec` and `MM_LISTEN_POLL_SEC` are gone: there is no timer to set.
 
-The plugin adds the MCP server `mattermost-agent-bus` (`uv run --locked --project
+The plugin adds the MCP server `ai-agent-bus` (`uv run --locked --project
 <checkout>/mcp mattermost-ai-agent-bus-mcp`) unless your configuration already has it or
 another local server running `mattermost-ai-agent-bus-mcp`, and the skill. It writes no
 file. The server it adds gets `MM_WORKSPACE` (the project directory), an empty
@@ -141,7 +141,7 @@ from the host copy's own read-only environment (`UV_PROJECT_ENVIRONMENT=<release
 `uv run --no-sync`), if the interpreter it links to is readable in the sandbox. A new release is a
 new path, so the next session builds a new cache entry; delete
 `~/.cache/mm-agent-bus/venv-*` in the corral home at any time. A dev checkout works the
-same way (`file:///ABS/PATH/mattermost-ai-agent-bus/opencode`, granted read-only), but
+same way (`file:///ABS/PATH/ai-agent-bus/opencode`, granted read-only), but
 an agent can change a checkout it can write: prefer the host copy.
 
 **No options under corral.** `command` with `MM_REG_SECRET` (the gopass example above)
@@ -164,7 +164,7 @@ it reads.
 **Check it works**, after `corral run opencode` in the project:
 
 - OpenCode's log has the line `loading plugin … opencode` (the path of the entry);
-- the session lists the bus tools (`mattermost-agent-bus`: `announce`, `bus_info`,
+- the session lists the bus tools (`ai-agent-bus`: `announce`, `bus_info`,
   `post_message` …);
 - `announce()` posts a `HELLO` in the project channel; `bus_info` shows no `relay` warning.
 
@@ -183,9 +183,9 @@ unverified; set `false` if the bot drops out after an hour without use.
 ## Skill / instructions
 
 With the plugin the skill is added. Without it, point OpenCode at the whole skill
-directory, [`skills/mattermost-ai-agent-bus/`](../skills/mattermost-ai-agent-bus/), not
+directory, [`skills/ai-agent-bus/`](../skills/ai-agent-bus/), not
 only `SKILL.md`: it points to the files next to it, such as
-[`runtime-no-hooks.md`](../skills/mattermost-ai-agent-bus/runtime-no-hooks.md) (`skills` paths in
+[`runtime-no-hooks.md`](../skills/ai-agent-bus/runtime-no-hooks.md) (`skills` paths in
 `opencode.json`; OpenCode also reads `.opencode/skills/`, `.claude/skills/` and
 `.agents/skills/`) or paste the contract into the agent system prompt: register with
 `session_start` → work in `MM_TEAM`/`MM_CHANNEL` threads → `session_end`.
@@ -200,11 +200,11 @@ By hand (without the plugin's, or with `mcp: false`), in the project's `opencode
   "$schema": "https://opencode.ai/config.json",
   "mcp": {
     "servers": {
-      "mattermost-agent-bus": {
+      "ai-agent-bus": {
         "type": "local",
         "command": [
           "sh", "-c",
-          "MM_REG_SECRET=\"$(gopass show -o bus/registrar)\" exec uv run --locked --project /ABS/PATH/mattermost-ai-agent-bus/mcp mattermost-ai-agent-bus-mcp"
+          "MM_REG_SECRET=\"$(gopass show -o bus/registrar)\" exec uv run --locked --project /ABS/PATH/ai-agent-bus/mcp mattermost-ai-agent-bus-mcp"
         ],
         "environment": {
           "MM_CHAT_URL": "https://chat.example.com",
@@ -224,7 +224,7 @@ By hand (without the plugin's, or with `mcp: false`), in the project's `opencode
 }
 ```
 
-- `opencode mcp add mattermost-agent-bus --env K=V … -- sh -c '…'` writes this entry, but
+- `opencode mcp add ai-agent-bus --env K=V … -- sh -c '…'` writes this entry, but
   refuses an empty `--env` value: add the two empty `CLAUDE_*` variables by hand.
 - `MM_WORKSPACE` (the project's real directory) and the two empty variables: the plugin
   looks only for the endpoint file keyed on the project directory, and a Claude Code
@@ -263,6 +263,6 @@ while OpenCode serves the project (not after `opencode run --standalone` exits);
 no channel push (Claude Code only). Between turns the status is 🛰 "on the bus", reachable. Without the plugin there are no
 turn hooks at all: the agent hears the bus only when it looks, with `wait_for_events`,
 so the skill asks it to check before each new activity, not only at the end
-([SKILL.md, *Staying reachable*](../skills/mattermost-ai-agent-bus/SKILL.md#staying-reachable),
-[runtime-no-hooks.md](../skills/mattermost-ai-agent-bus/runtime-no-hooks.md);
+([SKILL.md, *Staying reachable*](../skills/ai-agent-bus/SKILL.md#staying-reachable),
+[runtime-no-hooks.md](../skills/ai-agent-bus/runtime-no-hooks.md);
 differences: [arc42 §7.2](../docs/arc42/07-deployment-view.md#72-environment-differences)).

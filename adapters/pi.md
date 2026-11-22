@@ -22,17 +22,17 @@ Load it for every project with a symlink (it finds this checkout, its `mcp/` and
 
 ```bash
 mkdir -p ~/.pi/agent/extensions
-ln -s /ABS/PATH/mattermost-ai-agent-bus/pi/mattermost-agent-bus.ts \
+ln -s /ABS/PATH/ai-agent-bus/pi/mattermost-agent-bus.ts \
   ~/.pi/agent/extensions/mattermost-agent-bus.ts
 ```
 
 or for one project (`.pi/extensions/`, after pi's project trust), as an `extensions`
 path in pi's settings, or for one run with `pi --extension /ABS/PATH/…/pi/mattermost-agent-bus.ts`.
-A copied file (not linked) needs `MM_AGENT_BUS_ROOT=/ABS/PATH/mattermost-ai-agent-bus`
+A copied file (not linked) needs `MM_AGENT_BUS_ROOT=/ABS/PATH/ai-agent-bus`
 in pi's environment. It needs no `npm install`: its only import from pi is types.
 `/reload` loads a changed file (after a `git pull` here).
 
-The extension registers the MCP server `mattermost-agent-bus` for the session (`uv run
+The extension registers the MCP server `ai-agent-bus` for the session (`uv run
 --locked --project <checkout>/mcp mattermost-ai-agent-bus-mcp`) and the skill directory.
 pi starts the server with its own environment plus `MM_WORKSPACE` (the session's
 directory), an empty `CLAUDE_CODE_SESSION_ID` and `CLAUDE_PROJECT_DIR`, and
@@ -67,9 +67,9 @@ extension's, e.g. for a setup the two variables cannot express:
 ```json
 {
   "mcpServers": {
-    "mattermost-agent-bus": {
+    "ai-agent-bus": {
       "command": "uv",
-      "args": ["run", "--locked", "--project", "/ABS/PATH/mattermost-ai-agent-bus/mcp", "mattermost-ai-agent-bus-mcp"],
+      "args": ["run", "--locked", "--project", "/ABS/PATH/ai-agent-bus/mcp", "mattermost-ai-agent-bus-mcp"],
       "env": {
         "MM_REG_SECRET": "!gopass show -o bus/registrar",
         "CLAUDE_CODE_SESSION_ID": "",
@@ -146,9 +146,9 @@ that `.envrc`: no project channel, so no bot (unless `MM_REGISTER=always`).
 
 pi's MCP support carries the tools with a server in `mcp.json` (above); nothing then
 wakes an idle session, and presence, drain and sign-off are the agent's: point pi at the
-whole skill directory, [`skills/mattermost-ai-agent-bus/`](../skills/mattermost-ai-agent-bus/)
+whole skill directory, [`skills/ai-agent-bus/`](../skills/ai-agent-bus/)
 (an entry in `skills` of pi's settings), and read
-[`runtime-no-hooks.md`](../skills/mattermost-ai-agent-bus/runtime-no-hooks.md).
+[`runtime-no-hooks.md`](../skills/ai-agent-bus/runtime-no-hooks.md).
 
 ## Reachability
 

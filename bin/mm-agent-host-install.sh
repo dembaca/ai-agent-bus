@@ -637,7 +637,7 @@ if [[ "$ROLLBACK" -eq 1 ]]; then
   exit 0
 fi
 unset "${!GIT_@}"
-# What every release tree has; a source without it is no mattermost-ai-agent-bus.
+# What every release tree has; a source without it is no ai-agent-bus.
 REQUIRED=(adapters/corral/10-mm-session-start.sh adapters/corral/90-mm-session-stop.sh
           bin/mm-agent-lib.sh bin/mm-agent-symbols.sh .claude-plugin/plugin.json mcp/pyproject.toml mcp/uv.lock
           mcp/src/mattermost_ai_agent_bus/hosted.py)
@@ -646,7 +646,7 @@ REQUIRED=(adapters/corral/10-mm-session-start.sh adapters/corral/90-mm-session-s
 # extension (pi/, RT-6.27), which a sandbox loads read-only from here, so no
 # harness under corral needs a checkout an agent can write (RT-6.28).
 paths=(bin adapters/corral .claude-plugin/plugin.json mcp/pyproject.toml mcp/uv.lock mcp/src)
-OPTIONAL=(mcp/README.md skills/mattermost-ai-agent-bus opencode pi)
+OPTIONAL=(mcp/README.md skills/ai-agent-bus opencode pi)
 
 # --- a signed release (RT-6.29) -------------------------------------------------
 # The pinned keys come from the host only, never from the plugin or a session:
@@ -722,7 +722,7 @@ if [[ -n "$RELEASE" ]]; then
     rgit archive --format=tar "$head_sha" -- "${paths[@]}" | tar -x -C "$new" ||
       die "could not unpack $TAG"
     for f in "${REQUIRED[@]}"; do
-      [[ -f "$new/$f" ]] || die "$TAG is no mattermost-ai-agent-bus release (missing $f); refused"
+      [[ -f "$new/$f" ]] || die "$TAG is no ai-agent-bus release (missing $f); refused"
     done
     v_py="$(sed -n 's/^version = "\([^"]*\)"$/\1/p' "$new/mcp/pyproject.toml" | head -n1)"
     v_init="$(sed -n 's/^__version__ = "\([^"]*\)"$/\1/p' "$new/mcp/src/mattermost_ai_agent_bus/__init__.py" 2>/dev/null | head -n1)"
@@ -745,7 +745,7 @@ if sandbox_writable "$FROM"; then
   die "$FROM can be changed from inside a corral sandbox; run the installer from a checkout you reviewed, outside corral and outside every session's workdir (or pass --from <checkout>)"
 fi
 for f in "${REQUIRED[@]}"; do
-  [[ -f "$FROM/$f" ]] || die "$FROM is not a mattermost-ai-agent-bus tree (missing $f)"
+  [[ -f "$FROM/$f" ]] || die "$FROM is not an ai-agent-bus tree (missing $f)"
 done
 [[ "$FROM" != "$(cd -P "$DEST" 2>/dev/null && pwd -P)" ]] ||
   die "source and target are the same directory; run it from a checkout, or pass --from <checkout>"
@@ -888,7 +888,7 @@ if [[ "$cur" == "$name" ]]; then
   rm -rf "$new"
   new=""
   mark_signed "$name"
-  echo "mattermost-ai-agent-bus $name is already the current release in $DEST; nothing changed"
+  echo "ai-agent-bus $name is already the current release in $DEST; nothing changed"
   dispatch_line=""
   install_dispatcher "$name"
   [[ -z "$dispatch_line" ]] || echo "$dispatch_line"
@@ -974,7 +974,7 @@ else
   check="Compare the commit with the one you reviewed."
 fi
 cat <<EOF
-Installed mattermost-ai-agent-bus $version host hooks ($kind)
+Installed ai-agent-bus $version host hooks ($kind)
   from: $ORIGIN
   commit: $head_line
   to:   $DEST -> releases/$name

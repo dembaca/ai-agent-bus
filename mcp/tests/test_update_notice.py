@@ -6,7 +6,7 @@ from mattermost_ai_agent_bus import server
 
 
 def _install(home, version):
-    d = home / "cache" / "mattermost-ai-agent-bus" / version
+    d = home / "cache" / "ai-agent-bus" / version
     (d / ".claude-plugin").mkdir(parents=True)
     (d / ".claude-plugin" / "plugin.json").write_text(json.dumps({"version": version}))
     reg = home / ".claude" / "plugins" / "installed_plugins.json"

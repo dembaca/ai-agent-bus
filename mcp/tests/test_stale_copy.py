@@ -8,7 +8,7 @@ import pytest
 
 from mattermost_ai_agent_bus import server, session_file
 
-KEY = "mattermost-ai-agent-bus@mattermost-ai-agent-bus"
+KEY = "ai-agent-bus@ai-agent-bus"
 
 
 def _plugin(tree, version):
@@ -17,9 +17,9 @@ def _plugin(tree, version):
     return tree
 
 
-def _cache(home, version, marketplace="mattermost-ai-agent-bus"):
+def _cache(home, version, marketplace="ai-agent-bus"):
     """A cache folder as Claude Code lays it out: cache/<marketplace>/<plugin>/<version>."""
-    return _plugin(home / ".claude" / "plugins" / "cache" / marketplace / "mattermost-ai-agent-bus" / version, version)
+    return _plugin(home / ".claude" / "plugins" / "cache" / marketplace / "ai-agent-bus" / version, version)
 
 
 def _registry(home, **keys):
@@ -59,7 +59,7 @@ def test_a_cache_copy_older_than_every_entry_is_stale(home):
 def test_the_tree_of_any_entry_is_current_whatever_the_others_say(home):
     """Scopes: a project install elsewhere (newer) or a pin (older) must not make the user's session stale."""
     user, project, pin = _cache(home, "0.71.9"), _cache(home, "0.72.0", "other"), _cache(home, "0.70.0", "pin")
-    _registry(home, **{KEY: [("user", user), ("project", project)], "mattermost-ai-agent-bus@pin": [("local", pin)]})
+    _registry(home, **{KEY: [("user", user), ("project", project)], "ai-agent-bus@pin": [("local", pin)]})
     for tree, version in ((user, "0.71.9"), (project, "0.72.0"), (pin, "0.70.0")):
         assert server._stale_reason(_code(tree), version) == ""
 
@@ -80,8 +80,8 @@ def test_only_this_plugins_entries_count(home):
     """Another plugin whose name contains ours, or a second marketplace of ours."""
     other = _cache(home, "9.9.9", "other")
     mine = _cache(home, "0.71.6")
-    _registry(home, **{KEY: [("user", mine)], "not-mattermost-ai-agent-bus@m": [("user", other)],
-                       "x-mattermost-ai-agent-bus@m": [("user", other)]})
+    _registry(home, **{KEY: [("user", mine)], "not-ai-agent-bus@m": [("user", other)],
+                       "x-ai-agent-bus@m": [("user", other)]})
     assert server._stale_reason(_code(mine), "0.71.6") == ""
     old = _cache(home, "0.70.0", "third")
     assert "installed is 0.71.6" in server._stale_reason(_code(old), "0.70.0")
@@ -99,7 +99,7 @@ def test_the_plugin_root_claude_code_names_is_not_checked(home, monkeypatch):
 
 def test_the_marketplace_clone_follows_the_checkout_rule(home):
     """The clone under plugins/marketplaces is no cache folder: its own tree's version counts."""
-    clone = _plugin(home / ".claude" / "plugins" / "marketplaces" / "mattermost-ai-agent-bus", "0.71.9")
+    clone = _plugin(home / ".claude" / "plugins" / "marketplaces" / "ai-agent-bus", "0.71.9")
     _registry(home, **{KEY: [("user", _cache(home, "0.70.0"))]})
     assert server._stale_reason(_code(clone), "0.71.9") == ""
     assert "this server is 0.69.0" in server._stale_reason(_code(clone), "0.69.0")

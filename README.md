@@ -1,8 +1,13 @@
-# mattermost-ai-agent-bus
+# ai-agent-bus
 
-**Website:** [dembaca.github.io/mattermost-ai-agent-bus](https://dembaca.github.io/mattermost-ai-agent-bus/)
+**Website:** [dembaca.github.io/ai-agent-bus](https://dembaca.github.io/ai-agent-bus/)
 
-Generic **Mattermost agent bus**: skill + bot MCP server (required) + shell clients
+> **Moved.** This project was `mattermost-ai-agent-bus`; it is now `ai-agent-bus`,
+> since Mattermost is one chat it can run on. The old repository
+> (github.com/dembaca/mattermost-ai-agent-bus) is frozen at 0.95.0; the
+> [0.96.0 entry in the CHANGELOG](CHANGELOG.md#0960) says how to switch.
+
+Generic **AI agent bus**, today over Mattermost: skill + bot MCP server (required) + shell clients
 of it for multi-runtime coordination (Cursor / Claude Code / OpenCode / pi and friends).
 
 Ephemeral bots via a shared registration secret → work in a team channel
@@ -46,8 +51,8 @@ profile text.
 The repo is its own plugin marketplace, so the skill and the MCP server arrive together:
 
 ```
-/plugin marketplace add dembaca/mattermost-ai-agent-bus
-/plugin install mattermost-ai-agent-bus@mattermost-ai-agent-bus
+/plugin marketplace add dembaca/ai-agent-bus
+/plugin install ai-agent-bus@ai-agent-bus
 ```
 
 No absolute paths and no symlinks — the bundled MCP server locates itself via
@@ -57,7 +62,7 @@ No absolute paths and no symlinks — the bundled MCP server locates itself via
 
 | Path | Role |
 |------|------|
-| [`skills/mattermost-ai-agent-bus/`](skills/mattermost-ai-agent-bus/) | Agent skill (Cursor / Claude / OpenCode loaders): `SKILL.md`, the core every agent loads, and files it points to (per runtime, crown holder, self-registration); install the whole directory |
+| [`skills/ai-agent-bus/`](skills/ai-agent-bus/) | Agent skill (Cursor / Claude / OpenCode loaders): `SKILL.md`, the core every agent loads, and files it points to (per runtime, crown holder, self-registration); install the whole directory |
 | [`.claude-plugin/`](.claude-plugin/) | Plugin + marketplace manifests |
 | [`docs/arc42/`](docs/arc42/) | Architecture and behaviour spec (arc42, LEAN): goals, context, building blocks, runtime scenarios `RT-6.x`, deployment, decisions `ADR-xxx`, risks `RISK-xx` |
 | [`docs/protocol.md`](docs/protocol.md) | Job / inbox / security contract |
@@ -92,7 +97,7 @@ yours with the session JSON on stdin, e.g. in `~/.claude/statusline.sh`:
 
 ```bash
 input="$(cat)"
-bus="$(printf '%s' "$input" | ~/.claude/plugins/marketplaces/mattermost-ai-agent-bus/bin/mm-agent-statusline.sh)"
+bus="$(printf '%s' "$input" | ~/.claude/plugins/marketplaces/ai-agent-bus/bin/mm-agent-statusline.sh)"
 ```
 
 The marketplace checkout keeps that path across plugin updates, and it lies
@@ -194,7 +199,7 @@ server push each message into the session the moment it arrives, instead of a
 background listener waking the agent:
 
 ```bash
-claude --channels plugin:mattermost-ai-agent-bus@mattermost-ai-agent-bus
+claude --channels plugin:ai-agent-bus@ai-agent-bus
 ```
 
 The server sees the flag on Claude Code's command line, pushes one check and
@@ -205,7 +210,7 @@ listener would wake for; other posts come as one digest
 
 On claude.ai Team and Enterprise an Owner enables channels
 (`channelsEnabled`) and allows the plugin in managed settings:
-`"allowedChannelPlugins": [{"marketplace": "mattermost-ai-agent-bus", "plugin": "mattermost-ai-agent-bus"}]`
+`"allowedChannelPlugins": [{"marketplace": "ai-agent-bus", "plugin": "ai-agent-bus"}]`
 (the list replaces Anthropic's default one, so add the official channels you
 use too). Until then `--dangerously-load-development-channels` with the same
 entry loads it after a confirmation, in interactive sessions only.

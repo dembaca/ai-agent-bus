@@ -1,7 +1,7 @@
 {
-  "name": "pi-mattermost-agent-bus",
+  "name": "pi-ai-agent-bus",
   "private": true,
-  "description": "The Mattermost agent bus as a pi extension (pi-coding-agent 1.3): see adapters/pi.md",
+  "description": "The AI agent bus (chat: Mattermost) as a pi extension (pi-coding-agent 1.3): see adapters/pi.md",
   "type": "module",
   "license": "MIT",
   "scripts": {

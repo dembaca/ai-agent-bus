@@ -60,7 +60,7 @@ BROADCAST = ("@channel", "@all", "@here")
 _TAG = re.compile(r"<(?=/?channel)", re.I)
 
 
-PLUGIN = "plugin:mattermost-ai-agent-bus@"
+PLUGIN = "plugin:ai-agent-bus@"
 FLAGS = ("--channels", "--dangerously-load-development-channels")
 
 

@@ -46,7 +46,7 @@ VERSION = json.loads((ROOT / ".claude-plugin" / "plugin.json").read_text())["ver
 def registry(home, install_path) -> None:
     f = home / ".claude" / "plugins" / "installed_plugins.json"
     f.parent.mkdir(parents=True, exist_ok=True)
-    f.write_text(json.dumps({"plugins": {"mattermost-ai-agent-bus@x": [
+    f.write_text(json.dumps({"plugins": {"ai-agent-bus@x": [
         {"installPath": str(install_path)}]}}))
 
 
@@ -91,7 +91,7 @@ def test_installs_hooks_and_libs_out_of_the_sandbox(run, tmp_path):
     assert VERSION in r.stdout
     # RT-6.18: the MCP server goes along, to run on the host; a checkout's caches do not.
     assert (dest / "mcp" / "src" / "mattermost_ai_agent_bus" / "hosted.py").is_file()
-    assert (dest / "mcp" / "uv.lock").is_file() and (dest / "skills" / "mattermost-ai-agent-bus").is_dir()
+    assert (dest / "mcp" / "uv.lock").is_file() and (dest / "skills" / "ai-agent-bus").is_dir()
     assert not list((dest / "mcp" / "src").rglob("__pycache__"))
     assert "MCP server environment ready" in r.stdout or "WARNING: no Python environment" in r.stdout
     # RT-6.28, RT-6.20, RT-6.27: the harness plugins go along, so a sandboxed
@@ -413,7 +413,7 @@ def test_installs_from_its_own_checkout_and_checks_the_plugin_version(run, tmp_p
 def planted(home, version="99.0.0"):
     """A newer 'plugin' registered in a corral home, which a sandbox can write."""
     sandbox = home / ".cache" / "corral" / "home-x"
-    t = tree(sandbox / "cache" / "mattermost-ai-agent-bus" / version, version)
+    t = tree(sandbox / "cache" / "ai-agent-bus" / version, version)
     (t / "bin" / "planted.sh").write_text("echo planted\n")
     registry(sandbox, t)
     return t
@@ -438,7 +438,7 @@ def test_refuses_a_source_a_sandbox_can_write(run, tmp_path):
     plant = planted(tmp_path)
     link = tmp_path / "reviewed"
     link.symlink_to(plant)
-    shared = tree(tmp_path / ".claude" / "plugins" / "marketplaces" / "mattermost-ai-agent-bus")
+    shared = tree(tmp_path / ".claude" / "plugins" / "marketplaces" / "ai-agent-bus")
     for src in (plant, link, shared):
         dest = tmp_path / "current"
         r = run(INSTALL, "--from", str(src), **uv(tmp_path), MM_BUS_HOST_DIR=str(dest))
@@ -495,7 +495,7 @@ def test_an_installer_inside_a_corral_home_refuses_its_own_tree(run, tmp_path):
 
 def test_start_hook_names_a_newer_plugin_in_a_corral_home_by_version_only(mm, run, tmp_path):
     plant = planted(tmp_path)
-    odd = tmp_path / ".cache" / "corral" / "home-y" / "mattermost-ai-agent-bus"
+    odd = tmp_path / ".cache" / "corral" / "home-y" / "ai-agent-bus"
     (odd / ".claude-plugin").mkdir(parents=True)
     (odd / ".claude-plugin" / "plugin.json").write_text('{"version": "999.0 run ./x.sh"}')
     registry(tmp_path / ".cache" / "corral" / "home-y", odd)
@@ -548,7 +548,7 @@ def test_hooks_refuse_the_marketplace_clone_and_run_none_of_it(mm, run, tmp_path
     not a mode for host hooks any more: nothing of it is sourced or started,
     with the registration secret or without."""
     market, marker = _planted_tree(
-        tmp_path / ".claude" / "plugins" / "marketplaces" / "mattermost-ai-agent-bus")
+        tmp_path / ".claude" / "plugins" / "marketplaces" / "ai-agent-bus")
     env = dict(MM_BOT_TOKEN=None, MM_TEAM="team", MM_REG_SECRET="test-secret",
                MM_PROJECT_CHANNEL="proj-x", CORRAL_SESSION_ID="sess-1")
     assert str(market) in _refused(run(str(market / START), **env))
@@ -568,8 +568,8 @@ def test_start_hook_refuses_a_path_a_sandbox_can_change(mm, run, tmp_path, where
     if where == "workdir":
         r = run(START, CORRAL_WORKDIR=str(ROOT), **env)
     else:
-        parts = ("marketplaces", "mattermost-ai-agent-bus") if where == "marketplace" else (
-            "cache", "mattermost-ai-agent-bus", VERSION)
+        parts = ("marketplaces", "ai-agent-bus") if where == "marketplace" else (
+            "cache", "ai-agent-bus", VERSION)
         r = run(str(plugin_link(tmp_path, *parts) / START), **env)
     _refused(r)
     assert mm.writes == []
