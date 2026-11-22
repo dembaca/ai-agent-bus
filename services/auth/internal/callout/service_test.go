@@ -55,6 +55,12 @@ func newLab(t *testing.T) *lab { return newLabWith(t, nil, 0) }
 // and timeout, if set, is the service's request timeout.
 func newLabWith(t *testing.T, wrap func(Channels) Channels, timeout time.Duration) *lab {
 	t.Helper()
+	return newLabCfg(t, wrap, timeout, nil)
+}
+
+// newLabCfg is newLabWith with a last word on the service's configuration.
+func newLabCfg(t *testing.T, wrap func(Channels) Channels, timeout time.Duration, edit func(*Config)) *lab {
+	t.Helper()
 	issuer, _ := nkeys.CreateAccount()
 	issuerPub, _ := issuer.PublicKey()
 	xkey, _ := nkeys.CreateCurveKeys()
@@ -115,6 +121,9 @@ authorization {
 		ch = wrap(ch)
 	}
 	cfg := Config{Account: "BUS", Lobby: "lobby", Timeout: timeout}.WithDefaults()
+	if edit != nil {
+		edit(&cfg)
+	}
 	svc, err := New(cfg, issuer, xkey, l.realm.Verifier(l.chat), ch, NewBrake(l.brake, nil),
 		slog.New(slog.NewJSONHandler(l.logs, nil)))
 	if err != nil {

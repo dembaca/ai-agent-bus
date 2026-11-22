@@ -24,6 +24,23 @@ import (
 // through the bus's own service, not through this credential.
 type Subjects struct {
 	Prefix string // subject prefix, a setting (ADR-014, point 2)
+	// Native switches to the candidate "sender = subject, read only through
+	// push consumers the login service creates" (proof of concept).
+	Native bool
+}
+
+// nativePermissions: publish only under the own name, subscribe only to the
+// own deliver subjects. No channel subject, no inbox, no JetStream API.
+func (s Subjects) nativePermissions(agent string, channels []string) jwt.Permissions {
+	var p jwt.Permissions
+	for _, ch := range channels {
+		p.Pub.Allow.Add(s.Prefix + ".ch." + ch + "." + agent)
+		p.Pub.Allow.Add("presence.crown." + ch + "." + agent)
+	}
+	p.Pub.Allow.Add(s.Prefix + ".dm.*." + agent)
+	p.Pub.Allow.Add("presence." + agent)
+	p.Sub.Allow.Add("deliver." + agent + ".>")
+	return p
 }
 
 // token is a NATS subject token the bus uses: no wildcards, no dots, no
@@ -45,6 +62,9 @@ func checkToken(s string) error {
 // subjects; subscribe only to those channels, its own direct subject and its
 // own inbox. Nothing else, so the server, not the message, says who sent it.
 func (s Subjects) permissions(agent, hostNkey string, channels []string) jwt.Permissions {
+	if s.Native {
+		return s.nativePermissions(agent, channels)
+	}
 	var p jwt.Permissions
 	for _, ch := range channels {
 		p.Pub.Allow.Add(s.Prefix + ".ch." + ch + "." + agent)
