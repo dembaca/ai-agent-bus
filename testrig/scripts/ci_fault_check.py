@@ -36,9 +36,11 @@ def main() -> int:
         raise AssertionError(f"a cut printed a traceback:\n{out.stderr[-500:]}")
     cut = json.loads(out.stdout)
     assert cut["connection_closed"], cut
-    assert cut["measured"]["loss"]["value"] == 0, cut["measured"]["loss"]
+    # A cut loses whatever it prevented: the report names the closed
+    # connection *and* the count, never a zero that hides it.
+    assert cut["measured"]["loss"]["value"] is not None, cut["measured"]["loss"]
 
-    print("faulted run reports a loss; a cut reports the closed connection, no loss")
+    print("faulted run reports its loss; a cut reports the closed connection and what it lost")
     return 0
 
 

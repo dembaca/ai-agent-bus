@@ -172,6 +172,13 @@ class FrameProxy:
                     await client.close(close_code, close_reason)
                 except Exception:  # noqa: BLE001 — the client may be gone already
                     pass
+            else:
+                # The upstream ended without a close frame: it died, and the
+                # client must see an abort, not a clean 1000 (third re-check,
+                # point 3). A dead server is not a polite goodbye.
+                transport = getattr(client, "transport", None)
+                if transport is not None:
+                    transport.abort()
 
     async def _client_to_upstream(self, client: Any, upstream: Any) -> None:
         async for frame in client:

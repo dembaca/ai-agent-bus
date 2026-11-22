@@ -91,10 +91,12 @@ class Run:
         by_seq = {s.seq: s for s in self.sent}
         open_latencies = sorted((r.at - by_seq[seq].at) * 1000.0
                                 for seq, r in self.received.items() if seq in by_seq)
-        # A cut is not a loss (re-point 1): when the connection ended, the
-        # frames that never arrived are unsent or undeliverable, and the report
-        # names `connection_closed`. Only a run that stayed connected can lose.
-        lost = 0 if self.closed else sum(1 for seq in by_seq if seq not in self.received)
+        # A sent frame that never arrived is lost, whatever ended the
+        # connection: the acceptance compares exactly this number. The report
+        # also names `connection_closed`, so a cut is not mistaken for a
+        # delivery fault of the channel under test (re-point 2 of the third
+        # re-check: nulling it here hid 7 of 10).
+        lost = sum(1 for seq in by_seq if seq not in self.received)
         dupes = sum(r.copies - 1 for r in self.received.values())
         return {
             "loss": lost,
@@ -186,31 +188,42 @@ async def echo_run(count: int = 20, fault: ProxyFault | None = None,
             async with websockets.connect(proxy.url) as client:
 
                 async def read() -> None:
-                    """Read until the sender is done and the channel has been
-                    quiet for `settle`: stopping at completeness undercounted
-                    duplicates, stopping during sending invented losses."""
-                    quiet = None
+                    """Read continuously: never wait for the sender first.
+
+                    Waiting for `sent_all` before the first read made the
+                    measured latency the sender's runtime (52.9 ms at 2000
+                    frames, 905 ms with a 0.3 s pace). The reader keeps reading
+                    with a short timeout and ends only when the sender is done
+                    **and** `settle` has passed since the later of send-end and
+                    the last frame received.
+                    """
+                    done_at: float | None = None
+                    last_at = asyncio.get_running_loop().time()
                     while True:
-                        if quiet is None and not sent_all.is_set():
-                            await sent_all.wait()
-                            quiet = asyncio.get_running_loop().time()
-                        left = settle if quiet is None else quiet + settle - asyncio.get_running_loop().time()
+                        if done_at is None and sent_all.is_set():
+                            done_at = asyncio.get_running_loop().time()
+                        if done_at is not None:
+                            quiet_since = max(done_at, last_at)
+                            left = quiet_since + settle - asyncio.get_running_loop().time()
+                            if left <= 0:
+                                return
+                            timeout = left
+                        else:
+                            timeout = settle  # a short poll while sending
                         try:
-                            raw = await asyncio.wait_for(client.recv(), timeout=max(left, 0.01))
+                            raw = await asyncio.wait_for(client.recv(), timeout=timeout)
                         except asyncio.TimeoutError:
-                            if sent_all.is_set():
+                            if done_at is not None:
                                 return
                             continue
                         except websockets.ConnectionClosed as exc:
-                            # A cut ends the connection (re-point 1). The report
-                            # says so; unsent frames are named apart from losses.
                             run.closed = type(exc).__name__
                             return
                         try:
                             run.arrive(int(raw))
                         except ValueError:
                             continue  # a frame the harness did not send
-                        quiet = asyncio.get_running_loop().time()
+                        last_at = asyncio.get_running_loop().time()
 
                 reader = asyncio.create_task(read())
                 for seq in range(count):

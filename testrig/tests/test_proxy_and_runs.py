@@ -134,13 +134,16 @@ async def test_a_cut_aborts_without_a_close_frame():
         server.close()
 
 
-async def test_echo_run_survives_a_cut_and_names_it():
-    """Review point 1: `--fault cut` used to crash with a traceback. The run
-    reports the closed connection and counts no losses."""
-    run = await echo_run(count=5, fault=ProxyFault(kind="cut", after=1))
+async def test_echo_run_survives_a_cut_and_counts_what_it_lost():
+    """Review point 1 and third re-check point 2: `--fault cut` used to crash,
+    and then reported 0 losses. It survives, names the closed connection **and**
+    counts the frames that never arrived — that number is what the acceptance
+    compares (10 sent, 3 arrived, 7 lost)."""
+    run = await echo_run(count=10, fault=ProxyFault(kind="cut", after=3))
     report = run.report()
     assert report["connection_closed"], report
-    assert report["measured"]["loss"]["value"] == 0
+    assert report["sent_frames"] == 10, report
+    assert report["measured"]["loss"]["value"] == 7, report["measured"]["loss"]
 
 
 async def test_a_slow_sender_invents_no_loss():
@@ -272,6 +275,42 @@ async def test_a_client_leaving_closes_the_proxy_connection():
             await asyncio.sleep(0.1)  # the handler must end, not hang
     finally:
         server.close()
+
+
+async def test_a_killed_server_reaches_the_client_as_an_abort(tmp_path):
+    """Third re-check, point 3: the proxy swallowed ConnectionClosed, so a
+    killed server looked like a clean close with 1000. The client must see
+    ConnectionClosedError with no close frame instead."""
+    import subprocess
+    import sys
+
+    script = tmp_path / "server.py"
+    script.write_text(
+        "import asyncio, websockets\n"
+        "async def echo(c):\n"
+        "    async for f in c: await c.send(f)\n"
+        "async def main():\n"
+        "    async with websockets.serve(echo, '127.0.0.1', 0) as srv:\n"
+        "        port = srv.sockets[0].getsockname()[1]\n"
+        "        print(port, flush=True)\n"
+        "        await asyncio.Future()\n"
+        "asyncio.run(main())\n")
+    srv = subprocess.Popen([sys.executable, str(script)], stdout=subprocess.PIPE, text=True)
+    try:
+        port = int(await asyncio.to_thread(srv.stdout.readline))
+        async with FrameProxy(f"ws://127.0.0.1:{port}") as proxy:
+            async with websockets.connect(proxy.url) as client:
+                await client.send("x")
+                assert await asyncio.wait_for(client.recv(), 2) == "x"
+                srv.kill()
+                srv.wait(timeout=5)
+                with pytest.raises(websockets.exceptions.ConnectionClosedError) as caught:
+                    while True:
+                        await asyncio.wait_for(client.recv(), 5)
+                assert caught.value.rcvd is None
+    finally:
+        if srv.poll() is None:
+            srv.kill()
 
 
 def test_the_percentile_is_nearest_rank():
