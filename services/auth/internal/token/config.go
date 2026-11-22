@@ -1,6 +1,7 @@
 package token
 
 import (
+	"errors"
 	"fmt"
 	"net"
 	"net/url"
@@ -60,6 +61,9 @@ type Config struct {
 	// KeyRefresh is how often the JWKS is fetched in any case. Zero:
 	// DefaultKeyRefresh.
 	KeyRefresh time.Duration
+	// KeyFetchError, if set, hears of every JWKS fetch that failed, for the
+	// caller to log. The package itself never logs.
+	KeyFetchError func(error)
 }
 
 // withDefaults fills the defaults in and checks every value. It returns the
@@ -114,6 +118,10 @@ func checkURL(raw string) error {
 	u, err := url.Parse(raw)
 	if err != nil || u.Host == "" {
 		return fmt.Errorf("%q is not an absolute URL", raw)
+	}
+	if u.User != nil {
+		// Credentials in a URL end up in error texts and logs.
+		return errors.New("a URL with user information is refused")
 	}
 	switch u.Scheme {
 	case "https":
