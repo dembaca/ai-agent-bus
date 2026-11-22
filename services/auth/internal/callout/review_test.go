@@ -79,10 +79,13 @@ func TestNoServiceCanBeMadeToAnswerUnderAnotherName(t *testing.T) {
 		FilterSubject: "bus.ch.home.*"}); err != nil {
 		t.Fatal(err)
 	}
-	home, _ := b.nc.SubscribeSync("bus.ch.home.*")
-	secret, _ := b.nc.SubscribeSync("bus.ch.secret.*")
-	dm, _ := b.nc.SubscribeSync("bus.dm." + b.name + ".*")
-	_ = b.nc.Flush()
+	// Agents cannot read the bus subjects themselves any more: the victims'
+	// subjects are watched on the admin connection.
+	adm, _ := l.admin()
+	home, _ := adm.SubscribeSync("bus.ch.home.*")
+	secret, _ := adm.SubscribeSync("bus.ch.secret.*")
+	dm, _ := adm.SubscribeSync("bus.dm." + b.name + ".*")
+	_ = adm.Flush()
 
 	victims := []string{"bus.ch.home.agent-victim", "bus.ch.secret.agent-victim", "bus.dm." + b.name + ".agent-victim"}
 	calls := []string{
@@ -135,9 +138,10 @@ func TestAStreamThatAcksWouldCarryAForgedReply(t *testing.T) {
 	if _, err := js.AddStream(&nats.StreamConfig{Name: "BUS", Subjects: []string{"bus.>"}}); err != nil {
 		t.Fatal(err)
 	}
-	a, b := l.twoAgents()
-	secret, _ := b.nc.SubscribeSync("bus.ch.secret.*")
-	_ = b.nc.Flush()
+	a, _ := l.twoAgents()
+	adm, _ := l.admin()
+	secret, _ := adm.SubscribeSync("bus.ch.secret.*")
+	_ = adm.Flush()
 	if err := a.nc.PublishRequest("bus.ch.home."+a.name, "bus.ch.secret.agent-victim", []byte("x")); err != nil {
 		t.Fatal(err)
 	}
@@ -155,7 +159,12 @@ func TestMoreRefusedSubjects(t *testing.T) {
 	other, _ := nkeys.CreateUser()
 	otherPub, _ := other.PublicKey()
 	for subj, want := range map[string]bool{
-		"bus.ch.lobby.*": false, "_INBOX." + otherPub + ".x": true, "$KV.presence.x": true, "$SYS.>": true, "$JS.API.>": true,
+		// The bus subjects and every inbox are closed to an agent: it reads
+		// only its own deliver subjects.
+		"bus.ch.lobby.*": true, "bus.dm." + a.name + ".*": true, "_INBOX." + otherPub + ".x": true, "_INBOX.>": true,
+		"$KV.presence.x": true, "$SYS.>": true, "$JS.API.>": true, "$JS.API.CONSUMER.CREATE.BUS": true,
+		"presence.>": true, "deliver.agent-other.x": true, "deliver.>": true,
+		"deliver." + a.name + ".ch.lobby": false, "deliver." + a.name + ".>": false,
 	} {
 		_, _ = a.nc.SubscribeSync(subj)
 		if got := a.denied(t); got != want {

@@ -11,6 +11,10 @@ const (
 	DefaultTimeout    = 1500 * time.Millisecond
 	DefaultNamePrefix = "agent-"
 	DefaultPrefix     = "bus"
+	DefaultPresence   = "presence"
+	// DeliverPrefix starts the subjects push consumers deliver to; fixed,
+	// and neither of the two prefixes may take it.
+	DeliverPrefix = "deliver"
 )
 
 // Config is the callout's part of the service's configuration. Keys are not
@@ -38,6 +42,9 @@ func (c Config) WithDefaults() Config {
 	if c.Subjects.Prefix == "" {
 		c.Subjects.Prefix = DefaultPrefix
 	}
+	if c.Subjects.Presence == "" {
+		c.Subjects.Presence = DefaultPresence
+	}
 	if c.Timeout == 0 {
 		c.Timeout = DefaultTimeout
 	}
@@ -53,10 +60,18 @@ func (c Config) check() error {
 			return fmt.Errorf("callout: lobby %q: %w", c.Lobby, err)
 		}
 	}
-	for what, v := range map[string]string{"name prefix": c.NamePrefix, "subject prefix": c.Subjects.Prefix} {
+	for what, v := range map[string]string{"name prefix": c.NamePrefix, "subject prefix": c.Subjects.Prefix, "presence prefix": c.Subjects.Presence} {
 		if v == "" || !plain(v) {
 			return fmt.Errorf("callout: %s %q: letters, digits, - and _ only", what, v)
 		}
+	}
+	for what, v := range map[string]string{"subject prefix": c.Subjects.Prefix, "presence prefix": c.Subjects.Presence} {
+		if v == DeliverPrefix {
+			return fmt.Errorf("callout: %s %q is the deliver prefix: an agent could publish onto deliver subjects", what, v)
+		}
+	}
+	if c.Subjects.Presence == c.Subjects.Prefix {
+		return fmt.Errorf("callout: presence prefix %q must differ from the subject prefix (they would overlap)", c.Subjects.Presence)
 	}
 	if c.Timeout <= 0 || c.Timeout > 10*time.Second {
 		return fmt.Errorf("callout: timeout %s: must be above 0 and at most 10s", c.Timeout)

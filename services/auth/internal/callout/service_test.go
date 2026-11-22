@@ -55,6 +55,12 @@ func newLab(t *testing.T) *lab { return newLabWith(t, nil, 0) }
 // and timeout, if set, is the service's request timeout.
 func newLabWith(t *testing.T, wrap func(Channels) Channels, timeout time.Duration) *lab {
 	t.Helper()
+	return newLabCfg(t, wrap, timeout, nil)
+}
+
+// newLabCfg is newLabWith with a last word on the service's configuration.
+func newLabCfg(t *testing.T, wrap func(Channels) Channels, timeout time.Duration, edit func(*Config)) *lab {
+	t.Helper()
 	issuer, _ := nkeys.CreateAccount()
 	issuerPub, _ := issuer.PublicKey()
 	xkey, _ := nkeys.CreateCurveKeys()
@@ -115,6 +121,9 @@ authorization {
 		ch = wrap(ch)
 	}
 	cfg := Config{Account: "BUS", Lobby: "lobby", Timeout: timeout}.WithDefaults()
+	if edit != nil {
+		edit(&cfg)
+	}
 	svc, err := New(cfg, issuer, xkey, l.realm.Verifier(l.chat), ch, NewBrake(l.brake, nil),
 		slog.New(slog.NewJSONHandler(l.logs, nil)))
 	if err != nil {
@@ -155,7 +164,6 @@ func (l *lab) connect(owner, tok string, hello Hello, signer nkeys.KeyPair) (*ag
 	nc, err := nats.Connect(l.url,
 		nats.Nkey(pub, func(nonce []byte) ([]byte, error) { return signer.Sign(nonce) }),
 		nats.Token(string(raw)),
-		nats.CustomInboxPrefix("_INBOX."+pub),
 		nats.ErrorHandler(func(_ *nats.Conn, _ *nats.Subscription, err error) { a.errs <- err }),
 		nats.MaxReconnects(0))
 	if err != nil {
@@ -187,11 +195,14 @@ func TestAnAgentGetsItsNameAndOnlyItsChannels(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	// Granted: home (a member) and the lobby; refused: the guest channel
-	// alice is no member of, and every subject of another sender.
+	// Subscribing: only the own deliver subjects (reads go through push
+	// consumers the login service creates); no bus subject, no inbox.
 	for subj, want := range map[string]bool{
-		"bus.ch.home.*": false, "bus.ch.lobby.*": false, "bus.dm." + a.name + ".*": false,
+		"deliver." + a.name + ".ch.home": false, "deliver." + a.name + ".>": false,
+		"deliver.agent-other.ch.home": true, "deliver.>": true,
+		"bus.ch.home.*": true, "bus.ch.lobby.*": true, "bus.dm." + a.name + ".*": true,
 		"bus.ch.elsewhere.*": true, "bus.dm.agent-other.*": true, "bus.>": true,
+		"_INBOX.somehost.>": true, "presence.>": true,
 	} {
 		if _, err := a.nc.SubscribeSync(subj); err != nil {
 			t.Fatal(err)
@@ -203,6 +214,8 @@ func TestAnAgentGetsItsNameAndOnlyItsChannels(t *testing.T) {
 	for subj, want := range map[string]bool{
 		"bus.ch.home." + a.name: false, "bus.dm.agent-other." + a.name: false,
 		"bus.ch.home.agent-other": true, "bus.ch.elsewhere." + a.name: true, "bus.dm.agent-other.agent-other": true,
+		"presence." + a.name: false, "presence.crown.home." + a.name: false, "presence.crown.lobby." + a.name: false,
+		"presence.agent-other": true, "presence.crown.home.agent-other": true, "presence.crown.elsewhere." + a.name: true,
 	} {
 		if err := a.nc.Publish(subj, []byte("hi")); err != nil {
 			t.Fatal(err)
@@ -236,8 +249,24 @@ func TestAPostReachesTheChannelUnderItsSendersName(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	sub, _ := b.nc.SubscribeSync("bus.ch.home.*")
+	// Bob reads through a push consumer the admin connection creates (what
+	// the login service does), subscribed by its literal deliver subject.
+	_, js := l.admin()
+	if _, err := js.AddStream(&nats.StreamConfig{Name: "BUS", Subjects: []string{"bus.>"}, NoAck: true}); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := js.AddConsumer("BUS", &nats.ConsumerConfig{Durable: b.name + "_ch_home", DeliverSubject: "deliver." + b.name + ".ch.home",
+		FilterSubject: "bus.ch.home.*", AckPolicy: nats.AckNonePolicy, DeliverPolicy: nats.DeliverNewPolicy}); err != nil {
+		t.Fatal(err)
+	}
+	sub, err := b.nc.SubscribeSync("deliver." + b.name + ".ch.home")
+	if err != nil {
+		t.Fatal(err)
+	}
 	_ = b.nc.Flush()
+	if b.denied(t) {
+		t.Fatal("bob's own deliver subject refused")
+	}
 	if err := a.nc.Publish("bus.ch.home."+a.name, []byte("hello")); err != nil {
 		t.Fatal(err)
 	}

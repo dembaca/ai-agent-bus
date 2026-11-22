@@ -11,6 +11,16 @@ before 0.5.0 are described in the git history.
   and the NATS user key in a store (`MM_LOGIN_NKEY=ephemeral|host`), and sends
   the approval link to the responsible human by DM only. Nothing uses it yet;
   unset, nothing changes.
+- **The sender on NATS is NATS-native, no signed envelope** (ADR-014
+  point 16, decided by the owner). The login service's auth callout issues
+  one permission model only: publish with the agent's own name as the last
+  subject token (channels, direct messages, presence, crown claims),
+  subscribe only to `deliver.<name>.>` where the push consumers the login
+  service makes deliver; no JetStream, key-value, `$SYS` or `_INBOX` right.
+  The presence prefix is a setting (`AUTH_PRESENCE_PREFIX`, default
+  `presence`). The proof against an embedded nats-server 2.15.3 is part of
+  the test suite, and an update of the server needs it green. Not used by
+  agents yet.
 
 ## 0.96.0
 
