@@ -56,6 +56,34 @@ def _plugin_version() -> str:
 VERSION = _plugin_version()
 
 
+def _is_our_plugin_key(key: Any) -> bool:
+    """Whether an installed_plugins.json key names this plugin: the keys are
+    "<plugin>@<marketplace>", so the name is what decides, never the install
+    path. The name before 0.96.0 counts too, so an install of the old plugin is
+    still found."""
+    return isinstance(key, str) and re.fullmatch(
+        r"(mattermost-)?ai-agent-bus(@.*)?", key) is not None
+
+
+def _versions_under(node: Any) -> list[str]:
+    """Every version found by a plugin.json under an installPath inside node."""
+    found: list[str] = []
+    if isinstance(node, dict):
+        path = node.get("installPath")
+        if isinstance(path, str):
+            try:
+                found.append(json.loads(
+                    (Path(path) / ".claude-plugin" / "plugin.json").read_text())["version"])
+            except (OSError, ValueError, KeyError):
+                pass
+        for v in node.values():
+            found.extend(_versions_under(v))
+    elif isinstance(node, list):
+        for v in node:
+            found.extend(_versions_under(v))
+    return found
+
+
 def _installed_versions() -> list[str]:
     """The versions of this plugin that installed_plugins.json names, each read
     from its install path's plugin.json (RT-6.2); [] when it cannot be read."""
@@ -64,26 +92,13 @@ def _installed_versions() -> list[str]:
         data = json.loads(reg.read_text())
     except (OSError, ValueError):
         return []
+    plugins = data.get("plugins") if isinstance(data, dict) else None
+    if not isinstance(plugins, dict):
+        return []
     found: list[str] = []
-
-    def walk(node: Any) -> None:
-        if isinstance(node, dict):
-            path = node.get("installPath")
-            # A substring on purpose: it also finds the same plugin under its
-            # name before 0.96.0 (mattermost-ai-agent-bus).
-            if isinstance(path, str) and "ai-agent-bus" in path:
-                try:
-                    found.append(json.loads(
-                        (Path(path) / ".claude-plugin" / "plugin.json").read_text())["version"])
-                except (OSError, ValueError, KeyError):
-                    pass
-            for v in node.values():
-                walk(v)
-        elif isinstance(node, list):
-            for v in node:
-                walk(v)
-
-    walk(data)
+    for key, entries in plugins.items():
+        if _is_our_plugin_key(key):
+            found.extend(_versions_under(entries))
     return found
 
 
@@ -122,10 +137,10 @@ def _newer_installed() -> str | None:
 
 def _registered_trees() -> list[tuple[Path, str]]:
     """The installs installed_plugins.json lists for this plugin as (resolved
-    install path, version read from its plugin.json): the entries under
-    `plugins["ai-agent-bus@<marketplace>"]`, every scope and
-    marketplace of it, no other plugin (schema version 2). [] when the file
-    or an entry cannot be read."""
+    install path, version read from its plugin.json): the entries under a key
+    naming this plugin (`<plugin>@<marketplace>`, its name before 0.96.0
+    included), every scope and marketplace of it, no other plugin (schema
+    version 2). [] when the file or an entry cannot be read."""
     reg = Path.home() / ".claude" / "plugins" / "installed_plugins.json"
     try:
         plugins = json.loads(reg.read_text()).get("plugins", {})
@@ -133,8 +148,7 @@ def _registered_trees() -> list[tuple[Path, str]]:
         return []
     out: list[tuple[Path, str]] = []
     for key, entries in plugins.items() if isinstance(plugins, dict) else ():
-        if not (isinstance(key, str) and key.startswith("ai-agent-bus@")
-                and isinstance(entries, list)):
+        if not (_is_our_plugin_key(key) and isinstance(entries, list)):
             continue
         for entry in entries:
             path = entry.get("installPath") if isinstance(entry, dict) else None

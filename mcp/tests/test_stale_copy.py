@@ -64,6 +64,23 @@ def test_the_tree_of_any_entry_is_current_whatever_the_others_say(home):
         assert server._stale_reason(_code(tree), version) == ""
 
 
+def test_an_install_under_the_old_plugin_name_counts(home):
+    """Issue #5: the plugin was mattermost-ai-agent-bus before 0.96.0. An install
+    registered under that name is this plugin's tree, or a session on it would be
+    called stale and keep itself off the bus."""
+    old_name = _cache(home, "0.95.0", "mattermost-ai-agent-bus")
+    _registry(home, **{"mattermost-ai-agent-bus@old": [("user", old_name)]})
+    assert server._registered_trees() == [(old_name.resolve(), "0.95.0")]
+    assert server._stale_reason(_code(old_name), "0.95.0") == ""
+
+
+def test_another_plugin_is_not_this_one(home):
+    """The key names the plugin: a decoy whose path holds the name is not ours."""
+    decoy = _plugin(home / "cache" / "ai-agent-bus" / "9.9.9", "9.9.9")
+    _registry(home, **{"other-plugin@m": [("user", decoy)]})
+    assert server._registered_trees() == []
+
+
 def test_a_new_cache_folder_before_the_registry_rewrite_is_not_stale(home):
     """The new cache folder 0.71.10 runs (a /mcp reconnect after another session's update) while the
     registry still names 0.71.9: newer than every entry is legitimate."""

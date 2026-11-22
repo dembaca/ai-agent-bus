@@ -1,0 +1,86 @@
+# The measurands of the fault runs, in one place.
+#
+# Every entry has a fixed `id` and a free `name` (points 8 of the review):
+# the harness computes and reports by `id`, and only the report prints `name`.
+# Renaming therefore changes what a human reads, never what the code does,
+# and the match with another measurement plan is a rename, not a rebuild.
+#
+# `source` cites the acceptance row of ADR-014 (phase 4) a measurand belongs
+# to, so that a measurand is never invented here: the run measures what the
+# acceptance will compare, and nothing else.
+#
+# `status`:
+#   measured            the harness computes it from a run
+#   not_yet_measurable  this bus cannot produce it yet; reported as null with
+#                       `why`, so the report keeps the same shape either way
+#
+# `unit` is printed verbatim. Frames, not "posts": what a run sends through a
+# message channel is a frame (point 15 of the review).
+
+[[measurand]]
+id = "loss"
+name = "Loss"
+source = "Delivery, ADR-014 phase 4"
+unit = "frames"
+status = "measured"
+what = "Frames a run sent that never reached the receiving side."
+
+[[measurand]]
+id = "latency_p50"
+name = "Latency, median"
+source = "Delivery, ADR-014 phase 4 (95th percentile wait no worse than today)"
+unit = "ms"
+status = "measured"
+what = "Median time from send to arrival at the receiver."
+
+[[measurand]]
+id = "latency_p95"
+name = "Latency, 95th percentile"
+source = "Delivery, ADR-014 phase 4"
+unit = "ms"
+status = "measured"
+what = "95th percentile time from send to arrival at the receiver."
+
+[[measurand]]
+id = "duplicates"
+name = "Duplicates"
+source = "Delivery, ADR-014 phase 4 (nothing handled twice)"
+unit = "frames"
+status = "measured"
+what = "Frames that arrived more than once at the receiver."
+
+[[measurand]]
+id = "takeover_p95"
+name = "Coordinator take-over, 95th percentile"
+source = "Roles and coordinator, ADR-014 phase 4 (30 s is a new target, not today's)"
+unit = "s"
+status = "not_yet_measurable"
+why = "The harness has no bus and no coordinator yet: it cannot stop one and watch the crown pass (follow-up PR)."
+what = "95th percentile time from a hard stop of the coordinator to the crown being held again."
+
+[[measurand]]
+id = "handled_twice_or_missing"
+name = "Events handled twice or not at all"
+source = "Roles and coordinator, ADR-014 phase 4"
+unit = "events"
+status = "not_yet_measurable"
+why = "Needs a running bus whose coordinator events the harness can count (follow-up PR)."
+what = "Coordinator events handled twice or not at all after a take-over."
+
+[[measurand]]
+id = "device_approvals"
+name = "Device approvals"
+source = "Device approvals, ADR-014 phase 4"
+unit = "approvals"
+status = "not_yet_measurable"
+why = "Today's bus has no device approval; it arrives with the login service on the NATS side."
+what = "How often a human had to approve a login during a run."
+
+[[measurand]]
+id = "forgeries_refused"
+name = "Forgery cases refused"
+source = "Identity, ADR-014 phase 4"
+unit = "cases"
+status = "not_yet_measurable"
+why = "The forgery cases need the login service and the NATS permission model."
+what = "Forgery and replay cases refused out of those tried."

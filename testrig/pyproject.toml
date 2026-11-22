@@ -1,0 +1,36 @@
+[build-system]
+requires = ["hatchling>=1.21"]
+build-backend = "hatchling.build"
+
+[project]
+name = "agent-bus-testrig"
+version = "0.1.0"
+description = "Fault-run harness: injects failures into a message channel and measures what the build order compares"
+readme = "README.md"
+requires-python = ">=3.11"
+license = "MIT"
+authors = [{ name = "dembaca" }]
+dependencies = [
+  "websockets>=13.0",
+]
+
+[project.scripts]
+bus-testrig = "bus_testrig.cli:main"
+
+# `uv run pytest` finds pytest without `--extra dev` (review point 12). ruff
+# belongs to the repo's own tooling, not to this project's group.
+[dependency-groups]
+dev = ["pytest>=8.0", "pytest-asyncio>=0.24"]
+
+[tool.hatch.build.targets.wheel]
+packages = ["src/bus_testrig"]
+
+# `measurands.toml` lives beside the package, not inside it, and the wheel must
+# carry it too (review point 19): a wheel without it cannot measure anything.
+[tool.hatch.build.targets.wheel.force-include]
+"measurands.toml" = "bus_testrig/measurands.toml"
+
+# The same mode the bus's own tests use (mcp/pyproject.toml).
+[tool.pytest.ini_options]
+asyncio_mode = "auto"
+asyncio_default_fixture_loop_scope = "function"

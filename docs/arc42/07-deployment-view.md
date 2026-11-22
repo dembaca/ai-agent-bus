@@ -225,6 +225,11 @@ Otherwise the start hook contributes only `MM_BUS_UNAVAILABLE` with how to insta
 longer supported: it ran sandbox-writable code on the host with the registration
 secret.
 
+That version notice names the plugin by its entry in `installed_plugins.json`
+(`<plugin>@<marketplace>`, with its name before 0.96.0 matched too), never by its
+directory: a checkout or worktree counts whatever it is called, and another plugin
+whose path happens to contain the name does not.
+
 ---
 
 ## 7.2 Environment Differences
