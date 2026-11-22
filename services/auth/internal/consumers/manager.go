@@ -29,6 +29,10 @@ const (
 	metaLogin    = "login"
 )
 
+// ExpiryTolerance is how much older than MaxHistory the stream's first
+// message may be before a history start falls back to a start by time.
+const ExpiryTolerance = time.Minute
+
 // DeliverPrefix starts the subjects push consumers deliver to.
 const DeliverPrefix = "deliver"
 
@@ -60,6 +64,9 @@ type Config struct {
 	// BeforeBye is a hook for tests: WatchByes calls it with the agent after
 	// it read a bye and before it removes anything.
 	BeforeBye func(agent string)
+	// BeforeRemove is a hook for tests: Reconcile calls it before it removes
+	// a consumer that is no longer wanted; an error ends the reconcile there.
+	BeforeRemove func(consumer string) error
 	// BeforeRecord is a hook for tests: Reconcile calls it before it records
 	// only the new channels; an error ends the reconcile there.
 	BeforeRecord func(agent string) error
@@ -398,6 +405,11 @@ func (m *Manager) Reconcile(ctx context.Context, agent, owner string, channels [
 			continue
 		}
 		jobs = append(jobs, func() error {
+			if m.cfg.BeforeRemove != nil {
+				if err := m.cfg.BeforeRemove(c.name); err != nil {
+					return err
+				}
+			}
 			if ok, err := m.deleteOwned(ctx, c.stream, c.name, agent, time.Time{}); err != nil || !ok {
 				return err
 			}
@@ -587,15 +599,18 @@ func (m *Manager) start(ctx context.Context, cfg *nats.ConsumerConfig, last uint
 	if err != nil {
 		return fmt.Errorf("stream %s: %w", BusStream, err)
 	}
-	seq := last + 1
-	if seq > si.State.LastSeq {
-		return nil // nothing after it yet: from the next message on
+	if last >= si.State.LastSeq {
+		return nil // nothing after it yet (or a sequence past the last): from the next message on
 	}
+	seq := last + 1
 	if seq < si.State.FirstSeq {
 		seq = si.State.FirstSeq
 	}
 	cfg.DeliverPolicy, cfg.OptStartSeq = nats.DeliverByStartSequencePolicy, seq
-	if cutoff := m.cfg.Now().Add(-MaxHistory); si.State.FirstTime.Before(cutoff) {
+	// The server expires old messages only every few hundred ms, and the two
+	// clocks may differ a little: only a first message clearly older than the
+	// limit makes the start by time (which replays more than asked).
+	if cutoff := m.cfg.Now().Add(-MaxHistory); si.State.FirstTime.Before(cutoff.Add(-ExpiryTolerance)) {
 		cfg.DeliverPolicy, cfg.OptStartSeq, cfg.OptStartTime = nats.DeliverByStartTimePolicy, 0, &cutoff
 	}
 	return nil

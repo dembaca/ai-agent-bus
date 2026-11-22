@@ -433,6 +433,18 @@ func TestSinceNeverReachesBackFurtherThan14Days(t *testing.T) {
 		ci.Config.OptStartTime.Sub(cutoff).Abs() > time.Second {
 		t.Errorf("15 days: %+v", ci.Config)
 	}
+	// Just past the limit, within the server's expiry lag: still by sequence,
+	// nothing replayed twice.
+	clock = now.Add(14*24*time.Hour + 30*time.Second)
+	ci = reconcile("agent-just-old", first)
+	if ci.Config.DeliverPolicy != nats.DeliverByStartSequencePolicy || ci.Config.OptStartSeq != first+1 {
+		t.Errorf("14 days and 30 s: %+v", ci.Config)
+	}
+	// A sequence that would overflow is past the last: new messages only.
+	ci = reconcile("agent-overflow", ^uint64(0))
+	if ci.Config.DeliverPolicy != nats.DeliverNewPolicy {
+		t.Errorf("since 2^64-1: %+v", ci.Config)
+	}
 	// The last seen being the last one: nothing to replay, from new messages.
 	ci = reconcile("agent-caught-up", first+1)
 	if ci.Config.DeliverPolicy != nats.DeliverNewPolicy {
@@ -906,6 +918,38 @@ func TestAFailedRecordLeavesNoUnrecordedConsumer(t *testing.T) {
 		t.Fatal(err)
 	}
 	if c.info("BUS", agent+"_ch_gb") != nil {
+		t.Error("the consumer of the withdrawn channel survived the next reconcile")
+	}
+}
+
+// Removing an old channel's consumer fails: the record still names that
+// channel (old and new are recorded first), so the next reconcile removes it.
+func TestAFailedRemovalIsRetriedByTheNextReconcile(t *testing.T) {
+	var fail atomic.Bool
+	c := newConsumerLab(t, func(cfg *consumers.Config) {
+		cfg.BeforeRemove = func(name string) error {
+			if fail.Load() && strings.HasSuffix(name, "_ch_ga") {
+				return errors.New("the removal failed")
+			}
+			return nil
+		}
+	})
+	agent, owner := "agent-rm", "alice"
+	if err := c.mgr.Reconcile(ctx5(t), agent, owner, []string{"home", "ga"}, nil); err != nil {
+		t.Fatal(err)
+	}
+	fail.Store(true)
+	if err := c.mgr.Reconcile(ctx5(t), agent, owner, []string{"home"}, nil); err == nil {
+		t.Fatal("the failing removal did not fail the reconcile")
+	}
+	if c.info("BUS", agent+"_ch_ga") == nil {
+		t.Fatal("the consumer is gone although its removal failed")
+	}
+	fail.Store(false)
+	if err := c.mgr.Reconcile(ctx5(t), agent, owner, []string{"home"}, nil); err != nil {
+		t.Fatal(err)
+	}
+	if c.info("BUS", agent+"_ch_ga") != nil {
 		t.Error("the consumer of the withdrawn channel survived the next reconcile")
 	}
 }
