@@ -1503,3 +1503,33 @@ Everything the server writes in its state directory goes through one helper: a n
 | 6 | The file system offers no locks | Warning in the log, the login goes on without the lock |
 | 8 | A stored file is a symlink, not the user's, or open to group or world | `KeyStoreError` naming the entry; the value is treated as missing, a new approval or a new nkey follows |
 
+
+## 6.35 The login service manages an agent's consumers
+
+**Purpose:** An agent on NATS reads only through push consumers the login service makes for it (ADR-014 point 16): it has no right on the JetStream API, and its only subscribe right is `deliver.<name>.>`. This scenario keeps those consumers in step with the credential, so that what an agent reads follows what it may read, and removes them when the agent signs off or its owner is stopped. Built in the login service (`services/auth/internal/consumers`); no agent connects to it yet, the NATS adapter follows.
+
+**Trigger:** `AUTH_JS_SEED_FILE` is set (the login service's own user in the tenant account, the only holder of JetStream API rights), and a host connects to NATS, renews its credential, says bye, or the emergency brake changes.
+
+**Participants:** Login service; NATS server, Host process
+
+**Quality goal illustrated:** `#secure` Least privilege — an agent reads only the channels in its current credential, and nothing an agent sends can remove another agent's consumers; `#reliable` Recovery — history from a sequence after a gap, and nothing left behind by a host that vanished
+
+### Sequence
+
+1. **Start** (`Manager.EnsureStreams`). The login service makes the streams `BUS` (`<bus>.>`, 14 days, 1 GiB) and `PRESENCE` (`<presence>.>`, one message per subject, 24 h, 16 MiB) when they are missing, with `no_ack`, every `allow_*` switch and `mirror_direct` off, `deny_delete`, `deny_purge`, `discard: old` and size limits. It reads back what the server kept and refuses to start on a stream that differs in any of these (`ErrUnsafeStream`): the proof (`native_sender_test.go`) holds only for these settings, and it uses the same configuration.
+2. **Every issue of a credential** (`Manager.Reconcile`, called by the auth callout after the user JWT is built and before the answer). Wanted: one consumer per granted channel (`<name>_ch_<channel>`, filter `<bus>.ch.<channel>.*`, deliver subject `deliver.<name>.ch.<channel>`), one for direct messages (`<name>_dm`, `<bus>.dm.<name>.*`, `deliver.<name>.dm`) and one for presence (`<name>_presence`, filters `<presence>.*` and `<presence>.crown.<channel>.*` for each granted channel only, last message per subject, `deliver.<name>.presence`). All with ack policy none, no flow control, an inactivity threshold of one hour, the agent and owner in their metadata. A consumer that exists with these settings is kept with its position (a renewal every 15 min moves nothing); one of a channel no longer granted is removed, so a human removed from a channel stops their agent reading it at the next renewal; the presence consumer's filters follow the channels. A new channel consumer starts with new messages.
+3. **History** (`since` in the hello, the host's CONNECT `auth_token` JSON, a stream sequence per channel). Taken only for channels in the credential; others are ignored and logged. That channel's consumer starts again at the sequence, never further back than 14 days (older: by time at now minus 14 days) and never before the stream's first message; a sequence past the last starts with new messages.
+4. **Sign-off** (`Manager.WatchByes`). The service follows `<presence>.*` itself; a message `{"status": "bye"}` on `<presence>.<name>` removes that agent's consumers made before the bye (server time), so a bye handled after the same agent logged in again leaves the new ones. The sender is the subject's last token, which only that agent may publish on: a bye cannot be forged.
+5. **Emergency brake** (`Manager.WatchBrake`, every 10 s). The consumers of every owner the brake holds are removed, all of them when it holds everyone or cannot be read; the brake also refuses the owner's next credential (services/auth/README.md).
+6. **A host that vanished.** Its consumers have no listener and JetStream removes them after the inactivity threshold (one hour).
+
+### Error Handling
+
+| Step | Failure | System Response |
+|------|---------|----------------|
+| 1 | A stream exists with an unsafe setting, or JetStream cannot be reached | The login service does not start; the reason is in the log |
+| 2 | Making or removing a consumer fails or runs out of the request's time | The login is refused (`consumers could not be made`): a credential without its consumers would look whole; the token is never logged |
+| 3 | `since` for a channel not in the credential | Ignored and logged; the other channels are served |
+| 4 | Removing after a bye fails | Logged; the inactivity threshold removes the consumers later |
+| 5 | A consumer is made just after the brake was pulled | The next sweep, within 10 s, removes it |
+| — | `AUTH_JS_SEED_FILE` unset | A warning at start; credentials are issued as before, without consumers |

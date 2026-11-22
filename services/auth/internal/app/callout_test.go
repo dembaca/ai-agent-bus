@@ -10,6 +10,8 @@ import (
 	"testing"
 	"time"
 
+	"github.com/nats-io/nkeys"
+
 	"github.com/dembaca/ai-agent-bus/services/auth/internal/token"
 )
 
@@ -86,6 +88,65 @@ func TestAMissingOrBadKeyFileStopsTheStart(t *testing.T) {
 		}
 		err = RunCallout(context.Background(), s, slog.New(slog.DiscardHandler))
 		if !errors.Is(err, ErrConfig) {
+			t.Errorf("%s: %v", name, err)
+		}
+		if err != nil && strings.Contains(err.Error(), "not a seed\n") {
+			t.Errorf("%s: the file's content is in the error", name)
+		}
+	}
+}
+
+func TestConsumerManagementSettings(t *testing.T) {
+	s, _, err := LoadSettings(env(nil))
+	if err != nil || s.JSSeedFile != "" || s.JSURL != "tls://nats.example:4222" {
+		t.Fatalf("default: %+v, %v", s, err)
+	}
+	s, _, err = LoadSettings(env(map[string]string{"AUTH_JS_SEED_FILE": "/run/secrets/js"}))
+	if err != nil || s.JSSeedFile != "/run/secrets/js" || s.JSURL != s.NATSURL {
+		t.Fatalf("seed only: %+v, %v", s, err)
+	}
+	s, _, err = LoadSettings(env(map[string]string{"AUTH_JS_SEED_FILE": "/run/secrets/js", "AUTH_JS_URL": "tls://js.example:4222"}))
+	if err != nil || s.JSURL != "tls://js.example:4222" {
+		t.Fatalf("own URL: %+v, %v", s, err)
+	}
+	for name, over := range map[string]map[string]string{
+		"URL without seed":   {"AUTH_JS_URL": "tls://js.example:4222"},
+		"plain URL off lo":   {"AUTH_JS_SEED_FILE": "/run/secrets/js", "AUTH_JS_URL": "nats://js.example:4222"},
+		"URL that is no URL": {"AUTH_JS_SEED_FILE": "/run/secrets/js", "AUTH_JS_URL": "nonsense"},
+	} {
+		if _, _, err := LoadSettings(env(over)); !errors.Is(err, ErrConfig) {
+			t.Errorf("%s: %v", name, err)
+		}
+	}
+}
+
+func TestABadJetStreamSeedFileStopsTheStart(t *testing.T) {
+	dir := t.TempDir()
+	write := func(name, content string) string {
+		p := filepath.Join(dir, name)
+		if err := os.WriteFile(p, []byte(content), 0o600); err != nil {
+			t.Fatal(err)
+		}
+		return p
+	}
+	acct, _ := nkeys.CreateAccount()
+	acctSeed, _ := acct.Seed()
+	curve, _ := nkeys.CreateCurveKeys()
+	curveSeed, _ := curve.Seed()
+	usr, _ := nkeys.CreateUser()
+	usrSeed, _ := usr.Seed()
+	over := map[string]string{
+		"AUTH_ISSUER_SEED_FILE": write("issuer", string(acctSeed)), "AUTH_XKEY_SEED_FILE": write("xkey", string(curveSeed)),
+		"AUTH_NATS_SEED_FILE": write("nats", string(usrSeed)),
+	}
+	for name, path := range map[string]string{"missing": filepath.Join(dir, "nope"), "not a seed": write("js", "not a seed\n")} {
+		over["AUTH_JS_SEED_FILE"] = path
+		s, _, err := LoadSettings(env(over))
+		if err != nil {
+			t.Fatal(err)
+		}
+		err = RunCallout(context.Background(), s, slog.New(slog.DiscardHandler))
+		if err == nil || !errors.Is(err, ErrConfig) || !strings.Contains(err.Error(), "AUTH_JS_SEED_FILE") {
 			t.Errorf("%s: %v", name, err)
 		}
 		if err != nil && strings.Contains(err.Error(), "not a seed\n") {

@@ -29,6 +29,7 @@ type lab struct {
 	chat  *testrealm.Chat
 	logs  *syncBuffer
 	brake string
+	svc   *Service
 }
 
 type syncBuffer struct {
@@ -129,6 +130,7 @@ authorization {
 	if err != nil {
 		t.Fatal(err)
 	}
+	l.svc = svc
 	nc, err := nats.Connect(l.url, nats.Nkey(svcPub, svcUser.Sign))
 	if err != nil {
 		t.Fatal(err)

@@ -14,7 +14,7 @@ is not done until the docs say what the code now does:
 - **Scenario ids.** Section 6 scenarios are `RT-6.x` (their section number).
   Reference the id from the code that implements a scenario, from `SKILL.md`,
   and from at least one test in `tests/hooks/` (hook behaviour) or `mcp/tests/`
-  (MCP server behaviour). A new scenario needs a test.
+  (MCP server behaviour), or a `_test.go` beside a Go service under `services/`. A new scenario needs a test.
 - **The website is product copy too.** [`site/`](site) (published at
   https://dembaca.github.io/ai-agent-bus/) promises features, a
   harness matrix, security answers and a quick start. A PR that adds or changes

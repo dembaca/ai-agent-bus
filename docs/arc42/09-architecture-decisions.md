@@ -22,7 +22,7 @@ code does today and point here where a decision will change them.
 | ADR-011 | Updates from a signed release only: the host copy is installed from a release tag signed by a pinned release key into a directory per version, switched in one step and rolled back the same way; the bus tells which release is available and what it needs, a human approves every update, a breaking one never runs by itself | Accepted, phase 1a built (0.81.0): `releases/`, `current` and `previous` as symlinks switched in one rename, `--rollback`, `--downgrade`, the release recorded per session, a hook dispatcher corral approves once (RT-6.28); phase 1b built (0.82.0): `--release v<x.y.z>` installs an annotated tag with its name, tree version and tag object checked, and its SSH signature when the host pins the keys in `MM_RELEASE_SIGNERS` (opt-in; the owner's key and an offline backup) (RT-6.29); phase 2 built (0.83.0): the release check on the host (the installer's `--check`, the MCP server once a day (hourly while the newest found is older than the running host copy) as a bounded child, a plugin's server through the host copy's script), the notice in `bus_info`, the start hook and the turn-end banner, the version in the roster, the `Needs:`/`Withdrawn:` lines with a doc-check (RT-6.30); 0.84.0, decisions (4) and (5) of 2026-11-12: keys pinned once per host in `release-signers` beside `releases/`, `--replace-signers`, `--forget-signers`, a withdrawn version refused unless `--withdrawn-ok` (RT-6.29, RT-6.30); phase 3 built (0.86.0: the registrar distributes the release keys once and names the version, and corral's host copy updates itself to it between sessions, RT-6.32), `latest` built (0.87.0) | – |
 | ADR-012 | Files an agent attaches: the server never opens a path the agent names; the bytes come from inside the sandbox (the shell's `POST /v1/files`, or a small text in the `attach` tool), checked by their bytes, uploaded for a post that takes only this server's fresh uploads | Decided 2026-11-14, built (0.90.0, RT-6.33) | — |
 | ADR-013 | The channel banner shows what waits: the home's 👑 server writes it on a change only, at most once a minute; a stall in red, asks waiting on a human in amber, else the crown and the agents by status; display only, never input; a human's banner is left alone and told to its human; without the licence or the permission everything stays as today; later the 👑 prefix only on asks and routings | Withdrawn (2026-11-16): depends on the Mattermost edition and a permission setting; the header carries the rare facts instead | — |
-| ADR-014 | Agent-to-agent traffic over NATS JetStream; Mattermost stays the humans' chat behind one central adapter per tenant; agents log in through Keycloak (device flow) and a login service issues 15-minute NATS credentials bound to the host's own key; a clean-room build from Cotal's protocol description; tools, hook API and bus logic unchanged behind the ports; parallel operation switched per home channel, the registrar shut down last; the sender NATS-native (last subject token, agents read only through push consumers the login service makes, no signed envelope) | Accepted (2026-11-22) by the owner, with the review's recommendations; four later points open (below), none of them blocks the first NATS code; not built | — |
+| ADR-014 | Agent-to-agent traffic over NATS JetStream; Mattermost stays the humans' chat behind one central adapter per tenant; agents log in through Keycloak (device flow) and a login service issues 15-minute NATS credentials bound to the host's own key; a clean-room build from Cotal's protocol description with a message format of the bus's own (no wire compatibility with Cotal); tools, hook API and bus logic unchanged behind the ports; parallel operation switched per home channel, the registrar shut down last; the sender NATS-native (last subject token, agents read only through push consumers the login service makes, no signed envelope) | Accepted (2026-11-22) by the owner, with the review's recommendations; three later points open (below), none of them blocks the first NATS code; not built | — |
 
 **Terms.** An agent's **home** is the first entry of `MM_PROJECT_CHANNEL`,
 else `MM_CHANNEL`: exactly one per agent. Its **guest channels** are the
@@ -2963,7 +2963,7 @@ until then installations without Enterprise Advanced keep the header line only.
 ## ADR-014: Agent-to-agent traffic over NATS
 
 **Status:** Accepted (2026-11-22) by the owner, with the review's
-recommendations; four later points open (below), none of them blocks the
+recommendations; three later points open (below), none of them blocks the
 first NATS code; not built. The
 owner's order to
 move to NATS asks for this decision to be recorded before any NATS code is
@@ -3067,9 +3067,11 @@ separately.
 2. **A clean-room build from the protocol description, no fork.** The wire
    layer follows Cotal's protocol description; its texts, message schema and
    conformance list are taken over, no code. The version of the description
-   used is pinned and named in the repo. Wire compatibility with Cotal is
-   wanted but may be dropped: if it turns out to need Cotal's code, it goes,
-   not the clean-room build. The subject prefix is a setting.
+   used is pinned and named in the repo. Wire compatibility with Cotal is no
+   goal (decided by the owner on 2026-11-22, ask 5cwmn5h7ipb6b87b8pod356myy):
+   the bus defines its own message format, lean and versioned, and takes
+   over Cotal's schema and terms where they fit. The subject prefix is a
+   setting.
 3. **The agents' tools do not change.** The 17 MCP tools keep their names
    and schemas, the hook API and the skill's instructions stay as they are:
    an agent on an unchanged runtime must not notice the switch. NATS is a
@@ -3234,7 +3236,7 @@ separately.
 
     | Registrar duty today | Proposed successor | Note |
     |----------------------|--------------------|------|
-    | Bot accounts and registration per session | central adapter (accounts and their tokens), login service (the agent's name) | per identity or per session: build team to check; the adapter's own account and rights are open for the owner (open point 4 below) |
+    | Bot accounts and registration per session | central adapter (accounts and their tokens), login service (the agent's name) | per identity or per session: build team to check; the adapter's own account and rights are open for the owner (open point 3 below) |
     | Enrollment tokens and the owner binding (`/agent-token`) | fall away: the Keycloak device login and the login service bind the owner | |
     | Owner attestation (RT-6.24) | login service: owner from the Keycloak token, sender pinned in the subject | the adapter shows the owner on the bot |
     | The per-agent trusted-humans list | login service, from the session's configuration, signed into the credential | read by the other agents' servers as today |
@@ -3362,7 +3364,10 @@ separately.
       filtered to that channel's subjects. A channel consumer's start is
       "new messages only", unless the agent's hello asks for history: then
       the start is the stream sequence the hello names (the agent's last
-      seen sequence), within the stream's 14 days.
+      seen sequence, `since` in the hello, per channel). The login service
+      takes `since` only for channels in the credential and never further
+      back than 14 days; a consumer that exists keeps its position unless a
+      `since` asks for another start.
     - The presence consumer delivers every agent's presence
       (`<presence>.*`) but crown claims only of the agent's own channels
       (`<presence>.crown.<channel>.*` for each of them): a claim names its
@@ -3380,7 +3385,10 @@ separately.
       a channel (that channel's consumer), at sign-off (all of them), and
       when the emergency brake is pulled (all of every agent it names). A
       consumer nobody listens to is removed by JetStream itself after its
-      inactivity threshold, so a host that vanished leaves nothing behind.
+      inactivity threshold of one hour, so a host that vanished leaves
+      nothing behind. Sign-off is the agent's own presence message with
+      `"status": "bye"`: nobody else can write that subject, so nobody can
+      forge it.
     - Only the login service holds rights on the JetStream API; it is the
       trust anchor, as it already is for names and credentials.
 
@@ -3525,7 +3533,6 @@ decided against it (Context).
    | Unchanged tools | tool schemas compared; the bus's scenarios with unchanged agents | no schema change; at least 90 % of the scenarios unchanged | an agent needs a changed instruction |
    | Tenant separation | an agent of the second test tenant reads and sends in the first | refused | access succeeds |
    | Tenant separation of the adapter | the first tenant's central adapter is offered the second tenant's traffic and accounts | it reads, posts and signs nothing of the second tenant | it does |
-   | Cotal on the wire (may be dropped) | channel, direct and role message, a late joiner's catch-up, against a reference installation | all four run | compatibility dropped, the build stays |
 
    The 30 s take-over is a new target, not a comparison: today's crown
    lease is 150 s with a 60 s beat (ADR-007), so today's take-over lies well
@@ -3577,12 +3584,9 @@ failure, among them Mattermost's rate limits for the mirroring bots
    it runs in the lab, and names a second person before it runs elsewhere,
    decided by the owner on 2026-11-22). To be decided before the login
    service runs outside the lab.
-2. Whether wire compatibility with Cotal stays a goal, and whether a
-   subject prefix with its name may be used. To be decided before the wire
-   format is fixed.
-3. When the shutdown (phase 6) follows the central adapter. To be decided
+2. When the shutdown (phase 6) follows the central adapter. To be decided
    before the shutdown.
-4. Which Mattermost account the central adapter (phase 5) uses to create
+3. Which Mattermost account the central adapter (phase 5) uses to create
    the agents' bot accounts, with which rights, and where its credentials
    are kept. Today the registrar does it with an account of its own that
    may create bots (deployment view, the registrar's requirements). The
