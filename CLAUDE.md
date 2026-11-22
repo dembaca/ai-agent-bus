@@ -7,7 +7,11 @@ is not done until the docs say what the code now does:
 
 - **Which doc?** [docs/doc-map.toml](docs/doc-map.toml) maps code paths to the docs
   they must update. CI fails a PR that changes a mapped path without one of its
-  docs; a change that truly needs none gets the `no-doc-change` label.
+  docs; a change that truly needs none gets the `no-doc-change` label. A rule may
+  also carry an `exclude` list of globs whose matches it does not claim — the login
+  service leaves out its own `*_test.go` and `*/testdata/*` that way, so a
+  test-only PR needs no label. The matcher and the shipped map are pinned by
+  [tests/hooks/test_doc_map.py](tests/hooks/test_doc_map.py).
 - **Runtime texts are product, not docs.** `SKILL.md`, the MCP `instructions` in
   `mcp/src/…/server.py`, the hook `reason` texts and the `hooks/hooks.json`
   description are read by agents at runtime. Update them with the behaviour.

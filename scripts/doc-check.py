@@ -67,15 +67,30 @@ def repo_files() -> list[str]:
 
 # --- doc-map ----------------------------------------------------------------
 
+def doc_map_hits(rule: dict, changed: set[str]) -> list[str]:
+    """The changed files a rule answers for, sorted.
+
+    A file is in when its path matches one of the rule's `paths` and none of its
+    optional `exclude` patterns. Both are fnmatch globs on repo-relative paths,
+    as docs/doc-map.toml says: `*` also matches `/`. `exclude` is per rule, so a
+    tree can exempt its tests without loosening another rule's claim on the same
+    kind of file (the harness plugins' tests stay covered).
+    """
+    exclude = rule.get("exclude", [])
+    return sorted(
+        f for f in changed
+        if any(fnmatch.fnmatch(f, p) for p in rule["paths"])
+        and not any(fnmatch.fnmatch(f, x) for x in exclude)
+    )
+
+
 def check_doc_map(base: str) -> None:
     merge_base = git("merge-base", base, "HEAD").strip()
     changed = set(git("diff", "--name-only", merge_base).splitlines())
     changed |= set(git("ls-files", "--others", "--exclude-standard").splitlines())
     rules = tomllib.loads(DOC_MAP.read_text())["rule"]
     for rule in rules:
-        hits = sorted(
-            f for f in changed if any(fnmatch.fnmatch(f, p) for p in rule["paths"])
-        )
+        hits = doc_map_hits(rule, changed)
         if hits and not any(d in changed for d in rule["docs"]):
             error(
                 hits[0], None,
