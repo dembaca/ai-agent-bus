@@ -7,6 +7,7 @@ lifespan 10 s). Run: `uv run --directory mcp pytest -q -m keycloak`.
 """
 
 import asyncio
+import os
 import html
 import re
 import shutil
@@ -41,6 +42,10 @@ def _docker_ok() -> bool:
 
 @pytest.fixture(scope="module")
 def issuer() -> Iterator[str]:
+    # Only in their own workflow (keycloak.yml): a runner with docker would
+    # otherwise start Keycloak in every test job too.
+    if os.environ.get("MM_TEST_KEYCLOAK") != "1":
+        pytest.skip("MM_TEST_KEYCLOAK=1 is not set (keycloak.yml sets it)")
     if not _docker_ok():
         pytest.skip("docker is not available")
     name = f"mm-login-kc-{uuid.uuid4().hex[:8]}"
@@ -121,8 +126,12 @@ class Human:
         self.events.append("waiting")
         self.links.append(grant.verification_uri_complete)
         if self.answer:
-            self._tasks.append(asyncio.create_task(
-                play_human(grant.verification_uri_complete, self.user, approve=self.approve)))
+            task = asyncio.create_task(play_human(grant.verification_uri_complete, self.user, approve=self.approve))
+            # A failure in the forms shows in the log at once, not only as an
+            # expired code later.
+            task.add_done_callback(lambda t: t.cancelled() or t.exception() is None
+                                   or print(f"play_human failed: {t.exception()!r}", flush=True))
+            self._tasks.append(task)
 
     async def settled(self, outcome: str) -> None:
         self.events.append(f"settled:{outcome}")
@@ -207,8 +216,10 @@ async def test_a_denied_approval(issuer):
 
 async def test_an_expired_code(issuer):
     store, who = keystore.Ephemeral(), Human("alice", answer=False)
+    short = login.Login(login.Settings(issuer, "agent-bus-short", "ephemeral"), store=store,
+                        human=lambda: "alice", notifier=who)
     with pytest.raises(login.ApprovalExpired):
-        await make(issuer, store, "alice", who).access_token()  # the realm's lifespan is 10 s
+        await short.access_token()  # this client's device codes live 5 s
     assert who.events == ["waiting", "settled:expired"]
     assert store.load(keystore.REFRESH_TOKEN) is None
 
