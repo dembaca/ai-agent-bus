@@ -850,6 +850,17 @@ func TestTheDocumentedMinimalRightsSuffice(t *testing.T) {
 	if n := len(c.consumersOf(a)); n != 3 {
 		t.Fatalf("%d consumers", n)
 	}
+	// History needs no more rights: a login with since reads only the
+	// stream's info, never a message.
+	c.publish("bus.ch.home.agent-other", "m1")
+	c.publish("bus.ch.home.agent-other", "m2")
+	h, err := c.login("alice", newHost(), Hello{Home: "home", Since: map[string]uint64{"home": 1}})
+	if err != nil {
+		t.Fatalf("login with since: %v", err)
+	}
+	if ci := c.info("BUS", h.name+"_ch_home"); ci == nil || ci.Config.OptStartSeq != 2 {
+		t.Fatalf("login with since: %+v", ci)
+	}
 	if err := mgr.SweepBrake(ctx5(t), NewBrake("", nil)); err != nil {
 		t.Fatalf("SweepBrake: %v", err)
 	}
@@ -861,5 +872,40 @@ func TestTheDocumentedMinimalRightsSuffice(t *testing.T) {
 	case err := <-denied:
 		t.Errorf("the minimal user was refused: %v", err)
 	default:
+	}
+}
+
+// The channels are recorded together, old and new, before any consumer is
+// made, and cut to the new ones only at the end: a reconcile that fails in
+// between leaves a channel consumer the record still names, so the next
+// reconcile removes it (a consumer missing from the record would keep a
+// withdrawn read right for ever).
+func TestAFailedRecordLeavesNoUnrecordedConsumer(t *testing.T) {
+	var fail atomic.Bool
+	c := newConsumerLab(t, func(cfg *consumers.Config) {
+		cfg.BeforeRecord = func(string) error {
+			if fail.Load() {
+				return errors.New("the record could not be written")
+			}
+			return nil
+		}
+	})
+	agent, owner := "agent-rec", "alice"
+	if err := c.mgr.Reconcile(ctx5(t), agent, owner, []string{"home"}, nil); err != nil {
+		t.Fatal(err)
+	}
+	fail.Store(true)
+	if err := c.mgr.Reconcile(ctx5(t), agent, owner, []string{"home", "gb"}, nil); err == nil {
+		t.Fatal("the failing record did not fail the reconcile")
+	}
+	if c.info("BUS", agent+"_ch_gb") == nil {
+		t.Fatal("the new channel's consumer was not made before the record failed")
+	}
+	fail.Store(false)
+	if err := c.mgr.Reconcile(ctx5(t), agent, owner, []string{"home"}, nil); err != nil {
+		t.Fatal(err)
+	}
+	if c.info("BUS", agent+"_ch_gb") != nil {
+		t.Error("the consumer of the withdrawn channel survived the next reconcile")
 	}
 }

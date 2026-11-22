@@ -61,11 +61,15 @@ func PresenceStreamJSON(prefix string, maxBytes int64) string {
 
 func streamJSON(name, subject, limits string) string {
 	return fmt.Sprintf(`{"name":%q,"subjects":[%q],"retention":"limits","storage":"file","discard":"old",
-%s,"num_replicas":1,"no_ack":true,"duplicate_window":100000000,
+%s,"num_replicas":1,"no_ack":true,"duplicate_window":%d,
 "allow_direct":false,"mirror_direct":false,"deny_delete":true,"deny_purge":true,"allow_rollup_hdrs":false,
 "allow_msg_ttl":false,"allow_msg_counter":false,"allow_atomic":false,"allow_msg_schedules":false,"allow_batched":false}`,
-		name, subject, limits)
+		name, subject, limits, DuplicateWindow.Nanoseconds())
 }
+
+// DuplicateWindow is the streams' message-id window: as short as works, since
+// a guessed id suppresses another agent's message within it.
+const DuplicateWindow = 100 * time.Millisecond
 
 // ErrUnsafeStream: an existing stream differs from the safe configuration.
 var ErrUnsafeStream = errors.New("stream configuration is unsafe")
@@ -112,6 +116,11 @@ func checkStream(name, subject string, got map[string]any) error {
 	}
 	if maxAge <= 0 || maxAge > limit {
 		bad = append(bad, fmt.Sprintf("max_age is not within 0 and %s", limit))
+	}
+	// The message-id window is the side channel's reach (ADR-014 point 16,
+	// condition 1): no wider than the one this package creates.
+	if dw := time.Duration(num("duplicate_window")); dw <= 0 || dw > DuplicateWindow {
+		bad = append(bad, fmt.Sprintf("duplicate_window is not within 0 and %s", DuplicateWindow))
 	}
 	if got["discard"] != "old" {
 		bad = append(bad, "discard is not old")

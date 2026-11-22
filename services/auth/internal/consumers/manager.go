@@ -60,6 +60,9 @@ type Config struct {
 	// BeforeBye is a hook for tests: WatchByes calls it with the agent after
 	// it read a bye and before it removes anything.
 	BeforeBye func(agent string)
+	// BeforeRecord is a hook for tests: Reconcile calls it before it records
+	// only the new channels; an error ends the reconcile there.
+	BeforeRecord func(agent string) error
 }
 
 var (
@@ -365,8 +368,32 @@ func (m *Manager) Reconcile(ctx context.Context, agent, owner string, channels [
 		return fmt.Errorf("consumers: %s belongs to another agent", pres.Name)
 	}
 	stamp := ""
+	if pres != nil && !pres.Ts.IsZero() {
+		stamp = pres.Ts.UTC().Format(time.RFC3339Nano) // the server's time of this login
+	}
+	prev := m.previous(ctx, agent, pres)
+	// First record the old and the new channels together, then make and
+	// remove, then record only the new ones: a step that fails in between
+	// leaves every channel consumer that may exist in the record, so a later
+	// reconcile or bye finds it.
+	both := append([]string(nil), chans...)
+	inBoth := map[string]bool{}
+	for _, ch := range chans {
+		inBoth[ch] = true
+	}
+	for _, c := range prev {
+		if ch, ok := strings.CutPrefix(c.name, agent+"_ch_"); ok && c.stream == BusStream && !inBoth[ch] {
+			inBoth[ch] = true
+			both = append(both, ch)
+		}
+	}
+	sort.Strings(both)
+	presence := want[len(want)-1]
+	if err := m.ensureConsumer(ctx, presence, agent, owner, both, starts, stamp); err != nil {
+		return err
+	}
 	var jobs []func() error
-	for _, c := range m.previous(ctx, agent, pres) {
+	for _, c := range prev {
 		if wanted[c.stream+"/"+c.name] {
 			continue
 		}
@@ -378,21 +405,26 @@ func (m *Manager) Reconcile(ctx context.Context, agent, owner string, channels [
 			return nil
 		})
 	}
-	if pres != nil && !pres.Ts.IsZero() {
-		stamp = pres.Ts.UTC().Format(time.RFC3339Nano) // the server's time of this login
-	}
 	// The consumers are independent, and each call waits for the server to
 	// write to disk: do them at once, a login has little time.
 	if err := parallel(jobs); err != nil {
 		return err
 	}
 	jobs = nil
-	for _, w := range want {
+	for _, w := range want[:len(want)-1] {
 		jobs = append(jobs, func() error {
 			return m.ensureConsumer(ctx, w, agent, owner, chans, starts, stamp)
 		})
 	}
-	return parallel(jobs)
+	if err := parallel(jobs); err != nil {
+		return err
+	}
+	if m.cfg.BeforeRecord != nil {
+		if err := m.cfg.BeforeRecord(agent); err != nil {
+			return err
+		}
+	}
+	return m.ensureConsumer(ctx, presence, agent, owner, chans, starts, stamp)
 }
 
 type named struct{ stream, name string }
@@ -543,9 +575,13 @@ func parallel(jobs []func() error) error {
 }
 
 // start makes cfg start after the stream sequence last (the last one the
-// agent has seen), at last+1, but not further back than MaxHistory: when the
-// message there (or the first one after it) is older, the start is by time,
-// at now minus MaxHistory.
+// agent has seen), at last+1, but not further back than MaxHistory. Only the
+// stream's info is read, not a message (the service's JetStream user has no
+// right on MSG.GET): when the stream's first message is younger than now
+// minus MaxHistory, every message is, and the start is by sequence; when it
+// is older (BUS keeps at most MaxHistory, checked at start, so only while
+// the server has not yet expired it), the start is by time at now minus
+// MaxHistory, which may replay a little more than asked but never older.
 func (m *Manager) start(ctx context.Context, cfg *nats.ConsumerConfig, last uint64) error {
 	si, err := m.js.StreamInfo(BusStream, nats.Context(ctx))
 	if err != nil {
@@ -559,14 +595,7 @@ func (m *Manager) start(ctx context.Context, cfg *nats.ConsumerConfig, last uint
 		seq = si.State.FirstSeq
 	}
 	cfg.DeliverPolicy, cfg.OptStartSeq = nats.DeliverByStartSequencePolicy, seq
-	msg, err := m.js.GetMsg(BusStream, seq, nats.Context(ctx))
-	switch {
-	case errors.Is(err, nats.ErrMsgNotFound):
-		return nil
-	case err != nil:
-		return fmt.Errorf("stream %s: message %d: %w", BusStream, seq, err)
-	}
-	if cutoff := m.cfg.Now().Add(-MaxHistory); msg.Time.Before(cutoff) {
+	if cutoff := m.cfg.Now().Add(-MaxHistory); si.State.FirstTime.Before(cutoff) {
 		cfg.DeliverPolicy, cfg.OptStartSeq, cfg.OptStartTime = nats.DeliverByStartTimePolicy, 0, &cutoff
 	}
 	return nil
@@ -727,32 +756,37 @@ func (m *Manager) WatchBrake(ctx context.Context, b BrakeCheck) {
 // of the subject only, which NATS has checked against the credential. It
 // returns once subscribed; the subscription ends with ctx.
 func (m *Manager) WatchByes(ctx context.Context) error {
-	sub, err := m.js.Subscribe(m.cfg.Presence+".*", func(msg *nats.Msg) {
-		agent := msg.Subject[strings.LastIndexByte(msg.Subject, '.')+1:]
-		var body struct {
-			Status string `json:"status"`
-		}
-		if json.Unmarshal(msg.Data, &body) != nil || body.Status != "bye" || !agentRE.MatchString(agent) {
-			return
-		}
-		if m.cfg.BeforeBye != nil {
-			m.cfg.BeforeBye(agent)
-		}
-		md, err := msg.Metadata()
-		if err != nil {
-			m.log.Warn("consumers", "event", "bye ignored", "agent", agent, "reason", "no JetStream metadata")
-			return
-		}
-		at := md.Timestamp // the server's time of the bye
-		cctx, cancel := context.WithTimeout(ctx, byeTimeout)
-		defer cancel()
-		if err := m.RemoveBefore(cctx, agent, at); err != nil && ctx.Err() == nil {
-			m.log.Warn("consumers", "event", "bye not handled", "agent", agent, "reason", err.Error())
-		}
-	}, nats.BindStream(PresenceStream), nats.OrderedConsumer(), nats.DeliverNew())
+	sub, err := m.js.Subscribe(m.cfg.Presence+".*", func(msg *nats.Msg) { m.bye(ctx, msg) },
+		nats.BindStream(PresenceStream), nats.OrderedConsumer(), nats.DeliverNew())
 	if err != nil {
 		return fmt.Errorf("consumers: watching byes: %w", err)
 	}
 	go func() { <-ctx.Done(); _ = sub.Unsubscribe() }()
 	return nil
+}
+
+// bye handles one presence message: a bye removes the agent's consumers made
+// before the server's time of it; without that time it removes nothing.
+func (m *Manager) bye(ctx context.Context, msg *nats.Msg) {
+	agent := msg.Subject[strings.LastIndexByte(msg.Subject, '.')+1:]
+	var body struct {
+		Status string `json:"status"`
+	}
+	if json.Unmarshal(msg.Data, &body) != nil || body.Status != "bye" || !agentRE.MatchString(agent) {
+		return
+	}
+	if m.cfg.BeforeBye != nil {
+		m.cfg.BeforeBye(agent)
+	}
+	md, err := msg.Metadata()
+	if err != nil {
+		m.log.Warn("consumers", "event", "bye ignored", "agent", agent, "reason", "no JetStream metadata")
+		return
+	}
+	at := md.Timestamp // the server's time of the bye
+	cctx, cancel := context.WithTimeout(ctx, byeTimeout)
+	defer cancel()
+	if err := m.RemoveBefore(cctx, agent, at); err != nil && ctx.Err() == nil {
+		m.log.Warn("consumers", "event", "bye not handled", "agent", agent, "reason", err.Error())
+	}
 }
