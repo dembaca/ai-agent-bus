@@ -1,0 +1,97 @@
+{
+  "realm": "bus",
+  "enabled": true,
+  "sslRequired": "none",
+  "registrationAllowed": false,
+  "attributes": {
+    "oauth2DeviceCodeLifespan": "10",
+    "oauth2DevicePollingInterval": "1"
+  },
+  "accessTokenLifespan": 300,
+  "offlineSessionIdleTimeout": 2592000,
+  "groups": [
+    { "name": "approvers" }
+  ],
+  "clients": [
+    {
+      "clientId": "agent-bus",
+      "name": "AI agent bus",
+      "enabled": true,
+      "publicClient": true,
+      "standardFlowEnabled": false,
+      "implicitFlowEnabled": false,
+      "directAccessGrantsEnabled": false,
+      "serviceAccountsEnabled": false,
+      "consentRequired": true,
+      "fullScopeAllowed": false,
+      "attributes": {
+        "oauth2.device.authorization.grant.enabled": "true"
+      },
+      "defaultClientScopes": ["basic"],
+      "optionalClientScopes": ["offline_access"],
+      "protocolMappers": [
+        {
+          "name": "audience agent-bus",
+          "protocol": "openid-connect",
+          "protocolMapper": "oidc-audience-mapper",
+          "consentRequired": false,
+          "config": {
+            "included.client.audience": "agent-bus",
+            "id.token.claim": "false",
+            "access.token.claim": "true"
+          }
+        },
+        {
+          "name": "groups",
+          "protocol": "openid-connect",
+          "protocolMapper": "oidc-group-membership-mapper",
+          "consentRequired": false,
+          "config": {
+            "claim.name": "groups",
+            "full.path": "false",
+            "id.token.claim": "false",
+            "access.token.claim": "true",
+            "userinfo.token.claim": "false"
+          }
+        },
+        {
+          "name": "preferred_username",
+          "protocol": "openid-connect",
+          "protocolMapper": "oidc-usermodel-attribute-mapper",
+          "consentRequired": false,
+          "config": {
+            "user.attribute": "username",
+            "claim.name": "preferred_username",
+            "jsonType.label": "String",
+            "id.token.claim": "false",
+            "access.token.claim": "true",
+            "userinfo.token.claim": "false"
+          }
+        }
+      ]
+    }
+  ],
+  "users": [
+    {
+      "username": "alice",
+      "enabled": true,
+      "emailVerified": true,
+      "email": "alice@example.test",
+      "firstName": "Alice",
+      "lastName": "Example",
+      "credentials": [{ "type": "password", "value": "alice-test-pw", "temporary": false }],
+      "realmRoles": ["offline_access"],
+      "groups": ["approvers"]
+    },
+    {
+      "username": "mallory",
+      "enabled": true,
+      "emailVerified": true,
+      "email": "mallory@example.test",
+      "firstName": "Mallory",
+      "lastName": "Example",
+      "credentials": [{ "type": "password", "value": "mallory-test-pw", "temporary": false }],
+      "realmRoles": ["offline_access"]
+    }
+  ]
+}

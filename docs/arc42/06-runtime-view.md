@@ -2,14 +2,14 @@
 
 ## Overview
 
-Thirty-three scenarios: the host-managed session lifecycle (happy path) and the session an agent registers itself, the end of a turn
+Thirty-four scenarios: the host-managed session lifecycle (happy path) and the session an agent registers itself, the end of a turn
 with drain, sign-off and listen window (reachability, quality goal 4), a listen
 window ended by the human (recovery), the bus failing underneath a session
 (fail-open, quality goal 1), the typing indicator while a mention is answered
 (honest presence), the coordinator crown as a lease (who coordinates, and
 what happens when that agent goes idle or dies), the handoff state that
 survives a compacted conversation, an approval from the agent's own human
-over the bus, the counters that measure the bus's own overhead, an agent asking a human for something, messages pushed into the session as a channel, Claude Code's permission prompts answered from Mattermost, the agent cards and task states the server keeps from the posts, the references in posts that a human can click, who may wake an agent at all, how the turn hooks reach the bus through the MCP server without the token, how a corral session keeps the bot token on the host altogether, with its MCP server there, how the coordinator's server notices a stalled bus and open asks remind their human, how the OpenCode plugin and the pi extension run the same turn cycle through the hook API, who answers a mention of an agent that has left, how an agent talks in channels besides its home (guest channels), how it sees the files a post carries and attaches files of its own, how the registrar's signature vouches for whom an agent answers to, how a home's ask mode sends a worker's question to its coordinator first, how a trusted human's pinned mandate lets one coordinator give tasks in another home, and how the host copy is installed into a release of its own, switched and rolled back, and how it comes from a release tag, its signature checked when the host pins the release keys, how every server learns which release is out and what it needs, and how the host copy updates itself between sessions to the release the registrar names. Together they show where the bus may block an agent
+over the bus, the counters that measure the bus's own overhead, an agent asking a human for something, messages pushed into the session as a channel, Claude Code's permission prompts answered from Mattermost, the agent cards and task states the server keeps from the posts, the references in posts that a human can click, who may wake an agent at all, how the turn hooks reach the bus through the MCP server without the token, how a corral session keeps the bot token on the host altogether, with its MCP server there, how the coordinator's server notices a stalled bus and open asks remind their human, how the OpenCode plugin and the pi extension run the same turn cycle through the hook API, who answers a mention of an agent that has left, how an agent talks in channels besides its home (guest channels), how it sees the files a post carries and attaches files of its own, how the registrar's signature vouches for whom an agent answers to, how a home's ask mode sends a worker's question to its coordinator first, how a trusted human's pinned mandate lets one coordinator give tasks in another home, and how the host copy is installed into a release of its own, switched and rolled back, and how it comes from a release tag, its signature checked when the host pins the release keys, how every server learns which release is out and what it needs, and how the host copy updates itself between sessions to the release the registrar names, and how a host logs in to Keycloak for the NATS adapter that follows. Together they show where the bus may block an agent
 and why it can never wedge one.
 
 Each scenario is referenced as `RT-6.x` (its section number) from the tests in
@@ -1463,3 +1463,39 @@ Everything the server writes in its state directory goes through one helper: a n
 | 5 | A file uploaded to another channel than the post's | `posted: false`, the post's channel named to upload it again; nothing posted |
 | 5 | Mattermost refuses the post | Its reason as for any post (RT-6.14); the ids are given back |
 | 4 | The server restarts between upload and post | The ids are forgotten: upload again |
+
+---
+
+## 6.34 A host logs in to Keycloak
+
+**Purpose:** The NATS adapter (ADR-014, not built yet) needs two things before it may connect: a valid Keycloak access token of the session's responsible human, and the host's own NATS user key. This building block delivers both on the host, in the process that holds the bot token (ADR-014 points 6, 7 and 9). Nothing uses it yet: unconfigured, nothing changes.
+
+**Trigger:** `MM_LOGIN_ISSUER` and `MM_LOGIN_CLIENT_ID` are set, and the host process (corral, RT-6.18) or an MCP server outside corral starts.
+
+**Participants:** MCP server; Keycloak, Mattermost REST API, Responsible human
+
+**Quality goal illustrated:** `#secure` Secret confinement — tokens and the nkey seed stay on the host, in no log, error, environment or argument vector, and the approval link reaches no one but the human; `#usable` Reachability — one approval, then the login resumes from the stored refresh token
+
+### Sequence
+
+1. **Configuration** (`login.settings_from_env`). `MM_LOGIN_ISSUER` (https; http only on a loopback host such as localhost, for a test realm) and `MM_LOGIN_CLIENT_ID` (a public client, no secret). Both unset: the login is off, silently, and nothing here runs. One without the other, or a wrong value: a clear error in the log and the login stays off. `MM_LOGIN_NKEY=ephemeral|host` (default `ephemeral`) picks where the nkey lives (step 6); the owner's decision between the two is open, and both work without a code change.
+2. **Start, in the background** (`login.start`). The host process starts it in `hosted.services()` and cancels it on exit; a server outside corral starts the same class from the lease heartbeat's start (`lease.heartbeat`, which runs in both), one per process. The session never waits for it. The running object is `login.current()`, for the adapter.
+3. **Resume or approve.** With a refresh token in the store (`keystore.HostFile`, below) the first call needs no approval. Otherwise the OAuth 2.0 device authorization grant (RFC 8628) starts against the endpoints in `<issuer>/.well-known/openid-configuration`, with `client_id` and `scope=openid offline_access`, and polls the token endpoint at the `interval` it was given: `authorization_pending` waits, `slow_down` adds 5 s, `access_denied` and `expired_token` end it (`ApprovalDenied`, `ApprovalExpired`).
+4. **Tell the human, by DM only** (`login_notice`). `verification_uri_complete` and the `user_code` go as a direct message to the responsible human (`owners.responsible_human`), never into a channel: whoever opens the link and logs in becomes the owner. In the home channel the host posts an ask that says only that a login approval for this agent waits in the direct messages; it is registered like an `ask_human` ask (`asks.add`), so the open asks and the reminders (RT-6.19) track it. When the approval ends, approved or not, the ask is settled (`asks.resolve`, ✅). A link that cannot be delivered ends the approval; no link goes anywhere else.
+5. **The token and its person.** After every approval and every refresh the access token's payload is read, without a signature check (the login service checks it, services/auth/README.md), and `preferred_username` must be the responsible human. If not, or with no responsible human: the access and refresh token are dropped from memory and the store, the log says that another person approved, the human gets a DM, and `WrongHuman` is raised, none of them with any token content.
+6. **The refresh token is used once.** `access_token()` returns a token with at least 60 s left and refreshes otherwise, with the refresh token grant. The refresh token of every response is stored at once, before anything else; the host never sends one a second time (Keycloak's reuse detection is off by decision, ADR-014 point 7). `invalid_grant` drops the stored token and starts a new approval (step 3). The refresh token always persists in the store the host was given (`HostFile`).
+7. **The nkey** (`nkey()`). The host's NATS user key, made with the `nkeys` package: the public key and `sign(nonce)`, which the auth callout checks (services/auth/README.md, "Auth callout"). The seed is kept, not only the public key, so later messages can be signed. `ephemeral` keeps it in memory, a new key per process; `host` keeps it in the same kind of store as the refresh token and reuses it.
+8. **The stores** (`keystore.py`). `Ephemeral` is memory only. `HostFile` is one file per value, mode 0600, in `login/` of the host's state directory (`session_file.host_state_dir`), mode 0700, on the host and outside any sandbox. A write is a temporary file renamed over the old one; a read refuses a symlink, a file of another owner and one readable by group or world.
+
+### Error Handling
+
+| Step | Failure | System Response |
+|------|---------|----------------|
+| 1 | One variable without the other, an issuer that is neither https nor loopback http, an unknown `MM_LOGIN_NKEY` | Error in the log naming the variable; the login stays off, nothing else changes |
+| 3 | The human declines, or the device code expires | The ask is settled, `ApprovalDenied` or `ApprovalExpired`, nothing stored; the next `access_token()` starts a new approval |
+| 3 | Keycloak or its discovery document is not reachable | `LoginError` naming the exception type; stored tokens stay; the background start logs it and ends |
+| 4 | No chat, or the human is unknown to the chat | `NotifyError`, no approval is started; the link goes nowhere else |
+| 5 | Another person approved or refreshed | Tokens dropped, log line and DM without token content, `WrongHuman` |
+| 6 | `invalid_grant` on a refresh | Stored refresh token dropped, new approval |
+| 8 | A stored file is a symlink, not the user's, or open to group or world | `KeyStoreError` naming the entry; the value is treated as missing, a new approval or a new nkey follows |
+

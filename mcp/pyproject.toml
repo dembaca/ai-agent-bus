@@ -11,6 +11,7 @@ dependencies = [
   "httpx>=0.27",
   "websockets>=13.0",
   "cryptography>=42",
+  "nkeys>=0.2",
 ]
 
 [project.scripts]
@@ -28,7 +29,10 @@ asyncio_mode = "auto"
 asyncio_default_fixture_loop_scope = "function"
 testpaths = ["tests"]
 pythonpath = ["src"]
-markers = ["release_segment: keep the version segment of the status text (RT-6.30)"]
+markers = [
+  "release_segment: keep the version segment of the status text (RT-6.30)",
+  "keycloak: runs against a real Keycloak container, skipped without docker (RT-6.34)",
+]
 
 [dependency-groups]
 dev = [
@@ -44,3 +48,8 @@ dev = [
 files = ["src", "tests/fakes.py"]
 python_version = "3.11"
 strict = true
+
+# nkeys ships no type information.
+[[tool.mypy.overrides]]
+module = "nkeys"
+ignore_missing_imports = true

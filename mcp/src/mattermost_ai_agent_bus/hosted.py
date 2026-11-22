@@ -578,7 +578,7 @@ async def services(key: str, client: BusClient) -> AsyncIterator[str]:
     (RT-6.17, RT-6.6), with the ask reminders and the stall check (RT-6.19):
     the hooks call before any relay connects and after one closed. Yields the
     hook API's endpoint."""
-    from . import attest, hookapi, lease, release, stall
+    from . import attest, hookapi, lease, login, release, stall
 
     async def get_client() -> ChatPort:
         # The services need the chat alone; BusClient is one (compose).
@@ -592,10 +592,14 @@ async def services(key: str, client: BusClient) -> AsyncIterator[str]:
     attested = asyncio.create_task(attest.start(client))
     # The host's release check, once a day as a bounded child (RT-6.30).
     checking = asyncio.create_task(release.check_loop())
+    # The Keycloak login, when MM_LOGIN_* is set; the session never waits for it (RT-6.34).
+    logging_in = login.start(get_client)
     try:
         yield api.endpoint
     finally:
         task.cancel()
+        if logging_in is not None:
+            login.stop()
         attested.cancel()
         checking.cancel()
         await api.close()
