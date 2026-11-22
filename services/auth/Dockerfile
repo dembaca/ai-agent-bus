@@ -14,10 +14,8 @@ FROM golang:1.27-bookworm@sha256:4fa7c968ba93f1635670522dbb01a2c78150443e1385746
 WORKDIR /src
 
 # Copy the module first and download its dependencies before the sources, so a
-# source-only change keeps the module cache layer. go.sum* is optional: the
-# skeleton's module has no dependencies, and the token package (PR #4) brings
-# the first ones and a lock file with them.
-COPY go.mod go.sum* ./
+# source-only change keeps the module cache layer.
+COPY go.mod go.sum ./
 RUN go mod download
 
 COPY . .
