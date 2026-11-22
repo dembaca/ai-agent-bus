@@ -1337,11 +1337,8 @@ async def heartbeat(get_client: Callable[[], Awaitable[ChatPort | None]],
     watches a post for the holder's receipt (receipt.py, ADR-007 step 3) looks
     when its wait is over, and a holder that heard a crown_taken naming it
     ticks at once (step 4)."""
-    from . import login, receipt  # receipt.py claims through this module
+    from . import receipt  # receipt.py claims through this module
 
-    # The Keycloak login runs where the heartbeat does: the host process and a
-    # server outside corral (RT-6.34); one per process, off unless MM_LOGIN_* is set.
-    login.start(get_client)
     next_tick, held, seeded = 0.0, False, False
     counted: bool | None = None  # the crown as the overhead counters last noted it
     while True:

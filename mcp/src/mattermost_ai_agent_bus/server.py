@@ -24,7 +24,7 @@ from pydantic import ValidationError
 
 from . import (
     __version__, a2a, askroute, asks, attach, attest, channel, compose, debug, departed, files, gate, hookapi, hosted,
-    lease, life, mandate, overhead,
+    lease, life, login, mandate, overhead,
     owners, ownpost, permission,
     profile, receipt, release, remind, session_file, slim, stall, stats, tasks, unanswered, unread, usage,
 )
@@ -227,6 +227,9 @@ async def _lifespan(_server: Any) -> AsyncIterator[dict[str, Any]]:
     attested = asyncio.create_task(_attest_start())
     # The host's release check, once a day as a bounded child (RT-6.30).
     checking = asyncio.create_task(release.check_loop())
+    # The Keycloak login, when MM_LOGIN_* is set; the session never waits
+    # for it (RT-6.34). The host process starts it in hosted.services().
+    logging_in = login.start(_bus_client)
     api = await _start_hook_api()
     try:
         yield {}
@@ -234,6 +237,8 @@ async def _lifespan(_server: Any) -> AsyncIterator[dict[str, Any]]:
         task.cancel()
         attested.cancel()
         checking.cancel()
+        if logging_in is not None:
+            login.stop()
         if api is not None:
             await api.close()
 
