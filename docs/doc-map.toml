@@ -6,6 +6,12 @@
 # `no-doc-change` label on the PR (CI), or `--skip-doc-map` locally.
 #
 # Globs: fnmatch on repo-relative paths, `*` also matches `/`.
+# A rule may add `exclude`, also fnmatch globs: a changed file that matches one of
+# them is not the rule's business, even though `paths` matched it. Per rule on
+# purpose, so one tree can leave out its tests without loosening another rule:
+#
+#   exclude = ["*_test.go", "*/testdata/*"]
+#
 # Keep the docs list short and specific: "any doc changed" proves nothing.
 
 [[rule]]
@@ -50,6 +56,11 @@ docs = ["docs/arc42/06-runtime-view.md", "adapters/pi.md"]
 [[rule]]
 name = "login service: configuration, health, image"
 paths = ["services/auth/*"]
+# Its own tests and fixtures do not change what the service does, so they do not
+# ask for a doc. `*` covers `/`, so these need no `**`. Per rule on purpose: the
+# harness plugins' tests sit in the same tree as the code they drive and stay
+# covered by their rules.
+exclude = ["*_test.go", "*/testdata/*"]
 docs = [
   "docs/arc42/05-building-block-view.md",
   "docs/arc42/07-deployment-view.md",
