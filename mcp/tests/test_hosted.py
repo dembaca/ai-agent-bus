@@ -27,6 +27,11 @@ KEY = "k" * 64
 SRC = Path(__file__).resolve().parents[1] / "src"
 
 
+class _Client:
+    """An opaque stand-in, not a bus client: these tests only check that
+    whatever `Host` was given is handed through to exit_work unchanged."""
+
+
 async def _echo(read_stream, write_stream) -> None:
     async with write_stream:
         async for item in read_stream:
@@ -382,9 +387,10 @@ def test_watchdog_ends_the_session_with_exit_work(tmp_path, monkeypatch):
     monkeypatch.setattr(hosted, "exit_work", lambda c, keep=False: work.append(c))
     d = session_file.use_hosted_dir(tmp_path / "hosted" / "s")
     checks = iter([True, False])
-    why = hosted.serve_host(hosted.Host(KEY, serve=_echo, client="c"), ready_file=tmp_path / "r.json",
+    client = _Client()
+    why = hosted.serve_host(hosted.Host(KEY, serve=_echo, client=client), ready_file=tmp_path / "r.json",
                             with_services=False, watch=lambda: next(checks), interval=0.01, signals=())
-    assert why.startswith("watchdog") and work == ["c"]
+    assert why.startswith("watchdog") and work == [client]
     assert not (tmp_path / "r.json").exists() and not d.exists()
 
 
@@ -420,9 +426,10 @@ def test_sigusr1_keeps_the_bot_and_the_state_dir(tmp_path, monkeypatch):
     (d / "asks-x.env").write_text("kept\n")
     ready = tmp_path / "r.json"
     _signal_when_ready(ready, signal.SIGUSR1)
-    why = hosted.serve_host(hosted.Host(KEY, serve=_echo, client="c"), ready_file=ready,
+    client = _Client()
+    why = hosted.serve_host(hosted.Host(KEY, serve=_echo, client=client), ready_file=ready,
                             with_services=False, signals=(signal.SIGUSR2,))
-    assert why == "keep: signal SIGUSR1" and work == [("c", True)]
+    assert why == "keep: signal SIGUSR1" and work == [(client, True)]
     assert not ready.exists() and (d / "asks-x.env").read_text() == "kept\n"
 
 
@@ -501,8 +508,9 @@ def test_exit_work_runs_the_servers_cleanup(monkeypatch):
     import mattermost_ai_agent_bus
 
     monkeypatch.setattr(mattermost_ai_agent_bus, "server", Fake, raising=False)
-    hosted.exit_work("client")
-    assert calls == ["client"]
+    client = _Client()
+    hosted.exit_work(client)
+    assert calls == [client]
 
 
 def test_watcher_tells_a_gone_or_reused_pid():
