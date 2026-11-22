@@ -1,0 +1,3 @@
+# The build stage copies the module; keep the image context to what it needs.
+Dockerfile
+*.md
