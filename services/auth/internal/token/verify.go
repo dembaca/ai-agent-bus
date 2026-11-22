@@ -165,6 +165,12 @@ func (v *Verifier) checkChat(ctx context.Context, owner, sub string) error {
 	case u.AuthService == OpenIDService && u.AuthData != sub:
 		return ErrSubjectMismatch
 	}
+	if err := v.cfg.Binding.Check(ctx, sub, u); err != nil {
+		if errors.Is(err, ErrBinding) {
+			return ErrBinding
+		}
+		return ErrDirectory
+	}
 	return nil
 }
 

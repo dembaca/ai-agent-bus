@@ -388,6 +388,17 @@ func TestTheOwnerIsCheckedAgainstTheChat(t *testing.T) {
 			}
 		})
 	}
+	// The name binding decides after the lookup: OpenIDOnly refuses an
+	// account that logs in otherwise and lets an OpenID account pass.
+	only := func(c *Config) { c.Binding = OpenIDOnly{} }
+	v0 := verifier(t, r, human(func(u *User) { u.AuthService, u.AuthData = "", "" }), only)
+	if _, err := v0.Verify(context.Background(), r.token(nil)); err != ErrBinding {
+		t.Fatalf("OpenIDOnly, password account: %v", err)
+	}
+	v0 = verifier(t, r, human(nil), only)
+	if _, err := v0.Verify(context.Background(), r.token(nil)); err != nil {
+		t.Fatalf("OpenIDOnly, OpenID account: %v", err)
+	}
 	// A name in other case is another name, even for a chat that ignores case.
 	v := verifier(t, r, caseless(human(nil)), nil)
 	if _, err := v.Verify(context.Background(), r.token(func(c jwt.MapClaims) { c["preferred_username"] = "Alice" })); err != ErrUnknownHuman {
