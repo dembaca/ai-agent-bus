@@ -745,7 +745,7 @@ if sandbox_writable "$FROM"; then
   die "$FROM can be changed from inside a corral sandbox; run the installer from a checkout you reviewed, outside corral and outside every session's workdir (or pass --from <checkout>)"
 fi
 for f in "${REQUIRED[@]}"; do
-  [[ -f "$FROM/$f" ]] || die "$FROM is not a ai-agent-bus tree (missing $f)"
+  [[ -f "$FROM/$f" ]] || die "$FROM is not an ai-agent-bus tree (missing $f)"
 done
 [[ "$FROM" != "$(cd -P "$DEST" 2>/dev/null && pwd -P)" ]] ||
   die "source and target are the same directory; run it from a checkout, or pass --from <checkout>"

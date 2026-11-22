@@ -769,7 +769,7 @@ mm_newer_plugin() {
   printf '%s' "$want"
 }
 
-# Version of a ai-agent-bus tree (checkout, plugin or host copy).
+# Version of an ai-agent-bus tree (checkout, plugin or host copy).
 mm_tree_version() {
   local v
   v="$(mm_read_file "$1/.claude-plugin/plugin.json" | jq -r '.version // "?"' 2>/dev/null)" || v=""
