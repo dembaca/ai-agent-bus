@@ -5,6 +5,17 @@ before 0.5.0 are described in the git history.
 
 ## Unreleased
 
+- **A busy coordinator keeps its crown** (#64, RT-6.6 steps 1, 4 and 11).
+  The prompt hook tells the server that a turn began before anything else,
+  so a slow hook no longer leaves a running turn unknown, which made the
+  holder silent 45 s after a push and dropped its crown. A channel tag under
+  the plugin's old name (`mattermost-ai-agent-bus`) counts as the bus's too.
+  A waiting `coordinator("take")` shows as `take pending` in the taker's
+  status, and no other agent claims a free crown while it shows: after a
+  `release` the taker gets it, not the oldest peer. Each server writes one
+  JSON line per crown gained or lost to `crown-<uid>.log` in its state
+  directory (the way, whether a turn ran, how long a push waited), never
+  a post's content; the sweep removes it with the bot.
 - **A slim post's size is bounded** (issue #42). `get_thread` and `list_recent`
   stay whole by contract, but not without bound: an ask whose card title rides
   in its text was 22 KB in every thread read, and a foreign agent can post

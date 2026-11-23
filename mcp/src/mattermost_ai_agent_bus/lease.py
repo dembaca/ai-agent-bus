@@ -38,7 +38,7 @@ from datetime import datetime, timezone
 from pathlib import Path
 from typing import TYPE_CHECKING, Any, Protocol
 
-from . import a2a, channel, life, owners, ownpost, release, session_file, stats, usage
+from . import a2a, channel, crownlog, life, owners, ownpost, release, session_file, stats, usage
 from .model import ChannelUser, Mark, Post, Refused, RosterEntry, StatusMark
 
 if TYPE_CHECKING:
@@ -58,6 +58,15 @@ _SILENT_SINCE = re.compile(rf"{SILENT} · no sign since (\d\d:\d\dZ)")
 # posts that wake it (ADR-007 amendment, decided 2026-11-12; RT-6.6 step 10). A
 # holder without it (an older plugin) is judged as before: nobody claims over it.
 RECEIPT_MARK = a2a.symbol(Mark.SEEN)
+# A segment of an agent's status text while its coordinator("take") waits (RT-6.6 step 4,
+# #64): the others leave a free crown to it. Words, not a symbol: every plugin shows it.
+TAKE_PENDING = "take pending"
+_TAKE_PENDING = re.compile(rf"(?:^| · ){TAKE_PENDING}(?: · |$)")
+
+
+def _taker_waits(rows: list[dict[str, Any]], uid: str) -> bool:
+    """Another reachable agent of the home shows a waiting take: a free crown is its."""
+    return any(r["reachable"] and r["id"] != uid and _TAKE_PENDING.search(str(r["text"])) for r in rows)
 ACTIONS = ("who", "take", "release", "tick")
 _UID = re.compile(r"[a-z0-9]{26}")
 # One lock per event loop: a status, take, release or tick reads and writes
@@ -548,6 +557,7 @@ async def _set_status(client: ChatPort, state: str, label: str = "") -> None:
     if crown > now and not _at_this_home(uid, home):
         # ADR-002, #258: a crown recorded for another channel is not this home's.
         log.info("crown dropped: claimed in %s, this home is %s", crown_home(uid), home)
+        crownlog.note("lost", "home")
         kept = _coord(uid)  # a pending take and a yield stay
         _save_coord(uid, 0, kept.get("PENDING", 0), kept.get("YIELD_UNTIL", 0), "")
         crown = 0
@@ -557,6 +567,7 @@ async def _set_status(client: ChatPort, state: str, label: str = "") -> None:
         kept = _coord(uid)
         _save_coord(uid, 0, kept.get("PENDING", 0), kept.get("YIELD_UNTIL", 0), "")
         log.info("crown mirror dropped: another agent holds the crown over NATS")
+        crownlog.note("lost", "nats")
         crown = 0
     if since and crown > now:
         # A silent holder drops the crown; the next agent claims at its slot. It
@@ -565,6 +576,7 @@ async def _set_status(client: ChatPort, state: str, label: str = "") -> None:
         _save_coord(uid, 0, 0, now + crown_lease_sec())
         log.info("crown dropped: no sign of the agent since %s (ADR-007 amendment step 1)",
                  _rfc3339(int(since)))
+        crownlog.note("lost", "silent", since=since)
         crown = 0
     if state != "offline" and crown > now:
         # In a home over NATS (RT-6.38) the beat extends the mirror only while the NATS view
@@ -578,6 +590,10 @@ async def _set_status(client: ChatPort, state: str, label: str = "") -> None:
         text = f"coordinator · {text}" if nats is not None else f"coordinator · {text} · {RECEIPT_MARK}"
     else:
         crown = 0
+        if text and reachable and take_pending(uid):
+            # RT-6.6 step 4 (#64): the take waits in this server's file only; the status says
+            # so, and no other agent claims a free crown while it shows (_taker_waits).
+            text = f"{text} · {TAKE_PENDING}"
     if text:
         # The version (RT-6.30): last, and cut first, before the label; the
         # roster then reads it from the HELLO card.
@@ -1053,12 +1069,13 @@ async def _command(client: ChatPort, action: str, passed: list[bool] | None = No
         # next tick and a crown lease is judged by the two-crown rule again.
         others = [r for r in others if r["id"] != _took_from]
 
-    async def take_now() -> None:
+    async def take_now(way: str) -> None:
         global _crown_since
         _save_coord(uid, now + crown_lease_sec(), 0, 0, cid)
         _crown_since = now
         await _render(client)
         if crown <= now:
+            crownlog.note("gained", way)
             # The crown passed to this agent: is the header's bus part there (step 7)?
             if passed is not None:
                 passed.append(True)
@@ -1069,12 +1086,15 @@ async def _command(client: ChatPort, action: str, passed: list[bool] | None = No
         return first[0]["username"] if first else ""
     if action == "take":
         if not others:
-            await take_now()
+            await take_now("take")
             return "taken"
         _save_coord(uid, crown, 1, yield_until)
+        await _render(client)  # the status shows the waiting take at once
         return (f"pending: @{others[0]['username']} still holds the crown; "
                 "it passes to you once released or expired")
     if action == "release":
+        if crown > now:
+            crownlog.note("lost", "release")
         _save_coord(uid, 0, 0, now + 2 * lease)
         await _render(client)
         return "released"
@@ -1090,6 +1110,7 @@ async def _command(client: ChatPort, action: str, passed: list[bool] | None = No
         _took_from, _crown_since, _ousted = "", 0.0, None
         await _render(client)
         log.info("crown yielded: %s took it over (crown_taken, ADR-007 step 4)", by)
+        crownlog.note("lost", "taken_over", by=by)
         _plan(uid, rows)
         return ""
     if (holding and _took_from and posts is not None
@@ -1115,13 +1136,16 @@ async def _command(client: ChatPort, action: str, passed: list[bool] | None = No
         else:
             yields = mine is not None and others[0]["create_at"] < mine
         if yields:
+            crownlog.note("lost", "two_crowns")
             _save_coord(uid, 0, pending, yield_until)
             await _render(client)
     elif not holding and not others and yield_until <= now:
         me_reachable = any(r["id"] == uid and r["reachable"] for r in rows) and not _silent(uid)
         # An explicit take (pending) is allowed; the election only among peers.
-        if me_reachable and (pending == 1 or await _elected(client, uid, rows)):
-            await take_now()
+        # A take that shows in another agent's status wins a free crown (#64).
+        if me_reachable and (pending == 1 or (not _taker_waits(rows, uid)
+                                              and await _elected(client, uid, rows))):
+            await take_now("take" if pending == 1 else "election")
     if cid not in _header_line and _coord(uid).get("CROWN_UNTIL", 0) > now:
         # Once per process while holding: an upgrade finds an older header (step 7).
         await _header(client, cid, uid)
@@ -1452,11 +1476,13 @@ async def look(client: ChatPort) -> bool:
             gone = not any(r["id"] == _holder_id and r["reachable"] for r in rows)
             mine = any(r["id"] == uid and r["reachable"] for r in rows) and not _silent(uid)
             if (free and gone and mine and state.get("CROWN_UNTIL", 0) <= now
-                    and state.get("YIELD_UNTIL", 0) <= now and uid in (await _election(client, rows)).ids):
+                    and state.get("YIELD_UNTIL", 0) <= now and not _taker_waits(rows, uid)
+                    and uid in (await _election(client, rows)).ids):
                 _save_coord(uid, now + crown_lease_sec(), 0, 0, cid)
                 await _render(client)
                 claimed.append(_coord(uid).get("CROWN_UNTIL", 0) > now)
                 log.info("crown claimed at this agent's slot (ADR-007 step 2)")
+                crownlog.note("gained", "slot")
                 if any(claimed):
                     _crown_since = now
                     old = next((r for r in rows if r["id"] == _holder_id), None)
@@ -1533,6 +1559,7 @@ async def take_over(client: ChatPort, holder_id: str, post_id: str) -> bool:
                 return False
             _took_from, _took_why, _crown_since = holder_id, why, now
             log.info("crown taken over from %s: no receipt for %s (ADR-007 step 3)", held["username"], post_id)
+            crownlog.note("gained", "receipt")
             await _header(client, cid, uid)
     except asyncio.CancelledError:
         raise
@@ -1844,6 +1871,8 @@ async def heartbeat(get_client: Callable[[], Awaitable[ChatPort | None]],
                     await set_status(client, "renew")  # silent, or a sign again
                 elif await receipt.check(client) or await look(client):
                     next_tick = min(next_tick, time.time() + PENDING_POLL_SEC)
+                if held and not crown_held(uid):
+                    crownlog.lapsed()  # a line unless the rule that took it wrote one
                 held = crown_held(uid)
                 counted = _count_crown(uid, held, counted)
                 now = time.time()

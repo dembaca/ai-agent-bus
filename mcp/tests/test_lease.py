@@ -8,7 +8,7 @@ import time
 import httpx
 import pytest
 
-from mattermost_ai_agent_bus import lease, life
+from mattermost_ai_agent_bus import crownlog, lease, life
 from mattermost_ai_agent_bus.client import MattermostAdapter
 from mattermost_ai_agent_bus.model import RosterEntry
 
@@ -948,3 +948,130 @@ def test_the_status_carries_the_link_of_the_registry() -> None:
     finally:
         lease.use_nats_link(None)
     assert lease._nats_link is None
+
+
+# --- a waiting take shows; the crown log (#64) -----------------------------------------
+
+def _status_text(mm, uid: str, text: str) -> None:
+    """Another agent's status text, as its server would write it."""
+    for u in mm.users:
+        if u["id"] == uid:
+            status = json.loads(u["props"]["customStatus"])
+            u["props"]["customStatus"] = json.dumps(status | {"text": text})
+
+
+def _crown_log(tmp_path) -> list[dict]:
+    f = _dir(tmp_path) / f"crown-{UID}.log"
+    return [json.loads(ln) for ln in f.read_text().splitlines()] if f.exists() else []
+
+
+async def test_a_waiting_take_shows_in_the_status(mm, client, tmp_path):
+    """RT-6.6 step 4 (#64): the take waits in this server's file, and its status says so
+    at once; once taken, the segment is gone."""
+    me(mm)
+    mm.agent(OLDER, "agent-old", 1000, "crown")
+    assert (await lease.command(client, "take")).startswith("pending:")
+    assert " · take pending" in mm.custom_status()["text"]
+    mm.agent(OLDER, "agent-old", 1000, "hammer_and_wrench")   # released
+    await lease.command(client, "tick")
+    assert holds() and "take pending" not in mm.custom_status()["text"]
+
+
+async def test_an_elected_peer_leaves_a_free_crown_to_a_waiting_take(mm, client):
+    """RT-6.6 step 4 (#64): after a release the oldest peer's tick may come before the
+    taker's; it sees the taker's status and does not claim."""
+    me(mm)                                                    # the oldest reachable one
+    mm.agent(YOUNGER, "agent-taker", 3000, "ear")
+    _status_text(mm, YOUNGER, "listening · take pending")
+    await lease.command(client, "tick")
+    assert not holds()
+    _status_text(mm, YOUNGER, "listening")                    # the take is through, or gone
+    await lease.command(client, "tick")
+    assert holds()
+
+
+async def test_a_slot_leaves_a_free_crown_to_a_waiting_take(mm, client):
+    """RT-6.6 step 4 (#64): the holder went (silent, gone): no slot claims while a take waits."""
+    me(mm)
+    mm.agent(OLDER, "agent-old", 1000, "crown", expires_in=-5)
+    mm.agent(YOUNGER, "agent-taker", 3000, "ear")
+    _status_text(mm, YOUNGER, "listening · take pending")
+    lease._holder_id, lease._look_at = OLDER, time.time() - 1
+    assert not await lease.look(client) and not holds()
+    _status_text(mm, YOUNGER, "listening")
+    lease._holder_id, lease._look_at = OLDER, time.time() - 1
+    assert await lease.look(client) and holds()
+
+
+async def test_the_crown_log_names_each_way(mm, client, tmp_path, monkeypatch):
+    """RT-6.6 step 11 (#64): a line each time the crown passes, with what the sign-of-life
+    rule saw; nothing of a post."""
+    crownlog.reset()
+    me(mm)
+    assert await lease.command(client, "take") == "taken"
+    assert await lease.command(client, "release") == "released"
+    _coord_file(tmp_path, monkeypatch, CROWN_UNTIL=0, PENDING=0, YIELD_UNTIL=0)
+    assert await lease.command(client, "take") == "taken"
+    since = _no_sign_since(monkeypatch, 901)
+    monkeypatch.setattr(life, "_untaken", time.time() - 50)
+    await lease.set_status(client, "renew")                   # the silent drop
+    lines = _crown_log(tmp_path)
+    assert [(ln["event"], ln["way"]) for ln in lines] == [
+        ("gained", "take"), ("lost", "release"), ("gained", "take"), ("lost", "silent")]
+    silent = lines[-1]
+    assert silent["since"] == time.strftime("%Y-%m-%dT%H:%M:%SZ", time.gmtime(since))
+    assert silent["turn"] is False and 49 <= silent["untaken_sec"] <= 52
+    assert set(silent) == {"t", "event", "way", "turn", "since", "untaken_sec"}
+
+
+def test_a_crown_that_ends_without_a_rule_is_logged_as_lapsed(tmp_path, monkeypatch):
+    """RT-6.6 step 11: the heartbeat's lapse gets a line only when no rule wrote one."""
+    monkeypatch.setenv("XDG_STATE_HOME", str(tmp_path))
+    monkeypatch.setenv("MM_BOT_USER_ID", UID)
+    crownlog.reset()
+    crownlog.lapsed()                                         # held nothing: no line
+    crownlog.note("gained", "election")
+    crownlog.lapsed()
+    crownlog.lapsed()                                         # once per hold
+    crownlog.note("gained", "slot")
+    crownlog.note("lost", "taken_over", by=OLDER)
+    crownlog.lapsed()                                         # the rule wrote its line
+    assert [(ln["event"], ln["way"], ln.get("by")) for ln in _crown_log(tmp_path)] == [
+        ("gained", "election", None), ("lost", "lapsed", None),
+        ("gained", "slot", None), ("lost", "taken_over", OLDER)]
+
+
+def test_the_crown_log_keeps_its_bound(tmp_path, monkeypatch):
+    monkeypatch.setenv("XDG_STATE_HOME", str(tmp_path))
+    monkeypatch.setenv("MM_BOT_USER_ID", UID)
+    monkeypatch.setattr(crownlog, "LOG_LINES", 10)
+    monkeypatch.setattr(crownlog, "LOG_KEEP", 4)
+    for _ in range(11):
+        crownlog.note("gained", "take")
+    assert len(_crown_log(tmp_path)) == 4
+    crownlog.note("lost", "no-such-way")                      # refused, never raised
+    assert len(_crown_log(tmp_path)) == 4
+
+
+async def test_a_holder_whose_push_starts_a_turn_without_a_bus_tool_keeps_the_crown(
+        mm, client, tmp_path, monkeypatch):
+    """RT-6.6 step 1 (#64): a channel session idle as the holder gets a push; the prompt
+    hook's working starts the turn, which calls no tool of the bus and only answers in
+    the terminal. The turn takes the push up: no silence, the crown stays, also after
+    the turn's end and well past MM_ACK_WAIT_SEC."""
+    life.reset()
+    _dir(tmp_path).mkdir(exist_ok=True)
+    (_dir(tmp_path) / f"channel-{UID}.env").write_text("CONFIRMED=1\n")
+    me(mm, "ear")
+    assert await lease.command(client, "take") == "taken"
+    await lease.set_status(client, "idle")
+    life.pushed()                                             # the channel tag goes out
+    life.turn(True)                                           # the prompt hook: working
+    monkeypatch.setattr(life, "_sign", time.time() - 3600)    # a long turn, no bus tool
+    await lease.set_status(client, "renew")
+    assert holds() and mm.custom_status()["emoji"] == "crown"
+    life.turn(False)                                          # the Stop hook: idle
+    monkeypatch.setattr(life, "_sign", time.time() - 3600)
+    await lease.set_status(client, "renew")
+    assert holds() and not life.silent_since(listening=True)
+    life.reset()

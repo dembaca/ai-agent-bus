@@ -83,6 +83,11 @@ def in_turn() -> bool:
     return _turn
 
 
+def untaken_since() -> float:
+    """Since when the oldest push waits untaken (epoch s); 0 none (the crown log)."""
+    return _untaken
+
+
 def on_take_up(fn: Callable[[bool], None]) -> None:
     """Call fn(boundary) at each take-up; boundary: a turn begins or ends."""
     if fn not in _taken:
