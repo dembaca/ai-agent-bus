@@ -168,6 +168,8 @@ async def test_a_reaction_that_does_not_map_to_an_answer_chooses_nothing():
     p = await slim.post(_asker(), _reacted(plain, (HUMAN, "thumbsup")))
     assert p["ask"]["decision"] == "Merge #4."
     assert "answers" not in p["ask"] and "chosen" not in p["ask"]
+    # but the reader must see that it was approved: answer, as the live event says it
+    assert p["ask"]["answer"] == "yes"
 
 
 @pytest.mark.asyncio
@@ -204,3 +206,32 @@ async def test_no_ask_fields_when_the_author_cannot_be_classified():
     broken.agents = boom  # type: ignore[method-assign]
     p = await slim.post(broken, post_of(CARD))
     assert "ask" not in p
+
+
+PLAIN = {"id": ASK_ID, "channel_id": "c1", "user_id": ASKER, "create_at": 1,
+         "message": "\U0001F64B @dembaca",
+         "props": {"a2a": {"v": 1, "kind": "ask"}, "attachments": [{
+             "title": "Merge #4?", "fields": [
+                 {"title": "Decision", "value": "Merge #4.", "short": False},
+                 {"title": "Answer", "value": "\U0001F44D = yes to the decision \u00b7 \U0001F44E = no \u00b7 or reply in this thread",
+                  "short": False}]}]}}
+
+
+@pytest.mark.asyncio
+async def test_a_decision_without_alternatives_reports_yes_or_no():
+    """The coordinator's addition: a plain approval has no `chosen`, yet a reader
+    must see the verdict — `answer` is the same field the live event carries."""
+    p = await slim.post(_asker(), _reacted(PLAIN, (HUMAN, "thumbsup")))
+    assert p["ask"]["answer"] == "yes" and "chosen" not in p["ask"]
+    p = await slim.post(_asker(), _reacted(PLAIN, (HUMAN, "thumbsdown")))
+    assert p["ask"]["answer"] == "no" and "chosen" not in p["ask"]
+    for uid in (STRANGER, ASKER):  # an untrusted person, and the asking agent
+        p = await slim.post(_asker(), _reacted(PLAIN, (uid, "thumbsup")))
+        assert "answer" not in p["ask"] and "chosen" not in p["ask"], uid
+
+
+@pytest.mark.asyncio
+async def test_a_reaction_that_is_no_answer_leaves_answer_out():
+    """A remark emoji (👀) neither approves nor chooses."""
+    p = await slim.post(_asker(), _reacted(PLAIN, (HUMAN, "eyes")))
+    assert "answer" not in p["ask"] and "chosen" not in p["ask"]

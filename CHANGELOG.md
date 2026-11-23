@@ -42,8 +42,8 @@ before 0.5.0 are described in the git history.
   API's posts — carries `ask` for a post that is an ask from an agent:
   `need`, `decision` (what a 👍 approves) and `answers` (the offered
   alternatives, by position), plus `reactions` as
-  `{emoji, author, trusted_human}` and `chosen` when a trusted human's
-  reaction names one. `context` and `recommendation` stay out: they are
+  `{emoji, author, trusted_human}` with `answer` (yes or no) and, when the ask
+  offered alternatives, `chosen` naming the one picked. `context` and `recommendation` stay out: they are
   not what was approved. Whether the author is an agent is the bus's own
   account test (`gate.author_classes`), never a name prefix a person
   could carry; anyone may write a post's props, so these fields are data

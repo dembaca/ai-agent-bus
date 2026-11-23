@@ -72,13 +72,13 @@ async def _names(client: ChatPort, posts: Sequence[Post]) -> tuple[dict[str, str
 async def _ask_facts(client: ChatPort, posts: Sequence[Post],
                      users: dict[str, str]) -> dict[str, Any]:
     """What an ask's card and its reactions say, per post id (RT-6.11, issue #30):
-    {id: {"need"?, "decision"?, "answers"?, "chosen"?, "reactions"?}}.
+    {id: {"need"?, "decision"?, "answers"?, "answer"?, "chosen"?, "reactions"?}}.
 
     Only for a post that is an ask from an agent: its `a2a.kind` says ask AND its
     author is an agent by the bus's own test (`gate.author_classes`: AGENT or
     FOREIGN), never by a name prefix, which a person could carry. Anyone may
     write a post's props, so a card on a person's post is no ask and shows
-    nothing. `chosen` counts only a trusted human's reaction, as the live event
+    nothing. `answer` (yes/no) and `chosen` count only a trusted human's reaction, as the live event
     does. Every failure yields {}: unsure, no ask fields."""
     from . import gate
 
@@ -109,16 +109,22 @@ async def _ask_facts(client: ChatPort, posts: Sequence[Post],
                  "trusted_human": r.user_id in trusted}
                 for r in p.reactions
             ]
-        # chosen: only a trusted human's yes/no or keycap, as the live event counts it
+        # answer/chosen: only a trusted human's reaction, as the live event counts it.
+        # `answer` says yes or no to a decision (also when no alternatives were
+        # offered: a reader must see whether it was approved); `chosen` names the
+        # alternative that was picked, and exists only when there are alternatives.
         for r in p.reactions:
             if r.user_id not in trusted:
                 continue
             if (choice := asks.choice_of(r.emoji_name)) is not None:
                 if answers and 0 < choice <= len(answers):
+                    facts["answer"] = "yes" if choice == 1 else "no"
                     facts["chosen"] = answers[choice - 1]
                     break
-            elif len(answers) == 2 and (answer := asks.answer_of(r.emoji_name)):
-                facts["chosen"] = answers[0 if answer == "yes" else 1]
+            elif (answer := asks.answer_of(r.emoji_name)) is not None:
+                facts["answer"] = answer
+                if len(answers) == 2:
+                    facts["chosen"] = answers[0 if answer == "yes" else 1]
                 break
         if facts:
             out[p.id] = facts
