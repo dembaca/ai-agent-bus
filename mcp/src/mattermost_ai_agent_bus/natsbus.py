@@ -465,6 +465,16 @@ class NatsBus:
         return self._name
 
     @property
+    def connected(self) -> bool:
+        """Whether a connection is open now (False while a reconnect is under way)."""
+        return self._connected and self._nc is not None
+
+    @property
+    def fatal(self) -> NatsBusError | None:
+        """The error that stopped the bus for good (a NameMismatch), else None."""
+        return self._fatal
+
+    @property
     def channels(self) -> list[str]:
         out: list[str] = []
         wanted = [self._s.home, *self._s.guests]

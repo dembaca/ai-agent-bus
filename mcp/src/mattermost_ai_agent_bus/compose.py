@@ -10,10 +10,12 @@ is chosen here and nowhere else.
 from __future__ import annotations
 
 import logging
-from collections.abc import Sequence
+import re
+from collections.abc import Mapping, Sequence
 from typing import TYPE_CHECKING, Any, Protocol, cast
 
-from . import ownpost, unanswered
+from . import a2a, ownpost, unanswered
+from .config import env
 from .port import ChatPort
 from .registration import RegistrationPort
 
@@ -23,6 +25,8 @@ from .mattermost_ws import Wire
 
 if TYPE_CHECKING:
     from .events import EventSource
+    from .nats_port import NatsPort
+    from .natsbus import NatsSettings
     from .model import Post
     from .session_file import SessionInfo
 
@@ -117,20 +121,125 @@ async def _remember(port: ChatPort, bot_id: str, channel_id: str, post: Post) ->
 def client_from_env() -> BusClient:
     """The chat adapter the environment names (MM_CHAT_URL, MM_BOT_TOKEN,
     MM_REGISTER_URL, …): Mattermost's, wrapped so that its posts are kept as
-    the bus's own (#255). Raises RuntimeError without a chat URL."""
+    the bus's own (#255). A home named in MM_NATS_HOMES runs its agents' posts,
+    threads and reactions over NATS (nats_port.py, RT-6.36): the adapter is then
+    wrapped in a NatsPort first, inside the wrapper. Raises RuntimeError without
+    a chat URL."""
     from .client import MattermostAdapter
 
     adapter = MattermostAdapter.from_env()
-    return Remembered(adapter)
+    return Remembered(_with_nats(adapter))
+
+
+def nats_homes_from_env(environ: Mapping[str, str] | None = None) -> frozenset[str]:
+    """MM_NATS_HOMES: the home channels switched to NATS, comma or space separated
+    (a leading ~ is dropped), lower case; empty when unset."""
+    raw = (environ.get("MM_NATS_HOMES", "") if environ is not None else env("MM_NATS_HOMES"))
+    return frozenset(n.lstrip("~").lower() for n in re.split(r"[,\s]+", raw) if n.lstrip("~"))
+
+
+def nats_settings_from_env(home: str, lobby: str = "",
+                           environ: Mapping[str, str] | None = None) -> NatsSettings | None:
+    """The NATS settings of a session whose home channel is `home` (the lobby, MM_CHANNEL,
+    is `lobby`): MM_NATS_URL (one or more URLs, comma or space separated; tls://, or
+    nats:// to a loopback host), MM_NATS_CA_FILE (optional), MM_PROPS_PREFIX. None
+    without a URL; raises ValueError for a URL or prefix that is not allowed."""
+    from .natsbus import NatsSettings
+
+    def get(name: str) -> str:
+        return (environ.get(name, "") if environ is not None else env(name)).strip()
+
+    urls = tuple(u for u in re.split(r"[,\s]+", get("MM_NATS_URL")) if u)
+    if not urls:
+        return None
+    return NatsSettings(servers=urls, home=home, lobby_channel=lobby or "lobby",
+                        props_prefix=a2a.user_prefix(environ), tls_ca_file=get("MM_NATS_CA_FILE") or None)
+
+
+def _with_nats(adapter: BusClient) -> BusClient:
+    """The adapter, or a NatsPort around it when MM_NATS_HOMES names this session's
+    home. Without the login (MM_LOGIN_*) or a usable MM_NATS_URL the home stays
+    entirely on Mattermost, with the reason in the log: never half."""
+    homes = nats_homes_from_env()
+    if not homes:
+        return adapter
+    home = adapter.work_channel_name.lower()
+    if home not in homes:
+        log.info("MM_NATS_HOMES names no home of this session (%s): Mattermost", home)
+        return adapter
+    from . import login
+    from .nats_port import DEFAULT_MEMORY, NatsPort
+
+    if login.settings_from_env() is None:
+        log.error("MM_NATS_HOMES names ~%s, but the login (MM_LOGIN_ISSUER, MM_LOGIN_CLIENT_ID) "
+                  "is not set up: the home stays on Mattermost", home)
+        return adapter
+    try:
+        settings = nats_settings_from_env(home, adapter.channel_name.lower())
+    except ValueError as exc:
+        log.error("MM_NATS_HOMES names ~%s, but the NATS settings are not usable (%s): "
+                  "the home stays on Mattermost", home, exc)
+        return adapter
+    if settings is None:
+        log.error("MM_NATS_HOMES names ~%s, but MM_NATS_URL is not set: the home stays on Mattermost", home)
+        return adapter
+    try:
+        memory = int(env("MM_NATS_MEMORY") or DEFAULT_MEMORY)
+    except ValueError:
+        memory = DEFAULT_MEMORY
+    return cast("BusClient", NatsPort(adapter, settings, {home}, memory=memory))
+
+
+def nats_port_of(client: object) -> NatsPort | None:
+    """The NatsPort inside a client client_from_env built, None when no home runs over NATS."""
+    from .nats_port import NatsPort
+
+    inner = client.port if isinstance(client, Remembered) else client
+    return inner if isinstance(inner, NatsPort) else None
+
+
+async def start_nats(client: object) -> None:
+    """Start the NATS bus of the client's NATS homes once the login is there (the
+    server's lifespan and hosted.services call it after login.start; it waits for
+    the login's approval). Never raises: a failure is logged and kept in the port,
+    whose sends then raise. Nothing for a client without a NATS home."""
+    from . import login
+
+    port = nats_port_of(client)
+    if port is None:
+        return
+    current = login.current()
+    if current is None:
+        port.fail("the login is not running")
+        return
+    try:
+        await port.start(current)
+    except Exception as exc:  # noqa: BLE001 — port.start logged it and keeps it
+        log.debug("NATS bus not started: %s", type(exc).__name__)
+
+
+async def stop_nats(client: object) -> None:
+    """Stop the NATS bus of the client's NATS homes, if there is one."""
+    port = nats_port_of(client)
+    if port is not None:
+        await port.stop()
 
 
 def event_source(client: ChatPort) -> EventSource:
     """The live events of the chat client_from_env built (events.py), for a
-    WebSocket inbox handed none: Mattermost's WebSocket, as client's bot.
-    Raises TypeError for a client without the server's address and the bot's
-    token (mattermost_ws.Wire): no source for that chat."""
+    WebSocket inbox handed none: Mattermost's WebSocket, as client's bot. With a
+    NATS home, the Mattermost source for people and the other channels is merged
+    with the NATS source of the home (nats_port.MergedEvents): one would miss
+    the other's posts. Raises TypeError for a client without the server's
+    address and the bot's token (mattermost_ws.Wire): no source for that chat."""
     from .mattermost_ws import MattermostEvents, Wire
 
     if not isinstance(client, Wire):
         raise TypeError("event_source: no source for this chat")
-    return MattermostEvents(client)
+    chat = MattermostEvents(client)
+    port = nats_port_of(client)
+    if port is None:
+        return chat
+    from .nats_port import MergedEvents, NatsEvents
+
+    return MergedEvents(chat, NatsEvents(port), port)

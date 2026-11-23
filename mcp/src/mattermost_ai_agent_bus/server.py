@@ -31,7 +31,7 @@ from . import (
 from .a2a import attachment_props, props_view, with_debug
 from .compose import BusClient
 from .homes import guest_ids
-from .ids import InvalidId, mm_id, mm_name
+from .ids import InvalidId, mm_id, mm_name, post_id_arg
 from .model import Answer, Mark, Post, Refused
 from .port import ChatPort
 from .registration import RegistrationPort
@@ -244,10 +244,14 @@ async def _lifespan(_server: Any) -> AsyncIterator[dict[str, Any]]:
     # The Keycloak login, when MM_LOGIN_* is set; the session never waits
     # for it (RT-6.34). The host process starts it in hosted.services().
     logging_in = login.start(_bus_client)
+    # A home that runs over NATS (MM_NATS_HOMES, RT-6.36): its bus starts when the login is ready.
+    nats = asyncio.create_task(_nats_start())
     api = await _start_hook_api()
     try:
         yield {}
     finally:
+        nats.cancel()
+        await compose.stop_nats(_client)
         task.cancel()
         attested.cancel()
         checking.cancel()
@@ -255,6 +259,11 @@ async def _lifespan(_server: Any) -> AsyncIterator[dict[str, Any]]:
             login.stop()
         if api is not None:
             await api.close()
+
+
+async def _nats_start() -> None:
+    """The NATS bus of a home that runs over NATS (RT-6.36); never raises."""
+    await compose.start_nats(await _bus_client())
 
 
 async def _attest_start() -> None:
@@ -1372,7 +1381,7 @@ def _bad_id(**ids: str) -> str:
     for what, value in ids.items():
         if value:
             try:
-                mm_id(value, what)
+                post_id_arg(value) if what == "post" else mm_id(value, what)
             except InvalidId as exc:
                 return str(exc)
     return ""

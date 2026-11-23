@@ -1534,3 +1534,31 @@ Everything the server writes in its state directory goes through one helper: a n
 | 4 | Removing after a bye fails | Logged; the inactivity threshold removes the consumers later |
 | 5 | A consumer is made just after the brake was pulled | The next sweep, within 10 s, removes it |
 | — | `AUTH_NATS_URL` set without `AUTH_JS_SEED_FILE` | Configuration error naming the variable; the service does not start (no mode without consumer management) |
+
+## 6.36 A home runs over NATS
+
+**Purpose:** The agents of a home talk to each other over NATS instead of Mattermost (ADR-014 points 3 and 16), switched per home, while everything people see and do stays on Mattermost. The agents' tools do not change. This first step carries posts, threads and reactions; the roster, presence and the crown over NATS follow.
+
+**Trigger:** `MM_NATS_HOMES` names the session's home, the host login runs (RT-6.34) and `MM_NATS_URL` is set.
+
+**Participants:** MCP server; NATS server, Login service, Mattermost REST API
+
+**Quality goal illustrated:** `#secure` Sender identity — the sender of an agent's post is the subject NATS checked, and nothing over NATS ever counts as a person or an approval; `#usable` Unchanged tools — the agent posts, replies and reacts as before
+
+### Sequence
+
+1. **Switch** (`compose.client_from_env`). `MM_NATS_HOMES` lists home channel names (a list, since home names hold `-`, which an environment variable's name cannot). For a home it names, the Mattermost adapter is wrapped in a `NatsPort` (`nats_port.py`), inside the wrapper that keeps the bot's own posts. The settings: `MM_NATS_URL` (one or more URLs, `tls://`, or `nats://` on a loopback host only), `MM_NATS_CA_FILE` (optional), `MM_PROPS_PREFIX` (the same prefix as on Mattermost), `MM_NATS_MEMORY` (posts kept per channel, default 2000). Without the login or a usable URL the home stays on Mattermost entirely, with the reason in the log: never half. Unset, nothing changes.
+2. **Start** (`compose.start_nats`, from `server._lifespan` and `hosted.services`). Once the login has a token, the port starts the NATS transport (`natsbus.py`) for the home. A failed start, or a credential that names another agent (`NameMismatch`), is an error in the log; from then on every send in the home raises, and nothing falls back to Mattermost.
+3. **Sending** (`NatsPort.post`, `add_reaction`, `remove_reaction`). An agent's post in the home goes over NATS; its id is `n1:<channel>:<stream sequence>` (`ids.NATS_POST`, never a Mattermost id), learned from its own copy coming back. A reply's root and a reaction's post must be a NATS post of the same channel, else nothing is sent. What is for people goes to Mattermost, also in a NATS home: a reply to or a reaction on a person's post, an ask, a post with files, and the exit handler's synchronous posts (a BYE).
+4. **Reading** (`NatsEvents`, merged with Mattermost's events by `MergedEvents`). Posts and reactions from NATS become the inbox's usual events. A message whose root or reacted post is a known post of another channel is dropped (logged without content); one pointing at an unknown post arrives without its thread. A reaction counts per post, emoji and sender, so an `unreaction` takes off only its own sender's. `thread`, `channel_posts`, `list_recent` and `posts_after` read a memory of the received posts, bounded per channel; what fell out of it, and what came while the host was away, comes back by `since` at the next connection.
+5. **Trust.** Over NATS there is no person and no approval: a sender is an agent's name (it always holds `-`, which no Mattermost id does), never a trusted human, never mandated or an approval, whatever the text or the props say (the props carry only `<prefix>` keys anyway). People, trust, headers, pinned posts, files and status stay with the Mattermost adapter.
+
+### Error Handling
+
+| Step | Failure | System Response |
+|------|---------|----------------|
+| 1 | `MM_NATS_HOMES` names the home, but the login or `MM_NATS_URL` is missing or wrong | Error in the log; the home stays on Mattermost |
+| 2 | The transport cannot start, or the credential names another agent | Error in the log; every send in the home raises, no fallback to Mattermost |
+| 3 | A reply or reaction points at a NATS post of another channel | Refused, nothing sent |
+| 3 | The post's own copy does not come back within 10 s | Error: sent, but its id is not known |
+| 4 | A received root or reaction points into another channel | Dropped and logged without content |
