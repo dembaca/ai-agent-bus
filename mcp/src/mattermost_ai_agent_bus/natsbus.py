@@ -53,6 +53,7 @@ CLOSE_SEC = 5.0
 MAX_BODY = 65536  # the BUS stream's max_msg_size
 HEARTBEAT_SEC = 30.0
 PRESENCE_FRESH_SEC = 90.0  # a holder's last presence must be younger than this
+OWN_ECHO_SEC = 75.0  # the echo of this agent's own presence must be younger than this (monotonic), else the view is unknown
 GAP_RECONNECT_SEC = 30.0  # at most one reconnect for a gap within this time
 MAX_AGE_SEC = 86400.0  # the PRESENCE stream's max_age: older claims and presence are gone
 MEMBER_RENEW_SEC = 6 * 3600.0  # a membership is announced again this often (the stream keeps 24 h)
@@ -343,20 +344,37 @@ class GapTracker:
 
 # --- the crown ---------------------------------------------------------------------------
 
+def crown_candidates(claims: Mapping[str, int], presence: Mapping[str, tuple[float, str]],
+                     now: float, is_member: Callable[[str], bool] | None = None,
+                     fresh: float = PRESENCE_FRESH_SEC,
+                     at: Mapping[str, float] | None = None) -> list[str]:
+    """The agents that may hold the crown of one channel (RT-6.38), by claim order: a claim,
+    a last presence message younger than `fresh` seconds and not `bye`, and, when
+    `is_member` is given, a membership of the channel. The order is (server time of the
+    claim, stream sequence), lexicographically: the sequence alone is no order between
+    agents when the stream was made anew (`at` None: by sequence only).
+    claims: agent -> stream sequence of its (latest) claim; at: agent -> server time of it;
+    presence: agent -> (server time, status) of its last presence message."""
+    out: list[tuple[float, int, str]] = []
+    for agent, seq in claims.items():
+        seen = presence.get(agent)
+        if seen is None or seen[1] in ("bye", "offline") or now - seen[0] >= fresh:
+            continue
+        if is_member is not None and not is_member(agent):
+            continue
+        out.append((at.get(agent, 0.0) if at is not None else 0.0, seq, agent))
+    return [agent for _, _, agent in sorted(out)]
+
+
 def crown_holder(claims: Mapping[str, int], presence: Mapping[str, tuple[float, str]],
-                 now: float, fresh: float = PRESENCE_FRESH_SEC) -> str | None:
-    """The crown of one channel: the claim with the lowest stream sequence among the
+                 now: float, fresh: float = PRESENCE_FRESH_SEC,
+                 at: Mapping[str, float] | None = None) -> str | None:
+    """The crown of one channel: the first claim in crown_candidates' order among the
     agents whose last presence message is younger than `fresh` seconds and not `bye`.
     claims: agent -> stream sequence of its (latest) claim; presence: agent ->
     (server time, status) of its last presence message."""
-    best: tuple[int, str] | None = None
-    for agent, seq in claims.items():
-        seen = presence.get(agent)
-        if seen is None or seen[1] == "bye" or now - seen[0] >= fresh:
-            continue
-        if best is None or seq < best[0]:
-            best = (seq, agent)
-    return best[1] if best else None
+    first = crown_candidates(claims, presence, now, None, fresh, at)
+    return first[0] if first else None
 
 
 # --- CONNECT ---------------------------------------------------------------------------------
@@ -513,6 +531,8 @@ class NatsBus:
         self._members: dict[str, dict[str, tuple[int, float]]] = {}  # channel -> agent -> (stream sequence, server time)
         self._claims: dict[str, dict[str, int]] = {}
         self._claim_at: dict[tuple[str, str], float] = {}  # (channel, agent) -> server time of the claim
+        self._presence_cseq = 0  # the presence consumer's last delivery number: a lower one is a consumer made anew
+        self._own_echo = time.monotonic()  # when this agent's own presence last came back (monotonic, never server time)
 
     def __repr__(self) -> str:
         return f"NatsBus(name={self._name!r}, connected={self._connected})"
@@ -612,6 +632,7 @@ class NatsBus:
     async def _open(self) -> None:
         """One connection with a fresh access token, `since` and the literal subscriptions."""
         self._synced = False  # the stored presences are read again from this connection
+        self._own_echo = time.monotonic()  # a new connection gets the window to see its own presence
         token = await self._login.access_token()
         key = self._login.nkey()
         hello = build_hello(token, self._s.home, self._s.guests, self._s.lobby, self.since(),
@@ -970,11 +991,37 @@ class NatsBus:
         """agent -> (server time, status) of the last presence message of each."""
         return dict(self._presence)
 
+    @property
+    def server_now(self) -> float:
+        """The newest server timestamp this host has seen: its "now" for every age."""
+        return self._server_now
+
+    def claim_info(self, channel: str) -> dict[str, tuple[int, float]]:
+        """agent -> (stream sequence, server time) of its crown claim in the channel."""
+        return {a: (seq, self._claim_at.get((channel, a), 0.0))
+                for a, seq in self._claims.get(channel, {}).items()}
+
+    def own_echo_age(self) -> float:
+        """Seconds (monotonic clock) since this agent's own presence last came back over its
+        presence consumer, or since the connection opened. A half-open connection delivers
+        nothing: nats-py notices only after minutes (RT-6.38 step 2)."""
+        return time.monotonic() - self._own_echo
+
+    def claim_times(self, channel: str) -> dict[str, float]:
+        return {a: self._claim_at.get((channel, a), 0.0) for a in self._claims.get(channel, {})}
+
+    def candidates(self, channel: str, now: float | None = None) -> list[str]:
+        """The agents that may hold the channel's crown, in claim order: fresh presence and
+        a membership of the channel (RT-6.38); the standing-peer rule is the port's."""
+        return crown_candidates(self._claims.get(channel, {}), self._presence,
+                                self._server_now if now is None else now,
+                                lambda a: self.is_member(channel, a), at=self.claim_times(channel))
+
     def holder(self, channel: str, now: float | None = None) -> str | None:
         """The crown of a channel. "Now" is the newest server timestamp this host has seen,
         never its own clock (which may be wrong)."""
         return crown_holder(self._claims.get(channel, {}), self._presence,
-                            self._server_now if now is None else now)
+                            self._server_now if now is None else now, at=self.claim_times(channel))
 
     # --- receiving ----------------------------------------------------------------------
     def _handler(self, where: str) -> Callable[[Any], Awaitable[None]]:
@@ -1073,6 +1120,13 @@ class NatsBus:
             log.warning("nats bus: dropped a presence message without this consumer's JetStream metadata")
             return
         self._see(ack.time)
+        if ack.consumer_seq <= self._presence_cseq:
+            # The consumer was made anew (the login service at a credential, a stream made
+            # anew): what is delivered now is what the stream holds. Remembered claims may
+            # not be in it: forget them, so that an own claim that is gone is claimed again.
+            self._claims.clear()
+            self._claim_at.clear()
+        self._presence_cseq = ack.consumer_seq
         if ack.pending == 0:
             self._synced = True
             self._presence_read = True
@@ -1089,6 +1143,8 @@ class NatsBus:
                     return
                 self._presence_seq[agent] = (ack.stream_seq, ack.time)
                 self._presence[agent] = (ack.time, status)
+                if agent == self.name:
+                    self._own_echo = time.monotonic()
                 bot = decode_presence_bot(msg.data)
                 if bot:
                     self._bots[agent] = bot

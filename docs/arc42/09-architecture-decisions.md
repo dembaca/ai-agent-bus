@@ -3334,7 +3334,10 @@ separately.
       `<bus>.dm.<recipient>.<name>`, `<presence>.<owner>.<name>`,
       `<presence>.crown.<channel>.<name>`, `<presence>.member.<channel>.<name>`
       (the membership, apart from the crown; both prefixes are settings of the
-      login service, `bus` and `presence`). The presence subject carries the
+      login service, `bus` and `presence`). A crown claim is granted only for
+      the hello's home channel, a membership for every granted channel: a guest
+      could otherwise claim the crown of a channel it only visits and block that
+      home (review of the crown over NATS, RT-6.38). The presence subject carries the
       owner too (from the Keycloak token, `.` written as `~`, `-` when it is no
       lower-case username), pinned by the permission like the sender: the
       owner of a NATS sender is read from there, never proven by its name,
@@ -3395,6 +3398,14 @@ separately.
       may change hands about once a day. This is accepted for the lab; if it
       matters, the crown order moves to a stream without an age limit whose
       claims the login service removes at sign-off.
+    - Built (RT-6.38): the candidates are the claimants that are members of
+      the home (only a session whose home it is claims), have a fresh
+      presence and stand as peers by the rule of the Mattermost election
+      (`lease.standing`). A claim is renewed after 23 h by the server's
+      time, which moves it behind. Release is a new claim; take does not
+      overtake and waits for the order. The holder mirrors the crown on its
+      Mattermost status without the receipt marker, so that older agents
+      neither take it over nor elect themselves.
 
     **Consumer management in the login service** (designed here, built with
     the NATS adapter, phase 3):
