@@ -790,3 +790,67 @@ func TestDropPrintsTheNameClean(t *testing.T) {
 		t.Fatalf("not clean: %q", out)
 	}
 }
+
+func TestAccountCommands(t *testing.T) {
+	const path = "/v1/directory/accounts/mattermost/alice"
+	moved := `{"product":"mattermost","name":"alice","sub":"sub-b","revision":9,"moved_from":"sub-a"}`
+	cases := []struct {
+		name   string
+		args   []string
+		method string
+		ifm    string
+		ifnm   string
+		body   string
+		out    string
+	}{
+		{"show", []string{"account", "show", "alice"}, "GET", "", "", "", "sub sub-b\trevision 9\n\tmoved from sub-a"},
+		{"set creates", []string{"account", "set", "alice", "sub-b"}, "PUT", "", "*", `{"sub":"sub-b"}`, "moved from sub-a"},
+		{"set replaces", []string{"account", "set", "alice", "sub-b", "--rev", "9"}, "PUT", `"9"`, "", `{"sub":"sub-b"}`, "revision 9"},
+		{"rm", []string{"account", "rm", "alice", "--rev", "9"}, "DELETE", `"9"`, "", "", "removed alice"},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			r := newRig(t)
+			r.body = map[string]string{path: moved}
+			code, out, errs := r.do(tc.args...)
+			if code != 0 {
+				t.Fatalf("exit %d: %s", code, errs)
+			}
+			want := rec{tc.method, path, "Bearer " + secretToken, tc.ifm, tc.ifnm, tc.body}
+			if got := r.last(); got != want {
+				t.Fatalf("got  %+v\nwant %+v", got, want)
+			}
+			if !strings.Contains(out, tc.out) {
+				t.Fatalf("output %q lacks %q", out, tc.out)
+			}
+		})
+	}
+}
+
+func TestAccountUsageErrors(t *testing.T) {
+	r := newRig(t)
+	for _, args := range [][]string{
+		{"account"}, {"account", "nope", "alice"}, {"account", "show"}, {"account", "show", "Alice"},
+		{"account", "set", "alice"}, {"account", "set", "alice", "sub", "--rev", "0"}, {"account", "set", "alice", "sub", "--rev", "x"},
+		{"account", "rm", "alice"}, {"account", "show", "alice", "--rev", "3"}, {"show", "x", "--rev", "3"},
+	} {
+		if code, _, _ := r.do(args...); code != 2 {
+			t.Fatalf("%v: exit %d", args, code)
+		}
+	}
+	r.mu.Lock()
+	defer r.mu.Unlock()
+	if len(r.calls) != 0 {
+		t.Fatalf("a bad command reached the API: %+v", r.calls)
+	}
+}
+
+func TestAccountServerTextIsCleaned(t *testing.T) {
+	r := newRig(t)
+	r.body = map[string]string{"/v1/directory/accounts/mattermost/alice": `{"name":"alice","sub":"s\u001b[2Jx","revision":1,"moved_from":"o‮ld"}`}
+	_, out, _ := r.do("account", "show", "alice")
+	noDirt(t, "account show", out)
+	if strings.Contains(out, "‮") {
+		t.Fatalf("bidi control printed: %q", out)
+	}
+}

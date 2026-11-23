@@ -314,7 +314,14 @@ async def posts(client: ChatPort, items: Sequence[Post],
         items = [p for p in items if not p.type]
     users, channels = await _names(client, items)
     facts = await _facts(client, items, users)
-    return [_one(p, users, channels, facts) for p in items]
+    from . import lease  # lease imports this module's neighbours; late, as elsewhere
+
+    shown = await lease.shown_as(client, {p.user_id for p in items})
+    out = [_one(p, users, channels, facts) for p in items]
+    for row, p in zip(out, items, strict=True):
+        if p.user_id in shown:
+            row["shown_as"] = shown[p.user_id]  # #66: display only; `author` decides
+    return out
 
 
 async def post(client: ChatPort, item: Post) -> dict[str, Any]:
