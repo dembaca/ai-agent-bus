@@ -202,6 +202,9 @@ class HookAPI:
         self.endpoint = ""
         self._server: asyncio.Server | None = None
         self._file: Path | None = None
+        # The file a rekey is moving away from, while it is still on disk
+        # beside the new one: the exit work removes both (RT-6.10).
+        self._moving: Path | None = None
         self._uid = ""
         self._open = 0
         self._heavy = asyncio.Semaphore(MAX_HEAVY_RUNS)
@@ -233,13 +236,23 @@ class HookAPI:
         if not self._writes or self._server is None or self._file == file_path():
             return
         # The new file first, then the old one goes: a shell never finds neither.
-        old, self._file = self._file, None
+        # Both are named for the exit work (RT-6.10) while they are both there:
+        # `_file` kept pointing at the new one only, and clearing it first left
+        # the new file beyond any cleanup's reach (PR #27).
+        old, self._moving = self._file, self._file
         try:
             self._write_file(self._uid or None)
         except OSError as exc:
             log.warning("hook API: endpoint file not written: %s", exc)
-        if old is not None and old != self._file:
-            self._unlink_own(old)
+        if old is None:
+            self._moving = None
+            return
+        if self._file == old:
+            # Nothing took the old file's place (unkeyed, another server's, or
+            # the write failed): it goes, as when `_file` was cleared first.
+            self._file = None
+        self._unlink_own(old)
+        self._moving = None
 
     def note_client(self, name: str) -> None:
         """The MCP client's name from the handshake: into the file, while it is
@@ -312,8 +325,17 @@ class HookAPI:
                      f"MM_BUS_PID={os.getpid()}\n"
                      + (f"MM_BOT_USER_ID={self._uid}\n" if self._uid else "")
                      + (f"MM_BUS_CLIENT={self.client}\n" if self.client else ""))
-        os.replace(tmp, path)
-        self._file = path
+        # `_file` names the path before the file can exist: the exit work
+        # (RT-6.10) removes the endpoint file by that name, and a SIGTERM
+        # between the replace and the assignment left it behind (the flake of
+        # PR #27). A failed replace restores the earlier name, so a rewrite
+        # that fails does not forget the file that is still there.
+        old, self._file = self._file, path
+        try:
+            os.replace(tmp, path)
+        except OSError:
+            self._file = old
+            raise
 
     def _note_uid(self, uid: str) -> None:
         """Keep the file's bot id current (a bot registered or taken over after
@@ -329,10 +351,13 @@ class HookAPI:
 
     def remove_file(self) -> None:
         """Remove the discovery file while it is still this server's: one that
-        took the session over (`claude --continue`) may have written its own."""
+        took the session over (`claude --continue`) may have written its own.
+        A rekey's old file is still on disk beside the new one: it goes too."""
         path, self._file = self._file, None
-        if path is not None:
-            self._unlink_own(path)
+        moving, self._moving = self._moving, None
+        for left in (path, moving):
+            if left is not None:
+                self._unlink_own(left)
 
     def _unlink_own(self, path: Path) -> None:
         try:

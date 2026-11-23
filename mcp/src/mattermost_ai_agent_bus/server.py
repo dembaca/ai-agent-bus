@@ -291,12 +291,16 @@ async def _start_hook_api() -> hookapi.HookAPI | None:
     if await _bus_client() is None and not STALE:  # a stale copy answers 503, as before a bus session
         return None
     api = hookapi.HookAPI(_bus_client)
+    # Set before start(): start() writes the endpoint file, and the exit work
+    # (RT-6.10) removes it only through _hook_api. A SIGTERM between the write
+    # and the assignment left the file behind (the flake of PR #27).
+    _hook_api = api
     try:
         await api.start()
     except OSError as exc:
+        _hook_api = None
         log.warning("hook API not started, the turn hooks stay inert: %s", exc)
         return None
-    _hook_api = api
     return api
 
 
