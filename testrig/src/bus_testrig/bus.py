@@ -87,10 +87,18 @@ def _clean_env(base_url: str, token: str, state_dir: str) -> dict[str, str]:
     Claude Code markers, which would make the server read a state directory and
     a token that are not this run's. `XDG_STATE_HOME` is a throwaway directory,
     so session and release files land there and nowhere else.
+
+    `HTTP(S)_PROXY`/`ALL_PROXY` go too, with their lower-case forms (follow-up
+    review point 4): the stub and the proxy are loopback, and `httpx` — which
+    the server itself uses for every REST call — reads those variables and
+    would send the run's own traffic through a proxy that is not the stub.
+    That failed the run at `get_me` before it measured anything, and the
+    server's client is not this rig's to change.
     """
     env = {name: value for name, value in os.environ.items()
            if not name.startswith(("MM_", "MATTERMOST_", "CORRAL_", "CLAUDE"))
-           and name != "XDG_STATE_HOME"}
+           and name != "XDG_STATE_HOME"
+           and name.upper() not in ("HTTP_PROXY", "HTTPS_PROXY", "ALL_PROXY")}
     env.update({
         "MM_CHAT_URL": base_url,
         "MM_BOT_TOKEN": token,
@@ -243,6 +251,14 @@ class BusProcess:
             shutil.rmtree(self._state, ignore_errors=True)
             self._state = ""
             raise RuntimeError(f"the bus did not start: {exc}") from exc
+        except BaseException:
+            # A cancel while the spawn is under way (follow-up review point 6):
+            # the directory `mkdtemp` just made has no server to clean it up,
+            # because `stop` is never reached. Every other way out of `start`
+            # already removes it.
+            shutil.rmtree(self._state, ignore_errors=True)
+            self._state = ""
+            raise
         self._reader = asyncio.create_task(self._read())
         self._stderr = asyncio.create_task(self._drain())
         try:
@@ -446,6 +462,23 @@ class BusProcess:
             del self._lines[:-self._tail]
 
 
+def _posted_text(post: dict[str, Any], known: dict[str, int]) -> str:
+    """The text a reader can key on, as the send wrote it.
+
+    `slim.cut_item` shortens a long message and ends it with where the rest is,
+    so a post read back is not byte-identical to the one sent. A run's messages
+    are short, but the reader must not depend on that: the *longest* registered
+    text this post starts with is the send it came from — the shortest would
+    map `bus-run 10` to the send `bus-run 1`.
+    """
+    message = str(post.get("message") or "")
+    if message in known:
+        return message
+    candidates = [text for text in known
+                  if text and message.startswith(text[:200])]
+    return max(candidates, key=len) if candidates else message
+
+
 def _text_of(answer: dict[str, Any]) -> str:
     content = answer.get("content")
     if not isinstance(content, list):
@@ -475,6 +508,12 @@ async def bus_run(count: int = 100, fault: ProxyFault | None = None,
     harness invented. `send` is recorded before the tool call and `arrive`
     when the receiver's wait returns the post, which is the measurement point
     the plan proposes.
+
+    An arrival is matched by post id when the send is back, and by the text the
+    send wrote when it is not (follow-up review point 3): after a `cut` the
+    bus's catch-up read can hand a post over while `post_message` still waits
+    for its answer, and an id-only match counted that post twice — once here as
+    lost, once in the read as unknown.
 
     A run whose socket died still returns its numbers: the loss is what the
     acceptance compares, and the run's `tail` and `closed` say why the rest is
@@ -508,7 +547,14 @@ async def bus_run(count: int = 100, fault: ProxyFault | None = None,
         await stack.enter_async_context(receiver)
         sent_done: float | None = None
         last_arrival = time.monotonic()
+        # id -> seq for the posts the stub created, and text -> seq for the same
+        # sends. The text is the one that is always there in time (follow-up
+        # review point 3): it is registered before the send, so a post the
+        # receiver's catch-up read hands over while `post_message` is still in
+        # flight is counted as arrived. Its id is not in `seq_of` until that
+        # call returns, and matching on the id alone counted it as lost.
         seq_of: dict[str, int] = {}
+        seq_of_text: dict[str, int] = {}
         reader: asyncio.Task[None] | None = None
         try:
             # Nothing here needs a registered bot: the stub answers the calls
@@ -551,7 +597,13 @@ async def bus_run(count: int = 100, fault: ProxyFault | None = None,
                     failures = 0
                     for item in events if isinstance(events, list) else []:
                         post = item.get("post") if isinstance(item, dict) else None
-                        seq = seq_of.get(str(post.get("id"))) if isinstance(post, dict) else None
+                        if not isinstance(post, dict):
+                            continue
+                        # By id when the send already returned, by the text this
+                        # run wrote otherwise (follow-up review point 3).
+                        seq = seq_of.get(str(post.get("id")))
+                        if seq is None:
+                            seq = seq_of_text.get(_posted_text(post, seq_of_text))
                         if seq is not None:
                             run.arrive(seq)
                             last_arrival = time.monotonic()
@@ -562,10 +614,15 @@ async def bus_run(count: int = 100, fault: ProxyFault | None = None,
             if socket_ok:
                 reader = asyncio.create_task(receive())
             for seq in range(count):
+                text = f"bus-run {seq}"
+                # Registered before the send (follow-up review point 3): the
+                # catch-up read can hand this post over while `post_message` is
+                # still waiting for its answer.
+                seq_of_text[text] = seq
                 run.send(seq)
                 post: Any = None
                 try:
-                    post = await sender.call("post_message", message=f"bus-run {seq}")
+                    post = await sender.call("post_message", message=text)
                 except (McpError, RuntimeError, TimeoutError, OSError) as exc:
                     run.closed = run.closed or (
                         f"post_message failed: {type(exc).__name__}: {exc}")[:300]
@@ -574,12 +631,16 @@ async def bus_run(count: int = 100, fault: ProxyFault | None = None,
                     # the harness: it is neither sent nor lost (review point 5,
                     # the echo run's `run.sent.pop` at runner.py:246).
                     run.sent.pop()
+                    seq_of_text.pop(text, None)
                     if not run.closed:
                         run.closed = f"post_message answered without an id: {post!r}"[:300]
                     break
                 run.sent_frames += 1
                 created = stub.post_of(str(post["id"]))
                 seq_of[str(created["id"])] = seq
+                # The server may restyle the text (`a2a.lead`, `a2a.styled`):
+                # the post as written is the key the reader matches.
+                seq_of_text.setdefault(str(created.get("message") or ""), seq)
                 if await stub.push(posted_frame(created)) == 0 and not run.closed:
                     run.closed = "no open socket when a posted frame was pushed"
                 if send_interval:

@@ -33,6 +33,15 @@ def _forget_probed_interpreter():
 def pytest_configure(config: pytest.Config) -> None:
     config.addinivalue_line(
         "markers", "bus: starts the real MCP server, so it needs `uv sync --directory mcp`")
+    # Every connection here is loopback. An ambient HTTP(S)_PROXY would send it
+    # to a proxy host that does not exist, and both `httpx` (trust_env) and
+    # `websockets` (proxy=True) honour those variables by default: on a machine
+    # that sets one, 25 of 29 tests in test_gateway_and_stub.py failed here with
+    # `Connect call failed ('127.0.0.1', 9)`. Cleared once for the session
+    # rather than at twenty call sites, so a new test cannot forget it.
+    for name in ("HTTP_PROXY", "HTTPS_PROXY", "ALL_PROXY",
+                 "http_proxy", "https_proxy", "all_proxy"):
+        os.environ.pop(name, None)
 
 
 def pytest_collection_modifyitems(items: list[pytest.Item]) -> None:
