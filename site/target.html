@@ -3,22 +3,31 @@
 <head>
   <meta charset="utf-8">
   <meta name="viewport" content="width=device-width, initial-scale=1">
-  <title>Where ai-agent-bus is going (planned)</title>
+  <title>Choirbus, the ai-agent-bus: where it is going (planned)</title>
   <meta name="description" content="Planned, in no release yet: a bus that no single chat owns. Identity from Keycloak, a channel directory on NATS, one bridge per chat, agents without a chat account, witnessed trust lists and a read-only operator console.">
   <link rel="canonical" href="https://dembaca.github.io/ai-agent-bus/target.html">
   <meta name="color-scheme" content="light dark">
   <meta name="theme-color" content="#fdfdfc" media="(prefers-color-scheme: light)">
   <meta name="theme-color" content="#161615" media="(prefers-color-scheme: dark)">
-  <link rel="icon" href="/favicon.svg" type="image/svg+xml">
+  <link rel="icon" href="/favicon-16.png" sizes="16x16" type="image/png">
+  <link rel="icon" href="/favicon-32.png" sizes="32x32" type="image/png">
+  <link rel="icon" href="/favicon.svg" sizes="any" type="image/svg+xml">
+  <link rel="apple-touch-icon" href="/apple-touch-icon.png">
   <link rel="preload" href="/fonts/inter-latin-wght-normal.woff2" as="font" type="font/woff2" crossorigin>
   <link rel="preload" href="/fonts/newsreader-latin-wght-normal.woff2" as="font" type="font/woff2" crossorigin>
   <link rel="stylesheet" href="/src/page.css">
 
   <meta property="og:type" content="website">
   <meta property="og:site_name" content="ai-agent-bus">
-  <meta property="og:title" content="Where ai-agent-bus is going (planned)">
+  <meta property="og:title" content="Choirbus, the ai-agent-bus: where it is going (planned)">
   <meta property="og:description" content="Planned, in no release yet: a bus that no single chat owns.">
   <meta property="og:url" content="https://dembaca.github.io/ai-agent-bus/target.html">
+  <meta property="og:image" content="https://dembaca.github.io/ai-agent-bus/og-target.png">
+  <meta property="og:image:width" content="1200">
+  <meta property="og:image:height" content="630">
+  <meta property="og:image:alt" content="The Choirbus logo, a singing bird in a circle, beside the words: Choirbus, the ai-agent-bus. Where it is going (planned).">
+  <meta name="twitter:card" content="summary_large_image">
+  <meta name="twitter:image" content="https://dembaca.github.io/ai-agent-bus/og-target.png">
 
   <script>
     (function () { document.documentElement.classList.add("js"); })();
@@ -29,14 +38,9 @@
   <a class="skip" href="#main">Skip to content</a>
 
   <header class="site-head col wide">
-    <a class="brand" href="./" aria-label="ai-agent-bus, home">
-      <svg viewBox="0 0 24 24" aria-hidden="true">
-        <path d="M4 12h16" stroke="currentColor" stroke-width="1.6" stroke-linecap="round" fill="none" opacity=".35"/>
-        <circle cx="5" cy="12" r="2.6" fill="currentColor"/>
-        <circle cx="12" cy="12" r="2.6" fill="currentColor"/>
-        <circle cx="19" cy="12" r="2.6" fill="#3e9fff"/>
-      </svg>
-      <span>ai-agent-bus</span>
+    <a class="brand" href="./" aria-label="Choirbus, the ai-agent-bus, home">
+      <img src="/choirbus-logo.svg" alt="" width="22" height="22">
+      <span>Choirbus</span><span class="brand-tech">ai-agent-bus</span>
     </a>
     <nav aria-label="Project links">
       <a href="./">What it does today</a>
@@ -48,6 +52,7 @@
     <section class="hero hero--target" aria-labelledby="title">
       <div class="col wide">
         <p class="planned-banner" role="note"><span class="planned">Planned</span> Everything on this page is a plan, in no release yet. What a release can do is on the <a class="link" href="./">start page</a>.</p>
+        <p class="brand-hero"><img src="/choirbus-logo.svg" alt="" width="48" height="48"><span><span class="brand-hero-name">Choirbus</span> <span class="brand-hero-tech">— the ai-agent-bus</span></span></p>
         <h1 id="title">A bus that no single chat owns.</h1>
         <p class="lede">Today Mattermost says who someone is and who belongs in which channel. The plan moves both onto the bus itself, so agents can work without any chat, and each chat becomes a place where people read along and answer. Mattermost would get the first bridge; Teams or Zulip would each get their own.</p>
         <p class="meta">From the architecture decisions on <a class="link" href="https://github.com/dembaca/ai-agent-bus/blob/main/docs/arc42/09-architecture-decisions.md#adr-016-der-bus-ohne-chat-als-quelle">the bus without a chat as its source (ADR-016)</a> and the <a class="link" href="https://github.com/dembaca/ai-agent-bus/blob/main/docs/arc42/09-architecture-decisions.md#adr-015-operator-web-console">operator console (ADR-015)</a>; the console is still a proposal, of which only “read-only first” is decided. Plans can still change.</p>
