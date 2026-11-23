@@ -515,15 +515,23 @@ def ask_card(post: Any) -> dict[str, str]:
 
 
 def ask_answer_list(post: Any) -> list[str]:
-    """The alternatives an ask offers, as data when the server wrote them
-    (`props.ask_answers`, since #30) and else read from the `Answer` line — kept
-    as the fallback for asks posted before that (RT-6.11)."""
+    """The alternatives an ask offers, by position (RT-6.11, issue #30).
+
+    The `Answer` line is what the human saw, so it is the authority: `props.ask_answers`
+    is only an abbreviation of it, taken when it says the same thing. A prop that
+    disagrees is ignored — a foreign agent could otherwise show "👍 = go" and write
+    ["no-go", "go"] into props, and the human's 👍 would read as the opposite. The
+    prop is checked like `ask_human` accepts answers: two to four non-empty lines
+    without a line break."""
+    shown = ask_answers(ask_card(post).get("answer", ""))
     props = post.props if hasattr(post, "props") else (
         post.get("props") if isinstance(post, Mapping) else None)
     kept = props.get("ask_answers") if isinstance(props, Mapping) else None
-    if isinstance(kept, list) and 2 <= len(kept) <= 4 and all(isinstance(a, str) for a in kept):
+    if (isinstance(kept, list) and 2 <= len(kept) <= 4
+            and all(isinstance(a, str) and a.strip() and "\n" not in a for a in kept)
+            and [a for a in kept] == shown):
         return [str(a) for a in kept]
-    return ask_answers(ask_card(post).get("answer", ""))
+    return shown
 
 
 def ask_answers(answer_line: str) -> list[str]:

@@ -108,13 +108,15 @@ async def _facts(client: ChatPort, posts: Sequence[Post],
         card = a2a.ask_card(p)
         facts: dict[str, Any] = out.setdefault(p.id, {})
         if p.title:
-            facts["need"] = p.title
+            facts["need"] = cut(p.title, p.id)
         if card.get("decision"):
             facts["decision"] = cut(card["decision"], p.id)
-        answers = a2a.ask_answer_list(p)
+        answers = [cut(a, p.id) for a in a2a.ask_answer_list(p)]
         if answers:
             facts["answers"] = answers
-        # the newest trusted human's answer wins, as the live event counts it
+        # the newest trusted human's answer wins, as the live event counts it; an
+        # answer past APPROVAL_SEC approves nothing and is flagged `expired`, as the
+        # live event flags it (the verdict stays readable, the reader is told)
         for r in sorted(p.reactions, key=lambda r: r.create_at, reverse=True):
             if r.user_id not in trusted:
                 continue
@@ -122,12 +124,17 @@ async def _facts(client: ChatPort, posts: Sequence[Post],
                 if answers and 0 < choice <= len(answers):
                     facts["answer"] = "yes" if choice == 1 else "no"
                     facts["chosen"] = answers[choice - 1]
-                    break
+                elif answers:
+                    continue
             elif (answer := asks.answer_of(r.emoji_name)) is not None:
                 facts["answer"] = answer
                 if len(answers) == 2:
                     facts["chosen"] = answers[0 if answer == "yes" else 1]
-                break
+            else:
+                continue
+            if r.create_at - p.create_at >= asks.APPROVAL_SEC * 1000:
+                facts["expired"] = True  # RT-6.11: a late answer approves nothing
+            break
     return {pid: facts for pid, facts in out.items() if facts}
 
 
