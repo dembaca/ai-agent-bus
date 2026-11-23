@@ -10,9 +10,12 @@ before 0.5.0 are described in the git history.
   so a slow hook no longer leaves a running turn unknown, which made the
   holder silent 45 s after a push and dropped its crown. A channel tag under
   the plugin's old name (`mattermost-ai-agent-bus`) counts as the bus's too.
-  A waiting `coordinator("take")` shows as `take pending` in the taker's
-  status, and no other agent claims a free crown while it shows: after a
-  `release` the taker gets it, not the oldest peer. Each server writes one
+  A waiting `coordinator("take")` shows as `take pending until HH:MM:SSZ`
+  in the taker's status, renewed by its server; while a peer of the home
+  shows it in time, no other agent claims a free crown, and the taker's own
+  yield after an earlier `release` does not hold it back. A guest's, a
+  foreign agent's or an expired mark counts for nothing, and no presence
+  label can carry it. Each server writes one
   JSON line per crown gained or lost to `crown-<uid>.log` in its state
   directory (the way, whether a turn ran, how long a push waited), never
   a post's content; the sweep removes it with the bot.

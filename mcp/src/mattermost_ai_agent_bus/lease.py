@@ -59,14 +59,46 @@ _SILENT_SINCE = re.compile(rf"{SILENT} · no sign since (\d\d:\d\dZ)")
 # holder without it (an older plugin) is judged as before: nobody claims over it.
 RECEIPT_MARK = a2a.symbol(Mark.SEEN)
 # A segment of an agent's status text while its coordinator("take") waits (RT-6.6 step 4,
-# #64): the others leave a free crown to it. Words, not a symbol: every plugin shows it.
+# #64): `take pending until HH:MM:SSZ`. Its peers in the same home leave a free crown to
+# it until then. Only the server writes it, renewed at each of the taker's checks
+# (PENDING_POLL_SEC) for two of them; a label never carries the words (_NO_TAKE_WORDS).
 TAKE_PENDING = "take pending"
-_TAKE_PENDING = re.compile(rf"(?:^| · ){TAKE_PENDING}(?: · |$)")
+TAKE_MARK_SEC = 60
+_TAKE_SKEW_SEC = 15  # the clocks of two hosts may differ a little
+_TAKE_PENDING = re.compile(rf"(?:^| · ){TAKE_PENDING} until (\d\d):(\d\d):(\d\d)Z(?: · |$)")
+_NO_TAKE_WORDS = re.compile(r"take\s*pending", re.IGNORECASE)
 
 
-def _taker_waits(rows: list[dict[str, Any]], uid: str) -> bool:
-    """Another reachable agent of the home shows a waiting take: a free crown is its."""
-    return any(r["reachable"] and r["id"] != uid and _TAKE_PENDING.search(str(r["text"])) for r in rows)
+def _take_mark(now: float) -> str:
+    return f"{TAKE_PENDING} until {time.strftime('%H:%M:%SZ', time.gmtime(now + TAKE_MARK_SEC))}"
+
+
+def _take_shown(text: str, now: float) -> bool:
+    """The status text shows a waiting take whose time has not run out (nor lies far ahead)."""
+    m = _TAKE_PENDING.search(text)
+    if not m:
+        return False
+    day = now - now % 86400
+    at = day + int(m[1]) * 3600 + int(m[2]) * 60 + int(m[3])
+    if at - now > 43200:
+        at -= 86400  # written before midnight, read after it
+    elif now - at > 43200:
+        at += 86400
+    return 0 < at - now <= TAKE_MARK_SEC + _TAKE_SKEW_SEC
+
+
+async def _taker_waits(client: ChatPort, rows: list[dict[str, Any]], uid: str) -> bool:
+    """Another reachable agent of this home, a peer that stands (_election), shows a
+    waiting take in time: a free crown is its (#64). A guest, a foreign agent or a mark
+    past its time counts for nothing."""
+    now = time.time()
+    home = client.work_channel_name
+    waiting = [r["id"] for r in rows if r["reachable"] and r["id"] != uid and r["home"] == home
+               and _take_shown(str(r["text"]), now)]
+    if not waiting:
+        return False
+    ids = (await _election(client, rows)).ids
+    return any(i in ids for i in waiting)
 ACTIONS = ("who", "take", "release", "tick")
 _UID = re.compile(r"[a-z0-9]{26}")
 # One lock per event loop: a status, take, release or tick reads and writes
@@ -513,6 +545,8 @@ async def _set_status(client: ChatPort, state: str, label: str = "") -> None:
         raise ValueError(f"state must be one of {', '.join(STATES)} or renew")
     if not label and state != "listening":
         label = Path(os.environ.get("CORRAL_WORKDIR") or os.getcwd()).name
+    # Only this server writes a waiting take into the status (#64): never a label.
+    label = _NO_TAKE_WORDS.sub("", label).strip()
 
     until, reachable, presence, named = now + lease, True, "online", ""
     if state == "listening":
@@ -592,8 +626,8 @@ async def _set_status(client: ChatPort, state: str, label: str = "") -> None:
         crown = 0
         if text and reachable and take_pending(uid):
             # RT-6.6 step 4 (#64): the take waits in this server's file only; the status says
-            # so, and no other agent claims a free crown while it shows (_taker_waits).
-            text = f"{text} · {TAKE_PENDING}"
+            # so, and no peer of this home claims a free crown while it shows (_taker_waits).
+            text = f"{text} · {_take_mark(now)}"
     if text:
         # The version (RT-6.30): last, and cut first, before the label; the
         # roster then reads it from the HELLO card.
@@ -1090,6 +1124,7 @@ async def _command(client: ChatPort, action: str, passed: list[bool] | None = No
             return "taken"
         _save_coord(uid, crown, 1, yield_until)
         await _render(client)  # the status shows the waiting take at once
+        _nudge().set()  # the heartbeat checks it from now on, every PENDING_POLL_SEC
         return (f"pending: @{others[0]['username']} still holds the crown; "
                 "it passes to you once released or expired")
     if action == "release":
@@ -1139,11 +1174,13 @@ async def _command(client: ChatPort, action: str, passed: list[bool] | None = No
             crownlog.note("lost", "two_crowns")
             _save_coord(uid, 0, pending, yield_until)
             await _render(client)
-    elif not holding and not others and yield_until <= now:
+    elif not holding and not others and (yield_until <= now or pending == 1):
+        # An explicit take is not held back by this agent's own yield after a release (#64):
+        # its mark keeps the others off the crown, so only it may claim.
         me_reachable = any(r["id"] == uid and r["reachable"] for r in rows) and not _silent(uid)
         # An explicit take (pending) is allowed; the election only among peers.
         # A take that shows in another agent's status wins a free crown (#64).
-        if me_reachable and (pending == 1 or (not _taker_waits(rows, uid)
+        if me_reachable and (pending == 1 or (not await _taker_waits(client, rows, uid)
                                               and await _elected(client, uid, rows))):
             await take_now("take" if pending == 1 else "election")
     if cid not in _header_line and _coord(uid).get("CROWN_UNTIL", 0) > now:
@@ -1283,6 +1320,7 @@ async def _command_nats(client: ChatPort, action: str, passed: list[bool] | None
         _crown_since = now
         await _render(client)
         if before <= now:
+            crownlog.note("gained", "nats")
             if passed is not None:
                 passed.append(True)
             await _header(client, cid, uid)
@@ -1476,14 +1514,14 @@ async def look(client: ChatPort) -> bool:
             gone = not any(r["id"] == _holder_id and r["reachable"] for r in rows)
             mine = any(r["id"] == uid and r["reachable"] for r in rows) and not _silent(uid)
             if (free and gone and mine and state.get("CROWN_UNTIL", 0) <= now
-                    and state.get("YIELD_UNTIL", 0) <= now and not _taker_waits(rows, uid)
+                    and state.get("YIELD_UNTIL", 0) <= now and not await _taker_waits(client, rows, uid)
                     and uid in (await _election(client, rows)).ids):
                 _save_coord(uid, now + crown_lease_sec(), 0, 0, cid)
                 await _render(client)
                 claimed.append(_coord(uid).get("CROWN_UNTIL", 0) > now)
                 log.info("crown claimed at this agent's slot (ADR-007 step 2)")
-                crownlog.note("gained", "slot")
                 if any(claimed):
+                    crownlog.note("gained", "slot")  # only a claim that was written
                     _crown_since = now
                     old = next((r for r in rows if r["id"] == _holder_id), None)
                     silent = (old, m) if old and (m := _SILENT_SINCE.match(str(old["text"]))) else None
@@ -1852,7 +1890,10 @@ async def heartbeat(get_client: Callable[[], Awaitable[ChatPort | None]],
                         # /reload-plugins) keeps it: the Stop hook ends it.
                         life.turn(True)
                 if (time.time() >= next_tick or (_ousted is not None and crown_held(uid))
-                        or _nats_arm_due(uid)):
+                        or _nats_arm_due(uid)
+                        # A take that came after this tick was planned: its mark (#64) lasts
+                        # TAKE_MARK_SEC, so the checks must come every PENDING_POLL_SEC now.
+                        or (take_pending(uid) and next_tick > time.time() + PENDING_POLL_SEC)):
                     await command(client, "tick")
                     if take_pending(uid):
                         delay = PENDING_POLL_SEC

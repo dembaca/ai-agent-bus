@@ -39,8 +39,10 @@ state="$(mm_turn_state_file 2>/dev/null)" && rm -f "$state"
 # A turn the channel push started (RT-6.12) answers the bus; like an answer
 # from inside a listen window it needs no sign-off of its own. The plugin was
 # once named mattermost-ai-agent-bus: a tag under either name counts.
+prompt="$(jq -r '.prompt // ""' <<<"$MM_HOOK_INPUT" 2>/dev/null)" || prompt=""
 if [[ -n "${state:-}" ]] && mm_channel_push &&
-  [[ "$(jq -r '.prompt // ""' <<<"$MM_HOOK_INPUT" 2>/dev/null)" == '<channel source="plugin:'*'agent-bus:'* ]]; then
+  [[ "$prompt" == '<channel source="plugin:ai-agent-bus:'* ||
+     "$prompt" == '<channel source="plugin:mattermost-ai-agent-bus:'* ]]; then
   mkdir -p "$(dirname "$state")" 2>/dev/null && printf 'BY_BUS=1\n' >"$state" 2>/dev/null
   by=bus
 fi

@@ -130,6 +130,11 @@ def test_a_channel_tag_under_the_old_plugin_name_counts_too(mm, run):
                                 'kind="dm">hi</channel>'})
     assert run(PROMPT, stdin=old).code == 0
     assert run(STOP, **IN_PROJECT).passed
+    # Another plugin whose name merely ends in agent-bus is not the bus (review of #76).
+    other = json.dumps({"prompt": '<channel source="plugin:my-agent-bus:x" kind="dm">hi</channel>'})
+    assert run(PROMPT, stdin=other).code == 0
+    r = run(STOP, **IN_PROJECT)
+    assert r.blocked and "still reach you through the channel" in r.reason
 
 
 def test_the_turn_is_reported_before_anything_else(run):

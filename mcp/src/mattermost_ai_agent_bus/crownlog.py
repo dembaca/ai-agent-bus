@@ -31,8 +31,8 @@ LOG_KEEP = 400
 # and a lease that ran out without any of these (the beat did not renew it).
 LOST = frozenset({"silent", "taken_over", "release", "two_crowns", "home", "nats", "lapsed"})
 # Gained: a take, the tick's election, a slot after the holder went (ADR-007 step 2),
-# a takeover over a missing receipt (step 3).
-GAINED = frozenset({"take", "election", "slot", "receipt"})
+# a takeover over a missing receipt (step 3), the claim order of a home over NATS (RT-6.38).
+GAINED = frozenset({"take", "election", "slot", "receipt", "nats"})
 
 _explained = True  # the last loss has its line; a gain arms the next one
 

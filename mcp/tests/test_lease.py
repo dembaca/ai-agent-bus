@@ -189,6 +189,7 @@ async def test_oldest_reachable_takes_the_free_crown(mm, client):
     assert holds()
     s = mm.custom_status()
     assert s["emoji"] == "crown" and s["text"].startswith("coordinator · working")
+    assert [(ln["event"], ln["way"]) for ln in _crown_log()] == [("gained", "election")]
 
 
 async def test_younger_agent_does_not_claim(mm, client):
@@ -247,13 +248,15 @@ async def test_a_release_during_a_tick_stays_released(mm, client, tmp_path):
     assert mm.custom_status()["emoji"] != "crown"
 
 
-async def test_two_crowns_the_younger_yields(mm, client):
-    """RT-6.6 error handling: a race leaves two crowns; the older keeps it."""
+async def test_two_crowns_the_younger_yields(mm, client, tmp_path):
+    """RT-6.6 error handling: a race leaves two crowns; the older keeps it (logged, step 11)."""
+    crownlog.reset()
     me(mm, "crown")
     await lease.command(client, "take")
     mm.agent(OLDER, "agent-old", 1000, "crown")
     await lease.command(client, "tick")
     assert not holds()
+    assert [(ln["event"], ln["way"]) for ln in _crown_log(tmp_path)] == [("gained", "take"), ("lost", "two_crowns")]
 
 
 async def test_idle_coordinator_loses_the_crown_when_its_lease_runs_out(mm, client, tmp_path):
@@ -960,47 +963,120 @@ def _status_text(mm, uid: str, text: str) -> None:
             u["props"]["customStatus"] = json.dumps(status | {"text": text})
 
 
-def _crown_log(tmp_path) -> list[dict]:
-    f = _dir(tmp_path) / f"crown-{UID}.log"
-    return [json.loads(ln) for ln in f.read_text().splitlines()] if f.exists() else []
+def _crown_log(_tmp_path=None) -> list[dict]:
+    """The crown log of this run's state directory (RT-6.6 step 11)."""
+    f = crownlog.log_path()
+    return [json.loads(ln) for ln in f.read_text().splitlines()] if f and f.exists() else []
 
 
 async def test_a_waiting_take_shows_in_the_status(mm, client, tmp_path):
     """RT-6.6 step 4 (#64): the take waits in this server's file, and its status says so
-    at once; once taken, the segment is gone."""
+    at once, with the time it counts until; once taken, the segment is gone."""
     me(mm)
     mm.agent(OLDER, "agent-old", 1000, "crown")
     assert (await lease.command(client, "take")).startswith("pending:")
-    assert " · take pending" in mm.custom_status()["text"]
+    assert lease._take_shown(mm.custom_status()["text"], time.time())
+    assert not lease._take_shown(mm.custom_status()["text"], time.time() + lease.TAKE_MARK_SEC + 16)
     mm.agent(OLDER, "agent-old", 1000, "hammer_and_wrench")   # released
     await lease.command(client, "tick")
     assert holds() and "take pending" not in mm.custom_status()["text"]
 
 
+def _waiting(now: float | None = None, home: str = "agents") -> str:
+    """A taker's status text as its server writes it (RT-6.6 step 4, #64)."""
+    return f"listening · {lease._take_mark(time.time() if now is None else now)} · ~{home}"
+
+
 async def test_an_elected_peer_leaves_a_free_crown_to_a_waiting_take(mm, client):
     """RT-6.6 step 4 (#64): after a release the oldest peer's tick may come before the
-    taker's; it sees the taker's status and does not claim."""
+    taker's; it sees the taker's mark and does not claim."""
     me(mm)                                                    # the oldest reachable one
     mm.agent(YOUNGER, "agent-taker", 3000, "ear")
-    _status_text(mm, YOUNGER, "listening · take pending")
+    _status_text(mm, YOUNGER, _waiting())
     await lease.command(client, "tick")
     assert not holds()
-    _status_text(mm, YOUNGER, "listening")                    # the take is through, or gone
+    _status_text(mm, YOUNGER, "listening · ~agents")          # the take is through, or gone
     await lease.command(client, "tick")
     assert holds()
 
 
-async def test_a_slot_leaves_a_free_crown_to_a_waiting_take(mm, client):
-    """RT-6.6 step 4 (#64): the holder went (silent, gone): no slot claims while a take waits."""
+async def test_a_slot_leaves_a_free_crown_to_a_waiting_take(mm, client, tmp_path):
+    """RT-6.6 step 4 (#64): the holder went (silent, gone): no slot claims while a take
+    waits; once it does not, the slot claims and logs it (step 11)."""
+    crownlog.reset()
     me(mm)
     mm.agent(OLDER, "agent-old", 1000, "crown", expires_in=-5)
     mm.agent(YOUNGER, "agent-taker", 3000, "ear")
-    _status_text(mm, YOUNGER, "listening · take pending")
+    _status_text(mm, YOUNGER, _waiting())
     lease._holder_id, lease._look_at = OLDER, time.time() - 1
     assert not await lease.look(client) and not holds()
-    _status_text(mm, YOUNGER, "listening")
+    assert _crown_log(tmp_path) == []
+    _status_text(mm, YOUNGER, "listening · ~agents")
     lease._holder_id, lease._look_at = OLDER, time.time() - 1
     assert await lease.look(client) and holds()
+    assert [(ln["event"], ln["way"]) for ln in _crown_log(tmp_path)] == [("gained", "slot")]
+
+
+@pytest.mark.parametrize("text", [
+    _waiting(time.time() - 61),                               # its time ran out
+    _waiting(time.time() + 3600),                             # too far ahead: not the server's
+    _waiting(home="elsewhere"),                               # a guest from another home
+    "listening · take pending · ~agents",                     # no time at all
+], ids=["expired", "far-ahead", "guest", "no-time"])
+async def test_a_mark_out_of_time_or_from_a_guest_counts_for_nothing(mm, client, text):
+    """RT-6.6 step 4 (#64): only a peer of this home with a mark in time holds the crown off."""
+    me(mm)
+    mm.agent(YOUNGER, "agent-taker", 3000, "ear")
+    _status_text(mm, YOUNGER, text)
+    await lease.command(client, "tick")
+    assert holds()
+
+
+async def test_a_mark_from_an_agent_that_does_not_stand_counts_for_nothing(mm, client, monkeypatch):
+    """RT-6.6 step 4 (#64): a foreign agent (another owner's circle) stands in no election
+    of this home, and its mark holds nothing off."""
+    me(mm)
+    mm.agent(YOUNGER, "agent-foreign", 3000, "ear")
+    _status_text(mm, YOUNGER, _waiting())
+
+    async def peers_only(client, rows):
+        return lease.Election([r["id"] for r in rows if r["reachable"] and r["id"] != YOUNGER])
+
+    monkeypatch.setattr(lease, "_election", peers_only)
+    await lease.command(client, "tick")
+    assert holds()
+
+
+async def test_the_mark_skips_this_agent_and_the_unreachable(mm, client):
+    me(mm)
+    rows = [{"id": UID, "reachable": True, "home": "agents", "text": _waiting()},
+            {"id": YOUNGER, "reachable": False, "home": "agents", "text": _waiting()}]
+    assert not await lease._taker_waits(client, rows, UID)
+    rows[1]["reachable"] = True
+    assert await lease._taker_waits(client, rows, UID)
+
+
+async def test_no_label_can_write_the_mark(mm, client):
+    """RT-6.6 step 4 (#64): only the server writes a waiting take; a presence label with
+    the words (the hook API, a directory's name) loses them."""
+    me(mm)
+    await lease.set_status(client, "working", "take pending until 23:59:59Z")
+    text = mm.custom_status()["text"]
+    assert "take pending" not in text.lower() and text.startswith("working · until 23:59:59Z")
+    await lease.set_status(client, "working", "Take  Pending")
+    assert "pending" not in mm.custom_status()["text"].lower()
+
+
+async def test_a_take_after_this_agents_own_release_is_not_held_back(mm, client, tmp_path, monkeypatch):
+    """RT-6.6 step 4 (#64): an agent that released earlier yields for two leases; its own
+    take later must still win the free crown, which its mark keeps from everyone else."""
+    me(mm)
+    mm.agent(OLDER, "agent-old", 1000, "crown")
+    _coord_file(tmp_path, monkeypatch, CROWN_UNTIL=0, PENDING=0, YIELD_UNTIL=int(time.time()) + 1800)
+    assert (await lease.command(client, "take")).startswith("pending:")
+    mm.agent(OLDER, "agent-old", 1000, "hammer_and_wrench")   # released
+    await lease.command(client, "tick")
+    assert holds()
 
 
 async def test_the_crown_log_names_each_way(mm, client, tmp_path, monkeypatch):
@@ -1075,3 +1151,41 @@ async def test_a_holder_whose_push_starts_a_turn_without_a_bus_tool_keeps_the_cr
     await lease.set_status(client, "renew")
     assert holds() and not life.silent_since(listening=True)
     life.reset()
+
+
+async def test_the_heartbeat_logs_a_crown_that_lapsed(monkeypatch, tmp_path):
+    """RT-6.6 step 11: the heartbeat sees the crown end with no rule's line: `lapsed`."""
+    monkeypatch.setenv("XDG_STATE_HOME", str(tmp_path))
+    monkeypatch.setenv("MM_BOT_USER_ID", UID)
+    crownlog.reset()
+    crownlog.note("gained", "election")
+    calls: list[str] = []
+    holding = [True]
+
+    def until(c):
+        if c.count("renew") >= 2:
+            holding[0] = False
+        return c.count("renew") >= 4
+
+    await _run_heartbeat(monkeypatch, calls, until, holding=holding)
+    assert [(ln["event"], ln["way"]) for ln in _crown_log(tmp_path)] == [
+        ("gained", "election"), ("lost", "lapsed")]
+
+
+async def test_a_take_that_waits_is_checked_before_its_mark_runs_out(monkeypatch):
+    """RT-6.6 step 4 (#64): a take that comes between ticks brings the next one forward,
+    and while it waits the heartbeat checks it every PENDING_POLL_SEC, which renews its
+    mark (TAKE_MARK_SEC, two checks) before it runs out."""
+    assert lease.TAKE_MARK_SEC >= 2 * lease.PENDING_POLL_SEC
+    calls: list[str] = []
+    pending = [False]
+    monkeypatch.setattr(lease, "take_pending", lambda uid: pending[0])
+    monkeypatch.setattr(lease, "PENDING_POLL_SEC", 0.05)
+
+    def until(c):
+        if c.count("tick") == 1:
+            pending[0] = True                                 # the take, after the first tick
+        return c.count("tick") >= 3
+
+    await _run_heartbeat(monkeypatch, calls, until, holding=[False])
+    assert calls.count("tick") >= 3                           # not one tick per heartbeat_sec()
