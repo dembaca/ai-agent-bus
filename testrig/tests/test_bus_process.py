@@ -279,6 +279,58 @@ def _alive(pid: int) -> bool:
     return len(fields) > 2 and fields[2] != "Z"
 
 
+def test_alive_answers_for_a_zombie_a_vanished_entry_and_another_os(monkeypatch):
+    """The four answers `_alive` gives, each with the reason it exists.
+
+    The PR text of #29 said both `/proc` paths were checked and no test did it
+    (review of #29). On Linux a pid that is gone answers `/proc/<pid>/stat` with
+    `ESRCH` — `read()` raises after the `open` — and a missing entry there means
+    death, not life. Without `/proc` at all (macOS) the signal is the answer.
+    """
+    from unittest import mock
+
+    import test_bus_process as mod
+
+    # A pid this process can signal: alive.
+    assert mod._alive(os.getpid()) is True
+
+    # A pid that is gone by the time the read happens — the CI case of #22.
+    class Dying:
+        def __enter__(self): return self
+        def __exit__(self, *_a): return False
+        def read(self): raise ProcessLookupError(3, "No such process")
+
+    monkeypatch.setattr(mod.os, "kill", lambda pid, sig: None)
+    monkeypatch.setattr("builtins.open", lambda *a, **k: Dying())
+    assert mod._alive(4242) is False
+
+    # `/proc` exists, the entry does not: Linux says the process is gone.
+    monkeypatch.setattr("builtins.open",
+                        mock.Mock(side_effect=FileNotFoundError(2, "No such file")))
+    monkeypatch.setattr(mod.os.path, "isdir", lambda p: True)
+    assert mod._alive(4242) is False
+
+    # No `/proc` at all: not Linux, so the signal above decides.
+    monkeypatch.setattr(mod.os.path, "isdir", lambda p: False)
+    assert mod._alive(4242) is True
+
+
+def test_alive_counts_a_zombie_as_gone(monkeypatch):
+    """A killed child waits for *this* test to reap it, and `kill(pid, 0)`
+    answers for that zombie. The check that it is a zombie is the `/proc` state
+    field, not the signal."""
+    import test_bus_process as mod
+
+    class Zombie:
+        def __enter__(self): return self
+        def __exit__(self, *_a): return False
+        def read(self): return "1234 (sleep) Z 1 1234 1234 0 -1 0 0"
+
+    monkeypatch.setattr(mod.os, "kill", lambda pid, sig: None)
+    monkeypatch.setattr("builtins.open", lambda *a, **k: Zombie())
+    assert mod._alive(1234) is False
+
+
 @skip_no_bus
 async def test_a_run_reports_the_bus_as_its_target():
     """`target: bus`, every measurand in the file, and the numbers the run's
@@ -448,6 +500,72 @@ async def test_the_server_environment_carries_no_proxy(monkeypatch):
             ("HTTP_PROXY", "HTTPS_PROXY", "ALL_PROXY")]
     assert left == [], left
     assert env["MM_CHAT_URL"] == "http://127.0.0.1:1"
+
+
+@skip_no_bus
+async def test_a_post_delivered_while_post_message_runs_is_counted(monkeypatch):
+    """The arrival decided *while* `post_message` is in flight, through `bus_run`.
+
+    Two rulings made this test necessary; both mutations kept the whole suite
+    green before it existed (review of #35):
+
+    * `_arrivals` must be what `receive()` uses — the old inline id-only loop
+      never calls it, so a recorded call proves the wiring;
+    * the text must be registered *before* the send — moved after it, a
+      mid-flight hand-over matches nothing.
+
+    A whole-run loss check cannot see either: the stub pushes the real post with
+    its id already known, so a run ends at loss 0 whatever the fallback does.
+    This watches the decision itself, at the moment it is made.
+
+    The hand-over happens **once**, and that is not a detail: an earlier version
+    returned the post on every wait, so with the mutation the reader spun
+    without awaiting, starved `post_message`, and the run hung instead of
+    failing. The hang was this test's, not `bus_run`'s — with the hand-over made
+    one-shot the mutation fails in a few seconds, and nothing in `bus_run` had to
+    change for it (review of #35).
+    """
+    from bus_testrig import bus as bus_module
+
+    sent: list[str] = []
+    answered = {"done": False}
+    mid_flight: list[list[int]] = []
+    original_call = BusProcess.call
+    original_arrivals = bus_module._arrivals
+
+    def arrivals(events, by_id, by_text):
+        found = original_arrivals(events, by_id, by_text)
+        if sent and not answered["done"]:
+            mid_flight.append(found)
+        return found
+
+    monkeypatch.setattr(bus_module, "_arrivals", arrivals)
+
+    handed = {"once": False}
+
+    async def call(self, tool, **args):
+        if tool == "post_message":
+            sent.append(str(args.get("message") or ""))
+            answer = await original_call(self, tool, **args)
+            answered["done"] = True
+            return answer
+        # Handed over exactly once. Returning it on every wait would be an
+        # unbroken stream of immediate answers: the reader would spin without
+        # awaiting, starve `post_message`, and the run would hang instead of
+        # failing — which is exactly how this test first went wrong.
+        if tool == "wait_for_events" and sent and not answered["done"] and not handed["once"]:
+            handed["once"] = True
+            return [{"post": {"id": "q" * 26, "message": sent[-1]}}]
+        return await original_call(self, tool, **args)
+
+    monkeypatch.setattr(BusProcess, "call", call)
+    await bus_run(count=1)
+
+    assert sent == ["bus-run 0"], sent
+    assert mid_flight, "_arrivals was never called mid-send: receive() bypassed it"
+    assert any(mid_flight), (
+        f"the mid-send hand-over matched nothing {mid_flight}: the text is not "
+        "registered before the send, or the fallback is not wired")
 
 
 @skip_no_bus

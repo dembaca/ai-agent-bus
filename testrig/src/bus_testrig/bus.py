@@ -505,7 +505,7 @@ def _match_seq(post: dict[str, Any], by_id: dict[str, int],
     """Which send a delivered post came from: its id when the send has returned,
     else the text this run wrote for it.
 
-    One function so that the fallback is checkable on its own (review of #24).
+    One function so that the fallback is checkable on its own (review of #25).
     Watching a whole run cannot prove it: by the time an arrival is counted the
     id is registered, so the id path matches and the fallback might as well be
     absent — the earlier version of the test passed with it removed.
