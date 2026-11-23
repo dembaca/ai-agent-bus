@@ -88,3 +88,14 @@ func TestRunRefusesInvalidConfiguration(t *testing.T) {
 		})
 	}
 }
+
+func TestDispatchDirWithoutArgsPrintsUsage(t *testing.T) {
+	var out, errb strings.Builder
+	code, ok := dispatch([]string{"authd", "dir"}, func(string) string { return "" }, &out, &errb)
+	if !ok || code != 2 || !strings.Contains(errb.String(), "usage: authd dir") {
+		t.Fatalf("ok=%v code=%d stderr=%q", ok, code, errb.String())
+	}
+	if _, ok := dispatch([]string{"authd"}, func(string) string { return "" }, &out, &errb); ok {
+		t.Fatal("the service was not started by plain authd")
+	}
+}

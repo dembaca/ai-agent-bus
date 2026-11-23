@@ -9,6 +9,7 @@ package main
 import (
 	"context"
 	"errors"
+	"io"
 	"log/slog"
 	"os"
 	"os/signal"
@@ -16,6 +17,7 @@ import (
 
 	"github.com/dembaca/ai-agent-bus/services/auth/internal/app"
 	"github.com/dembaca/ai-agent-bus/services/auth/internal/config"
+	"github.com/dembaca/ai-agent-bus/services/auth/internal/dircli"
 	"github.com/dembaca/ai-agent-bus/services/auth/internal/httpserver"
 )
 
@@ -28,7 +30,19 @@ const (
 )
 
 func main() {
+	if code, ok := dispatch(os.Args, os.Getenv, os.Stdout, os.Stderr); ok {
+		os.Exit(code)
+	}
 	os.Exit(run(os.Getenv))
+}
+
+// dispatch runs the directory command line when args (os.Args) ask for it
+// (`authd dir …`); ok is false for the service.
+func dispatch(args []string, getenv func(string) string, stdout, stderr io.Writer) (code int, ok bool) {
+	if len(args) > 1 && args[1] == "dir" {
+		return dircli.Main(args[2:], getenv, stdout, stderr), true
+	}
+	return 0, false
 }
 
 // run is main with the environment injected, so the configuration path is

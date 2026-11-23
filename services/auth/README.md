@@ -340,6 +340,34 @@ server knows one issuer at a time.
   deadline.
 - **Immediate disconnect:** see the emergency brake.
 
+## The directory from the command line (`authd dir`)
+
+`authd dir <command>` is the command line for the channel directory's admin
+API (RT-6.40); the same binary, no service is started. It logs in with
+Keycloak's device flow on every run: it prints a link and a code, the person
+confirms them in the browser, and the access token lives only in that
+process's memory: never on disk, never printed, never in the environment.
+
+| Setting | Flag | Environment |
+|---|---|---|
+| the admin API's base URL (https; http only on a loopback IP) | `--api` | `AUTHD_DIR_API` |
+| the Keycloak issuer | `--issuer` | `AUTH_KEYCLOAK_ISSUER` |
+| the bus's public client | `--client-id` | `AUTH_KEYCLOAK_CLIENT_ID` |
+| an extra CA for the API's certificate | `--ca-file` | `AUTHD_DIR_CA_FILE` |
+
+| Command | What it does |
+|---|---|
+| `ls`, `show <channel>` | the channels one may see, one channel with its revision |
+| `create <channel> [--owner <sub>] [--public]` | a new channel (admins) |
+| `owner <channel> <sub>` or `-`, `public <channel> on` or `off` | owner and visibility (admins), over the revision just read |
+| `members add` or `rm <channel> <sub>…` | members (the channel's owner), over the revision just read |
+| `import` | the one import from Mattermost (admins), with its report |
+| `pending`, `confirm <name>` | the claims of password accounts, and an admin's confirmation over the listed revision |
+
+`--json` prints the API's answer as it is. A change made meanwhile by
+someone else ends with "changed meanwhile; run again" (exit 1); a usage
+error exits 2. Text the server sends is printed without control characters.
+
 ## Tests
 
 `go test ./...` covers the configuration (defaults, overrides, every rejection),

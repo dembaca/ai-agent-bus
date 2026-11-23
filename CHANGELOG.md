@@ -13,7 +13,9 @@ before 0.5.0 are described in the git history.
   public; a channel's owner keeps its members; `POST /v1/directory/import`
   copies the team's channels and human members once and marks the
   directory imported. A password account becomes a member only after an
-  admin confirms its claim. The command line follows.
+  admin confirms its claim. `authd dir ls|show|create|owner|public|members|
+  import|pending|confirm` is its command line: it logs in with Keycloak's
+  device flow on every run and keeps the token only in memory.
 
 ## 0.97.0
 

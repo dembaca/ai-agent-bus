@@ -1684,7 +1684,7 @@ Everything the server writes in its state directory goes through one helper: a n
 
 **Purpose:** The channels of the bus are kept in the directory, not in the chat: an admin from a Keycloak group creates channels, sets their owners and makes them public, a channel's owner keeps its members, and the channels and members of today come over once from Mattermost (ADR-016 decisions 1, 2, 3 and 8).
 
-**Trigger:** An HTTP request to the login service's admin API (`/v1/directory/…`), by the command line `authd dir …` (following release) or another client with a Keycloak access token.
+**Trigger:** An HTTP request to the login service's admin API (`/v1/directory/…`), by the command line `authd dir …` or another client with a Keycloak access token. The command line logs in with Keycloak's device flow on every run and keeps the access token only in its memory (`internal/dircli`, `services/auth/README.md`).
 
 **Participants:** Login service; NATS server (JetStream key-value), Mattermost REST API, Keycloak, Developer / operator
 
