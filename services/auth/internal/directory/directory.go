@@ -9,10 +9,11 @@
 //
 //	ch.<token>      a channel, by its token on the bus (the subject token)
 //	id.<sub>        an identity, by its Keycloak `sub`
-//	anchor.name.<hex>  the `sub` holding a name anchor (today's username)
-//	anchor.sub.<hex>   the `sub` holding a sub anchor (its own `sub`); the two
-//	                   kinds never share a value (see claimAnchor), so no value
-//	                   is given twice and no name can take a `sub`'s place
+//	anchor.<hex>    the `sub` holding the anchor <hex> (hex-encoded value): one
+//	                key per value, so no value is ever given twice, whether it
+//	                came from a name or a `sub`
+//	anchorof.<hex>  the anchor a `sub` (hex-encoded) claimed: found again at
+//	                its next login even if its identity was never written
 //	meta.imported   written last by the one import from Mattermost; from then
 //	                on the directory, not Mattermost, says who is a member
 //
@@ -41,6 +42,7 @@ const (
 	channelPrefix  = "ch."
 	identityPrefix = "id."
 	anchorPrefix   = "anchor."
+	anchorOfPrefix = "anchorof."
 	importedKey    = "meta.imported"
 )
 
@@ -55,8 +57,8 @@ var (
 	ErrConflict = errors.New("directory: changed meanwhile")
 	// ErrAnchorTaken: another identity holds that anchor.
 	ErrAnchorTaken = errors.New("directory: anchor held by another identity")
-	// ErrAnchorShape: the `sub` cannot be an anchor (not a lower-case token,
-	// or shaped like a chat username, which only names may be).
+	// ErrAnchorShape: the `sub` cannot be an anchor (lower-cased, it is no
+	// owner token: a symbol, too long).
 	ErrAnchorShape = errors.New("directory: the sub cannot be an anchor")
 	// ErrImportMissing: the configuration says the import has run
 	// (AUTH_DIRECTORY_IMPORTED), but the directory has no mark of it: a lost
@@ -115,10 +117,16 @@ var channelRE = regexp.MustCompile(`^[a-z0-9][a-z0-9_-]{0,63}$`)
 
 // nameAnchorRE: what may be a name anchor. Before the import a login's
 // owner is a Mattermost account of that name (token.Verifier's chat check),
-// and Mattermost usernames begin with a letter and have at most 22
-// characters; a Keycloak `sub` is a UUID of 36. So a name anchor never has
-// a `sub`'s shape, and a `sub` anchor must not have a name's.
-var nameAnchorRE = regexp.MustCompile(`^[a-z][a-z0-9._-]{0,21}$`)
+// and the Mattermost server takes usernames of a letter and then up to 63 of
+// [a-z0-9._-] (model.IsValidUsername; the 22 of the web form is not the
+// server's rule). A UUID may have that shape too: names and subs are kept
+// apart by the one index per value, not by their shape.
+var nameAnchorRE = regexp.MustCompile(`^[a-z][a-z0-9._-]{0,63}$`)
+
+// maxSuffix bounds the tries for a `sub` anchor whose value someone holds
+// already: <sub>, <sub>.1 … <sub>.<maxSuffix>. A squatter holds one name
+// (the one it logs in with), so a few tries always find a free one.
+const maxSuffix = 8
 
 // anchorRE: an anchor is what the callout hashes into an agent's name and
 // writes, with "." as "~", as the owner token of its presence subject
@@ -181,10 +189,12 @@ func Open(ctx context.Context, js jetstream.JetStream, bucket string, imported b
 	if err != nil {
 		return nil, fmt.Errorf("directory bucket %s: %w", cfg.Bucket, err)
 	}
-	if b, ok := st.(*jetstream.KeyValueBucketStatus); ok {
-		if err := checkBucket(cfg.Bucket, b.StreamInfo()); err != nil {
-			return nil, err
-		}
+	b, ok := st.(*jetstream.KeyValueBucketStatus)
+	if !ok {
+		return nil, fmt.Errorf("%w: %s: its stream cannot be read", ErrUnsafeBucket, cfg.Bucket)
+	}
+	if err := checkBucket(cfg.Bucket, b.StreamInfo()); err != nil {
+		return nil, err
 	}
 	return &Store{kv: kv, expect: imported}, nil
 }
@@ -383,16 +393,23 @@ func (s *Store) Login(ctx context.Context, sub, display, today string) (Identity
 	return Identity{}, ErrConflict
 }
 
-// claimAnchor reserves an anchor for sub: `today` as a name anchor when it
-// is given, has a name's shape and is free (or already sub's); else sub's own
-// lower-cased value as a sub anchor. The two kinds live under their own keys
-// and never share a value: a name anchor has a Mattermost username's shape
-// (a letter, at most 22 characters), a sub anchor must not have it. So a
-// username equal to another identity's `sub` can never take that identity's
-// place. The index is written before the identity; if that write fails the
-// index stays, and sub's next login finds it as its own.
+// claimAnchor reserves an anchor for sub and returns it. First the anchor
+// sub claimed before, if any (anchorof.<sub>): a login whose identity was not
+// written finds it again, before or after the import. Else `today` when it is
+// given, has a username's shape and is free (or already sub's). Else sub's
+// own lower-cased value, or with a suffix .1 … .8 when that value is held
+// (by a name equal to it): one index key per value (anchor.<hex>) is created
+// first, so no value is ever given twice, and a squatter that calls itself
+// another identity's `sub` takes one value, never that identity's place.
 func (s *Store) claimAnchor(ctx context.Context, sub, today string) (string, error) {
-	try := func(key string) (bool, error) {
+	of := anchorOfPrefix + hex.EncodeToString([]byte(sub))
+	if e, err := s.kv.Get(ctx, of); err == nil {
+		return string(e.Value()), nil
+	} else if !errors.Is(err, jetstream.ErrKeyNotFound) {
+		return "", err
+	}
+	try := func(a string) (bool, error) {
+		key := anchorPrefix + hex.EncodeToString([]byte(a))
 		_, err := s.kv.Create(ctx, key, []byte(sub))
 		if err == nil {
 			return true, nil
@@ -406,27 +423,42 @@ func (s *Store) claimAnchor(ctx context.Context, sub, today string) (string, err
 		}
 		return string(e.Value()) == sub, nil
 	}
+	remember := func(a string) (string, error) {
+		if _, err := s.kv.Put(ctx, of, []byte(a)); err != nil {
+			return "", err
+		}
+		return a, nil
+	}
 	if today != "" && nameAnchorRE.MatchString(today) {
-		ok, err := try(anchorPrefix + "name." + hex.EncodeToString([]byte(today)))
+		ok, err := try(today)
 		if err != nil {
 			return "", err
 		}
 		if ok {
-			return today, nil
+			return remember(today)
 		}
 	}
 	own := lower(sub)
-	if !anchorRE.MatchString(own) || nameAnchorRE.MatchString(own) {
+	if !anchorRE.MatchString(own) {
 		return "", fmt.Errorf("%w: %.64q", ErrAnchorShape, own)
 	}
-	ok, err := try(anchorPrefix + "sub." + hex.EncodeToString([]byte(own)))
-	if err != nil {
-		return "", err
+	for i := 0; i <= maxSuffix; i++ {
+		a := own
+		if i > 0 {
+			a = fmt.Sprintf("%s.%d", own, i)
+		}
+		if !anchorRE.MatchString(a) {
+			break
+		}
+		ok, err := try(a)
+		if err != nil {
+			return "", err
+		}
+		if ok {
+			return remember(a)
+		}
 	}
-	if !ok {
-		return "", fmt.Errorf("%w: %.64q", ErrAnchorTaken, own)
-	}
-	return own, nil
+	return "", fmt.Errorf("%w: %.64q", ErrAnchorTaken, own)
 }
 
 func lower(s string) string {

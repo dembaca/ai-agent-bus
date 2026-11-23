@@ -131,6 +131,8 @@ const (
 	subNew   = "0b6f3c1e-1111-4222-8333-444455556666"
 	subOther = "7D4C0A2B-AAAA-4BBB-8CCC-DDDDEEEEFFFF"
 	subSquat = "9e8d7c6b-5a49-4382-9716-151413121110"
+	// A UUID that starts with a letter has a Mattermost username's shape too.
+	subLetter = "ab12cd34-0000-4111-8222-333344445555"
 )
 
 // Decisions 7 and 9: an anchor is given once and never changed; before the
@@ -152,6 +154,13 @@ func TestAnchorsAreFixedAndNeverShared(t *testing.T) {
 	if got := anchor("sub-dot", "first.last"); got != "first.last" {
 		t.Fatalf("a name with a dot: %q (the callout hashes it as it is)", got)
 	}
+	long := "a.rather.long.username.of.30ch" // the server takes up to 64; the web form 22
+	if len(long) != 30 {
+		t.Fatal(len(long))
+	}
+	if got := anchor("sub-long", long); got != long {
+		t.Fatalf("a 30-character name before the import: %q", got)
+	}
 	for _, odd := range []string{"trailing.", "two..dots"} { // valid usernames, invalid as raw KV keys
 		if got := anchor("sub-"+strings.ReplaceAll(odd, ".", "x"), odd); got != odd {
 			t.Fatalf("%q: %q", odd, got)
@@ -172,8 +181,16 @@ func TestAnchorsAreFixedAndNeverShared(t *testing.T) {
 	if err := s.MarkImported(ctx(t), time.Now()); err != nil {
 		t.Fatal(err)
 	}
+	first, err := s.kv.Get(ctx(t), importedKey)
+	if err != nil {
+		t.Fatal(err)
+	}
 	if err := s.MarkImported(ctx(t), time.Now().Add(time.Hour)); err != nil { // written once, kept
 		t.Fatal(err)
+	}
+	if again, err := s.kv.Get(ctx(t), importedKey); err != nil || string(again.Value()) != string(first.Value()) ||
+		again.Revision() != first.Revision() {
+		t.Fatalf("a second import changed the mark: %v", err)
 	}
 	if got := anchor("sub-alice", "alice"); got != "alice" {
 		t.Fatalf("an identity known before the import: %q", got)
@@ -184,26 +201,49 @@ func TestAnchorsAreFixedAndNeverShared(t *testing.T) {
 	if _, err := a.Anchor(ctx(t), "sub.>", "x"); !errors.Is(err, ErrBadKey) {
 		t.Fatalf("a sub with a wildcard: %v", err)
 	}
-	if _, err := a.Anchor(ctx(t), "shortsub", "x"); !errors.Is(err, ErrAnchorShape) {
-		t.Fatalf("a sub shaped like a username: %v", err)
+	if _, err := a.Anchor(ctx(t), "_starts-odd", "x"); !errors.Is(err, ErrAnchorShape) {
+		t.Fatalf("a sub that is no owner token: %v", err)
 	}
 }
 
 // A username equal to another identity's sub cannot take that identity's
-// place before the import: names and subs never share an anchor.
+// place: one index key per value, and the identity whose value is held gets
+// it with a suffix. No value is ever given twice.
 func TestANameCannotSquatAnotherIdentitysSub(t *testing.T) {
 	s, _ := open(t)
 	a := Anchors{Store: s}
-	got, err := a.Anchor(ctx(t), subSquat, subNew) // calls itself the victim's sub
-	if err != nil || got != subSquat {
-		t.Fatalf("the squatter: %q %v", got, err)
+	squat, err := a.Anchor(ctx(t), subSquat, subLetter) // calls itself the victim's sub
+	if err != nil || squat != subLetter {
+		t.Fatalf("the squatter: %q %v", squat, err)
 	}
 	if err := s.MarkImported(ctx(t), time.Now()); err != nil {
 		t.Fatal(err)
 	}
-	got, err = a.Anchor(ctx(t), subNew, "victim")
-	if err != nil || got != subNew {
-		t.Fatalf("the victim after the import: %q %v", got, err)
+	victim, err := a.Anchor(ctx(t), subLetter, "victim")
+	if err != nil || victim != subLetter+".1" {
+		t.Fatalf("the victim after the import: %q %v", victim, err)
+	}
+	if again, err := a.Anchor(ctx(t), subLetter, "victim"); err != nil || again != victim {
+		t.Fatalf("the victim's anchor moved: %q %v", again, err)
+	}
+}
+
+// An identity whose record was not written after its anchor was claimed
+// (a crash between the two writes) finds its anchor again, after the import
+// too: the reverse key anchorof.<sub> is read first.
+func TestAnOrphanedAnchorIsFoundAgainAfterTheImport(t *testing.T) {
+	s, _ := open(t)
+	if _, err := s.claimAnchor(ctx(t), "sub-orphan", "orphan"); err != nil {
+		t.Fatal(err)
+	}
+	if _, _, ok, _ := s.Identity(ctx(t), "sub-orphan"); ok {
+		t.Fatal("the identity was written")
+	}
+	if err := s.MarkImported(ctx(t), time.Now()); err != nil {
+		t.Fatal(err)
+	}
+	if got, err := (Anchors{Store: s}).Anchor(ctx(t), "sub-orphan", "orphan"); err != nil || got != "orphan" {
+		t.Fatalf("the orphan after the import: %q %v", got, err)
 	}
 }
 

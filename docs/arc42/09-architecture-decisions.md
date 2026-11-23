@@ -4555,10 +4555,11 @@ nicht. Eine Umbenennung in Keycloak ändert `anchor` nicht; bekommt danach
 eine andere Person den alten Namen, ist dieser `anchor` vergeben, und sie
 bekommt ihr `sub` (festgelegt bei der Endabnahme von #44, 2026-11-23). Die
 Byte-Gleichheit mit dem Stand vor dem Verzeichnis gilt deshalb nur ohne
-Umbenennung. Namens- und `sub`-Anker teilen nie einen Wert: Ein
-Namensanker hat die Form eines Mattermost-Namens, ein `sub` aus Keycloak
-ist eine UUID und darf sie nicht haben, sodass kein Benutzername das `sub`
-einer anderen Identität besetzen kann. Nach dem Import setzt der Betreiber
+Umbenennung. Kein Wert wird zweimal vergeben, ob er aus einem Namen oder
+einem `sub` stammt: Je Wert gibt es einen Indexschlüssel. Hält ein Name
+schon den Wert eines `sub` (jemand hat sich so genannt), bekommt die
+Identität ihr `sub` mit einer Endung `.1` bis `.8`; so kann kein
+Benutzername eine Identität aussperren. Nach dem Import setzt der Betreiber
 `AUTH_DIRECTORY_IMPORTED=true`: Ein verlorener Bucket oder einer ohne
 `meta.imported` verweigert dann jede Ausgabe, statt auf Mattermost
 zurückzufallen. Daraus folgen zwei Punkte für die Umstellung:
