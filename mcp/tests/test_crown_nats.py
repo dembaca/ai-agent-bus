@@ -745,3 +745,29 @@ async def test_a_session_without_a_nats_home_keeps_the_mattermost_election(tmp_p
     _file_crown()
     assert lease.crown_held(BOT)
     assert owners and receipt  # the modules the real election uses are the ones imported here
+
+
+async def test_a_nats_sender_is_shown_by_its_proven_bot_but_stays_the_author(w: World) -> None:
+    """#66, RT-6.36 step 8: `shown_as` names the bot of a link proven afresh on every read
+    (lease._linked_owned, nothing cached); `author`, which every decision reads, stays the
+    NATS name."""
+    from mattermost_ai_agent_bus import slim
+    from mattermost_ai_agent_bus.model import Post
+
+    await _roster_world(w)
+    post = Post(id="n1:home:7", channel_id=WORK, user_id=NAME_A, message="hi")
+
+    async def one() -> dict[str, Any]:
+        return (await slim.posts(w.port, [post]))[0]  # type: ignore[arg-type]
+
+    got = await one()
+    assert got["author"] == NAME_A and got["shown_as"] == "agent-a"
+    bot(w.inner, BOT_A, "agent-a", 2000, crown=True)  # the bot takes its tag back
+    assert "shown_as" not in await one()
+    bot(w.inner, BOT_A, "agent-a", 2000, crown=True, tag=TAG[NAME_A])
+    assert (await one())["shown_as"] == "agent-a"
+    w.fake.owners[NAME_A] = "carol"  # the name's owner is not the bot's
+    assert "shown_as" not in await one()
+    w.fake.owners[NAME_A] = "alice"
+    w.port.fail("the credential names another agent")  # the NATS side is lost
+    assert "shown_as" not in await one()

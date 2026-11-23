@@ -1559,6 +1559,11 @@ def test_a_bot_and_a_name_are_linked_only_when_each_names_the_other() -> None:
     # an offline name
     fake.presence[NAME_A] = "offline"
     assert port.linked([two_sided]) == {}
+    # a NATS side lost for good links nothing, though the bus still knows the name
+    fake.presence[NAME_A] = "online"
+    assert port.linked([two_sided]) == {BOT_A: NAME_A}
+    port.fail("the credential names another agent")
+    assert port.linked([two_sided]) == {}
 
 
 def test_a_tag_that_fits_two_fresh_names_links_none() -> None:
@@ -1655,3 +1660,4 @@ async def test_a_bad_bot_id_does_not_stop_the_nats_home(monkeypatch: pytest.Monk
     finally:
         await port.stop()
         lease.use_nats_link(None)
+
