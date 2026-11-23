@@ -73,5 +73,17 @@ jobs:
           uv run --locked bus-testrig bus-run --count 20 --fault drop --after 1 --every 3 --expect-loss
         working-directory: testrig
 
+      # The probes drive the *real* bus code over the stub. A test of the stub's
+      # own shape cannot see a difference between what it invents and what the
+      # bus parses (review of #60: a top-level `custom_status` object against
+      # Mattermost's JSON string in `props.customStatus`), so these run here and
+      # fail on a gap instead of being a guard nobody executes.
+      # From the repository root: `--directory mcp` also changes the working
+      # directory, so a script path relative to `testrig/` cannot be found there.
+      - name: the stub passes the bus's own readers
+        run: |
+          uv run --directory mcp --with httpx python ../testrig/scripts/probe_status_shape.py
+          uv run --directory mcp --with httpx python ../testrig/scripts/stub_roundtrip.py
+
       - name: a fault really changes the numbers
         run: uv run --locked python scripts/ci_fault_check.py
