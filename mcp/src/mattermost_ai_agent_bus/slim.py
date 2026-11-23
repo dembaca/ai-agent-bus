@@ -278,7 +278,7 @@ def _reactions(p: Post, users: dict[str, str], trusted: Mapping[str, str]) -> di
 
 
 def _one(p: Post, users: dict[str, str], channels: dict[str, str],
-         facts: Mapping[str, Any] | None = None) -> dict[str, Any]:
+         facts: Mapping[str, Any] | None = None, shown: Mapping[str, str] | None = None) -> dict[str, Any]:
     out: dict[str, Any] = {"id": p.id}
     if p.root_id:
         out["root_id"] = p.root_id
@@ -305,6 +305,12 @@ def _one(p: Post, users: dict[str, str], channels: dict[str, str],
         card = {k: v for k, v in got.items() if k not in ("reactions", "reactions_total")}
         if card:
             out["ask_card"] = card  # what a 👍 approves; `ask` is the ask's id elsewhere
+    if shown:  # #66: to show and to DM (to=), never an identity; `author` decides
+        if p.user_id in shown:
+            out["shown_as"] = shown[p.user_id]
+        if out.get("reactions"):  # a NATS sender's author is its NATS name
+            out["reactions"] = [dict(r, shown_as=shown[r["author"]]) if r["author"] in shown else r
+                                for r in out["reactions"]]
     return _bounded(out, p.id, _nbytes(p.text))
 
 
@@ -316,12 +322,9 @@ async def posts(client: ChatPort, items: Sequence[Post],
     facts = await _facts(client, items, users)
     from . import lease  # lease imports this module's neighbours; late, as elsewhere
 
-    shown = await lease.shown_as(client, {p.user_id for p in items})
-    out = [_one(p, users, channels, facts) for p in items]
-    for row, p in zip(out, items, strict=True):
-        if p.user_id in shown:
-            row["shown_as"] = shown[p.user_id]  # #66: display only; `author` decides
-    return out
+    shown = await lease.shown_as(client, {p.user_id for p in items}
+                                 | {r.user_id for p in items for r in p.reactions})
+    return [_one(p, users, channels, facts, shown) for p in items]  # shown_as inside the bound
 
 
 async def post(client: ChatPort, item: Post) -> dict[str, Any]:

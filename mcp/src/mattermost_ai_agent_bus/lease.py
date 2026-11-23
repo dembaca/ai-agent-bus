@@ -306,8 +306,9 @@ def nats_visibility() -> str:
 async def shown_as(client: ChatPort, user_ids: AbstractSet[str]) -> dict[str, str]:
     """NATS name -> the username of its bot, for the NATS senders among `user_ids` whose link
     is proven now by the one test of a link (_linked_owned: bot and name name each other, the
-    name fresh, the bot's owner the name's), read afresh on every call, nothing cached (#66).
-    Display only: a post's author stays the NATS name, which every decision goes by."""
+    name fresh, the bot's owner the name's), read afresh on every call, nothing cached (#66):
+    agents DM a NATS sender by it (post_message to=), so it must never name a bot whose link
+    is gone. Not an identity: a post's author stays the NATS name, which decisions go by."""
     from .nats_port import is_nats_user  # nats_port imports this module
 
     names = {u for u in user_ids if is_nats_user(u)}
@@ -319,7 +320,7 @@ async def shown_as(client: ChatPort, user_ids: AbstractSet[str]) -> dict[str, st
         links = await _linked_owned(client, source, rows)
     except asyncio.CancelledError:
         raise
-    except Exception as exc:  # noqa: BLE001 — display only
+    except Exception as exc:  # noqa: BLE001 — shown_as is left out
         log.info("NATS senders not shown by their bots: %s", exc)
         return {}
     by_id = {str(r["id"]): str(r["username"]) for r in rows}
