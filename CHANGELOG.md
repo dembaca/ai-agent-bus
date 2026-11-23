@@ -5,6 +5,15 @@ before 0.5.0 are described in the git history.
 
 ## Unreleased
 
+- **The OpenCode plugin is checked against the hook API it declares** (issue #68).
+  The plugin named plugin API `~2.1.2` while the owner runs OpenCode 2.4.0, and
+  nothing verified the claim: its tests use a fake hook API, and `Plugin` was a
+  type-only import. It now declares `~2.4.1`, carries a `tsconfig` and a
+  `typecheck` script, and CI compiles it against `@opencode/plugin`'s own types -
+  a hook the API drops fails there. No behaviour changed on 2.4.0: the context's
+  domains and `mcp`/`skill.transform` are the same in 2.1.2 and 2.4.1. The
+  typecheck does not cover `session.hook` and `session.synthetic`, which the
+  plugin calls through `as any`; those stay covered by a session on a real host.
 - **Peers over NATS by the login service's record** (RT-6.37 step 4,
   RT-6.41). The MCP server sends the session's trusted humans in its
   hello and reads the login service's records: a NATS sender's owner is

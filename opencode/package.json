@@ -6,15 +6,17 @@
   "main": "server.ts",
   "license": "MIT",
   "scripts": {
-    "test": "node --test test/plugin.test.ts"
+    "test": "node --test test/plugin.test.ts",
+    "typecheck": "tsc --noEmit"
   },
   "engines": {
     "node": ">=22.18"
   },
   "peerDependencies": {
-    "@opencode/plugin": "~2.1.2"
+    "@opencode/plugin": "~2.4.1"
   },
   "devDependencies": {
-    "@opencode/plugin": "~2.1.2"
+    "@opencode/plugin": "~2.4.1",
+    "typescript": "^5.9.2"
   }
 }

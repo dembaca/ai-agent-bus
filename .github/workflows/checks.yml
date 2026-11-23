@@ -75,9 +75,14 @@ jobs:
       - uses: actions/setup-node@v4
         with:
           node-version: 24
-      # Type stripping runs the .ts as is; the plugin imports only node: modules.
+      # The plugin's runtime imports are node: modules only, so the test needs no
+      # install; the typecheck does, since it compiles against @opencode/plugin.
       - name: plugin glue against a fake hook API
         run: node --test opencode/test/plugin.test.ts
+      - name: plugin against the hook API it declares
+        run: |
+          npm --prefix opencode install --no-audit --no-fund
+          npm --prefix opencode run typecheck
 
   pi-extension:
     name: pi extension (node)
