@@ -204,7 +204,7 @@ async def posts(client: ChatPort, items: Sequence[Post],
     out = [_one(p, users, channels, facts) for p in items]
     for row, p in zip(out, items, strict=True):
         if p.user_id in shown:
-            row["shown_as"] = shown[p.user_id]  # #66: display only; `author` decides
+            row["shown_as"] = shown[p.user_id]  # #66: to show and to DM (to=), never an identity; `author` decides
         for r in row.get("reactions", ()):
             if r["author"] in shown:  # a NATS sender's author is its NATS name
                 r["shown_as"] = shown[r["author"]]
