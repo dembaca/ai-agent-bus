@@ -3338,7 +3338,9 @@ separately.
       `<bus>.dm.<recipient>.<name>`, `<presence>.<owner>.<name>`,
       `<presence>.crown.<channel>.<name>`, `<presence>.member.<channel>.<name>`
       (the membership, apart from the crown; both prefixes are settings of the
-      login service, `bus` and `presence`). A crown claim is granted only for
+      login service, `bus` and `presence`). `<presence>.attest.<name>.v1` is the
+      login service's record of an agent's owner and trust list (RT-6.41): only
+      the service publishes it, no agent has a right on it. A crown claim is granted only for
       the hello's home channel, a membership for every granted channel: a guest
       could otherwise claim the crown of a channel it only visits and block that
       home (review of the crown over NATS, RT-6.38). The presence subject carries the
@@ -4585,6 +4587,13 @@ Anmeldedienstes und der einmalige Import aus Mattermost (Entscheidungen 1,
 Passwort wird erst Mitglied, wenn ein Verwalter seinen Anspruch bestätigt
 hat (RISK-18); ein Kanal ohne menschlichen Ersteller mit `sub` bekommt
 keinen Eigentümer, sodass nur Verwalter ihn pflegen.
+
+Gebaut ist auch die Bürgschaft für Vertrauenslisten auf der Seite des
+Anmeldedienstes (Punkt 4, RT-6.41): Der Host nennt seine Liste, der Dienst
+löst sie über das Verzeichnis zu Ankern auf und schreibt bei jeder Ausgabe
+eine Bürgschaft, die nur er publizieren darf. Das Lesen im MCP-Server, also
+die Auflösung von `anchor` zu Namen und der Vergleich über Anker, folgt; erst
+danach ist die Bedingung vor dem ersten Import im Labor erfüllt.
 
 Gebaut ist die Bedingung „im Zweifel fremd“ (Punkt 1), vor jeder
 Auflösung von Namen: `owners.foreign()` und `owners.peer()` nehmen bei

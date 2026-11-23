@@ -241,7 +241,9 @@ type spec struct {
 
 func (m *Manager) desired(agent string, channels []string) []spec {
 	var out []spec
-	filters := []string{m.cfg.Presence + ".*.*"} // every agent: owner token and name
+	// every agent: owner token and name; everyone's attestation (the login
+	// service's vouching for an agent's owner and trust list)
+	filters := []string{m.cfg.Presence + ".*.*", m.cfg.Presence + ".attest.*.v1"}
 	for _, ch := range channels {
 		out = append(out, spec{stream: BusStream, name: agent + "_ch_" + ch, channel: ch,
 			deliver: DeliverPrefix + "." + agent + ".ch." + ch, filters: []string{m.cfg.Bus + ".ch." + ch + ".*"}})

@@ -81,7 +81,12 @@ accounts {
     # services/auth/README.md and RT-6.35 document.
     { user: jsmin, password: pwd, permissions: {
       publish: [ "$JS.API.STREAM.CREATE.BUS", "$JS.API.STREAM.INFO.BUS", "$JS.API.CONSUMER.*.BUS", "$JS.API.CONSUMER.*.BUS.>",
-        "$JS.API.STREAM.CREATE.PRESENCE", "$JS.API.STREAM.INFO.PRESENCE", "$JS.API.CONSUMER.*.PRESENCE", "$JS.API.CONSUMER.*.PRESENCE.>" ]
+        "$JS.API.STREAM.CREATE.PRESENCE", "$JS.API.STREAM.INFO.PRESENCE", "$JS.API.CONSUMER.*.PRESENCE", "$JS.API.CONSUMER.*.PRESENCE.>", "$JS.API.STREAM.MSG.GET.PRESENCE", "presence.attest.*.v1" ]
+      subscribe: [ "_INBOX.>" ] } },
+    # The same without the right to publish attestations: a refused publish
+    # must refuse the login (RT-6.41).
+    { user: jsnoatt, password: pwd, permissions: {
+      publish: [ "$JS.API.STREAM.INFO.PRESENCE", "$JS.API.STREAM.MSG.GET.PRESENCE" ]
       subscribe: [ "_INBOX.>" ] } } ] }
   OTHER { users: [ { user: other, password: pwd } ] }
 }
@@ -90,7 +95,7 @@ authorization {
   auth_callout {
     issuer: "`+issuerPub+`"
     account: AUTH
-    auth_users: [ "`+svcPub+`", other, admin, jsmin ]
+    auth_users: [ "`+svcPub+`", other, admin, jsmin, jsnoatt ]
     xkey: "`+xkeyPub+`"
   }
 }

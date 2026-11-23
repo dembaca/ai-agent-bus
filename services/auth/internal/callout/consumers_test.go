@@ -266,7 +266,7 @@ func TestALoginMakesTheConsumers(t *testing.T) {
 		{"BUS", "_ch_home", "ch.home", []string{"bus.ch.home.*"}},
 		{"BUS", "_ch_secret", "ch.secret", []string{"bus.ch.secret.*"}},
 		{"BUS", "_dm", "dm", []string{"bus.dm." + bob.name + ".*"}},
-		{"PRESENCE", "_presence", "presence", []string{"presence.*.*", "presence.crown.home.*", "presence.member.home.*", "presence.crown.secret.*", "presence.member.secret.*"}},
+		{"PRESENCE", "_presence", "presence", []string{"presence.*.*", "presence.attest.*.v1", "presence.crown.home.*", "presence.member.home.*", "presence.crown.secret.*", "presence.member.secret.*"}},
 	} {
 		ci := c.info(w.stream, bob.name+w.name)
 		if ci == nil {

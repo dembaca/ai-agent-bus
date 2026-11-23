@@ -380,3 +380,82 @@ func TestARecordedAnchorIsCheckedBeforeUse(t *testing.T) {
 		}
 	}
 }
+
+// A chat account has one identity: the index is per name, the same identity
+// may set it again, another gets ErrConflict.
+func TestAccountsAreOneIdentityPerName(t *testing.T) {
+	s, _ := open(t)
+	for _, sub := range []string{"sub-a", "sub-b"} {
+		if _, err := s.Login(ctx(t), sub, "x-"+sub, ""); err != nil {
+			t.Fatal(err)
+		}
+	}
+	if err := s.SetAccount(ctx(t), "sub-a", "mattermost", "alice"); err != nil {
+		t.Fatal(err)
+	}
+	if err := s.SetAccount(ctx(t), "sub-a", "mattermost", "alice"); err != nil {
+		t.Fatalf("again: %v", err)
+	}
+	if err := s.SetAccount(ctx(t), "sub-b", "mattermost", "alice"); !errors.Is(err, ErrConflict) {
+		t.Fatalf("another identity: %v", err)
+	}
+	if err := s.SetAccount(ctx(t), "sub-nobody", "mattermost", "zed"); !errors.Is(err, ErrNoIdentity) {
+		t.Fatalf("no identity: %v", err)
+	}
+	id, ok, err := s.ByAccount(ctx(t), "mattermost", "alice")
+	if err != nil || !ok || id.Sub != "sub-a" || id.Accounts["mattermost"] != "alice" {
+		t.Fatalf("ByAccount: %+v %v %v", id, ok, err)
+	}
+	if _, ok, _ := s.ByAccount(ctx(t), "mattermost", "nobody"); ok {
+		t.Fatal("an unknown name resolved")
+	}
+	// A rename frees the old name.
+	if err := s.SetAccount(ctx(t), "sub-a", "mattermost", "alice2"); err != nil {
+		t.Fatal(err)
+	}
+	if _, ok, _ := s.ByAccount(ctx(t), "mattermost", "alice"); ok {
+		t.Fatal("the old name still resolves")
+	}
+	if err := s.SetAccount(ctx(t), "sub-b", "mattermost", "alice"); err != nil {
+		t.Fatalf("the freed name: %v", err)
+	}
+}
+
+func TestResolveTrusted(t *testing.T) {
+	s, _ := open(t)
+	if _, err := s.Login(ctx(t), "sub-a", "alice", ""); err != nil { // anchor: the sub
+		t.Fatal(err)
+	}
+	if err := s.SetAccount(ctx(t), "sub-a", "mattermost", "alice"); err != nil {
+		t.Fatal(err)
+	}
+	// Before the import the name is the anchor; a bad shape is dropped.
+	got, cut, err := s.ResolveTrusted(ctx(t), []string{"alice", "bob", "Bad Name"}, false)
+	if err != nil || !cut || len(got) != 2 || got[0] != (Trusted{"alice", "alice"}) || got[1] != (Trusted{"bob", "bob"}) {
+		t.Fatalf("before: %+v cut=%v %v", got, cut, err)
+	}
+	// After it the identity's anchor; a name nobody has is dropped, not guessed.
+	got, cut, err = s.ResolveTrusted(ctx(t), []string{"alice", "bob"}, true)
+	if err != nil || !cut || len(got) != 1 || got[0] != (Trusted{"sub-a", "alice"}) {
+		t.Fatalf("after: %+v cut=%v %v", got, cut, err)
+	}
+	got, cut, err = s.ResolveTrusted(ctx(t), []string{"alice"}, true)
+	if err != nil || cut || len(got) != 1 {
+		t.Fatalf("all resolved: %+v cut=%v %v", got, cut, err)
+	}
+	// More than MaxTrusted: the first ones, and cut.
+	var many []string
+	for i := range MaxTrusted + 3 {
+		many = append(many, "u"+strconv.Itoa(i))
+	}
+	got, cut, err = s.ResolveTrusted(ctx(t), many, false)
+	if err != nil || !cut || len(got) != MaxTrusted || got[MaxTrusted-1].Name != "u"+strconv.Itoa(MaxTrusted-1) {
+		t.Fatalf("many: %d cut=%v %v", len(got), cut, err)
+	}
+	// A read error is an error, never a partial answer.
+	s2, nc := open(t)
+	nc.Close()
+	if got, _, err := s2.ResolveTrusted(ctx(t), []string{"alice"}, true); err == nil || got != nil {
+		t.Fatalf("a failed read: %+v %v", got, err)
+	}
+}

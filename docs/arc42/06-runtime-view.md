@@ -1726,3 +1726,32 @@ The rule that an operator reads the guest channels of agents that trust them onl
 | 7 | The confirmation names a revision the claim no longer has | 409; read again and confirm what is there |
 | 7 | Giving a confirmed claim's channels fails at a login | The issue is refused, the claim stays |
 | 7 | A channel of a confirmed claim is full at the login | That channel stays in the claim; the others are given, the login goes on |
+
+## 6.41 The login service vouches for an agent's owner and trust list
+
+**Purpose:** Over NATS an agent's owner is only a token in its presence subject and its trusted list is empty (RT-6.37 step 4); after the import from Mattermost that token may be a `sub`, which no session can compare with its names. The login service, which knows both the owner and the directory, vouches for them on a subject only it may publish, so readers can resolve the owner and judge peers by anchors (ADR-016 point 4).
+
+**Trigger:** Every issue of a credential by the auth callout (RT-6.35).
+
+**Participants:** Login service; NATS server (JetStream), Keycloak
+
+**Quality goal illustrated:** `#secure` Witness, not author — the service writes down the list the host named and never sets one; only the service publishes the record, proven against a NATS server
+
+### Sequence
+
+1. **The list from the host.** The host's hello names its trusted humans (`trusted`, the names of `MM_TRUSTED_HUMANS`); the service never adds one. At most 32 count; more, or a name that is no username (`[a-z][a-z0-9._-]{0,63}`), marks the record `cut`.
+2. **Resolution.** Before the import (RT-6.40 step 6) a name is its own anchor, as today. After it a name is resolved through the Mattermost account the import recorded for an identity (`account.mattermost.<hex>` in the directory): the identity's anchor and the name; a name without one is left out and the record is `cut`, never guessed. A read that fails refuses the issue.
+3. **The record.** After the agent's consumers are made and before the answer, the service writes `{"v":1, "agent", "owner":{"anchor","name"}, "trusted":[{"anchor","name"}…], "cut", "iat", "exp"}` on `<presence>.attest.<agent>.v1` with its own JetStream user, `exp` the credential's (15 minutes). The `PRESENCE` stream keeps one per subject; a record over 4 KiB (the stream's message limit) loses trusted entries from the end and is `cut`. The stream acknowledges nothing, so the service reads the record back (`$JS.API.STREAM.MSG.GET.PRESENCE`, last by subject) and counts it as written only when the stored bytes are its own; else the issue is refused, as a credential without its record would look whole.
+4. **Who may write it.** The subject has four tokens like a crown claim; an owner named `attest` still gives a three-token presence. No agent has a right on `<presence>.attest.*.v1`: the auth callout grants none (RT-6.35), proven against a NATS server for an agent whose owner is `attest` and for one that tries another's record.
+5. **Who reads it.** Every agent's presence consumer delivers all records (`<presence>.attest.*.v1`), as it delivers all presences. Reading them in the MCP server, the owner's name for its anchor and peers judged by anchors, follows in its own release; until then nothing reads them.
+
+### Error Handling
+
+| Step | Failure | System Response |
+|------|---------|----------------|
+| 1 | More than 32 names, or a name that is no username | The first 32 valid ones count; the record is `cut` |
+| 2 | After the import, a name with no identity of that Mattermost account | Left out; the record is `cut` |
+| 2 | The directory cannot be read | The issue is refused |
+| 3 | The record cannot be written, or is not stored as written (a missing right, the stream full) | The issue is refused (`attestation: …`) |
+| 3 | The record would exceed 4 KiB | Trusted entries dropped from the end; `cut` |
+| 4 | An agent publishes on an attestation subject | Refused by the NATS server |

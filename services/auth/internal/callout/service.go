@@ -22,6 +22,7 @@ import (
 	"github.com/nats-io/nats.go"
 	"github.com/nats-io/nkeys"
 
+	"github.com/dembaca/ai-agent-bus/services/auth/internal/directory"
 	"github.com/dembaca/ai-agent-bus/services/auth/internal/token"
 )
 
@@ -84,6 +85,9 @@ type Hello struct {
 	// presence consumer to be made anew (consumers.SincePresence: a new session
 	// that has not read the presence stream yet).
 	Since map[string]uint64 `json:"since,omitempty"`
+	// Trusted are the host's MM_TRUSTED_HUMANS names; the attestation
+	// vouches for them (attest.go).
+	Trusted []string `json:"trusted,omitempty"`
 }
 
 // Consumers makes the push consumers an agent reads from (consumers.Manager).
@@ -117,6 +121,8 @@ type Service struct {
 	cmu       sync.RWMutex
 	consumers Consumers // nil: none are made
 	anchors   Anchors   // nil: the anchor is the owner's name, as before ADR-016
+	attester  Attester  // nil: no attestation is published
+	trust     Trust     // nil: a trusted name is its own anchor
 }
 
 // SetAnchors sets where anchors come from. nil (the default) takes the
@@ -358,6 +364,12 @@ func (s *Service) authorize(ctx context.Context, req *jwt.AuthorizationRequestCl
 	if c := s.consumerHook(); c != nil {
 		if err := c.Reconcile(ctx, agent, id.Owner, channels, hello.Since); err != nil {
 			return "", who, fmt.Errorf("consumers could not be made: %w", err)
+		}
+	}
+	if at, tr := s.attestHooks(); at != nil {
+		if err := s.attest(ctx, at, tr, agent, directory.Trusted{Anchor: anchor, Name: id.Owner},
+			hello.Trusted, uc.IssuedAt, uc.Expires); err != nil {
+			return "", who, fmt.Errorf("attestation: %w", err)
 		}
 	}
 	return userJWT, who, nil

@@ -724,3 +724,34 @@ func TestAddPendingClearsWaitingFull(t *testing.T) {
 		t.Fatalf("after growing: %+v", ps)
 	}
 }
+
+// The import records each OpenID human's Mattermost username as an account of
+// the identity; a name two identities claim goes to the first and the second
+// is reported as skipped, without stopping the import (attested trust lists).
+func TestImportRecordsMattermostAccountsAndReportsAConflict(t *testing.T) {
+	twin := oidUser("twin")
+	twin.Username = "ann" // the same username as ann, another sub
+	src := &fakeSource{
+		channels: []mattermost.Channel{{ID: "c1", Name: "town", Type: "O"}},
+		members:  map[string][]string{"c1": {"ann", "twin", "bea"}},
+		users:    []mattermost.User{oidUser("ann"), twin, oidUser("bea")},
+	}
+	store := newStore(t)
+	rep, err := Import(ctx(t), store, src, "open", token.Identity{})
+	if err != nil {
+		t.Fatal(err)
+	}
+	for _, n := range []string{"ann", "bea"} {
+		id, ok, err := store.ByAccount(ctx(t), "mattermost", n)
+		if err != nil || !ok || id.Sub != "sub-"+n || id.Accounts["mattermost"] != n {
+			t.Fatalf("account %s: %+v %v %v", n, id, ok, err)
+		}
+	}
+	if len(rep.AccountsSkipped) != 1 || rep.AccountsSkipped[0].Username != "ann" ||
+		rep.AccountsSkipped[0].Reason != "mattermost name held by another identity" {
+		t.Fatalf("skipped accounts: %+v", rep.AccountsSkipped)
+	}
+	if rep.Identities != 3 {
+		t.Fatalf("identities %d, want 3", rep.Identities)
+	}
+}

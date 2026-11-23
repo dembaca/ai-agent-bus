@@ -81,7 +81,7 @@ func (n *native) login(ag *agent, channels ...string) (delivers []string) {
 		}
 		delivers = append(delivers, "deliver."+ag.name+"."+suffix)
 	}
-	presence := []string{"presence.*.*"}
+	presence := []string{"presence.*.*", "presence.attest.*.v1"}
 	for _, ch := range channels {
 		add("BUS", "ch."+ch, []string{"bus.ch." + ch + ".*"}, nats.DeliverNewPolicy)
 		presence = append(presence, "presence.crown."+ch+".*", "presence.member."+ch+".*")
@@ -397,6 +397,8 @@ func TestNativeEveryServiceSubjectIsRefused(t *testing.T) {
 		"bus.ch.secret." + n.a.name, "bus.ch.home." + n.b.name, "bus.ch.home.agent-victim", "bus.ch.home", "bus.ch.home." + n.a.name + ".x",
 		"bus.dm." + n.b.name + "." + n.b.name, "bus.dm." + n.b.name, "bus.dm.a.b." + n.a.name,
 		n.b.presence(), "presence.crown.home." + n.b.name, "presence.crown.secret." + n.a.name, "presence.x." + n.a.name,
+		// the login service's attestations (RT-6.41): another's, and one's own
+		"presence.attest." + n.b.name + ".v1", "presence.attest." + n.a.name + ".v1", "presence.attest.x.v1",
 	}
 	vs := n.victims()
 	for i, s := range subjects {
@@ -646,6 +648,7 @@ func TestNativePresenceAndCrown(t *testing.T) {
 	}
 	// Alice cannot write or remove bob's entries, by subject, rollup or API.
 	for _, s := range []string{n.b.presence(), "presence.crown.home." + n.b.name, "presence.crown.secret." + n.a.name,
+		"presence.attest." + n.b.name + ".v1", "presence.attest." + n.a.name + ".v1",
 		"$JS.API.STREAM.PURGE.PRESENCE", "$JS.API.STREAM.MSG.DELETE.PRESENCE", "$KV.presence." + n.b.name} {
 		if denied, stored := n.attack("presence: publish "+s, s, n.b.presence(), nil, `{"seq":1,"filter":"presence.>"}`); !denied || stored != 0 {
 			t.Errorf("%s: denied=%v stored=%d", s, denied, stored)

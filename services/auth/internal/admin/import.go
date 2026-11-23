@@ -191,6 +191,11 @@ func importAt(ctx context.Context, store *directory.Store, source Source, bindin
 				if _, err := store.Login(ctx, u.AuthData, u.Username, u.Username); err != nil {
 					return rep, fmt.Errorf("identity of %s: %w", u.Username, err)
 				}
+				if err := store.SetAccount(ctx, u.AuthData, "mattermost", u.Username); errors.Is(err, directory.ErrConflict) {
+					skipAccount(u, "mattermost name held by another identity")
+				} else if err != nil {
+					return rep, fmt.Errorf("account of %s: %w", u.Username, err)
+				}
 				subs[u.AuthData] = true
 				members = append(members, u.AuthData)
 			case binding == "open":
