@@ -205,8 +205,12 @@ async def echo_run(count: int = 20, fault: ProxyFault | None = None,
     settle = max(stall, reorder_wait, send_interval) + 0.3
     sent_all = asyncio.Event()
     try:
+        # `proxy=None` on both connections (follow-up review point 4): the
+        # endpoints are loopback and `websockets` would otherwise use the
+        # environment's proxy, so a machine with `HTTP_PROXY` set would fail the
+        # echo run before it measured anything.
         async with FrameProxy(f"ws://127.0.0.1:{port}", fault) as proxy:
-            async with websockets.connect(proxy.url) as client:
+            async with websockets.connect(proxy.url, proxy=None) as client:
 
                 async def read() -> None:
                     """Read continuously: never wait for the sender first.

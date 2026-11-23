@@ -106,7 +106,37 @@ def test_a_fault_runs_own_loss_is_not_a_failure(bus_run, capsys):
     assert _json_of(capsys)["measured"]["loss"]["value"] == 20
 
 
-def test_a_run_that_measured_nothing_exits_non_zero(bus_run, capsys):
+def test_a_run_that_sent_nothing_exits_non_zero(bus_run, capsys):
+    """Follow-up review point 2: a fault run whose sender broke before its
+    first post has `loss == 0`, nothing unknown and nothing unmeasured, so it
+    passed. It measured a sender that never ran."""
+    bus_run(_run(loss=0, fault="drop", sent=0,
+                 closed="post_message failed: McpError: the server refused"))
+    assert _main(["bus-run", "--count", "20", "--fault", "drop", "--after", "1"]) == 1
+    err = capsys.readouterr().err
+    assert "sent no frame" in err
+    assert "the server refused" in err
+
+
+def test_expect_loss_fails_a_fault_run_that_lost_nothing(bus_run, capsys):
+    """`--fault drop --every 1000` may fault no frame at all: the run is then a
+    clean baseline wearing a fault's name, and `--expect-loss` says so."""
+    bus_run(_run(loss=0, fault="drop"))
+    assert _main(["bus-run", "--count", "20", "--fault", "drop",
+                  "--every", "1000", "--expect-loss"]) == 1
+    assert "--expect-loss" in capsys.readouterr().err
+
+
+def test_expect_loss_passes_a_fault_run_that_lost(bus_run, capsys):
+    """The flag checks the claim, it does not forbid the loss: a run that lost
+    what the fault promised exits 0."""
+    bus_run(_run(loss=4, fault="drop", closed="no open socket when a posted frame was pushed"))
+    assert _main(["bus-run", "--count", "20", "--fault", "drop", "--after", "1",
+                  "--expect-loss"]) == 0
+    assert _json_of(capsys)["measured"]["loss"]["value"] == 4
+
+
+def test_a_fault_run_that_measured_nothing_exits_non_zero(bus_run, capsys):
     """The inbox never opened: the loss says "everything", and every
     comparison against it would be against nothing (the `drop --after 0` run
     the review measured at 5 / 5 lost and exit 0)."""

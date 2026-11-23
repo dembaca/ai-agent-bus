@@ -11,11 +11,17 @@ two real `mattermost_ai_agent_bus` processes and the Mattermost stub — and its
 report says `target: bus` rather than leaving a reader to assume otherwise.
 
 `bus-run`'s exit code says whether the run is trustworthy (review point 2): a
-stub call the rig could not answer, or a baseline (`--fault none`) that lost a
-frame or closed the connection, is a broken run and exits 1 — the report is
-still printed, because the numbers are how the failure is read. Before that
-`main` returned 0 unconditionally, so "20 of 20 lost" and a brand-new unknown
-endpoint both stayed green.
+stub call the rig could not answer, a baseline (`--fault none`) that lost a
+frame or closed the connection, or a run that never sent a frame at all, is a
+broken run and exits 1 — the report is still printed, because the numbers are
+how the failure is read. Before that `main` returned 0 unconditionally, so "20
+of 20 lost" and a brand-new unknown endpoint both stayed green.
+
+`--expect-loss` is for a fault run that is supposed to lose (follow-up review
+point 2): `--fault drop --after 1` on a sender that broke before it sent
+anything had `loss == 0`, nothing unknown and nothing unmeasured, and passed.
+The flag makes the run's own claim — this fault loses — a thing the exit code
+checks, so a fault that stopped faulting is not a green run.
 """
 
 from __future__ import annotations
@@ -70,6 +76,10 @@ def main(argv: list[str] | None = None) -> int:
     bus.add_argument("--after", type=int, default=0)
     bus.add_argument("--stall-sec", type=float, default=0.05)
     bus.add_argument("--send-interval", type=float, default=0.0)
+    # The run's own claim about its fault, checked by the exit code (follow-up
+    # review point 2): without it a fault that lost nothing was a green run.
+    bus.add_argument("--expect-loss", action="store_true",
+                     help="fail unless the run lost at least one frame")
 
     args = ap.parse_args(argv)
     if args.cmd == "measurands":
@@ -101,24 +111,32 @@ def main(argv: list[str] | None = None) -> int:
         return EXIT_NO_RUN
     run.commit = _commit()
     print(json.dumps(run.report(), indent=2, sort_keys=True))
-    return EXIT_BAD_RUN if args.cmd == "bus-run" and _untrustworthy(run) else EXIT_OK
+    if args.cmd != "bus-run":
+        return EXIT_OK
+    return EXIT_BAD_RUN if _untrustworthy(run, expect_loss=args.expect_loss) else EXIT_OK
 
 
-def _untrustworthy(run: runner.Run) -> bool:
+def _untrustworthy(run: runner.Run, *, expect_loss: bool = False) -> bool:
     """Whether a run's numbers describe a broken rig, not the bus (review
     point 2).
 
-    Three cases, each the run's own evidence:
+    Four cases, each the run's own evidence:
 
     * a call the stand-in could not answer — the bus asked something this rig
       does not model, so a number from the run is about the stand-in;
     * a path the run never observed at all — the receiver's inbox never opened,
       so `loss` means "everything" and compares with nothing (this is the
       `--fault drop --after 0` run the review measured at 5 of 5 lost, exit 0);
+    * a run that sent nothing — the sender broke before its first post, so
+      every later number is about a sender that never ran. `loss` is 0 there,
+      and without this case a faulted run with a broken sender passed (follow-up
+      review point 2);
     * a baseline (`--fault none`) that lost a frame or closed the connection.
 
     A faulted run's loss is its measurement and not a failure by itself: `drop`
-    is supposed to lose. Only the first two apply whatever the fault.
+    is supposed to lose. `expect_loss` is how a caller says "this fault is
+    meant to lose" and has that checked — the `--fault drop --after 1` CI step
+    does, because a fault that lost nothing was a green run for nothing.
     """
     if run.unknown:
         print(f"bus-testrig: the stub did not know {len(run.unknown)} call(s): "
@@ -128,10 +146,20 @@ def _untrustworthy(run: runner.Run) -> bool:
         print(f"bus-testrig: {run.unmeasured}; the run measured nothing "
               f"(connection_closed={run.closed or None})", file=sys.stderr)
         return True
+    if not run.sent_frames:
+        print(f"bus-testrig: the run sent no frame at all, so it measured nothing"
+              f"{f'; connection_closed={run.closed}' if run.closed else ''}",
+              file=sys.stderr)
+        return True
     loss = run.measure().get("loss", {}).get("value") or 0
     if run.fault == "none" and (loss > 0 or run.closed):
         print(f"bus-testrig: the baseline lost {loss} frame(s) of "
               f"{run.sent_frames}, connection_closed={run.closed or None}",
+              file=sys.stderr)
+        return True
+    if expect_loss and loss <= 0:
+        print(f"bus-testrig: --expect-loss, but the run lost nothing of "
+              f"{run.sent_frames} frame(s) under --fault {run.fault}",
               file=sys.stderr)
         return True
     return False

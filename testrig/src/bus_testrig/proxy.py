@@ -290,7 +290,11 @@ class FrameProxy:
         close_code: int | None = None
         close_reason = ""
         try:
-            async with connect(self.upstream) as upstream:
+            # `proxy=None` for the same reason the HTTP side sets
+            # `trust_env=False` (follow-up review point 4): `websockets`
+            # defaults to the environment's proxy, and a run whose upstream is
+            # loopback must not be sent through it.
+            async with connect(self.upstream, proxy=None) as upstream:
                 tasks = {asyncio.create_task(self._client_to_upstream(client, upstream)),
                          asyncio.create_task(self._upstream_to_client(upstream, client, state))}
                 await asyncio.wait(tasks, return_when=asyncio.FIRST_COMPLETED)
@@ -389,7 +393,12 @@ class GatewayProxy:
         return self.relay.altered
 
     async def __aenter__(self) -> GatewayProxy:
-        self._client = httpx.AsyncClient(timeout=10.0)
+        # `trust_env=False` (follow-up review point 4): both ends are loopback,
+        # and a machine with `HTTP_PROXY` set would otherwise send the run's own
+        # traffic to that proxy — refused, or worse, answered by something other
+        # than the stub the run is measuring. `urllib`'s bypass list does not
+        # cover 127.0.0.1 by default, so nothing else here turns it off.
+        self._client = httpx.AsyncClient(timeout=10.0, trust_env=False)
         self._gateway = Gateway(self._on_http, self._on_ws)
         await self._gateway.start()
         self.url = self._gateway.url
@@ -442,8 +451,10 @@ class GatewayProxy:
         close_reason = ""
         try:
             # `close_timeout` bounded: a `halfopen` upstream has stopped reading,
-            # so its close handshake never completes (CLOSE_SEC).
-            async with connect(self.ws_upstream, close_timeout=CLOSE_SEC) as upstream:
+            # so its close handshake never completes (CLOSE_SEC). `proxy=None`
+            # as in `FrameProxy._handle` (follow-up review point 4).
+            async with connect(self.ws_upstream, close_timeout=CLOSE_SEC,
+                               proxy=None) as upstream:
                 tasks = {asyncio.create_task(self._client_to_upstream(conn, upstream)),
                          asyncio.create_task(self._upstream_to_client(upstream, conn, state))}
                 await asyncio.wait(tasks, return_when=asyncio.FIRST_COMPLETED)
