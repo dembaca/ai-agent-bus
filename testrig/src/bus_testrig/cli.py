@@ -156,10 +156,37 @@ def _untrustworthy(run: runner.Run, *, expect_loss: bool = False) -> bool:
               file=sys.stderr)
         return True
     loss = run.measure().get("loss", {}).get("value") or 0
+    latency = run.measure().get("latency_p50", {}).get("value")
+    # Nothing lost, and yet no arrival has a latency: the run claims success
+    # while the receiver saw nothing. That is impossible on a healthy path — if
+    # no frame was lost, every frame arrived and has a time — and it is exactly
+    # what a broken match in `receive()` produces (the review of #35 measured it:
+    # sent 3, loss 0, latency_p50 null, while the healthy run gives 22.5 ms).
+    # A ratio against the relay's `forwarded` would not catch it: that counts
+    # `hello` too, and the broken run reports loss 0, not 4 (issue #47).
+    if loss == 0 and latency is None:
+        print("bus-testrig: no frame was reported lost and none arrived either "
+              f"({run.sent_frames} sent, no latency for any): the report is "
+              "self-contradictory, so the numbers are not a measurement",
+              file=sys.stderr)
+        return True
     if run.fault == "none" and (loss > 0 or run.closed):
         print(f"bus-testrig: the baseline lost {loss} frame(s) of "
               f"{run.sent_frames}, connection_closed={run.closed or None}",
               file=sys.stderr)
+        return True
+    relay = run.relay or {}
+    # Only when the relay counted at all (`received` is absent from a run that
+    # never had a proxy): a missing counter is not a zero.
+    if (run.fault != "none" and run.sent_frames and loss == run.sent_frames
+            and relay and relay.get("received") == 0):
+        # Every frame lost *and* the wire received nothing: the run measured the
+        # path, not the fault (issue #47). `--fault drop --after 0` is different:
+        # the wire sees the handshake, so it carries a number and stays a
+        # measurement of everything being lost.
+        print(f"bus-testrig: all {run.sent_frames} frame(s) lost and the relay "
+              "received nothing: the path carried nothing, so this is not a "
+              "measurement of the fault", file=sys.stderr)
         return True
     if expect_loss and not 0 < loss < run.sent_frames:
         # `loss > 0` alone let a dead receiver pass: 20 of 20 lost is not a

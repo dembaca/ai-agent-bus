@@ -136,6 +136,43 @@ def test_expect_loss_passes_a_fault_run_that_lost(bus_run, capsys):
     assert _json_of(capsys)["measured"]["loss"]["value"] == 4
 
 
+def test_a_run_that_lost_nothing_and_arrived_nothing_is_not_a_measurement(capsys):
+    """`loss == 0` with no latency at all is self-contradictory.
+
+    If nothing was lost, every frame arrived and has a time. A report that says
+    both claims success while the receiver saw nothing (issue #47). No CLI run
+    produces it today — the stub registers a post's id before its frame goes out,
+    so the id path always matches — so the report is built in exactly that state
+    here. The rule guards the report, not a run the harness can make.
+    """
+    from bus_testrig import cli as cli_module
+
+    run = runner.Run(name="bus-run", count=3, target="bus", fault="drop")
+    for seq in range(3):
+        run.send(seq)
+    run.sent_frames = 3
+    run.started, run.ended = 0.0, 1.0
+    run.measure = lambda *a, **k: {  # type: ignore[method-assign]
+        "loss": {"value": 0}, "latency_p50": {"value": None},
+        "latency_p95": {"value": None}, "duplicates": {"value": 0}}
+    assert cli_module._untrustworthy(run) is True
+    assert "none arrived either" in capsys.readouterr().err
+
+
+def test_a_fault_run_that_lost_everything_and_saw_nothing_is_not_a_measurement(bus_run, capsys):
+    """Every frame lost and the relay received nothing: the path, not the fault.
+
+    `--fault drop --after 0` is the other case and stays a measurement: the wire
+    sees the handshake, so there is a number to report (issue #47).
+    """
+    run = _run(loss=3, fault="drop", sent=3)
+    run.received.clear()  # so the latency rule does not fire first
+    run.relay = {"received": 0, "forwarded": 0, "altered": 0}
+    bus_run(run)
+    assert _main(["bus-run", "--count", "3", "--fault", "drop", "--after", "1"]) == 1
+    assert "the path carried nothing" in capsys.readouterr().err
+
+
 def test_expect_loss_fails_when_everything_was_lost(bus_run, capsys):
     """`loss == sent` is a dead path, not a fault: a receiver that never gets a
     frame and a fault that drops every frame look the same, and the flag meant
