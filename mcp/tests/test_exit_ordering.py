@@ -205,3 +205,33 @@ async def test_a_failed_start_leaves_no_hook_api_behind(started, monkeypatch):
     monkeypatch.setattr(hookapi.HookAPI, "start", refuse)
     assert await server._start_hook_api() is None
     assert server._hook_api is None
+
+
+async def test_remove_file_unlinks_before_it_forgets(started, monkeypatch):
+    """`remove_file` must not forget a name before the file is gone.
+
+    The order is the point: clearing `_file` and `_moving` first leaves a window
+    where an exit work interrupted inside `_unlink_own` (a close, a signal) finds
+    nothing left to remove, and the file stays. With the old order this test
+    fails; the six others stay green either way (review of #34).
+    """
+    monkeypatch.setenv("CLAUDE_CODE_SESSION_ID", "sess-unlink-first")
+    api = hookapi.HookAPI(lambda: FakeClient())
+    await api.start()
+    mine = api._file
+    assert mine is not None and mine.exists()
+
+    seen: list[tuple[Path | None, Path | None]] = []
+    real = hookapi.HookAPI._unlink_own
+
+    def observe(self, path):
+        # What the API still names at the moment it unlinks: both must be set.
+        seen.append((self._file, self._moving))
+        real(self, path)
+
+    monkeypatch.setattr(hookapi.HookAPI, "_unlink_own", observe)
+    api.remove_file()
+    assert seen == [(mine, None)], seen
+    assert not mine.exists()
+    assert api._file is None and api._moving is None
+    await api.close()

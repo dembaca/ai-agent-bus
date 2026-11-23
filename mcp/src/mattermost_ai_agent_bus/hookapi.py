@@ -238,7 +238,7 @@ class HookAPI:
         # The new file first, then the old one goes: a shell never finds neither.
         # Both are named for the exit work (RT-6.10) while they are both there:
         # `_file` kept pointing at the new one only, and clearing it first left
-        # the new file beyond any cleanup's reach (PR #27).
+        # the new file beyond any cleanup's reach (review of #34).
         old, self._moving = self._file, self._file
         try:
             self._write_file(self._uid or None)

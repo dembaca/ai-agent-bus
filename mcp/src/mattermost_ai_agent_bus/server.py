@@ -293,7 +293,8 @@ async def _start_hook_api() -> hookapi.HookAPI | None:
     api = hookapi.HookAPI(_bus_client)
     # Set before start(): start() writes the endpoint file, and the exit work
     # (RT-6.10) removes it only through _hook_api. A SIGTERM between the write
-    # and the assignment left the file behind (the flake of PR #27).
+    # and the assignment left the file behind. A real gap; not shown to be the
+    # cause of PR #27's flake (review of #34).
     _hook_api = api
     try:
         await api.start()

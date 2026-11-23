@@ -78,8 +78,10 @@ def start(mm, tmp_path):
     procs: list[subprocess.Popen] = []
 
     def _start(**extra: str) -> subprocess.Popen:
+        # stderr is kept, not sent to DEVNULL: when a run fails, the server's
+        # last lines are the only thing that says why (review of #34).
         p = subprocess.Popen([str(PY), "-m", "mattermost_ai_agent_bus"], stdin=subprocess.PIPE,
-                             stdout=subprocess.PIPE, stderr=subprocess.DEVNULL,
+                             stdout=subprocess.PIPE, stderr=subprocess.PIPE,
                              cwd=_project(tmp_path), env=_env(mm, tmp_path, **extra))
         procs.append(p)
         return p
@@ -112,9 +114,12 @@ def test_sigterm_ends_the_server_within_seconds(start, tmp_path, push):
     assert _wait_for(lambda: _endpoint_files(tmp_path))
     t = time.monotonic()
     p.send_signal(signal.SIGTERM)
-    p.wait(timeout=6)
-    assert time.monotonic() - t < 3.5
-    assert _endpoint_files(tmp_path) == []
+    code = p.wait(timeout=6)
+    took = time.monotonic() - t
+    tail = (p.stderr.read() or b"").decode(errors="replace")[-2000:] if p.stderr else ""
+    assert code == 0, f"exit {code} after {took:.1f}s; stderr tail:\n{tail}"
+    assert took < 3.5, f"took {took:.1f}s; stderr tail:\n{tail}"
+    assert _endpoint_files(tmp_path) == [], f"file left behind; stderr tail:\n{tail}"
 
 
 def test_the_server_ends_when_its_client_dies(mm, tmp_path):
