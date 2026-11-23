@@ -303,27 +303,38 @@ def nats_visibility() -> str:
             "goes over Mattermost, and DMs between agents go over Mattermost too")
 
 
+# How long the proven links behind `shown_as` are kept (#66): display only, so a link
+# a bot took back may still show this long; nothing decides by it.
+SHOWN_TTL_SEC = 30.0
+_shown: tuple[float, object, dict[str, str]] | None = None  # (monotonic time, source, name -> bot)
+
+
 async def shown_as(client: ChatPort, user_ids: AbstractSet[str]) -> dict[str, str]:
     """NATS name -> the username of its bot, for the NATS senders among `user_ids` whose link
-    is proven now by the one test of a link (_linked_owned: bot and name name each other, the
-    name fresh, the bot's owner the name's), read afresh on every call, nothing cached (#66).
-    Display only: a post's author stays the NATS name, which every decision goes by."""
+    is proven by the one test of a link (_linked_owned: bot and name name each other, the
+    name fresh, the bot's owner the name's). The links are read again after SHOWN_TTL_SEC
+    and whenever the NATS side changed, not for every batch of posts (#66). Display only:
+    a post's author stays the NATS name, which every decision goes by."""
+    global _shown
     from .nats_port import is_nats_user  # nats_port imports this module
 
     names = {u for u in user_ids if is_nats_user(u)}
     source = _nats_source
     if not names or not _nats_home or source is None:  # a lost side links none (linked)
         return {}
-    try:
-        rows = await _rows(client, await client.get_channel_id(_nats_home))
-        links = await _linked_owned(client, source, rows)
-    except asyncio.CancelledError:
-        raise
-    except Exception as exc:  # noqa: BLE001 — display only
-        log.info("NATS senders not shown by their bots: %s", exc)
-        return {}
-    by_id = {str(r["id"]): str(r["username"]) for r in rows}
-    return {name: by_id[bot] for bot, name in links.items() if name in names and bot in by_id}
+    now = time.monotonic()
+    if _shown is None or _shown[1] is not source or now - _shown[0] >= SHOWN_TTL_SEC:
+        try:
+            rows = await _rows(client, await client.get_channel_id(_nats_home))
+            links = await _linked_owned(client, source, rows)
+        except asyncio.CancelledError:
+            raise
+        except Exception as exc:  # noqa: BLE001 — display only
+            log.info("NATS senders not shown by their bots: %s", exc)
+            return {}
+        by_id = {str(r["id"]): str(r["username"]) for r in rows}
+        _shown = (now, source, {name: by_id[bot] for bot, name in links.items() if bot in by_id})
+    return {name: bot for name, bot in _shown[2].items() if name in names}
 
 
 def nats_notes() -> list[str]:

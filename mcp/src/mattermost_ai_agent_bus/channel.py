@@ -302,7 +302,7 @@ def notification(item: Mapping[str, Any]) -> dict[str, Any]:
     are identifiers, others Claude Code drops)."""
     post = item.get("post") or {}
     meta: dict[str, str] = {"kind": str(item.get("kind", ""))}
-    for key in ("id", "root_id", "channel", "author", "at"):
+    for key in ("id", "root_id", "channel", "author", "shown_as", "at"):  # shown_as: #66, display only
         if post.get(key):
             meta["post_id" if key == "id" else key] = str(post[key])
     meta["from_trusted_human"] = "true" if item.get("from_trusted_human") else "false"

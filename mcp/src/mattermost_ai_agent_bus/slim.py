@@ -199,11 +199,15 @@ async def posts(client: ChatPort, items: Sequence[Post],
     facts = await _facts(client, items, users)
     from . import lease  # lease imports this module's neighbours; late, as elsewhere
 
-    shown = await lease.shown_as(client, {p.user_id for p in items})
+    shown = await lease.shown_as(client, {p.user_id for p in items}
+                                 | {r.user_id for p in items for r in p.reactions})
     out = [_one(p, users, channels, facts) for p in items]
     for row, p in zip(out, items, strict=True):
         if p.user_id in shown:
             row["shown_as"] = shown[p.user_id]  # #66: display only; `author` decides
+        for r in row.get("reactions", ()):
+            if r["author"] in shown:  # a NATS sender's author is its NATS name
+                r["shown_as"] = shown[r["author"]]
     return out
 
 

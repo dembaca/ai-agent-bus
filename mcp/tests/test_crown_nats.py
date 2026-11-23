@@ -747,27 +747,59 @@ async def test_a_session_without_a_nats_home_keeps_the_mattermost_election(tmp_p
     assert owners and receipt  # the modules the real election uses are the ones imported here
 
 
-async def test_a_nats_sender_is_shown_by_its_proven_bot_but_stays_the_author(w: World) -> None:
-    """#66, RT-6.36 step 8: `shown_as` names the bot of a link proven afresh on every read
-    (lease._linked_owned, nothing cached); `author`, which every decision reads, stays the
-    NATS name."""
+async def test_a_nats_sender_is_shown_by_its_proven_bot_but_stays_the_author(
+        w: World, monkeypatch: pytest.MonkeyPatch) -> None:
+    """#66, RT-6.36 step 8: `shown_as` names the bot of a link proven by the one test of a
+    link (lease._linked_owned, owner included), on the post and on its reactions; `author`,
+    which every decision reads, stays the NATS name. The links are read again after
+    SHOWN_TTL_SEC, not for every batch."""
     from mattermost_ai_agent_bus import slim
     from mattermost_ai_agent_bus.model import Post
 
+    clock = [1000.0]
+    monkeypatch.setattr(lease.time, "monotonic", lambda: clock[0])
+    reads = [0]
+    real = w.inner.channel_users
+
+    async def counted(channel_id: str) -> list[ChannelUser]:
+        reads[0] += 1
+        return await real(channel_id)
+
+    monkeypatch.setattr(w.inner, "channel_users", counted)
     await _roster_world(w)
-    post = Post(id="n1:home:7", channel_id=WORK, user_id=NAME_A, message="hi")
+    post = Post(id="n1:home:7", channel_id=WORK, user_id=NAME_A, message="hi",
+                reactions=(Reaction(user_id=NAME_A, post_id="n1:home:7", emoji_name="eyes"),))
 
     async def one() -> dict[str, Any]:
         return (await slim.posts(w.port, [post]))[0]  # type: ignore[arg-type]
 
+    def later() -> None:
+        clock[0] += lease.SHOWN_TTL_SEC
+
     got = await one()
     assert got["author"] == NAME_A and got["shown_as"] == "agent-a"
+    assert got["reactions"][0]["author"] == NAME_A and got["reactions"][0]["shown_as"] == "agent-a"
+    before = reads[0]
+    await one()
+    assert reads[0] == before  # within SHOWN_TTL_SEC: not read again
     bot(w.inner, BOT_A, "agent-a", 2000, crown=True)  # the bot takes its tag back
+    assert (await one())["shown_as"] == "agent-a"  # display only: it may show that long
+    later()
     assert "shown_as" not in await one()
     bot(w.inner, BOT_A, "agent-a", 2000, crown=True, tag=TAG[NAME_A])
+    later()
     assert (await one())["shown_as"] == "agent-a"
     w.fake.owners[NAME_A] = "carol"  # the name's owner is not the bot's
+    later()
     assert "shown_as" not in await one()
     w.fake.owners[NAME_A] = "alice"
+    later()
+    assert (await one())["shown_as"] == "agent-a"
+    other = make()[0]  # another NATS side (a restart of the port): its links, at once
+    lease.use_nats(HOME, other)
+    assert "shown_as" not in await one()
+    lease.use_nats(HOME, w.port)
+    assert (await one())["shown_as"] == "agent-a"
     w.port.fail("the credential names another agent")  # the NATS side is lost
+    later()
     assert "shown_as" not in await one()

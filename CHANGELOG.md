@@ -5,6 +5,11 @@ before 0.5.0 are described in the git history.
 
 ## Unreleased
 
+- **`shown_as` on reactions and in the event tag** (#66, RT-6.36 step 8).
+  A NATS sender's reactions and the tag of a pushed event carry its bot's
+  username too, beside the author, which stays the NATS name. The proven
+  links are read at most every 30 s, not for every batch of posts.
+
 - **What the first NATS pilot found** (#66, RT-6.36). `bus_info` says in
   `over_nats` that people do not see a home over NATS in Mattermost.
   `post_message(to=<person>)` refuses with the reason (ask people with
