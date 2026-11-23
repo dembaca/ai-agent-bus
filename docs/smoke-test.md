@@ -47,7 +47,7 @@ bus.
 
 ```bash
 export MM_LOGIN_ISSUER=https://<keycloak-host>/realms/<realm>
-export MM_LOGIN_CLIENT_ID=agent-bus
+export MM_LOGIN_CLIENT_ID=<client-id>   # the Keycloak client of this bus, public
 ```
 
 The host hook starts the device flow; a human confirms in the browser at
@@ -57,30 +57,44 @@ the bus before that confirmation.
 - [ ] The login link arrives as a DM to the owner. It is not a secret: the
       person check at Keycloak is the barrier, not the link (RT-6.34)
 - [ ] The token carries `aud` and `groups`
-- [ ] `offline_access` is present — or is deliberately absent, and the login is
-      then expected to need a human again after the access token expires
+- [ ] `offline_access` is present. Without it there is no refresh token: the
+      login fails with `LoginError` and the response's refresh token is revoked
+      in Keycloak (RT-6.34 step 5) — it is not a slower re-login, it is a
+      refused login
 
 ### 2. The first NATS session
+
+Before the client: the login service needs its own JetStream rights. Its user
+in the tenant account must hold the `KV_BUS_DIRECTORY` stream rights from
+[`services/auth/nats-server.example.conf`](../services/auth/nats-server.example.conf)
+(publish `$JS.API.STREAM.CREATE.KV_BUS_DIRECTORY`,
+`$JS.API.STREAM.INFO.KV_BUS_DIRECTORY`, `$JS.API.DIRECT.GET.KV_BUS_DIRECTORY.>`
+and `$KV.BUS_DIRECTORY.>`); without them it does not start. Leave
+`AUTH_DIRECTORY_IMPORTED` at `false` until the one-time import has run — set to
+`true`, a missing bucket is never made anew (RT-6.39).
 
 ```bash
 export MM_NATS_URL=tls://<nats-host>:<port>
 export MM_NATS_HOMES=<pilot-home>
-# MM_NATS_CA_FILE: not needed here — the server certificate is from Let's
-# Encrypt, so the system's CAs verify it (RT-6.36)
+# MM_NATS_CA_FILE: set it only if the server's certificate does not chain to a
+# CA the system trusts. In the lab it is not needed — that certificate is from
+# Let's Encrypt, which is a fact of the lab, not a rule of RT-6.36.
 ```
 
-- [ ] The login service's log has `event=issued` for this agent (and
-      `event=refused` with a `reason` when it does not)
-- [ ] `bus_info` answers, and its `home` is the pilot home named in
-      `MM_NATS_HOMES` (today it has no separate NATS field: the home's
-      posts and events are what tell you NATS is carrying them)
+- [ ] The login service's log has `"event":"issued"` for this agent — one JSON
+      line per issue (`"event":"refused"` with a `reason` when it does not)
+- [ ] `bus_info` answers, its `home` is the pilot home named in
+      `MM_NATS_HOMES`, and it carries **no warning**. It has no separate NATS
+      field, but it does say so when the NATS side is gone: `the NATS side is
+      not reachable (…): no crown and no Mattermost election there` (RT-6.38). A
+      run with that line is not a NATS run
 - [ ] Without the VPN, the connect fails with a network error, not a permission
       error — the difference is what tells you the endpoint is unreachable
 
 ### 3. The pilot home works
 
 - [ ] A post from one agent reaches a second agent in the home
-- [ ] Presence and membership show up (RT-6.38)
+- [ ] Presence and membership show up (RT-6.37)
 - [ ] Exactly one agent holds the crown (RT-6.38); a second `coordinator("take")`
       waits instead of granting a second crown
 
@@ -90,9 +104,14 @@ Each of these must be refused, and the refusal must be visible:
 
 - [ ] An expired or foreign token is turned away by the callout
 - [ ] An agent cannot publish on another agent's subject (ADR-014 point 16)
-- [ ] A channel outside the credential's membership is refused
-- [ ] The emergency brake on an owner locks out that owner's agents: the
-      login service removes their consumers within its sweep (RT-6.35, step 5)
+- [ ] A channel outside the credential's membership is refused, and the log
+      says `"event":"channel refused"` for it. A refused channel is left out;
+      the credential is still issued for the others. A lookup that **fails**
+      refuses the whole issue instead (RT-6.35)
+- [ ] The emergency brake (`AUTH_BRAKE_FILE`) locks out that owner's agents:
+      the login service's sweep removes their consumers every 10 s, new
+      credentials are refused at the next issue, and a connection already open
+      lasts until its credential expires — at most 15 minutes (RT-6.35 step 5)
 - [ ] A home not named in `MM_NATS_HOMES` still runs over Mattermost — the
       switch is per home, not global
 

@@ -56,6 +56,20 @@ type Channels interface {
 	Memberships(ctx context.Context, username string, channels []string) (map[string]bool, error)
 }
 
+// IdentityChannels is a Channels that can also answer for the Keycloak
+// identity, by `sub` (directory.Channels, ADR-016 point 2). The service uses
+// it when the Channels it was given offers it.
+type IdentityChannels interface {
+	MembershipsFor(ctx context.Context, username, sub string, channels []string) (map[string]bool, error)
+}
+
+// Anchors gives each identity its fixed anchor (directory.Anchors, RT-6.39, ADR-016
+// decisions 7 and 9): what an agent's name hashes and its presence subject
+// names as owner, so neither changes when the name in Keycloak does.
+type Anchors interface {
+	Anchor(ctx context.Context, sub, display string) (string, error)
+}
+
 // Hello is what a host sends as `auth_token` in its CONNECT, as JSON: the
 // Keycloak access token and the channels it asks for. The channels are a
 // wish; only those the human is a member of are granted.
@@ -102,6 +116,22 @@ type Service struct {
 
 	cmu       sync.RWMutex
 	consumers Consumers // nil: none are made
+	anchors   Anchors   // nil: the anchor is the owner's name, as before ADR-016
+}
+
+// SetAnchors sets where anchors come from. nil (the default) takes the
+// owner's preferred_username, which is what the directory gives every
+// identity known before the import: names and presence tokens are the same.
+func (s *Service) SetAnchors(a Anchors) {
+	s.cmu.Lock()
+	defer s.cmu.Unlock()
+	s.anchors = a
+}
+
+func (s *Service) anchorHook() Anchors {
+	s.cmu.RLock()
+	defer s.cmu.RUnlock()
+	return s.anchors
 }
 
 // SetConsumers sets the consumer management. nil (the default) makes none and
@@ -281,12 +311,23 @@ func (s *Service) authorize(ctx context.Context, req *jwt.AuthorizationRequestCl
 	if err != nil {
 		return "", who, err
 	}
-	agent := s.cfg.NamePrefix + name(id.Owner, host)
-	who = append(who, "owner", id.Owner, "sub", id.Subject, "jti", id.ID, "agent", agent)
+	// The brake holds names (the owner's username), before anything is written.
 	if err := s.brake.Check(id.Owner); err != nil {
-		return "", who, err
+		return "", append(who, "owner", id.Owner, "sub", id.Subject), err
 	}
-	channels, err := s.grant(ctx, id.Owner, hello)
+	anchor := id.Owner
+	if a := s.anchorHook(); a != nil {
+		if anchor, err = a.Anchor(ctx, id.Subject, id.Owner); err != nil {
+			return "", append(who, "owner", id.Owner, "sub", id.Subject),
+				fmt.Errorf("%w: anchor: %v", token.ErrDirectory, err)
+		}
+	}
+	agent := s.cfg.NamePrefix + name(anchor, host)
+	who = append(who, "owner", id.Owner, "sub", id.Subject, "jti", id.ID, "agent", agent)
+	if anchor != id.Owner {
+		who = append(who, "anchor", anchor)
+	}
+	channels, err := s.grant(ctx, id.Owner, id.Subject, hello)
 	if err != nil {
 		return "", who, err
 	}
@@ -297,7 +338,7 @@ func (s *Service) authorize(ctx context.Context, req *jwt.AuthorizationRequestCl
 	uc.Audience = s.cfg.Account
 	uc.IssuedAt = now.Unix()
 	uc.Expires = now.Add(Lifetime).Unix()
-	uc.Permissions = s.cfg.Subjects.permissions(agent, id.Owner, hello.Home, channels)
+	uc.Permissions = s.cfg.Subjects.permissions(agent, anchor, hello.Home, channels)
 	uc.Limits.Subs = maxSubs
 	uc.Limits.Payload = maxPayload
 	uc.AllowedConnectionTypes.Add(jwt.ConnectionTypeStandard)
@@ -326,7 +367,7 @@ func (s *Service) authorize(ctx context.Context, req *jwt.AuthorizationRequestCl
 // the lobby when asked for, by the flag or by its name. A refused wish is
 // logged with its reason and the others are granted; a lookup that fails
 // refuses the whole request, since a partial credential would look whole.
-func (s *Service) grant(ctx context.Context, owner string, h Hello) ([]string, error) {
+func (s *Service) grant(ctx context.Context, owner, sub string, h Hello) ([]string, error) {
 	refuse := func(ch, why string) {
 		s.log.Info("auth callout", "event", "channel refused", "owner", owner,
 			"channel", fmt.Sprintf("%.64q", ch), "reason", why)
@@ -358,7 +399,13 @@ func (s *Service) grant(ctx context.Context, owner string, h Hello) ([]string, e
 	}
 	var granted []string
 	if len(ask) > 0 {
-		member, err := s.channels.Memberships(ctx, owner, ask)
+		var member map[string]bool
+		var err error
+		if ic, ok := s.channels.(IdentityChannels); ok {
+			member, err = ic.MembershipsFor(ctx, owner, sub, ask)
+		} else {
+			member, err = s.channels.Memberships(ctx, owner, ask)
+		}
 		if err != nil {
 			return nil, fmt.Errorf("%w: membership: %v", token.ErrDirectory, err)
 		}

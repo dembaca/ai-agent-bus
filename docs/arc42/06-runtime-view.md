@@ -1645,3 +1645,37 @@ Everything the server writes in its state directory goes through one helper: a n
 | 6 | A linked 👑 whose owner is not the name's owner, or a 👑 without a link | Not the home's crown |
 | 6 | Two live linked mirrors show 👑 while the view is unknown | Only the one with the lowest known claim counts; none without a known claim |
 | 7 | A tag fits two fresh names | No link; logged once, in `bus_info` |
+
+## 6.39 The channel directory: membership and anchors
+
+**Purpose:** The login service decides who reads a channel on the bus and how an agent of a person is named from its own channel directory on NATS, not from the chat, without changing a single agent's name or presence subject on the way there (ADR-016 point 2, decisions 2, 7 and 9).
+
+**Trigger:** Every issue of a credential by the auth callout (RT-6.35), and the one-time import from Mattermost, which writes `meta.imported` as its last step.
+
+**Participants:** Login service; NATS server (JetStream key-value), Mattermost REST API, Keycloak
+
+**Quality goal illustrated:** `#secure` One writer — only the login service's JetStream user reads or writes the directory, no agent has a right on `$KV` or `$JS`; `#reliable` No rename — an agent keeps its name and its presence subject across the switch
+
+### Sequence
+
+1. **The bucket.** At start the login service opens the key-value bucket `BUS_DIRECTORY` (`AUTH_DIRECTORY_BUCKET`) in the tenant account with its own JetStream user and makes it when it is missing (`internal/directory`): file storage, a history of 5, no expiry. Keys: `ch.<token>` a channel (its name on the bus, lower case, owner, public or not, members as Keycloak `sub`, a binding per chat), `id.<sub>` an identity (its anchor, the name it shows, its chat accounts), `anchor.<hex>` the `sub` holding an anchor (one key per value, hex-encoded, so any username fits a key), `anchorof.<hex>` the anchor a `sub` claimed, `meta.imported` the import's mark, written once. Every write is created new or made over the revision read (compare and set); one that lost the race is read again. An existing bucket is checked at start: no mirror, source or republish (which could hand its records to a subject an agent reads), file storage, a size limit, exactly its own subjects. Once the operator has run the import and set `AUTH_DIRECTORY_IMPORTED=true`, a missing bucket is never made anew and a missing `meta.imported` refuses every issue: a lost or replaced bucket never sends membership back to Mattermost or gives anchors anew by name.
+2. **The anchor at a login.** After the Keycloak token and the brake are checked, the callout asks the directory for the identity's anchor (`directory.Anchors`): an identity it knows keeps the anchor it has and takes the token's `preferred_username` as the name it shows; a new one gets, while `meta.imported` is not written, today's name (every identity is one of today then), else its `sub` in lower case. The index is created first, so two identities never share an anchor; a name another identity already holds gives the new one its `sub`, also when that other one was renamed in Keycloak and the new one now has its old name. A name anchor is a username as the Mattermost server takes it (a letter, then up to 63 of `[a-z0-9._-]`; before the import every owner has a Mattermost account of that name). No value is ever given twice, whether it came from a name or a `sub`: one index key per value. A `sub` whose value a name already holds (someone called themselves that) gets it with a suffix, `<sub>.1` up to `.8` (a long `sub` shortened so the suffix fits the 64 of an owner token); locking an identity out takes nine usernames chosen on purpose, each its own identity. Each claim is also written as `anchorof.<sub>`, read first at the next login: an identity whose record was not written after its claim (a crash between the two writes) finds its anchor again, before or after the import. The agent's name is the hash over the anchor and the host key, and the anchor is the owner token of its presence subject (`<presence>.<anchor>.<name>`, "." as "~", RT-6.37). Before the import that is byte for byte what it was without the directory, as long as nobody is renamed in Keycloak: a renamed identity keeps its anchor, while the brake and the consumers' metadata follow the new name (step 4).
+3. **Membership.** The callout's channel lookup (`callout.Channels`) is `directory.Channels`. Until `meta.imported` is written it asks Mattermost by username, as before; from then on the directory by `sub`: a channel is granted when it is public or the identity is a member. A channel the directory does not know is not granted. The switch is the import's own last step, not a setting.
+4. **The brake and the consumers stay with names.** The emergency brake lists usernames and is checked before anything is written; the consumers' metadata keep the owner's username, so a brake by name finds them.
+
+### Error Handling
+
+| Step | Failure | System Response |
+|------|---------|----------------|
+| 1 | The bucket cannot be opened or made (no right, JetStream down) | The service does not start; the error names the bucket |
+| 1 | An existing bucket mirrors, sources or republishes, or has no size limit or other subjects | The service does not start (`directory.ErrUnsafeBucket`) |
+| 1 | `AUTH_DIRECTORY_IMPORTED=true` and the bucket is missing | The service does not start; the bucket is not made anew |
+| 3 | `AUTH_DIRECTORY_IMPORTED=true` and the bucket has no `meta.imported` (replaced, restored from before the import) | Every issue is refused (`directory.ErrImportMissing`), never answered by Mattermost |
+| 2 | The directory cannot be read or written at a login | The issue is refused (`directory unavailable`): no credential with a name that might not be the identity's |
+| 2 | Two logins of a new identity at once | One creates the record, the other reads it: both get the same anchor |
+| 2 | The `sub` is no safe key (a dot, a wildcard), or lower-cased no owner token (`directory.ErrAnchorShape`) | The issue is refused |
+| 2 | The `sub` and its suffixes `.1` to `.8` are all held | The issue is refused (`directory.ErrAnchorTaken`); it takes nine names chosen on purpose |
+| 1 | An existing bucket's stream cannot be read as one | The service does not start (`directory.ErrUnsafeBucket`) |
+| 3 | The directory cannot be read after the import | The issue is refused: unknown is not "no", and never a partial credential |
+| 3 | After the import a lookup comes without a `sub` | Refused (`directory.ErrNoSub`), never answered by name |
+| — | An agent publishes on `$KV.BUS_DIRECTORY.…` or calls the JetStream API for the bucket | Refused by the NATS server: its credential has no such subject (proven against a NATS server, `TestTheDirectoryKeepsNamesAndPresenceTokens`) |
