@@ -846,6 +846,19 @@ func (s *Store) holdAccount(ctx context.Context, sub, product, name, movedFrom s
 				return err
 			}
 		}
+		// The key of the name it leaves is read before the record is written, and freed
+		// over exactly that revision: a login of this identity that takes that name back
+		// meanwhile touches the key after reading this record's new name, so after this
+		// read, and the delete fails (#72).
+		var oldKey string
+		var oldRev uint64
+		if old != "" && old != name {
+			if k, err := accountKey(product, old); err == nil {
+				if e, err := s.kv.Get(ctx, k); err == nil && string(e.Value()) == sub {
+					oldKey, oldRev = k, e.Revision()
+				}
+			}
+		}
 		if id.Accounts == nil {
 			id.Accounts = map[string]string{}
 		}
@@ -864,17 +877,32 @@ func (s *Store) holdAccount(ctx context.Context, sub, product, name, movedFrom s
 		} else if err != nil {
 			return err
 		}
-		if old != "" && old != name { // the name it left is free again
-			if oldKey, err := accountKey(product, old); err == nil {
-				if e, err := s.kv.Get(ctx, oldKey); err == nil && string(e.Value()) == sub {
-					_ = accountStep("free old")
-					_ = s.kv.Delete(ctx, oldKey, jetstream.LastRevision(e.Revision()))
-				}
+		if err := accountStep("holder put"); err != nil {
+			return err
+		}
+		if !changed && old != name {
+			// Another identity may have taken the key between the touch and the record:
+			// then this record would name a key it does not hold. Take the name back out
+			// of the record and fail the login; the next one moves the name back if
+			// Mattermost still says it is this identity's. A record never names a key
+			// another identity holds.
+			if e, err := s.kv.Get(ctx, s.mustKey(product, name)); err != nil || string(e.Value()) != sub {
+				return errors.Join(err, s.releaseAccount(ctx, sub, product, name), ErrConflict)
 			}
+		}
+		if oldKey != "" { // the name it left is free again
+			_ = accountStep("free old")
+			_ = s.kv.Delete(ctx, oldKey, jetstream.LastRevision(oldRev))
 		}
 		return nil
 	}
 	return ErrConflict
+}
+
+// mustKey is accountKey for a name already checked by the caller.
+func (s *Store) mustKey(product, name string) string {
+	k, _ := accountKey(product, name)
+	return k
 }
 
 // touchAccount gives the key of `name`, held by `sub`, a new revision (or
