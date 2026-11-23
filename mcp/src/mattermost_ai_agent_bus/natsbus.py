@@ -46,6 +46,10 @@ from .login import NKey
 
 log = logging.getLogger(__name__)
 
+# How long closing a superseded connection may take: it runs under the send
+# lock, and a close that never answers must not block the next post.
+CLOSE_SEC = 5.0
+
 MAX_BODY = 65536  # the BUS stream's max_msg_size
 HEARTBEAT_SEC = 30.0
 PRESENCE_FRESH_SEC = 90.0  # a holder's last presence must be younger than this
@@ -371,7 +375,12 @@ class NatsSettings:
     tls_ca_file: str | None = None  # CA bundle that verifies a tls:// server (default: the system's)
 
     def __post_init__(self) -> None:
-        a2a.user_prefix({a2a.PREFIX_ENV: self.props_prefix})  # raises ValueError for a bad one
+        # Store what the bus's own check returns, not what was passed: an empty
+        # value means "unset" there and comes back as the default, and keeping
+        # the empty string would make `k.startswith("")` accept every key,
+        # `from_trusted_human` included. Raises ValueError for a bad one.
+        object.__setattr__(self, "props_prefix",
+                           a2a.user_prefix({a2a.PREFIX_ENV: self.props_prefix}))
         for url in self.servers:
             _check_server(url)  # the access token goes over this connection
         _tls_mode(self.servers)
@@ -663,8 +672,10 @@ class NatsBus:
         old, self._nc, self._connected = self._nc, None, False
         if old is not None:
             try:
-                await old.close()
-            except Exception:
+                # Bounded: this runs under _send_lock, so a close that never
+                # returns would block every post that follows.
+                await asyncio.wait_for(old.close(), timeout=CLOSE_SEC)
+            except (asyncio.TimeoutError, Exception):
                 pass
 
     async def _notify_fatal(self, exc: NatsBusError) -> None:
