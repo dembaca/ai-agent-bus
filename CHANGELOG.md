@@ -5,6 +5,17 @@ before 0.5.0 are described in the git history.
 
 ## Unreleased
 
+- **The login service speaks TLS first** (RT-6.36). Over `tls://` it now
+  sends the TLS handshake before the server's INFO, as the hosts already do,
+  so the NATS server needs `handshake_first` in its `tls` block
+  (`services/auth/nats-server.example.conf`). A server that still waits for
+  older clients may hold a duration (`"300ms"`) during the move; set it to
+  `true` once this login service runs. `AUTH_NATS_URL` and `AUTH_JS_URL`
+  that mix `tls://` with another scheme are refused at the start. A host whose
+  server does not speak TLS first now says so in its log (`TLS: the server
+  does not speak TLS first: set handshake_first in its tls block, or this is
+  not a NATS TLS port`), and a certificate that is not trusted or names
+  another host says which, instead of a bare `SSLError`.
 - **The Mattermost account index follows logins after the import** (#59,
   ADR-016, RT-6.41 step 2). A login whose chat account logs in over OpenID
   with the token's `sub` sets that account's name on its identity: new
