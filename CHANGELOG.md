@@ -11,7 +11,7 @@ before 0.5.0 are described in the git history.
   type-only import. It now declares the peer range `>=2.1.2 <2.5` (so 2.4.0, the
   version the owner runs, is included), carries a `tsconfig` and a `typecheck`
   script, and CI runs `npm ci` and compiles it against `@opencode/plugin`'s own
-  types - a hook the API drops fails there. No behaviour changed: the context's
+  types at 2.1.2, 2.4.0 and 2.4.1 (both ends of the peer range) - a hook the API drops fails there. No behaviour changed: the context's
   domains and `mcp`/`skill.transform` are the same from 2.1.2 through 2.4.x, and
   it is tested by hand with 2.4.0. What the casts hide (the `editor` inside the
   two `transform` callbacks, `session.synthetic`, the `prompt` event) is not

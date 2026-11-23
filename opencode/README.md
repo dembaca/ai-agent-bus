@@ -19,8 +19,9 @@ and the arguments of the hooks this file calls **without** a cast — `mcp.trans
 `skill.transform`, `session.hook("prompt", ...)`.
 
 What it does **not** cover, because the value is cast (or the callback's parameter is
-`any`), is the *inside* of those calls: in the two `transform` callbacks `editor` is
-`any`, so `editor.get`, `editor.list`, `editor.set` and `editor.add` are unchecked
-(`plugin/mattermost-agent-bus.ts:649,654`); likewise `session.synthetic(...)` and the
-`prompt` hook's event object. An API change there passes the typecheck and fails in a
-session, so it needs a run on a real host (RT-6.20).
+`any`), is the *inside* of those calls. The `editor: any` at
+`plugin/mattermost-agent-bus.ts:649,654` is what makes it untyped, so the
+`editor.get`/`list`/`set` calls in `addMcp` (`:230,248`) and `editor.get`/`add` at
+`:655` are unchecked; likewise `session.synthetic(...)` and the `prompt` hook's
+event object. An API change there passes the typecheck and fails in a session, so it
+needs a run on a real host (RT-6.20).
