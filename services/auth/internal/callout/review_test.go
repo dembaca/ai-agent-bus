@@ -205,87 +205,116 @@ func (failingChannels) Memberships(context.Context, string, []string) (map[strin
 	return nil, errors.New("HTTP 500")
 }
 
-// countingSlowChannels delays each lookup and records how many ran at once, so a
-// test can assert concurrency by observation instead of inferring it from a
-// deadline expiring.
-type countingSlowChannels struct {
+// barrierChannels holds every lookup until `want` of them are inside at once, then
+// releases all. That makes "answered at once" the condition the test can wait for,
+// instead of a deadline: if the service answers them one after another, the first
+// lookup waits until its own deadline and the test fails clearly. A slow runner only
+// delays the release; it cannot turn a concurrent path into a serial one.
+//
+// It fails rather than hangs when the service allows fewer than `want` at once
+// (MaxPending): the deadline ends the wait and the error names how many arrived.
+type barrierChannels struct {
 	Channels
-	d       time.Duration
-	mu      sync.Mutex
-	now     int
-	highest int
+	want  int
+	mu    sync.Mutex
+	start []chan struct{} // one per lookup inside
+	most  int
 }
 
-func (s *countingSlowChannels) Memberships(ctx context.Context, u string, chs []string) (map[string]bool, error) {
-	s.mu.Lock()
-	s.now++
-	if s.now > s.highest {
-		s.highest = s.now
+func (b *barrierChannels) Memberships(ctx context.Context, u string, chs []string) (map[string]bool, error) {
+	b.mu.Lock()
+	mine := make(chan struct{})
+	b.start = append(b.start, mine)
+	if len(b.start) > b.most {
+		b.most = len(b.start)
 	}
-	s.mu.Unlock()
+	release := len(b.start) >= b.want
+	if release {
+		for _, c := range b.start {
+			close(c)
+		}
+	}
+	b.mu.Unlock()
+	// Always give the slot back, released or not: an attempt that ends without a
+	// release (its context ended, or its dial failed and it retried) must not leave a
+	// ghost in the barrier, or the next full count would include it and never meet.
 	defer func() {
-		s.mu.Lock()
-		s.now--
-		s.mu.Unlock()
+		b.mu.Lock()
+		for i, c := range b.start {
+			if c == mine {
+				b.start = append(b.start[:i], b.start[i+1:]...)
+				break
+			}
+		}
+		b.mu.Unlock()
 	}()
 	select {
+	case <-mine:
 	case <-ctx.Done():
 		return nil, ctx.Err()
-	case <-time.After(s.d):
 	}
-	return s.Channels.Memberships(ctx, u, chs)
+	return b.Channels.Memberships(ctx, u, chs)
+}
+
+func (b *barrierChannels) highest() int {
+	b.mu.Lock()
+	defer b.mu.Unlock()
+	return b.most
+}
+
+// logRetry makes a retry visible in the test log, so a CI run says whether any
+// happened at all. Without it a retry is invisible and a rising rate goes unnoticed.
+func logRetry(t *testing.T, attempt int, err error) {
+	t.Helper()
+	t.Logf("retrying the dial after attempt %d: %v", attempt, err)
 }
 
 func TestLoginsAreAnsweredAtOnce(t *testing.T) {
-	// Six logins, each with a lookup slower than a sixth of the timeout: answered
-	// one after another they could not all fit, so the test's subject is that they
-	// are answered concurrently. It observes that directly (how many lookups were
-	// inside at the same time) instead of inferring it from a deadline: the old form
-	// needed one request's 600ms to fit the 1500ms default on a loaded CI runner,
-	// which is a property of the runner, not of the service.
-	const delay = 600 * time.Millisecond
-	slow := &countingSlowChannels{Channels: nil, d: delay}
-	l := newLabWith(t, func(c Channels) Channels { slow.Channels = c; return slow }, 5*time.Second)
-	start := time.Now()
+	// Six logins, all held at a barrier until they are inside at once. Six is the
+	// scenario: a handful of sessions arriving together on one lease. The service's
+	// own limit (MaxPending) is a precondition, not the number to test with: taking
+	// the count from it would let a lowered limit pass silently, and the test exists
+	// to notice exactly that.
+	const want = 6
+	if MaxPending < want {
+		t.Fatalf("MaxPending is %d, below the %d logins this test requires at once", MaxPending, want)
+	}
+	slow := &barrierChannels{want: want}
+	// The service's own timeout, below the server's 3s callout timeout as the README
+	// asks (README.md:63); the lookup's only wait is the barrier, so this value only
+	// bounds a failure.
+	l := newLabWith(t, func(c Channels) Channels { slow.Channels = c; return slow }, 2500*time.Millisecond)
 	var wg sync.WaitGroup
-	errs := make(chan error, 6)
-	for range 6 {
+	errs := make(chan error, want)
+	for range want {
 		wg.Go(func() {
-			// The client's own timeout, above the server's deadline: nats.go ends a
-			// login at 2s by default, which is what failed under load, not the callout.
-			// A retry covers a nats.go handshake race that shows up only under a
-			// starved CPU ("expected 'PONG', got 'PING'"): the subject here is that
-			// logins are answered at once, not that dialling never races.
 			var err error
-			for attempt := 0; attempt < 3; attempt++ {
+			for attempt := 1; attempt <= 3; attempt++ {
 				if _, err = l.connectTimeout("alice", l.realm.Token("alice", nil),
 					Hello{Home: "home"}, nil, 10*time.Second); err == nil ||
 					!strings.Contains(err.Error(), "expected 'PONG'") {
 					break
 				}
+				// Visible, so a CI log says whether a retry happened at all
+				// (0 in 50 clean runs here; it needs a starved CPU).
+				logRetry(t, attempt, err)
 			}
 			errs <- err
 		})
 	}
 	wg.Wait()
 	close(errs)
-	elapsed := time.Since(start)
-	slow.mu.Lock()
-	highest := slow.highest
-	slow.mu.Unlock()
+	// The overlap first: with a serialised callout the clients also fail, and the
+	// server's "Authorization Violation" (the deadline passed before an answer) would
+	// hide what the test is about.
+	if got := slow.highest(); got != want {
+		t.Fatalf("%d of %d logins were inside at once, want %d: they are not answered at once",
+			got, want, want)
+	}
 	for err := range errs {
 		if err != nil {
 			t.Fatalf("a login was not answered: %v", err)
 		}
-	}
-	// The property that holds whatever the load: not all six waited for each other.
-	// Six serial lookups overlap not at all; a starved single CPU still overlapped
-	// 3–5 of 6 in every measured run under twelve `yes` processes. The bar is 2, far
-	// from both sides, so neither a slow runner nor a fast one decides the result.
-	// No wall-clock bound here: it was what flaked, and it measured the runner.
-	if highest < 2 {
-		t.Fatalf("at most %d of 6 logins overlapped: they are not answered at once (took %s)",
-			highest, elapsed)
 	}
 }
 
