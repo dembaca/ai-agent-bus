@@ -5,6 +5,10 @@ before 0.5.0 are described in the git history.
 
 ## Unreleased
 
+- **The account index keeps a name when one identity logs in with two at
+  once** (#72, RT-6.41 step 2). The name its record lists stays resolvable;
+  before, both keys could be gone until its next login (fail closed).
+
 - **The Mattermost account index follows logins after the import** (#59,
   ADR-016, RT-6.41 step 2). A login whose chat account logs in over OpenID
   with the token's `sub` sets that account's name on its identity: new

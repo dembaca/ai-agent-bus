@@ -543,6 +543,9 @@ func (s *Store) SetAccount(ctx context.Context, sub, product, name string) error
 			return ErrNoIdentity
 		}
 		if id.Accounts[product] == name {
+			// No rewrite needed. A release could otherwise race this fast path, but none
+			// runs while SetAccount does: the import is its only caller, it runs before the
+			// import mark, and claims (and with them releases) only after it (#72).
 			return nil
 		}
 		old := id.Accounts[product]
@@ -834,6 +837,15 @@ func (s *Store) holdAccount(ctx context.Context, sub, product, name, movedFrom s
 		if !changed && old == name && (movedFrom == "" || id.MovedFrom[product] == movedFrom) {
 			return nil
 		}
+		if !changed && old != name {
+			// The key of `name` is this identity's and did not change in this call, but the
+			// record names another: a login of the same identity with that other name may be
+			// about to free the key of `name` over the revision it read. Touch the key first,
+			// so that delete fails; recreate it when it is already gone (#72).
+			if err := s.touchAccount(ctx, sub, product, name); err != nil {
+				return err
+			}
+		}
 		if id.Accounts == nil {
 			id.Accounts = map[string]string{}
 		}
@@ -855,9 +867,45 @@ func (s *Store) holdAccount(ctx context.Context, sub, product, name, movedFrom s
 		if old != "" && old != name { // the name it left is free again
 			if oldKey, err := accountKey(product, old); err == nil {
 				if e, err := s.kv.Get(ctx, oldKey); err == nil && string(e.Value()) == sub {
+					_ = accountStep("free old")
 					_ = s.kv.Delete(ctx, oldKey, jetstream.LastRevision(e.Revision()))
 				}
 			}
+		}
+		return nil
+	}
+	return ErrConflict
+}
+
+// touchAccount gives the key of `name`, held by `sub`, a new revision (or
+// creates it again for `sub` when it is gone), so that a delete over an
+// older revision fails. ErrConflict when another identity holds it now.
+func (s *Store) touchAccount(ctx context.Context, sub, product, name string) error {
+	key, err := accountKey(product, name)
+	if err != nil {
+		return err
+	}
+	for range 5 {
+		e, err := s.kv.Get(ctx, key)
+		if errors.Is(err, jetstream.ErrKeyNotFound) {
+			if _, err := s.kv.Create(ctx, key, []byte(sub)); errors.Is(err, jetstream.ErrKeyExists) {
+				continue
+			} else if err != nil {
+				return err
+			}
+			return nil
+		}
+		if err != nil {
+			return err
+		}
+		if string(e.Value()) != sub {
+			return ErrConflict
+		}
+		if _, err := s.kv.Update(ctx, key, []byte(sub), e.Revision()); err != nil {
+			if isWrongSequence(err) || errors.Is(err, jetstream.ErrKeyNotFound) {
+				continue
+			}
+			return err
 		}
 		return nil
 	}

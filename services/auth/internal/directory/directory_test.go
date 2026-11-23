@@ -1024,3 +1024,99 @@ func TestAReleaseLosesToAHolderThatTookTheKeyMeanwhile(t *testing.T) {
 		t.Fatalf("the key's holder lost the name: %+v %v", id, ok)
 	}
 }
+
+// #72: one identity logs in with two names at once. Login 1 takes `n` and is
+// about to free `m` over the revision it read; login 2, with the stale name
+// `m`, writes its record back to `m` meanwhile. Login 2 touches the key of
+// `m` first, so login 1's delete fails and `m` stays resolvable.
+func TestTwoLoginsOfOneIdentityWithTwoNamesLeaveAKey(t *testing.T) {
+	s, _, _ := imported3(t)
+	if _, err := s.ClaimAccount(ctx(t), "sub-a", "mattermost", "m"); err != nil {
+		t.Fatal(err)
+	}
+	once := true
+	t.Cleanup(SetAccountStepForTest(func(at string) error {
+		if at == "free old" && once {
+			once = false
+			if _, err := s.ClaimAccount(ctx(t), "sub-a", "mattermost", "m"); err != nil {
+				t.Error(err)
+			}
+		}
+		return nil
+	}))
+	if _, err := s.ClaimAccount(ctx(t), "sub-a", "mattermost", "n"); err != nil {
+		t.Fatal(err)
+	}
+	id, _, _, _ := s.Identity(ctx(t), "sub-a")
+	name := id.Accounts["mattermost"]
+	if got, ok, _ := s.ByAccount(ctx(t), "mattermost", name); !ok || got.Sub != "sub-a" {
+		t.Fatalf("the record names %q, which resolves to %+v (%v)", name, got, ok)
+	}
+}
+
+// The same under load: two logins of one identity with two names, 100 rounds
+// (run with -race); the name the record lists always resolves to it.
+func TestConcurrentLoginsOfOneIdentityAlwaysLeaveItsNameResolvable(t *testing.T) {
+	s, _ := open(t)
+	if _, err := s.Login(ctx(t), "sub-a", "x", ""); err != nil {
+		t.Fatal(err)
+	}
+	for i := range 100 {
+		m, n := "m"+strconv.Itoa(i), "n"+strconv.Itoa(i)
+		if _, err := s.ClaimAccount(ctx(t), "sub-a", "mattermost", m); err != nil {
+			t.Fatal(err)
+		}
+		var wg sync.WaitGroup
+		errs := make([]error, 2)
+		for j, name := range []string{n, m} {
+			wg.Add(1)
+			go func() {
+				defer wg.Done()
+				_, errs[j] = s.ClaimAccount(ctx(t), "sub-a", "mattermost", name)
+			}()
+		}
+		wg.Wait()
+		if errors.Join(errs...) != nil {
+			continue // a login that gave up is tried again
+		}
+		id, _, _, _ := s.Identity(ctx(t), "sub-a")
+		name := id.Accounts["mattermost"]
+		if got, ok, _ := s.ByAccount(ctx(t), "mattermost", name); !ok || got.Sub != "sub-a" {
+			t.Fatalf("round %d: the record names %q, which resolves to %+v (%v)", i, name, got, ok)
+		}
+	}
+}
+
+// settle's branch for a mark that another write replaced meanwhile: it names a
+// holder other than the one this move took the key from, which still lists
+// the name. That one is released too (#72).
+func TestAMarkReplacedMeanwhileIsReleasedToo(t *testing.T) {
+	s, a, _ := imported3(t)
+	if _, err := s.Login(ctx(t), "sub-x", "x", ""); err != nil {
+		t.Fatal(err)
+	}
+	once := true
+	t.Cleanup(SetAccountStepForTest(func(at string) error {
+		if at == "before key" && once {
+			once = false
+			if err := s.holdAccount(ctx(t), "sub-x", "mattermost", "alice", "", true); err != nil {
+				t.Error(err)
+			}
+			if _, err := s.kv.Put(ctx(t), moveKey("mattermost", "alice"), []byte("sub-x")); err != nil {
+				t.Error(err)
+			}
+		}
+		return nil
+	}))
+	_ = a
+	mv, err := s.ClaimAccount(ctx(t), "sub-b", "mattermost", "alice")
+	if err != nil || mv.From != "sub-a" || mv.Released != "sub-x" {
+		t.Fatalf("move %+v, %v", mv, err)
+	}
+	if listsAlice(t, s, "sub-x") || listsAlice(t, s, "sub-a") {
+		t.Fatal("a former holder keeps the name")
+	}
+	if id, ok, _ := s.ByAccount(ctx(t), "mattermost", "alice"); !ok || id.Sub != "sub-b" {
+		t.Fatalf("resolves to %+v %v", id, ok)
+	}
+}
