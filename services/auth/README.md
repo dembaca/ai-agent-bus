@@ -48,6 +48,11 @@ With `AUTH_NATS_URL` set the service answers the auth callout, and these
 apply. Secrets are always files, never values in the environment; example
 values are placeholders.
 
+The NATS server's side of it is in
+[`nats-server.example.conf`](nats-server.example.conf): the callout's account
+and the tenant's, the two users of this service, `auth_callout`, TLS and
+JetStream, with placeholders instead of keys. A test starts a server from it.
+
 | Variable | Default | Meaning |
 | --- | --- | --- |
 | `AUTH_NATS_URL` | — | the NATS server, `tls://` (plain `nats://` only on a loopback host); unset: no callout, health only |
@@ -297,6 +302,10 @@ server knows one issuer at a time.
   system admin's token at all depends on its privacy settings; the lab checks
   it. Without it an OpenID account's `sub` cannot be compared, and the check
   refuses the login.
+- **A smaller Mattermost right than a system admin's:** whether a bot with
+  the system role "User Manager" (it reads users and nothing else) sees
+  `auth_service` and `auth_data` is unverified. Until someone has checked it,
+  the token is a system admin's.
 - **Who sent a post, as the receiver sees it:** the subject's last token
   names the sender, and only the sender can publish there: agents talk to no
   service, and the streams do not acknowledge (ADR-014 point 16). A receiver
