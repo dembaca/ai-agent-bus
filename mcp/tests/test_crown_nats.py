@@ -747,21 +747,33 @@ async def test_a_session_without_a_nats_home_keeps_the_mattermost_election(tmp_p
     assert owners and receipt  # the modules the real election uses are the ones imported here
 
 
-async def test_a_nats_sender_is_shown_by_its_proven_bot_but_stays_the_author(w: World) -> None:
-    """#66, RT-6.36 step 8: `shown_as` names the bot of a link proven afresh on every read
-    (lease._linked_owned, nothing cached); `author`, which every decision reads, stays the
-    NATS name."""
+async def test_a_nats_sender_is_shown_by_its_proven_bot_but_stays_the_author(
+        w: World, monkeypatch: pytest.MonkeyPatch) -> None:
+    """#66, RT-6.36 step 8: `shown_as` names the bot of a link proven afresh on every read by
+    the one test of a link (lease._linked_owned, owner included), on the post and on its
+    reactions; agents DM by it, so nothing is cached. `author`, which decisions read, stays
+    the NATS name."""
     from mattermost_ai_agent_bus import slim
     from mattermost_ai_agent_bus.model import Post
 
     await _roster_world(w)
-    post = Post(id="n1:home:7", channel_id=WORK, user_id=NAME_A, message="hi")
+    post = Post(id="n1:home:7", channel_id=WORK, user_id=NAME_A, message="hi",
+                reactions=(Reaction(user_id=NAME_A, post_id="n1:home:7", emoji_name="eyes"),))
 
-    async def one() -> dict[str, Any]:
-        return (await slim.posts(w.port, [post]))[0]  # type: ignore[arg-type]
+    async def one(p: Post = post) -> dict[str, Any]:
+        return (await slim.posts(w.port, [p]))[0]  # type: ignore[arg-type]
 
     got = await one()
     assert got["author"] == NAME_A and got["shown_as"] == "agent-a"
+    assert got["reactions"][0]["author"] == NAME_A and got["reactions"][0]["shown_as"] == "agent-a"
+    # a reaction alone brings its NATS sender in: the post's author is a Mattermost bot
+    by_bot = Post(id="p" * 26, channel_id=WORK, user_id=BOT, message="hi",
+                  reactions=(Reaction(user_id=NAME_A, post_id="p" * 26, emoji_name="eyes"),))
+    got = await one(by_bot)
+    assert "shown_as" not in got and got["reactions"][0]["shown_as"] == "agent-a"
+    # only the names asked for
+    assert await lease.shown_as(w.port, {NAME_B}) == {}  # type: ignore[arg-type]
+    assert await lease.shown_as(w.port, {NAME_A}) == {NAME_A: "agent-a"}  # type: ignore[arg-type]
     bot(w.inner, BOT_A, "agent-a", 2000, crown=True)  # the bot takes its tag back
     assert "shown_as" not in await one()
     bot(w.inner, BOT_A, "agent-a", 2000, crown=True, tag=TAG[NAME_A])
@@ -769,5 +781,18 @@ async def test_a_nats_sender_is_shown_by_its_proven_bot_but_stays_the_author(w: 
     w.fake.owners[NAME_A] = "carol"  # the name's owner is not the bot's
     assert "shown_as" not in await one()
     w.fake.owners[NAME_A] = "alice"
+    # a failed read shows nothing, and the next read shows again: nothing kept
+    real = w.inner.channel_users
+    fails = [True]
+
+    async def flaky(channel_id: str) -> list[ChannelUser]:
+        if fails[0]:
+            fails[0] = False
+            raise RuntimeError("chat down")
+        return await real(channel_id)
+
+    monkeypatch.setattr(w.inner, "channel_users", flaky)
+    assert "shown_as" not in await one()
+    assert (await one())["shown_as"] == "agent-a"
     w.port.fail("the credential names another agent")  # the NATS side is lost
     assert "shown_as" not in await one()
