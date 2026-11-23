@@ -4581,7 +4581,7 @@ zurückzufallen. Daraus folgen zwei Punkte für die Umstellung:
 
 Gebaut ist auch die Pflege über die Verwaltungs-Schnittstelle des
 Anmeldedienstes und der einmalige Import aus Mattermost (Entscheidungen 1,
-2, 3 und 8; RT-6.40); die Kommandozeile `authd dir …` folgt. Ein Konto mit
+2, 3 und 8; RT-6.40), mit der Kommandozeile `authd dir …` und Anmeldung über den Device-Flow von Keycloak. Ein Konto mit
 Passwort wird erst Mitglied, wenn ein Verwalter seinen Anspruch bestätigt
 hat (RISK-18); ein Kanal ohne menschlichen Ersteller mit `sub` bekommt
 keinen Eigentümer, sodass nur Verwalter ihn pflegen.
