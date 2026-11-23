@@ -64,6 +64,15 @@ def _endpoint_files(tmp_path: Path) -> list[Path]:
     return sorted((tmp_path / "state").rglob("endpoint-*.env"))
 
 
+def _stderr_tail(p: subprocess.Popen) -> str:
+    """The last lines the server wrote, from the file the fixture gave it."""
+    log = getattr(p, "stderr_log", None)
+    try:
+        return log.read_text(errors="replace")[-2000:] if log is not None else ""
+    except OSError:
+        return ""
+
+
 def _wait_for(cond, timeout: float = 10) -> bool:
     deadline = time.monotonic() + timeout
     while time.monotonic() < deadline:
@@ -76,14 +85,20 @@ def _wait_for(cond, timeout: float = 10) -> bool:
 @pytest.fixture
 def start(mm, tmp_path):
     procs: list[subprocess.Popen] = []
+    logs: list[Path] = []
 
     def _start(**extra: str) -> subprocess.Popen:
-        # stderr is kept, not sent to DEVNULL: when a run fails, the server's
-        # last lines are the only thing that says why (review of #34).
-        p = subprocess.Popen([str(PY), "-m", "mattermost_ai_agent_bus"], stdin=subprocess.PIPE,
-                             stdout=subprocess.PIPE, stderr=subprocess.PIPE,
-                             cwd=_project(tmp_path), env=_env(mm, tmp_path, **extra))
+        # stderr goes to a file, not DEVNULL and not a pipe: the lines are the
+        # only thing that says why a run failed, and a pipe nobody reads fills
+        # up and hangs the server (review of #34). A file needs no reader.
+        log = tmp_path / f"stderr-{len(logs)}.log"
+        logs.append(log)
+        with log.open("wb") as sink:
+            p = subprocess.Popen([str(PY), "-m", "mattermost_ai_agent_bus"],
+                                 stdin=subprocess.PIPE, stdout=subprocess.PIPE, stderr=sink,
+                                 cwd=_project(tmp_path), env=_env(mm, tmp_path, **extra))
         procs.append(p)
+        p.stderr_log = log  # type: ignore[attr-defined]
         return p
 
     yield _start
@@ -116,7 +131,7 @@ def test_sigterm_ends_the_server_within_seconds(start, tmp_path, push):
     p.send_signal(signal.SIGTERM)
     code = p.wait(timeout=6)
     took = time.monotonic() - t
-    tail = (p.stderr.read() or b"").decode(errors="replace")[-2000:] if p.stderr else ""
+    tail = _stderr_tail(p)
     assert code == 0, f"exit {code} after {took:.1f}s; stderr tail:\n{tail}"
     assert took < 3.5, f"took {took:.1f}s; stderr tail:\n{tail}"
     assert _endpoint_files(tmp_path) == [], f"file left behind; stderr tail:\n{tail}"
