@@ -10,7 +10,7 @@ import time
 import pytest
 from fakes import BOT, WORK, FakeChat
 
-from mattermost_ai_agent_bus import channel, gate, lease, server, tasks
+from mattermost_ai_agent_bus import channel, gate, lease, owners, server, tasks
 from mattermost_ai_agent_bus.model import ChannelUser, RosterEntry
 
 OLDER = "o" * 26
@@ -251,6 +251,63 @@ async def test_a_foreign_circle_in_the_home_blocks_every_automatic_claim(owned):
     assert await _ticks(owned)
 
 
+@pytest.mark.parametrize("why", ["unreadable", "no-account"])
+async def test_trusted_humans_not_resolved_keep_a_foreign_older_agent_from_standing(
+        owned, monkeypatch, why):
+    """RT-6.6 step 2, ADR-016: MM_TRUSTED_HUMANS names dembaca, but the lookup
+    resolves nobody (a 503, or a typo's 404): the split stays on with the
+    configured names, so an older reachable agent of another owner does not
+    stand, and neither does anyone beside it."""
+    monkeypatch.setenv("MM_TRUSTED_HUMANS", "dembaca")
+    owned.trusted = {}
+    if why == "unreadable":
+        async def down():
+            raise RuntimeError("503")
+        monkeypatch.setattr(owned, "trusted_humans", down)
+    owned.descriptions[FAR] = CAROL
+    rows = [{"id": FAR, "reachable": True}, {"id": BOT, "reachable": True}]
+    assert (await lease._election(owned, rows)).ids == []
+
+
+@pytest.mark.parametrize("far", [CAROL, "for @\x00unresolved · trusts @\x00unresolved · via agent-registrar"],
+                         ids=["another-owner", "a-name-no-username-has"])
+async def test_trusted_humans_configured_by_id_alone_keep_a_foreign_agent_from_standing(
+        owned, monkeypatch, far):
+    """RT-6.6 step 2, ADR-016: only MM_TRUSTED_HUMAN_USER_IDS is set and the
+    names behind the ids cannot be read: still in doubt, never "none
+    configured", so an older agent of another owner does not stand. Nor does
+    one whose description names an owner no username can be (a NUL): "nobody
+    is a peer" is a value, not a name a description could match."""
+    monkeypatch.delenv("MM_TRUSTED_HUMANS", raising=False)
+    monkeypatch.setenv("MM_TRUSTED_HUMAN_USER_IDS", "h" * 26)
+    owned.trusted = {}
+    owned.descriptions[FAR] = far
+    rows = [{"id": FAR, "reachable": True}, {"id": BOT, "reachable": True}]
+    ids = (await lease._election(owned, rows)).ids
+    assert FAR not in ids
+    if far == CAROL:
+        assert ids == []  # a foreign owner circle: nobody stands
+    names, _ = await owners.mine(owned)
+    assert names, "the owner split turned off"
+    assert FAR in await owners.foreign(owned, {FAR})
+    assert not await owners.peer(owned, FAR)
+
+
+async def test_a_short_outage_keeps_a_peer_standing(owned, monkeypatch):
+    """RT-6.6 step 2, ADR-016: an owner read a moment ago stands while its
+    description cannot be read, for OWNER_GRACE_SEC; then nobody stands."""
+    clock = [1000.0]
+    monkeypatch.setattr(owners, "monotonic", lambda: clock[0])
+    owned.descriptions[YOUNGER] = MINE
+    rows = [{"id": BOT, "reachable": True}, {"id": YOUNGER, "reachable": True}]
+    assert (await lease._election(owned, rows)).ids == [BOT, YOUNGER]
+    del owned.descriptions[YOUNGER]  # Mattermost fails for it
+    clock[0] += owners.OWNER_GRACE_SEC - 1
+    assert (await lease._election(owned, rows)).ids == [BOT, YOUNGER]
+    clock[0] += 1
+    assert (await lease._election(owned, rows)).ids == []
+
+
 async def test_an_unbound_agent_is_skipped_for_a_bound_server(owned):
     """RT-6.6 step 2: the unbound oldest agent (case 3 of ADR-007) is foreign;
     the bound younger one claims."""
@@ -316,7 +373,9 @@ async def test_an_own_description_that_cannot_be_read_blocks_like_any_other(home
     assert not await _ticks(home)
     home.descriptions[BOT] = UNBOUND  # readable again, and unbound: still no claim
     assert not await _ticks(home)
-    home.trusted = {}
+    home.trusted = {}  # none resolved now: in doubt the names last read hold (ADR-016)
+    assert not await _ticks(home)
+    owners.reset()  # none configured from the start (a session's list does not vanish)
     assert await _ticks(home)
 
 

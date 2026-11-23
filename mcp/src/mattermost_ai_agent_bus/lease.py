@@ -32,6 +32,7 @@ import re
 import time
 import weakref
 from collections.abc import Awaitable, Callable, Iterable, Mapping
+from collections.abc import Set as AbstractSet
 from dataclasses import dataclass
 from datetime import datetime, timezone
 from pathlib import Path
@@ -936,28 +937,29 @@ class Election:
 async def _election(client: ChatPort, rows: list[dict[str, Any]]) -> Election:
     """RT-6.6 step 2 (ADR-007 amendment step 4, the crown only for peers):
     who stands for the crown in the home of `rows`, as this server sees it.
-    Without trusted humans no peer can be told (the owner split is off) and
-    every reachable agent stands, as before. Else the reachable agents with an
+    Without trusted humans configured no peer can be told (the owner split
+    is off) and every reachable agent stands, as before; configured but not
+    readable now, the split stays on (ADR-016). Else the reachable agents with an
     owner (owners.read) stand if this bot is bound and a peer of each of them;
     the ones without an owner are foreign to them and stand only where no agent
     has one. A description that cannot be read blocks the election (nothing is
-    assumed): `owners.read` is None for it, '' for no owner. This bot's own
+    assumed) once the owner last read for it is older than
+    owners.OWNER_GRACE_SEC: `owners.known` is None for it, '' for no owner. This bot's own
     description too: with trusted humans only their absence makes parity."""
     oldest = [r["id"] for r in rows if r["reachable"]]
-    try:
-        names = await owners.trusted_names(client)
-        me = (await client.get_me()).id if names else ""
-    except Exception as exc:  # noqa: BLE001 — the owner split is off, as in owners.mine
-        log.info("crown: trusted humans or own account not read, every agent stands: %s", exc)
-        return Election(oldest)
+    # In doubt the split stays on (ADR-016, as in owners.mine): names that
+    # cannot be read now are the last read or the configured ones; only none
+    # configured lets every agent stand.
+    names, me = await owners.names_in_doubt(client)
     if not names:
         return Election(oldest)
     ids = oldest if me in oldest else [*oldest, me]
-    agents = {i: await owners.read(client, i) for i in ids}  # never raises: None is unreadable
+    # never raises; the owner last read holds for OWNER_GRACE_SEC, then None: nobody stands
+    agents = {i: await owners.known(client, i) for i in ids if i}
     return standing(oldest, me, names, agents)
 
 
-def standing(oldest: list[str], me: str, names: set[str],
+def standing(oldest: list[str], me: str, names: AbstractSet[str],
              agents: Mapping[str, owners.Owner | None]) -> Election:
     """The rule of _election on what it read, so that the home over NATS (RT-6.38) applies
     exactly the same one: `oldest` the reachable agents in their order (the oldest, or by

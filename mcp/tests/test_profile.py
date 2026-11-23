@@ -191,3 +191,11 @@ async def test_session_start_warns_when_the_own_bot_has_another_owner(monkeypatc
         await c.session_start("proj")
     assert ("owned by @alice, not by the responsible human @carol" in c.profile_warning) == warns
     assert ("owner vs responsible human" in caplog.text) == warns
+
+
+def test_an_owner_is_a_username_or_none():
+    """ADR-016: only what a chat username can be names an owner; a NUL, a
+    control character or a symbol names none."""
+    assert profile.owner("for @Alice.B-c_d · via agent-registrar") == "alice.b-c_d"
+    for bad in ("\x00unresolved", "al\x07ice", "al*ce", ".alice", "a" * 65):
+        assert profile.owner(f"for @{bad} · via agent-registrar") == "", bad

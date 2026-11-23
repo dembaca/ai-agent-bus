@@ -14,6 +14,9 @@ before 0.5.0 are described in the git history.
   cannot be read, or trusted humans that cannot, no longer turn the owner
   split off, nor do configured names none of which resolves: only a bot
   read without an owner does.
+  The crown election follows the same rule, on Mattermost and in a home
+  over NATS: trusted humans that cannot be resolved never let an agent of
+  another owner stand (RT-6.6, RT-6.38).
 
 - **The login service image is published to GHCR.** Each merge to `main` that
   changes `services/auth/` pushes `ghcr.io/dembaca/ai-agent-bus-auth:<commit SHA>`
