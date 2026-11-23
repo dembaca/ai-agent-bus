@@ -330,7 +330,8 @@ def _instructions() -> str:
     return (
         f"AI agent bus {VERSION}, chat: Mattermost. "
         + ("When bus_info shows over_nats, your home runs over NATS and people do not see its "
-           "posts in Mattermost; reach them with ask_human (RT-6.36). "
+           "posts in Mattermost; reach them with ask_human (RT-6.36). A post's shown_as is its "
+           "NATS sender's bot, to show and to DM (to=), never an identity. "
            if compose.nats_homes_from_env() else "")
         + (f"The bus is off in this corral session: {UNAVAILABLE}. The bot token stays "
            "on the host, so these tools cannot reach Mattermost here; do not register a "
@@ -2361,7 +2362,7 @@ async def get_thread(post_id: str, raw: bool = False) -> str:
     """post_id's thread, root + replies, oldest first.
 
     Slim posts {id, root_id, channel, author, at, message, files, reactions}; an
-    ask adds `ask_card`; shown_as: display. raw: all.
+    ask adds `ask_card`; shown_as: its bot. raw: all.
     """
     if bad := _bad_id(post=post_id or "-"):
         return _refused("get_thread", bad)
