@@ -356,3 +356,25 @@ func TestAnAttestationThatIsNotStoredRefusesTheLogin(t *testing.T) {
 		t.Fatalf("with the right: %v", err)
 	}
 }
+
+// The record counts only with exactly the bytes just written: an agent that
+// logs in again, whose new record the server refuses, does not pass on its
+// older record with the older list.
+func TestAnOlderStoredRecordDoesNotCountForANewLogin(t *testing.T) {
+	c := newConsumerLab(t, nil)
+	c.setup()
+	c.svc.SetAttester(NATSAttester{NC: c.nc, Stream: consumers.PresenceStream})
+	host := newHost()
+	if _, err := c.login("alice", host, Hello{Home: "home", Trusted: []string{"bob"}}); err != nil {
+		t.Fatal(err)
+	}
+	nc, err := nats.Connect(c.url, nats.UserInfo("jsnoatt", "pwd"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(nc.Close)
+	c.svc.SetAttester(NATSAttester{NC: nc, Stream: consumers.PresenceStream})
+	if a, err := c.login("alice", host, Hello{Home: "home", Trusted: []string{"carol"}}); err == nil {
+		t.Fatalf("logged in again on the older record: %s", a.name)
+	}
+}
