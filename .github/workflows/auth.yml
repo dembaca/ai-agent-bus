@@ -13,7 +13,12 @@ on:
     paths:
       - 'services/auth/**'
       - '.github/workflows/auth.yml'
+  # By hand, to publish the image of main again; the publish job below still
+  # refuses any other branch.
+  workflow_dispatch:
 
+# Read-only for the whole workflow. Only the publish job asks for more, and it
+# never runs for a pull request.
 permissions:
   contents: read
 
@@ -63,3 +68,76 @@ jobs:
         # The Dockerfile pins its base images by digest; this makes sure it
         # still builds after a change, without pushing anywhere.
         run: docker build --build-arg VERSION="ci-${GITHUB_SHA::7}" -t ai-agent-bus-auth:ci .
+
+  publish:
+    name: publish the image to GHCR
+    # Only what is on main, and only after the tests above passed. Never for a
+    # pull request: a PR (from a fork or not) gets no write token and no push.
+    needs: build
+    if: github.event_name != 'pull_request' && github.ref == 'refs/heads/main'
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+    permissions:
+      contents: read
+      packages: write        # push to ghcr.io with GITHUB_TOKEN, no PAT
+      id-token: write        # sign the build provenance (Sigstore, OIDC)
+      attestations: write    # store the provenance attestation
+    env:
+      IMAGE: ghcr.io/dembaca/ai-agent-bus-auth
+    steps:
+      - uses: actions/checkout@11bd71901bbe5b1630ceea73d27597364c9af683  # v4.2.2
+        with:
+          persist-credentials: false
+
+      - name: version
+        id: version
+        run: echo "short=${GITHUB_SHA::7}" >> "$GITHUB_OUTPUT"
+
+      - uses: docker/setup-buildx-action@f87e5991a6d7451dcb8d9637bfbc97413f497069  # v4.4.1
+
+      - uses: docker/login-action@8aa5831fb8d48d8f76594c7ddde61ae58019f550  # v4.8.0
+        with:
+          registry: ghcr.io
+          username: ${{ github.actor }}
+          password: ${{ secrets.GITHUB_TOKEN }}
+
+      - name: build and push
+        id: push
+        uses: docker/build-push-action@c3c9e263c25d99ce0380d002d59b67737d91b0dc  # v7.4.0
+        with:
+          context: services/auth
+          file: services/auth/Dockerfile
+          push: true
+          build-args: |
+            VERSION=ci-${{ steps.version.outputs.short }}
+          # The full commit SHA is the tag that names a build; :main moves with
+          # each merge and is a convenience only. Deployments use the digest.
+          tags: |
+            ${{ env.IMAGE }}:${{ github.sha }}
+            ${{ env.IMAGE }}:main
+          labels: |
+            org.opencontainers.image.source=${{ github.server_url }}/${{ github.repository }}
+            org.opencontainers.image.revision=${{ github.sha }}
+
+      - name: attest build provenance
+        uses: actions/attest-build-provenance@4d101475d8b20a2381f78447822ac1eab6504dd8  # v4.2.2
+        with:
+          subject-name: ${{ env.IMAGE }}
+          subject-digest: ${{ steps.push.outputs.digest }}
+          push-to-registry: true
+
+      - name: digest in the job summary
+        env:
+          DIGEST: ${{ steps.push.outputs.digest }}
+        run: |
+          {
+            echo "### Login service image"
+            echo
+            echo "Deploy by digest:"
+            echo
+            echo '```'
+            echo "${IMAGE}@${DIGEST}"
+            echo '```'
+            echo
+            echo "Tags: \`${GITHUB_SHA}\`, \`main\` (moving)."
+          } >> "$GITHUB_STEP_SUMMARY"

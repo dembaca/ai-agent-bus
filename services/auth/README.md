@@ -107,6 +107,12 @@ docker build -f services/auth/Dockerfile -t ai-agent-bus-auth services/auth
 docker run --rm -p 8080:8080 ai-agent-bus-auth
 ```
 
+Each merge to `main` that changes this directory publishes the image to
+`ghcr.io/dembaca/ai-agent-bus-auth`, tagged with the full commit SHA (and a
+moving `:main`), once the tests in `.github/workflows/auth.yml` passed. Deploy
+it by the digest from that run's job summary, not by a tag; where and how is in
+the [deployment view](../../docs/arc42/07-deployment-view.md).
+
 Both base images are pinned by digest. A tag can be moved; a digest cannot, and
 the running service should change only when this repository changes. When a
 base image needs updating, the digest changes in the same pull request that
