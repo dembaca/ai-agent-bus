@@ -105,11 +105,12 @@ func (c *Client) checkAuth(ctx context.Context) error {
 	err := c.get(ctx, "/api/v4/users/me", &me)
 	c.mu.Lock()
 	defer c.mu.Unlock()
-	c.checkedAt, c.recheck = c.now(), false
 	if err != nil {
-		c.authSeen = false
+		// not an answer: checkedAt stays, and the next lookup asks again
+		c.authSeen, c.recheck = false, true
 		return err
 	}
+	c.checkedAt, c.recheck = c.now(), false
 	c.authSeen = hasRole(me.Roles, "system_admin")
 	return nil
 }

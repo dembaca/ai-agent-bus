@@ -27,6 +27,9 @@ type Pending struct {
 	Channels    []string `json:"channels"`
 	Confirmed   bool     `json:"confirmed"`
 	ConfirmedBy string   `json:"confirmed_by,omitempty"`
+	// WaitingFull: the channels the last login kept in the claim because
+	// they were full.
+	WaitingFull []string `json:"waiting_full,omitempty"`
 }
 
 func pendingKey(name string) string {
@@ -94,7 +97,7 @@ func (s *Store) AddPending(ctx context.Context, name, channel string) error {
 		}
 		p.Channels = append(p.Channels, channel)
 		slices.Sort(p.Channels)
-		p.Confirmed, p.ConfirmedBy = false, ""
+		p.Confirmed, p.ConfirmedBy, p.WaitingFull = false, "", nil
 		if _, err := s.put(ctx, pendingKey(name), p, rev); errors.Is(err, ErrConflict) {
 			continue
 		} else if err != nil {
@@ -164,6 +167,33 @@ func (s *Store) ConfirmPending(ctx context.Context, name, bySub string, rev uint
 	return err
 }
 
+// DeletePending removes the entry over exactly the revision rev the admin
+// read; ErrNotFound when there is no such entry, ErrConflict when it changed
+// since.
+func (s *Store) DeletePending(ctx context.Context, name string, rev uint64) error {
+	var p Pending
+	cur, ok, err := s.get(ctx, pendingKey(name), &p)
+	if err != nil {
+		return err
+	}
+	if !ok {
+		return ErrNotFound
+	}
+	if cur != rev {
+		return ErrConflict
+	}
+	err = s.kv.Delete(ctx, pendingKey(name), jetstream.LastRevision(rev))
+	switch {
+	case err == nil:
+		return nil
+	case errors.Is(err, jetstream.ErrKeyNotFound):
+		return ErrNotFound
+	case isWrongSequence(err):
+		return ErrConflict
+	}
+	return err
+}
+
 // redeem gives `sub` the channels of a confirmed pending entry for `name`
 // and deletes the entry. An unconfirmed entry is left alone; a channel that
 // no longer exists is skipped. An error refuses the login.
@@ -186,7 +216,10 @@ func (s *Store) redeem(ctx context.Context, sub, name string) error {
 			}
 		}
 		if len(full) > 0 {
-			p.Channels = full
+			if slices.Equal(p.Channels, full) && slices.Equal(p.WaitingFull, full) {
+				return nil // nothing changed: no rewrite on every login
+			}
+			p.Channels, p.WaitingFull = full, slices.Clone(full)
 			if _, err := s.put(ctx, pendingKey(name), p, rev); errors.Is(err, ErrConflict) {
 				continue
 			} else if err != nil {
