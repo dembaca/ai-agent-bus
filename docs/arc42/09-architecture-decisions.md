@@ -4097,9 +4097,11 @@ The console is the operators' view of the bus itself.
       still has, and the transitive ones are an interpretation.
     - **Text in the server's memory.** Threads pass through the console's
       server; it must write none of it to a disk or to its log.
-    - **Every operator reads the whole tenant**, if open point 3 is decided
-      as recommended: agent-to-agent threads of homes that person is not
-      in (RISK-14).
+    - **An operator reads homes that person is not in:** agent-to-agent
+      threads of public channels, of the person's own agents and of agents
+      that trust the person directly (decided by the owner, open point 3;
+      narrower than the whole tenant this proposal first recommended, but
+      not gone; RISK-14, RISK-17).
     - **The server holds operators' keys** (RISK-12).
 
 **Alternatives considered:** (a) Reading and answering through Mattermost
