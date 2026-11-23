@@ -327,6 +327,34 @@ async def test_a_missing_own_echo_triggers_one_reconnect(monkeypatch: pytest.Mon
     assert not bus._wake.is_set()
 
 
+async def test_an_echo_a_reconnect_does_not_bring_back_backs_off(monkeypatch: pytest.MonkeyPatch) -> None:
+    """RT-6.38 step 2: when the echo stays away after reconnects, the wait doubles up to the
+    credential renewal (no reconnect in every window); a real echo resets it; a refused
+    presence subject (another release of the login service) reconnects never."""
+    mono = [100.0]
+    monkeypatch.setattr(time, "monotonic", lambda: mono[0])
+    bus, _ = _unit_bus()
+    bus._connected = True
+    times: list[float] = []
+    for _ in range(int(20 * 60 / 5)):  # 20 minutes, a beat every 5 s
+        mono[0] += 5
+        bus._check_own_echo()
+        if bus._wake.is_set():
+            bus._wake.clear()
+            times.append(mono[0])
+            bus._own_echo = mono[0]  # _open of the reconnect gives a new window, no echo comes
+    gaps = [b - a for a, b in zip(times, times[1:], strict=False)]
+    assert 2 <= len(times) <= 5, times
+    assert all(b > a for a, b in zip(gaps, gaps[1:], strict=False)), gaps  # each wait longer than the last
+    assert max(gaps) <= natsbus.RENEW_SEC + 5
+    await _presence(bus, bus.name, 1, T0)  # a real echo: the next outage starts afresh
+    assert bus._echo_backoff == 0.0
+    bus._denied = [bus._presence_subject]
+    mono[0] += 10_000
+    bus._check_own_echo()
+    assert not bus._wake.is_set()  # refused: a reconnect cures nothing
+
+
 async def test_the_heartbeat_checks_the_own_echo() -> None:
     """RT-6.38 step 2: the heartbeat loop asks for the reconnect when the echo is missing."""
     bus, _ = _unit_bus(heartbeat_sec=0.01)
