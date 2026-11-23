@@ -15,10 +15,23 @@ reactions.
 from __future__ import annotations
 
 from collections.abc import Sequence
+from dataclasses import dataclass
 from typing import TYPE_CHECKING, Any, Protocol
 
 if TYPE_CHECKING:
     from .model import Channel, ChannelUser, FileInfo, Me, Post, Reaction, Thread, UnreadChannel
+
+
+@dataclass(frozen=True)
+class AttestedCircle:
+    """An agent's circle as the login service attested it (over NATS): the owner's and the
+    trusted humans' anchors (stable ids, not names), and whether the list was cut."""
+
+    owner_anchor: str
+    trusted_anchors: frozenset[str]
+    cut: bool
+    owner_name: str = ""  # the owner's name now, to show; never compared
+    trusted_names: frozenset[str] = frozenset()  # the trusted entries' names, to show; never compared
 
 
 class BotSession(Protocol):
@@ -177,6 +190,18 @@ class ChatPort(Protocol):
         `for @<owner>` from its description, lower case; '' when it has none
         (unbound, owned by the registrar's account, or the two disagree), None
         when neither can be read. owners.decide has the rule."""
+        ...
+
+    async def attested_circle(self, user_id: str) -> AttestedCircle | None:
+        """The login service's attestation of a NATS sender's circle, by anchors, when it
+        holds a fresh one that fits the sender's presence; None for every other agent
+        (the Mattermost adapter always)."""
+        ...
+
+    async def own_anchors(self) -> frozenset[str] | None:
+        """The anchors of this session's own trusted humans as the login service resolved
+        them (its own fresh attestation); None where there are none (the Mattermost
+        adapter always)."""
         ...
 
     async def agent_attestation(self, user_id: str) -> str | None:

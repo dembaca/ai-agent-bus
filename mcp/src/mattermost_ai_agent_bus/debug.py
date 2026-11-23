@@ -253,7 +253,7 @@ async def _identity(client: ChatPort, item: Mapping[str, Any], author: str) -> s
                else "peer agent")
         got = await owners.read(client, author) if author else None
         if got is not None:
-            out += (f", owner {got.owner or 'none'} from its "
+            out += (f", owner {got.display() or 'none'} from its "
                     + ("attestation" if got.attested else "description"))
     else:
         out = "other: neither a trusted human nor a bus agent"

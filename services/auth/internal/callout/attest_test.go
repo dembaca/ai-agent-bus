@@ -378,3 +378,16 @@ func TestAnOlderStoredRecordDoesNotCountForANewLogin(t *testing.T) {
 		t.Fatalf("logged in again on the older record: %s", a.name)
 	}
 }
+
+func TestTheHostsOwnCutMakesTheAttestationCut(t *testing.T) {
+	l := newLab(t)
+	f := &fakeAttester{}
+	l.svc.SetAttester(f)
+	if _, err := l.connect("alice", l.realm.Token("alice", nil), Hello{Home: "home", Trusted: []string{"bob"}, TrustedCut: true}, nil); err != nil {
+		t.Fatal(err)
+	}
+	p, got := f.last(t)
+	if !got.Cut || len(got.Trusted) != 1 || !strings.Contains(string(p.body), `"cut":true`) {
+		t.Errorf("attestation %s", p.body)
+	}
+}

@@ -36,7 +36,7 @@ from .sandbox import sandbox_refusal as sandbox_refusal
 from .session_file import SessionInfo as SessionInfo, _pid_alive as _pid_alive
 
 if TYPE_CHECKING:
-    from .port import ChatPort
+    from .port import AttestedCircle, ChatPort
     from .registration import RegistrationPort
 
 log = logging.getLogger(__name__)
@@ -714,6 +714,12 @@ class MattermostAdapter:
         `agents` would take a bus agent for a person (RT-6.16 step 1)."""
         if isinstance(user.get("username"), str):
             self._accounts[user_id] = _account_of(user)
+
+    async def attested_circle(self, user_id: str) -> AttestedCircle | None:
+        return None
+
+    async def own_anchors(self) -> frozenset[str] | None:
+        return None
 
     async def agent_attestation(self, user_id: str) -> str | None:
         """The registrar's signed attestation of a bot (RT-6.24 step 5), read

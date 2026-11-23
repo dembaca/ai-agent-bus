@@ -31,7 +31,7 @@ from mattermost_ai_agent_bus.nats_port import (
     read_props,
     wire_props,
 )
-from mattermost_ai_agent_bus.natsbus import Event, Message, NameMismatch, NatsSettings
+from mattermost_ai_agent_bus.natsbus import Attestation, Event, Message, NameMismatch, NatsSettings
 from mattermost_ai_agent_bus.websocket_inbox import WebSocketInbox
 
 OTHER = "o" * 26
@@ -51,6 +51,7 @@ class FakeNats:
         self.seq = 100
         self.owners: dict[str, str] = {}  # what presence subjects named (natsbus.owner_of_token)
         self.presence: dict[str, str] = {}  # agent -> online | away (fresh), else offline
+        self.attestations: dict[str, Attestation] = {}  # agent -> the login service's record
         self.bots: dict[str, str] = {}  # agent -> the bot its presence names
         self.synced = True
         self.members: set[tuple[str, str]] = set()  # (channel, agent)
@@ -89,7 +90,22 @@ class FakeNats:
         self.announced.append(channel)
 
     def owner_of(self, agent: str) -> str:
+        """As NatsBus.owner_of: the attested name when its anchor is the presence owner."""
+        anchor = self.owners.get(agent, "")
+        att = self.attestation_of(agent)
+        return att.owner_name if att is not None and anchor and att.owner_anchor == anchor else anchor
+
+    def anchor_of(self, agent: str) -> str:
         return self.owners.get(agent, "")
+
+    def attestation_of(self, agent: str) -> Attestation | None:
+        att = self.attestations.get(agent)
+        return att if att is not None and att.exp > self.server_now else None
+
+    def records_on(self) -> bool:
+        """As NatsBus.records_on: once any record was seen, never off again (expired or not)."""
+        self.records_seen = getattr(self, "records_seen", False) or bool(self.attestations)
+        return self.records_seen
 
     def presence_of(self, agent: str) -> str:
         return self.presence.get(agent, "offline")

@@ -630,8 +630,8 @@ async def _owners_of(client: ChatPort, rows: list[Any]) -> dict[str, dict[str, A
         for r in rows:
             agent = await owners.read(client, r.user_id) if r.user_id else None
             if agent is not None:
-                out[r.username] = {"owner": agent.owner or None,
-                                   "trusts": sorted(agent.trusts) or None,
+                out[r.username] = {"owner": agent.display() or None,
+                                   "trusts": sorted(agent.display_trusts()) or None,
                                    "foreign": r.user_id in found or None,
                                    # owner and trusts from its attestation (RT-6.24)
                                    "attested": agent.attested or None}

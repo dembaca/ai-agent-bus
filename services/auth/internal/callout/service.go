@@ -88,6 +88,9 @@ type Hello struct {
 	// Trusted are the host's MM_TRUSTED_HUMANS names; the attestation
 	// vouches for them (attest.go).
 	Trusted []string `json:"trusted,omitempty"`
+	// TrustedCut says the host itself dropped invalid names or truncated
+	// its list before sending; the attestation's cut is then true.
+	TrustedCut bool `json:"trusted_cut,omitempty"`
 }
 
 // Consumers makes the push consumers an agent reads from (consumers.Manager).
@@ -368,7 +371,7 @@ func (s *Service) authorize(ctx context.Context, req *jwt.AuthorizationRequestCl
 	}
 	if at, tr := s.attestHooks(); at != nil {
 		if err := s.attest(ctx, at, tr, agent, directory.Trusted{Anchor: anchor, Name: id.Owner},
-			hello.Trusted, uc.IssuedAt, uc.Expires); err != nil {
+			hello.Trusted, hello.TrustedCut, uc.IssuedAt, uc.Expires); err != nil {
 			return "", who, fmt.Errorf("attestation: %w", err)
 		}
 	}

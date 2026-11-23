@@ -79,7 +79,8 @@ from . import a2a, lease, natsbus, owners
 from .events import ChatEvent, EventSource, EventStream, PostEvent, ReactionEvent
 from .ids import _ID, NATS_POST
 from .model import NotFound, Post, Reaction, Thread, UnreadChannel
-from .natsbus import DM_SINCE, Event, NameMismatch, NatsBus, NatsBusError, NatsSettings
+from .natsbus import DM_SINCE, Attestation, Event, NameMismatch, NatsBus, NatsBusError, NatsSettings
+from .port import AttestedCircle
 
 if TYPE_CHECKING:
     from .compose import BusClient
@@ -124,6 +125,11 @@ class BusLike(Protocol):
     async def unreact(self, channel: str, ref: int, emoji: str) -> None: ...
 
     def owner_of(self, agent: str) -> str: ...
+
+    def anchor_of(self, agent: str) -> str: ...
+
+    def attestation_of(self, agent: str) -> Attestation | None: ...
+    def records_on(self) -> bool: ...
 
     def presence_of(self, agent: str) -> str: ...
 
@@ -723,7 +729,43 @@ class NatsPort:
         # None, which is "not readable" (also foreign, ADR-016, but logged as an outage).
         if not is_nats_user(user_id):
             return await self.inner.agent_owner(user_id)
-        return self._bus.owner_of(user_id) if self._bus is not None and self._fatal is None else ""
+        if self._bus is None or self._fatal is not None:
+            return ""
+        if self._records_on() and self._circle(user_id) is None:
+            # The login service writes records (one was seen in this process): a sender
+            # without a usable one (none, expired, malformed, another anchor than its
+            # presence) has no owner. The name comparison is only for a bus whose login
+            # service writes none; it never comes back by an expiry (ADR-016).
+            return ""
+        return self._bus.owner_of(user_id)
+
+    def _circle(self, agent: str) -> AttestedCircle | None:
+        """The agent's circle by anchors: its fresh attestation, when the owner anchor in it is
+        the one its presence subject pins; None otherwise (no usable attestation)."""
+        bus = self._bus if self._fatal is None else None
+        if bus is None:
+            return None
+        att = bus.attestation_of(agent)
+        anchor = bus.anchor_of(agent)
+        if att is None or not anchor or att.owner_anchor != anchor:
+            return None
+        return AttestedCircle(att.owner_anchor, frozenset(a for a, _ in att.trusted), att.cut,
+                              att.owner_name, frozenset(n for _, n in att.trusted))
+
+    def _records_on(self) -> bool:
+        bus = self._bus if self._fatal is None else None
+        return bus is not None and bus.records_on()
+
+    def _own_anchors(self) -> frozenset[str] | None:
+        bus = self._bus if self._fatal is None else None
+        att = bus.attestation_of(bus.name) if bus is not None else None
+        return frozenset(a for a, _ in att.trusted) if att is not None else None
+
+    async def attested_circle(self, user_id: str) -> AttestedCircle | None:
+        return self._circle(user_id) if is_nats_user(user_id) else None
+
+    async def own_anchors(self) -> frozenset[str] | None:
+        return self._own_anchors()
 
     async def bot_description(self, user_id: str) -> str | None:
         return None if is_nats_user(user_id) else await self.inner.bot_description(user_id)
@@ -807,9 +849,19 @@ class NatsPort:
         order = natsbus.crown_candidates({a: seq for a, (seq, _) in info.items()}, bus.presence_snapshot(),
                                          bus.server_now, partial(bus.is_member, home),
                                          at={a: t for a, (_, t) in info.items()})
-        agents = {a: owners.Owner(owner=bus.owner_of(a), trusts=frozenset(), cut=False)
-                  for a in dict.fromkeys([*order, me])}
-        standing = lease.standing(order, me, self._names, agents).ids
+        agents: dict[str, owners.Owner | None] = {}
+        records_on = self._records_on()
+        if records_on:
+            # With records, a claimant without a usable one does not stand at all, also
+            # when it is the only one (it would otherwise show as the holder).
+            order = [a for a in order if a == me or self._circle(a) is not None]
+        for a in dict.fromkeys([*order, me]):
+            circle = self._circle(a)
+            agents[a] = (owners.Owner(owner=circle.owner_anchor, trusts=circle.trusted_anchors, cut=circle.cut,
+                                      attested=True, by_anchor=True) if circle is not None
+                         # with records on, no usable one means no owner (not a name match)
+                         else owners.Owner(owner="" if records_on else bus.owner_of(a), trusts=frozenset(), cut=False))
+        standing = lease.standing(order, me, self._names, agents, self._own_anchors()).ids
         mine = info.get(me)
         return lease.CrownView(me=me, holder=standing[0] if standing else "", candidates=tuple(standing),
                                member=bus.is_member(home, me),
