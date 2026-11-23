@@ -36,7 +36,7 @@ description, logged once per agent; without pinned keys nothing changes.
 from __future__ import annotations
 
 import logging
-from collections.abc import Iterable
+from collections.abc import Iterable, Set as AbstractSet
 from dataclasses import dataclass
 from time import monotonic
 from typing import TYPE_CHECKING
@@ -63,10 +63,18 @@ _LAST_MAX = 1024
 # lookup resolves them now.
 TRUSTED_VARS = ("MM_TRUSTED_HUMAN_USER_IDS", "MM_TRUSTED_HUMANS", "MM_OWNER_USER_ID", "MM_OWNER")
 
-# In doubt with trusted humans configured only by id, none of them resolved:
-# a name no owner and no trusted list ever holds (a username has no NUL), so
-# the split stays on and nobody is a peer (ADR-016).
-UNRESOLVED = "\x00unresolved"
+class _Nobody(frozenset[str]):
+    """Trusted humans that are configured but none known: empty, yet true.
+    The owner split stays on (it is not "none configured"), and no circle is
+    a subset of it, so nobody is a peer. A value, not a name: no description,
+    attestation or presence can ever match it (ADR-016)."""
+
+    def __bool__(self) -> bool:
+        return True
+
+
+# In doubt with trusted humans configured only by id, none of them resolved.
+NOBODY: AbstractSet[str] = _Nobody()
 
 
 def configured() -> bool:
@@ -104,7 +112,7 @@ def parse(description: str) -> Owner:
                  cut=profile.cut(description))
 
 
-def is_peer(agent: Owner, mine: set[str]) -> bool:
+def is_peer(agent: Owner, mine: AbstractSet[str]) -> bool:
     """ADR-001: I follow an agent only if I would follow everyone it obeys."""
     return bool(agent.owner) and not agent.cut and agent.circle() <= mine
 
@@ -240,15 +248,16 @@ async def trusted_names(client: ChatPort) -> set[str]:
     return names
 
 
-async def names_in_doubt(client: ChatPort) -> tuple[set[str], str]:
+async def names_in_doubt(client: ChatPort) -> tuple[AbstractSet[str], str]:
     """My trusted humans' names and my bot's id, in doubt (ADR-016): the names
     as read now; when they cannot be read, or none of the configured ones
     resolved, the ones last read (within OWNER_GRACE_SEC), else the configured
-    ones, or with ids alone configured {UNRESOLVED}, which no owner matches.
+    ones, or with ids alone configured NOBODY, which no owner matches.
     (set(), '') only when none are configured. Never raises: the crown
     election (lease._election, NATS prime) and `mine` read them here."""
     global _mine
     now = monotonic()
+    names: AbstractSet[str]
     try:
         names = await trusted_names(client)
         me = (await client.get_me()).id if names else ""
@@ -260,10 +269,12 @@ async def names_in_doubt(client: ChatPort) -> tuple[set[str], str]:
         return names, me
     if _mine is not None and now - _mine[0] < OWNER_GRACE_SEC:
         return set(_mine[1]), _mine[2]
-    names = {n.lower() for n in _trusted_names()}
-    if not names and configured():
-        names = {UNRESOLVED}  # configured by id only: nobody is a peer
-    if not names:
+    configured_names = {n.lower() for n in _trusted_names()}
+    if configured_names:
+        names = configured_names
+    elif configured():
+        names = NOBODY  # configured by id only: nobody is a peer
+    else:
         return set(), ""
     log.info("no trusted human resolved, %d configured: the owner split stays on", len(names))
     try:
@@ -273,7 +284,7 @@ async def names_in_doubt(client: ChatPort) -> tuple[set[str], str]:
     return names, me
 
 
-async def mine(client: ChatPort) -> tuple[set[str], str]:
+async def mine(client: ChatPort) -> tuple[AbstractSet[str], str]:
     """My trusted humans' names and my bot's id while the owner split is
     active; (set(), '') while it is not: no trusted humans configured, or my
     own bot read without an owner (unbound, say). In doubt it stays on

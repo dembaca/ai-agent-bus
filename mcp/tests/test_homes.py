@@ -269,20 +269,28 @@ async def test_trusted_humans_not_resolved_keep_a_foreign_older_agent_from_stand
     assert (await lease._election(owned, rows)).ids == []
 
 
+@pytest.mark.parametrize("far", [CAROL, "for @\x00unresolved · trusts @\x00unresolved · via agent-registrar"],
+                         ids=["another-owner", "a-name-no-username-has"])
 async def test_trusted_humans_configured_by_id_alone_keep_a_foreign_agent_from_standing(
-        owned, monkeypatch):
+        owned, monkeypatch, far):
     """RT-6.6 step 2, ADR-016: only MM_TRUSTED_HUMAN_USER_IDS is set and the
     names behind the ids cannot be read: still in doubt, never "none
-    configured", so an older agent of another owner does not stand."""
+    configured", so an older agent of another owner does not stand. Nor does
+    one whose description names an owner no username can be (a NUL): "nobody
+    is a peer" is a value, not a name a description could match."""
     monkeypatch.delenv("MM_TRUSTED_HUMANS", raising=False)
     monkeypatch.setenv("MM_TRUSTED_HUMAN_USER_IDS", "h" * 26)
     owned.trusted = {}
-    owned.descriptions[FAR] = CAROL
+    owned.descriptions[FAR] = far
     rows = [{"id": FAR, "reachable": True}, {"id": BOT, "reachable": True}]
-    assert (await lease._election(owned, rows)).ids == []
+    ids = (await lease._election(owned, rows)).ids
+    assert FAR not in ids
+    if far == CAROL:
+        assert ids == []  # a foreign owner circle: nobody stands
     names, _ = await owners.mine(owned)
     assert names, "the owner split turned off"
-    assert await owners.foreign(owned, {FAR}) == {FAR: "carol"}
+    assert FAR in await owners.foreign(owned, {FAR})
+    assert not await owners.peer(owned, FAR)
 
 
 async def test_a_short_outage_keeps_a_peer_standing(owned, monkeypatch):

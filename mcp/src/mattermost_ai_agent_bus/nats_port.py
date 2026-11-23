@@ -70,6 +70,7 @@ import secrets
 import weakref
 from collections import OrderedDict
 from collections.abc import Callable, Iterable, Mapping, Sequence
+from collections.abc import Set as AbstractSet
 from functools import partial
 from types import MappingProxyType
 from typing import TYPE_CHECKING, Any, Protocol
@@ -218,7 +219,7 @@ class NatsPort:
         self._subs: list[asyncio.Queue[ChatEvent | NatsPortError | None]] = []
         self._dropped = 0  # events a full subscriber's queue lost
         self._capped = 0  # reactions dropped at MAX_REACTIONS
-        self._names: set[str] | None = None  # this session's trusted humans, read by prime (RT-6.38)
+        self._names: AbstractSet[str] | None = None  # this session's trusted humans, read by prime (RT-6.38)
         self._ambiguous: set[str] = set()  # link tags that fit more than one fresh name (RT-6.37)
 
     def __getattr__(self, name: str) -> Any:

@@ -32,6 +32,7 @@ import re
 import time
 import weakref
 from collections.abc import Awaitable, Callable, Iterable, Mapping
+from collections.abc import Set as AbstractSet
 from dataclasses import dataclass
 from datetime import datetime, timezone
 from pathlib import Path
@@ -958,7 +959,7 @@ async def _election(client: ChatPort, rows: list[dict[str, Any]]) -> Election:
     return standing(oldest, me, names, agents)
 
 
-def standing(oldest: list[str], me: str, names: set[str],
+def standing(oldest: list[str], me: str, names: AbstractSet[str],
              agents: Mapping[str, owners.Owner | None]) -> Election:
     """The rule of _election on what it read, so that the home over NATS (RT-6.38) applies
     exactly the same one: `oldest` the reachable agents in their order (the oldest, or by
