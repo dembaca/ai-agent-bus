@@ -98,6 +98,19 @@ KNOWN: "OrderedDict[str, object]" = OrderedDict([
 # 3): the paths are Mattermost's, kept here so the dispatch reads like the table.
 CHANNEL_POSTS = re.compile(r"^/api/v4/channels/[^/]+/posts$")
 TEAM_MEMBERS = re.compile(r"^/api/v4/users/me/teams/[^/]+/channels/members$")
+# The roster reads an account by its id, and the owner check tries the bot
+# object for a description (`client._native_owner`, `bot_description`). Both
+# were gaps the online coordinator tools hit (`bus_info`, `coordinator`): a 404
+# here is not a delivery fault, but it did hide whether those tools work at all.
+#
+# Only a Mattermost id is an id (`[a-z0-9]{26}`, `ids.py`): `/api/v4/users/
+# autocomplete`, `/users/stats` and `/users/known` are *other* endpoints, and a
+# loose `[^/]+` gave each of them an invented account with 200 — the stub
+# answered what it does not know instead of reporting it (review of #24). The
+# lookahead keeps `me` on the row below, which answers the caller's own bot.
+ID = r"[a-z0-9]{26}"
+USER_BY_ID = re.compile(rf"^/api/v4/users/(?!me$){ID}$")
+BOT_BY_ID = re.compile(rf"^/api/v4/bots/{ID}$")
 
 
 def _query_int(query: dict[str, list[str]], name: str) -> int:
@@ -240,6 +253,16 @@ class MattermostStub:
             return self._member_channels()
         if method == "GET" and TEAM_MEMBERS.fullmatch(path):
             return self._team_channel_members()
+        # The lookahead in `USER_BY_ID` keeps `me` for the row below, which
+        # answers the caller's own bot; this route is for another id.
+        if method == "GET" and USER_BY_ID.fullmatch(path):
+            answer = self._user_by_id(path)
+            if answer is not None:
+                return answer
+        if method == "GET" and BOT_BY_ID.fullmatch(path):
+            answer = self._bot_by_id(path)
+            if answer is not None:
+                return answer
         key = f"{method} {path}"
         for pattern, answer in self._patterns:
             if pattern.fullmatch(key):
@@ -268,6 +291,41 @@ class MattermostStub:
         return 200, {"content-type": "application/json"}, json.dumps({
             "order": [p["id"] for p in window],
             "posts": {p["id"]: p for p in window},
+        }).encode()
+
+    def _user_by_id(self, path: str) -> tuple[int, dict[str, str], bytes] | None:
+        """An account by its id, as the roster reads it, or `None` when this stub
+        does not know that id.
+
+        Answered from the bots this stub identified, so two servers pointed at
+        one stub get their own name back rather than a fixed one: a run that
+        reported a constant would hide a mix-up between the two identities. An
+        id it never saw is a gap and goes to `.unknown` — inventing an account
+        there would answer what the stub cannot know (review of #24).
+        """
+        wanted = path.rsplit("/", 1)[-1]
+        for account in self.bots.values():
+            if account["id"] == wanted:
+                return 200, {"content-type": "application/json"}, json.dumps(account).encode()
+        return None
+
+    def _bot_by_id(self, path: str) -> tuple[int, dict[str, str], bytes] | None:
+        """The bot object of an account this stub identified, else `None`.
+
+        A 403 is what Mattermost answers without `read_others_bots`, and the
+        bus handles that (`_native_owner` catches it and the description
+        decides). An empty description keeps the owner unknown, which is the
+        honest answer for a stub that models no ownership.
+        """
+        wanted = path.rsplit("/", 1)[-1]
+        known = next((a for a in self.bots.values() if a["id"] == wanted), None)
+        if known is None:
+            return None
+        return 200, {"content-type": "application/json"}, json.dumps({
+            "user_id": wanted,
+            "username": known["username"],
+            "display_name": "",
+            "description": "",
         }).encode()
 
     def _member_channels(self) -> tuple[int, dict[str, str], bytes]:

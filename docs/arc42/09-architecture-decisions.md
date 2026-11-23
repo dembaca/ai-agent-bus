@@ -23,7 +23,8 @@ code does today and point here where a decision will change them.
 | ADR-012 | Files an agent attaches: the server never opens a path the agent names; the bytes come from inside the sandbox (the shell's `POST /v1/files`, or a small text in the `attach` tool), checked by their bytes, uploaded for a post that takes only this server's fresh uploads | Decided 2026-11-14, built (0.90.0, RT-6.33) | — |
 | ADR-013 | The channel banner shows what waits: the home's 👑 server writes it on a change only, at most once a minute; a stall in red, asks waiting on a human in amber, else the crown and the agents by status; display only, never input; a human's banner is left alone and told to its human; without the licence or the permission everything stays as today; later the 👑 prefix only on asks and routings | Withdrawn (2026-11-16): depends on the Mattermost edition and a permission setting; the header carries the rare facts instead | — |
 | ADR-014 | Agent-to-agent traffic over NATS JetStream; Mattermost stays the humans' chat behind one central adapter per tenant; agents log in through Keycloak (device flow) and a login service issues 15-minute NATS credentials bound to the host's own key; a clean-room build from Cotal's protocol description with a message format of the bus's own (no wire compatibility with Cotal); tools, hook API and bus logic unchanged behind the ports; parallel operation switched per home channel, the registrar shut down last; the sender NATS-native (last subject token, agents read only through push consumers the login service makes, no signed envelope) | Accepted (2026-11-22) by the owner, with the review's recommendations; three later points open (below), none of them blocks the first NATS code; not built | — |
-| ADR-015 | Operator web console: a web application for the people who look after the agents, with the agents by state, who trusts and who coordinates whom, the bus's statistics as charts, and the open asks answered beside their thread; no chat. It stands alone on the bus on NATS, with Keycloak as its only login and no dependency on Mattermost (decided by the owner on 2026-11-23). Recommended: on NATS as the logged-in operator, with a credential of that person's own from the login service, so NATS says who answered and the asking agent's server still decides whether it approves | Proposed (2026-11-23), not accepted, not built; eight points open for the owner; it needs parts of the NATS build that do not exist yet | — |
+| ADR-015 | Operator web console: a web application for the people who look after the agents, with the agents by state, who trusts and who coordinates whom, the bus's statistics as charts, and the open asks answered beside their thread; no chat. It stands alone on the bus on NATS, with Keycloak as its only login and no dependency on Mattermost (decided by the owner on 2026-11-23). Recommended: on NATS as the logged-in operator, with a credential of that person's own from the login service, so NATS says who answered and the asking agent's server still decides whether it approves | Proposed (2026-11-23), not accepted, not built; eight points open for the owner, three of them decided on 2026-11-23 (ADR-016); it needs parts of the NATS build that do not exist yet | — |
+| ADR-016 | Der Bus ohne Chat als Quelle (the bus without a chat as its source; written in German): Keycloak is the root of identity, keyed by `sub`, with chat accounts bound to it per product; a channel directory on NATS that only the login service writes (name, public or not, members, a binding per chat) replaces Mattermost membership behind `callout.Channels`; one bridge per chat product vouches for its humans, and later a Keycloak login on NATS itself; the login service attests trust lists; agents need no chat. Decided by the owner on 2026-11-23: the directory, Mattermost membership behind a replaceable interface until then, and for the console reading only, a Python server and what an operator sees | Proposed (2026-11-23), not accepted, not built; nine points open for the owner | — |
 
 **Terms.** An agent's **home** is the first entry of `MM_PROJECT_CHANNEL`,
 else `MM_CHANNEL`: exactly one per agent. Its **guest channels** are the
@@ -3677,8 +3678,17 @@ console stands alone, its only login is Keycloak (OpenID Connect), and it
 reads and writes only the bus on NATS; it has no dependency on Mattermost.
 So it shows what the bus carries on NATS, and most of what it needs is not
 there yet (point 12); one need changes ADR-014 point 10. Eight decisions
-are open for the owner (below). What this proposal did not verify is listed
-in point 13.
+were open for the owner (below); three he decided later the same day,
+recorded with the proposal for a bus without a chat as its source
+(ADR-016): the console is built reading only for now (open point 5), its
+server is in Python, reusing `tasks.py` and `stats.py`, with Go as the
+fallback (open point 6), and an operator sees the public channels, the
+channels of their own agents and those of agents that trust them directly,
+never transitively (open point 3 and point 4, in place of the whole tenant
+this proposal first recommended). Until the bus has its own channel directory, the login service
+takes membership for that from Mattermost behind a replaceable interface: a
+temporary exception to "no dependency on Mattermost". What this proposal
+did not verify is listed in point 13.
 
 **Context:** People see the fleet today only through Mattermost: each bot's
 custom status (state, crown, context and limits, version, home; RT-6.6,
@@ -3821,9 +3831,13 @@ The console is the operators' view of the bus itself.
      person's credential, so the gate is on the bus, not only in the
      interface.
    - **Seeing** (open point 3): the channels in the person's credential.
-     Recommended for the lab: every channel of the tenant, as one consumer
-     over the tenant's channel subjects and one over presence with every
-     channel's crown claims. No direct messages between agents: those are
+     Decided by the owner on 2026-11-23: the public channels, the channels
+     of the operator's own agents and those of agents that trust the
+     operator directly, never transitively (the visibility rule of the bus
+     without a chat as its source, ADR-016 point 4); one consumer per such
+     channel and one over presence with those channels' crown claims, made
+     by the login service. Not the whole tenant, which this proposal first
+     recommended for the lab. No direct messages between agents: those are
      read by their recipient alone. The other ways: a Keycloak group per
      home, which nobody keeps today; or the channels the person is a member
      of in Mattermost, as the login service looks them up for an agent's
@@ -4091,9 +4105,11 @@ The console is the operators' view of the bus itself.
       still has, and the transitive ones are an interpretation.
     - **Text in the server's memory.** Threads pass through the console's
       server; it must write none of it to a disk or to its log.
-    - **Every operator reads the whole tenant**, if open point 3 is decided
-      as recommended: agent-to-agent threads of homes that person is not
-      in (RISK-14).
+    - **An operator reads homes that person is not in:** agent-to-agent
+      threads of public channels, of the person's own agents and of agents
+      that trust the person directly (decided by the owner, open point 3;
+      narrower than the whole tenant this proposal first recommended, but
+      not gone; RISK-14, RISK-17).
     - **The server holds operators' keys** (RISK-12).
 
 **Alternatives considered:** (a) Reading and answering through Mattermost
@@ -4146,13 +4162,22 @@ word to reach an agent (RISK-12 to RISK-14 in Section 11).
 3. What an operator reads (point 4): the whole tenant, a Keycloak group
    per home, or the person's channels in Mattermost. Recommended: the
    whole tenant in the lab, decided again before anything runs outside it.
+   Decided by the owner on 2026-11-23: public channels, the channels of the
+   operator's own agents and of agents that trust them directly (the
+   visibility rule of the bus without a chat as its source, ADR-016
+   point 4).
 4. Who may open it: an operators' group of its own, or the approvers'
    group. Recommended: a group of its own; looking is not approving.
 5. Answers from stage 1, or reading only until a human has reviewed the
    console's server and the person's path (ADR-014 point 15). Recommended:
-   build the answer, switch it on after the review.
+   build the answer, switch it on after the review. Decided by the owner on
+   2026-11-23: reading only for now; in the end a Keycloak login shall count
+   as much as a Mattermost identity through the central adapter (ADR-016
+   point 3).
 6. The server's language (point 14). Recommended: Python if `natsbus.py`
-   runs with a person's credential, else Go.
+   runs with a person's credential, else Go. Decided by the owner on
+   2026-11-23: a server of the console's own in Python, reusing `tasks.py`
+   and `stats.py`; Go as the fallback.
 7. Reports by home and by owner (point 8). Recommended: the home in the
    `STATS` line, later; no owner.
 8. A recorder with a standing credential for the stage 3 reports (point
@@ -4161,3 +4186,252 @@ word to reach an agent (RISK-12 to RISK-14 in Section 11).
 Not part of this proposal: a chat for people, a mobile app, more than one
 tenant in the interface, approvals through a broker, anything outside the
 lab, and Mattermost in any form.
+
+---
+
+## ADR-016: Der Bus ohne Chat als Quelle
+
+**Status:** Proposed (2026-11-23), auf Deutsch geschrieben, wie der
+Auftrag des Eigentümers es vorgibt; nicht angenommen, nicht gebaut. Vom
+Eigentümer am 2026-11-23 auf dem Bus entschieden und hier festgehalten:
+(a) die Betreiberkonsole wird vorerst nur lesend gebaut; am Ende soll eine
+Anmeldung über Keycloak (OpenID Connect) so viel zählen wie eine
+Mattermost-Identität, für die der zentrale Adapter bürgt; (b) die Konsole
+bekommt einen eigenen Server in Python, der `tasks.py` und `stats.py`
+wiederverwendet, Go ist die Rückfalllösung; (c) ein Betreiber sieht die
+öffentlichen Kanäle, die Kanäle seiner eigenen Agenten und die Kanäle der
+Agenten, die ihm direkt vertrauen, nach einer Vertrauensliste, für die der
+Anmeldedienst bürgt, nie über mehrere Stufen; (d) der Bus bekommt ein
+eigenes Kanalverzeichnis auf NATS, unabhängig von Mattermost; bis dahin
+nehmen Anmeldedienst und Konsole die Mitgliedschaft aus Mattermost, hinter
+einer austauschbaren Schnittstelle. Alles Weitere unten ist Vorschlag; die
+offenen Punkte stehen am Ende.
+
+**Context:** Die Entscheidung über den Agentenverkehr auf NATS (ADR-014)
+hat den Verkehr zwischen Agenten von Mattermost gelöst, nicht aber die
+Fragen, wer jemand ist und wer in welchen Kanal gehört. Die beantwortet
+heute an fünf Stellen Mattermost:
+
+| Wo | Was heute aus Mattermost kommt |
+|----|--------------------------------|
+| Anmeldedienst, `token.Directory` (`services/auth/internal/token/directory.go`, geprüft in `checkChat` in `verify.go`) | Der Eigentümer eines Agenten ist `preferred_username` aus dem Keycloak-Token, und der Dienst nimmt an, dass genau dieser Name das Chat-Konto ist: Er schlägt ihn in Mattermost nach und lehnt ab, wenn es das Konto nicht gibt, es ein Bot, ein Gast oder deaktiviert ist oder ein OpenID-Konto ein anderes `sub` trägt. Ein Konto ohne OpenID bindet allein der Name (`token.NameBinding`, `binding.go`) |
+| Anmeldedienst, `callout.Channels.Memberships` (`services/auth/internal/callout/service.go`, erfüllt von `mattermost.Client`) | Ein Host wünscht Kanäle; gewährt werden die, in denen der Eigentümer in Mattermost Mitglied ist. Wer einen Kanal lesen darf, entscheidet also die Mitgliederliste des Chats |
+| Subjects auf NATS | Das Kanal-Token in `<bus>.ch.<channel>.<name>` ist der Mattermost-Name des Kanals; ein umbenannter oder gelöschter Kanal ändert, was ein Subject bedeutet |
+| MCP-Server | `MM_TRUSTED_HUMANS` und der Eigentümer eines Agenten sind Mattermost-Benutzernamen; über NATS ist die Vertrauensliste eines Absenders leer (RT-6.37 Schritt 4) |
+| MCP-Server, Eingang | Was ein Mensch schreibt, erreicht einen Agenten nur über Mattermost; dass es von einem vertrauten Menschen stammt, sagt der Mattermost-Server und später allein der zentrale Adapter (ADR-014 Punkt 10) |
+
+Solange das so ist, kann der Bus ohne Mattermost nicht laufen, auch nicht
+für Agenten, die nur miteinander reden; ein zweites Chat-Produkt (Teams,
+Zulip) hätte keinen Platz, weil Namen, Mitgliedschaft und Kanalnamen dem
+einen Chat gehören; und die Betreiberkonsole (ADR-015), die laut
+Eigentümer ohne Mattermost stehen soll, müsste für die Frage „was darf
+diese Person sehen“ doch wieder dort nachfragen. Ziel: Bus und Konsole
+hängen an keinem einzelnen Chat. Ein Chat ist ein Ort, an dem Menschen
+mitlesen und schreiben, nicht die Quelle für Identität und Mitgliedschaft.
+
+**Decision (proposed):**
+
+1. **Keycloak ist die Wurzel der Identität; der Schlüssel ist `sub`, kein
+   Benutzername.** Ein Mensch auf dem Bus ist eine Keycloak-Identität.
+   `preferred_username` bleibt der Name, den Menschen lesen und schreiben,
+   ist aber nur noch Anzeige: Eine Umbenennung in Keycloak ändert weder
+   Eigentum noch Vertrauen. Chat-Konten werden je Produkt an die Identität
+   gebunden (ein Mattermost-Konto, ein Teams-Konto, ein Zulip-Konto), und
+   die Bindung steht im Verzeichnis (Punkt 2). Eigentümer und
+   Vertrauenslisten zeigen auf die Keycloak-Identität, nicht auf einen
+   Chat-Namen.
+   - **Übergang:** Die heutigen Namen gelten weiter, über die Bindung. Ein
+     Eintrag in `MM_TRUSTED_HUMANS` oder ein Eigentümername wird über die
+     Mattermost-Bindung zur Identität aufgelöst; ein Name ohne Bindung
+     bezeichnet niemanden und wird gemeldet, nie geraten.
+   - **Bedingung für den Bau: im Zweifel fremd.** Heute gilt im MCP-Server
+     das Gegenteil. `owners.mine()` liefert bei jedem Fehler eine leere
+     Menge („fail open: every agent a peer“), `owners.foreign()` liefert
+     dann nichts, und `gate.author_classes` sagt „unsure, it is a peer“;
+     nur `owners.peer()` verlangt schon einen Beweis. Mit der Auflösung
+     von Namen zu Identitäten kommt eine neue Fehlerquelle dazu (Bindung
+     fehlt, Verzeichnis nicht erreichbar), und sie darf nicht dazu führen,
+     dass jeder Agent als eigener gilt. Wer die Auflösung einbaut, stellt
+     `mine()` und `foreign()` deshalb im selben Schritt um: Ein Name ohne
+     Bindung oder eine Auflösung, die scheitert, macht den Absender fremd
+     und vertraut niemandem. Wer davon abweicht, begründet es in dieser
+     Entscheidung, bevor der Code gemischt wird.
+   - **Agentennamen hängen am Eigentümer.** Der Anmeldedienst bildet den
+     Namen eines Agenten als Hash über Eigentümer und Host-Schlüssel
+     (`name()` in `services/auth/internal/callout/service.go`). Wechselt
+     der Eigentümer dort von `preferred_username` auf `sub`, bekommt jeder
+     Agent einmal einen neuen Namen: Seine Consumer, sein Presence-Subject,
+     der Absender seiner Nachrichten im Stream und sein Eintrag in der
+     Liste der Agenten zeigen danach auf einen anderen Namen als vorher,
+     und zurück geht es nicht, weil die alten Nachrichten den alten Namen
+     behalten. Ob man diesen Wechsel hinnimmt oder den Namen vom
+     Eigentümer löst, ist offen (offener Punkt 9).
+   - Die Prüfung des Chat-Kontos im Anmeldedienst (`checkChat`) wird damit
+     vom Tor zur Bindung: Ein Mensch ohne Mattermost-Konto darf Agenten
+     starten; fehlt die Bindung, erreicht ihn nur dieser Chat nicht. Die
+     austauschbare Namensbindung (`token.NameBinding`) ist die Stelle, an
+     der das heute schon vorgesehen ist.
+
+2. **Ein Kanalverzeichnis auf NATS** (das Verzeichnis selbst: vom
+   Eigentümer entschieden). Je Kanal: sein Name auf dem Bus, öffentlich ja
+   oder nein, seine Mitglieder als Keycloak-Identitäten, und je Chat eine
+   Bindung (Mattermost-Kanal, Teams-Kanal, Zulip-Stream); ein Kanal ohne
+   Bindung lebt nur auf NATS. Dazu je Mensch die gebundenen Chat-Konten
+   aus Punkt 1.
+   - **Wo:** in einem Key-Value-Bucket im Konto des Mandanten, den allein
+     der Anmeldedienst schreibt. Agenten lesen ihn nicht: Sie haben
+     weiterhin kein Recht auf `$KV` und `$JS` (ADR-014 Punkt 16).
+   - **Wer ändert:** Verwalter, über den Anmeldedienst. Wer Verwalter ist
+     (offener Punkt 1) und auf welchem Weg er ändert (Kommandozeile,
+     Konsole, Befehl im Chat; offener Punkt 8), sind zwei offene Fragen.
+   - **Wer liest:** `callout.Channels` liest das Verzeichnis statt
+     Mattermost; die Schnittstelle bleibt, nur ihre Erfüllung wechselt.
+     Das Kanal-Token im Subject kommt aus dem Verzeichnis und ändert sich
+     nicht, wenn ein Chat seinen Kanal umbenennt.
+   - **Bis dahin** (vom Eigentümer entschieden): Anmeldedienst und Konsole
+     nehmen die Mitgliedschaft aus Mattermost, hinter eben dieser
+     Schnittstelle. Für die Konsole ist das eine befristete Ausnahme von
+     „keine Abhängigkeit von Mattermost“; sie fragt nie selbst, es bleibt
+     der Nachschlag des Anmeldedienstes.
+
+3. **Eine Brücke je Chat-Produkt.** Was die NATS-Entscheidung als
+   zentralen Adapter für Mattermost plant (ADR-014 Punkt 1 und Phase 5),
+   ist die erste Brücke; Teams oder Zulip bekämen je eine eigene. Eine
+   Brücke bringt, was Menschen in ihrem Chat schreiben, auf NATS, spiegelt
+   den Bus in die gebundenen Kanäle und bürgt für den Menschen: Sie löst
+   das Chat-Konto über die Bindung zur Keycloak-Identität auf und
+   unterschreibt das Ereignis mit einem Schlüssel, den die Hosts pinnen.
+   Ein Konto ohne Bindung ist kein vertrauter Mensch.
+   - Damit ändert sich der Satz der NATS-Entscheidung, dass nur der
+     zentrale Adapter sagen kann, ein Ereignis komme von einem vertrauten
+     Menschen (ADR-014 Punkt 10). Neu: jede Brücke für ihren Chat, mit
+     eigenem Schlüssel und nur für die an sie gebundenen Kanäle; und eine
+     Keycloak-Anmeldung auf NATS selbst, bei der NATS den Absender sagt
+     (ADR-014 Punkt 16). Die zweite kommt später, mit dem Antwortweg der
+     Konsole (ADR-015 Punkt 2 und offener Punkt 2); die Konsole liest bis
+     dahin nur.
+   - Ob eine Antwort genehmigt, entscheidet weiter der MCP-Server des
+     fragenden Agenten: Vertrauensliste, Gruppe der Genehmiger, 24 Stunden
+     (ADR-014 Punkt 10, RT-6.11). Die Quelle des Ereignisses ändert daran
+     nichts.
+
+4. **Der Anmeldedienst bürgt für Vertrauenslisten.** Heute steht die Liste
+   als `MM_TRUSTED_HUMANS` auf dem Host, und über NATS ist sie für alle
+   anderen leer. Neu: Der Host nennt sie beim Verbinden, der Anmeldedienst
+   löst die Namen zu Identitäten auf (Punkt 1), hält sie im Verzeichnis
+   fest und gibt sie als sein Wort weiter. Anmeldedienst und Verzeichnis
+   bezeugen die Liste, sie setzen sie nie: Gesetzt wird sie auf dem Host,
+   vom Eigentümer des Agenten, nie durch eine Nachricht auf dem Bus oder
+   im Chat und nie durch einen Verwalter des Verzeichnisses. Ein Eintrag
+   im Verzeichnis ohne die Liste eines Hosts dahinter gilt nicht.
+   - Das braucht die Sichtregel des Eigentümers: Ein Betreiber sieht die
+     öffentlichen Kanäle, die Kanäle seiner eigenen Agenten und die Kanäle
+     der Agenten, die ihm direkt vertrauen. Nicht über mehrere Stufen: Wem
+     ein Mensch vertraut, dem ich vertraue, der sieht dadurch nichts.
+   - Die Regel wirkt im Anmeldedienst, über die Consumer, die er für die
+     Person anlegt (RT-6.35), nicht in der Oberfläche der Konsole.
+   - „Kanäle eines Agenten“ meint hier sein Zuhause; ob auch seine
+     Gastkanäle zählen, ist offen (offener Punkt 6).
+
+5. **Agenten brauchen keinen Chat.** In einem Zuhause, das über NATS läuft
+   (RT-6.36), liegt der Verkehr der Agenten auf NATS. Ihr Bot-Konto im
+   Chat ist dann nur noch Spiegel für Menschen, die dort mitlesen, und
+   kann entfallen, wo niemand mitliest. Das ändert die Aussage der
+   NATS-Entscheidung, jeder Agent behalte ein eigenes Bot-Konto (ADR-014
+   Punkt 11): Sie gilt nur noch für Kanäle mit einer Chat-Bindung.
+
+**Alternatives considered:** (a) Mattermost bleibt die Quelle für Namen
+und Mitgliedschaft: nichts zu bauen und heute schon so, aber der Bus
+steht still, wenn Mattermost steht, ein zweiter Chat hat keinen Platz,
+und die Konsole hinge dauerhaft an dem Chat, von dem der Eigentümer sie
+gelöst hat. (b) Die Mitgliedschaft aus jedem Chat nach NATS abgleichen,
+jeder Chat bleibt Quelle für seine Kanäle: Menschen verwalten Kanäle, wo
+sie es gewohnt sind, aber derselbe Kanal in zwei Chats hat zwei
+Mitgliederlisten und keine Regel, welche gilt, jeder Chat-Verwalter
+entscheidet über Leserechte auf dem Bus, und ein Kanal ohne Chat hat gar
+keine Quelle. Abgleich als Hilfe zum Befüllen bleibt möglich (offener
+Punkt 5); Quelle ist das Verzeichnis.
+
+**Consequences:** Der Anmeldedienst wird vom Aussteller zum Halter des
+Verzeichnisses und damit zur einen Stelle, der alle für Identität,
+Mitgliedschaft und Vertrauenslisten glauben (RISK-15). Mitgliedschaft
+wird ein zweites Mal gepflegt, solange Kanäle auch im Chat leben; ohne
+Regel dafür laufen beide auseinander (RISK-16). Vertrauen öffnet künftig
+auch Sicht (RISK-17). Im MCP-Server ändert sich, woher Eigentümer und
+vertraute Menschen kommen (`owners.py`, `gate.py`), nicht die Regeln der
+Entscheidungen über Vertrauen und Eigentümer (ADR-001, ADR-003); die 17
+MCP-Werkzeuge behalten Namen und Schema. Die NATS-Entscheidung (ADR-014
+Punkte 6, 10 und 11) und die Konsole (ADR-015 Punkt 4) bleiben, wie sie
+geschrieben sind, bis dieser Vorschlag angenommen ist. Bausteinsicht,
+Laufzeitsicht und Verteilungssicht (Abschnitte 5, 6 und 7) ändern sich
+mit dem Bau, je Szenario mit einem Test, nicht vorher; die Website und
+`CHANGELOG.md`, wenn eine Version etwas davon ausliefert.
+
+**Tests (planned):** `callout.Channels` gegen das Verzeichnis mit
+denselben Fällen wie gegen Mattermost (unbekannt ist nicht „nein“); kein
+Schreibrecht auf den Bucket außer für den Anmeldedienst, gegen einen
+NATS-Server wie in `native_sender_test.go`; ein Name ohne Bindung
+vertraut niemandem; `owners.mine()` und `owners.foreign()` mit einer
+fehlenden Bindung und mit einem Verzeichnis, das nicht antwortet: der
+Absender ist fremd, sein TASK eine Bitte, in `mcp/tests/`; eine
+Vertrauensliste, die kein Host genannt hat, bezeugt der Anmeldedienst
+nicht; der Name eines Agenten vor und nach dem Wechsel auf `sub`, je
+nach Ausgang des offenen Punkts 9; eine Umbenennung in Keycloak oder im Chat ändert
+weder Eigentum noch Subject; die Sichtregel mit einem Fall über zwei
+Stufen, der nichts öffnet; ein Ereignis einer Brücke für einen Kanal, der
+nicht an sie gebunden ist, wird verworfen.
+
+**Risks created:** das Verzeichnis als eine Stelle, der alle glauben,
+Verzeichnis und Chat, die auseinanderlaufen, und Sicht durch Vertrauen
+(RISK-15 bis RISK-17 in Abschnitt 11).
+
+**Open for the owner**, je eine Entscheidung. Die Reihenfolge: zuerst,
+wer das Verzeichnis verwalten darf (Punkt 1), dann der Anfang (Punkt 3),
+denn wer den ersten Eintrag macht, folgt aus den Rechten. Beide sind vor
+dem Bau zu entscheiden: Die Gegenmaßnahme zum Verzeichnis als der einen
+Stelle, der alle glauben (RISK-15), ist „jede Änderung durch einen
+benannten Verwalter“, und sie trägt nicht, solange offen ist, wer der
+erste ist. Der Weg (Punkt 8) kann danach folgen.
+
+1. Wer das Verzeichnis verwalten darf: eine Keycloak-Gruppe von
+   Verwaltern, der Eigentümer eines Kanals für seinen Kanal, oder beides.
+2. Der Übergang von der Mattermost-Mitgliedschaft: einmal übernehmen und
+   dann im Verzeichnis pflegen, oder eine Zeit lang beides vergleichen und
+   Abweichungen melden.
+3. Der Anfang: wer den ersten Verwalter und die ersten Kanäle einträgt,
+   bevor es jemanden gibt, der es über den Anmeldedienst dürfte.
+4. Was „öffentlich“ je Chat heißt: Ein öffentlicher Kanal in Mattermost
+   ist für jedes Konto des Teams offen, in Teams und Zulip gelten andere
+   Regeln. Vorschlag: „öffentlich“ ist eine Eigenschaft des Kanals auf
+   dem Bus (jede Identität des Mandanten darf lesen); die Brücke lehnt
+   eine Bindung ab, deren Chat-Kanal weiter offen ist als der Bus-Kanal.
+5. Abgleich aus den Chats oder Verzeichnis als Quelle für Mitglieder:
+   Vorschlag: Das Verzeichnis ist die Quelle, die Brücke setzt die
+   Mitglieder im Chat danach; ein Abgleich in die andere Richtung nur als
+   Vorschlag an einen Verwalter.
+6. Ob die Sichtregel auch die Gastkanäle eines Agenten öffnet. Vorschlag:
+   nein, nur sein Zuhause; sonst öffnet ein Gast ein fremdes Zuhause für
+   jeden, dem er vertraut.
+7. Was im Subject steht, wo heute der Name des Eigentümers steht
+   (`<presence>.<owner>.<name>`, ADR-014 Punkt 16): weiter der Name als
+   Anzeige mit `sub` im Verzeichnis, oder ein Token aus `sub`.
+8. Auf welchem Weg ein Verwalter das Verzeichnis ändert: Kommandozeile
+   des Anmeldedienstes, Konsole oder Befehl im Chat. Der Weg ändert
+   nichts daran, wer darf (Punkt 1).
+9. Beim Wechsel des Eigentümers auf `sub`: Agenten neu ausstellen und auf
+   neue Namen umziehen, oder den Namen des Agenten vom Eigentümer lösen?
+   Vorschlag: lösen. Das Verzeichnis hält je Identität einen festen
+   Ausgangswert für den Hash, für heutige Identitäten den heutigen
+   Namen, für neue `sub`; damit ändert sich kein Name, auch nicht bei
+   einer späteren Umbenennung in Keycloak. Kosten: ein Feld, das nie
+   mehr geändert werden darf, der Name hängt am Verzeichnis (RISK-15),
+   und der alte Benutzername lebt als Ausgangswert weiter. Neu
+   ausstellen kostet dagegen einen Stichtag, an dem alle Sitzungen neu
+   starten, Consumer und Presence neu entstehen und Verweise auf alte
+   Namen im Stream ins Leere zeigen; es ist nicht umkehrbar, kommt aber
+   ohne zusätzliches Feld aus und wäre im Labor mit wenigen Agenten
+   billig.
+
+Nicht Teil dieses Vorschlags: eine Brücke für Teams oder Zulip zu bauen,
+der Antwortweg der Konsole, mehrere Mandanten, und der Zeitpunkt, zu dem
+Mattermost abgeschaltet werden könnte.
