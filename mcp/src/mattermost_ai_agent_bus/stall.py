@@ -354,13 +354,14 @@ async def _look(client: ChatPort, uid: str, now: float, chan: str = "", name: st
     if any(r.status == "working" and r.username != names.get(uid) for r in roster):
         quiet = now_ms
     untrusted: set[str] = set()
-    if trusted:
+    gated = await gate.active(client)  # in doubt on (ADR-016), not "trusted resolved"
+    if gated:
         untrusted = {p.id for p, c in zip(posts, classes, strict=True)
                      if c in (gate.OTHER, gate.FOREIGN) and not p.root_id}
     rows = tasks.build(posts, names, now_ms=now_ms, untrusted=untrusted,
                        coordinators={r.username for r in roster if r.coordinator})
     # A foreign agent's ✅ keeps an ask open (RT-6.11, ADR-001).
-    foreign = await owners.foreign(client, tasks.ask_closers(posts)) if trusted else {}
+    foreign = await owners.foreign(client, tasks.ask_closers(posts)) if gated else {}
     found = items(posts, names, classes, rows, {r.username for r in roster}, now_ms, trusted,
                   me=names.get(uid, ""), foreign=set(foreign))
     if chan:

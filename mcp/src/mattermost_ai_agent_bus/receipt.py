@@ -131,7 +131,7 @@ async def arrived(client: ChatPort, post: Post, uid: str, gated: bool) -> None:
         if post.user_id == holder:
             return
         cls =(await gate.author_classes(client, [post]))[0]
-        if cls in (gate.OTHER, gate.FOREIGN) and await client.trusted_humans():
+        if cls in (gate.OTHER, gate.FOREIGN) and await gate.active(client):
             return  # its own trust (RT-6.16): it would not count the post as a wake
         if wakes_holder(post, cls, holder, name, home):
             now = time.time()

@@ -255,6 +255,8 @@ def dm_partner(channel: Channel, me: str) -> str:
 _NAME_RE = re.compile(r"^[a-z0-9]([a-z0-9-]{0,30}[a-z0-9])?$")
 # A bot description (its owner and trusted list, ADR-003) is read again after this.
 DESCRIPTION_TTL_SEC = 600.0
+# How long a failed lookup of MM_TRUSTED_HUMANS waits before it asks again (ADR-016).
+TRUSTED_RETRY_SEC = 60
 # The most a registrar's answer with a signed record may hold (an ask mode, a
 # mandate, an attestation: RT-6.25 step 8, RT-6.26 step 8, RT-6.24 step 5).
 MODE_RECORD_MAX = 8192
@@ -444,6 +446,8 @@ class MattermostAdapter:
         default_factory=dict, repr=False, init=False)
     session: SessionInfo | None = field(default=None, repr=False, init=False)
     _trusted: dict[str, str] | None = field(default=None, repr=False, init=False)
+    # After a failed lookup: (monotonic time to ask again, what resolved), ADR-016.
+    _trusted_retry: tuple[float, dict[str, str]] | None = field(default=None, repr=False, init=False)
     profile_warning: str = field(default="", repr=False, init=False)
     trusted_source: str = field(default="", repr=False, init=False)
     session_file_status: dict[str, Any] = field(
@@ -1140,6 +1144,8 @@ class MattermostAdapter:
         """
         if self._trusted is not None:
             return self._trusted
+        if self._trusted_retry is not None and time.monotonic() < self._trusted_retry[0]:
+            return dict(self._trusted_retry[1])
 
         def names(var: str) -> list[str]:
             return [n.strip().lstrip("@") for n in env(var).split(",") if n.strip()]
@@ -1171,12 +1177,14 @@ class MattermostAdapter:
         except (httpx.HTTPError, KeyError, ValueError):
             trusted, failed = {}, True
         if failed:
-            log.info("trusted humans: a lookup failed, %d of %d resolved; asked again next time",
-                     len(trusted), len(wanted))
+            log.info("trusted humans: a lookup failed, %d of %d resolved; asked again in %d s",
+                     len(trusted), len(wanted), TRUSTED_RETRY_SEC)
+            self._trusted_retry = (time.monotonic() + TRUSTED_RETRY_SEC, dict(trusted))
         else:
-            self._trusted = trusted
+            self._trusted, self._trusted_retry = trusted, None
         self.trusted_source = source if trusted else (
-            "none: set MM_TRUSTED_HUMANS")
+            f"not resolved: a lookup failed, asked again in {TRUSTED_RETRY_SEC} s" if failed
+            else "none: set MM_TRUSTED_HUMANS")
         return trusted
 
     @property

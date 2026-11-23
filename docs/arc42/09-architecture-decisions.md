@@ -83,7 +83,8 @@ an agent route; nothing says whether a routed request carries authority.
   exactly as today. A description that cannot be read (API error) failed
   open until the condition of the bus without a chat as its source (ADR-016,
   "im Zweifel fremd") was built: since then the owner last read holds for
-  `OWNER_GRACE_SEC` (300 s), after that the author is foreign, and my own bot
+  `OWNER_GRACE_SEC` (300 s; with the client's cache at most 15 minutes after
+  Mattermost last answered), after that the author is foreign, and my own bot
   unreadable keeps the split on (RT-6.16). A trusted list the registrar cut
   (marked `+N`, WP3) counts as foreign.
 
@@ -4469,9 +4470,12 @@ dem `sub` als Wert verhindert, dass ein Wert zweimal vergeben wird.
 Gebaut ist die Bedingung „im Zweifel fremd“ (Punkt 1), vor jeder
 Auflösung von Namen: `owners.foreign()` und `owners.peer()` nehmen bei
 einem Lesefehler den zuletzt gelesenen Eigentümer, solange er jünger
-als `OWNER_GRACE_SEC` (300 s) ist, danach ist der Agent fremd;
+als `OWNER_GRACE_SEC` (300 s) ist, mit dem Cache des Clients höchstens 15
+Minuten nach der letzten Antwort von Mattermost, danach ist der Agent fremd;
 `owners.mine()` lässt die Trennung an, wenn der eigene Bot oder die
-vertrauten Menschen nicht lesbar sind (RT-6.16). Die Frist hält eine
+vertrauten Menschen nicht lesbar sind (RT-6.16); Tor und Task-Zählung
+hängen daran, ob vertraute Menschen konfiguriert sind, nicht daran, ob
+gerade einer aufgelöst ist (`gate.active`). Die Frist hält eine
 kurze Störung davon ab, jeden TASK zur Bitte zu machen.
 
 Nicht Teil dieses Vorschlags: eine Brücke für Teams oder Zulip zu bauen,

@@ -20,6 +20,11 @@ _BUS_ENV = (
     "MM_BOT_USER_ID",
     "MM_BOT_ATTESTATION",
     "MM_REGISTRAR_KEYS",
+    # The trusted humans: gate.active reads them (RT-6.16, ADR-016).
+    "MM_TRUSTED_HUMANS",
+    "MM_TRUSTED_HUMAN_USER_IDS",
+    "MM_OWNER",
+    "MM_OWNER_USER_ID",
     "MM_PROPS_PREFIX",
     "MM_TEAM",
     "MM_TEAM_ID",

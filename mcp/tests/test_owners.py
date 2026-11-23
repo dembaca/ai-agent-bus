@@ -363,6 +363,7 @@ async def test_a_failed_lookup_of_trusted_names_is_not_remembered(monkeypatch):
         raise httpx.ConnectError("down")
 
     monkeypatch.setattr(client, "_api", api)
+    monkeypatch.setattr("mattermost_ai_agent_bus.client.TRUSTED_RETRY_SEC", 0)
     assert await client.trusted_humans() == {}
     names, _ = await owners.mine(client)
     assert names == {"alice"}  # in doubt: the configured names, the split on
