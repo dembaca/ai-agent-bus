@@ -83,8 +83,11 @@ async def after(client: ChatPort) -> list[After]:
         keys = [ch.channel_id, *([f"{ch.channel_id}{watermark.NATS_LANE}"] if ch.nats else [])]
         sinces = {k: max(marks[k].at if k in marks else 0, floor) for k in keys}
         since = min(sinces.values())
-        if ch.last_post_at:
-            if ch.last_post_at <= since:
+        newest = {ch.channel_id: ch.last_post_at}
+        if ch.nats:
+            newest[keys[-1]] = ch.nats_last_post_at
+        if ch.last_post_at or ch.nats:
+            if all(newest[k] <= sinces[k] for k in keys):  # each lane by its own clock
                 continue
         elif not (ch.pending or ch.unread):
             continue

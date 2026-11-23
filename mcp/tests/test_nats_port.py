@@ -457,7 +457,7 @@ async def test_threads_and_reads_come_from_the_memory() -> None:
         await port.thread("n1:home:99")
     # the unread count sees the newest NATS post, which Mattermost does not know
     (home,) = [c for c in await port.member_channels() if c.channel_id == WORK]
-    assert home.last_post_at == (await port.channel_posts(WORK))[0].create_at
+    assert home.nats and home.nats_last_post_at == (await port.channel_posts(WORK))[0].create_at
     assert await port.post_channel_id("n1:home:10") == WORK
     with pytest.raises(NotFound):
         await port.post_channel_id("n1:nothome:10")
@@ -755,13 +755,13 @@ async def test_the_reads_of_a_nats_home_hold_a_persons_mattermost_posts_too() ->
     # since, inclusive on both sides (Mattermost's posts_after is: client.py)
     assert [p.message for p in await port.posts_after(t_b, channel_id=WORK)] == ["b", "human task", "c"]
     assert [p.message for p in await port.posts_after(t_b + 1)] == ["human task", "c"]
-    # the unread count: the newer of the two is the last post
+    # the unread count: each lane's newest post, by its own server's clock
     (home,) = [c for c in await port.member_channels() if c.channel_id == WORK]
-    assert home.last_post_at == t_b + 1000
+    assert (home.last_post_at, home.nats_last_post_at) == (t_b + 500, t_b + 1000)
     inner.clock = t_b + 9_000
     inner.arrive({"id": "g" * 26, "user_id": HUMAN, "message": "later"})
     (home,) = [c for c in await port.member_channels() if c.channel_id == WORK]
-    assert home.last_post_at == t_b + 10_000  # Mattermost's, newer than the newest NATS post
+    assert (home.last_post_at, home.nats_last_post_at) == (t_b + 10_000, t_b + 1000)
     # a Mattermost root's thread is Mattermost's
     assert [p.message for p in (await port.thread("h" * 26)).posts] == ["human task"]
 
@@ -850,6 +850,85 @@ async def test_a_nats_side_closed_from_outside_is_not_opened_again_by_its_pump()
     await merged._nats.close()  # its clean end: closed, not failed
     await asyncio.sleep(0.1)  # several retry periods
     assert port._subs == []  # no new subscription beside the next connection's
+    pending.cancel()
+    await stream.aclose()
+
+
+class _SlowChat:
+    """A source with a stream per connection whose close takes a while (the socket's close
+    handshake, up to CLOSE_SEC) and touches only its own connection, as mattermost_ws's."""
+
+    def __init__(self) -> None:
+        self.conn, self.connected = 0, False
+
+    async def open(self) -> None:
+        self.conn += 1
+        self.connected = True
+
+    def events(self) -> Any:
+        return _SlowStream(self, self.conn)
+
+    async def typing(self, channel_id: str, parent_id: str) -> None: ...
+
+    async def close(self) -> None:
+        self.connected = False
+
+
+class _SlowStream:
+    def __init__(self, source: _SlowChat, conn: int) -> None:
+        self.source, self.conn = source, conn
+
+    def __aiter__(self) -> "_SlowStream":
+        return self
+
+    async def __anext__(self) -> Any:
+        await asyncio.Event().wait()
+
+    async def aclose(self) -> None:
+        if self.source.conn == self.conn:
+            self.source.connected = False
+        await asyncio.sleep(0.2)
+
+
+async def test_an_old_stream_closing_late_never_silences_the_next_connections_nats_side() -> None:
+    """The reader stopped (an event failed), its stream closes slowly, and the next
+    wait_for_events connects meanwhile: the old stream ends only its own subscription."""
+    port, inner, _ = make()
+    chat = _SlowChat()
+    merged = MergedEvents(chat, NatsEvents(port), port, retry_sec=0.01)  # type: ignore[arg-type]
+    await merged.open()
+    old = merged.events()
+    first = asyncio.ensure_future(old.__anext__())
+    await asyncio.sleep(0.02)
+    first.cancel()
+    closing = asyncio.ensure_future(old.aclose())  # the reader's finally, a slow socket close
+    await asyncio.sleep(0.02)
+    assert not merged.connected
+    await merged.open()  # the next connection, while the old stream still closes
+    new = merged.events()
+    nxt = asyncio.ensure_future(new.__anext__())
+    await closing
+    await asyncio.sleep(0.1)
+    assert len(port._subs) == 1
+    await arrive(port, "home", BOB, 1, Message("post", "m1"))
+    got = await asyncio.wait_for(nxt, 1)
+    assert got.post.message == "m1"  # type: ignore[union-attr]
+    await merged.close()
+    assert port._subs == []
+
+
+async def test_a_stopped_port_leaves_no_subscription_behind() -> None:
+    port, inner, _ = make()
+    chat = FakeEvents(connected=False, held=True)
+    merged = MergedEvents(chat, NatsEvents(port), port, retry_sec=0.01)
+    await merged.open()
+    stream = merged.events()
+    pending = asyncio.ensure_future(stream.__anext__())
+    await asyncio.sleep(0.05)
+    assert len(port._subs) == 1
+    await port.stop()  # the end reaches the stream: its pump returns
+    await asyncio.sleep(0.05)
+    assert port._subs == [] and not merged._nats.connected
     pending.cancel()
     await stream.aclose()
 
@@ -1116,6 +1195,41 @@ async def test_the_nats_posts_of_a_home_have_a_read_mark_of_their_own(monkeypatc
         assert [p.message for r in rows for p in r.posts] == ["`TASK` · from a person"]
     finally:
         await inbox.close()
+    # The next server's backfill hands the person's post over, not the NATS post again.
+    again = WebSocketInbox(client=client, watched_channel_ids={WORK}, source=NatsEvents(port))  # type: ignore[arg-type]
+    try:
+        await again.ensure_connected()
+        got = await again.take(timeout_sec=2, max_events=10)
+        assert [e.post.message for e in got] == ["`TASK` · from a person"]
+        await again.ack(got)
+        assert watermark.read(BOT)[WORK].at == got[0].post.create_at < nats_at
+        assert await unread.after(client) == []  # type: ignore[arg-type]
+    finally:
+        await again.close()
+
+
+async def test_a_quiet_nats_home_is_not_read_for_the_count(monkeypatch: pytest.MonkeyPatch) -> None:
+    """Each lane's newest post against its own mark: agents talking over NATS while nobody
+    posts on Mattermost cost the pending count no request."""
+    from mattermost_ai_agent_bus import unread, watermark
+
+    port, inner, _ = make()
+    await arrive(port, "home", ALICE, 10, Message("post", "from nats"))
+    (post,) = await port.channel_posts(WORK)
+    watermark.advance(BOT, watermark.lane(WORK, post.id), post.id, post.create_at)
+    reads: list[str] = []
+    real = port.channel_posts
+
+    async def counted(channel_id: str, **kw: Any) -> Any:
+        reads.append(channel_id)
+        return await real(channel_id, **kw)
+
+    monkeypatch.setattr(port, "channel_posts", counted)
+    assert await unread.after(compose.Remembered(port)) == []  # type: ignore[arg-type]
+    assert reads == []
+    await arrive(port, "home", ALICE, 11, Message("post", "new"))
+    rows = await unread.after(compose.Remembered(port))  # type: ignore[arg-type]
+    assert reads == [WORK] and [p.message for r in rows for p in r.posts] == ["new"]
 
 
 def test_a_post_moves_the_mark_of_its_own_lane() -> None:

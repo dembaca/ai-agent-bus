@@ -28,7 +28,7 @@ Memory. What arrives is kept per channel, at most `memory` posts (the lowest str
 sequence goes first); `thread` (of a NATS root) and `reactions` read it;
 `channel_posts`, `list_recent` and `posts_after` of a home merge it with what
 Mattermost has in that channel (a person's post, an ask, a BYE), sorted by time, and
-`member_channels` counts the newer of the two as the last post. What came while the
+`member_channels` gives a home's newest NATS post beside Mattermost's. What came while the
 session was away comes back over the bus at its next connection (`since`); what fell
 out of the memory does not. A reply whose root is a post
 of another channel is dropped; one whose root is not known is a top-level post; a
@@ -619,17 +619,16 @@ class NatsPort:
         return list(self._shown(ch, seq).reactions)
 
     async def member_channels(self) -> list[UnreadChannel]:
-        """The adapter's, with a NATS home's newest remembered post counted as its
-        last post: Mattermost does not know it, and the unread count and the
-        inbox's backfill look at it. A home is marked `nats`: its NATS posts have
-        a read watermark of their own (watermark.lane)."""
+        """The adapter's, a NATS home marked `nats` with its newest remembered
+        NATS post as `nats_last_post_at` (Mattermost does not know it): its NATS
+        posts have a read watermark of their own (watermark.lane), and the unread
+        count and the inbox's backfill compare each lane's newest with its mark."""
         rows = await self.inner.member_channels()
         ids = await self.resolve()
         newest = {ids[ch]: max((p.create_at for p in mem.values()), default=0)
                   for ch, mem in self._posts.items() if ch in ids}
         homes = set(ids.values())
-        return [dataclasses.replace(r, last_post_at=max(r.last_post_at, newest.get(r.channel_id, 0)),
-                                    nats=True)
+        return [dataclasses.replace(r, nats=True, nats_last_post_at=newest.get(r.channel_id, 0))
                 if r.channel_id in homes else r for r in rows]
 
     # --- the senders: agent names, no Mattermost accounts ----------------------------------------
@@ -730,7 +729,11 @@ class NatsEvents:
     async def typing(self, channel_id: str, parent_id: str) -> None:
         return None
 
-    async def close(self) -> None:
+    async def close(self, queue: asyncio.Queue[ChatEvent | NatsPortError | None] | None = None) -> None:
+        """End the subscription; with `queue`, only while it is still that one: a stream
+        closing late never ends the subscription of the connection after it."""
+        if queue is not None and self._queue is not queue:
+            return
         q, self._queue = self._queue, None
         if q is not None:
             self._port.unsubscribe(q)
@@ -756,7 +759,7 @@ class _NatsStream:
         return item
 
     async def aclose(self) -> None:
-        await self._source.close()
+        await self._source.close(self._queue)
 
 
 def _put_last(q: asyncio.Queue[Any], item: Any) -> int:
@@ -780,10 +783,12 @@ class MergedEvents:
     Mattermost side. The NATS side is opened again after `retry_sec` (doubling up to
     30 s) when its open or its stream failed, until the homes are down for good (the
     log says so once); a NATS stream that ends cleanly (closed, the port stopped) is
-    not opened again. open opens Mattermost's and tries the NATS side. A stream ends
-    (or raises) when Mattermost's does, and closes the other, so the next open
-    connects both afresh; close() ends every stream still running, so none keeps
-    reading beside the next one."""
+    not opened again. open opens Mattermost's and a fresh NATS subscription (the
+    last connection's ends), so each connection's stream reads its own. A stream
+    ends (or raises) when Mattermost's does, and closes the other side, only its
+    own subscription, so the next open connects both afresh and a stream closing
+    late never silences the next one; close() ends every stream still running, so
+    none keeps reading beside the next one."""
 
     def __init__(self, chat: EventSource, nats: NatsEvents, port: NatsPort, *,
                  retry_sec: float = START_RETRY_SEC) -> None:
@@ -797,6 +802,7 @@ class MergedEvents:
 
     async def open(self) -> None:
         await self._chat.open()
+        await self._nats.close()  # the last connection's subscription: this one gets its own
         try:
             await self._nats.open()
         except Exception as exc:  # noqa: BLE001 — NATS never takes Mattermost down
@@ -827,6 +833,7 @@ class _MergedStream:
                  gone: Callable[[_MergedStream], None]) -> None:
         self._chat, self._nats, self._retry = chat, nats, retry_sec
         self._gone = gone
+        self._bound: asyncio.Queue[ChatEvent | NatsPortError | None] | None = None  # the NATS subscription read
         self._queue: asyncio.Queue[tuple[str, Any]] = asyncio.Queue(MAX_QUEUE)
         self._tasks: list[asyncio.Task[None]] = []
         self._ended = False
@@ -853,6 +860,7 @@ class _MergedStream:
         while True:
             try:
                 await self._nats.open()
+                self._bound = self._nats._queue
                 async for event in self._nats.events():
                     delay = self._retry
                     try:
@@ -864,8 +872,10 @@ class _MergedStream:
                                         MAX_QUEUE, self._dropped)
                 # A clean end: the NATS side was closed (a new connection has its own
                 # subscription) or the port stopped. Opening it again here would read
-                # beside the next stream and take half of its events.
+                # beside the next stream and take half of its events. Its own
+                # subscription goes (after a stop it is still the source's).
                 log.info("nats: its event stream ended")
+                await self._nats.close(self._bound)
                 return
             except asyncio.CancelledError:
                 raise
@@ -900,5 +910,6 @@ class _MergedStream:
         await asyncio.gather(*self._tasks, return_exceptions=True)
         with contextlib.suppress(Exception):
             await self._chat.aclose()
-        with contextlib.suppress(Exception):
-            await self._nats.close()
+        if self._bound is not None:  # only its own: never the next connection's
+            with contextlib.suppress(Exception):
+                await self._nats.close(self._bound)
