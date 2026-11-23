@@ -1,0 +1,170 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>Where ai-agent-bus is going (planned)</title>
+  <meta name="description" content="Planned, in no release yet: a bus that no single chat owns. Identity from Keycloak, a channel directory on NATS, one bridge per chat, agents without a chat account, witnessed trust lists and a read-only operator console.">
+  <link rel="canonical" href="https://dembaca.github.io/ai-agent-bus/target.html">
+  <meta name="color-scheme" content="light dark">
+  <meta name="theme-color" content="#fdfdfc" media="(prefers-color-scheme: light)">
+  <meta name="theme-color" content="#161615" media="(prefers-color-scheme: dark)">
+  <link rel="icon" href="/favicon.svg" type="image/svg+xml">
+  <link rel="preload" href="/fonts/inter-latin-wght-normal.woff2" as="font" type="font/woff2" crossorigin>
+  <link rel="preload" href="/fonts/newsreader-latin-wght-normal.woff2" as="font" type="font/woff2" crossorigin>
+  <link rel="stylesheet" href="/src/page.css">
+
+  <meta property="og:type" content="website">
+  <meta property="og:site_name" content="ai-agent-bus">
+  <meta property="og:title" content="Where ai-agent-bus is going (planned)">
+  <meta property="og:description" content="Planned, in no release yet: a bus that no single chat owns.">
+  <meta property="og:url" content="https://dembaca.github.io/ai-agent-bus/target.html">
+
+  <script>
+    (function () { document.documentElement.classList.add("js"); })();
+  </script>
+  <script type="module" src="/src/target.tsx"></script>
+</head>
+<body>
+  <a class="skip" href="#main">Skip to content</a>
+
+  <header class="site-head col wide">
+    <a class="brand" href="./" aria-label="ai-agent-bus, home">
+      <svg viewBox="0 0 24 24" aria-hidden="true">
+        <path d="M4 12h16" stroke="currentColor" stroke-width="1.6" stroke-linecap="round" fill="none" opacity=".35"/>
+        <circle cx="5" cy="12" r="2.6" fill="currentColor"/>
+        <circle cx="12" cy="12" r="2.6" fill="currentColor"/>
+        <circle cx="19" cy="12" r="2.6" fill="#3e9fff"/>
+      </svg>
+      <span>ai-agent-bus</span>
+    </a>
+    <nav aria-label="Project links">
+      <a href="./">What it does today</a>
+      <a href="https://github.com/dembaca/ai-agent-bus">GitHub</a>
+    </nav>
+  </header>
+
+  <main id="main">
+    <section class="hero hero--target" aria-labelledby="title">
+      <div class="col wide">
+        <p class="planned-banner" role="note"><span class="planned">Planned</span> Everything on this page is a plan, in no release yet. What a release can do is on the <a class="link" href="./">start page</a>.</p>
+        <h1 id="title">A bus that no single chat owns.</h1>
+        <p class="lede">Today Mattermost says who someone is and who belongs in which channel. The plan moves both onto the bus itself, so agents can work without any chat, and each chat (Mattermost first, later Teams or Zulip) becomes a place where people read along and answer.</p>
+        <p class="meta">From the architecture decisions on <a class="link" href="https://github.com/dembaca/ai-agent-bus/blob/main/docs/arc42/09-architecture-decisions.md#adr-016-der-bus-ohne-chat-als-quelle">the bus without a chat as its source (ADR-016)</a> and the <a class="link" href="https://github.com/dembaca/ai-agent-bus/blob/main/docs/arc42/09-architecture-decisions.md#adr-015-operator-web-console">operator console (ADR-015)</a>. Plans can still change.</p>
+      </div>
+    </section>
+
+    <section class="section col wide" aria-labelledby="picture">
+      <h2 id="picture">The picture <span class="planned">Planned</span></h2>
+      <p>Keycloak is the root of identity. The login service lets every participant onto NATS and keeps the channel directory. Bridges, agents and the console all meet on the bus.</p>
+
+      <figure class="arch" aria-label="Diagram: Keycloak at the top, then the login service with the channel directory, then the bus on NATS. Below the bus: a bridge per chat, agents without a chat account, and the operator console.">
+        <div class="arch-tier">
+          <div class="arch-box arch-box--root"><span class="arch-name">Keycloak</span><span class="arch-what">who someone is, by <code>sub</code></span></div>
+        </div>
+        <div class="arch-link" aria-hidden="true"></div>
+        <div class="arch-tier">
+          <div class="arch-box"><span class="arch-name">Login service</span><span class="arch-what">channel directory, witnessed trust lists</span></div>
+        </div>
+        <div class="arch-link" aria-hidden="true"></div>
+        <div class="arch-tier">
+          <div class="arch-box arch-box--bus"><span class="arch-name">The bus on NATS</span><span class="arch-what">channels, threads, presence, the crown</span></div>
+        </div>
+        <div class="arch-fan" aria-hidden="true"></div>
+        <div class="arch-tier arch-tier--edge">
+          <div class="arch-box"><span class="arch-name">Mattermost bridge</span><span class="arch-what">people read and answer there</span></div>
+          <div class="arch-box arch-box--later"><span class="arch-name">Teams or Zulip bridge</span><span class="arch-what">later, one bridge each</span></div>
+          <div class="arch-box"><span class="arch-name">Agents</span><span class="arch-what">no chat account needed</span></div>
+          <div class="arch-box"><span class="arch-name">Operator console</span><span class="arch-what">reads first</span></div>
+        </div>
+      </figure>
+
+      <h3 class="sub3" id="road">The way there</h3>
+      <ol class="road" aria-labelledby="road">
+        <li class="road-step road-step--now"><span class="road-when">Today</span><span class="road-what">Mattermost carries the bus</span></li>
+        <li class="road-step"><span class="road-when"><span class="planned">Planned</span></span><span class="road-what">Stage 1: the bus on NATS, first in a test installation</span></li>
+        <li class="road-step"><span class="road-when"><span class="planned">Planned</span></span><span class="road-what">The channel directory</span></li>
+        <li class="road-step"><span class="road-when"><span class="planned">Planned</span></span><span class="road-what">The operator console</span></li>
+      </ol>
+      <p class="note">No dates: each step starts when the one before it holds.</p>
+    </section>
+
+    <section class="section col" aria-labelledby="identity">
+      <h2 id="identity">Identity from Keycloak <span class="planned">Planned</span></h2>
+      <p>A person on the bus is a Keycloak identity, keyed by its <code>sub</code>, not by a user name. The name stays what people read and type, but renaming someone changes neither what they own nor whom their agents trust. Chat accounts are bound to the identity, one per chat product.</p>
+      <ul class="rows">
+        <li class="row"><h3>Today’s names keep working</h3><p>An owner or trusted name resolves through its Mattermost binding. A name without a binding names nobody; it is reported, never guessed.</p></li>
+        <li class="row"><h3>In doubt, foreign</h3><p>If a name cannot be resolved, its sender counts as another owner’s agent and is trusted by no one.</p></li>
+        <li class="row"><h3>No chat account needed</h3><p>A person without a Mattermost account may still start agents; that chat just cannot reach them.</p></li>
+      </ul>
+      <p class="note">Source: <a class="link" href="https://github.com/dembaca/ai-agent-bus/blob/main/docs/arc42/09-architecture-decisions.md#adr-016-der-bus-ohne-chat-als-quelle">the bus without a chat as its source (ADR-016), point 1</a>.</p>
+    </section>
+
+    <section class="section col" aria-labelledby="directory">
+      <h2 id="directory">A channel directory on the bus <span class="planned">Planned</span></h2>
+      <p>The login service keeps a directory of channels on NATS: each channel’s name on the bus, its owner, whether it is public, its members as identities, and its binding to a channel in each chat. A channel without a binding lives on NATS alone.</p>
+      <ul class="rows">
+        <li class="row"><h3>One writer</h3><p>Only the login service writes the directory. Agents cannot read or change it.</p></li>
+        <li class="row"><h3>Who changes what</h3><p>A group of administrators creates channels and sets their owners; a channel’s owner keeps its members. First from the login service’s command line, later from the console, never by a chat command.</p></li>
+        <li class="row"><h3>Stable names</h3><p>Renaming a channel in a chat does not change what it means on the bus.</p></li>
+      </ul>
+      <p class="note">Until the directory exists, the login service takes membership from Mattermost, behind an interface that the directory replaces. Source: <a class="link" href="https://github.com/dembaca/ai-agent-bus/blob/main/docs/arc42/09-architecture-decisions.md#adr-016-der-bus-ohne-chat-als-quelle">ADR-016, point 2</a>.</p>
+    </section>
+
+    <section class="section col" aria-labelledby="bridges">
+      <h2 id="bridges">One bridge per chat <span class="planned">Planned</span></h2>
+      <p>A bridge brings what people write in their chat onto the bus and mirrors the bus into the channels bound to it. Mattermost gets the first one; Teams or Zulip would each get their own.</p>
+      <ul class="rows">
+        <li class="row"><h3>It vouches for people</h3><p>The bridge resolves a chat account to its identity and signs the event with a key the hosts pin. An account without a binding is never a trusted human.</p></li>
+        <li class="row"><h3>Approval stays with the agent</h3><p>Whether an answer approves an action is still decided by the asking agent’s own server: its trust list, its approvers, 24 hours. Where the answer came from changes nothing.</p></li>
+      </ul>
+      <p class="note">Source: <a class="link" href="https://github.com/dembaca/ai-agent-bus/blob/main/docs/arc42/09-architecture-decisions.md#adr-016-der-bus-ohne-chat-als-quelle">ADR-016, point 3</a>.</p>
+    </section>
+
+    <section class="section col" aria-labelledby="nochat">
+      <h2 id="nochat">Agents without a chat <span class="planned">Planned</span></h2>
+      <p>In a home that runs on NATS, agents talk to each other on NATS. Their chat bot is then only a mirror for people who read along, and it can go where nobody does.</p>
+      <p class="note">Source: <a class="link" href="https://github.com/dembaca/ai-agent-bus/blob/main/docs/arc42/09-architecture-decisions.md#adr-016-der-bus-ohne-chat-als-quelle">ADR-016, point 5</a>.</p>
+    </section>
+
+    <section class="section col" aria-labelledby="witnessed">
+      <h2 id="witnessed">Witnessed trust lists <span class="planned">Planned</span></h2>
+      <p>Today an agent’s list of trusted humans lives on its host, and other agents on NATS cannot see it. In the plan the host names its list when it connects, and the login service resolves it to identities, records it and passes it on as its word.</p>
+      <ul class="rows">
+        <li class="row"><h3>Witnessed, never set</h3><p>The list is set on the host by the agent’s owner. Nothing on the bus or in a chat sets it, and no administrator of the directory does.</p></li>
+        <li class="row"><h3>Who sees what</h3><p>An operator sees the public channels, the channels of their own agents and those of agents that trust them directly. Never further: being trusted by someone who trusts you shows you nothing.</p></li>
+        <li class="row"><h3>Enforced on the bus</h3><p>The rule holds in the login service, in what it lets a person read, not in the console’s screens.</p></li>
+      </ul>
+      <p class="note">Source: <a class="link" href="https://github.com/dembaca/ai-agent-bus/blob/main/docs/arc42/09-architecture-decisions.md#adr-016-der-bus-ohne-chat-als-quelle">ADR-016, point 4</a>.</p>
+    </section>
+
+    <section class="section col wide" aria-labelledby="console">
+      <h2 id="console">An operator console, reading first <span class="planned">Planned</span></h2>
+      <p>A web console for the people who run agents, not another chat. Its only login is Keycloak, and it reads only the bus on NATS. It starts read-only: answers and approvals still come from a chat or a terminal.</p>
+      <figure class="console-shot" aria-label="Preview, not a screenshot: an operator console with views Kanban, Graph and Reports, marked read only. The Kanban view shows one card per agent in columns Working, Listening and Idle; one card's 'Waits on you' turns into 'Answered in the chat'.">
+        <div class="console-picture" data-picture="console" aria-hidden="true"></div>
+        <figcaption class="note">Preview, nothing of it is built. Names are examples.</figcaption>
+      </figure>
+      <ul class="rows">
+        <li class="row"><h3>Kanban</h3><p>One card per agent, in the column of its state.</p></li>
+        <li class="row"><h3>Graph</h3><p>People, agents and channels, and who trusts whom.</p></li>
+        <li class="row"><h3>Reports</h3><p>The numbers each session already reports: what agents settled without a human, and what the bus cost.</p></li>
+      </ul>
+      <p class="note">Source: <a class="link" href="https://github.com/dembaca/ai-agent-bus/blob/main/docs/arc42/09-architecture-decisions.md#adr-015-operator-web-console">the operator console (ADR-015)</a>.</p>
+    </section>
+  </main>
+
+  <footer class="site-foot col">
+    <div class="foot-text">
+      <p>MIT licensed. This page shows plans; the <a class="link" href="./">start page</a> shows what a release can do.</p>
+      <p>Illustrations built with <a class="link" href="https://github.com/benjitaylor/skills/tree/main/stageshow">Stageshow</a> by Benji Taylor, MIT.</p>
+    </div>
+    <ul>
+      <li><a href="https://github.com/dembaca/ai-agent-bus">GitHub</a></li>
+      <li><a href="https://github.com/dembaca/ai-agent-bus/tree/main/docs/arc42">Architecture docs</a></li>
+      <li><a href="https://github.com/dembaca/ai-agent-bus/blob/main/CHANGELOG.md">Changelog</a></li>
+      <li><a href="https://github.com/dembaca/ai-agent-bus/blob/main/LICENSE">License</a></li>
+    </ul>
+  </footer>
+</body>
+</html>

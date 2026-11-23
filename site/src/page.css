@@ -696,3 +696,142 @@ a.row:hover .arrow, a.row:focus-visible .arrow { transform: translateX(3px); col
   .ps-turn::before { top: 0; bottom: 0; left: 50%; right: auto; width: 1px; height: auto; }
   .ps-turn span { transform: none; }
 }
+
+/* ---------- the target picture (target.html): planned, not shipped ---------- */
+
+.planned {
+  display: inline-flex;
+  align-items: center;
+  height: 1.25rem;
+  padding: 0 .5625rem;
+  border-radius: 999px;
+  background: color-mix(in srgb, var(--ask) 16%, transparent);
+  color: color-mix(in srgb, var(--ask) 70%, var(--ink));
+  font-family: var(--sans);
+  font-size: .6875rem;
+  font-weight: 550;
+  letter-spacing: .01em;
+  line-height: 1;
+  vertical-align: .2em;
+  white-space: nowrap;
+}
+.section h2 .planned { margin-left: .375rem; }
+.site-head nav .planned { margin-left: .25rem; vertical-align: .1em; }
+
+.planned-banner {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: .5rem .75rem;
+  margin: 0 0 2rem;
+  padding: .75rem 1rem;
+  border: 1px solid color-mix(in srgb, var(--ask) 35%, transparent);
+  border-radius: 10px;
+  color: var(--text);
+  font-size: .875rem;
+}
+
+.hero--target h1 {
+  font-family: var(--serif);
+  font-size: clamp(2rem, 5vw, 2.75rem);
+  line-height: 1.1;
+  letter-spacing: -.02em;
+  font-weight: 460;
+  color: var(--ink);
+  margin-bottom: 1rem;
+}
+.hero--target .meta { margin-top: 1rem; }
+
+/* The diagram: page markup, so it reads without JS and reflows on a phone. */
+.arch {
+  margin: 2rem 0 0;
+  display: grid;
+  justify-items: center;
+}
+.arch-tier {
+  display: flex;
+  justify-content: center;
+  width: 100%;
+}
+.arch-tier--edge {
+  display: grid;
+  grid-template-columns: repeat(4, 1fr);
+  gap: .75rem;
+}
+.arch-box {
+  display: grid;
+  gap: .25rem;
+  min-width: 15rem;
+  padding: .75rem 1rem;
+  border: 1px solid var(--line);
+  border-radius: 10px;
+  background: var(--surface);
+  text-align: center;
+}
+.arch-tier--edge .arch-box { min-width: 0; }
+.arch-box--root { border-color: color-mix(in srgb, var(--accent) 45%, transparent); }
+.arch-box--bus {
+  min-width: min(100%, 26rem);
+  background: color-mix(in srgb, var(--accent) 9%, var(--surface));
+  border-color: color-mix(in srgb, var(--accent) 45%, transparent);
+}
+.arch-box--later { border-style: dashed; }
+.arch-name { color: var(--ink); font-size: .875rem; font-weight: 560; }
+.arch-what { color: var(--muted); font-size: .8125rem; line-height: 1.4; }
+.arch-link {
+  width: 1px;
+  height: 1.25rem;
+  background: var(--link-line);
+}
+.arch-fan {
+  width: 75%;
+  height: 1.25rem;
+  border: 1px solid var(--link-line);
+  border-bottom: 0;
+  border-radius: 8px 8px 0 0;
+  margin-top: 1.25rem;
+  position: relative;
+}
+.arch-fan::before {
+  content: "";
+  position: absolute;
+  left: 50%;
+  top: -1.25rem;
+  width: 1px;
+  height: 1.25rem;
+  background: var(--link-line);
+}
+@media (max-width: 640px) {
+  .arch-tier--edge { grid-template-columns: repeat(2, 1fr); }
+  .arch-fan { width: 50%; }
+  .arch-box { min-width: 0; width: 100%; }
+}
+
+/* The way there: a short timeline, today solid, the rest planned. */
+.road {
+  list-style: none;
+  margin: 1rem 0 0;
+  padding: 0;
+  display: grid;
+  grid-template-columns: repeat(4, 1fr);
+  gap: .75rem;
+}
+.road-step {
+  display: grid;
+  align-content: start;
+  gap: .5rem;
+  padding-top: .875rem;
+  border-top: 2px dashed var(--link-line);
+}
+.road-step--now { border-top: 2px solid var(--accent); }
+.road-when { color: var(--ink); font-size: .8125rem; font-weight: 560; }
+.road-what { color: var(--muted); font-size: .875rem; line-height: 1.45; }
+@media (max-width: 640px) {
+  .road { grid-template-columns: 1fr; gap: 0; }
+  .road-step { padding: .75rem 0; }
+}
+
+.console-shot { margin: 1.5rem 0 0; }
+.console-picture { min-height: 20rem; }
+.console-shot figcaption { margin-top: .5rem; font-size: .8125rem; }
+html:not(.js) .console-picture { display: none; }
