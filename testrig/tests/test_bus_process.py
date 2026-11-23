@@ -517,6 +517,13 @@ async def test_a_post_delivered_while_post_message_runs_is_counted(monkeypatch):
     A whole-run loss check cannot see either: the stub pushes the real post with
     its id already known, so a run ends at loss 0 whatever the fallback does.
     This watches the decision itself, at the moment it is made.
+
+    The hand-over happens **once**, and that is not a detail: an earlier version
+    returned the post on every wait, so with the mutation the reader spun
+    without awaiting, starved `post_message`, and the run hung instead of
+    failing. The hang was this test's, not `bus_run`'s — with the hand-over made
+    one-shot the mutation fails in a few seconds, and nothing in `bus_run` had to
+    change for it (review of #35).
     """
     from bus_testrig import bus as bus_module
 
