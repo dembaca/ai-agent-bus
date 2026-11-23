@@ -14,6 +14,13 @@ npm --prefix opencode test            # a fake hook API and a fake OpenCode plug
 ```
 
 The typecheck is what keeps "tested with" honest: it compiles the plugin against the
-hook API it declares in `peerDependencies`. It covers the plugin context's domains and
-`mcp`/`skill.transform`, but not `session.hook` and `session.synthetic`, which the
-plugin calls through `as any`; those still need a session on a real host (RT-6.20).
+hook API in `peerDependencies` (`>=2.1.2 <2.5`). It covers the plugin context's shape
+and the arguments of the hooks this file calls **without** a cast — `mcp.transform`,
+`skill.transform`, `session.hook("prompt", ...)`.
+
+What it does **not** cover, because the value is cast (or the callback's parameter is
+`any`), is the *inside* of those calls: in the two `transform` callbacks `editor` is
+`any`, so `editor.get`, `editor.list`, `editor.set` and `editor.add` are unchecked
+(`plugin/mattermost-agent-bus.ts:649,654`); likewise `session.synthetic(...)` and the
+`prompt` hook's event object. An API change there passes the typecheck and fails in a
+session, so it needs a run on a real host (RT-6.20).

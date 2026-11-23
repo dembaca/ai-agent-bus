@@ -13,10 +13,11 @@
     "node": ">=22.18"
   },
   "peerDependencies": {
-    "@opencode/plugin": "~2.4.1"
+    "@opencode/plugin": ">=2.1.2 <2.5"
   },
   "devDependencies": {
     "@opencode/plugin": "~2.4.1",
-    "typescript": "^5.9.2"
+    "typescript": "5.9.3",
+    "@types/node": "24.10.1"
   }
 }

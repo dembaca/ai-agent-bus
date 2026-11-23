@@ -81,7 +81,7 @@ jobs:
         run: node --test opencode/test/plugin.test.ts
       - name: plugin against the hook API it declares
         run: |
-          npm --prefix opencode install --no-audit --no-fund
+          npm --prefix opencode ci --ignore-scripts
           npm --prefix opencode run typecheck
 
   pi-extension:

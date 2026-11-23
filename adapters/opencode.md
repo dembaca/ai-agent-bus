@@ -4,10 +4,13 @@ The MCP server is required: it holds the bot, and the shell scripts in `bin/` ar
 clients ([arc42 §6.17](../docs/arc42/06-runtime-view.md#617-turn-hooks-ask-the-mcp-server)).
 There is no shell-only mode any more (0.40.0).
 
-**OpenCode 2.x only** (plugin API V2; tested with 2.4.1, plugin API `~2.4.1`). OpenCode 1.x is
-not supported by the plugin; an MCP server configured by hand works there without the turn
-cycle. The plugin is compiled against the API's own types (`npm run typecheck` in
-`opencode/`), so a hook the API drops fails there and not only in a session.
+**OpenCode 2.x only** (plugin API V2; plugin API `>=2.1.2 <2.5`). Typechecked against
+2.1.2 through 2.4.x, and tested by hand with **2.4.0** — the version the owner runs;
+no session has run on 2.4.1. OpenCode 1.x is not supported by the plugin; an MCP
+server configured by hand works there without the turn cycle. The plugin is compiled
+against the API's own types (`npm run typecheck` in `opencode/`), so a hook the API
+drops fails there and not only in a session; what the casts still hide is listed in
+`opencode/README.md`.
 
 ## Plugin (recommended)
 
