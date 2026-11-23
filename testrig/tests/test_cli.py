@@ -141,7 +141,7 @@ def test_expect_loss_fails_when_everything_was_lost(bus_run, capsys):
     frame and a fault that drops every frame look the same, and the flag meant
     to prove a fault works proved nothing while `loss > 0` was the test.
     Without this case the older condition kept the whole file green (review of
-    #24)."""
+    #25)."""
     bus_run(_run(loss=20, fault="drop", closed="inbox never opened"))
     assert _main(["bus-run", "--count", "20", "--fault", "drop", "--after", "1",
                   "--expect-loss"]) == 1
