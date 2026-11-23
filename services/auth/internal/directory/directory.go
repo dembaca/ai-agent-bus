@@ -124,8 +124,10 @@ var channelRE = regexp.MustCompile(`^[a-z0-9][a-z0-9_-]{0,63}$`)
 var nameAnchorRE = regexp.MustCompile(`^[a-z][a-z0-9._-]{0,63}$`)
 
 // maxSuffix bounds the tries for a `sub` anchor whose value someone holds
-// already: <sub>, <sub>.1 … <sub>.<maxSuffix>. A squatter holds one name
-// (the one it logs in with), so a few tries always find a free one.
+// already: <sub>, <sub>.1 … <sub>.<maxSuffix>, the `sub` shortened where the
+// suffix would pass the 64 an owner token may have. Each squatter holds one
+// name, the one it logs in with: locking an identity out takes nine
+// identities made on purpose, and then the issue is refused (ErrAnchorTaken).
 const maxSuffix = 8
 
 // anchorRE: an anchor is what the callout hashes into an agent's name and
@@ -404,7 +406,12 @@ func (s *Store) Login(ctx context.Context, sub, display, today string) (Identity
 func (s *Store) claimAnchor(ctx context.Context, sub, today string) (string, error) {
 	of := anchorOfPrefix + hex.EncodeToString([]byte(sub))
 	if e, err := s.kv.Get(ctx, of); err == nil {
-		return string(e.Value()), nil
+		a := string(e.Value())
+		held, err := s.kv.Get(ctx, anchorPrefix+hex.EncodeToString([]byte(a)))
+		if !anchorRE.MatchString(a) || err != nil || string(held.Value()) != sub {
+			return "", fmt.Errorf("%w: the anchor recorded for this sub is not its own", ErrAnchorTaken)
+		}
+		return a, nil
 	} else if !errors.Is(err, jetstream.ErrKeyNotFound) {
 		return "", err
 	}
@@ -445,7 +452,12 @@ func (s *Store) claimAnchor(ctx context.Context, sub, today string) (string, err
 	for i := 0; i <= maxSuffix; i++ {
 		a := own
 		if i > 0 {
-			a = fmt.Sprintf("%s.%d", own, i)
+			suffix := fmt.Sprintf(".%d", i)
+			base := own
+			if len(base)+len(suffix) > 64 {
+				base = base[:64-len(suffix)]
+			}
+			a = base + suffix
 		}
 		if !anchorRE.MatchString(a) {
 			break

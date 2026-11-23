@@ -4558,8 +4558,10 @@ Byte-Gleichheit mit dem Stand vor dem Verzeichnis gilt deshalb nur ohne
 Umbenennung. Kein Wert wird zweimal vergeben, ob er aus einem Namen oder
 einem `sub` stammt: Je Wert gibt es einen Indexschlüssel. Hält ein Name
 schon den Wert eines `sub` (jemand hat sich so genannt), bekommt die
-Identität ihr `sub` mit einer Endung `.1` bis `.8`; so kann kein
-Benutzername eine Identität aussperren. Nach dem Import setzt der Betreiber
+Identität ihr `sub` mit einer Endung `.1` bis `.8`, bei einem langen `sub`
+gekürzt, sodass die Endung Platz hat. Aussperren können sie erst neun
+Benutzernamen, die genau diese Werte tragen, und jeder davon kostet eine
+eigene Identität; dann wird die Ausgabe verweigert (RT-6.39). Nach dem Import setzt der Betreiber
 `AUTH_DIRECTORY_IMPORTED=true`: Ein verlorener Bucket oder einer ohne
 `meta.imported` verweigert dann jede Ausgabe, statt auf Mattermost
 zurückzufallen. Daraus folgen zwei Punkte für die Umstellung:

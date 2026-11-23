@@ -2,7 +2,9 @@ package directory
 
 import (
 	"context"
+	"encoding/hex"
 	"errors"
+	"strconv"
 	"strings"
 	"testing"
 	"time"
@@ -319,5 +321,62 @@ func TestTheImportSwitchesMembershipToTheDirectory(t *testing.T) {
 	}
 	if _, err := ch.Memberships(ctx(t), "alice", []string{"other"}); !errors.Is(err, ErrNoSub) {
 		t.Fatalf("after the import a name alone: %v", err)
+	}
+}
+
+// A long sub that starts with a letter still has room for a suffix: it is
+// shortened, the value stays within the 64 an owner token may have, and the
+// index keeps it unique.
+func TestALongSubStillGetsASuffix(t *testing.T) {
+	s, _ := open(t)
+	a := Anchors{Store: s}
+	long := "a" + strings.Repeat("b", 63) // 64, a username's shape
+	if got, err := a.Anchor(ctx(t), "sub-squatter", long); err != nil || got != long {
+		t.Fatalf("the squatter: %q %v", got, err)
+	}
+	if err := s.MarkImported(ctx(t), time.Now()); err != nil {
+		t.Fatal(err)
+	}
+	got, err := a.Anchor(ctx(t), long, "victim")
+	if err != nil || got != long[:62]+".1" || len(got) != 64 {
+		t.Fatalf("the long sub: %q %v", got, err)
+	}
+}
+
+// Nine names on the nine values lock an identity out: the issue is refused,
+// never a shared anchor.
+func TestNineSquattersAreRefusedNotShared(t *testing.T) {
+	s, _ := open(t)
+	a := Anchors{Store: s}
+	if _, err := a.Anchor(ctx(t), "sub-0", subLetter); err != nil {
+		t.Fatal(err)
+	}
+	for i := 1; i <= maxSuffix; i++ {
+		if _, err := a.Anchor(ctx(t), "sub-"+strconv.Itoa(i), subLetter+"."+strconv.Itoa(i)); err != nil {
+			t.Fatal(err)
+		}
+	}
+	if err := s.MarkImported(ctx(t), time.Now()); err != nil {
+		t.Fatal(err)
+	}
+	if got, err := a.Anchor(ctx(t), subLetter, "victim"); !errors.Is(err, ErrAnchorTaken) {
+		t.Fatalf("the victim: %q %v", got, err)
+	}
+}
+
+// The anchor recorded for a sub is checked before it is used: it must be an
+// owner token, and its index must name that sub.
+func TestARecordedAnchorIsCheckedBeforeUse(t *testing.T) {
+	s, _ := open(t)
+	if got, err := (Anchors{Store: s}).Anchor(ctx(t), "sub-alice", "alice"); err != nil || got != "alice" {
+		t.Fatalf("alice: %q %v", got, err)
+	}
+	for name, value := range map[string]string{"another's anchor": "alice", "no owner token": "Alice*"} {
+		if _, err := s.kv.Put(ctx(t), anchorOfPrefix+hex.EncodeToString([]byte("sub-mallory")), []byte(value)); err != nil {
+			t.Fatal(err)
+		}
+		if got, err := s.claimAnchor(ctx(t), "sub-mallory", "mallory"); !errors.Is(err, ErrAnchorTaken) {
+			t.Fatalf("%s: %q %v", name, got, err)
+		}
 	}
 }
