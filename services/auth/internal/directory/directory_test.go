@@ -1024,3 +1024,215 @@ func TestAReleaseLosesToAHolderThatTookTheKeyMeanwhile(t *testing.T) {
 		t.Fatalf("the key's holder lost the name: %+v %v", id, ok)
 	}
 }
+
+// #72: one identity logs in with two names at once. Login 1 takes `n` and is
+// about to free `m` over the revision it read; login 2, with the stale name
+// `m`, writes its record back to `m` meanwhile. Login 2 touches the key of
+// `m` first, so login 1's delete fails and `m` stays resolvable.
+func TestTwoLoginsOfOneIdentityWithTwoNamesLeaveAKey(t *testing.T) {
+	s, _, _ := imported3(t)
+	if _, err := s.ClaimAccount(ctx(t), "sub-a", "mattermost", "m"); err != nil {
+		t.Fatal(err)
+	}
+	once := true
+	t.Cleanup(SetAccountStepForTest(func(at string) error {
+		if at == "free old" && once {
+			once = false
+			if _, err := s.ClaimAccount(ctx(t), "sub-a", "mattermost", "m"); err != nil {
+				t.Error(err)
+			}
+		}
+		return nil
+	}))
+	if _, err := s.ClaimAccount(ctx(t), "sub-a", "mattermost", "n"); err != nil {
+		t.Fatal(err)
+	}
+	id, _, _, _ := s.Identity(ctx(t), "sub-a")
+	name := id.Accounts["mattermost"]
+	if got, ok, _ := s.ByAccount(ctx(t), "mattermost", name); !ok || got.Sub != "sub-a" {
+		t.Fatalf("the record names %q, which resolves to %+v (%v)", name, got, ok)
+	}
+}
+
+// The same under load: two logins of one identity with two names, 100 rounds
+// (run with -race); the name the record lists always resolves to it.
+func TestConcurrentLoginsOfOneIdentityAlwaysLeaveItsNameResolvable(t *testing.T) {
+	s, _ := open(t)
+	if _, err := s.Login(ctx(t), "sub-a", "x", ""); err != nil {
+		t.Fatal(err)
+	}
+	for i := range 100 {
+		m, n := "m"+strconv.Itoa(i), "n"+strconv.Itoa(i)
+		if _, err := s.ClaimAccount(ctx(t), "sub-a", "mattermost", m); err != nil {
+			t.Fatal(err)
+		}
+		var wg sync.WaitGroup
+		errs := make([]error, 2)
+		for j, name := range []string{n, m} {
+			wg.Add(1)
+			go func() {
+				defer wg.Done()
+				_, errs[j] = s.ClaimAccount(ctx(t), "sub-a", "mattermost", name)
+			}()
+		}
+		wg.Wait()
+		if errors.Join(errs...) != nil {
+			continue // a login that gave up is tried again
+		}
+		id, _, _, _ := s.Identity(ctx(t), "sub-a")
+		name := id.Accounts["mattermost"]
+		if got, ok, _ := s.ByAccount(ctx(t), "mattermost", name); !ok || got.Sub != "sub-a" {
+			t.Fatalf("round %d: the record names %q, which resolves to %+v (%v)", i, name, got, ok)
+		}
+	}
+}
+
+// settle's branch for a mark that another write replaced meanwhile: it names a
+// holder other than the one this move took the key from, which still lists
+// the name. That one is released too (#72).
+func TestAMarkReplacedMeanwhileIsReleasedToo(t *testing.T) {
+	s, a, _ := imported3(t)
+	if _, err := s.Login(ctx(t), "sub-x", "x", ""); err != nil {
+		t.Fatal(err)
+	}
+	once := true
+	t.Cleanup(SetAccountStepForTest(func(at string) error {
+		if at == "before key" && once {
+			once = false
+			if err := s.holdAccount(ctx(t), "sub-x", "mattermost", "alice", "", true); err != nil {
+				t.Error(err)
+			}
+			if _, err := s.kv.Put(ctx(t), moveKey("mattermost", "alice"), []byte("sub-x")); err != nil {
+				t.Error(err)
+			}
+		}
+		return nil
+	}))
+	_ = a
+	mv, err := s.ClaimAccount(ctx(t), "sub-b", "mattermost", "alice")
+	if err != nil || mv.From != "sub-a" || mv.Released != "sub-x" {
+		t.Fatalf("move %+v, %v", mv, err)
+	}
+	if listsAlice(t, s, "sub-x") || listsAlice(t, s, "sub-a") {
+		t.Fatal("a former holder keeps the name")
+	}
+	if id, ok, _ := s.ByAccount(ctx(t), "mattermost", "alice"); !ok || id.Sub != "sub-b" {
+		t.Fatalf("resolves to %+v %v", id, ok)
+	}
+}
+
+// #72, Fable's sequence: login 1 (a, m -> n) has written its record; login 2
+// (a, the stale m) reads it, touches m, writes m back. Login 1 frees m only
+// over the revision it read before its record, so that delete fails.
+func TestLogin1FreesItsOldKeyOnlyOverTheRevisionReadBeforeItsRecord(t *testing.T) {
+	s, _, _ := imported3(t)
+	if _, err := s.ClaimAccount(ctx(t), "sub-a", "mattermost", "m"); err != nil {
+		t.Fatal(err)
+	}
+	once := true
+	t.Cleanup(SetAccountStepForTest(func(at string) error {
+		if at == "holder put" && once {
+			once = false
+			if _, err := s.ClaimAccount(ctx(t), "sub-a", "mattermost", "m"); err != nil {
+				t.Error(err)
+			}
+		}
+		return nil
+	}))
+	_, _ = s.ClaimAccount(ctx(t), "sub-a", "mattermost", "n") // may fail: login 2 took the record back
+	id, _, _, _ := s.Identity(ctx(t), "sub-a")
+	name := id.Accounts["mattermost"]
+	if got, ok, _ := s.ByAccount(ctx(t), "mattermost", name); !ok || got.Sub != "sub-a" {
+		t.Fatalf("the record names %q, which resolves to %+v (%v)", name, got, ok)
+	}
+}
+
+// a's record names another name while the key of `alice` is still a's: the
+// login with `alice` touches that key. Set up so, with a hook at the point
+// before the record is written.
+func staleHolder(t *testing.T) *Store {
+	s, _, _ := imported3(t)
+	if err := s.holdAccount(ctx(t), "sub-a", "mattermost", "zed", "", true); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := s.kv.Put(ctx(t), s.mustKey("mattermost", "alice"), []byte("sub-a")); err != nil {
+		t.Fatal(err)
+	}
+	return s
+}
+
+// The touch never takes a key another identity holds now: the login fails,
+// and the name stays the other's (d2f798's probe).
+func TestTheTouchNeverTakesAnotherIdentitysKey(t *testing.T) {
+	s := staleHolder(t)
+	once := true
+	t.Cleanup(SetAccountStepForTest(func(at string) error {
+		if at == "key moved" && once {
+			once = false
+			_, rev, _, _, _ := s.Account(ctx(t), "mattermost", "alice")
+			if _, err := s.PutAccount(ctx(t), "sub-c", "mattermost", "alice", rev); err != nil {
+				t.Error(err)
+			}
+		}
+		return nil
+	}))
+	if _, err := s.ClaimAccount(ctx(t), "sub-a", "mattermost", "alice"); !errors.Is(err, ErrConflict) {
+		t.Fatalf("the login did not fail: %v", err)
+	}
+	if id, ok, _ := s.ByAccount(ctx(t), "mattermost", "alice"); !ok || id.Sub != "sub-c" {
+		t.Fatalf("alice resolves to %+v %v", id, ok)
+	}
+	if listsAlice(t, s, "sub-a") {
+		t.Fatal("a's record names a key it does not hold")
+	}
+}
+
+// A key gone before the touch is made again for the login's holder.
+func TestTheTouchRecreatesAKeyThatIsGone(t *testing.T) {
+	s := staleHolder(t)
+	once := true
+	t.Cleanup(SetAccountStepForTest(func(at string) error {
+		if at == "key moved" && once {
+			once = false
+			if err := s.kv.Delete(ctx(t), s.mustKey("mattermost", "alice")); err != nil {
+				t.Error(err)
+			}
+		}
+		return nil
+	}))
+	if _, err := s.ClaimAccount(ctx(t), "sub-a", "mattermost", "alice"); err != nil {
+		t.Fatal(err)
+	}
+	if id, ok, _ := s.ByAccount(ctx(t), "mattermost", "alice"); !ok || id.Sub != "sub-a" {
+		t.Fatalf("alice resolves to %+v %v", id, ok)
+	}
+}
+
+// Another identity takes the key after the touch, before the record is
+// checked: the login fails instead of leaving a record without its key.
+func TestAKeyTakenAfterTheTouchFailsTheLogin(t *testing.T) {
+	s := staleHolder(t)
+	once := true
+	t.Cleanup(SetAccountStepForTest(func(at string) error {
+		if at == "holder put" && once {
+			once = false
+			// c's move, stopped before it released a: the key and c's record only
+			if _, err := s.kv.Put(ctx(t), s.mustKey("mattermost", "alice"), []byte("sub-c")); err != nil {
+				t.Error(err)
+			}
+			if err := s.holdAccount(ctx(t), "sub-c", "mattermost", "alice", "sub-a", true); err != nil {
+				t.Error(err)
+			}
+		}
+		return nil
+	}))
+	if _, err := s.ClaimAccount(ctx(t), "sub-a", "mattermost", "alice"); !errors.Is(err, ErrConflict) {
+		t.Fatalf("the login did not fail: %v", err)
+	}
+	if id, ok, _ := s.ByAccount(ctx(t), "mattermost", "alice"); !ok || id.Sub != "sub-c" {
+		t.Fatalf("alice resolves to %+v %v", id, ok)
+	}
+	if listsAlice(t, s, "sub-a") {
+		t.Fatal("a's record names a key another identity holds")
+	}
+}

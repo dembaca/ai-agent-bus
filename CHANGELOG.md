@@ -19,6 +19,14 @@ before 0.5.0 are described in the git history.
   JSON line per crown gained or lost to `crown-<uid>.log` in its state
   directory (the way, whether a turn ran, how long a push waited), never
   a post's content; the sweep removes it with the bot.
+- **`shown_as` on reactions and in the event tag** (#66, RT-6.36 step 8).
+  A NATS sender's reactions and the tag of a pushed event carry its bot's
+  username too, beside the author, which stays the NATS name. Agents DM a
+  NATS sender by it, so the link is proven afresh on every read, never
+  cached; it is never an identity.
+- **The account index keeps a name when one identity logs in with two at
+  once** (#72, RT-6.41 step 2). The name its record lists stays resolvable;
+  before, both keys could be gone until its next login (fail closed).
 - **A slim post's size is bounded** (issue #42). `get_thread` and `list_recent`
   stay whole by contract, but not without bound: an ask whose card title rides
   in its text was 22 KB in every thread read, and a foreign agent can post
