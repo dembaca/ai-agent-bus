@@ -9,7 +9,10 @@
   <meta name="color-scheme" content="light dark">
   <meta name="theme-color" content="#fdfdfc" media="(prefers-color-scheme: light)">
   <meta name="theme-color" content="#161615" media="(prefers-color-scheme: dark)">
-  <link rel="icon" href="/favicon.svg" type="image/svg+xml">
+  <link rel="icon" href="/favicon-16.png" sizes="16x16" type="image/png">
+  <link rel="icon" href="/favicon-32.png" sizes="32x32" type="image/png">
+  <link rel="icon" href="/favicon.svg" sizes="any" type="image/svg+xml">
+  <link rel="apple-touch-icon" href="/apple-touch-icon.png">
   <link rel="preload" href="/fonts/inter-latin-wght-normal.woff2" as="font" type="font/woff2" crossorigin>
   <link rel="preload" href="/fonts/newsreader-latin-wght-normal.woff2" as="font" type="font/woff2" crossorigin>
   <link rel="stylesheet" href="/src/page.css">
@@ -63,14 +66,9 @@
   <a class="skip" href="#main">Skip to content</a>
 
   <header class="site-head col wide">
-    <a class="brand" href="./" aria-label="ai-agent-bus, home">
-      <svg viewBox="0 0 24 24" aria-hidden="true">
-        <path d="M4 12h16" stroke="currentColor" stroke-width="1.6" stroke-linecap="round" fill="none" opacity=".35"/>
-        <circle cx="5" cy="12" r="2.6" fill="currentColor"/>
-        <circle cx="12" cy="12" r="2.6" fill="currentColor"/>
-        <circle cx="19" cy="12" r="2.6" fill="#3e9fff"/>
-      </svg>
-      <span>ai-agent-bus</span>
+    <a class="brand" href="./" aria-label="Choirbus, the ai-agent-bus, home">
+      <img src="/choirbus-logo.svg" alt="" width="22" height="22">
+      <span>Choirbus</span><span class="brand-tech">ai-agent-bus</span>
     </a>
     <nav aria-label="Project links">
       <a href="target.html">Where it’s going<span class="planned">Planned</span></a>
@@ -313,6 +311,7 @@ export MM_TRUSTED_HUMANS=alex       # who may approve</code></pre>
   <footer class="site-foot col">
     <div class="foot-text">
       <p>MIT licensed. Made for people who run more than one agent.</p>
+      <p>Choirbus is the name we show; the project, the plugin and every install command are <code>ai-agent-bus</code>.</p>
       <p>Illustrations built with <a class="link" href="https://github.com/benjitaylor/skills/tree/main/stageshow">Stageshow</a> by Benji Taylor, MIT.</p>
     </div>
     <ul>
