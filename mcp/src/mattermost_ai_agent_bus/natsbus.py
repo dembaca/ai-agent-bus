@@ -475,22 +475,34 @@ def build_hello(token: str, home: str, guests: tuple[str, ...], lobby: bool,
 # INFO in clear, so it waits for the classic order (or speaks no TLS at all).
 _NOT_TLS_FIRST = frozenset({"WRONG_VERSION_NUMBER", "RECORD_LAYER_FAILURE", "PACKET_LENGTH_TOO_LONG",
                             "UNKNOWN_PROTOCOL", "HTTP_REQUEST"})
+# OpenSSL's verify codes: the chain ends at no CA this host trusts (unable to get the issuer,
+# self-signed leaf or chain, unable to get the local issuer, unable to verify the leaf) ...
+_UNKNOWN_ISSUER = frozenset({2, 18, 19, 20, 21})
+# ... and a certificate for another host name or IP address.
+_NAME_MISMATCH = frozenset({62, 64})
 
 
 def connect_reason(exc: BaseException) -> str:
     """A failed connect in words for the log (RT-6.36): a TLS failure says why, anything else
-    stays its type name (an exception's text may carry what the log must not)."""
+    stays its type name (an exception's text may carry what the log must not). Only an unknown
+    issuer gets the CA hint: a certificate for another name may be a man in the middle, whose CA
+    nobody should be pointed to trust."""
     seen: set[int] = set()
     e: BaseException | None = exc
     while e is not None and id(e) not in seen:
         seen.add(id(e))
         if isinstance(e, ssl.SSLCertVerificationError):
-            return (f"TLS: the server's certificate is not trusted ({e.verify_message}): "
-                    "set MM_NATS_CA_FILE to the CA that signed it")
+            if e.verify_code in _NAME_MISMATCH:
+                return f"TLS: the certificate does not name this host ({e.verify_message})"
+            if e.verify_code in _UNKNOWN_ISSUER:
+                return (f"TLS: the server's certificate is not trusted ({e.verify_message}): "
+                        "if that CA is your NATS server's, set MM_NATS_CA_FILE to it")
+            return f"TLS: the server's certificate is refused ({e.verify_message})"
         if isinstance(e, ssl.SSLError):
             reason = getattr(e, "reason", None)  # set by OpenSSL, absent on one raised by hand
             if reason in _NOT_TLS_FIRST:
-                return "TLS: the server does not speak TLS first: set handshake_first in its tls block"
+                return ("TLS: the server does not speak TLS first: set handshake_first in its tls block, "
+                        "or this is not a NATS TLS port")
             return f"TLS: {reason or type(e).__name__}"
         e = e.__cause__ or e.__context__
     return type(exc).__name__

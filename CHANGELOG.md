@@ -10,10 +10,12 @@ before 0.5.0 are described in the git history.
   so the NATS server needs `handshake_first` in its `tls` block
   (`services/auth/nats-server.example.conf`). A server that still waits for
   older clients may hold a duration (`"300ms"`) during the move; set it to
-  `true` once this login service runs. A host whose server does not speak TLS
-  first now says so in its log (`TLS: the server does not speak TLS first:
-  set handshake_first in its tls block`), and an untrusted certificate names
-  itself too, instead of a bare `SSLError`.
+  `true` once this login service runs. `AUTH_NATS_URL` and `AUTH_JS_URL`
+  that mix `tls://` with another scheme are refused at the start. A host whose
+  server does not speak TLS first now says so in its log (`TLS: the server
+  does not speak TLS first: set handshake_first in its tls block, or this is
+  not a NATS TLS port`), and a certificate that is not trusted or names
+  another host says which, instead of a bare `SSLError`.
 - **Peers over NATS by the login service's record** (RT-6.37 step 4,
   RT-6.41). The MCP server sends the session's trusted humans in its
   hello and reads the login service's records: a NATS sender's owner is

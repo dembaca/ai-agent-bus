@@ -1403,7 +1403,8 @@ async def test_a_server_that_does_not_speak_tls_first_is_named_in_the_log(
         with pytest.raises(ssl.SSLError) as err:
             await bus._open()
         assert natsbus.connect_reason(err.value) == (
-            "TLS: the server does not speak TLS first: set handshake_first in its tls block")
+            "TLS: the server does not speak TLS first: set handshake_first in its tls block, "
+            "or this is not a NATS TLS port")
         await bus.start()  # the first connect fails, the supervisor retries
         try:
             assert "first connect failed, retrying: TLS: the server does not speak TLS first" in caplog.text
@@ -1487,10 +1488,13 @@ async def test_tls_url_refuses_a_trusted_certificate_for_another_name(tmp_path: 
         # trusted as a CA, but it names elsewhere.example while we dial 127.0.0.1
         s = _settings(servers=(f"tls://127.0.0.1:{srv.port}",), tls_ca_file=str(cert_file))
         bus = NatsBus(s, FakeLogin(), "alice", lambda e: None, connect_timeout=2)
-        with pytest.raises(Exception):  # noqa: B017
+        with pytest.raises(Exception) as err:  # noqa: B017
             await bus._open()
         await asyncio.sleep(0.1)
         assert b"CONNECT" not in srv.received and b"tok-" not in srv.received
+        # A certificate for another name may be a man in the middle: no hint to trust its CA.
+        why = natsbus.connect_reason(err.value)
+        assert why.startswith("TLS: the certificate does not name this host") and "MM_NATS_CA_FILE" not in why
 
 
 def test_tls_and_plain_servers_are_not_mixed() -> None:

@@ -59,8 +59,10 @@ server's INFO, as the agents' hosts do. The server therefore needs
 a host gets in. To move a server whose older clients still connect in the
 classic order, set a duration instead (`handshake_first: "300ms"`): the server
 waits that long for a TLS handshake, then lets a classic client in. Set it
-back to `true` once every client speaks TLS first. A loopback `nats://` stays
-plain.
+to `true` once every client speaks TLS first. A loopback `nats://` stays
+plain. `AUTH_NATS_URL` and `AUTH_JS_URL` are `tls://` throughout or not at
+all: a list that mixes `tls://` with another scheme is refused at the start,
+since it would reach a `handshake_first` server in the classic order.
 
 | Variable | Default | Meaning |
 | --- | --- | --- |

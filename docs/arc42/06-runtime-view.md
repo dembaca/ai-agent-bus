@@ -1564,7 +1564,7 @@ Everything the server writes in its state directory goes through one helper: a n
 |------|---------|----------------|
 | 1 | `MM_NATS_HOMES` names the home, but the login or `MM_NATS_URL` is missing or wrong | Error in the log; the home's posts stay on Mattermost; no crown and no election there (RT-6.38 step 6) |
 | 2 | The transport cannot start, or the credential names another agent | Error in the log; every send in the home raises, no fallback to Mattermost |
-| 2 | The NATS server answers a `tls://` connect in clear (no `handshake_first`), or its certificate is not trusted | The log names the cause (`TLS: the server does not speak TLS first: set handshake_first in its tls block`, or `TLS: the server's certificate is not trusted (…)`), not a bare `SSLError`; the token is never sent, and the start is tried again |
+| 2 | The NATS server answers a `tls://` connect in clear (no `handshake_first`, or no NATS TLS port), or its certificate is not trusted or names another host | The log names the cause (`TLS: the server does not speak TLS first: set handshake_first in its tls block, or this is not a NATS TLS port`; `TLS: the server's certificate is not trusted (…)`, with the hint to `MM_NATS_CA_FILE` only for an unknown issuer; `TLS: the certificate does not name this host (…)`, without it, since that may be a man in the middle), not a bare `SSLError`; the token is never sent, and the start is tried again |
 | 3 | A reply or reaction points at a NATS post of another channel | Refused, nothing sent |
 | 3 | The post's own copy does not come back within 10 s | Error: sent, but its id is not known |
 | 4 | A received root or reaction points into another channel | Dropped and logged without content |

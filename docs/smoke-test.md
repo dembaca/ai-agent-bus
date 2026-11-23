@@ -86,13 +86,14 @@ login service send the TLS handshake before anything else
 ([`services/auth/README.md`](../services/auth/README.md)). `true` lets in only
 clients that do; a duration such as `"300ms"` also lets a classic client in
 after that wait, for the move from an older login service. Once the login
-service of this version runs, set it back to `true`.
+service of this version runs, set it to `true`.
 
 - [ ] The server's `tls` block has `handshake_first` (`true`, or a duration
       only while an older login service still runs)
 - [ ] A host whose server lacks it says so in the MCP server's log: `nats bus:
       first connect failed, retrying: TLS: the server does not speak TLS first:
-      set handshake_first in its tls block` — not a bare `SSLError`
+      set handshake_first in its tls block, or this is not a NATS TLS port` —
+      not a bare `SSLError`
 
 - [ ] The login service's log has `"event":"issued"` for this agent — one JSON
       line per issue (`"event":"refused"` with a `reason` when it does not)

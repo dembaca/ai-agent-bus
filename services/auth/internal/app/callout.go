@@ -397,11 +397,11 @@ func connectOptions(s Settings, urls, name string, kp nkeys.KeyPair, log *slog.L
 	return opts
 }
 
-// tlsFirst: every URL of the list is tls://. A list that mixes in a loopback
-// nats:// keeps the classic order, since a plain server never answers a TLS
-// handshake.
+// tlsFirst: every URL of the list is tls://. natsURLSecure refuses a list that
+// mixes tls:// with another scheme: one connection has one order, and a
+// handshake_first server never lets a classic client in.
 func tlsFirst(urls string) bool {
-	for _, raw := range strings.Split(urls, ",") {
+	for raw := range strings.SplitSeq(urls, ",") {
 		u, err := url.Parse(strings.TrimSpace(raw))
 		if err != nil || u.Scheme != "tls" {
 			return false
@@ -411,14 +411,23 @@ func tlsFirst(urls string) bool {
 }
 
 // natsURLSecure: every URL of the list must be tls:// (or wss://), except on
-// a loopback host, since the callout's connection carries hosts' tokens.
+// a loopback host, since the callout's connection carries hosts' tokens. A
+// list is tls:// throughout or not at all: over tls:// the handshake comes
+// first (tlsFirst), and a list that mixes would reach a handshake_first server
+// in the classic order, which it refuses.
 func natsURLSecure(urls string) error {
-	for _, raw := range strings.Split(urls, ",") {
+	var tlsURLs, others int
+	for raw := range strings.SplitSeq(urls, ",") {
 		u, err := url.Parse(strings.TrimSpace(raw))
 		if err != nil || u.Host == "" {
 			return fmt.Errorf("%q is not a URL", raw)
 		}
-		if u.Scheme == "tls" || u.Scheme == "wss" {
+		if u.Scheme == "tls" {
+			tlsURLs++
+			continue
+		}
+		others++
+		if u.Scheme == "wss" {
 			continue
 		}
 		h := u.Hostname()
@@ -426,6 +435,9 @@ func natsURLSecure(urls string) error {
 			continue
 		}
 		return fmt.Errorf("%q: tls:// required off a loopback host", raw)
+	}
+	if tlsURLs > 0 && others > 0 {
+		return fmt.Errorf("tls:// mixed with another scheme: every URL tls:// or none, since over tls:// the TLS handshake comes first")
 	}
 	return nil
 }
