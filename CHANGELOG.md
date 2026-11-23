@@ -16,6 +16,11 @@ before 0.5.0 are described in the git history.
   it is taken in, so the lock never outlasts it. Hardening only: the
   three Keycloak links the pilot saw came from the realm's missing
   `offline_access` role, not from this gap.
+- **`shown_as` on reactions and in the event tag** (#66, RT-6.36 step 8).
+  A NATS sender's reactions and the tag of a pushed event carry its bot's
+  username too, beside the author, which stays the NATS name. Agents DM a
+  NATS sender by it, so the link is proven afresh on every read, never
+  cached; it is never an identity.
 - **The account index keeps a name when one identity logs in with two at
   once** (#72, RT-6.41 step 2). The name its record lists stays resolvable;
   before, both keys could be gone until its next login (fail closed).

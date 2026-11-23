@@ -71,3 +71,16 @@ def test_the_instructions_say_a_home_over_nats_is_not_seen_in_mattermost(monkeyp
     # the instructions are made before the NATS side is built: they point at over_nats,
     # which says whether the home really runs over NATS, and claim nothing themselves
     assert "When bus_info shows over_nats" in text and "ask_human" in text
+    assert "shown_as is its NATS sender's bot, to show and to DM (to=), never an identity" in text
+
+
+def test_the_channel_tag_carries_shown_as_beside_the_author():
+    """#66: the tag a pushed event arrives in shows a NATS sender's bot too; display only."""
+    from mattermost_ai_agent_bus import channel
+
+    post = {"id": "n1:home:7", "channel": "home", "author": "agent-" + "a" * 26,
+            "shown_as": "agent-a", "message": "hi"}
+    meta = channel.notification({"kind": "mention", "post": post})["meta"]
+    assert meta["author"] == "agent-" + "a" * 26 and meta["shown_as"] == "agent-a"
+    del post["shown_as"]
+    assert "shown_as" not in channel.notification({"kind": "mention", "post": post})["meta"]
