@@ -136,6 +136,40 @@ def test_expect_loss_passes_a_fault_run_that_lost(bus_run, capsys):
     assert _json_of(capsys)["measured"]["loss"]["value"] == 4
 
 
+def test_a_passing_fault_that_delivers_nothing_exits_non_zero(bus_run, capsys):
+    """`stall` lets every frame through, so a run under it must deliver some.
+
+    Delivering none means the path, not the fault (issue #47). The run is **built
+    here**, not driven: the `bus_run` fixture replaces `bus_run` with a stand-in
+    that returns this `Run` to `cli.main`, so the test exercises the decision and
+    not a real run. Making it a real run — a stub that accepts each pushed frame
+    and hands none on — is the better test and has not been written; this one
+    pins the rule and says plainly what it is.
+
+    `drop` is not covered here: a `drop` run may lose everything by design and is
+    a measurement. `blackhole` and `halfopen` are not covered either: their
+    silence is deliberate, and a bus that fails to recover from it is a different
+    finding than a rig that measured nothing.
+    """
+    run = _run(loss=3, fault="stall", sent=3)
+    run.received.clear()  # nothing arrived, though the fault lets it through
+    run.relay = {"received": 4, "forwarded": 4, "altered": 0}
+    bus_run(run)
+    assert _main(["bus-run", "--count", "3", "--fault", "stall"]) == 1
+    assert "lets traffic through" in capsys.readouterr().err
+
+
+def test_a_drop_run_that_delivers_nothing_stays_a_measurement(bus_run, capsys):
+    """The other side of the rule: `drop` is meant to discard, so a run under it
+    that delivers nothing and exits 0 is the measurement, not a broken path."""
+    run = _run(loss=3, fault="drop", sent=3)
+    run.received.clear()
+    run.relay = {"received": 4, "forwarded": 1, "altered": 3}
+    bus_run(run)
+    assert _main(["bus-run", "--count", "3", "--fault", "drop", "--after", "1",
+                  "--every", "1"]) == 0
+
+
 def test_expect_loss_fails_when_everything_was_lost(bus_run, capsys):
     """`loss == sent` is a dead path, not a fault: a receiver that never gets a
     frame and a fault that drops every frame look the same, and the flag meant

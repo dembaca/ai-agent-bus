@@ -41,6 +41,17 @@ from .proxy import KINDS, ProxyFault
 # The exit codes: 0 a run whose numbers can be compared, 1 a run that measured
 # a broken rig, 2 the rig could not start at all (no interpreter, an import).
 EXIT_OK = 0
+# The faults that pass every frame on but one of these: `stall` delays, `reorder`
+# swaps and `duplicate` repeats, so a run under them must deliver something — a
+# run that arrives nowhere is then the path, not the fault.
+#
+# Not here, each for its own reason: `drop` may lose everything by design and is
+# a measurement; `cut` is a dead transport the bus recovers by backfill;
+# `blackhole` and `halfopen` **stop delivery on purpose**, so silence is what they
+# are for, and a bus that does not recover from it is a different finding (the
+# review of #54).
+PASSING_FAULTS = ("stall", "reorder", "duplicate")
+
 EXIT_BAD_RUN = 1
 EXIT_NO_RUN = 2
 
@@ -122,7 +133,7 @@ def _untrustworthy(run: runner.Run, *, expect_loss: bool = False) -> bool:
     """Whether a run's numbers describe a broken rig, not the bus (review
     point 2).
 
-    Four cases, each the run's own evidence:
+    Five cases, each the run's own evidence:
 
     * a call the stand-in could not answer — the bus asked something this rig
       does not model, so a number from the run is about the stand-in;
@@ -133,7 +144,12 @@ def _untrustworthy(run: runner.Run, *, expect_loss: bool = False) -> bool:
       every later number is about a sender that never ran. `loss` is 0 there,
       and without this case a faulted run with a broken sender passed (follow-up
       review point 2);
-    * a baseline (`--fault none`) that lost a frame or closed the connection.
+    * a baseline (`--fault none`) that lost a frame or closed the connection;
+    * `stall`, `reorder` or `duplicate` — faults that pass every frame on — and a
+      run that arrived nowhere: the path carried nothing, so the number is about
+      the path and not the fault (issue #47). `drop`, `cut`, `blackhole` and
+      `halfopen` are excluded: discarding, a dead transport and a deliberate
+      silence are not the same finding.
 
     A faulted run's loss is its measurement and not a failure by itself: `drop`
     is supposed to lose. `expect_loss` is how a caller says "this fault is
@@ -160,6 +176,15 @@ def _untrustworthy(run: runner.Run, *, expect_loss: bool = False) -> bool:
         print(f"bus-testrig: the baseline lost {loss} frame(s) of "
               f"{run.sent_frames}, connection_closed={run.closed or None}",
               file=sys.stderr)
+        return True
+    # A fault that lets traffic through (`stall`, `reorder`, `duplicate`) and yet
+    # nothing arrives at all: the path, not the fault (issue #47). `drop` is the
+    # fault that is *meant* to discard, so a `drop` run that delivers nothing is a
+    # measurement; this rule names the faults that are not.
+    if (run.fault in PASSING_FAULTS and run.sent_frames and not run.received):
+        print(f"bus-testrig: --fault {run.fault} lets traffic through, but none of "
+              f"{run.sent_frames} frame(s) arrived: the path carried nothing, so "
+              "this is not a measurement of the fault", file=sys.stderr)
         return True
     if expect_loss and not 0 < loss < run.sent_frames:
         # `loss > 0` alone let a dead receiver pass: 20 of 20 lost is not a
