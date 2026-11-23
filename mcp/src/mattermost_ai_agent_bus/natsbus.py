@@ -417,7 +417,7 @@ class NatsBus:
                  connect_timeout: float = 5.0, renew_sec: float = RENEW_SEC,
                  send_wait_sec: float = SEND_WAIT_SEC, on_fatal: FatalCallback | None = None) -> None:
         for what, v in (("bus", settings.bus), ("presence", settings.presence)):
-            if not PREFIX_RE.match(v) or v == DELIVER:
+            if not PREFIX_RE.fullmatch(v) or v == DELIVER:
                 raise ValueError(f"invalid {what} prefix")
         for url in settings.servers:
             _check_server(url)
@@ -494,7 +494,7 @@ class NatsBus:
     # --- lifecycle ---------------------------------------------------------------
     async def start(self) -> None:
         for ch in self.channels:
-            if not CHANNEL_RE.match(ch):
+            if not CHANNEL_RE.fullmatch(ch):
                 raise ValueError("invalid channel name")
         _ = self.name
         retry = False
@@ -759,7 +759,7 @@ class NatsBus:
 
     @staticmethod
     def _channel(ch: str) -> str:
-        if not CHANNEL_RE.match(ch):
+        if not CHANNEL_RE.fullmatch(ch):
             raise ValueError("invalid channel name")
         return ch
 
@@ -784,7 +784,7 @@ class NatsBus:
         await self._publish(f"{self._s.bus}.ch.{self._asked(channel)}.{self.name}", body)
 
     def _dm_subject(self, recipient: str) -> str:
-        if not AGENT_RE.match(recipient):
+        if not AGENT_RE.fullmatch(recipient):
             raise ValueError("invalid recipient name")
         return f"{self._s.bus}.dm.{recipient}.{self.name}"
 
@@ -849,7 +849,7 @@ class NatsBus:
         tokens = subject.split(".")
         sender = tokens[-1]
         expect = [self._s.bus, "ch", where] if where != DM_SINCE else [self._s.bus, "dm", self.name]
-        if tokens[:-1] != expect or not AGENT_RE.match(sender):
+        if tokens[:-1] != expect or not AGENT_RE.fullmatch(sender):
             log.warning("nats bus: dropped a message on %s with an unexpected subject", where)
             return
         if gap:
@@ -903,9 +903,9 @@ class NatsBus:
         t = msg.subject.split(".")
         p = self._s.presence
         try:
-            if len(t) == 2 and t[0] == p and AGENT_RE.match(t[1]):
+            if len(t) == 2 and t[0] == p and AGENT_RE.fullmatch(t[1]):
                 self._presence[t[1]] = (ack.time, decode_presence(msg.data))
-            elif len(t) == 4 and t[0] == p and t[1] == "crown" and CHANNEL_RE.match(t[2]) and AGENT_RE.match(t[3]):
+            elif len(t) == 4 and t[0] == p and t[1] == "crown" and CHANNEL_RE.fullmatch(t[2]) and AGENT_RE.fullmatch(t[3]):
                 decode_claim(msg.data)
                 claims = self._claims.setdefault(t[2], {})
                 if ack.stream_seq > claims.get(t[3], 0):

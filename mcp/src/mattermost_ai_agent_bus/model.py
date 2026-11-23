@@ -261,6 +261,9 @@ class UnreadChannel:
     unread: int = field(default=0, compare=False)
     # Its name (town-square, …), where Mattermost gives it (RT-6.22 step 1).
     name: str = field(default="", compare=False)
+    # A home over NATS (RT-6.36): its NATS posts have a read watermark of their
+    # own (watermark.lane), since they carry the NATS server's time.
+    nats: bool = field(default=False, compare=False)
 
 
 class Refused(Exception):

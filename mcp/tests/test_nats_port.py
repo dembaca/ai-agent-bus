@@ -446,6 +446,8 @@ async def test_threads_and_reads_come_from_the_memory() -> None:
     assert [p.message for p in await port.list_recent(channel_id=WORK)] == ["root", "reply", "later"]
     first = (await port.channel_posts(WORK))[-1]
     after = await port.posts_after(first.create_at, channel_id=WORK)
+    assert [p.message for p in after] == ["root", "reply", "later"]  # since, inclusive, as Mattermost's
+    after = await port.posts_after(first.create_at + 1, channel_id=WORK)
     assert [p.message for p in after] == ["reply", "later"]
     assert [p.message for p in await port.channel_posts(WORK, since_ms=first.create_at + 1)] == ["later", "reply"]
     r = (await port.reactions("n1:home:10"))[0]
@@ -690,7 +692,14 @@ async def test_nats_events_turn_posts_and_reactions_into_chat_events() -> None:
         await stream.__anext__()
     await src.open()  # opens again
     assert src.connected
+    # Before the bus is started it subscribes all the same: the first post after the
+    # start reaches it. Only homes that are down raise.
     fresh, _, _ = make(bus=False)
+    early = NatsEvents(fresh)
+    await early.open()
+    assert early.connected
+    fresh.fail("down")
+    assert not early.connected
     with pytest.raises(NatsPortError):
         await NatsEvents(fresh).open()
 
@@ -743,8 +752,9 @@ async def test_the_reads_of_a_nats_home_hold_a_persons_mattermost_posts_too() ->
     assert [p.message for p in await port.list_recent(per_page=3)] == ["b", "human task", "c"]
     assert [p.message for p in await port.list_recent(channel_id=WORK, since_ms=t_b)] == [
         "b", "human task", "c"]
-    assert [p.message for p in await port.posts_after(t_b, channel_id=WORK)] == ["human task", "c"]
-    assert [p.message for p in await port.posts_after(t_b)] == ["human task", "c"]
+    # since, inclusive on both sides (Mattermost's posts_after is: client.py)
+    assert [p.message for p in await port.posts_after(t_b, channel_id=WORK)] == ["b", "human task", "c"]
+    assert [p.message for p in await port.posts_after(t_b + 1)] == ["human task", "c"]
     # the unread count: the newer of the two is the last post
     (home,) = [c for c in await port.member_channels() if c.channel_id == WORK]
     assert home.last_post_at == t_b + 1000
@@ -783,22 +793,83 @@ async def test_the_bye_reaches_the_people_of_a_nats_home_through_the_exit_handle
 
 
 async def test_mattermost_events_flow_while_nats_is_down_and_nats_events_follow_when_it_is_back() -> None:
-    port, inner, _ = make(bus=False)  # the bus is not up: NatsEvents.open raises
+    port, inner, _ = make(bus=False)  # the bus is not up yet
     chat = FakeEvents(connected=False, held=True)
-    merged = MergedEvents(chat, NatsEvents(port), port, retry_sec=0.02)
+    # A retry far beyond the test: the NATS side must not wait for one.
+    merged = MergedEvents(chat, NatsEvents(port), port, retry_sec=600)
     await merged.open()  # does not raise, and does not close Mattermost's side
     assert merged.connected and chat.opens == 1 and not chat.closed
     stream = merged.events()
     chat.push(inner.arrive({"id": "m" * 26, "user_id": HUMAN, "message": "a human"}))
     first = await asyncio.wait_for(stream.__anext__(), 2)
     assert first.post.id == "m" * 26  # type: ignore[union-attr]
-    port.use_bus(FakeNats(port))  # NATS comes up
-    nats_events = merged._nats
-    await until(lambda: nats_events._queue is not None)  # the NATS side opened again on its own
-    await arrive(port, "home", BOB, 10, Message("post", "an agent"))
+    port.use_bus(FakeNats(port))  # NATS comes up after the inbox connected
+    await arrive(port, "home", BOB, 10, Message("post", "a TASK right after the start"))  # no wait
     got = await asyncio.wait_for(stream.__anext__(), 2)
     assert got.post.id == "n1:home:10"  # type: ignore[union-attr]
     await stream.aclose()
+
+
+async def test_a_closed_merged_source_leaves_no_pump_reading_beside_the_next_stream() -> None:
+    """The inbox closes its source when a connect is cut short (a wait_for_events deadline)
+    or the reader stops: the old stream's NATS pump must not open again and take half of the
+    next stream's events."""
+    port, inner, _ = make()
+    chat = FakeEvents(connected=False, held=True)
+    merged = MergedEvents(chat, NatsEvents(port), port, retry_sec=0.01)
+    await merged.open()
+    old = merged.events()
+    pending = asyncio.ensure_future(old.__anext__())  # the pumps run
+    await asyncio.sleep(0.05)
+    await merged.close()  # the stream itself is never closed by its reader here
+    assert not merged._streams  # close() closed it
+    pending.cancel()
+    await asyncio.gather(pending, return_exceptions=True)
+    assert all(t.done() for t in old._tasks)  # type: ignore[attr-defined]
+    await asyncio.sleep(0.05)  # a pump that opened again would subscribe now
+    await merged.open()
+    assert len(port._subs) == 1
+    new = merged.events()
+    for seq in range(1, 21):
+        await arrive(port, "home", BOB, seq, Message("post", f"m{seq}"))
+    got = [await asyncio.wait_for(new.__anext__(), 2) for _ in range(20)]
+    assert [e.post.message for e in got] == [f"m{seq}" for seq in range(1, 21)]  # type: ignore[union-attr]
+    await new.aclose()
+    assert port._subs == []
+
+
+async def test_a_nats_side_closed_from_outside_is_not_opened_again_by_its_pump() -> None:
+    port, inner, _ = make()
+    chat = FakeEvents(connected=False, held=True)
+    merged = MergedEvents(chat, NatsEvents(port), port, retry_sec=0.01)
+    await merged.open()
+    stream = merged.events()
+    pending = asyncio.ensure_future(stream.__anext__())
+    await asyncio.sleep(0.05)
+    assert len(port._subs) == 1
+    await merged._nats.close()  # its clean end: closed, not failed
+    await asyncio.sleep(0.1)  # several retry periods
+    assert port._subs == []  # no new subscription beside the next connection's
+    pending.cancel()
+    await stream.aclose()
+
+
+async def test_the_inbox_closes_its_stream_when_its_reader_is_cancelled() -> None:
+    """A reader cancelled by close() or a connect cut short closes its stream (finally), so a
+    merged NATS side stops reading with it."""
+    port, inner, _ = make()
+    chat = FakeEvents(connected=False, held=True)
+    merged = MergedEvents(chat, NatsEvents(port), port, retry_sec=0.01)
+    inbox = WebSocketInbox(client=compose.Remembered(port), watched_channel_ids={WORK},  # type: ignore[arg-type]
+                           source=merged)
+    await inbox.ensure_connected()
+    await asyncio.sleep(0.05)  # the reader runs and its stream's pumps with it
+    reader = inbox._reader
+    assert reader is not None and merged._streams and len(port._subs) == 1
+    reader.cancel()
+    await asyncio.gather(reader, return_exceptions=True)
+    assert not merged._streams and port._subs == []
+    await inbox.close()
 
 
 async def test_a_failed_nats_home_leaves_mattermosts_events_flowing(caplog: pytest.LogCaptureFixture) -> None:
@@ -869,7 +940,8 @@ async def test_the_reactions_of_a_post_are_capped(caplog: pytest.LogCaptureFixtu
         for i in range(MAX_REACTIONS + 40):
             await arrive(port, "home", BOB, 100 + i, Message("reaction", ref=10, emoji=f"e{i}"))
     assert len(port._reacts[10]) == MAX_REACTIONS == len(await port.reactions("n1:home:10"))
-    assert "dropped" in caplog.text
+    capped = [r for r in caplog.records if "reactions already" in r.getMessage()]
+    assert len(capped) == 1 and port._capped == 40  # a foreign sender's pace: one line, all counted
     assert events._queue is not None and events._queue.qsize() == MAX_REACTIONS  # no event for a dropped one
     await arrive(port, "home", BOB, 900, Message("unreaction", ref=10, emoji="e0"))  # room again
     await arrive(port, "home", BOB, 901, Message("reaction", ref=10, emoji="new"))
@@ -889,7 +961,9 @@ async def test_the_queues_are_bounded_and_drop_with_a_log_line(
         for seq in range(1, 9):
             await arrive(port, "home", ALICE, seq, Message("post", f"m{seq}"))  # no exception
     assert events._queue.qsize() == 3 and "queue is full" in caplog.text
+    assert port._dropped == 5
     port.fail("down")  # the failure still gets through a full queue
+    assert port._dropped == 6  # the event it pushed out counts too
     items = [events._queue.get_nowait() for _ in range(3)]
     assert isinstance(items[-1], NatsPortError)
     merged = MergedEvents(FakeEvents(), events, port).events()
@@ -996,6 +1070,62 @@ async def test_the_nats_start_of_the_server_never_raises(
 
 def test_an_author_name_must_match_whole_not_up_to_a_newline() -> None:
     assert is_nats_user("agent-x") and not is_nats_user("agent-x\n") and not is_nats_user("agent-x\nmore")
+
+
+def test_a_channel_name_must_match_whole_not_up_to_a_newline() -> None:
+    assert natsbus.NatsBus._channel("home") == "home"
+    with pytest.raises(ValueError):
+        natsbus.NatsBus._channel("home\n")
+
+
+def test_a_start_failure_is_final_only_when_waiting_does_not_cure_it() -> None:
+    import json
+
+    from mattermost_ai_agent_bus.nats_port import _final
+
+    for final in (NameMismatch("x"), ValueError("wrong settings"), NatsPortError("x"),
+                  login.ApprovalDenied("no"), login.WrongHuman("w"), login.ConfigError("c")):
+        assert _final(final), final
+    for passing in (json.JSONDecodeError("not JSON", "<html>", 0),
+                    UnicodeDecodeError("utf-8", b"\xff", 0, 1, "bad"),
+                    login.ApprovalExpired("ran out"), RuntimeError("not there yet"), OSError("refused")):
+        assert not _final(passing), passing
+
+
+async def test_the_nats_posts_of_a_home_have_a_read_mark_of_their_own(monkeypatch: pytest.MonkeyPatch) -> None:
+    """The NATS server's clock runs ahead of Mattermost's: a NATS post handed over moves only
+    the NATS lane's mark, so a person's post that comes later with an earlier time still
+    counts as waiting and is caught up (RT-6.2, RT-6.36)."""
+    from mattermost_ai_agent_bus import unread, watermark
+
+    port, inner, _ = make()
+    client = compose.Remembered(port)  # type: ignore[arg-type]
+    monkeypatch.setattr(server, "_get_client", lambda: client)
+    inbox = WebSocketInbox(client=client, watched_channel_ids={WORK}, source=NatsEvents(port))  # type: ignore[arg-type]
+    try:
+        await inbox.ensure_connected()
+        await arrive(port, "home", ALICE, 10, Message("post", "from nats"))
+        (event,) = await inbox.take(timeout_sec=2, max_events=10)
+        await inbox.ack([event])
+        nats_at = event.post.create_at
+        marks = watermark.read(BOT)
+        assert marks[f"{WORK}:nats"].at == nats_at and WORK not in marks
+        inner.clock = nats_at - 60_000  # Mattermost's clock a minute behind
+        inner.arrive({"id": "h" * 26, "user_id": HUMAN, "message": "`TASK` · from a person"})
+        rows = await unread.after(client)  # type: ignore[arg-type]
+        assert [p.message for r in rows for p in r.posts] == ["`TASK` · from a person"]
+    finally:
+        await inbox.close()
+
+
+def test_a_post_moves_the_mark_of_its_own_lane() -> None:
+    from mattermost_ai_agent_bus import watermark
+
+    assert watermark.lane(WORK, "n1:home:7") == f"{WORK}:nats"
+    assert watermark.lane(WORK, "h" * 26) == WORK
+    assert watermark.advance(BOT, f"{WORK}:nats", "n1:home:7", 5)
+    assert watermark.read(BOT)[f"{WORK}:nats"] == watermark.Mark("-", 5)
+    assert not watermark.advance(BOT, f"{WORK}:other", "x", 6)
 
 
 # --- against a real server --------------------------------------------------------------------------------

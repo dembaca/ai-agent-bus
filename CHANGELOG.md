@@ -48,7 +48,9 @@ before 0.5.0 are described in the git history.
   exit handler's posts stay on Mattermost, and nothing over NATS counts as
   a person or an approval; until their owner is proven, NATS senders are
   foreign agents (their TASKs are requests). The tools do not change; NATS post ids look like
-  `n1:<channel>:<n>`. Roster, presence and crown over NATS follow.
+  `n1:<channel>:<n>`. The NATS posts of such a home have a read watermark
+  of their own, since they carry the NATS server's time. Roster, presence
+  and crown over NATS follow.
 
 ## 0.96.0
 
