@@ -8,12 +8,17 @@ a fifth of the size — and, for a post with attachments, a short `files` hint
 raw=true for the full JSON.
 
 What the bus brings unasked (a channel push, a wait_for_events item) has its
-text cut at BODY_MAX characters with a pointer to get_thread (RT-6.12 step 3);
-what the agent fetches by id or channel (get_thread, list_recent) stays whole.
+text cut at BODY_MAX characters with a pointer to get_thread (RT-6.12 step 3).
+What the agent fetches by id or channel (get_thread, list_recent) stays whole —
+but not without bound: a post's `message` there is cut at FETCH_MAX, and one
+slim post stays under POST_MAX, the largest text going first, both pointing at
+`raw=true` for the whole of it (issue #42). Without a bound, an ask whose card
+title rides in its text was 22 KB in every thread read.
 """
 
 from __future__ import annotations
 
+import re
 import time
 from collections.abc import Mapping, Sequence
 from typing import TYPE_CHECKING, Any
@@ -30,12 +35,27 @@ if TYPE_CHECKING:
 BODY_MAX = 2000
 
 
+# A cut's note as this module writes it, anchored at the **end** of the text: an author
+# who writes "… (cut, 999999 bytes in all;" into a post must not have it read as the
+# note, and a real note is always the last line. The unit is kept as found, since a
+# note from _cut_bytes counts bytes and one from cut() characters.
+_CUT_TOTAL = re.compile(r"… \(cut, (\d+) (chars|bytes) in all;[^\n]*\)\s*\Z")
+
+
 def cut(text: str, post_id: str) -> str:
     """`text` at most about BODY_MAX characters, cut at a line or word end and
     ending with where the rest is: get_thread with the post's id, which works
-    for a root and a reply alike. Unchanged when short or without an id."""
+    for a root and a reply alike. Unchanged when short or without an id.
+
+    Text already cut once (the slim post's `message`, which `_one` shortened to
+    FETCH_MAX) reports the **original** size: its own note carries it, and a
+    push must not claim the post was 15 930 characters when it was 36 000
+    (issue #42)."""
     if len(text) <= BODY_MAX or not post_id:
         return text
+    total, unit = len(text), "chars"
+    if (seen := _CUT_TOTAL.search(text)):
+        total, unit = max(total, int(seen.group(1))), seen.group(2)
     head = text[:BODY_MAX]
     floor = BODY_MAX * 4 // 5  # a boundary further back drops too much
     end = head.rfind("\n", floor)
@@ -43,13 +63,105 @@ def cut(text: str, post_id: str) -> str:
         end = max(head.rfind(" ", floor), head.rfind("\t", floor))
     if end > 0:
         head = head[:end]
-    return f"{head.rstrip()}\n… (cut, {len(text)} chars in all; get_thread {post_id})"
+    return f"{head.rstrip()}\n… (cut, {total} {unit} in all; get_thread {post_id})"
 
 
 def _when(ms: int | None) -> str:
     if not ms:
         return ""
     return time.strftime("%Y-%m-%d %H:%M", time.localtime(ms / 1000))
+
+
+# A post's `message` on the two tools that stay whole (get_thread, list_recent):
+# they are where a reader goes for the rest, so they must not point back at
+# themselves. Mattermost's own post limit is 16 383 bytes; a longer post comes
+# only over NATS (max_msg_size 65 536), and `raw=true` is the way to the whole of
+# it, without a bound (RT-6.11, issue #42).
+FETCH_MAX = 16_000
+# The hard bound on one slim post, text and card together. Under it, _bounded cuts
+# the largest contribution first, so a field added later cannot push the whole
+# over (RT-6.12 step 3, issue #42). UTF-8 bytes, since Mattermost and NATS bound
+# bytes: 60 000 emoji are 64 175 bytes and would otherwise pass.
+POST_MAX = 20_000
+# What a cut adds: the note naming the whole-post route. Reserved before the cut
+# so the result stays under POST_MAX rather than only closer to it.
+CUT_NOTE_MAX = 140
+# A cut keeps at least this many characters, so `need` and `decision` are never
+# emptied into an unreadable stub; _bounded then cuts another field instead.
+FIELD_FLOOR = 240
+
+
+def _nbytes(value: Any) -> int:
+    """The UTF-8 size of a slim field: a string, a list of them (answers), or the
+    card's dict. Counting only strings missed `answers` entirely (issue #42)."""
+    if isinstance(value, str):
+        return len(value.encode())
+    if isinstance(value, list):
+        return sum(_nbytes(v) for v in value)
+    if isinstance(value, dict):
+        return sum(_nbytes(v) for v in value.values())
+    return 0
+
+
+def _head_bytes(text: str, budget: int) -> str:
+    """The longest prefix of `text` that fits in `budget` UTF-8 bytes, cut back to
+    a line or word end when that keeps most of it."""
+    if budget <= 0:
+        return ""
+    used, out = 0, []
+    for ch in text:
+        n = len(ch.encode())
+        if used + n > budget:
+            break
+        used += n
+        out.append(ch)
+    head = "".join(out)
+    floor = len(head) * 4 // 5
+    end = head.rfind("\n", floor)
+    if end < 0:
+        end = max(head.rfind(" ", floor), head.rfind("\t", floor))
+    return head[:end].rstrip() if end > 0 else head
+
+
+def _cut_bytes(text: str, budget: int, post_id: str, where: str,
+               total: int | None = None) -> str:
+    """`text` cut to about `budget` UTF-8 bytes, ending with a note that names
+    `total` — the **original** size where the caller knows it, since a second cut
+    must not report the first cut's length (issue #42) — and never shorter than
+    FIELD_FLOOR characters."""
+    total = len(text.encode()) if total is None else total
+    if total <= budget:
+        return text
+    keep = _head_bytes(text, max(budget - CUT_NOTE_MAX, _nbytes(text[:FIELD_FLOOR])))
+    if len(keep) < FIELD_FLOOR:
+        keep = _head_bytes(text, _nbytes(text[:FIELD_FLOOR]))
+    pid = f" {post_id}" if post_id else ""
+    return f"{keep}\n… (cut, {total} bytes in all; {where}{pid})"
+
+
+# The card cannot reach POST_MAX on its own: every field in it is cut to BODY_MAX
+# first - need, decision, each of at most four answers, and `chosen`, which is one
+# of those answers again - so a card is at most 7 x BODY_MAX = 14 000 bytes.
+# (`answer`, `expired` and `card_edited_after` are a few bytes each.) Only
+# `message` can push a post over, and only it is cut here. Asserted by
+# test_a_card_cannot_reach_the_bound_by_itself so a later field cannot quietly
+# break the arithmetic (issue #42).
+CARD_MAX_FIELDS = 7  # need, decision, four answers, chosen
+assert CARD_MAX_FIELDS * BODY_MAX < POST_MAX
+
+
+def _bounded(out: dict[str, Any], pid: str, message_total: int | None = None) -> dict[str, Any]:
+    """`out` under POST_MAX bytes. The card is bounded by construction (each field cut
+    to BODY_MAX), so the message gets what is left; the note names `message_total`, the
+    text's size before any cut (issue #42)."""
+    card = _nbytes(out.get("ask_card") or {})
+    room = POST_MAX - card - CUT_NOTE_MAX
+    text = str(out.get("message") or "")
+    if room > 0 and _nbytes(text) > room:
+        out["message"] = _cut_bytes(text, room, pid,
+                                    "the whole post: get_thread with raw=true",
+                                    _nbytes(text) if message_total is None else message_total)
+    return out
 
 
 async def _names(client: ChatPort, posts: Sequence[Post]) -> tuple[dict[str, str], dict[str, str]]:
@@ -108,10 +220,12 @@ async def _facts(client: ChatPort, posts: Sequence[Post],
         card = a2a.ask_card(p)
         facts: dict[str, Any] = out.setdefault(p.id, {})
         if p.title:
-            facts["need"] = cut(p.title, p.id)
+            facts["need"] = _cut_bytes(p.title, BODY_MAX, p.id, "get_thread with raw=true")
         if card.get("decision"):
-            facts["decision"] = cut(card["decision"], p.id)
-        answers = [cut(a, p.id) for a in a2a.ask_answer_list(p)]
+            facts["decision"] = _cut_bytes(card["decision"], BODY_MAX, p.id,
+                                          "get_thread with raw=true")
+        answers = [_cut_bytes(a, BODY_MAX, p.id, "get_thread with raw=true")
+                   for a in a2a.ask_answer_list(p)]
         if answers:
             facts["answers"] = answers
         # the newest trusted human's answer wins, as the live event counts it. The sort
@@ -164,14 +278,17 @@ def _reactions(p: Post, users: dict[str, str], trusted: Mapping[str, str]) -> di
 
 
 def _one(p: Post, users: dict[str, str], channels: dict[str, str],
-         facts: Mapping[str, Any] | None = None) -> dict[str, Any]:
+         facts: Mapping[str, Any] | None = None, shown: Mapping[str, str] | None = None) -> dict[str, Any]:
     out: dict[str, Any] = {"id": p.id}
     if p.root_id:
         out["root_id"] = p.root_id
     out["channel"] = channels.get(p.channel_id, p.channel_id)
     out["author"] = users.get(p.user_id) or p.user_id
     out["at"] = _when(p.create_at)
-    out["message"] = p.text
+    # get_thread and list_recent stay whole by contract, but not without bound:
+    # an ask whose card title rides in `message` can be 20 000 characters. The
+    # reader gets raw=true as the way to all of it (issue #42).
+    out["message"] = _cut_bytes(p.text, FETCH_MAX, "", "the whole post: get_thread with raw=true")
     if p.type:
         out["type"] = p.type
     if p.edit_at:
@@ -188,7 +305,13 @@ def _one(p: Post, users: dict[str, str], channels: dict[str, str],
         card = {k: v for k, v in got.items() if k not in ("reactions", "reactions_total")}
         if card:
             out["ask_card"] = card  # what a 👍 approves; `ask` is the ask's id elsewhere
-    return out
+    if shown:  # #66: to show and to DM (to=), never an identity; `author` decides
+        if p.user_id in shown:
+            out["shown_as"] = shown[p.user_id]
+        if out.get("reactions"):  # a NATS sender's author is its NATS name
+            out["reactions"] = [dict(r, shown_as=shown[r["author"]]) if r["author"] in shown else r
+                                for r in out["reactions"]]
+    return _bounded(out, p.id, _nbytes(p.text))
 
 
 async def posts(client: ChatPort, items: Sequence[Post],
@@ -201,14 +324,7 @@ async def posts(client: ChatPort, items: Sequence[Post],
 
     shown = await lease.shown_as(client, {p.user_id for p in items}
                                  | {r.user_id for p in items for r in p.reactions})
-    out = [_one(p, users, channels, facts) for p in items]
-    for row, p in zip(out, items, strict=True):
-        if p.user_id in shown:
-            row["shown_as"] = shown[p.user_id]  # #66: to show and to DM (to=), never an identity; `author` decides
-        for r in row.get("reactions", ()):
-            if r["author"] in shown:  # a NATS sender's author is its NATS name
-                r["shown_as"] = shown[r["author"]]
-    return out
+    return [_one(p, users, channels, facts, shown) for p in items]  # shown_as inside the bound
 
 
 async def post(client: ChatPort, item: Post) -> dict[str, Any]:

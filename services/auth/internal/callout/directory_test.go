@@ -1,6 +1,8 @@
 package callout
 
 import (
+	"context"
+	"errors"
 	"testing"
 	"time"
 
@@ -91,5 +93,97 @@ func TestTheDirectoryKeepsNamesAndPresenceTokens(t *testing.T) {
 	}
 	if c, _, ok, err := dir.Channel(ctx5(t), "home"); err != nil || ok {
 		t.Fatalf("the bucket was written by an agent: %+v %v", c, err)
+	}
+}
+
+// accountSpy is directory.Anchors whose account step can fail and is counted.
+type accountSpy struct {
+	directory.Anchors
+	calls []string
+	err   error
+}
+
+func (a *accountSpy) Account(ctx context.Context, sub, name string) error {
+	a.calls = append(a.calls, sub+"/"+name)
+	if a.err != nil {
+		return a.err
+	}
+	return a.Anchors.Account(ctx, sub, name)
+}
+
+// RT-6.41 step 2, issue #59: after the import the account index follows a login whose chat
+// account is proven (OpenID), never one that logs in with a password, and an
+// index that cannot be written fails the login.
+func TestTheAccountIndexFollowsOnlyAProvenLogin(t *testing.T) {
+	l := newLab(t)
+	nc, _ := l.admin()
+	js, err := jetstream.New(nc)
+	if err != nil {
+		t.Fatal(err)
+	}
+	dir, err := directory.Open(ctx5(t), js, "", false)
+	if err != nil {
+		t.Fatal(err)
+	}
+	spy := &accountSpy{Anchors: directory.Anchors{Store: dir}}
+	l.svc.SetAnchors(spy)
+	const carolSub = "0b6f3c1e-1111-4222-8333-444455556666"
+	const malSub = "9e8d7c6b-5a49-4382-9716-151413121110"
+	l.chat.Users["carol"] = token.User{Username: "carol", AuthKnown: true, AuthService: token.OpenIDService, AuthData: carolSub}
+	l.chat.Channels["carol"] = []string{"home"}
+	login := func(sub string) error {
+		_, err := l.connect(sub, l.realm.Token("carol", func(c gojwt.MapClaims) { c["sub"] = sub }), Hello{Home: "home"}, nil)
+		return err
+	}
+
+	// Before the import nothing is written, though the login is proven.
+	if err := login(carolSub); err != nil {
+		t.Fatal(err)
+	}
+	if _, _, _, ok, _ := dir.Account(ctx5(t), "mattermost", "carol"); ok {
+		t.Fatal("the index was written before the import")
+	}
+	if err := dir.MarkImported(ctx5(t), time.Now()); err != nil {
+		t.Fatal(err)
+	}
+
+	// A proven login sets the entry.
+	if err := login(carolSub); err != nil {
+		t.Fatal(err)
+	}
+	if id, ok, err := dir.ByAccount(ctx5(t), "mattermost", "carol"); err != nil || !ok || id.Sub != carolSub {
+		t.Fatalf("after an OpenID login: %+v %v %v", id, ok, err)
+	}
+
+	// The chat account of that name now logs in with a password; its human
+	// has another sub. The name binding lets it pass, the index must not move.
+	l.chat.Users["carol"] = token.User{Username: "carol", AuthKnown: true}
+	calls := len(spy.calls)
+	if err := login(malSub); err != nil {
+		t.Fatal(err)
+	}
+	if len(spy.calls) != calls {
+		t.Fatalf("a password account reached the account index: %v", spy.calls[calls:])
+	}
+	if id, ok, _ := dir.ByAccount(ctx5(t), "mattermost", "carol"); !ok || id.Sub != carolSub {
+		t.Fatalf("a password account took the name over: %+v %v", id, ok)
+	}
+
+	// An index that cannot be written fails the login.
+	l.chat.Users["carol"] = token.User{Username: "carol", AuthKnown: true, AuthService: token.OpenIDService, AuthData: malSub}
+	spy.err = errors.New("bucket unavailable")
+	if err := login(malSub); err == nil {
+		t.Fatal("the login passed although the index could not be written")
+	}
+	spy.err = nil
+	if id, ok, _ := dir.ByAccount(ctx5(t), "mattermost", "carol"); !ok || id.Sub != carolSub {
+		t.Fatalf("a failed login changed the index: %+v %v", id, ok)
+	}
+	// With a working index the proven new holder takes the name.
+	if err := login(malSub); err != nil {
+		t.Fatal(err)
+	}
+	if id, ok, _ := dir.ByAccount(ctx5(t), "mattermost", "carol"); !ok || id.Sub != malSub || id.MovedFrom["mattermost"] != carolSub {
+		t.Fatalf("the proven new holder: %+v %v", id, ok)
 	}
 }
