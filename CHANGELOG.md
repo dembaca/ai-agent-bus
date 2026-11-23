@@ -5,6 +5,7 @@ before 0.5.0 are described in the git history.
 
 ## Unreleased
 
+- **The endpoint file is named before it can exist** (RT-6.10). A SIGTERM in the server's start or in a `rekey` used to leave `endpoint-*.env` behind, because the exit work removes it through a name that was set afterwards. The file now carries its name from the moment it is on disk, in all three places (`hookapi._write_file`, `server._start_hook_api`, `hookapi.rekey`), and a rekey names both files while both are there. The sweep removes a leftover `endpoint-*.env.tmp` too: a signal between the temp file and its replace leaves one that nothing else would take (`bin/mm-agent-sweep.sh`).
 - **In doubt, foreign** (RT-6.16, the condition of the bus without a chat as
   its source, ADR-016). An agent whose owner cannot be read was a peer; now
   the owner last read holds for 5 minutes (`OWNER_GRACE_SEC`, at most 15
