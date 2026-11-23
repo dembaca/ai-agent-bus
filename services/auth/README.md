@@ -53,6 +53,15 @@ The NATS server's side of it is in
 and the tenant's, the two users of this service, `auth_callout`, TLS and
 JetStream, with placeholders instead of keys. A test starts a server from it.
 
+Over `tls://` the service connects with the TLS handshake first, before the
+server's INFO, as the agents' hosts do. The server therefore needs
+`handshake_first: true` in its `tls` block; without it neither the service nor
+a host gets in. To move a server whose older clients still connect in the
+classic order, set a duration instead (`handshake_first: "300ms"`): the server
+waits that long for a TLS handshake, then lets a classic client in. Set it
+back to `true` once every client speaks TLS first. A loopback `nats://` stays
+plain.
+
 | Variable | Default | Meaning |
 | --- | --- | --- |
 | `AUTH_NATS_URL` | — | the NATS server, `tls://` (plain `nats://` only on a loopback host); unset: no callout, health only |

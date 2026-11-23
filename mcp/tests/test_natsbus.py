@@ -1392,6 +1392,36 @@ async def test_tls_url_never_sends_the_token_to_a_plaintext_server() -> None:
                 await bus._nc.close()
 
 
+async def test_a_server_that_does_not_speak_tls_first_is_named_in_the_log(
+        caplog: pytest.LogCaptureFixture) -> None:
+    """The NATS server needs handshake_first: without it the client's TLS handshake meets the
+    server's INFO in clear, and the log says so instead of a bare SSLError (RT-6.36)."""
+    caplog.set_level(logging.WARNING)
+    async with FakeServer(None) as srv:
+        bus = NatsBus(_settings(servers=(f"tls://127.0.0.1:{srv.port}",)), FakeLogin(), "alice",
+                      lambda e: None, connect_timeout=2)
+        with pytest.raises(ssl.SSLError) as err:
+            await bus._open()
+        assert natsbus.connect_reason(err.value) == (
+            "TLS: the server does not speak TLS first: set handshake_first in its tls block")
+        await bus.start()  # the first connect fails, the supervisor retries
+        try:
+            assert "first connect failed, retrying: TLS: the server does not speak TLS first" in caplog.text
+        finally:
+            await bus.stop()
+
+
+def test_connect_reason_keeps_other_errors_to_their_type() -> None:
+    assert natsbus.connect_reason(ConnectionRefusedError("secret text")) == "ConnectionRefusedError"
+    try:
+        try:
+            raise ssl.SSLError(1, "[SSL: SOMETHING_ELSE] other")
+        except ssl.SSLError as inner:
+            raise RuntimeError("wrapped") from inner
+    except RuntimeError as outer:
+        assert natsbus.connect_reason(outer) == "TLS: SSLError"
+
+
 async def test_tls_url_refuses_a_certificate_it_does_not_trust(tmp_path: Path) -> None:
     cert, key = _self_signed(tmp_path)
     ctx = ssl.SSLContext(ssl.PROTOCOL_TLS_SERVER)
@@ -1399,10 +1429,11 @@ async def test_tls_url_refuses_a_certificate_it_does_not_trust(tmp_path: Path) -
     async with FakeServer(ctx) as srv:  # no tls_ca_file: the system's CAs do not know this one
         bus = NatsBus(_settings(servers=(f"tls://127.0.0.1:{srv.port}",)), FakeLogin(), "alice",
                       lambda e: None, connect_timeout=2)
-        with pytest.raises(Exception):  # noqa: B017
+        with pytest.raises(Exception) as err:  # noqa: B017
             await bus._open()
         await asyncio.sleep(0.1)
         assert srv.received == b""
+        assert natsbus.connect_reason(err.value).startswith("TLS: the server's certificate is not trusted")
 
 
 async def test_tls_url_with_the_ca_file_handshakes_first_and_connects(tmp_path: Path) -> None:

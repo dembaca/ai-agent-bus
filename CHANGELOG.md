@@ -5,6 +5,15 @@ before 0.5.0 are described in the git history.
 
 ## Unreleased
 
+- **The login service speaks TLS first** (RT-6.36). Over `tls://` it now
+  sends the TLS handshake before the server's INFO, as the hosts already do,
+  so the NATS server needs `handshake_first` in its `tls` block
+  (`services/auth/nats-server.example.conf`). A server that still waits for
+  older clients may hold a duration (`"300ms"`) during the move; set it to
+  `true` once this login service runs. A host whose server does not speak TLS
+  first now says so in its log (`TLS: the server does not speak TLS first:
+  set handshake_first in its tls block`), and an untrusted certificate names
+  itself too, instead of a bare `SSLError`.
 - **Peers over NATS by the login service's record** (RT-6.37 step 4,
   RT-6.41). The MCP server sends the session's trusted humans in its
   hello and reads the login service's records: a NATS sender's owner is

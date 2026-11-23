@@ -294,25 +294,7 @@ func RunCallout(ctx context.Context, s Settings, log *slog.Logger) error {
 		log.Warn("emergency brake: a line that is no username holds nobody", "line", line)
 	})
 	connect := func(url, name string, kp nkeys.KeyPair) (*nats.Conn, error) {
-		pub, _ := kp.PublicKey()
-		opts := []nats.Option{nats.Name(name), nats.Nkey(pub, kp.Sign),
-			nats.MaxReconnects(-1), nats.ReconnectWait(2 * time.Second),
-			nats.DisconnectErrHandler(func(_ *nats.Conn, err error) {
-				log.Warn("NATS disconnected", "connection", name, "reason", fmt.Sprint(err))
-			}),
-			nats.ReconnectHandler(func(nc *nats.Conn) {
-				log.Info("NATS reconnected", "connection", name, "server", nc.ConnectedUrlRedacted())
-			}),
-			nats.ErrorHandler(func(_ *nats.Conn, _ *nats.Subscription, err error) {
-				log.Error("NATS error", "connection", name, "reason", err.Error())
-			})}
-		if s.NATSCAFile != "" {
-			opts = append(opts, nats.RootCAs(s.NATSCAFile))
-		}
-		if s.NATSCertFile != "" {
-			opts = append(opts, nats.ClientCert(s.NATSCertFile, s.NATSKeyFile))
-		}
-		return nats.Connect(url, opts...)
+		return nats.Connect(url, connectOptions(s, url, name, kp, log)...)
 	}
 	nc, err := connect(s.NATSURL, "authd", user)
 	if err != nil {
@@ -384,6 +366,48 @@ func RunCallout(ctx context.Context, s Settings, log *slog.Logger) error {
 		return errors.New("the directory admin API stopped")
 	}
 	return err
+}
+
+// connectOptions: one NATS connection of the login service (RT-6.35). To a
+// tls:// server the TLS handshake comes first, before the server's INFO, as
+// the agents' hosts do: the server then needs handshake_first in its tls block
+// (services/auth/README.md). A loopback nats:// stays plain.
+func connectOptions(s Settings, urls, name string, kp nkeys.KeyPair, log *slog.Logger) []nats.Option {
+	pub, _ := kp.PublicKey()
+	opts := []nats.Option{nats.Name(name), nats.Nkey(pub, kp.Sign),
+		nats.MaxReconnects(-1), nats.ReconnectWait(2 * time.Second),
+		nats.DisconnectErrHandler(func(_ *nats.Conn, err error) {
+			log.Warn("NATS disconnected", "connection", name, "reason", fmt.Sprint(err))
+		}),
+		nats.ReconnectHandler(func(nc *nats.Conn) {
+			log.Info("NATS reconnected", "connection", name, "server", nc.ConnectedUrlRedacted())
+		}),
+		nats.ErrorHandler(func(_ *nats.Conn, _ *nats.Subscription, err error) {
+			log.Error("NATS error", "connection", name, "reason", err.Error())
+		})}
+	if s.NATSCAFile != "" {
+		opts = append(opts, nats.RootCAs(s.NATSCAFile))
+	}
+	if s.NATSCertFile != "" {
+		opts = append(opts, nats.ClientCert(s.NATSCertFile, s.NATSKeyFile))
+	}
+	if tlsFirst(urls) {
+		opts = append(opts, nats.TLSHandshakeFirst())
+	}
+	return opts
+}
+
+// tlsFirst: every URL of the list is tls://. A list that mixes in a loopback
+// nats:// keeps the classic order, since a plain server never answers a TLS
+// handshake.
+func tlsFirst(urls string) bool {
+	for _, raw := range strings.Split(urls, ",") {
+		u, err := url.Parse(strings.TrimSpace(raw))
+		if err != nil || u.Scheme != "tls" {
+			return false
+		}
+	}
+	return true
 }
 
 // natsURLSecure: every URL of the list must be tls:// (or wss://), except on

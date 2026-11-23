@@ -133,6 +133,10 @@ func TestTheExampleServerConfiguration(t *testing.T) {
 	if opts.TLSConfig == nil {
 		t.Error("no tls")
 	}
+	if !opts.TLSHandshakeFirst || opts.TLSHandshakeFirstFallback != 0 {
+		t.Errorf("tls: handshake_first %v (fallback %v), want true without fallback",
+			opts.TLSHandshakeFirst, opts.TLSHandshakeFirstFallback)
+	}
 	if len(opts.Users) != 0 {
 		t.Errorf("%d users with a password", len(opts.Users))
 	}
@@ -197,7 +201,7 @@ func TestTheExampleServerConfiguration(t *testing.T) {
 			t.Errorf("JetStream in %s: %v, want %v", name, acc.JetStreamEnabled(), want)
 		}
 	}
-	nc, err := nats.Connect(srv.ClientURL(), nats.RootCAs(certFile),
+	nc, err := nats.Connect(srv.ClientURL(), nats.RootCAs(certFile), nats.TLSHandshakeFirst(),
 		nats.Nkey(jsPub, func(nonce []byte) ([]byte, error) { return jsUser.Sign(nonce) }))
 	if err != nil {
 		t.Fatalf("the JetStream user cannot connect: %v", err)

@@ -471,6 +471,31 @@ def build_hello(token: str, home: str, guests: tuple[str, ...], lobby: bool,
 
 # --- the bus ---------------------------------------------------------------------------------------
 
+# What OpenSSL says when the first bytes back are no TLS record: the server sent its
+# INFO in clear, so it waits for the classic order (or speaks no TLS at all).
+_NOT_TLS_FIRST = frozenset({"WRONG_VERSION_NUMBER", "RECORD_LAYER_FAILURE", "PACKET_LENGTH_TOO_LONG",
+                            "UNKNOWN_PROTOCOL", "HTTP_REQUEST"})
+
+
+def connect_reason(exc: BaseException) -> str:
+    """A failed connect in words for the log (RT-6.36): a TLS failure says why, anything else
+    stays its type name (an exception's text may carry what the log must not)."""
+    seen: set[int] = set()
+    e: BaseException | None = exc
+    while e is not None and id(e) not in seen:
+        seen.add(id(e))
+        if isinstance(e, ssl.SSLCertVerificationError):
+            return (f"TLS: the server's certificate is not trusted ({e.verify_message}): "
+                    "set MM_NATS_CA_FILE to the CA that signed it")
+        if isinstance(e, ssl.SSLError):
+            reason = getattr(e, "reason", None)  # set by OpenSSL, absent on one raised by hand
+            if reason in _NOT_TLS_FIRST:
+                return "TLS: the server does not speak TLS first: set handshake_first in its tls block"
+            return f"TLS: {reason or type(e).__name__}"
+        e = e.__cause__ or e.__context__
+    return type(exc).__name__
+
+
 def _check_server(url: str) -> None:
     """tls:// anywhere; nats:// (no TLS) only to this machine."""
     parts = urlsplit(url)
@@ -669,7 +694,7 @@ class NatsBus:
         except Exception as exc:
             # A first connect that fails is no end: the supervisor connects again with backoff
             # (a send raises "not connected" until it has).
-            log.warning("nats bus: first connect failed, retrying: %s", type(exc).__name__)
+            log.warning("nats bus: first connect failed, retrying: %s", connect_reason(exc))
             retry = True
         self._tasks = [asyncio.create_task(self._supervise()), asyncio.create_task(self._heartbeat())]
         if self._memberships:
@@ -743,7 +768,7 @@ class NatsBus:
                 m = _PUBLISH_DENIED_RE.search(text)
                 if m:
                     self._denied = [*self._denied[-63:], m.group(1)]
-            log.warning("nats bus: %s", type(exc).__name__)
+            log.warning("nats bus: %s", connect_reason(exc))
 
         # tls://: the TLS handshake comes first, before any NATS protocol, with the certificate
         # verified. nats-py otherwise upgrades only when the server's INFO says tls_required,
@@ -864,7 +889,7 @@ class NatsBus:
                         await self._notify_fatal(exc)
                         return
                     except Exception as exc:
-                        log.warning("nats bus: reconnect failed: %s", type(exc).__name__)
+                        log.warning("nats bus: reconnect failed: %s", connect_reason(exc))
                         await asyncio.sleep(delay * random.uniform(0.5, 1.0))
                         delay = min(delay * 2, 30.0)
             finally:
