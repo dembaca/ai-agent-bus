@@ -18,6 +18,7 @@ import websockets
 
 from bus_testrig.gateway import Gateway
 from bus_testrig.proxy import FrameProxy, GatewayProxy, ProxyFault
+from bus_testrig.bus import RECEIVER_ID, RECEIVER_TOKEN, SENDER_ID, SENDER_TOKEN
 from bus_testrig.stub import (CHANNEL, MattermostStub, posted_frame, reaction_added_frame,
                               user_added_frame)
 
@@ -184,6 +185,61 @@ async def test_the_stub_answers_the_probes_endpoints_and_records_foreign_ones():
     assert gap.status_code == 404
     assert stub.unknown == [("GET", "/api/v4/nothing")]
     assert ("GET", "/api/v4/users/me") in stub.calls and len(stub.calls) == 3
+
+
+async def test_a_known_token_names_its_own_account_and_an_id_read_is_not_me():
+    """`/users/me` answers the bot its bearer names, and `/users/<id>` answers
+    that id — not a fixed account.
+
+    The id route's pattern matches `me` as well; when it ran first it answered
+    `agent-me` for a token the stub knew, so `bus_info` reported the wrong bot
+    and every coordinator measurement would have been about the wrong identity.
+    The two servers of a run are told apart by their bearer, so a constant
+    answer hides exactly the mix-up a run must not have.
+    """
+    async with MattermostStub() as stub:
+        stub.identify(SENDER_TOKEN, SENDER_ID, "agent-sender")
+        stub.identify(RECEIVER_TOKEN, RECEIVER_ID, "agent-receiver")
+        async with httpx.AsyncClient(base_url=stub.url) as client:
+            mine = await client.get("/api/v4/users/me",
+                                    headers={"authorization": f"Bearer {SENDER_TOKEN}"})
+            theirs = await client.get("/api/v4/users/me",
+                                      headers={"authorization": f"Bearer {RECEIVER_TOKEN}"})
+            by_id = await client.get(f"/api/v4/users/{RECEIVER_ID}")
+    assert mine.json()["username"] == "agent-sender" and mine.json()["id"] == SENDER_ID
+    assert theirs.json()["username"] == "agent-receiver"
+    assert by_id.json()["id"] == RECEIVER_ID
+    assert stub.unknown == []
+
+
+async def test_an_id_route_answers_only_an_id_this_stub_knows():
+    """An id is `[a-z0-9]{26}`, and only a known one is answered.
+
+    A loose pattern gave `/users/autocomplete`, `/users/stats`, `/users/known`
+    and every invented id a 200 with `agent-lete` for a name — the stub answered
+    what it does not know instead of reporting it, which is the one thing this
+    stub exists not to do (review of #24). The same held for `/bots/<id>`, and
+    neither route had a test; the PR text's "Measured" block is not one.
+    """
+    async with MattermostStub() as stub:
+        stub.identify(SENDER_TOKEN, SENDER_ID, "agent-sender")
+        async with httpx.AsyncClient(base_url=stub.url) as client:
+            other_endpoints = [await client.get(p) for p in (
+                "/api/v4/users/autocomplete", "/api/v4/users/stats", "/api/v4/users/known")]
+            invented = "q" * 26
+            unknown_user = await client.get(f"/api/v4/users/{invented}")
+            unknown_bot = await client.get(f"/api/v4/bots/{invented}")
+            mine = await client.get(f"/api/v4/users/{SENDER_ID}")
+            my_bot = await client.get(f"/api/v4/bots/{SENDER_ID}")
+    assert [r.status_code for r in other_endpoints] == [404, 404, 404]
+    assert unknown_user.status_code == 404 and unknown_bot.status_code == 404
+    assert mine.json()["username"] == "agent-sender"
+    assert my_bot.json()["user_id"] == SENDER_ID
+    assert stub.unknown == [
+        ("GET", "/api/v4/users/autocomplete"), ("GET", "/api/v4/users/stats"),
+        ("GET", "/api/v4/users/known"), ("GET", f"/api/v4/users/{invented}"),
+        ("GET", f"/api/v4/bots/{invented}"),
+    ]
 
 
 async def test_the_stub_answers_the_challenge_then_sends_its_frames():
