@@ -1032,3 +1032,95 @@ async def test_a_declined_approval_leaves_its_reason_for_the_next_process(tmp_pa
     with pytest.raises(login.LoginError, match="the last approval was declined"):
         await second.access_token()
     assert script.device_requests == 1
+
+
+async def test_a_later_mark_from_another_session_beats_a_capped_one(tmp_path):
+    """A mark keeps both the raw deadline and the capped one it was taken in with. Raw
+    only, a session that took in a mark months ahead ignored every real mark left after
+    it - and sent a DM in the middle of another session's cooldown."""
+    class NoRoleScript(Script):
+        def _tokens(self):
+            self.n += 1
+            return httpx.Response(200, json={
+                "access_token": jwt("alice", realm_access={"roles": []}), "expires_in": 300,
+                "refresh_token": f"refresh-secret-{self.n}"})
+
+    clock = [1000.0]
+    store = keystore.HostFile(tmp_path / "login")
+    store.save(keystore.cooldown_entry(ISSUER, "agent-bus", "alice"),
+               f"{clock[0] + 7200} was refused")
+    a_script = NoRoleScript()
+    a = mk(store, transport=httpx.MockTransport(a_script), notifier=Note(),
+           now=lambda: clock[0], wall=lambda: clock[0])
+    with pytest.raises(login.LoginError):
+        await a.access_token()  # takes the mark in, capped to 60 s
+    b_script = NoRoleScript()
+    b = mk(store, transport=httpx.MockTransport(b_script), notifier=Note(),
+           now=lambda: clock[0], wall=lambda: clock[0])
+    with pytest.raises(login.LoginError):
+        await b.access_token()  # the same mark, taken in the same way
+    clock[0] = 1061  # both local cooldowns are over
+    with pytest.raises(login.LoginError):
+        await b.access_token()  # B fails now: its real mark runs until 1121
+    assert b_script.device_requests == 1
+    clock[0] = 1062
+    with pytest.raises(login.LoginError, match="a new one starts in 60 s"):
+        await a.access_token()  # A must obey B's real mark, not its capped one
+    assert a_script.device_requests == 0, "A sent a DM inside B's real cooldown"
+
+
+async def test_an_expired_approval_leaves_its_reason_for_the_next_process(tmp_path):
+    """Each failure saves its own reason with its human: an expired device code is not
+    reported as `failed`, and the mark exists at all."""
+    clock = [1000.0]
+    store = keystore.HostFile(tmp_path / "login")
+    script = Script(device_errors=("expired_token",))
+    first = mk(store, transport=httpx.MockTransport(script), notifier=Note(),
+               now=lambda: clock[0], wall=lambda: clock[0])
+    with pytest.raises(login.ApprovalExpired):
+        await first.access_token()
+    entry = keystore.cooldown_entry(ISSUER, "agent-bus", "alice")
+    assert (store.load(entry) or "").split(" ", 1)[1:] == ["expired"]
+    second = mk(store, transport=httpx.MockTransport(script), notifier=Note(),
+                now=lambda: clock[0], wall=lambda: clock[0])
+    with pytest.raises(login.LoginError, match="the last approval expired"):
+        await second.access_token()
+    assert script.device_requests == 1
+
+
+async def test_an_approval_by_another_person_leaves_its_reason(tmp_path):
+    """The refused path saves its mark with its human too: a second process repeats
+    "was refused", and does not send a new DM."""
+    clock = [1000.0]
+    store = keystore.HostFile(tmp_path / "login")
+    script = Script(user="mallory")
+    first = mk(store, transport=httpx.MockTransport(script), notifier=Note(),
+               now=lambda: clock[0], wall=lambda: clock[0])
+    with pytest.raises(login.WrongHuman):
+        await first.access_token()
+    entry = keystore.cooldown_entry(ISSUER, "agent-bus", "alice")
+    assert (store.load(entry) or "").split(" ", 1)[1:] == ["was refused"]
+    second = mk(store, transport=httpx.MockTransport(script), notifier=Note(),
+                now=lambda: clock[0], wall=lambda: clock[0])
+    with pytest.raises(login.LoginError, match="the last approval was refused"):
+        await second.access_token()
+    assert script.device_requests == 1
+
+
+async def test_a_refresh_that_works_deletes_the_mark(tmp_path):
+    """The cooldown guards approvals, not refreshes: a stored refresh token means no
+    approval is needed, so the login goes through and leaves no mark behind."""
+    clock = [1000.0]
+    store = keystore.HostFile(tmp_path / "login")
+    script = Script()
+    lg = mk(store, transport=httpx.MockTransport(script), notifier=Note(),
+            now=lambda: clock[0], wall=lambda: clock[0])
+    assert await lg.access_token()  # an approval: a refresh token is stored
+    assert script.device_requests == 1
+    entry = keystore.cooldown_entry(ISSUER, "agent-bus", "alice")
+    clock[0] += 300 - login.MIN_LEFT_SEC + 1  # the access token is no longer fresh
+    store.save(entry, f"{clock[0] + 30} was refused")  # a mark, from any session
+    assert await lg.access_token()  # refreshed, no approval
+    assert script.device_requests == 1
+    assert script.refreshed, "the refresh path is the one under test"
+    assert store.load(entry) is None, "a login that worked leaves no mark"

@@ -247,8 +247,8 @@ class Login:
         self._lock = asyncio.Lock()
         self._cooldown_until = 0.0
         self._cooldown_why = ""
-        self._mark_written = 0.0  # the wall deadline this process wrote, 0 for none
-        self._mark_seen = 0.0  # the stored deadline this object has already taken in
+        self._mark_seen = 0.0  # the stored deadline this object has taken in, 0 for none
+        self._mark_until = 0.0  # ... and the effective (capped) deadline that gave
         self._nkey: nkeys.KeyPair | None = None
 
     def __repr__(self) -> str:
@@ -505,9 +505,9 @@ class Login:
 
         The deadline is a wall-clock one: the monotonic clock stands still while the
         machine sleeps, and a stored one of those would mean nothing in the next
-        process. A mark this process wrote itself is skipped - its own monotonic
-        deadline is the one its calls advance against - so a later mark, from another
-        session, wins over it.
+        process. A mark is taken in once - the raw deadline and the capped one that
+        gave - so a second read arms nothing, while a later mark, from another session,
+        still wins over it.
         """
         if not human:
             return
@@ -520,15 +520,18 @@ class Login:
             until = float(until_text)
         except (keystore.KeyStoreError, OSError, ValueError):
             return
-        if not math.isfinite(until) or until <= max(self._mark_written, self._mark_seen):
-            return
-        self._mark_seen = until  # once: a second read must not arm another cooldown
+        if not math.isfinite(until) or until == self._mark_seen:
+            return  # no deadline, or the mark this object has already taken in
         # Nothing writes a mark further ahead than the cooldown itself, so a later
         # deadline is a wall clock that moved backwards: it must not hold approvals off
         # for the length of the jump, since nothing would clear the mark before then.
         # The deadline is capped, not the remainder: capped per call, every call would
         # arm another COOLDOWN_SEC and the lock would last the whole jump.
-        left = min(until, self._wall() + COOLDOWN_SEC) - self._wall()
+        effective = min(until, self._wall() + COOLDOWN_SEC)
+        if effective <= self._mark_until:
+            return  # a mark this object already has, or one that ends no later
+        self._mark_seen, self._mark_until = until, effective
+        left = effective - self._wall()
         if left > 0:
             self._cooldown_until = self._now() + left
             self._cooldown_why = why if why in COOLDOWN_WHY else "failed"
@@ -539,7 +542,7 @@ class Login:
         if not human:
             return
         until = self._wall() + COOLDOWN_SEC
-        self._mark_written = self._mark_seen = until
+        self._mark_seen = self._mark_until = until
         try:
             self._store.save(keystore.cooldown_entry(
                 self.settings.issuer, self.settings.client_id, human),
@@ -551,8 +554,8 @@ class Login:
         """A login that worked leaves no mark: the next process starts clean."""
         self._cooldown_until = 0.0
         self._cooldown_why = ""
-        self._mark_written = 0.0
         self._mark_seen = 0.0
+        self._mark_until = 0.0
         if not human:
             return
         try:
