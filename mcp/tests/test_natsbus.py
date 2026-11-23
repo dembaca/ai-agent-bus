@@ -485,7 +485,7 @@ async def test_the_owner_comes_from_the_presence_subject_and_presence_from_the_s
                                        encode_presence("online")))
     assert bus.owner_of(them) == "bob.b" and bus.presence_of(them) == "online"
     # an older message (a lower stream sequence) never overrides a newer one
-    await bus._on_presence_msg(FakeMsg(f"presence.mallory.{them}", _presence_reply(bus, 1, 1, T0 + 1),
+    await bus._on_presence_msg(FakeMsg(f"presence.mallory.{them}", _presence_reply(bus, 1, 1, T0 - 1),
                                        encode_presence("away")))
     assert bus.owner_of(them) == "bob.b" and bus.presence_of(them) == "online"
     # a presence under "-" (an owner not in the one form) names none
@@ -502,6 +502,18 @@ async def test_the_owner_comes_from_the_presence_subject_and_presence_from_the_s
     assert bus.presence_of(them) == "offline"
     # its own presence goes under its owner and name
     assert bus._presence_subject == f"presence.alice.{bus.name}"
+
+
+async def test_a_presence_stream_made_anew_is_read_by_its_newer_server_time() -> None:
+    """A PRESENCE stream made anew starts its sequences at 1: a lower sequence with a newer
+    server time is a newer message, not an old one."""
+    bus, _ = _unit_bus()
+    them = "agent-them"
+    await bus._on_presence_msg(FakeMsg(f"presence.bob.{them}", _presence_reply(bus, 500, 500, T0),
+                                       encode_presence("online")))
+    await bus._on_presence_msg(FakeMsg(f"presence.bob.{them}", _presence_reply(bus, 1, 1, T0 + 40),
+                                       encode_presence("away")))
+    assert bus.presence_snapshot()[them] == (T0 + 40, "away")
 
 
 async def test_claims_and_presence_age_out_after_24_hours() -> None:
@@ -703,7 +715,8 @@ async def rig(tmp_path: Path) -> AsyncIterator[Rig]:
     binary = _server_binary()
     if not binary or not Path(binary).exists():
         pytest.fail("nats-server 2.15.3 not found: set MM_NATS_SERVER=<path> or put it on PATH")
-    logins = {"alice": FakeLogin(), "bob": FakeLogin()}
+    # carol's credential is what an older login service granted: presence.<name> (RT-6.37)
+    logins = {"alice": FakeLogin(), "bob": FakeLogin(), "carol": FakeLogin()}
     names = {w: agent_name(w, lg.nkey().public_key) for w, lg in logins.items()}
     admin_pw = os.urandom(8).hex()
     users = [f'{{user: admin, password: "{admin_pw}"}}']
@@ -712,7 +725,8 @@ async def rig(tmp_path: Path) -> AsyncIterator[Rig]:
         # exactly what callout/perms.go grants for the channel `home`
         users.append(
             f'{{nkey: "{lg.nkey().public_key}", permissions: {{publish: {{allow: ["bus.ch.home.{n}", '
-            f'"presence.crown.home.{n}", "bus.dm.*.{n}", "presence.{w}.{n}"]}}, '
+            f'"presence.crown.home.{n}", "bus.dm.*.{n}", '
+            f'"{f"presence.{n}" if w == "carol" else f"presence.{w}.{n}"}"]}}, '
             f'subscribe: {{allow: ["deliver.{n}.>"]}}}}}}')
     port = _free_port()
     conf = tmp_path / "nats.conf"
@@ -821,6 +835,17 @@ async def test_presence_and_crown(rig: Rig) -> None:
     rig.buses.remove(bob)
     await until(lambda: alice.presence_snapshot()[rig.names["bob"]][1] == "bye")
     assert alice.holder("home") == alice.name
+
+
+async def test_a_refused_presence_subject_is_said_in_words(rig: Rig, caplog: pytest.LogCaptureFixture) -> None:
+    """RT-6.37: a host and a login service of different releases: the presence subject is
+    refused, and the host's log says what to do, not only an exception's type."""
+    caplog.set_level(logging.WARNING)
+    await rig.agent("carol")  # an older login service's credential
+    assert "update the login service and the hosts together" in caplog.text
+    caplog.clear()
+    await rig.agent("alice")
+    assert "update the login service" not in caplog.text
 
 
 async def test_connect_json_and_reconnect_with_fresh_token_and_since(

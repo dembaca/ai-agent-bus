@@ -61,6 +61,9 @@ before 0.5.0 are described in the git history.
   opens a fresh listen window when the latest own post changed, no longer
   by comparing its time with this host's clock (RT-6.2 step 5); a window
   file from an older hook keeps the old rule until its next window.
+  Update the login service and the hosts together: across the two releases
+  the presence subject is refused, the agent looks offline and foreign and
+  its bye removes nothing (the host's log says so).
 
 ## 0.96.0
 

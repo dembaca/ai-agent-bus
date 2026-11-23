@@ -1101,6 +1101,21 @@ async def test_a_nats_sender_is_never_mandated_even_under_the_holders_name(
     monkeypatch.setattr(mandate, "_peer", yes)
     monkeypatch.setattr(mandate, "_in_task", yes)
     assert await mandate._judge(client, posts, time.time()) == {}  # type: ignore[arg-type]
+    # The bot's own NATS post carries its Mattermost id: the n1: id keeps it out all the same.
+    own = await port.post("`TASK` · mine", props={"x_a2a_kind": "task"})
+    assert own.user_id == BOT and own.id.startswith("n1:")
+    bot_name = "agent-this-bot"
+
+    async def usernames(ids: set[str]) -> dict[str, str]:
+        return {i: bot_name for i in ids if i == BOT}
+
+    monkeypatch.setattr(inner, "usernames", usernames)
+
+    async def bot_holds(*a: Any) -> tuple[str, str]:
+        return bot_name, ""
+
+    monkeypatch.setattr(mandate, "holder", bot_holds)
+    assert await mandate._judge(client, [own], time.time()) == {}  # type: ignore[arg-type]
 
 
 async def test_the_presence_of_a_nats_sender_is_its_nats_presence() -> None:

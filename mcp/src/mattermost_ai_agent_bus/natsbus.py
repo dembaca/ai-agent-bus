@@ -471,7 +471,7 @@ class NatsBus:
         self._last_prune = 0.0
         self._presence: dict[str, tuple[float, str]] = {}
         self._owners: dict[str, str] = {}  # agent -> owner its presence subject names (RT-6.37)
-        self._presence_seq: dict[str, int] = {}  # agent -> stream sequence of its last presence
+        self._presence_seq: dict[str, tuple[int, float]] = {}  # agent -> (stream sequence, server time)
         self._claims: dict[str, dict[str, int]] = {}
         self._claim_at: dict[tuple[str, str], float] = {}  # (channel, agent) -> server time of the claim
 
@@ -632,7 +632,14 @@ class NatsBus:
             if refused:
                 raise NameMismatch("the credential's agent name is not the computed one; nothing sent")
             await nc.publish(self._presence_subject, encode_presence("online"))
-            await nc.flush()
+            await self._sync(nc)
+            if self._presence_subject in self._denied:
+                # A host and a login service of different releases (RT-6.37): the presence
+                # subject changed, so this agent looks offline and foreign, and its bye
+                # removes nothing. Said once, in words, not only as an exception's type.
+                log.warning("nats bus: the login service refused this agent's presence subject "
+                            "(<presence>.<owner>.<name>): update the login service and the hosts "
+                            "together; until then this agent looks offline and foreign to the others")
         except BaseException:
             await nc.close()
             self._nc = None
@@ -949,9 +956,12 @@ class NatsBus:
             if len(t) == 3 and t[0] == p and AGENT_RE.fullmatch(t[2]):
                 # <presence>.<owner>.<name>: the owner as the login service pinned it.
                 agent, status = t[2], decode_presence(msg.data)
-                if ack.stream_seq <= self._presence_seq.get(agent, 0):
-                    return  # an older message never overrides a newer one
-                self._presence_seq[agent] = ack.stream_seq
+                seq, at = self._presence_seq.get(agent, (0, 0.0))
+                if ack.stream_seq <= seq and ack.time <= at:
+                    # An older message never overrides a newer one. A newer server time
+                    # counts too: a PRESENCE stream made anew starts its sequences at 1.
+                    return
+                self._presence_seq[agent] = (ack.stream_seq, ack.time)
                 self._presence[agent] = (ack.time, status)
                 owner = owner_of_token(t[1])
                 if owner:
