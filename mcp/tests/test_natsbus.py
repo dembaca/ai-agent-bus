@@ -1423,6 +1423,29 @@ def test_connect_reason_keeps_other_errors_to_their_type() -> None:
         assert natsbus.connect_reason(outer) == "TLS: SSLError"
 
 
+def _cert_error(code: int | None, message: str | None = None) -> ssl.SSLCertVerificationError:
+    e = ssl.SSLCertVerificationError(1, "[SSL: CERTIFICATE_VERIFY_FAILED] certificate verify failed")
+    if code is not None:
+        e.verify_code, e.verify_message = code, message or ""
+    return e
+
+
+@pytest.mark.parametrize("code", [62, 64])  # X509_V_ERR_HOSTNAME_MISMATCH, _IP_ADDRESS_MISMATCH
+def test_a_certificate_for_another_name_gets_no_ca_hint(code: int) -> None:
+    why = natsbus.connect_reason(_cert_error(code, "mismatch"))
+    assert why == "TLS: the certificate does not name this host (mismatch)"
+
+
+@pytest.mark.parametrize("code", [2, 18, 19, 20, 21])
+def test_an_unknown_issuer_gets_the_ca_hint(code: int) -> None:
+    assert "set MM_NATS_CA_FILE" in natsbus.connect_reason(_cert_error(code, "unknown issuer"))
+
+
+def test_a_certificate_error_without_its_verify_fields_does_not_raise() -> None:
+    """One raised by hand has no verify_code: the retry loops log it, they must not crash on it."""
+    assert natsbus.connect_reason(_cert_error(None)) == "TLS: the server's certificate is refused (no reason given)"
+
+
 async def test_tls_url_refuses_a_certificate_it_does_not_trust(tmp_path: Path) -> None:
     cert, key = _self_signed(tmp_path)
     ctx = ssl.SSLContext(ssl.PROTOCOL_TLS_SERVER)

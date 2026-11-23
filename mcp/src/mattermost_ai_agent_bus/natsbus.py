@@ -492,12 +492,15 @@ def connect_reason(exc: BaseException) -> str:
     while e is not None and id(e) not in seen:
         seen.add(id(e))
         if isinstance(e, ssl.SSLCertVerificationError):
-            if e.verify_code in _NAME_MISMATCH:
-                return f"TLS: the certificate does not name this host ({e.verify_message})"
-            if e.verify_code in _UNKNOWN_ISSUER:
-                return (f"TLS: the server's certificate is not trusted ({e.verify_message}): "
+            # Both set by OpenSSL, absent on one raised by hand: this runs in the retry loops.
+            code = getattr(e, "verify_code", None)
+            msg = getattr(e, "verify_message", None) or "no reason given"
+            if code in _NAME_MISMATCH:
+                return f"TLS: the certificate does not name this host ({msg})"
+            if code in _UNKNOWN_ISSUER:
+                return (f"TLS: the server's certificate is not trusted ({msg}): "
                         "if that CA is your NATS server's, set MM_NATS_CA_FILE to it")
-            return f"TLS: the server's certificate is refused ({e.verify_message})"
+            return f"TLS: the server's certificate is refused ({msg})"
         if isinstance(e, ssl.SSLError):
             reason = getattr(e, "reason", None)  # set by OpenSSL, absent on one raised by hand
             if reason in _NOT_TLS_FIRST:
