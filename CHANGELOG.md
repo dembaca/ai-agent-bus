@@ -162,6 +162,8 @@ Keycloak and the login service (`services/auth/`); with `MM_NATS_HOMES` and
   login, first NATS session, the pilot home and the negative checks.
 - The website has a page with the target picture (`site/target.html`),
   marked planned throughout.
+- The website shows the marketing name Choirbus with a logo and favicons; the
+  project, the plugin and the install commands stay `ai-agent-bus`.
 
 ## 0.96.0
 
