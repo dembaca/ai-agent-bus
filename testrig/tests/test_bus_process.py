@@ -503,6 +503,68 @@ async def test_the_server_environment_carries_no_proxy(monkeypatch):
 
 
 @skip_no_bus
+async def test_a_post_delivered_while_post_message_runs_is_counted(monkeypatch):
+    """The arrival decided *while* `post_message` is in flight, through `bus_run`.
+
+    Two rulings made this test necessary; both mutations kept the whole suite
+    green before it existed (review of #35):
+
+    * `_arrivals` must be what `receive()` uses — the old inline id-only loop
+      never calls it, so a recorded call proves the wiring;
+    * the text must be registered *before* the send — moved after it, a
+      mid-flight hand-over matches nothing.
+
+    A whole-run loss check cannot see either: the stub pushes the real post with
+    its id already known, so a run ends at loss 0 whatever the fallback does.
+    This watches the decision itself, at the moment it is made, and aborts the
+    run once that has been observed: with the fallback unwired the mid-send post
+    never arrives, the settle window never closes, and waiting for the run would
+    hang instead of failing.
+    """
+    from bus_testrig import bus as bus_module
+
+    sent: list[str] = []
+    answered = {"done": False}
+    mid_flight: list[list[int]] = []
+    original_call = BusProcess.call
+    original_arrivals = bus_module._arrivals
+
+    class Stop(Exception):
+        """Raised into the receiver once the decision has been observed."""
+
+    def arrivals(events, by_id, by_text):
+        found = original_arrivals(events, by_id, by_text)
+        if not answered["done"]:
+            mid_flight.append(found)
+            raise Stop  # the decision is recorded; the run need not finish
+        return found
+
+    monkeypatch.setattr(bus_module, "_arrivals", arrivals)
+
+    async def call(self, tool, **args):
+        if tool == "post_message":
+            sent.append(str(args.get("message") or ""))
+            answer = await original_call(self, tool, **args)
+            answered["done"] = True
+            return answer
+        if tool == "wait_for_events" and sent and not answered["done"] and not mid_flight:
+            return [{"post": {"id": "q" * 26, "message": sent[-1]}}]
+        return await original_call(self, tool, **args)
+
+    monkeypatch.setattr(BusProcess, "call", call)
+    try:
+        await bus_run(count=1)
+    except BaseException:  # noqa: BLE001 — Stop, or the cancellation it causes
+        pass
+
+    assert sent == ["bus-run 0"], sent
+    assert mid_flight, "_arrivals was never called mid-send: receive() bypassed it"
+    assert any(mid_flight), (
+        f"the mid-send hand-over matched nothing {mid_flight}: the text is not "
+        "registered before the send, or the fallback is not wired")
+
+
+@skip_no_bus
 async def test_the_baseline_runs_through_the_proxy_too(monkeypatch):
     """Review point 4: the proxy used to be left out when `fault is None`, so
     the baseline and the faulted run took different paths. Every run now enters
