@@ -58,69 +58,107 @@ def _when(ms: int | None) -> str:
 
 # A post's `message` on the two tools that stay whole (get_thread, list_recent):
 # they are where a reader goes for the rest, so they must not point back at
-# themselves. Mattermost's own limit is 16 383 characters; a post longer than
-# this comes only over NATS (max_msg_size 65 536), and `raw=true` is the way to
-# the whole of it (RT-6.11, issue #42).
+# themselves. Mattermost's own post limit is 16 383 bytes; a longer post comes
+# only over NATS (max_msg_size 65 536), and `raw=true` is the way to the whole of
+# it, without a bound (RT-6.11, issue #42).
 FETCH_MAX = 16_000
-# The hard bound on one slim post, text and card together. Under it, _one cuts
-# the largest contribution first (message, then a card field), so a field added
-# later cannot push the whole over (RT-6.12 step 3, issue #42).
+# The hard bound on one slim post, text and card together. Under it, _bounded cuts
+# the largest contribution first, so a field added later cannot push the whole
+# over (RT-6.12 step 3, issue #42). UTF-8 bytes, since Mattermost and NATS bound
+# bytes: 60 000 emoji are 64 175 bytes and would otherwise pass.
 POST_MAX = 20_000
-# What a cut adds: the note naming get_thread with raw=true. Reserved before the
-# cut so the result stays under POST_MAX rather than just closer to it.
-CUT_NOTE_MAX = 120
+# What a cut adds: the note naming the whole-post route. Reserved before the cut
+# so the result stays under POST_MAX rather than only closer to it.
+CUT_NOTE_MAX = 140
+# A cut keeps at least this many characters, so `need` and `decision` are never
+# emptied into an unreadable stub; _bounded then cuts another field instead.
+FIELD_FLOOR = 240
 
 
-def _bounded(out: dict[str, Any], pid: str) -> dict[str, Any]:
-    """`out` under POST_MAX, cutting the largest text first and pointing at
-    `raw=true` for the whole of it. At most a fixed number of cuts, so it always
-    ends: a post has `message` and a handful of card fields (issue #42)."""
-    def used() -> int:
-        return (len(out.get("message") or "") + sum(
-            len(v) for v in (out.get("ask_card") or {}).values() if isinstance(v, str)))
+def _nbytes(value: Any) -> int:
+    """The UTF-8 size of a slim field: a string, a list of them (answers), or the
+    card's dict. Counting only strings missed `answers` entirely (issue #42)."""
+    if isinstance(value, str):
+        return len(value.encode())
+    if isinstance(value, list):
+        return sum(_nbytes(v) for v in value)
+    if isinstance(value, dict):
+        return sum(_nbytes(v) for v in value.values())
+    return 0
 
-    def room() -> int:
-        # a cut appends its own note, so aim below the limit by that much
-        return used() - (POST_MAX - CUT_NOTE_MAX)
 
-    for _ in range(8):  # message + at most four card strings, twice over
-        over = room()
-        if over <= 0:
+def _head_bytes(text: str, budget: int) -> str:
+    """The longest prefix of `text` that fits in `budget` UTF-8 bytes, cut back to
+    a line or word end when that keeps most of it."""
+    if budget <= 0:
+        return ""
+    used, out = 0, []
+    for ch in text:
+        n = len(ch.encode())
+        if used + n > budget:
             break
-        card = out.get("ask_card") or {}
-        sizes = {"message": len(out.get("message") or "")}
-        sizes |= {k: len(v) for k, v in card.items() if isinstance(v, str)}
-        if not any(sizes.values()):
-            break
-        biggest = max(sizes, key=lambda k: sizes[k])
-        keep = max(0, sizes[biggest] - over - CUT_NOTE_MAX)
-        note = "the whole post: get_thread with raw=true"
-        if biggest == "message":
-            out["message"] = cut_to(str(out["message"]), keep, pid, note)
-        else:
-            card = dict(card)
-            card[biggest] = cut_to(str(card[biggest]), keep, pid,
-                                   "the whole card: get_thread with raw=true")
-            out["ask_card"] = card
-    return out
-
-
-
-def cut_to(text: str, limit: int, post_id: str, where: str) -> str:
-    """`text` cut to about `limit` characters at a line or word end, ending with
-    `where`; unchanged when it already fits or `limit` is 0."""
-    if len(text) <= limit:
-        return text
-    if limit < 40:  # below this a cut is no information
-        return text[:limit]
-    head = text[:limit]
-    floor = limit * 4 // 5
+        used += n
+        out.append(ch)
+    head = "".join(out)
+    floor = len(head) * 4 // 5
     end = head.rfind("\n", floor)
     if end < 0:
         end = max(head.rfind(" ", floor), head.rfind("\t", floor))
-    if end > 0:
-        head = head[:end]
-    return f"{head.rstrip()}\n… (cut, {len(text)} chars in all; {where}{'' if not post_id else ' ' + post_id})"
+    return head[:end].rstrip() if end > 0 else head
+
+
+def _cut_bytes(text: str, budget: int, post_id: str, where: str,
+               total: int | None = None) -> str:
+    """`text` cut to about `budget` UTF-8 bytes, ending with a note that names
+    `total` — the **original** size where the caller knows it, since a second cut
+    must not report the first cut's length (issue #42) — and never shorter than
+    FIELD_FLOOR characters."""
+    total = len(text.encode()) if total is None else total
+    if total <= budget:
+        return text
+    keep = _head_bytes(text, max(budget - CUT_NOTE_MAX, _nbytes(text[:FIELD_FLOOR])))
+    if len(keep) < FIELD_FLOOR:
+        keep = _head_bytes(text, _nbytes(text[:FIELD_FLOOR]))
+    pid = f" {post_id}" if post_id else ""
+    return f"{keep}\n… (cut, {total} bytes in all; {where}{pid})"
+
+
+def _shrink(value: Any, over: int, pid: str, where: str, total: int | None = None) -> Any:
+    """`value` smaller by about `over` bytes: a string cut, a list's longest entry
+    cut. Returns the value unchanged when it cannot shrink (it is at the floor)."""
+    if isinstance(value, str):
+        return _cut_bytes(value, max(FIELD_FLOOR, _nbytes(value) - over - CUT_NOTE_MAX),
+                          pid, where, total)
+    if isinstance(value, list) and value:
+        biggest = max(range(len(value)), key=lambda i: _nbytes(value[i]))
+        cut_one = _cut_bytes(str(value[biggest]),
+                             max(FIELD_FLOOR, _nbytes(value[biggest]) - over - CUT_NOTE_MAX),
+                             pid, where)
+        return [cut_one if i == biggest else v for i, v in enumerate(value)]
+    return value
+
+
+# The card cannot reach POST_MAX on its own: every field in it is cut to BODY_MAX
+# first (need, decision, each of at most four answers), so a card is at most
+# 6 x BODY_MAX = 12 000 bytes. Only `message` can push a post over, and only it is
+# cut here. Asserted by test_a_card_cannot_reach_the_bound_by_itself so a later
+# field cannot quietly break the arithmetic (issue #42).
+CARD_MAX_FIELDS = 6  # need, decision, and at most four answers
+assert CARD_MAX_FIELDS * BODY_MAX < POST_MAX
+
+
+def _bounded(out: dict[str, Any], pid: str, message_total: int | None = None) -> dict[str, Any]:
+    """`out` under POST_MAX bytes. The card is bounded by construction (each field cut
+    to BODY_MAX), so the message gets what is left; the note names `message_total`, the
+    text's size before any cut (issue #42)."""
+    card = _nbytes(out.get("ask_card") or {})
+    room = POST_MAX - card - CUT_NOTE_MAX
+    text = str(out.get("message") or "")
+    if room > 0 and _nbytes(text) > room:
+        out["message"] = _cut_bytes(text, room, pid,
+                                    "the whole post: get_thread with raw=true",
+                                    _nbytes(text) if message_total is None else message_total)
+    return out
 
 
 async def _names(client: ChatPort, posts: Sequence[Post]) -> tuple[dict[str, str], dict[str, str]]:
@@ -179,10 +217,12 @@ async def _facts(client: ChatPort, posts: Sequence[Post],
         card = a2a.ask_card(p)
         facts: dict[str, Any] = out.setdefault(p.id, {})
         if p.title:
-            facts["need"] = cut(p.title, p.id)
+            facts["need"] = _cut_bytes(p.title, BODY_MAX, p.id, "get_thread with raw=true")
         if card.get("decision"):
-            facts["decision"] = cut(card["decision"], p.id)
-        answers = [cut(a, p.id) for a in a2a.ask_answer_list(p)]
+            facts["decision"] = _cut_bytes(card["decision"], BODY_MAX, p.id,
+                                          "get_thread with raw=true")
+        answers = [_cut_bytes(a, BODY_MAX, p.id, "get_thread with raw=true")
+                   for a in a2a.ask_answer_list(p)]
         if answers:
             facts["answers"] = answers
         # the newest trusted human's answer wins, as the live event counts it. The sort
@@ -245,7 +285,7 @@ def _one(p: Post, users: dict[str, str], channels: dict[str, str],
     # get_thread and list_recent stay whole by contract, but not without bound:
     # an ask whose card title rides in `message` can be 20 000 characters. The
     # reader gets raw=true as the way to all of it (issue #42).
-    out["message"] = cut_to(p.text, FETCH_MAX, "", "the whole post: get_thread with raw=true")
+    out["message"] = _cut_bytes(p.text, FETCH_MAX, "", "the whole post: get_thread with raw=true")
     if p.type:
         out["type"] = p.type
     if p.edit_at:
@@ -262,7 +302,7 @@ def _one(p: Post, users: dict[str, str], channels: dict[str, str],
         card = {k: v for k, v in got.items() if k not in ("reactions", "reactions_total")}
         if card:
             out["ask_card"] = card  # what a 👍 approves; `ask` is the ask's id elsewhere
-    return _bounded(out, p.id)
+    return _bounded(out, p.id, _nbytes(p.text))
 
 
 async def posts(client: ChatPort, items: Sequence[Post],
