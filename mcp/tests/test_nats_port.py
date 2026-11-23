@@ -102,6 +102,11 @@ class FakeNats:
         att = self.attestations.get(agent)
         return att if att is not None and att.exp > self.server_now else None
 
+    def records_on(self) -> bool:
+        """As NatsBus.records_on: once any record was seen, never off again (expired or not)."""
+        self.records_seen = getattr(self, "records_seen", False) or bool(self.attestations)
+        return self.records_seen
+
     def presence_of(self, agent: str) -> str:
         return self.presence.get(agent, "offline")
 

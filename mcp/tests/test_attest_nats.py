@@ -285,16 +285,18 @@ async def test_with_my_own_record_a_sender_without_a_usable_one_has_no_owner_and
     assert view is not None and NAME_B not in view.candidates and view.holder == NAME_ME
 
 
-async def test_without_my_own_record_a_sender_without_a_usable_one_is_compared_by_name(w: World) -> None:
+async def test_a_record_for_another_anchor_is_foreign_even_without_my_own_record(w: World) -> None:
+    """A record exists (records are on), but for another anchor than the presence's: the
+    sender has no usable one and is foreign, never compared by name (ADR-016)."""
     w.fake.owners[NAME_B] = "alice"
     w.fake.attestations[NAME_B] = Attestation("u9", "alice", (("u9", "alice"),), False,
                                               w.fake.server_now + 600)  # not the presence's anchor
-    assert await w.port.agent_owner(NAME_B) == "alice"
-    assert await foreign(w, NAME_B) == {}
+    assert await w.port.agent_owner(NAME_B) == ""
+    assert await foreign(w, NAME_B) == {NAME_B: ""}
     claimant(w.fake, NAME_ME, 30, owner="alice")
     claimant(w.fake, NAME_B, 20, owner="alice")
     view = w.view()
-    assert view is not None and view.holder == NAME_B and view.candidates == (NAME_B, NAME_ME)
+    assert view is not None and NAME_B not in view.candidates
 
 
 # --- the cut list of the host -----------------------------------------------------------------------
@@ -392,3 +394,46 @@ async def test_a_record_older_than_the_streams_max_age_is_pruned() -> None:
     await feed(bus, body(agent="agent-new", exp=far), seq=3, t=T0 + MAX_AGE_SEC + 50, agent="agent-new")
     assert AGENT not in bus._attest
     assert "agent-mid" in bus._attest and "agent-new" in bus._attest
+
+
+# --- records on: no comparison by name again, also after an expiry ---------------------------------
+
+async def test_records_on_latches_and_an_expiry_does_not_turn_it_off() -> None:
+    bus, _ = _unit_bus()
+    assert not bus.records_on()
+    await feed(bus, body(exp=int(T0) + 100), t=T0)
+    await _presence(bus, "agent-z", 2, T0 + 200)  # the record expires by the server's clock
+    assert bus.attestation_of(AGENT) is None and bus.records_on()
+
+
+async def test_my_own_record_expired_keeps_an_old_name_holder_foreign(w: World) -> None:
+    """The former alice keeps anchor `alice`; I trust the name alice. My own record has
+    expired (a failed renewal): the old holder without a record stays foreign and holds no crown."""
+    attested(w.fake, NAME_ME, ("u1", "alice"), ALICE, exp=w.fake.server_now - 1)  # mine, expired
+    w.fake.owners[NAME_A] = "alice"  # the old holder, no record
+    assert await foreign(w, NAME_A) == {NAME_A: ""}
+    assert not await owners.peer(w.port, NAME_A)  # type: ignore[arg-type]
+    claimant(w.fake, NAME_ME, 30, owner="u1")
+    claimant(w.fake, NAME_A, 10, owner="alice")
+    view = w.view()
+    assert view is not None and NAME_A not in view.candidates and view.holder != NAME_A
+
+
+async def test_before_my_own_record_arrives_another_record_already_ends_the_name_comparison(w: World) -> None:
+    """At a start the replay brings others' records before mine: a sender without one is foreign."""
+    attested(w.fake, NAME_B, ("u1", "alice"), ALICE)  # someone else's record
+    w.fake.owners[NAME_A] = "alice"
+    assert await foreign(w, NAME_A) == {NAME_A: ""}
+
+
+async def test_a_lone_claimant_without_a_record_does_not_show_as_the_holder(w: World) -> None:
+    attested(w.fake, NAME_ME, ("u1", "alice"), ALICE)
+    w.fake.claims.clear()
+    claimant(w.fake, NAME_A, 10, owner="alice")  # I am no claimant
+    view = w.view()
+    assert view is not None and view.holder == "" and view.candidates == ()
+
+
+async def test_without_any_record_the_name_comparison_stays(w: World) -> None:
+    w.fake.owners[NAME_A] = "alice"
+    assert await foreign(w, NAME_A) == {}

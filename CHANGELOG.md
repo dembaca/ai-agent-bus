@@ -10,8 +10,8 @@ before 0.5.0 are described in the git history.
   hello and reads the login service's records: a NATS sender's owner is
   shown by name, and it is a peer when its owner's and trusted humans'
   anchors are all among this session's own; a record cut short, or none
-  of its own, makes the sender foreign; once a session has its own record,
-  a sender without a usable one is foreign too. A host that drops or cuts
+  of its own, makes the sender foreign; once the process has seen any
+  record, a sender without a usable one is foreign too, until a restart. A host that drops or cuts
   names of its list says so (`trusted_cut`). Without records nothing changes.
   Update the login service (with its attestation rights) before the hosts.
 - **The login service vouches for an agent's owner and trust list**

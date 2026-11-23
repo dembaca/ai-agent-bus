@@ -602,6 +602,9 @@ class NatsBus:
         self._bots: dict[str, str] = {}  # agent -> Mattermost bot its presence names (RT-6.37)
         # agent -> (stream sequence, server time, record): the newest attestation of the login service
         self._attest: dict[str, tuple[int, float, Attestation]] = {}
+        # A valid attestation was seen in this process: the login service writes them, and
+        # from then on no NATS sender is judged by name again until a restart (ADR-016).
+        self._records_on = False
         self._bot = ""
         self._synced = False
         self._presence_read = False  # True once the stored presence stream was read (a new session says so in its hello)
@@ -1087,6 +1090,12 @@ class NatsBus:
         anchor), '' for none: what owner_of returns before any attestation."""
         return self._owners.get(agent, "")
 
+    def records_on(self) -> bool:
+        """A valid attestation (any agent's) was seen in this process: the login service
+        writes them. It never turns off again before a restart, so an expired or missing
+        record never brings back the comparison by name (fail closed, ADR-016)."""
+        return self._records_on
+
     def attestation_of(self, agent: str) -> Attestation | None:
         """The login service's newest attestation of the agent, None when there is none or it
         has expired by the server's clock (never this host's)."""
@@ -1294,6 +1303,7 @@ class NatsBus:
                 seq0, at0, _old = self._attest.get(t[2], (0, 0.0, att))
                 if (ack.time, ack.stream_seq) > (at0, seq0):
                     self._attest[t[2]] = (ack.stream_seq, ack.time, att)
+                self._records_on = True
             else:
                 log.warning("nats bus: dropped a presence message with an unexpected subject")
         except MessageError as exc:
