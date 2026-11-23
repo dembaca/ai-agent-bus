@@ -657,6 +657,35 @@ async def test_a_card_cannot_reach_the_bound_by_itself():
                          {"title": "Answer", "value": line + " \u00b7 or reply in this thread",
                           "short": False}]}]}
     long["message"] = ""
+    long["metadata"] = {"reactions": [
+        {"user_id": HUMAN, "post_id": ASK_ID, "emoji_name": "one", "create_at": 1_000_001}]}
     p = await slim.post(_asker(), post_of(long))
+    assert p["ask_card"].get("chosen"), "the seventh field must be there for this to mean anything"
     card = p.get("ask_card") or {}
-    assert slim._nbytes(card) <= slim.CARD_MAX_FIELDS * slim.BODY_MAX, slim._nbytes(card)
+    size = slim._nbytes(card)
+    assert size <= slim.CARD_MAX_FIELDS * slim.BODY_MAX, size
+    # ... and six would be too few: `chosen` is a seventh field cut to BODY_MAX
+    assert size > 6 * slim.BODY_MAX, size
+
+
+@pytest.mark.asyncio
+async def test_a_push_reports_the_original_size_not_the_fetch_cut_one():
+    """Fable's finding on #49: a post of 36 000 bytes showed "15930 chars in all" in
+    `wait_for_events`, because `cut()` measured the text `_one` had already shortened
+    to FETCH_MAX. The note of that first cut carries the original; the push keeps it."""
+    raw = dict(POST, user_id=ASKER, message="M" * 40_000)
+    p = await slim.post(_asker(), post_of(raw))
+    item = {"kind": "mention", "post": p}
+    slim.cut_item(item)
+    note = item["post"]["message"]
+    assert f"{40_000} chars in all" in note, note[-120:]
+    assert len(item["post"]["message"]) < slim.BODY_MAX + 200
+
+
+def test_a_cut_never_goes_below_the_field_floor():
+    """Fable's third finding: FIELD_FLOOR = 0 passed all 42 tests, so the constant had
+    no hold. A tiny budget still keeps the floor's worth of the text."""
+    assert slim.FIELD_FLOOR >= 200, slim.FIELD_FLOOR
+    out = slim._cut_bytes("x" * 5_000, 10, "p" * 26, "here")
+    assert out.startswith("x" * slim.FIELD_FLOOR), len(out)
+    assert f"{5_000} bytes in all" in out

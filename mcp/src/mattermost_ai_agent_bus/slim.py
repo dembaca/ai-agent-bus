@@ -18,6 +18,7 @@ title rides in its text was 22 KB in every thread read.
 
 from __future__ import annotations
 
+import re
 import time
 from collections.abc import Mapping, Sequence
 from typing import TYPE_CHECKING, Any
@@ -34,12 +35,25 @@ if TYPE_CHECKING:
 BODY_MAX = 2000
 
 
+# A cut's note as this module writes it, whatever unit it used: the number is the
+# text's original size, and a second cut must report that, not its own input.
+_CUT_TOTAL = re.compile(r"… \(cut, (\d+) (?:chars|bytes) in all;")
+
+
 def cut(text: str, post_id: str) -> str:
     """`text` at most about BODY_MAX characters, cut at a line or word end and
     ending with where the rest is: get_thread with the post's id, which works
-    for a root and a reply alike. Unchanged when short or without an id."""
+    for a root and a reply alike. Unchanged when short or without an id.
+
+    Text already cut once (the slim post's `message`, which `_one` shortened to
+    FETCH_MAX) reports the **original** size: its own note carries it, and a
+    push must not claim the post was 15 930 characters when it was 36 000
+    (issue #42)."""
     if len(text) <= BODY_MAX or not post_id:
         return text
+    total = len(text)
+    if (seen := _CUT_TOTAL.search(text)):
+        total = max(total, int(seen.group(1)))
     head = text[:BODY_MAX]
     floor = BODY_MAX * 4 // 5  # a boundary further back drops too much
     end = head.rfind("\n", floor)
@@ -47,7 +61,7 @@ def cut(text: str, post_id: str) -> str:
         end = max(head.rfind(" ", floor), head.rfind("\t", floor))
     if end > 0:
         head = head[:end]
-    return f"{head.rstrip()}\n… (cut, {len(text)} chars in all; get_thread {post_id})"
+    return f"{head.rstrip()}\n… (cut, {total} chars in all; get_thread {post_id})"
 
 
 def _when(ms: int | None) -> str:
@@ -123,27 +137,14 @@ def _cut_bytes(text: str, budget: int, post_id: str, where: str,
     return f"{keep}\n… (cut, {total} bytes in all; {where}{pid})"
 
 
-def _shrink(value: Any, over: int, pid: str, where: str, total: int | None = None) -> Any:
-    """`value` smaller by about `over` bytes: a string cut, a list's longest entry
-    cut. Returns the value unchanged when it cannot shrink (it is at the floor)."""
-    if isinstance(value, str):
-        return _cut_bytes(value, max(FIELD_FLOOR, _nbytes(value) - over - CUT_NOTE_MAX),
-                          pid, where, total)
-    if isinstance(value, list) and value:
-        biggest = max(range(len(value)), key=lambda i: _nbytes(value[i]))
-        cut_one = _cut_bytes(str(value[biggest]),
-                             max(FIELD_FLOOR, _nbytes(value[biggest]) - over - CUT_NOTE_MAX),
-                             pid, where)
-        return [cut_one if i == biggest else v for i, v in enumerate(value)]
-    return value
-
-
 # The card cannot reach POST_MAX on its own: every field in it is cut to BODY_MAX
-# first (need, decision, each of at most four answers), so a card is at most
-# 6 x BODY_MAX = 12 000 bytes. Only `message` can push a post over, and only it is
-# cut here. Asserted by test_a_card_cannot_reach_the_bound_by_itself so a later
-# field cannot quietly break the arithmetic (issue #42).
-CARD_MAX_FIELDS = 6  # need, decision, and at most four answers
+# first - need, decision, each of at most four answers, and `chosen`, which is one
+# of those answers again - so a card is at most 7 x BODY_MAX = 14 000 bytes.
+# (`answer`, `expired` and `card_edited_after` are a few bytes each.) Only
+# `message` can push a post over, and only it is cut here. Asserted by
+# test_a_card_cannot_reach_the_bound_by_itself so a later field cannot quietly
+# break the arithmetic (issue #42).
+CARD_MAX_FIELDS = 7  # need, decision, four answers, chosen
 assert CARD_MAX_FIELDS * BODY_MAX < POST_MAX
 
 
