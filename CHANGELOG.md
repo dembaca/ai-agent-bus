@@ -14,7 +14,10 @@ before 0.5.0 are described in the git history.
   to a linked reachable member. A home without its NATS side has no crown and
   says so (log, `bus_info`, roster hint). A home switching to NATS keeps no
   holder: the lowest claim holds. In a NATS home nobody takes the crown over by
-  receipts, unlike `coordinator.md` promises for Mattermost.
+  receipts, unlike `coordinator.md` promises for Mattermost: the holder itself
+  claims again, on a crown beat, when a post that needs it has no 👀 or ⏳ after
+  45 s. The login service grants crown claims only in the agent's home, not in a
+  guest channel.
   Needs: MM_NATS_HOMES alike on every agent of a home.
 - **Host login to Keycloak, building block only** (ADR-014, RT-6.34). With
   `MM_LOGIN_ISSUER` and `MM_LOGIN_CLIENT_ID` set, the host process (and a

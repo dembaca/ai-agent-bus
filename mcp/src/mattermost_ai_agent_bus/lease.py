@@ -227,6 +227,8 @@ class NatsSource(Protocol):
 
     def owner_of(self, name: str) -> str: ...
 
+    def lowest_claim(self, home: str, names: Iterable[str]) -> str: ...
+
     def ambiguous(self) -> list[str]: ...
 
 
@@ -818,13 +820,26 @@ async def _prime(source: NatsSource) -> None:
         log.info("crown over NATS: the trusted humans were not read: %s", exc)
 
 
+async def _linked_owned(client: ChatPort, source: NatsSource, rows: list[dict[str, Any]]) -> dict[str, str]:
+    """bot id -> NATS name for the rows with a proven link (NatsPort.linked: the bot and the
+    name name each other, the name fresh) whose bot's owner (owners.read) is the owner in
+    the name's presence subject. The one test of a link everywhere in a NATS home."""
+    out: dict[str, str] = {}
+    for bot_id, name in source.linked(rows).items():
+        owner = await owners.read(client, str(bot_id))
+        if owner is not None and bool(owner.owner) and owner.owner == source.owner_of(name):
+            out[str(bot_id)] = name
+    return out
+
+
 async def _nats_crowned(client: ChatPort, rows: list[dict[str, Any]]) -> list[dict[str, Any]]:
-    """`rows` of the NATS home with their `crown` as RT-6.38 step 5 reads it: with the NATS
-    side not reachable, none; with the view unknown (read-only, no election), only a live
-    mirrored 👑 whose status carries a link tag; else only one through a proven link: the
-    bot and the NATS name name each other (NatsPort.linked), the owner in the name's
-    presence subject is the bot's owner (owners.read) AND the name is the NATS holder
-    (a linked mirror that is not the holder, a lapsing old one, shows no crown). Other 👑 statuses (an unlinked
+    """`rows` of the NATS home with their `crown` as RT-6.38 step 6 reads it: with the NATS
+    side not reachable, none; else only a 👑 through a proven link (_linked_owned). With the
+    view known the linked name must be the NATS holder (a linked mirror that is not the
+    holder, a lapsing old one, shows no crown). With the view unknown (read-only, no
+    election) at most ONE 👑 counts, so that two live mirrors never name two coordinators:
+    of the live linked mirrors the one whose name has the lowest claim in the bus's last
+    known claims; with no known claim of any of them, none. Other 👑 statuses (an unlinked
     one, a Mattermost-only agent) are not the home's crown."""
     source = _nats_source
     if source is not None and not source.down():
@@ -832,17 +847,13 @@ async def _nats_crowned(client: ChatPort, rows: list[dict[str, Any]]) -> list[di
     state = nats_state()
     if state.kind == "down" or source is None:
         return [dict(r, crown=False) for r in rows]
+    links = await _linked_owned(client, source, rows)
     if state.kind == "unknown":
-        return [dict(r, crown=bool(r["crown"] and link_of(r["text"]))) for r in rows]
-    links = source.linked(rows)
-    out = []
-    for r in rows:
-        crown = False
-        if r["crown"] and r["id"] in links and links[r["id"]] == (state.view.holder if state.view else ""):
-            owner = await owners.read(client, str(r["id"]))
-            crown = owner is not None and bool(owner.owner) and owner.owner == source.owner_of(links[r["id"]])
-        out.append(dict(r, crown=crown))
-    return out
+        mirrors = {links[str(r["id"])]: str(r["id"]) for r in rows if r["crown"] and str(r["id"]) in links}
+        first = source.lowest_claim(_nats_home, mirrors) if mirrors else ""
+        return [dict(r, crown=bool(first) and mirrors.get(first) == str(r["id"])) for r in rows]
+    holder = state.view.holder if state.view else ""
+    return [dict(r, crown=bool(r["crown"] and holder and links.get(str(r["id"])) == holder)) for r in rows]
 
 
 def entry(row: Mapping[str, Any], crown_of: str = "") -> RosterEntry:
@@ -1085,6 +1096,10 @@ async def _command(client: ChatPort, action: str, passed: list[bool] | None = No
 
 # This agent claimed again as a holder that is not reachable (the self-yield): once per hold.
 _nats_yielded = False
+# The view said this agent holds the crown at the last look: a hold begins when it turns true.
+_nats_hold = False
+# Set by receipt.py: forget the posts owed a receipt (those of an earlier hold).
+hold_began: Callable[[], None] = lambda: None  # noqa: E731
 
 # Set by receipt.py: a post that needs this holder has had neither 👀 nor ⏳ for MM_ACK_WAIT_SEC
 # (the detection of the peer takeover, carried out by the holder itself in a NATS home).
@@ -1101,6 +1116,76 @@ def _no_look() -> None:
     _look_at, _vacant_at, _holder_id, _holder_name, _holder_marked = 0.0, 0.0, "", "", False
 
 
+def _nats_hold_track(view: CrownView) -> None:
+    """A new hold (the view turned mine) starts clean: no self-yield done, no post still owed
+    a receipt from an earlier hold (an old entry would trigger a late yield)."""
+    global _nats_hold, _nats_yielded
+    if view.mine and not _nats_hold:
+        _nats_yielded = False
+        hold_began()
+    _nats_hold = view.mine
+    if not view.mine:
+        _nats_yielded = False
+
+
+def _nats_reachable(rows: list[dict[str, Any]], uid: str) -> bool:
+    # The own state decides too: an idle holder's mirror still shows 👑 until its lease ends.
+    return (any(r["id"] == uid and r["reachable"] for r in rows) and _judged(uid)[0]
+            and not _silent(uid))
+
+
+async def _nats_holder_checks(client: ChatPort, source: NatsSource, uid: str, name: str,
+                              view: CrownView, rows: list[dict[str, Any]],
+                              links: Mapping[str, str]) -> None:
+    """What the holder checks of itself, at its tick and at each crown beat (RT-6.38 step 5):
+    a holder that is not reachable (silent, idle) while another linked reachable member
+    stands, or whose post that needs it has no 👀/⏳ for MM_ACK_WAIT_SEC, claims again, once
+    per hold: it moves behind and the next one holds."""
+    global _nats_yielded
+    if _nats_yielded:
+        return
+    if not _nats_reachable(rows, uid):
+        peers = {links[str(r["id"])] for r in rows if r["reachable"] and r["id"] != uid
+                 and links.get(str(r["id"])) in view.candidates}
+        if peers - {view.me}:
+            _nats_yielded = True
+            await source.claim(name)
+            log.info("crown yielded: this holder is not reachable, another member stands (RT-6.38)")
+            await _render(client)
+    elif any(c != view.me for c in view.candidates) and await unreceipted(client, uid):
+        # A post that needs the holder got neither 👀 nor ⏳ in time (RT-6.6 step 10, the
+        # promise of coordinator.md): the holder's own server claims again, once.
+        _nats_yielded = True
+        await source.claim(name)
+        log.info("crown yielded: a post that needs this holder has no receipt (RT-6.38)")
+        await _render(client)
+
+
+async def nats_beat(client: ChatPort) -> None:
+    """The holder's checks on each crown beat (MM_CROWN_BEAT_SEC), not only at the tick: the
+    self-yield comes within the wait plus one crown beat (RT-6.38 step 5). Never raises."""
+    if not client.token or not is_nats_home(client.work_channel_name):
+        return
+    try:
+        async with _lock():
+            uid = await _user_id(client)
+            state = nats_state()
+            source = _nats_source
+            if not _UID.fullmatch(uid) or state.kind != "ok" or state.view is None or source is None:
+                return
+            view = state.view
+            _nats_hold_track(view)
+            if not view.mine:
+                return
+            rows = _at_home(await _rows(client, await home_id(client)), client.work_channel_name)
+            links = await _linked_owned(client, source, rows)
+            await _nats_holder_checks(client, source, uid, client.work_channel_name.lower(), view, rows, links)
+    except asyncio.CancelledError:
+        raise
+    except Exception as exc:  # noqa: BLE001 — cosmetic, like the status
+        log.debug("lease nats beat: %s", exc)
+
+
 async def _command_nats(client: ChatPort, action: str, passed: list[bool] | None,
                         uid: str, cid: str) -> str:
     """_command in a home over NATS (RT-6.38): the crown is the claim order on the NATS bus,
@@ -1110,7 +1195,6 @@ async def _command_nats(client: ChatPort, action: str, passed: list[bool] | None
     synced and this agent is a member (and again after CLAIM_RENEW_SEC), arms or drops the
     mirror, and yields once when the holder is not reachable while another linked reachable
     member stands. Nothing is decided while the view is unknown."""
-    global _nats_yielded
     _no_look()
     name = client.work_channel_name.lower()
     now = int(time.time())
@@ -1128,7 +1212,8 @@ async def _command_nats(client: ChatPort, action: str, passed: list[bool] | None
                 "release": "not released: the NATS crown cannot be read now"}.get(action, "")
     view = state.view
     rows = _at_home(await _rows(client, cid), client.work_channel_name)
-    links = source.linked(rows)
+    links = await _linked_owned(client, source, rows)
+    _nats_hold_track(view)
 
     async def arm() -> None:
         global _crown_since
@@ -1153,8 +1238,11 @@ async def _command_nats(client: ChatPort, action: str, passed: list[bool] | None
         return (f"pending: {who} holds the crown over NATS; the claim order decides and cannot be "
                 "overtaken, so take waits for it to pass")
     if action == "release":
+        if not view.mine:
+            return "not held by you: nothing to release"
         others = [c for c in view.candidates if c != view.me]
-        await source.claim(name)  # a new claim moves behind every other
+        if view.member:
+            await source.claim(name)  # a new claim moves behind every other
         if not others:
             return "released; no other fresh claim here, the crown stays with you"
         _save_coord(uid, 0, 0, now + NATS_YIELD_SEC)
@@ -1168,36 +1256,15 @@ async def _command_nats(client: ChatPort, action: str, passed: list[bool] | None
         if state.kind != "ok" or state.view is None:
             return ""
         view = state.view
+        _nats_hold_track(view)
     state_file = _coord(uid)
     crown, yield_until = state_file.get("CROWN_UNTIL", 0), state_file.get("YIELD_UNTIL", 0)
-    # The own state decides too: an idle holder's mirror still shows 👑 until its lease ends.
-    reachable = (any(r["id"] == uid and r["reachable"] for r in rows) and _judged(uid)[0]
-                 and not _silent(uid))
     if view.mine:
-        if reachable and yield_until <= now and crown <= now:
+        if _nats_reachable(rows, uid) and yield_until <= now and crown <= now:
             await arm()
-        if not reachable and not _nats_yielded:
-            # A holder that is not reachable (silent, idle) while another linked reachable
-            # member stands claims again, once: it moves behind and the next one holds.
-            peers = {links[str(r["id"])] for r in rows if r["reachable"] and r["id"] != uid
-                     and links.get(str(r["id"])) in view.candidates}
-            if peers - {view.me}:
-                _nats_yielded = True
-                await source.claim(name)
-                log.info("crown yielded: this holder is not reachable, another member stands (RT-6.38)")
-                await _render(client)
-        elif reachable and not _nats_yielded and any(c != view.me for c in view.candidates) \
-                and await unreceipted(client, uid):
-            # A post that needs the holder got neither 👀 nor ⏳ in time (RT-6.6 step 10, the
-            # promise of coordinator.md): the holder's own server claims again, once.
-            _nats_yielded = True
-            await source.claim(name)
-            log.info("crown yielded: a post that needs this holder has no receipt (RT-6.38)")
-            await _render(client)
-    else:
-        _nats_yielded = False
-        if _coord(uid).get("CROWN_UNTIL", 0) > now:
-            await _render(client)  # the mirror ends
+        await _nats_holder_checks(client, source, uid, name, view, rows, links)
+    elif _coord(uid).get("CROWN_UNTIL", 0) > now:
+        await _render(client)  # the mirror ends
     if cid not in _header_line and crown_held(uid):
         await _header(client, cid, uid)  # once per process while holding (step 7)
     return ""
@@ -1732,6 +1799,8 @@ async def heartbeat(get_client: Callable[[], Awaitable[ChatPort | None]],
                     next_tick = time.time() + delay
                 elif crown_held(uid):
                     await set_status(client, "renew")  # the beat: no roster read, no watch
+                    if _nats_home:
+                        await nats_beat(client)  # RT-6.38: the holder's checks on every beat
                 elif held:
                     await set_status(client, "renew")  # the crown lapsed: the plain lease now
                 elif bool(_silent(uid)) != life.is_shown():

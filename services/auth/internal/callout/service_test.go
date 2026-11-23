@@ -241,7 +241,7 @@ func TestAnAgentGetsItsNameAndOnlyItsChannels(t *testing.T) {
 	for subj, want := range map[string]bool{
 		"bus.ch.home." + a.name: false, "bus.dm.agent-other." + a.name: false,
 		"bus.ch.home.agent-other": true, "bus.ch.elsewhere." + a.name: true, "bus.dm.agent-other.agent-other": true,
-		a.presence(): false, "presence.crown.home." + a.name: false, "presence.crown.lobby." + a.name: false,
+		a.presence(): false, "presence.crown.home." + a.name: false, "presence.crown.lobby." + a.name: true, // a crown claim only in the home (RT-6.38)
 		"presence." + ownerToken("alice") + ".agent-other": true, "presence.agent-other": true, "presence.-." + a.name: true, "presence.bob." + a.name: true, "presence.crown.home.agent-other": true, "presence.crown.elsewhere." + a.name: true,
 	} {
 		if err := a.nc.Publish(subj, []byte("hi")); err != nil {

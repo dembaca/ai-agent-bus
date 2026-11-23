@@ -59,6 +59,7 @@ class FakeNats:
         self.claimed_homes: list[str] = []
         self.server_now = 0.0  # the newest server time seen (RT-6.38)
         self.claims: dict[str, dict[str, tuple[int, float]]] = {}  # channel -> agent -> (sequence, server time)
+        self.echo_age = 0.0  # monotonic seconds since the own presence came back (RT-6.38 step 2)
 
     def link_bot(self, bot_id: str) -> None:
         self.linked_bot = bot_id
@@ -74,6 +75,9 @@ class FakeNats:
 
     def claim_info(self, channel: str) -> dict[str, tuple[int, float]]:
         return dict(self.claims.get(channel, {}))
+
+    def own_echo_age(self) -> float:
+        return self.echo_age
 
     async def claim(self, channel: str) -> None:
         """A claim, as the stream would number it: a new, higher sequence at the server's time."""

@@ -143,6 +143,8 @@ class BusLike(Protocol):
 
     def claim_info(self, channel: str) -> dict[str, tuple[int, float]]: ...
 
+    def own_echo_age(self) -> float: ...
+
     @property
     def server_now(self) -> float: ...
 
@@ -790,15 +792,19 @@ class NatsPort:
         that stand by the Mattermost election's rule (lease.standing, owners from the
         presence subjects) may hold it; the holder is the first. None, which is neither free
         nor mine, while the bus is not attached, failed, not connected or not synced, or the
-        trusted humans were not read yet."""
+        trusted humans were not read yet, or the echo of this agent's own presence (published
+        every 30 s) has not come back for more than OWN_ECHO_SEC by the monotonic clock: a
+        half-open connection delivers nothing, and the others take over after 90 s."""
         bus = self._bus
         if (bus is None or self._fatal is not None or not bus.connected or not bus.synced
-                or self._names is None or home not in self._homes):
+                or self._names is None or home not in self._homes
+                or bus.own_echo_age() > natsbus.OWN_ECHO_SEC):
             return None
         me = bus.name
         info = bus.claim_info(home)
         order = natsbus.crown_candidates({a: seq for a, (seq, _) in info.items()}, bus.presence_snapshot(),
-                                         bus.server_now, partial(bus.is_member, home))
+                                         bus.server_now, partial(bus.is_member, home),
+                                         at={a: t for a, (_, t) in info.items()})
         agents = {a: owners.Owner(owner=bus.owner_of(a), trusts=frozenset(), cut=False)
                   for a in dict.fromkeys([*order, me])}
         standing = lease.standing(order, me, self._names, agents).ids
@@ -806,6 +812,16 @@ class NatsPort:
         return lease.CrownView(me=me, holder=standing[0] if standing else "", candidates=tuple(standing),
                                member=bus.is_member(home, me),
                                claim_age=bus.server_now - mine[1] if mine is not None else None)
+
+    def lowest_claim(self, home: str, names: Iterable[str]) -> str:
+        """Of `names`, the one whose claim is first in claim order (server time, sequence) in
+        the last known claims of `home`; '' when none of them has a known claim."""
+        bus = self._bus if self._fatal is None else None
+        if bus is None:
+            return ""
+        info = bus.claim_info(home)
+        known = sorted((info[n][1], info[n][0], n) for n in names if n in info)
+        return known[0][2] if known else ""
 
     async def claim(self, home: str) -> None:
         """Claim the crown of `home` (again): the claim moves behind every other. Waits a

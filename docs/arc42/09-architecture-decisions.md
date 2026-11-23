@@ -3312,7 +3312,10 @@ separately.
       `<bus>.dm.<recipient>.<name>`, `<presence>.<owner>.<name>`,
       `<presence>.crown.<channel>.<name>`, `<presence>.member.<channel>.<name>`
       (the membership, apart from the crown; both prefixes are settings of the
-      login service, `bus` and `presence`). The presence subject carries the
+      login service, `bus` and `presence`). A crown claim is granted only for
+      the hello's home channel, a membership for every granted channel: a guest
+      could otherwise claim the crown of a channel it only visits and block that
+      home (review of the crown over NATS, RT-6.38). The presence subject carries the
       owner too (from the Keycloak token, `.` written as `~`, `-` when it is no
       lower-case username), pinned by the permission like the sender: the
       owner of a NATS sender is read from there, never proven by its name,

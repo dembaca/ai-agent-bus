@@ -32,6 +32,7 @@ from mattermost_ai_agent_bus.natsbus import (
     NatsSettings,
     agent_name,
     build_hello,
+    crown_candidates,
     crown_holder,
     decode,
     decode_presence,
@@ -255,6 +256,48 @@ def _presence_reply(bus: NatsBus, sseq: int, cseq: int, t: float) -> str:
 class FakeMsg:
     def __init__(self, subject: str, reply: str | None, data: bytes) -> None:
         self.subject, self.reply, self.data = subject, reply, data
+
+
+def test_the_claim_order_is_the_server_time_then_the_sequence() -> None:
+    """RT-6.38 step 1 (H2): a stream made anew restarts its sequence, so the sequence alone is
+    no order between agents: A's old claim (seq 500) stays before C's new one (seq 100)."""
+    now = 1000.0
+    pres = {"a": (now - 10, "online"), "c": (now - 10, "online")}
+    claims, at = {"a": 500, "c": 100}, {"a": now - 5000, "c": now - 100}
+    assert crown_candidates(claims, pres, now, None, 90.0, at) == ["a", "c"]
+    assert crown_candidates(claims, pres, now) == ["c", "a"]  # by the sequence alone, the old rule
+    at = {"a": now - 100, "c": now - 100}  # the same time: the sequence decides
+    assert crown_candidates(claims, pres, now, None, 90.0, at) == ["c", "a"]
+
+
+async def test_a_claim_older_than_the_consumer_made_anew_is_forgotten_and_claimed_again() -> None:
+    """RT-6.38 step 1 (H2): when the presence consumer starts over (its delivery number
+    falls back), remembered claims are gone from the stream: this agent's own is missing
+    and the tick claims again."""
+    bus, _ = _unit_bus()
+    await _claim(bus, bus.name, "home", 500, T0 - 1000)
+    await _claim(bus, "agent-b", "home", 501, T0 - 900)
+    assert bus.claimed("home", bus.name)
+    await bus._on_presence_msg(FakeMsg("presence.member.home.agent-b", _presence_reply(bus, 600, 1, T0),
+                                       encode_claim()))  # delivery number 1 again: made anew
+    assert not bus.claimed("home", bus.name) and not bus.claimed("home", "agent-b")
+    await _claim(bus, "agent-c", "home", 601, T0)
+    assert bus.claimed("home", "agent-c") and bus.claim_info("home").get(bus.name) is None
+
+
+async def test_the_echo_of_the_own_presence_is_timed_by_the_monotonic_clock(monkeypatch: pytest.MonkeyPatch) -> None:
+    """RT-6.38 step 2 (H3): the age of the last own presence delivered, never server time."""
+    mono = [100.0]
+    monkeypatch.setattr(time, "monotonic", lambda: mono[0])
+    bus, _ = _unit_bus()
+    mono[0] += 80
+    assert bus.own_echo_age() == 80
+    await _presence(bus, "agent-other", 1, T0)
+    assert bus.own_echo_age() == 80  # somebody else's presence is no echo of ours
+    await _presence(bus, bus.name, 2, T0 + 1)
+    assert bus.own_echo_age() == 0
+    mono[0] += 30
+    assert bus.own_echo_age() == 30
 
 
 def test_crown_rule() -> None:

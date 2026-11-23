@@ -319,7 +319,10 @@ func TestNativeConfigAsCreated(t *testing.T) {
 func TestNativePresenceShowsCrownsOnlyOfOwnChannels(t *testing.T) {
 	n := newNative(t, busStreamCfg) // alice: home; bob: home and secret
 	n.bobPosts(n.b.presence(), "bob online")
-	n.bobPosts("presence.crown.secret."+n.b.name, "claim in secret")
+	// bob may not claim in a guest channel (RT-6.38): the claim in secret comes from the server's own side
+	if err := n.nc.Publish("presence.crown.secret."+n.b.name, []byte("claim in secret")); err != nil {
+		t.Fatal(err)
+	}
 	n.bobPosts("presence.crown.home."+n.b.name, "claim in home")
 	seen := map[string]bool{}
 	for _, g := range take(n.aIn, 500*time.Millisecond) {
@@ -330,6 +333,27 @@ func TestNativePresenceShowsCrownsOnlyOfOwnChannels(t *testing.T) {
 	}
 	if seen["presence.crown.secret."+n.b.name] {
 		t.Error("alice was delivered a crown claim of a channel she is not in")
+	}
+}
+
+// A crown claim is allowed in the agent's home only (RT-6.38): bob, whose home is
+// home and who is a guest in secret, is refused in secret and allowed in home, as
+// the real server enforces the credential.
+func TestNativeACrownClaimIsRefusedInAGuestChannel(t *testing.T) {
+	n := newNative(t, busStreamCfg) // bob: home (his home) and secret (a guest)
+	before := n.last("PRESENCE")
+	if err := n.b.nc.Publish("presence.crown.secret."+n.b.name, []byte("claim in secret")); err != nil {
+		t.Fatal(err)
+	}
+	if !n.b.denied(t) {
+		t.Error("a crown claim in a guest channel was not refused")
+	}
+	if n.last("PRESENCE") != before {
+		t.Error("a crown claim in a guest channel was stored")
+	}
+	n.bobPosts("presence.crown.home."+n.b.name, "claim in home")
+	if n.last("PRESENCE") != before+1 {
+		t.Errorf("the claim in the home was not stored: %d -> %d", before, n.last("PRESENCE"))
 	}
 }
 

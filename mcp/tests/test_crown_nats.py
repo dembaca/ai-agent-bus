@@ -321,8 +321,9 @@ async def test_no_election_look_slot_over_take_over_or_receipt_holder_in_a_nats_
 async def _two(w: World, *, me_first: bool) -> None:
     """This agent and agent-a both claimed; whoever has the lower sequence holds it."""
     w.fake.members.add((HOME, NAME_ME))
-    claimant(w.fake, NAME_ME, 5 if me_first else 9, bot_id=BOT)
-    claimant(w.fake, NAME_A, 9 if me_first else 5, bot_id=BOT_A)
+    w.inner.descriptions = {BOT: "for @alice · trusts @alice", BOT_A: "for @alice · trusts @alice"}
+    claimant(w.fake, NAME_ME, 5 if me_first else 9, bot_id=BOT, owner="alice")
+    claimant(w.fake, NAME_A, 9 if me_first else 5, bot_id=BOT_A, owner="alice")
     bot(w.inner, BOT_A, "agent-a", 2000, tag=TAG[NAME_A])
     bot(w.inner, BOT, "agent-me", 1000, tag=TAG[NAME_ME])
 
@@ -491,6 +492,113 @@ async def test_with_the_view_unknown_only_a_live_mirrored_crown_with_a_link_tag_
     assert await lease.coordinator_of(w.port, WORK) == ""  # type: ignore[arg-type]
     bot(w.inner, BOT_A, "agent-a", 2000, tag=TAG[NAME_A])  # no crown at all: nobody is elected
     assert all(not r.coordinator for r in await lease.roster(w.port))  # type: ignore[arg-type]
+
+
+async def test_with_the_view_unknown_at_most_one_crown_counts_the_lowest_claim(w: World) -> None:
+    """RT-6.38 step 6 (H1): two live linked mirrors with the view unknown never name two
+    coordinators: the one whose name has the lowest claim in the last known claims counts
+    (not the older account, which may be the one that is yielding); none without a claim."""
+    await _roster_world(w)
+    bot(w.inner, BOT, "agent-me", 1000, crown=True, tag=TAG[NAME_ME])  # the older account, claim 9
+    w.fake.synced = False
+    rows = await lease.roster(w.port)  # type: ignore[arg-type]
+    assert [r.username for r in rows if r.crown] == ["agent-a"]  # claim 5 is the lowest
+    assert lease.crown_in(rows) == "agent-a"
+    assert await lease.coordinator_of(w.port, WORK) == "agent-a"  # type: ignore[arg-type]
+    w.fake.claims[HOME].clear()  # no claim of any of them is known
+    assert all(not r.crown for r in await lease.roster(w.port))  # type: ignore[arg-type]
+    assert await lease.coordinator_of(w.port, WORK) == ""  # type: ignore[arg-type]
+
+
+async def test_an_echo_of_the_own_presence_older_than_75_seconds_makes_the_view_unknown(w: World) -> None:
+    """RT-6.38 step 2 (H3): a half-open connection delivers nothing; the view is unknown when
+    the own presence (published every 30 s) has not come back for more than 75 s (monotonic)."""
+    _file_crown()
+    w.fake.echo_age = 75.0
+    assert w.view() is not None and lease.crown_held(BOT)
+    w.fake.echo_age = 75.5
+    assert w.view() is None and not lease.crown_held(BOT)
+    end = lease.crown_until(BOT)
+    await lease.set_status(w.port, "renew")  # type: ignore[arg-type]
+    assert lease.crown_until(BOT) == end  # the mirror is not extended
+    w.fake.echo_age = 1.0
+    assert w.view() is not None and w.view().mine  # type: ignore[union-attr]
+
+
+async def test_the_holder_yields_within_the_wait_plus_one_crown_beat_through_the_heartbeat(
+        w: World, monkeypatch: pytest.MonkeyPatch) -> None:
+    """RT-6.38 step 5 (M4): the holder's checks run on every crown beat, not only at the tick
+    (MM_HEARTBEAT_SEC, 300 s): no receipt for 45 s, the yield comes at the next beat."""
+    import asyncio
+    from types import SimpleNamespace
+
+    from mattermost_ai_agent_bus import life
+    from mattermost_ai_agent_bus.client import post_of
+    now = [time.time()]
+    monkeypatch.setattr(receipt, "time", SimpleNamespace(time=lambda: now[0]))
+    monkeypatch.delenv("MM_ACK_WAIT_SEC", raising=False)
+    monkeypatch.setenv("MM_CROWN_BEAT_SEC", "15")
+    receipt.reset()
+    await _two(w, me_first=True)
+    await w.tick()
+    assert lease.crown_held(BOT)
+    life.turn(False)
+    await w.port.get_me()
+    await receipt.arrived(w.port, post_of({"id": "p" * 26, "message": "please look", "user_id": HUMAN,  # type: ignore[arg-type]
+                                           "channel_id": WORK, "create_at": 1}), BOT, False)
+    assert set(receipt._owed) == {"p" * 26}
+    start, claims0 = now[0], len(w.fake.claimed_homes)
+    yielded_at: list[float] = []
+
+    async def pause(sec: float) -> None:
+        if len(w.fake.claimed_homes) > claims0 and not yielded_at:
+            yielded_at.append(now[0] - start)
+        if now[0] - start >= 120:
+            raise asyncio.CancelledError
+        now[0] += sec
+        await asyncio.sleep(0)
+
+    async def get_client() -> Any:
+        return w.port
+
+    monkeypatch.setattr(lease, "_pause", pause)
+    with pytest.raises(asyncio.CancelledError):
+        await lease.heartbeat(get_client)
+    assert yielded_at and 45 <= yielded_at[0] <= 45 + 15 + 1
+    assert w.view().holder == NAME_A  # type: ignore[union-attr]
+    assert len(w.fake.claimed_homes) == claims0 + 1  # once
+
+
+async def test_a_new_hold_forgets_the_posts_of_an_earlier_one(w: World, monkeypatch: pytest.MonkeyPatch) -> None:
+    """RT-6.38 step 5: an old receipt._owed entry cannot trigger a late yield in a new hold."""
+    receipt._owed["o" * 26] = (False, 1.0)
+    lease._nats_hold = False
+    lease._nats_hold_track(lease.CrownView(me=NAME_ME, holder=NAME_ME))
+    assert not receipt._owed and lease._nats_hold
+    receipt._owed["o" * 26] = (False, 1.0)
+    lease._nats_hold_track(lease.CrownView(me=NAME_ME, holder=NAME_ME))  # still the same hold
+    assert receipt._owed
+    lease._nats_hold_track(lease.CrownView(me=NAME_ME, holder=NAME_A))
+    assert not lease._nats_hold
+
+
+async def test_release_by_a_non_holder_says_so_and_claims_nothing(w: World) -> None:
+    await _two(w, me_first=False)
+    assert await lease.command(w.port, "release") == "not held by you: nothing to release"  # type: ignore[arg-type]
+    assert w.fake.claimed_homes == []
+    # a holder that is no member publishes no claim either
+    w.fake.members.discard((HOME, NAME_ME))
+    assert w.view() is not None and not w.view().member  # type: ignore[union-attr]
+    w.fake.claims[HOME][NAME_A] = (50, w.fake.server_now)
+    assert await lease.command(w.port, "release") == "not held by you: nothing to release"  # type: ignore[arg-type]
+    assert w.fake.claimed_homes == []
+
+
+async def test_who_needs_the_owner_of_the_link_to_match(w: World) -> None:
+    await _two(w, me_first=False)
+    assert await lease.command(w.port, "who") == "agent-a"  # type: ignore[arg-type]
+    w.fake.owners[NAME_A] = "carol"  # the name's owner is not the bot's owner: no link
+    assert await lease.command(w.port, "who") == ""  # type: ignore[arg-type]
 
 
 # --- 6. no NATS side ----------------------------------------------------------------------------------------

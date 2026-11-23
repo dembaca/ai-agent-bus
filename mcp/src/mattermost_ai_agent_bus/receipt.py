@@ -269,6 +269,7 @@ async def silent_holder(client: ChatPort, uid: str) -> bool:
 
 
 lease.unreceipted = silent_holder
+lease.hold_began = _owed.clear
 
 
 async def missing(client: ChatPort, pid: str, holder_name: str) -> bool:

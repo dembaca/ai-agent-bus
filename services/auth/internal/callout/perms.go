@@ -70,13 +70,17 @@ func checkToken(s string) error {
 
 // permissions are what an agent may do: publish only under its own name as
 // the last token, in the channels it was granted and to other agents' direct
-// subjects, plus presence (under its owner), crown claims and memberships; subscribe only to its own deliver
-// subjects. Nothing else.
-func (s Subjects) permissions(agent, owner string, channels []string) jwt.Permissions {
+// subjects, plus presence (under its owner), memberships in every granted channel and crown
+// claims only in its home (the hello's Home, when it is granted): a guest could otherwise
+// claim the crown of a channel it only visits and block that home (RT-6.38); subscribe only to
+// its own deliver subjects. Nothing else.
+func (s Subjects) permissions(agent, owner, home string, channels []string) jwt.Permissions {
 	var p jwt.Permissions
 	for _, ch := range channels {
 		p.Pub.Allow.Add(s.Prefix + ".ch." + ch + "." + agent)
-		p.Pub.Allow.Add(s.Presence + ".crown." + ch + "." + agent)
+		if ch == home {
+			p.Pub.Allow.Add(s.Presence + ".crown." + ch + "." + agent)
+		}
 		p.Pub.Allow.Add(s.Presence + ".member." + ch + "." + agent)
 	}
 	p.Pub.Allow.Add(s.Prefix + ".dm.*." + agent)
