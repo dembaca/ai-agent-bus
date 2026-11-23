@@ -218,7 +218,7 @@ func TestTheExampleServerConfiguration(t *testing.T) {
 		t.Fatal(err)
 	}
 	for range 2 { // made, then found
-		dir, err := directory.Open(ctx5(t), js, "")
+		dir, err := directory.Open(ctx5(t), js, "", false)
 		if err != nil {
 			t.Fatalf("directory: %v", err)
 		}

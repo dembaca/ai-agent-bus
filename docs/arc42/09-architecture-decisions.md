@@ -4551,7 +4551,17 @@ geschrieben, beim ersten Login einer Identität oder durch den Import, und
 nie geändert: Wer vor dem Import bekannt ist, behält den heutigen Namen,
 und nur eine Identität, die nach dem Import zum ersten Mal kommt, bekommt
 ihr `sub`. Einen einmaligen Wechsel aller Agentennamen gibt es deshalb
-nicht. Daraus folgen zwei Punkte für die Umstellung:
+nicht. Eine Umbenennung in Keycloak ändert `anchor` nicht; bekommt danach
+eine andere Person den alten Namen, ist dieser `anchor` vergeben, und sie
+bekommt ihr `sub` (festgelegt bei der Endabnahme von #44, 2026-11-23). Die
+Byte-Gleichheit mit dem Stand vor dem Verzeichnis gilt deshalb nur ohne
+Umbenennung. Namens- und `sub`-Anker teilen nie einen Wert: Ein
+Namensanker hat die Form eines Mattermost-Namens, ein `sub` aus Keycloak
+ist eine UUID und darf sie nicht haben, sodass kein Benutzername das `sub`
+einer anderen Identität besetzen kann. Nach dem Import setzt der Betreiber
+`AUTH_DIRECTORY_IMPORTED=true`: Ein verlorener Bucket oder einer ohne
+`meta.imported` verweigert dann jede Ausgabe, statt auf Mattermost
+zurückzufallen. Daraus folgen zwei Punkte für die Umstellung:
 
 - **Bedingung vor dem ersten Import im Labor:** Der MCP-Server vergleicht
   das Token des Eigentümers im Presence-Subject heute mit dem

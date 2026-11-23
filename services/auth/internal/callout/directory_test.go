@@ -4,6 +4,7 @@ import (
 	"testing"
 	"time"
 
+	gojwt "github.com/golang-jwt/jwt/v5"
 	"github.com/nats-io/nats.go/jetstream"
 
 	"github.com/dembaca/ai-agent-bus/services/auth/internal/directory"
@@ -22,7 +23,7 @@ func TestTheDirectoryKeepsNamesAndPresenceTokens(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	dir, err := directory.Open(ctx5(t), js, "")
+	dir, err := directory.Open(ctx5(t), js, "", false)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -62,9 +63,10 @@ func TestTheDirectoryKeepsNamesAndPresenceTokens(t *testing.T) {
 		t.Fatalf("alice after the import: %v", err)
 	}
 	presenceOK(again, "sub-alice")
-	l.chat.Users["carol"] = token.User{Username: "carol", AuthKnown: true, AuthService: token.OpenIDService, AuthData: "sub-carol"}
+	const carolSub = "0b6f3c1e-1111-4222-8333-444455556666" // Keycloak subs are UUIDs
+	l.chat.Users["carol"] = token.User{Username: "carol", AuthKnown: true, AuthService: token.OpenIDService, AuthData: carolSub}
 	l.chat.Channels["carol"] = []string{"home"}
-	carol, err := l.connect("sub-carol", l.realm.Token("carol", nil), Hello{Home: "home"}, nil)
+	carol, err := l.connect(carolSub, l.realm.Token("carol", func(c gojwt.MapClaims) { c["sub"] = carolSub }), Hello{Home: "home"}, nil)
 	if err != nil {
 		t.Fatalf("carol after the import: %v", err)
 	}
@@ -79,6 +81,12 @@ func TestTheDirectoryKeepsNamesAndPresenceTokens(t *testing.T) {
 	} {
 		if err := carol.nc.Publish(subj, []byte(`{"name":"home","public":true}`)); err != nil || !carol.denied(t) {
 			t.Fatalf("an agent may publish on %s", subj)
+		}
+	}
+	// Nor subscribe to them, nor to everything.
+	for _, subj := range []string{"$KV.>", "$KV." + directory.DefaultBucket + ".>", "$JS.API.>", ">"} {
+		if _, err := carol.nc.SubscribeSync(subj); err != nil || !carol.denied(t) {
+			t.Fatalf("an agent may subscribe to %s", subj)
 		}
 	}
 	if c, _, ok, err := dir.Channel(ctx5(t), "home"); err != nil || ok {

@@ -59,6 +59,10 @@ type Settings struct {
 	// DirectoryBucket is the channel directory's key-value bucket (ADR-016),
 	// in the tenant account; empty: directory.DefaultBucket.
 	DirectoryBucket string
+	// DirectoryImported: the operator ran the one-time import
+	// (AUTH_DIRECTORY_IMPORTED=true). The directory then must hold its mark:
+	// a missing bucket or mark refuses, never falls back to Mattermost.
+	DirectoryImported bool
 }
 
 // LoadSettings reads the callout's settings. It reports false when
@@ -122,6 +126,13 @@ func LoadSettings(getenv func(string) string) (Settings, bool, error) {
 	s.MattermostTeam = get("AUTH_MATTERMOST_TEAM")
 	s.MattermostFile = get("AUTH_MATTERMOST_TOKEN_FILE")
 	s.DirectoryBucket = get("AUTH_DIRECTORY_BUCKET")
+	switch v := get("AUTH_DIRECTORY_IMPORTED"); v {
+	case "", "false":
+	case "true":
+		s.DirectoryImported = true
+	default:
+		return Settings{}, true, fmt.Errorf("%w: AUTH_DIRECTORY_IMPORTED: true or false, got %q", ErrConfig, v)
+	}
 	if s.DirectoryBucket != "" && !bucketRE.MatchString(s.DirectoryBucket) {
 		return Settings{}, true, fmt.Errorf("%w: AUTH_DIRECTORY_BUCKET: letters, digits, - and _ only, got %q", ErrConfig, s.DirectoryBucket)
 	}
@@ -254,7 +265,7 @@ func RunCallout(ctx context.Context, s Settings, log *slog.Logger) error {
 	if err != nil {
 		return fmt.Errorf("JetStream: %w", err)
 	}
-	dir, err := directory.Open(startCtx, js, s.DirectoryBucket)
+	dir, err := directory.Open(startCtx, js, s.DirectoryBucket, s.DirectoryImported)
 	if err != nil {
 		return err
 	}

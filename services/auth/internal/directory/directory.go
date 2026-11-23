@@ -9,7 +9,10 @@
 //
 //	ch.<token>      a channel, by its token on the bus (the subject token)
 //	id.<sub>        an identity, by its Keycloak `sub`
-//	anchor.<value>  the `sub` that holds an anchor: no value is given twice
+//	anchor.name.<hex>  the `sub` holding a name anchor (today's username)
+//	anchor.sub.<hex>   the `sub` holding a sub anchor (its own `sub`); the two
+//	                   kinds never share a value (see claimAnchor), so no value
+//	                   is given twice and no name can take a `sub`'s place
 //	meta.imported   written last by the one import from Mattermost; from then
 //	                on the directory, not Mattermost, says who is a member
 //
@@ -18,11 +21,13 @@ package directory
 
 import (
 	"context"
+	"encoding/hex"
 	"encoding/json"
 	"errors"
 	"fmt"
 	"regexp"
 	"slices"
+	"strings"
 	"time"
 
 	"github.com/nats-io/nats.go/jetstream"
@@ -50,6 +55,15 @@ var (
 	ErrConflict = errors.New("directory: changed meanwhile")
 	// ErrAnchorTaken: another identity holds that anchor.
 	ErrAnchorTaken = errors.New("directory: anchor held by another identity")
+	// ErrAnchorShape: the `sub` cannot be an anchor (not a lower-case token,
+	// or shaped like a chat username, which only names may be).
+	ErrAnchorShape = errors.New("directory: the sub cannot be an anchor")
+	// ErrImportMissing: the configuration says the import has run
+	// (AUTH_DIRECTORY_IMPORTED), but the directory has no mark of it: a lost
+	// or replaced bucket, never a reason to fall back to the chat.
+	ErrImportMissing = errors.New("directory: the import's mark is missing")
+	// ErrUnsafeBucket: an existing bucket's stream differs from a safe one.
+	ErrUnsafeBucket = errors.New("directory: bucket configuration is unsafe")
 )
 
 // Channel is a channel on the bus.
@@ -86,11 +100,25 @@ type Identity struct {
 // Store is the directory over a key-value bucket.
 type Store struct {
 	kv jetstream.KeyValue
+	// expect: the configuration says the import has run; a missing mark is
+	// an error, not "not yet".
+	expect bool
 }
 
-// keyRE is one safe key token: what a KV key allows, minus the dot that
-// would split it, and not empty.
-var keyRE = regexp.MustCompile(`^[A-Za-z0-9_=-][A-Za-z0-9_=~-]{0,127}$`)
+// keyRE is one safe key token for a `sub`: what a KV key allows, minus the
+// dot that would split it, and not empty.
+var keyRE = regexp.MustCompile(`^[A-Za-z0-9_=-]{1,128}$`)
+
+// channelRE is a channel's token on the bus, as the callout checks it
+// (callout.tokenRE): lower case only, so one channel is one key.
+var channelRE = regexp.MustCompile(`^[a-z0-9][a-z0-9_-]{0,63}$`)
+
+// nameAnchorRE: what may be a name anchor. Before the import a login's
+// owner is a Mattermost account of that name (token.Verifier's chat check),
+// and Mattermost usernames begin with a letter and have at most 22
+// characters; a Keycloak `sub` is a UUID of 36. So a name anchor never has
+// a `sub`'s shape, and a `sub` anchor must not have a name's.
+var nameAnchorRE = regexp.MustCompile(`^[a-z][a-z0-9._-]{0,21}$`)
 
 // anchorRE: an anchor is what the callout hashes into an agent's name and
 // writes, with "." as "~", as the owner token of its presence subject
@@ -100,6 +128,13 @@ var anchorRE = regexp.MustCompile(`^[a-z0-9][a-z0-9._-]{0,63}$`)
 
 func checkKey(s string) error {
 	if !keyRE.MatchString(s) {
+		return fmt.Errorf("%w: %.64q", ErrBadKey, s)
+	}
+	return nil
+}
+
+func checkChannel(s string) error {
+	if !channelRE.MatchString(s) {
 		return fmt.Errorf("%w: %.64q", ErrBadKey, s)
 	}
 	return nil
@@ -121,24 +156,67 @@ func Config(bucket string) jetstream.KeyValueConfig {
 	}
 }
 
-// Open returns the store over the bucket, made with Config when it is missing
-// (an existing one is taken as it is: the rights for an update are not
-// granted). js must be the login service's own JetStream connection: the
-// only one with a right on the bucket.
-func Open(ctx context.Context, js jetstream.JetStream, bucket string) (*Store, error) {
+// Open returns the store over the bucket. js must be the login service's
+// own JetStream connection: the only one with a right on the bucket.
+// Without `imported` it makes the bucket with Config when it is missing; with
+// it (AUTH_DIRECTORY_IMPORTED: the operator ran the import) a missing bucket
+// is an error, never made anew, and a missing mark refuses every answer
+// (ErrImportMissing). An existing bucket is checked: no mirror, source or
+// republish (which could hand its records to a subject an agent reads), file
+// storage, a size limit, exactly its own subjects.
+func Open(ctx context.Context, js jetstream.JetStream, bucket string, imported bool) (*Store, error) {
 	cfg := Config(bucket)
 	kv, err := js.KeyValue(ctx, cfg.Bucket)
-	if errors.Is(err, jetstream.ErrBucketNotFound) {
+	switch {
+	case errors.Is(err, jetstream.ErrBucketNotFound) && imported:
+		return nil, fmt.Errorf("directory bucket %s: missing although the import has run (AUTH_DIRECTORY_IMPORTED): %w",
+			cfg.Bucket, ErrImportMissing)
+	case errors.Is(err, jetstream.ErrBucketNotFound):
 		kv, err = js.CreateKeyValue(ctx, cfg)
 	}
 	if err != nil {
 		return nil, fmt.Errorf("directory bucket %s: %w", cfg.Bucket, err)
 	}
-	return &Store{kv: kv}, nil
+	st, err := kv.Status(ctx)
+	if err != nil {
+		return nil, fmt.Errorf("directory bucket %s: %w", cfg.Bucket, err)
+	}
+	if b, ok := st.(*jetstream.KeyValueBucketStatus); ok {
+		if err := checkBucket(cfg.Bucket, b.StreamInfo()); err != nil {
+			return nil, err
+		}
+	}
+	return &Store{kv: kv, expect: imported}, nil
+}
+
+func checkBucket(bucket string, info *jetstream.StreamInfo) error {
+	if info == nil {
+		return fmt.Errorf("%w: %s: no stream info", ErrUnsafeBucket, bucket)
+	}
+	c, bad := info.Config, []string{}
+	if c.Mirror != nil || len(c.Sources) > 0 {
+		bad = append(bad, "mirror or sources set")
+	}
+	if c.RePublish != nil {
+		bad = append(bad, "republish set")
+	}
+	if c.Storage != jetstream.FileStorage {
+		bad = append(bad, "not file storage")
+	}
+	if c.MaxBytes <= 0 {
+		bad = append(bad, "no max_bytes")
+	}
+	if len(c.Subjects) != 1 || c.Subjects[0] != "$KV."+bucket+".>" {
+		bad = append(bad, "subjects are not exactly $KV."+bucket+".>")
+	}
+	if len(bad) > 0 {
+		return fmt.Errorf("%w: %s: %s", ErrUnsafeBucket, bucket, strings.Join(bad, ", "))
+	}
+	return nil
 }
 
 // New wraps a bucket that is already open (tests).
-func New(kv jetstream.KeyValue) *Store { return &Store{kv: kv} }
+func New(kv jetstream.KeyValue, imported bool) *Store { return &Store{kv: kv, expect: imported} }
 
 func (s *Store) get(ctx context.Context, key string, v any) (uint64, bool, error) {
 	e, err := s.kv.Get(ctx, key)
@@ -185,21 +263,28 @@ func isWrongSequence(err error) bool {
 func (s *Store) Imported(ctx context.Context) (bool, error) {
 	_, err := s.kv.Get(ctx, importedKey)
 	if errors.Is(err, jetstream.ErrKeyNotFound) {
+		if s.expect {
+			return false, ErrImportMissing
+		}
 		return false, nil
 	}
 	return err == nil, err
 }
 
-// MarkImported is the import's last step.
+// MarkImported is the import's last step. Written once (compare and set): a
+// second import leaves the first mark as it is.
 func (s *Store) MarkImported(ctx context.Context, at time.Time) error {
-	_, err := s.kv.Put(ctx, importedKey, []byte(at.UTC().Format(time.RFC3339)))
+	_, err := s.kv.Create(ctx, importedKey, []byte(at.UTC().Format(time.RFC3339)))
+	if errors.Is(err, jetstream.ErrKeyExists) {
+		return nil
+	}
 	return err
 }
 
 // Channel reads a channel by its token; false when there is none.
 func (s *Store) Channel(ctx context.Context, name string) (Channel, uint64, bool, error) {
 	var c Channel
-	if err := checkKey(name); err != nil {
+	if err := checkChannel(name); err != nil {
 		return c, 0, false, err
 	}
 	rev, ok, err := s.get(ctx, channelPrefix+name, &c)
@@ -208,7 +293,7 @@ func (s *Store) Channel(ctx context.Context, name string) (Channel, uint64, bool
 
 // PutChannel writes a channel over revision rev (0: a new one).
 func (s *Store) PutChannel(ctx context.Context, c Channel, rev uint64) (uint64, error) {
-	if err := checkKey(c.Name); err != nil {
+	if err := checkChannel(c.Name); err != nil {
 		return 0, err
 	}
 	if c.Owner != "" {
@@ -236,7 +321,7 @@ func (s *Store) Memberships(ctx context.Context, sub string, channels []string) 
 	}
 	out := make(map[string]bool, len(channels))
 	for _, name := range channels {
-		if checkKey(name) != nil {
+		if checkChannel(name) != nil {
 			out[name] = false
 			continue
 		}
@@ -298,33 +383,43 @@ func (s *Store) Login(ctx context.Context, sub, display, today string) (Identity
 	return Identity{}, ErrConflict
 }
 
-// claimAnchor reserves `today` for sub if it is a valid anchor and free (or
-// already sub's), else sub's own lower-cased value.
+// claimAnchor reserves an anchor for sub: `today` as a name anchor when it
+// is given, has a name's shape and is free (or already sub's); else sub's own
+// lower-cased value as a sub anchor. The two kinds live under their own keys
+// and never share a value: a name anchor has a Mattermost username's shape
+// (a letter, at most 22 characters), a sub anchor must not have it. So a
+// username equal to another identity's `sub` can never take that identity's
+// place. The index is written before the identity; if that write fails the
+// index stays, and sub's next login finds it as its own.
 func (s *Store) claimAnchor(ctx context.Context, sub, today string) (string, error) {
-	try := func(a string) (bool, error) {
-		if !anchorRE.MatchString(a) {
-			return false, nil
-		}
-		_, err := s.kv.Create(ctx, anchorPrefix+a, []byte(sub))
+	try := func(key string) (bool, error) {
+		_, err := s.kv.Create(ctx, key, []byte(sub))
 		if err == nil {
 			return true, nil
 		}
 		if !errors.Is(err, jetstream.ErrKeyExists) {
 			return false, err
 		}
-		e, err := s.kv.Get(ctx, anchorPrefix+a)
+		e, err := s.kv.Get(ctx, key)
 		if err != nil {
 			return false, err
 		}
 		return string(e.Value()) == sub, nil
 	}
-	if today != "" {
-		if ok, err := try(today); err != nil || ok {
-			return today, err
+	if today != "" && nameAnchorRE.MatchString(today) {
+		ok, err := try(anchorPrefix + "name." + hex.EncodeToString([]byte(today)))
+		if err != nil {
+			return "", err
+		}
+		if ok {
+			return today, nil
 		}
 	}
 	own := lower(sub)
-	ok, err := try(own)
+	if !anchorRE.MatchString(own) || nameAnchorRE.MatchString(own) {
+		return "", fmt.Errorf("%w: %.64q", ErrAnchorShape, own)
+	}
+	ok, err := try(anchorPrefix + "sub." + hex.EncodeToString([]byte(own)))
 	if err != nil {
 		return "", err
 	}
