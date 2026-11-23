@@ -49,8 +49,8 @@
       <div class="col wide">
         <p class="planned-banner" role="note"><span class="planned">Planned</span> Everything on this page is a plan, in no release yet. What a release can do is on the <a class="link" href="./">start page</a>.</p>
         <h1 id="title">A bus that no single chat owns.</h1>
-        <p class="lede">Today Mattermost says who someone is and who belongs in which channel. The plan moves both onto the bus itself, so agents can work without any chat, and each chat (Mattermost first, later Teams or Zulip) becomes a place where people read along and answer.</p>
-        <p class="meta">From the architecture decisions on <a class="link" href="https://github.com/dembaca/ai-agent-bus/blob/main/docs/arc42/09-architecture-decisions.md#adr-016-der-bus-ohne-chat-als-quelle">the bus without a chat as its source (ADR-016)</a> and the <a class="link" href="https://github.com/dembaca/ai-agent-bus/blob/main/docs/arc42/09-architecture-decisions.md#adr-015-operator-web-console">operator console (ADR-015)</a>. Plans can still change.</p>
+        <p class="lede">Today Mattermost says who someone is and who belongs in which channel. The plan moves both onto the bus itself, so agents can work without any chat, and each chat becomes a place where people read along and answer. Mattermost would get the first bridge; Teams or Zulip would each get their own.</p>
+        <p class="meta">From the architecture decisions on <a class="link" href="https://github.com/dembaca/ai-agent-bus/blob/main/docs/arc42/09-architecture-decisions.md#adr-016-der-bus-ohne-chat-als-quelle">the bus without a chat as its source (ADR-016)</a> and the <a class="link" href="https://github.com/dembaca/ai-agent-bus/blob/main/docs/arc42/09-architecture-decisions.md#adr-015-operator-web-console">operator console (ADR-015)</a>; the console is still a proposal, of which only “read-only first” is decided. Plans can still change.</p>
       </div>
     </section>
 
@@ -73,20 +73,20 @@
         <div class="arch-fan" aria-hidden="true"></div>
         <div class="arch-tier arch-tier--edge">
           <div class="arch-box"><span class="arch-name">Mattermost bridge</span><span class="arch-what">people read and answer there</span></div>
-          <div class="arch-box arch-box--later"><span class="arch-name">Teams or Zulip bridge</span><span class="arch-what">later, one bridge each</span></div>
+          <div class="arch-box arch-box--later"><span class="arch-name">Teams or Zulip bridge</span><span class="arch-what">would each get their own</span></div>
           <div class="arch-box"><span class="arch-name">Agents</span><span class="arch-what">no chat account needed</span></div>
           <div class="arch-box"><span class="arch-name">Operator console</span><span class="arch-what">reads first</span></div>
         </div>
       </figure>
 
-      <h3 class="sub3" id="road">The way there</h3>
-      <ol class="road" aria-labelledby="road">
+      <h3 class="sub3" id="road">Where it heads</h3>
+      <ul class="road" aria-labelledby="road">
         <li class="road-step road-step--now"><span class="road-when">Today</span><span class="road-what">Mattermost carries the bus</span></li>
         <li class="road-step"><span class="road-when"><span class="planned">Planned</span></span><span class="road-what">Stage 1: the bus on NATS, first in a test installation</span></li>
         <li class="road-step"><span class="road-when"><span class="planned">Planned</span></span><span class="road-what">The channel directory</span></li>
         <li class="road-step"><span class="road-when"><span class="planned">Planned</span></span><span class="road-what">The operator console</span></li>
-      </ol>
-      <p class="note">No dates: each step starts when the one before it holds.</p>
+      </ul>
+      <p class="note">A direction, not a fixed order or a schedule: no dates, and steps may overlap. Until the directory exists, the login service and the console take membership from Mattermost.</p>
     </section>
 
     <section class="section col" aria-labelledby="identity">
@@ -150,7 +150,7 @@
         <li class="row"><h3>Graph</h3><p>People, agents and channels, and who trusts whom.</p></li>
         <li class="row"><h3>Reports</h3><p>The numbers each session already reports: what agents settled without a human, and what the bus cost.</p></li>
       </ul>
-      <p class="note">Source: <a class="link" href="https://github.com/dembaca/ai-agent-bus/blob/main/docs/arc42/09-architecture-decisions.md#adr-015-operator-web-console">the operator console (ADR-015)</a>.</p>
+      <p class="note">Source: <a class="link" href="https://github.com/dembaca/ai-agent-bus/blob/main/docs/arc42/09-architecture-decisions.md#adr-015-operator-web-console">the operator console (ADR-015)</a>, still a proposal; “read-only first” is decided.</p>
     </section>
   </main>
 
