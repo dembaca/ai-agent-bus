@@ -7,6 +7,12 @@ MCP server — `python -m mattermost_ai_agent_bus`, the entry point
 stdout and is pointed at the stub through the proxy, so the faults the echo run
 injects are injected into the bus's own sockets.
 
+The proxy is there in **every** run, with `fault=None` for the baseline: a run
+without a fault and a run with one then take the same path, and their numbers
+compare directly (review point 4). Before that the baseline dialled the stub and
+its relay counters were empty, so "the fault changed nothing" could not be told
+from "the fault was not in the path".
+
 `bus_run` sends with `post_message` and receives with `wait_for_events`: the
 two tools an agent actually uses, driven through the server, its inbox and the
 tool boundary the acceptance talks about, not around them. Two processes, not
@@ -28,6 +34,7 @@ import json
 import os
 import re
 import shutil
+import signal
 import subprocess
 import sys
 import tempfile
@@ -50,6 +57,12 @@ STOP_SEC = 5.0
 # The server's last stderr lines a report carries (review point 15: a number is
 # never read without what produced it).
 TAIL = 200
+
+# How often a reader whose wait failed tries again, and how long it waits
+# between tries: the bus's inbox reconnects and backfills on its next
+# wait_for_events, so a single failure must not end the read (review point 3).
+RECONNECTS = 40
+RETRY_SEC = 0.25
 
 PROTOCOL = "2025-06-18"
 # Two tokens, two bots: the stub answers `users/me` with the one the bearer
@@ -90,7 +103,12 @@ def _clean_env(base_url: str, token: str, state_dir: str) -> dict[str, str]:
     return env
 
 
+class Unavailable(RuntimeError):
+    """No interpreter here imports the bus: the run cannot start, and says why."""
+
+
 _interpreter: list[str] | None = None
+_interpreting: asyncio.Lock | None = None
 
 
 def interpreter() -> list[str]:
@@ -102,16 +120,24 @@ def interpreter() -> list[str]:
     the first that can is used. A run under an interpreter without `mcp` would
     otherwise fail as a child that died with a traceback on stderr, which reads
     like a bus that never started.
+
+    There is deliberately no `uv run` candidate (review point at bus.py:118):
+    probing through it synced `mcp/` as a side effect, so a probe that failed
+    left an empty `mcp/.venv` behind and every later run reused it. The
+    environment `uv sync` would make is `mcp/.venv`, which the second candidate
+    already names — so a host without it is told to sync, not quietly given one.
     """
     global _interpreter
     if _interpreter is not None:
         return _interpreter
-    candidates = [[sys.executable]]
+    # An explicit interpreter wins and is the only candidate: a host whose
+    # layout the probe does not know names its own, and a run can be pointed at
+    # one that cannot import the bus to see what it does then.
+    pinned = os.environ.get("BUS_TESTRIG_PYTHON")
+    candidates = [[pinned or sys.executable]]
     venv = MCP / ".venv" / ("Scripts/python.exe" if os.name == "nt" else "bin/python")
-    if venv.exists():
+    if not pinned and venv.exists():
         candidates.append([str(venv)])
-    if shutil.which("uv"):
-        candidates.append(["uv", "run", "--directory", str(MCP), "--no-sync", "python"])
     probe_env = {name: value for name, value in os.environ.items()
                  if not name.startswith(("MM_", "MATTERMOST_", "CORRAL_", "CLAUDE"))}
     probe_env["PYTHONPATH"] = str(MCP / "src")
@@ -126,8 +152,34 @@ def interpreter() -> list[str]:
         if status == 0:
             _interpreter = argv
             return argv
-    raise RuntimeError("no interpreter here imports mattermost_ai_agent_bus: "
-                       "run `uv sync --directory mcp` first")
+    raise Unavailable("no interpreter here imports mattermost_ai_agent_bus: "
+                      "run `uv sync --directory mcp` first")
+
+
+async def interpreter_async() -> list[str]:
+    """`interpreter` off the loop (review point at bus.py:118).
+
+    The probe is synchronous and may wait 60 s per candidate; running it on the
+    event loop blocked every other task of the run — including another server's
+    reader — for that whole time. One probe at a time: two runs starting
+    together must not probe twice.
+    """
+    global _interpreting
+    if _interpreter is not None:
+        return _interpreter
+    if _interpreting is None:
+        _interpreting = asyncio.Lock()
+    async with _interpreting:
+        if _interpreter is not None:
+            return _interpreter
+        return await asyncio.to_thread(interpreter)
+
+
+def forget_interpreter() -> None:
+    """Forget the probed interpreter: a test that simulates one implacable
+    interpreter set must not leak into the next test."""
+    global _interpreter
+    _interpreter = None
 
 
 class BusProcess:
@@ -173,15 +225,23 @@ class BusProcess:
                 if _ERROR.search(line) and not line.startswith("HTTP Request:")]
 
     async def start(self) -> None:
+        # The probe first, then the temp dir (review point at bus.py:176): a
+        # mkdtemp before a probe that fails left one directory behind per
+        # failed run.
+        argv = await interpreter_async() + ["-m", "mattermost_ai_agent_bus"]
         self._state = tempfile.mkdtemp(prefix="bus-testrig-")
-        argv = interpreter() + ["-m", "mattermost_ai_agent_bus"]
         try:
             self._proc = await asyncio.create_subprocess_exec(
                 *argv, cwd=str(MCP), env=_clean_env(self.base_url, self.token, self._state),
                 stdin=asyncio.subprocess.PIPE, stdout=asyncio.subprocess.PIPE,
-                stderr=asyncio.subprocess.PIPE, limit=4 << 20)
+                stderr=asyncio.subprocess.PIPE, limit=4 << 20,
+                # A process group of its own: the server starts children on some
+                # hosts, and killing only the pid left them (review point at
+                # bus.py:114).
+                start_new_session=True)
         except OSError as exc:
             shutil.rmtree(self._state, ignore_errors=True)
+            self._state = ""
             raise RuntimeError(f"the bus did not start: {exc}") from exc
         self._reader = asyncio.create_task(self._read())
         self._stderr = asyncio.create_task(self._drain())
@@ -205,32 +265,68 @@ class BusProcess:
     async def stop(self) -> None:
         """End the server and reap it: closing stdin is the protocol's own way
         out; a SIGKILL is what remains when the server does not take it. No
-        orphan is left for the machine to inherit."""
-        proc, self._proc = self._proc, None
-        for task in (self._reader, self._stderr):
-            if task is not None:
-                task.cancel()
-        if proc is not None and proc.returncode is None:
-            with contextlib.suppress(BrokenPipeError, ConnectionError):
-                if proc.stdin is not None:
-                    proc.stdin.close()
-            try:
-                await asyncio.wait_for(proc.wait(), STOP_SEC)
-            except asyncio.TimeoutError:
+        orphan is left for the machine to inherit.
+
+        The group is killed, not the pid (review point at bus.py:114): a child
+        the server started would otherwise outlive it. The wait and the kill sit
+        in `try/finally`, so a `stop` cancelled half way still takes the child
+        down, and `self._proc` is dropped only once that is done — a second
+        `stop` after an interrupted one still has a process to kill. stderr is
+        read to EOF before the reader ends (review point at bus.py:210): the
+        lines the server wrote on its way out are the ones a failing run needs.
+        """
+        try:
+            proc = self._proc
+            if proc is not None and proc.returncode is None:
+                with contextlib.suppress(BrokenPipeError, ConnectionError):
+                    if proc.stdin is not None:
+                        proc.stdin.close()
+                try:
+                    await asyncio.wait_for(proc.wait(), STOP_SEC)
+                except asyncio.TimeoutError:
+                    await self._kill(proc)
+                    with contextlib.suppress(asyncio.TimeoutError):
+                        await asyncio.wait_for(proc.wait(), STOP_SEC)
+        finally:
+            proc = self._proc
+            if proc is not None and proc.returncode is None:
+                await self._kill(proc)
+                with contextlib.suppress(asyncio.TimeoutError):
+                    await asyncio.wait_for(proc.wait(), STOP_SEC)
+            self._proc = None
+            await self._finish_readers()
+            self._pending.clear()
+            # The state directory is this run's alone (a throwaway
+            # XDG_STATE_HOME); leaving it behind would grow the machine's temp
+            # directory by one per server, which a 10-run-per-fault plan
+            # multiplies.
+            if self._state:
+                shutil.rmtree(self._state, ignore_errors=True)
+                self._state = ""
+
+    async def _kill(self, proc: asyncio.subprocess.Process) -> None:
+        """SIGKILL the server's whole process group, or the pid when there is
+        no group of its own (Windows has none)."""
+        with contextlib.suppress(ProcessLookupError, PermissionError):
+            if hasattr(os, "killpg"):
+                os.killpg(os.getpgid(proc.pid), signal.SIGKILL)
+            else:
                 proc.kill()
-                await proc.wait()
-        for task in (self._reader, self._stderr):
-            if task is not None:
-                with contextlib.suppress(asyncio.CancelledError):
-                    await task
+
+    async def _finish_readers(self) -> None:
+        """Drain stdout and stderr to EOF, then end them: cancelling the stderr
+        reader first lost the child's last lines (review point at bus.py:210).
+        Bounded, so a pipe a grandchild still holds cannot hang the run; a
+        reader that failed is already over and its exception is not this call's
+        to raise."""
+        pending = [task for task in (self._reader, self._stderr) if task is not None]
+        if pending:
+            _, still = await asyncio.wait(pending, timeout=STOP_SEC)
+            for task in still:
+                task.cancel()
+            if still:
+                await asyncio.wait(still, timeout=STOP_SEC)
         self._reader = self._stderr = None
-        self._pending.clear()
-        # The state directory is this run's alone (a throwaway XDG_STATE_HOME);
-        # leaving it behind would grow the machine's temp directory by one per
-        # server, which a 10-run-per-fault plan multiplies.
-        if self._state:
-            shutil.rmtree(self._state, ignore_errors=True)
-            self._state = ""
 
     async def call(self, tool: str, **args: Any) -> Any:
         """One `tools/call`, the tool's own JSON as the server wrote it.
@@ -402,12 +498,12 @@ async def bus_run(count: int = 100, fault: ProxyFault | None = None,
         stub = await stack.enter_async_context(MattermostStub())
         stub.identify(SENDER_TOKEN, SENDER_ID, "agent-sender")
         stub.identify(RECEIVER_TOKEN, RECEIVER_ID, "agent-receiver")
-        proxy: GatewayProxy | None = None
-        if fault is not None:
-            proxy = await stack.enter_async_context(GatewayProxy(stub.url, fault))
-        url = proxy.url if proxy is not None else stub.url
-        sender = BusProcess(url, token=SENDER_TOKEN)
-        receiver = BusProcess(url, token=RECEIVER_TOKEN)
+        # Always through the proxy, with `fault=None` for the baseline (review
+        # point 4): the two runs then take the same path, and the relay's
+        # counters are there to compare instead of missing from the baseline.
+        proxy = await stack.enter_async_context(GatewayProxy(stub.url, fault))
+        sender = BusProcess(proxy.url, token=SENDER_TOKEN)
+        receiver = BusProcess(proxy.url, token=RECEIVER_TOKEN)
         await stack.enter_async_context(sender)
         await stack.enter_async_context(receiver)
         sent_done: float | None = None
@@ -433,14 +529,26 @@ async def bus_run(count: int = 100, fault: ProxyFault | None = None,
                 """Read continuously, never waiting for the sender first — the
                 error the echo run's review point 7 names. It ends only when
                 sending is done **and** the line has been quiet for `settle`
-                since the later of the last send and the last arrival."""
+                since the later of the last send and the last arrival.
+
+                A failed wait is retried a bounded number of times (review
+                point 3): the bus's inbox reconnects and backfills on its next
+                wait, so ending the reader at the first error would report
+                everything after a `cut` as lost although the bus recovers it.
+                """
                 nonlocal last_arrival
+                failures = 0
                 while True:
                     try:
                         events = await receiver.call("wait_for_events", timeout_sec=0.25)
                     except (McpError, RuntimeError, TimeoutError) as exc:
                         run.closed = run.closed or f"{type(exc).__name__}: {exc}"[:300]
-                        return
+                        failures += 1
+                        if failures > RECONNECTS:
+                            return
+                        await asyncio.sleep(RETRY_SEC)
+                        continue
+                    failures = 0
                     for item in events if isinstance(events, list) else []:
                         post = item.get("post") if isinstance(item, dict) else None
                         seq = seq_of.get(str(post.get("id"))) if isinstance(post, dict) else None
@@ -455,11 +563,21 @@ async def bus_run(count: int = 100, fault: ProxyFault | None = None,
                 reader = asyncio.create_task(receive())
             for seq in range(count):
                 run.send(seq)
-                post = await sender.call("post_message", message=f"bus-run {seq}")
-                run.sent_frames += 1
+                post: Any = None
+                try:
+                    post = await sender.call("post_message", message=f"bus-run {seq}")
+                except (McpError, RuntimeError, TimeoutError, OSError) as exc:
+                    run.closed = run.closed or (
+                        f"post_message failed: {type(exc).__name__}: {exc}")[:300]
                 if not isinstance(post, dict) or not post.get("id"):
-                    run.closed = f"post_message answered without an id: {post!r}"[:300]
+                    # A send that failed or answered without an id never left
+                    # the harness: it is neither sent nor lost (review point 5,
+                    # the echo run's `run.sent.pop` at runner.py:246).
+                    run.sent.pop()
+                    if not run.closed:
+                        run.closed = f"post_message answered without an id: {post!r}"[:300]
                     break
+                run.sent_frames += 1
                 created = stub.post_of(str(post["id"]))
                 seq_of[str(created["id"])] = seq
                 if await stub.push(posted_frame(created)) == 0 and not run.closed:
@@ -483,20 +601,36 @@ async def bus_run(count: int = 100, fault: ProxyFault | None = None,
                 with contextlib.suppress(asyncio.CancelledError):
                     await reader
             run.ended = time.monotonic()
-            if proxy is not None:
-                run.relay = {"received": proxy.received, "forwarded": proxy.forwarded,
-                             "altered": proxy.altered}
-                doubled = proxy.forwarded - proxy.received
-                if doubled > 0 and fault is not None and fault.kind == "duplicate":
-                    # The wire carried the frame twice; the bus's inbox hands
-                    # each post over once (`websocket_inbox._seen_ids`). That is
-                    # the measurement the acceptance wants ("nothing handled
-                    # twice"), and it is a different number from the wire's.
-                    run.notes.append(
-                        f"the relay delivered {doubled} frame(s) more than once; the bus "
-                        "handed each post over once (duplicates are counted at the tool "
-                        "boundary, not on the wire)")
+            run.relay = {"received": proxy.received, "forwarded": proxy.forwarded,
+                         "altered": proxy.altered}
+            doubled = proxy.forwarded - proxy.received
+            if doubled > 0 and fault is not None and fault.kind == "duplicate":
+                # The wire carried the frame twice; the bus's inbox hands
+                # each post over once (`websocket_inbox._seen_ids`). That is
+                # the measurement the acceptance wants ("nothing handled
+                # twice"), and it is a different number from the wire's.
+                run.notes.append(
+                    f"the relay delivered {doubled} frame(s) more than once; the bus "
+                    "handed each post over once (duplicates are counted at the tool "
+                    "boundary, not on the wire)")
+            if fault is not None and fault.kind in ("cut", "halfopen"):
+                # Neither fault is a plain delivery loss: the inbox reconnects
+                # and backfills after a cut, so what this number counts is the
+                # catch-up read as well as the socket, and a halfopen line
+                # carries nothing until the client's own heartbeat gives up.
+                run.notes.append(
+                    f"{fault.kind} is not a socket-delivery measurement: the loss counts "
+                    "the bus's catch-up read after a reconnect, or a frozen line's "
+                    "silence, not frames the socket dropped one by one")
+            if stub.closed:
+                run.notes.append(f"the stub's socket: {stub.closed}")
+            if run.unmeasured:
+                # The report's own words for "these numbers compare with
+                # nothing" (review point 2): `loss` here is every frame.
+                run.notes.append(f"{run.unmeasured}; loss counts every frame and "
+                                 "is not a delivery measurement")
             if stub.unknown:
+                run.unknown = list(stub.unknown)
                 run.notes.append(f"the stub did not know {len(stub.unknown)} call(s): "
                                  f"{stub.unknown[:5]}")
             run.tail = (receiver.errors or sender.errors)[-15:]
@@ -510,6 +644,7 @@ async def _open_inbox(receiver: BusProcess, run: Run) -> bool:
         await receiver.call("wait_for_events", timeout_sec=0.01)
     except (McpError, RuntimeError, TimeoutError) as exc:
         run.closed = f"inbox never opened: {type(exc).__name__}: {exc}"[:300]
+        run.unmeasured = "the receiver's inbox never opened"
         return False
     return True
 
@@ -517,15 +652,14 @@ async def _open_inbox(receiver: BusProcess, run: Run) -> bool:
 async def _await_socket(stub: MattermostStub, receiver: BusProcess, run: Run, *,
                         timeout: float) -> bool:
     """Wait until the bus's socket is open (it dials on its first wait, so a
-    frame pushed before that reaches nobody). False when none opened in time:
-    the stub still answers the sender, so the run's numbers are its loss, and
-    `closed` says the inbox never connected."""
-    deadline = time.monotonic() + timeout
-    while time.monotonic() < deadline:
-        if stub.conns:
-            return True
-        await asyncio.sleep(0.01)
+    frame pushed before that reaches nobody). An event, not a 10 ms poll
+    (review point at bus.py:523): the wait costs nothing and wakes at once.
+    False when none opened in time: the stub still answers the sender, so the
+    run's numbers are its loss, and `closed` says the inbox never connected."""
+    if await stub.wait_for_socket(timeout):
+        return True
     run.closed = run.closed or (
         f"the bus opened no socket within {timeout:.0f} s; "
         f"stderr: {receiver.errors[-3:]}")
+    run.unmeasured = "the receiver's socket never opened"
     return False

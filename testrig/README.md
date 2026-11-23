@@ -132,7 +132,26 @@ The bus's own calls, as measured from the running server, are the stub's
 `KNOWN` table plus three the first `bus-run` found and added: the heartbeat's
 status write, the roster read (`GET /api/v4/users`), and the exit path's
 unregister (`DELETE /register/v1/agents/<name>`). A run reports any *other*
-unknown call in `notes`, so a new gap is visible rather than a silent 404.
+unknown call in `notes`, and `bus-run` exits 1 on it (a new gap is a broken
+rig, not a delivery number).
+
+Three answers are computed from the posts the stub holds rather than fixed: a
+channel's posts (with `since`, `per_page` and `page`), the bot's channels (with
+`last_post_at`, which is what the bus's backfill tests before reading), and its
+memberships. A fixed empty post list made `cut` measure the stub: after the
+reconnect the bus's catch-up read found nothing, so 10 of 10 read as lost.
+
+`bus-run`'s exit code says whether its numbers can be compared: 0 for a run
+whose baseline lost nothing and whose stand-in answered every call, 1 when the
+stub did not know a call, when the receiver's inbox never opened, or when a
+baseline lost a frame; 2 when no interpreter could start the bus at all. The
+JSON report is printed in every case, because the numbers are how a failure is
+read.
+
+`cut` and `halfopen` are not plain delivery measurements, and the report's
+`notes` says which: after a cut the inbox reconnects and backfills, so the loss
+counts the catch-up read as well as the socket, and a frozen line carries
+nothing until the client's own heartbeat gives up.
 
 ## Layout
 

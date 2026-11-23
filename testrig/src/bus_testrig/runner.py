@@ -76,9 +76,17 @@ class Run:
     #: what the run saw that is not a delivery result (a stub call it could not
     #: answer), so the report says where its numbers came from
     notes: list[str] = field(default_factory=list)
+    #: set when the run never observed the path under test at all (the inbox
+    #: never opened): `loss` then says "everything", not "the channel lost
+    #: this", and a caller must not compare it (review point 2)
+    unmeasured: str = ""
     #: the proxy's own counters when a fault sat in front of the socket
     #: (received, forwarded, altered): the frames it saw, passed and changed
     relay: dict[str, int] = field(default_factory=dict)
+    #: calls the stand-in could not answer, HTTP or WebSocket. Not in the
+    #: report's JSON (it stays what it was) but on the run, because the exit
+    #: code is decided from it (review point 2).
+    unknown: list[tuple[str, str]] = field(default_factory=list, repr=False)
 
     def send(self, seq: int) -> Sent:
         item = Sent(seq=seq, at=time.monotonic())

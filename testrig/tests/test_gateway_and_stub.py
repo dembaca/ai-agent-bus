@@ -10,6 +10,7 @@ from __future__ import annotations
 
 import asyncio
 import json
+import time
 
 import httpx
 import pytest
@@ -366,5 +367,115 @@ async def test_the_gateway_proxy_carries_the_server_close_code():
         server.close()
 
 
+async def test_the_gateway_proxy_answers_502_when_the_backend_is_gone():
+    """Review point at proxy.py:419: an upstream that cannot be reached used to
+    close without an answer. The caller now gets a 502 it can read as the
+    upstream being gone, not a bare read error."""
+    async with Gateway(on_http=lambda *_: None) as upstream:
+        url = upstream.url
+    async with GatewayProxy(url) as proxy:
+        async with httpx.AsyncClient(base_url=proxy.url) as client:
+            answer = await client.get("/api/v4/users/me")
+    assert answer.status_code == 502
+    assert "could not reach the backend" in answer.text
+
+
 def test_halfopen_is_a_declared_fault():
     assert ProxyFault(kind="halfopen").kind == "halfopen"
+
+
+async def test_the_stub_answers_a_channels_posts_from_what_it_holds():
+    """Review point 3: the post list used to be a fixed empty answer, so the
+    bus's catch-up read after a reconnect found nothing and 10/10 lost under
+    `cut` measured the stub. The two posts it created come back, newest first.
+    """
+    async with MattermostStub() as stub:
+        async with httpx.AsyncClient(base_url=stub.url) as client:
+            first = (await client.post("/api/v4/posts", json={"message": "one"})).json()
+            second = (await client.post("/api/v4/posts", json={"message": "two"})).json()
+            read = (await client.get(f"/api/v4/channels/{CHANNEL}/posts")).json()
+    assert read["order"] == [second["id"], first["id"]]
+    assert read["posts"][first["id"]]["message"] == "one"
+    assert stub.unknown == []
+
+
+async def test_the_stubs_post_read_honours_since_and_per_page():
+    """`since` keeps posts created at or after that millisecond and `per_page`
+    caps the window: `client.posts_after` pages with exactly these."""
+    async with MattermostStub() as stub:
+        async with httpx.AsyncClient(base_url=stub.url) as client:
+            first = (await client.post("/api/v4/posts", json={"message": "one"})).json()
+            second = (await client.post("/api/v4/posts", json={"message": "two"})).json()
+            since = (await client.get(f"/api/v4/channels/{CHANNEL}/posts",
+                                      params={"since": second["create_at"]})).json()
+            page = (await client.get(f"/api/v4/channels/{CHANNEL}/posts",
+                                     params={"per_page": 1, "page": 1})).json()
+    assert since["order"] == [second["id"]], since
+    assert first["create_at"] < second["create_at"]
+    assert page["order"] == [first["id"]], page
+
+
+async def test_a_created_post_is_stamped_with_the_stubs_own_clock():
+    """A fixed date older than a day made the bus's catch-up read skip the post
+    it was meant to recover (its watermark floor is 24 h back)."""
+    before = int(time.time() * 1000)
+    async with MattermostStub() as stub:
+        async with httpx.AsyncClient(base_url=stub.url) as client:
+            made = (await client.post("/api/v4/posts", json={"message": "now"})).json()
+    assert before <= made["create_at"] <= int(time.time() * 1000) + 1
+
+
+def test_post_of_refuses_an_id_the_stub_never_created():
+    """Review point: `post_of` used to invent a blank post. A run would then
+    measure against a post the bus never made."""
+    stub = MattermostStub()
+    with pytest.raises(KeyError, match="created no post"):
+        stub.post_of("p" * 26)
+
+
+async def test_an_unexpected_websocket_frame_is_recorded_not_dropped():
+    """Review point 7: a first frame that is not the challenge, text that is
+    not JSON and an unknown action used to vanish. Each is a line in
+    `.unknown`, marked `WS` as REST's are."""
+    async with MattermostStub() as stub:
+        async with websockets.connect(await _ws_url(stub.url)) as not_json:
+            await not_json.send("this is not JSON")
+            await asyncio.sleep(0.1)
+        async with websockets.connect(await _ws_url(stub.url)) as wrong_action:
+            await wrong_action.send(json.dumps({"action": "no_such_action"}))
+            await asyncio.sleep(0.1)
+        async with websockets.connect(await _ws_url(stub.url)) as later:
+            await later.send(CHALLENGE)
+            await asyncio.sleep(0.05)
+            await later.send(json.dumps({"action": "also_unknown"}))
+            await asyncio.sleep(0.1)
+    marks = [entry for entry in stub.unknown if entry[0] == "WS"]
+    assert any("not JSON" in why for _, why in marks), marks
+    assert any("no_such_action" in why for _, why in marks), marks
+    assert any("also_unknown" in why for _, why in marks), marks
+
+
+async def test_a_push_into_a_frozen_socket_is_bounded():
+    """Review point 6: under `halfopen` a write never drains, so `push` used to
+    block until the job's own timeout. It gives up after PUSH_SEC and says why.
+    """
+    async with MattermostStub() as upstream:
+        async with GatewayProxy(upstream.url,
+                                ProxyFault(kind="halfopen", after=1)) as proxy:
+            async with websockets.connect(await _ws_url(proxy.url),
+                                          ping_interval=None) as client:
+                await client.send(CHALLENGE)
+                await client.recv()
+                # Fill the client's buffer and stop reading it, so the stub's
+                # write cannot drain.
+                client.transport.pause_reading()
+                began = asyncio.get_running_loop().time()
+                big = {"event": "posted", "data": {"post": "x" * 200_000}}
+                sent = 0
+                while not upstream.closed:
+                    sent += await upstream.push(big)
+                    if asyncio.get_running_loop().time() - began > 20:
+                        break
+    assert upstream.closed, "a frozen socket must be named, not waited on"
+    assert "did not take a frame" in upstream.closed
+

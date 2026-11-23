@@ -416,8 +416,17 @@ class GatewayProxy:
         forwarded = {name: value for name, value in headers.items()
                      if name.lower() not in _HOP_BY_HOP and name.lower() not in
                      ("host", "content-length")}
-        response = await client.request(method, self.upstream + target,
-                                        headers=forwarded, content=body)
+        try:
+            response = await client.request(method, self.upstream + target,
+                                            headers=forwarded, content=body)
+        except httpx.HTTPError as exc:
+            # An upstream that cannot be reached is an answer too (review point
+            # at proxy.py:419): closing without one left the caller with a bare
+            # read error, which reads like a bug in the client rather than the
+            # upstream being gone.
+            return 502, {"content-type": "text/plain"}, (
+                f"the proxy could not reach the backend: {type(exc).__name__}: {exc}\n"
+            ).encode()
         out = {name: value for name, value in response.headers.items()
                if name.lower() not in _HOP_BY_HOP and name.lower() not in
                ("content-length", "content-encoding")}

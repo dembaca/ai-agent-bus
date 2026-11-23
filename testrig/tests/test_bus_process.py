@@ -9,6 +9,9 @@ than waiting longer.
 
 from __future__ import annotations
 
+import asyncio
+from pathlib import Path
+
 import pytest
 
 from bus_testrig.bus import (
@@ -21,7 +24,7 @@ from bus_testrig.bus import (
     bus_run,
     interpreter,
 )
-from bus_testrig.proxy import ProxyFault
+from bus_testrig.proxy import GatewayProxy, ProxyFault
 from bus_testrig.stub import MattermostStub, posted_frame
 
 
@@ -33,8 +36,15 @@ def _can_import() -> bool:
     return True
 
 
-skip_no_bus = pytest.mark.skipif(not _can_import(),
-                                 reason="mcp/ is not synced: `uv sync --directory mcp`")
+# `BUS_TESTRIG_REQUIRE_BUS=1` (CI) turns the skip into a failure: with the
+# switch on, the conftest refuses before this marker can skip, so a host without
+# the bus fails with one sentence instead of a green report. A silent skip is
+# what let eight bus tests stay green while the workflow ran them before
+# `uv sync` (review point 1).
+skip_no_bus = pytest.mark.skipif(
+    not _can_import(),
+    reason="mcp/ is not synced: `uv sync --directory mcp`")
+pytestmark = pytest.mark.bus
 
 
 @skip_no_bus
@@ -102,7 +112,37 @@ async def test_stop_reaps_the_child():
 
 
 @skip_no_bus
-async def test_the_stub_carries_a_created_post_into_its_frame():
+async def test_a_cancelled_stop_still_kills_the_child():
+    """Review point at bus.py:114: the wait and the kill are a `try/finally`, so
+    a `stop` cancelled while it waits still takes the child down, and the next
+    `stop` finds it gone."""
+    async with MattermostStub() as stub:
+        bus = BusProcess(stub.url, token=SENDER_TOKEN)
+        await bus.start()
+        proc = bus._proc
+        assert proc is not None and proc.returncode is None
+        stopper = asyncio.create_task(bus.stop())
+        await asyncio.sleep(0)  # let it reach the wait
+        stopper.cancel()
+        with pytest.raises(asyncio.CancelledError):
+            await stopper
+        await bus.stop()
+        assert proc.returncode is not None
+
+
+@skip_no_bus
+async def test_the_state_directory_is_not_left_behind(tmp_path, monkeypatch):
+    """Review point at bus.py:176: `mkdtemp` came before the probe, so a probe
+    that failed left a directory behind. The probe now runs first, and a failed
+    start leaves nothing."""
+    async with MattermostStub() as stub:
+        bus = BusProcess(stub.url, token=SENDER_TOKEN)
+        await bus.start()
+        state = bus._state
+        assert state and Path(state).is_dir()
+        await bus.stop()
+        assert not Path(state).exists(), state
+
     """The frame a run pushes is the post the bus asked the stub to create, so
     it is the server's own JSON, not one the harness made up. The tool answers
     the slim post (`author`, not `user_id`); the frame carries the full one."""
@@ -122,7 +162,10 @@ async def test_the_stub_carries_a_created_post_into_its_frame():
 @skip_no_bus
 async def test_a_run_reports_the_bus_as_its_target():
     """`target: bus`, every measurand in the file, and the numbers the run's
-    own formulas produce — not a second bookkeeping type."""
+    own formulas produce — not a second bookkeeping type.
+
+    `relay` is filled even for the baseline (review point 4): the proxy is in
+    front of the stub in every run, so the two runs' counters compare."""
     run = await bus_run(count=6)
     report = run.report()
     assert report["target"] == "bus" and report["run"] == "bus-run"
@@ -130,6 +173,8 @@ async def test_a_run_reports_the_bus_as_its_target():
     assert report["connection_closed"] is None, report
     assert report["measured"]["loss"]["value"] == 0
     assert report["measured"]["latency_p50"]["value"] is not None
+    assert report["relay"]["received"] > 0, report["relay"]
+    assert report["relay"]["altered"] == 0, report["relay"]
     assert report["notes"] == [], report["notes"]
 
 
@@ -162,3 +207,57 @@ async def test_a_stall_delays_the_bus_without_losing():
     run = await bus_run(count=4, fault=ProxyFault(kind="stall", after=1, stall_sec=0.1))
     assert run.measure()["loss"]["value"] == 0
     assert run.measure()["latency_p95"]["value"] >= 100
+
+
+@skip_no_bus
+async def test_a_cut_is_marked_as_not_a_delivery_measurement():
+    """`cut` and `halfopen` close the line rather than dropping frames one by
+    one, and after a cut the bus reconnects and backfills (review point 3): what
+    the run then counts is the catch-up read, not the socket. The report says so
+    in `notes` instead of letting the number pass as a delivery loss."""
+    run = await bus_run(count=6, fault=ProxyFault(kind="cut", after=3), send_interval=0.05)
+    assert any("not a socket-delivery measurement" in note for note in run.notes), run.notes
+    half = await bus_run(count=4, fault=ProxyFault(kind="halfopen", after=2))
+    assert any("not a socket-delivery measurement" in note for note in half.notes), half.notes
+
+
+@skip_no_bus
+async def test_a_failed_send_is_neither_sent_nor_lost(monkeypatch):
+    """Review point 5: a `post_message` that raises, times out or answers
+    without an id never left the harness. The echo run pops the send
+    (`runner.py:246`); the bus run must too, or a dead server reads as frames
+    the channel lost."""
+    original = BusProcess.call
+    posts = {"n": 0}
+
+    async def flaky(self, tool, **args):
+        if tool == "post_message":
+            posts["n"] += 1
+            if posts["n"] == 3:
+                raise McpError("post_message: the server refused")
+        return await original(self, tool, **args)
+
+    monkeypatch.setattr(BusProcess, "call", flaky)
+    run = await bus_run(count=5)
+    assert posts["n"] == 3, posts
+    assert run.sent_frames == 2, (run.sent_frames, [s.seq for s in run.sent])
+    assert len(run.sent) == run.sent_frames
+    # Nothing that never left counts as lost: only the two real sends can be.
+    assert run.measure()["loss"]["value"] == 0, run.measure()["loss"]
+    assert "post_message failed" in run.closed, run.closed
+
+    """Review point 4: the proxy used to be left out when `fault is None`, so
+    the baseline and the faulted run took different paths. Every run now enters
+    `GatewayProxy`, with `None` as the baseline's fault."""
+    entered: list[object] = []
+
+    class Recording(GatewayProxy):
+        def __init__(self, upstream, fault=None):
+            entered.append(fault)
+            super().__init__(upstream, fault)
+
+    monkeypatch.setattr("bus_testrig.bus.GatewayProxy", Recording)
+    await bus_run(count=2)
+    await bus_run(count=2, fault=ProxyFault(kind="drop", after=1))
+    assert len(entered) == 2, entered
+    assert entered[0] is None and isinstance(entered[1], ProxyFault), entered

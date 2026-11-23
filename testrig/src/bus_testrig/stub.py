@@ -12,6 +12,15 @@ deliberate claim about the bus, which is why they are listed rather than guessed
 
 An unknown call is a 404 **and** a line in `.unknown`: a run asserts "0 unknown"
 instead of passing because nothing checked. Every call lands in `.calls`.
+A frame the socket did not understand lands there too, marked `WS`, for the
+same reason: a first frame that is not the challenge, text that is not JSON or
+an action nobody answers used to vanish, so a bus that changed what it sends
+would still have read as a clean run.
+
+Three answers are computed from what the stub holds rather than fixed in the
+table: a channel's posts, the bot's channels and its memberships. A fixed empty
+post list made the bus's catch-up read after a reconnect find nothing, so a
+`cut` run measured the stub's silence and not the bus's recovery.
 
 The WebSocket half answers the `authentication_challenge` with `hello`, then
 writes the frames the caller scripted. Mattermost sends a `posted` frame with
@@ -25,10 +34,13 @@ post is kept (`post_of`) so the frame a run pushes is the post the bus asked for
 
 from __future__ import annotations
 
+import asyncio
 import json
 import re
+import time
 from collections import OrderedDict
 from typing import Any
+from urllib.parse import parse_qs
 
 from .gateway import Gateway, WsConn
 
@@ -38,6 +50,10 @@ CHANNEL = "c" * 26
 POST = "p" * 26
 USER = "u" * 26
 
+# How long one pushed frame may take on one socket before that socket is
+# declared stuck (review point 6: under `halfopen` a write never drains).
+PUSH_SEC = 5.0
+
 # From the measured probe (probe_bus_calls.py): (method, path) regex -> body.
 # Copied rather than imported because that file is a script with side effects,
 # and because a change here must be a deliberate claim about the bus.
@@ -46,15 +62,16 @@ KNOWN: "OrderedDict[str, object]" = OrderedDict([
     (r"GET /api/v4/teams/name/[^/]+$", {"id": TEAM}),
     (r"GET /api/v4/teams/[^/]+/channels/name/[^/]+$", {"id": CHANNEL}),
     (r"GET /api/v4/channels/[^/]+$", {"id": CHANNEL, "name": "agents", "type": "O"}),
-    (r"GET /api/v4/channels/[^/]+/posts.*$", {"order": [], "posts": {}}),
+    # `posts`, the bot's channels and its memberships are computed from what
+    # this stub holds (`_channel_posts`, `_member_channels`,
+    # `_team_channel_members`); their *shape* is the measured claim, their
+    # content grows with the run, so they are not rows here.
     (r"GET /api/v4/channels/[^/]+/pinned$", {"order": [], "posts": {}}),
-    (r"GET /api/v4/users/me/channels$", []),
-    (r"GET /api/v4/users/me/teams/[^/]+/channels$", []),
     (r"POST /api/v4/posts$", {"id": POST, "user_id": M, "channel_id": CHANNEL,
                               "message": "hi", "create_at": 2}),
     (r"POST /api/v4/channels/members/me/view$", {}),
     (r"POST /api/v4/channels/[^/]+/members$", {}),
-    (r"GET /api/v4/users/me/teams/[^/]+/channels/members$", []),
+    (r"GET /api/v4/users/me/teams/[^/]+/channels$", []),
     (r"GET /api/v4/posts/[^/]+/thread$", {"order": [], "posts": {}}),
     (r"GET /api/v4/posts/[^/]+/reactions$", []),
     (r"GET /api/v4/channels/[^/]+/members/[^/]+$", {"channel_id": CHANNEL, "user_id": M}),
@@ -76,6 +93,26 @@ KNOWN: "OrderedDict[str, object]" = OrderedDict([
     # that treated this as unknown would report four gaps per run.
     (r"DELETE /register/v1/agents/[^/]+$", {}),
 ])
+
+# The three answers this stub computes instead of holding fixed (review point
+# 3): the paths are Mattermost's, kept here so the dispatch reads like the table.
+CHANNEL_POSTS = re.compile(r"^/api/v4/channels/[^/]+/posts$")
+TEAM_MEMBERS = re.compile(r"^/api/v4/users/me/teams/[^/]+/channels/members$")
+
+
+def _query_int(query: dict[str, list[str]], name: str) -> int:
+    """One integer query parameter, 0 when it is absent or not a number."""
+    values = query.get(name) or []
+    try:
+        return int(values[0]) if values else 0
+    except ValueError:
+        return 0
+
+
+# The actions the bus sends on its socket and this stub knows what to do with:
+# the challenge it answers, and the typing indicator it lets pass. Anything else
+# is recorded as unknown rather than dropped (review point 7).
+WS_ACTIONS = frozenset(("authentication_challenge", "user_typing"))
 
 
 def posted_frame(post: dict[str, Any], *, as_object: bool = False,
@@ -113,6 +150,9 @@ class MattermostStub:
         self.unknown: list[tuple[str, str]] = []
         self.received: list[dict[str, Any]] = []
         self.authenticated = False
+        #: why a socket could not be written to (review point 6), empty while
+        #: every push was taken; a run reports it instead of a silent loss
+        self.closed = ""
         #: the upgraded sockets, oldest first: the bus opens its inbox on the
         #: first wait, not at start, so a run pushes into whatever is open
         self.conns: list[WsConn] = []
@@ -122,6 +162,14 @@ class MattermostStub:
         self.posts: dict[str, dict[str, Any]] = {}
         self._patterns = [(re.compile(pattern), body) for pattern, body in KNOWN.items()]
         self._gateway = Gateway(self._on_http, self._on_ws)
+        #: set when the first socket is open; a run waits on it instead of
+        #: polling `conns` every 10 ms (review point at bus.py:523)
+        self._connected = asyncio.Event()
+        #: the wall-clock base the created posts count from. Mattermost stamps a
+        #: post with the time it was made; a fixed date made every catch-up read
+        #: look older than the bus's own watermark floor (24 h back), so the
+        #: backfill never saw a post a `cut` had eaten.
+        self._clock = int(time.time() * 1000)
 
     @property
     def url(self) -> str:
@@ -135,9 +183,13 @@ class MattermostStub:
 
     def post_of(self, post_id: str) -> dict[str, Any]:
         """The post the caller created, as Mattermost's `posted` frame carries
-        it. A run never invents a post: this is the one the bus asked for."""
-        return dict(self.posts.get(post_id) or {"id": post_id, "channel_id": CHANNEL,
-                                                "message": "", "create_at": 0})
+        it. A run never invents a post: an id this stub did not create is a
+        caller's bug, and raising says so instead of handing back a blank post
+        the run would then measure against."""
+        try:
+            return dict(self.posts[post_id])
+        except KeyError:
+            raise KeyError(f"the stub created no post {post_id!r}") from None
 
     def _bot(self, headers: dict[str, str]) -> dict[str, Any]:
         token = headers.get("authorization", "").removeprefix("Bearer ").strip()
@@ -149,11 +201,23 @@ class MattermostStub:
         Zero means the bus has not opened its inbox yet — it does so on its
         first wait_for_events — and the frame reached nobody. That is visible
         here rather than a silent success for a run that wants it delivered.
+
+        Bounded (review point 6): under `halfopen` the proxy has stopped
+        reading, so `send_text` waits for a transport that never drains — the
+        review measured a push blocked at frame 2283, with only the job's own
+        timeout left. A socket that cannot take the frame in PUSH_SEC is closed
+        and named in `.closed`, so the run reports a stuck line instead of
+        hanging until something outside kills it.
         """
         text = frame if isinstance(frame, str) else json.dumps(frame)
         sent = 0
         for conn in list(self.conns):
-            await conn.send_text(text)
+            try:
+                await asyncio.wait_for(conn.send_text(text), PUSH_SEC)
+            except asyncio.TimeoutError:
+                self.closed = f"a socket did not take a frame within {PUSH_SEC} s"
+                conn.transport.abort()
+                continue
             sent += 1
         return sent
 
@@ -170,6 +234,12 @@ class MattermostStub:
         self.calls.append((method, path))
         if method == "POST" and path == "/api/v4/posts":
             return self._create_post(headers, body)
+        if method == "GET" and CHANNEL_POSTS.fullmatch(path):
+            return self._channel_posts(target)
+        if method == "GET" and path == "/api/v4/users/me/channels":
+            return self._member_channels()
+        if method == "GET" and TEAM_MEMBERS.fullmatch(path):
+            return self._team_channel_members()
         key = f"{method} {path}"
         for pattern, answer in self._patterns:
             if pattern.fullmatch(key):
@@ -179,10 +249,61 @@ class MattermostStub:
         self.unknown.append((method, path))
         return 404, {"content-type": "application/json"}, b'{"message":"stub: unknown call"}'
 
+    def _channel_posts(self, target: str) -> tuple[int, dict[str, str], bytes]:
+        """A channel's posts as this stub holds them, newest first.
+
+        Mattermost's contract: `since` keeps posts created at or after that
+        millisecond, `per_page` caps `order` and `page` skips pages of it. A
+        blank answer here (the old fixed one) made the bus's catch-up read
+        after a reconnect find nothing, so a `cut` measured the stub.
+        """
+        query = parse_qs(target.partition("?")[2])
+        since = _query_int(query, "since")
+        per_page = _query_int(query, "per_page") or len(self.posts) or 1
+        page = _query_int(query, "page") or 0
+        held = sorted(self.posts.values(), key=lambda p: (p["create_at"], p["id"]),
+                      reverse=True)
+        kept = [p for p in held if p["create_at"] >= since]
+        window = kept[page * per_page:(page + 1) * per_page]
+        return 200, {"content-type": "application/json"}, json.dumps({
+            "order": [p["id"] for p in window],
+            "posts": {p["id"]: p for p in window},
+        }).encode()
+
+    def _member_channels(self) -> tuple[int, dict[str, str], bytes]:
+        """The bot's channels, each with when its newest post came.
+
+        `last_post_at` is what the bus's backfill tests before reading a
+        channel (unread.after): a zero here meant the newest post was never
+        looked for, so no catch-up read happened at all.
+        """
+        mine = {p["channel_id"] for p in self.posts.values()}
+        channels = [self._channel_row(CHANNEL)] + [
+            self._channel_row(cid) for cid in sorted(mine - {CHANNEL})]
+        return 200, {"content-type": "application/json"}, json.dumps(channels).encode()
+
+    def _team_channel_members(self) -> tuple[int, dict[str, str], bytes]:
+        """The bot's memberships in the team's channels, one per channel."""
+        return 200, {"content-type": "application/json"}, json.dumps(
+            [{"channel_id": CHANNEL, "user_id": M}]).encode()
+
+    def _channel_row(self, channel_id: str) -> dict[str, Any]:
+        newest = max((p["create_at"] for p in self.posts.values()
+                      if p["channel_id"] == channel_id), default=0)
+        row = {"id": channel_id, "type": "O", "last_post_at": newest}
+        if channel_id == CHANNEL:
+            row |= {"name": "agents", "total_msg_count": len(self.posts)}
+        return row
+
     def _create_post(self, headers: dict[str, str],
                      body: bytes) -> tuple[int, dict[str, str], bytes]:
         """Mattermost's own answer to a create: the post, with the author the
-        bearer names. Kept, so a run reads back exactly what it sent."""
+        bearer names. Kept, so a run reads back exactly what it sent.
+
+        `create_at` counts from the stub's own clock, not a fixed date: the bus
+        never looks back further than a day, so a 2023 timestamp made every
+        catch-up read skip the post it was meant to recover.
+        """
         try:
             asked = json.loads(body or b"{}")
         except json.JSONDecodeError:
@@ -193,33 +314,81 @@ class MattermostStub:
                 "root_id": str(asked.get("root_id") or ""),
                 "message": str(asked.get("message") or ""),
                 "props": asked.get("props") or {},
-                "create_at": 1_700_000_000_000 + seq}
+                "create_at": self._clock + seq}
         self.posts[post["id"]] = post
         return 200, {"content-type": "application/json"}, json.dumps(post).encode()
 
+    async def wait_for_socket(self, timeout: float) -> bool:
+        """True once a socket is open, False after `timeout`.
+
+        The bus opens its inbox on its first `wait_for_events`, not at start, so
+        a caller that pushes without waiting sends into nothing. This is the
+        event that replaces the 10 ms poll (review point at bus.py:523); the
+        event is cleared when the last socket closes, so waking and finding
+        none again keeps waiting rather than reporting a socket that is gone.
+        """
+        loop = asyncio.get_running_loop()
+        deadline = loop.time() + timeout
+        while True:
+            if self.conns:
+                return True
+            left = deadline - loop.time()
+            if left <= 0:
+                return False
+            try:
+                await asyncio.wait_for(self._connected.wait(), left)
+            except asyncio.TimeoutError:
+                return False
+
     async def _on_ws(self, conn: WsConn, _headers: dict[str, str]) -> None:
         self.conns.append(conn)
+        self._connected.set()
         try:
             await self._serve_ws(conn)
         finally:
             if conn in self.conns:
                 self.conns.remove(conn)
+            if not self.conns:
+                self._connected.clear()
 
     async def _serve_ws(self, conn: WsConn) -> None:
         first = await conn.recv()
-        if first is not None and first[0] == 0x1:
+        if first is None:
+            self.unknown.append(("WS", "the socket closed before its first frame"))
+        elif first[0] != 0x1:
+            # Not text: nothing the stub can read, and the handshake it needs
+            # never came (review point 7).
+            self.unknown.append(("WS", f"first frame was not text (opcode {first[0]})"))
+        else:
             try:
                 message = json.loads(first[1])
             except json.JSONDecodeError:
+                self.unknown.append(("WS", f"first frame was not JSON: {first[1][:60]!r}"))
                 message = {}
             self.received.append(message)
             if message.get("action") == "authentication_challenge":
                 self.authenticated = True
                 await conn.send_text(json.dumps({"event": "hello"}))
+            elif message.get("action") is not None:
+                # A socket that opens with an action this stub does not answer
+                # is a claim about the bus that has changed: say so (review
+                # point 7) rather than let the handshake time out unseen.
+                self.unknown.append(("WS", f"action {message['action']!r} before hello"))
         for frame in list(self.frames):
             await conn.send_text(frame if isinstance(frame, str) else json.dumps(frame))
         async for raw in conn:
-            try:
-                self.received.append(json.loads(raw))
-            except (json.JSONDecodeError, TypeError):
+            if not isinstance(raw, str):
+                self.unknown.append(("WS", f"a binary frame the stub cannot read ({len(raw)} B)"))
                 continue
+            try:
+                message = json.loads(raw)
+            except json.JSONDecodeError:
+                self.unknown.append(("WS", f"text that is not JSON: {raw[:60]!r}"))
+                continue
+            self.received.append(message)
+            action = message.get("action")
+            # The two actions the bus sends (probe_bus_frames): answered or
+            # let pass. Everything else is a gap in this stand-in, not a frame
+            # to drop silently.
+            if action is not None and action not in WS_ACTIONS:
+                self.unknown.append(("WS", f"action {action!r}"))
