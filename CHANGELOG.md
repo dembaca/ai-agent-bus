@@ -41,6 +41,16 @@ before 0.5.0 are described in the git history.
   certificate verified; props carry `MM_PROPS_PREFIX`. The login service takes `since`
   for direct messages under the key `@dm`. New dependency `nats-py` 2.16.0;
   CI runs its tests against nats-server 2.15.3.
+- **A home can run over NATS** (RT-6.36, ADR-014 points 3 and 16). With
+  `MM_NATS_HOMES` naming the home, the host login set up and `MM_NATS_URL`
+  (optional `MM_NATS_CA_FILE`, `MM_NATS_MEMORY`), the agents' posts, threads
+  and reactions in that home go over NATS; people, asks, files and the
+  exit handler's posts stay on Mattermost, and nothing over NATS counts as
+  a person or an approval; until their owner is proven, NATS senders are
+  foreign agents (their TASKs are requests). The tools do not change; NATS post ids look like
+  `n1:<channel>:<n>`. The NATS posts of such a home have a read watermark
+  of their own, since they carry the NATS server's time. Roster, presence
+  and crown over NATS follow.
 
 ## 0.96.0
 

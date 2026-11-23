@@ -28,6 +28,8 @@ ALLOWED = {
                      "release check, never by the server (RT-6.32)",
     "natsbus.py": "the NATS transport: its own message format v1 has a props object, no Mattermost carrier "
                   "(ADR-014 point 16)",
+    "nats_port.py": "the NATS adapter: the bus's note (a2a) as the flat props of message format v1 and "
+                    "back, no Mattermost carrier (RT-6.36)",
     "login.py": "Keycloak's device flow and token endpoint over HTTP: no chat carrier (RT-6.34)",
 }
 # Keys that are a carrier wherever they appear.

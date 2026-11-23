@@ -35,6 +35,10 @@ _BUS_ENV = (
     "MM_LOGIN_ISSUER",
     "MM_LOGIN_CLIENT_ID",
     "MM_LOGIN_NKEY",
+    "MM_NATS_HOMES",
+    "MM_NATS_URL",
+    "MM_NATS_CA_FILE",
+    "MM_NATS_MEMORY",
     "CORRAL_SANDBOX",
     "CORRAL_AGENT",
 )
@@ -91,3 +95,8 @@ def _isolate_bus_env(monkeypatch, tmp_path, request):
     # into os.environ, so make sure nothing leaks into the next test.
     for name in _BUS_ENV:
         os.environ.pop(name, None)
+
+
+# The real nats-server rig of test_natsbus.py, for the tests of the NATS adapter too
+# (test_nats_port.py); skipped without MM_TEST_NATS=1.
+from test_natsbus import rig  # noqa: E402, F401

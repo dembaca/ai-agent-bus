@@ -123,6 +123,12 @@ def channel_type(event: ClassifiedEvent) -> str:
     return (event.channel.type if event.channel else "") or event.channel_type or "O"
 
 
+def _lane(post: Post) -> str:
+    """The read watermark this post moves (watermark.lane): its channel's, or in a
+    home over NATS, for a NATS post, the channel's NATS lane (RT-6.36)."""
+    return watermark.lane(post.channel_id, post.id)
+
+
 @dataclass
 class WebSocketInbox:
     client: BusClient
@@ -367,8 +373,10 @@ class WebSocketInbox:
             log.warning("could not look for missed messages: %s", exc)
             self._snapshot_through()
             return
-        self._unqueued = {entry.channel_id: {p.id: p.create_at for p in posts}
-                          for entry, posts in unhandled}
+        self._unqueued = {}
+        for _, posts in unhandled:
+            for p in posts:
+                self._unqueued.setdefault(_lane(p), {})[p.id] = p.create_at
         # What came while the source was down is in the snapshot now: the
         # posts handled meanwhile may pass the mark as far as it is queued.
         for cid, handled in self._down.items():
@@ -429,9 +437,10 @@ class WebSocketInbox:
         """The backfill is past this snapshot post (queued, dropped, or queued
         before): it holds the mark no longer, the posts handled behind it may
         pass (_settle)."""
-        snapshot = (self._unqueued or {}).get(post.channel_id)
+        key = _lane(post)
+        snapshot = (self._unqueued or {}).get(key)
         if snapshot is not None and snapshot.pop(post.id, None) is not None:
-            self._settle(post.channel_id)
+            self._settle(key)
 
     def start_typing(self, channel_id: str, parent_id: str = "") -> None:
         """Show the bot as typing in channel_id (thread parent_id) for a while."""
@@ -482,20 +491,26 @@ class WebSocketInbox:
             async for event in stream:
                 await self._on_event(event)
         except asyncio.CancelledError:
-            # close() cancels us and owns the connection from here on.
+            # close() or a connect cut short cancels us and owns the connection
+            # from here on; the stream is closed all the same (finally).
             raise
         except Exception as exc:  # noqa: BLE001
             log.error("websocket reader stopped: %s", exc)
-        # Reached on a dropped connection, a clean server-side close or an
-        # event that failed here. The stream ends, so the source reads as not
-        # connected and the next wait_for_events reconnects: otherwise nothing
-        # feeds the queue and every later call times out silently — the agent
-        # goes deaf with no error anywhere. The handle goes first, and only
-        # while it is this task's: a close that takes a while lets the next
-        # read connect meanwhile, and that connection's reader stays.
-        if self._reader is asyncio.current_task():
-            self._reader = None
-        await stream.aclose()
+        finally:
+            # Reached on a dropped connection, a clean server-side close, an
+            # event that failed here, or a cancel. The stream ends, so the
+            # source reads as not connected and the next wait_for_events
+            # reconnects: otherwise nothing feeds the queue and every later
+            # call times out silently — the agent goes deaf with no error
+            # anywhere. Closed on a cancel too: a stream left open keeps its
+            # own tasks reading (a merged NATS side, RT-6.36) beside the next
+            # connection's. The handle goes first, and only while it is this
+            # task's: a close that takes a while lets the next read connect
+            # meanwhile, and that connection's reader stays.
+            if self._reader is asyncio.current_task():
+                self._reader = None
+            with contextlib.suppress(Exception):
+                await stream.aclose()
 
     async def _on_event(self, event: ChatEvent) -> None:
         if isinstance(event, ReactionEvent):
@@ -750,24 +765,25 @@ class WebSocketInbox:
         return [unread.Pending(UnreadChannel(cid, channel_type(events[0])), len(events),
                                [e.post for e in events]) for cid, events in found.items()]
 
-    def _first_waiting(self, channel_id: str) -> int | None:
-        """create_at of the oldest post of the channel not handed over yet,
-        None for none: one that waits in the queue unhandled (not gated), one
-        of the backfill's snapshot not queued yet, and a queued edit whose post
-        was not handed over (neither behind the mark nor remembered in
-        _behind): its post reached the inbox only as that edit (#245)."""
-        ats = list(((self._unqueued or {}).get(channel_id) or {}).values())
-        behind = self._behind.get(channel_id, {})
+    def _first_waiting(self, key: str) -> int | None:
+        """create_at of the oldest post of the mark's lane (a channel, or its
+        NATS lane: watermark.lane) not handed over yet, None for none: one that
+        waits in the queue unhandled (not gated), one of the backfill's
+        snapshot not queued yet, and a queued edit whose post was not handed
+        over (neither behind the mark nor remembered in _behind): its post
+        reached the inbox only as that edit (#245)."""
+        ats = list(((self._unqueued or {}).get(key) or {}).values())
+        behind = self._behind.get(key, {})
         mark: int | None = None
         for e in self._waiting():
             post = e.post
-            if post.channel_id != channel_id or e.gated or e.kind == "reaction":
+            if _lane(post) != key or e.gated or e.kind == "reaction":
                 continue
             if e.edited:
                 if post.id in behind:
                     continue
                 if mark is None:
-                    mark = watermark.at(self._bot_user_id, channel_id)
+                    mark = watermark.at(self._bot_user_id, key)
                 if post.create_at <= mark:
                     continue
             ats.append(post.create_at)
@@ -785,8 +801,10 @@ class WebSocketInbox:
         to that newest one again, not just to itself. Unconnected, or before
         the backfill read its snapshot, nothing moves: the backfill still has
         to read from the mark. The post is remembered all the same, and the
-        mark passes it once a backfill has read what came meanwhile (#244)."""
-        cid, pid, created = post.channel_id, post.id, post.create_at
+        mark passes it once a backfill has read what came meanwhile (#244).
+        In a home over NATS its NATS posts have a mark of their own (RT-6.36,
+        watermark.lane): each lane's mark compares its own server's times."""
+        cid, pid, created = _lane(post), post.id, post.create_at
         if not (self._bot_user_id and cid and pid and created):
             return
         if self._source is None:
@@ -839,7 +857,7 @@ class WebSocketInbox:
         post = event.post
         if not event.gated and not event.edited and event.kind != "reaction" and post.channel_id:
             try:
-                watermark.hold(self._bot_user_id, post.channel_id, post.create_at)
+                watermark.hold(self._bot_user_id, _lane(post), post.create_at)
             except Exception as exc:  # noqa: BLE001
                 log.warning("read watermark not held: %s", exc)
         await self._queue.put(event)
