@@ -362,9 +362,11 @@ process's memory: never on disk, never printed, never in the environment.
 | `owner <channel> <sub>` or `-`, `public <channel> on` or `off` | owner and visibility (admins), over the revision just read |
 | `members add` or `rm <channel> <sub>…` | members (the channel's owner), over the revision just read |
 | `import` | the one import from Mattermost (admins), with its report |
-| `pending`, `confirm <name>` | the claims of password accounts, and an admin's confirmation over the listed revision |
+| `pending`, `confirm <name>`, `drop <name>` | the claims of password accounts (with the full channels one waits on), an admin's confirmation over the listed revision, and deleting a claim over the listed revision |
 
-`--json` prints the API's answer as it is. A change made meanwhile by
+`--json` prints the API's answer as it is. `--json` writes the answer as the
+server sent it, for pipes and scripts, not for a terminal (text output is the
+cleaned one); an answer that is not JSON is an error and nothing is written. A change made meanwhile by
 someone else ends with "changed meanwhile; run again" (exit 1); a usage
 error exits 2. Text the server sends is printed without control characters.
 

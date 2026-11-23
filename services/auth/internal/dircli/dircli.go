@@ -44,6 +44,7 @@ commands:
   import                              copy the Mattermost channels once
   pending                             list the pending name claims
   confirm <name>                      confirm a pending name claim
+  drop <name>                         delete a pending name claim
 
 settings (flag, then environment):
   --api <url>         AUTHD_DIR_API             admin API base URL (https; http only on a loopback IP)
@@ -185,7 +186,7 @@ func (c *cli) check(pos []string) error {
 	switch pos[0] {
 	case "ls", "import", "pending":
 		return need(0, true)
-	case "show", "confirm", "create":
+	case "show", "confirm", "drop", "create":
 		return need(1, true)
 	case "owner":
 		return need(2, true)
@@ -557,9 +558,14 @@ func visibility(public bool) string {
 	return "private"
 }
 
-func (c *cli) raw(b []byte) {
+// raw writes the server's bytes as they came, if they are JSON.
+func (c *cli) raw(b []byte) error {
+	if !json.Valid(b) {
+		return errors.New("the server's answer is not JSON")
+	}
 	b = bytes.TrimRight(b, "\n")
 	fmt.Fprintf(c.out, "%s\n", b)
+	return nil
 }
 
 func (c *cli) command(pos []string) error {
@@ -570,8 +576,7 @@ func (c *cli) command(pos []string) error {
 			return err
 		}
 		if c.s.json {
-			c.raw(r.body)
-			return nil
+			return c.raw(r.body)
 		}
 		var chs []channel
 		if err := json.Unmarshal(r.body, &chs); err != nil {
@@ -642,11 +647,13 @@ func (c *cli) command(pos []string) error {
 			return err
 		}
 		if c.s.json {
-			c.raw(r.body)
-			return nil
+			return c.raw(r.body)
 		}
 		for _, p := range ps {
 			fmt.Fprintf(c.out, "%s\t%s\tconfirmed=%t\trevision %d\n", clean(p.Name), strings.Join(cleanAll(p.Channels), ","), p.Confirmed, p.Revision)
+			if len(p.WaitingFull) > 0 {
+				fmt.Fprintf(c.out, "\twaiting on full channel(s): %s\n", strings.Join(cleanAll(p.WaitingFull), ","))
+			}
 		}
 	case "confirm":
 		ps, _, err := c.pending()
@@ -663,10 +670,30 @@ func (c *cli) command(pos []string) error {
 				return err
 			}
 			if c.s.json {
-				c.raw(r.body)
-			} else {
-				fmt.Fprintf(c.out, "confirmed %s\n", clean(p.Name))
+				return c.raw(r.body)
 			}
+			fmt.Fprintf(c.out, "confirmed %s\n", clean(p.Name))
+			return nil
+		}
+		return fmt.Errorf("%q is not in the pending list", pos[1])
+	case "drop":
+		ps, _, err := c.pending()
+		if err != nil {
+			return err
+		}
+		for _, p := range ps {
+			if p.Name != pos[1] {
+				continue
+			}
+			r, err := c.call("DELETE", "/v1/directory/pending/"+esc(p.Name),
+				map[string]string{"If-Match": `"` + strconv.FormatUint(p.Revision, 10) + `"`}, nil)
+			if err != nil {
+				return err
+			}
+			if c.s.json {
+				return c.raw(r.body)
+			}
+			fmt.Fprintf(c.out, "dropped %s\n", clean(p.Name))
 			return nil
 		}
 		return fmt.Errorf("%q is not in the pending list", pos[1])
@@ -699,6 +726,8 @@ type pendingEntry struct {
 	Channels  []string `json:"channels"`
 	Confirmed bool     `json:"confirmed"`
 	Revision  uint64   `json:"revision"`
+
+	WaitingFull []string `json:"waiting_full"`
 }
 
 func (c *cli) pending() ([]pendingEntry, reply, error) {
@@ -715,8 +744,7 @@ func (c *cli) pending() ([]pendingEntry, reply, error) {
 
 func (c *cli) printChannel(r reply) error {
 	if c.s.json {
-		c.raw(r.body)
-		return nil
+		return c.raw(r.body)
 	}
 	var ch channel
 	if err := json.Unmarshal(r.body, &ch); err != nil {
@@ -733,8 +761,7 @@ func (c *cli) printChannel(r reply) error {
 
 func (c *cli) printImport(r reply) error {
 	if c.s.json {
-		c.raw(r.body)
-		return nil
+		return c.raw(r.body)
 	}
 	var rep struct {
 		Created         []string                            `json:"channels_created"`

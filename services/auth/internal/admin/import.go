@@ -18,6 +18,9 @@ import (
 // ErrAlreadyImported: the one import has run.
 var ErrAlreadyImported = errors.New("admin: the import has already run")
 
+// errTooBig: the union of a channel's members would pass MaxMembers.
+var errTooBig = errors.New("admin: the channel would exceed the member limit")
+
 var tooMany = fmt.Sprintf("more than %d members", directory.MaxMembers)
 
 // ErrAuthInvisible: the Mattermost token cannot see how accounts log in, so
@@ -222,6 +225,10 @@ func importAt(ctx context.Context, store *directory.Store, source Source, bindin
 			}
 		}
 		added, err := unionMembers(ctx, store, cur, rev, members)
+		if errors.Is(err, errTooBig) {
+			rep.ChannelsSkipped = append(rep.ChannelsSkipped, SkippedChannel{Name: ch.Name, Reason: tooMany})
+			continue
+		}
 		if err != nil {
 			return rep, fmt.Errorf("channel %s: %w", ch.Name, err)
 		}
@@ -252,6 +259,9 @@ func unionMembers(ctx context.Context, store *directory.Store, cur directory.Cha
 		}
 		if len(add) == 0 {
 			return 0, nil
+		}
+		if len(cur.Members)+len(add) > directory.MaxMembers {
+			return 0, errTooBig
 		}
 		next := cur
 		next.Members = append(slices.Clone(cur.Members), add...)

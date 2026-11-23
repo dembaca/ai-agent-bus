@@ -230,3 +230,40 @@ func TestAFailedProbeMeansNotVisible(t *testing.T) {
 		t.Fatalf("after a failed probe: %v, visible %v", err, c.AuthVisible())
 	}
 }
+
+// A failing /users/me is no answer: it does not start a quiet minute, the
+// next lookup asks again.
+func TestAFailedCheckIsAskedAgainAtOnce(t *testing.T) {
+	ctx := context.Background()
+	var meFails atomic.Bool
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		switch r.URL.Path {
+		case "/api/v4/users/me":
+			if meFails.Load() {
+				http.Error(w, "", http.StatusInternalServerError)
+				return
+			}
+			_ = json.NewEncoder(w).Encode(map[string]any{"id": "me", "roles": "system_user system_admin"})
+		default:
+			_ = json.NewEncoder(w).Encode(map[string]any{"id": "u1", "username": "alice", "roles": "system_user",
+				"auth_service": "openid", "auth_data": "sub-1"})
+		}
+	}))
+	t.Cleanup(srv.Close)
+	c, err := New(ctx, srv.URL, "lab", "tok")
+	if err != nil {
+		t.Fatal(err)
+	}
+	clock := time.Now()
+	c.now = func() time.Time { return clock }
+	meFails.Store(true)
+	clock = clock.Add(2 * time.Minute) // the old answer is due, the check fails
+	if u, _ := c.User(ctx, "alice"); u.AuthKnown {
+		t.Fatal("a failed check still counted as visible")
+	}
+	meFails.Store(false)
+	clock = clock.Add(5 * time.Second)
+	if u, _ := c.User(ctx, "alice"); !u.AuthKnown {
+		t.Fatal("not asked again within the minute after a failed check")
+	}
+}

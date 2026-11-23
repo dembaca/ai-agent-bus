@@ -106,6 +106,7 @@ func New(cfg Config, verifier Verifier, store *directory.Store, source Source) (
 	mux.HandleFunc("POST /v1/directory/import", h.auth(true, h.runImport))
 	mux.HandleFunc("GET /v1/directory/pending", h.auth(true, h.listPending))
 	mux.HandleFunc("POST /v1/directory/pending/{name}/confirm", h.auth(true, h.confirmPending))
+	mux.HandleFunc("DELETE /v1/directory/pending/{name}", h.auth(true, h.dropPending))
 	h.mux = mux
 	return h, nil
 }
@@ -441,4 +442,24 @@ func (h *handler) confirmPending(w http.ResponseWriter, r *http.Request, id toke
 	}
 	h.logWrite(id, "pending confirmed", "", map[string]any{"name": name})
 	reply(w, http.StatusOK, map[string]string{"confirmed": name})
+}
+
+func (h *handler) dropPending(w http.ResponseWriter, r *http.Request, id token.Identity) {
+	name := r.PathValue("name")
+	ifMatch := r.Header.Get("If-Match")
+	if ifMatch == "" {
+		fail(w, http.StatusPreconditionRequired, "If-Match: \"<revision>\" of the pending entry required")
+		return
+	}
+	rev, valid := parseRev(ifMatch)
+	if !valid {
+		fail(w, http.StatusBadRequest, "If-Match must be a revision")
+		return
+	}
+	if err := h.store.DeletePending(r.Context(), name, rev); err != nil {
+		h.storeError(w, err)
+		return
+	}
+	h.logWrite(id, "pending dropped", "", map[string]any{"name": name})
+	reply(w, http.StatusOK, map[string]string{"dropped": name})
 }

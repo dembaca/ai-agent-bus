@@ -564,3 +564,94 @@ func TestAFullChannelStaysInTheClaimAndTheLoginGoesOn(t *testing.T) {
 		t.Fatalf("the claim: %+v", left)
 	}
 }
+
+// A channel that fills up between the read and the write is skipped with the
+// reason of the size check; the retry re-checks the size.
+func TestUnionThatGrowsTooBigOnRetryIsTooBig(t *testing.T) {
+	store := newStore(t)
+	if _, err := store.PutChannel(ctx(t), directory.Channel{Name: "crowd", Members: []string{"sub-a"}}, 0); err != nil {
+		t.Fatal(err)
+	}
+	cur, rev, _, err := store.Channel(ctx(t), "crowd")
+	if err != nil {
+		t.Fatal(err)
+	}
+	filled := cur
+	for i := range directory.MaxMembers - 1 {
+		filled.Members = append(filled.Members, fmt.Sprintf("sub-x%04d", i))
+	}
+	if _, err := store.PutChannel(ctx(t), filled, rev); err != nil { // the concurrent write
+		t.Fatal(err)
+	}
+	if _, err := unionMembers(ctx(t), store, cur, rev, []string{"sub-new1", "sub-new2"}); !errors.Is(err, errTooBig) {
+		t.Fatalf("got %v", err)
+	}
+	if c, _, _, _ := store.Channel(ctx(t), "crowd"); len(c.Members) != directory.MaxMembers {
+		t.Fatalf("crowd changed: %d members", len(c.Members))
+	}
+}
+
+// Two logins with a full channel in the claim: the second writes nothing.
+func TestARedeemWithTheSameFullChannelsWritesNothing(t *testing.T) {
+	store := newStore(t)
+	var full []string
+	for i := range directory.MaxMembers {
+		full = append(full, fmt.Sprintf("sub-x%04d", i))
+	}
+	if _, err := store.PutChannel(ctx(t), directory.Channel{Name: "crowd", Members: full}, 0); err != nil {
+		t.Fatal(err)
+	}
+	if err := store.AddPending(ctx(t), "pat", "crowd"); err != nil {
+		t.Fatal(err)
+	}
+	es, _ := store.PendingEntries(ctx(t))
+	if err := store.ConfirmPending(ctx(t), "pat", "sub-admin", es[0].Revision); err != nil {
+		t.Fatal(err)
+	}
+	login := func() directory.PendingEntry {
+		if _, err := (directory.Anchors{Store: store}).Anchor(ctx(t), "sub-pat", "pat"); err != nil {
+			t.Fatal(err)
+		}
+		es, _ := store.PendingEntries(ctx(t))
+		if len(es) != 1 {
+			t.Fatalf("%+v", es)
+		}
+		return es[0]
+	}
+	first := login()
+	if !slices.Equal(first.WaitingFull, []string{"crowd"}) {
+		t.Fatalf("waiting_full: %+v", first)
+	}
+	if second := login(); second.Revision != first.Revision {
+		t.Fatalf("rewritten: revision %d, then %d", first.Revision, second.Revision)
+	}
+}
+
+func TestDroppingAPendingEntry(t *testing.T) {
+	e, cl, _, _ := importEnv(t, "open")
+	if _, err := Import(ctx(t), e.store, cl, "open", token.Identity{}); err != nil {
+		t.Fatal(err)
+	}
+	const path = "/v1/directory/pending/bob"
+	code, body, _ := e.do(t, "DELETE", path, e.admin, "")
+	want(t, "no If-Match", code, 428, body)
+	e2 := setup(t, Config{Burst: 100})
+	code, body, _ = e2.do(t, "DELETE", path, e2.bob, "", "If-Match", `"1"`)
+	want(t, "non-admin", code, 403, body)
+	code, body, _ = e.do(t, "DELETE", "/v1/directory/pending/nobody", e.admin, "", "If-Match", `"1"`)
+	want(t, "missing", code, 404, body)
+	stale := pendingRev(t, e, "bob")
+	if err := e.store.AddPending(ctx(t), "bob", "zeta"); err != nil {
+		t.Fatal(err)
+	}
+	code, body, _ = e.do(t, "DELETE", path, e.admin, "", "If-Match", `"`+stale+`"`)
+	want(t, "stale", code, 409, body)
+	if ps, _ := e.store.ListPending(ctx(t)); len(ps) != 1 {
+		t.Fatalf("deleted on a stale revision: %+v", ps)
+	}
+	code, body, _ = e.do(t, "DELETE", path, e.admin, "", "If-Match", `"`+pendingRev(t, e, "bob")+`"`)
+	want(t, "drop", code, 200, body)
+	if ps, _ := e.store.ListPending(ctx(t)); len(ps) != 0 {
+		t.Fatalf("still pending: %+v", ps)
+	}
+}

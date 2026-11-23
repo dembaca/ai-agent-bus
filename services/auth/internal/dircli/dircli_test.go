@@ -160,6 +160,8 @@ func (r *rig) serveAPI(w http.ResponseWriter, req *http.Request) {
 			`"identities":3,"members_added":4,"pending_added":1,"accounts_skipped":[{"username":"bob","reason":"password account"}],"next":"set AUTH_DIRECTORY_IMPORTED=true and restart"}`)
 	case p == "/v1/directory/pending":
 		_, _ = io.WriteString(w, r.pend)
+	case req.Method == "DELETE" && strings.HasPrefix(p, "/v1/directory/pending/"):
+		_, _ = io.WriteString(w, `{"dropped":"alice"}`)
 	case strings.HasSuffix(p, "/confirm"):
 		_, _ = io.WriteString(w, `{"confirmed":"alice"}`)
 	default:
@@ -707,5 +709,71 @@ func TestPollBackoffCapped(t *testing.T) {
 	want := []time.Duration{20 * time.Second, 30 * time.Second, 30 * time.Second, 30 * time.Second}
 	if !reflect.DeepEqual(r.sleeps, want) {
 		t.Fatalf("sleeps %v, want %v", r.sleeps, want)
+	}
+}
+
+// The printed link is cleaned: a path with a bidi control and a C1 control
+// passes url.Parse and the same-site check, and must not reach the terminal.
+func TestVerificationURIIsCleanedWhenPrinted(t *testing.T) {
+	r := newRig(t)
+	r.dev = map[string]any{"verification_uri_complete": r.kc.URL + "/activate/a\u202eb\u0085c"}
+	code, _, errs := r.do("ls")
+	if code != 0 {
+		t.Fatalf("exit %d: %q", code, errs)
+	}
+	if strings.ContainsAny(errs, "\u202e\u0085") || !strings.Contains(errs, "/activate/abc") {
+		t.Fatalf("printed: %q", errs)
+	}
+}
+
+func TestUserInfoInAPIOrIssuerRefused(t *testing.T) {
+	for _, flag := range []string{"--api", "--issuer"} {
+		r := newRig(t)
+		u := "https://u:p@" + strings.TrimPrefix(r.api.URL, "http://")
+		var out, errb bytes.Buffer
+		code := run([]string{flag, u, "ls"}, r.env(nil), &out, &errb, r.deps())
+		if code != 2 || !strings.Contains(errb.String(), "not a usable URL") {
+			t.Fatalf("%s: exit %d, %q", flag, code, errb.String())
+		}
+		if len(r.calls) != 0 || len(r.sleeps) != 0 || strings.Contains(errb.String(), "u:p") {
+			t.Fatalf("%s: contacted or echoed: %v %q", flag, r.calls, errb.String())
+		}
+	}
+}
+
+func TestJSONThatIsNotJSONIsAnError(t *testing.T) {
+	r := newRig(t)
+	r.body = map[string]string{"/v1/directory/channels": "<html>oops</html>"}
+	code, out, errs := r.do("--json", "ls")
+	if code != 1 || out != "" || !strings.Contains(errs, "the server's answer is not JSON") {
+		t.Fatalf("exit %d, out %q, err %q", code, out, errs)
+	}
+}
+
+func TestPendingShowsWhatItWaitsOn(t *testing.T) {
+	r := newRig(t)
+	r.pend = `[{"name":"alice","channels":["crowd"],"confirmed":true,"revision":7,"waiting_full":["cro\u202ewd"]}]`
+	code, out, _ := r.do("pending")
+	if code != 0 || !strings.Contains(out, "waiting on full channel(s): crowd") || strings.Contains(out, "\u202e") {
+		t.Fatalf("exit %d: %q", code, out)
+	}
+}
+
+func TestDrop(t *testing.T) {
+	r := newRig(t)
+	code, out, errs := r.do("drop", "alice")
+	if code != 0 || !strings.Contains(out, "dropped alice") {
+		t.Fatalf("exit %d: %q %q", code, out, errs)
+	}
+	if got := r.last(); got.Method != "DELETE" || got.Path != "/v1/directory/pending/alice" || got.IfMatch != `"7"` {
+		t.Fatalf("%+v", got)
+	}
+	r = newRig(t)
+	code, _, errs = r.do("drop", "zed")
+	if code != 1 || !strings.Contains(errs, "not in the pending list") {
+		t.Fatalf("exit %d: %q", code, errs)
+	}
+	if got := r.last(); got.Method != "GET" {
+		t.Fatalf("a delete was sent: %+v", got)
 	}
 }
