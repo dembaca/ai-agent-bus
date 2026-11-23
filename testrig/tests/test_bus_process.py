@@ -11,6 +11,7 @@ from __future__ import annotations
 
 import asyncio
 import contextlib
+import json
 import os
 import signal
 import sys
@@ -183,18 +184,32 @@ async def test_a_spawn_cancelled_after_the_temp_dir_still_removes_it(monkeypatch
 async def test_the_stub_carries_a_created_post_into_its_frame():
     """The frame a run pushes is the post the bus asked the stub to create, so
     it is the server's own JSON, not one the harness made up. The tool answers
-    the slim post (`author`, not `user_id`); the frame carries the full one."""
+    the slim post (`author`, not `user_id`); the frame carries the full one.
+
+    The **crown prefix is expected here, not tolerated**: a bot alone in its home
+    takes the crown on its first tick and the bus writes `👑 ` in front of its
+    posts (RT-6.6 step 5). This test used to pass only because the stub kept no
+    status, so no crown existed; the prefix is the real behaviour and is asserted
+    as such (review of #60).
+    """
     async with MattermostStub() as stub:
         stub.identify(SENDER_TOKEN, SENDER_ID, "agent-sender")
         async with BusProcess(stub.url, token=SENDER_TOKEN) as bus:
             await bus.call("get_me")
+            crown = (await bus.call("bus_info")).get("crown")
             created = await bus.call("post_message", message="hello from the bus")
-            assert created["message"] == "hello from the bus"
             carried = stub.post_of(created["id"])
-            assert carried["user_id"] == SENDER_ID
             frame = posted_frame(carried)
-            assert frame["event"] == "posted"
-            assert '"hello from the bus"' in frame["data"]["post"]
+    assert crown == "~agents", crown
+    assert created["message"] == "\U0001f451 hello from the bus", created["message"]
+    assert carried["message"] == "\U0001f451 hello from the bus"
+    assert carried["user_id"] == SENDER_ID
+    assert frame["event"] == "posted"
+    # The frame is JSON text, so the emoji is escaped there (`\ud83d\udc51`):
+    # parse it rather than searching for the literal character.
+    assert json.loads(frame["data"]["post"])["message"] == "\U0001f451 hello from the bus"
+    # And the crown travels in the props, which is how a reader knows (RT-6.6 step 5).
+    assert json.loads(frame["data"]["post"])["props"]["a2a"]["crown"] is True
 
 
 @skip_no_bus
