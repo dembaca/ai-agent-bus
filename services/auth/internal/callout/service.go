@@ -65,7 +65,8 @@ type Hello struct {
 	Guests []string `json:"guests,omitempty"`
 	Lobby  bool     `json:"lobby,omitempty"`
 	// Since asks, per channel, for history: the stream sequence the host
-	// saw last. It counts only for a granted channel.
+	// saw last. It counts only for a granted channel; the key "@dm" is the
+	// direct-message consumer (consumers.SinceDM).
 	Since map[string]uint64 `json:"since,omitempty"`
 }
 

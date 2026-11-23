@@ -44,6 +44,23 @@ jobs:
     steps:
       - uses: actions/checkout@v4
       - uses: astral-sh/setup-uv@v6
+      - name: nats-server (the NATS transport tests run against the real server)
+        # Official release, checked against a fixed sha256 (the release's SHA256SUMS for
+        # nats-server-v2.15.3-linux-amd64.tar.gz). Keep the version in step with
+        # services/auth/go.mod (ADR-014 point 16).
+        run: |
+          set -euo pipefail
+          v=2.15.3
+          sha=32e18c1e78d7ef4f86e483070eef3abb2647c3d4d67e29668077c7ad81da0797
+          dir="$RUNNER_TEMP/nats-server"
+          mkdir -p "$dir"
+          curl -fsSL -o "$dir/nats.tar.gz" \
+            "https://github.com/nats-io/nats-server/releases/download/v${v}/nats-server-v${v}-linux-amd64.tar.gz"
+          echo "$sha  $dir/nats.tar.gz" | sha256sum -c -
+          tar -xzf "$dir/nats.tar.gz" -C "$dir" --strip-components=1 "nats-server-v${v}-linux-amd64/nats-server"
+          "$dir/nats-server" --version
+          echo "MM_NATS_SERVER=$dir/nats-server" >> "$GITHUB_ENV"
+          echo "MM_TEST_NATS=1" >> "$GITHUB_ENV"
       - name: MCP server
         run: uv run --directory mcp pytest -q
       - name: hooks against a fake Mattermost
