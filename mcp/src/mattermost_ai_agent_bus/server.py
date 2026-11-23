@@ -589,19 +589,20 @@ async def _work_posts(client: ChatPort, channel_id: str = "",
 async def _tasks(client: ChatPort, posts: list[Post], names: dict[str, str],
                  crown: set[str] | None = None, *, home: bool = True) -> list[dict[str, Any]]:
     """The task rows; with trusted humans configured, a TASK root by anyone
-    but them and the peer agents is no task (RT-6.16, ADR-001). Unsure: all
-    roots count. `crown`: who may close any task, when not the home's
+    but them and the peer agents is no task (RT-6.16, ADR-001). In doubt
+    (the check fails): no root counts (ADR-016). `crown`: who may close any task, when not the home's
     roster (another channel's crown holder, RT-6.14 step 9). In the home a
     root the home's mandate covers is marked `mandated` (RT-6.26 step 5)."""
     untrusted: set[str] = set()
+    roots = [p for p in posts if not p.root_id]
     try:
-        if await client.trusted_humans():
-            roots = [p for p in posts if not p.root_id]
+        if await gate.active(client):
             classes = await gate.author_classes(client, roots)
             untrusted = {p.id for p, c in zip(roots, classes, strict=True)
                          if c in (gate.OTHER, gate.FOREIGN)}
-    except Exception as exc:  # noqa: BLE001
-        log.info("task rows without the trust check: %s", exc)
+    except Exception as exc:  # noqa: BLE001 — in doubt: no root is a task (ADR-016)
+        log.info("trust check failed, no root counts as a task: %s", exc)
+        untrusted = {p.id for p in roots}
     coordinators: set[str] = set(crown or ())
     try:  # who may close any task: the crown holder (RT-6.14 step 3)
         if crown is None:
@@ -678,7 +679,7 @@ async def _overview(client: ChatPort, action: str) -> dict[str, Any]:
                                            await _usage_of(client, agents))
             else:
                 # A foreign agent's ✅ keeps an ask open (RT-6.11, ADR-001).
-                foreign = (await owners.foreign(client, tasks.ask_closers(posts))) if trusted else {}
+                foreign = (await owners.foreign(client, tasks.ask_closers(posts))) if await gate.active(client) else {}
                 row["tasks"] = await _tasks(client, posts, names, {crown} - {""},
                                             home=ch["role"] == "home")
                 row["asks"] = tasks.open_asks(posts, names, trusted, set(foreign))
@@ -2309,7 +2310,7 @@ async def coordinator(action: str = "who", scope: str = "home") -> str:
                 log.info("asks without the trusted humans: %s", exc)
                 trusted = {}
             # A foreign agent's ✅ keeps an ask open (RT-6.11, ADR-001).
-            foreign = (await owners.foreign(client, tasks.ask_closers(posts))) if trusted else {}
+            foreign = (await owners.foreign(client, tasks.ask_closers(posts))) if await gate.active(client) else {}
             return _out("coordinator", {
                 "tasks": await _tasks(client, posts, names),
                 "asks": tasks.open_asks(posts, names, trusted, set(foreign)) + await _queued_rows(client)})
@@ -2641,7 +2642,7 @@ async def _event_items(events: list[Any], raw: bool = False) -> list[dict[str, A
             agents = await client.agents({p.user_id for p in posts} - {""})
     except Exception as exc:  # noqa: BLE001 — unknown: nobody counts as an agent
         log.info("could not tell agents from others: %s", exc)
-    foreign = await owners.foreign(client, agents) if trusted else {}
+    foreign = await owners.foreign(client, agents) if posts and await gate.active(client) else {}
     roots = await _roots_from_trusted(
         client, {e.post.root_id for e in events
                  if e.kind not in OWN_EVENTS and e.post.user_id in foreign and e.post.root_id},

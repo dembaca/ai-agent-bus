@@ -718,8 +718,8 @@ class NatsPort:
 
     async def agent_owner(self, user_id: str) -> str | None:
         # A NATS sender's owner is the one its presence proves (RT-6.37), else "" (an
-        # owner that is none), which is foreign for the peer split (owners.read); never
-        # None, which would count as a peer.
+        # owner that is none), which is foreign for the peer split (owners.read); not
+        # None, which is "not readable" (also foreign, ADR-016, but logged as an outage).
         if not is_nats_user(user_id):
             return await self.inner.agent_owner(user_id)
         return self._bus.owner_of(user_id) if self._bus is not None and self._fatal is None else ""

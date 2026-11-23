@@ -80,9 +80,13 @@ an agent route; nothing says whether a routed request carries authority.
 - **Activation, not a switch:** the owner split is active only when my
   session has trusted humans (the gate is on) and my own bot description shows
   `for @…` (the registrar writes owners). Otherwise every bus agent is a peer,
-  exactly as today. A description that cannot be read (API error) fails open:
-  the author counts as a peer, with a log line (quality goal 1). A trusted
-  list the registrar cut (marked `+N`, WP3) counts as foreign.
+  exactly as today. A description that cannot be read (API error) failed
+  open until the condition of the bus without a chat as its source (ADR-016,
+  "im Zweifel fremd") was built: since then the owner last read holds for
+  `OWNER_GRACE_SEC` (300 s; with the client's cache at most 15 minutes after
+  Mattermost last answered), after that the author is foreign, and my own bot
+  unreadable keeps the split on (RT-6.16). A trusted list the registrar cut
+  (marked `+N`, WP3) counts as foreign.
 
 **Alternatives:** Owner only (`owner(B) ∈ trusted(me)`): rejected, it keeps
 the relay open. Gate a foreign agent like `other`: rejected, cross-owner
@@ -4532,9 +4536,23 @@ danach angenommen (Ask `mfbre617hj8f9p3p81855waukr`, 👍).
 
 Was daraus folgt und noch nicht entworfen ist: wie der Eigentümer eines
 Kanals erfährt, wem ein Gast seinen Kanal lesend öffnet (Entscheidung
-6); und ob das feste Token im Presence-Subject und der Ausgangswert für
-den Namen derselbe Wert im Verzeichnis sind (Entscheidungen 7 und 9).
-Beides klärt der Bau, vor dem ersten Code am Verzeichnis.
+6). Geklärt vor dem ersten Code am Verzeichnis (Koordinator, 2026-11-23):
+Das feste Token im Presence-Subject und der Ausgangswert für den Namen
+(Entscheidungen 7 und 9) sind ein Feld je Identität, `anchor`: für
+heutige Identitäten der heutige Name, für neue `sub`, nie geändert. Zwei
+Felder könnten nur auseinanderlaufen. Ein Schlüssel `anchor.<wert>` mit
+dem `sub` als Wert verhindert, dass ein Wert zweimal vergeben wird.
+
+Gebaut ist die Bedingung „im Zweifel fremd“ (Punkt 1), vor jeder
+Auflösung von Namen: `owners.foreign()` und `owners.peer()` nehmen bei
+einem Lesefehler den zuletzt gelesenen Eigentümer, solange er jünger
+als `OWNER_GRACE_SEC` (300 s) ist, mit dem Cache des Clients höchstens 15
+Minuten nach der letzten Antwort von Mattermost, danach ist der Agent fremd;
+`owners.mine()` lässt die Trennung an, wenn der eigene Bot oder die
+vertrauten Menschen nicht lesbar sind (RT-6.16); Tor und Task-Zählung
+hängen daran, ob vertraute Menschen konfiguriert sind, nicht daran, ob
+gerade einer aufgelöst ist (`gate.active`). Die Frist hält eine
+kurze Störung davon ab, jeden TASK zur Bitte zu machen.
 
 Nicht Teil dieser Entscheidung: eine Brücke für Teams oder Zulip zu bauen,
 der Antwortweg der Konsole, mehrere Mandanten, und der Zeitpunkt, zu dem

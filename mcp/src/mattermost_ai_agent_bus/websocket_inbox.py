@@ -613,7 +613,7 @@ class WebSocketInbox:
         me = self._bot_user_id
         try:
             if (not me or await lease.coordinates_in(self.client, me, event.post.channel_id)
-                    or not await self.client.trusted_humans()):
+                    or not await gate.active(self.client)):
                 return
             if (await gate.author_classes(self.client, [event.post]))[0] != gate.OTHER:
                 return
@@ -646,7 +646,7 @@ class WebSocketInbox:
             # The coordinator is never gated where it routes (RT-6.16 step 2).
             if not me or await lease.coordinates_in(self.client, me, post.channel_id):
                 return
-            if not await self.client.trusted_humans():
+            if not await gate.active(self.client):
                 return
             cls = (await gate.author_classes(self.client, [post]))[0]
             if cls not in (gate.OTHER, gate.FOREIGN):

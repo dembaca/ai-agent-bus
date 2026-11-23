@@ -30,6 +30,7 @@ from pathlib import Path
 from typing import TYPE_CHECKING
 
 from . import a2a, channel, lease, owners, session_file
+from .config import env
 from .model import Mark, Post
 
 log = logging.getLogger(__name__)
@@ -58,9 +59,23 @@ def author_class(post: Post, trusted: Mapping[str, str], agents: set[str],
     return FOREIGN if uid in foreign else AGENT
 
 
+TRUSTED_VARS = ("MM_TRUSTED_HUMAN_USER_IDS", "MM_TRUSTED_HUMANS", "MM_OWNER_USER_ID", "MM_OWNER")
+
+
+async def active(client: ChatPort) -> bool:
+    """The gate and the owner split are on (RT-6.16 step 2): trusted humans
+    are configured, whether or not a lookup resolved them now. In doubt on
+    (ADR-016): a failed lookup leaves trusted_humans() empty, never the gate
+    off."""
+    if any(env(v).strip() for v in TRUSTED_VARS):
+        return True
+    return bool(await client.trusted_humans())
+
+
 async def author_classes(client: ChatPort, posts: Sequence[Post]) -> list[str]:
     """The class of each post's author; raises when the accounts cannot be
-    read. Whether an agent is foreign never raises: unsure, it is a peer."""
+    read. Whether an agent is foreign never raises: in doubt, it is foreign
+    (ADR-016, after owners.OWNER_GRACE_SEC)."""
     trusted = await client.trusted_humans()
     agents = await client.agents({p.user_id for p in posts} - {""})
     foreign = await owners.foreign(client, agents)
