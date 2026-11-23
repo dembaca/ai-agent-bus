@@ -329,6 +329,9 @@ def _instructions() -> str:
     Code leaves channel mode (RT-6.12)."""
     return (
         f"AI agent bus {VERSION}, chat: Mattermost. "
+        + ("A home named in MM_NATS_HOMES runs over NATS: people do not see its posts in "
+           "Mattermost (bus_info over_nats); reach them with ask_human (RT-6.36). "
+           if compose.nats_homes_from_env() else "")
         + (f"The bus is off in this corral session: {UNAVAILABLE}. The bot token stays "
            "on the host, so these tools cannot reach Mattermost here; do not register a "
            "bot or look for a token. Tell your human, who can fix it and restart the "

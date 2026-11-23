@@ -296,11 +296,34 @@ def crown_hint(name: str) -> str:
 def nats_visibility() -> str:
     """What bus_info says about a home over NATS (RT-6.36, #66): its agents' posts are
     not in Mattermost, so people do not see them there; '' for a home on Mattermost."""
-    if not _nats_home:
+    if not _nats_home or _nats_source is None:  # none built: the home stays on Mattermost
         return ""
     return (f"the home ~{_nats_home} runs over NATS: the agents' posts, threads and reactions there "
             "are not in Mattermost, and people do not see them; reach a person with ask_human, which "
             "goes over Mattermost, and DMs between agents go over Mattermost too")
+
+
+async def shown_as(client: ChatPort, user_ids: AbstractSet[str]) -> dict[str, str]:
+    """NATS name -> the username of its bot, for the NATS senders among `user_ids` whose link
+    is proven now by the one test of a link (_linked_owned: bot and name name each other, the
+    name fresh, the bot's owner the name's), read afresh on every call, nothing cached (#66).
+    Display only: a post's author stays the NATS name, which every decision goes by."""
+    from .nats_port import is_nats_user  # nats_port imports this module
+
+    names = {u for u in user_ids if is_nats_user(u)}
+    source = _nats_source
+    if not names or not _nats_home or source is None:  # a lost side links none (linked)
+        return {}
+    try:
+        rows = await _rows(client, await client.get_channel_id(_nats_home))
+        links = await _linked_owned(client, source, rows)
+    except asyncio.CancelledError:
+        raise
+    except Exception as exc:  # noqa: BLE001 — display only
+        log.info("NATS senders not shown by their bots: %s", exc)
+        return {}
+    by_id = {str(r["id"]): str(r["username"]) for r in rows}
+    return {name: by_id[bot] for bot, name in links.items() if name in names and bot in by_id}
 
 
 def nats_notes() -> list[str]:
