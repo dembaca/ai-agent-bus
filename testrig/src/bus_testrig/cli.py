@@ -23,7 +23,7 @@ anything had `loss == 0`, nothing unknown and nothing unmeasured, and passed.
 The flag makes the run's own claim a thing the exit code checks, and the claim
 is "loses some and carries the rest": a run that lost everything is a path that
 carried nothing, which reads exactly like a healthy run under a lossy fault
-(review of #24).
+(review of #25).
 """
 
 from __future__ import annotations

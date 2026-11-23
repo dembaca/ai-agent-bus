@@ -479,6 +479,27 @@ def _posted_text(post: dict[str, Any], known: dict[str, int]) -> str:
     return max(candidates, key=len) if candidates else message
 
 
+def _arrivals(events: Any, by_id: dict[str, int],
+              by_text: dict[str, int]) -> list[int]:
+    """The sends a `wait_for_events` answer reports as arrived, in order.
+
+    The call site of the fallback, in a function so that a test drives it with
+    the answer `receive()` gets. Testing `_match_seq` alone proved the function
+    and not its use: reverting this loop to an id-only match kept the whole
+    suite green (review of #25), which is the one thing a test of a fallback
+    must not allow.
+    """
+    out: list[int] = []
+    for item in events if isinstance(events, list) else []:
+        post = item.get("post") if isinstance(item, dict) else None
+        if not isinstance(post, dict):
+            continue
+        seq = _match_seq(post, by_id, by_text)
+        if seq is not None:
+            out.append(seq)
+    return out
+
+
 def _match_seq(post: dict[str, Any], by_id: dict[str, int],
                by_text: dict[str, int]) -> int | None:
     """Which send a delivered post came from: its id when the send has returned,
@@ -611,16 +632,9 @@ async def bus_run(count: int = 100, fault: ProxyFault | None = None,
                         await asyncio.sleep(RETRY_SEC)
                         continue
                     failures = 0
-                    for item in events if isinstance(events, list) else []:
-                        post = item.get("post") if isinstance(item, dict) else None
-                        if not isinstance(post, dict):
-                            continue
-                        # By id when the send already returned, by the text this
-                        # run wrote otherwise (follow-up review point 3).
-                        seq = _match_seq(post, seq_of, seq_of_text)
-                        if seq is not None:
-                            run.arrive(seq)
-                            last_arrival = time.monotonic()
+                    for seq in _arrivals(events, seq_of, seq_of_text):
+                        run.arrive(seq)
+                        last_arrival = time.monotonic()
                     if sent_done is not None and (
                             time.monotonic() - max(last_arrival, sent_done) > settle):
                         return

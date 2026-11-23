@@ -268,7 +268,13 @@ def _alive(pid: int) -> bool:
             fields = stat.read().split()
     except ProcessLookupError:  # died between the signal and the read
         return False
-    except OSError:  # not Linux (`/proc` absent), or unreadable: the signal decides
+    except FileNotFoundError:
+        # Two very different causes. No `/proc` at all means this is not Linux
+        # and the signal above is the answer. A `/proc` that exists but has no
+        # entry for the pid means the process is gone — which on Linux is
+        # death, not life (review of #25).
+        return not os.path.isdir("/proc")
+    except OSError:  # unreadable for another reason: the signal decides
         return True
     return len(fields) > 2 and fields[2] != "Z"
 
@@ -370,7 +376,7 @@ def test_a_delivered_post_is_matched_by_id_or_by_its_text():
     while that call is in flight has no id to match and was counted as lost.
     Testing this through a whole run cannot prove the fallback: by the time an
     arrival is counted the id is registered, and an earlier version of this test
-    passed 3 of 3 with the fallback deleted (review of #24). So the decision is
+    passed 3 of 3 with the fallback deleted (review of #25). So the decision is
     called directly, in the state it exists for: a post whose id is not yet
     known but whose text the run wrote.
     """
@@ -383,10 +389,49 @@ def test_a_delivered_post_is_matched_by_id_or_by_its_text():
     # An id the run has not registered yet is matched by the text it wrote —
     # the catch-up case. Without the fallback this is None, i.e. lost.
     assert _match_seq({"id": "p-unknown", "message": "bus-run 3"}, by_id, by_text) == 3
-    # The longest registered text wins, so `bus-run 30` is not read as send 3.
-    assert _match_seq({"id": "p-x", "message": "bus-run 30"}, by_id, by_text) == 30
     # Nothing this run wrote and no known id: not an arrival of this run.
     assert _match_seq({"id": "p-other", "message": "someone else"}, by_id, by_text) is None
+
+
+def test_the_arrival_loop_uses_the_text_fallback():
+    """The call site, driven with the answer `receive()` gets.
+
+    `test_a_delivered_post_is_matched_by_id_or_by_its_text` checks the decision
+    function, and that was not enough: reverting the loop in `bus_run` to an
+    id-only match kept the whole suite green (review of #25). A fallback that
+    nothing calls is not a fallback, so the loop itself is what is called here,
+    with a post whose id this run has not registered.
+    """
+    from bus_testrig.bus import _arrivals
+
+    by_id = {"p-known": 7}
+    by_text = {"bus-run 3": 3}
+    events = [
+        {"post": {"id": "p-known", "message": "bus-run 3"}},     # by id
+        {"post": {"id": "p-unknown", "message": "bus-run 3"}},   # must be by text
+        {"post": {"id": "p-other", "message": "not ours"}},      # neither: skipped
+        {"kind": "more_pending", "count": 2},                    # not a post at all
+        {"post": "not a dict"},
+    ]
+    assert _arrivals(events, by_id, by_text) == [7, 3]
+
+
+def test_the_longest_registered_text_wins_over_a_shorter_prefix():
+    """Mattermost shortens a long post and appends where the rest is, so the
+    text read back is not the text written and the exact key does not match.
+
+    The *longest* registered text the message starts with is the send it came
+    from; the shortest would map `bus-run 30` to send 3. This needs a message
+    that is not an exact key — an exact key proves nothing here (review of
+    #25)."""
+    from bus_testrig.bus import _match_seq
+
+    by_text = {"bus-run 1": 1, "bus-run 10": 10}
+    assert _match_seq({"id": "x", "message": "bus-run 10"}, {}, by_text) == 10
+    # as a reader sees a shortened one: the same head, then where the rest is
+    shortened = "bus-run 10\n\n_(the rest is in the thread)_"
+    assert _match_seq({"id": "x", "message": shortened}, {}, by_text) == 10
+    assert _match_seq({"id": "x", "message": "bus-run 1\n\n_(shortened)_"}, {}, by_text) == 1
 
 
 @skip_no_bus
