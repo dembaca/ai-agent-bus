@@ -842,3 +842,25 @@ a.row:hover .arrow, a.row:focus-visible .arrow { transform: translateX(3px); col
 .console-picture { min-height: 20rem; }
 .console-shot figcaption { margin-top: .5rem; font-size: .8125rem; }
 html:not(.js) .console-picture { display: none; }
+
+/* ---------- the brand: Choirbus, the ai-agent-bus ---------- */
+
+.brand img { width: 1.375rem; height: 1.375rem; flex: none; border-radius: 5px; }
+.brand-tech {
+  margin-left: .125rem;
+  color: var(--muted);
+  font-family: var(--mono);
+  font-size: .75rem;
+  font-weight: 400;
+}
+@media (max-width: 400px) { .brand-tech { display: none; } }
+
+.brand-hero {
+  display: flex;
+  align-items: center;
+  gap: .75rem;
+  margin: 0 0 1.25rem;
+}
+.brand-hero img { width: 3rem; height: 3rem; flex: none; border-radius: 10px; }
+.brand-hero-name { font-family: var(--serif); font-size: 1.5rem; font-weight: 560; color: var(--ink); }
+.brand-hero-tech { color: var(--muted); font-size: .9375rem; }

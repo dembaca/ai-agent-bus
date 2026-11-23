@@ -1,0 +1,7 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="63 66 1129 1122" role="img" aria-label="Choirbus">
+  <title>Choirbus</title>
+  <rect x="63" y="66" width="1129" height="1122" rx="225" fill="#140b47"/>
+  <circle cx="620" cy="626" r="470" fill="#fdf6ea"/>
+  <path d="M190 840 C205 700 240 590 310 510 C385 425 490 395 570 405 C640 415 690 440 725 470 L745 780 C630 820 545 920 525 1096 L525 1110 L200 1110 Z" fill="#140b47"/>
+  <path d="M640 455 L985 590 L640 790 C600 740 585 690 588 620 C590 545 610 490 640 455 Z" fill="#ec4a3a"/>
+</svg>
