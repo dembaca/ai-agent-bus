@@ -68,4 +68,6 @@ def test_the_instructions_say_a_home_over_nats_is_not_seen_in_mattermost(monkeyp
     assert "runs over NATS" not in server._instructions()
     monkeypatch.setenv("MM_NATS_HOMES", "home")
     text = server._instructions()
-    assert "people do not see its posts in Mattermost" in text and "ask_human" in text
+    # the instructions are made before the NATS side is built: they point at over_nats,
+    # which says whether the home really runs over NATS, and claim nothing themselves
+    assert "When bus_info shows over_nats" in text and "ask_human" in text
