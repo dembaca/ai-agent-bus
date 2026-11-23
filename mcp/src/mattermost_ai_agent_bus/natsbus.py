@@ -514,6 +514,8 @@ class NatsBus:
         self._denied: list[str] = []  # subjects the server refused a publish on
         self._gaps = GapTracker()
         self._last_gap_reconnect = -1e18
+        self._last_echo_reconnect = -1e18
+        self._echo_backoff = 0.0  # the wait after an echo reconnect that brought no echo back; 0: none yet
         self._stale: set[str] = set()  # channels with a gap, dropped until the reconnect
         self._last_seq: dict[str, int] = {}  # channel (or "@dm") -> last stream sequence delivered
         self._server_now = 0.0  # the newest server timestamp seen: the host's "now"
@@ -816,6 +818,26 @@ class NatsBus:
                     await nc.publish(self._presence_subject, encode_presence("online", self._bot))
                 except Exception as exc:
                     log.warning("nats bus: heartbeat: %s", type(exc).__name__)
+            self._check_own_echo()
+
+    def _check_own_echo(self) -> None:
+        """The echo of the own presence missing past OWN_ECHO_SEC while connected (a stream
+        made anew, the consumer gone): a reconnect makes the consumer again (RT-6.38 step 2).
+        None when the server refused the presence subject (host and login service of
+        different releases: a reconnect cures nothing). A reconnect that brings no echo back
+        doubles the wait before the next, from OWN_ECHO_SEC up to RENEW_SEC; a real echo
+        resets it. So an outage a reconnect does not cure is no reconnect storm."""
+        if self._stopping or not self._connected or self.own_echo_age() <= OWN_ECHO_SEC:
+            return
+        if self._presence_subject in self._denied:
+            return
+        now = time.monotonic()
+        if now - self._last_echo_reconnect < max(self._gap_sec, self._echo_backoff):
+            return
+        log.warning("nats bus: no echo of the own presence for %.0f s, reconnecting", self.own_echo_age())
+        self._echo_backoff = min(max(self._echo_backoff * 2, OWN_ECHO_SEC), RENEW_SEC)
+        self._last_echo_reconnect = now
+        self._wake.set()
 
     # --- sending ---------------------------------------------------------------------
     async def _publish(self, subject: str, body: bytes) -> None:
@@ -1126,6 +1148,7 @@ class NatsBus:
             # not be in it: forget them, so that an own claim that is gone is claimed again.
             self._claims.clear()
             self._claim_at.clear()
+            self._synced = False  # until a delivery with pending 0: the replay is not read yet
         self._presence_cseq = ack.consumer_seq
         if ack.pending == 0:
             self._synced = True
@@ -1145,6 +1168,7 @@ class NatsBus:
                 self._presence[agent] = (ack.time, status)
                 if agent == self.name:
                     self._own_echo = time.monotonic()
+                    self._echo_backoff = 0.0  # a real echo: the next outage starts afresh
                 bot = decode_presence_bot(msg.data)
                 if bot:
                     self._bots[agent] = bot
