@@ -3142,6 +3142,14 @@ separately.
      that `sub`. A human account that logs in to Mattermost without Keycloak
      cannot start a session through the bus's client and is never in the
      approvers' group.
+   - Changed by the decision on a bus without a chat as its source
+     (ADR-016 point 1, accepted 2026-11-23), not built yet: the key of a
+     human is the Keycloak `sub`, not `preferred_username`. Chat accounts
+     are bound to that identity per chat product, and today's names stay
+     valid through the binding; what is displayed is the current
+     `preferred_username`. The lookup in Mattermost turns from a gate into
+     that binding: a human without a Mattermost account may start agents.
+     Until it is built the login service checks as written here.
 7. **Credentials and their renewal** (decided by the owner on 2026-11-22).
    - The host process generates its own NATS nkey pair; the seed never
      leaves it.
@@ -4150,8 +4158,11 @@ point 3). What changes lies behind them: the NATS adapter (card, asks,
 `STATS`, the state word over NATS), the MCP server's check of an answer (a
 person on NATS), the login service (a person's credential) and the message
 format. Each changes Section 6 with a scenario and a test when it is
-built, not before; ADR-014 point 10 changes when open point 2 is decided,
-and stands as written until then. Sections 3, 5 and 7 get the console's
+built, not before. ADR-014 point 10 is already changed by the decision on
+a bus without a chat as its source (ADR-016, accepted 2026-11-23): each
+chat product's bridge vouches for the humans of its chat. That a Keycloak
+login on NATS itself vouches as well comes with this console's answer
+path, when open point 2 is decided. Sections 3, 5 and 7 get the console's
 interface, building block and deployment when it is accepted and built;
 the website and `CHANGELOG.md` when a version ships it.
 
