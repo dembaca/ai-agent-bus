@@ -1,0 +1,111 @@
+/* The planned operator console (Console.tsx), a preview inside a Stage. */
+
+.cn-fill {
+  width: 100%;
+}
+
+.cn-stage .ss-stage {
+  overflow: hidden;
+  background: transparent;
+  --ss-font: 'Inter', system-ui, -apple-system, sans-serif;
+}
+
+.cn-stage {
+  & .cn-win {
+    position: absolute;
+    top: 16px;
+    left: 16px;
+    right: 16px;
+    height: calc(100% + 8px);
+    box-shadow: var(--ss-shadow-hero);
+  }
+
+  & .ss-window__title {
+    font-family: var(--ss-mono);
+    font-size: 11.5px;
+  }
+
+  & .cn-preview {
+    display: flex;
+    justify-content: flex-end;
+    width: 100%;
+  }
+
+  & .cn-side {
+    display: grid;
+    align-content: start;
+    gap: 6px;
+    padding: 16px 14px;
+    height: 100%;
+    box-sizing: border-box;
+  }
+
+  & .cn-side-head {
+    margin-bottom: 6px;
+    font-size: 12px;
+    font-weight: 550;
+    color: var(--ss-text-strong);
+  }
+
+  & .cn-view {
+    padding: 5px 8px;
+    border-radius: 6px;
+    font-size: 12.5px;
+    color: var(--ss-text);
+  }
+
+  & .cn-view[data-on] {
+    background: var(--ss-ink-2);
+    color: var(--ss-text-strong);
+    font-weight: 550;
+  }
+
+  & .cn-side-foot {
+    margin-top: 14px;
+  }
+
+  & .cn-board {
+    display: grid;
+    gap: 12px;
+    padding: 16px;
+  }
+
+  & .cn-col {
+    display: grid;
+    align-content: start;
+    gap: 10px;
+  }
+
+  & .cn-col-head {
+    font-size: 11.5px;
+    font-weight: 550;
+    color: var(--ss-text-faint);
+    text-transform: uppercase;
+    letter-spacing: 0.04em;
+  }
+
+  & .cn-card {
+    display: grid;
+    gap: 10px;
+    padding: 10px 12px;
+    border-radius: 10px;
+    background: var(--ss-surface);
+    box-shadow: var(--ss-shadow-ground);
+  }
+
+  & .cn-card-head {
+    display: flex;
+    align-items: center;
+    gap: 8px;
+    min-width: 0;
+  }
+
+  & .cn-mono {
+    overflow: hidden;
+    font-family: var(--ss-mono);
+    font-size: 11px;
+    color: var(--ss-text-strong);
+    text-overflow: ellipsis;
+    white-space: nowrap;
+  }
+}
