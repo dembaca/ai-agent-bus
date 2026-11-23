@@ -79,6 +79,11 @@ func (h *handler) putAccount(w http.ResponseWriter, r *http.Request, id token.Id
 	}
 	ctx := r.Context()
 	from, err := h.store.PutAccount(ctx, b.Sub, accountProduct, name, want)
+	if err != nil && from != "" { // the key moved, the records did not all follow
+		h.cfg.Log.Warn("directory write", "event", "account set, incomplete", "sub", id.Subject, "user", id.Owner,
+			"product", accountProduct, "name", name, "old_sub", directory.Short(from), "new_sub", directory.Short(b.Sub),
+			"error", err.Error())
+	}
 	if errors.Is(err, directory.ErrNoIdentity) {
 		fail(w, http.StatusNotFound, "no identity with that sub: it must have logged in once")
 		return

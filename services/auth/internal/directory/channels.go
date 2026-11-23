@@ -93,18 +93,15 @@ func (a Anchors) Account(ctx context.Context, sub, name string) error {
 		return nil
 	}
 	movedFrom, err := a.Store.ClaimAccount(ctx, sub, "mattermost", name)
-	if err != nil {
-		return err
-	}
-	if movedFrom != "" {
+	if movedFrom != "" { // reported once the key moved, also when the records did not follow
 		log := a.Log
 		if log == nil {
 			log = slog.Default()
 		}
 		log.Warn("directory: chat account name moved", "product", "mattermost", "name", name,
-			"from", Short(movedFrom), "to", Short(sub))
+			"from", Short(movedFrom), "to", Short(sub), "complete", err == nil)
 	}
-	return nil
+	return err
 }
 
 // Short keeps the first 8 characters of a `sub` for a log line.

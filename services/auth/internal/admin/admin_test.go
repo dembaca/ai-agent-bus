@@ -427,6 +427,10 @@ func TestAccountEndpoints(t *testing.T) {
 	const path = "/v1/directory/accounts/mattermost/alice"
 	code, body, _ := e.do(t, "GET", path, e.bob, "")
 	want(t, "not an admin", code, 403, body)
+	code, body, _ = e.do(t, "PUT", path, e.bob, `{"sub":"sub-a"}`, "If-None-Match", "*")
+	want(t, "not an admin, put", code, 403, body)
+	code, body, _ = e.do(t, "DELETE", path, e.bob, "", "If-Match", `"1"`)
+	want(t, "not an admin, delete", code, 403, body)
 	code, body, _ = e.do(t, "GET", path, e.admin, "")
 	want(t, "missing", code, 404, body)
 	code, body, _ = e.do(t, "GET", "/v1/directory/accounts/mattermost/Bad%20Name", e.admin, "")

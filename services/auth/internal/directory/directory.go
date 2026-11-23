@@ -48,7 +48,10 @@ const (
 	anchorPrefix   = "anchor."
 	anchorOfPrefix = "anchorof."
 	accountPrefix  = "account."
-	importedKey    = "meta.imported"
+	// movePrefix marks a name whose index key is being moved: the `sub` it
+	// is taken from, until both records have followed.
+	movePrefix  = "accountmove."
+	importedKey = "meta.imported"
 )
 
 // MaxMembers bounds a channel's member list (the record must fit one value).
@@ -572,10 +575,12 @@ func (s *Store) SetAccount(ctx context.Context, sub, product, name string) error
 // or an admin: the import keeps SetAccount, which never takes a name over.
 // The identity must exist (ErrNoIdentity).
 //
-// The order is the safety: ByAccount needs the index key and the identity's
-// record to agree, so a write that stops half way leaves "not found", never a
-// wrong identity. First the key (compare and set), then the new holder's
-// record, last the old holder's.
+// The safety is ByAccount's: it needs the index key and the identity's
+// record to agree, so a write that stops half way leaves "not found" or the
+// new holder, never the old one once the key moved, in any order of the
+// records. The key moves first (compare and set, after a mark of the move),
+// then the new holder's record, last the old holder's; a move that stops is
+// finished from its mark by the next write of that name (settle).
 func (s *Store) ClaimAccount(ctx context.Context, sub, product, name string) (movedFrom string, err error) {
 	if err := checkKey(sub); err != nil {
 		return "", err
@@ -605,7 +610,13 @@ func (s *Store) ClaimAccount(ctx context.Context, sub, product, name string) (mo
 			return "", err
 		}
 		if string(e.Value()) == sub {
-			return "", s.finishAccount(ctx, sub, product, name, "")
+			return s.settle(ctx, sub, product, name, "")
+		}
+		if err := s.markMove(ctx, product, name, string(e.Value())); err != nil {
+			return "", err
+		}
+		if err := accountStep("before key"); err != nil {
+			return "", err
 		}
 		if _, err := s.kv.Update(ctx, key, []byte(sub), e.Revision()); err != nil {
 			if isWrongSequence(err) {
@@ -613,10 +624,54 @@ func (s *Store) ClaimAccount(ctx context.Context, sub, product, name string) (mo
 			}
 			return "", err
 		}
-		movedFrom = string(e.Value())
-		return movedFrom, s.finishAccount(ctx, sub, product, name, movedFrom)
+		return s.settle(ctx, sub, product, name, string(e.Value()))
 	}
 	return "", ErrConflict
+}
+
+// accountStep runs at the steps of a move; tests use it to stop a move half
+// way or change the key meanwhile. Nothing in production.
+var accountStep = func(string) error { return nil }
+
+func moveKey(product, name string) string {
+	return movePrefix + product + "." + hex.EncodeToString([]byte(name))
+}
+
+// markMove notes, before the index key moves, which `sub` it is taken from.
+// A move that stops after the key leaves the mark, and the next write of that
+// name finishes the move from it: the old holder still loses the name, and
+// the move is still reported.
+func (s *Store) markMove(ctx context.Context, product, name, from string) error {
+	_, err := s.kv.Put(ctx, moveKey(product, name), []byte(from))
+	return err
+}
+
+// settle follows a write of the index key that now points at `sub`. A mark
+// of a move that has not finished counts as moved from, when it names
+// another `sub`. It returns the `sub` the name moved from, also when the
+// records could not follow, so that the move is reported anyway; the mark
+// is removed only once they have.
+func (s *Store) settle(ctx context.Context, sub, product, name, movedFrom string) (string, error) {
+	mark, err := s.kv.Get(ctx, moveKey(product, name))
+	switch {
+	case errors.Is(err, jetstream.ErrKeyNotFound):
+		mark = nil
+	case err != nil:
+		return movedFrom, err
+	}
+	if movedFrom == "" && mark != nil && string(mark.Value()) != sub {
+		movedFrom = string(mark.Value())
+	}
+	if err := s.finishAccount(ctx, sub, product, name, movedFrom); err != nil {
+		return movedFrom, err
+	}
+	if mark != nil {
+		err := s.kv.Delete(ctx, moveKey(product, name), jetstream.LastRevision(mark.Revision()))
+		if err != nil && !errors.Is(err, jetstream.ErrKeyNotFound) && !isWrongSequence(err) {
+			return movedFrom, err
+		}
+	}
+	return movedFrom, nil
 }
 
 // PutAccount is the admin's write of the index entry: rev 0 creates it
@@ -643,7 +698,7 @@ func (s *Store) PutAccount(ctx context.Context, sub, product, name string, rev u
 		} else if err != nil {
 			return "", err
 		}
-		return "", s.finishAccount(ctx, sub, product, name, "")
+		return s.settle(ctx, sub, product, name, "")
 	}
 	e, err := s.kv.Get(ctx, key)
 	if errors.Is(err, jetstream.ErrKeyNotFound) {
@@ -655,23 +710,32 @@ func (s *Store) PutAccount(ctx context.Context, sub, product, name string, rev u
 	if e.Revision() != rev {
 		return "", ErrConflict
 	}
+	if old := string(e.Value()); old != sub {
+		movedFrom = old
+		if err := s.markMove(ctx, product, name, old); err != nil {
+			return "", err
+		}
+	}
 	if _, err := s.kv.Update(ctx, key, []byte(sub), rev); err != nil {
 		if isWrongSequence(err) {
 			return "", ErrConflict
 		}
 		return "", err
 	}
-	if old := string(e.Value()); old != sub {
-		movedFrom = old
-	}
-	return movedFrom, s.finishAccount(ctx, sub, product, name, movedFrom)
+	return s.settle(ctx, sub, product, name, movedFrom)
 }
 
 // finishAccount is what follows a write of the index key: the new holder's
 // record gets the name (and movedFrom), the name it had before is freed, and
 // the old holder's record loses the name.
 func (s *Store) finishAccount(ctx context.Context, sub, product, name, movedFrom string) error {
+	if err := accountStep("key moved"); err != nil {
+		return err
+	}
 	if err := s.holdAccount(ctx, sub, product, name, movedFrom); err != nil {
+		return err
+	}
+	if err := accountStep("holder written"); err != nil {
 		return err
 	}
 	if movedFrom == "" {
@@ -805,6 +869,9 @@ func (s *Store) DropAccount(ctx context.Context, product, name string, rev uint6
 		return "", err
 	}
 	sub = string(e.Value())
+	if err := s.kv.Delete(ctx, moveKey(product, name)); err != nil && !errors.Is(err, jetstream.ErrKeyNotFound) {
+		return sub, err
+	}
 	return sub, s.releaseAccount(ctx, sub, product, name)
 }
 
