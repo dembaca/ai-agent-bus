@@ -118,6 +118,10 @@ func importAt(ctx context.Context, store *directory.Store, source Source, bindin
 	}
 
 	for _, ch := range chs {
+		if ch.Type != "O" && ch.Type != "P" { // never a direct or group message
+			rep.ChannelsSkipped = append(rep.ChannelsSkipped, SkippedChannel{Name: ch.Name, Reason: "not a team channel"})
+			continue
+		}
 		if !channelNameRE.MatchString(ch.Name) {
 			rep.ChannelsSkipped = append(rep.ChannelsSkipped, SkippedChannel{Name: ch.Name, Reason: "not a valid channel name on the bus"})
 			continue

@@ -51,6 +51,8 @@ func mmServer(t *testing.T, failChannel *atomic.Value) *httptest.Server {
 			send([]map[string]any{
 				{"id": "c-town", "name": "town", "type": "O", "creator_id": "u-alice"},
 				{"id": "c-bad", "name": "Bad Name", "type": "O", "creator_id": "u-alice"},
+				// a direct message the server should never list here: still never imported
+				{"id": "c-dm", "name": "u-alice__u-bob", "type": "D", "creator_id": "u-alice"},
 			})
 		case p == "/api/v4/teams/t1/channels/private":
 			send([]map[string]any{{"id": "c-vault", "name": "vault", "type": "P", "creator_id": "u-bot"}})
@@ -112,8 +114,8 @@ func TestImportCreatesOnceThroughHTTP(t *testing.T) {
 	if err := json.Unmarshal([]byte(body), &rep); err != nil {
 		t.Fatal(err)
 	}
-	if !slices.Equal(rep.ChannelsCreated, []string{"town", "vault"}) || len(rep.ChannelsSkipped) != 1 ||
-		rep.ChannelsSkipped[0].Name != "Bad Name" || rep.Identities != 2 || rep.PendingAdded != 1 ||
+	if !slices.Equal(rep.ChannelsCreated, []string{"town", "vault"}) || len(rep.ChannelsSkipped) != 2 ||
+		rep.ChannelsSkipped[0].Name != "Bad Name" || rep.ChannelsSkipped[1].Reason != "not a team channel" || rep.Identities != 2 || rep.PendingAdded != 1 ||
 		rep.Next != "set AUTH_DIRECTORY_IMPORTED=true and restart" {
 		t.Fatalf("report: %+v", rep)
 	}
