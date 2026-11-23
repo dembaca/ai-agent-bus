@@ -67,7 +67,7 @@ func (c *cl) login(owner string, host nkeys.KeyPair, hello Hello) (*agent, error
 	pub, _ := host.PublicKey()
 	hello.Token = c.realm.Token(owner, nil)
 	raw, _ := json.Marshal(hello)
-	a := &agent{name: DefaultNamePrefix + name(owner, pub), errs: make(chan error, 16)}
+	a := &agent{name: DefaultNamePrefix + name(owner, pub), owner: owner, errs: make(chan error, 16)}
 	nc, err := nats.Connect(c.url, nats.Nkey(pub, host.Sign), nats.Token(string(raw)),
 		nats.ErrorHandler(func(_ *nats.Conn, _ *nats.Subscription, err error) { a.errs <- err }), nats.MaxReconnects(0))
 	if err != nil {
@@ -266,7 +266,7 @@ func TestALoginMakesTheConsumers(t *testing.T) {
 		{"BUS", "_ch_home", "ch.home", []string{"bus.ch.home.*"}},
 		{"BUS", "_ch_secret", "ch.secret", []string{"bus.ch.secret.*"}},
 		{"BUS", "_dm", "dm", []string{"bus.dm." + bob.name + ".*"}},
-		{"PRESENCE", "_presence", "presence", []string{"presence.*", "presence.crown.home.*", "presence.crown.secret.*"}},
+		{"PRESENCE", "_presence", "presence", []string{"presence.*.*", "presence.crown.home.*", "presence.crown.secret.*"}},
 	} {
 		ci := c.info(w.stream, bob.name+w.name)
 		if ci == nil {
@@ -549,24 +549,24 @@ func TestAByeOnTheOwnPresenceSubjectRemovesTheOwnConsumers(t *testing.T) {
 			t.Fatalf("%s refused", subject)
 		}
 	}
-	say(alice, "presence."+alice.name, `{"status":"online"}`)
+	say(alice, alice.presence(), `{"status":"online"}`)
 	time.Sleep(300 * time.Millisecond)
 	if len(c.consumersOf(alice)) != 3 {
 		t.Fatal("a heartbeat removed consumers")
 	}
-	say(bob, "presence."+bob.name, `{"status":"bye"}`)
+	say(bob, bob.presence(), `{"status":"bye"}`)
 	waitFor(t, "bob's consumers removed", func() bool { return len(c.consumersOf(bob)) == 0 })
 	if n := len(c.consumersOf(alice)); n != 3 {
 		t.Errorf("bob's bye touched alice's consumers: %d left", n)
 	}
 	// Alice cannot say bye as bob: the subject is hers alone.
-	if err := alice.nc.Publish("presence."+bob.name, []byte(`{"status":"bye"}`)); err != nil {
+	if err := alice.nc.Publish(bob.presence(), []byte(`{"status":"bye"}`)); err != nil {
 		t.Fatal(err)
 	}
 	if !alice.denied(t) {
 		t.Error("alice could publish on bob's presence subject")
 	}
-	say(alice, "presence."+alice.name, `{"status":"bye"}`)
+	say(alice, alice.presence(), `{"status":"bye"}`)
 	waitFor(t, "alice's consumers removed", func() bool { return len(c.consumersOf(alice)) == 0 })
 }
 
@@ -692,7 +692,7 @@ func TestEndToEndAnAgentReadsAPostOfAnother(t *testing.T) {
 	for subject, body := range map[string]string{
 		"bus.ch.home." + alice.name:             "hello home",
 		"bus.dm." + bob.name + "." + alice.name: "hello bob",
-		"presence." + alice.name:                `{"status":"online"}`,
+		alice.presence():                        `{"status":"online"}`,
 	} {
 		if err := alice.nc.Publish(subject, []byte(body)); err != nil {
 			t.Fatal(err)
@@ -736,7 +736,7 @@ func TestAByeHandledAfterAReloginLeavesTheConsumers(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if err := alice.nc.Publish("presence."+alice.name, []byte(`{"status":"bye"}`)); err != nil {
+	if err := alice.nc.Publish(alice.presence(), []byte(`{"status":"bye"}`)); err != nil {
 		t.Fatal(err)
 	}
 	select {
@@ -943,7 +943,7 @@ func TestTheDocumentedMinimalRightsSuffice(t *testing.T) {
 	if err := mgr.SweepBrake(ctx5(t), NewBrake("", nil)); err != nil {
 		t.Fatalf("SweepBrake: %v", err)
 	}
-	if err := a.nc.Publish("presence."+a.name, []byte(`{"status":"bye"}`)); err != nil {
+	if err := a.nc.Publish(a.presence(), []byte(`{"status":"bye"}`)); err != nil {
 		t.Fatal(err)
 	}
 	waitFor(t, "alice's consumers removed by her bye", func() bool { return len(c.consumersOf(a)) == 0 })

@@ -155,6 +155,22 @@ def test_listen_window_follows_the_files_post_time(mm, run):
     assert int(window(run)["SINCE"]) >= int(time.time()) - 5
 
 
+def test_a_window_file_without_post_keeps_listening_after_an_update(mm, run):
+    """RT-6.2 step 5: a window written before POST (an older hook) keeps the rule it
+    was opened under once: a post after its start opens a fresh window, which then
+    has POST; an older post does not."""
+    now = int(time.time())
+    last_post(run, "IDLE · before the window", at=(now - 120) * 1000)
+    set_window(run, UNTIL=now + 600, SINCE=now - 60, ASKED_AT=0, STARTED=0, PID=0, ENDED="event")
+    r = run(STOP, **IN_PROJECT)
+    assert r.blocked and int(window(run)["UNTIL"]) == now + 600 and not window(run).get("POST")
+    set_window(run, STARTED=now + 1, PID=0, ENDED="event")  # the listener ran and woke the agent
+    last_post(run, "RESULT · after its start", at=(now - 10) * 1000)
+    r = run(STOP, **IN_PROJECT)
+    assert r.blocked and int(window(run)["SINCE"]) >= now - 5
+    assert int(window(run)["POST"]) == (now - 10) * 1000  # from now on by the post
+
+
 def test_listen_window_opens_afresh_for_another_post_and_compares_no_clock(mm, run):
     """RT-6.2 step 5: a fresh window when the latest own post is another than the
     one the window opened with (POST), whatever the clocks say. A post on

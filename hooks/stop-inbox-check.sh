@@ -331,8 +331,12 @@ if [[ -n "$LF" && "$LISTEN_SEC" -gt 0 && "$have_post" -eq 1 ]] && ! mm_channel_p
   # latest own post is another than the one the window opened with (POST, its
   # time as the server that carried it gave it): no clock is compared, so a
   # post over NATS (RT-6.36), whose time is the NATS server's, counts alike.
-  # A window without POST (an older file) knows no post: none afresh by it.
-  if [[ "$LISTEN_UNTIL" -eq 0 ]] || { [[ -n "$LISTEN_POST" ]] && (( LAST_AT != LISTEN_POST )); }; then
+  # A window file from before POST (written by an older hook) keeps the rule it
+  # was opened under, its post time against its start, until its next window,
+  # which has POST: listening never stops after an update.
+  if [[ "$LISTEN_UNTIL" -eq 0 ]] ||
+    { [[ -n "$LISTEN_POST" ]] && (( LAST_AT != LISTEN_POST )); } ||
+    { [[ -z "$LISTEN_POST" ]] && (( LAST_AT / 1000 > LISTEN_SINCE )); }; then
     LISTEN_SINCE="$now"
     LISTEN_UNTIL=$((now + LISTEN_SEC))
     LISTEN_POST="$LAST_AT"

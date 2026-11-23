@@ -30,17 +30,16 @@ from mattermost_ai_agent_bus.natsbus import (
     NatsBus,
     NameMismatch,
     NatsSettings,
-    Presence,
     agent_name,
-    attested_owner,
     build_hello,
     crown_holder,
     decode,
     decode_presence,
-    decode_presence_record,
     encode,
     encode_claim,
     encode_presence,
+    owner_of_token,
+    owner_token,
     parse_ack,
 )
 
@@ -114,41 +113,24 @@ def test_sender_in_body_is_ignored() -> None:
     assert not hasattr(m, "sender")
 
 
-def test_a_presence_proves_the_owner_its_name_was_made_from() -> None:
-    """RT-6.37: the login service names an agent agent_name(owner, host nkey) and NATS
-    pins that name in the subject, so a presence naming owner and nkey proves the owner
-    when they recompute the sender's name, and nothing else does."""
-    me = "agent-" + VECTOR_NAME
-    good = Presence("online", "alice", VECTOR_NKEY)
-    assert attested_owner(me, good, "agent-") == "alice"
-    assert attested_owner(me, Presence("online", "bob", VECTOR_NKEY), "agent-") == ""  # another owner
-    other = bytes(FakeLogin().kp.public_key).decode()
-    assert attested_owner(me, Presence("online", "alice", other), "agent-") == ""  # another key
-    assert attested_owner("agent-someoneelse", good, "agent-") == ""  # another sender
-    assert attested_owner(VECTOR_NAME, good, "") == "alice" and attested_owner(me, good, "x-") == ""
-    assert attested_owner(me, Presence("online"), "agent-") == ""  # an older agent: says nothing
-    assert attested_owner(me, Presence("online", "alice", "not-a-key"), "agent-") == ""
+def test_the_owner_token_of_a_presence_subject() -> None:
+    """RT-6.37: the owner rides in the presence subject `<presence>.<owner>.<name>`, as Go's
+    ownerToken writes it: "." as "~" (no subject token holds "."; no username holds "~")."""
+    for owner, token in (("alice", "alice"), ("andreas.dembach", "andreas~dembach"), ("a_b-c", "a_b-c"),
+                         ("a.b.", "a~b~")):
+        assert owner_token(owner) == token and owner_of_token(token) == owner
+    assert owner_token("a.b") != owner_token("a_b")  # two owners never become one
+    assert owner_of_token("-") == "" and owner_of_token("a.b") == "" and owner_of_token("") == ""
 
 
 @pytest.mark.parametrize("owner", ["Alice", "ALICE", "alice ", " alice", "al\nice", "alice\n", "äl", ""])
 def test_an_owner_counts_only_in_the_one_form_the_bus_compares(owner: str) -> None:
     """RT-6.37: one namespace. The owner is compared with Mattermost usernames
     (MM_TRUSTED_HUMANS, the owners of Mattermost bots), which are lower case; nothing is
-    normalised, so an owner in any other form proves nothing, even when its name matches:
-    two owners never become one."""
-    key = VECTOR_NKEY
-    name = agent_name(owner, key)  # the login service would name it so
-    assert attested_owner(name, Presence("online", owner, key), "agent-") == ""
-
-
-def test_presence_bodies_carry_owner_and_key() -> None:
-    body = encode_presence("online", "alice", VECTOR_NKEY)
-    assert decode_presence_record(body) == Presence("online", "alice", VECTOR_NKEY)
-    assert decode_presence(body) == "online"
-    assert decode_presence_record(encode_presence("bye")) == Presence("bye")  # an older agent's form
-    for bad in (b'{"v":1,"status":"online","owner":7,"nkey":""}', b'{"v":1,"status":"online","nkey":[]}'):
-        with pytest.raises(MessageError):
-            decode_presence_record(bad)
+    normalised, so an owner in any other form gets the token "-" and is no owner: two
+    owners never become one."""
+    assert owner_token(owner) == "-"
+    assert owner_of_token(owner) == ""
 
 
 def test_presence_and_claim_bodies() -> None:
@@ -443,7 +425,7 @@ async def test_deliver_drops_a_reply_of_another_consumer(caplog: pytest.LogCaptu
     await bus._on_deliver("home", "bus.ch.home.agent-x", _reply(bus, "home", 5, 1), ok)
     assert len(events) == 1
     # a presence message of a forged consumer is dropped too
-    await bus._on_presence_msg(FakeMsg(f"presence.{bus.name}", f"$JS.ACK.PRESENCE.x_presence.1.1.1.{t}.0",
+    await bus._on_presence_msg(FakeMsg(f"presence.alice.{bus.name}", f"$JS.ACK.PRESENCE.x_presence.1.1.1.{t}.0",
                                        encode_presence("online")))
     assert bus.presence_snapshot() == {}
 
@@ -469,7 +451,7 @@ T0 = 1_800_000_000.0
 
 
 async def _presence(bus: NatsBus, who: str, seq: int, t: float, status: str = "online") -> None:
-    await bus._on_presence_msg(FakeMsg(f"presence.{who}", _presence_reply(bus, seq, seq, t),
+    await bus._on_presence_msg(FakeMsg(f"presence.-.{who}", _presence_reply(bus, seq, seq, t),
                                        encode_presence(status)))
 
 
@@ -494,28 +476,32 @@ async def test_crown_uses_server_time_not_the_local_clock(monkeypatch: pytest.Mo
     assert bus.holder("home") is None
 
 
-async def test_the_owner_comes_from_the_presence_and_presence_from_the_server_clock(
+async def test_the_owner_comes_from_the_presence_subject_and_presence_from_the_server_clock(
         monkeypatch: pytest.MonkeyPatch) -> None:
     monkeypatch.setattr(time, "time", lambda: T0 + 1e9)  # the host's clock is far off
     bus, _ = _unit_bus()
-    login = FakeLogin()
-    key = bytes(login.kp.public_key).decode()
-    them = agent_name("bob", key)
-    await bus._on_presence_msg(FakeMsg(f"presence.{them}", _presence_reply(bus, 1, 1, T0),
-                                       encode_presence("online", "bob", key)))
-    assert bus.owner_of(them) == "bob" and bus.presence_of(them) == "online"
-    # a later presence that claims another owner proves nothing: the owner goes
-    await bus._on_presence_msg(FakeMsg(f"presence.{them}", _presence_reply(bus, 2, 2, T0 + 30),
-                                       encode_presence("away", "alice", key)))
+    them = "agent-them"
+    await bus._on_presence_msg(FakeMsg(f"presence.bob~b.{them}", _presence_reply(bus, 2, 2, T0),
+                                       encode_presence("online")))
+    assert bus.owner_of(them) == "bob.b" and bus.presence_of(them) == "online"
+    # an older message (a lower stream sequence) never overrides a newer one
+    await bus._on_presence_msg(FakeMsg(f"presence.mallory.{them}", _presence_reply(bus, 1, 1, T0 + 1),
+                                       encode_presence("away")))
+    assert bus.owner_of(them) == "bob.b" and bus.presence_of(them) == "online"
+    # a presence under "-" (an owner not in the one form) names none
+    await bus._on_presence_msg(FakeMsg(f"presence.-.{them}", _presence_reply(bus, 3, 3, T0 + 30),
+                                       encode_presence("away")))
     assert bus.owner_of(them) == "" and bus.presence_of(them) == "away"
-    await _presence(bus, "agent-z", 3, T0 + 30 + natsbus.PRESENCE_FRESH_SEC)  # the server clock moves on
+    await _presence(bus, "agent-z", 4, T0 + 30 + natsbus.PRESENCE_FRESH_SEC)  # the server clock moves on
     assert bus.presence_of(them) == "offline" and bus.presence_of("agent-nobody") == "offline"
-    await _presence(bus, them, 4, T0 + 200, status="bye")
+    await _presence(bus, them, 5, T0 + 200, status="bye")
     assert bus.presence_of(them) == "offline"
-    # its own presence names its owner and key, so the others can recompute its name
-    assert decode_presence_record(bus._presence_body("online")) == Presence(
-        "online", "alice", bus._login.nkey().public_key)
-    assert attested_owner(bus.name, decode_presence_record(bus._presence_body("online")), "agent-") == "alice"
+    # the old form <presence>.<name> is no presence any more
+    await bus._on_presence_msg(FakeMsg(f"presence.{them}", _presence_reply(bus, 6, 6, T0 + 201),
+                                       encode_presence("online")))
+    assert bus.presence_of(them) == "offline"
+    # its own presence goes under its owner and name
+    assert bus._presence_subject == f"presence.alice.{bus.name}"
 
 
 async def test_claims_and_presence_age_out_after_24_hours() -> None:
@@ -635,7 +621,7 @@ HOUR_NS = 3_600_000_000_000
 def _consumer_specs(agent: str, channels: list[str], since: dict[str, int]) -> list[tuple[str, str, dict[str, Any]]]:
     """Consumers exactly like consumers/manager.go desired() and config(): (stream, name, config)."""
     out: list[tuple[str, str, dict[str, Any]]] = []
-    filters = ["presence.*"]
+    filters = ["presence.*.*"]  # every agent's presence: <owner>.<name> (RT-6.37)
 
     def cfg(name: str, deliver: str, flt: list[str], policy: str = "new") -> dict[str, Any]:
         c: dict[str, Any] = {"durable_name": name, "deliver_subject": deliver, "ack_policy": "none",
@@ -726,7 +712,7 @@ async def rig(tmp_path: Path) -> AsyncIterator[Rig]:
         # exactly what callout/perms.go grants for the channel `home`
         users.append(
             f'{{nkey: "{lg.nkey().public_key}", permissions: {{publish: {{allow: ["bus.ch.home.{n}", '
-            f'"presence.crown.home.{n}", "bus.dm.*.{n}", "presence.{n}"]}}, '
+            f'"presence.crown.home.{n}", "bus.dm.*.{n}", "presence.{w}.{n}"]}}, '
             f'subscribe: {{allow: ["deliver.{n}.>"]}}}}}}')
     port = _free_port()
     conf = tmp_path / "nats.conf"
@@ -901,7 +887,7 @@ async def test_a_name_the_credential_does_not_carry_stops_the_bus(rig: Rig) -> N
     assert seen == []
     # The right name starts and announces itself.
     right, _ = await rig.agent("alice")
-    await until(lambda: f"presence.{right.name}" in seen)
+    await until(lambda: f"presence.alice.{right.name}" in seen)
 
 
 async def test_a_refused_publish_is_not_a_success(rig: Rig, caplog: pytest.LogCaptureFixture) -> None:

@@ -234,7 +234,7 @@ type spec struct {
 
 func (m *Manager) desired(agent string, channels []string) []spec {
 	var out []spec
-	filters := []string{m.cfg.Presence + ".*"}
+	filters := []string{m.cfg.Presence + ".*.*"} // every agent: owner token and name
 	for _, ch := range channels {
 		out = append(out, spec{stream: BusStream, name: agent + "_ch_" + ch, channel: ch,
 			deliver: DeliverPrefix + "." + agent + ".ch." + ch, filters: []string{m.cfg.Bus + ".ch." + ch + ".*"}})
@@ -780,7 +780,7 @@ func (m *Manager) WatchBrake(ctx context.Context, b BrakeCheck) {
 // of the subject only, which NATS has checked against the credential. It
 // returns once subscribed; the subscription ends with ctx.
 func (m *Manager) WatchByes(ctx context.Context) error {
-	sub, err := m.js.Subscribe(m.cfg.Presence+".*", func(msg *nats.Msg) { m.bye(ctx, msg) },
+	sub, err := m.js.Subscribe(m.cfg.Presence+".*.*", func(msg *nats.Msg) { m.bye(ctx, msg) },
 		nats.BindStream(PresenceStream), nats.OrderedConsumer(), nats.DeliverNew())
 	if err != nil {
 		return fmt.Errorf("consumers: watching byes: %w", err)

@@ -295,7 +295,7 @@ func (s *Service) authorize(ctx context.Context, req *jwt.AuthorizationRequestCl
 	uc.Audience = s.cfg.Account
 	uc.IssuedAt = now.Unix()
 	uc.Expires = now.Add(Lifetime).Unix()
-	uc.Permissions = s.cfg.Subjects.permissions(agent, channels)
+	uc.Permissions = s.cfg.Subjects.permissions(agent, id.Owner, channels)
 	uc.Limits.Subs = maxSubs
 	uc.Limits.Payload = maxPayload
 	uc.AllowedConnectionTypes.Add(jwt.ConnectionTypeStandard)
@@ -401,8 +401,10 @@ var lowerBase32 = base32.NewEncoding("abcdefghijklmnopqrstuvwxyz234567").WithPad
 
 // name is the agent's name: 128 bits of SHA-256 over owner and host nkey,
 // 26 characters of base32 in lower case. Stable for one host process (its
-// nkey) of one owner; finding another owner's agent's name would take
-// 2^128 tries.
+// nkey) of one owner. 128 bits make finding a name for a given owner and key
+// (a preimage) take 2^128 tries, but two names of an attacker's own choosing
+// can collide in about 2^64, so the name never proves an owner: the owner is
+// pinned in the presence subject (perms.go).
 func name(owner, hostNkey string) string {
 	h := sha256.Sum256([]byte(owner + "\x00" + hostNkey))
 	return lowerBase32.EncodeToString(h[:16])

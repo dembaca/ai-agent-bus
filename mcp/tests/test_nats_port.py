@@ -49,7 +49,7 @@ class FakeNats:
         self.connected = True
         self.sent: list[tuple[Any, ...]] = []
         self.seq = 100
-        self.owners: dict[str, str] = {}  # what presences proved (natsbus.attested_owner)
+        self.owners: dict[str, str] = {}  # what presence subjects named (natsbus.owner_of_token)
         self.presence: dict[str, str] = {}  # agent -> online | away (fresh), else offline
 
     def owner_of(self, agent: str) -> str:
@@ -1050,7 +1050,7 @@ async def test_a_nats_sender_is_foreign_and_its_task_is_a_request_not_a_task() -
 
 
 async def test_a_nats_sender_whose_presence_proves_a_trusted_owner_is_a_peer() -> None:
-    """RT-6.37: the owner its presence proves (natsbus.attested_owner) is what the peer
+    """RT-6.37: the owner its presence subject names (natsbus.owner_of_token) is what the peer
     split reads, never a HELLO; an owner not trusted here, or none, stays foreign."""
     port, _ = _split_port()
     fake = port._bus
@@ -1072,6 +1072,35 @@ async def test_a_nats_sender_whose_presence_proves_a_trusted_owner_is_a_peer() -
     port.fail("down")  # a home that is down proves nothing
     fake.owners[ALICE] = "dembaca"
     assert await port.agent_owner(ALICE) == ""
+
+
+async def test_a_nats_sender_is_never_mandated_even_under_the_holders_name(
+        monkeypatch: pytest.MonkeyPatch) -> None:
+    """RT-6.36 step 5, RT-6.26: over NATS nothing is mandated, explicitly, not only because
+    the names do not match: here the mandate's holder has the NATS sender's very name."""
+    from mattermost_ai_agent_bus import mandate
+
+    port, inner, _ = make()
+    client = compose.Remembered(port)  # type: ignore[arg-type]
+    await arrive(port, "home", ALICE, 10, Message("post", "`TASK` · do it", props={"x_a2a_kind": "task"}))
+    posts = await port.channel_posts(WORK)
+    m = mandate.Mandate(post="p" * 26, home="home", home_id=WORK, by="dembaca", by_id=HUMAN,
+                        at_ms=0, until_ms=2**62)
+
+    async def current(*a: Any) -> Any:
+        return m, ""
+
+    async def holder(*a: Any) -> tuple[str, str]:
+        return ALICE, ""
+
+    async def yes(*a: Any) -> bool:
+        return True
+
+    monkeypatch.setattr(mandate, "current", current)
+    monkeypatch.setattr(mandate, "holder", holder)
+    monkeypatch.setattr(mandate, "_peer", yes)
+    monkeypatch.setattr(mandate, "_in_task", yes)
+    assert await mandate._judge(client, posts, time.time()) == {}  # type: ignore[arg-type]
 
 
 async def test_the_presence_of_a_nats_sender_is_its_nats_presence() -> None:

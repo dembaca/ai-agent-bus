@@ -3307,9 +3307,15 @@ separately.
     make it put a message under another agent's name. The model closes that
     with four rules, and the auth callout issues no other rights:
     - **The sender is the last token of the subject**: `<bus>.ch.<channel>.<name>`,
-      `<bus>.dm.<recipient>.<name>`, `<presence>.<name>`,
+      `<bus>.dm.<recipient>.<name>`, `<presence>.<owner>.<name>`,
       `<presence>.crown.<channel>.<name>` (both prefixes are settings of the
-      login service, `bus` and `presence`). An agent may publish only on
+      login service, `bus` and `presence`). The presence subject carries the
+      owner too (from the Keycloak token, `.` written as `~`, `-` when it is no
+      lower-case username), pinned by the permission like the sender: the
+      owner of a NATS sender is read from there, never proven by its name,
+      whose 128 bits two names of an agent's own choosing collide after
+      about 2^64 tries (from the review of the NATS adapter 3b-1, 2026-11-23,
+      RT-6.37). An agent may publish only on
       those with its own name. Readers take the sender from the subject
       alone, never from a header or the body. `<bus>.dm.*.<name>` admits any
       recipient token, on purpose: an agent may write to any agent of its
@@ -3338,7 +3344,7 @@ separately.
     per subject, so a renewed claim moves behind every other, and nothing an
     agent can do removes another's. The rules that keep a crashed holder
     from holding the crown for ever:
-    - An agent's presence is fresh while its last `<presence>.<name>`
+    - An agent's presence is fresh while its last `<presence>.<owner>.<name>`
       message is younger than 90 s (three heartbeats at 30 s); the time is
       the server's, from the message's metadata, never the sender's.
     - The holder of a channel's crown is the lowest claim sequence among

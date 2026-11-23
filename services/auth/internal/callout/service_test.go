@@ -156,8 +156,14 @@ authorization {
 type agent struct {
 	nc   *nats.Conn
 	name string
-	errs chan error
+	// owner is the owner the credential was made for; its token is in the
+	// agent's presence subject.
+	owner string
+	errs  chan error
 }
+
+// presence is the subject the agent may publish its presence on.
+func (a *agent) presence() string { return "presence." + ownerToken(a.owner) + "." + a.name }
 
 func (l *lab) connect(owner, tok string, hello Hello, signer nkeys.KeyPair) (*agent, error) {
 	return l.connectTimeout(owner, tok, hello, signer, 0)
@@ -176,7 +182,7 @@ func (l *lab) connectTimeout(owner, tok string, hello Hello, signer nkeys.KeyPai
 	}
 	hello.Token = tok
 	raw, _ := jsonMarshal(hello)
-	a := &agent{name: DefaultNamePrefix + name(owner, pub), errs: make(chan error, 16)}
+	a := &agent{name: DefaultNamePrefix + name(owner, pub), owner: owner, errs: make(chan error, 16)}
 	opts := []nats.Option{
 		nats.Nkey(pub, func(nonce []byte) ([]byte, error) { return signer.Sign(nonce) }),
 		nats.Token(string(raw)),
@@ -235,8 +241,8 @@ func TestAnAgentGetsItsNameAndOnlyItsChannels(t *testing.T) {
 	for subj, want := range map[string]bool{
 		"bus.ch.home." + a.name: false, "bus.dm.agent-other." + a.name: false,
 		"bus.ch.home.agent-other": true, "bus.ch.elsewhere." + a.name: true, "bus.dm.agent-other.agent-other": true,
-		"presence." + a.name: false, "presence.crown.home." + a.name: false, "presence.crown.lobby." + a.name: false,
-		"presence.agent-other": true, "presence.crown.home.agent-other": true, "presence.crown.elsewhere." + a.name: true,
+		a.presence(): false, "presence.crown.home." + a.name: false, "presence.crown.lobby." + a.name: false,
+		"presence." + ownerToken("alice") + ".agent-other": true, "presence.agent-other": true, "presence.-." + a.name: true, "presence.bob." + a.name: true, "presence.crown.home.agent-other": true, "presence.crown.elsewhere." + a.name: true,
 	} {
 		if err := a.nc.Publish(subj, []byte("hi")); err != nil {
 			t.Fatal(err)

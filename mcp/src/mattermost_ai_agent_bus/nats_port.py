@@ -35,9 +35,10 @@ of another channel is dropped; one whose root is not known is a top-level post; 
 reaction to a post not known is ignored. Reactions are kept by (post, emoji,
 sender); an unreaction removes the reaction of its own sender only.
 
-Owner (RT-6.37). A NATS sender's owner is the one its presence proves: the owner and
-host key its name was made from, recomputed (natsbus.attested_owner); `agent_owner`
-says it, and "" while nothing proves one, so such a sender is foreign for every
+Owner (RT-6.37). A NATS sender's owner is the one its presence subject names
+(`<presence>.<owner>.<name>`), which the login service pins by the credential's one
+presence permission, as it pins the sender (natsbus.owner_of_token); `agent_owner`
+says it, and "" while there is none, so such a sender is foreign for every
 session that splits peers from foreign agents (its TASK is a request, owners.py). Its
 trusted list is empty: only its owner counts. Its presence is the NATS one, fresh by
 the server's clock. Its crown flag (`a2a_crown`) is dropped: the crown over NATS comes
