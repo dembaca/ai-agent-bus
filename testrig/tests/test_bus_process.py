@@ -279,6 +279,58 @@ def _alive(pid: int) -> bool:
     return len(fields) > 2 and fields[2] != "Z"
 
 
+def test_alive_answers_for_a_zombie_a_vanished_entry_and_another_os(monkeypatch):
+    """The four answers `_alive` gives, each with the reason it exists.
+
+    The PR text of #29 said both `/proc` paths were checked and no test did it
+    (review of #29). On Linux a pid that is gone answers `/proc/<pid>/stat` with
+    `ESRCH` — `read()` raises after the `open` — and a missing entry there means
+    death, not life. Without `/proc` at all (macOS) the signal is the answer.
+    """
+    from unittest import mock
+
+    import test_bus_process as mod
+
+    # A pid this process can signal: alive.
+    assert mod._alive(os.getpid()) is True
+
+    # A pid that is gone by the time the read happens — the CI case of #22.
+    class Dying:
+        def __enter__(self): return self
+        def __exit__(self, *_a): return False
+        def read(self): raise ProcessLookupError(3, "No such process")
+
+    monkeypatch.setattr(mod.os, "kill", lambda pid, sig: None)
+    monkeypatch.setattr("builtins.open", lambda *a, **k: Dying())
+    assert mod._alive(4242) is False
+
+    # `/proc` exists, the entry does not: Linux says the process is gone.
+    monkeypatch.setattr("builtins.open",
+                        mock.Mock(side_effect=FileNotFoundError(2, "No such file")))
+    monkeypatch.setattr(mod.os.path, "isdir", lambda p: True)
+    assert mod._alive(4242) is False
+
+    # No `/proc` at all: not Linux, so the signal above decides.
+    monkeypatch.setattr(mod.os.path, "isdir", lambda p: False)
+    assert mod._alive(4242) is True
+
+
+def test_alive_counts_a_zombie_as_gone(monkeypatch):
+    """A killed child waits for *this* test to reap it, and `kill(pid, 0)`
+    answers for that zombie. The check that it is a zombie is the `/proc` state
+    field, not the signal."""
+    import test_bus_process as mod
+
+    class Zombie:
+        def __enter__(self): return self
+        def __exit__(self, *_a): return False
+        def read(self): return "1234 (sleep) Z 1 1234 1234 0 -1 0 0"
+
+    monkeypatch.setattr(mod.os, "kill", lambda pid, sig: None)
+    monkeypatch.setattr("builtins.open", lambda *a, **k: Zombie())
+    assert mod._alive(1234) is False
+
+
 @skip_no_bus
 async def test_a_run_reports_the_bus_as_its_target():
     """`target: bus`, every measurand in the file, and the numbers the run's
