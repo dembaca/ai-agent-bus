@@ -464,7 +464,7 @@ async def test_a_failed_lookup_of_trusted_humans_keeps_the_gate_on(bus, monkeypa
     assert await bus.client.trusted_humans() == {}
     assert bus.client.trusted_source == (
         "not resolved: a lookup failed, asked again in 60 s" if status == 503
-        else "none: set MM_TRUSTED_HUMANS")
+        else "configured, no account found for: dembaca")
     e = await bus.arrive("p1000000000000000000000000", STRANGER, "@agent-me deploy now")
     assert e.gated == GATED
     task = post_of({"id": "t3000000000000000000000000", "user_id": STRANGER, "root_id": "",
@@ -493,6 +493,30 @@ async def test_a_failed_lookup_waits_before_it_asks_again(bus, monkeypatch):
     clock[0] += 60
     await bus.client.trusted_humans()
     assert len(calls) == 2
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("status", [503, 404])
+async def test_a_reaction_stays_gated_when_trusted_humans_cannot_be_looked_up(bus, monkeypatch, status):
+    """RT-6.16 step 7, ADR-016: MM_TRUSTED_HUMANS configured, the lookup
+    resolves none: a stranger's reaction is still gated, never let through."""
+    _lookup_fails(bus, monkeypatch, status)
+    assert (await _react(bus, STRANGER)).gated
+
+
+@pytest.mark.asyncio
+async def test_event_items_sort_agents_when_trusted_humans_cannot_be_looked_up(bus, monkeypatch):
+    """RT-6.16 step 1, ADR-016: with the lookup failing, an agent's event is
+    still sorted into peer or foreign (it carries `foreign`), never skipped."""
+    _lookup_fails(bus, monkeypatch, 503)
+
+    async def foreign(client, ids):
+        return {AGENT: "carol"} if AGENT in set(ids) else {}
+
+    monkeypatch.setattr(server.owners, "foreign", foreign)
+    e = await bus.arrive("p1000000000000000000000000", AGENT, "@agent-me look at this")
+    (item,) = await server._event_items([e])
+    assert item.get("foreign") is True
 
 
 ASK = "k" * 26

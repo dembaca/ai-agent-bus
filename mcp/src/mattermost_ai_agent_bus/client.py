@@ -1153,6 +1153,7 @@ class MattermostAdapter:
         trusted: dict[str, str] = {}
         source = ""
         failed = False  # a lookup failed: not cached, the next call asks again (ADR-016)
+        missing: list[str] = []  # configured names with no human account (404, invalid, a bot)
         ids = names("MM_TRUSTED_HUMAN_USER_IDS") or names("MM_OWNER_USER_ID")
         wanted = names("MM_TRUSTED_HUMANS") or names("MM_OWNER")
         try:
@@ -1164,15 +1165,21 @@ class MattermostAdapter:
                     try:
                         u = await self._api("GET", f"/api/v4/users/username/{mm_name(n, 'user')}")
                     except httpx.HTTPStatusError as exc:
-                        failed = failed or getattr(exc.response, "status_code", None) != 404
+                        if getattr(exc.response, "status_code", None) == 404:
+                            missing.append(n)
+                        else:
+                            failed = True
                         continue
                     except InvalidId:
+                        missing.append(n)
                         continue
                     except httpx.HTTPError:
                         failed = True
                         continue
                     if not u.get("is_bot"):
                         trusted[u["id"]] = n
+                    else:
+                        missing.append(n)
                 source = "MM_TRUSTED_HUMANS"
         except (httpx.HTTPError, KeyError, ValueError):
             trusted, failed = {}, True
@@ -1184,6 +1191,7 @@ class MattermostAdapter:
             self._trusted, self._trusted_retry = trusted, None
         self.trusted_source = source if trusted else (
             f"not resolved: a lookup failed, asked again in {TRUSTED_RETRY_SEC} s" if failed
+            else f"configured, no account found for: {', '.join(missing)}" if missing
             else "none: set MM_TRUSTED_HUMANS")
         return trusted
 
