@@ -68,7 +68,8 @@ func (s *Store) keysWith(ctx context.Context, prefix string) ([]string, error) {
 
 // AddPending records that the password account `name` was a member of
 // channel: it creates the entry or appends the channel. Idempotent. A
-// confirmation already given stays.
+// confirmation covers the claim as it was confirmed: an entry that grows is
+// no longer confirmed.
 func (s *Store) AddPending(ctx context.Context, name, channel string) error {
 	if name == "" {
 		return ErrBadKey
@@ -90,6 +91,7 @@ func (s *Store) AddPending(ctx context.Context, name, channel string) error {
 		}
 		p.Channels = append(p.Channels, channel)
 		slices.Sort(p.Channels)
+		p.Confirmed, p.ConfirmedBy = false, ""
 		if _, err := s.put(ctx, pendingKey(name), p, rev); errors.Is(err, ErrConflict) {
 			continue
 		} else if err != nil {
@@ -100,46 +102,63 @@ func (s *Store) AddPending(ctx context.Context, name, channel string) error {
 	return ErrConflict
 }
 
-// ListPending returns every pending entry, by name.
-func (s *Store) ListPending(ctx context.Context) ([]Pending, error) {
+// PendingEntry is a pending entry with the revision it was read at.
+type PendingEntry struct {
+	Pending
+	Revision uint64 `json:"revision"`
+}
+
+// PendingEntries returns every pending entry with its revision, by name.
+func (s *Store) PendingEntries(ctx context.Context) ([]PendingEntry, error) {
 	keys, err := s.keysWith(ctx, pendingPrefix)
 	if err != nil {
 		return nil, err
 	}
-	out := make([]Pending, 0, len(keys))
+	out := make([]PendingEntry, 0, len(keys))
 	for _, k := range keys {
 		var p Pending
-		if _, ok, err := s.get(ctx, k, &p); err != nil {
+		if rev, ok, err := s.get(ctx, k, &p); err != nil {
 			return nil, err
 		} else if ok {
-			out = append(out, p)
+			out = append(out, PendingEntry{Pending: p, Revision: rev})
 		}
 	}
-	slices.SortFunc(out, func(a, b Pending) int { return strings.Compare(a.Name, b.Name) })
+	slices.SortFunc(out, func(a, b PendingEntry) int { return strings.Compare(a.Name, b.Name) })
 	return out, nil
 }
 
-// ConfirmPending marks the entry confirmed by the identity bySub; ErrNotFound
-// when there is none.
-func (s *Store) ConfirmPending(ctx context.Context, name, bySub string) error {
-	for range 5 {
-		var p Pending
-		rev, ok, err := s.get(ctx, pendingKey(name), &p)
-		if err != nil {
-			return err
-		}
-		if !ok {
-			return ErrNotFound
-		}
-		p.Confirmed, p.ConfirmedBy = true, bySub
-		if _, err := s.put(ctx, pendingKey(name), p, rev); errors.Is(err, ErrConflict) {
-			continue
-		} else if err != nil {
-			return err
-		}
-		return nil
+// ListPending returns every pending entry, by name.
+func (s *Store) ListPending(ctx context.Context) ([]Pending, error) {
+	es, err := s.PendingEntries(ctx)
+	if err != nil {
+		return nil, err
 	}
-	return ErrConflict
+	out := make([]Pending, 0, len(es))
+	for _, e := range es {
+		out = append(out, e.Pending)
+	}
+	return out, nil
+}
+
+// ConfirmPending marks the entry confirmed by the identity bySub, over
+// exactly the revision rev the admin read; ErrNotFound when there is no such
+// entry, ErrConflict when it changed since (a claim that grew needs a new
+// confirmation).
+func (s *Store) ConfirmPending(ctx context.Context, name, bySub string, rev uint64) error {
+	var p Pending
+	cur, ok, err := s.get(ctx, pendingKey(name), &p)
+	if err != nil {
+		return err
+	}
+	if !ok {
+		return ErrNotFound
+	}
+	if cur != rev {
+		return ErrConflict
+	}
+	p.Confirmed, p.ConfirmedBy = true, bySub
+	_, err = s.put(ctx, pendingKey(name), p, rev)
+	return err
 }
 
 // redeem gives `sub` the channels of a confirmed pending entry for `name`

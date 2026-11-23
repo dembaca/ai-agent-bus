@@ -35,10 +35,16 @@ type Config struct {
 	AdminGroup  string // the token group that makes an admin; required
 	NameBinding string // "open" or "openid-only" (default open)
 	BodyMax     int64  // default 64 KiB
-	RatePerSec  float64
-	Burst       int
-	Log         *slog.Logger
-	Now         func() time.Time
+	// RatePerSec and Burst limit one identity (token Subject) after its
+	// token is accepted (default 2/s, burst 10).
+	RatePerSec float64
+	Burst      int
+	// PreAuthRatePerSec and PreAuthBurst limit one peer address before
+	// authentication (default 20/s, burst 40). X-Forwarded-For is never read.
+	PreAuthRatePerSec float64
+	PreAuthBurst      int
+	Log               *slog.Logger
+	Now               func() time.Time
 }
 
 const maxLimiters = 10000
@@ -50,8 +56,9 @@ type handler struct {
 	source   Source
 	mux      *http.ServeMux
 
-	mu       sync.Mutex
-	limiters map[string]*rate.Limiter
+	mu     sync.Mutex
+	byAddr map[string]*rate.Limiter
+	bySub  map[string]*rate.Limiter
 }
 
 // New returns the API's handler.
@@ -75,6 +82,12 @@ func New(cfg Config, verifier Verifier, store *directory.Store, source Source) (
 	if cfg.Burst <= 0 {
 		cfg.Burst = 10
 	}
+	if cfg.PreAuthRatePerSec <= 0 {
+		cfg.PreAuthRatePerSec = 20
+	}
+	if cfg.PreAuthBurst <= 0 {
+		cfg.PreAuthBurst = 40
+	}
 	if cfg.Log == nil {
 		cfg.Log = slog.New(slog.DiscardHandler)
 	}
@@ -84,7 +97,7 @@ func New(cfg Config, verifier Verifier, store *directory.Store, source Source) (
 	if verifier == nil || store == nil || source == nil {
 		return nil, errors.New("admin: verifier, store and source are required")
 	}
-	h := &handler{cfg: cfg, verifier: verifier, store: store, source: source, limiters: map[string]*rate.Limiter{}}
+	h := &handler{cfg: cfg, verifier: verifier, store: store, source: source, byAddr: map[string]*rate.Limiter{}, bySub: map[string]*rate.Limiter{}}
 	mux := http.NewServeMux()
 	mux.HandleFunc("GET /v1/directory/channels", h.auth(false, h.listChannels))
 	mux.HandleFunc("GET /v1/directory/channels/{name}", h.auth(false, h.getChannel))
@@ -98,29 +111,41 @@ func New(cfg Config, verifier Verifier, store *directory.Store, source Source) (
 }
 
 func (h *handler) ServeHTTP(w http.ResponseWriter, r *http.Request) {
-	if !h.allow(r) {
-		fail(w, http.StatusTooManyRequests, "too many requests")
+	ip, _, err := net.SplitHostPort(r.RemoteAddr)
+	if err != nil {
+		ip = r.RemoteAddr
+	}
+	if !h.allow(h.byAddr, ip, h.cfg.PreAuthRatePerSec, h.cfg.PreAuthBurst) {
+		h.refuse(w, r, http.StatusTooManyRequests, "too many requests", "rate limit per address", nil)
 		return
 	}
 	h.mux.ServeHTTP(w, r)
 }
 
-func (h *handler) allow(r *http.Request) bool {
-	ip, _, err := net.SplitHostPort(r.RemoteAddr)
-	if err != nil {
-		ip = r.RemoteAddr
-	}
+// allow takes one token from key's limiter in m.
+func (h *handler) allow(m map[string]*rate.Limiter, key string, perSec float64, burst int) bool {
 	h.mu.Lock()
 	defer h.mu.Unlock()
-	l, ok := h.limiters[ip]
+	l, ok := m[key]
 	if !ok {
-		if len(h.limiters) >= maxLimiters {
-			h.limiters = map[string]*rate.Limiter{}
+		if len(m) >= maxLimiters {
+			clear(m)
 		}
-		l = rate.NewLimiter(rate.Limit(h.cfg.RatePerSec), h.cfg.Burst)
-		h.limiters[ip] = l
+		l = rate.NewLimiter(rate.Limit(perSec), burst)
+		m[key] = l
 	}
 	return l.Allow()
+}
+
+// refuse answers a 401, 403 or 429 and logs it: event, reason, remote
+// address and, when known, the identity's sub and user name; never a token.
+func (h *handler) refuse(w http.ResponseWriter, r *http.Request, code int, msg, reason string, id *token.Identity) {
+	attrs := []any{"event", "request refused", "status", code, "reason", reason, "remote", r.RemoteAddr}
+	if id != nil {
+		attrs = append(attrs, "sub", id.Subject, "preferred_username", id.Owner)
+	}
+	h.cfg.Log.Info("directory refusal", attrs...)
+	fail(w, code, msg)
 }
 
 func fail(w http.ResponseWriter, code int, msg string) {
@@ -141,7 +166,7 @@ func (h *handler) auth(admin bool, next authed) http.HandlerFunc {
 		scheme, raw, _ := strings.Cut(r.Header.Get("Authorization"), " ")
 		raw = strings.TrimSpace(raw)
 		if !strings.EqualFold(scheme, "Bearer") || raw == "" {
-			fail(w, http.StatusUnauthorized, "a bearer token is required")
+			h.refuse(w, r, http.StatusUnauthorized, "a bearer token is required", "no bearer token", nil)
 			return
 		}
 		id, err := h.verifier.Verify(r.Context(), raw)
@@ -150,11 +175,15 @@ func (h *handler) auth(admin bool, next authed) http.HandlerFunc {
 			fail(w, http.StatusServiceUnavailable, "the chat could not be asked; try again later")
 			return
 		case err != nil:
-			fail(w, http.StatusUnauthorized, "token refused: "+err.Error())
+			h.refuse(w, r, http.StatusUnauthorized, "token refused: "+err.Error(), "token refused: "+err.Error(), nil)
+			return
+		}
+		if !h.allow(h.bySub, id.Subject, h.cfg.RatePerSec, h.cfg.Burst) {
+			h.refuse(w, r, http.StatusTooManyRequests, "too many requests", "rate limit per identity", &id)
 			return
 		}
 		if admin && !h.isAdmin(id) {
-			fail(w, http.StatusForbidden, "admin group required")
+			h.refuse(w, r, http.StatusForbidden, "admin group required", "not in the admin group", &id)
 			return
 		}
 		next(w, r, id)
@@ -315,11 +344,11 @@ func (h *handler) patchMembers(w http.ResponseWriter, r *http.Request, id token.
 	case err != nil:
 		h.storeError(w, err)
 		return
-	case !ok:
+	case !ok || !h.sees(id, cur): // a private channel one is not in looks missing, as on GET
 		fail(w, http.StatusNotFound, "no such channel")
 		return
 	case cur.Owner == "" || cur.Owner != id.Subject:
-		fail(w, http.StatusForbidden, "only the channel's owner keeps its members")
+		h.refuse(w, r, http.StatusForbidden, "only the channel's owner keeps its members", "not the channel's owner", &id)
 		return
 	}
 	ifMatch := r.Header.Get("If-Match")
@@ -367,6 +396,10 @@ func (h *handler) runImport(w http.ResponseWriter, r *http.Request, id token.Ide
 	case errors.Is(err, ErrAlreadyImported):
 		fail(w, http.StatusConflict, "the import has already run")
 		return
+	case errors.Is(err, ErrAuthInvisible):
+		h.cfg.Log.Error("import stopped", "reason", err.Error(), "sub", id.Subject)
+		fail(w, http.StatusBadGateway, err.Error()+"; nothing was marked, run it again with the right token")
+		return
 	case err != nil:
 		h.cfg.Log.Error("import failed; it can be run again", "reason", err.Error(), "sub", id.Subject)
 		fail(w, http.StatusBadGateway, "the import stopped before its end and left no mark; run it again")
@@ -378,7 +411,7 @@ func (h *handler) runImport(w http.ResponseWriter, r *http.Request, id token.Ide
 }
 
 func (h *handler) listPending(w http.ResponseWriter, r *http.Request, _ token.Identity) {
-	ps, err := h.store.ListPending(r.Context())
+	ps, err := h.store.PendingEntries(r.Context())
 	if err != nil {
 		h.storeError(w, err)
 		return
@@ -388,7 +421,17 @@ func (h *handler) listPending(w http.ResponseWriter, r *http.Request, _ token.Id
 
 func (h *handler) confirmPending(w http.ResponseWriter, r *http.Request, id token.Identity) {
 	name := r.PathValue("name")
-	if err := h.store.ConfirmPending(r.Context(), name, id.Subject); err != nil {
+	ifMatch := r.Header.Get("If-Match")
+	if ifMatch == "" {
+		fail(w, http.StatusPreconditionRequired, "If-Match: \"<revision>\" of the pending entry required")
+		return
+	}
+	rev, valid := parseRev(ifMatch)
+	if !valid {
+		fail(w, http.StatusBadRequest, "If-Match must be a revision")
+		return
+	}
+	if err := h.store.ConfirmPending(r.Context(), name, id.Subject, rev); err != nil {
 		h.storeError(w, err)
 		return
 	}

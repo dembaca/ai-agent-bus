@@ -7,8 +7,10 @@ import (
 	"net/http"
 	"net/http/httptest"
 	"slices"
+	"strconv"
 	"sync/atomic"
 	"testing"
+	"time"
 
 	"github.com/dembaca/ai-agent-bus/services/auth/internal/directory"
 	"github.com/dembaca/ai-agent-bus/services/auth/internal/mattermost"
@@ -209,9 +211,9 @@ func TestPendingIsRedeemedOnlyWhenConfirmed(t *testing.T) {
 	}
 	code, body, _ := e.do(t, "GET", "/v1/directory/pending", e.admin, "")
 	want(t, "list", code, 200, body)
-	code, body, _ = e.do(t, "POST", "/v1/directory/pending/nobody/confirm", e.admin, "")
+	code, body, _ = e.do(t, "POST", "/v1/directory/pending/nobody/confirm", e.admin, "", "If-Match", `"1"`)
 	want(t, "confirm nobody", code, 404, body)
-	code, body, _ = e.do(t, "POST", "/v1/directory/pending/bob/confirm", e.admin, "")
+	code, body, _ = e.do(t, "POST", "/v1/directory/pending/bob/confirm", e.admin, "", "If-Match", `"`+pendingRev(t, e, "bob")+`"`)
 	want(t, "confirm", code, 200, body)
 	if _, err := a.Anchor(ctx(t), "sub-bob", "bob"); err != nil {
 		t.Fatal(err)
@@ -222,5 +224,264 @@ func TestPendingIsRedeemedOnlyWhenConfirmed(t *testing.T) {
 	}
 	if ps, _ := e.store.ListPending(ctx(t)); len(ps) != 0 {
 		t.Fatalf("still pending: %+v", ps)
+	}
+}
+
+func pendingRev(t *testing.T, e *env, name string) string {
+	t.Helper()
+	code, body, _ := e.do(t, "GET", "/v1/directory/pending", e.admin, "")
+	want(t, "list pending", code, 200, body)
+	var ps []struct {
+		Name     string `json:"name"`
+		Revision uint64 `json:"revision"`
+	}
+	if err := json.Unmarshal([]byte(body), &ps); err != nil {
+		t.Fatal(err)
+	}
+	for _, p := range ps {
+		if p.Name == name && p.Revision > 0 {
+			return strconv.FormatUint(p.Revision, 10)
+		}
+	}
+	t.Fatalf("no revision for %s: %s", name, body)
+	return ""
+}
+
+func TestAConfirmationBindsToTheEntrysRevision(t *testing.T) {
+	e, cl, _, _ := importEnv(t, "open")
+	if _, err := Import(ctx(t), e.store, cl, "open", token.Identity{}); err != nil {
+		t.Fatal(err)
+	}
+	const path = "/v1/directory/pending/bob/confirm"
+	code, body, _ := e.do(t, "POST", path, e.admin, "")
+	want(t, "no If-Match", code, 428, body)
+	stale := pendingRev(t, e, "bob")
+	if err := e.store.AddPending(ctx(t), "bob", "vault"); err != nil {
+		t.Fatal(err)
+	}
+	code, body, _ = e.do(t, "POST", path, e.admin, "", "If-Match", `"`+stale+`"`)
+	want(t, "stale", code, 409, body)
+
+	// confirm, then the claim grows: no longer confirmed, not redeemed
+	code, body, _ = e.do(t, "POST", path, e.admin, "", "If-Match", `"`+pendingRev(t, e, "bob")+`"`)
+	want(t, "confirm", code, 200, body)
+	if err := e.store.AddPending(ctx(t), "bob", "zeta"); err != nil {
+		t.Fatal(err)
+	}
+	ps, _ := e.store.ListPending(ctx(t))
+	if len(ps) != 1 || ps[0].Confirmed || ps[0].ConfirmedBy != "" {
+		t.Fatalf("still confirmed after growing: %+v", ps)
+	}
+	if _, err := (directory.Anchors{Store: e.store}).Anchor(ctx(t), "sub-bob", "bob"); err != nil {
+		t.Fatal(err)
+	}
+	if town, _, _, _ := e.store.Channel(ctx(t), "town"); slices.Contains(town.Members, "sub-bob") {
+		t.Fatal("an entry that grew was redeemed")
+	}
+}
+
+// fakeSource is an in-memory Source.
+type fakeSource struct {
+	channels []mattermost.Channel
+	members  map[string][]string
+	users    []mattermost.User
+}
+
+func (f *fakeSource) TeamChannels(context.Context) ([]mattermost.Channel, error) {
+	return slices.Clone(f.channels), nil
+}
+func (f *fakeSource) ChannelMemberIDs(_ context.Context, id string) ([]string, error) {
+	return f.members[id], nil
+}
+func (f *fakeSource) Users(_ context.Context, ids []string) ([]mattermost.User, error) {
+	var out []mattermost.User
+	for _, u := range f.users {
+		if slices.Contains(ids, u.ID) {
+			out = append(out, u)
+		}
+	}
+	return out, nil
+}
+
+func oidUser(id string) mattermost.User {
+	return mattermost.User{ID: id, Username: id, AuthKnown: true, AuthService: token.OpenIDService, AuthData: "sub-" + id}
+}
+
+func ownerAfterImport(t *testing.T, creator mattermost.User, members []string) (string, bool) {
+	t.Helper()
+	src := &fakeSource{
+		channels: []mattermost.Channel{{ID: "c1", Name: "town", Type: "O", CreatorID: creator.ID}},
+		members:  map[string][]string{"c1": members},
+		users:    []mattermost.User{oidUser("ann"), creator},
+	}
+	store := newStore(t)
+	if _, err := Import(ctx(t), store, src, "open", token.Identity{}); err != nil {
+		t.Fatal(err)
+	}
+	c, _, ok, _ := store.Channel(ctx(t), "town")
+	return c.Owner, ok
+}
+
+func TestTheCreatorOwnsOnlyWhileAnEligibleMember(t *testing.T) {
+	cr := oidUser("cat")
+	if o, _ := ownerAfterImport(t, cr, []string{"ann", "cat"}); o != "sub-cat" {
+		t.Fatalf("eligible creator: owner %q", o)
+	}
+	if o, ok := ownerAfterImport(t, cr, []string{"ann"}); !ok || o != "" {
+		t.Fatalf("creator removed from the channel: owner %q", o)
+	}
+	bot := oidUser("cat")
+	bot.IsBot = true
+	if o, _ := ownerAfterImport(t, bot, []string{"ann", "cat"}); o != "" {
+		t.Fatalf("bot creator: owner %q", o)
+	}
+	gone := oidUser("cat")
+	gone.Deactivated = true
+	if o, _ := ownerAfterImport(t, gone, []string{"ann", "cat"}); o != "" {
+		t.Fatalf("deactivated creator: owner %q", o)
+	}
+	guest := oidUser("cat")
+	guest.Guest = true
+	if o, _ := ownerAfterImport(t, guest, []string{"ann", "cat"}); o != "" {
+		t.Fatalf("guest creator: owner %q", o)
+	}
+	pw := oidUser("cat")
+	pw.AuthService, pw.AuthData = "", ""
+	if o, _ := ownerAfterImport(t, pw, []string{"ann", "cat"}); o != "" {
+		t.Fatalf("password creator: owner %q", o)
+	}
+}
+
+func TestAChannelOverMaxMembersIsSkippedAndTheImportCompletes(t *testing.T) {
+	src := &fakeSource{
+		channels: []mattermost.Channel{{ID: "big", Name: "big", Type: "O"}, {ID: "c1", Name: "town", Type: "O"}},
+		members:  map[string][]string{"c1": {"ann"}},
+		users:    []mattermost.User{oidUser("ann")},
+	}
+	for i := range directory.MaxMembers + 1 {
+		u := oidUser("u" + strconv.Itoa(i))
+		src.users = append(src.users, u)
+		src.members["big"] = append(src.members["big"], u.ID)
+	}
+	store := newStore(t)
+	rep, err := Import(ctx(t), store, src, "open", token.Identity{})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(rep.ChannelsSkipped) != 1 || rep.ChannelsSkipped[0].Name != "big" ||
+		rep.ChannelsSkipped[0].Reason != "more than 1000 members" || !slices.Equal(rep.ChannelsCreated, []string{"town"}) {
+		t.Fatalf("report: %+v", rep)
+	}
+	if done, _ := store.Imported(ctx(t)); !done {
+		t.Fatal("no mark")
+	}
+}
+
+type marksDuringImport struct {
+	*fakeSource
+	store *directory.Store
+}
+
+func (m *marksDuringImport) TeamChannels(c context.Context) ([]mattermost.Channel, error) {
+	if err := m.store.MarkImported(c, time.Now()); err != nil {
+		return nil, err
+	}
+	return m.fakeSource.TeamChannels(c)
+}
+
+func TestALostMarkIsAnAlreadyImported(t *testing.T) {
+	src := &fakeSource{}
+	store := newStore(t)
+	if _, err := Import(ctx(t), store, &marksDuringImport{src, store}, "open", token.Identity{}); !errors.Is(err, ErrAlreadyImported) {
+		t.Fatalf("import: %v", err)
+	}
+	m := &marksDuringImport{fakeSource: src}
+	e2 := setupWith(t, Config{}, testrealm.NewChat("alice"), m)
+	m.store = e2.store
+	code, body, _ := e2.do(t, "POST", "/v1/directory/import", e2.admin, "")
+	want(t, "http", code, 409, body)
+}
+
+// A token that cannot see how accounts log in aborts the import before it
+// writes or marks; a run with a system admin's token completes.
+func TestAnImportWithABlindTokenWritesNothing(t *testing.T) {
+	mm := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		send := func(v any) { _ = json.NewEncoder(w).Encode(v) }
+		switch p := r.URL.Path; {
+		case p == "/api/v4/users/me":
+			if r.Header.Get("Authorization") == "Bearer admin-token" {
+				send(map[string]any{"roles": "system_admin"})
+			} else {
+				send(map[string]any{"roles": "system_user"})
+			}
+		case p == "/api/v4/teams/name/lab":
+			send(map[string]any{"id": "t1"})
+		case p == "/api/v4/teams/t1/channels":
+			send([]map[string]any{{"id": "c1", "name": "town", "type": "O", "creator_id": "u-ann"}})
+		case p == "/api/v4/teams/t1/channels/private":
+			send([]map[string]any{})
+		case p == "/api/v4/channels/c1/members":
+			send([]map[string]any{{"user_id": "u-ann"}, {"user_id": "u-pw"}})
+		case p == "/api/v4/users/ids":
+			send([]map[string]any{
+				{"id": "u-ann", "username": "ann", "roles": "system_user", "auth_service": "openid", "auth_data": "sub-ann"},
+				{"id": "u-pw", "username": "pw", "roles": "system_user"},
+			})
+		default:
+			http.NotFound(w, r)
+		}
+	}))
+	t.Cleanup(mm.Close)
+	store := newStore(t)
+	blind, err := mattermost.New(ctx(t), mm.URL, "lab", "user-token")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, err := Import(ctx(t), store, blind, "open", token.Identity{}); !errors.Is(err, ErrAuthInvisible) {
+		t.Fatalf("blind import: %v", err)
+	}
+	if done, _ := store.Imported(ctx(t)); done {
+		t.Fatal("marked")
+	}
+	if ps, _ := store.ListPending(ctx(t)); len(ps) != 0 {
+		t.Fatalf("pending written: %+v", ps)
+	}
+	if chs, _ := store.ListChannels(ctx(t)); len(chs) != 0 {
+		t.Fatalf("channels written: %+v", chs)
+	}
+	seeing, err := mattermost.New(ctx(t), mm.URL, "lab", "admin-token")
+	if err != nil {
+		t.Fatal(err)
+	}
+	rep, err := Import(ctx(t), store, seeing, "open", token.Identity{})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if rep.PendingAdded != 1 || !slices.Equal(rep.ChannelsCreated, []string{"town"}) {
+		t.Fatalf("report: %+v", rep)
+	}
+}
+
+// The user cache is shared across channels: a creator known as a member of an
+// earlier channel, but no longer a member of the one they created, does not
+// own it.
+func TestACreatorRemovedFromTheirChannelDoesNotOwnIt(t *testing.T) {
+	src := &fakeSource{
+		channels: []mattermost.Channel{
+			{ID: "c1", Name: "aaa", Type: "O", CreatorID: "ann"},
+			{ID: "c2", Name: "board", Type: "P", CreatorID: "cat"},
+		},
+		members: map[string][]string{"c1": {"ann", "cat"}, "c2": {"ann"}},
+		users:   []mattermost.User{oidUser("ann"), oidUser("cat")},
+	}
+	store := newStore(t)
+	if _, err := Import(ctx(t), store, src, "open", token.Identity{}); err != nil {
+		t.Fatal(err)
+	}
+	if c, _, ok, _ := store.Channel(ctx(t), "board"); !ok || c.Owner != "" {
+		t.Fatalf("board: owner %q (cat was removed from it)", c.Owner)
+	}
+	if c, _, _, _ := store.Channel(ctx(t), "aaa"); c.Owner != "sub-ann" {
+		t.Fatalf("aaa: owner %q", c.Owner)
 	}
 }

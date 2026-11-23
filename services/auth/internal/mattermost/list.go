@@ -30,6 +30,9 @@ type User struct {
 	Guest       bool // role system_guest
 	AuthService string
 	AuthData    string
+	// AuthKnown: the token could see how accounts log in; when false,
+	// AuthService and AuthData are left empty.
+	AuthKnown bool
 }
 
 // paged reads path page by page until a short page, at most maxItems items.
@@ -107,6 +110,7 @@ func (c *Client) ChannelMemberIDs(ctx context.Context, channelID string) ([]stri
 // Users reads accounts by id (in batches of pageSize).
 func (c *Client) Users(ctx context.Context, ids []string) ([]User, error) {
 	var out []User
+	seen := c.authVisible(ctx)
 	for len(ids) > 0 {
 		n := min(len(ids), pageSize)
 		var got []user
@@ -114,8 +118,12 @@ func (c *Client) Users(ctx context.Context, ids []string) ([]User, error) {
 			return nil, err
 		}
 		for _, u := range got {
-			out = append(out, User{ID: u.ID, Username: u.Username, IsBot: u.IsBot, Deactivated: u.DeleteAt != 0,
-				Guest: hasRole(u.Roles, "system_guest"), AuthService: u.AuthService, AuthData: u.AuthData})
+			nu := User{ID: u.ID, Username: u.Username, IsBot: u.IsBot, Deactivated: u.DeleteAt != 0,
+				Guest: hasRole(u.Roles, "system_guest"), AuthKnown: seen}
+			if seen {
+				nu.AuthService, nu.AuthData = u.AuthService, u.AuthData
+			}
+			out = append(out, nu)
 		}
 		ids = ids[n:]
 	}

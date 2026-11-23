@@ -205,8 +205,8 @@ func adminSettings(s Settings) error {
 		return fmt.Errorf("%w: AUTH_ADMIN_LISTEN_ADDR: host:port expected", ErrConfig)
 	}
 	if s.AdminTLSCertFile == "" {
-		if ip := net.ParseIP(host); host != "localhost" && (ip == nil || !ip.IsLoopback()) {
-			return fmt.Errorf("%w: AUTH_ADMIN_LISTEN_ADDR: a loopback host unless AUTH_ADMIN_TLS_CERT_FILE and _KEY_FILE are set", ErrConfig)
+		if ip := net.ParseIP(host); ip == nil || !ip.IsLoopback() {
+			return fmt.Errorf("%w: AUTH_ADMIN_LISTEN_ADDR: a loopback IP address (127.0.0.0/8, ::1; not a name) unless AUTH_ADMIN_TLS_CERT_FILE and _KEY_FILE are set", ErrConfig)
 		}
 	}
 	return nil

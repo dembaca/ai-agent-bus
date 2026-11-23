@@ -1,9 +1,11 @@
 package admin
 
 import (
+	"bytes"
 	"context"
 	"encoding/json"
 	"io"
+	"log/slog"
 	"net/http"
 	"net/http/httptest"
 	"strings"
@@ -17,6 +19,7 @@ import (
 
 	"github.com/dembaca/ai-agent-bus/services/auth/internal/directory"
 	"github.com/dembaca/ai-agent-bus/services/auth/internal/testrealm"
+	"github.com/dembaca/ai-agent-bus/services/auth/internal/token"
 )
 
 func ctx(t *testing.T) context.Context {
@@ -67,11 +70,16 @@ type env struct {
 
 func setup(t *testing.T, cfg Config) *env {
 	t.Helper()
+	return setupWith(t, cfg, testrealm.NewChat("alice", "bob", "carol", "mal"), &fakeMM{})
+}
+
+func setupWith(t *testing.T, cfg Config, chat *testrealm.Chat, src Source) *env {
+	t.Helper()
 	realm := testrealm.New(t)
-	v := realm.Verifier(testrealm.NewChat("alice", "bob", "carol"))
+	v := realm.Verifier(chat)
 	store := newStore(t)
 	cfg.AdminGroup = testrealm.Group
-	h, err := New(cfg, v, store, &fakeMM{})
+	h, err := New(cfg, v, store, src)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -193,7 +201,7 @@ func TestMembersOnlyByTheOwner(t *testing.T) {
 	code, body, _ := e.do(t, "PATCH", path+"/members", e.admin, `{"add":["sub-bob"]}`, "If-Match", tag)
 	want(t, "admin, not owner", code, 403, body)
 	code, body, _ = e.do(t, "PATCH", path+"/members", e.bob, `{"add":["sub-bob"]}`, "If-Match", tag)
-	want(t, "other", code, 403, body)
+	want(t, "other, who does not see the private channel", code, 404, body)
 	code, body, _ = e.do(t, "PATCH", path+"/members", e.carol, `{"add":["sub-bob"]}`)
 	want(t, "owner, no If-Match", code, 428, body)
 	code, body, _ = e.do(t, "PATCH", path+"/members", e.carol, `{"add":["sub-bob"]}`, "If-Match", `"999999"`)
@@ -216,7 +224,11 @@ func TestMembersOnlyByTheOwner(t *testing.T) {
 	_, _, h = e.do(t, "PUT", "/v1/directory/channels/orphan", e.admin, `{"owner":""}`, "If-None-Match", "*")
 	for name, tok := range map[string]string{"admin": e.admin, "owner-less carol": e.carol, "bob": e.bob} {
 		code, body, _ = e.do(t, "PATCH", "/v1/directory/channels/orphan/members", tok, `{"add":["sub-bob"]}`, "If-Match", h.Get("ETag"))
-		want(t, "no owner, "+name, code, 403, body)
+		wantCode := 404 // a private channel one is not in looks missing
+		if name == "admin" {
+			wantCode = 403
+		}
+		want(t, "no owner, "+name, code, wantCode, body)
 	}
 }
 
@@ -279,4 +291,126 @@ func TestReadingShowsOnlyWhatOneMaySee(t *testing.T) {
 	want(t, "bob reads secret", code, 404, body)
 	code, body, _ = e.do(t, "GET", "/v1/directory/channels/secret", e.carol, "")
 	want(t, "carol reads secret", code, 200, body)
+}
+
+func TestPatchDoesNotRevealAPrivateChannel(t *testing.T) {
+	e := setup(t, Config{Burst: 100})
+	_, _, h := e.do(t, "PUT", "/v1/directory/channels/secret", e.admin, `{"owner":"sub-carol","public":false}`, "If-None-Match", "*")
+	tag := h.Get("ETag")
+	_, _, _ = e.do(t, "PATCH", "/v1/directory/channels/secret/members", e.carol, `{"add":["sub-bob"]}`, "If-Match", tag)
+	_, _, h = e.do(t, "GET", "/v1/directory/channels/secret", e.carol, "")
+	tag = h.Get("ETag")
+	mal := e.realm.Token("mal", func(c jwt.MapClaims) { c["groups"] = []string{"other"} })
+	code, missing, _ := e.do(t, "PATCH", "/v1/directory/channels/nowhere/members", mal, `{"add":["x"]}`, "If-Match", tag)
+	want(t, "missing", code, 404, missing)
+	code, body, _ := e.do(t, "PATCH", "/v1/directory/channels/secret/members", mal, `{"add":["x"]}`, "If-Match", tag)
+	want(t, "non-member, private", code, 404, body)
+	if body != missing {
+		t.Fatalf("a private channel answers differently from a missing one: %q vs %q", body, missing)
+	}
+	code, body, _ = e.do(t, "PATCH", "/v1/directory/channels/secret/members", e.bob, `{"add":["x"]}`, "If-Match", tag)
+	want(t, "member, not owner", code, 403, body)
+}
+
+func TestARateLimitIsPerIdentityNotPerAddress(t *testing.T) {
+	e := setup(t, Config{Burst: 2, RatePerSec: 0.001})
+	var codes []int
+	for range 3 {
+		code, _, _ := e.do(t, "GET", "/v1/directory/channels", e.bob, "")
+		codes = append(codes, code)
+	}
+	if codes[0] != 200 || codes[1] != 200 || codes[2] != 429 {
+		t.Fatalf("bob: %v", codes)
+	}
+	code, body, _ := e.do(t, "GET", "/v1/directory/channels", e.carol, "")
+	want(t, "another sub, same address", code, 200, body)
+}
+
+func TestThePreAuthLimitAnswersAFloodWithoutTokens(t *testing.T) {
+	e := setup(t, Config{PreAuthBurst: 3, PreAuthRatePerSec: 0.001})
+	var codes []int
+	for range 5 {
+		code, _, _ := e.do(t, "GET", "/v1/directory/channels", "", "")
+		codes = append(codes, code)
+	}
+	if codes[2] != 401 || codes[3] != 429 || codes[4] != 429 {
+		t.Fatalf("codes %v", codes)
+	}
+}
+
+func TestRefusalsAreLoggedWithoutTheToken(t *testing.T) {
+	var buf bytes.Buffer
+	e := setup(t, Config{Burst: 100, Log: slog.New(slog.NewTextHandler(&buf, nil))})
+	code, body, _ := e.do(t, "PUT", "/v1/directory/channels/x", e.bob, `{}`, "If-None-Match", "*")
+	want(t, "403", code, 403, body)
+	code, body, _ = e.do(t, "GET", "/v1/directory/channels", "", "")
+	want(t, "401", code, 401, body)
+	log := buf.String()
+	for _, w := range []string{"sub-bob", "preferred_username=bob", "status=403", "status=401", "remote=127.0.0.1", "reason="} {
+		if !strings.Contains(log, w) {
+			t.Fatalf("log lacks %q: %s", w, log)
+		}
+	}
+	if strings.Contains(log, e.bob) {
+		t.Fatal("the token is logged")
+	}
+}
+
+func TestTheConfirmRouteWantsTheAdminGroup(t *testing.T) {
+	e := setup(t, Config{Burst: 100})
+	code, body, _ := e.do(t, "POST", "/v1/directory/pending/bob/confirm", e.bob, "", "If-Match", `"1"`)
+	want(t, "non-admin confirm", code, 403, body)
+}
+
+// A token whose user name equals someone's sub string, with another sub, is
+// not that someone: membership and ownership compare the sub.
+func TestOwnershipComparesTheSubNotTheUserName(t *testing.T) {
+	chat := testrealm.NewChat("alice", "carol", "mal")
+	chat.Users["sub-carol"] = token.User{Username: "sub-carol", AuthKnown: true, AuthService: token.OpenIDService, AuthData: "sub-mal"}
+	e := setupWith(t, Config{Burst: 100}, chat, &fakeMM{})
+	_, _, h := e.do(t, "PUT", "/v1/directory/channels/secret", e.admin, `{"owner":"sub-carol","public":false,"bindings":{}}`, "If-None-Match", "*")
+	mal := e.realm.Token("mal", func(c jwt.MapClaims) { c["groups"] = []string{"other"}; c["preferred_username"] = "sub-carol" })
+	code, body, _ := e.do(t, "PATCH", "/v1/directory/channels/secret/members", mal, `{"add":["x"]}`, "If-Match", h.Get("ETag"))
+	if code != 403 && code != 404 {
+		t.Fatalf("patch by a look-alike: HTTP %d: %s", code, body)
+	}
+	code, body, _ = e.do(t, "GET", "/v1/directory/channels/secret", mal, "")
+	want(t, "get by a look-alike", code, 404, body)
+	code, body, _ = e.do(t, "GET", "/v1/directory/channels", mal, "")
+	want(t, "list", code, 200, body)
+	if strings.TrimSpace(body) != "[]" {
+		t.Fatalf("the look-alike lists %s", body)
+	}
+}
+
+func TestTheAdminGroupMatchIsExact(t *testing.T) {
+	e := setup(t, Config{Burst: 100})
+	g := testrealm.Group
+	for _, groups := range [][]string{{"DIR-" + g}, {g + "-x"}, {"x-" + g}, {strings.ToUpper(g)}, {"//" + g}, {"/" + g + "/"}, {"x/" + g}} {
+		tok := e.realm.Token("bob", func(c jwt.MapClaims) { c["groups"] = groups })
+		code, body, _ := e.do(t, "PUT", "/v1/directory/channels/x", tok, `{}`, "If-None-Match", "*")
+		want(t, "groups "+strings.Join(groups, ","), code, 403, body)
+	}
+}
+
+func TestAMemberReadsAPrivateChannel(t *testing.T) {
+	e := setup(t, Config{Burst: 100})
+	_, _, h := e.do(t, "PUT", "/v1/directory/channels/secret", e.admin, `{"owner":"sub-carol","public":false}`, "If-None-Match", "*")
+	code, body, _ := e.do(t, "PATCH", "/v1/directory/channels/secret/members", e.carol, `{"add":["sub-bob"]}`, "If-Match", h.Get("ETag"))
+	want(t, "add", code, 200, body)
+	code, body, _ = e.do(t, "GET", "/v1/directory/channels/secret", e.bob, "")
+	want(t, "member reads", code, 200, body)
+}
+
+func TestAnIDTokenIsRefusedEverywhere(t *testing.T) {
+	e := setup(t, Config{Burst: 100})
+	id := e.realm.Token("alice", func(c jwt.MapClaims) { c["typ"] = "ID" })
+	for _, r := range [][2]string{
+		{"GET", "/v1/directory/channels"}, {"GET", "/v1/directory/channels/x"}, {"PUT", "/v1/directory/channels/x"},
+		{"PATCH", "/v1/directory/channels/x/members"}, {"POST", "/v1/directory/import"},
+		{"GET", "/v1/directory/pending"}, {"POST", "/v1/directory/pending/x/confirm"},
+	} {
+		code, body, _ := e.do(t, r[0], r[1], id, `{}`, "If-None-Match", "*", "If-Match", `"1"`)
+		want(t, r[0]+" "+r[1], code, 401, body)
+	}
 }

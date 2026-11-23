@@ -65,7 +65,9 @@ func TestSettings(t *testing.T) {
 	for _, over := range []map[string]string{
 		{"AUTH_ADMIN_LISTEN_ADDR": "127.0.0.1:8081", "AUTH_DIRECTORY_ADMIN_GROUP": "dir-admins"},
 		{"AUTH_ADMIN_LISTEN_ADDR": "[::1]:8081", "AUTH_DIRECTORY_ADMIN_GROUP": "dir-admins"},
-		{"AUTH_ADMIN_LISTEN_ADDR": "localhost:8081", "AUTH_DIRECTORY_ADMIN_GROUP": "dir-admins"},
+		{"AUTH_ADMIN_LISTEN_ADDR": "127.9.9.9:8081", "AUTH_DIRECTORY_ADMIN_GROUP": "dir-admins"},
+		{"AUTH_ADMIN_LISTEN_ADDR": "localhost:8081", "AUTH_DIRECTORY_ADMIN_GROUP": "dir-admins",
+			"AUTH_ADMIN_TLS_CERT_FILE": "/run/secrets/c", "AUTH_ADMIN_TLS_KEY_FILE": "/run/secrets/k"},
 		{"AUTH_ADMIN_LISTEN_ADDR": "0.0.0.0:8081", "AUTH_DIRECTORY_ADMIN_GROUP": "dir-admins",
 			"AUTH_ADMIN_TLS_CERT_FILE": "/run/secrets/c", "AUTH_ADMIN_TLS_KEY_FILE": "/run/secrets/k"},
 	} {
@@ -91,6 +93,7 @@ func TestSettings(t *testing.T) {
 		"directory imported, unclear": {"AUTH_DIRECTORY_IMPORTED": "yes"},
 		"admin address, no group":     {"AUTH_ADMIN_LISTEN_ADDR": "127.0.0.1:8081"},
 		"admin, no host":              {"AUTH_ADMIN_LISTEN_ADDR": ":8081", "AUTH_DIRECTORY_ADMIN_GROUP": "dir-admins"},
+		"admin, localhost by name":    {"AUTH_ADMIN_LISTEN_ADDR": "localhost:8081", "AUTH_DIRECTORY_ADMIN_GROUP": "dir-admins"},
 		"admin, all interfaces":       {"AUTH_ADMIN_LISTEN_ADDR": "0.0.0.0:8081", "AUTH_DIRECTORY_ADMIN_GROUP": "dir-admins"},
 		"admin, non-loopback, no TLS": {"AUTH_ADMIN_LISTEN_ADDR": "10.0.0.5:8081", "AUTH_DIRECTORY_ADMIN_GROUP": "dir-admins"},
 		"admin cert, no key":          {"AUTH_ADMIN_TLS_CERT_FILE": "/run/secrets/c"},

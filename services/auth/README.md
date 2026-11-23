@@ -72,7 +72,7 @@ JetStream, with placeholders instead of keys. A test starts a server from it.
 | `AUTH_NAME_BINDING` | `open` | `open` or `openid-only` (see the name binding) |
 | `AUTH_MATTERMOST_URL`, `AUTH_MATTERMOST_TEAM` | — | the chat (https; http only on a loopback host) and the team of the bus's channels |
 | `AUTH_DIRECTORY_BUCKET` | `BUS_DIRECTORY` | the channel directory's key-value bucket in the tenant account (ADR-016, RT-6.39): letters, digits, `-` and `_`. Until the one-time import from Mattermost has written `meta.imported`, membership still comes from Mattermost and every identity's anchor is its name of today, so agents keep their names |
-| `AUTH_ADMIN_LISTEN_ADDR` | — | where the directory's admin API listens (RT-6.40), `host:port`; empty: no admin API. Requires `AUTH_DIRECTORY_ADMIN_GROUP`; without a certificate a loopback address only |
+| `AUTH_ADMIN_LISTEN_ADDR` | — | where the directory's admin API listens (RT-6.40), `host:port`; empty: no admin API. Requires `AUTH_DIRECTORY_ADMIN_GROUP`; without a certificate a loopback IP literal only (`127.0.0.1`, `::1`; `localhost` is not taken) |
 | `AUTH_ADMIN_TLS_CERT_FILE`, `AUTH_ADMIN_TLS_KEY_FILE` | — | the admin API's certificate and key, together |
 | `AUTH_DIRECTORY_ADMIN_GROUP` | — | the Keycloak group (as the group mapper writes it, with or without the leading `/`) whose members administer the directory; nothing in the directory makes anyone an admin |
 | `AUTH_DIRECTORY_IMPORTED` | `false` | set `true` once the one-time import has run: from then on a missing bucket is never made anew and a bucket without the import's mark refuses every login, instead of falling back to Mattermost (RT-6.39) |

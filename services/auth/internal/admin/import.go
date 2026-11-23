@@ -17,6 +17,10 @@ import (
 // ErrAlreadyImported: the one import has run.
 var ErrAlreadyImported = errors.New("admin: the import has already run")
 
+// ErrAuthInvisible: the Mattermost token cannot see how accounts log in, so
+// no account can be told apart as OpenID or password.
+var ErrAuthInvisible = errors.New("admin: the Mattermost token cannot see how accounts log in; a system admin's token is needed")
+
 var channelNameRE = regexp.MustCompile(`^[a-z0-9][a-z0-9_-]{0,63}$`)
 
 // Source is what the import reads from Mattermost (mattermost.Client).
@@ -133,7 +137,8 @@ func importAt(ctx context.Context, store *directory.Store, source Source, bindin
 		if err := fetch(ids); err != nil {
 			return rep, fmt.Errorf("channel %s: users: %w", ch.Name, err)
 		}
-		var members []string
+		var humans []mattermost.User
+		openIDs := map[string]bool{}
 		for _, id := range ids {
 			u, ok := users[id]
 			if !ok {
@@ -143,6 +148,21 @@ func importAt(ctx context.Context, store *directory.Store, source Source, bindin
 				skipAccount(u, why)
 				continue
 			}
+			if !u.AuthKnown { // before anything more is written
+				return rep, ErrAuthInvisible
+			}
+			humans = append(humans, u)
+			if isOpenID(u) {
+				openIDs[u.AuthData] = true
+			}
+		}
+		if len(openIDs) > directory.MaxMembers {
+			rep.ChannelsSkipped = append(rep.ChannelsSkipped, SkippedChannel{Name: ch.Name,
+				Reason: fmt.Sprintf("more than %d members", directory.MaxMembers)})
+			continue
+		}
+		var members []string
+		for _, u := range humans {
 			switch {
 			case isOpenID(u):
 				if _, err := store.Login(ctx, u.AuthData, u.Username, u.Username); err != nil {
@@ -167,14 +187,12 @@ func importAt(ctx context.Context, store *directory.Store, source Source, bindin
 			return rep, err
 		}
 		if !ok {
+			// the creator owns it only while still a member, human and an
+			// OpenID account with a visible sub
 			owner := ""
-			if ch.CreatorID != "" {
-				if err := fetch([]string{ch.CreatorID}); err != nil {
-					return rep, fmt.Errorf("channel %s: creator: %w", ch.Name, err)
-				}
-				if u, found := users[ch.CreatorID]; found && human(u) == "" && isOpenID(u) {
-					owner = u.AuthData
-				}
+			if u, found := users[ch.CreatorID]; found && slices.Contains(ids, ch.CreatorID) &&
+				human(u) == "" && u.AuthKnown && isOpenID(u) {
+				owner = u.AuthData
 			}
 			c := directory.Channel{Name: ch.Name, Owner: owner, Public: ch.Type == "O", Members: members,
 				Bindings: map[string]string{"mattermost": ch.Name}}
