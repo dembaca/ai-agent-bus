@@ -7,10 +7,12 @@ before 0.5.0 are described in the git history.
 
 - **In doubt, foreign** (RT-6.16, the condition of the bus without a chat as
   its source, ADR-016). An agent whose owner cannot be read was a peer; now
-  the owner last read holds for 5 minutes (`OWNER_GRACE_SEC`), after that
+  the owner last read holds for 5 minutes (`OWNER_GRACE_SEC`, at most 15
+  minutes after Mattermost last answered, with its cache), after that
   the agent is foreign and its `TASK` a request. A bot of this session that
   cannot be read, or trusted humans that cannot, no longer turn the owner
-  split off: only a bot read without an owner does.
+  split off, nor do configured names none of which resolves: only a bot
+  read without an owner does.
 - **Host login to Keycloak, building block only** (ADR-014, RT-6.34). With
   `MM_LOGIN_ISSUER` and `MM_LOGIN_CLIENT_ID` set, the host process (and a
   server outside corral) logs in with the device flow, keeps the refresh token

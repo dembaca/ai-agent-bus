@@ -55,7 +55,9 @@ log = logging.getLogger(__name__)
 OWNER_GRACE_SEC = 300.0
 
 # user id -> (when last read, monotonic; what was read): the last good read.
+# At most _LAST_MAX entries (over NATS every sender name is one): the oldest go.
 _last: dict[str, tuple[float, Owner]] = {}
+_LAST_MAX = 1024
 # My trusted names and bot id as last read (mine).
 _mine: tuple[float, set[str], str] | None = None
 
@@ -200,7 +202,10 @@ async def known(client: ChatPort, user_id: str) -> Owner | None:
     now = monotonic()
     agent = await read(client, user_id)
     if agent is not None:
+        _last.pop(user_id, None)
         _last[user_id] = (now, agent)
+        while len(_last) > _LAST_MAX:
+            del _last[next(iter(_last))]
         return agent
     hit = _last.get(user_id)
     if hit is not None and now - hit[0] < OWNER_GRACE_SEC:
@@ -240,8 +245,19 @@ async def mine(client: ChatPort) -> tuple[set[str], str]:
             return set(), ""
     else:
         if not names:
-            return set(), ""
-        _mine = (now, set(names), me)
+            # Names configured, none resolved (the client keeps what a failed
+            # lookup left): in doubt, the configured ones, never the split off.
+            names = {n.lower() for n in _trusted_names()}
+            if not names:
+                return set(), ""
+            log.info("no trusted human resolved, %d configured: the owner split stays on",
+                     len(names))
+            try:
+                me = (await client.get_me()).id
+            except Exception:  # noqa: BLE001 — in doubt: the configured id
+                me = env("MM_BOT_USER_ID").strip()
+        else:
+            _mine = (now, set(names), me)
     own = await known(client, me) if me else None
     if own is not None and not own.owner:
         return set(), ""

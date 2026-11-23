@@ -589,19 +589,20 @@ async def _work_posts(client: ChatPort, channel_id: str = "",
 async def _tasks(client: ChatPort, posts: list[Post], names: dict[str, str],
                  crown: set[str] | None = None, *, home: bool = True) -> list[dict[str, Any]]:
     """The task rows; with trusted humans configured, a TASK root by anyone
-    but them and the peer agents is no task (RT-6.16, ADR-001). Unsure: all
-    roots count. `crown`: who may close any task, when not the home's
+    but them and the peer agents is no task (RT-6.16, ADR-001). In doubt
+    (the check fails): no root counts (ADR-016). `crown`: who may close any task, when not the home's
     roster (another channel's crown holder, RT-6.14 step 9). In the home a
     root the home's mandate covers is marked `mandated` (RT-6.26 step 5)."""
     untrusted: set[str] = set()
+    roots = [p for p in posts if not p.root_id]
     try:
         if await client.trusted_humans():
-            roots = [p for p in posts if not p.root_id]
             classes = await gate.author_classes(client, roots)
             untrusted = {p.id for p, c in zip(roots, classes, strict=True)
                          if c in (gate.OTHER, gate.FOREIGN)}
-    except Exception as exc:  # noqa: BLE001
-        log.info("task rows without the trust check: %s", exc)
+    except Exception as exc:  # noqa: BLE001 — in doubt: no root is a task (ADR-016)
+        log.info("trust check failed, no root counts as a task: %s", exc)
+        untrusted = {p.id for p in roots}
     coordinators: set[str] = set(crown or ())
     try:  # who may close any task: the crown holder (RT-6.14 step 3)
         if crown is None:

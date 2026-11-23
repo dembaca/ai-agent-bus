@@ -42,6 +42,8 @@ def _chat(**kw):
 def state(tmp_path, monkeypatch):
     monkeypatch.setenv("XDG_STATE_HOME", str(tmp_path))
     monkeypatch.setenv("MM_BOT_USER_ID", BOT)
+    for var in ("MM_TRUSTED_HUMANS", "MM_OWNER"):  # the configured names (ADR-016 fallback)
+        monkeypatch.delenv(var, raising=False)
     monkeypatch.delenv("MM_AGENT_PREFIX", raising=False)
     monkeypatch.setattr(gate, "_coord", None)
 
@@ -325,3 +327,56 @@ async def test_trusted_humans_unreadable_keep_the_split_on(monkeypatch):
     owners.reset()
     monkeypatch.setenv("MM_TRUSTED_HUMANS", "alice,bob")
     assert await owners.foreign(chat, {RELAY}) == {RELAY: "alice"}  # the configured ones
+
+
+async def test_configured_names_none_resolved_keep_the_split_on(monkeypatch):
+    """ADR-016: the client keeps an empty list when the lookup of configured
+    names failed; the configured names count, the split is not off."""
+    monkeypatch.setenv("MM_TRUSTED_HUMANS", "alice,bob")
+    chat = _chat(trusted={})
+    assert await owners.foreign(chat, {PEER, RELAY}) == {RELAY: "alice"}
+    monkeypatch.delenv("MM_TRUSTED_HUMANS")
+    assert await owners.foreign(chat, {PEER, RELAY}) == {}  # none configured: off, as before
+
+
+async def test_a_failed_lookup_of_trusted_names_is_not_remembered(monkeypatch):
+    """ADR-016 with the real adapter: a 503 while MM_TRUSTED_HUMANS is looked
+    up by name leaves no empty list cached for the session; the owner split
+    stays on with the configured names, and the next read resolves them."""
+    import httpx
+
+    from mattermost_ai_agent_bus.client import MattermostAdapter
+
+    for var in ("MM_TRUSTED_HUMAN_USER_IDS", "MM_OWNER_USER_ID"):
+        monkeypatch.delenv(var, raising=False)
+    monkeypatch.setenv("MM_TRUSTED_HUMANS", "alice")
+    client = MattermostAdapter(base_url="https://chat.example", token="bot")
+    down = [True]
+
+    async def api(method, path, **_):
+        if path == "/api/v4/users/username/alice":
+            if down[0]:
+                request = httpx.Request("GET", "https://chat.example" + path)
+                raise httpx.HTTPStatusError("503", request=request,
+                                            response=httpx.Response(503, request=request))
+            return {"id": ALICE, "username": "alice", "is_bot": False}
+        raise httpx.ConnectError("down")
+
+    monkeypatch.setattr(client, "_api", api)
+    assert await client.trusted_humans() == {}
+    names, _ = await owners.mine(client)
+    assert names == {"alice"}  # in doubt: the configured names, the split on
+    down[0] = False
+    assert await client.trusted_humans() == {ALICE: "alice"}
+
+
+async def test_tasks_in_doubt_count_no_root(monkeypatch):
+    """RT-6.16 step 5, ADR-016: when the trust check of the task rows fails,
+    no root counts as a task (it used to be every root)."""
+    async def broken(client, posts):
+        raise RuntimeError("503")
+
+    monkeypatch.setattr(server.gate, "author_classes", broken)
+    chat = _chat()
+    root = _post("t" * 26, PEER, "TASK · ship it")
+    assert await server._tasks(chat, [root], NAMES, crown=set()) == []

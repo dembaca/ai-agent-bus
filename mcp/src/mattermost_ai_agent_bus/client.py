@@ -1146,6 +1146,7 @@ class MattermostAdapter:
 
         trusted: dict[str, str] = {}
         source = ""
+        failed = False  # a lookup failed: not cached, the next call asks again (ADR-016)
         ids = names("MM_TRUSTED_HUMAN_USER_IDS") or names("MM_OWNER_USER_ID")
         wanted = names("MM_TRUSTED_HUMANS") or names("MM_OWNER")
         try:
@@ -1156,14 +1157,24 @@ class MattermostAdapter:
                 for n in wanted:
                     try:
                         u = await self._api("GET", f"/api/v4/users/username/{mm_name(n, 'user')}")
-                    except (httpx.HTTPError, InvalidId):
+                    except httpx.HTTPStatusError as exc:
+                        failed = failed or getattr(exc.response, "status_code", None) != 404
+                        continue
+                    except InvalidId:
+                        continue
+                    except httpx.HTTPError:
+                        failed = True
                         continue
                     if not u.get("is_bot"):
                         trusted[u["id"]] = n
                 source = "MM_TRUSTED_HUMANS"
         except (httpx.HTTPError, KeyError, ValueError):
-            trusted = {}
-        self._trusted = trusted
+            trusted, failed = {}, True
+        if failed:
+            log.info("trusted humans: a lookup failed, %d of %d resolved; asked again next time",
+                     len(trusted), len(wanted))
+        else:
+            self._trusted = trusted
         self.trusted_source = source if trusted else (
             "none: set MM_TRUSTED_HUMANS")
         return trusted
