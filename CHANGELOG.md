@@ -5,6 +5,9 @@ before 0.5.0 are described in the git history.
 
 ## Unreleased
 
+- **The account index keeps a name when one identity logs in with two at
+  once** (#72, RT-6.41 step 2). The name its record lists stays resolvable;
+  before, both keys could be gone until its next login (fail closed).
 - **A slim post's size is bounded** (issue #42). `get_thread` and `list_recent`
   stay whole by contract, but not without bound: an ask whose card title rides
   in its text was 22 KB in every thread read, and a foreign agent can post
