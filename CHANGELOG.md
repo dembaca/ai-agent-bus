@@ -5,6 +5,10 @@ before 0.5.0 are described in the git history.
 
 ## Unreleased
 
+- **The login service image is published to GHCR.** Each merge to `main` that
+  changes `services/auth/` pushes `ghcr.io/dembaca/ai-agent-bus-auth:<commit SHA>`
+  with a build provenance attestation, after the service's tests; deployments
+  use the digest from the job summary.
 - **Host login to Keycloak, building block only** (ADR-014, RT-6.34). With
   `MM_LOGIN_ISSUER` and `MM_LOGIN_CLIENT_ID` set, the host process (and a
   server outside corral) logs in with the device flow, keeps the refresh token
