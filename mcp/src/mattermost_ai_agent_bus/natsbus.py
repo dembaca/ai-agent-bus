@@ -514,6 +514,7 @@ class NatsBus:
         self._denied: list[str] = []  # subjects the server refused a publish on
         self._gaps = GapTracker()
         self._last_gap_reconnect = -1e18
+        self._last_echo_reconnect = -1e18
         self._stale: set[str] = set()  # channels with a gap, dropped until the reconnect
         self._last_seq: dict[str, int] = {}  # channel (or "@dm") -> last stream sequence delivered
         self._server_now = 0.0  # the newest server timestamp seen: the host's "now"
@@ -816,6 +817,21 @@ class NatsBus:
                     await nc.publish(self._presence_subject, encode_presence("online", self._bot))
                 except Exception as exc:
                     log.warning("nats bus: heartbeat: %s", type(exc).__name__)
+            self._check_own_echo()
+
+    def _check_own_echo(self) -> None:
+        """The echo of the own presence missing past OWN_ECHO_SEC while connected (a stream
+        made anew, the consumer gone): one reconnect makes the consumer again. At most one
+        per gap interval, so an outage a reconnect does not cure is not a reconnect storm
+        (RT-6.38 step 2)."""
+        if self._stopping or not self._connected or self.own_echo_age() <= OWN_ECHO_SEC:
+            return
+        now = time.monotonic()
+        if now - self._last_echo_reconnect < self._gap_sec:
+            return
+        log.warning("nats bus: no echo of the own presence for %.0f s, reconnecting", self.own_echo_age())
+        self._last_echo_reconnect = now
+        self._wake.set()
 
     # --- sending ---------------------------------------------------------------------
     async def _publish(self, subject: str, body: bytes) -> None:
@@ -1126,6 +1142,7 @@ class NatsBus:
             # not be in it: forget them, so that an own claim that is gone is claimed again.
             self._claims.clear()
             self._claim_at.clear()
+            self._synced = False  # until a delivery with pending 0: the replay is not read yet
         self._presence_cseq = ack.consumer_seq
         if ack.pending == 0:
             self._synced = True

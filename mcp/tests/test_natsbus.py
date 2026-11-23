@@ -300,6 +300,59 @@ async def test_the_echo_of_the_own_presence_is_timed_by_the_monotonic_clock(monk
     assert bus.own_echo_age() == 30
 
 
+async def test_a_missing_own_echo_triggers_one_reconnect(monkeypatch: pytest.MonkeyPatch) -> None:
+    """RT-6.38 step 2: no echo of the own presence past OWN_ECHO_SEC while connected: one
+    reconnect, not more within the gap interval; a normal echo: none."""
+    mono = [100.0]
+    monkeypatch.setattr(time, "monotonic", lambda: mono[0])
+    bus, _ = _unit_bus()
+    bus._connected = True
+    mono[0] += natsbus.OWN_ECHO_SEC - 1
+    bus._check_own_echo()
+    assert not bus._wake.is_set()  # still within the window
+    await _presence(bus, bus.name, 1, T0)  # the echo comes
+    mono[0] += natsbus.OWN_ECHO_SEC - 1
+    bus._check_own_echo()
+    assert not bus._wake.is_set()
+    mono[0] += 2  # now missing past the window
+    bus._check_own_echo()
+    assert bus._wake.is_set()
+    bus._wake.clear()
+    mono[0] += 5
+    bus._check_own_echo()  # the same outage: no second reconnect
+    assert not bus._wake.is_set()
+    bus._connected = False
+    mono[0] += 1000
+    bus._check_own_echo()  # not connected: the supervisor is at it already
+    assert not bus._wake.is_set()
+
+
+async def test_the_heartbeat_checks_the_own_echo() -> None:
+    """RT-6.38 step 2: the heartbeat loop asks for the reconnect when the echo is missing."""
+    bus, _ = _unit_bus(heartbeat_sec=0.01)
+    bus._connected = True
+    bus._own_echo = time.monotonic() - natsbus.OWN_ECHO_SEC - 1
+    task = asyncio.create_task(bus._heartbeat())
+    try:
+        await asyncio.wait_for(bus._wake.wait(), 2)
+    finally:
+        task.cancel()
+
+
+async def test_forgetting_the_claims_unsyncs_until_the_replay_is_read() -> None:
+    """RT-6.38 step 1: after the consumer is made anew the view is not synced until a
+    delivery with pending 0, so a tick in the replay window does not claim."""
+    bus, _ = _unit_bus()
+    await _claim(bus, bus.name, "home", 500, T0 - 1000)
+    assert bus.synced  # pending 0
+    replay = _presence_reply(bus, 600, 1, T0)[:-1] + "3"  # delivery number 1 again, 3 still pending
+    await bus._on_presence_msg(FakeMsg("presence.member.home.agent-b", replay, encode_claim()))
+    assert not bus.synced and not bus.claimed("home", bus.name)
+    await bus._on_presence_msg(FakeMsg("presence.member.home.agent-b", _presence_reply(bus, 603, 4, T0),
+                                       encode_claim()))
+    assert bus.synced
+
+
 def test_crown_rule() -> None:
     now = 1000.0
     pres = {"a": (now - 10, "online"), "b": (now - 10, "online"), "c": (now - 10, "online")}

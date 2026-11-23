@@ -17,7 +17,10 @@ before 0.5.0 are described in the git history.
   receipts, unlike `coordinator.md` promises for Mattermost: the holder itself
   claims again, on a crown beat, when a post that needs it has no 👀 or ⏳ after
   45 s. The login service grants crown claims only in the agent's home, not in a
-  guest channel.
+  guest channel. The 23 h renewal of a claim passes the crown to the next live
+  candidate (a rotation about once every 23 h). A missing echo of the own
+  presence triggers one reconnect, and forgotten claims unsync the view until
+  the replay is read.
   Needs: MM_NATS_HOMES alike on every agent of a home.
 - **Host login to Keycloak, building block only** (ADR-014, RT-6.34). With
   `MM_LOGIN_ISSUER` and `MM_LOGIN_CLIENT_ID` set, the host process (and a
