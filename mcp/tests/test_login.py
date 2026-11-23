@@ -891,3 +891,32 @@ async def test_any_failed_approval_cools_down_and_revokes_the_token_it_got():
     with pytest.raises(login.LoginError, match="realm role"):
         await lg.access_token()
     assert script.device_requests == 2
+
+
+async def test_a_second_process_does_not_send_a_new_approval_during_the_cooldown():
+    """A restart is a new `Login`, and the cooldown has to survive it.
+
+    `_cooldown_until` lives in the object, so a new process - a session start, a
+    `--resume`, a restart after a failed login - began with no cooldown and sent
+    a fresh device DM at once. Measured in the lab: three Keycloak links within
+    two minutes, each from what the human saw as the same agent. The cooldown
+    belongs to the store entry, not to the object.
+    """
+    class NoRole(Script):
+        def _tokens(self):
+            self.n += 1
+            return httpx.Response(200, json={
+                "access_token": jwt("alice", realm_access={"roles": []}), "expires_in": 300,
+                "refresh_token": f"refresh-secret-{self.n}"})
+
+    script, note, clock = NoRole(), Note(), [0.0]
+    store = keystore.Ephemeral()
+    first = mk(store, transport=httpx.MockTransport(script), notifier=note, now=lambda: clock[0])
+    with pytest.raises(login.LoginError):
+        await first.access_token()
+    assert script.device_requests == 1
+    # A new process on the same store, inside the cooldown.
+    second = mk(store, transport=httpx.MockTransport(script), notifier=note, now=lambda: clock[0])
+    with pytest.raises(login.LoginError, match="a new one starts in"):
+        await second.access_token()
+    assert script.device_requests == 1, "a new process sent another device DM inside the cooldown"

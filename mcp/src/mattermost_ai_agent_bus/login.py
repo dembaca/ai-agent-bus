@@ -239,6 +239,7 @@ class Login:
         self._lock = asyncio.Lock()
         self._cooldown_until = 0.0
         self._cooldown_why = ""
+        self._cooled = False  # this object decided a cooldown, do not reload one
         self._nkey: nkeys.KeyPair | None = None
 
     def __repr__(self) -> str:
@@ -291,6 +292,12 @@ class Login:
                                  "(set MM_RESPONSIBLE_HUMAN or MM_TRUSTED_HUMANS)")
             entry = keystore.refresh_entry(self.settings.issuer, self.settings.client_id, human)
             async with self._file_lock(entry):
+                # A cooldown another process left: this one begins with none, and
+                # without this it sent a fresh device DM at once (measured in the
+                # lab: three Keycloak links in two minutes for what the human saw
+                # as one agent). Only read when this object has none of its own.
+                if not self._cooled:
+                    self._load_cooldown(human)
                 # Loaded only now: another process may have refreshed meanwhile,
                 # and its stored token is the one to use, never the old one.
                 refresh = self._stored_refresh(human)
@@ -311,7 +318,7 @@ class Login:
                     # Any failure, not only a denial: else every call would
                     # send a new DM and leave a new session open in Keycloak.
                     if self._cooldown_until <= self._now():
-                        self._cool_down("failed")
+                        self._cool_down("failed", human)
                     raise
                 return self._tokens.access
 
@@ -463,22 +470,57 @@ class Login:
             outcome = await self._poll(endpoints["token_endpoint"], device_code, interval, deadline, human)
         except ApprovalDenied:
             outcome = "denied"
-            self._cool_down("was declined")
+            self._cool_down("was declined", human)
             raise
         except ApprovalExpired:
             outcome = "expired"
-            self._cool_down("expired")
+            self._cool_down("expired", human)
             raise
         except WrongHuman:
             outcome = "refused"
-            self._cool_down("was refused")
+            self._cool_down("was refused", human)
             raise
         finally:
             await self._settle(outcome)
 
-    def _cool_down(self, why: str) -> None:
+    def _cool_down(self, why: str, human: str = "") -> None:
         self._cooldown_until = self._now() + COOLDOWN_SEC
         self._cooldown_why = why
+        # This process decided the cooldown, so it must not read the stored mark
+        # again: its own monotonic deadline is the one its tests and its calls
+        # advance against, and the stored wall clock is for the *next* process.
+        self._cooled = True
+        self._save_cooldown(human)
+
+    def _load_cooldown(self, human: str) -> None:
+        """The cooldown another process recorded, if it still runs.
+
+        Recorded as a wall-clock deadline: the monotonic clock stands still while
+        the machine sleeps, and a stored one of those would be meaningless in
+        the next process.
+        """
+        if not human:
+            return
+        try:
+            raw = self._store.load(keystore.cooldown_entry(
+                self.settings.issuer, self.settings.client_id, human))
+            until = float(raw) if raw else 0.0
+        except (keystore.KeyStoreError, OSError, ValueError):
+            return
+        left = until - self._wall()
+        if left > 0:
+            self._cooldown_until = self._now() + left
+            self._cooldown_why = self._cooldown_why or "was refused"
+
+    def _save_cooldown(self, human: str) -> None:
+        if not human:
+            return
+        try:
+            self._store.save(keystore.cooldown_entry(
+                self.settings.issuer, self.settings.client_id, human),
+                str(self._wall() + COOLDOWN_SEC))
+        except (keystore.KeyStoreError, OSError) as exc:
+            log.warning("login cooldown not stored: %s", type(exc).__name__)
 
     async def _settle(self, outcome: str) -> None:
         if self._notifier is None:

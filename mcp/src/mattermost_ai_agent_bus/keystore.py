@@ -36,6 +36,16 @@ def refresh_entry(issuer: str, client_id: str, human: str) -> str:
     return "refresh_" + "".join(chr(ord("a") + int(c, 16)) for c in digest)
 
 
+def cooldown_entry(issuer: str, client_id: str, human: str) -> str:
+    """The entry of one person's login cooldown: after a failed approval no new
+    device approval may start for a while, and a restart is a new process.
+
+    It sits beside the refresh token rather than inside it, because the token
+    entry is rewritten on every refresh and would lose the mark (login.py).
+    """
+    return "cool_" + refresh_entry(issuer, client_id, human)[len("refresh_"):]
+
+
 class KeyStoreError(Exception):
     """A stored value that must not be read or written; the message names the
     entry and the reason, never a value."""
