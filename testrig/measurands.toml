@@ -17,6 +17,25 @@
 # `unit` is printed verbatim. Frames, not "posts": what a run sends through a
 # message channel is a frame (point 15 of the review).
 
+# The run plan, word for word from `messplan-phase4.md` (phase 4, delivery and
+# coordinator rows) as it was posted in the task thread. A value that the plan
+# does not define stays `"open"` here: a number invented in this file would end
+# up in a report as if the plan had asked for it, and the tolerance decides
+# dembaca, not the harness.
+[plan]
+messages_per_run = 100          # delivery row: 100 messages per run, under fault
+runs_per_fault = 10             # proposal of the plan, "at least 10 runs per fault"
+hard_stops = 50                 # coordinator row: 50 hard stops
+human_posts = 100               # coordinator row: 100 human posts under fault
+takeover_target_sec = 30        # coordinator row: the new bus's target, not today's
+tolerance = "open"              # gap 1: the plan defines no "no worse than today"
+wait_start = "open"             # gap 1: where a wait begins
+wait_end = "open"               # gap 1: where it ends
+gap = "gap 1 of messplan-phase4.md; the tolerance is dembaca's decision"
+# Both adapters time at the same points — send time at the tool, receive time at
+# the receiver's ingress — as a *proposal* of the plan, not a decision.
+measurement_points = "proposal: send time at the tool, receive time at the receiver's ingress"
+
 [[measurand]]
 id = "loss"
 name = "Loss"
@@ -84,3 +103,68 @@ unit = "cases"
 status = "not_yet_measurable"
 why = "The forgery cases need the login service and the NATS permission model."
 what = "Forgery and replay cases refused out of those tried."
+
+# The plan's coordinator row also asks for 100 human posts under fault and, per
+# post, how often it was handled (0, 1, more than once). One row, because the
+# acceptance reads it as one number: the count that is not exactly 1.
+[[measurand]]
+id = "human_posts_not_handled_once"
+name = "Human posts handled zero or several times"
+source = "Roles and coordinator, ADR-014 phase 4 (100 human posts under fault)"
+unit = "posts"
+status = "not_yet_measurable"
+why = "Needs a running bus that can be faulted while a human posts 100 times (follow-up PR)."
+what = "Human posts out of 100 under fault that were handled zero times or more than once."
+
+# Row 7 of the plan, a proposal: approvals counted per kind. A is the first
+# approval, B one after resuming (target 0), C one after the refresh token
+# expired, D the renewal of the NATS credential (must be 0). Measured in daily
+# use, never in the rig, so it is one row that carries all four kinds.
+[[measurand]]
+id = "device_approvals_by_kind"
+name = "Device approvals by kind (A first, B after resume, C after refresh expiry, D NATS renewal)"
+source = "Device approvals, ADR-014 phase 4, row 7 (proposal)"
+unit = "approvals"
+status = "not_yet_measurable"
+why = "The plan measures this in daily use only, not in the rig; B targets 0 and D must be 0."
+what = "Approvals of kind A (first), B (after resume, target 0), C (after refresh expiry) and D (NATS credential renewal, must be 0)."
+
+# The plan names four rows the rig cannot measure at all. They are listed so
+# the report keeps one shape before and after the switch, each with its reason
+# rather than a zero that would read as a measurement.
+[[measurand]]
+id = "lockout_within_15_min"
+name = "Lockout takes effect within 15 minutes"
+source = "Emergency brake, ADR-014 phase 4"
+unit = "s"
+status = "not_yet_measurable"
+why = "No switch and no credential lifetime to wait on in the rig; it needs the login service and NATS."
+what = "Time from the emergency brake to a stopped agent's access ending (target: within 15 minutes)."
+
+[[measurand]]
+id = "retention_14_days"
+name = "History kept for 14 days"
+source = "Retention, ADR-014 phase 4"
+unit = "days"
+status = "not_yet_measurable"
+why = "Fourteen days cannot be waited out in a run; it is a JetStream setting to inspect, not a rig measurement."
+what = "How far back an agent can read history after reconnecting (target: 14 days)."
+
+[[measurand]]
+id = "return_path_via_switch"
+name = "Return path through the switch"
+source = "Switch, ADR-014 phase 4"
+unit = "cases"
+status = "not_yet_measurable"
+why = "The switch back to Mattermost belongs to the login service and the NATS adapter, neither of which the rig drives."
+what = "Cases in which a home switched back to Mattermost still delivers, without loss."
+
+[[measurand]]
+id = "mirroring_for_old_plugins"
+name = "Mirroring for older plugins"
+source = "Migration, ADR-014 phase 4"
+unit = "cases"
+status = "not_yet_measurable"
+why = "Older plugins run against a bus the rig does not start; mirroring is a property of the running deployment."
+what = "Cases in which an older plugin still reads what it expects while a home runs on NATS."
+
