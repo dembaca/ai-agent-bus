@@ -364,7 +364,7 @@ process's memory: never on disk, never printed, never in the environment.
 | `import` | the one import from Mattermost (admins), with its report |
 | `pending`, `confirm <name>`, `drop <name>` | the claims of password accounts (with the full channels one waits on), an admin's confirmation over the listed revision, and deleting a claim over the listed revision |
 
-`--json` prints the API's answer as it is. `--json` writes the answer as the
+`--json` writes the answer as the
 server sent it, for pipes and scripts, not for a terminal (text output is the
 cleaned one); an answer that is not JSON is an error and nothing is written. A change made meanwhile by
 someone else ends with "changed meanwhile; run again" (exit 1); a usage

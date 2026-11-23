@@ -655,3 +655,72 @@ func TestDroppingAPendingEntry(t *testing.T) {
 		t.Fatalf("still pending: %+v", ps)
 	}
 }
+
+// RT-6.40 step 6: a channel that fills up between the size check and the
+// write is left out with nothing of it written, its claims neither.
+func TestAChannelThatFillsUpMeanwhileGetsNoClaims(t *testing.T) {
+	store := newStore(t)
+	if _, err := store.PutChannel(ctx(t), directory.Channel{Name: "crowd", Members: []string{"sub-a"}}, 0); err != nil {
+		t.Fatal(err)
+	}
+	pw := mattermost.User{ID: "pat", Username: "pat", AuthKnown: true}
+	src := &fakeSource{
+		channels: []mattermost.Channel{{ID: "c1", Name: "crowd", Type: "O"}},
+		members:  map[string][]string{"c1": {"ann", "pat"}},
+		users:    []mattermost.User{oidUser("ann"), pw},
+	}
+	beforeUnion = func(name string) { // an owner fills the channel meanwhile
+		cur, rev, _, _ := store.Channel(ctx(t), name)
+		for i := range directory.MaxMembers - len(cur.Members) {
+			cur.Members = append(cur.Members, fmt.Sprintf("sub-x%04d", i))
+		}
+		if _, err := store.PutChannel(ctx(t), cur, rev); err != nil {
+			t.Error(err)
+		}
+	}
+	t.Cleanup(func() { beforeUnion = func(string) {} })
+	rep, err := Import(ctx(t), store, src, "open", token.Identity{})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(rep.ChannelsSkipped) != 1 || rep.ChannelsSkipped[0].Name != "crowd" || rep.PendingAdded != 0 {
+		t.Fatalf("report: %+v", rep)
+	}
+	if ps, _ := store.ListPending(ctx(t)); len(ps) != 0 {
+		t.Fatalf("claims written for a channel left out: %+v", ps)
+	}
+}
+
+// A claim that grows loses its confirmation and what it waited on.
+func TestAddPendingClearsWaitingFull(t *testing.T) {
+	store := newStore(t)
+	var full []string
+	for i := range directory.MaxMembers {
+		full = append(full, fmt.Sprintf("sub-x%04d", i))
+	}
+	for _, c := range []directory.Channel{{Name: "crowd", Members: full}, {Name: "town"}} {
+		if _, err := store.PutChannel(ctx(t), c, 0); err != nil {
+			t.Fatal(err)
+		}
+	}
+	if err := store.AddPending(ctx(t), "pat", "crowd"); err != nil {
+		t.Fatal(err)
+	}
+	es, _ := store.PendingEntries(ctx(t))
+	if err := store.ConfirmPending(ctx(t), "pat", "sub-admin", es[0].Revision); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := (directory.Anchors{Store: store}).Anchor(ctx(t), "sub-pat", "pat"); err != nil {
+		t.Fatal(err)
+	}
+	if ps, _ := store.ListPending(ctx(t)); len(ps) != 1 || len(ps[0].WaitingFull) != 1 {
+		t.Fatalf("before: %+v", ps)
+	}
+	if err := store.AddPending(ctx(t), "pat", "town"); err != nil {
+		t.Fatal(err)
+	}
+	ps, _ := store.ListPending(ctx(t))
+	if len(ps) != 1 || len(ps[0].WaitingFull) != 0 || ps[0].Confirmed {
+		t.Fatalf("after growing: %+v", ps)
+	}
+}

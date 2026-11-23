@@ -777,3 +777,16 @@ func TestDrop(t *testing.T) {
 		t.Fatalf("a delete was sent: %+v", got)
 	}
 }
+
+// The name printed after a drop is cleaned like every server text.
+func TestDropPrintsTheNameClean(t *testing.T) {
+	r := newRig(t)
+	r.pend = `[{"name":"al\u001b[2Jice‮","channels":["dev"],"confirmed":false,"revision":7}]`
+	code, out, errs := r.do("drop", "al\x1b[2Jice‮")
+	if code != 0 {
+		t.Fatalf("exit %d: %q %q", code, out, errs)
+	}
+	if strings.ContainsAny(out, "\x1b‮") || !strings.Contains(out, "dropped al[2Jice") {
+		t.Fatalf("not clean: %q", out)
+	}
+}

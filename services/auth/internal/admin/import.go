@@ -23,6 +23,10 @@ var errTooBig = errors.New("admin: the channel would exceed the member limit")
 
 var tooMany = fmt.Sprintf("more than %d members", directory.MaxMembers)
 
+// beforeUnion runs right before an existing channel's members are written;
+// tests use it to change the channel meanwhile. Nothing in production.
+var beforeUnion = func(string) {}
+
 // ErrAuthInvisible: the Mattermost token cannot see how accounts log in, so
 // no account can be told apart as OpenID or password.
 var ErrAuthInvisible = errors.New("admin: the Mattermost token cannot see how accounts log in; a system admin's token is needed")
@@ -180,7 +184,7 @@ func importAt(ctx context.Context, store *directory.Store, source Source, bindin
 			rep.ChannelsSkipped = append(rep.ChannelsSkipped, SkippedChannel{Name: ch.Name, Reason: tooMany})
 			continue
 		}
-		var members []string
+		var members, claims []string // claims: written only once the channel is
 		for _, u := range humans {
 			switch {
 			case isOpenID(u):
@@ -190,16 +194,24 @@ func importAt(ctx context.Context, store *directory.Store, source Source, bindin
 				subs[u.AuthData] = true
 				members = append(members, u.AuthData)
 			case binding == "open":
-				if err := store.AddPending(ctx, u.Username, ch.Name); err != nil {
-					return rep, fmt.Errorf("pending %s: %w", u.Username, err)
-				}
-				rep.PendingAdded++
+				claims = append(claims, u.Username)
 			default:
 				skipAccount(u, "password account, name binding openid-only")
 			}
 		}
 		slices.Sort(members)
 		members = slices.Compact(members)
+		// The claims of password accounts are written after the channel: a
+		// channel left out (too big on a retry) gets none.
+		writeClaims := func() error {
+			for _, name := range claims {
+				if err := store.AddPending(ctx, name, ch.Name); err != nil {
+					return fmt.Errorf("pending %s: %w", name, err)
+				}
+				rep.PendingAdded++
+			}
+			return nil
+		}
 
 		if !ok {
 			// the creator owns it only while still a member, human and an
@@ -215,6 +227,9 @@ func importAt(ctx context.Context, store *directory.Store, source Source, bindin
 			if err == nil {
 				rep.ChannelsCreated = append(rep.ChannelsCreated, ch.Name)
 				rep.MembersAdded += len(members)
+				if err := writeClaims(); err != nil {
+					return rep, err
+				}
 				continue
 			}
 			if !errors.Is(err, directory.ErrConflict) {
@@ -224,6 +239,7 @@ func importAt(ctx context.Context, store *directory.Store, source Source, bindin
 				return rep, fmt.Errorf("channel %s: changed meanwhile: %w", ch.Name, errors.Join(err, directory.ErrConflict))
 			}
 		}
+		beforeUnion(ch.Name)
 		added, err := unionMembers(ctx, store, cur, rev, members)
 		if errors.Is(err, errTooBig) {
 			rep.ChannelsSkipped = append(rep.ChannelsSkipped, SkippedChannel{Name: ch.Name, Reason: tooMany})
@@ -235,6 +251,9 @@ func importAt(ctx context.Context, store *directory.Store, source Source, bindin
 		if added > 0 {
 			rep.ChannelsUpdated = append(rep.ChannelsUpdated, ch.Name)
 			rep.MembersAdded += added
+		}
+		if err := writeClaims(); err != nil {
+			return rep, err
 		}
 	}
 	rep.Identities = len(subs)
