@@ -17,7 +17,7 @@ from fakes import BOT, WORK, FakeBus
 from test_nats_port import ME as NAME_ME_SHORT  # noqa: F401 — the module's own name, unused here
 from test_nats_port import FakeNats, make
 
-from mattermost_ai_agent_bus import a2a, compose, lease, owners, receipt, server
+from mattermost_ai_agent_bus import a2a, compose, crownlog, lease, owners, receipt, server
 from mattermost_ai_agent_bus.model import ChannelUser, Mark, Reaction, StatusMark
 from mattermost_ai_agent_bus.nats_port import NatsPort
 
@@ -370,7 +370,9 @@ async def test_who_names_the_bot_linked_to_the_nats_holder(w: World) -> None:
     assert await lease.command(w.port, "who") == ""  # type: ignore[arg-type]
 
 
-async def test_take_is_taken_for_the_holder_and_pending_for_everyone_else(w: World) -> None:
+async def test_take_is_taken_for_the_holder_and_pending_for_everyone_else(
+        w: World, monkeypatch: pytest.MonkeyPatch) -> None:
+    monkeypatch.setenv("MM_BOT_USER_ID", BOT)  # the crown log's file (RT-6.6 step 11)
     await _two(w, me_first=False)
     out = await lease.command(w.port, "take")  # type: ignore[arg-type]
     assert out.startswith("pending: @agent-a holds the crown over NATS") and "cannot be overtaken" in out
@@ -378,6 +380,8 @@ async def test_take_is_taken_for_the_holder_and_pending_for_everyone_else(w: Wor
     w.fake.presence[NAME_A] = "offline"  # the holder is gone: the claim order hands it on
     assert await lease.command(w.port, "take") == "taken"  # type: ignore[arg-type]
     assert lease.crown_held(BOT)
+    log = crownlog.log_path()
+    assert log is not None and [json.loads(ln)["way"] for ln in log.read_text().splitlines()] == ["nats"]
 
 
 async def test_release_claims_again_and_moves_behind(w: World) -> None:

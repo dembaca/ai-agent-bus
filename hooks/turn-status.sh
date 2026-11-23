@@ -22,6 +22,13 @@ MM_BUS_DEADLINE=$(( $(date +%s) + 4 ))
 export MM_BUS_DEADLINE
 mm_bus_uid || mm_bus_me || exit 0   # the bot's id keys the turn and listen state
 
+# The turn begins: tell the server first, before anything else may use up the
+# 5 s. Its sign-of-life rule (RT-6.6 step 1) counts a turn only from here; a
+# turn it does not know runs as no turn, and a push in it turns the agent
+# silent after 45 s, its crown with it (#64). A killed listener writes nothing.
+mm_bus POST /v1/presence "$(jq -nc --arg l "$(basename "${CORRAL_WORKDIR:-$PWD}")" \
+  '{state: "working", label: $l}')" || true
+
 # Who started this turn: the bus (a channel push, or the listener that ended on
 # a message) or the human. The Stop hook that ends the turn notes the end, so
 # the summary can say how long it ran (RT-6.9).
@@ -30,9 +37,12 @@ by=human
 # A new turn: forget what the Stop hook checked in the last one.
 state="$(mm_turn_state_file 2>/dev/null)" && rm -f "$state"
 # A turn the channel push started (RT-6.12) answers the bus; like an answer
-# from inside a listen window it needs no sign-off of its own.
+# from inside a listen window it needs no sign-off of its own. The plugin was
+# once named mattermost-ai-agent-bus: a tag under either name counts.
+prompt="$(jq -r '.prompt // ""' <<<"$MM_HOOK_INPUT" 2>/dev/null)" || prompt=""
 if [[ -n "${state:-}" ]] && mm_channel_push &&
-  [[ "$(jq -r '.prompt // ""' <<<"$MM_HOOK_INPUT" 2>/dev/null)" == '<channel source="plugin:ai-agent-bus:'* ]]; then
+  [[ "$prompt" == '<channel source="plugin:ai-agent-bus:'* ||
+     "$prompt" == '<channel source="plugin:mattermost-ai-agent-bus:'* ]]; then
   mkdir -p "$(dirname "$state")" 2>/dev/null && printf 'BY_BUS=1\n' >"$state" 2>/dev/null
   by=bus
 fi
@@ -65,6 +75,4 @@ mm_stat turn by="$by"
 transcript="$(jq -r '.transcript_path // ""' <<<"${MM_HOOK_INPUT:-}" 2>/dev/null)" || transcript=""
 [[ -z "$transcript" ]] || mm_stat transcript "path=$transcript"
 
-mm_bus POST /v1/presence "$(jq -nc --arg l "$(basename "${CORRAL_WORKDIR:-$PWD}")" \
-  '{state: "working", label: $l}')" || true
 exit 0

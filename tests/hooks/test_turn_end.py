@@ -120,6 +120,35 @@ def test_turn_woken_by_the_channel_needs_no_signoff(mm, run):
     assert r.blocked and "cannot reach you" in r.reason
 
 
+def test_a_channel_tag_under_the_old_plugin_name_counts_too(mm, run):
+    """RT-6.12 step 6 (#64): a session that still runs the plugin under its old name gets
+    tags from `plugin:mattermost-ai-agent-bus:`; the turn they start is the bus's too."""
+    mm.own_post("Done, merged.", 1000)
+    run.state_dir.mkdir(parents=True, exist_ok=True)
+    (run.state_dir / f"channel-{ME}.env").write_text("CONFIRMED=1\n")
+    old = json.dumps({"prompt": '<channel source="plugin:mattermost-ai-agent-bus:mattermost-ai-agent-bus" '
+                                'kind="dm">hi</channel>'})
+    assert run(PROMPT, stdin=old).code == 0
+    assert run(STOP, **IN_PROJECT).passed
+    # Another plugin whose name merely ends in agent-bus is not the bus (review of #76).
+    other = json.dumps({"prompt": '<channel source="plugin:my-agent-bus:x" kind="dm">hi</channel>'})
+    assert run(PROMPT, stdin=other).code == 0
+    r = run(STOP, **IN_PROJECT)
+    assert r.blocked and "still reach you through the channel" in r.reason
+
+
+def test_the_turn_is_reported_before_anything_else(run):
+    """RT-6.6 step 1 (#64): the server counts a turn only from the prompt hook's working.
+    It goes first, right after the bot's id, so that nothing before it (the listener, the
+    counters) can use up the hook's 5 s and leave a running turn unknown."""
+    lines = (ROOT / PROMPT).read_text().splitlines()
+    code = [n for n, ln in enumerate(lines) if ln.strip() and not ln.lstrip().startswith("#")]
+    first_call = next(n for n in code if "mm_bus_uid" in lines[n])
+    presence = next(n for n in code if "POST /v1/presence" in lines[n])
+    assert [n for n in code if first_call < n < presence] == []
+    assert all("mm_stat" not in lines[n] and "kill" not in lines[n] for n in code if n < presence)
+
+
 def last_post(run, msg: str, at: int = 1000, hello: str = "h1") -> None:
     """The file whoever posts as the agent keeps (ownpost.py, mm-agent-post.sh)."""
     run.state_dir.mkdir(parents=True, exist_ok=True)

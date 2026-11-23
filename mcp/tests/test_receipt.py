@@ -5,11 +5,12 @@ the yield) and RT-6.25 step 6 (a question without a receipt goes to the human
 after MM_ACK_WAIT_SEC)."""
 
 import asyncio
+import json
 import time
 
 import pytest
 
-from mattermost_ai_agent_bus import a2a, askroute, lease, life, receipt
+from mattermost_ai_agent_bus import a2a, askroute, crownlog, lease, life, receipt
 from mattermost_ai_agent_bus.client import post_of
 from mattermost_ai_agent_bus.gate import AGENT, OTHER, TRUSTED
 from mattermost_ai_agent_bus.model import ChannelUser, Mark, Reaction
@@ -51,6 +52,11 @@ def chat(monkeypatch):
     monkeypatch.delenv("MM_ACK_WAIT_SEC", raising=False)
     monkeypatch.delenv("MM_LEASE_SEC", raising=False)
     return Chat()
+
+
+def _crown_log() -> list[tuple[str, str]]:
+    f = crownlog.log_path()
+    return [(e["event"], e["way"]) for e in map(json.loads, f.read_text().splitlines())] if f and f.exists() else []
 
 
 def _post(message="please look at the build", user=HUMAN, pid=PID, **raw):
@@ -254,6 +260,7 @@ async def test_the_claim_over_a_missing_receipt_posts_crown_taken(chat):
     assert await lease.slot_over(chat, HOLDER) == 1
     assert await lease.take_over(chat, HOLDER, PID)
     assert lease.crown_held(ME) and chat.status["emoji"] == "crown"
+    assert _crown_log() == [("gained", "receipt")]  # RT-6.6 step 11
     line = chat.posted[-1]
     assert line["message"].endswith(f"taken over by `agent-me`: no {lease.RECEIPT_MARK} for `{PID}` within 45 s")
     assert line["props"]["a2a"]["kind"] == a2a.CROWN_TAKEN and line["props"]["a2a"]["holder"] == HOLDER
@@ -287,6 +294,7 @@ async def test_the_old_holder_yields_to_a_crown_taken_heard(chat):
     assert lease.ousted_pending()
     await lease.command(chat, "tick")
     assert not lease.crown_held(ME)
+    assert _crown_log()[-1] == ("lost", "taken_over")  # RT-6.6 step 11, `by` the taker's id
     until = lease._coord(ME)["YIELD_UNTIL"]
     assert time.time() + lease.crown_lease_sec() - 5 <= until <= time.time() + lease.crown_lease_sec()
 

@@ -5,6 +5,20 @@ before 0.5.0 are described in the git history.
 
 ## Unreleased
 
+- **A busy coordinator keeps its crown** (#64, RT-6.6 steps 1, 4 and 11).
+  The prompt hook tells the server that a turn began before anything else,
+  so a slow hook no longer leaves a running turn unknown, which made the
+  holder silent 45 s after a push and dropped its crown. A channel tag under
+  the plugin's old name (`mattermost-ai-agent-bus`) counts as the bus's too.
+  A waiting `coordinator("take")` shows as `take pending until HH:MM:SSZ`
+  in the taker's status, renewed by its server; while a peer of the home
+  shows it in time, no other agent claims a free crown, and the taker's own
+  yield after an earlier `release` does not hold it back. A guest's, a
+  foreign agent's or an expired mark counts for nothing, and no presence
+  label can carry it. Each server writes one
+  JSON line per crown gained or lost to `crown-<uid>.log` in its state
+  directory (the way, whether a turn ran, how long a push waited), never
+  a post's content; the sweep removes it with the bot.
 - **A failed approval's cooldown survives a restart** (#63). The 60 s mark after a
   failed login approval lived in the `Login` object, so a session start or a
   restart began with no cooldown and sent a fresh device DM at once. The mark is
