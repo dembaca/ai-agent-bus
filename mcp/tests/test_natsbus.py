@@ -952,6 +952,33 @@ async def test_presence_and_crown(rig: Rig) -> None:
     assert alice.holder("home") == alice.name
 
 
+async def test_the_crown_candidates_are_fresh_members_in_claim_order(rig: Rig) -> None:
+    """RT-6.38 step 1 against a real server: two home members claim and the lowest holds; a
+    claim without a membership (a guest) never holds; a holder that stops beating passes the
+    crown within the freshness window (the server's clock), a bye at once."""
+    alice, _ = await rig.agent("alice")
+    bob, _ = await rig.agent("bob")
+    await until(lambda: alice.synced and bob.synced)
+    await bob.claim("home")  # bob claims first, but is no member of the home: a guest
+    await alice.claim("home")
+    await alice.member("home")
+    await until(lambda: alice.is_member("home", alice.name) and bob.claimed("home", alice.name))
+    assert bob.candidates("home") == [alice.name]  # the lower claim is no member
+    assert alice.holder("home") == bob.name  # the bare rule has no membership: why the crown uses candidates
+    await bob.member("home")
+    await until(lambda: alice.is_member("home", bob.name))
+    assert alice.candidates("home") == [bob.name, alice.name]  # the lowest claim holds
+    assert alice.candidates("home")[0] == bob.name
+    # the holder stops beating: fresh for 90 s by the server's clock, then the next claim
+    t = alice.presence_snapshot()[bob.name][0]
+    assert alice.candidates("home", now=t + 89)[0] == bob.name
+    assert alice.candidates("home", now=t + 90) in ([alice.name], [])
+    await bob.stop()  # a bye: gone at once
+    rig.buses.remove(bob)
+    await until(lambda: alice.presence_snapshot()[rig.names["bob"]][1] == "bye")
+    assert alice.candidates("home") == [alice.name]
+
+
 async def test_a_refused_presence_subject_is_said_in_words(rig: Rig, caplog: pytest.LogCaptureFixture) -> None:
     """RT-6.37: a host and a login service of different releases: the presence subject is
     refused, and the host's log says what to do, not only an exception's type."""

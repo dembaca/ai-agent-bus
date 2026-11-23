@@ -247,6 +247,30 @@ async def check(client: ChatPort) -> bool:
     return False
 
 
+async def silent_holder(client: ChatPort, uid: str) -> bool:
+    """RT-6.38 step 5: in a NATS home nobody takes the crown over by receipts, the
+    holder's own server yields. True when a post that needs this holder (the posts
+    `arrived` owes a receipt for, the set a peer would watch) is older than the wait
+    and has neither 👀 nor ⏳; those posts are then forgotten, so it counts once.
+    Unreadable reactions: not silent."""
+    now, wait = time.time(), life.ack_wait_sec()
+    old = [p for p, (_, at) in _owed.items() if now - at >= wait]
+    try:
+        for pid in old:
+            if not await _receipted(client, pid, uid):
+                for p in old:
+                    _owed.pop(p, None)
+                return True
+    except asyncio.CancelledError:
+        raise
+    except Exception as exc:  # noqa: BLE001 — unsure: no yield
+        log.info("receipt of %s not read: %s", old, exc)
+    return False
+
+
+lease.unreceipted = silent_holder
+
+
 async def missing(client: ChatPort, pid: str, holder_name: str) -> bool:
     """RT-6.25 step 6 (ADR-007 step 5): the question `pid` to the 👑 `holder_name`
     has neither its 👀 nor its ⏳ after the wait, from a holder that sets

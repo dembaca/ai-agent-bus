@@ -343,20 +343,33 @@ class GapTracker:
 
 # --- the crown ---------------------------------------------------------------------------
 
+def crown_candidates(claims: Mapping[str, int], presence: Mapping[str, tuple[float, str]],
+                     now: float, is_member: Callable[[str], bool] | None = None,
+                     fresh: float = PRESENCE_FRESH_SEC) -> list[str]:
+    """The agents that may hold the crown of one channel (RT-6.38), by claim order (the
+    lowest stream sequence first): a claim, a last presence message younger than `fresh`
+    seconds and not `bye`, and, when `is_member` is given, a membership of the channel.
+    claims: agent -> stream sequence of its (latest) claim; presence: agent ->
+    (server time, status) of its last presence message."""
+    out: list[tuple[int, str]] = []
+    for agent, seq in claims.items():
+        seen = presence.get(agent)
+        if seen is None or seen[1] in ("bye", "offline") or now - seen[0] >= fresh:
+            continue
+        if is_member is not None and not is_member(agent):
+            continue
+        out.append((seq, agent))
+    return [agent for _, agent in sorted(out)]
+
+
 def crown_holder(claims: Mapping[str, int], presence: Mapping[str, tuple[float, str]],
                  now: float, fresh: float = PRESENCE_FRESH_SEC) -> str | None:
     """The crown of one channel: the claim with the lowest stream sequence among the
     agents whose last presence message is younger than `fresh` seconds and not `bye`.
     claims: agent -> stream sequence of its (latest) claim; presence: agent ->
     (server time, status) of its last presence message."""
-    best: tuple[int, str] | None = None
-    for agent, seq in claims.items():
-        seen = presence.get(agent)
-        if seen is None or seen[1] == "bye" or now - seen[0] >= fresh:
-            continue
-        if best is None or seq < best[0]:
-            best = (seq, agent)
-    return best[1] if best else None
+    first = crown_candidates(claims, presence, now, None, fresh)
+    return first[0] if first else None
 
 
 # --- CONNECT ---------------------------------------------------------------------------------
@@ -969,6 +982,23 @@ class NatsBus:
     def presence_snapshot(self) -> dict[str, tuple[float, str]]:
         """agent -> (server time, status) of the last presence message of each."""
         return dict(self._presence)
+
+    @property
+    def server_now(self) -> float:
+        """The newest server timestamp this host has seen: its "now" for every age."""
+        return self._server_now
+
+    def claim_info(self, channel: str) -> dict[str, tuple[int, float]]:
+        """agent -> (stream sequence, server time) of its crown claim in the channel."""
+        return {a: (seq, self._claim_at.get((channel, a), 0.0))
+                for a, seq in self._claims.get(channel, {}).items()}
+
+    def candidates(self, channel: str, now: float | None = None) -> list[str]:
+        """The agents that may hold the channel's crown, in claim order: fresh presence and
+        a membership of the channel (RT-6.38); the standing-peer rule is the port's."""
+        return crown_candidates(self._claims.get(channel, {}), self._presence,
+                                self._server_now if now is None else now,
+                                lambda a: self.is_member(channel, a))
 
     def holder(self, channel: str, now: float | None = None) -> str | None:
         """The crown of a channel. "Now" is the newest server timestamp this host has seen,

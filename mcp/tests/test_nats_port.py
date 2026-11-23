@@ -57,6 +57,8 @@ class FakeNats:
         self.linked_bot = ""
         self.announced: list[str] = []
         self.claimed_homes: list[str] = []
+        self.server_now = 0.0  # the newest server time seen (RT-6.38)
+        self.claims: dict[str, dict[str, tuple[int, float]]] = {}  # channel -> agent -> (sequence, server time)
 
     def link_bot(self, bot_id: str) -> None:
         self.linked_bot = bot_id
@@ -68,10 +70,16 @@ class FakeNats:
         return (channel, agent) in self.members
 
     def presence_snapshot(self) -> dict[str, tuple[float, str]]:
-        return {a: (0.0, s) for a, s in self.presence.items()}
+        return {a: (self.server_now, s) for a, s in self.presence.items()}
+
+    def claim_info(self, channel: str) -> dict[str, tuple[int, float]]:
+        return dict(self.claims.get(channel, {}))
 
     async def claim(self, channel: str) -> None:
+        """A claim, as the stream would number it: a new, higher sequence at the server's time."""
         self.claimed_homes.append(channel)
+        self.seq += 1
+        self.claims.setdefault(channel, {})[self.name] = (self.seq, self.server_now)
 
     async def member(self, channel: str) -> None:
         self.announced.append(channel)
