@@ -493,7 +493,8 @@ class Login:
         self._save_cooldown(human)
 
     def _load_cooldown(self, human: str) -> None:
-        """The cooldown another process recorded, if it still runs.
+        """The cooldown another process recorded, if it still runs, with the reason
+        it recorded.
 
         Recorded as a wall-clock deadline: the monotonic clock stands still while
         the machine sleeps, and a stored one of those would be meaningless in
@@ -504,21 +505,29 @@ class Login:
         try:
             raw = self._store.load(keystore.cooldown_entry(
                 self.settings.issuer, self.settings.client_id, human))
-            until = float(raw) if raw else 0.0
+            if not raw:
+                return
+            until_text, _, why = raw.partition(" ")
+            until = float(until_text)
         except (keystore.KeyStoreError, OSError, ValueError):
             return
-        left = until - self._wall()
+        # Nothing writes the mark further ahead than the cooldown itself, so a larger
+        # remainder is the wall clock having moved backwards: it must not hold approvals
+        # off for the length of the jump, since nothing would clear the mark before then.
+        left = min(until - self._wall(), COOLDOWN_SEC)
         if left > 0:
             self._cooldown_until = self._now() + left
-            self._cooldown_why = self._cooldown_why or "was refused"
+            self._cooldown_why = self._cooldown_why or why or "failed"
 
     def _save_cooldown(self, human: str) -> None:
+        """The mark beside the token: the deadline and why, so the next process says
+        what happened and not only how long is left."""
         if not human:
             return
         try:
             self._store.save(keystore.cooldown_entry(
                 self.settings.issuer, self.settings.client_id, human),
-                str(self._wall() + COOLDOWN_SEC))
+                f"{self._wall() + COOLDOWN_SEC} {self._cooldown_why}")
         except (keystore.KeyStoreError, OSError) as exc:
             log.warning("login cooldown not stored: %s", type(exc).__name__)
 

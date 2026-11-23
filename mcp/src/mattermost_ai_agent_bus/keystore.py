@@ -1,10 +1,11 @@
 """Where the host's login keeps its secrets (RT-6.34, ADR-014 points 7 and 9).
 
-A store holds two named values: the Keycloak refresh token and the nkey seed.
-`Ephemeral` keeps them in memory only; `HostFile` keeps each in a file of its
-own, mode 0600, in `<host state dir>/login/` (mode 0700): on the host, outside
-every sandbox. A file that is a symlink, not the user's own, or readable by
-group or world is refused, never read.
+A store holds three named values: the Keycloak refresh token, the login cooldown
+beside it (`cooldown_entry`), and the nkey seed. `Ephemeral` keeps them in
+memory only; `HostFile` keeps each in a file of its own, mode 0600, in
+`<host state dir>/login/` (mode 0700): on the host, outside every sandbox. A
+file that is a symlink, not the user's own, or readable by group or world is
+refused, never read.
 
 Nothing here logs or raises a value: errors name the store entry, never its
 content.

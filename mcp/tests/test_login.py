@@ -7,6 +7,7 @@ import base64
 import errno
 import json
 import logging
+import time
 
 import httpx
 import nkeys
@@ -893,14 +894,15 @@ async def test_any_failed_approval_cools_down_and_revokes_the_token_it_got():
     assert script.device_requests == 2
 
 
-async def test_a_second_process_does_not_send_a_new_approval_during_the_cooldown():
+async def test_a_second_process_does_not_send_a_new_approval_during_the_cooldown(tmp_path):
     """A restart is a new `Login`, and the cooldown has to survive it.
 
     `_cooldown_until` lives in the object, so a new process - a session start, a
     `--resume`, a restart after a failed login - began with no cooldown and sent
     a fresh device DM at once. Measured in the lab: three Keycloak links within
     two minutes, each from what the human saw as the same agent. The cooldown
-    belongs to the store entry, not to the object.
+    belongs to the store entry, not to the object: this runs on the `HostFile` a
+    restart reads, not on a dict two objects share.
     """
     class NoRole(Script):
         def _tokens(self):
@@ -910,13 +912,29 @@ async def test_a_second_process_does_not_send_a_new_approval_during_the_cooldown
                 "refresh_token": f"refresh-secret-{self.n}"})
 
     script, note, clock = NoRole(), Note(), [0.0]
-    store = keystore.Ephemeral()
+    store = keystore.HostFile(tmp_path / "login")
     first = mk(store, transport=httpx.MockTransport(script), notifier=note, now=lambda: clock[0])
     with pytest.raises(login.LoginError):
         await first.access_token()
     assert script.device_requests == 1
+    # the mark is in the file: a deadline and the reason it was set
+    mark = store.load(keystore.cooldown_entry(ISSUER, "agent-bus", "alice")) or ""
+    assert mark.split(" ", 1)[1:] == ["failed"], mark
     # A new process on the same store, inside the cooldown.
     second = mk(store, transport=httpx.MockTransport(script), notifier=note, now=lambda: clock[0])
-    with pytest.raises(login.LoginError, match="a new one starts in"):
+    with pytest.raises(login.LoginError, match="the last approval failed; a new one starts in"):
         await second.access_token()
     assert script.device_requests == 1, "a new process sent another device DM inside the cooldown"
+
+
+async def test_a_stored_cooldown_never_outlasts_the_cooldown(tmp_path):
+    """The mark is only ever written `COOLDOWN_SEC` ahead, so a longer remainder can only
+    be a wall clock that moved backwards (or an edited file). It must not hold approvals
+    off for the length of the jump: nothing would clear it before then."""
+    store = keystore.HostFile(tmp_path / "login")
+    store.save(keystore.cooldown_entry(ISSUER, "agent-bus", "alice"),
+               f"{time.time() + 7200} was refused")
+    lg = mk(store, transport=httpx.MockTransport(Script()), notifier=Note())
+    with pytest.raises(login.LoginError, match="was refused"):
+        await lg.access_token()
+    assert lg._cooldown_until - lg._now() <= login.COOLDOWN_SEC

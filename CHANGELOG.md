@@ -5,6 +5,15 @@ before 0.5.0 are described in the git history.
 
 ## Unreleased
 
+- **A failed approval's cooldown survives a restart** (#63). The 60 s mark after a
+  failed login approval lived in the `Login` object, so a session start or a
+  restart began with no cooldown and sent a fresh device DM at once. The mark is
+  stored beside the refresh token now (`keystore.cooldown_entry`), as a wall-clock
+  deadline that records its reason, so a process that restarts obeys it, while
+  the process that set it keeps its own monotonic one. A remainder beyond the
+  cooldown (a wall clock that moved backwards) is capped. Hardening only: the
+  three Keycloak links the pilot saw came from the realm's missing
+  `offline_access` role, not from this gap.
 - **The login service vouches for an agent's owner and trust list**
   (ADR-016 point 4, RT-6.41). The host's hello may name its trusted humans;
   at every credential the service resolves them through the directory to
