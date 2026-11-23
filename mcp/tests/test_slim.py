@@ -493,3 +493,59 @@ async def test_two_answer_fields_give_no_alternatives():
     p = await slim.post(_asker(), _reacted(twice, (HUMAN, "thumbsup")))
     assert "answers" not in p["ask_card"] and "chosen" not in p["ask_card"]
     assert p["ask_card"]["answer"] == "yes"  # the emoji still says what it says
+
+
+# --- a post's size on the two tools that stay whole (issue #42) ---------------------
+
+@pytest.mark.asyncio
+async def test_a_long_ask_title_is_bounded_in_get_thread_but_whole_with_raw():
+    """The two fetch tools stay whole by contract, but not without bound: an ask whose
+    card title rides in `message` was 22 KB, in every thread read."""
+    long = dict(PLAIN)
+    long["props"] = {"a2a": {"v": 1, "kind": "ask"}, "attachments": [{
+        "title": "T" * 20_000,
+        "fields": [{"title": "Decision", "value": "Merge it.", "short": False}]}]}
+    p = await slim.post(_asker(), post_of(long))
+    assert len(p["message"]) <= slim.FETCH_MAX + slim.CUT_NOTE_MAX
+    assert len(json.dumps(p)) <= slim.POST_MAX
+    assert "raw=true" in p["message"]
+    # `need` keeps the start of the title, so the question is still readable
+    assert p["ask_card"]["need"].startswith("TTT")
+
+
+@pytest.mark.asyncio
+async def test_a_post_without_a_card_is_bounded_too():
+    """A foreign agent can post 60 000 characters over NATS (max_msg_size 65 536);
+    no card needed to make a slim post huge."""
+    raw = dict(POST, user_id=ASKER, message="M" * 60_000)
+    p = await slim.post(_asker(), post_of(raw))
+    assert len(p["message"]) <= slim.FETCH_MAX + slim.CUT_NOTE_MAX
+    assert "raw=true" in p["message"]
+
+
+@pytest.mark.asyncio
+async def test_the_card_and_the_message_together_stay_under_the_bound():
+    """The bound is on the whole post, not per field: FETCH_MAX per field cannot hold a
+    post whose message and card are both long (three fields of 16 000 are 48 000), so
+    this is the test for POST_MAX itself. Without `_bounded` it is ~48 KB."""
+    long = dict(PLAIN)
+    long["props"] = {"a2a": {"v": 1, "kind": "ask"}, "ask_answers": ["a", "b"],
+                     "attachments": [{
+                         "title": "T" * 16_000,
+                         "fields": [
+                             {"title": "Decision", "value": "D" * 16_000, "short": False},
+                             {"title": "Answer", "value": "\U0001F44D = a \u00b7 \U0001F44E = b \u00b7 or reply in this thread",
+                              "short": False}]}]}
+    long["message"] = "M" * 16_000  # the mention plus a long text of its own
+    p = await slim.post(_asker(), post_of(long))
+    total = len(p["message"]) + sum(len(v) for v in p["ask_card"].values() if isinstance(v, str))
+    assert total <= slim.POST_MAX, total
+    assert "raw=true" in p["message"]
+
+
+@pytest.mark.asyncio
+async def test_a_short_post_is_untouched():
+    """No cut note, no length change: the bound must not touch ordinary posts."""
+    p = await slim.post(_asker(), post_of(PLAIN))
+    assert "cut" not in p["message"]
+    assert len(p["message"]) < slim.FETCH_MAX

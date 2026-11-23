@@ -8,8 +8,12 @@ a fifth of the size — and, for a post with attachments, a short `files` hint
 raw=true for the full JSON.
 
 What the bus brings unasked (a channel push, a wait_for_events item) has its
-text cut at BODY_MAX characters with a pointer to get_thread (RT-6.12 step 3);
-what the agent fetches by id or channel (get_thread, list_recent) stays whole.
+text cut at BODY_MAX characters with a pointer to get_thread (RT-6.12 step 3).
+What the agent fetches by id or channel (get_thread, list_recent) stays whole —
+but not without bound: a post's `message` there is cut at FETCH_MAX, and one
+slim post stays under POST_MAX, the largest text going first, both pointing at
+`raw=true` for the whole of it (issue #42). Without a bound, an ask whose card
+title rides in its text was 22 KB in every thread read.
 """
 
 from __future__ import annotations
@@ -50,6 +54,73 @@ def _when(ms: int | None) -> str:
     if not ms:
         return ""
     return time.strftime("%Y-%m-%d %H:%M", time.localtime(ms / 1000))
+
+
+# A post's `message` on the two tools that stay whole (get_thread, list_recent):
+# they are where a reader goes for the rest, so they must not point back at
+# themselves. Mattermost's own limit is 16 383 characters; a post longer than
+# this comes only over NATS (max_msg_size 65 536), and `raw=true` is the way to
+# the whole of it (RT-6.11, issue #42).
+FETCH_MAX = 16_000
+# The hard bound on one slim post, text and card together. Under it, _one cuts
+# the largest contribution first (message, then a card field), so a field added
+# later cannot push the whole over (RT-6.12 step 3, issue #42).
+POST_MAX = 20_000
+# What a cut adds: the note naming get_thread with raw=true. Reserved before the
+# cut so the result stays under POST_MAX rather than just closer to it.
+CUT_NOTE_MAX = 120
+
+
+def _bounded(out: dict[str, Any], pid: str) -> dict[str, Any]:
+    """`out` under POST_MAX, cutting the largest text first and pointing at
+    `raw=true` for the whole of it. At most a fixed number of cuts, so it always
+    ends: a post has `message` and a handful of card fields (issue #42)."""
+    def used() -> int:
+        return (len(out.get("message") or "") + sum(
+            len(v) for v in (out.get("ask_card") or {}).values() if isinstance(v, str)))
+
+    def room() -> int:
+        # a cut appends its own note, so aim below the limit by that much
+        return used() - (POST_MAX - CUT_NOTE_MAX)
+
+    for _ in range(8):  # message + at most four card strings, twice over
+        over = room()
+        if over <= 0:
+            break
+        card = out.get("ask_card") or {}
+        sizes = {"message": len(out.get("message") or "")}
+        sizes |= {k: len(v) for k, v in card.items() if isinstance(v, str)}
+        if not any(sizes.values()):
+            break
+        biggest = max(sizes, key=lambda k: sizes[k])
+        keep = max(0, sizes[biggest] - over - CUT_NOTE_MAX)
+        note = "the whole post: get_thread with raw=true"
+        if biggest == "message":
+            out["message"] = cut_to(str(out["message"]), keep, pid, note)
+        else:
+            card = dict(card)
+            card[biggest] = cut_to(str(card[biggest]), keep, pid,
+                                   "the whole card: get_thread with raw=true")
+            out["ask_card"] = card
+    return out
+
+
+
+def cut_to(text: str, limit: int, post_id: str, where: str) -> str:
+    """`text` cut to about `limit` characters at a line or word end, ending with
+    `where`; unchanged when it already fits or `limit` is 0."""
+    if len(text) <= limit:
+        return text
+    if limit < 40:  # below this a cut is no information
+        return text[:limit]
+    head = text[:limit]
+    floor = limit * 4 // 5
+    end = head.rfind("\n", floor)
+    if end < 0:
+        end = max(head.rfind(" ", floor), head.rfind("\t", floor))
+    if end > 0:
+        head = head[:end]
+    return f"{head.rstrip()}\n… (cut, {len(text)} chars in all; {where}{'' if not post_id else ' ' + post_id})"
 
 
 async def _names(client: ChatPort, posts: Sequence[Post]) -> tuple[dict[str, str], dict[str, str]]:
@@ -171,7 +242,10 @@ def _one(p: Post, users: dict[str, str], channels: dict[str, str],
     out["channel"] = channels.get(p.channel_id, p.channel_id)
     out["author"] = users.get(p.user_id) or p.user_id
     out["at"] = _when(p.create_at)
-    out["message"] = p.text
+    # get_thread and list_recent stay whole by contract, but not without bound:
+    # an ask whose card title rides in `message` can be 20 000 characters. The
+    # reader gets raw=true as the way to all of it (issue #42).
+    out["message"] = cut_to(p.text, FETCH_MAX, "", "the whole post: get_thread with raw=true")
     if p.type:
         out["type"] = p.type
     if p.edit_at:
@@ -188,7 +262,7 @@ def _one(p: Post, users: dict[str, str], channels: dict[str, str],
         card = {k: v for k, v in got.items() if k not in ("reactions", "reactions_total")}
         if card:
             out["ask_card"] = card  # what a 👍 approves; `ask` is the ask's id elsewhere
-    return out
+    return _bounded(out, p.id)
 
 
 async def posts(client: ChatPort, items: Sequence[Post],
