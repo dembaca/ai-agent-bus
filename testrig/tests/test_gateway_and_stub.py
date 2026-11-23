@@ -242,6 +242,28 @@ async def test_an_id_route_answers_only_an_id_this_stub_knows():
     ]
 
 
+def test_the_id_patterns_accept_an_id_and_nothing_else():
+    """The two compiled routes, pinned on their own.
+
+    `test_an_id_route_answers_only_an_id_this_stub_knows` proves the behaviour
+    through the handlers, and the handler is the real guard: with a loose
+    pattern and an honest handler that test still passes. So the patterns get
+    their own check, where a loose one cannot hide behind the handler (review of
+    #25)."""
+    from bus_testrig.stub import BOT_BY_ID, USER_BY_ID
+
+    an_id = "a" * 26
+    assert USER_BY_ID.fullmatch(f"/api/v4/users/{an_id}")
+    assert BOT_BY_ID.fullmatch(f"/api/v4/bots/{an_id}")
+    # The endpoints that merely start with `/users/` are not an account.
+    for not_an_id in ("/api/v4/users/autocomplete", "/api/v4/users/stats",
+                      "/api/v4/users/known", "/api/v4/users/" + "a" * 25,
+                      "/api/v4/users/" + "A" * 26, "/api/v4/users/me"):
+        assert not USER_BY_ID.fullmatch(not_an_id), not_an_id
+    assert not BOT_BY_ID.fullmatch("/api/v4/bots/anything")
+    assert not BOT_BY_ID.fullmatch("/api/v4/bots/" + "a" * 25)
+
+
 async def test_the_stub_answers_the_challenge_then_sends_its_frames():
     """What the bus sends (probe_bus_frames) and what it must read, on the wire."""
     post = {"id": "p" * 26, "user_id": "h" * 26, "channel_id": CHANNEL,
