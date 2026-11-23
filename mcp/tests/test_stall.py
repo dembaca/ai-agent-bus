@@ -510,6 +510,9 @@ async def test_a_new_crown_holder_does_not_wake_at_once(bus, monkeypatch):
     crown allows the first wake only MM_STALL_SEC later."""
     _open(bus, "task")
     monkeypatch.setattr(lease, "crown_held", lambda uid: True)
+    # The test's clock is NOW, fixed when the module was imported; taking the crown
+    # reads the real clock, which is minutes later when slow tests ran first.
+    monkeypatch.setattr(stall.time, "time", lambda: NOW)
     assert await stall.watch(bus) == pytest.approx(600, abs=60)
     assert bus.woken == []
     assert await _wakes(bus, [5, 11]) == [11]

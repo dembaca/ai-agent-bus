@@ -79,10 +79,15 @@ async def after(client: ChatPort) -> list[After]:
     gated = gate.gated(uid)
     out: list[After] = []
     for ch in await client.member_channels():
-        mark = marks.get(ch.channel_id)
-        since = max(mark.at if mark else 0, floor)
-        if ch.last_post_at:
-            if ch.last_post_at <= since:
+        # A home over NATS: its NATS posts after their own mark (watermark.lane).
+        keys = [ch.channel_id, *([f"{ch.channel_id}{watermark.NATS_LANE}"] if ch.nats else [])]
+        sinces = {k: max(marks[k].at if k in marks else 0, floor) for k in keys}
+        since = min(sinces.values())
+        newest = {ch.channel_id: ch.last_post_at}
+        if ch.nats:
+            newest[keys[-1]] = ch.nats_last_post_at
+        if ch.last_post_at or ch.nats:
+            if all(newest[k] <= sinces[k] for k in keys):  # each lane by its own clock
                 continue
         elif not (ch.pending or ch.unread):
             continue
@@ -91,13 +96,16 @@ async def after(client: ChatPort) -> list[After]:
         except Exception as exc:  # noqa: BLE001 — read again next time
             log.debug("posts after the watermark in %s: %s", ch.channel_id, exc)
             continue
-        posts = sorted((p for p in got if _at(p) > since), key=_at)
+        posts = sorted((p for p in got if _at(p) > sinces.get(watermark.lane(ch.channel_id, p.id), floor)),
+                       key=_at)
         skip = 0
         while skip < len(posts) and _passed(posts[skip], uid, gated):
             skip += 1
-        if skip:
-            last = posts[skip - 1]
-            watermark.advance(uid, ch.channel_id, last.id, _at(last))
+        passed: dict[str, Post] = {}
+        for p in posts[:skip]:
+            passed[watermark.lane(ch.channel_id, p.id)] = p  # the newest per lane
+        for key, last in passed.items():
+            watermark.advance(uid, key, last.id, _at(last))
         if posts[skip:]:
             out.append(After(ch, posts[skip:]))
     return out

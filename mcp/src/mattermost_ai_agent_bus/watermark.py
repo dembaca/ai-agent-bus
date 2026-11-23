@@ -15,6 +15,12 @@ with the host's state directory (RT-6.18).
 A mark only moves forward, except for hold(): a post that reaches the inbox
 behind the mark (it was on its way while the bot posted) pulls it back, so it
 counts as pending until it is handed over.
+
+A home over NATS (RT-6.36) has two lanes, two marks: its Mattermost posts
+(people, asks, a BYE) under the channel id, its NATS posts under
+``<channel_id>:nats`` (lane()). Each post carries its own server's time, and
+the two clocks are never compared: a NATS post handled with a time ahead of
+Mattermost's never moves past a person's post that comes later.
 """
 
 from __future__ import annotations
@@ -25,10 +31,19 @@ from pathlib import Path
 from typing import NamedTuple
 
 from . import session_file
+from .ids import NATS_POST
 
 log = logging.getLogger(__name__)
 
 _ID = re.compile(r"[a-z0-9]{1,64}")
+NATS_LANE = ":nats"
+_KEY = re.compile(r"[a-z0-9]{1,64}(?::nats)?")
+
+
+def lane(channel_id: str, post_id: str) -> str:
+    """The mark a post moves: its channel's, or for a post that came over NATS
+    the channel's NATS lane."""
+    return f"{channel_id}{NATS_LANE}" if channel_id and NATS_POST.fullmatch(post_id or "") else channel_id
 
 
 class Mark(NamedTuple):
@@ -48,7 +63,7 @@ def read(uid: str) -> dict[str, Mark]:
         return marks
     for line in lines:
         parts = line.split()
-        if len(parts) == 3 and _ID.fullmatch(parts[0]) and parts[2].isdigit():
+        if len(parts) == 3 and _KEY.fullmatch(parts[0]) and parts[2].isdigit():
             marks[parts[0]] = Mark(parts[1], int(parts[2]))
     return marks
 
@@ -69,7 +84,7 @@ def _write(uid: str, marks: dict[str, Mark]) -> None:
 
 def advance(uid: str, channel_id: str, post_id: str, created: int) -> bool:
     """Move the channel's mark to this post, if it is newer than the mark."""
-    if not (uid and channel_id and _ID.fullmatch(channel_id) and created > 0):
+    if not (uid and channel_id and _KEY.fullmatch(channel_id) and created > 0):
         return False
     marks = read(uid)
     if created <= marks.get(channel_id, Mark("", 0)).at:

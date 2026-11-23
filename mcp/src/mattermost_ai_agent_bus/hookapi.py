@@ -102,7 +102,7 @@ from . import (
     tasks, turnend, unanswered, unread, usage,
 )
 from .homes import guest_ids, watched_channel_ids
-from .ids import InvalidId, mm_id, mm_name
+from .ids import InvalidId, mm_id, mm_name, post_id_arg
 # model.NotAllowed and model.NotFound stay qualified below: attach.NotAllowed,
 # a refused file, is a different one.
 from .model import Post, Refused
@@ -993,7 +993,7 @@ async def files_route(client: ChatPort, query: Mapping[str, str],
         except ValueError as exc:  # a person, or no such user
             raise BadRequest(str(exc)) from exc
     elif where["root"]:
-        cid = await client.post_channel_id(mm_id(where["root"], "post"))
+        cid = await client.post_channel_id(post_id_arg(where["root"]))
     elif _UID.fullmatch(where["channel"]):
         cid = where["channel"]
     else:
