@@ -67,17 +67,32 @@ jobs:
         run: uv run --directory mcp pytest -q ../tests/hooks
 
   opencode-plugin:
-    name: OpenCode plugin (node)
+    name: OpenCode plugin (node, API ${{ matrix.api }})
     runs-on: ubuntu-latest
-    timeout-minutes: 10   # ~15 s
+    timeout-minutes: 10   # ~20 s each
+    strategy:
+      fail-fast: false
+      matrix:
+        api: ["2.1.2", "2.4.0", "2.4.1"]   # both ends of the peer range, and the pinned one
     steps:
       - uses: actions/checkout@v4
       - uses: actions/setup-node@v4
         with:
           node-version: 24
-      # Type stripping runs the .ts as is; the plugin imports only node: modules.
+      # The plugin's runtime imports are node: modules only, so the test needs no
+      # install; the typecheck does, since it compiles against @opencode/plugin.
       - name: plugin glue against a fake hook API
         run: node --test opencode/test/plugin.test.ts
+      # The peer range is >=2.1.2 <2.5, and the reader is told the plugin is
+      # typechecked across it; compile against both ends, not only the pinned
+      # dev version, or that sentence is not enforced.
+      - name: plugin against the hook API it declares
+        env:
+          API: ${{ matrix.api }}
+        run: |
+          npm --prefix opencode ci --ignore-scripts
+          npm --prefix opencode install --no-save --ignore-scripts --no-audit --no-fund "@opencode/plugin@$API"
+          npm --prefix opencode run typecheck
 
   pi-extension:
     name: pi extension (node)
