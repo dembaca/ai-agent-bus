@@ -91,7 +91,7 @@ jobs:
           API: ${{ matrix.api }}
         run: |
           npm --prefix opencode ci --ignore-scripts
-          npm --prefix opencode install --no-save --no-audit --no-fund "@opencode/plugin@$API"
+          npm --prefix opencode install --no-save --ignore-scripts --no-audit --no-fund "@opencode/plugin@$API"
           npm --prefix opencode run typecheck
 
   pi-extension:
