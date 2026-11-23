@@ -14,7 +14,7 @@ import re
 from collections.abc import Mapping, Sequence
 from typing import TYPE_CHECKING, Any, Protocol, cast
 
-from . import a2a, ownpost, unanswered
+from . import a2a, lease, ownpost, unanswered
 from .config import env
 from .port import ChatPort
 from .registration import RegistrationPort
@@ -162,32 +162,41 @@ def _with_nats(adapter: BusClient) -> BusClient:
     entirely on Mattermost, with the reason in the log: never half."""
     homes = nats_homes_from_env()
     if not homes:
+        lease.use_nats("", None)
         return adapter
     home = adapter.work_channel_name.lower()
     if home not in homes:
         log.info("MM_NATS_HOMES names no home of this session (%s): Mattermost", home)
+        lease.use_nats("", None)
         return adapter
     from . import login
     from .nats_port import DEFAULT_MEMORY, NatsPort
 
+    # The home is named: without a NATS side it has no crown and no election (RT-6.38 step 6).
     if login.settings_from_env() is None:
         log.error("MM_NATS_HOMES names ~%s, but the login (MM_LOGIN_ISSUER, MM_LOGIN_CLIENT_ID) "
-                  "is not set up: the home stays on Mattermost", home)
+                  "is not set up: the home stays on Mattermost, with no crown and no election (RT-6.38)", home)
+        lease.use_nats(home, None, "the login (MM_LOGIN_ISSUER, MM_LOGIN_CLIENT_ID) is not set up")
         return adapter
     try:
         settings = nats_settings_from_env(home, adapter.channel_name.lower())
     except ValueError as exc:
         log.error("MM_NATS_HOMES names ~%s, but the NATS settings are not usable (%s): "
-                  "the home stays on Mattermost", home, exc)
+                  "the home stays on Mattermost, with no crown and no election (RT-6.38)", home, exc)
+        lease.use_nats(home, None, f"the NATS settings are not usable ({exc})")
         return adapter
     if settings is None:
-        log.error("MM_NATS_HOMES names ~%s, but MM_NATS_URL is not set: the home stays on Mattermost", home)
+        log.error("MM_NATS_HOMES names ~%s, but MM_NATS_URL is not set: the home stays on Mattermost, "
+                  "with no crown and no election (RT-6.38)", home)
+        lease.use_nats(home, None, "MM_NATS_URL is not set")
         return adapter
     try:
         memory = int(env("MM_NATS_MEMORY") or DEFAULT_MEMORY)
     except ValueError:
         memory = DEFAULT_MEMORY
-    return cast("BusClient", NatsPort(adapter, settings, {home}, memory=memory))
+    port = NatsPort(adapter, settings, {home}, memory=memory)
+    lease.use_nats(home, port)  # the crown of the home is the NATS bus's (RT-6.38)
+    return cast("BusClient", port)
 
 
 def nats_port_of(client: object) -> NatsPort | None:

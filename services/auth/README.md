@@ -211,7 +211,8 @@ signed by the account key, valid 15 minutes from the check:
   other agents' direct subjects (`bus.dm.<recipient>.<agent>`), its presence
   (`presence.<owner>.<agent>`, the owner from the token with `.` as `~`, `-` when
   it is no lower-case username: pinned like the name, RT-6.37) and its crown
-  claims (`presence.crown.<channel>.<agent>`) and its memberships
+  claims only in its home, the hello's `home` (`presence.crown.<home>.<agent>`:
+  a claim in a guest channel is refused, RT-6.38) and its memberships
   (`presence.member.<channel>.<agent>`, apart from the crown: four tokens, so an
   owner named `crown` or `member` still gives a three-token presence).
   Subscribe only to its own deliver subjects (`deliver.<agent>.>`), where the

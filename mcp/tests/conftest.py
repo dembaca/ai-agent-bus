@@ -63,6 +63,12 @@ def _isolate_bus_env(monkeypatch, tmp_path, request):
     from mattermost_ai_agent_bus import lease as _lease
 
     monkeypatch.setattr(_lease, "_nats_link", None)
+    # The home over NATS and its NATS side that compose registers (RT-6.38).
+    monkeypatch.setattr(_lease, "_nats_home", "")
+    monkeypatch.setattr(_lease, "_nats_source", None)
+    monkeypatch.setattr(_lease, "_nats_why", "")
+    monkeypatch.setattr(_lease, "_nats_warned", set())
+    monkeypatch.setattr(_lease, "_nats_yielded", False)
     # What the attestation code remembers per process (RT-6.24).
     from mattermost_ai_agent_bus import askroute, attest, debug, lease, life, mandate, owners, receipt, usage
 

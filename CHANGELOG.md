@@ -6,6 +6,20 @@ before 0.5.0 are described in the git history.
 ## Unreleased
 
 - **The endpoint file is named before it can exist** (RT-6.10). A SIGTERM in the server's start or in a `rekey` used to leave `endpoint-*.env` behind, because the exit work removes it through a name that was set afterwards. The file now carries its name from the moment it is on disk, in all three places (`hookapi._write_file`, `server._start_hook_api`, `hookapi.rekey`), and a rekey names both files while both are there.
+- **The crown of a home over NATS** (RT-6.38, ADR-014 point 16). In a home
+  named in `MM_NATS_HOMES` the crown is the lowest crown claim among the home's
+  members with a fresh presence that stand as peers (the rule of the Mattermost
+  election); no Mattermost election runs there. The holder mirrors it on its
+  Mattermost status without the receipt marker, `take` waits for the order,
+  `release` claims again, and a holder that hangs but still beats yields once
+  to a linked reachable member. A home without its NATS side has no crown and
+  says so (log, `bus_info`, roster hint). A home switching to NATS keeps no
+  holder: the lowest claim holds. In a NATS home nobody takes the crown over by
+  receipts, unlike `coordinator.md` promises for Mattermost: the holder itself
+  claims again, on a crown beat, when a post that needs it has no 👀 or ⏳ after
+  45 s. The login service grants crown claims only in the agent's home, not in a
+  guest channel.
+  Needs: MM_NATS_HOMES alike on every agent of a home.
 - **Host login to Keycloak, building block only** (ADR-014, RT-6.34). With
   `MM_LOGIN_ISSUER` and `MM_LOGIN_CLIENT_ID` set, the host process (and a
   server outside corral) logs in with the device flow, keeps the refresh token

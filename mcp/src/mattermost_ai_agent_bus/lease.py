@@ -31,11 +31,11 @@ import os
 import re
 import time
 import weakref
-from collections.abc import Awaitable, Callable, Mapping
+from collections.abc import Awaitable, Callable, Iterable, Mapping
 from dataclasses import dataclass
 from datetime import datetime, timezone
 from pathlib import Path
-from typing import TYPE_CHECKING, Any
+from typing import TYPE_CHECKING, Any, Protocol
 
 from . import a2a, channel, life, owners, ownpost, release, session_file, stats, usage
 from .model import ChannelUser, Mark, Post, Refused, RosterEntry, StatusMark
@@ -175,11 +175,149 @@ def _at_this_home(user_id: str, home: str | None = None) -> bool:
     return not want or not got or want == got
 
 
+# --- a home over NATS (RT-6.38, ADR-014 point 16) ----------------------------------------
+
+# A claim older than this (by the NATS server's time, never the local clock) is renewed:
+# the presence stream keeps one for 24 h.
+CLAIM_RENEW_SEC = 23 * 3600
+# After a release or a self-yield the file lease is not armed again for this long: the
+# claim's copy takes a moment to come back, and until then the view still names this agent.
+NATS_YIELD_SEC = 10
+HINT_NATS_DOWN = "crown over NATS not reachable"
+
+
+@dataclass(frozen=True)
+class CrownView:
+    """What the NATS bus says about the crown of this session's home (RT-6.38). me: this
+    session's NATS name; holder: the NATS name that holds it ('' none); candidates: the
+    names that may hold it, in claim order (fresh presence, a member, a standing peer);
+    member: this session announced its membership of the home; claim_age: how old its own
+    claim is by the server's clock, None without one."""
+
+    me: str
+    holder: str = ""
+    candidates: tuple[str, ...] = ()
+    member: bool = False
+    claim_age: float | None = None
+
+    @property
+    def mine(self) -> bool:
+        return bool(self.me) and self.holder == self.me
+
+
+class NatsSource(Protocol):
+    """What lease needs of the NATS side (nats_port.NatsPort)."""
+
+    def down(self) -> str:
+        """Why the NATS side cannot work for good (failed), '' while it can."""
+        ...
+
+    def crown_view(self, home: str) -> CrownView | None:
+        """The view of the home's crown, None while unknown (bus not attached, not
+        connected, not synced)."""
+        ...
+
+    async def prime(self) -> None:
+        """Read what the view needs from Mattermost (the trusted humans)."""
+        ...
+
+    async def claim(self, home: str) -> None: ...
+
+    def linked(self, rows: Iterable[Mapping[str, Any]]) -> dict[str, str]: ...
+
+    def owner_of(self, name: str) -> str: ...
+
+    def lowest_claim(self, home: str, names: Iterable[str]) -> str: ...
+
+    def ambiguous(self) -> list[str]: ...
+
+
+@dataclass(frozen=True)
+class NatsState:
+    """kind: `none` (this session's home does not run over NATS), `down` (it does, and the
+    NATS side is not built or failed: no crown, no election), `unknown` (not readable now:
+    never free, never mine), `ok` (view)."""
+
+    kind: str
+    view: CrownView | None = None
+    why: str = ""
+
+
+_nats_home = ""
+_nats_source: NatsSource | None = None
+_nats_why = ""
+_nats_warned: set[str] = set()
+
+
+def use_nats(home: str, source: NatsSource | None, why: str = "") -> None:
+    """Register this session's NATS home (a channel named in MM_NATS_HOMES) and its NATS
+    side; `source` None where none was built (no login, no URL): the home then has no crown
+    and no Mattermost election, logged once. use_nats("", None) clears it."""
+    global _nats_home, _nats_source, _nats_why
+    _nats_home = home.lstrip("~").lower()
+    _nats_source, _nats_why = source, why
+    if _nats_home and source is None:
+        _warn_down(why or "no NATS side was built")
+
+
+def is_nats_home(name: str) -> bool:
+    """The channel `name` is this session's home and it runs over NATS."""
+    return bool(_nats_home) and name.lower() == _nats_home
+
+
+def _warn_down(why: str) -> None:
+    if why not in _nats_warned:
+        _nats_warned.add(why)
+        log.warning("the home ~%s runs its crown over NATS (MM_NATS_HOMES), but the NATS side is not "
+                    "reachable (%s): no crown and no Mattermost election there (RT-6.38)", _nats_home, why)
+
+
+def nats_state() -> NatsState:
+    """This session's home as the crown sees it (RT-6.38): see NatsState."""
+    if not _nats_home:
+        return NatsState("none")
+    source = _nats_source
+    why = (_nats_why or "no NATS side was built") if source is None else source.down()
+    if why:
+        _warn_down(why)
+        return NatsState("down", why=why)
+    assert source is not None
+    view = source.crown_view(_nats_home)
+    return NatsState("ok", view) if view is not None else NatsState("unknown")
+
+
+def crown_hint(name: str) -> str:
+    """The roster's hint for the home `name` (RT-6.38): that its crown over NATS cannot be
+    reached; '' for any other home or while it can."""
+    return HINT_NATS_DOWN if is_nats_home(name) and nats_state().kind == "down" else ""
+
+
+def nats_notes() -> list[str]:
+    """What bus_info says about the crown over NATS (RT-6.38 steps 7 and 8): the home that
+    has no NATS side, a link tag that fits more than one fresh name."""
+    out: list[str] = []
+    state = nats_state()
+    if state.kind == "down":
+        out.append(f"the home ~{_nats_home} runs its crown over NATS, but the NATS side is not reachable "
+                   f"({state.why}): no crown and no Mattermost election there (RT-6.38)")
+    if _nats_source is not None and state.kind != "none":
+        out.extend(f"the link tag {tag} fits more than one fresh NATS name: no bot is linked by it (RT-6.37)"
+                   for tag in _nats_source.ambiguous())
+    return out
+
+
 def crown_held(user_id: str, home: str | None = None) -> bool:
     """This agent holds its home's crown (RT-6.6, ADR-002): the lease runs and
     it was claimed in this server's home (or `home`). A crown recorded for
-    another channel is none here: never a prefix or a duty there (#258)."""
-    return _coord(user_id).get("CROWN_UNTIL", 0) > time.time() and _at_this_home(user_id, home)
+    another channel is none here: never a prefix or a duty there (#258). In a home over
+    NATS (RT-6.38) the lease is only the mirror: the NATS view must say this agent holds
+    the crown too, and unknown is neither free nor mine."""
+    if not (_coord(user_id).get("CROWN_UNTIL", 0) > time.time() and _at_this_home(user_id, home)):
+        return False
+    if not _nats_home or (home is not None and _home[0] and home != _home[0]):
+        return True
+    state = nats_state()
+    return state.kind == "ok" and state.view is not None and state.view.mine
 
 
 def crown_until(user_id: str) -> int:
@@ -379,6 +517,13 @@ async def _set_status(client: ChatPort, state: str, label: str = "") -> None:
         kept = _coord(uid)  # a pending take and a yield stay
         _save_coord(uid, 0, kept.get("PENDING", 0), kept.get("YIELD_UNTIL", 0), "")
         crown = 0
+    nats = nats_state() if is_nats_home(client.work_channel_name) else None
+    if nats is not None and crown > now and nats.kind == "ok" and nats.view is not None and not nats.view.mine:
+        # RT-6.38: the NATS view says another agent holds it: the mirror ends here.
+        kept = _coord(uid)
+        _save_coord(uid, 0, kept.get("PENDING", 0), kept.get("YIELD_UNTIL", 0), "")
+        log.info("crown mirror dropped: another agent holds the crown over NATS")
+        crown = 0
     if since and crown > now:
         # A silent holder drops the crown; the next agent claims at its slot. It
         # yields one crown lease, not a release's two leases: a silence may end
@@ -388,12 +533,15 @@ async def _set_status(client: ChatPort, state: str, label: str = "") -> None:
                  _rfc3339(int(since)))
         crown = 0
     if state != "offline" and crown > now:
-        if reachable:
+        # In a home over NATS (RT-6.38) the beat extends the mirror only while the NATS view
+        # says this agent holds the crown; unknown or down, it runs out on its own.
+        if reachable and (nats is None or (nats.view is not None and nats.view.mine)):
             crown = now + crown_lease_sec()  # ADR-007 step 1: the beat renews it
         # The marker (ADR-007 amendment, decided 2026-11-12): this holder's server sets
-        # the receipts, so the others may claim over a post without one (receipt.py).
+        # the receipts, so the others may claim over a post without one (receipt.py). The
+        # mirror of a crown over NATS has none: nobody claims over a missing receipt there.
         emoji, until = a2a.status_emoji(StatusMark.COORDINATOR), crown
-        text = f"coordinator · {text} · {RECEIPT_MARK}"
+        text = f"coordinator · {text}" if nats is not None else f"coordinator · {text} · {RECEIPT_MARK}"
     else:
         crown = 0
     if text:
@@ -637,8 +785,11 @@ async def roster_in(client: ChatPort, channel_id: str, name: str) -> list[Roster
     guests = [entry(dict(r, crown=False), crown_of=str(r["home"]))
               for r in rows if r["home"] not in (None, name) and r["crown"]]
     here = _at_home(rows, name)
-    standing = None if any(r["crown"] for r in here) else (await _election(client, here)).ids
-    return [entry(r) for r in _coordinator_first(here, standing)] + guests
+    if is_nats_home(name):
+        # RT-6.38: no election here; a 👑 counts only through a proven link to the NATS name.
+        return [entry(r) for r in _coordinator_first(await _nats_crowned(client, here), [])] + guests
+    standing_ = None if any(r["crown"] for r in here) else (await _election(client, here)).ids
+    return [entry(r) for r in _coordinator_first(here, standing_)] + guests
 
 
 def crown_in(rows: list[RosterEntry]) -> str:
@@ -653,7 +804,56 @@ async def coordinator_of(client: ChatPort, channel_id: str) -> str:
     an older plugin); '' for none. A guest's 👑 of its own home is none."""
     name = (await client.get_channel(channel_id)).name
     rows = _at_home(await _rows(client, channel_id), name)
+    if is_nats_home(name):
+        rows = await _nats_crowned(client, rows)
     return next((str(r["username"]) for r in rows if r["crown"]), "")
+
+
+async def _prime(source: NatsSource) -> None:
+    """The NATS side reads the trusted humans it judges the claimants by; it never raises
+    (a failure leaves the view unknown, or the owner split as it was)."""
+    try:
+        await source.prime()
+    except asyncio.CancelledError:
+        raise
+    except Exception as exc:  # noqa: BLE001
+        log.info("crown over NATS: the trusted humans were not read: %s", exc)
+
+
+async def _linked_owned(client: ChatPort, source: NatsSource, rows: list[dict[str, Any]]) -> dict[str, str]:
+    """bot id -> NATS name for the rows with a proven link (NatsPort.linked: the bot and the
+    name name each other, the name fresh) whose bot's owner (owners.read) is the owner in
+    the name's presence subject. The one test of a link everywhere in a NATS home."""
+    out: dict[str, str] = {}
+    for bot_id, name in source.linked(rows).items():
+        owner = await owners.read(client, str(bot_id))
+        if owner is not None and bool(owner.owner) and owner.owner == source.owner_of(name):
+            out[str(bot_id)] = name
+    return out
+
+
+async def _nats_crowned(client: ChatPort, rows: list[dict[str, Any]]) -> list[dict[str, Any]]:
+    """`rows` of the NATS home with their `crown` as RT-6.38 step 6 reads it: with the NATS
+    side not reachable, none; else only a 👑 through a proven link (_linked_owned). With the
+    view known the linked name must be the NATS holder (a linked mirror that is not the
+    holder, a lapsing old one, shows no crown). With the view unknown (read-only, no
+    election) at most ONE 👑 counts, so that two live mirrors never name two coordinators:
+    of the live linked mirrors the one whose name has the lowest claim in the bus's last
+    known claims; with no known claim of any of them, none. Other 👑 statuses (an unlinked
+    one, a Mattermost-only agent) are not the home's crown."""
+    source = _nats_source
+    if source is not None and not source.down():
+        await _prime(source)
+    state = nats_state()
+    if state.kind == "down" or source is None:
+        return [dict(r, crown=False) for r in rows]
+    links = await _linked_owned(client, source, rows)
+    if state.kind == "unknown":
+        mirrors = {links[str(r["id"])]: str(r["id"]) for r in rows if r["crown"] and str(r["id"]) in links}
+        first = source.lowest_claim(_nats_home, mirrors) if mirrors else ""
+        return [dict(r, crown=bool(first) and mirrors.get(first) == str(r["id"])) for r in rows]
+    holder = state.view.holder if state.view else ""
+    return [dict(r, crown=bool(r["crown"] and holder and links.get(str(r["id"])) == holder)) for r in rows]
 
 
 def entry(row: Mapping[str, Any], crown_of: str = "") -> RosterEntry:
@@ -754,6 +954,19 @@ async def _election(client: ChatPort, rows: list[dict[str, Any]]) -> Election:
         return Election(oldest)
     ids = oldest if me in oldest else [*oldest, me]
     agents = {i: await owners.read(client, i) for i in ids}  # never raises: None is unreadable
+    return standing(oldest, me, names, agents)
+
+
+def standing(oldest: list[str], me: str, names: set[str],
+             agents: Mapping[str, owners.Owner | None]) -> Election:
+    """The rule of _election on what it read, so that the home over NATS (RT-6.38) applies
+    exactly the same one: `oldest` the reachable agents in their order (the oldest, or by
+    claim), `me` this agent, `names` its trusted humans (empty: the owner split is off, every
+    one stands), `agents` each one's owner (`oldest` and `me`; None: not readable, nobody
+    stands). The agents with an owner stand if `me` has one and is a peer of each; those
+    without are foreign and stand only where nobody has one."""
+    if not names:
+        return Election(oldest)
     if any(a is None for a in agents.values()):
         log.info("crown: a description is not readable, nobody stands")
         return Election([])
@@ -783,6 +996,8 @@ async def _command(client: ChatPort, action: str, passed: list[bool] | None = No
     state = _coord(uid)
     crown, pending, yield_until = (state.get(k, 0) for k in ("CROWN_UNTIL", "PENDING", "YIELD_UNTIL"))
     cid = await home_id(client)
+    if is_nats_home(client.work_channel_name):
+        return await _command_nats(client, action, passed, uid, cid)
     if action == "tick":
         await _render(client)
         # Re-read: the renewal may have let an idle crown run out.
@@ -874,6 +1089,184 @@ async def _command(client: ChatPort, action: str, passed: list[bool] | None = No
         # Once per process while holding: an upgrade finds an older header (step 7).
         await _header(client, cid, uid)
     _plan(uid, rows)
+    return ""
+
+
+# --- the crown of a home over NATS (RT-6.38) ---------------------------------------------
+
+# This agent claimed again as a holder that is not reachable (the self-yield): once per hold.
+_nats_yielded = False
+# The view said this agent holds the crown at the last look: a hold begins when it turns true.
+_nats_hold = False
+# Set by receipt.py: forget the posts owed a receipt (those of an earlier hold).
+hold_began: Callable[[], None] = lambda: None  # noqa: E731
+
+# Set by receipt.py: a post that needs this holder has had neither 👀 nor ⏳ for MM_ACK_WAIT_SEC
+# (the detection of the peer takeover, carried out by the holder itself in a NATS home).
+unreceipted: Callable[[ChatPort, str], Awaitable[bool]] = lambda client, uid: _never()  # noqa: E731
+
+
+async def _never() -> bool:
+    return False
+
+
+def _no_look() -> None:
+    """No Mattermost election here: no slot is planned, no holder watched."""
+    global _look_at, _vacant_at, _holder_id, _holder_name, _holder_marked
+    _look_at, _vacant_at, _holder_id, _holder_name, _holder_marked = 0.0, 0.0, "", "", False
+
+
+def _nats_hold_track(view: CrownView) -> None:
+    """A new hold (the view turned mine) starts clean: no self-yield done, no post still owed
+    a receipt from an earlier hold (an old entry would trigger a late yield)."""
+    global _nats_hold, _nats_yielded
+    if view.mine and not _nats_hold:
+        _nats_yielded = False
+        hold_began()
+    _nats_hold = view.mine
+    if not view.mine:
+        _nats_yielded = False
+
+
+def _nats_reachable(rows: list[dict[str, Any]], uid: str) -> bool:
+    # The own state decides too: an idle holder's mirror still shows 👑 until its lease ends.
+    return (any(r["id"] == uid and r["reachable"] for r in rows) and _judged(uid)[0]
+            and not _silent(uid))
+
+
+async def _nats_holder_checks(client: ChatPort, source: NatsSource, uid: str, name: str,
+                              view: CrownView, rows: list[dict[str, Any]],
+                              links: Mapping[str, str]) -> None:
+    """What the holder checks of itself, at its tick and at each crown beat (RT-6.38 step 5):
+    a holder that is not reachable (silent, idle) while another linked reachable member
+    stands, or whose post that needs it has no 👀/⏳ for MM_ACK_WAIT_SEC, claims again, once
+    per hold: it moves behind and the next one holds."""
+    global _nats_yielded
+    if _nats_yielded:
+        return
+    if not _nats_reachable(rows, uid):
+        peers = {links[str(r["id"])] for r in rows if r["reachable"] and r["id"] != uid
+                 and links.get(str(r["id"])) in view.candidates}
+        if peers - {view.me}:
+            _nats_yielded = True
+            await source.claim(name)
+            log.info("crown yielded: this holder is not reachable, another member stands (RT-6.38)")
+            await _render(client)
+    elif any(c != view.me for c in view.candidates) and await unreceipted(client, uid):
+        # A post that needs the holder got neither 👀 nor ⏳ in time (RT-6.6 step 10, the
+        # promise of coordinator.md): the holder's own server claims again, once.
+        _nats_yielded = True
+        await source.claim(name)
+        log.info("crown yielded: a post that needs this holder has no receipt (RT-6.38)")
+        await _render(client)
+
+
+async def nats_beat(client: ChatPort) -> None:
+    """The holder's checks on each crown beat (MM_CROWN_BEAT_SEC), not only at the tick: the
+    self-yield comes within the wait plus one crown beat (RT-6.38 step 5). Never raises."""
+    if not client.token or not is_nats_home(client.work_channel_name):
+        return
+    try:
+        async with _lock():
+            uid = await _user_id(client)
+            state = nats_state()
+            source = _nats_source
+            if not _UID.fullmatch(uid) or state.kind != "ok" or state.view is None or source is None:
+                return
+            view = state.view
+            _nats_hold_track(view)
+            if not view.mine:
+                return
+            rows = _at_home(await _rows(client, await home_id(client)), client.work_channel_name)
+            links = await _linked_owned(client, source, rows)
+            await _nats_holder_checks(client, source, uid, client.work_channel_name.lower(), view, rows, links)
+    except asyncio.CancelledError:
+        raise
+    except Exception as exc:  # noqa: BLE001 — cosmetic, like the status
+        log.debug("lease nats beat: %s", exc)
+
+
+async def _command_nats(client: ChatPort, action: str, passed: list[bool] | None,
+                        uid: str, cid: str) -> str:
+    """_command in a home over NATS (RT-6.38): the crown is the claim order on the NATS bus,
+    this agent's 👑 status only its mirror. who names the bot linked to the NATS holder; take
+    is `taken` when this agent holds it and pending otherwise (the claim order cannot be
+    overtaken); release claims again and moves behind; the tick claims once the bus is
+    synced and this agent is a member (and again after CLAIM_RENEW_SEC), arms or drops the
+    mirror, and yields once when the holder is not reachable while another linked reachable
+    member stands. Nothing is decided while the view is unknown."""
+    _no_look()
+    name = client.work_channel_name.lower()
+    now = int(time.time())
+    if action == "tick":
+        await _render(client)
+    source = _nats_source
+    if source is not None and not source.down():
+        await _prime(source)
+    state = nats_state()
+    if state.kind != "ok" or state.view is None or source is None:
+        if state.kind == "down":
+            return {"take": f"no crown: {HINT_NATS_DOWN}",
+                    "release": f"not released: {HINT_NATS_DOWN}"}.get(action, "")
+        return {"take": "pending: the NATS crown cannot be read now",
+                "release": "not released: the NATS crown cannot be read now"}.get(action, "")
+    view = state.view
+    rows = _at_home(await _rows(client, cid), client.work_channel_name)
+    links = await _linked_owned(client, source, rows)
+    _nats_hold_track(view)
+
+    async def arm() -> None:
+        global _crown_since
+        before = _coord(uid).get("CROWN_UNTIL", 0)
+        _save_coord(uid, now + crown_lease_sec(), 0, 0, cid)
+        _crown_since = now
+        await _render(client)
+        if before <= now:
+            if passed is not None:
+                passed.append(True)
+            await _header(client, cid, uid)
+
+    if action == "who":
+        holder = next((r for r in rows if links.get(str(r["id"])) == view.holder), None) if view.holder else None
+        return str(holder["username"]) if holder else ""
+    if action == "take":
+        if view.mine:
+            await arm()
+            return "taken"
+        holder = next((r for r in rows if links.get(str(r["id"])) == view.holder), None) if view.holder else None
+        who = f"@{holder['username']}" if holder else "another agent"
+        return (f"pending: {who} holds the crown over NATS; the claim order decides and cannot be "
+                "overtaken, so take waits for it to pass")
+    if action == "release":
+        if not view.mine:
+            return "not held by you: nothing to release"
+        others = [c for c in view.candidates if c != view.me]
+        if view.member:
+            await source.claim(name)  # a new claim moves behind every other
+        if not others:
+            return "released; no other fresh claim here, the crown stays with you"
+        _save_coord(uid, 0, 0, now + NATS_YIELD_SEC)
+        await _render(client)
+        return "released"
+
+    # tick: claim, then arm or drop the mirror.
+    if view.member and (view.claim_age is None or view.claim_age > CLAIM_RENEW_SEC):
+        await source.claim(name)
+        state = nats_state()
+        if state.kind != "ok" or state.view is None:
+            return ""
+        view = state.view
+        _nats_hold_track(view)
+    state_file = _coord(uid)
+    crown, yield_until = state_file.get("CROWN_UNTIL", 0), state_file.get("YIELD_UNTIL", 0)
+    if view.mine:
+        if _nats_reachable(rows, uid) and yield_until <= now and crown <= now:
+            await arm()
+        await _nats_holder_checks(client, source, uid, name, view, rows, links)
+    elif _coord(uid).get("CROWN_UNTIL", 0) > now:
+        await _render(client)  # the mirror ends
+    if cid not in _header_line and crown_held(uid):
+        await _header(client, cid, uid)  # once per process while holding (step 7)
     return ""
 
 
@@ -1005,8 +1398,8 @@ async def look(client: ChatPort) -> bool:
     next tick re-checks for a second crown soon). Before its time it reads
     nothing. Never raises."""
     global _look_at, _crown_since
-    if not client.token or not 0 < _look_at <= time.time():
-        return False
+    if not client.token or not 0 < _look_at <= time.time() or is_nats_home(client.work_channel_name):
+        return False  # a home over NATS has no Mattermost election (RT-6.38)
     claimed: list[bool] = []
     silent = None
     try:
@@ -1057,6 +1450,8 @@ async def slot_over(client: ChatPort, holder_id: str) -> int:
     agents of the home that stand, the holder left out, for a claim over the
     holder `holder_id`; 0 when it has none or the holder wears no crown that
     sets receipts any more. Raises when the roster cannot be read."""
+    if is_nats_home(client.work_channel_name):
+        return 0  # nobody takes a crown over NATS by receipts (RT-6.38)
     uid = await _user_id(client)
     cid = await client.work_channel_id()
     rows = _at_home(await _rows(client, cid), client.work_channel_name)
@@ -1076,6 +1471,8 @@ async def take_over(client: ChatPort, holder_id: str, post_id: str) -> bool:
     that holder (_took_from) and posts crown_taken. A race of two such claims
     ends at the next tick: the younger yields. Never raises."""
     global _took_from, _took_why, _crown_since
+    if is_nats_home(client.work_channel_name):
+        return False  # RT-6.38
     why = f"no {a2a.symbol(Mark.SEEN)} for `{post_id}` within {life.ack_wait_sec()} s"
     try:
         async with _lock():
@@ -1133,6 +1530,8 @@ async def receipt_holder(client: ChatPort, username: str) -> tuple[str, str]:
     👑: (its id, 'marked') when it wears a crown that sets receipts, (its id,
     'silent') when it turned silent, ('', '') else (an older plugin, gone: judged
     as before). Raises when the roster cannot be read."""
+    if is_nats_home(client.work_channel_name):
+        return "", ""  # no receipts over NATS: nothing to take over (RT-6.38)
     cid = await client.work_channel_id()
     rows = _at_home(await _rows(client, cid), client.work_channel_name)
     row = next((r for r in rows if str(r["username"]).lower() == username.lower()), None)
@@ -1388,7 +1787,8 @@ async def heartbeat(get_client: Callable[[], Awaitable[ChatPort | None]],
                         # A server that restarts during a turn (a reconnect,
                         # /reload-plugins) keeps it: the Stop hook ends it.
                         life.turn(True)
-                if time.time() >= next_tick or (_ousted is not None and crown_held(uid)):
+                if (time.time() >= next_tick or (_ousted is not None and crown_held(uid))
+                        or _nats_arm_due(uid)):
                     await command(client, "tick")
                     if take_pending(uid):
                         delay = PENDING_POLL_SEC
@@ -1399,6 +1799,8 @@ async def heartbeat(get_client: Callable[[], Awaitable[ChatPort | None]],
                     next_tick = time.time() + delay
                 elif crown_held(uid):
                     await set_status(client, "renew")  # the beat: no roster read, no watch
+                    if _nats_home:
+                        await nats_beat(client)  # RT-6.38: the holder's checks on every beat
                 elif held:
                     await set_status(client, "renew")  # the crown lapsed: the plain lease now
                 elif bool(_silent(uid)) != life.is_shown():
@@ -1421,6 +1823,20 @@ async def heartbeat(get_client: Callable[[], Awaitable[ChatPort | None]],
         except Exception as exc:  # noqa: BLE001
             log.debug("lease heartbeat skipped: %s", exc)
         await _pause(max(0.0, min(delay, crown_beat_sec())))
+
+
+def _nats_arm_due(uid: str) -> bool:
+    """RT-6.38: in a home over NATS the NATS view says this agent holds the crown, but its
+    mirror is not armed (the crown just passed to it): tick now, not at the next tick."""
+    if not _nats_home:
+        return False
+    state = nats_state()
+    if state.kind != "ok" or state.view is None or not state.view.mine:
+        return False
+    coord = _coord(uid)
+    judged, _ = _judged(uid)
+    return (coord.get("CROWN_UNTIL", 0) <= time.time() and coord.get("YIELD_UNTIL", 0) <= time.time()
+            and judged and not _silent(uid))
 
 
 async def _pause(sec: float) -> None:
