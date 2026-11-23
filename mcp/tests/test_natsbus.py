@@ -984,11 +984,11 @@ async def rig(tmp_path: Path) -> AsyncIterator[Rig]:
         proc.wait(10)
 
 
-async def until(pred: Callable[[], bool], timeout: float = 5.0) -> None:
+async def until(pred: Callable[[], bool], timeout: float = 5.0, what: str = "") -> None:
     end = time.monotonic() + timeout
     while not pred():
         if time.monotonic() > end:
-            raise AssertionError("timed out")
+            raise AssertionError("timed out" + (f": {what}" if what else ""))
         await asyncio.sleep(0.02)
 
 

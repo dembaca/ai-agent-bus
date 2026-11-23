@@ -1502,13 +1502,25 @@ async def test_two_agents_in_a_nats_home_post_reply_react_and_unreact(rig: Rig) 
         assert (got.reaction.post_id, got.reaction.emoji_name, got.reaction.user_id) == (
             root.id, "thumbsup", rig.names["bob"])
         assert [r.user_id for r in await alice.reactions(root.id)] == [rig.names["bob"]]
-        # alice's unreaction of the same emoji takes nothing of bob's
-        await until(lambda: len(alice._reacts.get(parse_post_id(root.id)[1], {})) == 1)  # type: ignore[index]
+        # alice reacts with the same emoji too, so her own unreaction has something to take
+        # off: waiting for the echo of a removal that changes nothing would already be true
+        # before it arrives, and a removal that dropped everyone's reaction would pass
+        seq = parse_post_id(root.id)[1]
+        await alice.add_reaction(root.id, "thumbsup")
+        await until(lambda: len(alice._reacts.get(seq, {})) == 2,  # type: ignore[index]
+                    what="alice's own reaction arrived")
         await alice.remove_reaction(root.id, "thumbsup")
-        await asyncio.sleep(0.3)
-        assert len(await alice.reactions(root.id)) == 1
+        # a positive signal for her own echo: two reactions became one, and the one left is
+        # bob's - her unreaction of the same emoji took nothing of his
+        await until(lambda: [who for (_, who) in alice._reacts.get(seq, {})] == [rig.names["bob"]],  # type: ignore[index]
+                    what="alice's unreaction took only her own reaction")
+        assert [r.user_id for r in await alice.reactions(root.id)] == [rig.names["bob"]]
         await bob.remove_reaction(root.id, "thumbsup")
-        await until(lambda: not alice._reacts.get(parse_post_id(root.id)[1], {}))  # type: ignore[index]
+        # both memories: a port applies a reaction from its own event stream, so bob's own
+        # unreaction reaches him on his consumer's schedule, not alice's (#52: this assert
+        # once failed with bob's reaction still in his memory)
+        await until(lambda: not alice._reacts.get(parse_post_id(root.id)[1], {})  # type: ignore[index]
+                    and not bob._reacts.get(parse_post_id(root.id)[1], {}))
         assert await alice.reactions(root.id) == [] and await bob.reactions(root.id) == []
         # the memory answers the reads
         assert [p.id for p in await bob.channel_posts(WORK)] == [reply.id, root.id]
