@@ -159,6 +159,25 @@ async def test_a_foreign_owner_stops_the_candidates_as_the_mattermost_election_d
     assert view is not None and view.holder == NAME_ME and view.candidates == (NAME_ME,)
 
 
+@pytest.mark.parametrize("why", ["unreadable", "no-account"])
+async def test_trusted_humans_not_resolved_keep_a_foreign_owner_from_the_crown(
+        w: World, monkeypatch: pytest.MonkeyPatch, why: str) -> None:
+    """ADR-016, RT-6.38: MM_TRUSTED_HUMANS names alice, but the lookup resolves nobody
+    (a 503, or a typo's 404): prime takes the configured names, never "none", so an older
+    claim of another owner does not hold the crown."""
+    monkeypatch.setenv("MM_TRUSTED_HUMANS", "alice")
+    w.inner.trusted = {}
+    if why == "unreadable":
+        async def down() -> dict[str, str]:
+            raise RuntimeError("503")
+        monkeypatch.setattr(w.inner, "trusted_humans", down)
+    await w.prime()
+    claimant(w.fake, NAME_ME, 30, owner="alice")
+    claimant(w.fake, NAME_A, 10, owner="carol")
+    view = w.view()
+    assert view is not None and view.holder == "" and view.candidates == ()
+
+
 # --- the Mattermost election and the NATS candidates under one rule ------------------------------
 
 PEERS = "alice"

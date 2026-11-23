@@ -10,7 +10,7 @@ import time
 import pytest
 from fakes import BOT, WORK, FakeChat
 
-from mattermost_ai_agent_bus import channel, gate, lease, server, tasks
+from mattermost_ai_agent_bus import channel, gate, lease, owners, server, tasks
 from mattermost_ai_agent_bus.model import ChannelUser, RosterEntry
 
 OLDER = "o" * 26
@@ -251,6 +251,24 @@ async def test_a_foreign_circle_in_the_home_blocks_every_automatic_claim(owned):
     assert await _ticks(owned)
 
 
+@pytest.mark.parametrize("why", ["unreadable", "no-account"])
+async def test_trusted_humans_not_resolved_keep_a_foreign_older_agent_from_standing(
+        owned, monkeypatch, why):
+    """RT-6.6 step 2, ADR-016: MM_TRUSTED_HUMANS names dembaca, but the lookup
+    resolves nobody (a 503, or a typo's 404): the split stays on with the
+    configured names, so an older reachable agent of another owner does not
+    stand, and neither does anyone beside it."""
+    monkeypatch.setenv("MM_TRUSTED_HUMANS", "dembaca")
+    owned.trusted = {}
+    if why == "unreadable":
+        async def down():
+            raise RuntimeError("503")
+        monkeypatch.setattr(owned, "trusted_humans", down)
+    owned.descriptions[FAR] = CAROL
+    rows = [{"id": FAR, "reachable": True}, {"id": BOT, "reachable": True}]
+    assert (await lease._election(owned, rows)).ids == []
+
+
 async def test_an_unbound_agent_is_skipped_for_a_bound_server(owned):
     """RT-6.6 step 2: the unbound oldest agent (case 3 of ADR-007) is foreign;
     the bound younger one claims."""
@@ -316,7 +334,9 @@ async def test_an_own_description_that_cannot_be_read_blocks_like_any_other(home
     assert not await _ticks(home)
     home.descriptions[BOT] = UNBOUND  # readable again, and unbound: still no claim
     assert not await _ticks(home)
-    home.trusted = {}
+    home.trusted = {}  # none resolved now: in doubt the names last read hold (ADR-016)
+    assert not await _ticks(home)
+    owners.reset()  # none configured from the start (a session's list does not vanish)
     assert await _ticks(home)
 
 

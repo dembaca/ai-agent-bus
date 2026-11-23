@@ -224,40 +224,45 @@ async def trusted_names(client: ChatPort) -> set[str]:
     return names
 
 
-async def mine(client: ChatPort) -> tuple[set[str], str]:
-    """My trusted humans' names and my bot's id while the owner split is
-    active; (set(), '') while it is not: no trusted humans, or my own bot
-    read without an owner (unbound, say). In doubt it stays on (ADR-016): my
-    trusted names as last read (within OWNER_GRACE_SEC), else as configured;
-    my own bot unreadable is no reason to turn it off."""
+async def names_in_doubt(client: ChatPort) -> tuple[set[str], str]:
+    """My trusted humans' names and my bot's id, in doubt (ADR-016): the names
+    as read now; when they cannot be read, or none of the configured ones
+    resolved, the ones last read (within OWNER_GRACE_SEC), else the configured
+    ones. (set(), '') only when none are configured. Never raises: the crown
+    election (lease._election, NATS prime) and `mine` read them here."""
     global _mine
     now = monotonic()
     try:
         names = await trusted_names(client)
         me = (await client.get_me()).id if names else ""
     except Exception as exc:  # noqa: BLE001 — in doubt: the last names, else the configured ones
-        if _mine is not None and now - _mine[0] < OWNER_GRACE_SEC:
-            names, me = set(_mine[1]), _mine[2]
-        else:
-            names, me = {n.lower() for n in _trusted_names()}, env("MM_BOT_USER_ID").strip()
         log.info("trusted humans or my bot not readable (%s): the owner split stays on", exc)
-        if not names:
-            return set(), ""
-    else:
-        if not names:
-            # Names configured, none resolved (the client keeps what a failed
-            # lookup left): in doubt, the configured ones, never the split off.
-            names = {n.lower() for n in _trusted_names()}
-            if not names:
-                return set(), ""
-            log.info("no trusted human resolved, %d configured: the owner split stays on",
-                     len(names))
-            try:
-                me = (await client.get_me()).id
-            except Exception:  # noqa: BLE001 — in doubt: the configured id
-                me = env("MM_BOT_USER_ID").strip()
-        else:
-            _mine = (now, set(names), me)
+        names, me = set(), ""
+    if names:
+        _mine = (now, set(names), me)
+        return names, me
+    if _mine is not None and now - _mine[0] < OWNER_GRACE_SEC:
+        return set(_mine[1]), _mine[2]
+    names = {n.lower() for n in _trusted_names()}
+    if not names:
+        return set(), ""
+    log.info("no trusted human resolved, %d configured: the owner split stays on", len(names))
+    try:
+        me = (await client.get_me()).id
+    except Exception:  # noqa: BLE001 — in doubt: the configured id
+        me = env("MM_BOT_USER_ID").strip()
+    return names, me
+
+
+async def mine(client: ChatPort) -> tuple[set[str], str]:
+    """My trusted humans' names and my bot's id while the owner split is
+    active; (set(), '') while it is not: no trusted humans configured, or my
+    own bot read without an owner (unbound, say). In doubt it stays on
+    (ADR-016): names_in_doubt; my own bot unreadable is no reason to turn it
+    off."""
+    names, me = await names_in_doubt(client)
+    if not names:
+        return set(), ""
     own = await known(client, me) if me else None
     if own is not None and not own.owner:
         return set(), ""
