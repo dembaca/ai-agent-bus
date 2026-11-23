@@ -8,7 +8,7 @@ import (
 // A configured presence prefix is what the credential gets, nothing on the
 // default one.
 func TestAConfiguredPresencePrefixIsWhatTheCredentialGets(t *testing.T) {
-	p := Subjects{Prefix: "bus", Presence: "here"}.permissions("agent-x", "andreas.dembach", []string{"home"})
+	p := Subjects{Prefix: "bus", Presence: "here"}.permissions("agent-x", "andreas.dembach", "home", []string{"home"})
 	for _, want := range []string{"here.andreas~dembach.agent-x", "here.crown.home.agent-x", "here.member.home.agent-x", "bus.ch.home.agent-x", "bus.dm.*.agent-x"} {
 		if !p.Pub.Allow.Contains(want) {
 			t.Errorf("publish %s missing: %v", want, p.Pub.Allow)
@@ -66,7 +66,7 @@ func TestOwnerToken(t *testing.T) {
 
 // The permission set holds exactly the one presence subject, with the owner.
 func TestThePermissionHoldsExactlyOnePresenceSubject(t *testing.T) {
-	p := Subjects{Prefix: "bus", Presence: "presence"}.permissions("agent-x", "Alice", []string{"home"})
+	p := Subjects{Prefix: "bus", Presence: "presence"}.permissions("agent-x", "Alice", "home", []string{"home"})
 	var got []string
 	for _, s := range p.Pub.Allow {
 		if strings.HasPrefix(s, "presence.") && !strings.HasPrefix(s, "presence.crown.") && !strings.HasPrefix(s, "presence.member.") {
@@ -76,9 +76,30 @@ func TestThePermissionHoldsExactlyOnePresenceSubject(t *testing.T) {
 	if len(got) != 1 || got[0] != "presence.-.agent-x" {
 		t.Errorf("presence rights %v, want only presence.-.agent-x", got)
 	}
-	p = Subjects{Prefix: "bus", Presence: "presence"}.permissions("agent-x", "alice", nil)
+	p = Subjects{Prefix: "bus", Presence: "presence"}.permissions("agent-x", "alice", "home", nil)
 	if !p.Pub.Allow.Contains("presence.alice.agent-x") || p.Pub.Allow.Contains("presence.agent-x") {
 		t.Errorf("pub %v", p.Pub.Allow)
+	}
+}
+
+// A crown claim is allowed only in the home (RT-6.38): in a guest channel it is
+// refused, so a guest cannot claim and block a home it only visits; the
+// membership stays for every granted channel. A home that is not granted gives
+// no claim at all.
+func TestACrownClaimIsAllowedOnlyInTheHome(t *testing.T) {
+	s := Subjects{Prefix: "bus", Presence: "presence"}
+	p := s.permissions("agent-x", "alice", "home", []string{"home", "ga"})
+	if !p.Pub.Allow.Contains("presence.crown.home.agent-x") || p.Pub.Allow.Contains("presence.crown.ga.agent-x") {
+		t.Errorf("crown rights %v", p.Pub.Allow)
+	}
+	if !p.Pub.Allow.Contains("presence.member.ga.agent-x") || !p.Pub.Allow.Contains("bus.ch.ga.agent-x") {
+		t.Errorf("a guest channel keeps its post and membership rights: %v", p.Pub.Allow)
+	}
+	p = s.permissions("agent-x", "alice", "home", []string{"ga"}) // the home was not granted
+	for _, got := range p.Pub.Allow {
+		if strings.HasPrefix(got, "presence.crown.") {
+			t.Errorf("crown right without the home: %s", got)
+		}
 	}
 }
 
@@ -86,9 +107,9 @@ func TestThePermissionHoldsExactlyOnePresenceSubject(t *testing.T) {
 // a three-token presence subject, the claim and the membership have four.
 func TestOwnersNamedCrownAndMemberGiveAThreeTokenPresence(t *testing.T) {
 	for _, owner := range []string{"crown", "member"} {
-		p := Subjects{Prefix: "bus", Presence: "presence"}.permissions("agent-x", owner, []string{"home", "ga"})
+		p := Subjects{Prefix: "bus", Presence: "presence"}.permissions("agent-x", owner, "home", []string{"home", "ga"})
 		want := []string{"presence." + owner + ".agent-x", "presence.crown.home.agent-x", "presence.member.home.agent-x",
-			"presence.crown.ga.agent-x", "presence.member.ga.agent-x"}
+			"presence.member.ga.agent-x"}
 		for _, w := range want {
 			if !p.Pub.Allow.Contains(w) {
 				t.Errorf("owner %s: %s missing: %v", owner, w, p.Pub.Allow)

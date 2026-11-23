@@ -444,7 +444,7 @@ def test_static_budget():
     # + the shortened lines of that line restored (review of #161): 6,485 then
     # + ADR-008 amendment: `cost_usd` in that line (review of #172): 6,5xx now
     # + ADR-007 phase E: the receipts and crown_taken (RT-6.6 step 10)
-    assert len((skill / "coordinator.md").read_text()) <= 6_840  # + `/agent-mandate` (RT-6.26 step 8), + a task waiting on an ask (RT-6.19), + for_crown (RT-6.6 step 5)
+    assert len((skill / "coordinator.md").read_text()) <= 6_930  # + the NATS home line (RT-6.38), + `/agent-mandate` (RT-6.26 step 8), + a task waiting on an ask (RT-6.19), + for_crown (RT-6.6 step 5)
     # cleandoc: Python 3.13 strips a docstring's indentation, older ones don't.
     # + RT-6.14 step 9: scope="all", the overview across homes (#141)
     assert len(inspect.cleandoc(server.coordinator.__doc__)) <= 425 + 90 + 80
