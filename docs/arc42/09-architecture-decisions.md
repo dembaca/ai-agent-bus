@@ -4591,9 +4591,30 @@ keinen Eigentümer, sodass nur Verwalter ihn pflegen.
 Gebaut ist auch die Bürgschaft für Vertrauenslisten auf der Seite des
 Anmeldedienstes (Punkt 4, RT-6.41): Der Host nennt seine Liste, der Dienst
 löst sie über das Verzeichnis zu Ankern auf und schreibt bei jeder Ausgabe
-eine Bürgschaft, die nur er publizieren darf. Das Lesen im MCP-Server, also
-die Auflösung von `anchor` zu Namen und der Vergleich über Anker, folgt; erst
-danach ist die Bedingung vor dem ersten Import im Labor erfüllt.
+eine Bürgschaft, die nur er publizieren darf. Der MCP-Server liest sie: Er
+zeigt den Eigentümer mit seinem Namen statt mit seinem Anker und vergleicht
+über Anker, mit der eigenen Bürgschaft als eigener Liste (RT-6.37 Schritt 4).
+Damit ist die Bedingung vor dem ersten Import im Labor erfüllt. Wird der
+Anmeldedienst auf einen Stand ohne Bürgschaften zurückgerollt, sind bis zum
+Neustart der Hosts alle Absender über NATS fremd: Ein MCP-Server, der einmal
+eine Bürgschaft gesehen hat, vergleicht nicht mehr über Namen. Das ist
+gewollt (fail closed).
+
+Gebaut ist auch die Pflege des Kontenindex nach dem Import (#59, RT-6.41
+Schritt 2): Jede Anmeldung, deren Mattermost-Konto über OpenID mit genau dem
+`sub` des Tokens verbunden ist, setzt den Namen dieses Kontos auf ihre
+Identität, auch wenn eine andere ihn hielt. Mattermost beweist mit dem
+Abgleich von `sub` und `auth_data`, wem der Name jetzt gehört; ein
+Passwortkonto, der Import oder eine andere Quelle verschiebt nie einen
+Namen. Bewusst gilt: Eine Vertrauensliste nennt Namen, also gilt nach dem
+Wandern eines Namens das Vertrauen seinem **neuen** Halter; ein Eigentümer,
+der das nicht will, muss seine Liste ändern. Das Wandern wird mit altem und
+neuem `sub` (gekürzt) protokolliert und steht als `moved_from` am Eintrag.
+Kann der Index nicht geschrieben werden, scheitert die Anmeldung, denn ein
+veralteter Eintrag gäbe das Vertrauen dem früheren Halter. Für einen Namen,
+dessen neuer Halter sich nie über den Bus anmeldet, bleibt der Eintrag
+stehen, bis ein Verwalter ihn mit `authd dir account rm` löscht
+(Restrisiko).
 
 Gebaut ist die Bedingung „im Zweifel fremd“ (Punkt 1), vor jeder
 Auflösung von Namen: `owners.foreign()` und `owners.peer()` nehmen bei

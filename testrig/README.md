@@ -120,13 +120,21 @@ Two numbers a `bus-run` reports need a word of their own:
   `--after 1` lets the handshake through and measures loss on the delivered
   frames.
 
-The stub and the HTTP-passing proxy are exercised end to end by
-`scripts/stub_roundtrip.py`, which runs the real `MattermostAdapter` against
-`stub.MattermostStub` over TCP (from `mcp/`, so the bus is importable):
+The stub and the HTTP-passing proxy are exercised end to end by two scripts that
+run the **bus's own code** over the stub, both in CI (from the repository root,
+because `--directory mcp` also changes the working directory):
 
 ```
 uv run --directory mcp --with httpx python ../testrig/scripts/stub_roundtrip.py
+uv run --directory mcp --with httpx python ../testrig/scripts/probe_status_shape.py
 ```
+
+`stub_roundtrip.py` runs the real `MattermostAdapter` against
+`stub.MattermostStub` over TCP. `probe_status_shape.py` runs `lease._rows` and
+`coordinator_of` over the stub's status answer: a test of the stub's own JSON
+cannot tell a shape it invents from the one the bus parses, and that cost a
+review round (the custom status is a JSON *string* in `props.customStatus`, not
+a top-level object). Both exit non-zero on a gap.
 
 The bus's own calls, as measured from the running server, are the stub's
 `KNOWN` table plus three the first `bus-run` found and added: the heartbeat's
@@ -182,6 +190,7 @@ testrig/
     runner.py           a run's bookkeeping, the percentiles, the report
   scripts/ci_fault_check.py  the CI check that a fault changes the numbers
   scripts/stub_roundtrip.py  the real adapter against the stub, over TCP
+  scripts/probe_status_shape.py  the bus's status reader over the stub's answer
   tests/              against the real websockets library, a real killed process
                       and, in test_bus_process.py, the real MCP server
 ```

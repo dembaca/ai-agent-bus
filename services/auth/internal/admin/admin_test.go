@@ -4,6 +4,7 @@ import (
 	"bytes"
 	"context"
 	"encoding/json"
+	"errors"
 	"io"
 	"log/slog"
 	"net/http"
@@ -412,5 +413,159 @@ func TestAnIDTokenIsRefusedEverywhere(t *testing.T) {
 	} {
 		code, body, _ := e.do(t, r[0], r[1], id, `{}`, "If-None-Match", "*", "If-Match", `"1"`)
 		want(t, r[0]+" "+r[1], code, 401, body)
+	}
+}
+
+// RT-6.40 step 9, issue #59: the account index's admin API.
+func TestAccountEndpoints(t *testing.T) {
+	var logs bytes.Buffer
+	e := setup(t, Config{Burst: 100, Log: slog.New(slog.NewTextHandler(&logs, nil))})
+	for _, sub := range []string{"sub-a", "sub-b"} {
+		if _, err := e.store.Login(ctx(t), sub, "x", ""); err != nil {
+			t.Fatal(err)
+		}
+	}
+	const path = "/v1/directory/accounts/mattermost/alice"
+	code, body, _ := e.do(t, "GET", path, e.bob, "")
+	want(t, "not an admin", code, 403, body)
+	code, body, _ = e.do(t, "PUT", path, e.bob, `{"sub":"sub-a"}`, "If-None-Match", "*")
+	want(t, "not an admin, put", code, 403, body)
+	code, body, _ = e.do(t, "DELETE", path, e.bob, "", "If-Match", `"1"`)
+	want(t, "not an admin, delete", code, 403, body)
+	code, body, _ = e.do(t, "GET", path, e.admin, "")
+	want(t, "missing", code, 404, body)
+	code, body, _ = e.do(t, "GET", "/v1/directory/accounts/mattermost/Bad%20Name", e.admin, "")
+	want(t, "bad name", code, 400, body)
+	code, body, _ = e.do(t, "PUT", path, e.admin, `{"sub":"sub-a"}`)
+	want(t, "no precondition", code, 428, body)
+	code, body, _ = e.do(t, "PUT", path, e.admin, `{"sub":"sub-nobody"}`, "If-None-Match", "*")
+	want(t, "unknown identity", code, 404, body)
+	if !strings.Contains(body, "no identity") {
+		t.Fatalf("unclear message: %s", body)
+	}
+	code, body, h := e.do(t, "PUT", path, e.admin, `{"sub":"sub-a"}`, "If-None-Match", "*")
+	want(t, "create", code, 200, body)
+	tag := h.Get("ETag")
+	var v struct {
+		Product, Name, Sub, MovedFrom string
+		Revision                      uint64
+	}
+	_ = json.Unmarshal([]byte(body), &v)
+	if tag == "" || v.Product != "mattermost" || v.Name != "alice" || v.Sub != "sub-a" || v.Revision == 0 || v.MovedFrom != "" {
+		t.Fatalf("create answered %s (ETag %q)", body, tag)
+	}
+	code, body, _ = e.do(t, "PUT", path, e.admin, `{"sub":"sub-b"}`, "If-None-Match", "*")
+	want(t, "create twice", code, 409, body)
+	code, body, _ = e.do(t, "PUT", path, e.admin, `{"sub":"sub-b"}`, "If-Match", `"999999"`)
+	want(t, "stale replace", code, 409, body)
+	code, body, h = e.do(t, "GET", path, e.admin, "")
+	want(t, "get", code, 200, body)
+	if h.Get("ETag") != tag {
+		t.Fatalf("ETag %q, want %q", h.Get("ETag"), tag)
+	}
+	code, body, h = e.do(t, "PUT", path, e.admin, `{"sub":"sub-b"}`, "If-Match", tag)
+	want(t, "replace", code, 200, body)
+	if !strings.Contains(body, `"moved_from":"sub-a"`) || !strings.Contains(body, `"sub":"sub-b"`) {
+		t.Fatalf("replace answered %s", body)
+	}
+	if id, ok, _ := e.store.ByAccount(ctx(t), "mattermost", "alice"); !ok || id.Sub != "sub-b" {
+		t.Fatalf("after replace: %+v", id)
+	}
+	for _, w := range []string{"account set", "name=alice", "old_sub=sub-a", "new_sub=sub-b"} {
+		if !strings.Contains(logs.String(), w) {
+			t.Errorf("log lacks %q: %s", w, logs.String())
+		}
+	}
+	code, body, _ = e.do(t, "GET", path, e.admin, "")
+	want(t, "get moved", code, 200, body)
+	if !strings.Contains(body, `"moved_from":"sub-a"`) {
+		t.Fatalf("get lacks moved_from: %s", body)
+	}
+	code, body, _ = e.do(t, "DELETE", path, e.admin, "")
+	want(t, "delete without precondition", code, 428, body)
+	code, body, _ = e.do(t, "DELETE", path, e.admin, "", "If-Match", tag)
+	want(t, "delete over an old revision", code, 409, body)
+	code, body, h = e.do(t, "GET", path, e.admin, "")
+	want(t, "get again", code, 200, body)
+	code, body, _ = e.do(t, "DELETE", path, e.admin, "", "If-Match", h.Get("ETag"))
+	want(t, "delete", code, 204, body)
+	if !strings.Contains(logs.String(), "account removed") {
+		t.Errorf("no log of the delete: %s", logs.String())
+	}
+	code, body, _ = e.do(t, "GET", path, e.admin, "")
+	want(t, "gone", code, 404, body)
+}
+
+// RT-6.40 step 9: an admin's PUT whose records do not all follow the key is
+// logged as incomplete, with both subs.
+func TestAnIncompleteAccountPutIsLogged(t *testing.T) {
+	var logs bytes.Buffer
+	e := setup(t, Config{Burst: 100, Log: slog.New(slog.NewTextHandler(&logs, nil))})
+	for _, sub := range []string{"sub-a", "sub-b"} {
+		if _, err := e.store.Login(ctx(t), sub, "x", ""); err != nil {
+			t.Fatal(err)
+		}
+	}
+	const path = "/v1/directory/accounts/mattermost/alice"
+	code, body, h := e.do(t, "PUT", path, e.admin, `{"sub":"sub-a"}`, "If-None-Match", "*")
+	want(t, "create", code, 200, body)
+	t.Cleanup(directory.SetAccountStepForTest(func(at string) error {
+		if at == "key moved" {
+			return errors.New("stopped")
+		}
+		return nil
+	}))
+	code, body, _ = e.do(t, "PUT", path, e.admin, `{"sub":"sub-b"}`, "If-Match", h.Get("ETag"))
+	if code < 500 {
+		t.Fatalf("the stopped PUT answered %d: %s", code, body)
+	}
+	for _, w := range []string{"account set, incomplete", "old_sub=sub-a", "new_sub=sub-b"} {
+		if !strings.Contains(logs.String(), w) {
+			t.Errorf("log lacks %q: %s", w, logs.String())
+		}
+	}
+}
+
+// RT-6.40 step 9: an admin's PUT or DELETE that finishes an unfinished move
+// logs the old holder it released.
+func TestAnAdminWriteLogsTheUnfinishedMoveItFinishes(t *testing.T) {
+	for _, method := range []string{"PUT", "DELETE"} {
+		t.Run(method, func(t *testing.T) {
+			var logs bytes.Buffer
+			e := setup(t, Config{Burst: 100, Log: slog.New(slog.NewTextHandler(&logs, nil))})
+			for _, sub := range []string{"sub-a", "sub-b", "sub-c"} {
+				if _, err := e.store.Login(ctx(t), sub, "x", ""); err != nil {
+					t.Fatal(err)
+				}
+			}
+			if _, err := e.store.ClaimAccount(ctx(t), "sub-a", "mattermost", "alice"); err != nil {
+				t.Fatal(err)
+			}
+			restore := directory.SetAccountStepForTest(func(at string) error {
+				if at == "key moved" {
+					return errors.New("stopped")
+				}
+				return nil
+			})
+			if _, err := e.store.ClaimAccount(ctx(t), "sub-b", "mattermost", "alice"); err == nil {
+				t.Fatal("the move did not stop")
+			}
+			restore()
+			const path = "/v1/directory/accounts/mattermost/alice"
+			code, body, h := e.do(t, "GET", path, e.admin, "")
+			want(t, "get", code, 200, body)
+			if method == "PUT" {
+				code, body, _ = e.do(t, "PUT", path, e.admin, `{"sub":"sub-c"}`, "If-Match", h.Get("ETag"))
+				want(t, "put", code, 200, body)
+			} else {
+				code, body, _ = e.do(t, "DELETE", path, e.admin, "", "If-Match", h.Get("ETag"))
+				want(t, "delete", code, 204, body)
+			}
+			for _, w := range []string{"unfinished account move finished", "released=sub-a"} {
+				if !strings.Contains(logs.String(), w) {
+					t.Errorf("log lacks %q: %s", w, logs.String())
+				}
+			}
+		})
 	}
 }

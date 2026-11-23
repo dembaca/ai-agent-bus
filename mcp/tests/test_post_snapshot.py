@@ -73,6 +73,12 @@ class _Client:
     async def agent_owner(self, user_id):
         return ""
 
+    async def attested_circle(self, user_id):
+        return None
+
+    async def own_anchors(self):
+        return None
+
     async def list_recent(self, **_):
         return [_wrap(p) for p in POSTS]
 

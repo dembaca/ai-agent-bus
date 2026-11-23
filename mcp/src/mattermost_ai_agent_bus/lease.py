@@ -293,6 +293,39 @@ def crown_hint(name: str) -> str:
     return HINT_NATS_DOWN if is_nats_home(name) and nats_state().kind == "down" else ""
 
 
+def nats_visibility() -> str:
+    """What bus_info says about a home over NATS (RT-6.36, #66): its agents' posts are
+    not in Mattermost, so people do not see them there; '' for a home on Mattermost."""
+    if not _nats_home or _nats_source is None:  # none built: the home stays on Mattermost
+        return ""
+    return (f"the home ~{_nats_home} runs over NATS: the agents' posts, threads and reactions there "
+            "are not in Mattermost, and people do not see them; reach a person with ask_human, which "
+            "goes over Mattermost, and DMs between agents go over Mattermost too")
+
+
+async def shown_as(client: ChatPort, user_ids: AbstractSet[str]) -> dict[str, str]:
+    """NATS name -> the username of its bot, for the NATS senders among `user_ids` whose link
+    is proven now by the one test of a link (_linked_owned: bot and name name each other, the
+    name fresh, the bot's owner the name's), read afresh on every call, nothing cached (#66).
+    Display only: a post's author stays the NATS name, which every decision goes by."""
+    from .nats_port import is_nats_user  # nats_port imports this module
+
+    names = {u for u in user_ids if is_nats_user(u)}
+    source = _nats_source
+    if not names or not _nats_home or source is None:  # a lost side links none (linked)
+        return {}
+    try:
+        rows = await _rows(client, await client.get_channel_id(_nats_home))
+        links = await _linked_owned(client, source, rows)
+    except asyncio.CancelledError:
+        raise
+    except Exception as exc:  # noqa: BLE001 — display only
+        log.info("NATS senders not shown by their bots: %s", exc)
+        return {}
+    by_id = {str(r["id"]): str(r["username"]) for r in rows}
+    return {name: by_id[bot] for bot, name in links.items() if name in names and bot in by_id}
+
+
 def nats_notes() -> list[str]:
     """What bus_info says about the crown over NATS (RT-6.38 steps 7 and 8): the home that
     has no NATS side, a link tag that fits more than one fresh name."""
@@ -960,12 +993,14 @@ async def _election(client: ChatPort, rows: list[dict[str, Any]]) -> Election:
 
 
 def standing(oldest: list[str], me: str, names: AbstractSet[str],
-             agents: Mapping[str, owners.Owner | None]) -> Election:
+             agents: Mapping[str, owners.Owner | None],
+             anchors: AbstractSet[str] | None = None) -> Election:
     """The rule of _election on what it read, so that the home over NATS (RT-6.38) applies
     exactly the same one: `oldest` the reachable agents in their order (the oldest, or by
     claim), `me` this agent, `names` its trusted humans (empty: the owner split is off, every
     one stands), `agents` each one's owner (`oldest` and `me`; None: not readable, nobody
-    stands). The agents with an owner stand if `me` has one and is a peer of each; those
+    stands), `anchors` my own trusted humans' anchors (over NATS; an owner by anchor is compared
+    with them, none: it is foreign). The agents with an owner stand if `me` has one and is a peer of each; those
     without are foreign and stand only where nobody has one."""
     if not names:
         return Election(oldest)
@@ -978,7 +1013,7 @@ def standing(oldest: list[str], me: str, names: AbstractSet[str],
         return Election(oldest)  # no owners: every agent is a peer
     if me not in owned:
         return Election([], unbound=True, owned=held)
-    if any(not owners.is_peer(a, names) for i, a in owned.items() if i != me and i in oldest):
+    if any(not owners.is_peer(a, names, anchors) for i, a in owned.items() if i != me and i in oldest):
         log.info("crown: the home has an agent of a foreign owner circle: nobody stands")
         return Election([], owned=held)
     return Election([i for i in oldest if i in owned], owned=held)

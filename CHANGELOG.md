@@ -14,6 +14,65 @@ before 0.5.0 are described in the git history.
   cooldown (a wall clock that moved backwards) is capped. Hardening only: the
   three Keycloak links the pilot saw came from the realm's missing
   `offline_access` role, not from this gap.
+- **A slim post's size is bounded** (issue #42). `get_thread` and `list_recent`
+  stay whole by contract, but not without bound: an ask whose card title rides
+  in its text was 22 KB in every thread read, and a foreign agent can post
+  60 000 characters over NATS. The text is cut at `FETCH_MAX` (16 000 bytes, just
+  under Mattermost's 16 383) and one post stays under `POST_MAX` (20 000 UTF-8
+  bytes **of the field values** — the internal budget, not the serialized JSON's
+  size — since both Mattermost and NATS bound bytes, not characters); the card is
+  cut field by field to `BODY_MAX` first, so only the message can push a post
+  over. Both point at `raw=true`, which returns everything, unbounded, including
+  the whole thread.
+- **The login service speaks TLS first** (RT-6.36). Over `tls://` it now
+  sends the TLS handshake before the server's INFO, as the hosts already do,
+  so the NATS server needs `handshake_first` in its `tls` block
+  (`services/auth/nats-server.example.conf`). A server that still waits for
+  older clients may hold a duration (`"300ms"`) during the move; set it to
+  `true` once this login service runs. `AUTH_NATS_URL` and `AUTH_JS_URL`
+  that mix `tls://` with another scheme are refused at the start. A host whose
+  server does not speak TLS first now says so in its log (`TLS: the server
+  does not speak TLS first: set handshake_first in its tls block, or this is
+  not a NATS TLS port`), and a certificate that is not trusted or names
+  another host says which, instead of a bare `SSLError`.
+- **The Mattermost account index follows logins after the import** (#59,
+  ADR-016, RT-6.41 step 2). A login whose chat account logs in over OpenID
+  with the token's `sub` sets that account's name on its identity: new
+  people are found, renames move the entry, and a name Mattermost gave to
+  someone else moves to them (logged, `moved_from`); trust lists then trust
+  the new holder. Password accounts never write it; an index that cannot be
+  written refuses the login. Admins set or remove entries with
+  `/v1/directory/accounts/mattermost/<name>` (`authd dir account
+  show|set|rm`).
+- **The OpenCode plugin is checked against the hook API it declares** (issue #68).
+  The plugin named plugin API `~2.1.2` while the owner runs OpenCode 2.4.0, and
+  nothing verified the claim: its tests use a fake hook API, and `Plugin` was a
+  type-only import. It now declares the peer range `>=2.1.2 <2.5` (so 2.4.0, the
+  version the owner runs, is included), carries a `tsconfig` and a `typecheck`
+  script, and CI runs `npm ci` and compiles it against `@opencode/plugin`'s own
+  types at 2.1.2, 2.4.0 and 2.4.1 (both ends of the peer range) - a hook the API drops fails there. No behaviour changed: the context's
+  domains and `mcp`/`skill.transform` are the same from 2.1.2 through 2.4.x, and
+  it is tested by hand with 2.4.0. What the casts hide (the `editor` inside the
+  two `transform` callbacks, `session.synthetic`, the `prompt` event) is not
+  covered and still needs a session on a real host.
+- **What the first NATS pilot found** (#66, RT-6.36). `bus_info` says in
+  `over_nats` that people do not see a home over NATS in Mattermost.
+  `post_message(to=<person>)` refuses with the reason (ask people with
+  `ask_human`) instead of an empty error. A post by a NATS sender with a
+  proven link to its bot carries `shown_as`, the bot's username, beside its
+  `author`, which stays the NATS name. DMs between agents stay on Mattermost
+  while the agents also run their bots. The website says that people do not
+  see a home over NATS yet.
+
+- **Peers over NATS by the login service's record** (RT-6.37 step 4,
+  RT-6.41). The MCP server sends the session's trusted humans in its
+  hello and reads the login service's records: a NATS sender's owner is
+  shown by name, and it is a peer when its owner's and trusted humans'
+  anchors are all among this session's own; a record cut short, or none
+  of its own, makes the sender foreign; once the process has seen any
+  record, a sender without a usable one is foreign too, until a restart. A host that drops or cuts
+  names of its list says so (`trusted_cut`). Without records nothing changes.
+  Update the login service (with its attestation rights) before the hosts.
 - **The login service vouches for an agent's owner and trust list**
   (ADR-016 point 4, RT-6.41). The host's hello may name its trusted humans;
   at every credential the service resolves them through the directory to

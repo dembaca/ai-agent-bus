@@ -34,7 +34,7 @@ from mattermost_ai_agent_bus.session_file import SessionInfo
 if TYPE_CHECKING:
     from mattermost_ai_agent_bus.compose import BusClient
     from mattermost_ai_agent_bus.events import EventSource
-    from mattermost_ai_agent_bus.port import ChatPort
+    from mattermost_ai_agent_bus.port import AttestedCircle, ChatPort
     from mattermost_ai_agent_bus.registration import RegistrationPort
     from mattermost_ai_agent_bus.websocket_inbox import WebSocketInbox
 
@@ -237,6 +237,12 @@ class FakeChat:
         claim = await owners.attested(cast("ChatPort", self), user_id)
         return owners.decide(self.native_owners.get(user_id), self.descriptions.get(user_id),
                              user_id, claim)
+
+    async def attested_circle(self, user_id: str) -> AttestedCircle | None:
+        return None
+
+    async def own_anchors(self) -> frozenset[str] | None:
+        return None
 
     async def agent_attestation(self, user_id: str) -> str | None:
         """`attestations`; '' for a bot with a readable description and none."""

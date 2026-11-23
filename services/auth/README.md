@@ -53,6 +53,17 @@ The NATS server's side of it is in
 and the tenant's, the two users of this service, `auth_callout`, TLS and
 JetStream, with placeholders instead of keys. A test starts a server from it.
 
+Over `tls://` the service connects with the TLS handshake first, before the
+server's INFO, as the agents' hosts do. The server therefore needs
+`handshake_first: true` in its `tls` block; without it neither the service nor
+a host gets in. To move a server whose older clients still connect in the
+classic order, set a duration instead (`handshake_first: "300ms"`): the server
+waits that long for a TLS handshake, then lets a classic client in. Set it
+to `true` once every client speaks TLS first. A loopback `nats://` stays
+plain. `AUTH_NATS_URL` and `AUTH_JS_URL` are `tls://` throughout or not at
+all: a list that mixes `tls://` with another scheme is refused at the start,
+since it would reach a `handshake_first` server in the classic order.
+
 | Variable | Default | Meaning |
 | --- | --- | --- |
 | `AUTH_NATS_URL` | — | the NATS server, `tls://` (plain `nats://` only on a loopback host); unset: no callout, health only |
@@ -362,6 +373,7 @@ process's memory: never on disk, never printed, never in the environment.
 | `owner <channel> <sub>` or `-`, `public <channel> on` or `off` | owner and visibility (admins), over the revision just read |
 | `members add` or `rm <channel> <sub>…` | members (the channel's owner), over the revision just read |
 | `import` | the one import from Mattermost (admins), with its report |
+| `account show <name>`, `account set <name> <sub> [--rev N]`, `account rm <name> --rev N` | the Mattermost account index (admins): which identity a name resolves to, with `moved_from` when it moved; set creates without `--rev` and replaces over it |
 | `pending`, `confirm <name>`, `drop <name>` | the claims of password accounts (with the full channels one waits on), an admin's confirmation over the listed revision, and deleting a claim over the listed revision |
 
 `--json` writes the answer as the

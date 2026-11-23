@@ -3,6 +3,7 @@ package directory
 import (
 	"context"
 	"errors"
+	"log/slog"
 )
 
 // ByName is the membership lookup by chat username that the directory
@@ -47,7 +48,11 @@ func (c Channels) MembershipsFor(ctx context.Context, username, sub string, chan
 }
 
 // Anchors gives the callout each identity's anchor (decisions 7 and 9).
-type Anchors struct{ Store *Store }
+type Anchors struct {
+	Store *Store
+	// Log gets the notice of a moved chat account name; nil is slog.Default().
+	Log *slog.Logger
+}
 
 // Anchor records the login of `sub` as `display` and returns its anchor:
 // for an identity the directory knows, the one it holds; for a new one,
@@ -71,4 +76,42 @@ func (a Anchors) Anchor(ctx context.Context, sub, display string) (string, error
 		return "", err
 	}
 	return id.Anchor, nil
+}
+
+// Account keeps the Mattermost account index current from a verified login:
+// the caller (the callout) calls it only when the login's chat account is
+// proven to be the token's (token.Identity.ChatOpenID). Before the import it
+// writes nothing. An error fails the login: a stale index could hand trust
+// meant for the new holder of a name to the old one. A name that moves from
+// another identity is logged.
+func (a Anchors) Account(ctx context.Context, sub, name string) error {
+	imported, err := a.Store.Imported(ctx)
+	if err != nil {
+		return err
+	}
+	if !imported {
+		return nil
+	}
+	m, err := a.Store.ClaimAccount(ctx, sub, "mattermost", name)
+	log := a.Log
+	if log == nil {
+		log = slog.Default()
+	}
+	if m.Released != "" {
+		log.Warn("directory: an unfinished move of a chat account name finished", "product", "mattermost",
+			"name", name, "released", Short(m.Released))
+	}
+	if m.From != "" { // reported once the key moved, also when the records did not follow
+		log.Warn("directory: chat account name moved", "product", "mattermost", "name", name,
+			"from", Short(m.From), "to", Short(sub), "complete", err == nil)
+	}
+	return err
+}
+
+// Short keeps the first 8 characters of a `sub` for a log line.
+func Short(sub string) string {
+	if len(sub) <= 8 {
+		return sub
+	}
+	return sub[:8] + "…"
 }

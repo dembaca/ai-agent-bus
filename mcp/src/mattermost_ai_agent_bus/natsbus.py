@@ -35,7 +35,7 @@ import re
 import ssl
 import time
 from urllib.parse import urlsplit
-from collections.abc import Awaitable, Callable, Mapping
+from collections.abc import Awaitable, Callable, Iterable, Mapping
 from dataclasses import dataclass, field
 from typing import Any, Protocol
 
@@ -73,6 +73,8 @@ PREFIX_RE = re.compile(r"^[A-Za-z0-9_-]+$")
 # bots. Nothing is normalised: an owner in any other form is no owner.
 OWNER_RE = re.compile(r"[a-z0-9][a-z0-9._-]{0,63}")
 NO_OWNER = "-"  # the owner token of an owner not in OWNER_RE's form
+USERNAME_RE = re.compile(r"[a-z][a-z0-9._-]{0,63}")  # a human's name as the login service reads it
+MAX_TRUSTED = 32  # the hello's `trusted` and an attestation's trusted list: at most this many
 
 
 def owner_token(owner: str) -> str:
@@ -286,6 +288,70 @@ def link_tag(name: str) -> str:
     return name[-26:][:16] if len(name) >= 26 else ""
 
 
+@dataclass(frozen=True)
+class Attestation:
+    """The login service's record of an agent's circle, as it wrote it at the agent's
+    credential (`<presence>.attest.<agent>.v1`): anchors are what the service pinned
+    (stable), names what they were called at that time. `exp` is server time."""
+
+    owner_anchor: str
+    owner_name: str
+    trusted: tuple[tuple[str, str], ...]  # (anchor, name)
+    cut: bool
+    exp: float
+
+
+def _person(obj: Any, what: str) -> tuple[str, str]:
+    if not isinstance(obj, dict):
+        raise MessageError(f"{what} is not an object")
+    anchor, name = obj.get("anchor"), obj.get("name")
+    if not isinstance(anchor, str) or not OWNER_RE.fullmatch(anchor):
+        raise MessageError(f"{what} has a bad anchor")
+    if not isinstance(name, str) or not USERNAME_RE.fullmatch(name):
+        raise MessageError(f"{what} has a bad name")
+    return anchor, name
+
+
+def _int(obj: dict[str, Any], key: str) -> int:
+    v = obj.get(key)
+    if isinstance(v, bool) or not isinstance(v, int):
+        raise MessageError(f"{key} is not an integer")
+    return v
+
+
+def decode_attestation(data: bytes, agent: str) -> Attestation:
+    """Strict: anything that is not a well-formed v1 attestation of `agent` raises MessageError."""
+    obj = _obj(data)
+    if obj.get("agent") != agent:
+        raise MessageError("attestation of another agent")
+    owner = _person(obj.get("owner"), "owner")
+    trusted = obj.get("trusted")
+    if not isinstance(trusted, list) or len(trusted) > MAX_TRUSTED:
+        raise MessageError("trusted is not a list of at most 32")
+    cut = obj.get("cut")
+    if not isinstance(cut, bool):
+        raise MessageError("cut is not a boolean")
+    _int(obj, "iat")
+    return Attestation(owner_anchor=owner[0], owner_name=owner[1],
+                       trusted=tuple(_person(t, "a trusted entry") for t in trusted),
+                       cut=cut, exp=float(_int(obj, "exp")))
+
+
+def normalise_trusted(names: Iterable[str]) -> tuple[tuple[str, ...], bool]:
+    """The hello's trusted names and whether the list was cut: a leading "@" dropped, lower
+    case, only valid usernames, each once, at most MAX_TRUSTED. cut: an invalid name was
+    dropped or the list truncated (a repeat or a blank is no loss)."""
+    out: dict[str, None] = {}
+    cut = False
+    for n in names:
+        n = n.strip().lstrip("@").lower()
+        if USERNAME_RE.fullmatch(n):
+            out.setdefault(n)
+        elif n:
+            cut = True
+    return tuple(out)[:MAX_TRUSTED], cut or len(out) > MAX_TRUSTED
+
+
 def encode_claim() -> bytes:
     return _dumps({"v": 1}).encode()
 
@@ -380,7 +446,8 @@ def crown_holder(claims: Mapping[str, int], presence: Mapping[str, tuple[float, 
 # --- CONNECT ---------------------------------------------------------------------------------
 
 def build_hello(token: str, home: str, guests: tuple[str, ...], lobby: bool,
-                since: Mapping[str, int], *, fresh_presence: bool = False) -> str:
+                since: Mapping[str, int], *, fresh_presence: bool = False,
+                trusted: tuple[str, ...] = (), trusted_cut: bool = False) -> str:
     """The CONNECT `auth_token` the login service reads (callout.Hello). It holds the
     access token: never log it."""
     hello: dict[str, Any] = {"token": token}
@@ -390,6 +457,10 @@ def build_hello(token: str, home: str, guests: tuple[str, ...], lobby: bool,
         hello["guests"] = list(guests)
     if lobby:
         hello["lobby"] = True
+    if trusted:
+        hello["trusted"] = list(trusted)
+    if trusted_cut:
+        hello["trusted_cut"] = True
     known = {ch: seq for ch, seq in since.items() if seq > 0}
     if fresh_presence:
         known[PRESENCE_FRESH_KEY] = 1  # the login service reads the presence stream afresh (RT-6.35)
@@ -399,6 +470,46 @@ def build_hello(token: str, home: str, guests: tuple[str, ...], lobby: bool,
 
 
 # --- the bus ---------------------------------------------------------------------------------------
+
+# What OpenSSL says when the first bytes back are no TLS record: the server sent its
+# INFO in clear, so it waits for the classic order (or speaks no TLS at all).
+_NOT_TLS_FIRST = frozenset({"WRONG_VERSION_NUMBER", "RECORD_LAYER_FAILURE", "PACKET_LENGTH_TOO_LONG",
+                            "UNKNOWN_PROTOCOL", "HTTP_REQUEST"})
+# OpenSSL's verify codes: the chain ends at no CA this host trusts (unable to get the issuer,
+# self-signed leaf or chain, unable to get the local issuer, unable to verify the leaf) ...
+_UNKNOWN_ISSUER = frozenset({2, 18, 19, 20, 21})
+# ... and a certificate for another host name or IP address.
+_NAME_MISMATCH = frozenset({62, 64})
+
+
+def connect_reason(exc: BaseException) -> str:
+    """A failed connect in words for the log (RT-6.36): a TLS failure says why, anything else
+    stays its type name (an exception's text may carry what the log must not). Only an unknown
+    issuer gets the CA hint: a certificate for another name may be a man in the middle, whose CA
+    nobody should be pointed to trust."""
+    seen: set[int] = set()
+    e: BaseException | None = exc
+    while e is not None and id(e) not in seen:
+        seen.add(id(e))
+        if isinstance(e, ssl.SSLCertVerificationError):
+            # Both set by OpenSSL, absent on one raised by hand: this runs in the retry loops.
+            code = getattr(e, "verify_code", None)
+            msg = getattr(e, "verify_message", None) or "no reason given"
+            if code in _NAME_MISMATCH:
+                return f"TLS: the certificate does not name this host ({msg})"
+            if code in _UNKNOWN_ISSUER:
+                return (f"TLS: the server's certificate is not trusted ({msg}): "
+                        "if that CA is your NATS server's, set MM_NATS_CA_FILE to it")
+            return f"TLS: the server's certificate is refused ({msg})"
+        if isinstance(e, ssl.SSLError):
+            reason = getattr(e, "reason", None)  # set by OpenSSL, absent on one raised by hand
+            if reason in _NOT_TLS_FIRST:
+                return ("TLS: the server does not speak TLS first: set handshake_first in its tls block, "
+                        "or this is not a NATS TLS port")
+            return f"TLS: {reason or type(e).__name__}"
+        e = e.__cause__ or e.__context__
+    return type(exc).__name__
+
 
 def _check_server(url: str) -> None:
     """tls:// anywhere; nats:// (no TLS) only to this machine."""
@@ -438,8 +549,13 @@ class NatsSettings:
     name_prefix: str = "agent-"
     props_prefix: str = a2a.DEFAULT_PREFIX  # MM_PROPS_PREFIX, one setting of the whole bus (RT-6.16)
     tls_ca_file: str | None = None  # CA bundle that verifies a tls:// server (default: the system's)
+    trusted: tuple[str, ...] = ()  # this session's trusted humans' names, for the hello (normalised)
+    trusted_cut: bool = False  # normalising dropped or truncated names (set by __post_init__)
 
     def __post_init__(self) -> None:
+        names, cut = normalise_trusted(self.trusted)
+        object.__setattr__(self, "trusted", names)
+        object.__setattr__(self, "trusted_cut", cut or self.trusted_cut)
         # Store what the bus's own check returns, not what was passed: an empty
         # value means "unset" there and comes back as the default, and keeping
         # the empty string would make `k.startswith("")` accept every key,
@@ -524,6 +640,11 @@ class NatsBus:
         self._owners: dict[str, str] = {}  # agent -> owner its presence subject names (RT-6.37)
         self._presence_seq: dict[str, tuple[int, float]] = {}  # agent -> (stream sequence, server time)
         self._bots: dict[str, str] = {}  # agent -> Mattermost bot its presence names (RT-6.37)
+        # agent -> (stream sequence, server time, record): the newest attestation of the login service
+        self._attest: dict[str, tuple[int, float, Attestation]] = {}
+        # A valid attestation was seen in this process: the login service writes them, and
+        # from then on no NATS sender is judged by name again until a restart (ADR-016).
+        self._records_on = False
         self._bot = ""
         self._synced = False
         self._presence_read = False  # True once the stored presence stream was read (a new session says so in its hello)
@@ -588,7 +709,7 @@ class NatsBus:
         except Exception as exc:
             # A first connect that fails is no end: the supervisor connects again with backoff
             # (a send raises "not connected" until it has).
-            log.warning("nats bus: first connect failed, retrying: %s", type(exc).__name__)
+            log.warning("nats bus: first connect failed, retrying: %s", connect_reason(exc))
             retry = True
         self._tasks = [asyncio.create_task(self._supervise()), asyncio.create_task(self._heartbeat())]
         if self._memberships:
@@ -638,7 +759,7 @@ class NatsBus:
         token = await self._login.access_token()
         key = self._login.nkey()
         hello = build_hello(token, self._s.home, self._s.guests, self._s.lobby, self.since(),
-                            fresh_presence=not self._presence_read)
+                            fresh_presence=not self._presence_read, trusted=self._s.trusted, trusted_cut=self._s.trusted_cut)
         del token
         nc = NatsClient()
         # nats-py has no argument for the public key with a signature callback; this is the
@@ -662,7 +783,7 @@ class NatsBus:
                 m = _PUBLISH_DENIED_RE.search(text)
                 if m:
                     self._denied = [*self._denied[-63:], m.group(1)]
-            log.warning("nats bus: %s", type(exc).__name__)
+            log.warning("nats bus: %s", connect_reason(exc))
 
         # tls://: the TLS handshake comes first, before any NATS protocol, with the certificate
         # verified. nats-py otherwise upgrades only when the server's INFO says tls_required,
@@ -783,7 +904,7 @@ class NatsBus:
                         await self._notify_fatal(exc)
                         return
                     except Exception as exc:
-                        log.warning("nats bus: reconnect failed: %s", type(exc).__name__)
+                        log.warning("nats bus: reconnect failed: %s", connect_reason(exc))
                         await asyncio.sleep(delay * random.uniform(0.5, 1.0))
                         delay = min(delay * 2, 30.0)
             finally:
@@ -998,7 +1119,30 @@ class NatsBus:
         """The owner the agent's presence subject names (RT-6.37), '' for none. The login
         service pins it there by the credential's one presence permission, as it pins the
         sender: no agent can publish a presence under another owner."""
+        anchor = self._owners.get(agent, "")
+        att = self.attestation_of(agent)
+        if att is not None and anchor and att.owner_anchor == anchor:
+            return att.owner_name  # the anchor is the same one: the name it has now
+        return anchor
+
+    def anchor_of(self, agent: str) -> str:
+        """The owner the agent's presence subject names, as the login service pinned it (the
+        anchor), '' for none: what owner_of returns before any attestation."""
         return self._owners.get(agent, "")
+
+    def records_on(self) -> bool:
+        """A valid attestation (any agent's) was seen in this process: the login service
+        writes them. It never turns off again before a restart, so an expired or missing
+        record never brings back the comparison by name (fail closed, ADR-016)."""
+        return self._records_on
+
+    def attestation_of(self, agent: str) -> Attestation | None:
+        """The login service's newest attestation of the agent, None when there is none or it
+        has expired by the server's clock (never this host's)."""
+        seen = self._attest.get(agent)
+        if seen is None or seen[2].exp <= self._server_now:
+            return None
+        return seen[2]
 
     def presence_of(self, agent: str) -> str:
         """online or away while the agent's last presence is younger than
@@ -1066,6 +1210,9 @@ class NatsBus:
                 self._owners.pop(agent, None)
                 self._bots.pop(agent, None)
                 self._presence_seq.pop(agent, None)
+        for agent, (_, t, _a) in list(self._attest.items()):
+            if t < cut:
+                del self._attest[agent]
         for ch, members in list(self._members.items()):
             for agent in list(members):
                 if members[agent][1] < cut:
@@ -1191,6 +1338,12 @@ class NatsBus:
                 seq0, at0 = members.get(t[3], (0, 0.0))
                 if (ack.time, ack.stream_seq) > (at0, seq0):
                     members[t[3]] = (ack.stream_seq, ack.time)
+            elif len(t) == 4 and t[0] == p and t[1] == "attest" and t[3] == "v1" and AGENT_RE.fullmatch(t[2]):
+                att = decode_attestation(msg.data, t[2])
+                seq0, at0, _old = self._attest.get(t[2], (0, 0.0, att))
+                if (ack.time, ack.stream_seq) > (at0, seq0):
+                    self._attest[t[2]] = (ack.stream_seq, ack.time, att)
+                self._records_on = True
             else:
                 log.warning("nats bus: dropped a presence message with an unexpected subject")
         except MessageError as exc:
