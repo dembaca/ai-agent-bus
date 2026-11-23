@@ -15,6 +15,9 @@ const pendingPrefix = "pending."
 // ErrNotFound: there is no such record.
 var ErrNotFound = errors.New("directory: not found")
 
+// ErrChannelFull: the channel has MaxMembers members already.
+var ErrChannelFull = errors.New("directory: the channel is full")
+
 // Pending is a Mattermost password account's claim on channels, found by the
 // import: it names a username, not an identity. It is no member until an
 // admin has confirmed it and an identity of that name logs in (the name is
@@ -174,10 +177,22 @@ func (s *Store) redeem(ctx context.Context, sub, name string) error {
 		if !ok || !p.Confirmed {
 			return nil
 		}
+		var full []string
 		for _, ch := range p.Channels {
-			if err := s.addMember(ctx, ch, sub); err != nil {
+			if err := s.addMember(ctx, ch, sub); errors.Is(err, ErrChannelFull) {
+				full = append(full, ch) // stays in the claim, for an admin to see; the login goes on
+			} else if err != nil {
 				return err
 			}
+		}
+		if len(full) > 0 {
+			p.Channels = full
+			if _, err := s.put(ctx, pendingKey(name), p, rev); errors.Is(err, ErrConflict) {
+				continue
+			} else if err != nil {
+				return err
+			}
+			return nil
 		}
 		err = s.kv.Delete(ctx, pendingKey(name), jetstream.LastRevision(rev))
 		switch {
@@ -199,6 +214,9 @@ func (s *Store) addMember(ctx context.Context, channel, sub string) error {
 		}
 		if !ok || slices.Contains(c.Members, sub) {
 			return nil
+		}
+		if len(c.Members) >= MaxMembers {
+			return ErrChannelFull
 		}
 		c.Members = append(c.Members, sub)
 		if _, err := s.PutChannel(ctx, c, rev); errors.Is(err, ErrConflict) {

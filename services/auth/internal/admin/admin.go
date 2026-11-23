@@ -144,7 +144,11 @@ func (h *handler) refuse(w http.ResponseWriter, r *http.Request, code int, msg, 
 	if id != nil {
 		attrs = append(attrs, "sub", id.Subject, "preferred_username", id.Owner)
 	}
-	h.cfg.Log.Info("directory refusal", attrs...)
+	level := slog.LevelInfo
+	if id == nil && code == http.StatusTooManyRequests {
+		level = slog.LevelDebug // a flood before the token is checked: not a line per request
+	}
+	h.cfg.Log.Log(r.Context(), level, "directory refusal", attrs...)
 	fail(w, code, msg)
 }
 

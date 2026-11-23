@@ -114,6 +114,23 @@ func (c *Client) checkAuth(ctx context.Context) error {
 	return nil
 }
 
+// ErrTooMany: a list is longer than this client reads (maxItems).
+var ErrTooMany = errors.New("mattermost: list too long")
+
+// authState is authVisible with the reason: a check that failed (a
+// network error, a 5xx) is an error, not "cannot see".
+func (c *Client) authState(ctx context.Context) (bool, error) {
+	c.mu.Lock()
+	stale := c.recheck || c.now().Sub(c.checkedAt) > recheckFor
+	c.mu.Unlock()
+	if stale {
+		if err := c.checkAuth(ctx); err != nil {
+			return false, err
+		}
+	}
+	return c.AuthVisible(), nil
+}
+
 // authVisible asks again when the last answer is old or a request was
 // refused since.
 func (c *Client) authVisible(ctx context.Context) bool {

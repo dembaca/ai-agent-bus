@@ -4,6 +4,7 @@ import (
 	"context"
 	"encoding/json"
 	"errors"
+	"fmt"
 	"net/http"
 	"net/http/httptest"
 	"slices"
@@ -282,15 +283,19 @@ func TestAConfirmationBindsToTheEntrysRevision(t *testing.T) {
 
 // fakeSource is an in-memory Source.
 type fakeSource struct {
-	channels []mattermost.Channel
-	members  map[string][]string
-	users    []mattermost.User
+	channels  []mattermost.Channel
+	members   map[string][]string
+	memberErr map[string]error
+	users     []mattermost.User
 }
 
 func (f *fakeSource) TeamChannels(context.Context) ([]mattermost.Channel, error) {
 	return slices.Clone(f.channels), nil
 }
 func (f *fakeSource) ChannelMemberIDs(_ context.Context, id string) ([]string, error) {
+	if err := f.memberErr[id]; err != nil {
+		return nil, err
+	}
 	return f.members[id], nil
 }
 func (f *fakeSource) Users(_ context.Context, ids []string) ([]mattermost.User, error) {
@@ -483,5 +488,79 @@ func TestACreatorRemovedFromTheirChannelDoesNotOwnIt(t *testing.T) {
 	}
 	if c, _, _, _ := store.Channel(ctx(t), "aaa"); c.Owner != "sub-ann" {
 		t.Fatalf("aaa: owner %q", c.Owner)
+	}
+}
+
+// A channel that would grow past MaxMembers with the import (members already
+// in the directory counted), or whose member list is too long to read, is
+// left out and named; the import completes.
+func TestAChannelTooBigIsSkippedNotFailing(t *testing.T) {
+	store := newStore(t)
+	var full []string
+	for i := range directory.MaxMembers - 1 {
+		full = append(full, fmt.Sprintf("sub-x%04d", i))
+	}
+	if _, err := store.PutChannel(ctx(t), directory.Channel{Name: "crowd", Members: full}, 0); err != nil {
+		t.Fatal(err)
+	}
+	src := &fakeSource{
+		channels: []mattermost.Channel{
+			{ID: "c1", Name: "crowd", Type: "O"},
+			{ID: "c2", Name: "huge", Type: "O"},
+			{ID: "c3", Name: "town", Type: "O"},
+		},
+		members:   map[string][]string{"c1": {"ann", "cat"}, "c3": {"ann"}},
+		memberErr: map[string]error{"c2": mattermost.ErrTooMany},
+		users:     []mattermost.User{oidUser("ann"), oidUser("cat")},
+	}
+	rep, err := Import(ctx(t), store, src, "open", token.Identity{})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(rep.ChannelsSkipped) != 2 || rep.ChannelsSkipped[0].Name != "crowd" || rep.ChannelsSkipped[1].Name != "huge" {
+		t.Fatalf("skipped: %+v", rep.ChannelsSkipped)
+	}
+	if done, _ := store.Imported(ctx(t)); !done {
+		t.Fatal("the import did not complete")
+	}
+	if c, _, _, _ := store.Channel(ctx(t), "crowd"); len(c.Members) != directory.MaxMembers-1 {
+		t.Fatalf("crowd changed: %d members", len(c.Members))
+	}
+}
+
+// A confirmed claim on a full channel does not refuse the login: the full
+// channel stays in the claim, the others are given.
+func TestAFullChannelStaysInTheClaimAndTheLoginGoesOn(t *testing.T) {
+	store := newStore(t)
+	var full []string
+	for i := range directory.MaxMembers {
+		full = append(full, fmt.Sprintf("sub-x%04d", i))
+	}
+	for _, c := range []directory.Channel{{Name: "crowd", Members: full}, {Name: "town"}} {
+		if _, err := store.PutChannel(ctx(t), c, 0); err != nil {
+			t.Fatal(err)
+		}
+	}
+	for _, ch := range []string{"crowd", "town"} {
+		if err := store.AddPending(ctx(t), "pat", ch); err != nil {
+			t.Fatal(err)
+		}
+	}
+	entries, err := store.PendingEntries(ctx(t))
+	if err != nil || len(entries) != 1 {
+		t.Fatalf("%+v %v", entries, err)
+	}
+	if err := store.ConfirmPending(ctx(t), "pat", "sub-admin", entries[0].Revision); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := (directory.Anchors{Store: store}).Anchor(ctx(t), "sub-pat", "pat"); err != nil {
+		t.Fatalf("the login was refused: %v", err)
+	}
+	if c, _, _, _ := store.Channel(ctx(t), "town"); !slices.Contains(c.Members, "sub-pat") {
+		t.Fatalf("town not given: %v", c.Members)
+	}
+	left, _ := store.ListPending(ctx(t))
+	if len(left) != 1 || !slices.Equal(left[0].Channels, []string{"crowd"}) {
+		t.Fatalf("the claim: %+v", left)
 	}
 }

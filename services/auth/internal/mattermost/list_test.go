@@ -3,6 +3,7 @@ package mattermost
 import (
 	"context"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"net/http"
 	"net/http/httptest"
@@ -90,5 +91,59 @@ func TestUsersPost(t *testing.T) {
 	u := us[0]
 	if u.Username != "name-a" || !u.Guest || !u.Deactivated || !u.IsBot || u.AuthData != "sub-a" || u.AuthService != "openid" {
 		t.Fatalf("%+v", u)
+	}
+}
+
+// A check of the token's rights that fails (a 5xx) is an error, never "the
+// token cannot see how accounts log in".
+func TestAFailedRightsCheckIsAnErrorNotBlindness(t *testing.T) {
+	ctx := context.Background()
+	down := false
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if r.URL.Path == "/api/v4/users/me" {
+			if down {
+				http.Error(w, "", http.StatusBadGateway)
+				return
+			}
+			_ = json.NewEncoder(w).Encode(map[string]any{"roles": "system_admin"})
+			return
+		}
+		_ = json.NewEncoder(w).Encode([]map[string]any{{"id": "a", "username": "a", "auth_service": "openid", "auth_data": "s"}})
+	}))
+	t.Cleanup(srv.Close)
+	c, err := New(ctx, srv.URL, "lab", "tok")
+	if err != nil {
+		t.Fatal(err)
+	}
+	down = true
+	c.mu.Lock()
+	c.recheck = true
+	c.mu.Unlock()
+	if us, err := c.Users(ctx, []string{"a"}); err == nil {
+		t.Fatalf("a failed rights check answered %+v", us)
+	}
+}
+
+// A list longer than the client reads is ErrTooMany, for the caller to skip.
+func TestAListTooLongIsErrTooMany(t *testing.T) {
+	ctx := context.Background()
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if r.URL.Path == "/api/v4/users/me" {
+			_ = json.NewEncoder(w).Encode(map[string]any{"roles": "system_admin"})
+			return
+		}
+		out := make([]map[string]any, 200)
+		for i := range out {
+			out[i] = map[string]any{"user_id": fmt.Sprint("u", r.URL.Query().Get("page"), "-", i)}
+		}
+		_ = json.NewEncoder(w).Encode(out)
+	}))
+	t.Cleanup(srv.Close)
+	c, err := New(ctx, srv.URL, "lab", "tok")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, err := c.ChannelMemberIDs(ctx, "big"); !errors.Is(err, ErrTooMany) {
+		t.Fatalf("a never-ending list: %v", err)
 	}
 }

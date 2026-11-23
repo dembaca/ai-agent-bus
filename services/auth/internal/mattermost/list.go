@@ -49,7 +49,7 @@ func paged[T any](ctx context.Context, c *Client, path string) ([]T, error) {
 		}
 		all = append(all, got...)
 		if len(all) > maxItems {
-			return nil, fmt.Errorf("more than %d items", maxItems)
+			return nil, fmt.Errorf("%w: more than %d items", ErrTooMany, maxItems)
 		}
 		if len(got) < pageSize {
 			return all, nil
@@ -110,7 +110,10 @@ func (c *Client) ChannelMemberIDs(ctx context.Context, channelID string) ([]stri
 // Users reads accounts by id (in batches of pageSize).
 func (c *Client) Users(ctx context.Context, ids []string) ([]User, error) {
 	var out []User
-	seen := c.authVisible(ctx)
+	seen, err := c.authState(ctx)
+	if err != nil {
+		return nil, fmt.Errorf("whether the token sees how accounts log in: %w", err)
+	}
 	for len(ids) > 0 {
 		n := min(len(ids), pageSize)
 		var got []user

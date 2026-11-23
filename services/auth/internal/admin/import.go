@@ -4,6 +4,7 @@ import (
 	"context"
 	"errors"
 	"fmt"
+	"maps"
 	"regexp"
 	"slices"
 	"sort"
@@ -16,6 +17,8 @@ import (
 
 // ErrAlreadyImported: the one import has run.
 var ErrAlreadyImported = errors.New("admin: the import has already run")
+
+var tooMany = fmt.Sprintf("more than %d members", directory.MaxMembers)
 
 // ErrAuthInvisible: the Mattermost token cannot see how accounts log in, so
 // no account can be told apart as OpenID or password.
@@ -131,6 +134,10 @@ func importAt(ctx context.Context, store *directory.Store, source Source, bindin
 			continue
 		}
 		ids, err := source.ChannelMemberIDs(ctx, ch.ID)
+		if errors.Is(err, mattermost.ErrTooMany) {
+			rep.ChannelsSkipped = append(rep.ChannelsSkipped, SkippedChannel{Name: ch.Name, Reason: tooMany})
+			continue
+		}
 		if err != nil {
 			return rep, fmt.Errorf("channel %s: members: %w", ch.Name, err)
 		}
@@ -156,9 +163,18 @@ func importAt(ctx context.Context, store *directory.Store, source Source, bindin
 				openIDs[u.AuthData] = true
 			}
 		}
-		if len(openIDs) > directory.MaxMembers {
-			rep.ChannelsSkipped = append(rep.ChannelsSkipped, SkippedChannel{Name: ch.Name,
-				Reason: fmt.Sprintf("more than %d members", directory.MaxMembers)})
+		// The size after the import, members already in the directory
+		// included, decided before anything of this channel is written.
+		cur, rev, ok, err := store.Channel(ctx, ch.Name)
+		if err != nil {
+			return rep, err
+		}
+		after := maps.Clone(openIDs)
+		for _, m := range cur.Members {
+			after[m] = true
+		}
+		if len(after) > directory.MaxMembers {
+			rep.ChannelsSkipped = append(rep.ChannelsSkipped, SkippedChannel{Name: ch.Name, Reason: tooMany})
 			continue
 		}
 		var members []string
@@ -182,10 +198,6 @@ func importAt(ctx context.Context, store *directory.Store, source Source, bindin
 		slices.Sort(members)
 		members = slices.Compact(members)
 
-		cur, rev, ok, err := store.Channel(ctx, ch.Name)
-		if err != nil {
-			return rep, err
-		}
 		if !ok {
 			// the creator owns it only while still a member, human and an
 			// OpenID account with a visible sub
