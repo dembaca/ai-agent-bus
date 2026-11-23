@@ -41,7 +41,7 @@ from datetime import datetime, timezone
 from typing import TYPE_CHECKING, Any
 
 from . import a2a, attest, gate, lease, owners
-from .ids import _ID
+from .ids import _ID, NATS_POST
 from .model import Mark, NoMandateEndpoint, Post
 
 if TYPE_CHECKING:
@@ -373,7 +373,7 @@ async def _judge(client: ChatPort, posts: Sequence[Post], now: float) -> dict[st
     # Over NATS nothing is mandated (RT-6.36 step 5): a post whose author is no
     # Mattermost account (a NATS sender's agent name) is never the holder's, whatever
     # its name, here explicitly rather than by the names not matching.
-    posts = [p for p in posts if _ID.fullmatch(p.user_id)]
+    posts = [p for p in posts if _ID.fullmatch(p.user_id) and not NATS_POST.fullmatch(p.id)]
     names = await client.usernames({p.user_id for p in posts} - {""})
     mine = [p for p in posts if names.get(p.user_id, "").lower() == name.lower()]
     if not mine:

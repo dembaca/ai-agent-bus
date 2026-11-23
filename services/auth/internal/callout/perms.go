@@ -16,9 +16,14 @@ import (
 //	direct message    <prefix>.dm.<recipient>.<sender>
 //	presence          <presence>.<owner>.<sender>
 //	crown claim       <presence>.crown.<channel>.<sender>
+//	membership        <presence>.member.<channel>.<sender>   (an agent's channel, apart from the crown)
 //	reading           deliver.<agent>.<...>, only from push consumers the login
 //	                  service creates (ack none, no flow control, subscribed by
 //	                  their literal deliver subject)
+//
+// By token count: <presence>.<owner>.<sender> (3 tokens) is a presence, so an
+// owner named "crown" or "member" still gives a presence; the claim and the
+// membership have 4 tokens.
 //
 // The owner token of a presence subject is the owner from the Keycloak token's
 // preferred_username, with "." written as "~" (a NATS token holds no dot, a
@@ -65,13 +70,14 @@ func checkToken(s string) error {
 
 // permissions are what an agent may do: publish only under its own name as
 // the last token, in the channels it was granted and to other agents' direct
-// subjects, plus presence (under its owner) and crown claims; subscribe only to its own deliver
+// subjects, plus presence (under its owner), crown claims and memberships; subscribe only to its own deliver
 // subjects. Nothing else.
 func (s Subjects) permissions(agent, owner string, channels []string) jwt.Permissions {
 	var p jwt.Permissions
 	for _, ch := range channels {
 		p.Pub.Allow.Add(s.Prefix + ".ch." + ch + "." + agent)
 		p.Pub.Allow.Add(s.Presence + ".crown." + ch + "." + agent)
+		p.Pub.Allow.Add(s.Presence + ".member." + ch + "." + agent)
 	}
 	p.Pub.Allow.Add(s.Prefix + ".dm.*." + agent)
 	p.Pub.Allow.Add(s.Presence + "." + ownerToken(owner) + "." + agent)

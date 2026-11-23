@@ -9,7 +9,7 @@ import (
 // default one.
 func TestAConfiguredPresencePrefixIsWhatTheCredentialGets(t *testing.T) {
 	p := Subjects{Prefix: "bus", Presence: "here"}.permissions("agent-x", "andreas.dembach", []string{"home"})
-	for _, want := range []string{"here.andreas~dembach.agent-x", "here.crown.home.agent-x", "bus.ch.home.agent-x", "bus.dm.*.agent-x"} {
+	for _, want := range []string{"here.andreas~dembach.agent-x", "here.crown.home.agent-x", "here.member.home.agent-x", "bus.ch.home.agent-x", "bus.dm.*.agent-x"} {
 		if !p.Pub.Allow.Contains(want) {
 			t.Errorf("publish %s missing: %v", want, p.Pub.Allow)
 		}
@@ -19,7 +19,7 @@ func TestAConfiguredPresencePrefixIsWhatTheCredentialGets(t *testing.T) {
 			t.Errorf("publish right on the default presence prefix: %s", got)
 		}
 	}
-	if len(p.Pub.Allow) != 4 || len(p.Sub.Allow) != 1 || !p.Sub.Allow.Contains("deliver.agent-x.>") || len(p.Pub.Deny)+len(p.Sub.Deny) != 0 {
+	if len(p.Pub.Allow) != 5 || len(p.Sub.Allow) != 1 || !p.Sub.Allow.Contains("deliver.agent-x.>") || len(p.Pub.Deny)+len(p.Sub.Deny) != 0 {
 		t.Errorf("pub %v, sub %v", p.Pub, p.Sub)
 	}
 }
@@ -69,7 +69,7 @@ func TestThePermissionHoldsExactlyOnePresenceSubject(t *testing.T) {
 	p := Subjects{Prefix: "bus", Presence: "presence"}.permissions("agent-x", "Alice", []string{"home"})
 	var got []string
 	for _, s := range p.Pub.Allow {
-		if strings.HasPrefix(s, "presence.") && !strings.HasPrefix(s, "presence.crown.") {
+		if strings.HasPrefix(s, "presence.") && !strings.HasPrefix(s, "presence.crown.") && !strings.HasPrefix(s, "presence.member.") {
 			got = append(got, s)
 		}
 	}
@@ -79,5 +79,25 @@ func TestThePermissionHoldsExactlyOnePresenceSubject(t *testing.T) {
 	p = Subjects{Prefix: "bus", Presence: "presence"}.permissions("agent-x", "alice", nil)
 	if !p.Pub.Allow.Contains("presence.alice.agent-x") || p.Pub.Allow.Contains("presence.agent-x") {
 		t.Errorf("pub %v", p.Pub.Allow)
+	}
+}
+
+// The grammar is by token count: an owner named "crown" or "member" still gives
+// a three-token presence subject, the claim and the membership have four.
+func TestOwnersNamedCrownAndMemberGiveAThreeTokenPresence(t *testing.T) {
+	for _, owner := range []string{"crown", "member"} {
+		p := Subjects{Prefix: "bus", Presence: "presence"}.permissions("agent-x", owner, []string{"home", "ga"})
+		want := []string{"presence." + owner + ".agent-x", "presence.crown.home.agent-x", "presence.member.home.agent-x",
+			"presence.crown.ga.agent-x", "presence.member.ga.agent-x"}
+		for _, w := range want {
+			if !p.Pub.Allow.Contains(w) {
+				t.Errorf("owner %s: %s missing: %v", owner, w, p.Pub.Allow)
+			}
+		}
+		for _, s := range p.Pub.Allow {
+			if strings.HasPrefix(s, "presence.") && len(strings.Split(s, ".")) == 3 && s != "presence."+owner+".agent-x" {
+				t.Errorf("owner %s: another three-token presence subject %s", owner, s)
+			}
+		}
 	}
 }

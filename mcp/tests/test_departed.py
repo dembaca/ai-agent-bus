@@ -495,3 +495,38 @@ async def test_a_member_beyond_the_first_page_of_a_big_channel_is_reachable(bus)
         return True
     bus.client.is_member = member
     assert await departed.unreachable(bus.client, "TASK @agent-w", "agent-me", PROJ) == []
+
+
+class NatsStub:
+    """A client of a NATS home: no Mattermost bots, a port that says where a NATS name is."""
+
+    def __init__(self, where):
+        self.where = where
+
+    async def bots_named(self, names):
+        return {}
+
+    async def is_member(self, channel_id, user_id):
+        return False
+
+    async def whereabouts(self, channel_id, name):
+        return self.where.get(name)
+
+
+async def test_a_nats_name_here_counts_as_present_and_one_elsewhere_is_not_here():
+    """RT-6.37: where a NATS name is comes from the claims, not from a Mattermost bot."""
+    a, b, c, d = "agent-" + "a" * 26, "agent-" + "b" * 26, "agent-" + "c" * 26, "agent-" + "d" * 26
+    client = NatsStub({a: "here", b: "elsewhere", c: "gone", d: None})
+    assert await departed._present(client, WORK, [a, b, c, d]) == [a]
+    assert await departed.elsewhere(client, WORK, [a, b, c, d]) == [departed.Elsewhere(b, "")]
+    assert departed.not_here(await departed.elsewhere(client, WORK, [b])) == b
+
+
+async def test_a_client_without_whereabouts_leaves_a_nats_name_alone():
+    name = "agent-" + "a" * 26
+
+    class Plain(NatsStub):
+        whereabouts = None
+
+    assert await departed._present(Plain({}), WORK, [name]) == []
+    assert await departed.elsewhere(Plain({}), WORK, [name]) == []

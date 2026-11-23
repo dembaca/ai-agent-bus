@@ -64,14 +64,16 @@ import contextlib
 import dataclasses
 import json
 import logging
+import os
 import secrets
 import weakref
 from collections import OrderedDict
 from collections.abc import Callable, Iterable, Mapping, Sequence
+from functools import partial
 from types import MappingProxyType
 from typing import TYPE_CHECKING, Any, Protocol
 
-from . import a2a, natsbus
+from . import a2a, lease, natsbus
 from .events import ChatEvent, EventSource, EventStream, PostEvent, ReactionEvent
 from .ids import _ID, NATS_POST
 from .model import NotFound, Post, Reaction, Thread, UnreadChannel
@@ -121,6 +123,19 @@ class BusLike(Protocol):
     def owner_of(self, agent: str) -> str: ...
 
     def presence_of(self, agent: str) -> str: ...
+
+    def link_bot(self, bot_id: str) -> None: ...
+
+    def bot_of(self, agent: str) -> str: ...
+
+    @property
+    def synced(self) -> bool: ...
+
+    def is_member(self, channel: str, agent: str) -> bool: ...
+
+    def presence_snapshot(self) -> dict[str, tuple[float, str]]: ...
+
+    async def member(self, channel: str) -> None: ...
 
 
 def post_id(channel: str, seq: int) -> str:
@@ -238,7 +253,15 @@ class NatsPort:
                 bus = NatsBus(self._s, login, owner, self._on_event, on_fatal=self._on_fatal,
                               **self._bus_options)
                 self._bus = bus
+                try:
+                    bus.link_bot(await self._bot_id())
+                except ValueError:
+                    # A bot id that is no Mattermost user id (a bad MM_BOT_USER_ID): the NATS
+                    # home still starts, only without a link between bot and NATS name.
+                    log.warning("nats: the bot id is not a Mattermost user id: starting without a link")
                 await bus.start()
+                lease.use_nats_link(partial(_tag_of, bus))
+                await self._announce_membership(bus)
                 return
             except asyncio.CancelledError:
                 raise
@@ -252,6 +275,29 @@ class NatsPort:
                 await asyncio.sleep(delay)
                 delay = min(delay * 2, START_RETRY_MAX_SEC)
 
+    async def _bot_id(self) -> str:
+        """The Mattermost user id of the bot, as lease._user_id resolves it."""
+        inner: Any = self.inner
+        if inner.session:
+            return str(inner.session.user_id)
+        return os.environ.get("MM_BOT_USER_ID") or (await inner.get_me()).id
+
+    async def _announce_membership(self, bus: BusLike) -> None:
+        """Tell the bus to announce this session's membership of every channel it asked
+        for (the NATS homes, the guests, the lobby): the signal of whereabouts (RT-6.37).
+        The bus does it once it is synced, every 6 h and after each reconnect. The crown
+        claim is another subject and is not made here."""
+        channels = [*self._homes, *self._s.guests]
+        if self._s.lobby:
+            channels.append(self._s.lobby_channel)
+        try:
+            for ch in dict.fromkeys(channels):
+                await bus.member(ch)
+        except asyncio.CancelledError:
+            raise
+        except Exception as exc:  # noqa: BLE001
+            log.warning("nats: announcing the membership failed: %s", type(exc).__name__)
+
     def fail(self, why: BaseException | str) -> None:
         """The homes cannot run over NATS: logged once, sends raise from now on."""
         text = why if isinstance(why, str) else _describe(why)
@@ -264,6 +310,8 @@ class NatsPort:
         self.fail(exc)
 
     async def stop(self) -> None:
+        if self._bus is not None:
+            lease.use_nats_link(None)  # a stopped bus links nothing any more
         bus, self._bus = self._bus, None
         self._tell(None)
         if bus is not None:
@@ -681,11 +729,47 @@ class NatsPort:
         bus = self._bus if self._fatal is None else None
         return out | {i: bus.presence_of(i) if bus is not None else "offline" for i in nats}
 
+    def linked(self, rows: Iterable[Mapping[str, Any]]) -> dict[str, str]:
+        """bot id -> NATS name, for the roster rows (dicts with `id` and `text`) whose bot
+        and NATS name name each other (RT-6.37): the bot's status shows the name's tag AND
+        the name's presence names the bot, and the name is not offline. A tag that fits
+        more than one fresh name links none; a one-sided claim gives no link."""
+        bus = self._bus if self._fatal is None else None
+        if bus is None:
+            return {}
+        fresh = [n for n in bus.presence_snapshot() if bus.presence_of(n) != "offline"]
+        out: dict[str, str] = {}
+        for row in rows:
+            tag = lease.link_of(str(row.get("text") or ""))
+            if not tag:
+                continue
+            same = [n for n in fresh if natsbus.link_tag(n) == tag]
+            if len(same) == 1 and bus.bot_of(same[0]) == str(row.get("id")):
+                out[str(row["id"])] = same[0]
+        return out
+
+    async def whereabouts(self, channel_id: str, name: str) -> str | None:
+        """Where a NATS name is, for a NATS home's channel (RT-6.37): `gone` (offline),
+        `here` (fresh and a member of that home), else `elsewhere`; None when the channel
+        is no NATS home of this port or the bus cannot tell (not attached, failed, not
+        connected, not synced)."""
+        home = await self.nats_name(channel_id)
+        bus = self._bus
+        if home is None or bus is None or self._fatal is not None or not bus.connected or not bus.synced:
+            return None
+        if bus.presence_of(name) == "offline":
+            return "gone"
+        return "here" if bus.is_member(home, name) else "elsewhere"
+
     async def is_member(self, channel_id: str, user_id: str) -> bool:
         if not is_nats_user(user_id):
             return await self.inner.is_member(channel_id, user_id)
         name = await self.nats_name(channel_id)
         return name is not None and any(p.user_id == user_id for p in self._posts.get(name, {}).values())
+
+
+def _tag_of(bus: BusLike) -> str:
+    return natsbus.link_tag(bus.name)
 
 
 def _final(exc: BaseException) -> bool:

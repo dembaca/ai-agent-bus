@@ -76,6 +76,13 @@ type Config struct {
 // consumer. It cannot collide with a channel name (channelRE).
 const SinceDM = "@dm"
 
+// SincePresence is the key of Reconcile's since map (and of the hello's since)
+// with which a NEW host session says it has not read the presence stream yet:
+// the presence consumer is made anew, so the stored last message of every
+// subject (presences, crown claims, memberships) is delivered again. A
+// credential renewal of a running session leaves it out and keeps the position.
+const SincePresence = "@presence"
+
 var (
 	agentRE   = regexp.MustCompile(`^[A-Za-z0-9][A-Za-z0-9_-]{0,127}$`)
 	channelRE = regexp.MustCompile(`^[a-z0-9][a-z0-9_-]{0,63}$`)
@@ -238,7 +245,7 @@ func (m *Manager) desired(agent string, channels []string) []spec {
 	for _, ch := range channels {
 		out = append(out, spec{stream: BusStream, name: agent + "_ch_" + ch, channel: ch,
 			deliver: DeliverPrefix + "." + agent + ".ch." + ch, filters: []string{m.cfg.Bus + ".ch." + ch + ".*"}})
-		filters = append(filters, m.cfg.Presence+".crown."+ch+".*")
+		filters = append(filters, m.cfg.Presence+".crown."+ch+".*", m.cfg.Presence+".member."+ch+".*")
 	}
 	out = append(out,
 		spec{stream: BusStream, name: agent + "_dm", dm: true, deliver: DeliverPrefix + "." + agent + ".dm",
@@ -355,7 +362,7 @@ func (m *Manager) Reconcile(ctx context.Context, agent, owner string, channels [
 	for ch, seq := range since {
 		switch {
 		case seq == 0:
-		case ch == SinceDM || seen[ch]:
+		case ch == SinceDM || ch == SincePresence || seen[ch]:
 			starts[ch] = seq
 		default:
 			if ignored++; ignored <= maxIgnoredLogged {
@@ -404,6 +411,7 @@ func (m *Manager) Reconcile(ctx context.Context, agent, owner string, channels [
 	if err := m.ensureConsumer(ctx, presence, agent, owner, both, starts, stamp); err != nil {
 		return err
 	}
+	delete(starts, SincePresence) // read afresh once per login, not again at the final update
 	var jobs []func() error
 	for _, c := range prev {
 		if wanted[c.stream+"/"+c.name] {
@@ -540,6 +548,7 @@ func (m *Manager) ensureConsumer(ctx context.Context, w spec, agent, owner strin
 	}
 	seq, restart := starts[key]
 	restart = restart && key != ""
+	fresh := w.presence && starts[SincePresence] > 0
 	ci, err := m.info(ctx, w.stream, w.name)
 	if err != nil {
 		return err
@@ -548,7 +557,7 @@ func (m *Manager) ensureConsumer(ctx context.Context, w spec, agent, owner strin
 		if ci.Config.Metadata[metaAgent] != agent {
 			return fmt.Errorf("consumer %s belongs to another agent", w.name)
 		}
-		if w.presence && !restart {
+		if w.presence && !restart && !fresh {
 			// Kept or updated, with the time of this login: a bye the server
 			// stamped before it must not remove the consumer.
 			if stamp != "" {
@@ -560,12 +569,15 @@ func (m *Manager) ensureConsumer(ctx context.Context, w spec, agent, owner strin
 				}
 				return nil
 			}
-		} else if !restart && same(ci.Config, *cfg) {
+		} else if !restart && !fresh && same(ci.Config, *cfg) {
 			return nil
 		}
 		if err := m.delete(ctx, w.stream, w.name); err != nil {
 			return err
 		}
+	}
+	if fresh && stamp != "" {
+		cfg.Metadata[metaLogin] = stamp // the login's time, as an update would keep it
 	}
 	if restart {
 		if err := m.start(ctx, cfg, seq); err != nil {

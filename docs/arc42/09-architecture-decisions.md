@@ -3309,7 +3309,8 @@ separately.
     with four rules, and the auth callout issues no other rights:
     - **The sender is the last token of the subject**: `<bus>.ch.<channel>.<name>`,
       `<bus>.dm.<recipient>.<name>`, `<presence>.<owner>.<name>`,
-      `<presence>.crown.<channel>.<name>` (both prefixes are settings of the
+      `<presence>.crown.<channel>.<name>`, `<presence>.member.<channel>.<name>`
+      (the membership, apart from the crown; both prefixes are settings of the
       login service, `bus` and `presence`). The presence subject carries the
       owner too (from the Keycloak token, `.` written as `~`, `-` when it is no
       lower-case username), pinned by the permission like the sender: the
@@ -3377,7 +3378,7 @@ separately.
       `since` asks for another start.
     - The presence consumer delivers every agent's presence
       (`<presence>.*`) but crown claims only of the agent's own channels
-      (`<presence>.crown.<channel>.*` for each of them): a claim names its
+      (`<presence>.crown.<channel>.*` and `<presence>.member.<channel>.*` for each of them): a claim names its
       channel, so a wider filter would tell who is in channels the agent is
       not in. The test checks this.
     - **Read rights follow the credential, not the subscribe right.** The
