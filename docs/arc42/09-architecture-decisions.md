@@ -4591,9 +4591,11 @@ keinen Eigentümer, sodass nur Verwalter ihn pflegen.
 Gebaut ist auch die Bürgschaft für Vertrauenslisten auf der Seite des
 Anmeldedienstes (Punkt 4, RT-6.41): Der Host nennt seine Liste, der Dienst
 löst sie über das Verzeichnis zu Ankern auf und schreibt bei jeder Ausgabe
-eine Bürgschaft, die nur er publizieren darf. Das Lesen im MCP-Server, also
-die Auflösung von `anchor` zu Namen und der Vergleich über Anker, folgt; erst
-danach ist die Bedingung vor dem ersten Import im Labor erfüllt.
+eine Bürgschaft, die nur er publizieren darf. Der MCP-Server liest sie: Er
+zeigt den Eigentümer mit seinem Namen statt mit seinem Anker und vergleicht
+über Anker, mit der eigenen Bürgschaft als eigener Liste (RT-6.37 Schritt 4).
+Damit ist die Bedingung vor dem ersten Import im Labor erfüllt. Offen bleibt
+die Pflege des Kontenindex nach dem Import (#59).
 
 Gebaut ist die Bedingung „im Zweifel fremd“ (Punkt 1), vor jeder
 Auflösung von Namen: `owners.foreign()` und `owners.peer()` nehmen bei

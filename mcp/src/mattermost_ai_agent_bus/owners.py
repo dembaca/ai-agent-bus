@@ -101,6 +101,12 @@ class Owner:
     trusts: frozenset[str]
     cut: bool  # the registrar wrote only part of the trusted list (+N)
     attested: bool = False  # owner and trusts come from a valid attestation (RT-6.24)
+    by_anchor: bool = False  # owner and trusts are the login service's anchors, not names (NATS)
+    shown: str = ""  # the owner's name to show when `owner` is an anchor; never compared
+
+    def display(self) -> str:
+        """The owner as people read it: its name, also when it is compared by anchor."""
+        return self.shown or self.owner
 
     def circle(self) -> set[str]:
         """Everyone the agent obeys: its owner and its trusted humans."""
@@ -112,8 +118,12 @@ def parse(description: str) -> Owner:
                  cut=profile.cut(description))
 
 
-def is_peer(agent: Owner, mine: AbstractSet[str]) -> bool:
-    """ADR-001: I follow an agent only if I would follow everyone it obeys."""
+def is_peer(agent: Owner, mine: AbstractSet[str], anchors: AbstractSet[str] | None = None) -> bool:
+    """ADR-001: I follow an agent only if I would follow everyone it obeys. An agent
+    whose circle is by anchor is compared with `anchors` (my own trusted humans' anchors),
+    never with names: a later holder of an old name inherits nothing. No anchors: foreign."""
+    if agent.by_anchor:
+        return anchors is not None and bool(agent.owner) and not agent.cut and agent.circle() <= anchors
     return bool(agent.owner) and not agent.cut and agent.circle() <= mine
 
 
@@ -206,11 +216,15 @@ async def read(client: ChatPort, user_id: str) -> Owner | None:
         description = await client.bot_description(user_id)
         owner = await client.agent_owner(user_id)
         claim = await attested(client, user_id)
+        circle = await client.attested_circle(user_id)
     except Exception as exc:  # noqa: BLE001 — unreadable
         log.info("owner of %s not readable: %s", user_id, exc)
         return None
     if owner is None:
         return None
+    if circle is not None:
+        return Owner(owner=circle.owner_anchor, trusts=circle.trusted_anchors, cut=circle.cut,
+                     attested=True, by_anchor=True, shown=owner)
     if claim is not None:
         # A cut list (trusted_cut) is foreign, as a description's +N is.
         return Owner(owner=owner, trusts=frozenset(claim.trusted), cut=claim.trusted_cut > 0,
@@ -301,6 +315,17 @@ async def mine(client: ChatPort) -> tuple[AbstractSet[str], str]:
     return names, me
 
 
+async def _anchors(client: ChatPort, agent: Owner) -> frozenset[str] | None:
+    """My own trusted anchors, read only for an agent whose circle is by anchor."""
+    if not agent.by_anchor:
+        return None
+    try:
+        return await client.own_anchors()
+    except Exception as exc:  # noqa: BLE001 — in doubt: none, so foreign
+        log.info("my own anchors are not readable: %s", exc)
+        return None
+
+
 async def peer(client: ChatPort, user_id: str) -> bool:
     """The agent is a peer (ADR-001): the owner split is active and its owner
     and trusted humans are all this session's. Unreadable or split off: no
@@ -309,7 +334,7 @@ async def peer(client: ChatPort, user_id: str) -> bool:
     if not names:
         return False
     agent = await known(client, user_id)
-    return agent is not None and is_peer(agent, names)
+    return agent is not None and is_peer(agent, names, await _anchors(client, agent))
 
 
 async def foreign(client: ChatPort, agent_ids: Iterable[str]) -> dict[str, str]:
@@ -328,8 +353,8 @@ async def foreign(client: ChatPort, agent_ids: Iterable[str]) -> dict[str, str]:
         if agent is None:
             log.info("agent %s counts as foreign: its owner is not readable", uid)
             out[uid] = ""
-        elif not is_peer(agent, names):
-            out[uid] = agent.owner
+        elif not is_peer(agent, names, await _anchors(client, agent)):
+            out[uid] = agent.display()
     return out
 
 

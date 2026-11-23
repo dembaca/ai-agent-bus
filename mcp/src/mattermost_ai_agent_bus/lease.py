@@ -960,12 +960,14 @@ async def _election(client: ChatPort, rows: list[dict[str, Any]]) -> Election:
 
 
 def standing(oldest: list[str], me: str, names: AbstractSet[str],
-             agents: Mapping[str, owners.Owner | None]) -> Election:
+             agents: Mapping[str, owners.Owner | None],
+             anchors: AbstractSet[str] | None = None) -> Election:
     """The rule of _election on what it read, so that the home over NATS (RT-6.38) applies
     exactly the same one: `oldest` the reachable agents in their order (the oldest, or by
     claim), `me` this agent, `names` its trusted humans (empty: the owner split is off, every
     one stands), `agents` each one's owner (`oldest` and `me`; None: not readable, nobody
-    stands). The agents with an owner stand if `me` has one and is a peer of each; those
+    stands), `anchors` my own trusted humans' anchors (over NATS; an owner by anchor is compared
+    with them, none: it is foreign). The agents with an owner stand if `me` has one and is a peer of each; those
     without are foreign and stand only where nobody has one."""
     if not names:
         return Election(oldest)
@@ -978,7 +980,7 @@ def standing(oldest: list[str], me: str, names: AbstractSet[str],
         return Election(oldest)  # no owners: every agent is a peer
     if me not in owned:
         return Election([], unbound=True, owned=held)
-    if any(not owners.is_peer(a, names) for i, a in owned.items() if i != me and i in oldest):
+    if any(not owners.is_peer(a, names, anchors) for i, a in owned.items() if i != me and i in oldest):
         log.info("crown: the home has an agent of a foreign owner circle: nobody stands")
         return Election([], owned=held)
     return Election([i for i in oldest if i in owned], owned=held)

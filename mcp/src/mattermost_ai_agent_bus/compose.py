@@ -153,7 +153,8 @@ def nats_settings_from_env(home: str, lobby: str = "",
     if not urls:
         return None
     return NatsSettings(servers=urls, home=home, lobby_channel=lobby or "lobby",
-                        props_prefix=a2a.user_prefix(environ), tls_ca_file=get("MM_NATS_CA_FILE") or None)
+                        props_prefix=a2a.user_prefix(environ), tls_ca_file=get("MM_NATS_CA_FILE") or None,
+                        trusted=tuple((get("MM_TRUSTED_HUMANS") or get("MM_OWNER")).split(",")))
 
 
 def _with_nats(adapter: BusClient) -> BusClient:

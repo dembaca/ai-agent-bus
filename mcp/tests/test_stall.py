@@ -77,6 +77,12 @@ class Client:
     async def agent_owner(self, user_id):
         return ""
 
+    async def attested_circle(self, user_id):
+        return None
+
+    async def own_anchors(self):
+        return None
+
     async def reactions(self, post_id):
         return [reaction_of(r) for r in self.reacts.get(post_id, [])]
 
