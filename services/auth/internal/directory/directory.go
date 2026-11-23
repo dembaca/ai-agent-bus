@@ -284,11 +284,11 @@ func (s *Store) Imported(ctx context.Context) (bool, error) {
 }
 
 // MarkImported is the import's last step. Written once (compare and set): a
-// second import leaves the first mark as it is.
+// second one returns ErrConflict and leaves the first mark as it is.
 func (s *Store) MarkImported(ctx context.Context, at time.Time) error {
 	_, err := s.kv.Create(ctx, importedKey, []byte(at.UTC().Format(time.RFC3339)))
 	if errors.Is(err, jetstream.ErrKeyExists) {
-		return nil
+		return ErrConflict
 	}
 	return err
 }

@@ -9,6 +9,7 @@ import (
 	"fmt"
 	"log/slog"
 	"net"
+	"net/http"
 	"net/url"
 	"os"
 	"regexp"
@@ -19,6 +20,7 @@ import (
 	"github.com/nats-io/nats.go/jetstream"
 	"github.com/nats-io/nkeys"
 
+	"github.com/dembaca/ai-agent-bus/services/auth/internal/admin"
 	"github.com/dembaca/ai-agent-bus/services/auth/internal/callout"
 	"github.com/dembaca/ai-agent-bus/services/auth/internal/consumers"
 	"github.com/dembaca/ai-agent-bus/services/auth/internal/directory"
@@ -63,6 +65,15 @@ type Settings struct {
 	// (AUTH_DIRECTORY_IMPORTED=true). The directory then must hold its mark:
 	// a missing bucket or mark refuses, never falls back to Mattermost.
 	DirectoryImported bool
+	// AdminListenAddr is where the directory's admin API listens
+	// (AUTH_ADMIN_LISTEN_ADDR); empty: no admin API. Without a certificate
+	// it must be a loopback address.
+	AdminListenAddr  string
+	AdminTLSCertFile string
+	AdminTLSKeyFile  string
+	// DirectoryAdminGroup is the token group that makes a directory admin
+	// (AUTH_DIRECTORY_ADMIN_GROUP); required with AdminListenAddr.
+	DirectoryAdminGroup string
 }
 
 // LoadSettings reads the callout's settings. It reports false when
@@ -133,6 +144,13 @@ func LoadSettings(getenv func(string) string) (Settings, bool, error) {
 	default:
 		return Settings{}, true, fmt.Errorf("%w: AUTH_DIRECTORY_IMPORTED: true or false, got %q", ErrConfig, v)
 	}
+	s.AdminListenAddr = get("AUTH_ADMIN_LISTEN_ADDR")
+	s.AdminTLSCertFile = get("AUTH_ADMIN_TLS_CERT_FILE")
+	s.AdminTLSKeyFile = get("AUTH_ADMIN_TLS_KEY_FILE")
+	s.DirectoryAdminGroup = get("AUTH_DIRECTORY_ADMIN_GROUP")
+	if err := adminSettings(s); err != nil {
+		return Settings{}, true, err
+	}
 	if s.DirectoryBucket != "" && !bucketRE.MatchString(s.DirectoryBucket) {
 		return Settings{}, true, fmt.Errorf("%w: AUTH_DIRECTORY_BUCKET: letters, digits, - and _ only, got %q", ErrConfig, s.DirectoryBucket)
 	}
@@ -169,6 +187,62 @@ func LoadSettings(getenv func(string) string) (Settings, bool, error) {
 	}
 	s.Callout = s.Callout.WithDefaults()
 	return s, true, nil
+}
+
+// adminSettings checks the admin API's settings.
+func adminSettings(s Settings) error {
+	if (s.AdminTLSCertFile == "") != (s.AdminTLSKeyFile == "") {
+		return fmt.Errorf("%w: AUTH_ADMIN_TLS_CERT_FILE and AUTH_ADMIN_TLS_KEY_FILE go together", ErrConfig)
+	}
+	if s.AdminListenAddr == "" {
+		return nil
+	}
+	if s.DirectoryAdminGroup == "" {
+		return fmt.Errorf("%w: AUTH_DIRECTORY_ADMIN_GROUP must be set with AUTH_ADMIN_LISTEN_ADDR", ErrConfig)
+	}
+	host, _, err := net.SplitHostPort(s.AdminListenAddr)
+	if err != nil {
+		return fmt.Errorf("%w: AUTH_ADMIN_LISTEN_ADDR: host:port expected", ErrConfig)
+	}
+	if s.AdminTLSCertFile == "" {
+		if ip := net.ParseIP(host); ip == nil || !ip.IsLoopback() {
+			return fmt.Errorf("%w: AUTH_ADMIN_LISTEN_ADDR: a loopback IP address (127.0.0.0/8, ::1; not a name) unless AUTH_ADMIN_TLS_CERT_FILE and _KEY_FILE are set", ErrConfig)
+		}
+	}
+	return nil
+}
+
+// serveAdmin listens on the admin address and serves the directory API until
+// ctx ends. The listen error is returned at once; a later serve error goes to
+// the returned channel.
+func serveAdmin(ctx context.Context, s Settings, h http.Handler, log *slog.Logger) (<-chan error, error) {
+	ln, err := net.Listen("tcp", s.AdminListenAddr)
+	if err != nil {
+		return nil, fmt.Errorf("admin API: %w", err)
+	}
+	srv := &http.Server{Handler: h, ReadHeaderTimeout: 5 * time.Second, ReadTimeout: 10 * time.Second,
+		WriteTimeout: 120 * time.Second}
+	errc := make(chan error, 1)
+	go func() {
+		var err error
+		if s.AdminTLSCertFile != "" {
+			err = srv.ServeTLS(ln, s.AdminTLSCertFile, s.AdminTLSKeyFile)
+		} else {
+			err = srv.Serve(ln)
+		}
+		if !errors.Is(err, http.ErrServerClosed) {
+			errc <- fmt.Errorf("admin API: %w", err)
+		}
+		close(errc)
+	}()
+	go func() {
+		<-ctx.Done()
+		sctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+		defer cancel()
+		_ = srv.Shutdown(sctx)
+	}()
+	log.Info("directory admin API serving", "addr", ln.Addr().String(), "tls", s.AdminTLSCertFile != "")
+	return errc, nil
 }
 
 // RunCallout starts the callout and serves until ctx ends. Errors before it
@@ -276,10 +350,38 @@ func RunCallout(ctx context.Context, s Settings, log *slog.Logger) error {
 		return fmt.Errorf("%w: %v", ErrConfig, err)
 	}
 	svc.SetAnchors(directory.Anchors{Store: dir})
+	runCtx, stop := context.WithCancel(ctx)
+	defer stop()
+	var adminErr <-chan error
+	if s.AdminListenAddr != "" {
+		binding := s.Binding
+		if binding == "" {
+			binding = "open"
+		}
+		h, err := admin.New(admin.Config{AdminGroup: s.DirectoryAdminGroup, NameBinding: binding, Log: log}, v, dir, mm)
+		if err != nil {
+			return fmt.Errorf("%w: %v", ErrConfig, err)
+		}
+		if adminErr, err = serveAdmin(runCtx, s, h, log); err != nil {
+			return err
+		}
+	}
 	svc.SetConsumers(mgr)
 	log.Info("consumer management on", "bus", s.Callout.Subjects.Prefix, "presence", s.Callout.Subjects.Presence)
 	log.Info("auth callout serving", "account", s.Callout.Account, "binding", s.Binding)
-	return svc.Serve(ctx, nc)
+	if adminErr != nil {
+		go func() {
+			if err := <-adminErr; err != nil {
+				log.Error("directory admin API stopped", "reason", err.Error())
+				stop()
+			}
+		}()
+	}
+	err = svc.Serve(runCtx, nc)
+	if err == nil && ctx.Err() == nil && runCtx.Err() != nil {
+		return errors.New("the directory admin API stopped")
+	}
+	return err
 }
 
 // natsURLSecure: every URL of the list must be tls:// (or wss://), except on

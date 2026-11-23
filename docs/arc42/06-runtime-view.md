@@ -1679,3 +1679,49 @@ Everything the server writes in its state directory goes through one helper: a n
 | 3 | The directory cannot be read after the import | The issue is refused: unknown is not "no", and never a partial credential |
 | 3 | After the import a lookup comes without a `sub` | Refused (`directory.ErrNoSub`), never answered by name |
 | — | An agent publishes on `$KV.BUS_DIRECTORY.…` or calls the JetStream API for the bucket | Refused by the NATS server: its credential has no such subject (proven against a NATS server, `TestTheDirectoryKeepsNamesAndPresenceTokens`) |
+
+## 6.40 Maintaining the channel directory and the import from Mattermost
+
+**Purpose:** The channels of the bus are kept in the directory, not in the chat: an admin from a Keycloak group creates channels, sets their owners and makes them public, a channel's owner keeps its members, and the channels and members of today come over once from Mattermost (ADR-016 decisions 1, 2, 3 and 8).
+
+**Trigger:** An HTTP request to the login service's admin API (`/v1/directory/…`), by the command line `authd dir …` (following release) or another client with a Keycloak access token.
+
+**Participants:** Login service; NATS server (JetStream key-value), Mattermost REST API, Keycloak, Developer / operator
+
+**Quality goal illustrated:** `#secure` The right comes from outside — only the Keycloak group the configuration names makes an admin, no entry of the directory does; `#reliable` Once — the import writes its mark last and refuses a second run
+
+### Sequence
+
+1. **The listener.** With `AUTH_ADMIN_LISTEN_ADDR` set the login service serves the admin API on a listener of its own, beside `/healthz` (`internal/admin`). It needs `AUTH_DIRECTORY_ADMIN_GROUP`, else the service does not start; without a certificate (`AUTH_ADMIN_TLS_CERT_FILE`, `_KEY_FILE`) only on a loopback IP literal (`127.0.0.0/8`, `::1`; the name `localhost` is not resolved and not taken), so no write reaches it unencrypted. Before the token is checked a coarse limit holds per peer address (20 per second, a burst of 40), after it a limit per identity (2 per second, a burst of 10), so a busy proxy address does not lock admins out; `X-Forwarded-For` is never read, so behind a proxy the first limit counts the proxy. Bodies are limited to 64 KiB (413), JSON only, unknown fields refused. Every refusal (401, 403, 429) is logged with the reason, the peer address and, when known, the `sub` and name, never the token; a 429 before the token is checked only at debug level, so a flood writes no line per request.
+2. **Who.** Every request carries `Authorization: Bearer <Keycloak access token>`, checked as the auth callout checks a host's (RT-6.35 step 2: signature, audience, `azp`, lifetime, `typ`, the chat account). An admin is whoever has the configured group in the token's group claim; nothing in the directory makes anyone an admin.
+3. **Reading.** `GET /v1/directory/channels` and `…/channels/<name>`: an admin reads every channel, anyone else a public one and those they own or are a member of; a private channel one is not in looks missing (404). The revision comes as `ETag`.
+4. **Channels (admins).** `PUT /v1/directory/channels/<name>` with `{"owner","public","bindings"}` creates one (`If-None-Match: *`) or changes one over the revision read (`If-Match`); its members stay as they are. Without a precondition 428, over a stale revision 409.
+5. **Members (the owner).** `PATCH /v1/directory/channels/<name>/members` with `{"add","remove"}` (Keycloak `sub`s) and `If-Match`, only by the channel's owner, compared by `sub`, never by name; a channel without an owner has no member changes, and an admin who is not its owner makes none (decision 1). Who does not see the channel (step 3) gets 404 here too, so a private channel does not show itself; who sees it but does not own it gets 403.
+6. **The import (admins, once).** `POST /v1/directory/import` reads the team's channels (public and private) and their members from Mattermost. Only humans (no bot, no deactivated account, no guest); a channel whose name is no token of the bus is left out and named. An account that logs in over OpenID becomes a member by its `sub` and gets its identity with today's name as anchor (RT-6.39 step 2). A channel's owner is its creator only when that creator is, at the import, a member of the channel, a human, active, no guest and such an OpenID account; else nobody (only admins keep it), never the importing admin. When the service's Mattermost token cannot see how accounts log in (not a system admin's), the import stops before it writes anything further and before the mark: blank login data would otherwise make every account a password account. A channel that would have more than 1000 members after the import, members already in the directory counted, or whose member list is longer than the service reads (10,000), is left out and named, before anything of it is written. A check of the token's rights that fails for a passing reason (a 5xx) is an error of its own, not taken for a token that cannot see. Channels sorted before such a stop, a channel of bots only among them, are already written; the import run again adds only what is missing. A channel that exists already gets only the missing members, so an interrupted import is run again without duplicates. The mark `meta.imported` comes last, compare-and-set; a second import is refused (409). The answer counts what was done, names what was left out and says to set `AUTH_DIRECTORY_IMPORTED=true` and restart.
+7. **Password accounts.** An account without OpenID becomes no member. With `AUTH_NAME_BINDING=open` the import keeps it as a pending claim by its name and channels (`GET /v1/directory/pending`); only after an admin confirms it (`POST /v1/directory/pending/<name>/confirm` with `If-Match` on the revision the listing showed) does the next login of an identity of that name become a member of those channels, and the claim is gone. A claim that gains a channel after it was confirmed is unconfirmed again and needs a new confirmation. A channel of the claim that is full (1000 members) at that login is not given: it stays in the claim, where admins see it, and the login goes on. With `openid-only` such accounts are only named in the answer.
+8. **The record.** Every change is logged with the event, the admin's or owner's `sub` and name, the channel and what changed; never a token.
+
+The rule that an operator reads the guest channels of agents that trust them only reading (ADR-016 decision 6) is not part of this: it concerns people's consumers (ADR-015, ADR-016 point 4), not the directory's channels, and agents keep posting in their guest channels (ADR-002).
+
+### Error Handling
+
+| Step | Failure | System Response |
+|------|---------|----------------|
+| 1 | `AUTH_ADMIN_LISTEN_ADDR` without `AUTH_DIRECTORY_ADMIN_GROUP`, or a non-loopback address without a certificate | The service does not start (configuration error) |
+| 1 | Too many requests from one address before the token is checked, or from one identity after it; a body over 64 KiB | 429, 413 |
+| 3, 5 | A private channel the caller is not in, read or changed | 404, as for a missing channel |
+| 2 | No token, an invalid, expired or foreign one | 401, the reason without the token |
+| 2 | The chat account cannot be looked up | 503, try again |
+| 2 | A valid token without the admin group on an admin route | 403 |
+| 4 | No `If-None-Match`/`If-Match`; a stale revision | 428; 409 |
+| 5 | Not the channel's owner, or a channel without one | 403 |
+| 6 | Mattermost fails during the import | 502; no mark is written, the import may run again and adds only what is missing |
+| 6 | The Mattermost token cannot see how accounts log in | 502 naming it; nothing more written, no mark; run again with a system admin's token |
+| 6 | A channel would have more than 1000 members, or its member list is longer than 10,000 | Left out and named; the import goes on |
+| 6 | The check of the token's rights fails (a 5xx) | 502 naming that; no mark; run again |
+| 6 | The mark was written meanwhile (a second import at once) | 409 |
+| 6 | The import has run | 409 |
+| 7 | A pending claim is not confirmed, or gained a channel after its confirmation | Its name gets nothing at a login |
+| 7 | The confirmation names a revision the claim no longer has | 409; read again and confirm what is there |
+| 7 | Giving a confirmed claim's channels fails at a login | The issue is refused, the claim stays |
+| 7 | A channel of a confirmed claim is full at the login | That channel stays in the claim; the others are given, the login goes on |

@@ -1,0 +1,134 @@
+package mattermost
+
+import (
+	"context"
+	"fmt"
+	"net/url"
+	"strconv"
+	"strings"
+)
+
+const (
+	pageSize = 200
+	maxItems = 10000
+)
+
+// Channel is a channel of the team: Type "O" is public, "P" private.
+type Channel struct {
+	ID        string `json:"id"`
+	Name      string `json:"name"`
+	Type      string `json:"type"`
+	CreatorID string `json:"creator_id"`
+}
+
+// User is an account as the one-time import reads it.
+type User struct {
+	ID          string
+	Username    string
+	IsBot       bool
+	Deactivated bool
+	Guest       bool // role system_guest
+	AuthService string
+	AuthData    string
+	// AuthKnown: the token could see how accounts log in; when false,
+	// AuthService and AuthData are left empty.
+	AuthKnown bool
+}
+
+// paged reads path page by page until a short page, at most maxItems items.
+func paged[T any](ctx context.Context, c *Client, path string) ([]T, error) {
+	var all []T
+	for page := 0; ; page++ {
+		var got []T
+		sep := "?"
+		if strings.Contains(path, "?") {
+			sep = "&"
+		}
+		if err := c.get(ctx, path+sep+"page="+strconv.Itoa(page)+"&per_page="+strconv.Itoa(pageSize), &got); err != nil {
+			return nil, err
+		}
+		all = append(all, got...)
+		if len(all) > maxItems {
+			return nil, fmt.Errorf("%w: more than %d items", ErrTooMany, maxItems)
+		}
+		if len(got) < pageSize {
+			return all, nil
+		}
+	}
+}
+
+func (c *Client) teamID(ctx context.Context) (string, error) {
+	var t struct {
+		ID string `json:"id"`
+	}
+	if err := c.get(ctx, "/api/v4/teams/name/"+url.PathEscape(c.team), &t); err != nil {
+		return "", fmt.Errorf("team %q: %w", c.team, err)
+	}
+	return t.ID, nil
+}
+
+// TeamChannels lists the team's public and private channels, once each.
+func (c *Client) TeamChannels(ctx context.Context) ([]Channel, error) {
+	id, err := c.teamID(ctx)
+	if err != nil {
+		return nil, err
+	}
+	base := "/api/v4/teams/" + url.PathEscape(id) + "/channels"
+	var out []Channel
+	seen := map[string]bool{}
+	for _, p := range []string{base, base + "/private"} {
+		chs, err := paged[Channel](ctx, c, p)
+		if err != nil {
+			return nil, err
+		}
+		for _, ch := range chs {
+			if !seen[ch.ID] {
+				seen[ch.ID] = true
+				out = append(out, ch)
+			}
+		}
+	}
+	return out, nil
+}
+
+// ChannelMemberIDs lists the user ids of a channel's members.
+func (c *Client) ChannelMemberIDs(ctx context.Context, channelID string) ([]string, error) {
+	type member struct {
+		UserID string `json:"user_id"`
+	}
+	ms, err := paged[member](ctx, c, "/api/v4/channels/"+url.PathEscape(channelID)+"/members")
+	if err != nil {
+		return nil, err
+	}
+	ids := make([]string, 0, len(ms))
+	for _, m := range ms {
+		ids = append(ids, m.UserID)
+	}
+	return ids, nil
+}
+
+// Users reads accounts by id (in batches of pageSize).
+func (c *Client) Users(ctx context.Context, ids []string) ([]User, error) {
+	var out []User
+	seen, err := c.authState(ctx)
+	if err != nil {
+		return nil, fmt.Errorf("whether the token sees how accounts log in: %w", err)
+	}
+	for len(ids) > 0 {
+		n := min(len(ids), pageSize)
+		var got []user
+		if err := c.post(ctx, "/api/v4/users/ids", ids[:n], &got); err != nil {
+			return nil, err
+		}
+		for _, u := range got {
+			nu := User{ID: u.ID, Username: u.Username, IsBot: u.IsBot, Deactivated: u.DeleteAt != 0,
+				Guest: hasRole(u.Roles, "system_guest"), AuthKnown: seen}
+			if seen {
+				nu.AuthService, nu.AuthData = u.AuthService, u.AuthData
+			}
+			out = append(out, nu)
+		}
+		ids = ids[n:]
+	}
+	return out, nil
+}

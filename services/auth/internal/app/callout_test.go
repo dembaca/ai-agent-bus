@@ -62,6 +62,19 @@ func TestSettings(t *testing.T) {
 	if s, _, err := LoadSettings(env(map[string]string{"AUTH_XKEY_SEED_FILE": "", "AUTH_PLAIN_REQUESTS": "allow"})); err != nil || !s.PlainRequests {
 		t.Fatalf("explicit plain requests: %+v, %v", s.PlainRequests, err)
 	}
+	for _, over := range []map[string]string{
+		{"AUTH_ADMIN_LISTEN_ADDR": "127.0.0.1:8081", "AUTH_DIRECTORY_ADMIN_GROUP": "dir-admins"},
+		{"AUTH_ADMIN_LISTEN_ADDR": "[::1]:8081", "AUTH_DIRECTORY_ADMIN_GROUP": "dir-admins"},
+		{"AUTH_ADMIN_LISTEN_ADDR": "127.9.9.9:8081", "AUTH_DIRECTORY_ADMIN_GROUP": "dir-admins"},
+		{"AUTH_ADMIN_LISTEN_ADDR": "localhost:8081", "AUTH_DIRECTORY_ADMIN_GROUP": "dir-admins",
+			"AUTH_ADMIN_TLS_CERT_FILE": "/run/secrets/c", "AUTH_ADMIN_TLS_KEY_FILE": "/run/secrets/k"},
+		{"AUTH_ADMIN_LISTEN_ADDR": "0.0.0.0:8081", "AUTH_DIRECTORY_ADMIN_GROUP": "dir-admins",
+			"AUTH_ADMIN_TLS_CERT_FILE": "/run/secrets/c", "AUTH_ADMIN_TLS_KEY_FILE": "/run/secrets/k"},
+	} {
+		if s, _, err := LoadSettings(env(over)); err != nil || s.DirectoryAdminGroup != "dir-admins" {
+			t.Errorf("admin settings %v: %v", over, err)
+		}
+	}
 	for name, over := range map[string]map[string]string{
 		"no account":                  {"AUTH_ACCOUNT": ""},
 		"no issuer seed":              {"AUTH_ISSUER_SEED_FILE": ""},
@@ -78,6 +91,13 @@ func TestSettings(t *testing.T) {
 		"directory bucket with a dot": {"AUTH_DIRECTORY_BUCKET": "BUS.DIRECTORY"},
 		"directory bucket wildcard":   {"AUTH_DIRECTORY_BUCKET": "*"},
 		"directory imported, unclear": {"AUTH_DIRECTORY_IMPORTED": "yes"},
+		"admin address, no group":     {"AUTH_ADMIN_LISTEN_ADDR": "127.0.0.1:8081"},
+		"admin, no host":              {"AUTH_ADMIN_LISTEN_ADDR": ":8081", "AUTH_DIRECTORY_ADMIN_GROUP": "dir-admins"},
+		"admin, localhost by name":    {"AUTH_ADMIN_LISTEN_ADDR": "localhost:8081", "AUTH_DIRECTORY_ADMIN_GROUP": "dir-admins"},
+		"admin, all interfaces":       {"AUTH_ADMIN_LISTEN_ADDR": "0.0.0.0:8081", "AUTH_DIRECTORY_ADMIN_GROUP": "dir-admins"},
+		"admin, non-loopback, no TLS": {"AUTH_ADMIN_LISTEN_ADDR": "10.0.0.5:8081", "AUTH_DIRECTORY_ADMIN_GROUP": "dir-admins"},
+		"admin cert, no key":          {"AUTH_ADMIN_TLS_CERT_FILE": "/run/secrets/c"},
+		"admin key, no cert":          {"AUTH_ADMIN_TLS_KEY_FILE": "/run/secrets/k"},
 	} {
 		if _, _, err := LoadSettings(env(over)); !errors.Is(err, ErrConfig) {
 			t.Errorf("%s: %v", name, err)

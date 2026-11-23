@@ -187,8 +187,8 @@ func TestAnchorsAreFixedAndNeverShared(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if err := s.MarkImported(ctx(t), time.Now().Add(time.Hour)); err != nil { // written once, kept
-		t.Fatal(err)
+	if err := s.MarkImported(ctx(t), time.Now().Add(time.Hour)); !errors.Is(err, ErrConflict) { // written once, kept
+		t.Fatalf("a second mark: %v", err)
 	}
 	if again, err := s.kv.Get(ctx(t), importedKey); err != nil || string(again.Value()) != string(first.Value()) ||
 		again.Revision() != first.Revision() {
