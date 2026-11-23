@@ -7,6 +7,7 @@ package dircli
 import (
 	"bytes"
 	"context"
+	"crypto/tls"
 	"crypto/x509"
 	"encoding/json"
 	"errors"
@@ -19,6 +20,8 @@ import (
 	"strconv"
 	"strings"
 	"time"
+	"unicode"
+	"unicode/utf8"
 )
 
 // Exit codes.
@@ -237,23 +240,36 @@ func (c *cli) setup() error {
 	if c.s.clientID == "" {
 		return usageError("the client id is not set (--client-id, AUTH_KEYCLOAK_CLIENT_ID)")
 	}
-	tr := http.DefaultTransport.(*http.Transport).Clone()
-	if c.s.caFile != "" {
-		pem, err := os.ReadFile(c.s.caFile)
-		if err != nil {
-			return errors.New("the CA file is not readable")
-		}
-		pool, err := x509.SystemCertPool()
-		if err != nil || pool == nil {
-			pool = x509.NewCertPool()
-		}
-		if !pool.AppendCertsFromPEM(pem) {
-			return usageError("the CA file holds no certificate")
-		}
-		tr.TLSClientConfig.RootCAs = pool
+	tr, err := apiTransport(http.DefaultTransport.(*http.Transport), c.s.caFile)
+	if err != nil {
+		return err
 	}
 	c.api = newClient(tr)
 	return nil
+}
+
+// apiTransport is a copy of base that also trusts the CA file, if any.
+func apiTransport(base *http.Transport, caFile string) (*http.Transport, error) {
+	tr := base.Clone()
+	if caFile == "" {
+		return tr, nil
+	}
+	pem, err := os.ReadFile(caFile)
+	if err != nil {
+		return nil, errors.New("the CA file is not readable")
+	}
+	pool, err := x509.SystemCertPool()
+	if err != nil || pool == nil {
+		pool = x509.NewCertPool()
+	}
+	if !pool.AppendCertsFromPEM(pem) {
+		return nil, usageError("the CA file holds no certificate")
+	}
+	if tr.TLSClientConfig == nil {
+		tr.TLSClientConfig = &tls.Config{MinVersion: tls.VersionTLS12}
+	}
+	tr.TLSClientConfig.RootCAs = pool
+	return tr, nil
 }
 
 func newClient(tr http.RoundTripper) *http.Client {
@@ -265,20 +281,47 @@ func newClient(tr http.RoundTripper) *http.Client {
 
 const (
 	maxDeviceLife = 15 * time.Minute
-	maxBackoff    = 60 * time.Second
+	maxInterval   = 30 * time.Second // also the backoff
+	maxBackoff    = maxInterval
 )
+
+// effectivePort is the URL's port, the scheme's default when it has none.
+func effectivePort(u *url.URL) string {
+	if p := u.Port(); p != "" {
+		return p
+	}
+	switch u.Scheme {
+	case "https":
+		return "443"
+	case "http":
+		return "80"
+	}
+	return ""
+}
+
+// sameSite refuses a URL that is not on the issuer's own site: scheme, host
+// and port (a default port counts as the implicit one) must match, and the
+// URL carries no user info.
+func sameSite(issuer *url.URL, raw, what string) error {
+	u, err := url.Parse(raw)
+	if err != nil || u.Host == "" {
+		return fmt.Errorf("%s is not a usable URL", what)
+	}
+	if u.User != nil {
+		return fmt.Errorf("%s carries user info", what)
+	}
+	if u.Scheme != issuer.Scheme || !strings.EqualFold(u.Hostname(), issuer.Hostname()) ||
+		effectivePort(u) != effectivePort(issuer) {
+		return fmt.Errorf("%s is not on the issuer's host", what)
+	}
+	return nil
+}
 
 func (c *cli) login() error {
 	kc := newClient(http.DefaultTransport)
 	issuer := strings.TrimRight(c.s.issuer, "/")
 	iu, _ := url.Parse(issuer)
-	sameSite := func(raw, what string) error {
-		u, err := url.Parse(raw)
-		if err != nil || u.Scheme != iu.Scheme || u.Hostname() != iu.Hostname() {
-			return fmt.Errorf("%s is not on the issuer's host", what)
-		}
-		return nil
-	}
+	sameSite := func(raw, what string) error { return sameSite(iu, raw, what) }
 	var doc struct {
 		Issuer string `json:"issuer"`
 		Device string `json:"device_authorization_endpoint"`
@@ -332,16 +375,18 @@ func (c *cli) login() error {
 	}
 	life = min(life, maxDeviceLife)
 	deadline := c.d.now().Add(life)
-	interval := max(time.Duration(dev.Interval)*time.Second, time.Second)
+	interval := time.Duration(dev.Interval) * time.Second
 	if dev.Interval <= 0 {
 		interval = 5 * time.Second
 	}
+	interval = min(max(interval, time.Second), maxInterval)
 	delay := interval
 	for {
-		c.d.sleep(delay)
-		if c.d.now().After(deadline) {
+		left := deadline.Sub(c.d.now())
+		if left <= 0 {
 			return errors.New("the login expired; run the command again")
 		}
+		c.d.sleep(min(delay, left))
 		st, body, err := c.postForm(kc, doc.Token, url.Values{
 			"grant_type":  {"urn:ietf:params:oauth:grant-type:device_code"},
 			"device_code": {dev.DeviceCode}, "client_id": {c.s.clientID}})
@@ -363,7 +408,7 @@ func (c *cli) login() error {
 		switch code := errCode(body, st); code {
 		case "authorization_pending":
 		case "slow_down":
-			interval += 5 * time.Second
+			interval = min(interval+5*time.Second, maxInterval)
 			delay = interval
 		case "access_denied":
 			return errors.New("the login was declined")
@@ -477,20 +522,32 @@ type putBody struct {
 
 func esc(s string) string { return url.PathEscape(s) }
 
-// clean drops control characters from text a server sent before it reaches
-// the terminal, so an answer cannot move the cursor, clear the screen or
-// fake a line of its own; at most 512 bytes.
+// clean is the one filter for text a server sent: it drops control and
+// format characters (so also bidi controls) and the line and paragraph
+// separators, which could move the cursor, clear the screen, fake a line or
+// reorder the text on a terminal; at most 512 bytes. --json stays raw.
 func clean(s string) string {
 	s = strings.Map(func(r rune) rune {
-		if r < 0x20 || r == 0x7f || (r >= 0x80 && r < 0xa0) {
+		if unicode.Is(unicode.Cc, r) || unicode.Is(unicode.Cf, r) || r == 0x2028 || r == 0x2029 {
 			return -1
 		}
 		return r
 	}, s)
 	if len(s) > 512 {
 		s = s[:512]
+		for !utf8.ValidString(s) {
+			s = s[:len(s)-1]
+		}
 	}
 	return s
+}
+
+func cleanAll(ss []string) []string {
+	out := make([]string, len(ss))
+	for i, s := range ss {
+		out[i] = clean(s)
+	}
+	return out
 }
 
 func visibility(public bool) string {
@@ -521,7 +578,7 @@ func (c *cli) command(pos []string) error {
 			return errors.New("the API's answer is not a channel list")
 		}
 		for _, ch := range chs {
-			fmt.Fprintf(c.out, "%s\t%s\t%s\t%d members\n", ch.Name, visibility(ch.Public), ownerText(ch.Owner), len(ch.Members))
+			fmt.Fprintf(c.out, "%s\t%s\t%s\t%d members\n", clean(ch.Name), visibility(ch.Public), ownerText(ch.Owner), len(ch.Members))
 		}
 	case "show":
 		r, err := c.call("GET", "/v1/directory/channels/"+esc(pos[1]), nil, nil)
@@ -589,7 +646,7 @@ func (c *cli) command(pos []string) error {
 			return nil
 		}
 		for _, p := range ps {
-			fmt.Fprintf(c.out, "%s\t%s\tconfirmed=%t\trevision %d\n", p.Name, strings.Join(p.Channels, ","), p.Confirmed, p.Revision)
+			fmt.Fprintf(c.out, "%s\t%s\tconfirmed=%t\trevision %d\n", clean(p.Name), strings.Join(cleanAll(p.Channels), ","), p.Confirmed, p.Revision)
 		}
 	case "confirm":
 		ps, _, err := c.pending()
@@ -608,7 +665,7 @@ func (c *cli) command(pos []string) error {
 			if c.s.json {
 				c.raw(r.body)
 			} else {
-				fmt.Fprintf(c.out, "confirmed %s\n", p.Name)
+				fmt.Fprintf(c.out, "confirmed %s\n", clean(p.Name))
 			}
 			return nil
 		}
@@ -621,7 +678,7 @@ func ownerText(o string) string {
 	if o == "" {
 		return "-"
 	}
-	return o
+	return clean(o)
 }
 
 // read gets a channel for its ETag.
@@ -665,12 +722,12 @@ func (c *cli) printChannel(r reply) error {
 	if err := json.Unmarshal(r.body, &ch); err != nil {
 		return errors.New("the API's answer is not a channel")
 	}
-	rev := strings.Trim(r.etag, `"`)
+	rev := clean(strings.Trim(r.etag, `"`))
 	if rev == "" {
 		rev = "unknown"
 	}
-	fmt.Fprintf(c.out, "%s\t%s\towner %s\t%d members: %s\trevision %s\n", ch.Name, visibility(ch.Public),
-		ownerText(ch.Owner), len(ch.Members), strings.Join(ch.Members, ","), rev)
+	fmt.Fprintf(c.out, "%s\t%s\towner %s\t%d members: %s\trevision %s\n", clean(ch.Name), visibility(ch.Public),
+		ownerText(ch.Owner), len(ch.Members), strings.Join(cleanAll(ch.Members), ","), rev)
 	return nil
 }
 
@@ -696,13 +753,13 @@ func (c *cli) printImport(r reply) error {
 	fmt.Fprintf(c.out, "identities %d, members added %d, pending added %d, accounts skipped %d\n",
 		rep.Identities, rep.MembersAdded, rep.PendingAdded, len(rep.SkippedAccounts))
 	for _, s := range rep.SkippedChannels {
-		fmt.Fprintf(c.out, "skipped channel %s: %s\n", s.Name, s.Reason)
+		fmt.Fprintf(c.out, "skipped channel %s: %s\n", clean(s.Name), clean(s.Reason))
 	}
 	for _, s := range rep.SkippedAccounts {
-		fmt.Fprintf(c.out, "skipped account %s: %s\n", s.Username, s.Reason)
+		fmt.Fprintf(c.out, "skipped account %s: %s\n", clean(s.Username), clean(s.Reason))
 	}
 	if rep.Next != "" {
-		fmt.Fprintf(c.out, "next: %s\n", rep.Next)
+		fmt.Fprintf(c.out, "next: %s\n", clean(rep.Next))
 	}
 	return nil
 }
