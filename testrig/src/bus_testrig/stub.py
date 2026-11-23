@@ -111,6 +111,7 @@ TEAM_MEMBERS = re.compile(r"^/api/v4/users/me/teams/[^/]+/channels/members$")
 ID = r"[a-z0-9]{26}"
 USER_BY_ID = re.compile(rf"^/api/v4/users/(?!me$){ID}$")
 BOT_BY_ID = re.compile(rf"^/api/v4/bots/{ID}$")
+CHANNEL_PATCH = re.compile(r"^/api/v4/channels/[^/]+/patch$")
 
 
 def _query_int(query: dict[str, list[str]], name: str) -> int:
@@ -274,9 +275,24 @@ class MattermostStub:
             return self._statuses(headers, body)
         if method == "GET" and path == "/api/v4/users":
             return self._channel_users(target)
+        if method == "PUT" and CHANNEL_PATCH.fullmatch(path):
+            # The crown's headline goes into the channel's header (RT-6.6 step 7).
+            # The stub never saw it before, because the status did not persist
+            # past the write: a run that keeps a crown reaches this path.
+            return self._patch_channel(path, body)
         if method == "PUT" and (path.endswith("/status") or path.endswith("/status/custom")) \
                 and "/api/v4/users/" in path:
             return self._write_status(headers, path, body)
+        if method == "DELETE" and path == "/api/v4/users/me/status/custom":
+            # A released crown must disappear (client.clear_custom_status). A 404
+            # left it stored, so the crown outlived its release in every run.
+            uid = self._bot(headers)["id"]
+            held = self.statuses.get(uid)
+            if held is not None:
+                held.pop("custom", None)
+                held.pop("text", None)
+                held.pop("expires_at", None)
+            return 200, {"content-type": "application/json"}, b'{"status":"OK"}'
         key = f"{method} {path}"
         for pattern, answer in self._patterns:
             if pattern.fullmatch(key):
@@ -307,6 +323,19 @@ class MattermostStub:
             "posts": {p["id"]: p for p in window},
         }).encode()
 
+    def _patch_channel(self, path: str, body: bytes) -> tuple[int, dict[str, str], bytes]:
+        """A channel patch (the crown's headline, RT-6.6 step 7), answered with the
+        channel as Mattermost does."""
+        try:
+            asked = json.loads(body or b"{}")
+        except json.JSONDecodeError:
+            asked = {}
+        cid = path.split("/")[4]
+        row = self._channel_row(cid)
+        if isinstance(asked, dict):
+            row.update({k: v for k, v in asked.items() if isinstance(k, str)})
+        return 200, {"content-type": "application/json"}, json.dumps(row).encode()
+
     def _channel_users(self, target: str) -> tuple[int, dict[str, str], bytes]:
         """The accounts of a channel (`GET /users?in_channel=…`), with the custom
         status on each.
@@ -320,6 +349,10 @@ class MattermostStub:
         out = []
         for account in self.bots.values():
             held = self.statuses.get(account["id"]) or {}
+            custom = ({"emoji": held["custom"], "text": held.get("text", ""),
+                       "duration": "date_and_time",
+                       "expires_at": held.get("expires_at") or "0001-01-01T00:00:00Z"}
+                      if held.get("custom") else {})
             out.append({
                 "id": account["id"],
                 "username": account["username"],
@@ -327,11 +360,13 @@ class MattermostStub:
                 "delete_at": 0,
                 "deleted": False,
                 "is_bot": True,
-                "custom_status": ({"emoji": held["custom"],
-                                   "text": held.get("text", ""),
-                                   "duration": "date_and_time",
-                                   "expires_at": held.get("expires_at", "")}
-                                  if held.get("custom") else {}),
+                # Mattermost carries the custom status as a JSON *string* in
+                # `props.customStatus`, and that is what `client._custom_status`
+                # parses. A top-level object made the crown invisible to the real
+                # reader while the stub's own test was green (review of #60): the
+                # third time in this rig that a test pinned the stub's invented
+                # shape instead of what the bus parses.
+                "props": ({"customStatus": json.dumps(custom)} if custom else {}),
             })
         return 200, {"content-type": "application/json"}, json.dumps(out).encode()
 
@@ -385,11 +420,13 @@ class MattermostStub:
             # The lease's end: a custom status without one "proves nothing
             # about a live session" (lease.live), so a stub that drops it makes
             # the crown unwritable even though the emoji arrived.
-            held["expires_at"] = str(asked.get("expires_at") or "")
+            held["expires_at"] = str(asked.get("expires_at") or "0001-01-01T00:00:00Z")
         else:
             held["status"] = str(asked.get("status") or "online")
-        return 200, {"content-type": "application/json"}, json.dumps(
-            {"user_id": uid, **{k: v for k, v in held.items()}}).encode()
+        # Mattermost answers the status routes with `{"status":"OK"}`, not with
+        # the state it kept; a stub that echoed its own bookkeeping looked like a
+        # response the bus never gets (review of #60).
+        return 200, {"content-type": "application/json"}, b'{"status":"OK"}'
 
     def _user_by_id(self, path: str) -> tuple[int, dict[str, str], bytes] | None:
         """An account by its id, as the roster reads it, or `None` when this stub

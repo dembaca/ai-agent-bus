@@ -242,15 +242,15 @@ async def test_an_id_route_answers_only_an_id_this_stub_knows():
     ]
 
 
-async def test_the_stub_keeps_the_status_it_is_written():
-    """The crown is a Mattermost status lease (RT-6.6 step 6), so the stub must
-    keep what the bus writes and hand it back.
+async def test_the_stub_carries_the_custom_status_as_mattermost_does():
+    """`props.customStatus` as a JSON **string**, which is what the bus parses.
 
-    Before, it accepted the write and answered `[]` for every read: the crown was
-    invisible (`bus_info` said `crown: False` with the write done) and no
-    take-over could be measured. The three routes the bus uses are checked here:
-    the presence route, the custom status, and the channel's accounts, which is
-    where `lease._rows` takes `custom_status` from.
+    The stub first answered a top-level `custom_status` object: the bus's own
+    reader (`client._custom_status`) looks in `props` for a string, so it saw
+    nothing, `lease.live` was False, and no crown existed — while a test of the
+    stub's own shape stayed green. The reader itself lives in `mcp/`, which this
+    package deliberately does not depend on; `scripts/probe_status_shape.py` runs
+    the real `channel_user_of` over this answer instead (review of #60).
     """
     async with MattermostStub() as stub:
         stub.identify(SENDER_TOKEN, SENDER_ID, "agent-sender")
@@ -259,19 +259,36 @@ async def test_the_stub_keeps_the_status_it_is_written():
                                      trust_env=False) as client:
             await client.put(f"/api/v4/users/{SENDER_ID}/status", json={"status": "online"})
             await client.put("/api/v4/users/me/status/custom", json={
-                "emoji": "crown", "text": "coordinator · ~agents",
+                "emoji": "crown", "text": "coordinator \u00b7 ~agents",
                 "duration": "date_and_time", "expires_at": "2099-01-01T00:00:00Z"})
-            presence = await client.post("/api/v4/users/status/ids", json=[SENDER_ID])
             users = await client.get("/api/v4/users", params={"in_channel": CHANNEL})
-    held = stub.statuses[SENDER_ID]
-    assert held["status"] == "online"
-    assert held["custom"] == "crown" and held["text"] == "coordinator · ~agents"
-    assert presence.json() == [{"user_id": SENDER_ID, "status": "online",
-                                "manual": False, "last_activity_at": 0}]
     row = next(u for u in users.json() if u["id"] == SENDER_ID)
-    assert row["custom_status"]["emoji"] == "crown"
-    assert row["custom_status"]["text"] == "coordinator · ~agents"
-    assert row["custom_status"]["expires_at"] == "2099-01-01T00:00:00Z"
+    raw = row["props"]["customStatus"]
+    assert isinstance(raw, str), "Mattermost sends a JSON string here, not an object"
+    parsed = json.loads(raw)
+    assert parsed["emoji"] == "crown"
+    assert parsed["text"] == "coordinator \u00b7 ~agents"
+    assert parsed["expires_at"] == "2099-01-01T00:00:00Z"
+    assert "custom_status" not in row, "the invented top-level key must be gone"
+    assert stub.unknown == []
+
+
+async def test_a_released_crown_disappears():
+    """`clear_custom_status` (DELETE) must leave nothing: a crown that outlives
+    its release would be held forever in every run."""
+    async with MattermostStub() as stub:
+        stub.identify(SENDER_TOKEN, SENDER_ID, "agent-sender")
+        async with httpx.AsyncClient(base_url=stub.url,
+                                     headers={"authorization": f"Bearer {SENDER_TOKEN}"},
+                                     trust_env=False) as client:
+            await client.put("/api/v4/users/me/status/custom", json={
+                "emoji": "crown", "text": "coordinator \u00b7 ~agents",
+                "duration": "date_and_time", "expires_at": "2099-01-01T00:00:00Z"})
+            cleared = await client.delete("/api/v4/users/me/status/custom")
+            users = await client.get("/api/v4/users", params={"in_channel": CHANNEL})
+    assert cleared.json() == {"status": "OK"}
+    row = next(u for u in users.json() if u["id"] == SENDER_ID)
+    assert row["props"] == {}
     assert stub.unknown == []
 
 
@@ -286,7 +303,7 @@ async def test_a_user_without_a_status_reads_back_none():
     assert answer.json() == [{"user_id": SENDER_ID, "status": "offline",
                               "manual": False, "last_activity_at": 0}]
     row = next(u for u in users.json() if u["id"] == SENDER_ID)
-    assert row["custom_status"] == {}
+    assert row["props"] == {}
 
 
 def test_the_id_patterns_accept_an_id_and_nothing_else():
