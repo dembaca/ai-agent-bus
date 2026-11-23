@@ -48,6 +48,11 @@ With `AUTH_NATS_URL` set the service answers the auth callout, and these
 apply. Secrets are always files, never values in the environment; example
 values are placeholders.
 
+The NATS server's side of it is in
+[`nats-server.example.conf`](nats-server.example.conf): the callout's account
+and the tenant's, the two users of this service, `auth_callout`, TLS and
+JetStream, with placeholders instead of keys. A test starts a server from it.
+
 | Variable | Default | Meaning |
 | --- | --- | --- |
 | `AUTH_NATS_URL` | — | the NATS server, `tls://` (plain `nats://` only on a loopback host); unset: no callout, health only |
@@ -59,13 +64,15 @@ values are placeholders.
 | `AUTH_ACCOUNT` | — | the tenant's account the agents land in |
 | `AUTH_LOBBY` | unset | the lobby's channel name |
 | `AUTH_SUBJECT_PREFIX`, `AUTH_PRESENCE_PREFIX`, `AUTH_NAME_PREFIX` | `bus`, `presence`, `agent-` | subject prefix of channels and direct messages, of presence and crown claims (must differ, and neither may be `deliver`), the start of agent names |
-| `AUTH_JS_SEED_FILE`, `AUTH_JS_URL` | —, `AUTH_NATS_URL` | file with the user nkey seed of the service's own user in the tenant account, the only one with JetStream API rights, and its server; required with `AUTH_NATS_URL`: the service makes the streams and every agent's consumers (RT-6.35) and does not start without them. That user needs only (`TestTheDocumentedMinimalRightsSuffice`): publish `$JS.API.STREAM.CREATE.<S>`, `$JS.API.STREAM.INFO.<S>`, `$JS.API.CONSUMER.*.<S>` and `$JS.API.CONSUMER.*.<S>.>` for `<S>` = `BUS`, `PRESENCE`; subscribe `_INBOX.>` |
+| `AUTH_JS_SEED_FILE`, `AUTH_JS_URL` | —, `AUTH_NATS_URL` | file with the user nkey seed of the service's own user in the tenant account, the only one with JetStream API rights, and its server; required with `AUTH_NATS_URL`: the service makes the streams and every agent's consumers (RT-6.35) and does not start without them. That user needs only (`TestTheDocumentedMinimalRightsSuffice`): publish `$JS.API.STREAM.CREATE.<S>`, `$JS.API.STREAM.INFO.<S>`, `$JS.API.CONSUMER.*.<S>` and `$JS.API.CONSUMER.*.<S>.>` for `<S>` = `BUS`, `PRESENCE`; for the channel directory (RT-6.39) `$JS.API.INFO`, `$JS.API.STREAM.CREATE.KV_BUS_DIRECTORY`, `$JS.API.STREAM.INFO.KV_BUS_DIRECTORY`, `$JS.API.DIRECT.GET.KV_BUS_DIRECTORY.>` and `$KV.BUS_DIRECTORY.>` (with another `AUTH_DIRECTORY_BUCKET`, its name in place of `BUS_DIRECTORY`); subscribe `_INBOX.>` |
 | `AUTH_REQUEST_TIMEOUT` | `1.5s` | bound of one request (token check, chat lookups, answer), at most 10 s; keep it below the server's callout timeout |
 | `AUTH_BRAKE_FILE` | unset | the emergency brake (below) |
 | `AUTH_KEYCLOAK_ISSUER`, `AUTH_KEYCLOAK_JWKS_URL`, `AUTH_KEYCLOAK_CLIENT_ID` | — | the realm and the bus's client |
 | `AUTH_KEYCLOAK_AUDIENCE`, `AUTH_APPROVER_GROUP`, `AUTH_APPROVER_CLAIM`, `AUTH_TOKEN_LEEWAY` | client id, unset, `groups`, `30s` | see the token check |
 | `AUTH_NAME_BINDING` | `open` | `open` or `openid-only` (see the name binding) |
 | `AUTH_MATTERMOST_URL`, `AUTH_MATTERMOST_TEAM` | — | the chat (https; http only on a loopback host) and the team of the bus's channels |
+| `AUTH_DIRECTORY_BUCKET` | `BUS_DIRECTORY` | the channel directory's key-value bucket in the tenant account (ADR-016, RT-6.39): letters, digits, `-` and `_`. Until the one-time import from Mattermost has written `meta.imported`, membership still comes from Mattermost and every identity's anchor is its name of today, so agents keep their names |
+| `AUTH_DIRECTORY_IMPORTED` | `false` | set `true` once the one-time import has run: from then on a missing bucket is never made anew and a bucket without the import's mark refuses every login, instead of falling back to Mattermost (RT-6.39) |
 | `AUTH_MATTERMOST_TOKEN_FILE` | — | file with a Mattermost access token that may see how accounts log in (a system admin's); without that right every login is refused. The right is asked again every minute and after every 401 or 403 |
 
 An invalid value stops the program at start with a message naming the variable.
@@ -101,6 +108,12 @@ As a container, from the repository root:
 docker build -f services/auth/Dockerfile -t ai-agent-bus-auth services/auth
 docker run --rm -p 8080:8080 ai-agent-bus-auth
 ```
+
+Each merge to `main` that changes this directory publishes the image to
+`ghcr.io/dembaca/ai-agent-bus-auth`, tagged with the full commit SHA (and a
+moving `:main`), once the tests in `.github/workflows/auth.yml` passed. Deploy
+it by the digest from that run's job summary, not by a tag; where and how is in
+the [deployment view](../../docs/arc42/07-deployment-view.md).
 
 Both base images are pinned by digest. A tag can be moved; a digest cannot, and
 the running service should change only when this repository changes. When a
@@ -298,6 +311,15 @@ server knows one issuer at a time.
   system admin's token at all depends on its privacy settings; the lab checks
   it. Without it an OpenID account's `sub` cannot be compared, and the check
   refuses the login.
+- **A smaller Mattermost right than a system admin's** needs a license
+  with custom permission schemes. The lab checked it (2026-11-23): its Entry
+  license refuses the system role "User Manager" ("Custom Permission Schemes
+  not supported by current license"), and a bot without that role gets
+  `auth_service` back empty. The service itself also accepts only a token
+  with the role `system_admin` (`internal/mattermost/client.go`): any other
+  leaves `auth_service` unknown and refuses every login. A smaller role thus
+  needs a license with custom permission schemes and a code change; whether
+  "User Manager" then sees `auth_service` and `auth_data` is unverified.
 - **Who sent a post, as the receiver sees it:** the subject's last token
   names the sender, and only the sender can publish there: agents talk to no
   service, and the streams do not acknowledge (ADR-014 point 16). A receiver

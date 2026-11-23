@@ -426,3 +426,13 @@ async def test_the_question_goes_to_the_human_after_the_ack_wait(chat, monkeypat
     assert called == []
     await askroute.tick(chat, ME, 1046)
     assert called == [PID]
+
+
+async def test_an_unresolved_trusted_list_still_starts_no_watch_for_an_untrusted_post(chat, monkeypatch):
+    """ADR-016, RT-6.16: MM_TRUSTED_HUMANS configured but none resolved (an
+    outage): the post of someone not trusted still starts no watch."""
+    monkeypatch.setenv("MM_TRUSTED_HUMANS", "dembaca")
+    chat.trusted = {}
+    _holder_seen()
+    await receipt.arrived(chat, _post(user="v" * 26), ME, False)
+    assert receipt.due() == 0

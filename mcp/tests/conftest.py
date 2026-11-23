@@ -20,6 +20,11 @@ _BUS_ENV = (
     "MM_BOT_USER_ID",
     "MM_BOT_ATTESTATION",
     "MM_REGISTRAR_KEYS",
+    # The trusted humans: gate.active reads them (RT-6.16, ADR-016).
+    "MM_TRUSTED_HUMANS",
+    "MM_TRUSTED_HUMAN_USER_IDS",
+    "MM_OWNER",
+    "MM_OWNER_USER_ID",
     "MM_PROPS_PREFIX",
     "MM_TEAM",
     "MM_TEAM_ID",
@@ -84,6 +89,7 @@ def _isolate_bus_env(monkeypatch, tmp_path, request):
                         ("_took_from", ""), ("_crown_since", 0.0), ("_ousted", None)):
         monkeypatch.setattr(lease, name, value)
     owners._noted.clear()
+    owners.reset()  # the last owners read, held for OWNER_GRACE_SEC (RT-6.16)
     # The bus line each home's header was last checked for (RT-6.6 step 7), and
     # what the ask-mode reader keeps per process (RT-6.25).
     monkeypatch.setattr(lease, "_header_line", {})

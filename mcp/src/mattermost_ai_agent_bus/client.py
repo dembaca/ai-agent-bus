@@ -255,6 +255,8 @@ def dm_partner(channel: Channel, me: str) -> str:
 _NAME_RE = re.compile(r"^[a-z0-9]([a-z0-9-]{0,30}[a-z0-9])?$")
 # A bot description (its owner and trusted list, ADR-003) is read again after this.
 DESCRIPTION_TTL_SEC = 600.0
+# How long a failed lookup of MM_TRUSTED_HUMANS waits before it asks again (ADR-016).
+TRUSTED_RETRY_SEC = 60
 # The most a registrar's answer with a signed record may hold (an ask mode, a
 # mandate, an attestation: RT-6.25 step 8, RT-6.26 step 8, RT-6.24 step 5).
 MODE_RECORD_MAX = 8192
@@ -444,6 +446,8 @@ class MattermostAdapter:
         default_factory=dict, repr=False, init=False)
     session: SessionInfo | None = field(default=None, repr=False, init=False)
     _trusted: dict[str, str] | None = field(default=None, repr=False, init=False)
+    # After a failed lookup: (monotonic time to ask again, what resolved), ADR-016.
+    _trusted_retry: tuple[float, dict[str, str]] | None = field(default=None, repr=False, init=False)
     profile_warning: str = field(default="", repr=False, init=False)
     trusted_source: str = field(default="", repr=False, init=False)
     session_file_status: dict[str, Any] = field(
@@ -1140,12 +1144,16 @@ class MattermostAdapter:
         """
         if self._trusted is not None:
             return self._trusted
+        if self._trusted_retry is not None and time.monotonic() < self._trusted_retry[0]:
+            return dict(self._trusted_retry[1])
 
         def names(var: str) -> list[str]:
             return [n.strip().lstrip("@") for n in env(var).split(",") if n.strip()]
 
         trusted: dict[str, str] = {}
         source = ""
+        failed = False  # a lookup failed: not cached, the next call asks again (ADR-016)
+        missing: list[str] = []  # configured names with no human account (404, invalid, a bot)
         ids = names("MM_TRUSTED_HUMAN_USER_IDS") or names("MM_OWNER_USER_ID")
         wanted = names("MM_TRUSTED_HUMANS") or names("MM_OWNER")
         try:
@@ -1156,16 +1164,35 @@ class MattermostAdapter:
                 for n in wanted:
                     try:
                         u = await self._api("GET", f"/api/v4/users/username/{mm_name(n, 'user')}")
-                    except (httpx.HTTPError, InvalidId):
+                    except httpx.HTTPStatusError as exc:
+                        if getattr(exc.response, "status_code", None) == 404:
+                            missing.append(n)
+                        else:
+                            failed = True
+                        continue
+                    except InvalidId:
+                        missing.append(n)
+                        continue
+                    except httpx.HTTPError:
+                        failed = True
                         continue
                     if not u.get("is_bot"):
                         trusted[u["id"]] = n
+                    else:
+                        missing.append(n)
                 source = "MM_TRUSTED_HUMANS"
         except (httpx.HTTPError, KeyError, ValueError):
-            trusted = {}
-        self._trusted = trusted
+            trusted, failed = {}, True
+        if failed:
+            log.info("trusted humans: a lookup failed, %d of %d resolved; asked again in %d s",
+                     len(trusted), len(wanted), TRUSTED_RETRY_SEC)
+            self._trusted_retry = (time.monotonic() + TRUSTED_RETRY_SEC, dict(trusted))
+        else:
+            self._trusted, self._trusted_retry = trusted, None
         self.trusted_source = source if trusted else (
-            "none: set MM_TRUSTED_HUMANS")
+            f"not resolved: a lookup failed, asked again in {TRUSTED_RETRY_SEC} s" if failed
+            else f"configured, no account found for: {', '.join(missing)}" if missing
+            else "none: set MM_TRUSTED_HUMANS")
         return trusted
 
     @property

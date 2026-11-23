@@ -11,10 +11,14 @@ trusted list always comes from the description, which the registrar writes
 (``for @<owner> · trusts @…``). Every MCP server reads both with its own bot
 token through the chat port: the same in every harness. The split is active
 only when this session has trusted humans and its own bot has an owner;
-otherwise every agent is a peer, as before. An agent whose owner and
-description cannot be read counts as a peer, with a log line: like the gate,
-this fails open. One without an owner is foreign (``unbound`` too), and so is
-a cut list (``+N``).
+otherwise every agent is a peer, as before. In doubt, foreign (ADR-016): an
+agent whose owner and description cannot be read keeps the owner last read
+for it for ``OWNER_GRACE_SEC``, so a short outage does not turn every task
+into a request; after that it is foreign, with a log line. When my own bot
+cannot be read the split stays on (only a bot read without an owner turns it
+off), and my trusted humans are the last names read, else those configured.
+One without an owner is foreign (``unbound`` too), and so is a cut list
+(``+N``).
 
 With registrar keys pinned (``MM_REGISTRAR_KEYS``) an agent whose account
 carries a valid attestation (RT-6.24: a pinned key signed it, for this bot id
@@ -32,8 +36,9 @@ description, logged once per agent; without pinned keys nothing changes.
 from __future__ import annotations
 
 import logging
-from collections.abc import Iterable
+from collections.abc import Iterable, Set as AbstractSet
 from dataclasses import dataclass
+from time import monotonic
 from typing import TYPE_CHECKING
 
 from . import attest, profile
@@ -43,6 +48,49 @@ if TYPE_CHECKING:
     from .port import ChatPort
 
 log = logging.getLogger(__name__)
+
+# How long the owner last read for an agent stands in for one that cannot be
+# read now (RT-6.16, error table): a short outage keeps peers peers; after
+# it, in doubt, the agent is foreign (ADR-016).
+OWNER_GRACE_SEC = 300.0
+
+# user id -> (when last read, monotonic; what was read): the last good read.
+# At most _LAST_MAX entries (over NATS every sender name is one): the oldest go.
+_last: dict[str, tuple[float, Owner]] = {}
+_LAST_MAX = 1024
+# The variables that configure trusted humans, by name or by id: any of them
+# set turns the owner split and the gate on (gate.active), whether or not a
+# lookup resolves them now.
+TRUSTED_VARS = ("MM_TRUSTED_HUMAN_USER_IDS", "MM_TRUSTED_HUMANS", "MM_OWNER_USER_ID", "MM_OWNER")
+
+class _Nobody(frozenset[str]):
+    """Trusted humans that are configured but none known: empty, yet true.
+    The owner split stays on (it is not "none configured"), and no circle is
+    a subset of it, so nobody is a peer. A value, not a name: no description,
+    attestation or presence can ever match it (ADR-016)."""
+
+    def __bool__(self) -> bool:
+        return True
+
+
+# In doubt with trusted humans configured only by id, none of them resolved.
+NOBODY: AbstractSet[str] = _Nobody()
+
+
+def configured() -> bool:
+    """Trusted humans are configured, by name or by id."""
+    return any(env(v).strip() for v in TRUSTED_VARS)
+
+
+# My trusted names and bot id as last read (mine).
+_mine: tuple[float, set[str], str] | None = None
+
+
+def reset() -> None:
+    """Forget the last reads (tests, a new session)."""
+    global _mine
+    _last.clear()
+    _mine = None
 
 
 @dataclass(frozen=True)
@@ -64,7 +112,7 @@ def parse(description: str) -> Owner:
                  cut=profile.cut(description))
 
 
-def is_peer(agent: Owner, mine: set[str]) -> bool:
+def is_peer(agent: Owner, mine: AbstractSet[str]) -> bool:
     """ADR-001: I follow an agent only if I would follow everyone it obeys."""
     return bool(agent.owner) and not agent.cut and agent.circle() <= mine
 
@@ -171,6 +219,25 @@ async def read(client: ChatPort, user_id: str) -> Owner | None:
                  cut=profile.cut(description))
 
 
+async def known(client: ChatPort, user_id: str) -> Owner | None:
+    """`read`, and when that cannot read the agent, the owner last read for it
+    while that is younger than OWNER_GRACE_SEC; None after that (in doubt,
+    foreign: ADR-016)."""
+    now = monotonic()
+    agent = await read(client, user_id)
+    if agent is not None:
+        _last.pop(user_id, None)
+        _last[user_id] = (now, agent)
+        while len(_last) > _LAST_MAX:
+            del _last[next(iter(_last))]
+        return agent
+    hit = _last.get(user_id)
+    if hit is not None and now - hit[0] < OWNER_GRACE_SEC:
+        log.info("owner of %s not readable: the one read %.0f s ago holds", user_id, now - hit[0])
+        return hit[1]
+    return None
+
+
 async def trusted_names(client: ChatPort) -> set[str]:
     """The usernames of this session's trusted humans, lower case."""
     trusted = await client.trusted_humans()
@@ -181,21 +248,56 @@ async def trusted_names(client: ChatPort) -> set[str]:
     return names
 
 
-async def mine(client: ChatPort) -> tuple[set[str], str]:
-    """My trusted humans' names and my bot's id while the owner split is
-    active; (set(), '') while it is not: no trusted humans, or my own bot
-    has no owner (unbound, say) or it cannot be read."""
+async def names_in_doubt(client: ChatPort) -> tuple[AbstractSet[str], str]:
+    """My trusted humans' names and my bot's id, in doubt (ADR-016): the names
+    as read now; when they cannot be read, or none of the configured ones
+    resolved, the ones last read (within OWNER_GRACE_SEC), else the configured
+    ones, or with ids alone configured NOBODY, which no owner matches.
+    (set(), '') only when none are configured. Never raises: the crown
+    election (lease._election, NATS prime) and `mine` read them here."""
+    global _mine
+    now = monotonic()
+    names: AbstractSet[str]
     try:
         names = await trusted_names(client)
-        if not names:
-            return set(), ""
+        me = (await client.get_me()).id if names else ""
+    except Exception as exc:  # noqa: BLE001 — in doubt: the last names, else the configured ones
+        log.info("trusted humans or my bot not readable (%s): the owner split stays on", exc)
+        names, me = set(), ""
+    if names:
+        _mine = (now, set(names), me)
+        return names, me
+    if _mine is not None and now - _mine[0] < OWNER_GRACE_SEC:
+        return set(_mine[1]), _mine[2]
+    configured_names = {n.lower() for n in _trusted_names()}
+    if configured_names:
+        names = configured_names
+    elif configured():
+        names = NOBODY  # configured by id only: nobody is a peer
+    else:
+        return set(), ""
+    log.info("no trusted human resolved, %d configured: the owner split stays on", len(names))
+    try:
         me = (await client.get_me()).id
-        own = await read(client, me)
-    except Exception as exc:  # noqa: BLE001 — fail open: every agent a peer
-        log.info("owner split off: %s", exc)
+    except Exception:  # noqa: BLE001 — in doubt: the configured id
+        me = env("MM_BOT_USER_ID").strip()
+    return names, me
+
+
+async def mine(client: ChatPort) -> tuple[AbstractSet[str], str]:
+    """My trusted humans' names and my bot's id while the owner split is
+    active; (set(), '') while it is not: no trusted humans configured, or my
+    own bot read without an owner (unbound, say). In doubt it stays on
+    (ADR-016): names_in_doubt; my own bot unreadable is no reason to turn it
+    off."""
+    names, me = await names_in_doubt(client)
+    if not names:
         return set(), ""
-    if own is None or not own.owner:
+    own = await known(client, me) if me else None
+    if own is not None and not own.owner:
         return set(), ""
+    if own is None:
+        log.info("my own bot's owner is not readable: the owner split stays on")
     return names, me
 
 
@@ -206,13 +308,14 @@ async def peer(client: ChatPort, user_id: str) -> bool:
     names, _ = await mine(client)
     if not names:
         return False
-    agent = await read(client, user_id)
+    agent = await known(client, user_id)
     return agent is not None and is_peer(agent, names)
 
 
 async def foreign(client: ChatPort, agent_ids: Iterable[str]) -> dict[str, str]:
     """The foreign agents among `agent_ids` (bus agents), each with its owner
-    ('' when its description names none); {} while the split is off. Never fails."""
+    ('' when its description names none, or when it cannot be read beyond
+    OWNER_GRACE_SEC: in doubt, foreign); {} while the split is off. Never fails."""
     ids = set(agent_ids)
     if not ids:
         return {}
@@ -221,9 +324,10 @@ async def foreign(client: ChatPort, agent_ids: Iterable[str]) -> dict[str, str]:
         return {}
     out: dict[str, str] = {}
     for uid in sorted(ids - {me}):
-        agent = await read(client, uid)
+        agent = await known(client, uid)
         if agent is None:
-            log.info("agent %s counts as a peer: its description is not readable", uid)
+            log.info("agent %s counts as foreign: its owner is not readable", uid)
+            out[uid] = ""
         elif not is_peer(agent, names):
             out[uid] = agent.owner
     return out

@@ -41,10 +41,17 @@ def cut(description: str | None) -> bool:
     return _CUT.search(_trusts(description)) is not None
 
 
+# A chat username as an owner (the registrar's, Mattermost's): lower-case
+# letters, digits, ".", "-", "_". Anything else names no owner.
+_USERNAME = re.compile(r"[a-z0-9][a-z0-9._-]{0,63}")
+
+
 def owner(description: str | None) -> str:
-    """The owner after ``for @`` in a bot's description, lower case; '' without one."""
+    """The owner after ``for @`` in a bot's description, lower case; '' without
+    one, and '' for anything that is no username (a NUL, a control character)."""
     m = re.search(r"(?:^|·)\s*for @([^\s·,]+)", description or "")
-    return m[1].lower() if m else ""
+    name = m[1].lower() if m else ""
+    return name if _USERNAME.fullmatch(name) else ""
 
 
 def unbound(description: str | None) -> bool:

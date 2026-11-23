@@ -1,0 +1,71 @@
+package directory
+
+import (
+	"context"
+	"errors"
+)
+
+// ByName is the membership lookup by chat username that the directory
+// replaces: Mattermost's (mattermost.Client), until the import has run.
+type ByName interface {
+	Memberships(ctx context.Context, username string, channels []string) (map[string]bool, error)
+}
+
+// ErrNoSub: after the import membership needs the identity's `sub`.
+var ErrNoSub = errors.New("directory: membership needs the identity's sub")
+
+// Channels is callout.Channels over the directory (ADR-016 point 2): until
+// the import has written meta.imported, Mattermost (Fallback) answers by
+// username, as before; from then on the directory answers by `sub`. No
+// switch to set: the import decides, once, as its last step (decision 2).
+type Channels struct {
+	Store    *Store
+	Fallback ByName
+}
+
+// Memberships is the lookup by username alone: Mattermost's until the
+// import; after it the directory needs the `sub` and refuses.
+func (c Channels) Memberships(ctx context.Context, username string, channels []string) (map[string]bool, error) {
+	return c.MembershipsFor(ctx, username, "", channels)
+}
+
+// MembershipsFor answers for the identity: by username through Mattermost
+// before the import, by `sub` through the directory after it. An error is an
+// unknown answer, never a "no".
+func (c Channels) MembershipsFor(ctx context.Context, username, sub string, channels []string) (map[string]bool, error) {
+	imported, err := c.Store.Imported(ctx)
+	if err != nil {
+		return nil, err
+	}
+	if !imported {
+		return c.Fallback.Memberships(ctx, username, channels)
+	}
+	if sub == "" {
+		return nil, ErrNoSub
+	}
+	return c.Store.Memberships(ctx, sub, channels)
+}
+
+// Anchors gives the callout each identity's anchor (decisions 7 and 9).
+type Anchors struct{ Store *Store }
+
+// Anchor records the login of `sub` as `display` and returns its anchor:
+// for an identity the directory knows, the one it holds; for a new one,
+// today's name `display` while the import has not run (every identity is a
+// today's one then: agent names and presence tokens stay exactly as they
+// were), its `sub` after it.
+func (a Anchors) Anchor(ctx context.Context, sub, display string) (string, error) {
+	imported, err := a.Store.Imported(ctx)
+	if err != nil {
+		return "", err
+	}
+	today := display
+	if imported {
+		today = ""
+	}
+	id, err := a.Store.Login(ctx, sub, display, today)
+	if err != nil {
+		return "", err
+	}
+	return id.Anchor, nil
+}

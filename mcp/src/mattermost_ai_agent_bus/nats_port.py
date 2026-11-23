@@ -70,6 +70,7 @@ import secrets
 import weakref
 from collections import OrderedDict
 from collections.abc import Callable, Iterable, Mapping, Sequence
+from collections.abc import Set as AbstractSet
 from functools import partial
 from types import MappingProxyType
 from typing import TYPE_CHECKING, Any, Protocol
@@ -218,7 +219,7 @@ class NatsPort:
         self._subs: list[asyncio.Queue[ChatEvent | NatsPortError | None]] = []
         self._dropped = 0  # events a full subscriber's queue lost
         self._capped = 0  # reactions dropped at MAX_REACTIONS
-        self._names: set[str] | None = None  # this session's trusted humans, read by prime (RT-6.38)
+        self._names: AbstractSet[str] | None = None  # this session's trusted humans, read by prime (RT-6.38)
         self._ambiguous: set[str] = set()  # link tags that fit more than one fresh name (RT-6.37)
 
     def __getattr__(self, name: str) -> Any:
@@ -718,8 +719,8 @@ class NatsPort:
 
     async def agent_owner(self, user_id: str) -> str | None:
         # A NATS sender's owner is the one its presence proves (RT-6.37), else "" (an
-        # owner that is none), which is foreign for the peer split (owners.read); never
-        # None, which would count as a peer.
+        # owner that is none), which is foreign for the peer split (owners.read); not
+        # None, which is "not readable" (also foreign, ADR-016, but logged as an outage).
         if not is_nats_user(user_id):
             return await self.inner.agent_owner(user_id)
         return self._bus.owner_of(user_id) if self._bus is not None and self._fatal is None else ""
@@ -782,9 +783,10 @@ class NatsPort:
         return str(self._fatal) if self._fatal is not None else ""
 
     async def prime(self) -> None:
-        """Read this session's trusted humans, which the crown's standing rule needs
-        (owners.trusted_names); raises when they cannot be read."""
-        self._names = await owners.trusted_names(self.inner)
+        """Read this session's trusted humans, which the crown's standing rule needs:
+        in doubt (ADR-016) the ones last read or configured, never "none" because a
+        lookup failed (owners.names_in_doubt); only none configured lets every one stand."""
+        self._names, _ = await owners.names_in_doubt(self.inner)
 
     def crown_view(self, home: str) -> lease.CrownView | None:
         """The crown of the NATS home `home` as the bus says it (RT-6.38 step 2): the claimants

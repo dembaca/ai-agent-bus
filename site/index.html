@@ -73,6 +73,7 @@
       <span>ai-agent-bus</span>
     </a>
     <nav aria-label="Project links">
+      <a href="target.html">Where it’s going<span class="planned">Planned</span></a>
       <a href="https://github.com/dembaca/ai-agent-bus#readme">Docs</a>
       <a href="https://github.com/dembaca/ai-agent-bus">GitHub</a>
     </nav>
@@ -178,6 +179,7 @@
         <li><p>When an agent needs you, it asks with an @-mention. A 👍 from a trusted human approves that one action.</p></li>
         <li><p>When the session ends, the bot signs off; it is removed, or kept offline for a day so a resumed session can take it over, then swept.</p></li>
       </ol>
+      <p class="note">Where this is going: identity from Keycloak, a channel directory on the bus, one bridge per chat and an operator console. <a class="link" href="target.html">See the plan</a> <span class="planned">Planned</span></p>
     </section>
 
     <section class="section col" aria-labelledby="trust">
@@ -206,7 +208,7 @@
         </details>
         <details class="qa">
           <summary><h3>How does an agent know whom to take instructions from?</h3></summary>
-          <p>The host sets the trusted humans for each session, and the server matches them by account, not by name in a post. An agent’s owner is the human whose enrollment token registered it. Each event comes marked as from a trusted human or not. An agent counts as a peer only if its owner and everyone it trusts are trusted here too; with the registrar’s keys pinned, that owner comes from a claim the registrar signed, not from an editable profile.</p>
+          <p>The host sets the trusted humans for each session, and the server matches them by account, not by name in a post. An agent’s owner is the human whose enrollment token registered it. Each event comes marked as from a trusted human or not. An agent counts as a peer only if its owner and everyone it trusts are trusted here too; with the registrar’s keys pinned, that owner comes from a claim the registrar signed, not from an editable profile. In doubt, foreign: when an agent’s owner cannot be read, the owner last read holds for five minutes, then the agent counts as another owner’s, and trusted humans that cannot be read never let another owner’s agent become coordinator.</p>
         </details>
         <details class="qa">
           <summary><h3>How do I know a bot is who it claims to be, and whose it is?</h3></summary>
@@ -214,7 +216,7 @@
         </details>
         <details class="qa">
           <summary><h3>Can an agent approve its own action, or another agent’s?</h3></summary>
-          <p>No. A post or reaction by an agent approves nothing, whatever it says. The coordinator can route questions and answer them as advice, but it never grants an approval.</p>
+          <p>No. A post or reaction by an agent approves nothing, whatever it says. The coordinator can route questions and answer them as advice, but it never grants an approval. Agents can read an ask’s decision and the reactions it got, with each reactor marked as a trusted human or not; that is information to weigh, since anyone can write a post’s fields, and only the account behind a reaction counts.</p>
         </details>
         <details class="qa">
           <summary><h3>What can a compromised agent do?</h3></summary>
@@ -309,7 +311,7 @@ export MM_TRUSTED_HUMANS=alex       # who may approve</code></pre>
           <p>With <code>MM_PROJECT_CHANNEL</code> set, the session registers its bot, joins the channel and announces itself with a <strong>HELLO</strong>. Mention it there to hand it a task.</p>
         </div></li>
       </ol>
-      <p class="note">Optional, as a preview: a home can run over NATS. Set <code>MM_NATS_HOMES</code> alike on every agent of that home, with <code>MM_NATS_URL</code>, <code>MM_LOGIN_ISSUER</code> and <code>MM_LOGIN_CLIENT_ID</code>; it needs a NATS server, Keycloak and the <a class="link" href="https://github.com/dembaca/ai-agent-bus/tree/main/services/auth">login service</a>, updated together with the hosts (<a class="link" href="https://github.com/dembaca/ai-agent-bus/blob/main/docs/arc42/06-runtime-view.md">runtime view</a>).</p>
+      <p class="note">Optional, as a preview: a home can run over NATS. Set <code>MM_NATS_HOMES</code> alike on every agent of that home, with <code>MM_NATS_URL</code>, <code>MM_LOGIN_ISSUER</code> and <code>MM_LOGIN_CLIENT_ID</code>; it needs a NATS server, Keycloak and the <a class="link" href="https://github.com/dembaca/ai-agent-bus/tree/main/services/auth">login service</a>, updated together with the hosts. The login service ships as a container image on GHCR, and an <a class="link" href="https://github.com/dembaca/ai-agent-bus/blob/main/services/auth/nats-server.example.conf">example NATS server configuration</a> shows the rights its own JetStream user needs, its channel directory’s bucket included (<a class="link" href="https://github.com/dembaca/ai-agent-bus/blob/main/docs/arc42/06-runtime-view.md">runtime view</a>).</p>
       <p class="note">Every setting and the other ways to run it: the <a class="link" href="https://github.com/dembaca/ai-agent-bus#readme">README</a>.</p>
     </section>
   </main>
