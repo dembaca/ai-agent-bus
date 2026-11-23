@@ -1505,10 +1505,16 @@ async def test_two_agents_in_a_nats_home_post_reply_react_and_unreact(rig: Rig) 
         # alice's unreaction of the same emoji takes nothing of bob's
         await until(lambda: len(alice._reacts.get(parse_post_id(root.id)[1], {})) == 1)  # type: ignore[index]
         await alice.remove_reaction(root.id, "thumbsup")
-        await asyncio.sleep(0.3)
+        # her own unreaction is applied by her own echo, so the wait is on the state the
+        # next line asserts, not on a fixed 0.3 s
+        await until(lambda: len(alice._reacts.get(parse_post_id(root.id)[1], {})) == 1)  # type: ignore[index]
         assert len(await alice.reactions(root.id)) == 1
         await bob.remove_reaction(root.id, "thumbsup")
-        await until(lambda: not alice._reacts.get(parse_post_id(root.id)[1], {}))  # type: ignore[index]
+        # both memories: a port applies a reaction from its own event stream, so bob's own
+        # unreaction reaches him on his consumer's schedule, not alice's (#52: this assert
+        # once failed with bob's reaction still in his memory)
+        await until(lambda: not alice._reacts.get(parse_post_id(root.id)[1], {})  # type: ignore[index]
+                    and not bob._reacts.get(parse_post_id(root.id)[1], {}))
         assert await alice.reactions(root.id) == [] and await bob.reactions(root.id) == []
         # the memory answers the reads
         assert [p.id for p in await bob.channel_posts(WORK)] == [reply.id, root.id]
