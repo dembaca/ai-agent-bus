@@ -30,6 +30,8 @@ class AttestedCircle:
     owner_anchor: str
     trusted_anchors: frozenset[str]
     cut: bool
+    owner_name: str = ""  # the owner's name now, to show; never compared
+    trusted_names: frozenset[str] = frozenset()  # the trusted entries' names, to show; never compared
 
 
 class BotSession(Protocol):

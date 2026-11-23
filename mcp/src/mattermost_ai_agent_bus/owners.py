@@ -103,10 +103,19 @@ class Owner:
     attested: bool = False  # owner and trusts come from a valid attestation (RT-6.24)
     by_anchor: bool = False  # owner and trusts are the login service's anchors, not names (NATS)
     shown: str = ""  # the owner's name to show when `owner` is an anchor; never compared
+    shown_trusts: frozenset[str] = frozenset()  # the trusted entries' names to show when by anchor; never compared
 
     def display(self) -> str:
         """The owner as people read it: its name, also when it is compared by anchor."""
         return self.shown or self.owner
+
+    def display_trusts(self) -> frozenset[str]:
+        """The trusted humans as people read them: names, also when compared by anchor."""
+        return self.shown_trusts if self.by_anchor else self.trusts
+
+    def display_circle(self) -> set[str]:
+        """Everyone the agent obeys, by name: for what people read, never for authority."""
+        return ({self.display()} if self.display() else set()) | set(self.display_trusts())
 
     def circle(self) -> set[str]:
         """Everyone the agent obeys: its owner and its trusted humans."""
@@ -224,7 +233,8 @@ async def read(client: ChatPort, user_id: str) -> Owner | None:
         return None
     if circle is not None:
         return Owner(owner=circle.owner_anchor, trusts=circle.trusted_anchors, cut=circle.cut,
-                     attested=True, by_anchor=True, shown=owner)
+                     attested=True, by_anchor=True, shown=owner,
+                     shown_trusts=circle.trusted_names)
     if claim is not None:
         # A cut list (trusted_cut) is foreign, as a description's +N is.
         return Owner(owner=owner, trusts=frozenset(claim.trusted), cut=claim.trusted_cut > 0,

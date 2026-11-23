@@ -143,7 +143,7 @@ async def mentioned_agent_trusts(client: ChatPort, post: Post, author: str, me: 
     for r in rows:
         if r.user_id and r.user_id != me and r.username.lower() in named:
             agent = await owners.read(client, r.user_id)
-            if agent is not None and author.lower() in agent.circle():
+            if agent is not None and author.lower() in agent.display_circle():
                 return True
     return False
 

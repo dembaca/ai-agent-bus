@@ -91,7 +91,7 @@ func (s *Service) attestHooks() (Attester, Trust) {
 }
 
 // attest resolves the host's names and publishes the attestation.
-func (s *Service) attest(ctx context.Context, a Attester, t Trust, agent string, owner directory.Trusted, names []string, iat, exp int64) error {
+func (s *Service) attest(ctx context.Context, a Attester, t Trust, agent string, owner directory.Trusted, names []string, hostCut bool, iat, exp int64) error {
 	var (
 		list []directory.Trusted
 		cut  bool
@@ -106,7 +106,7 @@ func (s *Service) attest(ctx context.Context, a Attester, t Trust, agent string,
 	if err != nil {
 		return err
 	}
-	body, err := Attestation{V: 1, Agent: agent, Owner: owner, Trusted: list, Cut: cut, Iat: iat, Exp: exp}.encode()
+	body, err := Attestation{V: 1, Agent: agent, Owner: owner, Trusted: list, Cut: cut || hostCut, Iat: iat, Exp: exp}.encode()
 	if err != nil {
 		return err
 	}

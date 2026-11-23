@@ -337,15 +337,19 @@ def decode_attestation(data: bytes, agent: str) -> Attestation:
                        cut=cut, exp=float(_int(obj, "exp")))
 
 
-def normalise_trusted(names: Iterable[str]) -> tuple[str, ...]:
-    """The hello's trusted names: a leading "@" dropped, lower case, only valid usernames,
-    each once, at most MAX_TRUSTED."""
+def normalise_trusted(names: Iterable[str]) -> tuple[tuple[str, ...], bool]:
+    """The hello's trusted names and whether the list was cut: a leading "@" dropped, lower
+    case, only valid usernames, each once, at most MAX_TRUSTED. cut: an invalid name was
+    dropped or the list truncated (a repeat or a blank is no loss)."""
     out: dict[str, None] = {}
+    cut = False
     for n in names:
         n = n.strip().lstrip("@").lower()
         if USERNAME_RE.fullmatch(n):
             out.setdefault(n)
-    return tuple(out)[:MAX_TRUSTED]
+        elif n:
+            cut = True
+    return tuple(out)[:MAX_TRUSTED], cut or len(out) > MAX_TRUSTED
 
 
 def encode_claim() -> bytes:
@@ -443,7 +447,7 @@ def crown_holder(claims: Mapping[str, int], presence: Mapping[str, tuple[float, 
 
 def build_hello(token: str, home: str, guests: tuple[str, ...], lobby: bool,
                 since: Mapping[str, int], *, fresh_presence: bool = False,
-                trusted: tuple[str, ...] = ()) -> str:
+                trusted: tuple[str, ...] = (), trusted_cut: bool = False) -> str:
     """The CONNECT `auth_token` the login service reads (callout.Hello). It holds the
     access token: never log it."""
     hello: dict[str, Any] = {"token": token}
@@ -455,6 +459,8 @@ def build_hello(token: str, home: str, guests: tuple[str, ...], lobby: bool,
         hello["lobby"] = True
     if trusted:
         hello["trusted"] = list(trusted)
+    if trusted_cut:
+        hello["trusted_cut"] = True
     known = {ch: seq for ch, seq in since.items() if seq > 0}
     if fresh_presence:
         known[PRESENCE_FRESH_KEY] = 1  # the login service reads the presence stream afresh (RT-6.35)
@@ -504,9 +510,12 @@ class NatsSettings:
     props_prefix: str = a2a.DEFAULT_PREFIX  # MM_PROPS_PREFIX, one setting of the whole bus (RT-6.16)
     tls_ca_file: str | None = None  # CA bundle that verifies a tls:// server (default: the system's)
     trusted: tuple[str, ...] = ()  # this session's trusted humans' names, for the hello (normalised)
+    trusted_cut: bool = False  # normalising dropped or truncated names (set by __post_init__)
 
     def __post_init__(self) -> None:
-        object.__setattr__(self, "trusted", normalise_trusted(self.trusted))
+        names, cut = normalise_trusted(self.trusted)
+        object.__setattr__(self, "trusted", names)
+        object.__setattr__(self, "trusted_cut", cut or self.trusted_cut)
         # Store what the bus's own check returns, not what was passed: an empty
         # value means "unset" there and comes back as the default, and keeping
         # the empty string would make `k.startswith("")` accept every key,
@@ -707,7 +716,7 @@ class NatsBus:
         token = await self._login.access_token()
         key = self._login.nkey()
         hello = build_hello(token, self._s.home, self._s.guests, self._s.lobby, self.since(),
-                            fresh_presence=not self._presence_read, trusted=self._s.trusted)
+                            fresh_presence=not self._presence_read, trusted=self._s.trusted, trusted_cut=self._s.trusted_cut)
         del token
         nc = NatsClient()
         # nats-py has no argument for the public key with a signature callback; this is the

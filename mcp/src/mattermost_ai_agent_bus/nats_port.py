@@ -728,7 +728,15 @@ class NatsPort:
         # None, which is "not readable" (also foreign, ADR-016, but logged as an outage).
         if not is_nats_user(user_id):
             return await self.inner.agent_owner(user_id)
-        return self._bus.owner_of(user_id) if self._bus is not None and self._fatal is None else ""
+        if self._bus is None or self._fatal is not None:
+            return ""
+        if self._own_anchors() is not None and self._circle(user_id) is None:
+            # This session has a record of its own: a sender without a usable one (none,
+            # expired, malformed, another anchor than its presence) has no owner; the name
+            # comparison is only for sessions without any record (no later holder of an old
+            # name inherits it).
+            return ""
+        return self._bus.owner_of(user_id)
 
     def _circle(self, agent: str) -> AttestedCircle | None:
         """The agent's circle by anchors: its fresh attestation, when the owner anchor in it is
@@ -740,7 +748,8 @@ class NatsPort:
         anchor = bus.anchor_of(agent)
         if att is None or not anchor or att.owner_anchor != anchor:
             return None
-        return AttestedCircle(att.owner_anchor, frozenset(a for a, _ in att.trusted), att.cut)
+        return AttestedCircle(att.owner_anchor, frozenset(a for a, _ in att.trusted), att.cut,
+                              att.owner_name, frozenset(n for _, n in att.trusted))
 
     def _own_anchors(self) -> frozenset[str] | None:
         bus = self._bus if self._fatal is None else None
@@ -836,11 +845,13 @@ class NatsPort:
                                          bus.server_now, partial(bus.is_member, home),
                                          at={a: t for a, (_, t) in info.items()})
         agents: dict[str, owners.Owner | None] = {}
+        has_record = self._own_anchors() is not None
         for a in dict.fromkeys([*order, me]):
             circle = self._circle(a)
             agents[a] = (owners.Owner(owner=circle.owner_anchor, trusts=circle.trusted_anchors, cut=circle.cut,
                                       attested=True, by_anchor=True) if circle is not None
-                         else owners.Owner(owner=bus.owner_of(a), trusts=frozenset(), cut=False))
+                         # with my own record, no usable one means no owner (not a name match)
+                         else owners.Owner(owner="" if has_record else bus.owner_of(a), trusts=frozenset(), cut=False))
         standing = lease.standing(order, me, self._names, agents, self._own_anchors()).ids
         mine = info.get(me)
         return lease.CrownView(me=me, holder=standing[0] if standing else "", candidates=tuple(standing),

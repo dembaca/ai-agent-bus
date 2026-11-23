@@ -256,3 +256,139 @@ async def test_a_foreign_sender_is_shown_by_name_not_by_its_anchor(w: World) -> 
     assert await foreign(w, NAME_A) == {NAME_A: "carol"}
     agent = await owners.read(w.port, NAME_A)  # type: ignore[arg-type]
     assert agent is not None and agent.owner == sub and agent.display() == "carol"
+
+
+# --- no fallback to names once this session has its own record (RT-6.41) ---------------------------------
+
+async def _own_record_world(w: World) -> None:
+    attested(w.fake, NAME_ME, ("u1", "alice"), ALICE)
+
+
+@pytest.mark.parametrize("case", ["none", "expired", "another anchor"])
+async def test_with_my_own_record_a_sender_without_a_usable_one_has_no_owner_and_does_not_stand(
+        w: World, case: str) -> None:
+    """The former `alice` keeps the anchor `alice`; a new person is now named so and I trust her:
+    its agent must not pass by that name when its record is missing, expired or mismatched."""
+    await _own_record_world(w)
+    w.fake.owners[NAME_B] = "alice"  # the presence owner equals my trusted NAME
+    if case == "expired":
+        w.fake.attestations[NAME_B] = Attestation("alice", "alice", ALICE, False, w.fake.server_now - 1)
+    elif case == "another anchor":
+        w.fake.attestations[NAME_B] = Attestation("u9", "alice", (("u9", "alice"),), False,
+                                                  w.fake.server_now + 600)
+    assert await w.port.agent_owner(NAME_B) == ""
+    assert NAME_B in await foreign(w, NAME_B)
+    assert not await owners.peer(w.port, NAME_B)  # type: ignore[arg-type]
+    claimant(w.fake, NAME_ME, 30, owner="u1")
+    claimant(w.fake, NAME_B, 20, owner="alice")  # older: it would hold the crown by name
+    view = w.view()
+    assert view is not None and NAME_B not in view.candidates and view.holder == NAME_ME
+
+
+async def test_without_my_own_record_a_sender_without_a_usable_one_is_compared_by_name(w: World) -> None:
+    w.fake.owners[NAME_B] = "alice"
+    w.fake.attestations[NAME_B] = Attestation("u9", "alice", (("u9", "alice"),), False,
+                                              w.fake.server_now + 600)  # not the presence's anchor
+    assert await w.port.agent_owner(NAME_B) == "alice"
+    assert await foreign(w, NAME_B) == {}
+    claimant(w.fake, NAME_ME, 30, owner="alice")
+    claimant(w.fake, NAME_B, 20, owner="alice")
+    view = w.view()
+    assert view is not None and view.holder == NAME_B and view.candidates == (NAME_B, NAME_ME)
+
+
+# --- the cut list of the host -----------------------------------------------------------------------
+
+def test_the_hello_says_when_the_host_cut_its_trusted_list() -> None:
+    from mattermost_ai_agent_bus.natsbus import normalise_trusted
+    assert normalise_trusted(["@Alice", "alice", "", "bob"]) == (("alice", "bob"), False)
+    assert normalise_trusted(["alice", "Bad Name"]) == (("alice",), True)
+    assert normalise_trusted([f"u{i}" for i in range(33)])[1] is True
+    assert normalise_trusted([f"u{i}" for i in range(32)])[1] is False
+    bad = NatsSettings(servers=("nats://127.0.0.1:1",), home="home", trusted=("alice", "Bad Name"))
+    assert bad.trusted == ("alice",) and bad.trusted_cut
+    hello = json.loads(build_hello("T", "home", (), False, {}, trusted=bad.trusted, trusted_cut=bad.trusted_cut))
+    assert hello == {"token": "T", "home": "home", "trusted": ["alice"], "trusted_cut": True}
+    many = NatsSettings(servers=("nats://127.0.0.1:1",), home="home", trusted=tuple(f"u{i}" for i in range(40)))
+    assert many.trusted_cut
+    clean = NatsSettings(servers=("nats://127.0.0.1:1",), home="home", trusted=("alice",))
+    assert not clean.trusted_cut
+    assert "trusted_cut" not in json.loads(build_hello("T", "home", (), False, {}, trusted=("alice",)))
+
+
+async def test_the_bus_puts_the_cut_into_the_hello_it_sends(monkeypatch: pytest.MonkeyPatch) -> None:
+    import mattermost_ai_agent_bus.natsbus as nb
+    seen: list[bool] = []
+    real = nb.build_hello
+
+    def spy(*a: Any, **kw: Any) -> str:
+        seen.append(bool(kw.get("trusted_cut")))
+        return real(*a, **kw)
+
+    monkeypatch.setattr(nb, "build_hello", spy)
+    bus, _ = _unit_bus(trusted=("alice", "Bad Name"))
+    try:
+        await bus._open()
+    except Exception:  # noqa: BLE001 — no server: only the hello's building counts
+        pass
+    assert seen == [True]
+
+
+# --- names, never anchors, for people -----------------------------------------------------------------
+
+SUB1, SUB2 = "0b6f3c1e-1111-4222-8333-444455556666", "0b6f3c1e-2222-4222-8333-444455556666"
+
+
+async def test_a_circle_by_anchor_is_shown_by_names(w: World, monkeypatch: pytest.MonkeyPatch) -> None:
+    import types
+
+    from mattermost_ai_agent_bus import debug, gate, server
+    await _own_record_world(w)
+    attested(w.fake, NAME_A, (SUB1, "alice"), ((SUB1, "alice"), (SUB2, "bob")))
+    agent = await owners.read(w.port, NAME_A)  # type: ignore[arg-type]
+    assert agent is not None and agent.by_anchor and agent.trusts == {SUB1, SUB2}
+    assert agent.display_trusts() == {"alice", "bob"} and agent.display_circle() == {"alice", "bob"}
+    row = type("Row", (), {"user_id": NAME_A, "username": "agent-a"})()
+    out = await server._owners_of(w.port, [row])  # type: ignore[arg-type]
+    assert out["agent-a"]["owner"] == "alice" and out["agent-a"]["trusts"] == ["alice", "bob"]
+    said = await debug._identity(w.port, {"from_agent": True}, NAME_A)  # type: ignore[arg-type]
+    assert "owner alice from its attestation" in said and SUB1 not in said
+    # the "Not woken" answer compares the author's NAME with the names, not the anchors
+    async def roster(_c: Any) -> list[Any]:
+        return [types.SimpleNamespace(user_id=NAME_A, username="agent-a")]
+
+    monkeypatch.setattr(gate.lease, "roster", roster)
+    post = types.SimpleNamespace(message="@agent-a hi", from_webhook=False)
+    assert await gate.mentioned_agent_trusts(w.port, post, "Bob", "me")  # type: ignore[arg-type]
+    assert not await gate.mentioned_agent_trusts(w.port, post, SUB2, "me")  # type: ignore[arg-type]
+
+
+# --- what the mutations left alive --------------------------------------------------------------------
+
+async def test_a_record_on_another_version_is_ignored_and_warned(caplog: pytest.LogCaptureFixture) -> None:
+    bus, _ = _unit_bus()
+    with caplog.at_level(logging.WARNING):
+        await bus._on_presence_msg(FakeMsg(f"presence.attest.{AGENT}.v2", _presence_reply(bus, 1, 1, T0), body()))
+    assert bus.attestation_of(AGENT) is None
+    assert any("unexpected subject" in r.getMessage() for r in caplog.records)
+
+
+async def test_my_own_anchors_are_my_trusted_entries_only_not_my_owner(w: World) -> None:
+    """As `owners.mine` has the trusted names only: the owner's anchor is not in the set."""
+    attested(w.fake, NAME_ME, ("u1", "alice"), (("u2", "bob"),))
+    assert await w.port.own_anchors() == {"u2"}
+    attested(w.fake, NAME_A, ("u1", "alice"), (("u2", "bob"),))
+    assert NAME_A in await foreign(w, NAME_A)  # its owner u1 is not among my anchors
+    attested(w.fake, NAME_B, ("u2", "bob"), (("u2", "bob"),))
+    assert await foreign(w, NAME_B) == {}
+
+
+async def test_a_record_older_than_the_streams_max_age_is_pruned() -> None:
+    from mattermost_ai_agent_bus.natsbus import MAX_AGE_SEC
+    bus, _ = _unit_bus()
+    far = int(T0) + 10 * 86400  # not expired: only the pruning may remove it
+    await feed(bus, body(exp=far), seq=1, t=T0)
+    await feed(bus, body(agent="agent-mid", exp=far), seq=2, t=T0 + 200, agent="agent-mid")
+    await feed(bus, body(agent="agent-new", exp=far), seq=3, t=T0 + MAX_AGE_SEC + 50, agent="agent-new")
+    assert AGENT not in bus._attest
+    assert "agent-mid" in bus._attest and "agent-new" in bus._attest
