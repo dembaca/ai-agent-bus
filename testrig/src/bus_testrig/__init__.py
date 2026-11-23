@@ -1,9 +1,10 @@
 """Fault runs for the agent bus.
 
-This harness measures its own echo loop today (`runner.echo_run`): a real
-`websockets` server, the real proxy in front of it and its own client. Driving
-the bus itself is the follow-up PR. See `measurands.toml` for what is measured
-and why.
+This harness measures the bus itself now (`bus.bus_run`): two real
+`mattermost_ai_agent_bus` processes, one posting and one receiving, through the
+Mattermost stub and the proxy. `runner.echo_run` remains the loop that proves
+the harness works where the bus does not run. See `measurands.toml` for what is
+measured and why.
 """
 
-__all__ = ["cli", "measurands", "proc", "proxy", "runner"]
+__all__ = ["bus", "cli", "measurands", "proc", "proxy", "runner"]
