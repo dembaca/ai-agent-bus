@@ -81,7 +81,7 @@ func (n *native) login(ag *agent, channels ...string) (delivers []string) {
 		}
 		delivers = append(delivers, "deliver."+ag.name+"."+suffix)
 	}
-	presence := []string{"presence.*"}
+	presence := []string{"presence.*.*"}
 	for _, ch := range channels {
 		add("BUS", "ch."+ch, []string{"bus.ch." + ch + ".*"}, nats.DeliverNewPolicy)
 		presence = append(presence, "presence.crown."+ch+".*")
@@ -256,7 +256,7 @@ func (n *native) victims() []string {
 		"bus.ch.home.agent-victim", "bus.ch.secret.agent-victim", "bus.ch.secret." + n.b.name, "bus.ch.home." + n.b.name,
 		"bus.dm." + n.b.name + ".agent-victim", "bus.dm." + n.a.name + "." + n.b.name,
 		"deliver." + n.b.name + ".ch.secret", "deliver." + n.b.name + ".ch.home", "deliver." + n.b.name + ".dm",
-		"presence." + n.b.name, "presence.crown.home." + n.b.name, "presence.crown.secret.agent-victim",
+		n.b.presence(), "presence.crown.home." + n.b.name, "presence.crown.secret.agent-victim",
 	}
 }
 
@@ -318,14 +318,14 @@ func TestNativeConfigAsCreated(t *testing.T) {
 // is in a channel the agent is not in.
 func TestNativePresenceShowsCrownsOnlyOfOwnChannels(t *testing.T) {
 	n := newNative(t, busStreamCfg) // alice: home; bob: home and secret
-	n.bobPosts("presence."+n.b.name, "bob online")
+	n.bobPosts(n.b.presence(), "bob online")
 	n.bobPosts("presence.crown.secret."+n.b.name, "claim in secret")
 	n.bobPosts("presence.crown.home."+n.b.name, "claim in home")
 	seen := map[string]bool{}
 	for _, g := range take(n.aIn, 500*time.Millisecond) {
 		seen[g.Subject] = true
 	}
-	if !seen["presence."+n.b.name] || !seen["presence.crown.home."+n.b.name] {
+	if !seen[n.b.presence()] || !seen["presence.crown.home."+n.b.name] {
 		t.Errorf("alice misses bob's presence or his claim in home: %v", seen)
 	}
 	if seen["presence.crown.secret."+n.b.name] {
@@ -337,7 +337,7 @@ func TestNativePresenceShowsCrownsOnlyOfOwnChannels(t *testing.T) {
 // stores the post under the publisher's name and answers nobody.
 func TestNativeReplySubjectOnOwnPosts(t *testing.T) {
 	n := newNative(t, busStreamCfg)
-	own := []string{"bus.ch.home." + n.a.name, "bus.dm." + n.b.name + "." + n.a.name, "presence." + n.a.name, "presence.crown.home." + n.a.name}
+	own := []string{"bus.ch.home." + n.a.name, "bus.dm." + n.b.name + "." + n.a.name, n.a.presence(), "presence.crown.home." + n.a.name}
 	for _, s := range own {
 		for _, v := range n.victims() {
 			denied, stored := n.attack("own "+s+" reply="+v, s, v, nil, "reply-attack")
@@ -372,7 +372,7 @@ func TestNativeEveryServiceSubjectIsRefused(t *testing.T) {
 		"deliver." + n.b.name + ".ch.secret", "deliver." + n.b.name + ".dm", "deliver." + n.a.name + ".ch.home", "deliver.x",
 		"bus.ch.secret." + n.a.name, "bus.ch.home." + n.b.name, "bus.ch.home.agent-victim", "bus.ch.home", "bus.ch.home." + n.a.name + ".x",
 		"bus.dm." + n.b.name + "." + n.b.name, "bus.dm." + n.b.name, "bus.dm.a.b." + n.a.name,
-		"presence." + n.b.name, "presence.crown.home." + n.b.name, "presence.crown.secret." + n.a.name, "presence.x." + n.a.name,
+		n.b.presence(), "presence.crown.home." + n.b.name, "presence.crown.secret." + n.a.name, "presence.x." + n.a.name,
 	}
 	vs := n.victims()
 	for i, s := range subjects {
@@ -382,7 +382,7 @@ func TestNativeEveryServiceSubjectIsRefused(t *testing.T) {
 		}
 	}
 	for _, s := range []string{"deliver." + n.b.name + ".>", "deliver." + n.b.name + ".ch.home", "deliver.>", "deliver.*.>", "deliver.*.ch.home", ">", "*.>",
-		"_INBOX.>", "_INBOX.*", "bus.>", "bus.ch.home.*", "bus.ch.home." + n.a.name, "bus.dm." + n.a.name + ".*", "presence.>", "presence." + n.a.name,
+		"_INBOX.>", "_INBOX.*", "bus.>", "bus.ch.home.*", "bus.ch.home." + n.a.name, "bus.dm." + n.a.name + ".*", "presence.>", n.a.presence(),
 		"$JS.>", "$JS.API.>", "$JS.EVENT.ADVISORY.>", "$KV.>", "$SYS.>", "$SYS.ACCOUNT.*.CONNECT"} {
 		if _, err := n.a.nc.SubscribeSync(s); err != nil {
 			t.Fatal(err)
@@ -403,7 +403,7 @@ func TestNativeHeadersOnOwnPosts(t *testing.T) {
 	n := newNative(t, busStreamCfg)
 	n.bobPosts("bus.ch.secret."+n.b.name, "bob's secret post")
 	n.bobPosts("bus.ch.home."+n.b.name, "bob's home post")
-	n.bobPosts("presence."+n.b.name, "bob online")
+	n.bobPosts(n.b.presence(), "bob online")
 	n.bobPosts("presence.crown.home."+n.b.name, "bob's claim")
 	take(n.bIn, 300*time.Millisecond)
 	busBefore, _ := n.js.StreamInfo("BUS")
@@ -462,12 +462,12 @@ func TestNativeHeadersOnOwnPosts(t *testing.T) {
 	}
 	// The same on alice's presence subject: no rollup, bob's entries stay.
 	for _, r := range []string{"all", "sub"} {
-		if denied, stored := n.attack("presence: Nats-Rollup: "+r, "presence."+n.a.name, vs[0], h{"Nats-Rollup": r}, "x"); denied || stored != 0 {
+		if denied, stored := n.attack("presence: Nats-Rollup: "+r, n.a.presence(), vs[0], h{"Nats-Rollup": r}, "x"); denied || stored != 0 {
 			t.Errorf("presence rollup %s: denied=%v stored=%d", r, denied, stored)
 		}
 	}
 	time.Sleep(3 * time.Second) // a schedule would have fired by now
-	for _, s := range []string{"presence." + n.b.name, "presence.crown.home." + n.b.name, "bus.ch.secret." + n.b.name, "bus.ch.home." + n.b.name} {
+	for _, s := range []string{n.b.presence(), "presence.crown.home." + n.b.name, "bus.ch.secret." + n.b.name, "bus.ch.home." + n.b.name} {
 		st := "BUS"
 		if strings.HasPrefix(s, "presence.") {
 			st = "PRESENCE"
@@ -577,7 +577,7 @@ func TestNativeMsgIdsAreStreamWide(t *testing.T) {
 // Presence and the crown on a plain stream with one message per subject.
 func TestNativePresenceAndCrown(t *testing.T) {
 	n := newNative(t, busStreamCfg)
-	n.bobPosts("presence."+n.b.name, "bob online")
+	n.bobPosts(n.b.presence(), "bob online")
 	if err := n.a.nc.Publish("presence.crown.home."+n.a.name, []byte("claim")); err != nil {
 		t.Fatal(err)
 	}
@@ -586,7 +586,7 @@ func TestNativePresenceAndCrown(t *testing.T) {
 	}
 	n.bobPosts("presence.crown.home."+n.b.name, "claim")
 	for i := 0; i < 50; i++ {
-		_ = n.a.nc.Publish("presence."+n.a.name, []byte(fmt.Sprintf("beat %d", i)))
+		_ = n.a.nc.Publish(n.a.presence(), []byte(fmt.Sprintf("beat %d", i)))
 	}
 	_ = n.a.nc.Flush()
 	// The holder is the oldest claim by the stream's own sequence; the time
@@ -621,18 +621,18 @@ func TestNativePresenceAndCrown(t *testing.T) {
 		t.Errorf("PRESENCE holds %d messages, want 4 (one per subject)", si.State.Msgs)
 	}
 	// Alice cannot write or remove bob's entries, by subject, rollup or API.
-	for _, s := range []string{"presence." + n.b.name, "presence.crown.home." + n.b.name, "presence.crown.secret." + n.a.name,
+	for _, s := range []string{n.b.presence(), "presence.crown.home." + n.b.name, "presence.crown.secret." + n.a.name,
 		"$JS.API.STREAM.PURGE.PRESENCE", "$JS.API.STREAM.MSG.DELETE.PRESENCE", "$KV.presence." + n.b.name} {
-		if denied, stored := n.attack("presence: publish "+s, s, "presence."+n.b.name, nil, `{"seq":1,"filter":"presence.>"}`); !denied || stored != 0 {
+		if denied, stored := n.attack("presence: publish "+s, s, n.b.presence(), nil, `{"seq":1,"filter":"presence.>"}`); !denied || stored != 0 {
 			t.Errorf("%s: denied=%v stored=%d", s, denied, stored)
 		}
 	}
 	for _, r := range []string{"all", "sub"} {
-		if denied, stored := n.attack("presence: own claim with Nats-Rollup: "+r, "presence.crown.home."+n.a.name, "presence."+n.b.name, map[string]string{"Nats-Rollup": r}, "x"); denied || stored != 0 {
+		if denied, stored := n.attack("presence: own claim with Nats-Rollup: "+r, "presence.crown.home."+n.a.name, n.b.presence(), map[string]string{"Nats-Rollup": r}, "x"); denied || stored != 0 {
 			t.Errorf("rollup %s: denied=%v stored=%d", r, denied, stored)
 		}
 	}
-	for _, s := range []string{"presence." + n.b.name, "presence.crown.home." + n.b.name} {
+	for _, s := range []string{n.b.presence(), "presence.crown.home." + n.b.name} {
 		m, err := n.js.GetLastMsg("PRESENCE", s)
 		if err != nil || !n.bobSent[s+"|"+string(m.Data)] {
 			t.Errorf("bob's %s changed or gone: %v", s, err)
@@ -731,5 +731,44 @@ func TestNativeAConsumerWaitsForItsLiteralSubject(t *testing.T) {
 	t.Logf("literal subscription: delivered %d, pending %d, push_bound %v", len(got), ci.NumPending, ci.PushBound)
 	if len(got) != 1 {
 		t.Errorf("delivered %d, want the one waiting message", len(got))
+	}
+}
+
+// The owner is pinned in the presence subject by the credential, like the
+// sender: only the own owner token and the own name publish, and a reader
+// takes the owner from the subject.
+func TestNativePresenceCarriesTheOwnerPinnedByTheCredential(t *testing.T) {
+	n := newNative(t, busStreamCfg)
+	if n.a.owner == n.b.owner {
+		t.Fatal("the test needs two owners")
+	}
+	n.bobPosts(n.b.presence(), "bob online")
+	take(n.aIn, 300*time.Millisecond)
+	take(n.bIn, 300*time.Millisecond)
+	for _, s := range []string{
+		"presence." + ownerToken(n.b.owner) + "." + n.a.name, // another owner's token
+		"presence.-." + n.a.name,
+		"presence." + n.a.name, // the old form
+	} {
+		if denied, stored := n.attack("presence "+s, s, "", nil, "x"); !denied || stored != 0 {
+			t.Errorf("publish %s: denied=%v stored=%d, want denied", s, denied, stored)
+		}
+	}
+	want := "presence." + ownerToken(n.a.owner) + "." + n.a.name
+	if want != n.a.presence() {
+		t.Fatalf("presence() = %s", n.a.presence())
+	}
+	if err := n.a.nc.Publish(want, []byte("alice online")); err != nil {
+		t.Fatal(err)
+	}
+	if n.a.denied(t) {
+		t.Fatalf("publish %s denied", want)
+	}
+	seen := map[string]bool{}
+	for _, g := range take(n.bIn, 500*time.Millisecond) {
+		seen[g.Subject] = true
+	}
+	if !seen[want] {
+		t.Errorf("bob's presence consumer misses %s: %v", want, seen)
 	}
 }

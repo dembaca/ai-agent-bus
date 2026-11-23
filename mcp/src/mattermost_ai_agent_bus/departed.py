@@ -10,7 +10,9 @@ is not in this channel and where its home is. The event wakes the answering
 agent, which routes or forwards the work.
 
 Gone: its status lease ran out (no live custom status), or it is no member of
-the work channel any more while its HELLO is still there. A BYE alone is not
+the work channel any more while its HELLO is still there. An agent whose HELLO
+came over NATS (RT-6.36) has no lease: it is gone when its NATS presence is not
+fresh (RT-6.37). A BYE alone is not
 (it may mean "task finished"); for a gone agent whose latest post in its newest
 HELLO thread is a BYE, that BYE gives the time and the handoff link. 💤 idle
 and 👂 listening run on a live lease: not gone. Not here: a bot account by
@@ -28,6 +30,7 @@ from dataclasses import dataclass
 from typing import TYPE_CHECKING, Any
 
 from . import a2a, gate, lease, session_file
+from .ids import _ID
 from .model import Post
 
 if TYPE_CHECKING:
@@ -129,6 +132,15 @@ async def gone(client: ChatPort, names: list[str],
         last = next((p for p in own if hello and hello.id in (p.id, p.root_id)), None)
         if row is not None and row.get("live"):
             continue  # a live lease: here, BYE or not ("task finished")
+        if row is None and not _ID.fullmatch(uid):
+            # An agent over NATS (RT-6.36) has no lease on Mattermost: its NATS presence,
+            # fresh by the NATS server's clock, says whether it is here (RT-6.37).
+            try:
+                if (await client.presences([uid])).get(uid, "offline") != "offline":
+                    continue
+            except Exception as exc:  # noqa: BLE001 — unknown: not told as gone
+                log.info("departed: presence of %s not read: %s", name, exc)
+                continue
         if last and a2a.word(last.message) == "BYE":
             out.append(Departure(name, last.create_at, True, last.id))
         else:

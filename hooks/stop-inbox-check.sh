@@ -89,14 +89,14 @@ fi
 # Listen window (bin/mm-agent-listen.sh): kept outside the turn state, because a
 # turn the runtime starts to deliver a message clears the turn state like any
 # new prompt, and the window has to survive that.
-LISTEN_SINCE=0 LISTEN_UNTIL=0 LISTEN_ASKED=0 LISTEN_STARTED=0 LISTEN_PID=0
+LISTEN_SINCE=0 LISTEN_UNTIL=0 LISTEN_ASKED=0 LISTEN_STARTED=0 LISTEN_PID=0 LISTEN_POST=""
 LF="$(mm_bot_state_file listen 2>/dev/null)" || LF=""
 if [[ -n "$LF" && -f "$LF" ]]; then
   while IFS='=' read -r k v; do
     [[ "$v" =~ ^[0-9]+$ ]] || continue
     case "$k" in
       SINCE) LISTEN_SINCE="$v" ;; UNTIL) LISTEN_UNTIL="$v" ;; ASKED_AT) LISTEN_ASKED="$v" ;;
-      STARTED) LISTEN_STARTED="$v" ;; PID) LISTEN_PID="$v" ;;
+      STARTED) LISTEN_STARTED="$v" ;; PID) LISTEN_PID="$v" ;; POST) LISTEN_POST="$v" ;;
     esac
   done <"$LF"
 fi
@@ -110,8 +110,8 @@ save_state() {
 save_listen() {
   [[ -n "$LF" ]] || return 0
   mkdir -p "$(dirname "$LF")" 2>/dev/null || return 0
-  printf 'UNTIL=%s\nSINCE=%s\nASKED_AT=%s\nSTARTED=%s\nPID=0\nENDED=\n' \
-    "$LISTEN_UNTIL" "$LISTEN_SINCE" "$LISTEN_ASKED" "$LISTEN_STARTED" >"$LF" 2>/dev/null || true
+  printf 'UNTIL=%s\nSINCE=%s\nASKED_AT=%s\nSTARTED=%s\nPID=0\nENDED=\nPOST=%s\n' \
+    "$LISTEN_UNTIL" "$LISTEN_SINCE" "$LISTEN_ASKED" "$LISTEN_STARTED" "$LISTEN_POST" >"$LF" 2>/dev/null || true
 }
 
 # block <reason for the agent> [banner for the human] [stat kind]. The reason goes to the
@@ -327,10 +327,19 @@ if [[ -n "$LF" && "$LISTEN_SEC" -gt 0 && "$have_post" -eq 1 ]] && ! mm_channel_p
     exit 0
   fi
   # A new window when none is open yet, or when the agent answered on the bus
-  # since the window opened: that answer may well get a reply of its own.
-  if [[ "$LISTEN_UNTIL" -eq 0 ]] || (( LAST_AT / 1000 > LISTEN_SINCE )); then
+  # since the window opened: that answer may well get a reply of its own. Its
+  # latest own post is another than the one the window opened with (POST, its
+  # time as the server that carried it gave it): no clock is compared, so a
+  # post over NATS (RT-6.36), whose time is the NATS server's, counts alike.
+  # A window file from before POST (written by an older hook) keeps the rule it
+  # was opened under, its post time against its start, until its next window,
+  # which has POST: listening never stops after an update.
+  if [[ "$LISTEN_UNTIL" -eq 0 ]] ||
+    { [[ -n "$LISTEN_POST" ]] && (( LAST_AT != LISTEN_POST )); } ||
+    { [[ -z "$LISTEN_POST" ]] && (( LAST_AT / 1000 > LISTEN_SINCE )); }; then
     LISTEN_SINCE="$now"
     LISTEN_UNTIL=$((now + LISTEN_SEC))
+    LISTEN_POST="$LAST_AT"
   fi
   remaining=$((LISTEN_UNTIL - now))
   # Asked before, and no listener started since: the agent cannot run one

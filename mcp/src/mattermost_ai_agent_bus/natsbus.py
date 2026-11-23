@@ -4,7 +4,7 @@ The permission model, from the host's side:
 
 * The sender of a message is the last token of its subject
   (`<bus>.ch.<channel>.<sender>`, `<bus>.dm.<recipient>.<sender>`,
-  `<presence>.<sender>`, `<presence>.crown.<channel>.<sender>`), never a header or
+  `<presence>.<owner>.<sender>`, `<presence>.crown.<channel>.<sender>`), never a header or
   the body. No `Nats-Msg-Id` header is ever set (the stream's message-id window is
   the side channel of condition 1).
 * The host never talks to JetStream. It reads only through the push consumers the
@@ -64,6 +64,24 @@ DELIVER = "deliver"  # consumers.DeliverPrefix / callout.DeliverPrefix
 CHANNEL_RE = re.compile(r"^[a-z0-9][a-z0-9_-]{0,63}$")  # Go checkToken
 AGENT_RE = re.compile(r"^[A-Za-z0-9][A-Za-z0-9_-]{0,127}$")  # Go consumers.agentRE
 PREFIX_RE = re.compile(r"^[A-Za-z0-9_-]+$")
+# An owner counts only in this form (RT-6.37): a Mattermost username's characters in lower
+# case, the same string the bus compares with MM_TRUSTED_HUMANS and the owners of Mattermost
+# bots. Nothing is normalised: an owner in any other form is no owner.
+OWNER_RE = re.compile(r"[a-z0-9][a-z0-9._-]{0,63}")
+NO_OWNER = "-"  # the owner token of an owner not in OWNER_RE's form
+
+
+def owner_token(owner: str) -> str:
+    """The owner as the token of a presence subject (`<presence>.<owner>.<name>`, RT-6.37),
+    as Go's ownerToken (services/auth/internal/callout/perms.go) makes it: "." as "~" (a
+    subject token holds no "."; no username holds "~"), NO_OWNER for any other form."""
+    return owner.replace(".", "~") if OWNER_RE.fullmatch(owner) else NO_OWNER
+
+
+def owner_of_token(token: str) -> str:
+    """The owner a presence subject's owner token names, '' for none."""
+    owner = token.replace("~", ".")
+    return owner if token != NO_OWNER and "." not in token and OWNER_RE.fullmatch(owner) else ""
 
 _PUBLISH_DENIED_RE = re.compile(r'permissions violation for publish to "([^"]*)"', re.IGNORECASE)
 _KINDS = ("post", "reaction", "unreaction")
@@ -452,6 +470,8 @@ class NatsBus:
         self._server_now = 0.0  # the newest server timestamp seen: the host's "now"
         self._last_prune = 0.0
         self._presence: dict[str, tuple[float, str]] = {}
+        self._owners: dict[str, str] = {}  # agent -> owner its presence subject names (RT-6.37)
+        self._presence_seq: dict[str, int] = {}  # agent -> stream sequence of its last presence
         self._claims: dict[str, dict[str, int]] = {}
         self._claim_at: dict[tuple[str, str], float] = {}  # (channel, agent) -> server time of the claim
 
@@ -525,7 +545,7 @@ class NatsBus:
         nc = self._nc
         if nc is not None and self._connected:
             try:
-                await nc.publish(f"{self._s.presence}.{self.name}", encode_presence("bye"))
+                await nc.publish(self._presence_subject, encode_presence("bye"))
                 await asyncio.wait_for(nc.drain(), 5)
             except Exception as exc:  # the bus is going away anyway
                 log.warning("nats bus: stop: %s", type(exc).__name__)
@@ -611,7 +631,7 @@ class NatsBus:
             await self._sync(nc)
             if refused:
                 raise NameMismatch("the credential's agent name is not the computed one; nothing sent")
-            await nc.publish(f"{self._s.presence}.{name}", encode_presence("online"))
+            await nc.publish(self._presence_subject, encode_presence("online"))
             await nc.flush()
         except BaseException:
             await nc.close()
@@ -717,7 +737,7 @@ class NatsBus:
             nc = self._nc
             if nc is not None and self._connected:
                 try:
-                    await nc.publish(f"{self._s.presence}.{self.name}", encode_presence("online"))
+                    await nc.publish(self._presence_subject, encode_presence("online"))
                 except Exception as exc:
                     log.warning("nats bus: heartbeat: %s", type(exc).__name__)
 
@@ -802,6 +822,27 @@ class NatsBus:
     async def claim(self, channel: str) -> None:
         await self._publish(f"{self._s.presence}.crown.{self._asked(channel)}.{self.name}", encode_claim())
 
+    @property
+    def _presence_subject(self) -> str:
+        """`<presence>.<owner>.<name>` (RT-6.37): the login service lets this agent publish
+        its presence there and nowhere else, so the owner in it is pinned like the name."""
+        return f"{self._s.presence}.{owner_token(self._owner)}.{self.name}"
+
+    def owner_of(self, agent: str) -> str:
+        """The owner the agent's presence subject names (RT-6.37), '' for none. The login
+        service pins it there by the credential's one presence permission, as it pins the
+        sender: no agent can publish a presence under another owner."""
+        return self._owners.get(agent, "")
+
+    def presence_of(self, agent: str) -> str:
+        """online or away while the agent's last presence is younger than
+        PRESENCE_FRESH_SEC by the server's clock (never this host's) and no bye;
+        else offline."""
+        seen = self._presence.get(agent)
+        if seen is None or seen[1] == "bye" or self._server_now - seen[0] >= PRESENCE_FRESH_SEC:
+            return "offline"
+        return seen[1]
+
     def presence_snapshot(self) -> dict[str, tuple[float, str]]:
         """agent -> (server time, status) of the last presence message of each."""
         return dict(self._presence)
@@ -830,6 +871,8 @@ class NatsBus:
         for agent, (t, _) in list(self._presence.items()):
             if t < cut:
                 del self._presence[agent]
+                self._owners.pop(agent, None)
+                self._presence_seq.pop(agent, None)
         for ch, claims in list(self._claims.items()):
             for agent in list(claims):
                 if self._claim_at.get((ch, agent), 0.0) < cut:
@@ -903,8 +946,18 @@ class NatsBus:
         t = msg.subject.split(".")
         p = self._s.presence
         try:
-            if len(t) == 2 and t[0] == p and AGENT_RE.fullmatch(t[1]):
-                self._presence[t[1]] = (ack.time, decode_presence(msg.data))
+            if len(t) == 3 and t[0] == p and AGENT_RE.fullmatch(t[2]):
+                # <presence>.<owner>.<name>: the owner as the login service pinned it.
+                agent, status = t[2], decode_presence(msg.data)
+                if ack.stream_seq <= self._presence_seq.get(agent, 0):
+                    return  # an older message never overrides a newer one
+                self._presence_seq[agent] = ack.stream_seq
+                self._presence[agent] = (ack.time, status)
+                owner = owner_of_token(t[1])
+                if owner:
+                    self._owners[agent] = owner
+                else:
+                    self._owners.pop(agent, None)
             elif len(t) == 4 and t[0] == p and t[1] == "crown" and CHANNEL_RE.fullmatch(t[2]) and AGENT_RE.fullmatch(t[3]):
                 decode_claim(msg.data)
                 claims = self._claims.setdefault(t[2], {})

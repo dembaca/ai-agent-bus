@@ -81,7 +81,11 @@ async def after(client: ChatPort) -> list[After]:
     for ch in await client.member_channels():
         # A home over NATS: its NATS posts after their own mark (watermark.lane).
         keys = [ch.channel_id, *([f"{ch.channel_id}{watermark.NATS_LANE}"] if ch.nats else [])]
-        sinces = {k: max(marks[k].at if k in marks else 0, floor) for k in keys}
+        # The floor (the bot's creation, a day back) is Mattermost's and this host's
+        # time: never laid on the NATS lane, whose posts carry the NATS server's. That
+        # lane reads the port's memory, which holds only what this session received.
+        sinces = {k: (marks[k].at if k in marks else 0) if k.endswith(watermark.NATS_LANE)
+                  else max(marks[k].at if k in marks else 0, floor) for k in keys}
         since = min(sinces.values())
         newest = {ch.channel_id: ch.last_post_at}
         if ch.nats:

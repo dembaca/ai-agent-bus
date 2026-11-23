@@ -46,7 +46,7 @@ func TestAByeWithoutTheServersTimeRemovesNothing(t *testing.T) {
 	if err := m.Reconcile(ctx, "agent-a", "alice", []string{"home"}, nil); err != nil {
 		t.Fatal(err)
 	}
-	m.bye(ctx, &nats.Msg{Subject: "presence.agent-a", Data: []byte(`{"status":"bye"}`)})
+	m.bye(ctx, &nats.Msg{Subject: "presence.alice.agent-a", Data: []byte(`{"status":"bye"}`)})
 	for _, n := range []string{"agent-a_ch_home", "agent-a_dm"} {
 		if _, err := m.js.ConsumerInfo(BusStream, n); err != nil {
 			t.Errorf("%s gone after a bye without metadata: %v", n, err)
@@ -54,11 +54,11 @@ func TestAByeWithoutTheServersTimeRemovesNothing(t *testing.T) {
 	}
 	// The same bye as JetStream delivers it, with the server's time, does
 	// remove them.
-	sub, err := m.js.SubscribeSync("presence.agent-a", nats.BindStream(PresenceStream), nats.OrderedConsumer())
+	sub, err := m.js.SubscribeSync("presence.alice.agent-a", nats.BindStream(PresenceStream), nats.OrderedConsumer())
 	if err != nil {
 		t.Fatal(err)
 	}
-	if err := nc.Publish("presence.agent-a", []byte(`{"status":"bye"}`)); err != nil {
+	if err := nc.Publish("presence.alice.agent-a", []byte(`{"status":"bye"}`)); err != nil {
 		t.Fatal(err)
 	}
 	msg, err := sub.NextMsg(5 * time.Second)

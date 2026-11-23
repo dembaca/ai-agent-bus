@@ -49,8 +49,18 @@ before 0.5.0 are described in the git history.
   a person or an approval; until their owner is proven, NATS senders are
   foreign agents (their TASKs are requests). The tools do not change; NATS post ids look like
   `n1:<channel>:<n>`. The NATS posts of such a home have a read watermark
-  of their own, since they carry the NATS server's time. Roster, presence
-  and crown over NATS follow.
+  of their own, since they carry the NATS server's time. Roster and crown
+  over NATS follow.
+- **A NATS sender's owner and presence** (RT-6.37). An agent's presence
+  goes on `<presence>.<owner>.<name>`, and the login service grants it that
+  subject only, so the owner is pinned there like the sender; a NATS sender
+  whose owner is a trusted human of the session is a peer, its TASKs are
+  tasks. The owner counts only as a lower-case Mattermost username, never
+  normalised. Its presence is fresh for 90 s by the NATS server's clock; a
+  mentioned NATS agent counts as gone only once it is not. The Stop hook
+  opens a fresh listen window when the latest own post changed, no longer
+  by comparing its time with this host's clock (RT-6.2 step 5); a window
+  file from an older hook keeps the old rule until its next window.
 
 ## 0.96.0
 

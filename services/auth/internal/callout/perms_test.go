@@ -8,8 +8,8 @@ import (
 // A configured presence prefix is what the credential gets, nothing on the
 // default one.
 func TestAConfiguredPresencePrefixIsWhatTheCredentialGets(t *testing.T) {
-	p := Subjects{Prefix: "bus", Presence: "here"}.permissions("agent-x", []string{"home"})
-	for _, want := range []string{"here.agent-x", "here.crown.home.agent-x", "bus.ch.home.agent-x", "bus.dm.*.agent-x"} {
+	p := Subjects{Prefix: "bus", Presence: "here"}.permissions("agent-x", "andreas.dembach", []string{"home"})
+	for _, want := range []string{"here.andreas~dembach.agent-x", "here.crown.home.agent-x", "bus.ch.home.agent-x", "bus.dm.*.agent-x"} {
 		if !p.Pub.Allow.Contains(want) {
 			t.Errorf("publish %s missing: %v", want, p.Pub.Allow)
 		}
@@ -50,5 +50,34 @@ func TestSubjectPrefixesAreChecked(t *testing.T) {
 	c.Subjects.Prefix = DeliverPrefix
 	if err := c.check(); err == nil || !strings.Contains(err.Error(), "deliver prefix") {
 		t.Errorf("subject prefix deliver: %v", err)
+	}
+}
+
+func TestOwnerToken(t *testing.T) {
+	for in, want := range map[string]string{
+		"alice": "alice", "andreas.dembach": "andreas~dembach", "a_b-c": "a_b-c",
+		"Alice": "-", " alice": "-", "": "-", "al.ice\n": "-", "a~b": "-", ".a": "-",
+	} {
+		if got := ownerToken(in); got != want {
+			t.Errorf("ownerToken(%q) = %q, want %q", in, got, want)
+		}
+	}
+}
+
+// The permission set holds exactly the one presence subject, with the owner.
+func TestThePermissionHoldsExactlyOnePresenceSubject(t *testing.T) {
+	p := Subjects{Prefix: "bus", Presence: "presence"}.permissions("agent-x", "Alice", []string{"home"})
+	var got []string
+	for _, s := range p.Pub.Allow {
+		if strings.HasPrefix(s, "presence.") && !strings.HasPrefix(s, "presence.crown.") {
+			got = append(got, s)
+		}
+	}
+	if len(got) != 1 || got[0] != "presence.-.agent-x" {
+		t.Errorf("presence rights %v, want only presence.-.agent-x", got)
+	}
+	p = Subjects{Prefix: "bus", Presence: "presence"}.permissions("agent-x", "alice", nil)
+	if !p.Pub.Allow.Contains("presence.alice.agent-x") || p.Pub.Allow.Contains("presence.agent-x") {
+		t.Errorf("pub %v", p.Pub.Allow)
 	}
 }
