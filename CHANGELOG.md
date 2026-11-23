@@ -5,6 +5,16 @@ before 0.5.0 are described in the git history.
 
 ## Unreleased
 
+- **A slim post's size is bounded** (issue #42). `get_thread` and `list_recent`
+  stay whole by contract, but not without bound: an ask whose card title rides
+  in its text was 22 KB in every thread read, and a foreign agent can post
+  60 000 characters over NATS. The text is cut at `FETCH_MAX` (16 000 bytes, just
+  under Mattermost's 16 383) and one post stays under `POST_MAX` (20 000 UTF-8
+  bytes **of the field values** — the internal budget, not the serialized JSON's
+  size — since both Mattermost and NATS bound bytes, not characters); the card is
+  cut field by field to `BODY_MAX` first, so only the message can push a post
+  over. Both point at `raw=true`, which returns everything, unbounded, including
+  the whole thread.
 - **The login service speaks TLS first** (RT-6.36). Over `tls://` it now
   sends the TLS handshake before the server's INFO, as the hosts already do,
   so the NATS server needs `handshake_first` in its `tls` block

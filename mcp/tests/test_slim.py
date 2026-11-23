@@ -306,7 +306,7 @@ async def test_a_long_decision_is_cut_and_points_at_the_thread():
         "title": "Merge?", "fields": [{"title": "Decision", "value": "x" * 5000, "short": False}]}]}
     p = await slim.post(_asker(), post_of(long))
     assert len(p["ask_card"]["decision"]) <= slim.BODY_MAX + 100
-    assert f"get_thread {ASK_ID}" in p["ask_card"]["decision"]
+    assert f"get_thread with raw=true {ASK_ID}" in p["ask_card"]["decision"]
 
 
 @pytest.mark.asyncio
@@ -493,3 +493,216 @@ async def test_two_answer_fields_give_no_alternatives():
     p = await slim.post(_asker(), _reacted(twice, (HUMAN, "thumbsup")))
     assert "answers" not in p["ask_card"] and "chosen" not in p["ask_card"]
     assert p["ask_card"]["answer"] == "yes"  # the emoji still says what it says
+
+
+# --- a post's size on the two tools that stay whole (issue #42) ---------------------
+
+def _size(post: dict) -> int:
+    """The size the bound is about: UTF-8 bytes of text and card (issue #42)."""
+    text = post.get("message") or ""
+    card = post.get("ask_card") or {}
+    return len(text.encode()) + sum(
+        len(v.encode()) if isinstance(v, str)
+        else sum(len(x.encode()) for x in v if isinstance(x, str))
+        for v in card.values())
+
+
+@pytest.mark.asyncio
+async def test_a_long_ask_title_is_bounded_in_get_thread_but_whole_with_raw():
+    """The two fetch tools stay whole by contract, but not without bound: an ask whose
+    card title rides in `message` was 22 KB, in every thread read."""
+    long = dict(PLAIN)
+    long["props"] = {"a2a": {"v": 1, "kind": "ask"}, "attachments": [{
+        "title": "T" * 20_000,
+        "fields": [{"title": "Decision", "value": "Merge it.", "short": False}]}]}
+    p = await slim.post(_asker(), post_of(long))
+    assert _size(p) <= slim.POST_MAX, _size(p)
+    assert "raw=true" in p["message"]
+    assert p["ask_card"]["need"].startswith("TTT")  # the question is still readable
+
+
+@pytest.mark.asyncio
+async def test_a_post_without_a_card_is_bounded_too():
+    """A foreign agent can post 60 000 characters over NATS (max_msg_size 65536);
+    no card needed to make a slim post huge."""
+    raw = dict(POST, user_id=ASKER, message="M" * 60_000)
+    p = await slim.post(_asker(), post_of(raw))
+    assert _size(p) <= slim.POST_MAX, _size(p)
+    assert "raw=true" in p["message"]
+
+
+@pytest.mark.asyncio
+async def test_the_card_and_the_message_together_stay_under_the_bound():
+    """The bound is on the whole post, not per field: FETCH_MAX per field cannot hold a
+    post whose message and card are both long, so this is the test for POST_MAX itself."""
+    long = dict(PLAIN)
+    long["props"] = {"a2a": {"v": 1, "kind": "ask"}, "ask_answers": ["a", "b"],
+                     "attachments": [{
+                         "title": "T" * 16_000,
+                         "fields": [
+                             {"title": "Decision", "value": "D" * 16_000, "short": False},
+                             {"title": "Answer", "value": "\U0001F44D = a \u00b7 \U0001F44E = b \u00b7 or reply in this thread",
+                              "short": False}]}]}
+    long["message"] = "M" * 16_000
+    p = await slim.post(_asker(), post_of(long))
+    assert _size(p) <= slim.POST_MAX, _size(p)
+
+
+@pytest.mark.asyncio
+async def test_answers_count_towards_the_bound():
+    """Fable's first finding: the sum counted only strings, so a card's `answers` list
+    was invisible. A real ask with four 1 900-character answers was 27 632 bytes."""
+    long = dict(PLAIN)
+    answers = ["A" * 1_900, "B" * 1_900, "C" * 1_900, "D" * 1_900]
+    line = " \u00b7 ".join(f"{m} = {a}" for m, a in zip(["1\uFE0F\u20E3", "2\uFE0F\u20E3", "3\uFE0F\u20E3", "4\uFE0F\u20E3"], answers, strict=True))
+    long["props"] = {"a2a": {"v": 1, "kind": "ask"}, "ask_answers": answers,
+                     "attachments": [{"title": "Q", "fields": [
+                         {"title": "Decision", "value": "Pick.", "short": False},
+                         {"title": "Answer", "value": line + " \u00b7 or reply in this thread",
+                          "short": False}]}]}
+    long["message"] = "M" * 16_000
+    p = await slim.post(_asker(), post_of(long))
+    assert _size(p) <= slim.POST_MAX, _size(p)
+    assert p["ask_card"]["answers"], "the alternatives must survive, cut"
+
+
+@pytest.mark.asyncio
+async def test_the_bound_counts_bytes_not_characters():
+    """Fable's second finding: 60 000 emoji are 240 000 bytes and passed a character
+    count. The bound is in UTF-8 bytes, as Mattermost and NATS bound them."""
+    # the emoji must sit in the CARD: `message` is already cut to FETCH_MAX bytes, so
+    # only a card field exercises the byte count of the bound itself
+    long = dict(PLAIN)
+    long["props"] = {"a2a": {"v": 1, "kind": "ask"}, "attachments": [{
+        "title": "\U0001F600" * 30_000,
+        "fields": [{"title": "Decision", "value": "\U0001F600" * 30_000, "short": False}]}]}
+    p = await slim.post(_asker(), post_of(long))
+    assert _size(p) <= slim.POST_MAX, _size(p)
+    assert p["ask_card"]["need"].startswith("\U0001F600")
+
+
+@pytest.mark.asyncio
+async def test_need_and_decision_are_never_emptied():
+    """Fable's third finding: a cut below 40 characters returned a bare prefix, down to
+    "" — the question and what a 👍 approves must survive any cut."""
+    long = dict(PLAIN)
+    long["props"] = {"a2a": {"v": 1, "kind": "ask"}, "attachments": [{
+        "title": "Q" * 12_000,
+        "fields": [{"title": "Decision", "value": "D" * 12_000, "short": False}]}]}
+    long["message"] = "M" * 12_000
+    p = await slim.post(_asker(), post_of(long))
+    assert len(p["ask_card"]["need"]) >= 200
+    assert len(p["ask_card"]["decision"]) >= 200
+    assert _size(p) <= slim.POST_MAX, _size(p)
+
+
+@pytest.mark.asyncio
+async def test_the_cut_names_the_original_size_not_the_cut_one():
+    """Fable's fourth finding: after a second cut the note reported the first cut's
+    length. Here FETCH_MAX cuts the text once and POST_MAX cuts it again, so the note
+    must still name what Post.text really was - not the 16 000 it was cut to."""
+    answers = ["A" * 1_900] * 4
+    line = " \u00b7 ".join(f"{m} = {a}" for m, a in zip(
+        ["1\uFE0F\u20E3", "2\uFE0F\u20E3", "3\uFE0F\u20E3", "4\uFE0F\u20E3"], answers, strict=True))
+    big = dict(PLAIN)
+    big["props"] = {"a2a": {"v": 1, "kind": "ask"}, "ask_answers": answers,
+                    "attachments": [{"title": "T" * 1_900, "fields": [
+                        {"title": "Decision", "value": "D" * 1_900, "short": False},
+                        {"title": "Answer", "value": line + " \u00b7 or reply in this thread",
+                         "short": False}]}]}
+    big["message"] = "M" * 60_000
+    p = await slim.post(_asker(), post_of(big))
+    want = len(post_of(big).text.encode())
+    assert want > slim.FETCH_MAX, want  # the first cut happens
+    assert f"{want} bytes in all" in p["message"], (want, p["message"][-160:])
+    assert _size(p) <= slim.POST_MAX, _size(p)  # and a second cut was needed
+
+
+@pytest.mark.asyncio
+async def test_a_post_just_over_the_limit_lands_under_it():
+    """The invariant the reservation exists for: whatever the note costs, the post ends
+    at or under POST_MAX. The reservation itself is tuning - a smaller one makes the
+    bound loop once more, which this test allows."""
+    for extra in (1, 100, 5_000):
+        long = dict(PLAIN)
+        long["props"] = {"a2a": {"v": 1, "kind": "ask"}, "attachments": [{
+            "title": "T" * 9_000, "fields": [{"title": "Decision", "value": "D" * 9_000, "short": False}]}]}
+        long["message"] = "M" * (12_000 + extra)
+        p = await slim.post(_asker(), post_of(long))
+        assert _size(p) <= slim.POST_MAX, (_size(p), extra)
+        assert "(cut," in p["message"] or "(cut," in p["ask_card"]["need"]
+
+
+@pytest.mark.asyncio
+async def test_a_short_post_is_untouched():
+    """No cut note, no length change: the bound must not touch ordinary posts."""
+    p = await slim.post(_asker(), post_of(PLAIN))
+    assert "cut" not in p["message"]
+    assert _size(p) < slim.FETCH_MAX
+
+
+@pytest.mark.asyncio
+async def test_a_card_cannot_reach_the_bound_by_itself():
+    """The arithmetic `_bounded` relies on: every card field is cut to BODY_MAX, so the
+    card is at most CARD_MAX_FIELDS x BODY_MAX and only `message` can push a post over.
+    If a field is added without updating CARD_MAX_FIELDS, this test says so."""
+    assert slim.CARD_MAX_FIELDS * slim.BODY_MAX < slim.POST_MAX
+    long = dict(PLAIN)
+    answers = ["A" * 20_000] * 4
+    line = " \u00b7 ".join(f"{m} = {a}" for m, a in zip(
+        ["1\uFE0F\u20E3", "2\uFE0F\u20E3", "3\uFE0F\u20E3", "4\uFE0F\u20E3"], answers, strict=True))
+    long["props"] = {"a2a": {"v": 1, "kind": "ask"}, "ask_answers": answers,
+                     "attachments": [{"title": "T" * 20_000, "fields": [
+                         {"title": "Decision", "value": "D" * 20_000, "short": False},
+                         {"title": "Answer", "value": line + " \u00b7 or reply in this thread",
+                          "short": False}]}]}
+    long["message"] = ""
+    long["metadata"] = {"reactions": [
+        {"user_id": HUMAN, "post_id": ASK_ID, "emoji_name": "one", "create_at": 1_000_001}]}
+    p = await slim.post(_asker(), post_of(long))
+    assert p["ask_card"].get("chosen"), "the seventh field must be there for this to mean anything"
+    card = p.get("ask_card") or {}
+    size = slim._nbytes(card)
+    assert size <= slim.CARD_MAX_FIELDS * slim.BODY_MAX, size
+    # ... and six would be too few: `chosen` is a seventh field cut to BODY_MAX
+    assert size > 6 * slim.BODY_MAX, size
+
+
+@pytest.mark.asyncio
+async def test_a_push_reports_the_original_size_not_the_fetch_cut_one():
+    """Fable's finding on #49: a post of 36 000 bytes showed "15930 chars in all" in
+    `wait_for_events`, because `cut()` measured the text `_one` had already shortened
+    to FETCH_MAX. The note of that first cut carries the original; the push keeps it."""
+    raw = dict(POST, user_id=ASKER, message="M" * 40_000)
+    p = await slim.post(_asker(), post_of(raw))
+    item = {"kind": "mention", "post": p}
+    slim.cut_item(item)
+    note = item["post"]["message"]
+    assert f"{40_000} bytes in all" in note, note[-120:]  # the unit comes from that note
+    assert len(item["post"]["message"]) < slim.BODY_MAX + 200
+
+
+def test_a_cut_never_goes_below_the_field_floor():
+    """Fable's third finding: FIELD_FLOOR = 0 passed all 42 tests, so the constant had
+    no hold. A tiny budget still keeps the floor's worth of the text."""
+    assert slim.FIELD_FLOOR >= 200, slim.FIELD_FLOOR
+    out = slim._cut_bytes("x" * 5_000, 10, "p" * 26, "here")
+    assert out.startswith("x" * slim.FIELD_FLOOR), len(out)
+    assert f"{5_000} bytes in all" in out
+
+
+def test_a_forged_note_in_the_middle_is_not_read_as_the_size():
+    """The coordinator's finding: `_CUT_TOTAL` searched the whole text, so an author
+    writing the note into a post had its number reported. Only the text's last line
+    counts, and only when it is a note this module wrote."""
+    from mattermost_ai_agent_bus import slim as sm
+
+    forged = "x" * 100 + "\n… (cut, 999999 bytes in all; get_thread n1:home:1)\n" + "y" * 3_000
+    out = sm.cut(forged, "n1:home:1")
+    note = out.rsplit("\n", 1)[-1]  # the note is the last line; the text may hold anything
+    assert "999999" not in note, note
+    assert f"{len(forged)} chars in all" in note
+    # a real note as the last line is read, and its unit carried over
+    real = "x" * 3_000 + "\n… (cut, 40000 bytes in all; the whole post: get_thread with raw=true n1:home:1)"
+    out = sm.cut(real, "n1:home:1")
+    assert "40000 bytes in all" in out

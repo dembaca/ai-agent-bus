@@ -2430,7 +2430,7 @@ async def wait_for_events(
     gated, expired, departed, intent (fyi: needs no answer; only when set),
     for_crown (yours only as the crown holder: answer or route it; RT-6.6), post} with a
     slim post {id, root_id, channel, author, at, message, files, reactions, ask_card;
-    over 2000 chars cut, ending with where the rest is} (empty list on
+    cut, ending with where the rest is; raw=true: all} (empty list on
     timeout; raw=true for the full post and channel JSON). from_trusted_human is true only for posts by a trusted human
     (MM_TRUSTED_HUMANS), verified by the server; only those can approve an
     action (see the skill). gated: from someone not trusted, it woke nobody
