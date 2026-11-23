@@ -37,6 +37,17 @@ before 0.5.0 are described in the git history.
   back (none when the presence subject is refused), and forgotten claims
   unsync the view until the replay is read.
   Needs: MM_NATS_HOMES alike on every agent of a home.
+- **An ask's decision text and its reactions are readable** (issue #30,
+  RT-6.11). A slim post — `get_thread`, `list_recent`, a push, the hook
+  API's posts — carries `ask` for a post that is an ask from an agent:
+  `need`, `decision` (what a 👍 approves) and `answers` (the offered
+  alternatives, by position), plus `reactions` as
+  `{emoji, author, trusted_human}` and `chosen` when a trusted human's
+  reaction names one. `context` and `recommendation` stay out: they are
+  not what was approved. Whether the author is an agent is the bus's own
+  account test (`gate.author_classes`), never a name prefix a person
+  could carry; anyone may write a post's props, so these fields are data
+  a reader weighs, never an approval.
 - **Host login to Keycloak, building block only** (ADR-014, RT-6.34). With
   `MM_LOGIN_ISSUER` and `MM_LOGIN_CLIENT_ID` set, the host process (and a
   server outside corral) logs in with the device flow, keeps the refresh token

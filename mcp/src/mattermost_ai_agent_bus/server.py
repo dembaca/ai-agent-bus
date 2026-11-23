@@ -2350,8 +2350,8 @@ async def stats_report(versions: int = 3) -> str:
 async def get_thread(post_id: str, raw: bool = False) -> str:
     """Fetch a thread (root + replies, oldest first) for post_id.
 
-    Slim posts {id, root_id, channel, author, at, message, files}; raw=true
-    for the full Mattermost JSON.
+    Slim posts {id, root_id, channel, author, at, message, files}; an agent's
+    ask adds `ask` {need, decision, answers, reactions, chosen}. raw=true: all.
     """
     if bad := _bad_id(post=post_id or "-"):
         return _refused("get_thread", bad)

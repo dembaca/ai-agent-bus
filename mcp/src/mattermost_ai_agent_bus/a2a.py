@@ -489,6 +489,49 @@ def attachment_props(fields: list[tuple[str, str, bool]], *, fallback: str,
     }]}
 
 
+ASK_CARD_FIELDS = ("Decision", "Answer")  # the two a reader needs (RT-6.11)
+
+
+def ask_card(post: Any) -> dict[str, str]:
+    """The fields of an ask's card that a reading agent needs (RT-6.11): the
+    `Decision` that a 👍 approves and the `Answer` line naming the offered
+    alternatives; {} for a post without such a card. Takes a Post (its props)
+    or a raw post mapping. Data only: anyone may write a post's props, so a
+    caller must check that the post is an ask from an agent before showing
+    them (slim.post)."""
+    props = post.props if hasattr(post, "props") else (
+        post.get("props") if isinstance(post, Mapping) else None)
+    cards = props.get("attachments") if isinstance(props, Mapping) else None
+    card = cards[0] if isinstance(cards, list) and cards else None
+    fields = card.get("fields") if isinstance(card, Mapping) else None
+    out: dict[str, str] = {}
+    for f in fields if isinstance(fields, list) else []:
+        if not isinstance(f, Mapping):
+            continue
+        title, value = f.get("title"), f.get("value")
+        if title in ASK_CARD_FIELDS and isinstance(value, str) and value.strip():
+            out[str(title).lower()] = value
+    return out
+
+
+def ask_answers(answer_line: str) -> list[str]:
+    """The alternatives an ask's `Answer` field offers, by position (RT-6.11):
+    `👍 = A · 👎 = B · or reply in this thread` gives ["A", "B"]; [] when the
+    line offers only yes/no (`👍 = yes to the decision · 👎 = no`), which is
+    the same as an ask without alternatives (asks.answer_line([], …))."""
+    head, _, _ = answer_line.partition(" · or reply in this thread")
+    found: list[str] = []
+    for part in head.split(" · "):
+        _, sep, text = part.partition(" = ")
+        if not sep:
+            continue
+        text = text.strip()
+        if text in ("yes", "no", "yes to the decision"):
+            return []  # the plain yes/no line: no alternatives
+        found.append(text)
+    return found if 2 <= len(found) <= 4 else []
+
+
 # RT-6.31: the grey attachment the server adds to its agent's post while debug is
 # on, after any other (an ask's card); known by its title and fallback together.
 DEBUG_TITLE, _DEBUG_FALLBACK, _DEBUG_COLOR = "debug", "MCP debug", "#8b8b8b"
