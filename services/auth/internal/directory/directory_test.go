@@ -593,13 +593,13 @@ func TestTheAdminsAccountWritesAreOverExactRevisions(t *testing.T) {
 		t.Fatalf("old holder keeps the name: %+v", old)
 	}
 	_, rev, _, _, _ = s.Account(ctx(t), "mattermost", "alice")
-	if _, err := s.DropAccount(ctx(t), "mattermost", "alice", rev+1); !errors.Is(err, ErrConflict) {
+	if _, _, err := s.DropAccount(ctx(t), "mattermost", "alice", rev+1); !errors.Is(err, ErrConflict) {
 		t.Fatalf("drop over a wrong revision: %v", err)
 	}
-	if _, err := s.DropAccount(ctx(t), "mattermost", "none", 1); !errors.Is(err, ErrNotFound) {
+	if _, _, err := s.DropAccount(ctx(t), "mattermost", "none", 1); !errors.Is(err, ErrNotFound) {
 		t.Fatalf("drop a missing key: %v", err)
 	}
-	if sub, err := s.DropAccount(ctx(t), "mattermost", "alice", rev); err != nil || sub != "sub-b" {
+	if sub, _, err := s.DropAccount(ctx(t), "mattermost", "alice", rev); err != nil || sub != "sub-b" {
 		t.Fatalf("drop: %q %v", sub, err)
 	}
 	b, _, _, _ := s.Identity(ctx(t), "sub-b")
@@ -845,8 +845,8 @@ func TestADropReleasesAnUnfinishedMove(t *testing.T) {
 	if err != nil || !ok {
 		t.Fatal(ok, err)
 	}
-	if _, err := s.DropAccount(ctx(t), "mattermost", "alice", rev); err != nil {
-		t.Fatal(err)
+	if _, released, err := s.DropAccount(ctx(t), "mattermost", "alice", rev); err != nil || released != "sub-a" {
+		t.Fatalf("drop: released %q, %v", released, err)
 	}
 	if listsAlice(t, s, "sub-a") || listsAlice(t, s, "sub-b") {
 		t.Fatal("a record keeps the dropped name")
@@ -873,5 +873,76 @@ func TestAStoppedAdminPutIsFinishedByTheNextLogin(t *testing.T) {
 	}
 	if !strings.Contains(logs.String(), "from=sub-a") || listsAlice(t, s, "sub-a") {
 		t.Fatalf("not finished: a lists alice %v, log %s", listsAlice(t, s, "sub-a"), logs.String())
+	}
+}
+
+// A mark whose old holder still holds the key (the move stopped before it)
+// is stale for that holder: its next login keeps its name.
+func TestTheHolderOfAStaleMarkKeepsItsName(t *testing.T) {
+	s, a, logs := imported3(t)
+	restart := stopAt(t, "before key")
+	if err := a.Account(ctx(t), "sub-b", "alice"); err == nil {
+		t.Fatal("the move did not stop")
+	}
+	restart()
+	logs.Reset()
+	if err := a.Account(ctx(t), "sub-a", "alice"); err != nil {
+		t.Fatal(err)
+	}
+	if !listsAlice(t, s, "sub-a") || logs.Len() != 0 {
+		t.Fatalf("the holder lost its name or a move was told: %v %s", listsAlice(t, s, "sub-a"), logs.String())
+	}
+	if id, ok, _ := s.ByAccount(ctx(t), "mattermost", "alice"); !ok || id.Sub != "sub-a" {
+		t.Fatalf("resolves to %+v %v", id, ok)
+	}
+}
+
+// The old holder takes its name back from a stopped move: nothing is told
+// as released, the name moves back from the key's holder.
+func TestTakingANameBackFromAStoppedMoveReleasesNobody(t *testing.T) {
+	s, a, logs := imported3(t)
+	restart := stopAt(t, "key moved")
+	if err := a.Account(ctx(t), "sub-b", "alice"); err == nil {
+		t.Fatal("the move did not stop")
+	}
+	restart()
+	logs.Reset()
+	if err := a.Account(ctx(t), "sub-a", "alice"); err != nil {
+		t.Fatal(err)
+	}
+	if strings.Contains(logs.String(), "released") || !strings.Contains(logs.String(), "complete=true") {
+		t.Fatalf("log: %s", logs.String())
+	}
+	if !listsAlice(t, s, "sub-a") || listsAlice(t, s, "sub-b") {
+		t.Fatal("the name is not back with its holder alone")
+	}
+}
+
+// a→b stops after its key, c's claim stops before its key: the move to b is
+// finished for b all the same, with where the name came from.
+func TestAStoppedMoveIsFinishedForItsHolderWhenTheNextOneStops(t *testing.T) {
+	s, a, logs := imported3(t)
+	restart := stopAt(t, "key moved")
+	if err := a.Account(ctx(t), "sub-b", "alice"); err == nil {
+		t.Fatal("the move did not stop")
+	}
+	restart()
+	restart = stopAt(t, "before key")
+	if err := a.Account(ctx(t), "sub-c", "alice"); err == nil {
+		t.Fatal("c's claim did not stop")
+	}
+	restart()
+	if !strings.Contains(logs.String(), "released=sub-a") {
+		t.Fatalf("the finished move is not told: %s", logs.String())
+	}
+	b, _, _, _ := s.Identity(ctx(t), "sub-b")
+	if b.Accounts["mattermost"] != "alice" || b.MovedFrom["mattermost"] != "sub-a" || listsAlice(t, s, "sub-a") {
+		t.Fatalf("b: %+v, a lists alice %v", b, listsAlice(t, s, "sub-a"))
+	}
+	if err := a.Account(ctx(t), "sub-b", "alice"); err != nil {
+		t.Fatal(err)
+	}
+	if id, ok, _ := s.ByAccount(ctx(t), "mattermost", "alice"); !ok || id.Sub != "sub-b" {
+		t.Fatalf("resolves to %+v %v", id, ok)
 	}
 }

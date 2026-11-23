@@ -614,7 +614,7 @@ func (s *Store) ClaimAccount(ctx context.Context, sub, product, name string) (Ac
 		if from == sub {
 			return s.settle(ctx, sub, product, name, "", released)
 		}
-		r, err := s.beginMove(ctx, product, name, from)
+		r, err := s.beginMove(ctx, product, name, from, sub)
 		if r != "" {
 			released = r
 		}
@@ -687,17 +687,23 @@ func (s *Store) openMark(ctx context.Context, product, name, holder string) (fro
 	return m, mark, nil
 }
 
-// beginMove notes, before the index key moves away from `from`, that it is
-// taken from there. A move that stops after the key leaves the mark, and the
-// next write of that name finishes it from there (settle). An unfinished
-// move's mark is not lost to the new one: its old holder, who no longer has
-// the key, loses the name first (released).
-func (s *Store) beginMove(ctx context.Context, product, name, from string) (released string, err error) {
+// beginMove notes, before the index key moves away from `from` to `sub`,
+// that it is taken from there. A move that stops after the key leaves the
+// mark, and the next write of that name finishes it from there (settle). An
+// unfinished move's mark is not lost to the new one: that move is finished
+// first, for the key's holder `from` (its record gets the name and where it
+// came from, the old holder loses it: released). When `sub` is that old
+// holder taking its name back, the unfinished move is moot and nothing is
+// released.
+func (s *Store) beginMove(ctx context.Context, product, name, from, sub string) (released string, err error) {
 	open, _, err := s.openMark(ctx, product, name, from)
 	if err != nil {
 		return "", err
 	}
-	if open != "" {
+	if open != "" && open != sub {
+		if err := s.holdAccount(ctx, from, product, name, open); err != nil {
+			return "", err
+		}
 		if err := s.releaseAccount(ctx, open, product, name); err != nil {
 			return "", err
 		}
@@ -779,7 +785,7 @@ func (s *Store) PutAccount(ctx context.Context, sub, product, name string, rev u
 	from, released := "", ""
 	if old := string(e.Value()); old != sub {
 		from = old
-		if released, err = s.beginMove(ctx, product, name, old); err != nil {
+		if released, err = s.beginMove(ctx, product, name, old, sub); err != nil {
 			return AccountMove{Released: released}, err
 		}
 	}
@@ -913,46 +919,47 @@ func (s *Store) Account(ctx context.Context, product, name string) (sub string, 
 // rev the admin read (ErrNotFound when there is none, ErrConflict when it
 // changed), then removes the name from the record of the identity it
 // pointed at, if that lists it. It returns that `sub`.
-func (s *Store) DropAccount(ctx context.Context, product, name string, rev uint64) (sub string, err error) {
+func (s *Store) DropAccount(ctx context.Context, product, name string, rev uint64) (sub, released string, err error) {
 	key, err := accountKey(product, name)
 	if err != nil {
-		return "", err
+		return "", "", err
 	}
 	e, err := s.kv.Get(ctx, key)
 	if errors.Is(err, jetstream.ErrKeyNotFound) {
-		return "", ErrNotFound
+		return "", "", ErrNotFound
 	}
 	if err != nil {
-		return "", err
+		return "", "", err
 	}
 	if e.Revision() != rev {
-		return "", ErrConflict
+		return "", "", ErrConflict
 	}
 	err = s.kv.Delete(ctx, key, jetstream.LastRevision(rev))
 	switch {
 	case err == nil:
 	case errors.Is(err, jetstream.ErrKeyNotFound):
-		return "", ErrNotFound
+		return "", "", ErrNotFound
 	case isWrongSequence(err):
-		return "", ErrConflict
+		return "", "", ErrConflict
 	default:
-		return "", err
+		return "", "", err
 	}
 	sub = string(e.Value())
 	// An unfinished move's old holder loses the name too: no one holds it now.
 	open, _, err := s.openMark(ctx, product, name, sub)
 	if err != nil {
-		return sub, err
+		return sub, "", err
 	}
 	if open != "" {
 		if err := s.releaseAccount(ctx, open, product, name); err != nil {
-			return sub, err
+			return sub, "", err
 		}
+		released = open
 	}
 	if err := s.kv.Delete(ctx, moveKey(product, name)); err != nil && !errors.Is(err, jetstream.ErrKeyNotFound) {
-		return sub, err
+		return sub, released, err
 	}
-	return sub, s.releaseAccount(ctx, sub, product, name)
+	return sub, released, s.releaseAccount(ctx, sub, product, name)
 }
 
 // ByAccount finds the identity that has the chat account `name` of `product`;

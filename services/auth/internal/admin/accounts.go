@@ -127,7 +127,11 @@ func (h *handler) dropAccount(w http.ResponseWriter, r *http.Request, id token.I
 		fail(w, http.StatusBadRequest, "If-Match must be a revision")
 		return
 	}
-	sub, err := h.store.DropAccount(r.Context(), accountProduct, name, rev)
+	sub, released, err := h.store.DropAccount(r.Context(), accountProduct, name, rev)
+	if released != "" { // an unfinished move's old holder lost the name too
+		h.cfg.Log.Warn("directory write", "event", "unfinished account move finished", "sub", id.Subject,
+			"user", id.Owner, "product", accountProduct, "name", name, "released", directory.Short(released))
+	}
 	if err != nil {
 		h.storeError(w, err)
 		return

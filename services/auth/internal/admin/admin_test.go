@@ -525,3 +525,47 @@ func TestAnIncompleteAccountPutIsLogged(t *testing.T) {
 		}
 	}
 }
+
+// RT-6.40 step 9: an admin's PUT or DELETE that finishes an unfinished move
+// logs the old holder it released.
+func TestAnAdminWriteLogsTheUnfinishedMoveItFinishes(t *testing.T) {
+	for _, method := range []string{"PUT", "DELETE"} {
+		t.Run(method, func(t *testing.T) {
+			var logs bytes.Buffer
+			e := setup(t, Config{Burst: 100, Log: slog.New(slog.NewTextHandler(&logs, nil))})
+			for _, sub := range []string{"sub-a", "sub-b", "sub-c"} {
+				if _, err := e.store.Login(ctx(t), sub, "x", ""); err != nil {
+					t.Fatal(err)
+				}
+			}
+			if _, err := e.store.ClaimAccount(ctx(t), "sub-a", "mattermost", "alice"); err != nil {
+				t.Fatal(err)
+			}
+			restore := directory.SetAccountStepForTest(func(at string) error {
+				if at == "key moved" {
+					return errors.New("stopped")
+				}
+				return nil
+			})
+			if _, err := e.store.ClaimAccount(ctx(t), "sub-b", "mattermost", "alice"); err == nil {
+				t.Fatal("the move did not stop")
+			}
+			restore()
+			const path = "/v1/directory/accounts/mattermost/alice"
+			code, body, h := e.do(t, "GET", path, e.admin, "")
+			want(t, "get", code, 200, body)
+			if method == "PUT" {
+				code, body, _ = e.do(t, "PUT", path, e.admin, `{"sub":"sub-c"}`, "If-Match", h.Get("ETag"))
+				want(t, "put", code, 200, body)
+			} else {
+				code, body, _ = e.do(t, "DELETE", path, e.admin, "", "If-Match", h.Get("ETag"))
+				want(t, "delete", code, 204, body)
+			}
+			for _, w := range []string{"unfinished account move finished", "released=sub-a"} {
+				if !strings.Contains(logs.String(), w) {
+					t.Errorf("log lacks %q: %s", w, logs.String())
+				}
+			}
+		})
+	}
+}
