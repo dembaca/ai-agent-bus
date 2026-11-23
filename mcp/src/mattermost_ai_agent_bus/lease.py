@@ -400,7 +400,7 @@ async def _set_status(client: ChatPort, state: str, label: str = "") -> None:
         # The version (RT-6.30): last, and cut first, before the label; the
         # roster then reads it from the HELLO card.
         text = status_text(text, named, usage.segments(), client.work_channel_name,
-                           version=release.segment())
+                           version=release.segment(), link=_nats_link() if _nats_link else "")
         usage.shown()
     if coord is not None and coord.is_file():
         # The beat records the home too (ADR-002, #258): a file from before has none.
@@ -428,41 +428,67 @@ async def _set_status(client: ChatPort, state: str, label: str = "") -> None:
 # Mattermost caps custom status text at 100 characters.
 STATUS_MAX = 100
 _HOME = " · ~"
+_LINK = " · ⇄"
+_LINK_TAG = re.compile(r"[a-z0-9]{16}")
+
+# The link to the agent's NATS name (RT-6.37), set by the NATS port: a function
+# returning the tag to show, "" for none. Without a NATS home there is none.
+_nats_link: Callable[[], str] | None = None
 
 
-def homed(text: str, home: str) -> str:
+def use_nats_link(fn: Callable[[], str] | None) -> None:
+    global _nats_link
+    _nats_link = fn
+
+
+def _tail(home: str, link: str) -> str:
+    """What status texts never lose: the link segment, then the home."""
+    return (f"{_LINK}{link}" if link else "") + (f"{_HOME}{home}" if home else "")
+
+
+def homed(text: str, home: str, link: str = "") -> str:
     """A status text that names the agent's home (RT-6.6 step 1, ADR-002):
-    "<text> · ~<home>". A custom status is global per user; the home tells
-    every channel's roster whose crown it is. Past STATUS_MAX the text
-    before it is cut (the label first, it comes last), never the home."""
-    if not home:
+    "<text> · ⇄<link> · ~<home>", the link segment only with a link (RT-6.37). A
+    custom status is global per user; the home tells every channel's roster
+    whose crown it is. Past STATUS_MAX the text before it is cut (the label
+    first, it comes last), never the link or the home."""
+    tail = _tail(home, link)
+    if not tail:
         return text
-    tail = f"{_HOME}{home}"
     return text[:max(0, STATUS_MAX - len(tail))] + tail
 
 
-def status_text(head: str, label: str, segments: list[str], home: str, version: str = "") -> str:
+def status_text(head: str, label: str, segments: list[str], home: str, version: str = "",
+                link: str = "") -> str:
     """The custom status text (RT-6.6 step 1, ADR-008, RT-6.30): `<head> ·
-    <label> · <segments> · <version> · ~<home>`, e.g. `working · bus · ctx 62%
-    · 5h 40% · v0.83.0 · ~home`. The home stays last and STATUS_MAX holds: when
-    it does not fit, the version goes first, then the label, then the last
-    segments (`7d`, `5h`, `ctx` in that order, each shown only when it exists),
-    never the home. Without segments it is homed() of head and label, the
-    label cut as before."""
+    <label> · <segments> · <version> · ⇄<link> · ~<home>`, e.g. `working · bus
+    · ctx 62% · 5h 40% · v0.83.0 · ~home`. The link (RT-6.37) and the home stay
+    last and STATUS_MAX holds: when it does not fit, the version goes first,
+    then the label, then the last segments (`7d`, `5h`, `ctx` in that order,
+    each shown only when it exists), never the link or the home. Without
+    segments it is homed() of head and label, the label cut as before."""
+    tail = _tail(home, link)
     if version:
-        tail = f"{_HOME}{home}" if home else ""
         text = " · ".join([head, *([label] if label else []), *segments, version])
         if len(text) + len(tail) <= STATUS_MAX:
             return text + tail
     if not segments:
-        return homed(f"{head} · {label}" if label else head, home)
-    tail = f"{_HOME}{home}" if home else ""
+        return homed(f"{head} · {label}" if label else head, home, link)
     for keep, with_label in ((len(segments), True), (len(segments), False),
                              *((n, False) for n in range(len(segments) - 1, 0, -1))):
         text = " · ".join([head, *([label] if label and with_label else []), *segments[:keep]])
         if len(text) + len(tail) <= STATUS_MAX:
             return text + tail
-    return homed(head, home)
+    return homed(head, home, link)
+
+
+def link_of(text: str) -> str:
+    """The NATS link tag a status text names (RT-6.37): '' for none."""
+    for piece in str(text).split(" · "):
+        piece = piece.strip()
+        if piece.startswith("⇄") and _LINK_TAG.fullmatch(piece[1:]):
+            return piece[1:]
+    return ""
 
 
 def sets_receipts(text: str) -> bool:

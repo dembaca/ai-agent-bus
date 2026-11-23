@@ -870,3 +870,51 @@ async def test_without_permission_the_crown_works_and_it_logs_once(mm, client, c
         await lease._header(client, CHANNEL, UID)
     assert mm.patches == []
     assert [r.levelname for r in caplog.records if "header" in r.getMessage()] == ["WARNING", "DEBUG"]
+
+
+# --- the link segment of the status text (RT-6.37) ---------------------------------------------
+
+TAG = "abcdefghijklmnop"
+
+
+def test_the_link_segment_sits_before_the_home_and_is_read_back() -> None:
+    from mattermost_ai_agent_bus import release, usage
+
+    text = lease.status_text("working", "bus", ["ctx 62%", "5h 40%"], "home", version="v0.95.0", link=TAG)
+    assert text == f"working · bus · ctx 62% · 5h 40% · v0.95.0 · ⇄{TAG} · ~home"
+    assert lease.link_of(text) == TAG and lease.home_of(text) == "home"
+    assert usage.from_status(text)["ctx"] == 62 and release.from_status(text) == {"version": "0.95.0"}
+    assert lease.status_text("working", "bus", ["ctx 62%"], "home") == "working · bus · ctx 62% · ~home"
+    assert lease.link_of("working · bus · ctx 62% · ~home") == ""
+    assert lease.homed("working", "home", TAG) == f"working · ⇄{TAG} · ~home"
+    assert lease.status_text("idle", "", [], "", link=TAG) == f"idle · ⇄{TAG}"  # no home: the link last
+
+
+def test_the_link_and_a_long_home_are_never_cut() -> None:
+    home = "h" * 64
+    for args in (("working", "x" * 80, ["ctx 62%", "5h 40%", "7d 10%"], home, "v0.95.0"),
+                 ("working", "bus", ["ctx 62%"], home, ""), ("w" * 90, "", [], home, ""),
+                 ("working", "x" * 80, [], home, "v0.95.0")):
+        text = lease.status_text(*args, link=TAG)
+        assert len(text) <= lease.STATUS_MAX
+        assert text.endswith(f" · ⇄{TAG} · ~{home}"), text
+        assert lease.link_of(text) == TAG and lease.home_of(text) == home
+
+
+def test_link_of_reads_only_a_well_formed_segment() -> None:
+    assert lease.link_of(f"working · ⇄{TAG}") == TAG
+    for bad in ("", "working", "working · ⇄short", f"working · ⇄{TAG.upper()}", f"working · ⇄{TAG}x",
+                f"working · x⇄{TAG}", f"working ⇄{TAG}"):
+        assert lease.link_of(bad) == ""
+    assert lease.home_of(f"working · ⇄{TAG} · ~home") == "home"
+    assert lease.home_of(f"working · ⇄{TAG}") is None  # a link is no home
+
+
+def test_the_status_carries_the_link_of_the_registry() -> None:
+    assert lease._nats_link is None  # no NATS home, no link
+    lease.use_nats_link(lambda: TAG)
+    try:
+        assert lease._nats_link is not None and lease._nats_link() == TAG
+    finally:
+        lease.use_nats_link(None)
+    assert lease._nats_link is None

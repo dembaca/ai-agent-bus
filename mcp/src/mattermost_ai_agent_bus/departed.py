@@ -32,6 +32,7 @@ from typing import TYPE_CHECKING, Any
 from . import a2a, gate, lease, session_file
 from .ids import _ID
 from .model import Post
+from .nats_port import is_nats_user
 
 if TYPE_CHECKING:
     from .port import ChatPort
@@ -162,6 +163,12 @@ async def elsewhere(client: ChatPort, channel_id: str, names: list[str]) -> list
         out = []
         for name in names:
             user = bots.get(name)
+            if user is None and is_nats_user(name):
+                # A NATS name (no Mattermost account), by its claims (RT-6.37): fresh,
+                # but not claimed in this home.
+                if await _whereabouts(client, channel_id, name) == "elsewhere":
+                    out.append(Elsewhere(name, ""))
+                continue
             home = lease.live_home(user) if user is not None else None
             if user is None or home is None or await client.is_member(channel_id, user.id):
                 continue
@@ -210,8 +217,25 @@ async def _present(client: ChatPort, channel_id: str, names: list[str]) -> list[
     if not names:
         return []
     bots = await client.bots_named(set(names))
-    return [n for n in names if (u := bots.get(n)) is not None and lease.live_home(u) is not None
-            and await client.is_member(channel_id, u.id)]
+    out = []
+    for n in names:
+        u = bots.get(n)
+        if u is None:
+            if is_nats_user(n) and await _whereabouts(client, channel_id, n) == "here":
+                out.append(n)  # a NATS name claimed in this home (RT-6.37)
+        elif lease.live_home(u) is not None and await client.is_member(channel_id, u.id):
+            out.append(n)
+    return out
+
+
+async def _whereabouts(client: Any, channel_id: str, name: str) -> str | None:
+    """The NATS port's answer (here, elsewhere, gone) for a NATS name in the channel,
+    None when the client is no NATS port or cannot tell (RT-6.37)."""
+    ask = getattr(client, "whereabouts", None)
+    if ask is None:
+        return None
+    res = await ask(channel_id, name)
+    return res if isinstance(res, str) else None
 
 
 async def unreachable(client: ChatPort, message: str, me: str, channel_id: str) -> list[str]:

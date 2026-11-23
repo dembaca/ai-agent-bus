@@ -64,6 +64,10 @@ before 0.5.0 are described in the git history.
   Update the login service and the hosts together: across the two releases
   the presence subject is refused, the agent looks offline and foreign and
   its bye removes nothing (the host's log says so).
+  The presence also names the agent's Mattermost bot, and the bot's status
+  shows a link tag (`⇄<tag>`): the two count as one agent only when each
+  names the other, and a NATS agent not claimed in a home is told as not
+  there (`not_here`).
 
 ## 0.96.0
 

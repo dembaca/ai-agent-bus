@@ -35,9 +35,11 @@ from mattermost_ai_agent_bus.natsbus import (
     crown_holder,
     decode,
     decode_presence,
+    decode_presence_bot,
     encode,
     encode_claim,
     encode_presence,
+    link_tag,
     owner_of_token,
     owner_token,
     parse_ack,
@@ -144,6 +146,38 @@ def test_presence_and_claim_bodies() -> None:
         encode_presence("gone")
 
 
+BOT = "a1b2c3d4e5f6g7h8i9j0k1l2m3"
+
+
+def test_presence_names_its_bot() -> None:
+    """RT-6.37: the presence body may carry the Mattermost bot's id; a bad one never drops the status."""
+    assert encode_presence("online") == b'{"v":1,"status":"online"}'  # no key without a bot
+    body = encode_presence("away", BOT)
+    assert decode_presence(body) == "away" and decode_presence_bot(body) == BOT
+    assert decode_presence_bot(encode_presence("online")) == ""
+    for bad in ("short", BOT.upper(), BOT + "x", " " + BOT, 7, None, [BOT], ""):
+        raw = json.dumps({"v": 1, "status": "online", "bot": bad}).encode()
+        assert decode_presence(raw) == "online" and decode_presence_bot(raw) == ""
+    assert decode_presence_bot(b"junk") == ""
+
+
+def test_link_tag_is_the_start_of_the_hash_part() -> None:
+    name = "agent-" + "abcdefghijklmnopqrstuvwxyz"[:26]
+    assert link_tag(name) == "abcdefghijklmnop" and link_tag(VECTOR_NAME) == VECTOR_NAME[:16]
+    assert link_tag("agent-short") == "" and link_tag("") == ""
+    assert link_tag("a" * 25) == "" and link_tag("a" * 26) == "a" * 16
+
+
+def test_a_bus_links_only_a_valid_bot() -> None:
+    bus, _ = _unit_bus()
+    assert bus._bot == ""
+    for bad in ("", "short", BOT.upper(), BOT + "x"):
+        with pytest.raises(ValueError):
+            bus.link_bot(bad)
+    bus.link_bot(BOT)
+    assert bus._bot == BOT
+
+
 # --- unit: JetStream metadata, gaps, crown, CONNECT --------------------------------------------
 
 def test_parse_ack() -> None:
@@ -152,6 +186,13 @@ def test_parse_ack() -> None:
     assert a.time == pytest.approx(1795388483.779185)
     b = parse_ack("$JS.ACK._.HASH.BUS.c1.1.18.6.1795388483779185000.2.tok")
     assert b is not None and (b.stream_seq, b.consumer_seq) == (18, 6)
+    assert (a.pending, b.pending) == (0, 2)
+    c = parse_ack("$JS.ACK.PRESENCE.c1.1.18.6.1795388483779185000.41")
+    assert c is not None and c.pending == 41
+    d = parse_ack("$JS.ACK.dom.HASH.PRESENCE.c1.1.18.6.1795388483779185000.7")  # domain form, 11 tokens
+    assert d is not None and d.pending == 7 and d.stream_seq == 18
+    for bad in ("$JS.ACK.BUS.c1.1.17.5.1795388483779185000.x", "$JS.ACK.BUS.c1.1.17.5.1795388483779185000.-1"):
+        assert parse_ack(bad) is None
     for bad in (None, "", "reply", "$JS.ACK.BUS.c1", "$JS.ACK.BUS.c1.1.x.5.1.0", "_INBOX.a.b",
                 "$JS.ACK.BUS.c1.1.0.5.1795388483779185000.0"):
         assert parse_ack(bad) is None
@@ -450,9 +491,10 @@ def test_tls_or_loopback_only() -> None:
 T0 = 1_800_000_000.0
 
 
-async def _presence(bus: NatsBus, who: str, seq: int, t: float, status: str = "online") -> None:
-    await bus._on_presence_msg(FakeMsg(f"presence.-.{who}", _presence_reply(bus, seq, seq, t),
-                                       encode_presence(status)))
+async def _presence(bus: NatsBus, who: str, seq: int, t: float, status: str = "online", bot: str = "",
+                    pending: int = 0) -> None:
+    reply = _presence_reply(bus, seq, seq, t)[:-1] + str(pending)
+    await bus._on_presence_msg(FakeMsg(f"presence.-.{who}", reply, encode_presence(status, bot)))
 
 
 async def _claim(bus: NatsBus, who: str, ch: str, seq: int, t: float) -> None:
@@ -531,6 +573,49 @@ async def test_claims_and_presence_age_out_after_24_hours() -> None:
     # a claim of the 24 h edge: its own age counts, not the presence's
     await _presence(bus, "agent-new", 7, T0 + natsbus.MAX_AGE_SEC + 3600 + 10)
     assert bus._claims == {} and bus._claim_at == {}
+
+
+async def test_the_bot_of_a_name_follows_its_accepted_presence_and_ages_out() -> None:
+    bus, _ = _unit_bus()
+    await _presence(bus, "agent-x", 5, T0, bot=BOT)
+    assert bus.bot_of("agent-x") == BOT and bus.bot_of("agent-y") == ""
+    await _presence(bus, "agent-x", 2, T0 - 5, bot="z" * 26)  # an older message changes nothing
+    assert bus.bot_of("agent-x") == BOT
+    await _presence(bus, "agent-x", 6, T0 + 30, bot="z" * 26)
+    assert bus.bot_of("agent-x") == "z" * 26
+    await _presence(bus, "agent-x", 7, T0 + 60)  # no bot any more
+    assert bus.bot_of("agent-x") == ""
+    await _presence(bus, "agent-x", 8, T0 + 90, bot="bad")  # a bad one: status counts, no bot
+    assert bus.bot_of("agent-x") == "" and bus.presence_of("agent-x") == "online"
+    await _presence(bus, "agent-old", 9, T0 + 100, bot=BOT)
+    await _presence(bus, "agent-new", 10, T0 + natsbus.MAX_AGE_SEC + 200)  # agent-old is over 24 h old
+    assert bus.bot_of("agent-old") == "" and "agent-old" not in bus._bots
+
+
+async def test_synced_only_with_nothing_pending_and_not_after_a_reconnect() -> None:
+    bus, _ = _unit_bus()
+    assert not bus.synced
+    await _presence(bus, "agent-x", 1, T0, pending=3)
+    assert not bus.synced
+    await _presence(bus, "agent-x", 2, T0 + 1, pending=0)
+    assert bus.synced
+    await _presence(bus, "agent-x", 3, T0 + 2, pending=5)
+    assert bus.synced  # once read, it stays until the next connection
+
+    async def refuse() -> str:
+        raise OSError("down")
+
+    bus._login.access_token = refuse  # type: ignore[method-assign,assignment]
+    with pytest.raises(OSError):
+        await bus._open()
+    assert not bus.synced  # reset at each (re)connect, before anything is read
+
+
+async def test_claimed_says_whether_an_agent_has_a_claim() -> None:
+    bus, _ = _unit_bus()
+    await _claim(bus, "agent-x", "home", 3, T0)
+    assert bus.claimed("home", "agent-x")
+    assert not bus.claimed("home", "agent-y") and not bus.claimed("other", "agent-x")
 
 
 async def test_server_time_comes_from_any_delivery() -> None:
@@ -685,7 +770,7 @@ class Rig:
         self.buses: list[NatsBus] = []
 
     async def agent(self, who: str, channels: list[str] | None = None, bus_kw: dict[str, Any] | None = None,
-                    **kw: Any) -> tuple[NatsBus, list[Event]]:
+                    bot: str = "", **kw: Any) -> tuple[NatsBus, list[Event]]:
         channels = channels or ["home"]
         login = self.logins[who]
         events: list[Event] = []
@@ -693,6 +778,8 @@ class Rig:
                       login, who, events.append, **{"heartbeat_sec": 0.2, **(bus_kw or {})})
         assert bus.name == self.names[who]
         await _login_service(self.admin, bus.name, channels, {})
+        if bot:
+            bus.link_bot(bot)
         await bus.start()
         self.buses.append(bus)
         return bus, events
@@ -813,11 +900,15 @@ async def test_malformed_is_dropped_and_logged(rig: Rig, caplog: pytest.LogCaptu
 
 
 async def test_presence_and_crown(rig: Rig) -> None:
-    alice, _ = await rig.agent("alice")
+    alice, _ = await rig.agent("alice", bot="a" * 26)
     bob, _ = await rig.agent("bob")
     await until(lambda: rig.names["alice"] in bob.presence_snapshot()
                 and rig.names["bob"] in alice.presence_snapshot())
     assert bob.presence_snapshot()[rig.names["alice"]][1] == "online"
+    # RT-6.37: the bot id rides in the presence body; both read the stored presences to the end
+    await until(lambda: bob.bot_of(alice.name) == "a" * 26)
+    assert alice.bot_of(bob.name) == ""
+    await until(lambda: alice.synced and bob.synced)
     # RT-6.37: each proves its owner to the other through the real server
     assert bob.owner_of(alice.name) == "alice" and alice.owner_of(bob.name) == "bob"
     assert bob.presence_of(alice.name) == "online"

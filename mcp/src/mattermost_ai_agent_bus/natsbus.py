@@ -246,10 +246,17 @@ def decode(data: bytes, props_prefix: str = a2a.DEFAULT_PREFIX) -> Message:
     return m
 
 
-def encode_presence(status: str) -> bytes:
+BOT_RE = re.compile(r"[a-z0-9]{26}")  # a Mattermost user id
+
+
+def encode_presence(status: str, bot: str = "") -> bytes:
+    """The presence body; `bot` is the agent's Mattermost bot id (RT-6.37), left out when ''."""
     if status not in _STATUSES:
         raise MessageError("unknown status")
-    return _dumps({"v": 1, "status": status}).encode()
+    body: dict[str, Any] = {"v": 1, "status": status}
+    if bot:
+        body["bot"] = bot
+    return _dumps(body).encode()
 
 
 def decode_presence(data: bytes) -> str:
@@ -257,6 +264,22 @@ def decode_presence(data: bytes) -> str:
     if status not in _STATUSES:
         raise MessageError("unknown status")
     return str(status)
+
+
+def decode_presence_bot(data: bytes) -> str:
+    """The bot id of a presence body when it is a Mattermost user id, else ''. A bad
+    bot field never drops the message."""
+    try:
+        bot = _obj(data).get("bot")
+    except MessageError:
+        return ""
+    return bot if isinstance(bot, str) and BOT_RE.fullmatch(bot) else ""
+
+
+def link_tag(name: str) -> str:
+    """The 16 characters of the hash part of an agent name that the roster status shows
+    (RT-6.37); '' for a name shorter than the hash part (26 characters)."""
+    return name[-26:][:16] if len(name) >= 26 else ""
 
 
 def encode_claim() -> bytes:
@@ -274,6 +297,7 @@ class Ack:
     stream_seq: int
     consumer_seq: int
     time: float  # the server's timestamp, seconds since the epoch
+    pending: int = -1  # messages the consumer still has to deliver; -1: not told
 
 
 def parse_ack(reply: str | None, stream: str | None = None, consumer: str | None = None) -> Ack | None:
@@ -289,12 +313,12 @@ def parse_ack(reply: str | None, stream: str | None = None, consumer: str | None
     if (stream is not None and t[i - 2] != stream) or (consumer is not None and t[i - 1] != consumer):
         return None
     try:
-        sseq, cseq, ns = int(t[i + 1]), int(t[i + 2]), int(t[i + 3])
-    except ValueError:
+        sseq, cseq, ns, pending = int(t[i + 1]), int(t[i + 2]), int(t[i + 3]), int(t[i + 4])
+    except (ValueError, IndexError):
         return None
-    if sseq < 1 or cseq < 1:
+    if sseq < 1 or cseq < 1 or pending < 0:
         return None
-    return Ack(sseq, cseq, ns / 1e9)
+    return Ack(sseq, cseq, ns / 1e9, pending)
 
 
 class GapTracker:
@@ -472,6 +496,9 @@ class NatsBus:
         self._presence: dict[str, tuple[float, str]] = {}
         self._owners: dict[str, str] = {}  # agent -> owner its presence subject names (RT-6.37)
         self._presence_seq: dict[str, tuple[int, float]] = {}  # agent -> (stream sequence, server time)
+        self._bots: dict[str, str] = {}  # agent -> Mattermost bot its presence names (RT-6.37)
+        self._bot = ""
+        self._synced = False
         self._claims: dict[str, dict[str, int]] = {}
         self._claim_at: dict[tuple[str, str], float] = {}  # (channel, agent) -> server time of the claim
 
@@ -545,7 +572,7 @@ class NatsBus:
         nc = self._nc
         if nc is not None and self._connected:
             try:
-                await nc.publish(self._presence_subject, encode_presence("bye"))
+                await nc.publish(self._presence_subject, encode_presence("bye", self._bot))
                 await asyncio.wait_for(nc.drain(), 5)
             except Exception as exc:  # the bus is going away anyway
                 log.warning("nats bus: stop: %s", type(exc).__name__)
@@ -566,6 +593,7 @@ class NatsBus:
     # --- connection ----------------------------------------------------------------
     async def _open(self) -> None:
         """One connection with a fresh access token, `since` and the literal subscriptions."""
+        self._synced = False  # the stored presences are read again from this connection
         token = await self._login.access_token()
         key = self._login.nkey()
         hello = build_hello(token, self._s.home, self._s.guests, self._s.lobby, self.since())
@@ -631,7 +659,7 @@ class NatsBus:
             await self._sync(nc)
             if refused:
                 raise NameMismatch("the credential's agent name is not the computed one; nothing sent")
-            await nc.publish(self._presence_subject, encode_presence("online"))
+            await nc.publish(self._presence_subject, encode_presence("online", self._bot))
             await self._sync(nc)
             if self._presence_subject in self._denied:
                 # A host and a login service of different releases (RT-6.37): the presence
@@ -744,7 +772,7 @@ class NatsBus:
             nc = self._nc
             if nc is not None and self._connected:
                 try:
-                    await nc.publish(self._presence_subject, encode_presence("online"))
+                    await nc.publish(self._presence_subject, encode_presence("online", self._bot))
                 except Exception as exc:
                     log.warning("nats bus: heartbeat: %s", type(exc).__name__)
 
@@ -835,6 +863,25 @@ class NatsBus:
         its presence there and nowhere else, so the owner in it is pinned like the name."""
         return f"{self._s.presence}.{owner_token(self._owner)}.{self.name}"
 
+    def link_bot(self, bot_id: str) -> None:
+        """The Mattermost bot this agent's presence names (RT-6.37); before start."""
+        if not BOT_RE.fullmatch(bot_id):
+            raise ValueError("not a Mattermost user id")
+        self._bot = bot_id
+
+    def bot_of(self, agent: str) -> str:
+        """The bot the agent's presence names, '' for none."""
+        return self._bots.get(agent, "")
+
+    @property
+    def synced(self) -> bool:
+        """True once a presence delivery came with nothing pending: the stored presences
+        and claims are read; False again at each (re)connect."""
+        return self._synced
+
+    def claimed(self, channel: str, agent: str) -> bool:
+        return agent in self._claims.get(channel, {})
+
     def owner_of(self, agent: str) -> str:
         """The owner the agent's presence subject names (RT-6.37), '' for none. The login
         service pins it there by the credential's one presence permission, as it pins the
@@ -879,6 +926,7 @@ class NatsBus:
             if t < cut:
                 del self._presence[agent]
                 self._owners.pop(agent, None)
+                self._bots.pop(agent, None)
                 self._presence_seq.pop(agent, None)
         for ch, claims in list(self._claims.items()):
             for agent in list(claims):
@@ -950,6 +998,8 @@ class NatsBus:
             log.warning("nats bus: dropped a presence message without this consumer's JetStream metadata")
             return
         self._see(ack.time)
+        if ack.pending == 0:
+            self._synced = True
         t = msg.subject.split(".")
         p = self._s.presence
         try:
@@ -963,6 +1013,11 @@ class NatsBus:
                     return
                 self._presence_seq[agent] = (ack.stream_seq, ack.time)
                 self._presence[agent] = (ack.time, status)
+                bot = decode_presence_bot(msg.data)
+                if bot:
+                    self._bots[agent] = bot
+                else:
+                    self._bots.pop(agent, None)
                 owner = owner_of_token(t[1])
                 if owner:
                     self._owners[agent] = owner
