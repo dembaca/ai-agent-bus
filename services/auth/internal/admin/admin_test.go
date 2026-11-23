@@ -4,6 +4,7 @@ import (
 	"bytes"
 	"context"
 	"encoding/json"
+	"errors"
 	"io"
 	"log/slog"
 	"net/http"
@@ -493,4 +494,34 @@ func TestAccountEndpoints(t *testing.T) {
 	}
 	code, body, _ = e.do(t, "GET", path, e.admin, "")
 	want(t, "gone", code, 404, body)
+}
+
+// RT-6.40 step 9: an admin's PUT whose records do not all follow the key is
+// logged as incomplete, with both subs.
+func TestAnIncompleteAccountPutIsLogged(t *testing.T) {
+	var logs bytes.Buffer
+	e := setup(t, Config{Burst: 100, Log: slog.New(slog.NewTextHandler(&logs, nil))})
+	for _, sub := range []string{"sub-a", "sub-b"} {
+		if _, err := e.store.Login(ctx(t), sub, "x", ""); err != nil {
+			t.Fatal(err)
+		}
+	}
+	const path = "/v1/directory/accounts/mattermost/alice"
+	code, body, h := e.do(t, "PUT", path, e.admin, `{"sub":"sub-a"}`, "If-None-Match", "*")
+	want(t, "create", code, 200, body)
+	t.Cleanup(directory.SetAccountStepForTest(func(at string) error {
+		if at == "key moved" {
+			return errors.New("stopped")
+		}
+		return nil
+	}))
+	code, body, _ = e.do(t, "PUT", path, e.admin, `{"sub":"sub-b"}`, "If-Match", h.Get("ETag"))
+	if code < 500 {
+		t.Fatalf("the stopped PUT answered %d: %s", code, body)
+	}
+	for _, w := range []string{"account set, incomplete", "old_sub=sub-a", "new_sub=sub-b"} {
+		if !strings.Contains(logs.String(), w) {
+			t.Errorf("log lacks %q: %s", w, logs.String())
+		}
+	}
 }

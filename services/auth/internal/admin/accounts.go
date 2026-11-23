@@ -78,7 +78,12 @@ func (h *handler) putAccount(w http.ResponseWriter, r *http.Request, id token.Id
 		return
 	}
 	ctx := r.Context()
-	from, err := h.store.PutAccount(ctx, b.Sub, accountProduct, name, want)
+	mv, err := h.store.PutAccount(ctx, b.Sub, accountProduct, name, want)
+	from := mv.From
+	if mv.Released != "" {
+		h.cfg.Log.Warn("directory write", "event", "unfinished account move finished", "sub", id.Subject,
+			"user", id.Owner, "product", accountProduct, "name", name, "released", directory.Short(mv.Released))
+	}
 	if err != nil && from != "" { // the key moved, the records did not all follow
 		h.cfg.Log.Warn("directory write", "event", "account set, incomplete", "sub", id.Subject, "user", id.Owner,
 			"product", accountProduct, "name", name, "old_sub", directory.Short(from), "new_sub", directory.Short(b.Sub),

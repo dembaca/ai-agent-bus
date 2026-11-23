@@ -580,7 +580,8 @@ func TestTheAdminsAccountWritesAreOverExactRevisions(t *testing.T) {
 	if _, err := s.PutAccount(ctx(t), "sub-b", "mattermost", "alice", rev+1); !errors.Is(err, ErrConflict) {
 		t.Fatalf("replace over a wrong revision: %v", err)
 	}
-	from, err := s.PutAccount(ctx(t), "sub-b", "mattermost", "alice", rev)
+	mv, err := s.PutAccount(ctx(t), "sub-b", "mattermost", "alice", rev)
+	from := mv.From
 	if err != nil || from != "sub-a" {
 		t.Fatalf("replace: %q %v", from, err)
 	}
@@ -694,7 +695,8 @@ func TestAMoveIsOverTheKeysRevision(t *testing.T) {
 		return nil
 	}
 	t.Cleanup(func() { accountStep = func(string) error { return nil } })
-	from, err := s.ClaimAccount(ctx(t), "sub-b", "mattermost", "alice")
+	mv, err := s.ClaimAccount(ctx(t), "sub-b", "mattermost", "alice")
+	from := mv.From
 	if err != nil || from != "sub-c" {
 		t.Fatalf("moved from %q (%v), want sub-c", from, err)
 	}
@@ -732,5 +734,144 @@ func TestReleaseChecksTheNameAndARenameClearsMovedFrom(t *testing.T) {
 	}
 	if _, _, from, ok, _ := s.Account(ctx(t), "mattermost", "bea"); !ok || from != "" {
 		t.Fatalf("bea: %q %v", from, ok)
+	}
+}
+
+// stopAt makes the move stop at one step until the returned func is called.
+func stopAt(t *testing.T, step string) (restart func()) {
+	restore := SetAccountStepForTest(func(at string) error {
+		if at == step {
+			return errors.New("stopped at " + at)
+		}
+		return nil
+	})
+	t.Cleanup(restore)
+	return restore
+}
+
+func imported3(t *testing.T) (*Store, Anchors, *strings.Builder) {
+	s, _ := open(t)
+	var logs strings.Builder
+	a := Anchors{Store: s, Log: slog.New(slog.NewTextHandler(&logs, nil))}
+	for _, sub := range []string{"sub-a", "sub-b", "sub-c"} {
+		if _, err := s.Login(ctx(t), sub, "x", ""); err != nil {
+			t.Fatal(err)
+		}
+	}
+	if err := s.MarkImported(ctx(t), time.Now()); err != nil {
+		t.Fatal(err)
+	}
+	if err := a.Account(ctx(t), "sub-a", "alice"); err != nil {
+		t.Fatal(err)
+	}
+	return s, a, &logs
+}
+
+func listsAlice(t *testing.T, s *Store, sub string) bool {
+	id, _, _, err := s.Identity(ctx(t), sub)
+	if err != nil {
+		t.Fatal(err)
+	}
+	return id.Accounts["mattermost"] == "alice"
+}
+
+// A move a→b stops; c then takes the name: the mark of the stopped move is
+// not lost, a loses the name and that is logged.
+func TestAStoppedMoveIsNotLostToTheNextOne(t *testing.T) {
+	s, a, logs := imported3(t)
+	restart := stopAt(t, "key moved")
+	if err := a.Account(ctx(t), "sub-b", "alice"); err == nil {
+		t.Fatal("the move did not stop")
+	}
+	restart()
+	if err := a.Account(ctx(t), "sub-c", "alice"); err != nil {
+		t.Fatal(err)
+	}
+	if listsAlice(t, s, "sub-a") || listsAlice(t, s, "sub-b") {
+		t.Fatal("an earlier holder keeps the name")
+	}
+	if id, ok, _ := s.ByAccount(ctx(t), "mattermost", "alice"); !ok || id.Sub != "sub-c" {
+		t.Fatalf("after the takeover: %+v %v", id, ok)
+	}
+	for _, w := range []string{"unfinished move", "released=sub-a", "from=sub-b", "to=sub-c", "complete=true"} {
+		if !strings.Contains(logs.String(), w) {
+			t.Errorf("log lacks %q: %s", w, logs.String())
+		}
+	}
+	if _, err := s.kv.Get(ctx(t), moveKey("mattermost", "alice")); !errors.Is(err, jetstream.ErrKeyNotFound) {
+		t.Fatalf("the mark stays: %v", err)
+	}
+}
+
+// A mark whose key never moved is stale once its holder has left the name:
+// the next holder of the freed name invents no move.
+func TestAStaleMarkInventsNoMove(t *testing.T) {
+	s, a, logs := imported3(t)
+	restart := stopAt(t, "before key")
+	if err := a.Account(ctx(t), "sub-b", "alice"); err == nil {
+		t.Fatal("the move did not stop")
+	}
+	restart()
+	if err := a.Account(ctx(t), "sub-a", "anna"); err != nil { // a renames, alice is free
+		t.Fatal(err)
+	}
+	logs.Reset()
+	if err := a.Account(ctx(t), "sub-c", "alice"); err != nil {
+		t.Fatal(err)
+	}
+	if logs.Len() != 0 {
+		t.Fatalf("a move was invented: %s", logs.String())
+	}
+	if _, _, from, ok, _ := s.Account(ctx(t), "mattermost", "alice"); !ok || from != "" {
+		t.Fatalf("moved_from %q (%v), want none", from, ok)
+	}
+	if id, _, _, _ := s.Identity(ctx(t), "sub-a"); id.Accounts["mattermost"] != "anna" {
+		t.Fatalf("a lost its new name: %+v", id)
+	}
+	if _, err := s.kv.Get(ctx(t), moveKey("mattermost", "alice")); !errors.Is(err, jetstream.ErrKeyNotFound) {
+		t.Fatalf("the stale mark stays: %v", err)
+	}
+}
+
+// An admin's DELETE while a move is unfinished: no one keeps the name.
+func TestADropReleasesAnUnfinishedMove(t *testing.T) {
+	s, a, _ := imported3(t)
+	restart := stopAt(t, "key moved")
+	if err := a.Account(ctx(t), "sub-b", "alice"); err == nil {
+		t.Fatal("the move did not stop")
+	}
+	restart()
+	_, rev, _, ok, err := s.Account(ctx(t), "mattermost", "alice")
+	if err != nil || !ok {
+		t.Fatal(ok, err)
+	}
+	if _, err := s.DropAccount(ctx(t), "mattermost", "alice", rev); err != nil {
+		t.Fatal(err)
+	}
+	if listsAlice(t, s, "sub-a") || listsAlice(t, s, "sub-b") {
+		t.Fatal("a record keeps the dropped name")
+	}
+	if _, err := s.kv.Get(ctx(t), moveKey("mattermost", "alice")); !errors.Is(err, jetstream.ErrKeyNotFound) {
+		t.Fatalf("the mark stays: %v", err)
+	}
+}
+
+// An admin's PUT that stops after its key moved is finished, and reported,
+// by the next login of the new holder.
+func TestAStoppedAdminPutIsFinishedByTheNextLogin(t *testing.T) {
+	s, a, logs := imported3(t)
+	_, rev, _, _, _ := s.Account(ctx(t), "mattermost", "alice")
+	restart := stopAt(t, "key moved")
+	mv, err := s.PutAccount(ctx(t), "sub-b", "mattermost", "alice", rev)
+	if err == nil || mv.From != "sub-a" {
+		t.Fatalf("the stopped PUT: %+v %v", mv, err)
+	}
+	restart()
+	logs.Reset()
+	if err := a.Account(ctx(t), "sub-b", "alice"); err != nil {
+		t.Fatal(err)
+	}
+	if !strings.Contains(logs.String(), "from=sub-a") || listsAlice(t, s, "sub-a") {
+		t.Fatalf("not finished: a lists alice %v, log %s", listsAlice(t, s, "sub-a"), logs.String())
 	}
 }

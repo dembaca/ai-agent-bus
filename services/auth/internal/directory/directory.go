@@ -569,8 +569,8 @@ func (s *Store) SetAccount(ctx context.Context, sub, product, name string) error
 
 // ClaimAccount makes `name` the chat account of `product` of the identity
 // `sub`, also when another identity holds that name: the index key is moved to
-// `sub` and the old holder's record loses the name; movedFrom is the `sub` it
-// was taken from ("" when it was free or already sub's). ONLY for a login
+// `sub` and the old holder's record loses the name; the move says which `sub`
+// it was taken from (From "" when it was free or already sub's). ONLY for a login
 // whose chat account is proven to be the token's (token.Identity.ChatOpenID)
 // or an admin: the import keeps SetAccount, which never takes a name over.
 // The identity must exist (ErrNoIdentity).
@@ -581,148 +581,218 @@ func (s *Store) SetAccount(ctx context.Context, sub, product, name string) error
 // records. The key moves first (compare and set, after a mark of the move),
 // then the new holder's record, last the old holder's; a move that stops is
 // finished from its mark by the next write of that name (settle).
-func (s *Store) ClaimAccount(ctx context.Context, sub, product, name string) (movedFrom string, err error) {
+func (s *Store) ClaimAccount(ctx context.Context, sub, product, name string) (AccountMove, error) {
 	if err := checkKey(sub); err != nil {
-		return "", err
+		return AccountMove{}, err
 	}
 	key, err := accountKey(product, name)
 	if err != nil {
-		return "", err
+		return AccountMove{}, err
 	}
 	if _, _, ok, err := s.Identity(ctx, sub); err != nil {
-		return "", err
+		return AccountMove{}, err
 	} else if !ok {
-		return "", ErrNoIdentity
+		return AccountMove{}, ErrNoIdentity
 	}
+	released := ""
 	for range 5 {
 		_, err := s.kv.Create(ctx, key, []byte(sub))
 		if err == nil {
-			return "", s.finishAccount(ctx, sub, product, name, "")
+			return s.settle(ctx, sub, product, name, "", released)
 		}
 		if !errors.Is(err, jetstream.ErrKeyExists) {
-			return "", err
+			return AccountMove{Released: released}, err
 		}
 		e, err := s.kv.Get(ctx, key)
 		if errors.Is(err, jetstream.ErrKeyNotFound) {
 			continue // deleted meanwhile: create it
 		}
 		if err != nil {
-			return "", err
+			return AccountMove{Released: released}, err
 		}
-		if string(e.Value()) == sub {
-			return s.settle(ctx, sub, product, name, "")
+		from := string(e.Value())
+		if from == sub {
+			return s.settle(ctx, sub, product, name, "", released)
 		}
-		if err := s.markMove(ctx, product, name, string(e.Value())); err != nil {
-			return "", err
+		r, err := s.beginMove(ctx, product, name, from)
+		if r != "" {
+			released = r
+		}
+		if err != nil {
+			return AccountMove{Released: released}, err
 		}
 		if err := accountStep("before key"); err != nil {
-			return "", err
+			return AccountMove{Released: released}, err
 		}
 		if _, err := s.kv.Update(ctx, key, []byte(sub), e.Revision()); err != nil {
 			if isWrongSequence(err) {
 				continue
 			}
-			return "", err
+			return AccountMove{Released: released}, err
 		}
-		return s.settle(ctx, sub, product, name, string(e.Value()))
+		return s.settle(ctx, sub, product, name, from, released)
 	}
-	return "", ErrConflict
+	return AccountMove{Released: released}, ErrConflict
+}
+
+// AccountMove is what a write of the index did besides pointing a name at
+// its holder. From: the `sub` the name moved from (also when the records did
+// not all follow, so that the move is reported anyway). Released: an earlier
+// holder whose unfinished move was finished by this write, by losing the
+// name from its record.
+type AccountMove struct {
+	From     string
+	Released string
 }
 
 // accountStep runs at the steps of a move; tests use it to stop a move half
 // way or change the key meanwhile. Nothing in production.
 var accountStep = func(string) error { return nil }
 
+// SetAccountStepForTest replaces the hook at the steps of a move, for the
+// tests of other packages; it returns the restore. Never in production.
+func SetAccountStepForTest(f func(step string) error) (restore func()) {
+	old := accountStep
+	accountStep = f
+	return func() { accountStep = old }
+}
+
 func moveKey(product, name string) string {
 	return movePrefix + product + "." + hex.EncodeToString([]byte(name))
 }
 
-// markMove notes, before the index key moves, which `sub` it is taken from.
-// A move that stops after the key leaves the mark, and the next write of that
-// name finishes the move from it: the old holder still loses the name, and
-// the move is still reported.
-func (s *Store) markMove(ctx context.Context, product, name, from string) error {
-	_, err := s.kv.Put(ctx, moveKey(product, name), []byte(from))
-	return err
+// openMark reads the mark of a move of `name`. It counts only while it
+// describes an unfinished move: its `sub` is not `holder` (the key's) and
+// its record still lists the name. Else it is stale: from is "", and mark is
+// returned for the caller to remove.
+func (s *Store) openMark(ctx context.Context, product, name, holder string) (from string, mark jetstream.KeyValueEntry, err error) {
+	mark, err = s.kv.Get(ctx, moveKey(product, name))
+	if errors.Is(err, jetstream.ErrKeyNotFound) {
+		return "", nil, nil
+	}
+	if err != nil {
+		return "", nil, err
+	}
+	m := string(mark.Value())
+	if m == holder || checkKey(m) != nil {
+		return "", mark, nil
+	}
+	id, _, ok, err := s.Identity(ctx, m)
+	if err != nil {
+		return "", nil, err
+	}
+	if !ok || id.Accounts[product] != name {
+		return "", mark, nil
+	}
+	return m, mark, nil
 }
 
-// settle follows a write of the index key that now points at `sub`. A mark
-// of a move that has not finished counts as moved from, when it names
-// another `sub`. It returns the `sub` the name moved from, also when the
-// records could not follow, so that the move is reported anyway; the mark
-// is removed only once they have.
-func (s *Store) settle(ctx context.Context, sub, product, name, movedFrom string) (string, error) {
-	mark, err := s.kv.Get(ctx, moveKey(product, name))
+// beginMove notes, before the index key moves away from `from`, that it is
+// taken from there. A move that stops after the key leaves the mark, and the
+// next write of that name finishes it from there (settle). An unfinished
+// move's mark is not lost to the new one: its old holder, who no longer has
+// the key, loses the name first (released).
+func (s *Store) beginMove(ctx context.Context, product, name, from string) (released string, err error) {
+	open, _, err := s.openMark(ctx, product, name, from)
+	if err != nil {
+		return "", err
+	}
+	if open != "" {
+		if err := s.releaseAccount(ctx, open, product, name); err != nil {
+			return "", err
+		}
+		released = open
+	}
+	_, err = s.kv.Put(ctx, moveKey(product, name), []byte(from))
+	return released, err
+}
+
+// settle follows a write of the index key that now points at `sub`: the
+// records follow (finishAccount), and an unfinished move's mark is finished:
+// its old holder counts as moved from when this write moved nothing, else it
+// is released. The mark is removed once the records have followed; a stale
+// one too.
+func (s *Store) settle(ctx context.Context, sub, product, name, from, released string) (AccountMove, error) {
+	m := AccountMove{From: from, Released: released}
+	open, mark, err := s.openMark(ctx, product, name, sub)
+	if err != nil {
+		return m, err
+	}
 	switch {
-	case errors.Is(err, jetstream.ErrKeyNotFound):
-		mark = nil
-	case err != nil:
-		return movedFrom, err
+	case open == "":
+	case m.From == "":
+		m.From = open
+	case open != m.From:
+		if err := s.releaseAccount(ctx, open, product, name); err != nil {
+			return m, err
+		}
+		m.Released = open
 	}
-	if movedFrom == "" && mark != nil && string(mark.Value()) != sub {
-		movedFrom = string(mark.Value())
-	}
-	if err := s.finishAccount(ctx, sub, product, name, movedFrom); err != nil {
-		return movedFrom, err
+	if err := s.finishAccount(ctx, sub, product, name, m.From); err != nil {
+		return m, err
 	}
 	if mark != nil {
 		err := s.kv.Delete(ctx, moveKey(product, name), jetstream.LastRevision(mark.Revision()))
 		if err != nil && !errors.Is(err, jetstream.ErrKeyNotFound) && !isWrongSequence(err) {
-			return movedFrom, err
+			return m, err
 		}
 	}
-	return movedFrom, nil
+	return m, nil
 }
 
 // PutAccount is the admin's write of the index entry: rev 0 creates it
 // (ErrConflict when the key exists), rev > 0 replaces it over exactly that
 // revision (ErrConflict otherwise, ErrNotFound when there is none). The
-// identity `sub` must exist (ErrNoIdentity). movedFrom is the `sub` the name
-// was held by before, when that was another.
-func (s *Store) PutAccount(ctx context.Context, sub, product, name string, rev uint64) (movedFrom string, err error) {
+// identity `sub` must exist (ErrNoIdentity). The move says where the name
+// came from, when that was another `sub`.
+func (s *Store) PutAccount(ctx context.Context, sub, product, name string, rev uint64) (AccountMove, error) {
 	if err := checkKey(sub); err != nil {
-		return "", err
+		return AccountMove{}, err
 	}
 	key, err := accountKey(product, name)
 	if err != nil {
-		return "", err
+		return AccountMove{}, err
 	}
 	if _, _, ok, err := s.Identity(ctx, sub); err != nil {
-		return "", err
+		return AccountMove{}, err
 	} else if !ok {
-		return "", ErrNoIdentity
+		return AccountMove{}, ErrNoIdentity
 	}
 	if rev == 0 {
 		if _, err := s.kv.Create(ctx, key, []byte(sub)); errors.Is(err, jetstream.ErrKeyExists) {
-			return "", ErrConflict
+			return AccountMove{}, ErrConflict
 		} else if err != nil {
-			return "", err
+			return AccountMove{}, err
 		}
-		return s.settle(ctx, sub, product, name, "")
+		return s.settle(ctx, sub, product, name, "", "")
 	}
 	e, err := s.kv.Get(ctx, key)
 	if errors.Is(err, jetstream.ErrKeyNotFound) {
-		return "", ErrNotFound
+		return AccountMove{}, ErrNotFound
 	}
 	if err != nil {
-		return "", err
+		return AccountMove{}, err
 	}
 	if e.Revision() != rev {
-		return "", ErrConflict
+		return AccountMove{}, ErrConflict
 	}
+	from, released := "", ""
 	if old := string(e.Value()); old != sub {
-		movedFrom = old
-		if err := s.markMove(ctx, product, name, old); err != nil {
-			return "", err
+		from = old
+		if released, err = s.beginMove(ctx, product, name, old); err != nil {
+			return AccountMove{Released: released}, err
 		}
+	}
+	if err := accountStep("before key"); err != nil {
+		return AccountMove{Released: released}, err
 	}
 	if _, err := s.kv.Update(ctx, key, []byte(sub), rev); err != nil {
 		if isWrongSequence(err) {
-			return "", ErrConflict
+			return AccountMove{Released: released}, ErrConflict
 		}
-		return "", err
+		return AccountMove{Released: released}, err
 	}
-	return s.settle(ctx, sub, product, name, movedFrom)
+	return s.settle(ctx, sub, product, name, from, released)
 }
 
 // finishAccount is what follows a write of the index key: the new holder's
@@ -869,6 +939,16 @@ func (s *Store) DropAccount(ctx context.Context, product, name string, rev uint6
 		return "", err
 	}
 	sub = string(e.Value())
+	// An unfinished move's old holder loses the name too: no one holds it now.
+	open, _, err := s.openMark(ctx, product, name, sub)
+	if err != nil {
+		return sub, err
+	}
+	if open != "" {
+		if err := s.releaseAccount(ctx, open, product, name); err != nil {
+			return sub, err
+		}
+	}
 	if err := s.kv.Delete(ctx, moveKey(product, name)); err != nil && !errors.Is(err, jetstream.ErrKeyNotFound) {
 		return sub, err
 	}

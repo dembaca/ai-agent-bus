@@ -92,14 +92,18 @@ func (a Anchors) Account(ctx context.Context, sub, name string) error {
 	if !imported {
 		return nil
 	}
-	movedFrom, err := a.Store.ClaimAccount(ctx, sub, "mattermost", name)
-	if movedFrom != "" { // reported once the key moved, also when the records did not follow
-		log := a.Log
-		if log == nil {
-			log = slog.Default()
-		}
+	m, err := a.Store.ClaimAccount(ctx, sub, "mattermost", name)
+	log := a.Log
+	if log == nil {
+		log = slog.Default()
+	}
+	if m.Released != "" {
+		log.Warn("directory: an unfinished move of a chat account name finished", "product", "mattermost",
+			"name", name, "released", Short(m.Released))
+	}
+	if m.From != "" { // reported once the key moved, also when the records did not follow
 		log.Warn("directory: chat account name moved", "product", "mattermost", "name", name,
-			"from", Short(movedFrom), "to", Short(sub), "complete", err == nil)
+			"from", Short(m.From), "to", Short(sub), "complete", err == nil)
 	}
 	return err
 }
