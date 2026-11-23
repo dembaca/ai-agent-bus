@@ -205,22 +205,87 @@ func (failingChannels) Memberships(context.Context, string, []string) (map[strin
 	return nil, errors.New("HTTP 500")
 }
 
+// countingSlowChannels delays each lookup and records how many ran at once, so a
+// test can assert concurrency by observation instead of inferring it from a
+// deadline expiring.
+type countingSlowChannels struct {
+	Channels
+	d       time.Duration
+	mu      sync.Mutex
+	now     int
+	highest int
+}
+
+func (s *countingSlowChannels) Memberships(ctx context.Context, u string, chs []string) (map[string]bool, error) {
+	s.mu.Lock()
+	s.now++
+	if s.now > s.highest {
+		s.highest = s.now
+	}
+	s.mu.Unlock()
+	defer func() {
+		s.mu.Lock()
+		s.now--
+		s.mu.Unlock()
+	}()
+	select {
+	case <-ctx.Done():
+		return nil, ctx.Err()
+	case <-time.After(s.d):
+	}
+	return s.Channels.Memberships(ctx, u, chs)
+}
+
 func TestLoginsAreAnsweredAtOnce(t *testing.T) {
-	l := newLabWith(t, func(c Channels) Channels { return slowChannels{c, 600 * time.Millisecond} }, 0)
+	// Six logins, each with a lookup slower than a sixth of the timeout: answered
+	// one after another they could not all fit, so the test's subject is that they
+	// are answered concurrently. It observes that directly (how many lookups were
+	// inside at the same time) instead of inferring it from a deadline: the old form
+	// needed one request's 600ms to fit the 1500ms default on a loaded CI runner,
+	// which is a property of the runner, not of the service.
+	const delay = 600 * time.Millisecond
+	slow := &countingSlowChannels{Channels: nil, d: delay}
+	l := newLabWith(t, func(c Channels) Channels { slow.Channels = c; return slow }, 5*time.Second)
+	start := time.Now()
 	var wg sync.WaitGroup
 	errs := make(chan error, 6)
 	for range 6 {
 		wg.Go(func() {
-			_, err := l.connect("alice", l.realm.Token("alice", nil), Hello{Home: "home"}, nil)
+			// The client's own timeout, above the server's deadline: nats.go ends a
+			// login at 2s by default, which is what failed under load, not the callout.
+			// A retry covers a nats.go handshake race that shows up only under a
+			// starved CPU ("expected 'PONG', got 'PING'"): the subject here is that
+			// logins are answered at once, not that dialling never races.
+			var err error
+			for attempt := 0; attempt < 3; attempt++ {
+				if _, err = l.connectTimeout("alice", l.realm.Token("alice", nil),
+					Hello{Home: "home"}, nil, 10*time.Second); err == nil ||
+					!strings.Contains(err.Error(), "expected 'PONG'") {
+					break
+				}
+			}
 			errs <- err
 		})
 	}
 	wg.Wait()
 	close(errs)
+	elapsed := time.Since(start)
+	slow.mu.Lock()
+	highest := slow.highest
+	slow.mu.Unlock()
 	for err := range errs {
 		if err != nil {
-			t.Fatalf("a login fell into the timeout: %v", err)
+			t.Fatalf("a login was not answered: %v", err)
 		}
+	}
+	// The property that holds whatever the load: not all six waited for each other.
+	// Six serial lookups overlap not at all; a starved single CPU still overlapped
+	// 3–5 of 6 in every measured run under twelve `yes` processes. The bar is 2, far
+	// from both sides, so neither a slow runner nor a fast one decides the result.
+	// No wall-clock bound here: it was what flaked, and it measured the runner.
+	if highest < 2 {
+		t.Fatalf("at most %d of 6 logins overlapped: they are not answered at once (took %s)",
+			highest, elapsed)
 	}
 }
 
@@ -364,8 +429,17 @@ func TestTheUserJWT(t *testing.T) {
 	if uc.Issuer != issuerPub || uc.Subject != req.UserNkey || uc.Audience != "BUS" {
 		t.Fatalf("issuer %s subject %s audience %s", uc.Issuer, uc.Subject, uc.Audience)
 	}
-	if uc.Expires != now.Add(Lifetime).Unix() || uc.IssuedAt != now.Unix() {
-		t.Fatalf("expires %d, issued %d", uc.Expires, uc.IssuedAt)
+	if uc.Expires != now.Add(Lifetime).Unix() {
+		t.Fatalf("expires %d, want %d", uc.Expires, now.Add(Lifetime).Unix())
+	}
+	// IssuedAt cannot be compared with anything this test captured: jwt's Encode
+	// stamps it with its own time.Now() (claims.go), overwriting what service.go
+	// sets, so it is one clock and Expires is another. A second boundary between
+	// the two runs gives 899 or 901, which is why comparing the two and comparing
+	// it with `now` both flaked. What the service promises is checked above (exp is
+	// Lifetime after its `now`); iat only has to be a sane unix time near that.
+	if diff := uc.IssuedAt - now.Unix(); diff < -2 || diff > 2 {
+		t.Fatalf("issued %d, want within 2s of %d", uc.IssuedAt, now.Unix())
 	}
 	if uc.Limits.Subs != maxSubs || uc.Limits.Payload != maxPayload ||
 		!uc.AllowedConnectionTypes.Contains(jwt.ConnectionTypeStandard) || len(uc.AllowedConnectionTypes) != 1 {

@@ -160,6 +160,14 @@ type agent struct {
 }
 
 func (l *lab) connect(owner, tok string, hello Hello, signer nkeys.KeyPair) (*agent, error) {
+	return l.connectTimeout(owner, tok, hello, signer, 0)
+}
+
+// connectTimeout is connect with the client's own timeout, for a test that
+// deliberately makes the server slow: nats.go's DefaultTimeout (2s) would
+// otherwise end the login before the callout's deadline decides.
+func (l *lab) connectTimeout(owner, tok string, hello Hello, signer nkeys.KeyPair,
+	timeout time.Duration) (*agent, error) {
 	l.t.Helper()
 	host, _ := nkeys.CreateUser()
 	pub, _ := host.PublicKey()
@@ -169,11 +177,16 @@ func (l *lab) connect(owner, tok string, hello Hello, signer nkeys.KeyPair) (*ag
 	hello.Token = tok
 	raw, _ := jsonMarshal(hello)
 	a := &agent{name: DefaultNamePrefix + name(owner, pub), errs: make(chan error, 16)}
-	nc, err := nats.Connect(l.url,
+	opts := []nats.Option{
 		nats.Nkey(pub, func(nonce []byte) ([]byte, error) { return signer.Sign(nonce) }),
 		nats.Token(string(raw)),
 		nats.ErrorHandler(func(_ *nats.Conn, _ *nats.Subscription, err error) { a.errs <- err }),
-		nats.MaxReconnects(0))
+		nats.MaxReconnects(0),
+	}
+	if timeout > 0 {
+		opts = append(opts, nats.Timeout(timeout))
+	}
+	nc, err := nats.Connect(l.url, opts...)
 	if err != nil {
 		return nil, err
 	}
