@@ -64,6 +64,20 @@ TAIL = 200
 RECONNECTS = 40
 RETRY_SEC = 0.25
 
+# How long a run waits, after its last send, for *any* frame to arrive before it
+# calls the path broken instead of slow (review of #35).
+#
+# Derived, not guessed: the settle window is `max(stall, reorder, send_interval)
+# + 0.4`, and each of those is the run's own argument, so the settle is known
+# before the run starts. This deadline is `10 x settle + 5 s`; the multiplier
+# covers a slow runner's scheduling and the fixed 5 s covers one
+# `wait_for_events` round trip. Without it, a run whose receiver never gets
+# anything waits until the job's own timeout, and a mutation that breaks
+# delivery shows up as a hang instead of a failed assertion.
+def delivery_deadline(settle: float) -> float:
+    return 10.0 * settle + 5.0
+
+
 PROTOCOL = "2025-06-18"
 # Two tokens, two bots: the stub answers `users/me` with the one the bearer
 # names. The ids are well-formed Mattermost ids and belong to no real bot.
@@ -569,6 +583,7 @@ async def bus_run(count: int = 100, fault: ProxyFault | None = None,
     stall = fault.stall_sec if fault is not None and fault.kind == "stall" else 0.0
     reorder_wait = fault.reorder_max_wait if fault is not None else 0.0
     settle = max(stall, reorder_wait, send_interval) + 0.4
+    limit = delivery_deadline(settle)
     run.started = time.monotonic()
     async with contextlib.AsyncExitStack() as stack:
         stub = await stack.enter_async_context(MattermostStub())
@@ -635,9 +650,20 @@ async def bus_run(count: int = 100, fault: ProxyFault | None = None,
                     for seq in _arrivals(events, seq_of, seq_of_text):
                         run.arrive(seq)
                         last_arrival = time.monotonic()
-                    if sent_done is not None and (
-                            time.monotonic() - max(last_arrival, sent_done) > settle):
-                        return
+                    if sent_done is not None:
+                        quiet = time.monotonic() - max(last_arrival, sent_done)
+                        if quiet > settle:
+                            return
+                        # Sent, and nothing has come back at all: the path is
+                        # broken, not slow. Say so in one line and end the run
+                        # rather than wait for the job's own timeout (review of
+                        # #35: a mutation that broke delivery hung instead of
+                        # failing).
+                        if not run.received and quiet > limit:
+                            run.closed = (
+                                f"nothing arrived within {limit:.1f}s of the last "
+                                f"send: {run.sent_frames} frame(s) sent, none received")
+                            return
 
             if socket_ok:
                 reader = asyncio.create_task(receive())

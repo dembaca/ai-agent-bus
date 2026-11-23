@@ -516,10 +516,7 @@ async def test_a_post_delivered_while_post_message_runs_is_counted(monkeypatch):
 
     A whole-run loss check cannot see either: the stub pushes the real post with
     its id already known, so a run ends at loss 0 whatever the fallback does.
-    This watches the decision itself, at the moment it is made, and aborts the
-    run once that has been observed: with the fallback unwired the mid-send post
-    never arrives, the settle window never closes, and waiting for the run would
-    hang instead of failing.
+    This watches the decision itself, at the moment it is made.
     """
     from bus_testrig import bus as bus_module
 
@@ -529,17 +526,15 @@ async def test_a_post_delivered_while_post_message_runs_is_counted(monkeypatch):
     original_call = BusProcess.call
     original_arrivals = bus_module._arrivals
 
-    class Stop(Exception):
-        """Raised into the receiver once the decision has been observed."""
-
     def arrivals(events, by_id, by_text):
         found = original_arrivals(events, by_id, by_text)
-        if not answered["done"]:
+        if sent and not answered["done"]:
             mid_flight.append(found)
-            raise Stop  # the decision is recorded; the run need not finish
         return found
 
     monkeypatch.setattr(bus_module, "_arrivals", arrivals)
+
+    handed = {"once": False}
 
     async def call(self, tool, **args):
         if tool == "post_message":
@@ -547,15 +542,17 @@ async def test_a_post_delivered_while_post_message_runs_is_counted(monkeypatch):
             answer = await original_call(self, tool, **args)
             answered["done"] = True
             return answer
-        if tool == "wait_for_events" and sent and not answered["done"] and not mid_flight:
+        # Handed over exactly once. Returning it on every wait would be an
+        # unbroken stream of immediate answers: the reader would spin without
+        # awaiting, starve `post_message`, and the run would hang instead of
+        # failing — which is exactly how this test first went wrong.
+        if tool == "wait_for_events" and sent and not answered["done"] and not handed["once"]:
+            handed["once"] = True
             return [{"post": {"id": "q" * 26, "message": sent[-1]}}]
         return await original_call(self, tool, **args)
 
     monkeypatch.setattr(BusProcess, "call", call)
-    try:
-        await bus_run(count=1)
-    except BaseException:  # noqa: BLE001 — Stop, or the cancellation it causes
-        pass
+    await bus_run(count=1)
 
     assert sent == ["bus-run 0"], sent
     assert mid_flight, "_arrivals was never called mid-send: receive() bypassed it"
