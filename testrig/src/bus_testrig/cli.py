@@ -41,6 +41,12 @@ from .proxy import KINDS, ProxyFault
 # The exit codes: 0 a run whose numbers can be compared, 1 a run that measured
 # a broken rig, 2 the rig could not start at all (no interpreter, an import).
 EXIT_OK = 0
+# The faults that do not discard: a run under one of these must deliver
+# something, or the path is broken rather than the fault doing its work. `drop`
+# and `cut` are not here: a `drop` run may lose everything by design, and a `cut`
+# is a dead transport that the bus recovers by backfill.
+PASSING_FAULTS = ("stall", "reorder", "duplicate", "blackhole", "halfopen")
+
 EXIT_BAD_RUN = 1
 EXIT_NO_RUN = 2
 
@@ -122,7 +128,7 @@ def _untrustworthy(run: runner.Run, *, expect_loss: bool = False) -> bool:
     """Whether a run's numbers describe a broken rig, not the bus (review
     point 2).
 
-    Four cases, each the run's own evidence:
+    Five cases, each the run's own evidence:
 
     * a call the stand-in could not answer — the bus asked something this rig
       does not model, so a number from the run is about the stand-in;
@@ -133,7 +139,10 @@ def _untrustworthy(run: runner.Run, *, expect_loss: bool = False) -> bool:
       every later number is about a sender that never ran. `loss` is 0 there,
       and without this case a faulted run with a broken sender passed (follow-up
       review point 2);
-    * a baseline (`--fault none`) that lost a frame or closed the connection.
+    * a baseline (`--fault none`) that lost a frame or closed the connection;
+    * a fault that lets traffic through and a run that arrived nowhere — the path
+      carried nothing, so the number is about the path and not the fault
+      (issue #47); `drop` is excluded, because discarding is its job.
 
     A faulted run's loss is its measurement and not a failure by itself: `drop`
     is supposed to lose. `expect_loss` is how a caller says "this fault is
@@ -156,37 +165,19 @@ def _untrustworthy(run: runner.Run, *, expect_loss: bool = False) -> bool:
               file=sys.stderr)
         return True
     loss = run.measure().get("loss", {}).get("value") or 0
-    latency = run.measure().get("latency_p50", {}).get("value")
-    # Nothing lost, and yet no arrival has a latency: the run claims success
-    # while the receiver saw nothing. That is impossible on a healthy path — if
-    # no frame was lost, every frame arrived and has a time — and it is exactly
-    # what a broken match in `receive()` produces (the review of #35 measured it:
-    # sent 3, loss 0, latency_p50 null, while the healthy run gives 22.5 ms).
-    # A ratio against the relay's `forwarded` would not catch it: that counts
-    # `hello` too, and the broken run reports loss 0, not 4 (issue #47).
-    if loss == 0 and latency is None:
-        print("bus-testrig: no frame was reported lost and none arrived either "
-              f"({run.sent_frames} sent, no latency for any): the report is "
-              "self-contradictory, so the numbers are not a measurement",
-              file=sys.stderr)
-        return True
     if run.fault == "none" and (loss > 0 or run.closed):
         print(f"bus-testrig: the baseline lost {loss} frame(s) of "
               f"{run.sent_frames}, connection_closed={run.closed or None}",
               file=sys.stderr)
         return True
-    relay = run.relay or {}
-    # Only when the relay counted at all (`received` is absent from a run that
-    # never had a proxy): a missing counter is not a zero.
-    if (run.fault != "none" and run.sent_frames and loss == run.sent_frames
-            and relay and relay.get("received") == 0):
-        # Every frame lost *and* the wire received nothing: the run measured the
-        # path, not the fault (issue #47). `--fault drop --after 0` is different:
-        # the wire sees the handshake, so it carries a number and stays a
-        # measurement of everything being lost.
-        print(f"bus-testrig: all {run.sent_frames} frame(s) lost and the relay "
-              "received nothing: the path carried nothing, so this is not a "
-              "measurement of the fault", file=sys.stderr)
+    # A fault that lets traffic through (`stall`, `reorder`, `duplicate`) and yet
+    # nothing arrives at all: the path, not the fault (issue #47). `drop` is the
+    # fault that is *meant* to discard, so a `drop` run that delivers nothing is a
+    # measurement; this rule names the faults that are not.
+    if (run.fault in PASSING_FAULTS and run.sent_frames and not run.received):
+        print(f"bus-testrig: --fault {run.fault} lets traffic through, but none of "
+              f"{run.sent_frames} frame(s) arrived: the path carried nothing, so "
+              "this is not a measurement of the fault", file=sys.stderr)
         return True
     if expect_loss and not 0 < loss < run.sent_frames:
         # `loss > 0` alone let a dead receiver pass: 20 of 20 lost is not a

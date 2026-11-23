@@ -144,9 +144,13 @@ reconnect the bus's catch-up read found nothing, so 10 of 10 read as lost.
 `bus-run`'s exit code says whether its numbers can be compared: 0 for a run
 whose baseline lost nothing and whose stand-in answered every call, 1 when the
 stub did not know a call, when the receiver's inbox never opened, when the run
-sent no frame at all, or when a baseline lost a frame; 2 when no interpreter
-could start the bus at all. The JSON report is printed in every case, because
-the numbers are how a failure is read.
+sent no frame at all, when a baseline lost a frame, or when a fault that lets
+traffic through (`stall`, `reorder`, `duplicate`, `blackhole`, `halfopen`)
+delivered **nothing** — a path that carried nothing is not a measurement of the
+fault (issue #47); 2 when no interpreter could start the bus at all. A `drop` run
+that delivers nothing is the other case and stays a measurement: `drop` is meant
+to discard. The JSON report is printed in every case, because the numbers are how
+a failure is read.
 
 `--expect-loss` makes a fault run's claim ("this fault loses some and carries
 the rest") part of that check: a run that lost nothing exits 1, and so does one

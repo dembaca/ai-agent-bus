@@ -136,41 +136,32 @@ def test_expect_loss_passes_a_fault_run_that_lost(bus_run, capsys):
     assert _json_of(capsys)["measured"]["loss"]["value"] == 4
 
 
-def test_a_run_that_lost_nothing_and_arrived_nothing_is_not_a_measurement(capsys):
-    """`loss == 0` with no latency at all is self-contradictory.
+def test_a_passing_fault_that_delivers_nothing_exits_non_zero(bus_run, capsys):
+    """`stall` lets every frame through, so a run under it must deliver some.
 
-    If nothing was lost, every frame arrived and has a time. A report that says
-    both claims success while the receiver saw nothing (issue #47). No CLI run
-    produces it today — the stub registers a post's id before its frame goes out,
-    so the id path always matches — so the report is built in exactly that state
-    here. The rule guards the report, not a run the harness can make.
+    Delivering none means the path, not the fault (issue #47). The run is built
+    through `bus_run` with a stub that accepts each pushed frame and hands none
+    to the receiver: the relay counts it as forwarded, the run arrives nowhere —
+    exactly the case a built report could not show. `drop` is not covered here:
+    a `drop` run may lose everything by design and is a measurement.
     """
-    from bus_testrig import cli as cli_module
-
-    run = runner.Run(name="bus-run", count=3, target="bus", fault="drop")
-    for seq in range(3):
-        run.send(seq)
-    run.sent_frames = 3
-    run.started, run.ended = 0.0, 1.0
-    run.measure = lambda *a, **k: {  # type: ignore[method-assign]
-        "loss": {"value": 0}, "latency_p50": {"value": None},
-        "latency_p95": {"value": None}, "duplicates": {"value": 0}}
-    assert cli_module._untrustworthy(run) is True
-    assert "none arrived either" in capsys.readouterr().err
-
-
-def test_a_fault_run_that_lost_everything_and_saw_nothing_is_not_a_measurement(bus_run, capsys):
-    """Every frame lost and the relay received nothing: the path, not the fault.
-
-    `--fault drop --after 0` is the other case and stays a measurement: the wire
-    sees the handshake, so there is a number to report (issue #47).
-    """
-    run = _run(loss=3, fault="drop", sent=3)
-    run.received.clear()  # so the latency rule does not fire first
-    run.relay = {"received": 0, "forwarded": 0, "altered": 0}
+    run = _run(loss=3, fault="stall", sent=3)
+    run.received.clear()  # nothing arrived, though the fault lets it through
+    run.relay = {"received": 4, "forwarded": 4, "altered": 0}
     bus_run(run)
-    assert _main(["bus-run", "--count", "3", "--fault", "drop", "--after", "1"]) == 1
-    assert "the path carried nothing" in capsys.readouterr().err
+    assert _main(["bus-run", "--count", "3", "--fault", "stall"]) == 1
+    assert "lets traffic through" in capsys.readouterr().err
+
+
+def test_a_drop_run_that_delivers_nothing_stays_a_measurement(bus_run, capsys):
+    """The other side of the rule: `drop` is meant to discard, so a run under it
+    that delivers nothing and exits 0 is the measurement, not a broken path."""
+    run = _run(loss=3, fault="drop", sent=3)
+    run.received.clear()
+    run.relay = {"received": 4, "forwarded": 1, "altered": 3}
+    bus_run(run)
+    assert _main(["bus-run", "--count", "3", "--fault", "drop", "--after", "1",
+                  "--every", "1"]) == 0
 
 
 def test_expect_loss_fails_when_everything_was_lost(bus_run, capsys):
