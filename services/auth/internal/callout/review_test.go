@@ -205,21 +205,115 @@ func (failingChannels) Memberships(context.Context, string, []string) (map[strin
 	return nil, errors.New("HTTP 500")
 }
 
+// barrierChannels holds every lookup until `want` of them are inside at once, then
+// releases all. That makes "answered at once" the condition the test can wait for,
+// instead of a deadline: if the service answers them one after another, the first
+// lookup waits until its own deadline and the test fails clearly. A slow runner only
+// delays the release; it cannot turn a concurrent path into a serial one.
+//
+// It fails rather than hangs when the service allows fewer than `want` at once
+// (MaxPending): the deadline ends the wait and the error names how many arrived.
+type barrierChannels struct {
+	Channels
+	want  int
+	mu    sync.Mutex
+	start []chan struct{} // one per lookup inside
+	most  int
+}
+
+func (b *barrierChannels) Memberships(ctx context.Context, u string, chs []string) (map[string]bool, error) {
+	b.mu.Lock()
+	mine := make(chan struct{})
+	b.start = append(b.start, mine)
+	if len(b.start) > b.most {
+		b.most = len(b.start)
+	}
+	release := len(b.start) >= b.want
+	if release {
+		for _, c := range b.start {
+			close(c)
+		}
+	}
+	b.mu.Unlock()
+	// Always give the slot back, released or not: an attempt that ends without a
+	// release (its context ended, or its dial failed and it retried) must not leave a
+	// ghost in the barrier, or the next full count would include it and never meet.
+	defer func() {
+		b.mu.Lock()
+		for i, c := range b.start {
+			if c == mine {
+				b.start = append(b.start[:i], b.start[i+1:]...)
+				break
+			}
+		}
+		b.mu.Unlock()
+	}()
+	select {
+	case <-mine:
+	case <-ctx.Done():
+		return nil, ctx.Err()
+	}
+	return b.Channels.Memberships(ctx, u, chs)
+}
+
+func (b *barrierChannels) highest() int {
+	b.mu.Lock()
+	defer b.mu.Unlock()
+	return b.most
+}
+
+// logRetry makes a retry visible in the test log, so a CI run says whether any
+// happened at all. Without it a retry is invisible and a rising rate goes unnoticed.
+func logRetry(t *testing.T, attempt int, err error) {
+	t.Helper()
+	t.Logf("retrying the dial after attempt %d: %v", attempt, err)
+}
+
 func TestLoginsAreAnsweredAtOnce(t *testing.T) {
-	l := newLabWith(t, func(c Channels) Channels { return slowChannels{c, 600 * time.Millisecond} }, 0)
+	// Six logins, all held at a barrier until they are inside at once. Six is the
+	// scenario: a handful of sessions arriving together on one lease. The service's
+	// own limit (MaxPending) is a precondition, not the number to test with: taking
+	// the count from it would let a lowered limit pass silently, and the test exists
+	// to notice exactly that.
+	const want = 6
+	if MaxPending < want {
+		t.Fatalf("MaxPending is %d, below the %d logins this test requires at once", MaxPending, want)
+	}
+	slow := &barrierChannels{want: want}
+	// The service's own timeout, below the server's 3s callout timeout as the README
+	// asks (README.md:63); the lookup's only wait is the barrier, so this value only
+	// bounds a failure.
+	l := newLabWith(t, func(c Channels) Channels { slow.Channels = c; return slow }, 2500*time.Millisecond)
 	var wg sync.WaitGroup
-	errs := make(chan error, 6)
-	for range 6 {
+	errs := make(chan error, want)
+	for range want {
 		wg.Go(func() {
-			_, err := l.connect("alice", l.realm.Token("alice", nil), Hello{Home: "home"}, nil)
+			var err error
+			for attempt := 1; attempt <= 3; attempt++ {
+				if _, err = l.connectTimeout("alice", l.realm.Token("alice", nil),
+					Hello{Home: "home"}, nil, 10*time.Second); err == nil ||
+					!strings.Contains(err.Error(), "expected 'PONG'") {
+					break
+				}
+				// Visible, so a CI log says whether a retry happened at all
+				// (0 in 50 clean runs here; it needs a starved CPU).
+				logRetry(t, attempt, err)
+			}
 			errs <- err
 		})
 	}
 	wg.Wait()
 	close(errs)
+	// The overlap first: with a serialised callout the clients also fail, and the
+	// server's "Authorization Violation" (the deadline passed before an answer) would
+	// hide what the test is about.
+	if got := slow.highest(); got != want {
+		t.Fatalf("%d of %d logins were inside at once, want %d: they are not answered at once",
+			got, want, want)
+	}
 	for err := range errs {
 		if err != nil {
-			t.Fatalf("a login fell into the timeout: %v", err)
+			t.Fatalf("a login was not answered: %v", err)
 		}
 	}
 }
@@ -364,8 +458,17 @@ func TestTheUserJWT(t *testing.T) {
 	if uc.Issuer != issuerPub || uc.Subject != req.UserNkey || uc.Audience != "BUS" {
 		t.Fatalf("issuer %s subject %s audience %s", uc.Issuer, uc.Subject, uc.Audience)
 	}
-	if uc.Expires != now.Add(Lifetime).Unix() || uc.IssuedAt != now.Unix() {
-		t.Fatalf("expires %d, issued %d", uc.Expires, uc.IssuedAt)
+	if uc.Expires != now.Add(Lifetime).Unix() {
+		t.Fatalf("expires %d, want %d", uc.Expires, now.Add(Lifetime).Unix())
+	}
+	// IssuedAt cannot be compared with anything this test captured: jwt's Encode
+	// stamps it with its own time.Now() (claims.go), overwriting what service.go
+	// sets, so it is one clock and Expires is another. A second boundary between
+	// the two runs gives 899 or 901, which is why comparing the two and comparing
+	// it with `now` both flaked. What the service promises is checked above (exp is
+	// Lifetime after its `now`); iat only has to be a sane unix time near that.
+	if diff := uc.IssuedAt - now.Unix(); diff < -2 || diff > 2 {
+		t.Fatalf("issued %d, want within 2s of %d", uc.IssuedAt, now.Unix())
 	}
 	if uc.Limits.Subs != maxSubs || uc.Limits.Payload != maxPayload ||
 		!uc.AllowedConnectionTypes.Contains(jwt.ConnectionTypeStandard) || len(uc.AllowedConnectionTypes) != 1 {
