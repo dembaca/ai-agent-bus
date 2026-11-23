@@ -497,8 +497,21 @@ class NatsBus:
             if not CHANNEL_RE.match(ch):
                 raise ValueError("invalid channel name")
         _ = self.name
-        await self._open()
+        retry = False
+        try:
+            await self._open()
+        except (NameMismatch, ValueError):
+            raise  # final: another credential, or settings that are wrong
+        except asyncio.CancelledError:
+            raise
+        except Exception as exc:
+            # A first connect that fails is no end: the supervisor connects again with backoff
+            # (a send raises "not connected" until it has).
+            log.warning("nats bus: first connect failed, retrying: %s", type(exc).__name__)
+            retry = True
         self._tasks = [asyncio.create_task(self._supervise()), asyncio.create_task(self._heartbeat())]
+        if retry:
+            self._wake.set()
 
     async def stop(self) -> None:
         self._stopping = True

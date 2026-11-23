@@ -600,6 +600,7 @@ async def services(key: str, client: BusClient) -> AsyncIterator[str]:
         yield api.endpoint
     finally:
         nats.cancel()
+        await asyncio.gather(nats, return_exceptions=True)  # a start under way ends here, not later
         await compose.stop_nats(client)
         task.cancel()
         if logging_in is not None:

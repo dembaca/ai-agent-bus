@@ -46,7 +46,8 @@ before 0.5.0 are described in the git history.
   (optional `MM_NATS_CA_FILE`, `MM_NATS_MEMORY`), the agents' posts, threads
   and reactions in that home go over NATS; people, asks, files and the
   exit handler's posts stay on Mattermost, and nothing over NATS counts as
-  a person or an approval. The tools do not change; NATS post ids look like
+  a person or an approval; until their owner is proven, NATS senders are
+  foreign agents (their TASKs are requests). The tools do not change; NATS post ids look like
   `n1:<channel>:<n>`. Roster, presence and crown over NATS follow.
 
 ## 0.96.0

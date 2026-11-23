@@ -14,7 +14,7 @@ from typing import Any
 
 import pytest
 from fakes import BOT, WORK, FakeBus, FakeEvents, FakeRegistrar
-from test_natsbus import FakeLogin, Rig, _login_service, until  # the rig fixture comes from conftest.py
+from test_natsbus import FakeLogin, Rig, _login_service, _unit_bus, until  # the rig fixture comes from conftest.py
 
 from mattermost_ai_agent_bus import a2a, compose, gate, login, natsbus, server
 from mattermost_ai_agent_bus.events import PostEvent, ReactionEvent
@@ -231,15 +231,81 @@ async def test_a_bus_that_is_not_up_yet_refuses_a_send_and_a_fatal_error_keeps_r
     assert not events.connected
 
 
-async def test_a_bus_that_cannot_start_is_a_failed_home(caplog: pytest.LogCaptureFixture) -> None:
+async def test_a_server_that_is_not_reachable_is_no_end_the_bus_goes_on_trying(
+        caplog: pytest.LogCaptureFixture) -> None:
+    """A first connect that fails (nothing listens on port 1) leaves the supervisor running; the
+    sends raise until it has connected, and nothing goes to Mattermost."""
     port, inner, _ = make(bus=False)
     port._bus_options = {"connect_timeout": 1.0}
-    with caplog.at_level(logging.ERROR), pytest.raises(Exception):  # noqa: B017 — nothing listens on port 1
+    with caplog.at_level(logging.WARNING):
+        await port.start(FakeLogin(), owner="alice")  # returns: it keeps trying
+    try:
+        assert port.failure is None and port.bus_attached and not port.bus_connected
+        assert "first connect failed" in caplog.text
+        with pytest.raises(natsbus.NatsBusError, match="not connected"):
+            await port.post("x")
+        assert inner.posted == []
+    finally:
+        await port.stop()
+
+
+async def test_a_name_mismatch_at_start_is_final_and_a_passing_failure_is_tried_again(
+        monkeypatch: pytest.MonkeyPatch, caplog: pytest.LogCaptureFixture) -> None:
+    from mattermost_ai_agent_bus import nats_port
+
+    starts: list[str] = []
+
+    class Flaky:
+        def __init__(self, *a: Any, **kw: Any) -> None:
+            self.name, self.connected = ME, True
+
+        async def start(self) -> None:
+            starts.append("start")
+            if len(starts) == 1:
+                raise RuntimeError("the login service is not there yet")
+
+        async def stop(self) -> None: ...
+
+    monkeypatch.setattr(nats_port, "NatsBus", Flaky)
+    monkeypatch.setattr(nats_port, "START_RETRY_SEC", 0.01)
+    port, inner, _ = make(bus=False)
+    with caplog.at_level(logging.WARNING):
         await port.start(FakeLogin(), owner="alice")
-    assert "is down" in caplog.text
-    with pytest.raises(NatsPortError):
+    assert len(starts) == 2 and port.failure is None and port.bus_connected
+    assert "trying again" in caplog.text
+
+    class Wrong(Flaky):
+        async def start(self) -> None:
+            starts.append("wrong")
+            raise NameMismatch("the credential's agent name is not the computed one")
+
+    monkeypatch.setattr(nats_port, "NatsBus", Wrong)
+    port, inner, _ = make(bus=False)
+    with caplog.at_level(logging.ERROR), pytest.raises(NameMismatch):
+        await port.start(FakeLogin(), owner="alice")
+    assert starts.count("wrong") == 1 and "is down" in caplog.text  # not tried again
+    with pytest.raises(NatsPortError, match="is down"):
         await port.post("x")
     assert inner.posted == []
+
+
+async def test_the_bus_connects_again_after_a_first_connect_that_failed() -> None:
+    bus, _ = _unit_bus()
+    tries: list[int] = []
+
+    async def flaky() -> None:
+        tries.append(1)
+        if len(tries) == 1:
+            raise OSError("connection refused")
+        bus._connected, bus._nc = True, object()  # type: ignore[assignment]
+
+    bus._open = flaky  # type: ignore[method-assign]
+    await bus.start()  # does not raise
+    try:
+        await until(lambda: bus.connected)
+        assert len(tries) == 2
+    finally:
+        await bus.stop()
 
 
 # --- ids -------------------------------------------------------------------------------------------
@@ -280,8 +346,11 @@ async def test_a_post_in_a_nats_home_goes_over_nats_and_comes_back_with_its_id()
     props = a2a.props("`HELLO` · hi", kind="hello") | {"x_k": "v", "agent_card": {"n": 1}}
     post = await port.post("`HELLO` · hi", props=props)
     assert inner.posted == []  # nothing on Mattermost
+    nonce = fake.sent[0][4]["x_nats_nonce"]  # what tells the post its own copy
     assert fake.sent == [("post", "home", "`HELLO` · hi", None,
-                          {"x_a2a_v": 1, "x_a2a_kind": "hello", "x_a2a_intent": "fyi", "x_k": "v"})]
+                          {"x_a2a_v": 1, "x_a2a_kind": "hello", "x_a2a_intent": "fyi", "x_k": "v",
+                           "x_nats_nonce": nonce})]
+    assert "x_nats_nonce" not in (await port.channel_posts(WORK))[0].props
     assert post.id == "n1:home:101" and post.channel_id == WORK and post.root_id == ""
     assert post.user_id == BOT  # the bot's own id: the inbox ignores its own posts
     assert post.kind == "HELLO" and post.intent == "fyi" and abs(post.create_at / 1000 - time.time()) < 30
@@ -320,8 +389,11 @@ async def test_the_synchronous_posts_go_to_mattermost_also_for_a_nats_home() -> 
     port.post_by_name_sync("agents", "stats")
     assert [s.get("channel_id") or s.get("channel_name") for s in inner.sent_sync] == [
         WORK, "~home", OTHER, "agents"]
-    with pytest.raises(NatsPortError, match="synchronous"):
-        port.post_sync("bye", channel_id=WORK, root_id="n1:home:3")
+    # a reply to a NATS post (the HELLO): Mattermost has no such post, so it goes top-level
+    port.post_sync("bye", channel_id=WORK, root_id="n1:home:3", props={"a2a": {"kind": "bye"}})
+    last = inner.sent_sync[-1]
+    assert last["root_id"] == "" and last["channel_id"] == WORK
+    assert last["props"] == {"a2a": {"kind": "bye"}, "x_nats_root": "n1:home:3"}
 
 
 async def test_a_reply_or_reaction_to_a_persons_post_in_a_nats_home_goes_to_mattermost() -> None:
@@ -344,7 +416,7 @@ async def test_a_post_without_its_echo_is_an_error_that_says_the_id_is_unknown()
     fake.echo = False
     with pytest.raises(NatsPortError, match="id is not known"):
         await port.post("lost?")
-    assert fake.sent and inner.posted == [] and port._echoes == []
+    assert fake.sent and inner.posted == [] and port._echoes == {}
 
 
 async def test_the_echo_of_a_concurrent_send_goes_to_its_own_sender() -> None:
@@ -427,8 +499,10 @@ async def test_sending_a_reply_needs_a_nats_post_of_the_same_channel() -> None:
         await plain.post("no", channel_id="z" * 26, root_id="n1:home:10")
     assert pinner.posted == []
     # an ask or a file cannot hang under a NATS post either (they go to Mattermost)
-    with pytest.raises(NatsPortError):
+    with pytest.raises(NatsPortError, match="for people.*top-level"):
         await port.post("a file", root_id="n1:home:10", file_ids=["f" * 26])
+    with pytest.raises(NatsPortError, match="for people.*top-level"):
+        await port.post("\U0001F64B @dembaca", root_id="n1:home:10", props=a2a.props(kind=a2a.ASK))
 
 
 async def test_sending_a_reaction_needs_a_nats_post() -> None:
@@ -540,7 +614,8 @@ async def test_nothing_over_nats_is_from_a_human_or_an_approval() -> None:
     # the author is an agent, never trusted: the class the server's flags come from
     assert (await gate.author_classes(client, [post])) == [gate.AGENT]
     assert await client.agents({post.user_id}) == {ALICE} and await client.usernames({ALICE}) == {ALICE: ALICE}
-    assert await client.agent_owner(ALICE) is None and await client.bot_description(ALICE) is None
+    # an owner that is none, not an owner that cannot be read: that would count as a peer
+    assert await client.agent_owner(ALICE) == "" and await client.bot_description(ALICE) is None
     assert await client.agent_attestation(ALICE) is None
 
 
@@ -644,6 +719,283 @@ async def test_the_merged_source_has_both_and_routes_typing() -> None:
         await stream.__anext__()
     assert not merged.connected
     await merged.close()
+
+
+# --- the security review: reads, the BYE, Mattermost keeps flowing, the owner, bounds -----------------
+
+def _ms() -> int:
+    return int(_clock[0] * 1000)
+
+
+async def test_the_reads_of_a_nats_home_hold_a_persons_mattermost_posts_too() -> None:
+    """A task a person posts while the WebSocket is down is on Mattermost, not in the NATS memory:
+    every read of the home merges both, by time, and keeps its own limits."""
+    port, inner, _ = make()
+    await arrive(port, "home", ALICE, 10, Message("post", "a"))
+    await arrive(port, "home", ALICE, 11, Message("post", "b"))
+    t_b = _ms()
+    inner.clock = t_b - 500
+    inner.arrive({"id": "h" * 26, "user_id": HUMAN, "message": "human task"})  # at t_b + 500
+    await arrive(port, "home", ALICE, 12, Message("post", "c"))  # at t_b + 1000
+    assert [p.message for p in await port.channel_posts(WORK)] == ["c", "human task", "b", "a"]
+    assert [p.message for p in await port.channel_posts(WORK, per_page=2)] == ["c", "human task"]
+    assert [p.message for p in await port.channel_posts(WORK, since_ms=t_b)] == ["c", "human task", "b"]
+    assert [p.message for p in await port.list_recent(per_page=3)] == ["b", "human task", "c"]
+    assert [p.message for p in await port.list_recent(channel_id=WORK, since_ms=t_b)] == [
+        "b", "human task", "c"]
+    assert [p.message for p in await port.posts_after(t_b, channel_id=WORK)] == ["human task", "c"]
+    assert [p.message for p in await port.posts_after(t_b)] == ["human task", "c"]
+    # the unread count: the newer of the two is the last post
+    (home,) = [c for c in await port.member_channels() if c.channel_id == WORK]
+    assert home.last_post_at == t_b + 1000
+    inner.clock = t_b + 9_000
+    inner.arrive({"id": "g" * 26, "user_id": HUMAN, "message": "later"})
+    (home,) = [c for c in await port.member_channels() if c.channel_id == WORK]
+    assert home.last_post_at == t_b + 10_000  # Mattermost's, newer than the newest NATS post
+    # a Mattermost root's thread is Mattermost's
+    assert [p.message for p in (await port.thread("h" * 26)).posts] == ["human task"]
+
+
+async def test_the_catch_up_of_the_inbox_finds_a_task_posted_while_the_websocket_was_down() -> None:
+    from mattermost_ai_agent_bus import unread
+
+    port, inner, _ = make()
+    await arrive(port, "home", ALICE, 10, Message("post", "old"))
+    inner.clock = _ms()
+    inner.arrive({"id": "h" * 26, "user_id": HUMAN, "message": "`TASK` · while you were away"})
+    rows = await unread.after(compose.Remembered(port))  # type: ignore[arg-type]
+    assert "`TASK` · while you were away" in [p.message for r in rows for p in r.posts]
+
+
+async def test_the_bye_reaches_the_people_of_a_nats_home_through_the_exit_handler() -> None:
+    from mattermost_ai_agent_bus import ownpost
+
+    port, inner, _ = make()
+    hello = await port.post("`HELLO` · hi", props=a2a.props("`HELLO` · hi", kind="hello"))
+    assert parse_post_id(hello.id)
+    ownpost.record(BOT, WORK, hello)
+    assert ownpost.read(BOT)["HELLO"] == hello.id  # the BYE's root is a NATS post
+    assert ownpost.bye_sync(port, BOT) == "BYE posted"  # type: ignore[arg-type]
+    (sent,) = inner.sent_sync
+    assert sent["channel_id"] == WORK and sent["root_id"] == ""  # top-level on Mattermost
+    assert sent["props"]["x_nats_root"] == hello.id and sent["props"]["a2a"]["kind"] == "bye"
+    assert "BYE" in sent["message"]
+
+
+async def test_mattermost_events_flow_while_nats_is_down_and_nats_events_follow_when_it_is_back() -> None:
+    port, inner, _ = make(bus=False)  # the bus is not up: NatsEvents.open raises
+    chat = FakeEvents(connected=False, held=True)
+    merged = MergedEvents(chat, NatsEvents(port), port, retry_sec=0.02)
+    await merged.open()  # does not raise, and does not close Mattermost's side
+    assert merged.connected and chat.opens == 1 and not chat.closed
+    stream = merged.events()
+    chat.push(inner.arrive({"id": "m" * 26, "user_id": HUMAN, "message": "a human"}))
+    first = await asyncio.wait_for(stream.__anext__(), 2)
+    assert first.post.id == "m" * 26  # type: ignore[union-attr]
+    port.use_bus(FakeNats(port))  # NATS comes up
+    nats_events = merged._nats
+    await until(lambda: nats_events._queue is not None)  # the NATS side opened again on its own
+    await arrive(port, "home", BOB, 10, Message("post", "an agent"))
+    got = await asyncio.wait_for(stream.__anext__(), 2)
+    assert got.post.id == "n1:home:10"  # type: ignore[union-attr]
+    await stream.aclose()
+
+
+async def test_a_failed_nats_home_leaves_mattermosts_events_flowing(caplog: pytest.LogCaptureFixture) -> None:
+    port, inner, _ = make()
+    chat = FakeEvents(connected=False, held=True)
+    merged = MergedEvents(chat, NatsEvents(port), port, retry_sec=0.02)
+    await merged.open()
+    stream = merged.events()
+    first = asyncio.ensure_future(stream.__anext__())
+    await asyncio.sleep(0.05)  # the pumps run
+    with caplog.at_level(logging.WARNING):
+        port.fail("the credential is not the computed one")  # a NameMismatch: the homes are down
+        await asyncio.sleep(0.1)
+    assert "stop for good" in caplog.text
+    chat.push(inner.arrive({"id": "m" * 26, "user_id": HUMAN, "message": "still there"}))
+    got = await asyncio.wait_for(first, 2)  # no error, no end
+    assert got.post.id == "m" * 26  # type: ignore[union-attr]
+    assert not chat.closed
+    await stream.aclose()
+
+
+# --- the owner is not proven: a NATS sender is foreign, its crown is nobody's --------------------------
+
+def _split_port() -> tuple[NatsPort, FakeBus]:
+    """A session with trusted humans and a bot that has an owner: the peer split is active."""
+    inner = FakeBus(FakeRegistrar(), trusted={HUMAN: "dembaca"}, names={HUMAN: "dembaca"},
+                    descriptions={BOT: "for @dembaca · trusts @dembaca"})
+    inner.registrar.session = inner.registrar.info
+    inner.work_channel_name = "home"
+    port = NatsPort(inner, _settings(), ("home",), echo_wait=0.5)  # type: ignore[arg-type]
+    port.use_bus(FakeNats(port))
+    return port, inner
+
+
+async def test_a_nats_sender_is_foreign_and_its_task_is_a_request_not_a_task() -> None:
+    port, _ = _split_port()
+    client = compose.Remembered(port)  # type: ignore[arg-type]
+    await arrive(port, "home", ALICE, 10, Message("post", "`TASK` · do it", props={"x_a2a_kind": "task"}))
+    posts = await port.channel_posts(WORK)
+    assert await gate.author_classes(client, posts) == [gate.FOREIGN]
+    assert await server._tasks(client, posts, {}, crown=set(), home=False) == []  # type: ignore[arg-type]
+
+
+async def test_the_crown_flag_of_a_nats_sender_changes_nothing() -> None:
+    from mattermost_ai_agent_bus import tasks
+
+    port, _ = _split_port()
+    await arrive(port, "home", ALICE, 10, Message("post", "`TASK` · do it", props={"x_a2a_kind": "task"}))
+    await arrive(port, "home", BOB, 11, Message(
+        "post", "`DONE` · closed", root=10, props={"x_a2a_kind": "done", "x_a2a_crown": True}))
+    posts = await port.channel_posts(WORK)
+    done = next(p for p in posts if p.kind == "DONE")
+    assert done.crowned is False and "crown" not in done.props["a2a"] and "crown" not in done.raw["props"]["a2a"]
+    (row,) = tasks.build(posts, {})  # bob is no author and holds no crown: the task stays open
+    assert row["state"] == "submitted"
+
+
+# --- bounds -----------------------------------------------------------------------------------------------
+
+async def test_the_reactions_of_a_post_are_capped(caplog: pytest.LogCaptureFixture) -> None:
+    from mattermost_ai_agent_bus.nats_port import MAX_REACTIONS
+
+    port, _, _ = make()
+    await arrive(port, "home", ALICE, 10, Message("post", "root"))
+    events = NatsEvents(port)
+    await events.open()
+    with caplog.at_level(logging.WARNING):
+        for i in range(MAX_REACTIONS + 40):
+            await arrive(port, "home", BOB, 100 + i, Message("reaction", ref=10, emoji=f"e{i}"))
+    assert len(port._reacts[10]) == MAX_REACTIONS == len(await port.reactions("n1:home:10"))
+    assert "dropped" in caplog.text
+    assert events._queue is not None and events._queue.qsize() == MAX_REACTIONS  # no event for a dropped one
+    await arrive(port, "home", BOB, 900, Message("unreaction", ref=10, emoji="e0"))  # room again
+    await arrive(port, "home", BOB, 901, Message("reaction", ref=10, emoji="new"))
+    assert len(port._reacts[10]) == MAX_REACTIONS
+
+
+async def test_the_queues_are_bounded_and_drop_with_a_log_line(
+        monkeypatch: pytest.LogCaptureFixture, caplog: pytest.LogCaptureFixture) -> None:
+    from mattermost_ai_agent_bus import nats_port
+
+    monkeypatch.setattr(nats_port, "MAX_QUEUE", 3)  # type: ignore[attr-defined]
+    port, _, _ = make()
+    events = NatsEvents(port)
+    await events.open()
+    assert events._queue is not None and events._queue.maxsize == 3
+    with caplog.at_level(logging.WARNING):
+        for seq in range(1, 9):
+            await arrive(port, "home", ALICE, seq, Message("post", f"m{seq}"))  # no exception
+    assert events._queue.qsize() == 3 and "queue is full" in caplog.text
+    port.fail("down")  # the failure still gets through a full queue
+    items = [events._queue.get_nowait() for _ in range(3)]
+    assert isinstance(items[-1], NatsPortError)
+    merged = MergedEvents(FakeEvents(), events, port).events()
+    assert merged._queue.maxsize == 3  # type: ignore[attr-defined]
+
+
+async def test_the_reply_count_is_looked_up_by_index_not_by_scanning_the_channel() -> None:
+    from collections import OrderedDict
+
+    port, _, _ = make()
+    await arrive(port, "home", ALICE, 1, Message("post", "root"))
+    for seq in range(2, 600):
+        await arrive(port, "home", BOB, seq, Message("post", f"r{seq}", root=1 if seq % 2 else None))
+
+    class Scanned(OrderedDict[int, Any]):
+        scans = 0
+
+        def values(self) -> Any:  # type: ignore[override]
+            Scanned.scans += 1
+            return super().values()
+
+    port._posts["home"] = Scanned(port._posts["home"])
+    shown = port._shown("home", 1)
+    assert shown.reply_count == 299 and Scanned.scans == 0  # a scan would call values() per post
+    # the count follows the eviction
+    small, _, _ = make(memory=3)
+    await arrive(small, "home", ALICE, 1, Message("post", "root"))
+    await arrive(small, "home", BOB, 2, Message("post", "r", root=1))
+    await arrive(small, "home", BOB, 3, Message("post", "r", root=1))
+    assert small._shown("home", 1).reply_count == 2
+    await arrive(small, "home", BOB, 4, Message("post", "x"))  # evicts the root (lowest sequence)
+    await arrive(small, "home", BOB, 5, Message("post", "x"))  # evicts reply 2
+    assert small._children == {"n1:home:1": {3}}
+
+
+# --- the small ones ----------------------------------------------------------------------------------------
+
+async def test_an_older_post_with_the_same_text_never_takes_a_new_posts_id() -> None:
+    port, _, fake = make()
+    assert fake is not None
+    fake.echo = False  # the test plays the stream
+    task = asyncio.ensure_future(port.post("ACK"))
+    await until(lambda: bool(fake.sent))
+    nonce = fake.sent[0][4]["x_nats_nonce"]
+    # an older own "ACK" comes again (a replay after a reconnect): same sender, same text, no nonce
+    await arrive(port, "home", ME, 5, Message("post", "ACK"))
+    await asyncio.sleep(0.05)
+    assert not task.done()
+    await arrive(port, "home", ME, 6, Message("post", "ACK", props={"x_nats_nonce": nonce}))
+    assert (await task).id == "n1:home:6"
+    # another sender's post carrying the nonce takes nothing either
+    fake.sent.clear()
+    task = asyncio.ensure_future(port.post("again"))
+    await until(lambda: bool(fake.sent))
+    await arrive(port, "home", BOB, 7, Message("post", "again", props={"x_nats_nonce": fake.sent[0][4]["x_nats_nonce"]}))
+    await asyncio.sleep(0.05)
+    assert not task.done()
+    with pytest.raises(NatsPortError, match="id is not known"):
+        await task
+
+
+async def test_the_lowest_stream_sequence_is_evicted_not_the_oldest_arrival() -> None:
+    port, _, _ = make(memory=3)
+    for seq in (10, 11, 12):
+        await arrive(port, "home", ALICE, seq, Message("post", f"m{seq}"))
+    await arrive(port, "home", ALICE, 5, Message("post", "m5"))  # a late, older one
+    assert sorted(port._posts["home"]) == [10, 11, 12] and 5 not in port._where
+    await arrive(port, "home", ALICE, 13, Message("post", "m13"))
+    assert sorted(port._posts["home"]) == [11, 12, 13]
+
+
+async def test_stopping_the_bus_logs_what_failed(caplog: pytest.LogCaptureFixture) -> None:
+    port, _, fake = make()
+    assert fake is not None
+
+    async def broken() -> None:
+        raise OSError("drain failed")
+
+    fake.stop = broken  # type: ignore[method-assign]
+    with caplog.at_level(logging.WARNING):
+        await port.stop()  # does not raise
+    assert "stopping the bus failed: OSError" in caplog.text
+
+
+async def test_the_nats_start_of_the_server_never_raises(
+        monkeypatch: pytest.MonkeyPatch, caplog: pytest.LogCaptureFixture) -> None:
+    async def boom(_client: object) -> None:
+        raise RuntimeError("no client")
+
+    monkeypatch.setattr(compose, "start_nats", boom)
+
+    async def no_client() -> None:
+        return None
+
+    monkeypatch.setattr(server, "_bus_client", no_client)
+    with caplog.at_level(logging.WARNING):
+        await server._nats_start()
+    assert "NATS bus not started: RuntimeError" in caplog.text
+    task = asyncio.ensure_future(server._nats_start())
+    task.cancel()  # a cancellation is how the lifespan ends it: not swallowed
+    with pytest.raises(asyncio.CancelledError):
+        await task
+
+
+def test_an_author_name_must_match_whole_not_up_to_a_newline() -> None:
+    assert is_nats_user("agent-x") and not is_nats_user("agent-x\n") and not is_nats_user("agent-x\nmore")
 
 
 # --- against a real server --------------------------------------------------------------------------------

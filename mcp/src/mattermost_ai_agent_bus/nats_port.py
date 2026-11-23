@@ -24,13 +24,19 @@ bus's own props (`a2a`) travel as flat keys `<MM_PROPS_PREFIX>a2a_<key>`, the
 agent's own `<MM_PROPS_PREFIX>…` props as they are; the agent card and anything
 else are not sent.
 
-Memory. What arrives is kept per channel, at most `memory` posts (the oldest go);
-`thread`, `channel_posts`, `list_recent`, `posts_after` and `reactions` read it,
-`member_channels` shows its newest post to the unread count. What lies beyond is
+Memory. What arrives is kept per channel, at most `memory` posts (the lowest stream
+sequence goes first); `thread` (of a NATS root) and `reactions` read it;
+`channel_posts`, `list_recent` and `posts_after` of a home merge it with what
+Mattermost has in that channel (a person's post, an ask, a BYE), sorted by time, and
+`member_channels` counts the newer of the two as the last post. What lies beyond is
 read again after a restart: the bus sends `since`. A reply whose root is a post
 of another channel is dropped; one whose root is not known is a top-level post; a
 reaction to a post not known is ignored. Reactions are kept by (post, emoji,
 sender); an unreaction removes the reaction of its own sender only.
+
+Owner. A NATS sender's owner is not proven (the roster comes later): `agent_owner`
+says "" for it, so it is foreign for every session that splits peers from foreign
+agents (its TASK is a request, owners.py), and its crown flag (`a2a_crown`) is dropped.
 
 Trust. Nothing from NATS is from a human or an approval. The post carries the
 sender's agent name as author, which is no trusted human's id (the trusted ids are
@@ -38,8 +44,11 @@ Mattermost's), no owner's and no mandate holder's; an author without a "-" in it
 name is dropped. Text and props claim nothing: the server never reads them for
 trust (gate.py, mandate.py, owners.py go by the author's id).
 
-A NATS home that cannot start (no login, a NameMismatch, a failed connect) is
-reported in the log and every send raises: it never falls back to Mattermost.
+A NATS home that cannot start (no login, a NameMismatch) is reported in the log and
+every send raises: it never falls back to Mattermost. A start that fails for a
+reason that may pass (the server not reachable, the login or Mattermost not ready) is
+tried again with backoff. Whatever NATS does, Mattermost's events keep flowing
+(MergedEvents): a NATS error is logged and its side opens again when the bus is back.
 """
 
 from __future__ import annotations
@@ -48,8 +57,9 @@ import asyncio
 import contextlib
 import dataclasses
 import logging
+import secrets
 from collections import OrderedDict
-from collections.abc import Iterable, Mapping, Sequence
+from collections.abc import Callable, Iterable, Mapping, Sequence
 from types import MappingProxyType
 from typing import TYPE_CHECKING, Any, Protocol
 
@@ -57,7 +67,7 @@ from . import a2a, natsbus
 from .events import ChatEvent, EventSource, EventStream, PostEvent, ReactionEvent
 from .ids import _ID, NATS_POST
 from .model import NotFound, Post, Reaction, Thread, UnreadChannel
-from .natsbus import DM_SINCE, Event, NatsBus, NatsBusError, NatsSettings
+from .natsbus import DM_SINCE, Event, NameMismatch, NatsBus, NatsBusError, NatsSettings
 
 if TYPE_CHECKING:
     from .compose import BusClient
@@ -65,8 +75,14 @@ if TYPE_CHECKING:
 log = logging.getLogger(__name__)
 
 DEFAULT_MEMORY = 2000  # posts kept per channel
+MAX_REACTIONS = 64  # distinct (emoji, sender) per post
+MAX_QUEUE = 10_000  # events a subscriber or a merged stream holds
+START_RETRY_SEC = 1.0  # first wait of a start that failed; doubles up to START_RETRY_MAX_SEC
+START_RETRY_MAX_SEC = 30.0
 ECHO_WAIT_SEC = 10.0  # how long a send waits for its own copy from the stream
 _NOTE = "a2a_"  # after the props prefix: the bus's own note, flat
+_NONCE = "nats_nonce"  # after the props prefix: tells a post its own copy
+_ROOT = "nats_root"  # after the props prefix: the NATS post a Mattermost post answers
 
 
 class NatsPortError(Exception):
@@ -108,7 +124,7 @@ def parse_post_id(value: str) -> tuple[str, int] | None:
 def is_nats_user(user_id: str) -> bool:
     """The author id of a post that came over NATS: an agent name, which has a "-".
     No Mattermost user id (26 characters of [a-z0-9]) is one."""
-    return "-" in user_id and natsbus.AGENT_RE.match(user_id) is not None and not _ID.fullmatch(user_id)
+    return "-" in user_id and natsbus.AGENT_RE.fullmatch(user_id) is not None and not _ID.fullmatch(user_id)
 
 
 def _scalar(v: object) -> bool:
@@ -159,8 +175,10 @@ class NatsPort:
         self._posts: dict[str, OrderedDict[int, Post]] = {}  # channel -> seq -> post
         self._where: dict[int, str] = {}  # seq -> channel (stream sequences are global)
         self._reacts: dict[int, dict[tuple[str, str], int]] = {}  # seq -> (emoji, sender) -> ms
-        self._echoes: list[tuple[str, str, int | None, asyncio.Future[Post]]] = []
+        self._children: dict[str, set[int]] = {}  # root post id -> seqs of its replies (the count of _shown)
+        self._echoes: dict[str, tuple[str, asyncio.Future[Post]]] = {}  # nonce -> (channel, future)
         self._subs: list[asyncio.Queue[ChatEvent | NatsPortError | None]] = []
+        self._dropped = 0
 
     def __getattr__(self, name: str) -> Any:
         if name in ("inner", "__setstate__"):
@@ -191,23 +209,34 @@ class NatsPort:
     async def start(self, login: natsbus.LoginLike, owner: str | None = None) -> None:
         """Resolve the homes' channels, then start the bus as the login's owner
         (the access token's preferred_username unless `owner` is given). Waits for
-        the login's approval. A failure is logged, kept (every send then raises)
+        the login's approval. A failure that may pass (Mattermost, the login or the
+        NATS server not ready) is logged and tried again with backoff; one that will
+        not (a NameMismatch, wrong settings) is logged, kept (every send then raises)
         and raised."""
         if self._bus is not None:
             return
-        try:
-            await self.resolve()
-            if owner is None:
-                owner = await _owner_of(login)
-            bus = NatsBus(self._s, login, owner, self._on_event, on_fatal=self._on_fatal,
-                          **self._bus_options)
-            self._bus = bus
-            await bus.start()
-        except asyncio.CancelledError:
-            raise
-        except Exception as exc:
-            self.fail(exc)
-            raise
+        delay = START_RETRY_SEC
+        while True:
+            try:
+                await self.resolve()
+                if owner is None:
+                    owner = await _owner_of(login)
+                bus = NatsBus(self._s, login, owner, self._on_event, on_fatal=self._on_fatal,
+                              **self._bus_options)
+                self._bus = bus
+                await bus.start()
+                return
+            except asyncio.CancelledError:
+                raise
+            except (NameMismatch, ValueError, NatsPortError) as exc:
+                self.fail(exc)
+                raise
+            except Exception as exc:  # noqa: BLE001 — may pass: again
+                self._bus = None
+                log.warning("nats: the home %s did not start (%s), trying again in %.0f s",
+                            ", ".join(self._homes), _describe(exc), delay)
+                await asyncio.sleep(delay)
+                delay = min(delay * 2, START_RETRY_MAX_SEC)
 
     def fail(self, why: BaseException | str) -> None:
         """The homes cannot run over NATS: logged once, sends raise from now on."""
@@ -224,8 +253,10 @@ class NatsPort:
         bus, self._bus = self._bus, None
         self._tell(None)
         if bus is not None:
-            with contextlib.suppress(Exception):
+            try:
                 await bus.stop()
+            except Exception as exc:  # noqa: BLE001 — going away anyway, but not silently
+                log.warning("nats: stopping the bus failed: %s", type(exc).__name__)
 
     def _require(self) -> BusLike:
         if self._fatal is not None:
@@ -236,18 +267,27 @@ class NatsPort:
         return self._bus
 
     def subscribe(self) -> asyncio.Queue[ChatEvent | NatsPortError | None]:
-        q: asyncio.Queue[ChatEvent | NatsPortError | None] = asyncio.Queue()
+        q: asyncio.Queue[ChatEvent | NatsPortError | None] = asyncio.Queue(MAX_QUEUE)
         self._subs.append(q)
         return q
 
     def unsubscribe(self, q: asyncio.Queue[ChatEvent | NatsPortError | None]) -> None:
         with contextlib.suppress(ValueError):
             self._subs.remove(q)
-        q.put_nowait(None)
+        _put_last(q, None)
 
     def _tell(self, item: ChatEvent | NatsPortError | None) -> None:
         for q in list(self._subs):
-            q.put_nowait(item)
+            if item is None or isinstance(item, NatsPortError):
+                _put_last(q, item)  # the end and the failure always get through
+                continue
+            try:
+                q.put_nowait(item)
+            except asyncio.QueueFull:
+                self._dropped += 1
+                if self._dropped % 1000 == 1:
+                    log.warning("nats: a subscriber's queue is full (%d): events dropped (%d so far)",
+                                MAX_QUEUE, self._dropped)
 
     # --- the channels ------------------------------------------------------------
     async def resolve(self) -> dict[str, str]:
@@ -323,16 +363,18 @@ class NatsPort:
         if file_ids or a2a.kind_of({"props": props or {}, "message": message}) == a2a.ASK:
             # For people (an ask for a human, files): Mattermost, as before.
             if root_id and parse_post_id(root_id):
-                raise NatsPortError("a post for people (an ask, files) cannot be a reply to a NATS post: "
-                                    "nothing sent")
+                raise NatsPortError("an ask or a post with files is for people and goes to Mattermost, "
+                                    "where it cannot be a reply to a NATS post: post it top-level "
+                                    "(no root_id) in the home; nothing sent")
             return await self.inner.post(message, channel_id=channel_id, root_id=root_id,
                                          props=props, file_ids=file_ids)
         root = self._id_in(root_id, name, "a reply's root") if root_id else None
         bus = self._require()
         wire = wire_props(props, self._s.props_prefix)
+        nonce = secrets.token_hex(8)  # only this post's own copy carries it
+        wire[f"{self._s.props_prefix}{_NONCE}"] = nonce
         echo: asyncio.Future[Post] = asyncio.get_running_loop().create_future()
-        entry = (name, message, root, echo)
-        self._echoes.append(entry)
+        self._echoes[nonce] = (name, echo)
         try:
             await bus.post(name, message, root=root, props=wire)
             try:
@@ -341,15 +383,16 @@ class NatsPort:
                 raise NatsPortError("the post was sent over NATS, but its own copy did not come back: "
                                     "its id is not known") from None
         finally:
-            with contextlib.suppress(ValueError):
-                self._echoes.remove(entry)
+            self._echoes.pop(nonce, None)
 
     def post_sync(self, message: str, *, channel_id: str, root_id: str = "",
                   props: dict[str, Any] | None = None, timeout: float = 5.0) -> Post:
-        if parse_post_id(root_id):
-            raise NatsPortError("no synchronous post over NATS (the exit handler has no event loop): "
-                                "nothing sent")
         # The exit handler's last words (a BYE) are for the people in the home: Mattermost.
+        # Its root may be a NATS post (the HELLO): Mattermost has no such post, so it goes
+        # top-level in the channel, the prop naming the NATS post it answers.
+        if parse_post_id(root_id):
+            props = {**(props or {}), f"{self._s.props_prefix}{_ROOT}": root_id}
+            root_id = ""
         return self.inner.post_sync(message, channel_id=channel_id, root_id=root_id,
                                     props=props, timeout=timeout)
 
@@ -412,7 +455,17 @@ class NatsPort:
                          ev.stream_seq, ch)
             else:
                 root = post_id(ch, m.root)
-        props = read_props(m.props, self._s.props_prefix)
+        prefix = self._s.props_prefix
+        props = read_props(m.props, prefix)
+        nonce = props.pop(f"{prefix}{_NONCE}", None)
+        note = props.get("a2a")
+        if isinstance(note, dict) and "crown" in note:
+            # A NATS sender's owner is not proven, so its crown is no one's: dropped.
+            kept = {k: v for k, v in note.items() if k != "crown"}
+            if kept:
+                props["a2a"] = kept
+            else:
+                props.pop("a2a")
         raw: dict[str, Any] = {"id": post_id(ch, ev.stream_seq), "channel_id": channel_id, "root_id": root,
                "user_id": self._uid(ev.sender), "create_at": int(ev.time * 1000),
                "message": m.text, "props": props}
@@ -420,20 +473,28 @@ class NatsPort:
             id=raw["id"], channel_id=channel_id, root_id=root, user_id=raw["user_id"],
             create_at=raw["create_at"], message=m.text, kind=a2a.kind_of(raw),
             intent=a2a.intent_of(raw), to=a2a.ALL if a2a.to_all(raw) else "",
-            pr=a2a.pr_of(raw), branch=a2a.branch_of(raw), crowned=a2a.crowned(raw),
+            pr=a2a.pr_of(raw), branch=a2a.branch_of(raw), crowned=False,
             props=MappingProxyType(props), raw=MappingProxyType(raw))
         mem = self._posts.setdefault(ch, OrderedDict())
         mem[ev.stream_seq] = post
         self._where[ev.stream_seq] = ch
+        if root:
+            self._children.setdefault(root, set()).add(ev.stream_seq)
         while len(mem) > self._memory:
-            old, _ = mem.popitem(last=False)
+            old = min(mem)  # the lowest stream sequence goes, whatever the order of arrival
+            gone = mem.pop(old)
             self._where.pop(old, None)
             self._reacts.pop(old, None)
-        for entry in self._echoes:
-            if (entry[0], entry[1], entry[2]) == (ch, m.text, m.root) and not entry[3].done() \
-                    and self._bus is not None and ev.sender == self._bus.name:
-                entry[3].set_result(post)
-                break
+            if gone.root_id:
+                kids = self._children.get(gone.root_id)
+                if kids is not None:
+                    kids.discard(old)
+                    if not kids:
+                        del self._children[gone.root_id]
+        entry = self._echoes.get(nonce) if isinstance(nonce, str) else None
+        if entry is not None and entry[0] == ch and not entry[1].done() \
+                and self._bus is not None and ev.sender == self._bus.name:
+            entry[1].set_result(post)
         self._tell(PostEvent(post=self.inner.with_links(post), channel_type=None, edited=False))
 
     def _on_reaction(self, ev: Event, channel_id: str) -> None:
@@ -451,7 +512,12 @@ class NatsPort:
             self._reacts.get(m.ref, {}).pop(key, None)  # the sender's own, nobody else's
             return
         ms = int(ev.time * 1000)
-        self._reacts.setdefault(m.ref, {})[key] = ms
+        bucket = self._reacts.setdefault(m.ref, {})
+        if key not in bucket and len(bucket) >= MAX_REACTIONS:
+            log.warning("nats: a reaction of %s to post %d in ~%s is dropped: %d reactions already",
+                        ev.sender, m.ref, ch, MAX_REACTIONS)
+            return
+        bucket[key] = ms
         self._tell(ReactionEvent(
             Reaction(user_id=self._uid(ev.sender), post_id=post_id(ch, m.ref),
                      emoji_name=m.emoji, create_at=ms), channel_id))
@@ -463,7 +529,7 @@ class NatsPort:
         reactions = tuple(
             Reaction(user_id=self._uid(sender), post_id=post.id, emoji_name=emoji, create_at=ms)
             for (emoji, sender), ms in sorted(self._reacts.get(seq, {}).items(), key=lambda kv: kv[1]))
-        replies = sum(1 for p in self._posts[ch].values() if p.root_id == post.id)
+        replies = len(self._children.get(post.id, ()))
         return dataclasses.replace(post, reactions=reactions, reply_count=replies)
 
     def _channel_posts(self, ch: str) -> list[Post]:
@@ -494,14 +560,20 @@ class NatsPort:
             raise NotFound(f"~{got[0]} is no NATS home of this session")
         return ids[got[0]]
 
+    def _merged(self, name: str, others: Iterable[Post], keep: Callable[[Post], bool]) -> list[Post]:
+        """A NATS home's posts (those `keep` lets through) and Mattermost's `others` in
+        the same channel (a person's post, an ask, a BYE), oldest first."""
+        got = {p.id: p for p in others}
+        got.update({p.id: p for p in self._channel_posts(name) if keep(p)})
+        return sorted(got.values(), key=lambda p: p.create_at)
+
     async def channel_posts(self, channel_id: str, *, per_page: int | None = None,
                             since_ms: int | None = None) -> list[Post]:
         name = await self.nats_name(channel_id)
+        mm = await self.inner.channel_posts(channel_id, per_page=per_page, since_ms=since_ms)
         if name is None:
-            return await self.inner.channel_posts(channel_id, per_page=per_page, since_ms=since_ms)
-        posts = self._channel_posts(name)
-        if since_ms is not None:
-            posts = [p for p in posts if p.create_at >= since_ms]
+            return mm
+        posts = self._merged(name, mm, lambda p: since_ms is None or p.create_at >= since_ms)
         posts.reverse()  # newest first
         return posts[:per_page] if per_page is not None else posts
 
@@ -509,13 +581,11 @@ class NatsPort:
                           since_ms: int | None = None) -> list[Post]:
         cid = await self._home_or(channel_id)
         name = await self.nats_name(cid)
+        mm = await self.inner.list_recent(channel_id=channel_id, per_page=per_page, since_ms=since_ms)
         if name is None:
-            return await self.inner.list_recent(channel_id=channel_id, per_page=per_page,
-                                                since_ms=since_ms)
-        posts = self._channel_posts(name)
-        if since_ms is not None:
-            posts = [p for p in posts if p.create_at >= since_ms]
-        else:
+            return mm
+        posts = self._merged(name, mm, lambda p: since_ms is None or p.create_at >= since_ms)
+        if since_ms is None:
             posts = posts[-per_page:] if per_page > 0 else []
         return [self.inner.with_links(p) for p in posts]
 
@@ -523,9 +593,10 @@ class NatsPort:
                           max_pages: int = 25) -> list[Post]:
         cid = await self._home_or(channel_id)
         name = await self.nats_name(cid)
+        mm = await self.inner.posts_after(since_ms, channel_id=channel_id, max_pages=max_pages)
         if name is None:
-            return await self.inner.posts_after(since_ms, channel_id=channel_id, max_pages=max_pages)
-        return [p for p in self._channel_posts(name) if p.create_at > since_ms]
+            return mm
+        return self._merged(name, mm, lambda p: p.create_at > since_ms)
 
     async def reactions(self, post_id: str) -> list[Reaction]:
         got = parse_post_id(post_id)
@@ -562,7 +633,9 @@ class NatsPort:
         return (await self.inner.agents(set(user_ids) - nats) if user_ids - nats else set()) | nats
 
     async def agent_owner(self, user_id: str) -> str | None:
-        return None if is_nats_user(user_id) else await self.inner.agent_owner(user_id)
+        # A NATS sender's owner is not proven: "" (an owner that is none), which is foreign
+        # for the peer split (owners.read); not None, which would count as a peer.
+        return "" if is_nats_user(user_id) else await self.inner.agent_owner(user_id)
 
     async def bot_description(self, user_id: str) -> str | None:
         return None if is_nats_user(user_id) else await self.inner.bot_description(user_id)
@@ -660,29 +733,47 @@ class _NatsStream:
         await self._source.close()
 
 
+def _put_last(q: asyncio.Queue[Any], item: Any) -> None:
+    """Put `item` into a bounded queue; when it is full the oldest entry goes (the end
+    and a failure always get through)."""
+    while True:
+        try:
+            q.put_nowait(item)
+            return
+        except asyncio.QueueFull:
+            with contextlib.suppress(asyncio.QueueEmpty):
+                q.get_nowait()
+
+
 class MergedEvents:
     """Mattermost's events for what stays there (people, every other channel) and
-    the NATS events of the homes, in one source. It is connected when both are;
-    open opens both; a stream ends (or raises) when either does, and closes the
-    other, so the next open connects both afresh."""
+    the NATS events of the homes, in one source. It is connected when Mattermost is:
+    whatever NATS does (not started yet, down, failed) never fails or closes the
+    Mattermost side. The NATS side is opened again after `retry_sec` (doubling up to
+    30 s) when its open or its stream failed, until the homes are down for good (the
+    log says so once); open opens Mattermost's and tries the NATS side. A stream ends
+    (or raises) when Mattermost's does, and closes the other, so the next open
+    connects both afresh."""
 
-    def __init__(self, chat: EventSource, nats: NatsEvents, port: NatsPort) -> None:
+    def __init__(self, chat: EventSource, nats: NatsEvents, port: NatsPort, *,
+                 retry_sec: float = START_RETRY_SEC) -> None:
         self._chat, self._nats, self._port = chat, nats, port
+        self._retry = retry_sec
 
     @property
     def connected(self) -> bool:
-        return self._chat.connected and self._nats.connected
+        return self._chat.connected
 
     async def open(self) -> None:
         await self._chat.open()
         try:
             await self._nats.open()
-        except BaseException:
-            await self._chat.close()
-            raise
+        except Exception as exc:  # noqa: BLE001 — NATS never takes Mattermost down
+            log.warning("nats: its events are not open yet (%s): Mattermost's flow, NATS is tried again",
+                        _describe(exc))
 
     def events(self) -> EventStream:
-        return _MergedStream(self._chat.events(), self._nats.events())
+        return _MergedStream(self._chat.events(), self._nats, self._retry)
 
     async def typing(self, channel_id: str, parent_id: str) -> None:
         if await self._port.is_nats_channel(channel_id):
@@ -697,16 +788,18 @@ class MergedEvents:
 
 
 class _MergedStream:
-    def __init__(self, *streams: EventStream) -> None:
-        self._streams = streams
-        self._queue: asyncio.Queue[tuple[str, Any]] = asyncio.Queue()
+    def __init__(self, chat: EventStream, nats: NatsEvents, retry_sec: float) -> None:
+        self._chat, self._nats, self._retry = chat, nats, retry_sec
+        self._queue: asyncio.Queue[tuple[str, Any]] = asyncio.Queue(MAX_QUEUE)
         self._tasks: list[asyncio.Task[None]] = []
         self._ended = False
+        self._dropped = 0
 
     def __aiter__(self) -> _MergedStream:
         return self
 
     async def _pump(self, stream: EventStream) -> None:
+        """Mattermost's side: its end or error ends the stream (blocks while the reader lags)."""
         try:
             async for event in stream:
                 await self._queue.put(("event", event))
@@ -716,11 +809,39 @@ class _MergedStream:
         except Exception as exc:  # noqa: BLE001 — handed to the reader
             await self._queue.put(("error", exc))
 
+    async def _pump_nats(self) -> None:
+        """The NATS side: never ends the stream. A failure is logged and the side opens
+        again; when the homes are down for good it stops, Mattermost's side goes on."""
+        delay = self._retry
+        while True:
+            try:
+                await self._nats.open()
+                async for event in self._nats.events():
+                    delay = self._retry
+                    try:
+                        self._queue.put_nowait(("event", event))
+                    except asyncio.QueueFull:
+                        self._dropped += 1
+                        if self._dropped % 1000 == 1:
+                            log.warning("nats: the merged stream is full (%d): events dropped (%d so far)",
+                                        MAX_QUEUE, self._dropped)
+                log.info("nats: its event stream ended, opening it again")
+            except asyncio.CancelledError:
+                raise
+            except Exception as exc:  # noqa: BLE001
+                if self._nats._port.failure is not None:
+                    log.warning("nats: its events stop for good (%s); Mattermost's go on", _describe(exc))
+                    return
+                log.warning("nats: its events failed (%s), opening again in %.1f s", _describe(exc), delay)
+            await asyncio.sleep(delay)
+            delay = min(delay * 2, max(START_RETRY_MAX_SEC, self._retry))
+
     async def __anext__(self) -> ChatEvent:
         if self._ended:
             raise StopAsyncIteration
         if not self._tasks:
-            self._tasks = [asyncio.create_task(self._pump(s)) for s in self._streams]
+            self._tasks = [asyncio.create_task(self._pump(self._chat)),
+                           asyncio.create_task(self._pump_nats())]
         what, value = await self._queue.get()
         if what == "event":
             event: ChatEvent = value
@@ -735,7 +856,7 @@ class _MergedStream:
         for t in self._tasks:
             t.cancel()
         await asyncio.gather(*self._tasks, return_exceptions=True)
-        for s in self._streams:
-            with contextlib.suppress(Exception):
-                await s.aclose()
-
+        with contextlib.suppress(Exception):
+            await self._chat.aclose()
+        with contextlib.suppress(Exception):
+            await self._nats.close()

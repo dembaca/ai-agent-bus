@@ -251,6 +251,7 @@ async def _lifespan(_server: Any) -> AsyncIterator[dict[str, Any]]:
         yield {}
     finally:
         nats.cancel()
+        await asyncio.gather(nats, return_exceptions=True)  # a start under way ends here, not later
         await compose.stop_nats(_client)
         task.cancel()
         attested.cancel()
@@ -262,8 +263,14 @@ async def _lifespan(_server: Any) -> AsyncIterator[dict[str, Any]]:
 
 
 async def _nats_start() -> None:
-    """The NATS bus of a home that runs over NATS (RT-6.36); never raises."""
-    await compose.start_nats(await _bus_client())
+    """The NATS bus of a home that runs over NATS (RT-6.36); never raises (a
+    cancellation, which ends it on exit, is not an error)."""
+    try:
+        await compose.start_nats(await _bus_client())
+    except asyncio.CancelledError:
+        raise
+    except Exception as exc:  # noqa: BLE001 — the session never waits for or dies of NATS
+        log.warning("NATS bus not started: %s", type(exc).__name__)
 
 
 async def _attest_start() -> None:
