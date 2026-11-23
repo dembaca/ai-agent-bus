@@ -248,7 +248,15 @@ async def test_stop_kills_the_whole_group_including_a_grandchild(tmp_path):
 def _alive(pid: int) -> bool:
     """Whether pid is a running process. `kill(pid, 0)` answers for a zombie
     too, which is not: a killed child waits for its parent to reap it, and that
-    parent is this test, not the group being checked."""
+    parent is this test, not the group being checked.
+
+    A process can die between the signal and the read, and then Linux answers
+    the read of `/proc/<pid>/stat` with `ESRCH`: `read()` raises
+    `ProcessLookupError` on a file that opened a moment earlier. The CI run of
+    #22 hit exactly this (run 45156648718, attempt 1, `test_bus_process.py:257`)
+    — while checking the grandchild *after* a successful `killpg`, so the test
+    failed when its subject worked. A process that is gone is not alive.
+    """
     try:
         os.kill(pid, 0)
     except ProcessLookupError:
@@ -257,9 +265,12 @@ def _alive(pid: int) -> bool:
         return True
     try:
         with open(f"/proc/{pid}/stat") as stat:  # Linux: a zombie is no process
-            return stat.read().split()[2] != "Z"
-    except FileNotFoundError:  # not Linux, or gone: the signal above is the test
+            fields = stat.read().split()
+    except ProcessLookupError:  # died between the signal and the read
+        return False
+    except OSError:  # not Linux (`/proc` absent), or unreadable: the signal decides
         return True
+    return len(fields) > 2 and fields[2] != "Z"
 
 
 @skip_no_bus
