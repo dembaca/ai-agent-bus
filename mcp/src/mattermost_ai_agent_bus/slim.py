@@ -114,18 +114,22 @@ async def _facts(client: ChatPort, posts: Sequence[Post],
         answers = [cut(a, p.id) for a in a2a.ask_answer_list(p)]
         if answers:
             facts["answers"] = answers
-        # the newest trusted human's answer wins, as the live event counts it; an
-        # answer past APPROVAL_SEC approves nothing and is flagged `expired`, as the
-        # live event flags it (the verdict stays readable, the reader is told)
-        for r in sorted(p.reactions, key=lambda r: (r.create_at, r.emoji_name), reverse=True):
+        # the newest trusted human's answer wins, as the live event counts it. The sort
+        # is stable, so reactions in the same millisecond keep Mattermost's own order:
+        # that is the order a reader of the card would have seen (RT-6.11). An answer
+        # past APPROVAL_SEC approves nothing and is flagged `expired`, as the live
+        # event flags it (the verdict stays readable, the reader is told)
+        for r in sorted(p.reactions, key=lambda r: r.create_at, reverse=True):
             if r.user_id not in trusted:
                 continue
             if (choice := asks.choice_of(r.emoji_name)) is not None:
-                if answers and 0 < choice <= len(answers):
-                    facts["answer"] = "yes" if choice == 1 else "no"
-                    facts["chosen"] = answers[choice - 1]
-                elif answers:
+                # a keycap the ask never offered expresses nothing: keep looking at
+                # older reactions rather than letting it end the search (a 👍 on a
+                # yes/no ask stays readable when a stray keycap follows)
+                if not answers or not 0 < choice <= len(answers):
                     continue
+                facts["answer"] = "yes" if choice == 1 else "no"
+                facts["chosen"] = answers[choice - 1]
             elif (answer := asks.answer_of(r.emoji_name)) is not None:
                 facts["answer"] = answer
                 if len(answers) == 2:

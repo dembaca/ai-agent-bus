@@ -392,16 +392,15 @@ async def test_a_long_need_and_long_answers_are_cut_too():
 
 
 @pytest.mark.asyncio
-async def test_two_reactions_at_the_same_millisecond_are_deterministic():
-    """The coordinator's question 6: with equal `create_at` the list order decided, so
-    two reads of the same data could differ. The tie is broken by the emoji name."""
-    raw = dict(PLAIN, metadata={"reactions": [
-        {"user_id": HUMAN, "post_id": ASK_ID, "emoji_name": "thumbsdown", "create_at": 100},
-        {"user_id": HUMAN, "post_id": ASK_ID, "emoji_name": "thumbsup", "create_at": 100}]})
-    first = (await slim.post(_asker(), post_of(raw)))["ask_card"]["answer"]
-    raw["metadata"]["reactions"].reverse()  # the other order: same instant
-    second = (await slim.post(_asker(), post_of(raw)))["ask_card"]["answer"]
-    assert first == second, (first, second)
+async def test_two_reactions_at_the_same_millisecond_keep_mattermosts_order():
+    """The coordinator's decision 6a: at an equal `create_at` the first in Mattermost's
+    order wins, not an order of ours that the reader never saw."""
+    raw = dict(PLAIN, create_at=1_000_000, metadata={"reactions": [
+        {"user_id": HUMAN, "post_id": ASK_ID, "emoji_name": "thumbsdown", "create_at": 1_000_100},
+        {"user_id": HUMAN, "post_id": ASK_ID, "emoji_name": "thumbsup", "create_at": 1_000_100}]})
+    assert (await slim.post(_asker(), post_of(raw)))["ask_card"]["answer"] == "no"
+    raw["metadata"]["reactions"].reverse()
+    assert (await slim.post(_asker(), post_of(raw)))["ask_card"]["answer"] == "yes"
 
 
 @pytest.mark.asyncio
@@ -452,3 +451,45 @@ async def test_an_ask_edited_after_the_reaction_keeps_no_verdict():
     raw["metadata"]["reactions"][0]["create_at"] = 1_000_600
     p = await slim.post(_asker(), post_of(raw))
     assert p["ask_card"]["answer"] == "yes"
+
+
+@pytest.mark.asyncio
+async def test_the_24_hour_boundary_exactly():
+    """Fable's point 3: `>=` -> `>` and a zero time base both survived. Exactly 24 h
+    is expired (the live event uses the same `>=`), 1 ms less is not."""
+    base = 1_000_000
+    for at, expired in ((base + 86_400_000, True), (base + 86_400_000 - 1, False)):
+        raw = dict(PLAIN, create_at=base, metadata={"reactions": [
+            {"user_id": HUMAN, "post_id": ASK_ID, "emoji_name": "thumbsup", "create_at": at}]})
+        p = await slim.post(_asker(), post_of(raw))
+        assert ("expired" in p["ask_card"]) is expired, at - base
+        assert p["ask_card"]["answer"] == "yes"  # the verdict stays in both cases
+
+
+@pytest.mark.asyncio
+async def test_a_stray_keycap_does_not_swallow_an_earlier_yes():
+    """Fable's regression: a 👍 on a yes/no ask, then a 2️⃣ that the ask never offered,
+    left the card with no answer at all - the search ended on the keycap."""
+    raw = dict(PLAIN, create_at=1_000_000, metadata={"reactions": [
+        {"user_id": HUMAN, "post_id": ASK_ID, "emoji_name": "thumbsup", "create_at": 1_000_002},
+        {"user_id": HUMAN, "post_id": ASK_ID, "emoji_name": "two", "create_at": 1_000_003}]})
+    p = await slim.post(_asker(), post_of(raw))
+    assert p["ask_card"]["answer"] == "yes"
+    assert "chosen" not in p["ask_card"]
+
+
+@pytest.mark.asyncio
+async def test_two_answer_fields_give_no_alternatives():
+    """Fable's point 2: two `Answer` fields, and the last one wins silently. The reader
+    may have read the first, so neither is offered."""
+    twice = dict(PLAIN)
+    twice["props"] = {"a2a": {"v": 1, "kind": "ask"}, "attachments": [{
+        "title": "Merge?", "fields": [
+            {"title": "Decision", "value": "Merge it.", "short": False},
+            {"title": "Answer", "value": "\U0001F44D = go \u00b7 \U0001F44E = no-go \u00b7 or reply in this thread",
+             "short": False},
+            {"title": "Answer", "value": "\U0001F44D = no-go \u00b7 \U0001F44E = go \u00b7 or reply in this thread",
+             "short": False}]}]}
+    p = await slim.post(_asker(), _reacted(twice, (HUMAN, "thumbsup")))
+    assert "answers" not in p["ask_card"] and "chosen" not in p["ask_card"]
+    assert p["ask_card"]["answer"] == "yes"  # the emoji still says what it says

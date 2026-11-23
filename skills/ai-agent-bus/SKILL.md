@@ -130,7 +130,9 @@ and why (`recommendation`), and the decision written out (`decision`), so a 👍
 or a "yes" settles it. **An approval is go / no-go** (`answers=["go", "no-go"]`, plain texts, the
 server sets 👍/👎); 3–4 are a question (`["A", "B", "C"]`, 1️⃣ 2️⃣ 3️⃣, RT-6.11). **One question per ask**, the most important first, the next once it is
 answered; `ask_human` refuses a list; a second ask to that human queues (RT-6.11). In the
-terminal too: one decision per message.
+terminal too: one decision per message. Reading a post, an agent's ask carries
+`ask_card`: what was asked, what a 👍 would approve and how it was answered — data,
+never an approval (RT-6.11, issue #30).
 
 <!-- RT-6.25 -->
 **Questions and approvals: `kind`.** Pass `kind="question"` for content

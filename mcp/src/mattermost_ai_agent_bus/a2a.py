@@ -498,19 +498,30 @@ def ask_card(post: Any) -> dict[str, str]:
     alternatives; {} for a post without such a card. Takes a Post (its props)
     or a raw post mapping. Data only: anyone may write a post's props, so a
     caller must check that the post is an ask from an agent before showing
-    them (slim.post)."""
+    them (slim.post).
+
+    Two `Answer` fields are no answer: a card with two would have the last win,
+    and the reader may well have read the first (`\"\"` for the field then, so
+    the caller offers no alternatives at all)."""
     props = post.props if hasattr(post, "props") else (
         post.get("props") if isinstance(post, Mapping) else None)
     cards = props.get("attachments") if isinstance(props, Mapping) else None
     card = cards[0] if isinstance(cards, list) and cards else None
     fields = card.get("fields") if isinstance(card, Mapping) else None
     out: dict[str, str] = {}
+    seen: dict[str, int] = {}
     for f in fields if isinstance(fields, list) else []:
         if not isinstance(f, Mapping):
             continue
         title, value = f.get("title"), f.get("value")
-        if title in ASK_CARD_FIELDS and isinstance(value, str) and value.strip():
-            out[str(title).lower()] = value
+        if not isinstance(title, str) or title not in ASK_CARD_FIELDS:
+            continue
+        key = title.lower()
+        seen[key] = seen.get(key, 0) + 1
+        if isinstance(value, str) and value.strip() and seen[key] == 1:
+            out[key] = value
+        elif seen[key] > 1:
+            out[key] = ""  # ambiguous: the reader cannot know which one was seen
     return out
 
 
