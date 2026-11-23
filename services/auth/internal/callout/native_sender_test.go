@@ -81,7 +81,7 @@ func (n *native) login(ag *agent, channels ...string) (delivers []string) {
 		}
 		delivers = append(delivers, "deliver."+ag.name+"."+suffix)
 	}
-	presence := []string{"presence.*.*"}
+	presence := []string{"presence.*.*", "presence.attest.*.v1"}
 	for _, ch := range channels {
 		add("BUS", "ch."+ch, []string{"bus.ch." + ch + ".*"}, nats.DeliverNewPolicy)
 		presence = append(presence, "presence.crown."+ch+".*", "presence.member."+ch+".*")

@@ -5,6 +5,15 @@ before 0.5.0 are described in the git history.
 
 ## Unreleased
 
+- **The login service vouches for an agent's owner and trust list**
+  (ADR-016 point 4, RT-6.41). The host's hello may name its trusted humans;
+  at every credential the service resolves them through the directory to
+  anchors (before the import a name is its own anchor) and writes a record
+  on `<presence>.attest.<agent>.v1`, a subject no agent may publish, read
+  back before the credential is issued. Every agent's presence consumer
+  delivers the records; the MCP server reads them in a following release.
+  The service's JetStream user needs `$JS.API.STREAM.MSG.GET.PRESENCE` and
+  `presence.attest.*.v1` (`services/auth/nats-server.example.conf`).
 - **The channel directory gets its admin API and the import from Mattermost**
   (ADR-016, RT-6.40). With `AUTH_ADMIN_LISTEN_ADDR` the login service serves
   `/v1/directory/…` on a listener of its own (TLS, or a loopback IP),

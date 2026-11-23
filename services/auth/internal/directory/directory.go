@@ -14,6 +14,10 @@
 //	                came from a name or a `sub`
 //	anchorof.<hex>  the anchor a `sub` (hex-encoded) claimed: found again at
 //	                its next login even if its identity was never written
+//	account.<product>.<hex>
+//	                the `sub` whose account of that product (today "mattermost")
+//	                has the name <hex> (hex-encoded): one key per name, so a
+//	                chat name never resolves to two identities
 //	meta.imported   written last by the one import from Mattermost; from then
 //	                on the directory, not Mattermost, says who is a member
 //
@@ -43,6 +47,7 @@ const (
 	identityPrefix = "id."
 	anchorPrefix   = "anchor."
 	anchorOfPrefix = "anchorof."
+	accountPrefix  = "account."
 	importedKey    = "meta.imported"
 )
 
@@ -122,6 +127,15 @@ var channelRE = regexp.MustCompile(`^[a-z0-9][a-z0-9_-]{0,63}$`)
 // server's rule). A UUID may have that shape too: names and subs are kept
 // apart by the one index per value, not by their shape.
 var nameAnchorRE = regexp.MustCompile(`^[a-z][a-z0-9._-]{0,63}$`)
+
+// productRE: a chat product's name in an account key.
+var productRE = regexp.MustCompile(`^[a-z]{1,16}$`)
+
+// MaxTrusted is how many names of a host's trust list are resolved.
+const MaxTrusted = 32
+
+// ErrNoIdentity: the `sub` has no identity record.
+var ErrNoIdentity = errors.New("directory: no such identity")
 
 // maxSuffix bounds the tries for a `sub` anchor whose value someone holds
 // already: <sub>, <sub>.1 … <sub>.<maxSuffix>, the `sub` shortened where the
@@ -481,4 +495,142 @@ func lower(s string) string {
 		}
 	}
 	return string(b)
+}
+
+func accountKey(product, name string) (string, error) {
+	if !productRE.MatchString(product) || name == "" || len(name) > 64 {
+		return "", fmt.Errorf("%w: account %.16q %.64q", ErrBadKey, product, name)
+	}
+	return accountPrefix + product + "." + hex.EncodeToString([]byte(name)), nil
+}
+
+// SetAccount records that the identity `sub` has the chat account `name` of
+// `product`. The index key is created first: a name another identity holds is
+// ErrConflict, and the same identity's own is fine. The identity must exist
+// (ErrNoIdentity); its record is written over its revision.
+func (s *Store) SetAccount(ctx context.Context, sub, product, name string) error {
+	if err := checkKey(sub); err != nil {
+		return err
+	}
+	key, err := accountKey(product, name)
+	if err != nil {
+		return err
+	}
+	if _, err := s.kv.Create(ctx, key, []byte(sub)); errors.Is(err, jetstream.ErrKeyExists) {
+		e, err := s.kv.Get(ctx, key)
+		if err != nil {
+			return err
+		}
+		if string(e.Value()) != sub {
+			return ErrConflict
+		}
+	} else if err != nil {
+		return err
+	}
+	for range 3 {
+		id, rev, ok, err := s.Identity(ctx, sub)
+		if err != nil {
+			return err
+		}
+		if !ok {
+			return ErrNoIdentity
+		}
+		if id.Accounts[product] == name {
+			return nil
+		}
+		old := id.Accounts[product]
+		if id.Accounts == nil {
+			id.Accounts = map[string]string{}
+		}
+		id.Accounts[product] = name
+		if _, err := s.put(ctx, identityPrefix+sub, id, rev); errors.Is(err, ErrConflict) {
+			continue
+		} else if err != nil {
+			return err
+		}
+		if old != "" { // the name it left is free again
+			if oldKey, err := accountKey(product, old); err == nil {
+				if e, err := s.kv.Get(ctx, oldKey); err == nil && string(e.Value()) == sub {
+					_ = s.kv.Delete(ctx, oldKey)
+				}
+			}
+		}
+		return nil
+	}
+	return ErrConflict
+}
+
+// ByAccount finds the identity that has the chat account `name` of `product`;
+// false when none has.
+func (s *Store) ByAccount(ctx context.Context, product, name string) (Identity, bool, error) {
+	key, err := accountKey(product, name)
+	if err != nil {
+		return Identity{}, false, err
+	}
+	e, err := s.kv.Get(ctx, key)
+	if errors.Is(err, jetstream.ErrKeyNotFound) {
+		return Identity{}, false, nil
+	}
+	if err != nil {
+		return Identity{}, false, err
+	}
+	id, _, ok, err := s.Identity(ctx, string(e.Value()))
+	if err != nil || !ok || id.Accounts[product] != name {
+		return Identity{}, false, err
+	}
+	return id, true, nil
+}
+
+// Trusted is one human a host trusts: the anchor of their identity and the
+// name the host gave.
+type Trusted struct {
+	Anchor string `json:"anchor"`
+	Name   string `json:"name"`
+}
+
+// ResolveTrusted resolves the names of a host's trust list (MM_TRUSTED_HUMANS).
+// At most MaxTrusted names are looked at; more, a name that is no lower-case
+// username and, after the import, a name no identity has set cut=true and are
+// left out, never guessed. Before the import (imported false) the name is the
+// anchor, as it is for every identity then, and the store is not read. A read
+// that fails is an error: no partial answer.
+func (s *Store) ResolveTrusted(ctx context.Context, names []string, imported bool) ([]Trusted, bool, error) {
+	cut := false
+	if len(names) > MaxTrusted {
+		names, cut = names[:MaxTrusted], true
+	}
+	out := make([]Trusted, 0, len(names))
+	for _, n := range names {
+		if !nameAnchorRE.MatchString(n) {
+			cut = true
+			continue
+		}
+		if !imported {
+			out = append(out, Trusted{Anchor: n, Name: n})
+			continue
+		}
+		id, ok, err := s.ByAccount(ctx, "mattermost", n)
+		if err != nil {
+			return nil, false, err
+		}
+		if !ok {
+			cut = true
+			continue
+		}
+		out = append(out, Trusted{Anchor: id.Anchor, Name: n})
+	}
+	return out, cut, nil
+}
+
+// Trust gives the callout a host's resolved trust list: before the import by
+// name, after it by the accounts the import recorded.
+type Trust struct{ Store *Store }
+
+// Resolve is ResolveTrusted with the import's state read from the store.
+func (t Trust) Resolve(ctx context.Context, names []string) ([]Trusted, bool, error) {
+	imported, err := t.Store.Imported(ctx)
+	if err != nil {
+		return nil, false, err
+	}
+	return t.Store.ResolveTrusted(ctx, names, imported)
 }
