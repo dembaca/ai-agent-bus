@@ -148,10 +148,33 @@ def test_listen_window_follows_the_files_post_time(mm, run):
     """RT-6.2 step 5: a fresh post since the window opened opens a fresh window,
     read from the file as from the channel."""
     last_post(run, "IDLE · done: x", at=int(time.time() * 1000) + 5000)
-    set_window(run, UNTIL=int(time.time()) + 600, SINCE=int(time.time()) - 60)
+    # the window opened with an earlier post (POST): this one is another
+    set_window(run, UNTIL=int(time.time()) + 600, SINCE=int(time.time()) - 60, POST=1)
     r = run(STOP, **IN_PROJECT)
     assert r.blocked and "mm-agent-listen.sh" in r.reason
     assert int(window(run)["SINCE"]) >= int(time.time()) - 5
+
+
+def test_listen_window_opens_afresh_for_another_post_and_compares_no_clock(mm, run):
+    """RT-6.2 step 5: a fresh window when the latest own post is another than the
+    one the window opened with (POST), whatever the clocks say. A post on
+    Mattermost and one over NATS (RT-6.36), whose time is the NATS server's, an
+    hour behind or ahead of this host's clock, count alike."""
+    now = int(time.time())
+    for label, at in (("mattermost", now * 1000 - 2000), ("nats behind", (now - 3600) * 1000),
+                      ("nats ahead", (now + 3600) * 1000)):
+        # The same post as when the window opened: the rest of the window, none afresh.
+        last_post(run, f"IDLE · {label}", at=at)
+        set_window(run, UNTIL=now + 600, SINCE=now - 60, POST=at, ASKED_AT=0, STARTED=0, PID=0, ENDED="event")
+        r = run(STOP, **IN_PROJECT)
+        assert r.blocked and "mm-agent-listen.sh" in r.reason, label
+        assert int(window(run)["UNTIL"]) == now + 600 and int(window(run)["POST"]) == at, label
+        # Another post since: a fresh window that remembers it, also when its time is behind.
+        last_post(run, f"RESULT · {label}", at=at + 1)
+        set_window(run, UNTIL=now + 600, SINCE=now - 60, POST=at, ASKED_AT=0, STARTED=0, PID=0, ENDED="event")
+        r = run(STOP, **IN_PROJECT)
+        assert r.blocked and "mm-agent-listen.sh" in r.reason, label
+        assert int(window(run)["SINCE"]) >= now - 5 and int(window(run)["POST"]) == at + 1, label
 
 
 def test_the_cli_post_keeps_the_file(mm, run):

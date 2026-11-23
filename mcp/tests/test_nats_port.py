@@ -49,6 +49,14 @@ class FakeNats:
         self.connected = True
         self.sent: list[tuple[Any, ...]] = []
         self.seq = 100
+        self.owners: dict[str, str] = {}  # what presences proved (natsbus.attested_owner)
+        self.presence: dict[str, str] = {}  # agent -> online | away (fresh), else offline
+
+    def owner_of(self, agent: str) -> str:
+        return self.owners.get(agent, "")
+
+    def presence_of(self, agent: str) -> str:
+        return self.presence.get(agent, "offline")
 
     async def start(self) -> None: ...
 
@@ -933,6 +941,55 @@ async def test_a_stopped_port_leaves_no_subscription_behind() -> None:
     await stream.aclose()
 
 
+async def test_a_stream_reads_the_subscription_it_was_given_out_with_never_a_later_one() -> None:
+    """A stream given out before a later open() (the next connection's) reads only its own
+    subscription, also when it is read only after that open."""
+    port, inner, _ = make()
+    chat = FakeEvents(connected=False, held=True)
+    merged = MergedEvents(chat, NatsEvents(port), port, retry_sec=0.01)
+    await merged.open()
+    old = merged.events()
+    await merged.open()  # the next connection, before the old stream was read at all
+    new = merged.events()
+    old_next = asyncio.ensure_future(old.__anext__())
+    new_next = asyncio.ensure_future(new.__anext__())
+    await asyncio.sleep(0.05)
+    assert len(port._subs) == 1
+    for seq in range(1, 6):
+        await arrive(port, "home", BOB, seq, Message("post", f"m{seq}"))
+    first = await asyncio.wait_for(new_next, 2)
+    rest = [await asyncio.wait_for(new.__anext__(), 2) for _ in range(4)]
+    assert [e.post.message for e in [first, *rest]] == ["m1", "m2", "m3", "m4", "m5"]  # type: ignore[union-attr]
+    assert not old_next.done()
+    old_next.cancel()
+    await asyncio.gather(old_next, return_exceptions=True)
+    await old.aclose()
+    await merged.close()
+
+
+async def test_a_stream_given_out_and_never_read_leaves_no_entry() -> None:
+    import gc
+
+    port, inner, _ = make()
+    merged = MergedEvents(FakeEvents(connected=False, held=True), NatsEvents(port), port)
+    await merged.open()
+    merged.events()  # a reader cancelled before its first step: dropped unread
+    gc.collect()
+    assert len(merged._streams) == 0
+    await merged.close()
+
+
+async def test_the_nats_lane_has_no_floor_of_this_hosts_clock(monkeypatch: pytest.MonkeyPatch) -> None:
+    """unread.after lays the floor (the bot's creation, a day back) only on Mattermost's
+    lane: a NATS post whose server clock is two days behind still counts."""
+    from mattermost_ai_agent_bus import unread
+
+    port, inner, _ = make()
+    await port._on_event(Event("home", ALICE, 10, time.time() - 2 * 86400, Message("post", "behind")))
+    rows = await unread.after(compose.Remembered(port))  # type: ignore[arg-type]
+    assert [p.message for r in rows for p in r.posts] == ["behind"]
+
+
 async def test_the_inbox_closes_its_stream_when_its_reader_is_cancelled() -> None:
     """A reader cancelled by close() or a connect cut short closes its stream (finally), so a
     merged NATS side stops reading with it."""
@@ -990,6 +1047,61 @@ async def test_a_nats_sender_is_foreign_and_its_task_is_a_request_not_a_task() -
     posts = await port.channel_posts(WORK)
     assert await gate.author_classes(client, posts) == [gate.FOREIGN]
     assert await server._tasks(client, posts, {}, crown=set(), home=False) == []  # type: ignore[arg-type]
+
+
+async def test_a_nats_sender_whose_presence_proves_a_trusted_owner_is_a_peer() -> None:
+    """RT-6.37: the owner its presence proves (natsbus.attested_owner) is what the peer
+    split reads, never a HELLO; an owner not trusted here, or none, stays foreign."""
+    port, _ = _split_port()
+    fake = port._bus
+    assert isinstance(fake, FakeNats)
+    client = compose.Remembered(port)  # type: ignore[arg-type]
+    await arrive(port, "home", ALICE, 10, Message("post", "`TASK` · do it", props={"x_a2a_kind": "task"}))
+    await arrive(port, "home", BOB, 11, Message("post", "`HELLO` · for @dembaca · trusts @dembaca"))
+    posts = await port.channel_posts(WORK)
+    task = [p for p in posts if p.user_id == ALICE]
+    fake.owners[ALICE] = "dembaca"
+    assert await port.agent_owner(ALICE) == "dembaca"
+    assert await gate.author_classes(client, task) == [gate.AGENT]
+    assert len(await server._tasks(client, task, {}, crown=set(), home=False)) == 1  # type: ignore[arg-type]
+    fake.owners[ALICE] = "mallory"  # proven, but not trusted here
+    assert await gate.author_classes(client, task) == [gate.FOREIGN]
+    # bob only says whom it answers to, in its HELLO: that proves nothing
+    assert await port.agent_owner(BOB) == ""
+    assert await gate.author_classes(client, [p for p in posts if p.user_id == BOB]) == [gate.FOREIGN]
+    port.fail("down")  # a home that is down proves nothing
+    fake.owners[ALICE] = "dembaca"
+    assert await port.agent_owner(ALICE) == ""
+
+
+async def test_the_presence_of_a_nats_sender_is_its_nats_presence() -> None:
+    port, _ = _split_port()
+    fake = port._bus
+    assert isinstance(fake, FakeNats)
+    fake.presence[ALICE] = "online"
+    fake.presence[BOB] = "away"
+    assert await port.presences([ALICE, BOB, "agent-carol"]) == {
+        ALICE: "online", BOB: "away", "agent-carol": "offline"}
+    port.fail("down")
+    assert await port.presences([ALICE]) == {ALICE: "offline"}
+
+
+async def test_a_nats_agent_mentioned_is_gone_only_when_its_presence_is_not_fresh() -> None:
+    """RT-6.21 for an agent whose HELLO came over NATS: no lease on Mattermost, its NATS
+    presence says whether it is here (RT-6.37)."""
+    from mattermost_ai_agent_bus import departed
+
+    port, inner, fake = make()
+    assert fake is not None
+    client = compose.Remembered(port)  # type: ignore[arg-type]
+    await arrive(port, "home", ALICE, 10, Message("post", "`HELLO` · working on x"))
+    fake.presence[ALICE] = "online"
+    assert await departed.gone(client, [ALICE]) == []  # type: ignore[arg-type]
+    fake.presence[ALICE] = "away"
+    assert await departed.gone(client, [ALICE]) == []  # type: ignore[arg-type]
+    del fake.presence[ALICE]
+    (d,) = await departed.gone(client, [ALICE])  # type: ignore[arg-type]
+    assert d.username == ALICE and not d.bye and d.post_id == "n1:home:10"
 
 
 async def test_the_crown_flag_of_a_nats_sender_changes_nothing() -> None:

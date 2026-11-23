@@ -35,9 +35,13 @@ of another channel is dropped; one whose root is not known is a top-level post; 
 reaction to a post not known is ignored. Reactions are kept by (post, emoji,
 sender); an unreaction removes the reaction of its own sender only.
 
-Owner. A NATS sender's owner is not proven (the roster comes later): `agent_owner`
-says "" for it, so it is foreign for every session that splits peers from foreign
-agents (its TASK is a request, owners.py), and its crown flag (`a2a_crown`) is dropped.
+Owner (RT-6.37). A NATS sender's owner is the one its presence proves: the owner and
+host key its name was made from, recomputed (natsbus.attested_owner); `agent_owner`
+says it, and "" while nothing proves one, so such a sender is foreign for every
+session that splits peers from foreign agents (its TASK is a request, owners.py). Its
+trusted list is empty: only its owner counts. Its presence is the NATS one, fresh by
+the server's clock. Its crown flag (`a2a_crown`) is dropped: the crown over NATS comes
+from the claims, later.
 
 Trust. Nothing from NATS is from a human or an approval. The post carries the
 sender's agent name as author, which is no trusted human's id (the trusted ids are
@@ -60,6 +64,7 @@ import dataclasses
 import json
 import logging
 import secrets
+import weakref
 from collections import OrderedDict
 from collections.abc import Callable, Iterable, Mapping, Sequence
 from types import MappingProxyType
@@ -111,6 +116,10 @@ class BusLike(Protocol):
     async def react(self, channel: str, ref: int, emoji: str) -> None: ...
 
     async def unreact(self, channel: str, ref: int, emoji: str) -> None: ...
+
+    def owner_of(self, agent: str) -> str: ...
+
+    def presence_of(self, agent: str) -> str: ...
 
 
 def post_id(channel: str, seq: int) -> str:
@@ -212,10 +221,11 @@ class NatsPort:
     async def start(self, login: natsbus.LoginLike, owner: str | None = None) -> None:
         """Resolve the homes' channels, then start the bus as the login's owner
         (the access token's preferred_username unless `owner` is given). Waits for
-        the login's approval. A failure that may pass (Mattermost, the login or the
-        NATS server not ready) is logged and tried again with backoff; one that will
-        not (a NameMismatch, wrong settings) is logged, kept (every send then raises)
-        and raised."""
+        the login's approval. A failure that waiting does not cure (_final: a
+        NameMismatch, wrong settings, a ConfigError of the login, a login the human
+        declined or the wrong human approved) is logged, kept (every send then
+        raises) and raised; any other (Mattermost, the login or the NATS server not
+        ready, an answer that does not decode) is logged and tried again with backoff."""
         if self._bus is not None:
             return
         delay = START_RETRY_SEC
@@ -645,9 +655,12 @@ class NatsPort:
         return (await self.inner.agents(set(user_ids) - nats) if user_ids - nats else set()) | nats
 
     async def agent_owner(self, user_id: str) -> str | None:
-        # A NATS sender's owner is not proven: "" (an owner that is none), which is foreign
-        # for the peer split (owners.read); not None, which would count as a peer.
-        return "" if is_nats_user(user_id) else await self.inner.agent_owner(user_id)
+        # A NATS sender's owner is the one its presence proves (RT-6.37), else "" (an
+        # owner that is none), which is foreign for the peer split (owners.read); never
+        # None, which would count as a peer.
+        if not is_nats_user(user_id):
+            return await self.inner.agent_owner(user_id)
+        return self._bus.owner_of(user_id) if self._bus is not None and self._fatal is None else ""
 
     async def bot_description(self, user_id: str) -> str | None:
         return None if is_nats_user(user_id) else await self.inner.bot_description(user_id)
@@ -659,7 +672,13 @@ class NatsPort:
         return None if is_nats_user(bot_id) else await self.inner.attestation_record(bot_id)
 
     async def presences(self, user_ids: list[str]) -> dict[str, str]:
-        return await self.inner.presences([i for i in user_ids if not is_nats_user(i)])
+        """Mattermost's for its accounts; for a NATS sender its NATS presence (RT-6.37):
+        online or away while fresh by the server's clock, else offline."""
+        nats = [i for i in user_ids if is_nats_user(i)]
+        rest = [i for i in user_ids if not is_nats_user(i)]
+        out = await self.inner.presences(rest) if rest else {}
+        bus = self._bus if self._fatal is None else None
+        return out | {i: bus.presence_of(i) if bus is not None else "offline" for i in nats}
 
     async def is_member(self, channel_id: str, user_id: str) -> bool:
         if not is_nats_user(user_id):
@@ -740,9 +759,10 @@ class NatsEvents:
 
 
 class _NatsStream:
-    def __init__(self, source: NatsEvents) -> None:
+    def __init__(self, source: NatsEvents,
+                 queue: asyncio.Queue[ChatEvent | NatsPortError | None] | None = None) -> None:
         self._source = source
-        self._queue = source._queue
+        self._queue = queue if queue is not None else source._queue
 
     def __aiter__(self) -> _NatsStream:
         return self
@@ -794,7 +814,9 @@ class MergedEvents:
                  retry_sec: float = START_RETRY_SEC) -> None:
         self._chat, self._nats, self._port = chat, nats, port
         self._retry = retry_sec
-        self._streams: set[_MergedStream] = set()
+        # Weak: a stream given out and dropped unread (its reader cancelled before
+        # its first step) leaves no entry; one that is read has its tasks alive.
+        self._streams: weakref.WeakSet[_MergedStream] = weakref.WeakSet()
 
     @property
     def connected(self) -> bool:
@@ -810,7 +832,8 @@ class MergedEvents:
                         _describe(exc))
 
     def events(self) -> EventStream:
-        stream = _MergedStream(self._chat.events(), self._nats, self._retry, self._streams.discard)
+        stream = _MergedStream(self._chat.events(), self._nats, self._retry, self._streams.discard,
+                               self._nats._queue)
         self._streams.add(stream)
         return stream
 
@@ -830,10 +853,13 @@ class MergedEvents:
 
 class _MergedStream:
     def __init__(self, chat: EventStream, nats: NatsEvents, retry_sec: float,
-                 gone: Callable[[_MergedStream], None]) -> None:
+                 gone: Callable[[_MergedStream], None],
+                 bound: asyncio.Queue[ChatEvent | NatsPortError | None] | None = None) -> None:
         self._chat, self._nats, self._retry = chat, nats, retry_sec
         self._gone = gone
-        self._bound: asyncio.Queue[ChatEvent | NatsPortError | None] | None = None  # the NATS subscription read
+        # The NATS subscription this stream reads: the one open when it was given out
+        # (events()), else the one its pump opens. Never a later connection's.
+        self._bound = bound
         self._queue: asyncio.Queue[tuple[str, Any]] = asyncio.Queue(MAX_QUEUE)
         self._tasks: list[asyncio.Task[None]] = []
         self._ended = False
@@ -859,9 +885,15 @@ class _MergedStream:
         delay = self._retry
         while True:
             try:
-                await self._nats.open()
-                self._bound = self._nats._queue
-                async for event in self._nats.events():
+                if self._bound is None:
+                    await self._nats.open()
+                    self._bound = self._nats._queue
+                if self._bound is None or self._bound is not self._nats._queue:
+                    # A later open() gave the source a new subscription: that is the
+                    # next stream's, never read beside it.
+                    log.info("nats: this stream's subscription was replaced: its NATS side ends")
+                    return
+                async for event in _NatsStream(self._nats, self._bound):
                     delay = self._retry
                     try:
                         self._queue.put_nowait(("event", event))

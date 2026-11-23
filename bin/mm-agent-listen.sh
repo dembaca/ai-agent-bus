@@ -86,12 +86,13 @@ fi
 get() { [[ -f "$LF" ]] && sed -n "s/^$1=//p" "$LF" | head -1; }
 SINCE="$(get SINCE)"; [[ "$SINCE" =~ ^[0-9]+$ ]] || SINCE="$(date +%s)"
 ASKED_AT="$(get ASKED_AT)"; [[ "$ASKED_AT" =~ ^[0-9]+$ ]] || ASKED_AT=0
+POST="$(get POST)"; [[ "$POST" =~ ^[0-9]+$ ]] || POST=""  # the Stop hook's, kept (RT-6.2 step 5)
 STARTED="$(date +%s)"
 
 write() {  # write PID ENDED
   mkdir -p "$(dirname "$LF")" 2>/dev/null || return 0
-  printf 'UNTIL=%s\nSINCE=%s\nASKED_AT=%s\nSTARTED=%s\nPID=%s\nENDED=%s\n' \
-    "$UNTIL" "$SINCE" "$ASKED_AT" "$STARTED" "$1" "$2" >"$LF" 2>/dev/null || true
+  printf 'UNTIL=%s\nSINCE=%s\nASKED_AT=%s\nSTARTED=%s\nPID=%s\nENDED=%s\nPOST=%s\n' \
+    "$UNTIL" "$SINCE" "$ASKED_AT" "$STARTED" "$1" "$2" "$POST" >"$LF" 2>/dev/null || true
 }
 write "$$" ""
 # Stopped by the prompt hook: the human is back and the hook removes the file —

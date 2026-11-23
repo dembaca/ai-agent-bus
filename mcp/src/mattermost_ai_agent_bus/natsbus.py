@@ -64,6 +64,11 @@ DELIVER = "deliver"  # consumers.DeliverPrefix / callout.DeliverPrefix
 CHANNEL_RE = re.compile(r"^[a-z0-9][a-z0-9_-]{0,63}$")  # Go checkToken
 AGENT_RE = re.compile(r"^[A-Za-z0-9][A-Za-z0-9_-]{0,127}$")  # Go consumers.agentRE
 PREFIX_RE = re.compile(r"^[A-Za-z0-9_-]+$")
+# An owner a presence names counts only in this form (RT-6.37): a Mattermost username's
+# characters in lower case, the same string the bus compares with MM_TRUSTED_HUMANS and the
+# owners of Mattermost bots. Nothing is normalised: an owner in any other form is no owner.
+OWNER_RE = re.compile(r"[a-z0-9][a-z0-9._-]{0,63}")
+NKEY_USER_RE = re.compile(r"U[A-Z2-7]{55}")  # an nkey user public key
 
 _PUBLISH_DENIED_RE = re.compile(r'permissions violation for publish to "([^"]*)"', re.IGNORECASE)
 _KINDS = ("post", "reaction", "unreaction")
@@ -228,17 +233,51 @@ def decode(data: bytes, props_prefix: str = a2a.DEFAULT_PREFIX) -> Message:
     return m
 
 
-def encode_presence(status: str) -> bytes:
+@dataclass(frozen=True)
+class Presence:
+    """A presence message: the status, and what the sender says it was named from
+    (owner and host nkey, RT-6.37); '' where it says nothing."""
+
+    status: str
+    owner: str = ""
+    nkey: str = ""
+
+
+def encode_presence(status: str, owner: str = "", nkey: str = "") -> bytes:
     if status not in _STATUSES:
         raise MessageError("unknown status")
-    return _dumps({"v": 1, "status": status}).encode()
+    obj: dict[str, object] = {"v": 1, "status": status}
+    if owner or nkey:
+        obj |= {"owner": owner, "nkey": nkey}
+    return _dumps(obj).encode()
+
+
+def decode_presence_record(data: bytes) -> Presence:
+    obj = _obj(data)
+    status = obj.get("status")
+    if status not in _STATUSES:
+        raise MessageError("unknown status")
+    owner, nkey = obj.get("owner", ""), obj.get("nkey", "")
+    if not isinstance(owner, str) or not isinstance(nkey, str):
+        raise MessageError("owner and nkey must be text")
+    return Presence(str(status), owner, nkey)
 
 
 def decode_presence(data: bytes) -> str:
-    status = _obj(data).get("status")
-    if status not in _STATUSES:
-        raise MessageError("unknown status")
-    return str(status)
+    return decode_presence_record(data).status
+
+
+def attested_owner(sender: str, presence: Presence, prefix: str) -> str:
+    """The sender's owner as the login service bound it (RT-6.37), '' for none. The
+    login service names an agent `agent_name(owner, host nkey)` from the Keycloak token's
+    owner and the host's key, and NATS lets it publish only under that name (the last
+    subject token, `sender`). A presence that names owner and nkey whose name is the
+    sender's is therefore that binding, recomputed: a false owner would need a second
+    preimage of 16 bytes (128 bits) of SHA-256. An owner not in OWNER_RE's form, a
+    malformed nkey or a name that does not match: none."""
+    if not (OWNER_RE.fullmatch(presence.owner) and NKEY_USER_RE.fullmatch(presence.nkey)):
+        return ""
+    return presence.owner if agent_name(presence.owner, presence.nkey, prefix) == sender else ""
 
 
 def encode_claim() -> bytes:
@@ -452,6 +491,7 @@ class NatsBus:
         self._server_now = 0.0  # the newest server timestamp seen: the host's "now"
         self._last_prune = 0.0
         self._presence: dict[str, tuple[float, str]] = {}
+        self._owners: dict[str, str] = {}  # agent -> owner its last presence proved (RT-6.37)
         self._claims: dict[str, dict[str, int]] = {}
         self._claim_at: dict[tuple[str, str], float] = {}  # (channel, agent) -> server time of the claim
 
@@ -525,7 +565,7 @@ class NatsBus:
         nc = self._nc
         if nc is not None and self._connected:
             try:
-                await nc.publish(f"{self._s.presence}.{self.name}", encode_presence("bye"))
+                await nc.publish(f"{self._s.presence}.{self.name}", self._presence_body("bye"))
                 await asyncio.wait_for(nc.drain(), 5)
             except Exception as exc:  # the bus is going away anyway
                 log.warning("nats bus: stop: %s", type(exc).__name__)
@@ -611,7 +651,7 @@ class NatsBus:
             await self._sync(nc)
             if refused:
                 raise NameMismatch("the credential's agent name is not the computed one; nothing sent")
-            await nc.publish(f"{self._s.presence}.{name}", encode_presence("online"))
+            await nc.publish(f"{self._s.presence}.{name}", self._presence_body("online"))
             await nc.flush()
         except BaseException:
             await nc.close()
@@ -717,7 +757,7 @@ class NatsBus:
             nc = self._nc
             if nc is not None and self._connected:
                 try:
-                    await nc.publish(f"{self._s.presence}.{self.name}", encode_presence("online"))
+                    await nc.publish(f"{self._s.presence}.{self.name}", self._presence_body("online"))
                 except Exception as exc:
                     log.warning("nats bus: heartbeat: %s", type(exc).__name__)
 
@@ -802,6 +842,24 @@ class NatsBus:
     async def claim(self, channel: str) -> None:
         await self._publish(f"{self._s.presence}.crown.{self._asked(channel)}.{self.name}", encode_claim())
 
+    def _presence_body(self, status: str) -> bytes:
+        """This agent's presence: its status, with the owner and host key its name
+        was made from, so that every reader can recompute it (RT-6.37)."""
+        return encode_presence(status, self._owner, self._login.nkey().public_key)
+
+    def owner_of(self, agent: str) -> str:
+        """The owner the agent's last presence proved (attested_owner), '' for none."""
+        return self._owners.get(agent, "")
+
+    def presence_of(self, agent: str) -> str:
+        """online or away while the agent's last presence is younger than
+        PRESENCE_FRESH_SEC by the server's clock (never this host's) and no bye;
+        else offline."""
+        seen = self._presence.get(agent)
+        if seen is None or seen[1] == "bye" or self._server_now - seen[0] >= PRESENCE_FRESH_SEC:
+            return "offline"
+        return seen[1]
+
     def presence_snapshot(self) -> dict[str, tuple[float, str]]:
         """agent -> (server time, status) of the last presence message of each."""
         return dict(self._presence)
@@ -830,6 +888,7 @@ class NatsBus:
         for agent, (t, _) in list(self._presence.items()):
             if t < cut:
                 del self._presence[agent]
+                self._owners.pop(agent, None)
         for ch, claims in list(self._claims.items()):
             for agent in list(claims):
                 if self._claim_at.get((ch, agent), 0.0) < cut:
@@ -904,7 +963,13 @@ class NatsBus:
         p = self._s.presence
         try:
             if len(t) == 2 and t[0] == p and AGENT_RE.fullmatch(t[1]):
-                self._presence[t[1]] = (ack.time, decode_presence(msg.data))
+                record = decode_presence_record(msg.data)
+                self._presence[t[1]] = (ack.time, record.status)
+                owner = attested_owner(t[1], record, self._s.name_prefix)
+                if owner:
+                    self._owners[t[1]] = owner
+                else:
+                    self._owners.pop(t[1], None)
             elif len(t) == 4 and t[0] == p and t[1] == "crown" and CHANNEL_RE.fullmatch(t[2]) and AGENT_RE.fullmatch(t[3]):
                 decode_claim(msg.data)
                 claims = self._claims.setdefault(t[2], {})
