@@ -5,6 +5,7 @@ before 0.5.0 are described in the git history.
 
 ## Unreleased
 
+- **The endpoint file is named before it can exist** (RT-6.10). A SIGTERM in the server's start or in a `rekey` used to leave `endpoint-*.env` behind, because the exit work removes it through a name that was set afterwards. The file now carries its name from the moment it is on disk, in all three places (`hookapi._write_file`, `server._start_hook_api`, `hookapi.rekey`), and a rekey names both files while both are there.
 - **Host login to Keycloak, building block only** (ADR-014, RT-6.34). With
   `MM_LOGIN_ISSUER` and `MM_LOGIN_CLIENT_ID` set, the host process (and a
   server outside corral) logs in with the device flow, keeps the refresh token

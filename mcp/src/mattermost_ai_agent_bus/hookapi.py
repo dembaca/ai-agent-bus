@@ -327,9 +327,11 @@ class HookAPI:
                      + (f"MM_BUS_CLIENT={self.client}\n" if self.client else ""))
         # `_file` names the path before the file can exist: the exit work
         # (RT-6.10) removes the endpoint file by that name, and a SIGTERM
-        # between the replace and the assignment left it behind (the flake of
-        # PR #27). A failed replace restores the earlier name, so a rewrite
-        # that fails does not forget the file that is still there.
+        # between the replace and the assignment leaves it behind. A real gap,
+        # but not the flake of PR #27: that write happens before the client's
+        # handshake, and the test sends SIGTERM only after it (review of #34).
+        # A failed replace restores the earlier name, so a rewrite that fails
+        # does not forget the file that is still there.
         old, self._file = self._file, path
         try:
             os.replace(tmp, path)
@@ -352,12 +354,16 @@ class HookAPI:
     def remove_file(self) -> None:
         """Remove the discovery file while it is still this server's: one that
         took the session over (`claude --continue`) may have written its own.
-        A rekey's old file is still on disk beside the new one: it goes too."""
-        path, self._file = self._file, None
-        moving, self._moving = self._moving, None
+        A rekey's old file is still on disk beside the new one: it goes too.
+
+        Unlink first, then forget: an exit work that runs between the two finds
+        the names still set and tries again, which is harmless; clearing first
+        left a file that nothing named (review of #34)."""
+        path, moving = self._file, self._moving
         for left in (path, moving):
             if left is not None:
                 self._unlink_own(left)
+        self._file, self._moving = None, None
 
     def _unlink_own(self, path: Path) -> None:
         try:

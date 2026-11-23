@@ -2,9 +2,14 @@
 it exists on disk, so the file's owner must be known before the file can be
 there.
 
-Each test takes the one moment CI's flake hit (PR #27): inside ``os.replace``,
-right after the file appeared. There the exit work runs in-process, so nothing
-races and nothing sleeps.
+Each test takes one moment the endpoint file can exist unnamed — inside
+``os.replace``, right after the file appeared. There the exit work runs
+in-process, so nothing races and nothing sleeps.
+
+These are real gaps, and they are **not** shown to be the cause of CI's flake in
+PR #27: that write happens before the client's handshake, and the test sends
+SIGTERM only after it, and a client without the `roots` capability never calls
+`rekey` at all (review of #34).
 """
 
 from __future__ import annotations
@@ -41,8 +46,8 @@ def started(monkeypatch):
 async def test_the_path_is_known_before_the_file_can_exist(monkeypatch):
     """RT-6.10: ``_write_file`` names the path before ``os.replace`` puts the
     file there, so ``remove_file`` in that moment removes it. The old order
-    assigned the path after the replace: the file stayed, and CI's SIGTERM
-    landed in exactly that gap (PR #27)."""
+    assigned the path after the replace: an exit work in that gap left the file
+    behind. A real gap; whether CI's flake hit it is not shown (above)."""
     monkeypatch.setenv("CLAUDE_CODE_SESSION_ID", "sess-in-replace")
     seen: list[tuple[Path | None, bool]] = []
     real = os.replace
@@ -70,8 +75,8 @@ async def test_the_path_is_known_before_the_file_can_exist(monkeypatch):
 async def test_the_server_knows_its_hook_api_before_the_file_can_exist(started, monkeypatch):
     """RT-6.10: ``_start_hook_api`` sets the module's ``_hook_api`` before
     ``start()`` writes the file, so the exit work reaches it. The old order set
-    it after the await: a SIGTERM in the write's gap found ``None`` and left
-    the file behind (PR #27)."""
+    it after the await: an exit work in the write's gap found ``None`` and left
+    the file behind. A real gap; whether CI's flake hit it is not shown."""
     monkeypatch.setenv("CLAUDE_CODE_SESSION_ID", "sess-server-start")
     left: list[list[Path]] = []
     real = os.replace
@@ -95,8 +100,7 @@ async def test_a_rekey_keeps_the_file_named_until_the_exit_can_remove_it(started
     """RT-6.10: ``rekey`` keeps ``_file`` naming the old file until
     ``_write_file`` names the new one, so an exit work that runs in between
     still finds a file to remove. The old order cleared it first: the exit
-    work saw ``None`` with the old file still on disk and left it there, the
-    same flake (PR #27)."""
+    work saw ``None`` with the old file still on disk and left it there."""
     for var in ("CLAUDE_CODE_SESSION_ID", "CLAUDE_PROJECT_DIR", "MM_WORKSPACE"):
         monkeypatch.delenv(var, raising=False)
     monkeypatch.setattr(session_file, "_roots_dir", None)
@@ -153,3 +157,51 @@ async def test_a_rekey_names_both_files_while_both_are_on_disk(started, monkeypa
         assert left == [[]]
     finally:
         await api.close()
+
+
+async def test_a_failed_replace_keeps_the_earlier_name(started, monkeypatch, tmp_path):
+    """A rewrite that fails must not forget the file that is still there.
+
+    `_write_file` names the new path before `os.replace`, so a failed replace has
+    to put the earlier name back. The case that matters is a *changed* path: if
+    the name stays as it was, a missing restore is invisible — which is why the
+    first version of this test passed with the restore deleted. Here the API
+    names one file and the write aims at another, and the replace fails
+    (review of #34).
+    """
+    monkeypatch.setenv("CLAUDE_CODE_SESSION_ID", "sess-replace-fails")
+    api = hookapi.HookAPI(lambda: FakeClient())
+    await api.start()
+    mine = api._file
+    assert mine is not None and mine.exists()
+
+    # A different target, so the restore has something to put back.
+    other = mine.with_name("endpoint-sid-ffffffffffffffff.env")
+    monkeypatch.setattr(hookapi, "file_path", lambda: other)
+
+    def broken(_tmp, _path):
+        raise OSError(28, "No space left on device")
+
+    monkeypatch.setattr(hookapi.os, "replace", broken)
+    with pytest.raises(OSError):
+        api._write_file()
+    assert api._file == mine, "the earlier name was not restored"
+    assert mine.exists()
+
+    # And the exit work still removes the file it knows (the write left a .tmp).
+    api.remove_file()
+    assert not mine.exists()
+    await api.close()
+
+
+async def test_a_failed_start_leaves_no_hook_api_behind(started, monkeypatch):
+    """`_start_hook_api` sets `_hook_api` before `start()` writes the file, so a
+    start that raises must clear it again: a half-started API must not be what
+    the exit work removes files through (review of #34)."""
+
+    async def refuse(_self, **_kw):
+        raise OSError(99, "Cannot assign requested address")
+
+    monkeypatch.setattr(hookapi.HookAPI, "start", refuse)
+    assert await server._start_hook_api() is None
+    assert server._hook_api is None
