@@ -48,6 +48,11 @@ With `AUTH_NATS_URL` set the service answers the auth callout, and these
 apply. Secrets are always files, never values in the environment; example
 values are placeholders.
 
+The NATS server's side of it is in
+[`nats-server.example.conf`](nats-server.example.conf): the callout's account
+and the tenant's, the two users of this service, `auth_callout`, TLS and
+JetStream, with placeholders instead of keys. A test starts a server from it.
+
 | Variable | Default | Meaning |
 | --- | --- | --- |
 | `AUTH_NATS_URL` | — | the NATS server, `tls://` (plain `nats://` only on a loopback host); unset: no callout, health only |
@@ -101,6 +106,12 @@ As a container, from the repository root:
 docker build -f services/auth/Dockerfile -t ai-agent-bus-auth services/auth
 docker run --rm -p 8080:8080 ai-agent-bus-auth
 ```
+
+Each merge to `main` that changes this directory publishes the image to
+`ghcr.io/dembaca/ai-agent-bus-auth`, tagged with the full commit SHA (and a
+moving `:main`), once the tests in `.github/workflows/auth.yml` passed. Deploy
+it by the digest from that run's job summary, not by a tag; where and how is in
+the [deployment view](../../docs/arc42/07-deployment-view.md).
 
 Both base images are pinned by digest. A tag can be moved; a digest cannot, and
 the running service should change only when this repository changes. When a
@@ -298,6 +309,10 @@ server knows one issuer at a time.
   system admin's token at all depends on its privacy settings; the lab checks
   it. Without it an OpenID account's `sub` cannot be compared, and the check
   refuses the login.
+- **A smaller Mattermost right than a system admin's:** whether a bot with
+  the system role "User Manager" (it reads users and nothing else) sees
+  `auth_service` and `auth_data` is unverified. Until someone has checked it,
+  the token is a system admin's.
 - **Who sent a post, as the receiver sees it:** the subject's last token
   names the sender, and only the sender can publish there: agents talk to no
   service, and the streams do not acknowledge (ADR-014 point 16). A receiver

@@ -14,6 +14,10 @@ before 0.5.0 are described in the git history.
   split off, nor do configured names none of which resolves: only a bot
   read without an owner does.
 
+- **The login service image is published to GHCR.** Each merge to `main` that
+  changes `services/auth/` pushes `ghcr.io/dembaca/ai-agent-bus-auth:<commit SHA>`
+  with a build provenance attestation, after the service's tests; deployments
+  use the digest from the job summary.
 - **The crown of a home over NATS** (RT-6.38, ADR-014 point 16). In a home
   named in `MM_NATS_HOMES` the crown is the lowest crown claim among the home's
   members with a fresh presence that stand as peers (the rule of the Mattermost
@@ -26,7 +30,11 @@ before 0.5.0 are described in the git history.
   receipts, unlike `coordinator.md` promises for Mattermost: the holder itself
   claims again, on a crown beat, when a post that needs it has no 👀 or ⏳ after
   45 s. The login service grants crown claims only in the agent's home, not in a
-  guest channel.
+  guest channel. The 23 h renewal of a claim passes the crown to the next live
+  candidate (a rotation about once every 23 h). A missing echo of the own
+  presence triggers a reconnect, backing off up to 14 min while none brings it
+  back (none when the presence subject is refused), and forgotten claims
+  unsync the view until the replay is read.
   Needs: MM_NATS_HOMES alike on every agent of a home.
 - **Host login to Keycloak, building block only** (ADR-014, RT-6.34). With
   `MM_LOGIN_ISSUER` and `MM_LOGIN_CLIENT_ID` set, the host process (and a
