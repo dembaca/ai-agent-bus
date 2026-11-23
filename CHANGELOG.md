@@ -45,7 +45,7 @@ before 0.5.0 are described in the git history.
   agent also carries `ask_card`: `need`, `decision` (what a 👍 approves, cut
   like a message) and `answers` (the offered alternatives, by position), with
   `answer` (yes or no) and, when alternatives were offered, `chosen` naming the
-  one picked — from a trusted human's newest reaction only, as the live event
+  one picked, with `card_edited_after` when the card was edited after that answer — from a trusted human's newest reaction only, as the live event
   counts it. `context` and `recommendation` stay out: they are not what was
   approved. Whether the author is an agent is the bus's own account test
   (`gate.author_classes`), never a name prefix a person could carry; anyone may
