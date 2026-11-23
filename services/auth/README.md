@@ -313,9 +313,11 @@ server knows one issuer at a time.
   with custom permission schemes. The lab checked it (2026-11-23): its Entry
   license refuses the system role "User Manager" ("Custom Permission Schemes
   not supported by current license"), and a bot without that role gets
-  `auth_service` back empty. So without an Enterprise license the token is a
-  system admin's. Whether "User Manager" is enough where the license allows
-  it is still unverified.
+  `auth_service` back empty. The service itself also accepts only a token
+  with the role `system_admin` (`internal/mattermost/client.go`): any other
+  leaves `auth_service` unknown and refuses every login. A smaller role thus
+  needs a license with custom permission schemes and a code change; whether
+  "User Manager" then sees `auth_service` and `auth_data` is unverified.
 - **Who sent a post, as the receiver sees it:** the subject's last token
   names the sender, and only the sender can publish there: agents talk to no
   service, and the streams do not acknowledge (ADR-014 point 16). A receiver
