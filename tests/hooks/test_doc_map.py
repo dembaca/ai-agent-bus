@@ -92,12 +92,132 @@ def test_a_rule_without_exclude_still_works():
     assert hits(rule, "bin/mm-agent-sweep.sh") == ["bin/mm-agent-sweep.sh"]
 
 
+def test_a_malformed_rule_is_reported():
+    """A string where a list belongs would be iterated character by character, and
+    the rule would silently claim nothing. Reported, not tolerated."""
+    good = {"name": "t", "paths": ["bin/*"], "docs": ["docs/x.md"]}
+    assert doc_check.doc_map_rule_error(good) == ""
+    assert doc_check.doc_map_rule_error({**good, "exclude": ["*_test.go"]}) == ""
+    assert doc_check.doc_map_rule_error({**good, "exclude": "*_test.go"}) == (
+        "exclude must be a list of strings"
+    )
+    assert doc_check.doc_map_rule_error({**good, "exclude": [1]}) == (
+        "exclude must be a list of strings"
+    )
+    assert doc_check.doc_map_rule_error({**good, "paths": "bin/*"}) == (
+        "paths must be a list of strings"
+    )
+    assert doc_check.doc_map_rule_error({**good, "docs": "docs/x.md"}) == (
+        "docs must be a list of strings"
+    )
+
+
+def test_a_rule_missing_a_required_key_is_reported_by_name():
+    """Missing keys used to pass validation and then die with a bare KeyError
+    further down, without the rule's name."""
+    good = {"name": "t", "paths": ["bin/*"], "docs": ["docs/x.md"]}
+    for missing in ("name", "paths", "docs"):
+        rule = {k: v for k, v in good.items() if k != missing}
+        assert doc_check.doc_map_rule_error(rule) == f"{missing} is missing", missing
+
+
+def test_an_unknown_key_is_reported():
+    """A misspelled optional key (`excludes`) leaves the rule claiming what it
+    should exempt, and nothing would say so."""
+    good = {"name": "t", "paths": ["bin/*"], "docs": ["docs/x.md"]}
+    msg = doc_check.doc_map_rule_error({**good, "excludes": ["*_test.go"]})
+    assert msg.startswith("unknown key excludes") and "allowed:" in msg
+    assert doc_check.doc_map_rule_error({**good, "naem": "x"}).startswith("unknown key naem")
+
+
+def test_an_empty_paths_or_docs_is_reported():
+    """An empty list makes the rule claim nothing while looking well formed."""
+    good = {"name": "t", "paths": ["bin/*"], "docs": ["docs/x.md"]}
+    assert doc_check.doc_map_rule_error({**good, "paths": []}) == "paths must not be empty"
+    assert doc_check.doc_map_rule_error({**good, "docs": []}) == "docs must not be empty"
+    assert doc_check.doc_map_rule_error({**good, "name": ""}) == "name must be a non-empty string"
+
+
+# --- the wiring in check_doc_map ------------------------------------------------
+
+def _run_check(monkeypatch, tmp_path, toml: str, changed: list[str]):
+    """Run the real check_doc_map on a map we write, with git answering `changed`.
+    Proves the validator is called and its verdict reaches the exit state, not
+    only that the function returns the right string."""
+    doc_map = tmp_path / "doc-map.toml"
+    doc_map.write_text(toml)
+    (tmp_path / "docs").mkdir(exist_ok=True)
+    (tmp_path / "docs" / "x.md").write_text("x")
+    monkeypatch.setattr(doc_check, "DOC_MAP", doc_map)
+    monkeypatch.setattr(doc_check, "ROOT", tmp_path)
+
+    def fake_git(*args: str) -> str:
+        if args[:1] == ("merge-base",):
+            return "base\n"
+        return "\n".join(changed)
+
+    monkeypatch.setattr(doc_check, "git", fake_git)
+    saved, doc_check.errors = doc_check.errors, []
+    try:
+        doc_check.check_doc_map("origin/main")
+        return list(doc_check.errors)
+    finally:
+        doc_check.errors = saved
+
+
+def test_check_doc_map_fails_on_a_malformed_rule(monkeypatch, tmp_path):
+    """The mutation the review named: a validator that only warns, or one never
+    called, would leave this green."""
+    errs = _run_check(monkeypatch, tmp_path, """
+[[rule]]
+name = "t"
+paths = ["bin/*"]
+docs = ["docs/x.md"]
+exclude = "*_test.go"
+""", ["bin/a.sh"])
+    assert errs, "check_doc_map accepted a malformed rule"
+    assert "t" in errs[0][2] and "exclude must be a list of strings" in errs[0][2]
+
+
+def test_check_doc_map_fails_on_a_rule_missing_docs(monkeypatch, tmp_path):
+    """Previously a KeyError inside check_doc_map instead of a named error."""
+    errs = _run_check(monkeypatch, tmp_path, """
+[[rule]]
+name = "no docs here"
+paths = ["bin/*"]
+""", ["bin/a.sh"])
+    assert errs and "no docs here" in errs[0][2] and "docs is missing" in errs[0][2]
+
+
+def test_check_doc_map_still_passes_a_good_rule(monkeypatch, tmp_path):
+    """Counter-check: a well-formed rule whose doc changed records nothing."""
+    errs = _run_check(monkeypatch, tmp_path, """
+[[rule]]
+name = "t"
+paths = ["bin/*"]
+docs = ["docs/x.md"]
+""", ["bin/a.sh", "docs/x.md"])
+    assert errs == [], errs
+
+
+def test_check_doc_map_still_asks_for_a_doc(monkeypatch, tmp_path):
+    """And the rule's own purpose still works: code changed, no doc, one error."""
+    errs = _run_check(monkeypatch, tmp_path, """
+[[rule]]
+name = "t"
+paths = ["bin/*"]
+docs = ["docs/x.md"]
+""", ["bin/a.sh"])
+    assert len(errs) == 1 and "bin/a.sh changed" in errs[0][2], errs
+
+
 # --- the map that ships -------------------------------------------------------
 
 def test_every_rule_is_well_formed():
     for name, rule in rules().items():
         assert rule["paths"], name
         assert rule["docs"], name
+        assert doc_check.doc_map_rule_error(rule) == "", name
 
 
 def test_every_rule_has_a_doc_that_exists():
@@ -118,6 +238,25 @@ def test_the_login_service_rule_ignores_its_own_tests():
                  "services/auth/internal/config/config.go") == [
         "services/auth/internal/config/config.go"
     ]
+
+
+def test_product_code_with_test_in_its_name_stays_covered():
+    """The exclusion must not be widened into "*test*": that would silently drop
+    services/auth/internal/testrealm/realm.go, real code that happens to live in a
+    directory with 'test' in its name. Pinned so a later loosening fails here."""
+    rule = rules()["login service: configuration, health, image"]
+    real_code = [
+        "services/auth/internal/testrealm/realm.go",   # exists
+        "services/auth/internal/contest/handler.go",   # shape of the same trap
+        "services/auth/internal/latest/reader.go",     # ditto
+    ]
+    for path in real_code:
+        assert hits(rule, path) == [path], path
+
+    # The same paths under an over-broad exclude would fall out, which is what this
+    # guards against: prove the test would notice.
+    broad = {**rule, "exclude": ["*test*"]}
+    assert hits(broad, "services/auth/internal/testrealm/realm.go") == []
 
 
 def test_the_other_rules_keep_their_meaning():
