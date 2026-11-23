@@ -266,7 +266,7 @@ func TestALoginMakesTheConsumers(t *testing.T) {
 		{"BUS", "_ch_home", "ch.home", []string{"bus.ch.home.*"}},
 		{"BUS", "_ch_secret", "ch.secret", []string{"bus.ch.secret.*"}},
 		{"BUS", "_dm", "dm", []string{"bus.dm." + bob.name + ".*"}},
-		{"PRESENCE", "_presence", "presence", []string{"presence.*.*", "presence.crown.home.*", "presence.crown.secret.*"}},
+		{"PRESENCE", "_presence", "presence", []string{"presence.*.*", "presence.crown.home.*", "presence.member.home.*", "presence.crown.secret.*", "presence.member.secret.*"}},
 	} {
 		ci := c.info(w.stream, bob.name+w.name)
 		if ci == nil {
@@ -1019,4 +1019,54 @@ func TestAFailedRemovalIsRetriedByTheNextReconcile(t *testing.T) {
 	if c.info("BUS", agent+"_ch_ga") != nil {
 		t.Error("the consumer of the withdrawn channel survived the next reconcile")
 	}
+}
+
+// A NEW host session asks (since key "@presence") for the stored presence
+// stream afresh: the consumer is made anew and replays the last message of
+// every subject. A renewal of a running session leaves it out and keeps the
+// position (RT-6.35).
+func TestAFreshHostReadsPresenceAgainARenewalDoesNot(t *testing.T) {
+	c := newConsumerLab(t, nil)
+	host := newHost()
+	a, err := c.login("alice", host, Hello{Home: "home"})
+	if err != nil {
+		t.Fatal(err)
+	}
+	in := c.listen(a, "deliver."+a.name+".presence")
+	if err := c.nc.Publish("presence.bob.agent-other", []byte(`{"status":"online"}`)); err != nil {
+		t.Fatal(err)
+	}
+	if err := c.nc.Publish("presence.member.home.agent-other", []byte("m")); err != nil {
+		t.Fatal(err)
+	}
+	waitFor(t, "presence delivered", func() bool { return len(take(in, 200*time.Millisecond)) > 0 })
+	before := c.info("PRESENCE", a.name+"_presence")
+	if _, err := c.login("alice", host, Hello{Home: "home"}); err != nil { // a renewal
+		t.Fatal(err)
+	}
+	after := c.info("PRESENCE", a.name+"_presence")
+	if after == nil || !after.Created.Equal(before.Created) || after.Delivered.Stream != before.Delivered.Stream {
+		t.Fatalf("a renewal moved the presence consumer: %+v -> %+v", before, after)
+	}
+	if got := take(in, 300*time.Millisecond); len(got) != 0 {
+		t.Fatalf("a renewal replayed %d messages", len(got))
+	}
+	// A new session of the same agent, within the inactivity hour.
+	if _, err := c.login("alice", host, Hello{Home: "home", Since: map[string]uint64{"@presence": 1}}); err != nil {
+		t.Fatal(err)
+	}
+	fresh := c.info("PRESENCE", a.name+"_presence")
+	if fresh == nil || !fresh.Created.After(before.Created) {
+		t.Fatalf("a fresh session did not recreate the presence consumer: %+v", fresh)
+	}
+	if fresh.Config.DeliverPolicy != nats.DeliverLastPerSubjectPolicy || fresh.Config.Metadata["login"] == "" {
+		t.Errorf("recreated consumer: policy %v, metadata %v", fresh.Config.DeliverPolicy, fresh.Config.Metadata)
+	}
+	subjects := map[string]bool{}
+	waitFor(t, "replay", func() bool {
+		for _, g := range take(in, 200*time.Millisecond) {
+			subjects[g.Subject] = true
+		}
+		return subjects["presence.bob.agent-other"] && subjects["presence.member.home.agent-other"]
+	})
 }

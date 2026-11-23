@@ -84,7 +84,7 @@ func (n *native) login(ag *agent, channels ...string) (delivers []string) {
 	presence := []string{"presence.*.*"}
 	for _, ch := range channels {
 		add("BUS", "ch."+ch, []string{"bus.ch." + ch + ".*"}, nats.DeliverNewPolicy)
-		presence = append(presence, "presence.crown."+ch+".*")
+		presence = append(presence, "presence.crown."+ch+".*", "presence.member."+ch+".*")
 	}
 	add("BUS", "dm", []string{"bus.dm." + ag.name + ".*"}, nats.DeliverNewPolicy)
 	add("PRESENCE", "presence", presence, nats.DeliverLastPerSubjectPolicy)
@@ -770,5 +770,32 @@ func TestNativePresenceCarriesTheOwnerPinnedByTheCredential(t *testing.T) {
 	}
 	if !seen[want] {
 		t.Errorf("bob's presence consumer misses %s: %v", want, seen)
+	}
+}
+
+// An agent publishes its membership on its own member subject in its channels
+// only: not in a channel it was not granted, not under another name (RT-6.37).
+func TestNativeMemberSubjectIsOwnAndOnlyInGrantedChannels(t *testing.T) {
+	n := newNative(t, busStreamCfg) // alice: home; bob: home and secret
+	denied, stored := n.attack("own member subject", "presence.member.home."+n.a.name, n.b.presence(), nil, "member")
+	if denied || stored != 1 {
+		t.Errorf("own member subject in home: denied=%v stored=%d", denied, stored)
+	}
+	for _, s := range []string{"presence.member.secret." + n.a.name, "presence.member.home." + n.b.name,
+		"presence.member.secret." + n.b.name, "presence.member.home.agent-victim", "presence.member.home", "presence.member.home." + n.a.name + ".x"} {
+		denied, stored := n.attack("member "+s, s, n.b.presence(), nil, "member")
+		if !denied || stored != 0 {
+			t.Errorf("publish %s: denied=%v stored=%d", s, denied, stored)
+		}
+	}
+	// Membership is shown only for the channels a reader is in.
+	n.bobPosts("presence.member.secret."+n.b.name, "bob in secret")
+	n.bobPosts("presence.member.home."+n.b.name, "bob in home")
+	seen := map[string]bool{}
+	for _, g := range take(n.aIn, 500*time.Millisecond) {
+		seen[g.Subject] = true
+	}
+	if !seen["presence.member.home."+n.b.name] || seen["presence.member.secret."+n.b.name] {
+		t.Errorf("alice's view of bob's memberships: %v", seen)
 	}
 }

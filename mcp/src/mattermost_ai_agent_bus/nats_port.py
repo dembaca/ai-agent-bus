@@ -89,7 +89,6 @@ MAX_REACTIONS = 64  # distinct (emoji, sender) per post
 MAX_QUEUE = 10_000  # events a subscriber or a merged stream holds
 START_RETRY_SEC = 1.0  # first wait of a start that failed; doubles up to START_RETRY_MAX_SEC
 START_RETRY_MAX_SEC = 30.0
-CLAIM_WAIT_SEC = 10.0  # how long the claim of the homes waits for the bus to be synced
 ECHO_WAIT_SEC = 10.0  # how long a send waits for its own copy from the stream
 _NOTE = "a2a_"  # after the props prefix: the bus's own note, flat
 _NONCE = "nats_nonce"  # after the props prefix: tells a post its own copy
@@ -132,11 +131,11 @@ class BusLike(Protocol):
     @property
     def synced(self) -> bool: ...
 
-    def claimed(self, channel: str, agent: str) -> bool: ...
+    def is_member(self, channel: str, agent: str) -> bool: ...
 
     def presence_snapshot(self) -> dict[str, tuple[float, str]]: ...
 
-    async def claim(self, channel: str) -> None: ...
+    async def member(self, channel: str) -> None: ...
 
 
 def post_id(channel: str, seq: int) -> str:
@@ -197,7 +196,6 @@ class NatsPort:
         self._echo_wait = echo_wait
         self._bus_options = dict(bus_options or {})
         self._bus: BusLike | None = None
-        self._claims_task: asyncio.Task[None] | None = None
         self._fatal: NatsPortError | None = None
         self._ids: dict[str, str] | None = None  # channel name -> Mattermost id
         self._resolving = asyncio.Lock()
@@ -255,10 +253,15 @@ class NatsPort:
                 bus = NatsBus(self._s, login, owner, self._on_event, on_fatal=self._on_fatal,
                               **self._bus_options)
                 self._bus = bus
-                bus.link_bot(await self._bot_id())
+                try:
+                    bus.link_bot(await self._bot_id())
+                except ValueError:
+                    # A bot id that is no Mattermost user id (a bad MM_BOT_USER_ID): the NATS
+                    # home still starts, only without a link between bot and NATS name.
+                    log.warning("nats: the bot id is not a Mattermost user id: starting without a link")
                 await bus.start()
                 lease.use_nats_link(partial(_tag_of, bus))
-                self._claims_task = asyncio.create_task(self._claim_homes(bus))
+                await self._announce_membership(bus)
                 return
             except asyncio.CancelledError:
                 raise
@@ -279,23 +282,21 @@ class NatsPort:
             return str(inner.session.user_id)
         return os.environ.get("MM_BOT_USER_ID") or (await inner.get_me()).id
 
-    async def _claim_homes(self, bus: BusLike) -> None:
-        """Claim each home once the bus has read the stored presences and claims: the
-        claim is the membership signal of whereabouts (RT-6.37)."""
+    async def _announce_membership(self, bus: BusLike) -> None:
+        """Tell the bus to announce this session's membership of every channel it asked
+        for (the NATS homes, the guests, the lobby): the signal of whereabouts (RT-6.37).
+        The bus does it once it is synced, every 6 h and after each reconnect. The crown
+        claim is another subject and is not made here."""
+        channels = [*self._homes, *self._s.guests]
+        if self._s.lobby:
+            channels.append(self._s.lobby_channel)
         try:
-            for _ in range(int(CLAIM_WAIT_SEC / 0.1)):
-                if bus.synced:
-                    break
-                await asyncio.sleep(0.1)
-            else:
-                log.warning("nats: the presence stream was not read within %.0f s: claiming the homes anyway",
-                            CLAIM_WAIT_SEC)
-            for home in self._homes:
-                await bus.claim(home)
+            for ch in dict.fromkeys(channels):
+                await bus.member(ch)
         except asyncio.CancelledError:
             raise
         except Exception as exc:  # noqa: BLE001
-            log.warning("nats: claiming the homes failed: %s", type(exc).__name__)
+            log.warning("nats: announcing the membership failed: %s", type(exc).__name__)
 
     def fail(self, why: BaseException | str) -> None:
         """The homes cannot run over NATS: logged once, sends raise from now on."""
@@ -309,9 +310,6 @@ class NatsPort:
         self.fail(exc)
 
     async def stop(self) -> None:
-        if self._claims_task is not None:
-            self._claims_task.cancel()
-            self._claims_task = None
         if self._bus is not None:
             lease.use_nats_link(None)  # a stopped bus links nothing any more
         bus, self._bus = self._bus, None
@@ -752,7 +750,7 @@ class NatsPort:
 
     async def whereabouts(self, channel_id: str, name: str) -> str | None:
         """Where a NATS name is, for a NATS home's channel (RT-6.37): `gone` (offline),
-        `here` (fresh and claimed in that home), else `elsewhere`; None when the channel
+        `here` (fresh and a member of that home), else `elsewhere`; None when the channel
         is no NATS home of this port or the bus cannot tell (not attached, failed, not
         connected, not synced)."""
         home = await self.nats_name(channel_id)
@@ -761,7 +759,7 @@ class NatsPort:
             return None
         if bus.presence_of(name) == "offline":
             return "gone"
-        return "here" if bus.claimed(home, name) else "elsewhere"
+        return "here" if bus.is_member(home, name) else "elsewhere"
 
     async def is_member(self, channel_id: str, user_id: str) -> bool:
         if not is_nats_user(user_id):

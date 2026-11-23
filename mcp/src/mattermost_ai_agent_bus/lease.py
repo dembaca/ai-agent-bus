@@ -429,7 +429,6 @@ async def _set_status(client: ChatPort, state: str, label: str = "") -> None:
 STATUS_MAX = 100
 _HOME = " · ~"
 _LINK = " · ⇄"
-_LINK_TAG = re.compile(r"[a-z0-9]{16}")
 
 # The link to the agent's NATS name (RT-6.37), set by the NATS port: a function
 # returning the tag to show, "" for none. Without a NATS home there is none.
@@ -451,11 +450,19 @@ def homed(text: str, home: str, link: str = "") -> str:
     "<text> · ⇄<link> · ~<home>", the link segment only with a link (RT-6.37). A
     custom status is global per user; the home tells every channel's roster
     whose crown it is. Past STATUS_MAX the text before it is cut (the label
-    first, it comes last), never the link or the home."""
+    first, it comes last), never the link or the home, and never a holder's
+    receipt marker at its end (RT-6.6 step 10: without it the others would
+    not take over from a silent holder). The cut leaves no separator behind."""
     tail = _tail(home, link)
     if not tail:
         return text
-    return text[:max(0, STATUS_MAX - len(tail))] + tail
+    marker = f" · {RECEIPT_MARK}"
+    kept = marker if text.endswith(marker) else ""
+    body = text[:len(text) - len(kept)]
+    room = max(0, STATUS_MAX - len(tail) - len(kept))
+    if len(body) > room:
+        body = body[:room].rstrip(" ·")
+    return body + kept + tail
 
 
 def status_text(head: str, label: str, segments: list[str], home: str, version: str = "",
@@ -482,13 +489,15 @@ def status_text(head: str, label: str, segments: list[str], home: str, version: 
     return homed(head, home, link)
 
 
+_LINK_AT_END = re.compile(r"(?:^| · )⇄([a-z0-9]{16})(?= · ~[^·]*$|$)")
+
+
 def link_of(text: str) -> str:
-    """The NATS link tag a status text names (RT-6.37): '' for none."""
-    for piece in str(text).split(" · "):
-        piece = piece.strip()
-        if piece.startswith("⇄") and _LINK_TAG.fullmatch(piece[1:]):
-            return piece[1:]
-    return ""
+    """The NATS link tag a status text names (RT-6.37): the one right before its
+    home (or at its end), the last of them; '' for none. A tag anywhere else (a
+    label) is not the link."""
+    found = _LINK_AT_END.findall(str(text))
+    return found[-1] if found else ""
 
 
 def sets_receipts(text: str) -> bool:

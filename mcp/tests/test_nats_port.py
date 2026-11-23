@@ -53,8 +53,9 @@ class FakeNats:
         self.presence: dict[str, str] = {}  # agent -> online | away (fresh), else offline
         self.bots: dict[str, str] = {}  # agent -> the bot its presence names
         self.synced = True
-        self.claims: set[tuple[str, str]] = set()  # (channel, agent)
+        self.members: set[tuple[str, str]] = set()  # (channel, agent)
         self.linked_bot = ""
+        self.announced: list[str] = []
         self.claimed_homes: list[str] = []
 
     def link_bot(self, bot_id: str) -> None:
@@ -63,14 +64,17 @@ class FakeNats:
     def bot_of(self, agent: str) -> str:
         return self.bots.get(agent, "")
 
-    def claimed(self, channel: str, agent: str) -> bool:
-        return (channel, agent) in self.claims
+    def is_member(self, channel: str, agent: str) -> bool:
+        return (channel, agent) in self.members
 
     def presence_snapshot(self) -> dict[str, tuple[float, str]]:
         return {a: (0.0, s) for a, s in self.presence.items()}
 
     async def claim(self, channel: str) -> None:
         self.claimed_homes.append(channel)
+
+    async def member(self, channel: str) -> None:
+        self.announced.append(channel)
 
     def owner_of(self, agent: str) -> str:
         return self.owners.get(agent, "")
@@ -289,7 +293,7 @@ async def test_a_name_mismatch_at_start_is_final_and_a_passing_failure_is_tried_
 
         def link_bot(self, bot_id: str) -> None: ...
 
-        async def claim(self, channel: str) -> None: ...
+        async def member(self, channel: str) -> None: ...
 
         async def start(self) -> None:
             starts.append("start")
@@ -1544,8 +1548,8 @@ async def test_whereabouts_of_a_name_in_a_nats_home() -> None:
     home = await port.nats_name(WORK)
     assert home == "home"
     fake.presence[NAME_A] = "online"
-    assert await port.whereabouts(WORK, NAME_A) == "elsewhere"  # fresh, no claim in this home
-    fake.claims.add(("home", NAME_A))
+    assert await port.whereabouts(WORK, NAME_A) == "elsewhere"  # fresh, not a member of this home
+    fake.members.add(("home", NAME_A))
     assert await port.whereabouts(WORK, NAME_A) == "here"
     fake.presence[NAME_A] = "away"
     assert await port.whereabouts(WORK, NAME_A) == "here"
@@ -1567,31 +1571,57 @@ async def test_whereabouts_of_a_name_in_a_nats_home() -> None:
     assert await bare.whereabouts(WORK, NAME_A) is None
 
 
-async def test_start_links_the_bot_and_claims_the_homes_once_synced(monkeypatch: pytest.MonkeyPatch) -> None:
+async def test_start_links_the_bot_and_announces_membership_of_every_channel_not_the_crown(
+        monkeypatch: pytest.MonkeyPatch) -> None:
+    """RT-6.37: membership of the homes and the guests, never a crown claim."""
     from mattermost_ai_agent_bus import lease, nats_port
 
     made: list[FakeNats] = []
 
     def build(*a: Any, **kw: Any) -> FakeNats:
         fake = FakeNats(port, name=NAME_A)
-        fake.synced = False
         made.append(fake)
         return fake
 
     monkeypatch.setattr(nats_port, "NatsBus", build)
     monkeypatch.setattr(lease, "_nats_link", None)
     port, inner, _ = make(("home", "other"), bus=False)
+    port._s = _settings(guests=("guest", "home"))
     await port.start(FakeLogin(), owner="alice")
     try:
         (fake,) = made
         assert fake.linked_bot == BOT  # the bot's Mattermost id, as the session names it
         assert lease._nats_link is not None and lease._nats_link() == TAG_A
-        await asyncio.sleep(0.25)
-        assert fake.claimed_homes == []  # not before the bus has read the stored presences
-        fake.synced = True
-        await until(lambda: fake.claimed_homes == ["home", "other"])
-        await asyncio.sleep(0.25)
-        assert fake.claimed_homes == ["home", "other"]  # once
+        assert fake.announced == ["home", "other", "guest"]
+        assert fake.claimed_homes == []  # the crown claim is not made at start
+    finally:
+        await port.stop()
+        lease.use_nats_link(None)
+
+
+async def test_a_bad_bot_id_does_not_stop_the_nats_home(monkeypatch: pytest.MonkeyPatch,
+                                                         caplog: pytest.LogCaptureFixture) -> None:
+    from mattermost_ai_agent_bus import lease, nats_port
+
+    made: list[FakeNats] = []
+
+    class Picky(FakeNats):
+        def link_bot(self, bot_id: str) -> None:
+            raise ValueError("not a Mattermost user id")
+
+    def build(*a: Any, **kw: Any) -> FakeNats:
+        fake = Picky(port, name=NAME_A)
+        made.append(fake)
+        return fake
+
+    monkeypatch.setattr(nats_port, "NatsBus", build)
+    monkeypatch.setattr(lease, "_nats_link", None)
+    port, inner, _ = make(bus=False)
+    caplog.set_level(logging.WARNING)
+    await port.start(FakeLogin(), owner="alice")
+    try:
+        assert port.failure is None and port.bus_attached and made[0].announced == ["home"]
+        assert "starting without a link" in caplog.text
     finally:
         await port.stop()
         lease.use_nats_link(None)

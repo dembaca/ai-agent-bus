@@ -901,6 +901,36 @@ def test_the_link_and_a_long_home_are_never_cut() -> None:
         assert lease.link_of(text) == TAG and lease.home_of(text) == home
 
 
+def test_a_holders_receipt_marker_is_never_cut_by_the_link() -> None:
+    """RT-6.6 step 10, RT-6.37: the link segment makes the status longer; the cut takes
+    the label and the segments, never a holder's receipt marker, the link or the home."""
+    head = f"coordinator · working · {lease.RECEIPT_MARK}"
+    for n in range(0, 65):
+        home = "h" * n if n else ""
+        for label in ("", "bus", "x" * 70):
+            for link in ("", TAG):
+                text = lease.status_text(head, label, ["ctx 62%", "5h 40%"], home, "v0.97.0", link=link)
+                assert len(text) <= lease.STATUS_MAX, text
+                assert lease.sets_receipts(text), text
+                assert lease.link_of(text) == link, text
+                if home:
+                    assert lease.home_of(text) == home, text
+
+
+def test_the_cut_leaves_no_separator_before_the_link() -> None:
+    """A cut right after a "·" must not leave `… · · ⇄<tag>`, which hid the link."""
+    for n in range(1, 100):
+        text = lease.homed("a · " * 30, "h" * (n % 65), link=TAG)
+        assert " · · " not in text and lease.link_of(text) == TAG, text
+
+
+def test_link_of_takes_the_last_tag_before_the_home() -> None:
+    other = "z" * 16
+    assert lease.link_of(f"a · ⇄{other} · b · ⇄{TAG} · ~home") == TAG
+    assert lease.link_of(f"label ⇄{other} · ⇄{TAG} · ~home") == TAG
+    assert lease.link_of(f"working · ⇄{other} · bus · ~home") == ""  # a tag in a label is no link
+
+
 def test_link_of_reads_only_a_well_formed_segment() -> None:
     assert lease.link_of(f"working · ⇄{TAG}") == TAG
     for bad in ("", "working", "working · ⇄short", f"working · ⇄{TAG.upper()}", f"working · ⇄{TAG}x",

@@ -66,8 +66,15 @@ before 0.5.0 are described in the git history.
   its bye removes nothing (the host's log says so).
   The presence also names the agent's Mattermost bot, and the bot's status
   shows a link tag (`⇄<tag>`): the two count as one agent only when each
-  names the other, and a NATS agent not claimed in a home is told as not
-  there (`not_here`).
+  names the other, and a NATS agent that announced no membership of a home
+  is told as not there (`not_here`). The membership is its own subject,
+  `<presence>.member.<channel>.<name>`, apart from the crown claim: announced
+  once the bus has read the stored presences, renewed every 6 h and after
+  every reconnect, and read afresh by each new session (the login service
+  makes the presence consumer anew when the hello says the session has not
+  read it yet; a credential renewal keeps its position). Presence and claims
+  are ordered by the server's time, then the stream sequence. A bad bot id
+  no longer stops the NATS home.
 
 ## 0.96.0
 
