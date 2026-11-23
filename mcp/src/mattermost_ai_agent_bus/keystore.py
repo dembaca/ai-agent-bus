@@ -1,10 +1,11 @@
 """Where the host's login keeps its secrets (RT-6.34, ADR-014 points 7 and 9).
 
-A store holds two named values: the Keycloak refresh token and the nkey seed.
-`Ephemeral` keeps them in memory only; `HostFile` keeps each in a file of its
-own, mode 0600, in `<host state dir>/login/` (mode 0700): on the host, outside
-every sandbox. A file that is a symlink, not the user's own, or readable by
-group or world is refused, never read.
+A store holds three named values: the Keycloak refresh token, the login cooldown
+beside it (`cooldown_entry`), and the nkey seed. `Ephemeral` keeps them in
+memory only; `HostFile` keeps each in a file of its own, mode 0600, in
+`<host state dir>/login/` (mode 0700): on the host, outside every sandbox. A
+file that is a symlink, not the user's own, or readable by group or world is
+refused, never read.
 
 Nothing here logs or raises a value: errors name the store entry, never its
 content.
@@ -34,6 +35,16 @@ def refresh_entry(issuer: str, client_id: str, human: str) -> str:
     raw = "\0".join((issuer.rstrip("/"), client_id, human.strip().casefold()))
     digest = hashlib.sha256(raw.encode("utf-8")).hexdigest()[:20]
     return "refresh_" + "".join(chr(ord("a") + int(c, 16)) for c in digest)
+
+
+def cooldown_entry(issuer: str, client_id: str, human: str) -> str:
+    """The entry of one person's login cooldown: after a failed approval no new
+    device approval may start for a while, and a restart is a new process.
+
+    It sits beside the refresh token rather than inside it, because the token
+    entry is rewritten on every refresh and would lose the mark (login.py).
+    """
+    return "cool_" + refresh_entry(issuer, client_id, human)[len("refresh_"):]
 
 
 class KeyStoreError(Exception):
