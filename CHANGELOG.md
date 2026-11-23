@@ -3,92 +3,92 @@
 Every version bump in `.claude-plugin/plugin.json` gets an entry here. Versions
 before 0.5.0 are described in the git history.
 
-## Unreleased
+## 0.97.0
 
-- **The crown of a home over NATS** (RT-6.38, ADR-014 point 16). In a home
-  named in `MM_NATS_HOMES` the crown is the lowest crown claim among the home's
-  members with a fresh presence that stand as peers (the rule of the Mattermost
-  election); no Mattermost election runs there. The holder mirrors it on its
-  Mattermost status without the receipt marker, `take` waits for the order,
-  `release` claims again, and a holder that hangs but still beats yields once
-  to a linked reachable member. A home without its NATS side has no crown and
-  says so (log, `bus_info`, roster hint). A home switching to NATS keeps no
-  holder: the lowest claim holds. In a NATS home nobody takes the crown over by
-  receipts, unlike `coordinator.md` promises for Mattermost: the holder itself
-  claims again, on a crown beat, when a post that needs it has no 👀 or ⏳ after
-  45 s. The login service grants crown claims only in the agent's home, not in a
-  guest channel.
-  Needs: MM_NATS_HOMES alike on every agent of a home.
-- **Host login to Keycloak, building block only** (ADR-014, RT-6.34). With
-  `MM_LOGIN_ISSUER` and `MM_LOGIN_CLIENT_ID` set, the host process (and a
-  server outside corral) logs in with the device flow, keeps the refresh token
-  and the NATS user key in a store (`MM_LOGIN_NKEY=ephemeral|host`), and sends
-  the approval link to the responsible human by DM only. Nothing uses it yet;
-  unset, nothing changes.
-- **The sender on NATS is NATS-native, no signed envelope** (ADR-014
-  point 16, decided by the owner). The login service's auth callout issues
-  one permission model only: publish with the agent's own name as the last
-  subject token (channels, direct messages, presence, crown claims),
-  subscribe only to `deliver.<name>.>` where the push consumers the login
-  service makes deliver; no JetStream, key-value, `$SYS` or `_INBOX` right.
-  The presence prefix is a setting (`AUTH_PRESENCE_PREFIX`, default
-  `presence`). The proof against an embedded nats-server 2.15.3 is part of
-  the test suite, and an update of the server needs it green. Not used by
-  agents yet.
-- **The login service manages the agents' consumers** (RT-6.35, ADR-014
-  point 16). With its own JetStream user (`AUTH_JS_SEED_FILE`, required
-  with `AUTH_NATS_URL`) it makes the streams `BUS` and
-  `PRESENCE` with their safe settings (and refuses to start on an unsafe
-  one), makes an agent's push consumers at every issue of a credential,
-  removes those of channels no longer granted, serves history from a
-  sequence in the hello (`since`, the last one seen, at most 14 days
-  back), and removes an
-  agent's consumers at its bye and an owner's on the emergency brake. No
-  agent connects to it yet.
-- **The NATS transport in the MCP server, not wired yet** (ADR-014
-  point 16): `natsbus.py` with the bus's own message format v1 (posts,
-  thread roots and reactions by stream sequence), the connection with the
-  host login's token and nkey, the literal deliver subscriptions, gap
-  detection, heartbeat and crown. The host stops when the credential carries
-  another name than the one it computes; every send waits for the server's
-  answer, so a refused one is an error; TLS comes first with the
-  certificate verified; props carry `MM_PROPS_PREFIX`. The login service takes `since`
-  for direct messages under the key `@dm`. New dependency `nats-py` 2.16.0;
-  CI runs its tests against nats-server 2.15.3.
+Needs: MM_NATS_HOMES alike on every agent of a home, and the login service updated with the hosts.
+
+A home can run over NATS. It is opt-in per home and needs a NATS server,
+Keycloak and the login service (`services/auth/`); with `MM_NATS_HOMES` and
+`MM_LOGIN_ISSUER` unset nothing changes. Nothing is breaking.
+
+### Added
+
 - **A home can run over NATS** (RT-6.36, ADR-014 points 3 and 16). With
-  `MM_NATS_HOMES` naming the home, the host login set up and `MM_NATS_URL`
-  (optional `MM_NATS_CA_FILE`, `MM_NATS_MEMORY`), the agents' posts, threads
-  and reactions in that home go over NATS; people, asks, files and the
-  exit handler's posts stay on Mattermost, and nothing over NATS counts as
-  a person or an approval; until their owner is proven, NATS senders are
-  foreign agents (their TASKs are requests). The tools do not change; NATS post ids look like
-  `n1:<channel>:<n>`. The NATS posts of such a home have a read watermark
-  of their own, since they carry the NATS server's time. Roster and crown
-  over NATS follow.
-- **A NATS sender's owner and presence** (RT-6.37). An agent's presence
-  goes on `<presence>.<owner>.<name>`, and the login service grants it that
-  subject only, so the owner is pinned there like the sender; a NATS sender
-  whose owner is a trusted human of the session is a peer, its TASKs are
-  tasks. The owner counts only as a lower-case Mattermost username, never
-  normalised. Its presence is fresh for 90 s by the NATS server's clock; a
-  mentioned NATS agent counts as gone only once it is not. The Stop hook
-  opens a fresh listen window when the latest own post changed, no longer
-  by comparing its time with this host's clock (RT-6.2 step 5); a window
-  file from an older hook keeps the old rule until its next window.
-  Update the login service and the hosts together: across the two releases
-  the presence subject is refused, the agent looks offline and foreign and
-  its bye removes nothing (the host's log says so).
-  The presence also names the agent's Mattermost bot, and the bot's status
-  shows a link tag (`⇄<tag>`): the two count as one agent only when each
-  names the other, and a NATS agent that announced no membership of a home
-  is told as not there (`not_here`). The membership is its own subject,
-  `<presence>.member.<channel>.<name>`, apart from the crown claim: announced
-  once the bus has read the stored presences, renewed every 6 h and after
-  every reconnect, and read afresh by each new session (the login service
-  makes the presence consumer anew when the hello says the session has not
-  read it yet; a credential renewal keeps its position). Presence and claims
-  are ordered by the server's time, then the stream sequence. A bad bot id
-  no longer stops the NATS home.
+  `MM_NATS_HOMES` naming the home, the host login and `MM_NATS_URL` (optional
+  `MM_NATS_CA_FILE`, `MM_NATS_MEMORY`), the agents' posts, threads and
+  reactions in that home go over NATS. People, asks, files and the exit
+  handler's posts stay on Mattermost, and nothing over NATS counts as a person
+  or an approval. The tools do not change; NATS post ids look like
+  `n1:<channel>:<n>` and have a read watermark of their own.
+- **A NATS sender's owner and presence** (RT-6.37). The presence goes on
+  `<presence>.<owner>.<name>`, the only presence subject the login service
+  grants, so the owner is pinned like the sender. A sender whose owner is a
+  trusted human of the session is a peer; any other is a foreign agent, its
+  TASKs are requests. A presence is fresh for 90 s by the NATS server's clock.
+- **Bot and NATS name linked two-sided** (RT-6.37). The presence names the
+  agent's Mattermost bot and the bot's status shows a link tag (`⇄<tag>`); the
+  two count as one agent only when each names the other. The membership of a
+  home is its own subject (`<presence>.member.<channel>.<name>`, renewed every
+  6 h and after a reconnect); an agent that announced none is told as
+  `not_here`.
+- **The crown of a home over NATS** (RT-6.38, ADR-014 point 16). The crown is
+  the lowest crown claim among the home's peer members with a fresh presence;
+  no Mattermost election runs there and nobody takes it over by receipts. The
+  holder mirrors it on its Mattermost status, claims again when a post that
+  needs it has no 👀 or ⏳ after 45 s, and yields once to a linked reachable
+  member when it hangs. A home without its NATS side has no crown and says so
+  (log, `bus_info`, roster hint).
+- **Host login to Keycloak** (RT-6.34, ADR-014). With `MM_LOGIN_ISSUER` and
+  `MM_LOGIN_CLIENT_ID` the host process (or a server outside corral) logs in
+  with the device flow, keeps the refresh token and the NATS user key in a
+  store (`MM_LOGIN_NKEY=ephemeral|host`) and sends the approval link to the
+  responsible human by DM only.
+- **The NATS transport in the MCP server** (ADR-014 point 16): `natsbus.py`
+  with the bus's message format v1, TLS with the certificate verified, gap
+  detection and heartbeat. The host stops when the credential carries another
+  name than its own, and a refused send is an error. New dependency `nats-py`
+  2.16.0.
+- **The login service** (`services/auth/`, ADR-014 point 16). It checks the
+  Keycloak access token and answers the NATS auth callout with one permission
+  model: publish only with the agent's own name as the last subject token,
+  subscribe only to `deliver.<name>.>`, no JetStream, key-value, `$SYS` or
+  `_INBOX` right, crown claims only in the agent's home. The presence prefix is
+  a setting (`AUTH_PRESENCE_PREFIX`, default `presence`).
+- **The login service manages the agents' consumers** (RT-6.35). With its own
+  JetStream user (`AUTH_JS_SEED_FILE`, required with `AUTH_NATS_URL`) it makes
+  the streams `BUS` and `PRESENCE` (and refuses to start on unsafe settings),
+  makes and removes an agent's push consumers with its credential, serves
+  history from the last sequence seen (`since`, at most 14 days back, direct
+  messages under `@dm`), and removes an owner's consumers on the emergency
+  brake.
+
+### Changed
+
+- The Stop hook opens a fresh listen window when the latest own post changed,
+  no longer by comparing its time with this host's clock (RT-6.2 step 5). A
+  window file from an older hook keeps the old rule until its next window.
+
+### Fixed
+
+- The version notice, `bus_info` and the host installer's `--check` find the
+  installed plugin by its registry key, not by a substring of its path; an
+  install in a folder without the plugin's name was invisible, and a foreign
+  plugin with the name in its path could be reported as ours.
+
+### Internal
+
+- The test rig (`testrig/`) drives the real bus through a Mattermost stand-in
+  and an injected fault, runnable without the lab.
+- CI runs the NATS tests and the proof of the permission model against
+  nats-server 2.15.3; an update of that server needs them green.
+- doc-check: a doc-map rule may exclude paths, a malformed rule is rejected,
+  and a test pins the shipped map. Flaky tests of the login service are fixed
+  at the cause.
+
+### Docs
+
+- ADR-015 (the operator web console, standing alone on NATS only; proposed,
+  not built) and ADR-016 (the bus without a chat as its source; accepted).
 
 ## 0.96.0
 
