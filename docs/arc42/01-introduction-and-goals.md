@@ -53,5 +53,6 @@ See Section 10 for detailed quality scenarios (not yet written).
 | Coding agents (Claude Code, Cursor, OpenCode) | via SKILL.md / MCP instructions | Unambiguous rules: when to register, post, listen, sign off |
 | People reading the channel | Mattermost | See at a glance who works on what, without chatter |
 | Operator of Mattermost and the registrar | — | Bots are ephemeral; the registration secret can be rotated |
+| Operator of the fleet (Leitstand) | Keycloak identity; proposed console (ADR-015) | Live fleet status, trust/coordination graph, stats KPIs, answer `ask_human` without replacing the humans' chat |
 
 **Quality goal sign-off:** Maintainer, 2026-10-24 (after the design review, #61)
