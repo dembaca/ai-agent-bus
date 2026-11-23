@@ -94,7 +94,7 @@ uv run --directory testrig bus-testrig echo-run --fault stall --stall-sec 0.2
 uv run --directory testrig bus-testrig echo-run --fault halfopen
 
 uv run --directory testrig bus-testrig bus-run
-uv run --directory testrig bus-testrig bus-run --fault drop --after 1 --expect-loss
+uv run --directory testrig bus-testrig bus-run --fault drop --after 1 --every 3 --expect-loss
 uv run --directory testrig bus-testrig bus-run --fault duplicate --after 1
 uv run --directory testrig bus-testrig bus-run --fault stall --stall-sec 0.2
 uv run --directory testrig bus-testrig bus-run --count 20 --send-interval 0.01
@@ -148,9 +148,11 @@ sent no frame at all, or when a baseline lost a frame; 2 when no interpreter
 could start the bus at all. The JSON report is printed in every case, because
 the numbers are how a failure is read.
 
-`--expect-loss` makes a fault run's claim ("this fault loses") part of that
-check: a `--fault drop` run that lost nothing exits 1 rather than green, which
-is what CI asks of its `drop --after 1` step.
+`--expect-loss` makes a fault run's claim ("this fault loses some and carries
+the rest") part of that check: a run that lost nothing exits 1, and so does one
+that lost *everything* — a dead receiver reads the same as a fault that drops
+every frame, so it cannot prove that a fault works. That is why CI asks it of
+a `--every 3` step rather than `--after 1` alone.
 
 `cut` and `halfopen` are not plain delivery measurements, and the report's
 `notes` says which: after a cut the inbox reconnects and backfills, so the loss

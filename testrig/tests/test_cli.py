@@ -136,6 +136,18 @@ def test_expect_loss_passes_a_fault_run_that_lost(bus_run, capsys):
     assert _json_of(capsys)["measured"]["loss"]["value"] == 4
 
 
+def test_expect_loss_fails_when_everything_was_lost(bus_run, capsys):
+    """`loss == sent` is a dead path, not a fault: a receiver that never gets a
+    frame and a fault that drops every frame look the same, and the flag meant
+    to prove a fault works proved nothing while `loss > 0` was the test.
+    Without this case the older condition kept the whole file green (review of
+    #24)."""
+    bus_run(_run(loss=20, fault="drop", closed="inbox never opened"))
+    assert _main(["bus-run", "--count", "20", "--fault", "drop", "--after", "1",
+                  "--expect-loss"]) == 1
+    assert "loses some and carries the rest" in capsys.readouterr().err
+
+
 def test_a_fault_run_that_measured_nothing_exits_non_zero(bus_run, capsys):
     """The inbox never opened: the loss says "everything", and every
     comparison against it would be against nothing (the `drop --after 0` run

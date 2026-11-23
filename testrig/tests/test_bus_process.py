@@ -362,60 +362,31 @@ async def test_a_failed_send_is_neither_sent_nor_lost(monkeypatch):
 
 
 @skip_no_bus
-async def test_a_post_delivered_by_the_catch_up_read_is_counted_as_arrived(monkeypatch):
-    """Follow-up review point 3: `seq_of` was filled only after `post_message`
-    returned, so a post the receiver was handed while that call was still in
-    flight — by the catch-up read after a reconnect — had no seq yet and was
-    counted as lost.
+def test_a_delivered_post_is_matched_by_id_or_by_its_text():
+    """The fallback that review point 3 asked for, checked on the decision
+    itself.
 
-    The first send is made to hold its answer while its socket is cut: the
-    receiver's wait fails, reconnects and backfills, and the backfill hands over
-    the post that was just created. With the id-only match that post arrived
-    nowhere, so `loss` was 1 for a run that lost nothing."""
-    from bus_testrig import bus as bus_module
+    `seq_of` is filled only after `post_message` returns, so a post handed over
+    while that call is in flight has no id to match and was counted as lost.
+    Testing this through a whole run cannot prove the fallback: by the time an
+    arrival is counted the id is registered, and an earlier version of this test
+    passed 3 of 3 with the fallback deleted (review of #24). So the decision is
+    called directly, in the state it exists for: a post whose id is not yet
+    known but whose text the run wrote.
+    """
+    from bus_testrig.bus import _match_seq
 
-    recorded: list[MattermostStub] = []
-
-    class Recording(MattermostStub):
-        def __init__(self, *args, **kwargs):
-            super().__init__(*args, **kwargs)
-            recorded.append(self)
-
-    original = BusProcess.call
-    posted = {"n": 0}
-    reads_before = [0]
-
-    async def call(self, tool, **args):
-        answer = await original(self, tool, **args)
-        if tool == "post_message":
-            posted["n"] += 1
-            if posted["n"] == 2:
-                # The post is in the stub and its frame may be on the wire; its
-                # id is not in `seq_of` yet, because this call has not returned.
-                before = len(recorded[0].calls)
-                for conn in list(recorded[0].conns):
-                    conn.transport.abort()
-                # Wait for the catch-up read itself, not for a fixed time: a
-                # slow runner slept 0.6 s, saw nothing and still passed, so the
-                # test proved the clock rather than the backfill (review of
-                # #23). The stub records the read, so it is observable.
-                deadline = asyncio.get_running_loop().time() + 15.0
-                while asyncio.get_running_loop().time() < deadline:
-                    if any(method == "GET" and path.endswith("/posts")
-                           for method, path in recorded[0].calls[before:]):
-                        reads_before[0] += 1
-                        break
-                    await asyncio.sleep(0.01)
-        return answer
-
-    monkeypatch.setattr(bus_module, "MattermostStub", Recording)
-    monkeypatch.setattr(BusProcess, "call", call)
-    run = await bus_run(count=4)
-    assert posted["n"] == 4, posted
-    assert reads_before[0] == 1, "the catch-up read never happened, so the test proved nothing"
-    assert run.sent_frames == 4, run.sent_frames
-    assert run.measure()["loss"]["value"] == 0, (
-        run.measure()["loss"], [s.seq for s in run.sent], sorted(run.received))
+    by_id = {"p-known": 7}
+    by_text = {"bus-run 3": 3, "bus-run 30": 30}
+    # The id wins when the send has returned.
+    assert _match_seq({"id": "p-known", "message": "bus-run 3"}, by_id, by_text) == 7
+    # An id the run has not registered yet is matched by the text it wrote —
+    # the catch-up case. Without the fallback this is None, i.e. lost.
+    assert _match_seq({"id": "p-unknown", "message": "bus-run 3"}, by_id, by_text) == 3
+    # The longest registered text wins, so `bus-run 30` is not read as send 3.
+    assert _match_seq({"id": "p-x", "message": "bus-run 30"}, by_id, by_text) == 30
+    # Nothing this run wrote and no known id: not an arrival of this run.
+    assert _match_seq({"id": "p-other", "message": "someone else"}, by_id, by_text) is None
 
 
 @skip_no_bus
