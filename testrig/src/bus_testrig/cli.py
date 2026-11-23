@@ -157,8 +157,13 @@ def _untrustworthy(run: runner.Run, *, expect_loss: bool = False) -> bool:
               f"{run.sent_frames}, connection_closed={run.closed or None}",
               file=sys.stderr)
         return True
-    if expect_loss and loss <= 0:
-        print(f"bus-testrig: --expect-loss, but the run lost nothing of "
+    if expect_loss and not 0 < loss < run.sent_frames:
+        # `loss > 0` alone let a dead receiver pass: 20 of 20 lost is not a
+        # fault that lost something, it is a path that carried nothing, and it
+        # reads the same as a healthy run under a lossy fault (review of #23).
+        # A measurement needs a fault that lets part of the traffic through.
+        print(f"bus-testrig: --expect-loss wants a fault that loses some and "
+              f"carries the rest, but the run lost {loss} of "
               f"{run.sent_frames} frame(s) under --fault {run.fault}",
               file=sys.stderr)
         return True

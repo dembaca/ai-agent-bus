@@ -207,13 +207,16 @@ async def test_stop_kills_the_whole_group_including_a_grandchild(tmp_path):
 
     The child writes its own pid, and the grandchild's, to a file before it
     sleeps: those pids are read from the file, not discovered by scanning the
-    process table."""
+    process table. Written under a temporary name and renamed, so a reader can
+    never see a half-written file (review of #23)."""
     script = tmp_path / "child.py"
     pids = tmp_path / "pids"
     script.write_text(
         "import os, subprocess, sys, time\n"
         f"grand = subprocess.Popen([sys.executable, '-c', 'import time; time.sleep(120)'])\n"
-        f"open({str(pids)!r}, 'w').write(f'{{os.getpid()}} {{grand.pid}}')\n"
+        f"tmp = {str(pids)!r} + '.part'\n"
+        f"open(tmp, 'w').write(f'{{os.getpid()}} {{grand.pid}}')\n"
+        f"os.replace(tmp, {str(pids)!r})\n"
         "time.sleep(120)\n")
     bus = BusProcess("http://127.0.0.1:1", token=SENDER_TOKEN)
     # The probe is what `start` would do first; there is no bus here, so the
@@ -369,6 +372,7 @@ async def test_a_post_delivered_by_the_catch_up_read_is_counted_as_arrived(monke
 
     original = BusProcess.call
     posted = {"n": 0}
+    reads_before = [0]
 
     async def call(self, tool, **args):
         answer = await original(self, tool, **args)
@@ -377,15 +381,27 @@ async def test_a_post_delivered_by_the_catch_up_read_is_counted_as_arrived(monke
             if posted["n"] == 2:
                 # The post is in the stub and its frame may be on the wire; its
                 # id is not in `seq_of` yet, because this call has not returned.
+                before = len(recorded[0].calls)
                 for conn in list(recorded[0].conns):
                     conn.transport.abort()
-                await asyncio.sleep(0.6)  # the receiver reconnects and backfills
+                # Wait for the catch-up read itself, not for a fixed time: a
+                # slow runner slept 0.6 s, saw nothing and still passed, so the
+                # test proved the clock rather than the backfill (review of
+                # #23). The stub records the read, so it is observable.
+                deadline = asyncio.get_running_loop().time() + 15.0
+                while asyncio.get_running_loop().time() < deadline:
+                    if any(method == "GET" and path.endswith("/posts")
+                           for method, path in recorded[0].calls[before:]):
+                        reads_before[0] += 1
+                        break
+                    await asyncio.sleep(0.01)
         return answer
 
     monkeypatch.setattr(bus_module, "MattermostStub", Recording)
     monkeypatch.setattr(BusProcess, "call", call)
     run = await bus_run(count=4)
     assert posted["n"] == 4, posted
+    assert reads_before[0] == 1, "the catch-up read never happened, so the test proved nothing"
     assert run.sent_frames == 4, run.sent_frames
     assert run.measure()["loss"]["value"] == 0, (
         run.measure()["loss"], [s.seq for s in run.sent], sorted(run.received))

@@ -63,13 +63,14 @@ jobs:
       # `bus-run` drives the real server, so it needs the bus's own project
       # synced; the step above did that. A baseline that loses a frame or has an
       # unknown stub call exits non-zero (review point 2), so this also asserts
-      # the plain run is clean. The `drop --after 1` run is asked to lose
-      # (`--expect-loss`, follow-up review point 2): without it a sender that
-      # broke before its first post lost nothing and stayed green.
+      # the plain run is clean. The faulted run is asked to lose *some* and
+      # carry the rest (`--expect-loss`, `--every 3`): at `--every 1` everything
+      # is lost, which a dead receiver also produces, so it could not tell the
+      # two apart (review of #23).
       - name: run the bus through the rig
         run: |
           uv run --locked bus-testrig bus-run --count 20
-          uv run --locked bus-testrig bus-run --count 20 --fault drop --after 1 --expect-loss
+          uv run --locked bus-testrig bus-run --count 20 --fault drop --after 1 --every 3 --expect-loss
         working-directory: testrig
 
       - name: a fault really changes the numbers
