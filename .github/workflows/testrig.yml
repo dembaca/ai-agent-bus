@@ -43,5 +43,14 @@ jobs:
       - name: echo run, no Lab and no server
         run: uv run --locked bus-testrig echo-run
 
+      # `bus-run` drives the real server, so it needs the bus's own project
+      # synced; without this the bus tests skip and nothing checks that module.
+      - name: sync the bus, then run it through the rig
+        run: |
+          uv sync --locked --directory ../mcp
+          uv run --locked bus-testrig bus-run --count 20
+          uv run --locked bus-testrig bus-run --count 20 --fault drop --after 1
+        working-directory: testrig
+
       - name: a fault really changes the numbers
         run: uv run --locked python scripts/ci_fault_check.py

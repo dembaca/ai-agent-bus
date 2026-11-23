@@ -2,11 +2,13 @@
 
   bus-testrig measurands     the measurands as the file declares them
   bus-testrig echo-run       the whole flow against a local echo endpoint
+  bus-testrig bus-run        the real MCP server, posting and receiving
 
 `echo-run` needs no Lab and no server: it starts a loopback echo endpoint, puts
-the proxy in front of it and measures the harness's own round trip. It does
-**not** drive the bus yet; that is the follow-up PR, and the report says so in
-its `target` field rather than leaving a reader to assume otherwise.
+the proxy in front of it and measures the harness's own round trip, which proves
+the harness works where the bus does not run. `bus-run` drives the bus itself —
+two real `mattermost_ai_agent_bus` processes and the Mattermost stub — and its
+report says `target: bus` rather than leaving a reader to assume otherwise.
 """
 
 from __future__ import annotations
@@ -46,6 +48,16 @@ def main(argv: list[str] | None = None) -> int:
     echo.add_argument("--stall-sec", type=float, default=0.05)
     echo.add_argument("--send-interval", type=float, default=0.0)
 
+    bus = sub.add_parser("bus-run", help="the real MCP server, posting and receiving")
+    # `none` is spelled out: a run's fault is a value the report carries, and
+    # `--fault none` reads as the baseline it is rather than as a missing flag.
+    bus.add_argument("--fault", choices=("none", *KINDS), default="none")
+    bus.add_argument("--count", type=int, default=100)
+    bus.add_argument("--every", type=int, default=1)
+    bus.add_argument("--after", type=int, default=0)
+    bus.add_argument("--stall-sec", type=float, default=0.05)
+    bus.add_argument("--send-interval", type=float, default=0.0)
+
     args = ap.parse_args(argv)
     if args.cmd == "measurands":
         for m in measurands.load():
@@ -54,11 +66,26 @@ def main(argv: list[str] | None = None) -> int:
         return 0
 
     fault = None
-    if args.fault:
+    if args.fault and args.fault != "none":
         fault = ProxyFault(kind=args.fault, every=args.every, after=args.after,
                            stall_sec=args.stall_sec)
-    run = asyncio.run(runner.echo_run(count=args.count, fault=fault,
-                                      send_interval=args.send_interval))
+    if args.cmd == "bus-run":
+        # Imported here: the echo run must work where the bus's package is
+        # not installed, and that include is what `bus` probes for.
+        from . import bus as bus_module
+
+        try:
+            run = asyncio.run(bus_module.bus_run(count=args.count, fault=fault,
+                                                send_interval=args.send_interval))
+        except RuntimeError as exc:
+            # What `bus_run` cannot catch itself: the interpreter probe or the
+            # spawn, before there is a run to report. A traceback here would
+            # bury the one sentence that says what to do.
+            print(f"bus-testrig: {exc}", file=sys.stderr)
+            return 2
+    else:
+        run = asyncio.run(runner.echo_run(count=args.count, fault=fault,
+                                          send_interval=args.send_interval))
     run.commit = _commit()
     print(json.dumps(run.report(), indent=2, sort_keys=True))
     return 0

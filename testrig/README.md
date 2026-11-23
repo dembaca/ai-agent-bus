@@ -1,16 +1,29 @@
 # testrig — fault runs for the agent bus
 
-The scaffolding for measuring the bus under injected faults, so that the
-acceptance of phase 4 can compare against **today's** bus rather than memory.
+The harness that measures the bus under injected faults, so that the acceptance
+of phase 4 can compare against **today's** bus rather than memory.
 
-**What it measures today:** its own echo loop — a real `websockets` server, the
-real proxy in front of it, and its own client. It does **not** drive the bus
-yet: no code path here starts a server, a bot or a session. Driving the bus
-(the MCP server as a subprocess) is the follow-up PR. What it does have ready
-for that PR is a Mattermost stand-in that answers what the bus was measured to
-call (`stub.MattermostStub`, on `gateway.Gateway`) and a proxy that puts it in
-front of the bus (`proxy.GatewayProxy`). Every number it prints is therefore
-about the harness, not the bus, and the report says so in its `target` field.
+**What it measures:** the bus itself. `bus-run` starts two real
+`mattermost_ai_agent_bus` MCP servers — one posts with `post_message`, one
+receives with `wait_for_events` — in front of the Mattermost stand-in
+(`stub.MattermostStub`, on `gateway.Gateway`) and, when a fault is asked for,
+the proxy (`proxy.GatewayProxy`). Every number it prints is about that path:
+frames the sender handed to the server, frames the receiver's tool returned,
+the time between, and what the stub and the relay saw. It is the same
+bookkeeping (`runner.Run`) and the same formulas the echo run uses, so the two
+runs' numbers compare directly.
+
+**What it does not measure:** anything that needs more than the two roles a run
+stages. The coordinator rows of the plan — a hard stop and the crown passing, a
+take-over, 100 human posts under fault — stay `not_yet_measurable` in
+`measurands.toml`, each with the reason. A `bus-run` posts bot to bot in one
+home channel; it does not stage a role switch, does not read with a human's
+account and does not run long enough for a 14-day retention check.
+
+`echo-run` remains: it starts a loopback echo endpoint and measures the
+harness's own round trip, which proves the harness works where the bus does not.
+`bus-run` needs `mcp/` synced (`uv sync --directory mcp`); without it the
+command says so instead of pretending.
 
 Not part of the bus: nothing here is imported by `mcp/`, and the bus does not
 know this directory exists.
@@ -79,11 +92,33 @@ uv run --directory testrig bus-testrig echo-run --fault duplicate
 uv run --directory testrig bus-testrig echo-run --fault reorder --after 1
 uv run --directory testrig bus-testrig echo-run --fault stall --stall-sec 0.2
 uv run --directory testrig bus-testrig echo-run --fault halfopen
+
+uv run --directory testrig bus-testrig bus-run
+uv run --directory testrig bus-testrig bus-run --fault drop
+uv run --directory testrig bus-testrig bus-run --fault duplicate --after 1
+uv run --directory testrig bus-testrig bus-run --fault stall --stall-sec 0.2
+uv run --directory testrig bus-testrig bus-run --count 20 --send-interval 0.01
 ```
 
 `echo-run` needs no Lab, no test channel and no test bots: it starts a loopback
 echo endpoint, puts the proxy in front of it and measures the harness's own
-round trip. That is what proves the harness works before the Lab exists.
+round trip. `bus-run` needs `uv sync --directory mcp`: it runs the real server
+as a subprocess, found by asking each candidate interpreter whether it imports
+the package (this project's own venv does not, by design).
+
+Two numbers a `bus-run` reports need a word of their own:
+
+- `--fault duplicate` shows **0 duplicates at the tool boundary** while the
+  relay forwarded twice as many frames as it received. The bus's inbox hands a
+  post over once by id (`websocket_inbox._seen_ids`), so the wire duplication is
+  absorbed before the agent sees it. Both numbers are in the report — the wire's
+  in `relay`, the bus's in `measured` — and the run says so in `notes`.
+- `--fault drop` with the default `--after 0` eats the socket's handshake
+  frame, so the inbox never opens and every frame is lost. That is a real
+  measurement (loss equals frames sent), not a crash: `connection_closed` says
+  the inbox never opened, and `stderr_tail` carries the server's own message.
+  `--after 1` lets the handshake through and measures loss on the delivered
+  frames.
 
 The stub and the HTTP-passing proxy are exercised end to end by
 `scripts/stub_roundtrip.py`, which runs the real `MattermostAdapter` against
@@ -93,8 +128,11 @@ The stub and the HTTP-passing proxy are exercised end to end by
 uv run --directory mcp --with httpx python ../testrig/scripts/stub_roundtrip.py
 ```
 
-Runs against the real bus need the test channel, test bots and a machine
-outside the sandbox; the harness is built to be ready before those exist.
+The bus's own calls, as measured from the running server, are the stub's
+`KNOWN` table plus three the first `bus-run` found and added: the heartbeat's
+status write, the roster read (`GET /api/v4/users`), and the exit path's
+unregister (`DELETE /register/v1/agents/<name>`). A run reports any *other*
+unknown call in `notes`, so a new gap is visible rather than a silent 404.
 
 ## Layout
 
@@ -103,14 +141,16 @@ testrig/
   pyproject.toml        own project: the move changes mcp/pyproject.toml, not this
   measurands.toml       the names, their acceptance row, their status
   src/bus_testrig/
-    cli.py              bus-testrig measurands | echo-run
+    cli.py              bus-testrig measurands | echo-run | bus-run
     gateway.py          one port speaking HTTP and the WebSocket upgrade
     stub.py             MattermostStub: the measured REST answers and a scripted socket
+    bus.py              the MCP server as a subprocess, and the run that measures it
     measurands.py       reads measurands.toml; a run cannot report an undeclared name
     proxy.py            the proxies (WebSocket-only and HTTP-passing) and the frame faults
     proc.py             the operating-system faults, and where they cannot be produced
     runner.py           a run's bookkeeping, the percentiles, the report
   scripts/ci_fault_check.py  the CI check that a fault changes the numbers
   scripts/stub_roundtrip.py  the real adapter against the stub, over TCP
-  tests/              against the real websockets library and a real killed process
+  tests/              against the real websockets library, a real killed process
+                      and, in test_bus_process.py, the real MCP server
 ```

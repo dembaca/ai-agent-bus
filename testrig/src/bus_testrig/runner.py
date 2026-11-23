@@ -1,9 +1,10 @@
 """Runs: send frames, fault the channel, measure what arrived.
 
-This harness measures **its own echo loop** today: a real `websockets` server,
-the real proxy in front of it and the harness's own client. It does not drive
-the bus yet — that is the follow-up PR, and every text here says so rather
-than implying otherwise (review point 1).
+Two runs share this bookkeeping. `echo_run` measures the harness's own echo
+loop — a real `websockets` server, the real proxy in front of it and the
+harness's own client — and proves the harness works where the bus does not
+run. `bus.bus_run` measures the bus itself: two real MCP server processes, one
+posting and one receiving, through the stub.
 
 The measurement is independent of when a test reads: `Sent` and `Received`
 are recorded at the moment each side acts, so a slow reader cannot inflate a
@@ -69,6 +70,15 @@ class Run:
     closed: str = ""  # set when a fault ended the connection (a cut)
     #: how many frames the run had sent when it stopped sending
     sent_frames: int = 0
+    #: the bus's own stderr when the target was a process: a failure is read
+    #: with what the server said, not guessed from a missing frame
+    tail: list[str] = field(default_factory=list)
+    #: what the run saw that is not a delivery result (a stub call it could not
+    #: answer), so the report says where its numbers came from
+    notes: list[str] = field(default_factory=list)
+    #: the proxy's own counters when a fault sat in front of the socket
+    #: (received, forwarded, altered): the frames it saw, passed and changed
+    relay: dict[str, int] = field(default_factory=dict)
 
     def send(self, seq: int) -> Sent:
         item = Sent(seq=seq, at=time.monotonic())
@@ -142,6 +152,9 @@ class Run:
             "commit": self.commit,
             "duration_s": round(self.ended - self.started, 3) if self.ended else None,
             "connection_closed": self.closed or None,
+            "stderr_tail": self.tail,
+            "notes": self.notes,
+            "relay": self.relay,
             "measured": self.measure(),
         }
 

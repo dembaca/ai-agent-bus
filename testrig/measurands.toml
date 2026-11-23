@@ -74,7 +74,7 @@ name = "Coordinator take-over, 95th percentile"
 source = "Roles and coordinator, ADR-014 phase 4 (30 s is a new target, not today's)"
 unit = "s"
 status = "not_yet_measurable"
-why = "The harness has no bus and no coordinator yet: it cannot stop one and watch the crown pass (follow-up PR)."
+why = "The harness drives one bus and its own posts; a coordinator take-over needs two roles and a hard stop of one, which no run here does."
 what = "95th percentile time from a hard stop of the coordinator to the crown being held again."
 
 [[measurand]]
@@ -83,7 +83,7 @@ name = "Events handled twice or not at all"
 source = "Roles and coordinator, ADR-014 phase 4"
 unit = "events"
 status = "not_yet_measurable"
-why = "Needs a running bus whose coordinator events the harness can count (follow-up PR)."
+why = "A take-over is needed to produce these events, and the rig stages no role switch (see takeover_p95)."
 what = "Coordinator events handled twice or not at all after a take-over."
 
 [[measurand]]
@@ -113,7 +113,7 @@ name = "Human posts handled zero or several times"
 source = "Roles and coordinator, ADR-014 phase 4 (100 human posts under fault)"
 unit = "posts"
 status = "not_yet_measurable"
-why = "Needs a running bus that can be faulted while a human posts 100 times (follow-up PR)."
+why = "The rig fault the socket of one bot's inbox, not 100 human posts; counting them needs a human (or a script) posting into the same run."
 what = "Human posts out of 100 under fault that were handled zero times or more than once."
 
 # Row 7 of the plan, a proposal: approvals counted per kind. A is the first
