@@ -107,6 +107,9 @@ func New(cfg Config, verifier Verifier, store *directory.Store, source Source) (
 	mux.HandleFunc("GET /v1/directory/pending", h.auth(true, h.listPending))
 	mux.HandleFunc("POST /v1/directory/pending/{name}/confirm", h.auth(true, h.confirmPending))
 	mux.HandleFunc("DELETE /v1/directory/pending/{name}", h.auth(true, h.dropPending))
+	mux.HandleFunc("GET /v1/directory/accounts/mattermost/{name}", h.auth(true, h.getAccount))
+	mux.HandleFunc("PUT /v1/directory/accounts/mattermost/{name}", h.auth(true, h.putAccount))
+	mux.HandleFunc("DELETE /v1/directory/accounts/mattermost/{name}", h.auth(true, h.dropAccount))
 	h.mux = mux
 	return h, nil
 }

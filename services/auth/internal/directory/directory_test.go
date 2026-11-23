@@ -4,8 +4,10 @@ import (
 	"context"
 	"encoding/hex"
 	"errors"
+	"log/slog"
 	"strconv"
 	"strings"
+	"sync"
 	"testing"
 	"time"
 
@@ -457,5 +459,568 @@ func TestResolveTrusted(t *testing.T) {
 	nc.Close()
 	if got, _, err := s2.ResolveTrusted(ctx(t), []string{"alice"}, true); err == nil || got != nil {
 		t.Fatalf("a failed read: %+v %v", got, err)
+	}
+}
+
+// RT-6.41 step 2, issue #59: the account index follows a verified login; the import's
+// SetAccount never takes a name over.
+func TestAnAccountIsClaimedOnlyAfterTheImportAndMovesWithItsHolder(t *testing.T) {
+	s, _ := open(t)
+	var logs strings.Builder
+	a := Anchors{Store: s, Log: slog.New(slog.NewTextHandler(&logs, nil))}
+	for _, sub := range []string{"sub-a", "sub-b"} {
+		if _, err := s.Login(ctx(t), sub, "x", ""); err != nil {
+			t.Fatal(err)
+		}
+	}
+	// Before the import nothing is written.
+	if err := a.Account(ctx(t), "sub-a", "alice"); err != nil {
+		t.Fatal(err)
+	}
+	if _, _, _, ok, _ := s.Account(ctx(t), "mattermost", "alice"); ok {
+		t.Fatal("an index entry was written before the import")
+	}
+	if err := s.MarkImported(ctx(t), time.Now()); err != nil {
+		t.Fatal(err)
+	}
+	// A new person: entry set.
+	if err := a.Account(ctx(t), "sub-a", "alice"); err != nil {
+		t.Fatal(err)
+	}
+	if id, ok, err := s.ByAccount(ctx(t), "mattermost", "alice"); err != nil || !ok || id.Sub != "sub-a" {
+		t.Fatalf("new person: %+v %v %v", id, ok, err)
+	}
+	if err := a.Account(ctx(t), "sub-a", "alice"); err != nil || logs.Len() != 0 {
+		t.Fatalf("the same holder again: %v, log %q", err, logs.String())
+	}
+	// Rename: the new key points at sub, the old one is gone.
+	if err := a.Account(ctx(t), "sub-a", "alice2"); err != nil {
+		t.Fatal(err)
+	}
+	if id, ok, _ := s.ByAccount(ctx(t), "mattermost", "alice2"); !ok || id.Sub != "sub-a" {
+		t.Fatalf("renamed: %+v %v", id, ok)
+	}
+	if _, _, _, ok, _ := s.Account(ctx(t), "mattermost", "alice"); ok {
+		t.Fatal("the old key is still there")
+	}
+	// The name moves to another sub.
+	if err := a.Account(ctx(t), "sub-b", "alice2"); err != nil {
+		t.Fatal(err)
+	}
+	id, ok, err := s.ByAccount(ctx(t), "mattermost", "alice2")
+	if err != nil || !ok || id.Sub != "sub-b" || id.MovedFrom["mattermost"] != "sub-a" {
+		t.Fatalf("moved: %+v %v %v", id, ok, err)
+	}
+	old, _, _, _ := s.Identity(ctx(t), "sub-a")
+	if old.Accounts["mattermost"] != "" {
+		t.Fatalf("the old holder keeps the name: %+v", old)
+	}
+	if sub, _, from, ok, _ := s.Account(ctx(t), "mattermost", "alice2"); !ok || sub != "sub-b" || from != "sub-a" {
+		t.Fatalf("Account: %q %q %v", sub, from, ok)
+	}
+	for _, w := range []string{"level=WARN", "chat account name moved", "name=alice2", "from=sub-a", "to=sub-b"} {
+		if !strings.Contains(logs.String(), w) {
+			t.Errorf("log lacks %q: %s", w, logs.String())
+		}
+	}
+	// The import's SetAccount never takes a name over.
+	if err := s.SetAccount(ctx(t), "sub-a", "mattermost", "alice2"); !errors.Is(err, ErrConflict) {
+		t.Fatalf("SetAccount over a held name: %v", err)
+	}
+	if id, ok, _ := s.ByAccount(ctx(t), "mattermost", "alice2"); !ok || id.Sub != "sub-b" {
+		t.Fatalf("SetAccount took it over: %+v", id)
+	}
+	if _, err := s.ClaimAccount(ctx(t), "sub-nobody", "mattermost", "zed"); !errors.Is(err, ErrNoIdentity) {
+		t.Fatalf("no identity: %v", err)
+	}
+	if _, _, _, ok, _ := s.Account(ctx(t), "mattermost", "zed"); ok {
+		t.Fatal("a name was written for an identity that does not exist")
+	}
+}
+
+func TestAHalfWrittenMoveResolvesToNotFound(t *testing.T) {
+	s, _ := open(t)
+	for _, sub := range []string{"sub-a", "sub-b"} {
+		if _, err := s.Login(ctx(t), sub, "x", ""); err != nil {
+			t.Fatal(err)
+		}
+	}
+	if err := s.SetAccount(ctx(t), "sub-a", "mattermost", "alice"); err != nil {
+		t.Fatal(err)
+	}
+	// The key moved, the records did not follow.
+	key, _ := accountKey("mattermost", "alice")
+	if _, err := s.kv.Put(ctx(t), key, []byte("sub-b")); err != nil {
+		t.Fatal(err)
+	}
+	if id, ok, _ := s.ByAccount(ctx(t), "mattermost", "alice"); ok {
+		t.Fatalf("a half-written move resolved to %+v", id)
+	}
+}
+
+func TestTheAdminsAccountWritesAreOverExactRevisions(t *testing.T) {
+	s, _ := open(t)
+	for _, sub := range []string{"sub-a", "sub-b"} {
+		if _, err := s.Login(ctx(t), sub, "x", ""); err != nil {
+			t.Fatal(err)
+		}
+	}
+	if _, err := s.PutAccount(ctx(t), "sub-a", "mattermost", "alice", 0); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := s.PutAccount(ctx(t), "sub-b", "mattermost", "alice", 0); !errors.Is(err, ErrConflict) {
+		t.Fatalf("create over an existing key: %v", err)
+	}
+	if _, err := s.PutAccount(ctx(t), "sub-b", "mattermost", "nobody", 5); !errors.Is(err, ErrNotFound) {
+		t.Fatalf("replace a missing key: %v", err)
+	}
+	if _, err := s.PutAccount(ctx(t), "sub-nobody", "mattermost", "zed", 0); !errors.Is(err, ErrNoIdentity) {
+		t.Fatalf("unknown identity: %v", err)
+	}
+	_, rev, _, _, _ := s.Account(ctx(t), "mattermost", "alice")
+	if _, err := s.PutAccount(ctx(t), "sub-b", "mattermost", "alice", rev+1); !errors.Is(err, ErrConflict) {
+		t.Fatalf("replace over a wrong revision: %v", err)
+	}
+	mv, err := s.PutAccount(ctx(t), "sub-b", "mattermost", "alice", rev)
+	from := mv.From
+	if err != nil || from != "sub-a" {
+		t.Fatalf("replace: %q %v", from, err)
+	}
+	if id, ok, _ := s.ByAccount(ctx(t), "mattermost", "alice"); !ok || id.Sub != "sub-b" {
+		t.Fatalf("after replace: %+v", id)
+	}
+	old, _, _, _ := s.Identity(ctx(t), "sub-a")
+	if old.Accounts["mattermost"] != "" {
+		t.Fatalf("old holder keeps the name: %+v", old)
+	}
+	_, rev, _, _, _ = s.Account(ctx(t), "mattermost", "alice")
+	if _, _, err := s.DropAccount(ctx(t), "mattermost", "alice", rev+1); !errors.Is(err, ErrConflict) {
+		t.Fatalf("drop over a wrong revision: %v", err)
+	}
+	if _, _, err := s.DropAccount(ctx(t), "mattermost", "none", 1); !errors.Is(err, ErrNotFound) {
+		t.Fatalf("drop a missing key: %v", err)
+	}
+	if sub, _, err := s.DropAccount(ctx(t), "mattermost", "alice", rev); err != nil || sub != "sub-b" {
+		t.Fatalf("drop: %q %v", sub, err)
+	}
+	b, _, _, _ := s.Identity(ctx(t), "sub-b")
+	if _, _, _, ok, _ := s.Account(ctx(t), "mattermost", "alice"); ok || b.Accounts["mattermost"] != "" {
+		t.Fatalf("after drop: key %v, identity %+v", ok, b)
+	}
+}
+
+// RT-6.41 step 2, issue #59: a move that stops after its key moved is
+// reported at once and finished, with the old holder released, by the next
+// write of that name; at no stop does the name resolve to the old holder
+// once its key has moved.
+func TestAnInterruptedMoveIsReportedAndFinished(t *testing.T) {
+	for _, stop := range []string{"key moved", "holder written"} {
+		t.Run(stop, func(t *testing.T) {
+			s, _ := open(t)
+			var logs strings.Builder
+			a := Anchors{Store: s, Log: slog.New(slog.NewTextHandler(&logs, nil))}
+			for _, sub := range []string{"sub-a", "sub-b"} {
+				if _, err := s.Login(ctx(t), sub, "x", ""); err != nil {
+					t.Fatal(err)
+				}
+			}
+			if err := s.MarkImported(ctx(t), time.Now()); err != nil {
+				t.Fatal(err)
+			}
+			if err := a.Account(ctx(t), "sub-a", "alice"); err != nil {
+				t.Fatal(err)
+			}
+			boom := errors.New("stopped")
+			accountStep = func(at string) error {
+				if at == stop {
+					return boom
+				}
+				return nil
+			}
+			t.Cleanup(func() { accountStep = func(string) error { return nil } })
+			if err := a.Account(ctx(t), "sub-b", "alice"); !errors.Is(err, boom) {
+				t.Fatalf("the stopped move: %v", err)
+			}
+			if !strings.Contains(logs.String(), "from=sub-a") || !strings.Contains(logs.String(), "complete=false") {
+				t.Fatalf("a half move is not reported: %s", logs.String())
+			}
+			if id, ok, _ := s.ByAccount(ctx(t), "mattermost", "alice"); ok && id.Sub != "sub-b" {
+				t.Fatalf("after the key moved the name resolves to %+v", id)
+			}
+			accountStep = func(string) error { return nil }
+			logs.Reset()
+			if err := a.Account(ctx(t), "sub-b", "alice"); err != nil {
+				t.Fatal(err)
+			}
+			if !strings.Contains(logs.String(), "from=sub-a") || !strings.Contains(logs.String(), "complete=true") {
+				t.Fatalf("the finished move is not reported: %s", logs.String())
+			}
+			id, ok, _ := s.ByAccount(ctx(t), "mattermost", "alice")
+			if !ok || id.Sub != "sub-b" || id.MovedFrom["mattermost"] != "sub-a" {
+				t.Fatalf("finished: %+v %v", id, ok)
+			}
+			if old, _, _, _ := s.Identity(ctx(t), "sub-a"); old.Accounts["mattermost"] != "" {
+				t.Fatalf("the old holder keeps the name: %+v", old)
+			}
+			if _, err := s.kv.Get(ctx(t), moveKey("mattermost", "alice")); !errors.Is(err, jetstream.ErrKeyNotFound) {
+				t.Fatalf("the mark stays: %v", err)
+			}
+			logs.Reset()
+			if err := a.Account(ctx(t), "sub-b", "alice"); err != nil || logs.Len() != 0 {
+				t.Fatalf("a settled name is reported again: %v %s", err, logs.String())
+			}
+		})
+	}
+}
+
+// The key moves only over the revision read: a holder that changed
+// meanwhile is the one the name moves from.
+func TestAMoveIsOverTheKeysRevision(t *testing.T) {
+	s, _ := open(t)
+	for _, sub := range []string{"sub-a", "sub-b", "sub-c"} {
+		if _, err := s.Login(ctx(t), sub, "x", ""); err != nil {
+			t.Fatal(err)
+		}
+	}
+	if err := s.SetAccount(ctx(t), "sub-a", "mattermost", "alice"); err != nil {
+		t.Fatal(err)
+	}
+	once := true
+	accountStep = func(at string) error {
+		if at == "before key" && once {
+			once = false
+			if _, err := s.ClaimAccount(ctx(t), "sub-c", "mattermost", "alice"); err != nil {
+				t.Error(err)
+			}
+		}
+		return nil
+	}
+	t.Cleanup(func() { accountStep = func(string) error { return nil } })
+	mv, err := s.ClaimAccount(ctx(t), "sub-b", "mattermost", "alice")
+	from := mv.From
+	if err != nil || from != "sub-c" {
+		t.Fatalf("moved from %q (%v), want sub-c", from, err)
+	}
+	if c, _, _, _ := s.Identity(ctx(t), "sub-c"); c.Accounts["mattermost"] != "" {
+		t.Fatalf("the holder of meanwhile keeps the name: %+v", c)
+	}
+}
+
+// Releasing a name leaves a record alone that lists another one; a rename
+// clears the note of where the old name came from.
+func TestReleaseChecksTheNameAndARenameClearsMovedFrom(t *testing.T) {
+	s, _ := open(t)
+	for _, sub := range []string{"sub-a", "sub-b"} {
+		if _, err := s.Login(ctx(t), sub, "x", ""); err != nil {
+			t.Fatal(err)
+		}
+	}
+	if _, err := s.ClaimAccount(ctx(t), "sub-a", "mattermost", "anna"); err != nil {
+		t.Fatal(err)
+	}
+	if err := s.releaseAccount(ctx(t), "sub-a", "mattermost", "alice"); err != nil {
+		t.Fatal(err)
+	}
+	if a, _, _, _ := s.Identity(ctx(t), "sub-a"); a.Accounts["mattermost"] != "anna" {
+		t.Fatalf("a release of another name took %+v", a)
+	}
+	if _, err := s.ClaimAccount(ctx(t), "sub-b", "mattermost", "anna"); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := s.ClaimAccount(ctx(t), "sub-b", "mattermost", "bea"); err != nil {
+		t.Fatal(err)
+	}
+	if b, _, _, _ := s.Identity(ctx(t), "sub-b"); b.MovedFrom["mattermost"] != "" {
+		t.Fatalf("a rename kept moved_from: %+v", b)
+	}
+	if _, _, from, ok, _ := s.Account(ctx(t), "mattermost", "bea"); !ok || from != "" {
+		t.Fatalf("bea: %q %v", from, ok)
+	}
+}
+
+// stopAt makes the move stop at one step until the returned func is called.
+func stopAt(t *testing.T, step string) (restart func()) {
+	restore := SetAccountStepForTest(func(at string) error {
+		if at == step {
+			return errors.New("stopped at " + at)
+		}
+		return nil
+	})
+	t.Cleanup(restore)
+	return restore
+}
+
+func imported3(t *testing.T) (*Store, Anchors, *strings.Builder) {
+	s, _ := open(t)
+	var logs strings.Builder
+	a := Anchors{Store: s, Log: slog.New(slog.NewTextHandler(&logs, nil))}
+	for _, sub := range []string{"sub-a", "sub-b", "sub-c"} {
+		if _, err := s.Login(ctx(t), sub, "x", ""); err != nil {
+			t.Fatal(err)
+		}
+	}
+	if err := s.MarkImported(ctx(t), time.Now()); err != nil {
+		t.Fatal(err)
+	}
+	if err := a.Account(ctx(t), "sub-a", "alice"); err != nil {
+		t.Fatal(err)
+	}
+	return s, a, &logs
+}
+
+func listsAlice(t *testing.T, s *Store, sub string) bool {
+	id, _, _, err := s.Identity(ctx(t), sub)
+	if err != nil {
+		t.Fatal(err)
+	}
+	return id.Accounts["mattermost"] == "alice"
+}
+
+// A move a→b stops; c then takes the name: the mark of the stopped move is
+// not lost, a loses the name and that is logged.
+func TestAStoppedMoveIsNotLostToTheNextOne(t *testing.T) {
+	s, a, logs := imported3(t)
+	restart := stopAt(t, "key moved")
+	if err := a.Account(ctx(t), "sub-b", "alice"); err == nil {
+		t.Fatal("the move did not stop")
+	}
+	restart()
+	if err := a.Account(ctx(t), "sub-c", "alice"); err != nil {
+		t.Fatal(err)
+	}
+	if listsAlice(t, s, "sub-a") || listsAlice(t, s, "sub-b") {
+		t.Fatal("an earlier holder keeps the name")
+	}
+	if id, ok, _ := s.ByAccount(ctx(t), "mattermost", "alice"); !ok || id.Sub != "sub-c" {
+		t.Fatalf("after the takeover: %+v %v", id, ok)
+	}
+	for _, w := range []string{"unfinished move", "released=sub-a", "from=sub-b", "to=sub-c", "complete=true"} {
+		if !strings.Contains(logs.String(), w) {
+			t.Errorf("log lacks %q: %s", w, logs.String())
+		}
+	}
+	if _, err := s.kv.Get(ctx(t), moveKey("mattermost", "alice")); !errors.Is(err, jetstream.ErrKeyNotFound) {
+		t.Fatalf("the mark stays: %v", err)
+	}
+}
+
+// A mark whose key never moved is stale once its holder has left the name:
+// the next holder of the freed name invents no move.
+func TestAStaleMarkInventsNoMove(t *testing.T) {
+	s, a, logs := imported3(t)
+	restart := stopAt(t, "before key")
+	if err := a.Account(ctx(t), "sub-b", "alice"); err == nil {
+		t.Fatal("the move did not stop")
+	}
+	restart()
+	if err := a.Account(ctx(t), "sub-a", "anna"); err != nil { // a renames, alice is free
+		t.Fatal(err)
+	}
+	logs.Reset()
+	if err := a.Account(ctx(t), "sub-c", "alice"); err != nil {
+		t.Fatal(err)
+	}
+	if logs.Len() != 0 {
+		t.Fatalf("a move was invented: %s", logs.String())
+	}
+	if _, _, from, ok, _ := s.Account(ctx(t), "mattermost", "alice"); !ok || from != "" {
+		t.Fatalf("moved_from %q (%v), want none", from, ok)
+	}
+	if id, _, _, _ := s.Identity(ctx(t), "sub-a"); id.Accounts["mattermost"] != "anna" {
+		t.Fatalf("a lost its new name: %+v", id)
+	}
+	if _, err := s.kv.Get(ctx(t), moveKey("mattermost", "alice")); !errors.Is(err, jetstream.ErrKeyNotFound) {
+		t.Fatalf("the stale mark stays: %v", err)
+	}
+}
+
+// An admin's DELETE while a move is unfinished: no one keeps the name.
+func TestADropReleasesAnUnfinishedMove(t *testing.T) {
+	s, a, _ := imported3(t)
+	restart := stopAt(t, "key moved")
+	if err := a.Account(ctx(t), "sub-b", "alice"); err == nil {
+		t.Fatal("the move did not stop")
+	}
+	restart()
+	_, rev, _, ok, err := s.Account(ctx(t), "mattermost", "alice")
+	if err != nil || !ok {
+		t.Fatal(ok, err)
+	}
+	if _, released, err := s.DropAccount(ctx(t), "mattermost", "alice", rev); err != nil || released != "sub-a" {
+		t.Fatalf("drop: released %q, %v", released, err)
+	}
+	if listsAlice(t, s, "sub-a") || listsAlice(t, s, "sub-b") {
+		t.Fatal("a record keeps the dropped name")
+	}
+	if _, err := s.kv.Get(ctx(t), moveKey("mattermost", "alice")); !errors.Is(err, jetstream.ErrKeyNotFound) {
+		t.Fatalf("the mark stays: %v", err)
+	}
+}
+
+// An admin's PUT that stops after its key moved is finished, and reported,
+// by the next login of the new holder.
+func TestAStoppedAdminPutIsFinishedByTheNextLogin(t *testing.T) {
+	s, a, logs := imported3(t)
+	_, rev, _, _, _ := s.Account(ctx(t), "mattermost", "alice")
+	restart := stopAt(t, "key moved")
+	mv, err := s.PutAccount(ctx(t), "sub-b", "mattermost", "alice", rev)
+	if err == nil || mv.From != "sub-a" {
+		t.Fatalf("the stopped PUT: %+v %v", mv, err)
+	}
+	restart()
+	logs.Reset()
+	if err := a.Account(ctx(t), "sub-b", "alice"); err != nil {
+		t.Fatal(err)
+	}
+	if !strings.Contains(logs.String(), "from=sub-a") || listsAlice(t, s, "sub-a") {
+		t.Fatalf("not finished: a lists alice %v, log %s", listsAlice(t, s, "sub-a"), logs.String())
+	}
+}
+
+// A mark whose old holder still holds the key (the move stopped before it)
+// is stale for that holder: its next login keeps its name.
+func TestTheHolderOfAStaleMarkKeepsItsName(t *testing.T) {
+	s, a, logs := imported3(t)
+	restart := stopAt(t, "before key")
+	if err := a.Account(ctx(t), "sub-b", "alice"); err == nil {
+		t.Fatal("the move did not stop")
+	}
+	restart()
+	logs.Reset()
+	if err := a.Account(ctx(t), "sub-a", "alice"); err != nil {
+		t.Fatal(err)
+	}
+	if !listsAlice(t, s, "sub-a") || logs.Len() != 0 {
+		t.Fatalf("the holder lost its name or a move was told: %v %s", listsAlice(t, s, "sub-a"), logs.String())
+	}
+	if id, ok, _ := s.ByAccount(ctx(t), "mattermost", "alice"); !ok || id.Sub != "sub-a" {
+		t.Fatalf("resolves to %+v %v", id, ok)
+	}
+}
+
+// The old holder takes its name back from a stopped move: nothing is told
+// as released, the name moves back from the key's holder.
+func TestTakingANameBackFromAStoppedMoveReleasesNobody(t *testing.T) {
+	s, a, logs := imported3(t)
+	restart := stopAt(t, "key moved")
+	if err := a.Account(ctx(t), "sub-b", "alice"); err == nil {
+		t.Fatal("the move did not stop")
+	}
+	restart()
+	logs.Reset()
+	if err := a.Account(ctx(t), "sub-a", "alice"); err != nil {
+		t.Fatal(err)
+	}
+	if strings.Contains(logs.String(), "released") || !strings.Contains(logs.String(), "complete=true") {
+		t.Fatalf("log: %s", logs.String())
+	}
+	if !listsAlice(t, s, "sub-a") || listsAlice(t, s, "sub-b") {
+		t.Fatal("the name is not back with its holder alone")
+	}
+}
+
+// a→b stops after its key, c's claim stops before its key: a loses the name
+// (released, logged), and b, the key's holder, gets it at its next login.
+// b's record is not written by c's claim (only b's own login or an admin
+// writes the name into it), so this move has no moved_from: a limit RT-6.41
+// step 2 names.
+func TestAStoppedMoveStaysWithItsKeysHolderWhenTheNextOneStops(t *testing.T) {
+	s, a, logs := imported3(t)
+	restart := stopAt(t, "key moved")
+	if err := a.Account(ctx(t), "sub-b", "alice"); err == nil {
+		t.Fatal("the move did not stop")
+	}
+	restart()
+	restart = stopAt(t, "before key")
+	if err := a.Account(ctx(t), "sub-c", "alice"); err == nil {
+		t.Fatal("c's claim did not stop")
+	}
+	restart()
+	if !strings.Contains(logs.String(), "released=sub-a") || listsAlice(t, s, "sub-a") {
+		t.Fatalf("a is not released: %s", logs.String())
+	}
+	if b, _, _, _ := s.Identity(ctx(t), "sub-b"); b.Accounts["mattermost"] != "" {
+		t.Fatalf("c's claim wrote b's record: %+v", b)
+	}
+	if err := a.Account(ctx(t), "sub-b", "alice"); err != nil {
+		t.Fatal(err)
+	}
+	if id, ok, _ := s.ByAccount(ctx(t), "mattermost", "alice"); !ok || id.Sub != "sub-b" {
+		t.Fatalf("resolves to %+v %v", id, ok)
+	}
+}
+
+// Two identities claim one name at the same time (the hard review of #65):
+// when both claims succeed, the name resolves to the key's holder; a record
+// is never released by a claim that lost the key meanwhile. Run with -race.
+func TestConcurrentClaimsResolveToTheKeysHolder(t *testing.T) {
+	s, _ := open(t)
+	for _, sub := range []string{"sub-a", "sub-b"} {
+		if _, err := s.Login(ctx(t), sub, "x", ""); err != nil {
+			t.Fatal(err)
+		}
+	}
+	lost, skipped := 0, 0
+	defer func() { t.Logf("%d of 100 rounds had a claim that gave up", skipped) }()
+	for i := range 100 {
+		name := "n" + strconv.Itoa(i)
+		if _, err := s.ClaimAccount(ctx(t), "sub-a", "mattermost", name); err != nil { // the old holder
+			t.Fatal(err)
+		}
+		var wg sync.WaitGroup
+		errs := make([]error, 4)
+		for j, sub := range []string{"sub-a", "sub-b", "sub-a", "sub-b"} {
+			wg.Add(1)
+			go func() {
+				defer wg.Done()
+				_, errs[j] = s.ClaimAccount(ctx(t), sub, "mattermost", name)
+			}()
+		}
+		wg.Wait()
+		if errors.Join(errs...) != nil {
+			skipped++
+			continue // a claim that gave up is a login that failed and is tried again
+		}
+		holder, _, _, ok, err := s.Account(ctx(t), "mattermost", name)
+		if err != nil || !ok {
+			t.Fatal(name, ok, err)
+		}
+		if id, found, _ := s.ByAccount(ctx(t), "mattermost", name); !found || id.Sub != holder {
+			lost++
+			t.Errorf("%s: the key names %s, the index resolves to %+v (%v)", name, holder, id, found)
+		}
+	}
+	if lost > 0 {
+		t.Fatalf("%d of 100 names lost their holder", lost)
+	}
+}
+
+// A release that checked the key, then the old holder creates the key anew
+// and holds the name it still lists: its record is written all the same, so
+// the release fails over the stale revision, looks again and keeps the name.
+func TestAReleaseLosesToAHolderThatTookTheKeyMeanwhile(t *testing.T) {
+	s, _, _ := imported3(t)
+	if _, err := s.ClaimAccount(ctx(t), "sub-a", "mattermost", "alice"); err != nil {
+		t.Fatal(err)
+	}
+	key, _ := accountKey("mattermost", "alice")
+	once := true
+	t.Cleanup(SetAccountStepForTest(func(at string) error {
+		if at == "release checked" && once {
+			once = false
+			if err := s.kv.Delete(ctx(t), key); err != nil {
+				t.Error(err)
+			}
+			if _, err := s.ClaimAccount(ctx(t), "sub-a", "mattermost", "alice"); err != nil {
+				t.Error(err)
+			}
+		}
+		return nil
+	}))
+	if _, err := s.ClaimAccount(ctx(t), "sub-b", "mattermost", "alice"); err != nil {
+		t.Fatal(err)
+	}
+	if id, ok, _ := s.ByAccount(ctx(t), "mattermost", "alice"); !ok || id.Sub != "sub-a" {
+		t.Fatalf("the key's holder lost the name: %+v %v", id, ok)
 	}
 }
