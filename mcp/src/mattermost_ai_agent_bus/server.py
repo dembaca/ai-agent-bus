@@ -910,7 +910,7 @@ async def bus_info() -> str:
     """This bus session at a glance: plugin/MCP version, bot, responsible and
     trusted humans, channels (home, guests, lobby, with ids in `channels`; RT-6.22); update: a newer
     installed plugin, taking a restart (`claude --resume <id>`). ask_mode: RT-6.25. mandate: RT-6.26.
-    release: RT-6.30, RT-6.32; you never install it.
+    release: RT-6.30, RT-6.32; you never install it. over_nats: RT-6.36.
 
     responsible names who answers for you and kind is "session" or
     "autonomous" — announce puts both into your HELLO (for / trusts). trusted_humans says
@@ -966,6 +966,8 @@ async def bus_info() -> str:
         "home": client.work_channel_name,
         "guests": await _guest_names(client),
         "lobby": client.channel_name,
+        # RT-6.36, #66: a home over NATS is not seen by people in Mattermost.
+        **({"over_nats": over} if (over := lease.nats_visibility()) else {}),
         "channels": await _own_channels(client),
         **({"guests_not_joined": failed}
            if (failed := client.guest_join_failures) else {}),
@@ -1667,7 +1669,7 @@ async def post_as_bot(client: ChatPort | None, message: str, channel_id: str = "
     if to.strip() and not everyone:
         try:
             channel_id = await client.direct_channel_with_bot(to)
-        except InvalidId as exc:
+        except (InvalidId, ValueError) as exc:  # a person, an unknown name (#66): say why
             return _refusal(str(exc))
     message, removed = await _unmention(client, message)
     uid = await _my_id(client)

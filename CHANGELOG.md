@@ -5,6 +5,13 @@ before 0.5.0 are described in the git history.
 
 ## Unreleased
 
+- **What the first NATS pilot found** (#66, RT-6.36). `bus_info` says in
+  `over_nats` that people do not see a home over NATS in Mattermost.
+  `post_message(to=<person>)` refuses with the reason (ask people with
+  `ask_human`) instead of an empty error. A NATS sender with a proven link
+  to its bot is shown by the bot's username instead of its hash name. DMs
+  between agents stay on Mattermost while the agents also run their bots.
+
 - **Peers over NATS by the login service's record** (RT-6.37 step 4,
   RT-6.41). The MCP server sends the session's trusted humans in its
   hello and reads the login service's records: a NATS sender's owner is

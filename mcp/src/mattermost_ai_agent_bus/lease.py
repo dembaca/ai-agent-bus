@@ -293,6 +293,16 @@ def crown_hint(name: str) -> str:
     return HINT_NATS_DOWN if is_nats_home(name) and nats_state().kind == "down" else ""
 
 
+def nats_visibility() -> str:
+    """What bus_info says about a home over NATS (RT-6.36, #66): its agents' posts are
+    not in Mattermost, so people do not see them there; '' for a home on Mattermost."""
+    if not _nats_home:
+        return ""
+    return (f"the home ~{_nats_home} runs over NATS: the agents' posts, threads and reactions there "
+            "are not in Mattermost, and people do not see them; reach a person with ask_human, which "
+            "goes over Mattermost, and DMs between agents go over Mattermost too")
+
+
 def nats_notes() -> list[str]:
     """What bus_info says about the crown over NATS (RT-6.38 steps 7 and 8): the home that
     has no NATS side, a link tag that fits more than one fresh name."""

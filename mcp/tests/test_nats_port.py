@@ -1655,3 +1655,25 @@ async def test_a_bad_bot_id_does_not_stop_the_nats_home(monkeypatch: pytest.Monk
     finally:
         await port.stop()
         lease.use_nats_link(None)
+
+
+async def test_a_nats_sender_is_shown_by_its_linked_bot_only_while_the_link_holds() -> None:
+    """#66, RT-6.37: a NATS name is a hash; while `linked` proved it names a bot and the
+    bot names it, the sender is shown by the bot's username. Display only."""
+    port, inner, fake = make()
+    assert fake is not None
+    inner.names[BOT_A] = "agent-mac-pilot-a"
+    fake.presence[NAME_A] = "online"
+    fake.bots[NAME_A] = BOT_A
+    assert await port.username(NAME_A) == NAME_A  # no link proven yet
+    assert port.linked([_row(BOT_A, f"working · x · ⇄{TAG_A} · ~home")]) == {BOT_A: NAME_A}
+    assert await port.username(NAME_A) == "agent-mac-pilot-a"
+    assert await port.usernames({NAME_A}) == {NAME_A: "agent-mac-pilot-a"}
+    fake.bots[NAME_A] = BOT_B  # the presence names another bot now
+    assert await port.username(NAME_A) == NAME_A
+    fake.bots[NAME_A] = BOT_A
+    fake.presence[NAME_A] = "offline"
+    assert await port.username(NAME_A) == NAME_A
+    fake.presence[NAME_A] = "online"
+    del inner.names[BOT_A]  # the bot's name cannot be read
+    assert await port.username(NAME_A) == NAME_A

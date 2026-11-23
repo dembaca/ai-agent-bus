@@ -227,6 +227,7 @@ class NatsPort:
         self._capped = 0  # reactions dropped at MAX_REACTIONS
         self._names: AbstractSet[str] | None = None  # this session's trusted humans, read by prime (RT-6.38)
         self._ambiguous: set[str] = set()  # link tags that fit more than one fresh name (RT-6.37)
+        self._shown_as: dict[str, str] = {}  # NATS name -> bot id of its last proven link (#66)
 
     def __getattr__(self, name: str) -> Any:
         if name in ("inner", "__setstate__"):
@@ -714,10 +715,10 @@ class NatsPort:
     async def usernames(self, user_ids: set[str]) -> dict[str, str]:
         nats = {i for i in user_ids if is_nats_user(i)}
         out = await self.inner.usernames(set(user_ids) - nats) if user_ids - nats else {}
-        return out | {i: i for i in nats}
+        return out | {i: await self._display(i) for i in nats}
 
     async def username(self, user_id: str) -> str:
-        return user_id if is_nats_user(user_id) else await self.inner.username(user_id)
+        return await self._display(user_id) if is_nats_user(user_id) else await self.inner.username(user_id)
 
     async def agents(self, user_ids: set[str]) -> set[str]:
         nats = {i for i in user_ids if is_nats_user(i)}
@@ -807,7 +808,21 @@ class NatsPort:
                 self._ambiguous.discard(tag)
             if len(same) == 1 and bus.bot_of(same[0]) == str(row.get("id")):
                 out[str(row["id"])] = same[0]
+        self._shown_as.update({name: bot for bot, name in out.items()})
         return out
+
+    async def _display(self, name: str) -> str:
+        """How a NATS sender is shown (#66): as its bot's username while the link `linked`
+        last proved still holds on the NATS side (its presence names that bot and is not
+        offline); else its NATS name. Display only: owner, trust and ids stay the name's."""
+        bot = self._shown_as.get(name, "")
+        bus = self._bus if self._fatal is None else None
+        if not bot or bus is None or bus.bot_of(name) != bot or bus.presence_of(name) == "offline":
+            return name
+        try:
+            return await self.inner.username(bot) or name
+        except Exception:  # noqa: BLE001 — display only
+            return name
 
     def ambiguous(self) -> list[str]:
         """The link tags that fit more than one fresh NATS name, as `linked` last saw them
