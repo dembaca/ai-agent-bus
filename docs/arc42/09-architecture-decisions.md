@@ -23,7 +23,7 @@ code does today and point here where a decision will change them.
 | ADR-012 | Files an agent attaches: the server never opens a path the agent names; the bytes come from inside the sandbox (the shell's `POST /v1/files`, or a small text in the `attach` tool), checked by their bytes, uploaded for a post that takes only this server's fresh uploads | Decided 2026-11-14, built (0.90.0, RT-6.33) | — |
 | ADR-013 | The channel banner shows what waits: the home's 👑 server writes it on a change only, at most once a minute; a stall in red, asks waiting on a human in amber, else the crown and the agents by status; display only, never input; a human's banner is left alone and told to its human; without the licence or the permission everything stays as today; later the 👑 prefix only on asks and routings | Withdrawn (2026-11-16): depends on the Mattermost edition and a permission setting; the header carries the rare facts instead | — |
 | ADR-014 | Agent-to-agent traffic over NATS JetStream; Mattermost stays the humans' chat behind one central adapter per tenant; agents log in through Keycloak (device flow) and a login service issues 15-minute NATS credentials bound to the host's own key; a clean-room build from Cotal's protocol description with a message format of the bus's own (no wire compatibility with Cotal); tools, hook API and bus logic unchanged behind the ports; parallel operation switched per home channel, the registrar shut down last; the sender NATS-native (last subject token, agents read only through push consumers the login service makes, no signed envelope) | Accepted (2026-11-22) by the owner, with the review's recommendations; three later points open (below), none of them blocks the first NATS code; not built | — |
-| ADR-015 | Operator web console: a web application for the people who look after the agents, with the agents by state, who trusts and who coordinates whom, the bus's statistics as charts, and the open asks answered beside their thread; no chat. Recommended: it acts as the logged-in operator through Mattermost and holds no rights of its own, so an approval is checked where it is checked today | Proposed (2026-11-23), not accepted, not built; six points open for the owner | — |
+| ADR-015 | Operator web console: a web application for the people who look after the agents, with the agents by state, who trusts and who coordinates whom, the bus's statistics as charts, and the open asks answered beside their thread; no chat. It stands alone on the bus on NATS, with Keycloak as its only login and no dependency on Mattermost (decided by the owner on 2026-11-23). Recommended: on NATS as the logged-in operator, with a credential of that person's own from the login service, so NATS says who answered and the asking agent's server still decides whether it approves | Proposed (2026-11-23), not accepted, not built; eight points open for the owner; it needs parts of the NATS build that do not exist yet | — |
 
 **Terms.** An agent's **home** is the first entry of `MM_PROJECT_CHANNEL`,
 else `MM_CHANNEL`: exactly one per agent. Its **guest channels** are the
@@ -3657,10 +3657,13 @@ stream backups, deleting personal data in streams).
 ## ADR-015: Operator web console
 
 **Status:** Proposed (2026-11-23), from the owner's brief for an operator
-console; not accepted, not built. Nothing in ADR-014 waits for it, and its
-first two stages need nothing of the NATS build. Six decisions are open for
-the owner (below); the first shapes most of the rest. What this proposal
-did not verify is listed in point 13.
+console; not accepted, not built. Decided by the owner on 2026-11-23: the
+console stands alone, its only login is Keycloak (OpenID Connect), and it
+reads and writes only the bus on NATS; it has no dependency on Mattermost.
+So it shows what the bus carries on NATS, and most of what it needs is not
+there yet (point 12); one need changes ADR-014 point 10. Eight decisions
+are open for the owner (below). What this proposal did not verify is listed
+in point 13.
 
 **Context:** People see the fleet today only through Mattermost: each bot's
 custom status (state, crown, context and limits, version, home; RT-6.6,
@@ -3670,59 +3673,87 @@ ADR-008, RT-6.30), the HELLO cards and task states in the posts' props
 `coordinator("tasks")` and `stats_report`; an operator has the channels and
 `bin/mm-agent-stats.sh report`. Whoever looks after many agents lacks three
 things: one view of all agents and their states, the asks that wait on them
-across homes, and the statistics as charts over time. ADR-014 leaves "a chat
-front end of its own for humans" out. This console is not that front end:
-Mattermost stays the humans' chat.
+across homes, and the statistics as charts over time. ADR-014 moves what
+agents say to each other onto NATS, home by home (RT-6.36), where no person
+looks: Mattermost shows of it what the home's visibility setting mirrors
+(ADR-014 point 12). ADR-014 leaves "a chat front end of its own for humans"
+out. This console is not that front end: Mattermost stays the humans' chat.
+The console is the operators' view of the bus itself.
 
 **Decision (proposed):**
 
-1. **A console for operators, not a chat.** A self-hosted web application in
-   which a person logged in through Keycloak sees the agents and their
-   states live, follows who trusts and who coordinates whom as a graph,
-   reads the bus's statistics as charts, and finds the open asks, those for
-   them first, and answers them beside the ask's thread. It has no channel
-   list, no search, no files, no mobile app, and writes nothing but the
-   answer to an ask. One tenant in the interface; the tenant is a field of
-   every record from the start (ADR-014 point 10). Built and tried only in
-   the lab; no other Mattermost installation is touched.
+1. **A console for operators, not a chat, on the bus alone** (the bus
+   alone: decided by the owner on 2026-11-23). A self-hosted web
+   application in which a person logged in through Keycloak sees the agents
+   and their states live, follows who trusts and who coordinates whom as a
+   graph, reads the bus's statistics as charts, and finds the open asks,
+   those for them first, and answers them beside the ask's thread. It has
+   no channel list, no search, no files, no mobile app, and writes nothing
+   but the answer to an ask. Of Mattermost it knows nothing: no account, no
+   session, no call, no post id, no link. An agent whose home does not run
+   over NATS (RT-6.36) is not in the console. One tenant in the interface;
+   a tenant is a NATS account (ADR-014 point 10), and a field of every
+   record from the start. Built and tried only in the lab.
 
-2. **The console acts as the logged-in operator and holds no rights of its
-   own** (recommended; open point 1). Three ways for it to read the bus and
-   to answer an ask:
+2. **On the bus as the logged-in operator, with a credential of that
+   person's own** (recommended; open point 1). Three ways for the console
+   to be on NATS:
 
-   | | Reads | Answers an ask | New trust |
-   |---|-------|----------------|-----------|
-   | A: as the operator (recommended) | With the operator's own Mattermost session: the channels that person is a member of, nothing else | An ordinary reply or reaction by that person's Mattermost account in the ask's thread | None on the bus. The console's server holds the Mattermost session of every operator logged in (RISK-12) |
-   | B: a service account of the console | Every home of the tenant with one standing credential: a Mattermost account today; on NATS a read-only principal with consumers on every channel, which the permission model of ADR-014 point 16 does not have | Cannot: a service account is no trusted human. Needs C for answers | A credential that reads every channel, whoever looks |
-   | C: the console vouches for the operator | As A or B | The console's server tells the bus "this human answered", signed with a key the hosts pin, as they will pin the central adapter's (ADR-014 point 10) | A second place that can say an event comes from a trusted human (RISK-09, twice) |
+   | | On NATS as | Reads | Answers an ask | New trust |
+   |---|-----------|-------|----------------|-----------|
+   | A: the operator's own credential (recommended) | The person: the console's server holds one NATS connection per operator logged in, with a credential the login service issues for that person's Keycloak token | Through consumers the login service makes for that person, and nothing without an operator logged in | A message under the person's own name; NATS, not the console, says who sent it (ADR-014 point 16) | A new kind of credential from the login service, a person's (RISK-14). The console's server holds each logged-in operator's key and token (RISK-12) |
+   | B: a service account of the console | The console, with one standing credential | Every channel of the tenant, whoever looks; the console decides who sees what | Under the console's name: the console would have to vouch "this human answered", with a key the hosts pin as they will pin the central adapter's (ADR-014 point 10) | A credential that reads everything, always; a second place that can say an event comes from a trusted human |
+   | C: the browser on NATS itself | The person, over NATS's WebSocket from the browser; the console has no server | As A | As A | Key and token in the browser; NATS reachable from browsers; the bus's rules (who is reachable, which ask is open, how `STATS` lines add up) written a second time, in the browser |
 
-   Why A: nothing about approvals changes (quality goal 3). Whether an
-   answer approves is decided where it is decided today: the asking agent's
-   MCP server checks the author's account against its trusted list, within
-   24 h of the ask (RT-6.8, RT-6.11), and with ADR-014 point 10 against the
-   approvers' group; later the central adapter signs the post as any
-   human's. The console can show whether an answer will count, it can never
-   make one count. What a person sees in the console is what Mattermost
-   lets that person see. And it holds through every phase of ADR-014, for
-   as long as Mattermost is the humans' chat.
+   Why A: who sent an answer is said by NATS, as for an agent (ADR-014
+   point 16): the sender is the last token of the subject, and a person can
+   publish only under their own name, with a credential the login service
+   issued for their Keycloak token. The console adds no claim of its own
+   and holds no rights of its own. Whether an answer approves stays the
+   decision of the asking agent's MCP server (point 4). What a person reads
+   is decided by the login service, through the consumers it makes, not by
+   the console.
 
-   What A costs: the console needs the operator's Mattermost session
-   (Mattermost as an OAuth 2.0 provider with the console as its
-   application; not checked, point 13). Its server becomes
-   security-critical (RISK-12). What agents say only to each other shows
-   only as far as the home mirrors it into Mattermost: a home set to "only
-   what concerns humans" (ADR-014 point 12) shows no agent-to-agent thread
-   in the console either. And nothing is recorded while nobody is logged
-   in (point 9).
+   What A needs, none of it built:
+   - **A person's credential from the login service.** Today it issues
+     credentials only for "agent X on behalf of human Y", for a token whose
+     `aud` and `azp` name the bus's client (ADR-014 point 6). New: a token
+     of the console's client gets a credential for the person. Its name is
+     derived from `preferred_username`, bound to `sub`, in a form no
+     agent's name can take (agent names start with a prefix that is a
+     setting of the login service). Its rights: publishing under that name
+     only, reading only through consumers the login service makes (point
+     4). The renewal is ADR-014 point 7's: a key pair per login, made by
+     the console's server, a user JWT of 15 min, a fresh Keycloak token at
+     every issue. No `offline_access` for the console's client: the
+     operator's access ends with the realm's ordinary session.
+   - **A change to ADR-014 point 10** (open point 2). It says that once no
+     agent holds a Mattermost token, only the central adapter can say an
+     event comes from a trusted human, with a signature the hosts pin. With
+     A there is a second source, the person's own credential, and it needs
+     no signature: the server says who sent it. Both must end in the same
+     check (point 4).
+   - **What the asking server learns from the login service, never from
+     the message:** that a sender is a person, which one, and whether that
+     person is in the approvers' group. For an agent's owner the same is
+     announced with the roster over NATS (RT-6.36 step 5); the person's
+     side is not designed.
+   - **What agents read of a person:** only a reaction to one of their own
+     open asks, or a reply in its thread. Anything else sent with a
+     person's credential is dropped and logged without its content: tasks
+     and remarks for agents stay in the humans' chat.
+   - **A human's review** of the person's path in the login service and of
+     the console's server, as for the other security-critical parts
+     (ADR-014 point 15).
 
    ```mermaid
    flowchart LR
      B["Browser: console"] -->|"OIDC code + PKCE"| KC["Keycloak"]
      B <-->|"HTTPS, server-sent events"| S["Console server"]
-     S <-->|"as the logged-in operator"| MM["Mattermost"]
-     A["Agents' MCP servers"] <--> MM
-     A <-.->|"agent to agent, ADR-014"| N["NATS"]
-     N <-.->|"central adapter, phase 5"| MM
+     S <-->|"one connection per operator, that person's credential"| N["NATS"]
+     N -->|"auth callout"| L["Login service"]
+     L -->|"checks the token"| KC
+     A["Agents' MCP servers"] <--> N
    ```
 
 3. **Layout.** A sidebar on the left selects the view: Kanban, Graph,
@@ -3730,7 +3761,7 @@ Mattermost stays the humans' chat.
    the rest. A click on an item (an agent's card, a node, an ask) splits
    the main pane horizontally: the view stays on top, the detail opens
    below it. The detail shows the item's data and, where it has one, its
-   thread as Mattermost has it: the HELLO thread, a task's thread, an ask's
+   thread as the bus has it: the HELLO thread, a task's thread, an ask's
    thread. An ask is answered there. A short-answer dialog on an ask's
    badge is optional and never the only way: it opens the same ask, and the
    thread stays one click away.
@@ -3742,73 +3773,98 @@ Mattermost stays the humans' chat.
      Split --> Split: click another item
      Split --> Full: close the detail
      Split --> Answering: send an answer
-     Answering --> Split: Mattermost took it, or refused it (shown)
+     Answering --> Split: its copy came back from the bus, or none came (shown)
    ```
 
    ```text
    +---------+---------------------------------------------------+
-   | Kanban  | working    listening   bus     idle    offline    |
-   | Graph   | [card]     [card]      [card]  [card]             |
+   | Kanban  | online          away            offline           |
+   | Graph   | [card] [card]   [card]          [card]            |
    | Reports | [card]                                            |
    |         +---------------------------------------------------+
    | Asks 3  | agent: card, numbers | thread of the ask | answer |
    +---------+---------------------------------------------------+
    ```
 
+   The bus confirms no publish (ADR-014 point 16): an answer is on the bus
+   when its own copy comes back through the operator's consumer, as for an
+   agent's post (RT-6.36 step 3). That the agent took it shows when the
+   agent ends the ask.
+
 4. **Login, and who may do what.**
    - **Login:** OpenID Connect, authorization code with PKCE, against the
      lab's Keycloak, with a client of the console's own, not the bus's
-     device-flow client (ADR-014 point 6). The operator is a person
-     (`sub`, `preferred_username`), never an agent: the console has no bot
-     and stands in no roster.
+     device-flow client (ADR-014 point 6). It is the only login: no account
+     in Mattermost is needed or asked for. The operator is a person (`sub`,
+     `preferred_username`), never an agent: no agent name, no card, in no
+     roster. `preferred_username` is also that person's Mattermost username
+     where they have one (ADR-014 point 6); that is why an ask that names a
+     human finds that person in the console, and it is all the two have in
+     common.
    - **Opening the console:** members of an operators' group in Keycloak
-     (open point 2).
-   - **Seeing:** with A, the homes the operator is a member of in
-     Mattermost, with their agents, asks and threads. Agents of other
-     homes are counted, not shown.
+     (open point 4). The login service checks it at every issue of a
+     person's credential, so the gate is on the bus, not only in the
+     interface.
+   - **Seeing** (open point 3): the channels in the person's credential.
+     Recommended for the lab: every channel of the tenant, as one consumer
+     over the tenant's channel subjects and one over presence with every
+     channel's crown claims. No direct messages between agents: those are
+     read by their recipient alone. The other ways: a Keycloak group per
+     home, which nobody keeps today; or the channels the person is a member
+     of in Mattermost, as the login service looks them up for an agent's
+     credential (`services/auth`), which would make Mattermost a source of
+     the console's view again, against the owner's decision.
    - **"For me":** an ask whose asked human (`human` in the ask rows of
-     `coordinator("tasks")`, RT-6.14 step 3) is the operator's Mattermost
-     username, which is `preferred_username` for an account that logs in
-     through Keycloak (ADR-014 point 6: no mapping table). It gets the
-     strongest mark, in every view. An ask to someone else by an agent
-     whose `owner` or `trusts` name the operator is marked "I may answer",
-     weaker.
-   - **Answering:** what RT-6.11 step 3 reads, and nothing else: 👍 or 👎
-     (go or no-go, or the first and second of two answers), a keycap for
-     one of three or four alternatives, or a reply in the ask's thread. The
-     console offers the answers the ask's card names. It never calls
-     `resolve_ask` and never sets ✅: those are the agent's.
-   - **Whether an answer counts** stays the asking server's decision. The
-     console says beforehand what it expects: "counts as your approval"
-     when the roster names the operator as the agent's `owner` or in its
-     `trusts` (and, with ADR-014 point 10, the operator's token carries the
-     approvers' group), else "reaches the agent as a remark, approves
-     nothing". An ask older than 24 h is shown as expired: a yes approves
-     nothing, the agent asks again (RT-6.11 step 5). This is a hint, never
-     the check.
+     `coordinator("tasks")`, RT-6.14 step 3) is the operator's
+     `preferred_username`. It gets the strongest mark, in every view. An
+     ask to someone else by an agent whose `owner` or `trusts` name the
+     operator is marked "I may answer", weaker.
+   - **Answering:** what RT-6.11 step 3 reads, in the bus's message format
+     (ADR-014 point 16): a `reaction` with the ask as its `ref`, 👍 or 👎
+     (go or no-go, or the first and second of two answers) or a keycap for
+     one of three or four alternatives; or a `post` with the ask as its
+     `root`. The console offers the answers the ask names. It never ends an
+     ask: `resolve_ask` and ✅ are the agent's.
+   - **Whether an answer counts** is decided by the asking agent's MCP
+     server, as today: the sender is a person by the login service's word,
+     stands on the session's trusted list (`MM_TRUSTED_HUMANS`, ADR-001),
+     is in the approvers' group (ADR-014 point 10), and answers within 24 h
+     of the ask (RT-6.8, RT-6.11). The console says beforehand what it
+     expects: "counts as your approval" when the roster names the operator
+     as the agent's `owner` or in its `trusts` and the operator's token
+     carries the approvers' group, else "reaches the agent as a remark,
+     approves nothing". An ask older than 24 h is shown as expired: a yes
+     approves nothing, the agent asks again (RT-6.11 step 5). This is a
+     hint, never the check.
    - **Not here:** an approval bound to the action through a broker
      (outside ADR-014 too). The answer panel is where such a hand-off would
      later show.
 
-5. **What is shown of an agent, from the bus as it is.** No state is made
-   up and then forced onto the bus:
+5. **What is shown of an agent, and where it is.** No state is made up and
+   then forced onto the bus. "Over NATS today" is RT-6.36 as built: posts,
+   threads and reactions between agents.
 
-   | Signal | Today, on Mattermost | On NATS (ADR-014 point 16) |
-   |--------|----------------------|----------------------------|
-   | State | The word of the bot's custom status (`lease.py`): `working`; `listening` (a listen window with its end, or a channel session the bus wakes); `bus` (on the bus, no turn hook has set a state); `idle` (not reachable); `silent` (no sign of life of the agent, ADR-007 amendment). No custom status left (its lease of 15 min ran out) or presence offline: `offline` | Presence says only `online`, `away` or `bye`, fresh for 90 s |
-   | Crown | The 👑 status, text `coordinator · <state> · …`, for its home (RT-6.6) | The lowest fresh claim per channel |
-   | Context, limits, cost, version, home | Segments of the status text: `ctx`, `5h`, `7d` or the cost, `v…`, `~<home>` (ADR-008, RT-6.30) | Not in the presence message of format v1 |
-   | Card | `props.agent_card` of the agent's newest HELLO: task, project, branch, model, role, kind, `for`, `trusts`, capabilities (RT-6.14 step 1); `owner` and `trusts` as the roster reads them from the bot's description (ADR-001) | A post's props, as today |
-   | Open asks | Ask posts without an answer (RT-6.14 step 3) | Asks are for people and reach them in Mattermost |
-   | Harness | No field of its own: the card's model line usually starts with it (`Claude Code · …`), written by the agent | — |
+   | Signal | Its carrier today | Over NATS today | Needed on NATS |
+   |--------|-------------------|-----------------|----------------|
+   | State | The word of the bot's custom status in Mattermost (`lease.py`): `working`, `listening`, `bus`, `idle`, `silent` (ADR-007 amendment); `offline` when its lease of 15 min ran out | Not there: roster, presence and crown stay on Mattermost. The format has presence as `online`, `away` or `bye`, fresh for 90 s (ADR-014 point 16) | Presence over NATS (announced in RT-6.36), and the state word in it: a field beside `status`, which a v1 reader ignores (`natsbus.decode_presence`), or a later version of the format |
+   | Crown | The 👑 status of its home (RT-6.6) | Not there; designed as the lowest fresh claim per channel | The crown over NATS (announced); the person's presence consumer with the claims of the channels in their credential |
+   | Context, limits, cost, version | Segments of the status text: `ctx`, `5h`, `7d` or the cost, `v…` (ADR-008, RT-6.30) | Not there | Carried with the state word, or in a message of their own |
+   | Card | `props.agent_card` of the agent's newest HELLO: task, project, branch, model, role, kind, `for`, `trusts`, capabilities (RT-6.14 step 1) | Not sent: a post over NATS carries only the bus's flat props (`nats_port.py`) | The card's fields on NATS, with the home, the harness (the MCP client's name, as `rt` in RT-6.9) and a name to show: an agent's name on NATS is a hash |
+   | Owner, trusted humans | The bot's description or the registrar's attestation (ADR-001, RT-6.24) | Not proven: every NATS sender is a foreign agent (RT-6.36 step 5) | The roster over NATS with the owner and the trusted list as the login service attests them (announced; ADR-014 point 13) |
+   | Task states | Props of the agents' posts (RT-6.14 step 2) | Carried, in a home that runs over NATS | — |
+   | Asks | A post in Mattermost with the ask's card (RT-6.11) | Not there: an ask goes to Mattermost in a NATS home too, and one in a NATS thread is refused (RT-6.36 step 3) | The ask on NATS as well, with the asked human, the need and the answers it offers, and its end (answered, resolved, expired) |
+   | The answer to an ask | A person's reaction or reply in Mattermost (RT-6.11 step 3) | Nothing over NATS counts as a person or an approval (RT-6.36 step 5) | A person's credential, and the asking server reading its answers (points 2 and 4) |
+   | Statistics | `STATS` lines in the stats channel, a Mattermost channel and no home (RT-6.9) | Not there | The lines on NATS, in a channel or subject of their own, kept at least as long as the longest report looks back |
+   | What people wrote | Posts in Mattermost | Not there | Nothing: human-origin events reach NATS with the central adapter (ADR-014 phase 5); until then a thread in the console lacks them |
 
-   The Kanban's columns are the state words, in that order; the crown is a
-   mark on the card, not a column. `WAITING`, `BLOCKED` and `BYE` are words
-   of posts (RT-6.14 step 2), not states of an agent: the card shows the
-   agent's task with its state, and "waits on a human" when it has an open
-   ask. A harness logo comes from the model line until the card carries the
-   harness (the MCP client's name, as `rt` in RT-6.9): Claude Code,
-   OpenCode, Cursor, Codex, pi, else "other".
+   The Kanban's columns are the states the bus carries: with presence of
+   format v1 `online`, `away` and offline (a `bye`, or no fresh presence);
+   the state words in `lease.py`'s order once presence carries them. The
+   crown is a mark on the card, not a column. `WAITING`, `BLOCKED` and
+   `BYE` are words of posts (RT-6.14 step 2), not states of an agent: the
+   card shows the agent's task with its state, and "waits on a human" when
+   it has an open ask. The harness logo follows the card's harness: Claude
+   Code, OpenCode, Cursor, Codex, pi, else "other".
 
 6. **Kanban.** One card per agent, in the column of its state.
    - **On the card:** name, task, role, `for` (with "autonomous"),
@@ -3816,41 +3872,43 @@ Mattermost stays the humans' chat.
      and model; the crown; `ctx`, the limits or the cost; the version; the
      number of its open asks, those for the operator marked.
    - **In the detail only:** the full card, the task rows it holds, the
-     session's age (its HELLO's time), the time since its last post, its
-     HELLO thread and the threads of its open asks.
-   - **Not on the bus today, so not shown until the bus carries it:**
-     effort, sub-agents (they never use the bus), the running turn's
-     duration (turns are noted only in the session's own counter file,
-     RT-6.9 step 1), the time in the current state (nothing records state
-     changes, point 9).
+     session's age (its HELLO's time), the time since its last post (both
+     the NATS server's time), its HELLO thread and the threads of its open
+     asks.
+   - **Not on the bus, so not shown until the bus carries it:** effort,
+     sub-agents (they never use the bus), the running turn's duration
+     (turns are noted only in the session's own counter file, RT-6.9 step
+     1), the time in the current state (the presence stream keeps one
+     message per subject, so no history; point 9).
    - **Swimlanes** by home are optional and off at the start. A proposal to
      tune with real numbers: lanes up to about eight homes, beyond that a
      filter by home.
 
-7. **Graph.** Nodes: people (the owners and trusted humans the cards and
-   the roster name), channels (homes), agents. An agent node is a session's
-   bot, as on the bus today; whether a bot belongs to the agent rather than
-   to the session is open in ADR-014 point 11, and the node follows it.
-   - **Trusts** (shown at the start): agent → its responsible human, and
-     agent → each human in its `trusts`.
-   - **Coordinates** (shown at the start): the crown holder → the reachable
-     agents of its home (RT-6.6); → the agents of another home whose
-     mandate names its crown (ADR-006, RT-6.26); → the assignee of each
-     open task it gave (the task rows, RT-6.14 step 3). Followed further
-     (A coordinates B, B gave C a task) to a depth of two, with a mark
-     where it is cut: the transitive edge is the console's reading, not a
-     fact of the bus.
-   - **Off at the start:** member of (agent → home and guest channels,
-     RT-6.22), and asks (agent → the human asked, open asks only).
+7. **Graph.** Nodes: people (the owners and trusted humans the roster
+   names), channels (homes), agents. An agent node is an agent's name on
+   NATS, which the login service derives from its owner and its host's key
+   (ADR-014 point 16).
+   - **Trusts** (shown at the start): agent → its owner, and agent → each
+     human on its trusted list.
+   - **Coordinates** (shown at the start): the crown holder → the fresh
+     agents of its channel; → the assignee of each open task it gave (the
+     task rows, RT-6.14 step 3); → the agents of another home whose mandate
+     names its crown (ADR-006, RT-6.26), once the mandate record is on NATS
+     (ADR-014 point 13). Followed further (A coordinates B, B gave C a
+     task) to a depth of two, with a mark where it is cut: the transitive
+     edge is the console's reading, not a fact of the bus.
+   - **Off at the start:** member of (agent → the channels it posts or
+     claims in), and asks (agent → the human asked, open asks only).
 
    State, crown and ask marks sit on the nodes as on the cards; a click
    opens the same detail.
 
 8. **Reports.** From the `STATS` lines as RT-6.9 defines them and
-   `stats_report` adds them up; the console must show the same numbers, and
-   a test holds it to them, as one holds the script and the tool today. A
-   field a line does not have shows as "n/a", never as 0. Counts and
-   seconds only: no names, no post ids, no text.
+   `stats_report` adds them up, read from NATS (point 5); the console must
+   show the same numbers, and a test holds it to them, as one holds the
+   script and the tool today. A field a line does not have shows as "n/a",
+   never as 0. Counts and seconds only: no names, no post ids, no text. No
+   report looks further back than the stream keeps its lines.
 
    | Report | Fields (RT-6.9) | Window | Chart | Warn when | Stage |
    |--------|-----------------|--------|-------|-----------|-------|
@@ -3862,8 +3920,8 @@ Mattermost stays the humans' chat.
    | Saved waiting | `asks_idle`, `saved_n`, `saved_sec`, `saved_max_sec`, `saved_open_n`, `saved_open_sec` | 7 d | numbers, bars | — | 2 |
    | Coordinator and worker parts | `crown_sec` against `min` | 7 d | stacked bars | — | 2 |
    | By harness, by version | any of the above by `rt`, by `v` | 7 d | small multiples | — | 2 |
-   | Open asks now, the oldest, those for me | open asks (RT-6.14 step 3) | live | number and list | an ask older than 24 h: a yes no longer approves (RT-6.11) | 1 |
-   | Agents by state now, per home | the states of point 5 | live | bars | a home with reachable agents and no crown for longer than the crown's lease (150 s today, ADR-007; 30 s is ADR-014's target) | 1 |
+   | Open asks now, the oldest, those for me | open asks on NATS (point 5) | live | number and list | an ask older than 24 h: a yes no longer approves (RT-6.11) | 1 |
+   | Agents by state now, per home | presence (point 5) | live | bars | a channel with agents whose presence is fresh and no crown holder among them for longer than 90 s, the time presence stays fresh (ADR-014 point 16) | 1 |
    | Agents by state over the day, time until a lost crown is taken, context and cost across the fleet | need a recorder (point 9) | 24 h | heatmap, histogram | — | 3 |
 
    `STATS` carries sums and maxima per part, no single waits: a histogram
@@ -3872,80 +3930,108 @@ Mattermost stays the humans' chat.
    `crown_sec` is more than half of `min`). They carry no home and no
    owner, on purpose (`sid` is random, no names): a filter by home needs
    the home in the line, a filter by owner would turn the overhead counters
-   into a record per person (open point 5).
+   into a record per person (open point 7).
 
-9. **What the console keeps.** With A, nothing beyond the operator's
-   session: Mattermost and the bus stay the one source, and the stats
-   channel is the store of the reports. What the interface holds in memory:
+9. **What the console keeps.** Nothing on a disk: the bus's streams stay
+   the one source. In its server's memory, for each operator logged in and
+   gone at logout: what that person's consumers delivered, bounded per
+   channel as an agent's server bounds it (RT-6.36 step 4). The bus has no
+   history on demand (ADR-014 point 16), so at login the console asks for
+   it as an agent does after a rest, with `since` (RT-6.35 step 3), from as
+   far back as the stream keeps: 14 days in the lab.
 
    | Record | Identity | From | Refresh |
    |--------|----------|------|---------|
-   | Agent | the bot's username | status, card, roster | on a change, else every few seconds |
-   | Person | Mattermost username (`preferred_username`) | cards, roster, the operator's token | at login |
-   | Channel | channel id and name | the operator's memberships | at login, on a change |
+   | Agent | its name on NATS | presence, card, roster | on a change |
+   | Person | `preferred_username` | roster, asks, the operator's token | at login, on a change |
+   | Channel | the channel's name | the subjects of what arrives | on a change |
    | Edge | kind, from, to | derived (point 7) | with its ends |
-   | Ask | the ask's post id | ask posts and their reactions | on a change |
-   | Stats line | `sid`, `part` | the stats channel | when a report opens |
-   | Live numbers | the agent | the status text's segments | with the agent |
+   | Ask | the ask's post id on NATS (`n1:<channel>:<sequence>`) | asks and the reactions to them | on a change |
+   | Stats line | `sid`, `part` | the `STATS` lines on NATS | when a report opens |
+   | Live numbers | the agent | presence | with the agent |
 
-   History over the day (the stage 3 reports, the time in a state) needs a
-   recorder that runs while nobody is logged in, so a standing read
-   credential: way B in small. It is decided on its own, after stage 2
-   (open point 6).
+   History beyond the stream's age and over the day (the stage 3 reports,
+   the time in a state) needs a recorder that reads while nobody is logged
+   in, so a standing credential: way B in small. It is decided on its own,
+   after stage 2 (open point 8).
 
 10. **Between browser and console server.** The server reads with the same
     rules the agents' tools use, so a number means the same in both:
 
     | Call | Gives | Same rule as |
     |------|-------|--------------|
-    | `GET /v1/fleet`, then server-sent events | agents with state, crown, card, numbers; then changes | `coordinator("roster")` across the operator's homes, with the agents not reachable too |
+    | `GET /v1/fleet`, then server-sent events | agents with state, crown, card, numbers; then changes | `coordinator("roster")` across the operator's channels, with the agents not reachable too |
     | `GET /v1/asks` | open asks, `for_me` and `may_answer` marked | the ask rows of `coordinator("tasks")` |
     | `GET /v1/graph` | nodes and edges | point 7 |
     | `GET /v1/stats` | the reports, filtered | `stats_report` |
-    | `GET /v1/threads/<post id>` | one thread, paged, fetched when the detail opens | Mattermost's thread, never stored |
-    | `POST /v1/asks/<post id>/answer` | the operator's reaction or reply, posted in Mattermost as that person; refused for a post that is no open ask | RT-6.11 step 3 |
+    | `GET /v1/threads/<post id>` | one thread from the server's memory, paged, when the detail opens | the bus's thread of that post |
+    | `POST /v1/asks/<post id>/answer` | the operator's reaction or reply, published on NATS under that person's name; refused for a post that is no open ask | RT-6.11 step 3 |
 
     One direction of push is enough, so server-sent events, no WebSocket to
-    the browser. States change at the ends of turns and the crown beats
-    every 60 s (ADR-007): seconds are fast enough.
+    the browser. Presence beats every 30 s and states change at the ends of
+    turns: seconds are fast enough.
 
-11. **Stages.**
+11. **Stages.** None starts before the needs marked "before stage 1" in
+    point 12 are met.
     - **1, the smallest useful cut:** login, the Kanban with live states,
       the asks with "for me", the detail with thread and answer, and two
-      reports (open asks, the bus's share per version). Should the review
-      of the answer path (RISK-12) not be through, the same without the
-      answer: the detail links to the ask in Mattermost.
+      reports (open asks, the bus's share per version). As long as a
+      person's answer is not decided or not reviewed (open points 2 and 5):
+      the same, reading only. An ask is then answered where it is answered
+      today, in the humans' chat, and the console shows it open until the
+      agent ends it.
     - **2:** the graph, the remaining reports, swimlanes.
-    - **3:** the recorder and its reports; reading NATS directly where a
-      home mirrors only what concerns humans; a broker hand-off, once one
+    - **3:** the recorder and its reports; what people wrote, once the
+      central adapter brings it onto NATS; a broker hand-off, once one
       exists.
 
-12. **What it needs of the NATS build.** Stages 1 and 2 run beside it and
-    hold up nothing of it, the registrar's shutdown included.
+12. **What it needs of the NATS build.** The console holds up nothing of
+    that build, the registrar's shutdown included; it waits for it. None of
+    these exists today:
 
-    | Needed | Today | Once the central adapter runs (phase 5) | For whom |
-    |--------|-------|------------------------------------------|----------|
-    | State word, crown, numbers, version | the bot's custom status | The adapter mirrors presence and crown onto the bot's status (ADR-014 point 11), but presence v1 knows only `online`, `away`, `bye` and no segments. The state word and the segments must survive: in the mirrored status, or in a later version of the format | build team, before phase 5 |
-    | Cards, task states | post props in the home | The same posts, as far as the home's visibility setting mirrors them (ADR-014 point 12) | — |
-    | Asks and their answers | posts and reactions in Mattermost | Unchanged; the adapter signs the answer as any human's (ADR-014 point 10) | — |
-    | Stats | the stats channel | A Mattermost channel unless the build moves it; then the console follows | build team |
-    | Reading NATS directly | not needed | Only for stage 3: a read-only principal the permission model does not have, under the human review of ADR-014 point 15 | owner |
+    | Needed | Part | When |
+    |--------|------|------|
+    | A person's credential: the console's client accepted, the name, the rights, the consumers (points 2 and 4) | Login service; a human's review (ADR-014 point 15) | Before stage 1 |
+    | Presence, crown and roster over NATS, with the owner and the trusted list as the login service attests them | NATS adapter, login service; announced in RT-6.36 | Before stage 1 |
+    | The card on NATS, with home, harness and a name to show | NATS adapter | Before stage 1 |
+    | The console's server admitted to NATS: the lab's network rule admits only NATS's own namespace today (ADR-014, the lab today) | The lab; the owner's approval | Before stage 1 |
+    | The state word, the numbers and the version in presence | MCP server, message format | Stage 1; until then three columns |
+    | The ask and its end on NATS | NATS adapter | Stage 1 |
+    | A person's answer read by the asking server: trusted list, approvers' group, 24 h | MCP server, login service; changes ADR-014 point 10 | The answer of stage 1 |
+    | `STATS` lines on NATS and how long they are kept | MCP server, login service (it makes the streams, RT-6.35) | The reports of stages 1 and 2 |
+    | Human-origin events from the chat | Central adapter (ADR-014 phase 5) | Stage 3 |
 
-13. **To check in the lab before stage 1.** Not verified for this proposal:
-    - that the lab's Mattermost can be an OAuth 2.0 provider for the
-      console, and what such a session may do (expected: everything that
-      person may, with no narrower scope);
-    - what a person's session may read of a bot: its custom status, and
-      the description the roster takes `owner` and `trusts` from (a bot's
-      native owner needs `read_others_bots`, RISK-03);
-    - whether Mattermost's WebSocket tells a person's session that a bot's
-      custom status changed, or the server has to poll;
-    - whether the bus's read side (`lease.py`, `tasks.py`, `stats.py`)
-      runs behind `ChatPort` with a person's session instead of a bot's.
+    Built beside it without waiting: the interface and the console's
+    server against a NATS server in the test, as the NATS adapter's own
+    tests run, and the client and the group in the lab's Keycloak.
 
-    Each of these needs a change in the lab (an OAuth application in
-    Mattermost, a client and a group in Keycloak): the owner's approval,
-    asked by whoever carries it out (ADR-014 point 15).
+13. **To check before stage 1.** Not verified for this proposal:
+    - that the auth callout can tell a token of the console's client from
+      one of the bus's and issue a person's credential without widening
+      the agents' path: today the token check takes the bus's client alone
+      (`services/auth`, token check);
+    - a person's name as a subject token: `preferred_username` may hold
+      what a token must not (a `.`), so the login service derives the
+      token, and the asking server must get from it back to the name on
+      its trusted list;
+    - the name itself: for an agent's owner the login service asks the
+      chat for an account of that name with the token's `sub` (ADR-014
+      point 6). Without that lookup for a person's credential, a Keycloak
+      name that equals a trusted name of another account answers as that
+      account; with it, the login service, not the console, asks
+      Mattermost (open point 2);
+    - how many NATS connections and renewals the console's server holds
+      for its operators, and what 14 days of history cost at every login;
+    - whether `natsbus.py` (transport, format, TLS rules, renewal) runs
+      with a person's credential: it computes an agent's name and stops
+      when the credential names another (`NameMismatch`);
+    - that every reader ignores a field beside `status` in a presence
+      message: the Python reader does, the login service's bye watcher is
+      not checked.
+
+    Each change in the lab (a client and a group in Keycloak, the network
+    rule, a rollout of the login service) needs the owner's approval, asked
+    by whoever carries it out (ADR-014 point 15).
 
 14. **Technology.** One recommendation each, with its reason:
     - **Browser:** React with TypeScript, built with Vite, as `site/`
@@ -3953,75 +4039,110 @@ Mattermost stays the humans' chat.
       Charts and the graph's layout from open-source libraries rather than
       drawn by hand (candidates, not evaluated: Apache ECharts,
       Cytoscape.js).
-    - **Server:** Python, if the last check of point 13 holds (open point
-      4). Who is reachable, which ask is open and how `STATS` lines add up
-      is written once, in Python behind `ChatPort`; a server in Go, like
-      the login service, writes those rules a second time and has to be
-      held to the same numbers by tests.
+    - **Server:** Python, if `natsbus.py` runs with a person's credential
+      (point 13; open point 6). The transport, the message format and the
+      rules for who is reachable, which ask is open and how `STATS` lines
+      add up exist in Python; a server in Go, like the login service,
+      writes them a second time and has to be held to the same numbers by
+      tests.
     - **Where it runs:** the lab's Kubernetes, in a namespace of its own,
-      as an image like the login service's (no shell, non-root). The
-      sessions it holds stay in memory.
+      as an image like the login service's (no shell, non-root). Keys,
+      tokens and what the consumers delivered stay in memory.
 
 15. **Where this proposal is weak.**
+    - **It comes after the NATS build and shows only NATS.** Nothing of
+      point 12 is built. A home still on Mattermost is missing from every
+      view, and the console looks complete (RISK-13). The first draft read
+      the bus through Mattermost and could have run on today's bus; the
+      owner decided against it (Alternatives).
+    - **Two places answer an ask** while Mattermost is the humans' chat:
+      the chat and the console. The asking server takes the first answer
+      that counts, as today. Of an answer given in the chat the console
+      learns only the ask's end, and before the central adapter not what
+      was answered.
+    - **Threads lack what people wrote** in the chat, until the central
+      adapter brings it onto NATS.
+    - **A name carries "for me" and the trust.** The asked human and the
+      trusted list are names; they are the Keycloak name only for accounts
+      that log in through Keycloak (ADR-014 point 6; point 13).
     - **Runtimes without turn hooks** (Cursor, Codex) send no turn data
-      (RT-6.9), and their state is expected to be `bus` rather than
-      `working` or `listening` (read from `lease.py`'s default, not
-      traced): the board is coarser for them, and their turn reports stay
-      "n/a".
-    - **A session, not an agent.** Bots are per session today, so the graph
-      and any history break with every new session until ADR-014 point 11
-      is settled.
-    - **"For me" hangs on a name.** The asked human is a Mattermost
-      username; it is the Keycloak name only for accounts that log in
-      through Keycloak (ADR-014 point 6).
-    - **The graph reads posts.** Task edges come from the last 14 days of a
-      home (RT-6.14 step 3), and the transitive ones are an
-      interpretation.
-    - **Text in the detail.** A thread shown is one the operator may read
-      in Mattermost anyway, but the console's server must store none of it
-      and write none of it to its log.
-    - **What A does not see:** homes the operator is not in, agent-to-agent
-      threads of a home that mirrors only what concerns humans, and
-      anything that happened while nobody was logged in (RISK-13).
-    - **The server holds people's sessions** (RISK-12).
+      (RT-6.9): their turn reports stay "n/a", and a state word they never
+      set stays coarse.
+    - **A process, not an agent.** An agent's name on NATS comes from its
+      owner and its host's key; with the key kept in memory, the default
+      (`MM_LOGIN_NKEY=ephemeral`, RT-6.34), every process is a new name,
+      and the graph and any history break at every restart.
+    - **The graph reads posts.** Task edges come from the posts the stream
+      still has, and the transitive ones are an interpretation.
+    - **Text in the server's memory.** Threads pass through the console's
+      server; it must write none of it to a disk or to its log.
+    - **Every operator reads the whole tenant**, if open point 3 is decided
+      as recommended: agent-to-agent threads of homes that person is not
+      in (RISK-14).
+    - **The server holds operators' keys** (RISK-12).
 
-**Alternatives considered:** (a) Mattermost alone, as today: no view across
-homes, no charts. (b) The chat front end of its own first: outside ADR-014,
-and far larger than a console. (c) A dashboard tool on the `STATS` lines
-alone: covers the reports, not the fleet and not the asks. (d) The agents'
-MCP tools for people: an operator is a person with a Keycloak login, not a
-session with a bot. Ways B and C of point 2.
+**Alternatives considered:** (a) Reading and answering through Mattermost
+as the logged-in operator, the first draft's recommendation: it runs on
+today's bus, changes nothing about approvals and needs nothing of point 12.
+Rejected by the owner on 2026-11-23: the console stands alone, on NATS
+only. (b) Mattermost alone, as today: no view across homes, no charts, and
+less of the agents' traffic with every home that moves to NATS. (c) The
+chat front end of its own first: outside ADR-014, and far larger than a
+console. (d) A dashboard tool on the `STATS` lines alone: covers the
+reports, not the fleet and not the asks. (e) The agents' MCP tools for
+people: an operator is a person with a Keycloak login, not a session with
+an agent's name. Ways B and C of point 2.
 
-**Consequences:** The 17 MCP tools, the hook API, the skill and the message
-format do not change. Sections 3, 5 and 7 get the console's interface,
-building block and deployment when it is accepted and built, not before;
+**Consequences:** The 17 MCP tools keep their names and schemas (ADR-014
+point 3). What changes lies behind them: the NATS adapter (card, asks,
+`STATS`, the state word over NATS), the MCP server's check of an answer (a
+person on NATS), the login service (a person's credential) and the message
+format. Each changes Section 6 with a scenario and a test when it is
+built, not before; ADR-014 point 10 changes when open point 2 is decided,
+and stands as written until then. Sections 3, 5 and 7 get the console's
+interface, building block and deployment when it is accepted and built;
 the website and `CHANGELOG.md` when a version ships it.
 
 **Tests (planned):** the reports against `stats_report` on the same lines;
-a missing field shown as "n/a"; the answer call refusing every post that is
-no open ask and posting nothing else; "for me" and "may answer" from names
-alone; an expired ask shown as such; no thread text in the server's log.
+a missing field shown as "n/a"; the console's server publishing nothing but
+an answer to an open ask; a person's credential publishing only under its
+own name and reading only its consumers, against a NATS server as in
+`native_sender_test.go`; no person's credential for a token of the bus's
+client, no agent's for one of the console's, none without the operators'
+group; an answer from a person not on the trusted list, not in the
+approvers' group or after 24 h approving nothing, and anything else from a
+person dropped; "for me" and "may answer" from names alone; an expired ask
+shown as such; no thread text in the server's log.
 
-**Risks created:** the console's server holds operators' sessions, and it
-shows less than there is (RISK-12 and RISK-13 in Section 11).
+**Risks created:** the console's server holds operators' keys, it shows
+less than there is, and a person's credential is a second way for a human's
+word to reach an agent (RISK-12 to RISK-14 in Section 11).
 
 **Open for the owner**, one decision each:
 
-1. How the console reads and answers: A, B or C (point 2). Recommended: A.
-2. Who may open it: an operators' group of its own, or the approvers'
-   group. Recommended: a group of its own; with A it shows nobody more than
-   Mattermost does, and looking is not approving.
-3. Answers from stage 1, or a link to Mattermost until a human has reviewed
-   the console's server like the other security-critical parts (ADR-014
-   point 15). Recommended: build the answer, switch it on after the review.
-4. The server's language (point 14). Recommended: Python if the bus's read
-   side runs with a person's session, else Go.
-5. Reports by home and by owner (point 8). Recommended: the home in the
+1. How the console is on NATS: A, B or C (point 2). Recommended: A.
+2. A person's own credential as a second source of human-origin events
+   beside the central adapter's signature, which changes ADR-014 point 10;
+   and with it whether the login service checks a person's name against
+   the chat as it does an owner's (point 13). Recommended: yes to the
+   credential, else the console only reads; and the name check kept while
+   Mattermost is the humans' chat: it is the login service's lookup,
+   already built, and none of the console's.
+3. What an operator reads (point 4): the whole tenant, a Keycloak group
+   per home, or the person's channels in Mattermost. Recommended: the
+   whole tenant in the lab, decided again before anything runs outside it.
+4. Who may open it: an operators' group of its own, or the approvers'
+   group. Recommended: a group of its own; looking is not approving.
+5. Answers from stage 1, or reading only until a human has reviewed the
+   console's server and the person's path (ADR-014 point 15). Recommended:
+   build the answer, switch it on after the review.
+6. The server's language (point 14). Recommended: Python if `natsbus.py`
+   runs with a person's credential, else Go.
+7. Reports by home and by owner (point 8). Recommended: the home in the
    `STATS` line, later; no owner.
-6. A recorder with a standing read credential for the stage 3 reports
-   (point 9). Recommended: decide after stage 2, when it shows what is
-   missed.
+8. A recorder with a standing credential for the stage 3 reports (point
+   9). Recommended: decide after stage 2, when it shows what is missed.
 
 Not part of this proposal: a chat for people, a mobile app, more than one
 tenant in the interface, approvals through a broker, anything outside the
-lab.
+lab, and Mattermost in any form.
