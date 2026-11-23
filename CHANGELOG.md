@@ -9,9 +9,11 @@ before 0.5.0 are described in the git history.
   failed login approval lived in the `Login` object, so a session start or a
   restart began with no cooldown and sent a fresh device DM at once. The mark is
   stored beside the refresh token now (`keystore.cooldown_entry`), as a wall-clock
-  deadline that records its reason, so a process that restarts obeys it, while
-  the process that set it keeps its own monotonic one. A remainder beyond the
-  cooldown (a wall clock that moved backwards) is capped. Hardening only: the
+  deadline that records its reason. It is read before every new approval, so a
+  second session's cooldown counts, and deleted by a login that works; the
+  process that set it keeps its own monotonic deadline. A deadline further
+  ahead than the cooldown (a wall clock that moved backwards) is capped when
+  it is taken in, so the lock never outlasts it. Hardening only: the
   three Keycloak links the pilot saw came from the realm's missing
   `offline_access` role, not from this gap.
 - **The account index keeps a name when one identity logs in with two at

@@ -37,6 +37,7 @@ import contextlib
 import ipaddress
 import json
 import logging
+import math
 import os
 import re
 import time
@@ -64,6 +65,9 @@ DEFAULT_INTERVAL_SEC = 5
 HTTP_TIMEOUT_SEC = 20.0
 MAX_BACKOFF_SEC = 60  # growing wait after a network error or a 5xx while polling
 COOLDOWN_SEC = 60  # after any approval that failed, no new approval for this long
+# The reasons a cooldown may carry. A mark is a file, so its reason is data, and only
+# these are ever reported: anything else says "failed".
+COOLDOWN_WHY = ("was declined", "expired", "was refused", "lacked the realm role", "failed")
 LOCK_POLL_SEC = 0.2
 NKEY_ENV = "MM_LOGIN_NKEY"
 NKEY_STORES = ("ephemeral", "host")
@@ -83,6 +87,10 @@ class ApprovalDenied(LoginError):
 
 class ApprovalExpired(LoginError):
     """The device code ran out before it was approved."""
+
+
+class NoRole(LoginError):
+    """The access token does not carry the realm role the NATS login needs."""
 
 
 class WrongHuman(LoginError):
@@ -239,7 +247,8 @@ class Login:
         self._lock = asyncio.Lock()
         self._cooldown_until = 0.0
         self._cooldown_why = ""
-        self._cooled = False  # this object decided a cooldown, do not reload one
+        self._mark_written = 0.0  # the wall deadline this process wrote, 0 for none
+        self._mark_seen = 0.0  # the stored deadline this object has already taken in
         self._nkey: nkeys.KeyPair | None = None
 
     def __repr__(self) -> str:
@@ -292,18 +301,19 @@ class Login:
                                  "(set MM_RESPONSIBLE_HUMAN or MM_TRUSTED_HUMANS)")
             entry = keystore.refresh_entry(self.settings.issuer, self.settings.client_id, human)
             async with self._file_lock(entry):
-                # A cooldown another process left: this one begins with none, and
-                # without this it sent a fresh device DM at once (measured in the
-                # lab: three Keycloak links in two minutes for what the human saw
-                # as one agent). Only read when this object has none of its own.
-                if not self._cooled:
-                    self._load_cooldown(human)
+                # The mark on the host, whoever left it: a cooldown another process set
+                # while this one was running counts too, so it is read before every
+                # decision to start an approval, not once per object (measured in the
+                # lab: three Keycloak links in two minutes for what the human saw as one
+                # agent).
+                self._load_cooldown(human)
                 # Loaded only now: another process may have refreshed meanwhile,
                 # and its stored token is the one to use, never the old one.
                 refresh = self._stored_refresh(human)
                 if refresh:
                     try:
                         await self._refresh(refresh, human)
+                        self._clear_cooldown(human)
                         return self._tokens.access
                     except _InvalidGrant:
                         log.info("login: the refresh token is no longer valid, asking for a new approval")
@@ -314,12 +324,14 @@ class Login:
                                      f"a new one starts in {int(wait) + 1} s")
                 try:
                     await self._approve(human)
-                except LoginError:
+                except LoginError as exc:
                     # Any failure, not only a denial: else every call would
                     # send a new DM and leave a new session open in Keycloak.
                     if self._cooldown_until <= self._now():
-                        self._cool_down("failed", human)
+                        self._cool_down("lacked the realm role" if isinstance(exc, NoRole)
+                                        else "failed", human)
                     raise
+                self._clear_cooldown(human)
                 return self._tokens.access
 
     def _fresh(self) -> bool:
@@ -486,19 +498,16 @@ class Login:
     def _cool_down(self, why: str, human: str = "") -> None:
         self._cooldown_until = self._now() + COOLDOWN_SEC
         self._cooldown_why = why
-        # This process decided the cooldown, so it must not read the stored mark
-        # again: its own monotonic deadline is the one its tests and its calls
-        # advance against, and the stored wall clock is for the *next* process.
-        self._cooled = True
         self._save_cooldown(human)
 
     def _load_cooldown(self, human: str) -> None:
-        """The cooldown another process recorded, if it still runs, with the reason
-        it recorded.
+        """The cooldown the host recorded, if it still runs, with the reason recorded.
 
-        Recorded as a wall-clock deadline: the monotonic clock stands still while
-        the machine sleeps, and a stored one of those would be meaningless in
-        the next process.
+        The deadline is a wall-clock one: the monotonic clock stands still while the
+        machine sleeps, and a stored one of those would mean nothing in the next
+        process. A mark this process wrote itself is skipped - its own monotonic
+        deadline is the one its calls advance against - so a later mark, from another
+        session, wins over it.
         """
         if not human:
             return
@@ -511,25 +520,46 @@ class Login:
             until = float(until_text)
         except (keystore.KeyStoreError, OSError, ValueError):
             return
-        # Nothing writes the mark further ahead than the cooldown itself, so a larger
-        # remainder is the wall clock having moved backwards: it must not hold approvals
-        # off for the length of the jump, since nothing would clear the mark before then.
-        left = min(until - self._wall(), COOLDOWN_SEC)
+        if not math.isfinite(until) or until <= max(self._mark_written, self._mark_seen):
+            return
+        self._mark_seen = until  # once: a second read must not arm another cooldown
+        # Nothing writes a mark further ahead than the cooldown itself, so a later
+        # deadline is a wall clock that moved backwards: it must not hold approvals off
+        # for the length of the jump, since nothing would clear the mark before then.
+        # The deadline is capped, not the remainder: capped per call, every call would
+        # arm another COOLDOWN_SEC and the lock would last the whole jump.
+        left = min(until, self._wall() + COOLDOWN_SEC) - self._wall()
         if left > 0:
             self._cooldown_until = self._now() + left
-            self._cooldown_why = self._cooldown_why or why or "failed"
+            self._cooldown_why = why if why in COOLDOWN_WHY else "failed"
 
     def _save_cooldown(self, human: str) -> None:
         """The mark beside the token: the deadline and why, so the next process says
         what happened and not only how long is left."""
         if not human:
             return
+        until = self._wall() + COOLDOWN_SEC
+        self._mark_written = self._mark_seen = until
         try:
             self._store.save(keystore.cooldown_entry(
                 self.settings.issuer, self.settings.client_id, human),
-                f"{self._wall() + COOLDOWN_SEC} {self._cooldown_why}")
+                f"{until} {self._cooldown_why}")
         except (keystore.KeyStoreError, OSError) as exc:
             log.warning("login cooldown not stored: %s", type(exc).__name__)
+
+    def _clear_cooldown(self, human: str) -> None:
+        """A login that worked leaves no mark: the next process starts clean."""
+        self._cooldown_until = 0.0
+        self._cooldown_why = ""
+        self._mark_written = 0.0
+        self._mark_seen = 0.0
+        if not human:
+            return
+        try:
+            self._store.delete(keystore.cooldown_entry(
+                self.settings.issuer, self.settings.client_id, human))
+        except (keystore.KeyStoreError, OSError) as exc:
+            log.warning("login cooldown not cleared: %s", type(exc).__name__)
 
     async def _settle(self, outcome: str) -> None:
         if self._notifier is None:
@@ -618,7 +648,7 @@ class Login:
             access_info = claims.get("realm_access")
             roles = access_info.get("roles") if isinstance(access_info, dict) else None
             if not isinstance(roles, list) or ROLE not in roles:
-                raise LoginError(f"the access token does not carry the realm role {ROLE}")
+                raise NoRole(f"the access token does not carry the realm role {ROLE}")
         except LoginError:
             # Never stored, so never used: revoked, or its session stays open in Keycloak.
             await self._revoke(refresh)
