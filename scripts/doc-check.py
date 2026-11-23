@@ -67,6 +67,11 @@ def repo_files() -> list[str]:
 
 # --- doc-map ----------------------------------------------------------------
 
+DOC_MAP_REQUIRED = ("name", "paths", "docs")
+DOC_MAP_OPTIONAL = ("exclude",)
+DOC_MAP_KEYS = DOC_MAP_REQUIRED + DOC_MAP_OPTIONAL
+
+
 def doc_map_rule_error(rule: dict) -> str:
     """What is wrong with a rule's shape, '' when nothing is.
 
@@ -74,12 +79,30 @@ def doc_map_rule_error(rule: dict) -> str:
     instead of a list would be iterated character by character, so `"*_test.go"`
     excludes nothing specific and the rule silently stops claiming any file — a
     check that never fires is worse than one that complains.
+
+    Required keys are checked here too, not left to fail later: a rule without
+    `paths` or `docs` used to pass validation and then die with a bare `KeyError`
+    somewhere below, without the rule's name. An empty `paths`, an unknown key
+    and a misspelled optional one (`excludes`) are refused for the same reason:
+    each one makes the rule claim nothing while looking healthy.
     """
+    for key in DOC_MAP_REQUIRED:
+        if key not in rule:
+            return f"{key} is missing"
+    unknown = sorted(set(rule) - set(DOC_MAP_KEYS))
+    if unknown:
+        return f"unknown key {', '.join(unknown)} (allowed: {', '.join(DOC_MAP_KEYS)})"
+    if not isinstance(rule["name"], str) or not rule["name"]:
+        return "name must be a non-empty string"
     for key in ("paths", "docs", "exclude"):
         if key not in rule:
             continue
         if not isinstance(rule[key], list) or not all(isinstance(v, str) for v in rule[key]):
             return f"{key} must be a list of strings"
+    if not rule["paths"]:
+        return "paths must not be empty"
+    if not rule["docs"]:
+        return "docs must not be empty"
     return ""
 
 
