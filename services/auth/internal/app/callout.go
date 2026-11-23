@@ -11,20 +11,26 @@ import (
 	"net"
 	"net/url"
 	"os"
+	"regexp"
 	"strings"
 	"time"
 
 	"github.com/nats-io/nats.go"
+	"github.com/nats-io/nats.go/jetstream"
 	"github.com/nats-io/nkeys"
 
 	"github.com/dembaca/ai-agent-bus/services/auth/internal/callout"
 	"github.com/dembaca/ai-agent-bus/services/auth/internal/consumers"
+	"github.com/dembaca/ai-agent-bus/services/auth/internal/directory"
 	"github.com/dembaca/ai-agent-bus/services/auth/internal/mattermost"
 	"github.com/dembaca/ai-agent-bus/services/auth/internal/token"
 )
 
 // ErrConfig marks a configuration the service refuses to start with.
 var ErrConfig = errors.New("configuration")
+
+// bucketRE: what NATS allows as a key-value bucket's name.
+var bucketRE = regexp.MustCompile(`^[A-Za-z0-9_-]{1,64}$`)
 
 // Settings is the callout's configuration from the environment. Secrets are
 // file paths, never values.
@@ -50,6 +56,13 @@ type Settings struct {
 	MattermostURL  string
 	MattermostTeam string
 	MattermostFile string // the Mattermost access token
+	// DirectoryBucket is the channel directory's key-value bucket (ADR-016),
+	// in the tenant account; empty: directory.DefaultBucket.
+	DirectoryBucket string
+	// DirectoryImported: the operator ran the one-time import
+	// (AUTH_DIRECTORY_IMPORTED=true). The directory then must hold its mark:
+	// a missing bucket or mark refuses, never falls back to Mattermost.
+	DirectoryImported bool
 }
 
 // LoadSettings reads the callout's settings. It reports false when
@@ -112,6 +125,17 @@ func LoadSettings(getenv func(string) string) (Settings, bool, error) {
 	s.MattermostURL = get("AUTH_MATTERMOST_URL")
 	s.MattermostTeam = get("AUTH_MATTERMOST_TEAM")
 	s.MattermostFile = get("AUTH_MATTERMOST_TOKEN_FILE")
+	s.DirectoryBucket = get("AUTH_DIRECTORY_BUCKET")
+	switch v := get("AUTH_DIRECTORY_IMPORTED"); v {
+	case "", "false":
+	case "true":
+		s.DirectoryImported = true
+	default:
+		return Settings{}, true, fmt.Errorf("%w: AUTH_DIRECTORY_IMPORTED: true or false, got %q", ErrConfig, v)
+	}
+	if s.DirectoryBucket != "" && !bucketRE.MatchString(s.DirectoryBucket) {
+		return Settings{}, true, fmt.Errorf("%w: AUTH_DIRECTORY_BUCKET: letters, digits, - and _ only, got %q", ErrConfig, s.DirectoryBucket)
+	}
 
 	for k, v := range map[string]string{
 		"AUTH_NATS_SEED_FILE": s.NATSSeedFile, "AUTH_ISSUER_SEED_FILE": s.IssuerSeedFile,
@@ -195,10 +219,6 @@ func RunCallout(ctx context.Context, s Settings, log *slog.Logger) error {
 	brake := callout.NewBrake(s.BrakeFile, func(line string) {
 		log.Warn("emergency brake: a line that is no username holds nobody", "line", line)
 	})
-	svc, err := callout.New(s.Callout, issuer, xkey, v, mm, brake, log)
-	if err != nil {
-		return fmt.Errorf("%w: %v", ErrConfig, err)
-	}
 	connect := func(url, name string, kp nkeys.KeyPair) (*nats.Conn, error) {
 		pub, _ := kp.PublicKey()
 		opts := []nats.Option{nats.Name(name), nats.Nkey(pub, kp.Sign),
@@ -241,6 +261,21 @@ func RunCallout(ctx context.Context, s Settings, log *slog.Logger) error {
 		return err
 	}
 	mgr.WatchBrake(ctx, brake)
+	js, err := jetstream.New(jsnc)
+	if err != nil {
+		return fmt.Errorf("JetStream: %w", err)
+	}
+	dir, err := directory.Open(startCtx, js, s.DirectoryBucket, s.DirectoryImported)
+	if err != nil {
+		return err
+	}
+	// The directory answers membership once the import has run; until then
+	// Mattermost does, by username, as before (ADR-016, decision 2).
+	svc, err := callout.New(s.Callout, issuer, xkey, v, directory.Channels{Store: dir, Fallback: mm}, brake, log)
+	if err != nil {
+		return fmt.Errorf("%w: %v", ErrConfig, err)
+	}
+	svc.SetAnchors(directory.Anchors{Store: dir})
 	svc.SetConsumers(mgr)
 	log.Info("consumer management on", "bus", s.Callout.Subjects.Prefix, "presence", s.Callout.Subjects.Presence)
 	log.Info("auth callout serving", "account", s.Callout.Account, "binding", s.Binding)
