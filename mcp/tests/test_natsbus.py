@@ -32,6 +32,7 @@ from mattermost_ai_agent_bus.natsbus import (
     NatsSettings,
     agent_name,
     build_hello,
+    crown_candidates,
     crown_holder,
     decode,
     decode_presence,
@@ -255,6 +256,129 @@ def _presence_reply(bus: NatsBus, sseq: int, cseq: int, t: float) -> str:
 class FakeMsg:
     def __init__(self, subject: str, reply: str | None, data: bytes) -> None:
         self.subject, self.reply, self.data = subject, reply, data
+
+
+def test_the_claim_order_is_the_server_time_then_the_sequence() -> None:
+    """RT-6.38 step 1 (H2): a stream made anew restarts its sequence, so the sequence alone is
+    no order between agents: A's old claim (seq 500) stays before C's new one (seq 100)."""
+    now = 1000.0
+    pres = {"a": (now - 10, "online"), "c": (now - 10, "online")}
+    claims, at = {"a": 500, "c": 100}, {"a": now - 5000, "c": now - 100}
+    assert crown_candidates(claims, pres, now, None, 90.0, at) == ["a", "c"]
+    assert crown_candidates(claims, pres, now) == ["c", "a"]  # by the sequence alone, the old rule
+    at = {"a": now - 100, "c": now - 100}  # the same time: the sequence decides
+    assert crown_candidates(claims, pres, now, None, 90.0, at) == ["c", "a"]
+
+
+async def test_a_claim_older_than_the_consumer_made_anew_is_forgotten_and_claimed_again() -> None:
+    """RT-6.38 step 1 (H2): when the presence consumer starts over (its delivery number
+    falls back), remembered claims are gone from the stream: this agent's own is missing
+    and the tick claims again."""
+    bus, _ = _unit_bus()
+    await _claim(bus, bus.name, "home", 500, T0 - 1000)
+    await _claim(bus, "agent-b", "home", 501, T0 - 900)
+    assert bus.claimed("home", bus.name)
+    await bus._on_presence_msg(FakeMsg("presence.member.home.agent-b", _presence_reply(bus, 600, 1, T0),
+                                       encode_claim()))  # delivery number 1 again: made anew
+    assert not bus.claimed("home", bus.name) and not bus.claimed("home", "agent-b")
+    await _claim(bus, "agent-c", "home", 601, T0)
+    assert bus.claimed("home", "agent-c") and bus.claim_info("home").get(bus.name) is None
+
+
+async def test_the_echo_of_the_own_presence_is_timed_by_the_monotonic_clock(monkeypatch: pytest.MonkeyPatch) -> None:
+    """RT-6.38 step 2 (H3): the age of the last own presence delivered, never server time."""
+    mono = [100.0]
+    monkeypatch.setattr(time, "monotonic", lambda: mono[0])
+    bus, _ = _unit_bus()
+    mono[0] += 80
+    assert bus.own_echo_age() == 80
+    await _presence(bus, "agent-other", 1, T0)
+    assert bus.own_echo_age() == 80  # somebody else's presence is no echo of ours
+    await _presence(bus, bus.name, 2, T0 + 1)
+    assert bus.own_echo_age() == 0
+    mono[0] += 30
+    assert bus.own_echo_age() == 30
+
+
+async def test_a_missing_own_echo_triggers_one_reconnect(monkeypatch: pytest.MonkeyPatch) -> None:
+    """RT-6.38 step 2: no echo of the own presence past OWN_ECHO_SEC while connected: one
+    reconnect, not more within the gap interval; a normal echo: none."""
+    mono = [100.0]
+    monkeypatch.setattr(time, "monotonic", lambda: mono[0])
+    bus, _ = _unit_bus()
+    bus._connected = True
+    mono[0] += natsbus.OWN_ECHO_SEC - 1
+    bus._check_own_echo()
+    assert not bus._wake.is_set()  # still within the window
+    await _presence(bus, bus.name, 1, T0)  # the echo comes
+    mono[0] += natsbus.OWN_ECHO_SEC - 1
+    bus._check_own_echo()
+    assert not bus._wake.is_set()
+    mono[0] += 2  # now missing past the window
+    bus._check_own_echo()
+    assert bus._wake.is_set()
+    bus._wake.clear()
+    mono[0] += 5
+    bus._check_own_echo()  # the same outage: no second reconnect
+    assert not bus._wake.is_set()
+    bus._connected = False
+    mono[0] += 1000
+    bus._check_own_echo()  # not connected: the supervisor is at it already
+    assert not bus._wake.is_set()
+
+
+async def test_an_echo_a_reconnect_does_not_bring_back_backs_off(monkeypatch: pytest.MonkeyPatch) -> None:
+    """RT-6.38 step 2: when the echo stays away after reconnects, the wait doubles up to the
+    credential renewal (no reconnect in every window); a real echo resets it; a refused
+    presence subject (another release of the login service) reconnects never."""
+    mono = [100.0]
+    monkeypatch.setattr(time, "monotonic", lambda: mono[0])
+    bus, _ = _unit_bus()
+    bus._connected = True
+    times: list[float] = []
+    for _ in range(int(20 * 60 / 5)):  # 20 minutes, a beat every 5 s
+        mono[0] += 5
+        bus._check_own_echo()
+        if bus._wake.is_set():
+            bus._wake.clear()
+            times.append(mono[0])
+            bus._own_echo = mono[0]  # _open of the reconnect gives a new window, no echo comes
+    gaps = [b - a for a, b in zip(times, times[1:], strict=False)]
+    assert 2 <= len(times) <= 5, times
+    assert all(b > a for a, b in zip(gaps, gaps[1:], strict=False)), gaps  # each wait longer than the last
+    assert max(gaps) <= natsbus.RENEW_SEC + 5
+    await _presence(bus, bus.name, 1, T0)  # a real echo: the next outage starts afresh
+    assert bus._echo_backoff == 0.0
+    bus._denied = [bus._presence_subject]
+    mono[0] += 10_000
+    bus._check_own_echo()
+    assert not bus._wake.is_set()  # refused: a reconnect cures nothing
+
+
+async def test_the_heartbeat_checks_the_own_echo() -> None:
+    """RT-6.38 step 2: the heartbeat loop asks for the reconnect when the echo is missing."""
+    bus, _ = _unit_bus(heartbeat_sec=0.01)
+    bus._connected = True
+    bus._own_echo = time.monotonic() - natsbus.OWN_ECHO_SEC - 1
+    task = asyncio.create_task(bus._heartbeat())
+    try:
+        await asyncio.wait_for(bus._wake.wait(), 2)
+    finally:
+        task.cancel()
+
+
+async def test_forgetting_the_claims_unsyncs_until_the_replay_is_read() -> None:
+    """RT-6.38 step 1: after the consumer is made anew the view is not synced until a
+    delivery with pending 0, so a tick in the replay window does not claim."""
+    bus, _ = _unit_bus()
+    await _claim(bus, bus.name, "home", 500, T0 - 1000)
+    assert bus.synced  # pending 0
+    replay = _presence_reply(bus, 600, 1, T0)[:-1] + "3"  # delivery number 1 again, 3 still pending
+    await bus._on_presence_msg(FakeMsg("presence.member.home.agent-b", replay, encode_claim()))
+    assert not bus.synced and not bus.claimed("home", bus.name)
+    await bus._on_presence_msg(FakeMsg("presence.member.home.agent-b", _presence_reply(bus, 603, 4, T0),
+                                       encode_claim()))
+    assert bus.synced
 
 
 def test_crown_rule() -> None:
@@ -950,6 +1074,33 @@ async def test_presence_and_crown(rig: Rig) -> None:
     rig.buses.remove(bob)
     await until(lambda: alice.presence_snapshot()[rig.names["bob"]][1] == "bye")
     assert alice.holder("home") == alice.name
+
+
+async def test_the_crown_candidates_are_fresh_members_in_claim_order(rig: Rig) -> None:
+    """RT-6.38 step 1 against a real server: two home members claim and the lowest holds; a
+    claim without a membership (a guest) never holds; a holder that stops beating passes the
+    crown within the freshness window (the server's clock), a bye at once."""
+    alice, _ = await rig.agent("alice")
+    bob, _ = await rig.agent("bob")
+    await until(lambda: alice.synced and bob.synced)
+    await bob.claim("home")  # bob claims first, but is no member of the home: a guest
+    await alice.claim("home")
+    await alice.member("home")
+    await until(lambda: alice.is_member("home", alice.name) and bob.claimed("home", alice.name))
+    assert bob.candidates("home") == [alice.name]  # the lower claim is no member
+    assert alice.holder("home") == bob.name  # the bare rule has no membership: why the crown uses candidates
+    await bob.member("home")
+    await until(lambda: alice.is_member("home", bob.name))
+    assert alice.candidates("home") == [bob.name, alice.name]  # the lowest claim holds
+    assert alice.candidates("home")[0] == bob.name
+    # the holder stops beating: fresh for 90 s by the server's clock, then the next claim
+    t = alice.presence_snapshot()[bob.name][0]
+    assert alice.candidates("home", now=t + 89)[0] == bob.name
+    assert alice.candidates("home", now=t + 90) in ([alice.name], [])
+    await bob.stop()  # a bye: gone at once
+    rig.buses.remove(bob)
+    await until(lambda: alice.presence_snapshot()[rig.names["bob"]][1] == "bye")
+    assert alice.candidates("home") == [alice.name]
 
 
 async def test_a_refused_presence_subject_is_said_in_words(rig: Rig, caplog: pytest.LogCaptureFixture) -> None:
