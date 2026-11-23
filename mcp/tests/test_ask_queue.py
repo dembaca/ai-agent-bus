@@ -444,3 +444,26 @@ async def test_ask_posted_and_ask_route_wake_nobody_but_a_stall_wakes_the_crown(
         event = ClassifiedEvent(kind=kind, post=post_of({"id": "", "message": "x", "create_at": 1}))
         (item,) = await server._event_items([event])
         assert channel.wakes(item, coordinator=True, in_my_thread=False) is wakes, kind
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("scope", ["home", "all"])
+async def test_ask_closers_are_checked_when_trusted_humans_cannot_be_resolved(bus, monkeypatch, scope):
+    """ADR-016, RT-6.16: MM_TRUSTED_HUMANS configured, the lookup resolved
+    none (an outage): coordinator("tasks") and the overview still sort the
+    closers of an ask into peer and foreign, never "nobody is trusted, skip"."""
+    monkeypatch.setenv("MM_TRUSTED_HUMANS", "dembaca")
+    bus.trusted = {}
+    seen = []
+
+    async def spy(client, ids):
+        import inspect
+
+        seen.append(inspect.stack()[1].function)  # who checks: coordinator or _overview
+        return {}
+
+    monkeypatch.setattr(server.owners, "foreign", spy)
+    await _ask(need="Merge #61?")
+    seen.clear()
+    await server.coordinator("tasks", scope=scope)
+    assert ("coordinator" if scope == "home" else "_overview") in seen, seen
