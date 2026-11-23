@@ -173,6 +173,13 @@ class MattermostStub:
         self.bots: dict[str, dict[str, Any]] = {}
         #: post id -> the post the caller created, for `posted_frame`
         self.posts: dict[str, dict[str, Any]] = {}
+        #: user id -> the status the bus wrote (`{"status": ..., "custom": ...}`).
+        #: The crown is a Mattermost status lease (RT-6.6 step 6), so a stub that
+        #: accepts the write and answers `[]` for every read makes the crown
+        #: invisible: `coordinator("who")` says "(no coordinator)" and `bus_info`
+        #: says `crown: False`. Measured before it was fixed; without this the
+        #: take-over cannot be measured at all (Etappe 1 of the takeover lines).
+        self.statuses: dict[str, dict[str, Any]] = {}
         self._patterns = [(re.compile(pattern), body) for pattern, body in KNOWN.items()]
         self._gateway = Gateway(self._on_http, self._on_ws)
         #: set when the first socket is open; a run waits on it instead of
@@ -263,6 +270,13 @@ class MattermostStub:
             answer = self._bot_by_id(path)
             if answer is not None:
                 return answer
+        if method == "POST" and path == "/api/v4/users/status/ids":
+            return self._statuses(headers, body)
+        if method == "GET" and path == "/api/v4/users":
+            return self._channel_users(target)
+        if method == "PUT" and (path.endswith("/status") or path.endswith("/status/custom")) \
+                and "/api/v4/users/" in path:
+            return self._write_status(headers, path, body)
         key = f"{method} {path}"
         for pattern, answer in self._patterns:
             if pattern.fullmatch(key):
@@ -292,6 +306,90 @@ class MattermostStub:
             "order": [p["id"] for p in window],
             "posts": {p["id"]: p for p in window},
         }).encode()
+
+    def _channel_users(self, target: str) -> tuple[int, dict[str, str], bytes]:
+        """The accounts of a channel (`GET /users?in_channel=…`), with the custom
+        status on each.
+
+        This is where the crown is read from (RT-6.6 step 6: `lease._rows` takes
+        `u.custom_status`, not the presence route), so a stub that answers `[]`
+        here makes the crown invisible even when it stores the write. The bots
+        this stub identified are its members; an older answer of `[]` is why
+        `coordinator("who")` said "(no coordinator)" with the status written.
+        """
+        out = []
+        for account in self.bots.values():
+            held = self.statuses.get(account["id"]) or {}
+            out.append({
+                "id": account["id"],
+                "username": account["username"],
+                "create_at": account.get("create_at", 1),
+                "delete_at": 0,
+                "deleted": False,
+                "is_bot": True,
+                "custom_status": ({"emoji": held["custom"],
+                                   "text": held.get("text", ""),
+                                   "duration": "date_and_time",
+                                   "expires_at": held.get("expires_at", "")}
+                                  if held.get("custom") else {}),
+            })
+        return 200, {"content-type": "application/json"}, json.dumps(out).encode()
+
+    def _statuses(self, headers: dict[str, str],
+                  body: bytes) -> tuple[int, dict[str, str], bytes]:
+        """The status of the accounts asked for, as Mattermost answers it.
+
+        The bus reads the crown back from here (RT-6.6 step 6): a status it wrote
+        must come back, and a user who never wrote one has none. Answering `[]`
+        for every read made the crown invisible and every take-over unmeasurable.
+        """
+        try:
+            asked = json.loads(body or b"[]")
+        except json.JSONDecodeError:
+            asked = []
+        wanted = asked if isinstance(asked, list) else []
+        out = []
+        for uid in wanted:
+            if not isinstance(uid, str):
+                continue
+            held = self.statuses.get(uid) or {}
+            out.append({"user_id": uid,
+                        "status": held.get("status", "offline"),
+                        "manual": False,
+                        "last_activity_at": 0})
+        return 200, {"content-type": "application/json"}, json.dumps(out).encode()
+
+    def _write_status(self, headers: dict[str, str], path: str,
+                      body: bytes) -> tuple[int, dict[str, str], bytes]:
+        """Keep what the bus writes (RT-6.6 step 6), so a later read sees it.
+
+        Two routes: `PUT /users/<id>/status` (the bot's own status) and
+        `PUT /users/me/status/custom` (the custom status that carries the 👑 and
+        the label). Both are the lease the bus renews every beat; a stub that
+        drops them cannot show a crown at all.
+        """
+        try:
+            asked = json.loads(body or b"{}")
+        except json.JSONDecodeError:
+            asked = {}
+        who = "me" if path.endswith("/users/me/status/custom") \
+            else path.rsplit("/", 2)[-2]
+        uid = self._bot(headers)["id"] if who == "me" else who
+        held = self.statuses.setdefault(uid, {})
+        if path.endswith("/status/custom"):
+            held["custom"] = str(asked.get("emoji") or "")
+            # The text names the home (`lease.home_of`), and a row whose text
+            # names no home does not count in that home's roster: dropping it
+            # made the crown readable but never *for* the home.
+            held["text"] = str(asked.get("text") or "")
+            # The lease's end: a custom status without one "proves nothing
+            # about a live session" (lease.live), so a stub that drops it makes
+            # the crown unwritable even though the emoji arrived.
+            held["expires_at"] = str(asked.get("expires_at") or "")
+        else:
+            held["status"] = str(asked.get("status") or "online")
+        return 200, {"content-type": "application/json"}, json.dumps(
+            {"user_id": uid, **{k: v for k, v in held.items()}}).encode()
 
     def _user_by_id(self, path: str) -> tuple[int, dict[str, str], bytes] | None:
         """An account by its id, as the roster reads it, or `None` when this stub

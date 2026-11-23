@@ -242,6 +242,53 @@ async def test_an_id_route_answers_only_an_id_this_stub_knows():
     ]
 
 
+async def test_the_stub_keeps_the_status_it_is_written():
+    """The crown is a Mattermost status lease (RT-6.6 step 6), so the stub must
+    keep what the bus writes and hand it back.
+
+    Before, it accepted the write and answered `[]` for every read: the crown was
+    invisible (`bus_info` said `crown: False` with the write done) and no
+    take-over could be measured. The three routes the bus uses are checked here:
+    the presence route, the custom status, and the channel's accounts, which is
+    where `lease._rows` takes `custom_status` from.
+    """
+    async with MattermostStub() as stub:
+        stub.identify(SENDER_TOKEN, SENDER_ID, "agent-sender")
+        async with httpx.AsyncClient(base_url=stub.url,
+                                     headers={"authorization": f"Bearer {SENDER_TOKEN}"},
+                                     trust_env=False) as client:
+            await client.put(f"/api/v4/users/{SENDER_ID}/status", json={"status": "online"})
+            await client.put("/api/v4/users/me/status/custom", json={
+                "emoji": "crown", "text": "coordinator · ~agents",
+                "duration": "date_and_time", "expires_at": "2099-01-01T00:00:00Z"})
+            presence = await client.post("/api/v4/users/status/ids", json=[SENDER_ID])
+            users = await client.get("/api/v4/users", params={"in_channel": CHANNEL})
+    held = stub.statuses[SENDER_ID]
+    assert held["status"] == "online"
+    assert held["custom"] == "crown" and held["text"] == "coordinator · ~agents"
+    assert presence.json() == [{"user_id": SENDER_ID, "status": "online",
+                                "manual": False, "last_activity_at": 0}]
+    row = next(u for u in users.json() if u["id"] == SENDER_ID)
+    assert row["custom_status"]["emoji"] == "crown"
+    assert row["custom_status"]["text"] == "coordinator · ~agents"
+    assert row["custom_status"]["expires_at"] == "2099-01-01T00:00:00Z"
+    assert stub.unknown == []
+
+
+async def test_a_user_without_a_status_reads_back_none():
+    """The stub invents nothing: an account that never wrote a status has none,
+    and the presence route says `offline` rather than a made-up `online`."""
+    async with MattermostStub() as stub:
+        stub.identify(SENDER_TOKEN, SENDER_ID, "agent-sender")
+        async with httpx.AsyncClient(base_url=stub.url, trust_env=False) as client:
+            answer = await client.post("/api/v4/users/status/ids", json=[SENDER_ID])
+            users = await client.get("/api/v4/users", params={"in_channel": CHANNEL})
+    assert answer.json() == [{"user_id": SENDER_ID, "status": "offline",
+                              "manual": False, "last_activity_at": 0}]
+    row = next(u for u in users.json() if u["id"] == SENDER_ID)
+    assert row["custom_status"] == {}
+
+
 def test_the_id_patterns_accept_an_id_and_nothing_else():
     """The two compiled routes, pinned on their own.
 
