@@ -598,7 +598,7 @@ func (s *Store) ClaimAccount(ctx context.Context, sub, product, name string) (Ac
 	for range 5 {
 		_, err := s.kv.Create(ctx, key, []byte(sub))
 		if err == nil {
-			return s.settle(ctx, sub, product, name, "", released)
+			return s.settle(ctx, sub, product, name, "", released, true)
 		}
 		if !errors.Is(err, jetstream.ErrKeyExists) {
 			return AccountMove{Released: released}, err
@@ -612,7 +612,7 @@ func (s *Store) ClaimAccount(ctx context.Context, sub, product, name string) (Ac
 		}
 		from := string(e.Value())
 		if from == sub {
-			return s.settle(ctx, sub, product, name, "", released)
+			return s.settle(ctx, sub, product, name, "", released, false)
 		}
 		r, err := s.beginMove(ctx, product, name, from, sub)
 		if r != "" {
@@ -630,7 +630,7 @@ func (s *Store) ClaimAccount(ctx context.Context, sub, product, name string) (Ac
 			}
 			return AccountMove{Released: released}, err
 		}
-		return s.settle(ctx, sub, product, name, from, released)
+		return s.settle(ctx, sub, product, name, from, released, true)
 	}
 	return AccountMove{Released: released}, ErrConflict
 }
@@ -690,20 +690,17 @@ func (s *Store) openMark(ctx context.Context, product, name, holder string) (fro
 // beginMove notes, before the index key moves away from `from` to `sub`,
 // that it is taken from there. A move that stops after the key leaves the
 // mark, and the next write of that name finishes it from there (settle). An
-// unfinished move's mark is not lost to the new one: that move is finished
-// first, for the key's holder `from` (its record gets the name and where it
-// came from, the old holder loses it: released). When `sub` is that old
-// holder taking its name back, the unfinished move is moot and nothing is
-// released.
+// unfinished move's mark is not lost to the new one: its old holder, who no
+// longer has the key, loses the name first (released). Nothing is written
+// into the record of `from`: only a login of `from` or an admin writes the
+// name into it (a write from here could free a name `from` took meanwhile).
+// When `sub` is that old holder taking its name back, nothing is released.
 func (s *Store) beginMove(ctx context.Context, product, name, from, sub string) (released string, err error) {
 	open, _, err := s.openMark(ctx, product, name, from)
 	if err != nil {
 		return "", err
 	}
 	if open != "" && open != sub {
-		if err := s.holdAccount(ctx, from, product, name, open); err != nil {
-			return "", err
-		}
 		if err := s.releaseAccount(ctx, open, product, name); err != nil {
 			return "", err
 		}
@@ -718,7 +715,7 @@ func (s *Store) beginMove(ctx context.Context, product, name, from, sub string) 
 // its old holder counts as moved from when this write moved nothing, else it
 // is released. The mark is removed once the records have followed; a stale
 // one too.
-func (s *Store) settle(ctx context.Context, sub, product, name, from, released string) (AccountMove, error) {
+func (s *Store) settle(ctx context.Context, sub, product, name, from, released string, changed bool) (AccountMove, error) {
 	m := AccountMove{From: from, Released: released}
 	open, mark, err := s.openMark(ctx, product, name, sub)
 	if err != nil {
@@ -734,7 +731,7 @@ func (s *Store) settle(ctx context.Context, sub, product, name, from, released s
 		}
 		m.Released = open
 	}
-	if err := s.finishAccount(ctx, sub, product, name, m.From); err != nil {
+	if err := s.finishAccount(ctx, sub, product, name, m.From, changed); err != nil {
 		return m, err
 	}
 	if mark != nil {
@@ -770,7 +767,7 @@ func (s *Store) PutAccount(ctx context.Context, sub, product, name string, rev u
 		} else if err != nil {
 			return AccountMove{}, err
 		}
-		return s.settle(ctx, sub, product, name, "", "")
+		return s.settle(ctx, sub, product, name, "", "", true)
 	}
 	e, err := s.kv.Get(ctx, key)
 	if errors.Is(err, jetstream.ErrKeyNotFound) {
@@ -798,17 +795,17 @@ func (s *Store) PutAccount(ctx context.Context, sub, product, name string, rev u
 		}
 		return AccountMove{Released: released}, err
 	}
-	return s.settle(ctx, sub, product, name, from, released)
+	return s.settle(ctx, sub, product, name, from, released, true)
 }
 
 // finishAccount is what follows a write of the index key: the new holder's
 // record gets the name (and movedFrom), the name it had before is freed, and
 // the old holder's record loses the name.
-func (s *Store) finishAccount(ctx context.Context, sub, product, name, movedFrom string) error {
+func (s *Store) finishAccount(ctx context.Context, sub, product, name, movedFrom string, changed bool) error {
 	if err := accountStep("key moved"); err != nil {
 		return err
 	}
-	if err := s.holdAccount(ctx, sub, product, name, movedFrom); err != nil {
+	if err := s.holdAccount(ctx, sub, product, name, movedFrom, changed); err != nil {
 		return err
 	}
 	if err := accountStep("holder written"); err != nil {
@@ -820,7 +817,11 @@ func (s *Store) finishAccount(ctx context.Context, sub, product, name, movedFrom
 	return s.releaseAccount(ctx, movedFrom, product, name)
 }
 
-func (s *Store) holdAccount(ctx context.Context, sub, product, name, movedFrom string) error {
+// holdAccount writes `name` into the record of `sub`. After a key this call
+// changed (changed) it always writes, also when the record lists the name
+// already: a release that read the record before must fail over its
+// revision (releaseAccount).
+func (s *Store) holdAccount(ctx context.Context, sub, product, name, movedFrom string, changed bool) error {
 	for range 3 {
 		id, rev, ok, err := s.Identity(ctx, sub)
 		if err != nil {
@@ -830,7 +831,7 @@ func (s *Store) holdAccount(ctx context.Context, sub, product, name, movedFrom s
 			return ErrNoIdentity
 		}
 		old := id.Accounts[product]
-		if old == name && (movedFrom == "" || id.MovedFrom[product] == movedFrom) {
+		if !changed && old == name && (movedFrom == "" || id.MovedFrom[product] == movedFrom) {
 			return nil
 		}
 		if id.Accounts == nil {
@@ -864,10 +865,20 @@ func (s *Store) holdAccount(ctx context.Context, sub, product, name, movedFrom s
 }
 
 // releaseAccount removes `name` from the record of `sub`, if it still lists
-// it. A `sub` without a record has nothing to lose.
+// it and does not hold its key. A `sub` without a record has nothing to lose.
+//
+// The record is read before the key, and written over the revision read: a
+// `sub` that takes the key meanwhile writes its record after its key (hold
+// always writes after a key it changed), so either the key read here shows
+// it and nothing is released, or its record write comes later and the one
+// here fails over the stale revision and looks again.
 func (s *Store) releaseAccount(ctx context.Context, sub, product, name string) error {
 	if checkKey(sub) != nil {
 		return nil
+	}
+	key, err := accountKey(product, name)
+	if err != nil {
+		return err
 	}
 	for range 3 {
 		id, rev, ok, err := s.Identity(ctx, sub)
@@ -876,6 +887,14 @@ func (s *Store) releaseAccount(ctx context.Context, sub, product, name string) e
 		}
 		if !ok || id.Accounts[product] != name {
 			return nil
+		}
+		if e, err := s.kv.Get(ctx, key); err == nil && string(e.Value()) == sub {
+			return nil // it holds the key (again): the name is its own
+		} else if err != nil && !errors.Is(err, jetstream.ErrKeyNotFound) {
+			return err
+		}
+		if err := accountStep("release checked"); err != nil {
+			return err
 		}
 		delete(id.Accounts, product)
 		delete(id.MovedFrom, product)

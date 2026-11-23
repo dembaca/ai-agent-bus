@@ -7,6 +7,7 @@ import (
 	"log/slog"
 	"strconv"
 	"strings"
+	"sync"
 	"testing"
 	"time"
 
@@ -918,9 +919,12 @@ func TestTakingANameBackFromAStoppedMoveReleasesNobody(t *testing.T) {
 	}
 }
 
-// a→b stops after its key, c's claim stops before its key: the move to b is
-// finished for b all the same, with where the name came from.
-func TestAStoppedMoveIsFinishedForItsHolderWhenTheNextOneStops(t *testing.T) {
+// a→b stops after its key, c's claim stops before its key: a loses the name
+// (released, logged), and b, the key's holder, gets it at its next login.
+// b's record is not written by c's claim (only b's own login or an admin
+// writes the name into it), so this move has no moved_from: a limit RT-6.41
+// step 2 names.
+func TestAStoppedMoveStaysWithItsKeysHolderWhenTheNextOneStops(t *testing.T) {
 	s, a, logs := imported3(t)
 	restart := stopAt(t, "key moved")
 	if err := a.Account(ctx(t), "sub-b", "alice"); err == nil {
@@ -932,17 +936,91 @@ func TestAStoppedMoveIsFinishedForItsHolderWhenTheNextOneStops(t *testing.T) {
 		t.Fatal("c's claim did not stop")
 	}
 	restart()
-	if !strings.Contains(logs.String(), "released=sub-a") {
-		t.Fatalf("the finished move is not told: %s", logs.String())
+	if !strings.Contains(logs.String(), "released=sub-a") || listsAlice(t, s, "sub-a") {
+		t.Fatalf("a is not released: %s", logs.String())
 	}
-	b, _, _, _ := s.Identity(ctx(t), "sub-b")
-	if b.Accounts["mattermost"] != "alice" || b.MovedFrom["mattermost"] != "sub-a" || listsAlice(t, s, "sub-a") {
-		t.Fatalf("b: %+v, a lists alice %v", b, listsAlice(t, s, "sub-a"))
+	if b, _, _, _ := s.Identity(ctx(t), "sub-b"); b.Accounts["mattermost"] != "" {
+		t.Fatalf("c's claim wrote b's record: %+v", b)
 	}
 	if err := a.Account(ctx(t), "sub-b", "alice"); err != nil {
 		t.Fatal(err)
 	}
 	if id, ok, _ := s.ByAccount(ctx(t), "mattermost", "alice"); !ok || id.Sub != "sub-b" {
 		t.Fatalf("resolves to %+v %v", id, ok)
+	}
+}
+
+// Two identities claim one name at the same time (the hard review of #65):
+// when both claims succeed, the name resolves to the key's holder; a record
+// is never released by a claim that lost the key meanwhile. Run with -race.
+func TestConcurrentClaimsResolveToTheKeysHolder(t *testing.T) {
+	s, _ := open(t)
+	for _, sub := range []string{"sub-a", "sub-b"} {
+		if _, err := s.Login(ctx(t), sub, "x", ""); err != nil {
+			t.Fatal(err)
+		}
+	}
+	lost, skipped := 0, 0
+	defer func() { t.Logf("%d of 100 rounds had a claim that gave up", skipped) }()
+	for i := range 100 {
+		name := "n" + strconv.Itoa(i)
+		if _, err := s.ClaimAccount(ctx(t), "sub-a", "mattermost", name); err != nil { // the old holder
+			t.Fatal(err)
+		}
+		var wg sync.WaitGroup
+		errs := make([]error, 4)
+		for j, sub := range []string{"sub-a", "sub-b", "sub-a", "sub-b"} {
+			wg.Add(1)
+			go func() {
+				defer wg.Done()
+				_, errs[j] = s.ClaimAccount(ctx(t), sub, "mattermost", name)
+			}()
+		}
+		wg.Wait()
+		if errors.Join(errs...) != nil {
+			skipped++
+			continue // a claim that gave up is a login that failed and is tried again
+		}
+		holder, _, _, ok, err := s.Account(ctx(t), "mattermost", name)
+		if err != nil || !ok {
+			t.Fatal(name, ok, err)
+		}
+		if id, found, _ := s.ByAccount(ctx(t), "mattermost", name); !found || id.Sub != holder {
+			lost++
+			t.Errorf("%s: the key names %s, the index resolves to %+v (%v)", name, holder, id, found)
+		}
+	}
+	if lost > 0 {
+		t.Fatalf("%d of 100 names lost their holder", lost)
+	}
+}
+
+// A release that checked the key, then the old holder creates the key anew
+// and holds the name it still lists: its record is written all the same, so
+// the release fails over the stale revision, looks again and keeps the name.
+func TestAReleaseLosesToAHolderThatTookTheKeyMeanwhile(t *testing.T) {
+	s, _, _ := imported3(t)
+	if _, err := s.ClaimAccount(ctx(t), "sub-a", "mattermost", "alice"); err != nil {
+		t.Fatal(err)
+	}
+	key, _ := accountKey("mattermost", "alice")
+	once := true
+	t.Cleanup(SetAccountStepForTest(func(at string) error {
+		if at == "release checked" && once {
+			once = false
+			if err := s.kv.Delete(ctx(t), key); err != nil {
+				t.Error(err)
+			}
+			if _, err := s.ClaimAccount(ctx(t), "sub-a", "mattermost", "alice"); err != nil {
+				t.Error(err)
+			}
+		}
+		return nil
+	}))
+	if _, err := s.ClaimAccount(ctx(t), "sub-b", "mattermost", "alice"); err != nil {
+		t.Fatal(err)
+	}
+	if id, ok, _ := s.ByAccount(ctx(t), "mattermost", "alice"); !ok || id.Sub != "sub-a" {
+		t.Fatalf("the key's holder lost the name: %+v %v", id, ok)
 	}
 }
