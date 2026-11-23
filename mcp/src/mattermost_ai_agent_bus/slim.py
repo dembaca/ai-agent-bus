@@ -117,7 +117,7 @@ async def _facts(client: ChatPort, posts: Sequence[Post],
         # the newest trusted human's answer wins, as the live event counts it; an
         # answer past APPROVAL_SEC approves nothing and is flagged `expired`, as the
         # live event flags it (the verdict stays readable, the reader is told)
-        for r in sorted(p.reactions, key=lambda r: r.create_at, reverse=True):
+        for r in sorted(p.reactions, key=lambda r: (r.create_at, r.emoji_name), reverse=True):
             if r.user_id not in trusted:
                 continue
             if (choice := asks.choice_of(r.emoji_name)) is not None:
@@ -132,7 +132,13 @@ async def _facts(client: ChatPort, posts: Sequence[Post],
                     facts["chosen"] = answers[0 if answer == "yes" else 1]
             else:
                 continue
-            if r.create_at - p.create_at >= asks.APPROVAL_SEC * 1000:
+            if p.edit_at and r.create_at < p.edit_at:
+                # The card was edited after this reaction: what it approved is not what
+                # the human saw. Keep the fact that an answer exists, drop the verdict.
+                for k in ("answer", "chosen"):
+                    facts.pop(k, None)
+                facts["card_edited_after"] = True
+            elif r.create_at - p.create_at >= asks.APPROVAL_SEC * 1000:
                 facts["expired"] = True  # RT-6.11: a late answer approves nothing
             break
     return {pid: facts for pid, facts in out.items() if facts}

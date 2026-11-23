@@ -389,3 +389,66 @@ async def test_a_long_need_and_long_answers_are_cut_too():
     # Post.text repeats the card's title after the mention (22 KB on main already,
     # without any of these fields)
     assert len(json.dumps(card)) < 10_000
+
+
+@pytest.mark.asyncio
+async def test_two_reactions_at_the_same_millisecond_are_deterministic():
+    """The coordinator's question 6: with equal `create_at` the list order decided, so
+    two reads of the same data could differ. The tie is broken by the emoji name."""
+    raw = dict(PLAIN, metadata={"reactions": [
+        {"user_id": HUMAN, "post_id": ASK_ID, "emoji_name": "thumbsdown", "create_at": 100},
+        {"user_id": HUMAN, "post_id": ASK_ID, "emoji_name": "thumbsup", "create_at": 100}]})
+    first = (await slim.post(_asker(), post_of(raw)))["ask_card"]["answer"]
+    raw["metadata"]["reactions"].reverse()  # the other order: same instant
+    second = (await slim.post(_asker(), post_of(raw)))["ask_card"]["answer"]
+    assert first == second, (first, second)
+
+
+@pytest.mark.asyncio
+async def test_a_keycap_out_of_range_answers_nothing_and_the_older_answer_stands():
+    """A keycap the ask never offered expresses nothing (the live event gives no
+    `chosen` and no `answer` for it), so an older interpretable answer still counts."""
+    three = dict(PLAIN)
+    three["create_at"] = 1_000_000
+    three["props"] = {"a2a": {"v": 1, "kind": "ask"}, "attachments": [{
+        "title": "Which?",
+        "fields": [
+            {"title": "Decision", "value": "Pick one.", "short": False},
+            {"title": "Answer",
+             "value": "1" + "\uFE0F\u20E3 = A \u00b7 2\uFE0F\u20E3 = B \u00b7 3\uFE0F\u20E3 = C "
+                      "\u00b7 or reply in this thread",
+             "short": False},
+        ],
+    }]}
+    raw = dict(three, metadata={"reactions": [
+        {"user_id": HUMAN, "post_id": ASK_ID, "emoji_name": "thumbsdown",
+         "create_at": 1_000_002},
+        {"user_id": HUMAN, "post_id": ASK_ID, "emoji_name": "four", "create_at": 1_000_003},
+    ]})
+    p = await slim.post(_asker(), post_of(raw))
+    assert p["ask_card"]["answer"] == "no"
+    assert "chosen" not in p["ask_card"]
+
+
+@pytest.mark.asyncio
+async def test_an_ask_edited_after_the_reaction_keeps_no_verdict():
+    """Fable's third case: the author of an ask edits the card after a human reacted,
+    and the same 👍 would then approve something else. The verdict is dropped rather
+    than read from a card the human never saw."""
+    after = dict(PLAIN, create_at=1_000_000, edit_at=1_000_500,
+                 props={"a2a": {"v": 1, "kind": "ask"}, "attachments": [{
+                     "title": "Merge?", "fields": [
+                         {"title": "Decision", "value": "Delete the branch.", "short": False},
+                         {"title": "Answer",
+                          "value": "\U0001F44D = delete the branch \u00b7 \U0001F44E = keep it \u00b7 or reply in this thread",
+                          "short": False}]}]})
+    raw = dict(after, metadata={"reactions": [
+        {"user_id": HUMAN, "post_id": ASK_ID, "emoji_name": "thumbsup",
+         "create_at": 1_000_100}]})  # the reaction came before the edit
+    p = await slim.post(_asker(), post_of(raw))
+    assert "answer" not in p["ask_card"] and "chosen" not in p["ask_card"]
+    assert p["ask_card"]["card_edited_after"] is True
+    # a reaction after the edit is read normally
+    raw["metadata"]["reactions"][0]["create_at"] = 1_000_600
+    p = await slim.post(_asker(), post_of(raw))
+    assert p["ask_card"]["answer"] == "yes"
