@@ -16,6 +16,26 @@ before 0.5.0 are described in the git history.
   does not speak TLS first: set handshake_first in its tls block, or this is
   not a NATS TLS port`), and a certificate that is not trusted or names
   another host says which, instead of a bare `SSLError`.
+- **The Mattermost account index follows logins after the import** (#59,
+  ADR-016, RT-6.41 step 2). A login whose chat account logs in over OpenID
+  with the token's `sub` sets that account's name on its identity: new
+  people are found, renames move the entry, and a name Mattermost gave to
+  someone else moves to them (logged, `moved_from`); trust lists then trust
+  the new holder. Password accounts never write it; an index that cannot be
+  written refuses the login. Admins set or remove entries with
+  `/v1/directory/accounts/mattermost/<name>` (`authd dir account
+  show|set|rm`).
+- **The OpenCode plugin is checked against the hook API it declares** (issue #68).
+  The plugin named plugin API `~2.1.2` while the owner runs OpenCode 2.4.0, and
+  nothing verified the claim: its tests use a fake hook API, and `Plugin` was a
+  type-only import. It now declares the peer range `>=2.1.2 <2.5` (so 2.4.0, the
+  version the owner runs, is included), carries a `tsconfig` and a `typecheck`
+  script, and CI runs `npm ci` and compiles it against `@opencode/plugin`'s own
+  types at 2.1.2, 2.4.0 and 2.4.1 (both ends of the peer range) - a hook the API drops fails there. No behaviour changed: the context's
+  domains and `mcp`/`skill.transform` are the same from 2.1.2 through 2.4.x, and
+  it is tested by hand with 2.4.0. What the casts hide (the `editor` inside the
+  two `transform` callbacks, `session.synthetic`, the `prompt` event) is not
+  covered and still needs a session on a real host.
 - **What the first NATS pilot found** (#66, RT-6.36). `bus_info` says in
   `over_nats` that people do not see a home over NATS in Mattermost.
   `post_message(to=<person>)` refuses with the reason (ask people with

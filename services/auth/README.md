@@ -373,6 +373,7 @@ process's memory: never on disk, never printed, never in the environment.
 | `owner <channel> <sub>` or `-`, `public <channel> on` or `off` | owner and visibility (admins), over the revision just read |
 | `members add` or `rm <channel> <sub>…` | members (the channel's owner), over the revision just read |
 | `import` | the one import from Mattermost (admins), with its report |
+| `account show <name>`, `account set <name> <sub> [--rev N]`, `account rm <name> --rev N` | the Mattermost account index (admins): which identity a name resolves to, with `moved_from` when it moved; set creates without `--rev` and replaces over it |
 | `pending`, `confirm <name>`, `drop <name>` | the claims of password accounts (with the full channels one waits on), an admin's confirmation over the listed revision, and deleting a claim over the listed revision |
 
 `--json` writes the answer as the

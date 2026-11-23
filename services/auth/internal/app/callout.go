@@ -331,7 +331,7 @@ func RunCallout(ctx context.Context, s Settings, log *slog.Logger) error {
 	if err != nil {
 		return fmt.Errorf("%w: %v", ErrConfig, err)
 	}
-	svc.SetAnchors(directory.Anchors{Store: dir})
+	svc.SetAnchors(directory.Anchors{Store: dir, Log: log})
 	svc.SetTrust(directory.Trust{Store: dir})
 	svc.SetAttester(callout.NATSAttester{NC: jsnc, Stream: consumers.PresenceStream})
 	runCtx, stop := context.WithCancel(ctx)

@@ -71,6 +71,15 @@ type Anchors interface {
 	Anchor(ctx context.Context, sub, display string) (string, error)
 }
 
+// AccountIndex is an optional part of what SetAnchors is given
+// (directory.Anchors has it): it keeps the chat account index current from a
+// login. The service checks for it by type assertion and calls it only for a
+// login whose chat account is proven to be the token's (token.Identity.
+// ChatOpenID), never for a password account; an error refuses the login.
+type AccountIndex interface {
+	Account(ctx context.Context, sub, name string) error
+}
+
 // Hello is what a host sends as `auth_token` in its CONNECT, as JSON: the
 // Keycloak access token and the channels it asks for. The channels are a
 // wish; only those the human is a member of are granted.
@@ -329,6 +338,12 @@ func (s *Service) authorize(ctx context.Context, req *jwt.AuthorizationRequestCl
 		if anchor, err = a.Anchor(ctx, id.Subject, id.Owner); err != nil {
 			return "", append(who, "owner", id.Owner, "sub", id.Subject),
 				fmt.Errorf("%w: anchor: %v", token.ErrDirectory, err)
+		}
+		if ai, ok := a.(AccountIndex); ok && id.ChatOpenID {
+			if err := ai.Account(ctx, id.Subject, id.Owner); err != nil {
+				return "", append(who, "owner", id.Owner, "sub", id.Subject),
+					fmt.Errorf("%w: account index: %v", token.ErrDirectory, err)
+			}
 		}
 	}
 	agent := s.cfg.NamePrefix + name(anchor, host)
