@@ -269,6 +269,37 @@ async def test_trusted_humans_not_resolved_keep_a_foreign_older_agent_from_stand
     assert (await lease._election(owned, rows)).ids == []
 
 
+async def test_trusted_humans_configured_by_id_alone_keep_a_foreign_agent_from_standing(
+        owned, monkeypatch):
+    """RT-6.6 step 2, ADR-016: only MM_TRUSTED_HUMAN_USER_IDS is set and the
+    names behind the ids cannot be read: still in doubt, never "none
+    configured", so an older agent of another owner does not stand."""
+    monkeypatch.delenv("MM_TRUSTED_HUMANS", raising=False)
+    monkeypatch.setenv("MM_TRUSTED_HUMAN_USER_IDS", "h" * 26)
+    owned.trusted = {}
+    owned.descriptions[FAR] = CAROL
+    rows = [{"id": FAR, "reachable": True}, {"id": BOT, "reachable": True}]
+    assert (await lease._election(owned, rows)).ids == []
+    names, _ = await owners.mine(owned)
+    assert names, "the owner split turned off"
+    assert await owners.foreign(owned, {FAR}) == {FAR: "carol"}
+
+
+async def test_a_short_outage_keeps_a_peer_standing(owned, monkeypatch):
+    """RT-6.6 step 2, ADR-016: an owner read a moment ago stands while its
+    description cannot be read, for OWNER_GRACE_SEC; then nobody stands."""
+    clock = [1000.0]
+    monkeypatch.setattr(owners, "monotonic", lambda: clock[0])
+    owned.descriptions[YOUNGER] = MINE
+    rows = [{"id": BOT, "reachable": True}, {"id": YOUNGER, "reachable": True}]
+    assert (await lease._election(owned, rows)).ids == [BOT, YOUNGER]
+    del owned.descriptions[YOUNGER]  # Mattermost fails for it
+    clock[0] += owners.OWNER_GRACE_SEC - 1
+    assert (await lease._election(owned, rows)).ids == [BOT, YOUNGER]
+    clock[0] += 1
+    assert (await lease._election(owned, rows)).ids == []
+
+
 async def test_an_unbound_agent_is_skipped_for_a_bound_server(owned):
     """RT-6.6 step 2: the unbound oldest agent (case 3 of ADR-007) is foreign;
     the bound younger one claims."""

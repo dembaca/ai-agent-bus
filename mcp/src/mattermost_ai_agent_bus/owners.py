@@ -58,6 +58,22 @@ OWNER_GRACE_SEC = 300.0
 # At most _LAST_MAX entries (over NATS every sender name is one): the oldest go.
 _last: dict[str, tuple[float, Owner]] = {}
 _LAST_MAX = 1024
+# The variables that configure trusted humans, by name or by id: any of them
+# set turns the owner split and the gate on (gate.active), whether or not a
+# lookup resolves them now.
+TRUSTED_VARS = ("MM_TRUSTED_HUMAN_USER_IDS", "MM_TRUSTED_HUMANS", "MM_OWNER_USER_ID", "MM_OWNER")
+
+# In doubt with trusted humans configured only by id, none of them resolved:
+# a name no owner and no trusted list ever holds (a username has no NUL), so
+# the split stays on and nobody is a peer (ADR-016).
+UNRESOLVED = "\x00unresolved"
+
+
+def configured() -> bool:
+    """Trusted humans are configured, by name or by id."""
+    return any(env(v).strip() for v in TRUSTED_VARS)
+
+
 # My trusted names and bot id as last read (mine).
 _mine: tuple[float, set[str], str] | None = None
 
@@ -228,7 +244,8 @@ async def names_in_doubt(client: ChatPort) -> tuple[set[str], str]:
     """My trusted humans' names and my bot's id, in doubt (ADR-016): the names
     as read now; when they cannot be read, or none of the configured ones
     resolved, the ones last read (within OWNER_GRACE_SEC), else the configured
-    ones. (set(), '') only when none are configured. Never raises: the crown
+    ones, or with ids alone configured {UNRESOLVED}, which no owner matches.
+    (set(), '') only when none are configured. Never raises: the crown
     election (lease._election, NATS prime) and `mine` read them here."""
     global _mine
     now = monotonic()
@@ -244,6 +261,8 @@ async def names_in_doubt(client: ChatPort) -> tuple[set[str], str]:
     if _mine is not None and now - _mine[0] < OWNER_GRACE_SEC:
         return set(_mine[1]), _mine[2]
     names = {n.lower() for n in _trusted_names()}
+    if not names and configured():
+        names = {UNRESOLVED}  # configured by id only: nobody is a peer
     if not names:
         return set(), ""
     log.info("no trusted human resolved, %d configured: the owner split stays on", len(names))

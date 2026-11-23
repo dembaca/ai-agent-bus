@@ -178,6 +178,20 @@ async def test_trusted_humans_not_resolved_keep_a_foreign_owner_from_the_crown(
     assert view is not None and view.holder == "" and view.candidates == ()
 
 
+async def test_trusted_humans_configured_by_id_alone_keep_a_foreign_owner_from_the_crown(
+        w: World, monkeypatch: pytest.MonkeyPatch) -> None:
+    """ADR-016, RT-6.38: only MM_TRUSTED_HUMAN_USER_IDS is set and nothing resolves:
+    prime is in doubt, never "none", so an older claim of another owner does not hold."""
+    monkeypatch.delenv("MM_TRUSTED_HUMANS", raising=False)
+    monkeypatch.setenv("MM_TRUSTED_HUMAN_USER_IDS", HUMAN)
+    w.inner.trusted = {}
+    await w.prime()
+    claimant(w.fake, NAME_ME, 30, owner="alice")
+    claimant(w.fake, NAME_A, 10, owner="carol")
+    view = w.view()
+    assert view is not None and view.holder == "" and view.candidates == ()
+
+
 # --- the Mattermost election and the NATS candidates under one rule ------------------------------
 
 PEERS = "alice"
