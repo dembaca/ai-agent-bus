@@ -66,7 +66,7 @@ TAKE_PENDING = "take pending"
 TAKE_MARK_SEC = 60
 _TAKE_SKEW_SEC = 15  # the clocks of two hosts may differ a little
 _TAKE_PENDING = re.compile(rf"(?:^| · ){TAKE_PENDING} until (\d\d):(\d\d):(\d\d)Z(?: · |$)")
-_NO_TAKE_WORDS = re.compile(r"take\s*pending", re.IGNORECASE)
+_NO_TAKE_WORDS = re.compile(r"take\W*pending", re.IGNORECASE)
 
 
 def _take_mark(now: float) -> str:
@@ -93,6 +93,8 @@ async def _taker_waits(client: ChatPort, rows: list[dict[str, Any]], uid: str) -
     past its time counts for nothing."""
     now = time.time()
     home = client.work_channel_name
+    # The home exactly: _at_home also lets in a status that names no home (a plugin before
+    # 0.59.0), which cannot have written a mark; one that shows it anyway counts for nothing.
     waiting = [r["id"] for r in rows if r["reachable"] and r["id"] != uid and r["home"] == home
                and _take_shown(str(r["text"]), now)]
     if not waiting:
@@ -546,8 +548,11 @@ async def _set_status(client: ChatPort, state: str, label: str = "") -> None:
         raise ValueError(f"state must be one of {', '.join(STATES)} or renew")
     if not label and state != "listening":
         label = Path(os.environ.get("CORRAL_WORKDIR") or os.getcwd()).name
-    # Only this server writes a waiting take into the status (#64): never a label.
-    label = _NO_TAKE_WORDS.sub("", label).strip()
+    # Only this server writes a waiting take into the status (#64): a label that holds
+    # the words in any form is dropped whole, not cleaned (`taketake pending pending`
+    # would come out of a cleaning as the words).
+    if _NO_TAKE_WORDS.search(label):
+        label = ""
 
     until, reachable, presence, named = now + lease, True, "online", ""
     if state == "listening":

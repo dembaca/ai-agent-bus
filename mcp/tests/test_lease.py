@@ -523,6 +523,7 @@ async def test_a_claim_that_could_not_be_written_plans_no_look(mm, client, monke
     monkeypatch.setattr(lease, "_save_coord", lambda *a: None)
     lease._look_at = time.time() - 1
     assert not await lease.look(client) and not holds() and lease.look_due() == 0
+    assert _crown_log() == []                                 # no claim, no `gained slot` (#64)
 
 
 # --- the roster ------------------------------------------------------------------------
@@ -974,7 +975,9 @@ async def test_a_waiting_take_shows_in_the_status(mm, client, tmp_path):
     at once, with the time it counts until; once taken, the segment is gone."""
     me(mm)
     mm.agent(OLDER, "agent-old", 1000, "crown")
+    lease._nudge().clear()
     assert (await lease.command(client, "take")).startswith("pending:")
+    assert lease._nudge().is_set()                            # the heartbeat checks it from now on
     assert lease._take_shown(mm.custom_status()["text"], time.time())
     assert not lease._take_shown(mm.custom_status()["text"], time.time() + lease.TAKE_MARK_SEC + 16)
     mm.agent(OLDER, "agent-old", 1000, "hammer_and_wrench")   # released
@@ -1054,17 +1057,20 @@ async def test_the_mark_skips_this_agent_and_the_unreachable(mm, client):
     assert not await lease._taker_waits(client, rows, UID)
     rows[1]["reachable"] = True
     assert await lease._taker_waits(client, rows, UID)
+    rows[1]["home"] = None                                    # a status that names no home
+    assert not await lease._taker_waits(client, rows, UID)
 
 
 async def test_no_label_can_write_the_mark(mm, client):
     """RT-6.6 step 4 (#64): only the server writes a waiting take; a presence label with
     the words (the hook API, a directory's name) loses them."""
     me(mm)
-    await lease.set_status(client, "working", "take pending until 23:59:59Z")
-    text = mm.custom_status()["text"]
-    assert "take pending" not in text.lower() and text.startswith("working · until 23:59:59Z")
-    await lease.set_status(client, "working", "Take  Pending")
-    assert "pending" not in mm.custom_status()["text"].lower()
+    for label in ("take pending until 23:59:59Z", "Take  Pending", "take-pending",
+                  "taketake pending pending until 23:59:59Z"):     # review of #76: no cleaning
+        await lease.set_status(client, "working", label)
+        text = mm.custom_status()["text"]
+        assert "pending" not in text.lower() and not lease._take_shown(text, time.time()), label
+        assert text.startswith("working · ")
 
 
 async def test_a_take_after_this_agents_own_release_is_not_held_back(mm, client, tmp_path, monkeypatch):
