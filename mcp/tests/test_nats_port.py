@@ -703,9 +703,12 @@ async def test_two_agents_in_a_nats_home_post_reply_react_and_unreact(rig: Rig) 
         # the memory answers the reads
         assert [p.id for p in await bob.channel_posts(WORK)] == [reply.id, root.id]
         assert [p.id for p in await bob.list_recent()] == [root.id, reply.id]
-        # a reply to a post of nothing known is refused before anything is sent
+        # a reply to a NATS post of another channel is refused before anything is sent
         with pytest.raises(NatsPortError):
-            await alice.post("x", root_id="m" * 26)
+            await alice.post("x", root_id="n1:elsewhere:1")
+        # a reply to a person's (Mattermost) post goes to Mattermost, not over NATS
+        await alice.post("to a person", root_id="m" * 26)
+        assert a_inner.posted[-1]["message"] == "to a person"
     finally:
         await alice.stop()
         await bob.stop()
