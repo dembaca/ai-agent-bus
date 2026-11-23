@@ -207,13 +207,16 @@ async def test_stop_kills_the_whole_group_including_a_grandchild(tmp_path):
 
     The child writes its own pid, and the grandchild's, to a file before it
     sleeps: those pids are read from the file, not discovered by scanning the
-    process table."""
+    process table. Written under a temporary name and renamed, so a reader can
+    never see a half-written file (review of #23)."""
     script = tmp_path / "child.py"
     pids = tmp_path / "pids"
     script.write_text(
         "import os, subprocess, sys, time\n"
         f"grand = subprocess.Popen([sys.executable, '-c', 'import time; time.sleep(120)'])\n"
-        f"open({str(pids)!r}, 'w').write(f'{{os.getpid()}} {{grand.pid}}')\n"
+        f"tmp = {str(pids)!r} + '.part'\n"
+        f"open(tmp, 'w').write(f'{{os.getpid()}} {{grand.pid}}')\n"
+        f"os.replace(tmp, {str(pids)!r})\n"
         "time.sleep(120)\n")
     bus = BusProcess("http://127.0.0.1:1", token=SENDER_TOKEN)
     # The probe is what `start` would do first; there is no bus here, so the
@@ -245,7 +248,15 @@ async def test_stop_kills_the_whole_group_including_a_grandchild(tmp_path):
 def _alive(pid: int) -> bool:
     """Whether pid is a running process. `kill(pid, 0)` answers for a zombie
     too, which is not: a killed child waits for its parent to reap it, and that
-    parent is this test, not the group being checked."""
+    parent is this test, not the group being checked.
+
+    A process can die between the signal and the read, and then Linux answers
+    the read of `/proc/<pid>/stat` with `ESRCH`: `read()` raises
+    `ProcessLookupError` on a file that opened a moment earlier. The CI run of
+    #22 hit exactly this (run 45156648718, attempt 1, `test_bus_process.py:257`)
+    — while checking the grandchild *after* a successful `killpg`, so the test
+    failed when its subject worked. A process that is gone is not alive.
+    """
     try:
         os.kill(pid, 0)
     except ProcessLookupError:
@@ -254,9 +265,12 @@ def _alive(pid: int) -> bool:
         return True
     try:
         with open(f"/proc/{pid}/stat") as stat:  # Linux: a zombie is no process
-            return stat.read().split()[2] != "Z"
-    except FileNotFoundError:  # not Linux, or gone: the signal above is the test
+            fields = stat.read().split()
+    except ProcessLookupError:  # died between the signal and the read
+        return False
+    except OSError:  # not Linux (`/proc` absent), or unreadable: the signal decides
         return True
+    return len(fields) > 2 and fields[2] != "Z"
 
 
 @skip_no_bus
@@ -348,47 +362,31 @@ async def test_a_failed_send_is_neither_sent_nor_lost(monkeypatch):
 
 
 @skip_no_bus
-async def test_a_post_delivered_by_the_catch_up_read_is_counted_as_arrived(monkeypatch):
-    """Follow-up review point 3: `seq_of` was filled only after `post_message`
-    returned, so a post the receiver was handed while that call was still in
-    flight — by the catch-up read after a reconnect — had no seq yet and was
-    counted as lost.
+def test_a_delivered_post_is_matched_by_id_or_by_its_text():
+    """The fallback that review point 3 asked for, checked on the decision
+    itself.
 
-    The first send is made to hold its answer while its socket is cut: the
-    receiver's wait fails, reconnects and backfills, and the backfill hands over
-    the post that was just created. With the id-only match that post arrived
-    nowhere, so `loss` was 1 for a run that lost nothing."""
-    from bus_testrig import bus as bus_module
+    `seq_of` is filled only after `post_message` returns, so a post handed over
+    while that call is in flight has no id to match and was counted as lost.
+    Testing this through a whole run cannot prove the fallback: by the time an
+    arrival is counted the id is registered, and an earlier version of this test
+    passed 3 of 3 with the fallback deleted (review of #24). So the decision is
+    called directly, in the state it exists for: a post whose id is not yet
+    known but whose text the run wrote.
+    """
+    from bus_testrig.bus import _match_seq
 
-    recorded: list[MattermostStub] = []
-
-    class Recording(MattermostStub):
-        def __init__(self, *args, **kwargs):
-            super().__init__(*args, **kwargs)
-            recorded.append(self)
-
-    original = BusProcess.call
-    posted = {"n": 0}
-
-    async def call(self, tool, **args):
-        answer = await original(self, tool, **args)
-        if tool == "post_message":
-            posted["n"] += 1
-            if posted["n"] == 2:
-                # The post is in the stub and its frame may be on the wire; its
-                # id is not in `seq_of` yet, because this call has not returned.
-                for conn in list(recorded[0].conns):
-                    conn.transport.abort()
-                await asyncio.sleep(0.6)  # the receiver reconnects and backfills
-        return answer
-
-    monkeypatch.setattr(bus_module, "MattermostStub", Recording)
-    monkeypatch.setattr(BusProcess, "call", call)
-    run = await bus_run(count=4)
-    assert posted["n"] == 4, posted
-    assert run.sent_frames == 4, run.sent_frames
-    assert run.measure()["loss"]["value"] == 0, (
-        run.measure()["loss"], [s.seq for s in run.sent], sorted(run.received))
+    by_id = {"p-known": 7}
+    by_text = {"bus-run 3": 3, "bus-run 30": 30}
+    # The id wins when the send has returned.
+    assert _match_seq({"id": "p-known", "message": "bus-run 3"}, by_id, by_text) == 7
+    # An id the run has not registered yet is matched by the text it wrote —
+    # the catch-up case. Without the fallback this is None, i.e. lost.
+    assert _match_seq({"id": "p-unknown", "message": "bus-run 3"}, by_id, by_text) == 3
+    # The longest registered text wins, so `bus-run 30` is not read as send 3.
+    assert _match_seq({"id": "p-x", "message": "bus-run 30"}, by_id, by_text) == 30
+    # Nothing this run wrote and no known id: not an arrival of this run.
+    assert _match_seq({"id": "p-other", "message": "someone else"}, by_id, by_text) is None
 
 
 @skip_no_bus

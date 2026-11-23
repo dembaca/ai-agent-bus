@@ -479,6 +479,22 @@ def _posted_text(post: dict[str, Any], known: dict[str, int]) -> str:
     return max(candidates, key=len) if candidates else message
 
 
+def _match_seq(post: dict[str, Any], by_id: dict[str, int],
+               by_text: dict[str, int]) -> int | None:
+    """Which send a delivered post came from: its id when the send has returned,
+    else the text this run wrote for it.
+
+    One function so that the fallback is checkable on its own (review of #24).
+    Watching a whole run cannot prove it: by the time an arrival is counted the
+    id is registered, so the id path matches and the fallback might as well be
+    absent — the earlier version of the test passed with it removed.
+    """
+    seq = by_id.get(str(post.get("id")))
+    if seq is not None:
+        return seq
+    return by_text.get(_posted_text(post, by_text))
+
+
 def _text_of(answer: dict[str, Any]) -> str:
     content = answer.get("content")
     if not isinstance(content, list):
@@ -601,9 +617,7 @@ async def bus_run(count: int = 100, fault: ProxyFault | None = None,
                             continue
                         # By id when the send already returned, by the text this
                         # run wrote otherwise (follow-up review point 3).
-                        seq = seq_of.get(str(post.get("id")))
-                        if seq is None:
-                            seq = seq_of_text.get(_posted_text(post, seq_of_text))
+                        seq = _match_seq(post, seq_of, seq_of_text)
                         if seq is not None:
                             run.arrive(seq)
                             last_arrival = time.monotonic()

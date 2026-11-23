@@ -20,8 +20,10 @@ of 20 lost" and a brand-new unknown endpoint both stayed green.
 `--expect-loss` is for a fault run that is supposed to lose (follow-up review
 point 2): `--fault drop --after 1` on a sender that broke before it sent
 anything had `loss == 0`, nothing unknown and nothing unmeasured, and passed.
-The flag makes the run's own claim — this fault loses — a thing the exit code
-checks, so a fault that stopped faulting is not a green run.
+The flag makes the run's own claim a thing the exit code checks, and the claim
+is "loses some and carries the rest": a run that lost everything is a path that
+carried nothing, which reads exactly like a healthy run under a lossy fault
+(review of #24).
 """
 
 from __future__ import annotations
@@ -79,7 +81,7 @@ def main(argv: list[str] | None = None) -> int:
     # The run's own claim about its fault, checked by the exit code (follow-up
     # review point 2): without it a fault that lost nothing was a green run.
     bus.add_argument("--expect-loss", action="store_true",
-                     help="fail unless the run lost at least one frame")
+                     help="fail unless the fault lost some frames and carried the rest")
 
     args = ap.parse_args(argv)
     if args.cmd == "measurands":
@@ -135,8 +137,10 @@ def _untrustworthy(run: runner.Run, *, expect_loss: bool = False) -> bool:
 
     A faulted run's loss is its measurement and not a failure by itself: `drop`
     is supposed to lose. `expect_loss` is how a caller says "this fault is
-    meant to lose" and has that checked — the `--fault drop --after 1` CI step
-    does, because a fault that lost nothing was a green run for nothing.
+    meant to lose some and carry the rest" and has that checked — CI does it on
+    a `--every 3` step, because a fault that lost nothing was a green run for
+    nothing, and a fault that lost everything is a dead path wearing a fault's
+    name.
     """
     if run.unknown:
         print(f"bus-testrig: the stub did not know {len(run.unknown)} call(s): "
@@ -157,8 +161,13 @@ def _untrustworthy(run: runner.Run, *, expect_loss: bool = False) -> bool:
               f"{run.sent_frames}, connection_closed={run.closed or None}",
               file=sys.stderr)
         return True
-    if expect_loss and loss <= 0:
-        print(f"bus-testrig: --expect-loss, but the run lost nothing of "
+    if expect_loss and not 0 < loss < run.sent_frames:
+        # `loss > 0` alone let a dead receiver pass: 20 of 20 lost is not a
+        # fault that lost something, it is a path that carried nothing, and it
+        # reads the same as a healthy run under a lossy fault (review of #23).
+        # A measurement needs a fault that lets part of the traffic through.
+        print(f"bus-testrig: --expect-loss wants a fault that loses some and "
+              f"carries the rest, but the run lost {loss} of "
               f"{run.sent_frames} frame(s) under --fault {run.fault}",
               file=sys.stderr)
         return True
