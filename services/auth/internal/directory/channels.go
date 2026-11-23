@@ -67,5 +67,8 @@ func (a Anchors) Anchor(ctx context.Context, sub, display string) (string, error
 	if err != nil {
 		return "", err
 	}
+	if err := a.Store.redeem(ctx, sub, display); err != nil {
+		return "", err
+	}
 	return id.Anchor, nil
 }

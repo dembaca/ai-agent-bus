@@ -62,6 +62,8 @@ type Identity struct {
 	// Approver is true when the token lists the approvers' group. It is the
 	// upper bound only: the session's trusted list selects within it.
 	Approver bool
+	// Groups are all strings of the group claim (Config.ApproverClaim).
+	Groups []string
 	// Expires is the token's `exp`. This service checks a token only up to
 	// then; it learns of no revocation before it.
 	Expires time.Time
@@ -127,6 +129,7 @@ func (v *Verifier) Verify(ctx context.Context, raw string) (Identity, error) {
 		Owner:    owner,
 		Subject:  sub,
 		Approver: v.inApproverGroup(claims),
+		Groups:   v.groups(claims),
 		Expires:  exp.Time,
 		ID:       jti(claims),
 	}, nil
@@ -188,6 +191,18 @@ func (v *Verifier) inApproverGroup(claims jwt.MapClaims) bool {
 		}
 	}
 	return false
+}
+
+// groups lists every string of the group claim.
+func (v *Verifier) groups(claims jwt.MapClaims) []string {
+	var out []string
+	list, _ := claims[v.cfg.ApproverClaim].([]any)
+	for _, g := range list {
+		if s, ok := g.(string); ok {
+			out = append(out, s)
+		}
+	}
+	return out
 }
 
 // classify maps the JWT library's error onto this package's reasons. The

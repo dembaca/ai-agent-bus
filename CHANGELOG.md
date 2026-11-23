@@ -5,6 +5,15 @@ before 0.5.0 are described in the git history.
 
 ## Unreleased
 
+- **The channel directory gets its admin API and the import from Mattermost**
+  (ADR-016, RT-6.40). With `AUTH_ADMIN_LISTEN_ADDR` the login service serves
+  `/v1/directory/…` on a listener of its own (TLS, or a loopback address),
+  with a Keycloak access token on every request: admins from
+  `AUTH_DIRECTORY_ADMIN_GROUP` create channels, set owners and make them
+  public; a channel's owner keeps its members; `POST /v1/directory/import`
+  copies the team's channels and human members once and marks the
+  directory imported. A password account becomes a member only after an
+  admin confirms its claim. The command line follows.
 - **The login service keeps a channel directory** (ADR-016, RT-6.39). A
   key-value bucket in the tenant account (`AUTH_DIRECTORY_BUCKET`, default
   `BUS_DIRECTORY`) that only the login service reads and writes holds the

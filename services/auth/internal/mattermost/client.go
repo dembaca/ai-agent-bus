@@ -4,6 +4,7 @@
 package mattermost
 
 import (
+	"bytes"
 	"context"
 	"encoding/json"
 	"errors"
@@ -248,11 +249,30 @@ func (c *Client) channelID(ctx context.Context, name string) (string, error) {
 var errNotFound = errors.New("not found")
 
 func (c *Client) get(ctx context.Context, path string, into any) error {
-	req, err := http.NewRequestWithContext(ctx, http.MethodGet, c.base.String()+path, nil)
+	return c.do(ctx, http.MethodGet, path, nil, into)
+}
+
+func (c *Client) post(ctx context.Context, path string, body, into any) error {
+	b, err := json.Marshal(body)
+	if err != nil {
+		return err
+	}
+	return c.do(ctx, http.MethodPost, path, b, into)
+}
+
+func (c *Client) do(ctx context.Context, method, path string, body []byte, into any) error {
+	var rd io.Reader
+	if body != nil {
+		rd = bytes.NewReader(body)
+	}
+	req, err := http.NewRequestWithContext(ctx, method, c.base.String()+path, rd)
 	if err != nil {
 		return err
 	}
 	req.Header.Set("Authorization", "Bearer "+c.token)
+	if body != nil {
+		req.Header.Set("Content-Type", "application/json")
+	}
 	resp, err := c.http.Do(req)
 	if err != nil {
 		return err

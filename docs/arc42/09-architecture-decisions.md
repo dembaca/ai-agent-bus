@@ -4579,6 +4579,13 @@ zurückzufallen. Daraus folgen zwei Punkte für die Umstellung:
   aufgelöst werden; eine Umbenennung in Keycloak entzieht ihr die Person.
   Zu klären vor dem ersten Import, nicht in diesem Schritt.
 
+Gebaut ist auch die Pflege über die Verwaltungs-Schnittstelle des
+Anmeldedienstes und der einmalige Import aus Mattermost (Entscheidungen 1,
+2, 3 und 8; RT-6.40); die Kommandozeile `authd dir …` folgt. Ein Konto mit
+Passwort wird erst Mitglied, wenn ein Verwalter seinen Anspruch bestätigt
+hat (RISK-18); ein Kanal ohne menschlichen Ersteller mit `sub` bekommt
+keinen Eigentümer, sodass nur Verwalter ihn pflegen.
+
 Gebaut ist die Bedingung „im Zweifel fremd“ (Punkt 1), vor jeder
 Auflösung von Namen: `owners.foreign()` und `owners.peer()` nehmen bei
 einem Lesefehler den zuletzt gelesenen Eigentümer, solange er jünger
