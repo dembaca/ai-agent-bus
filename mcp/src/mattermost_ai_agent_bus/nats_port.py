@@ -312,6 +312,8 @@ class NatsPort:
         if self._claims_task is not None:
             self._claims_task.cancel()
             self._claims_task = None
+        if self._bus is not None:
+            lease.use_nats_link(None)  # a stopped bus links nothing any more
         bus, self._bus = self._bus, None
         self._tell(None)
         if bus is not None:
