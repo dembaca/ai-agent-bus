@@ -5,6 +5,15 @@ before 0.5.0 are described in the git history.
 
 ## Unreleased
 
+- **The login service keeps a channel directory** (ADR-016, RT-6.39). A
+  key-value bucket in the tenant account (`AUTH_DIRECTORY_BUCKET`, default
+  `BUS_DIRECTORY`) that only the login service reads and writes holds the
+  channels, their members by Keycloak `sub`, and each identity's fixed
+  anchor, from which its agents' names and presence subjects are made.
+  Until the one-time import from Mattermost (a following release) has run,
+  Mattermost still decides membership and every anchor is today's name:
+  no agent changes its name. The service's JetStream user needs the
+  bucket's rights (`services/auth/nats-server.example.conf`).
 - **In doubt, foreign** (RT-6.16, the condition of the bus without a chat as
   its source, ADR-016). An agent whose owner cannot be read was a peer; now
   the owner last read holds for 5 minutes (`OWNER_GRACE_SEC`, at most 15

@@ -4543,6 +4543,29 @@ heutige Identitäten der heutige Name, für neue `sub`, nie geändert. Zwei
 Felder könnten nur auseinanderlaufen. Ein Schlüssel `anchor.<wert>` mit
 dem `sub` als Wert verhindert, dass ein Wert zweimal vergeben wird.
 
+Gebaut ist das Verzeichnis selbst und sein Lesen im Anmeldedienst
+(Punkt 2, RT-6.39): der Bucket, den nur der Anmeldedienst liest und
+schreibt, `callout.Channels` über das Verzeichnis mit Mattermost bis
+`meta.imported`, und `anchor` je Identität. `anchor` wird einmal
+geschrieben, beim ersten Login einer Identität oder durch den Import, und
+nie geändert: Wer vor dem Import bekannt ist, behält den heutigen Namen,
+und nur eine Identität, die nach dem Import zum ersten Mal kommt, bekommt
+ihr `sub`. Einen einmaligen Wechsel aller Agentennamen gibt es deshalb
+nicht. Daraus folgen zwei Punkte für die Umstellung:
+
+- **Bedingung vor dem ersten Import im Labor:** Der MCP-Server vergleicht
+  das Token des Eigentümers im Presence-Subject heute mit dem
+  Mattermost-Namen (`NatsPort.owner_of`, `lease._linked_owned`). Ein
+  `anchor` aus `sub` wäre dort kein Name, und die Agenten einer neuen
+  Identität gälten über NATS als fremd. Bevor im Labor importiert wird,
+  löst der MCP-Server `anchor` zu Namen auf, mit Punkt 4 (der
+  Anmeldedienst bürgt für Vertrauenslisten).
+- **Offen, die Notbremse:** Sie hält Benutzernamen, und die Consumer
+  tragen in ihren Metadaten den angezeigten Namen. Nach dem Import trifft
+  eine Bremse per Name eine Identität nur, solange Name und `sub` zusammen
+  aufgelöst werden; eine Umbenennung in Keycloak entzieht ihr die Person.
+  Zu klären vor dem ersten Import, nicht in diesem Schritt.
+
 Gebaut ist die Bedingung „im Zweifel fremd“ (Punkt 1), vor jeder
 Auflösung von Namen: `owners.foreign()` und `owners.peer()` nehmen bei
 einem Lesefehler den zuletzt gelesenen Eigentümer, solange er jünger

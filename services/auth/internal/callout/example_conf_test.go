@@ -19,9 +19,11 @@ import (
 
 	"github.com/nats-io/nats-server/v2/server"
 	"github.com/nats-io/nats.go"
+	"github.com/nats-io/nats.go/jetstream"
 	"github.com/nats-io/nkeys"
 
 	"github.com/dembaca/ai-agent-bus/services/auth/internal/consumers"
+	"github.com/dembaca/ai-agent-bus/services/auth/internal/directory"
 )
 
 const exampleConf = "../../nats-server.example.conf"
@@ -154,6 +156,9 @@ func TestTheExampleServerConfiguration(t *testing.T) {
 				pub = append(pub, "$JS.API.STREAM.CREATE."+s, "$JS.API.STREAM.INFO."+s,
 					"$JS.API.CONSUMER.*."+s, "$JS.API.CONSUMER.*."+s+".>")
 			}
+			kv := "KV_" + directory.DefaultBucket
+			pub = append(pub, "$JS.API.INFO", "$JS.API.STREAM.CREATE."+kv, "$JS.API.STREAM.INFO."+kv,
+				"$JS.API.DIRECT.GET."+kv+".>", "$KV."+directory.DefaultBucket+".>")
 			p := u.Permissions
 			if p == nil || p.Publish == nil || p.Subscribe == nil {
 				t.Fatalf("the JetStream user has no permissions: %+v", p)
@@ -205,5 +210,20 @@ func TestTheExampleServerConfiguration(t *testing.T) {
 	}
 	if err := mgr.EnsureStreams(ctx5(t)); err != nil {
 		t.Fatalf("EnsureStreams: %v", err)
+	}
+	// The channel directory (ADR-016): the same user makes its bucket, opens
+	// it again, writes and reads it with exactly these rights.
+	js, err := jetstream.New(nc)
+	if err != nil {
+		t.Fatal(err)
+	}
+	for range 2 { // made, then found
+		dir, err := directory.Open(ctx5(t), js, "")
+		if err != nil {
+			t.Fatalf("directory: %v", err)
+		}
+		if id, err := (directory.Anchors{Store: dir}).Anchor(ctx5(t), "0b6f3c1e-sub", "alice"); err != nil || id != "alice" {
+			t.Fatalf("anchor %q, %v", id, err)
+		}
 	}
 }
