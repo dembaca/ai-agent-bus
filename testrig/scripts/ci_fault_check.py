@@ -51,7 +51,28 @@ def main() -> int:
     p = json.loads(paced.stdout)
     assert p["measured"]["loss"]["value"] == 1, p["measured"]["loss"]
 
-    print("faulted run reports its loss; a cut reports the closed connection and what it lost")
+    # `bus-run` says whether its own run can be compared (review point 2): a
+    # baseline must exit 0, and a run that ate the whole socket must exit
+    # non-zero even though it lost every frame. Both are subprocesses, so this
+    # also checks the exit code the shell sees, not only the JSON.
+    clean = subprocess.run(
+        [sys.executable, "-m", "bus_testrig.cli", "bus-run", "--count", "3"],
+        capture_output=True, text=True, timeout=120, check=False,
+    )
+    assert clean.returncode == 0, (clean.returncode, clean.stderr[-500:])
+    assert json.loads(clean.stdout)["measured"]["loss"]["value"] == 0
+
+    broken = subprocess.run(
+        [sys.executable, "-m", "bus_testrig.cli", "bus-run", "--count", "3",
+         "--fault", "drop", "--after", "0"],
+        capture_output=True, text=True, timeout=120, check=False,
+    )
+    assert broken.returncode != 0, (broken.returncode, broken.stderr[-500:])
+    # Its report is still printed: the numbers are how the failure is read.
+    assert json.loads(broken.stdout)["sent_frames"] == 3
+
+    print("faulted run reports its loss; a cut reports the closed connection and what it lost; "
+          "bus-run's exit code says whether its numbers can be compared")
     return 0
 
 

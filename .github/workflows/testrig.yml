@@ -35,13 +35,34 @@ jobs:
       - name: ruff
         run: uvx --from ruff@0.17.2 ruff check
 
+      # Before the tests (review point 1): `skip_no_bus` skips every bus test
+      # when no interpreter imports the bus, and with the sync after the test
+      # step CI skipped all of them and reported green. One `sync` for both
+      # steps below.
+      - name: sync the bus
+        run: uv sync --locked --directory ../mcp
+
+      # `BUS_TESTRIG_REQUIRE_BUS=1` turns that skip into a failure: a silent
+      # skip is what hid the ordering above, so CI asks for the bus explicitly.
       - name: tests
         run: uv run --locked --group dev pytest -q
+        env:
+          BUS_TESTRIG_REQUIRE_BUS: "1"
 
       # The harness must run where the Lab does, and must be runnable where it
       # does not: the echo run proves the second half on every build.
       - name: echo run, no Lab and no server
         run: uv run --locked bus-testrig echo-run
+
+      # `bus-run` drives the real server, so it needs the bus's own project
+      # synced; the step above did that. A baseline that loses a frame or an
+      # unknown stub call exits non-zero (review point 2), so this also asserts
+      # the plain run is clean.
+      - name: run the bus through the rig
+        run: |
+          uv run --locked bus-testrig bus-run --count 20
+          uv run --locked bus-testrig bus-run --count 20 --fault drop --after 1
+        working-directory: testrig
 
       - name: a fault really changes the numbers
         run: uv run --locked python scripts/ci_fault_check.py

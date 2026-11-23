@@ -351,8 +351,8 @@ async def test_echo_run_needs_no_lab_and_reports_every_measurand():
     assert report["measured"]["takeover_p95"] == {
         "name": "Coordinator take-over, 95th percentile", "value": None, "unit": "s",
         "status": measurands.NOT_YET,
-        "why": "The harness has no bus and no coordinator yet: it cannot stop one "
-               "and watch the crown pass (follow-up PR)."}
+        "why": "The harness drives one bus and its own posts; a coordinator take-over "
+               "needs two roles and a hard stop of one, which no run here does."}
 
 
 async def test_a_stall_is_not_a_loss():
