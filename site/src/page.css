@@ -853,7 +853,12 @@ html:not(.js) .console-picture { display: none; }
   font-size: .75rem;
   font-weight: 400;
 }
-@media (max-width: 400px) { .brand-tech { display: none; } }
+@media (max-width: 480px) { .brand-tech { display: none; } }
+/* The logo's night-blue field melts into the dark page (1.01:1): a cream hairline keeps its edge */
+@media (prefers-color-scheme: dark) {
+  :root:not([data-theme="light"]) :is(.brand, .brand-hero) img { box-shadow: 0 0 0 1px rgba(253, 246, 234, .45); }
+}
+:root[data-theme="dark"] :is(.brand, .brand-hero) img { box-shadow: 0 0 0 1px rgba(253, 246, 234, .45); }
 
 .brand-hero {
   display: flex;
