@@ -23,7 +23,7 @@ code does today and point here where a decision will change them.
 | ADR-012 | Files an agent attaches: the server never opens a path the agent names; the bytes come from inside the sandbox (the shell's `POST /v1/files`, or a small text in the `attach` tool), checked by their bytes, uploaded for a post that takes only this server's fresh uploads | Decided 2026-11-14, built (0.90.0, RT-6.33) | — |
 | ADR-013 | The channel banner shows what waits: the home's 👑 server writes it on a change only, at most once a minute; a stall in red, asks waiting on a human in amber, else the crown and the agents by status; display only, never input; a human's banner is left alone and told to its human; without the licence or the permission everything stays as today; later the 👑 prefix only on asks and routings | Withdrawn (2026-11-16): depends on the Mattermost edition and a permission setting; the header carries the rare facts instead | — |
 | ADR-014 | Agent-to-agent traffic over NATS JetStream; Mattermost stays the humans' chat behind one central adapter per tenant; agents log in through Keycloak (device flow) and a login service issues 15-minute NATS credentials bound to the host's own key; a clean-room build from Cotal's protocol description with a message format of the bus's own (no wire compatibility with Cotal); tools, hook API and bus logic unchanged behind the ports; parallel operation switched per home channel, the registrar shut down last; the sender NATS-native (last subject token, agents read only through push consumers the login service makes, no signed envelope) | Accepted (2026-11-22) by the owner, with the review's recommendations; three later points open (below), none of them blocks the first NATS code; not built | — |
-| ADR-015 | Operator web console: a Keycloak-authenticated Leitstand for fleet status, trust/coordination graph, stats KPIs and answering `ask_human`; not a humans' chat; reads fleet/ask/stats signals from the bus (NATS-native, with a bridge path while Mattermost still carries them); answers bind the operator's Keycloak identity through the same trust chain as the bus | Proposed (2026-11-23); not built; does not block the NATS cut-over | — |
+| ADR-015 | Operator web console: a web application for the people who look after the agents, with the agents by state, who trusts and who coordinates whom, the bus's statistics as charts, and the open asks answered beside their thread; no chat. Recommended: it acts as the logged-in operator through Mattermost and holds no rights of its own, so an approval is checked where it is checked today | Proposed (2026-11-23), not accepted, not built; six points open for the owner | — |
 
 **Terms.** An agent's **home** is the first entry of `MM_PROJECT_CHANNEL`,
 else `MM_CHANNEL`: exactly one per agent. Its **guest channels** are the
@@ -3650,267 +3650,378 @@ shutdown.
 Not part of this decision: a chat front end of its own for humans, adapters
 for further chats, an approval bound to the action through a broker, and the
 operation outside the lab (three NATS nodes, a doubled login service,
-stream backups, deleting personal data in streams). The operator Leitstand
-(Kanban, graph, stats, ask answers) is a separate proposal (ADR-015); it is
-not that chat front end and does not block this decision.
+stream backups, deleting personal data in streams).
 
 ---
 
 ## ADR-015: Operator web console
 
-**Status:** Proposed (2026-11-23); not built. The NATS cut-over (ADR-014) does
-not wait on it: the console hangs on readable fleet, ask and stats signals, not
-on shutting down the registrar. Acceptance by the owner decides whether and
-when MVP is built; open points below.
+**Status:** Proposed (2026-11-23), from the owner's brief for an operator
+console; not accepted, not built. Nothing in ADR-014 waits for it, and its
+first two stages need nothing of the NATS build. Six decisions are open for
+the owner (below); the first shapes most of the rest. What this proposal
+did not verify is listed in point 13.
 
-**Context:** Today's Mattermost-only bus already shows humans presence, the
-roster, the crown, `ask_human` cards, HELLO threads and overhead stats
-(`agents-stats` / `stats_report`, RT-6.9). Those signals stay after agents
-move to NATS (ADR-014): Mattermost remains the humans' chat behind a central
-adapter. Operators still need a place that is not the chat to see the fleet
-live, navigate trust and coordination, read KPIs and answer asks that wait
-on them. The research package "eigenes Frontend" describes a full chat
-replacement; that is out of scope here and out of ADR-014. This decision is
-the Leitstand only.
+**Context:** People see the fleet today only through Mattermost: each bot's
+custom status (state, crown, context and limits, version, home; RT-6.6,
+ADR-008, RT-6.30), the HELLO cards and task states in the posts' props
+(RT-6.14), the asks (RT-6.11) and the `STATS` lines in the stats channel
+(RT-6.9). Agents read these as `coordinator("roster")`,
+`coordinator("tasks")` and `stats_report`; an operator has the channels and
+`bin/mm-agent-stats.sh report`. Whoever looks after many agents lacks three
+things: one view of all agents and their states, the asks that wait on them
+across homes, and the statistics as charts over time. ADR-014 leaves "a chat
+front end of its own for humans" out. This console is not that front end:
+Mattermost stays the humans' chat.
 
-**Decision:**
+**Decision (proposed):**
 
-1. **What it is.** A self-hosted web app where a logged-in human (Keycloak
-   identity) sees the fleet live, navigates trust and coordination as a
-   graph, reads aggregated bus KPIs, and answers open `ask_human` questions —
-   especially those addressed to them — in a detail pane with the thread
-   history. Real-time and auditability beat pixel polish.
+1. **A console for operators, not a chat.** A self-hosted web application in
+   which a person logged in through Keycloak sees the agents and their
+   states live, follows who trusts and who coordinates whom as a graph,
+   reads the bus's statistics as charts, and finds the open asks, those for
+   them first, and answers them beside the ask's thread. It has no channel
+   list, no search, no files, no mobile app, and writes nothing but the
+   answer to an ask. One tenant in the interface; the tenant is a field of
+   every record from the start (ADR-014 point 10). Built and tried only in
+   the lab; no other Mattermost installation is touched.
 
-2. **What it is not.** Not a replacement for the humans' chat (no everyday
-   channel writing, search or file workflows). Not the full "Bus mit eigenem
-   Frontend" product. Not a mobile app. Not multi-tenant UI beyond one lab
-   tenant first (tenant id in the model from day one). Not broker / token-
-   exchange approvals beyond answering `ask_human` (a placeholder interface
-   only). No change to DG-i production Mattermost; lab + NATS rebuild only.
+2. **The console acts as the logged-in operator and holds no rights of its
+   own** (recommended; open point 1). Three ways for it to read the bus and
+   to answer an ask:
 
-3. **Shell and information architecture.**
-   - Left: sidebar for the three main views (Kanban, Graph, Reporting).
-   - Right: main screen, full-bleed by default (one pane).
-   - Split: clicking an item splits the main **horizontally** — upper pane
-     keeps the list/board/graph; lower pane is the detail view (profile,
-     live metrics, HELLO / TASK / ask / bus event timeline). Answering an
-     ask happens in the detail view; a modal may offer a short answer, but
-     the history stays reachable in the detail pane.
-   - UI state machine: *no item selected* → *item selected (split)* →
-     *ask answer in flight* (optimistic UI, then server-confirmed event
-     with operator identity). Leaving detail collapses the split.
+   | | Reads | Answers an ask | New trust |
+   |---|-------|----------------|-----------|
+   | A: as the operator (recommended) | With the operator's own Mattermost session: the channels that person is a member of, nothing else | An ordinary reply or reaction by that person's Mattermost account in the ask's thread | None on the bus. The console's server holds the Mattermost session of every operator logged in (RISK-12) |
+   | B: a service account of the console | Every home of the tenant with one standing credential: a Mattermost account today; on NATS a read-only principal with consumers on every channel, which the permission model of ADR-014 point 16 does not have | Cannot: a service account is no trusted human. Needs C for answers | A credential that reads every channel, whoever looks |
+   | C: the console vouches for the operator | As A or B | The console's server tells the bus "this human answered", signed with a key the hosts pin, as they will pin the central adapter's (ADR-014 point 10) | A second place that can say an event comes from a trusted human (RISK-09, twice) |
 
-```mermaid
-stateDiagram-v2
-  [*] --> FullMain: open console
-  FullMain --> Split: select item
-  Split --> FullMain: clear selection
-  Split --> Answering: submit ask answer
-  Answering --> Split: confirmed or failed
-```
+   Why A: nothing about approvals changes (quality goal 3). Whether an
+   answer approves is decided where it is decided today: the asking agent's
+   MCP server checks the author's account against its trusted list, within
+   24 h of the ask (RT-6.8, RT-6.11), and with ADR-014 point 10 against the
+   approvers' group; later the central adapter signs the post as any
+   human's. The console can show whether an answer will count, it can never
+   make one count. What a person sees in the console is what Mattermost
+   lets that person see. And it holds through every phase of ADR-014, for
+   as long as Mattermost is the humans' chat.
 
-4. **Authentication and authorisation.**
-   - Login: Keycloak OIDC Authorization Code + PKCE in the browser. Console
-     session ≠ agent session: the operator acts as a human (`sub`), never as
-     an agent.
-   - Who may open the console: members of a Keycloak group dedicated to
-     operators (lab: propose the existing approvers' group
-     `BGL_AGENT_APPROVERS`, or a narrower `BGL_AGENT_OPERATORS` — open for
-     the owner). Starting an agent stays open to everyone (ADR-014); seeing
-     the fleet is tighter.
-   - Who may see foreign asks: every operator sees open asks in homes they
-     are allowed to watch (lab: all homes of the tenant); "for me" is
-     highlighted when the ask's `human` / trusted / for-list matches the
-     operator's Keycloak identity mapped to the bus's human id.
-   - Who may answer: only when the operator is on the session's trusted
-     humans list **and** in the Keycloak approvers' group — the same dual
-     check as ADR-014 for approvals. An answer is never "anonymous UI
-     click": Console API → bus event stamped with the verified operator
-     identity (central adapter or login-service path, same trust chain as a
-     Mattermost reply / reaction today, RT-6.11).
-   - Broker-bound, action-checksum approvals stay out of scope; the API
-     leaves a placeholder for a later broker hand-off.
+   What A costs: the console needs the operator's Mattermost session
+   (Mattermost as an OAuth 2.0 provider with the console as its
+   application; not checked, point 13). Its server becomes
+   security-critical (RISK-12). What agents say only to each other shows
+   only as far as the home mirrors it into Mattermost: a home set to "only
+   what concerns humans" (ADR-014 point 12) shows no agent-to-agent thread
+   in the console either. And nothing is recorded while nobody is logged
+   in (point 9).
 
-5. **Status signals (every view).** Wherever agents appear, show at least:
+   ```mermaid
+   flowchart LR
+     B["Browser: console"] -->|"OIDC code + PKCE"| KC["Keycloak"]
+     B <-->|"HTTPS, server-sent events"| S["Console server"]
+     S <-->|"as the logged-in operator"| MM["Mattermost"]
+     A["Agents' MCP servers"] <--> MM
+     A <-.->|"agent to agent, ADR-014"| N["NATS"]
+     N <-.->|"central adapter, phase 5"| MM
+   ```
 
-   | Signal | Source (today → NATS) | Display |
-   | --- | --- | --- |
-   | Agent state | `StatusMark` in `model.py` / lease: `working`, `listening`, `idle`, `bus`; crown overlays as coordinator; Mattermost presence offline / lease expired → `offline` | column colour / node ring |
-   | Waiting on human | open ask for that agent (RT-6.11), not a separate `StatusMark` | badge on card/node |
-   | Crown | roster `crown` / presence claim (RT-6.6, ADR-014 KV) | crown glyph |
-   | Ask for me | ask addresses this operator | stronger highlight; click opens detail |
-   | Harness | HELLO / agent card model string (Claude Code, OpenCode, Cursor, Codex, pi, other) | small logo |
+3. **Layout.** A sidebar on the left selects the view: Kanban, Graph,
+   Reports, with the number of open asks beside them. The main pane fills
+   the rest. A click on an item (an agent's card, a node, an ask) splits
+   the main pane horizontally: the view stays on top, the detail opens
+   below it. The detail shows the item's data and, where it has one, its
+   thread as Mattermost has it: the HELLO thread, a task's thread, an ask's
+   thread. An ask is answered there. A short-answer dialog on an ask's
+   badge is optional and never the only way: it opens the same ask, and the
+   thread stays one click away.
 
-   Do not invent a status enum and force the bus into it: columns and filters
-   map the real marks; `BYE` is end-of-session (offline after sign-off), not
-   a lasting column.
+   ```mermaid
+   stateDiagram-v2
+     [*] --> Full: open a view
+     Full --> Split: click an item
+     Split --> Split: click another item
+     Split --> Full: close the detail
+     Split --> Answering: send an answer
+     Answering --> Split: Mattermost took it, or refused it (shown)
+   ```
 
-6. **Kanban.** Cards in columns by the real status marks above. Optional
-   horizontal swimlanes by home (NATS queue / logical home); default off;
-   suggest enabling only when home count ≤ 8, else filter by home instead.
-   Card content (HELLO-near): display name, task, role
-   (coordinator/member), owner / `for`, `trusts`, project, branch/PR
-   (short), capabilities (truncated), harness logo + model. Live metrics when
-   present: model, effort (if harness/bus supplies it), `ctx` %,
-   `cost_usd` / usage (ADR-008 / roster). Candidates for detail only:
-   sub-agent counts, turn age, time in status, session age, open-ask count
-   (and "for me"), plugin/adapter version. Click → detail as in (3).
+   ```text
+   +---------+---------------------------------------------------+
+   | Kanban  | working    listening   bus     idle    offline    |
+   | Graph   | [card]     [card]      [card]  [card]             |
+   | Reports | [card]                                            |
+   |         +---------------------------------------------------+
+   | Asks 3  | agent: card, numbers | thread of the ask | answer |
+   +---------+---------------------------------------------------+
+   ```
 
-7. **Graph.** Node types: **User** (Keycloak humans known on the bus),
-   **Channel** (logical homes / NATS queues), **Agent**. Granularity:
-   prefer a **stable agent identity** once ADR-014 settles bot accounts per
-   identity (open there); until then one node per live session, merged by
-   name when the login service reuses it. Edges (toggleable): **Trusts**
-   (`trusts`, responsible human, trusted humans); **Coordinates** (crown
-   holder → members, plus transitive delegate / assignment edges from
-   `ASSIGNMENTS` / `DELEGATE`, depth capped — recommend depth 2 in MVP).
-   Default visible: Trusts + Coordinates; **member_of** Channel optional.
-   Further edges (`asked_human`) only if scoped (open asks as dashed edges
-   to the addressed User). Same detail shell as Kanban.
+4. **Login, and who may do what.**
+   - **Login:** OpenID Connect, authorization code with PKCE, against the
+     lab's Keycloak, with a client of the console's own, not the bus's
+     device-flow client (ADR-014 point 6). The operator is a person
+     (`sub`, `preferred_username`), never an agent: the console has no bot
+     and stands in no roster.
+   - **Opening the console:** members of an operators' group in Keycloak
+     (open point 2).
+   - **Seeing:** with A, the homes the operator is a member of in
+     Mattermost, with their agents, asks and threads. Agents of other
+     homes are counted, not shown.
+   - **"For me":** an ask whose asked human (`human` in the ask rows of
+     `coordinator("tasks")`, RT-6.14 step 3) is the operator's Mattermost
+     username, which is `preferred_username` for an account that logs in
+     through Keycloak (ADR-014 point 6: no mapping table). It gets the
+     strongest mark, in every view. An ask to someone else by an agent
+     whose `owner` or `trusts` name the operator is marked "I may answer",
+     weaker.
+   - **Answering:** what RT-6.11 step 3 reads, and nothing else: 👍 or 👎
+     (go or no-go, or the first and second of two answers), a keycap for
+     one of three or four alternatives, or a reply in the ask's thread. The
+     console offers the answers the ask's card names. It never calls
+     `resolve_ask` and never sets ✅: those are the agent's.
+   - **Whether an answer counts** stays the asking server's decision. The
+     console says beforehand what it expects: "counts as your approval"
+     when the roster names the operator as the agent's `owner` or in its
+     `trusts` (and, with ADR-014 point 10, the operator's token carries the
+     approvers' group), else "reaches the agent as a remark, approves
+     nothing". An ask older than 24 h is shown as expired: a yes approves
+     nothing, the agent asks again (RT-6.11 step 5). This is a hint, never
+     the check.
+   - **Not here:** an approval bound to the action through a broker
+     (outside ADR-014 too). The answer panel is where such a hand-off would
+     later show.
 
-8. **Reporting and KPI catalogue.** Stats semantics stay those of RT-6.9
-   (`STATS {…}` lines, `stats_report`); on NATS the same counters land as a
-   stream or a materialisation the console queries. Stats stay counting —
-   no message text, no PII in aggregates.
+5. **What is shown of an agent, from the bus as it is.** No state is made
+   up and then forced onto the bus:
 
-   | KPI | Priority | Source | Window | Viz | Note |
-   | --- | --- | --- | --- | --- | --- |
-   | Bus overhead share (bus tokens / all tokens) | Must | `tok` in STATS | 24h, 7d | sparkline + number | missing `tok` → n/a, never 0 |
-   | Bus requests / h; fixed tokens / request | Must | STATS | 24h | small multiples by version | quality goal 6 |
-   | Turns / h; bus-turn share; mean/max turn duration | Must | STATS turn fields | 24h | bar + histogram | harnesses without turn hooks: n/a |
-   | Asks / h; answer rate; mean/max wait; open asks; waiting share | Must | STATS ask counters + live ask index | live, 24h | KPI strip + histogram | |
-   | Settled without a human (bus-wakes-only share; crown-answered questions; tasks with no human in thread; human posts/answers per agent-day) | Should | STATS autonomy fields | 7d | stacked bar | |
-   | Saved waiting (answers while terminal idle; mean saved wait) | Should | STATS | 24h | number + sparkline | |
-   | Crown vs worker time (`crown_sec`) | Should | STATS | 24h, 7d | stacked bar | |
-   | Harness comparison | Must | STATS by `rt` | 7d | small multiples | absent turn fields = n/a |
-   | Version regression (overhead by plugin/bus version) | Must | STATS `v` | 7d | line per version | must not rise without CHANGELOG reason |
-   | Open asks now; median age; asks for me | Must | live ask index | live | badge + table | console-specific |
-   | Agents by status (heat over the day) | Should | presence samples | 24h | heatmap | console materialises samples |
-   | Time to crown takeover after loss | Should | crown claim events | 24h | histogram | compare to ADR-014 30 s goal |
-   | Cost/usage distribution across fleet | Later | live `cost_usd` / tokens | live, 24h | violin / bar | only where live |
-   | Swimlane / home load (agents + asks per home) | Should | fleet + asks | live | bar | |
+   | Signal | Today, on Mattermost | On NATS (ADR-014 point 16) |
+   |--------|----------------------|----------------------------|
+   | State | The word of the bot's custom status (`lease.py`): `working`; `listening` (a listen window with its end, or a channel session the bus wakes); `bus` (on the bus, no turn hook has set a state); `idle` (not reachable); `silent` (no sign of life of the agent, ADR-007 amendment). No custom status left (its lease of 15 min ran out) or presence offline: `offline` | Presence says only `online`, `away` or `bye`, fresh for 90 s |
+   | Crown | The 👑 status, text `coordinator · <state> · …`, for its home (RT-6.6) | The lowest fresh claim per channel |
+   | Context, limits, cost, version, home | Segments of the status text: `ctx`, `5h`, `7d` or the cost, `v…`, `~<home>` (ADR-008, RT-6.30) | Not in the presence message of format v1 |
+   | Card | `props.agent_card` of the agent's newest HELLO: task, project, branch, model, role, kind, `for`, `trusts`, capabilities (RT-6.14 step 1); `owner` and `trusts` as the roster reads them from the bot's description (ADR-001) | A post's props, as today |
+   | Open asks | Ask posts without an answer (RT-6.14 step 3) | Asks are for people and reach them in Mattermost |
+   | Harness | No field of its own: the card's model line usually starts with it (`Claude Code · …`), written by the agent | — |
 
-   Filters: time range, version, harness, role, home, owner.
+   The Kanban's columns are the state words, in that order; the crown is a
+   mark on the card, not a column. `WAITING`, `BLOCKED` and `BYE` are words
+   of posts (RT-6.14 step 2), not states of an agent: the card shows the
+   agent's task with its state, and "waits on a human" when it has an open
+   ask. A harness logo comes from the model line until the card carries the
+   harness (the MCP client's name, as `rt` in RT-6.9): Claude Code,
+   OpenCode, Cursor, Codex, pi, else "other".
 
-9. **UI data model (mirror, not source of truth).**
+6. **Kanban.** One card per agent, in the column of its state.
+   - **On the card:** name, task, role, `for` (with "autonomous"),
+     `trusts`, project, branch or PR, the first capabilities, harness logo
+     and model; the crown; `ctx`, the limits or the cost; the version; the
+     number of its open asks, those for the operator marked.
+   - **In the detail only:** the full card, the task rows it holds, the
+     session's age (its HELLO's time), the time since its last post, its
+     HELLO thread and the threads of its open asks.
+   - **Not on the bus today, so not shown until the bus carries it:**
+     effort, sub-agents (they never use the bus), the running turn's
+     duration (turns are noted only in the session's own counter file,
+     RT-6.9 step 1), the time in the current state (nothing records state
+     changes, point 9).
+   - **Swimlanes** by home are optional and off at the start. A proposal to
+     tune with real numbers: lanes up to about eight homes, beyond that a
+     filter by home.
 
-   | Entity | Id | Refresh |
-   | --- | --- | --- |
-   | Agent | stable agent name when known, else session id; fields: status, crown, home, owner, trusts, hello card, live metrics, version, harness | presence/KV + HELLO; ≤ 5 s push or poll |
-   | User | Keycloak `sub` (+ chat account id while Mattermost maps humans) | directory / adapter; slow |
-   | Channel | home / queue id | membership + presence |
-   | Edge | typed (trusts \| coordinates \| member_of \| …), from, to | derived from roster, HELLO, ASSIGNMENTS |
-   | Ask | post/bus id; agent; human targets; kind; opened_at; open/answered | ask events; push |
-   | StatsSnapshot | version, sid, part, fields of STATS | ingest from stats channel/stream |
-   | LiveMetrics | agent id → ctx, cost, effort, … | status line / usage path (ADR-008) |
+7. **Graph.** Nodes: people (the owners and trusted humans the cards and
+   the roster name), channels (homes), agents. An agent node is a session's
+   bot, as on the bus today; whether a bot belongs to the agent rather than
+   to the session is open in ADR-014 point 11, and the node follows it.
+   - **Trusts** (shown at the start): agent → its responsible human, and
+     agent → each human in its `trusts`.
+   - **Coordinates** (shown at the start): the crown holder → the reachable
+     agents of its home (RT-6.6); → the agents of another home whose
+     mandate names its crown (ADR-006, RT-6.26); → the assignee of each
+     open task it gave (the task rows, RT-6.14 step 3). Followed further
+     (A coordinates B, B gave C a task) to a depth of two, with a mark
+     where it is cut: the transitive edge is the console's reading, not a
+     fact of the bus.
+   - **Off at the start:** member of (agent → home and guest channels,
+     RT-6.22), and asks (agent → the human asked, open asks only).
 
-   The console **stores** only what it must for query (stats history,
-   sampled presence for heatmaps, operator session). Fleet truth stays on
-   the bus (presence KV, streams, adapter). Message bodies in detail views
-   are fetched on demand and not indexed for search in MVP.
+   State, crown and ask marks sit on the nodes as on the cards; a click
+   opens the same detail.
 
-10. **Bus / Console API surface (new).** A Console backend is a bus
-    participant (NATS subscriber with its own credentials from the login
-    service, service account / pod path) **or**, during parallel operation,
-    a reader of the Mattermost bridge signals (roster, asks, stats channel)
-    behind the same HTTP API so the SPA does not care which transport is
-    live.
+8. **Reports.** From the `STATS` lines as RT-6.9 defines them and
+   `stats_report` adds them up; the console must show the same numbers, and
+   a test holds it to them, as one holds the script and the tool today. A
+   field a line does not have shows as "n/a", never as 0. Counts and
+   seconds only: no names, no post ids, no text.
 
-    | Endpoint (logical) | Verb | Purpose |
-    | --- | --- | --- |
-    | `/v1/fleet` | GET + WS/SSE | snapshot + deltas of agents, status, crown, metrics |
-    | `/v1/graph` | GET | nodes + edges for current filters |
-    | `/v1/stats` | GET | query STATS-derived KPIs (filters above) |
-    | `/v1/asks` | GET | open asks; `for_me` filter |
-    | `/v1/asks/{id}/answer` | POST | answer / react; returns only after the bus event is stamped with operator identity |
-    | `/v1/agents/{id}/timeline` | GET | HELLO / work / ask thread events (paged) |
+   | Report | Fields (RT-6.9) | Window | Chart | Warn when | Stage |
+   |--------|-----------------|--------|-------|-----------|-------|
+   | The bus's share of all tokens | `tok.bus`, `tok.all` | per version, 7 d | line per version | higher than the version before without a reason in `CHANGELOG.md` (quality goal 6) | 1 |
+   | Requests the bus caused per hour, fixed tokens per request | `tok.bus_req`, `tok.req`, `tok.fixed`, `min` | 7 d | small multiples per version | — | 2 |
+   | Turns: share the bus started, mean and longest | `turns`, `bus_turns`, `turns_timed`, `turn_sec`, `turn_max_sec` | 24 h, 7 d | bars per harness | — | 2 |
+   | Asks: per hour, share answered, mean and longest wait, waiting share | `asks`, `asks_answered`, `ask_wait_sec`, `ask_wait_max_sec`, `asks_open`, `ask_open_sec`, `min` | 24 h, 7 d | numbers, bars per day | — | 1 |
+   | Settled without a human | `bus_turns_agent`, `bus_turns_human`, `asks_crown`, `asks_crown_answered`, `asks_human`, `tasks_agent_only`, `tasks_with_human`, `human_posts_trusted`, `human_posts_other`, `human_answers` | 7 d | stacked bars per role | — | 2 |
+   | Saved waiting | `asks_idle`, `saved_n`, `saved_sec`, `saved_max_sec`, `saved_open_n`, `saved_open_sec` | 7 d | numbers, bars | — | 2 |
+   | Coordinator and worker parts | `crown_sec` against `min` | 7 d | stacked bars | — | 2 |
+   | By harness, by version | any of the above by `rt`, by `v` | 7 d | small multiples | — | 2 |
+   | Open asks now, the oldest, those for me | open asks (RT-6.14 step 3) | live | number and list | an ask older than 24 h: a yes no longer approves (RT-6.11) | 1 |
+   | Agents by state now, per home | the states of point 5 | live | bars | a home with reachable agents and no crown for longer than the crown's lease (150 s today, ADR-007; 30 s is ADR-014's target) | 1 |
+   | Agents by state over the day, time until a lost crown is taken, context and cost across the fleet | need a recorder (point 9) | 24 h | heatmap, histogram | — | 3 |
 
-    Parallel operation: homes still on Mattermost feed the same projections;
-    NATS-native homes use presence KV + streams. One projection layer; no
-    dual UI modes for the operator.
+   `STATS` carries sums and maxima per part, no single waits: a histogram
+   of waits is not possible from it. Filters the lines support: time,
+   version (`v`), harness (`rt`), role (a part is the coordinator's when
+   `crown_sec` is more than half of `min`). They carry no home and no
+   owner, on purpose (`sid` is random, no names): a filter by home needs
+   the home in the line, a filter by owner would turn the overhead counters
+   into a record per person (open point 5).
 
-11. **MVP cut and stages.**
-    - **MVP:** Kanban + live status + ask inbox ("for me") + answer in
-      detail + Keycloak login. Graph off. Reporting: open-asks strip +
-      overhead sparkline only.
-    - **Stage 2:** Graph (Trusts + Coordinates); fuller KPI catalogue;
-      swimlanes.
-    - **Stage 3:** heatmaps, crown-takeover histogram, cost distribution,
-      optional broker placeholder UI.
+9. **What the console keeps.** With A, nothing beyond the operator's
+   session: Mattermost and the bus stay the one source, and the stats
+   channel is the store of the reports. What the interface holds in memory:
 
-12. **Technical recommendation.** SPA: React + TypeScript (team familiarity
-    with the ecosystem; no chat-client fork). Real-time: Console backend
-    exposes WebSocket or SSE; backend is the bus participant (Go, same
-    language as the login service, one ops story in lab Kubernetes) and
-    materialises fleet/ask/stats for the SPA. Hosting: lab Kubernetes,
-    namespace of its own, Keycloak client separate from `agent-bus` (public
-    SPA client with PKCE). Prefer open-source charting (e.g. Apache ECharts
-    or Observable Plot) over building charts; do not adopt a full "ops
-    console" product that fights the three-view IA. Estimated new code
-    order-of-magnitude: low tens of thousands of lines for MVP (SPA +
-    backend), not the ~100 k+ of a chat front end.
+   | Record | Identity | From | Refresh |
+   |--------|----------|------|---------|
+   | Agent | the bot's username | status, card, roster | on a change, else every few seconds |
+   | Person | Mattermost username (`preferred_username`) | cards, roster, the operator's token | at login |
+   | Channel | channel id and name | the operator's memberships | at login, on a change |
+   | Edge | kind, from, to | derived (point 7) | with its ends |
+   | Ask | the ask's post id | ask posts and their reactions | on a change |
+   | Stats line | `sid`, `part` | the stats channel | when a report opens |
+   | Live numbers | the agent | the status text's segments | with the agent |
 
-13. **Dependencies on the NATS rebuild.**
+   History over the day (the stage 3 reports, the time in a state) needs a
+   recorder that runs while nobody is logged in, so a standing read
+   credential: way B in small. It is decided on its own, after stage 2
+   (open point 6).
 
-    | Need | From | Parallel? |
-    | --- | --- | --- |
-    | Operator Keycloak identity | Keycloak client for the SPA | yes, now |
-    | Fleet presence / roster | presence KV + login service names (ADR-014); until then Mattermost roster / custom status | MVP on Mattermost signals |
-    | Ask events with addressable human | ask cards + trusted-human stamp (RT-6.11); adapter signs human-origin answers | answer path needs adapter or today's Mattermost path |
-    | Stats | RT-6.9 channel today; stream/materialisation later | MVP reads `agents-stats` |
-    | Central adapter | mirrors asks/answers; stamps operator answers when chat is Mattermost | stage when NATS homes stop posting asks on MM directly |
+10. **Between browser and console server.** The server reads with the same
+    rules the agents' tools use, so a number means the same in both:
 
-    Console work must not block registrar shutdown. MVP can ship against
-    today's Mattermost-visible signals while NATS lands.
+    | Call | Gives | Same rule as |
+    |------|-------|--------------|
+    | `GET /v1/fleet`, then server-sent events | agents with state, crown, card, numbers; then changes | `coordinator("roster")` across the operator's homes, with the agents not reachable too |
+    | `GET /v1/asks` | open asks, `for_me` and `may_answer` marked | the ask rows of `coordinator("tasks")` |
+    | `GET /v1/graph` | nodes and edges | point 7 |
+    | `GET /v1/stats` | the reports, filtered | `stats_report` |
+    | `GET /v1/threads/<post id>` | one thread, paged, fetched when the detail opens | Mattermost's thread, never stored |
+    | `POST /v1/asks/<post id>/answer` | the operator's reaction or reply, posted in Mattermost as that person; refused for a post that is no open ask | RT-6.11 step 3 |
 
-14. **Self-critical risks (second pass).**
-    - **Cursor / Codex without turn hooks:** turn KPIs stay n/a; dashboards
-      must never coerce missing fields to zero (RT-6.9 error table).
-    - **Session vs stable agent id:** graph and Kanban double-count or lose
-      history if identity flips with every session; follow ADR-014's open
-      point on bot-per-identity.
-    - **Ask attribution:** mapping Keycloak `sub` ↔ Mattermost user ↔ ask
-      `human` must be server-side; a wrong map lets the wrong person answer
-      or hides "for me".
-    - **Graph transitivity:** unbounded coordinate edges explode; cap depth
-      and show "truncated" markers.
-    - **PII in timelines:** detail panes show message text; access logs and
-      retention must match lab policy (streams 14 days); no stats from body
-      text.
-    - **Dual path during parallel operation:** projection bugs show a ghost
-      fleet; one integration test per home switch is mandatory before lab
-      roll-out beyond the trial channel.
+    One direction of push is enough, so server-sent events, no WebSocket to
+    the browser. States change at the ends of turns and the crown beats
+    every 60 s (ADR-007): seconds are fast enough.
 
-**Alternatives considered:** (a) Mattermost as the only Leitstand — rejected:
-channel noise and no graph/KPI surface. (b) Build the full own chat front
-end first — rejected by ADR-014 and the Bau-Auftrag; console is the thin
-slice. (c) Agent MCP tools as the operator UI — rejected: operators are
-humans on Keycloak, not agents. (d) Read-only Grafana on STATS — rejected
-as sole answer: no ask answer path, no fleet board.
+11. **Stages.**
+    - **1, the smallest useful cut:** login, the Kanban with live states,
+      the asks with "for me", the detail with thread and answer, and two
+      reports (open asks, the bus's share per version). Should the review
+      of the answer path (RISK-12) not be through, the same without the
+      answer: the detail links to the ask in Mattermost.
+    - **2:** the graph, the remaining reports, swimlanes.
+    - **3:** the recorder and its reports; reading NATS directly where a
+      home mirrors only what concerns humans; a broker hand-off, once one
+      exists.
 
-**Consequences:** New building block (Section 5), external interface IF-11
-(Section 3), lab deployment row (Section 7), risks RISK-12 and RISK-13
-(Section 11). No change to the 17 MCP tools, skill, or hook API. Site and
-CHANGELOG update when MVP is versioned, not with this proposal.
+12. **What it needs of the NATS build.** Stages 1 and 2 run beside it and
+    hold up nothing of it, the registrar's shutdown included.
 
-**Open for the owner:**
+    | Needed | Today | Once the central adapter runs (phase 5) | For whom |
+    |--------|-------|------------------------------------------|----------|
+    | State word, crown, numbers, version | the bot's custom status | The adapter mirrors presence and crown onto the bot's status (ADR-014 point 11), but presence v1 knows only `online`, `away`, `bye` and no segments. The state word and the segments must survive: in the mirrored status, or in a later version of the format | build team, before phase 5 |
+    | Cards, task states | post props in the home | The same posts, as far as the home's visibility setting mirrors them (ADR-014 point 12) | — |
+    | Asks and their answers | posts and reactions in Mattermost | Unchanged; the adapter signs the answer as any human's (ADR-014 point 10) | — |
+    | Stats | the stats channel | A Mattermost channel unless the build moves it; then the console follows | build team |
+    | Reading NATS directly | not needed | Only for stage 3: a read-only principal the permission model does not have, under the human review of ADR-014 point 15 | owner |
 
-1. Operator Keycloak group: reuse `BGL_AGENT_APPROVERS` or add
-   `BGL_AGENT_OPERATORS`? **Recommendation:** separate operators group so
-   viewers are not automatically approvers.
-2. May any operator answer any ask in the tenant, or only asks that name
-   them / their trusts? **Recommendation:** see all; answer only when dual
-   check (approvers group ∧ session trusted list) passes.
-3. MVP against Mattermost signals before NATS presence KV is live?
-   **Recommendation:** yes, so the Leitstand is useful during parallel
-   operation.
-4. Console backend language: Go (with login service) or Python (with MCP)?
-   **Recommendation:** Go.
-5. Stable agent identity for graph nodes before phase 5 bot-account
-   decision? **Recommendation:** session nodes until that decision; document
-   the merge key in the API.
-6. Retain message bodies in the console DB, or fetch-through only?
-   **Recommendation:** fetch-through only in MVP.
+13. **To check in the lab before stage 1.** Not verified for this proposal:
+    - that the lab's Mattermost can be an OAuth 2.0 provider for the
+      console, and what such a session may do (expected: everything that
+      person may, with no narrower scope);
+    - what a person's session may read of a bot: its custom status, and
+      the description the roster takes `owner` and `trusts` from (a bot's
+      native owner needs `read_others_bots`, RISK-03);
+    - whether Mattermost's WebSocket tells a person's session that a bot's
+      custom status changed, or the server has to poll;
+    - whether the bus's read side (`lease.py`, `tasks.py`, `stats.py`)
+      runs behind `ChatPort` with a person's session instead of a bot's.
 
-Not part of this decision: replacing Mattermost for humans, mobile, multi-
-tenant UI, broker token exchange, production DG-i Mattermost changes.
+    Each of these needs a change in the lab (an OAuth application in
+    Mattermost, a client and a group in Keycloak): the owner's approval,
+    asked by whoever carries it out (ADR-014 point 15).
+
+14. **Technology.** One recommendation each, with its reason:
+    - **Browser:** React with TypeScript, built with Vite, as `site/`
+      already is: the toolchain and its CI job exist in this repository.
+      Charts and the graph's layout from open-source libraries rather than
+      drawn by hand (candidates, not evaluated: Apache ECharts,
+      Cytoscape.js).
+    - **Server:** Python, if the last check of point 13 holds (open point
+      4). Who is reachable, which ask is open and how `STATS` lines add up
+      is written once, in Python behind `ChatPort`; a server in Go, like
+      the login service, writes those rules a second time and has to be
+      held to the same numbers by tests.
+    - **Where it runs:** the lab's Kubernetes, in a namespace of its own,
+      as an image like the login service's (no shell, non-root). The
+      sessions it holds stay in memory.
+
+15. **Where this proposal is weak.**
+    - **Runtimes without turn hooks** (Cursor, Codex) send no turn data
+      (RT-6.9), and their state is expected to be `bus` rather than
+      `working` or `listening` (read from `lease.py`'s default, not
+      traced): the board is coarser for them, and their turn reports stay
+      "n/a".
+    - **A session, not an agent.** Bots are per session today, so the graph
+      and any history break with every new session until ADR-014 point 11
+      is settled.
+    - **"For me" hangs on a name.** The asked human is a Mattermost
+      username; it is the Keycloak name only for accounts that log in
+      through Keycloak (ADR-014 point 6).
+    - **The graph reads posts.** Task edges come from the last 14 days of a
+      home (RT-6.14 step 3), and the transitive ones are an
+      interpretation.
+    - **Text in the detail.** A thread shown is one the operator may read
+      in Mattermost anyway, but the console's server must store none of it
+      and write none of it to its log.
+    - **What A does not see:** homes the operator is not in, agent-to-agent
+      threads of a home that mirrors only what concerns humans, and
+      anything that happened while nobody was logged in (RISK-13).
+    - **The server holds people's sessions** (RISK-12).
+
+**Alternatives considered:** (a) Mattermost alone, as today: no view across
+homes, no charts. (b) The chat front end of its own first: outside ADR-014,
+and far larger than a console. (c) A dashboard tool on the `STATS` lines
+alone: covers the reports, not the fleet and not the asks. (d) The agents'
+MCP tools for people: an operator is a person with a Keycloak login, not a
+session with a bot. Ways B and C of point 2.
+
+**Consequences:** The 17 MCP tools, the hook API, the skill and the message
+format do not change. Sections 3, 5 and 7 get the console's interface,
+building block and deployment when it is accepted and built, not before;
+the website and `CHANGELOG.md` when a version ships it.
+
+**Tests (planned):** the reports against `stats_report` on the same lines;
+a missing field shown as "n/a"; the answer call refusing every post that is
+no open ask and posting nothing else; "for me" and "may answer" from names
+alone; an expired ask shown as such; no thread text in the server's log.
+
+**Risks created:** the console's server holds operators' sessions, and it
+shows less than there is (RISK-12 and RISK-13 in Section 11).
+
+**Open for the owner**, one decision each:
+
+1. How the console reads and answers: A, B or C (point 2). Recommended: A.
+2. Who may open it: an operators' group of its own, or the approvers'
+   group. Recommended: a group of its own; with A it shows nobody more than
+   Mattermost does, and looking is not approving.
+3. Answers from stage 1, or a link to Mattermost until a human has reviewed
+   the console's server like the other security-critical parts (ADR-014
+   point 15). Recommended: build the answer, switch it on after the review.
+4. The server's language (point 14). Recommended: Python if the bus's read
+   side runs with a person's session, else Go.
+5. Reports by home and by owner (point 8). Recommended: the home in the
+   `STATS` line, later; no owner.
+6. A recorder with a standing read credential for the stage 3 reports
+   (point 9). Recommended: decide after stage 2, when it shows what is
+   missed.
+
+Not part of this proposal: a chat for people, a mobile app, more than one
+tenant in the interface, approvals through a broker, anything outside the
+lab.
