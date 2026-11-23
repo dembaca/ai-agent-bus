@@ -9,6 +9,7 @@ import logging
 import os
 import shutil
 import socket
+import ssl
 import subprocess
 import time
 from collections.abc import AsyncIterator, Awaitable, Callable
@@ -180,7 +181,7 @@ def _unit_bus(**kw: Any) -> tuple[NatsBus, list[Event]]:
 
 def _reply(bus: NatsBus, where: str, sseq: int, cseq: int, t: float | None = None) -> str:
     """The JetStream reply subject of the bus's own consumer for `where`."""
-    consumer = f"{bus.name}_dm" if where == "dm" else f"{bus.name}_ch_{where}"
+    consumer = f"{bus.name}_dm" if where == "@dm" else f"{bus.name}_ch_{where}"
     return f"$JS.ACK.BUS.{consumer}.1.{sseq}.{cseq}.{int((time.time() if t is None else t) * 1e9)}.0"
 
 
@@ -267,20 +268,20 @@ async def test_dm_gap_and_since_key() -> None:
     bus, events = _unit_bus()
     ok = encode(Message("post", "hi"))
     subj = f"bus.dm.{bus.name}.agent-y"
-    await bus._on_deliver("dm", subj, _reply(bus, "dm", 7, 1), ok)
+    await bus._on_deliver("@dm", subj, _reply(bus, "@dm", 7, 1), ok)
     assert bus.since() == {"@dm": 7}
     assert json.loads(build_hello("T", "home", (), False, bus.since()))["since"] == {"@dm": 7}
-    await bus._on_deliver("dm", subj, _reply(bus, "dm", 9, 3), ok)  # a DM was lost
+    await bus._on_deliver("@dm", subj, _reply(bus, "@dm", 9, 3), ok)  # a DM was lost
     assert bus._wake.is_set() and len(events) == 1 and bus.since() == {"@dm": 7}
-    await bus._on_deliver("dm", subj, _reply(bus, "dm", 7, 4), ok)  # a repeat from since
+    await bus._on_deliver("@dm", subj, _reply(bus, "@dm", 7, 4), ok)  # a repeat from since
     assert len(events) == 1
 
 
 async def test_unit_dm_event_and_repr() -> None:
     bus, events = _unit_bus()
-    await bus._on_deliver("dm", f"bus.dm.{bus.name}.agent-y", _reply(bus, "dm", 3, 1), encode(Message("post", "hi")))
-    assert [(e.where, e.sender) for e in events] == [("dm", "agent-y")]
-    await bus._on_deliver("dm", "bus.dm.someone-else.agent-y", _reply(bus, "dm", 4, 2), encode(Message("post", "hi")))
+    await bus._on_deliver("@dm", f"bus.dm.{bus.name}.agent-y", _reply(bus, "@dm", 3, 1), encode(Message("post", "hi")))
+    assert [(e.where, e.sender) for e in events] == [("@dm", "agent-y")]
+    await bus._on_deliver("@dm", "bus.dm.someone-else.agent-y", _reply(bus, "@dm", 4, 2), encode(Message("post", "hi")))
     assert len(events) == 1
     assert "tok-" not in repr(bus) and "seed" not in repr(bus).lower()
 
@@ -589,6 +590,8 @@ def _consumer_specs(agent: str, channels: list[str], since: dict[str, int]) -> l
         out.append(("BUS", c["durable_name"], c))
         filters.append(f"presence.crown.{ch}.*")
     dm = cfg(f"{agent}_dm", f"deliver.{agent}.dm", [f"bus.dm.{agent}.*"])
+    if since.get("@dm"):  # the same as the channels: restart after the last DM seen
+        dm["deliver_policy"], dm["opt_start_seq"] = "by_start_sequence", since["@dm"] + 1
     out.append(("BUS", dm["durable_name"], dm))
     pr = cfg(f"{agent}_presence", f"deliver.{agent}.presence", filters, "last_per_subject")
     out.append(("PRESENCE", pr["durable_name"], pr))
@@ -607,6 +610,10 @@ async def _login_service(admin: NatsClient, agent: str, channels: list[str], sin
     for stream, name, cfg in _consumer_specs(agent, channels, since):
         if since and stream == "BUS" and "_ch_" in name and since.get(name.split("_ch_", 1)[1]):
             await _api(admin, f"$JS.API.CONSUMER.DELETE.{stream}.{name}")
+        if since.get("@dm") and name == f"{agent}_dm":
+            # as the login service: restart it, or make it anew when JetStream dropped it
+            r = await admin.request(f"$JS.API.CONSUMER.DELETE.{stream}.{name}", b"", timeout=5)
+            assert json.loads(r.data).get("error", {}).get("err_code") in (None, 10014), r.data
         await _api(admin, f"$JS.API.CONSUMER.CREATE.{stream}.{name}", {"stream_name": stream, "config": cfg})
 
 
@@ -714,10 +721,10 @@ async def test_post_reply_reaction_dm(rig: Rig) -> None:
     await until(lambda: len(a_ev) == 4)
     assert a_ev[3].message.kind == "unreaction"
     await alice.dm(bob.name, "psst")
-    await until(lambda: any(e.where == "dm" for e in b_ev))
-    dm = next(e for e in b_ev if e.where == "dm")
+    await until(lambda: any(e.where == "@dm" for e in b_ev))
+    dm = next(e for e in b_ev if e.where == "@dm")
     assert (dm.sender, dm.message.text) == (alice.name, "psst")
-    assert not any(e.where == "dm" for e in a_ev)
+    assert not any(e.where == "@dm" for e in a_ev)
 
 
 async def test_forged_sender_in_body_is_ignored(rig: Rig) -> None:
@@ -899,3 +906,266 @@ async def test_the_bus_renews_before_the_credential_expires(rig: Rig) -> None:
     assert set(got) == set(sent), "a message lost in the renewal"
     seqs = [e.stream_seq for e in b_ev if e.where == "home"]
     assert seqs == sorted(seqs)
+
+
+def test_the_props_prefix_is_the_buss_setting() -> None:
+    """Props keys carry MM_PROPS_PREFIX (RT-6.16 step 8), not a fixed x_: with
+    another prefix the bus can post its own keys, and x_ keys are refused."""
+    m = Message("post", "hi", props={"bgl_k": "v"})
+    assert decode(encode(m, "bgl_"), "bgl_") == m
+    with pytest.raises(MessageError):
+        encode(m)  # the default prefix x_
+    with pytest.raises(MessageError):
+        decode(encode(Message("post", "hi", props={"x_k": "v"})), "bgl_")
+    with pytest.raises(MessageError):
+        decode(encode(m, "bgl_"), "x_")
+    s = _settings(props_prefix="bgl_")
+    assert s.props_prefix == "bgl_"
+    for bad in ("BGL_", "bgl", "from_", "1x_"):
+        with pytest.raises(ValueError):
+            _settings(props_prefix=bad)
+
+
+async def test_a_bus_with_another_props_prefix_posts_and_reads() -> None:
+    bus, _ = _unit_bus(props_prefix="bgl_")
+    sent: list[bytes] = []
+
+    class Ok:
+        async def publish(self, subject: str, body: bytes) -> None:
+            sent.append(body)
+
+        async def flush(self, timeout: float = 10) -> None:
+            return None
+
+    bus._nc, bus._connected = Ok(), True  # type: ignore[assignment]
+    await bus.post("home", "hi", props={"bgl_k": "v"})
+    assert decode(sent[0], "bgl_").props == {"bgl_k": "v"}
+    with pytest.raises(MessageError):
+        await bus.post("home", "hi", props={"x_k": "v"})
+
+
+# --- TLS: the handshake comes first, the certificate is verified ----------------------------
+
+class FakeServer:
+    """A NATS-looking server on 127.0.0.1 that records every line the client sends."""
+
+    def __init__(self, ssl_ctx: ssl.SSLContext | None) -> None:
+        self.ssl_ctx = ssl_ctx
+        self.received = b""
+        self._server: asyncio.Server | None = None
+        self.port = 0
+
+    async def _serve(self, reader: asyncio.StreamReader, writer: asyncio.StreamWriter) -> None:
+        info = {"server_id": "x", "version": "2.15.3", "max_payload": 1048576, "proto": 1, "nonce": "abc",
+                "auth_required": True}  # no tls_required: what a man in the middle says
+        try:
+            writer.write(b"INFO " + json.dumps(info).encode() + b"\r\n")
+            await writer.drain()
+            while True:
+                line = await reader.readline()
+                if not line:
+                    return
+                self.received += line
+                if line.startswith(b"PING"):
+                    writer.write(b"PONG\r\n")
+                    await writer.drain()
+        except (ConnectionError, ssl.SSLError):
+            pass
+        finally:
+            writer.close()
+
+    async def __aenter__(self) -> "FakeServer":
+        self._server = await asyncio.start_server(self._serve, "127.0.0.1", 0, ssl=self.ssl_ctx)
+        self.port = self._server.sockets[0].getsockname()[1]
+        return self
+
+    async def __aexit__(self, *a: Any) -> None:
+        assert self._server is not None
+        self._server.close()
+        await self._server.wait_closed()
+
+
+def _self_signed(tmp_path: Path) -> tuple[Path, Path]:
+    """A self-signed certificate for 127.0.0.1 and localhost: (cert file, key file)."""
+    import datetime
+    import ipaddress
+
+    from cryptography import x509
+    from cryptography.hazmat.primitives import hashes, serialization
+    from cryptography.hazmat.primitives.asymmetric import ec
+    from cryptography.x509.oid import NameOID
+
+    key = ec.generate_private_key(ec.SECP256R1())
+    name = x509.Name([x509.NameAttribute(NameOID.COMMON_NAME, "localhost")])
+    now = datetime.datetime.now(datetime.timezone.utc)
+    cert = (x509.CertificateBuilder().subject_name(name).issuer_name(name).public_key(key.public_key())
+            .serial_number(x509.random_serial_number()).not_valid_before(now - datetime.timedelta(days=1))
+            .not_valid_after(now + datetime.timedelta(days=1))
+            .add_extension(x509.SubjectAlternativeName([x509.DNSName("localhost"),
+                                                        x509.IPAddress(ipaddress.ip_address("127.0.0.1"))]),
+                           critical=False)
+            .add_extension(x509.BasicConstraints(ca=True, path_length=None), critical=True)
+            .sign(key, hashes.SHA256()))
+    cert_f, key_f = tmp_path / "cert.pem", tmp_path / "key.pem"
+    cert_f.write_bytes(cert.public_bytes(serialization.Encoding.PEM))
+    key_f.write_bytes(key.private_bytes(serialization.Encoding.PEM, serialization.PrivateFormat.PKCS8,
+                                        serialization.NoEncryption()))
+    return cert_f, key_f
+
+
+async def test_tls_url_never_sends_the_token_to_a_plaintext_server() -> None:
+    """A man in the middle behind tls:// answers in plaintext with an INFO that does not
+    say tls_required: nats-py alone would carry on and send the CONNECT with the token."""
+    async with FakeServer(None) as srv:
+        bus = NatsBus(_settings(servers=(f"tls://127.0.0.1:{srv.port}",)), FakeLogin(), "alice",
+                      lambda e: None, connect_timeout=2)
+        try:
+            with pytest.raises(Exception):  # noqa: B017
+                await bus._open()
+            await asyncio.sleep(0.1)
+            assert b"CONNECT" not in srv.received and b"tok-" not in srv.received
+            assert bus._nc is None
+        finally:
+            if bus._nc is not None:  # only when the connection wrongly succeeded
+                await bus._nc.close()
+
+
+async def test_tls_url_refuses_a_certificate_it_does_not_trust(tmp_path: Path) -> None:
+    cert, key = _self_signed(tmp_path)
+    ctx = ssl.SSLContext(ssl.PROTOCOL_TLS_SERVER)
+    ctx.load_cert_chain(cert, key)
+    async with FakeServer(ctx) as srv:  # no tls_ca_file: the system's CAs do not know this one
+        bus = NatsBus(_settings(servers=(f"tls://127.0.0.1:{srv.port}",)), FakeLogin(), "alice",
+                      lambda e: None, connect_timeout=2)
+        with pytest.raises(Exception):  # noqa: B017
+            await bus._open()
+        await asyncio.sleep(0.1)
+        assert srv.received == b""
+
+
+async def test_tls_url_with_the_ca_file_handshakes_first_and_connects(tmp_path: Path) -> None:
+    cert, key = _self_signed(tmp_path)
+    ctx = ssl.SSLContext(ssl.PROTOCOL_TLS_SERVER)
+    ctx.load_cert_chain(cert, key)
+    async with FakeServer(ctx) as srv:  # its INFO does not say tls_required: the handshake is first anyway
+        s = _settings(servers=(f"tls://127.0.0.1:{srv.port}",), tls_ca_file=str(cert))
+        bus = NatsBus(s, FakeLogin(), "alice", lambda e: None, connect_timeout=2)
+        await bus._open()
+        nc = bus._nc
+        try:
+            assert nc is not None and bus._connected
+            assert b"CONNECT" in srv.received and srv.received.count(b"SUB deliver.") >= 3
+        finally:
+            if bus._renew_task:
+                bus._renew_task.cancel()
+            if nc is not None:
+                await nc.close()
+
+
+def test_tls_and_plain_servers_are_not_mixed() -> None:
+    with pytest.raises(ValueError):
+        NatsSettings(servers=("tls://nats.example.org", "nats://127.0.0.1:4222"), home="home")
+    assert _settings().tls_context() is None
+    assert _settings(servers=("tls://nats.example.org",)).tls_context() is not None
+
+
+# --- a planned renewal waits for a send under way ---------------------------------------------
+
+async def test_a_planned_renewal_does_not_cut_off_a_running_send(monkeypatch: pytest.MonkeyPatch) -> None:
+    bus, _ = _unit_bus(send_wait_sec=3)
+    in_sync, release = asyncio.Event(), asyncio.Event()
+    log_: list[str] = []
+
+    class Old:
+        async def publish(self, subject: str, body: bytes) -> None:
+            log_.append("old publish")
+
+        async def flush(self, timeout: float = 10) -> None:
+            in_sync.set()
+            await release.wait()
+
+        async def close(self) -> None:
+            log_.append("old close")
+
+    class New:
+        async def publish(self, subject: str, body: bytes) -> None:
+            log_.append("new publish")
+
+        async def flush(self, timeout: float = 10) -> None:
+            return None
+
+    async def fake_open() -> None:
+        log_.append("open")
+        bus._nc, bus._connected = New(), True  # type: ignore[assignment]
+
+    monkeypatch.setattr(bus, "_open", fake_open)
+    bus._nc, bus._connected = Old(), True  # type: ignore[assignment]
+    first = asyncio.create_task(bus.post("home", "one"))
+    await asyncio.wait_for(in_sync.wait(), 2)  # the send is under way, waiting for the server
+    sup = asyncio.create_task(bus._supervise())
+    bus._planned = True
+    bus._wake.set()
+    second = asyncio.create_task(bus.post("home", "two"))
+    await asyncio.sleep(0.1)
+    assert "old close" not in log_ and not first.done()  # the renewal waits for the send
+    release.set()
+    await asyncio.wait_for(first, 2)  # no FlushTimeoutError, no "publish failed"
+    await asyncio.wait_for(second, 2)  # goes to the new connection: waits for it, not "not connected"
+    assert log_ == ["old publish", "old close", "open", "new publish"]
+    bus._stopping = True
+    bus._wake.set()
+    await asyncio.wait_for(sup, 2)
+
+
+# --- a channel named dm is not the direct messages ---------------------------------------------
+
+async def test_a_channel_named_dm_does_not_collide_with_direct_messages() -> None:
+    bus, events = _unit_bus(home="dm")
+    ok = encode(Message("post", "x"))
+    await bus._on_deliver("dm", "bus.ch.dm.agent-x", _reply(bus, "dm", 10, 1), ok)  # the channel
+    await bus._on_deliver("@dm", f"bus.dm.{bus.name}.agent-x", _reply(bus, "@dm", 3, 1), ok)  # a DM
+    assert [(e.where, e.stream_seq) for e in events] == [("dm", 10), ("@dm", 3)]
+    assert bus.since() == {"dm": 10, "@dm": 3}
+    # a gap in the channel's consumer does not mark the DMs stale, and the other way round
+    await bus._on_deliver("dm", "bus.ch.dm.agent-x", _reply(bus, "dm", 15, 4), ok)
+    assert bus._stale == {"dm"}
+    await bus._on_deliver("@dm", f"bus.dm.{bus.name}.agent-x", _reply(bus, "@dm", 4, 2), ok)
+    assert len(events) == 3 and events[-1].where == "@dm" and bus.since() == {"dm": 10, "@dm": 4}
+    bus._stale.clear()
+    await bus._on_deliver("@dm", f"bus.dm.{bus.name}.agent-x", _reply(bus, "@dm", 9, 7), ok)
+    assert bus._stale == {"@dm"}
+    await bus._on_deliver("dm", "bus.ch.dm.agent-x", _reply(bus, "dm", 11, 5), ok)
+    assert events[-1].where == "dm" and events[-1].stream_seq == 11
+    if bus._gap_task:
+        bus._gap_task.cancel()
+
+
+async def test_dm_reconnect_with_since_gets_exactly_the_dms_after_it(rig: Rig) -> None:
+    alice, _ = await rig.agent("alice")
+    bob_login = rig.logins["bob"]
+    bob_ref: list[NatsBus] = []
+
+    async def at_login(call: int) -> None:
+        if call == 2:
+            await alice.dm(rig.names["bob"], "dm3")  # while bob is away: nobody reads it now
+            await asyncio.sleep(0.3)
+            # Bob was away long enough for JetStream to drop his idle consumer: only `since`
+            # under "@dm" brings dm3 back (a fixture that ignored it would start with new only).
+            await _api(rig.admin, f"$JS.API.CONSUMER.DELETE.BUS.{rig.names['bob']}_dm")
+            await _login_service(rig.admin, rig.names["bob"], ["home"], bob_ref[0].since())
+            await alice.dm(rig.names["bob"], "dm4")
+
+    bob_login.hook = at_login
+    bob, b_ev = await rig.agent("bob")
+    bob_ref.append(bob)
+    await alice.dm(rig.names["bob"], "dm1")
+    await alice.dm(rig.names["bob"], "dm2")
+    await until(lambda: len([e for e in b_ev if e.where == "@dm"]) == 2)
+    assert "@dm" in bob.since()
+    assert bob._nc is not None
+    bob._nc._transport.close()
+    await until(lambda: bob_login.calls == 2 and bob._connected, timeout=10)
+    await alice.dm(rig.names["bob"], "dm5")
+    await until(lambda: any(e.message.text == "dm5" for e in b_ev))
+    await asyncio.sleep(0.3)
+    assert [e.message.text for e in b_ev if e.where == "@dm"] == ["dm1", "dm2", "dm3", "dm4", "dm5"]

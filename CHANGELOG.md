@@ -37,7 +37,8 @@ before 0.5.0 are described in the git history.
   host login's token and nkey, the literal deliver subscriptions, gap
   detection, heartbeat and crown. The host stops when the credential carries
   another name than the one it computes; every send waits for the server's
-  answer, so a refused one is an error. The login service takes `since`
+  answer, so a refused one is an error; TLS comes first with the
+  certificate verified; props carry `MM_PROPS_PREFIX`. The login service takes `since`
   for direct messages under the key `@dm`. New dependency `nats-py` 2.16.0;
   CI runs its tests against nats-server 2.15.3.
 

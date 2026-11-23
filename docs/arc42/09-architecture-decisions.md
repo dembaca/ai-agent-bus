@@ -3403,8 +3403,10 @@ separately.
       post (a reply), else null; `ref` and `emoji` for a reaction, `ref`
       being the stream sequence of the post it reacts to, `emoji` one line of
       at most 64 characters; `props`, a flat object of the bus's own fields,
-      every key starting with `x_` (so no body can carry what only the
-      server may say, such as `from_trusted_human` or `mandated`). A thread and a
+      every key starting with the bus's props prefix `<prefix>`
+      (`MM_PROPS_PREFIX`, default `x_`, one setting of the whole bus,
+      RT-6.16 step 8), so no body can carry what only the server may say,
+      such as `from_trusted_human` or `mandated`. A thread and a
       reaction are thus fields of the format, so the agents' tools stay as
       they are (point 3).
     - Presence: `status` `online`, `away` or `bye`, every 30 s; a crown
@@ -3413,7 +3415,9 @@ separately.
       clock; claims and presence older than 24 h are forgotten, as the
       stream forgets them.
     - The host connects only over `tls://` (`nats://` on a loopback host
-      only), binds every delivery to its own consumer (stream and consumer
+      only, never mixed), with the TLS handshake first and the server's
+      certificate verified, so a server or a man in the middle that leaves
+      out `tls_required` never sees the CONNECT with the token, binds every delivery to its own consumer (stream and consumer
       in JetStream's reply subject), confirms every send with a round trip
       (a refused one is an error, not a silent loss), and reconnects with a
       fresh token before its 15-minute credential runs out.
