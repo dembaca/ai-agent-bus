@@ -212,6 +212,36 @@ async def test_a_known_token_names_its_own_account_and_an_id_read_is_not_me():
     assert stub.unknown == []
 
 
+async def test_an_id_route_answers_only_an_id_this_stub_knows():
+    """An id is `[a-z0-9]{26}`, and only a known one is answered.
+
+    A loose pattern gave `/users/autocomplete`, `/users/stats`, `/users/known`
+    and every invented id a 200 with `agent-lete` for a name — the stub answered
+    what it does not know instead of reporting it, which is the one thing this
+    stub exists not to do (review of #24). The same held for `/bots/<id>`, and
+    neither route had a test; the PR text's "Measured" block is not one.
+    """
+    async with MattermostStub() as stub:
+        stub.identify(SENDER_TOKEN, SENDER_ID, "agent-sender")
+        async with httpx.AsyncClient(base_url=stub.url) as client:
+            other_endpoints = [await client.get(p) for p in (
+                "/api/v4/users/autocomplete", "/api/v4/users/stats", "/api/v4/users/known")]
+            invented = "q" * 26
+            unknown_user = await client.get(f"/api/v4/users/{invented}")
+            unknown_bot = await client.get(f"/api/v4/bots/{invented}")
+            mine = await client.get(f"/api/v4/users/{SENDER_ID}")
+            my_bot = await client.get(f"/api/v4/bots/{SENDER_ID}")
+    assert [r.status_code for r in other_endpoints] == [404, 404, 404]
+    assert unknown_user.status_code == 404 and unknown_bot.status_code == 404
+    assert mine.json()["username"] == "agent-sender"
+    assert my_bot.json()["user_id"] == SENDER_ID
+    assert stub.unknown == [
+        ("GET", "/api/v4/users/autocomplete"), ("GET", "/api/v4/users/stats"),
+        ("GET", "/api/v4/users/known"), ("GET", f"/api/v4/users/{invented}"),
+        ("GET", f"/api/v4/bots/{invented}"),
+    ]
+
+
 async def test_the_stub_answers_the_challenge_then_sends_its_frames():
     """What the bus sends (probe_bus_frames) and what it must read, on the wire."""
     post = {"id": "p" * 26, "user_id": "h" * 26, "channel_id": CHANNEL,
