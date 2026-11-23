@@ -945,7 +945,7 @@ async def bus_info() -> str:
                and profile.unbound(await client.bot_description(me.id)) else "")
     # RT-6.18: no relay reached the host process (none since its start).
     warnings = [w for w in (unbound, *own.warnings, _hook_warning().get("warning", ""),
-                            hosted.relay_warning()) if w]
+                            hosted.relay_warning(), *lease.nats_notes()) if w]
     return _out("bus_info", {
         "version": VERSION,
         "on_bus": True,
@@ -2316,7 +2316,9 @@ async def coordinator(action: str = "who", scope: str = "home") -> str:
                 "asks": tasks.open_asks(posts, names, trusted, set(foreign)) + await _queued_rows(client)})
         rows = await lease.roster(client)
         return _out("coordinator", {"roster": tasks.roster(
-            rows, posts, names, await _owners_of(client, rows), await _usage_of(client, rows))})
+            rows, posts, names, await _owners_of(client, rows), await _usage_of(client, rows)),
+            # RT-6.38 step 6: a NATS home without its NATS side has no crown.
+            **({"hint": hint} if (hint := lease.crown_hint(client.work_channel_name)) else {})})
     if action not in ("who", "take", "release"):
         return _refused("coordinator", 'action must be "who", "take", "release", "tasks" or "roster"')
     out = await lease.command(_get_client(), action)

@@ -5,7 +5,8 @@ For the channels of a home named in MM_NATS_HOMES the agents' posts, threads and
 reactions go over NATS; everything about people stays on Mattermost (their posts
 and reactions arrive over the Mattermost WebSocket, trust, headers, pinned posts,
 files, status, users are the adapter's, handed on unchanged). The agents' tools
-do not change. Roster, presence and the crown stay on Mattermost (not here yet).
+do not change. Roster and presence stay on Mattermost; the crown of the home is the claim
+order on the NATS bus, its 👑 status on Mattermost only the mirror (crown_view, claim: RT-6.38).
 
 Ids. A channel keeps its Mattermost id and name. A post that went over NATS has an
 opaque id `n1:<channel name>:<stream sequence>` (ids.NATS_POST): it never has the
@@ -73,7 +74,7 @@ from functools import partial
 from types import MappingProxyType
 from typing import TYPE_CHECKING, Any, Protocol
 
-from . import a2a, lease, natsbus
+from . import a2a, lease, natsbus, owners
 from .events import ChatEvent, EventSource, EventStream, PostEvent, ReactionEvent
 from .ids import _ID, NATS_POST
 from .model import NotFound, Post, Reaction, Thread, UnreadChannel
@@ -89,6 +90,7 @@ MAX_REACTIONS = 64  # distinct (emoji, sender) per post
 MAX_QUEUE = 10_000  # events a subscriber or a merged stream holds
 START_RETRY_SEC = 1.0  # first wait of a start that failed; doubles up to START_RETRY_MAX_SEC
 START_RETRY_MAX_SEC = 30.0
+CLAIM_ECHO_SEC = 2.0  # how long a claim waits for its own copy (RT-6.38)
 ECHO_WAIT_SEC = 10.0  # how long a send waits for its own copy from the stream
 _NOTE = "a2a_"  # after the props prefix: the bus's own note, flat
 _NONCE = "nats_nonce"  # after the props prefix: tells a post its own copy
@@ -136,6 +138,15 @@ class BusLike(Protocol):
     def presence_snapshot(self) -> dict[str, tuple[float, str]]: ...
 
     async def member(self, channel: str) -> None: ...
+
+    async def claim(self, channel: str) -> None: ...
+
+    def claim_info(self, channel: str) -> dict[str, tuple[int, float]]: ...
+
+    def own_echo_age(self) -> float: ...
+
+    @property
+    def server_now(self) -> float: ...
 
 
 def post_id(channel: str, seq: int) -> str:
@@ -207,6 +218,8 @@ class NatsPort:
         self._subs: list[asyncio.Queue[ChatEvent | NatsPortError | None]] = []
         self._dropped = 0  # events a full subscriber's queue lost
         self._capped = 0  # reactions dropped at MAX_REACTIONS
+        self._names: set[str] | None = None  # this session's trusted humans, read by prime (RT-6.38)
+        self._ambiguous: set[str] = set()  # link tags that fit more than one fresh name (RT-6.37)
 
     def __getattr__(self, name: str) -> Any:
         if name in ("inner", "__setstate__"):
@@ -744,9 +757,82 @@ class NatsPort:
             if not tag:
                 continue
             same = [n for n in fresh if natsbus.link_tag(n) == tag]
+            if len(same) > 1 and tag not in self._ambiguous:
+                self._ambiguous.add(tag)
+                log.warning("nats: the link tag %s fits %d fresh NATS names: no bot is linked by it", tag, len(same))
+            elif len(same) == 1:
+                self._ambiguous.discard(tag)
             if len(same) == 1 and bus.bot_of(same[0]) == str(row.get("id")):
                 out[str(row["id"])] = same[0]
         return out
+
+    def ambiguous(self) -> list[str]:
+        """The link tags that fit more than one fresh NATS name, as `linked` last saw them
+        (RT-6.37); sorted."""
+        return sorted(self._ambiguous)
+
+    def owner_of(self, name: str) -> str:
+        """The owner a NATS name's presence subject names, '' for none or no bus."""
+        bus = self._bus if self._fatal is None else None
+        return bus.owner_of(name) if bus is not None else ""
+
+    # --- the crown (RT-6.38) ---------------------------------------------------------
+    def down(self) -> str:
+        """Why the NATS side is lost for good (a failed start), '' otherwise."""
+        return str(self._fatal) if self._fatal is not None else ""
+
+    async def prime(self) -> None:
+        """Read this session's trusted humans, which the crown's standing rule needs
+        (owners.trusted_names); raises when they cannot be read."""
+        self._names = await owners.trusted_names(self.inner)
+
+    def crown_view(self, home: str) -> lease.CrownView | None:
+        """The crown of the NATS home `home` as the bus says it (RT-6.38 step 2): the claimants
+        with a fresh presence that are members of the channel, in claim order, of which those
+        that stand by the Mattermost election's rule (lease.standing, owners from the
+        presence subjects) may hold it; the holder is the first. None, which is neither free
+        nor mine, while the bus is not attached, failed, not connected or not synced, or the
+        trusted humans were not read yet, or the echo of this agent's own presence (published
+        every 30 s) has not come back for more than OWN_ECHO_SEC by the monotonic clock: a
+        half-open connection delivers nothing, and the others take over after 90 s."""
+        bus = self._bus
+        if (bus is None or self._fatal is not None or not bus.connected or not bus.synced
+                or self._names is None or home not in self._homes
+                or bus.own_echo_age() > natsbus.OWN_ECHO_SEC):
+            return None
+        me = bus.name
+        info = bus.claim_info(home)
+        order = natsbus.crown_candidates({a: seq for a, (seq, _) in info.items()}, bus.presence_snapshot(),
+                                         bus.server_now, partial(bus.is_member, home),
+                                         at={a: t for a, (_, t) in info.items()})
+        agents = {a: owners.Owner(owner=bus.owner_of(a), trusts=frozenset(), cut=False)
+                  for a in dict.fromkeys([*order, me])}
+        standing = lease.standing(order, me, self._names, agents).ids
+        mine = info.get(me)
+        return lease.CrownView(me=me, holder=standing[0] if standing else "", candidates=tuple(standing),
+                               member=bus.is_member(home, me),
+                               claim_age=bus.server_now - mine[1] if mine is not None else None)
+
+    def lowest_claim(self, home: str, names: Iterable[str]) -> str:
+        """Of `names`, the one whose claim is first in claim order (server time, sequence) in
+        the last known claims of `home`; '' when none of them has a known claim."""
+        bus = self._bus if self._fatal is None else None
+        if bus is None:
+            return ""
+        info = bus.claim_info(home)
+        known = sorted((info[n][1], info[n][0], n) for n in names if n in info)
+        return known[0][2] if known else ""
+
+    async def claim(self, home: str) -> None:
+        """Claim the crown of `home` (again): the claim moves behind every other. Waits a
+        moment for the claim's own copy to come back, so the view that follows has it."""
+        bus = self._require()
+        before = bus.claim_info(home).get(bus.name)
+        await bus.claim(home)
+        for _ in range(int(CLAIM_ECHO_SEC / 0.05)):
+            if bus.claim_info(home).get(bus.name) != before:
+                return
+            await asyncio.sleep(0.05)
 
     async def whereabouts(self, channel_id: str, name: str) -> str | None:
         """Where a NATS name is, for a NATS home's channel (RT-6.37): `gone` (offline),

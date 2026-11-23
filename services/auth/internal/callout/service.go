@@ -297,7 +297,7 @@ func (s *Service) authorize(ctx context.Context, req *jwt.AuthorizationRequestCl
 	uc.Audience = s.cfg.Account
 	uc.IssuedAt = now.Unix()
 	uc.Expires = now.Add(Lifetime).Unix()
-	uc.Permissions = s.cfg.Subjects.permissions(agent, id.Owner, channels)
+	uc.Permissions = s.cfg.Subjects.permissions(agent, id.Owner, hello.Home, channels)
 	uc.Limits.Subs = maxSubs
 	uc.Limits.Payload = maxPayload
 	uc.AllowedConnectionTypes.Add(jwt.ConnectionTypeStandard)
