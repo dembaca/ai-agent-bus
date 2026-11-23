@@ -514,6 +514,18 @@ def ask_card(post: Any) -> dict[str, str]:
     return out
 
 
+def ask_answer_list(post: Any) -> list[str]:
+    """The alternatives an ask offers, as data when the server wrote them
+    (`props.ask_answers`, since #30) and else read from the `Answer` line — kept
+    as the fallback for asks posted before that (RT-6.11)."""
+    props = post.props if hasattr(post, "props") else (
+        post.get("props") if isinstance(post, Mapping) else None)
+    kept = props.get("ask_answers") if isinstance(props, Mapping) else None
+    if isinstance(kept, list) and 2 <= len(kept) <= 4 and all(isinstance(a, str) for a in kept):
+        return [str(a) for a in kept]
+    return ask_answers(ask_card(post).get("answer", ""))
+
+
 def ask_answers(answer_line: str) -> list[str]:
     """The alternatives an ask's `Answer` field offers, by position (RT-6.11):
     `👍 = A · 👎 = B · or reply in this thread` gives ["A", "B"]; [] when the

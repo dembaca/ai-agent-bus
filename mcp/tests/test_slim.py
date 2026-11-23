@@ -127,20 +127,20 @@ def _reacted(base: dict, *reactions: tuple[str, str]) -> "object":
 async def test_an_asks_decision_and_answers_are_readable():
     """issue #30: what a 👍 approves, and the alternatives it names."""
     p = await slim.post(_asker(), post_of(CARD))
-    assert p["ask"]["need"] == "Merge #4?"
-    assert p["ask"]["decision"] == "Merge #4 after CI."
-    assert p["ask"]["answers"] == ["go", "no-go"]
-    assert "context" not in p["ask"]  # not what was approved
+    assert p["ask_card"]["need"] == "Merge #4?"
+    assert p["ask_card"]["decision"] == "Merge #4 after CI."
+    assert p["ask_card"]["answers"] == ["go", "no-go"]
+    assert "context" not in p["ask_card"]  # not what was approved
 
 
 @pytest.mark.asyncio
 async def test_only_a_trusted_humans_reaction_chooses():
     """The coordinator's second condition: a bot's or an untrusted person's 👍 picks nothing."""
     p = await slim.post(_asker(), _reacted(CARD, (HUMAN, "thumbsup")))
-    assert p["ask"]["chosen"] == "go"
+    assert p["ask_card"]["chosen"] == "go"
     for uid in (STRANGER, ASKER):  # an untrusted person, and the asking agent itself
         p = await slim.post(_asker(), _reacted(CARD, (uid, "thumbsup")))
-        assert "chosen" not in p["ask"], uid
+        assert "chosen" not in p["ask_card"], uid
 
 
 @pytest.mark.asyncio
@@ -149,10 +149,10 @@ async def test_a_persons_post_with_a_forged_ask_card_shows_nothing():
     write props; the bus's own test (an agent account), not the prefix, decides."""
     forged = dict(CARD, user_id=STRANGER)  # a person, not an agent account
     p = await slim.post(_asker(), post_of(forged))
-    assert "ask" not in p
+    assert "ask_card" not in p
     # and one whose author is no agent at all
     p = await slim.post(_asker(), post_of(dict(CARD, user_id="x" * 26)))
-    assert "ask" not in p
+    assert "ask_card" not in p
 
 
 @pytest.mark.asyncio
@@ -166,10 +166,10 @@ async def test_a_reaction_that_does_not_map_to_an_answer_chooses_nothing():
             {"title": "Answer", "value": "\U0001F44D = yes to the decision \u00b7 \U0001F44E = no \u00b7 or reply in this thread",
              "short": False}]}]}
     p = await slim.post(_asker(), _reacted(plain, (HUMAN, "thumbsup")))
-    assert p["ask"]["decision"] == "Merge #4."
-    assert "answers" not in p["ask"] and "chosen" not in p["ask"]
+    assert p["ask_card"]["decision"] == "Merge #4."
+    assert "answers" not in p["ask_card"] and "chosen" not in p["ask_card"]
     # but the reader must see that it was approved: answer, as the live event says it
-    assert p["ask"]["answer"] == "yes"
+    assert p["ask_card"]["answer"] == "yes"
 
 
 @pytest.mark.asyncio
@@ -181,15 +181,15 @@ async def test_a_keycap_picks_its_alternative():
             {"title": "Answer", "value": "1\uFE0F\u20E3 = A \u00b7 2\uFE0F\u20E3 = B \u00b7 3\uFE0F\u20E3 = C \u00b7 or reply in this thread",
              "short": False}]}]}
     p = await slim.post(_asker(), _reacted(three, (HUMAN, "two")))
-    assert p["ask"]["answers"] == ["A", "B", "C"]
-    assert p["ask"]["chosen"] == "B"
+    assert p["ask_card"]["answers"] == ["A", "B", "C"]
+    assert p["ask_card"]["chosen"] == "B"
 
 
 @pytest.mark.asyncio
 async def test_a_reactions_author_and_whether_it_is_a_trusted_human():
     p = await slim.post(_asker(), _reacted(CARD, (HUMAN, "thumbsup"), (STRANGER, "eyes")))
     # Mattermost's own emoji_name, as the Reaction carries it
-    assert p["ask"]["reactions"] == [
+    assert p["reactions"] == [
         {"emoji": "thumbsup", "author": "dembaca", "trusted_human": True},
         {"emoji": "eyes", "author": "someone", "trusted_human": False}]
 
@@ -205,7 +205,7 @@ async def test_no_ask_fields_when_the_author_cannot_be_classified():
 
     broken.agents = boom  # type: ignore[method-assign]
     p = await slim.post(broken, post_of(CARD))
-    assert "ask" not in p
+    assert "ask_card" not in p
 
 
 PLAIN = {"id": ASK_ID, "channel_id": "c1", "user_id": ASKER, "create_at": 1,
@@ -222,16 +222,106 @@ async def test_a_decision_without_alternatives_reports_yes_or_no():
     """The coordinator's addition: a plain approval has no `chosen`, yet a reader
     must see the verdict — `answer` is the same field the live event carries."""
     p = await slim.post(_asker(), _reacted(PLAIN, (HUMAN, "thumbsup")))
-    assert p["ask"]["answer"] == "yes" and "chosen" not in p["ask"]
+    assert p["ask_card"]["answer"] == "yes" and "chosen" not in p["ask_card"]
     p = await slim.post(_asker(), _reacted(PLAIN, (HUMAN, "thumbsdown")))
-    assert p["ask"]["answer"] == "no" and "chosen" not in p["ask"]
+    assert p["ask_card"]["answer"] == "no" and "chosen" not in p["ask_card"]
     for uid in (STRANGER, ASKER):  # an untrusted person, and the asking agent
         p = await slim.post(_asker(), _reacted(PLAIN, (uid, "thumbsup")))
-        assert "answer" not in p["ask"] and "chosen" not in p["ask"], uid
+        assert "answer" not in p["ask_card"] and "chosen" not in p["ask_card"], uid
 
 
 @pytest.mark.asyncio
 async def test_a_reaction_that_is_no_answer_leaves_answer_out():
     """A remark emoji (👀) neither approves nor chooses."""
     p = await slim.post(_asker(), _reacted(PLAIN, (HUMAN, "eyes")))
-    assert "answer" not in p["ask"] and "chosen" not in p["ask"]
+    assert "answer" not in p["ask_card"] and "chosen" not in p["ask_card"]
+
+
+RESULT_POST = {"id": "r" * 26, "channel_id": "c1", "user_id": ASKER, "create_at": 1,
+               "message": "`RESULT` · done", "props": {"a2a": {"v": 1, "kind": "result"}}}
+
+
+@pytest.mark.asyncio
+async def test_reactions_show_on_any_post_not_only_an_ask():
+    """Issue #30 names this too: a trusted human's 👍 on a RESULT must not be invisible."""
+    p = await slim.post(_asker(), _reacted(RESULT_POST, (HUMAN, "thumbsup")))
+    assert p["reactions"] == [{"emoji": "thumbsup", "author": "dembaca", "trusted_human": True}]
+    assert p["reactions_total"] == 1
+    assert "ask_card" not in p  # a RESULT carries no card
+
+
+@pytest.mark.asyncio
+async def test_reactions_are_capped_with_the_trusted_first_and_counted():
+    """200 reactions used to cost 13 KB on every read; the cap keeps the people who
+    answered and says how many there were (the coordinator's first finding)."""
+    from mattermost_ai_agent_bus.model import Reaction
+    many = [Reaction(user_id=f"{i:026d}", post_id=RESULT_POST["id"], emoji_name="eyes",
+                     create_at=i) for i in range(200)]
+    p = await slim.post(_asker(), _reacted(RESULT_POST, (HUMAN, "thumbsup")))
+    raw = dict(RESULT_POST, metadata={"reactions": [
+        {"user_id": r.user_id, "post_id": r.post_id, "emoji_name": r.emoji_name,
+         "create_at": r.create_at} for r in many] + [
+        {"user_id": HUMAN, "post_id": RESULT_POST["id"], "emoji_name": "thumbsup", "create_at": 999}]})
+    p = await slim.post(_asker(), post_of(raw))
+    assert len(p["reactions"]) == slim.REACTIONS_MAX
+    assert p["reactions_total"] == 201
+    assert p["reactions"][0]["author"] == "dembaca"  # a trusted human comes first
+    assert len(json.dumps(p)) < 3000  # the budget holds
+
+
+@pytest.mark.asyncio
+async def test_the_newest_trusted_answer_wins():
+    """Two contradicting reactions by the same human: the newest counts, as the live
+    event does — not the first in the list."""
+    raw = dict(PLAIN)
+    raw["metadata"] = {"reactions": [
+        {"user_id": HUMAN, "post_id": ASK_ID, "emoji_name": "thumbsdown", "create_at": 50},
+        {"user_id": HUMAN, "post_id": ASK_ID, "emoji_name": "thumbsup", "create_at": 60}]}
+    p = await slim.post(_asker(), post_of(raw))
+    assert p["ask_card"]["answer"] == "yes"
+    raw["metadata"] = {"reactions": [
+        {"user_id": HUMAN, "post_id": ASK_ID, "emoji_name": "thumbsup", "create_at": 50},
+        {"user_id": HUMAN, "post_id": ASK_ID, "emoji_name": "thumbsdown", "create_at": 60}]}
+    p = await slim.post(_asker(), post_of(raw))
+    assert p["ask_card"]["answer"] == "no"
+
+
+@pytest.mark.asyncio
+async def test_a_post_that_is_not_an_ask_shows_no_card():
+    """The `p.kind == a2a.ASK` filter: props alone must not make a card, even from an
+    agent. Without this filter every post with attachments would show one."""
+    card = CARD["props"]["attachments"]
+    fake_ask = dict(RESULT_POST)
+    # an ask's card on a post that says it is a result: the kind decides, not the props
+    fake_ask["props"] = {"a2a": {"v": 1, "kind": "result"}, "attachments": card}
+    p = await slim.post(_asker(), post_of(fake_ask))
+    assert "ask_card" not in p
+
+
+@pytest.mark.asyncio
+async def test_a_long_decision_is_cut_and_points_at_the_thread():
+    """The coordinator's first finding: an unbounded decision cost 20 KB per post."""
+    long = dict(PLAIN)
+    long["props"] = {"a2a": {"v": 1, "kind": "ask"}, "attachments": [{
+        "title": "Merge?", "fields": [{"title": "Decision", "value": "x" * 5000, "short": False}]}]}
+    p = await slim.post(_asker(), post_of(long))
+    assert len(p["ask_card"]["decision"]) <= slim.BODY_MAX + 100
+    assert f"get_thread {ASK_ID}" in p["ask_card"]["decision"]
+
+
+@pytest.mark.asyncio
+async def test_alternatives_written_as_data_beat_the_display_line():
+    """An alternative that is itself "yes", or holds a " · ", breaks the Answer line's
+    parse. The server now writes the list into the props; that wins (issue #30)."""
+    tricky = dict(PLAIN)
+    tricky["props"] = {"a2a": {"v": 1, "kind": "ask"}, "ask_answers": ["yes", "no thanks · later"],
+                       "attachments": [{"title": "Merge?", "fields": [
+                           {"title": "Decision", "value": "Merge it.", "short": False},
+                           {"title": "Answer", "value": "\U0001F44D = yes \u00b7 \U0001F44E = no thanks \u00b7 later",
+                            "short": False}]}]}
+    p = await slim.post(_asker(), _reacted(tricky, (HUMAN, "thumbsup")))
+    assert p["ask_card"]["answers"] == ["yes", "no thanks · later"]
+    assert p["ask_card"]["chosen"] == "yes"
+    # an ask posted before the props carried the list keeps the parse
+    old = await slim.post(_asker(), post_of(CARD))
+    assert old["ask_card"]["answers"] == ["go", "no-go"]

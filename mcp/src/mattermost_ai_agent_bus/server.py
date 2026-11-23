@@ -2181,6 +2181,10 @@ async def _post_ask(client: ChatPort, me: Any, *, to: str, head: str, need: str,
     props = (attachment_props(fields, fallback=f"{to}: {_one_line(need)}", urgent=blocking,
                               title=head)
              | (a2a.props(kind=a2a.ASK) or {}))
+    if answers:
+        # RT-6.11: the alternatives as data too, so a reader need not parse the
+        # Answer line (a text that is itself "yes" or holds a " · " broke that)
+        props["ask_answers"] = list(answers)
     stats.record("post", chars=len(text))
     # RT-6.31 step 5: the debug card after the ask's own, about the thread it came from.
     shown = await _with_debug(client, me.id, props, channel_id="", root_id="", thread=root_id,
@@ -2350,8 +2354,8 @@ async def stats_report(versions: int = 3) -> str:
 async def get_thread(post_id: str, raw: bool = False) -> str:
     """Fetch a thread (root + replies, oldest first) for post_id.
 
-    Slim posts {id, root_id, channel, author, at, message, files}; an agent's
-    ask adds `ask` {need, decision, answers, reactions, answer, chosen}. raw=true: all.
+    Slim posts {id, root_id, channel, author, at, message, files, reactions}; an
+    agent's ask adds `ask_card`. raw=true: all.
     """
     if bad := _bad_id(post=post_id or "-"):
         return _refused("get_thread", bad)
