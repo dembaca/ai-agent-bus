@@ -35,9 +35,11 @@ if TYPE_CHECKING:
 BODY_MAX = 2000
 
 
-# A cut's note as this module writes it, whatever unit it used: the number is the
-# text's original size, and a second cut must report that, not its own input.
-_CUT_TOTAL = re.compile(r"… \(cut, (\d+) (?:chars|bytes) in all;")
+# A cut's note as this module writes it, anchored at the **end** of the text: an author
+# who writes "… (cut, 999999 bytes in all;" into a post must not have it read as the
+# note, and a real note is always the last line. The unit is kept as found, since a
+# note from _cut_bytes counts bytes and one from cut() characters.
+_CUT_TOTAL = re.compile(r"… \(cut, (\d+) (chars|bytes) in all;[^\n]*\)\s*\Z")
 
 
 def cut(text: str, post_id: str) -> str:
@@ -51,9 +53,9 @@ def cut(text: str, post_id: str) -> str:
     (issue #42)."""
     if len(text) <= BODY_MAX or not post_id:
         return text
-    total = len(text)
+    total, unit = len(text), "chars"
     if (seen := _CUT_TOTAL.search(text)):
-        total = max(total, int(seen.group(1)))
+        total, unit = max(total, int(seen.group(1))), seen.group(2)
     head = text[:BODY_MAX]
     floor = BODY_MAX * 4 // 5  # a boundary further back drops too much
     end = head.rfind("\n", floor)
@@ -61,7 +63,7 @@ def cut(text: str, post_id: str) -> str:
         end = max(head.rfind(" ", floor), head.rfind("\t", floor))
     if end > 0:
         head = head[:end]
-    return f"{head.rstrip()}\n… (cut, {total} chars in all; get_thread {post_id})"
+    return f"{head.rstrip()}\n… (cut, {total} {unit} in all; get_thread {post_id})"
 
 
 def _when(ms: int | None) -> str:

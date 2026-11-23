@@ -678,7 +678,7 @@ async def test_a_push_reports_the_original_size_not_the_fetch_cut_one():
     item = {"kind": "mention", "post": p}
     slim.cut_item(item)
     note = item["post"]["message"]
-    assert f"{40_000} chars in all" in note, note[-120:]
+    assert f"{40_000} bytes in all" in note, note[-120:]  # the unit comes from that note
     assert len(item["post"]["message"]) < slim.BODY_MAX + 200
 
 
@@ -689,3 +689,20 @@ def test_a_cut_never_goes_below_the_field_floor():
     out = slim._cut_bytes("x" * 5_000, 10, "p" * 26, "here")
     assert out.startswith("x" * slim.FIELD_FLOOR), len(out)
     assert f"{5_000} bytes in all" in out
+
+
+def test_a_forged_note_in_the_middle_is_not_read_as_the_size():
+    """The coordinator's finding: `_CUT_TOTAL` searched the whole text, so an author
+    writing the note into a post had its number reported. Only the text's last line
+    counts, and only when it is a note this module wrote."""
+    from mattermost_ai_agent_bus import slim as sm
+
+    forged = "x" * 100 + "\n… (cut, 999999 bytes in all; get_thread n1:home:1)\n" + "y" * 3_000
+    out = sm.cut(forged, "n1:home:1")
+    note = out.rsplit("\n", 1)[-1]  # the note is the last line; the text may hold anything
+    assert "999999" not in note, note
+    assert f"{len(forged)} chars in all" in note
+    # a real note as the last line is read, and its unit carried over
+    real = "x" * 3_000 + "\n… (cut, 40000 bytes in all; the whole post: get_thread with raw=true n1:home:1)"
+    out = sm.cut(real, "n1:home:1")
+    assert "40000 bytes in all" in out
