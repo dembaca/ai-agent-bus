@@ -65,19 +65,18 @@ def test_the_description_names_owner_trusts_and_a_cut():
 async def test_peer_and_foreign_agents(caplog):
     """RT-6.16 step 1: a peer's owner and trusted humans are all mine; the
     relay (B trusts Carol, I don't), another owner's agent, one without
-    `for @` and one with a cut list are foreign. An unreadable description
-    fails open: a peer, logged."""
+    `for @` and one with a cut list are foreign. In doubt, foreign (ADR-016):
+    one never read is foreign at once, logged."""
     with caplog.at_level("INFO"):
         assert await _classes(_chat()) == [
-            "agent", "foreign", "foreign", "foreign", "foreign", "agent"]
-    assert "counts as a peer" in caplog.text
+            "agent", "foreign", "foreign", "foreign", "foreign", "foreign"]
+    assert "counts as foreign: its owner is not readable" in caplog.text
 
 
 @pytest.mark.parametrize("change", [
     {"descriptions": DESCRIPTIONS | {BOT: "Registered via agent-registrar"}},  # no `for @` on mine
-    {"descriptions": {k: v for k, v in DESCRIPTIONS.items() if k != BOT}},     # mine unreadable
     {"trusted": {}},                                                            # no trusted humans
-], ids=["no-owner-on-my-bot", "my-description-unreadable", "no-trusted-humans"])
+], ids=["no-owner-on-my-bot", "no-trusted-humans"])
 async def test_parity_every_agent_is_a_peer(change):
     """ADR-001 activation: the split is off, every bus agent is an agent, as today."""
     assert await _classes(_chat(**change)) == ["agent"] * len(ORDER)
@@ -262,6 +261,67 @@ async def test_my_unbound_bot_turns_the_split_off_and_warns(monkeypatch):
 
 
 async def test_parity_without_any_owner_information():
-    """No description and no native owner anywhere: every agent a peer, as today."""
-    assert await _classes(_chat(descriptions={})) == ["agent"] * len(ORDER)
-    assert await owners.read(_chat(descriptions={}), PEER) is None
+    """Every bot readable, none with an owner (no registrar writes one): every
+    agent a peer, as today."""
+    empty = {u: "" for u in [BOT, *ORDER]}
+    assert await _classes(_chat(descriptions=empty)) == ["agent"] * len(ORDER)
+
+
+async def test_in_doubt_foreign_when_nothing_can_be_read():
+    """ADR-016: my own bot unreadable keeps the split on, and every agent
+    whose owner cannot be read is foreign: no task binds, nothing fails open."""
+    chat = _chat(descriptions={})
+    assert await owners.read(chat, PEER) is None
+    assert await _classes(chat) == ["foreign"] * len(ORDER)
+    assert not await owners.peer(chat, PEER)
+
+
+async def test_a_short_outage_keeps_the_owner_last_read(monkeypatch):
+    """RT-6.16: within OWNER_GRACE_SEC of the last good read an unreadable
+    agent keeps that owner, mine too: a peer stays a peer, coordination goes on."""
+    clock = [1000.0]
+    monkeypatch.setattr(owners, "monotonic", lambda: clock[0])
+    chat = _chat()
+    assert await _classes(chat) == ["agent", "foreign", "foreign", "foreign", "foreign", "foreign"]
+    chat.descriptions = {}  # Mattermost fails for everyone
+    clock[0] += owners.OWNER_GRACE_SEC - 1
+    assert await _classes(chat) == ["agent", "foreign", "foreign", "foreign", "foreign", "foreign"]
+    assert await owners.peer(chat, PEER)
+
+
+async def test_a_long_outage_makes_every_agent_foreign(monkeypatch, caplog):
+    """RT-6.16: past OWNER_GRACE_SEC the owner last read no longer holds: the
+    peer is foreign, and the split stays on although my own bot is unreadable."""
+    clock = [1000.0]
+    monkeypatch.setattr(owners, "monotonic", lambda: clock[0])
+    chat = _chat()
+    assert (await _classes(chat))[0] == "agent"
+    chat.descriptions = {}
+    clock[0] += owners.OWNER_GRACE_SEC
+    with caplog.at_level("INFO"):
+        assert await _classes(chat) == ["foreign"] * len(ORDER)
+    assert not await owners.peer(chat, PEER)
+    assert "owner split stays on" in caplog.text
+    chat.descriptions = dict(DESCRIPTIONS)  # readable again: a peer at once
+    assert (await _classes(chat))[0] == "agent"
+
+
+async def test_trusted_humans_unreadable_keep_the_split_on(monkeypatch):
+    """ADR-016: when my trusted humans cannot be read, the names last read
+    count, else the configured ones: never every agent a peer."""
+    class Failing(FakeChat):
+        fail = False
+
+        async def trusted_humans(self):
+            if self.fail:
+                raise RuntimeError("503")
+            return await super().trusted_humans()
+
+    chat = Failing(names=NAMES, agents=AGENTS, trusted={ALICE: "alice", BOB: "bob"},
+                   descriptions=DESCRIPTIONS)
+    assert (await _classes(chat))[1] == "foreign"
+    chat.fail = True
+    assert await owners.foreign(chat, {RELAY}) == {RELAY: "alice"}  # the last names read
+    owners.reset()
+    monkeypatch.setenv("MM_TRUSTED_HUMANS", "alice,bob")
+    assert await owners.foreign(chat, {RELAY}) == {RELAY: "alice"}  # the configured ones

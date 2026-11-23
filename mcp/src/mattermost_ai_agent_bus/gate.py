@@ -60,7 +60,8 @@ def author_class(post: Post, trusted: Mapping[str, str], agents: set[str],
 
 async def author_classes(client: ChatPort, posts: Sequence[Post]) -> list[str]:
     """The class of each post's author; raises when the accounts cannot be
-    read. Whether an agent is foreign never raises: unsure, it is a peer."""
+    read. Whether an agent is foreign never raises: in doubt, it is foreign
+    (ADR-016, after owners.OWNER_GRACE_SEC)."""
     trusted = await client.trusted_humans()
     agents = await client.agents({p.user_id for p in posts} - {""})
     foreign = await owners.foreign(client, agents)

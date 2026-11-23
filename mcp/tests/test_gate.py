@@ -44,6 +44,10 @@ class Bus:
         async def api(method, path, json=None, **_):
             if path == "/api/v4/users/ids":
                 return [USERS[i] for i in json if i in USERS]
+            if path == f"/api/v4/users/{ME}":
+                # My own bot, read without an owner: the owner split is off
+                # (ADR-001 activation), not left in doubt (ADR-016).
+                return {"id": ME, "username": "agent-me", "is_bot": True}
             if path.startswith("/api/v4/posts/"):  # a reply's root
                 return {"id": path.rsplit("/", 1)[1]}
             if path == "/api/v4/posts":

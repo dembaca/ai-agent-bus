@@ -11,7 +11,7 @@ import pytest
 
 from mattermost_ai_agent_bus import a2a, asks, channel, hookapi, lease, mandate, remind, server, stall, stats, tasks
 from mattermost_ai_agent_bus.client import post_of, reaction_of
-from mattermost_ai_agent_bus.model import Post, RosterEntry, Thread
+from mattermost_ai_agent_bus.model import Me, Post, RosterEntry, Thread
 from mattermost_ai_agent_bus.websocket_inbox import WebSocketInbox
 
 from fakes import FakeEvents
@@ -65,6 +65,17 @@ class Client:
 
     async def agents(self, ids):
         return {i for i in ids if i in (ME, BOB, EVE)}
+
+    # Every bot read without an owner: the owner split is off (ADR-001
+    # activation), not left in doubt (ADR-016, RT-6.16).
+    async def get_me(self):
+        return Me(id=ME, username="agent-coord")
+
+    async def bot_description(self, user_id):
+        return ""
+
+    async def agent_owner(self, user_id):
+        return ""
 
     async def reactions(self, post_id):
         return [reaction_of(r) for r in self.reacts.get(post_id, [])]

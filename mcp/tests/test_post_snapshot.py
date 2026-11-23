@@ -61,6 +61,14 @@ class _Client:
     async def get_me(self):
         return model.Me(id=ME, username="agent-x")
 
+    # Every bot read without an owner: the owner split is off (ADR-001
+    # activation), not left in doubt (ADR-016, RT-6.16).
+    async def bot_description(self, user_id):
+        return ""
+
+    async def agent_owner(self, user_id):
+        return ""
+
     async def list_recent(self, **_):
         return [_wrap(p) for p in POSTS]
 

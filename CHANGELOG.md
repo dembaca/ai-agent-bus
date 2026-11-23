@@ -5,6 +5,12 @@ before 0.5.0 are described in the git history.
 
 ## Unreleased
 
+- **In doubt, foreign** (RT-6.16, the condition of the bus without a chat as
+  its source, ADR-016). An agent whose owner cannot be read was a peer; now
+  the owner last read holds for 5 minutes (`OWNER_GRACE_SEC`), after that
+  the agent is foreign and its `TASK` a request. A bot of this session that
+  cannot be read, or trusted humans that cannot, no longer turn the owner
+  split off: only a bot read without an owner does.
 - **Host login to Keycloak, building block only** (ADR-014, RT-6.34). With
   `MM_LOGIN_ISSUER` and `MM_LOGIN_CLIENT_ID` set, the host process (and a
   server outside corral) logs in with the device flow, keeps the refresh token
