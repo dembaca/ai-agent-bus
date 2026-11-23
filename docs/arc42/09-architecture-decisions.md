@@ -24,7 +24,7 @@ code does today and point here where a decision will change them.
 | ADR-013 | The channel banner shows what waits: the home's 👑 server writes it on a change only, at most once a minute; a stall in red, asks waiting on a human in amber, else the crown and the agents by status; display only, never input; a human's banner is left alone and told to its human; without the licence or the permission everything stays as today; later the 👑 prefix only on asks and routings | Withdrawn (2026-11-16): depends on the Mattermost edition and a permission setting; the header carries the rare facts instead | — |
 | ADR-014 | Agent-to-agent traffic over NATS JetStream; Mattermost stays the humans' chat behind one central adapter per tenant; agents log in through Keycloak (device flow) and a login service issues 15-minute NATS credentials bound to the host's own key; a clean-room build from Cotal's protocol description with a message format of the bus's own (no wire compatibility with Cotal); tools, hook API and bus logic unchanged behind the ports; parallel operation switched per home channel, the registrar shut down last; the sender NATS-native (last subject token, agents read only through push consumers the login service makes, no signed envelope) | Accepted (2026-11-22) by the owner, with the review's recommendations; three later points open (below), none of them blocks the first NATS code; not built | — |
 | ADR-015 | Operator web console: a web application for the people who look after the agents, with the agents by state, who trusts and who coordinates whom, the bus's statistics as charts, and the open asks answered beside their thread; no chat. It stands alone on the bus on NATS, with Keycloak as its only login and no dependency on Mattermost (decided by the owner on 2026-11-23). Recommended: on NATS as the logged-in operator, with a credential of that person's own from the login service, so NATS says who answered and the asking agent's server still decides whether it approves | Proposed (2026-11-23), not accepted, not built; eight points open for the owner, three of them decided on 2026-11-23 (ADR-016); it needs parts of the NATS build that do not exist yet | — |
-| ADR-016 | Der Bus ohne Chat als Quelle (the bus without a chat as its source; written in German): Keycloak is the root of identity, keyed by `sub`, with chat accounts bound to it per product; a channel directory on NATS that only the login service writes (name, public or not, members, a binding per chat) replaces Mattermost membership behind `callout.Channels`; one bridge per chat product vouches for its humans, and later a Keycloak login on NATS itself; the login service attests trust lists; agents need no chat. Decided by the owner on 2026-11-23: the directory, Mattermost membership behind a replaceable interface until then, and for the console reading only, a Python server and what an operator sees | Accepted (2026-11-23) by the owner, not built; its nine open points decided by the owner the same day; it changes ADR-014 points 10, 11 and 16 | — |
+| ADR-016 | Der Bus ohne Chat als Quelle (the bus without a chat as its source; written in German): Keycloak is the root of identity, keyed by `sub`, with chat accounts bound to it per product; a channel directory on NATS that only the login service writes (name, public or not, members, a binding per chat) replaces Mattermost membership behind `callout.Channels`; one bridge per chat product vouches for its humans, and later a Keycloak login on NATS itself; the login service attests trust lists; agents need no chat. Decided by the owner on 2026-11-23: the directory, Mattermost membership behind a replaceable interface until then, and for the console reading only, a Python server and what an operator sees | Accepted (2026-11-23) by the owner, not built; its nine open points decided by the owner the same day; it changes ADR-014 points 6, 10, 11 and 16 | — |
 
 **Terms.** An agent's **home** is the first entry of `MM_PROJECT_CHANNEL`,
 else `MM_CHANNEL`: exactly one per agent. Its **guest channels** are the
@@ -4417,13 +4417,11 @@ bestimmt weiter der Chat, und beides muss nicht übereinstimmen
 eines Agenten (RISK-17). Im MCP-Server ändert sich, woher Eigentümer und
 vertraute Menschen kommen (`owners.py`, `gate.py`), nicht die Regeln der
 Entscheidungen über Vertrauen und Eigentümer (ADR-001, ADR-003); die 17
-MCP-Werkzeuge behalten Namen und Schema. Die NATS-Entscheidung trägt seit der Annahme an drei Stellen
-einen Vermerk, was nun gilt: wer für einen Menschen bürgt, das Bot-Konto
-je Agent und das Token des Eigentümers im Presence-Subject (ADR-014
-Punkte 10, 11 und 16). Ihr Punkt zur Anmeldung, nach dem der Eigentümer
-`preferred_username` ist und gegen Mattermost geprüft wird (ADR-014
-Punkt 6), und die Konsolen-Entscheidung (ADR-015 Punkt 4) beschreiben
-weiter den Stand bis zum Bau. Bausteinsicht,
+MCP-Werkzeuge behalten Namen und Schema. Die NATS-Entscheidung trägt seit der Annahme an vier Stellen
+einen Vermerk, was nun gilt: der Schlüssel eines Menschen, wer für einen
+Menschen bürgt, das Bot-Konto je Agent und das Token des Eigentümers im
+Presence-Subject (ADR-014 Punkte 6, 10, 11 und 16). Bis zum Bau tut der
+Code, was dort bisher stand. Bausteinsicht,
 Laufzeitsicht und Verteilungssicht (Abschnitte 5, 6 und 7) ändern sich
 mit dem Bau, je Szenario mit einem Test, nicht vorher; die Website und
 `CHANGELOG.md`, wenn eine Version etwas davon ausliefert.
