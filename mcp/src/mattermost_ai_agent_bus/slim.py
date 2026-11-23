@@ -18,7 +18,7 @@ import time
 from collections.abc import Mapping, Sequence
 from typing import TYPE_CHECKING, Any
 
-from . import files
+from . import files, asks, a2a
 
 if TYPE_CHECKING:
     from .port import ChatPort
@@ -55,8 +55,10 @@ def _when(ms: int | None) -> str:
 async def _names(client: ChatPort, posts: Sequence[Post]) -> tuple[dict[str, str], dict[str, str]]:
     users: dict[str, str] = {}
     channels: dict[str, str] = {}
+    ids = {p.user_id for p in posts} - {""}
+    ids |= {r.user_id for p in posts for r in p.reactions} - {""}  # RT-6.11: a reactor's name too
     try:
-        users = await client.usernames({p.user_id for p in posts} - {""})
+        users = await client.usernames(ids)
     except Exception:  # noqa: BLE001 — names are a convenience; ids still identify
         pass
     for cid in {p.channel_id for p in posts} - {""}:
@@ -67,7 +69,102 @@ async def _names(client: ChatPort, posts: Sequence[Post]) -> tuple[dict[str, str
     return users, channels
 
 
-def _one(p: Post, users: dict[str, str], channels: dict[str, str]) -> dict[str, Any]:
+async def _facts(client: ChatPort, posts: Sequence[Post],
+                 users: dict[str, str]) -> dict[str, Any]:
+    """What a slim post carries beyond its text (RT-6.11, issue #30): per post id
+    {"reactions"?} for every post, plus {"ask_card"?} for an ask from an agent.
+
+    `reactions` is Mattermost's own metadata, so it holds for any post: a 👍 on a
+    RESULT is as visible as one on an ask. It is capped (REACTIONS_MAX) with the
+    trusted humans first, so a crowd cannot push the people who answered out of
+    a post's budget, and `reactions_total` says how many there were.
+
+    `ask_card` needs the author to be an agent by the bus's own test
+    (`gate.author_classes`: AGENT or FOREIGN), never a name prefix a person
+    could carry: anyone may write a post's props, so a card on a person's post
+    is no ask and shows nothing. Its `decision` is cut like a message. `answer`
+    and `chosen` count only a trusted human's reaction; where two contradict,
+    the newest wins, as the live reaction event does."""
+    from . import gate
+
+    try:
+        trusted = await client.trusted_humans()
+    except Exception:  # noqa: BLE001 — no names: no flag, no chosen. Reactions still show.
+        trusted = {}
+    out: dict[str, Any] = {}
+    for p in posts:
+        if p.reactions:
+            out[p.id] = _reactions(p, users, trusted)
+    asks_only = [p for p in posts if p.kind == a2a.ASK]
+    if not asks_only:
+        return out
+    try:
+        classes = await gate.author_classes(client, asks_only)
+    except Exception:  # noqa: BLE001 — unsure whether agent or person: no card at all
+        return out
+    for p, cls in zip(asks_only, classes, strict=True):
+        if cls not in gate.AGENTS:
+            continue  # a person's post, whatever its props claim
+        card = a2a.ask_card(p)
+        facts: dict[str, Any] = out.setdefault(p.id, {})
+        if p.title:
+            facts["need"] = cut(p.title, p.id)
+        if card.get("decision"):
+            facts["decision"] = cut(card["decision"], p.id)
+        answers = [cut(a, p.id) for a in a2a.ask_answer_list(p)]
+        if answers:
+            facts["answers"] = answers
+        # the newest trusted human's answer wins, as the live event counts it. The sort
+        # is stable, so reactions in the same millisecond keep Mattermost's own order:
+        # that is the order a reader of the card would have seen (RT-6.11). An answer
+        # past APPROVAL_SEC approves nothing and is flagged `expired`, as the live
+        # event flags it (the verdict stays readable, the reader is told)
+        for r in sorted(p.reactions, key=lambda r: r.create_at, reverse=True):
+            if r.user_id not in trusted:
+                continue
+            if (choice := asks.choice_of(r.emoji_name)) is not None:
+                # a keycap the ask never offered expresses nothing: keep looking at
+                # older reactions rather than letting it end the search (a 👍 on a
+                # yes/no ask stays readable when a stray keycap follows)
+                if not answers or not 0 < choice <= len(answers):
+                    continue
+                facts["answer"] = "yes" if choice == 1 else "no"
+                facts["chosen"] = answers[choice - 1]
+            elif (answer := asks.answer_of(r.emoji_name)) is not None:
+                facts["answer"] = answer
+                if len(answers) == 2:
+                    facts["chosen"] = answers[0 if answer == "yes" else 1]
+            else:
+                continue
+            if p.edit_at and r.create_at < p.edit_at:
+                # The card was edited after this reaction: what it approved is not what
+                # the human saw. Keep the fact that an answer exists, drop the verdict.
+                for k in ("answer", "chosen"):
+                    facts.pop(k, None)
+                facts["card_edited_after"] = True
+            elif r.create_at - p.create_at >= asks.APPROVAL_SEC * 1000:
+                facts["expired"] = True  # RT-6.11: a late answer approves nothing
+            break
+    return {pid: facts for pid, facts in out.items() if facts}
+
+
+# How many reactions one slim post carries: enough to see who answered, small
+# enough that a popular post costs every turn the same (200 reactions were 13 KB).
+REACTIONS_MAX = 8
+
+
+def _reactions(p: Post, users: dict[str, str], trusted: Mapping[str, str]) -> dict[str, Any]:
+    """A post's reactions, the trusted humans' first, at most REACTIONS_MAX, with
+    the count of all of them (RT-6.11)."""
+    rows = [{"emoji": r.emoji_name, "author": users.get(r.user_id) or r.user_id,
+             "trusted_human": r.user_id in trusted} for r in p.reactions]
+    kept = ([row for row in rows if row["trusted_human"]]
+            + [row for row in rows if not row["trusted_human"]])[:REACTIONS_MAX]
+    return {"reactions": kept, "reactions_total": len(rows)}
+
+
+def _one(p: Post, users: dict[str, str], channels: dict[str, str],
+         facts: Mapping[str, Any] | None = None) -> dict[str, Any]:
     out: dict[str, Any] = {"id": p.id}
     if p.root_id:
         out["root_id"] = p.root_id
@@ -83,6 +180,14 @@ def _one(p: Post, users: dict[str, str], channels: dict[str, str]) -> dict[str, 
         out["replies"] = p.reply_count
     if p.files:
         out["files"] = [files.hint(f) for f in p.files]  # RT-6.23: get_file fetches one
+    if facts and p.id in facts:
+        got = facts[p.id]
+        if got.get("reactions"):
+            out["reactions"] = got["reactions"]  # RT-6.11: who answered, on any post
+            out["reactions_total"] = got["reactions_total"]
+        card = {k: v for k, v in got.items() if k not in ("reactions", "reactions_total")}
+        if card:
+            out["ask_card"] = card  # what a 👍 approves; `ask` is the ask's id elsewhere
     return out
 
 
@@ -91,7 +196,8 @@ async def posts(client: ChatPort, items: Sequence[Post],
     if drop_system:
         items = [p for p in items if not p.type]
     users, channels = await _names(client, items)
-    return [_one(p, users, channels) for p in items]
+    facts = await _facts(client, items, users)
+    return [_one(p, users, channels, facts) for p in items]
 
 
 async def post(client: ChatPort, item: Post) -> dict[str, Any]:

@@ -14,6 +14,7 @@ before 0.5.0 are described in the git history.
   Mattermost still decides membership and every anchor is today's name:
   no agent changes its name. The service's JetStream user needs the
   bucket's rights (`services/auth/nats-server.example.conf`).
+- **The endpoint file is named before it can exist** (RT-6.10). A SIGTERM in the server's start or in a `rekey` used to leave `endpoint-*.env` behind, because the exit work removes it through a name that was set afterwards. The file now carries its name from the moment it is on disk, in all three places (`hookapi._write_file`, `server._start_hook_api`, `hookapi.rekey`), and a rekey names both files while both are there. The sweep removes a leftover `endpoint-*.env.tmp` too: a signal between the temp file and its replace leaves one that nothing else would take (`bin/mm-agent-sweep.sh`).
 - **In doubt, foreign** (RT-6.16, the condition of the bus without a chat as
   its source, ADR-016). An agent whose owner cannot be read was a peer; now
   the owner last read holds for 5 minutes (`OWNER_GRACE_SEC`, at most 15
@@ -22,6 +23,9 @@ before 0.5.0 are described in the git history.
   cannot be read, or trusted humans that cannot, no longer turn the owner
   split off, nor do configured names none of which resolves: only a bot
   read without an owner does.
+  The crown election follows the same rule, on Mattermost and in a home
+  over NATS: trusted humans that cannot be resolved never let an agent of
+  another owner stand (RT-6.6, RT-6.38).
 
 - **The login service image is published to GHCR.** Each merge to `main` that
   changes `services/auth/` pushes `ghcr.io/dembaca/ai-agent-bus-auth:<commit SHA>`
@@ -45,6 +49,20 @@ before 0.5.0 are described in the git history.
   back (none when the presence subject is refused), and forgotten claims
   unsync the view until the replay is read.
   Needs: MM_NATS_HOMES alike on every agent of a home.
+- **An ask's decision text and the reactions that answered it are readable**
+  (issue #30, RT-6.11). A slim post from `get_thread`, `list_recent` or a push
+  carries `reactions` on any post, so a trusted human's thumbs-up on a RESULT
+  shows too: `{emoji, author, trusted_human}`, capped at eight with the trusted
+  humans first and `reactions_total` beside them. A post that is an ask from an
+  agent also carries `ask_card`: `need`, `decision` (what a 👍 approves, cut
+  like a message) and `answers` (the offered alternatives, by position), with
+  `answer` (yes or no) and, when alternatives were offered, `chosen` naming the
+  one picked, with `card_edited_after` when the card was edited after that answer — from a trusted human's newest reaction only, as the live event
+  counts it. `context` and `recommendation` stay out: they are not what was
+  approved. Whether the author is an agent is the bus's own account test
+  (`gate.author_classes`), never a name prefix a person could carry; anyone may
+  write a post's props, so `ask_card` is data a reader weighs, never an
+  approval. The hook API's own `_slim` is unchanged.
 - **Host login to Keycloak, building block only** (ADR-014, RT-6.34). With
   `MM_LOGIN_ISSUER` and `MM_LOGIN_CLIENT_ID` set, the host process (and a
   server outside corral) logs in with the device flow, keeps the refresh token

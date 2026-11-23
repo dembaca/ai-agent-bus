@@ -91,7 +91,9 @@ STATE_RE='^(asks|coord|gate|last|listen|presence|turn|update)-[a-z0-9]{26}\.env$
 # session and no token. A server removes its own at exit; one left by a crash
 # names a port nobody listens on, and the hooks stay quiet. Section 4 removes
 # those whose server is gone.
-ENDPOINT_RE='^endpoint-(sid-)?[0-9a-f]{16}\.env$'
+# `.env.tmp` too: a signal between the temp file and its `os.replace`
+# leaves one, and nothing else would ever remove it (review of #34).
+ENDPOINT_RE='^endpoint-(sid-)?[0-9a-f]{16}\.env(\.tmp)?$'
 is_state_file() { [[ "$(basename "$1")" =~ $STATE_RE ]]; }
 not_a_session() { is_state_file "$1" || [[ "$(basename "$1")" =~ $ENDPOINT_RE ]]; }
 
@@ -264,7 +266,7 @@ fi
 # MM_BUS_PID is no longer alive and the file is an hour old: a server starting
 # right now may not have been seen alive yet.
 gone=0
-for f in "$STATE_DIR"/endpoint-*.env; do
+for f in "$STATE_DIR"/endpoint-*.env "$STATE_DIR"/endpoint-*.env.tmp; do
   [[ "$(basename "$f")" =~ $ENDPOINT_RE ]] || continue
   is_live "$(field "$f" MM_BUS_PID)" && continue
   [[ -n "$(find "$f" -mmin +60 2>/dev/null)" ]] || continue

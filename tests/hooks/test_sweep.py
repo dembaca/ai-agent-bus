@@ -171,6 +171,26 @@ def test_endpoint_files_of_gone_servers_are_removed(run):
     assert not (d / gone).exists() and (d / fresh).exists() and (d / live).exists()
 
 
+def test_a_leftover_endpoint_temp_file_is_swept_too(run):
+    """A signal between writing `endpoint-*.env.tmp` and its `os.replace` leaves
+    the temp file behind, and nothing else would ever remove it: the sweep took
+    only `endpoint-*.env` (review of #34)."""
+    import time
+
+    d = run.state_dir
+    d.mkdir(parents=True, exist_ok=True)
+    tmp = d / f"endpoint-sid-{'d' * 16}.env.tmp"
+    tmp.write_text("MM_BUS_ENDPOINT=http://127.0.0.1:9\nMM_BUS_KEY=x\n"
+                   f"MM_BUS_PID={DEAD_PID}\n")
+    t = time.time() - 2 * 3600
+    os.utime(tmp, (t, t))
+
+    dry = run(SWEEP, MM_BOT_TOKEN=None)
+    assert "would remove" in dry.stdout and tmp.exists()
+    run(SWEEP, "--apply", MM_BOT_TOKEN=None)
+    assert not tmp.exists(), "the leftover temp file survived the sweep"
+
+
 def test_a_bot_kept_for_the_workspace_waits_out_the_grace_period_only(mm, run):
     """RT-6.10 step 7: a server without a session id marked its end and kept
     the bot; its harness (MM_SESSION_PID) lives on, so only the grace counts."""

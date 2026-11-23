@@ -30,7 +30,6 @@ from pathlib import Path
 from typing import TYPE_CHECKING
 
 from . import a2a, channel, lease, owners, session_file
-from .config import env
 from .model import Mark, Post
 
 log = logging.getLogger(__name__)
@@ -59,7 +58,7 @@ def author_class(post: Post, trusted: Mapping[str, str], agents: set[str],
     return FOREIGN if uid in foreign else AGENT
 
 
-TRUSTED_VARS = ("MM_TRUSTED_HUMAN_USER_IDS", "MM_TRUSTED_HUMANS", "MM_OWNER_USER_ID", "MM_OWNER")
+TRUSTED_VARS = owners.TRUSTED_VARS
 
 
 async def active(client: ChatPort) -> bool:
@@ -67,7 +66,7 @@ async def active(client: ChatPort) -> bool:
     are configured, whether or not a lookup resolved them now. In doubt on
     (ADR-016): a failed lookup leaves trusted_humans() empty, never the gate
     off."""
-    if any(env(v).strip() for v in TRUSTED_VARS):
+    if owners.configured():
         return True
     return bool(await client.trusted_humans())
 
