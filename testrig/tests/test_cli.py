@@ -139,11 +139,17 @@ def test_expect_loss_passes_a_fault_run_that_lost(bus_run, capsys):
 def test_a_passing_fault_that_delivers_nothing_exits_non_zero(bus_run, capsys):
     """`stall` lets every frame through, so a run under it must deliver some.
 
-    Delivering none means the path, not the fault (issue #47). The run is built
-    through `bus_run` with a stub that accepts each pushed frame and hands none
-    to the receiver: the relay counts it as forwarded, the run arrives nowhere —
-    exactly the case a built report could not show. `drop` is not covered here:
-    a `drop` run may lose everything by design and is a measurement.
+    Delivering none means the path, not the fault (issue #47). The run is **built
+    here**, not driven: the `bus_run` fixture replaces `bus_run` with a stand-in
+    that returns this `Run` to `cli.main`, so the test exercises the decision and
+    not a real run. Making it a real run — a stub that accepts each pushed frame
+    and hands none on — is the better test and has not been written; this one
+    pins the rule and says plainly what it is.
+
+    `drop` is not covered here: a `drop` run may lose everything by design and is
+    a measurement. `blackhole` and `halfopen` are not covered either: their
+    silence is deliberate, and a bus that fails to recover from it is a different
+    finding than a rig that measured nothing.
     """
     run = _run(loss=3, fault="stall", sent=3)
     run.received.clear()  # nothing arrived, though the fault lets it through

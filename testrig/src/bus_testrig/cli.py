@@ -41,11 +41,16 @@ from .proxy import KINDS, ProxyFault
 # The exit codes: 0 a run whose numbers can be compared, 1 a run that measured
 # a broken rig, 2 the rig could not start at all (no interpreter, an import).
 EXIT_OK = 0
-# The faults that do not discard: a run under one of these must deliver
-# something, or the path is broken rather than the fault doing its work. `drop`
-# and `cut` are not here: a `drop` run may lose everything by design, and a `cut`
-# is a dead transport that the bus recovers by backfill.
-PASSING_FAULTS = ("stall", "reorder", "duplicate", "blackhole", "halfopen")
+# The faults that pass every frame on but one of these: `stall` delays, `reorder`
+# swaps and `duplicate` repeats, so a run under them must deliver something — a
+# run that arrives nowhere is then the path, not the fault.
+#
+# Not here, each for its own reason: `drop` may lose everything by design and is
+# a measurement; `cut` is a dead transport the bus recovers by backfill;
+# `blackhole` and `halfopen` **stop delivery on purpose**, so silence is what they
+# are for, and a bus that does not recover from it is a different finding (the
+# review of #54).
+PASSING_FAULTS = ("stall", "reorder", "duplicate")
 
 EXIT_BAD_RUN = 1
 EXIT_NO_RUN = 2
@@ -140,9 +145,11 @@ def _untrustworthy(run: runner.Run, *, expect_loss: bool = False) -> bool:
       and without this case a faulted run with a broken sender passed (follow-up
       review point 2);
     * a baseline (`--fault none`) that lost a frame or closed the connection;
-    * a fault that lets traffic through and a run that arrived nowhere — the path
-      carried nothing, so the number is about the path and not the fault
-      (issue #47); `drop` is excluded, because discarding is its job.
+    * `stall`, `reorder` or `duplicate` — faults that pass every frame on — and a
+      run that arrived nowhere: the path carried nothing, so the number is about
+      the path and not the fault (issue #47). `drop`, `cut`, `blackhole` and
+      `halfopen` are excluded: discarding, a dead transport and a deliberate
+      silence are not the same finding.
 
     A faulted run's loss is its measurement and not a failure by itself: `drop`
     is supposed to lose. `expect_loss` is how a caller says "this fault is
