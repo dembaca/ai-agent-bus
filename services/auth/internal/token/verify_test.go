@@ -406,6 +406,29 @@ func TestTheOwnerIsCheckedAgainstTheChat(t *testing.T) {
 	}
 }
 
+func TestChatOpenIDSaysTheNameIsBoundToTheSub(t *testing.T) {
+	r := newRealm(t)
+	for _, tc := range []struct {
+		name string
+		dir  Directory
+		want bool
+	}{
+		{"OpenID account with the same sub", human(nil), true},
+		{"password account, Open binding", human(func(u *User) { u.AuthService, u.AuthData = "", "" }), false},
+		{"LDAP account, Open binding", human(func(u *User) { u.AuthService, u.AuthData = "ldap", "uid=alice" }), false},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			id, err := verifier(t, r, tc.dir, nil).Verify(context.Background(), r.token(nil))
+			if err != nil {
+				t.Fatal(err)
+			}
+			if id.ChatOpenID != tc.want {
+				t.Fatalf("ChatOpenID = %v; want %v", id.ChatOpenID, tc.want)
+			}
+		})
+	}
+}
+
 func TestAKeyRotationIsPickedUpFromASlowRealm(t *testing.T) {
 	r := newRealm(t)
 	r.delay = 50 * time.Millisecond

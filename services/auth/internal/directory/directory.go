@@ -102,6 +102,10 @@ type Identity struct {
 	// Accounts are the identity's chat accounts by product ("mattermost":
 	// its username there).
 	Accounts map[string]string `json:"accounts,omitempty"`
+	// MovedFrom says, by product, which `sub` held this identity's account
+	// name before it moved here (a name taken over by a verified login or by
+	// an admin): for the operator to see, never a key.
+	MovedFrom map[string]string `json:"moved_from,omitempty"`
 }
 
 // Store is the directory over a key-value bucket.
@@ -558,6 +562,250 @@ func (s *Store) SetAccount(ctx context.Context, sub, product, name string) error
 		return nil
 	}
 	return ErrConflict
+}
+
+// ClaimAccount makes `name` the chat account of `product` of the identity
+// `sub`, also when another identity holds that name: the index key is moved to
+// `sub` and the old holder's record loses the name; movedFrom is the `sub` it
+// was taken from ("" when it was free or already sub's). ONLY for a login
+// whose chat account is proven to be the token's (token.Identity.ChatOpenID)
+// or an admin: the import keeps SetAccount, which never takes a name over.
+// The identity must exist (ErrNoIdentity).
+//
+// The order is the safety: ByAccount needs the index key and the identity's
+// record to agree, so a write that stops half way leaves "not found", never a
+// wrong identity. First the key (compare and set), then the new holder's
+// record, last the old holder's.
+func (s *Store) ClaimAccount(ctx context.Context, sub, product, name string) (movedFrom string, err error) {
+	if err := checkKey(sub); err != nil {
+		return "", err
+	}
+	key, err := accountKey(product, name)
+	if err != nil {
+		return "", err
+	}
+	if _, _, ok, err := s.Identity(ctx, sub); err != nil {
+		return "", err
+	} else if !ok {
+		return "", ErrNoIdentity
+	}
+	for range 5 {
+		_, err := s.kv.Create(ctx, key, []byte(sub))
+		if err == nil {
+			return "", s.finishAccount(ctx, sub, product, name, "")
+		}
+		if !errors.Is(err, jetstream.ErrKeyExists) {
+			return "", err
+		}
+		e, err := s.kv.Get(ctx, key)
+		if errors.Is(err, jetstream.ErrKeyNotFound) {
+			continue // deleted meanwhile: create it
+		}
+		if err != nil {
+			return "", err
+		}
+		if string(e.Value()) == sub {
+			return "", s.finishAccount(ctx, sub, product, name, "")
+		}
+		if _, err := s.kv.Update(ctx, key, []byte(sub), e.Revision()); err != nil {
+			if isWrongSequence(err) {
+				continue
+			}
+			return "", err
+		}
+		movedFrom = string(e.Value())
+		return movedFrom, s.finishAccount(ctx, sub, product, name, movedFrom)
+	}
+	return "", ErrConflict
+}
+
+// PutAccount is the admin's write of the index entry: rev 0 creates it
+// (ErrConflict when the key exists), rev > 0 replaces it over exactly that
+// revision (ErrConflict otherwise, ErrNotFound when there is none). The
+// identity `sub` must exist (ErrNoIdentity). movedFrom is the `sub` the name
+// was held by before, when that was another.
+func (s *Store) PutAccount(ctx context.Context, sub, product, name string, rev uint64) (movedFrom string, err error) {
+	if err := checkKey(sub); err != nil {
+		return "", err
+	}
+	key, err := accountKey(product, name)
+	if err != nil {
+		return "", err
+	}
+	if _, _, ok, err := s.Identity(ctx, sub); err != nil {
+		return "", err
+	} else if !ok {
+		return "", ErrNoIdentity
+	}
+	if rev == 0 {
+		if _, err := s.kv.Create(ctx, key, []byte(sub)); errors.Is(err, jetstream.ErrKeyExists) {
+			return "", ErrConflict
+		} else if err != nil {
+			return "", err
+		}
+		return "", s.finishAccount(ctx, sub, product, name, "")
+	}
+	e, err := s.kv.Get(ctx, key)
+	if errors.Is(err, jetstream.ErrKeyNotFound) {
+		return "", ErrNotFound
+	}
+	if err != nil {
+		return "", err
+	}
+	if e.Revision() != rev {
+		return "", ErrConflict
+	}
+	if _, err := s.kv.Update(ctx, key, []byte(sub), rev); err != nil {
+		if isWrongSequence(err) {
+			return "", ErrConflict
+		}
+		return "", err
+	}
+	if old := string(e.Value()); old != sub {
+		movedFrom = old
+	}
+	return movedFrom, s.finishAccount(ctx, sub, product, name, movedFrom)
+}
+
+// finishAccount is what follows a write of the index key: the new holder's
+// record gets the name (and movedFrom), the name it had before is freed, and
+// the old holder's record loses the name.
+func (s *Store) finishAccount(ctx context.Context, sub, product, name, movedFrom string) error {
+	if err := s.holdAccount(ctx, sub, product, name, movedFrom); err != nil {
+		return err
+	}
+	if movedFrom == "" {
+		return nil
+	}
+	return s.releaseAccount(ctx, movedFrom, product, name)
+}
+
+func (s *Store) holdAccount(ctx context.Context, sub, product, name, movedFrom string) error {
+	for range 3 {
+		id, rev, ok, err := s.Identity(ctx, sub)
+		if err != nil {
+			return err
+		}
+		if !ok {
+			return ErrNoIdentity
+		}
+		old := id.Accounts[product]
+		if old == name && (movedFrom == "" || id.MovedFrom[product] == movedFrom) {
+			return nil
+		}
+		if id.Accounts == nil {
+			id.Accounts = map[string]string{}
+		}
+		id.Accounts[product] = name
+		switch {
+		case movedFrom != "":
+			if id.MovedFrom == nil {
+				id.MovedFrom = map[string]string{}
+			}
+			id.MovedFrom[product] = movedFrom
+		case old != name:
+			delete(id.MovedFrom, product) // it told of the name it left
+		}
+		if _, err := s.put(ctx, identityPrefix+sub, id, rev); errors.Is(err, ErrConflict) {
+			continue
+		} else if err != nil {
+			return err
+		}
+		if old != "" && old != name { // the name it left is free again
+			if oldKey, err := accountKey(product, old); err == nil {
+				if e, err := s.kv.Get(ctx, oldKey); err == nil && string(e.Value()) == sub {
+					_ = s.kv.Delete(ctx, oldKey, jetstream.LastRevision(e.Revision()))
+				}
+			}
+		}
+		return nil
+	}
+	return ErrConflict
+}
+
+// releaseAccount removes `name` from the record of `sub`, if it still lists
+// it. A `sub` without a record has nothing to lose.
+func (s *Store) releaseAccount(ctx context.Context, sub, product, name string) error {
+	if checkKey(sub) != nil {
+		return nil
+	}
+	for range 3 {
+		id, rev, ok, err := s.Identity(ctx, sub)
+		if err != nil {
+			return err
+		}
+		if !ok || id.Accounts[product] != name {
+			return nil
+		}
+		delete(id.Accounts, product)
+		delete(id.MovedFrom, product)
+		if _, err := s.put(ctx, identityPrefix+sub, id, rev); errors.Is(err, ErrConflict) {
+			continue
+		} else if err != nil {
+			return err
+		}
+		return nil
+	}
+	return ErrConflict
+}
+
+// Account reads the index entry of `name`: the `sub` it points at, the key's
+// revision, and where the name came from when it moved ("" otherwise). ok is
+// false when there is no key.
+func (s *Store) Account(ctx context.Context, product, name string) (sub string, rev uint64, movedFrom string, ok bool, err error) {
+	key, err := accountKey(product, name)
+	if err != nil {
+		return "", 0, "", false, err
+	}
+	e, err := s.kv.Get(ctx, key)
+	if errors.Is(err, jetstream.ErrKeyNotFound) {
+		return "", 0, "", false, nil
+	}
+	if err != nil {
+		return "", 0, "", false, err
+	}
+	sub = string(e.Value())
+	if checkKey(sub) == nil {
+		if id, _, found, err := s.Identity(ctx, sub); err != nil {
+			return "", 0, "", false, err
+		} else if found && id.Accounts[product] == name {
+			movedFrom = id.MovedFrom[product]
+		}
+	}
+	return sub, e.Revision(), movedFrom, true, nil
+}
+
+// DropAccount deletes the index entry of `name` over exactly the revision
+// rev the admin read (ErrNotFound when there is none, ErrConflict when it
+// changed), then removes the name from the record of the identity it
+// pointed at, if that lists it. It returns that `sub`.
+func (s *Store) DropAccount(ctx context.Context, product, name string, rev uint64) (sub string, err error) {
+	key, err := accountKey(product, name)
+	if err != nil {
+		return "", err
+	}
+	e, err := s.kv.Get(ctx, key)
+	if errors.Is(err, jetstream.ErrKeyNotFound) {
+		return "", ErrNotFound
+	}
+	if err != nil {
+		return "", err
+	}
+	if e.Revision() != rev {
+		return "", ErrConflict
+	}
+	err = s.kv.Delete(ctx, key, jetstream.LastRevision(rev))
+	switch {
+	case err == nil:
+	case errors.Is(err, jetstream.ErrKeyNotFound):
+		return "", ErrNotFound
+	case isWrongSequence(err):
+		return "", ErrConflict
+	default:
+		return "", err
+	}
+	sub = string(e.Value())
+	return sub, s.releaseAccount(ctx, sub, product, name)
 }
 
 // ByAccount finds the identity that has the chat account `name` of `product`;

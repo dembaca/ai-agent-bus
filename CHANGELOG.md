@@ -5,6 +5,16 @@ before 0.5.0 are described in the git history.
 
 ## Unreleased
 
+- **The Mattermost account index follows logins after the import** (#59,
+  ADR-016, RT-6.41 step 2). A login whose chat account logs in over OpenID
+  with the token's `sub` sets that account's name on its identity: new
+  people are found, renames move the entry, and a name Mattermost gave to
+  someone else moves to them (logged, `moved_from`); trust lists then trust
+  the new holder. Password accounts never write it; an index that cannot be
+  written refuses the login. Admins set or remove entries with
+  `/v1/directory/accounts/mattermost/<name>` (`authd dir account
+  show|set|rm`).
+
 - **Peers over NATS by the login service's record** (RT-6.37 step 4,
   RT-6.41). The MCP server sends the session's trusted humans in its
   hello and reads the login service's records: a NATS sender's owner is

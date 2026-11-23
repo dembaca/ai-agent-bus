@@ -17,6 +17,7 @@ import (
 	"net/http"
 	"net/url"
 	"os"
+	"regexp"
 	"strconv"
 	"strings"
 	"time"
@@ -45,6 +46,9 @@ commands:
   pending                             list the pending name claims
   confirm <name>                      confirm a pending name claim
   drop <name>                         delete a pending name claim
+  account show <name>                 show which sub holds a Mattermost account name
+  account set <name> <sub> [--rev N]  point a name at a sub (no --rev: create; --rev N: replace revision N)
+  account rm <name> --rev N           remove a name's entry (revision N from show)
 
 settings (flag, then environment):
   --api <url>         AUTHD_DIR_API             admin API base URL (https; http only on a loopback IP)
@@ -73,6 +77,8 @@ type settings struct {
 	json, public                  bool
 	owner                         string
 	ownerSet                      bool
+	revText                       string
+	revSet                        bool
 }
 
 type cli struct {
@@ -128,7 +134,7 @@ func parseArgs(args []string, env func(string) string) (s settings, pos []string
 	s = settings{api: env("AUTHD_DIR_API"), issuer: env("AUTH_KEYCLOAK_ISSUER"),
 		clientID: env("AUTH_KEYCLOAK_CLIENT_ID"), caFile: env("AUTHD_DIR_CA_FILE")}
 	strs := map[string]*string{"api": &s.api, "issuer": &s.issuer, "client-id": &s.clientID,
-		"ca-file": &s.caFile, "owner": &s.owner}
+		"ca-file": &s.caFile, "owner": &s.owner, "rev": &s.revText}
 	bools := map[string]*bool{"json": &s.json, "public": &s.public}
 	for i := 0; i < len(args); i++ {
 		a := args[i]
@@ -159,8 +165,11 @@ func parseArgs(args []string, env func(string) string) (s settings, pos []string
 				val = args[i]
 			}
 			*p = val
-			if name == "owner" {
+			switch name {
+			case "owner":
 				s.ownerSet = true
+			case "rev":
+				s.revSet = true
 			}
 		default:
 			pos = append(pos, a)
@@ -176,6 +185,10 @@ func (c *cli) check(pos []string) error {
 	}
 	if (c.s.ownerSet || c.s.public) && pos[0] != "create" {
 		return usageError("--owner and --public belong to create")
+	}
+	isAccount := pos[0] == "account" && len(pos) > 1 && (pos[1] == "set" || pos[1] == "rm")
+	if c.s.revSet && !isAccount {
+		return usageError("--rev belongs to account set and account rm")
 	}
 	need := func(n int, exact bool) error {
 		if len(pos)-1 < n || (exact && len(pos)-1 != n) {
@@ -204,8 +217,42 @@ func (c *cli) check(pos []string) error {
 		if len(pos) < 4 {
 			return usageError("members " + pos[1] + " wants a channel and at least one sub")
 		}
+	case "account":
+		return c.checkAccount(pos)
 	default:
 		return usageError("unknown command " + pos[0])
+	}
+	return nil
+}
+
+// accountNameRE is a bus username, as the API wants it.
+var accountNameRE = regexp.MustCompile(`^[a-z0-9][a-z0-9._-]{0,63}$`)
+
+// checkAccount validates `account show|set|rm` before anything is sent.
+func (c *cli) checkAccount(pos []string) error {
+	if len(pos) < 2 || (pos[1] != "show" && pos[1] != "set" && pos[1] != "rm") {
+		return usageError("account wants show, set or rm")
+	}
+	want := map[string]int{"show": 1, "set": 2, "rm": 1}[pos[1]]
+	if len(pos)-2 != want {
+		return usageError("wrong number of arguments for account " + pos[1])
+	}
+	if !accountNameRE.MatchString(pos[2]) {
+		return usageError("the account name is no bus username (a-z, 0-9, . _ -; at most 64)")
+	}
+	if pos[1] == "set" && pos[3] == "" {
+		return usageError("the sub is empty")
+	}
+	if pos[1] == "show" && c.s.revSet {
+		return usageError("--rev belongs to account set and account rm")
+	}
+	if c.s.revSet {
+		if n, err := strconv.ParseUint(c.s.revText, 10, 64); err != nil || n == 0 {
+			return usageError("--rev wants a revision number above 0")
+		}
+	}
+	if pos[1] == "rm" && !c.s.revSet {
+		return usageError("account rm needs --rev N (the revision account show printed)")
 	}
 	return nil
 }
@@ -655,6 +702,8 @@ func (c *cli) command(pos []string) error {
 				fmt.Fprintf(c.out, "\twaiting on full channel(s): %s\n", strings.Join(cleanAll(p.WaitingFull), ","))
 			}
 		}
+	case "account":
+		return c.account(pos)
 	case "confirm":
 		ps, _, err := c.pending()
 		if err != nil {
@@ -697,6 +746,57 @@ func (c *cli) command(pos []string) error {
 			return nil
 		}
 		return fmt.Errorf("%q is not in the pending list", pos[1])
+	}
+	return nil
+}
+
+type accountEntry struct {
+	Product   string `json:"product"`
+	Name      string `json:"name"`
+	Sub       string `json:"sub"`
+	Revision  uint64 `json:"revision"`
+	MovedFrom string `json:"moved_from"`
+}
+
+// account runs account show, set and rm (the arguments are checked).
+func (c *cli) account(pos []string) error {
+	path := "/v1/directory/accounts/mattermost/" + esc(pos[2])
+	rev := `"` + c.s.revText + `"`
+	var r reply
+	var err error
+	switch pos[1] {
+	case "show":
+		r, err = c.call("GET", path, nil, nil)
+	case "set":
+		hdr := map[string]string{"If-None-Match": "*"}
+		if c.s.revSet {
+			hdr = map[string]string{"If-Match": rev}
+		}
+		r, err = c.call("PUT", path, hdr, map[string]string{"sub": pos[3]})
+	case "rm":
+		r, err = c.call("DELETE", path, map[string]string{"If-Match": rev}, nil)
+		if err != nil {
+			return err
+		}
+		if c.s.json && len(r.body) > 0 {
+			return c.raw(r.body)
+		}
+		fmt.Fprintf(c.out, "removed %s\n", clean(pos[2]))
+		return nil
+	}
+	if err != nil {
+		return err
+	}
+	if c.s.json {
+		return c.raw(r.body)
+	}
+	var a accountEntry
+	if err := json.Unmarshal(r.body, &a); err != nil {
+		return errors.New("the API's answer is not an account entry")
+	}
+	fmt.Fprintf(c.out, "%s\t%s\tsub %s\trevision %d\n", clean(a.Product), clean(a.Name), clean(a.Sub), a.Revision)
+	if a.MovedFrom != "" {
+		fmt.Fprintf(c.out, "\tmoved from %s\n", clean(a.MovedFrom))
 	}
 	return nil
 }

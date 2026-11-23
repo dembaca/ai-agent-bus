@@ -67,6 +67,10 @@ type Identity struct {
 	// Expires is the token's `exp`. This service checks a token only up to
 	// then; it learns of no revocation before it.
 	Expires time.Time
+	// ChatOpenID is true only when the chat account checked by checkChat logs
+	// in over OpenID Connect, so its auth_data equals the token's `sub`: the
+	// binding of the name to the `sub` is proven, not assumed.
+	ChatOpenID bool
 }
 
 // Verifier checks tokens. It is safe for concurrent use.
@@ -121,7 +125,8 @@ func (v *Verifier) Verify(ctx context.Context, raw string) (Identity, error) {
 	if sub == "" || owner == "" {
 		return Identity{}, ErrIdentity
 	}
-	if err := v.checkChat(ctx, owner, sub); err != nil {
+	openID, err := v.checkChat(ctx, owner, sub)
+	if err != nil {
 		return Identity{}, err
 	}
 	exp, _ := claims.GetExpirationTime() // required and checked by the parser
@@ -132,6 +137,8 @@ func (v *Verifier) Verify(ctx context.Context, raw string) (Identity, error) {
 		Groups:   v.groups(claims),
 		Expires:  exp.Time,
 		ID:       jti(claims),
+
+		ChatOpenID: openID,
 	}, nil
 }
 
@@ -150,34 +157,35 @@ func (v *Verifier) keyfunc(ctx context.Context) jwt.Keyfunc {
 // checkChat: the owner is an active human account of exactly that name, not a
 // guest, and, when that account logs in over OpenID Connect, with the same
 // `sub`. A chat that logs its humans in otherwise has no `sub` to compare; the
-// name alone binds then.
-func (v *Verifier) checkChat(ctx context.Context, owner, sub string) error {
+// name alone binds then. It returns true when the account is an OpenID one
+// (its auth_data was compared with `sub`).
+func (v *Verifier) checkChat(ctx context.Context, owner, sub string) (bool, error) {
 	u, err := v.dir.User(ctx, owner)
 	switch {
 	case errors.Is(err, ErrNoSuchUser):
-		return ErrUnknownHuman
+		return false, ErrUnknownHuman
 	case err != nil:
-		return ErrDirectory
+		return false, ErrDirectory
 	}
 	switch {
 	case u.Username != owner:
-		return ErrUnknownHuman
+		return false, ErrUnknownHuman
 	case u.Bot || u.Deactivated:
-		return ErrNotHuman
+		return false, ErrNotHuman
 	case u.Guest:
-		return ErrGuest
+		return false, ErrGuest
 	case !u.AuthKnown:
-		return ErrDirectory
+		return false, ErrDirectory
 	case u.AuthService == OpenIDService && u.AuthData != sub:
-		return ErrSubjectMismatch
+		return false, ErrSubjectMismatch
 	}
 	if err := v.cfg.Binding.Check(ctx, sub, u); err != nil {
 		if errors.Is(err, ErrBinding) {
-			return ErrBinding
+			return false, ErrBinding
 		}
-		return ErrDirectory
+		return false, ErrDirectory
 	}
-	return nil
+	return u.AuthService == OpenIDService && u.AuthData == sub, nil
 }
 
 func (v *Verifier) inApproverGroup(claims jwt.MapClaims) bool {

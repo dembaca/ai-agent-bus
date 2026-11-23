@@ -4,6 +4,7 @@ import (
 	"context"
 	"encoding/hex"
 	"errors"
+	"log/slog"
 	"strconv"
 	"strings"
 	"testing"
@@ -457,5 +458,151 @@ func TestResolveTrusted(t *testing.T) {
 	nc.Close()
 	if got, _, err := s2.ResolveTrusted(ctx(t), []string{"alice"}, true); err == nil || got != nil {
 		t.Fatalf("a failed read: %+v %v", got, err)
+	}
+}
+
+// RT-6.41 step 2, issue #59: the account index follows a verified login; the import's
+// SetAccount never takes a name over.
+func TestAnAccountIsClaimedOnlyAfterTheImportAndMovesWithItsHolder(t *testing.T) {
+	s, _ := open(t)
+	var logs strings.Builder
+	a := Anchors{Store: s, Log: slog.New(slog.NewTextHandler(&logs, nil))}
+	for _, sub := range []string{"sub-a", "sub-b"} {
+		if _, err := s.Login(ctx(t), sub, "x", ""); err != nil {
+			t.Fatal(err)
+		}
+	}
+	// Before the import nothing is written.
+	if err := a.Account(ctx(t), "sub-a", "alice"); err != nil {
+		t.Fatal(err)
+	}
+	if _, _, _, ok, _ := s.Account(ctx(t), "mattermost", "alice"); ok {
+		t.Fatal("an index entry was written before the import")
+	}
+	if err := s.MarkImported(ctx(t), time.Now()); err != nil {
+		t.Fatal(err)
+	}
+	// A new person: entry set.
+	if err := a.Account(ctx(t), "sub-a", "alice"); err != nil {
+		t.Fatal(err)
+	}
+	if id, ok, err := s.ByAccount(ctx(t), "mattermost", "alice"); err != nil || !ok || id.Sub != "sub-a" {
+		t.Fatalf("new person: %+v %v %v", id, ok, err)
+	}
+	if err := a.Account(ctx(t), "sub-a", "alice"); err != nil || logs.Len() != 0 {
+		t.Fatalf("the same holder again: %v, log %q", err, logs.String())
+	}
+	// Rename: the new key points at sub, the old one is gone.
+	if err := a.Account(ctx(t), "sub-a", "alice2"); err != nil {
+		t.Fatal(err)
+	}
+	if id, ok, _ := s.ByAccount(ctx(t), "mattermost", "alice2"); !ok || id.Sub != "sub-a" {
+		t.Fatalf("renamed: %+v %v", id, ok)
+	}
+	if _, _, _, ok, _ := s.Account(ctx(t), "mattermost", "alice"); ok {
+		t.Fatal("the old key is still there")
+	}
+	// The name moves to another sub.
+	if err := a.Account(ctx(t), "sub-b", "alice2"); err != nil {
+		t.Fatal(err)
+	}
+	id, ok, err := s.ByAccount(ctx(t), "mattermost", "alice2")
+	if err != nil || !ok || id.Sub != "sub-b" || id.MovedFrom["mattermost"] != "sub-a" {
+		t.Fatalf("moved: %+v %v %v", id, ok, err)
+	}
+	old, _, _, _ := s.Identity(ctx(t), "sub-a")
+	if old.Accounts["mattermost"] != "" {
+		t.Fatalf("the old holder keeps the name: %+v", old)
+	}
+	if sub, _, from, ok, _ := s.Account(ctx(t), "mattermost", "alice2"); !ok || sub != "sub-b" || from != "sub-a" {
+		t.Fatalf("Account: %q %q %v", sub, from, ok)
+	}
+	for _, w := range []string{"level=WARN", "chat account name moved", "name=alice2", "from=sub-a", "to=sub-b"} {
+		if !strings.Contains(logs.String(), w) {
+			t.Errorf("log lacks %q: %s", w, logs.String())
+		}
+	}
+	// The import's SetAccount never takes a name over.
+	if err := s.SetAccount(ctx(t), "sub-a", "mattermost", "alice2"); !errors.Is(err, ErrConflict) {
+		t.Fatalf("SetAccount over a held name: %v", err)
+	}
+	if id, ok, _ := s.ByAccount(ctx(t), "mattermost", "alice2"); !ok || id.Sub != "sub-b" {
+		t.Fatalf("SetAccount took it over: %+v", id)
+	}
+	if _, err := s.ClaimAccount(ctx(t), "sub-nobody", "mattermost", "zed"); !errors.Is(err, ErrNoIdentity) {
+		t.Fatalf("no identity: %v", err)
+	}
+	if _, _, _, ok, _ := s.Account(ctx(t), "mattermost", "zed"); ok {
+		t.Fatal("a name was written for an identity that does not exist")
+	}
+}
+
+func TestAHalfWrittenMoveResolvesToNotFound(t *testing.T) {
+	s, _ := open(t)
+	for _, sub := range []string{"sub-a", "sub-b"} {
+		if _, err := s.Login(ctx(t), sub, "x", ""); err != nil {
+			t.Fatal(err)
+		}
+	}
+	if err := s.SetAccount(ctx(t), "sub-a", "mattermost", "alice"); err != nil {
+		t.Fatal(err)
+	}
+	// The key moved, the records did not follow.
+	key, _ := accountKey("mattermost", "alice")
+	if _, err := s.kv.Put(ctx(t), key, []byte("sub-b")); err != nil {
+		t.Fatal(err)
+	}
+	if id, ok, _ := s.ByAccount(ctx(t), "mattermost", "alice"); ok {
+		t.Fatalf("a half-written move resolved to %+v", id)
+	}
+}
+
+func TestTheAdminsAccountWritesAreOverExactRevisions(t *testing.T) {
+	s, _ := open(t)
+	for _, sub := range []string{"sub-a", "sub-b"} {
+		if _, err := s.Login(ctx(t), sub, "x", ""); err != nil {
+			t.Fatal(err)
+		}
+	}
+	if _, err := s.PutAccount(ctx(t), "sub-a", "mattermost", "alice", 0); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := s.PutAccount(ctx(t), "sub-b", "mattermost", "alice", 0); !errors.Is(err, ErrConflict) {
+		t.Fatalf("create over an existing key: %v", err)
+	}
+	if _, err := s.PutAccount(ctx(t), "sub-b", "mattermost", "nobody", 5); !errors.Is(err, ErrNotFound) {
+		t.Fatalf("replace a missing key: %v", err)
+	}
+	if _, err := s.PutAccount(ctx(t), "sub-nobody", "mattermost", "zed", 0); !errors.Is(err, ErrNoIdentity) {
+		t.Fatalf("unknown identity: %v", err)
+	}
+	_, rev, _, _, _ := s.Account(ctx(t), "mattermost", "alice")
+	if _, err := s.PutAccount(ctx(t), "sub-b", "mattermost", "alice", rev+1); !errors.Is(err, ErrConflict) {
+		t.Fatalf("replace over a wrong revision: %v", err)
+	}
+	from, err := s.PutAccount(ctx(t), "sub-b", "mattermost", "alice", rev)
+	if err != nil || from != "sub-a" {
+		t.Fatalf("replace: %q %v", from, err)
+	}
+	if id, ok, _ := s.ByAccount(ctx(t), "mattermost", "alice"); !ok || id.Sub != "sub-b" {
+		t.Fatalf("after replace: %+v", id)
+	}
+	old, _, _, _ := s.Identity(ctx(t), "sub-a")
+	if old.Accounts["mattermost"] != "" {
+		t.Fatalf("old holder keeps the name: %+v", old)
+	}
+	_, rev, _, _, _ = s.Account(ctx(t), "mattermost", "alice")
+	if _, err := s.DropAccount(ctx(t), "mattermost", "alice", rev+1); !errors.Is(err, ErrConflict) {
+		t.Fatalf("drop over a wrong revision: %v", err)
+	}
+	if _, err := s.DropAccount(ctx(t), "mattermost", "none", 1); !errors.Is(err, ErrNotFound) {
+		t.Fatalf("drop a missing key: %v", err)
+	}
+	if sub, err := s.DropAccount(ctx(t), "mattermost", "alice", rev); err != nil || sub != "sub-b" {
+		t.Fatalf("drop: %q %v", sub, err)
+	}
+	b, _, _, _ := s.Identity(ctx(t), "sub-b")
+	if _, _, _, ok, _ := s.Account(ctx(t), "mattermost", "alice"); ok || b.Accounts["mattermost"] != "" {
+		t.Fatalf("after drop: key %v, identity %+v", ok, b)
 	}
 }
