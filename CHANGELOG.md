@@ -5,6 +5,17 @@ before 0.5.0 are described in the git history.
 
 ## Unreleased
 
+- **A failed approval's cooldown survives a restart** (#63). The 60 s mark after a
+  failed login approval lived in the `Login` object, so a session start or a
+  restart began with no cooldown and sent a fresh device DM at once. The mark is
+  stored beside the refresh token now (`keystore.cooldown_entry`), as a wall-clock
+  deadline that records its reason. It is read before every new approval, so a
+  second session's cooldown counts, and deleted by a login that works; the
+  process that set it keeps its own monotonic deadline. A deadline further
+  ahead than the cooldown (a wall clock that moved backwards) is capped when
+  it is taken in, so the lock never outlasts it. Hardening only: the
+  three Keycloak links the pilot saw came from the realm's missing
+  `offline_access` role, not from this gap.
 - **`shown_as` on reactions and in the event tag** (#66, RT-6.36 step 8).
   A NATS sender's reactions and the tag of a pushed event carry its bot's
   username too, beside the author, which stays the NATS name. Agents DM a
