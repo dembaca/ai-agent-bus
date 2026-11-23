@@ -908,13 +908,18 @@ class NatsBus:
             else:
                 log.warning("nats bus: the presence stream was not read within %.0f s: announcing memberships anyway",
                             MEMBER_SYNC_WAIT_SEC)
+            await self._announce_once()
+
+    async def _announce_once(self) -> None:
+        """Announce each membership on its own: a channel the login service did not grant
+        (a guest the human is not in) is refused, and the others go out all the same."""
+        for ch in list(self._memberships):
             try:
-                for ch in list(self._memberships):
-                    await self._publish(f"{self._s.presence}.member.{ch}.{self.name}", encode_claim())
+                await self._publish(f"{self._s.presence}.member.{ch}.{self.name}", encode_claim())
             except asyncio.CancelledError:
                 raise
             except Exception as exc:  # noqa: BLE001 — the next renewal tries again
-                log.warning("nats bus: announcing memberships failed: %s", type(exc).__name__)
+                log.warning("nats bus: announcing the membership of ~%s failed: %s", ch, type(exc).__name__)
 
     @property
     def _presence_subject(self) -> str:

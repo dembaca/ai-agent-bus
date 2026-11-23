@@ -66,7 +66,9 @@ type Hello struct {
 	Lobby  bool     `json:"lobby,omitempty"`
 	// Since asks, per channel, for history: the stream sequence the host
 	// saw last. It counts only for a granted channel; the key "@dm" is the
-	// direct-message consumer (consumers.SinceDM).
+	// direct-message consumer (consumers.SinceDM), and "@presence" asks for the
+	// presence consumer to be made anew (consumers.SincePresence: a new session
+	// that has not read the presence stream yet).
 	Since map[string]uint64 `json:"since,omitempty"`
 }
 

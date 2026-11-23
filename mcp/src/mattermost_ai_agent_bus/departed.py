@@ -164,8 +164,8 @@ async def elsewhere(client: ChatPort, channel_id: str, names: list[str]) -> list
         for name in names:
             user = bots.get(name)
             if user is None and is_nats_user(name):
-                # A NATS name (no Mattermost account), by its claims (RT-6.37): fresh,
-                # but not claimed in this home.
+                # A NATS name (no Mattermost account), by its membership (RT-6.37): fresh,
+                # but no member of this home.
                 if await _whereabouts(client, channel_id, name) == "elsewhere":
                     out.append(Elsewhere(name, ""))
                 continue
@@ -222,7 +222,7 @@ async def _present(client: ChatPort, channel_id: str, names: list[str]) -> list[
         u = bots.get(n)
         if u is None:
             if is_nats_user(n) and await _whereabouts(client, channel_id, n) == "here":
-                out.append(n)  # a NATS name claimed in this home (RT-6.37)
+                out.append(n)  # a NATS name that is a member of this home (RT-6.37)
         elif lease.live_home(u) is not None and await client.is_member(channel_id, u.id):
             out.append(n)
     return out

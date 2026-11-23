@@ -558,6 +558,23 @@ async def test_a_presence_stream_made_anew_is_read_by_its_newer_server_time() ->
     assert bus.presence_snapshot()[them] == (T0 + 40, "away")
 
 
+async def test_a_refused_membership_does_not_stop_the_others() -> None:
+    """A guest the login service did not grant is refused; the channels after it are
+    announced all the same (RT-6.37)."""
+    bus, _ = _unit_bus()
+    bus._memberships = ["g1", "g2", "lobby"]
+    sent: list[str] = []
+
+    async def publish(subject: str, data: bytes) -> None:
+        if ".member.g1." in subject:
+            raise natsbus.NatsBusError("publish refused by the server: no permission for it")
+        sent.append(subject.split(".")[2])
+
+    bus._publish = publish  # type: ignore[method-assign]
+    await bus._announce_once()
+    assert sent == ["g2", "lobby"]
+
+
 async def test_claims_and_presence_age_out_after_24_hours() -> None:
     bus, _ = _unit_bus()
     await _presence(bus, "agent-old", 1, T0)
