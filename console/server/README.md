@@ -64,13 +64,15 @@ decided the same day, ADR-015):
    publish through it; nothing can be forged (the sender stays pinned in
    the subject, RISK-09 holds), but state can be erased. It heals by
    republishing: an overwritten presence within 30 s (`HEARTBEAT_SEC`),
-   attestation, membership and crown claim with the agent's next
-   credential renewal — at the latest after about 14 minutes (`RENEW_SEC`;
-   attestation is written by the login service at every credential,
-   membership and claim return on the renewal's reconnect). A host
-   already running keeps its copy in memory; a host started in between
-   sees no attestation until then and judges the sender as foreign —
-   fail closed.
+   attestation and membership with the agent's next credential renewal —
+   at the latest after about 14 minutes (`RENEW_SEC`; attestation is
+   written by the login service at every credential, membership returns
+   on the renewal's reconnect), and **the crown claim at the agent's
+   next crown tick** (the tick claims anew when this agent sees no claim
+   of its own or one older than 23 h, `lease.py`; a reconnect alone does
+   not re-claim it). A host already running keeps its copy in memory; a
+   host started in between sees no attestation until then and judges the
+   sender as foreign — fail closed.
 2. **The consumer's deliver subject is freely chosen** — NATS
    permissions cannot close what a consumer-create names, so a
    taken-over console account could aim its consumer at `bus.evil.x`.
