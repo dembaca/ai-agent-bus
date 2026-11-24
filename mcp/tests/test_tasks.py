@@ -631,13 +631,12 @@ def test_the_instructions_name_the_props_prefix_in_force(monkeypatch):
 
 
 @pytest.mark.asyncio
-async def test_a_crashing_tool_names_its_cause(caplog):
+async def test_a_crashing_tool_names_its_cause():
     """The SDK answers a crash with a bare "Error executing tool <name>"
-    (`mcp/server/mcpserver/tools/base.py`) and keeps the cause on the server. The NATS
-    pilot saw exactly that: two sessions failed to post and the reason stood only in the
-    host log. Through the **real** handler (no fake), so the log line is checked too."""
-    import logging
-
+    (`mcp/server/mcpserver/tools/base.py`) and keeps the cause on the server: the NATS
+    pilot saw exactly that, and the reason stood only in the host log. Through the
+    **real** handler (no fake), so the type the SDK logs with a traceback is the one
+    that carries the cause to the client."""
     from mcp.server.mcpserver.exceptions import ToolError, UnexpectedToolError
 
     from mattermost_ai_agent_bus import server as srv
@@ -648,13 +647,12 @@ async def test_a_crashing_tool_names_its_cause(caplog):
     async def zz_crash() -> str:
         raise RuntimeError("boom")
 
-    with caplog.at_level(logging.ERROR, logger="mcp.server.mcpserver.server"):
-        with pytest.raises(ToolError) as err:
-            await test_server.call_tool("zz_crash", {})
+    with pytest.raises(ToolError) as err:
+        await test_server.call_tool("zz_crash", {})
     assert "RuntimeError: boom" in str(err.value), str(err.value)
     # `UnexpectedToolError` is what makes the SDK write the traceback to the host log
     # (`mcp/server/mcpserver/server.py`: `logger.exception` only for that type), so the
-    # hidden cause is never lost on both sides.
+    # cause is never lost on both sides.
     assert isinstance(err.value, UnexpectedToolError), type(err.value)
 
 
