@@ -221,9 +221,14 @@ jobs:
             curl -fsS http://127.0.0.1:8747/healthz && break
             sleep 1
           done
-          # the logs first, whatever happened: a red smoke shows its traceback
+          # /livez is liveness (200, NATS-less container and all); /healthz
+          # is readiness and rightly answers 503 not synced in this smoke —
+          # an assertion both ways, not a curl that passed by chance
           status=0
-          curl -fsS http://127.0.0.1:8747/healthz | grep -q ok || status=1
+          curl -fsS http://127.0.0.1:8747/livez | grep -q ok || status=1
+          code=$(curl -s -o /dev/null -w "%{http_code}" http://127.0.0.1:8747/healthz)
+          [ "$code" = "503" ] || status=1
+          curl -sS http://127.0.0.1:8747/healthz | grep -q "not synced" || status=1
           docker logs console-test 2>&1 | tail -40
           docker rm -f console-test
           exit $status
