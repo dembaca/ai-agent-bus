@@ -68,3 +68,9 @@ def test_a_status_word_stands_alone_before_a_block(body):
     assert a2a.styled(led) == f"`RESULT`\n\n{body}"
     assert a2a.styled(symbols.with_crown(led)) == f"{CROWN} `RESULT`\n\n{body}"
     assert a2a.lead("plain text", "RESULT") == "RESULT · plain text"
+
+
+@pytest.mark.parametrize("text", ["\n| a |", "  | a |", "\n\n- x", " plain", "\nplain"])
+def test_strip_crown_inverts_with_crown_exactly(text):
+    """A message's own leading whitespace survives the round trip."""
+    assert symbols.strip_crown(symbols.with_crown(text)) == text

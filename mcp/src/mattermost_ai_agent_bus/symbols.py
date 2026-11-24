@@ -105,8 +105,17 @@ def with_crown(message: str) -> str:
 
 
 def strip_crown(message: str) -> str:
-    """The message without a leading crown (and the space after it)."""
-    return message.removeprefix(_CROWN).lstrip(" \n") if message.startswith(_CROWN) else message
+    """The message without the crown `with_crown` put in front: the crown and
+    exactly its separator (a blank line, or one space); of an older post that
+    has just the crown, the spaces after it too."""
+    if not message.startswith(_CROWN):
+        return message
+    rest = message.removeprefix(_CROWN)
+    if rest.startswith("\n\n"):
+        return rest[2:]
+    if rest.startswith(" "):
+        return rest[1:]
+    return rest.lstrip(" ")
 
 
 def parse_head(message: str) -> Head:
