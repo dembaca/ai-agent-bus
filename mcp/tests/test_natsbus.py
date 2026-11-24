@@ -1133,8 +1133,14 @@ async def test_wss_verifies_the_websocket_tls(wss_rig: tuple[Rig, Path]) -> None
     alice, a_ev = await rig.agent("alice", url=rig.ws_url, tls_ca_file=str(ca))
     await alice.post("home", "hello over wss")
     await until(lambda: len(a_ev) == 1, what="alice's own post came back over wss")
-    # an untrusted certificate is refused before the CONNECT goes out, and the reason names it:
-    # nats-py retries the failed WebSocket handshake, so the attempt is bounded here
+    # the bus itself verifies: without the CA file it never connects. An unverified context
+    # would connect right here, which is what a mutation of the TLS setup turns red.
+    refused = NatsBus(NatsSettings(servers=(rig.ws_url,), home="home"), FakeLogin(), "alice",
+                      lambda e: None, connect_timeout=3)
+    with pytest.raises(asyncio.TimeoutError):
+        await refused._open()  # nats-py retries the refused handshake; _open bounds it
+    assert refused._nc is None
+    # and the reason names the certificate, through nats-py's error callback
     errors: list[Exception] = []
 
     async def on_error(exc: Exception) -> None:

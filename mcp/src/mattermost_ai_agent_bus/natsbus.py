@@ -673,7 +673,7 @@ class NatsBus:
                 raise ValueError(f"invalid {what} prefix")
         for url in settings.servers:
             _check_server(url)
-        _tls_mode(settings.servers)  # one scheme per pool, also for settings built around the check
+        _schemes(settings.servers)  # one scheme per pool, also for settings built around the check
         self._s = settings
         self._login = login
         self._owner = owner
@@ -862,7 +862,11 @@ class NatsBus:
         # wss:// is TLS inside the WebSocket handshake: the same verified context, and no
         # handshake-first (the WebSocket handshake is the first thing on the wire anyway).
         if _websocket(self._s.servers):
-            nc._transport = _websocket_transport()  # no redirects: the CONNECT carries the token
+            # No redirects: the CONNECT carries the access token. (nats-py turns a server the
+            # NATS server announces — connect_urls — into nats:// unless the current one is
+            # tls://, and never resets the transport: with reconnect enabled a wss pool would
+            # ws_connect("nats://…") and fail. No downgrade, just no failover into a cluster.)
+            nc._transport = _websocket_transport()
         tls = self._s.tls_context()
         tls_kw: dict[str, Any] = {}
         if tls is not None:
