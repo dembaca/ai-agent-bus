@@ -4855,13 +4855,22 @@ registrar's functions can move in later without a second component.
        watermark, it carries nothing from before; it reaches back at most
        10 minutes, and what is older is logged as a gap, not carried. Each
        caught-up post and reaction passes the same drop rules as the live
-       path. Reactions it compares with the post's current reactions, for
-       posts inside that window. An event's key is a post's `mm`, and for a
-       reaction or unreaction its `mm`, emoji, sender and kind together; the
-       bridge keeps the keys it carried in `BUS_BRIDGE`, so nothing goes out
-       twice, and the MCP server drops an event whose key it has seen. Whether `since`
-       returns a post whose only change is a reaction is to be checked
-       against Mattermost at build. Why: in a switched channel the MCP
+       path. A reaction is bounded by its own time, not its post's: the
+       bridge carries a reaction whose `create_at` is after the watermark
+       and within the 10 minutes, also on an older post (an ask). It finds
+       them through the same `since` read, which returns posts whose
+       reactions changed with their current reactions, and compares those
+       with what it carried; whether `since` returns a post whose only
+       change is a reaction is to be checked against Mattermost at build,
+       and if not, the bridge reads the reactions of the posts it carried
+       or mirrored within the bound. A removal found this way is carried as
+       an `unreaction`. An event's key is a post's `mm`, and for a reaction
+       or unreaction its `mm`, emoji, sender and kind together; an event of
+       the opposite kind for the same `mm`, emoji and sender clears the
+       key, so a 👍 taken back and given again counts again (chosen over
+       adding the reaction's `create_at` to the key). The bridge keeps the
+       keys it carried in `BUS_BRIDGE`, so nothing goes out twice, and the
+       MCP server drops an event whose key it holds. Why: in a switched channel the MCP
        server no longer reads people on Mattermost (point 12), so a "go"
        posted during a reconnect would never arrive; the watermark and the
        age bound keep an old, edited "go" from going out as new.
@@ -4879,7 +4888,7 @@ registrar's functions can move in later without a second component.
        first reads that channel on Mattermost from its last people event
        on, so what came while the bridge was gone is not lost. At a switch
        both sides may deliver the same event once, and the server drops the
-       second by its key (point 11). No new setting. Why: lab hosts set
+       second by its key, cleared by an event of the opposite kind (point 11). No new setting. Why: lab hosts set
        `MM_BRIDGE_BOT` already for the first step, so with it as the switch
        an upgraded host before an upgraded bridge leaves people unheard,
        silently. Alternative: `MM_BRIDGE_BOT` as the switch with a release
