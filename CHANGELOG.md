@@ -5,6 +5,21 @@ before 0.5.0 are described in the git history.
 
 ## Unreleased
 
+- **A signal no longer skips the MCP server's exit work** (RT-6.18 step 7,
+  RT-6.10). The host process catches its signals before it writes the
+  readiness file: a SIGTERM from `postEnd` right after the start (no relay
+  ever connected) came while the NATS start was still importing nats-py and
+  aiohttp, and ended the process without `BYE`, stats or unregistering.
+  The stdio server's signal handler starts the exit work in a thread of its
+  own: run inside an interrupted write to stderr, its first log line raised
+  a reentrant-call error and the endpoint file stayed behind.
+- **The MCP server reaches NATS over WebSocket** (RT-6.36, part of #51).
+  `MM_NATS_URL` takes `wss://` (TLS inside the WebSocket, verified with
+  `MM_NATS_CA_FILE` like `tls://`) or `ws://` on a loopback host only; a
+  pool is all one scheme. A home cannot run over it yet: the login service
+  refuses websocket URLs, and the credentials it issues allow standard
+  connections only (`AllowedConnectionTypes`). It may once the
+  sender-authenticity suite runs over a websocket listener.
 - **A test-rig run that receives nothing says whether the fault explains it**
   (#47). `bus-testrig bus-run` exits 1 when frames were sent and none arrived
   and no fault accounts for it - a path that carried nothing is not a

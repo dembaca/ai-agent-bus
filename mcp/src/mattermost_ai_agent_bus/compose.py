@@ -141,8 +141,9 @@ def nats_homes_from_env(environ: Mapping[str, str] | None = None) -> frozenset[s
 def nats_settings_from_env(home: str, lobby: str = "",
                            environ: Mapping[str, str] | None = None) -> NatsSettings | None:
     """The NATS settings of a session whose home channel is `home` (the lobby, MM_CHANNEL,
-    is `lobby`): MM_NATS_URL (one or more URLs, comma or space separated; tls://, or
-    nats:// to a loopback host), MM_NATS_CA_FILE (optional), MM_PROPS_PREFIX. None
+    is `lobby`): MM_NATS_URL (one or more URLs, comma or space separated, all one scheme:
+    tls:// or wss://, or nats:///ws:// to a loopback host), MM_NATS_CA_FILE (optional),
+    MM_PROPS_PREFIX. None
     without a URL; raises ValueError for a URL or prefix that is not allowed."""
     from .natsbus import NatsSettings
 

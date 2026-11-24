@@ -25,6 +25,7 @@ import (
 type lab struct {
 	t     *testing.T
 	url   string
+	wsURL string
 	realm *testrealm.Realm
 	chat  *testrealm.Chat
 	logs  *syncBuffer
@@ -73,6 +74,7 @@ func newLabCfg(t *testing.T, wrap func(Channels) Channels, timeout time.Duration
 	conf := filepath.Join(t.TempDir(), "nats.conf")
 	err := os.WriteFile(conf, []byte(`
 listen: "127.0.0.1:-1"
+websocket { listen: "127.0.0.1:-1", no_tls: true }
 jetstream { store_dir: "`+t.TempDir()+`" }
 accounts {
   AUTH { users: [ { nkey: "`+svcPub+`" } ] }
@@ -118,7 +120,7 @@ authorization {
 	}
 	t.Cleanup(srv.Shutdown)
 
-	l := &lab{t: t, url: srv.ClientURL(), realm: testrealm.New(t), chat: testrealm.NewChat("alice", "gus"),
+	l := &lab{t: t, url: srv.ClientURL(), wsURL: srv.WebsocketURL(), realm: testrealm.New(t), chat: testrealm.NewChat("alice", "gus"),
 		logs: &syncBuffer{}, brake: filepath.Join(t.TempDir(), "brake")}
 	g := l.chat.Users["gus"]
 	g.Guest = true
@@ -180,6 +182,13 @@ func (l *lab) connect(owner, tok string, hello Hello, signer nkeys.KeyPair) (*ag
 func (l *lab) connectTimeout(owner, tok string, hello Hello, signer nkeys.KeyPair,
 	timeout time.Duration) (*agent, error) {
 	l.t.Helper()
+	return l.connectAt(l.url, owner, tok, hello, signer, timeout)
+}
+
+// connectAt is connectTimeout on another listener of the same server (a websocket one).
+func (l *lab) connectAt(url, owner, tok string, hello Hello, signer nkeys.KeyPair,
+	timeout time.Duration) (*agent, error) {
+	l.t.Helper()
 	host, _ := nkeys.CreateUser()
 	pub, _ := host.PublicKey()
 	if signer == nil {
@@ -197,7 +206,7 @@ func (l *lab) connectTimeout(owner, tok string, hello Hello, signer nkeys.KeyPai
 	if timeout > 0 {
 		opts = append(opts, nats.Timeout(timeout))
 	}
-	nc, err := nats.Connect(l.url, opts...)
+	nc, err := nats.Connect(url, opts...)
 	if err != nil {
 		return nil, err
 	}
@@ -217,6 +226,19 @@ func (a *agent) denied(t *testing.T) bool {
 		return strings.Contains(err.Error(), "Permissions Violation")
 	case <-time.After(300 * time.Millisecond):
 		return false
+	}
+}
+
+// The credentials the callout issues allow standard connections only
+// (AllowedConnectionTypes = STANDARD): a host cannot reach a websocket listener
+// with one, so a home over WebSocket waits for that (RT-6.36, #51).
+func TestACredentialDoesNotAllowAWebsocketConnection(t *testing.T) {
+	l := newLab(t)
+	if l.wsURL == "" {
+		t.Fatal("the lab's server has no websocket listener")
+	}
+	if _, err := l.connectAt(l.wsURL, "alice", l.realm.Token("alice", nil), Hello{Home: "home"}, nil, 0); err == nil {
+		t.Fatal("a STANDARD credential reached a websocket listener")
 	}
 }
 
