@@ -3,45 +3,15 @@
 Every version bump in `.claude-plugin/plugin.json` gets an entry here. Versions
 before 0.5.0 are described in the git history.
 
-## Unreleased
+## 0.99.0
 
-- **The console's `/healthz` answers readiness, not only liveness** (ADR-015).
-  It went 503 only when the NATS reader ended without a stop; a reader that
-  silently never synced still said ok. It now answers 503 until the reader
-  has synced — a finished replay with zero messages included, so an empty
-  fleet reads healthy — and again once no replay arrived within
-  `CONSOLE_HEALTH_SYNC_BOUND` (30 s to 24 h, default 180 s; the reader
-  reconnects for a replay between 5/8 and 7/8 of the bound, checked every
-  quarter of it). Beside it, `GET /livez` answers liveness:
-  503 only when the reader ended without a stop — a liveness probe on
-  `/healthz` would restart the pod while NATS is merely slow. The
-  docs follow: the console's row in the deployment view (settings, the
-  image, the Keycloak setup, one replica), the README's deployment notes
-  (a container-usable `CONSOLE_ADDR`, the group mapper and
-  `preferred_username` required, `handshake_first`, `/healthz` and
-  `/livez`, `CONSOLE_TOKEN_ALGS`/`CONSOLE_CONSUMER_NAME` in the settings
-  table), and ADR-015's status cell states the pilot as built once.
+The operator console's read-only pilot (its server, browser app and image), the
+central bridge's first step from NATS to Mattermost, and three fixes in the MCP
+server: a crashing tool names its cause, the server imports on Python 3.11 again,
+and the tool text is the same on every Python. Nothing is breaking.
 
-- **The console's image is published** (ADR-015). `checks.yml` gains a
-  `publish-console` job: a push to `main` that changes `console/`, `mcp/` or
-  that workflow, and only after the console's browser build and the console
-  server's tests with the image smoke have passed, builds `console/server/Dockerfile` from the
-  repository root and pushes
-  `ghcr.io/dembaca/ai-agent-bus-console:<full commit SHA>` and `:main` with a
-  build provenance attestation; the digest stands in the job's summary, and a
-  deployment names it by that digest. A push that changes nothing under
-  `console/` builds no image.
-- **The operator console's browser app, a read-only pilot** (ADR-015 point
-  14). `console/web` inherits the toolchain of `site/` (React,
-  TypeScript, Vite) and implements the four views against a mock of the API
-  in ADR-015 point 10: the Kanban of agents by state (the crown a mark on the
-  card, not a column), the asks with *for me* and *may answer*, the graph
-  (trusts and coordinates, cut at depth two with a mark), and the reports
-  (counts and seconds, a missing field `n/a`, never 0). The detail pane shows
-  the full card, the task rows an agent holds, its HELLO thread and the
-  threads of its open asks. Nothing posts — an ask gets no answer button
-  (stage 1, reading only); the same `ConsoleApi` interface hides the mock and
-  the future console server behind `VITE_CONSOLE_API`.
+### Added
+
 - **The console's server, the pilot's live view** (ADR-015). `console/server`
   reads the NATS homes' presence, crown claims and memberships through a
   push consumer of its own on the PRESENCE stream (the shape the login
@@ -59,6 +29,52 @@ before 0.5.0 are described in the git history.
   reusing the mcp package's NATS reading (`natsbus.py`) by editable path
   dependency; the NATS tests run against a real nats-server like the
   MCP ones.
+- **The console's `/healthz` answers readiness, not only liveness** (ADR-015).
+  It went 503 only when the NATS reader ended without a stop; a reader that
+  silently never synced still said ok. It now answers 503 until the reader
+  has synced — a finished replay with zero messages included, so an empty
+  fleet reads healthy — and again once no replay arrived within
+  `CONSOLE_HEALTH_SYNC_BOUND` (30 s to 24 h, default 180 s; the reader
+  reconnects for a replay between 5/8 and 7/8 of the bound, checked every
+  quarter of it). Beside it, `GET /livez` answers liveness:
+  503 only when the reader ended without a stop — a liveness probe on
+  `/healthz` would restart the pod while NATS is merely slow. The
+  docs follow: the console's row in the deployment view (settings, the
+  image, the Keycloak setup, one replica), the README's deployment notes
+  (a container-usable `CONSOLE_ADDR`, the group mapper and
+  `preferred_username` required, `handshake_first`, `/healthz` and
+  `/livez`, `CONSOLE_TOKEN_ALGS`/`CONSOLE_CONSUMER_NAME` in the settings
+  table), and ADR-015's status cell states the pilot as built once.
+- **The operator console's browser app, a read-only pilot** (ADR-015 point
+  14). `console/web` inherits the toolchain of `site/` (React,
+  TypeScript, Vite) and implements the four views against a mock of the API
+  in ADR-015 point 10: the Kanban of agents by state (the crown a mark on the
+  card, not a column), the asks with *for me* and *may answer*, the graph
+  (trusts and coordinates, cut at depth two with a mark), and the reports
+  (counts and seconds, a missing field `n/a`, never 0). The detail pane shows
+  the full card, the task rows an agent holds, its HELLO thread and the
+  threads of its open asks. Nothing posts — an ask gets no answer button
+  (stage 1, reading only); the same `ConsoleApi` interface hides the mock and
+  the future console server behind `VITE_CONSOLE_API`.
+- **The console's image is published** (ADR-015). `checks.yml` gains a
+  `publish-console` job: a push to `main` that changes `console/`, `mcp/` or
+  that workflow, and only after the console's browser build and the console
+  server's tests with the image smoke have passed, builds `console/server/Dockerfile` from the
+  repository root and pushes
+  `ghcr.io/dembaca/ai-agent-bus-console:<full commit SHA>` and `:main` with a
+  build provenance attestation; the digest stands in the job's summary, and a
+  deployment names it by that digest. A push that changes nothing under
+  `console/` builds no image.
+- **The central bridge, step 1: NATS to Mattermost** (ADR-016 point 4).
+  `services/bridge` (Go) mirrors a NATS home's posts and reactions into its
+  Mattermost channel with one bridge bot: the sender above the text, the NATS
+  id in `<prefix>nats_id`, a reply under the mirrored root, a reaction counted
+  per message and emoji. It reads as a NATS user read-only on the bus, through
+  push consumers and a KV bucket (`BUS_BRIDGE`) the operator creates, keeps its
+  position per home, so a redelivery is never mirrored twice, and answers
+  `/healthz`. One way only: what a person writes on a copy does not reach the
+  NATS thread yet. The hosts of a mirrored home run 0.98.0 or later first,
+  whose `MM_BRIDGE_BOT` drops the copies.
 
 ### Fixed
 
