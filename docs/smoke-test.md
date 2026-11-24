@@ -50,7 +50,7 @@ export MM_LOGIN_ISSUER=https://<keycloak-host>/realms/<realm>
 export MM_LOGIN_CLIENT_ID=<client-id>   # the Keycloak client of this bus, public
 ```
 
-The host hook starts the device flow; a human confirms in the browser at
+The session's MCP server (under corral the host process) starts the device flow; a human confirms in the browser at
 Keycloak, and the refresh token stays on the host (RT-6.34). Nothing reaches
 the bus before that confirmation.
 
