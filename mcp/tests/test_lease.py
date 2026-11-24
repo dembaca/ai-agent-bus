@@ -706,12 +706,12 @@ async def test_a_channel_session_is_silent_only_with_a_push_untaken(mm, client, 
 
 
 async def test_a_silent_holder_drops_the_crown_and_does_not_claim(mm, client, tmp_path, monkeypatch):
-    """RT-6.6 steps 1, 4 and 6: a holder that turns silent drops the crown with
-    that write, as a release does (no claim for two leases), and claims
+    """RT-6.6 steps 1, 4 and 6: a holder silent for one crown lease (#64) drops the
+    crown with that write, as a release does (no claim for two leases), and claims
     neither at its tick nor at a slot while silent."""
     me(mm)
     assert await lease.command(client, "take") == "taken"
-    _no_sign_since(monkeypatch, 901)
+    _no_sign_since(monkeypatch, 900 + 150)  # silent at 900 s, then one crown lease
     await lease.set_status(client, "renew")
     assert not holds() and coord(tmp_path)["CROWN_UNTIL"] == 0
     # One crown lease, not a release's two leases: the silence may end soon.
@@ -725,6 +725,66 @@ async def test_a_silent_holder_drops_the_crown_and_does_not_claim(mm, client, tm
     mm.agent(OLDER, "agent-old", 1000, "crown", expires_in=-5)
     lease._holder_id, lease._look_at = OLDER, time.time() - 1
     assert not await lease.look(client) and not holds()
+
+
+async def test_a_silent_holder_keeps_the_crown_one_crown_lease(mm, client, tmp_path, monkeypatch):
+    """RT-6.6 step 1 (#64, decided 2026-11-24): silence changes the display only; the
+    holder keeps its 👑 one crown lease from the moment it turned silent, its text says
+    the silence, without the receipt marker (no peer claims over a missing 👀), and its
+    status ends where that lease does."""
+    me(mm)
+    assert await lease.command(client, "take") == "taken"
+    at = _no_sign_since(monkeypatch, 900 + 100)  # silent since 100 s
+    await lease.set_status(client, "renew")
+    s = mm.custom_status()
+    assert holds() and s["emoji"] == "crown"
+    assert s["text"].startswith(f"coordinator · silent · no sign since {time.strftime('%H:%MZ', time.gmtime(at))}")
+    assert not lease.sets_receipts(s["text"]) and life.is_shown()
+    end = int(at) + 900 + 150
+    assert s["expires_at"] == lease._rfc3339(end)
+    assert coord(tmp_path)["CROWN_UNTIL"] >= end + lease.crown_beat_sec()  # the drop is at the end
+    # the beat renews nothing while silent: the end stays where it is
+    await lease.set_status(client, "renew")
+    assert mm.custom_status()["expires_at"] == lease._rfc3339(end)
+    # the end reached: dropped, logged as silent
+    monkeypatch.setattr(life, "_sign", at - 50)
+    await lease.set_status(client, "renew")
+    assert not holds() and mm.custom_status()["emoji"] == "zzz"
+
+
+async def test_a_sign_within_the_last_lease_keeps_the_crown_and_restarts_the_count(mm, client, tmp_path, monkeypatch):
+    """RT-6.6 step 1 (#64): a sign of the agent while it is silent ends the silence;
+    the crown is renewed as before, and a later silence counts its lease anew."""
+    me(mm)
+    assert await lease.command(client, "take") == "taken"
+    _no_sign_since(monkeypatch, 900 + 140)
+    await lease.set_status(client, "renew")
+    assert holds() and mm.custom_status()["text"].startswith("coordinator · silent · ")
+    life.take_up()
+    await lease.set_status(client, "renew")
+    s = mm.custom_status()
+    assert holds() and s["emoji"] == "crown" and lease.sets_receipts(s["text"])
+    assert "silent" not in s["text"] and not life.is_shown()
+    assert coord(tmp_path)["CROWN_UNTIL"] >= time.time() + lease.crown_lease_sec() - 1
+    _no_sign_since(monkeypatch, 900 + 10)  # silent again, 10 s: a fresh lease
+    await lease.set_status(client, "renew")
+    assert holds() and mm.custom_status()["emoji"] == "crown"
+
+
+async def test_a_push_left_untaken_keeps_the_crown_one_crown_lease(mm, client, tmp_path, monkeypatch):
+    """RT-6.6 step 1 (#64): a channel session's holder silent by a push left untaken
+    for MM_ACK_WAIT_SEC keeps the crown one crown lease from there, then drops it."""
+    me(mm)
+    _dir(tmp_path).mkdir(exist_ok=True)
+    (_dir(tmp_path) / f"channel-{UID}.env").write_text("CONFIRMED=1\n")
+    assert await lease.command(client, "take") == "taken"
+    await lease.set_status(client, "idle")
+    monkeypatch.setattr(life, "_untaken", time.time() - 45 - 149)
+    await lease.set_status(client, "renew")
+    assert holds() and mm.custom_status()["text"].startswith("coordinator · silent · ")
+    monkeypatch.setattr(life, "_untaken", time.time() - 45 - 150)
+    await lease.set_status(client, "renew")
+    assert not holds() and mm.custom_status()["emoji"] == "zzz"
 
 
 async def test_a_silent_agent_never_claims_at_its_tick(mm, client, monkeypatch):
@@ -1095,14 +1155,14 @@ async def test_the_crown_log_names_each_way(mm, client, tmp_path, monkeypatch):
     _coord_file(tmp_path, monkeypatch, CROWN_UNTIL=0, PENDING=0, YIELD_UNTIL=0)
     assert await lease.command(client, "take") == "taken"
     since = _no_sign_since(monkeypatch, 901)
-    monkeypatch.setattr(life, "_untaken", time.time() - 50)
+    monkeypatch.setattr(life, "_untaken", time.time() - 200)  # silent 45 s on, then a lease
     await lease.set_status(client, "renew")                   # the silent drop
     lines = _crown_log(tmp_path)
     assert [(ln["event"], ln["way"]) for ln in lines] == [
         ("gained", "take"), ("lost", "release"), ("gained", "take"), ("lost", "silent")]
     silent = lines[-1]
     assert silent["since"] == time.strftime("%Y-%m-%dT%H:%M:%SZ", time.gmtime(since))
-    assert silent["turn"] is False and 49 <= silent["untaken_sec"] <= 52
+    assert silent["turn"] is False and 199 <= silent["untaken_sec"] <= 202
     assert set(silent) == {"t", "event", "way", "turn", "since", "untaken_sec"}
 
 

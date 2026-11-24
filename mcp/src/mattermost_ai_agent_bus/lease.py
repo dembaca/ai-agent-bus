@@ -53,7 +53,8 @@ SLOT_SEC = 10.0
 STATES = ("working", "listening", "idle", "bus", "offline")
 # The status text's first word for an agent without a sign (ADR-007 amendment step 1).
 SILENT = "silent"
-_SILENT_SINCE = re.compile(rf"{SILENT} · no sign since (\d\d:\d\dZ)")
+# Also after `coordinator · `: a silent holder within its last crown lease (#64).
+_SILENT_SINCE = re.compile(rf"(?:coordinator · )?{SILENT} · no sign since (\d\d:\d\dZ)")
 # A segment of a holder's status text: its server sets the receipts (👀, ⏳) on the
 # posts that wake it (ADR-007 amendment, decided 2026-11-12; RT-6.6 step 10). A
 # holder without it (an older plugin) is judged as before: nobody claims over it.
@@ -609,16 +610,30 @@ async def _set_status(client: ChatPort, state: str, label: str = "") -> None:
         log.info("crown mirror dropped: another agent holds the crown over NATS")
         crownlog.note("lost", "nats")
         crown = 0
-    if since and crown > now:
-        # A silent holder drops the crown; the next agent claims at its slot. It
-        # yields one crown lease, not a release's two leases: a silence may end
+    grace = 0
+    if since and crown > now and now < (end := _silent_end(uid, state)):
+        # #64 (decided 2026-11-24): silence alone changes the display; a silent holder
+        # keeps its crown one crown lease from the moment it turned silent, and any sign
+        # of the agent in that time ends the silence.
+        grace = end
+    elif since and crown > now:
+        # A silent holder drops the crown after that lease; the next agent claims at its
+        # slot. It yields one crown lease, not a release's two leases: a silence may end
         # with the next tool call, and the slots come first anyway.
         _save_coord(uid, 0, 0, now + crown_lease_sec())
         log.info("crown dropped: no sign of the agent since %s (ADR-007 amendment step 1)",
                  _rfc3339(int(since)))
         crownlog.note("lost", "silent", since=since)
         crown = 0
-    if state != "offline" and crown > now:
+    if state != "offline" and crown > now and grace:
+        # The silent holder's last lease (#64): 👑 with the silence in the text, so the peers
+        # see the crown held and elect nobody; no receipt marker, so none of them claims over
+        # a missing 👀 meanwhile (RT-6.6 step 10). The file runs a crown beat longer than the
+        # status: the heartbeat wakes at the end and drops the crown there, logged.
+        crown = max(crown, grace + crown_beat_sec())
+        emoji, until = a2a.status_emoji(StatusMark.COORDINATOR), grace
+        text = f"coordinator · {text}"
+    elif state != "offline" and crown > now:
         # In a home over NATS (RT-6.38) the beat extends the mirror only while the NATS view
         # says this agent holds the crown; unknown or down, it runs out on its own.
         if reachable and (nats is None or (nats.view is not None and nats.view.mine)):
@@ -1234,8 +1249,9 @@ def _nats_hold_track(view: CrownView) -> None:
 
 def _nats_reachable(rows: list[dict[str, Any]], uid: str) -> bool:
     # The own state decides too: an idle holder's mirror still shows 👑 until its lease ends.
+    # A silent holder within its last crown lease (#64) still holds: its mirror shows 👑.
     return (any(r["id"] == uid and r["reachable"] for r in rows) and _judged(uid)[0]
-            and not _silent(uid))
+            and (not _silent(uid) or _in_grace(uid)))
 
 
 async def _nats_holder_checks(client: ChatPort, source: NatsSource, uid: str, name: str,
@@ -1256,7 +1272,8 @@ async def _nats_holder_checks(client: ChatPort, source: NatsSource, uid: str, na
             await source.claim(name)
             log.info("crown yielded: this holder is not reachable, another member stands (RT-6.38)")
             await _render(client)
-    elif any(c != view.me for c in view.candidates) and await unreceipted(client, uid):
+    elif (any(c != view.me for c in view.candidates) and not _in_grace(uid)
+          and await unreceipted(client, uid)):
         # A post that needs the holder got neither 👀 nor ⏳ in time (RT-6.6 step 10, the
         # promise of coordinator.md): the holder's own server claims again, once.
         _nats_yielded = True
@@ -1813,6 +1830,19 @@ def _silent(uid: str, state: str = "") -> float:
     return life.silent_since(listening=listening) if counts else 0.0
 
 
+def _silent_end(uid: str, state: str = "") -> int:
+    """When a silent agent's crown ends (epoch s): one crown lease after it turned
+    silent (#64, RT-6.6 step 1); 0 while it is not silent."""
+    counts, listening = _judged(uid, state)
+    at = life.silent_at(listening=listening) if counts else 0.0
+    return int(at) + crown_lease_sec() if at else 0
+
+
+def _in_grace(uid: str) -> bool:
+    """Silent, but within the crown lease it keeps after that (#64)."""
+    return time.time() < _silent_end(uid)
+
+
 async def ctx_line(client: ChatPort) -> None:
     """The context reached usage.CTX_LINE_AT (ADR-008 step 4, RT-6.6 step 9): one
     fyi line in the agent's HELLO thread, once per context window, no model turn.
@@ -1931,6 +1961,8 @@ async def heartbeat(get_client: Callable[[], Awaitable[ChatPort | None]],
                 counts, listening = _judged(uid)
                 if counts and (silent_at := life.due(listening=listening)):
                     delay = min(delay, max(1.0, silent_at - now))
+                if held and (end := _silent_end(uid)) > now:
+                    delay = min(delay, max(1.0, end - now))  # #64: the crown drops there
         except asyncio.CancelledError:
             raise
         except Exception as exc:  # noqa: BLE001
