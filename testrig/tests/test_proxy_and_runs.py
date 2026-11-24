@@ -10,13 +10,14 @@ twice before: a behaviour the real object does not have.
 from __future__ import annotations
 
 import asyncio
+import json
 import sys
 
 import pytest
 import websockets
 
 from bus_testrig import measurands, proc
-from bus_testrig.proxy import FrameProxy, ProxyFault
+from bus_testrig.proxy import ConnState, FaultRelay, FrameProxy, ProxyFault
 from bus_testrig.runner import Run, _pct, echo_run
 
 
@@ -92,6 +93,23 @@ async def test_stall_delays_everything_and_loses_nothing():
     assert got == [str(i) for i in range(5)]
     assert loop.time() - began >= 0.02 * 5 * 0.5
     assert (proxy.received, proxy.forwarded) == (5, 5)
+
+
+async def test_stall_counts_a_forwarded_posted_frame():
+    """A stalled frame is delivered after the delay, not discarded: the posted
+    counter has to say so, or a real stall run reads "seen 3, forwarded 0,
+    altered 3", which is a discard (Fable's review of #78)."""
+    sent: list[object] = []
+
+    async def send(frame: object) -> None:
+        sent.append(frame)
+
+    relay = FaultRelay(ProxyFault(kind="stall", stall_sec=0.001))
+    frame = json.dumps({"event": "posted", "data": {"post": "x"}})
+    await relay.deliver(frame, ConnState(), send=send)
+    assert sent == [frame]
+    assert (relay.forwarded, relay.altered) == (1, 1)
+    assert (relay.posted_seen, relay.posted_forwarded, relay.posted_altered) == (1, 1, 1)
 
 
 async def test_blackhole_keeps_the_socket_and_delivers_nothing():

@@ -410,11 +410,17 @@ func tlsFirst(urls string) bool {
 	return true
 }
 
-// natsURLSecure: every URL of the list must be tls:// (or wss://), except on
-// a loopback host, since the callout's connection carries hosts' tokens. A
-// list is tls:// throughout or not at all: over tls:// the handshake comes
-// first (tlsFirst), and a list that mixes would reach a handshake_first server
-// in the classic order, which it refuses.
+// natsURLSecure: every URL of the list must be tls://, except on a loopback
+// host, since the callout's connection carries hosts' tokens. A list is tls://
+// throughout or not at all: over tls:// the handshake comes first (tlsFirst),
+// and a list that mixes would reach a handshake_first server in the classic
+// order, which it refuses.
+//
+// Websockets (ws://, wss://) are refused: the NATS hosts' side accepts them
+// (RT-6.36), the service does not yet. Before it may, the sender-authenticity
+// suite has to run against a server with a websocket listener (the callout's
+// token, the subject rights, the auth callout over the WebSocket transport),
+// and the service's own TLS-first rule has no meaning there.
 func natsURLSecure(urls string) error {
 	var tlsURLs, others int
 	for raw := range strings.SplitSeq(urls, ",") {
@@ -422,14 +428,14 @@ func natsURLSecure(urls string) error {
 		if err != nil || u.Host == "" {
 			return fmt.Errorf("%q is not a URL", raw)
 		}
+		if u.Scheme == "ws" || u.Scheme == "wss" {
+			return fmt.Errorf("%q: the login service does not speak websockets yet; use tls:// (RT-6.36)", raw)
+		}
 		if u.Scheme == "tls" {
 			tlsURLs++
 			continue
 		}
 		others++
-		if u.Scheme == "wss" {
-			continue
-		}
 		h := u.Hostname()
 		if ip := net.ParseIP(h); h == "localhost" || (ip != nil && ip.IsLoopback()) {
 			continue

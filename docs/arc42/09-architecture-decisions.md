@@ -1069,7 +1069,11 @@ whether it is a peer (RT-6.25 step 3), and its answer settles the question
    flips, and the agent is not reachable, like a blocked one (ADR-008 step
    4): no candidate of the election and no slot (step 2). A holder's server
    drops the crown with that write, as a `release` does (no claim for two
-   `MM_LEASE_SEC`, RT-6.6 step 4), and stops the beat; the next agent claims
+   `MM_LEASE_SEC`, RT-6.6 step 4), and stops the beat (amended 2026-11-24,
+   #64: one crown lease after the agent turned silent; until then the 👑
+   stays, unrenewed, with the silence in its text and no receipt marker, and
+   a sign ends it; a busy coordinator lost its crown to a silence that was
+   only the server not hearing of the turn); the next agent claims
    at its slot (step 2) and posts `crown_taken` (step 4), its line naming
    the reason: "👑 taken over by `<bot>`: `<holder>` silent since 14:05Z".
    The next sign makes the agent reachable again, as an ordinary member

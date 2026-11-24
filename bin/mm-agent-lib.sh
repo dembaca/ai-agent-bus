@@ -616,31 +616,6 @@ mm_bot_state_file() {
   printf '%s' "$(mm_state_dir)/${kind}-${uid}.env"
 }
 
-# Remember the bot's latest post in the work channel, for the Stop hook and the
-# MCP server's exit handler (RT-6.2; mcp/.../ownpost.py writes the same file):
-# mm_record_own_post <channel_id> <post JSON as the API returned it>. A post in
-# another channel leaves it as it was; when the work channel cannot be told, the
-# file goes, and the hook asks the channel as before. Never fails.
-mm_record_own_post() {
-  local cid="$1" post="$2" f work uid id root at msg hello=""
-  uid="$(jq -r '.user_id // empty' <<<"$post" 2>/dev/null)" || return 0
-  f="$(mm_bot_state_file last "$uid")" || return 0
-  work="$(mm_work_channel_id 2>/dev/null)" || { rm -f "$f"; return 0; }
-  [[ "$cid" == "$work" ]] || return 0
-  {
-    read -r id; read -r root; read -r at; read -r msg
-  } < <(jq -r --arg crown "$MM_CROWN " '.id, (.root_id // ""), (.create_at // 0),
-               (.message | ltrimstr($crown) | gsub("\\s+"; " ") | .[0:80])' <<<"$post" 2>/dev/null)
-  [[ -n "$id" ]] || return 0
-  if [[ -z "$root" && "$msg" =~ ^[^A-Za-z0-9@#]*HELLO([^A-Za-z]|$) ]]; then
-    hello="$id"
-  elif [[ "$(sed -n 's/^CHANNEL=//p' "$f" 2>/dev/null)" == "$cid" ]]; then
-    hello="$(sed -n 's/^HELLO=//p' "$f" 2>/dev/null)"
-  fi
-  mkdir -p "$(dirname "$f")" 2>/dev/null || return 0
-  printf 'CHANNEL=%s\nID=%s\nAT=%s\nMSG=%s\nHELLO=%s\n' "$cid" "$id" "$at" "$msg" "$hello" >"$f" 2>/dev/null || true
-}
-
 # How long a custom status lives without renewal (MM_LEASE_SEC, default 900 s).
 mm_lease_sec() {
   local s="${MM_LEASE_SEC:-900}"
