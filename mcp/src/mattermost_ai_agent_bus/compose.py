@@ -141,8 +141,9 @@ def nats_homes_from_env(environ: Mapping[str, str] | None = None) -> frozenset[s
 def nats_settings_from_env(home: str, lobby: str = "",
                            environ: Mapping[str, str] | None = None) -> NatsSettings | None:
     """The NATS settings of a session whose home channel is `home` (the lobby, MM_CHANNEL,
-    is `lobby`): MM_NATS_URL (one or more URLs, comma or space separated; tls://, or
-    nats:// to a loopback host), MM_NATS_CA_FILE (optional), MM_PROPS_PREFIX. None
+    is `lobby`): MM_NATS_URL (one or more URLs, comma or space separated, all one scheme:
+    tls:// or wss://, or nats:///ws:// to a loopback host), MM_NATS_CA_FILE (optional),
+    MM_PROPS_PREFIX. None
     without a URL; raises ValueError for a URL or prefix that is not allowed."""
     from .natsbus import NatsSettings
 
@@ -195,7 +196,8 @@ def _with_nats(adapter: BusClient) -> BusClient:
         memory = int(env("MM_NATS_MEMORY") or DEFAULT_MEMORY)
     except ValueError:
         memory = DEFAULT_MEMORY
-    port = NatsPort(adapter, settings, {home}, memory=memory)
+    # MM_BRIDGE_BOT: the bridge's copies of the home's NATS posts are dropped on read (RT-6.36 step 4).
+    port = NatsPort(adapter, settings, {home}, memory=memory, bridge_bot=env("MM_BRIDGE_BOT"))
     lease.use_nats(home, port)  # the crown of the home is the NATS bus's (RT-6.38)
     return cast("BusClient", port)
 

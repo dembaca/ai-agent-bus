@@ -7,7 +7,7 @@ cost. A decision is recorded once it is taken, before it is built; its status
 says how far the code has come. The scenarios in Section 6 describe what the
 code does today and point here where a decision will change them.
 
-| ADR | Decision | Status | Work packages (#63, #83) |
+| ADR | Decision | Status | Work packages / issue |
 |-----|----------|--------|--------------------------|
 | ADR-001 | Authority comes from trust, not from a role or a channel | Decided 2026-10-29, built (WP2, 0.60.0; WP6, 0.64.0) | WP2, WP6 |
 | ADR-002 | One home per agent; guests only talk; a crown per (agent, home); `MM_CHANNEL` is the lobby | Decided 2026-10-29, built (WP1, 0.59.0; WP4, 0.62.0; WP5, 0.63.0; WP6, 0.64.0) | WP1, WP4, WP5, WP6 |
@@ -15,16 +15,18 @@ code does today and point here where a decision will change them.
 | ADR-004 | Ask delegates: a human hands their asks to a delegate; routing and authority are separate, authority is bounded by impact | Proposed (2026-11-01), not built; depends on #83 | #83 |
 | ADR-005 | Ask routing modes: workers ask their coordinator first; the coordinator answers questions, never grants approvals; a mode per home, switched by a trusted human | Accepted (2026-11-01); phase 1 built (0.67.0): `direct` and `coordinator`, switched by a command in the home; phase 2 built (0.68.0): the registrar's signed `/agent-ask-mode` record, the only source once its keys are pinned; phases 3–4 open (`delegated` with ADR-004, standing approvals) | #83 |
 | ADR-006 | Mandate for a role: a trusted human's pinned post in a home lets the holder of a named crown (`👑 of ~<home>`) give tasks and priorities there; never approvals, never over another owner's agents | Accepted (2026-11-04); phases 1 (0.71.0: the pinned post) and 2 (0.71.18: the registrar's signed `/agent-mandate` record) built, RT-6.26 | #141 |
-| ADR-007 | A dead 👑 is found in seconds: a short crown lease for the holder only, a 👀 acknowledgement on demand, the crown stays with the new holder; amended: reachable only with a sign of life of the agent, the 👀 once the agent has the post, stale server copies stay off the bus, the crown only for peers | Proposed (2026-11-04), amended 2026-11-04 (the agent's sign of life); phase 1 built (0.75.0: the crown beat and the slot); amendment phases B (0.71.9: the crown only for peers), C (0.71.11: stale copies stay off the bus) and D (0.77.0: the sign of life and `silent`, without the ping) and E (0.80.0: the 👀 at the take-up, the ⏳, the claim over a missing receipt, `crown_taken`; with phase 2) built, the ping and the prompt rule not built | – |
+| ADR-007 | A dead 👑 is found in seconds: a short crown lease for the holder only, a 👀 acknowledgement on demand, the crown stays with the new holder; amended: reachable only with a sign of life of the agent, the 👀 once the agent has the post, stale server copies stay off the bus, the crown only for peers | Accepted (proposed 2026-11-04), amended 2026-11-04 (the agent's sign of life) and 2026-11-24 (#64: a silent holder keeps its crown one crown lease, unrenewed, before it drops it); phase 1 built (0.75.0: the crown beat and the slot); amendment phases A (0.71.7: no question to a foreign 👑), B (0.71.9: the crown only for peers), C (0.71.11: stale copies stay off the bus) and D (0.77.0: the sign of life and `silent`, without the ping) and E (0.80.0: the 👀 at the take-up, the ⏳, the claim over a missing receipt, `crown_taken`; with phase 2) built, the ping and the prompt rule not built | – |
 | ADR-008 | Context and limits of the agents in the chat: the status line's numbers reach the server, the bot's status, the roster and one fyi line per threshold; a blocked agent is marked, answered for and not reachable | Proposed (2026-11-04); phase 1 built (0.71.6): the tap, A and C; phase 3 partly built (0.76.0): the context threshold; the window thresholds and the blocked state, B and the other runtimes open | – |
 | ADR-009 | Push for plugin runtimes: a long-poll wake endpoint, OpenCode without a listen window, a pi adapter | Decided, built (proposed 2026-11-04): phase 1 (0.71.8: the long poll of `GET /v1/wake`), phase 2 (0.71.10: the OpenCode plugin without a listen window) and phase 3 (0.79.0: the pi extension, RT-6.27) | – |
 | ADR-010 | MCP debug: a trusted human switches, per home, which categories of its own MCP server's decisions show (`/agent-debug`, additive, an hour by default, a signed record); the agent's own post carries them as a grey `debug` attachment, the agent gets them in its channel tag and `wait_for_events`; never in a guest channel or the lobby, in a DM only what the other side may see | Decided, built: phase 1 in the registrar (0.8.0), phase 2 on the bus (0.85.0, 2026-11-12, RT-6.31) | – |
 | ADR-011 | Updates from a signed release only: the host copy is installed from a release tag signed by a pinned release key into a directory per version, switched in one step and rolled back the same way; the bus tells which release is available and what it needs, a human approves every update, a breaking one never runs by itself | Accepted, phase 1a built (0.81.0): `releases/`, `current` and `previous` as symlinks switched in one rename, `--rollback`, `--downgrade`, the release recorded per session, a hook dispatcher corral approves once (RT-6.28); phase 1b built (0.82.0): `--release v<x.y.z>` installs an annotated tag with its name, tree version and tag object checked, and its SSH signature when the host pins the keys in `MM_RELEASE_SIGNERS` (opt-in; the owner's key and an offline backup) (RT-6.29); phase 2 built (0.83.0): the release check on the host (the installer's `--check`, the MCP server once a day (hourly while the newest found is older than the running host copy) as a bounded child, a plugin's server through the host copy's script), the notice in `bus_info`, the start hook and the turn-end banner, the version in the roster, the `Needs:`/`Withdrawn:` lines with a doc-check (RT-6.30); 0.84.0, decisions (4) and (5) of 2026-11-12: keys pinned once per host in `release-signers` beside `releases/`, `--replace-signers`, `--forget-signers`, a withdrawn version refused unless `--withdrawn-ok` (RT-6.29, RT-6.30); phase 3 built (0.86.0: the registrar distributes the release keys once and names the version, and corral's host copy updates itself to it between sessions, RT-6.32), `latest` built (0.87.0) | – |
 | ADR-012 | Files an agent attaches: the server never opens a path the agent names; the bytes come from inside the sandbox (the shell's `POST /v1/files`, or a small text in the `attach` tool), checked by their bytes, uploaded for a post that takes only this server's fresh uploads | Decided 2026-11-14, built (0.90.0, RT-6.33) | — |
 | ADR-013 | The channel banner shows what waits: the home's 👑 server writes it on a change only, at most once a minute; a stall in red, asks waiting on a human in amber, else the crown and the agents by status; display only, never input; a human's banner is left alone and told to its human; without the licence or the permission everything stays as today; later the 👑 prefix only on asks and routings | Withdrawn (2026-11-16): depends on the Mattermost edition and a permission setting; the header carries the rare facts instead | — |
-| ADR-014 | Agent-to-agent traffic over NATS JetStream; Mattermost stays the humans' chat behind one central adapter per tenant; agents log in through Keycloak (device flow) and a login service issues 15-minute NATS credentials bound to the host's own key; a clean-room build from Cotal's protocol description with a message format of the bus's own (no wire compatibility with Cotal); tools, hook API and bus logic unchanged behind the ports; parallel operation switched per home channel, the registrar shut down last; the sender NATS-native (last subject token, agents read only through push consumers the login service makes, no signed envelope) | Accepted (2026-11-22) by the owner, with the review's recommendations; three later points open (below), none of them blocks the first NATS code; not built | — |
-| ADR-015 | Operator web console: a web application for the people who look after the agents, with the agents by state, who trusts and who coordinates whom, the bus's statistics as charts, and the open asks answered beside their thread; no chat. It stands alone on the bus on NATS, with Keycloak as its only login and no dependency on Mattermost (decided by the owner on 2026-11-23). Recommended: on NATS as the logged-in operator, with a credential of that person's own from the login service, so NATS says who answered and the asking agent's server still decides whether it approves | Proposed (2026-11-23), not accepted; eight points open for the owner, three of them decided on 2026-11-23 (ADR-016); it needs parts of the NATS build that do not exist yet. Built: stage 1's read-only pilot (2026-11-24): the browser app against a mock of point 10's API and the server that reads the NATS homes' presence and crown live — one read-only NATS account, the pilot's deviation from the per-person credential, with the right to name its consumer's deliver subject taken as an accepted lab risk (after the pilot an admin or the login service makes the consumer and the account keeps only the read) | — |
-| ADR-016 | Der Bus ohne Chat als Quelle (the bus without a chat as its source; written in German): Keycloak is the root of identity, keyed by `sub`, with chat accounts bound to it per product; a channel directory on NATS that only the login service writes (name, public or not, members, a binding per chat) replaces Mattermost membership behind `callout.Channels`; one bridge per chat product vouches for its humans, and later a Keycloak login on NATS itself; the login service attests trust lists; agents need no chat. Decided by the owner on 2026-11-23: the directory, Mattermost membership behind a replaceable interface until then, and for the console reading only, a Python server and what an operator sees | Accepted (2026-11-23) by the owner, not built; its nine open points decided by the owner the same day; it changes ADR-014 points 6, 10, 11 and 16 | — |
+
+| ADR-014 | Agent-to-agent traffic over NATS JetStream; Mattermost stays the humans' chat behind one central adapter per tenant; agents log in through Keycloak (device flow) and a login service issues 15-minute NATS credentials bound to the host's own key; a clean-room build from Cotal's protocol description with a message format of the bus's own (no wire compatibility with Cotal); tools, hook API and bus logic unchanged behind the ports; parallel operation switched per home channel, the registrar shut down last; the sender NATS-native (last subject token, agents read only through push consumers the login service makes, no signed envelope) | Accepted (2026-11-22) by the owner, with the review's recommendations; three later points open (below), none of them blocks the first NATS code. Phase 2 built; phase 3 built in part in 0.97.0: the login service with the host's Keycloak login, consumers, a home over NATS, owner, presence and crown over NATS (RT-6.34 to RT-6.38), the attestation after 0.97.0 (RT-6.41); not built: the central adapter, the pod path, role addressing, files and DMs over NATS, signed human-origin events, shutting the registrar down | — |
+| ADR-015 | Operator web console: a web application for the people who look after the agents, with the agents by state, who trusts and who coordinates whom, the bus's statistics as charts, and the open asks answered beside their thread; no chat. It stands alone on the bus on NATS, with Keycloak as its only login and no dependency on Mattermost (decided by the owner on 2026-11-23). Recommended: on NATS as the logged-in operator, with a credential of that person's own from the login service, so NATS says who answered and the asking agent's server still decides whether it approves | Proposed (2026-11-23), not accepted, not built; eight points open for the owner, three of them decided on 2026-11-23 (ADR-016); it needs parts of the NATS build that do not exist yet Proposed (2026-11-23), not accepted; eight points open for the owner, three of them decided on 2026-11-23 (ADR-016); it needs parts of the NATS build that do not exist yet. Built: stage 1's read-only pilot (2026-11-24): the browser app against a mock of point 10's API and the server that reads the NATS homes' presence and crown live — one read-only NATS account, the pilot's deviation from the per-person credential, with the right to name its consumer's deliver subject taken as an accepted lab risk (after the pilot an admin or the login service makes the consumer and the account keeps only the read) | Proposed (2026-11-23), not accepted; eight points open for the owner, three of them decided on 2026-11-23 (ADR-016); it needs parts of the NATS build that do not exist yet. Built: stage 1's read-only pilot (2026-11-24): the browser app against a mock of point 10's API and the server that reads the NATS homes' presence and crown live — one read-only NATS account, the pilot's deviation from the per-person credential, with the right to name its consumer's deliver subject taken as an accepted lab risk (after the pilot an admin or the login service makes the consumer and the account keeps only the read) | — |
+| ADR-016 | The bus without a chat as its source: Keycloak is the root of identity, keyed by `sub`, with chat accounts bound to it per product; a channel directory on NATS that only the login service writes (name, public or not, members, a binding per chat) replaces Mattermost membership behind `callout.Channels`; one bridge per chat product vouches for its humans, and later a Keycloak login on NATS itself; the login service attests trust lists; agents need no chat. Decided by the owner on 2026-11-23: the directory, Mattermost membership behind a replaceable interface until then, and for the console reading only, a Python server and what an operator sees | Accepted (2026-11-23) by the owner, its nine open points decided by the owner the same day; it changes ADR-014 points 6, 10, 11 and 16. Built in part: the channel directory (RT-6.39) and "in doubt, foreign" (RT-6.16) in 0.97.0; after 0.97.0 the admin API with the import from Mattermost (RT-6.40) and the attested trust lists (RT-6.41). Not built: the bridges, `checkChat` as a binding, agents without a chat, the host's agent name from an anchor that is not the username. Addition 2026-11-24: all Mattermost functions in one service, the bridge in `services/bridge`, the registrar's move as an open step; built step by step, the pilot with one bridge bot | — |
+
 
 **Terms.** An agent's **home** is the first entry of `MM_PROJECT_CHANNEL`,
 else `MM_CHANNEL`: exactly one per agent. Its **guest channels** are the
@@ -82,7 +84,7 @@ an agent route; nothing says whether a routed request carries authority.
   `for @…` (the registrar writes owners). Otherwise every bus agent is a peer,
   exactly as today. A description that cannot be read (API error) failed
   open until the condition of the bus without a chat as its source (ADR-016,
-  "im Zweifel fremd") was built: since then the owner last read holds for
+  "in doubt, foreign") was built: since then the owner last read holds for
   `OWNER_GRACE_SEC` (300 s; with the client's cache at most 15 minutes after
   Mattermost last answered), after that the author is foreign, and my own bot
   unreadable keeps the split on (RT-6.16). A trusted list the registrar cut
@@ -190,15 +192,19 @@ since WP2 (0.60.0, RT-6.16 step 1), bound by enrollment tokens in WP3
 warns at session start when the own bot's owner is not its responsible
 human (RT-6.16 step 1). The signed registrar claim (#83) is built on the
 bus side in 0.66.0 (RT-6.24): carried from the registration to the MCP server,
-verified against keys pinned in `MM_REGISTRAR_KEYS`, published on the bot's
-account and in its HELLO card, and used for other agents' owners; without
-pinned keys nothing changes. The registrar's side (signing, `…/keys`) is
-built in its own repository; rolling it out waits for a plan.
+verified against keys pinned in `MM_REGISTRAR_KEYS`, carried in its HELLO
+card, and used for other agents' owners; without pinned keys nothing
+changes. Since 0.71.19 nothing is written onto the bot's account (a bot's
+patch of its own user props is a 403); since 0.71.21 another agent's
+attestation is read from the registrar (`…/register/v1/attestations/<bot
+id>`, RT-6.24 step 5). The registrar's side (signing, `…/keys`) is built in
+its own repository; the bus also reads its signed records for the ask mode
+(`…/modes/<home>`), the mandate (`…/mandates/<channel id>`) and `/agent-debug`.
 
 **Context:** ADR-001 needs each agent's owner and trusted humans. The
 registrar already writes them into the bot description as
 `for @<owner> · trusts @…`, which every MCP server can read with its bot
-token (`GET /users/<id>`, as `profile.py` does for its warning). With one
+token (`GET /users/<id>`, as `client.py` does for `profile.py`'s warning). With one
 shared registration secret, though, any holder can register a bot `for` any
 human (Section 7.3, "The profile says whom an agent answers to").
 
@@ -235,7 +241,9 @@ human (Section 7.3, "The profile says whom an agent answers to").
   (Section 5); the description stays the portable fallback.
 - **Keycloak/OIDC dropped:** Mattermost already says who typed a slash
   command, so no identity provider is needed (and Mattermost's OIDC is not
-  in every edition).
+  in every edition). Reversed for the NATS path: there agents log in
+  through Keycloak (ADR-014, RT-6.34), and Keycloak is the root of identity
+  (ADR-016).
 - **The signed claim (#83, built in 0.66.0, RT-6.24):** the registrar signs
   what it registered (`bot_id`, `username`, `responsible`, `trusted`,
   `trusted_cut`, `kind`, `via`, `iat`, `exp`) with Ed25519 and returns it as
@@ -244,8 +252,11 @@ human (Section 7.3, "The profile says whom an agent answers to").
   (`mm-agent-registrar-keys.sh` shows them for comparing out of band). Each
   MCP server checks its own attestation at start against its settings (a
   difference is a warning; the environment stays authoritative for the own
-  session) and publishes it in its bot's user props, where the read that
-  fetches the description finds it, and in its HELLO card. For another agent
+  session) and carries it in its HELLO card (as built since 0.71.19: not on
+  the bot's account, which a bot cannot patch); another agent's attestation
+  is fetched from the registrar (`GET <registrar>/register/v1/attestations/<bot
+  id>`, since 0.71.21, RT-6.24 steps 3 and 5) and verified against the
+  pinned keys. For another agent
   a valid attestation replaces the description; where they disagree, the
   attestation wins. `via: enrollment` counts as signed, whatever the native
   owner says, so an untrusted admin who reassigns `owner_id` or rewrites a
@@ -272,9 +283,12 @@ no proof of who uses them. Keycloak/OIDC login: an extra dependency. The
 human's own personal access token creating the bot: the agent would hold an
 unscoped human token. Owner from a session setting: anyone could write
 anything. For the signed claim: trusting the registrar's key endpoint at
-runtime (rejected: whoever answers it would vouch for itself); the
-attestation only in the HELLO card (rejected: an agent's owner is read from
-its account, which every server reads anyway, and a HELLO can be missing).
+runtime (rejected: whoever answers it would vouch for itself; the
+attestations themselves are fetched from the registrar since 0.71.21, they
+carry the signature the pinned keys check); the attestation only in the
+HELLO card (rejected: a HELLO can be missing; first the attestation was put
+on the bot's account, which a bot cannot write, so since 0.71.21 other
+agents read it from the registrar).
 
 **Consequences:** No secret key material on the hosts: only the registrar's
 public keys, pinned by the operator. The peer rule is only as sound as the
@@ -290,7 +304,7 @@ their bound bots (Mattermost's `DisableBotsWhenOwnerIsDeactivated`).
 
 **Status:** Proposed (2026-11-01). Not built; no scenario in Section 6 changes
 until it is decided. Depends on #83 (the registrar's signing key and the keys
-pinned in `MM_REGISTRAR_KEYS`), which stays parked until this is accepted.
+pinned in `MM_REGISTRAR_KEYS`), built on the bus side in 0.66.0 (RT-6.24).
 
 **Context:** Every `ask_human` mentions and waits for one human, by default
 the session's responsible human. Only a post or reaction marked
@@ -537,7 +551,7 @@ two hours did nothing but confirm such an order. The human had already said
 what they wanted, to the coordinator, in a channel the worker cannot read.
 Naming a bot in that word does not last: bot names change with every session.
 
-**Decision (proposed):**
+**Decision:**
 
 1. **A mandate is a trusted human's standing word, addressed to a role.** A
    trusted human pins a post in a home whose first line is
@@ -812,11 +826,11 @@ not; without one nothing is marked, as today (Section 7.2).
 
 ## ADR-007: A dead 👑 is found in seconds
 
-**Status:** Proposed (2026-11-04); phase 1 built (0.75.0: the crown beat and
+**Status:** Accepted (proposed 2026-11-04); phase 1 built (0.75.0: the crown beat and
 the slot, with the proposed numbers; the servers compare the status's
 `expires_at` themselves, so Mattermost's handling of a short expiry decides
 nothing, and with no holder seen only the oldest that stands looks, see RT-6.6
-step 2); phases B (the crown only
+step 2); phases A (a question never goes to a foreign 👑, 0.71.7), B (the crown only
 for peers, 0.71.9), C (stale copies stay off the bus, 0.71.11) and D (the
 sign of life and `silent`, 0.77.0, without the ping: decided by dembaca on
 2026-11-10, bus ask `pgfgcaxwpbr8mmjj34xpbnpswc`) and E (the 👀 at the
@@ -828,8 +842,11 @@ holder) and on 2026-11-04 (step 4: the `crown_taken` post); the numbers below
 are proposals. Builds on ADR-002 (a crown per
 (agent, home)) and RT-6.6; touches RT-6.12 and RT-6.25. Amended on
 2026-11-04 (the agent's sign of life, at the end), approved by the trusted
-human dembaca (bus ask `s5gg3y458fbnfebc5ojfa6neny`): still proposed, not
-built; the amendment also touches RT-6.10, RT-6.17 and RT-6.18.
+human dembaca (bus ask `s5gg3y458fbnfebc5ojfa6neny`), built in phases A to
+E, without the ping and the prompt rule; the amendment also touches
+RT-6.10, RT-6.17 and RT-6.18. Amended on 2026-11-24 (#64): a silent holder
+keeps its crown, unrenewed and without the receipt marker, for one crown
+lease before it drops it (step 1 of the amendment).
 
 **Context:** A crown whose holder died is claimed by nobody until the holder's
 status lease runs out: `MM_LEASE_SEC`, 900 s (RT-6.6 step 6; error rows 2 and
@@ -843,7 +860,7 @@ renewed while the 👑 sees nothing. Everything that finds this out must run in
 the MCP servers; an agent that polls for it costs model turns, so a server does the work
 where it can.
 
-**Decision (proposed):**
+**Decision:**
 
 1. **A crown beat.** Only the holder of a crown renews it faster:
    `MM_CROWN_BEAT_SEC` (default 60, at least 15) writes its status again, and
@@ -872,7 +889,7 @@ where it can.
    routed to it, RT-6.25) the holder's **server** puts a 👀 reaction on the
    post as soon as it has it, before the push reaches the model: no LLM turn,
    and a human sees that someone received it. `MM_ACK_WAIT_SEC` (default 45,
-   30 to 60) later, each other server that would count the post as such a
+   30 to 60 recommended; any positive number is taken) later, each other server that would count the post as such a
    wake (its own trust and gate, RT-6.16: a post it gates starts nothing)
    looks at the post's reactions, with one more look 10 s later. The other
    servers hear the reaction on their WebSocket, so an answered post costs them
@@ -943,7 +960,7 @@ compare `expires_at` themselves. (2)
 the 👀 and the claim after a missing one, `crown_taken` and the yield, with
 RT-6.12 step 3 and RT-6.25 step 6. Each is a patch-sized change, 1 first.
 
-**Tests (when built, `mcp/tests/`):** the beat writes at the short expiry only
+**Tests (the plan, `mcp/tests/`):** the beat writes at the short expiry only
 while the crown is held, and falls back to the long one on `release`, on a lost
 crown and on a take that went to someone else; the status expires after 2.5
 beats and the roster stops counting the holder; the first and the second
@@ -989,7 +1006,8 @@ built if it shows up in use.
 
 **Amendment (2026-11-04): the agent's sign of life.** Approved by the
 trusted human dembaca on 2026-11-04 (bus ask `s5gg3y458fbnfebc5ojfa6neny`).
-Proposed, not built; the numbers are proposals. It changes steps 1, 2, 3 and
+Built in phases A to E, without the ping and the prompt rule (see the
+status). It changes steps 1, 2, 3 and
 5 above where it says so and, once built, ADR-002's "a foreign agent may win
 the election". Builds on ADR-001 (peer and foreign), ADR-003 (bound and
 unbound bots) and ADR-008 step 4 (a blocked agent is not reachable).
@@ -1024,7 +1042,7 @@ yet a question in ask mode `coordinator` goes to the 👑 without asking
 whether it is a peer (RT-6.25 step 3), and its answer settles the question
 (RT-6.25 step 6).
 
-**Decision (amendment, proposed):**
+**Decision (amendment):**
 
 1. **Reachable only with a sign of life of the agent.** An agent counts as
    reachable (RT-6.6 step 1), and may keep or claim a crown, only while its
@@ -1068,12 +1086,14 @@ whether it is a peer (RT-6.25 step 3), and its answer settles the question
    (`silent · no sign since 14:05Z · ~<home>`), one write when the state
    flips, and the agent is not reachable, like a blocked one (ADR-008 step
    4): no candidate of the election and no slot (step 2). A holder's server
-   drops the crown with that write, as a `release` does (no claim for two
-   `MM_LEASE_SEC`, RT-6.6 step 4), and stops the beat (amended 2026-11-24,
-   #64: one crown lease after the agent turned silent; until then the 👑
-   stays, unrenewed, with the silence in its text and no receipt marker, and
-   a sign ends it; a busy coordinator lost its crown to a silence that was
-   only the server not hearing of the turn); the next agent claims
+   keeps the 👑 one crown lease (`MM_CROWN_LEASE_SEC`) after the agent
+   turned silent, unrenewed, with the silence in its text and no receipt
+   marker, and a sign in that time ends it; then it drops the crown, stops
+   the beat and does not claim for one crown lease (RT-6.6 step 4)
+   (amended 2026-11-24, #64; before, it dropped the crown with the `silent`
+   write, as a `release` does, with no claim for two `MM_LEASE_SEC`, and a
+   busy coordinator lost its crown to a silence that was only the server
+   not hearing of the turn); the next agent claims
    at its slot (step 2) and posts `crown_taken` (step 4), its line naming
    the reason: "👑 taken over by `<bot>`: `<holder>` silent since 14:05Z".
    The next sign makes the agent reachable again, as an ordinary member
@@ -1293,7 +1313,9 @@ home and stands for its server, and then does not claim for one crown lease
 neither receipt or a silent one no 👀. No new scenario: the 👀 is RT-6.12 step
 7 (the open question's recommendation), the claim RT-6.6 step 10.
 
-**Tests (amendment, when built):** in `mcp/tests/` unless noted. RT-6.25
+**Tests (amendment, the plan):** in `mcp/tests/` unless noted. The cases
+with the ping and the open permission prompt fell away with the ping (not
+built, decided 2026-11-10). RT-6.25
 (`test_ask_route.py`): a question while the home's 👑 is foreign goes to the
 human at once with the `route_note`, one to a peer 👑 goes to it; a foreign
 agent's reply or 👍 in the question's thread does not settle it, a trusted
@@ -1311,7 +1333,7 @@ lapses; a relayed permission prompt open past the window lapses (RT-6.13); a
 push not taken up within the wait makes the agent `silent` at once, a push
 followed by a turn does not; a confirmed channel with nothing pushed and a
 ping answered stays reachable; a `silent` holder drops the crown, stops the
-beat and does not claim for two leases; the next sign brings it back
+beat and does not claim for one crown lease; the next sign brings it back
 without the crown; the successor's `crown_taken` names the silence. RT-6.12
 (`test_channel.py`): the 👀 comes at the take-up, not at arrival; a post
 `wait_for_events` returns gets it; a post during a turn gets ⏳ and later
@@ -1339,8 +1361,8 @@ reachable agent is foreign or unbound" (skipped; the oldest peer claims; it
 does not claim itself while a bound agent is reachable); new: "No agent of
 the home passes the peer test" (no automatic crown; the digest and the
 human); new: "A turn runs longer than the window" (alive while the ping is
-answered); new: "A permission prompt stays open past the window"
-(`silent`). Row 1 (the younger yields) holds for any two crowns, as today.
+answered; not built, a turn counts as alive until it ends); new: "A
+permission prompt stays open past the window" (`silent`; not built). Row 1 (the younger yields) holds for any two crowns, as today.
 RT-6.25: step 5's "no 👑" adds "or the 👑 is foreign to the asking agent,
 or `silent`"; new rows for step 3 (the 👑 is foreign: the human at once,
 with the `route_note`) and step 6 (a foreign agent replies or reacts in the
@@ -1390,7 +1412,8 @@ handover by step 4; record it as a RISK when built if it shows up in use.
   keeps new ones off the bus, but a process without a client keeps its bot.
   Recommendation: a server whose client sent nothing and answered no ping
   for `MM_SESSION_KEEP_SEC` ends as if the client had closed (RT-6.10 step
-  4); decide when phase C is built.
+  4). Still open after phase C (0.71.11): no server ends for that today;
+  `MM_SESSION_KEEP_SEC` only ages kept bots.
 - **A cut trust list in the peer test** (`+N`, ADR-001): a claimer cannot see
   whether its circle lies within. Recommendation: count it as not a peer, so
   this agent does not claim and another one does.
@@ -1409,7 +1432,8 @@ handover by step 4; record it as a RISK when built if it shows up in use.
 phase 3 partly built (0.76.0): the context threshold (RT-6.6 step 9); the
 window thresholds and the blocked state open, since Claude Code reports no
 `rate_limits` behind the gateway (open questions) and they wait for that
-measurement; B and the other runtimes open. Stage 1 decided by a trusted
+measurement; B open; of the other runtimes pi reports the context since
+0.79.0 (RT-6.27 step 4), OpenCode, Cursor and Codex report nothing. Stage 1 decided by a trusted
 human on 2026-11-04: the tap (step 1), A (step 2), C (step 3) and D (step 4).
 B is stage 2 and only an outlook here; E and F are alternatives. The numbers
 below are proposals; step 4's "a blocked agent is not reachable" (proposed by
@@ -1457,8 +1481,9 @@ about once a second, so nothing there may block or call the API.
    Without it the agent shows no numbers, as today.
 2. **A · the bot's status.** The custom status gets the numbers:
    `working · bus · ctx 62% · 5h 40% · ~home`. The home stays last and the
-   100 characters hold (RT-6.6 step 1): when it does not fit, the label goes
-   first, then `5h`, then `ctx`, never the home. `7d` shows only from 90 %
+   100 characters hold: when it does not fit, segments are cut in the order
+   RT-6.6 step 1 gives (as built, the version first, then the label, `7d`,
+   `5h`, `ctx`), never the home. `7d` shows only from 90 %
    (`7d 92%`), and the reset only from 90 % of a window
    (`5h 93% ↻21:40Z`, UTC, so agents in different zones read one time). The
    server writes it with the lease, on its heartbeat, and when a number
@@ -1487,7 +1512,8 @@ about once a second, so nothing there may block or call the API.
    reports the values itself. They are a display and a hint to the 👑, never a
    permission or an authority (ADR-001): a wrong number can only hold work back
    or mark an agent blocked.
-4. **D · thresholds and the limit reached.** Once per window the agent's
+4. **D · thresholds and the limit reached** (built: the context line only,
+   0.76.0, RT-6.6 step 9; the rest not built). Once per window the agent's
    server posts one fyi line in its HELLO thread: ctx at 85 % ("compaction
    soon"), a window at 90 % with its reset. When a window reaches 100 % (or
    the `StopFailure` hook with the matcher `rate_limit` fires; not yet
@@ -1505,7 +1531,8 @@ about once a second, so nothing there may block or call the API.
    environment variable turns any of it off. A harness without Claude Code's
    status line (Cursor, OpenCode, a plain MCP client) reports nothing, so its
    agents show no numbers and are never marked blocked; the rest is
-   unchanged. What those runtimes offer instead is not checked here (the
+   unchanged. The pi extension reports the context use since 0.79.0
+   (RT-6.27 step 4). What those runtimes offer instead is not checked here (the
    OpenCode plugin of RT-6.20 has no status line in this repository).
 
 **Stage 2, outlook.** B: a slash command `/agent-status`, next to `/agent-token`
@@ -1553,7 +1580,9 @@ text carries `ctx`/`5h` and the home last, and cuts the label, then `5h`, then
 `ctx`; `7d` and the reset only from 90 %; the server writes `agent_usage` into
 its bot's props, keeping the others and the attestation, under the status
 lock, and not more often than a band or the heartbeat; the roster reads the
-props, not the status text, and returns nothing for an agent without them;
+props, not the status text, and returns nothing for an agent without them
+(these two replaced by the amendment of 2026-11-05: no props, the roster
+reads the status text, tests in `mcp/tests/test_usage.py`);
 agents with one `five_hour.resets_at` share a `limit_shared` group, others
 not; the threshold line comes
 once per window, a 100 % window posts `BLOCKED` and the blocked state; a
@@ -1595,7 +1624,7 @@ the roster reads the numbers back from the **custom status text** of each
 agent, which every roster read holds anyway (`GET /users?in_channel`), with
 `usage.from_status`: `ctx <n>%`, `5h <n>%` (a reset `↻HH:MMZ` only from 90 %,
 so `limit_shared` needs it), `7d <n>%`, `$<cost>`. A segment the cut dropped
-(RT-6.6 step 1: label, `7d`, `5h`, `ctx`) is unknown, never 0. This reverses
+(RT-6.6 step 1 gives the order) is unknown, never 0. This reverses
 step 2's "nothing parses it": the text is a contract now (tests for the
 variants and the cut), and its freshness is the status's (a turn's start or
 end, a band, the heartbeat). The own row stays exact from memory. No second
@@ -1770,7 +1799,7 @@ variables), runs the turn cycle through pi's events (presence at `agent_start`;
 the drain and sign-off checks of RT-6.2 when the agent is `agent_settled`, as
 the final idle signal, not at `agent_end`; the handoff of RT-6.7 after
 `session_compact`), keeps the long poll of phase 1 open from `session_start` to
-`session_shutdown`, and starts a turn with `pi.sendUserMessage()` (immediately
+`session_shutdown` (as built: see the status), and starts a turn with `pi.sendUserMessage()` (immediately
 when idle; when a turn runs, `deliverAs: "followUp"` so it never interrupts a
 tool call, the others being the plugin's guard). It feeds ADR-008 with
 `ctx.getContextUsage()`; the limits only if the rate-limit headers prove
@@ -1819,7 +1848,7 @@ between `session_start` and `session_shutdown`, sends `followUp` while a turn
 runs and plain when idle, runs the checks at `agent_settled` and not at
 `agent_end`. RT-6.17 (the endpoint), RT-6.20 (steps 5 and 7, the window) and
 RT-6.2 step 3 (which runtimes still have a window) change; a new scenario for
-the pi turn cycle, RT-6.x, with its own test.
+the pi turn cycle, RT-6.27, with its own test.
 
 **Risks created:** none new: no new authority, the same gates. A held request
 that is never released is bounded by `wait` and by the plugin's abort.
@@ -2039,7 +2068,7 @@ appears, nor an argument's value in `calls`, nor a value under a secret's key
 in `props`; `attachments` and long values shortened, the `debug` attachment not
 in `props out`; an ask card keeps its attachment; a record not signed, or set
 by someone not trusted by this session, changes nothing; without pinned keys
-debug stays off. A new scenario in Section 6, RT-6.x, with its test.
+debug stays off. A new scenario in Section 6, RT-6.31, with its test.
 
 **Risks created:** props and author classes in plain view in the home for up
 to a day; the guest channels and the lobby stay without, a DM shows only what
@@ -2230,7 +2259,8 @@ repository's URL (`MM_RELEASE_URL`), both from the host's environment like
 session; the operator compares the keys out of band. The installer gets a new
 mode, `mm-agent-host-install.sh --release <version>`:
 
-- The version must match `^[0-9]+\.[0-9]+\.[0-9]+$` before it reaches a git
+- The version must match `v<x.y.z>`, the `v` optional
+  (`^v?([0-9]+\.[0-9]+\.[0-9]+)$`), before it reaches a git
   argument or any output.
 - It fetches the tag, anonymously over HTTPS (`GIT_TERMINAL_PROMPT=0`, no
   credential helper, no SSH agent), into a bare repository only the host sees
@@ -2296,7 +2326,7 @@ newest verified release, whether it is a patch or a minor, `Breaking` when its
 entry has that section, and what it needs first. That last part comes from a
 fixed line in the release's CHANGELOG entry, `Needs: MM_PROPS_PREFIX on every
 server`: variable names (`^MM_[A-Z0-9_]+$`) and a few fixed words, bounded in
-length, never free prose, since it reaches every agent's context. When the
+length (as built: *Phase 2 as built* below), never free prose, since it reaches every agent's context. When the
 newest verified release is older than this host's, the notice says so (a
 repository frozen or rewound).
 
@@ -2304,7 +2334,8 @@ repository frozen or rewound).
 part installs itself on the host. The host copy changes only when the
 developer runs `--release`, after the notice; a minor release with
 `### Breaking` prints its `Needs:` lines and asks for confirmation in the
-terminal first. The plugin keeps Claude Code's own update, whose auto-update
+terminal first (not built: the installer asks nothing; the notice alone
+names `Breaking` and the `Needs:` lines). The plugin keeps Claude Code's own update, whose auto-update
 is on or off, not per kind of release (open question). Pull, not push: a
 trusted human's `/agent-update` that installs on every host of a home is not
 part of this decision (alternative (c)). *Since phase 3 (2026-11-13):* corral's
@@ -2426,10 +2457,11 @@ becomes `releases/<version>-legacy/`; **1b** (built, 0.82.0, RT-6.29) adds
 the signed tag and `--release`, which installs into `releases/<version>/` with
 `SOURCE=signed`, or `SOURCE=release` `VERIFIED=no` on a host without pinned keys; a host installs it once the owner's first signed tag exists
 and its keys are pinned. The non-corral configs pointed at the host copy
-(point 7) are still open. **2** (built, 0.83.0, RT-6.30) follows the recommendations
+(point 7): done for OpenCode and pi (`adapters/opencode.md`,
+`adapters/pi.md`), still open for Cursor, Codex and Claude Code. **2** (built, 0.83.0, RT-6.30) follows the recommendations
 of two open questions below: the MCP server runs the check as a bounded child (and
 the installer's `--check`), and a `Withdrawn:` line is read; the notice honours it,
-`--release` does not yet. Each phase is versioned by CLAUDE.md's SemVer rule (a new command
+and `--release` refuses it since 0.84.0 (decision (5)). Each phase is versioned by CLAUDE.md's SemVer rule (a new command
 is a minor), which supersedes "patch-sized" in this ADR's first draft.
 
 *Phase 2 as built (0.83.0, RT-6.30).* `bin/mm-agent-release-check.sh` shares the
@@ -2484,14 +2516,17 @@ swaps `current` and `previous`; `postEnd` runs the release `preStart` recorded;
 a running host process keeps its tree. `mcp/tests/`: the notice shows version,
 kind, `Breaking` and `Needs:` from a verified tag only, never from one that does
 not verify; a `Needs:` line outside its grammar is dropped; `unsigned` shows
-after `--from`; a failed check changes nothing; the roster shows versions. A new
-scenario in Section 6, RT-6.x, and Section 7.1 rewritten for the release path.
+after `--from`; a failed check changes nothing; the roster shows versions. New
+scenarios in Section 6, RT-6.28, RT-6.29, RT-6.30 and RT-6.32, and Section 7.1
+rewritten for the release path.
 
 **Risks created:** a leaked release key installs code on every host that
 pins it, until they unpin it: kept offline, rotated like the registrar's keys
 (pin old and new together). A bad release stays validly signed for ever:
-the downgrade guard and the notice keep hosts from going back to it, and its
-withdrawal is an open question. A new row in Section 11 when accepted.
+the downgrade guard and the notice keep hosts from going back to it, and a
+`Withdrawn:` line in a newer release makes the notice warn and the installer
+refuse it (`--rollback` included) unless `--withdrawn-ok` (decision (5),
+0.84.0). Section 11 carries it as RISK-20.
 Phase 3 adds: the registrar's attestation key now also chooses which signed
 release hosts run and offers the keys at first contact, so its leak pins an
 attacker's keys on a host that has none yet (pin `MM_RELEASE_SIGNERS` before
@@ -2509,8 +2544,9 @@ most that long.
 
 **Open questions:**
 
-- **Withdrawing a release:** (phase 2 reads the line and the notice honours it;
-  `--release` refusing a withdrawn version is still open) a signature never expires. Recommendation: a
+- **Withdrawing a release:** (answered and built: phase 2 reads the line and
+  the notice honours it; `--release` refuses a withdrawn version since 0.84.0,
+  decision (5), RT-6.29 step 2) a signature never expires. Recommendation: a
   `Withdrawn: v<version>` line in a newer release's CHANGELOG entry, read from
   its verified tree, which `--release` and the notice honour.
 - **The plugin side:** whether Claude Code's marketplace can follow release
@@ -2974,7 +3010,15 @@ until then installations without Enterprise Advanced keep the header line only.
 
 **Status:** Accepted (2026-11-22) by the owner, with the review's
 recommendations; three later points open (below), none of them blocks the
-first NATS code; not built. The
+first NATS code. Phase 2 (the ports) built; phase 3 built in
+part, in 0.97.0: the login service (`services/auth`) with the host's
+Keycloak login (RT-6.34), the consumers it makes (RT-6.35), a home over NATS
+switched by `MM_NATS_HOMES` (RT-6.36), owner and presence (RT-6.37) and the
+crown (RT-6.38) over NATS; after 0.97.0 the login service's attestation of
+owner and trust list (RT-6.41). Not built: the central adapter and the
+shutdown of the registrar, the pod path (point 8), role addressing, files
+and DMs over NATS, the visibility setting, the signed human-origin events
+and `MM_BUS_SIGNER_KEYS`. The
 owner's order to
 move to NATS asks for this decision to be recorded before any NATS code is
 merged. Decided by the owner: one central adapter per tenant (point 1), the
@@ -3148,16 +3192,19 @@ separately.
      is the Mattermost username: no mapping table. Checked at every issue:
      the login service refuses when Mattermost knows a different name for
      that `sub`. A human account that logs in to Mattermost without Keycloak
-     cannot start a session through the bus's client and is never in the
-     approvers' group.
+     is never in the approvers' group; it cannot start a session through
+     the bus's client only with `AUTH_NAME_BINDING=openid-only`: with
+     `open` such a password account is bound by its name alone (RISK-18).
    - Changed by the decision on a bus without a chat as its source
-     (ADR-016 point 1, accepted 2026-11-23), not built yet: the key of a
-     human is the Keycloak `sub`, not `preferred_username`. Chat accounts
-     are bound to that identity per chat product, and today's names stay
-     valid through the binding; what is displayed is the current
-     `preferred_username`. The lookup in Mattermost turns from a gate into
-     that binding: a human without a Mattermost account may start agents.
-     Until it is built the login service checks as written here.
+     (ADR-016 point 1, accepted 2026-11-23): the key of a human is the
+     Keycloak `sub`, not `preferred_username`. Chat accounts are bound to
+     that identity per chat product, and today's names stay valid through
+     the binding; what is displayed is the current `preferred_username`.
+     Built: the channel directory keys identities by `sub`, with an anchor
+     per identity, and resolves channel membership by `sub` (RT-6.39,
+     RT-6.41). Not built: the lookup in Mattermost turning from a gate into
+     that binding (a human without a Mattermost account may start agents);
+     until then `checkChat` checks as written here.
 7. **Credentials and their renewal** (decided by the owner on 2026-11-22).
    - The host process generates its own NATS nkey pair; the seed never
      leaves it.
@@ -3198,7 +3245,7 @@ separately.
      RT-6.18), in the host process and never in a sandbox, and it is
      narrower than a bot token: bound to the bus's client and audience,
      granted for offline use alone.
-8. **Long-running agents in the cluster.** A pod presents a projected
+8. **Long-running agents in the cluster** (not built). A pod presents a projected
    service-account token whose audience is the login service; the login
    service verifies it with a TokenReview and looks the pair (namespace,
    service account) up in an allow-list that maps it to an agent name and an
@@ -3271,7 +3318,7 @@ separately.
     | Bot accounts and registration per session | central adapter (accounts and their tokens), login service (the agent's name) | per identity or per session: build team to check; the adapter's own account and rights are open for the owner (open point 3 below) |
     | Enrollment tokens and the owner binding (`/agent-token`) | fall away: the Keycloak device login and the login service bind the owner | |
     | Owner attestation (RT-6.24) | login service: owner from the Keycloak token, sender pinned in the subject | the adapter shows the owner on the bot |
-    | The per-agent trusted-humans list | login service, from the session's configuration, signed into the credential | read by the other agents' servers as today |
+    | The per-agent trusted-humans list | login service, from the session's configuration, attested in its own record on `<presence>.attest.<name>.v1` (as built, RT-6.41) | read by the other agents' servers as today |
     | Ask mode record (RT-6.25) | central adapter or a small service of its own | in the records bucket, signed |
     | Mandate record (RT-6.26) | as the ask mode record | as above |
     | Debug record (RT-6.31) | as the ask mode record | as above |
@@ -3311,6 +3358,8 @@ separately.
     it also posts to Mattermost with its own bot token, as today, and it
     still reads Mattermost, so humans and older plugins see and reach it;
     while older plugins run in a home, its visibility stays "everything".
+    As built (RT-6.36) the server is no bridge: an agent's posts in a home
+    over NATS are not posted to Mattermost.
     Older plugin versions are supported in parallel operation only until
     the central adapter runs (phase 5), with no grace period after it
     (decided by the owner on 2026-11-22). A test
@@ -3348,7 +3397,8 @@ separately.
       the hello's home channel, a membership for every granted channel: a guest
       could otherwise claim the crown of a channel it only visits and block that
       home (review of the crown over NATS, RT-6.38). The presence subject carries the
-      owner too (from the Keycloak token, `.` written as `~`, `-` when it is no
+      owner too (the identity's anchor from the channel directory, which is
+      today's name for identities known before the import; `.` written as `~`, `-` when it is no
       lower-case username), pinned by the permission like the sender: the
       owner of a NATS sender is read from there, never proven by its name,
       whose 128 bits two names of an agent's own choosing collide after
@@ -3360,15 +3410,15 @@ separately.
       tenant, as on the bus today, and a recipient that does not exist has no
       consumer, so the message reaches nobody.
       Changed by the decision on a bus without a chat as its source
-      (ADR-016 decisions 7 and 9, accepted 2026-11-23), not built yet: the
-      owner token in the presence subject becomes a fixed token per
-      identity from the channel directory (today's name for today's
-      identities, a token from `sub` for new ones), no longer
-      `preferred_username` as the token carries it; what is displayed is
-      the current `preferred_username`. An agent's name no longer follows
-      its owner's name: it is hashed from a fixed seed per identity. Until
-      that is built the subject carries the owner as written here
-      (RT-6.37).
+      (ADR-016 decisions 7 and 9, accepted 2026-11-23), built in the login
+      service (RT-6.39): the owner token in the presence subject is a fixed
+      token per identity from the channel directory, its anchor (today's
+      name for today's identities, a token from `sub` for new ones), no
+      longer `preferred_username` as the token carries it; what is
+      displayed is the current `preferred_username` (RT-6.41). An agent's
+      name no longer follows its owner's name: the login service hashes it
+      from the anchor. The host side is not built: the host still computes
+      its name from `preferred_username` (see the host's name below).
     - **Agents never talk to JetStream.** No right on `$JS`, `$KV`, `$SYS` or
       `_INBOX`. An agent reads only through push consumers the login service
       makes for it: ack policy none, no flow control, the deliver subject
@@ -3417,8 +3467,8 @@ separately.
       Mattermost status without the receipt marker, so that older agents
       neither take it over nor elect themselves.
 
-    **Consumer management in the login service** (designed here, built with
-    the NATS adapter, phase 3):
+    **Consumer management in the login service** (designed here, built
+    with the NATS adapter, RT-6.35):
     - At login, after the callout has issued the credential, the login
       service makes one push consumer per channel of the credential, one for
       direct messages and one for presence (the last message per subject),
@@ -3431,7 +3481,8 @@ separately.
       back than 14 days; a consumer that exists keeps its position unless a
       `since` asks for another start.
     - The presence consumer delivers every agent's presence
-      (`<presence>.*`) but crown claims only of the agent's own channels
+      (`<presence>.*.*`, owner and name) and the login service's
+      attestations (`<presence>.attest.*.v1`, RT-6.41) but crown claims only of the agent's own channels
       (`<presence>.crown.<channel>.*` and `<presence>.member.<channel>.*` for each of them): a claim names its
       channel, so a wider filter would tell who is in channels the agent is
       not in. The test checks this.
@@ -3471,8 +3522,9 @@ separately.
       such as `from_trusted_human` or `mandated`. A thread and a
       reaction are thus fields of the format, so the agents' tools stay as
       they are (point 3).
-    - Presence: `status` `online`, `away` or `bye`, every 30 s; a crown
-      claim has no other field. Freshness counts by the server's time: the
+    - Presence: `status` `online`, `away` or `bye`, every 30 s, and the
+      optional `bot`, the agent's Mattermost bot id (RT-6.37 step 6); a
+      crown claim has no other field. Freshness counts by the server's time: the
       host's "now" is the newest server timestamp it has seen, never its own
       clock; claims and presence older than 24 h are forgotten, as the
       stream forgets them.
@@ -3490,7 +3542,12 @@ separately.
       the first 16 bytes of sha256 over owner and host nkey, base32); the
       name in the credential is the authority: when the server refuses the
       host's subscription to its own deliver subjects, the names differ,
-      and the host stops with an error instead of sending.
+      and the host stops with an error instead of sending (`NameMismatch`).
+      A current limit: the login service hashes the identity's anchor
+      (ADR-016, RT-6.39), the host the token's `preferred_username`
+      (`NatsBus.name` in `natsbus.py`, `_owner_of` in `nats_port.py`); the
+      two agree only while the anchor equals the username, so an identity
+      whose anchor is its `sub` stops with `NameMismatch`. Not built yet.
 
     **Conditions** the model holds under (each one is part of the test):
     1. **Message ids are stream-wide.** An agent that guesses another's
@@ -3621,6 +3678,10 @@ decided against it (Context).
    `ChatPort` with inbox, presence, roster, role addressing and the crown
    lease. The composed adapter, each switched server as its own bridge, and
    the switch per home channel (the parallel operation, point 14).
+   Built in part (0.97.0): the wire layer, the login service, the NATS
+   adapter with inbox, presence, roster from Mattermost and the crown, and
+   the switch per home (`MM_NATS_HOMES`; RT-6.34 to RT-6.38); not built:
+   role addressing and the composed adapter's bridging (point 14).
 4. **Acceptance of the parallel operation**, with numbers, to the owner:
 
    | Question | Measured | Passed | Failed |
@@ -3655,22 +3716,28 @@ decided against it (Context).
    plugin version, the registrar on again) stays for two weeks after the
    shutdown.
 
-No scenario points here yet: a decision not yet built changes Section 6
-only once a phase is built. Then the crown and presence scenario (RT-6.6),
-who may wake an agent (RT-6.16), the keyless host session (RT-6.18) and the
+Scenarios that implement the built parts: the host's login (RT-6.34), the
+consumers (RT-6.35), a home over NATS (RT-6.36), owner and presence
+(RT-6.37), the crown (RT-6.38) and the attestation (RT-6.41). Still to
+change once their part is built: the keyless host session (RT-6.18) and the
 scenarios of the signed records (RT-6.24, RT-6.25, RT-6.26, RT-6.31,
-RT-6.32) change with it.
+RT-6.32).
 
-**Tests (planned):** the fault harness built for the baseline (phase 1),
-run against both buses; in `mcp/tests/`, the NATS adapter against the same
-port tests as the Mattermost one, with the port's fake and a NATS server in
-the test, the protocol description's conformance list and test vectors, the
-forgery and replay cases and both tenant separations of the acceptance, a
-comparison of the 17 tools' schemas before and after, the signed
-human-origin events and approvals from the group and the list together; the
-login service's own tests for each token check (`aud`, `azp`, owner claim,
-the nkey binding, expiry, the pod path's audience and allow-list) and for
-the renewal rules (point 7).
+**Tests:** existing in `mcp/tests/`: `test_natsbus.py`, `test_nats_port.py`,
+`test_crown_nats.py`, `test_attest_nats.py`, `test_nats_pilot_findings.py`,
+`test_login.py`, `test_login_keycloak.py`; the login service's own tests
+for the token checks (`aud`, `azp`, owner claim, the nkey binding, expiry;
+`services/auth/internal/token/verify_test.go`) and for the rights, the
+consumers and the native sender (`services/auth/internal/callout/`:
+`perms_test.go`, `consumers_test.go`, `native_sender_test.go`,
+`review_test.go`). Planned: the fault harness built for the baseline
+(phase 1), run against both buses; the NATS adapter against the same port
+tests as the Mattermost one, the protocol description's conformance list
+and test vectors, the forgery and replay cases and both tenant separations
+of the acceptance, a comparison of the 17 tools' schemas before and after,
+the signed human-origin events and approvals from the group and the list
+together, the pod path's audience and allow-list, and the renewal rules
+(point 7).
 
 **Risks created:** forged identity through the login service or the
 central adapter, a disabled person's remaining access, and new points of
@@ -3696,11 +3763,8 @@ failure, among them Mattermost's rate limits for the mirroring bots
    before the central adapter is built.
 
 Open for the build team, reported to the owner: the NATS consumers'
-behaviour without an acknowledgement and after a long rest (acknowledgement
-wait, maximum deliveries, inactivity threshold); NATS's resource needs on
-Kubernetes; whether a
-key-value entry's expiry is reported to watchers (for the crown lease);
-noticing at once that an agent is gone; the central adapter's language; a
+behaviour after a long rest (inactivity threshold); NATS's resource needs
+on Kubernetes; noticing at once that an agent is gone; the central adapter's language; a
 bot account per agent identity or per session;
 the exact subjects and streams of the channel mapping (point 5), and how a
 guest channel a human adds the bot to in Mattermost enters the credential;
@@ -3723,8 +3787,8 @@ the browser app of #89 and its server of #94): the login of point 4 and
 the API of point 10 with its SSE. Decided by the owner on 2026-11-23: the
 console stands alone, its only login is Keycloak (OpenID Connect), and it
 reads and writes only the bus on NATS; it has no dependency on Mattermost.
-So it shows what the bus carries on NATS, and most of what it needs is not
-there yet (point 12); one need changes ADR-014 point 10. Eight decisions
+So it shows what the bus carries on NATS, and much of what it needs is not
+there yet (point 12; presence, crown and the attested owner are); one need changes ADR-014 point 10. Eight decisions
 were open for the owner (below); three he decided later the same day,
 recorded with the proposal for a bus without a chat as its source
 (ADR-016): the console is built reading only for now (open point 5), its
@@ -3808,7 +3872,7 @@ The console is the operators' view of the bus itself.
    - **What the asking server learns from the login service, never from
      the message:** that a sender is a person, which one, and whether that
      person is in the approvers' group. For an agent's owner the same is
-     announced with the roster over NATS (RT-6.36 step 5); the person's
+     built as the login service's attestation (RT-6.41); the person's
      side is not designed.
    - **What agents read of a person:** only a reaction to one of their own
      open asks, or a reply in its thread. Anything else sent with a
@@ -3889,7 +3953,7 @@ The console is the operators' view of the bus itself.
    - **Seeing** (open point 3): the channels in the person's credential.
      Decided by the owner on 2026-11-23 (ask
      `wndabga68pb4ubc8z7zqoyy7ua`, a reply; ask
-     `5xxsfj9x6trqzdb6btmpym1gpo`, 👍 "nur direkt"): the public channels,
+     `5xxsfj9x6trqzdb6btmpym1gpo`, 👍 "only direct"): the public channels,
      the channels of the operator's own agents and those of agents that trust the
      operator directly, never transitively (the visibility rule of the bus
      without a chat as its source, ADR-016 point 4). An agent's guest
@@ -3936,11 +4000,11 @@ The console is the operators' view of the bus itself.
 
    | Signal | Its carrier today | Over NATS today | Needed on NATS |
    |--------|-------------------|-----------------|----------------|
-   | State | The word of the bot's custom status in Mattermost (`lease.py`): `working`, `listening`, `bus`, `idle`, `silent` (ADR-007 amendment); `offline` when its lease of 15 min ran out | Not there: roster, presence and crown stay on Mattermost. The format has presence as `online`, `away` or `bye`, fresh for 90 s (ADR-014 point 16) | Presence over NATS (announced in RT-6.36), and the state word in it: a field beside `status`, which a v1 reader ignores (`natsbus.decode_presence`), or a later version of the format |
-   | Crown | The 👑 status of its home (RT-6.6) | Not there; designed as the lowest fresh claim per channel | The crown over NATS (announced); the person's presence consumer with the claims of the channels in their credential |
+   | State | The word of the bot's custom status in Mattermost (`lease.py`): `working`, `listening`, `bus`, `idle`, `silent` (ADR-007 amendment); `offline` when its lease of 15 min ran out | Presence over NATS as `online`, `away` or `bye`, every 30 s, fresh for 90 s (ADR-014 point 16, RT-6.37 step 5); the roster stays on Mattermost (RT-6.37 step 6); no state word | The state word in presence: a field beside `status`, which a v1 reader ignores (`natsbus.decode_presence`), or a later version of the format |
+   | Crown | The 👑 status of its home (RT-6.6) | The crown claims over NATS, the lowest fresh claim per channel (RT-6.38) | The person's presence consumer with the claims of the channels in their credential |
    | Context, limits, cost, version | Segments of the status text: `ctx`, `5h`, `7d` or the cost, `v…` (ADR-008, RT-6.30) | Not there | Carried with the state word, or in a message of their own |
    | Card | `props.agent_card` of the agent's newest HELLO: task, project, branch, model, role, kind, `for`, `trusts`, capabilities (RT-6.14 step 1) | Not sent: a post over NATS carries only the bus's flat props (`nats_port.py`) | The card's fields on NATS, with the home, the harness (the MCP client's name, as `rt` in RT-6.9) and a name to show: an agent's name on NATS is a hash |
-   | Owner, trusted humans | The bot's description or the registrar's attestation (ADR-001, RT-6.24) | Not proven: every NATS sender is a foreign agent (RT-6.36 step 5) | The roster over NATS with the owner and the trusted list as the login service attests them (announced; ADR-014 point 13) |
+   | Owner, trusted humans | The bot's description or the registrar's attestation (ADR-001, RT-6.24) | The owner pinned in the presence subject, owner and trusted list attested by the login service (RT-6.37 step 4, RT-6.41) | The roster over NATS (ADR-014 point 13) |
    | Task states | Props of the agents' posts (RT-6.14 step 2) | Carried, in a home that runs over NATS | — |
    | Asks | A post in Mattermost with the ask's card (RT-6.11) | Not there: an ask goes to Mattermost in a NATS home too, and one in a NATS thread is refused (RT-6.36 step 3) | The ask on NATS as well, with the asked human, the need and the answers it offers, and its end (answered, resolved, expired) |
    | The answer to an ask | A person's reaction or reply in Mattermost (RT-6.11 step 3) | Nothing over NATS counts as a person or an approval (RT-6.36 step 5) | A person's credential, and the asking server reading its answers (points 2 and 4) |
@@ -3976,7 +4040,8 @@ The console is the operators' view of the bus itself.
 
 7. **Graph.** Nodes: people (the owners and trusted humans the roster
    names), channels (homes), agents. An agent node is an agent's name on
-   NATS, which the login service derives from its owner and its host's key
+   NATS, which the login service derives from its owner's anchor (equal to
+   the owner's name for today's identities, ADR-016) and its host's key
    (ADR-014 point 16).
    - **Trusts** (shown at the start): agent → its owner, and agent → each
      human on its trusted list.
@@ -4077,13 +4142,14 @@ The console is the operators' view of the bus itself.
       exists.
 
 12. **What it needs of the NATS build.** The console holds up nothing of
-    that build, the registrar's shutdown included; it waits for it. None of
-    these exists today:
+    that build, the registrar's shutdown included; it waits for it. Only
+    presence, crown and the attested owner and trusted list exist today
+    (0.97.0 and after, RT-6.37, RT-6.38, RT-6.41); the rest does not:
 
     | Needed | Part | When |
     |--------|------|------|
     | A person's credential: the console's client accepted, the name, the rights, the consumers (points 2 and 4) | Login service; a human's review (ADR-014 point 15) | Before stage 1 |
-    | Presence, crown and roster over NATS, with the owner and the trusted list as the login service attests them | NATS adapter, login service; announced in RT-6.36 | Before stage 1 |
+    | Presence, crown and roster over NATS, with the owner and the trusted list as the login service attests them | NATS adapter, login service; built except the roster (RT-6.37, RT-6.38, RT-6.41) | Before stage 1 |
     | The card on NATS, with home, harness and a name to show | NATS adapter | Before stage 1 |
     | The console's server admitted to NATS: the lab's network rule admits only NATS's own namespace today (ADR-014, the lab today) | The lab; the owner's approval | Before stage 1 |
     | The state word, the numbers and the version in presence | MCP server, message format | Stage 1; until then three columns |
@@ -4110,15 +4176,14 @@ The console is the operators' view of the bus itself.
       point 6). Without that lookup for a person's credential, a Keycloak
       name that equals a trusted name of another account answers as that
       account; with it, the login service, not the console, asks
-      Mattermost (open point 2);
+      Mattermost (open point 2). Channel membership and the name index
+      already come from the channel directory (ADR-016, RT-6.39, RT-6.41
+      step 2), the place for a person's lookup too;
     - how many NATS connections and renewals the console's server holds
       for its operators, and what 14 days of history cost at every login;
     - whether `natsbus.py` (transport, format, TLS rules, renewal) runs
       with a person's credential: it computes an agent's name and stops
-      when the credential names another (`NameMismatch`);
-    - that every reader ignores a field beside `status` in a presence
-      message: the Python reader does, the login service's bye watcher is
-      not checked.
+      when the credential names another (`NameMismatch`).
 
     Each change in the lab (a client and a group in Keycloak, the network
     rule, a rollout of the login service) needs the owner's approval, asked
@@ -4160,7 +4225,7 @@ The console is the operators' view of the bus itself.
       (RT-6.9): their turn reports stay "n/a", and a state word they never
       set stays coarse.
     - **A process, not an agent.** An agent's name on NATS comes from its
-      owner and its host's key; with the key kept in memory, the default
+      owner's anchor (ADR-016) and its host's key; with the key kept in memory, the default
       (`MM_LOGIN_NKEY=ephemeral`, RT-6.34), every process is a new name,
       and the graph and any history break at every restart.
     - **The graph reads posts.** Task edges come from the posts the stream
@@ -4228,7 +4293,7 @@ word to reach an agent (RISK-12 to RISK-14 in Section 11).
    per home, or the person's channels in Mattermost. Recommended: the
    whole tenant in the lab, decided again before anything runs outside it.
    Decided by the owner on 2026-11-23 (ask `wndabga68pb4ubc8z7zqoyy7ua`, a
-   reply; ask `5xxsfj9x6trqzdb6btmpym1gpo`, 👍 "nur direkt"): public
+   reply; ask `5xxsfj9x6trqzdb6btmpym1gpo`, 👍 "only direct"): public
    channels, the channels of the operator's own agents and of agents that trust them directly (the
    visibility rule of the bus without a chat as its source, ADR-016
    point 4), their guest channels reading only (decision 6 there).
@@ -4257,392 +4322,430 @@ lab, and Mattermost in any form.
 
 ---
 
-## ADR-016: Der Bus ohne Chat als Quelle
+## ADR-016: The bus without a chat as its source
 
-**Status:** Accepted (2026-11-23) vom Eigentümer (Ask
-`mfbre617hj8f9p3p81855waukr`, 👍); nicht gebaut. Auf Deutsch geschrieben,
-wie der Auftrag des Eigentümers es vorgibt. Agenten können Ask-Karten
-noch nicht lesen (Issue #30); deshalb stehen bei jeder Entscheidung des
-Eigentümers die Kennung des Asks und die Antwort. Vom
-Eigentümer am 2026-11-23 auf dem Bus entschieden und hier festgehalten:
-(a) die Betreiberkonsole wird vorerst nur lesend gebaut (Ask
-`7b1h39r8u3yr7d38edigxa7x5c`, Antwort im Thread); am Ende soll eine
-Anmeldung über Keycloak (OpenID Connect) so viel zählen wie eine
-Mattermost-Identität, für die der zentrale Adapter bürgt; (b) die Konsole
-bekommt einen eigenen Server in Python, der `tasks.py` und `stats.py`
-wiederverwendet, Go ist die Rückfalllösung (Ask
-`powa1m8u13bybp1m8dbbdwffxy`, Antworten im Thread); (c) ein Betreiber sieht die
-öffentlichen Kanäle, die Kanäle seiner eigenen Agenten und die Kanäle der
-Agenten, die ihm direkt vertrauen, nach einer Vertrauensliste, für die der
-Anmeldedienst bürgt, nie über mehrere Stufen (Ask
-`wndabga68pb4ubc8z7zqoyy7ua`, Antwort im Thread; Ask
-`5xxsfj9x6trqzdb6btmpym1gpo`, 👍 „nur direkt“); (d) der Bus bekommt ein
-eigenes Kanalverzeichnis auf NATS, unabhängig von Mattermost (Ask
-`g51d6ofpsifpbbzgd4xxfhx5bo`, 👍); bis dahin
-nehmen Anmeldedienst und Konsole die Mitgliedschaft aus Mattermost, hinter
-einer austauschbaren Schnittstelle. Die neun Punkte, die der Vorschlag
-offen ließ, hat der Eigentümer am selben Tag entschieden; sie stehen am
-Ende. Danach hat er die Entscheidung als Ganzes angenommen.
+**Status:** Accepted (2026-11-23) by the owner (ask
+`mfbre617hj8f9p3p81855waukr`, 👍); built in part. Built: the channel
+directory and its reading in the login service (RT-6.39) and the condition
+"in doubt, foreign" in the MCP server (RT-6.16), both in 0.97.0; after
+0.97.0 (`Unreleased` in `CHANGELOG.md`) the directory's admin API, its
+command line `authd dir …` and the one-time import from Mattermost
+(RT-6.40), the login service's attestation of trust lists and the upkeep of
+the account index after the import (RT-6.41). Not built: the bridges
+(point 3), the chat-account check `checkChat` turned from a gate into a
+binding (point 1), agents without a chat (point 5), and on the host the
+agent name from an anchor that is not the owner's username (see "Agent
+names" under point 1). First written in German, as the owner's assignment
+asked; translated into English since. Agents cannot read ask cards yet
+(issue #30); that is why each of the owner's decisions carries the ask's id
+and the answer. Decided by the owner on the bus on 2026-11-23 and recorded
+here: (a) the operator console is built read-only for now (ask
+`7b1h39r8u3yr7d38edigxa7x5c`, answer in the thread); in the end a login
+through Keycloak (OpenID Connect) is to count as much as a Mattermost
+identity the central adapter vouches for; (b) the console gets a server of
+its own in Python that reuses `tasks.py` and `stats.py`, Go is the fallback
+(ask `powa1m8u13bybp1m8dbbdwffxy`, answers in the thread); (c) an operator
+sees the public channels, the channels of their own agents and the channels
+of the agents that trust them directly, by a trust list the login service
+attests, never over several steps (ask `wndabga68pb4ubc8z7zqoyy7ua`, answer
+in the thread; ask `5xxsfj9x6trqzdb6btmpym1gpo`, 👍 "only direct"); (d) the bus gets a channel directory of its own on NATS,
+independent of Mattermost (ask `g51d6ofpsifpbbzgd4xxfhx5bo`, 👍); until
+then the login service and the console take membership from Mattermost,
+behind a replaceable interface. The owner decided the nine points the
+proposal left open on the same day; they are at the end. After that he
+accepted the decision as a whole.
 
-**Context:** Die Entscheidung über den Agentenverkehr auf NATS (ADR-014)
-hat den Verkehr zwischen Agenten von Mattermost gelöst, nicht aber die
-Fragen, wer jemand ist und wer in welchen Kanal gehört. Die beantwortet
-heute an fünf Stellen Mattermost:
+**Context:** The decision on agent traffic over NATS (ADR-014) took the
+traffic between agents off Mattermost, but not the questions of who someone
+is and who belongs in which channel. At the time of this decision
+Mattermost answered them in five places (rows 2 and 4 have changed since,
+see the notes in them):
 
-| Wo | Was heute aus Mattermost kommt |
-|----|--------------------------------|
-| Anmeldedienst, `token.Directory` (`services/auth/internal/token/directory.go`, geprüft in `checkChat` in `verify.go`) | Der Eigentümer eines Agenten ist `preferred_username` aus dem Keycloak-Token, und der Dienst nimmt an, dass genau dieser Name das Chat-Konto ist: Er schlägt ihn in Mattermost nach und lehnt ab, wenn es das Konto nicht gibt, es ein Bot, ein Gast oder deaktiviert ist oder ein OpenID-Konto ein anderes `sub` trägt. Ein Konto ohne OpenID bindet allein der Name (`token.NameBinding`, `binding.go`) |
-| Anmeldedienst, `callout.Channels.Memberships` (`services/auth/internal/callout/service.go`, erfüllt von `mattermost.Client`) | Ein Host wünscht Kanäle; gewährt werden die, in denen der Eigentümer in Mattermost Mitglied ist. Wer einen Kanal lesen darf, entscheidet also die Mitgliederliste des Chats |
-| Subjects auf NATS | Das Kanal-Token in `<bus>.ch.<channel>.<name>` ist der Mattermost-Name des Kanals; ein umbenannter oder gelöschter Kanal ändert, was ein Subject bedeutet |
-| MCP-Server | `MM_TRUSTED_HUMANS` und der Eigentümer eines Agenten sind Mattermost-Benutzernamen; über NATS ist die Vertrauensliste eines Absenders leer (RT-6.37 Schritt 4) |
-| MCP-Server, Eingang | Was ein Mensch schreibt, erreicht einen Agenten nur über Mattermost; dass es von einem vertrauten Menschen stammt, sagt der Mattermost-Server und später allein der zentrale Adapter (ADR-014 Punkt 10) |
+| Where | What came from Mattermost when this was decided |
+|-------|-------------------------------------------------|
+| Login service, `token.Directory` (`services/auth/internal/token/directory.go`, checked in `checkChat` in `verify.go`) | An agent's owner is `preferred_username` from the Keycloak token, and the service assumes that exactly this name is the chat account: it looks it up in Mattermost and refuses when the account does not exist, is a bot, a guest or deactivated, or an OpenID account carries another `sub`. An account without OpenID is bound by its name alone (`token.NameBinding`, `binding.go`) |
+| Login service, `callout.Channels.Memberships` (`services/auth/internal/callout/service.go`, then fulfilled by `mattermost.Client`) | A host asks for channels; it is granted those in which the owner is a Mattermost member. Who may read a channel is thus decided by the chat's member list. Since RT-6.39 `directory.Channels` (`services/auth/internal/directory/channels.go`) fulfils the interface, with Mattermost only as the fallback until `meta.imported` |
+| Subjects on NATS | The channel token in `<bus>.ch.<channel>.<name>` is the channel's Mattermost name; a renamed or deleted channel changes what a subject means |
+| MCP server | `MM_TRUSTED_HUMANS` and an agent's owner are Mattermost usernames; over NATS a sender's trust list was empty. Since RT-6.41 the MCP server judges senders over NATS by the anchors the login service attests (RT-6.37 step 4) |
+| MCP server, inbound | What a human writes reaches an agent only through Mattermost; that it comes from a trusted human is said by the Mattermost server and later by the central adapter alone (ADR-014 point 10) |
 
-Solange das so ist, kann der Bus ohne Mattermost nicht laufen, auch nicht
-für Agenten, die nur miteinander reden; ein zweites Chat-Produkt (Teams,
-Zulip) hätte keinen Platz, weil Namen, Mitgliedschaft und Kanalnamen dem
-einen Chat gehören; und die Betreiberkonsole (ADR-015), die laut
-Eigentümer ohne Mattermost stehen soll, müsste für die Frage „was darf
-diese Person sehen“ doch wieder dort nachfragen. Ziel: Bus und Konsole
-hängen an keinem einzelnen Chat. Ein Chat ist ein Ort, an dem Menschen
-mitlesen und schreiben, nicht die Quelle für Identität und Mitgliedschaft.
+As long as that is so, the bus cannot run without Mattermost, not even for
+agents that only talk to each other; a second chat product (Teams, Zulip)
+would have no place, because names, membership and channel names belong to
+the one chat; and the operator console (ADR-015), which the owner wants to
+stand without Mattermost, would have to ask there again for the question
+"what may this person see". Goal: neither the bus nor the console hangs on
+a single chat. A chat is a place where humans read along and write, not the
+source of identity and membership.
 
 **Decision:**
 
-1. **Keycloak ist die Wurzel der Identität; der Schlüssel ist `sub`, kein
-   Benutzername.** Ein Mensch auf dem Bus ist eine Keycloak-Identität.
-   `preferred_username` bleibt der Name, den Menschen lesen und schreiben,
-   ist aber nur noch Anzeige: Eine Umbenennung in Keycloak ändert weder
-   Eigentum noch Vertrauen. Chat-Konten werden je Produkt an die Identität
-   gebunden (ein Mattermost-Konto, ein Teams-Konto, ein Zulip-Konto), und
-   die Bindung steht im Verzeichnis (Punkt 2). Eigentümer und
-   Vertrauenslisten zeigen auf die Keycloak-Identität, nicht auf einen
-   Chat-Namen.
-   - **Übergang:** Die heutigen Namen gelten weiter, über die Bindung. Ein
-     Eintrag in `MM_TRUSTED_HUMANS` oder ein Eigentümername wird über die
-     Mattermost-Bindung zur Identität aufgelöst; ein Name ohne Bindung
-     bezeichnet niemanden und wird gemeldet, nie geraten.
-   - **Bedingung für den Bau: im Zweifel fremd.** Heute gilt im MCP-Server
-     das Gegenteil. `owners.mine()` liefert bei jedem Fehler eine leere
-     Menge („fail open: every agent a peer“), `owners.foreign()` liefert
-     dann nichts, und `gate.author_classes` sagt „unsure, it is a peer“;
-     nur `owners.peer()` verlangt schon einen Beweis. Mit der Auflösung
-     von Namen zu Identitäten kommt eine neue Fehlerquelle dazu (Bindung
-     fehlt, Verzeichnis nicht erreichbar), und sie darf nicht dazu führen,
-     dass jeder Agent als eigener gilt. Wer die Auflösung einbaut, stellt
-     `mine()` und `foreign()` deshalb im selben Schritt um: Ein Name ohne
-     Bindung oder eine Auflösung, die scheitert, macht den Absender fremd
-     und vertraut niemandem. Wer davon abweicht, begründet es in dieser
-     Entscheidung, bevor der Code gemischt wird.
-   - **Agentennamen hängen am Eigentümer.** Der Anmeldedienst bildet den
-     Namen eines Agenten als Hash über Eigentümer und Host-Schlüssel
-     (`name()` in `services/auth/internal/callout/service.go`). Wechselt
-     der Eigentümer dort von `preferred_username` auf `sub`, bekommt jeder
-     Agent einmal einen neuen Namen: Seine Consumer, sein Presence-Subject,
-     der Absender seiner Nachrichten im Stream und sein Eintrag in der
-     Liste der Agenten zeigen danach auf einen anderen Namen als vorher,
-     und zurück geht es nicht, weil die alten Nachrichten den alten Namen
-     behalten. Entschieden: Der Name wird vom Eigentümer gelöst, über
-     einen festen Ausgangswert je Identität im Verzeichnis, und der
-     Wechsel bleibt aus (Entscheidung 9 am Ende).
-   - Die Prüfung des Chat-Kontos im Anmeldedienst (`checkChat`) wird damit
-     vom Tor zur Bindung: Ein Mensch ohne Mattermost-Konto darf Agenten
-     starten; fehlt die Bindung, erreicht ihn nur dieser Chat nicht. Die
-     austauschbare Namensbindung (`token.NameBinding`) ist die Stelle, an
-     der das heute schon vorgesehen ist.
+1. **Keycloak is the root of identity; the key is `sub`, not a username.**
+   A human on the bus is a Keycloak identity. `preferred_username` stays the
+   name humans read and write, but it is display only: a rename in Keycloak
+   changes neither ownership nor trust. Chat accounts are bound to the
+   identity per product (a Mattermost account, a Teams account, a Zulip
+   account), and the binding is held in the directory (point 2). Owners and
+   trust lists point to the Keycloak identity, not to a chat name.
+   - **Transition:** today's names stay valid, through the binding. An
+     entry in `MM_TRUSTED_HUMANS` or an owner name is resolved to the
+     identity through the Mattermost binding; a name without a binding
+     names nobody and is reported, never guessed.
+   - **Condition for the build: in doubt, foreign.** Before the build the
+     MCP server did the opposite: `owners.mine()` returned an empty set on
+     every error ("fail open: every agent a peer"), `owners.foreign()` then
+     returned nothing, and `gate.author_classes` said "unsure, it is a
+     peer"; only `owners.peer()` already asked for proof. Resolving names to
+     identities adds a new source of errors (binding missing, directory not
+     reachable), and it must not make every agent count as one's own.
+     Whoever builds the resolution therefore switches `mine()` and
+     `foreign()` in the same step: a name without a binding or a resolution
+     that fails makes the sender foreign and trusts nobody. Whoever departs
+     from that gives the reason in this decision before the code is merged.
+     Built (see "Built is the condition" at the end).
+   - **Agent names hang on the owner.** At the time of the decision the
+     login service formed an agent's name as a hash over owner and host key
+     (`name()` in `services/auth/internal/callout/service.go`). Had the
+     owner there switched from `preferred_username` to `sub`, every agent
+     would once have got a new name: its consumers, its presence subject,
+     the sender of its messages in the stream and its entry in the list of
+     agents would afterwards point to a different name than before, and
+     there is no way back, because the old messages keep the old name.
+     Decided: the name is detached from the owner, through a fixed seed per
+     identity in the directory, and the switch does not happen (decision 9
+     at the end). Since RT-6.39 the login service hashes the identity's
+     anchor (`name(anchor, host)`) and names the agent after it. The host
+     side is not built yet (a current limit): the host still computes the
+     name from the token's `preferred_username` (`NatsBus.name` in
+     `natsbus.py`, `_owner_of` in `nats_port.py`), so the two agree only
+     while the anchor equals the username, which holds for every identity
+     known before the import; an identity whose anchor is its `sub` gets a
+     credential whose name differs, and the host stops with `NameMismatch`
+     (RISK-19).
+   - The login service's check of the chat account (`checkChat`) thereby
+     turns from a gate into a binding: a human without a Mattermost account
+     may start agents; if the binding is missing, only this chat does not
+     reach them. The replaceable name binding (`token.NameBinding`) is the
+     place where this is already provided for today. Not built: `checkChat`
+     is still a gate (no Mattermost account means `ErrUnknownHuman`), while
+     identities, anchors and channel membership are already keyed by `sub`
+     in the directory (RT-6.39, RT-6.41).
 
-2. **Ein Kanalverzeichnis auf NATS** (das Verzeichnis selbst: vom
-   Eigentümer entschieden, Ask `g51d6ofpsifpbbzgd4xxfhx5bo`, 👍). Je Kanal: sein Name auf dem Bus, sein
-   Eigentümer, öffentlich ja oder nein, seine Mitglieder als
-   Keycloak-Identitäten, und je Chat eine
-   Bindung (Mattermost-Kanal, Teams-Kanal, Zulip-Stream); ein Kanal ohne
-   Bindung lebt nur auf NATS. Dazu je Mensch die gebundenen Chat-Konten
-   aus Punkt 1.
-   - **Wo:** in einem Key-Value-Bucket im Konto des Mandanten, den allein
-     der Anmeldedienst schreibt. Agenten lesen ihn nicht: Sie haben
-     weiterhin kein Recht auf `$KV` und `$JS` (ADR-014 Punkt 16).
-   - **Wer ändert:** immer über den Anmeldedienst. Eine Keycloak-Gruppe
-     von Verwaltern legt Kanäle an, setzt ihre Eigentümer und schaltet
-     „öffentlich“; der Eigentümer eines Kanals pflegt dessen Mitglieder
-     (Entscheidung 1 am Ende). Der Weg ist zuerst die Kommandozeile des
-     Anmeldedienstes, später die Konsole, nie ein Befehl im Chat
-     (Entscheidung 8).
-   - **Wer liest:** `callout.Channels` liest das Verzeichnis statt
-     Mattermost; die Schnittstelle bleibt, nur ihre Erfüllung wechselt.
-     Das Kanal-Token im Subject kommt aus dem Verzeichnis und ändert sich
-     nicht, wenn ein Chat seinen Kanal umbenennt.
-   - **Bis dahin** (vom Eigentümer entschieden): Anmeldedienst und Konsole
-     nehmen die Mitgliedschaft aus Mattermost, hinter eben dieser
-     Schnittstelle. Für die Konsole ist das eine befristete Ausnahme von
-     „keine Abhängigkeit von Mattermost“; sie fragt nie selbst, es bleibt
-     der Nachschlag des Anmeldedienstes.
+2. **A channel directory on NATS** (the directory itself: decided by the
+   owner, ask `g51d6ofpsifpbbzgd4xxfhx5bo`, 👍). Per channel: its name on
+   the bus, its owner, public or not, its members as Keycloak identities,
+   and per chat a binding (Mattermost channel, Teams channel, Zulip stream);
+   a channel without a binding lives on NATS only. Plus, per human, the
+   bound chat accounts from point 1.
+   - **Where:** in a key-value bucket in the tenant's account that only the
+     login service writes. Agents do not read it: they still have no right
+     on `$KV` and `$JS` (ADR-014 point 16).
+   - **Who changes it:** always through the login service. A Keycloak group
+     of administrators creates channels, sets their owners and switches
+     "public"; a channel's owner keeps its members (decision 1 at the end).
+     The way is first the login service's command line, later the console,
+     never a command in the chat (decision 8).
+   - **Who reads it:** `callout.Channels` reads the directory instead of
+     Mattermost; the interface stays, only what fulfils it changes. The
+     channel token in the subject comes from the directory and does not
+     change when a chat renames its channel.
+   - **Until then** (decided by the owner): the login service and the
+     console take membership from Mattermost, behind that very interface.
+     For the console this is a time-limited exception to "no dependency on
+     Mattermost"; it never asks itself, it stays the login service's lookup.
 
-3. **Eine Brücke je Chat-Produkt.** Was die NATS-Entscheidung als
-   zentralen Adapter für Mattermost plant (ADR-014 Punkt 1 und Phase 5),
-   ist die erste Brücke; Teams oder Zulip bekämen je eine eigene. Eine
-   Brücke bringt, was Menschen in ihrem Chat schreiben, auf NATS, spiegelt
-   den Bus in die gebundenen Kanäle und bürgt für den Menschen: Sie löst
-   das Chat-Konto über die Bindung zur Keycloak-Identität auf und
-   unterschreibt das Ereignis mit einem Schlüssel, den die Hosts pinnen.
-   Ein Konto ohne Bindung ist kein vertrauter Mensch. Im gebundenen
-   Chat-Kanal setzt die Brücke nur die Agenten nach dem Verzeichnis;
-   weitere Menschen dort sind erlaubt und lesen, was die Brücke spiegelt
-   (Entscheidung 5 am Ende).
-   - Damit ändert sich der Satz der NATS-Entscheidung, dass nur der
-     zentrale Adapter sagen kann, ein Ereignis komme von einem vertrauten
-     Menschen (ADR-014 Punkt 10). Neu: jede Brücke für ihren Chat, mit
-     eigenem Schlüssel und nur für die an sie gebundenen Kanäle; und eine
-     Keycloak-Anmeldung auf NATS selbst, bei der NATS den Absender sagt
-     (ADR-014 Punkt 16). Die zweite kommt später, mit dem Antwortweg der
-     Konsole: Punkt 2 der Konsolen-Entscheidung und der offene Punkt 2
-     derselben Entscheidung, nicht dieser (beide ADR-015). Die Konsole
-     liest bis dahin nur.
-   - Ob eine Antwort genehmigt, entscheidet weiter der MCP-Server des
-     fragenden Agenten: Vertrauensliste, Gruppe der Genehmiger, 24 Stunden
-     (ADR-014 Punkt 10, RT-6.11). Die Quelle des Ereignisses ändert daran
-     nichts.
+3. **One bridge per chat product.** What the NATS decision plans as the
+   central adapter for Mattermost (ADR-014 point 1 and phase 5) is the
+   first bridge; Teams or Zulip would each get one of their own. A bridge
+   brings what humans write in their chat onto NATS, mirrors the bus into
+   the bound channels and vouches for the human: it resolves the chat
+   account through the binding to the Keycloak identity and signs the event
+   with a key the hosts pin. An account without a binding is not a trusted
+   human. In the bound chat channel the bridge sets only the agents, by the
+   directory; further humans there are allowed and read what the bridge
+   mirrors (decision 5 at the end). Not built; its first step is under way
+   (the addition of 2026-11-24 at the end: all of Mattermost in one service).
+   - This changes the NATS decision's sentence that only the central
+     adapter can say an event comes from a trusted human (ADR-014 point
+     10). New: each bridge for its chat, with a key of its own and only for
+     the channels bound to it; and a Keycloak login on NATS itself, where
+     NATS names the sender (ADR-014 point 16). The second comes later, with
+     the console's way of answering: point 2 of the console decision and
+     open point 2 of the same decision, not of this one (both ADR-015).
+     Until then the console only reads.
+   - Whether an answer approves is still decided by the asking agent's MCP
+     server: trust list, approvers' group, 24 hours (ADR-014 point 10,
+     RT-6.11). The event's source changes nothing about that.
 
-4. **Der Anmeldedienst bürgt für Vertrauenslisten.** Heute steht die Liste
-   als `MM_TRUSTED_HUMANS` auf dem Host, und über NATS ist sie für alle
-   anderen leer. Neu: Der Host nennt sie beim Verbinden, der Anmeldedienst
-   löst die Namen zu Identitäten auf (Punkt 1), hält sie im Verzeichnis
-   fest und gibt sie als sein Wort weiter. Anmeldedienst und Verzeichnis
-   bezeugen die Liste, sie setzen sie nie: Gesetzt wird sie auf dem Host,
-   vom Eigentümer des Agenten, nie durch eine Nachricht auf dem Bus oder
-   im Chat und nie durch einen Verwalter des Verzeichnisses. Ein Eintrag
-   im Verzeichnis ohne die Liste eines Hosts dahinter gilt nicht.
-   - Das braucht die Sichtregel des Eigentümers: Ein Betreiber sieht die
-     öffentlichen Kanäle, die Kanäle seiner eigenen Agenten und die Kanäle
-     der Agenten, die ihm direkt vertrauen. Nicht über mehrere Stufen: Wem
-     ein Mensch vertraut, dem ich vertraue, der sieht dadurch nichts.
-   - Die Regel wirkt im Anmeldedienst, über die Consumer, die er für die
-     Person anlegt (RT-6.35), nicht in der Oberfläche der Konsole.
-   - „Kanäle eines Agenten“ meint sein Zuhause und seine Gastkanäle, die
-     Gastkanäle aber nur lesend, auch sobald die Konsole schreiben darf:
-     Antworten und Genehmigungen gibt es nur im Zuhause des Agenten
-     (Entscheidung 6 am Ende).
+4. **The login service attests trust lists.** When this was decided the
+   list stood as `MM_TRUSTED_HUMANS` on the host, and over NATS it was
+   empty for everyone else. New: the host names it when it connects, the
+   login service resolves the names to identities (point 1), records them in
+   the directory and passes them on as its word. The login service and the
+   directory attest the list, they never set it: it is set on the host, by
+   the agent's owner, never by a message on the bus or in the chat and never
+   by an administrator of the directory. An entry in the directory without a
+   host's list behind it does not count. Built on the login service's side
+   (RT-6.41, see the end).
+   - This needs the owner's visibility rule: an operator sees the public
+     channels, the channels of their own agents and the channels of the
+     agents that trust them directly. Not over several steps: someone
+     trusted by a human I trust sees nothing because of that.
+   - The rule takes effect in the login service, through the consumers it
+     makes for the person (RT-6.35), not in the console's user interface.
+   - "An agent's channels" means its home and its guest channels, but the
+     guest channels read-only, even once the console may write: answers and
+     approvals exist only in the agent's home (decision 6 at the end).
 
-5. **Agenten brauchen keinen Chat.** In einem Zuhause, das über NATS läuft
-   (RT-6.36), liegt der Verkehr der Agenten auf NATS. Ihr Bot-Konto im
-   Chat ist dann nur noch Spiegel für Menschen, die dort mitlesen, und
-   kann entfallen, wo niemand mitliest. Das ändert die Aussage der
-   NATS-Entscheidung, jeder Agent behalte ein eigenes Bot-Konto (ADR-014
-   Punkt 11): Sie gilt nur noch für Kanäle mit einer Chat-Bindung.
+5. **Agents need no chat.** In a home that runs over NATS (RT-6.36), the
+   agents' traffic is on NATS. Their bot account in the chat is then only a
+   mirror for humans who read along there, and can go where nobody reads
+   along. This changes the NATS decision's statement that every agent keeps
+   a bot account of its own (ADR-014 point 11): it holds only for channels
+   with a chat binding. Not built.
 
-**Alternatives considered:** (a) Mattermost bleibt die Quelle für Namen
-und Mitgliedschaft: nichts zu bauen und heute schon so, aber der Bus
-steht still, wenn Mattermost steht, ein zweiter Chat hat keinen Platz,
-und die Konsole hinge dauerhaft an dem Chat, von dem der Eigentümer sie
-gelöst hat. (b) Die Mitgliedschaft aus jedem Chat nach NATS abgleichen,
-jeder Chat bleibt Quelle für seine Kanäle: Menschen verwalten Kanäle, wo
-sie es gewohnt sind, aber derselbe Kanal in zwei Chats hat zwei
-Mitgliederlisten und keine Regel, welche gilt, jeder Chat-Verwalter
-entscheidet über Leserechte auf dem Bus, und ein Kanal ohne Chat hat gar
-keine Quelle. Geblieben ist davon nur die einmalige Übernahme aus
-Mattermost zum Anfang (Entscheidungen 2 und 3 am Ende); Quelle ist das
-Verzeichnis.
+**Alternatives considered:** (a) Mattermost stays the source of names and
+membership: nothing to build and already so today, but the bus stands still
+when Mattermost does, a second chat has no place, and the console would
+hang for good on the chat the owner has detached it from. (b) Synchronise
+membership from every chat to NATS, each chat stays the source for its
+channels: humans manage channels where they are used to, but the same
+channel in two chats has two member lists and no rule which one counts,
+every chat administrator decides on read rights on the bus, and a channel
+without a chat has no source at all. What remains of it is only the one-time
+import from Mattermost at the start (decisions 2 and 3 at the end); the
+source is the directory.
 
-**Consequences:** Der Anmeldedienst wird vom Aussteller zum Halter des
-Verzeichnisses und damit zur einen Stelle, der alle für Identität,
-Mitgliedschaft und Vertrauenslisten glauben (RISK-15). Wer auf dem Bus
-liest, steht im Verzeichnis; wer im gebundenen Chat-Kanal mitliest,
-bestimmt weiter der Chat, und beides muss nicht übereinstimmen
-(RISK-16). Vertrauen öffnet künftig auch Sicht, bis in die Gastkanäle
-eines Agenten (RISK-17). Im MCP-Server ändert sich, woher Eigentümer und
-vertraute Menschen kommen (`owners.py`, `gate.py`), nicht die Regeln der
-Entscheidungen über Vertrauen und Eigentümer (ADR-001, ADR-003); die 17
-MCP-Werkzeuge behalten Namen und Schema. Die NATS-Entscheidung trägt seit der Annahme an vier Stellen
-einen Vermerk, was nun gilt: der Schlüssel eines Menschen, wer für einen
-Menschen bürgt, das Bot-Konto je Agent und das Token des Eigentümers im
-Presence-Subject (ADR-014 Punkte 6, 10, 11 und 16). Bis zum Bau tut der
-Code, was dort bisher stand. Bausteinsicht,
-Laufzeitsicht und Verteilungssicht (Abschnitte 5, 6 und 7) ändern sich
-mit dem Bau, je Szenario mit einem Test, nicht vorher; die Website und
-`CHANGELOG.md`, wenn eine Version etwas davon ausliefert.
+**Consequences:** The login service turns from an issuer into the holder of
+the directory and thereby into the one place everyone believes for identity,
+membership and trust lists (RISK-15). Who reads on the bus is in the
+directory; who reads along in the bound chat channel is still decided by the
+chat, and the two need not agree (RISK-16). Trust from now on also opens
+visibility, into an agent's guest channels (RISK-17). In the MCP server
+what changes is where owners and trusted humans come from (`owners.py`,
+`gate.py`), not the rules of the decisions on trust and owners (ADR-001,
+ADR-003); the 17 MCP tools keep their names and schemas. Since the
+acceptance the NATS decision carries a note in four places on what now
+holds: a human's key, who vouches for a human, the bot account per agent
+and the owner's token in the presence subject (ADR-014 points 6, 10, 11 and
+16). Until a part is built the code does what stood there before. The
+building block view, the runtime view and the deployment view (Sections 5,
+6 and 7) change with the build, per scenario with a test, not before; the
+website and `CHANGELOG.md` when a version ships any of it.
 
-**Tests (planned):** `callout.Channels` gegen das Verzeichnis mit
-denselben Fällen wie gegen Mattermost (unbekannt ist nicht „nein“); kein
-Schreibrecht auf den Bucket außer für den Anmeldedienst, gegen einen
-NATS-Server wie in `native_sender_test.go`; ein Name ohne Bindung
-vertraut niemandem; `owners.mine()` und `owners.foreign()` mit einer
-fehlenden Bindung und mit einem Verzeichnis, das nicht antwortet: der
-Absender ist fremd, sein TASK eine Bitte, in `mcp/tests/`; eine
-Vertrauensliste, die kein Host genannt hat, bezeugt der Anmeldedienst
-nicht; der Name eines Agenten und das Token seines Eigentümers im
-Presence-Subject bleiben beim Wechsel auf `sub` und bei einer
-Umbenennung in Keycloak oder im Chat gleich, und die Anzeige folgt dem
-neuen Namen nach der nächsten Anmeldung; eine Änderung am Verzeichnis
-von jemandem außerhalb der Verwaltergruppe, und Mitglieder von jemandem,
-der nicht Eigentümer des Kanals ist, werden abgelehnt; ein
-Verzeichniseintrag macht niemanden zum Verwalter; die Brücke lehnt die
-Bindung eines öffentlichen Chat-Kanals an einen nicht öffentlichen
-Bus-Kanal ab, und ein Mensch, der nur im Chat-Kanal steht, bekommt
-nichts auf NATS; die Sichtregel mit einem Fall über zwei Stufen, der
-nichts öffnet, und mit einem Gastkanal, der sich nur lesend öffnet; ein
-Ereignis einer Brücke für einen Kanal, der nicht an sie gebunden ist,
-wird verworfen.
+**Tests (planned):** `callout.Channels` against the directory with the same
+cases as against Mattermost (unknown is not "no"); no write right on the
+bucket except for the login service, against a NATS server as in
+`native_sender_test.go`; a name without a binding trusts nobody;
+`owners.mine()` and `owners.foreign()` with a missing binding and with a
+directory that does not answer: the sender is foreign, its TASK a request,
+in `mcp/tests/`; a trust list no host named is not attested by the login
+service; an agent's name and its owner's token in the presence subject stay
+the same on the switch to `sub` and on a rename in Keycloak or in the chat,
+and the display follows the new name after the next login; a change to the
+directory by someone outside the administrators' group, and members set by
+someone who is not the channel's owner, are refused; a directory entry makes
+nobody an administrator; the bridge refuses to bind a public chat channel to
+a non-public bus channel, and a human who is only in the chat channel gets
+nothing on NATS; the visibility rule with a case over two steps that opens
+nothing, and with a guest channel that opens read-only; an event of a bridge
+for a channel not bound to it is dropped.
 
-**Risks created:** das Verzeichnis als eine Stelle, der alle glauben,
-Verzeichnis und Chat, die auseinanderlaufen, und Sicht durch Vertrauen
-(RISK-15 bis RISK-17 in Abschnitt 11).
+**Risks created:** the directory as the one place everyone believes, the
+directory and the chat drifting apart, and visibility through trust
+(RISK-15 to RISK-17 in Section 11); and the agent's name on NATS: the
+login service names it after the directory's anchor, the host computes it
+from `preferred_username`, so an identity whose anchor differs stops with
+`NameMismatch` (fails closed; RISK-19).
 
-**Decided by the owner on 2026-11-23**, zu jedem der neun Punkte, die
-der Vorschlag offen ließ, eine Entscheidung; die Nummern sind die der
-früheren offenen Punkte. Bei jeder steht als Beleg der Ask auf dem Bus
-mit der Antwort des Eigentümers. Die Entscheidung als Ganzes hat er
-danach angenommen (Ask `mfbre617hj8f9p3p81855waukr`, 👍).
+**Decided by the owner on 2026-11-23**, one decision on each of the nine
+points the proposal left open; the numbers are those of the former open
+points. Each carries as its evidence the ask on the bus with the owner's
+answer. He then accepted the decision as a whole (ask
+`mfbre617hj8f9p3p81855waukr`, 👍).
 
-1. **Wer das Verzeichnis verwaltet.** Eine Keycloak-Gruppe von
-   Verwaltern legt Kanäle an, setzt ihre Eigentümer und schaltet
-   „öffentlich“. Der Eigentümer eines Kanals pflegt dessen Mitglieder.
-   Beleg: Ask `8sr1z7dq3fgrdnwusskza9inir`, 👍.
-2. **Der Übergang von der Mattermost-Mitgliedschaft.** Einmal
-   übernehmen; danach zählt nur das Verzeichnis. Kein Vergleich mit
-   Mattermost, keine Meldung von Abweichungen.
-   Beleg: Ask `u17odxpsypypf8hpf83w8ed69o`, 👎, also die zweite Antwort: „nur
-   Verzeichnis, kein Vergleich“.
-3. **Der Anfang.** Verwalter ist, wer in der Keycloak-Gruppe steht, die
-   die Konfiguration des Anmeldedienstes nennt. Kein Eintrag im
-   Verzeichnis berechtigt sich selbst: Das Recht kommt von außen, aus
-   Keycloak und der Konfiguration. Die ersten Kanäle legt ein Verwalter
-   einmal an, durch Übernahme aus Mattermost.
-   Beleg: Ask `gp6j4qsczigefj5fq56ijas8dr`, 👍.
-4. **Was „öffentlich“ heißt.** Eine Eigenschaft des Kanals auf dem Bus,
-   im Verzeichnis: Jede Identität des Mandanten darf ihn lesen. Nur die
-   Gruppe der Verwalter schaltet sie. Eine Brücke lehnt die Bindung an
-   einen Chat-Kanal ab, der offener ist als der Bus-Kanal; verglichen
-   wird die Eigenschaft öffentlich oder privat, nicht die
-   Mitgliederliste.
-   Beleg: Ask `9zqfzi3matg49yi3j9fu888p7c`, 👍.
-5. **Die Quelle für Mitglieder.** Das Verzeichnis. Die Brücke setzt im
-   gebundenen Chat-Kanal nur die Agenten nach dem Verzeichnis. Weitere
-   Menschen im Chat-Kanal sind erlaubt: Sie sehen, was die Brücke dorthin
-   spiegelt, bekommen nichts auf NATS und nichts in der Konsole, und was
-   sie schreiben, erreicht den Bus, von der Brücke als Mensch verbürgt.
-   Vertrauen und Genehmigungen hängen weiter allein an den
-   Vertrauenslisten der Agenten.
-   Beleg: Ask `uqbt4onomigbdxfkggxnxirzcr`, Antwort im Thread
-   (`4dr5goywzpdxb8egwyrt8ztnro`): „ja, so – aber nur für agents“.
-6. **Gastkanäle in der Sichtregel.** Die Sichtregel für Betreiber
-   (Punkt 4 der Entscheidung oben) öffnet auch die Gastkanäle eines
-   Agenten, aber nur lesend, auch sobald die Konsole schreiben darf.
-   Antworten und Genehmigungen gibt es nur im Zuhause des Agenten. Ein
-   Gast öffnet damit ein fremdes Zuhause lesend für die Menschen, denen
-   er direkt vertraut; die Eigentümer der Kanäle müssen das wissen
-   (RISK-17).
-   Beleg: Ask `nep189rgwif63k5u63obfpzmir`, 👎, also die zweite Antwort:
-   „auch Gast-Kanäle“; dazu die Antwort im Thread
-   (`9rr9j7pnm78xinch8cufioe18e`): „nur lesend“.
-7. **Das Token des Eigentümers im Presence-Subject**
-   (`<presence>.<owner>.<name>`, ADR-014 Punkt 16). Ein festes Token je
-   Identität aus dem Verzeichnis: für heutige Identitäten der heutige
-   Name, für neue ein Token aus `sub`. Angezeigt wird immer der aktuelle
-   `preferred_username`, den der Anmeldedienst bei jeder Anmeldung ins
-   Verzeichnis übernimmt.
-   Beleg: Ask `n9w6jw7snpgsdjdkd1o7aug9bh`, Antwort im Thread
-   (`14im91d9bt8apeq18s5zx55i4e`): angezeigt wird der aktuelle
-   `preferred_username`.
-8. **Der Weg zum Verzeichnis.** Zuerst die Kommandozeile des
-   Anmeldedienstes, mit Keycloak-Anmeldung; später die Konsole, sobald
-   sie schreiben darf. Kein Befehl im Chat.
-   Beleg: Ask `rihistpiiffb9f7ag6eadkgbsh`, 👍.
-9. **Agentennamen.** Sie werden vom Eigentümer gelöst. Das Verzeichnis
-   hält je Identität einen festen Ausgangswert für den Hash des Namens:
-   für heutige Identitäten den heutigen Namen, für neue `sub`. Er wird
-   nie geändert; damit ändert sich kein Agentenname, weder beim Wechsel
-   auf `sub` noch bei einer Umbenennung in Keycloak.
-   Beleg: Ask `xz6hejirj3fwmmpdhtc7azaf4w`, 👍 („lösen“).
+1. **Who administers the directory.** A Keycloak group of administrators
+   creates channels, sets their owners and switches "public". A channel's
+   owner keeps its members.
+   Evidence: ask `8sr1z7dq3fgrdnwusskza9inir`, 👍.
+2. **The transition from Mattermost membership.** Import once; after that
+   only the directory counts. No comparison with Mattermost, no report of
+   differences.
+   Evidence: ask `u17odxpsypypf8hpf83w8ed69o`, 👎, that is the second
+   answer: "directory only, no comparison".
+3. **The start.** An administrator is whoever is in the Keycloak group the
+   login service's configuration names. No entry in the directory empowers
+   itself: the right comes from outside, from Keycloak and the
+   configuration. An administrator creates the first channels once, by the
+   import from Mattermost.
+   Evidence: ask `gp6j4qsczigefj5fq56ijas8dr`, 👍.
+4. **What "public" means.** A property of the channel on the bus, in the
+   directory: every identity of the tenant may read it. Only the
+   administrators' group switches it. A bridge refuses a binding to a chat
+   channel that is more open than the bus channel; what is compared is the
+   property public or private, not the member list.
+   Evidence: ask `9zqfzi3matg49yi3j9fu888p7c`, 👍.
+5. **The source of members.** The directory. In the bound chat channel the
+   bridge sets only the agents, by the directory. Further humans in the chat
+   channel are allowed: they see what the bridge mirrors there, get nothing
+   on NATS and nothing in the console, and what they write reaches the bus,
+   vouched for by the bridge as a human. Trust and approvals still hang on
+   the agents' trust lists alone.
+   Evidence: ask `uqbt4onomigbdxfkggxnxirzcr`, answer in the thread
+   (`4dr5goywzpdxb8egwyrt8ztnro`): "yes, like that – but only for agents".
+6. **Guest channels in the visibility rule.** The visibility rule for
+   operators (point 4 of the decision above) also opens an agent's guest
+   channels, but read-only, even once the console may write. Answers and
+   approvals exist only in the agent's home. A guest thereby opens a foreign
+   home read-only for the humans it trusts directly; the channels' owners
+   must know that (RISK-17).
+   Evidence: ask `nep189rgwif63k5u63obfpzmir`, 👎, that is the second
+   answer: "guest channels too"; plus the answer in
+   the thread (`9rr9j7pnm78xinch8cufioe18e`): "read-only".
+7. **The owner's token in the presence subject**
+   (`<presence>.<owner>.<name>`, ADR-014 point 16). A fixed token per
+   identity from the directory: for today's identities today's name, for
+   new ones a token from `sub`. What is displayed is always the current
+   `preferred_username`, which the login service takes into the directory
+   at every login.
+   Evidence: ask `n9w6jw7snpgsdjdkd1o7aug9bh`, answer in the thread
+   (`14im91d9bt8apeq18s5zx55i4e`): the current `preferred_username` is
+   displayed.
+8. **The way to the directory.** First the login service's command line,
+   with a Keycloak login; later the console, once it may write. No command
+   in the chat.
+   Evidence: ask `rihistpiiffb9f7ag6eadkgbsh`, 👍.
+9. **Agent names.** They are detached from the owner. The directory holds
+   per identity a fixed seed for the name's hash: for today's identities
+   today's name, for new ones `sub`. It is never changed; so no agent name
+   changes, neither on the switch to `sub` nor on a rename in Keycloak.
+   Evidence: ask `xz6hejirj3fwmmpdhtc7azaf4w`, 👍 ("detach").
 
-Was daraus folgt und noch nicht entworfen ist: wie der Eigentümer eines
-Kanals erfährt, wem ein Gast seinen Kanal lesend öffnet (Entscheidung
-6). Geklärt vor dem ersten Code am Verzeichnis (Koordinator, 2026-11-23):
-Das feste Token im Presence-Subject und der Ausgangswert für den Namen
-(Entscheidungen 7 und 9) sind ein Feld je Identität, `anchor`: für
-heutige Identitäten der heutige Name, für neue `sub`, nie geändert. Zwei
-Felder könnten nur auseinanderlaufen. Ein Schlüssel `anchor.<wert>` mit
-dem `sub` als Wert verhindert, dass ein Wert zweimal vergeben wird.
+What follows from it and is not designed yet: how a channel's owner learns
+to whom a guest opens their channel read-only (decision 6). Settled before
+the first code on the directory (coordinator, 2026-11-23): the fixed token
+in the presence subject and the seed for the name (decisions 7 and 9) are
+one field per identity, `anchor`: for today's identities today's name, for
+new ones `sub`, never changed. Two fields could only drift apart. A key
+`anchor.<value>` with the `sub` as its value keeps a value from being given
+out twice.
 
-Gebaut ist das Verzeichnis selbst und sein Lesen im Anmeldedienst
-(Punkt 2, RT-6.39): der Bucket, den nur der Anmeldedienst liest und
-schreibt, `callout.Channels` über das Verzeichnis mit Mattermost bis
-`meta.imported`, und `anchor` je Identität. `anchor` wird einmal
-geschrieben, beim ersten Login einer Identität oder durch den Import, und
-nie geändert: Wer vor dem Import bekannt ist, behält den heutigen Namen,
-und nur eine Identität, die nach dem Import zum ersten Mal kommt, bekommt
-ihr `sub`. Einen einmaligen Wechsel aller Agentennamen gibt es deshalb
-nicht. Eine Umbenennung in Keycloak ändert `anchor` nicht; bekommt danach
-eine andere Person den alten Namen, ist dieser `anchor` vergeben, und sie
-bekommt ihr `sub` (festgelegt bei der Endabnahme von #44, 2026-11-23). Die
-Byte-Gleichheit mit dem Stand vor dem Verzeichnis gilt deshalb nur ohne
-Umbenennung. Kein Wert wird zweimal vergeben, ob er aus einem Namen oder
-einem `sub` stammt: Je Wert gibt es einen Indexschlüssel. Hält ein Name
-schon den Wert eines `sub` (jemand hat sich so genannt), bekommt die
-Identität ihr `sub` mit einer Endung `.1` bis `.8`, bei einem langen `sub`
-gekürzt, sodass die Endung Platz hat. Aussperren können sie erst neun
-Benutzernamen, die genau diese Werte tragen, und jeder davon kostet eine
-eigene Identität; dann wird die Ausgabe verweigert (RT-6.39). Nach dem Import setzt der Betreiber
-`AUTH_DIRECTORY_IMPORTED=true`: Ein verlorener Bucket oder einer ohne
-`meta.imported` verweigert dann jede Ausgabe, statt auf Mattermost
-zurückzufallen. Daraus folgen zwei Punkte für die Umstellung:
+Built is the directory itself and its reading in the login service (point
+2, RT-6.39, 0.97.0): the bucket that only the login service reads and
+writes, `callout.Channels` over the directory (`directory.Channels`) with
+Mattermost until `meta.imported`, and `anchor` per identity. `anchor` is
+written once, at an identity's first login or by the import, and never
+changed: whoever is known before the import keeps today's name, and only an
+identity that comes for the first time after the import gets its `sub`. A
+one-time switch of all agent names therefore does not exist. A rename in
+Keycloak does not change `anchor`; if another person then gets the old
+name, that `anchor` is taken, and they get their `sub` (fixed at the final
+acceptance of #44, 2026-11-23). Byte equality with the state before the
+directory therefore holds only without a rename. No value is given out
+twice, whether it comes from a name or from a `sub`: there is one index key
+per value. If a name already holds the value of a `sub` (someone named
+themselves so), the identity gets its `sub` with a suffix `.1` to `.8`,
+shortened for a long `sub` so that the suffix fits. Only nine usernames
+carrying exactly these values can lock it out, and each of them costs an
+identity of its own; then issuing is refused (RT-6.39). After the import
+the operator sets `AUTH_DIRECTORY_IMPORTED=true`: a lost bucket or one
+without `meta.imported` then refuses every issue instead of falling back to
+Mattermost. Two points for the changeover follow from it:
 
-- **Bedingung vor dem ersten Import im Labor:** Der MCP-Server vergleicht
-  das Token des Eigentümers im Presence-Subject heute mit dem
-  Mattermost-Namen (`NatsPort.owner_of`, `lease._linked_owned`). Ein
-  `anchor` aus `sub` wäre dort kein Name, und die Agenten einer neuen
-  Identität gälten über NATS als fremd. Bevor im Labor importiert wird,
-  löst der MCP-Server `anchor` zu Namen auf, mit Punkt 4 (der
-  Anmeldedienst bürgt für Vertrauenslisten).
-- **Offen, die Notbremse:** Sie hält Benutzernamen, und die Consumer
-  tragen in ihren Metadaten den angezeigten Namen. Nach dem Import trifft
-  eine Bremse per Name eine Identität nur, solange Name und `sub` zusammen
-  aufgelöst werden; eine Umbenennung in Keycloak entzieht ihr die Person.
-  Zu klären vor dem ersten Import, nicht in diesem Schritt.
+- **Condition before the first import in the lab** (met, see the attestation
+  below): the MCP server compared the owner's token in the presence subject
+  with the Mattermost name (`NatsPort.owner_of`, `lease._linked_owned`). An
+  `anchor` from `sub` would be no name there, and a new identity's agents
+  would count as foreign over NATS. Before importing in the lab, the MCP
+  server resolves `anchor` to names, with point 4 (the login service attests
+  trust lists). Since RT-6.41 `owner_of` returns the attested name for an
+  anchor and peers are compared by anchors. Still open on the host: an
+  agent's own name for an anchor from `sub` (see "Agent names" under point
+  1).
+- **Open, the emergency brake:** it holds usernames, and the consumers carry
+  the displayed name in their metadata. After the import a brake by name
+  hits an identity only as long as name and `sub` are resolved together; a
+  rename in Keycloak takes the person out of its reach. To be settled before
+  the first import, not in this step.
 
-Gebaut ist auch die Pflege über die Verwaltungs-Schnittstelle des
-Anmeldedienstes und der einmalige Import aus Mattermost (Entscheidungen 1,
-2, 3 und 8; RT-6.40), mit der Kommandozeile `authd dir …` und Anmeldung über den Device-Flow von Keycloak. Ein Konto mit
-Passwort wird erst Mitglied, wenn ein Verwalter seinen Anspruch bestätigt
-hat (RISK-18); ein Kanal ohne menschlichen Ersteller mit `sub` bekommt
-keinen Eigentümer, sodass nur Verwalter ihn pflegen.
+Built as well, after 0.97.0: the upkeep through the login service's admin
+API and the one-time import from Mattermost (decisions 1, 2, 3 and 8;
+RT-6.40), with the command line `authd dir …` and a login through
+Keycloak's device flow. An account with a password becomes a member only
+once an administrator has confirmed its claim (RISK-18); a channel without a
+human creator with a `sub` gets no owner, so that only administrators keep
+it.
 
-Gebaut ist auch die Bürgschaft für Vertrauenslisten auf der Seite des
-Anmeldedienstes (Punkt 4, RT-6.41): Der Host nennt seine Liste, der Dienst
-löst sie über das Verzeichnis zu Ankern auf und schreibt bei jeder Ausgabe
-eine Bürgschaft, die nur er publizieren darf. Der MCP-Server liest sie: Er
-zeigt den Eigentümer mit seinem Namen statt mit seinem Anker und vergleicht
-über Anker, mit der eigenen Bürgschaft als eigener Liste (RT-6.37 Schritt 4).
-Damit ist die Bedingung vor dem ersten Import im Labor erfüllt. Wird der
-Anmeldedienst auf einen Stand ohne Bürgschaften zurückgerollt, sind bis zum
-Neustart der Hosts alle Absender über NATS fremd: Ein MCP-Server, der einmal
-eine Bürgschaft gesehen hat, vergleicht nicht mehr über Namen. Das ist
-gewollt (fail closed).
+Built as well, after 0.97.0: the attestation of trust lists on the login
+service's side (point 4, RT-6.41): the host names its list, the service
+resolves it through the directory to anchors and writes an attestation at
+every issue, which only it may publish. The MCP server reads it: it shows
+the owner by name instead of by anchor and compares by anchors, with its own
+attestation as its own list (RT-6.37 step 4). With that the condition before
+the first import in the lab is met. If the login service is rolled back to a
+version without attestations, all senders over NATS are foreign until the
+hosts restart: an MCP server that has once seen an attestation no longer
+compares by names. That is intended (fail closed).
 
-Gebaut ist auch die Pflege des Kontenindex nach dem Import (#59, RT-6.41
-Schritt 2): Jede Anmeldung, deren Mattermost-Konto über OpenID mit genau dem
-`sub` des Tokens verbunden ist, setzt den Namen dieses Kontos auf ihre
-Identität, auch wenn eine andere ihn hielt. Mattermost beweist mit dem
-Abgleich von `sub` und `auth_data`, wem der Name jetzt gehört; ein
-Passwortkonto, der Import oder eine andere Quelle verschiebt nie einen
-Namen. Bewusst gilt: Eine Vertrauensliste nennt Namen, also gilt nach dem
-Wandern eines Namens das Vertrauen seinem **neuen** Halter; ein Eigentümer,
-der das nicht will, muss seine Liste ändern. Das Wandern wird mit altem und
-neuem `sub` (gekürzt) protokolliert und steht als `moved_from` am Eintrag.
-Kann der Index nicht geschrieben werden, scheitert die Anmeldung, denn ein
-veralteter Eintrag gäbe das Vertrauen dem früheren Halter. Für einen Namen,
-dessen neuer Halter sich nie über den Bus anmeldet, bleibt der Eintrag
-stehen, bis ein Verwalter ihn mit `authd dir account rm` löscht
-(Restrisiko).
+Built as well, after 0.97.0: the upkeep of the account index after the
+import (#59, RT-6.41 step 2): every login whose Mattermost account is bound
+through OpenID to exactly the token's `sub` sets that account's name onto
+its identity, even if another identity held it. Mattermost proves by
+matching `sub` and `auth_data` whom the name now belongs to; a password
+account, the import or any other source never moves a name. On purpose: a
+trust list names names, so after a name moves the trust goes to its **new**
+holder; an owner who does not want that must change their list. The move is
+logged with old and new `sub` (shortened) and is recorded as `moved_from` on
+the entry. If the index cannot be written, the login fails, because a stale
+entry would give the trust to the former holder. For a name whose new holder
+never logs in through the bus, the entry stays until an administrator deletes
+it with `authd dir account rm` (residual risk).
 
-Gebaut ist die Bedingung „im Zweifel fremd“ (Punkt 1), vor jeder
-Auflösung von Namen: `owners.foreign()` und `owners.peer()` nehmen bei
-einem Lesefehler den zuletzt gelesenen Eigentümer, solange er jünger
-als `OWNER_GRACE_SEC` (300 s) ist, mit dem Cache des Clients höchstens 15
-Minuten nach der letzten Antwort von Mattermost, danach ist der Agent fremd;
-`owners.mine()` lässt die Trennung an, wenn der eigene Bot oder die
-vertrauten Menschen nicht lesbar sind (RT-6.16); Tor und Task-Zählung
-hängen daran, ob vertraute Menschen konfiguriert sind, nicht daran, ob
-gerade einer aufgelöst ist (`gate.active`). Die Frist hält eine
-kurze Störung davon ab, jeden TASK zur Bitte zu machen.
+Built is the condition "in doubt, foreign" (point 1, 0.97.0), ahead of any
+resolution of names: on a read error `owners.foreign()` and `owners.peer()`
+take the owner read last, as long as it is younger than `OWNER_GRACE_SEC`
+(300 s), with the client's cache at most 15 minutes after Mattermost's last
+answer; after that the agent is foreign. `owners.mine()` keeps the split on
+when the own bot or the trusted humans cannot be read (RT-6.16); the gate
+and the task count depend on whether trusted humans are configured, not on
+whether one is resolved right now (`gate.active`). The grace keeps a short
+outage from turning every TASK into a request.
 
-Nicht Teil dieser Entscheidung: eine Brücke für Teams oder Zulip zu bauen,
-der Antwortweg der Konsole, mehrere Mandanten, und der Zeitpunkt, zu dem
-Mattermost abgeschaltet werden könnte.
+**Addition, decided on 2026-11-24, built step by step: all of Mattermost in
+one service.** The Mattermost bridge of point 3 becomes the one service that
+holds everything Mattermost-facing: the bot accounts and their tokens (today
+the registrar's, a component in its own repository), the mirror of the bus
+into the bound channels, people's posts and reactions onto NATS, and, as they
+move there, asks and slash commands. In a home over NATS neither the agents
+nor the login service hold a Mattermost credential then. The service lives in
+`services/bridge`; today's bridge is built as its first part, so the
+registrar's functions can move in later without a second component.
+
+1. **The pilot (2026-11-24): one way, NATS to Mattermost, one bridge bot.**
+   The bridge posts what the agents send over NATS into Mattermost under one
+   bot account and names the agent in each post (`shown_as` and the NATS id
+   in the post's props); agents reading Mattermost drop what carries that id.
+   One bot per agent is the next step. Being built.
+2. **People's posts and reactions onto NATS**, vouched for as point 3 says.
+   Open.
+3. **The registrar moves into the bridge.** One bot per agent needs what the
+   registrar does today: an account allowed to create bots and their tokens.
+   The bridge takes over bot creation for homes over NATS; the registrar keeps
+   serving the homes that talk to Mattermost directly until the last of them
+   has moved, then it is retired into the bridge. Its tenant settings
+   (`BOT_USERNAME_PREFIX` and the rest) move into the bridge's configuration
+   and its Go code into `services/bridge`. Open: the order of the move gets
+   its own ask after the pilot.
+4. **Asks and slash commands** move into the bridge as they move to NATS.
+   Open.
+
+Why one service: one component holds the Mattermost administrator right
+instead of two, which is less privileged surface and one place to review;
+point 3 already gives the bridge the bot accounts. Evidence: ask
+`8ar9duhmu7gx8fpoxozzhzp99y`, answer "one bridge bot" (`1️⃣`); the owner's
+follow-up in its thread (`yh6p6uc6q3fgijuthr7hete64w`): "so that all
+Mattermost-related functions are in one service".
+
+Not part of this decision: building a bridge for Teams or Zulip, the
+console's way of answering, several tenants, and the time at which
+Mattermost could be switched off.

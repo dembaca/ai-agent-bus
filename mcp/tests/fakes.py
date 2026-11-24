@@ -369,6 +369,9 @@ class FakeChat:
         posts = [p for p in posts if p.create_at >= since_ms] if since_ms is not None else posts[:per_page]
         return sorted(posts, key=lambda p: p.create_at)
 
+    async def copies_through(self, channel_id: str, since_ms: int) -> int:
+        return 0  # no NATS home (RT-6.36 step 4)
+
     async def posts_after(self, since_ms: int, *, channel_id: str | None = None,
                           max_pages: int = 25) -> list[Post]:
         """All posts: the test hands only what came after."""
