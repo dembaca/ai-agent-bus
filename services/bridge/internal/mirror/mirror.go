@@ -11,14 +11,20 @@ package mirror
 
 import (
 	"context"
+	"encoding/json"
 	"errors"
 	"fmt"
 	"log/slog"
 	"strings"
+	"time"
 	"unicode/utf8"
 
 	"github.com/dembaca/ai-agent-bus/services/bridge/internal/message"
 )
+
+// MaxProps bounds the props a sender may carry through: the bus's own cap
+// (a2a.user_props) is 2 000 characters of key and value.
+const MaxProps = 2000
 
 // MaxPost bounds a mirrored post's text: Mattermost refuses one above 16 383
 // characters, so the mirror cuts to 16 000 runes and marks the cut. A bus post
@@ -99,7 +105,7 @@ func (m *Mirror) Handle(ctx context.Context, channelID func(context.Context) (st
 		return err
 	} else if done {
 		// Already mirrored (a replay after a crash): only move the position on.
-		return m.Store.Save(ctx, m.Home, seq, seen)
+		return m.save(ctx, seq, seen)
 	}
 	cid, err := channelID(ctx)
 	if err != nil {
@@ -113,15 +119,7 @@ func (m *Mirror) Handle(ctx context.Context, channelID func(context.Context) (st
 		shown = sender
 	}
 	id := fmt.Sprintf("n1:%s:%d", m.Home, seq)
-	props := map[string]any{}
-	for k, v := range msg.Props {
-		// The bridge's own semantics only: an a2a kind or crown from a NATS
-		// sender must never make the mirror a task, an ask or a crown.
-		if strings.HasPrefix(k, m.Prefix+"a2a") {
-			continue
-		}
-		props[k] = v
-	}
+	props := m.senderProps(msg.Props)
 	props[m.Prefix+"nats_id"] = id
 	props[m.Prefix+"shown_as"] = shown
 	p := Post{}
@@ -150,7 +148,7 @@ func (m *Mirror) Handle(ctx context.Context, channelID func(context.Context) (st
 		if !ok {
 			m.Log.Info("bridge: a reaction to an unknown post is skipped",
 				"home", m.Home, "ref", *msg.Ref, "emoji", msg.Emoji)
-			return m.Store.Save(ctx, m.Home, seq, Post{})
+			return m.save(ctx, seq, Post{})
 		}
 		delta := 1
 		if msg.Kind == message.Unreaction {
@@ -180,14 +178,69 @@ func (m *Mirror) Handle(ctx context.Context, channelID func(context.Context) (st
 	default:
 		return errors.New("bridge: unknown message kind")
 	}
-	return m.Store.Save(ctx, m.Home, seq, p)
+	return m.save(ctx, seq, p)
+}
+
+// save writes the map and the position although the reader may be stopping:
+// a post that Mattermost accepted must be remembered, or a restart repeats it.
+func (m *Mirror) save(ctx context.Context, seq uint64, p Post) error {
+	sctx, cancel := context.WithTimeout(context.WithoutCancel(ctx), 5*time.Second)
+	defer cancel()
+	return m.Store.Save(sctx, m.Home, seq, p)
+}
+
+// senderProps keeps what a sender may carry through: keys with the bus props
+// prefix and scalar values, without the keys the bridge itself sets (a forged
+// system, nats_id, shown_as or nats_root must not reach Mattermost). Nothing
+// else from Mattermost's own prop namespace passes, so no from_webhook, no
+// override_username, no attachments. Too many bytes: the sender's props go.
+func (m *Mirror) senderProps(in map[string]any) map[string]any {
+	out := map[string]any{}
+	for k, v := range in {
+		if !strings.HasPrefix(k, m.Prefix) {
+			continue
+		}
+		switch v.(type) {
+		case string, bool, json.Number, float64, int, int64:
+		default:
+			continue
+		}
+		switch strings.TrimPrefix(k, m.Prefix) {
+		case "system", "nats_id", "shown_as", "nats_root":
+			continue
+		}
+		out[k] = v
+	}
+	if raw, err := json.Marshal(out); err != nil || len(raw) > MaxProps {
+		return map[string]any{}
+	}
+	return out
 }
 
 // Attribution puts the sender above the text, as the bridge posts with one
 // bot for every agent (the pilot's decision): a line of its own, so Markdown
 // blocks and tables below it stay intact.
 func Attribution(shown, text string) string {
-	return "**" + shown + "**\n\n" + text
+	// The sender line is ours; the text cannot move it. Mentions in the text would
+	// notify people through the bridge's bot, so every @ gets a zero-width space
+	// after it: the text reads as written, no one is woken by a mirror.
+	return "**" + shown + "**\n\n" + DefuseMentions(text)
+}
+
+// DefuseMentions makes @channel, @all and @name in a mirrored text plain text.
+func DefuseMentions(text string) string {
+	if !strings.Contains(text, "@") {
+		return text
+	}
+	var b strings.Builder
+	b.Grow(len(text) + 8)
+	for _, r := range text {
+		b.WriteRune(r)
+		if r == '@' {
+			b.WriteRune('\u200b')
+		}
+	}
+	return b.String()
 }
 
 // Cut shortens text to MaxPost runes, with a mark when it did.

@@ -36,7 +36,7 @@ func (r *Reader) Run(ctx context.Context, js nats.JetStreamContext,
 	if err != nil {
 		return err
 	}
-	start := nats.DeliverAll()
+	start := nats.DeliverNew() // a first start mirrors what comes now, not the history
 	if ok {
 		start = nats.StartSequence(pos + 1)
 	}
@@ -74,7 +74,7 @@ func (r *Reader) Run(ctx context.Context, js nats.JetStreamContext,
 					// was seen and go on; one post must not stop a home.
 					r.Log.Warn("bridge: refused, skipped", "home", r.Home,
 						"subject", m.Subject, "error", err)
-					_ = r.Store.Save(ctx, r.Home, mustSeq(m), mirror.Post{})
+					_ = r.save(ctx, mustSeq(m), mirror.Post{})
 					break
 				}
 				if ctx.Err() != nil {
@@ -97,6 +97,13 @@ func (r *Reader) Run(ctx context.Context, js nats.JetStreamContext,
 	}
 }
 
+// save remembers a skipped message although the reader may be stopping.
+func (r *Reader) save(ctx context.Context, seq uint64, p mirror.Post) error {
+	sctx, cancel := context.WithTimeout(context.WithoutCancel(ctx), 5*time.Second)
+	defer cancel()
+	return r.Store.Save(sctx, r.Home, seq, p)
+}
+
 func mustSeq(m *nats.Msg) uint64 {
 	md, err := m.Metadata()
 	if err != nil {
@@ -108,9 +115,11 @@ func mustSeq(m *nats.Msg) uint64 {
 func (r *Reader) one(ctx context.Context, m *nats.Msg,
 	channelID func(context.Context) (string, error)) error {
 	parts := strings.Split(m.Subject, ".")
-	// <prefix>.ch.<home>.<sender>
+	// <prefix>.ch.<home>.<sender>; anything else under the wildcard is not this
+	// home's post and must not stop the reader (a fifth token, a sub-subject).
 	if len(parts) != 4 || parts[0] != r.Prefix || parts[1] != "ch" || parts[2] != r.Home {
-		return fmt.Errorf("reader: unexpected subject %q", m.Subject)
+		r.Log.Warn("bridge: unexpected subject skipped", "subject", m.Subject)
+		return r.save(ctx, mustSeq(m), mirror.Post{})
 	}
 	seq := mustSeq(m)
 	msg, err := message.Decode(m.Data, r.PropsPrefix)
@@ -118,7 +127,7 @@ func (r *Reader) one(ctx context.Context, m *nats.Msg,
 		// A message this bridge cannot read is not the bridge's to fix: log it
 		// and advance past it, so one broken post does not stop the home.
 		r.Log.Warn("bridge: unreadable message skipped", "subject", m.Subject, "error", err)
-		return r.Store.Save(ctx, r.Home, seq, mirror.Post{})
+		return r.save(ctx, seq, mirror.Post{})
 	}
 	return r.Mirror.Handle(ctx, channelID, parts[3], seq, msg)
 }

@@ -4,6 +4,7 @@ import (
 	"context"
 	"io"
 	"log/slog"
+	"strings"
 	"testing"
 
 	"github.com/dembaca/ai-agent-bus/services/bridge/internal/message"
@@ -115,6 +116,45 @@ func TestAReplyThreadsOnItsRootAndFallsBackToTheProp(t *testing.T) {
 	}
 	if sink.posts[2].root != "" || sink.posts[2].props["a2a.nats_root"] != "n1:home:99" {
 		t.Fatalf("fallback: %+v", sink.posts[2])
+	}
+}
+
+func TestOnlyTheSendersBusPropsPassAndMentionsAreDefused(t *testing.T) {
+	sink, st := &fakeSink{}, &fakeStore{posts: map[uint64]Post{}, reactions: map[string]int{}}
+	m := &Mirror{Home: "home", Prefix: "x_", Log: slog.New(slog.NewTextHandler(io.Discard, nil)),
+		Sink: sink, Store: st, Links: LinksNone{}}
+	msg := message.Msg{Kind: message.Post, Text: "@channel please, @alice too", Props: map[string]any{
+		"x_ok": "kept", "x_system": "1", "x_nats_id": "forged", "x_nats_root": "n1:home:9",
+		"from_webhook": "true", "override_username": "admin", "attachments": []any{},
+		"a2a_kind": "TASK",
+	}}
+	if err := m.Handle(context.Background(), channel, "agent-a", 4, msg); err != nil {
+		t.Fatal(err)
+	}
+	props := sink.posts[0].props
+	if props["x_ok"] != "kept" || props["x_nats_id"] != "n1:home:4" {
+		t.Fatalf("props: %+v", props)
+	}
+	for _, k := range []string{"x_system", "x_nats_root", "from_webhook", "override_username", "attachments", "a2a_kind"} {
+		if _, ok := props[k]; ok {
+			t.Errorf("%s reached the mirror: %+v", k, props)
+		}
+	}
+	if strings.Contains(sink.posts[0].text, "@channel") || strings.Contains(sink.posts[0].text, "@alice") {
+		t.Fatalf("a mention would notify: %q", sink.posts[0].text)
+	}
+	if !strings.Contains(sink.posts[0].text, "@\u200bchannel") {
+		t.Fatalf("the mention is not defused with a zero-width space: %q", sink.posts[0].text)
+	}
+	// too many bytes of the sender's props: all of them go, the bridge's stay
+	big := message.Msg{Kind: message.Post, Text: "x", Props: map[string]any{
+		"x_ok": "kept", "x_big": strings.Repeat("a", 2100)}}
+	if err := m.Handle(context.Background(), channel, "agent-a", 5, big); err != nil {
+		t.Fatal(err)
+	}
+	props = sink.posts[1].props
+	if _, ok := props["x_ok"]; ok || props["x_nats_id"] != "n1:home:5" {
+		t.Fatalf("oversize props: %+v", props)
 	}
 }
 

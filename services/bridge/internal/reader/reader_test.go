@@ -96,6 +96,7 @@ func TestAPostAReplyAndAReactionOverARealServer(t *testing.T) {
 	s := &sink{got: make(chan [3]string, 8), react: make(chan string, 4)}
 	cancel, _ := start(t, nc, js, kv, s)
 	defer cancel()
+	waitConsumer(t, js, "BUS")
 
 	mustPublish(t, nc, "bus.ch.home.agent-a", `{"v":1,"kind":"post","text":"hello"}`)
 	first := until(t, s, "**agent-a**\n\nhello")
@@ -140,6 +141,7 @@ func TestARestartNeitherRepeatsNorLoses(t *testing.T) {
 	}
 	s := &sink{got: make(chan [3]string, 8), react: make(chan string, 4)}
 	cancel, done := start(t, nc, js, kv, s)
+	waitConsumer(t, js, "BUS")
 	mustPublish(t, nc, "bus.ch.home.agent-a", `{"v":1,"kind":"post","text":"one"}`)
 	until(t, s, "**agent-a**\n\none")
 	cancel()
@@ -151,6 +153,7 @@ func TestARestartNeitherRepeatsNorLoses(t *testing.T) {
 	// while the bridge is down a post arrives, and the old one is not repeated
 	mustPublish(t, nc, "bus.ch.home.agent-a", `{"v":1,"kind":"post","text":"two"}`)
 	cancel2, _ := start(t, nc, js, kv, s)
+	waitConsumer(t, js, "BUS")
 	defer cancel2()
 	got := until(t, s, "**agent-a**\n\ntwo")
 	if got[2] != "n1:home:2" {
@@ -160,6 +163,23 @@ func TestARestartNeitherRepeatsNorLoses(t *testing.T) {
 	case again := <-s.got:
 		t.Fatalf("a post was repeated after the restart: %+v", again)
 	case <-time.After(300 * time.Millisecond):
+	}
+}
+
+// waitConsumer waits until the reader's ephemeral pull consumer exists: a
+// DeliverNew consumer mirrors what comes after its creation, and the test
+// publishes right after the reader starts.
+func waitConsumer(t *testing.T, js nats.JetStreamContext, stream string) {
+	t.Helper()
+	deadline := time.Now().Add(3 * time.Second)
+	for {
+		if si, err := js.StreamInfo(stream); err == nil && si.State.Consumers > 0 {
+			return
+		}
+		if time.Now().After(deadline) {
+			t.Fatal("the reader made no consumer")
+		}
+		time.Sleep(10 * time.Millisecond)
 	}
 }
 

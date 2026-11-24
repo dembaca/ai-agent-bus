@@ -16,6 +16,7 @@ import (
 	"os/signal"
 	"strings"
 	"sync"
+	"sync/atomic"
 	"syscall"
 	"time"
 
@@ -72,6 +73,7 @@ func run(log *slog.Logger) error {
 		hasPresence = true
 	}
 
+	var failed atomic.Bool
 	var wg sync.WaitGroup
 	if hasPresence {
 		pr := &presence.Reader{Log: log, Stream: "PRESENCE", Into: snapshot}
@@ -80,6 +82,8 @@ func run(log *slog.Logger) error {
 			defer wg.Done()
 			if err := pr.Run(ctx, js); err != nil && ctx.Err() == nil {
 				log.Error("bridge: presence stopped", "error", err)
+				failed.Store(true)
+				stop()
 			}
 		}()
 	}
@@ -102,12 +106,19 @@ func run(log *slog.Logger) error {
 				// A consumer that cannot be created or fetched from is fatal for
 				// that home (a refused post is not: the reader skips it).
 				log.Error("bridge: a home stopped", "home", home, "error", err)
+				failed.Store(true)
+				stop()
 			}
 		}()
 	}
 
 	mux := http.NewServeMux()
 	mux.HandleFunc("GET /healthz", func(w http.ResponseWriter, _ *http.Request) {
+		if failed.Load() {
+			w.WriteHeader(http.StatusServiceUnavailable)
+			_, _ = w.Write([]byte("a home stopped; see the log\n"))
+			return
+		}
 		w.WriteHeader(http.StatusOK)
 		_, _ = w.Write([]byte("ok\n"))
 	})
@@ -122,6 +133,9 @@ func run(log *slog.Logger) error {
 	<-ctx.Done()
 	_ = srv.Shutdown(context.Background())
 	wg.Wait()
+	if failed.Load() {
+		return errors.New("a home stopped; the bridge exits so the supervisor restarts it")
+	}
 	return nil
 }
 

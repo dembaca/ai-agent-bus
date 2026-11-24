@@ -5,6 +5,7 @@ package config
 import (
 	"fmt"
 	"os"
+	"regexp"
 	"strings"
 )
 
@@ -48,6 +49,14 @@ func Load(get func(string) string) (Config, error) {
 	if c.BusPrefix == "" {
 		c.BusPrefix = "bus"
 	}
+	if c.Prefix == "" {
+		c.Prefix = "x_"
+	}
+	if !propsPrefix.MatchString(c.Prefix) || reservedPrefixes[c.Prefix] {
+		return Config{}, fmt.Errorf("BRIDGE_PROPS_PREFIX %q is no props prefix: lower-case letters and "+
+			"digits, starting with a letter, ending with _ (for example x_ or abc_), and none the bus "+
+			"or Mattermost writes (a2a_, agent_, from_, override_, webhook_, channel_, disable_, icon_)", c.Prefix)
+	}
 	if c.Listen == "" {
 		c.Listen = "127.0.0.1:8095"
 	}
@@ -69,11 +78,19 @@ func Load(get func(string) string) (Config, error) {
 		return Config{}, fmt.Errorf("BRIDGE_MM_TEAM is required")
 	case len(c.Homes) == 0:
 		return Config{}, fmt.Errorf("BRIDGE_HOMES is required: at least one home channel name")
-	case c.Prefix == "":
-		return Config{}, fmt.Errorf("BRIDGE_PROPS_PREFIX is required: the homes' MM_PROPS_PREFIX")
+
 	}
 	return c, nil
 }
+
+// propsPrefix is the bus's own rule (a2a.user_prefix): one segment, ending in _.
+var propsPrefix = regexp.MustCompile(`^[a-z][a-z0-9]*_$`)
+
+// reservedPrefixes are the first segments the bus or Mattermost writes into
+// props; a prefix that names one of them would let a sender's prop be read as
+// the bus's.
+var reservedPrefixes = map[string]bool{"a2a_": true, "agent_": true, "from_": true, "override_": true,
+	"webhook_": true, "channel_": true, "disable_": true, "icon_": true}
 
 // FromEnv is Load(os.Getenv) with the token read from its file.
 func FromEnv() (Config, error) {
