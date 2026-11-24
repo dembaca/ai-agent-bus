@@ -1834,6 +1834,10 @@ class MattermostAdapter:
         return sorted((post_of(read_links(p, self.permalink_base)) for p in posts.values()),
                       key=lambda p: p.create_at)
 
+    async def copies_through(self, channel_id: str, since_ms: int) -> int:
+        """No NATS home here, so no bridge's copies to pass (RT-6.36 step 4): 0."""
+        return 0
+
     async def posts_after(self, since_ms: int, *, channel_id: str | None = None,
                           max_pages: int = 25) -> list[Post]:
         """A channel's posts created since `since_ms`, oldest first, as
