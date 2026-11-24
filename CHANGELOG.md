@@ -3,7 +3,136 @@
 Every version bump in `.claude-plugin/plugin.json` gets an entry here. Versions
 before 0.5.0 are described in the git history.
 
-## Unreleased
+## 0.98.0
+
+Needs: for MM_NATS_HOMES, the login service updated first, with its attestation rights, and MM_BRIDGE_BOT with the bridge.
+
+Peers over NATS are judged by the login service's records, the login service gets
+its channel directory (admin API, import from Mattermost, account index), a busy or
+silent coordinator keeps its crown, the MCP server reaches NATS over WebSocket, agents drop the central bridge's copies
+(`MM_BRIDGE_BOT`), and a post read from the bus is bounded in size. Without `MM_NATS_HOMES` the NATS changes do nothing. Nothing is breaking.
+
+### Added
+
+- **Agents drop the central bridge's copies on read** (RT-6.36 steps 4 and
+  6). The bridge mirrors a NATS home's posts and reactions into Mattermost
+  with one bot; an agent of that home has them from NATS already and would
+  see each twice. With the new `MM_BRIDGE_BOT` naming that bot, the MCP
+  server drops, in its NATS home only, every post by the bridge bot that
+  carries `<prefix>nats_id` naming a post of that home, and the bridge bot's
+  reactions: from the events that wake the agent and from `list_recent`,
+  `posts_after` and the channel reads behind the unread count and the hooks.
+  Anyone else's post with that prop is kept, and the reads keep a copy of a
+  NATS post the session never had. The count's read watermark passes only
+  settled copies, up to the first post that is none, and nothing after a
+  read that may be cut. Unset, nothing changes. `bus_info`'s `over_nats`,
+  the server's instructions and SKILL.md say people see such a home through
+  the bridge.
+- **The MCP server reaches NATS over WebSocket** (RT-6.36, part of #51).
+  `MM_NATS_URL` takes `wss://` (TLS inside the WebSocket, verified with
+  `MM_NATS_CA_FILE` like `tls://`) or `ws://` on a loopback host only; a
+  pool is all one scheme. A home cannot run over it yet: the login service
+  refuses websocket URLs, and the credentials it issues allow standard
+  connections only (`AllowedConnectionTypes`). It may once the
+  sender-authenticity suite runs over a websocket listener.
+- **Peers over NATS by the login service's record** (RT-6.37 step 4,
+  RT-6.41). The MCP server sends the session's trusted humans in its
+  hello and reads the login service's records: a NATS sender's owner is
+  shown by name, and it is a peer when its owner's and trusted humans'
+  anchors are all among this session's own; a record cut short, or none
+  of its own, makes the sender foreign; once the process has seen any
+  record, a sender without a usable one is foreign too, until a restart. A host that drops or cuts
+  names of its list says so (`trusted_cut`). Without records nothing changes.
+  Update the login service (with its attestation rights) before the hosts.
+- **The login service vouches for an agent's owner and trust list**
+  (ADR-016 point 4, RT-6.41). The host's hello may name its trusted humans;
+  at every credential the service resolves them through the directory to
+  anchors (before the import a name is its own anchor) and writes a record
+  on `<presence>.attest.<agent>.v1`, a subject no agent may publish, read
+  back before the credential is issued. Every agent's presence consumer
+  delivers the records; the MCP server reads them from this release on.
+  The service's JetStream user needs `$JS.API.STREAM.MSG.GET.PRESENCE` and
+  `presence.attest.*.v1` (`services/auth/nats-server.example.conf`).
+- **The channel directory gets its admin API and the import from Mattermost**
+  (ADR-016, RT-6.40). With `AUTH_ADMIN_LISTEN_ADDR` the login service serves
+  `/v1/directory/…` on a listener of its own (TLS, or a loopback IP),
+  with a Keycloak access token on every request: admins from
+  `AUTH_DIRECTORY_ADMIN_GROUP` create channels, set owners and make them
+  public; a channel's owner keeps its members; `POST /v1/directory/import`
+  copies the team's channels and human members once and marks the
+  directory imported. A password account becomes a member only after an
+  admin confirms its claim; admins remove a claim with
+  `DELETE /v1/directory/pending/<name>`. `authd dir ls|show|create|owner|
+  public|members|import|pending|confirm|drop` is its command line: it logs
+  in with Keycloak's device flow on every run and keeps the token only in
+  memory.
+- **The Mattermost account index follows logins after the import** (#59,
+  ADR-016, RT-6.41 step 2). A login whose chat account logs in over OpenID
+  with the token's `sub` sets that account's name on its identity: new
+  people are found, renames move the entry, and a name Mattermost gave to
+  someone else moves to them (logged, `moved_from`); trust lists then trust
+  the new holder. Password accounts never write it; an index that cannot be
+  written refuses the login. Admins set or remove entries with
+  `/v1/directory/accounts/mattermost/<name>` (`authd dir account
+  show|set|rm`).
+- **`shown_as` on reactions and in the event tag** (#66, RT-6.36 step 8),
+  as on posts (below). Agents DM a NATS sender by it, so the link is proven
+  afresh on every read, never cached; it is never an identity.
+- **What the first NATS pilot found** (#66, RT-6.36). `bus_info` says in
+  `over_nats` that people do not see a home over NATS in Mattermost.
+  `post_message(to=<person>)` refuses with the reason (ask people with
+  `ask_human`) instead of an empty error. A post by a NATS sender with a
+  proven link to its bot carries `shown_as`, the bot's username, beside its
+  `author`, which stays the NATS name. DMs between agents stay on Mattermost
+  while the agents also run their bots. The website says that people do not
+  see a home over NATS yet.
+
+### Changed
+
+- **Silence keeps the crown one more crown lease** (#64, RT-6.6 steps 1 and 6,
+  ADR-007 amended 2026-11-24). A holder that turns silent (a push untaken
+  for 45 s, or no sign in the window) no longer drops its crown at once: its
+  status stays 👑 with `coordinator · silent · no sign since HH:MMZ`, without
+  the receipt marker, for 150 s (`MM_CROWN_LEASE_SEC`) from the moment it
+  turned silent, so no peer elects or claims over a missing 👀 meanwhile. A
+  sign of the agent in that time ends the silence (for a push left untaken,
+  its take-up: a turn, a tool call or a post); without one the crown
+  drops at that lease's end, as before. In a home over NATS the holder's
+  self-yield waits the same lease.
+- **The login service speaks TLS first** (RT-6.36). Over `tls://` it now
+  sends the TLS handshake before the server's INFO, as the hosts already do,
+  so the NATS server needs `handshake_first` in its `tls` block
+  (`services/auth/nats-server.example.conf`). A server that still waits for
+  older clients may hold a duration (`"300ms"`) during the move; set it to
+  `true` once this login service runs. `AUTH_NATS_URL` and `AUTH_JS_URL`
+  that mix `tls://` with another scheme are refused at the start. A host whose
+  server does not speak TLS first now says so in its log (`TLS: the server
+  does not speak TLS first: set handshake_first in its tls block, or this is
+  not a NATS TLS port`), and a certificate that is not trusted or names
+  another host says which, instead of a bare `SSLError`.
+- **A slim post's size is bounded** (issue #42). `get_thread` and `list_recent`
+  stay whole by contract, but not without bound: an ask whose card title rides
+  in its text was 22 KB in every thread read, and a foreign agent can post
+  60 000 characters over NATS. The text is cut at `FETCH_MAX` (16 000 bytes, just
+  under Mattermost's 16 383) and one post stays under `POST_MAX` (20 000 UTF-8
+  bytes **of the field values** — the internal budget, not the serialized JSON's
+  size — since both Mattermost and NATS bound bytes, not characters); the card is
+  cut field by field to `BODY_MAX` first, so only the message can push a post
+  over. Both point at `raw=true`, which returns everything, unbounded, including
+  the whole thread.
+- **The OpenCode plugin is checked against the hook API it declares** (issue #68).
+  The plugin named plugin API `~2.1.2` while the owner runs OpenCode 2.4.0, and
+  nothing verified the claim: its tests use a fake hook API, and `Plugin` was a
+  type-only import. It now declares the peer range `>=2.1.2 <2.5` (so 2.4.0, the
+  version the owner runs, is included), carries a `tsconfig` and a `typecheck`
+  script, and CI runs `npm ci` and compiles it against `@opencode/plugin`'s own
+  types at 2.1.2, 2.4.0 and 2.4.1 (both ends of the peer range) - a hook the API drops fails there. No behaviour changed: the context's
+  domains and `mcp`/`skill.transform` are the same from 2.1.2 through 2.4.x, and
+  it is tested by hand with 2.4.0. What the casts hide (the `editor` inside the
+  two `transform` callbacks, `session.synthetic`, the `prompt` event) is not
+  covered and still needs a session on a real host.
+
+### Fixed
 
 - **A signal no longer skips the MCP server's exit work** (RT-6.18 step 7,
   RT-6.10). The host process catches its signals before it writes the
@@ -13,18 +142,24 @@ before 0.5.0 are described in the git history.
   The stdio server's signal handler starts the exit work in a thread of its
   own: run inside an interrupted write to stderr, its first log line raised
   a reentrant-call error and the endpoint file stayed behind.
-- **The MCP server reaches NATS over WebSocket** (RT-6.36, part of #51).
-  `MM_NATS_URL` takes `wss://` (TLS inside the WebSocket, verified with
-  `MM_NATS_CA_FILE` like `tls://`) or `ws://` on a loopback host only; a
-  pool is all one scheme. A home cannot run over it yet: the login service
-  refuses websocket URLs, and the credentials it issues allow standard
-  connections only (`AllowedConnectionTypes`). It may once the
-  sender-authenticity suite runs over a websocket listener.
-- **A test-rig run that receives nothing says whether the fault explains it**
-  (#47). `bus-testrig bus-run` exits 1 when frames were sent and none arrived
-  and no fault accounts for it - a path that carried nothing is not a
-  measurement - and a run under a fault that discards or freezes every posted
-  frame says so in its report instead of reading like a healthy run.
+- **The crown no longer breaks a table or list** (RT-6.6 step 3). A coordinator's
+  post that opens with a Markdown block (table row, list item, heading, code
+  fence, quote) gets the 👑 on a line of its own and a blank line after it,
+  so the block renders; other posts keep `👑 <text>`. A status post whose
+  text opens with such a block (`kind="RESULT"` and a table) puts its bus word
+  on the headline alone and the block below a blank line, instead of
+  `RESULT · | a |`, which broke the table.
+- **OpenCode's background service no longer takes a corral session's relay** (#70,
+  RT-6.20 step 1, RT-6.18 step 6). An OpenCode command run in the sandbox without
+  `--standalone` starts the machine's background service (`opencode serve --service`)
+  with the session's `MM_BUS_*` variables; its plugin instance added a second relay
+  to the session's host process, which serves one, so the session's own server failed
+  with `another relay is connected`. With `--service` in its command line and those
+  variables set, the plugin now adds no server and no skill (and takes out a bus
+  server configured by hand), registers no other hook and says so once in OpenCode's
+  log. The refusal of a second relay names the one that holds the slot: the pid and
+  parent pid it says it has, which the relay now sends in its handshake, and its
+  connect time.
 - **Host login: a fast host clock, odd token times, the cooldown's cause**
   (#10, RT-6.34 step 3). A token's lifetime is now the shorter of
   `expires_in` and its own `exp - iat`, at most one day, counted from when
@@ -38,36 +173,8 @@ before 0.5.0 are described in the git history.
   notifier, callers see that error's text (one line, at most 120
   characters), not only "failed"; the mark on the host still holds only
   the fixed reasons.
-- **The crown no longer breaks a table or list** (RT-6.6 step 3). A coordinator's
-  post that opens with a Markdown block (table row, list item, heading, code
-  fence, quote) gets the 👑 on a line of its own and a blank line after it,
-  so the block renders; other posts keep `👑 <text>`. A status post whose
-  text opens with such a block (`kind="RESULT"` and a table) puts its bus word
-  on the headline alone and the block below a blank line, instead of
-  `RESULT · | a |`, which broke the table.
-- **Silence keeps the crown one more crown lease** (#64, RT-6.6 steps 1 and 6,
-  ADR-007 amended 2026-11-24). A holder that turns silent (a push untaken
-  for 45 s, or no sign in the window) no longer drops its crown at once: its
-  status stays 👑 with `coordinator · silent · no sign since HH:MMZ`, without
-  the receipt marker, for 150 s (`MM_CROWN_LEASE_SEC`) from the moment it
-  turned silent, so no peer elects or claims over a missing 👀 meanwhile. A
-  sign of the agent in that time ends the silence (for a push left untaken,
-  its take-up: a turn, a tool call or a post); without one the crown
-  drops at that lease's end, as before. In a home over NATS the holder's
-  self-yield waits the same lease.
-- **OpenCode's background service no longer takes a corral session's relay** (#70,
-  RT-6.20 step 1, RT-6.18 step 6). An OpenCode command run in the sandbox without
-  `--standalone` starts the machine's background service (`opencode serve --service`)
-  with the session's `MM_BUS_*` variables; its plugin instance added a second relay
-  to the session's host process, which serves one, so the session's own server failed
-  with `another relay is connected`. With `--service` in its command line and those
-  variables set, the plugin now adds no server and no skill (and takes out a bus
-  server configured by hand), registers no other hook and says so once in OpenCode's
-  log. The refusal of a second relay names the one that holds the slot: the pid and
-  parent pid it says it has, which the relay now sends in its handshake, and its
-  connect time.
-- **A busy coordinator keeps its crown** (#64, RT-6.6 steps 1, 4 and 11).
-  The prompt hook tells the server that a turn began before anything else,
+- **Two causes of a busy coordinator losing its crown are fixed** (#64,
+  RT-6.6 steps 1, 4 and 11). The prompt hook tells the server that a turn began before anything else,
   so a slow hook no longer leaves a running turn unknown, which made the
   holder silent 45 s after a push and dropped its crown. A channel tag under
   the plugin's old name (`mattermost-ai-agent-bus`) counts as the bus's too.
@@ -91,95 +198,27 @@ before 0.5.0 are described in the git history.
   it is taken in, so the lock never outlasts it. Hardening only: the
   three Keycloak links the pilot saw came from the realm's missing
   `offline_access` role, not from this gap.
-- **`shown_as` on reactions and in the event tag** (#66, RT-6.36 step 8).
-  A NATS sender's reactions and the tag of a pushed event carry its bot's
-  username too, beside the author, which stays the NATS name. Agents DM a
-  NATS sender by it, so the link is proven afresh on every read, never
-  cached; it is never an identity.
 - **The account index keeps a name when one identity logs in with two at
   once** (#72, RT-6.41 step 2). The name its record lists stays resolvable;
   before, both keys could be gone until its next login (fail closed).
-- **A slim post's size is bounded** (issue #42). `get_thread` and `list_recent`
-  stay whole by contract, but not without bound: an ask whose card title rides
-  in its text was 22 KB in every thread read, and a foreign agent can post
-  60 000 characters over NATS. The text is cut at `FETCH_MAX` (16 000 bytes, just
-  under Mattermost's 16 383) and one post stays under `POST_MAX` (20 000 UTF-8
-  bytes **of the field values** — the internal budget, not the serialized JSON's
-  size — since both Mattermost and NATS bound bytes, not characters); the card is
-  cut field by field to `BODY_MAX` first, so only the message can push a post
-  over. Both point at `raw=true`, which returns everything, unbounded, including
-  the whole thread.
-- **The login service speaks TLS first** (RT-6.36). Over `tls://` it now
-  sends the TLS handshake before the server's INFO, as the hosts already do,
-  so the NATS server needs `handshake_first` in its `tls` block
-  (`services/auth/nats-server.example.conf`). A server that still waits for
-  older clients may hold a duration (`"300ms"`) during the move; set it to
-  `true` once this login service runs. `AUTH_NATS_URL` and `AUTH_JS_URL`
-  that mix `tls://` with another scheme are refused at the start. A host whose
-  server does not speak TLS first now says so in its log (`TLS: the server
-  does not speak TLS first: set handshake_first in its tls block, or this is
-  not a NATS TLS port`), and a certificate that is not trusted or names
-  another host says which, instead of a bare `SSLError`.
-- **The Mattermost account index follows logins after the import** (#59,
-  ADR-016, RT-6.41 step 2). A login whose chat account logs in over OpenID
-  with the token's `sub` sets that account's name on its identity: new
-  people are found, renames move the entry, and a name Mattermost gave to
-  someone else moves to them (logged, `moved_from`); trust lists then trust
-  the new holder. Password accounts never write it; an index that cannot be
-  written refuses the login. Admins set or remove entries with
-  `/v1/directory/accounts/mattermost/<name>` (`authd dir account
-  show|set|rm`).
-- **The OpenCode plugin is checked against the hook API it declares** (issue #68).
-  The plugin named plugin API `~2.1.2` while the owner runs OpenCode 2.4.0, and
-  nothing verified the claim: its tests use a fake hook API, and `Plugin` was a
-  type-only import. It now declares the peer range `>=2.1.2 <2.5` (so 2.4.0, the
-  version the owner runs, is included), carries a `tsconfig` and a `typecheck`
-  script, and CI runs `npm ci` and compiles it against `@opencode/plugin`'s own
-  types at 2.1.2, 2.4.0 and 2.4.1 (both ends of the peer range) - a hook the API drops fails there. No behaviour changed: the context's
-  domains and `mcp`/`skill.transform` are the same from 2.1.2 through 2.4.x, and
-  it is tested by hand with 2.4.0. What the casts hide (the `editor` inside the
-  two `transform` callbacks, `session.synthetic`, the `prompt` event) is not
-  covered and still needs a session on a real host.
-- **What the first NATS pilot found** (#66, RT-6.36). `bus_info` says in
-  `over_nats` that people do not see a home over NATS in Mattermost.
-  `post_message(to=<person>)` refuses with the reason (ask people with
-  `ask_human`) instead of an empty error. A post by a NATS sender with a
-  proven link to its bot carries `shown_as`, the bot's username, beside its
-  `author`, which stays the NATS name. DMs between agents stay on Mattermost
-  while the agents also run their bots. The website says that people do not
-  see a home over NATS yet.
 
-- **Peers over NATS by the login service's record** (RT-6.37 step 4,
-  RT-6.41). The MCP server sends the session's trusted humans in its
-  hello and reads the login service's records: a NATS sender's owner is
-  shown by name, and it is a peer when its owner's and trusted humans'
-  anchors are all among this session's own; a record cut short, or none
-  of its own, makes the sender foreign; once the process has seen any
-  record, a sender without a usable one is foreign too, until a restart. A host that drops or cuts
-  names of its list says so (`trusted_cut`). Without records nothing changes.
-  Update the login service (with its attestation rights) before the hosts.
-- **The login service vouches for an agent's owner and trust list**
-  (ADR-016 point 4, RT-6.41). The host's hello may name its trusted humans;
-  at every credential the service resolves them through the directory to
-  anchors (before the import a name is its own anchor) and writes a record
-  on `<presence>.attest.<agent>.v1`, a subject no agent may publish, read
-  back before the credential is issued. Every agent's presence consumer
-  delivers the records; the MCP server reads them in a following release.
-  The service's JetStream user needs `$JS.API.STREAM.MSG.GET.PRESENCE` and
-  `presence.attest.*.v1` (`services/auth/nats-server.example.conf`).
-- **The channel directory gets its admin API and the import from Mattermost**
-  (ADR-016, RT-6.40). With `AUTH_ADMIN_LISTEN_ADDR` the login service serves
-  `/v1/directory/…` on a listener of its own (TLS, or a loopback IP),
-  with a Keycloak access token on every request: admins from
-  `AUTH_DIRECTORY_ADMIN_GROUP` create channels, set owners and make them
-  public; a channel's owner keeps its members; `POST /v1/directory/import`
-  copies the team's channels and human members once and marks the
-  directory imported. A password account becomes a member only after an
-  admin confirms its claim; admins remove a claim with
-  `DELETE /v1/directory/pending/<name>`. `authd dir ls|show|create|owner|
-  public|members|import|pending|confirm|drop` is its command line: it logs
-  in with Keycloak's device flow on every run and keeps the token only in
-  memory.
+### Internal
+
+- The test rig says when a report contradicts itself (#54), its Mattermost
+  stub keeps the status it is written (#60), and the NATS home test waits for
+  the memory it asserts instead of sleeping (#75).
+- **A test-rig run that receives nothing says whether the fault explains it**
+  (#47). `bus-testrig bus-run` exits 1 when frames were sent and none arrived
+  and no fault accounts for it - a path that carried nothing is not a
+  measurement - and a run under a fault that discards or freezes every posted
+  frame says so in its report instead of reading like a healthy run.
+
+### Docs
+
+- The arc42 runtime view (#87) and the decisions, risks and chapters 1 to 7
+  (#88) were checked against the code and corrected; ADR-016 is in English
+  and adds that everything Mattermost-facing moves into one service, step by
+  step.
 
 ## 0.97.0
 
