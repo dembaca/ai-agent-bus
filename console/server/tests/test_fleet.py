@@ -208,6 +208,41 @@ def test_a_replay_of_old_stamps_does_not_revive_the_aged() -> None:
     assert f.holder_of("dev") == "lone-agent"
 
 
+def test_a_wall_clock_step_moves_nothing(monkeypatch) -> None:
+    """Fable's pin: the floor counts monotonic time — swap the two
+    `time.monotonic()` calls for `time.time()` (the mutants) and this is
+    the test that goes red: a wall step of +3600 s via a patched
+    `time.time` must not age a fresh agent out, and a step back must not
+    revive an aged one."""
+    import time as _time
+    import console_server.fleet as fleet_mod
+
+    fresh = Fleet()
+    subject, data = presence("fresh-agent", "dembaca", "online")
+    feed(fresh, (subject, data, ack("PRESENCE", "console", 1, 1, 1000.0)))
+    staged = fresh.last_server_now_wall
+    real_mono = _time.monotonic()
+
+    # the floor reads time.monotonic (fleet source): patch time.time's
+    # step away — the agent stays fresh
+    monkeypatch.setattr(fleet_mod.time, "time", lambda: _time.time() + 3600.0)
+    assert fresh.state_of("fresh-agent") == "online"  # +1 h of wall: nothing
+
+    # the mutant's face: a backdated wall must not revive the aged
+    aged = Fleet()
+    feed(aged, (presence("aged-agent", "dembaca", "online")[0],
+                presence("aged-agent", "dembaca", "online")[1],
+                ack("PRESENCE", "console", 1, 1, 1000.0)))
+    staged = aged.last_server_now_wall
+    aged.last_server_now_wall = (staged[0], real_mono - 10000)
+    monkeypatch.setattr(fleet_mod.time, "time", lambda: _time.time() - 3600.0)
+    assert aged.state_of("aged-agent") == "offline"  # -1 h of wall: nothing
+
+    monkeypatch.undo()
+    # and the true face for comparison: monotonic elapsed does age it
+    assert aged.state_of("aged-agent") == "offline"
+
+
 def test_the_attestation_expires_by_the_floored_clock() -> None:
     """The attestation's expiry reads the floored clock too: silent
     aging expires it (the card falls back to the presence owner), and a
@@ -227,3 +262,20 @@ def test_the_attestation_expires_by_the_floored_clock() -> None:
     graph = f.graph()
     b_node = next(n for n in graph["nodes"] if n["id"] == "b")
     assert "crown" not in b_node or b_node.get("crown") is False
+    # the graph carries the attestation's owner while it is live: before
+    # the aging, the edge from b to somebody-else exists; after, only the
+    # presence owner's remains
+    expired_edges = {e["to"] for e in graph["edges"]
+                     if e["from"] == "b" and e["kind"] == "trusts"}
+    assert "somebody-else" not in expired_edges
+    # the pre-expiry form: a fresh fleet's graph has the attested owner
+    g2 = Fleet()
+    feed(g2, (presence("c", "dembaca", "online")[0],
+              presence("c", "dembaca", "online")[1],
+              ack("PRESENCE", "console", 1, 1, 1000.0)))
+    feed(g2, (atestation("c", "somebody-else", [], exp=99000.0)[0],
+              atestation("c", "somebody-else", [], exp=99000.0)[1],
+              ack("PRESENCE", "console", 2, 2, 1001.0)))
+    live_edges = {e["to"] for e in g2.graph()["edges"]
+                  if e["from"] == "c" and e["kind"] == "trusts"}
+    assert "somebody-else" in live_edges

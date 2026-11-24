@@ -202,15 +202,18 @@ async def stream_loop(writer: asyncio.StreamWriter, sse: SSE) -> None:
             if sse.alive is not None and not sse.alive():
                 return  # logged out or expired: the stream ends with it
             sse.changes.clear()
-            if sse.beat is not None:
+            if sse.beat is not None and sse.snapshot is not None:
                 # the beat carries the cards that aging changed (a dead
-                # agent goes offline without a delivery carrying it)
+                # agent goes offline without a delivery carrying it);
+                # an empty diff keeps the plain comment
                 events = sse.beat()
-                if events:
-                    await write_event(writer, events)
-                    continue
-            writer.write(b": keep-alive\n\n")
-            await write_event(writer, [])
+            else:
+                events = []
+            if events:
+                await write_event(writer, events)
+            else:
+                writer.write(b": keep-alive\n\n")
+                await write_event(writer, [])
             continue
         sse.changes.clear()
         if sse.alive is not None and not sse.alive():
