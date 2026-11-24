@@ -329,8 +329,9 @@ def _instructions() -> str:
     Code leaves channel mode (RT-6.12)."""
     return (
         f"AI agent bus {VERSION}, chat: Mattermost. "
-        + ("When bus_info shows over_nats, your home runs over NATS and people do not see its "
-           "posts in Mattermost; reach them with ask_human (RT-6.36). A post's shown_as is its "
+        + ("When bus_info shows over_nats, your home runs over NATS; it says whether people see "
+           "its posts in Mattermost (only through a bridge's copies); reach them with ask_human "
+           "(RT-6.36). A post's shown_as is its "
            "NATS sender's bot, to show and to DM (to=), never an identity. "
            if compose.nats_homes_from_env() else "")
         + (f"The bus is off in this corral session: {UNAVAILABLE}. The bot token stays "
@@ -3282,6 +3283,15 @@ def _watch_parent(interval: float = 1.0) -> None:
     threading.Thread(target=watch, name="parent-watch", daemon=True).start()
 
 
+def _finish_aside(why: str) -> None:
+    """_finish in a thread of its own, for a signal handler. The handler runs in
+    the main thread wherever it stood, also in the middle of a write to stderr:
+    its own log line then raised RuntimeError (a reentrant call into the
+    stream), which left the handler before the exit work, and the timer ended
+    the process with its endpoint file still there (RT-6.10 error handling)."""
+    threading.Thread(target=_finish, args=(why,), name="exit-work").start()
+
+
 def _install_exit_handlers() -> None:
     # Claude Code ends an MCP server by closing stdin, which returns from
     # mcp.run() (main calls _finish); a signal or the parent's death ends it
@@ -3289,7 +3299,7 @@ def _install_exit_handlers() -> None:
     atexit.register(_cleanup_on_exit)
     for sig in (signal.SIGTERM, signal.SIGHUP):
         try:
-            signal.signal(sig, lambda num, _frame: _finish(f"signal {signal.Signals(num).name}"))
+            signal.signal(sig, lambda num, _frame: _finish_aside(f"signal {signal.Signals(num).name}"))
         except (ValueError, OSError):  # not the main thread / unsupported
             pass
     _watch_parent()

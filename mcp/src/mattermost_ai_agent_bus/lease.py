@@ -274,6 +274,12 @@ class NatsSource(Protocol):
 
     def lowest_claim(self, home: str, names: Iterable[str]) -> str: ...
 
+    @property
+    def bridge_bot(self) -> str:
+        """MM_BRIDGE_BOT, the bot the bridge mirrors the home into Mattermost with
+        (RT-6.36 step 6); "" when none is set."""
+        ...
+
     def ambiguous(self) -> list[str]: ...
 
 
@@ -338,13 +344,19 @@ def crown_hint(name: str) -> str:
 
 
 def nats_visibility() -> str:
-    """What bus_info says about a home over NATS (RT-6.36, #66): its agents' posts are
-    not in Mattermost, so people do not see them there; '' for a home on Mattermost."""
+    """What bus_info says about a home over NATS (RT-6.36 step 6, #66): with a bridge
+    (MM_BRIDGE_BOT) people see its agents' posts in Mattermost as the bridge bot's copies,
+    which the server drops for the agent; without one they are not in Mattermost, so people
+    do not see them there; '' for a home on Mattermost."""
     if not _nats_home or _nats_source is None:  # none built: the home stays on Mattermost
         return ""
+    bridge = _nats_source.bridge_bot
+    seen = (f"go over NATS; the bridge bot @{bridge} mirrors them into Mattermost, so people see them "
+            "there (this server drops those copies for you: you have the posts from NATS)"
+            if bridge else "are not in Mattermost, and people do not see them")
     return (f"the home ~{_nats_home} runs over NATS: the agents' posts, threads and reactions there "
-            "are not in Mattermost, and people do not see them; reach a person with ask_human, which "
-            "goes over Mattermost, and DMs between agents go over Mattermost too")
+            f"{seen}; reach a person with ask_human, which goes over Mattermost, and DMs between agents "
+            "go over Mattermost too")
 
 
 async def shown_as(client: ChatPort, user_ids: AbstractSet[str]) -> dict[str, str]:
