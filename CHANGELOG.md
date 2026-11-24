@@ -3,6 +3,18 @@
 Every version bump in `.claude-plugin/plugin.json` gets an entry here. Versions
 before 0.5.0 are described in the git history.
 
+## Unreleased
+
+### Fixed
+
+- **The MCP server imports on Python 3.11 again** (#96), which
+  `mcp/pyproject.toml` allows. The models' empty default was a
+  `MappingProxyType` as a plain dataclass default, which `dataclasses` accepts
+  only from Python 3.12 on, so on 3.11 the package failed at import and a host
+  did not start. The fields take it through `default_factory`; the value is
+  still the one shared, read-only mapping. A CI job now runs the server's tests
+  on 3.11.
+
 ## 0.98.0
 
 Needs: for MM_NATS_HOMES, the login service updated first, with its attestation rights, and MM_BRIDGE_BOT with the bridge.

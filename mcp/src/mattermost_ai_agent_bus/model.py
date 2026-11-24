@@ -16,6 +16,10 @@ from enum import Enum
 from types import MappingProxyType
 from typing import Any
 
+# The empty mapping the models default to. A frozen dataclass's default must be
+# hashable on Python 3.11 (a mappingproxy is only from 3.12 on), so the fields
+# take it through default_factory; the value is still the one shared, immutable
+# object.
 _EMPTY: Mapping[str, Any] = MappingProxyType({})
 
 
@@ -125,7 +129,7 @@ class Me:
 
     id: str = ""
     username: str = ""
-    raw: Mapping[str, Any] = field(default=_EMPTY, compare=False, repr=False)
+    raw: Mapping[str, Any] = field(default_factory=lambda: _EMPTY, compare=False, repr=False)
 
     def json(self) -> dict[str, Any]:
         return dict(self.raw)
@@ -139,7 +143,7 @@ class Channel:
     id: str = ""
     name: str = ""
     type: str = ""
-    raw: Mapping[str, Any] = field(default=_EMPTY, compare=False, repr=False)
+    raw: Mapping[str, Any] = field(default_factory=lambda: _EMPTY, compare=False, repr=False)
 
     def json(self) -> dict[str, Any]:
         return dict(self.raw)
@@ -155,7 +159,7 @@ class ChannelUser:
     username: str = ""
     create_at: int = 0
     deleted: bool = False
-    custom_status: Mapping[str, Any] = field(default=_EMPTY, compare=False)
+    custom_status: Mapping[str, Any] = field(default_factory=lambda: _EMPTY, compare=False)
 
 
 @dataclass(frozen=True)
@@ -190,8 +194,8 @@ class Post:
     title: str = ""  # an ask's question (RT-6.11 step 1); "" for no ask
     reactions: tuple[Reaction, ...] = field(default=(), compare=False)
     files: tuple[FileInfo, ...] = field(default=(), compare=False)  # RT-6.23
-    props: Mapping[str, Any] = field(default=_EMPTY, compare=False, repr=False)
-    raw: Mapping[str, Any] = field(default=_EMPTY, compare=False, repr=False)
+    props: Mapping[str, Any] = field(default_factory=lambda: _EMPTY, compare=False, repr=False)
+    raw: Mapping[str, Any] = field(default_factory=lambda: _EMPTY, compare=False, repr=False)
 
     @property
     def text(self) -> str:

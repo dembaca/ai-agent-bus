@@ -66,6 +66,20 @@ jobs:
       - name: hooks against a fake Mattermost
         run: uv run --directory mcp pytest -q ../tests/hooks
 
+  mcp-python-311:
+    name: MCP server on Python 3.11
+    runs-on: ubuntu-latest
+    timeout-minutes: 15   # the suite without the live NATS tests, ~2 min
+    steps:
+      - uses: actions/checkout@v4
+      - uses: astral-sh/setup-uv@v6
+      - name: the MCP server on the oldest Python pyproject allows
+        # pyproject.toml's requires-python is >=3.11. #96 was a dataclass default
+        # that only Python 3.12 accepts (a mappingproxy as a plain default), so
+        # every 3.11 host failed at import. The live NATS tests are the tests
+        # job's business; this job is about the interpreter.
+        run: uv run --directory mcp --python 3.11 pytest -q
+
   opencode-plugin:
     name: OpenCode plugin (node, API ${{ matrix.api }})
     runs-on: ubuntu-latest
