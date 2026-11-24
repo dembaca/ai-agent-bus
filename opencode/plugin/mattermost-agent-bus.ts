@@ -225,7 +225,7 @@ export function busRoot(options: Options, env: Env, here: string): string | null
 }
 
 // OpenCode's long-running background service (`opencode serve --service`, the
-// command its clients start it with) with a corral session's relay variables:
+// command its clients start it with: `cli.service-config` in OpenCode 2.4.0) with a corral session's relay variables:
 // it took them from the sandboxed command that started it. Its relay would
 // take the host process's one relay slot from the session's own server, and
 // its long poll the session's (RT-6.20 step 1).
@@ -234,14 +234,27 @@ export function serviceWithRelay(argv: readonly string[], env: Env): boolean {
     Boolean(env.MM_BUS_MCP_ENDPOINT || env.MM_BUS_ENDPOINT)
 }
 
+// A local MCP entry that runs the bus's server, under any name.
+const runsBus = (cfg: any): boolean =>
+  Array.isArray(cfg?.command) && cfg.command.some((a: unknown) => String(a).includes("mattermost-ai-agent-bus-mcp"))
+
+// The MCP transform in that service: every bus server goes, the plugin's name
+// and a hand-configured one alike, or it would relay there all the same. A
+// host without remove() keeps them (none known: 2.1.2 has it). The names removed.
+export function dropMcp(editor: any): string[] {
+  if (typeof editor?.remove !== "function") return []
+  const names = editor.list().filter(([n, cfg]: [string, any]) => n === SERVER || runsBus(cfg)).map(([n]: [string]) => n)
+  if (editor.get(SERVER) && !names.includes(SERVER)) names.push(SERVER)
+  for (const n of names) editor.remove(n)
+  return names
+}
+
 // The MCP transform: the server, unless the user has it (by name, or another
 // local entry that runs mattermost-ai-agent-bus-mcp). true: the user's server
 // has no MM_WORKSPACE, so its endpoint file may lie where the plugin does not look.
 export function addMcp(editor: any, options: Options, root: string | null, directory: string,
                        env: Env = {}): boolean {
-  const runs = (cfg: any) =>
-    Array.isArray(cfg?.command) && cfg.command.some((a: unknown) => String(a).includes("mattermost-ai-agent-bus-mcp"))
-  const own = editor.get(SERVER) ?? editor.list().find(([, cfg]: [string, any]) => runs(cfg))?.[1]
+  const own = editor.get(SERVER) ?? editor.list().find(([, cfg]: [string, any]) => runsBus(cfg))?.[1]
   if (options.mcp !== false && !own) {
     const command =
       options.command ??
@@ -323,7 +336,15 @@ export async function setup(ctx: Plugin.Context) {
   if (serviceWithRelay(process.argv, env)) {
     console.warn(`[${SERVER}] OpenCode's background service holds a corral session's relay variables: no bus ` +
       `server, skill or turn cycle here, the session's own server (--standalone) has them (adapters/opencode.md)`)
-    return
+    // Only a transform that takes every bus server out, a configured one too.
+    try {
+      const reg: any = await ctx.mcp.transform((editor: any) => void dropMcp(editor))
+      return async () => {
+        await reg?.dispose?.().catch(() => {})
+      }
+    } catch {
+      return // an older or newer host without this hook
+    }
   }
   const storeKey = `${SERVER}/${sha16(realDir)}`
   let unkeyed = false // a hand-configured server without MM_WORKSPACE

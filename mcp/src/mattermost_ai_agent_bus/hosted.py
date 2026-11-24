@@ -451,13 +451,16 @@ def _load_server(client: BusClient | None) -> Serve:
 
 def relay_holder(hello: Mapping[str, Any], since: float) -> str:
     """The connected relay, as the refusal of a second one names it (RT-6.18
-    step 6): its process ids when it sent them (whole numbers, else left out)
-    and when it connected. Nothing it says is used for anything else."""
+    step 6): the process ids it says it has (whole numbers, else left out;
+    the sandbox's own claim, never checked or used for anything else) and
+    when it connected."""
     ids = {k: v for k in ("pid", "ppid")
            if type(v := hello.get(k)) is int and 0 < v < 2**31}
     parts = ([f"pid {ids['pid']}"] if "pid" in ids else []) \
         + ([f"parent {ids['ppid']}"] if "ppid" in ids else [])
-    return ", ".join([*parts, f"since {time.strftime('%H:%M:%S', time.localtime(since))}"])
+    said = f"says {', '.join(parts)}; " if parts else ""
+    return f"{said}since {time.strftime('%m-%d %H:%M:%S', time.localtime(since))}"
+
 
 
 async def _answer(stream: Any, ok: bool, error: str = "") -> None:

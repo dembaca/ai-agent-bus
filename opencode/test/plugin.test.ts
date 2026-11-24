@@ -12,7 +12,7 @@ import { dirname, join } from "node:path"
 import { after, afterEach, before, beforeEach, mock, test } from "node:test"
 import { fileURLToPath } from "node:url"
 
-import plugin, { addMcp, busFile, busRoot, MARK, RETRY_SEC, retryMs, SERVER, serviceWithRelay, setup, SKILL, skillInfo,
+import plugin, { addMcp, busFile, busRoot, dropMcp, MARK, RETRY_SEC, retryMs, SERVER, serviceWithRelay, setup, SKILL, skillInfo,
   timing, WAIT_SEC, venvDir, WAKE_BACKOFF_MAX_MS, WAKE_BACKOFF_MS, wakeBackoffMs, waitSec } from "../plugin/mattermost-agent-bus.ts"
 import entry from "../server.ts"
 
@@ -163,7 +163,7 @@ function fakeCtx(opts: Record<string, unknown> = {}, sessions: Record<string, { 
     mcp: {
       transform: async (cb: any) => {
         cb({ list: () => [...mcpServers.entries()], get: (n: string) => mcpServers.get(n),
-             set: (n: string, c: any) => mcpServers.set(n, c) })
+             set: (n: string, c: any) => mcpServers.set(n, c), remove: (n: string) => void mcpServers.delete(n) })
         return { dispose: async () => {} }
       },
     },
@@ -661,6 +661,8 @@ test("RT-6.20 step 1, RT-6.18 step 6: the background service with a corral sessi
   const relay = { MM_BUS_MCP_ENDPOINT: "tcp://127.0.0.1:9", MM_BUS_ENDPOINT: "http://127.0.0.1:9", MM_BUS_KEY: "k" }
   const service = ["/$bunfs/root/opencode", "serve", "--service"]
   assert.equal(serviceWithRelay(service, relay), true)
+  assert.equal(serviceWithRelay(["opencode", "serve", "--service=true"], relay), true)
+  assert.equal(serviceWithRelay(["opencode", "serve", "--service=false"], relay), false)
   assert.equal(serviceWithRelay(service, {}), false) // without corral the service is OpenCode's normal home
   assert.equal(serviceWithRelay(["opencode", "serve", "--stdio", "--port", "0"], relay), false) // --standalone's server
   const argv = process.argv
@@ -669,8 +671,14 @@ test("RT-6.20 step 1, RT-6.18 step 6: the background service with a corral sessi
     process.argv = [...argv, "--service"]
     process.env.MM_BUS_MCP_ENDPOINT = relay.MM_BUS_MCP_ENDPOINT
     const fx = fakeCtx()
-    assert.equal(await setup(fx.ctx), undefined)
-    assert.equal(fx.mcpServers.size, 0) // no second relay to the host process
+    // A bus server configured by hand, under the plugin's name or another, goes too.
+    const other = { type: "local", command: ["other-mcp"] }
+    fx.mcpServers.set(SERVER, { type: "local", command: ["my-bus"] })
+    fx.mcpServers.set("bus", { type: "local", command: ["uv", "run", "mattermost-ai-agent-bus-mcp"] })
+    fx.mcpServers.set("other", other)
+    const cleanup: any = await setup(fx.ctx)
+    assert.deepEqual([...fx.mcpServers.entries()], [["other", other]]) // no second relay to the host process
+    await cleanup()
     assert.equal(fx.skills.size, 0)
     assert.deepEqual(Object.keys(fx.hooks), [])
     await settle()
@@ -681,6 +689,10 @@ test("RT-6.20 step 1, RT-6.18 step 6: the background service with a corral sessi
     delete process.env.MM_BUS_MCP_ENDPOINT
     const plain = await start()
     assert.ok(plain.mcpServers.has(SERVER))
+    // A host whose editor cannot remove keeps them, and nothing breaks.
+    const old = new Map([["bus", { command: ["mattermost-ai-agent-bus-mcp"] }]])
+    assert.deepEqual(dropMcp({ list: () => [...old.entries()], get: (n: string) => old.get(n) }), [])
+    assert.equal(old.size, 1)
   } finally {
     process.argv = argv
     delete process.env.MM_BUS_MCP_ENDPOINT

@@ -156,7 +156,7 @@ async def test_one_relay_at_a_time_and_reconnect(tmp_path):
         assert answer["ok"]
         second, answer = await _hello(ready["port"])
         assert answer["ok"] is False
-        assert re.fullmatch(r"another relay is connected \(since \d\d:\d\d:\d\d\): the host serves one per "
+        assert re.fullmatch(r"another relay is connected \(since \d\d-\d\d \d\d:\d\d:\d\d\): the host serves one per "
                             r"session, so another process of this session holds it \(RT-6\.18 step 6\)",
                             answer["error"])
         await first.stream.aclose()
@@ -185,13 +185,13 @@ async def test_refusal_names_the_relay_that_holds_the_slot(tmp_path):
         second = _Conn(await anyio.connect_tcp("127.0.0.1", ready["port"]))
         await second.send({"key": KEY, "session": {}, "pid": 7, "ppid": 1})
         error = (await second.line())["error"]
-        assert re.match(r"another relay is connected \(pid 4242, parent 4240, since \d\d:\d\d:\d\d\): ", error)
+        assert re.match(r"another relay is connected \(says pid 4242, parent 4240; since \d\d-\d\d \d\d:\d\d:\d\d\): ", error)
         await first.stream.aclose()
         await second.stream.aclose()
 
     await _with_host(host, tmp_path, body, with_services=False)
     assert hosted.relay_holder({"pid": "1; rm", "ppid": True}, 0).startswith("since ")
-    assert hosted.relay_holder({"pid": 2**31, "ppid": 3}, 0).startswith("parent 3, since ")
+    assert hosted.relay_holder({"pid": 2**31, "ppid": 3}, 0).startswith("says parent 3; since ")
 
 
 def test_apply_session_sets_names_and_never_changes_directory(tmp_path, monkeypatch):

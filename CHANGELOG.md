@@ -11,10 +11,11 @@ before 0.5.0 are described in the git history.
   with the session's `MM_BUS_*` variables; its plugin instance added a second relay
   to the session's host process, which serves one, so the session's own server failed
   with `another relay is connected`. With `--service` in its command line and those
-  variables set, the plugin now adds no server and no skill, registers no hook and
-  says so once in OpenCode's log. The refusal of a second relay names the one that
-  holds the slot: its pid, parent pid and connect time, which the relay now sends in
-  its handshake.
+  variables set, the plugin now adds no server and no skill (and takes out a bus
+  server configured by hand), registers no other hook and says so once in OpenCode's
+  log. The refusal of a second relay names the one that holds the slot: the pid and
+  parent pid it says it has, which the relay now sends in its handshake, and its
+  connect time.
 - **A busy coordinator keeps its crown** (#64, RT-6.6 steps 1, 4 and 11).
   The prompt hook tells the server that a turn began before anything else,
   so a slow hook no longer leaves a running turn unknown, which made the

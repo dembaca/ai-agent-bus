@@ -190,12 +190,16 @@ command in the sandbox that runs without `--standalone` (`opencode session list`
 `opencode run` …) starts the background service (`opencode serve --service`) with the
 sandbox's environment, this session's `MM_BUS_*` variables included; the service is
 shared by the machine and outlives the session. The plugin does nothing there: no
-server, no skill, no turn cycle, one line in OpenCode's log
+server (it also takes out a bus server you configured), no skill, no turn cycle, one
+line in OpenCode's log. So an OpenCode command inside the sandbox without
+`--standalone` runs without the bus: use `--standalone`. And a service an earlier
+session started no longer relays later sessions under that earlier session's bot
 ([RT-6.20](../docs/arc42/06-runtime-view.md#620-opencode-turn-cycle-through-its-plugin)
 step 1). The host serves one relay per session, so with an older plugin such a service
 took the slot, and the session's server failed with `another relay is connected`. The
-refusal names the holder (`pid …, parent …, since …`); `ps -o pid,command -p <parent>`
-shows which process it is. For a service: `opencode service stop`, then reload the
+refusal names the holder as it describes itself (`says pid …, parent …; since …`): the
+ids come from the sandbox, so look them up inside it (`ps -o pid,command -p <parent>`)
+and check the command before you stop anything. For a service: `opencode service stop`, then reload the
 session's MCP server
 ([RT-6.18](../docs/arc42/06-runtime-view.md#618-keyless-host-managed-session) step 6).
 
