@@ -155,7 +155,7 @@ jobs:
     runs-on: ubuntu-latest
     timeout-minutes: 10   # like the site job
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@11bd71901bbe5b1630ceea73d27597364c9af683  # v4.2.2
       - uses: actions/setup-node@v4
         with:
           node-version: 24
@@ -175,7 +175,7 @@ jobs:
     runs-on: ubuntu-latest
     timeout-minutes: 10
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@11bd71901bbe5b1630ceea73d27597364c9af683  # v4.2.2
       - uses: astral-sh/setup-uv@v6
       - name: nats-server (the console's reads run against the real server)
         # As the MCP job: keep the version in step with services/auth/go.mod.
@@ -233,7 +233,9 @@ jobs:
   # checks.yml has no paths filter (it covers the repository).
   console-changed:
     name: did this push touch console/?
-    if: github.event_name == 'workflow_dispatch' || (github.event_name == 'push' && github.ref == 'refs/heads/main')
+    # Only main, a push or a manual run: a dispatch from a feature branch must
+    # not reach the publish job below, which moves :main.
+    if: github.ref == 'refs/heads/main' && github.event_name != 'pull_request'
     runs-on: ubuntu-latest
     timeout-minutes: 5
     outputs:
@@ -252,10 +254,12 @@ jobs:
             exit 0
           fi
           before="${{ github.event.before }}"
+          # mcp/ too: the image carries the package as console/server's path
+          # dependency, so a change there makes a new image as well.
           if git cat-file -e "${before}^{commit}" 2>/dev/null &&
-             git diff --quiet "$before" HEAD -- console; then
+             git diff --quiet "$before" HEAD -- console mcp .github/workflows/checks.yml; then
             echo "run=false" >> "$GITHUB_OUTPUT"
-            echo "nothing under console/ changed; the image is not built again"
+            echo "nothing under console/, mcp/ or this workflow changed; the image is not built again"
           else
             echo "run=true" >> "$GITHUB_OUTPUT"
           fi
@@ -270,7 +274,12 @@ jobs:
   publish-console:
     name: publish the console image to GHCR
     needs: [console, console-server, console-changed]
-    if: needs.console-changed.outputs.run == 'true'
+    if: github.ref == 'refs/heads/main' && needs.console-changed.outputs.run == 'true'
+    # One publish at a time: an older run must not move :main back after a
+    # newer one.
+    concurrency:
+      group: publish-console
+      cancel-in-progress: false
     runs-on: ubuntu-latest
     timeout-minutes: 20
     permissions:

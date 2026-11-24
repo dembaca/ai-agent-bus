@@ -6,9 +6,9 @@ before 0.5.0 are described in the git history.
 ## Unreleased
 
 - **The console's image is published** (ADR-015). `checks.yml` gains a
-  `publish-console` job: a push to `main` that changes `console/`, and only
-  after the console's browser build and the console server's tests with the
-  image smoke have passed, builds `console/server/Dockerfile` from the
+  `publish-console` job: a push to `main` that changes `console/`, `mcp/` or
+  that workflow, and only after the console's browser build and the console
+  server's tests with the image smoke have passed, builds `console/server/Dockerfile` from the
   repository root and pushes
   `ghcr.io/dembaca/ai-agent-bus-console:<full commit SHA>` and `:main` with a
   build provenance attestation; the digest stands in the job's summary, and a

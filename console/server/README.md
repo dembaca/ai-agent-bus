@@ -131,8 +131,8 @@ The image (`Dockerfile`, built from the repository root) carries the
 built browser app and the server, no shell, not root, like the login
 service's image. The release pins its bases by digest. `checks.yml`'s
 `publish-console` job publishes it, and only after the console's two jobs
-have passed: each push to `main` that changes `console/` builds it from the
-repository root and pushes `ghcr.io/dembaca/ai-agent-bus-console:<full commit
+have passed: each push to `main` that changes `console/`, `mcp/` (the server's
+path dependency) or that workflow builds it from the repository root and pushes `ghcr.io/dembaca/ai-agent-bus-console:<full commit
 SHA>` and `:main`, with a build provenance attestation; the digest stands in
 the job's summary, and a deployment names the image by its digest, never by a
 tag — as `services/auth/README.md` puts it for the login service.
