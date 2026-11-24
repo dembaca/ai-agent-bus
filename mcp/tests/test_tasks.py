@@ -631,31 +631,47 @@ def test_the_instructions_name_the_props_prefix_in_force(monkeypatch):
 
 
 @pytest.mark.asyncio
-async def test_a_crashing_tool_names_its_cause(monkeypatch):
+async def test_a_crashing_tool_names_its_cause(caplog):
     """The SDK answers a crash with a bare "Error executing tool <name>"
     (`mcp/server/mcpserver/tools/base.py`) and keeps the cause on the server. The NATS
     pilot saw exactly that: two sessions failed to post and the reason stood only in the
-    host log. The cause is carried now - one bounded line - unless it looks like a
-    credential, which names the type alone."""
+    host log. Through the **real** handler (no fake), so the log line is checked too."""
+    import logging
+
     from mcp.server.mcpserver.exceptions import ToolError, UnexpectedToolError
 
     from mattermost_ai_agent_bus import server as srv
 
-    async def crashed(self, name, arguments, *args, **kwargs):
-        raise UnexpectedToolError(f"Error executing tool {name}") from RuntimeError("boom")
+    test_server = srv._StrictServer("crash-test")
 
-    monkeypatch.setattr(srv.MCPServer, "call_tool", crashed)
-    with pytest.raises(ToolError) as err:
-        await srv.mcp.call_tool("announce", {})
+    @test_server.tool()
+    async def zz_crash() -> str:
+        raise RuntimeError("boom")
+
+    with caplog.at_level(logging.ERROR, logger="mcp.server.mcpserver.server"):
+        with pytest.raises(ToolError) as err:
+            await test_server.call_tool("zz_crash", {})
     assert "RuntimeError: boom" in str(err.value), str(err.value)
+    # `UnexpectedToolError` is what makes the SDK write the traceback to the host log
+    # (`mcp/server/mcpserver/server.py`: `logger.exception` only for that type), so the
+    # hidden cause is never lost on both sides.
+    assert isinstance(err.value, UnexpectedToolError), type(err.value)
 
-    async def leaked(self, name, arguments, *args, **kwargs):
-        raise UnexpectedToolError(f"Error executing tool {name}") from RuntimeError(
-            "posting failed token=SECRETSECRET with 40 more characters")
 
-    monkeypatch.setattr(srv.MCPServer, "call_tool", leaked)
-    with pytest.raises(ToolError) as err:
-        await srv.mcp.call_tool("announce", {})
-    text = str(err.value)
-    assert "SECRETSECRET" not in text and "details hidden" in text, text
-    assert "RuntimeError" in text, text
+def test_a_cause_that_may_hold_a_credential_names_the_type_only():
+    from mattermost_ai_agent_bus import server as srv
+
+    for text in ('posting failed token=SECRETSECRET', '{"token": "abc123"}',
+                 "nats://bot:hunter2@host:4222", "api_key=abcdef", "Bearer abcdef",
+                 "a" * 64):
+        got = srv._cause_text(RuntimeError(text))
+        assert "details hidden" in got and "SECRETSECRET" not in got, (text, got)
+    assert srv._cause_text(RuntimeError("boom")) == "RuntimeError: boom"
+
+
+def test_a_cause_is_one_bounded_line():
+    from mattermost_ai_agent_bus import server as srv
+
+    got = srv._cause_text(RuntimeError("word " * 200))
+    assert len(got) <= srv.CAUSE_MAX + 1, len(got)
+    assert got.endswith("…")

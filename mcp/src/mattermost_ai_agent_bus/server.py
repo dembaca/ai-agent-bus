@@ -18,7 +18,7 @@ from pathlib import Path
 from typing import Any
 
 from mcp.server.mcpserver import Image, MCPServer
-from mcp.server.mcpserver.exceptions import ToolError
+from mcp.server.mcpserver.exceptions import ToolError, UnexpectedToolError
 from mcp.server.mcpserver.utilities.func_metadata import ArgModelBase
 from pydantic import ValidationError
 
@@ -412,7 +412,8 @@ ArgModelBase.model_config["extra"] = "forbid"
 # this the only place a cause is readable). A text that looks like it holds a credential
 # is replaced by the type alone: a tool's error is for an agent, never for a token.
 _SECRETISH = re.compile(r"(?i)(bearer\s+\S+|\beyJ[A-Za-z0-9_-]{8,}|"
-                        r"(?:token|password|secret|authorization)\s*[=:]\s*\S+|"
+                        r"[\"']?(?:token|password|secret|api[_-]?key|authorization)[\"']?\s*[=:]\s*\S+|"
+                        r"[a-z][a-z0-9+.-]*://[^\s/@:]+:[^\s/@]+@|"
                         r"\b[A-Fa-f0-9]{32,}\b|[A-Za-z0-9+/_-]{40,}={0,2})")
 CAUSE_MAX = 300  # one bounded line: an error answer is read by an agent, not a log
 
@@ -444,18 +445,23 @@ class _StrictServer(MCPServer):
             return await super().call_tool(name, arguments, *args, **kwargs)
         except ToolError as exc:
             cause = exc.__cause__
-            if cause is not None and not isinstance(cause, (ValidationError, ToolError)):
+            if isinstance(cause, ValidationError):
+                errors = cause.errors()
+                unknown = sorted({str(e["loc"][0]) for e in errors if e["type"] == "extra_forbidden"})
+                tool = self._tool_manager.get_tool(name) if unknown else None
+            else:
+                unknown, tool = [], None
+            if tool is None and cause is not None and not isinstance(cause, ToolError):
                 # The SDK keeps a crash's own text on the server and hands the client a
                 # bare "Error executing tool <name>" (mcp/server/mcpserver/tools/base.py:
                 # `raise UnexpectedToolError(f"Error executing tool {self.name}") from exc`).
                 # The cause is the only place that says what happened - the NATS pilot saw
                 # nothing but the generic line while the real cause stood in the host log.
-                raise ToolError(f"Error executing tool {name}: {_cause_text(cause)}") from cause
-            if not isinstance(cause, ValidationError):
-                raise
-            errors = cause.errors()
-            unknown = sorted({str(e["loc"][0]) for e in errors if e["type"] == "extra_forbidden"})
-            tool = self._tool_manager.get_tool(name) if unknown else None
+                # Raised as `UnexpectedToolError`: it is a `ToolError` (the client text is
+                # the same) and it is the one the SDK logs with a traceback, so a hidden
+                # cause is not lost on both sides.
+                raise UnexpectedToolError(
+                    f"Error executing tool {name}: {_cause_text(cause)}") from cause
             if tool is None:
                 raise
             valid = ", ".join(tool.parameters.get("properties", {}))

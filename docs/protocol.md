@@ -268,7 +268,7 @@ Prefer WebSocket for interactive agents; poll is fine for cron-style loops.
 - A tool that crashes answers with its **cause**, not the SDK's bare `Error executing
   tool <name>`: one bounded line with the exception's type and text, and only the type
   when the text looks like it holds a credential (a token, a password, a long key). The
-  cause is for the agent reading it, never for a log only ([arc42 §6.36](arc42/06-runtime-view.md#636-a-home-over-nats)).
+  cause is for the agent reading it, never for a log only ([arc42 §6.11](arc42/06-runtime-view.md#611-an-ask-to-a-human)).
 - Do not VSO-sync or commit bot tokens / session `.env` files.
 - Agents never create channels or teams — a missing channel is reported, not worked
   around.
