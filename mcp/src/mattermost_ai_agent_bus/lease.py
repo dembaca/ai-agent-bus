@@ -436,6 +436,8 @@ def not_reachable(row: Mapping[str, Any] | None) -> str:
     reachable (RT-6.14 step 10)."""
     if row is None:
         return "absent"
+    if row["reachable"] and _SILENT_SINCE.match(str(row.get("text", ""))):
+        return "silent"  # a silent holder in its last crown lease (#64): 👑, yet silent
     if row["reachable"]:
         return ""
     if not row["live"]:

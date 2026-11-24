@@ -11,7 +11,8 @@ before 0.5.0 are described in the git history.
   status stays 👑 with `coordinator · silent · no sign since HH:MMZ`, without
   the receipt marker, for 150 s (`MM_CROWN_LEASE_SEC`) from the moment it
   turned silent, so no peer elects or claims over a missing 👀 meanwhile. A
-  sign of the agent in that time ends the silence; without one the crown
+  sign of the agent in that time ends the silence (for a push left untaken,
+  its take-up: a turn, a tool call or a post); without one the crown
   drops at that lease's end, as before. In a home over NATS the holder's
   self-yield waits the same lease.
 

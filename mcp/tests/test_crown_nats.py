@@ -800,3 +800,21 @@ async def test_a_nats_sender_is_shown_by_its_proven_bot_but_stays_the_author(
     assert (await one())["shown_as"] == "agent-a"
     w.port.fail("the credential names another agent")  # the NATS side is lost
     assert "shown_as" not in await one()
+
+async def test_a_silent_holder_yields_only_after_its_last_crown_lease(
+        w: World, monkeypatch: pytest.MonkeyPatch) -> None:
+    """RT-6.38 step 5, RT-6.6 step 6 (#64): a silent holder keeps the crown one crown lease
+    from the moment it turned silent; only after it does its own server yield."""
+    from mattermost_ai_agent_bus import life
+    await _two(w, me_first=True)
+    await w.tick()
+    assert lease.crown_held(BOT)
+    life.turn(False)
+    monkeypatch.setattr(life, "_sign", time.time() - 900 - 100)
+    claims = len(w.fake.claimed_homes)
+    await w.tick()
+    assert len(w.fake.claimed_homes) == claims and w.view().holder == NAME_ME  # type: ignore[union-attr]
+    monkeypatch.setattr(life, "_sign", time.time() - 900 - 151)
+    await w.tick()
+    assert len(w.fake.claimed_homes) == claims + 1
+    assert w.view().holder == NAME_A  # type: ignore[union-attr]

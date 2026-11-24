@@ -740,6 +740,8 @@ async def test_a_silent_holder_keeps_the_crown_one_crown_lease(mm, client, tmp_p
     assert holds() and s["emoji"] == "crown"
     assert s["text"].startswith(f"coordinator · silent · no sign since {time.strftime('%H:%MZ', time.gmtime(at))}")
     assert not lease.sets_receipts(s["text"]) and life.is_shown()
+    row = {"reachable": True, "live": True, "emoji": "crown", "text": s["text"]}
+    assert lease.not_reachable(row) == "silent"  # a TASK to it says so (RT-6.14 step 10)
     end = int(at) + 900 + 150
     assert s["expires_at"] == lease._rfc3339(end)
     assert coord(tmp_path)["CROWN_UNTIL"] >= end + lease.crown_beat_sec()  # the drop is at the end
