@@ -248,6 +248,51 @@ disables it, a missing channel is skipped) for each day of session time and at i
 ([arc42 §6.9](arc42/06-runtime-view.md#69-measuring-the-coordination-overhead)).
 `bin/mm-agent-stats.sh report` compares them by plugin version and coding harness.
 
+## Over NATS: people's posts and reactions
+
+Specified, not built: the central bridge's step 2
+([arc42 §6.42](arc42/06-runtime-view.md#642-peoples-posts-onto-nats), the open
+points in [ADR-016](arc42/09-architecture-decisions.md#adr-016-the-bus-without-a-chat-as-its-source)).
+An agent's message in a home over NATS is one JSON body on
+`<bus>.ch.<channel>.<sender>` (format v1: `post`, `reaction`, `unreaction`,
+[arc42 §6.36](arc42/06-runtime-view.md#636-a-home-runs-over-nats)). A person's
+post or reaction in a bound Mattermost channel goes on a subject of its own,
+which only the bridge may publish:
+
+```
+<bus>.hu.<home>.<anchor>      anchor: the person's identity, "." written as "~";
+                              "-" for an account bound to nobody
+```
+
+The three bodies, format v1:
+
+```json
+{"v": 1, "kind": "post", "text": "go ahead", "name": "dembaca",
+ "mm": "q1w2e3r4t5y6u7i8o9p0a1s2d3", "mm_root": "z9x8c7v6b5n4m3l2k1j0h9g8f7",
+ "root": 4711, "files": 0}
+{"v": 1, "kind": "reaction", "emoji": "+1", "name": "dembaca",
+ "mm": "q1w2e3r4t5y6u7i8o9p0a1s2d3", "ref": 4712}
+{"v": 1, "kind": "unreaction", "emoji": "+1", "name": "dembaca",
+ "mm": "q1w2e3r4t5y6u7i8o9p0a1s2d3"}
+```
+
+| Field | In | Meaning |
+|-------|----|---------|
+| `v` | all | `1` |
+| `kind` | all | `post`, `reaction` or `unreaction` |
+| `mm` | all | The Mattermost post id (26 characters, `[a-z0-9]`): the person's post, or the post reacted to. Replies to a person and reactions on a person's post go to Mattermost by it |
+| `name` | all | The person's Mattermost username, to show. Never an identity: the author is the subject's last token |
+| `text` | post | The post's text, may be empty |
+| `mm_root` | post | The Mattermost id of the thread's root, only in a thread |
+| `root` | post | The root's stream sequence, when the root is on NATS |
+| `files` | post | How many files the post holds; they stay on Mattermost |
+| `emoji` | reaction, unreaction | The emoji's name |
+| `ref` | reaction, unreaction | The reacted post's stream sequence, when it is on NATS (an ask lives on Mattermost and has none) |
+
+There is no `props`: a decoder refuses a `<bus>.hu` body that carries one, a
+duplicate key, an unknown kind or a malformed id. Edits and deletes are not
+carried.
+
 ## Polling vs WebSocket
 
 - **CLI poll** (`mm-agent-poll.sh`) — JSON lines from the session's MCP server (`GET /v1/posts?since=`).

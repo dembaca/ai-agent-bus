@@ -4730,9 +4730,90 @@ registrar's functions can move in later without a second component.
    The bridge posts what the agents send over NATS into Mattermost under one
    bot account and names the agent in each post (`shown_as` and the NATS id
    in the post's props); agents reading Mattermost drop what carries that id.
-   One bot per agent is the next step. Being built.
+   One bot per agent is the next step. Built (#90) and deployed in the lab
+   since 2026-11-24.
 2. **People's posts and reactions onto NATS**, vouched for as point 3 says.
-   Open.
+   Specified, not built: the scenario "People's posts onto NATS" (RT-6.42)
+   and the bodies in `docs/protocol.md`. The bridge reads its bot's
+   Mattermost WebSocket in the bound home channels and publishes each
+   person's post and reaction on NATS. Seven points are open; each is
+   written as a recommendation, with its reason and the alternative, for
+   the owner to decide:
+   1. **A subject of its own, `<bus>.hu.<home>.<anchor>`, apart from
+      `<bus>.ch`.** Recommended. Why: the sender stays the subject's last
+      token (ADR-014 point 16), here the person's anchor; no agent's right
+      overlaps it, and no agent decoder can take a person's event for an
+      agent's or the reverse. The bridge may publish `<bus>.hu.<HOME>.*` for
+      each home it serves, never `<bus>.hu.>` and never `<bus>.ch` or
+      `<bus>.dm`. Alternative: on `<bus>.ch` with the bridge as the sender
+      and the person in the body. Rejected: readers take the sender from
+      the subject alone, never from a body.
+   2. **The bridge's NATS publish right vouches for the person, not a
+      signature per event.** Recommended. Why: on NATS the server already
+      checks who may publish where; only the bridge holds the right on
+      `<bus>.hu`, so the subject is the claim, as for an agent's own
+      subject, and the hosts pin no further key. A signature is needed only
+      for a reader without NATS (a console that reads elsewhere, an
+      archive), and none exists yet. Alternative: the bridge signs every
+      event with a key the hosts pin, as the NATS decision planned for the
+      central adapter (ADR-014 point 10). Its cost: a key to keep, rotate
+      and pin, for no reader that needs it today.
+   3. **An account bound to nobody publishes under the token `-` and is
+      never trusted.** Recommended. Why: people the bridge cannot resolve
+      still reach the crown as untrusted people do on Mattermost today
+      (RT-6.16), and `-` is no anchor, so no trust list can name it.
+      Alternative: drop their posts. Then an unbound person who writes in a
+      bound channel is silently unheard.
+   4. **Edits and deletes are not carried.** Recommended. Why: an agent
+      may already have acted on the first text; an edit that changes "go"
+      into something else after an approval must not reach the agent as the
+      same post. A person who changes their mind writes a new post.
+      Alternative: carry an edit as a new kind that names the old post. It
+      needs every reader to decide what an edit of an answered ask means.
+   5. **In a home with the bridge bot set (`MM_BRIDGE_BOT`), people come
+      from NATS only, with no new setting.** Recommended. Why: one source,
+      no double events, and the bus is the single place (no switch an
+      operator can leave in the wrong state). Its order: the release that
+      reads people from NATS needs the bridge's step 2 running first, which
+      its CHANGELOG entry says. Alternative: a new setting that turns it on
+      per home. It allows a gradual move, at the cost of one more setting
+      that must agree with the bridge.
+   6. **The login service publishes one record per bound account.**
+      Recommended: `<presence>.account.mattermost.<user id>.v1` with the
+      account's anchor, its name, `approver`, `iat` and `exp`, written by
+      the login service alone, like the attestation records
+      (`<presence>.attest.*`, RT-6.41), at each credential issue of that
+      identity's agents and when an administrator changes the binding. The
+      bridge maps a Mattermost account to a person's anchor from these
+      records through a push consumer and gets no read right on the
+      channel directory's bucket. Why: the directory's raw values are not
+      the bridge's to read (they hold every identity and binding), and the
+      hosts need the same record for point 7. Alternative: a read right on
+      the directory's account index. Simpler, but it gives the component
+      with the Mattermost administrator right the whole directory too.
+   7. **Who may approve** (the approvers' group of the NATS decision,
+      ADR-014 point 10): **an `approver` flag in that record.** Recommended:
+      `approver` is true when the identity's newest Keycloak token placed it
+      in the approvers' group; the MCP server lets a person's post or
+      reaction over NATS approve an ask only when the person is in the
+      session's trusted list and a fresh record (`exp` not passed) says
+      `approver`. Until the records exist, the bridge takes a lower-case
+      Mattermost username as the anchor, as the login service does before
+      the import (RT-6.41 step 2), and a person's post over NATS wakes an
+      agent but never approves anything. Why: the group is decided by
+      Keycloak, which only the login service reads; a stale record fails
+      closed. Alternative: the login service or the bridge asks Keycloak's
+      admin API for the group per event. That needs an admin right in
+      Keycloak for a check the token already answers.
+   Security, whichever way the points are decided: the author comes only
+   from the WebSocket event's `user_id`. The bridge drops posts with
+   `from_webhook` or `override_username`, system posts, posts and
+   reactions by bots and its own; it strips every prop a person set (the
+   body has none). An agent that names a `<bus>.hu` subject as a reply
+   subject gets at most a JetStream API answer published there, which the
+   strict v1 decoders refuse; direct get (`allow_direct`) stays off on
+   every stream, so no stored message can be replayed onto `<bus>.hu`. The
+   bridge never mirrors a `<bus>.hu` message back into Mattermost.
 3. **The registrar moves into the bridge.** One bot per agent needs what the
    registrar does today: an account allowed to create bots and their tokens.
    The bridge takes over bot creation for homes over NATS; the registrar keeps

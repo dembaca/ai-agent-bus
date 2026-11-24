@@ -5,6 +5,15 @@ before 0.5.0 are described in the git history.
 
 ## Unreleased
 
+### Docs
+
+- **The central bridge's step 2 is specified** (ADR-016, RT-6.42): people's
+  posts and reactions in a bound Mattermost channel reach NATS through the
+  bridge on `bus.hu.<home>.<anchor>`, vouched for by the bridge's publish
+  right; the v1 bodies are in `docs/protocol.md`. Seven open points wait for
+  the owner as recommendations. Nothing is built; the deployment view now says
+  the bridge's first step runs in the lab.
+
 ### Breaking
 
 - **A props prefix is at most 16 characters** (RT-6.16 step 8). The
