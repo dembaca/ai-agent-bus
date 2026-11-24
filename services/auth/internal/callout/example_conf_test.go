@@ -179,7 +179,8 @@ func TestTheExampleServerConfiguration(t *testing.T) {
 				}
 			}
 			sub := strings.Join(u.Permissions.Subscribe.Allow, " ")
-			if !strings.Contains(sub, "_INBOX.>") || !strings.Contains(sub, "deliver.bridge.>") ||
+			if !strings.Contains(sub, "_INBOX_bridge.>") || !strings.Contains(sub, "deliver.bridge.>") ||
+				strings.Contains(sub, "_INBOX.>") ||
 				strings.Contains(sub, "bus.>") || strings.Contains(sub, "presence.>") {
 				t.Errorf("the bridge subscribes to %q", sub)
 			}

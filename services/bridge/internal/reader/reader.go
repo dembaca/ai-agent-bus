@@ -25,6 +25,7 @@ import (
 type Reader struct {
 	Home        string
 	Deliver     string // deliver.bridge.<home>: the operator's push consumer's subject
+	Stream      string // "BUS", for the ack reply's prefix
 	Log         *slog.Logger
 	Mirror      *mirror.Mirror
 	Store       mirror.Store
@@ -36,6 +37,30 @@ type Reader struct {
 	// reader keeps trying (a revoked token is fixed, not skipped).
 	Stuck      func(bool)
 	StuckAfter time.Duration
+}
+
+// ConsumerName is the operator's consumer for a home: bridge_<home>, with
+// anything but letters, digits, - and _ replaced.
+func ConsumerName(home string) string {
+	return "bridge_" + strings.Map(func(r rune) rune {
+		switch {
+		case r >= 'a' && r <= 'z', r >= 'A' && r <= 'Z', r >= '0' && r <= '9', r == '-', r == '_':
+			return r
+		default:
+			return '_'
+		}
+	}, home)
+}
+
+// delivery says whether m is a real delivery of this home's consumer. The
+// server also publishes idle heartbeats and flow-control messages to the
+// delivery subject, and anyone who may publish there can put a message there;
+// such a message has no $JS.ACK reply and no sequence of this stream, and it
+// must not touch the position (an empty one once set it to zero, and every
+// later post would be mirrored twice).
+func (r *Reader) delivery(m *nats.Msg) bool {
+	return m.Header.Get("Status") == "" &&
+		strings.HasPrefix(m.Reply, "$JS.ACK."+r.Stream+"."+ConsumerName(r.Home)+".")
 }
 
 // Run consumes until ctx ends.
@@ -63,6 +88,10 @@ func (r *Reader) Run(ctx context.Context, nc *nats.Conn,
 		case <-ctx.Done():
 			return nil
 		case m := <-ch:
+			if !r.delivery(m) {
+				r.Log.Warn("bridge: not a delivery, dropped", "home", r.Home, "subject", m.Subject)
+				continue
+			}
 			if err := r.retry(ctx, m, channelID); err != nil {
 				return err
 			}
@@ -129,6 +158,11 @@ func (r *Reader) retry(ctx context.Context, m *nats.Msg,
 
 // save remembers a skipped message although the reader may be stopping.
 func (r *Reader) save(ctx context.Context, seq uint64, p mirror.Post) error {
+	if seq == 0 {
+		// No stream sequence, nothing to remember: writing 0 would make every
+		// later message look already handled.
+		return nil
+	}
 	sctx, cancel := context.WithTimeout(context.WithoutCancel(ctx), 5*time.Second)
 	defer cancel()
 	return r.Store.Save(sctx, r.Home, seq, p)

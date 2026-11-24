@@ -83,7 +83,10 @@ accounts {
 	}
 
 	denied := make(chan error, 16)
+	// the bridge's own inbox prefix, as connect() sets it: the shared _INBOX.>
+	// would read the login service's answers (164534's delta)
 	bridgeNC, err := nats.Connect(srv.ClientURL(), nats.UserInfo("bridge", "pw"),
+		nats.CustomInboxPrefix("_INBOX_bridge"),
 		nats.ErrorHandler(func(_ *nats.Conn, _ *nats.Subscription, err error) { denied <- err }))
 	if err != nil {
 		t.Fatal(err)
@@ -146,8 +149,8 @@ accounts {
 	s := &sink{got: make(chan [3]string, 4), react: make(chan string, 4)}
 	m := &mirror.Mirror{Home: "home", Prefix: "x_", Log: slog.New(slog.NewTextHandler(io.Discard, nil)),
 		Sink: s, Store: kv, Links: mirror.LinksNone{}}
-	r := &Reader{Home: "home", Deliver: "deliver.bridge.home", Log: m.Log, Mirror: m, Store: kv,
-		Prefix: "bus", PropsPrefix: "x_", Ready: make(chan struct{})}
+	r := &Reader{Home: "home", Deliver: "deliver.bridge.home", Stream: "BUS", Log: m.Log, Mirror: m,
+		Store: kv, Prefix: "bus", PropsPrefix: "x_", Ready: make(chan struct{})}
 	cancel, done := startWith(t, context.Background(), bridgeNC, r)
 	defer cancel()
 	if err := admin.Publish("bus.ch.home.agent-a", []byte(`{"v":1,"kind":"post","text":"hello"}`)); err != nil {
@@ -361,6 +364,9 @@ func documentedBridgeRights(t *testing.T, home string) (publish, subscribe []str
 		if subject == "bus.>" || subject == "presence.>" || strings.HasPrefix(subject, "bus.") ||
 			strings.HasPrefix(subject, "presence.") {
 			t.Errorf("the bridge may read the bus directly: %s", subject)
+		}
+		if subject == "_INBOX.>" {
+			t.Error("the bridge may read every inbox: _INBOX.>")
 		}
 	}
 	return publish, subscribe

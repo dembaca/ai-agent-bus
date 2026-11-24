@@ -82,8 +82,8 @@ func start(t *testing.T, nc *nats.Conn, js jetstream.JetStream, kv *store.KV,
 	done := make(chan error, 1)
 	m := &mirror.Mirror{Home: "home", Prefix: "a2a.", Log: slog.New(slog.NewTextHandler(io.Discard, nil)),
 		Sink: s, Store: kv, Links: mirror.LinksNone{}}
-	r := &Reader{Home: "home", Deliver: "deliver.bridge.home", Log: m.Log, Mirror: m, Store: kv,
-		Prefix: "bus", PropsPrefix: "a2a.", Ready: make(chan struct{})}
+	r := &Reader{Home: "home", Deliver: "deliver.bridge.home", Stream: "BUS", Log: m.Log, Mirror: m,
+		Store: kv, Prefix: "bus", PropsPrefix: "a2a.", Ready: make(chan struct{})}
 	go func() {
 		done <- r.Run(ctx, nc, func(context.Context) (string, error) { return "chan", nil })
 	}()
@@ -93,6 +93,48 @@ func start(t *testing.T, nc *nats.Conn, js jetstream.JetStream, kv *store.KV,
 		t.Fatal("the reader did not subscribe")
 	}
 	return cancel, done
+}
+
+// A message on the delivery subject that is no delivery — an idle heartbeat,
+// flow control, or a publish by whoever may write there — has no ack reply and
+// no sequence: it must not reset the position (it once set it to 0, and every
+// later post was mirrored twice).
+func TestAMessageThatIsNoDeliveryTouchesNothing(t *testing.T) {
+	nc, js := lab(t)
+	kv := operatorBucket(t, nc, js)
+	s := &sink{got: make(chan [3]string, 8), react: make(chan string, 4)}
+	cancel, _ := start(t, nc, js, kv, s)
+	defer cancel()
+	mustPublish(t, nc, "bus.ch.home.agent-a", `{"v":1,"kind":"post","text":"one"}`)
+	until(t, s, mirror.SenderMark+"**agent-a**\n\none")
+	deadline := time.Now().Add(3 * time.Second)
+	for {
+		if pos, ok, err := kv.Position(context.Background(), "home"); err == nil && ok && pos == 1 {
+			break
+		}
+		if time.Now().After(deadline) {
+			t.Fatal("the position did not reach 1")
+		}
+		time.Sleep(20 * time.Millisecond)
+	}
+	// a heartbeat-like empty message and a forged one with a bus reply
+	if err := nc.Publish("deliver.bridge.home", nil); err != nil {
+		t.Fatal(err)
+	}
+	if err := nc.PublishMsg(&nats.Msg{Subject: "deliver.bridge.home", Reply: "bus.ch.home.zz",
+		Data: []byte(`{"v":1,"kind":"post","text":"forged"}`)}); err != nil {
+		t.Fatal(err)
+	}
+	_ = nc.Flush()
+	time.Sleep(300 * time.Millisecond)
+	if pos, ok, err := kv.Position(context.Background(), "home"); err != nil || !ok || pos != 1 {
+		t.Fatalf("the position moved: %d %v %v", pos, ok, err)
+	}
+	select {
+	case got := <-s.got:
+		t.Fatalf("a stray message was mirrored: %+v", got)
+	default:
+	}
 }
 
 func until(t *testing.T, s *sink, want string) [3]string {

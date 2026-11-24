@@ -80,8 +80,8 @@ func run(log *slog.Logger) error {
 		cid := channelOnce(cfg.MMTeam, home, client)
 		lk := &links.Resolver{Presence: snapshot, Roster: roster{client: client, cid: cid},
 			Window: 90 * time.Second, TTL: 30 * time.Second}
-		r := &reader.Reader{Home: home, Deliver: cfg.Deliver + "." + home, Log: log, Store: kv,
-			Prefix: cfg.BusPrefix, PropsPrefix: cfg.Prefix,
+		r := &reader.Reader{Home: home, Deliver: cfg.Deliver + "." + home, Stream: cfg.NATSStream,
+			Log: log, Store: kv, Prefix: cfg.BusPrefix, PropsPrefix: cfg.Prefix,
 			Mirror: &mirror.Mirror{Home: home, Prefix: cfg.Prefix, Log: log, Sink: client, Store: kv,
 				Links: lk}}
 		r.Stuck = h.stuckOn
@@ -119,8 +119,11 @@ func run(log *slog.Logger) error {
 
 // connect is the bridge's own NATS user: read-only on the bus (RT-6.36).
 func connect(cfg config.Config) (*nats.Conn, error) {
+	// The answers to the bridge's own requests go to its own inbox prefix: with
+	// the shared _INBOX.> it would read every answer the login service's user
+	// gets — the channel directory's raw values among them (RT-6.36 step 1).
 	opts := []nats.Option{nats.Name("bridge"), nats.MaxReconnects(-1),
-		nats.ReconnectWait(2 * time.Second)}
+		nats.ReconnectWait(2 * time.Second), nats.CustomInboxPrefix(cfg.Inbox)}
 	seed, err := nats.NkeyOptionFromSeed(cfg.SeedFile)
 	if err != nil {
 		return nil, fmt.Errorf("BRIDGE_NATS_SEED_FILE: %w", err)
