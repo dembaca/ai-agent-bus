@@ -3,6 +3,20 @@
 Every version bump in `.claude-plugin/plugin.json` gets an entry here. Versions
 before 0.5.0 are described in the git history.
 
+## Unreleased
+
+### Breaking
+
+- **A props prefix is at most 16 characters** (RT-6.16 step 8). The
+  per-turn instructions name the prefix (`props keys start with <prefix>`), so
+  an absurd one would grow the text carried every turn; the server now refuses
+  one that long at start, beside the existing refusal of one a bus or
+  Mattermost key can start with, and the bridge's `BRIDGE_PROPS_PREFIX` holds
+  the same limit (it must equal the homes' prefix). A deployment with a longer
+  prefix does not start until it is shortened; `x_`, `bgl_` and `bridge_` are
+  unaffected. The static-text budget test measures each session configuration
+  on its own and holds the worst one under its bound (#104).
+
 ## 0.99.0
 
 The operator console's read-only pilot (its server, browser app and image), the

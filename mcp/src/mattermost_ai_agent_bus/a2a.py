@@ -255,6 +255,10 @@ def props(message: str = "", to: str = "", kind: str = "",
 PREFIX_ENV = "MM_PROPS_PREFIX"
 DEFAULT_PREFIX = "x_"
 _PREFIX = re.compile(r"[a-z][a-z0-9]*_")
+# The per-turn instructions name the prefix ("props keys start with <prefix>"),
+# so an absurd one would grow the text every turn; 16 characters are far more
+# than a prefix needs (x_, bgl_, abc1_).
+PREFIX_MAX = 16
 # The first `_`-segment of the keys the bus or Mattermost writes into post props
 # (a prefix is one segment ending in `_`, so it clashes exactly when it names the
 # first segment of one of them); `a2a_` stays the bus's namespace.
@@ -273,6 +277,9 @@ def user_prefix(environ: Mapping[str, str] | None = None) -> str:
     if not _PREFIX.fullmatch(prefix):
         raise ValueError(f"{PREFIX_ENV}={raw!r} is no props prefix: lower-case letters and digits, "
                          "starting with a letter, ending with _ (for example x_ or abc_)")
+    if len(prefix) > PREFIX_MAX:
+        raise ValueError(f"{PREFIX_ENV}={prefix!r} is longer than {PREFIX_MAX} characters; "
+                         "the instructions name it on every turn")
     if prefix in _RESERVED_SEGMENTS:
         raise ValueError(f"{PREFIX_ENV}={prefix!r} could clash with a key of the bus or of "
                          "Mattermost: choose another")

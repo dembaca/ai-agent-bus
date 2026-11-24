@@ -38,9 +38,12 @@ derived, not a setting.
 
 **Props prefix (RT-6.16 step 8, since 0.74.0).** `MM_PROPS_PREFIX` names the keys an agent
 may add to its posts' props and the bus's own system key (`<prefix>system`): lower-case
-letters and digits starting with a letter, ending in `_`; default `x_`. A prefix that is
-empty after trimming is the default; one that is malformed, or that a key of the bus or
-of Mattermost starts with (`a2a_`, `agent_`, `from_`, `override_`, `webhook_`, …), stops
+letters and digits starting with a letter, ending in `_`; default `x_`. At most 16
+characters: the MCP instructions name it on every turn, and the bridge's
+`BRIDGE_PROPS_PREFIX` holds the same limit (it must equal the homes' prefix). A prefix
+that is empty after trimming is the default; one that is malformed, too long, or that a
+key of the bus or of Mattermost starts with (`a2a_`, `agent_`, `from_`, `override_`,
+`webhook_`, …), stops
 the MCP server at its start with the reason (in a corral session the host process refuses
 before it reports ready, so the hook's preStart fails with it). It is one setting of the whole bus: every
 server must have the same value, or one server does not recognise another's system replies
