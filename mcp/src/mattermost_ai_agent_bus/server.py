@@ -18,7 +18,7 @@ from pathlib import Path
 from typing import Any
 
 from mcp.server.mcpserver import Image, MCPServer
-from mcp.server.mcpserver.exceptions import ToolError
+from mcp.server.mcpserver.exceptions import ToolError, UnexpectedToolError
 from mcp.server.mcpserver.utilities.func_metadata import ArgModelBase
 from pydantic import ValidationError
 
@@ -408,6 +408,33 @@ a2a.user_prefix()  # RT-6.16 step 8: a bad MM_PROPS_PREFIX stops the server here
 ArgModelBase.model_config["extra"] = "forbid"
 
 
+# What a crash's text may not carry out of the server (the NATS pilot's empty error made
+# this the only place a cause is readable). A text that looks like it holds a credential
+# is replaced by the type alone: a tool's error is for an agent, never for a token.
+_SECRETISH = re.compile(
+    r"(?i)(?:token|secret|password|passwd|pwd|credential|session|authorization|auth|cookie"
+    r"|bearer|basic|mmauth|enrollment|sig|code|key|seed|jwt)"
+    r"|[A-Za-z0-9+/=_-]{20,}"
+    r"|://[^\s/@]+@")
+CAUSE_MAX = 300  # one bounded line: an error answer is read by an agent, not a log
+
+
+def _cause_text(cause: BaseException) -> str:
+    """A crash as one bounded line: its type and its own text, never a credential.
+
+    Found in the NATS pilot: 0.98.0 answered "Error executing tool announce" with no
+    cause at all, and only the host log named it. The text a tool raises can carry what
+    a person pasted into it, so anything that looks like a token, a password or a long
+    key is replaced by the type alone.
+    """
+    text = " ".join(str(cause).split())
+    name = type(cause).__name__
+    if _SECRETISH.search(text):
+        return f"{name} (details hidden: the message may carry a credential)"
+    body = f"{name}: {text}" if text else name
+    return body[:CAUSE_MAX] + ("…" if len(body) > CAUSE_MAX else "")
+
+
 class _StrictServer(MCPServer):
     """An unknown argument fails the call with the field's name and the tool's valid
     fields, so the agent corrects it in its next call instead of guessing."""
@@ -419,11 +446,24 @@ class _StrictServer(MCPServer):
             return await super().call_tool(name, arguments, *args, **kwargs)
         except ToolError as exc:
             cause = exc.__cause__
-            if not isinstance(cause, ValidationError):
-                raise
-            errors = cause.errors()
-            unknown = sorted({str(e["loc"][0]) for e in errors if e["type"] == "extra_forbidden"})
-            tool = self._tool_manager.get_tool(name) if unknown else None
+            crash = isinstance(exc, UnexpectedToolError)
+            if isinstance(cause, ValidationError) and not crash:
+                errors = cause.errors()
+                unknown = sorted({str(e["loc"][0]) for e in errors if e["type"] == "extra_forbidden"})
+                tool = self._tool_manager.get_tool(name) if unknown else None
+            else:
+                unknown, tool = [], None
+            if crash and cause is not None and not isinstance(cause, ToolError):
+                # The SDK keeps a crash's own text on the server and hands the client a
+                # bare "Error executing tool <name>" (mcp/server/mcpserver/tools/base.py:
+                # `raise UnexpectedToolError(f"Error executing tool {self.name}") from exc`).
+                # The cause is the only place that says what happened - the NATS pilot saw
+                # nothing but the generic line while the real cause stood in the host log.
+                # Raised as `UnexpectedToolError`: it is a `ToolError` (the client text is
+                # the same) and it is the one the SDK logs with a traceback, so a hidden
+                # cause is not lost on both sides.
+                raise UnexpectedToolError(
+                    f"Error executing tool {name}: {_cause_text(cause)}") from cause
             if tool is None:
                 raise
             valid = ", ".join(tool.parameters.get("properties", {}))

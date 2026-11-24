@@ -628,3 +628,70 @@ def test_the_instructions_name_the_props_prefix_in_force(monkeypatch):
     assert "props keys start with x_." in server._instructions()
     monkeypatch.setenv("MM_PROPS_PREFIX", "bgl_")
     assert "props keys start with bgl_." in server._instructions()
+
+
+@pytest.mark.asyncio
+async def test_a_crashing_tool_names_its_cause():
+    """The SDK answers a crash with a bare "Error executing tool <name>"
+    (`mcp/server/mcpserver/tools/base.py`) and keeps the cause on the server: the NATS
+    pilot saw exactly that, and the reason stood only in the host log. Through the
+    **real** handler (no fake), so the type the SDK logs with a traceback is the one
+    that carries the cause to the client."""
+    from mcp.server.mcpserver.exceptions import ToolError, UnexpectedToolError
+
+    from mattermost_ai_agent_bus import server as srv
+
+    test_server = srv._StrictServer("crash-test")
+
+    @test_server.tool()
+    async def zz_crash() -> str:
+        raise RuntimeError("boom")
+
+    with pytest.raises(ToolError) as err:
+        await test_server.call_tool("zz_crash", {})
+    assert "RuntimeError: boom" in str(err.value), str(err.value)
+    # `UnexpectedToolError` is what makes the SDK write the traceback to the host log
+    # (`mcp/server/mcpserver/server.py`: `logger.exception` only for that type), so the
+    # cause is never lost on both sides.
+    assert isinstance(err.value, UnexpectedToolError), type(err.value)
+
+
+def test_a_cause_that_may_hold_a_credential_names_the_type_only():
+    from mattermost_ai_agent_bus import server as srv
+
+    for text in ("posting failed token=SECRETSECRET", '{"token": "abc123xyz"}',
+                 "nats://bot:hunter2@host:4222", "api_key=abcdefgh", "Bearer abcdef",
+                 "passwd=hunter22", "pwd=hunter2", "credentials=a:b1234567",
+                 "session_id=abcdefgh", "sig=abcdefgh", "invalid password 'hunter2'",
+                 "password=abc", "token: expired", "Basic dXNlcjpwYXNz",
+                 "X-Enrollment-Secret abc123", "a" * 20):
+        got = srv._cause_text(RuntimeError(text))
+        assert "details hidden" in got and "SECRETSECRET" not in got, (text, got)
+    assert srv._cause_text(RuntimeError("boom")) == "RuntimeError: boom"
+    # what must stay readable: a path without a secret word or a long run
+    for text in ("post failed with 403", "the thread is gone"):
+        assert "details hidden" not in srv._cause_text(RuntimeError(text)), text
+
+
+def test_a_cause_is_one_bounded_line():
+    from mattermost_ai_agent_bus import server as srv
+
+    got = srv._cause_text(RuntimeError("word " * 200))
+    assert len(got) <= srv.CAUSE_MAX + 1, len(got)
+    assert got.endswith("…")
+
+
+@pytest.mark.asyncio
+async def test_a_wrong_argument_is_no_crash(caplog):
+    """Fable's regression: a missing or wrongly typed argument must keep the plain
+    `ToolError` path (field names, INFO line), not become `UnexpectedToolError` with a
+    traceback and a cut or hidden text."""
+    from mcp.server.mcpserver.exceptions import ToolError, UnexpectedToolError
+
+    from mattermost_ai_agent_bus import server as srv
+
+    # a *missing* argument: this is the case that took the crash path before
+    with pytest.raises(ToolError) as err:
+        await srv.mcp.call_tool("post_message", {})
+    assert not isinstance(err.value, UnexpectedToolError), type(err.value)
+    assert "message" in str(err.value) and "Field required" in str(err.value), str(err.value)
