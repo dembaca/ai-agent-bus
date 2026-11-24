@@ -22,7 +22,7 @@ import type {
  * the fields the app maps itself are declared; everything else passes
  * through with the shape the app types already expect (`asked human` is
  * `human`, the ADR's columns are ADR-015's own words). */
-interface WireAsk {
+export interface WireAsk {
   id: string
   by: string
   display_name: string
