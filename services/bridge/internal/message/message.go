@@ -19,8 +19,8 @@ import (
 type Kind string
 
 const (
-	Post      Kind = "post"
-	Reaction  Kind = "reaction"
+	Post       Kind = "post"
+	Reaction   Kind = "reaction"
 	Unreaction Kind = "unreaction"
 )
 

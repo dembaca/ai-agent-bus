@@ -10,17 +10,17 @@ import (
 
 // Config is the bridge's whole configuration.
 type Config struct {
-	NATSURL   string   // BRIDGE_NATS_URL, tls:// in the lab
-	SeedFile  string   // BRIDGE_NATS_SEED_FILE, the read-only user's nkey seed
-	CAFile    string   // BRIDGE_CA_FILE, optional: the server's CA
-	MMURL     string   // BRIDGE_MM_URL
-	MMToken   string   // BRIDGE_MM_TOKEN_FILE
-	MMTeam    string   // BRIDGE_MM_TEAM
-	Homes     []string // BRIDGE_HOMES, the home channel names to mirror
-	Prefix    string   // BRIDGE_PROPS_PREFIX, the homes' MM_PROPS_PREFIX
-	KVBucket  string   // BRIDGE_KV_BUCKET, default BUS_BRIDGE
-	Listen    string   // BRIDGE_LISTEN_ADDR, /healthz
-	NATSStream string  // BRIDGE_STREAM, default BUS
+	NATSURL    string   // BRIDGE_NATS_URL, tls:// in the lab
+	SeedFile   string   // BRIDGE_NATS_SEED_FILE, the read-only user's nkey seed
+	CAFile     string   // BRIDGE_CA_FILE, optional: the server's CA
+	MMURL      string   // BRIDGE_MM_URL
+	MMToken    string   // BRIDGE_MM_TOKEN_FILE
+	MMTeam     string   // BRIDGE_MM_TEAM
+	Homes      []string // BRIDGE_HOMES, the home channel names to mirror
+	Prefix     string   // BRIDGE_PROPS_PREFIX, the homes' MM_PROPS_PREFIX
+	KVBucket   string   // BRIDGE_KV_BUCKET, default BUS_BRIDGE
+	Listen     string   // BRIDGE_LISTEN_ADDR, /healthz
+	NATSStream string   // BRIDGE_STREAM, default BUS
 }
 
 // Load reads the environment. A missing required value is an error naming it.

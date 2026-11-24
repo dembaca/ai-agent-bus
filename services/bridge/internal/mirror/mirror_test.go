@@ -10,13 +10,19 @@ import (
 )
 
 type fakeSink struct {
-	posts   []struct{ text, root string; props map[string]any }
-	reacted []string
+	posts []struct {
+		text, root string
+		props      map[string]any
+	}
+	reacted   []string
 	unreacted []string
 }
 
 func (f *fakeSink) Create(_ context.Context, _, text, root string, props map[string]any) (string, error) {
-	f.posts = append(f.posts, struct{ text, root string; props map[string]any }{text, root, props})
+	f.posts = append(f.posts, struct {
+		text, root string
+		props      map[string]any
+	}{text, root, props})
 	return "mm" + string(rune('0'+len(f.posts))), nil
 }
 func (f *fakeSink) React(_ context.Context, post, emoji string) error {
@@ -54,7 +60,7 @@ var channel = func(context.Context) (string, error) { return "chan", nil }
 
 func TestAPostIsMirroredOnceWithTheNATSIdAndAttribution(t *testing.T) {
 	m, sink, st := newMirror(t)
-	msg := message.Msg{Kind: message.Post, Text: "hello", Props: map[string]any{"a2a.": map[string]any{"kind": "TASK"}}}
+	msg := message.Msg{Kind: message.Post, Text: "hello", Props: map[string]any{"a2a.a2a": map[string]any{"kind": "TASK"}}}
 	if err := m.Handle(context.Background(), channel, "agent-a", 4, msg); err != nil {
 		t.Fatal(err)
 	}
@@ -67,7 +73,7 @@ func TestAPostIsMirroredOnceWithTheNATSIdAndAttribution(t *testing.T) {
 	if sink.posts[0].props["a2a.nats_id"] != "n1:home:4" || sink.posts[0].props["a2a.shown_as"] != "agent-a" {
 		t.Fatalf("props: %+v", sink.posts[0].props)
 	}
-	if _, ok := sink.posts[0].props["a2a."]; ok {
+	if _, ok := sink.posts[0].props["a2a.a2a"]; ok {
 		t.Fatalf("an a2a prop from the NATS side reached Mattermost: %+v", sink.posts[0].props)
 	}
 	// the same message again (a replay): no second post, position moved on

@@ -21,7 +21,7 @@ import (
 
 // Post is what the bridge remembers about a mirrored message.
 type Post struct {
-	ID     string `json:"id"`      // the Mattermost post id
+	ID     string `json:"id"`             // the Mattermost post id
 	RootID string `json:"root,omitempty"` // the Mattermost root, when it answers one
 }
 

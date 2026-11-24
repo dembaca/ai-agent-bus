@@ -79,7 +79,11 @@ func (r *Reader) one(ctx context.Context, m *nats.Msg,
 	if len(parts) != 4 || parts[0] != r.Prefix || parts[1] != "ch" || parts[2] != r.Home {
 		return fmt.Errorf("reader: unexpected subject %q", m.Subject)
 	}
-	seq := m.MetaData().StreamSequence
+	md, err := m.Metadata()
+	if err != nil {
+		return fmt.Errorf("reader: %s: no metadata: %w", m.Subject, err)
+	}
+	seq := md.Sequence.Stream
 	msg, err := message.Decode(m.Data)
 	if err != nil {
 		// A message this bridge cannot read is not the bridge's to fix: log it
