@@ -22,8 +22,10 @@ import (
 	"github.com/nats-io/nats.go"
 
 	"github.com/dembaca/ai-agent-bus/services/bridge/internal/config"
+	"github.com/dembaca/ai-agent-bus/services/bridge/internal/links"
 	"github.com/dembaca/ai-agent-bus/services/bridge/internal/mirror"
 	"github.com/dembaca/ai-agent-bus/services/bridge/internal/mm"
+	"github.com/dembaca/ai-agent-bus/services/bridge/internal/presence"
 	"github.com/dembaca/ai-agent-bus/services/bridge/internal/reader"
 	"github.com/dembaca/ai-agent-bus/services/bridge/internal/store"
 )
@@ -62,14 +64,37 @@ func run(log *slog.Logger) error {
 		return fmt.Errorf("the bridge bot: %w", err)
 	}
 
+	// `shown_as` needs the presence of the names and the home's roster; without a
+	// PRESENCE stream the bridge runs as before, naming the NATS name.
+	snapshot := presence.New()
+	hasPresence := false
+	if _, err := js.StreamInfo("PRESENCE"); err == nil {
+		hasPresence = true
+	}
+
 	var wg sync.WaitGroup
+	if hasPresence {
+		pr := &presence.Reader{Log: log, Stream: "PRESENCE", Into: snapshot}
+		wg.Add(1)
+		go func() {
+			defer wg.Done()
+			if err := pr.Run(ctx, js); err != nil && ctx.Err() == nil {
+				log.Error("bridge: presence stopped", "error", err)
+			}
+		}()
+	}
 	for _, home := range cfg.Homes {
 		home := home
 		cid := channelOnce(cfg.MMTeam, home, client)
+		var lk mirror.Links = mirror.LinksNone{}
+		if hasPresence {
+			lk = &links.Resolver{Presence: snapshot, Roster: roster{client: client, cid: cid},
+				Window: 75 * time.Second, TTL: 30 * time.Second}
+		}
 		r := &reader.Reader{Home: home, Log: log, Store: kv, Stream: cfg.NATSStream,
 			Prefix: cfg.BusPrefix, PropsPrefix: cfg.Prefix,
 			Mirror: &mirror.Mirror{Home: home, Prefix: cfg.Prefix, Log: log, Sink: client, Store: kv,
-				Links: mirror.LinksNone{}}}
+				Links: lk}}
 		wg.Add(1)
 		go func() {
 			defer wg.Done()
@@ -139,6 +164,29 @@ func tlsFirst(urls string) bool {
 		}
 	}
 	return urls != ""
+}
+
+// roster is the home's member list for the links resolver.
+type roster struct {
+	client *mm.Client
+	cid    func(context.Context) (string, error)
+}
+
+// Members implements links.Roster.
+func (r roster) Members(ctx context.Context) ([]links.Member, error) {
+	cid, err := r.cid(ctx)
+	if err != nil {
+		return nil, err
+	}
+	users, err := r.client.Members(ctx, cid)
+	if err != nil {
+		return nil, err
+	}
+	out := make([]links.Member, 0, len(users))
+	for _, u := range users {
+		out = append(out, links.Member{ID: u.ID, Username: u.Username, Status: u.Status})
+	}
+	return out, nil
 }
 
 // channelOnce resolves a home's Mattermost channel id on first use.

@@ -87,6 +87,42 @@ func (c *Client) Create(ctx context.Context, channelID, text, rootID string,
 	return p.ID, nil
 }
 
+// User is one of a home's members, as the roster needs it.
+type User struct {
+	ID       string
+	Username string
+	Status   string // the custom status text, where the ⇄tag sits
+}
+
+// Members lists a channel's members: the bots' usernames and status texts.
+func (c *Client) Members(ctx context.Context, channelID string) ([]User, error) {
+	var raw []struct {
+		ID       string `json:"id"`
+		Username string `json:"username"`
+		Props    struct {
+			Custom string `json:"customStatus"`
+		} `json:"props"`
+	}
+	path := "/api/v4/users?in_channel=" + url.QueryEscape(channelID) + "&per_page=200"
+	if err := c.do(ctx, "GET", path, nil, &raw); err != nil {
+		return nil, err
+	}
+	out := make([]User, 0, len(raw))
+	for _, u := range raw {
+		status := ""
+		if u.Props.Custom != "" {
+			var st struct {
+				Text string `json:"text"`
+			}
+			if json.Unmarshal([]byte(u.Props.Custom), &st) == nil {
+				status = st.Text
+			}
+		}
+		out = append(out, User{ID: u.ID, Username: u.Username, Status: status})
+	}
+	return out, nil
+}
+
 // React adds emoji to a post as the bridge's bot.
 func (c *Client) React(ctx context.Context, postID, emoji string) error {
 	uid, err := c.Me(ctx)
