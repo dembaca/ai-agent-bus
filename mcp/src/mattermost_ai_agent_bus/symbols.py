@@ -89,13 +89,19 @@ def answer_symbol(answer: Answer) -> str:
 _BLOCK_START = re.compile(r"^\s*(?:\||[-*+]\s|\d+[.)]\s|#{1,6}\s|```|~~~|>)")
 
 
+def opens_with_block(message: str) -> bool:
+    """Whether the text opens with a Markdown block (table row, list item,
+    heading, code fence, quote), which needs a line of its own."""
+    return _BLOCK_START.match(message) is not None
+
+
 def with_crown(message: str) -> str:
     """The message with the crown in front, once. A message that opens with a
     Markdown block gets the crown on its own line and a blank line after it
     (RT-6.6 step 3); `strip_crown` takes both away again."""
     if message.startswith(_CROWN):
         return message
-    return f"{_CROWN}\n\n{message}" if _BLOCK_START.match(message) else f"{_CROWN} {message}"
+    return f"{_CROWN}\n\n{message}" if opens_with_block(message) else f"{_CROWN} {message}"
 
 
 def strip_crown(message: str) -> str:

@@ -58,3 +58,13 @@ def test_crown_before_plain_text_stays_on_the_line():
 def test_an_already_crowned_message_is_left_alone():
     for text in (f"{CROWN} | a |", f"{CROWN}\n\n| a |", f"{CROWN} x"):
         assert symbols.with_crown(text) == text
+
+
+@pytest.mark.parametrize("body", ["| a | b |\n|---|---|\n| 1 | 2 |", "- one\n- two"])
+def test_a_status_word_stands_alone_before_a_block(body):
+    """RT-6.14 step 2: `RESULT · | a |` would break the table; the block starts below."""
+    led = a2a.lead(body, "RESULT")
+    assert led == f"RESULT\n\n{body}"
+    assert a2a.styled(led) == f"`RESULT`\n\n{body}"
+    assert a2a.styled(symbols.with_crown(led)) == f"{CROWN} `RESULT`\n\n{body}"
+    assert a2a.lead("plain text", "RESULT") == "RESULT · plain text"
