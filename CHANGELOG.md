@@ -5,6 +5,11 @@ before 0.5.0 are described in the git history.
 
 ## Unreleased
 
+- **A test-rig run that receives nothing says whether the fault explains it**
+  (#47). `bus-testrig bus-run` exits 1 when frames were sent and none arrived
+  and no fault accounts for it - a path that carried nothing is not a
+  measurement - and a run under a fault that discards or freezes every posted
+  frame says so in its report instead of reading like a healthy run.
 - **A busy coordinator keeps its crown** (#64, RT-6.6 steps 1, 4 and 11).
   The prompt hook tells the server that a turn began before anything else,
   so a slow hook no longer leaves a running turn unknown, which made the

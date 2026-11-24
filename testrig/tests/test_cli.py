@@ -139,26 +139,27 @@ def test_expect_loss_passes_a_fault_run_that_lost(bus_run, capsys):
     assert _json_of(capsys)["measured"]["loss"]["value"] == 4
 
 
-def test_a_passing_fault_that_delivers_nothing_exits_non_zero(bus_run, capsys):
-    """`stall` lets every frame through, so a run under it must deliver some.
+@pytest.mark.parametrize("fault", ("stall", "reorder", "duplicate"))
+def test_a_passing_fault_that_delivers_nothing_exits_non_zero(bus_run, capsys, fault):
+    """`stall`, `reorder` and `duplicate` let every frame through, so a run under
+    one of them must deliver some.
 
-    Delivering none means the path, not the fault (issue #47). The run is **built
-    here**, not driven: the `bus_run` fixture replaces `bus_run` with a stand-in
-    that returns this `Run` to `cli.main`, so the test exercises the decision and
-    not a real run. Making it a real run — a stub that accepts each pushed frame
-    and hands none on — is the better test and has not been written; this one
-    pins the rule and says plainly what it is.
+    Delivering none means the path, not the fault (issue #47). Each of the three
+    is checked: with only `stall` pinned, a mutation that treated `reorder` and
+    `duplicate` as silencing faults stayed green (716d72's review of #78). The run
+    is **built here**, not driven: the `bus_run` fixture replaces `bus_run` with a
+    stand-in that returns this `Run` to `cli.main`, so the test exercises the
+    decision and not a real run.
 
-    `drop` is not covered here: a `drop` run may lose everything by design and is
-    a measurement. `blackhole` and `halfopen` are not covered either: their
-    silence is deliberate, and a bus that fails to recover from it is a different
-    finding than a rig that measured nothing.
+    `none` is not covered here: the baseline rule catches it first. `drop`,
+    `blackhole`, `halfopen` and `cut` have rules of their own.
     """
-    run = _run(loss=3, fault="stall", sent=3)
+    run = _run(loss=3, fault=fault, sent=3)
     run.received.clear()  # nothing arrived, though the fault lets it through
-    run.relay = {"received": 4, "forwarded": 4, "altered": 0}
+    run.relay = {"received": 4, "forwarded": 4, "altered": 0,
+                 "posted_seen": 3, "posted_forwarded": 3, "posted_altered": 0}
     bus_run(run)
-    assert _main(["bus-run", "--count", "3", "--fault", "stall"]) == 1
+    assert _main(["bus-run", "--count", "3", "--fault", fault]) == 1
     assert "lets traffic through" in capsys.readouterr().err
 
 
