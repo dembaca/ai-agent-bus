@@ -12,6 +12,7 @@ dependencies = [
   "websockets>=13.0",
   "cryptography>=42",
   "nkeys>=0.2",
+  # natsbus's WebSocketTransport subclass copies its __init__: it matches this pin, recheck on update
   "nats-py==2.16.0",
   # nats-py's WebSocket transport (ws://, wss://, RT-6.36); imported only then
   "aiohttp>=3.14",

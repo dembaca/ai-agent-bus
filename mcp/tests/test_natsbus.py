@@ -1031,14 +1031,16 @@ async def wss_rig(tmp_path: Path) -> AsyncIterator[tuple[Rig, Path]]:
     if not binary or not Path(binary).exists():
         pytest.fail("nats-server 2.15.3 not found: set MM_NATS_SERVER=<path> or put it on PATH")
     cert, key = _self_signed(tmp_path)
-    logins = {"alice": FakeLogin()}
+    logins = {"alice": FakeLogin(), "eve": FakeLogin()}
     names = {w: agent_name(w, lg.nkey().public_key) for w, lg in logins.items()}
     admin_pw = os.urandom(8).hex()
-    n = names["alice"]
-    users = [f'{{user: admin, password: "{admin_pw}"}}',
-             f'{{nkey: "{logins["alice"].nkey().public_key}", permissions: {{publish: {{allow: '
-             f'["bus.ch.home.{n}", "presence.crown.home.{n}", "presence.member.home.{n}", '
-             f'"bus.dm.*.{n}", "presence.alice.{n}"]}}, subscribe: {{allow: ["deliver.{n}.>"]}}}}}}']
+    users = [f'{{user: admin, password: "{admin_pw}"}}']
+    for w, lg in logins.items():
+        n = names[w]
+        users.append(
+            f'{{nkey: "{lg.nkey().public_key}", permissions: {{publish: {{allow: '
+            f'["bus.ch.home.{n}", "presence.crown.home.{n}", "presence.member.home.{n}", '
+            f'"bus.dm.*.{n}", "presence.{w}.{n}"]}}, subscribe: {{allow: ["deliver.{n}.>"]}}}}}}')
     port, wss_port = _free_port(), _free_port()
     conf = tmp_path / "nats-wss.conf"
     conf.write_text(f'port: {port}\nhost: 127.0.0.1\njetstream {{ store_dir: "{tmp_path / "js"}" }}\n'
@@ -1126,34 +1128,24 @@ async def test_post_and_reply_over_a_websocket(rig: Rig) -> None:
     assert (a_ev[1].where, a_ev[1].sender) == ("home", bob.name)
 
 
-async def test_wss_verifies_the_websocket_tls(wss_rig: tuple[Rig, Path]) -> None:
+async def test_wss_verifies_the_websocket_tls(wss_rig: tuple[Rig, Path],
+                                              caplog: pytest.LogCaptureFixture) -> None:
     """wss://: the WebSocket's TLS is verified with MM_NATS_CA_FILE like tls://; without the CA
     the connection is refused, and no token goes over it."""
     rig, ca = wss_rig
     alice, a_ev = await rig.agent("alice", url=rig.ws_url, tls_ca_file=str(ca))
     await alice.post("home", "hello over wss")
     await until(lambda: len(a_ev) == 1, what="alice's own post came back over wss")
-    # the bus itself verifies: without the CA file it never connects. An unverified context
-    # would connect right here, which is what a mutation of the TLS setup turns red.
-    refused = NatsBus(NatsSettings(servers=(rig.ws_url,), home="home"), FakeLogin(), "alice",
-                      lambda e: None, connect_timeout=3)
-    with pytest.raises(asyncio.TimeoutError):
-        await refused._open()  # nats-py retries the refused handshake; _open bounds it
-    assert refused._nc is None
-    # and the reason names the certificate, through nats-py's error callback
-    errors: list[Exception] = []
-
-    async def on_error(exc: Exception) -> None:
-        errors.append(exc)
-
-    other = NatsClient()
+    # the bus itself verifies: an agent without MM_NATS_CA_FILE never connects, and the bus's
+    # own log names the certificate. An unverified context would connect right here, which is
+    # what a mutation of the TLS setup turns red (716d72's blocker on #83).
+    caplog.set_level(logging.WARNING, logger="mattermost_ai_agent_bus.natsbus")
+    eve, _ = await rig.agent("eve", url=rig.ws_url, bus_kw={"connect_timeout": 3})
     try:
-        with pytest.raises(asyncio.TimeoutError):
-            await asyncio.wait_for(other.connect(rig.ws_url, token="x", allow_reconnect=False,
-                                                 connect_timeout=2, error_cb=on_error), 8)
+        assert eve._nc is None and not eve._connected
+        assert "certificate" in caplog.text.lower()
     finally:
-        await other.close()
-    assert errors and "certificate" in natsbus.connect_reason(errors[0]).lower()
+        await eve.stop()
 
 
 async def test_post_reply_reaction_dm(rig: Rig) -> None:
