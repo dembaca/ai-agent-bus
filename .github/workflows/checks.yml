@@ -170,6 +170,33 @@ jobs:
           echo "MM_TEST_NATS=1" >> "$GITHUB_ENV"
       - name: console server
         run: uv run --directory console/server pytest -q
+      # The reviews' image findings, held by CI: the image builds and the
+      # server starts and answers /healthz (the login keeps retrying its
+      # discovery when the issuer is down, so a missing Keycloak in this
+      # smoke is the reality the loop handles).
+      - name: image builds, and the server starts
+        run: |
+          docker build -t console-test -f console/server/Dockerfile .
+          seed="$(uv run --directory console/server python -c "import nkeys, os; print(nkeys.encode_seed(os.urandom(32), nkeys.PREFIX_BYTE_USER).decode())")"
+          printf '%s' "$seed" > "$RUNNER_TEMP/console.seed"
+          chmod 600 "$RUNNER_TEMP/console.seed"
+          docker run -d --name console-test -p 127.0.0.1:8747:8747 \
+            -e CONSOLE_PUBLIC_URL=http://127.0.0.1:8747 \
+            -e CONSOLE_ISSUER=http://127.0.0.1:19999 \
+            -e CONSOLE_CLIENT_ID=smoke \
+            -e CONSOLE_OPERATOR_GROUP=operators \
+            -e CONSOLE_ADDR=0.0.0.0:8747 \
+            -e CONSOLE_NATS_URL=nats://127.0.0.1:4222 \
+            -e CONSOLE_NATS_SEED_FILE=/run/console.seed \
+            -v "$RUNNER_TEMP/console.seed:/run/console.seed:ro" \
+            console-test
+          for i in $(seq 1 30); do
+            curl -fsS http://127.0.0.1:8747/healthz && break
+            sleep 1
+          done
+          curl -fsS http://127.0.0.1:8747/healthz | grep -q ok
+          docker logs console-test 2>&1 | tail -5
+          docker rm -f console-test
 
   lint:
     runs-on: ubuntu-latest

@@ -109,8 +109,10 @@ function FullCard({ card }: { card: AgentCard }) {
           </td></tr>
         <tr><th>open asks</th>
           <td>
-            {card.openAsks === 0 ? "0"
-              : `${card.openAsks}${card.asksForOperator > 0 ? ` · ${card.asksForOperator} for you` : ""}`}
+            {card.openAsks === null
+              ? "n/a"
+              : card.openAsks === 0 ? "0"
+              : `${card.openAsks}${(card.asksForOperator ?? 0) > 0 ? ` · ${card.asksForOperator} for you` : ""}`}
           </td></tr>
       </tbody>
     </table>

@@ -99,9 +99,12 @@ export function AgentCardView({ card, active, onSelect }: {
       )}
       <div className="card__bottom">
         <span className="card__asks"
-          title={card.asksForOperator > 0 ? "open asks, for you marked" : "open asks"}>
-          {card.openAsks > 0 ? `asks ${card.openAsks}` : ""}
-          {card.asksForOperator > 0 && <b className="card__asks-for"> · for you {card.asksForOperator}</b>}
+          title={card.asksForOperator ? "open asks, for you marked" : "open asks"}>
+          {card.openAsks === null
+            ? "asks n/a"
+            : `asks ${card.openAsks}`}
+          {card.asksForOperator !== null && card.asksForOperator > 0 &&
+            <b className="card__asks-for"> · for you {card.asksForOperator}</b>}
         </span>
         <span className="card__ctx" title="context">
           <span className="card__ctx-bar" style={{ width: card.ctx === null ? 0 : `${Math.min(100, card.ctx)}%` }} />

@@ -70,8 +70,9 @@ async def rig(tmp_path):
         + "accounts { BUS { jetstream: enabled\n users: ["
         + '{ user: admin, password: "%s"},' % admin_pw
         + '{ nkey: "%s", permissions: {' % console_pub
-        + 'publish: { allow: ["$JS.API.CONSUMER.CREATE.PRESENCE.console"]},'
-        + 'subscribe: { allow: ["deliver.console.presence", "_INBOX.>"]}'
+        + 'publish: { allow: ["$JS.API.CONSUMER.CREATE.PRESENCE.console",'
+        + ' "$JS.API.CONSUMER.DELETE.PRESENCE.console"]},'
+        + 'subscribe: { allow: ["deliver.console.presence", "_INBOX_console.>"]}'
         + "} }] } }\n")
     proc = subprocess.Popen([binary, "-c", str(conf)],
                              stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
@@ -147,17 +148,16 @@ async def test_the_console_reads_the_fleet_sse(rig) -> None:
         await admin.publish("presence.crown.dev.agent-one", b'{"v": 1}')
         await admin.publish("presence.dembaca.agent-two", encode_presence("away"))
 
-        # the replay reaches the console: snapshot, then card events
+        # the replay reaches the console: a snapshot, then card events
         cards: dict[str, dict] = {}
-        for _ in range(20):
+        for _ in range(30):
             event = await stream.event()
             if event["type"] == "snapshot":
                 cards = {c["name"]: c for c in event["cards"]}
                 if "agent-one" in cards:
                     break
-            elif event["type"] == "cards":
-                for card in event["cards"]:
-                    cards[card["name"]] = card
+            elif event["type"] == "card":
+                cards[event["card"]["name"]] = event["card"]
                 if "agent-one" in cards:
                     break
         assert cards["agent-one"]["state"] == "online"
@@ -166,19 +166,20 @@ async def test_the_console_reads_the_fleet_sse(rig) -> None:
         assert cards["agent-one"]["for"] == "dembaca"
         assert cards["agent-two"]["state"] == "away"
         assert cards["agent-two"]["ctx"] is None
-        assert cards["agent-two"]["openAsks"] == 0
+        assert cards["agent-two"]["openAsks"] is None  # unknown, never 0
         assert short_name("agent-one") == "agent-one"
 
-        # a change arrives as its own stream event
+        # a change arrives as one "card" event per change, the app's alphabet
         await admin.publish("presence.dembaca.agent-two", encode_presence("online"))
         changed = None
         for _ in range(10):
             event = await stream.event()
-            if event["type"] == "cards" and event["cards"]:
-                changed = {c["name"]: c for c in event["cards"]}
+            if event["type"] == "card" and event["card"]:
+                changed = event["card"]
                 break
         assert changed is not None
-        assert changed["agent-two"]["state"] == "online"
+        assert changed["name"] == "agent-two"
+        assert changed["state"] == "online"
 
         # the graph answers the API too (raw, same facts)
         answer = await console.handle("/v1/graph", {}, {})
@@ -191,3 +192,72 @@ async def test_the_console_reads_the_fleet_sse(rig) -> None:
         stream.close()
     finally:
         await console.stop()
+
+
+async def test_a_restart_replays_the_fleet(rig) -> None:
+    """The reviews' restart probe: a consumer recreated under its own name
+    replays nothing, so the console deletes it first — a restart finds the
+    fleet (presence, membership, crown) as the stream holds it."""
+    admin: NatsClient = rig["admin"]
+    await admin.publish("presence.dembaca.agent-one", encode_presence("online"))
+    await admin.publish("presence.member.dev.agent-one", b'{"v": 1}')
+    await admin.publish("presence.crown.dev.agent-one", b'{"v": 1}')
+
+    console = Console(settings_of(rig))
+    await console.start()
+    try:
+        stream = Stream(console)
+        await stream.open()
+        cards = {}
+        for _ in range(30):
+            event = await stream.event()
+            if event["type"] == "snapshot":
+                cards = {c["name"]: c for c in event["cards"]}
+            elif event["type"] == "card":
+                cards[event["card"]["name"]] = event["card"]
+            if cards.get("agent-one", {}).get("crown") is True:
+                break
+        assert cards["agent-one"]["crown"] is True
+        stream.close()
+
+        # the restart: the old connection and its consumer die; the state
+        # lives in the stream, and the replay of the new consumer renews it
+        await console.stop()
+        await console.start()
+        again = Stream(console)
+        await again.open()
+        fresh = {}
+        for _ in range(30):
+            event = await again.event()
+            if event["type"] == "snapshot":
+                fresh = {c["name"]: c for c in event["cards"]}
+                break
+        assert fresh["agent-one"]["crown"] is True
+        assert fresh["agent-one"]["home"] == "dev"
+        again.close()
+    finally:
+        await console.stop()
+
+
+async def test_the_account_publishes_nothing(rig) -> None:
+    """The read-only account's grant: it cannot publish on the bus's
+    subjects — a probe that a wider grant would catch."""
+    import nats
+    seed = open(rig["seed_file"]).read()
+    nc = await nats.connect(servers=[rig["url"]], nkeys_seed_str=seed,
+                            inbox_prefix="_INBOX_console",
+                            allow_reconnect=False, connect_timeout=5.0)
+    refused = asyncio.get_running_loop().create_future()
+
+    async def err_cb(exc: BaseException) -> None:
+        if not refused.done():
+            refused.set_result(exc)
+
+    nc._error_cb = err_cb
+    try:
+        await nc.publish("presence.dembaca.spy", b'{"v": 1}')
+        await nc.flush(2.0)
+        got = await asyncio.wait_for(refused, 5.0)
+        assert "permission" in str(got).lower() or "violation" in str(got).lower()
+    finally:
+        await nc.close()

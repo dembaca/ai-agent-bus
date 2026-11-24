@@ -18,12 +18,18 @@ import hmac
 import json
 import secrets
 import time
+from collections.abc import Awaitable, Callable
 from dataclasses import dataclass, field
+from typing import Any
 from urllib.parse import urlsplit
 
 import httpx
 
 from . import config
+
+# the seams the tests drive: same bounds, runnable signatures
+Fetch = Callable[[str], Awaitable[bytes]]
+Post = Callable[[str, dict[str, str]], Awaitable[bytes]]
 
 LEEWAY_SEC = 30.0
 MAX_DOC = 1 << 19  # the discovery document, bounded (Go: 512 KiB-ish)
@@ -33,7 +39,11 @@ UNKNOWN_KID_RETRY_SEC = 60.0
 
 
 class AuthError(Exception):
-    pass
+    """The path broke: discovery, token endpoint, jwks — 502 in the app."""
+
+
+class Refused(AuthError):
+    """A working path refused this login — 403, not a server fault."""
 
 
 @dataclass(frozen=True)
@@ -52,9 +62,9 @@ class Endpoints:
     discovered_at: float = 0.0
 
 
-async def _get(url: str, limit: int, fetch: object | None) -> bytes:
+async def _get(url: str, limit: int, fetch: Fetch | None) -> bytes:
     if fetch is not None:  # a test seam with the same bounds
-        body = await fetch(url)  # type: ignore[misc]
+        body = await fetch(url)
         if len(body) > limit:
             raise AuthError("answer too big")
         return body
@@ -65,7 +75,7 @@ async def _get(url: str, limit: int, fetch: object | None) -> bytes:
         return res.content
 
 
-async def discover(issuer: str, fetch: object | None = None) -> Endpoints:
+async def discover(issuer: str, fetch: Fetch | None = None) -> Endpoints:
     """The issuer's own endpoints, checked: https (or http on loopback for
     a test), each answered by the issuer's own site."""
     body = await _get(f"{issuer.rstrip('/')}/.well-known/openid-configuration",
@@ -103,10 +113,11 @@ class Keyring:
     """The realm's JWKS keys, by kid: fetched with bounds (10 s, 1 MiB,
     no redirects), cached for an hour, fetched again on an unknown kid —
     at most once a minute."""
-    _keys: dict[str, dict] = field(default_factory=dict)
+    _keys: dict[str, dict[str, Any]] = field(default_factory=dict)
     _fetched_at: float = 0.0
 
-    async def public_key(self, jwks_url: str, kid: str, fetch: object | None = None) -> dict:
+    async def public_key(self, jwks_url: str, kid: str,
+                      fetch: Fetch | None = None) -> dict[str, Any]:
         if self._fetched_at == 0.0 or (kid not in self._keys
                                        and self._fetched_at < time.monotonic() - UNKNOWN_KID_RETRY_SEC) \
                 or time.monotonic() - self._fetched_at > KEY_TTL_SEC:
@@ -115,7 +126,7 @@ class Keyring:
             raise AuthError(f"no jwt key {kid!r} at the issuer")
         return self._keys[kid]
 
-    async def _load(self, jwks_url: str, fetch: object | None) -> None:
+    async def _load(self, jwks_url: str, fetch: Fetch | None) -> None:
         body = await _get(jwks_url, MAX_JWKS, fetch)
         try:
             doc = json.loads(body)
@@ -141,27 +152,29 @@ def login_url(endpoints: Endpoints, client_id: str, redirect_uri: str,
               scopes: str = "openid") -> tuple[str, str, str]:
     """The authorization URL for a session, with PKCE S256: returns
     (url, state, code_verifier) — the verifier never leaves the server."""
+    from urllib.parse import quote
     verifier = _b64u(secrets.token_bytes(48))
     challenge = _b64u(hashlib.sha256(verifier.encode()).digest())
     state = _b64u(secrets.token_bytes(24))
     sep = "&" if "?" in endpoints.authorization else "?"
     url = (f"{endpoints.authorization}{sep}response_type=code"
-           f"&client_id={client_id}&redirect_uri={redirect_uri}"
-           f"&scope={scopes}&state={state}"
+           f"&client_id={quote(client_id, safe='')}"
+           f"&redirect_uri={quote(redirect_uri, safe='')}"
+           f"&scope={quote(scopes, safe='')}&state={state}"
            f"&code_challenge={challenge}&code_challenge_method=S256")
     return url, state, verifier
 
 
 async def exchange(endpoints: Endpoints, client_id: str, redirect_uri: str,
                    code: str, verifier: str,
-                   post: object | None = None) -> str:
+                   post: Post | None = None) -> str:
     """The code for an access token (unverified here: ``verify`` decides
     who the operator is)."""
     form = {"grant_type": "authorization_code", "code": code,
             "redirect_uri": redirect_uri, "client_id": client_id,
             "code_verifier": verifier}
     if post is not None:  # as _get: a test seam
-        body = await post(endpoints.token, form)  # type: ignore[misc]
+        body = await post(endpoints.token, form)
         doc = json.loads(body)
     else:
         async with httpx.AsyncClient(timeout=10.0, follow_redirects=False) as client:
@@ -171,12 +184,14 @@ async def exchange(endpoints: Endpoints, client_id: str, redirect_uri: str,
             doc = res.json()
     if not isinstance(doc, dict) or not isinstance(doc.get("access_token"), str):
         raise AuthError("no access token in the answer")
-    return doc["access_token"]
+    raw = doc["access_token"]
+    assert isinstance(raw, str)
+    return raw
 
 
 async def verify(settings: config.Settings, endpoints: Endpoints,
                  keyring: Keyring, raw: str,
-                 fetch: object | None = None) -> Operator:
+                 fetch: Fetch | None = None) -> Operator:
     """One access token to an Operator: the signature verified against the
     realm's keys, and the claims checked as the login service checks them —
     the console's own client, the operators group, a username."""
@@ -200,7 +215,8 @@ async def verify(settings: config.Settings, endpoints: Endpoints,
     return _check_claims(settings, endpoints, payload)
 
 
-def _check_signature(alg: str, jwk: dict, signature: bytes, signed: bytes) -> None:
+def _check_signature(alg: str, jwk: dict[str, Any],
+                      signature: bytes, signed: bytes) -> None:
     import cryptography.exceptions
     from cryptography.hazmat.primitives import hashes
     from cryptography.hazmat.primitives.asymmetric import padding, rsa
@@ -219,26 +235,29 @@ def _check_signature(alg: str, jwk: dict, signature: bytes, signed: bytes) -> No
 
 
 def _check_claims(settings: config.Settings, endpoints: Endpoints,
-                  payload: dict) -> Operator:
+                  payload: dict[str, Any]) -> Operator:
     if payload.get("iss") != endpoints.issuer:
-        raise AuthError("token of another issuer")
+        raise Refused("token of another issuer")
     aud = payload.get("aud")
     if aud != settings.client_id and not (isinstance(aud, list)
                                           and settings.client_id in aud):
-        raise AuthError("token audience is not the console's client")
+        raise Refused("token audience is not the console's client")
     if payload.get("azp") != settings.client_id:
-        raise AuthError("token azp is not the console's client")
+        raise Refused("token azp is not the console's client")
     exp = payload.get("exp")
     if not isinstance(exp, (int, float)) or float(exp) < time.time() - LEEWAY_SEC:
-        raise AuthError("token expired")
+        raise Refused("token expired")
     username = payload.get("preferred_username")
     if not isinstance(username, str) or not username:
-        raise AuthError("token without a username")
+        raise Refused("token without a username")
     groups = payload.get("groups")
     if not isinstance(groups, list) or not all(isinstance(g, str) for g in groups):
         groups = []
-    if settings.operator_group and settings.operator_group not in groups:
-        raise AuthError(f"not a member of {settings.operator_group!r}")
+    if settings.operator_group and not any(
+            g in (settings.operator_group, f"/{settings.operator_group}")
+            for g in groups):
+        # "/operators" too: Keycloak's group mapper with the full path
+        raise Refused(f"not a member of {settings.operator_group!r}")
     display = payload.get("name")
     return Operator(username=username,
                     display=display if isinstance(display, str) and display else username,
@@ -256,8 +275,16 @@ class Sessions:
     def issue(self, operator: Operator, ttl: float) -> str:
         token = secrets.token_urlsafe(32)
         digest = hmac.new(self.secret, token.encode(), hashlib.sha256).hexdigest()
-        self._sessions[digest] = (time.time() + ttl, operator)
+        at = time.time()
+        self._sessions = {d: row for d, row in self._sessions.items()
+                          if row[0] > at}  # sweep: expired sessions go
+        self._sessions[digest] = (at + ttl, operator)
         return token
+
+    def drop(self, token: str) -> None:
+        """Logout: the server ends the session, not only the cookie."""
+        digest = hmac.new(self.secret, token.encode(), hashlib.sha256).hexdigest()
+        self._sessions.pop(digest, None)
 
     def get(self, token: str | None, now: float | None = None) -> Operator | None:
         if not token:

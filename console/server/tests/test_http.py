@@ -27,7 +27,7 @@ async def client(console: Console) -> tuple[asyncio.StreamReader, asyncio.Stream
 
 
 async def get(console: Console, path: str, cookie: str | None = None
-              ) -> tuple[int, dict[str, str], bytes]:
+              ) -> tuple[int, dict[str, object], bytes]:
     reader, writer = await client(console)
     head = f"GET {path} HTTP/1.1\r\nHost: x\r\n"
     if cookie:
@@ -39,12 +39,17 @@ async def get(console: Console, path: str, cookie: str | None = None
 
 
 async def _read_answer(reader: asyncio.StreamReader
-                       ) -> tuple[int, dict[str, str], bytes]:
+                       ) -> tuple[int, dict[str, object], bytes]:
     head = await reader.readuntil(b"\r\n\r\n")
     lines = head.decode("latin-1").split("\r\n")
     status = int(lines[0].split()[1])
-    headers = {k.strip().lower(): v.strip()
-               for k, v in (l.partition(":")[0::2] for l in lines[1:-1])}
+    headers: dict[str, object] = {k.strip().lower(): v.strip()
+                                  for k, v in (l.partition(":")[0::2]
+                                               for l in lines[1:-1])}
+    cookies = [v.strip() for l in lines[1:-1]
+               if l.split(":")[0].strip().lower() == "set-cookie"
+               for v in [l.partition(":")[2]]]
+    headers["__set-cookie__"] = cookies
     if headers.get("content-type") == "text/event-stream":
         return status, headers, b""  # the stream holds the connection
     if headers.get("content-type").endswith("json"):  # type: ignore[union-attr]
@@ -133,6 +138,63 @@ async def test_static_web_and_no_traversal(console: Console) -> None:
             assert body == b"<html>Choirbus</html>"
 
 
+async def test_every_v1_route_answers_401_without_a_session() -> None:
+    settings = config.Settings(public_url="http://127.0.0.1:8747",
+                               issuer="http://127.0.0.1:8747/kc",
+                               client_id="console", operator_group="operators",
+                               nats_url="", nats_seed_file="")
+    c = Console(settings)
+    c.endpoints = auth.Endpoints(issuer=settings.issuer,
+                                 authorization="http://127.0.0.1:8747/kc/auth",
+                                 token="http://127.0.0.1:8747/kc/token",
+                                 jwks="http://127.0.0.1:8747/kc/certs")
+    async def fake_discover(issuer: str) -> auth.Endpoints:
+        return c.endpoints  # type: ignore[return-value]
+    await c.start(discover=fake_discover)
+    try:
+        for path in ("/v1/me", "/v1/asks", "/v1/stats", "/v1/graph",
+                     "/v1/threads/x"):
+            status, headers, _b = await get(c, path)
+            assert status == 401, path
+            assert headers.get("cache-control") == "no-store", path
+            assert "nosniff" in headers.get("x-content-type-options", ""), path
+        status, _h, _b = await get(c, "/")
+        assert status == 303  # the browser app goes to the login first
+    finally:
+        await c.stop()
+
+
+async def test_a_fleet_stream_counts_per_session() -> None:
+    settings = config.Settings(public_url="http://127.0.0.1:8747",
+                               issuer="http://127.0.0.1:8747/kc",
+                               client_id="console", operator_group="operators",
+                               nats_url="", nats_seed_file="")
+    c = Console(settings)
+    c.endpoints = auth.Endpoints(issuer=settings.issuer,
+                                 authorization="http://127.0.0.1:8747/kc/auth",
+                                 token="http://127.0.0.1:8747/kc/token",
+                                 jwks="http://127.0.0.1:8747/kc/certs")
+    async def fake_discover(issuer: str) -> auth.Endpoints:
+        return c.endpoints  # type: ignore[return-value]
+    await c.start(discover=fake_discover)
+    try:
+        token = c.sessions.issue(auth.Operator(username="dembaca", display="d",
+                                               groups=("operators",)), 3600)
+        cookie = f"choirbus_session={token}"
+        for _ in range(4):
+            status, _h, _b = await get(c, "/v1/fleet", cookie=cookie)
+            assert status in (200, None)  # the stream stays open
+        # the fifth stream of the same operator answers 429
+        reader, writer = await asyncio.open_connection("127.0.0.1",
+                                                      c._http.bound_port)
+        writer.write(f"GET /v1/fleet HTTP/1.1\r\nHost: x\r\nCookie: {cookie}\r\n\r\n".encode())
+        head = await asyncio.wait_for(reader.readuntil(b"\r\n\r\n"), 5.0)
+        assert b"429" in head.split(b"\r\n")[0]
+        writer.close()
+    finally:
+        await c.stop()
+
+
 async def test_unknown_route_is_not_found(console: Console) -> None:
     status, _headers, _body = await get(console, "/nowhere")
     assert status == 404
@@ -165,6 +227,10 @@ async def test_the_login_flow_sets_the_cookie(tmp_path) -> None:
         assert status == 303
         where = headers.get("location", "")
         assert "code_challenge_method=S256" in where
+        set_cookies = [v for v in headers["__set-cookie__"]  # type: ignore[union-attr]
+                       if isinstance(v, str)]
+        flow = next((v for v in set_cookies if v.startswith("choirbus_flow=")), "")
+        assert flow.startswith("choirbus_flow=") and "HttpOnly" in flow
 
         # the forged callback: no state this console issued
         status, _h, _b = await get(c, "/callback?code=x&state=forged")
@@ -186,15 +252,28 @@ async def test_the_login_flow_sets_the_cookie(tmp_path) -> None:
 
         with mock.patch.object(auth, "exchange", fake_exchange), \
                 mock.patch.object(auth, "verify", fake_verify):
-            status, headers, _b = await get(c, f"/callback?code=x&state={state}")
+            # without the flow cookie the state is not ours: refused
+            status, _h, _b = await get(c, f"/callback?code=x&state={state}")
+            assert status == 400
+            status, headers, _b = await get(c, f"/callback?code=x&state={state}",
+                                            cookie=flow.split(";")[0])
         assert status == 303
-        cookie = headers.get("set-cookie", "")
-        assert cookie.startswith(COOKIE + "=")
+        cookies = [v for v in headers["__set-cookie__"]  # type: ignore[union-attr]
+                   if v.startswith(COOKIE + "=")]
+        assert len(cookies) == 1
+        cookie = cookies[0]
         assert "HttpOnly" in cookie
         # the cookie holds the session: /v1/me names the operator
         status, _h, body = await get(c, "/v1/me",
                                      cookie=cookie.split(";")[0])
         assert status == 200
         assert json.loads(body)["username"] == "dembaca"
+
+        # logout ends the session on the server: the cookie, even copied,
+        # is worthless afterwards
+        status, _h, _b = await get(c, "/logout", cookie=cookie.split(";")[0])
+        assert status == 303
+        status, _h, _b = await get(c, "/v1/me", cookie=cookie.split(";")[0])
+        assert status == 401
     finally:
         await c.stop()

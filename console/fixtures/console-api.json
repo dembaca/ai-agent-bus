@@ -1,0 +1,110 @@
+{
+  "//": "The console API's wire contract in one place (ADR-015 point 10): both sides hold to it \u2014 console/server/tests/test_wire_contract.py builds this card from live deliveries, and console/web/src/api/wire.ts fails its typecheck when the app's types drift from it. Fleet cards, events and thread pages are the app's camelCase shapes; ask rows and /v1/me use the ADR's spellings and are mapped in the app's http.ts.",
+  "card": {
+    "name": "agent-mac-ai-agent-alice",
+    "displayName": "alice",
+    "home": "dev",
+    "state": "online",
+    "crown": true,
+    "harness": "other",
+    "model": "",
+    "task": "",
+    "role": "member",
+    "for": "dembaca",
+    "autonomous": false,
+    "trusts": [
+      "dembaca"
+    ],
+    "capabilities": [],
+    "project": "",
+    "branch": null,
+    "pr": null,
+    "ctx": null,
+    "limits": null,
+    "version": "",
+    "openAsks": null,
+    "asksForOperator": null,
+    "helloAt": 1763980760000,
+    "lastPostAt": null,
+    "helloPostId": "",
+    "tasks": []
+  },
+  "events": {
+    "snapshot": {
+      "type": "snapshot",
+      "cards": []
+    },
+    "card": {
+      "type": "card",
+      "card": {
+        "name": "agent-mac-ai-agent-alice",
+        "displayName": "alice",
+        "home": "dev",
+        "state": "online",
+        "crown": true,
+        "harness": "other",
+        "model": "",
+        "task": "",
+        "role": "member",
+        "for": "dembaca",
+        "autonomous": false,
+        "trusts": [
+          "dembaca"
+        ],
+        "capabilities": [],
+        "project": "",
+        "branch": null,
+        "pr": null,
+        "ctx": null,
+        "limits": null,
+        "version": "",
+        "openAsks": null,
+        "asksForOperator": null,
+        "helloAt": 1763980760000,
+        "lastPostAt": null,
+        "helloPostId": "",
+        "tasks": []
+      }
+    },
+    "drop": {
+      "type": "drop",
+      "name": "agent-mac-ai-agent-alice"
+    }
+  },
+  "ask": {
+    "id": "ask-1",
+    "by": "agent-mac-ai-agent-alice",
+    "display_name": "alice",
+    "human": "dembaca",
+    "need": "an example ask",
+    "answers": [
+      "go",
+      "no-go"
+    ],
+    "at": 1763980900000,
+    "end": "open",
+    "for_me": true,
+    "may_answer": true,
+    "thread_id": "thread-1"
+  },
+  "me": {
+    "username": "dembaca",
+    "display_name": "dembaca",
+    "groups": [
+      "operators"
+    ]
+  },
+  "page": {
+    "rootId": "thread-1",
+    "posts": [
+      {
+        "id": "thread-1",
+        "rootId": null,
+        "author": "agent-mac-ai-agent-alice",
+        "at": 1763980900000,
+        "message": "an example post"
+      }
+    ],
+    "next": null
+  }
+}

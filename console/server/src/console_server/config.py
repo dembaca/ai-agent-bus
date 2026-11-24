@@ -2,6 +2,7 @@
 from __future__ import annotations
 
 import os
+from collections.abc import Callable
 from dataclasses import dataclass, field
 from urllib.parse import urlsplit
 
@@ -91,7 +92,7 @@ def find() -> Settings:
     return _https(settings)
 
 
-def _required(given, name: str) -> str:
+def _required(given: Callable[[str], str], name: str) -> str:
     value = given(name)
     if not value:
         raise ConfigError(f"{name} is required")
@@ -102,8 +103,21 @@ def _check(s: Settings) -> None:
     if not s.login_off and (not s.issuer or not s.client_id):
         raise ConfigError("CONSOLE_ISSUER and CONSOLE_CLIENT_ID are required"
                           " (or CONSOLE_LOGIN_OFF=1 for tests)")
+    if not s.login_off and not s.operator_group:
+        # fail closed (the reviews' blocker): an unset group would admit
+        # every user of the realm
+        raise ConfigError("CONSOLE_OPERATOR_GROUP is required: only its"
+                          " members may log in")
+    if s.login_off and s.listen_host not in ("127.0.0.1", "::1", "localhost"):
+        raise ConfigError("CONSOLE_LOGIN_OFF=1 refuses a non-loopback"
+                          " CONSOLE_ADDR: it would serve without a login")
     if not s.login_off:
         _url(s.issuer, "CONSOLE_ISSUER")
+    if s.nats_seed_file:
+        mode = os.stat(s.nats_seed_file).st_mode & 0o777
+        if mode & 0o077:
+            raise ConfigError("CONSOLE_NATS_SEED_FILE must be readable by"
+                              f" its owner only (mode {mode:o})")
     _url(s.public_url, "CONSOLE_PUBLIC_URL")
     if not s.nats_url:
         raise ConfigError("CONSOLE_NATS_URL is required")

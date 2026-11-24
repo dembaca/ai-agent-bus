@@ -1,32 +1,34 @@
 """The console's HTTP side: raw asyncio as the mcp package's hook API
-(``hookapi.py``) — no framework — with the same bounds (headers, body,
-timeouts, connections) and one thing the hook API never needed: a
-server-sent-events stream for ``GET /v1/fleet`` (ADR-015 point 10).
+(``hookapi.py``) — no framework — with the same bounds and, for the
+reviews, harder edges: one deadline for the whole request head (a slow
+line is a slow request, not ten slow ones), a bounded drain, streams that
+end when the session behind them ends, and per-stream events.
 
-Handlers are ``(path, query, headers) -> Response | Stream``; the SSE
-stream holds the connection open and writes an event whenever the fleet
-changes plus a keep-alive beat every 15 s.
+Handlers return ``(path, query, headers) -> Response | SSE``; an SSE
+holds the connection open and writes an event whenever the fleet changes,
+a keep-alive beat every ``SSE_KEEPALIVE_SEC``, and closes when the
+session is gone (the ``alive`` callback) or the browser walked away.
 """
 from __future__ import annotations
 
 import asyncio
 import json
-import time
 from dataclasses import dataclass, field
-from typing import Awaitable, Callable
+from typing import Any, Awaitable, Callable
 from urllib.parse import parse_qsl, urlsplit
 
 MAX_HEADERS = 64
 MAX_LINE = 16 * 1024
-MAX_BODY = 64 * 1024
-MAX_CONNECTIONS = 64
-READ_TIMEOUT = 10.0
+HEAD_DEADLINE = 10.0     # the whole request head, one deadline
+DRAIN_SEC = 5.0          # one write may not block the server longer
+MAX_CONNECTIONS = 64     # before the login; a stream cap comes per session
 SSE_KEEPALIVE_SEC = 15.0
 
-REASONS = {200: "OK", 206: "Partial Content", 302: "Found", 303: "See Other",
+REASONS = {200: "OK", 206: "Partial Content", 303: "See Other",
            400: "Bad Request", 401: "Unauthorized", 403: "Forbidden",
            404: "Not Found", 405: "Method Not Allowed", 413: "Payload Too Large",
-           500: "Internal Server Error", 503: "Service Unavailable"}
+           429: "Too Many Requests", 500: "Internal Server Error",
+           502: "Bad Gateway", 503: "Service Unavailable"}
 
 
 @dataclass
@@ -63,21 +65,26 @@ class Response:
 
 @dataclass
 class SSE:
-    """The stream the fleet handler returns: the connection writes the first
-    event, then one per change, then closes with the client."""
+    """The stream the fleet handler returns. ``first`` is one event, every
+    later wave a list of events (one per change — the app decodes
+    ``snapshot``/``card``/``drop`` and nothing else). ``alive`` is asked
+    on every keep-alive: a session that ended mid-stream ends the stream;
+    ``teardown`` runs when it ends, however it ends."""
     first: dict
     changes: asyncio.Event
-    snapshot: Callable[[], dict]
-    cookie: str | None = None  # the session cookie to re-check on the client
+    snapshot: Callable[[], list[dict[str, Any]]] = lambda: []
+    alive: Callable[[], bool] | None = None
+    teardown: Callable[[], None] | None = None
 
     def head(self) -> bytes:
         lines = ["HTTP/1.1 200 OK", "Content-Type: text/event-stream",
-                 "Cache-Control: no-cache", "Connection: keep-alive"]
+                 "Cache-Control: no-store",
+                 "X-Content-Type-Options: nosniff",
+                 "Connection: keep-alive"]
         return ("\r\n".join(lines) + "\r\n\r\n").encode("latin-1")
 
 
-Handler = Callable[[str, dict[str, str], dict[str, str]],
-                  Awaitable[Response | SSE]]
+Handler = Callable[[str, dict[str, str], dict[str, str]], Awaitable[Response | SSE]]
 
 
 @dataclass
@@ -85,9 +92,8 @@ class Httpd:
     handler: Handler
     host: str = "127.0.0.1"
     port: int = 0
-    _server: object | None = field(default=None, repr=False)
-    _conns: set[object] = field(default_factory=set, repr=False)
-    _tasks: set[object] = field(default_factory=set, repr=False)
+    _server: asyncio.AbstractServer | None = field(default=None, repr=False)
+    _tasks: set[asyncio.Task[None]] = field(default_factory=set, repr=False)
 
     async def start(self) -> None:
         self._server = await asyncio.start_server(self._spawn, self.host, self.port)
@@ -95,17 +101,18 @@ class Httpd:
     async def _spawn(self, reader: asyncio.StreamReader,
                      writer: asyncio.StreamWriter) -> None:
         task = asyncio.create_task(self._serve(reader, writer))
-        self._tasks.add(task)  # type: ignore[attr-defined]
-        task.add_done_callback(self._tasks.discard)  # type: ignore[attr-defined]
+        self._tasks.add(task)
+        task.add_done_callback(self._tasks.discard)
 
     async def stop(self) -> None:
         """The end of the server: the listener closes and every connection's
         task is cancelled, streams included (a stopped console never waits
         on a browser that walked away)."""
-        for task in list(self._tasks):  # type: ignore[attr-defined]
-            task.cancel()  # type: ignore[attr-defined]
-        if self._tasks:  # type: ignore[attr-defined]
-            await asyncio.gather(*self._tasks, return_exceptions=True)  # type: ignore[attr-defined]
+        for task in list(self._tasks):
+            task.cancel()
+        if self._tasks:
+            await asyncio.gather(*self._tasks, return_exceptions=True)
+        self._tasks.clear()
         if self._server is not None:
             self._server.close()
             await self._server.wait_closed()
@@ -114,48 +121,56 @@ class Httpd:
     @property
     def bound_port(self) -> int:
         assert self._server is not None
-        return self._server.sockets[0].getsockname()[1]  # type: ignore[attr-defined]
+        sockets = getattr(self._server, "sockets", None)
+        assert sockets, "the http server bound no socket"
+        return sockets[0].getsockname()[1]
 
     async def _serve(self, reader: asyncio.StreamReader,
                       writer: asyncio.StreamWriter) -> None:
-        if len(self._conns) >= MAX_CONNECTIONS:
+        if len(self._tasks) > MAX_CONNECTIONS:
             writer.close()
             return
-        self._conns.add(writer)
         try:
             try:
-                line = await asyncio.wait_for(reader.readline(), READ_TIMEOUT)
-            except asyncio.TimeoutError:
+                line = await asyncio.wait_for(reader.readline(), HEAD_DEADLINE)
+                if len(line) > MAX_LINE:
+                    raise ValueError("request line too long")
+                parts = line.decode("latin-1").split()
+                if len(parts) < 3 or not parts[0].startswith("GET"):
+                    raise ValueError("only GET")
+                headers: dict[str, str] = {}
+                async with asyncio.timeout(HEAD_DEADLINE):
+                    while True:
+                        h = await reader.readline()
+                        if h in (b"\r\n", b"\n", b""):
+                            break
+                        if len(h) > MAX_LINE or len(headers) >= MAX_HEADERS:
+                            raise ValueError("head too big")
+                        name, _, value = h.decode("latin-1").partition(":")
+                        headers[name.strip().lower()] = value.strip()
+            except (asyncio.TimeoutError, ValueError, ConnectionError):
+                writer.write(Response(status=400).head())
                 return
-            parts = line.decode("latin-1").split()
-            if len(parts) < 3 or not parts[0].startswith("GET") or len(line) > MAX_LINE:
-                writer.write((Response(status=400)).head())
-                return
-            path = parts[1]
-            headers: dict[str, str] = {}
-            for _ in range(MAX_HEADERS):
-                h = await asyncio.wait_for(reader.readline(), READ_TIMEOUT)
-                if h in (b"\r\n", b"\n", b""):
-                    break
-                name, _, value = h.decode("latin-1").partition(":")
-                headers[name.strip().lower()] = value.strip()
-            query = dict(parse_qsl(urlsplit(path).query))
-            route = urlsplit(path).path
+            query = dict(parse_qsl(urlsplit(parts[1]).query))
+            route = urlsplit(parts[1]).path
             try:
                 answer = await self.handler(route, query, headers)
             except (json.JSONDecodeError, ValueError) as exc:
                 answer = Response.text(str(exc), 400)
             if isinstance(answer, SSE):
                 writer.write(answer.head())
-                await write_event(writer, answer.first)
-                await stream_loop(writer, answer)
-            else:
-                writer.write(answer.head())
-                writer.write(answer.body)
+                await write_event(writer, [answer.first])
+                try:
+                    await stream_loop(writer, answer)
+                finally:
+                    if answer.teardown is not None:
+                        answer.teardown()
+                return
+            writer.write(answer.head())
+            writer.write(answer.body)
         except (ConnectionError, asyncio.TimeoutError, OSError):
             pass
         finally:
-            self._conns.discard(writer)
             try:
                 writer.close()
                 await writer.wait_closed()
@@ -163,25 +178,27 @@ class Httpd:
                 pass
 
 
-async def write_event(writer: asyncio.StreamWriter, event: dict) -> None:
-    payload = json.dumps(event, separators=(",", ":")).encode()
-    writer.write(b"data: " + payload + b"\n\n")
-    await writer.drain()
+async def write_event(writer: asyncio.StreamWriter,
+                       events: list[dict[str, Any]]) -> None:
+    for event in events:
+        payload = json.dumps(event, separators=(",", ":")).encode()
+        writer.write(b"data: " + payload + b"\n\n")
+    await asyncio.wait_for(writer.drain(), DRAIN_SEC)
 
 
 async def stream_loop(writer: asyncio.StreamWriter, sse: SSE) -> None:
-    """Hold the stream open: a beat every SSE_KEEPALIVE_SEC, an event
+    """Hold the stream open: a beat every ``SSE_KEEPALIVE_SEC`` (asking
+    ``alive``: a session that ended ends the stream), an event wave
     whenever the fleet changed, the end when the client goes."""
-    time.monotonic()
     while True:
         try:
             await asyncio.wait_for(sse.changes.wait(), SSE_KEEPALIVE_SEC)
         except asyncio.TimeoutError:
+            if sse.alive is not None and not sse.alive():
+                return  # logged out or expired: the stream ends with it
             sse.changes.clear()
             writer.write(b": keep-alive\n\n")
-            await writer.drain()
-            time.monotonic()
+            await write_event(writer, [])
             continue
         sse.changes.clear()
         await write_event(writer, sse.snapshot())
-        time.monotonic()

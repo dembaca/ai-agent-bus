@@ -56,7 +56,7 @@ other subject is needed — and none is granted.
 |---|---|
 | `CONSOLE_PUBLIC_URL` | where the browser reaches the console (redirect URI); https off loopback |
 | `CONSOLE_ISSUER`, `CONSOLE_CLIENT_ID` | Keycloak: the issuer and the console's own client |
-| `CONSOLE_OPERATOR_GROUP` | the realm group whose members may log in |
+| `CONSOLE_OPERATOR_GROUP` | the realm group whose members may log in (required: without it the console refuses to start) |
 | `CONSOLE_ADDR` | listen, default `127.0.0.1:8747` (the lab fronts it with TLS) |
 | `CONSOLE_NATS_URL` | `tls://` anywhere, `nats://` loopback only (as `natsbus`) |
 | `CONSOLE_NATS_SEED_FILE` | the read-only account's nkey seed |
@@ -66,6 +66,18 @@ other subject is needed — and none is granted.
 | `CONSOLE_WEB_DIR` | the built browser app (`console/web/dist`) |
 | `CONSOLE_SESSION_SEC` | session lifetime, default 8 h |
 | `CONSOLE_LOGIN_OFF` | **tests and the mock only** (loopback): no login, the operator is a stand-in |
+
+## The Keycloak client of the console's own (the lab's part)
+
+- a **public** client with the authorization-code flow and PKCE enabled
+  (the console is its own client, not the bus's device-flow client,
+  ADR-014 point 6);
+- one valid redirect URI: `<CONSOLE_PUBLIC_URL>/callback`, exact;
+- an **audience mapper** for the client: the verifier reads the client id
+  in `aud` — Keycloak sets it only with one;
+- a **group mapper** onto the `groups` claim: with the mapper's full path
+  on, name the group `/operators`; with it off, `operators` — both are
+  accepted.
 
 ## Run
 

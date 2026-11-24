@@ -77,9 +77,10 @@ export interface AgentCard {
   /** The limits or the cost, when the card carries it. */
   limits: string | null
   version: string
-  /** Its open asks; `asksForOperator` of those are the operator's. */
-  openAsks: number
-  asksForOperator: number
+  /** Its open asks, `asksForOperator` of those the operator's; `null`
+   * while asks do not lie on NATS (unknown is never guessed as 0). */
+  openAsks: number | null
+  asksForOperator: number | null
   /** Since the HELLO, and the last post (both the servers's clock). */
   helloAt: number
   lastPostAt: number | null

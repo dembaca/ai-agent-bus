@@ -15,6 +15,7 @@ shows ``n/a``.
 from __future__ import annotations
 
 from dataclasses import dataclass, field
+from typing import Any
 
 from mattermost_ai_agent_bus import natsbus
 from mattermost_ai_agent_bus.natsbus import (
@@ -179,7 +180,7 @@ class Fleet:
 
     # --- the wire (ADR-015 point 10, the app's contract) -------------------------------
 
-    def cards(self) -> list[dict]:
+    def cards(self) -> list[dict[str, Any]]:
         """One wire card per agent, unknown fields marked as unknown
         (``None`` or empty), never guessed as 0 (ADR-015 point 8)."""
         out = []
@@ -195,7 +196,7 @@ class Fleet:
             presence = self._presence.get(agent, (0.0, "offline"))
             out.append({
                 "name": agent,
-                "display_name": short_name(agent),
+                "displayName": short_name(agent),
                 "home": crowns.get(agent) or (channels[0] if channels else ""),
                 "state": self.state_of(agent),
                 "crown": agent in crowns,
@@ -213,8 +214,9 @@ class Fleet:
                 "ctx": None,
                 "limits": None,
                 "version": "",
-                "openAsks": 0,
-                "asksForOperator": 0,
+                # unknown is null here, not 0: asks do not lie on NATS yet
+                "openAsks": None,
+                "asksForOperator": None,
                 "helloAt": int(presence[0] * 1000),
                 "lastPostAt": None,
                 "helloPostId": "",
@@ -222,13 +224,13 @@ class Fleet:
             })
         return out
 
-    def card(self, agent: str) -> dict | None:
+    def card(self, agent: str) -> dict[str, Any] | None:
         for card in self.cards():
             if card["name"] == agent:
                 return card
         return None
 
-    def graph(self) -> dict:
+    def graph(self) -> dict[str, Any]:
         """Nodes: people, channels, agents; edges: the owner (as attested)
         and each channel's crown and members — trusts and coordinates,
         cut at no depth yet (the pilot shows one tenant, whole)."""
@@ -251,9 +253,13 @@ class Fleet:
                 edges.append({"id": f"e-{agent}-{channel}", "from": agent, "to": channel,
                               "kind": "coordinates"})
         for agent in self.agents():
-            nodes.append({"id": agent, "kind": "agent", "label": short_name(agent),
-                          "crown": any(self.holder_of(ch) == agent for ch in self._claims),
-                          "state": self.state_of(agent)})
+            crown = any(self.holder_of(ch) == agent for ch in self._claims)
+            node: dict[str, Any] = {"id": agent, "kind": "agent",
+                                   "label": short_name(agent),
+                                   "state": self.state_of(agent)}
+            if crown:
+                node["crown"] = True
+            nodes.append(node)
         return {"nodes": nodes, "edges": [{"id": e["id"], "from": e["from"], "to": e["to"],
                                           "kind": e["kind"]} for e in edges],
                 "cutDepth": None}

@@ -73,7 +73,7 @@ def test_bye_is_offline_and_cards_mark_unknown() -> None:
     card = cards[0]
     assert card["state"] == "offline"
     assert card["name"] == "agent-mac-ai-agent-a1b2c3"
-    assert card["display_name"] == "a1b2c3"
+    assert card["displayName"] == "a1b2c3"
     assert short_name("agent-mac-ai-agent-a1b2c3") == "a1b2c3"
     assert card["for"] == "dembaca"       # from the attestation
     assert card["trusts"] == ["dembaca"]  # from the attestation
@@ -81,7 +81,7 @@ def test_bye_is_offline_and_cards_mark_unknown() -> None:
     # what a NATS home does not carry is unknown, never guessed as zero
     assert card["ctx"] is None
     assert card["model"] == ""
-    assert card["openAsks"] == 0
+    assert card["openAsks"] is None  # unknown, never 0
     assert card["helloPostId"] == ""
 
 

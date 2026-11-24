@@ -30,3 +30,11 @@ dev = [
     "pytest>=8.0",
     "pytest-asyncio>=0.24",
 ]
+
+[tool.mypy]
+python_version = "3.11"
+# the mcp package ships no py.typed marker (its own repo checks it):
+# import it as an untyped dependency, never skip its use unexamined
+[[tool.mypy.overrides]]
+module = "mattermost_ai_agent_bus.*"
+ignore_missing_imports = true
