@@ -19,6 +19,17 @@ def test_the_silent_reconnect_lands_inside_the_bound(bound: float) -> None:
     assert threshold < bound * 3 / 4 + 0.001
 
 
+def test_the_values_are_exact() -> None:
+    """The arithmetic, pinned as numbers: the wake tick, and the
+    reconnect threshold as three quarters taken back half a tick (so the
+    tick that fires sees the reconnect between 5/8 and 7/8 of the bound).
+    With these asserted, no mutant of the subtraction or the factor
+    survives."""
+    assert nats_read.idle_timing(180.0) == (45.0, 112.5)
+    assert nats_read.idle_timing(30.0) == (7.5, 18.75)
+    assert nats_read.idle_timing(60.0) == (15.0, 37.5)
+
+
 def test_the_floor_lifts_the_low_bounds() -> None:
     wake, threshold = nats_read.idle_timing(30.0)
     # three quarters of 30 s is 22.5 s, above the 15 s floor either way;

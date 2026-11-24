@@ -217,8 +217,11 @@ jobs:
             -e CONSOLE_NATS_SEED_FILE=/run/console.seed \
             -v "$RUNNER_TEMP/console.seed:/run/console.seed:ro" \
             console-test
+          # /livez is liveness and answers 200 as soon as the server
+          # listens; /healthz (readiness) stays 503 in this smoke by
+          # design — waiting on it would burn the full loop
           for i in $(seq 1 30); do
-            curl -fsS http://127.0.0.1:8747/healthz && break
+            curl -fsS http://127.0.0.1:8747/livez && break
             sleep 1
           done
           # /livez is liveness (200, NATS-less container and all); /healthz

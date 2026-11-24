@@ -14,6 +14,7 @@ from __future__ import annotations
 import asyncio
 import json
 import os
+from asyncio import IncompleteReadError
 import shutil
 import socket
 import subprocess
@@ -115,12 +116,35 @@ async def until(pred, timeout: float = 8.0, what: str = "") -> None:
 
 
 class Stream:
-    """A raw client of one fleet stream: the head, then the events."""
+    """A raw client of one fleet stream. `open` waits for the console's
+    `/livez` first: the spawned server listens only after its start-up
+    finishes, and under load (a parallel npm ci, say, as the flake showed)
+    the first connect can race the listen — the wait closes the start
+    race instead of dodging it."""
 
     def __init__(self, console: Console) -> None:
         self.console = console
 
     async def open(self) -> None:
+        deadline = time.monotonic() + 10.0
+        while True:
+            probe_reader, probe_writer = None, None
+            try:
+                probe_reader, probe_writer = await asyncio.open_connection(
+                    "127.0.0.1", self.console._http.bound_port)
+                probe_writer.write(b"GET /livez HTTP/1.1\r\nHost: x\r\n\r\n")
+                head = await asyncio.wait_for(
+                    probe_reader.readuntil(b"\r\n\r\n"), 2.0)
+                if b"200" in head.split(b"\r\n")[0]:
+                    break  # liveness answers: the server listens
+            except (OSError, asyncio.TimeoutError, IncompleteReadError):
+                pass
+            finally:
+                if probe_writer is not None:
+                    probe_writer.close()
+            if time.monotonic() > deadline:
+                raise AssertionError("the console's /livez never answered")
+            await asyncio.sleep(0.1)
         self.reader, self.writer = await asyncio.open_connection(
             "127.0.0.1", self.console._http.bound_port)
         self.writer.write(b"GET /v1/fleet HTTP/1.1\r\nHost: x\r\n\r\n")

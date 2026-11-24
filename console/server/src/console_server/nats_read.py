@@ -35,6 +35,13 @@ log = logging.getLogger("console.nats")
 CONSUMER_API_TIMEOUT = 5.0
 
 
+INBOX_PREFIX = "_INBOX_console"   # the console's own, granted alone
+# A silent stream reconnects for a replay; the idle bound couples to the
+# probe's bound (a silent fleet's reconnect lands inside the bound, whatever
+# it is) with a floor, and the watchdog wakes every quarter of the bound.
+IDLE_FLOOR_SEC = 15.0
+
+
 def idle_timing(bound: float) -> tuple[float, float]:
     """The silent stream's timing, from the probe's bound: the watch
     ticks every quarter (at least 5 s), and the reconnect goes at
@@ -45,11 +52,6 @@ def idle_timing(bound: float) -> tuple[float, float]:
     wake = max(5.0, bound / 4)
     idle = max(IDLE_FLOOR_SEC, bound * 3 / 4)
     return wake, idle - wake / 2
-INBOX_PREFIX = "_INBOX_console"   # the console's own, granted alone
-# A silent stream reconnects for a replay; the idle bound couples to the
-# probe's bound (a silent fleet's reconnect lands inside the bound, whatever
-# it is) with a floor, and the watchdog wakes every quarter of the bound.
-IDLE_FLOOR_SEC = 15.0
 
 
 class NatsError(Exception):
