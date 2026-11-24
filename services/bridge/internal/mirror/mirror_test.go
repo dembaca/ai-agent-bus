@@ -35,11 +35,14 @@ func (f *fakeSink) Unreact(_ context.Context, post, emoji string) error {
 }
 
 type fakeStore struct {
-	pos   uint64
-	posts map[uint64]Post
+	pos       uint64
+	posts     map[uint64]Post
+	reactions map[string]int
 }
 
-func (f *fakeStore) Position(context.Context) (uint64, bool, error) { return f.pos, f.pos != 0, nil }
+func (f *fakeStore) Position(context.Context, string) (uint64, bool, error) {
+	return f.pos, f.pos != 0, nil
+}
 func (f *fakeStore) Post(_ context.Context, _ string, seq uint64) (Post, bool, error) {
 	p, ok := f.posts[seq]
 	return p, ok, nil
@@ -50,8 +53,17 @@ func (f *fakeStore) Save(_ context.Context, _ string, seq uint64, p Post) error 
 	return nil
 }
 
+func (f *fakeStore) Reaction(_ context.Context, home string, seq uint64, emoji string, delta int) (int, error) {
+	k := home + "/" + emoji
+	f.reactions[k] += delta
+	if f.reactions[k] < 0 {
+		f.reactions[k] = 0
+	}
+	return f.reactions[k], nil
+}
+
 func newMirror(t *testing.T) (*Mirror, *fakeSink, *fakeStore) {
-	sink, st := &fakeSink{}, &fakeStore{posts: map[uint64]Post{}}
+	sink, st := &fakeSink{}, &fakeStore{posts: map[uint64]Post{}, reactions: map[string]int{}}
 	return &Mirror{Home: "home", Prefix: "a2a.", Log: slog.New(slog.NewTextHandler(io.Discard, nil)),
 		Sink: sink, Store: st, Links: LinksNone{}}, sink, st
 }
@@ -118,7 +130,22 @@ func TestReactionsMapToTheMirroredPost(t *testing.T) {
 	if len(sink.reacted) != 1 || sink.reacted[0] != "mm1/thumbsup" {
 		t.Fatalf("%+v", sink.reacted)
 	}
-	if err := m.Handle(context.Background(), channel, "agent-b", 4, message.Msg{Kind: message.Unreaction, Ref: &ref, Emoji: "thumbsup"}); err != nil {
+	// a second agent with the same emoji: one bot, one reaction
+	if err := m.Handle(context.Background(), channel, "agent-c", 4, message.Msg{Kind: message.Reaction, Ref: &ref, Emoji: "thumbsup"}); err != nil {
+		t.Fatal(err)
+	}
+	if len(sink.reacted) != 1 {
+		t.Fatalf("a second agent's reaction doubled the bot's: %+v", sink.reacted)
+	}
+	// one of the two takes theirs back: the bot keeps the reaction
+	if err := m.Handle(context.Background(), channel, "agent-b", 5, message.Msg{Kind: message.Unreaction, Ref: &ref, Emoji: "thumbsup"}); err != nil {
+		t.Fatal(err)
+	}
+	if len(sink.unreacted) != 0 {
+		t.Fatalf("the bot's reaction went with the first agent's: %+v", sink.unreacted)
+	}
+	// the last one takes theirs back: the bot removes it
+	if err := m.Handle(context.Background(), channel, "agent-c", 6, message.Msg{Kind: message.Unreaction, Ref: &ref, Emoji: "thumbsup"}); err != nil {
 		t.Fatal(err)
 	}
 	if len(sink.unreacted) != 1 {
@@ -126,7 +153,7 @@ func TestReactionsMapToTheMirroredPost(t *testing.T) {
 	}
 	// a reaction to a post the bridge does not know is skipped, not failed
 	unknown := uint64(99)
-	if err := m.Handle(context.Background(), channel, "agent-b", 5, message.Msg{Kind: message.Reaction, Ref: &unknown, Emoji: "x"}); err != nil {
+	if err := m.Handle(context.Background(), channel, "agent-b", 7, message.Msg{Kind: message.Reaction, Ref: &unknown, Emoji: "x"}); err != nil {
 		t.Fatal(err)
 	}
 	if len(sink.reacted) != 1 || len(sink.posts) != 1 {

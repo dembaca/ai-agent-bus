@@ -14,6 +14,7 @@ import (
 	"net/http"
 	"os"
 	"os/signal"
+	"strings"
 	"sync"
 	"syscall"
 	"time"
@@ -65,15 +66,17 @@ func run(log *slog.Logger) error {
 	for _, home := range cfg.Homes {
 		home := home
 		cid := channelOnce(cfg.MMTeam, home, client)
-		r := &reader.Reader{Home: home, Log: log, Store: kv, Stream: cfg.NATSStream, Prefix: "bus",
+		r := &reader.Reader{Home: home, Log: log, Store: kv, Stream: cfg.NATSStream,
+			Prefix: cfg.BusPrefix, PropsPrefix: cfg.Prefix,
 			Mirror: &mirror.Mirror{Home: home, Prefix: cfg.Prefix, Log: log, Sink: client, Store: kv,
 				Links: mirror.LinksNone{}}}
 		wg.Add(1)
 		go func() {
 			defer wg.Done()
 			if err := r.Run(ctx, js, cid); err != nil && ctx.Err() == nil {
+				// A consumer that cannot be created or fetched from is fatal for
+				// that home (a refused post is not: the reader skips it).
 				log.Error("bridge: a home stopped", "home", home, "error", err)
-				stop()
 			}
 		}()
 	}
@@ -106,19 +109,36 @@ func connect(cfg config.Config) (*nats.Conn, error) {
 		return nil, fmt.Errorf("BRIDGE_NATS_SEED_FILE: %w", err)
 	}
 	opts = append(opts, seed)
-	if cfg.CAFile != "" {
-		pool := x509.NewCertPool()
-		pem, err := os.ReadFile(cfg.CAFile)
-		if err != nil {
-			return nil, fmt.Errorf("BRIDGE_CA_FILE: %w", err)
+	if tlsFirst(cfg.NATSURL) {
+		// Over tls:// the handshake comes first, as the login service and the
+		// hosts do (RT-6.36): the lab server needs handshake_first in its tls
+		// block, and a CA file is only needed when the system does not know it.
+		tcfg := &tls.Config{MinVersion: tls.VersionTLS12}
+		if cfg.CAFile != "" {
+			pool := x509.NewCertPool()
+			pem, err := os.ReadFile(cfg.CAFile)
+			if err != nil {
+				return nil, fmt.Errorf("BRIDGE_CA_FILE: %w", err)
+			}
+			if !pool.AppendCertsFromPEM(pem) {
+				return nil, fmt.Errorf("BRIDGE_CA_FILE %s holds no certificate", cfg.CAFile)
+			}
+			tcfg.RootCAs = pool
 		}
-		if !pool.AppendCertsFromPEM(pem) {
-			return nil, fmt.Errorf("BRIDGE_CA_FILE %s holds no certificate", cfg.CAFile)
-		}
-		opts = append(opts, nats.Secure(&tls.Config{MinVersion: tls.VersionTLS12, RootCAs: pool}),
-			nats.TLSHandshakeFirst())
+		opts = append(opts, nats.Secure(tcfg), nats.TLSHandshakeFirst())
 	}
 	return nats.Connect(cfg.NATSURL, opts...)
+}
+
+// tlsFirst is true when every URL of the list is tls:// (one pool, one scheme).
+func tlsFirst(urls string) bool {
+	for _, raw := range strings.Split(urls, ",") {
+		u := strings.TrimSpace(raw)
+		if !strings.HasPrefix(strings.ToLower(u), "tls://") {
+			return false
+		}
+	}
+	return urls != ""
 }
 
 // channelOnce resolves a home's Mattermost channel id on first use.

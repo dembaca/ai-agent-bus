@@ -15,15 +15,35 @@ import (
 	"fmt"
 	"log/slog"
 	"strings"
+	"unicode/utf8"
 
 	"github.com/dembaca/ai-agent-bus/services/bridge/internal/message"
 )
+
+// MaxPost bounds a mirrored post's text: Mattermost refuses one above 16 383
+// characters, so the mirror cuts to 16 000 runes and marks the cut. A bus post
+// above that is one the agents read over NATS in full; the mirror is for
+// people and says it was cut.
+const MaxPost = 16000
 
 // Post is what the bridge remembers about a mirrored message.
 type Post struct {
 	ID     string `json:"id"`             // the Mattermost post id
 	RootID string `json:"root,omitempty"` // the Mattermost root, when it answers one
 }
+
+// Refused is Mattermost refusing a message for good (4xx, but not 429: a rate
+// limit is transient). The reader logs it and moves on: one unmirrorable post
+// must not stop a home.
+type Refused struct {
+	Status int
+	Err    error
+}
+
+func (r *Refused) Error() string {
+	return fmt.Sprintf("mattermost refused it (%d): %v", r.Status, r.Err)
+}
+func (r *Refused) Unwrap() error { return r.Err }
 
 // Sink writes to Mattermost with the bridge's bot.
 type Sink interface {
@@ -35,20 +55,21 @@ type Sink interface {
 	Unreact(ctx context.Context, postID, emoji string) error
 }
 
-// Store is the id map and the position, in the bridge's own KV bucket.
+// Store is the id map, the position and the reaction counts, in the bridge's
+// own KV bucket.
 type Store interface {
-	// Position is the last stream sequence this bridge has handled.
-	Position(ctx context.Context) (uint64, bool, error)
-	// Post finds the mirror of a message, by channel and stream sequence.
-	Post(ctx context.Context, channel string, seq uint64) (Post, bool, error)
-	// Save remembers a mirror and moves the position; both in one call so a
-	// crash cannot remember a post without moving on or move on without it.
-	Save(ctx context.Context, channel string, seq uint64, p Post) error
+	Position(ctx context.Context, home string) (uint64, bool, error)
+	Post(ctx context.Context, home string, seq uint64) (Post, bool, error)
+	// Save remembers a mirror and moves the home's position.
+	Save(ctx context.Context, home string, seq uint64, p Post) error
+	// Reaction counts one reaction of a home's message (its stream sequence)
+	// and emoji, delta +1/-1, and returns the new count; the bridge's bot
+	// reacts on 1 and unreacts on 0.
+	Reaction(ctx context.Context, home string, seq uint64, emoji string, delta int) (int, error)
 }
 
 // Links resolves an agent's name to the Mattermost username of its bot, when
-// the link is proven (bot and name name each other, the name fresh, the
-// owner matches), like RT-6.37 step 4. Unknown or unproven: "".
+// the link is proven, like RT-6.37 step 4. Unknown or unproven: "".
 type Links interface {
 	ShownAs(ctx context.Context, agent string) (string, error)
 }
@@ -69,9 +90,6 @@ type Mirror struct {
 	Store  Store
 	Links  Links
 }
-
-// ChannelID resolves a home's channel name to Mattermost's id, once.
-type ChannelID func(ctx context.Context, name string) (string, error)
 
 // Handle mirrors one message; sender is the subject's last token, seq the
 // stream sequence. It is idempotent: a message already saved is skipped.
@@ -119,7 +137,7 @@ func (m *Mirror) Handle(ctx context.Context, channelID func(context.Context) (st
 				props[m.Prefix+"nats_root"] = fmt.Sprintf("n1:%s:%d", m.Home, *msg.Root)
 			}
 		}
-		pid, err := m.Sink.Create(ctx, cid, Attribution(shown, msg.Text), root, props)
+		pid, err := m.Sink.Create(ctx, cid, Attribution(shown, Cut(msg.Text)), root, props)
 		if err != nil {
 			return err
 		}
@@ -134,12 +152,26 @@ func (m *Mirror) Handle(ctx context.Context, channelID func(context.Context) (st
 				"home", m.Home, "ref", *msg.Ref, "emoji", msg.Emoji)
 			return m.Store.Save(ctx, m.Home, seq, Post{})
 		}
-		if msg.Kind == message.Reaction {
+		delta := 1
+		if msg.Kind == message.Unreaction {
+			delta = -1
+		}
+		n, err := m.Store.Reaction(ctx, m.Home, *msg.Ref, msg.Emoji, delta)
+		if err != nil {
+			return err
+		}
+		switch {
+		case delta > 0 && n == 1:
 			err = m.Sink.React(ctx, target.ID, msg.Emoji)
-		} else {
+		case delta < 0 && n == 0:
 			err = m.Sink.Unreact(ctx, target.ID, msg.Emoji)
 		}
 		if err != nil {
+			// The count moves with the reaction; a refused one must not be
+			// counted, so take the delta back before returning.
+			if _, undo := m.Store.Reaction(ctx, m.Home, *msg.Ref, msg.Emoji, -delta); undo != nil {
+				m.Log.Error("bridge: reaction count out of step", "post", target.ID, "emoji", msg.Emoji)
+			}
 			return err
 		}
 		// A reaction makes no post of its own; keep the target so the map
@@ -156,4 +188,13 @@ func (m *Mirror) Handle(ctx context.Context, channelID func(context.Context) (st
 // blocks and tables below it stay intact.
 func Attribution(shown, text string) string {
 	return "**" + shown + "**\n\n" + text
+}
+
+// Cut shortens text to MaxPost runes, with a mark when it did.
+func Cut(text string) string {
+	if utf8.RuneCountInString(text) <= MaxPost {
+		return text
+	}
+	runes := []rune(text)
+	return string(runes[:MaxPost]) + " …"
 }

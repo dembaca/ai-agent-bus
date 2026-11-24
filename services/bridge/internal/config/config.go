@@ -21,6 +21,7 @@ type Config struct {
 	KVBucket   string   // BRIDGE_KV_BUCKET, default BUS_BRIDGE
 	Listen     string   // BRIDGE_LISTEN_ADDR, /healthz
 	NATSStream string   // BRIDGE_STREAM, default BUS
+	BusPrefix  string   // BRIDGE_BUS_PREFIX, the bus's subject prefix, default bus
 }
 
 // Load reads the environment. A missing required value is an error naming it.
@@ -36,12 +37,16 @@ func Load(get func(string) string) (Config, error) {
 		KVBucket:   strings.TrimSpace(get("BRIDGE_KV_BUCKET")),
 		Listen:     strings.TrimSpace(get("BRIDGE_LISTEN_ADDR")),
 		NATSStream: strings.TrimSpace(get("BRIDGE_STREAM")),
+		BusPrefix:  strings.TrimSpace(get("BRIDGE_BUS_PREFIX")),
 	}
 	if c.KVBucket == "" {
 		c.KVBucket = "BUS_BRIDGE"
 	}
 	if c.NATSStream == "" {
 		c.NATSStream = "BUS"
+	}
+	if c.BusPrefix == "" {
+		c.BusPrefix = "bus"
 	}
 	if c.Listen == "" {
 		c.Listen = "127.0.0.1:8095"
@@ -64,6 +69,8 @@ func Load(get func(string) string) (Config, error) {
 		return Config{}, fmt.Errorf("BRIDGE_MM_TEAM is required")
 	case len(c.Homes) == 0:
 		return Config{}, fmt.Errorf("BRIDGE_HOMES is required: at least one home channel name")
+	case c.Prefix == "":
+		return Config{}, fmt.Errorf("BRIDGE_PROPS_PREFIX is required: the homes' MM_PROPS_PREFIX")
 	}
 	return c, nil
 }

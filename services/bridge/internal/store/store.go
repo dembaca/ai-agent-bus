@@ -1,10 +1,14 @@
-// Package store is the bridge's id map and its position, in one JetStream KV
-// bucket of the bus account: `pos` holds the last stream sequence, and
-// `p.<home>.<seq>` the Mattermost post a mirrored message became.
+// Package store is the bridge's id map, its position per home and its reaction
+// counts, in one JetStream KV bucket of the bus account: `pos.<home>` holds the
+// last stream sequence that home's reader has handled, `p.<home>.<seq>` the
+// Mattermost post a mirrored message became, and `r.<post>.<emoji>` how many
+// agents reacted with that emoji (the bridge's bot holds one reaction per post
+// and emoji).
 package store
 
 import (
 	"context"
+	"encoding/hex"
 	"encoding/json"
 	"errors"
 	"fmt"
@@ -39,9 +43,9 @@ func Open(ctx context.Context, nc *nats.Conn, bucket string) (*KV, error) {
 	return &KV{kv: kv}, nil
 }
 
-// Position is the last stream sequence this bridge has handled.
-func (s *KV) Position(ctx context.Context) (uint64, bool, error) {
-	e, err := s.kv.Get(ctx, "pos")
+// Position is the last stream sequence this home's reader has handled.
+func (s *KV) Position(ctx context.Context, home string) (uint64, bool, error) {
+	e, err := s.kv.Get(ctx, "pos."+home)
 	if errors.Is(err, jetstream.ErrKeyNotFound) {
 		return 0, false, nil
 	}
@@ -71,7 +75,7 @@ func (s *KV) Post(ctx context.Context, home string, seq uint64) (mirror.Post, bo
 	return p, true, nil
 }
 
-// Save remembers a mirror and moves the position.
+// Save remembers a mirror and moves the home's position.
 func (s *KV) Save(ctx context.Context, home string, seq uint64, p mirror.Post) error {
 	raw, err := json.Marshal(p)
 	if err != nil {
@@ -80,8 +84,69 @@ func (s *KV) Save(ctx context.Context, home string, seq uint64, p mirror.Post) e
 	if _, err := s.kv.Put(ctx, postKey(home, seq), raw); err != nil {
 		return err
 	}
-	_, err = s.kv.Put(ctx, "pos", []byte(strconv.FormatUint(seq, 10)))
+	_, err = s.kv.Put(ctx, "pos."+home, []byte(strconv.FormatUint(seq, 10)))
 	return err
+}
+
+// Reaction counts one reaction of a home's message (its stream sequence) and
+// emoji, and returns the new count: the caller reacts on the first and removes
+// on the last. The emoji is hex-encoded: a KV key allows no arbitrary text.
+func (s *KV) Reaction(ctx context.Context, home string, seq uint64, emoji string, delta int) (int, error) {
+	key := "r." + home + "." + strconv.FormatUint(seq, 10) + "." + hex.EncodeToString([]byte(emoji))
+	for range 5 {
+		e, err := s.kv.Get(ctx, key)
+		n := 0
+		var rev uint64
+		switch {
+		case errors.Is(err, jetstream.ErrKeyNotFound):
+		case err != nil:
+			return 0, err
+		default:
+			n, err = strconv.Atoi(string(e.Value()))
+			if err != nil {
+				return 0, fmt.Errorf("store: %s: %w", key, err)
+			}
+			rev = e.Revision()
+		}
+		n += delta
+		if n < 0 {
+			n = 0
+		}
+		if n == 0 {
+			if rev != 0 {
+				if err := s.kv.Delete(ctx, key, jetstream.LastRevision(rev)); err != nil &&
+					!errors.Is(err, jetstream.ErrKeyNotFound) && !errors.Is(err, jetstream.ErrKeyDeleted) {
+					if isWrongSequence(err) {
+						continue
+					}
+					return 0, err
+				}
+			}
+			return 0, nil
+		}
+		value := []byte(strconv.Itoa(n))
+		if rev == 0 {
+			_, err = s.kv.Create(ctx, key, value)
+		} else {
+			_, err = s.kv.Update(ctx, key, value, rev)
+		}
+		if err == nil {
+			return n, nil
+		}
+		if isWrongSequence(err) || errors.Is(err, jetstream.ErrKeyExists) {
+			continue
+		}
+		return 0, err
+	}
+	return 0, jetstream.ErrKeyExists
+}
+
+func isWrongSequence(err error) bool {
+	var jsErr *jetstream.APIError
+	if errors.As(err, &jsErr) {
+		return jsErr.ErrorCode == jetstream.JSErrCodeStreamWrongLastSequence
+	}
+	return false
 }
 
 func postKey(home string, seq uint64) string {

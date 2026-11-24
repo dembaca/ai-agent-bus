@@ -14,6 +14,8 @@ import (
 	"net/url"
 	"strings"
 	"time"
+
+	"github.com/dembaca/ai-agent-bus/services/bridge/internal/mirror"
 )
 
 // Client is a Mattermost bot's HTTP client.
@@ -129,7 +131,14 @@ func (c *Client) do(ctx context.Context, method, path string, in, out any) error
 	defer resp.Body.Close()
 	if resp.StatusCode < 200 || resp.StatusCode > 299 {
 		msg, _ := io.ReadAll(io.LimitReader(resp.Body, 512))
-		return fmt.Errorf("mattermost %s %s: %s: %s", method, path, resp.Status, strings.TrimSpace(string(msg)))
+		err := fmt.Errorf("mattermost %s %s: %s: %s", method, path, resp.Status,
+			strings.TrimSpace(string(msg)))
+		if resp.StatusCode >= 400 && resp.StatusCode < 500 && resp.StatusCode != http.StatusTooManyRequests {
+			// The message itself is refused for good (too long, an unknown
+			// emoji, a deleted root): a retry cannot help, the caller skips it.
+			return &mirror.Refused{Status: resp.StatusCode, Err: err}
+		}
+		return err
 	}
 	if out == nil {
 		return nil

@@ -65,7 +65,8 @@ func start(t *testing.T, nc *nats.Conn, js nats.JetStreamContext, kv *store.KV,
 	done := make(chan error, 1)
 	m := &mirror.Mirror{Home: "home", Prefix: "a2a.", Log: slog.New(slog.NewTextHandler(io.Discard, nil)),
 		Sink: s, Store: kv, Links: mirror.LinksNone{}}
-	r := &Reader{Home: "home", Log: m.Log, Mirror: m, Store: kv, Stream: "BUS", Prefix: "bus"}
+	r := &Reader{Home: "home", Log: m.Log, Mirror: m, Store: kv, Stream: "BUS", Prefix: "bus",
+		PropsPrefix: "a2a."}
 	go func() {
 		done <- r.Run(ctx, js, func(context.Context) (string, error) { return "chan", nil })
 	}()
@@ -117,7 +118,7 @@ func TestAPostAReplyAndAReactionOverARealServer(t *testing.T) {
 	}
 	deadline := time.Now().Add(3 * time.Second)
 	for {
-		pos, ok, err := kv.Position(context.Background())
+		pos, ok, err := kv.Position(context.Background(), "home")
 		if err != nil {
 			t.Fatal(err)
 		}

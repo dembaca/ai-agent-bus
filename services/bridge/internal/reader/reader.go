@@ -20,18 +20,19 @@ import (
 
 // Reader mirrors one home.
 type Reader struct {
-	Home   string
-	Log    *slog.Logger
-	Mirror *mirror.Mirror
-	Store  mirror.Store
-	Stream string // "BUS"
-	Prefix string // "bus"
+	Home        string
+	Log         *slog.Logger
+	Mirror      *mirror.Mirror
+	Store       mirror.Store
+	Stream      string // "BUS"
+	Prefix      string // the bus prefix, "bus" unless configured
+	PropsPrefix string // the homes' MM_PROPS_PREFIX, for the message decode
 }
 
 // Run consumes until ctx ends.
 func (r *Reader) Run(ctx context.Context, js nats.JetStreamContext,
 	channelID func(context.Context) (string, error)) error {
-	pos, ok, err := r.Store.Position(ctx)
+	pos, ok, err := r.Store.Position(ctx, r.Home)
 	if err != nil {
 		return err
 	}
@@ -60,16 +61,48 @@ func (r *Reader) Run(ctx context.Context, js nats.JetStreamContext,
 			return fmt.Errorf("reader: fetch: %w", err)
 		}
 		for _, m := range msgs {
-			if err := r.one(ctx, m, channelID); err != nil {
-				// No ack: the message stays for the next pull; a broken
-				// Mattermost or store is retried rather than dropped.
-				r.Log.Error("bridge: not mirrored", "home", r.Home,
-					"subject", m.Subject, "error", err)
-				return err
+			wait := time.Second
+			for {
+				err := r.one(ctx, m, channelID)
+				if err == nil {
+					_ = m.Ack() // BUS is a no-ack stream: the ack is a no-op there
+					break
+				}
+				var refused *mirror.Refused
+				if errors.As(err, &refused) {
+					// Mattermost will refuse it again: log it, remember that it
+					// was seen and go on; one post must not stop a home.
+					r.Log.Warn("bridge: refused, skipped", "home", r.Home,
+						"subject", m.Subject, "error", err)
+					_ = r.Store.Save(ctx, r.Home, mustSeq(m), mirror.Post{})
+					break
+				}
+				if ctx.Err() != nil {
+					return nil
+				}
+				// Transient (5xx, 429, a network or a store hiccup): retry the
+				// same message with a backoff rather than drop it or end.
+				r.Log.Error("bridge: not mirrored, retrying", "home", r.Home,
+					"subject", m.Subject, "in", wait.String(), "error", err)
+				select {
+				case <-ctx.Done():
+					return nil
+				case <-time.After(wait):
+				}
+				if wait < 30*time.Second {
+					wait *= 2
+				}
 			}
-			_ = m.Ack() // BUS is a no-ack stream: the ack is a no-op there
 		}
 	}
+}
+
+func mustSeq(m *nats.Msg) uint64 {
+	md, err := m.Metadata()
+	if err != nil {
+		return 0
+	}
+	return md.Sequence.Stream
 }
 
 func (r *Reader) one(ctx context.Context, m *nats.Msg,
@@ -79,12 +112,8 @@ func (r *Reader) one(ctx context.Context, m *nats.Msg,
 	if len(parts) != 4 || parts[0] != r.Prefix || parts[1] != "ch" || parts[2] != r.Home {
 		return fmt.Errorf("reader: unexpected subject %q", m.Subject)
 	}
-	md, err := m.Metadata()
-	if err != nil {
-		return fmt.Errorf("reader: %s: no metadata: %w", m.Subject, err)
-	}
-	seq := md.Sequence.Stream
-	msg, err := message.Decode(m.Data)
+	seq := mustSeq(m)
+	msg, err := message.Decode(m.Data, r.PropsPrefix)
 	if err != nil {
 		// A message this bridge cannot read is not the bridge's to fix: log it
 		// and advance past it, so one broken post does not stop the home.

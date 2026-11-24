@@ -1,10 +1,12 @@
 // Package message is the bus message format of the MCP server (RT-6.36): one
 // JSON body per NATS message on `<prefix>.ch.<channel>.<sender>`.
 //
-// The format is a contract with natsbus.py (`Message.decode`): version 1, a
-// kind of post, reaction or unreaction; a post carries its text and optionally
-// the stream sequence of its thread's root, a reaction the sequence it reacts
-// to and an emoji. Anything else is refused, never guessed.
+// The format is a contract with natsbus.py (`decode`/`_check`): version 1, a
+// kind of post, reaction or unreaction; a post carries its text (which may be
+// empty) and optionally the stream sequence of its thread's root, a reaction
+// the sequence it reacts to and one emoji. Decoding is as strict as the Python
+// side: no invalid UTF-8, no duplicate keys, props with the bus prefix only and
+// scalar values. Anything else is refused, never guessed.
 package message
 
 import (
@@ -12,6 +14,8 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
+	"io"
+	"strings"
 	"unicode/utf8"
 )
 
@@ -24,11 +28,9 @@ const (
 	Unreaction Kind = "unreaction"
 )
 
-// MaxText bounds a mirrored text: the PRESENCE stream's own limit for records
-// is 4 KiB; a bus post is bounded by the BUS stream at 64 KiB, and Mattermost
-// takes 16 383 characters. Posts above the Mattermost limit are cut by the
-// mirror, not here.
-const MaxText = 65536
+// MaxBody is the largest message the BUS stream carries (the Python side's
+// MAX_BODY): a bigger one is refused here rather than mirrored.
+const MaxBody = 65536
 
 // Msg is one decoded message.
 type Msg struct {
@@ -40,8 +42,21 @@ type Msg struct {
 	Props map[string]any
 }
 
-// Decode reads one message body.
-func Decode(body []byte) (Msg, error) {
+// Decode reads one message body; prefix is the bus props prefix (MM_PROPS_PREFIX).
+func Decode(body []byte, prefix string) (Msg, error) {
+	switch {
+	case len(body) == 0:
+		return Msg{}, errors.New("not a bus message: empty")
+	case len(body) > MaxBody:
+		return Msg{}, fmt.Errorf("not a bus message: %d bytes, more than %d", len(body), MaxBody)
+	case !utf8.Valid(body):
+		return Msg{}, errors.New("not a bus message: not valid UTF-8")
+	case prefix == "":
+		return Msg{}, errors.New("not a bus message: no props prefix")
+	}
+	if err := noDuplicateKeys(body); err != nil {
+		return Msg{}, fmt.Errorf("not a bus message: %w", err)
+	}
 	var raw struct {
 		V     *int           `json:"v"`
 		Kind  string         `json:"kind"`
@@ -60,14 +75,24 @@ func Decode(body []byte) (Msg, error) {
 		return Msg{}, errors.New("not format v1")
 	}
 	m := Msg{Text: raw.Text, Props: raw.Props}
+	if m.Props == nil {
+		m.Props = map[string]any{}
+	}
+	for k, v := range m.Props {
+		if !strings.HasPrefix(k, prefix) {
+			return Msg{}, fmt.Errorf("prop %q does not start with the bus prefix %q", k, prefix)
+		}
+		switch v.(type) {
+		case string, bool, json.Number:
+		default:
+			return Msg{}, fmt.Errorf("prop %q is no string or simple value", k)
+		}
+	}
 	switch Kind(raw.Kind) {
 	case Post:
 		m.Kind = Post
 		if raw.Ref != nil || raw.Emoji != "" {
 			return Msg{}, errors.New("a post has no ref or emoji")
-		}
-		if m.Text == "" || len(m.Text) > MaxText || !utf8.ValidString(m.Text) {
-			return Msg{}, errors.New("a post needs text")
 		}
 		m.Root = raw.Root
 		if raw.Root != nil && *raw.Root == 0 {
@@ -81,17 +106,72 @@ func Decode(body []byte) (Msg, error) {
 		if raw.Ref == nil || *raw.Ref == 0 {
 			return Msg{}, errors.New("a reaction needs ref")
 		}
-		if raw.Emoji == "" || len(raw.Emoji) > 64 || !utf8.ValidString(raw.Emoji) {
-			return Msg{}, errors.New("a reaction needs an emoji")
+		if raw.Emoji == "" || len(raw.Emoji) > 64 || strings.ContainsAny(raw.Emoji, "\r\n") {
+			return Msg{}, errors.New("an emoji is one line of at most 64 characters")
 		}
 		m.Ref, m.Emoji = raw.Ref, raw.Emoji
 	default:
 		return Msg{}, fmt.Errorf("unknown kind %q", raw.Kind)
 	}
-	if m.Props == nil {
-		m.Props = map[string]any{}
-	}
 	return m, nil
+}
+
+// noDuplicateKeys refuses a JSON body with the same key twice in one object,
+// as the Python reader does: a second value could hide the first.
+func noDuplicateKeys(body []byte) error {
+	type frame struct {
+		object, expectKey bool
+		keys              map[string]bool
+	}
+	dec := json.NewDecoder(bytes.NewReader(body))
+	dec.UseNumber()
+	stack := []*frame{}
+	for {
+		tok, err := dec.Token()
+		if errors.Is(err, io.EOF) {
+			return nil
+		}
+		if err != nil {
+			return err
+		}
+		top := func() *frame {
+			if len(stack) == 0 {
+				return nil
+			}
+			return stack[len(stack)-1]
+		}
+		switch v := tok.(type) {
+		case json.Delim:
+			switch v {
+			case '{':
+				stack = append(stack, &frame{object: true, expectKey: true, keys: map[string]bool{}})
+			case '[':
+				stack = append(stack, &frame{})
+			case '}', ']':
+				if len(stack) == 0 {
+					return errors.New("unbalanced JSON")
+				}
+				stack = stack[:len(stack)-1]
+				if f := top(); f != nil && f.object {
+					f.expectKey = true
+				}
+			}
+		case string:
+			if f := top(); f != nil && f.object && f.expectKey {
+				if f.keys[v] {
+					return fmt.Errorf("duplicate key %q", v)
+				}
+				f.keys[v] = true
+				f.expectKey = false
+			} else if f != nil && f.object {
+				f.expectKey = true
+			}
+		default:
+			if f := top(); f != nil && f.object {
+				f.expectKey = true
+			}
+		}
+	}
 }
 
 // Sender is the last token of the subject, which is the agent's name; the
