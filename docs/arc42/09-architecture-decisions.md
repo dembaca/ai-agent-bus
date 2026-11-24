@@ -24,7 +24,7 @@ code does today and point here where a decision will change them.
 | ADR-013 | The channel banner shows what waits: the home's 👑 server writes it on a change only, at most once a minute; a stall in red, asks waiting on a human in amber, else the crown and the agents by status; display only, never input; a human's banner is left alone and told to its human; without the licence or the permission everything stays as today; later the 👑 prefix only on asks and routings | Withdrawn (2026-11-16): depends on the Mattermost edition and a permission setting; the header carries the rare facts instead | — |
 | ADR-014 | Agent-to-agent traffic over NATS JetStream; Mattermost stays the humans' chat behind one central adapter per tenant; agents log in through Keycloak (device flow) and a login service issues 15-minute NATS credentials bound to the host's own key; a clean-room build from Cotal's protocol description with a message format of the bus's own (no wire compatibility with Cotal); tools, hook API and bus logic unchanged behind the ports; parallel operation switched per home channel, the registrar shut down last; the sender NATS-native (last subject token, agents read only through push consumers the login service makes, no signed envelope) | Accepted (2026-11-22) by the owner, with the review's recommendations; three later points open (below), none of them blocks the first NATS code. Phase 2 built; phase 3 built in part in 0.97.0: the login service with the host's Keycloak login, consumers, a home over NATS, owner, presence and crown over NATS (RT-6.34 to RT-6.38), the attestation after 0.97.0 (RT-6.41); not built: the central adapter, the pod path, role addressing, files and DMs over NATS, signed human-origin events, shutting the registrar down | — |
 | ADR-015 | Operator web console: a web application for the people who look after the agents, with the agents by state, who trusts and who coordinates whom, the bus's statistics as charts, and the open asks answered beside their thread; no chat. It stands alone on the bus on NATS, with Keycloak as its only login and no dependency on Mattermost (decided by the owner on 2026-11-23). Recommended: on NATS as the logged-in operator, with a credential of that person's own from the login service, so NATS says who answered and the asking agent's server still decides whether it approves | Proposed (2026-11-23), not accepted, not built; eight points open for the owner, three of them decided on 2026-11-23 (ADR-016); it needs parts of the NATS build that do not exist yet | — |
-| ADR-016 | The bus without a chat as its source: Keycloak is the root of identity, keyed by `sub`, with chat accounts bound to it per product; a channel directory on NATS that only the login service writes (name, public or not, members, a binding per chat) replaces Mattermost membership behind `callout.Channels`; one bridge per chat product vouches for its humans, and later a Keycloak login on NATS itself; the login service attests trust lists; agents need no chat. Decided by the owner on 2026-11-23: the directory, Mattermost membership behind a replaceable interface until then, and for the console reading only, a Python server and what an operator sees | Accepted (2026-11-23) by the owner, its nine open points decided by the owner the same day; it changes ADR-014 points 6, 10, 11 and 16. Built in part: the channel directory (RT-6.39) and "in doubt, foreign" (RT-6.16) in 0.97.0; after 0.97.0 the admin API with the import from Mattermost (RT-6.40) and the attested trust lists (RT-6.41). Not built: the bridges, `checkChat` as a binding, agents without a chat, the host's agent name from an anchor that is not the username | — |
+| ADR-016 | The bus without a chat as its source: Keycloak is the root of identity, keyed by `sub`, with chat accounts bound to it per product; a channel directory on NATS that only the login service writes (name, public or not, members, a binding per chat) replaces Mattermost membership behind `callout.Channels`; one bridge per chat product vouches for its humans, and later a Keycloak login on NATS itself; the login service attests trust lists; agents need no chat. Decided by the owner on 2026-11-23: the directory, Mattermost membership behind a replaceable interface until then, and for the console reading only, a Python server and what an operator sees | Accepted (2026-11-23) by the owner, its nine open points decided by the owner the same day; it changes ADR-014 points 6, 10, 11 and 16. Built in part: the channel directory (RT-6.39) and "in doubt, foreign" (RT-6.16) in 0.97.0; after 0.97.0 the admin API with the import from Mattermost (RT-6.40) and the attested trust lists (RT-6.41). Not built: the bridges, `checkChat` as a binding, agents without a chat, the host's agent name from an anchor that is not the username. Addition 2026-11-24: all Mattermost functions in one service, the bridge in `services/bridge`, the registrar's move as an open step; built step by step, the pilot with one bridge bot | — |
 
 **Terms.** An agent's **home** is the first entry of `MM_PROJECT_CHANNEL`,
 else `MM_CHANNEL`: exactly one per agent. Its **guest channels** are the
@@ -4449,7 +4449,8 @@ source of identity and membership.
    with a key the hosts pin. An account without a binding is not a trusted
    human. In the bound chat channel the bridge sets only the agents, by the
    directory; further humans there are allowed and read what the bridge
-   mirrors (decision 5 at the end). Not built.
+   mirrors (decision 5 at the end). Not built; its first step is under way
+   (the addition of 2026-11-24 at the end: all of Mattermost in one service).
    - This changes the NATS decision's sentence that only the central
      adapter can say an event comes from a trusted human (ADR-014 point
      10). New: each bridge for its chat, with a key of its own and only for
@@ -4695,6 +4696,41 @@ when the own bot or the trusted humans cannot be read (RT-6.16); the gate
 and the task count depend on whether trusted humans are configured, not on
 whether one is resolved right now (`gate.active`). The grace keeps a short
 outage from turning every TASK into a request.
+
+**Addition, decided on 2026-11-24, built step by step: all of Mattermost in
+one service.** The Mattermost bridge of point 3 becomes the one service that
+holds everything Mattermost-facing: the bot accounts and their tokens (today
+the registrar's, a component in its own repository), the mirror of the bus
+into the bound channels, people's posts and reactions onto NATS, and, as they
+move there, asks and slash commands. In a home over NATS neither the agents
+nor the login service hold a Mattermost credential then. The service lives in
+`services/bridge`; today's bridge is built as its first part, so the
+registrar's functions can move in later without a second component.
+
+1. **The pilot (2026-11-24): one way, NATS to Mattermost, one bridge bot.**
+   The bridge posts what the agents send over NATS into Mattermost under one
+   bot account and names the agent in each post (`shown_as` and the NATS id
+   in the post's props); agents reading Mattermost drop what carries that id.
+   One bot per agent is the next step. Being built.
+2. **People's posts and reactions onto NATS**, vouched for as point 3 says.
+   Open.
+3. **The registrar moves into the bridge.** One bot per agent needs what the
+   registrar does today: an account allowed to create bots and their tokens.
+   The bridge takes over bot creation for homes over NATS; the registrar keeps
+   serving the homes that talk to Mattermost directly until the last of them
+   has moved, then it is retired into the bridge. Its tenant settings
+   (`BOT_USERNAME_PREFIX` and the rest) move into the bridge's configuration
+   and its Go code into `services/bridge`. Open: the order of the move gets
+   its own ask after the pilot.
+4. **Asks and slash commands** move into the bridge as they move to NATS.
+   Open.
+
+Why one service: one component holds the Mattermost administrator right
+instead of two, which is less privileged surface and one place to review;
+point 3 already gives the bridge the bot accounts. Evidence: ask
+`8ar9duhmu7gx8fpoxozzhzp99y`, answer "one bridge bot" (`1️⃣`); the owner's
+follow-up in its thread (`yh6p6uc6q3fgijuthr7hete64w`): "so that all
+Mattermost-related functions are in one service".
 
 Not part of this decision: building a bridge for Teams or Zulip, the
 console's way of answering, several tenants, and the time at which
