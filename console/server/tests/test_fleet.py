@@ -126,3 +126,31 @@ def test_attested_owner_names_the_agent() -> None:
     feed(f, (s_att2, d_att2, ack("PRESENCE", "console", 3, 3, 1002.0)))
     (card,) = f.cards()
     assert card["for"] == "dembaca"
+
+
+def test_a_silent_stream_ages_the_lone_agent_out() -> None:
+    """#108's bug: with no further deliveries the console's clock stood
+    still, so a killed lone agent stayed online with its crown. The
+    wall-clock floor ages presence past PRESENCE_FRESH_SEC on its own:
+    offline, and the crown drops with it."""
+    f = Fleet()
+    subject, data = presence("lone-agent", "dembaca", "online")
+    feed(f, (subject, data, ack("PRESENCE", "console", 1, 1, 1000.0)))
+    feed(f, ("presence.member.dev.lone-agent", b'{"v": 1}',
+              ack("PRESENCE", "console", 2, 2, 1001.0)))
+    feed(f, ("presence.crown.dev.lone-agent", b'{"v": 1}',
+              ack("PRESENCE", "console", 3, 3, 1002.0)))
+    assert f.state_of("lone-agent") == "online"
+    assert f.holder_of("dev") == "lone-agent"
+
+    # the stream goes silent, and only the wall clock moves: backdate the
+    # wall stamp so the floor sits far past the freshness window (the
+    # floor is the server stamp plus the elapsed wall time — the test
+    # does not really wait 90 s)
+    staged = f.last_server_now_wall
+    assert staged is not None
+    f.last_server_now_wall = (staged[0], staged[1] - 10000)
+    assert f.state_of("lone-agent") == "offline"
+    assert f.holder_of("dev") is None
+    (card,) = f.cards()
+    assert card["state"] == "offline" and card["crown"] is False
