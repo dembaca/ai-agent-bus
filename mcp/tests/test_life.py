@@ -110,3 +110,21 @@ def test_what_the_status_shows_is_kept(clock):
     assert life.is_shown()
     life.reset()
     assert not life.is_shown()
+
+
+def test_silent_at_is_when_a_rule_first_held(clock, monkeypatch):
+    """#64: the silent holder's last crown lease counts from the moment it turned
+    silent, not from its last sign: the window's end, or the push's wait's end,
+    whichever came first; 0 while alive."""
+    start = clock[0]
+    assert life.silent_at() == 0
+    clock[0] += 1000
+    assert life.silent_at() == start + 900
+    life.sign()
+    assert life.silent_at() == 0
+    life.pushed()
+    pushed = clock[0]
+    clock[0] += 60
+    assert life.silent_at(listening=True) == pushed + 45
+    clock[0] += 900
+    assert life.silent_at() == pushed + 45  # the earlier rule
