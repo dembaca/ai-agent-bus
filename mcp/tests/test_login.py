@@ -1327,3 +1327,16 @@ async def test_the_cooldown_cause_is_one_short_line():
     cause = str(info.value).split("(", 1)[1].rsplit(");", 1)[0]
     assert cause.startswith("first line second line xxx") and "\n" not in cause
     assert len(cause) == login.MAX_CAUSE_CHARS
+
+
+async def test_expires_in_as_a_float_counts():
+    """300.0 is 300 s, not a missing value: without exp and iat the token would else
+    get 60 s and never count as fresh."""
+    wall = [1_000_000.0]
+    script = Timed(lambda: int(wall[0]), expires_in=300.0, exp=None, iat=None)
+    lg = mk(transport=httpx.MockTransport(script), notifier=Note(), now=lambda: 0.0, wall=lambda: wall[0])
+    first = await lg.access_token()
+    wall[0] += 200
+    assert await lg.access_token() == first and script.refreshed == []
+    wall[0] += 41
+    assert await lg.access_token() != first

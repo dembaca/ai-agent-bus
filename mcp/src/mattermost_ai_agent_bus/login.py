@@ -758,7 +758,9 @@ def _lifetime(body: dict[str, Any], claims: dict[str, Any], wall: float) -> floa
     exp, iat = _time_claim(claims, "exp"), _time_claim(claims, "iat")
     spans: list[float] = []
     expires_in = body.get("expires_in")
-    if isinstance(expires_in, int) and not isinstance(expires_in, bool) and 0 < expires_in < MAX_TIME_SEC:
+    # A number, int or float (not a bool); NaN and infinity fail the range check.
+    if isinstance(expires_in, int | float) and not isinstance(expires_in, bool) \
+            and 0 < expires_in < MAX_TIME_SEC:
         spans.append(float(expires_in))
     if exp is not None and iat is not None:
         if exp <= iat:
