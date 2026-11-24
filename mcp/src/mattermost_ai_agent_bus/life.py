@@ -22,7 +22,9 @@ signs, which it sees anyway, and judges it `silent` without them:
   D without it, decided 2026-11-10).
 
 State lives in memory: a new server starts alive, its start being the
-client's handshake. lease.py writes the status from it and drops a crown.
+client's handshake. lease.py writes the status from it; a silent crown holder
+keeps its crown one crown lease (MM_CROWN_LEASE_SEC) from the moment it turned
+silent, then drops it (decided 2026-11-24, #64).
 """
 
 from __future__ import annotations
@@ -119,6 +121,21 @@ def silent_since(now: float | None = None, *, listening: bool = False) -> float:
     if not listening and now - _sign >= window_sec():
         return _sign
     return 0.0
+
+
+def silent_at(now: float | None = None, *, listening: bool = False) -> float:
+    """When the agent turned silent (epoch s): the moment a rule of silent_since
+    first held, the earlier of the two; 0 while it is alive. A silent crown
+    holder keeps its crown one crown lease from here (RT-6.6 step 1, #64)."""
+    now = time.time() if now is None else now
+    if not silent_since(now, listening=listening):
+        return 0.0
+    at = []
+    if _untaken and now - _untaken >= ack_wait_sec():
+        at.append(_untaken + ack_wait_sec())
+    if not listening and now - _sign >= window_sec():
+        at.append(_sign + window_sec())
+    return min(at)
 
 
 def due(*, listening: bool = False) -> float:

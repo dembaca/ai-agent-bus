@@ -12,6 +12,18 @@ before 0.5.0 are described in the git history.
   text opens with such a block (`kind="RESULT"` and a table) puts its bus word
   on the headline alone and the block below a blank line, instead of
   `RESULT · | a |`, which broke the table.
+
+- **Silence keeps the crown one more crown lease** (#64, RT-6.6 steps 1 and 6,
+  ADR-007 amended 2026-11-24). A holder that turns silent (a push untaken
+  for 45 s, or no sign in the window) no longer drops its crown at once: its
+  status stays 👑 with `coordinator · silent · no sign since HH:MMZ`, without
+  the receipt marker, for 150 s (`MM_CROWN_LEASE_SEC`) from the moment it
+  turned silent, so no peer elects or claims over a missing 👀 meanwhile. A
+  sign of the agent in that time ends the silence (for a push left untaken,
+  its take-up: a turn, a tool call or a post); without one the crown
+  drops at that lease's end, as before. In a home over NATS the holder's
+  self-yield waits the same lease.
+
 - **A busy coordinator keeps its crown** (#64, RT-6.6 steps 1, 4 and 11).
   The prompt hook tells the server that a turn began before anything else,
   so a slow hook no longer leaves a running turn unknown, which made the

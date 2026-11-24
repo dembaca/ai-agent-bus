@@ -282,6 +282,19 @@ async def test_no_claim_over_an_unmarked_holder_or_beside_a_second_crown(chat):
     assert not lease.crown_held(ME) and chat.posted == []
 
 
+async def test_no_claim_over_a_silent_holder_within_its_last_lease(chat):
+    """RT-6.6 steps 1 and 10 (#64): a silent holder within its last crown lease wears 👑
+    without the receipt marker: the peers see the crown held, nobody claims over a missing
+    👀, and a question to it is judged by its 👀 alone."""
+    _home(chat, holder_text="coordinator · silent · no sign since 14:05Z · ~agents")
+    rows = await lease._rows(chat, WORK)
+    assert next(r for r in rows if r["id"] == HOLDER)["crown"]
+    assert await lease.slot_over(chat, HOLDER) == 0
+    assert not await lease.take_over(chat, HOLDER, PID)
+    assert await lease.receipt_holder(chat, "agent-coord") == (HOLDER, "silent")
+    assert not lease.crown_held(ME) and chat.posted == []
+
+
 async def test_the_old_holder_yields_to_a_crown_taken_heard(chat):
     """ADR-007 step 4: a crown_taken naming this holder, from an agent that
     wears a crown, makes it yield at its next tick and not claim for one crown
