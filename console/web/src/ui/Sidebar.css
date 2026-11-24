@@ -1,0 +1,75 @@
+.side {
+  display: flex;
+  flex-direction: column;
+  gap: 2px;
+  border-right: 1px solid var(--hair);
+  background: var(--surface);
+  padding: 12px 10px;
+}
+
+.side__brand {
+  display: flex;
+  gap: 8px;
+  align-items: center;
+  font-weight: 600;
+  line-height: 1.2;
+  margin-bottom: 14px;
+}
+
+.side__brand em {
+  font-style: normal;
+  font-weight: 400;
+  color: var(--muted);
+  font-size: 11px;
+}
+
+.side__logo { font-size: 18px; }
+
+.side__item {
+  display: flex;
+  justify-content: space-between;
+  align-items: center;
+  gap: 8px;
+  width: 100%;
+  border: 0;
+  background: none;
+  color: var(--text);
+  padding: 7px 10px;
+  border-radius: 8px;
+  cursor: pointer;
+  text-align: left;
+}
+
+.side__item:hover { background: var(--surface-2); }
+
+.side__item--active {
+  background: var(--surface-2);
+  color: var(--ink);
+  font-weight: 600;
+}
+
+.side__badge {
+  min-width: 20px;
+  text-align: center;
+  font-size: 11px;
+  border-radius: 999px;
+  padding: 0 6px;
+  line-height: 18px;
+  background: var(--hair);
+  color: var(--text);
+}
+
+.side__badge--for-me {
+  background: var(--for-me);
+  color: #111;
+  font-weight: 700;
+}
+
+.side__foot {
+  margin-top: auto;
+  color: var(--muted);
+  font-size: 11px;
+  line-height: 1.5;
+  padding: 10px 10px 2px;
+  border-top: 1px solid var(--hair);
+}

@@ -126,6 +126,26 @@ jobs:
           npm run typecheck
           npm run build
 
+  console:
+    name: operator console builds (console/web)
+    runs-on: ubuntu-latest
+    timeout-minutes: 10   # like the site job
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 24
+          cache: npm
+          cache-dependency-path: console/web/package-lock.json
+      # Same build as the site: typecheck and build, so a PR shows a broken
+      # console before main does.
+      - name: typecheck and build
+        working-directory: console/web
+        run: |
+          npm ci
+          npm run typecheck
+          npm run build
+
   lint:
     runs-on: ubuntu-latest
     timeout-minutes: 10   # ~45 s

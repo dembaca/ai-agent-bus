@@ -5,6 +5,17 @@ before 0.5.0 are described in the git history.
 
 ## Unreleased
 
+- **The operator console's browser app, a read-only pilot** (ADR-015 point
+  14). `console/web` inherits the toolchain of `site/` (React,
+  TypeScript, Vite) and implements the four views against a mock of the API
+  in ADR-015 point 10: the Kanban of agents by state (the crown a mark on the
+  card, not a column), the asks with *for me* and *may answer*, the graph
+  (trusts and coordinates, cut at depth two with a mark), and the reports
+  (counts and seconds, a missing field `n/a`, never 0). The detail pane shows
+  the full card, the task rows an agent holds, its HELLO thread and the
+  threads of its open asks. Nothing posts — an ask gets no answer button
+  (stage 1, reading only); the same `ConsoleApi` interface hides the mock and
+  the future console server behind `VITE_CONSOLE_API`.
 - **Host login: a fast host clock, odd token times, the cooldown's cause**
   (#10, RT-6.34 step 3). A token's lifetime is now the shorter of
   `expires_in` and its own `exp - iat`, at most one day, counted from when
