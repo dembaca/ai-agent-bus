@@ -133,10 +133,14 @@ the read.
   name on every view — and `name` (the display name) is welcome.
 - A `tls://` NATS URL needs the lab server's `handshake_first: true`
   (the console connects TLS first, as every host does).
-- **`/healthz`** is both liveness and readiness: 503 when the NATS
-  reader ended without a stop, and 503 once the reader has seen no
-  replay within `CONSOLE_HEALTH_SYNC_BOUND` (default 180 s; the reader
-  reconnects for a replay on its own after 120 s of silence).
+- **`/healthz`** is the **readiness** probe: 503 until the reader has
+  synced — a finished replay, an empty one included (the consumer's
+  create answers, so the fleet's state is whole even with zero agents) —
+  and again once no replay arrived within `CONSOLE_HEALTH_SYNC_BOUND`
+  (30 s to 24 h, default 180 s; the reader reconnects for a replay on
+  its own after 120 s of silence, waking every quarter of the bound).
+  The **liveness** answer is 503 only when the reader ended without a
+  stop; everything else retries on its own.
 
 ## Run
 

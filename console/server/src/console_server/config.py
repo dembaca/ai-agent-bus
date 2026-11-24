@@ -89,10 +89,20 @@ def find() -> Settings:
         deliver_subject=given("CONSOLE_DELIVER_SUBJECT") or "deliver.console.presence",
         consumer_name=given("CONSOLE_CONSUMER_NAME") or "console",
         web_dir=given("CONSOLE_WEB_DIR"),
-        health_sync_bound=float(given("CONSOLE_HEALTH_SYNC_BOUND") or 180.0),
+        health_sync_bound=_float(given, "CONSOLE_HEALTH_SYNC_BOUND", 180.0),
     )
     _check(settings)
     return _https(settings)
+
+
+def _float(given: Callable[[str], str], name: str, default: float) -> float:
+    raw = given(name)
+    if not raw:
+        return default
+    try:
+        return float(raw)
+    except ValueError as exc:
+        raise ConfigError(f"{name}: a number of seconds, got {raw!r}") from exc
 
 
 def _required(given: Callable[[str], str], name: str) -> str:
@@ -142,6 +152,9 @@ def _check(s: Settings) -> None:
     for name in (s.presence_subject, s.presence_stream, s.consumer_name):
         if not name or any(c in name for c in ". *>"):
             raise ConfigError("CONSOLE_PRESENCE_SUBJECT/STREAM/CONSUMER_NAME: one plain token")
+    if not (30.0 <= s.health_sync_bound <= 24 * 3600.0):
+        raise ConfigError("CONSOLE_HEALTH_SYNC_BOUND: 30 s to 24 h (the probe"
+                          " went red forever below, or never, above)")
 
 
 def _https(s: Settings) -> Settings:

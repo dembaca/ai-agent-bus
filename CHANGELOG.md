@@ -7,9 +7,12 @@ before 0.5.0 are described in the git history.
 
 - **The console's `/healthz` answers readiness, not only liveness** (ADR-015).
   It went 503 only when the NATS reader ended without a stop; a reader that
-  silently never synced still said ok. It now answers 503 once the reader
-  has seen no replay within `CONSOLE_HEALTH_SYNC_BOUND` (default 180 s; the
-  reader reconnects for a replay on its own after 120 s of silence). The
+  silently never synced still said ok. It now answers 503 until the reader
+  has synced — a finished replay with zero messages included, so an empty
+  fleet reads healthy — and again once no replay arrived within
+  `CONSOLE_HEALTH_SYNC_BOUND` (30 s to 24 h, default 180 s; the reader
+  reconnects for a replay on its own after 120 s of silence and wakes every
+  quarter of the bound). The
   docs follow: the console's row in the deployment view (settings, the
   image, the Keycloak setup, one replica), the README's deployment notes
   (a container-usable `CONSOLE_ADDR`, the group mapper and

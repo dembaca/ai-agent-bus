@@ -259,7 +259,7 @@ class Console:
                 age = time.monotonic() - self.fleet.last_sync_at
                 if age > s.health_sync_bound:
                     return httpd.Response.text(
-                        f"the fleet reader has not synced for {age:.0f} s", 503)
+                        "the fleet reader has not synced in time", 503)
             return httpd.Response.text("ok")
         if path in ("/login", "/callback"):
             if s.login_off:

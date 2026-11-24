@@ -29,6 +29,7 @@ from nats.aio.client import Client as NatsClient
 from . import config
 from .fleet import Fleet
 
+
 log = logging.getLogger("console.nats")
 
 CONSUMER_API_TIMEOUT = 5.0
@@ -75,10 +76,14 @@ async def _api(nc: NatsClient, subject: str,
     return body
 
 
-async def ensure_consumer(nc: NatsClient, settings: config.Settings) -> None:
+async def ensure_consumer(nc: NatsClient, settings: config.Settings,
+                         fleet: Fleet) -> None:
     """Delete then create, as the login service remakes its consumers: a
     consumer that still stands under this name replays nothing on
-    reattach, and the replay is the fleet's state after a restart."""
+    reattach, and the replay is the fleet's state after a restart. A
+    create that answers at all is a finished replay — an empty fleet or
+    one older than the stream's max age delivers nothing, and that is
+    still "in sync", not a red probe."""
     await _api(nc, f"$JS.API.CONSUMER.DELETE.{settings.presence_stream}"
                   f".{settings.consumer_name}", {})
     # a DELETE the server cannot answer (none yet) is fine: the CREATE that
@@ -88,6 +93,10 @@ async def ensure_consumer(nc: NatsClient, settings: config.Settings) -> None:
     error = body.get("error")
     if error is not None:
         raise NatsError(f"consumer create refused: {error!r}")
+    # the consumer answers, so the replay is done — with zero messages too
+    fleet.synced = True
+    fleet.last_sync_at = time.monotonic()
+
 
 
 async def read_forever(settings: config.Settings, fleet: Fleet,
@@ -138,14 +147,16 @@ async def read_forever(settings: config.Settings, fleet: Fleet,
                         on_change()
 
                 await nc.subscribe(settings.deliver_subject, cb=handle)
-                await ensure_consumer(nc, settings)
+                await ensure_consumer(nc, settings, fleet)
                 backoff = 1.0
                 # the connection ends by its own word (ended), or by the
-                # idle watchdog asking for a replay
+                # idle watchdog asking for a replay; it wakes every quarter
+                # of the probe's bound (at least 5 s), so a silent fleet's
+                # reconnect lands within the bound, not a cycle after it
+                wake = max(5.0, settings.health_sync_bound / 4)
                 while not closed.done():
                     try:
-                        await asyncio.wait_for(asyncio.shield(closed),
-                                               IDLE_RECONNECT_SEC)
+                        await asyncio.wait_for(asyncio.shield(closed), wake)
                     except asyncio.TimeoutError:
                         age = time.monotonic() - last_seen
                         if age >= IDLE_RECONNECT_SEC:
