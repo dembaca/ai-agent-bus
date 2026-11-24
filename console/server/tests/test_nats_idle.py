@@ -3,7 +3,6 @@
 # The identity the loop uses is checked without a server: the loop's own
 # arithmetic (idle - wake/2 < bound for every bound), so the mutant 3
 # (idle = bound * 3) fails it.
-import math
 import pytest
 
 
