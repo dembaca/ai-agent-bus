@@ -115,7 +115,10 @@ async def until(pred, timeout: float = 8.0, what: str = "") -> None:
 
 
 class Stream:
-    """A raw client of one fleet stream: the head, then the events."""
+    """A raw client of one fleet stream: the head, then the events. The
+    console listens before `start()` returns, so no connect race exists —
+    the flake (#105) was a card assertion breaking one event early, fixed
+    in the tests that read cards."""
 
     def __init__(self, console: Console) -> None:
         self.console = console
@@ -148,18 +151,20 @@ async def test_the_console_reads_the_fleet_sse(rig) -> None:
         await admin.publish("presence.crown.dev.agent-one", b'{"v": 1}')
         await admin.publish("presence.dembaca.agent-two", encode_presence("away"))
 
-        # the replay reaches the console: a snapshot, then card events
+        # the replay reaches the console: a snapshot, then card events.
+        # The flake (#105) was here: breaking on agent-one's FIRST card
+        # races the claim's own card event — wait for its crown instead
+        # (presence, member and claim replay in one burst), bounded by
+        # the stream's events.
         cards: dict[str, dict] = {}
         for _ in range(30):
             event = await stream.event()
             if event["type"] == "snapshot":
                 cards = {c["name"]: c for c in event["cards"]}
-                if "agent-one" in cards:
-                    break
             elif event["type"] == "card":
                 cards[event["card"]["name"]] = event["card"]
-                if "agent-one" in cards:
-                    break
+            if cards.get("agent-one", {}).get("crown") is True:
+                break
         assert cards["agent-one"]["state"] == "online"
         assert cards["agent-one"]["crown"] is True
         assert cards["agent-one"]["home"] == "dev"
@@ -231,6 +236,9 @@ async def test_a_restart_replays_the_fleet(rig) -> None:
             event = await again.event()
             if event["type"] == "snapshot":
                 fresh = {c["name"]: c for c in event["cards"]}
+            elif event["type"] == "card":
+                fresh[event["card"]["name"]] = event["card"]
+            if fresh.get("agent-one", {}).get("crown") is True:
                 break
         assert fresh["agent-one"]["crown"] is True
         assert fresh["agent-one"]["home"] == "dev"
