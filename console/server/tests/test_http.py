@@ -1,0 +1,200 @@
+"""The console's HTTP surface: the heap the hook API taught (bounded
+headers, ordered answers), the routes of ADR-015 point 10, the cookie
+session and the fleet's server-sent events — served by the raw asyncio
+httpd, asked by a raw client, no NATS and no Keycloak in sight.
+
+The login itself needs no Keycloak here: the flow is driven with the
+same seams the tests use for NATS and JWKS, and ``CONSOLE_LOGIN_OFF``
+stands the operator in (loopback only, tests and the mock).
+"""
+from __future__ import annotations
+
+import asyncio
+import json
+
+import pytest
+
+from console_server import auth, config
+from console_server.app import COOKIE, Console
+
+SETTINGS = config.Settings(public_url="http://127.0.0.1:8747",
+                          login_off=True, nats_url="")
+
+
+async def client(console: Console) -> tuple[asyncio.StreamReader, asyncio.StreamWriter]:
+    port = console._http.bound_port
+    return await asyncio.open_connection("127.0.0.1", port)
+
+
+async def get(console: Console, path: str, cookie: str | None = None
+              ) -> tuple[int, dict[str, str], bytes]:
+    reader, writer = await client(console)
+    head = f"GET {path} HTTP/1.1\r\nHost: x\r\n"
+    if cookie:
+        head += f"Cookie: {cookie}\r\n"
+    writer.write((head + "\r\n").encode())
+    raw = await asyncio.wait_for(_read_answer(reader), 5.0)
+    writer.close()
+    return raw
+
+
+async def _read_answer(reader: asyncio.StreamReader
+                       ) -> tuple[int, dict[str, str], bytes]:
+    head = await reader.readuntil(b"\r\n\r\n")
+    lines = head.decode("latin-1").split("\r\n")
+    status = int(lines[0].split()[1])
+    headers = {k.strip().lower(): v.strip()
+               for k, v in (l.partition(":")[0::2] for l in lines[1:-1])}
+    if headers.get("content-type") == "text/event-stream":
+        return status, headers, b""  # the stream holds the connection
+    if headers.get("content-type").endswith("json"):  # type: ignore[union-attr]
+        assert int(headers["content-length"]) > 0
+    body = await reader.readexactly(int(headers.get("content-length", "0")))
+    return status, headers, body
+
+
+@pytest.fixture
+async def console() -> Console:
+    c = Console(SETTINGS)
+    await c.start()
+    try:
+        yield c
+    finally:
+        await c.stop()
+
+
+async def test_healthz(console: Console) -> None:
+    status, headers, body = await get(console, "/healthz")
+    assert status == 200
+    assert body == b"ok"
+
+
+async def test_me_answers_the_stand_in_operator(console: Console) -> None:
+    status, _headers, body = await get(console, "/v1/me")
+    assert status == 200
+    doc = json.loads(body)
+    assert doc["username"] == "nobody"
+    assert doc["display_name"]
+    assert doc["groups"] == []
+
+
+async def test_asks_and_stats_answer_empty_until_nats_carries_them(
+        console: Console) -> None:
+    for path, what in (("/v1/asks", []), ("/v1/stats", [])):
+        status, _headers, body = await get(console, path)
+        assert status == 200, what
+        assert json.loads(body) == (what)
+
+
+async def test_threads_answer_an_empty_page(console: Console) -> None:
+    status, _headers, body = await get(console, "/v1/threads/anything")
+    assert status == 200
+    assert json.loads(body) == {"posts": [], "next": None}
+
+
+async def test_graph_of_an_empty_fleet(console: Console) -> None:
+    status, _headers, body = await get(console, "/v1/graph")
+    assert status == 200
+    assert json.loads(body) == {"nodes": [], "edges": [], "cutDepth": None}
+
+
+async def test_fleet_streams_sse(console: Console) -> None:
+    reader, writer = await client(console)
+    writer.write(b"GET /v1/fleet HTTP/1.1\r\nHost: x\r\n\r\n")
+    head = await asyncio.wait_for(reader.readuntil(b"\r\n\r\n"), 5.0)
+    assert b"Content-Type: text/event-stream" in head
+    # with CONSOLE_NATS unset the console serves an honest empty fleet
+    line = await asyncio.wait_for(reader.readline(), 5.0)
+    event = json.loads(line[len(b"data: "):])
+    assert event == {"type": "snapshot", "cards": []}
+    writer.close()
+
+
+async def test_static_web_and_no_traversal(console: Console) -> None:
+    object.__setattr__(console.settings, "web_dir", "")  # nothing set: 404
+    status, _headers, body = await get(console, "/")
+    assert status == 404
+
+    import tempfile
+    with tempfile.TemporaryDirectory() as tmp:
+        root = __import__("pathlib").Path(tmp)
+        (root / "index.html").write_text("<html>Choirbus</html>")
+        (root / "assets").mkdir()
+        (root / "assets" / "app.js").write_text("console.log(1)")
+        object.__setattr__(console.settings, "web_dir", str(root))
+        status, _h, body = await get(console, "/")
+        assert status == 200 and b"Choirbus" in body
+        status, _h, body = await get(console, "/assets/app.js")
+        assert status == 200 and body == b"console.log(1)"
+        # ..%2f stays outside the built app: no traversal, the app again
+        status, _h, body = await get(console, "/%2e%2e/etc/passwd")
+        assert status in (404, 200)
+        if status == 200:
+            assert body == b"<html>Choirbus</html>"
+
+
+async def test_unknown_route_is_not_found(console: Console) -> None:
+    status, _headers, _body = await get(console, "/nowhere")
+    assert status == 404
+
+
+async def test_the_login_flow_sets_the_cookie(tmp_path) -> None:
+    """The driven flow: a state redirects to Keycloak, the callback's code
+    becomes a verified operator and a cookie; every step with forged input
+    is refused."""
+    settings = config.Settings(public_url="http://127.0.0.1:8747",
+                               issuer="http://127.0.0.1:8747/kc",
+                               client_id="console", operator_group="operators",
+                               nats_url="", nats_seed_file="")
+    c = Console(settings)
+    c.endpoints = auth.Endpoints(issuer=settings.issuer,
+                                 authorization="http://127.0.0.1:8747/kc/auth",
+                                 token="http://127.0.0.1:8747/kc/token",
+                                 jwks="http://127.0.0.1:8747/kc/certs")
+
+    async def fake_discover(issuer: str) -> auth.Endpoints:
+        assert issuer == settings.issuer
+        return c.endpoints
+    await c.start(discover=fake_discover)
+    try:
+        # /v1/me without a cookie: login required
+        status, _h, _b = await get(c, "/v1/me")
+        assert status == 401
+
+        status, headers, _b = await get(c, "/login")
+        assert status == 303
+        where = headers.get("location", "")
+        assert "code_challenge_method=S256" in where
+
+        # the forged callback: no state this console issued
+        status, _h, _b = await get(c, "/callback?code=x&state=forged")
+        assert status == 400
+
+        # the real one, driven: the state is in the redirect
+        from urllib.parse import parse_qs, urlsplit
+        state = parse_qs(urlsplit(where).query)["state"][0]
+        assert state in c._pending
+
+        verified = auth.Operator(username="dembaca", display="D", groups=("operators",))
+        import unittest.mock as mock
+
+        async def fake_exchange(*args, **kwargs):
+            return "a-token"
+
+        async def fake_verify(*args, **kwargs):
+            return verified
+
+        with mock.patch.object(auth, "exchange", fake_exchange), \
+                mock.patch.object(auth, "verify", fake_verify):
+            status, headers, _b = await get(c, f"/callback?code=x&state={state}")
+        assert status == 303
+        cookie = headers.get("set-cookie", "")
+        assert cookie.startswith(COOKIE + "=")
+        assert "HttpOnly" in cookie
+        # the cookie holds the session: /v1/me names the operator
+        status, _h, body = await get(c, "/v1/me",
+                                     cookie=cookie.split(";")[0])
+        assert status == 200
+        assert json.loads(body)["username"] == "dembaca"
+    finally:
+        await c.stop()
