@@ -184,6 +184,21 @@ loaded), and with it the plugin and its relay: the next use loads both again, an
 host process takes the relay back. Whether a `--standalone` server unloads at all is
 unverified; set `false` if the bot drops out after an hour without use.
 
+**The background service is not the session's.** corral runs OpenCode with its own
+private server (`--standalone`), whose plugin starts the session's relay. Any OpenCode
+command in the sandbox that runs without `--standalone` (`opencode session list`,
+`opencode run` …) starts the background service (`opencode serve --service`) with the
+sandbox's environment, this session's `MM_BUS_*` variables included; the service is
+shared by the machine and outlives the session. The plugin does nothing there: no
+server, no skill, no turn cycle, one line in OpenCode's log
+([RT-6.20](../docs/arc42/06-runtime-view.md#620-opencode-turn-cycle-through-its-plugin)
+step 1). The host serves one relay per session, so with an older plugin such a service
+took the slot, and the session's server failed with `another relay is connected`. The
+refusal names the holder (`pid …, parent …, since …`); `ps -o pid,command -p <parent>`
+shows which process it is. For a service: `opencode service stop`, then reload the
+session's MCP server
+([RT-6.18](../docs/arc42/06-runtime-view.md#618-keyless-host-managed-session) step 6).
+
 ## Skill / instructions
 
 With the plugin the skill is added. Without it, point OpenCode at the whole skill

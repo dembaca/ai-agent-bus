@@ -12,8 +12,8 @@ import { dirname, join } from "node:path"
 import { after, afterEach, before, beforeEach, mock, test } from "node:test"
 import { fileURLToPath } from "node:url"
 
-import plugin, { addMcp, busFile, busRoot, MARK, RETRY_SEC, retryMs, SERVER, setup, SKILL, skillInfo, timing, WAIT_SEC,
-  venvDir, WAKE_BACKOFF_MAX_MS, WAKE_BACKOFF_MS, wakeBackoffMs, waitSec } from "../plugin/mattermost-agent-bus.ts"
+import plugin, { addMcp, busFile, busRoot, MARK, RETRY_SEC, retryMs, SERVER, serviceWithRelay, setup, SKILL, skillInfo,
+  timing, WAIT_SEC, venvDir, WAKE_BACKOFF_MAX_MS, WAKE_BACKOFF_MS, wakeBackoffMs, waitSec } from "../plugin/mattermost-agent-bus.ts"
 import entry from "../server.ts"
 
 const HERE = dirname(fileURLToPath(import.meta.url))
@@ -655,6 +655,37 @@ test("RT-6.20: a failed turn-end check leaves a listening session listening", as
   await settle(150)
   assert.equal(held.length, 0)
   await fx.cleanup()
+})
+
+test("RT-6.20 step 1, RT-6.18 step 6: the background service with a corral session's relay variables does nothing (#70)", async () => {
+  const relay = { MM_BUS_MCP_ENDPOINT: "tcp://127.0.0.1:9", MM_BUS_ENDPOINT: "http://127.0.0.1:9", MM_BUS_KEY: "k" }
+  const service = ["/$bunfs/root/opencode", "serve", "--service"]
+  assert.equal(serviceWithRelay(service, relay), true)
+  assert.equal(serviceWithRelay(service, {}), false) // without corral the service is OpenCode's normal home
+  assert.equal(serviceWithRelay(["opencode", "serve", "--stdio", "--port", "0"], relay), false) // --standalone's server
+  const argv = process.argv
+  const warn = mock.method(console, "warn", () => {})
+  try {
+    process.argv = [...argv, "--service"]
+    process.env.MM_BUS_MCP_ENDPOINT = relay.MM_BUS_MCP_ENDPOINT
+    const fx = fakeCtx()
+    assert.equal(await setup(fx.ctx), undefined)
+    assert.equal(fx.mcpServers.size, 0) // no second relay to the host process
+    assert.equal(fx.skills.size, 0)
+    assert.deepEqual(Object.keys(fx.hooks), [])
+    await settle()
+    assert.deepEqual(calls, []) // no long poll either
+    assert.equal(warn.mock.callCount(), 1)
+    assert.match(String(warn.mock.calls[0].arguments[0]), /background service.*--standalone/)
+    // The same service without the relay variables serves as before.
+    delete process.env.MM_BUS_MCP_ENDPOINT
+    const plain = await start()
+    assert.ok(plain.mcpServers.has(SERVER))
+  } finally {
+    process.argv = argv
+    delete process.env.MM_BUS_MCP_ENDPOINT
+    warn.mock.restore()
+  }
 })
 
 test("RT-6.20: a hand-configured server without MM_WORKSPACE that cannot be found: one warning", async () => {

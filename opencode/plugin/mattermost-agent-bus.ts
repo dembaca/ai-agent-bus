@@ -34,6 +34,10 @@
 // (parentID) is left alone. OpenCode 2 runs one plugin instance per location
 // in its long-running service and unloads a location after an hour without
 // use: the turn state is kept in the plugin's storage, so a reload goes on.
+// That service is shared by the machine and outlives a corral session: one
+// started inside a sandbox carries that session's relay variables, so it does
+// nothing; corral runs the session in a private server (--standalone), whose
+// relay is the one the host process serves (RT-6.20 step 1, RT-6.18 step 6).
 
 import type { Plugin } from "@opencode/plugin"
 import { createHash } from "node:crypto"
@@ -220,6 +224,16 @@ export function busRoot(options: Options, env: Env, here: string): string | null
   return null
 }
 
+// OpenCode's long-running background service (`opencode serve --service`, the
+// command its clients start it with) with a corral session's relay variables:
+// it took them from the sandboxed command that started it. Its relay would
+// take the host process's one relay slot from the session's own server, and
+// its long poll the session's (RT-6.20 step 1).
+export function serviceWithRelay(argv: readonly string[], env: Env): boolean {
+  return argv.some((a) => a === "--service" || a === "--service=true") &&
+    Boolean(env.MM_BUS_MCP_ENDPOINT || env.MM_BUS_ENDPOINT)
+}
+
 // The MCP transform: the server, unless the user has it (by name, or another
 // local entry that runs mattermost-ai-agent-bus-mcp). true: the user's server
 // has no MM_WORKSPACE, so its endpoint file may lie where the plugin does not look.
@@ -306,6 +320,11 @@ export async function setup(ctx: Plugin.Context) {
   const directory = String(ctx.location.directory)
   const realDir = real(directory) || directory
   const env = process.env as Env
+  if (serviceWithRelay(process.argv, env)) {
+    console.warn(`[${SERVER}] OpenCode's background service holds a corral session's relay variables: no bus ` +
+      `server, skill or turn cycle here, the session's own server (--standalone) has them (adapters/opencode.md)`)
+    return
+  }
   const storeKey = `${SERVER}/${sha16(realDir)}`
   let unkeyed = false // a hand-configured server without MM_WORKSPACE
   let warned = false

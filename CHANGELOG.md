@@ -5,6 +5,16 @@ before 0.5.0 are described in the git history.
 
 ## Unreleased
 
+- **OpenCode's background service no longer takes a corral session's relay** (#70,
+  RT-6.20 step 1, RT-6.18 step 6). An OpenCode command run in the sandbox without
+  `--standalone` starts the machine's background service (`opencode serve --service`)
+  with the session's `MM_BUS_*` variables; its plugin instance added a second relay
+  to the session's host process, which serves one, so the session's own server failed
+  with `another relay is connected`. With `--service` in its command line and those
+  variables set, the plugin now adds no server and no skill, registers no hook and
+  says so once in OpenCode's log. The refusal of a second relay names the one that
+  holds the slot: its pid, parent pid and connect time, which the relay now sends in
+  its handshake.
 - **A busy coordinator keeps its crown** (#64, RT-6.6 steps 1, 4 and 11).
   The prompt hook tells the server that a turn began before anything else,
   so a slow hook no longer leaves a running turn unknown, which made the
