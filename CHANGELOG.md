@@ -5,12 +5,12 @@ before 0.5.0 are described in the git history.
 
 ## 0.98.0
 
-Needs: for MM_NATS_HOMES, the login service updated first, with its attestation rights.
+Needs: for MM_NATS_HOMES, the login service updated first, with its attestation rights, and MM_BRIDGE_BOT with the bridge.
 
 Peers over NATS are judged by the login service's records, the login service gets
 its channel directory (admin API, import from Mattermost, account index), a busy or
-silent coordinator keeps its crown, the MCP server reaches NATS over WebSocket, and a
-post read from the bus is bounded in size. Without `MM_NATS_HOMES` the NATS changes do nothing. Nothing is breaking.
+silent coordinator keeps its crown, the MCP server reaches NATS over WebSocket, agents drop the central bridge's copies
+(`MM_BRIDGE_BOT`), and a post read from the bus is bounded in size. Without `MM_NATS_HOMES` the NATS changes do nothing. Nothing is breaking.
 
 ### Added
 
@@ -28,14 +28,6 @@ post read from the bus is bounded in size. Without `MM_NATS_HOMES` the NATS chan
   read that may be cut. Unset, nothing changes. `bus_info`'s `over_nats`,
   the server's instructions and SKILL.md say people see such a home through
   the bridge.
-- **A signal no longer skips the MCP server's exit work** (RT-6.18 step 7,
-  RT-6.10). The host process catches its signals before it writes the
-  readiness file: a SIGTERM from `postEnd` right after the start (no relay
-  ever connected) came while the NATS start was still importing nats-py and
-  aiohttp, and ended the process without `BYE`, stats or unregistering.
-  The stdio server's signal handler starts the exit work in a thread of its
-  own: run inside an interrupted write to stderr, its first log line raised
-  a reentrant-call error and the endpoint file stayed behind.
 - **The MCP server reaches NATS over WebSocket** (RT-6.36, part of #51).
   `MM_NATS_URL` takes `wss://` (TLS inside the WebSocket, verified with
   `MM_NATS_CA_FILE` like `tls://`) or `ws://` on a loopback host only; a
@@ -142,6 +134,14 @@ post read from the bus is bounded in size. Without `MM_NATS_HOMES` the NATS chan
 
 ### Fixed
 
+- **A signal no longer skips the MCP server's exit work** (RT-6.18 step 7,
+  RT-6.10). The host process catches its signals before it writes the
+  readiness file: a SIGTERM from `postEnd` right after the start (no relay
+  ever connected) came while the NATS start was still importing nats-py and
+  aiohttp, and ended the process without `BYE`, stats or unregistering.
+  The stdio server's signal handler starts the exit work in a thread of its
+  own: run inside an interrupted write to stderr, its first log line raised
+  a reentrant-call error and the endpoint file stayed behind.
 - **The crown no longer breaks a table or list** (RT-6.6 step 3). A coordinator's
   post that opens with a Markdown block (table row, list item, heading, code
   fence, quote) gets the 👑 on a line of its own and a blank line after it,
@@ -212,6 +212,13 @@ post read from the bus is bounded in size. Without `MM_NATS_HOMES` the NATS chan
   and no fault accounts for it - a path that carried nothing is not a
   measurement - and a run under a fault that discards or freezes every posted
   frame says so in its report instead of reading like a healthy run.
+
+### Docs
+
+- The arc42 runtime view (#87) and the decisions, risks and chapters 1 to 7
+  (#88) were checked against the code and corrected; ADR-016 is in English
+  and adds that everything Mattermost-facing moves into one service, step by
+  step.
 
 ## 0.97.0
 
