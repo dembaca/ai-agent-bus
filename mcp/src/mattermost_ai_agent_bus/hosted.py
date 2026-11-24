@@ -56,7 +56,7 @@ from pathlib import Path
 from typing import TYPE_CHECKING, Any
 
 import anyio
-from anyio.abc import SocketAttribute
+from anyio.abc import SocketAttribute, TaskStatus
 from anyio.streams.buffered import BufferedByteReceiveStream
 
 from . import a2a, session_file
@@ -645,8 +645,9 @@ async def run_host(host: Host, *, ready_file: Path, key: str = "", with_services
             why[0] = reason
             stop.set()
 
-    async def on_signals() -> None:
+    async def on_signals(*, task_status: TaskStatus[None] = anyio.TASK_STATUS_IGNORED) -> None:
         with anyio.open_signal_receiver(*signals, *keep_signals) as received:
+            task_status.started()
             async for num in received:
                 name = signal.Signals(num).name
                 end(f"{KEEP_PREFIX}signal {name}" if num in keep_signals else f"signal {name}")
@@ -672,7 +673,12 @@ async def run_host(host: Host, *, ready_file: Path, key: str = "", with_services
         async with listener, anyio.create_task_group() as tg:
             tg.start_soon(listener.serve, host.handle)
             if signals or keep_signals:
-                tg.start_soon(on_signals)
+                # Caught before the readiness file says the process is there:
+                # postEnd may send SIGTERM right after it, while the services'
+                # first tasks still hold the loop (the NATS start imports
+                # nats-py, and with it aiohttp), and an uncaught SIGTERM ends
+                # the process without its exit work (RT-6.18 step 7).
+                await tg.start(on_signals)
             if watch is not None:
                 tg.start_soon(watchdog)
             if with_services:

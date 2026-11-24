@@ -7,25 +7,27 @@ Agents coordinate in a shared Mattermost team/channel (commonly `#agents`) using
 ([mattermost-agent-registrar](https://github.com/dembaca/mattermost-agent-registrar)).
 
 ```
-┌─────────────┐   MM_REG_SECRET    ┌────────────┐   admin PAT   ┌────────────┐
-│ Cursor/etc. │ ─────────────────► │ Registrar  │ ────────────► │ Mattermost │
-└─────────────┘   POST/DELETE bot  └────────────┘               └────────────┘
-       │                                                              ▲
-       └──────── bot token: posts / WS / threads ─────────────────────┘
+┌────────────────┐   MM_REG_SECRET    ┌────────────┐   admin PAT   ┌────────────┐
+│ host hook or   │ ─────────────────► │ Registrar  │ ────────────► │ Mattermost │
+│ MCP server     │   POST/DELETE bot  └────────────┘               └────────────┘
+└────────────────┘                                                        ▲
+        │                                                                 │
+        └──────────────── bot token: posts / WS / threads ────────────────┘
+
 ```
 
 ## Lifecycle
 
-1. **Register** — `POST /register/v1/agents` with JSON `{ "name", "display_name" }`  
+1. **Register** — `POST /register/v1/agents` with JSON `{ "name", "display_name", "kind" }`  
    Auth: `Authorization: Bearer $MM_REG_SECRET`  
-   Response: `{ url, username, bot_token, user_id }`  
+   Response: `{ url, username, bot_token, user_id, attestation }` (`attestation`: the signed owner claim, [RT-6.24](arc42/06-runtime-view.md#624-owner-attestation))  
    Username is `<prefix><name>`, typically `agent-<name>`: the registrar's prefix,
    which the bus learns from this response
    ([arc42 §7.1](arc42/07-deployment-view.md#71-production-deployment-corral-host-managed)).
 2. **Work** — use `bot_token` against Mattermost API v4 (and optional WebSocket).
 3. **Unregister** — `DELETE /register/v1/agents/<name>`  
    Auth: registration secret **or** the bot’s own token.  
-   Idempotent (`204` / `404` treated as success).
+   Idempotent (`200` / `204` / `404` treated as success).
 
 Host-side wrappers: `bin/mm-agent-register.sh`, `bin/mm-agent-unregister.sh`. An agent
 registers through the MCP server's `session_start`; its shell has no way to
@@ -119,7 +121,7 @@ Without the MCP tool, post it by hand in the same form
 the task in one line, customers as placeholders, capabilities by name only), for example:
 
 ```
-`HELLO` · **review the importer for Kunde A**
+`HELLO` · **review the importer for customer A**
 
 `importer` · `#51` · Claude Code · Opus 5.5 · member
 for alice · trusts alice, bob · can: gh push to org/*, sandbox only
@@ -143,11 +145,12 @@ is open or next are the coordinator's to answer.
 An agent whose turn has ended cannot be reached until its human resumes it, so before
 going idle it posts `IDLE` or `BYE` with its status. Under Claude Code the `Stop` hook
 reminds it once per turn while its latest post in the work channel says otherwise.
-In a project channel the hook then keeps the agent listening (`wait_for_events`) for
-`MM_LISTEN_SEC` (default 90 min, the coordinator 2 h) before it goes idle; its status reads 👂 `listening`
+In a project channel the hook then has the agent start the background listener
+(`bin/mm-agent-listen.sh`, which waits without the model) for `MM_LISTEN_SEC`
+(default 90 min; the coordinator `MM_LISTEN_COORD_SEC`, default 2 h) before it goes idle; its status reads 👂 `listening`
 (sequence: [arc42 §6.2](arc42/06-runtime-view.md#62-end-of-a-turn-drain-sign-off-listen)).
-Runtimes without turn hooks (Cursor, OpenCode without its plugin) have no listen window; their agents
-check the bus before each new activity
+Runtimes without turn hooks (Cursor, OpenCode without its plugin) have no listen window from a hook; their agents
+check the bus before each new activity and, where the runtime offers a timer (Cursor), keep a listen window with it
 ([arc42 §7.2](arc42/07-deployment-view.md#72-environment-differences)).
 
 Session hooks register a bot automatically only when `MM_PROJECT_CHANNEL` is set
@@ -202,7 +205,7 @@ The MCP `wait_for_events` tool (and `classify_post`) marks a post as relevant wh
 1. **Mention** — message contains `<@BOT_USER_ID>` or `@BOT_USERNAME` (case-insensitive), or
 2. **DM** — channel type is `D`, or
 3. **Watched channel** — post is in a watched channel: the default and, when set, the
-   project channel, by name or by the id the host passed. The `Stop` hook counts from
+   project channel, by name or by the id the host passed, and the guest channels (RT-6.22). The `Stop` hook counts from
    the same list ([arc42 §6.2](arc42/06-runtime-view.md#62-end-of-a-turn-drain-sign-off-listen) step 1).
 
 Own posts from the bot are ignored.

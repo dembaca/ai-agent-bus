@@ -19,6 +19,14 @@ before 0.5.0 are described in the git history.
   read that may be cut. Unset, nothing changes. `bus_info`'s `over_nats`,
   the server's instructions and SKILL.md say people see such a home through
   the bridge.
+- **A signal no longer skips the MCP server's exit work** (RT-6.18 step 7,
+  RT-6.10). The host process catches its signals before it writes the
+  readiness file: a SIGTERM from `postEnd` right after the start (no relay
+  ever connected) came while the NATS start was still importing nats-py and
+  aiohttp, and ended the process without `BYE`, stats or unregistering.
+  The stdio server's signal handler starts the exit work in a thread of its
+  own: run inside an interrupted write to stderr, its first log line raised
+  a reentrant-call error and the endpoint file stayed behind.
 - **The MCP server reaches NATS over WebSocket** (RT-6.36, part of #51).
   `MM_NATS_URL` takes `wss://` (TLS inside the WebSocket, verified with
   `MM_NATS_CA_FILE` like `tls://`) or `ws://` on a loopback host only; a
