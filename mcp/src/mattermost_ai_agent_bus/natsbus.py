@@ -618,6 +618,7 @@ class NatsBus:
                 raise ValueError(f"invalid {what} prefix")
         for url in settings.servers:
             _check_server(url)
+        _tls_mode(settings.servers)  # one scheme per pool, also for settings built around the check
         self._s = settings
         self._login = login
         self._owner = owner

@@ -625,6 +625,10 @@ def test_wss_is_tls_inside_the_websocket_and_ws_is_plain() -> None:
     object.__setattr__(s, "servers", ("nats://remote.example.org:4222",))
     with pytest.raises(ValueError):
         NatsBus(s, FakeLogin(), "alice", lambda e: None)
+    s = NatsSettings(servers=("ws://127.0.0.1:1",), home="home")
+    object.__setattr__(s, "servers", ("tls://ok.example.org", "ws://127.0.0.1:1"))
+    with pytest.raises(ValueError):
+        NatsBus(s, FakeLogin(), "alice", lambda e: None)  # one scheme per pool, at construction
 
 
 T0 = 1_800_000_000.0
