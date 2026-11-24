@@ -1124,3 +1124,138 @@ async def test_a_refresh_that_works_deletes_the_mark(tmp_path):
     assert script.device_requests == 1
     assert script.refreshed, "the refresh path is the one under test"
     assert store.load(entry) is None, "a login that worked leaves no mark"
+
+
+# --- issue #10: a host clock ahead of the issuer, odd times, the cooldown's cause (RT-6.34) ---
+
+class Timed(Script):
+    """Tokens stamped by the issuer's own clock, which runs `behind` this host's."""
+
+    def __init__(self, issuer_now, lifetime=300, expires_in=300, **claims):
+        super().__init__()
+        self.issuer_now, self.lifetime, self.expires_in, self.claims = issuer_now, lifetime, expires_in, claims
+
+    def _tokens(self):
+        self.n += 1
+        iat = self.issuer_now()
+        claims = {"iat": iat, "exp": iat + self.lifetime, **self.claims}
+        body = {"access_token": jwt("alice", n=self.n, **claims),
+                "refresh_token": f"refresh-secret-{self.n}"}
+        if self.expires_in is not None:
+            body["expires_in"] = self.expires_in
+        return httpx.Response(200, json=body)
+
+
+@pytest.mark.parametrize("expires_in", [300, None])
+async def test_a_host_clock_ahead_of_the_issuer_still_keeps_its_token(expires_in):
+    """The host's wall clock runs an hour ahead of Keycloak's: by `exp` against the
+    host's clock every token was stale, and every call refreshed and rotated it.
+    The token's lifetime counts from when it arrived (`exp - iat`), not its `exp`."""
+    wall, mono = [1_003_600.0], [0.0]
+    script = Timed(lambda: int(wall[0]) - 3600, expires_in=expires_in)
+    lg = mk(transport=httpx.MockTransport(script), notifier=Note(),
+            now=lambda: mono[0], wall=lambda: wall[0])
+    first = await lg.access_token()
+    assert await lg.access_token() == first
+    wall[0] += 200
+    mono[0] += 200
+    assert await lg.access_token() == first and script.refreshed == []
+    wall[0] += 41  # 59 s left of 300
+    mono[0] += 41
+    assert await lg.access_token() != first and script.refreshed == ["refresh-secret-1"]
+
+
+async def test_a_host_clock_ahead_still_counts_a_sleep():
+    """The wall clock still ends a token while the monotonic one stood still."""
+    wall = [1_003_600.0]
+    script = Timed(lambda: int(wall[0]) - 3600)
+    lg = mk(transport=httpx.MockTransport(script), notifier=Note(), now=lambda: 0.0, wall=lambda: wall[0])
+    first = await lg.access_token()
+    wall[0] += 3600
+    assert await lg.access_token() != first and script.refreshed == ["refresh-secret-1"]
+
+
+async def test_expires_in_shorter_than_the_token_counts():
+    wall = [1_000_000.0]
+    script = Timed(lambda: int(wall[0]), lifetime=3600, expires_in=120)
+    lg = mk(transport=httpx.MockTransport(script), notifier=Note(), now=lambda: 0.0, wall=lambda: wall[0])
+    first = await lg.access_token()
+    wall[0] += 61  # 59 s left of the 120 the response gave
+    assert await lg.access_token() != first
+
+
+@pytest.mark.parametrize("claims, match", [
+    ({"exp": float("nan")}, "exp is not a usable time"),
+    ({"exp": float("inf")}, "exp is not a usable time"),
+    ({"exp": 10 ** 400}, "exp is not a usable time"),
+    ({"exp": -5}, "exp is not a usable time"),
+    ({"exp": "soon"}, "exp is not a usable time"),
+    ({"exp": True}, "exp is not a usable time"),
+    ({"iat": float("nan")}, "iat is not a usable time"),
+    ({"iat": 2_000_000, "exp": 1_000_000}, "expires before it was issued"),
+])
+async def test_an_odd_time_in_the_token_is_a_login_error_and_nothing_is_stored(claims, match):
+    """Only a hostile issuer sends these. A NaN `exp` refreshed on every call; an
+    integer too large for a float raised OverflowError after the token was stored,
+    no LoginError, so no cooldown."""
+    class Odd(Script):
+        def _tokens(self):
+            self.n += 1
+            return httpx.Response(200, json={
+                "access_token": jwt("alice", **claims), "expires_in": 300,
+                "refresh_token": f"refresh-secret-{self.n}"})
+
+    script, store, clock = Odd(), keystore.Ephemeral(), [0.0]
+    lg = mk(store, transport=httpx.MockTransport(script), notifier=Note(), now=lambda: clock[0])
+    with pytest.raises(login.LoginError, match=match):
+        await lg.access_token()
+    assert stored(store) is None and script.revoked == ["refresh-secret-1"]
+    with pytest.raises(login.LoginError, match="a new one starts in"):
+        await lg.access_token()
+    assert script.device_requests == 1
+
+
+async def test_an_odd_time_on_a_refresh_is_a_login_error():
+    class Odd(Script):
+        def _tokens(self):
+            self.n += 1
+            return httpx.Response(200, json={
+                "access_token": jwt("alice", exp=10 ** 400), "expires_in": 300,
+                "refresh_token": f"refresh-secret-{self.n}"})
+
+    store, script = keystore.Ephemeral(), Odd()
+    put(store, "refresh-secret-0")
+    lg = mk(store, transport=httpx.MockTransport(script), notifier=Note())
+    with pytest.raises(login.LoginError, match="exp is not a usable time"):
+        await lg.access_token()
+    assert script.revoked == ["refresh-secret-1"] and stored(store) == "refresh-secret-0"
+
+
+async def test_the_cooldown_names_the_error_that_set_it(tmp_path):
+    """Keycloak down: during the cooldown a caller sees why, not only "failed".
+    A new process on the same host sees the fixed reason only: the mark holds no text."""
+    def down(request):
+        raise httpx.ConnectError("down")
+
+    store, clock = keystore.HostFile(tmp_path / "login"), [1000.0]
+    lg = mk(store, transport=httpx.MockTransport(down), notifier=Note(),
+            now=lambda: clock[0], wall=lambda: clock[0])
+    with pytest.raises(login.LoginError, match=r"discovery document not read \(ConnectError\)"):
+        await lg.access_token()
+    with pytest.raises(login.LoginError, match=r"^the last approval failed \(Keycloak's discovery document "
+                                               r"not read \(ConnectError\)\); a new one starts in"):
+        await lg.access_token()
+    other = mk(store, transport=httpx.MockTransport(down), notifier=Note(),
+               now=lambda: clock[0], wall=lambda: clock[0])
+    with pytest.raises(login.LoginError, match=r"^the last approval failed; a new one starts in"):
+        await other.access_token()
+    mark = store.load(keystore.cooldown_entry(ISSUER, "agent-bus", "alice")) or ""
+    assert mark.split(" ", 1)[1:] == ["failed"], mark
+
+
+async def test_the_cooldown_without_a_notifier_names_it():
+    lg = mk(transport=httpx.MockTransport(Script()), notifier=None)
+    with pytest.raises(login.NotifyError):
+        await lg.access_token()
+    with pytest.raises(login.LoginError, match=r"failed \(no way to tell the human about the approval\)"):
+        await lg.access_token()

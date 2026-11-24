@@ -5,6 +5,17 @@ before 0.5.0 are described in the git history.
 
 ## Unreleased
 
+- **Host login: a fast host clock, odd token times, the cooldown's cause**
+  (#10, RT-6.34 step 3). A token's lifetime is now the shorter of
+  `expires_in` and its own `exp - iat`, counted from when it arrived: a host
+  wall clock running ahead of Keycloak's by more than the lifetime made every
+  token stale, so every call refreshed and rotated it. An `exp` or `iat` that
+  is no sane time (NaN, infinite, an integer too large for a float), or an
+  `exp` before the `iat`, is a `LoginError` before anything is stored; a huge
+  integer raised `OverflowError` after the token was stored, with no
+  cooldown. During a cooldown set by any other error, such as Keycloak not
+  reachable or no notifier, callers see that error's text, not only
+  "failed"; the mark on the host still holds only the fixed reasons.
 - **A busy coordinator keeps its crown** (#64, RT-6.6 steps 1, 4 and 11).
   The prompt hook tells the server that a turn began before anything else,
   so a slow hook no longer leaves a running turn unknown, which made the
