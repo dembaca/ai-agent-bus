@@ -157,11 +157,23 @@ func TestTheExampleServerConfiguration(t *testing.T) {
 			if u.Account == nil || u.Account.Name != "BUS" {
 				t.Errorf("the bridge's user is not in BUS: %+v", u.Account)
 			}
-			// Read-only on the bus, its own consumers and bucket:
+			// Read-only on the bus, its own consumers and its bucket, which the
+			// operator makes: it may create no stream (a source would read what
+			// it must not), and no consumer but its own.
 			pub := strings.Join(u.Permissions.Publish.Allow, " ")
-			if !strings.Contains(pub, "$JS.API.CONSUMER.CREATE.BUS.bridge_home.bus.ch.home.*") ||
-				!strings.Contains(pub, "$KV.BUS_BRIDGE.>") || strings.Contains(pub, "bus.>") {
-				t.Errorf("the bridge's rights: %+v", u.Permissions.Publish.Allow)
+			for _, want := range []string{"$JS.API.CONSUMER.CREATE.BUS.bridge_home.bus.ch.home.*",
+				"$JS.API.CONSUMER.CREATE.PRESENCE.bridge_presence.presence.*.*", "$KV.BUS_BRIDGE.>"} {
+				if !strings.Contains(pub, want) {
+					t.Errorf("the bridge's rights lack %s: %+v", want, u.Permissions.Publish.Allow)
+				}
+			}
+			for _, unwanted := range []string{"bus.>", "presence.>", "$JS.API.STREAM.CREATE"} {
+				if strings.Contains(pub, unwanted) {
+					t.Errorf("the bridge may %s: %+v", unwanted, u.Permissions.Publish.Allow)
+				}
+			}
+			if sub := strings.Join(u.Permissions.Subscribe.Allow, " "); sub != "_INBOX.>" {
+				t.Errorf("the bridge subscribes to %q", sub)
 			}
 		case jsPub:
 			if u.Account == nil || u.Account.Name != "BUS" {

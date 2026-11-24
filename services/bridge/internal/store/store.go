@@ -25,7 +25,12 @@ type KV struct {
 	kv jetstream.KeyValue
 }
 
-// Open binds to the bucket, creating it when it does not exist.
+// Open binds to the bucket. It never creates it, and the bridge's NATS user has
+// no right to create a stream: a stream's sources would let it read what it
+// must not (a consumer or a source with a DM filter into its own bucket). The
+// operator creates the bucket before the first start:
+//
+//	nats kv add BUS_BRIDGE --history 1
 func Open(ctx context.Context, nc *nats.Conn, bucket string) (*KV, error) {
 	js, err := jetstream.New(nc)
 	if err != nil {
@@ -33,9 +38,8 @@ func Open(ctx context.Context, nc *nats.Conn, bucket string) (*KV, error) {
 	}
 	kv, err := js.KeyValue(ctx, bucket)
 	if errors.Is(err, jetstream.ErrBucketNotFound) {
-		kv, err = js.CreateKeyValue(ctx, jetstream.KeyValueConfig{
-			Bucket: bucket, History: 1, Storage: jetstream.FileStorage,
-		})
+		return nil, fmt.Errorf("store: the bucket %q does not exist; the operator creates it "+
+			"(nats kv add %s --history 1): %w", bucket, bucket, err)
 	}
 	if err != nil {
 		return nil, fmt.Errorf("store: %w", err)

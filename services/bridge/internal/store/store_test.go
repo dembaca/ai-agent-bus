@@ -7,6 +7,7 @@ import (
 
 	natsserver "github.com/nats-io/nats-server/v2/server"
 	"github.com/nats-io/nats.go"
+	"github.com/nats-io/nats.go/jetstream"
 
 	"github.com/dembaca/ai-agent-bus/services/bridge/internal/mirror"
 )
@@ -28,6 +29,15 @@ func open(t *testing.T) (*KV, *nats.Conn) {
 		t.Fatal(err)
 	}
 	t.Cleanup(nc.Close)
+	js, err := jetstream.New(nc)
+	if err != nil {
+		t.Fatal(err)
+	}
+	// the operator's step, not the bridge's
+	if _, err := js.CreateKeyValue(context.Background(), jetstream.KeyValueConfig{
+		Bucket: "BUS_BRIDGE", History: 1}); err != nil {
+		t.Fatal(err)
+	}
 	kv, err := Open(context.Background(), nc, "BUS_BRIDGE")
 	if err != nil {
 		t.Fatal(err)

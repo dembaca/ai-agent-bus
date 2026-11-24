@@ -78,7 +78,7 @@ accounts {
 		t.Fatal(err)
 	}
 
-	denied := make(chan error, 4)
+	denied := make(chan error, 16)
 	bridgeNC, err := nats.Connect(srv.ClientURL(), nats.UserInfo("bridge", "pw"),
 		nats.ErrorHandler(func(_ *nats.Conn, _ *nats.Subscription, err error) { denied <- err }))
 	if err != nil {
@@ -89,18 +89,42 @@ accounts {
 	if err != nil {
 		t.Fatal(err)
 	}
-	// the bucket is created by the bridge on its first start
+	// The three ways a broad right would let the bridge read what it must not
+	// (164534's cross-model probes): a consumer of its own name with a DM
+	// filter, the short create form with a body that names one, and a bucket
+	// whose source is a DM filter.
+	createCtx, cancelCreate := context.WithTimeout(ctx, 3*time.Second)
+	defer cancelCreate()
+	if _, err := bjs.CreateStream(createCtx, jetstream.StreamConfig{Name: "KV_BUS_BRIDGE",
+		Subjects: []string{"$KV.BUS_BRIDGE.>"},
+		Sources:  []*jetstream.StreamSource{{Name: "BUS", FilterSubject: "bus.dm.>"}}}); err == nil {
+		t.Fatal("the bridge created a stream that reads the DMs")
+	}
+	if _, err := bjs.CreateOrUpdateConsumer(createCtx, "BUS", jetstream.ConsumerConfig{
+		Name: "evil", FilterSubject: "bus.dm.>", AckPolicy: jetstream.AckNonePolicy}); err == nil {
+		t.Fatal("the bridge created a consumer over the DMs")
+	}
+	if err := bridgeNC.Publish("$JS.API.CONSUMER.CREATE.BUS.bridge_home",
+		[]byte(`{"stream_name":"BUS","config":{"name":"bridge_home","filter_subject":"bus.dm.>"}}`)); err != nil {
+		t.Fatal(err)
+	}
+	_ = bridgeNC.Flush()
+	select {
+	case derr := <-denied:
+		if !strings.Contains(derr.Error(), "Permissions Violation") {
+			t.Fatalf("not a permission refusal: %v", derr)
+		}
+	case <-time.After(2 * time.Second):
+		t.Fatal("the short create form was not refused")
+	}
+
+	// The operator makes the bucket; the bridge only binds to it.
+	if _, err := ajs.CreateKeyValue(ctx, jetstream.KeyValueConfig{Bucket: "BUS_BRIDGE", History: 1}); err != nil {
+		t.Fatal(err)
+	}
 	kv, err := store.Open(ctx, bridgeNC, "BUS_BRIDGE")
 	if err != nil {
-		var all []string
-		for {
-			select {
-			case derr := <-denied:
-				all = append(all, derr.Error())
-			default:
-				t.Fatalf("the bridge may not create its bucket: %v (denied: %v)", err, all)
-			}
-		}
+		t.Fatalf("the bridge may not bind to its bucket: %v", err)
 	}
 
 	s := &sink{got: make(chan [3]string, 4), react: make(chan string, 4)}

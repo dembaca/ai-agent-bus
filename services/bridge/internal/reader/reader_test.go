@@ -88,12 +88,24 @@ func until(t *testing.T, s *sink, want string) [3]string {
 	return [3]string{}
 }
 
-func TestAPostAReplyAndAReactionOverARealServer(t *testing.T) {
-	nc, js := lab(t)
+// operatorBucket is the operator's step the bridge cannot do itself: it makes
+// the KV bucket, then the bridge binds to it.
+func operatorBucket(t *testing.T, nc *nats.Conn, js jetstream.JetStream) *store.KV {
+	t.Helper()
+	if _, err := js.CreateKeyValue(context.Background(), jetstream.KeyValueConfig{
+		Bucket: "BUS_BRIDGE", History: 1}); err != nil {
+		t.Fatal(err)
+	}
 	kv, err := store.Open(context.Background(), nc, "BUS_BRIDGE")
 	if err != nil {
 		t.Fatal(err)
 	}
+	return kv
+}
+
+func TestAPostAReplyAndAReactionOverARealServer(t *testing.T) {
+	nc, js := lab(t)
+	kv := operatorBucket(t, nc, js)
 	s := &sink{got: make(chan [3]string, 8), react: make(chan string, 4)}
 	cancel, _ := start(t, nc, js, kv, s)
 	defer cancel()
@@ -136,10 +148,7 @@ func TestAPostAReplyAndAReactionOverARealServer(t *testing.T) {
 
 func TestARestartNeitherRepeatsNorLoses(t *testing.T) {
 	nc, js := lab(t)
-	kv, err := store.Open(context.Background(), nc, "BUS_BRIDGE")
-	if err != nil {
-		t.Fatal(err)
-	}
+	kv := operatorBucket(t, nc, js)
 	s := &sink{got: make(chan [3]string, 8), react: make(chan string, 4)}
 	cancel, done := start(t, nc, js, kv, s)
 	waitConsumer(t, js, "BUS")
