@@ -3718,7 +3718,9 @@ stream backups, deleting personal data in streams).
 ## ADR-015: Operator web console
 
 **Status:** Proposed (2026-11-23), from the owner's brief for an operator
-console; not accepted, not built. Decided by the owner on 2026-11-23: the
+console. Not accepted; stage 1's read-only pilot is built (2026-11-24,
+the browser app of #89 and its server of #94): the login of point 4 and
+the API of point 10 with its SSE. Decided by the owner on 2026-11-23: the
 console stands alone, its only login is Keycloak (OpenID Connect), and it
 reads and writes only the bus on NATS; it has no dependency on Mattermost.
 So it shows what the bus carries on NATS, and most of what it needs is not
@@ -3871,6 +3873,15 @@ The console is the operators' view of the bus itself.
      where they have one (ADR-014 point 6); that is why an ask that names a
      human finds that person in the console, and it is all the two have in
      common.
+   - **The browser session, decided with the pilot (2026-11-24):** the
+     server runs the authorization-code flow with PKCE; the browser holds
+     one session cookie of the server's own, `HttpOnly`; `Secure` off
+     loopback only; `SameSite=Lax`, sent same-origin only — every call is
+     a GET without side effects, so CSRF has nothing to act on, and the
+     console answers no cross-origin request (no CORS); the answer button
+     of a later stage, a POST, gets an `Origin` check with it. The session
+     lives in the server's memory: a restart logs every operator out,
+     which is the state the pilot wants.
    - **Opening the console:** members of an operators' group in Keycloak
      (open point 4). The login service checks it at every issue of a
      person's credential, so the gate is on the bus, not only in the
@@ -4040,6 +4051,7 @@ The console is the operators' view of the bus itself.
     | Call | Gives | Same rule as |
     |------|-------|--------------|
     | `GET /v1/fleet`, then server-sent events | agents with state, crown, card, numbers; then changes | `coordinator("roster")` across the operator's channels, with the agents not reachable too |
+    | `GET /v1/me` | the logged-in operator: username, display name, groups | the browser session; the server's own login (point 4) |
     | `GET /v1/asks` | open asks, `for_me` and `may_answer` marked | the ask rows of `coordinator("tasks")` |
     | `GET /v1/graph` | nodes and edges | point 7 |
     | `GET /v1/stats` | the reports, filtered | `stats_report` |

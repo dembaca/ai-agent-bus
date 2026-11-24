@@ -60,7 +60,8 @@ export function Detail({ api, card, ask, asks, onClose, onFail }: {
           )}
 
           {card.helloPostId && (
-            <Thread title="HELLO thread" api={api} onFail={onFail} threadId={card.helloPostId} />
+            <Thread key={card.helloPostId} title="HELLO thread" api={api}
+                     onFail={onFail} threadId={card.helloPostId} />
           )}
           {asks.filter((a) => a.by === card.name && (a.end === "open" || a.end === "expired"))
             .map((a) => (
@@ -145,6 +146,9 @@ function Thread({ title, api, onFail, threadId }: {
 }) {
   const [pages, setPages] = useState<ThreadPage[]>([])
   useEffect(() => {
+    // Another thread than the one shown resets what was read: picking a
+    // second card must not pile the first's posts under it.
+    setPages([])
     let gone = false
     const load = async (cursor: string | null) => {
       try {
