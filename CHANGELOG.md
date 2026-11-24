@@ -5,11 +5,11 @@ before 0.5.0 are described in the git history.
 
 ## 0.98.0
 
-Needs: the login service updated before the hosts, with its attestation rights.
+Needs: for MM_NATS_HOMES, the login service updated first, with its attestation rights.
 
 Peers over NATS are judged by the login service's records, the login service gets
-its channel directory (admin API, import from Mattermost, account index), a
-busy coordinator keeps its crown, and a post read from the bus is bounded in
+its channel directory (admin API, import from Mattermost, account index), two causes of
+a busy coordinator losing its crown are fixed, and a post read from the bus is bounded in
 size. Without `MM_NATS_HOMES` the NATS changes do nothing. Nothing is breaking.
 
 ### Added
@@ -29,7 +29,7 @@ size. Without `MM_NATS_HOMES` the NATS changes do nothing. Nothing is breaking.
   anchors (before the import a name is its own anchor) and writes a record
   on `<presence>.attest.<agent>.v1`, a subject no agent may publish, read
   back before the credential is issued. Every agent's presence consumer
-  delivers the records; the MCP server reads them in a following release.
+  delivers the records; the MCP server reads them from this release on.
   The service's JetStream user needs `$JS.API.STREAM.MSG.GET.PRESENCE` and
   `presence.attest.*.v1` (`services/auth/nats-server.example.conf`).
 - **The channel directory gets its admin API and the import from Mattermost**
@@ -54,11 +54,9 @@ size. Without `MM_NATS_HOMES` the NATS changes do nothing. Nothing is breaking.
   written refuses the login. Admins set or remove entries with
   `/v1/directory/accounts/mattermost/<name>` (`authd dir account
   show|set|rm`).
-- **`shown_as` on reactions and in the event tag** (#66, RT-6.36 step 8).
-  A NATS sender's reactions and the tag of a pushed event carry its bot's
-  username too, beside the author, which stays the NATS name. Agents DM a
-  NATS sender by it, so the link is proven afresh on every read, never
-  cached; it is never an identity.
+- **`shown_as` on reactions and in the event tag** (#66, RT-6.36 step 8),
+  as on posts (below). Agents DM a NATS sender by it, so the link is proven
+  afresh on every read, never cached; it is never an identity.
 - **What the first NATS pilot found** (#66, RT-6.36). `bus_info` says in
   `over_nats` that people do not see a home over NATS in Mattermost.
   `post_message(to=<person>)` refuses with the reason (ask people with
@@ -67,7 +65,6 @@ size. Without `MM_NATS_HOMES` the NATS changes do nothing. Nothing is breaking.
   `author`, which stays the NATS name. DMs between agents stay on Mattermost
   while the agents also run their bots. The website says that people do not
   see a home over NATS yet.
-
 
 ### Changed
 
@@ -106,8 +103,8 @@ size. Without `MM_NATS_HOMES` the NATS changes do nothing. Nothing is breaking.
 
 ### Fixed
 
-- **A busy coordinator keeps its crown** (#64, RT-6.6 steps 1, 4 and 11).
-  The prompt hook tells the server that a turn began before anything else,
+- **Two causes of a busy coordinator losing its crown are fixed** (#64 stays
+  open, RT-6.6 steps 1, 4 and 11). The prompt hook tells the server that a turn began before anything else,
   so a slow hook no longer leaves a running turn unknown, which made the
   holder silent 45 s after a push and dropped its crown. A channel tag under
   the plugin's old name (`mattermost-ai-agent-bus`) counts as the bus's too.
@@ -134,6 +131,12 @@ size. Without `MM_NATS_HOMES` the NATS changes do nothing. Nothing is breaking.
 - **The account index keeps a name when one identity logs in with two at
   once** (#72, RT-6.41 step 2). The name its record lists stays resolvable;
   before, both keys could be gone until its next login (fail closed).
+
+### Internal
+
+- The test rig says when a report contradicts itself (#54), its Mattermost
+  stub keeps the status it is written (#60), and the NATS home test waits for
+  the memory it asserts instead of sleeping (#75).
 
 ## 0.97.0
 
