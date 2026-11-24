@@ -13,8 +13,10 @@ import (
 
 // Reader follows the PRESENCE stream into a snapshot. A named consumer with
 // the narrowest filter (presence.*.*: a name's presence, never a crown claim or
-// a membership) and deliver-all: the stream keeps one message per subject, so
-// every start replays the latest presence and needs no position of its own.
+// a membership). It is deleted and made anew on every start: the stream keeps
+// one message per subject, so deliver-all replays the latest presence of every
+// subject, and the snapshot after a restart is not empty until each agent's
+// next heartbeat.
 type Reader struct {
 	Log    *slog.Logger
 	Stream string // "PRESENCE"
@@ -27,6 +29,13 @@ const ConsumerName = "bridge_presence"
 
 // Run consumes until ctx ends.
 func (r *Reader) Run(ctx context.Context, js jetstream.JetStream) error {
+	// A consumer that survived a restart has delivered the presences, so it
+	// would replay only what comes next; without it, deliver-all replays the
+	// latest per subject, and `shown_as` knows the names from the first post.
+	if err := js.DeleteConsumer(ctx, r.Stream, ConsumerName); err != nil &&
+		!errors.Is(err, jetstream.ErrConsumerNotFound) {
+		return fmt.Errorf("presence: consumer delete: %w", err)
+	}
 	cons, err := js.CreateOrUpdateConsumer(ctx, r.Stream, jetstream.ConsumerConfig{
 		Name: ConsumerName, FilterSubject: "presence.*.*",
 		DeliverPolicy: jetstream.DeliverAllPolicy, AckPolicy: jetstream.AckNonePolicy,

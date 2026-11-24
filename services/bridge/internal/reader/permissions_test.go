@@ -2,6 +2,7 @@ package reader
 
 import (
 	"context"
+	"fmt"
 	"io"
 	"log/slog"
 	"os"
@@ -25,30 +26,24 @@ import (
 func TestTheDocumentedBridgeRightsSufficeAndNoMore(t *testing.T) {
 	dir := t.TempDir()
 	conf := filepath.Join(dir, "nats.conf")
-	err := os.WriteFile(conf, []byte(`
+	// The example configuration's bridge user, with its placeholders filled for
+	// the home this test mirrors. A password user stands in for the nkey: the
+	// permissions are what is under test.
+	publish, subscribe := documentedBridgeRights(t, "home")
+	err := os.WriteFile(conf, []byte(fmt.Sprintf(`
 port: -1
 host: 127.0.0.1
-jetstream { store_dir: "`+dir+`/js" }
+jetstream { store_dir: %q }
 accounts {
   BUS { jetstream: enabled, users: [
     { user: admin, password: pw },
     { user: bridge, password: pw, permissions: {
-      publish: [
-        "$JS.API.INFO", "$JS.API.STREAM.INFO.BUS", "$JS.API.STREAM.INFO.PRESENCE",
-        "$JS.API.CONSUMER.CREATE.BUS.>", "$JS.API.CONSUMER.DELETE.BUS.>",
-        "$JS.API.CONSUMER.MSG.NEXT.BUS.>",
-        "$JS.API.CONSUMER.CREATE.PRESENCE.>",
-        "$JS.API.CONSUMER.DELETE.PRESENCE.>",
-        "$JS.API.CONSUMER.MSG.NEXT.PRESENCE.>",
-        "$JS.API.STREAM.CREATE.KV_BUS_BRIDGE", "$JS.API.STREAM.INFO.KV_BUS_BRIDGE",
-        "$JS.API.DIRECT.GET.KV_BUS_BRIDGE.>", "$JS.API.STREAM.MSG.GET.KV_BUS_BRIDGE",
-        "$KV.BUS_BRIDGE.>"
-      ]
-      subscribe: [ "_INBOX.>" ]
+      publish: [ %s ]
+      subscribe: [ %s ]
     } }
   ] }
 }
-`), 0o600)
+`, filepath.Join(dir, "js"), quoted(publish), quoted(subscribe))), 0o600)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -189,8 +184,11 @@ func waitNamedConsumer(t *testing.T, js jetstream.JetStream, stream, name string
 	for {
 		st, err := js.Stream(context.Background(), stream)
 		if err == nil {
+			// the name matters: the rights are granted on exactly that consumer
 			if info, err := st.Info(context.Background()); err == nil && info.State.Consumers > 0 {
-				return
+				if _, err := st.Consumer(context.Background(), name); err == nil {
+					return
+				}
 			}
 		}
 		if time.Now().After(deadline) {
@@ -206,4 +204,79 @@ func waitNamedConsumer(t *testing.T, js jetstream.JetStream, stream, name string
 		}
 		time.Sleep(20 * time.Millisecond)
 	}
+}
+
+// documentedBridgeRights reads the bridge user's publish and subscribe lists
+// from the example server configuration, so this test fails when the code and
+// the rights the lab is told to grant drift apart.
+func documentedBridgeRights(t *testing.T, home string) (publish, subscribe []string) {
+	t.Helper()
+	raw, err := os.ReadFile("../../../auth/nats-server.example.conf")
+	if err != nil {
+		t.Fatalf("the example configuration: %v", err)
+	}
+	text := string(raw)
+	i := strings.Index(text, `nkey: "<BRIDGE_USER_PUBLIC_NKEY>"`)
+	if i < 0 {
+		t.Fatal("the example configuration has no bridge user")
+	}
+	block := text[i:]
+	if end := strings.Index(block, "\n      }"); end > 0 {
+		block = block[:end]
+	}
+	publish, subscribe = listIn(block, "publish:"), listIn(block, "subscribe:")
+	if len(publish) < 5 || len(subscribe) == 0 {
+		t.Fatalf("the bridge user's lists: %v / %v", publish, subscribe)
+	}
+	for _, list := range [][]string{publish, subscribe} {
+		for j := range list {
+			list[j] = strings.ReplaceAll(list[j], "<HOME>", home)
+		}
+	}
+	// and it stays narrow: no whole-stream or whole-consumer wildcards
+	for _, subject := range publish {
+		for _, broad := range []string{"CONSUMER.CREATE.BUS.>", "CONSUMER.DELETE.BUS.>", "bus.>", "presence.>"} {
+			if strings.Contains(subject, broad) {
+				t.Errorf("the bridge's rights are too broad: %s", subject)
+			}
+		}
+	}
+	return publish, subscribe
+}
+
+// listIn returns the quoted entries of the first [ ... ] after field.
+func listIn(block, field string) []string {
+	i := strings.Index(block, field)
+	if i < 0 {
+		return nil
+	}
+	rest := block[i+len(field):]
+	end := strings.Index(rest, "]")
+	if end < 0 {
+		return nil
+	}
+	rest = rest[:end]
+	var out []string
+	for {
+		a := strings.Index(rest, `"`)
+		if a < 0 {
+			return out
+		}
+		rest = rest[a+1:]
+		b := strings.Index(rest, `"`)
+		if b < 0 {
+			return out
+		}
+		out = append(out, rest[:b])
+		rest = rest[b+1:]
+	}
+}
+
+// quoted renders a list as one config line of quoted entries.
+func quoted(list []string) string {
+	parts := make([]string, len(list))
+	for i, v := range list {
+		parts[i] = `"` + v + `"`
+	}
+	return strings.Join(parts, ", ")
 }

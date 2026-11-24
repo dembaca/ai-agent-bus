@@ -16,7 +16,6 @@ import (
 	"os/signal"
 	"strings"
 	"sync"
-	"sync/atomic"
 	"syscall"
 	"time"
 
@@ -74,8 +73,7 @@ func run(log *slog.Logger) error {
 		hasPresence = true
 	}
 
-	var failed atomic.Bool
-	var stuck atomic.Bool
+	h := &health{}
 	var wg sync.WaitGroup
 	if hasPresence {
 		pr := &presence.Reader{Log: log, Stream: "PRESENCE", Into: snapshot}
@@ -84,7 +82,7 @@ func run(log *slog.Logger) error {
 			defer wg.Done()
 			if err := pr.Run(ctx, js); err != nil && ctx.Err() == nil {
 				log.Error("bridge: presence stopped", "error", err)
-				failed.Store(true)
+				h.failed.Store(true)
 				stop()
 			}
 		}()
@@ -101,7 +99,7 @@ func run(log *slog.Logger) error {
 			Prefix: cfg.BusPrefix, PropsPrefix: cfg.Prefix,
 			Mirror: &mirror.Mirror{Home: home, Prefix: cfg.Prefix, Log: log, Sink: client, Store: kv,
 				Links: lk}}
-		r.Stuck = stuck.Store
+		r.Stuck = h.stuckOn
 		wg.Add(1)
 		go func() {
 			defer wg.Done()
@@ -109,22 +107,14 @@ func run(log *slog.Logger) error {
 				// A consumer that cannot be created or fetched from is fatal for
 				// that home (a refused post is not: the reader skips it).
 				log.Error("bridge: a home stopped", "home", home, "error", err)
-				failed.Store(true)
+				h.failed.Store(true)
 				stop()
 			}
 		}()
 	}
 
 	mux := http.NewServeMux()
-	mux.HandleFunc("GET /healthz", func(w http.ResponseWriter, _ *http.Request) {
-		if failed.Load() || stuck.Load() {
-			w.WriteHeader(http.StatusServiceUnavailable)
-			_, _ = w.Write([]byte("a home fails or retries; see the log\n"))
-			return
-		}
-		w.WriteHeader(http.StatusOK)
-		_, _ = w.Write([]byte("ok\n"))
-	})
+	mux.Handle("GET /healthz", h)
 	srv := &http.Server{Addr: cfg.Listen, Handler: mux, ReadHeaderTimeout: 5 * time.Second}
 	go func() {
 		if err := srv.ListenAndServe(); err != nil && !errors.Is(err, http.ErrServerClosed) {
@@ -136,7 +126,7 @@ func run(log *slog.Logger) error {
 	<-ctx.Done()
 	_ = srv.Shutdown(context.Background())
 	wg.Wait()
-	if failed.Load() {
+	if h.failed.Load() {
 		return errors.New("a home stopped; the bridge exits so the supervisor restarts it")
 	}
 	return nil
