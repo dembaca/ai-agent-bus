@@ -43,6 +43,7 @@ faults (`FaultRelay`), so a frame is treated the same however it got here
 from __future__ import annotations
 
 import asyncio
+import json
 from dataclasses import dataclass
 from typing import Any, Awaitable, Callable
 from urllib.parse import urlsplit, urlunsplit
@@ -68,6 +69,19 @@ _HOP_BY_HOP = frozenset(("connection", "keep-alive", "proxy-authenticate",
 # line has stopped reading, so that handshake never completes; the wait must be
 # bounded or every frozen run would hang for the library's default 10 s.
 CLOSE_SEC = 2.0
+
+
+def _posted(frame: Frame) -> bool:
+    """Whether a server frame is a Mattermost `posted` event - the frame a bus
+    run counts. Anything else (a status frame, the echo run's own payload, a
+    frame that is not JSON at all) is not one, and never raises."""
+    if not isinstance(frame, (str, bytes, bytearray)):
+        return False
+    try:
+        data = json.loads(frame)
+    except (ValueError, TypeError):
+        return False
+    return isinstance(data, dict) and data.get("event") == "posted"
 
 
 @dataclass
@@ -105,6 +119,7 @@ class ConnState:
     n: int = 0
     matched: int = 0
     held: Frame = None
+    posted_held: bool = False
     release: asyncio.TimerHandle | None = None
 
     def cancel(self) -> None:
@@ -126,6 +141,12 @@ class FaultRelay:
     received: int = 0
     forwarded: int = 0
     altered: int = 0
+    #: the same three, counted only for Mattermost `posted` events - the frames a
+    #: bus run measures. The plain counters also count status and presence frames,
+    #: so "the fault saw every frame" cannot be read from them (review of #78).
+    posted_seen: int = 0
+    posted_forwarded: int = 0
+    posted_altered: int = 0
 
     def applies(self, frame: Frame, state: ConnState) -> bool:
         fault = self.fault
@@ -152,12 +173,19 @@ class FaultRelay:
         held frame is released).
         """
         fault = self.fault
+        posted = _posted(frame)
         applies = self.applies(frame, state)  # once per frame, never twice
+        if posted:
+            self.posted_seen += 1
         if not applies:
             await send(frame)
             self.forwarded += 1
+            if posted:
+                self.posted_forwarded += 1
             return
         self.altered += 1
+        if posted:
+            self.posted_altered += 1
         if fault is None:  # unreachable: `applies` is False without a fault
             return
         if fault.kind == "blackhole":
@@ -181,10 +209,13 @@ class FaultRelay:
             await send(frame)
             await send(frame)
             self.forwarded += 2
+            if posted:
+                self.posted_forwarded += 2
             return
         if fault.kind == "reorder":
             if state.held is None:
                 state.held = frame
+                state.posted_held = posted
                 state.release = asyncio.get_running_loop().call_later(
                     fault.reorder_max_wait,
                     lambda: asyncio.ensure_future(self.flush(state, send=send)))
@@ -194,11 +225,18 @@ class FaultRelay:
             await send(frame)
             await send(held)
             self.forwarded += 2
+            if posted:
+                self.posted_forwarded += 1
+            if state.posted_held:
+                self.posted_forwarded += 1
+            state.posted_held = False
             return
         if fault.kind == "stall":
             await asyncio.sleep(fault.stall_sec)
             await send(frame)
             self.forwarded += 1
+            if posted:
+                self.posted_forwarded += 1
 
     async def flush(self, state: ConnState, *, send: Send) -> None:
         """Release a frame `reorder` still holds when the server stops.
@@ -213,8 +251,12 @@ class FaultRelay:
         try:
             await send(held)
             self.forwarded += 1
+            if state.posted_held:
+                self.posted_forwarded += 1
         except Exception:  # noqa: BLE001 — the client left; that is the run's fault
             return
+        finally:
+            state.posted_held = False
 
 
 def _abort_of(target: Any) -> Abort:
@@ -259,6 +301,18 @@ class FrameProxy:
     @property
     def altered(self) -> int:
         return self.relay.altered
+
+    @property
+    def posted_seen(self) -> int:
+        return self.relay.posted_seen
+
+    @property
+    def posted_forwarded(self) -> int:
+        return self.relay.posted_forwarded
+
+    @property
+    def posted_altered(self) -> int:
+        return self.relay.posted_altered
 
     async def __aenter__(self) -> FrameProxy:
         from websockets.asyncio.server import serve
@@ -391,6 +445,18 @@ class GatewayProxy:
     @property
     def altered(self) -> int:
         return self.relay.altered
+
+    @property
+    def posted_seen(self) -> int:
+        return self.relay.posted_seen
+
+    @property
+    def posted_forwarded(self) -> int:
+        return self.relay.posted_forwarded
+
+    @property
+    def posted_altered(self) -> int:
+        return self.relay.posted_altered
 
     async def __aenter__(self) -> GatewayProxy:
         # `trust_env=False` (follow-up review point 4): both ends are loopback,

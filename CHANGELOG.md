@@ -5,6 +5,11 @@ before 0.5.0 are described in the git history.
 
 ## Unreleased
 
+- **A test-rig run that receives nothing says whether the fault explains it**
+  (#47). `bus-testrig bus-run` exits 1 when frames were sent and none arrived
+  and no fault accounts for it - a path that carried nothing is not a
+  measurement - and a run under a fault that discards or freezes every posted
+  frame says so in its report instead of reading like a healthy run.
 - **Host login: a fast host clock, odd token times, the cooldown's cause**
   (#10, RT-6.34 step 3). A token's lifetime is now the shorter of
   `expires_in` and its own `exp - iat`, at most one day, counted from when
