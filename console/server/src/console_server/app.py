@@ -238,12 +238,14 @@ class Console:
         if not self.settings.nats_url:
             return httpd.SSE(first={"type": "snapshot", "cards": []},
                              changes=wake, teardown=done,
-                             snapshot=lambda: [{"type": "card", "card": None}][:0])
+                             snapshot=lambda: [{"type": "card", "card": None}][:0],
+                             beat=lambda: [])
         first = next_events()
         return httpd.SSE(first=first[0], changes=wake, snapshot=next_events,
                          alive=(None if not token
                                 else lambda: self.sessions.get(token) is not None),
-                         teardown=done)
+                         teardown=done,
+                         beat=next_events)  # the same diff, on the beat
 
     # --- routing ---------------------------------------------------------------------------
 
