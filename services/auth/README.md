@@ -62,11 +62,15 @@ waits that long for a TLS handshake, then lets a classic client in. Set it
 to `true` once every client speaks TLS first. A loopback `nats://` stays
 plain. `AUTH_NATS_URL` and `AUTH_JS_URL` are `tls://` throughout or not at
 all: a list that mixes `tls://` with another scheme is refused at the start,
-since it would reach a `handshake_first` server in the classic order.
+since it would reach a `handshake_first` server in the classic order. The
+hosts also reach a server over its WebSocket listener (`wss://`), the service
+does not yet: before it may, the sender-authenticity suite has to run against
+a websocket listener, and the TLS-first rule has no meaning inside the
+WebSocket handshake (RT-6.36). Websocket URLs are refused at the start.
 
 | Variable | Default | Meaning |
 | --- | --- | --- |
-| `AUTH_NATS_URL` | — | the NATS server, `tls://` (plain `nats://` only on a loopback host); unset: no callout, health only |
+| `AUTH_NATS_URL` | — | the NATS server, `tls://` (plain `nats://` only on a loopback host; websockets are refused, see above); unset: no callout, health only |
 | `AUTH_NATS_SEED_FILE` | — | file with the nkey seed of the service's own NATS user, one of the server's `auth_users` |
 | `AUTH_ISSUER_SEED_FILE` | — | file with the account key seed that signs the responses and user JWTs; its public key is the server's `auth_callout.issuer` |
 | `AUTH_XKEY_SEED_FILE` | — | file with the curve key seed that decrypts requests and encrypts answers; its public key is the server's `auth_callout.xkey`. Plain requests are refused |

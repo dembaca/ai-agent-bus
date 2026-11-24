@@ -511,13 +511,18 @@ def connect_reason(exc: BaseException) -> str:
     return type(exc).__name__
 
 
+_SECURE_SCHEMES = frozenset({"tls", "wss"})   # TLS is verified; wss is TLS inside the WebSocket
+_PLAIN_SCHEMES = frozenset({"nats", "ws"})    # no TLS: only to this machine
+_WS_SCHEMES = frozenset({"ws", "wss"})
+
+
 def _check_server(url: str) -> None:
-    """tls:// anywhere; nats:// (no TLS) only to this machine."""
+    """tls:// and wss:// anywhere; nats:// and ws:// (no TLS) only to this machine."""
     parts = urlsplit(url)
     host = parts.hostname or ""
-    if parts.scheme == "tls" and host:
+    if parts.scheme in _SECURE_SCHEMES and host:
         return
-    if parts.scheme == "nats" and host:
+    if parts.scheme in _PLAIN_SCHEMES and host:
         if host == "localhost":
             return
         try:
@@ -525,16 +530,26 @@ def _check_server(url: str) -> None:
                 return
         except ValueError:
             pass
-    raise ValueError("a NATS server URL is tls://, or nats:// to a loopback host only")
+    raise ValueError("a NATS server URL is tls:// or wss://, or nats:// or ws:// to a loopback host only")
+
+
+def _schemes(servers: tuple[str, ...]) -> set[str]:
+    schemes = {urlsplit(u).scheme for u in servers}
+    if len(schemes) != 1:
+        # One pool, one scheme: nats-py picks the transport and the TLS setup for the pool,
+        # and a mix of a secure and a plain server would let the pool downgrade.
+        raise ValueError("NATS server URLs are all of one scheme (tls://, wss://, nats://, ws://), not mixed")
+    return schemes
+
+
+def _websocket(servers: tuple[str, ...]) -> bool:
+    """True when the servers are ws:// or wss:// (nats-py's WebSocket transport, aiohttp)."""
+    return _schemes(servers) <= _WS_SCHEMES
 
 
 def _tls_mode(servers: tuple[str, ...]) -> bool:
-    """True when the servers are tls://. nats-py takes one TLS mode for the whole pool, so
-    tls:// and nats:// servers are not mixed."""
-    tls = {urlsplit(u).scheme == "tls" for u in servers}
-    if len(tls) > 1:
-        raise ValueError("NATS server URLs are all tls:// or all nats://, not mixed")
-    return tls == {True}
+    """True when the servers are tls:// or wss://. The TLS setup is one for the pool."""
+    return _schemes(servers) <= _SECURE_SCHEMES
 
 
 @dataclass(frozen=True)
@@ -567,7 +582,7 @@ class NatsSettings:
         _tls_mode(self.servers)
 
     def tls_context(self) -> ssl.SSLContext | None:
-        """For tls:// servers: a context that verifies the certificate and the host name."""
+        """For tls:// and wss:// servers: a context that verifies the certificate and the host name."""
         if not _tls_mode(self.servers):
             return None
         return ssl.create_default_context(cafile=self.tls_ca_file)
@@ -788,8 +803,14 @@ class NatsBus:
         # tls://: the TLS handshake comes first, before any NATS protocol, with the certificate
         # verified. nats-py otherwise upgrades only when the server's INFO says tls_required,
         # which a man in the middle simply leaves out (the CONNECT with the token would go in clear).
+        # wss:// is TLS inside the WebSocket handshake: the same verified context, and no
+        # handshake-first (the WebSocket handshake is the first thing on the wire anyway).
         tls = self._s.tls_context()
-        tls_kw: dict[str, Any] = {"tls": tls, "tls_handshake_first": True} if tls is not None else {}
+        tls_kw: dict[str, Any] = {}
+        if tls is not None:
+            tls_kw["tls"] = tls
+            if not _websocket(self._s.servers):
+                tls_kw["tls_handshake_first"] = True
         try:
             # nats-py bounds the TCP connect and the INFO, not a TLS handshake that never ends
             # (a plaintext peer behind tls:// leaves the client waiting for a TLS record).

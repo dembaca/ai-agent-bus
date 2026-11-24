@@ -5,6 +5,12 @@ before 0.5.0 are described in the git history.
 
 ## Unreleased
 
+- **The MCP server reaches NATS over WebSocket** (RT-6.36, part of #51).
+  `MM_NATS_URL` takes `wss://` (TLS inside the WebSocket, verified with
+  `MM_NATS_CA_FILE` like `tls://`) or `ws://` on a loopback host only; a
+  pool is all one scheme. The login service still refuses websockets until
+  the sender-authenticity suite runs over one.
+
 - **A busy coordinator keeps its crown** (#64, RT-6.6 steps 1, 4 and 11).
   The prompt hook tells the server that a turn began before anything else,
   so a slow hook no longer leaves a running turn unknown, which made the
