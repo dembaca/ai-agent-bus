@@ -1,0 +1,2 @@
+{"k": "heard", "t": 1795529224, "agent": 0, "human": 1, "trusted": 1, "other": 0}
+{"k": "tool", "t": 1795529224, "name": "wait_for_events", "chars": 90}

@@ -1,0 +1,2 @@
+{"type": "user", "isSidechain": false, "message": {"role": "user", "content": "fix the bug"}, "timestamp": "2026-10-24T10:00:00.000Z", "origin": {"kind": "human"}}
+{"type": "assistant", "isSidechain": false, "requestId": "req_1", "timestamp": "2026-10-24T10:00:00.000Z", "message": {"id": "req_1", "usage": {"input_tokens": 10, "cache_read_input_tokens": 100000, "cache_creation_input_tokens": 1000, "output_tokens": 200, "cache_creation": {"ephemeral_5m_input_tokens": 1000, "ephemeral_1h_input_tokens": 0}}, "content": [{"type": "text", "text": "ok"}]}}

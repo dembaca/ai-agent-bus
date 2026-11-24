@@ -1,0 +1,6 @@
+{"k": "part", "t": 1795529223, "sid": "c039f7c6bc93", "n": 2, "hooks": 1}
+{"k": "turn", "t": 1795529173, "by": "human"}
+{"k": "ask", "t": 1795442823, "id": "q1", "busy": 1}
+{"k": "transcript", "t": 1795442723, "path": "/nowhere/t.jsonl"}
+{"k": "turn_end", "t": 1795529223}
+{"k": "answer", "t": 1795529223, "id": "q1", "wait": 86400, "at": 1795529228}

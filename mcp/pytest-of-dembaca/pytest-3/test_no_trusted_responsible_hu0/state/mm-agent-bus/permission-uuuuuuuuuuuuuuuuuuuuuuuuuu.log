@@ -1,0 +1,2 @@
+{"t": "2026-11-24T14:06:57Z", "id": "abcde", "tool": "Bash", "step": "request received", "reason": ""}
+{"t": "2026-11-24T14:06:57Z", "id": "abcde", "tool": "Bash", "step": "not relayed", "reason": "responsible human not trusted"}
