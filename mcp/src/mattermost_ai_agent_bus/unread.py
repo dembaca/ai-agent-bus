@@ -102,12 +102,20 @@ async def after(client: ChatPort) -> list[After]:
             continue
         posts = sorted((p for p in got if _at(p) > sinces.get(watermark.lane(ch.channel_id, p.id), floor)),
                        key=_at)
-        if ch.nats and newest[ch.channel_id] > sinces[ch.channel_id] and not any(
+        copies = getattr(client, "copies_through", None) if ch.nats else None
+        if copies is not None and newest[ch.channel_id] > sinces[ch.channel_id] and not any(
                 watermark.lane(ch.channel_id, p.id) == ch.channel_id for p in posts):
-            # A NATS home's Mattermost lane past its mark with nothing in the read: its newest
-            # posts are the bridge's copies, which the port drops (RT-6.36 step 4). The mark
-            # moves to the newest, or every count would read the copies again.
-            watermark.advance(uid, ch.channel_id, "", newest[ch.channel_id])
+            # A NATS home's Mattermost lane past its mark with nothing in the read: the port
+            # drops the bridge's copies (RT-6.36 step 4), so the mark passes the copies it
+            # identified, up to the first post that is none, or every count would read them
+            # again. Never to the lane's newest: a post the read did not show stops it.
+            try:
+                through = await copies(ch.channel_id, sinces[ch.channel_id])
+            except Exception as exc:  # noqa: BLE001 — read again next time
+                log.debug("the bridge's copies in %s: %s", ch.channel_id, exc)
+                through = 0
+            if through:
+                watermark.advance(uid, ch.channel_id, "", through)
         skip = 0
         while skip < len(posts) and _passed(posts[skip], uid, gated):
             skip += 1

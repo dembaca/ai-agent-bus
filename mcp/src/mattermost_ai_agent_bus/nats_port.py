@@ -478,6 +478,20 @@ class NatsPort:
             return posts
         return [p for p in posts if not await self.mirrored(p)]
 
+    async def copies_through(self, channel_id: str, since_ms: int) -> int:
+        """How far the read watermark of this NATS home's Mattermost lane may pass the
+        bridge's copies (unread.after): the time of the last copy after `since_ms` that
+        comes before every other post there, 0 when the first post after it is no copy
+        (a person's, a gated one, anything). Mattermost's own read, never the merged one:
+        a post the merged read does not show still stops it."""
+        if not self._bridge_bot or await self.nats_name(channel_id) is None or not await self._bridge():
+            return 0
+        after = [p for p in await self.inner.channel_posts(channel_id, since_ms=since_ms)
+                 if p.create_at > since_ms]
+        marked = [(p.create_at, await self.mirrored(p)) for p in after]
+        first_other = min((t for t, copy in marked if not copy), default=None)
+        return max((t for t, copy in marked if copy and (first_other is None or t < first_other)), default=0)
+
     async def skip(self, event: ChatEvent) -> bool:
         """A Mattermost event that is the bridge's copy: MergedEvents drops it."""
         if not self._bridge_bot:

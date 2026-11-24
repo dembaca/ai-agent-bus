@@ -13,7 +13,8 @@ before 0.5.0 are described in the git history.
   carries `<prefix>nats_id`, and the bridge bot's reactions: from the events
   that wake the agent and from `list_recent`, `posts_after` and the channel
   reads behind the unread count and the hooks. Anyone else's post with that
-  prop is kept. Unset, nothing changes. `bus_info`'s `over_nats`, the
+  prop is kept. The count's read watermark passes only the copies, up to
+  the first post that is none. Unset, nothing changes. `bus_info`'s `over_nats`, the
   server's instructions and SKILL.md say people see such a home through the
   bridge.
 - **The MCP server reaches NATS over WebSocket** (RT-6.36, part of #51).
