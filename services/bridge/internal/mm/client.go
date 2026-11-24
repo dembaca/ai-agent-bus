@@ -151,8 +151,9 @@ func (c *Client) GetUser(ctx context.Context, userID string) (User, error) {
 // Post is one of a channel's posts, as the catch-up after a WebSocket
 // reconnect needs it (mmws.Reconnected): who wrote it and where, its
 // thread, Mattermost's clock fields, the text — and the fields the drop
-// rules read: the type and props, the file counts and the delete mark
-// (a post created and deleted inside the gap comes back from `since`).
+// rules read: the type and props, the files the post carries and its
+// delete mark (a post created and deleted inside the gap comes back
+// from `since`).
 type Post struct {
 	ID        string
 	UserID    string
@@ -160,7 +161,7 @@ type Post struct {
 	RootID    string
 	Type      string         // Mattermost's post type (a join, a custom one)
 	Props     map[string]any // the post's props: fromusername, attachments
-	FileCount map[string]int // per file name
+	FileCount int            // its `file_ids` length (model/post.go's field)
 	CreateAt  int64          // ms
 	UpdateAt  int64          // ms
 	EditAt    int64          // ms, 0 when never edited
@@ -176,7 +177,7 @@ type postJSON struct {
 	RootID    string         `json:"root_id"`
 	Type      string         `json:"type"`
 	Props     map[string]any `json:"props"`
-	FileCount map[string]int `json:"file_count"`
+	FileIDs   []string       `json:"file_ids"`
 	CreateAt  int64          `json:"create_at"`
 	UpdateAt  int64          `json:"update_at"`
 	EditAt    int64          `json:"edit_at"`
@@ -192,7 +193,7 @@ type postJSON struct {
 // a reaction counts toward the limit, so a full read may have left
 // posts behind it: that is logged as the gap it is. This method never
 // filters, and UpdateAt, EditAt, DeleteAt, the type, the props and the
-// file counts are carried because the caller decides: an edited or
+// files are carried because the caller decides: an edited or
 // deleted post is never carried again. The posts come sorted by
 // create_at ascending.
 func (c *Client) PostsSince(ctx context.Context, channelID string, since int64) ([]Post, error) {
@@ -215,7 +216,7 @@ func (c *Client) PostsSince(ctx context.Context, channelID string, since int64) 
 				RootID:    raw.RootID,
 				Type:      raw.Type,
 				Props:     raw.Props,
-				FileCount: raw.FileCount,
+				FileCount: len(raw.FileIDs),
 				CreateAt:  raw.CreateAt,
 				UpdateAt:  raw.UpdateAt,
 				EditAt:    raw.EditAt,

@@ -83,9 +83,9 @@ func TestPostsSince(t *testing.T) {
 				"newest": map[string]any{
 					"id": "newest", "user_id": "u1", "channel_id": "ch7",
 					"root_id": "root1", "type": "custom_card",
-					"props":      map[string]any{"fromusername": "dembaca"},
-					"file_count": map[string]any{"spec.txt": 1},
-					"create_at":  4000, "update_at": 4000,
+					"props":     map[string]any{"fromusername": "dembaca"},
+					"file_ids":  []string{"only-one"},
+					"create_at": 4000, "update_at": 4000,
 					"edit_at": 0, "delete_at": 0, "message": "written in the gap",
 				},
 				"deleted": map[string]any{
@@ -131,8 +131,8 @@ func TestPostsSince(t *testing.T) {
 	}
 	if newest.Type != "custom_card" ||
 		newest.Props["fromusername"] != "dembaca" ||
-		newest.FileCount["spec.txt"] != 1 {
-		t.Fatalf("got the new post %+v, want its type, props and file counts", newest)
+		newest.FileCount != 1 {
+		t.Fatalf("got the new post %+v, want its type, props and file count", newest)
 	}
 }
 

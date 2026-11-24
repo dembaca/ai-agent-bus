@@ -30,7 +30,8 @@ before 0.5.0 are described in the git history.
   bot's (a drop) or
   a person's (carried) stays the caller's decision, so it filters,
   stores and publishes nowhere. A post comes out with the fields the
-  drop rules read — type, props, file counts, the delete mark — and a
+  drop rules read — type, props, the files it carries (`file_ids`'
+  count), the delete mark — and a
   reaction with the channel it happened in; a quiet socket is taken
   again by a read deadline (renewed per frame and per ping), the auth
   reply is found by its `seq_reply` wherever it sits in the stream, and

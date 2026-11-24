@@ -255,8 +255,8 @@ func TestEventsTyped(t *testing.T) {
 				"type": "custom_card", "props": map[string]any{
 					"fromusername": "dembaca",
 				},
-				"file_count": map[string]any{"spec.txt": 1},
-				"create_at":  1000, "update_at": 1000, "edit_at": 0,
+				"file_ids":  []string{"file1", "file2"},
+				"create_at": 1000, "update_at": 1000, "edit_at": 0,
 				"delete_at": 0,
 				"message":   "go ahead",
 			})
@@ -290,7 +290,7 @@ func TestEventsTyped(t *testing.T) {
 		PostID: "p1", UserID: "u1", ChannelID: "ch1", RootID: "r1",
 		Type:      "custom_card",
 		Props:     map[string]any{"fromusername": "dembaca"},
-		FileCount: map[string]int{"spec.txt": 1},
+		FileCount: 2,
 		CreateAt:  1000, UpdateAt: 1000, EditAt: 0, DeleteAt: 0,
 		Message: "go ahead",
 	}

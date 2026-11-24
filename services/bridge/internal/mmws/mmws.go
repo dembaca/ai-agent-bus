@@ -22,9 +22,10 @@ import (
 )
 
 // Posted is one `posted` event: what somebody wrote in a channel, with
-// the fields the drop rules read — the post's type and props, its file
-// counts and its delete mark — because a post brought back by a catch-up
-// or a live stream may be deleted, and only the caller may drop it.
+// the fields the drop rules read — the post's type and props, how many
+// files it carries and its delete mark — because a post brought back by
+// a catch-up or a live stream may be deleted, and only the caller may
+// drop it.
 type Posted struct {
 	PostID    string
 	UserID    string
@@ -32,7 +33,7 @@ type Posted struct {
 	RootID    string
 	Type      string         // Mattermost's post type (a custom one, a join…)
 	Props     map[string]any // the post's props: fromusername, attachments…
-	FileCount map[string]int // per file name; a file post carries more
+	FileCount int            // its `file_ids` length (model/post.go's field)
 	CreateAt  int64          // ms, Mattermost's clock
 	UpdateAt  int64
 	EditAt    int64 // 0 when the post was never edited
@@ -225,7 +226,11 @@ func (r *Reader) connect(ctx context.Context) time.Duration {
 			slog.Error("mmws: the bot token was refused; retrying",
 				"url", u.Redacted(), "status", auth.Status)
 		} else {
-			slog.Error("mmws: the auth challenge failed; retrying",
+			// A real Mattermost closes the socket on a bad token rather
+			// than answering, so a lost handshake reads as what it most
+			// likely is — the operator then checks the token first.
+			slog.Error("mmws: the socket ended during the auth challenge;"+
+				" likely a refused token; retrying",
 				"url", u.Redacted(), "error", err)
 		}
 		return 0
@@ -394,7 +399,7 @@ func (r *Reader) typedPosted(data json.RawMessage) Event {
 		RootID    string         `json:"root_id"`
 		Type      string         `json:"type"`
 		Props     map[string]any `json:"props"`
-		FileCount map[string]int `json:"file_count"`
+		FileIDs   []string       `json:"file_ids"`
 		CreateAt  int64          `json:"create_at"`
 		UpdateAt  int64          `json:"update_at"`
 		EditAt    int64          `json:"edit_at"`
@@ -413,7 +418,7 @@ func (r *Reader) typedPosted(data json.RawMessage) Event {
 		RootID:    post.RootID,
 		Type:      post.Type,
 		Props:     post.Props,
-		FileCount: post.FileCount,
+		FileCount: len(post.FileIDs),
 		CreateAt:  post.CreateAt,
 		UpdateAt:  post.UpdateAt,
 		EditAt:    post.EditAt,
