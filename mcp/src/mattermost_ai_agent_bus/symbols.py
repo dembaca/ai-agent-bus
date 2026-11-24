@@ -83,14 +83,24 @@ def answer_symbol(answer: Answer) -> str:
     return _ANSWERS[answer]
 
 
+# A message that opens with one of these is a Markdown block (table row, list item,
+# heading, code fence, quote): a crown in front of it on the same line would stop it
+# rendering (a table needs a blank line before it).
+_BLOCK_START = re.compile(r"^\s*(?:\||[-*+]\s|\d+[.)]\s|#{1,6}\s|```|~~~|>)")
+
+
 def with_crown(message: str) -> str:
-    """The message with the crown in front, once."""
-    return message if message.startswith(_CROWN) else f"{_CROWN} {message}"
+    """The message with the crown in front, once. A message that opens with a
+    Markdown block gets the crown on its own line and a blank line after it
+    (RT-6.6 step 3); `strip_crown` takes both away again."""
+    if message.startswith(_CROWN):
+        return message
+    return f"{_CROWN}\n\n{message}" if _BLOCK_START.match(message) else f"{_CROWN} {message}"
 
 
 def strip_crown(message: str) -> str:
     """The message without a leading crown (and the space after it)."""
-    return message.removeprefix(_CROWN).lstrip(" ") if message.startswith(_CROWN) else message
+    return message.removeprefix(_CROWN).lstrip(" \n") if message.startswith(_CROWN) else message
 
 
 def parse_head(message: str) -> Head:

@@ -34,3 +34,27 @@ def test_the_wire_form_is_unchanged():
     assert a2a.answer_marks(2) == ["\U0001F44D", "\U0001F44E"]
     assert a2a.answer_marks(4) == [f"{n}{KEYCAP}" for n in "1234"]
     assert a2a.status_emoji(StatusMark.COORDINATOR) == "crown" and a2a.status_emoji(StatusMark.BUS) == "satellite_antenna"
+
+
+CROWN = "\U0001F451"
+
+
+@pytest.mark.parametrize("text", ["| a | b |\n|---|---|\n| 1 | 2 |", "- one\n- two", "1. one", "# Title", "```\ncode\n```", "> quote"])
+def test_crown_before_a_markdown_block_gets_its_own_line(text):
+    """RT-6.6 step 3: a 👑 on the first line would stop a table or list rendering."""
+    crowned = symbols.with_crown(text)
+    assert crowned == f"{CROWN}\n\n{text}"
+    assert symbols.strip_crown(crowned) == text
+    assert symbols.parse_head(crowned).crowned and symbols.parse_head(crowned).body == text
+
+
+def test_crown_before_plain_text_stays_on_the_line():
+    assert symbols.with_crown("ACK got it") == f"{CROWN} ACK got it"
+    assert symbols.strip_crown(f"{CROWN} ACK got it") == "ACK got it"
+    m = symbols.status_head(symbols.with_crown("TASK do it"))
+    assert m is not None and m[3] == "TASK"
+
+
+def test_an_already_crowned_message_is_left_alone():
+    for text in (f"{CROWN} | a |", f"{CROWN}\n\n| a |", f"{CROWN} x"):
+        assert symbols.with_crown(text) == text
