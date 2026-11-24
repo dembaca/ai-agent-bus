@@ -274,12 +274,16 @@ class Console:
                 return _unauthorized()
             return httpd.Response.json(self.fleet.graph(), headers=API_HEADERS)
         if path == "/logout":
+            own = urlsplit(s.public_url)
+            want = f"{own.scheme}://{own.netloc}"
             origin = headers.get("origin", "")
-            if origin:
-                own = urlsplit(s.public_url)
-                want = f"{own.scheme}://{own.netloc}"
-                if origin != want:
-                    return httpd.Response.text("cross-site logout", 403)
+            if origin and origin != want:
+                return httpd.Response.text("cross-site logout", 403)
+            # a cross-site <img> or navigation sends no Origin; Fetch
+            # Metadata names the site anyway (absent: as old as the header)
+            fetch_site = headers.get("sec-fetch-site", "")
+            if fetch_site and fetch_site not in ("same-origin", "same-site", "none"):
+                return httpd.Response.text("cross-site logout", 403)
             response = httpd.Response.see(s.login_off and "/" or "/login")
             response.headers = response.headers + (
                 ("Set-Cookie", f"{COOKIE}=; Path=/; Max-Age=0"),)

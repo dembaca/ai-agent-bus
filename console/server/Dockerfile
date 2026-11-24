@@ -2,9 +2,10 @@
 # Dockerfile): two stages, bases pinned by digest, and the run stage without
 # a shell, as not root. The browser app is built with its API base set to "/"
 # (same-origin: the login's cookie) so the served bundle talks to the server
-# beside it, never to the mock; the server's packages are installed on the
-# run stage's Python (3.11) — non-editable, from the lockfile, without the
-# test groups — so the venv copies and the entrypoint starts.
+# beside it, never to the mock. One Python — 3.13 — on both sides: the mcp
+# package needs 3.12+ (#96), the run stage is distroless python3-debian13.
+# The venv installs non-editable from the lockfile, without the test groups,
+# so it copies and the entrypoint starts.
 #
 # The build context is the repository root (the server's uv project has a
 # path dependency on ../..-/mcp):
@@ -18,7 +19,7 @@ COPY console/fixtures ./console/fixtures
 COPY console/web ./console/web
 RUN VITE_CONSOLE_API=/ npm --prefix console/web run build
 
-FROM python:3.11-slim@sha256:788c5fb8a33aa5416623c540a8b4fa5c6f1b5cd805726d47a86cb24d1524e569 AS server
+FROM python:3.13-slim@sha256:1b5c0692836eae9b028cc352d7146872f36939aa1fb0de24d3ef6df307b956c9 AS server
 WORKDIR /src
 RUN pip install --no-cache-dir uv==0.13.9
 COPY mcp/pyproject.toml mcp/uv.lock mcp/README.md ./mcp/

@@ -111,9 +111,9 @@ the read.
 - one valid redirect URI: `<CONSOLE_PUBLIC_URL>/callback`, exact;
 - an **audience mapper** for the client: the verifier reads the client id
   in `aud` — Keycloak sets it only with one;
-- a **group mapper** onto the `groups` claim: with the mapper's full path
-  on, name the group `/operators`; with it off, `operators` — both are
-  accepted.
+- a **group mapper** onto the `groups` claim: the match is exact — name
+  the group `operators` and set the mapper's full path off, or name it
+  `/operators` and set the full path on.
 
 ## Run
 

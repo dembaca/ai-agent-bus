@@ -257,9 +257,10 @@ def _check_claims(settings: config.Settings, endpoints: Endpoints,
     groups = payload.get("groups")
     if not isinstance(groups, list) or not all(isinstance(g, str) for g in groups):
         groups = []
-    if not any(g in (settings.operator_group, f"/{settings.operator_group}")
-               for g in groups):
-        # "/operators" too: Keycloak's group mapper with the full path
+    if settings.operator_group not in groups:
+        # the match is exact, as the login service's verifier: name the
+        # group with its full path ("/operators") when the realm's group
+        # mapper writes the full path
         raise Refused("not a member of the operators group")
     display = payload.get("name")
     return Operator(username=username,

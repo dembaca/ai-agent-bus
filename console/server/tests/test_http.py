@@ -27,13 +27,16 @@ async def client(console: Console) -> tuple[asyncio.StreamReader, asyncio.Stream
 
 
 async def get(console: Console, path: str, cookie: str | None = None,
-              origin: str | None = None) -> tuple[int, dict[str, object], bytes]:
+              origin: str | None = None,
+              sec_fetch_site: str | None = None) -> tuple[int, dict[str, object], bytes]:
     reader, writer = await client(console)
     head = f"GET {path} HTTP/1.1\r\nHost: x\r\n"
     if cookie:
         head += f"Cookie: {cookie}\r\n"
     if origin:
         head += f"Origin: {origin}\r\n"
+    if sec_fetch_site:
+        head += f"Sec-Fetch-Site: {sec_fetch_site}\r\n"
     writer.write((head + "\r\n").encode())
     raw = await asyncio.wait_for(_read_answer(reader), 5.0)
     writer.close()
@@ -346,6 +349,11 @@ async def test_a_cross_site_page_cannot_log_the_operator_out() -> None:
                                    origin="http://evil.example")
         assert status == 403
         assert c.sessions.get(token) is not None  # the session stands
+        # a cross-site <img> sends no Origin at all — Fetch Metadata says it
+        status, _h, _b = await get(c, "/logout", cookie=cookie,
+                                   sec_fetch_site="cross-site")
+        assert status == 403
+        assert c.sessions.get(token) is not None
         # the console's own origin (or none, a typed address bar) is fine
         status, _h, _b = await get(c, "/logout", cookie=cookie,
                                    origin="http://127.0.0.1:8747")

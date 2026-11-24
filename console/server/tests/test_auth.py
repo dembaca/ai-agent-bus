@@ -154,6 +154,25 @@ def test_sessions_hash_the_token_in_memory() -> None:
     assert sessions.get(value) is None
 
 
+async def test_the_group_match_is_exact_and_the_full_path_works() -> None:
+    """The match is the Go verifier's: exact against the configured name.
+    A realm whose group mapper writes the full path names "/operators" in
+    the config; a bare "operators" is then not a match, and vice versa."""
+    private, jwk = keypair()
+    keyring = Keyring()
+    keyring._keys = {jwk["kid"]: jwk}
+    keyring._fetched_at = time.monotonic()
+    full = config.Settings(public_url="https://console.example",
+                           issuer="https://kc/realms/x", client_id="console",
+                           operator_group="/operators")
+    operator = await auth.verify(full, ENDPOINTS, keyring,
+                                 token(private, groups=("/operators",)))
+    assert operator.username == "dembaca"
+    with pytest.raises(auth.Refused):
+        await auth.verify(full, ENDPOINTS, keyring,
+                         token(private, groups=("operators",)))
+
+
 async def test_an_empty_group_admits_nobody() -> None:
     """Defence in depth: the config refuses to start without a group; a
     verify with an empty one refuses too, never everyone."""
