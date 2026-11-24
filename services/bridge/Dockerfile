@@ -36,7 +36,7 @@ FROM gcr.io/distroless/static-debian12:nonroot@sha256:afa5c872c891853ca7fcf1f12c
 COPY --from=build /out/bridged /usr/local/bin/bridged
 
 USER nonroot:nonroot
-EXPOSE 8080
+EXPOSE 8095
 
 # No HEALTHCHECK: probes belong to the platform that runs the container (the
 # lab's Kubernetes reads /healthz as its liveness probe). A Docker HEALTHCHECK
