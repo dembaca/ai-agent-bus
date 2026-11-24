@@ -84,8 +84,10 @@ func write(conn *websocket.Conn, v any) {
 	_ = conn.WriteJSON(v)
 }
 
-// authOK reads the auth challenge and answers it as Mattermost does —
-// an OK reply, then the hello event — and runs the steps on the socket.
+// authOK reads the auth challenge and answers it as Mattermost does: the
+// hello is queued before the reply (HubRegister precedes the OK), so
+// hello goes first — the reader must not take it for the reply — then
+// the OK reply, then the steps on the socket.
 func authOK(steps ...func(*websocket.Conn)) func(*websocket.Conn) {
 	return func(conn *websocket.Conn) {
 		var challenge struct {
@@ -94,18 +96,35 @@ func authOK(steps ...func(*websocket.Conn)) func(*websocket.Conn) {
 		if err := conn.ReadJSON(&challenge); err != nil {
 			return // the reader hung up before asking
 		}
-		write(conn, map[string]any{"status": "OK", "seq_reply": challenge.Seq,
-			"data": map[string]any{}})
 		write(conn, map[string]any{"event": "hello",
 			"data": map[string]any{"connection_id": "c1"}, "seq": 0})
+		write(conn, map[string]any{"status": "OK", "seq_reply": challenge.Seq,
+			"data": map[string]any{}})
 		for _, step := range steps {
 			step(conn)
 		}
 	}
 }
 
-// authRefused answers the challenge with a refusal, as Mattermost answers
-// a bad token, and hangs up.
+// authClosed answers the challenge the way a real Mattermost answers a
+// bad token: not at all — the socket simply closes (its HubRegister has
+// no session to queue hello for), which reads as the drop it then
+// behaves like.
+func authClosed(conn *websocket.Conn) {
+	var challenge struct {
+		Seq int `json:"seq"`
+	}
+	if err := conn.ReadJSON(&challenge); err != nil {
+		return
+	}
+	_ = conn.WriteControl(websocket.CloseMessage,
+		websocket.FormatCloseMessage(1008, "bad token"),
+		time.Now().Add(time.Second))
+}
+
+// authRefused answers the challenge with an in-band refusal — a server
+// that says no instead of closing. Mattermost does not; the reader still
+// knows the shape.
 func authRefused(conn *websocket.Conn) {
 	var challenge struct {
 		Seq int `json:"seq"`
@@ -395,11 +414,13 @@ func TestStalledSocket(t *testing.T) {
 	}
 }
 
-// Given a Mattermost whose hello event lands before the auth reply — the
-// reply is found by its seq_reply, not by being first — when the reader
-// connects, it hands the early event's none out, waits for the reply,
-// and runs on: the order is the wire's, not an assumption.
-func TestHelloBeforeReply(t *testing.T) {
+// Given a handshake that interleaves — a post overtakes the auth reply —
+// when the reader connects, the reply is still found (by its seq_reply,
+// never by being first... the reply-first order is the other legal one),
+// and the early event comes out strictly AFTER the connection's
+// Reconnected marker: the marker always heads a connection, so the
+// caller's catch-up never reads past an event it cannot place.
+func TestEarlyEventsFollowTheMarker(t *testing.T) {
 	f := newFake(t)
 	f.scripts = []func(*websocket.Conn){func(conn *websocket.Conn) {
 		var challenge struct {
@@ -408,23 +429,47 @@ func TestHelloBeforeReply(t *testing.T) {
 		if err := conn.ReadJSON(&challenge); err != nil {
 			return // the reader hung up before asking
 		}
-		// The hello first, the reply after: both orders are legal.
-		write(conn, map[string]any{"event": "hello",
-			"data": map[string]any{"connection_id": "c1"}, "seq": 0})
+		// The reply first — the other legal order — then a post; the
+		// script ends, which cuts the socket for the second connection.
 		write(conn, map[string]any{"status": "OK", "seq_reply": challenge.Seq,
 			"data": map[string]any{}})
 		postEvent(conn, map[string]any{
-			"id": "p1", "user_id": "u1", "channel_id": "ch1",
-			"create_at": 1000, "update_at": 1000, "message": "hello first",
+			"id": "early", "user_id": "u1", "channel_id": "ch1",
+			"create_at": 100, "update_at": 100, "message": "before the handshake ended",
 		})
-		still(conn)
 	}}
+	// A second script with an event between hello (first, as the wire) and
+	// the reply: the marker must still head the connection.
+	f.scripts = append(f.scripts, func(conn *websocket.Conn) {
+		var challenge struct {
+			Seq int `json:"seq"`
+		}
+		if err := conn.ReadJSON(&challenge); err != nil {
+			return
+		}
+		write(conn, map[string]any{"event": "hello",
+			"data": map[string]any{"connection_id": "c1"}, "seq": 0})
+		reactionEvent(conn, "reaction_added", "ch1", map[string]any{
+			"user_id": "u2", "post_id": "early", "emoji_name": "+1",
+			"create_at": 200,
+		})
+		write(conn, map[string]any{"status": "OK", "seq_reply": challenge.Seq,
+			"data": map[string]any{}})
+		still(conn)
+	})
 	r := run(t, f)
 
-	reconnected(t, next(t, r), 0) // the reply was found behind the hello
-	post, ok := next(t, r).(*Posted)
-	if !ok || post.PostID != "p1" {
-		t.Fatalf("got %v, want the post after the hello-first handshake", post)
+	// The first connection: the reply came first, the post while reading
+	// normally — the marker heads it all.
+	reconnected(t, next(t, r), 0)
+	if post, ok := next(t, r).(*Posted); !ok || post.PostID != "early" {
+		t.Fatalf("got %v, want the early post after its marker", post)
+	}
+	// The second connection: the reaction overtook the reply and waits —
+	// the marker comes first, the reaction only then.
+	reconnected(t, next(t, r), 100)
+	if react, ok := next(t, r).(*Reaction); !ok || react.CreateAt != 200 {
+		t.Fatalf("got %v, want the overtaking reaction after the marker", react)
 	}
 }
 
@@ -441,15 +486,39 @@ func TestAuthFailureRetries(t *testing.T) {
 	defer slog.SetDefault(old)
 
 	f := newFake(t)
-	f.scripts = []func(*websocket.Conn){authRefused, authOK(still)}
+	// Three faces of a refused token: an in-band refusal, the silent close
+	// a real Mattermost gives, and then a good one.
+	f.scripts = []func(*websocket.Conn){authRefused, authClosed, authOK(still)}
 	r := run(t, f)
 
-	reconnected(t, next(t, r), 0) // the second connection's marker
-	if got := f.connections(); got < 2 {
-		t.Fatalf("got %d connections, want the refusal retried", got)
+	reconnected(t, next(t, r), 0) // the third connection's marker
+	if got := f.connections(); got < 3 {
+		t.Fatalf("got %d connections, want both refusals and the close retried", got)
 	}
 	if !logs.has("refused") {
 		t.Errorf("the logs do not say the token was refused: %v", logs.msgs)
+	}
+}
+
+// Given the wait's rules, when a connection ends, one that stayed up for
+// steady earns the first wait again and anything else doubles up to the
+// cap: the reset and the cap, pinned without sleeping either side.
+func TestWaitAfter(t *testing.T) {
+	r := New("http://x", "tok").WithBackoff(time.Second, 4*time.Second)
+	if got := r.waitAfter(steady, 3*time.Second); got != time.Second {
+		t.Errorf("got %v after a steady connection, want the first wait again (1s)", got)
+	}
+	if got := r.waitAfter(steady, time.Duration(1<<59)); got != time.Second {
+		t.Errorf("got %v after a steady connection, want the reset", got)
+	}
+	if got := r.waitAfter(0, time.Second); got != 2*time.Second {
+		t.Errorf("got %v after a drop, want the doubled wait", got)
+	}
+	if got := r.waitAfter(time.Second, 4*time.Second); got != 4*time.Second {
+		t.Errorf("got %v past the cap, want the cap held", got)
+	}
+	if got := r.waitAfter(steady-1, 4*time.Second); got != 4*time.Second {
+		t.Errorf("got %v just under steady, want the wait kept", got)
 	}
 }
 

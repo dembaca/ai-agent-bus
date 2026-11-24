@@ -80,17 +80,12 @@ func (*Reaction) event()    {}
 func (*Reconnected) event() {}
 
 // The backoff's shape, the socket's patience and the frame cap:
-//
-//	first, max — start 1 s, double per drop, stop at 30 s. A connection
-//	that stayed up for steady resets the wait. The first wait is `first`
-//	the same whatever max says; the doubling caps the rest.
-//
-//	idle — a read that stays quiet this long takes the socket again: a
-//	half-open connection must not hang the reader. Mattermost pings far
-//	more often, so 2.5 min only ever fires on a broken peer.
-//
-//	maxFrame — a bigger frame is a broken peer, not a post; the socket is
-//	dropped and taken again (Mattermost's longest message is far below).
+// wait starts at a second and doubles per drop up to half a minute; a
+// socket that stayed up for steady earns the start again (waitAfter).
+// A read quiet beyond idle takes the socket again — a half-open
+// connection must not hang the reader — and Mattermost pings far more
+// often, so idle only ever fires on a broken peer. A frame past
+// maxFrame is a broken peer's, not a post: dropped and taken again.
 const (
 	firstBackoff = time.Second
 	maxBackoff   = 30 * time.Second
@@ -152,8 +147,10 @@ func (r *Reader) WithIdle(idle time.Duration) *Reader {
 
 // Events is where the typed events arrive. Run stops reading from
 // Mattermost while nobody takes them: an event is never dropped on the
-// floor to keep the socket moving, and a block of more than a few
-// seconds is logged.
+// floor to keep the socket moving, a wait past a few seconds is logged,
+// and a consumer that stalls for good shows up as recurring reconnects
+// (unanswered pings close the socket, and the catch-up covers the gap —
+// nothing is lost, only the socket is).
 func (r *Reader) Events() <-chan Event { return r.events }
 
 // Run connects, reads and reconnects until ctx is cancelled, whose error
@@ -163,16 +160,25 @@ func (r *Reader) Events() <-chan Event { return r.events }
 func (r *Reader) Run(ctx context.Context) error {
 	wait := r.first
 	for ctx.Err() == nil {
-		if up := r.connect(ctx); up >= steady {
-			wait = r.first // the socket carried the bus for a while: start over
-		}
+		up := r.connect(ctx)
 		select {
 		case <-ctx.Done():
 		case <-time.After(wait):
 		}
-		wait = min(2*wait, r.max)
+		wait = r.waitAfter(up, wait)
 	}
 	return ctx.Err()
+}
+
+// waitAfter says what Run waits after a connection ended: one that
+// stayed up for steady earned the first wait again — a socket that
+// carried the bus for a while starts over — anything else doubles the
+// last, capped at max. The first wait is `first` whatever max says.
+func (r *Reader) waitAfter(up, last time.Duration) time.Duration {
+	if up >= steady {
+		return r.first
+	}
+	return min(2*last, r.max)
 }
 
 // connect dials, proves the token and reads one socket to its end. It
@@ -191,7 +197,26 @@ func (r *Reader) connect(ctx context.Context) time.Duration {
 		return 0
 	}
 	defer conn.Close()
-	if err := r.prove(ctx, conn); err != nil {
+	// The context ends this socket from the first byte — the auth wait
+	// included, whose own deadline a cancellation must not have to wait
+	// out. The watcher leaves with the connection (stop below).
+	stop := make(chan struct{})
+	go func() {
+		select {
+		case <-ctx.Done():
+			conn.Close()
+		case <-stop:
+		}
+	}()
+	defer close(stop)
+	// The hint is snapshotted before the handshake: an event that
+	// overtakes the reply is parsed (its create_at raises the running
+	// hint) but not handed out until after the marker — so the marker
+	// must say what was truly handed out before this connection, or the
+	// caller reading with a strict since would skip the early events.
+	hint := r.since
+	var early []Event
+	if early, err = r.prove(ctx, conn); err != nil {
 		var auth *AuthError
 		if errors.As(err, &auth) {
 			// Distinctly logged: a refused token is not a lost socket, it
@@ -205,17 +230,24 @@ func (r *Reader) connect(ctx context.Context) time.Duration {
 		}
 		return 0
 	}
-	r.emit(ctx, &Reconnected{Since: r.since})
+	// The marker first, whatever the handshake interleaved: the caller
+	// ends its catch-up reading where the marker of the next connect
+	// says, so an early event must never claim to predate it.
+	r.emit(ctx, &Reconnected{Since: hint})
+	for _, ev := range early {
+		r.emit(ctx, ev)
+	}
 	up := time.Now()
 	r.read(ctx, conn)
 	return time.Since(up)
 }
 
-// AuthError is Mattermost's refusal of the bot token: the socket is fine,
-// the answer says the token is no good. It is retried like a dropped
-// connection, only logged as what it is.
+// AuthError is a refusal that answers: a status other than OK in the
+// seq_reply frame. A real Mattermost is less polite — a bad token gets
+// the socket closed after the challenge, which reads as the drop it
+// then behaves like — but a server that says no is named as saying no.
 type AuthError struct {
-	Status string // Mattermost's reply status, never "OK"
+	Status string // the reply's status, never "OK"
 }
 
 func (e *AuthError) Error() string {
@@ -224,11 +256,13 @@ func (e *AuthError) Error() string {
 
 // prove sends Mattermost's auth challenge and waits for its reply —
 // wherever it sits in the stream. The reply carries `seq_reply` and the
-// events do not, so the reader takes frames until the reply with its own
-// sequence lands (mattermost's wire model, model/websocket_message.go);
-// any event that arrives first is handed out, not dropped, and a reply
-// with any status but OK is the refusal.
-func (r *Reader) prove(ctx context.Context, conn *websocket.Conn) error {
+// events do not (mattermost's wire model, model/websocket_message.go:
+// hello is queued before the reply, and channel events may also come
+// first), so the reader takes frames until the reply with its own
+// sequence lands. An event that arrives first is carried out with the
+// connection's own marker after it, and a reply with any status but OK
+// is the refusal.
+func (r *Reader) prove(ctx context.Context, conn *websocket.Conn) ([]Event, error) {
 	challenge := struct {
 		Seq    int               `json:"seq"`
 		Action string            `json:"action"`
@@ -238,8 +272,11 @@ func (r *Reader) prove(ctx context.Context, conn *websocket.Conn) error {
 	// must not outlive the context.
 	conn.SetWriteDeadline(time.Now().Add(20 * time.Second))
 	if err := conn.WriteJSON(challenge); err != nil {
-		return fmt.Errorf("mmws: sending the auth challenge: %w", err)
+		return nil, fmt.Errorf("mmws: sending the auth challenge: %w", err)
 	}
+	// The events that overtake the reply wait here, and connect hands
+	// them out after its own marker — theirs, but never before it.
+	var early []Event
 	for {
 		conn.SetReadDeadline(time.Now().Add(20 * time.Second))
 		var frame struct {
@@ -252,17 +289,20 @@ func (r *Reader) prove(ctx context.Context, conn *websocket.Conn) error {
 			} `json:"broadcast"`
 		}
 		if err := conn.ReadJSON(&frame); err != nil {
-			return fmt.Errorf("mmws: reading the auth reply: %w", err)
+			return early, fmt.Errorf("mmws: reading the auth reply: %w", err)
 		}
 		if frame.SeqReply == 0 {
-			// an event before the reply (hello first is legal): hand it out
-			r.takeEvent(ctx, frame.Event, frame.Data, frame.Broadcast.ChannelID)
+			// an event before the reply (hello first is legal): kept for
+			// the connection's own marker, which always goes out first
+			if ev := r.typedEvent(frame.Event, frame.Data, frame.Broadcast.ChannelID); ev != nil {
+				early = append(early, ev)
+			}
 			continue
 		}
 		if frame.Status != "OK" {
-			return &AuthError{Status: frame.Status}
+			return early, &AuthError{Status: frame.Status}
 		}
-		return nil
+		return early, nil
 	}
 }
 
@@ -283,16 +323,8 @@ func (r *Reader) read(ctx context.Context, conn *websocket.Conn) {
 		}
 		return err
 	})
-	// A blocked read ends only with the socket: the context closes it.
-	stop := make(chan struct{})
-	go func() {
-		select {
-		case <-ctx.Done():
-			conn.Close()
-		case <-stop:
-		}
-	}()
-	defer close(stop)
+	// A blocked read ends only with the socket: connect's watcher closes
+	// it on the context.
 	for {
 		conn.SetReadDeadline(time.Now().Add(r.idle))
 		var frame struct {
@@ -316,25 +348,44 @@ func (r *Reader) read(ctx context.Context, conn *websocket.Conn) {
 // it is none of the reader's three.
 func (r *Reader) takeEvent(ctx context.Context, event string, data json.RawMessage,
 	channelID string) {
+	if ev := r.typedEvent(event, data, channelID); ev != nil {
+		r.emit(ctx, ev)
+	}
+}
+
+// typedEvent parses one frame into its typed event — nil for every event
+// that is none of the reader's three (hello, typing and the rest) —
+// updating the hint on the ones it takes.
+func (r *Reader) typedEvent(event string, data json.RawMessage,
+	channelID string) Event {
 	switch event {
 	case "posted":
-		r.takePosted(ctx, data)
+		return r.typedPosted(data)
 	case "reaction_added", "reaction_removed":
-		r.takeReaction(ctx, data, channelID, event == "reaction_added")
+		return r.typedReaction(data, channelID, event == "reaction_added")
 	default:
-		// hello, typing and every other event: not the reader's business
+		return nil
 	}
 }
 
 // takePosted decodes one `posted` event. Mattermost carries the post as
 // a JSON string inside the event's data, not as an object.
 func (r *Reader) takePosted(ctx context.Context, data json.RawMessage) {
+	if ev := r.typedPosted(data); ev != nil {
+		r.emit(ctx, ev)
+	}
+}
+
+// typedPosted parses one `posted` into its event, or nil when the frame
+// does not decode — never an error past a logged warning, so one broken
+// event cannot end the reader.
+func (r *Reader) typedPosted(data json.RawMessage) Event {
 	var outer struct {
 		Post string `json:"post"`
 	}
 	if err := json.Unmarshal(data, &outer); err != nil || outer.Post == "" {
 		slog.Warn("mmws: a posted event without its post; ignored")
-		return
+		return nil
 	}
 	var post struct {
 		ID        string         `json:"id"`
@@ -352,10 +403,10 @@ func (r *Reader) takePosted(ctx context.Context, data json.RawMessage) {
 	}
 	if err := json.Unmarshal([]byte(outer.Post), &post); err != nil {
 		slog.Warn("mmws: a post that does not decode; ignored", "error", err)
-		return
+		return nil
 	}
 	r.since = max(r.since, post.CreateAt)
-	r.emit(ctx, &Posted{
+	return &Posted{
 		PostID:    post.ID,
 		UserID:    post.UserID,
 		ChannelID: post.ChannelID,
@@ -368,7 +419,7 @@ func (r *Reader) takePosted(ctx context.Context, data json.RawMessage) {
 		EditAt:    post.EditAt,
 		DeleteAt:  post.DeleteAt,
 		Message:   post.Message,
-	})
+	}
 }
 
 // takeReaction decodes one `reaction_added` or `reaction_removed`. The
@@ -377,12 +428,21 @@ func (r *Reader) takePosted(ctx context.Context, data json.RawMessage) {
 // comment says why).
 func (r *Reader) takeReaction(ctx context.Context, data json.RawMessage,
 	channelID string, added bool) {
+	if ev := r.typedReaction(data, channelID, added); ev != nil {
+		r.emit(ctx, ev)
+	}
+}
+
+// typedReaction parses one reaction event into its event, or nil when
+// the frame does not decode (see typedPosted).
+func (r *Reader) typedReaction(data json.RawMessage, channelID string,
+	added bool) Event {
 	var outer struct {
 		Reaction string `json:"reaction"`
 	}
 	if err := json.Unmarshal(data, &outer); err != nil || outer.Reaction == "" {
 		slog.Warn("mmws: a reaction event without its reaction; ignored")
-		return
+		return nil
 	}
 	var reaction struct {
 		UserID    string `json:"user_id"`
@@ -392,17 +452,17 @@ func (r *Reader) takeReaction(ctx context.Context, data json.RawMessage,
 	}
 	if err := json.Unmarshal([]byte(outer.Reaction), &reaction); err != nil {
 		slog.Warn("mmws: a reaction that does not decode; ignored", "error", err)
-		return
+		return nil
 	}
 	r.since = max(r.since, reaction.CreateAt)
-	r.emit(ctx, &Reaction{
+	return &Reaction{
 		PostID:    reaction.PostID,
 		UserID:    reaction.UserID,
 		ChannelID: channelID,
 		EmojiName: reaction.EmojiName,
 		CreateAt:  reaction.CreateAt,
 		Added:     added,
-	})
+	}
 }
 
 // emit hands the event out. It waits for a taker as long as the context

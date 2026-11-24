@@ -10,6 +10,7 @@ import (
 	"errors"
 	"fmt"
 	"io"
+	"log/slog"
 	"net/http"
 	"net/url"
 	"sort"
@@ -185,12 +186,15 @@ type postJSON struct {
 
 // PostsSince reads a channel's posts from since on, for the catch-up
 // after a WebSocket drop: mmws.Reconnected's hint goes here. Mattermost's
-// `since` returns a post whose create_at OR update_at is after the bound,
-// so a post edited after the bound comes back too, its old create_at
-// kept — this method never filters, and UpdateAt and EditAt are carried
-// because the caller decides: an edited post is never carried again,
-// a person who changes their mind writes a new post. The posts come
-// sorted by create_at ascending.
+// `since` answers by update_at alone (sqlstore getPostsSince: no paging,
+// LIMIT 1000), so a post edited or deleted after the bound comes back
+// too, its old create_at kept — and an older post that only collected
+// a reaction counts toward the limit, so a full read may have left
+// posts behind it: that is logged as the gap it is. This method never
+// filters, and UpdateAt, EditAt, DeleteAt, the type, the props and the
+// file counts are carried because the caller decides: an edited or
+// deleted post is never carried again. The posts come sorted by
+// create_at ascending.
 func (c *Client) PostsSince(ctx context.Context, channelID string, since int64) ([]Post, error) {
 	var list struct {
 		Order []string            `json:"order"`
@@ -221,8 +225,19 @@ func (c *Client) PostsSince(ctx context.Context, channelID string, since int64) 
 		}
 	}
 	sort.SliceStable(out, func(i, j int) bool { return out[i].CreateAt < out[j].CreateAt })
+	if len(out) >= maxSincePosts {
+		// The read cannot say whether it was cut at the limit; posts may
+		// sit behind it, reactivated old ones at that. Say so: an operator
+		// reads this, and the caller knows to read again, split by time.
+		slog.Warn("mattermost: the since read returned its thousand",
+			"channel", channelID)
+	}
 	return out, nil
 }
+
+// maxSincePosts is Mattermost's own page cap for getPostsSince: the read
+// is silently cut there, so the count names the cut.
+const maxSincePosts = 1000
 
 // Create posts text in channelID, as a reply to rootID when that is set.
 func (c *Client) Create(ctx context.Context, channelID, text, rootID string,
