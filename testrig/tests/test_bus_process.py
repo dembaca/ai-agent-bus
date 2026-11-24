@@ -387,9 +387,12 @@ async def test_a_run_that_receives_nothing_says_whether_the_fault_explains_it():
     run = await bus_run(count=4, fault=ProxyFault(kind="drop", after=1, every=1))
     assert run.sent_frames == 4, run.sent_frames
     assert not run.received, run.received
-    assert any("nothing arrived" in note and "drops every frame" in note
+    assert any("nothing arrived" in note and "discards every frame it sees" in note
                for note in run.notes), run.notes
-    assert run.relay["altered"] >= run.sent_frames, run.relay
+    # the posted counters, not the plain ones: the fault saw and discarded every
+    # frame the run measures (Fable's sixth point on #78)
+    assert run.relay["posted_seen"] >= run.sent_frames, run.relay
+    assert run.relay["posted_altered"] >= run.sent_frames, run.relay
 
 
 @skip_no_bus

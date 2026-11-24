@@ -158,20 +158,27 @@ pass every frame on, so silence under them is the path, and so is silence under
 `none` — a path that carried nothing is not a measurement of the fault (issue
 #47); 2 when no interpreter could start the bus at all.
 
-A fault whose silence is its own doing — `drop` discards, `cut` is a dead
-transport the bus recovers by backfill, `blackhole` and `halfopen` stop delivery
-on purpose — makes such a run a measurement **and the run says so**, in `notes`
-and on stderr:
+A fault that discards what it sees — `drop` and `blackhole`, which are the same
+discard — makes such a run a measurement only when the relay saw **every** posted
+frame and discarded **every** one: a frame it never saw was lost before the
+injection point, and one it forwarded and that still did not arrive is the path's
+loss. `halfopen` freezes the line, so it explains the silence only when no posted
+frame had been delivered before the freeze. `cut` aborts the transport and the bus
+recovers by catch-up read, so nothing arriving under it means the recovery
+recovered nothing — exit 1, not a measurement of the cut.
+
+In every case the run **says** which it is, in `notes` and on stderr:
 
 ```
-bus-testrig: nothing arrived: --fault drop drops every frame (3 of 3 frame(s)
-altered at the relay), so the run measures the fault, not delivery
+bus-testrig: nothing arrived: --fault drop discards every frame it sees (3 of 3
+posted frame(s) discarded at the relay), so the run measures the fault
 ```
 
-For `drop` that verdict rests on the relay's own counters: a frame the relay
-never saw was lost **before** the injection point, so the fault does not explain
-it and the run exits 1. Counting delivered frames alone cannot tell the two
-apart, which is what made a run that proved nothing read like a healthy one.
+The counters behind that are the relay's **posted** ones: the plain ones also
+count status and presence frames, and "the fault saw every frame" cannot be read
+from them. A silent run that kept no counters explains nothing and exits 1.
+Counting delivered frames alone cannot separate the two situations, which is what
+made a run that proved nothing read like a healthy one.
 
 The JSON report is printed in every case, because the numbers are how a failure
 is read.

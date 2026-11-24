@@ -101,7 +101,10 @@ def test_an_unknown_call_exits_non_zero_whatever_the_fault(bus_run, capsys, monk
 def test_a_fault_runs_own_loss_is_not_a_failure(bus_run, capsys):
     """A faulted run's loss is its measurement: `--fault drop` is expected to
     lose, and the exit code must not call that a broken rig."""
-    bus_run(_run(loss=20, fault="drop", closed="no open socket when a posted frame was pushed"))
+    run = _run(loss=20, fault="drop", closed="no open socket when a posted frame was pushed")
+    run.relay = {"received": 21, "forwarded": 0, "altered": 20,
+                 "posted_seen": 20, "posted_forwarded": 0, "posted_altered": 20}
+    bus_run(run)
     assert _main(["bus-run", "--count", "20", "--fault", "drop", "--after", "0"]) == 0
     assert _json_of(capsys)["measured"]["loss"]["value"] == 20
 
@@ -159,47 +162,123 @@ def test_a_passing_fault_that_delivers_nothing_exits_non_zero(bus_run, capsys):
     assert "lets traffic through" in capsys.readouterr().err
 
 
-def test_a_drop_run_that_delivers_nothing_stays_a_measurement(bus_run, capsys):
-    """The other side of the rule: `drop` is meant to discard, so a run under it
-    that delivers nothing and exits 0 is the measurement, not a broken path.
-
-    It must **say** so (issue #47): the same numbers otherwise read as a healthy
-    run, and a reader cannot tell the fault from a dead path."""
+def test_a_drop_run_that_discarded_every_posted_frame_stays_a_measurement(bus_run, capsys):
+    """The measurement side of the rule: `drop` saw every posted frame and
+    discarded every one, so the silence is the fault's - and the run **says** so
+    (issue #47). Without the sentence the same numbers read as a healthy run."""
     run = _run(loss=3, fault="drop", sent=3)
     run.received.clear()
-    run.relay = {"received": 4, "forwarded": 1, "altered": 3}
+    run.relay = {"received": 4, "forwarded": 1, "altered": 3,
+                 "posted_seen": 3, "posted_forwarded": 0, "posted_altered": 3}
     bus_run(run)
     assert _main(["bus-run", "--count", "3", "--fault", "drop", "--after", "1",
                   "--every", "1"]) == 0
     err = capsys.readouterr().err
-    assert "nothing arrived" in err and "drops every frame" in err, err
-    assert "3 of 3 frame(s) altered at the relay" in err, err
+    assert "nothing arrived" in err and "discards every frame it sees" in err, err
+    assert "3 of 3 posted frame(s) discarded at the relay" in err, err
 
 
 def test_a_drop_run_whose_frames_never_reached_the_relay_exits_non_zero(bus_run, capsys):
     """The criterion that tells the two apart (issue #47): `drop` discards what it
     sees, so a frame the relay never saw was lost **before** the injection point.
     Counting delivered frames alone reads identically; the relay's own counters do
-    not."""
+    not (Fable's first case on #78)."""
     run = _run(loss=3, fault="drop", sent=3)
     run.received.clear()
-    run.relay = {"received": 1, "forwarded": 1, "altered": 1}
+    # the plain counters would say "all seen, all dropped" (status frames inflate
+    # them); only the posted ones show that two of three never reached the relay
+    run.relay = {"received": 4, "forwarded": 1, "altered": 3,
+                 "posted_seen": 1, "posted_forwarded": 0, "posted_altered": 1}
     bus_run(run)
     assert _main(["bus-run", "--count", "3", "--fault", "drop", "--after", "1",
                   "--every", "1"]) == 1
-    assert "never reached the injection point" in capsys.readouterr().err
+    assert "lost before the injection point" in capsys.readouterr().err
 
 
-def test_a_cut_that_delivers_nothing_says_so_and_stays_a_measurement(bus_run, capsys):
-    """`cut` silences the line by design; a run under it that delivers nothing is
-    still a measurement of the cut - and says so, where it used to say nothing."""
+def test_a_drop_run_that_dropped_only_some_exits_non_zero(bus_run, capsys):
+    """The other half of the same criterion: the frames the fault *forwarded* also
+    failed to arrive, so the silence is not the fault's alone (Fable on #78: a
+    `--every 2` run exited 0 before this)."""
+    run = _run(loss=3, fault="drop", sent=3)
+    run.received.clear()
+    run.relay = {"received": 3, "forwarded": 2, "altered": 1,
+                 "posted_seen": 3, "posted_forwarded": 2, "posted_altered": 1}
+    bus_run(run)
+    assert _main(["bus-run", "--count", "3", "--fault", "drop", "--every", "2"]) == 1
+    assert "the path lost the forwarded ones" in capsys.readouterr().err
+
+
+def test_a_blackhole_that_discarded_every_posted_frame_stays_a_measurement(bus_run, capsys):
+    """`blackhole` is the same discard as `drop` (the review of #78): it has to be
+    read the same way, not taken as explained unconditionally."""
+    run = _run(loss=3, fault="blackhole", sent=3)
+    run.received.clear()
+    run.relay = {"received": 3, "forwarded": 0, "altered": 3,
+                 "posted_seen": 3, "posted_forwarded": 0, "posted_altered": 3}
+    bus_run(run)
+    assert _main(["bus-run", "--count", "3", "--fault", "blackhole", "--after", "1"]) == 0
+    assert "stops delivery" in capsys.readouterr().err
+
+
+def test_a_blackhole_that_never_fired_exits_non_zero(bus_run, capsys):
+    """`blackhole --after 50` on a 3-frame run discards nothing: nothing arriving
+    is then the path, not the fault (Fable's measured case)."""
+    for fault in ("blackhole", "drop", "halfopen"):
+        run = _run(loss=3, fault=fault, sent=3)
+        run.received.clear()
+        run.relay = {"received": 3, "forwarded": 3, "altered": 0,
+                     "posted_seen": 3, "posted_forwarded": 3, "posted_altered": 0}
+        bus_run(run)
+        assert _main(["bus-run", "--count", "3", "--fault", fault]) == 1, fault
+        err = capsys.readouterr().err
+        assert "is the path" in err or "discarded 0 of 3" in err, (fault, err)
+
+
+def test_a_halfopen_that_froze_before_a_posted_frame_stays_a_measurement(bus_run, capsys):
+    """A frozen line carries nothing: if no posted frame had been delivered before
+    the freeze, the silence is what the fault is for."""
+    run = _run(loss=3, fault="halfopen", sent=3)
+    run.received.clear()
+    run.relay = {"received": 3, "forwarded": 0, "altered": 3,
+                 "posted_seen": 3, "posted_forwarded": 0, "posted_altered": 3}
+    bus_run(run)
+    assert _main(["bus-run", "--count", "3", "--fault", "halfopen", "--after", "3"]) == 0
+    assert "froze the line before a posted frame" in capsys.readouterr().err
+
+
+def test_a_halfopen_that_delivered_a_posted_frame_first_exits_non_zero(bus_run, capsys):
+    """A posted frame delivered before the freeze had to be carried by the path:
+    if none arrived, the path lost it."""
+    run = _run(loss=3, fault="halfopen", sent=3)
+    run.received.clear()
+    run.relay = {"received": 3, "forwarded": 1, "altered": 2,
+                 "posted_seen": 3, "posted_forwarded": 1, "posted_altered": 2}
+    bus_run(run)
+    assert _main(["bus-run", "--count", "3", "--fault", "halfopen", "--after", "3"]) == 1
+    assert "had been delivered, and none arrived" in capsys.readouterr().err
+
+
+def test_a_cut_that_delivers_nothing_exits_non_zero(bus_run, capsys):
+    """`cut` aborts the transport and the bus recovers by catch-up read (the
+    review of #78): nothing arriving means the recovery recovered nothing, which
+    is not the cut itself - it used to exit 0 as "the fault's own silence"."""
     run = _run(loss=4, fault="cut", sent=4, closed="ConnectionClosed: cut")
     run.received.clear()
-    run.relay = {"received": 0, "forwarded": 0, "altered": 0}
+    run.relay = {"received": 0, "forwarded": 0, "altered": 1,
+                 "posted_seen": 0, "posted_forwarded": 0, "posted_altered": 1}
     bus_run(run)
-    assert _main(["bus-run", "--count", "4", "--fault", "cut"]) == 0
-    err = capsys.readouterr().err
-    assert "nothing arrived" in err and "silences the line" in err, err
+    assert _main(["bus-run", "--count", "4", "--fault", "cut"]) == 1
+    assert "recovered none of it" in capsys.readouterr().err
+
+
+def test_a_silent_run_without_relay_counters_exits_non_zero(bus_run, capsys):
+    """No counters is no evidence (Fable's fifth point): the fault cannot be shown
+    to have caused the silence, so the run does not pass."""
+    run = _run(loss=3, fault="drop", sent=3)
+    run.received.clear()
+    bus_run(run)
+    assert _main(["bus-run", "--count", "3", "--fault", "drop"]) == 1
+    assert "kept no relay counters" in capsys.readouterr().err
 
 
 def test_expect_loss_fails_when_everything_was_lost(bus_run, capsys):
@@ -208,7 +287,10 @@ def test_expect_loss_fails_when_everything_was_lost(bus_run, capsys):
     to prove a fault works proved nothing while `loss > 0` was the test.
     Without this case the older condition kept the whole file green (review of
     #25)."""
-    bus_run(_run(loss=20, fault="drop", closed="inbox never opened"))
+    run = _run(loss=20, fault="drop", closed="inbox never opened")
+    run.relay = {"received": 20, "forwarded": 0, "altered": 20,
+                 "posted_seen": 20, "posted_forwarded": 0, "posted_altered": 20}
+    bus_run(run)
     assert _main(["bus-run", "--count", "20", "--fault", "drop", "--after", "1",
                   "--expect-loss"]) == 1
     assert "loses some and carries the rest" in capsys.readouterr().err

@@ -691,7 +691,9 @@ async def bus_run(count: int = 100, fault: ProxyFault | None = None,
                     await reader
             run.ended = time.monotonic()
             run.relay = {"received": proxy.received, "forwarded": proxy.forwarded,
-                         "altered": proxy.altered}
+                         "altered": proxy.altered, "posted_seen": proxy.posted_seen,
+                         "posted_forwarded": proxy.posted_forwarded,
+                         "posted_altered": proxy.posted_altered}
             doubled = proxy.forwarded - proxy.received
             if doubled > 0 and fault is not None and fault.kind == "duplicate":
                 # The wire carried the frame twice; the bus's inbox hands
