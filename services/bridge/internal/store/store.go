@@ -88,30 +88,32 @@ func (s *KV) Save(ctx context.Context, home string, seq uint64, p mirror.Post) e
 	return err
 }
 
-// Reaction counts one reaction of a home's message (its stream sequence) and
-// emoji, and returns the new count: the caller reacts on the first and removes
-// on the last. The emoji is hex-encoded: a KV key allows no arbitrary text.
-func (s *KV) Reaction(ctx context.Context, home string, seq uint64, emoji string, delta int) (int, error) {
+// Reaction adds or removes one sender's reaction of a home's message (its
+// stream sequence) and emoji, and returns how many senders reacted: the
+// bridge's bot reacts on 1 and unreacts on 0. A sender reacting twice is one
+// reaction, as on the bus, so a replay counts nothing.
+func (s *KV) Reaction(ctx context.Context, home string, seq uint64, emoji, sender string, add bool) (int, error) {
 	key := "r." + home + "." + strconv.FormatUint(seq, 10) + "." + hex.EncodeToString([]byte(emoji))
 	for range 5 {
 		e, err := s.kv.Get(ctx, key)
-		n := 0
+		senders := map[string]bool{}
 		var rev uint64
 		switch {
 		case errors.Is(err, jetstream.ErrKeyNotFound):
 		case err != nil:
 			return 0, err
 		default:
-			n, err = strconv.Atoi(string(e.Value()))
-			if err != nil {
+			if err := json.Unmarshal(e.Value(), &senders); err != nil {
 				return 0, fmt.Errorf("store: %s: %w", key, err)
 			}
 			rev = e.Revision()
 		}
-		n += delta
-		if n < 0 {
-			n = 0
+		if add {
+			senders[sender] = true
+		} else {
+			delete(senders, sender)
 		}
+		n := len(senders)
 		if n == 0 {
 			if rev != 0 {
 				if err := s.kv.Delete(ctx, key, jetstream.LastRevision(rev)); err != nil &&
@@ -124,7 +126,10 @@ func (s *KV) Reaction(ctx context.Context, home string, seq uint64, emoji string
 			}
 			return 0, nil
 		}
-		value := []byte(strconv.Itoa(n))
+		value, err := json.Marshal(senders)
+		if err != nil {
+			return 0, err
+		}
 		if rev == 0 {
 			_, err = s.kv.Create(ctx, key, value)
 		} else {

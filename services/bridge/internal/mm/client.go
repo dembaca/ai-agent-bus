@@ -18,6 +18,30 @@ import (
 	"github.com/dembaca/ai-agent-bus/services/bridge/internal/mirror"
 )
 
+// StatusError is Mattermost's answer to one request. Create, React and Unreact
+// turn a message-specific refusal (400, 404, 413) into mirror.Refused; every
+// other failure (401/403: a revoked token or a bot outside the channel, 429,
+// 5xx, a network error) is transient and must be retried, never skipped.
+type StatusError struct {
+	Status int
+	Err    error
+}
+
+func (e *StatusError) Error() string { return e.Err.Error() }
+func (e *StatusError) Unwrap() error { return e.Err }
+
+// refuse maps a message-specific refusal, else nil.
+func refuse(err error) error {
+	var se *StatusError
+	if errors.As(err, &se) {
+		switch se.Status {
+		case http.StatusBadRequest, http.StatusNotFound, http.StatusRequestEntityTooLarge:
+			return &mirror.Refused{Status: se.Status, Err: se.Err}
+		}
+	}
+	return err
+}
+
 // Client is a Mattermost bot's HTTP client.
 type Client struct {
 	base  string
@@ -65,28 +89,6 @@ func (c *Client) ChannelIDByName(ctx context.Context, team, name string) (string
 	return ch.ID, nil
 }
 
-// Create posts text in channelID, as a reply to rootID when that is set.
-func (c *Client) Create(ctx context.Context, channelID, text, rootID string,
-	props map[string]any) (string, error) {
-	body := map[string]any{"channel_id": channelID, "message": text}
-	if rootID != "" {
-		body["root_id"] = rootID
-	}
-	if len(props) > 0 {
-		body["props"] = props
-	}
-	var p struct {
-		ID string `json:"id"`
-	}
-	if err := c.do(ctx, "POST", "/api/v4/posts", body, &p); err != nil {
-		return "", err
-	}
-	if p.ID == "" {
-		return "", errors.New("mattermost: a post without an id")
-	}
-	return p.ID, nil
-}
-
 // User is one of a home's members, as the roster needs it.
 type User struct {
 	ID       string
@@ -123,14 +125,36 @@ func (c *Client) Members(ctx context.Context, channelID string) ([]User, error) 
 	return out, nil
 }
 
+// Create posts text in channelID, as a reply to rootID when that is set.
+func (c *Client) Create(ctx context.Context, channelID, text, rootID string,
+	props map[string]any) (string, error) {
+	body := map[string]any{"channel_id": channelID, "message": text}
+	if rootID != "" {
+		body["root_id"] = rootID
+	}
+	if len(props) > 0 {
+		body["props"] = props
+	}
+	var p struct {
+		ID string `json:"id"`
+	}
+	if err := c.do(ctx, "POST", "/api/v4/posts", body, &p); err != nil {
+		return "", refuse(err)
+	}
+	if p.ID == "" {
+		return "", errors.New("mattermost: a post without an id")
+	}
+	return p.ID, nil
+}
+
 // React adds emoji to a post as the bridge's bot.
 func (c *Client) React(ctx context.Context, postID, emoji string) error {
 	uid, err := c.Me(ctx)
 	if err != nil {
 		return err
 	}
-	return c.do(ctx, "POST", "/api/v4/reactions",
-		map[string]any{"user_id": uid, "post_id": postID, "emoji_name": emoji}, nil)
+	return refuse(c.do(ctx, "POST", "/api/v4/reactions",
+		map[string]any{"user_id": uid, "post_id": postID, "emoji_name": emoji}, nil))
 }
 
 // Unreact removes the bridge's own reaction.
@@ -139,8 +163,8 @@ func (c *Client) Unreact(ctx context.Context, postID, emoji string) error {
 	if err != nil {
 		return err
 	}
-	return c.do(ctx, "DELETE", "/api/v4/users/"+url.PathEscape(uid)+"/posts/"+
-		url.PathEscape(postID)+"/reactions/"+url.PathEscape(emoji), nil, nil)
+	return refuse(c.do(ctx, "DELETE", "/api/v4/users/"+url.PathEscape(uid)+"/posts/"+
+		url.PathEscape(postID)+"/reactions/"+url.PathEscape(emoji), nil, nil))
 }
 
 func (c *Client) do(ctx context.Context, method, path string, in, out any) error {
@@ -167,14 +191,9 @@ func (c *Client) do(ctx context.Context, method, path string, in, out any) error
 	defer resp.Body.Close()
 	if resp.StatusCode < 200 || resp.StatusCode > 299 {
 		msg, _ := io.ReadAll(io.LimitReader(resp.Body, 512))
-		err := fmt.Errorf("mattermost %s %s: %s: %s", method, path, resp.Status,
-			strings.TrimSpace(string(msg)))
-		if resp.StatusCode >= 400 && resp.StatusCode < 500 && resp.StatusCode != http.StatusTooManyRequests {
-			// The message itself is refused for good (too long, an unknown
-			// emoji, a deleted root): a retry cannot help, the caller skips it.
-			return &mirror.Refused{Status: resp.StatusCode, Err: err}
-		}
-		return err
+		return &StatusError{Status: resp.StatusCode,
+			Err: fmt.Errorf("mattermost %s %s: %s: %s", method, path, resp.Status,
+				strings.TrimSpace(string(msg)))}
 	}
 	if out == nil {
 		return nil

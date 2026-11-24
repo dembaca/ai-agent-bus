@@ -10,6 +10,9 @@ func TestDecodeAndSubject(t *testing.T) {
 	if err != nil || st != Online || bot != "bot-1" {
 		t.Fatalf("%v %q %v", st, bot, err)
 	}
+	if st, _, err := Decode([]byte(`{"v":1,"status":"bye"}`)); err != nil || st != Bye {
+		t.Fatalf("bye: %v %v", st, err)
+	}
 	for _, body := range []string{`{}`, `{"v":2,"status":"online"}`, `{"v":1,"status":"napping"}`} {
 		if _, _, err := Decode([]byte(body)); err == nil {
 			t.Errorf("accepted %q", body)
@@ -31,8 +34,10 @@ func TestFreshAndTheLinkTag(t *testing.T) {
 	if Fresh(Info{Status: Online, At: now.Add(-80 * time.Second)}, now, 75*time.Second) {
 		t.Fatal("an old presence is fresh")
 	}
-	if Fresh(Info{Status: Offline, At: now}, now, 75*time.Second) {
-		t.Fatal("an offline presence is fresh")
+	for _, st := range []Status{Offline, Bye} {
+		if Fresh(Info{Status: st, At: now}, now, 75*time.Second) {
+			t.Fatalf("%s counts as fresh", st)
+		}
 	}
 	name := "agent-abcdefghijklmnopqrstuvwxyz"
 	if got := LinkTag(name); got != name[len(name)-26:][:16] {

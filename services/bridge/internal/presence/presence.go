@@ -18,6 +18,7 @@ const (
 	Online  Status = "online"
 	Away    Status = "away"
 	Offline Status = "offline"
+	Bye     Status = "bye" // a session that ended (the MCP posts it on its way out)
 )
 
 // Info is one name's latest presence.
@@ -60,9 +61,19 @@ func (s *Snapshot) Get(name string) (Info, bool) {
 	return i, ok
 }
 
-// Fresh says whether i is newer than window.
+// Newest is the time of the newest presence seen, the snapshot's own clock:
+// comparing a presence with it avoids the two hosts' clock difference.
+func (s *Snapshot) Newest() time.Time {
+	s.mu.RLock()
+	defer s.mu.RUnlock()
+	return s.seen
+}
+
+// Fresh says whether i is newer than window against now (the snapshot's newest)
+// and still says the agent is there: offline and bye do not.
 func Fresh(i Info, now time.Time, window time.Duration) bool {
-	return !i.At.IsZero() && now.Sub(i.At) <= window && i.Status != Offline
+	return !i.At.IsZero() && now.Sub(i.At) <= window &&
+		i.Status != Offline && i.Status != Bye
 }
 
 // Decode reads a presence body: {"v":1,"status":...,"bot":...}.
@@ -79,7 +90,7 @@ func Decode(body []byte) (Status, string, error) {
 		return "", "", errors.New("not presence v1")
 	}
 	switch st := Status(raw.Status); st {
-	case Online, Away, Offline:
+	case Online, Away, Offline, Bye:
 		return st, raw.Bot, nil
 	default:
 		return "", "", errors.New("unknown presence status")

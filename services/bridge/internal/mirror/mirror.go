@@ -68,10 +68,10 @@ type Store interface {
 	Post(ctx context.Context, home string, seq uint64) (Post, bool, error)
 	// Save remembers a mirror and moves the home's position.
 	Save(ctx context.Context, home string, seq uint64, p Post) error
-	// Reaction counts one reaction of a home's message (its stream sequence)
-	// and emoji, delta +1/-1, and returns the new count; the bridge's bot
-	// reacts on 1 and unreacts on 0.
-	Reaction(ctx context.Context, home string, seq uint64, emoji string, delta int) (int, error)
+	// Reaction adds or removes one sender's reaction of a home's message and
+	// emoji, and returns how many senders reacted; the bridge's bot reacts on
+	// 1 and unreacts on 0.
+	Reaction(ctx context.Context, home string, seq uint64, emoji, sender string, add bool) (int, error)
 }
 
 // Links resolves an agent's name to the Mattermost username of its bot, when
@@ -113,7 +113,9 @@ func (m *Mirror) Handle(ctx context.Context, channelID func(context.Context) (st
 	}
 	shown, err := m.Links.ShownAs(ctx, sender)
 	if err != nil {
-		return err
+		// Display only: a roster or presence hiccup must not stop a post.
+		m.Log.Info("bridge: shown_as not resolved", "agent", sender, "error", err)
+		shown = ""
 	}
 	if shown == "" {
 		shown = sender
@@ -135,7 +137,7 @@ func (m *Mirror) Handle(ctx context.Context, channelID func(context.Context) (st
 				props[m.Prefix+"nats_root"] = fmt.Sprintf("n1:%s:%d", m.Home, *msg.Root)
 			}
 		}
-		pid, err := m.Sink.Create(ctx, cid, Attribution(shown, Cut(msg.Text)), root, props)
+		pid, err := m.Sink.Create(ctx, cid, Attribution(shown, msg.Text), root, props)
 		if err != nil {
 			return err
 		}
@@ -150,24 +152,21 @@ func (m *Mirror) Handle(ctx context.Context, channelID func(context.Context) (st
 				"home", m.Home, "ref", *msg.Ref, "emoji", msg.Emoji)
 			return m.save(ctx, seq, Post{})
 		}
-		delta := 1
-		if msg.Kind == message.Unreaction {
-			delta = -1
-		}
-		n, err := m.Store.Reaction(ctx, m.Home, *msg.Ref, msg.Emoji, delta)
+		add := msg.Kind == message.Reaction
+		n, err := m.Store.Reaction(ctx, m.Home, *msg.Ref, msg.Emoji, sender, add)
 		if err != nil {
 			return err
 		}
 		switch {
-		case delta > 0 && n == 1:
+		case add && n == 1:
 			err = m.Sink.React(ctx, target.ID, msg.Emoji)
-		case delta < 0 && n == 0:
+		case !add && n == 0:
 			err = m.Sink.Unreact(ctx, target.ID, msg.Emoji)
 		}
 		if err != nil {
-			// The count moves with the reaction; a refused one must not be
-			// counted, so take the delta back before returning.
-			if _, undo := m.Store.Reaction(ctx, m.Home, *msg.Ref, msg.Emoji, -delta); undo != nil {
+			// The set moved with the reaction; a refused one must not be
+			// counted, so take it back before returning.
+			if _, undo := m.Store.Reaction(ctx, m.Home, *msg.Ref, msg.Emoji, sender, !add); undo != nil {
 				m.Log.Error("bridge: reaction count out of step", "post", target.ID, "emoji", msg.Emoji)
 			}
 			return err
@@ -220,11 +219,17 @@ func (m *Mirror) senderProps(in map[string]any) map[string]any {
 // Attribution puts the sender above the text, as the bridge posts with one
 // bot for every agent (the pilot's decision): a line of its own, so Markdown
 // blocks and tables below it stay intact.
+// SenderMark starts the sender line. The bridge strips it from every text, so
+// a post cannot imitate the line: its own "**agent-other**" lacks the mark.
+const SenderMark = "▍"
+
 func Attribution(shown, text string) string {
-	// The sender line is ours; the text cannot move it. Mentions in the text would
-	// notify people through the bridge's bot, so every @ gets a zero-width space
-	// after it: the text reads as written, no one is woken by a mirror.
-	return "**" + shown + "**\n\n" + DefuseMentions(text)
+	// The sender line is ours and marked; the text cannot move it. Mentions in
+	// the text would notify people through the bridge's bot, so every @ gets a
+	// zero-width space after it. Cut after defusing, so the limit holds for what
+	// is posted.
+	body := strings.ReplaceAll(text, SenderMark, "▏")
+	return SenderMark + "**" + shown + "**\n\n" + Cut(DefuseMentions(body))
 }
 
 // DefuseMentions makes @channel, @all and @name in a mirrored text plain text.

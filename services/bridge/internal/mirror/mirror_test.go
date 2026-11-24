@@ -4,6 +4,7 @@ import (
 	"context"
 	"io"
 	"log/slog"
+	"math/bits"
 	"strings"
 	"testing"
 
@@ -38,7 +39,7 @@ func (f *fakeSink) Unreact(_ context.Context, post, emoji string) error {
 type fakeStore struct {
 	pos       uint64
 	posts     map[uint64]Post
-	reactions map[string]int
+	reactions map[string]int // a bit set of senders per post/emoji
 }
 
 func (f *fakeStore) Position(context.Context, string) (uint64, bool, error) {
@@ -54,13 +55,26 @@ func (f *fakeStore) Save(_ context.Context, _ string, seq uint64, p Post) error 
 	return nil
 }
 
-func (f *fakeStore) Reaction(_ context.Context, home string, seq uint64, emoji string, delta int) (int, error) {
+func (f *fakeStore) Reaction(_ context.Context, home string, seq uint64, emoji, sender string, add bool) (int, error) {
 	k := home + "/" + emoji
-	f.reactions[k] += delta
-	if f.reactions[k] < 0 {
-		f.reactions[k] = 0
+	set := f.reactions[k]
+	if add {
+		if set|(1<<f.senderBit(sender)) == set {
+			return bits.OnesCount(uint(set)), nil
+		}
+		set |= 1 << f.senderBit(sender)
+	} else {
+		set &^= 1 << f.senderBit(sender)
 	}
-	return f.reactions[k], nil
+	f.reactions[k] = set
+	return bits.OnesCount(uint(set)), nil
+}
+
+func (f *fakeStore) senderBit(sender string) int {
+	if sender == "agent-c" {
+		return 1
+	}
+	return 0
 }
 
 func newMirror(t *testing.T) (*Mirror, *fakeSink, *fakeStore) {
@@ -80,7 +94,7 @@ func TestAPostIsMirroredOnceWithTheNATSIdAndAttribution(t *testing.T) {
 	if len(sink.posts) != 1 || sink.posts[0].root != "" {
 		t.Fatalf("%+v", sink.posts)
 	}
-	if got := sink.posts[0].text; got != "**agent-a**\n\nhello" {
+	if got := sink.posts[0].text; got != SenderMark+"**agent-a**\n\nhello" {
 		t.Fatalf("attribution: %q", got)
 	}
 	if sink.posts[0].props["a2a.nats_id"] != "n1:home:4" || sink.posts[0].props["a2a.shown_as"] != "agent-a" {

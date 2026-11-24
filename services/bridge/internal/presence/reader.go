@@ -8,52 +8,69 @@ import (
 	"time"
 
 	"github.com/nats-io/nats.go"
+	"github.com/nats-io/nats.go/jetstream"
 )
 
-// Reader follows the PRESENCE stream: the latest presence per name, one
-// message per subject, so every start replays what the stream holds and needs
-// no position of its own.
+// Reader follows the PRESENCE stream into a snapshot. A named consumer with
+// the narrowest filter (presence.*.*: a name's presence, never a crown claim or
+// a membership) and deliver-all: the stream keeps one message per subject, so
+// every start replays the latest presence and needs no position of its own.
 type Reader struct {
 	Log    *slog.Logger
 	Stream string // "PRESENCE"
 	Into   *Snapshot
 }
 
+// ConsumerName is the bridge's presence consumer; the NATS user's rights are
+// granted on exactly this name.
+const ConsumerName = "bridge_presence"
+
 // Run consumes until ctx ends.
-func (r *Reader) Run(ctx context.Context, js nats.JetStreamContext) error {
-	sub, err := js.PullSubscribe("presence.>", "", nats.BindStream(r.Stream),
-		nats.DeliverAll(), nats.ManualAck(), nats.MaxAckPending(256))
+func (r *Reader) Run(ctx context.Context, js jetstream.JetStream) error {
+	cons, err := js.CreateOrUpdateConsumer(ctx, r.Stream, jetstream.ConsumerConfig{
+		Name: ConsumerName, FilterSubject: "presence.*.*",
+		DeliverPolicy: jetstream.DeliverAllPolicy, AckPolicy: jetstream.AckNonePolicy,
+		MaxAckPending: 256,
+	})
 	if err != nil {
 		return fmt.Errorf("presence: consumer: %w", err)
 	}
-	defer func() { _ = sub.Unsubscribe() }()
 	for {
 		if ctx.Err() != nil {
 			return nil
 		}
-		msgs, err := sub.Fetch(64, nats.MaxWait(2*time.Second))
-		if errors.Is(err, nats.ErrTimeout) {
-			continue
-		}
+		batch, err := cons.Fetch(64, jetstream.FetchMaxWait(2*time.Second))
 		if err != nil {
+			if errors.Is(err, nats.ErrTimeout) || errors.Is(err, context.DeadlineExceeded) {
+				continue
+			}
 			return fmt.Errorf("presence: fetch: %w", err)
 		}
-		for _, m := range msgs {
+		for m := range batch.Messages() {
 			r.one(m)
-			_ = m.Ack()
+		}
+		if berr := batch.Error(); berr != nil && !errors.Is(berr, nats.ErrTimeout) &&
+			!errors.Is(berr, context.DeadlineExceeded) {
+			return fmt.Errorf("presence: batch: %w", berr)
 		}
 	}
 }
 
-func (r *Reader) one(m *nats.Msg) {
-	owner, name, ok := Subject(m.Subject)
+func (r *Reader) one(m jetstream.Msg) {
+	owner, name, ok := Subject(m.Subject())
 	if !ok {
 		return
 	}
-	status, bot, err := Decode(m.Data)
+	status, bot, err := Decode(m.Data())
 	if err != nil {
-		r.Log.Warn("presence: unreadable", "subject", m.Subject, "error", err)
+		r.Log.Warn("presence: unreadable", "subject", m.Subject(), "error", err)
 		return
 	}
-	r.Into.Observed(name, owner, bot, status, time.Now())
+	// The stream's own time, not this host's clock: a presence is fresh
+	// relative to what the server delivered, as the MCP reads it too.
+	at := time.Now()
+	if md, err := m.Metadata(); err == nil && !md.Timestamp.IsZero() {
+		at = md.Timestamp
+	}
+	r.Into.Observed(name, owner, bot, status, at)
 }

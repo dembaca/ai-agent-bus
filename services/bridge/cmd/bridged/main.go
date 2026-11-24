@@ -21,6 +21,7 @@ import (
 	"time"
 
 	"github.com/nats-io/nats.go"
+	"github.com/nats-io/nats.go/jetstream"
 
 	"github.com/dembaca/ai-agent-bus/services/bridge/internal/config"
 	"github.com/dembaca/ai-agent-bus/services/bridge/internal/links"
@@ -52,7 +53,7 @@ func run(log *slog.Logger) error {
 		return err
 	}
 	defer nc.Close()
-	js, err := nc.JetStream()
+	js, err := jetstream.New(nc)
 	if err != nil {
 		return fmt.Errorf("jetstream: %w", err)
 	}
@@ -69,7 +70,7 @@ func run(log *slog.Logger) error {
 	// PRESENCE stream the bridge runs as before, naming the NATS name.
 	snapshot := presence.New()
 	hasPresence := false
-	if _, err := js.StreamInfo("PRESENCE"); err == nil {
+	if _, err := js.Stream(ctx, "PRESENCE"); err == nil {
 		hasPresence = true
 	}
 
@@ -93,7 +94,7 @@ func run(log *slog.Logger) error {
 		var lk mirror.Links = mirror.LinksNone{}
 		if hasPresence {
 			lk = &links.Resolver{Presence: snapshot, Roster: roster{client: client, cid: cid},
-				Window: 75 * time.Second, TTL: 30 * time.Second}
+				Window: 90 * time.Second, TTL: 30 * time.Second}
 		}
 		r := &reader.Reader{Home: home, Log: log, Store: kv, Stream: cfg.NATSStream,
 			Prefix: cfg.BusPrefix, PropsPrefix: cfg.Prefix,

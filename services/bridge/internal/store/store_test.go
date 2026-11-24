@@ -63,16 +63,19 @@ func TestEveryHomeHasItsOwnPosition(t *testing.T) {
 func TestReactionsAreCountedPerMessageAndEmoji(t *testing.T) {
 	kv, _ := open(t)
 	ctx := context.Background()
+	// a sender reacting twice is one reaction; the last one leaving removes it
 	for _, step := range []struct {
-		seq, delta, want int
-	}{{1, +1, 1}, {1, +1, 2}, {1, -1, 1}, {1, -1, 0}} {
-		n, err := kv.Reaction(ctx, "home", uint64(step.seq), "thumbsup", step.delta)
+		sender string
+		add    bool
+		want   int
+	}{{"a", true, 1}, {"a", true, 1}, {"b", true, 2}, {"a", false, 1}, {"b", false, 0}} {
+		n, err := kv.Reaction(ctx, "home", 1, "thumbsup", step.sender, step.add)
 		if err != nil || n != step.want {
 			t.Fatalf("step %+v: %d %v", step, n, err)
 		}
 	}
-	// a different emoji is its own count
-	if n, err := kv.Reaction(ctx, "home", 1, "eyes", +1); err != nil || n != 1 {
+	// a different emoji is its own set
+	if n, err := kv.Reaction(ctx, "home", 1, "eyes", "a", true); err != nil || n != 1 {
 		t.Fatalf("eyes: %d %v", n, err)
 	}
 }

@@ -47,7 +47,7 @@ func (r *Resolver) ShownAs(ctx context.Context, agent string) (string, error) {
 		return "", nil
 	}
 	info, ok := r.Presence.Get(agent)
-	if !ok || !presence.Fresh(info, time.Now(), r.Window) || info.Bot == "" {
+	if !ok || !presence.Fresh(info, r.Presence.Newest(), r.Window) || info.Bot == "" {
 		return "", nil
 	}
 	members, err := r.roster(ctx)

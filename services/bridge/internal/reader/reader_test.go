@@ -9,6 +9,7 @@ import (
 
 	natsserver "github.com/nats-io/nats-server/v2/server"
 	"github.com/nats-io/nats.go"
+	"github.com/nats-io/nats.go/jetstream"
 
 	"github.com/dembaca/ai-agent-bus/services/bridge/internal/mirror"
 	"github.com/dembaca/ai-agent-bus/services/bridge/internal/store"
@@ -30,7 +31,7 @@ func (s *sink) React(_ context.Context, post, emoji string) error {
 }
 func (s *sink) Unreact(context.Context, string, string) error { return nil }
 
-func lab(t *testing.T) (*nats.Conn, nats.JetStreamContext) {
+func lab(t *testing.T) (*nats.Conn, jetstream.JetStream) {
 	t.Helper()
 	srv, err := natsserver.NewServer(&natsserver.Options{Host: "127.0.0.1", Port: -1, JetStream: true,
 		StoreDir: t.TempDir(), NoLog: true, NoSigs: true})
@@ -47,18 +48,18 @@ func lab(t *testing.T) (*nats.Conn, nats.JetStreamContext) {
 		t.Fatal(err)
 	}
 	t.Cleanup(nc.Close)
-	js, err := nc.JetStream()
+	js, err := jetstream.New(nc)
 	if err != nil {
 		t.Fatal(err)
 	}
-	if _, err := js.AddStream(&nats.StreamConfig{Name: "BUS", Subjects: []string{"bus.>"},
-		NoAck: true, Storage: nats.MemoryStorage}); err != nil {
+	if _, err := js.CreateStream(context.Background(), jetstream.StreamConfig{Name: "BUS",
+		Subjects: []string{"bus.>"}, NoAck: true, Storage: jetstream.MemoryStorage}); err != nil {
 		t.Fatal(err)
 	}
 	return nc, js
 }
 
-func start(t *testing.T, nc *nats.Conn, js nats.JetStreamContext, kv *store.KV,
+func start(t *testing.T, nc *nats.Conn, js jetstream.JetStream, kv *store.KV,
 	s *sink) (context.CancelFunc, chan error) {
 	t.Helper()
 	ctx, cancel := context.WithCancel(context.Background())
@@ -99,12 +100,12 @@ func TestAPostAReplyAndAReactionOverARealServer(t *testing.T) {
 	waitConsumer(t, js, "BUS")
 
 	mustPublish(t, nc, "bus.ch.home.agent-a", `{"v":1,"kind":"post","text":"hello"}`)
-	first := until(t, s, "**agent-a**\n\nhello")
+	first := until(t, s, mirror.SenderMark+"**agent-a**\n\nhello")
 	if first[1] != "" || first[2] != "n1:home:1" {
 		t.Fatalf("first: %+v", first)
 	}
 	mustPublish(t, nc, "bus.ch.home.agent-b", `{"v":1,"kind":"post","text":"reply","root":1}`)
-	reply := until(t, s, "**agent-b**\n\nreply")
+	reply := until(t, s, mirror.SenderMark+"**agent-b**\n\nreply")
 	if reply[1] != "mm-n1:home:1" {
 		t.Fatalf("reply threads on %q", reply[1])
 	}
@@ -143,7 +144,7 @@ func TestARestartNeitherRepeatsNorLoses(t *testing.T) {
 	cancel, done := start(t, nc, js, kv, s)
 	waitConsumer(t, js, "BUS")
 	mustPublish(t, nc, "bus.ch.home.agent-a", `{"v":1,"kind":"post","text":"one"}`)
-	until(t, s, "**agent-a**\n\none")
+	until(t, s, mirror.SenderMark+"**agent-a**\n\none")
 	cancel()
 	select {
 	case <-done:
@@ -155,7 +156,7 @@ func TestARestartNeitherRepeatsNorLoses(t *testing.T) {
 	cancel2, _ := start(t, nc, js, kv, s)
 	waitConsumer(t, js, "BUS")
 	defer cancel2()
-	got := until(t, s, "**agent-a**\n\ntwo")
+	got := until(t, s, mirror.SenderMark+"**agent-a**\n\ntwo")
 	if got[2] != "n1:home:2" {
 		t.Fatalf("after restart: %+v", got)
 	}
@@ -169,12 +170,14 @@ func TestARestartNeitherRepeatsNorLoses(t *testing.T) {
 // waitConsumer waits until the reader's ephemeral pull consumer exists: a
 // DeliverNew consumer mirrors what comes after its creation, and the test
 // publishes right after the reader starts.
-func waitConsumer(t *testing.T, js nats.JetStreamContext, stream string) {
+func waitConsumer(t *testing.T, js jetstream.JetStream, stream string) {
 	t.Helper()
 	deadline := time.Now().Add(3 * time.Second)
 	for {
-		if si, err := js.StreamInfo(stream); err == nil && si.State.Consumers > 0 {
-			return
+		if st, err := js.Stream(context.Background(), stream); err == nil {
+			if info, err := st.Info(context.Background()); err == nil && info.State.Consumers > 0 {
+				return
+			}
 		}
 		if time.Now().After(deadline) {
 			t.Fatal("the reader made no consumer")

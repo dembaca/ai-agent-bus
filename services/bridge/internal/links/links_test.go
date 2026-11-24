@@ -40,6 +40,7 @@ func TestShownAsNeedsTheTagAndAFreshPresence(t *testing.T) {
 	// an old presence: no link
 	snap3 := presence.New()
 	snap3.Observed(name, "alice", "bot-1", presence.Online, time.Now().Add(-2*time.Minute))
+	snap3.Observed("agent-other", "alice", "bot-2", presence.Online, time.Now()) // a newer presence
 	r4 := &Resolver{Presence: snap3, Window: 75 * time.Second, TTL: time.Minute,
 		Roster: roster{members: []Member{{ID: "bot-1", Username: "agent-a", Status: "⇄" + tag}}}}
 	if got, _ := r4.ShownAs(context.Background(), name); got != "" {
