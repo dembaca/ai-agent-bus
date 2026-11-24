@@ -551,3 +551,23 @@ async def test_a_consumer_create_stamps_only_with_nothing_pending() -> None:
     for nc in (awaiting, empty):
         assert any("DELETE" in subject for subject in nc.calls)
         assert any("CREATE" in subject for subject in nc.calls)
+
+
+async def test_a_pending_delivery_stamps_no_sync() -> None:
+    """A delivery whose replay is still behind (pending > 0) is not a
+    finished replay: it stamps nothing, the probe stays red until a
+    delivery with pending 0 or a create with nothing left arrives."""
+    from console_server.fleet import Fleet
+    f = Fleet(presence_subject="presence")
+    def ack(sseq, cseq, ts, pending):
+        return (f"$JS.ACK.PRESENCE.console.{sseq}.{sseq}.{cseq}.{int(ts*1e9)}.{pending}")
+
+    # presence: pending 2 behind — not synced
+    assert f.on_delivery("presence.dembaca.a", b'{"v":1,"status":"online"}',
+                         ack(1, 1, 1000.0, 2), "PRESENCE", "console")
+    assert f.synced is False and f.last_sync_at is None
+
+    # the next delivery catches up: pending 0 — synced
+    assert f.on_delivery("presence.dembaca.b", b'{"v":1,"status":"online"}',
+                         ack(2, 2, 1001.0, 0), "PRESENCE", "console")
+    assert f.synced is True and f.last_sync_at is not None

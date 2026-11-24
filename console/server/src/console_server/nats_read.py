@@ -162,13 +162,18 @@ async def read_forever(settings: config.Settings, fleet: Fleet,
                 # of the probe's bound (at least 5 s), so a silent fleet's
                 # reconnect lands within the bound, not a cycle after it
                 wake = max(5.0, settings.health_sync_bound / 4)
+                # three quarters of the bound, taken back half a watch
+                # tick: the third tick reads slightly under it, and a
+                # red probe between the reconnect and the tick is what
+                # this avoids. The 15 s floor never applies at the
+                # minimum bound of 30 s — the coupling stays above it.
                 idle = max(IDLE_FLOOR_SEC, settings.health_sync_bound * 3 / 4)
                 while not closed.done():
                     try:
                         await asyncio.wait_for(asyncio.shield(closed), wake)
                     except asyncio.TimeoutError:
                         age = time.monotonic() - last_seen
-                        if age >= idle:
+                        if age >= idle - wake / 2:
                             log.info("console: the stream was silent for %.0f s;"
                                      " reconnecting for a replay", age)
                             break
