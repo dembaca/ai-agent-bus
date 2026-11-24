@@ -33,6 +33,18 @@ from .fleet import Fleet
 log = logging.getLogger("console.nats")
 
 CONSUMER_API_TIMEOUT = 5.0
+
+
+def idle_timing(bound: float) -> tuple[float, float]:
+    """The silent stream's timing, from the probe's bound: the watch
+    ticks every quarter (at least 5 s), and the reconnect goes at
+    three quarters of the bound taken back half a tick — so the tick
+    that fires (each quarter) sees the reconnect between 5/8 and 7/8 of
+    the bound, inside it for every bound. The 15 s floor makes the
+    minimum bound of 30 s stay above it."""
+    wake = max(5.0, bound / 4)
+    idle = max(IDLE_FLOOR_SEC, bound * 3 / 4)
+    return wake, idle - wake / 2
 INBOX_PREFIX = "_INBOX_console"   # the console's own, granted alone
 # A silent stream reconnects for a replay; the idle bound couples to the
 # probe's bound (a silent fleet's reconnect lands inside the bound, whatever
@@ -161,19 +173,13 @@ async def read_forever(settings: config.Settings, fleet: Fleet,
                 # idle watchdog asking for a replay; it wakes every quarter
                 # of the probe's bound (at least 5 s), so a silent fleet's
                 # reconnect lands within the bound, not a cycle after it
-                wake = max(5.0, settings.health_sync_bound / 4)
-                # three quarters of the bound, taken back half a watch
-                # tick: the third tick reads slightly under it, and a
-                # red probe between the reconnect and the tick is what
-                # this avoids. The 15 s floor never applies at the
-                # minimum bound of 30 s — the coupling stays above it.
-                idle = max(IDLE_FLOOR_SEC, settings.health_sync_bound * 3 / 4)
+                wake, idle_after = idle_timing(settings.health_sync_bound)
                 while not closed.done():
                     try:
                         await asyncio.wait_for(asyncio.shield(closed), wake)
                     except asyncio.TimeoutError:
                         age = time.monotonic() - last_seen
-                        if age >= idle - wake / 2:
+                        if age >= idle_after:
                             log.info("console: the stream was silent for %.0f s;"
                                      " reconnecting for a replay", age)
                             break

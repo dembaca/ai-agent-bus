@@ -138,8 +138,9 @@ the read.
   an empty one included (a consumer created with nothing left to deliver
   stamps it, so a fleet with zero agents is healthy) — and again once no
   replay arrived within `CONSOLE_HEALTH_SYNC_BOUND` (30 s to 24 h,
-  default 180 s; the reader reconnects for a replay on its own after a
-  silent three quarters of the bound, waking every quarter of it).
+  default 180 s; the reader reconnects for a replay between 5/8 and 7/8
+  of the bound — three quarters taken back half a watch tick, checked
+  every quarter of it).
   **A liveness probe on `/healthz` would restart the pod while NATS is
   merely slow** — use `/livez`: it answers 503 only when the reader
   ended without a stop; everything else retries on its own.
