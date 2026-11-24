@@ -482,13 +482,14 @@ mcp = _StrictServer("ai-agent-bus", instructions=_instructions(), lifespan=_life
 def tool(*args: Any, **kwargs: Any) -> Callable[[Callable[..., Any]], Any]:
     """Register a tool with its docstring dedented (RT-6.9).
 
-    Python 3.13's compiler removes a docstring's common indentation; 3.11's and
-    3.12's leave it, so the same tool carried ~500 more characters on the older
-    interpreters: the text an agent got and the text `_fixed` counted would not
-    be what the budget in tests/test_stats.py assumes, and the budget could not
-    hold for every version. `cleandoc` once, at registration, keeps the served
-    and the counted text the same everywhere; where the compiler already
-    dedented, it changes nothing.
+    Python 3.13's compiler removes a docstring's common indentation and its
+    trailing newline; 3.11's and 3.12's leave both, so the same tool carried
+    ~500 more characters on the older interpreters: the text an agent got and
+    the text `_fixed` counted would not be what the budget in tests/test_stats.py
+    assumes, and the budget could not hold for every version. `cleandoc` once,
+    at registration, keeps the served and the counted text the same everywhere;
+    on 3.13 it only drops a trailing newline per tool (about 11 characters in
+    all), not a word of the text.
     """
 
     def register(fn: Callable[..., Any]) -> Any:
@@ -3222,7 +3223,8 @@ def _tools() -> tuple[Callable[..., Any], ...]:
     """The tools this session has: the base set, and what its configuration
     adds (the host's session pair, the channel's push check)."""
     tools: tuple[Callable[..., Any], ...] = (bus_info, announce, get_me, post_message, reply_in_thread, ask_human,
-             resolve_ask, coordinator, get_thread, get_file, list_recent, wait_for_events, stats_report)
+             resolve_ask, coordinator, get_thread, get_file, attach_text, list_recent, wait_for_events,
+             stats_report)
     if not (HOST_MANAGED or UNAVAILABLE):
         tools += (session_start, session_end)
     if PUSH:

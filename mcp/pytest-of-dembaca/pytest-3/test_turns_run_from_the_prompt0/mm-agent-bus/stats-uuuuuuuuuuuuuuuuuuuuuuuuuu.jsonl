@@ -1,9 +1,0 @@
-{"k": "turn", "t": 1000, "by": "human"}
-{"k": "block", "t": 1100, "kind": "drain"}
-{"k": "turn_end", "t": 1300}
-{"k": "turn", "t": 2000, "by": "bus"}
-{"k": "turn_end", "t": 2060}
-{"k": "turn", "t": 3000, "by": "human"}
-{"k": "turn", "t": 4000, "by": "human"}
-{"k": "turn_end", "t": 4010}
-{"k": "turn_end", "t": 5000}

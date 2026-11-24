@@ -16,6 +16,8 @@ build/
 venv/
 .pytest_cache/
 .pytest-tmp/
+# pytest's own temp roots, when a run uses the working directory (a sandbox)
+pytest-of-*/
 .mypy_cache/
 .ruff_cache/
 .coverage
