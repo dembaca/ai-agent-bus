@@ -1259,3 +1259,71 @@ async def test_the_cooldown_without_a_notifier_names_it():
         await lg.access_token()
     with pytest.raises(login.LoginError, match=r"failed \(no way to tell the human about the approval\)"):
         await lg.access_token()
+
+
+async def test_the_lifetime_counts_from_the_request_not_the_answer():
+    """A slow answer shortens the token's life, never lengthens it: the 100 s the
+    answer took are already gone when it arrives."""
+    wall, mono = [1_000_000.0], [0.0]
+
+    class Slow(Timed):
+        def _tokens(self):
+            wall[0] += 100
+            mono[0] += 100
+            return super()._tokens()
+
+    script = Slow(lambda: int(wall[0]))
+    lg = mk(transport=httpx.MockTransport(script), notifier=Note(),
+            now=lambda: mono[0], wall=lambda: wall[0])
+    first = await lg.access_token()
+    wall[0] += 141  # 241 s after the request: 59 s left of 300
+    mono[0] += 141
+    assert await lg.access_token() != first and script.refreshed == ["refresh-secret-1"]
+
+
+async def test_no_token_is_held_longer_than_a_day():
+    """Neither `iat` nor `expires_in`: only the host's clock against `exp`, and
+    an `exp` ten years ahead is not trusted for ten years."""
+    wall = [1_000_000.0]
+    script = Timed(lambda: int(wall[0]), lifetime=10 * 365 * 86_400, expires_in=None, iat=None)
+    lg = mk(transport=httpx.MockTransport(script), notifier=Note(),
+            now=lambda: 0.0, wall=lambda: wall[0])
+    first = await lg.access_token()
+    wall[0] += login.MAX_LIFETIME_SEC - login.MIN_LEFT_SEC - 1
+    assert await lg.access_token() == first
+    wall[0] += 2
+    assert await lg.access_token() != first and script.refreshed == ["refresh-secret-1"]
+
+
+async def test_iat_true_is_a_login_error():
+    script = Timed(lambda: 1_000_000)
+    script.claims = {"iat": True}
+    store = keystore.Ephemeral()
+    with pytest.raises(login.LoginError, match="iat is not a usable time"):
+        await mk(store, transport=httpx.MockTransport(script), notifier=Note()).access_token()
+    assert stored(store) is None
+
+
+async def test_expires_in_true_counts_as_missing():
+    """`True` is no 1 s lifetime: the token's own `exp - iat` counts."""
+    wall = [1_000_000.0]
+    script = Timed(lambda: int(wall[0]), expires_in=True)
+    lg = mk(transport=httpx.MockTransport(script), notifier=Note(), now=lambda: 0.0, wall=lambda: wall[0])
+    first = await lg.access_token()
+    wall[0] += 200
+    assert await lg.access_token() == first and script.refreshed == []
+
+
+async def test_the_cooldown_cause_is_one_short_line():
+    lg = mk(transport=httpx.MockTransport(Script()), notifier=Note())
+
+    async def broken(human):
+        raise login.LoginError("first line\n\tsecond   line\n" + "x" * 500)
+    lg._approve = broken
+    with pytest.raises(login.LoginError):
+        await lg.access_token()
+    with pytest.raises(login.LoginError) as info:
+        await lg.access_token()
+    cause = str(info.value).split("(", 1)[1].rsplit(");", 1)[0]
+    assert cause.startswith("first line second line xxx") and "\n" not in cause
+    assert len(cause) == login.MAX_CAUSE_CHARS

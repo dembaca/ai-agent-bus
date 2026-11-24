@@ -66,6 +66,8 @@ HTTP_TIMEOUT_SEC = 20.0
 MAX_BACKOFF_SEC = 60  # growing wait after a network error or a 5xx while polling
 COOLDOWN_SEC = 60  # after any approval that failed, no new approval for this long
 MAX_TIME_SEC = 2 ** 34  # a token's times lie below this (the year 2514), far below what a float holds
+MAX_LIFETIME_SEC = 86_400  # a token is held at most this long, whatever its times say
+MAX_CAUSE_CHARS = 120  # the error text a cooldown reports, on one line
 # The reasons a cooldown may carry. A mark is a file, so its reason is data, and only
 # these are ever reported: anything else says "failed".
 COOLDOWN_WHY = ("was declined", "expired", "was refused", "lacked the realm role", "failed")
@@ -510,7 +512,7 @@ class Login:
         host carries one of the fixed reasons, never a text."""
         self._cooldown_until = self._now() + COOLDOWN_SEC
         self._cooldown_why = why
-        self._cooldown_cause = cause
+        self._cooldown_cause = " ".join(cause.split())[:MAX_CAUSE_CHARS]
         self._save_cooldown(human)
 
     def _load_cooldown(self, human: str) -> None:
@@ -595,6 +597,7 @@ class Login:
             if self._now() > deadline:
                 raise ApprovalExpired("the device code expired")
             try:
+                sent = (self._now(), self._wall())
                 resp = await self._post(token_url, {
                     "grant_type": "urn:ietf:params:oauth:grant-type:device_code",
                     "device_code": device_code, "client_id": self.settings.client_id})
@@ -609,7 +612,7 @@ class Login:
             delay = interval
             body = _json(resp)
             if resp.status_code == 200:
-                await self._accept(body, human)
+                await self._accept(body, human, sent)
                 return "approved"
             code = body.get("error")
             if code == "authorization_pending":
@@ -626,20 +629,23 @@ class Login:
 
     async def _refresh(self, refresh_token: str, human: str) -> None:
         endpoints = await self._discover()
+        sent = (self._now(), self._wall())
         resp = await self._post(endpoints["token_endpoint"], {
             "grant_type": "refresh_token", "refresh_token": refresh_token,
             "client_id": self.settings.client_id})
         body = _json(resp)
         if resp.status_code == 200:
-            await self._accept(body, human)
+            await self._accept(body, human, sent)
             return
         if body.get("error") == "invalid_grant":
             raise _InvalidGrant
         raise LoginError(f"the refresh failed ({_error_of(body, resp)})")
 
-    async def _accept(self, body: dict[str, Any], human: str) -> None:
+    async def _accept(self, body: dict[str, Any], human: str, sent: tuple[float, float]) -> None:
         """A token response: the token's issuer, client and person are checked
-        first; only then is the new refresh token stored."""
+        first; only then is the new refresh token stored. `sent` is the monotonic
+        and the wall time the request went out: the lifetime counts from there,
+        never from the answer, so a slow answer only shortens it."""
         access, refresh = body.get("access_token"), body.get("refresh_token")
         if not isinstance(access, str) or not access:
             raise LoginError("the token response has no access token")
@@ -667,14 +673,14 @@ class Login:
             roles = access_info.get("roles") if isinstance(access_info, dict) else None
             if not isinstance(roles, list) or ROLE not in roles:
                 raise NoRole(f"the access token does not carry the realm role {ROLE}")
-            lifetime = _lifetime(body, claims, self._wall())
+            lifetime = _lifetime(body, claims, sent[1])
         except LoginError:
             # Never stored, so never used: revoked, or its session stays open in Keycloak.
             await self._revoke(refresh)
             raise
         self._store_refresh(refresh, human)
-        self._tokens = _Tokens(access=access, expires_at=self._now() + lifetime,
-                               wall_until=self._wall() + lifetime)
+        self._tokens = _Tokens(access=access, expires_at=sent[0] + lifetime,
+                               wall_until=sent[1] + lifetime)
 
     async def _revoke(self, refresh_token: str) -> None:
         """A refresh token that is not kept (another person's, or a token that
@@ -743,11 +749,12 @@ def _time_claim(claims: dict[str, Any], name: str) -> float | None:
 
 
 def _lifetime(body: dict[str, Any], claims: dict[str, Any], wall: float) -> float:
-    """How long a token just received lives, in seconds: the shorter of the response's
-    `expires_in` and the token's own `exp - iat`. Both are durations, so a host clock
-    that runs ahead of the issuer's does not make every token stale (RT-6.34 step 3).
-    Only a token without `iat` is measured against this host's clock; one with no
-    lifetime at all gets 60 s, as before."""
+    """How long a token lives from `wall`, the time its request went out, in seconds:
+    the shorter of the response's `expires_in` and the token's own `exp - iat`, and
+    never more than MAX_LIFETIME_SEC. Both are durations, so a host clock that runs
+    ahead of the issuer's does not make every token stale (RT-6.34 step 3). Only a
+    token without `iat` is measured against this host's clock; one with no lifetime
+    at all gets 60 s, as before."""
     exp, iat = _time_claim(claims, "exp"), _time_claim(claims, "iat")
     spans: list[float] = []
     expires_in = body.get("expires_in")
@@ -759,7 +766,7 @@ def _lifetime(body: dict[str, Any], claims: dict[str, Any], wall: float) -> floa
         spans.append(exp - iat)
     elif exp is not None:
         spans.append(exp - wall)
-    return min(spans) if spans else 60.0
+    return min(*spans, MAX_LIFETIME_SEC) if spans else 60.0
 
 
 def _int(value: object, default: int) -> int:
