@@ -5,6 +5,17 @@ before 0.5.0 are described in the git history.
 
 ## Unreleased
 
+- **The console's `/healthz` answers readiness, not only liveness** (ADR-015).
+  It went 503 only when the NATS reader ended without a stop; a reader that
+  silently never synced still said ok. It now answers 503 once the reader
+  has seen no replay within `CONSOLE_HEALTH_SYNC_BOUND` (default 180 s; the
+  reader reconnects for a replay on its own after 120 s of silence). The
+  docs follow: the console's row in the deployment view (settings, the
+  image, the Keycloak setup, one replica), the README's deployment notes
+  (a container-usable `CONSOLE_ADDR`, the group mapper and
+  `preferred_username` required, `handshake_first`, `/healthz`,
+  `CONSOLE_TOKEN_ALGS`/`CONSOLE_CONSUMER_NAME` in the settings table),
+  and ADR-015's status cell states the pilot as built once.
 - **The operator console's browser app, a read-only pilot** (ADR-015 point
   14). `console/web` inherits the toolchain of `site/` (React,
   TypeScript, Vite) and implements the four views against a mock of the API

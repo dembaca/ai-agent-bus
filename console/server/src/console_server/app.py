@@ -253,6 +253,13 @@ class Console:
         if path == s.health_path:
             if self.nats_dead:
                 return httpd.Response.text("the NATS reader ended", 503)
+            if self.settings.nats_url:
+                # readiness, not only liveness: a reader that has not
+                # seen a replay within the bound serves a stale fleet
+                age = time.monotonic() - self.fleet.last_sync_at
+                if age > s.health_sync_bound:
+                    return httpd.Response.text(
+                        f"the fleet reader has not synced for {age:.0f} s", 503)
             return httpd.Response.text("ok")
         if path in ("/login", "/callback"):
             if s.login_off:

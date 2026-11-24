@@ -48,6 +48,8 @@ class Settings:
     # the built browser app (console/web/dist)
     web_dir: str = ""
     health_path: str = "/healthz"
+    # /healthz goes 503 once the reader has seen no replay for this long
+    health_sync_bound: float = 180.0
     extra: tuple[tuple[str, str], ...] = field(default_factory=tuple)
 
 
@@ -87,6 +89,7 @@ def find() -> Settings:
         deliver_subject=given("CONSOLE_DELIVER_SUBJECT") or "deliver.console.presence",
         consumer_name=given("CONSOLE_CONSUMER_NAME") or "console",
         web_dir=given("CONSOLE_WEB_DIR"),
+        health_sync_bound=float(given("CONSOLE_HEALTH_SYNC_BOUND") or 180.0),
     )
     _check(settings)
     return _https(settings)

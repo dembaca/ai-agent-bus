@@ -479,3 +479,28 @@ async def test_a_ended_nats_reader_fails_healthz() -> None:
     finally:
         app_module.read_forever = original
         await c.stop()
+
+
+async def test_healthz_fails_while_the_reader_never_synced() -> None:
+    """Readiness, not only liveness: a reader that has seen no replay
+    within the bound serves a stale fleet, and /healthz says so (503)
+    until one sync arrives."""
+    settings = config.Settings(public_url="http://127.0.0.1:8747",
+                               login_off=True,
+                               nats_url="nats://127.0.0.1:4",
+                               nats_seed_file="/none",
+                               health_sync_bound=0.001)
+    c = Console(settings)
+    c.fleet.last_sync_at = 0.0  # never synced, ages beyond the bound
+    await c.start()
+    try:
+        status, _h, body = await get(c, "/healthz")
+        assert status == 503
+        assert b"not synced" in body
+        # one sync heals it: the epoch lives in the past no longer
+        import time as _t
+        c.fleet.last_sync_at = _t.monotonic()
+        status, _h, _b = await get(c, "/healthz")
+        assert status == 200
+    finally:
+        await c.stop()

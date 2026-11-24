@@ -14,6 +14,7 @@ shows ``n/a``.
 """
 from __future__ import annotations
 
+import time
 from dataclasses import dataclass, field
 from typing import Any
 
@@ -46,6 +47,10 @@ class Fleet:
     _presence_cseq: int = 0
     _server_now: float = 0.0
     synced: bool = False
+    # monotonic stamps: the last jetstream replay seen (a delivery with
+    # pending 0), and the last delivery of any kind — /healthz reads them
+    last_sync_at: float = 0.0
+    last_delivery_at: float = 0.0
 
     @property
     def server_now(self) -> float:
@@ -61,6 +66,7 @@ class Fleet:
         ack = parse_ack(reply, stream, consumer)
         if ack is None:
             return False
+        self.last_delivery_at = time.monotonic()
         self._see(ack.time)
         if ack.consumer_seq <= self._presence_cseq:
             # The consumer was made anew (here: the console reconnected):
@@ -71,6 +77,7 @@ class Fleet:
         self._presence_cseq = ack.consumer_seq
         if ack.pending == 0:
             self.synced = True
+            self.last_sync_at = time.monotonic()
         t = subject.split(".")
         p = self.presence_subject
         try:
