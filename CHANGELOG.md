@@ -21,6 +21,16 @@ before 0.5.0 are described in the git history.
   `preferred_username` required, `handshake_first`, `/healthz` and
   `/livez`, `CONSOLE_TOKEN_ALGS`/`CONSOLE_CONSUMER_NAME` in the settings
   table), and ADR-015's status cell states the pilot as built once.
+
+- **The console's image is published** (ADR-015). `checks.yml` gains a
+  `publish-console` job: a push to `main` that changes `console/`, `mcp/` or
+  that workflow, and only after the console's browser build and the console
+  server's tests with the image smoke have passed, builds `console/server/Dockerfile` from the
+  repository root and pushes
+  `ghcr.io/dembaca/ai-agent-bus-console:<full commit SHA>` and `:main` with a
+  build provenance attestation; the digest stands in the job's summary, and a
+  deployment names it by that digest. A push that changes nothing under
+  `console/` builds no image.
 - **The operator console's browser app, a read-only pilot** (ADR-015 point
   14). `console/web` inherits the toolchain of `site/` (React,
   TypeScript, Vite) and implements the four views against a mock of the API
