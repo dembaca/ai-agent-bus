@@ -7,6 +7,7 @@ import hashlib
 import io
 import json
 import os
+import re
 import signal
 import socket
 import subprocess
@@ -154,7 +155,10 @@ async def test_one_relay_at_a_time_and_reconnect(tmp_path):
         first, answer = await _hello(ready["port"])
         assert answer["ok"]
         second, answer = await _hello(ready["port"])
-        assert answer == {"ok": False, "error": "another relay is connected"}
+        assert answer["ok"] is False
+        assert re.fullmatch(r"another relay is connected \(since \d\d-\d\d \d\d:\d\d:\d\d\): the host serves one per "
+                            r"session, so another process of this session holds it \(RT-6\.18 step 6\)",
+                            answer["error"])
         await first.stream.aclose()
         with anyio.fail_after(5):
             while host.active:
@@ -167,6 +171,27 @@ async def test_one_relay_at_a_time_and_reconnect(tmp_path):
 
     await _with_host(host, tmp_path, body, with_services=False)
     assert host.served == 2
+
+
+async def test_refusal_names_the_relay_that_holds_the_slot(tmp_path):
+    """RT-6.18 step 6 (#70): the refusal names the connected relay by its
+    process ids and connect time; ids that are no whole numbers are left out."""
+    host = hosted.Host(KEY, serve=_echo, apply=lambda v: None)
+
+    async def body(ready):
+        first = _Conn(await anyio.connect_tcp("127.0.0.1", ready["port"]))
+        await first.send({"key": KEY, "session": {}, "pid": 4242, "ppid": 4240})
+        assert (await first.line())["ok"]
+        second = _Conn(await anyio.connect_tcp("127.0.0.1", ready["port"]))
+        await second.send({"key": KEY, "session": {}, "pid": 7, "ppid": 1})
+        error = (await second.line())["error"]
+        assert re.match(r"another relay is connected \(says pid 4242, parent 4240; since \d\d-\d\d \d\d:\d\d:\d\d\): ", error)
+        await first.stream.aclose()
+        await second.stream.aclose()
+
+    await _with_host(host, tmp_path, body, with_services=False)
+    assert hosted.relay_holder({"pid": "1; rm", "ppid": True}, 0).startswith("since ")
+    assert hosted.relay_holder({"pid": 2**31, "ppid": 3}, 0).startswith("says parent 3; since ")
 
 
 def test_apply_session_sets_names_and_never_changes_directory(tmp_path, monkeypatch):
@@ -325,6 +350,8 @@ def test_relay_pipes_stdio_after_the_handshake(monkeypatch):
     assert hello["key"] == KEY
     assert hello["session"] == {"CLAUDE_CODE_SESSION_ID": "s1", "CLAUDE_PROJECT_DIR": "/p",
                                 "MM_CHANNEL_PUSH": "0", "cwd": os.getcwd()}
+    # Its process ids, for the refusal of a second relay to name it (RT-6.18 step 6).
+    assert (hello["pid"], hello["ppid"]) == (os.getpid(), os.getppid())
 
 
 def test_relay_fails_clearly_without_the_host(monkeypatch, capsys):
