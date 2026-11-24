@@ -800,3 +800,54 @@ async def test_a_nats_sender_is_shown_by_its_proven_bot_but_stays_the_author(
     assert (await one())["shown_as"] == "agent-a"
     w.port.fail("the credential names another agent")  # the NATS side is lost
     assert "shown_as" not in await one()
+
+async def test_a_silent_holder_yields_only_after_its_last_crown_lease(
+        w: World, monkeypatch: pytest.MonkeyPatch) -> None:
+    """RT-6.38 step 5, RT-6.6 step 6 (#64): a silent holder keeps the crown one crown lease
+    from the moment it turned silent; only after it does its own server yield."""
+    from mattermost_ai_agent_bus import life
+    await _two(w, me_first=True)
+    await w.tick()
+    assert lease.crown_held(BOT)
+    life.turn(False)
+    monkeypatch.setattr(life, "_sign", time.time() - 900 - 100)
+    claims = len(w.fake.claimed_homes)
+    await w.tick()
+    assert len(w.fake.claimed_homes) == claims and w.view().holder == NAME_ME  # type: ignore[union-attr]
+    monkeypatch.setattr(life, "_sign", time.time() - 900 - 151)
+    await w.tick()
+    assert len(w.fake.claimed_homes) == claims + 1
+    assert w.view().holder == NAME_A  # type: ignore[union-attr]
+
+
+async def test_a_silent_holder_in_its_last_lease_does_not_yield_over_a_missing_receipt(
+        w: World, monkeypatch: pytest.MonkeyPatch) -> None:
+    """RT-6.38 step 5, RT-6.6 step 6 (#64): a post without 👀 or ⏳ for 45 s does not make a
+    holder yield while it is silent within its last crown lease; past that lease it yields."""
+    from types import SimpleNamespace
+
+    from mattermost_ai_agent_bus import life
+    from mattermost_ai_agent_bus.client import post_of
+    now = [time.time()]
+    monkeypatch.setattr(receipt, "time", SimpleNamespace(time=lambda: now[0]))
+    monkeypatch.delenv("MM_ACK_WAIT_SEC", raising=False)
+    receipt.reset()
+    await _two(w, me_first=True)
+    await w.tick()
+    assert lease.crown_held(BOT)
+    life.turn(False)
+    await w.port.get_me()
+    pid = "p" * 26
+    await receipt.arrived(w.port, post_of({"id": pid, "message": "please look", "user_id": HUMAN,  # type: ignore[arg-type]
+                                           "channel_id": WORK, "create_at": 1}), BOT, False)
+    assert set(receipt._owed) == {pid}
+    monkeypatch.setattr(life, "_sign", time.time() - 900 - 100)  # silent 100 s: in its last lease
+    claims = len(w.fake.claimed_homes)
+    now[0] += 46
+    await w.tick()
+    assert len(w.fake.claimed_homes) == claims and w.view().holder == NAME_ME  # type: ignore[union-attr]
+    assert set(receipt._owed) == {pid}  # not judged while in the lease
+    monkeypatch.setattr(life, "_sign", time.time() - 900 - 151)  # past it
+    await w.tick()
+    assert len(w.fake.claimed_homes) == claims + 1
+    assert w.view().holder == NAME_A  # type: ignore[union-attr]
