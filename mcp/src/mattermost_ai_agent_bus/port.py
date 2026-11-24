@@ -302,6 +302,12 @@ class ChatPort(Protocol):
     async def posts_after(self, since_ms: int, *, channel_id: str | None = None,
                           max_pages: int = 25) -> list[Post]: ...
 
+    async def copies_through(self, channel_id: str, since_ms: int) -> int:
+        """How far the read watermark of a NATS home's chat lane may pass the bridge's
+        copies, which the reads drop (RT-6.36 step 4): a time in ms, 0 for nothing. A chat
+        without a NATS home has none: 0."""
+        ...
+
     def with_links(self, post: Post) -> Post:
         """A post read with channel_posts or posts_after, its links read as
         the bus reads them (RT-6.15): the bus's permalinks as bare ids, odd

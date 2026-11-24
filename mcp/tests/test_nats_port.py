@@ -1528,6 +1528,7 @@ async def test_a_bridge_bot_that_is_no_bot_account_drops_nothing(caplog: pytest.
 
 async def test_a_failed_read_of_the_bridge_bot_keeps_the_copies_and_is_tried_again() -> None:
     port, inner = bridged()
+    await arrive(port, "home", ALICE, 10, Message("post", "copy"))  # the session has it
     _copies(inner)
     real = inner.bots_named
     calls: list[int] = []
@@ -1537,9 +1538,9 @@ async def test_a_failed_read_of_the_bridge_bot_keeps_the_copies_and_is_tried_aga
         raise RuntimeError("mattermost is down")
 
     inner.bots_named = down  # type: ignore[method-assign]
-    assert len(await port.list_recent(channel_id=WORK)) == 4
+    assert len(await port.list_recent(channel_id=WORK)) == 5
     inner.bots_named = real  # type: ignore[method-assign]
-    assert len(await port.list_recent(channel_id=WORK)) == 3
+    assert len(await port.list_recent(channel_id=WORK)) == 4
     assert calls == [1]
 
 
@@ -1574,13 +1575,30 @@ async def test_the_bridges_copies_and_reactions_wake_no_one() -> None:
     await merged.close()
 
 
+async def _had(port: NatsPort, inner: FakeBus, *seqs: int) -> None:
+    """The session received these NATS posts (their own lane read), and Mattermost's clock
+    is a minute back, so the copies after are settled (COPY_SETTLE_SEC)."""
+    from mattermost_ai_agent_bus import watermark
+
+    for seq in seqs:
+        await arrive(port, "home", ALICE, seq, Message("post", f"nats {seq}"))
+    newest = max(port._posts["home"].values(), key=lambda p: p.create_at)
+    watermark.advance(BOT, watermark.lane(WORK, newest.id), newest.id, newest.create_at)
+    inner.clock = int(time.time() * 1000) - 60_000
+
+
+def _copy(inner: FakeBus, pid: str, seq: int, home: str = "home") -> None:
+    inner.arrive({"id": pid, "user_id": BRIDGE, "message": f"copy {seq}", "props": {"x_nats_id": f"n1:{home}:{seq}"}})
+
+
 async def test_the_count_passes_the_bridges_copies(monkeypatch: pytest.MonkeyPatch) -> None:
-    """RT-6.36 step 4: copies leave nothing in the read, so the Mattermost lane's mark moves to
-    its newest post: the next count does not read them again."""
+    """RT-6.36 step 4: copies leave nothing in the read, so the Mattermost lane's mark passes
+    them: the next count does not read them again."""
     from mattermost_ai_agent_bus import unread, watermark
 
     port, inner = bridged()
-    inner.arrive({"id": "c" * 26, "user_id": BRIDGE, "message": "copy", "props": {"x_nats_id": "n1:home:10"}})
+    await _had(port, inner, 10)
+    _copy(inner, "c" * 26, 10)
     newest = (await inner.channel_posts(WORK))[0].create_at
     reads: list[str] = []
     real = port.channel_posts
@@ -1601,14 +1619,15 @@ async def test_the_count_passes_the_bridges_copies(monkeypatch: pytest.MonkeyPat
 
 async def test_the_count_never_passes_a_post_the_read_did_not_show(monkeypatch: pytest.MonkeyPatch) -> None:
     """RT-6.36 step 4: the mark passes only posts the port identified as the bridge's copies, up to
-    the first post that is none: a person's post behind copies, which the merged read does not show
-    (a lagging replica, a cut read), and a gated post stop it; never the lane's newest."""
+    the first post that is none: a person's post behind copies, which the merged read does not show,
+    stops it; never the lane's newest."""
     from mattermost_ai_agent_bus import unread, watermark
 
     port, inner = bridged()
-    inner.arrive({"id": "c" * 26, "user_id": BRIDGE, "message": "copy 1", "props": {"x_nats_id": "n1:home:10"}})
+    await _had(port, inner, 10, 11)
+    _copy(inner, "c" * 26, 10)
     inner.arrive({"id": "h" * 26, "user_id": HUMAN, "message": "approve it"})
-    inner.arrive({"id": "e" * 26, "user_id": BRIDGE, "message": "copy 2", "props": {"x_nats_id": "n1:home:11"}})
+    _copy(inner, "e" * 26, 11)
     times = {p.id: p.create_at for p in await inner.channel_posts(WORK)}
     real = port.channel_posts
 
@@ -1626,30 +1645,80 @@ async def test_the_count_never_passes_a_post_the_read_did_not_show(monkeypatch: 
 
 
 async def test_a_post_first_after_the_mark_keeps_it_where_it_is() -> None:
-    """RT-6.36 step 4: a post that is no copy right after the mark (a gated one, a forged prop)
+    """RT-6.36 step 4: a post that is no copy right after the mark (a person's, a forged prop)
     leaves nothing to pass, whatever copies come after it."""
     port, inner = bridged()
-    inner.arrive({"id": "g" * 26, "user_id": HUMAN, "message": "held by the gate"})
-    inner.arrive({"id": "a" * 26, "user_id": "f" * 26, "message": "forged", "props": {"x_nats_id": "n1:home:9"}})
-    inner.arrive({"id": "c" * 26, "user_id": BRIDGE, "message": "copy", "props": {"x_nats_id": "n1:home:10"}})
+    await _had(port, inner, 10)
+    inner.arrive({"id": "g" * 26, "user_id": HUMAN, "message": "a person"})
+    inner.arrive({"id": "a" * 26, "user_id": "f" * 26, "message": "forged", "props": {"x_nats_id": "n1:home:10"}})
+    _copy(inner, "c" * 26, 10)
+    newest_first = await inner.channel_posts(WORK)
     assert await port.copies_through(WORK, 0) == 0
-    first = (await inner.channel_posts(WORK))[-1].create_at
-    second = (await inner.channel_posts(WORK))[-2].create_at
-    assert await port.copies_through(WORK, second) == (await inner.channel_posts(WORK))[0].create_at
-    assert await port.copies_through(WORK, first) == 0  # the forged one stops it
+    assert await port.copies_through(WORK, newest_first[1].create_at) == newest_first[0].create_at
+    assert await port.copies_through(WORK, newest_first[2].create_at) == 0  # the forged one stops it
     assert await port.copies_through(OTHER, 0) == 0  # not the NATS home
     plain, inner2, _ = make()
-    inner2.arrive({"id": "c" * 26, "user_id": BRIDGE, "message": "copy", "props": {"x_nats_id": "n1:home:10"}})
+    _copy(inner2, "c" * 26, 10)
     assert await plain.copies_through(WORK, 0) == 0  # no bridge bot set
 
 
 async def test_a_copy_at_the_same_time_as_a_persons_post_is_not_passed() -> None:
     """RT-6.36 step 4: the mark stays below the first post that is no copy, also at the same ms."""
     port, inner = bridged()
-    inner.arrive({"id": "c" * 26, "user_id": BRIDGE, "message": "copy", "props": {"x_nats_id": "n1:home:10"}})
+    await _had(port, inner, 10)
+    _copy(inner, "c" * 26, 10)
     inner.clock -= 1_000
     inner.arrive({"id": "h" * 26, "user_id": HUMAN, "message": "same ms"})
     assert await port.copies_through(WORK, 0) == 0
+
+
+async def test_a_cut_read_or_a_young_copy_is_not_passed(monkeypatch: pytest.MonkeyPatch) -> None:
+    """RT-6.36 step 4: a read of COPY_READ_CAP posts may be cut and passes nothing; a copy younger
+    than COPY_SETTLE_SEC is not passed (a replica may still lack a post before it)."""
+    from mattermost_ai_agent_bus import nats_port
+
+    port, inner = bridged()
+    await _had(port, inner, 10, 11)
+    _copy(inner, "c" * 26, 10)
+    _copy(inner, "e" * 26, 11)
+    assert await port.copies_through(WORK, 0) == (await inner.channel_posts(WORK))[0].create_at
+    monkeypatch.setattr(nats_port, "COPY_READ_CAP", 2)
+    assert await port.copies_through(WORK, 0) == 0
+    monkeypatch.setattr(nats_port, "COPY_READ_CAP", 1000)
+    inner.clock = int(time.time() * 1000)
+    _copy(inner, "f" * 26, 11)  # just now
+    older = (await inner.channel_posts(WORK))[1].create_at
+    assert await port.copies_through(WORK, 0) == older
+
+
+async def test_a_copy_of_a_post_the_session_never_had_stays_in_the_reads() -> None:
+    """RT-6.36 step 4: the reads drop a copy only of a NATS post the session has (in its memory, or
+    at or below the highest sequence it received); the events drop it anyway. A prop that names
+    another home or no NATS post is no copy at all."""
+    port, inner = bridged()
+    _copy(inner, "c" * 26, 50)
+    _copy(inner, "q" * 26, 3, home="elsewhere")
+    inner.arrive({"id": "x" * 26, "user_id": BRIDGE, "message": "junk", "props": {"x_nats_id": "not-an-id"}})
+    by_id = {p.id: p for p in await inner.channel_posts(WORK)}
+    assert {p.id for p in await port.list_recent(channel_id=WORK)} == {"c" * 26, "q" * 26, "x" * 26}
+    assert await port.mirrored(by_id["c" * 26])
+    assert not await port.mirrored(by_id["q" * 26]) and not await port.mirrored(by_id["x" * 26])
+    await arrive(port, "home", ALICE, 60, Message("post", "later"))  # 50 is at or below the highest now
+    assert {p.id for p in await port.list_recent(channel_id=WORK)} == {"q" * 26, "x" * 26, "n1:home:60"}
+
+
+async def test_a_bridge_bot_found_later_is_read_again_after_the_ttl(monkeypatch: pytest.MonkeyPatch) -> None:
+    """RT-6.36 step 4: "no bot account" holds BRIDGE_TTL_SEC, not for the process's life."""
+    from mattermost_ai_agent_bus import nats_port
+
+    port, inner, _ = make(bridge_bot="bridge-bot")
+    await _had(port, inner, 10)
+    _copy(inner, "c" * 26, 10)
+    assert len(await port.list_recent(channel_id=WORK)) == 2
+    inner.bots["bridge-bot"] = ChannelUser(id=BRIDGE, username="bridge-bot")
+    assert len(await port.list_recent(channel_id=WORK)) == 2  # within the TTL
+    monkeypatch.setattr(nats_port, "BRIDGE_TTL_SEC", 0.0)
+    assert [p.id for p in await port.list_recent(channel_id=WORK)] == ["n1:home:10"]
 
 
 def test_the_bridge_bot_is_named_as_a_username() -> None:

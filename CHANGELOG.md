@@ -10,13 +10,15 @@ before 0.5.0 are described in the git history.
   with one bot; an agent of that home has them from NATS already and would
   see each twice. With the new `MM_BRIDGE_BOT` naming that bot, the MCP
   server drops, in its NATS home only, every post by the bridge bot that
-  carries `<prefix>nats_id`, and the bridge bot's reactions: from the events
-  that wake the agent and from `list_recent`, `posts_after` and the channel
-  reads behind the unread count and the hooks. Anyone else's post with that
-  prop is kept. The count's read watermark passes only the copies, up to
-  the first post that is none. Unset, nothing changes. `bus_info`'s `over_nats`, the
-  server's instructions and SKILL.md say people see such a home through the
-  bridge.
+  carries `<prefix>nats_id` naming a post of that home, and the bridge bot's
+  reactions: from the events that wake the agent and from `list_recent`,
+  `posts_after` and the channel reads behind the unread count and the hooks.
+  Anyone else's post with that prop is kept, and the reads keep a copy of a
+  NATS post the session never had. The count's read watermark passes only
+  settled copies, up to the first post that is none, and nothing after a
+  read that may be cut. Unset, nothing changes. `bus_info`'s `over_nats`,
+  the server's instructions and SKILL.md say people see such a home through
+  the bridge.
 - **The MCP server reaches NATS over WebSocket** (RT-6.36, part of #51).
   `MM_NATS_URL` takes `wss://` (TLS inside the WebSocket, verified with
   `MM_NATS_CA_FILE` like `tls://`) or `ws://` on a loopback host only; a

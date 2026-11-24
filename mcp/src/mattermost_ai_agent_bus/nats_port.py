@@ -40,8 +40,9 @@ The bridge's copies (RT-6.36 step 4). The central bridge (services/bridge) mirro
 NATS post and reaction of the home into its Mattermost channel with one bot, which
 MM_BRIDGE_BOT names. This session has those posts from NATS already, so in its NATS home it
 drops the copies from Mattermost: from the events (MergedEvents) and from the merged reads
-(channel_posts, list_recent, posts_after). A copy is a post BOTH by the bridge bot AND with
-`<prefix>nats_id`, and any reaction of the bridge bot there (it reacts only on its copies;
+(channel_posts, list_recent, posts_after; there only a copy of a NATS post the session
+has). A copy is a post BOTH by the bridge bot AND with `<prefix>nats_id` naming a post of
+this home, and any reaction of the bridge bot there (it reacts only on its copies;
 a reaction has no props to check). Anyone else's post with that prop is kept: a forged prop
 hides nobody. Only in the session's NATS home: in any other channel, and for a session that
 reads the home on Mattermost alone, the copy is the only one. `thread` of a Mattermost root
@@ -78,6 +79,7 @@ import json
 import logging
 import os
 import secrets
+import time
 import weakref
 from collections import OrderedDict
 from collections.abc import Awaitable, Callable, Iterable, Mapping, Sequence
@@ -109,6 +111,9 @@ _NOTE = "a2a_"  # after the props prefix: the bus's own note, flat
 _NONCE = "nats_nonce"  # after the props prefix: tells a post its own copy
 _ROOT = "nats_root"  # after the props prefix: the NATS post a Mattermost post answers
 _NATS_ID = "nats_id"  # after the props prefix: the NATS post the bridge's copy mirrors (RT-6.36 step 4)
+BRIDGE_TTL_SEC = 300.0  # how long "MM_BRIDGE_BOT is no bot account" holds before it is read again
+COPY_READ_CAP = 1000  # Mattermost's most posts in one read after a time: a read this long may be cut
+COPY_SETTLE_SEC = 5.0  # a copy younger than this is not passed by the count (a replica may lag)
 
 
 class NatsPortError(Exception):
@@ -221,6 +226,8 @@ class NatsPort:
         # MM_BRIDGE_BOT: the bot the bridge mirrors NATS with (RT-6.36 step 4); "" drops nothing.
         self._bridge_bot = bridge_bot.strip().lstrip("@").lower()
         self._bridge_id: str | None = None  # its Mattermost id, read once (_bridge)
+        self._bridge_none_at = 0.0  # monotonic time it was found to be no bot account
+        self._highest: dict[str, int] = {}  # channel -> the highest stream sequence received
         self._s = settings
         self._homes = tuple(sorted({h.strip().lower() for h in homes if h.strip()}))
         if not self._homes:
@@ -425,8 +432,11 @@ class NatsPort:
 
     async def _bridge(self) -> str:
         """The bridge bot's Mattermost id, read once; "" when none is set or the name is
-        no bot account (logged once). A read that fails is tried again next time."""
-        if self._bridge_id is not None:
+        no bot account (logged, read again after BRIDGE_TTL_SEC). A read that fails is tried
+        again next time."""
+        if self._bridge_id is not None and (
+                self._bridge_id or not self._bridge_bot
+                or time.monotonic() - self._bridge_none_at < BRIDGE_TTL_SEC):
             return self._bridge_id
         if not self._bridge_bot:
             self._bridge_id = ""
@@ -439,8 +449,10 @@ class NatsPort:
             return ""
         user = found.get(self._bridge_bot)
         if user is None or not user.id:
-            log.warning("MM_BRIDGE_BOT %s is no bot account: nothing is dropped as the bridge's copy",
-                        self._bridge_bot)
+            if self._bridge_id is None:  # once, not at every read again
+                log.warning("MM_BRIDGE_BOT %s is no bot account: nothing is dropped as the bridge's copy "
+                            "(read again every %d s)", self._bridge_bot, BRIDGE_TTL_SEC)
+            self._bridge_none_at = time.monotonic()
         self._bridge_id = user.id if user is not None else ""
         return self._bridge_id
 
@@ -451,13 +463,36 @@ class NatsPort:
             log.debug("nats: the homes are not known (%s): a copy is kept", type(exc).__name__)
             return False
 
-    async def mirrored(self, post: Post) -> bool:
-        """The bridge's copy of a NATS post in this session's NATS home: by the bridge
-        bot AND with `<prefix>nats_id`. Anyone else's post with that prop is no copy."""
-        if f"{self._s.props_prefix}{_NATS_ID}" not in post.props:
-            return False
+    async def _copy_of(self, post: Post) -> int | None:
+        """The stream sequence a bridge's copy in this session's NATS home mirrors: a post by
+        the bridge bot AND with `<prefix>nats_id` naming a post of this home (`n1:<home>:<seq>`);
+        None for any other post. Anyone else's post with that prop is no copy."""
+        got = parse_post_id(str(post.props.get(f"{self._s.props_prefix}{_NATS_ID}", "")))
+        if got is None:
+            return None
         bridge = await self._bridge()
-        return bool(bridge) and post.user_id == bridge and await self._in_home(post.channel_id)
+        if not bridge or post.user_id != bridge:
+            return None
+        try:
+            home = await self.nats_name(post.channel_id)
+        except Exception as exc:  # noqa: BLE001 — not known: kept
+            log.debug("nats: the homes are not known (%s): a copy is kept", type(exc).__name__)
+            return None
+        return got[1] if home is not None and got[0] == home else None
+
+    async def mirrored(self, post: Post) -> bool:
+        """The bridge's copy of a NATS post of this session's NATS home (_copy_of): the
+        events drop it, whether or not its NATS post came yet."""
+        return await self._copy_of(post) is not None
+
+    async def _had(self, post: Post) -> bool:
+        """A copy the reads drop: of a NATS post this session has (in its memory, or at or
+        below the highest sequence it received). A copy of one it never had stays visible."""
+        seq = await self._copy_of(post)
+        if seq is None:
+            return False
+        name = await self.nats_name(post.channel_id)
+        return name is not None and (seq in self._posts.get(name, {}) or seq <= self._highest.get(name, -1))
 
     async def mirrored_reaction(self, reaction: Reaction, channel_id: str) -> bool:
         """A reaction of the bridge bot in this session's NATS home: the copy of a NATS
@@ -476,21 +511,28 @@ class NatsPort:
         """Mattermost's posts of the NATS home without the bridge's copies."""
         if not self._bridge_bot or not await self._bridge():  # one read for the batch
             return posts
-        return [p for p in posts if not await self.mirrored(p)]
+        return [p for p in posts if not await self._had(p)]
 
     async def copies_through(self, channel_id: str, since_ms: int) -> int:
         """How far the read watermark of this NATS home's Mattermost lane may pass the
-        bridge's copies (unread.after): the time of the last copy after `since_ms` that
-        comes before every other post there, 0 when the first post after it is no copy
-        (a person's, a gated one, anything). Mattermost's own read, never the merged one:
-        a post the merged read does not show still stops it."""
+        bridge's copies (unread.after): the time of the last copy the reads drop (_had) after
+        `since_ms` that comes before every other post there, 0 when the first post after it
+        is none (a person's, a gated one, anything). Mattermost's own read, never the merged
+        one: a post the merged read does not show still stops it. A read of COPY_READ_CAP
+        posts or more may be cut and passes nothing; a copy younger than COPY_SETTLE_SEC by
+        this host's clock is not passed (a replica may still lack a post before it). A post
+        in neither read can still be passed."""
         if not self._bridge_bot or await self.nats_name(channel_id) is None or not await self._bridge():
             return 0
-        after = [p for p in await self.inner.channel_posts(channel_id, since_ms=since_ms)
-                 if p.create_at > since_ms]
-        marked = [(p.create_at, await self.mirrored(p)) for p in after]
+        raw = await self.inner.channel_posts(channel_id, since_ms=since_ms)
+        if len(raw) >= COPY_READ_CAP:
+            return 0
+        after = [p for p in raw if p.create_at > since_ms]
+        marked = [(p.create_at, await self._had(p)) for p in after]
         first_other = min((t for t, copy in marked if not copy), default=None)
-        return max((t for t, copy in marked if copy and (first_other is None or t < first_other)), default=0)
+        settled = int((time.time() - COPY_SETTLE_SEC) * 1000)
+        return max((t for t, copy in marked
+                    if copy and t <= settled and (first_other is None or t < first_other)), default=0)
 
     async def skip(self, event: ChatEvent) -> bool:
         """A Mattermost event that is the bridge's copy: MergedEvents drops it."""
@@ -665,6 +707,7 @@ class NatsPort:
         mem = self._posts.setdefault(ch, OrderedDict())
         mem[ev.stream_seq] = post
         self._where[ev.stream_seq] = ch
+        self._highest[ch] = max(self._highest.get(ch, -1), ev.stream_seq)
         if root:
             self._children.setdefault(root, set()).add(ev.stream_seq)
         while len(mem) > self._memory:
