@@ -1,0 +1,29 @@
+{
+  "name": "ai-agent-bus-console-web",
+  "private": true,
+  "version": "0.0.0",
+  "type": "module",
+  "description": "Operator console (ADR-015): the browser app, built against a mock of the console API. Read-only pilot.",
+  "license": "MIT",
+  "engines": {
+    "node": ">=20.19"
+  },
+  "scripts": {
+    "dev": "vite",
+    "build": "vite build",
+    "preview": "vite preview",
+    "typecheck": "tsc --noEmit"
+  },
+  "dependencies": {
+    "lucide-react": "0.468.0",
+    "react": "^18.3.1",
+    "react-dom": "^18.3.1"
+  },
+  "devDependencies": {
+    "@types/react": "^18.3.1",
+    "@types/react-dom": "^18.3.1",
+    "@vitejs/plugin-react": "^4.7.0",
+    "typescript": "^5.6.3",
+    "vite": "^6.4.1"
+  }
+}

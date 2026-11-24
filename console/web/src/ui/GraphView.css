@@ -1,0 +1,34 @@
+.graph { display: grid; gap: 12px; }
+
+.graph__svg {
+  width: 100%;
+  height: auto;
+  background: var(--surface);
+  border: 1px solid var(--line);
+  border-radius: var(--radius);
+}
+
+.graph__edge { stroke: var(--line); stroke-width: 1.5; }
+.graph__edge--trusts { stroke: color-mix(in srgb, var(--accent) 55%, transparent); }
+.graph__edge--coordinates { stroke: color-mix(in srgb, var(--state-listening) 45%, transparent); }
+.graph__edge--cut { stroke-dasharray: 4 4; }
+
+.graph__node circle,
+.graph__node rect {
+  fill: var(--surface-2);
+  stroke: var(--muted);
+  stroke-width: 1.5;
+}
+
+.graph__node--person circle { stroke: var(--accent); }
+.graph__node--channel rect { stroke: var(--state-listening); fill: transparent; }
+.graph__node--agent rect { stroke: var(--line); }
+
+.graph__node text { fill: var(--ink); font-size: 12px; text-anchor: middle; }
+.graph__node .graph__state { fill: var(--muted); font-size: 10px; }
+.graph__hint { fill: var(--muted); font-size: 10px; }
+
+.graph__crown {
+  fill: var(--for-me);
+  stroke: none;
+}

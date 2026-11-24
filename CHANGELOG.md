@@ -5,6 +5,35 @@ before 0.5.0 are described in the git history.
 
 ## Unreleased
 
+- **The operator console's browser app, a read-only pilot** (ADR-015 point
+  14). `console/web` inherits the toolchain of `site/` (React,
+  TypeScript, Vite) and implements the four views against a mock of the API
+  in ADR-015 point 10: the Kanban of agents by state (the crown a mark on the
+  card, not a column), the asks with *for me* and *may answer*, the graph
+  (trusts and coordinates, cut at depth two with a mark), and the reports
+  (counts and seconds, a missing field `n/a`, never 0). The detail pane shows
+  the full card, the task rows an agent holds, its HELLO thread and the
+  threads of its open asks. Nothing posts — an ask gets no answer button
+  (stage 1, reading only); the same `ConsoleApi` interface hides the mock and
+  the future console server behind `VITE_CONSOLE_API`.
+- **The console's server, the pilot's live view** (ADR-015). `console/server`
+  reads the NATS homes' presence, crown claims and memberships through a
+  push consumer of its own on the PRESENCE stream (the shape the login
+  service makes for an agent: no acks, replay of the last message per
+  subject, the server's own clock from the deliveries' JetStream
+  metadata), with one read-only NATS account — the pilot's documented
+  deviation from ADR-015 way A, lab and one tenant only. It serves the
+  API of ADR-015 point 10 (`/v1/fleet` streamed over SSE, `/v1/me`,
+  `/v1/asks` and `/v1/stats` empty until those lie on NATS, `/v1/graph`,
+  `/v1/threads/<id>`) and the built browser app; an operator logs in over
+  Keycloak (authorization code with PKCE, a client of the console's own,
+  members of an operators group), the access token verified against the
+  realm's JWKS — rules the login service's Go verifier set — and what a
+  NATS home does not carry shows as unknown, never as zero. Python,
+  reusing the mcp package's NATS reading (`natsbus.py`) by editable path
+  dependency; the NATS tests run against a real nats-server like the
+  MCP ones.
+
 ### Fixed
 
 - **The tool text is the same on every Python** (#98). The per-turn `static`

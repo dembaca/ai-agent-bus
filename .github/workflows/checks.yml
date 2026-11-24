@@ -147,6 +147,84 @@ jobs:
           npm run typecheck
           npm run build
 
+  console:
+    name: operator console builds (console/web)
+    runs-on: ubuntu-latest
+    timeout-minutes: 10   # like the site job
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 24
+          cache: npm
+          cache-dependency-path: console/web/package-lock.json
+      # Same build as the site: typecheck and build, so a PR shows a broken
+      # console before main does.
+      - name: typecheck and build
+        working-directory: console/web
+        run: |
+          npm ci
+          npm run typecheck
+          npm run build
+
+  console-server:
+    name: operator console server (console/server, real nats-server)
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    steps:
+      - uses: actions/checkout@v4
+      - uses: astral-sh/setup-uv@v6
+      - name: nats-server (the console's reads run against the real server)
+        # As the MCP job: keep the version in step with services/auth/go.mod.
+        run: |
+          set -euo pipefail
+          v=2.15.3
+          sha=32e18c1e78d7ef4f86e483070eef3abb2647c3d4d67e29668077c7ad81da0797
+          dir="$RUNNER_TEMP/nats-server"
+          mkdir -p "$dir"
+          curl -fsSL -o "$dir/nats.tar.gz" \
+            "https://github.com/nats-io/nats-server/releases/download/v${v}/nats-server-v${v}-linux-amd64.tar.gz"
+          echo "$sha  $dir/nats.tar.gz" | sha256sum -c -
+          tar -xzf "$dir/nats.tar.gz" -C "$dir" --strip-components=1 "nats-server-v${v}-linux-amd64/nats-server"
+          "$dir/nats-server" --version
+          echo "MM_NATS_SERVER=$dir/nats-server" >> "$GITHUB_ENV"
+          echo "MM_TEST_NATS=1" >> "$GITHUB_ENV"
+      - name: console server
+        run: |
+          uv run --directory console/server pytest -q
+          uv run --directory console/server --with mypy mypy src
+      # The reviews' image findings, held by CI: the image builds and the
+      # server starts and answers /healthz (the login keeps retrying its
+      # discovery when the issuer is down, so a missing Keycloak in this
+      # smoke is the reality the loop handles).
+      - name: image builds, and the server starts
+        run: |
+          docker build -t console-test -f console/server/Dockerfile .
+          seed="$(uv run --directory console/server python -c "import nkeys, os; print(nkeys.encode_seed(os.urandom(32), nkeys.PREFIX_BYTE_USER).decode())")"
+          printf '%s' "$seed" > "$RUNNER_TEMP/console.seed"
+          chmod 600 "$RUNNER_TEMP/console.seed"
+          sudo chown 65532 "$RUNNER_TEMP/console.seed"  # the container's nonroot
+          docker run -d --name console-test -p 127.0.0.1:8747:8747 \
+            -e CONSOLE_PUBLIC_URL=http://127.0.0.1:8747 \
+            -e CONSOLE_ISSUER=http://127.0.0.1:19999 \
+            -e CONSOLE_CLIENT_ID=smoke \
+            -e CONSOLE_OPERATOR_GROUP=operators \
+            -e CONSOLE_ADDR=0.0.0.0:8747 \
+            -e CONSOLE_NATS_URL=nats://127.0.0.1:4222 \
+            -e CONSOLE_NATS_SEED_FILE=/run/console.seed \
+            -v "$RUNNER_TEMP/console.seed:/run/console.seed:ro" \
+            console-test
+          for i in $(seq 1 30); do
+            curl -fsS http://127.0.0.1:8747/healthz && break
+            sleep 1
+          done
+          # the logs first, whatever happened: a red smoke shows its traceback
+          status=0
+          curl -fsS http://127.0.0.1:8747/healthz | grep -q ok || status=1
+          docker logs console-test 2>&1 | tail -40
+          docker rm -f console-test
+          exit $status
+
   lint:
     runs-on: ubuntu-latest
     timeout-minutes: 10   # ~45 s

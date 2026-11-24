@@ -1,0 +1,113 @@
+/* ai-agent-bus: operator console (ADR-015). Same plain-CSS approach as
+   site/: tokens here, one css file per component beside it. */
+
+:root {
+  color-scheme: light dark;
+
+  --bg: #111214;
+  --surface: #191b1e;
+  --surface-2: #1f2226;
+  --ink: #f2f3f5;
+  --text: rgba(242, 243, 245, .78);
+  --muted: rgba(242, 243, 245, .5);
+  --hair: #26292d;
+  --line: rgba(242, 243, 245, .1);
+  --accent: #3e9fff;
+  --for-me: #f09637;
+  --danger: #ff5d55;
+  --ok: #1f7a3d;
+  --focus: rgba(62, 159, 255, .55);
+
+  --state-working: #3e9fff;
+  --state-listening: #9d7bff;
+  --state-bus: #14b8a6;
+  --state-idle: #8d8d93;
+  --state-silent: #6f6f76;
+  --state-offline: #4a4a52;
+
+  --radius: 10px;
+  --font: ui-sans-serif, system-ui, "SF Pro Text", "Segoe UI", Inter, sans-serif;
+  --mono: ui-monospace, "SF Mono", "Cascadia Mono", Menlo, monospace;
+}
+
+@media (prefers-color-scheme: light) {
+  :root {
+    --bg: #f7f7f5;
+    --surface: #ffffff;
+    --surface-2: #f1f1ef;
+    --ink: #111;
+    --text: rgba(0, 0, 0, .72);
+    --muted: rgba(0, 0, 0, .5);
+    --hair: #eeefec;
+    --line: rgba(0, 0, 0, .1);
+  }
+}
+
+* { box-sizing: border-box; }
+
+html, body, #root { height: 100%; }
+
+body {
+  margin: 0;
+  background: var(--bg);
+  color: var(--ink);
+  font: 13px/1.45 var(--font);
+  -webkit-font-smoothing: antialiased;
+}
+
+button { font: inherit; color: inherit; }
+
+:focus-visible { outline: 2px solid var(--focus); outline-offset: 1px; }
+
+.app {
+  display: grid;
+  grid-template-columns: 208px 1fr auto;
+  height: 100%;
+}
+
+.stage {
+  overflow: auto;
+  padding: 14px 18px;
+}
+
+.hint {
+  color: var(--muted);
+  margin: 0 0 12px;
+}
+
+/* shared chip */
+.chip {
+  display: inline-block;
+  border: 1px solid var(--line);
+  border-radius: 999px;
+  padding: 0 7px;
+  font-size: 11px;
+  line-height: 17px;
+  color: var(--text);
+  background: var(--surface-2);
+  white-space: nowrap;
+}
+
+.chip--for-me {
+  border-color: var(--for-me);
+  color: var(--for-me);
+}
+
+.chip--may-answer {
+  border-color: color-mix(in srgb, var(--for-me) 45%, transparent);
+}
+
+.chip--expired {
+  border-color: var(--danger);
+  color: var(--danger);
+}
+
+.chip--open {
+  border-color: var(--ok);
+  color: var(--ok);
+}
+
+.chip--pr {
+  color: var(--accent);
+  border-color: color-mix(in srgb, var(--accent) 40%, transparent);
+}
