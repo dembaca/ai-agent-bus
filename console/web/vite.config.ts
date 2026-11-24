@@ -12,4 +12,8 @@ export default defineConfig({
     outDir: "dist",
     emptyOutDir: true,
   },
+  // Development against a local console server (the login's cookie is
+  // same-origin, so the API is proxied, never cross-origin):
+  //   server: { proxy: { "/v1": "http://127.0.0.1:8747" } },
+  // with `VITE_CONSOLE_API=""` — the same shapes the built app serves.
 })

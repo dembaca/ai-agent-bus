@@ -22,8 +22,7 @@ not exist yet — the app is the stage a scope-shrink keeps either way.
   session's age, the time since its last post, its HELLO thread and the threads
   of its open asks.
 
-When the console server exists, point the app at it:
-`VITE_CONSOLE_API=https://…` (see `src/main.tsx`; without it, the mock runs).
+When the console server exists, point the app at it — same-origin, as its login needs the cookie: `VITE_CONSOLE_API` is the API base path (`""` to serve the API beside the built app, or a path like `/api` in front of it) — never a cross-origin URL: the session cookie stays same-origin and a 401's answer is the server's own `/login` route (see `src/api/http.ts`; without a base, the mock runs). For development, Vite's dev server proxies the API to a console server on `127.0.0.1` with a `server.proxy` entry in `vite.config.ts`.
 The operator of the mock is a stand-in; the real visibility rule lives in the
 login service, not in this interface.
 
