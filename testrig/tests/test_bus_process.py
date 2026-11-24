@@ -379,6 +379,20 @@ async def test_a_drop_on_the_socket_measures_loss():
 
 
 @skip_no_bus
+async def test_a_run_that_receives_nothing_says_whether_the_fault_explains_it():
+    """Issue #47, with real numbers: a `drop` that discards every frame is a
+    measurement, and the run's own note says so, with the relay's counters behind
+    it. Before this, a run that proved nothing printed `notes: []` and exited 0,
+    reading exactly like a healthy run under a lossy fault."""
+    run = await bus_run(count=4, fault=ProxyFault(kind="drop", after=1, every=1))
+    assert run.sent_frames == 4, run.sent_frames
+    assert not run.received, run.received
+    assert any("nothing arrived" in note and "drops every frame" in note
+               for note in run.notes), run.notes
+    assert run.relay["altered"] >= run.sent_frames, run.relay
+
+
+@skip_no_bus
 async def test_a_duplicate_on_the_wire_is_handed_over_once():
     """The bus's inbox dedups by post id, so the tool boundary sees each post
     once although the relay forwarded the frame twice. Both numbers are in the

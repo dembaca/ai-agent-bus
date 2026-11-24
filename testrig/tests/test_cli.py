@@ -161,13 +161,45 @@ def test_a_passing_fault_that_delivers_nothing_exits_non_zero(bus_run, capsys):
 
 def test_a_drop_run_that_delivers_nothing_stays_a_measurement(bus_run, capsys):
     """The other side of the rule: `drop` is meant to discard, so a run under it
-    that delivers nothing and exits 0 is the measurement, not a broken path."""
+    that delivers nothing and exits 0 is the measurement, not a broken path.
+
+    It must **say** so (issue #47): the same numbers otherwise read as a healthy
+    run, and a reader cannot tell the fault from a dead path."""
     run = _run(loss=3, fault="drop", sent=3)
     run.received.clear()
     run.relay = {"received": 4, "forwarded": 1, "altered": 3}
     bus_run(run)
     assert _main(["bus-run", "--count", "3", "--fault", "drop", "--after", "1",
                   "--every", "1"]) == 0
+    err = capsys.readouterr().err
+    assert "nothing arrived" in err and "drops every frame" in err, err
+    assert "3 of 3 frame(s) altered at the relay" in err, err
+
+
+def test_a_drop_run_whose_frames_never_reached_the_relay_exits_non_zero(bus_run, capsys):
+    """The criterion that tells the two apart (issue #47): `drop` discards what it
+    sees, so a frame the relay never saw was lost **before** the injection point.
+    Counting delivered frames alone reads identically; the relay's own counters do
+    not."""
+    run = _run(loss=3, fault="drop", sent=3)
+    run.received.clear()
+    run.relay = {"received": 1, "forwarded": 1, "altered": 1}
+    bus_run(run)
+    assert _main(["bus-run", "--count", "3", "--fault", "drop", "--after", "1",
+                  "--every", "1"]) == 1
+    assert "never reached the injection point" in capsys.readouterr().err
+
+
+def test_a_cut_that_delivers_nothing_says_so_and_stays_a_measurement(bus_run, capsys):
+    """`cut` silences the line by design; a run under it that delivers nothing is
+    still a measurement of the cut - and says so, where it used to say nothing."""
+    run = _run(loss=4, fault="cut", sent=4, closed="ConnectionClosed: cut")
+    run.received.clear()
+    run.relay = {"received": 0, "forwarded": 0, "altered": 0}
+    bus_run(run)
+    assert _main(["bus-run", "--count", "4", "--fault", "cut"]) == 0
+    err = capsys.readouterr().err
+    assert "nothing arrived" in err and "silences the line" in err, err
 
 
 def test_expect_loss_fails_when_everything_was_lost(bus_run, capsys):

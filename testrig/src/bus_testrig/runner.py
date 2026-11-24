@@ -167,6 +167,48 @@ class Run:
         }
 
 
+# The faults whose silence is their own doing (issue #47): `drop` discards every
+# frame it sees, `cut` is a dead transport the bus recovers by backfill,
+# `blackhole` and `halfopen` stop delivery on purpose. A run under one of them
+# that delivers nothing is a measurement of that fault - and has to say so,
+# because a path that carried nothing reads exactly the same. Every other fault
+# passes frames on (`stall` delays, `reorder` swaps, `duplicate` repeats), and
+# `none` is the baseline: silence under those is the path.
+SILENCING_FAULTS = ("drop", "cut", "blackhole", "halfopen")
+
+
+def silence(run: Run) -> tuple[bool, str]:
+    """`(explained, why)`: frames were sent and **none** arrived (issue #47).
+
+    `explained` is true when the run's own evidence accounts for every frame: a
+    fault that silences the line by design, with the relay's counters showing it
+    saw them (`drop`, which is meant to discard). False means the path carried
+    nothing - about the rig, not about the fault - and `why` names the part.
+
+    No verdict (`True, ""`) when something arrived: there is nothing to explain.
+    Counting *delivered* frames alone cannot separate the two, which is why the
+    relay's own counters decide the `drop` case: a frame the relay never saw was
+    lost before the injection point (the review of #35).
+    """
+    if not run.sent_frames or run.received or run.unmeasured:
+        # `unmeasured` has its own words: the inbox never opened, so nothing
+        # arriving says nothing this run did not already say (review of #54).
+        return True, ""
+    altered = (run.relay or {}).get("altered", 0)
+    seen = f" ({altered} of {run.sent_frames} frame(s) altered at the relay)" if run.relay else ""
+    if run.fault in SILENCING_FAULTS:
+        if run.fault == "drop" and run.relay and altered < run.sent_frames:
+            return False, (f"the relay dropped {altered} of {run.sent_frames} frame(s); the "
+                           "rest never reached the injection point, so nothing arriving is "
+                           "not the fault's doing")
+        what = "drops every frame" if run.fault == "drop" else "silences the line"
+        return True, (f"nothing arrived: --fault {run.fault} {what}{seen}, so the run "
+                      "measures the fault, not delivery")
+    return False, (f"--fault {run.fault} lets traffic through, but none of "
+                   f"{run.sent_frames} frame(s) arrived: the path carried nothing, so "
+                   "this is not a measurement of the fault")
+
+
 async def echo_run(count: int = 20, fault: ProxyFault | None = None,
                    send_interval: float = 0.0) -> Run:
     """The whole flow with no Lab and no server: an echo endpoint the harness

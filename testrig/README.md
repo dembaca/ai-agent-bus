@@ -152,15 +152,29 @@ reconnect the bus's catch-up read found nothing, so 10 of 10 read as lost.
 `bus-run`'s exit code says whether its numbers can be compared: 0 for a run
 whose baseline lost nothing and whose stand-in answered every call, 1 when the
 stub did not know a call, when the receiver's inbox never opened, when the run
-sent no frame at all, when a baseline lost a frame, or when `stall`, `reorder` or `duplicate` — faults
-that pass every frame on — delivered **nothing** at all: a path that carried
-nothing is not a measurement of the fault (issue #47); 2 when no interpreter
-could start the bus at all. Three faults are excluded, each for its own reason:
-`drop` may lose everything by design and is a measurement; `cut` is a dead
-transport the bus recovers by backfill; `blackhole` and `halfopen` stop delivery
-on purpose, so silence is what they are for, and a bus that fails to recover
-from it is a different finding. The JSON report is printed in every case, because the numbers are how
-a failure is read.
+sent no frame at all, when a baseline lost a frame, or when **frames were sent
+and none arrived** and no fault explains it: `stall`, `reorder` and `duplicate`
+pass every frame on, so silence under them is the path, and so is silence under
+`none` — a path that carried nothing is not a measurement of the fault (issue
+#47); 2 when no interpreter could start the bus at all.
+
+A fault whose silence is its own doing — `drop` discards, `cut` is a dead
+transport the bus recovers by backfill, `blackhole` and `halfopen` stop delivery
+on purpose — makes such a run a measurement **and the run says so**, in `notes`
+and on stderr:
+
+```
+bus-testrig: nothing arrived: --fault drop drops every frame (3 of 3 frame(s)
+altered at the relay), so the run measures the fault, not delivery
+```
+
+For `drop` that verdict rests on the relay's own counters: a frame the relay
+never saw was lost **before** the injection point, so the fault does not explain
+it and the run exits 1. Counting delivered frames alone cannot tell the two
+apart, which is what made a run that proved nothing read like a healthy one.
+
+The JSON report is printed in every case, because the numbers are how a failure
+is read.
 
 `--expect-loss` makes a fault run's claim ("this fault loses some and carries
 the rest") part of that check: a run that lost nothing exits 1, and so does one
