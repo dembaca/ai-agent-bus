@@ -5,67 +5,16 @@ before 0.5.0 are described in the git history.
 
 ## Unreleased
 
-- **The console's clock moves without deliveries too** (`Part of #108`).
+- **The console's clock ages without deliveries too** (`Part of #108`).
   "Now" stood still between deliveries, so a killed lone agent stayed
-  `online` with its crown forever. The fleet's ages carry a **monotonic**
-  floor: presence older than the freshness window ages out on its own,
-  the crown drops with it, and a jump of the host's wall clock changes
-  nothing. The deployment view says the bridge
-  runs in the lab and the console is deployed for the pilot.
-.- **The console's `/healthz` answers readiness, not only liveness** (ADR-015).
-  It went 503 only when the NATS reader ended without a stop; a reader that
-  silently never synced still said ok. It now answers 503 until the reader
-  has synced — a finished replay with zero messages included, so an empty
-  fleet reads healthy — and again once no replay arrived within
-  `CONSOLE_HEALTH_SYNC_BOUND` (30 s to 24 h, default 180 s; the reader
-  reconnects for a replay between 5/8 and 7/8 of the bound, checked every
-  quarter of it). Beside it, `GET /livez` answers liveness:
-  503 only when the reader ended without a stop — a liveness probe on
-  `/healthz` would restart the pod while NATS is merely slow. The
-  docs follow: the console's row in the deployment view (settings, the
-  image, the Keycloak setup, one replica), the README's deployment notes
-  (a container-usable `CONSOLE_ADDR`, the group mapper and
-  `preferred_username` required, `handshake_first`, `/healthz` and
-  `/livez`, `CONSOLE_TOKEN_ALGS`/`CONSOLE_CONSUMER_NAME` in the settings
-  table), and ADR-015's status cell states the pilot as built once.
-
-- **The console's image is published** (ADR-015). `checks.yml` gains a
-  `publish-console` job: a push to `main` that changes `console/`, `mcp/` or
-  that workflow, and only after the console's browser build and the console
-  server's tests with the image smoke have passed, builds `console/server/Dockerfile` from the
-  repository root and pushes
-  `ghcr.io/dembaca/ai-agent-bus-console:<full commit SHA>` and `:main` with a
-  build provenance attestation; the digest stands in the job's summary, and a
-  deployment names it by that digest. A push that changes nothing under
-  `console/` builds no image.
-- **The operator console's browser app, a read-only pilot** (ADR-015 point
-  14). `console/web` inherits the toolchain of `site/` (React,
-  TypeScript, Vite) and implements the four views against a mock of the API
-  in ADR-015 point 10: the Kanban of agents by state (the crown a mark on the
-  card, not a column), the asks with *for me* and *may answer*, the graph
-  (trusts and coordinates, cut at depth two with a mark), and the reports
-  (counts and seconds, a missing field `n/a`, never 0). The detail pane shows
-  the full card, the task rows an agent holds, its HELLO thread and the
-  threads of its open asks. Nothing posts — an ask gets no answer button
-  (stage 1, reading only); the same `ConsoleApi` interface hides the mock and
-  the future console server behind `VITE_CONSOLE_API`.
-- **The console's server, the pilot's live view** (ADR-015). `console/server`
-  reads the NATS homes' presence, crown claims and memberships through a
-  push consumer of its own on the PRESENCE stream (the shape the login
-  service makes for an agent: no acks, replay of the last message per
-  subject, the server's own clock from the deliveries' JetStream
-  metadata), with one read-only NATS account — the pilot's documented
-  deviation from ADR-015 way A, lab and one tenant only. It serves the
-  API of ADR-015 point 10 (`/v1/fleet` streamed over SSE, `/v1/me`,
-  `/v1/asks` and `/v1/stats` empty until those lie on NATS, `/v1/graph`,
-  `/v1/threads/<id>`) and the built browser app; an operator logs in over
-  Keycloak (authorization code with PKCE, a client of the console's own,
-  members of an operators group), the access token verified against the
-  realm's JWKS — rules the login service's Go verifier set — and what a
-  NATS home does not carry shows as unknown, never as zero. Python,
-  reusing the mcp package's NATS reading (`natsbus.py`) by editable path
-  dependency; the NATS tests run against a real nats-server like the
-  MCP ones.
+  `online` with its crown forever. The fleet's "now" carries a
+  **monotonic** floor: presence older than the freshness window ages out
+  on its own and the crown drops with it, a jump of the host's wall clock
+  changes nothing, and the floor re-anchors only on a genuinely newer
+  server stamp (a replay of old stamps revives nothing). The attestation
+  expiry reads the floored clock too. The deployment view says the
+  bridge runs since the lab sync on 2026-11-24 and the console is planned
+  for the pilot.
 
 ### Fixed
 

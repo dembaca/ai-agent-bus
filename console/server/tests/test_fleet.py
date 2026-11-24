@@ -165,3 +165,65 @@ def test_a_silent_stream_ages_the_lone_agent_out() -> None:
     # agent is fresh no matter what happens to the wall
     assert fresh.state_of("alive-agent") == "online"
     assert abs(fresh.server_now - 1000.0) < 0.05
+
+
+def test_a_replay_of_old_stamps_does_not_revive_the_aged() -> None:
+    """Fable's replay probe: silence ages the lone agent out, and the
+    reconnect's replay re-delivers the same old stamps — the floor must
+    not re-anchor on them (the crown stays gone, the agent offline)."""
+    f = Fleet()
+    subject, data = presence("lone-agent", "dembaca", "online")
+    feed(f, (subject, data, ack("PRESENCE", "console", 1, 1, 1000.0)))
+    feed(f, ("presence.member.dev.lone-agent", b'{"v": 1}',
+              ack("PRESENCE", "console", 2, 2, 1001.0)))
+    feed(f, ("presence.crown.dev.lone-agent", b'{"v": 1}',
+              ack("PRESENCE", "console", 3, 3, 1002.0)))
+    # silence ages it out (the monotonic backdate of the other test)
+    staged = f.last_server_now_wall
+    f.last_server_now_wall = (staged[0], staged[1] - 10000)
+    assert f.state_of("lone-agent") == "offline"
+    assert f.holder_of("dev") is None
+    # the replay after the reconnect: a NEW consumer re-delivers the last
+    # message per subject (higher consumer sequence, the same old stamps)
+    # — the floor must not re-anchor on the old stamp, and the lone agent
+    # stays offline; the consumer-made-anew reset forgets the claims, so
+    # the crown is gone for either reason, both honest
+    for i, (sub, dat, ts) in enumerate((
+            (subject, data, 1000.0),
+            ("presence.member.dev.lone-agent", b'{"v": 1}', 1001.0),
+            ("presence.crown.dev.lone-agent", b'{"v": 1}', 1002.0))):
+        f.on_delivery(sub, dat, ack("PRESENCE", "console", 10 + i, 20 + i, ts),
+                      "PRESENCE", "console")
+    assert f.state_of("lone-agent") == "offline"
+    assert f.holder_of("dev") is None  # offline, and the claim re-delivered is older
+    # a genuinely newer heartbeat re-anchors presence — and a genuinely
+    # newer crown claim with it revives the crown (fresh claim on record)
+    assert f.on_delivery(subject, data,
+                         ack("PRESENCE", "console", 14, 24, 11000.0),
+                         "PRESENCE", "console")
+    assert f.state_of("lone-agent") == "online"
+    assert f.on_delivery("presence.crown.dev.lone-agent", b'{"v": 1}',
+                          ack("PRESENCE", "console", 15, 25, 11001.0),
+                          "PRESENCE", "console")
+    assert f.holder_of("dev") == "lone-agent"
+
+
+def test_the_attestation_expires_by_the_floored_clock() -> None:
+    """The attestation's expiry reads the floored clock too: silent
+    aging expires it (the card falls back to the presence owner), and a
+    fresh delivery keeps it."""
+    f = Fleet()
+    s_b, d_b = presence("b", "dembaca", "online")
+    feed(f, (s_b, d_b, ack("PRESENCE", "console", 1, 1, 1000.0)))
+    s_att, d_att = atestation("b", "somebody-else", [], exp=1010.0)
+    feed(f, (s_att, d_att, ack("PRESENCE", "console", 2, 2, 1001.0)))
+    (card,) = f.cards()
+    assert card["for"] == "somebody-else"
+    # silence past the attestation's exp: the floored clock expires it
+    staged = f.last_server_now_wall
+    f.last_server_now_wall = (staged[0], staged[1] - 10000)
+    (card,) = f.cards()
+    assert card["for"] == "dembaca"  # fell back to the presence owner
+    graph = f.graph()
+    b_node = next(n for n in graph["nodes"] if n["id"] == "b")
+    assert "crown" not in b_node or b_node.get("crown") is False

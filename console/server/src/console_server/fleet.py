@@ -153,10 +153,16 @@ class Fleet:
 
     def _see(self, at: float) -> None:
         """The newest server timestamp this console has seen; prunes like
-        NatsBus: nothing older than the stream's 24 h max age stays."""
-        self._server_now = max(self._server_now, at)
-        import time
-        self.last_server_now_wall = (self._server_now, time.monotonic())
+        NatsBus: nothing older than the stream's 24 h max age stays.
+
+        The floor re-anchors only when a delivery's stamp is genuinely
+        newer: a replay after a reconnect re-delivers the same old stamps,
+        and re-anchoring on them would revive a presence that the silent
+        window had already aged out (Fable's replay probe)."""
+        if at > self._server_now:
+            self._server_now = at
+            import time
+            self.last_server_now_wall = (self._server_now, time.monotonic())
         edge = self.server_now - natsbus.MAX_AGE_SEC
         for agent, (at_p, _s) in list(self._presence.items()):
             if at_p < edge:
@@ -221,7 +227,7 @@ class Fleet:
                 crowns[holder] = channel
         for agent in self.agents():
             att = self._attests.get(agent)
-            record = att[2] if att and att[2].exp > self._server_now else None
+            record = att[2] if att and att[2].exp > self.server_now else None
             channels = sorted(ch for ch in self._members if agent in self._members[ch])
             presence = self._presence.get(agent, (0.0, "offline"))
             out.append({
@@ -269,7 +275,7 @@ class Fleet:
         people: dict[str, None] = {}
         for agent in self.agents():
             att = self._attests.get(agent)
-            record = att[2] if att and att[2].exp > self._server_now else None
+            record = att[2] if att and att[2].exp > self.server_now else None
             owner = record.owner_name if record else self._owners.get(agent, "")
             if owner:
                 people.setdefault(owner, None)
