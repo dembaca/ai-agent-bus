@@ -227,9 +227,11 @@ func (c *Client) PostsSince(ctx context.Context, channelID string, since int64) 
 	}
 	sort.SliceStable(out, func(i, j int) bool { return out[i].CreateAt < out[j].CreateAt })
 	if len(out) >= maxSincePosts {
-		// The read cannot say whether it was cut at the limit; posts may
-		// sit behind it, reactivated old ones at that. Say so: an operator
-		// reads this, and the caller knows to read again, split by time.
+		// The read cannot say whether it was cut at the limit, and the
+		// server's LIMIT has no ORDER BY, so which posts sat behind the
+		// cap is unknowable from here — only that there may be some.
+		// This is a log, not a signal: the caller reads the warning with
+		// everything else it knows (a gap that big is its own error row).
 		slog.Warn("mattermost: the since read returned its thousand",
 			"channel", channelID)
 	}

@@ -233,6 +233,10 @@ func (r *Reader) connect(ctx context.Context) time.Duration {
 				" likely a refused token; retrying",
 				"url", u.Redacted(), "error", err)
 		}
+		// The handshake failed: whatever events it parsed were never handed
+		// out, so the hint forgets them — the next marker says only what
+		// the caller truly received.
+		r.since = hint
 		return 0
 	}
 	// The marker first, whatever the handshake interleaved: the caller
@@ -373,17 +377,10 @@ func (r *Reader) typedEvent(event string, data json.RawMessage,
 	}
 }
 
-// takePosted decodes one `posted` event. Mattermost carries the post as
-// a JSON string inside the event's data, not as an object.
-func (r *Reader) takePosted(ctx context.Context, data json.RawMessage) {
-	if ev := r.typedPosted(data); ev != nil {
-		r.emit(ctx, ev)
-	}
-}
-
-// typedPosted parses one `posted` into its event, or nil when the frame
-// does not decode — never an error past a logged warning, so one broken
-// event cannot end the reader.
+// typedPosted parses one `posted` event (the post as a JSON string
+// inside the data, as Mattermost carries it) into its event, or nil
+// when the frame does not decode — never an error past a logged
+// warning, so one broken event cannot end the reader.
 func (r *Reader) typedPosted(data json.RawMessage) Event {
 	var outer struct {
 		Post string `json:"post"`
@@ -431,13 +428,6 @@ func (r *Reader) typedPosted(data json.RawMessage) Event {
 // reaction travels as a JSON string inside the event's data, the channel
 // in the broadcast beside it; a removal's create_at is 0 (its struct's
 // comment says why).
-func (r *Reader) takeReaction(ctx context.Context, data json.RawMessage,
-	channelID string, added bool) {
-	if ev := r.typedReaction(data, channelID, added); ev != nil {
-		r.emit(ctx, ev)
-	}
-}
-
 // typedReaction parses one reaction event into its event, or nil when
 // the frame does not decode (see typedPosted).
 func (r *Reader) typedReaction(data json.RawMessage, channelID string,
