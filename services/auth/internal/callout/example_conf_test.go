@@ -101,6 +101,7 @@ func TestTheExampleServerConfiguration(t *testing.T) {
 		"<SERVICE_USER_PUBLIC_NKEY>":  svcPub,
 		"<JS_USER_PUBLIC_NKEY>":       jsPub,
 		"<BRIDGE_USER_PUBLIC_NKEY>":   bridgePub,
+		"<HOME>":                      "home",
 		"<PATH_TO_SERVER_CERT>":       certFile,
 		"<PATH_TO_SERVER_KEY>":        keyFile,
 		"<PATH_TO_CLIENT_CA>":         certFile,
@@ -158,7 +159,7 @@ func TestTheExampleServerConfiguration(t *testing.T) {
 			}
 			// Read-only on the bus, its own consumers and bucket:
 			pub := strings.Join(u.Permissions.Publish.Allow, " ")
-			if !strings.Contains(pub, "$JS.API.CONSUMER.CREATE.BUS.>") ||
+			if !strings.Contains(pub, "$JS.API.CONSUMER.CREATE.BUS.bridge_home.bus.ch.home.*") ||
 				!strings.Contains(pub, "$KV.BUS_BRIDGE.>") || strings.Contains(pub, "bus.>") {
 				t.Errorf("the bridge's rights: %+v", u.Permissions.Publish.Allow)
 			}
