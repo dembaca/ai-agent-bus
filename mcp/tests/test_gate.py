@@ -688,6 +688,8 @@ def test_the_props_prefix_is_configurable_with_a_neutral_default(monkeypatch, va
 @pytest.mark.parametrize("value", [
     "a2a_", "a2a", "from_", "override_", "agent_", "attachments", "card", "BGL_", "bgl", "_", "1x_",
     "bgl__", "bg l_", "webhook_", "x-y_",
+    # the instructions name the prefix every turn: 17 characters are one too many (#104)
+    "a" * 16 + "_", "abcdefghijklmnop_",
 ])
 def test_a_props_prefix_that_can_clash_is_refused_at_start(monkeypatch, value):
     """RT-6.16 step 8: empty is the default, but a prefix a bus or Mattermost key can

@@ -5,6 +5,13 @@ before 0.5.0 are described in the git history.
 
 ## Unreleased
 
+- **A props prefix is at most 16 characters** (RT-6.16 step 8). The
+  per-turn instructions name the prefix (`props keys start with <prefix>`), so
+  an absurd one would grow the text carried every turn; the server now refuses
+  one that long at start, beside the existing refusal of one a bus or
+  Mattermost key can start with. The static-text budget test measures each
+  session configuration on its own and holds the worst one under its bound
+  (#104).
 - **The console's `/healthz` answers readiness, not only liveness** (ADR-015).
   It went 503 only when the NATS reader ended without a stop; a reader that
   silently never synced still said ok. It now answers 503 until the reader

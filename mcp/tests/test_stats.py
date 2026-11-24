@@ -85,6 +85,8 @@ def static_text_in(env_overrides: dict[str, str]) -> int:
     """
     code = ("from mattermost_ai_agent_bus import server\n"
             "f = server._fixed()\n"
+            "assert len(server._instructions()) == f.instructions, \\\n"
+            "    'the served instructions are not what _instructions builds'\n"
             "print(f.instructions + f.tools)\n")
     env = {"PATH": os.environ.get("PATH", ""), "HOME": os.environ.get("HOME", "")}
     env.update(env_overrides)
@@ -98,17 +100,26 @@ def test_the_static_text_holds_in_every_configuration():
     session's configuration adds — the channel push, the permission relay's
     trusted humans, a NATS home (#104: each was measured on its own, and the
     combination was 350 over the old 12,900)."""
+    # MM_CHANNEL_PUSH=0 without push: unset, channel.enabled() reads the parent
+    # command line, and a suite started from a channel session would measure
+    # push where it means base (#104 review).
     configs = {
-        "base": {},
+        "base": {"MM_CHANNEL_PUSH": "0"},
         "channel push": {"MM_CHANNEL_PUSH": "1"},
         "push, trusted humans": {"MM_CHANNEL_PUSH": "1", "MM_TRUSTED_HUMANS": "alice,bob"},
-        "a NATS home": {"MM_NATS_HOMES": "nats-pilot"},
+        "a NATS home": {"MM_CHANNEL_PUSH": "0", "MM_NATS_HOMES": "nats-pilot"},
         "push, trusted humans, a NATS home": {
             "MM_CHANNEL_PUSH": "1", "MM_TRUSTED_HUMANS": "alice,bob", "MM_NATS_HOMES": "nats-pilot"},
     }
-    for label, env in configs.items():
-        static = static_text_in(env)
+    measured = {label: static_text_in(env) for label, env in configs.items()}
+    for label, static in measured.items():
         assert static < STATIC_BOUND, f"{label}: {static} >= {STATIC_BOUND}"
+    # The combination is the one the bound is set by: it must be there, be the
+    # largest, and keep its place. Removing it from the list above is a KeyError
+    # here, not a quietly smaller maximum.
+    worst = measured["push, trusted humans, a NATS home"]
+    assert worst == max(measured.values()), measured
+    assert worst >= 13_200, measured
 
 
 def test_static_is_per_turn_text_and_the_skill_its_own_field():
@@ -118,7 +129,11 @@ def test_static_is_per_turn_text_and_the_skill_its_own_field():
     stats.record("turn")
     f = server._fixed()
     s = stats.summary("0.53.0", f)
-    assert s["static"] == f.instructions + f.tools == len(server._instructions()) + f.tools
+    # `_fixed` counts the served instructions (`mcp.instructions`) and the tool
+    # docs; that they are what `_instructions()` builds is asserted in a fresh
+    # interpreter by test_the_static_text_holds_in_every_configuration, since a
+    # running suite may have changed MM_* since this module was imported (#104).
+    assert s["static"] == f.instructions + f.tools
     # + get_file (RT-6.23), channel names (RT-6.22); + ask_human's kind, advice, ask_mode (RT-6.25)
     # + coordinator's scope (RT-6.14 step 9); + mandated on events, the instructions (RT-6.26)
     # + ask_human's alternatives and `choice` on reactions (RT-6.11)
