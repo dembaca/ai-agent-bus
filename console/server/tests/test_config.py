@@ -141,3 +141,28 @@ def test_an_unreadable_seed_is_a_config_error(monkeypatch: pytest.MonkeyPatch,
     monkeypatch.setenv("CONSOLE_NATS_SEED_FILE", str(no_read))
     with pytest.raises(config.ConfigError, match="cannot be read"):
         config.find()
+
+
+def test_the_health_sync_bound_is_bounded(monkeypatch: pytest.MonkeyPatch,
+                                           tmp_path) -> None:
+    """The probe's bound: 30 s to 24 h, or the start refuses; a value that
+    is no number names itself."""
+    seed = tmp_path / "seed"
+    seed.write_text("seed")
+    seed.chmod(0o600)
+    base = {"CONSOLE_PUBLIC_URL": "http://127.0.0.1:8747",
+            "CONSOLE_LOGIN_OFF": "1",
+            "CONSOLE_NATS_URL": "nats://127.0.0.1:4222",
+            "CONSOLE_NATS_SEED_FILE": str(seed)}
+    for k, v in base.items():
+        monkeypatch.setenv(k, v)
+    assert config.find().health_sync_bound == 180.0
+    for raw in ("0", "-10", "99999999"):
+        monkeypatch.setenv("CONSOLE_HEALTH_SYNC_BOUND", raw)
+        with pytest.raises(config.ConfigError, match="SYNC_BOUND"):
+            config.find()
+    monkeypatch.setenv("CONSOLE_HEALTH_SYNC_BOUND", "abc")
+    with pytest.raises(config.ConfigError, match="number of seconds"):
+        config.find()
+    monkeypatch.setenv("CONSOLE_HEALTH_SYNC_BOUND", "60")
+    assert config.find().health_sync_bound == 60.0

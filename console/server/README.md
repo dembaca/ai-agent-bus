@@ -94,7 +94,10 @@ the read.
 | `CONSOLE_PUBLIC_URL` | where the browser reaches the console (redirect URI); https off loopback |
 | `CONSOLE_ISSUER`, `CONSOLE_CLIENT_ID` | Keycloak: the issuer and the console's own client |
 | `CONSOLE_OPERATOR_GROUP` | the realm group whose members may log in (required: without it the console refuses to start) |
-| `CONSOLE_ADDR` | listen, default `127.0.0.1:8747` (the lab fronts it with TLS) |
+| `CONSOLE_ADDR` | listen, default `127.0.0.1:8747`; in a container set `0.0.0.0:8747` (a kubelet cannot probe a loopback listener) — outside one it stays loopback |
+| `CONSOLE_TOKEN_ALGS` | the access token's allowed algs, default `RS256` (asymmetric only, never `HS*`/`none`) |
+| `CONSOLE_CONSUMER_NAME` | the consumer's name on the PRESENCE stream, default `console`; the account's publish rights name it too |
+| `CONSOLE_HEALTH_SYNC_BOUND` | `/healthz` goes 503 once the reader has seen no replay for this long, default 180 s |
 | `CONSOLE_NATS_URL` | `tls://` anywhere, `nats://` loopback only (as `natsbus`) |
 | `CONSOLE_NATS_SEED_FILE` | the read-only account's nkey seed |
 | `CONSOLE_NATS_CA_FILE` | the CA for `tls://` |
@@ -115,6 +118,32 @@ the read.
 - a **group mapper** onto the `groups` claim: the match is exact — name
   the group `operators` and set the mapper's full path off, or name it
   `/operators` and set the full path on.
+
+## Deployment notes
+
+- **One replica.** The sessions live in memory (RISK-12: a restart logs
+  everyone out, which is the state the pilot wants); a second replica
+  would fight over login states and streams. Scale out comes with the
+  per-person credential of ADR-015 way A after the pilot.
+- The Keycloak client needs **PKCE (S256)** and, in the **access token**:
+  an **audience mapper** for the client id (`aud`, `azp`) and a **group
+  mapper** onto `groups` (full path on, so the claim carries
+  `/operators`; `CONSOLE_OPERATOR_GROUP` names what the check matches
+  exactly). **`preferred_username` is required** — it is the operator's
+  name on every view — and `name` (the display name) is welcome.
+- A `tls://` NATS URL needs the lab server's `handshake_first: true`
+  (the console connects TLS first, as every host does).
+- **`/healthz` is the readiness probe**; **`/livez` the liveness probe**.
+  `/healthz` answers 503 until the reader has synced — a finished replay,
+  an empty one included (a consumer created with nothing left to deliver
+  stamps it, so a fleet with zero agents is healthy) — and again once no
+  replay arrived within `CONSOLE_HEALTH_SYNC_BOUND` (30 s to 24 h,
+  default 180 s; the reader reconnects for a replay between 5/8 and 7/8
+  of the bound — three quarters taken back half a watch tick, checked
+  every quarter of it).
+  **A liveness probe on `/healthz` would restart the pod while NATS is
+  merely slow** — use `/livez`: it answers 503 only when the reader
+  ended without a stop; everything else retries on its own.
 
 ## Run
 

@@ -5,6 +5,23 @@ before 0.5.0 are described in the git history.
 
 ## Unreleased
 
+- **The console's `/healthz` answers readiness, not only liveness** (ADR-015).
+  It went 503 only when the NATS reader ended without a stop; a reader that
+  silently never synced still said ok. It now answers 503 until the reader
+  has synced — a finished replay with zero messages included, so an empty
+  fleet reads healthy — and again once no replay arrived within
+  `CONSOLE_HEALTH_SYNC_BOUND` (30 s to 24 h, default 180 s; the reader
+  reconnects for a replay between 5/8 and 7/8 of the bound, checked every
+  quarter of it). Beside it, `GET /livez` answers liveness:
+  503 only when the reader ended without a stop — a liveness probe on
+  `/healthz` would restart the pod while NATS is merely slow. The
+  docs follow: the console's row in the deployment view (settings, the
+  image, the Keycloak setup, one replica), the README's deployment notes
+  (a container-usable `CONSOLE_ADDR`, the group mapper and
+  `preferred_username` required, `handshake_first`, `/healthz` and
+  `/livez`, `CONSOLE_TOKEN_ALGS`/`CONSOLE_CONSUMER_NAME` in the settings
+  table), and ADR-015's status cell states the pilot as built once.
+
 - **The console's image is published** (ADR-015). `checks.yml` gains a
   `publish-console` job: a push to `main` that changes `console/`, `mcp/` or
   that workflow, and only after the console's browser build and the console
