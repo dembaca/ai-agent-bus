@@ -92,8 +92,7 @@ func until(t *testing.T, s *sink, want string) [3]string {
 // the KV bucket, then the bridge binds to it.
 func operatorBucket(t *testing.T, nc *nats.Conn, js jetstream.JetStream) *store.KV {
 	t.Helper()
-	if _, err := js.CreateKeyValue(context.Background(), jetstream.KeyValueConfig{
-		Bucket: "BUS_BRIDGE", History: 1}); err != nil {
+	if err := store.CreateBucket(context.Background(), js); err != nil {
 		t.Fatal(err)
 	}
 	kv, err := store.Open(context.Background(), nc, "BUS_BRIDGE")

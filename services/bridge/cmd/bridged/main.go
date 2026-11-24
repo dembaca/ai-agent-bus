@@ -68,9 +68,9 @@ func run(log *slog.Logger) error {
 	// `shown_as` needs the presence of the names and the home's roster; without a
 	// PRESENCE stream the bridge runs as before, naming the NATS name.
 	snapshot := presence.New()
-	hasPresence := false
-	if _, err := js.Stream(ctx, "PRESENCE"); err == nil {
-		hasPresence = true
+	hasPresence, err := presence.Exists(ctx, js)
+	if err != nil {
+		return err
 	}
 
 	h := &health{}

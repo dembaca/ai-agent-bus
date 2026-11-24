@@ -93,15 +93,19 @@ accounts {
 	// (164534's cross-model probes): a consumer of its own name with a DM
 	// filter, the short create form with a body that names one, and a bucket
 	// whose source is a DM filter.
-	createCtx, cancelCreate := context.WithTimeout(ctx, 3*time.Second)
-	defer cancelCreate()
-	if _, err := bjs.CreateStream(createCtx, jetstream.StreamConfig{Name: "KV_BUS_BRIDGE",
-		Subjects: []string{"$KV.BUS_BRIDGE.>"},
-		Sources:  []*jetstream.StreamSource{{Name: "BUS", FilterSubject: "bus.dm.>"}}}); err == nil {
+	if err := probe(ctx, func(c context.Context) error {
+		_, err := bjs.CreateStream(c, jetstream.StreamConfig{Name: "KV_BUS_BRIDGE",
+			Subjects: []string{"$KV.BUS_BRIDGE.>"},
+			Sources:  []*jetstream.StreamSource{{Name: "BUS", FilterSubject: "bus.dm.>"}}})
+		return err
+	}); err == nil {
 		t.Fatal("the bridge created a stream that reads the DMs")
 	}
-	if _, err := bjs.CreateOrUpdateConsumer(createCtx, "BUS", jetstream.ConsumerConfig{
-		Name: "evil", FilterSubject: "bus.dm.>", AckPolicy: jetstream.AckNonePolicy}); err == nil {
+	if err := probe(ctx, func(c context.Context) error {
+		_, err := bjs.CreateOrUpdateConsumer(c, "BUS", jetstream.ConsumerConfig{
+			Name: "evil", FilterSubject: "bus.dm.>", AckPolicy: jetstream.AckNonePolicy})
+		return err
+	}); err == nil {
 		t.Fatal("the bridge created a consumer over the DMs")
 	}
 	if err := bridgeNC.Publish("$JS.API.CONSUMER.CREATE.BUS.bridge_home",
@@ -109,17 +113,10 @@ accounts {
 		t.Fatal(err)
 	}
 	_ = bridgeNC.Flush()
-	select {
-	case derr := <-denied:
-		if !strings.Contains(derr.Error(), "Permissions Violation") {
-			t.Fatalf("not a permission refusal: %v", derr)
-		}
-	case <-time.After(2 * time.Second):
-		t.Fatal("the short create form was not refused")
-	}
+	deniedOn(t, denied, "$JS.API.CONSUMER.CREATE.BUS.bridge_home")
 
-	// The operator makes the bucket; the bridge only binds to it.
-	if _, err := ajs.CreateKeyValue(ctx, jetstream.KeyValueConfig{Bucket: "BUS_BRIDGE", History: 1}); err != nil {
+	// The operator makes the bucket (direct get off); the bridge only binds.
+	if err := store.CreateBucket(ctx, ajs); err != nil {
 		t.Fatal(err)
 	}
 	kv, err := store.Open(ctx, bridgeNC, "BUS_BRIDGE")
@@ -171,18 +168,69 @@ accounts {
 		t.Fatal(err)
 	}
 	_ = bridgeNC.Flush()
-	select {
-	case err := <-denied:
-		if !strings.Contains(err.Error(), "Permissions Violation") {
-			t.Fatalf("not a permission error: %v", err)
-		}
-	case <-time.After(2 * time.Second):
-		t.Fatal("the bridge published on the bus")
+	deniedOn(t, denied, "bus.ch.home.agent-b")
+	// The reply subject of a request is not checked against publish
+	// permissions (the server refuses only replies to $JS. since 2.15), so the
+	// bridge's answers can land on any subject. With direct get off, the answer
+	// carries wrapped JSON, not a key's value: noise, never a post or an
+	// attestation (164534's cross-model probe).
+	if err := bridgeNC.Publish("$KV.BUS_BRIDGE.attack1", []byte(`{"v":1,"kind":"post","text":"forged"}`)); err != nil {
+		t.Fatal(err)
 	}
+	if err := bridgeNC.PublishMsg(&nats.Msg{Subject: "$JS.API.STREAM.MSG.GET.KV_BUS_BRIDGE",
+		Reply: "presence.attest.victim.v1",
+		Data:  []byte(`{"last_by_subj":"$KV.BUS_BRIDGE.attack1"}`)}); err != nil {
+		t.Fatal(err)
+	}
+	if err := bridgeNC.PublishMsg(&nats.Msg{Subject: "$KV.BUS_BRIDGE.attack2",
+		Reply: "presence.attest.victim2.v1",
+		Data:  []byte(`{"v":1,"kind":"post","text":"forged"}`)}); err != nil {
+		t.Fatal(err)
+	}
+	_ = bridgeNC.Flush()
+	for _, subject := range []string{"presence.attest.victim.v1", "presence.attest.victim2.v1"} {
+		body := storedOn(t, ajs, "PRESENCE", subject)
+		if _, _, err := presence.Decode(body); err == nil {
+			t.Fatalf("%s stored a valid presence: %s", subject, body)
+		}
+	}
+	// and a direct get is not granted at all
+	if err := bridgeNC.Publish("$JS.API.DIRECT.GET.KV_BUS_BRIDGE.$KV.BUS_BRIDGE.attack1", nil); err != nil {
+		t.Fatal(err)
+	}
+	_ = bridgeNC.Flush()
+	deniedOn(t, denied, "DIRECT.GET")
 	cancel()
 	pcancel()
 	<-done
 	<-pdone
+}
+
+// storedOn waits until the stream holds a message on subject and returns it.
+func storedOn(t *testing.T, js jetstream.JetStream, stream, subject string) []byte {
+	t.Helper()
+	st, err := js.Stream(context.Background(), stream)
+	if err != nil {
+		t.Fatalf("stream %s: %v", stream, err)
+	}
+	deadline := time.Now().Add(5 * time.Second)
+	for {
+		info, err := st.Info(context.Background())
+		if err != nil {
+			t.Fatal(err)
+		}
+		for seq := info.State.FirstSeq; seq <= info.State.LastSeq; seq++ {
+			msg, err := st.GetMsg(context.Background(), seq)
+			if err != nil || msg.Subject != subject {
+				continue
+			}
+			return msg.Data
+		}
+		if time.Now().After(deadline) {
+			t.Fatalf("nothing on %s", subject)
+		}
+		time.Sleep(50 * time.Millisecond)
+	}
 }
 
 // startWith runs a BUS reader on a given connection.
@@ -303,4 +351,28 @@ func quoted(list []string) string {
 		parts[i] = `"` + v + `"`
 	}
 	return strings.Join(parts, ", ")
+}
+
+// probe runs one request that must not reach the server (its right is absent),
+// on a context of its own so the timeout of one probe cannot cancel the next.
+func probe(ctx context.Context, f func(context.Context) error) error {
+	c, cancel := context.WithTimeout(ctx, 3*time.Second)
+	defer cancel()
+	return f(c)
+}
+
+// deniedOn waits for a refusal naming want, skipping refusals of earlier probes.
+func deniedOn(t *testing.T, denied chan error, want string) {
+	t.Helper()
+	deadline := time.After(3 * time.Second)
+	for {
+		select {
+		case err := <-denied:
+			if strings.Contains(err.Error(), want) {
+				return
+			}
+		case <-deadline:
+			t.Fatalf("no refusal naming %s", want)
+		}
+	}
 }

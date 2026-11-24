@@ -27,6 +27,42 @@ type Reader struct {
 // granted on exactly this name.
 const ConsumerName = "bridge_presence"
 
+// config is the one consumer the bridge makes on PRESENCE.
+func config() jetstream.ConsumerConfig {
+	return jetstream.ConsumerConfig{
+		Name: ConsumerName, FilterSubject: "presence.*.*",
+		DeliverPolicy: jetstream.DeliverAllPolicy, AckPolicy: jetstream.AckNonePolicy,
+		MaxAckPending:     256,
+		InactiveThreshold: time.Hour,
+	}
+}
+
+// Exists tells whether PRESENCE is there, with the rights the bridge has: its
+// own consumer's create and delete, no STREAM.INFO (whose subjects filter would
+// list who writes direct messages to whom). A missing stream is not an error.
+func Exists(ctx context.Context, js jetstream.JetStream) (bool, error) {
+	err := js.DeleteConsumer(ctx, "PRESENCE", ConsumerName)
+	switch {
+	case err == nil, errors.Is(err, jetstream.ErrConsumerNotFound):
+	case errors.Is(err, jetstream.ErrStreamNotFound):
+		return false, nil
+	default:
+		return false, fmt.Errorf("presence: %w", err)
+	}
+	if _, err := js.CreateOrUpdateConsumer(ctx, "PRESENCE", config()); err != nil {
+		if errors.Is(err, jetstream.ErrStreamNotFound) {
+			return false, nil
+		}
+		return false, fmt.Errorf("presence: %w", err)
+	}
+	// Run makes its own, from the start of the stream
+	if err := js.DeleteConsumer(ctx, "PRESENCE", ConsumerName); err != nil &&
+		!errors.Is(err, jetstream.ErrConsumerNotFound) {
+		return false, fmt.Errorf("presence: %w", err)
+	}
+	return true, nil
+}
+
 // Run consumes until ctx ends.
 func (r *Reader) Run(ctx context.Context, js jetstream.JetStream) error {
 	// A consumer that survived a restart has delivered the presences, so it

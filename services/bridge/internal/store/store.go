@@ -25,22 +25,41 @@ type KV struct {
 	kv jetstream.KeyValue
 }
 
-// Open binds to the bucket. It never creates it, and the bridge's NATS user has
-// no right to create a stream: a stream's sources would let it read what it
-// must not (a consumer or a source with a DM filter into its own bucket). The
-// operator creates the bucket before the first start:
+// Open binds to the bucket the operator created (OperatorConfig), and refuses a
+// bucket it cannot hold safe. The bridge's NATS user creates no stream: a
+// stream's sources would let it read what it must not (a DM filter into its own
+// bucket), so the bucket is not the bridge's to make.
 //
-//	nats kv add BUS_BRIDGE --history 1
+// Nor may the bucket answer direct gets: a direct get returns a key's value as
+// the request's reply payload, and the server checks a reply subject against no
+// publish permission, so with direct get the credential could carry chosen
+// bytes onto any subject — a forged post in another home, a forged attestation.
+// Through the message-get API the same trick delivers wrapped JSON instead.
 func Open(ctx context.Context, nc *nats.Conn, bucket string) (*KV, error) {
 	js, err := jetstream.New(nc)
 	if err != nil {
 		return nil, fmt.Errorf("store: %w", err)
 	}
-	kv, err := js.KeyValue(ctx, bucket)
-	if errors.Is(err, jetstream.ErrBucketNotFound) {
+	stream, err := js.Stream(ctx, "KV_"+bucket)
+	if errors.Is(err, jetstream.ErrStreamNotFound) {
 		return nil, fmt.Errorf("store: the bucket %q does not exist; the operator creates it "+
-			"(nats kv add %s --history 1): %w", bucket, bucket, err)
+			"from services/bridge/internal/store/bucket.json "+
+			"(nats stream add --config services/bridge/internal/store/bucket.json): %w", bucket, err)
 	}
+	if err != nil {
+		return nil, fmt.Errorf("store: %w", err)
+	}
+	info, err := stream.Info(ctx)
+	if err != nil {
+		return nil, fmt.Errorf("store: %w", err)
+	}
+	if info.Config.AllowDirect {
+		return nil, fmt.Errorf("store: the bucket %q has direct get on; the operator creates it "+
+			"from services/bridge/internal/store/bucket.json (allow_direct false), "+
+			"since a direct get answers with a key's value onto a reply subject the server does not check",
+			bucket)
+	}
+	kv, err := js.KeyValue(ctx, bucket)
 	if err != nil {
 		return nil, fmt.Errorf("store: %w", err)
 	}

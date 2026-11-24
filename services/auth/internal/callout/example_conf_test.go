@@ -162,12 +162,17 @@ func TestTheExampleServerConfiguration(t *testing.T) {
 			// it must not), and no consumer but its own.
 			pub := strings.Join(u.Permissions.Publish.Allow, " ")
 			for _, want := range []string{"$JS.API.CONSUMER.CREATE.BUS.bridge_home.bus.ch.home.*",
-				"$JS.API.CONSUMER.CREATE.PRESENCE.bridge_presence.presence.*.*", "$KV.BUS_BRIDGE.>"} {
+				"$JS.API.CONSUMER.CREATE.PRESENCE.bridge_presence.presence.*.*", "$KV.BUS_BRIDGE.>",
+				"$JS.API.STREAM.MSG.GET.KV_BUS_BRIDGE"} {
 				if !strings.Contains(pub, want) {
 					t.Errorf("the bridge's rights lack %s: %+v", want, u.Permissions.Publish.Allow)
 				}
 			}
-			for _, unwanted := range []string{"bus.>", "presence.>", "$JS.API.STREAM.CREATE"} {
+			// no direct get (its answer carries a key's value onto a reply
+			// subject the server does not check), no stream create, and no
+			// stream info (its subjects filter lists who writes DMs to whom)
+			for _, unwanted := range []string{"bus.>", "presence.>", "$JS.API.STREAM.CREATE",
+				"DIRECT.GET", "$JS.API.STREAM.INFO.BUS", "$JS.API.STREAM.INFO.PRESENCE"} {
 				if strings.Contains(pub, unwanted) {
 					t.Errorf("the bridge may %s: %+v", unwanted, u.Permissions.Publish.Allow)
 				}
