@@ -7,10 +7,10 @@ before 0.5.0 are described in the git history.
 
 - **The console's clock moves without deliveries too** (`Part of #108`).
   "Now" stood still between deliveries, so a killed lone agent stayed
-  `online` with its crown forever. The fleet's ages carry a wall-clock
+  `online` with its crown forever. The fleet's ages carry a **monotonic**
   floor: presence older than the freshness window ages out on its own,
-  and the crown drops with it (a wrong host clock only shortens lives
-  the server's clock would keep). The deployment view says the bridge
+  the crown drops with it, and a jump of the host's wall clock changes
+  nothing. The deployment view says the bridge
   runs in the lab and the console is deployed for the pilot.
 .- **The console's `/healthz` answers readiness, not only liveness** (ADR-015).
   It went 503 only when the NATS reader ended without a stop; a reader that

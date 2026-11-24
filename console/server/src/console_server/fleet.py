@@ -46,7 +46,9 @@ class Fleet:
     _attests: dict[str, tuple[int, float, Attestation]] = field(default_factory=dict)
     _presence_cseq: int = 0
     _server_now: float = 0.0
-    # the wall clock beside each server stamp: (server time, wall time)
+    # the clocks beside each server stamp: (server time, monotonic time)
+    # — the floor's elapsed time is monotonic, so a jump of the host's
+    # wall clock neither revives dead agents nor kills live ones
     last_server_now_wall: tuple[float, float] | None = None
     synced: bool = False
     # monotonic stamps, or None before the first: the last jetstream
@@ -63,17 +65,17 @@ class Fleet:
 
         The wall-clock floor (#108): with no deliveries at all — a killed
         lone agent, a silent stream — `server_now` would stand still and
-        the dead stay "online" forever. The floor ages presence by the
-        host clock only where the host's own age is the bigger of the two:
-        the floor is the local clock's distance since the newest delivery,
-        added to that delivery's server time, and never below it. A wrong
-        host clock can only shorten lives that the server's clock would
-        keep (both faces of wrongness are bounded by the delivery gap)."""
+        the dead stay "online" forever. The floor is the **monotonic**
+        clock's distance since the newest delivery, added to that
+        delivery's server time, and never below the raw stamp: a jump of
+        the host's wall clock changes nothing (the elapsed time is
+        monotonic), and the floor is only wrong by the drift of the two
+        clocks since the last delivery — bounded by the delivery gap."""
         import time
         if self.last_server_now_wall is None:
             return self._server_now
-        at, wall = self.last_server_now_wall
-        return round(max(self._server_now, at + (time.time() - wall)), 3)
+        at, mono = self.last_server_now_wall
+        return max(self._server_now, at + (time.monotonic() - mono))
 
     def on_delivery(self, subject: str, data: bytes, reply: str | None,
                     stream: str, consumer: str) -> bool:
@@ -154,7 +156,7 @@ class Fleet:
         NatsBus: nothing older than the stream's 24 h max age stays."""
         self._server_now = max(self._server_now, at)
         import time
-        self.last_server_now_wall = (self._server_now, time.time())
+        self.last_server_now_wall = (self._server_now, time.monotonic())
         edge = self.server_now - natsbus.MAX_AGE_SEC
         for agent, (at_p, _s) in list(self._presence.items()):
             if at_p < edge:

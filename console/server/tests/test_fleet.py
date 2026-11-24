@@ -56,7 +56,7 @@ def test_presence_and_freshness_by_the_servers_clock() -> None:
                   "PRESENCE", "console")
     assert f.state_of("agent-a") == "offline"
     assert f.state_of("agent-b") == "online"
-    assert f.server_now == 1090.0
+    assert abs(f.server_now - 1090.0) < 0.05
 
 
 def test_bye_is_offline_and_cards_mark_unknown() -> None:
@@ -143,10 +143,9 @@ def test_a_silent_stream_ages_the_lone_agent_out() -> None:
     assert f.state_of("lone-agent") == "online"
     assert f.holder_of("dev") == "lone-agent"
 
-    # the stream goes silent, and only the wall clock moves: backdate the
-    # wall stamp so the floor sits far past the freshness window (the
-    # floor is the server stamp plus the elapsed wall time — the test
-    # does not really wait 90 s)
+    # the stream goes silent, and only the monotonic clock moves:
+    # backdate the monotonic stamp so the floor sits far past the
+    # freshness window (the test does not really wait 90 s)
     staged = f.last_server_now_wall
     assert staged is not None
     f.last_server_now_wall = (staged[0], staged[1] - 10000)
@@ -154,3 +153,15 @@ def test_a_silent_stream_ages_the_lone_agent_out() -> None:
     assert f.holder_of("dev") is None
     (card,) = f.cards()
     assert card["state"] == "offline" and card["crown"] is False
+
+    # Fable's point: a jump of the host's wall clock changes nothing —
+    # the floor counts monotonic time only; the agent stays offline (no
+    # revival through a backwards jump) and an online one before the
+    # window is what the next delivery says, not the wall
+    fresh = Fleet()
+    subject, data = presence("alive-agent", "dembaca", "online")
+    feed(fresh, (subject, data, ack("PRESENCE", "console", 1, 1, 1000.0)))
+    # a monotonic stamp just taken: the floor is the raw stamp, so the
+    # agent is fresh no matter what happens to the wall
+    assert fresh.state_of("alive-agent") == "online"
+    assert abs(fresh.server_now - 1000.0) < 0.05
