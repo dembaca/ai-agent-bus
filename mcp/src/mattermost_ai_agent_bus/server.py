@@ -408,6 +408,31 @@ a2a.user_prefix()  # RT-6.16 step 8: a bad MM_PROPS_PREFIX stops the server here
 ArgModelBase.model_config["extra"] = "forbid"
 
 
+# What a crash's text may not carry out of the server (the NATS pilot's empty error made
+# this the only place a cause is readable). A text that looks like it holds a credential
+# is replaced by the type alone: a tool's error is for an agent, never for a token.
+_SECRETISH = re.compile(r"(?i)(bearer\s+\S+|\beyJ[A-Za-z0-9_-]{8,}|"
+                        r"(?:token|password|secret|authorization)\s*[=:]\s*\S+|"
+                        r"\b[A-Fa-f0-9]{32,}\b|[A-Za-z0-9+/_-]{40,}={0,2})")
+CAUSE_MAX = 300  # one bounded line: an error answer is read by an agent, not a log
+
+
+def _cause_text(cause: BaseException) -> str:
+    """A crash as one bounded line: its type and its own text, never a credential.
+
+    Found in the NATS pilot: 0.98.0 answered "Error executing tool announce" with no
+    cause at all, and only the host log named it. The text a tool raises can carry what
+    a person pasted into it, so anything that looks like a token, a password or a long
+    key is replaced by the type alone.
+    """
+    text = " ".join(str(cause).split())
+    name = type(cause).__name__
+    if _SECRETISH.search(text):
+        return f"{name} (details hidden: the message may carry a credential)"
+    body = f"{name}: {text}" if text else name
+    return body[:CAUSE_MAX] + ("…" if len(body) > CAUSE_MAX else "")
+
+
 class _StrictServer(MCPServer):
     """An unknown argument fails the call with the field's name and the tool's valid
     fields, so the agent corrects it in its next call instead of guessing."""
@@ -419,6 +444,13 @@ class _StrictServer(MCPServer):
             return await super().call_tool(name, arguments, *args, **kwargs)
         except ToolError as exc:
             cause = exc.__cause__
+            if cause is not None and not isinstance(cause, (ValidationError, ToolError)):
+                # The SDK keeps a crash's own text on the server and hands the client a
+                # bare "Error executing tool <name>" (mcp/server/mcpserver/tools/base.py:
+                # `raise UnexpectedToolError(f"Error executing tool {self.name}") from exc`).
+                # The cause is the only place that says what happened - the NATS pilot saw
+                # nothing but the generic line while the real cause stood in the host log.
+                raise ToolError(f"Error executing tool {name}: {_cause_text(cause)}") from cause
             if not isinstance(cause, ValidationError):
                 raise
             errors = cause.errors()

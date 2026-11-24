@@ -3,6 +3,14 @@
 Every version bump in `.claude-plugin/plugin.json` gets an entry here. Versions
 before 0.5.0 are described in the git history.
 
+## Unreleased
+
+- **A crashing tool names its cause** (RT-6.36). 0.98.0 answered a crashed tool
+  call with the SDK's bare `Error executing tool <name>` and kept the reason in the
+  host log - two NATS pilot sessions failed to post and their agent saw nothing. The
+  cause is carried now, as one bounded line of its type and text; a text that looks
+  like it holds a token, a password or a long key is replaced by the type alone.
+
 ## 0.98.0
 
 Needs: for MM_NATS_HOMES, the login service updated first, with its attestation rights, and MM_BRIDGE_BOT with the bridge.

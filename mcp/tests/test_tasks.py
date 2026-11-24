@@ -628,3 +628,34 @@ def test_the_instructions_name_the_props_prefix_in_force(monkeypatch):
     assert "props keys start with x_." in server._instructions()
     monkeypatch.setenv("MM_PROPS_PREFIX", "bgl_")
     assert "props keys start with bgl_." in server._instructions()
+
+
+@pytest.mark.asyncio
+async def test_a_crashing_tool_names_its_cause(monkeypatch):
+    """The SDK answers a crash with a bare "Error executing tool <name>"
+    (`mcp/server/mcpserver/tools/base.py`) and keeps the cause on the server. The NATS
+    pilot saw exactly that: two sessions failed to post and the reason stood only in the
+    host log. The cause is carried now - one bounded line - unless it looks like a
+    credential, which names the type alone."""
+    from mcp.server.mcpserver.exceptions import ToolError, UnexpectedToolError
+
+    from mattermost_ai_agent_bus import server as srv
+
+    async def crashed(self, name, arguments, *args, **kwargs):
+        raise UnexpectedToolError(f"Error executing tool {name}") from RuntimeError("boom")
+
+    monkeypatch.setattr(srv.MCPServer, "call_tool", crashed)
+    with pytest.raises(ToolError) as err:
+        await srv.mcp.call_tool("announce", {})
+    assert "RuntimeError: boom" in str(err.value), str(err.value)
+
+    async def leaked(self, name, arguments, *args, **kwargs):
+        raise UnexpectedToolError(f"Error executing tool {name}") from RuntimeError(
+            "posting failed token=SECRETSECRET with 40 more characters")
+
+    monkeypatch.setattr(srv.MCPServer, "call_tool", leaked)
+    with pytest.raises(ToolError) as err:
+        await srv.mcp.call_tool("announce", {})
+    text = str(err.value)
+    assert "SECRETSECRET" not in text and "details hidden" in text, text
+    assert "RuntimeError" in text, text

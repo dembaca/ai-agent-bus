@@ -265,6 +265,10 @@ Prefer WebSocket for interactive agents; poll is fine for cron-style loops.
   Keep it in gopass, not in the login environment
   ([arc42 §7.3](arc42/07-deployment-view.md#73-trust-assumptions)).
 - Ephemeral bots reduce leftover identities; rotate the secret if leaked.
+- A tool that crashes answers with its **cause**, not the SDK's bare `Error executing
+  tool <name>`: one bounded line with the exception's type and text, and only the type
+  when the text looks like it holds a credential (a token, a password, a long key). The
+  cause is for the agent reading it, never for a log only ([arc42 §6.36](arc42/06-runtime-view.md#636-a-home-over-nats)).
 - Do not VSO-sync or commit bot tokens / session `.env` files.
 - Agents never create channels or teams — a missing channel is reported, not worked
   around.
