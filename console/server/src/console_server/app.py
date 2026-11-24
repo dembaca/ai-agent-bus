@@ -99,9 +99,11 @@ class Console:
 
             def _nats_done(task: "asyncio.Task[None]") -> None:
                 # a cancelled task is a stop; anything else leaves the
-                # fleet's view frozen, and the operator must see it
+                # fleet's view frozen, and the operator must see it — the
+                # reason stays in the task for whoever restarts it
                 if not task.cancelled():
-                    log.error("console: the NATS reader ended; /healthz fails")
+                    log.error("console: the NATS reader ended (%s);"
+                              " /healthz fails", task.exception())
                     self.nats_dead = True
             self._nats_task.add_done_callback(_nats_done)
         self._http = httpd.Httpd(handler=self.handle,
