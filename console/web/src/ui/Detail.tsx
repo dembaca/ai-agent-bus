@@ -98,7 +98,7 @@ function FullCard({ card }: { card: AgentCard }) {
         <tr><th>capabilities</th><td>{card.capabilities.join(", ") || "–"}</td></tr>
         <tr><th>ctx</th><td>{card.ctx === null ? "n/a" : `${card.ctx} %`}</td></tr>
         <tr><th>limits / cost</th><td>{card.limits ?? "n/a"}</td></tr>
-        <tr><th>version</th><td>{card.version}</td></tr>
+        <tr><th>version</th><td>{card.version || "n/a"}</td></tr>
         <tr><th>task</th><td>{card.task}</td></tr>
         <tr><th>HELLO since</th><td>{since(card.helloAt)}</td></tr>
         <tr><th>last post</th>
@@ -109,8 +109,10 @@ function FullCard({ card }: { card: AgentCard }) {
           </td></tr>
         <tr><th>open asks</th>
           <td>
-            {card.openAsks === 0 ? "0"
-              : `${card.openAsks}${card.asksForOperator > 0 ? ` · ${card.asksForOperator} for you` : ""}`}
+            {card.openAsks === null
+              ? "n/a"
+              : card.openAsks === 0 ? "0"
+              : `${card.openAsks}${(card.asksForOperator ?? 0) > 0 ? ` · ${card.asksForOperator} for you` : ""}`}
           </td></tr>
       </tbody>
     </table>

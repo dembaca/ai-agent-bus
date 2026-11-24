@@ -1,6 +1,7 @@
 import { StrictMode } from "react"
 import { createRoot } from "react-dom/client"
 import { App } from "./App"
+import "./api/wire"  // the fixture's contract guards run at load
 import { httpApi } from "./api/http"
 import { mockApi } from "./api/mock"
 import type { ConsoleApi } from "./api/types"

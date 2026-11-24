@@ -79,7 +79,9 @@ export function AgentCardView({ card, active, onSelect }: {
       </div>
       <div className="card__task">{card.task}</div>
       <div className="card__meta">
-        <span className="card__model">{HARNESS_LABEL[card.harness]} · {card.model}</span>
+        <span className="card__model">
+          {[HARNESS_LABEL[card.harness], card.model].filter(Boolean).join(" · ")}
+        </span>
         {card.role === "coordinator" && chip("coordinator")}
         <span className="card__for">
           for {card.for}{card.autonomous && chip("autonomous")}
@@ -97,15 +99,18 @@ export function AgentCardView({ card, active, onSelect }: {
       )}
       <div className="card__bottom">
         <span className="card__asks"
-          title={card.asksForOperator > 0 ? "open asks, for you marked" : "open asks"}>
-          {card.openAsks > 0 ? `asks ${card.openAsks}` : ""}
-          {card.asksForOperator > 0 && <b className="card__asks-for"> · for you {card.asksForOperator}</b>}
+          title={card.asksForOperator ? "open asks, for you marked" : "open asks"}>
+          {card.openAsks === null
+            ? "asks n/a"
+            : `asks ${card.openAsks}`}
+          {card.asksForOperator !== null && card.asksForOperator > 0 &&
+            <b className="card__asks-for"> · for you {card.asksForOperator}</b>}
         </span>
         <span className="card__ctx" title="context">
           <span className="card__ctx-bar" style={{ width: card.ctx === null ? 0 : `${Math.min(100, card.ctx)}%` }} />
           <em>{card.ctx === null ? "n/a" : `${card.ctx} %`}</em>
         </span>
-        <span className="card__version">v{card.version}</span>
+        <span className="card__version">{card.version ? `v${card.version}` : "n/a"}</span>
       </div>
     </button>
   )
