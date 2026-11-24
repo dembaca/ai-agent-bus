@@ -21,7 +21,6 @@ before 0.5.0 are described in the git history.
   threads of its open asks. Nothing posts — an ask gets no answer button
   (stage 1, reading only); the same `ConsoleApi` interface hides the mock and
   the future console server behind `VITE_CONSOLE_API`.
->>>>>>> origin/main
 - **Host login: a fast host clock, odd token times, the cooldown's cause**
   (#10, RT-6.34 step 3). A token's lifetime is now the shorter of
   `expires_in` and its own `exp - iat`, at most one day, counted from when
