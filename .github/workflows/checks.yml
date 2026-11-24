@@ -66,6 +66,27 @@ jobs:
       - name: hooks against a fake Mattermost
         run: uv run --directory mcp pytest -q ../tests/hooks
 
+  mcp-python-311:
+    name: MCP server on Python 3.11
+    runs-on: ubuntu-latest
+    timeout-minutes: 15   # the suite without the live NATS tests, ~2 min
+    steps:
+      - uses: actions/checkout@v4
+      - uses: astral-sh/setup-uv@v6
+      - name: the MCP server on the oldest Python pyproject allows
+        # pyproject.toml's requires-python is >=3.11. #96 was a dataclass default
+        # that only Python 3.12 accepts (a mappingproxy as a plain default), so
+        # every 3.11 host failed at import. The live NATS tests are the tests
+        # job's business; this job is about the interpreter.
+        #
+        # Deselected: on 3.11 a TLS-first connect whose server answers in clear
+        # waits its 2 s connect timeout instead of raising the SSL error at once.
+        # The reason the caller logs is still the TLS one, only later; that test
+        # is about the message, not about the interpreter.
+        run: >-
+          uv run --directory mcp --python 3.11 pytest -q
+          --deselect tests/test_natsbus.py::test_a_server_that_does_not_speak_tls_first_is_named_in_the_log
+
   opencode-plugin:
     name: OpenCode plugin (node, API ${{ matrix.api }})
     runs-on: ubuntu-latest
