@@ -412,15 +412,10 @@ ArgModelBase.model_config["extra"] = "forbid"
 # this the only place a cause is readable). A text that looks like it holds a credential
 # is replaced by the type alone: a tool's error is for an agent, never for a token.
 _SECRETISH = re.compile(
-    r"(?i)(bearer\s+\S+"
-    r"|\beyJ[A-Za-z0-9_-]{8,}"
-    r"|[a-z][a-z0-9+.-]*://[^\s/@:]+:[^\s/@]+@"          # a password in a URL
-    r"|[\"']?(?:password|passwd|pwd|credentials)[\"']?\s*[=:]\s*['\"]?\S{4,}"  # short is fine
-    r"|[\"']?(?:token|secret|api[_-]?key|session_id|sig|authorization|key)"
-    r"[\"']?\s*[=:]\s*['\"]?\S{8,}"                      # "token: expired" stays readable
-    r"|(?:password|passwd|pwd|credentials)\s+['\"]?\S{6,}"  # "invalid password 'hunter2'"
-    r"|\b[A-Fa-f0-9]{32,}\b"
-    r"|[A-Za-z0-9+_-]{40,}={0,2})")                        # no `/`: paths and URLs stay readable
+    r"(?i)(?:token|secret|password|passwd|pwd|credential|session|authorization|auth|cookie"
+    r"|bearer|basic|mmauth|enrollment|sig|code|key|seed|jwt)"
+    r"|[A-Za-z0-9+/=_-]{20,}"
+    r"|://[^\s/@]+@")
 CAUSE_MAX = 300  # one bounded line: an error answer is read by an agent, not a log
 
 

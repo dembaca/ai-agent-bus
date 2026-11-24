@@ -661,17 +661,17 @@ async def test_a_crashing_tool_names_its_cause(caplog):
 def test_a_cause_that_may_hold_a_credential_names_the_type_only():
     from mattermost_ai_agent_bus import server as srv
 
-    for text in ('posting failed token=SECRETSECRET', '{"token": "abc123xyz"}',
+    for text in ("posting failed token=SECRETSECRET", '{"token": "abc123xyz"}',
                  "nats://bot:hunter2@host:4222", "api_key=abcdefgh", "Bearer abcdef",
                  "passwd=hunter22", "pwd=hunter2", "credentials=a:b1234567",
                  "session_id=abcdefgh", "sig=abcdefgh", "invalid password 'hunter2'",
-                 "a" * 64):
+                 "password=abc", "token: expired", "Basic dXNlcjpwYXNz",
+                 "X-Enrollment-Secret abc123", "a" * 20):
         got = srv._cause_text(RuntimeError(text))
         assert "details hidden" in got and "SECRETSECRET" not in got, (text, got)
     assert srv._cause_text(RuntimeError("boom")) == "RuntimeError: boom"
-    # what must stay readable: a URL path and a short benign value
-    for text in ("POST /api/v4/channels/abcdefghijklmnopqrstuvwxyz/posts failed",
-                 "token: expired"):
+    # what must stay readable: a path without a secret word or a long run
+    for text in ("post failed with 403", "the thread is gone"):
         assert "details hidden" not in srv._cause_text(RuntimeError(text)), text
 
 
@@ -692,7 +692,8 @@ async def test_a_wrong_argument_is_no_crash(caplog):
 
     from mattermost_ai_agent_bus import server as srv
 
+    # a *missing* argument: this is the case that took the crash path before
     with pytest.raises(ToolError) as err:
-        await srv.mcp.call_tool("post_message", {"no_such_argument": "x"})
+        await srv.mcp.call_tool("post_message", {})
     assert not isinstance(err.value, UnexpectedToolError), type(err.value)
-    assert "no argument no_such_argument" in str(err.value), str(err.value)
+    assert "message" in str(err.value) and "Field required" in str(err.value), str(err.value)
