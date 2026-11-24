@@ -66,7 +66,10 @@ since it would reach a `handshake_first` server in the classic order. The
 hosts also reach a server over its WebSocket listener (`wss://`), the service
 does not yet: before it may, the sender-authenticity suite has to run against
 a websocket listener, and the TLS-first rule has no meaning inside the
-WebSocket handshake (RT-6.36). Websocket URLs are refused at the start.
+WebSocket handshake (RT-6.36). Websocket URLs are refused at the start, and the
+credentials the service issues allow standard connections only
+(`AllowedConnectionTypes = STANDARD`, `service.go`), so a websocket listener
+cannot be used end to end until both change.
 
 | Variable | Default | Meaning |
 | --- | --- | --- |

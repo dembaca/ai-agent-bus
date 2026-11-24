@@ -75,9 +75,9 @@ and `$KV.BUS_DIRECTORY.>`); without them it does not start. Leave
 
 ```bash
 export MM_NATS_URL=tls://<nats-host>:<port>
-# or the server's WebSocket listener: wss://<nats-host>:<port>/ (preview; the
-# login service itself still needs tls://)
-export MM_NATS_URL=wss://<nats-host>:<port>/
+# the client also accepts the server's WebSocket listener, wss://<nats-host>:<port>/,
+# but the login service's credentials allow standard connections only: a home
+# cannot run over WebSocket yet (RT-6.36).
 export MM_NATS_HOMES=<pilot-home>
 # MM_NATS_CA_FILE: set it only if the server's certificate does not chain to a
 # CA the system trusts. In the lab it is not needed — that certificate is from

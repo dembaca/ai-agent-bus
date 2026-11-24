@@ -612,6 +612,20 @@ def test_tls_or_loopback_only() -> None:
                   ("nats://127.0.0.1", "ws://127.0.0.1")):
         with pytest.raises(ValueError):
             NatsSettings(servers=mixed, home="home")
+    # an upper-case scheme is normalised, never handed to nats-py: it matches `wss://`
+    # case-sensitively and would read `WSS://host` as a host name and dial plain TCP
+    for raw, want in (("WSS://nats.example.org:443", "wss://nats.example.org:443"),
+                      ("WS://127.0.0.1:8080", "ws://127.0.0.1:8080"),
+                      ("NATS://127.0.0.1:4222", "nats://127.0.0.1:4222"),
+                      ("TLS://nats.example.org:4222", "tls://nats.example.org:4222")):
+        assert NatsSettings(servers=(raw,), home="home").servers == (want,)
+    with pytest.raises(ValueError):
+        NatsSettings(servers=("NATS://nats.example.org:4222",), home="home")  # plain off loopback
+    # and a settings object built around the checks cannot smuggle one in
+    s = NatsSettings(servers=("wss://ok.example.org",), home="home")
+    object.__setattr__(s, "servers", ("WSS://ok.example.org",))
+    with pytest.raises(ValueError):
+        NatsBus(s, FakeLogin(), "alice", lambda e: None)
 
 
 def test_wss_is_tls_inside_the_websocket_and_ws_is_plain() -> None:
@@ -1061,6 +1075,43 @@ async def until(pred: Callable[[], bool], timeout: float = 5.0, what: str = "") 
         if time.monotonic() > end:
             raise AssertionError("timed out" + (f": {what}" if what else ""))
         await asyncio.sleep(0.02)
+
+
+async def test_a_ws_redirect_is_refused_and_nothing_reaches_the_target() -> None:
+    """aiohttp follows a 3xx of the WebSocket upgrade, and the CONNECT (with the access token)
+    would go to the redirect's target: the client refuses it before a byte goes there (Fable's
+    review of #51)."""
+    target_bytes = bytearray()
+
+    async def target(reader: asyncio.StreamReader, writer: asyncio.StreamWriter) -> None:
+        target_bytes.extend(await reader.read(4096))
+        writer.close()
+
+    target_srv = await asyncio.start_server(target, "127.0.0.1", 0)
+    target_port = target_srv.sockets[0].getsockname()[1]
+
+    async def redirect(reader: asyncio.StreamReader, writer: asyncio.StreamWriter) -> None:
+        await reader.readuntil(b"\r\n\r\n")
+        writer.write(f"HTTP/1.1 302 Found\r\nLocation: http://127.0.0.1:{target_port}/nats\r\n"
+                     "Content-Length: 0\r\n\r\n".encode())
+        await writer.drain()
+        writer.close()
+
+    redir_srv = await asyncio.start_server(redirect, "127.0.0.1", 0)
+    redir_port = redir_srv.sockets[0].getsockname()[1]
+    try:
+        bus = NatsBus(NatsSettings(servers=(f"ws://127.0.0.1:{redir_port}",), home="home"),
+                      FakeLogin(), "alice", lambda e: None, connect_timeout=2)
+        # the refusal surfaces as the transport error, or as our bounded connect timeout:
+        # nats-py retries a failed server until the caller stops it
+        with pytest.raises((natsbus.NatsBusError, asyncio.TimeoutError)):
+            await bus._open()
+        await asyncio.sleep(0.2)
+        assert target_bytes == b"", "the redirect target received the CONNECT"
+    finally:
+        for srv in (redir_srv, target_srv):
+            srv.close()
+            await srv.wait_closed()
 
 
 async def test_post_and_reply_over_a_websocket(rig: Rig) -> None:

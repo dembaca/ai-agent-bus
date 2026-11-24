@@ -8,8 +8,10 @@ before 0.5.0 are described in the git history.
 - **The MCP server reaches NATS over WebSocket** (RT-6.36, part of #51).
   `MM_NATS_URL` takes `wss://` (TLS inside the WebSocket, verified with
   `MM_NATS_CA_FILE` like `tls://`) or `ws://` on a loopback host only; a
-  pool is all one scheme. The login service still refuses websockets until
-  the sender-authenticity suite runs over one.
+  pool is all one scheme. A home cannot run over it yet: the login service
+  refuses websocket URLs, and the credentials it issues allow standard
+  connections only (`AllowedConnectionTypes`). It may once the
+  sender-authenticity suite runs over a websocket listener.
 
 - **A busy coordinator keeps its crown** (#64, RT-6.6 steps 1, 4 and 11).
   The prompt hook tells the server that a turn began before anything else,
