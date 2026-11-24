@@ -24,7 +24,7 @@ type Config struct {
 	NATSStream string   // BRIDGE_STREAM, default BUS
 	BusPrefix  string   // BRIDGE_BUS_PREFIX, the bus's subject prefix, default bus
 	Deliver    string   // BRIDGE_DELIVER, the operator's push consumer prefix, default deliver.bridge
-	Inbox      string   // BRIDGE_INBOX, the bridge's own reply inbox prefix, default _INBOX_bridge
+	Inbox      string   // BRIDGE_INBOX, the bridge's own reply inbox prefix, default _INBOX_bridge; it must match the right _INBOX_bridge.>
 }
 
 // Load reads the environment. A missing required value is an error naming it.
