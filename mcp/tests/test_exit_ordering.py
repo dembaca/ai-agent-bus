@@ -235,3 +235,33 @@ async def test_remove_file_unlinks_before_it_forgets(started, monkeypatch):
     assert not mine.exists()
     assert api._file is None and api._moving is None
     await api.close()
+
+
+def test_a_signal_does_the_exit_work_outside_the_main_thread(monkeypatch):
+    """A signal handler runs in the main thread wherever it stood, also inside
+    a write to stderr: a log line of its own then raised RuntimeError (a
+    reentrant call into the stream) and left it before the exit work, so the
+    timer ended the process with the endpoint file still there (CI on 5619f49).
+    The handler only starts the exit work in a thread of its own."""
+    import signal
+    import threading
+
+    done = threading.Event()
+    ran: list[tuple[str, bool]] = []
+
+    def finish(why: str, deadline: float = 0.0) -> None:
+        ran.append((why, threading.current_thread() is threading.main_thread()))
+        done.set()
+
+    monkeypatch.setattr(server, "_finish", finish)
+    monkeypatch.setattr(server, "_watch_parent", lambda: None)
+    monkeypatch.setattr(server.atexit, "register", lambda f: None)
+    old = {s: signal.getsignal(s) for s in (signal.SIGTERM, signal.SIGHUP)}
+    try:
+        server._install_exit_handlers()
+        os.kill(os.getpid(), signal.SIGTERM)
+        assert done.wait(5)
+    finally:
+        for s, h in old.items():
+            signal.signal(s, h)
+    assert ran == [("signal SIGTERM", False)]
