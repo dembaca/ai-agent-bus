@@ -449,3 +449,33 @@ async def test_transport_trouble_answers_502_and_retries() -> None:
         assert status == 502
     finally:
         await c.stop()
+
+
+async def test_a_ended_nats_reader_fails_healthz() -> None:
+    """The NATS task ending without a stop must be visible: /healthz
+    fails the moment the reader dies (a stop cancels it, which is fine)."""
+    settings = config.Settings(public_url="http://127.0.0.1:8747",
+                               login_off=True,
+                               nats_url="nats://127.0.0.1:4",
+                               nats_seed_file="/none")
+    c = Console(settings)
+
+    async def dead(settings, fleet, on_change):
+        raise RuntimeError("the reader died on the seed")
+
+    import console_server.app as app_module
+    original = app_module.read_forever
+    app_module.read_forever = dead
+    try:
+        await c.start()
+        for _ in range(60):
+            await asyncio.sleep(0.05)
+            if c.nats_dead:
+                break
+        assert c.nats_dead
+        status, _h, body = await get(c, "/healthz")
+        assert status == 503
+        assert b"NATS reader" in body
+    finally:
+        app_module.read_forever = original
+        await c.stop()

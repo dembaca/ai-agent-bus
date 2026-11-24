@@ -81,8 +81,9 @@ decided the same day, ADR-015):
    forgery.
 
 The seed belongs to the lab's console service account: whoever runs the
-lab checklist creates it and mounts it as a read-only secret file; the
-console owns nothing else. After the pilot an admin (or the login
+lab checklist creates it and mounts it as a read-only secret file, owned
+by uid 65532 (the distroless nonroot the image runs as) and readable by
+that user only; the console owns nothing else. After the pilot an admin (or the login
 service, way A) makes the console's consumer and the account keeps only
 the read.
 

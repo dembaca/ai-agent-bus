@@ -182,6 +182,7 @@ jobs:
           seed="$(uv run --directory console/server python -c "import nkeys, os; print(nkeys.encode_seed(os.urandom(32), nkeys.PREFIX_BYTE_USER).decode())")"
           printf '%s' "$seed" > "$RUNNER_TEMP/console.seed"
           chmod 600 "$RUNNER_TEMP/console.seed"
+          sudo chown 65532 "$RUNNER_TEMP/console.seed"  # the container's nonroot
           docker run -d --name console-test -p 127.0.0.1:8747:8747 \
             -e CONSOLE_PUBLIC_URL=http://127.0.0.1:8747 \
             -e CONSOLE_ISSUER=http://127.0.0.1:19999 \
@@ -196,9 +197,12 @@ jobs:
             curl -fsS http://127.0.0.1:8747/healthz && break
             sleep 1
           done
-          curl -fsS http://127.0.0.1:8747/healthz | grep -q ok
-          docker logs console-test 2>&1 | tail -5
+          # the logs first, whatever happened: a red smoke shows its traceback
+          status=0
+          curl -fsS http://127.0.0.1:8747/healthz | grep -q ok || status=1
+          docker logs console-test 2>&1 | tail -40
           docker rm -f console-test
+          exit $status
 
   lint:
     runs-on: ubuntu-latest

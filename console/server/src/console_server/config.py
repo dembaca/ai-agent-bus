@@ -114,10 +114,14 @@ def _check(s: Settings) -> None:
     if not s.login_off:
         _url(s.issuer, "CONSOLE_ISSUER")
     if s.nats_seed_file:
-        mode = os.stat(s.nats_seed_file).st_mode & 0o777
-        if mode & 0o077:
-            raise ConfigError("CONSOLE_NATS_SEED_FILE must be readable by"
-                              f" its owner only (mode {mode:o})")
+        try:
+            mode = os.stat(s.nats_seed_file).st_mode & 0o777
+            if mode & 0o077:
+                raise ConfigError("CONSOLE_NATS_SEED_FILE must be readable by"
+                                  f" its owner only (mode {mode:o})")
+            open(s.nats_seed_file, "rb").read(4096)  # readable, and no directory
+        except OSError as exc:
+            raise ConfigError(f"CONSOLE_NATS_SEED_FILE cannot be read: {exc}") from exc
     _url(s.public_url, "CONSOLE_PUBLIC_URL")
     if not s.nats_url:
         raise ConfigError("CONSOLE_NATS_URL is required")

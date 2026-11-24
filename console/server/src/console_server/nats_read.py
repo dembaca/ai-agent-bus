@@ -99,10 +99,11 @@ async def read_forever(settings: config.Settings, fleet: Fleet,
     replay then says what still stands. The loop never publishes."""
     backoff = 1.0
     while True:
-        # the seed is read per attempt: nothing to cache (a rotated seed
-        # file is picked up, a missing one has failed the config check)
-        seed = Path(settings.nats_seed_file).read_text(encoding="utf-8").strip()
         try:
+            # the seed is read per attempt, inside the try: a seed that
+            # becomes unreadable later is an error returned below, not a
+            # silent death of the task
+            seed = Path(settings.nats_seed_file).read_text(encoding="utf-8").strip()
             closed = asyncio.get_running_loop().create_future()
             last_seen = time.monotonic()
 

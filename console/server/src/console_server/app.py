@@ -72,6 +72,7 @@ class Console:
         self._discovery: asyncio.Task | None = None  # type: ignore[type-arg]
         self._wakes: set[asyncio.Event] = set()  # one event per live stream
         self._streams: dict[str, int] = {}  # session token → open streams
+        self.nats_dead = False  # the NATS task ended without a stop
 
     # --- the fleet's wake: every stream has its own event -----------------------------
 
@@ -95,6 +96,14 @@ class Console:
             self._nats_task = asyncio.create_task(
                 read_forever(self.settings, self.fleet, self.fire),
                 name="console-nats")
+
+            def _nats_done(task: "asyncio.Task[None]") -> None:
+                # a cancelled task is a stop; anything else leaves the
+                # fleet's view frozen, and the operator must see it
+                if not task.cancelled():
+                    log.error("console: the NATS reader ended; /healthz fails")
+                    self.nats_dead = True
+            self._nats_task.add_done_callback(_nats_done)
         self._http = httpd.Httpd(handler=self.handle,
                                  host=self.settings.listen_host,
                                  port=self.settings.listen_port)
@@ -240,6 +249,8 @@ class Console:
                      headers: dict[str, str]) -> httpd.Response | httpd.SSE:
         s = self.settings
         if path == s.health_path:
+            if self.nats_dead:
+                return httpd.Response.text("the NATS reader ended", 503)
             return httpd.Response.text("ok")
         if path in ("/login", "/callback"):
             if s.login_off:
