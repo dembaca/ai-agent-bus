@@ -5,7 +5,8 @@ bring their own tests (a Go test beside the bridge, mcp/tests for the decoder) a
 replace this one. Until then it pins the contract the code packages start from,
 so an edit of the examples that breaks a rule of the spec fails here: every body
 is format v1 with a known kind, carries the Mattermost post id, has no `props`
-and only the fields its kind allows.
+and only the fields its kind allows, the field table lists exactly
+those, and the examples hold no duplicate key.
 
 Run where the other script tests run: uv run --directory mcp pytest ../tests/hooks
 """
@@ -29,24 +30,61 @@ ALLOWED = {
 MM_ID = re.compile(r"[a-z0-9]{26}")
 
 
+def section() -> str:
+    return PROTOCOL.read_text().split(SECTION, 1)[1].split("\n## ", 1)[0]
+
+
+def no_duplicates(pairs: list[tuple[str, object]]) -> dict:
+    keys = [k for k, _ in pairs]
+    assert len(keys) == len(set(keys)), f"duplicate key in {keys}"
+    return dict(pairs)
+
+
 def bodies() -> list[dict]:
-    text = PROTOCOL.read_text()
-    section = text.split(SECTION, 1)[1].split("\n## ", 1)[0]
-    block = section.split("```json\n", 1)[1].split("```", 1)[0]
+    block = section().split("```json\n", 1)[1].split("```", 1)[0]
     # One body per JSON object; an object may span lines.
     found, depth, start = [], 0, 0
     for i, ch in enumerate(block):
         if ch == "{":
-            depth, start = depth + 1, (i if depth == 0 else start)
+            if depth == 0:
+                start = i
+            depth += 1
         elif ch == "}":
             depth -= 1
             if depth == 0:
-                found.append(json.loads(block[start:i + 1]))
+                found.append(json.loads(block[start:i + 1], object_pairs_hook=no_duplicates))
     return found
+
+
+def field_table() -> dict[str, set[str]]:
+    """The protocol's field table: field -> the kinds it is "In"."""
+    table: dict[str, set[str]] = {}
+    for line in section().splitlines():
+        cells = [c.strip() for c in line.strip().strip("|").split("|")]
+        if len(cells) == 3 and cells[0].startswith("`"):
+            kinds = {k.strip() for k in cells[1].split(",")}
+            table[cells[0].strip("`")] = set(ALLOWED) if kinds == {"all"} else kinds
+    return table
 
 
 def test_every_kind_has_an_example():
     assert sorted(b["kind"] for b in bodies()) == ["post", "reaction", "unreaction"]
+
+
+def test_the_field_table_says_what_the_spec_allows():
+    by_kind: dict[str, set[str]] = {k: set() for k in ALLOWED}
+    for field, kinds in field_table().items():
+        for kind in kinds:
+            by_kind[kind].add(field)
+    assert by_kind == ALLOWED
+
+
+def test_a_duplicate_key_is_refused():
+    try:
+        json.loads('{"v": 1, "v": 1}', object_pairs_hook=no_duplicates)
+    except AssertionError:
+        return
+    raise AssertionError("a duplicate key passed")
 
 
 def test_bodies_keep_the_rules_of_the_spec():
@@ -60,5 +98,4 @@ def test_bodies_keep_the_rules_of_the_spec():
 
 
 def test_the_subject_is_its_own_and_names_the_person_last():
-    section = PROTOCOL.read_text().split(SECTION, 1)[1].split("\n## ", 1)[0]
-    assert "<bus>.hu.<home>.<anchor>" in section
+    assert "<bus>.hu.<home>.<anchor>" in section()

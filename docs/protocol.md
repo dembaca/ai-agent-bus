@@ -289,8 +289,8 @@ The three bodies, format v1:
 | `emoji` | reaction, unreaction | The emoji's name |
 | `ref` | reaction, unreaction | The reacted post's stream sequence, when it is on NATS (an ask lives on Mattermost and has none) |
 
-There is no `props`: a decoder refuses a `<bus>.hu` body that carries one, a
-duplicate key, an unknown kind or a malformed id. Edits and deletes are not
+There is no `props`: a decoder refuses a `<bus>.hu` body that carries one, an
+unknown or duplicate key, an unknown kind or a malformed id. Edits and deletes are not
 carried.
 
 ## Polling vs WebSocket

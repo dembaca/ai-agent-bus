@@ -10,8 +10,9 @@ before 0.5.0 are described in the git history.
 - **The central bridge's step 2 is specified** (ADR-016, RT-6.42): people's
   posts and reactions in a bound Mattermost channel reach NATS through the
   bridge on `bus.hu.<home>.<anchor>`, vouched for by the bridge's publish
-  right; the v1 bodies are in `docs/protocol.md`. Seven open points wait for
-  the owner as recommendations. Nothing is built; the deployment view now says
+  right; the v1 bodies are in `docs/protocol.md`. Eighteen open points wait for
+  the owner as recommendations, and the risk of the bridge as the only voucher
+  for people is recorded (RISK-21). Nothing is built; the deployment view now says
   the bridge's first step runs in the lab.
 
 ### Breaking
