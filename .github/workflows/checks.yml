@@ -6,6 +6,9 @@ on:
   pull_request:
     # labeled/unlabeled: adding or removing no-doc-change re-runs the doc map.
     types: [opened, synchronize, reopened, labeled, unlabeled]
+  # By hand, to run the suite of main again; the publish job below refuses a
+  # pull request and a branch other than main, as the bridge's does.
+  workflow_dispatch:
 
 permissions:
   contents: read
@@ -152,7 +155,7 @@ jobs:
     runs-on: ubuntu-latest
     timeout-minutes: 10   # like the site job
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@11bd71901bbe5b1630ceea73d27597364c9af683  # v4.2.2
       - uses: actions/setup-node@v4
         with:
           node-version: 24
@@ -172,7 +175,7 @@ jobs:
     runs-on: ubuntu-latest
     timeout-minutes: 10
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@11bd71901bbe5b1630ceea73d27597364c9af683  # v4.2.2
       - uses: astral-sh/setup-uv@v6
       - name: nats-server (the console's reads run against the real server)
         # As the MCP job: keep the version in step with services/auth/go.mod.
@@ -224,6 +227,119 @@ jobs:
           docker logs console-test 2>&1 | tail -40
           docker rm -f console-test
           exit $status
+
+  # Whether this push touched console/ at all. A job of its own so the publish
+  # job below can be skipped whole: GitHub runs every job of a workflow, and
+  # checks.yml has no paths filter (it covers the repository).
+  console-changed:
+    name: did this push touch console/?
+    # Only main, a push or a manual run: a dispatch from a feature branch must
+    # not reach the publish job below, which moves :main.
+    if: github.ref == 'refs/heads/main' && github.event_name != 'pull_request'
+    runs-on: ubuntu-latest
+    timeout-minutes: 5
+    outputs:
+      run: ${{ steps.changed.outputs.run }}
+    steps:
+      - uses: actions/checkout@11bd71901bbe5b1630ceea73d27597364c9af683  # v4.2.2
+        with:
+          persist-credentials: false
+          fetch-depth: 2   # the push's previous head, for the diff
+      - name: git diff against the previous head
+        id: changed
+        run: |
+          if [ "${{ github.event_name }}" = "workflow_dispatch" ]; then
+            # a manual run of main publishes on purpose, as bridge.yml's does
+            echo "run=true" >> "$GITHUB_OUTPUT"
+            exit 0
+          fi
+          before="${{ github.event.before }}"
+          # mcp/ too: the image carries the package as console/server's path
+          # dependency, so a change there makes a new image as well.
+          if git cat-file -e "${before}^{commit}" 2>/dev/null &&
+             git diff --quiet "$before" HEAD -- console mcp .github/workflows/checks.yml; then
+            echo "run=false" >> "$GITHUB_OUTPUT"
+            echo "nothing under console/, mcp/ or this workflow changed; the image is not built again"
+          else
+            echo "run=true" >> "$GITHUB_OUTPUT"
+          fi
+
+  # The console image for the lab pilot (ADR-015): built from the repository
+  # root, because its Dockerfile copies console/web and console/fixtures. The
+  # gate is this file's console jobs — a `needs` cannot reach across workflow
+  # files, so this job lives here rather than in a workflow of its own.
+  #
+  # Read-only for the whole workflow; only this job asks for more, and it never
+  # runs for a pull request.
+  publish-console:
+    name: publish the console image to GHCR
+    needs: [console, console-server, console-changed]
+    if: github.ref == 'refs/heads/main' && needs.console-changed.outputs.run == 'true'
+    # One publish at a time: an older run must not move :main back after a
+    # newer one.
+    concurrency:
+      group: publish-console
+      cancel-in-progress: false
+    runs-on: ubuntu-latest
+    timeout-minutes: 20
+    permissions:
+      contents: read
+      packages: write        # push to ghcr.io with GITHUB_TOKEN, no PAT
+      id-token: write        # sign the build provenance (Sigstore, OIDC)
+      attestations: write    # store the provenance attestation
+    env:
+      IMAGE: ghcr.io/dembaca/ai-agent-bus-console
+    steps:
+      - uses: actions/checkout@11bd71901bbe5b1630ceea73d27597364c9af683  # v4.2.2
+        with:
+          persist-credentials: false
+
+      - uses: docker/setup-buildx-action@f87e5991a6d7451dcb8d9637bfbc97413f497069  # v4.4.1
+
+      - uses: docker/login-action@8aa5831fb8d48d8f76594c7ddde61ae58019f550  # v4.8.0
+        with:
+          registry: ghcr.io
+          username: ${{ github.actor }}
+          password: ${{ secrets.GITHUB_TOKEN }}
+
+      - name: build and push
+        id: push
+        uses: docker/build-push-action@c3c9e263c25d99ce0380d002d59b67737d91b0dc  # v7.4.0
+        with:
+          context: .
+          file: console/server/Dockerfile
+          push: true
+          # The full commit SHA is the tag that names a build; :main moves with
+          # each merge and is a convenience only. Deployments use the digest.
+          tags: |
+            ${{ env.IMAGE }}:${{ github.sha }}
+            ${{ env.IMAGE }}:main
+          labels: |
+            org.opencontainers.image.source=${{ github.server_url }}/${{ github.repository }}
+            org.opencontainers.image.revision=${{ github.sha }}
+
+      - name: attest build provenance
+        uses: actions/attest-build-provenance@4d101475d8b20a2381f78447822ac1eab6504dd8  # v4.2.2
+        with:
+          subject-name: ${{ env.IMAGE }}
+          subject-digest: ${{ steps.push.outputs.digest }}
+          push-to-registry: true
+
+      - name: digest in the job summary
+        env:
+          DIGEST: ${{ steps.push.outputs.digest }}
+        run: |
+          {
+            echo "### Operator console image"
+            echo
+            echo "Deploy by digest:"
+            echo
+            echo '```'
+            echo "${IMAGE}@${DIGEST}"
+            echo '```'
+            echo
+            echo "Tags: \`${GITHUB_SHA}\`, \`main\` (moving)."
+          } >> "$GITHUB_STEP_SUMMARY"
 
   lint:
     runs-on: ubuntu-latest

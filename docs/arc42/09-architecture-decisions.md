@@ -4203,7 +4203,12 @@ The console is the operators' view of the bus itself.
       tests.
     - **Where it runs:** the lab's Kubernetes, in a namespace of its own,
       as an image like the login service's (no shell, non-root). Keys,
-      tokens and what the consumers delivered stay in memory.
+      tokens and what the consumers delivered stay in memory. `checks.yml`
+      publishes the image, after the console's own jobs: each push to `main`
+      that changes `console/`, `mcp/` or that workflow pushes it as
+      `ghcr.io/dembaca/ai-agent-bus-console:<commit SHA>` and `:main` with a
+      build provenance attestation, and a deployment names it by the digest
+      in the job's summary.
 
 15. **Where this proposal is weak.**
     - **It comes after the NATS build and shows only NATS.** Nothing of
