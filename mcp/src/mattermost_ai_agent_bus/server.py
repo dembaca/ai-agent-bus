@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import asyncio
 import atexit
+import inspect
 import json
 import logging
 import os
@@ -477,6 +478,26 @@ class _StrictServer(MCPServer):
 mcp = _StrictServer("ai-agent-bus", instructions=_instructions(), lifespan=_lifespan,
                     version=VERSION)
 
+
+def tool(*args: Any, **kwargs: Any) -> Callable[[Callable[..., Any]], Any]:
+    """Register a tool with its docstring dedented (RT-6.9).
+
+    Python 3.13's compiler removes a docstring's common indentation and its
+    trailing newline; 3.11's and 3.12's leave both, so the same tool carried
+    ~500 more characters on the older interpreters: the text an agent got and
+    the text `_fixed` counted would not be what the budget in tests/test_stats.py
+    assumes, and the budget could not hold for every version. `cleandoc` once,
+    at registration, keeps the served and the counted text the same everywhere;
+    on 3.13 it only drops a trailing newline per tool (about 11 characters in
+    all), not a word of the text.
+    """
+
+    def register(fn: Callable[..., Any]) -> Any:
+        fn.__doc__ = inspect.cleandoc(fn.__doc__ or "")
+        return mcp.tool(*args, **kwargs)(fn)
+
+    return register
+
 _client: BusClient | None = None
 _inbox: WebSocketInbox | None = None
 
@@ -880,7 +901,7 @@ def _dump(obj: Any) -> str:
     return json.dumps(obj, separators=(",", ":"), ensure_ascii=False, default=str)
 
 
-@mcp.tool()
+@tool()
 async def session_start(
     name: str, display_name: str = "", unique: bool = True
 ) -> str:
@@ -936,7 +957,7 @@ async def session_start(
     return _out("session_start", out)
 
 
-@mcp.tool()
+@tool()
 async def session_end(name: str = "") -> str:
     """Unregister the ephemeral bot (DELETE registrar). Call when the task ends."""
     client = _get_client()
@@ -950,7 +971,7 @@ async def session_end(name: str = "") -> str:
     return _out("session_end", {"ok": True, "ended": ended})
 
 
-@mcp.tool()
+@tool()
 async def bus_info() -> str:
     """This bus session at a glance: plugin/MCP version, bot, responsible and
     trusted humans, channels (home, guests, lobby, with ids in `channels`; RT-6.22); update: a newer
@@ -1551,7 +1572,7 @@ async def _debug_items(events: list[Any], payload: list[dict[str, Any]]) -> None
             item["debug"] = debug.block(trace, state)
 
 
-@mcp.tool()
+@tool()
 async def announce(
     project: str,
     task: str,
@@ -1629,14 +1650,14 @@ async def _foreign_coordinator(client: ChatPort, me: str) -> str:
             "it routes a thread your trusted human started (root_from_trusted_human)")
 
 
-@mcp.tool()
+@tool()
 async def get_me(raw: bool = False) -> str:
     """Return the current bot user: id and username (raw=true: users/me as is)."""
     me = await _get_client().get_me()
     return _out("get_me", me.json() if raw else {"id": me.id, "username": me.username})
 
 
-@mcp.tool()
+@tool()
 async def post_message(
     message: str, channel_id: str = "", root_id: str = "", to: str = "", kind: str = "",
     channel: str = "", props: dict[str, Any] | None = None, files: list[str] | None = None,
@@ -1767,7 +1788,7 @@ async def post_as_bot(client: ChatPort | None, message: str, channel_id: str = "
         word))
 
 
-@mcp.tool()
+@tool()
 async def reply_in_thread(
     root_id: str, message: str, channel_id: str = "", to: str = "", kind: str = "",
     props: dict[str, Any] | None = None, files: list[str] | None = None,
@@ -1901,7 +1922,7 @@ def _file_ids(ups: list[attach.Upload]) -> dict[str, Any]:
     return {"file_ids": [u.file_id for u in ups]} if ups else {}
 
 
-@mcp.tool(name="attach")
+@tool(name="attach")
 async def attach_text(name: str, text: str, channel: str = "", to: str = "") -> str:
     """Upload a small text file for a post's `files` (RT-6.33): its file_id.
 
@@ -1955,7 +1976,7 @@ async def _claimed(client: ChatPort, root_id: str, message: str, uid: str,
     return result
 
 
-@mcp.tool()
+@tool()
 async def ask_human(
     need: str,
     context: str = "",
@@ -2298,7 +2319,7 @@ async def _ask_fallback(_port: Any, question: str, human: str, coord: str) -> st
 askroute.fallback = _ask_fallback
 
 
-@mcp.tool()
+@tool()
 async def resolve_ask(post_id: str, note: str = "") -> str:
     """Close an ask once it is answered or no longer needed (RT-6.11).
 
@@ -2335,7 +2356,7 @@ async def resolve_ask(post_id: str, note: str = "") -> str:
     return _out("resolve_ask", {"ask": post_id, "was_open": was_open})
 
 
-@mcp.tool()
+@tool()
 async def coordinator(action: str = "who", scope: str = "home") -> str:
     """The coordinator role, held as a 👑 status lease (RT-6.6).
 
@@ -2382,7 +2403,7 @@ async def coordinator(action: str = "who", scope: str = "home") -> str:
     return _out("coordinator", {"action": action, "result": out or "(no coordinator)"})
 
 
-@mcp.tool()
+@tool()
 async def stats_report(versions: int = 3) -> str:
     """The bus's overhead per plugin version from the stats channel, as
     `bin/mm-agent-stats.sh report --json` gives it (RT-6.9): the newest
@@ -2398,7 +2419,7 @@ async def stats_report(versions: int = 3) -> str:
     return _out("stats_report", {"channel": name, "versions": rows[-max(1, versions):]})
 
 
-@mcp.tool()
+@tool()
 async def get_thread(post_id: str, raw: bool = False) -> str:
     """post_id's thread, root + replies, oldest first.
 
@@ -2414,7 +2435,7 @@ async def get_thread(post_id: str, raw: bool = False) -> str:
     return _out("get_thread", {"root_id": data.root_id, "posts": await slim.posts(client, data.posts)})
 
 
-@mcp.tool()
+@tool()
 async def get_file(file_id: str) -> list[str | Image]:
     """Fetch a file by its id from a post's `files` (RT-6.23): an image as
     a picture (≤5 MB), text cut at 20,000 chars, other types metadata only.
@@ -2429,7 +2450,7 @@ async def get_file(file_id: str) -> list[str | Image]:
     return [text, Image(data=got.image, format=got.image_format)] if got.image else [text]
 
 
-@mcp.tool()
+@tool()
 async def list_recent(
     channel_id: str = "", per_page: int = 20, since_ms: int = 0, raw: bool = False
 ) -> str:
@@ -2458,7 +2479,7 @@ ASK_PUSH_HINT = ("An ask of yours waits on a human. Its answer reaches you as a 
                  "finish your turn and do not poll wait_for_events for it.")
 
 
-@mcp.tool()
+@tool()
 async def wait_for_events(
     timeout_sec: float = 60.0, max_events: int = 10, raw: bool = False
 ) -> str:
@@ -2819,7 +2840,7 @@ _my_roots: set[str] = set()
 _confirmed: Path | None = None
 
 
-@mcp.tool()
+@tool()
 async def channel_ok(code: str) -> str:
     """Confirm the bus channel check: call it with the code the check pushed."""
     global _confirmed
@@ -3198,21 +3219,29 @@ async def _run_as_channel() -> None:
 _exit_handled = False
 
 
-def _fixed() -> overhead.Fixed:
-    """Instructions and tool docs (every turn), skill (per load), each in
-    characters (RT-6.9)."""
-    skill = release.SKILL_FILE
+def _tools() -> tuple[Callable[..., Any], ...]:
+    """The tools this session has: the base set, and what its configuration
+    adds (the host's session pair, the channel's push check)."""
     tools: tuple[Callable[..., Any], ...] = (bus_info, announce, get_me, post_message, reply_in_thread, ask_human,
-             resolve_ask, coordinator, get_thread, get_file, list_recent, wait_for_events, stats_report)
+             resolve_ask, coordinator, get_thread, get_file, attach_text, list_recent, wait_for_events,
+             stats_report)
     if not (HOST_MANAGED or UNAVAILABLE):
         tools += (session_start, session_end)
     if PUSH:
         tools += (channel_ok,)
+    return tools
+
+
+def _fixed() -> overhead.Fixed:
+    """Instructions and tool docs (every turn), skill (per load), each in
+    characters (RT-6.9). The docstrings are dedented at registration (`tool`),
+    so the count is the same on every Python."""
+    skill = release.SKILL_FILE
     try:
         skill_chars = len(skill.read_text())
     except OSError:
         skill_chars = 0
-    return overhead.Fixed(len(mcp.instructions or ""), sum(len(f.__doc__ or "") for f in tools),
+    return overhead.Fixed(len(mcp.instructions or ""), sum(len(f.__doc__ or "") for f in _tools()),
                           skill_chars)
 
 

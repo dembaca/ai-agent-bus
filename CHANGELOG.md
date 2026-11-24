@@ -35,6 +35,14 @@ before 0.5.0 are described in the git history.
   MCP ones.
 
 ### Fixed
+
+- **The tool text is the same on every Python** (#98). The per-turn `static`
+  size counts the tool docstrings, and the compiler dedents a docstring only
+  from Python 3.13 on: on 3.11 and 3.12 the same session carried ~500 more
+  characters than the budget in `tests/test_stats.py` allows, and on a host with
+  the channel push switched on the test went red there. The tools are
+  registered through `inspect.cleandoc` now, so what an agent is served and what
+  STATS counts is one text on every interpreter.
 - **The MCP server imports on Python 3.11 again** (#96), which
   `mcp/pyproject.toml` allows. The models' empty default was a
   `MappingProxyType` as a plain dataclass default, which `dataclasses` accepts
