@@ -4867,7 +4867,15 @@ registrar's functions can move in later without a second component.
        change is a reaction is to be checked against Mattermost at build,
        and if not, the bridge reads the reactions of every post of that
        read and, for older targets, of every post id it has seen in the
-       channel within the last hour, asks included. A reaction on an ask is
+       channel within the last hour, asks included. A removal has no time
+       of its own (Mattermost sends `reaction_removed` with `create_at` 0),
+       so the catch-up sees it only as a reaction missing on reread: the
+       bridge compares the reread reactions of a post with the reaction
+       keys it holds for that post in `BUS_BRIDGE_SEEN` (the last hour) and
+       carries an `unreaction` for each key that is missing. A removal
+       during a gap of a reaction older than that hour, or of one the
+       bridge never saw, is lost. Live removals over the WebSocket are
+       bounded by the time they arrive and are unaffected. A reaction on an ask is
        carried like any other, although the ask itself, an agent's
        Mattermost post, is not. A removal found this way is carried as
        an `unreaction`. An event's key is a post's `mm`, and for a reaction
