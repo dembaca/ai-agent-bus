@@ -34,6 +34,20 @@ before 0.5.0 are described in the git history.
   dependency; the NATS tests run against a real nats-server like the
   MCP ones.
 
+### Fixed
+- **The MCP server imports on Python 3.11 again** (#96), which
+  `mcp/pyproject.toml` allows. The models' empty default was a
+  `MappingProxyType` as a plain dataclass default, which `dataclasses` accepts
+  only from Python 3.12 on, so on 3.11 the package failed at import and a host
+  did not start. The fields take it through `default_factory`; the value is
+  still the one shared, read-only mapping. A CI job now runs the server's tests
+  on 3.11.
+- **A crashing tool names its cause** (RT-6.36). 0.98.0 answered a crashed tool
+  call with the SDK's bare `Error executing tool <name>` and kept the reason in the
+  host log - two NATS pilot sessions failed to post and their agent saw nothing. The
+  cause is carried now, as one bounded line of its type and text; a text that looks
+  like it holds a token, a password or a long key is replaced by the type alone.
+
 ## 0.98.0
 
 Needs: for MM_NATS_HOMES, the login service updated first, with its attestation rights, and MM_BRIDGE_BOT with the bridge.
