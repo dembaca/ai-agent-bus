@@ -661,12 +661,18 @@ async def test_a_crashing_tool_names_its_cause(caplog):
 def test_a_cause_that_may_hold_a_credential_names_the_type_only():
     from mattermost_ai_agent_bus import server as srv
 
-    for text in ('posting failed token=SECRETSECRET', '{"token": "abc123"}',
-                 "nats://bot:hunter2@host:4222", "api_key=abcdef", "Bearer abcdef",
+    for text in ('posting failed token=SECRETSECRET', '{"token": "abc123xyz"}',
+                 "nats://bot:hunter2@host:4222", "api_key=abcdefgh", "Bearer abcdef",
+                 "passwd=hunter22", "pwd=hunter2", "credentials=a:b1234567",
+                 "session_id=abcdefgh", "sig=abcdefgh", "invalid password 'hunter2'",
                  "a" * 64):
         got = srv._cause_text(RuntimeError(text))
         assert "details hidden" in got and "SECRETSECRET" not in got, (text, got)
     assert srv._cause_text(RuntimeError("boom")) == "RuntimeError: boom"
+    # what must stay readable: a URL path and a short benign value
+    for text in ("POST /api/v4/channels/abcdefghijklmnopqrstuvwxyz/posts failed",
+                 "token: expired"):
+        assert "details hidden" not in srv._cause_text(RuntimeError(text)), text
 
 
 def test_a_cause_is_one_bounded_line():
@@ -675,3 +681,18 @@ def test_a_cause_is_one_bounded_line():
     got = srv._cause_text(RuntimeError("word " * 200))
     assert len(got) <= srv.CAUSE_MAX + 1, len(got)
     assert got.endswith("…")
+
+
+@pytest.mark.asyncio
+async def test_a_wrong_argument_is_no_crash(caplog):
+    """Fable's regression: a missing or wrongly typed argument must keep the plain
+    `ToolError` path (field names, INFO line), not become `UnexpectedToolError` with a
+    traceback and a cut or hidden text."""
+    from mcp.server.mcpserver.exceptions import ToolError, UnexpectedToolError
+
+    from mattermost_ai_agent_bus import server as srv
+
+    with pytest.raises(ToolError) as err:
+        await srv.mcp.call_tool("post_message", {"no_such_argument": "x"})
+    assert not isinstance(err.value, UnexpectedToolError), type(err.value)
+    assert "no argument no_such_argument" in str(err.value), str(err.value)

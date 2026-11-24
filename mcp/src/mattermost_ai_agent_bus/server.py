@@ -411,10 +411,16 @@ ArgModelBase.model_config["extra"] = "forbid"
 # What a crash's text may not carry out of the server (the NATS pilot's empty error made
 # this the only place a cause is readable). A text that looks like it holds a credential
 # is replaced by the type alone: a tool's error is for an agent, never for a token.
-_SECRETISH = re.compile(r"(?i)(bearer\s+\S+|\beyJ[A-Za-z0-9_-]{8,}|"
-                        r"[\"']?(?:token|password|secret|api[_-]?key|authorization)[\"']?\s*[=:]\s*\S+|"
-                        r"[a-z][a-z0-9+.-]*://[^\s/@:]+:[^\s/@]+@|"
-                        r"\b[A-Fa-f0-9]{32,}\b|[A-Za-z0-9+/_-]{40,}={0,2})")
+_SECRETISH = re.compile(
+    r"(?i)(bearer\s+\S+"
+    r"|\beyJ[A-Za-z0-9_-]{8,}"
+    r"|[a-z][a-z0-9+.-]*://[^\s/@:]+:[^\s/@]+@"          # a password in a URL
+    r"|[\"']?(?:password|passwd|pwd|credentials)[\"']?\s*[=:]\s*['\"]?\S{4,}"  # short is fine
+    r"|[\"']?(?:token|secret|api[_-]?key|session_id|sig|authorization|key)"
+    r"[\"']?\s*[=:]\s*['\"]?\S{8,}"                      # "token: expired" stays readable
+    r"|(?:password|passwd|pwd|credentials)\s+['\"]?\S{6,}"  # "invalid password 'hunter2'"
+    r"|\b[A-Fa-f0-9]{32,}\b"
+    r"|[A-Za-z0-9+_-]{40,}={0,2})")                        # no `/`: paths and URLs stay readable
 CAUSE_MAX = 300  # one bounded line: an error answer is read by an agent, not a log
 
 
@@ -445,13 +451,14 @@ class _StrictServer(MCPServer):
             return await super().call_tool(name, arguments, *args, **kwargs)
         except ToolError as exc:
             cause = exc.__cause__
-            if isinstance(cause, ValidationError):
+            crash = isinstance(exc, UnexpectedToolError)
+            if isinstance(cause, ValidationError) and not crash:
                 errors = cause.errors()
                 unknown = sorted({str(e["loc"][0]) for e in errors if e["type"] == "extra_forbidden"})
                 tool = self._tool_manager.get_tool(name) if unknown else None
             else:
                 unknown, tool = [], None
-            if tool is None and cause is not None and not isinstance(cause, ToolError):
+            if crash and cause is not None and not isinstance(cause, ToolError):
                 # The SDK keeps a crash's own text on the server and hands the client a
                 # bare "Error executing tool <name>" (mcp/server/mcpserver/tools/base.py:
                 # `raise UnexpectedToolError(f"Error executing tool {self.name}") from exc`).
