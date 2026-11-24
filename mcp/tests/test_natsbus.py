@@ -4,6 +4,7 @@ MM_TEST_NATS=1; with it, a missing binary is a failure, not a skip (CI sets it).
 """
 
 import asyncio
+import base64
 import json
 import logging
 import os
@@ -35,6 +36,7 @@ from mattermost_ai_agent_bus.natsbus import (
     crown_candidates,
     crown_holder,
     decode,
+    decode_attestation,
     decode_presence,
     decode_presence_bot,
     encode,
@@ -98,6 +100,21 @@ def test_decode_error_holds_no_content() -> None:
     with pytest.raises(MessageError) as ei:
         decode(b'{"v":1,"kind":"post","text":"SECRET-CONTENT","root":"x"}')
     assert "SECRET-CONTENT" not in str(ei.value)
+
+
+def test_a_message_get_answer_is_no_attestation() -> None:
+    """The server checks a request's reply subject against no publish permission, so an
+    answer can land on presence.attest.* (RT-6.36 step 1, #90). With direct get off, what
+    arrives is the message-get answer: JSON with the key's value base64 inside. The strict
+    decoder refuses it, so the route writes noise, never a forged attestation."""
+    value = b'{"agent":"victim","owner":{"anchor":"alice"},"trusted":[],"cut":false,"iat":1,"exp":2}'
+    answer = (b'{"message":{"subject":"$KV.BUS_BRIDGE.k1","seq":1,"data":"' +
+              base64.b64encode(value) + b'"}}')
+    with pytest.raises(MessageError):
+        decode_attestation(answer, "victim")
+    # the value on its own is no attestation either: it has no owner name
+    with pytest.raises(MessageError):
+        decode_attestation(value, "victim")
 
 
 def test_encode_rejects_too_big_and_malformed() -> None:
