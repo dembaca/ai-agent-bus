@@ -39,7 +39,7 @@ export function Asks({ asks, onOpen }: {
                   <span className="chip chip--may-answer" title="an agent whose owner or trusts name you">may answer</span>}
               </td>
               <td className="asks__need">{ask.need}</td>
-              <td title={ask.by}>{ask.by.replace(/^agent-mac-/, "")}</td>
+              <td title={ask.by}>{ask.displayName}</td>
               <td>{ask.human ?? "–"}</td>
               <td>{since(ask.at)}</td>
               <td className="asks__answers">

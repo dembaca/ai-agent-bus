@@ -1,24 +1,75 @@
-// The real console server behind the same ConsoleApi as the mock: fetch for
-// the request endpoints, EventSource for the one stream of changes
-// (ADR-015 point 10: HTTPS, server-sent events; one direction of push is
-// enough). Unused until the console server exists — VITE_CONSOLE_API names
-// its base URL.
+// The real console server behind the same ConsoleApi as the mock. The
+// server does the Keycloak authorization-code flow with PKCE; the browser
+// holds a same-origin HttpOnly session cookie, which fetch (same-origin)
+// and EventSource carry with every call. `VITE_CONSOLE_API` names the
+// server; without it the app runs the mock (see main.tsx).
 import type {
-  AgentCard, Ask, ConsoleApi, FleetEvent, GraphData, Post, Report,
-  ThreadPage,
+  AgentCard, Ask, ConsoleApi, ConnState, FleetEvent, GraphData, Post,
+  Report, ThreadPage,
 } from "./types"
 
+/** The wire contract: snake_case where the ADR spells it that way. Only
+ * the fields the app maps itself are declared; everything else passes
+ * through with the shape the app types already expect (`asked human` is
+ * `human`, the ADR's columns are ADR-015's own words). */
+interface WireAsk {
+  id: string
+  by: string
+  display_name: string
+  human: string | null
+  need: string
+  answers: string[]
+  at: number
+  end: "open" | "answered" | "resolved" | "expired"
+  for_me: boolean
+  may_answer: boolean
+  thread_id: string
+}
+
+interface WireThread {
+  posts: Post[]
+  /** The next page's cursor; null or absent on the last page. */
+  next?: string | null
+}
+
 const json = async <T>(base: string, path: string): Promise<T> => {
-  const res = await fetch(`${base}${path}`)
+  const res = await fetch(`${base}${path}`, { credentials: "same-origin" })
   if (!res.ok) throw new Error(`${path}: ${res.status} ${res.statusText}`)
   return await res.json() as Promise<T>
+}
+
+/** Wire → app: the ask rows and pages keep the shapes the server sends;
+ * the marked fields get their app names here, so no cast goes unchecked. */
+function askOf(row: WireAsk): Ask {
+  return {
+    id: row.id,
+    by: row.by,
+    displayName: row.display_name,
+    human: row.human,
+    need: row.need,
+    answers: row.answers,
+    at: row.at,
+    end: row.end,
+    forMe: row.for_me,
+    mayAnswer: row.may_answer,
+    threadId: row.thread_id,
+  }
 }
 
 export function httpApi(base: string): ConsoleApi {
   const strip = base.endsWith("/") ? base.slice(0, -1) : base
   return {
-    watchFleet(onEvent: (event: FleetEvent) => void): () => void {
+    async me() {
+      const me = await json<{ username: string; display_name: string; groups: string[] }>(strip, "/v1/me")
+      return { username: me.username, displayName: me.display_name, groups: me.groups }
+    },
+    watchFleet(onEvent: (event: FleetEvent) => void,
+               onState?: (state: ConnState) => void): () => void {
+      let opened = false
+      // Same-origin: EventSource carries the session cookie by default.
       const source = new EventSource(`${strip}/v1/fleet`)
+      source.onopen = () => { opened = true; onState?.("live") }
+      source.onerror = () => { onState?.(opened ? "reconnecting" : "error") }
       source.onmessage = (ev) => {
         try {
           onEvent(JSON.parse(ev.data) as FleetEvent)
@@ -27,7 +78,8 @@ export function httpApi(base: string): ConsoleApi {
       return () => source.close()
     },
     async asks(): Promise<Ask[]> {
-      return await json(strip, "/v1/asks")
+      const rows = await json<WireAsk[]>(strip, "/v1/asks")
+      return rows.map(askOf)
     },
     async graph(): Promise<GraphData> {
       return await json(strip, "/v1/graph")
@@ -35,9 +87,10 @@ export function httpApi(base: string): ConsoleApi {
     async stats(): Promise<Report[]> {
       return await json(strip, "/v1/stats")
     },
-    async thread(rootId: string): Promise<ThreadPage> {
-      const page = await json<{ posts: Post[]; next: boolean }>(strip, `/v1/threads/${encodeURIComponent(rootId)}`)
-      return { rootId, posts: page.posts, next: page.next }
+    async thread(rootId: string, next?: string | null): Promise<ThreadPage> {
+      const query = next ? `?next=${encodeURIComponent(next)}` : ""
+      const page = await json<WireThread>(strip, `/v1/threads/${encodeURIComponent(rootId)}${query}`)
+      return { rootId, posts: page.posts, next: page.next ?? null }
     },
   }
 }

@@ -23,7 +23,12 @@
   font-size: 11px;
 }
 
-.side__logo { font-size: 18px; }
+.side__logo {
+  display: grid;
+  place-items: center;
+  color: var(--ink);
+  flex: 0 0 auto;
+}
 
 .side__item {
   display: flex;
@@ -65,11 +70,79 @@
   font-weight: 700;
 }
 
+.side__notice {
+  margin-top: 10px;
+  display: grid;
+  grid-template-columns: 1fr auto;
+  gap: 6px;
+  align-items: start;
+  font-size: 11px;
+  color: var(--danger);
+  border: 1px solid color-mix(in srgb, var(--danger) 40%, transparent);
+  border-radius: 8px;
+  padding: 7px 8px;
+}
+
+.side__notice-x {
+  border: 0;
+  background: none;
+  color: inherit;
+  cursor: pointer;
+  padding: 0 2px;
+  line-height: 1;
+}
+
 .side__foot {
   margin-top: auto;
   color: var(--muted);
   font-size: 11px;
-  line-height: 1.5;
+  line-height: 1.6;
   padding: 10px 10px 2px;
   border-top: 1px solid var(--hair);
+  display: grid;
+  gap: 2px;
+  justify-items: start;
+}
+
+.side__conn {
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+}
+
+.side__conn i {
+  width: 8px;
+  height: 8px;
+  border-radius: 50%;
+  display: inline-block;
+  background: var(--state-offline);
+}
+
+.side__conn--live i { background: var(--ok); }
+.side__conn--connecting i,
+.side__conn--reconnecting i { background: var(--for-me); }
+.side__conn--error i { background: var(--danger); }
+
+.side__crown {
+  display: inline-flex;
+  align-items: center;
+  gap: 4px;
+  color: var(--muted);
+}
+
+/* one view, narrow screens included: the detail pane scrolls over the
+   stage instead of squeezing it (Fable's low point) */
+@media (max-width: 760px) {
+  .app { grid-template-columns: 64px 1fr; }
+  .side__brand span:last-child,
+  .side__foot,
+  .side__notice { display: none; }
+  .detail {
+    position: fixed;
+    inset: 0;
+    left: 64px;
+    width: auto;
+    flex: none;
+    z-index: 3;
+  }
 }

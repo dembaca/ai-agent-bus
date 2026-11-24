@@ -7,14 +7,15 @@
 // The operator of this console is "dembaca" (Ask.forMe / mayAnswer are
 // relative to that name).
 import type {
-  AgentCard, AgentState, Ask, ConsoleApi, FleetEvent, GraphData, Post,
-  Report, TaskRow, ThreadPage,
+  AgentCard, AgentState, Ask, ConnState, ConsoleApi, FleetEvent, GraphData,
+  Operator, Post, Report, TaskRow, ThreadPage,
 } from "./types"
 
 const now = () => Date.now()
 const minute = 60_000
 
-const cards = (): AgentCard[] => withTasks([
+const cards = (): CardWire[] => [
+
   {
     name: "agent-mac-ai-agent-164534", home: "~ai-agent-bus-dev", state: "working",
     crown: true, harness: "claude-code", model: "Opus 5.5",
@@ -97,9 +98,12 @@ const cards = (): AgentCard[] => withTasks([
     openAsks: 2, asksForOperator: 1, helloAt: now() - 990 * minute, lastPostAt: now() - 95 * minute,
     tasks: [],
   },
-])
+]
 
-const asks = (): Ask[] => [
+type CardWire = Omit<AgentCard, "displayName" | "helloPostId">
+type AskWire = Omit<Ask, "displayName">
+
+const asks = (): AskWire[] => [
   {
     id: "ask-bridge-way", by: "agent-mac-ai-agent-164534", human: "dembaca",
     need: "Is today's bridge the documented interim: every agent mirrors its own NATS posts into Mattermost?",
@@ -130,10 +134,20 @@ const asks = (): Ask[] => [
   },
 ]
 
-/** The task rows a card carries (detail only): which of the day's rows it
- * holds. */
-const withTasks = (all: AgentCard[]): AgentCard[] =>
-  all.map((card) => ({ ...card, tasks: tasksOf(card.name) }))
+/** The short name a list shows (`display_name` on the wire); the mock
+ * derives it where the server sends it. */
+const short = (name: string): string => name.replace(/^agent-mac-ai-agent-|^agent-mac-/, "")
+
+/** The task rows a card carries (detail only), plus the short display
+ * name and the HELLO post id the server sends on the wire
+ * (`display_name`, `hello_post_id`). */
+const withTasks = (all: CardWire[]): AgentCard[] =>
+  all.map((card) => ({
+    ...card,
+    displayName: short(card.name),
+    helloPostId: `hello-${card.name}`,
+    tasks: tasksOf(card.name),
+  }))
 
 const threads: Record<string, Post[]> = {
   "hello-agent-mac-ai-agent-bb8f09": [
@@ -290,11 +304,19 @@ const step = {i: 0}
 /** The mock as a ConsoleApi. `onEvent` gets a snapshot first, then the
  * changes; the returned function stops it. */
 export function mockApi(): ConsoleApi {
-  let cardsNow: AgentCard[] = cards()
+  let cardsNow: AgentCard[] = withTasks(cards())
   return {
-    watchFleet(onEvent: (event: FleetEvent) => void): () => void {
+    me(): Promise<Operator> {
+      // The mock's stand-in operator; the server answers from its session.
+      return Promise.resolve({
+        username: "dembaca", displayName: "dembaca", groups: ["operators"],
+      })
+    },
+    watchFleet(onEvent: (event: FleetEvent) => void,
+               onState?: (state: ConnState) => void): () => void {
       let stopped = false
       const emit = (event: FleetEvent) => { if (!stopped) onEvent(event) }
+      onState?.("live")
       emit({ type: "snapshot", cards: cardsNow })
       const timer = setInterval(() => {
         step.i += 1
@@ -313,9 +335,11 @@ export function mockApi(): ConsoleApi {
       return () => { stopped = true; clearInterval(timer) }
     },
     async asks(): Promise<Ask[]> {
-      // Older than 24 h counts as expired (ADR-015 point 4): the mock ages
-      // nothing into that on its own, one ask starts expired.
-      return asks()
+      // Older than 24 h counts as expired (ADR-015 point 4); the mock marks
+      // one ask expired from the start. The server sends `for_me`/
+      // `may_answer` (http.ts maps); the mock speaks the app's shapes, with
+      // the short display name derived where the server sends it.
+      return asks().map((a): Ask => ({ ...a, displayName: short(a.by) }))
     },
     async graph(): Promise<GraphData> {
       return graph()
@@ -323,15 +347,9 @@ export function mockApi(): ConsoleApi {
     async stats(): Promise<Report[]> {
       return stats()
     },
-    async thread(rootId: string): Promise<ThreadPage> {
-      const posts = threads[rootId] ?? (rootId.startsWith("hello-")
-        ? [{
-            id: rootId, rootId: null, author: rootId.replace(/^hello-/, ""),
-            at: now() - 120 * minute,
-            message: "`HELLO` · session of this agent",
-          }]
-        : [])
-      return { rootId, posts, next: false }
+    async thread(rootId: string, _next?: string | null): Promise<ThreadPage> {
+      // One page; the server pages with a cursor, the mock has all of it.
+      return { rootId, posts: threads[rootId] ?? [], next: null }
     },
   }
 }

@@ -1,28 +1,36 @@
+import { Crown } from "lucide-react"
 import type { View } from "./Sidebar"
-import { AGENT_STATES, type AgentCard } from "../api/types"
+import { AGENT_STATES, type AgentCard, type AgentState } from "../api/types"
 import { HARNESS_LABEL } from "../api/types"
 import { since } from "../clock"
 import "./Kanban.css"
 
 /** The Kanban: one column per state word, the crown on the card, not the
- * column (ADR-015 point 6). */
+ * column (ADR-015 point 6). Presence's format v1 says `online`/`away`
+ * until it carries the state words, and a state the console does not know
+ * lands in the last, catch-all column (Fable's point 4). */
 export function Kanban({ cards, selected, onSelect }: {
   cards: AgentCard[]
   selected: AgentCard | null
   onSelect: (card: AgentCard) => void
 }) {
+  const known = AGENT_STATES.filter((state) => cards.some((c) => c.state === state))
+  const knownSet = AGENT_STATES as readonly string[]
+  const others: AgentCard[] = cards.filter((c) => !knownSet.includes(c.state))
+  const columns: Array<AgentState | "other"> = known.length > 0 ? [...known] : [...AGENT_STATES]
+  if (others.length > 0) columns.push("other")
+  const inColumn = (state: AgentState | "other"): AgentCard[] =>
+    state === "other" ? others : cards.filter((c) => c.state === state)
   return (
     <div className="kanban">
-      {AGENT_STATES.map((state) => (
+      {columns.map((state) => (
         <section key={state} className="kanban__column" data-state={state}>
           <header className="kanban__head">
-            <span className="kanban__state">{state}</span>
-            <span className="kanban__count">
-              {cards.filter((c) => c.state === state).length}
-            </span>
+            <span className="kanban__state">{state === "other" ? "other" : state}</span>
+            <span className="kanban__count">{inColumn(state).length}</span>
           </header>
           <div className="kanban__cards">
-            {cards.filter((c) => c.state === state).map((card) => (
+            {inColumn(state).map((card) => (
               <AgentCardView
                 key={card.name}
                 card={card}
@@ -47,7 +55,7 @@ export function AgentCardView({ card, active, onSelect }: {
   active: boolean
   onSelect: (card: AgentCard) => void
 }) {
-  const mark = (text: string, extra?: string) => (
+  const chip = (text: string, extra?: string) => (
     <span className={"chip" + (extra ? ` chip--${extra}` : "")}>{text}</span>
   )
   return (
@@ -59,10 +67,12 @@ export function AgentCardView({ card, active, onSelect }: {
       onClick={() => onSelect(card)}
     >
       <div className="card__top">
-        {card.crown && <span className="card__crown" title="the crown of its channel">👑</span>}
+        {card.crown && <span className="card__crown" title="the crown of its channel">
+          <Crown size={12} />
+        </span>}
         <span className={"logo logo--" + card.harness} title={HARNESS_LABEL[card.harness]}
           aria-hidden="true">{logoGlyph(card.harness)}</span>
-        <span className="card__name" title={card.name}>{card.name}</span>
+        <span className="card__name" title={card.name}>{card.displayName}</span>
         <span className="card__since" title="since the last post">
           {card.lastPostAt ? since(card.lastPostAt) : "n/a"}
         </span>
@@ -70,19 +80,19 @@ export function AgentCardView({ card, active, onSelect }: {
       <div className="card__task">{card.task}</div>
       <div className="card__meta">
         <span className="card__model">{HARNESS_LABEL[card.harness]} · {card.model}</span>
-        {card.role === "coordinator" && mark("coordinator")}
+        {card.role === "coordinator" && chip("coordinator")}
         <span className="card__for">
-          for {card.for}{card.autonomous && mark("autonomous")}
+          for {card.for}{card.autonomous && chip("autonomous")}
         </span>
       </div>
       <div className="card__meta">
         <span className="card__project">{card.project}</span>
-        {card.pr && mark(`#${card.pr.number}`, "pr")}
-        {!card.pr && card.branch && mark(card.branch)}
+        {card.pr && chip(`#${card.pr.number}`, "pr")}
+        {!card.pr && card.branch && chip(card.branch)}
       </div>
       {card.capabilities.length > 0 && (
         <div className="card__meta card__caps">
-          {card.capabilities.slice(0, 3).map((c) => mark(c))}
+          {card.capabilities.slice(0, 3).map((c) => chip(c))}
         </div>
       )}
       <div className="card__bottom">

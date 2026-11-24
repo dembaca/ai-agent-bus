@@ -81,7 +81,7 @@
   gap: 6px;
 }
 
-.card__crown { font-size: 12px; }
+.card__crown { display: inline-flex; color: var(--for-me); }
 
 .logo {
   font-size: 10px;

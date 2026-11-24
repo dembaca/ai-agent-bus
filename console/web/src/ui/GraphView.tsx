@@ -2,17 +2,21 @@ import { useEffect, useState } from "react"
 import type { ConsoleApi, GraphData } from "../api/types"
 import "./GraphView.css"
 
+type Fail = (what: string, error: unknown) => void
+
 /** The graph (ADR-015 point 7): nodes people, channels (homes), agents;
  * the edges shown at start are trusts and coordinates, followed further
  * only to a depth of two, with a mark where it is cut. Hand-rolled SVG:
  * the libraries stay an open ADR point, and the pilot graph is small. */
-export function GraphView({ api }: { api: ConsoleApi }) {
+export function GraphView({ api, onFail }: { api: ConsoleApi; onFail: Fail }) {
   const [data, setData] = useState<GraphData | null>(null)
   useEffect(() => {
     let gone = false
-    api.graph().then((g) => { if (!gone) setData(g) }).catch(() => {})
+    api.graph()
+      .then((g) => { if (!gone) setData(g) })
+      .catch((error: unknown) => { if (!gone) onFail("graph", error) })
     return () => { gone = true }
-  }, [api])
+  }, [api, onFail])
   if (!data) return <div className="graph"><p className="hint">loading…</p></div>
   return (
     <div className="graph">
@@ -25,7 +29,8 @@ export function GraphView({ api }: { api: ConsoleApi }) {
 }
 
 /** Layered left-to-right: people, then channels, then agents — a plain,
- * readable shape while the console is a pilot. */
+ * readable shape while the console is a pilot. A crown-holding node is
+ * marked by a small crown drawn beside it (point 9: no emoji literal). */
 function Graph({ data }: { data: GraphData }) {
   const width = 900
   const height = 460
@@ -45,7 +50,6 @@ function Graph({ data }: { data: GraphData }) {
     ...column(channels, 440),
     ...column(agents, 760),
   }
-  const nodeById = Object.fromEntries(data.nodes.map((n) => [n.id, n]))
 
   return (
     <svg className="graph__svg" viewBox={`0 0 ${width} ${height}`} role="img"
@@ -62,15 +66,14 @@ function Graph({ data }: { data: GraphData }) {
       {data.nodes.map((node) => {
         const p = pos[node.id]
         if (!p) return null
-        const label = node.kind === "agent"
-          ? `${node.crown ? "👑 " : ""}${node.label}`
-          : node.label
         return (
           <g key={node.id} className={`graph__node graph__node--${node.kind}`}>
             {node.kind === "person" && <circle cx={p.x} cy={p.y} r="18" />}
             {node.kind === "channel" && <rect x={p.x - 22} y={p.y - 14} width="44" height="28" rx="6" />}
             {node.kind === "agent" && <rect x={p.x - 26} y={p.y - 16} width="52" height="32" rx="16" />}
-            <text x={p.x} y={p.y - 24}>{label}</text>
+            <text x={p.x} y={p.y - 24}>{node.label}</text>
+            {node.crown && <path className="graph__crown" transform={`translate(${p.x - 13} ${p.y - 46})`}
+              d="M0 8 L2 2 L6 6 L10 0 L14 6 L18 2 L20 8 Z" />}
             {node.state && <text className="graph__state" x={p.x} y={p.y + 34}>{node.state}</text>}
           </g>
         )

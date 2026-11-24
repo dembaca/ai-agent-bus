@@ -1,8 +1,8 @@
-# The operator console's browser app (ADR-015)
+# The operator console's browser app, "Choirbus" (ADR-015 pilot)
 
-The browser app of the operator console ([ADR-015](../docs/arc42/09-architecture-decisions.md)),
+The browser app of the operator console ([ADR-015](../../docs/arc42/09-architecture-decisions.md)),
 built as a **read-only pilot** against a mock of the console API: React with
-TypeScript on Vite, as [`site/`](../site) already is. The console server does
+TypeScript on Vite, as [`site/`](../../site) already is. The console server does
 not exist yet — the app is the stage a scope-shrink keeps either way.
 
 - **The mock** (`src/api/mock.ts`) serves the API of ADR-015 point 10 behind the

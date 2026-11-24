@@ -112,3 +112,12 @@
   max-height: 260px;
   overflow: auto;
 }
+
+.detail__crown {
+  display: inline-flex;
+  vertical-align: -2px;
+  margin-left: 5px;
+  color: var(--for-me);
+}
+
+.detail__role { display: inline-flex; align-items: center; gap: 4px; }

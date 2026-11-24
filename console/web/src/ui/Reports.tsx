@@ -3,21 +3,27 @@ import type { ConsoleApi, Report } from "../api/types"
 import { seconds } from "../clock"
 import "./Reports.css"
 
+type Fail = (what: string, error: unknown) => void
+
 /** The reports (ADR-015 point 8): from the STATS lines as RT-6.9 defines
  * them — counts and seconds only, no names, no post ids, no text. A field
  * a source line does not have shows as "n/a", never as 0. */
-export function Reports({ api }: { api: ConsoleApi }) {
+export function Reports({ api, onFail }: { api: ConsoleApi; onFail: Fail }) {
   const [reports, setReports] = useState<Report[]>([])
   useEffect(() => {
     let gone = false
     const load = async () => {
-      const r = await api.stats()
-      if (!gone) setReports(r)
+      try {
+        const r = await api.stats()
+        if (!gone) setReports(r)
+      } catch (error: unknown) {
+        if (!gone) onFail("reports", error)
+      }
     }
     void load()
     const timer = setInterval(load, 30_000)
     return () => { gone = true; clearInterval(timer) }
-  }, [api])
+  }, [api, onFail])
 
   return (
     <div className="reports">

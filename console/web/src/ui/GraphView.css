@@ -27,3 +27,8 @@
 .graph__node text { fill: var(--ink); font-size: 12px; text-anchor: middle; }
 .graph__node .graph__state { fill: var(--muted); font-size: 10px; }
 .graph__hint { fill: var(--muted); font-size: 10px; }
+
+.graph__crown {
+  fill: var(--for-me);
+  stroke: none;
+}

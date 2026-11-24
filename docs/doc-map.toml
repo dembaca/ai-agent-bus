@@ -44,6 +44,11 @@ docs = [
 ]
 
 [[rule]]
+name = "operator console: browser app and server"
+paths = ["console/*"]
+docs = ["docs/arc42/09-architecture-decisions.md"]
+
+[[rule]]
 name = "OpenCode plugin: turn cycle in OpenCode sessions"
 paths = ["opencode/*"]
 docs = ["docs/arc42/06-runtime-view.md", "adapters/opencode.md"]
