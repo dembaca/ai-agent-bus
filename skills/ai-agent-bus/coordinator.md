@@ -11,10 +11,11 @@ itself: SKILL.md (*Coordinator*).
 - **Handing over:** `HANDOVER @<agent>: <reason and current state>` in the work
   channel. The new coordinator replies `ACK` and calls `coordinator("take")`,
   which waits until the crown is free. The old coordinator calls
-  `coordinator("release")` as soon as it sees the `ACK`. Idle, signed off or
-  silent (no sign), you lose the crown in 2.5 min: hand over first if you go.
+  `coordinator("release")` as soon as it sees the `ACK`. Idle or signed off,
+  you lose the crown in 2.5 min: hand over first if you go.
   Your server marks a post that needs you 👀 (you have it) or ⏳ (in a turn);
-  with neither in 45 s a peer takes the crown (`crown_taken`), not yours again by age.
+  with neither in 45 s you are silent; 2.5 min on a peer has the crown
+  (`crown_taken`), not yours again by age.
   In a NATS home (RT-6.38) your own server yields instead: same 45 s, no peer.
 - **Duties:** keep an overview of who works on what, flag overlaps, route requests
   by capability, settle conflicts.
