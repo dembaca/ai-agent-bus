@@ -41,17 +41,6 @@ from .proxy import KINDS, ProxyFault
 # The exit codes: 0 a run whose numbers can be compared, 1 a run that measured
 # a broken rig, 2 the rig could not start at all (no interpreter, an import).
 EXIT_OK = 0
-# The faults that pass every frame on but one of these: `stall` delays, `reorder`
-# swaps and `duplicate` repeats, so a run under them must deliver something — a
-# run that arrives nowhere is then the path, not the fault.
-#
-# Not here, each for its own reason: `drop` may lose everything by design and is
-# a measurement; `cut` is a dead transport the bus recovers by backfill;
-# `blackhole` and `halfopen` **stop delivery on purpose**, so silence is what they
-# are for, and a bus that does not recover from it is a different finding (the
-# review of #54).
-PASSING_FAULTS = ("stall", "reorder", "duplicate")
-
 EXIT_BAD_RUN = 1
 EXIT_NO_RUN = 2
 
@@ -177,15 +166,15 @@ def _untrustworthy(run: runner.Run, *, expect_loss: bool = False) -> bool:
               f"{run.sent_frames}, connection_closed={run.closed or None}",
               file=sys.stderr)
         return True
-    # A fault that lets traffic through (`stall`, `reorder`, `duplicate`) and yet
-    # nothing arrives at all: the path, not the fault (issue #47). `drop` is the
-    # fault that is *meant* to discard, so a `drop` run that delivers nothing is a
-    # measurement; this rule names the faults that are not.
-    if (run.fault in PASSING_FAULTS and run.sent_frames and not run.received):
-        print(f"bus-testrig: --fault {run.fault} lets traffic through, but none of "
-              f"{run.sent_frames} frame(s) arrived: the path carried nothing, so "
-              "this is not a measurement of the fault", file=sys.stderr)
-        return True
+    # Sent and nothing at all arrived (issue #47): either the fault accounts for
+    # every frame, or the path carried nothing and the numbers are about the rig.
+    # `runner.silence` decides from the run's own evidence - for `drop`, the
+    # relay's counters, since a frame it never saw was lost before the fault.
+    explained, why = runner.silence(run)
+    if why:
+        print(f"bus-testrig: {why}", file=sys.stderr)
+        if not explained:
+            return True
     if expect_loss and not 0 < loss < run.sent_frames:
         # `loss > 0` alone let a dead receiver pass: 20 of 20 lost is not a
         # fault that lost something, it is a path that carried nothing, and it
