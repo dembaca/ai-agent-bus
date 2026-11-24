@@ -67,6 +67,16 @@ docs = [
 ]
 
 [[rule]]
+name = "central bridge: configuration, health, image"
+paths = ["services/bridge/*"]
+# Own tests and fixtures need no doc, as for the login service above.
+exclude = ["*_test.go", "*/testdata/*"]
+docs = [
+  "docs/arc42/05-building-block-view.md",
+  "docs/arc42/07-deployment-view.md",
+]
+
+[[rule]]
 name = "version bump"
 paths = [".claude-plugin/plugin.json"]
 docs = ["CHANGELOG.md"]
