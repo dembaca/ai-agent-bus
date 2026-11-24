@@ -201,4 +201,6 @@ async def stream_loop(writer: asyncio.StreamWriter, sse: SSE) -> None:
             await write_event(writer, [])
             continue
         sse.changes.clear()
+        if sse.alive is not None and not sse.alive():
+            return  # the session ended: the busyness never outlives it
         await write_event(writer, sse.snapshot())

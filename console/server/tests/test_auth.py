@@ -152,3 +152,17 @@ def test_sessions_hash_the_token_in_memory() -> None:
     assert sessions.get("forged") is None
     assert sessions.get(value, now=time.time() + 7200) is None  # expired
     assert sessions.get(value) is None
+
+
+async def test_an_empty_group_admits_nobody() -> None:
+    """Defence in depth: the config refuses to start without a group; a
+    verify with an empty one refuses too, never everyone."""
+    private, jwk = keypair()
+    keyring = Keyring()
+    keyring._keys = {jwk["kid"]: jwk}
+    keyring._fetched_at = time.monotonic()
+    settings = config.Settings(public_url="https://console.example",
+                               issuer="https://kc/realms/x", client_id="console",
+                               operator_group="")
+    with pytest.raises(auth.Refused, match="no operators group"):
+        await auth.verify(settings, ENDPOINTS, keyring, token(private))

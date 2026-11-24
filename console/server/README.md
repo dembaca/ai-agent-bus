@@ -35,20 +35,32 @@ extra columns. Asks and the STATS lines do not lie on NATS yet:
 
 ## NATS account for the lab (the pilot's deviation)
 
-A user of the tenant (`BUS`) account, **without** JetStream beyond
-making its own consumer, **publishing nothing**:
+A user of the tenant (`BUS`) account, **publishing nothing but its two
+consumer calls**, reading only its own deliver subject and inbox — the
+same rights its live test grants (`tests/test_nats_live.py`):
 
 ```
 { nkey: "<CONSOLE PUBLIC NKEY>", permissions: {
-    publish: { allow: ["$JS.API.CONSUMER.CREATE.PRESENCE.console"] },
-    subscribe: { allow: ["deliver.console.presence", "_INBOX.>"] } } }
+    publish: { allow: ["$JS.API.CONSUMER.CREATE.PRESENCE.console",
+                       "$JS.API.CONSUMER.DELETE.PRESENCE.console"] },
+    subscribe: { allow: ["deliver.console.presence", "_INBOX_console.>"] } } }
 ```
 
-The seed goes to `CONSOLE_NATS_SEED_FILE`. The PRESENCE stream
+The consumer is **deleted and made anew at every connect** (as the login
+service remakes an agent's at every credential, Go
+`consumers/manager.go`): a consumer that still stands under its name
+replays nothing on reattach, and the replay is the fleet's state after a
+restart. The seed goes to `CONSOLE_NATS_SEED_FILE`, readable by its
+owner alone — the server refuses wider. The PRESENCE stream
 (`services/auth`: `consumers/streams.go`) must exist; the login service's
 `AUTH_JS_SEED_FILE` user or the lab checklist owner makes it.
-Everything else the agents publish arrives through the replay, so no
-other subject is needed — and none is granted.
+
+**Accepted lab risk, named for the pilot (ADR-015):** the right to create
+a consumer names its deliver subject freely, which NATS permissions
+cannot close — a taken-over console account could aim its consumer at
+`bus.evil.x`. The lab takes this knowingly; after the pilot an admin (or
+the login service, way A) makes the console's consumer and the account
+keeps only the read.
 
 ## Settings (all `CONSOLE_*`, checked on start; fail closed)
 

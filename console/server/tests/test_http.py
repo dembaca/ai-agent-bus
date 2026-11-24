@@ -26,12 +26,14 @@ async def client(console: Console) -> tuple[asyncio.StreamReader, asyncio.Stream
     return await asyncio.open_connection("127.0.0.1", port)
 
 
-async def get(console: Console, path: str, cookie: str | None = None
-              ) -> tuple[int, dict[str, object], bytes]:
+async def get(console: Console, path: str, cookie: str | None = None,
+              origin: str | None = None) -> tuple[int, dict[str, object], bytes]:
     reader, writer = await client(console)
     head = f"GET {path} HTTP/1.1\r\nHost: x\r\n"
     if cookie:
         head += f"Cookie: {cookie}\r\n"
+    if origin:
+        head += f"Origin: {origin}\r\n"
     writer.write((head + "\r\n").encode())
     raw = await asyncio.wait_for(_read_answer(reader), 5.0)
     writer.close()
@@ -275,5 +277,167 @@ async def test_the_login_flow_sets_the_cookie(tmp_path) -> None:
         assert status == 303
         status, _h, _b = await get(c, "/v1/me", cookie=cookie.split(";")[0])
         assert status == 401
+    finally:
+        await c.stop()
+
+
+async def test_a_busy_stream_ends_with_its_session() -> None:
+    """The reviews' finding: presence heartbeats keep a stream awake, so
+    the session may be checked only on every send — after a logout the
+    stream closes with its next event, however busy the fleet is."""
+    settings = config.Settings(public_url="http://127.0.0.1:8747",
+                               issuer="http://127.0.0.1:8747/kc",
+                               client_id="console", operator_group="operators",
+                               nats_url="nats://127.0.0.1:4",
+                               nats_seed_file="/none")
+    c = Console(settings)
+    c.endpoints = auth.Endpoints(issuer=settings.issuer,
+                                 authorization="http://127.0.0.1:8747/kc/auth",
+                                 token="http://127.0.0.1:8747/kc/token",
+                                 jwks="http://127.0.0.1:8747/kc/certs")
+
+    async def fake_discover(issuer: str) -> auth.Endpoints:
+        return c.endpoints  # type: ignore[return-value]
+    await c.start(discover=fake_discover)
+    try:
+        token = c.sessions.issue(auth.Operator(username="dembaca", display="d",
+                                               groups=("operators",)), 3600)
+        cookie = f"choirbus_session={token}"
+        reader, writer = await asyncio.open_connection(
+            "127.0.0.1", c._http.bound_port)
+        writer.write(f"GET /v1/fleet HTTP/1.1\r\nHost: x\r\nCookie: {cookie}\r\n\r\n".encode())
+        await asyncio.wait_for(reader.readuntil(b"\r\n\r\n"), 5.0)
+        line = await asyncio.wait_for(reader.readline(), 10.0)
+        assert b'"type":"snapshot"' in line
+        c.fleet.synced = True
+        # a busy fleet: a change arrives and is delivered…
+        c.fire()
+        line = await asyncio.wait_for(reader.readline(), 10.0)
+        assert line.startswith(b"data: ") or line in (b"\n",)
+        # …the session ends…
+        c.sessions.drop(token)
+        # …and the next change closes the stream, beat or no beat
+        c.fire()
+        raw = await asyncio.wait_for(reader.read(), 10.0)
+        assert raw == b""  # closed, not another event
+    finally:
+        await c.stop()
+
+
+async def test_a_cross_site_page_cannot_log_the_operator_out() -> None:
+    settings = config.Settings(public_url="http://127.0.0.1:8747",
+                               issuer="http://127.0.0.1:8747/kc",
+                               client_id="console", operator_group="operators",
+                               nats_url="", nats_seed_file="")
+    c = Console(settings)
+    c.endpoints = auth.Endpoints(issuer=settings.issuer,
+                                 authorization="http://127.0.0.1:8747/kc/auth",
+                                 token="http://127.0.0.1:8747/kc/token",
+                                 jwks="http://127.0.0.1:8747/kc/certs")
+
+    async def fake_discover(issuer: str) -> auth.Endpoints:
+        return c.endpoints  # type: ignore[return-value]
+    await c.start(discover=fake_discover)
+    try:
+        token = c.sessions.issue(auth.Operator(username="dembaca", display="d",
+                                               groups=("operators",)), 3600)
+        cookie = f"choirbus_session={token}"
+        status, _h, _b = await get(c, "/logout", cookie=cookie,
+                                   origin="http://evil.example")
+        assert status == 403
+        assert c.sessions.get(token) is not None  # the session stands
+        # the console's own origin (or none, a typed address bar) is fine
+        status, _h, _b = await get(c, "/logout", cookie=cookie,
+                                   origin="http://127.0.0.1:8747")
+        assert status == 303
+        assert c.sessions.get(token) is None
+    finally:
+        await c.stop()
+
+
+async def test_a_flood_of_logins_never_evicts_states() -> None:
+    settings = config.Settings(public_url="http://127.0.0.1:8747",
+                               issuer="http://127.0.0.1:8747/kc",
+                               client_id="console", operator_group="operators",
+                               nats_url="", nats_seed_file="")
+    c = Console(settings)
+    c.endpoints = auth.Endpoints(issuer=settings.issuer,
+                                 authorization="http://127.0.0.1:8747/kc/auth",
+                                 token="http://127.0.0.1:8747/kc/token",
+                                 jwks="http://127.0.0.1:8747/kc/certs")
+
+    async def fake_discover(issuer: str) -> auth.Endpoints:
+        return c.endpoints  # type: ignore[return-value]
+    await c.start(discover=fake_discover)
+    try:
+        status, headers, _b = await get(c, "/login")
+        assert status == 303
+        state_before = {k: v for k, v in c._pending.items()}
+        assert state_before
+        # a flood of further /login requests: refused without creating,
+        # never evicting the first state
+        seen_429 = False
+        for _ in range(40):
+            status, _h, _b = await get(c, "/login")
+            if status == 429:
+                seen_429 = True
+                break
+        assert seen_429
+        for k, v in state_before.items():
+            assert c._pending.get(k) == v
+    finally:
+        await c.stop()
+
+
+async def test_transport_trouble_answers_502_and_retries() -> None:
+    """The reviews' third: an unreachable issuer never ends the discovery,
+    and the callback answers 502 instead of dropping the connection."""
+    import httpx
+    settings = config.Settings(public_url="http://127.0.0.1:8747",
+                               issuer="http://127.0.0.1:8747/kc",
+                               client_id="console", operator_group="operators",
+                               nats_url="", nats_seed_file="")
+    c = Console(settings)
+    calls = {"n": 0}
+
+    async def flaky_discover(issuer: str) -> auth.Endpoints:
+        calls["n"] += 1
+        if calls["n"] < 3:
+            raise httpx.ConnectError("issuer down")
+        return auth.Endpoints(issuer=issuer,
+                              authorization=f"{issuer}/auth",
+                              token=f"{issuer}/token",
+                              jwks=f"{issuer}/certs")
+    await c.start(discover=flaky_discover)
+    try:
+        # before the issuer answers: /login is 503, the loop alive
+        status, _h, _b = await get(c, "/login")
+        assert status == 503
+        assert c._discovery is not None and not c._discovery.done()
+        from asyncio import sleep as asleep
+        for _ in range(40):
+            await asleep(0.3)
+            if c.endpoints is not None:
+                break
+        assert c.endpoints is not None  # the loop got through
+        # an /login needs its endpoints for a state
+        status, _h, _b = await get(c, "/login")
+        assert status == 303
+        # the callback: an unreachable token endpoint answers 502
+        from urllib.parse import parse_qs, urlsplit
+        status, headers, _b = await get(c, "/login")
+        where = headers.get("location", "")
+        state = parse_qs(urlsplit(where).query)["state"][0]
+        flow = next(v for v in headers["__set-cookie__"]  # type: ignore[union-attr]
+                    if isinstance(v, str) and v.startswith("choirbus_flow="))
+        import unittest.mock as mock
+
+        async def dead_exchange(*args, **kwargs):
+            raise httpx.ConnectError("token endpoint down")
+
+        with mock.patch.object(auth, "exchange", dead_exchange):
+            status, _h, body = await get(c, f"/callback?code=x&state={state}",
+                                         cookie=flow.split(";")[0])
+        assert status == 502
     finally:
         await c.stop()

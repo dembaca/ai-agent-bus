@@ -136,6 +136,8 @@ class Fleet:
                 self._presence_seq.pop(agent, None)
                 self._owners.pop(agent, None)
                 self._bots.pop(agent, None)
+        self._attests = {a: row for a, row in self._attests.items()
+                         if row[1] >= edge}
         for ch in list(self._members):
             self._members[ch] = {a: m for a, m in self._members[ch].items() if m[1] >= edge}
             if not self._members[ch]:

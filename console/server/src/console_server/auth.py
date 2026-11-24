@@ -250,14 +250,17 @@ def _check_claims(settings: config.Settings, endpoints: Endpoints,
     username = payload.get("preferred_username")
     if not isinstance(username, str) or not username:
         raise Refused("token without a username")
+    if not settings.operator_group:
+        # defence in depth: the config already refuses to start without a
+        # group; an empty one here admits nobody either
+        raise Refused("no operators group configured")
     groups = payload.get("groups")
     if not isinstance(groups, list) or not all(isinstance(g, str) for g in groups):
         groups = []
-    if settings.operator_group and not any(
-            g in (settings.operator_group, f"/{settings.operator_group}")
-            for g in groups):
+    if not any(g in (settings.operator_group, f"/{settings.operator_group}")
+               for g in groups):
         # "/operators" too: Keycloak's group mapper with the full path
-        raise Refused(f"not a member of {settings.operator_group!r}")
+        raise Refused("not a member of the operators group")
     display = payload.get("name")
     return Operator(username=username,
                     display=display if isinstance(display, str) and display else username,

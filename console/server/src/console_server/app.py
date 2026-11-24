@@ -17,9 +17,13 @@ import asyncio
 import logging
 import secrets
 import time
+from collections import deque
+
+import httpx
 from collections.abc import Awaitable, Callable
 from pathlib import Path
 from typing import Any
+from urllib.parse import urlsplit
 
 from . import auth, config, httpd
 from .auth import Endpoints
@@ -32,6 +36,8 @@ COOKIE = "choirbus_session"        # the session (8 h default)
 FLOW_COOKIE = "choirbus_flow"      # binds a login to the browser (10 min)
 STATE_TTL = 600.0                  # a login state lives ten minutes
 STATE_MAX = 64                     # then the oldest goes, never all
+STATE_RATE_MAX = 16                # new states per minute; past that /login
+STATE_RATE_SEC = 60.0              # answers 429 without creating one
 STREAMS_PER_OPERATOR = 4            # every further stream answers 429
 STATIC_TYPES = {".html": "text/html; charset=utf-8",
                 ".js": "text/javascript; charset=utf-8",
@@ -60,6 +66,7 @@ class Console:
         self.keyring = auth.Keyring()
         self.endpoints: auth.Endpoints | None = None
         self._pending: dict[str, tuple[str, float, str]] = {}  # state→(verifier, until, flow)
+        self._state_rate: deque[float] = deque()  # when states were made
         self._http: httpd.Httpd | None = None
         self._nats_task: asyncio.Task | None = None  # type: ignore[type-arg]
         self._discovery: asyncio.Task | None = None  # type: ignore[type-arg]
@@ -99,7 +106,7 @@ class Console:
                 self.endpoints = await finder(self.settings.issuer)
                 log.info("console: the issuer's endpoints are in")
                 return
-            except auth.AuthError as exc:
+            except (auth.AuthError, httpx.HTTPError, OSError, TimeoutError) as exc:
                 log.warning("console: %s; /login answers 503; retrying", exc)
                 await asyncio.sleep(5.0)
 
@@ -267,6 +274,12 @@ class Console:
                 return _unauthorized()
             return httpd.Response.json(self.fleet.graph(), headers=API_HEADERS)
         if path == "/logout":
+            origin = headers.get("origin", "")
+            if origin:
+                own = urlsplit(s.public_url)
+                want = f"{own.scheme}://{own.netloc}"
+                if origin != want:
+                    return httpd.Response.text("cross-site logout", 403)
             response = httpd.Response.see(s.login_off and "/" or "/login")
             response.headers = response.headers + (
                 ("Set-Cookie", f"{COOKIE}=; Path=/; Max-Age=0"),)
@@ -294,8 +307,13 @@ class Console:
             url, state, verifier = auth.login_url(self.endpoints, s.client_id, redirect)
             flow = _b64u_cookie()
             now = time.time()
-            # expired states go, then the oldest when the table is full —
-            # a flood of /login never wipes another browser's state
+            while self._state_rate and now - self._state_rate[0] > STATE_RATE_SEC:
+                self._state_rate.popleft()
+            if len(self._state_rate) >= STATE_RATE_MAX:
+                # a flood gets a 429, never the power to evict a genuine
+                # login state by filling the table
+                return httpd.Response.text("too many logins; wait a minute", 429)
+            self._state_rate.append(now)
             self._pending = {k: row for k, row in self._pending.items()
                              if row[1] > now}
             while len(self._pending) >= STATE_MAX:
@@ -323,9 +341,11 @@ class Console:
             operator = await auth.verify(s, self.endpoints, self.keyring, raw)
         except auth.Refused as exc:
             log.warning("console login refused: %s", exc)
-            return httpd.Response.text(f"login refused: {exc}", 403)
-        except auth.AuthError as exc:
-            # discovery, token endpoint, jwks: the server's fault, not the person's
+            return httpd.Response.text("login refused: not a member of the"
+                                       " operators group", 403)
+        except (auth.AuthError, httpx.HTTPError, OSError, TimeoutError) as exc:
+            # discovery, token endpoint, jwks, transport: the server's
+            # fault, not the person's
             log.warning("console login failed: %s", exc)
             return httpd.Response.text(f"login failed: {exc}", 502)
         token = self.sessions.issue(operator, s.session_sec)
