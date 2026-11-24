@@ -36,7 +36,15 @@ export function App({ api }: { api: ConsoleApi }) {
       setCards((all) => all.filter((c) => c.name !== event.name))
     }
   }, [])
-  useEffect(() => api.watchFleet(onEvent, setConn), [api, onEvent])
+  const onState = useCallback((state: ConnState) => {
+    setConn(state)
+    if (state === "error") {
+      // An EventSource hides its status code; the probe finds a real 401,
+      // and http.ts sends the operator to the server's /login for it.
+      api.me().catch(() => {})
+    }
+  }, [api])
+  useEffect(() => api.watchFleet(onEvent, onState), [api, onEvent, onState])
 
   // The operator (GET /v1/me); the login itself is the server's — a failed
   // identity call is the one error a read-only console cannot wave away.

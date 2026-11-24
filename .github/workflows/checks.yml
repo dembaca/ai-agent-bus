@@ -169,7 +169,9 @@ jobs:
           echo "MM_NATS_SERVER=$dir/nats-server" >> "$GITHUB_ENV"
           echo "MM_TEST_NATS=1" >> "$GITHUB_ENV"
       - name: console server
-        run: uv run --directory console/server pytest -q
+        run: |
+          uv run --directory console/server pytest -q
+          uv run --directory console/server --with mypy mypy src
       # The reviews' image findings, held by CI: the image builds and the
       # server starts and answers /healthz (the login keeps retrying its
       # discovery when the issuer is down, so a missing Keycloak in this

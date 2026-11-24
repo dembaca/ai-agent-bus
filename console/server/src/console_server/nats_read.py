@@ -97,9 +97,11 @@ async def read_forever(settings: config.Settings, fleet: Fleet,
     every delivery to the reader. One failed delivery never ends the
     loop; a silent stream reconnects after ``IDLE_RECONNECT_SEC`` — the
     replay then says what still stands. The loop never publishes."""
-    seed = Path(settings.nats_seed_file).read_text(encoding="utf-8").strip()
     backoff = 1.0
     while True:
+        # the seed is read per attempt: nothing to cache (a rotated seed
+        # file is picked up, a missing one has failed the config check)
+        seed = Path(settings.nats_seed_file).read_text(encoding="utf-8").strip()
         try:
             closed = asyncio.get_running_loop().create_future()
             last_seen = time.monotonic()

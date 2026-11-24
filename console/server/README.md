@@ -55,12 +55,34 @@ owner alone — the server refuses wider. The PRESENCE stream
 (`services/auth`: `consumers/streams.go`) must exist; the login service's
 `AUTH_JS_SEED_FILE` user or the lab checklist owner makes it.
 
-**Accepted lab risk, named for the pilot (ADR-015):** the right to create
-a consumer names its deliver subject freely, which NATS permissions
-cannot close — a taken-over console account could aim its consumer at
-`bus.evil.x`. The lab takes this knowingly; after the pilot an admin (or
-the login service, way A) makes the console's consumer and the account
-keeps only the read.
+**Lab risks, named for the pilot** (dembaca's go, 2026-11-24; both close
+with the console's own NATS account before the stage after the pilot,
+decided the same day, ADR-015):
+
+1. **The reply subject of a consumer request can overwrite the PRESENCE
+   state of agents.** Someone holding the console's NATS credential can
+   publish through it; nothing can be forged (the sender stays pinned in
+   the subject, RISK-09 holds), but state can be erased. It heals by
+   republishing: an overwritten presence within 30 s (`HEARTBEAT_SEC`),
+   attestation, membership and crown claim with the agent's next
+   credential renewal — at the latest after about 14 minutes (`RENEW_SEC`;
+   attestation is written by the login service at every credential,
+   membership and claim return on the renewal's reconnect). A host
+   already running keeps its copy in memory; a host started in between
+   sees no attestation until then and judges the sender as foreign —
+   fail closed.
+2. **The consumer's deliver subject is freely chosen** — NATS
+   permissions cannot close what a consumer-create names, so a
+   taken-over console account could aim its consumer at `bus.evil.x`.
+   Agents drop foreign deliveries (each delivers only to
+   `deliver.<name>.…`), so this widens reading into the streams, not
+   forgery.
+
+The seed belongs to the lab's console service account: whoever runs the
+lab checklist creates it and mounts it as a read-only secret file; the
+console owns nothing else. After the pilot an admin (or the login
+service, way A) makes the console's consumer and the account keeps only
+the read.
 
 ## Settings (all `CONSOLE_*`, checked on start; fail closed)
 

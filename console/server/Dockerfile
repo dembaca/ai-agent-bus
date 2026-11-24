@@ -14,6 +14,7 @@ FROM node:24-slim@sha256:32e57b5784e8875d2cc0112dcaf13f9100f2d0d9446187808738e99
 WORKDIR /src
 COPY console/web/package.json console/web/package-lock.json ./console/web/
 RUN npm --prefix console/web ci --ignore-scripts
+COPY console/fixtures ./console/fixtures
 COPY console/web ./console/web
 RUN VITE_CONSOLE_API=/ npm --prefix console/web run build
 
@@ -25,16 +26,19 @@ COPY mcp/src ./mcp/src
 COPY console/server/pyproject.toml console/server/uv.lock  ./console/server/
 COPY console/server/src ./console/server/src
 # --frozen: the lockfile decides; --no-dev: the tests stay out; --no-editable:
-# /src does not travel with the venv (the reviews' image findings)
-RUN VIRTUAL_ENV=/venv uv sync --directory console/server --frozen --no-dev \
-        --no-editable --python 3.11
+# /src does not travel with the venv (the reviews' image findings);
+# UV_PROJECT_ENVIRONMENT puts the project's venv at /venv itself.
+# Python 3.13 on both sides: the mcp package needs 3.12+ (#96), and
+# distroless python3-debian13 is 3.13 as the build stage is.
+ENV UV_PROJECT_ENVIRONMENT=/venv
+RUN uv sync --directory console/server --frozen --no-dev --no-editable
 
-# gcr.io/distroless/python3-debian12: no shell, no package manager; python3
-# is the run stage's interpreter, 3.11 as the install stage's.
-FROM gcr.io/distroless/python3-debian12:nonroot@sha256:7d1042ce588ab97019fe95c24ffca7bc5a82ccdac572511d5e09bda4435c89c5
+# gcr.io/distroless/python3-debian13: no shell, no package manager; its
+# python3 is 3.13, as the install stage's — the mcp package needs 3.12+ (#96).
+FROM gcr.io/distroless/python3-debian13:nonroot@sha256:e36c26ad81ef8c9da7605d717a22160193ab66cfbc55bd5977f429f01f6ead99
 COPY --from=server /venv /venv
 COPY --from=web /src/console/web/dist /app/web
-ENV PYTHONPATH=/venv/lib/python3.11/site-packages \
+ENV PYTHONPATH=/venv/lib/python3.13/site-packages \
     CONSOLE_WEB_DIR=/app/web \
     PYTHONUNBUFFERED=1
 USER nonroot:nonroot
