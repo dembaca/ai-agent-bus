@@ -5,6 +5,19 @@ before 0.5.0 are described in the git history.
 
 ## Unreleased
 
+- **Host login: a fast host clock, odd token times, the cooldown's cause**
+  (#10, RT-6.34 step 3). A token's lifetime is now the shorter of
+  `expires_in` and its own `exp - iat`, at most one day, counted from when
+  its request went out: a host wall clock running ahead of Keycloak's by
+  more than the lifetime made every token stale, so every call refreshed
+  and rotated it. An `exp` or `iat` that is no sane time (NaN, infinite, an
+  integer too large for a float), or an `exp` before the `iat`, is a
+  `LoginError` before anything is stored; a huge integer raised
+  `OverflowError` after the token was stored, with no cooldown. During a
+  cooldown set by any other error, such as Keycloak not reachable or no
+  notifier, callers see that error's text (one line, at most 120
+  characters), not only "failed"; the mark on the host still holds only
+  the fixed reasons.
 - **The crown no longer breaks a table or list** (RT-6.6 step 3). A coordinator's
   post that opens with a Markdown block (table row, list item, heading, code
   fence, quote) gets the 👑 on a line of its own and a blank line after it,
@@ -12,7 +25,6 @@ before 0.5.0 are described in the git history.
   text opens with such a block (`kind="RESULT"` and a table) puts its bus word
   on the headline alone and the block below a blank line, instead of
   `RESULT · | a |`, which broke the table.
-
 - **Silence keeps the crown one more crown lease** (#64, RT-6.6 steps 1 and 6,
   ADR-007 amended 2026-11-24). A holder that turns silent (a push untaken
   for 45 s, or no sign in the window) no longer drops its crown at once: its

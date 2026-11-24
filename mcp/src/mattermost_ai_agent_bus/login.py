@@ -65,6 +65,9 @@ DEFAULT_INTERVAL_SEC = 5
 HTTP_TIMEOUT_SEC = 20.0
 MAX_BACKOFF_SEC = 60  # growing wait after a network error or a 5xx while polling
 COOLDOWN_SEC = 60  # after any approval that failed, no new approval for this long
+MAX_TIME_SEC = 2 ** 34  # a token's times lie below this (the year 2514), far below what a float holds
+MAX_LIFETIME_SEC = 86_400  # a token is held at most this long, whatever its times say
+MAX_CAUSE_CHARS = 120  # the error text a cooldown reports, on one line
 # The reasons a cooldown may carry. A mark is a file, so its reason is data, and only
 # these are ever reported: anything else says "failed".
 COOLDOWN_WHY = ("was declined", "expired", "was refused", "lacked the realm role", "failed")
@@ -204,7 +207,10 @@ class NKey:
 class _Tokens:
     access: str = ""
     expires_at: float = 0.0  # monotonic clock
-    exp: float = 0.0  # the token's own exp, wall clock: the monotonic one stands still while the machine sleeps
+    # The same end on this host's wall clock: the monotonic one stands still while the
+    # machine sleeps. Time received plus the token's lifetime, never its exp as such,
+    # since this host's clock may run apart from the issuer's (RT-6.34 step 3).
+    wall_until: float = 0.0
 
     def __repr__(self) -> str:
         return "_Tokens(<hidden>)"
@@ -247,6 +253,7 @@ class Login:
         self._lock = asyncio.Lock()
         self._cooldown_until = 0.0
         self._cooldown_why = ""
+        self._cooldown_cause = ""  # the error behind this object's own "failed" cooldown
         self._mark_seen = 0.0  # the stored deadline this object has taken in, 0 for none
         self._mark_until = 0.0  # ... and the effective (capped) deadline that gave
         self._nkey: nkeys.KeyPair | None = None
@@ -320,7 +327,10 @@ class Login:
                         self._drop_refresh(human)
                 wait = self._cooldown_until - self._now()
                 if wait > 0:
-                    raise LoginError(f"the last approval {self._cooldown_why}; "
+                    # The first error, where this process saw it: "failed" alone hides
+                    # whether Keycloak was down or no DM could go out.
+                    cause = f" ({self._cooldown_cause})" if self._cooldown_cause else ""
+                    raise LoginError(f"the last approval {self._cooldown_why}{cause}; "
                                      f"a new one starts in {int(wait) + 1} s")
                 try:
                     await self._approve(human)
@@ -328,8 +338,10 @@ class Login:
                     # Any failure, not only a denial: else every call would
                     # send a new DM and leave a new session open in Keycloak.
                     if self._cooldown_until <= self._now():
-                        self._cool_down("lacked the realm role" if isinstance(exc, NoRole)
-                                        else "failed", human)
+                        if isinstance(exc, NoRole):
+                            self._cool_down("lacked the realm role", human)
+                        else:
+                            self._cool_down("failed", human, cause=str(exc))
                     raise
                 self._clear_cooldown(human)
                 return self._tokens.access
@@ -337,7 +349,7 @@ class Login:
     def _fresh(self) -> bool:
         t = self._tokens
         return bool(t.access) and t.expires_at - self._now() >= MIN_LEFT_SEC \
-            and t.exp - self._wall() >= MIN_LEFT_SEC
+            and t.wall_until - self._wall() >= MIN_LEFT_SEC
 
     @contextlib.asynccontextmanager
     async def _file_lock(self, entry: str) -> AsyncIterator[None]:
@@ -495,9 +507,12 @@ class Login:
         finally:
             await self._settle(outcome)
 
-    def _cool_down(self, why: str, human: str = "") -> None:
+    def _cool_down(self, why: str, human: str = "", cause: str = "") -> None:
+        """`cause` is the error's own text, kept in this object only: the mark on the
+        host carries one of the fixed reasons, never a text."""
         self._cooldown_until = self._now() + COOLDOWN_SEC
         self._cooldown_why = why
+        self._cooldown_cause = " ".join(cause.split())[:MAX_CAUSE_CHARS]
         self._save_cooldown(human)
 
     def _load_cooldown(self, human: str) -> None:
@@ -535,6 +550,7 @@ class Login:
         if left > 0:
             self._cooldown_until = self._now() + left
             self._cooldown_why = why if why in COOLDOWN_WHY else "failed"
+            self._cooldown_cause = ""  # another process's failure: its error is not known here
 
     def _save_cooldown(self, human: str) -> None:
         """The mark beside the token: the deadline and why, so the next process says
@@ -554,6 +570,7 @@ class Login:
         """A login that worked leaves no mark: the next process starts clean."""
         self._cooldown_until = 0.0
         self._cooldown_why = ""
+        self._cooldown_cause = ""
         self._mark_seen = 0.0
         self._mark_until = 0.0
         if not human:
@@ -580,6 +597,7 @@ class Login:
             if self._now() > deadline:
                 raise ApprovalExpired("the device code expired")
             try:
+                sent = (self._now(), self._wall())
                 resp = await self._post(token_url, {
                     "grant_type": "urn:ietf:params:oauth:grant-type:device_code",
                     "device_code": device_code, "client_id": self.settings.client_id})
@@ -594,7 +612,7 @@ class Login:
             delay = interval
             body = _json(resp)
             if resp.status_code == 200:
-                await self._accept(body, human)
+                await self._accept(body, human, sent)
                 return "approved"
             code = body.get("error")
             if code == "authorization_pending":
@@ -611,20 +629,23 @@ class Login:
 
     async def _refresh(self, refresh_token: str, human: str) -> None:
         endpoints = await self._discover()
+        sent = (self._now(), self._wall())
         resp = await self._post(endpoints["token_endpoint"], {
             "grant_type": "refresh_token", "refresh_token": refresh_token,
             "client_id": self.settings.client_id})
         body = _json(resp)
         if resp.status_code == 200:
-            await self._accept(body, human)
+            await self._accept(body, human, sent)
             return
         if body.get("error") == "invalid_grant":
             raise _InvalidGrant
         raise LoginError(f"the refresh failed ({_error_of(body, resp)})")
 
-    async def _accept(self, body: dict[str, Any], human: str) -> None:
+    async def _accept(self, body: dict[str, Any], human: str, sent: tuple[float, float]) -> None:
         """A token response: the token's issuer, client and person are checked
-        first; only then is the new refresh token stored."""
+        first; only then is the new refresh token stored. `sent` is the monotonic
+        and the wall time the request went out: the lifetime counts from there,
+        never from the answer, so a slow answer only shortens it."""
         access, refresh = body.get("access_token"), body.get("refresh_token")
         if not isinstance(access, str) or not access:
             raise LoginError("the token response has no access token")
@@ -652,17 +673,14 @@ class Login:
             roles = access_info.get("roles") if isinstance(access_info, dict) else None
             if not isinstance(roles, list) or ROLE not in roles:
                 raise NoRole(f"the access token does not carry the realm role {ROLE}")
+            lifetime = _lifetime(body, claims, sent[1])
         except LoginError:
             # Never stored, so never used: revoked, or its session stays open in Keycloak.
             await self._revoke(refresh)
             raise
         self._store_refresh(refresh, human)
-        lifetime = _int(body.get("expires_in"), 60)
-        exp = claims.get("exp")
-        self._tokens = _Tokens(
-            access=access, expires_at=self._now() + lifetime,
-            exp=float(exp) if isinstance(exp, (int, float)) and not isinstance(exp, bool)
-            else self._wall() + lifetime)
+        self._tokens = _Tokens(access=access, expires_at=sent[0] + lifetime,
+                               wall_until=sent[1] + lifetime)
 
     async def _revoke(self, refresh_token: str) -> None:
         """A refresh token that is not kept (another person's, or a token that
@@ -715,6 +733,42 @@ def _error_of(body: dict[str, Any], resp: httpx.Response) -> str:
     if isinstance(code, str) and re.fullmatch(r"[a-z_]{1,39}", code):
         return code
     return f"HTTP {resp.status_code}"
+
+
+def _time_claim(claims: dict[str, Any], name: str) -> float | None:
+    """A token's `exp` or `iat`: absent is None; anything but a positive number below
+    MAX_TIME_SEC is a LoginError. A NaN made no token fresh, and an integer too large
+    for a float raised OverflowError after the token was stored; both need a hostile
+    issuer."""
+    value = claims.get(name)
+    if value is None:
+        return None
+    if isinstance(value, bool) or not isinstance(value, int | float) or not 0 < value < MAX_TIME_SEC:
+        raise LoginError(f"the access token's {name} is not a usable time")
+    return float(value)
+
+
+def _lifetime(body: dict[str, Any], claims: dict[str, Any], wall: float) -> float:
+    """How long a token lives from `wall`, the time its request went out, in seconds:
+    the shorter of the response's `expires_in` and the token's own `exp - iat`, and
+    never more than MAX_LIFETIME_SEC. Both are durations, so a host clock that runs
+    ahead of the issuer's does not make every token stale (RT-6.34 step 3). Only a
+    token without `iat` is measured against this host's clock; one with no lifetime
+    at all gets 60 s, as before."""
+    exp, iat = _time_claim(claims, "exp"), _time_claim(claims, "iat")
+    spans: list[float] = []
+    expires_in = body.get("expires_in")
+    # A number, int or float (not a bool); NaN and infinity fail the range check.
+    if isinstance(expires_in, int | float) and not isinstance(expires_in, bool) \
+            and 0 < expires_in < MAX_TIME_SEC:
+        spans.append(float(expires_in))
+    if exp is not None and iat is not None:
+        if exp <= iat:
+            raise LoginError("the access token expires before it was issued")
+        spans.append(exp - iat)
+    elif exp is not None:
+        spans.append(exp - wall)
+    return min(*spans, MAX_LIFETIME_SEC) if spans else 60.0
 
 
 def _int(value: object, default: int) -> int:
