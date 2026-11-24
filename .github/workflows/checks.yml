@@ -307,22 +307,31 @@ jobs:
           username: ${{ github.actor }}
           password: ${{ secrets.GITHUB_TOKEN }}
 
-      - name: is this the newest main? (:main only then)
+      - name: is this the newest build of these paths? (:main only then)
         id: tags
-        # A run's tests finish in their own time: without this, an older push
-        # that finishes later would move :main back. Only the newest commit
-        # gets :main; every build keeps its SHA tag, and deployments name the
-        # digest anyway.
+        # A run's tests finish in their own time, and each workflow is path
+        # filtered: :main belongs to the newest commit of the image's own paths,
+        # so an unrelated merge that lands while a build runs does not leave
+        # :main behind. Only that commit moves :main; every build keeps its SHA
+        # tag, and deployments name the digest anyway.
         env:
           GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
         run: |
-          head="$(gh api "repos/${GITHUB_REPOSITORY}/commits/main" --jq .sha)"
+          newest() {
+            for p in "$@"; do
+              gh api "repos/${GITHUB_REPOSITORY}/commits?sha=main&path=${p}&per_page=1" \
+                --jq '.[0] | "\(.commit.committer.date) \(.sha)"'
+            done | sort | tail -1 | cut -d' ' -f2
+          }
+          head="$(newest console mcp)"
           tags="${IMAGE}:${GITHUB_SHA}"
           if [ "$head" = "$GITHUB_SHA" ]; then
             tags="${tags}"$'\n'"${IMAGE}:main"
-            echo "this build is main: :main moves"
+            echo "main=true" >> "$GITHUB_OUTPUT"
+            echo "this build is the newest of its paths: :main moves"
           else
-            echo "main is ${head} by now: only :${GITHUB_SHA} is tagged"
+            echo "main=false" >> "$GITHUB_OUTPUT"
+            echo "the newest build of these paths is ${head}: only :${GITHUB_SHA} is tagged"
           fi
           { echo "list<<EOF"; echo "$tags"; echo "EOF"; } >> "$GITHUB_OUTPUT"
 
@@ -351,6 +360,7 @@ jobs:
       - name: digest in the job summary
         env:
           DIGEST: ${{ steps.push.outputs.digest }}
+          MAIN: ${{ steps.tags.outputs.main }}
         run: |
           {
             echo "### Operator console image"
@@ -361,7 +371,11 @@ jobs:
             echo "${IMAGE}@${DIGEST}"
             echo '```'
             echo
-            echo "Tags: \`${GITHUB_SHA}\`, \`main\` (moving)."
+            if [ "${MAIN}" = "true" ]; then
+              echo "Tags: \`${GITHUB_SHA}\`, \`main\` (moving)."
+            else
+              echo "Tags: \`${GITHUB_SHA}\` only: main moved on before this build finished, so \`:main\` names a newer image."
+            fi
           } >> "$GITHUB_STEP_SUMMARY"
 
   lint:
