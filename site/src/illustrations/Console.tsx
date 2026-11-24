@@ -3,7 +3,7 @@ import { Avatar, Badge, Bar, Stage, States, Text, Window, type Act, type Theme }
 import './console.css'
 
 // The operator console as planned (ADR-015, ADR-016), drawn as a preview,
-// not a screenshot: nothing of it is built yet. The page says so above the
+// not a screenshot of the pilot. The page says so above the
 // picture and the window carries a "Preview" badge of its own.
 //
 // One window, after the `window-row` gold's chrome: a sidebar with the three
