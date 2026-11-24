@@ -3288,7 +3288,10 @@ separately.
       (ADR-016, accepted 2026-11-23), not built yet: not the central
       adapter alone. Each chat product's bridge vouches for the humans of
       its chat, with a key of its own and only for the channels bound to
-      it; the central adapter is the bridge for Mattermost. Later a
+      it; the central adapter is the bridge for Mattermost. Amended by
+      step 2 of the addition "all of Mattermost in one service" (ADR-016,
+      decision point 2, open): recommended is no key, the bridge vouches by
+      its NATS publish right alone; the risk is RISK-21. Later a
       Keycloak login on NATS itself counts as much, with the operator
       console's answer path (ADR-015 open point 2). Whether an answer
       approves stays the asking agent's MCP server's check, as above.
@@ -4862,15 +4865,23 @@ registrar's functions can move in later without a second component.
        reactions changed with their current reactions, and compares those
        with what it carried; whether `since` returns a post whose only
        change is a reaction is to be checked against Mattermost at build,
-       and if not, the bridge reads the reactions of the posts it carried
-       or mirrored within the bound. A removal found this way is carried as
+       and if not, the bridge reads the reactions of every post of that
+       read and, for older targets, of every post id it has seen in the
+       channel within the last hour, asks included. A reaction on an ask is
+       carried like any other, although the ask itself, an agent's
+       Mattermost post, is not. A removal found this way is carried as
        an `unreaction`. An event's key is a post's `mm`, and for a reaction
        or unreaction its `mm`, emoji, sender and kind together; an event of
        the opposite kind for the same `mm`, emoji and sender clears the
        key, so a 👍 taken back and given again counts again (chosen over
        adding the reaction's `create_at` to the key). The bridge keeps the
-       keys it carried in `BUS_BRIDGE`, so nothing goes out twice, and the
-       MCP server drops an event whose key it holds. Why: in a switched channel the MCP
+       keys it carried and the post ids it has seen in a bucket of their
+       own, `BUS_BRIDGE_SEEN`, with `max_age` one hour (longer than the
+       catch-up bound and any key's use) and `discard: old`, so they never
+       fill `BUS_BRIDGE`, whose first-step `pos.<home>` keys have no age
+       limit and whose `discard: new` would then refuse every write; the
+       watermark per home stays in `BUS_BRIDGE`. The MCP server drops an
+       event whose key it holds, and keeps its keys for the same hour. Why: in a switched channel the MCP
        server no longer reads people on Mattermost (point 12), so a "go"
        posted during a reconnect would never arrive; the watermark and the
        age bound keep an old, edited "go" from going out as new.
@@ -4915,9 +4926,10 @@ registrar's functions can move in later without a second component.
        stream of its own. Then a reply across the two needs a second kind
        of reference.
    16. **Each agent gets one consumer per granted channel for people,
-       deliver subject `deliver.<name>.hu.<channel>`, ack none.**
-       Recommended: the login service makes it beside the agent's
-       `<bus>.ch` consumer. Why: the same rules as for agents' traffic
+       named `<agent>_hu_<channel>`, deliver subject
+       `deliver.<name>.hu.<channel>`, ack none.** Recommended: the login
+       service makes it beside the agent's `<agent>_ch_<channel>` and the
+       agent's bye deletes both. Why: the same rules as for agents' traffic
        (ADR-014 point 16), and a channel the agent may not read gives it
        no people either. Alternative: widen the existing consumer's filter
        to both subjects. One consumer less, but a change to every agent's
@@ -4928,8 +4940,9 @@ registrar's functions can move in later without a second component.
        post is already in Mattermost; a mirror would show it twice and
        loop. Alternative: none sensible.
    18. **The body's fields**: `v`, `kind`, `mm`, `name` (display only),
-       for a post `text`, `mm_root`, `root`, `files` (a count; files stay
-       on Mattermost), for a reaction `emoji` and `ref`; no `props`.
+       for a post `text` (cut at 16 000 characters and to fit the stream's
+       64 KiB, then marked `cut`), `mm_root`, `root`, `files` (a count;
+       files stay on Mattermost), for a reaction `emoji` and `ref`; no `props`.
        Recommended. Why: the Mattermost ids let an agent answer a person
        and match an ask; nothing in the body names the author. Alternative:
        carry files over NATS. Not needed while agents can read Mattermost.

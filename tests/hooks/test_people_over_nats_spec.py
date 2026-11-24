@@ -23,7 +23,7 @@ PROTOCOL = ROOT / "docs" / "protocol.md"
 SECTION = "## Over NATS: people's posts and reactions"
 
 ALLOWED = {
-    "post": {"v", "kind", "text", "name", "mm", "mm_root", "root", "files"},
+    "post": {"v", "kind", "text", "name", "mm", "mm_root", "root", "files", "cut"},
     "reaction": {"v", "kind", "emoji", "name", "mm", "ref"},
     "unreaction": {"v", "kind", "emoji", "name", "mm", "ref"},
 }

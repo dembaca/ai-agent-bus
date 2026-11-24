@@ -286,6 +286,7 @@ The three bodies, format v1:
 | `mm_root` | post | The Mattermost id of the thread's root, only in a thread |
 | `root` | post | The root's stream sequence, when the root is on NATS |
 | `files` | post | How many files the post holds; they stay on Mattermost |
+| `cut` | post | `true` when the text was cut: at 16 000 characters, and further until the body fits the stream's 64 KiB |
 | `emoji` | reaction, unreaction | The emoji's name |
 | `ref` | reaction, unreaction | The reacted post's stream sequence, when it is on NATS (an ask lives on Mattermost and has none) |
 
