@@ -111,8 +111,9 @@ async def read_forever(settings: config.Settings, fleet: Fleet,
     """Connect, subscribe the console's deliver subject, remake the
     consumer (its replay flows to exactly this subscription) and feed
     every delivery to the reader. One failed delivery never ends the
-    loop; a silent stream reconnects after ``IDLE_RECONNECT_SEC`` — the
-    replay then says what still stands. The loop never publishes."""
+    loop; a silent stream reconnects for a replay after three quarters
+    of the probe's bound (with a floor), so the fleet stays honest
+    within it. The loop never publishes."""
     backoff = 1.0
     while True:
         try:

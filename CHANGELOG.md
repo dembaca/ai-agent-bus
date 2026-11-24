@@ -11,14 +11,16 @@ before 0.5.0 are described in the git history.
   has synced — a finished replay with zero messages included, so an empty
   fleet reads healthy — and again once no replay arrived within
   `CONSOLE_HEALTH_SYNC_BOUND` (30 s to 24 h, default 180 s; the reader
-  reconnects for a replay on its own after 120 s of silence and wakes every
-  quarter of the bound). The
+  reconnects for a replay after a silent three quarters of the bound and
+  wakes every quarter of it). Beside it, `GET /livez` answers liveness:
+  503 only when the reader ended without a stop — a liveness probe on
+  `/healthz` would restart the pod while NATS is merely slow. The
   docs follow: the console's row in the deployment view (settings, the
   image, the Keycloak setup, one replica), the README's deployment notes
   (a container-usable `CONSOLE_ADDR`, the group mapper and
-  `preferred_username` required, `handshake_first`, `/healthz`,
-  `CONSOLE_TOKEN_ALGS`/`CONSOLE_CONSUMER_NAME` in the settings table),
-  and ADR-015's status cell states the pilot as built once.
+  `preferred_username` required, `handshake_first`, `/healthz` and
+  `/livez`, `CONSOLE_TOKEN_ALGS`/`CONSOLE_CONSUMER_NAME` in the settings
+  table), and ADR-015's status cell states the pilot as built once.
 - **The operator console's browser app, a read-only pilot** (ADR-015 point
   14). `console/web` inherits the toolchain of `site/` (React,
   TypeScript, Vite) and implements the four views against a mock of the API
