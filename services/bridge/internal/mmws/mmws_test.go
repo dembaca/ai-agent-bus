@@ -1,0 +1,473 @@
+package mmws
+
+import (
+	"bytes"
+	"context"
+	"encoding/json"
+	"errors"
+	"io"
+	"log/slog"
+	"net/http"
+	"net/http/httptest"
+	"os"
+	"strings"
+	"sync"
+	"testing"
+	"time"
+
+	"github.com/gorilla/websocket"
+
+	"github.com/dembaca/ai-agent-bus/services/bridge/internal/mm"
+)
+
+func TestMain(m *testing.M) {
+	// The reader logs its retries by design; a test does not want them on
+	// stderr (TestAuthFailureRetries swaps the default for its own ear).
+	slog.SetDefault(slog.New(slog.NewTextHandler(io.Discard, nil)))
+	os.Exit(m.Run())
+}
+
+// fakeMM is a scripted Mattermost: one httptest server that serves both
+// the WebSocket (/api/v4/websocket) and the REST path the catch-up reads,
+// as one Mattermost does. Each WebSocket connection runs the next script
+// of the list; the last script repeats for every later connection, so a
+// test that cuts the socket says with its scripts what comes back.
+type fakeMM struct {
+	mu      sync.Mutex
+	scripts []func(*websocket.Conn)
+	n       int              // WebSocket connections taken
+	posts   http.HandlerFunc // /api/v4/channels/<id>/posts
+	srv     *httptest.Server
+}
+
+func newFake(t *testing.T) *fakeMM {
+	t.Helper()
+	f := &fakeMM{}
+	mux := http.NewServeMux()
+	mux.HandleFunc("/api/v4/websocket", func(w http.ResponseWriter, r *http.Request) {
+		conn, err := (&websocket.Upgrader{}).Upgrade(w, r, nil)
+		if err != nil {
+			return
+		}
+		defer conn.Close()
+		f.mu.Lock()
+		f.n++
+		script := f.scripts[min(f.n-1, len(f.scripts)-1)]
+		f.mu.Unlock()
+		if script != nil {
+			script(conn)
+		}
+	})
+	mux.HandleFunc("/api/v4/channels/", func(w http.ResponseWriter, r *http.Request) {
+		if f.posts == nil || !strings.HasSuffix(r.URL.Path, "/posts") {
+			w.WriteHeader(http.StatusNotFound)
+			return
+		}
+		f.posts(w, r)
+	})
+	f.srv = httptest.NewServer(mux)
+	t.Cleanup(f.srv.Close)
+	return f
+}
+
+// connections says how many WebSocket connections the fake has taken.
+func (f *fakeMM) connections() int {
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	return f.n
+}
+
+func write(conn *websocket.Conn, v any) {
+	// A write the reader did not live to read fails with its hang-up;
+	// what the reader then does is the scripts' business.
+	_ = conn.WriteJSON(v)
+}
+
+// authOK reads the auth challenge and answers it as Mattermost does —
+// an OK reply, then the hello event — and runs the steps on the socket.
+func authOK(steps ...func(*websocket.Conn)) func(*websocket.Conn) {
+	return func(conn *websocket.Conn) {
+		var challenge struct {
+			Seq int `json:"seq"`
+		}
+		if err := conn.ReadJSON(&challenge); err != nil {
+			return // the reader hung up before asking
+		}
+		write(conn, map[string]any{"status": "OK", "seq_reply": challenge.Seq,
+			"data": map[string]any{}})
+		write(conn, map[string]any{"event": "hello",
+			"data": map[string]any{"connection_id": "c1"}, "seq": 0})
+		for _, step := range steps {
+			step(conn)
+		}
+	}
+}
+
+// authRefused answers the challenge with a refusal, as Mattermost answers
+// a bad token, and hangs up.
+func authRefused(conn *websocket.Conn) {
+	var challenge struct {
+		Seq int `json:"seq"`
+	}
+	if err := conn.ReadJSON(&challenge); err != nil {
+		return
+	}
+	write(conn, map[string]any{"status": "FAIL", "seq_reply": challenge.Seq,
+		"error": map[string]any{"id": "api.context.session_expired.app_error",
+			"message": "Invalid or expired session"}})
+}
+
+// still holds a connection open reading until the reader hangs up: the
+// quiet connection every connected test ends on.
+func still(conn *websocket.Conn) {
+	for {
+		if _, _, err := conn.ReadMessage(); err != nil {
+			return
+		}
+	}
+}
+
+func postEvent(conn *websocket.Conn, post map[string]any) {
+	// Mattermost carries the post as a JSON string inside the event.
+	raw, _ := json.Marshal(post)
+	write(conn, map[string]any{"event": "posted",
+		"data": map[string]any{"post": string(raw)}})
+}
+
+func reactionEvent(conn *websocket.Conn, name string, reaction map[string]any) {
+	raw, _ := json.Marshal(reaction)
+	write(conn, map[string]any{"event": name,
+		"data": map[string]any{"reaction": string(raw)}})
+}
+
+// ping sends a ping and fails the test when no pong, with the same
+// payload, comes back: the reader must answer pings, or Mattermost closes
+// a quiet socket.
+func ping(t *testing.T) func(*websocket.Conn) {
+	return func(conn *websocket.Conn) {
+		got := make(chan string, 1)
+		conn.SetPongHandler(func(d string) error {
+			select {
+			case got <- d:
+			default:
+			}
+			return nil
+		})
+		if err := conn.WriteControl(websocket.PingMessage, []byte("1"),
+			time.Now().Add(time.Second)); err != nil {
+			t.Errorf("the fake could not ping: %v", err)
+			return
+		}
+		select {
+		case d := <-got:
+			if d != "1" {
+				t.Errorf("got pong %q, want the ping's payload \"1\"", d)
+			}
+		case <-time.After(2 * time.Second):
+			t.Error("the reader did not answer the ping")
+		}
+	}
+}
+
+// run starts the reader against the fake. The backoff is what a test may
+// sleep: a reconnect happens in milliseconds, not seconds.
+func run(t *testing.T, f *fakeMM) *Reader {
+	t.Helper()
+	ctx, cancel := context.WithCancel(context.Background())
+	r := New(f.srv.URL, "tok").WithBackoff(time.Millisecond, 4*time.Millisecond)
+	done := make(chan error, 1)
+	go func() { done <- r.Run(ctx) }()
+	t.Cleanup(func() {
+		cancel()
+		select {
+		case <-done:
+		case <-time.After(2 * time.Second):
+			t.Error("the reader did not stop")
+		}
+	})
+	return r
+}
+
+// next takes the next event, or fails the test when none comes in time.
+func next(t *testing.T, r *Reader) Event {
+	t.Helper()
+	select {
+	case ev := <-r.Events():
+		return ev
+	case <-time.After(2 * time.Second):
+		t.Fatal("no event in time")
+		return nil
+	}
+}
+
+func reconnected(t *testing.T, ev Event, want int64) {
+	t.Helper()
+	rc, ok := ev.(*Reconnected)
+	if !ok {
+		t.Fatalf("got %T, want *Reconnected", ev)
+	}
+	if rc.Since != want {
+		t.Errorf("got Reconnected{Since: %d}, want %d", rc.Since, want)
+	}
+}
+
+// Given a connected reader, when Mattermost sends a post, a ping and the
+// two reaction events — with an event it must ignore among them — the
+// three arrive typed with all their fields, the ping is answered and the
+// rest changes nothing.
+func TestEventsTyped(t *testing.T) {
+	f := newFake(t)
+	f.scripts = []func(*websocket.Conn){authOK(
+		func(conn *websocket.Conn) {
+			postEvent(conn, map[string]any{
+				"id": "p1", "user_id": "u1", "channel_id": "ch1", "root_id": "r1",
+				"create_at": 1000, "update_at": 1000, "edit_at": 0,
+				"message": "go ahead",
+			})
+			// An event the reader must ignore, never crash on.
+			write(conn, map[string]any{"event": "status_change",
+				"data": map[string]any{"status": "away"}, "seq": 2})
+			reactionEvent(conn, "reaction_added", map[string]any{
+				"user_id": "u2", "post_id": "p2", "emoji_name": "+1",
+				"create_at": 1500,
+			})
+			reactionEvent(conn, "reaction_removed", map[string]any{
+				"user_id": "u3", "post_id": "p3", "emoji_name": "smile",
+				"create_at": 1600,
+			})
+		},
+		// The script ends here, which cuts the socket; the reader comes
+		// back on a quiet connection.
+		still,
+	)}
+	r := run(t, f)
+
+	// The first connect says the catch-up hint of a cold start: none yet.
+	reconnected(t, next(t, r), 0)
+
+	post, ok := next(t, r).(*Posted)
+	if !ok {
+		t.Fatalf("got %T, want *Posted", post)
+	}
+	wantPost := Posted{
+		PostID: "p1", UserID: "u1", ChannelID: "ch1", RootID: "r1",
+		CreateAt: 1000, UpdateAt: 1000, EditAt: 0, Message: "go ahead",
+	}
+	if *post != wantPost {
+		t.Errorf("got post %+v, want %+v", *post, wantPost)
+	}
+
+	// The ping was answered inside the script; the events after it still
+	// arrive, so the answer broke nothing.
+	added, ok := next(t, r).(*Reaction)
+	if !ok {
+		t.Fatalf("got %T, want *Reaction", added)
+	}
+	if want := (Reaction{PostID: "p2", UserID: "u2", EmojiName: "+1",
+		CreateAt: 1500, Added: true}); *added != want {
+		t.Errorf("got reaction %+v, want %+v", *added, want)
+	}
+	removed, ok := next(t, r).(*Reaction)
+	if !ok {
+		t.Fatalf("got %T, want *Reaction", removed)
+	}
+	if want := (Reaction{PostID: "p3", UserID: "u3", EmojiName: "smile",
+		CreateAt: 1600, Added: false}); *removed != want {
+		t.Errorf("got reaction %+v, want %+v", *removed, want)
+	}
+}
+
+// Given a reader that saw a post and a reaction before its socket was
+// cut, when it comes back, it says Reconnected with the greatest create_at
+// of what it saw — 1500, the reaction's, not the post's — and the
+// catch-up read with that hint finds the post written in the gap.
+func TestReconnectCatchUp(t *testing.T) {
+	f := newFake(t)
+	f.scripts = []func(*websocket.Conn){
+		// The first socket: a post, a reaction, then the cut — the
+		// script's end is the hang-up.
+		authOK(
+			func(conn *websocket.Conn) {
+				postEvent(conn, map[string]any{
+					"id": "seen", "user_id": "u1", "channel_id": "ch7",
+					"create_at": 1000, "update_at": 1000, "message": "before the cut",
+				})
+				reactionEvent(conn, "reaction_added", map[string]any{
+					"user_id": "u2", "post_id": "seen", "emoji_name": "+1",
+					"create_at": 1500,
+				})
+			},
+		),
+		// The second socket: quiet, the connection the reader ends on.
+		authOK(still),
+	}
+	// The REST side: the post written while no socket was up, which the
+	// WebSocket never carried — the catch-up finds it by the hint.
+	f.posts = func(w http.ResponseWriter, r *http.Request) {
+		if got := r.URL.Query().Get("since"); got != "1500" {
+			t.Errorf("got since %q, want 1500", got)
+		}
+		json.NewEncoder(w).Encode(map[string]any{
+			"order": []string{"missed"},
+			"posts": map[string]any{"missed": map[string]any{
+				"id": "missed", "user_id": "u9", "channel_id": "ch7",
+				"create_at": 1800, "update_at": 1800,
+				"message": "written in the gap",
+			}},
+		})
+	}
+	r := run(t, f)
+
+	reconnected(t, next(t, r), 0) // the first connect
+	if post, ok := next(t, r).(*Posted); !ok || post.PostID != "seen" {
+		t.Fatalf("got %v, want the post seen before the cut", post)
+	}
+	if react, ok := next(t, r).(*Reaction); !ok || react.CreateAt != 1500 {
+		t.Fatalf("got %v, want the reaction seen before the cut", react)
+	}
+
+	// The cut, the backoff and the return: only a second connection can
+	// say this marker, and it carries the hint of everything the reader
+	// ever handed out — the reaction's create_at, the greater one.
+	ev, ok := next(t, r).(*Reconnected)
+	if !ok {
+		t.Fatalf("got %T, want *Reconnected", ev)
+	}
+	if ev.Since != 1500 {
+		t.Fatalf("got Reconnected{Since: %d}, want 1500: the reaction's create_at, the greater one", ev.Since)
+	}
+	if got := f.connections(); got < 2 {
+		t.Fatalf("got %d connections, want the reader back on a second", got)
+	}
+
+	// The catch-up the hint is for: the caller reads the channel over
+	// REST and finds the post the socket missed.
+	posts, err := mm.New(f.srv.URL, "tok").PostsSince(context.Background(), "ch7", ev.Since)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(posts) != 1 || posts[0].ID != "missed" || posts[0].CreateAt != 1800 {
+		t.Fatalf("got posts %+v, want the one written in the gap", posts)
+	}
+}
+
+// Given a Mattermost that refuses the token once and then answers, when
+// the reader runs, it retries the refusal like a dropped socket — but
+// says in its log that the token was refused — and the second connection
+// carries.
+func TestAuthFailureRetries(t *testing.T) {
+	// Log capture: the reader must log a refusal as a refusal, never as a
+	// lost socket, so an operator reads what to fix.
+	logs := &recorder{}
+	old := slog.Default()
+	slog.SetDefault(slog.New(logs))
+	defer slog.SetDefault(old)
+
+	f := newFake(t)
+	f.scripts = []func(*websocket.Conn){authRefused, authOK(still)}
+	r := run(t, f)
+
+	reconnected(t, next(t, r), 0) // the second connection's marker
+	if got := f.connections(); got < 2 {
+		t.Fatalf("got %d connections, want the refusal retried", got)
+	}
+	if !logs.has("refused") {
+		t.Errorf("the logs do not say the token was refused: %v", logs.msgs)
+	}
+}
+
+// Given a reader on a quiet socket, when its context is cancelled, Run
+// returns the context's error — a backoff never has to pass first.
+func TestContextCancellation(t *testing.T) {
+	f := newFake(t)
+	f.scripts = []func(*websocket.Conn){authOK(still)}
+	ctx, cancel := context.WithCancel(context.Background())
+	r := New(f.srv.URL, "tok").WithBackoff(time.Hour, time.Hour) // no retry may pass
+	done := make(chan error, 1)
+	go func() { done <- r.Run(ctx) }()
+	reconnected(t, next(t, r), 0) // connected, reading
+
+	cancel()
+	select {
+	case err := <-done:
+		if !errors.Is(err, context.Canceled) {
+			t.Fatalf("got %v, want context.Canceled", err)
+		}
+	case <-time.After(2 * time.Second):
+		t.Fatal("Run did not return on the cancellation")
+	}
+}
+
+// Given a frame bigger than the read cap, when it arrives, the socket is
+// refused and dropped, nothing of it is handed out, and the reader comes
+// back on the next connection and carries again.
+func TestOversizedFrame(t *testing.T) {
+	f := newFake(t)
+	f.scripts = []func(*websocket.Conn){
+		authOK(func(conn *websocket.Conn) {
+			// Far over the cap: no post is that big, so the frame is a
+			// broken peer's, not Mattermost's.
+			conn.WriteMessage(websocket.TextMessage,
+				bytes.Repeat([]byte("x"), maxFrame+1024))
+		}),
+		authOK(
+			func(conn *websocket.Conn) {
+				postEvent(conn, map[string]any{
+					"id": "after", "user_id": "u1", "channel_id": "ch1",
+					"create_at": 500, "update_at": 500, "message": "still reading",
+				})
+			},
+			still,
+		),
+	}
+	r := run(t, f)
+
+	reconnected(t, next(t, r), 0) // the first connect
+
+	// The oversized frame refused the socket and dropped it; the marker
+	// of the second connection says the reader is back. Only then can a
+	// connection count say so.
+	reconnected(t, next(t, r), 0)
+	if got := f.connections(); got < 2 {
+		t.Fatalf("got %d connections, want the oversized frame dropped", got)
+	}
+	post, ok := next(t, r).(*Posted)
+	if !ok {
+		t.Fatalf("got %T, want *Posted", post)
+	}
+	if post.PostID != "after" {
+		t.Errorf("got post %+v, want the one after the drop", *post)
+	}
+}
+
+// recorder keeps the messages the reader logs, for a test that checks
+// what an operator would read.
+type recorder struct {
+	mu   sync.Mutex
+	msgs []string
+}
+
+func (h *recorder) Enabled(context.Context, slog.Level) bool { return true }
+
+func (h *recorder) Handle(_ context.Context, r slog.Record) error {
+	h.mu.Lock()
+	h.msgs = append(h.msgs, r.Message)
+	h.mu.Unlock()
+	return nil
+}
+
+func (h *recorder) WithAttrs([]slog.Attr) slog.Handler { return h }
+
+func (h *recorder) WithGroup(string) slog.Handler { return h }
+
+// has says whether a logged message contains s.
+func (h *recorder) has(s string) bool {
+	h.mu.Lock()
+	defer h.mu.Unlock()
+	for _, msg := range h.msgs {
+		if strings.Contains(msg, s) {
+			return true
+		}
+	}
+	return false
+}

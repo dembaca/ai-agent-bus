@@ -12,6 +12,8 @@ import (
 	"io"
 	"net/http"
 	"net/url"
+	"sort"
+	"strconv"
 	"strings"
 	"time"
 
@@ -94,6 +96,7 @@ type User struct {
 	ID       string
 	Username string
 	Status   string // the custom status text, where the ⇄tag sits
+	IsBot    bool   // Mattermost's is_bot: whether an account is a bot's
 }
 
 // Members lists a channel's members: the bots' usernames and status texts.
@@ -122,6 +125,88 @@ func (c *Client) Members(ctx context.Context, channelID string) ([]User, error) 
 		}
 		out = append(out, User{ID: u.ID, Username: u.Username, Status: status})
 	}
+	return out, nil
+}
+
+// GetUser reads one user by id: its username and whether it is a bot
+// account — the mark that decides whose post is a bot's, and only
+// Mattermost may say it.
+func (c *Client) GetUser(ctx context.Context, userID string) (User, error) {
+	var raw struct {
+		ID       string `json:"id"`
+		Username string `json:"username"`
+		IsBot    bool   `json:"is_bot"`
+	}
+	path := "/api/v4/users/" + url.PathEscape(userID)
+	if err := c.do(ctx, "GET", path, nil, &raw); err != nil {
+		return User{}, fmt.Errorf("mattermost: user %q: %w", userID, err)
+	}
+	if raw.ID == "" {
+		return User{}, fmt.Errorf("mattermost: no user %q", userID)
+	}
+	return User{ID: raw.ID, Username: raw.Username, IsBot: raw.IsBot}, nil
+}
+
+// Post is one of a channel's posts, as the catch-up after a WebSocket
+// reconnect needs it (mmws.Reconnected): who wrote it and where, its
+// thread, Mattermost's clock fields and the text.
+type Post struct {
+	ID        string
+	UserID    string
+	ChannelID string
+	RootID    string
+	CreateAt  int64 // ms
+	UpdateAt  int64 // ms
+	EditAt    int64 // ms, 0 when never edited
+	Message   string
+}
+
+// postJSON is a post as Mattermost writes it on the wire.
+type postJSON struct {
+	ID        string `json:"id"`
+	UserID    string `json:"user_id"`
+	ChannelID string `json:"channel_id"`
+	RootID    string `json:"root_id"`
+	CreateAt  int64  `json:"create_at"`
+	UpdateAt  int64  `json:"update_at"`
+	EditAt    int64  `json:"edit_at"`
+	Message   string `json:"message"`
+}
+
+// PostsSince reads a channel's posts from since on, for the catch-up
+// after a WebSocket drop: mmws.Reconnected's hint goes here. Mattermost's
+// `since` returns a post whose create_at OR update_at is after the bound,
+// so a post edited after the bound comes back too, its old create_at
+// kept — this method never filters, and UpdateAt and EditAt are carried
+// because the caller decides: an edited post is never carried again,
+// a person who changes their mind writes a new post. The posts come
+// sorted by create_at ascending.
+func (c *Client) PostsSince(ctx context.Context, channelID string, since int64) ([]Post, error) {
+	var list struct {
+		Order []string            `json:"order"`
+		Posts map[string]postJSON `json:"posts"`
+	}
+	path := "/api/v4/channels/" + url.PathEscape(channelID) +
+		"/posts?since=" + strconv.FormatInt(since, 10)
+	if err := c.do(ctx, "GET", path, nil, &list); err != nil {
+		return nil, fmt.Errorf("mattermost: channel %q: %w", channelID, err)
+	}
+	out := make([]Post, 0, len(list.Order))
+	for _, id := range list.Order {
+		if raw, ok := list.Posts[id]; ok {
+			out = append(out, Post{
+				ID:        raw.ID,
+				UserID:    raw.UserID,
+				ChannelID: raw.ChannelID,
+				RootID:    raw.RootID,
+				CreateAt:  raw.CreateAt,
+				UpdateAt:  raw.UpdateAt,
+				EditAt:    raw.EditAt,
+				Message:   raw.Message,
+			})
+		}
+	}
+	sort.SliceStable(out, func(i, j int) bool { return out[i].CreateAt < out[j].CreateAt })
 	return out, nil
 }
 

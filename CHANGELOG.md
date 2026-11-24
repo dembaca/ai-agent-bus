@@ -17,6 +17,24 @@ before 0.5.0 are described in the git history.
   unaffected. The static-text budget test measures each session configuration
   on its own and holds the worst one under its bound (#104).
 
+### Added
+
+- **The bridge reads Mattermost: the WebSocket reader `internal/mmws` and
+  two REST methods of `internal/mm` (ADR-016, the bridge's step 2).
+  `mmws` dials Mattermost's WebSocket with the bot
+  token, reconnects with backoff when the socket drops and emits typed
+  events — `Posted`, `Reaction` (added and removed) and a `Reconnected`
+  marker whose `Since` is the greatest event `create_at` it handed out,
+  the catch-up hint — and nothing else: whose post is a bot's (a drop) or
+  a person's (carried) stays the caller's decision, so it filters,
+  stores and publishes nowhere. `mm.GetUser` reads a user's `is_bot` and
+  `mm.PostsSince` the channel's posts from a reconnect's hint, `update_at`
+  and `edit_at` kept, for the same caller. Nothing is wired into
+  `bridged` — no publish, no consumer, no configuration, no right beyond
+  what step 1 already holds — so the bridge behaves exactly as before.
+  One new dependency, `gorilla/websocket` (v1.5.3): the WebSocket client,
+  and the fake Mattermost its tests run against.
+
 ## 0.99.0
 
 The operator console's read-only pilot (its server, browser app and image), the
