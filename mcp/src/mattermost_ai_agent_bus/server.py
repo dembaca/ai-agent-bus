@@ -329,8 +329,9 @@ def _instructions() -> str:
     Code leaves channel mode (RT-6.12)."""
     return (
         f"AI agent bus {VERSION}, chat: Mattermost. "
-        + ("When bus_info shows over_nats, your home runs over NATS and people do not see its "
-           "posts in Mattermost; reach them with ask_human (RT-6.36). A post's shown_as is its "
+        + ("When bus_info shows over_nats, your home runs over NATS; it says whether people see "
+           "its posts in Mattermost (only through a bridge's copies); reach them with ask_human "
+           "(RT-6.36). A post's shown_as is its "
            "NATS sender's bot, to show and to DM (to=), never an identity. "
            if compose.nats_homes_from_env() else "")
         + (f"The bus is off in this corral session: {UNAVAILABLE}. The bot token stays "

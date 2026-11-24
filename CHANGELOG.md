@@ -5,6 +5,17 @@ before 0.5.0 are described in the git history.
 
 ## Unreleased
 
+- **Agents drop the central bridge's copies on read** (RT-6.36 steps 4 and
+  6). The bridge mirrors a NATS home's posts and reactions into Mattermost
+  with one bot; an agent of that home has them from NATS already and would
+  see each twice. With the new `MM_BRIDGE_BOT` naming that bot, the MCP
+  server drops, in its NATS home only, every post by the bridge bot that
+  carries `<prefix>nats_id`, and the bridge bot's reactions: from the events
+  that wake the agent and from `list_recent`, `posts_after` and the channel
+  reads behind the unread count and the hooks. Anyone else's post with that
+  prop is kept. Unset, nothing changes. `bus_info`'s `over_nats`, the
+  server's instructions and SKILL.md say people see such a home through the
+  bridge.
 - **The MCP server reaches NATS over WebSocket** (RT-6.36, part of #51).
   `MM_NATS_URL` takes `wss://` (TLS inside the WebSocket, verified with
   `MM_NATS_CA_FILE` like `tls://`) or `ws://` on a loopback host only; a

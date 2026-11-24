@@ -25,6 +25,8 @@ class _Side:
     async def prime(self) -> None:
         return None
 
+    bridge_bot = ""
+
 
 @pytest.fixture
 def nats_home():
@@ -44,6 +46,14 @@ async def test_bus_info_says_a_home_over_nats_is_not_seen_in_mattermost(chat, na
     info = json.loads(await server.bus_info())
     assert "~home runs over NATS" in info["over_nats"]
     assert "people do not see them" in info["over_nats"] and "ask_human" in info["over_nats"]
+
+
+async def test_bus_info_says_people_see_a_home_over_nats_through_the_bridge(chat, nats_home):  # noqa: F811
+    """RT-6.36 step 6: with MM_BRIDGE_BOT the bridge mirrors the home into Mattermost."""
+    lease._nats_source.bridge_bot = "bridge-bot"  # type: ignore[union-attr,misc]
+    over = json.loads(await server.bus_info())["over_nats"]
+    assert "@bridge-bot mirrors them into Mattermost, so people see them" in over
+    assert "do not see" not in over and "ask_human" in over
 
 
 async def test_bus_info_says_nothing_of_nats_for_a_home_on_mattermost(chat):  # noqa: F811

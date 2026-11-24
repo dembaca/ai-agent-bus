@@ -102,6 +102,12 @@ async def after(client: ChatPort) -> list[After]:
             continue
         posts = sorted((p for p in got if _at(p) > sinces.get(watermark.lane(ch.channel_id, p.id), floor)),
                        key=_at)
+        if ch.nats and newest[ch.channel_id] > sinces[ch.channel_id] and not any(
+                watermark.lane(ch.channel_id, p.id) == ch.channel_id for p in posts):
+            # A NATS home's Mattermost lane past its mark with nothing in the read: its newest
+            # posts are the bridge's copies, which the port drops (RT-6.36 step 4). The mark
+            # moves to the newest, or every count would read the copies again.
+            watermark.advance(uid, ch.channel_id, "", newest[ch.channel_id])
         skip = 0
         while skip < len(posts) and _passed(posts[skip], uid, gated):
             skip += 1
