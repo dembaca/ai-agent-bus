@@ -112,7 +112,7 @@ def test_a_message_get_answer_is_no_attestation() -> None:
               base64.b64encode(value) + b'"}}')
     with pytest.raises(MessageError):
         decode_attestation(answer, "victim")
-    # the value on its own is no attestation either: it has no owner name
+    # the value on its own is no attestation either: it is not v1 (no "v": 1)
     with pytest.raises(MessageError):
         decode_attestation(value, "victim")
 

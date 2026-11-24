@@ -56,7 +56,23 @@ func lab(t *testing.T) (*nats.Conn, jetstream.JetStream) {
 		Subjects: []string{"bus.>"}, NoAck: true, Storage: jetstream.MemoryStorage}); err != nil {
 		t.Fatal(err)
 	}
+	operator(t, js)
 	return nc, js
+}
+
+// operator is the step the bridge cannot do itself: the operator creates the
+// push consumer, and the bridge only subscribes to what it delivers (a pull
+// would let the credential replay the home). The test's ack wait is short, so
+// a message published while the bridge is down comes back promptly.
+func operator(t *testing.T, js jetstream.JetStream) {
+	t.Helper()
+	if _, err := js.CreateOrUpdateConsumer(context.Background(), "BUS", jetstream.ConsumerConfig{
+		Name: "bridge_home", Durable: "bridge_home", FilterSubject: "bus.ch.home.*",
+		DeliverSubject: "deliver.bridge.home", DeliverPolicy: jetstream.DeliverNewPolicy,
+		AckPolicy: jetstream.AckExplicitPolicy, AckWait: 2 * time.Second, MaxAckPending: 8,
+	}); err != nil {
+		t.Fatal(err)
+	}
 }
 
 func start(t *testing.T, nc *nats.Conn, js jetstream.JetStream, kv *store.KV,
@@ -66,11 +82,16 @@ func start(t *testing.T, nc *nats.Conn, js jetstream.JetStream, kv *store.KV,
 	done := make(chan error, 1)
 	m := &mirror.Mirror{Home: "home", Prefix: "a2a.", Log: slog.New(slog.NewTextHandler(io.Discard, nil)),
 		Sink: s, Store: kv, Links: mirror.LinksNone{}}
-	r := &Reader{Home: "home", Log: m.Log, Mirror: m, Store: kv, Stream: "BUS", Prefix: "bus",
-		PropsPrefix: "a2a."}
+	r := &Reader{Home: "home", Deliver: "deliver.bridge.home", Log: m.Log, Mirror: m, Store: kv,
+		Prefix: "bus", PropsPrefix: "a2a.", Ready: make(chan struct{})}
 	go func() {
-		done <- r.Run(ctx, js, func(context.Context) (string, error) { return "chan", nil })
+		done <- r.Run(ctx, nc, func(context.Context) (string, error) { return "chan", nil })
 	}()
+	select {
+	case <-r.Ready:
+	case <-time.After(5 * time.Second):
+		t.Fatal("the reader did not subscribe")
+	}
 	return cancel, done
 }
 
@@ -108,7 +129,6 @@ func TestAPostAReplyAndAReactionOverARealServer(t *testing.T) {
 	s := &sink{got: make(chan [3]string, 8), react: make(chan string, 4)}
 	cancel, _ := start(t, nc, js, kv, s)
 	defer cancel()
-	waitConsumer(t, js, "BUS")
 
 	mustPublish(t, nc, "bus.ch.home.agent-a", `{"v":1,"kind":"post","text":"hello"}`)
 	first := until(t, s, mirror.SenderMark+"**agent-a**\n\nhello")
@@ -150,7 +170,6 @@ func TestARestartNeitherRepeatsNorLoses(t *testing.T) {
 	kv := operatorBucket(t, nc, js)
 	s := &sink{got: make(chan [3]string, 8), react: make(chan string, 4)}
 	cancel, done := start(t, nc, js, kv, s)
-	waitConsumer(t, js, "BUS")
 	mustPublish(t, nc, "bus.ch.home.agent-a", `{"v":1,"kind":"post","text":"one"}`)
 	until(t, s, mirror.SenderMark+"**agent-a**\n\none")
 	cancel()
@@ -162,7 +181,6 @@ func TestARestartNeitherRepeatsNorLoses(t *testing.T) {
 	// while the bridge is down a post arrives, and the old one is not repeated
 	mustPublish(t, nc, "bus.ch.home.agent-a", `{"v":1,"kind":"post","text":"two"}`)
 	cancel2, _ := start(t, nc, js, kv, s)
-	waitConsumer(t, js, "BUS")
 	defer cancel2()
 	got := until(t, s, mirror.SenderMark+"**agent-a**\n\ntwo")
 	if got[2] != "n1:home:2" {
@@ -172,25 +190,6 @@ func TestARestartNeitherRepeatsNorLoses(t *testing.T) {
 	case again := <-s.got:
 		t.Fatalf("a post was repeated after the restart: %+v", again)
 	case <-time.After(300 * time.Millisecond):
-	}
-}
-
-// waitConsumer waits until the reader's ephemeral pull consumer exists: a
-// DeliverNew consumer mirrors what comes after its creation, and the test
-// publishes right after the reader starts.
-func waitConsumer(t *testing.T, js jetstream.JetStream, stream string) {
-	t.Helper()
-	deadline := time.Now().Add(3 * time.Second)
-	for {
-		if st, err := js.Stream(context.Background(), stream); err == nil {
-			if info, err := st.Info(context.Background()); err == nil && info.State.Consumers > 0 {
-				return
-			}
-		}
-		if time.Now().After(deadline) {
-			t.Fatal("the reader made no consumer")
-		}
-		time.Sleep(10 * time.Millisecond)
 	}
 }
 

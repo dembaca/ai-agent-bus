@@ -23,6 +23,7 @@ type Config struct {
 	Listen     string   // BRIDGE_LISTEN_ADDR, /healthz
 	NATSStream string   // BRIDGE_STREAM, default BUS
 	BusPrefix  string   // BRIDGE_BUS_PREFIX, the bus's subject prefix, default bus
+	Deliver    string   // BRIDGE_DELIVER, the operator's push consumer prefix, default deliver.bridge
 }
 
 // Load reads the environment. A missing required value is an error naming it.
@@ -39,6 +40,7 @@ func Load(get func(string) string) (Config, error) {
 		Listen:     strings.TrimSpace(get("BRIDGE_LISTEN_ADDR")),
 		NATSStream: strings.TrimSpace(get("BRIDGE_STREAM")),
 		BusPrefix:  strings.TrimSpace(get("BRIDGE_BUS_PREFIX")),
+		Deliver:    strings.TrimSpace(get("BRIDGE_DELIVER")),
 	}
 	if c.KVBucket == "" {
 		c.KVBucket = "BUS_BRIDGE"
@@ -48,6 +50,9 @@ func Load(get func(string) string) (Config, error) {
 	}
 	if c.BusPrefix == "" {
 		c.BusPrefix = "bus"
+	}
+	if c.Deliver == "" {
+		c.Deliver = "deliver.bridge"
 	}
 	if c.Prefix == "" {
 		c.Prefix = "x_"

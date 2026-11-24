@@ -1,7 +1,10 @@
-// Package reader pulls a home's messages from the BUS stream and hands them to
-// the mirror. The position lives in the bridge's store, and every start uses a
-// named pull consumer with the narrowest filter the stream allows, so the
-// bridge's NATS user needs rights on that one consumer and nothing broad.
+// Package reader reads a home's push consumer and hands its messages to the
+// mirror. The consumer is not the bridge's: the operator creates it and the
+// server delivers to `deliver.bridge.<home>`; the bridge only subscribes and
+// acks. It holds no consumer-create and no message-next right, because a pull
+// names its own reply subject — which the server checks against no publish
+// permission — and a pulled message is stored again under its original subject:
+// a replay of the whole home, a trusted human's "go" re-issued (RT-6.36 step 1).
 package reader
 
 import (
@@ -13,7 +16,6 @@ import (
 	"time"
 
 	"github.com/nats-io/nats.go"
-	"github.com/nats-io/nats.go/jetstream"
 
 	"github.com/dembaca/ai-agent-bus/services/bridge/internal/message"
 	"github.com/dembaca/ai-agent-bus/services/bridge/internal/mirror"
@@ -21,101 +23,64 @@ import (
 
 // Reader mirrors one home.
 type Reader struct {
-	Home string
-	// Stuck is told when this home has been retrying one message for more than
-	// StuckAfter, and false when it went through: the probe fails meanwhile, the
-	// reader keeps trying (a revoked token is fixed, not skipped).
-	Stuck       func(bool)
-	StuckAfter  time.Duration
+	Home        string
+	Deliver     string // deliver.bridge.<home>: the operator's push consumer's subject
 	Log         *slog.Logger
 	Mirror      *mirror.Mirror
 	Store       mirror.Store
-	Stream      string // "BUS"
-	Prefix      string // the bus prefix, "bus" unless configured
-	PropsPrefix string // the homes' MM_PROPS_PREFIX, for the message decode
-}
-
-// ConsumerName is the bridge's consumer for a home: one name per home, the
-// NATS user's rights are granted on exactly these.
-func ConsumerName(home string) string {
-	safe := strings.Map(func(r rune) rune {
-		switch {
-		case r >= 'a' && r <= 'z', r >= 'A' && r <= 'Z', r >= '0' && r <= '9', r == '-', r == '_':
-			return r
-		default:
-			return '_'
-		}
-	}, home)
-	return "bridge_" + safe
+	Prefix      string        // the bus prefix, "bus" unless configured
+	PropsPrefix string        // the homes' MM_PROPS_PREFIX, for the message decode
+	Ready       chan struct{} // closed once the subscription is active (tests wait on it)
+	// Stuck is told when this home has been retrying one message for more than
+	// StuckAfter, and false when it went through: the probe fails meanwhile, the
+	// reader keeps trying (a revoked token is fixed, not skipped).
+	Stuck      func(bool)
+	StuckAfter time.Duration
 }
 
 // Run consumes until ctx ends.
-func (r *Reader) Run(ctx context.Context, js jetstream.JetStream,
+func (r *Reader) Run(ctx context.Context, nc *nats.Conn,
 	channelID func(context.Context) (string, error)) error {
-	pos, ok, err := r.Store.Position(ctx, r.Home)
+	ch := make(chan *nats.Msg, 256)
+	// A core subscription never acks by itself: Ack is the bridge's call, after
+	// the mirror is written.
+	sub, err := nc.ChanSubscribe(r.Deliver, ch)
 	if err != nil {
-		return err
+		return fmt.Errorf("reader: subscribe %s: %w", r.Deliver, err)
 	}
-	cfg := jetstream.ConsumerConfig{
-		Name:          ConsumerName(r.Home),
-		FilterSubject: r.Prefix + ".ch." + r.Home + ".*",
-		AckPolicy:     jetstream.AckNonePolicy,
-		MaxAckPending: 64,
-		// The server drops an idle consumer after its own threshold; a
-		// Mattermost outage must not end the home, so it lives an hour between
-		// deliveries, far beyond the bridge's 30 s retry cap.
-		InactiveThreshold: time.Hour,
+	defer func() { _ = sub.Unsubscribe() }()
+	// The subscription must be in place before the server delivers: a push
+	// consumer counts a delivery with no listener as delivered.
+	if err := nc.Flush(); err != nil {
+		return fmt.Errorf("reader: subscribe %s: %w", r.Deliver, err)
 	}
-	if ok {
-		cfg.DeliverPolicy = jetstream.DeliverByStartSequencePolicy
-		cfg.OptStartSeq = pos + 1
-	} else {
-		cfg.DeliverPolicy = jetstream.DeliverNewPolicy // a first start mirrors what comes now
+	if r.Ready != nil {
+		close(r.Ready)
 	}
-	// The consumer is recreated on every start: the store's position is the
-	// truth, and a consumer that survived a crash would have moved past a post
-	// whose Mattermost copy was written but not yet recorded (AckNone streams
-	// deliver once).
-	if err := js.DeleteConsumer(ctx, r.Stream, cfg.Name); err != nil &&
-		!errors.Is(err, jetstream.ErrConsumerNotFound) {
-		return fmt.Errorf("reader: consumer delete: %w", err)
-	}
-	cons, err := js.CreateOrUpdateConsumer(ctx, r.Stream, cfg)
-	if err != nil {
-		return fmt.Errorf("reader: consumer: %w", err)
-	}
-	r.Log.Info("bridge: reading a home", "home", r.Home, "from", pos, "consumer", cfg.Name)
+	r.Log.Info("bridge: reading a home", "home", r.Home, "deliver", r.Deliver)
 	for {
-		if ctx.Err() != nil {
+		select {
+		case <-ctx.Done():
 			return nil
-		}
-		batch, err := cons.Fetch(16, jetstream.FetchMaxWait(2*time.Second))
-		if err != nil {
-			if errors.Is(err, nats.ErrTimeout) || errors.Is(err, context.DeadlineExceeded) {
-				continue
-			}
-			return fmt.Errorf("reader: fetch: %w", err)
-		}
-		got := 0
-		for m := range batch.Messages() {
-			got++
+		case m := <-ch:
 			if err := r.retry(ctx, m, channelID); err != nil {
 				return err
 			}
-		}
-		if berr := batch.Error(); berr != nil && !errors.Is(berr, nats.ErrTimeout) &&
-			!errors.Is(berr, context.DeadlineExceeded) {
-			return fmt.Errorf("reader: batch: %w", berr)
-		}
-		if got == 0 {
-			continue
+			if ctx.Err() != nil {
+				return nil
+			}
+			// Ack after the mirror is written: an unacked message is delivered
+			// again, and the store's position then skips what is already done.
+			if err := m.Ack(); err != nil {
+				r.Log.Warn("bridge: ack refused", "home", r.Home, "error", err)
+			}
 		}
 	}
 }
 
 // retry mirrors one message; a refusal is skipped, everything else retried in
 // place with a backoff, so a message never kills the home nor disappears.
-func (r *Reader) retry(ctx context.Context, m jetstream.Msg,
+func (r *Reader) retry(ctx context.Context, m *nats.Msg,
 	channelID func(context.Context) (string, error)) error {
 	wait := time.Second
 	since := time.Now()
@@ -133,7 +98,7 @@ func (r *Reader) retry(ctx context.Context, m jetstream.Msg,
 		var refused *mirror.Refused
 		if errors.As(err, &refused) {
 			r.Log.Warn("bridge: refused, skipped", "home", r.Home,
-				"subject", m.Subject(), "error", err)
+				"subject", m.Subject, "error", err)
 			return r.save(ctx, mustSeq(m), mirror.Post{})
 		}
 		if ctx.Err() != nil {
@@ -150,7 +115,7 @@ func (r *Reader) retry(ctx context.Context, m jetstream.Msg,
 			}
 		}
 		r.Log.Error("bridge: not mirrored, retrying", "home", r.Home,
-			"subject", m.Subject(), "in", wait.String(), "error", err)
+			"subject", m.Subject, "in", wait.String(), "error", err)
 		select {
 		case <-ctx.Done():
 			return nil
@@ -169,7 +134,7 @@ func (r *Reader) save(ctx context.Context, seq uint64, p mirror.Post) error {
 	return r.Store.Save(sctx, r.Home, seq, p)
 }
 
-func mustSeq(m jetstream.Msg) uint64 {
+func mustSeq(m *nats.Msg) uint64 {
 	md, err := m.Metadata()
 	if err != nil {
 		return 0
@@ -177,21 +142,30 @@ func mustSeq(m jetstream.Msg) uint64 {
 	return md.Sequence.Stream
 }
 
-func (r *Reader) one(ctx context.Context, m jetstream.Msg,
+func (r *Reader) one(ctx context.Context, m *nats.Msg,
 	channelID func(context.Context) (string, error)) error {
-	parts := strings.Split(m.Subject(), ".")
-	// <prefix>.ch.<home>.<sender>; anything else under the wildcard is not this
-	// home's post and must not stop the reader (a fifth token, a sub-subject).
+	parts := strings.Split(m.Subject, ".")
+	// <prefix>.ch.<home>.<sender>; anything else under the consumer's filter is
+	// not this home's post and must not stop the reader (a sub-subject).
 	if len(parts) != 4 || parts[0] != r.Prefix || parts[1] != "ch" || parts[2] != r.Home {
-		r.Log.Warn("bridge: unexpected subject skipped", "subject", m.Subject())
+		r.Log.Warn("bridge: unexpected subject skipped", "subject", m.Subject)
 		return r.save(ctx, mustSeq(m), mirror.Post{})
 	}
 	seq := mustSeq(m)
-	msg, err := message.Decode(m.Data(), r.PropsPrefix)
+	// The consumer delivers again what was not acked (a restart, an ack that
+	// timed out): the position says what is done, so nothing is mirrored twice.
+	pos, ok, err := r.Store.Position(ctx, r.Home)
+	if err != nil {
+		return err
+	}
+	if ok && seq <= pos {
+		return nil
+	}
+	msg, err := message.Decode(m.Data, r.PropsPrefix)
 	if err != nil {
 		// A message this bridge cannot read is not the bridge's to fix: log it
-		// and advance past it, so one broken post does not stop the home.
-		r.Log.Warn("bridge: unreadable message skipped", "subject", m.Subject(), "error", err)
+		// and move past it, so one broken post does not stop the home.
+		r.Log.Warn("bridge: unreadable message skipped", "subject", m.Subject, "error", err)
 		return r.save(ctx, seq, mirror.Post{})
 	}
 	return r.Mirror.Handle(ctx, channelID, parts[3], seq, msg)

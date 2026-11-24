@@ -77,6 +77,10 @@ accounts {
 		NoAck: true, Storage: jetstream.MemoryStorage}); err != nil {
 		t.Fatal(err)
 	}
+	st, err := ajs.Stream(ctx, "BUS")
+	if err != nil {
+		t.Fatal(err)
+	}
 
 	denied := make(chan error, 16)
 	bridgeNC, err := nats.Connect(srv.ClientURL(), nats.UserInfo("bridge", "pw"),
@@ -115,8 +119,23 @@ accounts {
 	_ = bridgeNC.Flush()
 	deniedOn(t, denied, "$JS.API.CONSUMER.CREATE.BUS.bridge_home")
 
-	// The operator makes the bucket (direct get off); the bridge only binds.
+	// The operator makes the bucket (direct get off) and the push consumers;
+	// the bridge only binds to the bucket and subscribes to what is delivered.
 	if err := store.CreateBucket(ctx, ajs); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := ajs.CreateOrUpdateConsumer(ctx, "BUS", jetstream.ConsumerConfig{
+		Name: "bridge_home", Durable: "bridge_home", FilterSubject: "bus.ch.home.*",
+		DeliverSubject: "deliver.bridge.home", DeliverPolicy: jetstream.DeliverNewPolicy,
+		AckPolicy: jetstream.AckExplicitPolicy, AckWait: 2 * time.Second, MaxAckPending: 8,
+	}); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := ajs.CreateOrUpdateConsumer(ctx, "PRESENCE", jetstream.ConsumerConfig{
+		Name: presence.ConsumerName, Durable: presence.ConsumerName, FilterSubject: "presence.*.*",
+		DeliverSubject: "deliver.bridge.presence", DeliverPolicy: jetstream.DeliverLastPerSubjectPolicy,
+		AckPolicy: jetstream.AckNonePolicy,
+	}); err != nil {
 		t.Fatal(err)
 	}
 	kv, err := store.Open(ctx, bridgeNC, "BUS_BRIDGE")
@@ -127,10 +146,10 @@ accounts {
 	s := &sink{got: make(chan [3]string, 4), react: make(chan string, 4)}
 	m := &mirror.Mirror{Home: "home", Prefix: "x_", Log: slog.New(slog.NewTextHandler(io.Discard, nil)),
 		Sink: s, Store: kv, Links: mirror.LinksNone{}}
-	r := &Reader{Home: "home", Log: m.Log, Mirror: m, Store: kv, Stream: "BUS", Prefix: "bus", PropsPrefix: "x_"}
-	cancel, done := startWith(context.Background(), r, bjs)
+	r := &Reader{Home: "home", Deliver: "deliver.bridge.home", Log: m.Log, Mirror: m, Store: kv,
+		Prefix: "bus", PropsPrefix: "x_", Ready: make(chan struct{})}
+	cancel, done := startWith(t, context.Background(), bridgeNC, r)
 	defer cancel()
-	waitNamedConsumer(t, ajs, "BUS", "bridge_home", denied)
 	if err := admin.Publish("bus.ch.home.agent-a", []byte(`{"v":1,"kind":"post","text":"hello"}`)); err != nil {
 		t.Fatal(err)
 	}
@@ -143,17 +162,26 @@ accounts {
 	case <-time.After(5 * time.Second):
 		t.Fatal("no mirror with the documented rights")
 	}
-	// the presence consumer is granted on its one name
+	// and its ack lands: the consumer has nothing pending
+	deadline := time.Now().Add(3 * time.Second)
+	for {
+		if pending := consumerPending(t, st, "bridge_home"); pending == 0 {
+			break
+		} else if time.Now().After(deadline) {
+			t.Fatalf("%d messages unacked: the bridge may not ack", pending)
+		}
+		time.Sleep(20 * time.Millisecond)
+	}
 	snap := presence.New()
-	pr := &presence.Reader{Log: m.Log, Stream: "PRESENCE", Into: snap}
-	pcancel, pdone := startPresence(context.Background(), pr, bjs)
+	pr := &presence.Reader{Log: m.Log, Deliver: "deliver.bridge.presence", Into: snap,
+		Ready: make(chan struct{})}
+	pcancel, pdone := startPresence(t, context.Background(), bridgeNC, pr)
 	defer pcancel()
-	waitNamedConsumer(t, ajs, "PRESENCE", presence.ConsumerName, denied)
 	if err := admin.Publish("presence.alice.agent-a", []byte(`{"v":1,"status":"online","bot":"b1"}`)); err != nil {
 		t.Fatal(err)
 	}
 	_ = admin.Flush()
-	deadline := time.Now().Add(3 * time.Second)
+	deadline = time.Now().Add(3 * time.Second)
 	for {
 		if _, ok := snap.Get("agent-a"); ok {
 			break
@@ -194,6 +222,28 @@ accounts {
 			t.Fatalf("%s stored a valid presence: %s", subject, body)
 		}
 	}
+	// The pull is the replay: a pulled message is stored again under its
+	// original subject, so a bridge that may pull can re-issue a human's "go".
+	// The bridge has no message-next right, and the stream does not grow.
+	before, err := st.Info(ctx)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := bridgeNC.PublishMsg(&nats.Msg{Subject: "$JS.API.CONSUMER.MSG.NEXT.BUS.bridge_home",
+		Reply: "bus.ch.home.zz", Data: []byte(`{"batch":10}`)}); err != nil {
+		t.Fatal(err)
+	}
+	_ = bridgeNC.Flush()
+	deniedOn(t, denied, "$JS.API.CONSUMER.MSG.NEXT.BUS.bridge_home")
+	time.Sleep(200 * time.Millisecond)
+	after, err := st.Info(ctx)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if after.State.LastSeq != before.State.LastSeq || after.State.Msgs != before.State.Msgs {
+		t.Fatalf("a pull replayed the home: %d messages, last seq %d, was %d/%d",
+			after.State.Msgs, after.State.LastSeq, before.State.Msgs, before.State.LastSeq)
+	}
 	// and a direct get is not granted at all
 	if err := bridgeNC.Publish("$JS.API.DIRECT.GET.KV_BUS_BRIDGE.$KV.BUS_BRIDGE.attack1", nil); err != nil {
 		t.Fatal(err)
@@ -233,49 +283,38 @@ func storedOn(t *testing.T, js jetstream.JetStream, stream, subject string) []by
 	}
 }
 
-// startWith runs a BUS reader on a given connection.
-func startWith(ctx context.Context, r *Reader, js jetstream.JetStream) (context.CancelFunc, chan error) {
+// startWith runs a BUS reader on a given connection, waiting for its
+// subscription: a push consumer counts a delivery with no listener as delivered.
+func startWith(t *testing.T, ctx context.Context, nc *nats.Conn, r *Reader) (context.CancelFunc, chan error) {
+	t.Helper()
 	cctx, cancel := context.WithCancel(ctx)
 	done := make(chan error, 1)
 	go func() {
-		done <- r.Run(cctx, js, func(context.Context) (string, error) { return "chan", nil })
+		done <- r.Run(cctx, nc, func(context.Context) (string, error) { return "chan", nil })
 	}()
+	select {
+	case <-r.Ready:
+	case err := <-done:
+		t.Fatalf("the reader did not subscribe: %v", err)
+	case <-time.After(5 * time.Second):
+		t.Fatal("the reader did not subscribe")
+	}
 	return cancel, done
 }
 
-func startPresence(ctx context.Context, r *presence.Reader, js jetstream.JetStream) (context.CancelFunc, chan error) {
+func startPresence(t *testing.T, ctx context.Context, nc *nats.Conn, r *presence.Reader) (context.CancelFunc, chan error) {
+	t.Helper()
 	cctx, cancel := context.WithCancel(ctx)
 	done := make(chan error, 1)
-	go func() { done <- r.Run(cctx, js) }()
-	return cancel, done
-}
-
-func waitNamedConsumer(t *testing.T, js jetstream.JetStream, stream, name string, denied chan error) {
-	t.Helper()
-	deadline := time.Now().Add(3 * time.Second)
-	for {
-		st, err := js.Stream(context.Background(), stream)
-		if err == nil {
-			// the name matters: the rights are granted on exactly that consumer
-			if info, err := st.Info(context.Background()); err == nil && info.State.Consumers > 0 {
-				if _, err := st.Consumer(context.Background(), name); err == nil {
-					return
-				}
-			}
-		}
-		if time.Now().After(deadline) {
-			var all []string
-			for {
-				select {
-				case derr := <-denied:
-					all = append(all, derr.Error())
-				default:
-					t.Fatalf("no consumer %s on %s (denied: %v)", name, stream, all)
-				}
-			}
-		}
-		time.Sleep(20 * time.Millisecond)
+	go func() { done <- r.Run(cctx, nc) }()
+	select {
+	case <-r.Ready:
+	case err := <-done:
+		t.Fatalf("the presence reader did not subscribe: %v", err)
+	case <-time.After(5 * time.Second):
+		t.Fatal("the presence reader did not subscribe")
 	}
+	return cancel, done
 }
 
 // documentedBridgeRights reads the bridge user's publish and subscribe lists
@@ -305,12 +344,23 @@ func documentedBridgeRights(t *testing.T, home string) (publish, subscribe []str
 			list[j] = strings.ReplaceAll(list[j], "<HOME>", home)
 		}
 	}
-	// and it stays narrow: no whole-stream or whole-consumer wildcards
+	// and it stays narrow: no consumer API of its own (the operator makes the
+	// consumers), no direct get, no whole-stream publish, no bus subscribe.
 	for _, subject := range publish {
-		for _, broad := range []string{"CONSUMER.CREATE.BUS.>", "CONSUMER.DELETE.BUS.>", "bus.>", "presence.>"} {
+		for _, broad := range []string{"$JS.API.CONSUMER.CREATE", "$JS.API.CONSUMER.DELETE",
+			"$JS.API.CONSUMER.MSG.NEXT", "$JS.API.STREAM.CREATE", "DIRECT.GET"} {
 			if strings.Contains(subject, broad) {
-				t.Errorf("the bridge's rights are too broad: %s", subject)
+				t.Errorf("the bridge may %s: %s", broad, subject)
 			}
+		}
+		if subject == "bus.>" || subject == "presence.>" {
+			t.Errorf("the bridge may publish on the bus: %s", subject)
+		}
+	}
+	for _, subject := range subscribe {
+		if subject == "bus.>" || subject == "presence.>" || strings.HasPrefix(subject, "bus.") ||
+			strings.HasPrefix(subject, "presence.") {
+			t.Errorf("the bridge may read the bus directly: %s", subject)
 		}
 	}
 	return publish, subscribe
@@ -375,4 +425,20 @@ func deniedOn(t *testing.T, denied chan error, want string) {
 			t.Fatalf("no refusal naming %s", want)
 		}
 	}
+}
+
+// consumerPending is how many messages of a named consumer wait for an ack.
+func consumerPending(t *testing.T, st jetstream.Stream, name string) int {
+	t.Helper()
+	lister := st.ListConsumers(context.Background())
+	for info := range lister.Info() {
+		if info.Name == name {
+			return info.NumAckPending
+		}
+	}
+	if err := lister.Err(); err != nil {
+		t.Fatal(err)
+	}
+	t.Fatalf("no consumer %s", name)
+	return 0
 }

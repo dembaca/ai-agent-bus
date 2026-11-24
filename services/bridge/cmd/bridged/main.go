@@ -20,7 +20,6 @@ import (
 	"time"
 
 	"github.com/nats-io/nats.go"
-	"github.com/nats-io/nats.go/jetstream"
 
 	"github.com/dembaca/ai-agent-bus/services/bridge/internal/config"
 	"github.com/dembaca/ai-agent-bus/services/bridge/internal/links"
@@ -52,10 +51,6 @@ func run(log *slog.Logger) error {
 		return err
 	}
 	defer nc.Close()
-	js, err := jetstream.New(nc)
-	if err != nil {
-		return fmt.Errorf("jetstream: %w", err)
-	}
 	kv, err := store.Open(ctx, nc, cfg.KVBucket)
 	if err != nil {
 		return err
@@ -65,37 +60,27 @@ func run(log *slog.Logger) error {
 		return fmt.Errorf("the bridge bot: %w", err)
 	}
 
-	// `shown_as` needs the presence of the names and the home's roster; without a
-	// PRESENCE stream the bridge runs as before, naming the NATS name.
+	// `shown_as` needs the presence of the names and the home's roster; without
+	// presences the bridge runs as before, naming the NATS name.
 	snapshot := presence.New()
-	hasPresence, err := presence.Exists(ctx, js)
-	if err != nil {
-		return err
-	}
-
 	h := &health{}
 	var wg sync.WaitGroup
-	if hasPresence {
-		pr := &presence.Reader{Log: log, Stream: "PRESENCE", Into: snapshot}
-		wg.Add(1)
-		go func() {
-			defer wg.Done()
-			if err := pr.Run(ctx, js); err != nil && ctx.Err() == nil {
-				log.Error("bridge: presence stopped", "error", err)
-				h.failed.Store(true)
-				stop()
-			}
-		}()
-	}
+	pr := &presence.Reader{Log: log, Deliver: cfg.Deliver + ".presence", Into: snapshot}
+	wg.Add(1)
+	go func() {
+		defer wg.Done()
+		if err := pr.Run(ctx, nc); err != nil && ctx.Err() == nil {
+			log.Error("bridge: presence stopped", "error", err)
+			h.failed.Store(true)
+			stop()
+		}
+	}()
 	for _, home := range cfg.Homes {
 		home := home
 		cid := channelOnce(cfg.MMTeam, home, client)
-		var lk mirror.Links = mirror.LinksNone{}
-		if hasPresence {
-			lk = &links.Resolver{Presence: snapshot, Roster: roster{client: client, cid: cid},
-				Window: 90 * time.Second, TTL: 30 * time.Second}
-		}
-		r := &reader.Reader{Home: home, Log: log, Store: kv, Stream: cfg.NATSStream,
+		lk := &links.Resolver{Presence: snapshot, Roster: roster{client: client, cid: cid},
+			Window: 90 * time.Second, TTL: 30 * time.Second}
+		r := &reader.Reader{Home: home, Deliver: cfg.Deliver + "." + home, Log: log, Store: kv,
 			Prefix: cfg.BusPrefix, PropsPrefix: cfg.Prefix,
 			Mirror: &mirror.Mirror{Home: home, Prefix: cfg.Prefix, Log: log, Sink: client, Store: kv,
 				Links: lk}}
@@ -103,7 +88,7 @@ func run(log *slog.Logger) error {
 		wg.Add(1)
 		go func() {
 			defer wg.Done()
-			if err := r.Run(ctx, js, cid); err != nil && ctx.Err() == nil {
+			if err := r.Run(ctx, nc, cid); err != nil && ctx.Err() == nil {
 				// A consumer that cannot be created or fetched from is fatal for
 				// that home (a refused post is not: the reader skips it).
 				log.Error("bridge: a home stopped", "home", home, "error", err)
