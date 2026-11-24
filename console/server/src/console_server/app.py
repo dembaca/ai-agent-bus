@@ -251,15 +251,20 @@ class Console:
                      headers: dict[str, str]) -> httpd.Response | httpd.SSE:
         s = self.settings
         if path == s.health_path:
-            if self.nats_dead:
-                return httpd.Response.text("the NATS reader ended", 503)
             if self.settings.nats_url:
-                # readiness, not only liveness: a reader that has not
-                # seen a replay within the bound serves a stale fleet
-                age = time.monotonic() - self.fleet.last_sync_at
-                if age > s.health_sync_bound:
+                # readiness: a reader that has not seen a replay within
+                # the bound serves a stale fleet — None says "never"
+                age = (None if self.fleet.last_sync_at is None
+                       else time.monotonic() - self.fleet.last_sync_at)
+                if age is None or age > s.health_sync_bound:
                     return httpd.Response.text(
                         "the fleet reader has not synced in time", 503)
+            return httpd.Response.text("ok")
+        if path == "/livez":
+            # liveness beside readiness: 503 only when the reader ended
+            # without a stop (everything else retries on its own)
+            if self.nats_dead:
+                return httpd.Response.text("the NATS reader ended", 503)
             return httpd.Response.text("ok")
         if path in ("/login", "/callback"):
             if s.login_off:

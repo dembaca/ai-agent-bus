@@ -34,7 +34,10 @@ log = logging.getLogger("console.nats")
 
 CONSUMER_API_TIMEOUT = 5.0
 INBOX_PREFIX = "_INBOX_console"   # the console's own, granted alone
-IDLE_RECONNECT_SEC = 120.0        # a silent stream reconnects: replay or nothing
+# A silent stream reconnects for a replay; the idle bound couples to the
+# probe's bound (a silent fleet's reconnect lands inside the bound, whatever
+# it is) with a floor, and the watchdog wakes every quarter of the bound.
+IDLE_FLOOR_SEC = 15.0
 
 
 class NatsError(Exception):
@@ -93,9 +96,13 @@ async def ensure_consumer(nc: NatsClient, settings: config.Settings,
     error = body.get("error")
     if error is not None:
         raise NatsError(f"consumer create refused: {error!r}")
-    # the consumer answers, so the replay is done — with zero messages too
-    fleet.synced = True
-    fleet.last_sync_at = time.monotonic()
+    # the creation answer says how much there is to deliver; nothing left
+    # (an empty stream at creation) is a finished replay. Messages still
+    # pending wait for their deliveries — the fleet stamps them when one
+    # arrives with pending 0.
+    if body.get("num_pending") == 0:
+        fleet.synced = True
+        fleet.last_sync_at = time.monotonic()
 
 
 
@@ -154,12 +161,13 @@ async def read_forever(settings: config.Settings, fleet: Fleet,
                 # of the probe's bound (at least 5 s), so a silent fleet's
                 # reconnect lands within the bound, not a cycle after it
                 wake = max(5.0, settings.health_sync_bound / 4)
+                idle = max(IDLE_FLOOR_SEC, settings.health_sync_bound * 3 / 4)
                 while not closed.done():
                     try:
                         await asyncio.wait_for(asyncio.shield(closed), wake)
                     except asyncio.TimeoutError:
                         age = time.monotonic() - last_seen
-                        if age >= IDLE_RECONNECT_SEC:
+                        if age >= idle:
                             log.info("console: the stream was silent for %.0f s;"
                                      " reconnecting for a replay", age)
                             break

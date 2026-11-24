@@ -47,9 +47,11 @@ class Fleet:
     _presence_cseq: int = 0
     _server_now: float = 0.0
     synced: bool = False
-    # monotonic stamps: the last jetstream replay seen (a delivery with
-    # pending 0), and the last delivery of any kind — /healthz reads them
-    last_sync_at: float = 0.0
+    # monotonic stamps, or None before the first: the last jetstream
+    # replay seen (a delivery with pending 0, or a consumer that answered
+    # with nothing left to deliver), and the last delivery of any kind —
+    # /healthz reads them; None says "never synced" and reads red
+    last_sync_at: float | None = None
     last_delivery_at: float = 0.0
 
     @property
