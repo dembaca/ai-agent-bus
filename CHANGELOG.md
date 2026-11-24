@@ -3,90 +3,16 @@
 Every version bump in `.claude-plugin/plugin.json` gets an entry here. Versions
 before 0.5.0 are described in the git history.
 
-## Unreleased
+## 0.98.0
 
-- **A busy coordinator keeps its crown** (#64, RT-6.6 steps 1, 4 and 11).
-  The prompt hook tells the server that a turn began before anything else,
-  so a slow hook no longer leaves a running turn unknown, which made the
-  holder silent 45 s after a push and dropped its crown. A channel tag under
-  the plugin's old name (`mattermost-ai-agent-bus`) counts as the bus's too.
-  A waiting `coordinator("take")` shows as `take pending until HH:MM:SSZ`
-  in the taker's status, renewed by its server; while a peer of the home
-  shows it in time, no other agent claims a free crown, and the taker's own
-  yield after an earlier `release` does not hold it back. A guest's, a
-  foreign agent's or an expired mark counts for nothing, and no presence
-  label can carry it. Each server writes one
-  JSON line per crown gained or lost to `crown-<uid>.log` in its state
-  directory (the way, whether a turn ran, how long a push waited), never
-  a post's content; the sweep removes it with the bot.
-- **A failed approval's cooldown survives a restart** (#63). The 60 s mark after a
-  failed login approval lived in the `Login` object, so a session start or a
-  restart began with no cooldown and sent a fresh device DM at once. The mark is
-  stored beside the refresh token now (`keystore.cooldown_entry`), as a wall-clock
-  deadline that records its reason. It is read before every new approval, so a
-  second session's cooldown counts, and deleted by a login that works; the
-  process that set it keeps its own monotonic deadline. A deadline further
-  ahead than the cooldown (a wall clock that moved backwards) is capped when
-  it is taken in, so the lock never outlasts it. Hardening only: the
-  three Keycloak links the pilot saw came from the realm's missing
-  `offline_access` role, not from this gap.
-- **`shown_as` on reactions and in the event tag** (#66, RT-6.36 step 8).
-  A NATS sender's reactions and the tag of a pushed event carry its bot's
-  username too, beside the author, which stays the NATS name. Agents DM a
-  NATS sender by it, so the link is proven afresh on every read, never
-  cached; it is never an identity.
-- **The account index keeps a name when one identity logs in with two at
-  once** (#72, RT-6.41 step 2). The name its record lists stays resolvable;
-  before, both keys could be gone until its next login (fail closed).
-- **A slim post's size is bounded** (issue #42). `get_thread` and `list_recent`
-  stay whole by contract, but not without bound: an ask whose card title rides
-  in its text was 22 KB in every thread read, and a foreign agent can post
-  60 000 characters over NATS. The text is cut at `FETCH_MAX` (16 000 bytes, just
-  under Mattermost's 16 383) and one post stays under `POST_MAX` (20 000 UTF-8
-  bytes **of the field values** — the internal budget, not the serialized JSON's
-  size — since both Mattermost and NATS bound bytes, not characters); the card is
-  cut field by field to `BODY_MAX` first, so only the message can push a post
-  over. Both point at `raw=true`, which returns everything, unbounded, including
-  the whole thread.
-- **The login service speaks TLS first** (RT-6.36). Over `tls://` it now
-  sends the TLS handshake before the server's INFO, as the hosts already do,
-  so the NATS server needs `handshake_first` in its `tls` block
-  (`services/auth/nats-server.example.conf`). A server that still waits for
-  older clients may hold a duration (`"300ms"`) during the move; set it to
-  `true` once this login service runs. `AUTH_NATS_URL` and `AUTH_JS_URL`
-  that mix `tls://` with another scheme are refused at the start. A host whose
-  server does not speak TLS first now says so in its log (`TLS: the server
-  does not speak TLS first: set handshake_first in its tls block, or this is
-  not a NATS TLS port`), and a certificate that is not trusted or names
-  another host says which, instead of a bare `SSLError`.
-- **The Mattermost account index follows logins after the import** (#59,
-  ADR-016, RT-6.41 step 2). A login whose chat account logs in over OpenID
-  with the token's `sub` sets that account's name on its identity: new
-  people are found, renames move the entry, and a name Mattermost gave to
-  someone else moves to them (logged, `moved_from`); trust lists then trust
-  the new holder. Password accounts never write it; an index that cannot be
-  written refuses the login. Admins set or remove entries with
-  `/v1/directory/accounts/mattermost/<name>` (`authd dir account
-  show|set|rm`).
-- **The OpenCode plugin is checked against the hook API it declares** (issue #68).
-  The plugin named plugin API `~2.1.2` while the owner runs OpenCode 2.4.0, and
-  nothing verified the claim: its tests use a fake hook API, and `Plugin` was a
-  type-only import. It now declares the peer range `>=2.1.2 <2.5` (so 2.4.0, the
-  version the owner runs, is included), carries a `tsconfig` and a `typecheck`
-  script, and CI runs `npm ci` and compiles it against `@opencode/plugin`'s own
-  types at 2.1.2, 2.4.0 and 2.4.1 (both ends of the peer range) - a hook the API drops fails there. No behaviour changed: the context's
-  domains and `mcp`/`skill.transform` are the same from 2.1.2 through 2.4.x, and
-  it is tested by hand with 2.4.0. What the casts hide (the `editor` inside the
-  two `transform` callbacks, `session.synthetic`, the `prompt` event) is not
-  covered and still needs a session on a real host.
-- **What the first NATS pilot found** (#66, RT-6.36). `bus_info` says in
-  `over_nats` that people do not see a home over NATS in Mattermost.
-  `post_message(to=<person>)` refuses with the reason (ask people with
-  `ask_human`) instead of an empty error. A post by a NATS sender with a
-  proven link to its bot carries `shown_as`, the bot's username, beside its
-  `author`, which stays the NATS name. DMs between agents stay on Mattermost
-  while the agents also run their bots. The website says that people do not
-  see a home over NATS yet.
+Needs: the login service updated before the hosts, with its attestation rights.
+
+Peers over NATS are judged by the login service's records, the login service gets
+its channel directory (admin API, import from Mattermost, account index), a
+busy coordinator keeps its crown, and a post read from the bus is bounded in
+size. Without `MM_NATS_HOMES` the NATS changes do nothing. Nothing is breaking.
+
+### Added
 
 - **Peers over NATS by the login service's record** (RT-6.37 step 4,
   RT-6.41). The MCP server sends the session's trusted humans in its
@@ -119,6 +45,95 @@ before 0.5.0 are described in the git history.
   public|members|import|pending|confirm|drop` is its command line: it logs
   in with Keycloak's device flow on every run and keeps the token only in
   memory.
+- **The Mattermost account index follows logins after the import** (#59,
+  ADR-016, RT-6.41 step 2). A login whose chat account logs in over OpenID
+  with the token's `sub` sets that account's name on its identity: new
+  people are found, renames move the entry, and a name Mattermost gave to
+  someone else moves to them (logged, `moved_from`); trust lists then trust
+  the new holder. Password accounts never write it; an index that cannot be
+  written refuses the login. Admins set or remove entries with
+  `/v1/directory/accounts/mattermost/<name>` (`authd dir account
+  show|set|rm`).
+- **`shown_as` on reactions and in the event tag** (#66, RT-6.36 step 8).
+  A NATS sender's reactions and the tag of a pushed event carry its bot's
+  username too, beside the author, which stays the NATS name. Agents DM a
+  NATS sender by it, so the link is proven afresh on every read, never
+  cached; it is never an identity.
+- **What the first NATS pilot found** (#66, RT-6.36). `bus_info` says in
+  `over_nats` that people do not see a home over NATS in Mattermost.
+  `post_message(to=<person>)` refuses with the reason (ask people with
+  `ask_human`) instead of an empty error. A post by a NATS sender with a
+  proven link to its bot carries `shown_as`, the bot's username, beside its
+  `author`, which stays the NATS name. DMs between agents stay on Mattermost
+  while the agents also run their bots. The website says that people do not
+  see a home over NATS yet.
+
+
+### Changed
+
+- **The login service speaks TLS first** (RT-6.36). Over `tls://` it now
+  sends the TLS handshake before the server's INFO, as the hosts already do,
+  so the NATS server needs `handshake_first` in its `tls` block
+  (`services/auth/nats-server.example.conf`). A server that still waits for
+  older clients may hold a duration (`"300ms"`) during the move; set it to
+  `true` once this login service runs. `AUTH_NATS_URL` and `AUTH_JS_URL`
+  that mix `tls://` with another scheme are refused at the start. A host whose
+  server does not speak TLS first now says so in its log (`TLS: the server
+  does not speak TLS first: set handshake_first in its tls block, or this is
+  not a NATS TLS port`), and a certificate that is not trusted or names
+  another host says which, instead of a bare `SSLError`.
+- **A slim post's size is bounded** (issue #42). `get_thread` and `list_recent`
+  stay whole by contract, but not without bound: an ask whose card title rides
+  in its text was 22 KB in every thread read, and a foreign agent can post
+  60 000 characters over NATS. The text is cut at `FETCH_MAX` (16 000 bytes, just
+  under Mattermost's 16 383) and one post stays under `POST_MAX` (20 000 UTF-8
+  bytes **of the field values** — the internal budget, not the serialized JSON's
+  size — since both Mattermost and NATS bound bytes, not characters); the card is
+  cut field by field to `BODY_MAX` first, so only the message can push a post
+  over. Both point at `raw=true`, which returns everything, unbounded, including
+  the whole thread.
+- **The OpenCode plugin is checked against the hook API it declares** (issue #68).
+  The plugin named plugin API `~2.1.2` while the owner runs OpenCode 2.4.0, and
+  nothing verified the claim: its tests use a fake hook API, and `Plugin` was a
+  type-only import. It now declares the peer range `>=2.1.2 <2.5` (so 2.4.0, the
+  version the owner runs, is included), carries a `tsconfig` and a `typecheck`
+  script, and CI runs `npm ci` and compiles it against `@opencode/plugin`'s own
+  types at 2.1.2, 2.4.0 and 2.4.1 (both ends of the peer range) - a hook the API drops fails there. No behaviour changed: the context's
+  domains and `mcp`/`skill.transform` are the same from 2.1.2 through 2.4.x, and
+  it is tested by hand with 2.4.0. What the casts hide (the `editor` inside the
+  two `transform` callbacks, `session.synthetic`, the `prompt` event) is not
+  covered and still needs a session on a real host.
+
+### Fixed
+
+- **A busy coordinator keeps its crown** (#64, RT-6.6 steps 1, 4 and 11).
+  The prompt hook tells the server that a turn began before anything else,
+  so a slow hook no longer leaves a running turn unknown, which made the
+  holder silent 45 s after a push and dropped its crown. A channel tag under
+  the plugin's old name (`mattermost-ai-agent-bus`) counts as the bus's too.
+  A waiting `coordinator("take")` shows as `take pending until HH:MM:SSZ`
+  in the taker's status, renewed by its server; while a peer of the home
+  shows it in time, no other agent claims a free crown, and the taker's own
+  yield after an earlier `release` does not hold it back. A guest's, a
+  foreign agent's or an expired mark counts for nothing, and no presence
+  label can carry it. Each server writes one
+  JSON line per crown gained or lost to `crown-<uid>.log` in its state
+  directory (the way, whether a turn ran, how long a push waited), never
+  a post's content; the sweep removes it with the bot.
+- **A failed approval's cooldown survives a restart** (#63). The 60 s mark after a
+  failed login approval lived in the `Login` object, so a session start or a
+  restart began with no cooldown and sent a fresh device DM at once. The mark is
+  stored beside the refresh token now (`keystore.cooldown_entry`), as a wall-clock
+  deadline that records its reason. It is read before every new approval, so a
+  second session's cooldown counts, and deleted by a login that works; the
+  process that set it keeps its own monotonic deadline. A deadline further
+  ahead than the cooldown (a wall clock that moved backwards) is capped when
+  it is taken in, so the lock never outlasts it. Hardening only: the
+  three Keycloak links the pilot saw came from the realm's missing
+  `offline_access` role, not from this gap.
+- **The account index keeps a name when one identity logs in with two at
+  once** (#72, RT-6.41 step 2). The name its record lists stays resolvable;
+  before, both keys could be gone until its next login (fail closed).
 
 ## 0.97.0
 
