@@ -30,7 +30,8 @@ func (r *Reader) Run(ctx context.Context, js jetstream.JetStream) error {
 	cons, err := js.CreateOrUpdateConsumer(ctx, r.Stream, jetstream.ConsumerConfig{
 		Name: ConsumerName, FilterSubject: "presence.*.*",
 		DeliverPolicy: jetstream.DeliverAllPolicy, AckPolicy: jetstream.AckNonePolicy,
-		MaxAckPending: 256,
+		MaxAckPending:     256,
+		InactiveThreshold: time.Hour,
 	})
 	if err != nil {
 		return fmt.Errorf("presence: consumer: %w", err)

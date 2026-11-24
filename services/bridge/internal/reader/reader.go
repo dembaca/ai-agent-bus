@@ -21,7 +21,12 @@ import (
 
 // Reader mirrors one home.
 type Reader struct {
-	Home        string
+	Home string
+	// Stuck is told when this home has been retrying one message for more than
+	// StuckAfter, and false when it went through: the probe fails meanwhile, the
+	// reader keeps trying (a revoked token is fixed, not skipped).
+	Stuck       func(bool)
+	StuckAfter  time.Duration
 	Log         *slog.Logger
 	Mirror      *mirror.Mirror
 	Store       mirror.Store
@@ -56,6 +61,10 @@ func (r *Reader) Run(ctx context.Context, js jetstream.JetStream,
 		FilterSubject: r.Prefix + ".ch." + r.Home + ".*",
 		AckPolicy:     jetstream.AckNonePolicy,
 		MaxAckPending: 64,
+		// The server drops an idle consumer after its own threshold; a
+		// Mattermost outage must not end the home, so it lives an hour between
+		// deliveries, far beyond the bridge's 30 s retry cap.
+		InactiveThreshold: time.Hour,
 	}
 	if ok {
 		cfg.DeliverPolicy = jetstream.DeliverByStartSequencePolicy
@@ -109,6 +118,13 @@ func (r *Reader) Run(ctx context.Context, js jetstream.JetStream,
 func (r *Reader) retry(ctx context.Context, m jetstream.Msg,
 	channelID func(context.Context) (string, error)) error {
 	wait := time.Second
+	since := time.Now()
+	stuck := false
+	defer func() {
+		if stuck && r.Stuck != nil {
+			r.Stuck(false)
+		}
+	}()
 	for {
 		err := r.one(ctx, m, channelID)
 		if err == nil {
@@ -122,6 +138,16 @@ func (r *Reader) retry(ctx context.Context, m jetstream.Msg,
 		}
 		if ctx.Err() != nil {
 			return nil
+		}
+		if !stuck && r.Stuck != nil {
+			after := r.StuckAfter
+			if after == 0 {
+				after = time.Minute
+			}
+			if time.Since(since) > after {
+				stuck = true
+				r.Stuck(true)
+			}
 		}
 		r.Log.Error("bridge: not mirrored, retrying", "home", r.Home,
 			"subject", m.Subject(), "in", wait.String(), "error", err)

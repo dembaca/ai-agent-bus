@@ -75,6 +75,7 @@ func run(log *slog.Logger) error {
 	}
 
 	var failed atomic.Bool
+	var stuck atomic.Bool
 	var wg sync.WaitGroup
 	if hasPresence {
 		pr := &presence.Reader{Log: log, Stream: "PRESENCE", Into: snapshot}
@@ -100,6 +101,7 @@ func run(log *slog.Logger) error {
 			Prefix: cfg.BusPrefix, PropsPrefix: cfg.Prefix,
 			Mirror: &mirror.Mirror{Home: home, Prefix: cfg.Prefix, Log: log, Sink: client, Store: kv,
 				Links: lk}}
+		r.Stuck = stuck.Store
 		wg.Add(1)
 		go func() {
 			defer wg.Done()
@@ -115,9 +117,9 @@ func run(log *slog.Logger) error {
 
 	mux := http.NewServeMux()
 	mux.HandleFunc("GET /healthz", func(w http.ResponseWriter, _ *http.Request) {
-		if failed.Load() {
+		if failed.Load() || stuck.Load() {
 			w.WriteHeader(http.StatusServiceUnavailable)
-			_, _ = w.Write([]byte("a home stopped; see the log\n"))
+			_, _ = w.Write([]byte("a home fails or retries; see the log\n"))
 			return
 		}
 		w.WriteHeader(http.StatusOK)

@@ -92,12 +92,15 @@ func TestTheExampleServerConfiguration(t *testing.T) {
 	svcPub, _ := svcUser.PublicKey()
 	jsUser, _ := nkeys.CreateUser()
 	jsPub, _ := jsUser.PublicKey()
+	bridgeUser, _ := nkeys.CreateUser()
+	bridgePub, _ := bridgeUser.PublicKey()
 	certFile, keyFile := selfSigned(t)
 	for placeholder, value := range map[string]string{
 		"<ISSUER_ACCOUNT_PUBLIC_KEY>": issuerPub,
 		"<XKEY_PUBLIC_KEY>":           xkeyPub,
 		"<SERVICE_USER_PUBLIC_NKEY>":  svcPub,
 		"<JS_USER_PUBLIC_NKEY>":       jsPub,
+		"<BRIDGE_USER_PUBLIC_NKEY>":   bridgePub,
 		"<PATH_TO_SERVER_CERT>":       certFile,
 		"<PATH_TO_SERVER_KEY>":        keyFile,
 		"<PATH_TO_CLIENT_CA>":         certFile,
@@ -127,8 +130,8 @@ func TestTheExampleServerConfiguration(t *testing.T) {
 	if co.Issuer != issuerPub || co.Account != "AUTH" || co.XKey != xkeyPub {
 		t.Errorf("auth_callout: %+v", co)
 	}
-	if want := []string{svcPub, jsPub}; !slices.Equal(co.AuthUsers, want) {
-		t.Errorf("auth_users %v, want only the login service's two users", co.AuthUsers)
+	if want := []string{svcPub, jsPub, bridgePub}; !slices.Equal(co.AuthUsers, want) {
+		t.Errorf("auth_users %v, want the login service's two users and the bridge's", co.AuthUsers)
 	}
 	if opts.TLSConfig == nil {
 		t.Error("no tls")
@@ -140,14 +143,24 @@ func TestTheExampleServerConfiguration(t *testing.T) {
 	if len(opts.Users) != 0 {
 		t.Errorf("%d users with a password", len(opts.Users))
 	}
-	if len(opts.Nkeys) != 2 {
-		t.Fatalf("%d nkey users, want the login service's two", len(opts.Nkeys))
+	if len(opts.Nkeys) != 3 {
+		t.Fatalf("%d nkey users, want the login service's two and the bridge's", len(opts.Nkeys))
 	}
 	for _, u := range opts.Nkeys {
 		switch u.Nkey {
 		case svcPub:
 			if u.Account == nil || u.Account.Name != "AUTH" {
 				t.Errorf("the callout's user is not in AUTH: %+v", u.Account)
+			}
+		case bridgePub:
+			if u.Account == nil || u.Account.Name != "BUS" {
+				t.Errorf("the bridge's user is not in BUS: %+v", u.Account)
+			}
+			// Read-only on the bus, its own consumers and bucket:
+			pub := strings.Join(u.Permissions.Publish.Allow, " ")
+			if !strings.Contains(pub, "$JS.API.CONSUMER.CREATE.BUS.>") ||
+				!strings.Contains(pub, "$KV.BUS_BRIDGE.>") || strings.Contains(pub, "bus.>") {
+				t.Errorf("the bridge's rights: %+v", u.Permissions.Publish.Allow)
 			}
 		case jsPub:
 			if u.Account == nil || u.Account.Name != "BUS" {
