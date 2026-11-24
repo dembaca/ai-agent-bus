@@ -170,7 +170,11 @@ def lead(message: str, kind: str = "") -> str:
     m = _FIRST.match(message or "")
     if m and m[1] in WORDS:
         raise ValueError(f"kind is {k} but the message starts with {m[1]}: drop one")
-    return f"{k} · {message.lstrip()}" if message.strip() else k
+    if not message.strip():
+        return k
+    body = message.lstrip()
+    # a table or list on the headline would not render: it starts below it
+    return f"{k}\n\n{body}" if _symbols.opens_with_block(body) else f"{k} · {body}"
 
 
 def status(kind: str | None) -> str | None:

@@ -5,6 +5,14 @@ before 0.5.0 are described in the git history.
 
 ## Unreleased
 
+- **The crown no longer breaks a table or list** (RT-6.6 step 3). A coordinator's
+  post that opens with a Markdown block (table row, list item, heading, code
+  fence, quote) gets the 👑 on a line of its own and a blank line after it,
+  so the block renders; other posts keep `👑 <text>`. A status post whose
+  text opens with such a block (`kind="RESULT"` and a table) puts its bus word
+  on the headline alone and the block below a blank line, instead of
+  `RESULT · | a |`, which broke the table.
+
 - **Silence keeps the crown one more crown lease** (#64, RT-6.6 steps 1 and 6,
   ADR-007 amended 2026-11-24). A holder that turns silent (a push untaken
   for 45 s, or no sign in the window) no longer drops its crown at once: its
