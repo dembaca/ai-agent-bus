@@ -167,6 +167,74 @@ class Run:
         }
 
 
+def silence(run: Run) -> tuple[bool, str]:
+    """`(explained, why)`: frames were sent and **none** arrived (issue #47).
+
+    `explained` is true only when the run's own evidence accounts for every one
+    of them; then the verdict is a statement about the fault. False means the
+    path carried something away, and the numbers are about the rig.
+
+    Which evidence counts depends on the fault, because each fails differently:
+
+    * `drop` and `blackhole` discard what they see. Every posted frame must have
+      been **seen** at the relay and **discarded** - a frame the relay never saw
+      was lost before the injection point, and one it forwarded was lost after
+      it;
+    * `halfopen` freezes the line: a frame delivered before the freeze is one the
+      path still had to carry, so any forwarded posted frame makes the silence
+      the path's;
+    * `cut` aborts the transport and the bus recovers by catch-up read; nothing
+      arriving means that read recovered nothing, which is not the cut itself
+      (the review of #78);
+    * `none`, `stall`, `reorder` and `duplicate` pass frames on, so silence under
+      them is never the fault.
+
+    The counters are the relay's **posted** ones: the plain ones also count
+    status and presence frames, and "the fault saw every frame" cannot be read
+    from them. A run that kept no counters explains nothing.
+    """
+    if not run.sent_frames or run.received or run.unmeasured:
+        # `unmeasured` has its own words: the inbox never opened, so nothing
+        # arriving says nothing this run did not already say (review of #54).
+        return True, ""
+    relay = run.relay or {}
+    sent = run.sent_frames
+    if not relay:
+        return False, ("nothing arrived, and the run kept no relay counters, so the fault "
+                       "cannot be shown to have caused it")
+    seen = int(relay.get("posted_seen", 0))
+    forwarded = int(relay.get("posted_forwarded", 0))
+    altered = int(relay.get("posted_altered", 0))
+    if run.fault in ("drop", "blackhole"):
+        if seen < sent:
+            return False, (f"the relay saw {seen} of {sent} posted frame(s) ({forwarded} "
+                           f"forwarded, {altered} discarded): the rest were lost before the "
+                           "injection point, so the fault does not explain the silence")
+        if altered < sent:
+            return False, (f"--fault {run.fault} discarded {altered} of {sent} posted "
+                           f"frame(s) and {forwarded} were forwarded, so the silence is not "
+                           "the fault's alone: the path lost the forwarded ones")
+        what = "discards every frame it sees" if run.fault == "drop" else "stops delivery"
+        return True, (f"nothing arrived: --fault {run.fault} {what} ({altered} of {sent} "
+                      "posted frame(s) discarded at the relay), so the run measures the fault")
+    if run.fault == "halfopen":
+        if altered == 0:
+            return False, ("--fault halfopen froze no posted frame, so nothing arriving is "
+                           "the path")
+        if forwarded:
+            return False, (f"the line froze after {forwarded} posted frame(s) had been "
+                           "delivered, and none arrived: the path lost them")
+        return True, (f"nothing arrived: --fault halfopen froze the line before a posted "
+                      f"frame was delivered ({altered} frozen), so the run measures the fault")
+    if run.fault == "cut":
+        return False, ("nothing arrived under --fault cut: the transport was cut and the "
+                       "bus's catch-up read recovered none of it, so this measured a recovery "
+                       "that did not happen")
+    return False, (f"--fault {run.fault} lets traffic through, but none of {sent} posted "
+                   "frame(s) arrived: the path carried nothing, so this is not a measurement "
+                   "of the fault")
+
+
 async def echo_run(count: int = 20, fault: ProxyFault | None = None,
                    send_interval: float = 0.0) -> Run:
     """The whole flow with no Lab and no server: an echo endpoint the harness

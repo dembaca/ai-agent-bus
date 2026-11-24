@@ -5,6 +5,18 @@ before 0.5.0 are described in the git history.
 
 ## Unreleased
 
+- **The MCP server reaches NATS over WebSocket** (RT-6.36, part of #51).
+  `MM_NATS_URL` takes `wss://` (TLS inside the WebSocket, verified with
+  `MM_NATS_CA_FILE` like `tls://`) or `ws://` on a loopback host only; a
+  pool is all one scheme. A home cannot run over it yet: the login service
+  refuses websocket URLs, and the credentials it issues allow standard
+  connections only (`AllowedConnectionTypes`). It may once the
+  sender-authenticity suite runs over a websocket listener.
+- **A test-rig run that receives nothing says whether the fault explains it**
+  (#47). `bus-testrig bus-run` exits 1 when frames were sent and none arrived
+  and no fault accounts for it - a path that carried nothing is not a
+  measurement - and a run under a fault that discards or freezes every posted
+  frame says so in its report instead of reading like a healthy run.
 - **Host login: a fast host clock, odd token times, the cooldown's cause**
   (#10, RT-6.34 step 3). A token's lifetime is now the shorter of
   `expires_in` and its own `exp - iat`, at most one day, counted from when

@@ -597,19 +597,52 @@ async def test_deliver_drops_a_reply_of_another_consumer(caplog: pytest.LogCaptu
 
 def test_tls_or_loopback_only() -> None:
     for ok in ("tls://nats.example.org:4222", "nats://localhost:4222", "nats://127.0.0.1:4222",
-               "nats://127.9.9.9", "nats://[::1]:4222", "tls://10.0.0.5:4222"):
+               "nats://127.9.9.9", "nats://[::1]:4222", "tls://10.0.0.5:4222",
+               "wss://nats.example.org:443", "wss://10.0.0.5:443", "ws://localhost:8080",
+               "ws://127.0.0.1:8080"):
         NatsSettings(servers=(ok,), home="home")
     for bad in ("nats://nats.example.org:4222", "nats://10.0.0.5:4222", "nats://127.0.0.1.evil.org",
-                "ws://localhost:80", "localhost:4222", "http://localhost", "nats://", "tls://", ""):
+                "ws://nats.example.org:8080", "ws://10.0.0.5:8080", "ws://",
+                "localhost:4222", "http://localhost", "nats://", "tls://", "wss://", ""):
         with pytest.raises(ValueError):
             NatsSettings(servers=(bad,), home="home")
+    for mixed in (("tls://ok.example.org", "nats://remote.example.org"),
+                  ("wss://ok.example.org", "ws://127.0.0.1"),
+                  ("tls://ok.example.org", "wss://ok.example.org"),
+                  ("nats://127.0.0.1", "ws://127.0.0.1")):
+        with pytest.raises(ValueError):
+            NatsSettings(servers=mixed, home="home")
+    # an upper-case scheme is normalised, never handed to nats-py: it matches `wss://`
+    # case-sensitively and would read `WSS://host` as a host name and dial plain TCP
+    for raw, want in (("WSS://nats.example.org:443", "wss://nats.example.org:443"),
+                      ("WS://127.0.0.1:8080", "ws://127.0.0.1:8080"),
+                      ("NATS://127.0.0.1:4222", "nats://127.0.0.1:4222"),
+                      ("TLS://nats.example.org:4222", "tls://nats.example.org:4222")):
+        assert NatsSettings(servers=(raw,), home="home").servers == (want,)
     with pytest.raises(ValueError):
-        NatsSettings(servers=("tls://ok.example.org", "nats://remote.example.org"), home="home")
+        NatsSettings(servers=("NATS://nats.example.org:4222",), home="home")  # plain off loopback
+    # and a settings object built around the checks cannot smuggle one in
+    s = NatsSettings(servers=("wss://ok.example.org",), home="home")
+    object.__setattr__(s, "servers", ("WSS://ok.example.org",))
+    with pytest.raises(ValueError):
+        NatsBus(s, FakeLogin(), "alice", lambda e: None)
+
+
+def test_wss_is_tls_inside_the_websocket_and_ws_is_plain() -> None:
+    wss = NatsSettings(servers=("wss://nats.example.org:443",), home="home")
+    assert wss.tls_context() is not None and natsbus._websocket(wss.servers)
+    ws = NatsSettings(servers=("ws://127.0.0.1:8080",), home="home")
+    assert ws.tls_context() is None and natsbus._websocket(ws.servers)
+    assert not natsbus._websocket(NatsSettings(servers=("tls://h",), home="home").servers)
     # also when settings were built around the check
     s = NatsSettings(servers=("nats://127.0.0.1:1",), home="home")
     object.__setattr__(s, "servers", ("nats://remote.example.org:4222",))
     with pytest.raises(ValueError):
         NatsBus(s, FakeLogin(), "alice", lambda e: None)
+    s = NatsSettings(servers=("ws://127.0.0.1:1",), home="home")
+    object.__setattr__(s, "servers", ("tls://ok.example.org", "ws://127.0.0.1:1"))
+    with pytest.raises(ValueError):
+        NatsBus(s, FakeLogin(), "alice", lambda e: None)  # one scheme per pool, at construction
 
 
 T0 = 1_800_000_000.0
@@ -906,16 +939,18 @@ async def _login_service(admin: NatsClient, agent: str, channels: list[str], sin
 
 
 class Rig:
-    def __init__(self, url: str, admin: NatsClient, names: dict[str, str], logins: dict[str, FakeLogin]) -> None:
+    def __init__(self, url: str, admin: NatsClient, names: dict[str, str], logins: dict[str, FakeLogin],
+                 ws_url: str = "") -> None:
         self.url, self.admin, self.names, self.logins = url, admin, names, logins
+        self.ws_url = ws_url
         self.buses: list[NatsBus] = []
 
     async def agent(self, who: str, channels: list[str] | None = None, bus_kw: dict[str, Any] | None = None,
-                    bot: str = "", **kw: Any) -> tuple[NatsBus, list[Event]]:
+                    bot: str = "", url: str | None = None, **kw: Any) -> tuple[NatsBus, list[Event]]:
         channels = channels or ["home"]
         login = self.logins[who]
         events: list[Event] = []
-        bus = NatsBus(NatsSettings(servers=(self.url,), home=channels[0], guests=tuple(channels[1:]), **kw),
+        bus = NatsBus(NatsSettings(servers=(url or self.url,), home=channels[0], guests=tuple(channels[1:]), **kw),
                       login, who, events.append, **{"heartbeat_sec": 0.2, **(bus_kw or {})})
         assert bus.name == self.names[who]
         await _login_service(self.admin, bus.name, channels, {})
@@ -957,8 +992,10 @@ async def rig(tmp_path: Path) -> AsyncIterator[Rig]:
             f'"{f"presence.{n}" if w == "carol" else f"presence.{w}.{n}"}"]}}, '
             f'subscribe: {{allow: ["deliver.{n}.>"]}}}}}}')
     port = _free_port()
+    ws_port = _free_port()
     conf = tmp_path / "nats.conf"
     conf.write_text(f'port: {port}\nhost: 127.0.0.1\njetstream {{ store_dir: "{tmp_path / "js"}" }}\n'
+                    f'websocket {{ port: {ws_port}\n host: 127.0.0.1\n no_tls: true }}\n'
                     f'accounts {{ BUS {{ jetstream: enabled\n users: [{", ".join(users)}] }} }}\n')
     proc = subprocess.Popen([binary, "-c", str(conf)], stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
     admin = NatsClient()
@@ -974,8 +1011,58 @@ async def rig(tmp_path: Path) -> AsyncIterator[Rig]:
             pytest.fail("nats-server did not start")
         for name, cfg in (("BUS", BUS_STREAM), ("PRESENCE", PRESENCE_STREAM)):
             await _api(admin, f"$JS.API.STREAM.CREATE.{name}", cfg)
-        r = Rig(url, admin, names, logins)
+        r = Rig(url, admin, names, logins, ws_url=f"ws://127.0.0.1:{ws_port}")
         yield r
+        for b in r.buses:
+            await b.stop()
+        await admin.close()
+    finally:
+        proc.terminate()
+        proc.wait(10)
+
+
+@pytest.fixture
+async def wss_rig(tmp_path: Path) -> AsyncIterator[tuple[Rig, Path]]:
+    """The same home over wss://: a websocket listener with a self-signed certificate, which
+    the client trusts through MM_NATS_CA_FILE (the test's `tls_ca_file`)."""
+    if os.environ.get("MM_TEST_NATS") != "1":
+        pytest.skip("MM_TEST_NATS=1 runs the tests against a real nats-server")
+    binary = _server_binary()
+    if not binary or not Path(binary).exists():
+        pytest.fail("nats-server 2.15.3 not found: set MM_NATS_SERVER=<path> or put it on PATH")
+    cert, key = _self_signed(tmp_path)
+    logins = {"alice": FakeLogin(), "eve": FakeLogin()}
+    names = {w: agent_name(w, lg.nkey().public_key) for w, lg in logins.items()}
+    admin_pw = os.urandom(8).hex()
+    users = [f'{{user: admin, password: "{admin_pw}"}}']
+    for w, lg in logins.items():
+        n = names[w]
+        users.append(
+            f'{{nkey: "{lg.nkey().public_key}", permissions: {{publish: {{allow: '
+            f'["bus.ch.home.{n}", "presence.crown.home.{n}", "presence.member.home.{n}", '
+            f'"bus.dm.*.{n}", "presence.{w}.{n}"]}}, subscribe: {{allow: ["deliver.{n}.>"]}}}}}}')
+    port, wss_port = _free_port(), _free_port()
+    conf = tmp_path / "nats-wss.conf"
+    conf.write_text(f'port: {port}\nhost: 127.0.0.1\njetstream {{ store_dir: "{tmp_path / "js"}" }}\n'
+                    f'websocket {{ port: {wss_port}\n host: 127.0.0.1\n tls {{ cert_file: "{cert}", '
+                    f'key_file: "{key}" }} }}\n'
+                    f'accounts {{ BUS {{ jetstream: enabled\n users: [{", ".join(users)}] }} }}\n')
+    proc = subprocess.Popen([binary, "-c", str(conf)], stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
+    admin = NatsClient()
+    try:
+        url = f"nats://127.0.0.1:{port}"
+        for _ in range(100):
+            try:
+                await admin.connect(url, user="admin", password=admin_pw, allow_reconnect=False)
+                break
+            except Exception:
+                await asyncio.sleep(0.1)
+        else:
+            pytest.fail("nats-server did not start")
+        for name, cfg in (("BUS", BUS_STREAM), ("PRESENCE", PRESENCE_STREAM)):
+            await _api(admin, f"$JS.API.STREAM.CREATE.{name}", cfg)
+        r = Rig(url, admin, names, logins, ws_url=f"wss://127.0.0.1:{wss_port}")
+        yield r, cert
         for b in r.buses:
             await b.stop()
         await admin.close()
@@ -990,6 +1077,75 @@ async def until(pred: Callable[[], bool], timeout: float = 5.0, what: str = "") 
         if time.monotonic() > end:
             raise AssertionError("timed out" + (f": {what}" if what else ""))
         await asyncio.sleep(0.02)
+
+
+async def test_a_ws_redirect_is_refused_and_nothing_reaches_the_target() -> None:
+    """aiohttp follows a 3xx of the WebSocket upgrade, and the CONNECT (with the access token)
+    would go to the redirect's target: the client refuses it before a byte goes there (Fable's
+    review of #51)."""
+    target_bytes = bytearray()
+
+    async def target(reader: asyncio.StreamReader, writer: asyncio.StreamWriter) -> None:
+        target_bytes.extend(await reader.read(4096))
+        writer.close()
+
+    target_srv = await asyncio.start_server(target, "127.0.0.1", 0)
+    target_port = target_srv.sockets[0].getsockname()[1]
+
+    async def redirect(reader: asyncio.StreamReader, writer: asyncio.StreamWriter) -> None:
+        await reader.readuntil(b"\r\n\r\n")
+        writer.write(f"HTTP/1.1 302 Found\r\nLocation: http://127.0.0.1:{target_port}/nats\r\n"
+                     "Content-Length: 0\r\n\r\n".encode())
+        await writer.drain()
+        writer.close()
+
+    redir_srv = await asyncio.start_server(redirect, "127.0.0.1", 0)
+    redir_port = redir_srv.sockets[0].getsockname()[1]
+    try:
+        bus = NatsBus(NatsSettings(servers=(f"ws://127.0.0.1:{redir_port}",), home="home"),
+                      FakeLogin(), "alice", lambda e: None, connect_timeout=2)
+        # the refusal surfaces as the transport error, or as our bounded connect timeout:
+        # nats-py retries a failed server until the caller stops it
+        with pytest.raises((natsbus.NatsBusError, asyncio.TimeoutError)):
+            await bus._open()
+        await asyncio.sleep(0.2)
+        assert target_bytes == b"", "the redirect target received the CONNECT"
+    finally:
+        for srv in (redir_srv, target_srv):
+            srv.close()
+            await srv.wait_closed()
+
+
+async def test_post_and_reply_over_a_websocket(rig: Rig) -> None:
+    """ws://: nats-py's WebSocket transport (aiohttp) carries the same home; a ws agent and a
+    tcp agent of one home see each other, so the transport is the only difference (RT-6.36)."""
+    alice, a_ev = await rig.agent("alice", url=rig.ws_url)
+    bob, b_ev = await rig.agent("bob")  # tcp, the same home
+    await alice.post("home", "hello over ws")
+    await until(lambda: len(b_ev) == 1, what="bob got alice's ws post")
+    await bob.post("home", "reply", root=b_ev[0].stream_seq)
+    await until(lambda: len(a_ev) == 2, what="alice got bob's reply over ws")
+    assert (a_ev[1].where, a_ev[1].sender) == ("home", bob.name)
+
+
+async def test_wss_verifies_the_websocket_tls(wss_rig: tuple[Rig, Path],
+                                              caplog: pytest.LogCaptureFixture) -> None:
+    """wss://: the WebSocket's TLS is verified with MM_NATS_CA_FILE like tls://; without the CA
+    the connection is refused, and no token goes over it."""
+    rig, ca = wss_rig
+    alice, a_ev = await rig.agent("alice", url=rig.ws_url, tls_ca_file=str(ca))
+    await alice.post("home", "hello over wss")
+    await until(lambda: len(a_ev) == 1, what="alice's own post came back over wss")
+    # the bus itself verifies: an agent without MM_NATS_CA_FILE never connects, and the bus's
+    # own log names the certificate. An unverified context would connect right here, which is
+    # what a mutation of the TLS setup turns red (716d72's blocker on #83).
+    caplog.set_level(logging.WARNING, logger="mattermost_ai_agent_bus.natsbus")
+    eve, _ = await rig.agent("eve", url=rig.ws_url, bus_kw={"connect_timeout": 3})
+    try:
+        assert eve._nc is None and not eve._connected
+        assert "certificate" in caplog.text.lower()
+    finally:
+        await eve.stop()
 
 
 async def test_post_reply_reaction_dm(rig: Rig) -> None:
