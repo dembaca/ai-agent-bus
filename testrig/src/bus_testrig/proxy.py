@@ -235,6 +235,8 @@ class FaultRelay:
             await asyncio.sleep(fault.stall_sec)
             await send(frame)
             self.forwarded += 1
+            if posted:
+                self.posted_forwarded += 1
 
     async def flush(self, state: ConnState, *, send: Send) -> None:
         """Release a frame `reorder` still holds when the server stops.
