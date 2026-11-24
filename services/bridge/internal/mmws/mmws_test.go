@@ -10,6 +10,7 @@ import (
 	"net/http"
 	"net/http/httptest"
 	"os"
+	"reflect"
 	"strings"
 	"sync"
 	"testing"
@@ -134,10 +135,15 @@ func postEvent(conn *websocket.Conn, post map[string]any) {
 		"data": map[string]any{"post": string(raw)}})
 }
 
-func reactionEvent(conn *websocket.Conn, name string, reaction map[string]any) {
+// reactionEvent writes a reaction event as Mattermost does: the
+// reaction as a JSON string inside data, the channel in the broadcast
+// beside it. create_at is what the caller says — a removal carries 0.
+func reactionEvent(conn *websocket.Conn, name, channelID string,
+	reaction map[string]any) {
 	raw, _ := json.Marshal(reaction)
 	write(conn, map[string]any{"event": name,
-		"data": map[string]any{"reaction": string(raw)}})
+		"data":      map[string]any{"reaction": string(raw)},
+		"broadcast": map[string]any{"channel_id": channelID}})
 }
 
 // ping sends a ping and fails the test when no pong, with the same
@@ -173,8 +179,14 @@ func ping(t *testing.T) func(*websocket.Conn) {
 // sleep: a reconnect happens in milliseconds, not seconds.
 func run(t *testing.T, f *fakeMM) *Reader {
 	t.Helper()
+	return runReader(t, New(f.srv.URL, "tok").
+		WithBackoff(time.Millisecond, 4*time.Millisecond))
+}
+
+// runReader starts a reader the test built, on the same ending.
+func runReader(t *testing.T, r *Reader) *Reader {
+	t.Helper()
 	ctx, cancel := context.WithCancel(context.Background())
-	r := New(f.srv.URL, "tok").WithBackoff(time.Millisecond, 4*time.Millisecond)
 	done := make(chan error, 1)
 	go func() { done <- r.Run(ctx) }()
 	t.Cleanup(func() {
@@ -221,19 +233,25 @@ func TestEventsTyped(t *testing.T) {
 		func(conn *websocket.Conn) {
 			postEvent(conn, map[string]any{
 				"id": "p1", "user_id": "u1", "channel_id": "ch1", "root_id": "r1",
-				"create_at": 1000, "update_at": 1000, "edit_at": 0,
-				"message": "go ahead",
+				"type": "custom_card", "props": map[string]any{
+					"fromusername": "dembaca",
+				},
+				"file_count": map[string]any{"spec.txt": 1},
+				"create_at":  1000, "update_at": 1000, "edit_at": 0,
+				"delete_at": 0,
+				"message":   "go ahead",
 			})
 			// An event the reader must ignore, never crash on.
 			write(conn, map[string]any{"event": "status_change",
 				"data": map[string]any{"status": "away"}, "seq": 2})
-			reactionEvent(conn, "reaction_added", map[string]any{
+			reactionEvent(conn, "reaction_added", "ch1", map[string]any{
 				"user_id": "u2", "post_id": "p2", "emoji_name": "+1",
 				"create_at": 1500,
 			})
-			reactionEvent(conn, "reaction_removed", map[string]any{
+			// As on the wire: a removal carries no create_at of its own —
+			// Mattermost's delete handler sends the bare object.
+			reactionEvent(conn, "reaction_removed", "ch1", map[string]any{
 				"user_id": "u3", "post_id": "p3", "emoji_name": "smile",
-				"create_at": 1600,
 			})
 		},
 		// The script ends here, which cuts the socket; the reader comes
@@ -251,9 +269,14 @@ func TestEventsTyped(t *testing.T) {
 	}
 	wantPost := Posted{
 		PostID: "p1", UserID: "u1", ChannelID: "ch1", RootID: "r1",
-		CreateAt: 1000, UpdateAt: 1000, EditAt: 0, Message: "go ahead",
+		Type:      "custom_card",
+		Props:     map[string]any{"fromusername": "dembaca"},
+		FileCount: map[string]int{"spec.txt": 1},
+		CreateAt:  1000, UpdateAt: 1000, EditAt: 0, DeleteAt: 0,
+		Message: "go ahead",
 	}
-	if *post != wantPost {
+	// Props and FileCount hold maps: a DeepEqual, not a plain compare.
+	if !reflect.DeepEqual(*post, wantPost) {
 		t.Errorf("got post %+v, want %+v", *post, wantPost)
 	}
 
@@ -263,17 +286,17 @@ func TestEventsTyped(t *testing.T) {
 	if !ok {
 		t.Fatalf("got %T, want *Reaction", added)
 	}
-	if want := (Reaction{PostID: "p2", UserID: "u2", EmojiName: "+1",
-		CreateAt: 1500, Added: true}); *added != want {
+	if want := (Reaction{PostID: "p2", UserID: "u2", ChannelID: "ch1",
+		EmojiName: "+1", CreateAt: 1500, Added: true}); *added != want {
 		t.Errorf("got reaction %+v, want %+v", *added, want)
 	}
 	removed, ok := next(t, r).(*Reaction)
 	if !ok {
 		t.Fatalf("got %T, want *Reaction", removed)
 	}
-	if want := (Reaction{PostID: "p3", UserID: "u3", EmojiName: "smile",
-		CreateAt: 1600, Added: false}); *removed != want {
-		t.Errorf("got reaction %+v, want %+v", *removed, want)
+	if want := (Reaction{PostID: "p3", UserID: "u3", ChannelID: "ch1",
+		EmojiName: "smile", CreateAt: 0, Added: false}); *removed != want {
+		t.Errorf("got reaction %+v, want %+v (a removal carries no time)", *removed, want)
 	}
 }
 
@@ -292,7 +315,7 @@ func TestReconnectCatchUp(t *testing.T) {
 					"id": "seen", "user_id": "u1", "channel_id": "ch7",
 					"create_at": 1000, "update_at": 1000, "message": "before the cut",
 				})
-				reactionEvent(conn, "reaction_added", map[string]any{
+				reactionEvent(conn, "reaction_added", "ch7", map[string]any{
 					"user_id": "u2", "post_id": "seen", "emoji_name": "+1",
 					"create_at": 1500,
 				})
@@ -348,6 +371,60 @@ func TestReconnectCatchUp(t *testing.T) {
 	}
 	if len(posts) != 1 || posts[0].ID != "missed" || posts[0].CreateAt != 1800 {
 		t.Fatalf("got posts %+v, want the one written in the gap", posts)
+	}
+}
+
+// Given a Mattermost that answers and then goes quiet without closing —
+// a half-open socket — when the idle deadline passes, the reader drops
+// it and comes back: the stall cannot hang it.
+func TestStalledSocket(t *testing.T) {
+	f := newFake(t)
+	// Both scripts hold the connection silently after the handshake; the
+	// second connection's marker is the only thing that tells them apart.
+	f.scripts = []func(*websocket.Conn){authOK(still), authOK(still)}
+	r := runReader(t, New(f.srv.URL, "tok").
+		WithBackoff(time.Millisecond, 4*time.Millisecond).
+		WithIdle(20*time.Millisecond))
+
+	reconnected(t, next(t, r), 0) // the first connect
+	// The socket stays fine-but-silent; the read deadline takes it and
+	// the second connect says so within the test's time.
+	reconnected(t, next(t, r), 0)
+	if got := f.connections(); got < 2 {
+		t.Fatalf("got %d connections, want the silent socket taken again", got)
+	}
+}
+
+// Given a Mattermost whose hello event lands before the auth reply — the
+// reply is found by its seq_reply, not by being first — when the reader
+// connects, it hands the early event's none out, waits for the reply,
+// and runs on: the order is the wire's, not an assumption.
+func TestHelloBeforeReply(t *testing.T) {
+	f := newFake(t)
+	f.scripts = []func(*websocket.Conn){func(conn *websocket.Conn) {
+		var challenge struct {
+			Seq int `json:"seq"`
+		}
+		if err := conn.ReadJSON(&challenge); err != nil {
+			return // the reader hung up before asking
+		}
+		// The hello first, the reply after: both orders are legal.
+		write(conn, map[string]any{"event": "hello",
+			"data": map[string]any{"connection_id": "c1"}, "seq": 0})
+		write(conn, map[string]any{"status": "OK", "seq_reply": challenge.Seq,
+			"data": map[string]any{}})
+		postEvent(conn, map[string]any{
+			"id": "p1", "user_id": "u1", "channel_id": "ch1",
+			"create_at": 1000, "update_at": 1000, "message": "hello first",
+		})
+		still(conn)
+	}}
+	r := run(t, f)
+
+	reconnected(t, next(t, r), 0) // the reply was found behind the hello
+	post, ok := next(t, r).(*Posted)
+	if !ok || post.PostID != "p1" {
+		t.Fatalf("got %v, want the post after the hello-first handshake", post)
 	}
 }
 

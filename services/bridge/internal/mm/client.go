@@ -149,28 +149,38 @@ func (c *Client) GetUser(ctx context.Context, userID string) (User, error) {
 
 // Post is one of a channel's posts, as the catch-up after a WebSocket
 // reconnect needs it (mmws.Reconnected): who wrote it and where, its
-// thread, Mattermost's clock fields and the text.
+// thread, Mattermost's clock fields, the text — and the fields the drop
+// rules read: the type and props, the file counts and the delete mark
+// (a post created and deleted inside the gap comes back from `since`).
 type Post struct {
 	ID        string
 	UserID    string
 	ChannelID string
 	RootID    string
-	CreateAt  int64 // ms
-	UpdateAt  int64 // ms
-	EditAt    int64 // ms, 0 when never edited
+	Type      string         // Mattermost's post type (a join, a custom one)
+	Props     map[string]any // the post's props: fromusername, attachments
+	FileCount map[string]int // per file name
+	CreateAt  int64          // ms
+	UpdateAt  int64          // ms
+	EditAt    int64          // ms, 0 when never edited
+	DeleteAt  int64          // ms, past 0: deleted
 	Message   string
 }
 
 // postJSON is a post as Mattermost writes it on the wire.
 type postJSON struct {
-	ID        string `json:"id"`
-	UserID    string `json:"user_id"`
-	ChannelID string `json:"channel_id"`
-	RootID    string `json:"root_id"`
-	CreateAt  int64  `json:"create_at"`
-	UpdateAt  int64  `json:"update_at"`
-	EditAt    int64  `json:"edit_at"`
-	Message   string `json:"message"`
+	ID        string         `json:"id"`
+	UserID    string         `json:"user_id"`
+	ChannelID string         `json:"channel_id"`
+	RootID    string         `json:"root_id"`
+	Type      string         `json:"type"`
+	Props     map[string]any `json:"props"`
+	FileCount map[string]int `json:"file_count"`
+	CreateAt  int64          `json:"create_at"`
+	UpdateAt  int64          `json:"update_at"`
+	EditAt    int64          `json:"edit_at"`
+	DeleteAt  int64          `json:"delete_at"`
+	Message   string         `json:"message"`
 }
 
 // PostsSince reads a channel's posts from since on, for the catch-up
@@ -188,7 +198,7 @@ func (c *Client) PostsSince(ctx context.Context, channelID string, since int64) 
 	}
 	path := "/api/v4/channels/" + url.PathEscape(channelID) +
 		"/posts?since=" + strconv.FormatInt(since, 10)
-	if err := c.do(ctx, "GET", path, nil, &list); err != nil {
+	if err := c.doLimit(ctx, "GET", path, nil, &list, catchUpCap); err != nil {
 		return nil, fmt.Errorf("mattermost: channel %q: %w", channelID, err)
 	}
 	out := make([]Post, 0, len(list.Order))
@@ -199,9 +209,13 @@ func (c *Client) PostsSince(ctx context.Context, channelID string, since int64) 
 				UserID:    raw.UserID,
 				ChannelID: raw.ChannelID,
 				RootID:    raw.RootID,
+				Type:      raw.Type,
+				Props:     raw.Props,
+				FileCount: raw.FileCount,
 				CreateAt:  raw.CreateAt,
 				UpdateAt:  raw.UpdateAt,
 				EditAt:    raw.EditAt,
+				DeleteAt:  raw.DeleteAt,
 				Message:   raw.Message,
 			})
 		}
@@ -252,18 +266,64 @@ func (c *Client) Unreact(ctx context.Context, postID, emoji string) error {
 		url.PathEscape(postID)+"/reactions/"+url.PathEscape(emoji), nil, nil))
 }
 
+// catchUpCap is what PostsSince may read: `since` answers up to a
+// thousand posts in one body, far past the cap a single object needs.
+const catchUpCap = 32 << 20 // 32 MiB
+
+// ErrTooLarge says a response ran past the cap its method reads: the
+// catch-up names its own bound, so the caller can fall back to pages
+// instead of retrying a body that cannot fit.
+var ErrTooLarge = errors.New("mattermost: the response is larger than this read takes")
+
+// doLimit is do with the body's cap named: PostsSince needs far more
+// than a single object, and its refusal says itself (ErrTooLarge) so the
+// caller can page instead of retrying a body that cannot fit.
+func (c *Client) doLimit(ctx context.Context, method, path string, in, out any,
+	limit int64) error {
+	body, err := c.request(ctx, method, path, in)
+	if err != nil {
+		return err
+	}
+	defer body.Close()
+	raw, rerr := io.ReadAll(io.LimitReader(body, limit+1))
+	if rerr != nil {
+		return rerr
+	}
+	if int64(len(raw)) > limit {
+		return fmt.Errorf("mattermost %s %s: %w", method, path, ErrTooLarge)
+	}
+	if out == nil {
+		return nil
+	}
+	return json.Unmarshal(raw, out)
+}
+
 func (c *Client) do(ctx context.Context, method, path string, in, out any) error {
+	body, err := c.request(ctx, method, path, in)
+	if err != nil {
+		return err
+	}
+	defer body.Close()
+	if out == nil {
+		return nil
+	}
+	return json.NewDecoder(io.LimitReader(body, 1<<20)).Decode(out)
+}
+
+// request is do and doLimit's shared half: one request sent, its status
+// checked, the body left open for whichever cap reads it.
+func (c *Client) request(ctx context.Context, method, path string, in any) (io.ReadCloser, error) {
 	var body io.Reader
 	if in != nil {
 		raw, err := json.Marshal(in)
 		if err != nil {
-			return err
+			return nil, err
 		}
 		body = bytes.NewReader(raw)
 	}
 	req, err := http.NewRequestWithContext(ctx, method, c.base+path, body)
 	if err != nil {
-		return err
+		return nil, err
 	}
 	req.Header.Set("Authorization", "Bearer "+c.token)
 	if in != nil {
@@ -271,17 +331,14 @@ func (c *Client) do(ctx context.Context, method, path string, in, out any) error
 	}
 	resp, err := c.http.Do(req)
 	if err != nil {
-		return err
+		return nil, err
 	}
-	defer resp.Body.Close()
 	if resp.StatusCode < 200 || resp.StatusCode > 299 {
 		msg, _ := io.ReadAll(io.LimitReader(resp.Body, 512))
-		return &StatusError{Status: resp.StatusCode,
+		resp.Body.Close()
+		return nil, &StatusError{Status: resp.StatusCode,
 			Err: fmt.Errorf("mattermost %s %s: %s: %s", method, path, resp.Status,
 				strings.TrimSpace(string(msg)))}
 	}
-	if out == nil {
-		return nil
-	}
-	return json.NewDecoder(io.LimitReader(resp.Body, 1<<20)).Decode(out)
+	return resp.Body, nil
 }

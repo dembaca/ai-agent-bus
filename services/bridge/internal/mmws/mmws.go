@@ -21,25 +21,41 @@ import (
 	"github.com/gorilla/websocket"
 )
 
-// Posted is one `posted` event: what somebody wrote in a channel.
+// Posted is one `posted` event: what somebody wrote in a channel, with
+// the fields the drop rules read — the post's type and props, its file
+// counts and its delete mark — because a post brought back by a catch-up
+// or a live stream may be deleted, and only the caller may drop it.
 type Posted struct {
 	PostID    string
 	UserID    string
 	ChannelID string
 	RootID    string
-	CreateAt  int64 // ms, Mattermost's clock
+	Type      string         // Mattermost's post type (a custom one, a join…)
+	Props     map[string]any // the post's props: fromusername, attachments…
+	FileCount map[string]int // per file name; a file post carries more
+	CreateAt  int64          // ms, Mattermost's clock
 	UpdateAt  int64
 	EditAt    int64 // 0 when the post was never edited
+	DeleteAt  int64 // past 0: the post is deleted (a live edit of a deletion)
 	Message   string
 }
 
 // Reaction is one `reaction_added` (Added true) or `reaction_removed`
-// (Added false) event. Its CreateAt bounds it, not its post's.
+// (Added false) event, with the channel it happened in — Mattermost
+// broadcasts the post's channel beside the reaction, so the caller needs
+// no extra read to place it.
+//
+// A removed reaction carries CreateAt 0: Mattermost's own delete handler
+// sends the bare object it was handed (verified against server/channels/
+// api4/reaction.go), so a removal has no time of its own. It never lowers
+// this reader's hint, and the caller bounds a removal it caught up by the
+// post it belongs to, not by the clock.
 type Reaction struct {
 	PostID    string
 	UserID    string
+	ChannelID string
 	EmojiName string
-	CreateAt  int64 // ms, Mattermost's clock
+	CreateAt  int64 // ms, Mattermost's clock; 0 on a removal
 	Added     bool
 }
 
@@ -47,7 +63,11 @@ type Reaction struct {
 // CreateAt of the posts and reactions this reader handed out before — 0
 // when it handed out none — the hint for the caller's catch-up read. It
 // is a hint, not a promise: the caller may have carried more from its
-// own reading, and what it carries stays its decision.
+// own reading, and what it carries stays its decision. Mattermost's
+// `since` returns only what is strictly after its bound, so the caller
+// reads from Since minus a margin (some seconds) and dedups the posts by
+// their id and the reactions by their post, user, emoji and kind — the
+// live path may have handed out what the read finds again.
 type Reconnected struct {
 	Since int64
 }
@@ -59,13 +79,15 @@ func (*Posted) event()      {}
 func (*Reaction) event()    {}
 func (*Reconnected) event() {}
 
-// The backoff's shape and the frame cap, Mattermost's clock aside:
+// The backoff's shape, the socket's patience and the frame cap:
 //
 //	first, max — start 1 s, double per drop, stop at 30 s. A connection
-//	that stayed up for steady resets the wait: a socket that drops every
+//	that stayed up for steady resets the wait. The first wait is `first`
+//	the same whatever max says; the doubling caps the rest.
 //
-// second waits longer each time, one that carried the bus for half a
-// minute starts over.
+//	idle — a read that stays quiet this long takes the socket again: a
+//	half-open connection must not hang the reader. Mattermost pings far
+//	more often, so 2.5 min only ever fires on a broken peer.
 //
 //	maxFrame — a bigger frame is a broken peer, not a post; the socket is
 //	dropped and taken again (Mattermost's longest message is far below).
@@ -73,6 +95,7 @@ const (
 	firstBackoff = time.Second
 	maxBackoff   = 30 * time.Second
 	steady       = 30 * time.Second
+	readIdle     = 150 * time.Second
 	maxFrame     = 1 << 20 // 1 MiB
 )
 
@@ -85,6 +108,7 @@ type Reader struct {
 	token  string // the bridge bot's token, sent as the auth challenge
 	first  time.Duration
 	max    time.Duration
+	idle   time.Duration
 	events chan Event
 
 	since int64 // the greatest CreateAt handed out, posts and reactions alike
@@ -99,26 +123,37 @@ func New(baseURL, token string) *Reader {
 		token:  token,
 		first:  firstBackoff,
 		max:    maxBackoff,
+		idle:   readIdle,
 		events: make(chan Event, 128),
 	}
 }
 
-// WithBackoff sets the reconnect backoff: the first wait after a drop and
-// its cap. Both can be as small as a test may sleep; a cap below the
-// first waits the first forever.
-func (r *Reader) WithBackoff(first, max time.Duration) *Reader {
+// WithBackoff sets the reconnect backoff: the first wait after a drop
+// and the cap the doubling stops at. WithIdle sets the read deadline; a
+// quiet socket is dropped then. Both take what a test may sleep.
+func (r *Reader) WithBackoff(first, cap time.Duration) *Reader {
 	if first > 0 {
 		r.first = first
 	}
-	if max > 0 {
-		r.max = max
+	if cap > 0 {
+		r.max = cap
+	}
+	return r
+}
+
+// WithIdle sets how long one read may stay quiet before the socket is
+// taken again: half-open protection, which the tests shorten.
+func (r *Reader) WithIdle(idle time.Duration) *Reader {
+	if idle > 0 {
+		r.idle = idle
 	}
 	return r
 }
 
 // Events is where the typed events arrive. Run stops reading from
 // Mattermost while nobody takes them: an event is never dropped on the
-// floor to keep the socket moving.
+// floor to keep the socket moving, and a block of more than a few
+// seconds is logged.
 func (r *Reader) Events() <-chan Event { return r.events }
 
 // Run connects, reads and reconnects until ctx is cancelled, whose error
@@ -144,15 +179,15 @@ func (r *Reader) Run(ctx context.Context) error {
 // returns how long the socket was up — 0 when it never came up — after
 // logging why it ended; Run decides the wait, never the caller.
 func (r *Reader) connect(ctx context.Context) time.Duration {
-	addr, err := r.url()
+	u, err := r.url()
 	if err != nil {
 		slog.Error("mmws: not a Mattermost base URL; retrying", "error", err)
 		return 0
 	}
-	conn, _, err := websocket.DefaultDialer.DialContext(ctx, addr, nil)
+	conn, _, err := websocket.DefaultDialer.DialContext(ctx, u.String(), nil)
 	if err != nil {
 		slog.Error("mmws: no Mattermost WebSocket; retrying",
-			"url", addr, "error", err)
+			"url", u.Redacted(), "error", err)
 		return 0
 	}
 	defer conn.Close()
@@ -163,10 +198,10 @@ func (r *Reader) connect(ctx context.Context) time.Duration {
 			// answers and says no — and the retry costs the same, since the
 			// token may be re-issued while the bridge runs.
 			slog.Error("mmws: the bot token was refused; retrying",
-				"url", addr, "status", auth.Status)
+				"url", u.Redacted(), "status", auth.Status)
 		} else {
 			slog.Error("mmws: the auth challenge failed; retrying",
-				"url", addr, "error", err)
+				"url", u.Redacted(), "error", err)
 		}
 		return 0
 	}
@@ -187,9 +222,12 @@ func (e *AuthError) Error() string {
 	return "mmws: the auth challenge was refused: status " + e.Status
 }
 
-// prove sends Mattermost's auth challenge and waits for its reply. The
-// token then lives in the socket alone; nothing else of the connection is
-// asked again.
+// prove sends Mattermost's auth challenge and waits for its reply —
+// wherever it sits in the stream. The reply carries `seq_reply` and the
+// events do not, so the reader takes frames until the reply with its own
+// sequence lands (mattermost's wire model, model/websocket_message.go);
+// any event that arrives first is handed out, not dropped, and a reply
+// with any status but OK is the refusal.
 func (r *Reader) prove(ctx context.Context, conn *websocket.Conn) error {
 	challenge := struct {
 		Seq    int               `json:"seq"`
@@ -202,28 +240,42 @@ func (r *Reader) prove(ctx context.Context, conn *websocket.Conn) error {
 	if err := conn.WriteJSON(challenge); err != nil {
 		return fmt.Errorf("mmws: sending the auth challenge: %w", err)
 	}
-	conn.SetReadDeadline(time.Now().Add(20 * time.Second))
-	var reply struct {
-		Status string `json:"status"`
+	for {
+		conn.SetReadDeadline(time.Now().Add(20 * time.Second))
+		var frame struct {
+			Event     string          `json:"event"`
+			Status    string          `json:"status"`
+			SeqReply  int             `json:"seq_reply"`
+			Data      json.RawMessage `json:"data"`
+			Broadcast struct {
+				ChannelID string `json:"channel_id"`
+			} `json:"broadcast"`
+		}
+		if err := conn.ReadJSON(&frame); err != nil {
+			return fmt.Errorf("mmws: reading the auth reply: %w", err)
+		}
+		if frame.SeqReply == 0 {
+			// an event before the reply (hello first is legal): hand it out
+			r.takeEvent(ctx, frame.Event, frame.Data, frame.Broadcast.ChannelID)
+			continue
+		}
+		if frame.Status != "OK" {
+			return &AuthError{Status: frame.Status}
+		}
+		return nil
 	}
-	err := conn.ReadJSON(&reply)
-	conn.SetReadDeadline(time.Time{})
-	if err != nil {
-		return fmt.Errorf("mmws: reading the auth reply: %w", err)
-	}
-	if reply.Status != "OK" {
-		return &AuthError{Status: reply.Status}
-	}
-	return nil
 }
 
 // read hands out typed events until the socket drops or the context ends.
 // Every event but the three is ignored — Mattermost sends many, and none
-// of them may stop the reader.
+// of them may stop the reader — and each read is bounded by the idle
+// deadline, renewed by every frame and every ping, so a half-open socket
+// is taken again instead of hanging.
 func (r *Reader) read(ctx context.Context, conn *websocket.Conn) {
 	conn.SetReadLimit(maxFrame)
 	// Answer pings; a pong is all Mattermost asks of a quiet client.
 	conn.SetPingHandler(func(ping string) error {
+		conn.SetReadDeadline(time.Now().Add(r.idle))
 		err := conn.WriteControl(websocket.PongMessage, []byte(ping),
 			time.Now().Add(5*time.Second))
 		if err == websocket.ErrCloseSent {
@@ -242,9 +294,13 @@ func (r *Reader) read(ctx context.Context, conn *websocket.Conn) {
 	}()
 	defer close(stop)
 	for {
+		conn.SetReadDeadline(time.Now().Add(r.idle))
 		var frame struct {
-			Event string          `json:"event"`
-			Data  json.RawMessage `json:"data"`
+			Event     string          `json:"event"`
+			Data      json.RawMessage `json:"data"`
+			Broadcast struct {
+				ChannelID string `json:"channel_id"`
+			} `json:"broadcast"`
 		}
 		if err := conn.ReadJSON(&frame); err != nil {
 			if ctx.Err() == nil {
@@ -252,14 +308,21 @@ func (r *Reader) read(ctx context.Context, conn *websocket.Conn) {
 			}
 			return
 		}
-		switch frame.Event {
-		case "posted":
-			r.takePosted(ctx, frame.Data)
-		case "reaction_added", "reaction_removed":
-			r.takeReaction(ctx, frame.Data, frame.Event == "reaction_added")
-		default:
-			// hello, typing and every other event: not the reader's business
-		}
+		r.takeEvent(ctx, frame.Event, frame.Data, frame.Broadcast.ChannelID)
+	}
+}
+
+// takeEvent hands one frame out as its typed event, or ignores it when
+// it is none of the reader's three.
+func (r *Reader) takeEvent(ctx context.Context, event string, data json.RawMessage,
+	channelID string) {
+	switch event {
+	case "posted":
+		r.takePosted(ctx, data)
+	case "reaction_added", "reaction_removed":
+		r.takeReaction(ctx, data, channelID, event == "reaction_added")
+	default:
+		// hello, typing and every other event: not the reader's business
 	}
 }
 
@@ -274,14 +337,18 @@ func (r *Reader) takePosted(ctx context.Context, data json.RawMessage) {
 		return
 	}
 	var post struct {
-		ID        string `json:"id"`
-		UserID    string `json:"user_id"`
-		ChannelID string `json:"channel_id"`
-		RootID    string `json:"root_id"`
-		CreateAt  int64  `json:"create_at"`
-		UpdateAt  int64  `json:"update_at"`
-		EditAt    int64  `json:"edit_at"`
-		Message   string `json:"message"`
+		ID        string         `json:"id"`
+		UserID    string         `json:"user_id"`
+		ChannelID string         `json:"channel_id"`
+		RootID    string         `json:"root_id"`
+		Type      string         `json:"type"`
+		Props     map[string]any `json:"props"`
+		FileCount map[string]int `json:"file_count"`
+		CreateAt  int64          `json:"create_at"`
+		UpdateAt  int64          `json:"update_at"`
+		EditAt    int64          `json:"edit_at"`
+		DeleteAt  int64          `json:"delete_at"`
+		Message   string         `json:"message"`
 	}
 	if err := json.Unmarshal([]byte(outer.Post), &post); err != nil {
 		slog.Warn("mmws: a post that does not decode; ignored", "error", err)
@@ -293,16 +360,23 @@ func (r *Reader) takePosted(ctx context.Context, data json.RawMessage) {
 		UserID:    post.UserID,
 		ChannelID: post.ChannelID,
 		RootID:    post.RootID,
+		Type:      post.Type,
+		Props:     post.Props,
+		FileCount: post.FileCount,
 		CreateAt:  post.CreateAt,
 		UpdateAt:  post.UpdateAt,
 		EditAt:    post.EditAt,
+		DeleteAt:  post.DeleteAt,
 		Message:   post.Message,
 	})
 }
 
 // takeReaction decodes one `reaction_added` or `reaction_removed`. The
-// reaction too travels as a JSON string inside the event's data.
-func (r *Reader) takeReaction(ctx context.Context, data json.RawMessage, added bool) {
+// reaction travels as a JSON string inside the event's data, the channel
+// in the broadcast beside it; a removal's create_at is 0 (its struct's
+// comment says why).
+func (r *Reader) takeReaction(ctx context.Context, data json.RawMessage,
+	channelID string, added bool) {
 	var outer struct {
 		Reaction string `json:"reaction"`
 	}
@@ -324,6 +398,7 @@ func (r *Reader) takeReaction(ctx context.Context, data json.RawMessage, added b
 	r.emit(ctx, &Reaction{
 		PostID:    reaction.PostID,
 		UserID:    reaction.UserID,
+		ChannelID: channelID,
 		EmojiName: reaction.EmojiName,
 		CreateAt:  reaction.CreateAt,
 		Added:     added,
@@ -331,21 +406,29 @@ func (r *Reader) takeReaction(ctx context.Context, data json.RawMessage, added b
 }
 
 // emit hands the event out. It waits for a taker as long as the context
-// lives, so an event is never lost to a full channel.
+// lives, so an event is never lost to a full channel; a wait long enough
+// to starve the socket is logged, because the taker is who must know.
 func (r *Reader) emit(ctx context.Context, ev Event) {
+	start := time.Now()
 	select {
 	case r.events <- ev:
 	case <-ctx.Done():
+		return
+	}
+	if took := time.Since(start); took > 5*time.Second {
+		slog.Warn("mmws: no taker for the events; the reader paused",
+			"blocked", took)
 	}
 }
 
 // url derives the WebSocket URL from the base URL: https becomes wss,
 // http ws, on Mattermost's own path below whatever path the base carries
-// (a Mattermost behind a proxy keeps its prefix).
-func (r *Reader) url() (string, error) {
+// (a Mattermost behind a proxy keeps its prefix). For the logs the
+// caller redacts it; the wire only ever sees the whole form.
+func (r *Reader) url() (*url.URL, error) {
 	u, err := url.Parse(r.base)
 	if err != nil {
-		return "", fmt.Errorf("mmws: %q: %w", r.base, err)
+		return nil, fmt.Errorf("mmws: %q: %w", r.base, err)
 	}
 	switch u.Scheme {
 	case "https":
@@ -353,8 +436,8 @@ func (r *Reader) url() (string, error) {
 	case "http":
 		u.Scheme = "ws"
 	default:
-		return "", fmt.Errorf("mmws: %q: neither http nor https", r.base)
+		return nil, fmt.Errorf("mmws: %q: neither http nor https", r.base)
 	}
 	u.Path = strings.TrimRight(u.Path, "/") + "/api/v4/websocket"
-	return u.String(), nil
+	return u, nil
 }

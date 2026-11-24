@@ -25,11 +25,19 @@ before 0.5.0 are described in the git history.
   token, reconnects with backoff when the socket drops and emits typed
   events — `Posted`, `Reaction` (added and removed) and a `Reconnected`
   marker whose `Since` is the greatest event `create_at` it handed out,
-  the catch-up hint — and nothing else: whose post is a bot's (a drop) or
+  the catch-up hint (Mattermost's `since` is strict: read from `Since`
+  minus a margin and dedup by key) — and nothing else: whose post is a
+  bot's (a drop) or
   a person's (carried) stays the caller's decision, so it filters,
-  stores and publishes nowhere. `mm.GetUser` reads a user's `is_bot` and
-  `mm.PostsSince` the channel's posts from a reconnect's hint, `update_at`
-  and `edit_at` kept, for the same caller. Nothing is wired into
+  stores and publishes nowhere. A post comes out with the fields the
+  drop rules read — type, props, file counts, the delete mark — and a
+  reaction with the channel it happened in; a quiet socket is taken
+  again by a read deadline (renewed per frame and per ping), the auth
+  reply is found by its `seq_reply` wherever it sits in the stream, and
+  `mm.GetUser` reads a user's `is_bot`, `mm.PostsSince` the channel's
+  posts from a reconnect's hint with `update_at` and `edit_at` (and the
+  delete mark and the props) kept, a body past its 32 MiB cap named
+  `ErrTooLarge` — always for the same caller, never filtered here. Nothing is wired into
   `bridged` — no publish, no consumer, no configuration, no right beyond
   what step 1 already holds — so the bridge behaves exactly as before.
   One new dependency, `gorilla/websocket` (v1.5.3): the WebSocket client,

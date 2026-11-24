@@ -3,8 +3,11 @@ package mm
 import (
 	"context"
 	"encoding/json"
+	"errors"
+	"io"
 	"net/http"
 	"net/http/httptest"
+	"strings"
 	"testing"
 )
 
@@ -75,12 +78,20 @@ func TestPostsSince(t *testing.T) {
 			t.Errorf("got since %q, want 1500", got)
 		}
 		json.NewEncoder(w).Encode(map[string]any{
-			"order": []string{"newest", "edited"},
+			"order": []string{"newest", "edited", "deleted"},
 			"posts": map[string]any{
 				"newest": map[string]any{
 					"id": "newest", "user_id": "u1", "channel_id": "ch7",
-					"root_id": "root1", "create_at": 4000, "update_at": 4000,
-					"edit_at": 0, "message": "written in the gap",
+					"root_id": "root1", "type": "custom_card",
+					"props":      map[string]any{"fromusername": "dembaca"},
+					"file_count": map[string]any{"spec.txt": 1},
+					"create_at":  4000, "update_at": 4000,
+					"edit_at": 0, "delete_at": 0, "message": "written in the gap",
+				},
+				"deleted": map[string]any{
+					"id": "deleted", "user_id": "u3", "channel_id": "ch7",
+					"create_at": 3000, "update_at": 3000,
+					"delete_at": 4500, "message": "created and deleted in the gap",
 				},
 				"edited": map[string]any{
 					"id": "edited", "user_id": "u2", "channel_id": "ch7",
@@ -95,13 +106,14 @@ func TestPostsSince(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if len(posts) != 2 {
-		t.Fatalf("got %d posts, want 2", len(posts))
+	if len(posts) != 3 {
+		t.Fatalf("got %d posts, want 3", len(posts))
 	}
 	// Sorted by create_at ascending: the edit carries its old create_at,
 	// and its UpdateAt and EditAt come with it for the caller to decide.
-	if posts[0].ID != "edited" || posts[1].ID != "newest" {
-		t.Fatalf("got order %s, %s; want edited, newest", posts[0].ID, posts[1].ID)
+	if posts[0].ID != "edited" || posts[1].ID != "deleted" || posts[2].ID != "newest" {
+		t.Fatalf("got order %s, %s, %s; want edited, deleted, newest",
+			posts[0].ID, posts[1].ID, posts[2].ID)
 	}
 	edited := posts[0]
 	if edited.UserID != "u2" || edited.ChannelID != "ch7" || edited.RootID != "" ||
@@ -109,8 +121,32 @@ func TestPostsSince(t *testing.T) {
 		edited.Message != "reworded" {
 		t.Fatalf("got the edited post %+v", edited)
 	}
-	newest := posts[1]
+	deleted := posts[1]
+	if deleted.DeleteAt != 4500 {
+		t.Fatalf("got the deleted post %+v, want its delete mark: the caller drops it", deleted)
+	}
+	newest := posts[2]
 	if newest.RootID != "root1" || newest.EditAt != 0 || newest.CreateAt != 4000 {
 		t.Fatalf("got the new post %+v", newest)
+	}
+	if newest.Type != "custom_card" ||
+		newest.Props["fromusername"] != "dembaca" ||
+		newest.FileCount["spec.txt"] != 1 {
+		t.Fatalf("got the new post %+v, want its type, props and file counts", newest)
+	}
+}
+
+// Given a response past the cap its read takes, when the read runs, the
+// named too-large error comes back — the catch-up's bound says itself, so
+// the caller can page instead of retrying a body that cannot fit.
+func TestTooLarge(t *testing.T) {
+	c := fake(t, func(w http.ResponseWriter, r *http.Request) {
+		_, _ = io.Copy(w, strings.NewReader(strings.Repeat("x", 600)))
+	})
+	var out any
+	err := c.doLimit(context.Background(), "GET", "/api/v4/channels/ch7/posts",
+		nil, &out, 512)
+	if !errors.Is(err, ErrTooLarge) {
+		t.Fatalf("got %v, want ErrTooLarge", err)
 	}
 }
