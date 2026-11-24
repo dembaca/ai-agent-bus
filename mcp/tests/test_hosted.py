@@ -432,6 +432,31 @@ def test_sigterm_ends_the_session_with_exit_work(tmp_path, monkeypatch):
     assert why == "signal SIGUSR2" and work == [(None, False)]
 
 
+def test_a_sigterm_right_at_readiness_does_the_exit_work(tmp_path, monkeypatch):
+    """RT-6.18 step 7: the signal is caught before the readiness file is written.
+    postEnd may signal at once (no relay ever connected); before, the receiver
+    started after the file, behind the services' first tasks (the NATS start
+    imports nats-py and aiohttp), and SIGTERM ended the process without its
+    exit work, the bot left registered (SIGUSR2 stands in)."""
+    work, missed = [], []
+    monkeypatch.setattr(hosted, "exit_work", lambda c, keep=False: work.append((c, keep)))
+    write_ready = hosted.write_ready
+
+    def ready_then_signal(*args):
+        write_ready(*args)
+        os.kill(os.getpid(), signal.SIGUSR2)
+
+    monkeypatch.setattr(hosted, "write_ready", ready_then_signal)
+    old = signal.signal(signal.SIGUSR2, lambda *_: missed.append(1))
+    try:
+        why = hosted.serve_host(hosted.Host(KEY, serve=_echo), ready_file=tmp_path / "r.json",
+                                with_services=False, signals=(signal.SIGUSR2,),
+                                watch=lambda: not missed, interval=0.01)
+    finally:
+        signal.signal(signal.SIGUSR2, old)
+    assert why == "signal SIGUSR2" and not missed and work == [(None, False)]
+
+
 def _signal_when_ready(ready: Path, sig: signal.Signals) -> None:
     def kill_when_ready():
         for _ in range(500):

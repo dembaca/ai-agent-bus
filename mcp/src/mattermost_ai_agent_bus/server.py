@@ -3282,6 +3282,15 @@ def _watch_parent(interval: float = 1.0) -> None:
     threading.Thread(target=watch, name="parent-watch", daemon=True).start()
 
 
+def _finish_aside(why: str) -> None:
+    """_finish in a thread of its own, for a signal handler. The handler runs in
+    the main thread wherever it stood, also in the middle of a write to stderr:
+    its own log line then raised RuntimeError (a reentrant call into the
+    stream), which left the handler before the exit work, and the timer ended
+    the process with its endpoint file still there (RT-6.10 error handling)."""
+    threading.Thread(target=_finish, args=(why,), name="exit-work").start()
+
+
 def _install_exit_handlers() -> None:
     # Claude Code ends an MCP server by closing stdin, which returns from
     # mcp.run() (main calls _finish); a signal or the parent's death ends it
@@ -3289,7 +3298,7 @@ def _install_exit_handlers() -> None:
     atexit.register(_cleanup_on_exit)
     for sig in (signal.SIGTERM, signal.SIGHUP):
         try:
-            signal.signal(sig, lambda num, _frame: _finish(f"signal {signal.Signals(num).name}"))
+            signal.signal(sig, lambda num, _frame: _finish_aside(f"signal {signal.Signals(num).name}"))
         except (ValueError, OSError):  # not the main thread / unsupported
             pass
     _watch_parent()
