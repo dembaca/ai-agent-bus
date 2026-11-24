@@ -43,7 +43,7 @@ from pathlib import Path
 from typing import Any
 
 from .proxy import GatewayProxy, ProxyFault
-from .runner import Run
+from .runner import Run, silence
 from .stub import MattermostStub, posted_frame
 
 # testrig/src/bus_testrig/bus.py -> the repository root
@@ -691,7 +691,9 @@ async def bus_run(count: int = 100, fault: ProxyFault | None = None,
                     await reader
             run.ended = time.monotonic()
             run.relay = {"received": proxy.received, "forwarded": proxy.forwarded,
-                         "altered": proxy.altered}
+                         "altered": proxy.altered, "posted_seen": proxy.posted_seen,
+                         "posted_forwarded": proxy.posted_forwarded,
+                         "posted_altered": proxy.posted_altered}
             doubled = proxy.forwarded - proxy.received
             if doubled > 0 and fault is not None and fault.kind == "duplicate":
                 # The wire carried the frame twice; the bus's inbox hands
@@ -718,6 +720,14 @@ async def bus_run(count: int = 100, fault: ProxyFault | None = None,
                 # nothing" (review point 2): `loss` here is every frame.
                 run.notes.append(f"{run.unmeasured}; loss counts every frame and "
                                  "is not a delivery measurement")
+            if run.sent_frames and not run.received and not run.unmeasured:
+                # Sent and nothing arrived (the run already speaks for itself when
+                # it measured nothing at all): the report says which of the two
+                # reads this is, a measurement of the fault or a dead path
+                # (issue #47) - the exit code follows the same verdict.
+                _, why = silence(run)
+                if why:
+                    run.notes.append(why)
             if stub.unknown:
                 run.unknown = list(stub.unknown)
                 run.notes.append(f"the stub did not know {len(stub.unknown)} call(s): "
