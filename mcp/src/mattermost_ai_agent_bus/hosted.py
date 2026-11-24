@@ -16,7 +16,9 @@ host chose for the session, listens on 127.0.0.1 and serves
   (MM_BUS_ENDPOINT), for the turn hooks and the listener, from the start of
   the session to its end, as do the lease heartbeat (RT-6.6).
 
-A relay opens with one handshake line, ``{"key": …, "session": {…}}``. The
+A relay opens with one handshake line, ``{"key": …, "session": {…}, "pid": …,
+"ppid": …}``; its process ids only name the relay that holds the one slot in
+the refusal of a second (RT-6.18 step 6). The
 session values are names only (NAMING): the Claude Code session id, project
 directory and working directory, the channel flag, CLAUDECODE. They are
 checked for type and length and never opened, resolved or entered on the host;
@@ -207,7 +209,7 @@ def relay(environ: Mapping[str, str], *, stdin_fd: int = 0, stdout_fd: int = 1,
                      "The bot token stays on the host, so no server starts here; "
                      "restart the corral session (RT-6.18)")
     with sock:
-        hello = {"key": key, "session": session_values(environ)}
+        hello = {"key": key, "session": session_values(environ), "pid": os.getpid(), "ppid": os.getppid()}
         try:
             sock.sendall(json.dumps(hello).encode() + b"\n")
             line, rest = _read_line(sock)
@@ -447,6 +449,20 @@ def _load_server(client: BusClient | None) -> Serve:
     return server.serve
 
 
+def relay_holder(hello: Mapping[str, Any], since: float) -> str:
+    """The connected relay, as the refusal of a second one names it (RT-6.18
+    step 6): the process ids it says it has (whole numbers, else left out;
+    the sandbox's own claim, never checked or used for anything else) and
+    when it connected."""
+    ids = {k: v for k in ("pid", "ppid")
+           if type(v := hello.get(k)) is int and 0 < v < 2**31}
+    parts = ([f"pid {ids['pid']}"] if "pid" in ids else []) \
+        + ([f"parent {ids['ppid']}"] if "ppid" in ids else [])
+    said = f"says {', '.join(parts)}; " if parts else ""
+    return f"{said}since {time.strftime('%m-%d %H:%M:%S', time.localtime(since))}"
+
+
+
 async def _answer(stream: Any, ok: bool, error: str = "") -> None:
     body: dict[str, Any] = {"ok": True} if ok else {"ok": False, "error": error}
     with suppress(anyio.BrokenResourceError, anyio.ClosedResourceError, OSError):
@@ -468,6 +484,7 @@ class Host:
         self.active = False
         self.served = 0
         self._pending = 0
+        self._holder = ""
 
     def _load(self, session: dict[str, str]) -> Serve:
         if self.session is None:
@@ -509,10 +526,13 @@ class Host:
                 await _answer(stream, False, str(exc))
                 return
             if self.active:
-                log.warning("relay refused: another relay is connected")
-                await _answer(stream, False, "another relay is connected")
+                why = (f"another relay is connected ({self._holder}): the host serves one per session, "
+                       "so another process of this session holds it (RT-6.18 step 6)")
+                log.warning("relay refused: %s", why)
+                await _answer(stream, False, why)
                 return
             self.active = True
+            self._holder = relay_holder(hello, time.time())
             try:
                 serve = self._load(session)
                 await _answer(stream, True)

@@ -83,14 +83,39 @@ def answer_symbol(answer: Answer) -> str:
     return _ANSWERS[answer]
 
 
+# A message that opens with one of these is a Markdown block (table row, list item,
+# heading, code fence, quote): a crown in front of it on the same line would stop it
+# rendering (a table needs a blank line before it).
+_BLOCK_START = re.compile(r"^\s*(?:\||[-*+]\s|\d+[.)]\s|#{1,6}\s|```|~~~|>)")
+
+
+def opens_with_block(message: str) -> bool:
+    """Whether the text opens with a Markdown block (table row, list item,
+    heading, code fence, quote), which needs a line of its own."""
+    return _BLOCK_START.match(message) is not None
+
+
 def with_crown(message: str) -> str:
-    """The message with the crown in front, once."""
-    return message if message.startswith(_CROWN) else f"{_CROWN} {message}"
+    """The message with the crown in front, once. A message that opens with a
+    Markdown block gets the crown on its own line and a blank line after it
+    (RT-6.6 step 3); `strip_crown` takes both away again."""
+    if message.startswith(_CROWN):
+        return message
+    return f"{_CROWN}\n\n{message}" if opens_with_block(message) else f"{_CROWN} {message}"
 
 
 def strip_crown(message: str) -> str:
-    """The message without a leading crown (and the space after it)."""
-    return message.removeprefix(_CROWN).lstrip(" ") if message.startswith(_CROWN) else message
+    """The message without the crown `with_crown` put in front: the crown and
+    exactly its separator (a blank line, or one space); of an older post that
+    has just the crown, the spaces after it too."""
+    if not message.startswith(_CROWN):
+        return message
+    rest = message.removeprefix(_CROWN)
+    if rest.startswith("\n\n"):
+        return rest[2:]
+    if rest.startswith(" "):
+        return rest[1:]
+    return rest.lstrip(" ")
 
 
 def parse_head(message: str) -> Head:

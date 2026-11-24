@@ -10,6 +10,26 @@ before 0.5.0 are described in the git history.
   and no fault accounts for it - a path that carried nothing is not a
   measurement - and a run under a fault that discards or freezes every posted
   frame says so in its report instead of reading like a healthy run.
+- **Host login: a fast host clock, odd token times, the cooldown's cause**
+  (#10, RT-6.34 step 3). A token's lifetime is now the shorter of
+  `expires_in` and its own `exp - iat`, at most one day, counted from when
+  its request went out: a host wall clock running ahead of Keycloak's by
+  more than the lifetime made every token stale, so every call refreshed
+  and rotated it. An `exp` or `iat` that is no sane time (NaN, infinite, an
+  integer too large for a float), or an `exp` before the `iat`, is a
+  `LoginError` before anything is stored; a huge integer raised
+  `OverflowError` after the token was stored, with no cooldown. During a
+  cooldown set by any other error, such as Keycloak not reachable or no
+  notifier, callers see that error's text (one line, at most 120
+  characters), not only "failed"; the mark on the host still holds only
+  the fixed reasons.
+- **The crown no longer breaks a table or list** (RT-6.6 step 3). A coordinator's
+  post that opens with a Markdown block (table row, list item, heading, code
+  fence, quote) gets the 👑 on a line of its own and a blank line after it,
+  so the block renders; other posts keep `👑 <text>`. A status post whose
+  text opens with such a block (`kind="RESULT"` and a table) puts its bus word
+  on the headline alone and the block below a blank line, instead of
+  `RESULT · | a |`, which broke the table.
 - **Silence keeps the crown one more crown lease** (#64, RT-6.6 steps 1 and 6,
   ADR-007 amended 2026-11-24). A holder that turns silent (a push untaken
   for 45 s, or no sign in the window) no longer drops its crown at once: its
@@ -20,7 +40,17 @@ before 0.5.0 are described in the git history.
   its take-up: a turn, a tool call or a post); without one the crown
   drops at that lease's end, as before. In a home over NATS the holder's
   self-yield waits the same lease.
-
+- **OpenCode's background service no longer takes a corral session's relay** (#70,
+  RT-6.20 step 1, RT-6.18 step 6). An OpenCode command run in the sandbox without
+  `--standalone` starts the machine's background service (`opencode serve --service`)
+  with the session's `MM_BUS_*` variables; its plugin instance added a second relay
+  to the session's host process, which serves one, so the session's own server failed
+  with `another relay is connected`. With `--service` in its command line and those
+  variables set, the plugin now adds no server and no skill (and takes out a bus
+  server configured by hand), registers no other hook and says so once in OpenCode's
+  log. The refusal of a second relay names the one that holds the slot: the pid and
+  parent pid it says it has, which the relay now sends in its handshake, and its
+  connect time.
 - **A busy coordinator keeps its crown** (#64, RT-6.6 steps 1, 4 and 11).
   The prompt hook tells the server that a turn began before anything else,
   so a slow hook no longer leaves a running turn unknown, which made the
