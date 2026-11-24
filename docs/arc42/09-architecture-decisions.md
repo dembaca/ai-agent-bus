@@ -4812,7 +4812,9 @@ registrar's functions can move in later without a second component.
       `iat` (`token_iat`); the login service never overwrites a record with
       one from an older token, so an older but still valid token replayed
       from another host cannot flip the flag back after a removal from the
-      group. The flag counts until the record's `exp`, the expiry of the
+      group. It keeps the newest `token_iat` per identity in the directory,
+      its own store, and compares with that, not with the record on NATS,
+      so a record erased by a stray answer does not reset the guard. The flag counts until the record's `exp`, the expiry of the
       NATS credential issued from that token (15 minutes); a stale record
       still names the anchor but approves nothing. The MCP server lets a
       person's post or reaction approve an ask only when the person is in
@@ -4845,27 +4847,39 @@ registrar's functions can move in later without a second component.
        per account, ending at the import, and never approving. It keeps
        people heard during the move, with the rename risk above.
    11. **A gap in the WebSocket is caught up over REST.** Recommended: on
-       each reconnect the bridge reads each home channel's posts changed
-       since the last event it carried (`GET /channels/{id}/posts?since=`)
-       and carries what is new; reactions it compares with the post's
-       current reactions. It keeps the `mm` ids (posts) and `mm`, emoji and
-       account (reactions) it carried in `BUS_BRIDGE`, so nothing goes out
-       twice, and the MCP server drops a second event with a known `mm`
-       too. Whether `since` returns a post whose only change is a reaction
-       is to be checked against Mattermost at build. Why: in a switched
-       channel the MCP server no longer reads people on Mattermost (point
-       12), so a "go" posted during a reconnect would never arrive.
+       each reconnect the bridge reads each home channel's posts since its
+       watermark (`GET /channels/{id}/posts?since=`) and carries only posts
+       whose `create_at` is after the watermark, the newest `create_at` it
+       carried, kept in `BUS_BRIDGE`; `since` also returns edited posts,
+       which are never carried again. On its first start, or with no
+       watermark, it carries nothing from before; it reaches back at most
+       10 minutes, and what is older is logged as a gap, not carried. Each
+       caught-up post and reaction passes the same drop rules as the live
+       path. Reactions it compares with the post's current reactions, for
+       posts inside that window. An event's key is a post's `mm`, and for a
+       reaction or unreaction its `mm`, emoji, sender and kind together; the
+       bridge keeps the keys it carried in `BUS_BRIDGE`, so nothing goes out
+       twice, and the MCP server drops an event whose key it has seen. Whether `since`
+       returns a post whose only change is a reaction is to be checked
+       against Mattermost at build. Why: in a switched channel the MCP
+       server no longer reads people on Mattermost (point 12), so a "go"
+       posted during a reconnect would never arrive; the watermark and the
+       age bound keep an old, edited "go" from going out as new.
        Alternative: accept the gap and log it. A lost approval then shows
        only as an ask that stays open.
    12. **The MCP server switches a channel to NATS on the bridge's own
        signal, not on `MM_BRIDGE_BOT`.** Recommended: the bridge publishes
        `{"v":1, "home", "people":true, "iat", "exp"}` on
-       `<presence>.bridge.<home>.v1` at start and every minute, valid 3
-       minutes. While a fresh one names a channel, the MCP server takes
-       that channel's people from NATS only and drops the Mattermost
-       side's; without one it keeps the Mattermost side, as today. At a
-       switch both sides may deliver the same post once, and the server
-       drops the second by its `mm` id. No new setting. Why: lab hosts set
+       `<presence>.bridge.<home>.v1` every minute, valid 3 minutes, but only
+       while its WebSocket is connected and its catch-up (point 11) is done;
+       it stops on a disconnect, and the signal runs out. While a fresh one
+       names a channel, the MCP server takes that channel's people from
+       NATS only and drops the Mattermost side's; without one it reads the
+       Mattermost side, as today. When the signal runs out, the server
+       first reads that channel on Mattermost from its last people event
+       on, so what came while the bridge was gone is not lost. At a switch
+       both sides may deliver the same event once, and the server drops the
+       second by its key (point 11). No new setting. Why: lab hosts set
        `MM_BRIDGE_BOT` already for the first step, so with it as the switch
        an upgraded host before an upgraded bridge leaves people unheard,
        silently. Alternative: `MM_BRIDGE_BOT` as the switch with a release
