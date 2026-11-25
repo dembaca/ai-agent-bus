@@ -4369,8 +4369,10 @@ console on the bus as its operator" (RT-6.43) and the bodies in
 service's part of points 9 and 12 (each agent's publish right on its one
 ask record and on its `STATS` subject, for its own name, the ask record
 only in its hello's home, and the `STATS` stream the service makes and
-checks at its start) and the MCP server's and the console's part of
-points 8 to 15; points 1 to 7 are not built. Fifteen points, each one decision with a recommendation, its
+checks at its start), its part of points 1 to 6 (the person's
+credential and each login's consumers) and the MCP server's and the
+console's part of points 8 to 15; the console's use of the person's
+credential (its side of points 1, 4 and 6, and point 7) is not built. Fifteen points, each one decision with a recommendation, its
 reason and the alternative, for the owner to answer yes or no. One rule
 runs through all of them: what the console shows of an agent, NATS says
 came from that agent: each of its subjects ends with the agent's NATS
@@ -4433,10 +4435,15 @@ agent publishes passes for a person's word.
    person's view.
 5. **Reading only, and only through consumers the login service makes.**
    Recommended: the person's user JWT allows no publish on any subject,
-   subscribe only on `deliver.<name>.<login>.>`, and no `$JS.API` right;
-   `<login>` is the first ten characters of the login's public key after
-   its leading `U`, in lower case, so two logins of one operator (two
-   browsers) never share a consumer. At a login's first issue the login
+   subscribe only on `deliver.person.<login>.>`, and no `$JS.API` right;
+   `<login>` is the login's whole public key in lower case, so two logins
+   of one operator (two browsers) never share a consumer and no operator
+   can grind a key whose token is another's (amended on 2026-11-25 with the
+   build: first the name and ten characters of the key). The deliver
+   subject names no person: the console never derives the name; at each
+   issue the login service writes the login's own record on
+   `<presence>.person.<login>.v1` (the person's name and anchor), which
+   only that login's presence consumer filters on. At a login's first issue the login
    service makes `<name>_<login>_presence` on `PRESENCE`, delivering the
    last message per subject and then new ones: every agent's presence and
    attestation, as every agent reads them, and the crown claims,

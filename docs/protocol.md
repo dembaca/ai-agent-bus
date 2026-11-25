@@ -294,6 +294,27 @@ There is no `props`: a decoder refuses a `<bus>.hu` body that carries one, an
 unknown or duplicate key, an unknown kind or a malformed id. Edits and deletes are not
 carried.
 
+## Over NATS: an operator's connection
+
+How the operator console's server connects as the logged-in person
+([arc42 §6.43](arc42/06-runtime-view.md#643-the-console-on-the-bus-as-its-operator),
+steps 2 to 4). The login service's side is built; the console does not use it yet.
+
+| Part | Value |
+|------|-------|
+| Connect token | The operator's Keycloak access token, bare (no JSON): `azp` the console's client (`AUTH_CONSOLE_CLIENT_ID`), `aud` naming it and not the bus's client, the operators' group (`AUTH_OPERATOR_GROUP`) in `groups` |
+| Connect nkey | A key pair per login, made by the console's server; it signs the server's nonce |
+| Name | `<AUTH_PERSON_PREFIX><anchor>`, default `person-`, the anchor the directory holds for the token's `sub` with `.` written as `~` |
+| `<login>` | The login's whole public key, in lower case (56 characters): no other login's token can be ground |
+| Rights | Publish nothing; subscribe only on `deliver.person.<login>.>`; 15 minutes |
+| Own record | `<presence>.person.<login>.v1`, written by the login service at each issue, before the credential is answered, and delivered by the presence consumer like the rest (last per subject): `{"v": 1, "name": "person-ann~k", "anchor": "ann~k", "iat": …, "exp": …}`, the anchor in its subject form (as an ask's `human`). The console takes the name and anchor from it, never from the token. Only this login's consumer filters on the subject |
+| Consumers | One on `PRESENCE`, delivering to `deliver.person.<login>.presence`, last per subject; one on `STATS`, delivering to `deliver.person.<login>.stats`, from 7 days back; their names are the service's own business. Both ack none, gone 15 minutes after nobody listens |
+| Renewal | Connect again with the same key and a fresh access token, also on every NATS reconnect (it runs the callout again): both consumers keep their position while the visible channels are the same |
+| Refused | Another client's token, one whose `aud` names both clients, an expired one, one without the operators' group, a `sub` without an anchor in the directory, a new login above `AUTH_PERSON_MAX_LOGINS` (default 8) of one person: no credential, the reason in the login service's log |
+
+The server subscribes to both deliver subjects by their literal names, with no
+inbox: the credential holds no right to make a request.
+
 ## Over NATS: the console's asks and STATS lines
 
 Built in the MCP server (`natsbus.encode_ask_record`, `NatsBus.publish_asks`,

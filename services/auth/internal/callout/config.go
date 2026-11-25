@@ -35,6 +35,9 @@ type Config struct {
 	// Timeout bounds one request: the token check, the chat lookups and the
 	// answer. It must stay below the server's auth callout timeout.
 	Timeout time.Duration
+	// Console is the operator console's path (RT-6.43, person.go); its
+	// ClientID empty: no person's credential is issued.
+	Console Console
 }
 
 // WithDefaults fills the defaults in.
@@ -54,6 +57,7 @@ func (c Config) WithDefaults() Config {
 	if c.Timeout == 0 {
 		c.Timeout = DefaultTimeout
 	}
+	c.Console = c.Console.withDefaults()
 	return c
 }
 
@@ -90,7 +94,7 @@ func (c Config) check() error {
 	if c.Timeout <= 0 || c.Timeout > 10*time.Second {
 		return fmt.Errorf("callout: timeout %s: must be above 0 and at most 10s", c.Timeout)
 	}
-	return nil
+	return c.checkConsole()
 }
 
 // checkStats checks the STATS prefix (RT-6.43): a plain token, not the deliver

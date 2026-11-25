@@ -13,6 +13,7 @@ import (
 	"net/url"
 	"os"
 	"regexp"
+	"strconv"
 	"strings"
 	"time"
 
@@ -185,6 +186,20 @@ func LoadSettings(getenv func(string) string) (Settings, bool, error) {
 	default:
 		return Settings{}, true, fmt.Errorf("%w: AUTH_NAME_BINDING: open or openid-only, got %q", ErrConfig, s.Binding)
 	}
+	// The operator console's path (RT-6.43): a person's credential for a
+	// token of the console's own client, never of the bus's.
+	s.Callout.Console = callout.Console{ClientID: get("AUTH_CONSOLE_CLIENT_ID"),
+		OperatorGroup: get("AUTH_OPERATOR_GROUP"), PersonPrefix: get("AUTH_PERSON_PREFIX")}
+	if v := get("AUTH_PERSON_MAX_LOGINS"); v != "" {
+		n, err := strconv.Atoi(v)
+		if err != nil || n < 1 || n > 64 {
+			return Settings{}, true, fmt.Errorf("%w: AUTH_PERSON_MAX_LOGINS: a number from 1 to 64, got %q", ErrConfig, v)
+		}
+		s.Callout.Console.MaxLogins = n
+	}
+	if c := s.Callout.Console.ClientID; c != "" && (c == s.Token.ClientID || c == s.Token.Audience) {
+		return Settings{}, true, fmt.Errorf("%w: AUTH_CONSOLE_CLIENT_ID must differ from the bus's client and audience", ErrConfig)
+	}
 	s.Callout = s.Callout.WithDefaults()
 	return s, true, nil
 }
@@ -286,7 +301,14 @@ func RunCallout(ctx context.Context, s Settings, log *slog.Logger) error {
 	}
 	tc := s.Token
 	tc.KeyFetchError = func(err error) { log.Warn("JWKS fetch failed", "reason", err.Error()) }
+	if s.Callout.Console.ClientID != "" {
+		tc.OtherClients = []string{s.Callout.Console.ClientID}
+	}
 	v, err := token.New(ctx, tc, mm)
+	if err != nil {
+		return fmt.Errorf("%w: %v", ErrConfig, err)
+	}
+	pv, err := personVerifier(ctx, s, tc, mm)
 	if err != nil {
 		return fmt.Errorf("%w: %v", ErrConfig, err)
 	}
@@ -335,6 +357,10 @@ func RunCallout(ctx context.Context, s Settings, log *slog.Logger) error {
 	svc.SetAnchors(directory.Anchors{Store: dir, Log: log})
 	svc.SetTrust(directory.Trust{Store: dir})
 	svc.SetAttester(callout.NATSAttester{NC: jsnc, Stream: consumers.PresenceStream})
+	if pv != nil {
+		svc.SetPersons(pv, directory.Persons{Store: dir})
+		log.Info("the console's path on", "client", s.Callout.Console.ClientID, "operators", s.Callout.Console.OperatorGroup)
+	}
 	runCtx, stop := context.WithCancel(ctx)
 	defer stop()
 	var adminErr <-chan error
@@ -471,4 +497,26 @@ func seed(path, name string) (nkeys.KeyPair, error) {
 		return nil, fmt.Errorf("%w: %s: not an nkey seed", ErrConfig, name)
 	}
 	return kp, nil
+}
+
+// personVerifier is the token check of the console's path (RT-6.43): the same
+// realm and keys as the agents', the console's client as `azp` and audience,
+// the bus's client refused in `aud`. nil when the path is off.
+func personVerifier(ctx context.Context, s Settings, bus token.Config, dir token.Directory) (*token.Verifier, error) {
+	if s.Callout.Console.ClientID == "" {
+		return nil, nil
+	}
+	return token.New(ctx, personTokenConfig(s, bus), dir)
+}
+
+// personTokenConfig: the console's client as `azp` and audience; a token
+// whose `aud` names the bus's client or the bus's audience is refused.
+func personTokenConfig(s Settings, bus token.Config) token.Config {
+	pc := bus
+	pc.ClientID, pc.Audience, pc.ApproverGroup = s.Callout.Console.ClientID, "", ""
+	pc.OtherClients = []string{bus.ClientID}
+	if bus.Audience != "" && bus.Audience != bus.ClientID {
+		pc.OtherClients = append(pc.OtherClients, bus.Audience)
+	}
+	return pc
 }

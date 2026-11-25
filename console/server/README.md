@@ -15,7 +15,8 @@ disk.
 Pilot deviation, decided by the owner (2026-11-24): **one read-only NATS
 account for the whole console** — lab, one tenant. ADR-015 way A (a
 credential per person, made by the login service) follows after the
-pilot.
+pilot: the login service issues it already (RT-6.43), the console does
+not use it yet.
 
 ## What it reads
 
@@ -43,9 +44,10 @@ record that breaks a rule is dropped whole with a warning that carries
 none of it) and `/v1/asks` lists the asks of every record whose `exp` is
 ahead of the floored clock, `expired` after 24 h (a hint), `agent_gone`
 when its presence is not fresh. "For me" and "may answer" are `null`
-(`n/a`) and mark nothing until the operator's own NATS credential (points
-1 to 6 of the console decision's addition of 2026-11-25) brings the
-operator's anchor: they compare anchors only, never a login name (point
+(`n/a`) and mark nothing until the console connects with the operator's own NATS
+credential (points 1 to 6 of the console decision's addition of
+2026-11-25, issued by the login service but not used here yet) and takes
+the operator's anchor from the login's own record: they compare anchors only, never a login name (point
 4). Read-only: no answer, no
 thread text. `/v1/stats` answers the two stage-1 reports (the bus's share
 of all tokens per version over 7 days; the asks over 24 h and 7 days),
