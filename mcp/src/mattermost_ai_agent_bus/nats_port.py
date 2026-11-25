@@ -182,7 +182,7 @@ class BusLike(Protocol):
 
     def approver(self, anchor: str) -> bool: ...
 
-    def link_bot(self, bot_id: str) -> None: ...
+    def link_bot(self, bot_id: str, username: str = "") -> None: ...
 
     def bot_of(self, agent: str) -> str: ...
 
@@ -377,7 +377,7 @@ class NatsPort:
                 self._bus = bus
                 bus.on_person_gap = self._person_gap
                 try:
-                    bus.link_bot(await self._bot_id())
+                    bus.link_bot(await self._bot_id(), await self._bot_name())
                 except ValueError:
                     # A bot id that is no Mattermost user id (a bad MM_BOT_USER_ID): the NATS
                     # home still starts, only without a link between bot and NATS name.
@@ -405,6 +405,16 @@ class NatsPort:
         if inner.session:
             return str(inner.session.user_id)
         return os.environ.get("MM_BOT_USER_ID") or (await inner.get_me()).id
+
+    async def _bot_name(self) -> str:
+        """The bot's username, for the presence (the name the operator console shows,
+        ADR-015); MM_BOT_USERNAME, or '' when it cannot be read: the home starts all the same."""
+        inner: Any = self.inner
+        try:
+            return str((await inner.get_me()).username)
+        except Exception as exc:  # noqa: BLE001 — a label, never a reason to stop
+            log.info("nats: the bot's username was not read (%s)", type(exc).__name__)
+            return os.environ.get("MM_BOT_USERNAME", "")
 
     async def _announce_membership(self, bus: BusLike) -> None:
         """Tell the bus to announce this session's membership of every channel it asked

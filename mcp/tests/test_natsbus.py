@@ -39,6 +39,7 @@ from mattermost_ai_agent_bus.natsbus import (
     decode_attestation,
     decode_presence,
     decode_presence_bot,
+    decode_presence_name,
     encode,
     encode_claim,
     encode_presence,
@@ -177,6 +178,28 @@ def test_presence_names_its_bot() -> None:
         raw = json.dumps({"v": 1, "status": "online", "bot": bad}).encode()
         assert decode_presence(raw) == "online" and decode_presence_bot(raw) == ""
     assert decode_presence_bot(b"junk") == ""
+
+
+def test_presence_states_its_bots_username() -> None:
+    """ADR-015 (the operator console's card name): the presence may carry the bot's
+    username beside its id; a bad one is ignored and never drops the status."""
+    body = encode_presence("online", BOT, "agent-himalia-nats-pilo-772844")
+    assert json.loads(body) == {"v": 1, "status": "online", "bot": BOT,
+                                "name": "agent-himalia-nats-pilo-772844"}
+    assert decode_presence_name(body) == "agent-himalia-nats-pilo-772844"
+    assert decode_presence_name(encode_presence("online", BOT)) == ""
+    for bad in ("Agent-X", "-x", "a" * 65, "a b", 7, None, ["a"], ""):
+        raw = json.dumps({"v": 1, "status": "online", "name": bad}).encode()
+        assert decode_presence(raw) == "online" and decode_presence_name(raw) == ""
+    assert decode_presence_name(b"junk") == ""
+
+
+def test_a_bus_states_only_a_valid_username() -> None:
+    bus, _ = _unit_bus()
+    bus.link_bot(BOT, "agent-mac-ai-agent-716d72")
+    assert bus._bot_name == "agent-mac-ai-agent-716d72"
+    bus.link_bot(BOT, "Not A Name")
+    assert bus._bot == BOT and bus._bot_name == ""
 
 
 def test_link_tag_is_the_start_of_the_hash_part() -> None:

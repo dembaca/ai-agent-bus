@@ -17,19 +17,19 @@ import fixture from "../../../fixtures/console-api.json"
 type FixtureEvShape = {
   snapshot: { type: string, cards: AgentCard[] }
   card: { type: string, card: Omit<AgentCard, "state" | "harness" | "role">
-          & { state: string; harness: string; role: string } }
+          & { state: string; harness: string | null; role: string } }
   drop: { type: string, name: string }
 }
 
 let shapes: {
-  card: Omit<AgentCard, "state" | "harness" | "role"> & { state: string; harness: string; role: string },
+  card: Omit<AgentCard, "state" | "harness" | "role"> & { state: string; harness: string | null; role: string },
   page: ThreadPage, events: FixtureEvShape,
   ask: Omit<WireAsk, "end"> & { end: string }
 } | null = null
 
 if (!import.meta.env.PROD) {
   type CardShape = Omit<AgentCard, "state" | "harness" | "role">
-    & { state: string; harness: string; role: string }
+    & { state: string; harness: string | null; role: string }
   const card = fixture.card satisfies CardShape
   const firstPost = fixture.page.posts[0] satisfies Post
   const page = { rootId: fixture.page.rootId, posts: [firstPost], next: fixture.page.next } satisfies ThreadPage
@@ -38,7 +38,7 @@ if (!import.meta.env.PROD) {
   if (!(AGENT_STATES as readonly string[]).includes(card.state)) {
     throw new Error(`wire fixture: unknown state ${card.state}`)
   }
-  if (!(card.harness in HARNESS_LABEL)) {
+  if (card.harness !== null && !(card.harness in HARNESS_LABEL)) {
     throw new Error(`wire fixture: unknown harness ${card.harness}`)
   }
   if (card.role !== "coordinator" && card.role !== "member") {

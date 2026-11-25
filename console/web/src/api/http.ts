@@ -42,6 +42,17 @@ interface WireThread {
   next?: string | null
 }
 
+/** A 503: the console is not ready yet — after a restart its readiness
+ * probe (`/healthz`) answers 503 until the fleet's replay is read, and the
+ * proxy in front answers 503 for it meanwhile. The app shows "syncing…"
+ * for it, not an error, and tries again. */
+export class Unavailable extends Error {
+  constructor(path: string) {
+    super(`${path}: 503, the console is syncing`)
+    this.name = "Unavailable"
+  }
+}
+
 const json = async <T>(base: string, path: string): Promise<T> => {
   const res = await fetch(`${base}${path}`, { credentials: "same-origin" })
   if (res.status === 401) {
@@ -52,6 +63,7 @@ const json = async <T>(base: string, path: string): Promise<T> => {
     }
     throw new Error("operator login required")
   }
+  if (res.status === 503) throw new Unavailable(path)
   if (!res.ok) throw new Error(`${path}: ${res.status} ${res.statusText}`)
   return await res.json() as Promise<T>
 }
