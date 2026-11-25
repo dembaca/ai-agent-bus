@@ -2,6 +2,7 @@ package callout
 
 import (
 	"context"
+	"encoding/json"
 	"errors"
 	"fmt"
 	"slices"
@@ -10,6 +11,7 @@ import (
 
 	"github.com/nats-io/jwt/v2"
 
+	"github.com/dembaca/ai-agent-bus/services/auth/internal/consumers"
 	"github.com/dembaca/ai-agent-bus/services/auth/internal/token"
 )
 
@@ -22,12 +24,14 @@ import (
 //
 // The credential: named <AUTH_PERSON_PREFIX><anchor> (the anchor the
 // directory holds for the token's `sub`, "." written as "~"), 15 minutes,
-// no publish at all, subscribe only on deliver.<name>.<login>.>, where
-// <login> is the first ten characters of the login's public key after its
-// "U", lower-cased. No JetStream API, no inbox: what the person reads comes
-// from two push consumers the login service makes for that login
-// (consumers.EnsurePerson), so whoever takes over the console's server can
-// read what the person reads and do nothing else (RISK-12).
+// no publish at all, subscribe only on deliver.person.<login>.>, where
+// <login> is the login's whole public key, lower-cased. No JetStream API, no
+// inbox: what the person reads comes from two push consumers the login
+// service makes for that login (consumers.EnsurePerson), so whoever takes
+// over the console's server can read what the person reads and do nothing
+// else (RISK-12). The console never derives the person's name: at each issue
+// the service writes the login's own record (PersonRecord) on
+// consumers.PersonRecordSubject, which only that login's consumer delivers.
 
 // DefaultPersonPrefix starts a person's NATS name.
 const DefaultPersonPrefix = "person-"
@@ -143,16 +147,29 @@ func (s *Service) personToken(connect string) (string, bool) {
 	return connect, token.Client(connect) == s.cfg.Console.ClientID
 }
 
-// loginOf is a login's token in names and subjects.
-func loginOf(key string) string { return strings.ToLower(key[1:11]) }
+// loginOf is a login's token in names and subjects: its whole public key,
+// lower-cased.
+func loginOf(key string) string { return strings.ToLower(key) }
 
 // personPermissions: no publish, subscribe only on the login's deliver
 // subjects.
-func personPermissions(person, login string) jwt.Permissions {
+func personPermissions(login string) jwt.Permissions {
 	var p jwt.Permissions
 	p.Pub.Deny.Add(">")
-	p.Sub.Allow.Add(DeliverPrefix + "." + person + "." + login + ".>")
+	p.Sub.Allow.Add(DeliverPrefix + "." + consumers.PersonDeliverToken + "." + login + ".>")
 	return p
+}
+
+// PersonRecord is the login's own record: who the credential is for, as the
+// console shows it and compares an ask's `human` with.
+type PersonRecord struct {
+	V int `json:"v"`
+	// Name is the person's NATS name, <AUTH_PERSON_PREFIX><anchor>.
+	Name string `json:"name"`
+	// Anchor is the anchor in its subject form ("." as "~").
+	Anchor string `json:"anchor"`
+	IAT    int64  `json:"iat"`
+	Exp    int64  `json:"exp"`
 }
 
 // authorizePerson issues an operator's credential.
@@ -199,7 +216,7 @@ func (s *Service) authorizePerson(ctx context.Context, req *jwt.AuthorizationReq
 	uc.Audience = s.cfg.Account
 	uc.IssuedAt = now.Unix()
 	uc.Expires = now.Add(Lifetime).Unix()
-	uc.Permissions = personPermissions(person, login)
+	uc.Permissions = personPermissions(login)
 	uc.Limits.Subs = maxPersonSubs
 	uc.Limits.Payload = maxPayload
 	uc.AllowedConnectionTypes.Add(jwt.ConnectionTypeStandard)
@@ -220,6 +237,12 @@ func (s *Service) authorizePerson(ctx context.Context, req *jwt.AuthorizationReq
 		}
 		if err := pc.EnsurePerson(ctx, person, login, channels, s.cfg.Console.MaxLogins); err != nil {
 			return "", who, fmt.Errorf("consumers could not be made: %w", err)
+		}
+	}
+	if at, _ := s.attestHooks(); at != nil {
+		body, _ := json.Marshal(PersonRecord{V: 1, Name: person, Anchor: tok, IAT: uc.IssuedAt, Exp: uc.Expires})
+		if err := at.Publish(ctx, consumers.PersonRecordSubject(s.cfg.Subjects.Presence, login), body); err != nil {
+			return "", who, fmt.Errorf("the login's record: %w", err)
 		}
 	}
 	return userJWT, who, nil

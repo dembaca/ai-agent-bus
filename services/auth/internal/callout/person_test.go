@@ -7,6 +7,7 @@ package callout
 import (
 	"context"
 	"encoding/base64"
+	"encoding/json"
 	"slices"
 	"strings"
 	"sync"
@@ -79,6 +80,7 @@ func personLab(t *testing.T) (*cl, *fakePersons) {
 	}
 	fp := &fakePersons{anchors: map[string]string{"sub-ann": "ann.k"}, visible: []string{"home"}}
 	l.svc.SetPersons(pv, fp)
+	l.svc.SetAttester(NATSAttester{NC: c.nc, Stream: consumers.PresenceStream})
 	return c, fp
 }
 
@@ -110,7 +112,7 @@ func (c *cl) operator(tok string, key nkeys.KeyPair) (*agent, error) {
 
 func loginToken(key nkeys.KeyPair) string {
 	pub, _ := key.PublicKey()
-	return strings.ToLower(pub[1:11])
+	return strings.ToLower(pub)
 }
 
 // The user JWT itself: the name from the anchor, 15 minutes, no publish,
@@ -131,7 +133,7 @@ func TestAnOperatorsCredentialReadsOnlyAndLivesFifteenMinutes(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	userJWT, _, err := c.svc.authorize(context.Background(), req, time.Now())
+	userJWT, _, err := c.svc.authorize(ctx5(t), req, time.Now())
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -139,14 +141,14 @@ func TestAnOperatorsCredentialReadsOnlyAndLivesFifteenMinutes(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	login := strings.ToLower(pub[1:11])
+	login := strings.ToLower(pub)
 	p := uc.Permissions
 	if uc.Name != "person-ann~k" || uc.Expires-uc.IssuedAt != int64(Lifetime.Seconds()) || Lifetime != 15*time.Minute ||
 		uc.Subject != req.UserNkey || uc.Audience != "BUS" {
 		t.Fatalf("name %q, %d s, subject %s, audience %s", uc.Name, uc.Expires-uc.IssuedAt, uc.Subject, uc.Audience)
 	}
 	if len(p.Pub.Allow) != 0 || !slices.Equal(p.Pub.Deny, natsjwt.StringList{">"}) ||
-		!slices.Equal(p.Sub.Allow, natsjwt.StringList{"deliver.person-ann~k." + login + ".>"}) || len(p.Sub.Deny) != 0 || p.Resp != nil {
+		!slices.Equal(p.Sub.Allow, natsjwt.StringList{"deliver.person." + login + ".>"}) || len(p.Sub.Deny) != 0 || p.Resp != nil {
 		t.Fatalf("permissions %+v", p)
 	}
 }
@@ -166,20 +168,20 @@ func TestAnOperatorReadsThroughTheirOwnConsumersOnly(t *testing.T) {
 	if ci == nil {
 		t.Fatal("no presence consumer")
 	}
-	want := []string{"presence.*.*", "presence.attest.*.v1", "presence.crown.home.*", "presence.member.home.*", "presence.ask.home.*"}
+	want := []string{"presence.person." + login + ".v1", "presence.*.*", "presence.attest.*.v1", "presence.crown.home.*", "presence.member.home.*", "presence.ask.home.*"}
 	if !slices.Equal(ci.Config.FilterSubjects, want) || ci.Config.InactiveThreshold != 15*time.Minute ||
 		ci.Config.DeliverPolicy != nats.DeliverLastPerSubjectPolicy || ci.Config.AckPolicy != nats.AckNonePolicy ||
-		ci.Config.DeliverSubject != "deliver.person-ann~k."+login+".presence" || ci.Config.Metadata["agent"] != "" {
+		ci.Config.DeliverSubject != "deliver.person."+login+".presence" || ci.Config.Metadata["agent"] != "" {
 		t.Fatalf("presence consumer %+v", ci.Config)
 	}
 	si := c.info("STATS", stats)
 	if si == nil || si.Config.InactiveThreshold != 15*time.Minute || si.Config.DeliverPolicy != nats.DeliverByStartTimePolicy ||
 		si.Config.OptStartTime == nil || time.Since(*si.Config.OptStartTime) < 7*24*time.Hour-time.Minute ||
-		si.Config.DeliverSubject != "deliver.person-ann~k."+login+".stats" {
+		si.Config.DeliverSubject != "deliver.person."+login+".stats" {
 		t.Fatalf("stats consumer %+v", si)
 	}
 
-	got := c.listen(a, "deliver.person-ann~k."+login+".presence", "deliver.person-ann~k."+login+".stats")
+	got := c.listen(a, "deliver.person."+login+".presence", "deliver.person."+login+".stats")
 	for _, s := range []string{"presence.alice.agent-x", "presence.ask.home.agent-x", "presence.ask.secret.agent-y", "stats.agent-x"} {
 		if err := c.nc.Publish(s, []byte(`{"v":1}`)); err != nil {
 			t.Fatal(err)
@@ -187,7 +189,7 @@ func TestAnOperatorReadsThroughTheirOwnConsumersOnly(t *testing.T) {
 	}
 	seen := map[string]bool{}
 	deadline := time.After(3 * time.Second)
-	for len(seen) < 3 {
+	for len(seen) < 4 {
 		select {
 		case m := <-got:
 			seen[m.Subject] = true
@@ -195,7 +197,8 @@ func TestAnOperatorReadsThroughTheirOwnConsumersOnly(t *testing.T) {
 			t.Fatalf("delivered %v", seen)
 		}
 	}
-	if !seen["presence.alice.agent-x"] || !seen["presence.ask.home.agent-x"] || !seen["stats.agent-x"] || seen["presence.ask.secret.agent-y"] {
+	if !seen["presence.person."+login+".v1"] || !seen["presence.alice.agent-x"] || !seen["presence.ask.home.agent-x"] ||
+		!seen["stats.agent-x"] || seen["presence.ask.secret.agent-y"] {
 		t.Fatalf("delivered %v", seen)
 	}
 
@@ -204,7 +207,7 @@ func TestAnOperatorReadsThroughTheirOwnConsumersOnly(t *testing.T) {
 	for _, s := range []string{"presence.ann~k.person-ann~k", "bus.ch.home.person-ann~k", "stats.person-ann~k",
 		"$JS.API.CONSUMER.CREATE.PRESENCE.other", "$JS.API.CONSUMER.MSG.NEXT.PRESENCE." + pres,
 		"$JS.API.DIRECT.GET.PRESENCE", "$JS.API.CONSUMER.DELETE.PRESENCE." + pres, "$JS.API.STREAM.INFO.PRESENCE",
-		"_INBOX.x", "deliver.person-ann~k." + login + ".presence"} {
+		"_INBOX.x", "deliver.person." + login + ".presence"} {
 		if err := a.nc.Publish(s, nil); err != nil {
 			t.Fatal(err)
 		}
@@ -340,15 +343,21 @@ func TestTheDocumentedMinimalRightsMakeAnOperatorsConsumers(t *testing.T) {
 	if err := mgr.EnsureStreams(ctx5(t)); err != nil {
 		t.Fatal(err)
 	}
+	login := loginToken(newHost())
+	// the login's record, with the documented publish right
+	if err := (NATSAttester{NC: nc, Stream: consumers.PresenceStream}).Publish(ctx5(t),
+		consumers.PersonRecordSubject("presence", login), []byte(`{"v":1}`)); err != nil {
+		t.Fatalf("the login's record: %v", err)
+	}
 	for range 2 { // made, then kept
-		if err := mgr.EnsurePerson(ctx5(t), "person-ann~k", "abcdefghij", []string{"home"}, 8); err != nil {
+		if err := mgr.EnsurePerson(ctx5(t), "person-ann~k", login, []string{"home"}, 8); err != nil {
 			t.Fatalf("EnsurePerson: %v", err)
 		}
 	}
-	if err := mgr.EnsurePerson(ctx5(t), "person-ann~k", "abcdefghij", []string{"home", "lobby"}, 8); err != nil {
+	if err := mgr.EnsurePerson(ctx5(t), "person-ann~k", login, []string{"home", "lobby"}, 8); err != nil {
 		t.Fatalf("EnsurePerson with other channels: %v", err)
 	}
-	for _, bad := range [][2]string{{"person.x", "abcdefghij"}, {"person-x", "ABCDEFGHIJ"}, {"person-x", "abc"}, {"person-*", "abcdefghij"}} {
+	for _, bad := range [][2]string{{"person.x", login}, {"person-x", strings.ToUpper(login)}, {"person-x", login[:26]}, {"person-*", login}} {
 		if mgr.EnsurePerson(ctx5(t), bad[0], bad[1], nil, 8) == nil {
 			t.Errorf("EnsurePerson(%q, %q) accepted", bad[0], bad[1])
 		}
@@ -379,5 +388,83 @@ func TestAnOperatorsLoginsAreCapped(t *testing.T) {
 	pres, stats := consumers.PersonConsumerNames("person-ann~k", loginToken(keys[0]))
 	if !c.info("PRESENCE", pres).Config.MemoryStorage || !c.info("STATS", stats).Config.MemoryStorage {
 		t.Fatal("not in memory")
+	}
+}
+
+// match is NATS's subject match of a filter (* one token, > the rest).
+func match(filter, subject string) bool {
+	f, s := strings.Split(filter, "."), strings.Split(subject, ".")
+	for i, t := range f {
+		switch {
+		case t == ">":
+			return len(s) > i
+		case i >= len(s):
+			return false
+		case t != "*" && t != s[i]:
+			return false
+		}
+	}
+	return len(f) == len(s)
+}
+
+// The login's own record (its name and anchor) reaches that login only: no
+// other consumer on PRESENCE, an agent's, another person's or another login
+// of the same person, filters on it, and it holds what the console shows.
+func TestTheLoginsRecordReachesThatLoginOnly(t *testing.T) {
+	c, fp := personLab(t)
+	fp.anchors["sub-bob"] = "bob"
+	c.setup()
+	if _, err := c.login("bob", newHost(), Hello{Home: "home"}); err != nil {
+		t.Fatalf("an agent: %v", err)
+	}
+	mine, other, bobs := newHost(), newHost(), newHost()
+	a, err := c.operator(c.consoleToken("ann", nil), mine)
+	if err != nil {
+		t.Fatal(err)
+	}
+	for _, x := range []struct {
+		who string
+		key nkeys.KeyPair
+	}{{"ann", other}, {"bob", bobs}} {
+		if _, err := c.operator(c.consoleToken(x.who, nil), x.key); err != nil {
+			t.Fatal(err)
+		}
+	}
+	login := loginToken(mine)
+	subject := consumers.PersonRecordSubject("presence", login)
+	m, err := c.js.GetLastMsg("PRESENCE", subject)
+	if err != nil {
+		t.Fatal(err)
+	}
+	var rec PersonRecord
+	if err := json.Unmarshal(m.Data, &rec); err != nil || rec.Name != "person-ann~k" || rec.Anchor != "ann~k" || rec.V != 1 ||
+		rec.Exp-rec.IAT != int64(Lifetime.Seconds()) {
+		t.Fatalf("record %s: %v", m.Data, err)
+	}
+	own, _ := consumers.PersonConsumerNames("person-ann~k", login)
+	n := 0
+	for ci := range c.js.ConsumersInfo("PRESENCE") {
+		filters := append(slices.Clone(ci.Config.FilterSubjects), ci.Config.FilterSubject)
+		for _, f := range filters {
+			if f != "" && match(f, subject) && ci.Name != own {
+				t.Errorf("%s filters on another login's record by %s", ci.Name, f)
+			}
+		}
+		n++
+	}
+	if n < 4 {
+		t.Fatalf("only %d consumers looked at", n)
+	}
+	got := c.listen(a, "deliver.person."+login+".presence")
+	deadline := time.After(3 * time.Second)
+	for {
+		select {
+		case m := <-got:
+			if m.Subject == subject {
+				return
+			}
+		case <-deadline:
+			t.Fatal("the own record not delivered")
+		}
 	}
 }
