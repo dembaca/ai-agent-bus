@@ -5,26 +5,15 @@ before 0.5.0 are described in the git history.
 
 ## Unreleased
 
-### Added
-
-- **The MCP server reads people's posts from NATS** (RT-6.42, ADR-016 step 2):
-  in a channel of a NATS session (the home, a guest channel, the lobby) whose
-  bridge signal is fresh, people's posts and reactions come from the person's
-  consumer `<agent>_hu_<channel>` on `bus.hu.<channel>.<anchor>`, decoded
-  strictly, and Mattermost's events of people there are dropped; without a
-  signal, people are read on Mattermost as before, and when it runs out the
-  server reads Mattermost from the last people event on. A key per event,
-  held for an hour, drops the repeat at a switch. A person over NATS is
-  trusted by the anchors of the session's own attestation (`hu:<anchor>`,
-  never `hu:-`), and an event of a trusted person without a fresh approver
-  record of the login service is marked `not_approver` and approves nothing,
-  also as a yes on an ask, a relayed tool permission, a channel tag and what `get_thread`,
-  `list_recent` and an ask's card read back; it does not stop an ask's
-  reminders. A
-  signal counts only while NATS is connected and the session's own presence
-  comes back; a person's files are read from Mattermost by the post's id.
-  Other bots, webhooks, system posts and direct messages stay on Mattermost. Nothing changes until the bridge and the login
-  service publish their side.
+- **The registrar's code moves into the bridge's module** (ADR-016, step 3 of
+  "all of Mattermost in one service"). The core and Mattermost packages of
+  `github.com/dembaca/mattermost-agent-registrar` (main at `c984d19`) are
+  imported into `services/bridge/internal/registrar/` with their tests, their
+  import paths adjusted to the bridge's module; the packages need no new
+  dependency. Nothing is wired: `cmd/bridged`, the routes, the settings and
+  every behaviour are unchanged, and `go test ./...` in `services/bridge`
+  stays green. The arc42 building-block view says the registrar package is
+  imported but not yet active.
 
 ### Docs
 
@@ -47,6 +36,52 @@ before 0.5.0 are described in the git history.
   prefix does not start until it is shortened; `x_`, `bgl_` and `bridge_` are
   unaffected. The static-text budget test measures each session configuration
   on its own and holds the worst one under its bound (#104).
+
+### Added
+
+- **The MCP server reads people's posts from NATS** (RT-6.42, ADR-016 step 2):
+  in a channel of a NATS session (the home, a guest channel, the lobby) whose
+  bridge signal is fresh, people's posts and reactions come from the person's
+  consumer `<agent>_hu_<channel>` on `bus.hu.<channel>.<anchor>`, decoded
+  strictly, and Mattermost's events of people there are dropped; without a
+  signal, people are read on Mattermost as before, and when it runs out the
+  server reads Mattermost from the last people event on. A key per event,
+  held for an hour, drops the repeat at a switch. A person over NATS is
+  trusted by the anchors of the session's own attestation (`hu:<anchor>`,
+  never `hu:-`), and an event of a trusted person without a fresh approver
+  record of the login service is marked `not_approver` and approves nothing,
+  also as a yes on an ask, a relayed tool permission, a channel tag and what `get_thread`,
+  `list_recent` and an ask's card read back; it does not stop an ask's
+  reminders. A
+  signal counts only while NATS is connected and the session's own presence
+  comes back; a person's files are read from Mattermost by the post's id.
+  Other bots, webhooks, system posts and direct messages stay on Mattermost. Nothing changes until the bridge and the login
+  service publish their side.
+
+- **The bridge reads Mattermost: the WebSocket reader `internal/mmws` and
+  two REST methods of `internal/mm` (ADR-016, the bridge's step 2).
+  `mmws` dials Mattermost's WebSocket with the bot
+  token, reconnects with backoff when the socket drops and emits typed
+  events — `Posted`, `Reaction` (added and removed) and a `Reconnected`
+  marker whose `Since` is the greatest event `create_at` it handed out,
+  the catch-up hint (Mattermost's `since` is strict: read from `Since`
+  minus a margin and dedup by key) — and nothing else: whose post is a
+  bot's (a drop) or
+  a person's (carried) stays the caller's decision, so it filters,
+  stores and publishes nowhere. A post comes out with the fields the
+  drop rules read — type, props, the files it carries (`file_ids`'
+  count), the delete mark — and a
+  reaction with the channel it happened in; a quiet socket is taken
+  again by a read deadline (renewed per frame and per ping), the auth
+  reply is found by its `seq_reply` wherever it sits in the stream, and
+  `mm.GetUser` reads a user's `is_bot`, `mm.PostsSince` the channel's
+  posts from a reconnect's hint with `update_at` and `edit_at` (and the
+  delete mark and the props) kept, a body past its 32 MiB cap named
+  `ErrTooLarge` — always for the same caller, never filtered here. Nothing is wired into
+  `bridged` — no publish, no consumer, no configuration, no right beyond
+  what step 1 already holds — so the bridge behaves exactly as before.
+  One new dependency, `gorilla/websocket` (v1.5.3): the WebSocket client,
+  and the fake Mattermost its tests run against.
 
 ## 0.99.0
 
