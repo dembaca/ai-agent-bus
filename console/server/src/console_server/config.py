@@ -2,9 +2,12 @@
 from __future__ import annotations
 
 import os
+import re
 from collections.abc import Callable
 from dataclasses import dataclass, field
 from urllib.parse import urlsplit
+
+PREFIX_RE = re.compile(r"[A-Za-z0-9_-]{0,31}-")
 
 
 class ConfigError(Exception):
@@ -36,20 +39,20 @@ class Settings:
     listen_host: str = "127.0.0.1"
     listen_port: int = 8747
 
-    # the read-only NATS side: one static account (the pilot's deviation)
+    # the read-only NATS side: one connection per logged-in operator, with a
+    # credential the login service issues for that person (RT-6.43); no
+    # static account, no seed
     nats_url: str = ""
-    nats_seed_file: str = ""
     nats_ca_file: str = ""
     presence_subject: str = "presence"
     presence_stream: str = "PRESENCE"
-    deliver_subject: str = "deliver.console.presence"
-    consumer_name: str = "console"
+    # the login service's AUTH_PERSON_PREFIX: a person's NATS name is it
+    # and the owner token of their username
+    person_prefix: str = "person-"
 
     # the built browser app (console/web/dist)
     web_dir: str = ""
     health_path: str = "/healthz"
-    # /healthz goes 503 once the reader has seen no replay for this long
-    health_sync_bound: float = 180.0
     extra: tuple[tuple[str, str], ...] = field(default_factory=tuple)
 
 
@@ -82,27 +85,21 @@ def find() -> Settings:
         listen_host=host,
         listen_port=port,
         nats_url=given("CONSOLE_NATS_URL"),
-        nats_seed_file=given("CONSOLE_NATS_SEED_FILE"),
         nats_ca_file=given("CONSOLE_NATS_CA_FILE"),
         presence_subject=given("CONSOLE_PRESENCE_SUBJECT") or "presence",
         presence_stream=given("CONSOLE_PRESENCE_STREAM") or "PRESENCE",
-        deliver_subject=given("CONSOLE_DELIVER_SUBJECT") or "deliver.console.presence",
-        consumer_name=given("CONSOLE_CONSUMER_NAME") or "console",
+        person_prefix=given("CONSOLE_PERSON_PREFIX") or "person-",
         web_dir=given("CONSOLE_WEB_DIR"),
-        health_sync_bound=_float(given, "CONSOLE_HEALTH_SYNC_BOUND", 180.0),
     )
+    if given("CONSOLE_NATS_SEED_FILE"):
+        # the static account is gone (RT-6.43): a leftover setting points at a
+        # secret that must go too, so the start refuses; the file is never read
+        raise ConfigError("CONSOLE_NATS_SEED_FILE: the console's static NATS"
+                          " account is gone, every operator reads with a"
+                          " credential of their own; remove the setting, the"
+                          " secret and the account's user")
     _check(settings)
     return _https(settings)
-
-
-def _float(given: Callable[[str], str], name: str, default: float) -> float:
-    raw = given(name)
-    if not raw:
-        return default
-    try:
-        return float(raw)
-    except ValueError as exc:
-        raise ConfigError(f"{name}: a number of seconds, got {raw!r}") from exc
 
 
 def _required(given: Callable[[str], str], name: str) -> str:
@@ -126,15 +123,6 @@ def _check(s: Settings) -> None:
                           " CONSOLE_ADDR: it would serve without a login")
     if not s.login_off:
         _url(s.issuer, "CONSOLE_ISSUER")
-    if s.nats_seed_file:
-        try:
-            mode = os.stat(s.nats_seed_file).st_mode & 0o777
-            if mode & 0o077:
-                raise ConfigError("CONSOLE_NATS_SEED_FILE must be readable by"
-                                  f" its owner only (mode {mode:o})")
-            open(s.nats_seed_file, "rb").read(4096)  # readable, and no directory
-        except OSError as exc:
-            raise ConfigError(f"CONSOLE_NATS_SEED_FILE cannot be read: {exc}") from exc
     _url(s.public_url, "CONSOLE_PUBLIC_URL")
     if not s.nats_url:
         raise ConfigError("CONSOLE_NATS_URL is required")
@@ -144,17 +132,13 @@ def _check(s: Settings) -> None:
     if parts.scheme == "nats" and parts.hostname not in ("127.0.0.1", "::1", "localhost"):
         raise ConfigError("CONSOLE_NATS_URL: nats:// only to a loopback host"
                           " (a token to anywhere else would go in the clear); use tls://")
-    if not s.nats_seed_file:
-        raise ConfigError("CONSOLE_NATS_SEED_FILE is required"
-                          " (the console's read-only account, the pilot's deviation from ADR-015)")
-    if s.deliver_subject.count(".") < 1 or not s.deliver_subject.startswith("deliver."):
-        raise ConfigError("CONSOLE_DELIVER_SUBJECT: deliver.<name>.…")
-    for name in (s.presence_subject, s.presence_stream, s.consumer_name):
+    for name in (s.presence_subject, s.presence_stream):
         if not name or any(c in name for c in ". *>"):
-            raise ConfigError("CONSOLE_PRESENCE_SUBJECT/STREAM/CONSUMER_NAME: one plain token")
-    if not (30.0 <= s.health_sync_bound <= 24 * 3600.0):
-        raise ConfigError("CONSOLE_HEALTH_SYNC_BOUND: 30 s to 24 h (the probe"
-                          " went red forever below, or never, above)")
+            raise ConfigError("CONSOLE_PRESENCE_SUBJECT/STREAM: one plain token")
+    if not PREFIX_RE.fullmatch(s.person_prefix):
+        # as the login service's AUTH_PERSON_PREFIX (callout.checkConsole)
+        raise ConfigError("CONSOLE_PERSON_PREFIX: letters, digits, - and _,"
+                          " ending in - (the login service's AUTH_PERSON_PREFIX)")
 
 
 def _https(s: Settings) -> Settings:

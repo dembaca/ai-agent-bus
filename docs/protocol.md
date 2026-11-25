@@ -298,7 +298,7 @@ carried.
 
 How the operator console's server connects as the logged-in person
 ([arc42 §6.43](arc42/06-runtime-view.md#643-the-console-on-the-bus-as-its-operator),
-steps 2 to 4). The login service's side is built; the console does not use it yet.
+steps 1 to 4). Both sides are built: the login service's, and the console's server, which connects this way for each logged-in operator (`console/server/src/console_server/nats_read.py`).
 
 | Part | Value |
 |------|-------|

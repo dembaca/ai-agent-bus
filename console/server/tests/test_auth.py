@@ -134,11 +134,37 @@ async def test_exchange_with_a_fake_token_endpoint() -> None:
     async def post(url: str, form: dict) -> bytes:
         assert url == ENDPOINTS.token
         assert form["code_verifier"] == "the-verifier"
-        return json.dumps({"access_token": "x.y.z", "id_token": "no"}).encode()
-    raw = await auth.exchange(ENDPOINTS, "console",
-                              "https://console.example/callback",
-                              "the-code", "the-verifier", post=post)
-    assert raw == "x.y.z"
+        return json.dumps({"access_token": "x.y.z", "id_token": "no",
+                           "refresh_token": "r.r.r"}).encode()
+    tokens = await auth.exchange(ENDPOINTS, "console",
+                                 "https://console.example/callback",
+                                 "the-code", "the-verifier", post=post)
+    assert (tokens.access, tokens.refresh) == ("x.y.z", "r.r.r")
+    assert "x.y.z" not in repr(tokens) and "r.r.r" not in repr(tokens)
+
+
+async def test_refresh_uses_the_sessions_refresh_token() -> None:
+    """RT-6.43 step 4: the renewal's grant is the ordinary session's
+    refresh token for the console's public client, no offline scope; a
+    rotated refresh token replaces the old one, none in the answer keeps
+    it; no refresh token at all is a refusal, never a passing fault."""
+    seen: list[dict] = []
+
+    async def post(url: str, form: dict) -> bytes:
+        seen.append(form)
+        body: dict = {"access_token": "fresh"}
+        if form["refresh_token"] == "old":
+            body["refresh_token"] = "rotated"
+        return json.dumps(body).encode()
+    tokens = await auth.refresh(ENDPOINTS, "console", "old", post=post)
+    assert (tokens.access, tokens.refresh) == ("fresh", "rotated")
+    assert seen[0] == {"grant_type": "refresh_token", "refresh_token": "old",
+                       "client_id": "console"}
+    assert "scope" not in seen[0]           # no offline_access asked for
+    tokens = await auth.refresh(ENDPOINTS, "console", "kept", post=post)
+    assert tokens.refresh == "kept"
+    with pytest.raises(auth.Refused):
+        await auth.refresh(ENDPOINTS, "console", "", post=post)
 
 
 def test_sessions_hash_the_token_in_memory() -> None:

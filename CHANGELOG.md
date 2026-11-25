@@ -5,6 +5,39 @@ before 0.5.0 are described in the git history.
 
 ## Unreleased
 
+### Breaking
+
+- **The console reads the bus as the logged-in operator; its static NATS
+  account is gone** (the console on the bus as its operator, RT-6.43
+  steps 1 and 4; point 7 of the console decision's addition of
+  2026-11-25, ADR-015). At each login the console's server makes a key
+  pair for that login, in memory only, and connects to NATS with the
+  operator's Keycloak access token as the connect token; the login
+  service issues the person's credential and the login's two consumers,
+  and the session shows what they deliver: one reader per session, none
+  before a login. Every 10 minutes it refreshes the token with the
+  ordinary Keycloak session's refresh token (no `offline_access`), checks
+  it as at the login (operators' group, same person) and connects again
+  with the same key; a refused refresh, a lost group or a logout closes
+  the connection, drops key and tokens and ends the session. The person's
+  name is `CONSOLE_PERSON_PREFIX` (new, default `person-`, as the login
+  service's `AUTH_PERSON_PREFIX`) and the owner token of
+  `preferred_username`: an identity whose anchor is not its username
+  reads nothing yet (#86). `CONSOLE_NATS_SEED_FILE` now refuses the start
+  (the file is never read); `CONSOLE_DELIVER_SUBJECT`,
+  `CONSOLE_CONSUMER_NAME` and `CONSOLE_HEALTH_SYNC_BOUND` are gone.
+  `/healthz` (readiness) answers 200 when the NATS server answers on
+  `CONSOLE_NATS_URL` (a verified TLS handshake for `tls://`), no longer
+  after a fleet replay; `/livez` answers 200 while the server serves.
+  Rollout, in this order: the login service with its console path on
+  (`AUTH_CONSOLE_CLIENT_ID`, `AUTH_OPERATOR_GROUP`), the console's
+  Keycloak client with refresh tokens and no `offline_access`, then the
+  console without `CONSOLE_NATS_SEED_FILE`; afterwards remove the
+  pilot's console user from the NATS server's configuration and its
+  seed secret. The release's `Needs:` line, to be written under its
+  version: "login service updated first with the console path on, then
+  the console, its static account and seed removed."
+
 ### Added
 
 - **The login service's part of the console's asks and `STATS` lines**

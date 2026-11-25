@@ -147,7 +147,7 @@ async def test_every_v1_route_answers_401_without_a_session() -> None:
     settings = config.Settings(public_url="http://127.0.0.1:8747",
                                issuer="http://127.0.0.1:8747/kc",
                                client_id="console", operator_group="operators",
-                               nats_url="", nats_seed_file="")
+                               nats_url="")
     c = Console(settings)
     c.endpoints = auth.Endpoints(issuer=settings.issuer,
                                  authorization="http://127.0.0.1:8747/kc/auth",
@@ -173,7 +173,7 @@ async def test_a_fleet_stream_counts_per_session() -> None:
     settings = config.Settings(public_url="http://127.0.0.1:8747",
                                issuer="http://127.0.0.1:8747/kc",
                                client_id="console", operator_group="operators",
-                               nats_url="", nats_seed_file="")
+                               nats_url="")
     c = Console(settings)
     c.endpoints = auth.Endpoints(issuer=settings.issuer,
                                  authorization="http://127.0.0.1:8747/kc/auth",
@@ -212,7 +212,7 @@ async def test_the_login_flow_sets_the_cookie(tmp_path) -> None:
     settings = config.Settings(public_url="http://127.0.0.1:8747",
                                issuer="http://127.0.0.1:8747/kc",
                                client_id="console", operator_group="operators",
-                               nats_url="", nats_seed_file="")
+                               nats_url="")
     c = Console(settings)
     c.endpoints = auth.Endpoints(issuer=settings.issuer,
                                  authorization="http://127.0.0.1:8747/kc/auth",
@@ -250,7 +250,7 @@ async def test_the_login_flow_sets_the_cookie(tmp_path) -> None:
         import unittest.mock as mock
 
         async def fake_exchange(*args, **kwargs):
-            return "a-token"
+            return auth.Tokens(access="a-token", refresh="r-token")
 
         async def fake_verify(*args, **kwargs):
             return verified
@@ -291,8 +291,7 @@ async def test_a_busy_stream_ends_with_its_session() -> None:
     settings = config.Settings(public_url="http://127.0.0.1:8747",
                                issuer="http://127.0.0.1:8747/kc",
                                client_id="console", operator_group="operators",
-                               nats_url="nats://127.0.0.1:4",
-                               nats_seed_file="/none")
+                               nats_url="nats://127.0.0.1:4")
     c = Console(settings)
     c.endpoints = auth.Endpoints(issuer=settings.issuer,
                                  authorization="http://127.0.0.1:8747/kc/auth",
@@ -331,7 +330,7 @@ async def test_a_cross_site_page_cannot_log_the_operator_out() -> None:
     settings = config.Settings(public_url="http://127.0.0.1:8747",
                                issuer="http://127.0.0.1:8747/kc",
                                client_id="console", operator_group="operators",
-                               nats_url="", nats_seed_file="")
+                               nats_url="")
     c = Console(settings)
     c.endpoints = auth.Endpoints(issuer=settings.issuer,
                                  authorization="http://127.0.0.1:8747/kc/auth",
@@ -367,7 +366,7 @@ async def test_a_flood_of_logins_never_evicts_states() -> None:
     settings = config.Settings(public_url="http://127.0.0.1:8747",
                                issuer="http://127.0.0.1:8747/kc",
                                client_id="console", operator_group="operators",
-                               nats_url="", nats_seed_file="")
+                               nats_url="")
     c = Console(settings)
     c.endpoints = auth.Endpoints(issuer=settings.issuer,
                                  authorization="http://127.0.0.1:8747/kc/auth",
@@ -404,7 +403,7 @@ async def test_transport_trouble_answers_502_and_retries() -> None:
     settings = config.Settings(public_url="http://127.0.0.1:8747",
                                issuer="http://127.0.0.1:8747/kc",
                                client_id="console", operator_group="operators",
-                               nats_url="", nats_seed_file="")
+                               nats_url="")
     c = Console(settings)
     calls = {"n": 0}
 
@@ -451,108 +450,6 @@ async def test_transport_trouble_answers_502_and_retries() -> None:
         await c.stop()
 
 
-async def test_a_ended_nats_reader_fails_healthz() -> None:
-    """The NATS task ending without a stop must be visible: /healthz
-    fails the moment the reader dies (a stop cancels it, which is fine)."""
-    settings = config.Settings(public_url="http://127.0.0.1:8747",
-                               login_off=True,
-                               nats_url="nats://127.0.0.1:4",
-                               nats_seed_file="/none")
-    c = Console(settings)
-
-    async def dead(settings, fleet, on_change):
-        raise RuntimeError("the reader died on the seed")
-
-    import console_server.app as app_module
-    original = app_module.read_forever
-    app_module.read_forever = dead
-    try:
-        await c.start()
-        for _ in range(60):
-            await asyncio.sleep(0.05)
-            if c.nats_dead:
-                break
-        assert c.nats_dead
-        status, _h, body = await get(c, "/livez")
-        assert status == 503
-        assert b"NATS reader" in body
-    finally:
-        app_module.read_forever = original
-        await c.stop()
-
-
-async def test_healthz_fails_until_synced_and_when_aged_out() -> None:
-    """Readiness, not only liveness: a reader that has never seen a replay
-    (None) or none within the bound serves a stale fleet, and /healthz
-    says so (503) until one fresh sync arrives. /livez stays 200 through
-    both, so a liveness probe does not restart the pod while NATS is slow."""
-    settings = config.Settings(public_url="http://127.0.0.1:8747",
-                               login_off=True,
-                               nats_url="nats://127.0.0.1:4",
-                               nats_seed_file="/none",
-                               health_sync_bound=100.0)
-    c = Console(settings)
-    await c.start()
-    try:
-        import time as _t
-        # never synced: None, not a zero epoch
-        c.fleet.last_sync_at = None
-        status, _h, body = await get(c, "/healthz")
-        assert status == 503 and b"not synced" in body
-        # synced, then aged out beyond the bound
-        c.fleet.last_sync_at = _t.monotonic() - 200.0
-        status, _h, _b = await get(c, "/healthz")
-        assert status == 503
-        # liveness stays 200 through both — the reader lives, retries
-        status, _h, _b = await get(c, "/livez")
-        assert status == 200
-        # one fresh sync heals the readiness
-        c.fleet.last_sync_at = _t.monotonic()
-        status, _h, _b = await get(c, "/healthz")
-        assert status == 200
-        # and liveness tells the reader's own death
-        c.nats_dead = True
-        status, _h, _b = await get(c, "/livez")
-        assert status == 503
-    finally:
-        await c.stop()
-
-
-async def test_a_consumer_create_stamps_only_with_nothing_pending() -> None:
-    """The create's answer says how much there is to deliver: stamps only
-    at num_pending == 0 (an empty stream at creation); messages left wait
-    for their delivery with pending 0."""
-    from console_server import nats_read
-
-    class FakeNc:
-        def __init__(self, body):
-            self.body = body
-            self.calls = []
-        async def request(self, subject, payload, timeout=None):
-            self.calls.append(subject)
-            reply = type("R", (), {"data": json.dumps(self.body).encode()})()
-            return reply
-
-    fleet_mod = __import__("console_server.fleet", fromlist=["Fleet"])
-    f = fleet_mod.Fleet(presence_subject="presence")
-    # messages pending: no stamp
-    awaiting = FakeNc({"num_pending": 3})
-    await nats_read.ensure_consumer(awaiting, config.Settings(
-        public_url="http://x", login_off=True, nats_url="nats://127.0.0.1:1",
-        nats_seed_file="/none"), f)
-    assert f.last_sync_at is None and not f.synced
-    # nothing to deliver: the creation itself is the finished replay
-    empty = FakeNc({"num_pending": 0})
-    await nats_read.ensure_consumer(empty, config.Settings(
-        public_url="http://x", login_off=True, nats_url="nats://127.0.0.1:1",
-        nats_seed_file="/none"), f)
-    assert f.last_sync_at is not None and f.synced
-    # both hops hit the delete and the create
-    for nc in (awaiting, empty):
-        assert any("DELETE" in subject for subject in nc.calls)
-        assert any("CREATE" in subject for subject in nc.calls)
-
-
 async def test_a_pending_delivery_stamps_no_sync() -> None:
     """A delivery whose replay is still behind (pending > 0) is not a
     finished replay: it stamps nothing, the probe stays red until a
@@ -582,9 +479,7 @@ async def test_an_aged_card_reaches_the_stream_on_the_beat() -> None:
 
     c = Console(config.Settings(public_url="http://127.0.0.1:8747",
                                 login_off=True,
-                                nats_url="nats://127.0.0.1:4",
-                                nats_seed_file="/none",
-                                health_sync_bound=100.0))
+                                nats_url="nats://127.0.0.1:4"))
     await c.start()
     try:
         import time as _t

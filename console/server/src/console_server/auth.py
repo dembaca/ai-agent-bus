@@ -165,28 +165,65 @@ def login_url(endpoints: Endpoints, client_id: str, redirect_uri: str,
     return url, state, verifier
 
 
-async def exchange(endpoints: Endpoints, client_id: str, redirect_uri: str,
-                   code: str, verifier: str,
-                   post: Post | None = None) -> str:
-    """The code for an access token (unverified here: ``verify`` decides
-    who the operator is)."""
-    form = {"grant_type": "authorization_code", "code": code,
-            "redirect_uri": redirect_uri, "client_id": client_id,
-            "code_verifier": verifier}
+@dataclass(repr=False)
+class Tokens:
+    """A login's Keycloak tokens, in memory only and never printed: the
+    access token (the NATS connect token, RT-6.43) and the refresh token
+    of the ordinary session (no ``offline_access``), empty if none came."""
+    access: str
+    refresh: str = ""
+
+    def __repr__(self) -> str:
+        return "Tokens(…)"
+
+
+async def _token_call(endpoints: Endpoints, form: dict[str, str],
+                      post: Post | None, what: str) -> Tokens:
     if post is not None:  # as _get: a test seam
         body = await post(endpoints.token, form)
         doc = json.loads(body)
     else:
         async with httpx.AsyncClient(timeout=10.0, follow_redirects=False) as client:
             res = await client.post(endpoints.token, data=form)
+            if 400 <= res.status_code < 500:
+                # the realm said no (invalid_grant: the session ended, or the
+                # client's grant is off): a refusal, not a passing fault
+                raise Refused(f"token endpoint refused the {what}")
             if res.status_code != 200 or len(res.content) > MAX_DOC:
-                raise AuthError("token endpoint refused the code")
+                raise AuthError(f"token endpoint failed on the {what}")
             doc = res.json()
     if not isinstance(doc, dict) or not isinstance(doc.get("access_token"), str):
         raise AuthError("no access token in the answer")
-    raw = doc["access_token"]
-    assert isinstance(raw, str)
-    return raw
+    refresh = doc.get("refresh_token")
+    return Tokens(access=doc["access_token"],
+                  refresh=refresh if isinstance(refresh, str) else "")
+
+
+async def exchange(endpoints: Endpoints, client_id: str, redirect_uri: str,
+                   code: str, verifier: str,
+                   post: Post | None = None) -> Tokens:
+    """The code for the login's tokens (unverified here: ``verify`` decides
+    who the operator is)."""
+    form = {"grant_type": "authorization_code", "code": code,
+            "redirect_uri": redirect_uri, "client_id": client_id,
+            "code_verifier": verifier}
+    return await _token_call(endpoints, form, post, "code")
+
+
+async def refresh(endpoints: Endpoints, client_id: str, refresh_token: str,
+                  post: Post | None = None) -> Tokens:
+    """Fresh tokens from the refresh token of the operator's ordinary
+    Keycloak session (RT-6.43 step 4); a rotated refresh token replaces the
+    old one, an answer without one keeps it. ``Refused`` when the realm
+    refuses (the session ended or was revoked)."""
+    if not refresh_token:
+        raise Refused("no refresh token: the realm gave none at the login")
+    form = {"grant_type": "refresh_token", "refresh_token": refresh_token,
+            "client_id": client_id}
+    tokens = await _token_call(endpoints, form, post, "refresh")
+    if not tokens.refresh:
+        tokens.refresh = refresh_token
+    return tokens
 
 
 async def verify(settings: config.Settings, endpoints: Endpoints,
@@ -272,34 +309,68 @@ def _check_claims(settings: config.Settings, endpoints: Endpoints,
 class Sessions:
     """Operator sessions: an opaque cookie token, hashed in memory, to the
     operator; nothing else is kept — a restart logs everyone out, and the
-    browser holds nothing but the HttpOnly cookie."""
-    secret: bytes = field(default_factory=lambda: secrets.token_bytes(32))
-    _sessions: dict[str, tuple[float, Operator]] = field(default_factory=dict)
+    browser holds nothing but the HttpOnly cookie.
 
-    def issue(self, operator: Operator, ttl: float) -> str:
+    A session may carry a view (``nats_read.View``: its fleet and its own
+    NATS reader, RT-6.43); whatever ends the session — logout, expiry, the
+    reader's own end — closes the view, which drops the login's key and
+    tokens."""
+    secret: bytes = field(default_factory=lambda: secrets.token_bytes(32))
+    _sessions: dict[str, tuple[float, Operator, Any]] = field(default_factory=dict)
+
+    def _digest(self, token: str) -> str:
+        return hmac.new(self.secret, token.encode(), hashlib.sha256).hexdigest()
+
+    @staticmethod
+    def _close(row: tuple[float, Operator, Any]) -> None:
+        close = getattr(row[2], "close", None)
+        if close is not None:
+            close()
+
+    def issue(self, operator: Operator, ttl: float, view: Any = None) -> str:
         token = secrets.token_urlsafe(32)
-        digest = hmac.new(self.secret, token.encode(), hashlib.sha256).hexdigest()
         at = time.time()
-        self._sessions = {d: row for d, row in self._sessions.items()
-                          if row[0] > at}  # sweep: expired sessions go
-        self._sessions[digest] = (at + ttl, operator)
+        for d, row in list(self._sessions.items()):  # sweep: expired sessions go
+            if row[0] <= at:
+                del self._sessions[d]
+                self._close(row)
+        self._sessions[self._digest(token)] = (at + ttl, operator, view)
         return token
 
     def drop(self, token: str) -> None:
         """Logout: the server ends the session, not only the cookie."""
-        digest = hmac.new(self.secret, token.encode(), hashlib.sha256).hexdigest()
-        self._sessions.pop(digest, None)
+        row = self._sessions.pop(self._digest(token), None)
+        if row is not None:
+            self._close(row)
+
+    def end(self, view: Any) -> None:
+        """The session whose view this is ends (its reader ended it)."""
+        for d, row in list(self._sessions.items()):
+            if row[2] is view:
+                del self._sessions[d]
+                self._close(row)
+
+    def views(self) -> list[Any]:
+        return [row[2] for row in self._sessions.values() if row[2] is not None]
+
+    def view(self, token: str | None) -> Any:
+        """The live session's view, or None."""
+        if self.get(token) is None:
+            return None
+        assert token is not None
+        return self._sessions[self._digest(token)][2]
 
     def get(self, token: str | None, now: float | None = None) -> Operator | None:
         if not token:
             return None
-        digest = hmac.new(self.secret, token.encode(), hashlib.sha256).hexdigest()
+        digest = self._digest(token)
         row = self._sessions.get(digest)
         if row is None:
             return None
-        until, operator = row
+        until, operator, _view = row
         at = time.time() if now is None else now
         if at > until:
             del self._sessions[digest]
+            self._close(row)
             return None
         return operator

@@ -4,6 +4,9 @@ fleet view, the Keycloak login, the HTTP side and the built browser app.
 Read-only (ADR-015 stage 1): the only endpoints that answer with state
 are reads; ``/v1/asks`` and ``/v1/stats`` answer empty until asks and
 the STATS lines lie on NATS (the pilot shows presence and crown, live).
+Each logged-in operator reads the bus with a NATS connection of their own
+(RT-6.43): the fleet a session shows is what that person's consumers
+deliver, and there is no reader before a login.
 
 The reviews' edges, held here as invariants: the login refuses when the
 operators group is unset (fail closed), a stream ends with its session
@@ -28,7 +31,7 @@ from urllib.parse import urlsplit
 from . import auth, config, httpd
 from .auth import Endpoints
 from .fleet import Fleet
-from .nats_read import read_forever
+from .nats_read import PersonReader, View, reachable
 
 log = logging.getLogger("console")
 
@@ -39,6 +42,7 @@ STATE_MAX = 64                     # then the oldest goes, never all
 STATE_RATE_MAX = 16                # new states per minute; past that /login
 STATE_RATE_SEC = 60.0              # answers 429 without creating one
 STREAMS_PER_OPERATOR = 4            # every further stream answers 429
+REACH_CACHE_SEC = 5.0               # /healthz asks NATS at most this often
 STATIC_TYPES = {".html": "text/html; charset=utf-8",
                 ".js": "text/javascript; charset=utf-8",
                 ".css": "text/css; charset=utf-8",
@@ -61,25 +65,37 @@ STATIC_HEADERS = (("X-Content-Type-Options", "nosniff"),
 class Console:
     def __init__(self, settings: config.Settings):
         self.settings = settings
-        self.fleet = Fleet(presence_subject=settings.presence_subject)
+        # the stand-in view: login off (tests and the mock) and sessions made
+        # without one; nothing feeds it — every login has a view of its own
+        self.standin = View(settings.presence_subject)
         self.sessions = auth.Sessions()
         self.keyring = auth.Keyring()
         self.endpoints: auth.Endpoints | None = None
         self._pending: dict[str, tuple[str, float, str]] = {}  # state→(verifier, until, flow)
         self._state_rate: deque[float] = deque()  # when states were made
         self._http: httpd.Httpd | None = None
-        self._nats_task: asyncio.Task | None = None  # type: ignore[type-arg]
         self._discovery: asyncio.Task | None = None  # type: ignore[type-arg]
-        self._wakes: set[asyncio.Event] = set()  # one event per live stream
         self._streams: dict[str, int] = {}  # session token → open streams
-        self.nats_dead = False  # the NATS task ended without a stop
+        self._reach: tuple[float, bool] | None = None  # (when asked, answer)
+
+    @property
+    def fleet(self) -> Fleet:
+        """The stand-in view's fleet (login off; tests)."""
+        return self.standin.fleet
+
+    @fleet.setter
+    def fleet(self, value: Fleet) -> None:
+        self.standin.fleet = value
 
     # --- the fleet's wake: every stream has its own event -----------------------------
 
     def fire(self) -> None:
-        """The fleet changed: wake every live stream, none may steal it."""
-        for wake in list(self._wakes):
-            wake.set()
+        """The stand-in fleet changed: wake its streams, none may steal it."""
+        self.standin.fire()
+
+    def _view(self, token: str | None) -> View:
+        view = self.sessions.view(token)
+        return view if isinstance(view, View) else self.standin
 
     # --- foreign dependencies ----------------------------------------------------------
 
@@ -92,20 +108,6 @@ class Console:
             finder = discover or auth.discover
             self._discovery = asyncio.create_task(self._discover_loop(finder),
                                                  name="console-discovery")
-        if self.settings.nats_url:
-            self._nats_task = asyncio.create_task(
-                read_forever(self.settings, self.fleet, self.fire),
-                name="console-nats")
-
-            def _nats_done(task: "asyncio.Task[None]") -> None:
-                # a cancelled task is a stop; anything else leaves the
-                # fleet's view frozen, and the operator must see it — the
-                # reason stays in the task for whoever restarts it
-                if not task.cancelled():
-                    log.error("console: the NATS reader ended (%s);"
-                              " /livez fails", task.exception())
-                    self.nats_dead = True
-            self._nats_task.add_done_callback(_nats_done)
         self._http = httpd.Httpd(handler=self.handle,
                                  host=self.settings.listen_host,
                                  port=self.settings.listen_port)
@@ -124,7 +126,10 @@ class Console:
     async def stop(self) -> None:
         if self._http is not None:
             await self._http.stop()
-        for task in (self._nats_task, self._discovery):
+        for view in self.sessions.views():
+            if isinstance(view, View) and view.reader is not None:
+                await view.reader.aclose()  # key and tokens dropped
+        for task in (self._discovery,):
             if task is not None:
                 task.cancel()
                 try:
@@ -204,13 +209,14 @@ class Console:
         if token and open_now >= STREAMS_PER_OPERATOR:
             return httpd.Response.json({"error": "too many fleet streams"}, 429,
                                         API_HEADERS)
+        view = self._view(token)
         wake = asyncio.Event()
-        self._wakes.add(wake)
+        view.wakes.add(wake)
         if token:
             self._streams[token] = open_now + 1
 
         def done() -> None:
-            self._wakes.discard(wake)
+            view.wakes.discard(wake)
             if token:
                 left = self._streams.get(token, 1) - 1
                 if left > 0:
@@ -221,8 +227,8 @@ class Console:
         sent: dict[str, dict[str, Any]] = {}
 
         def next_events() -> list[dict[str, Any]]:
-            cards: dict[str, dict[str, Any]] = {c["name"]: c for c in self.fleet.cards()}
-            if not self.fleet.synced or not sent:
+            cards: dict[str, dict[str, Any]] = {c["name"]: c for c in view.fleet.cards()}
+            if not view.fleet.synced or not sent:
                 sent.clear()
                 sent.update(cards)
                 return [{"type": "snapshot", "cards": list(cards.values())}]
@@ -235,11 +241,6 @@ class Console:
             sent.update(cards)
             return out
 
-        if not self.settings.nats_url:
-            return httpd.SSE(first={"type": "snapshot", "cards": []},
-                             changes=wake, teardown=done,
-                             snapshot=lambda: [{"type": "card", "card": None}][:0],
-                             beat=lambda: [])
         first = next_events()
         return httpd.SSE(first=first[0], changes=wake, snapshot=next_events,
                          alive=(None if not token
@@ -253,20 +254,15 @@ class Console:
                      headers: dict[str, str]) -> httpd.Response | httpd.SSE:
         s = self.settings
         if path == s.health_path:
-            if self.settings.nats_url:
-                # readiness: a reader that has not seen a replay within
-                # the bound serves a stale fleet — None says "never"
-                age = (None if self.fleet.last_sync_at is None
-                       else time.monotonic() - self.fleet.last_sync_at)
-                if age is None or age > s.health_sync_bound:
-                    return httpd.Response.text(
-                        "the fleet reader has not synced in time", 503)
+            # readiness: the settings held at the start, and the NATS server
+            # answers (a TLS handshake for tls://). There is no reader before
+            # a login (RT-6.43), so no fleet to wait for: each operator's
+            # connection is that session's, renewed and retried on its own
+            if self.settings.nats_url and not await self._nats_reachable():
+                return httpd.Response.text("the NATS server does not answer", 503)
             return httpd.Response.text("ok")
         if path == "/livez":
-            # liveness beside readiness: 503 only when the reader ended
-            # without a stop (everything else retries on its own)
-            if self.nats_dead:
-                return httpd.Response.text("the NATS reader ended", 503)
+            # liveness: the process serves; every reader retries on its own
             return httpd.Response.text("ok")
         if path in ("/login", "/callback"):
             if s.login_off:
@@ -299,7 +295,8 @@ class Console:
         if path == "/v1/graph":
             if self._operator(headers) is None:
                 return _unauthorized()
-            return httpd.Response.json(self.fleet.graph(), headers=API_HEADERS)
+            view = self._view(self._session_token(headers))
+            return httpd.Response.json(view.fleet.graph(), headers=API_HEADERS)
         if path == "/logout":
             own = urlsplit(s.public_url)
             want = f"{own.scheme}://{own.netloc}"
@@ -368,8 +365,8 @@ class Console:
             return httpd.Response.text("login: the flow cookie does not match", 400)
         self._pending.pop(state, None)
         try:
-            raw = await auth.exchange(self.endpoints, s.client_id, redirect, code, verifier)
-            operator = await auth.verify(s, self.endpoints, self.keyring, raw)
+            tokens = await auth.exchange(self.endpoints, s.client_id, redirect, code, verifier)
+            operator = await auth.verify(s, self.endpoints, self.keyring, tokens.access)
         except auth.Refused as exc:
             log.warning("console login refused: %s", exc)
             return httpd.Response.text("login refused: not a member of the"
@@ -379,13 +376,54 @@ class Console:
             # fault, not the person's
             log.warning("console login failed: %s", exc)
             return httpd.Response.text(f"login failed: {exc}", 502)
-        token = self.sessions.issue(operator, s.session_sec)
+        token = self._open_session(operator, tokens)
         response = httpd.Response.see("/")
         response.headers = response.headers + (
             ("Set-Cookie", self._cookie(COOKIE, token, int(s.session_sec))),
             ("Set-Cookie", f"{FLOW_COOKIE}=; Path=/; Max-Age=0"),)
         log.info("console login: %s", operator.username)
         return response
+
+
+    # --- the operator's own connection (RT-6.43) ---------------------------------------
+
+    def _open_session(self, operator: auth.Operator, tokens: auth.Tokens) -> str:
+        """A session with a view of its own; with NATS set, a reader that
+        connects as this operator with a key pair made for this login."""
+        s = self.settings
+        view = View(s.presence_subject)
+        if s.nats_url:
+            username = operator.username
+
+            async def renew(refresh: str) -> auth.Tokens:
+                return await self._renew(username, refresh)
+
+            view.reader = PersonReader(s, username, tokens, renew, view,
+                                       until=time.time() + s.session_sec,
+                                       on_end=lambda: self.sessions.end(view))
+        token = self.sessions.issue(operator, s.session_sec, view)
+        if view.reader is not None:
+            view.reader.start()
+        return token
+
+    async def _renew(self, username: str, refresh: str) -> auth.Tokens:
+        """Fresh tokens for a login's renewal, verified as at the login: the
+        realm's refusal or a token without the operators' group is
+        ``auth.Refused`` and ends the session (RT-6.43 step 4)."""
+        if self.endpoints is None:
+            raise auth.AuthError("the issuer's endpoints are not in")
+        tokens = await auth.refresh(self.endpoints, self.settings.client_id, refresh)
+        operator = await auth.verify(self.settings, self.endpoints, self.keyring,
+                                     tokens.access)
+        if operator.username != username:
+            raise auth.Refused("the refreshed token names another person")
+        return tokens
+
+    async def _nats_reachable(self) -> bool:
+        now = time.monotonic()
+        if self._reach is None or now - self._reach[0] > REACH_CACHE_SEC:
+            self._reach = (now, await reachable(self.settings))
+        return self._reach[1]
 
 
 def _b64u_cookie() -> str:

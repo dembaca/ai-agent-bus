@@ -74,8 +74,7 @@ def test_the_card_the_fixture_states(fleet_scenario) -> None:
 
 def test_the_events_the_fixture_states(fleet_scenario) -> None:
     console = Console(config.Settings(public_url="http://127.0.0.1:8747",
-                                     login_off=True, nats_url="nats://127.0.0.1:4",
-                                     nats_seed_file="/none"))
+                                     login_off=True, nats_url="nats://127.0.0.1:4"))
     console.fleet = fleet_scenario
     console.fleet.synced = True
     stream = console._stream(token=None)
