@@ -10,9 +10,11 @@ before 0.5.0 are described in the git history.
   corral session carries one bot: the plugin binds the bus to the first
   top-level session that prompts. Every other top-level session of that
   process (`/new` in the TUI too) is told so in the session ("No bus in
-  this session: …"), its hooks call nothing and its bus tool calls are
-  pointed at a tool that fails with the reason; a subagent of the bound
-  session keeps the bus. The bus server starts only once a session
+  this session: …") and its hooks call nothing; a subagent of the bound
+  session keeps the bus. Such a session's bus tool calls are rerouted to a
+  tool that fails with the reason; that in-process refusal is tested
+  against fakes only and still needs a check on a real OpenCode 2.4 before
+  the release. Across processes the host enforces the identity. The bus server starts only once a session
   prompted, with its id as `OPENCODE_SESSION_ID`, which the host compares
   like a Claude session id, for the relay and, by the header
   `X-Bus-Client-Session`, for the hook API (`403` for another session's
