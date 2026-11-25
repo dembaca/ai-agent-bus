@@ -4863,8 +4863,10 @@ registrar's functions can move in later without a second component.
        and within the 10 minutes, also on an older post (an ask). It finds
        them through the same `since` read alone: Mattermost raises a post's
        `update_at` when a reaction is added or removed, so the read returns
-       that post with its current reactions (`metadata.reactions`), which
-       the bridge compares with the keys it carried. A removal has no time
+       that post with its current reactions (`metadata.reactions`). A
+       post with `delete_at` set, which `since` returns too but without
+       reactions, is skipped in that comparison, since deletes are not
+       carried (point 5). A removal has no time
        of its own (Mattermost sends `reaction_removed` with `create_at` 0),
        so the catch-up sees it only as a reaction missing on reread: the
        bridge compares the reread reactions of a post with the reaction
@@ -4874,8 +4876,7 @@ registrar's functions can move in later without a second component.
        bridge never saw, is lost. Live removals over the WebSocket are
        bounded by the time they arrive and are unaffected. A reaction on an ask is
        carried like any other, although the ask itself, an agent's
-       Mattermost post, is not. A removal found this way is carried as
-       an `unreaction`. An event's key is a post's `mm`, and for a reaction
+       Mattermost post, is not. An event's key is a post's `mm`, and for a reaction
        or unreaction its `mm`, emoji, sender and kind together; an event of
        the opposite kind for the same `mm`, emoji and sender clears the
        key, so a 👍 taken back and given again counts again (chosen over
