@@ -804,3 +804,114 @@ func TestAGoneConsumerIsMadeAgain(t *testing.T) {
 		t.Fatalf("consumers %v after %v", now, first)
 	}
 }
+
+// accountConsumer is the bridge's current consumer of the account records.
+func accountConsumer(t *testing.T, l *lab) (name, deliver string) {
+	t.Helper()
+	ctx := context.Background()
+	st, err := l.js.Stream(ctx, "PRESENCE")
+	if err != nil {
+		t.Fatal(err)
+	}
+	lister := st.ListConsumers(ctx)
+	for info := range lister.Info() {
+		if strings.HasPrefix(info.Name, AccountsConsumer+"_") {
+			name, deliver = info.Name, info.Config.DeliverSubject
+		}
+	}
+	return name, deliver // "" while there is none
+}
+
+// RT-6.42 step 3: a new consumer reads the records into a map of its own,
+// so an account whose record went away meanwhile keeps no old anchor.
+func TestANewConsumerKeepsNoStaleAnchor(t *testing.T) {
+	l := newLab(t)
+	ctx := context.Background()
+	l.record(t, aliceID, `{"v":1,"account":"`+aliceID+`","anchor":"alice","name":"alice",`+
+		`"approver":true,"token_iat":1,"iat":1,"exp":2}`, "alice")
+	st, err := l.js.Stream(ctx, "PRESENCE")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := st.Purge(ctx, jetstream.WithPurgeSubject("presence.account.mattermost."+aliceID+".v1")); err != nil {
+		t.Fatal(err)
+	}
+	name, _ := accountConsumer(t, l)
+	if name == "" {
+		t.Fatal("no account consumer")
+	}
+	if err := l.js.DeleteConsumer(ctx, "PRESENCE", name); err != nil {
+		t.Fatal(err)
+	}
+	deadline := time.Now().Add(3 * time.Second)
+	for {
+		if again, _ := accountConsumer(t, l); again != "" && again != name && l.acc.CaughtUp() && l.acc.Anchor(aliceID) == "" {
+			return
+		}
+		if time.Now().After(deadline) {
+			t.Fatalf("after a new consumer: anchor %q, caught up %v", l.acc.Anchor(aliceID), l.acc.CaughtUp())
+		}
+		time.Sleep(20 * time.Millisecond)
+	}
+}
+
+// RT-6.42 step 3: with ack none a delivery lost on the way shows as a gap
+// in the consumer's sequence; the bridge starts over with a new consumer.
+func TestAGapInTheDeliveriesStartsOver(t *testing.T) {
+	l := newLab(t)
+	name, deliver := accountConsumer(t, l)
+	if name == "" {
+		t.Fatal("no account consumer")
+	}
+	// a heartbeat that says five were delivered, which the bridge never got
+	// (the server refuses a forged $JS.ACK reply, so the heartbeat stands in)
+	hb := nats.NewMsg(deliver)
+	hb.Header.Set("Status", "100")
+	hb.Header.Set("Description", "Idle Heartbeat")
+	hb.Header.Set("Nats-Last-Consumer", "5")
+	if err := l.nc.PublishMsg(hb); err != nil {
+		t.Fatal(err)
+	}
+	deadline := time.Now().Add(3 * time.Second)
+	for {
+		ctx := context.Background()
+		st, _ := l.js.Stream(ctx, "PRESENCE")
+		names := []string{}
+		lister := st.ConsumerNames(ctx)
+		for n := range lister.Name() {
+			names = append(names, n)
+		}
+		for _, n := range names {
+			if n != name && strings.HasPrefix(n, AccountsConsumer+"_") {
+				return
+			}
+		}
+		if time.Now().After(deadline) {
+			t.Fatalf("no new consumer after a gap: %v", names)
+		}
+		time.Sleep(20 * time.Millisecond)
+	}
+}
+
+// RT-6.42 step 1: the quiet home's watermark moves at the signal only when no
+// event is queued; a queued one may be older than the minute's slack.
+func TestTheWatermarkWaitsForQueuedEvents(t *testing.T) {
+	l := newLab(t)
+	ctx := context.Background()
+	events := make(chan mmws.Event, 1)
+	b := &Bridge{Homes: []string{"home"}, Log: quiet(), NATS: Confirmed{NC: l.nc}, Store: l.kv, Seen: l.seen,
+		Anchors: l.acc, Events: events, Up: func() uint64 { return 1 }}
+	b.defaults()
+	h := b.homes[0]
+	h.stopped, h.caughtUp, h.wm = false, 1, 1000
+	events <- &mmws.Posted{}
+	b.signal(ctx, h)
+	if wm, ok, _ := l.kv.Watermark(ctx, "home"); ok || h.wm != 1000 {
+		t.Fatalf("moved with an event queued: %d", wm)
+	}
+	<-events
+	b.signal(ctx, h)
+	if wm, ok, _ := l.kv.Watermark(ctx, "home"); !ok || wm <= 1000 {
+		t.Fatalf("did not move when nothing was queued: %d %v", wm, ok)
+	}
+}

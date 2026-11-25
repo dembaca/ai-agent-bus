@@ -159,11 +159,11 @@ func (b *Bridge) Run(ctx context.Context) error {
 					b.catchUp(ctx, h, ev.Conn)
 				}
 			case *mmws.Posted:
-				if h := b.byCID[ev.ChannelID]; h != nil && b.carrying(h) {
+				if h := b.byCID[ev.ChannelID]; h != nil && b.carrying(h) && b.records(h) {
 					b.guard(h, b.post(ctx, h, fromLive(ev), false, 0))
 				}
 			case *mmws.Reaction:
-				if h := b.byCID[ev.ChannelID]; h != nil && b.carrying(h) {
+				if h := b.byCID[ev.ChannelID]; h != nil && b.carrying(h) && b.records(h) {
 					b.guard(h, b.reaction(ctx, h, ev.PostID, ev.UserID, ev.EmojiName, ev.CreateAt, ev.Added, false))
 				}
 			}
@@ -186,6 +186,16 @@ func (b *Bridge) Run(ctx context.Context) error {
 // carrying: a stopped home takes no live event; its catch-up, when it runs
 // again, reads them from the watermark on.
 func (b *Bridge) carrying(h *home) bool { return !h.stopped && h.caughtUp != 0 }
+
+// records: while the account records are read afresh (a new consumer), a
+// home carries nothing and stops; its retry catches up once they are read.
+func (b *Bridge) records(h *home) bool {
+	if b.Anchors.CaughtUp() {
+		return true
+	}
+	b.guard(h, errRecordsPending)
+	return false
+}
 
 // guard stops a home on an error it cannot carry past (a refused bucket write,
 // Mattermost out of reach): the signal stops with it, so sessions read that
@@ -238,7 +248,10 @@ func (b *Bridge) signal(ctx context.Context, h *home) {
 	if err != nil {
 		b.Log.Warn("inbound: the signal was not published", "home", h.name, "error", err)
 	}
-	b.guard(h, b.advance(ctx, h, now.UnixMilli()+b.offset-liveSlack.Milliseconds()))
+	if len(b.Events) == 0 {
+		// only with nothing queued: a queued event may be older than the slack
+		b.guard(h, b.advance(ctx, h, now.UnixMilli()+b.offset-liveSlack.Milliseconds()))
+	}
 }
 
 // liveSlack is how far behind Mattermost's clock a connected home's watermark

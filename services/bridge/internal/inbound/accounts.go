@@ -11,6 +11,7 @@ import (
 	"io"
 	"log/slog"
 	"regexp"
+	"strconv"
 	"strings"
 	"sync"
 	"time"
@@ -73,6 +74,7 @@ type Accounts struct {
 
 	mu       sync.Mutex
 	anchors  map[string]string // accounts with a record, "" for unbound
+	staging  map[string]string // a new consumer's records until it caught up
 	caughtUp bool
 }
 
@@ -122,6 +124,12 @@ func (a *Accounts) consume(ctx context.Context, nc *nats.Conn) error {
 	if err := nc.Flush(); err != nil {
 		return fmt.Errorf("accounts: subscribe %s: %w", deliver, err)
 	}
+	// A new consumer reads every record afresh into a map of its own, which
+	// replaces the old one once caught up: an account unbound while NATS was
+	// away must not keep its old anchor. Until then no home carries.
+	a.mu.Lock()
+	a.staging, a.caughtUp = map[string]string{}, false
+	a.mu.Unlock()
 	if err := a.create(ctx, nc, name, deliver); err != nil {
 		return err
 	}
@@ -137,6 +145,10 @@ func (a *Accounts) consume(ctx context.Context, nc *nats.Conn) error {
 	// no message for three heartbeats: the consumer is gone, a new one
 	silence := time.NewTimer(3 * heartbeat)
 	defer silence.Stop()
+	// Ack none: a delivery lost on the way shows only as a gap in the
+	// consumer's sequence, in a delivery's or in the heartbeat's
+	// Nats-Last-Consumer; a gap starts over with a new consumer.
+	var last uint64
 	for {
 		select {
 		case <-ctx.Done():
@@ -148,6 +160,11 @@ func (a *Accounts) consume(ctx context.Context, nc *nats.Conn) error {
 			silence.Reset(3 * heartbeat)
 			if m.Header.Get("Status") == "100" && strings.Contains(m.Header.Get("Description"), "Idle") {
 				// the server's idle heartbeat: nothing is pending
+				if seen, err := strconv.ParseUint(m.Header.Get("Nats-Last-Consumer"), 10, 64); err == nil && seen != last {
+					a.Log.Warn("accounts: a record was lost on the way; making a new consumer",
+						"consumer", name, "delivered", seen, "received", last)
+					return nil
+				}
 				a.caught()
 				continue
 			}
@@ -158,8 +175,19 @@ func (a *Accounts) consume(ctx context.Context, nc *nats.Conn) error {
 				a.Log.Warn("accounts: not a delivery, dropped", "subject", m.Subject)
 				continue
 			}
+			md, err := m.Metadata()
+			if err != nil {
+				a.Log.Warn("accounts: not a delivery, dropped", "subject", m.Subject)
+				continue
+			}
+			if md.Sequence.Consumer != last+1 {
+				a.Log.Warn("accounts: a record was lost on the way; making a new consumer",
+					"consumer", name, "delivered", md.Sequence.Consumer, "received", last)
+				return nil
+			}
+			last = md.Sequence.Consumer
 			a.one(m.Subject, m.Data)
-			if md, err := m.Metadata(); err == nil && md.NumPending == 0 {
+			if md.NumPending == 0 {
 				a.caught()
 			}
 		}
@@ -202,7 +230,8 @@ func (a *Accounts) create(ctx context.Context, nc *nats.Conn, name, deliver stri
 func (a *Accounts) caught() {
 	a.mu.Lock()
 	defer a.mu.Unlock()
-	if !a.caughtUp {
+	if a.staging != nil {
+		a.anchors, a.staging = a.staging, nil
 		a.Log.Info("accounts: the account records are read", "accounts", len(a.anchors))
 	}
 	a.caughtUp = true
@@ -231,12 +260,16 @@ func (a *Accounts) take(subject string, data []byte) {
 // set records an account's anchor; a record that does not decode is unbound
 // (step 10). a.mu is held.
 func (a *Accounts) set(uid, anchor string, err error) {
-	if a.anchors == nil {
-		a.anchors = map[string]string{}
-	}
 	if err != nil {
 		anchor = ""
 		a.Log.Warn("accounts: a record that does not decode; unbound", "account", uid, "error", err)
+	}
+	if a.staging != nil {
+		a.staging[uid] = anchor
+		return
+	}
+	if a.anchors == nil {
+		a.anchors = map[string]string{}
 	}
 	a.anchors[uid] = anchor
 }
