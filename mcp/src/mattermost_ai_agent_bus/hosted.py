@@ -477,18 +477,42 @@ def identity(values: Mapping[str, str]) -> dict[str, str]:
     return {k: v if k == "CLAUDE_CODE_SESSION_ID" else os.path.normpath(v) for k, v in out.items()}
 
 
+_ONE_AGENT = ("the host serves one agent with one bot, so another session's relay would post "
+              "and answer as this bot (RT-6.18 step 6). Run each agent in its own corral session")
+
+
 def identity_mismatch(first: Mapping[str, str], other: Mapping[str, str]) -> str:
     """Why a relay is refused for another agent's session values, or "" when
     it speaks for the same one (RT-6.18 step 6). Names the differing keys,
-    never their values: the session id is the sandbox's, not for the log."""
+    never their values: the session id is the sandbox's, not for the log.
+
+    A new session id in the same, named project directory is the same agent
+    (``/clear``, an MCP reconnect). An MM_WORKSPACE the first relay did not
+    send is taken (a plugin updated mid-session); the caller adopts it."""
+    if not first.get("MM_WORKSPACE"):
+        other = {k: v for k, v in other.items() if k != "MM_WORKSPACE"}
     a, b = identity(first), identity(other)
-    keys = sorted(k for k in a.keys() | b.keys() if a.get(k) != b.get(k))
+    keys = {k for k in a.keys() | b.keys() if a.get(k) != b.get(k)}
+    if a.get("CLAUDE_PROJECT_DIR") and a.get("CLAUDE_PROJECT_DIR") == b.get("CLAUDE_PROJECT_DIR"):
+        keys.discard("CLAUDE_CODE_SESSION_ID")
     if not keys:
         return ""
-    return (f"this relay's session values differ from the first relay's ({', '.join(keys)}): "
-            "the host serves one agent with one bot, so another session's relay would post "
-            "and answer as this bot (RT-6.18 step 6). Start the bus's MCP server from the "
-            "session it was started for")
+    return f"this relay's session values differ from the first relay's ({', '.join(sorted(keys))}): {_ONE_AGENT}"
+
+
+def outside_workdir(values: Mapping[str, str], workdir: str | None) -> str:
+    """Why a relay is refused for naming a directory outside the corral
+    session's workdir, or "" (RT-6.18 step 6). The workdir comes from
+    preStart, on the host; the relay's directories from the sandbox, so even
+    the first relay is held to it. Compared as names, by path components."""
+    if not workdir:
+        return ""
+    root = Path(os.path.normpath(workdir)).parts
+    keys = [k for k in ("CLAUDE_PROJECT_DIR", "MM_WORKSPACE")
+            if values.get(k) and Path(os.path.normpath(values[k])).parts[:len(root)] != root]
+    if not keys:
+        return ""
+    return f"this relay's {', '.join(keys)} lies outside this corral session's workdir: {_ONE_AGENT}"
 
 
 async def _answer(stream: Any, ok: bool, error: str = "") -> None:
@@ -504,8 +528,10 @@ class Host:
     and directories, RT-6.18 step 6) and keep those."""
 
     def __init__(self, key: str, *, client: BusClient | None = None, serve: Serve | None = None,
-                 apply: Callable[[Mapping[str, str]], None] = apply_session) -> None:
+                 apply: Callable[[Mapping[str, str]], None] = apply_session,
+                 workdir: str | None = None) -> None:
         self._key = key.encode()
+        self._workdir = workdir
         self._serve = serve
         self._apply = apply
         self.client = client
@@ -556,11 +582,22 @@ class Host:
                 log.warning("relay refused: %s", exc)
                 await _answer(stream, False, str(exc))
                 return
-            if self.session is not None and (why := identity_mismatch(self.session, session)):
-                # One bot speaks for one agent (#119): never another session's relay.
+            # One bot speaks for one agent (#119, RT-6.18 step 6): never another
+            # session's relay, the first one included.
+            why = outside_workdir(session, self._workdir)
+            if not why and self.session is not None:
+                why = identity_mismatch(self.session, session)
+            if why:
                 log.warning("relay refused: %s", why)
                 await _answer(stream, False, why)
                 return
+            if self.session is not None:
+                if session.get("CLAUDE_CODE_SESSION_ID") != self.session.get("CLAUDE_CODE_SESSION_ID"):
+                    log.info("relay: a new Claude session id in the same project directory "
+                             "(/clear or a reconnect); served as the same agent")
+                if session.get("MM_WORKSPACE") and not self.session.get("MM_WORKSPACE"):
+                    log.info("relay: names MM_WORKSPACE, the first did not (a plugin update); taken")
+                    self.session = {**self.session, "MM_WORKSPACE": session["MM_WORKSPACE"]}
             if self.active:
                 why = (f"another relay is connected ({self._holder}): the host serves one per session, "
                        "so another process of this session holds it (RT-6.18 step 6)")
@@ -832,7 +869,8 @@ def _daemon(args: argparse.Namespace, key: str) -> int:
     # Read once into the client; nothing else in this process needs it.
     for name in _TOKEN_ENV:
         os.environ.pop(name, None)
-    serve_host(Host(key, client=client), ready_file=args.ready_file, key=key, watch=watch)
+    host = Host(key, client=client, workdir=os.environ.get("CORRAL_WORKDIR", "").strip() or None)
+    serve_host(host, ready_file=args.ready_file, key=key, watch=watch)
     return 0
 
 

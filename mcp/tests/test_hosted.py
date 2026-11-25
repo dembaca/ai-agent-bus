@@ -198,16 +198,16 @@ FIRST = {"CLAUDE_CODE_SESSION_ID": "s1", "CLAUDE_PROJECT_DIR": "/p", "MM_WORKSPA
          "cwd": "/p", "MM_CHANNEL_PUSH": "0"}
 
 
-async def _refused_after_first(tmp_path, other: dict) -> tuple[hosted.Host, list, str]:
-    """A first relay with FIRST, closed; then one with `other`: its answer."""
+async def _refused_after_first(tmp_path, other: dict, first: dict = FIRST) -> tuple[hosted.Host, list, str]:
+    """A first relay with `first`, closed; then one with `other`: its answer."""
     applied: list = []
     host = hosted.Host(KEY, serve=_echo, apply=applied.append)
     answers: list = []
 
     async def body(ready):
-        first, answer = await _hello(ready["port"], session=FIRST)
+        conn, answer = await _hello(ready["port"], session=first)
         assert answer == {"ok": True}
-        await first.stream.aclose()
+        await conn.stream.aclose()
         with anyio.fail_after(5):
             while host.active:
                 await anyio.sleep(0.01)
@@ -229,7 +229,8 @@ async def test_a_relay_of_the_same_agent_is_served(tmp_path):
 
 
 @pytest.mark.parametrize("other, keys", [
-    ({**FIRST, "CLAUDE_CODE_SESSION_ID": "s2"}, "CLAUDE_CODE_SESSION_ID"),
+    ({**FIRST, "CLAUDE_CODE_SESSION_ID": "s2", "CLAUDE_PROJECT_DIR": "/p/q"},
+     "CLAUDE_CODE_SESSION_ID, CLAUDE_PROJECT_DIR"),
     ({**FIRST, "MM_WORKSPACE": "/q"}, "MM_WORKSPACE"),
     ({k: v for k, v in FIRST.items() if k != "MM_WORKSPACE"}, "MM_WORKSPACE"),
     ({**FIRST, "CLAUDE_PROJECT_DIR": "/q", "MM_WORKSPACE": "/q"}, "CLAUDE_PROJECT_DIR, MM_WORKSPACE"),
@@ -244,6 +245,7 @@ async def test_a_relay_of_another_agent_is_refused(tmp_path, other, keys):
         f"this relay's session values differ from the first relay's ({keys}): "
         "the host serves one agent with one bot")
     assert "RT-6.18 step 6" in answer["error"]
+    assert answer["error"].endswith("Run each agent in its own corral session")
     assert "s2" not in answer["error"] and "/q" not in answer["error"]
     assert host.served == 1 and applied == [FIRST] and host.session == FIRST
 
@@ -255,12 +257,96 @@ async def test_another_agents_relay_is_refused_while_the_first_is_connected(tmp_
     async def body(ready):
         first, answer = await _hello(ready["port"], session=FIRST)
         assert answer["ok"]
-        second, answer = await _hello(ready["port"], session={**FIRST, "CLAUDE_CODE_SESSION_ID": "s2"})
+        second, answer = await _hello(ready["port"], session={**FIRST, "MM_WORKSPACE": "/q"})
         assert answer["ok"] is False and answer["error"].startswith("this relay's session values differ")
         await first.stream.aclose()
         await second.stream.aclose()
 
     await _with_host(host, tmp_path, body, with_services=False)
+
+
+async def test_a_new_session_id_in_the_same_project_replaces_the_gone_relay(tmp_path):
+    """RT-6.18 step 6 (#119): after /clear or an MCP reconnect Claude Code may
+    name a new session id; in the same named project directory, with the old
+    relay gone, it is the same agent and served."""
+    host, applied, answer = await _refused_after_first(tmp_path, {**FIRST, "CLAUDE_CODE_SESSION_ID": "s2"})
+    assert answer == {"ok": True} and host.served == 2 and applied == [FIRST]
+
+
+async def test_a_concurrent_relay_with_a_new_session_id_is_refused(tmp_path):
+    """RT-6.18 step 6 (#119): the same project directory with another session id
+    is only a replacement; while the first relay is connected it is refused."""
+    host = hosted.Host(KEY, serve=_echo, apply=lambda v: None)
+
+    async def body(ready):
+        first, answer = await _hello(ready["port"], session=FIRST)
+        assert answer["ok"]
+        second, answer = await _hello(ready["port"], session={**FIRST, "CLAUDE_CODE_SESSION_ID": "s2"})
+        assert answer["ok"] is False and answer["error"].startswith("another relay is connected")
+        await first.stream.aclose()
+        await second.stream.aclose()
+
+    await _with_host(host, tmp_path, body, with_services=False)
+    assert host.served == 1
+
+
+@pytest.mark.parametrize("first, other", [
+    ({"CLAUDE_CODE_SESSION_ID": "s1", "MM_WORKSPACE": "/p"}, {"CLAUDE_CODE_SESSION_ID": "s2", "MM_WORKSPACE": "/p"}),
+    ({"CLAUDE_CODE_SESSION_ID": "s1", "cwd": "/p"}, {"CLAUDE_CODE_SESSION_ID": "s2", "cwd": "/p"}),
+])
+async def test_a_new_session_id_without_a_project_directory_is_refused(tmp_path, first, other):
+    """RT-6.18 step 6 (#119): a new session id is taken only with the same,
+    named CLAUDE_PROJECT_DIR; without one it names another agent."""
+    host, _, answer = await _refused_after_first(tmp_path, other, first)
+    assert answer["ok"] is False and "(CLAUDE_CODE_SESSION_ID)" in answer["error"]
+
+
+async def test_known_gap_same_workspace_without_session_id_is_served(tmp_path):
+    """RT-6.18 error table, known gap (#119): two OpenCode sessions in one
+    directory send no session id and the same MM_WORKSPACE, so the host cannot
+    tell them apart and serves the second. Step 2 of #119 closes this in the
+    OpenCode plugin; this test pins today's behaviour until then."""
+    same = {"MM_WORKSPACE": "/p", "cwd": "/p", "MM_CHANNEL_PUSH": "0"}
+    host, _, answer = await _refused_after_first(tmp_path, dict(same), same)
+    assert answer == {"ok": True} and host.served == 2
+
+
+async def test_a_workspace_named_after_a_plugin_update_is_taken(tmp_path):
+    """RT-6.18 step 6 (#119): a first relay of an older plugin sent no
+    MM_WORKSPACE; a later one that names it is served and its workspace taken,
+    so a relay naming another one after it is refused."""
+    old = {"CLAUDE_CODE_SESSION_ID": "s1", "cwd": "/p", "MM_CHANNEL_PUSH": "0"}
+    host, _, answer = await _refused_after_first(tmp_path, {**old, "MM_WORKSPACE": "/p"}, old)
+    assert answer == {"ok": True}
+    assert host.session == {**old, "MM_WORKSPACE": "/p"}
+    assert hosted.identity_mismatch(host.session, {**old, "MM_WORKSPACE": "/q"})
+    assert hosted.identity_mismatch(host.session, old)  # dropping it again is refused
+
+
+async def test_the_first_relay_is_held_to_the_corral_workdir(tmp_path):
+    """RT-6.18 step 6 (#119): the host knows the corral workdir from preStart;
+    a relay naming a directory outside it is refused even when it comes first,
+    and the right one is served after it."""
+    applied: list = []
+    host = hosted.Host(KEY, serve=_echo, apply=applied.append, workdir="/work/a")
+
+    async def body(ready):
+        for wrong in ({"MM_WORKSPACE": "/work/ab"}, {"CLAUDE_PROJECT_DIR": "/work/b", "cwd": "/work/a"},
+                      {"MM_WORKSPACE": "/work/a/../b"}):
+            conn, answer = await _hello(ready["port"], session={"CLAUDE_CODE_SESSION_ID": "x", **wrong})
+            assert answer["ok"] is False
+            assert "lies outside this corral session's workdir" in answer["error"]
+            assert "/work" not in answer["error"]
+            await conn.stream.aclose()
+        right = {"CLAUDE_CODE_SESSION_ID": "s1", "CLAUDE_PROJECT_DIR": "/work/a",
+                 "MM_WORKSPACE": "/work/a/sub/"}
+        conn, answer = await _hello(ready["port"], session=right)
+        assert answer == {"ok": True}
+        await conn.stream.aclose()
+
+    await _with_host(host, tmp_path, body, with_services=False)
+    assert host.served == 1 and applied[0]["CLAUDE_PROJECT_DIR"] == "/work/a"
+    assert hosted.outside_workdir({"MM_WORKSPACE": "/anywhere"}, None) == ""
 
 
 def test_identity_uses_the_working_directory_only_without_a_named_one():
