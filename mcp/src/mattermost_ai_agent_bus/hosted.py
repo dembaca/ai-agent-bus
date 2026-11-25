@@ -20,7 +20,7 @@ A relay opens with one handshake line, ``{"key": …, "session": {…}, "pid": �
 "ppid": …}``; its process ids only name the relay that holds the one slot in
 the refusal of a second (RT-6.18 step 6). The
 session values are names only (NAMING): the Claude Code session id, project
-directory and working directory, the channel flag, CLAUDECODE. They are
+directory, MM_WORKSPACE and working directory, the channel flag, CLAUDECODE. They are
 checked for type and length and never opened, resolved or entered on the host;
 HOME, XDG_STATE_HOME and anything else the relay sends are ignored. The host
 answers ``{"ok": true}`` or ``{"ok": false, "error": …}``. A closed relay
@@ -50,7 +50,7 @@ import socket
 import sys
 import threading
 import time
-from collections.abc import AsyncIterator, Awaitable, Callable, Mapping, MutableMapping
+from collections.abc import AsyncIterator, Awaitable, Callable, Mapping, MutableMapping, Sequence
 from contextlib import AsyncExitStack, asynccontextmanager, suppress
 from pathlib import Path
 from typing import TYPE_CHECKING, Any
@@ -96,9 +96,13 @@ _HARNESS = re.compile(r"[a-z0-9][a-z0-9._-]{0,31}")
 _no_relay_since: float | None = None
 
 # What a relay may tell the host: names only, with their longest length.
-NAMING = {"CLAUDE_CODE_SESSION_ID": 256, "CLAUDE_PROJECT_DIR": 4096, "cwd": 4096,
-          "MM_CHANNEL_PUSH": 1, "CLAUDECODE": 16}
-_NAMING_PATHS = ("CLAUDE_PROJECT_DIR", "cwd")
+NAMING = {"CLAUDE_CODE_SESSION_ID": 256, "CLAUDE_PROJECT_DIR": 4096, "MM_WORKSPACE": 4096,
+          "cwd": 4096, "MM_CHANNEL_PUSH": 1, "CLAUDECODE": 16}
+_NAMING_PATHS = ("CLAUDE_PROJECT_DIR", "MM_WORKSPACE", "cwd")
+# The session values that say which agent a relay speaks for (RT-6.18 step 6):
+# a relay that differs from the first one in these is refused. The working
+# directory counts only when neither directory is named.
+_IDENTITY = ("CLAUDE_CODE_SESSION_ID", "CLAUDE_PROJECT_DIR", "MM_WORKSPACE")
 
 # What preStart may hand the host process on stdin besides the key: the bus
 # settings (MM_*, MATTERMOST_*), the corral session's names and the network
@@ -162,7 +166,7 @@ def session_values(environ: Mapping[str, str], cwd: str | None = None) -> dict[s
     """What the relay tells the host about this session: names only (NAMING)."""
     from . import channel
 
-    out = {k: environ[k] for k in ("CLAUDE_CODE_SESSION_ID", "CLAUDE_PROJECT_DIR", "CLAUDECODE")
+    out = {k: environ[k] for k in ("CLAUDE_CODE_SESSION_ID", "CLAUDE_PROJECT_DIR", "MM_WORKSPACE", "CLAUDECODE")
            if environ.get(k)}
     # Claude Code is among the relay's ancestors, not the host's (RT-6.12).
     out["MM_CHANNEL_PUSH"] = "1" if channel.enabled() else "0"
@@ -463,6 +467,64 @@ def relay_holder(hello: Mapping[str, Any], since: float) -> str:
 
 
 
+def identity(values: Mapping[str, str]) -> dict[str, str]:
+    """The session values that name the agent a relay speaks for (RT-6.18
+    step 6): the session id and the named directories, the working directory
+    only when no directory is named. Directories as names, normalised."""
+    out = {k: values[k] for k in _IDENTITY if values.get(k)}
+    if "CLAUDE_PROJECT_DIR" not in out and "MM_WORKSPACE" not in out and values.get("cwd"):
+        out["cwd"] = values["cwd"]
+    return {k: v if k == "CLAUDE_CODE_SESSION_ID" else os.path.normpath(v) for k, v in out.items()}
+
+
+_ONE_AGENT = ("the host serves one agent with one bot, so another session's relay would post "
+              "and answer as this bot (RT-6.18 step 6). Run each agent in its own corral session")
+
+
+def identity_mismatch(first: Mapping[str, str], other: Mapping[str, str]) -> str:
+    """Why a relay is refused for another agent's session values, or "" when
+    it speaks for the same one (RT-6.18 step 6). Names the differing keys,
+    never their values: the session id is the sandbox's, not for the log.
+
+    A new session id in the same, named project directory is the same agent
+    (``/clear``, an MCP reconnect). An MM_WORKSPACE the first relay did not
+    send is taken (a plugin updated mid-session); the caller adopts it."""
+    if not first.get("MM_WORKSPACE"):
+        other = {k: v for k, v in other.items() if k != "MM_WORKSPACE"}
+    a, b = identity(first), identity(other)
+    keys = {k for k in a.keys() | b.keys() if a.get(k) != b.get(k)}
+    if a.get("CLAUDE_PROJECT_DIR") and a.get("CLAUDE_PROJECT_DIR") == b.get("CLAUDE_PROJECT_DIR"):
+        keys.discard("CLAUDE_CODE_SESSION_ID")
+    if not keys:
+        return ""
+    return f"this relay's session values differ from the first relay's ({', '.join(sorted(keys))}): {_ONE_AGENT}"
+
+
+def workdir_roots(workdir: str) -> tuple[str, ...]:
+    """The corral workdir as the host knows it (from preStart, trusted), and
+    resolved, so a sandbox that sees it by its real path is served too. Only
+    this host value is resolved, never a relay's (RT-6.18 step 6)."""
+    workdir = workdir.strip()
+    if not workdir:
+        return ()
+    return tuple(dict.fromkeys((os.path.normpath(workdir), os.path.realpath(workdir))))
+
+
+def outside_workdir(values: Mapping[str, str], workdirs: Sequence[str]) -> str:
+    """Why a relay is refused for naming a directory outside the corral
+    session's workdir, or "" (RT-6.18 step 6). The workdir comes from
+    preStart, on the host; the relay's directories from the sandbox, so even
+    the first relay is held to it. Compared as names, by path components."""
+    if not workdirs:
+        return ""
+    roots = [Path(os.path.normpath(w)).parts for w in workdirs]
+    keys = [k for k in ("CLAUDE_PROJECT_DIR", "MM_WORKSPACE")
+            if values.get(k) and not any(Path(os.path.normpath(values[k])).parts[:len(r)] == r for r in roots)]
+    if not keys:
+        return ""
+    return f"this relay's {', '.join(keys)} lies outside this corral session's workdir: {_ONE_AGENT}"
+
+
 async def _answer(stream: Any, ok: bool, error: str = "") -> None:
     body: dict[str, Any] = {"ok": True} if ok else {"ok": False, "error": error}
     with suppress(anyio.BrokenResourceError, anyio.ClosedResourceError, OSError):
@@ -472,11 +534,14 @@ async def _answer(stream: Any, ok: bool, error: str = "") -> None:
 class Host:
     """Takes relay connections: each after a handshake with the session key,
     one at a time. The server is loaded on the first one, after its session
-    values are applied; later ones keep those."""
+    values are applied; later ones must speak for the same agent (session id
+    and directories, RT-6.18 step 6) and keep those."""
 
     def __init__(self, key: str, *, client: BusClient | None = None, serve: Serve | None = None,
-                 apply: Callable[[Mapping[str, str]], None] = apply_session) -> None:
+                 apply: Callable[[Mapping[str, str]], None] = apply_session,
+                 workdirs: Sequence[str] = ()) -> None:
         self._key = key.encode()
+        self._workdirs = tuple(workdirs)
         self._serve = serve
         self._apply = apply
         self.client = client
@@ -492,10 +557,28 @@ class Host:
             self.session = session
             note_claude_session(session)
         elif session != self.session:
-            log.info("relay: its session values differ from the first relay's; the first stay")
+            # Same agent (handle refused any other, RT-6.18 step 6): the channel
+            # flag or working directory may differ; the first relay's stay.
+            log.info("relay: its channel flag or working directory differ from the first relay's; the first stay")
         if self._serve is None:
             self._serve = _load_server(self.client)
         return self._serve
+
+    def _replace(self, session: Mapping[str, str]) -> None:
+        """A later relay of the same agent (RT-6.18 step 6): a new Claude
+        session id (``/clear``, a reconnect) is noted for postEnd, so
+        ``claude --resume <new id>`` keeps the bot; an MM_WORKSPACE the first
+        relay did not send (a plugin update) is taken. Names are not applied again."""
+        assert self.session is not None
+        sid = session.get("CLAUDE_CODE_SESSION_ID", "")
+        if sid and sid != self.session.get("CLAUDE_CODE_SESSION_ID"):
+            log.info("relay: a new Claude session id in the same project directory "
+                     "(/clear or a reconnect); served as the same agent")
+            self.session = {**self.session, "CLAUDE_CODE_SESSION_ID": sid}
+            note_claude_session(self.session)
+        if session.get("MM_WORKSPACE") and not self.session.get("MM_WORKSPACE"):
+            log.info("relay: names MM_WORKSPACE, the first did not (a plugin update); taken")
+            self.session = {**self.session, "MM_WORKSPACE": session["MM_WORKSPACE"]}
 
     async def handle(self, stream: Any) -> None:
         if self._pending >= MAX_PENDING:
@@ -525,12 +608,24 @@ class Host:
                 log.warning("relay refused: %s", exc)
                 await _answer(stream, False, str(exc))
                 return
+            # One bot speaks for one agent (#119, RT-6.18 step 6): never another
+            # session's relay, the first one included.
+            why = outside_workdir(session, self._workdirs)
+            if not why and self.session is not None:
+                why = identity_mismatch(self.session, session)
+            if why:
+                log.warning("relay refused: %s", why)
+                await _answer(stream, False, why)
+                return
             if self.active:
                 why = (f"another relay is connected ({self._holder}): the host serves one per session, "
                        "so another process of this session holds it (RT-6.18 step 6)")
                 log.warning("relay refused: %s", why)
                 await _answer(stream, False, why)
                 return
+            if self.session is not None:
+                # Only a relay that got the slot changes what the host holds.
+                self._replace(session)
             self.active = True
             self._holder = relay_holder(hello, time.time())
             try:
@@ -796,7 +891,8 @@ def _daemon(args: argparse.Namespace, key: str) -> int:
     # Read once into the client; nothing else in this process needs it.
     for name in _TOKEN_ENV:
         os.environ.pop(name, None)
-    serve_host(Host(key, client=client), ready_file=args.ready_file, key=key, watch=watch)
+    host = Host(key, client=client, workdirs=workdir_roots(os.environ.get("CORRAL_WORKDIR", "")))
+    serve_host(host, ready_file=args.ready_file, key=key, watch=watch)
     return 0
 
 
