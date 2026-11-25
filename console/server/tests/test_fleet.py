@@ -56,7 +56,7 @@ def test_presence_and_freshness_by_the_servers_clock() -> None:
                   "PRESENCE", "console")
     assert f.state_of("agent-a") == "offline"
     assert f.state_of("agent-b") == "online"
-    assert f.server_now == 1090.0
+    assert abs(f.server_now - 1090.0) < 0.05
 
 
 def test_bye_is_offline_and_cards_mark_unknown() -> None:
@@ -126,3 +126,156 @@ def test_attested_owner_names_the_agent() -> None:
     feed(f, (s_att2, d_att2, ack("PRESENCE", "console", 3, 3, 1002.0)))
     (card,) = f.cards()
     assert card["for"] == "dembaca"
+
+
+def test_a_silent_stream_ages_the_lone_agent_out() -> None:
+    """#108's bug: with no further deliveries the console's clock stood
+    still, so a killed lone agent stayed online with its crown. The
+    wall-clock floor ages presence past PRESENCE_FRESH_SEC on its own:
+    offline, and the crown drops with it."""
+    f = Fleet()
+    subject, data = presence("lone-agent", "dembaca", "online")
+    feed(f, (subject, data, ack("PRESENCE", "console", 1, 1, 1000.0)))
+    feed(f, ("presence.member.dev.lone-agent", b'{"v": 1}',
+              ack("PRESENCE", "console", 2, 2, 1001.0)))
+    feed(f, ("presence.crown.dev.lone-agent", b'{"v": 1}',
+              ack("PRESENCE", "console", 3, 3, 1002.0)))
+    assert f.state_of("lone-agent") == "online"
+    assert f.holder_of("dev") == "lone-agent"
+
+    # the stream goes silent, and only the monotonic clock moves:
+    # backdate the monotonic stamp so the floor sits far past the
+    # freshness window (the test does not really wait 90 s)
+    staged = f.last_server_now_wall
+    assert staged is not None
+    f.last_server_now_wall = (staged[0], staged[1] - 10000)
+    assert f.state_of("lone-agent") == "offline"
+    assert f.holder_of("dev") is None
+    (card,) = f.cards()
+    assert card["state"] == "offline" and card["crown"] is False
+
+    # Fable's point: a jump of the host's wall clock changes nothing —
+    # the floor counts monotonic time only; the agent stays offline (no
+    # revival through a backwards jump) and an online one before the
+    # window is what the next delivery says, not the wall
+    fresh = Fleet()
+    subject, data = presence("alive-agent", "dembaca", "online")
+    feed(fresh, (subject, data, ack("PRESENCE", "console", 1, 1, 1000.0)))
+    # a monotonic stamp just taken: the floor is the raw stamp, so the
+    # agent is fresh no matter what happens to the wall
+    assert fresh.state_of("alive-agent") == "online"
+    assert abs(fresh.server_now - 1000.0) < 0.05
+
+
+def test_a_replay_of_old_stamps_does_not_revive_the_aged() -> None:
+    """Fable's replay probe: silence ages the lone agent out, and the
+    reconnect's replay re-delivers the same old stamps — the floor must
+    not re-anchor on them (the crown stays gone, the agent offline)."""
+    f = Fleet()
+    subject, data = presence("lone-agent", "dembaca", "online")
+    feed(f, (subject, data, ack("PRESENCE", "console", 1, 1, 1000.0)))
+    feed(f, ("presence.member.dev.lone-agent", b'{"v": 1}',
+              ack("PRESENCE", "console", 2, 2, 1001.0)))
+    feed(f, ("presence.crown.dev.lone-agent", b'{"v": 1}',
+              ack("PRESENCE", "console", 3, 3, 1002.0)))
+    # silence ages it out (the monotonic backdate of the other test)
+    staged = f.last_server_now_wall
+    f.last_server_now_wall = (staged[0], staged[1] - 10000)
+    assert f.state_of("lone-agent") == "offline"
+    assert f.holder_of("dev") is None
+    # the replay after the reconnect: a NEW consumer re-delivers the last
+    # message per subject (higher consumer sequence, the same old stamps)
+    # — the floor must not re-anchor on the old stamp, and the lone agent
+    # stays offline; the consumer-made-anew reset forgets the claims, so
+    # the crown is gone for either reason, both honest
+    for i, (sub, dat, ts) in enumerate((
+            (subject, data, 1000.0),
+            ("presence.member.dev.lone-agent", b'{"v": 1}', 1001.0),
+            ("presence.crown.dev.lone-agent", b'{"v": 1}', 1002.0))):
+        f.on_delivery(sub, dat, ack("PRESENCE", "console", 10 + i, 20 + i, ts),
+                      "PRESENCE", "console")
+    assert f.state_of("lone-agent") == "offline"
+    assert f.holder_of("dev") is None  # offline, and the claim re-delivered is older
+    # a genuinely newer heartbeat re-anchors presence — and a genuinely
+    # newer crown claim with it revives the crown (fresh claim on record)
+    assert f.on_delivery(subject, data,
+                         ack("PRESENCE", "console", 14, 24, 11000.0),
+                         "PRESENCE", "console")
+    assert f.state_of("lone-agent") == "online"
+    assert f.on_delivery("presence.crown.dev.lone-agent", b'{"v": 1}',
+                          ack("PRESENCE", "console", 15, 25, 11001.0),
+                          "PRESENCE", "console")
+    assert f.holder_of("dev") == "lone-agent"
+
+
+def test_a_wall_clock_step_moves_nothing(monkeypatch) -> None:
+    """Fable's pin: the floor counts monotonic time — swap the two
+    `time.monotonic()` calls for `time.time()` (the mutants) and this is
+    the test that goes red: a wall step of +3600 s via a patched
+    `time.time` must not age a fresh agent out, and a step back must not
+    revive an aged one."""
+    import time as _time
+    import console_server.fleet as fleet_mod
+
+    fresh = Fleet()
+    subject, data = presence("fresh-agent", "dembaca", "online")
+    feed(fresh, (subject, data, ack("PRESENCE", "console", 1, 1, 1000.0)))
+    staged = fresh.last_server_now_wall
+    real_mono = _time.monotonic()
+
+    # the floor reads time.monotonic (fleet source): patch time.time's
+    # step away — the agent stays fresh
+    monkeypatch.setattr(fleet_mod.time, "time", lambda: _time.time() + 3600.0)
+    assert fresh.state_of("fresh-agent") == "online"  # +1 h of wall: nothing
+
+    # the mutant's face: a backdated wall must not revive the aged
+    aged = Fleet()
+    feed(aged, (presence("aged-agent", "dembaca", "online")[0],
+                presence("aged-agent", "dembaca", "online")[1],
+                ack("PRESENCE", "console", 1, 1, 1000.0)))
+    staged = aged.last_server_now_wall
+    aged.last_server_now_wall = (staged[0], real_mono - 10000)
+    monkeypatch.setattr(fleet_mod.time, "time", lambda: _time.time() - 3600.0)
+    assert aged.state_of("aged-agent") == "offline"  # -1 h of wall: nothing
+
+    monkeypatch.undo()
+    # and the true face for comparison: monotonic elapsed does age it
+    assert aged.state_of("aged-agent") == "offline"
+
+
+def test_the_attestation_expires_by_the_floored_clock() -> None:
+    """The attestation's expiry reads the floored clock too: silent
+    aging expires it (the card falls back to the presence owner), and a
+    fresh delivery keeps it."""
+    f = Fleet()
+    s_b, d_b = presence("b", "dembaca", "online")
+    feed(f, (s_b, d_b, ack("PRESENCE", "console", 1, 1, 1000.0)))
+    s_att, d_att = atestation("b", "somebody-else", [], exp=1010.0)
+    feed(f, (s_att, d_att, ack("PRESENCE", "console", 2, 2, 1001.0)))
+    (card,) = f.cards()
+    assert card["for"] == "somebody-else"
+    # silence past the attestation's exp: the floored clock expires it
+    staged = f.last_server_now_wall
+    f.last_server_now_wall = (staged[0], staged[1] - 10000)
+    (card,) = f.cards()
+    assert card["for"] == "dembaca"  # fell back to the presence owner
+    graph = f.graph()
+    b_node = next(n for n in graph["nodes"] if n["id"] == "b")
+    assert "crown" not in b_node or b_node.get("crown") is False
+    # the graph carries the attestation's owner while it is live: before
+    # the aging, the edge from b to somebody-else exists; after, only the
+    # presence owner's remains
+    expired_edges = {e["to"] for e in graph["edges"]
+                     if e["from"] == "b" and e["kind"] == "trusts"}
+    assert "somebody-else" not in expired_edges
+    # the pre-expiry form: a fresh fleet's graph has the attested owner
+    g2 = Fleet()
+    feed(g2, (presence("c", "dembaca", "online")[0],
+              presence("c", "dembaca", "online")[1],
+              ack("PRESENCE", "console", 1, 1, 1000.0)))
+    feed(g2, (atestation("c", "somebody-else", [], exp=99000.0)[0],
+              atestation("c", "somebody-else", [], exp=99000.0)[1],
+              ack("PRESENCE", "console", 2, 2, 1001.0)))
+    live_edges = {e["to"] for e in g2.graph()["edges"]
+                  if e["from"] == "c" and e["kind"] == "trusts"}
+    assert "somebody-else" in live_edges

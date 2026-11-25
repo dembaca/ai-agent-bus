@@ -46,6 +46,10 @@ class Fleet:
     _attests: dict[str, tuple[int, float, Attestation]] = field(default_factory=dict)
     _presence_cseq: int = 0
     _server_now: float = 0.0
+    # the clocks beside each server stamp: (server time, monotonic time)
+    # — the floor's elapsed time is monotonic, so a jump of the host's
+    # wall clock neither revives dead agents nor kills live ones
+    last_server_now_wall: tuple[float, float] | None = None
     synced: bool = False
     # monotonic stamps, or None before the first: the last jetstream
     # replay seen (a delivery with pending 0, or a consumer that answered
@@ -57,8 +61,21 @@ class Fleet:
     @property
     def server_now(self) -> float:
         """The newest server timestamp this console has seen (never its own
-        clock, which may be wrong — as NatsBus, every age is by this)."""
-        return self._server_now
+        clock, which may be wrong — as NatsBus, every age is by this).
+
+        The wall-clock floor (#108): with no deliveries at all — a killed
+        lone agent, a silent stream — `server_now` would stand still and
+        the dead stay "online" forever. The floor is the **monotonic**
+        clock's distance since the newest delivery, added to that
+        delivery's server time, and never below the raw stamp: a jump of
+        the host's wall clock changes nothing (the elapsed time is
+        monotonic), and the floor is only wrong by the drift of the two
+        clocks since the last delivery — bounded by the delivery gap."""
+        import time
+        if self.last_server_now_wall is None:
+            return self._server_now
+        at, mono = self.last_server_now_wall
+        return max(self._server_now, at + (time.monotonic() - mono))
 
     def on_delivery(self, subject: str, data: bytes, reply: str | None,
                     stream: str, consumer: str) -> bool:
@@ -136,9 +153,17 @@ class Fleet:
 
     def _see(self, at: float) -> None:
         """The newest server timestamp this console has seen; prunes like
-        NatsBus: nothing older than the stream's 24 h max age stays."""
-        self._server_now = max(self._server_now, at)
-        edge = self._server_now - natsbus.MAX_AGE_SEC
+        NatsBus: nothing older than the stream's 24 h max age stays.
+
+        The floor re-anchors only when a delivery's stamp is genuinely
+        newer: a replay after a reconnect re-delivers the same old stamps,
+        and re-anchoring on them would revive a presence that the silent
+        window had already aged out (Fable's replay probe)."""
+        if at > self._server_now:
+            self._server_now = at
+            import time
+            self.last_server_now_wall = (self._server_now, time.monotonic())
+        edge = self.server_now - natsbus.MAX_AGE_SEC
         for agent, (at_p, _s) in list(self._presence.items()):
             if at_p < edge:
                 del self._presence[agent]
@@ -160,7 +185,7 @@ class Fleet:
         (ADR-015 point 5: the columns until presence carries them)."""
         seen = self._presence.get(agent)
         if (seen is None or seen[1] == "bye"
-                or self._server_now - seen[0] >= natsbus.PRESENCE_FRESH_SEC):
+                or self.server_now - seen[0] >= natsbus.PRESENCE_FRESH_SEC):
             return "offline"
         return seen[1]
 
@@ -168,7 +193,7 @@ class Fleet:
         """The crown of a channel, by the NATS rule (RT-6.38): the lowest
         fresh claim in claim order, a member of the channel."""
         claims = self._claims.get(channel, {})
-        return natsbus.crown_holder(claims, self._presence, self._server_now,
+        return natsbus.crown_holder(claims, self._presence, self.server_now,
                                     at=self.claim_times(channel)) or None
 
     def claim_times(self, channel: str) -> dict[str, float]:
@@ -202,7 +227,7 @@ class Fleet:
                 crowns[holder] = channel
         for agent in self.agents():
             att = self._attests.get(agent)
-            record = att[2] if att and att[2].exp > self._server_now else None
+            record = att[2] if att and att[2].exp > self.server_now else None
             channels = sorted(ch for ch in self._members if agent in self._members[ch])
             presence = self._presence.get(agent, (0.0, "offline"))
             out.append({
@@ -250,7 +275,7 @@ class Fleet:
         people: dict[str, None] = {}
         for agent in self.agents():
             att = self._attests.get(agent)
-            record = att[2] if att and att[2].exp > self._server_now else None
+            record = att[2] if att and att[2].exp > self.server_now else None
             owner = record.owner_name if record else self._owners.get(agent, "")
             if owner:
                 people.setdefault(owner, None)

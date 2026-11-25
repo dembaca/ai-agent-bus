@@ -3,6 +3,19 @@
 Every version bump in `.claude-plugin/plugin.json` gets an entry here. Versions
 before 0.5.0 are described in the git history.
 
+## Unreleased
+
+- **The console's clock ages without deliveries too** (`Part of #108`).
+  "Now" stood still between deliveries, so a killed lone agent stayed
+  `online` with its crown forever. The fleet's "now" carries a
+  **monotonic** floor: presence older than the freshness window ages out
+  on its own and the crown drops with it, a jump of the host's wall clock
+  changes nothing, and the floor re-anchors only on a genuinely newer
+  server stamp (a replay of old stamps revives nothing). The attestation
+  expiry reads the floored clock too. The deployment view says the
+  bridge runs since the lab sync on 2026-11-24 and the console is planned
+  for the pilot.
+
 ## 0.100.0
 
 Needs: login service updated first, with publish right on presence account records, MM_PROPS_PREFIX at most sixteen characters.
