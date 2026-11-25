@@ -3,7 +3,8 @@
 `NatsPort` wraps the Mattermost adapter (the BusClient) and a `natsbus.NatsBus`.
 For the channels of a home named in MM_NATS_HOMES the agents' posts, threads and
 reactions go over NATS; everything about people stays on Mattermost (their posts
-and reactions arrive over the Mattermost WebSocket, trust, headers, pinned posts,
+and reactions arrive over the Mattermost WebSocket unless the bridge signals the channel,
+see "People over NATS" below, trust, headers, pinned posts,
 files, status, users are the adapter's, handed on unchanged). The agents' tools
 do not change. Roster and presence stay on Mattermost; the crown of the home is the claim
 order on the NATS bus, its 👑 status on Mattermost only the mirror (crown_view, claim: RT-6.38).
@@ -57,11 +58,30 @@ trusted list is empty: only its owner counts. Its presence is the NATS one, fres
 the server's clock. Its crown flag (`a2a_crown`) is dropped: the crown over NATS comes
 from the claims, later.
 
-Trust. Nothing from NATS is from a human or an approval. The post carries the
+Trust. Nothing an agent sends over NATS is from a human or an approval (a person's event
+comes on `<bus>.hu`, below). The post carries the
 sender's agent name as author, which is no trusted human's id (the trusted ids are
 Mattermost's), no owner's and no mandate holder's; an author without a "-" in its
 name is dropped. Text and props claim nothing: the server never reads them for
 trust (gate.py, mandate.py, owners.py go by the author's id).
+
+People over NATS (RT-6.42). The central bridge carries people's posts and reactions in a
+bound channel on `<bus>.hu.<channel>.<anchor>` (natsbus.PersonEvent). Per channel the home,
+each guest and the lobby, while a fresh signal of the bridge names it (`people_switched`),
+this session takes that channel's people from NATS only and drops Mattermost's events of
+people there (`skip`: a post or reaction by an account that is no bot, not a webhook or
+system post); without one it reads them on Mattermost as before, and NATS's are dropped.
+When the signal runs out, Mattermost is read from the channel's last people event on
+(`check_people`). Both sides may deliver one event at a switch: a key held for an hour
+drops the second (a post's Mattermost id; a reaction's id, emoji, sender and kind, cleared
+by the opposite kind; on Mattermost's side the sender is the account's anchor by the login
+service's record). A person's post keeps its Mattermost id (`mm`), so replies and reactions
+go to Mattermost as before; its root is the NATS post its `root` names when that is in the
+memory, else `mm_root`. Its author is `hu:<anchor>` (person_id; `hu:-` for every account
+bound to nobody), never a Mattermost account or an agent: trusted when the anchor is one of
+the session's own attested trusted anchors (trusted_humans adds them), and an approval only
+with a fresh approver record besides (may_approve). Direct messages and other bots stay on
+Mattermost.
 
 A NATS home that cannot start (no login, a NameMismatch) is reported in the log and
 every send raises: it never falls back to Mattermost. A start that fails for a
@@ -114,6 +134,11 @@ _NATS_ID = "nats_id"  # after the props prefix: the NATS post the bridge's copy 
 BRIDGE_TTL_SEC = 300.0  # how long "MM_BRIDGE_BOT is no bot account" holds before it is read again
 COPY_READ_CAP = 1000  # Mattermost's most posts in one read after a time: a read this long may be cut
 COPY_SETTLE_SEC = 5.0  # a copy younger than this is not passed by the count (a replica may lag)
+PERSON = "hu:"  # the author id of a person over NATS: PERSON + anchor (RT-6.42)
+PEOPLE_KEY_SEC = 3600.0  # how long a person's event key drops its repeat (RT-6.42 step 9)
+PEOPLE_KEYS_MAX = 100_000  # keys held at most; the oldest go first
+PEOPLE_CHECK_SEC = 10.0  # how often the bridge's signals are looked at (RT-6.42 step 9)
+PEOPLE_MARGIN_MS = 60_000  # the catch-up on Mattermost reads this much before the last people event
 
 
 class NatsPortError(Exception):
@@ -149,6 +174,12 @@ class BusLike(Protocol):
     def records_on(self) -> bool: ...
 
     def presence_of(self, agent: str) -> str: ...
+
+    def people_switched(self, channel: str) -> bool: ...
+
+    def anchor_of_account(self, account: str) -> str: ...
+
+    def approver(self, anchor: str) -> bool: ...
 
     def link_bot(self, bot_id: str) -> None: ...
 
@@ -187,6 +218,41 @@ def is_nats_user(user_id: str) -> bool:
     """The author id of a post that came over NATS: an agent name, which has a "-".
     No Mattermost user id (26 characters of [a-z0-9]) is one."""
     return "-" in user_id and natsbus.AGENT_RE.fullmatch(user_id) is not None and not _ID.fullmatch(user_id)
+
+
+def person_id(anchor: str) -> str:
+    """The author id of a person over NATS (RT-6.42): never a Mattermost id or an agent name."""
+    return PERSON + anchor
+
+
+def is_person(user_id: str) -> bool:
+    return user_id.startswith(PERSON)
+
+
+class _Keys:
+    """The keys of people's events this session delivered (RT-6.42 step 9), each for
+    PEOPLE_KEY_SEC by the monotonic clock, at most PEOPLE_KEYS_MAX."""
+
+    def __init__(self, ttl: float = PEOPLE_KEY_SEC) -> None:
+        self._ttl = ttl
+        self._at: OrderedDict[tuple[str, ...], float] = OrderedDict()
+
+    def take(self, key: tuple[str, ...]) -> bool:
+        """True for a key not held (now held), False for one held: a repeat."""
+        now = time.monotonic()
+        while self._at and (len(self._at) >= PEOPLE_KEYS_MAX or next(iter(self._at.values())) < now - self._ttl):
+            self._at.popitem(last=False)
+        if key in self._at:
+            return False
+        self._at[key] = now
+        return True
+
+    def take_reaction(self, kind: str, mm: str, emoji: str, sender: str) -> bool:
+        """A reaction's or unreaction's key; the opposite kind's is cleared, so a reaction
+        taken back and given again counts again."""
+        other = "unreaction" if kind == "reaction" else "reaction"
+        self._at.pop((other, mm, emoji, sender), None)
+        return self.take((kind, mm, emoji, sender))
 
 
 def _scalar(v: object) -> bool:
@@ -249,6 +315,15 @@ class NatsPort:
         self._capped = 0  # reactions dropped at MAX_REACTIONS
         self._names: AbstractSet[str] | None = None  # this session's trusted humans, read by prime (RT-6.38)
         self._ambiguous: set[str] = set()  # link tags that fit more than one fresh name (RT-6.37)
+        # People over NATS (RT-6.42)
+        self._keys = _Keys()
+        self._person_names: dict[str, str] = {}  # person id -> the name the bridge last showed
+        self._people_ids: dict[str, str] = {}  # channel name -> Mattermost id, for the bus's channels
+        self._people_miss: dict[str, float] = {}  # channel name -> monotonic time its id was not readable
+        self._switched: set[str] = set()  # channels whose people came over NATS at the last look
+        self._people_at: dict[str, int] = {}  # channel -> ms of its last people event over NATS
+        self._catching_up: set[asyncio.Task[None]] = set()
+        self._watch: asyncio.Task[None] | None = None
 
     def __getattr__(self, name: str) -> Any:
         if name in ("inner", "__setstate__"):
@@ -293,7 +368,7 @@ class NatsPort:
                 if owner is None:
                     owner = await _owner_of(login)
                 bus = NatsBus(self._s, login, owner, self._on_event, on_fatal=self._on_fatal,
-                              **self._bus_options)
+                              on_person=self._on_person, **self._bus_options)
                 self._bus = bus
                 try:
                     bus.link_bot(await self._bot_id())
@@ -304,6 +379,7 @@ class NatsPort:
                 await bus.start()
                 lease.use_nats_link(partial(_tag_of, bus))
                 await self._announce_membership(bus)
+                self._watch = asyncio.create_task(self._watch_people())
                 return
             except asyncio.CancelledError:
                 raise
@@ -355,6 +431,9 @@ class NatsPort:
         if self._bus is not None:
             lease.use_nats_link(None)  # a stopped bus links nothing any more
         bus, self._bus = self._bus, None
+        for t in [*self._catching_up, *([self._watch] if self._watch is not None else [])]:
+            t.cancel()
+        self._watch = None
         self._tell(None)
         if bus is not None:
             try:
@@ -535,7 +614,13 @@ class NatsPort:
                     if copy and t <= settled and (first_other is None or t < first_other)), default=0)
 
     async def skip(self, event: ChatEvent) -> bool:
-        """A Mattermost event that is the bridge's copy: MergedEvents drops it."""
+        """A Mattermost event that is the bridge's copy, or a person's that comes over NATS
+        or came already (RT-6.42): MergedEvents drops it."""
+        if await self._copy_event(event):
+            return True
+        return await self._person_on_mattermost(event)
+
+    async def _copy_event(self, event: ChatEvent) -> bool:
         if not self._bridge_bot:
             return False
         if isinstance(event, PostEvent):
@@ -754,6 +839,211 @@ class NatsPort:
             Reaction(user_id=self._uid(ev.sender), post_id=post_id(ch, m.ref),
                      emoji_name=m.emoji, create_at=ms), channel_id))
 
+    # --- people over NATS (RT-6.42) -----------------------------------------------------------
+    def _people_channels(self) -> list[str]:
+        """The channels the bus asked for: the home, the guests, the lobby."""
+        wanted = [self._s.home, *self._s.guests, *([self._s.lobby_channel] if self._s.lobby else [])]
+        return [ch for ch in dict.fromkeys(wanted) if ch]
+
+    async def _people_map(self) -> dict[str, str]:
+        """Channel name -> Mattermost id of the bus's channels; one not readable now is read
+        again after BRIDGE_TTL_SEC."""
+        for ch in self._people_channels():
+            if ch in self._people_ids or time.monotonic() - self._people_miss.get(ch, -1e18) < BRIDGE_TTL_SEC:
+                continue
+            try:
+                if ch in (await self.resolve()):
+                    self._people_ids[ch] = (await self.resolve())[ch]
+                elif ch == self.inner.work_channel_name.lower():
+                    self._people_ids[ch] = await self.inner.work_channel_id()
+                else:
+                    self._people_ids[ch] = await self.inner.get_channel_id(ch)
+            except Exception as exc:  # noqa: BLE001 — not known now: its people stay on Mattermost
+                self._people_miss[ch] = time.monotonic()
+                log.debug("nats: the channel ~%s is not known (%s)", ch, type(exc).__name__)
+        return self._people_ids
+
+    def _live(self) -> BusLike | None:
+        return self._bus if self._fatal is None else None
+
+    def _note_switch(self, ch: str) -> bool:
+        """Whether the channel's people come over NATS now; a switch back to Mattermost
+        starts the catch-up there (RT-6.42 step 9)."""
+        bus = self._live()
+        on = bus is not None and bus.people_switched(ch)
+        if on and ch not in self._switched:
+            self._switched.add(ch)
+            log.info("nats: the people of ~%s come over NATS now (the bridge's signal)", ch)
+            if bus is not None:
+                self._people_at[ch] = max(self._people_at.get(ch, 0), int(bus.server_now * 1000))
+        elif not on and ch in self._switched:
+            self._switched.discard(ch)
+            log.info("nats: the bridge's signal for ~%s ran out: its people are read on Mattermost again", ch)
+            task = asyncio.create_task(self._catch_up(ch))
+            self._catching_up.add(task)
+            task.add_done_callback(self._catching_up.discard)
+        return on
+
+    async def check_people(self) -> None:
+        """Look at the bridge's signals of every channel of the bus (RT-6.42 step 9)."""
+        for ch in self._people_channels():
+            self._note_switch(ch)
+
+    async def _watch_people(self) -> None:
+        while True:
+            await asyncio.sleep(PEOPLE_CHECK_SEC)
+            try:
+                await self.check_people()
+            except Exception as exc:  # noqa: BLE001 — the next look tries again
+                log.warning("nats: the bridge's signals were not looked at: %s", type(exc).__name__)
+
+    async def _catch_up(self, ch: str) -> None:
+        """Read the channel on Mattermost from its last people event over NATS on, and deliver
+        the people's posts and reactions no key holds (RT-6.42 step 9)."""
+        cid = (await self._people_map()).get(ch)
+        bus = self._live()
+        if cid is None or bus is None:
+            return
+        since = max(0, self._people_at.get(ch, 0) - PEOPLE_MARGIN_MS)
+        try:
+            posts = await self.inner.posts_after(since, channel_id=cid)
+            authors = {p.user_id for p in posts} | {r.user_id for p in posts for r in p.reactions}
+            bots = await self.inner.bot_accounts(authors - {""})
+        except Exception as exc:  # noqa: BLE001 — logged: what came meanwhile may be missing
+            log.warning("nats: the catch-up of ~%s on Mattermost failed (%s): people's posts since the "
+                        "bridge's signal ran out may be missing", ch, type(exc).__name__)
+            return
+        me = self.inner.bot_id
+
+        def person(uid: str) -> bool:
+            return bool(uid) and uid != me and uid not in bots
+
+        for p in sorted(posts, key=lambda p: p.create_at):
+            if (p.create_at >= since and person(p.user_id) and not p.from_webhook and not p.type
+                    and self._keys.take(("post", p.id))):
+                self._tell(PostEvent(post=p, channel_type=None, edited=False))
+            for r in p.reactions:
+                if (r.create_at >= since and person(r.user_id)
+                        and self._keys.take_reaction("reaction", p.id, r.emoji_name,
+                                                     bus.anchor_of_account(r.user_id))):
+                    self._tell(ReactionEvent(r, cid))
+
+    async def _person_on_mattermost(self, event: ChatEvent) -> bool:
+        """A Mattermost event of a person in a channel of the bus: dropped while its people
+        come over NATS, and when its key is held (it came over NATS before, or by the
+        catch-up). An edit is not carried over NATS: dropped there too, else kept as before.
+        Bots, webhooks and system posts are never people. In doubt: kept."""
+        if isinstance(event, PostEvent):
+            post = event.post
+            uid, cid = post.user_id, post.channel_id
+            if post.from_webhook or post.type:
+                return False
+        elif isinstance(event, ReactionEvent):
+            uid, cid = event.reaction.user_id, event.channel_id
+        else:
+            return False
+        bus = self._live()
+        if bus is None or not uid or not cid or uid == self.inner.bot_id:
+            return False
+        try:
+            ch = next((n for n, i in (await self._people_map()).items() if i == cid), None)
+            if ch is None or uid in await self.inner.bot_accounts({uid}):
+                return False
+        except Exception as exc:  # noqa: BLE001 — not known: kept
+            log.debug("nats: a person's event not told apart (%s): kept", type(exc).__name__)
+            return False
+        if self._note_switch(ch):
+            return True
+        if isinstance(event, PostEvent):
+            return False if event.edited else not self._keys.take(("post", event.post.id))
+        r = event.reaction
+        return not self._keys.take_reaction("reaction", r.post_id, r.emoji_name, bus.anchor_of_account(uid))
+
+    async def _on_person(self, ev: natsbus.PersonEvent) -> None:
+        """A person's event over NATS (RT-6.42 step 9): a PostEvent or ReactionEvent while the
+        bridge's signal names its channel; dropped otherwise (Mattermost has it) and when its
+        key is held."""
+        cid = (await self._people_map()).get(ev.where)
+        if cid is None:
+            log.debug("nats: dropped a person's event in ~%s: the channel is not known", ev.where)
+            return
+        if not self._note_switch(ev.where):
+            log.debug("nats: a person's event in ~%s is read on Mattermost: no fresh signal of the bridge",
+                      ev.where)
+            return
+        m, ch = ev.message, ev.where
+        uid = person_id(ev.anchor)
+        self._person_names[uid] = m.name
+        ms = int(ev.time * 1000)
+        if m.kind == "post":
+            if not self._keys.take(("post", m.mm)):
+                return
+            self._people_at[ch] = max(self._people_at.get(ch, 0), ms)
+            self._tell(PostEvent(post=self.inner.with_links(self._person_post(ev, cid)),
+                                 channel_type=None, edited=False))
+            return
+        assert m.emoji is not None
+        if not self._keys.take_reaction(m.kind, m.mm, m.emoji, ev.anchor):
+            return
+        self._people_at[ch] = max(self._people_at.get(ch, 0), ms)
+        on_nats = m.ref is not None and self._where.get(m.ref) == ch
+        if m.kind == "unreaction":
+            if on_nats and m.ref is not None:
+                self._reacts.get(m.ref, {}).pop((m.emoji, uid), None)
+            return
+        target = m.mm
+        if on_nats and m.ref is not None:
+            target = post_id(ch, m.ref)
+            bucket = self._reacts.setdefault(m.ref, {})
+            if (m.emoji, uid) in bucket or len(bucket) < MAX_REACTIONS:
+                bucket[(m.emoji, uid)] = ms
+        self._tell(ReactionEvent(Reaction(user_id=uid, post_id=target, emoji_name=m.emoji, create_at=ms), cid))
+
+    def _person_post(self, ev: natsbus.PersonEvent, channel_id: str) -> Post:
+        """A person's post as a read gives it: its Mattermost id, its root (the NATS post
+        `root` names when it is in the memory, else `mm_root`), author person_id(anchor),
+        no props (the body has none), the server's time."""
+        m, ch = ev.message, ev.where
+        root = ""
+        if m.root is not None and self._where.get(m.root) == ch:
+            root = post_id(ch, m.root)
+        elif m.mm_root:
+            root = m.mm_root
+        raw: dict[str, Any] = {"id": m.mm, "channel_id": channel_id, "root_id": root,
+                               "user_id": person_id(ev.anchor), "create_at": int(ev.time * 1000),
+                               "message": m.text, "props": {}}
+        if m.files:
+            raw["file_count"] = m.files  # the files stay on Mattermost
+        if m.cut:
+            raw["cut"] = True
+        return Post(id=m.mm, channel_id=channel_id, root_id=root, user_id=raw["user_id"],
+                    create_at=raw["create_at"], message=m.text, kind=a2a.kind_of(raw),
+                    pr=a2a.pr_of(raw), branch=a2a.branch_of(raw), raw=MappingProxyType(raw))
+
+    async def trusted_humans(self) -> dict[str, str]:
+        """The adapter's, and a person over NATS by each anchor of this session's own fresh
+        attestation (RT-6.41), under the name it was attested with (RT-6.42 step 9). UNBOUND
+        is no anchor: never one of them."""
+        out = dict(await self.inner.trusted_humans())
+        bus = self._live()
+        att = bus.attestation_of(bus.name) if bus is not None else None
+        for anchor, name in att.trusted if att is not None else ():
+            out.setdefault(person_id(anchor), name)
+        return out
+
+    async def may_approve(self, user_id: str) -> bool | None:
+        """A person over NATS approves only with a fresh approver record (RT-6.42 step 9);
+        None for everyone else (the adapter's rule)."""
+        if not is_person(user_id):
+            return await self.inner.may_approve(user_id)
+        bus = self._live()
+        return bus is not None and bus.approver(user_id[len(PERSON):])
+
+    async def bot_accounts(self, user_ids: set[str]) -> set[str]:
+        nats = {i for i in user_ids if is_nats_user(i)}
+        rest = {i for i in user_ids if not is_nats_user(i) and not is_person(i)}
+        return (await self.inner.bot_accounts(rest) if rest else set()) | nats
+
     # --- reading ---------------------------------------------------------------------------
     def _shown(self, ch: str, seq: int) -> Post:
         """The post with its reactions and reply count, as a read gives it."""
@@ -857,22 +1147,33 @@ class NatsPort:
                 if r.channel_id in homes else r for r in rows]
 
     # --- the senders: agent names, no Mattermost accounts ----------------------------------------
+    def _person_name(self, user_id: str) -> str:
+        """The name a person over NATS is shown with: the bridge's (display only)."""
+        return self._person_names.get(user_id) or user_id[len(PERSON):]
+
     async def usernames(self, user_ids: set[str]) -> dict[str, str]:
         nats = {i for i in user_ids if is_nats_user(i)}
-        out = await self.inner.usernames(set(user_ids) - nats) if user_ids - nats else {}
-        return out | {i: i for i in nats}
+        people = {i for i in user_ids if is_person(i)}
+        rest = set(user_ids) - nats - people
+        out = await self.inner.usernames(rest) if rest else {}
+        return out | {i: i for i in nats} | {i: self._person_name(i) for i in people}
 
     async def username(self, user_id: str) -> str:
+        if is_person(user_id):
+            return self._person_name(user_id)
         return user_id if is_nats_user(user_id) else await self.inner.username(user_id)
 
     async def agents(self, user_ids: set[str]) -> set[str]:
         nats = {i for i in user_ids if is_nats_user(i)}
-        return (await self.inner.agents(set(user_ids) - nats) if user_ids - nats else set()) | nats
+        rest = {i for i in user_ids if not is_nats_user(i) and not is_person(i)}
+        return (await self.inner.agents(rest) if rest else set()) | nats
 
     async def agent_owner(self, user_id: str) -> str | None:
         # A NATS sender's owner is the one its presence proves (RT-6.37), else "" (an
         # owner that is none), which is foreign for the peer split (owners.read); not
         # None, which is "not readable" (also foreign, ADR-016, but logged as an outage).
+        if is_person(user_id):
+            return ""  # a person, no agent (RT-6.42)
         if not is_nats_user(user_id):
             return await self.inner.agent_owner(user_id)
         if self._bus is None or self._fatal is not None:
@@ -914,20 +1215,21 @@ class NatsPort:
         return self._own_anchors()
 
     async def bot_description(self, user_id: str) -> str | None:
-        return None if is_nats_user(user_id) else await self.inner.bot_description(user_id)
+        return None if is_nats_user(user_id) or is_person(user_id) else await self.inner.bot_description(user_id)
 
     async def agent_attestation(self, user_id: str) -> str | None:
-        return None if is_nats_user(user_id) else await self.inner.agent_attestation(user_id)
+        return None if is_nats_user(user_id) or is_person(user_id) else await self.inner.agent_attestation(user_id)
 
     async def attestation_record(self, bot_id: str) -> str | None:
-        return None if is_nats_user(bot_id) else await self.inner.attestation_record(bot_id)
+        return None if is_nats_user(bot_id) or is_person(bot_id) else await self.inner.attestation_record(bot_id)
 
     async def presences(self, user_ids: list[str]) -> dict[str, str]:
         """Mattermost's for its accounts; for a NATS sender its NATS presence (RT-6.37):
         online or away while fresh by the server's clock, else offline."""
         nats = [i for i in user_ids if is_nats_user(i)]
-        rest = [i for i in user_ids if not is_nats_user(i)]
+        rest = [i for i in user_ids if not is_nats_user(i) and not is_person(i)]
         out = await self.inner.presences(rest) if rest else {}
+        out |= {i: "offline" for i in user_ids if is_person(i)}  # no Mattermost account (RT-6.42)
         bus = self._bus if self._fatal is None else None
         return out | {i: bus.presence_of(i) if bus is not None else "offline" for i in nats}
 

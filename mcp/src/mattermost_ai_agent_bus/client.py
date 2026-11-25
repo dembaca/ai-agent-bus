@@ -721,6 +721,13 @@ class MattermostAdapter:
     async def own_anchors(self) -> frozenset[str] | None:
         return None
 
+    async def may_approve(self, user_id: str) -> bool | None:
+        return None  # Mattermost: the trusted list alone (RT-6.8); over NATS see RT-6.42
+
+    async def bot_accounts(self, user_ids: set[str]) -> set[str]:
+        names = await self.usernames(user_ids)
+        return {i for i in names if self._accounts[i].bot}
+
     async def agent_attestation(self, user_id: str) -> str | None:
         """The registrar's signed attestation of a bot (RT-6.24 step 5), read
         from the registrar when its keys are pinned (MM_REGISTRAR_KEYS), else

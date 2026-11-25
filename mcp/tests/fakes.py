@@ -244,6 +244,12 @@ class FakeChat:
     async def own_anchors(self) -> frozenset[str] | None:
         return None
 
+    async def may_approve(self, user_id: str) -> bool | None:
+        return None
+
+    async def bot_accounts(self, user_ids: set[str]) -> set[str]:
+        return set(user_ids) & (self._agents | {u.id for u in self.bots.values()})
+
     async def agent_attestation(self, user_id: str) -> str | None:
         """`attestations`; '' for a bot with a readable description and none."""
         if user_id in self.attestations:

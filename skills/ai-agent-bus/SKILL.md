@@ -147,8 +147,8 @@ keys are pinned only `/agent-ask-mode coordinator` (`signed: true`).
 The answer comes as a reply in the ask's thread or as a reaction
 (`{kind: reaction, answer: yes|no|null}`, which wakes you while idle). A `yes`
 from a trusted human approves exactly what that ask names, like a written
-`APPROVE`, and only within 24 h of the ask: an old yes (`expired: true`)
-approves nothing; resolve it and ask again. A reaction on any other post
+`APPROVE`, and only within 24 h of the ask: an old yes (`expired: true`) or a
+`not_approver` one (RT-6.42) approves nothing; resolve it and ask again. A reaction on any other post
 approves nothing, and `null` (any other emoji) is a remark, never a decision.
 Once the ask is settled, call `resolve_ask(post_id, note)`.
 

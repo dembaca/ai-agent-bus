@@ -5,6 +5,23 @@ before 0.5.0 are described in the git history.
 
 ## Unreleased
 
+### Added
+
+- **The MCP server reads people's posts from NATS** (RT-6.42, ADR-016 step 2):
+  in a channel of a NATS session (the home, a guest channel, the lobby) whose
+  bridge signal is fresh, people's posts and reactions come from the person's
+  consumer `<agent>_hu_<channel>` on `bus.hu.<channel>.<anchor>`, decoded
+  strictly, and Mattermost's events of people there are dropped; without a
+  signal, people are read on Mattermost as before, and when it runs out the
+  server reads Mattermost from the last people event on. A key per event,
+  held for an hour, drops the repeat at a switch. A person over NATS is
+  trusted by the anchors of the session's own attestation (`hu:<anchor>`,
+  never `hu:-`), and an event of a trusted person without a fresh approver
+  record of the login service is marked `not_approver` and approves nothing,
+  also as a yes on an ask. Other bots, webhooks, system posts and direct
+  messages stay on Mattermost. Nothing changes until the bridge and the login
+  service publish their side.
+
 ### Docs
 
 - **The central bridge's step 2 is specified** (ADR-016, RT-6.42): people's
