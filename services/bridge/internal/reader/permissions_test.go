@@ -250,27 +250,38 @@ accounts {
 		t.Fatal(err)
 	}
 	deadline = time.Now().Add(3 * time.Second)
-	anchor := func(a *inbound.Accounts) string {
-		got, err := a.Anchor(ctx, uid)
-		if err != nil {
-			t.Fatalf("the account lookup with the documented rights: %v", err)
-		}
-		return got
-	}
-	for anchor(acc) != "alice" || consumerPending(t, pst, inbound.AccountsConsumer) != 0 {
+	for acc.Anchor(uid) != "alice" || !acc.CaughtUp() ||
+		consumerPending(t, pst, inbound.AccountsConsumer) != 0 {
 		if time.Now().After(deadline) {
 			t.Fatalf("the account record: %d unacked", consumerPending(t, pst, inbound.AccountsConsumer))
 		}
 		time.Sleep(20 * time.Millisecond)
 	}
-	// a restarted bridge gets the acked record no more from the consumer; it
-	// looks the account up through the message-get API
+	// a restart: the operator makes the consumer afresh, and the restarted
+	// bridge reads the record again with only its documented rights
+	acancel()
+	if err := ajs.DeleteConsumer(ctx, "PRESENCE", inbound.AccountsConsumer); err != nil {
+		t.Fatal(err)
+	}
 	again := &inbound.Accounts{Log: m.Log, Deliver: "deliver.bridge.accounts", Stream: "PRESENCE",
 		Ready: make(chan struct{})}
-	go func() { _ = again.Run(actx, bridgeNC) }()
+	rctx, rcancel := context.WithCancel(ctx)
+	defer rcancel()
+	go func() { _ = again.Run(rctx, bridgeNC) }()
 	<-again.Ready
-	if got := anchor(again); got != "alice" {
-		t.Fatalf("the lookup after a restart: %q", got)
+	if _, err := ajs.CreateOrUpdateConsumer(ctx, "PRESENCE", jetstream.ConsumerConfig{
+		Name: inbound.AccountsConsumer, Durable: inbound.AccountsConsumer,
+		FilterSubject: "presence.account.mattermost.*.v1", DeliverSubject: "deliver.bridge.accounts",
+		DeliverPolicy: jetstream.DeliverLastPerSubjectPolicy, AckPolicy: jetstream.AckExplicitPolicy,
+	}); err != nil {
+		t.Fatal(err)
+	}
+	deadline = time.Now().Add(3 * time.Second)
+	for again.Anchor(uid) != "alice" || !again.CaughtUp() {
+		if time.Now().After(deadline) {
+			t.Fatalf("after the restart: anchor %q", again.Anchor(uid))
+		}
+		time.Sleep(20 * time.Millisecond)
 	}
 	// The reply subject of a request is not checked against publish
 	// permissions (the server refuses only replies to $JS. since 2.15), so the

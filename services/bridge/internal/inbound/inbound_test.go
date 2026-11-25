@@ -165,7 +165,7 @@ func newLab(t *testing.T) *lab {
 	if _, err := js.CreateOrUpdateConsumer(ctx, "PRESENCE", jetstream.ConsumerConfig{
 		Name: AccountsConsumer, Durable: AccountsConsumer, FilterSubject: "presence.account.mattermost.*.v1",
 		DeliverSubject: "deliver.bridge.accounts", DeliverPolicy: jetstream.DeliverLastPerSubjectPolicy,
-		AckPolicy: jetstream.AckExplicitPolicy,
+		AckPolicy: jetstream.AckExplicitPolicy, IdleHeartbeat: 100 * time.Millisecond,
 	}); err != nil {
 		t.Fatal(err)
 	}
@@ -188,6 +188,14 @@ func newLab(t *testing.T) *lab {
 	t.Cleanup(cancel)
 	go func() { _ = l.acc.Run(actx, nc) }()
 	<-l.acc.Ready
+	// the idle heartbeat says the (empty) records are read
+	deadline := time.Now().Add(3 * time.Second)
+	for !l.acc.CaughtUp() {
+		if time.Now().After(deadline) {
+			t.Fatal("the account records were never read")
+		}
+		time.Sleep(10 * time.Millisecond)
+	}
 	return l
 }
 
@@ -208,11 +216,8 @@ func (l *lab) record(t *testing.T, uid, body string, want string) {
 
 func anchorOf(t *testing.T, a *Accounts, uid string) string {
 	t.Helper()
-	anchor, err := a.Anchor(context.Background(), uid)
-	if err != nil {
-		t.Fatal(err)
-	}
-	return anchor
+	t.Helper()
+	return a.Anchor(uid)
 }
 
 func quiet() *slog.Logger { return slog.New(slog.NewTextHandler(io.Discard, nil)) }
@@ -587,32 +592,47 @@ func drain(ch chan *nats.Msg) {
 	}
 }
 
-// RT-6.42 step 3: after a restart the operator's consumer does not deliver
-// the records the bridge acked before; an account it has not heard of since
-// is looked up, so a bound person is still carried under the anchor.
+// RT-6.42 step 3: the operator makes bridge_accounts afresh before every
+// start, so the restarted bridge reads the last record of every account
+// again; no home signals before the records are read.
 func TestAfterARestartABoundPersonKeepsTheAnchor(t *testing.T) {
 	r := newRig(t, nil)
 	r.record(t, aliceID, `{"v":1,"account":"`+aliceID+`","anchor":"alice","name":"alice",`+
 		`"approver":true,"token_iat":1,"iat":1,"exp":2}`, "alice")
-	// the restarted bridge: a new reader of the same consumer, which has
-	// nothing to deliver
+	// the operator's step before the restart
+	ctx := context.Background()
+	if err := r.js.DeleteConsumer(ctx, "PRESENCE", AccountsConsumer); err != nil {
+		t.Fatal(err)
+	}
 	again := &Accounts{Log: quiet(), Deliver: "deliver.bridge.accounts", Stream: "PRESENCE", Ready: make(chan struct{})}
-	ctx, cancel := context.WithCancel(context.Background())
+	actx, cancel := context.WithCancel(ctx)
 	defer cancel()
-	go func() { _ = again.Run(ctx, r.nc) }()
+	go func() { _ = again.Run(actx, r.nc) }()
 	<-again.Ready
-	if got := anchorOf(t, again, aliceID); got != "alice" {
-		t.Fatalf("after the restart: %q", got)
-	}
-	if got := anchorOf(t, again, bobID); got != "" {
-		t.Fatalf("an account without a record: %q", got)
-	}
 	r.b.Anchors = again
 	r.connect(1)
+	noSignal(t, r.sig) // the records are not read yet
+	if _, err := r.js.CreateOrUpdateConsumer(ctx, "PRESENCE", jetstream.ConsumerConfig{
+		Name: AccountsConsumer, Durable: AccountsConsumer, FilterSubject: "presence.account.mattermost.*.v1",
+		DeliverSubject: "deliver.bridge.accounts", DeliverPolicy: jetstream.DeliverLastPerSubjectPolicy,
+		AckPolicy: jetstream.AckExplicitPolicy, IdleHeartbeat: 100 * time.Millisecond,
+	}); err != nil {
+		t.Fatal(err)
+	}
+	waitSignal(t, r.sig) // the retry catches up once they are
+	if got := anchorOf(t, again, aliceID); got != "alice" || !again.CaughtUp() {
+		t.Fatalf("after the restart: %q", got)
+	}
 	r.send(alicePost(pid(1), now()))
 	if subject, _ := r.next(t); subject != "bus.hu.home.alice" {
 		t.Fatalf("after the restart: %s", subject)
 	}
+}
+
+// RT-6.42 step 3 (point 10): before the login service writes any record, the
+// idle heartbeat says nothing is pending; every account goes out under "-".
+func TestWithoutRecordsTheHeartbeatSaysCaughtUp(t *testing.T) {
+	newLab(t) // waits until the idle heartbeat says the records are read
 }
 
 // RT-6.42 step 1 and its error table: a catch-up that fails half way moves

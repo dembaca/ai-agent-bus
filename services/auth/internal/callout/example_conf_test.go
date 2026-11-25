@@ -163,7 +163,11 @@ func TestTheExampleServerConfiguration(t *testing.T) {
 			pub := strings.Join(u.Permissions.Publish.Allow, " ")
 			for _, want := range []string{"$JS.ACK.BUS.bridge_home.>",
 				"$JS.ACK.PRESENCE.bridge_presence.>", "$KV.BUS_BRIDGE.>",
-				"$JS.API.STREAM.MSG.GET.KV_BUS_BRIDGE"} {
+				"$JS.API.STREAM.MSG.GET.KV_BUS_BRIDGE",
+				// people onto NATS (RT-6.42)
+				"bus.hu.home.*", "presence.bridge.home.v1", "$JS.ACK.PRESENCE.bridge_accounts.>",
+				"$KV.BUS_BRIDGE_SEEN.>",
+				"$JS.API.STREAM.INFO.KV_BUS_BRIDGE_SEEN", "$JS.API.STREAM.MSG.GET.KV_BUS_BRIDGE_SEEN"} {
 				if !strings.Contains(pub, want) {
 					t.Errorf("the bridge's rights lack %s: %+v", want, u.Permissions.Publish.Allow)
 				}
@@ -173,7 +177,8 @@ func TestTheExampleServerConfiguration(t *testing.T) {
 			// stream info (its subjects filter lists who writes DMs to whom)
 			for _, unwanted := range []string{"bus.>", "$JS.API.STREAM.CREATE",
 				"DIRECT.GET", "$JS.API.STREAM.INFO.BUS", "$JS.API.STREAM.INFO.PRESENCE",
-				"$JS.API.CONSUMER.CREATE", "$JS.API.CONSUMER.DELETE", "$JS.API.CONSUMER.MSG.NEXT"} {
+				"$JS.API.CONSUMER.CREATE", "$JS.API.CONSUMER.DELETE", "$JS.API.CONSUMER.MSG.NEXT",
+				"$JS.API.STREAM.MSG.GET.PRESENCE"} {
 				if strings.Contains(pub, unwanted) {
 					t.Errorf("the bridge may %s: %+v", unwanted, u.Permissions.Publish.Allow)
 				}

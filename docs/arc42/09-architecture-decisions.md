@@ -4742,9 +4742,9 @@ registrar's functions can move in later without a second component.
    not built: the login service's account records and per-agent consumers,
    and the MCP server's reader. The bridge reads its bot's
    Mattermost WebSocket in the bound home channels and publishes each
-   person's post and reaction on NATS. Eighteen points are open, each one
+   person's post and reaction on NATS. The eighteen points were each one
    decision with a recommendation, its reason and the alternative, for the
-   owner to answer yes or no; points 15 to 18 are details the first draft
+   owner to answer yes or no; points 15 to 18 were details the first draft
    filled in without saying so.
    1. **A subject of its own, `<bus>.hu.<home>.<anchor>`, apart from
       `<bus>.ch`.** Recommended. Why: the sender stays the subject's last

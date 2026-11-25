@@ -40,8 +40,8 @@ before 0.5.0 are described in the git history.
   from its watermark, at most 10 minutes back; it signals each home it
   carries on `presence.bridge.<home>.v1` while its WebSocket is up and the
   catch-up is done. A publish the server refuses carries nothing and stops
-  that home; after a restart the bridge looks up the account records it has
-  not heard of since (`$JS.API.STREAM.MSG.GET.PRESENCE`). The operator creates the bucket `BUS_BRIDGE_SEEN`
+  that home. The operator makes `bridge_accounts` afresh before every start
+  of the bridge, which signals no home until it has read the records. The operator creates the bucket `BUS_BRIDGE_SEEN`
   (`services/bridge/internal/store/seen_bucket.json`) and the consumer
   `bridge_accounts`, widens each home's consumer to `bus.hu.<home>.*` and
   grants the bridge the rights in `services/auth/nats-server.example.conf`

@@ -54,10 +54,11 @@ type Seen interface {
 }
 
 // Anchors maps a Mattermost user id to an anchor, "" when unbound (Accounts).
-// A lookup that fails is an error: the home stops rather than carry a bound
-// person under "-".
+// No home carries before CaughtUp: until the records are read, a bound person
+// would go out under "-".
 type Anchors interface {
-	Anchor(ctx context.Context, userID string) (string, error)
+	Anchor(userID string) string
+	CaughtUp() bool
 }
 
 // The defaults of the step's bounds (RT-6.42 steps 1 and 7).
@@ -101,6 +102,7 @@ type home struct {
 	// and while the home is stopped.
 	caughtUp uint64
 	stopped  bool
+	logged   time.Time // the last log of its stop, for the pulse
 	wm       int64
 }
 
@@ -192,8 +194,18 @@ func (b *Bridge) guard(h *home, err error) {
 	if err == nil || errors.Is(err, context.Canceled) {
 		return
 	}
-	if !h.stopped {
+	if errors.Is(err, errRecordsPending) {
+		h.stopped, h.caughtUp = true, 0 // waits quietly: no failure
+		return
+	}
+	switch {
+	case !h.stopped:
 		b.Log.Error("inbound: a home stopped carrying people; retrying", "home", h.name, "error", err)
+		h.logged = b.Now()
+	case b.Now().Sub(h.logged) >= time.Minute:
+		// a pulse while the retries keep failing, not one line per retry
+		b.Log.Warn("inbound: a home still does not carry people; retrying", "home", h.name, "error", err)
+		h.logged = b.Now()
 	}
 	h.stopped, h.caughtUp = true, 0
 }
@@ -243,6 +255,9 @@ const liveSlack = time.Minute
 // never goes out before its root.
 func (b *Bridge) catchUp(ctx context.Context, h *home, conn uint64) {
 	err := func() error {
+		if !b.Anchors.CaughtUp() {
+			return errRecordsPending
+		}
 		if b.me == "" {
 			me, err := b.MM.Me(ctx)
 			if err != nil {
@@ -273,6 +288,8 @@ func (b *Bridge) catchUp(ctx context.Context, h *home, conn uint64) {
 				return fmt.Errorf("BUS_BRIDGE: %w", err)
 			}
 			h.wm = now
+			b.Log.Info("inbound: first start of a home; nothing from before it is carried",
+				"home", h.name, "watermark", now)
 			return nil
 		}
 		h.wm = wm
@@ -325,7 +342,21 @@ func (b *Bridge) catchUp(ctx context.Context, h *home, conn uint64) {
 // reaction on an agent's post (an ask) is carried like any other; a deleted
 // post's reactions are not, its removal is no person taking one back (point 5).
 func (b *Bridge) reactionsOf(ctx context.Context, h *home, p mm.Post, lower int64) error {
-	if !p.HasMetadata || p.DeleteAt != 0 || !mmID.MatchString(p.ID) {
+	if p.DeleteAt != 0 || !mmID.MatchString(p.ID) {
+		return nil
+	}
+	if !p.HasMetadata {
+		// Mattermost always prepares the read with metadata; one without it
+		// says nothing about reactions, so no removal is read from it. That
+		// is a gap only where the bridge carried a reaction on the post.
+		kinds, err := b.Seen.Reactions(ctx, p.ID)
+		if err != nil {
+			return fmt.Errorf("BUS_BRIDGE_SEEN: %w", err)
+		}
+		if len(kinds) > 0 {
+			b.Log.Warn("inbound: a post came back without metadata; its reactions are not compared",
+				"home", h.name, "post", p.ID)
+		}
 		return nil
 	}
 	reactions := append([]mm.Reaction(nil), p.Reactions...)
@@ -448,7 +479,7 @@ func (b *Bridge) post(ctx context.Context, h *home, p post, caught bool, lower i
 		b.Log.Warn("inbound: a post that does not encode, dropped", "home", h.name, "post", p.id, "error", err)
 		return nil
 	}
-	if err := b.publish(ctx, h, p.user, raw); err != nil {
+	if err := b.publish(h, p.user, raw); err != nil {
 		return err
 	}
 	if err := b.Seen.MarkPost(ctx, p.id); err != nil {
@@ -473,6 +504,7 @@ func (b *Bridge) reaction(ctx context.Context, h *home, postID, userID, emoji st
 	}
 	u, err := b.user(ctx, userID)
 	if gone(err) {
+		b.Log.Info("inbound: a reaction dropped", "home", h.name, "post", postID, "why", "no such account")
 		return nil
 	}
 	if err != nil {
@@ -505,7 +537,7 @@ func (b *Bridge) reaction(ctx context.Context, h *home, postID, userID, emoji st
 	if err != nil {
 		return err
 	}
-	if err := b.publish(ctx, h, userID, raw); err != nil {
+	if err := b.publish(h, userID, raw); err != nil {
 		return err
 	}
 	kinds[key] = kind
@@ -519,12 +551,8 @@ func (b *Bridge) reaction(ctx context.Context, h *home, postID, userID, emoji st
 }
 
 // publish sends on <bus>.hu.<home>.<anchor>, "-" for an unbound account.
-func (b *Bridge) publish(ctx context.Context, h *home, userID string, body []byte) error {
-	anchor, err := b.Anchors.Anchor(ctx, userID)
-	if err != nil {
-		return fmt.Errorf("the account record of %s: %w", userID, err)
-	}
-	subject := b.BusPrefix + ".hu." + h.name + "." + SenderToken(anchor)
+func (b *Bridge) publish(h *home, userID string, body []byte) error {
+	subject := b.BusPrefix + ".hu." + h.name + "." + SenderToken(b.Anchors.Anchor(userID))
 	if err := b.NATS.Publish(subject, body); err != nil {
 		return fmt.Errorf("publish %s: %w", subject, err)
 	}
@@ -563,3 +591,6 @@ func gone(err error) bool {
 	var se *mm.StatusError
 	return errors.As(err, &se) && se.Status == 404
 }
+
+// errRecordsPending: the account records are not read yet (Accounts.CaughtUp).
+var errRecordsPending = errors.New("inbound: the account records are not read yet")
