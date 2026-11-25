@@ -4301,7 +4301,9 @@ shown as such; no thread text in the server's log.
 
 **Risks created:** the console's server holds operators' keys, it shows
 less than there is, and a person's credential is a second way for a human's
-word to reach an agent (RISK-12 to RISK-14 in Section 11).
+word to reach an agent (RISK-12 to RISK-14 in Section 11). The name on an
+agent's card is the agent's own statement in its presence: displayed, never
+trusted; the owner beside it comes from the login service's attestation.
 
 **Open for the owner**, one decision each:
 
