@@ -484,6 +484,63 @@ def test_instructions_budget(monkeypatch, variant, mode):
     assert len(server._instructions()) <= _INSTRUCTION_BUDGET[variant][mode]
 
 
+# What the model reads of the bus, hashed (RT-6.9, #139): the MCP instructions in every
+# variant, the tool names, docstrings and argument schemas, the skill and its side files,
+# the hooks' description, the turn-end and wake texts (turnend.py), the channel check, a
+# pushed tag, and the sentences the hooks and the listener print. Counting what the bus
+# costs must not cost tokens itself: a change here is a deliberate one, with this hash
+# updated in the same PR and a reason in its body. The plugin version is left out.
+_MODEL_TEXT_SHA256 = "48be1c125658dc552cb5db34b867043f6b4e0d1a28a76929bec7a38fa5f82850"
+_ROOT = Path(__file__).resolve().parents[2]
+
+
+def _model_text(monkeypatch) -> bytes:
+    import asyncio
+    import hashlib
+    import re
+
+    parts: list[str] = []
+    names = ("HOST_MANAGED", "HOSTED", "UNAVAILABLE", "PUSH", "RELAY")
+    before = {name: getattr(server, name) for name in names}
+    for host, hosted, unavailable in ((False, False, ""), (True, False, ""), (True, True, ""),
+                                      (False, False, "x" * 300)):
+        for push, relay in ((False, False), (True, False), (True, True)):
+            for name, value in (("HOST_MANAGED", host), ("HOSTED", hosted), ("UNAVAILABLE", unavailable),
+                                ("PUSH", push), ("RELAY", relay)):
+                monkeypatch.setattr(server, name, value)
+            parts.append(server._instructions())
+    for name, value in before.items():
+        monkeypatch.setattr(server, name, value)
+    tools = asyncio.run(server.mcp.list_tools())
+    parts += [json.dumps([t.name, t.description, t.input_schema], sort_keys=True)
+              for t in sorted(tools, key=lambda t: t.name)]
+    files = sorted((_ROOT / "skills").rglob("*.md")) + [
+        _ROOT / "hooks" / "hooks.json", _ROOT / "mcp" / "src" / "mattermost_ai_agent_bus" / "turnend.py"]
+    parts += [f.read_text() for f in files]
+    parts.append(json.dumps(channel.check("0" * 8), sort_keys=True))
+    parts.append(json.dumps(channel.notification(
+        {"kind": "mention", "from_agent": True, "from_trusted_human": False,
+         "post": {"id": "p" * 26, "root_id": "r" * 26, "author": "a", "message": "TASK x"}}), sort_keys=True))
+    # The hooks' and the listener's sentences: what a hook's reason is built of, what the
+    # listener prints.
+    for f in sorted((_ROOT / "hooks").glob("*.sh")) + [_ROOT / "bin" / "mm-agent-listen.sh"]:
+        for line in f.read_text().splitlines():
+            if m := re.match(r"\s*((?:answer_)?reason\+?=.*)", line):
+                parts.append(m[1])
+            parts += re.findall(r'(?:echo|say [a-z]+) ("[^"]*")', line)
+    text = "\x00".join(parts).replace(server.VERSION, "<version>")
+    return hashlib.sha256(text.encode()).hexdigest().encode()
+
+
+def test_counting_costs_no_model_tokens(monkeypatch):
+    """RT-6.9 (#139): the instructions, tool docs, skill, hook and pushed texts are
+    byte-identical to what _MODEL_TEXT_SHA256 pins: the measurement runs in code only."""
+    got = _model_text(monkeypatch).decode()
+    assert got == _MODEL_TEXT_SHA256, (
+        f"the text the model reads changed ({got}): on purpose? update _MODEL_TEXT_SHA256 "
+        "and say why in the PR (RT-6.9: counting adds no tokens)")
+
+
 @pytest.mark.parametrize("message,kind,out", [
     ("on it", "ack", "ACK · on it"), ("ACK – on it", "ACK", "ACK – on it"),
     ("**DONE** #46 merged", "done", "**DONE** #46 merged"), ("PR #57", "RESULT", "PR #57"),

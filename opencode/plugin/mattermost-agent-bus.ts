@@ -227,6 +227,13 @@ export function wakeBackoffMs(repeats: number): number {
   return Math.min(WAKE_BACKOFF_MS * 2 ** repeats, WAKE_BACKOFF_MAX_MS)
 }
 
+// The kinds of text put into the context the stats know (stats.INJECT_KINDS, RT-6.9 step 1);
+// any other counts as "other". Only the kind and the length go to the server, never the text.
+const INJECT_KINDS = new Set(["start", "check", "digest", "drain", "signoff", "listen", "idle", "compact"])
+export function injectKind(name: string): string {
+  return INJECT_KINDS.has(name) ? name : "other"
+}
+
 // The bus checkout: the option, MM_AGENT_BUS_ROOT, or the checkout this file
 // really lies in (opencode/plugin/) (a symlink into .opencode/plugins/ resolves).
 export function busRoot(options: Options, env: Env, here: string): string | null {
@@ -524,6 +531,8 @@ export async function setup(ctx: Plugin.Context) {
   }
 
   const stat = (k: string, fields: Json = {}) => bus("POST", "/v1/stat", { k, ...fields })
+  // A text the plugin puts into the context, by kind and length only, never the text (RT-6.9 step 1).
+  const inject = (name: string, text: string) => stat("inject", { name: injectKind(name), chars: text.length })
   // One call at a time: the prompt hook's `working` and an interrupt's `idle`
   // (the event stream) never overtake each other.
   const setPresence = presenceQueue((state) => bus("POST", "/v1/presence", { state, label }))
@@ -579,7 +588,11 @@ export async function setup(ctx: Plugin.Context) {
     try {
       const bots: Json = ((await ctx.storage.get(BOTS_KEY)) as Json | undefined) ?? {}
       const old = String(bots[id]?.username || "")
-      if (old && old !== now) await send(id, renamedText(old, now), "context", "AI agent bus: your bot changed")
+      if (old && old !== now) {
+        const text = renamedText(old, now)
+        await inject("other", text)
+        await send(id, text, "context", "AI agent bus: your bot changed")
+      }
       bots[id] = { username: now, at: Date.now() }
       for (const [k, v] of Object.entries<any>(bots)) if (Date.now() - Number(v?.at || 0) > 30 * 86400_000) delete bots[k]
       await ctx.storage.set(BOTS_KEY, bots)
@@ -621,6 +634,7 @@ export async function setup(ctx: Plugin.Context) {
         else if (r.action === "signoff") t.signoffAsked = true
         t.busy = true
         await stat("block", { kind: r.action })
+        await inject(r.action, String(r.reason))
         if (await send(id, String(r.reason), r.action, String(r.banner || ""))) return
         t.busy = false
       }
@@ -721,6 +735,7 @@ export async function setup(ctx: Plugin.Context) {
     t.busy = true
     t.byBus = true
     await stat("wake", { reason: String(r.reason || "") })
+    await inject(r.reason === "digest" ? "digest" : "other", String(r.text))
     if (await send(id, String(r.text), "wake", "AI agent bus: wake-up")) {
       // Requested before the stat, and not after an interrupt that came meanwhile
       // (it cleared `busy` and requested idle): working never follows that idle.

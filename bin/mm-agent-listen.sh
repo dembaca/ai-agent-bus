@@ -101,6 +101,12 @@ write "$$" ""
 trap 'ENDED_AS=killed; echo "Your human is back: nothing to do here."; exit 0' TERM INT
 trap '[[ "${ENDED_AS:-}" == killed ]] || write 0 "${ENDED_AS:-over}"' EXIT
 
+# The line that wakes the agent, counted by kind and length only (RT-6.9 step 1), then printed.
+say() {
+  mm_stat inject name="$1" chars="${#2}"
+  printf '%s\n' "$2"
+}
+
 since_ms=$((STARTED * 1000))
 while (( $(date +%s) < UNTIL )); do
   pending=0
@@ -111,7 +117,7 @@ while (( $(date +%s) < UNTIL )); do
   if (( pending > 0 )); then
     ENDED_AS=event
     mm_stat wake reason=dm
-    echo "Mattermost: ${pending} unread mention(s) or DM(s) for you. Collect them with wait_for_events(timeout_sec=1), answer in their threads, then finish your turn."
+    say other "Mattermost: ${pending} unread mention(s) or DM(s) for you. Collect them with wait_for_events(timeout_sec=1), answer in their threads, then finish your turn."
     exit 0
   fi
   # A reaction to an open ask (RT-6.11) raises no unread counter: the server
@@ -124,7 +130,7 @@ while (( $(date +%s) < UNTIL )); do
   if (( fresh > 0 )); then
     ENDED_AS=event
     mm_stat wake reason=reaction
-    echo "Mattermost: ${fresh} reaction(s) to your ask(s). Collect them with wait_for_events(timeout_sec=1), act on the answer, call resolve_ask once it is settled, then finish your turn."
+    say other "Mattermost: ${fresh} reaction(s) to your ask(s). Collect them with wait_for_events(timeout_sec=1), act on the answer, call resolve_ask once it is settled, then finish your turn."
     exit 0
   fi
   coordinator=false
@@ -156,7 +162,7 @@ while (( $(date +%s) < UNTIL )); do
     if [[ "${addressed:-0}" =~ ^[0-9]+$ ]] && (( addressed > 0 )); then
       ENDED_AS=event
       mm_stat wake reason=addressed
-      echo "Mattermost: ${addressed} new post(s) for you in the work channel. Collect them with wait_for_events(timeout_sec=1), answer in their threads, then finish your turn."
+      say other "Mattermost: ${addressed} new post(s) for you in the work channel. Collect them with wait_for_events(timeout_sec=1), answer in their threads, then finish your turn."
       exit 0
     fi
     if [[ "${others:-0}" =~ ^[0-9]+$ ]] && (( others > 0 )) &&
@@ -165,7 +171,7 @@ while (( $(date +%s) < UNTIL )); do
       mm_stat wake reason=digest
       note=""
       [[ "${fyi:-0}" =~ ^[0-9]+$ ]] && (( fyi > 0 )) && note=", ${fyi} of them fyi"
-      echo "Mattermost digest: ${others} post(s) in the work channel since $(mm_epoch_hhmm $(( oldest / 1000 )))${note}, none addressed to you. Skim them with wait_for_events(timeout_sec=1); act only on what needs you, then finish your turn."
+      say digest "Mattermost digest: ${others} post(s) in the work channel since $(mm_epoch_hhmm $(( oldest / 1000 )))${note}, none addressed to you. Skim them with wait_for_events(timeout_sec=1); act only on what needs you, then finish your turn."
       exit 0
     fi
   fi
@@ -176,4 +182,4 @@ while (( $(date +%s) < UNTIL )); do
 done
 
 mm_stat wake reason=over
-echo "Mattermost listen window over, nothing new. Finish your turn without another word."
+say idle "Mattermost listen window over, nothing new. Finish your turn without another word."

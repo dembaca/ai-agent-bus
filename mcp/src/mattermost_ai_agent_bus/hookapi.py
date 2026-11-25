@@ -29,7 +29,7 @@ instead, served next to the WebSocket inbox in the server's event loop:
     POST /v1/usage          {ctx?, ctx_size?, five_hour?: {used?, resets_at?},
                             seven_day?: {…}} → {ok} (the status line's numbers, RT-6.10
                             step 3, ADR-008: valid fields kept, the rest ignored)
-    POST /v1/stat           {k: turn|turn_end|block|compact|wake|transcript, …} → {ok}
+    POST /v1/stat           {k: turn|turn_end|block|compact|wake|transcript|inject, …} → {ok}
                             (one overhead counter, RT-6.9: the hooks of a keyless
                             session cannot reach the server's state dir, RT-6.18)
     POST /v1/files          ?name=N[&channel=ID|NAME | &root=ID | &to=AGENT], the raw bytes
@@ -885,7 +885,7 @@ async def usage_route(client: ChatPort, query: Mapping[str, str],
 
 
 # The counters the hooks and the listener note (bin/mm-agent-lib.sh mm_stat).
-STAT_KINDS = frozenset({"turn", "turn_end", "block", "compact", "wake", "transcript"})
+STAT_KINDS = frozenset({"turn", "turn_end", "block", "compact", "wake", "transcript", "inject"})
 MAX_STAT_FIELDS = 4
 MAX_STAT_VALUE = 4096
 _FIELD = re.compile(r"[a-z][a-z_]{0,15}")
@@ -920,6 +920,10 @@ async def stat(client: ChatPort, query: Mapping[str, str], body: Mapping[str, An
                 (type(v) is int and abs(v) < 2**53)
                 or (isinstance(v, str) and len(v) <= MAX_STAT_VALUE and "\x00" not in v)):
             raise BadRequest("fields: short lowercase names, numbers or strings")
+    if kind == "inject" and (set(values) != {"name", "chars"} or values["name"] not in stats.INJECT_KINDS
+                             or type(values["chars"]) is not int or values["chars"] < 0):
+        # A text put into the context: its kind and length only, never the text (RT-6.9 step 1).
+        raise BadRequest(f"inject: name (one of {', '.join(sorted(stats.INJECT_KINDS))}) and chars only")
     stats.set_user(await _uid(client))
     stats.record(kind, **values)
     return 200, {"ok": True}

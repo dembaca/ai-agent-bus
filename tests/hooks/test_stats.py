@@ -38,7 +38,7 @@ def test_a_turn_ends_at_the_stop_that_lets_go(mm, run):
     run(PROMPT)
     mm.unread_dm(1)
     assert all(run(STOP).blocked for _ in range(3))     # three drain rounds: no end
-    assert [e["k"] for e in events(run)] == ["turn", "block", "block", "block"]
+    assert [e["k"] for e in events(run)] == ["turn", *["block", "inject"] * 3]
     assert run(STOP).passed                              # the count is stale: let go
     kinds = [e["k"] for e in events(run)]
     assert kinds.count("turn") == 1 and kinds[-1] == "turn_end"
@@ -225,6 +225,51 @@ def test_the_tool_reports_what_the_script_reports(mm, run):
     assert ["0.91.0", "worker", "2", "0.1", "100%", "50%", "100%", "19.1", "9.5"] in cells
     assert all(r["settled"] is None for r in stats.report(lines)[:-1])
     assert ["0.91.0", "worker", "2", "2", "2.5", "10%", "7%", "1.3", "0.4", "1%"] in cells
+
+
+def test_the_hooks_count_their_texts_by_kind_and_length_only(mm, run):
+    """RT-6.9 step 1: every text the Stop hook and the listener put into the context is an
+    `inject` event with its kind and length, numbers only, never the text."""
+    run(PROMPT)
+    mm.unread_dm(1)
+    blocked = run(STOP)                                  # drain round
+    reason = json.loads(blocked.stdout)["reason"]
+    run(LISTEN, "--until", str(int(time.time()) + 5), MM_LISTEN_POLL_SEC="1", **IN_PROJECT)
+    injected = [e for e in events(run) if e["k"] == "inject"]
+    assert [e["name"] for e in injected] == ["drain", "other"]
+    assert injected[0]["chars"] == len(reason)
+    assert all(set(e) == {"k", "t", "name", "chars"} and isinstance(e["chars"], int) for e in injected)
+
+
+def test_the_traffic_by_category_is_the_tools(mm, run):
+    """RT-6.9 step 3: the bus traffic by category, the same JSON from the script as from
+    stats_report; a line without the counts (older than the counts) leaves the version
+    n/a and counts in the coverage, never as 0."""
+    from mattermost_ai_agent_bus import stats
+
+    new = {"post_words": {"HELLO": [1, 40], "IDLE": [2, 60], "TASK": [1, 300], "DONE": [1, 90],
+                          "plain": [2, 120], "ask": [1, 500], "other": [1, 30]},
+           "inbound": {"agent": [3, 900], "human": [1, 50], "event": [2, 80], "envelope": [6, 1200]},
+           "polls": [5, 3], "inject": {"drain": [1, 150], "compact": [1, 2000], "digest": [1, 400]}}
+    lines = [{"v": "0.101.0", "min": 60, "turns": 3},
+             {"v": "0.102.0", "sid": "5e55", "min": 60, "turns": 3, **new},
+             {"v": "0.102.0", "sid": "a1b2", "min": 30, "turns": 1}]
+    mm.posts[:0] = [{"id": f"s{i}", "user_id": "x" * 26, "create_at": 1,
+                     "message": "STATS " + json.dumps(line)} for i, line in enumerate(lines)]
+    r = run(REPORT, "report", "agents-stats", "--json")
+    assert r.code == 0, r.stderr
+    got = json.loads(r.stdout)
+    assert got == stats.report(lines)
+    old, t = got[0]["traffic"], got[1]["traffic"]
+    assert old is None and (t["lines"], t["of"]) == (1, 2)
+    # Overhead: HELLO, IDLE, other posts (4 items, 130), server events (2, 80), the envelope
+    # (1200 characters), hook texts (3, 2550), empty polls (3 items).
+    assert t["overhead"] == [4 + 2 + 3 + 3, 130 + 80 + 1200 + 2550]
+    assert t["coordination"] == [1 + 1 + 2 + 1 + 3 + 1, 300 + 90 + 120 + 500 + 900 + 50]
+    assert (t["empty_polls_pct"], t["overhead_chars_pct"]) == (60, 67)
+    cells = [line.split() for line in run(REPORT, "report", "agents-stats").stdout.splitlines()]
+    assert ["0.102.0", "1/2", "12", "3960", "9", "1960", "67%", "60%"] in cells
+    assert ["0.101.0", "-", "-", "-", "-", "-", "-", "-"] in cells
 
 
 def test_off_counts_nothing(mm, run):

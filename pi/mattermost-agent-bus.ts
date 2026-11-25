@@ -210,6 +210,13 @@ export function wakeBackoffMs(repeats: number): number {
   return Math.min(WAKE_BACKOFF_MS * 2 ** repeats, WAKE_BACKOFF_MAX_MS)
 }
 
+// The kinds of text put into the context the stats know (stats.INJECT_KINDS, RT-6.9 step 1);
+// any other counts as "other". Only the kind and the length go to the server, never the text.
+const INJECT_KINDS = new Set(["start", "check", "digest", "drain", "signoff", "listen", "idle", "compact"])
+export function injectKind(name: string): string {
+  return INJECT_KINDS.has(name) ? name : "other"
+}
+
 // The bus checkout: MM_AGENT_BUS_ROOT, or the checkout this file really lies
 // in (pi/; a symlink into ~/.pi/agent/extensions/ resolves).
 export function busRoot(env: Env, here: string): string | null {
@@ -291,6 +298,8 @@ export function create(pi: ExtensionAPI, deps: Deps = {}) {
   let closed = true
 
   const stat = (k: string, fields: Json = {}) => bus("POST", "/v1/stat", { k, ...fields })
+  // A text the extension puts into the context, by kind and length only, never the text (RT-6.9 step 1).
+  const inject = (name: string, text: string) => stat("inject", { name: injectKind(name), chars: text.length })
   // One call at a time: an abort's `idle` never overtakes the run's `working`.
   const presence: (state: "working" | "idle" | "bus") => Promise<void> =
     presenceQueue((state) => bus("POST", "/v1/presence", { state, label }))
@@ -378,6 +387,7 @@ export function create(pi: ExtensionAPI, deps: Deps = {}) {
       if (r.action === "drain") t.drains += 1
       else if (r.action === "signoff") t.signoffAsked = true
       await stat("block", { kind: r.action })
+      await inject(r.action, String(r.reason))
       notify(String(r.banner || ""))
       deliver(String(r.reason))
       return
@@ -448,6 +458,7 @@ export function create(pi: ExtensionAPI, deps: Deps = {}) {
       t.wakeAfter = now + wakeBackoffMs(t.wakeRepeats)
       const idle = !t.running
       await stat("wake", { reason: String(r.reason || "") })
+      await inject(r.reason === "digest" ? "digest" : "other", String(r.text))
       deliver(String(r.text))
       if (idle) {
         // The bus's turn keeps the drain rounds: only the human's next prompt

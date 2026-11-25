@@ -775,6 +775,10 @@ async def test_only_a_push_that_went_out_is_a_hand_over(monkeypatch):
     assert _heard() == []
     await server._push_delivered(item(True))
     assert [(h["human"], h["trusted"], h.get("pushed")) for h in _heard()] == [(1, 1, 1)]
+    # RT-6.9 step 2: only the pushed one is handed in, its tag's text and attributes counted.
+    tag = channel.notification(item(True))
+    assert [(e["c"], e["chars"], e["env"]) for e in _events() if e["k"] == "in"] == [
+        ("human", len(tag["content"]), len(json.dumps(tag["meta"], ensure_ascii=False)))]
 
 
 def test_the_settled_report_counts_old_lines_as_unknown():
@@ -858,3 +862,145 @@ def test_the_answer_to_a_question_to_the_coordinator_is_marked(monkeypatch):
         ("q1", 1, 5000), ("a2", None, 6000)]
     s = stats.summary("0.91.1")
     assert (s["asks"], s["asks_answered"], s["ask_wait_sec"], s["human_answers"]) == (1, 1, 30, 2)
+
+
+# --- the bus traffic by kind and category (RT-6.9 steps 2 and 3, #139 stage 1) ---------------
+
+def test_the_server_counts_posts_by_word_messages_by_class_polls_and_hook_texts():
+    """RT-6.9 step 2: own posts by bus word (none: plain; the server's own: other; an old
+    event without one: other), messages handed in by author class with their envelope,
+    polls and the empty ones, hook texts by kind (an unknown kind: other; a compaction
+    handoff is one): pairs of numbers under fixed keys, no text."""
+    _write_events(
+        {"k": "post", "t": 1, "chars": 40, "w": "HELLO"}, {"k": "post", "t": 2, "chars": 300, "w": "TASK"},
+        {"k": "post", "t": 3, "chars": 20, "w": "plain"}, {"k": "post", "t": 4, "chars": 7},
+        {"k": "post", "t": 5, "chars": 9, "w": "evil"},
+        {"k": "in", "t": 6, "c": "agent", "chars": 100, "env": 150},
+        {"k": "in", "t": 7, "c": "human", "chars": 10, "env": 120},
+        {"k": "in", "t": 8, "c": "nobody", "chars": 5, "env": 5},
+        {"k": "poll", "t": 9, "empty": 1}, {"k": "poll", "t": 10, "empty": 0},
+        {"k": "inject", "t": 11, "name": "drain", "chars": 200},
+        {"k": "inject", "t": 12, "name": "made-up", "chars": 3},
+        {"k": "compact", "t": 13, "chars": 2500},
+    )
+    s = stats.summary("0.102.0")
+    assert s["post_words"] == {"HELLO": [1, 40], "TASK": [1, 300], "plain": [1, 20], "other": [2, 16]}
+    assert s["inbound"] == {"agent": [1, 100], "human": [1, 10], "envelope": [2, 270]}
+    assert s["polls"] == [2, 1]
+    assert s["inject"] == {"drain": [1, 200], "other": [1, 3], "compact": [1, 2500]}
+    assert stats.decode_line(stats.nats_body(s) or b"")["inject"] == s["inject"]
+
+
+def test_a_session_without_traffic_still_says_so():
+    """RT-6.9 step 2: a new line always carries the four keys, so zero is told from n/a."""
+    stats.record("turn")
+    s = stats.summary("0.102.0")
+    assert (s["post_words"], s["inbound"], s["polls"], s["inject"]) == ({}, {}, [0, 0], {})
+
+
+async def test_wait_for_events_counts_the_poll_and_what_it_handed_in(monkeypatch):
+    """RT-6.9 step 2: an empty poll; a poll with an agent's post and the server's own event:
+    body characters by class, the rest of the item as the envelope."""
+    from mattermost_ai_agent_bus import receipt
+
+    class Inbox:
+        pending = 0
+
+        def __init__(self, batches):
+            self.batches = batches
+
+        async def wait_for_events(self, timeout_sec, max_events):
+            return self.batches.pop(0)
+
+    agent = _ev("mention", user_id="a", message="TASK do it")
+    own = _ev("stall", message="stalled")
+    items = {id(agent): {"kind": "mention", "from_trusted_human": False, "from_agent": True,
+                         "post": {"message": "TASK do it", "id": "p"}},
+             id(own): {"kind": "stall", "from_trusted_human": False, "from_agent": False,
+                       "post": {"message": "stalled"}}}
+
+    async def event_items(events, raw=False):
+        return [dict(items[id(e)]) for e in events]
+
+    async def nothing(*a, **kw):
+        return None
+
+    inbox = Inbox([[], [agent, own]])
+    monkeypatch.setattr(server, "_get_inbox", lambda: inbox)
+    monkeypatch.setattr(server, "_event_items", event_items)
+    monkeypatch.setattr(receipt, "delivered", lambda ids: None)
+    for name in ("_note_delivered", "_note_unanswered", "_typing_for_task", "_crown_events",
+                 "_compact_bystander"):
+        monkeypatch.setattr(server, name, nothing)
+    monkeypatch.setattr(server, "_confirmed", None)
+    await server.wait_for_events(timeout_sec=0)
+    await server.wait_for_events(timeout_sec=0)
+    rows = [e for e in _events() if e["k"] in ("poll", "in")]
+    assert [(e["k"], e.get("empty", e.get("c"))) for e in rows] == [
+        ("poll", 1), ("poll", 0), ("in", "agent"), ("in", "event")]
+    assert (rows[2]["chars"], rows[3]["chars"]) == (len("TASK do it"), len("stalled"))
+    assert rows[2]["env"] == len(server._dump(items[id(agent)])) - len("TASK do it")
+
+
+def test_own_posts_record_their_word():
+    """RT-6.9 step 2: post_message and reply_in_thread key a post by its bus word, else plain."""
+    assert server._post_word("`DONE` merged") == "DONE"
+    assert server._post_word("**IDLE** nothing open") == "IDLE"
+    assert server._post_word("thanks, looking") == "plain"
+    assert stats.POST_WORDS == {*__import__("mattermost_ai_agent_bus.a2a").a2a.WORDS, "ask", "plain", "other"}
+
+
+def test_the_new_keys_decode_within_their_bounds_and_drop_unknown_ones():
+    """RT-6.9, RT-6.43 step 7: the four objects pass the strict decoder as pairs of numbers
+    0 to NUM_MAX; a key outside the fixed lists is left out, never shown; a value of
+    another shape drops the whole line."""
+    line = {"v": "0.102.0", "post_words": {"TASK": [1, 30], "secret-name": [1, 1]},
+            "inbound": {"agent": [1, 2], "envelope": [1, 50], "peer-x": [1, 1]},
+            "polls": [3, 1], "inject": {"drain": [1, 9], "text": [1, 1]}}
+    got = stats.decode_line(json.dumps(line).encode())
+    assert got["post_words"] == {"TASK": [1, 30]} and got["inbound"] == {"agent": [1, 2], "envelope": [1, 50]}
+    assert got["polls"] == [3, 1] and got["inject"] == {"drain": [1, 9]}
+    for bad in ({"polls": [1]}, {"polls": [1, -1]}, {"post_words": {"TASK": 3}},
+                {"inbound": {"agent": [1, "x"]}}, {"inject": {"drain": [1, 10**13]}},
+                {"post_words": {"TASK": [True, 1]}}):
+        with pytest.raises(stats.LineError):
+            stats.decode_line(json.dumps({"v": "0.102.0", **bad}).encode())
+
+
+def test_the_largest_line_with_the_traffic_stays_within_the_limit():
+    """RT-6.43 step 7: every key of every list at NUM_MAX still fits NATS_BODY_MAX."""
+    big = [10**12, 10**12]
+    line = {"v": "0.102.0", "sid": "3f9a1c2b7d4e", "rt": "claude-code", "kind": "session",
+            "tools": {n: big for n in stats.TOOL_NAMES}, "post_words": dict.fromkeys(stats.POST_WORDS, big),
+            "inbound": dict.fromkeys(stats.INBOUND_KEYS, big), "polls": big,
+            "inject": dict.fromkeys(stats.INJECT_KINDS, big),
+            "wakes": dict.fromkeys(stats.WAKE_REASONS, 10**12), "blocks": dict.fromkeys(stats.BLOCK_KINDS, 10**12)}
+    body = stats.nats_body(line | {k: 10**12 for k, label in stats.LINE_KEYS.items()
+                                   if k not in line and k not in ("final", "part", "posts", "compact", "tok")})
+    assert body is not None and len(body) <= stats.NATS_BODY_MAX
+
+
+def test_the_report_groups_the_traffic_into_overhead_and_coordination():
+    """RT-6.9 step 3: the reader's mapping (CATEGORY_OF) on the summed counts; lines without
+    the counts (older publishers) count in the coverage and leave a version n/a, never 0."""
+    new = {"post_words": {"HELLO": [1, 40], "BYE": [1, 20], "RESULT": [2, 400], "ask": [1, 300], "other": [1, 5]},
+           "inbound": {"agent": [2, 600], "human": [1, 30], "event": [1, 40], "envelope": [4, 800]},
+           "polls": [4, 1], "inject": {"check": [1, 200], "digest": [1, 700]}}
+    lines = [{"v": "0.101.0", "min": 10}, {"v": "0.102.0", "sid": "a" * 12, "min": 10, **new},
+             {"v": "0.102.0", "sid": "b" * 12, "min": 10, **new}, {"v": "0.102.0", "min": 5}]
+    rows = {r["version"]: r for r in stats.report(lines)}
+    assert rows["0.101.0"]["traffic"] is None
+    t = rows["0.102.0"]["traffic"]
+    assert (t["lines"], t["of"]) == (2, 3)
+    assert t["posts"]["RESULT"] == [4, 800] and t["polls"] == 8 and t["empty_polls"] == 2
+    # Overhead: HELLO, BYE, other (3 items, 65), event (1, 40), envelope (800, no items),
+    # hook texts (2, 900), the empty poll (1 item); twice.
+    assert t["overhead"] == [2 * (3 + 1 + 2 + 1), 2 * (65 + 40 + 800 + 900)]
+    assert t["coordination"] == [2 * (2 + 1 + 2 + 1), 2 * (400 + 300 + 600 + 30)]
+    assert t["empty_polls_pct"] == 25 and t["overhead_chars_pct"] == round(1805 * 100 / (1805 + 1330))
+    assert stats.traffic_summary(lines) == t | {"of": 4}
+    assert stats.traffic_summary([{"v": "0.101.0"}]) is None
+    # Every key of the fixed lists has a category; the mapping lives on the reader's side.
+    assert set(stats.CATEGORY_OF["post_words"]) == stats.POST_WORDS
+    assert set(stats.CATEGORY_OF["inbound"]) == stats.INBOUND_KEYS
+    assert set(stats.CATEGORY_OF["inject"]) == stats.INJECT_KINDS

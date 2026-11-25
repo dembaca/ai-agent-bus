@@ -213,8 +213,10 @@ test("RT-6.27 step 5: a wake starts a run when idle, follows up while a human's 
   answerWake({ wake: true, reason: "mentions", count: 1, text: "collect with wait_for_events" })
   await until(() => f.sent.length === 1, "a wake-up is sent")
   assert.deepEqual(f.sent[0], { text: "collect with wait_for_events", opts: undefined })
-  await until(() => rest().filter((p) => p === "POST /v1/stat").length === 2, "counted")
-  assert.deepEqual(bodies("/v1/stat"), [{ k: "wake", reason: "mentions" }, { k: "turn", by: "bus" }])
+  await until(() => rest().filter((p) => p === "POST /v1/stat").length === 3, "counted")
+  // RT-6.9 step 1: the wake-up's text by kind and length only, never the text.
+  assert.deepEqual(bodies("/v1/stat"), [{ k: "wake", reason: "mentions" },
+    { k: "inject", name: "other", chars: "collect with wait_for_events".length }, { k: "turn", by: "bus" }])
   await settle()
   assert.equal(held.length, 0, "no poll while the run it started goes")
   await f.emit("agent_start")
@@ -272,7 +274,8 @@ test("RT-6.27 step 4: the checks run at agent_settled, not at agent_end", async 
                /^\/v1\/turn-end\?drains=0&signoff_asked=0&by_bus=0&push=1&unanswered=1$/)
   assert.deepEqual(f.sent[0], { text: "3 messages wait: collect them", opts: undefined })
   assert.deepEqual(f.box.notes, ["bus: drain"])
-  assert.deepEqual(bodies("/v1/stat").at(-1), { k: "block", kind: "drain" })
+  assert.deepEqual(bodies("/v1/stat").slice(-2), [{ k: "block", kind: "drain" },
+    { k: "inject", name: "drain", chars: "3 messages wait: collect them".length }])  // RT-6.9 step 1
   // The drain's run settles: the next check counts the round; idle with the gates → on the bus.
   answers["/v1/turn-end"] = () => ({ action: "idle", listen_since: nowSec(), listen_until: nowSec() + 5400 })
   await f.emit("agent_start")
@@ -302,7 +305,9 @@ test("RT-6.27 step 4, RT-6.2 step 2: a bus post without an answer in its thread:
   // Marked as the block goes out, not by the read.
   assert.deepEqual(bodies("/v1/reminded"), [{ post_ids: ["p1"] }])
   assert.deepEqual(f.box.notes, ["bus: answer"])
-  assert.deepEqual(bodies("/v1/stat").at(-1), { k: "block", kind: "answer" })
+  // RT-6.9 step 1: the answer demand is no kind of its own among the texts: "other".
+  assert.deepEqual(bodies("/v1/stat").slice(-2), [{ k: "block", kind: "answer" },
+    { k: "inject", name: "other", chars: "A post that reached you …".length }])
   answers["/v1/turn-end"] = { action: "idle" }
   await f.emit("agent_start")
   await f.emit("agent_settled", { aborted: false })
