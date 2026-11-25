@@ -36,6 +36,8 @@ from .nats_read import PersonReader, View, reachable
 
 log = logging.getLogger("console")
 
+LOGGED_OUT_LOCALLY = ("Logged out of the console. The Keycloak session is still"
+                      " open: close the browser to end it.")
 COOKIE = "choirbus_session"        # the session (8 h default)
 FLOW_COOKIE = "choirbus_flow"      # binds a login to the browser (10 min)
 STATE_TTL = 600.0                  # a login state lives ten minutes
@@ -121,6 +123,10 @@ class Console:
             try:
                 self.endpoints = await finder(self.settings.issuer)
                 log.info("console: the issuer's endpoints are in")
+                if not self.endpoints.end_session:
+                    log.warning("console: the issuer names no end-session endpoint;"
+                                " a logout leaves the Keycloak session open"
+                                " (RT-6.43 step 9)")
                 return
             except (auth.AuthError, httpx.HTTPError, OSError, TimeoutError) as exc:
                 log.warning("console: %s; /login answers 503; retrying", exc)
@@ -331,18 +337,31 @@ class Console:
             # logout), so /login does not slip back in through Keycloak's
             # single sign-on; the stored ID token is the hint, expired or not;
             # with no live session (a restart) the realm asks to confirm
-            target = "/"
-            if not s.login_off:
-                target = "/login"
-                if self.endpoints is not None:
+            if s.login_off:
+                response = httpd.Response.see("/")
+            else:
+                target = ""
+                if self.endpoints is None:
+                    log.warning("console logout: the issuer's endpoints are not"
+                                " in yet; the Keycloak session stays open")
+                else:
                     target = auth.logout_url(self.endpoints, s.client_id,
-                                             f"{self.base()}/", hint) or target
-                if target == "/login":
-                    log.warning("console logout: no end-session endpoint;"
-                                " the realm's session stays")
-            response = httpd.Response.see(target)
+                                             f"{self.base()}/", hint)
+                    if not target:
+                        log.warning("console logout: the issuer names no"
+                                    " end-session endpoint; the Keycloak"
+                                    " session stays open")
+                # without the realm's logout, a page that starts no login:
+                # /login would come straight back in through the open session
+                response = (httpd.Response.see(target) if target
+                            else httpd.Response.text(LOGGED_OUT_LOCALLY))
+            # the hint travels in the Location URL: kept out of caches and
+            # of the next page's Referer (it still reaches the browser's
+            # history and the access logs of Keycloak and its proxy)
             response.headers = response.headers + (
-                ("Set-Cookie", f"{COOKIE}=; Path=/; Max-Age=0"),)
+                ("Set-Cookie", f"{COOKIE}=; Path=/; Max-Age=0"),
+                ("Cache-Control", "no-store"),
+                ("Referrer-Policy", "no-referrer"))
             return response
         # the browser app
         operator = self._operator(headers)
@@ -444,7 +463,7 @@ class Console:
                                        on_end=lambda: self.sessions.end(view))
         token = self.sessions.issue(operator, s.session_sec, view,
                                     per_person=SESSIONS_PER_OPERATOR,
-                                    id_token=tokens.id)
+                                    id_token=tokens.id_token)
         if view.reader is not None:
             view.reader.start()
         return token

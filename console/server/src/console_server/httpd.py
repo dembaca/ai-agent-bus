@@ -28,9 +28,18 @@ MAX_POST_BODY = 4096     # the logout's form is empty; nothing more is read
 
 REASONS = {200: "OK", 206: "Partial Content", 303: "See Other",
            400: "Bad Request", 401: "Unauthorized", 403: "Forbidden",
-           404: "Not Found", 405: "Method Not Allowed", 413: "Payload Too Large",
+           404: "Not Found", 405: "Method Not Allowed", 411: "Length Required",
+           413: "Payload Too Large",
            429: "Too Many Requests", 500: "Internal Server Error",
            502: "Bad Gateway", 503: "Service Unavailable"}
+
+
+class Refusal(ValueError):
+    """A request refused before any handler, with its own status."""
+
+    def __init__(self, status: int, why: str) -> None:
+        super().__init__(why)
+        self.status = status
 
 
 @dataclass
@@ -157,18 +166,23 @@ class Httpd:
                         headers[name.strip().lower()] = value.strip()
                     if parts[0] == "POST":
                         # a POST carries no body the console reads (the
-                        # logout's form is empty): a small one is drained
+                        # logout's form is empty): a small one is drained;
+                        # a chunked one has no length to bound it by
+                        if "transfer-encoding" in headers:
+                            raise Refusal(411, "POST without a Content-Length")
                         length = headers.get("content-length", "0")
-                        if not length.isdigit() or int(length) > MAX_POST_BODY:
-                            raise ValueError("POST body too big")
+                        if not length.isdigit():
+                            raise ValueError("Content-Length is no number")
+                        if int(length) > MAX_POST_BODY:
+                            raise Refusal(413, "POST body too big")
                         if int(length):
                             await reader.readexactly(int(length))
                 # the method as a pseudo-header: no line of the head can
                 # name it (a leading ":" leaves an empty name)
                 headers[":method"] = parts[0]
             except (asyncio.TimeoutError, ValueError, ConnectionError,
-                    asyncio.IncompleteReadError):
-                writer.write(Response(status=400).head())
+                    asyncio.IncompleteReadError) as exc:
+                writer.write(Response(status=getattr(exc, "status", 400)).head())
                 return
             query = dict(parse_qsl(urlsplit(parts[1]).query))
             route = urlsplit(parts[1]).path

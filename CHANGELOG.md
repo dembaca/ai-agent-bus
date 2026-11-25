@@ -14,6 +14,12 @@ before 0.5.0 are described in the git history.
   `127.0.0.1`, `::1` or `localhost`; a lab on a network it trusts may set
   `BRIDGE_MM_ALLOW_HTTP=true` (default off, a warning at start). The
   bridge's WebSocket reader refuses such a URL on its own too.
+- **The operator console's `GET /logout` answers 405** (#108 point 3,
+  RT-6.43 step 9). The logout is a POST now, from the sidebar's button; a
+  bookmark or link to `/logout` no longer logs out. The release's entry
+  needs the line `Needs: keycloak post logout redirect uri for the console
+  client.` (the console's client lists `<CONSOLE_PUBLIC_URL>/` under "Valid
+  post logout redirect URIs").
 
 ### Changed
 
@@ -24,8 +30,7 @@ before 0.5.0 are described in the git history.
   the previous operator. Now a button in the sidebar POSTs `/logout`; the
   server drops its session and redirects to Keycloak's end-session endpoint
   with the login's stored ID token as the hint, expired or not (Keycloak
-  asks to confirm only without one, after a restart). `GET /logout`
-  answers 405. The
+  asks to confirm only without one, after a restart). The
   console's Keycloak client needs `<CONSOLE_PUBLIC_URL>/` under "Valid post
   logout redirect URIs" before rollout.
 

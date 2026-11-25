@@ -201,7 +201,7 @@ class Tokens:
     the ID token, kept only as the logout's hint (RT-6.43 step 9)."""
     access: str
     refresh: str = ""
-    id: str = ""
+    id_token: str = ""
 
     def __repr__(self) -> str:
         return "Tokens(…)"
@@ -228,7 +228,7 @@ async def _token_call(endpoints: Endpoints, form: dict[str, str],
     id_token = doc.get("id_token")
     return Tokens(access=doc["access_token"],
                   refresh=refresh if isinstance(refresh, str) else "",
-                  id=id_token if isinstance(id_token, str) else "")
+                  id_token=id_token if isinstance(id_token, str) else "")
 
 
 async def exchange(endpoints: Endpoints, client_id: str, redirect_uri: str,

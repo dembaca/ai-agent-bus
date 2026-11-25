@@ -139,7 +139,7 @@ async def test_exchange_with_a_fake_token_endpoint() -> None:
     tokens = await auth.exchange(ENDPOINTS, "console",
                                  "https://console.example/callback",
                                  "the-code", "the-verifier", post=post)
-    assert (tokens.access, tokens.refresh, tokens.id) == ("x.y.z", "r.r.r", "no")
+    assert (tokens.access, tokens.refresh, tokens.id_token) == ("x.y.z", "r.r.r", "no")
     assert "x.y.z" not in repr(tokens) and "r.r.r" not in repr(tokens)
 
 
@@ -188,6 +188,11 @@ def test_logout_url_hints_with_the_stored_id_token() -> None:
                        f"&id_token_hint={stored}")
     url = auth.logout_url(ends, "console", back, "")
     assert "id_token_hint" not in url and "client_id=console" in url
+    queried = auth.Endpoints(issuer=ENDPOINTS.issuer, authorization=ENDPOINTS.authorization,
+                             token=ENDPOINTS.token, jwks=ENDPOINTS.jwks,
+                             end_session="https://kc/realms/x/logout?ui_locales=en")
+    url = auth.logout_url(queried, "console", back, "")
+    assert url.startswith("https://kc/realms/x/logout?ui_locales=en&client_id=console&")
     assert auth.logout_url(ENDPOINTS, "console", back, "stored") == ""
 
 
@@ -219,6 +224,22 @@ def test_a_sessions_id_token_goes_with_it() -> None:
     expired = sessions.issue(operator, ttl=3600, id_token="old")
     assert sessions.get(expired, now=time.time() + 7200) is None
     assert sessions._hints == {}
+    # the sweep in issue: an expired session's hint goes with it
+    sessions.issue(operator, ttl=-1, id_token="swept")
+    sessions.issue(operator, ttl=3600)
+    assert "swept" not in sessions._hints.values()
+    # the per-person cap evicts the oldest, and its hint
+    capped = Sessions()
+    capped.issue(operator, ttl=3600, per_person=1, id_token="first")
+    second = capped.issue(operator, ttl=3600, per_person=1, id_token="second")
+    assert list(capped._hints.values()) == ["second"]
+    # the reader's own end (Sessions.end) takes the hint too
+    view = object()
+    ended = Sessions()
+    ended.issue(operator, ttl=3600, view=view, id_token="viewed")
+    ended.end(view)
+    assert ended._hints == {}
+    assert capped.drop(second) == "second"
 
 
 def test_sessions_hash_the_token_in_memory() -> None:
