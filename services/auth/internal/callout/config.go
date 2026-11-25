@@ -4,6 +4,8 @@ import (
 	"errors"
 	"fmt"
 	"time"
+
+	"github.com/dembaca/ai-agent-bus/services/auth/internal/consumers"
 )
 
 // Defaults of the configuration.
@@ -12,7 +14,7 @@ const (
 	DefaultNamePrefix = "agent-"
 	DefaultPrefix     = "bus"
 	DefaultPresence   = "presence"
-	DefaultStats      = "stats"
+	DefaultStats      = consumers.DefaultStatsPrefix
 	// DeliverPrefix starts the subjects push consumers deliver to; fixed,
 	// and neither of the two prefixes may take it.
 	DeliverPrefix = "deliver"
@@ -78,6 +80,11 @@ func (c Config) check() error {
 			return fmt.Errorf("callout: %s %q is the deliver prefix: an agent could publish onto deliver subjects", what, v)
 		}
 	}
+	for what, v := range map[string]string{"subject prefix": c.Subjects.Prefix, "presence prefix": c.Subjects.Presence, "stats prefix": c.Subjects.Stats} {
+		if v == inboxPrefix {
+			return fmt.Errorf("callout: %s %q is the inbox prefix: an agent could publish onto replies", what, v)
+		}
+	}
 	if c.Subjects.Presence == c.Subjects.Prefix {
 		return fmt.Errorf("callout: presence prefix %q must differ from the subject prefix (they would overlap)", c.Subjects.Presence)
 	}
@@ -104,6 +111,10 @@ func (s Subjects) checkStats() error {
 	}
 	return nil
 }
+
+// inboxPrefix starts the reply subjects of requests (nats.go's _INBOX): no
+// prefix of the bus may take it.
+const inboxPrefix = "_INBOX"
 
 func plain(s string) bool {
 	for _, r := range s {

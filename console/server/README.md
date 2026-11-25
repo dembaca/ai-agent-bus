@@ -25,9 +25,11 @@ the login service makes for an agent: no acks, the last message per
 subject replayed (so a reconnect finds the fleet as it stands), a
 one-hour idle threshold. From the deliveries (their JetStream metadata is
 the server's clock — never the host's, as `natsbus.py` does it) it keeps
-the presence, membership and crown-claim state; the card everything the
-bus does not carry today arrives as unknown (`null`/empty), never guessed
-as zero — the app shows `n/a`.
+the presence, membership and crown-claim state, and the HELLO card's
+harness, model, task, branch and open asks the presence states (RT-6.37
+step 6, self-stated: shown as text, never trusted); everything the bus
+does not carry today, and those fields from an older MCP server, arrive as
+unknown (`null`/empty), never guessed as zero — the app shows `n/a`.
 
 Presence today carries `online`/`away` (format v1) — the Kanban's two
 extra columns. Asks and the STATS lines do not lie on NATS yet:

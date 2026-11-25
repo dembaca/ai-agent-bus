@@ -17,9 +17,12 @@ before 0.5.0 are described in the git history.
   not be `deliver`). The service makes the `STATS` stream at its start
   (`<stats>.>`, file storage, 30 days, 64 MiB, 8 KiB per message, at most
   500 per subject, the oldest discarded) and refuses to start on one that
-  keeps more per subject or longer. Its JetStream user needs two more
-  rights: `$JS.API.STREAM.CREATE.STATS` and `$JS.API.STREAM.INFO.STATS`
-  (`services/auth/nats-server.example.conf`). No MCP server publishes
+  keeps more per subject or longer, takes other than 8 KiB per message, or
+  is not stored on file. Its JetStream user needs two more
+  rights, `$JS.API.STREAM.CREATE.STATS` and `$JS.API.STREAM.INFO.STATS`
+  (`services/auth/nats-server.example.conf`): without them the login
+  service refuses to start, with an error that names both. No prefix may be
+  `_INBOX`. No MCP server publishes
   either record yet; the person's credential is separate work.
 - **A NATS credential per console operator, in the login service** (the
   console on the bus as its operator, RT-6.43; points 1 to 6 of the console
@@ -49,6 +52,19 @@ before 0.5.0 are described in the git history.
   `AUTH_OPERATOR_GROUP` must be a full group path (`/…`). The connection is described in
   `docs/protocol.md`. The console does not use it yet: its switch and the
   removal of its static NATS account follow.
+
+- **The console's agent card shows harness, model, task, branch and open
+  asks** (RT-6.37 step 6, ADR-015). A NATS home's presence now carries the
+  HELLO card's data: the harness from the MCP handshake, model, task and
+  branch from the last `announce`, and how many of the session's own asks
+  to a human still wait. Sent with every heartbeat and the bye, so a change
+  shows within 30 s. Bounded on both sides (one line without control
+  characters, model 64 and task 120 characters, branch a safe git ref of
+  at most 100, asks capped at 999), well below the stream's 4 KiB limit;
+  older readers ignore the keys, and a card from an older MCP server says
+  "n/a". Self-stated like the name: displayed, never trusted. The
+  harness name also changes the `rt` of `STATS` lines: a pi client
+  (`pi`, `pi-…`) now counts as `pi`, no longer by its own name.
 
 ### Changed
 
