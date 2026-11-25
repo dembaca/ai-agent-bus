@@ -1,12 +1,12 @@
 {
   "//": "The console API's wire contract in one place (ADR-015 point 10): both sides hold to it \u2014 console/server/tests/test_wire_contract.py builds this card from live deliveries, and console/web/src/api/wire.ts fails its typecheck when the app's types drift from it. Fleet cards, events and thread pages are the app's camelCase shapes; ask rows and /v1/me use the ADR's spellings and are mapped in the app's http.ts.",
   "card": {
-    "name": "agent-mac-ai-agent-alice",
-    "displayName": "alice",
+    "name": "agent-oudzj4bhpl62iahctur5s5sf44",
+    "displayName": "agent-himalia-nats-pilo-772844",
     "home": "dev",
     "state": "online",
     "crown": true,
-    "harness": "other",
+    "harness": null,
     "model": "",
     "task": "",
     "role": "member",
@@ -37,12 +37,12 @@
     "card": {
       "type": "card",
       "card": {
-        "name": "agent-mac-ai-agent-alice",
-        "displayName": "alice",
+        "name": "agent-oudzj4bhpl62iahctur5s5sf44",
+        "displayName": "agent-himalia-nats-pilo-772844",
         "home": "dev",
         "state": "online",
         "crown": true,
-        "harness": "other",
+        "harness": null,
         "model": "",
         "task": "",
         "role": "member",
@@ -68,13 +68,13 @@
     },
     "drop": {
       "type": "drop",
-      "name": "agent-mac-ai-agent-alice"
+      "name": "agent-oudzj4bhpl62iahctur5s5sf44"
     }
   },
   "ask": {
     "id": "ask-1",
-    "by": "agent-mac-ai-agent-alice",
-    "display_name": "alice",
+    "by": "agent-oudzj4bhpl62iahctur5s5sf44",
+    "display_name": "agent-himalia-nats-pilo-772844",
     "human": "dembaca",
     "need": "an example ask",
     "answers": [
@@ -100,7 +100,7 @@
       {
         "id": "thread-1",
         "rootId": null,
-        "author": "agent-mac-ai-agent-alice",
+        "author": "agent-oudzj4bhpl62iahctur5s5sf44",
         "at": 1763980900000,
         "message": "an example post"
       }

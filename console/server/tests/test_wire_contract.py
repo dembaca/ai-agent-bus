@@ -13,9 +13,17 @@ import pytest
 
 from console_server import config
 from console_server.app import Console
-from console_server.fleet import short_name
+from mattermost_ai_agent_bus.natsbus import (
+    agent_name, encode_claim, encode_presence, owner_token,
+)
 
 FIXTURE = json.loads((Path(__file__).parents[2] / "fixtures" / "console-api.json").read_text())
+
+
+# a host's public nkey (any one: the agent's name is a hash over it) and a
+# Mattermost bot id (26 characters, natsbus.BOT_RE)
+NKEY_PUBLIC = "UDXU4RCSJNZOIQHZNWXHXORDPRTGNJAHAHFRGZNEEJCPQTT2M7NFCNF4"
+BOT_ID = "pxcexeco5fbwmjxqzt3r1ah9yc"
 
 
 def ack(sseq: int, cseq: int, ts: float) -> str:
@@ -26,19 +34,27 @@ def ack(sseq: int, cseq: int, ts: float) -> str:
 def fleet_scenario():
     from console_server.fleet import Fleet
     f = Fleet(presence_subject="presence")
-    agent = FIXTURE["card"]["name"]
-    assert short_name(agent) == FIXTURE["card"]["displayName"]
+    # The shapes an MCP server really publishes in a NATS home, made by its own
+    # encoders (mcp/src/mattermost_ai_agent_bus/natsbus.py): the agent's name
+    # is `agent_name` (the login service's hash, never the bot's username),
+    # the presence subject `NatsBus._presence_subject`, its body
+    # `encode_presence(status, bot id, bot username)` as `NatsBus` sends it
+    # each heartbeat, membership and crown `encode_claim`.
+    agent = agent_name("dembaca", NKEY_PUBLIC)
+    assert agent == FIXTURE["card"]["name"]
     rows = [
-        # presence: online, the owner token names the owner
-        (f"presence.dembaca.{agent}", b'{"v": 1, "status": "online"}',
+        # presence: online, the owner token names the owner, the body the bot
+        (f"presence.{owner_token('dembaca')}.{agent}",
+         encode_presence("online", BOT_ID, FIXTURE["card"]["displayName"]),
          ack(1, 1, 1763980760.0)),
         # membership of the channel dev
-        (f"presence.member.dev.{agent}", b'{"v": 1}',
+        (f"presence.member.dev.{agent}", encode_claim(),
          ack(2, 2, 1763980770.0)),
         # a crown claim on dev
-        (f"presence.crown.dev.{agent}", b'{"v": 1}',
+        (f"presence.crown.dev.{agent}", encode_claim(),
          ack(3, 3, 1763980780.0)),
-        # the login service's attestation of owner and trust
+        # the login service's attestation of owner and trust, as the Go service
+        # writes it (services/auth/internal/callout/attest.go, the record type)
         (f"presence.attest.{agent}.v1",
          json.dumps({"v": 1, "agent": agent,
                      "owner": {"anchor": "dembaca", "name": "dembaca"},

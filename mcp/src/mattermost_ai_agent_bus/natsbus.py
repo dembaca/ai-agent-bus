@@ -257,13 +257,17 @@ def decode(data: bytes, props_prefix: str = a2a.DEFAULT_PREFIX) -> Message:
 BOT_RE = re.compile(r"[a-z0-9]{26}")  # a Mattermost user id
 
 
-def encode_presence(status: str, bot: str = "") -> bytes:
-    """The presence body; `bot` is the agent's Mattermost bot id (RT-6.37), left out when ''."""
+def encode_presence(status: str, bot: str = "", bot_name: str = "") -> bytes:
+    """The presence body; `bot` is the agent's Mattermost bot id (RT-6.37) and `name` that
+    bot's username, the name people and coordinator("who") know the agent by (the operator
+    console shows it, ADR-015); each left out when ''."""
     if status not in _STATUSES:
         raise MessageError("unknown status")
     body: dict[str, Any] = {"v": 1, "status": status}
     if bot:
         body["bot"] = bot
+    if bot_name:
+        body["name"] = bot_name
     return _dumps(body).encode()
 
 
@@ -282,6 +286,17 @@ def decode_presence_bot(data: bytes) -> str:
     except MessageError:
         return ""
     return bot if isinstance(bot, str) and BOT_RE.fullmatch(bot) else ""
+
+
+def decode_presence_name(data: bytes) -> str:
+    """The bot's username a presence body states when it is a valid username, else ''. The
+    agent states it of itself: a label for people, never an identity (the subject's name is).
+    A bad name field never drops the message."""
+    try:
+        name = _obj(data).get("name")
+    except MessageError:
+        return ""
+    return name if isinstance(name, str) and USERNAME_RE.fullmatch(name) else ""
 
 
 def link_tag(name: str) -> str:
@@ -864,6 +879,7 @@ class NatsBus:
         # from then on no NATS sender is judged by name again until a restart (ADR-016).
         self._records_on = False
         self._bot = ""
+        self._bot_name = ""  # the bot's username, stated in the presence for people (ADR-015)
         self._synced = False
         self._presence_read = False  # True once the stored presence stream was read (a new session says so in its hello)
         self._memberships: list[str] = []  # channels this bus announces its membership of
@@ -957,7 +973,7 @@ class NatsBus:
         nc = self._nc
         if nc is not None and self._connected:
             try:
-                await nc.publish(self._presence_subject, encode_presence("bye", self._bot))
+                await nc.publish(self._presence_subject, encode_presence("bye", self._bot, self._bot_name))
                 await asyncio.wait_for(nc.drain(), 5)
             except Exception as exc:  # the bus is going away anyway
                 log.warning("nats bus: stop: %s", type(exc).__name__)
@@ -1062,7 +1078,7 @@ class NatsBus:
             await self._sync(nc)
             if refused:
                 raise NameMismatch("the credential's agent name is not the computed one; nothing sent")
-            await nc.publish(self._presence_subject, encode_presence("online", self._bot))
+            await nc.publish(self._presence_subject, encode_presence("online", self._bot, self._bot_name))
             await self._sync(nc)
             if self._presence_subject in self._denied:
                 # A host and a login service of different releases (RT-6.37): the presence
@@ -1176,7 +1192,7 @@ class NatsBus:
             nc = self._nc
             if nc is not None and self._connected:
                 try:
-                    await nc.publish(self._presence_subject, encode_presence("online", self._bot))
+                    await nc.publish(self._presence_subject, encode_presence("online", self._bot, self._bot_name))
                 except Exception as exc:
                     log.warning("nats bus: heartbeat: %s", type(exc).__name__)
             self._check_own_echo()
@@ -1331,11 +1347,13 @@ class NatsBus:
         its presence there and nowhere else, so the owner in it is pinned like the name."""
         return f"{self._s.presence}.{owner_token(self._owner)}.{self.name}"
 
-    def link_bot(self, bot_id: str) -> None:
-        """The Mattermost bot this agent's presence names (RT-6.37); before start."""
+    def link_bot(self, bot_id: str, username: str = "") -> None:
+        """The Mattermost bot this agent's presence names (RT-6.37), and its username for
+        people (one that is no valid username is left out); before start."""
         if not BOT_RE.fullmatch(bot_id):
             raise ValueError("not a Mattermost user id")
         self._bot = bot_id
+        self._bot_name = username if USERNAME_RE.fullmatch(username) else ""
 
     def bot_of(self, agent: str) -> str:
         """The bot the agent's presence names, '' for none."""

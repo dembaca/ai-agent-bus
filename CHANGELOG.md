@@ -5,6 +5,8 @@ before 0.5.0 are described in the git history.
 
 ## Unreleased
 
+### Changed
+
 - **One bus session per OpenCode process under corral** (#119, RT-6.20
   step 1, RT-6.18 step 6). An OpenCode server serves many sessions but a
   corral session carries one bot: the plugin binds the bus to the first
@@ -28,6 +30,8 @@ before 0.5.0 are described in the git history.
   session whose bot changed is told old → new; nothing carries over.
   Without corral OpenCode behaves as before.
 
+### Fixed
+
 - **The console's clock ages without deliveries too** (`Part of #108`).
   "Now" stood still between deliveries, so a killed lone agent stayed
   `online` with its crown forever. The fleet's "now" carries a
@@ -38,6 +42,16 @@ before 0.5.0 are described in the git history.
   expiry reads the floored clock too. The deployment view says the
   bridge runs since the lab sync on 2026-11-24 and the console is planned
   for the pilot.
+- The operator console's cards showed each agent's name on the bus (`agent-`
+  and a 26-character hash) instead of the name `coordinator("who")` shows. An
+  agent's presence over NATS now also states its bot's username (`name`
+  beside `bot`, RT-6.37), and the card shows it; the bus name stays in the
+  detail as "id on the bus". A username any other known card states too
+  (also offline, within 24 h) is shown on neither. Harness, model and task are not on what the console reads: the card
+  says "n/a" instead of "other" or nothing (ADR-015).
+- After a restart the console showed a red 503 while its server read the
+  fleet's replay; it now shows "syncing…" and tries again, an error only
+  after two minutes.
 
 ## 0.100.0
 

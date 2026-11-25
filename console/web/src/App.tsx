@@ -1,6 +1,7 @@
-import { useCallback, useEffect, useState } from "react"
+import { useCallback, useEffect, useRef, useState } from "react"
 import type { AgentCard, Ask, ConnState, ConsoleApi, FleetEvent, Operator } from "./api/types"
 import { AGENT_STATES } from "./api/types"
+import { Unavailable } from "./api/http"
 import { Sidebar, type View } from "./ui/Sidebar"
 import { Kanban } from "./ui/Kanban"
 import { Asks } from "./ui/Asks"
@@ -14,7 +15,15 @@ import { Reports } from "./ui/Reports"
  * until the owner opens answering.
  *
  * One connection state for the whole app (Fable's point 6): the fleet
- * stream's own state, and every view's failed load, lands in the sidebar. */
+ * stream's own state, and every view's failed load, lands in the sidebar.
+ *
+ * A 503 is no error at first: after a restart the server is not ready until
+ * it has read the fleet's replay, and the proxy in front answers 503 for it.
+ * The sidebar says "syncing…" and the app tries again every few seconds;
+ * only a 503 that lasts longer than SYNC_GIVE_UP_MS is shown as an error. */
+const SYNC_RETRY_MS = 3_000
+const SYNC_GIVE_UP_MS = 120_000
+
 export function App({ api }: { api: ConsoleApi }) {
   const [cards, setCards] = useState<AgentCard[]>([])
   const [asks, setAsks] = useState<Ask[]>([])
@@ -24,6 +33,29 @@ export function App({ api }: { api: ConsoleApi }) {
   const [ask, setAsk] = useState<Ask | null>(null)
   const [conn, setConn] = useState<ConnState>("connecting")
   const [notice, setNotice] = useState<string | null>(null)
+  // bumped to reopen the stream and ask for the operator again after a 503
+  const [attempt, setAttempt] = useState(0)
+  const syncingSince = useRef<number | null>(null)
+  const retryTimer = useRef<ReturnType<typeof setTimeout> | null>(null)
+  useEffect(() => () => { if (retryTimer.current) clearTimeout(retryTimer.current) }, [])
+
+  /** True when the error was the server's "not ready yet" (a 503): the
+   * sidebar shows "syncing…" and one retry is scheduled — until the 503
+   * has lasted SYNC_GIVE_UP_MS, then it is an error like any other. */
+  const syncing = useCallback((error: unknown): boolean => {
+    if (!(error instanceof Unavailable)) return false
+    const now = Date.now()
+    syncingSince.current ??= now
+    if (now - syncingSince.current > SYNC_GIVE_UP_MS) return false
+    setConn("syncing")
+    if (!retryTimer.current) {
+      retryTimer.current = setTimeout(() => {
+        retryTimer.current = null
+        setAttempt((n) => n + 1)
+      }, SYNC_RETRY_MS)
+    }
+    return true
+  }, [])
 
   const onEvent = useCallback((event: FleetEvent) => {
     if (event.type === "snapshot") {
@@ -37,37 +69,46 @@ export function App({ api }: { api: ConsoleApi }) {
     }
   }, [])
   const onState = useCallback((state: ConnState) => {
-    setConn(state)
-    if (state === "error") {
-      // An EventSource hides its status code; the probe finds a real 401,
-      // and http.ts sends the operator to the server's /login for it.
-      api.me().catch(() => {})
+    if (state !== "error") {
+      setConn(state)
+      return
     }
-  }, [api])
-  useEffect(() => api.watchFleet(onEvent, onState), [api, onEvent, onState])
+    // An EventSource hides its status code; the probe finds a real 401
+    // (http.ts sends the operator to the server's /login for it) or a 503
+    // (syncing: the stream is opened again).
+    api.me().then(() => { setConn("error") }, (error: unknown) => {
+      if (!syncing(error)) setConn("error")
+    })
+  }, [api, syncing])
+  useEffect(() => api.watchFleet(onEvent, onState), [api, onEvent, onState, attempt])
 
   // The operator (GET /v1/me); the login itself is the server's — a failed
   // identity call is the one error a read-only console cannot wave away.
   useEffect(() => {
     let gone = false
     api.me()
-      .then((who) => { if (!gone) setMe(who) })
+      .then((who) => {
+        syncingSince.current = null  // a load that answered: no longer syncing
+        if (!gone) setMe(who)
+      })
       .catch((error: unknown) => {
-        if (!gone) {
+        if (!gone && !syncing(error)) {
           setConn("error")
           setNotice(`operator: ${error instanceof Error ? error.message : String(error)}`)
         }
       })
     return () => { gone = true }
-  }, [api])
+  }, [api, syncing, attempt])
 
   // Asks change at turn ends; asking every 30 s is faster than that.
   const fail = useCallback((what: string, error: unknown) => {
+    if (syncing(error)) return
     setNotice(`${what}: ${error instanceof Error ? error.message : String(error)}`)
-  }, [])
+  }, [syncing])
   const loadAsks = useCallback(async () => {
     try {
       setAsks(await api.asks())
+      syncingSince.current = null  // a load that answered: no longer syncing
     } catch (error: unknown) {
       fail("asks", error)
     }
