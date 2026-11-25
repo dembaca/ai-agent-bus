@@ -5,6 +5,23 @@ before 0.5.0 are described in the git history.
 
 ## Unreleased
 
+### Added
+
+- **The login service's part of the console's asks and `STATS` lines**
+  (the console on the bus as its operator, RT-6.43; points 9 and 12 of the
+  console decision's addition of 2026-11-25, ADR-015). Each agent's
+  credential may publish its one ask record on
+  `<presence>.ask.<home>.<name>`, under its own name and in its hello's
+  home only, and its `STATS` line on `<stats>.<name>` (`AUTH_STATS_PREFIX`,
+  new, default `stats`; it must differ from the other two prefixes and
+  not be `deliver`). The service makes the `STATS` stream at its start
+  (`<stats>.>`, file storage, 30 days, 64 MiB, 8 KiB per message, at most
+  500 per subject, the oldest discarded) and refuses to start on one that
+  keeps more per subject or longer. Its JetStream user needs two more
+  rights: `$JS.API.STREAM.CREATE.STATS` and `$JS.API.STREAM.INFO.STATS`
+  (`services/auth/nats-server.example.conf`). No MCP server publishes
+  either record yet; the person's credential is separate work.
+
 ### Changed
 
 - **One bus session per OpenCode process under corral** (#119, RT-6.20

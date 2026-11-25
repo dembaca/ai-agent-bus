@@ -52,8 +52,9 @@ const (
 type Config struct {
 	Bus      string // subject prefix of channels and direct messages
 	Presence string // subject prefix of presence and crown claims
+	Stats    string // subject prefix of the STATS lines (RT-6.43); "": DefaultStatsPrefix
 	// Sizes of the streams in bytes; 0 takes the defaults.
-	BusMaxBytes, PresenceMaxBytes int64
+	BusMaxBytes, PresenceMaxBytes, StatsMaxBytes int64
 	// InactiveThreshold: JetStream removes a push consumer nobody listens
 	// to after this long; 0 takes an hour.
 	InactiveThreshold time.Duration
@@ -107,13 +108,19 @@ type agentLock struct {
 // New returns a Manager on nc, a connection in the tenant account with
 // JetStream API rights.
 func New(nc *nats.Conn, cfg Config) (*Manager, error) {
-	for what, v := range map[string]string{"bus prefix": cfg.Bus, "presence prefix": cfg.Presence} {
+	if cfg.Stats == "" {
+		cfg.Stats = DefaultStatsPrefix
+	}
+	for what, v := range map[string]string{"bus prefix": cfg.Bus, "presence prefix": cfg.Presence, "stats prefix": cfg.Stats} {
 		if !prefixRE.MatchString(v) || v == DeliverPrefix {
 			return nil, fmt.Errorf("consumers: %s %q: letters, digits, - and _, not %q", what, v, DeliverPrefix)
 		}
 	}
 	if cfg.Bus == cfg.Presence {
 		return nil, errors.New("consumers: bus and presence prefix must differ")
+	}
+	if cfg.Stats == cfg.Bus || cfg.Stats == cfg.Presence {
+		return nil, errors.New("consumers: the stats prefix must differ from the bus and the presence prefix")
 	}
 	if cfg.InactiveThreshold <= 0 {
 		cfg.InactiveThreshold = DefaultInactiveThreshold
@@ -191,13 +198,14 @@ func isAPI(err error, code int) bool {
 	return errors.As(err, &e) && e.ErrCode == code
 }
 
-// EnsureStreams creates the streams BUS and PRESENCE when they are missing.
+// EnsureStreams creates the streams BUS, PRESENCE and STATS when they are missing.
 // A stream that exists is read back and refused with ErrUnsafeStream when a
 // safety setting differs.
 func (m *Manager) EnsureStreams(ctx context.Context) error {
 	for _, s := range []struct{ name, cfg, subject string }{
 		{BusStream, BusStreamJSON(m.cfg.Bus, m.cfg.BusMaxBytes), m.cfg.Bus + ".>"},
 		{PresenceStream, PresenceStreamJSON(m.cfg.Presence, m.cfg.PresenceMaxBytes), m.cfg.Presence + ".>"},
+		{StatsStream, StatsStreamJSON(m.cfg.Stats, m.cfg.StatsMaxBytes), m.cfg.Stats + ".>"},
 	} {
 		if err := m.ensure(ctx, s.name, s.cfg, s.subject); err != nil {
 			return err

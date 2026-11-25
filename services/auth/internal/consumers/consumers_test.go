@@ -23,6 +23,10 @@ func safe(name string) map[string]any {
 	if name == PresenceStream {
 		g["max_age"], g["max_msgs_per_subject"], g["subjects"] = float64(PresenceMaxAge), float64(1), []any{"presence.>"}
 	}
+	if name == StatsStream {
+		g["max_age"], g["max_msgs_per_subject"], g["subjects"] = float64(StatsMaxAge), float64(500), []any{"stats.>"}
+		g["max_bytes"], g["max_msg_size"] = float64(64<<20), float64(8192)
+	}
 	return g
 }
 
@@ -33,7 +37,7 @@ func with(name string, edit func(map[string]any)) map[string]any {
 }
 
 func TestCheckStream(t *testing.T) {
-	subject := map[string]string{BusStream: "bus.>", PresenceStream: "presence.>"}
+	subject := map[string]string{BusStream: "bus.>", PresenceStream: "presence.>", StatsStream: "stats.>"}
 	for name, c := range map[string]struct {
 		stream string
 		got    map[string]any
@@ -73,6 +77,18 @@ func TestCheckStream(t *testing.T) {
 		"BUS discards new":              {BusStream, with(BusStream, func(g map[string]any) { g["discard"] = "new" }), true},
 		"PRESENCE keeps many":           {PresenceStream, with(PresenceStream, func(g map[string]any) { g["max_msgs_per_subject"] = float64(5) }), true},
 		"PRESENCE keeps all":            {PresenceStream, with(PresenceStream, func(g map[string]any) { delete(g, "max_msgs_per_subject") }), true},
+		// The STATS lines (RT-6.43): 30 days, at most 500 per agent's subject.
+		"STATS safe":              {StatsStream, safe(StatsStream), false},
+		"STATS keeps fewer":       {StatsStream, with(StatsStream, func(g map[string]any) { g["max_msgs_per_subject"] = float64(100) }), false},
+		"STATS keeps 501":         {StatsStream, with(StatsStream, func(g map[string]any) { g["max_msgs_per_subject"] = float64(501) }), true},
+		"STATS keeps all":         {StatsStream, with(StatsStream, func(g map[string]any) { delete(g, "max_msgs_per_subject") }), true},
+		"STATS max_age 31 days":   {StatsStream, with(StatsStream, func(g map[string]any) { g["max_age"] = float64(31 * 24 * time.Hour) }), true},
+		"STATS max_age unlimited": {StatsStream, with(StatsStream, func(g map[string]any) { g["max_age"] = float64(0) }), true},
+		"STATS other subject":     {StatsStream, with(StatsStream, func(g map[string]any) { g["subjects"] = []any{"bus.>"} }), true},
+		"STATS discards new":      {StatsStream, with(StatsStream, func(g map[string]any) { g["discard"] = "new" }), true},
+		"STATS acknowledges":      {StatsStream, with(StatsStream, func(g map[string]any) { g["no_ack"] = false }), true},
+		"STATS allows direct":     {StatsStream, with(StatsStream, func(g map[string]any) { g["allow_direct"] = true }), true},
+		"STATS no size limit":     {StatsStream, with(StatsStream, func(g map[string]any) { g["max_bytes"] = float64(-1) }), true},
 	} {
 		t.Run(name, func(t *testing.T) {
 			err := checkStream(c.stream, subject[c.stream], c.got)
@@ -88,6 +104,7 @@ func TestTheCreationRequestsPassTheCheck(t *testing.T) {
 	for stream, c := range map[string]struct{ json, subject string }{
 		BusStream:      {BusStreamJSON("bus", 0), "bus.>"},
 		PresenceStream: {PresenceStreamJSON("presence", 0), "presence.>"},
+		StatsStream:    {StatsStreamJSON("stats", 0), "stats.>"},
 	} {
 		var got map[string]any
 		if err := json.Unmarshal([]byte(c.json), &got); err != nil {
@@ -181,4 +198,38 @@ func TestTheLocksMapDoesNotGrow(t *testing.T) {
 	}
 	unlock()
 	<-got
+}
+
+// The STATS stream's creation request says what the spec says (RT-6.43): its
+// own subjects, file storage, 30 days, 64 MiB, 8 KiB per line, 500 per
+// subject, the oldest discarded.
+func TestTheStatsStreamDefinition(t *testing.T) {
+	var got map[string]any
+	if err := json.Unmarshal([]byte(StatsStreamJSON("st", 0)), &got); err != nil {
+		t.Fatal(err)
+	}
+	for k, want := range map[string]any{
+		"name": "STATS", "storage": "file", "retention": "limits", "discard": "old", "no_ack": true,
+		"max_age": float64(30 * 24 * time.Hour), "max_bytes": float64(64 << 20), "max_msg_size": float64(8192),
+		"max_msgs_per_subject": float64(500), "num_replicas": float64(1),
+	} {
+		if got[k] != want {
+			t.Errorf("%s = %v, want %v", k, got[k], want)
+		}
+	}
+	if subs, _ := got["subjects"].([]any); len(subs) != 1 || subs[0] != "st.>" {
+		t.Errorf("subjects %v", got["subjects"])
+	}
+	if err := json.Unmarshal([]byte(StatsStreamJSON("st", 1<<20)), &got); err != nil || got["max_bytes"] != float64(1<<20) {
+		t.Errorf("max_bytes %v, %v", got["max_bytes"], err)
+	}
+}
+
+// The STATS prefix is checked like the other two (RT-6.43).
+func TestTheStatsPrefixMustDiffer(t *testing.T) {
+	for _, stats := range []string{"bus", "presence", DeliverPrefix, "a.b"} {
+		if _, err := New(nil, Config{Bus: "bus", Presence: "presence", Stats: stats}); err == nil {
+			t.Errorf("stats prefix %q accepted", stats)
+		}
+	}
 }

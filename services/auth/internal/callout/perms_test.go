@@ -8,8 +8,9 @@ import (
 // A configured presence prefix is what the credential gets, nothing on the
 // default one.
 func TestAConfiguredPresencePrefixIsWhatTheCredentialGets(t *testing.T) {
-	p := Subjects{Prefix: "bus", Presence: "here"}.permissions("agent-x", "andreas.dembach", "home", []string{"home"})
-	for _, want := range []string{"here.andreas~dembach.agent-x", "here.crown.home.agent-x", "here.member.home.agent-x", "bus.ch.home.agent-x", "bus.dm.*.agent-x"} {
+	p := Subjects{Prefix: "bus", Presence: "here", Stats: "st"}.permissions("agent-x", "andreas.dembach", "home", []string{"home"})
+	for _, want := range []string{"here.andreas~dembach.agent-x", "here.crown.home.agent-x", "here.member.home.agent-x", "here.ask.home.agent-x",
+		"bus.ch.home.agent-x", "bus.dm.*.agent-x", "st.agent-x"} {
 		if !p.Pub.Allow.Contains(want) {
 			t.Errorf("publish %s missing: %v", want, p.Pub.Allow)
 		}
@@ -19,7 +20,7 @@ func TestAConfiguredPresencePrefixIsWhatTheCredentialGets(t *testing.T) {
 			t.Errorf("publish right on the default presence prefix: %s", got)
 		}
 	}
-	if len(p.Pub.Allow) != 5 || len(p.Sub.Allow) != 1 || !p.Sub.Allow.Contains("deliver.agent-x.>") || len(p.Pub.Deny)+len(p.Sub.Deny) != 0 {
+	if len(p.Pub.Allow) != 7 || len(p.Sub.Allow) != 1 || !p.Sub.Allow.Contains("deliver.agent-x.>") || len(p.Pub.Deny)+len(p.Sub.Deny) != 0 {
 		t.Errorf("pub %v, sub %v", p.Pub, p.Sub)
 	}
 }
@@ -69,7 +70,8 @@ func TestThePermissionHoldsExactlyOnePresenceSubject(t *testing.T) {
 	p := Subjects{Prefix: "bus", Presence: "presence"}.permissions("agent-x", "Alice", "home", []string{"home"})
 	var got []string
 	for _, s := range p.Pub.Allow {
-		if strings.HasPrefix(s, "presence.") && !strings.HasPrefix(s, "presence.crown.") && !strings.HasPrefix(s, "presence.member.") {
+		if strings.HasPrefix(s, "presence.") && !strings.HasPrefix(s, "presence.crown.") && !strings.HasPrefix(s, "presence.member.") &&
+			!strings.HasPrefix(s, "presence.ask.") {
 			got = append(got, s)
 		}
 	}
@@ -103,10 +105,11 @@ func TestACrownClaimIsAllowedOnlyInTheHome(t *testing.T) {
 	}
 }
 
-// The grammar is by token count: an owner named "crown" or "member" still gives
-// a three-token presence subject, the claim and the membership have four.
+// The grammar is by token count: an owner named "crown", "member" or "ask" still
+// gives a three-token presence subject, the claim, the membership and the ask
+// record (RT-6.43) have four.
 func TestOwnersNamedCrownAndMemberGiveAThreeTokenPresence(t *testing.T) {
-	for _, owner := range []string{"crown", "member"} {
+	for _, owner := range []string{"crown", "member", "ask"} {
 		p := Subjects{Prefix: "bus", Presence: "presence"}.permissions("agent-x", owner, "home", []string{"home", "ga"})
 		want := []string{"presence." + owner + ".agent-x", "presence.crown.home.agent-x", "presence.member.home.agent-x",
 			"presence.member.ga.agent-x"}
@@ -119,6 +122,67 @@ func TestOwnersNamedCrownAndMemberGiveAThreeTokenPresence(t *testing.T) {
 			if strings.HasPrefix(s, "presence.") && len(strings.Split(s, ".")) == 3 && s != "presence."+owner+".agent-x" {
 				t.Errorf("owner %s: another three-token presence subject %s", owner, s)
 			}
+		}
+	}
+}
+
+// The console's asks and STATS lines (RT-6.43): an agent may publish its one ask
+// record only in its home and under its own name, and its STATS line only under
+// its own name. A guest channel, another home or another name gets no right, and
+// there is no subject per ask.
+func TestAnAgentPublishesItsOwnAskRecordAndStatsOnly(t *testing.T) {
+	s := Config{Account: "BUS"}.WithDefaults().Subjects
+	p := s.permissions("agent-x", "alice", "home", []string{"home", "ga"})
+	for _, want := range []string{"presence.ask.home.agent-x", "stats.agent-x"} {
+		if !p.Pub.Allow.Contains(want) {
+			t.Errorf("publish %s missing: %v", want, p.Pub.Allow)
+		}
+	}
+	var asks, stats []string
+	for _, got := range p.Pub.Allow {
+		switch {
+		case strings.HasPrefix(got, "presence.ask."):
+			asks = append(asks, got)
+		case strings.HasPrefix(got, "stats."):
+			stats = append(stats, got)
+		}
+		if strings.Contains(got, "*") && !strings.HasPrefix(got, "bus.dm.*.") || strings.Contains(got, ">") {
+			t.Errorf("a wildcard right: %s", got)
+		}
+	}
+	if len(asks) != 1 || len(stats) != 1 {
+		t.Errorf("ask rights %v, stats rights %v: want exactly one each", asks, stats)
+	}
+	p = s.permissions("agent-x", "alice", "home", []string{"ga"}) // the home was not granted
+	for _, got := range p.Pub.Allow {
+		if strings.HasPrefix(got, "presence.ask.") {
+			t.Errorf("ask right without the home: %s", got)
+		}
+	}
+	if !p.Pub.Allow.Contains("stats.agent-x") {
+		t.Errorf("the STATS line does not depend on the home: %v", p.Pub.Allow)
+	}
+}
+
+// The STATS prefix (AUTH_STATS_PREFIX, RT-6.43) is a plain token of its own: not
+// the deliver prefix and neither of the other two.
+func TestTheStatsPrefixIsChecked(t *testing.T) {
+	ok := Config{Account: "BUS"}.WithDefaults()
+	if ok.Subjects.Stats != DefaultStats {
+		t.Fatalf("stats default %q", ok.Subjects.Stats)
+	}
+	for name, edit := range map[string]func(*Config){
+		"dot":             func(c *Config) { c.Subjects.Stats = "a.b" },
+		"wildcard":        func(c *Config) { c.Subjects.Stats = ">" },
+		"deliver":         func(c *Config) { c.Subjects.Stats = DeliverPrefix },
+		"subject prefix":  func(c *Config) { c.Subjects.Stats = c.Subjects.Prefix },
+		"presence prefix": func(c *Config) { c.Subjects.Stats = c.Subjects.Presence },
+		"custom presence": func(c *Config) { c.Subjects.Presence, c.Subjects.Stats = "x", "x" },
+	} {
+		c := ok
+		edit(&c)
+		if err := c.check(); err == nil || !strings.Contains(err.Error(), "stats prefix") {
+			t.Errorf("%s: %v", name, err)
 		}
 	}
 }
