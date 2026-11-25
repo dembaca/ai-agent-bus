@@ -19,8 +19,10 @@ before 0.5.0 are described in the git history.
   500 per subject, the oldest discarded) and refuses to start on one that
   keeps more per subject or longer, takes other than 8 KiB per message, or
   is not stored on file. Its JetStream user needs two more
-  rights: `$JS.API.STREAM.CREATE.STATS` and `$JS.API.STREAM.INFO.STATS`
-  (`services/auth/nats-server.example.conf`). No MCP server publishes
+  rights, `$JS.API.STREAM.CREATE.STATS` and `$JS.API.STREAM.INFO.STATS`
+  (`services/auth/nats-server.example.conf`): without them the login
+  service refuses to start, with an error that names both. No prefix may be
+  `_INBOX`. No MCP server publishes
   either record yet; the person's credential is separate work.
 
 ### Changed
