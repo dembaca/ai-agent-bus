@@ -3,7 +3,27 @@
 Every version bump in `.claude-plugin/plugin.json` gets an entry here. Versions
 before 0.5.0 are described in the git history.
 
-## Unreleased
+## 0.101.0
+
+Needs: jetstream user first with create, info, consumer rights on stats, publish on person records, then the login service.
+Needs: login service updated first with the console path on, then the console, its static account and seed removed.
+
+The operator console's stage 1 is built: the console reads the bus as the
+logged-in operator, with a NATS credential of that person's own from the login
+service, and its static NATS account is gone; the channels a person sees are
+for now the public ones and those the directory lists them as a member of
+(their own agents' home channels, those of agents that trust them and guest
+channels follow); each MCP server publishes its
+open asks and its `STATS` parts on NATS, and the console shows the asks
+read-only and two reports. Agent cards show names, harness, model, task and
+branch. One bot speaks for one agent: the host refuses a relay that names
+another agent, and under corral one OpenCode process binds the bus to one
+session. The bridge's Mattermost reader authenticates again. Breaking for
+operators: the console refuses `CONSOLE_NATS_SEED_FILE`, and the login service
+refuses to start without its JetStream user's new rights on the `STATS`
+stream. Order: the login service first (its rights and stream for asks and
+`STATS`, then its console path on), then the console's Keycloak client, then
+the console; afterwards remove the console's NATS user and seed secret.
 
 ### Breaking
 
@@ -41,9 +61,11 @@ before 0.5.0 are described in the git history.
   Keycloak client with refresh tokens and no `offline_access`, then the
   console without `CONSOLE_NATS_SEED_FILE`; afterwards remove the
   pilot's console user from the NATS server's configuration and its
-  seed secret. The release's `Needs:` line, to be written under its
-  version: "login service updated first with the console path on, then
-  the console, its static account and seed removed."
+  seed secret (the release's second `Needs:` line).
+- **The login service refuses to start without its JetStream user's
+  rights on the `STATS` stream** (`$JS.API.STREAM.CREATE.STATS` and
+  `$JS.API.STREAM.INFO.STATS`, the entry under Added; the release's first
+  `Needs:` line).
 
 ### Added
 
@@ -110,14 +132,12 @@ before 0.5.0 are described in the git history.
   ones and the person's own in the directory) and `<name>_<login>_stats` on
   `STATS` from 7 days back, both gone 15 minutes after nobody listens. The
   JetStream user needs `$JS.API.CONSUMER.*.STATS` and
-  `$JS.API.CONSUMER.*.STATS.>` and `presence.person.*.v1` too (for the release's entry, since
-  doc-check takes a `Needs:` line in a version's entry only:
-  `Needs: login service updated first, its jetstream user with consumer rights on stats, new publish rights.`).
+  `$JS.API.CONSUMER.*.STATS.>` and `presence.person.*.v1` too (the release's first `Needs:` line).
   One person holds consumers for at most `AUTH_PERSON_MAX_LOGINS` (new,
   default 8) logins at once; the consumers are kept in memory.
   `AUTH_OPERATOR_GROUP` must be a full group path (`/…`). The connection is described in
-  `docs/protocol.md`. The console does not use it yet: its switch and the
-  removal of its static NATS account follow.
+  `docs/protocol.md`. The console uses it from this release on (the
+  breaking change above).
 
 - **The console's agent card shows harness, model, task, branch and open
   asks** (RT-6.37 step 6, ADR-015). A NATS home's presence now carries the
@@ -141,9 +161,8 @@ before 0.5.0 are described in the git history.
   process (`/new` in the TUI too) is told so in the session ("No bus in
   this session: …") and its hooks call nothing; a subagent of the bound
   session keeps the bus. Such a session's bus tool calls are rerouted to a
-  tool that fails with the reason; that in-process refusal is tested
-  against fakes only and still needs a check on a real OpenCode 2.4 before
-  the release. Across processes the host enforces the identity. The bus server starts only once a session
+  tool that fails with the reason (checked on a real OpenCode 2.4 in the
+  lab). Across processes the host enforces the identity. The bus server starts only once a session
   prompted, with its id as `OPENCODE_SESSION_ID`, which the host compares
   like a Claude session id, for the relay and, by the header
   `X-Bus-Client-Session`, for the hook API (`403` for another session's
@@ -156,6 +175,17 @@ before 0.5.0 are described in the git history.
   gone. `bus_info` shows `pid` and, for OpenCode, `client_session`. A bound
   session whose bot changed is told old → new; nothing carries over.
   Without corral OpenCode behaves as before.
+- **The host refuses a relay that names another agent** (#119 step 1,
+  RT-6.18 step 6). Under corral one bot speaks for one agent: a relay is
+  refused, the first one included, when its `CLAUDE_PROJECT_DIR` or
+  `MM_WORKSPACE` lies outside the corral session's workdir, and a later
+  relay when its session values name another agent than the first relay's
+  (another project directory or workspace, another session id without the
+  same project directory). A new session id in the same project directory
+  (`/clear`, a reconnect) replaces a gone relay and is noted for
+  `claude --resume`. The error names the differing keys, never their
+  values. Before, such a relay was served with the first relay's names, so
+  one agent's posts and approvals were credited to another's bot.
 
 ### Fixed
 
@@ -173,16 +203,14 @@ before 0.5.0 are described in the git history.
   on its own and the crown drops with it, a jump of the host's wall clock
   changes nothing, and the floor re-anchors only on a genuinely newer
   server stamp (a replay of old stamps revives nothing). The attestation
-  expiry reads the floored clock too. The deployment view says the
-  bridge runs since the lab sync on 2026-11-24 and the console is planned
-  for the pilot.
+  expiry reads the floored clock too.
 - The operator console's cards showed each agent's name on the bus (`agent-`
   and a 26-character hash) instead of the name `coordinator("who")` shows. An
   agent's presence over NATS now also states its bot's username (`name`
   beside `bot`, RT-6.37), and the card shows it; the bus name stays in the
   detail as "id on the bus". A username any other known card states too
-  (also offline, within 24 h) is shown on neither. Harness, model and task are not on what the console reads: the card
-  says "n/a" instead of "other" or nothing (ADR-015).
+  (also offline, within 24 h) is shown on neither. A card from an older MCP server, without harness,
+  model and task, says "n/a" for them.
 - After a restart the console showed a red 503 while its server read the
   fleet's replay; it now shows "syncing…" and tries again, an error only
   after two minutes.
@@ -196,7 +224,8 @@ before 0.5.0 are described in the git history.
   account; the open asks as one bounded record each asking agent
   publishes under its own name, shown and not answered; the `STATS` lines on a stream of their
   own beside the chat, decoded so that no text can ride along. Fifteen
-  points for the owner, each with a recommendation; nothing is built.
+  points for the owner, each with a recommendation; built in this release
+  (the entries above).
 
 ## 0.100.0
 
