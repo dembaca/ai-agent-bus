@@ -122,7 +122,7 @@ block() {
   # The text the model gets, by kind and length only, never the text (RT-6.9 step 1).
   local injected=other
   case "${3:-}" in drain | signoff | listen) injected="$3" ;; esac
-  mm_stat inject name="$injected" chars="${#1}"
+  mm_stat inject name="$injected" chars="$(mm_chars "$1")"
   TURN_BLOCKED=1
   save_state
   jq -nc --arg r "$1" --arg m "${2:-}" \

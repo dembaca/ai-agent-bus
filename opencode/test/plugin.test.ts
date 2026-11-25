@@ -13,7 +13,7 @@ import { after, afterEach, before, beforeEach, mock, test } from "node:test"
 import { fileURLToPath } from "node:url"
 
 import plugin, { addMcp, bindings, busFile, busRoot, CLIENT_HEADER, dropMcp, HOST_REFUSED, MARK, NO_BUS, REFUSAL_TOOL, relayVars,
-  renamedText, RETRY_SEC, retryMs, SERVER, setup, SKILL, skillInfo, timing, WAIT_SEC, venvDir, WAKE_BACKOFF_MAX_MS, WAKE_BACKOFF_MS, wakeBackoffMs, waitSec } from "../plugin/mattermost-agent-bus.ts"
+  chars, renamedText, RETRY_SEC, retryMs, SERVER, setup, SKILL, skillInfo, timing, WAIT_SEC, venvDir, WAKE_BACKOFF_MAX_MS, WAKE_BACKOFF_MS, wakeBackoffMs, waitSec } from "../plugin/mattermost-agent-bus.ts"
 import entry from "../server.ts"
 
 const HERE = dirname(fileURLToPath(import.meta.url))
@@ -990,4 +990,8 @@ test("RT-6.20: state kept by a plugin from before ADR-009 (a window going on) ke
   const fx = await start({}, {}, store)
   await until(() => held.length === 1, "asked again")
   await fx.cleanup()
+})
+
+test("RT-6.9 step 1: an inject's length counts Unicode code points, as the server and the hooks do", () => {
+  assert.equal(chars("a\u{1F600}\u2014"), 3)  // "a😀—": 4 UTF-16 units, 3 code points
 })

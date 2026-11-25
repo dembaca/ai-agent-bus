@@ -234,6 +234,12 @@ export function injectKind(name: string): string {
   return INJECT_KINDS.has(name) ? name : "other"
 }
 
+// A text's length in Unicode code points, as the server (Python's len) and the hooks
+// (jq's length) count it; String.length would count UTF-16 units (RT-6.9).
+export function chars(text: string): number {
+  return [...text].length
+}
+
 // The bus checkout: the option, MM_AGENT_BUS_ROOT, or the checkout this file
 // really lies in (opencode/plugin/) (a symlink into .opencode/plugins/ resolves).
 export function busRoot(options: Options, env: Env, here: string): string | null {
@@ -532,7 +538,7 @@ export async function setup(ctx: Plugin.Context) {
 
   const stat = (k: string, fields: Json = {}) => bus("POST", "/v1/stat", { k, ...fields })
   // A text the plugin puts into the context, by kind and length only, never the text (RT-6.9 step 1).
-  const inject = (name: string, text: string) => stat("inject", { name: injectKind(name), chars: text.length })
+  const inject = (name: string, text: string) => stat("inject", { name: injectKind(name), chars: chars(text) })
   // One call at a time: the prompt hook's `working` and an interrupt's `idle`
   // (the event stream) never overtake each other.
   const setPresence = presenceQueue((state) => bus("POST", "/v1/presence", { state, label }))

@@ -229,12 +229,15 @@ def test_the_tool_reports_what_the_script_reports(mm, run):
 
 def test_the_hooks_count_their_texts_by_kind_and_length_only(mm, run):
     """RT-6.9 step 1: every text the Stop hook and the listener put into the context is an
-    `inject` event with its kind and length, numbers only, never the text."""
+    `inject` event with its kind and length, numbers only, never the text. The length is
+    in Unicode code points, as the server and the plugins count it, also under the C
+    locale, where bash's ${#…} would count bytes (the drain reason holds an em dash)."""
     run(PROMPT)
     mm.unread_dm(1)
-    blocked = run(STOP)                                  # drain round
+    blocked = run(STOP, LC_ALL="C", LANG="C")             # drain round
     reason = json.loads(blocked.stdout)["reason"]
-    run(LISTEN, "--until", str(int(time.time()) + 5), MM_LISTEN_POLL_SEC="1", **IN_PROJECT)
+    assert any(ord(c) > 127 for c in reason)
+    run(LISTEN, "--until", str(int(time.time()) + 5), MM_LISTEN_POLL_SEC="1", LC_ALL="C", **IN_PROJECT)
     injected = [e for e in events(run) if e["k"] == "inject"]
     assert [e["name"] for e in injected] == ["drain", "other"]
     assert injected[0]["chars"] == len(reason)

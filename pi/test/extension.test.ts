@@ -13,7 +13,7 @@ import { fileURLToPath } from "node:url"
 import ocBus from "../../opencode/plugin/mattermost-agent-bus.ts"
 import { busFile as ocBusFile } from "../../opencode/plugin/mattermost-agent-bus.ts"
 import mattermostAgentBus, { busFile, busRoot, create, hookApi, MCP_TIMEOUT_SEC, mcpConfig, secretCommand, SERVER, SKILL,
-  timing, venvDir, waitSec, wakeBackoffMs } from "../mattermost-agent-bus.ts"
+  chars, timing, venvDir, waitSec, wakeBackoffMs } from "../mattermost-agent-bus.ts"
 
 const HERE = dirname(fileURLToPath(import.meta.url))
 const REPO = dirname(dirname(HERE))
@@ -538,4 +538,8 @@ test("RT-6.27 step 2: the keep-in-step helpers are the OpenCode plugin's, to the
   }
   assert.equal(block(join(REPO, "pi", "mattermost-agent-bus.ts")),
                block(join(REPO, "opencode", "plugin", "mattermost-agent-bus.ts")))
+})
+
+test("RT-6.9 step 1: an inject's length counts Unicode code points, as the server and the hooks do", () => {
+  assert.equal(chars("a\u{1F600}\u2014"), 3)  // "a😀—": 4 UTF-16 units, 3 code points
 })

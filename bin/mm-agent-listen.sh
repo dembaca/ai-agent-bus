@@ -103,7 +103,7 @@ trap '[[ "${ENDED_AS:-}" == killed ]] || write 0 "${ENDED_AS:-over}"' EXIT
 
 # The line that wakes the agent, counted by kind and length only (RT-6.9 step 1), then printed.
 say() {
-  mm_stat inject name="$1" chars="${#2}"
+  mm_stat inject name="$1" chars="$(mm_chars "$2")"
   printf '%s\n' "$2"
 }
 
