@@ -368,31 +368,17 @@ class Fleet:
         att = self._attests.get(agent)
         return att[2] if att and att[2].exp > self.server_now else None
 
-    def operator_token(self, username: str) -> str | None:
-        """The operator's anchor in subject form, as the login service's fresh records pair it
-        with the operator's login name (RT-6.41): the same records an asking agent's server
-        maps its asked human through, so "for me" compares anchor with anchor. None when no
-        record names the operator, or two anchors claim the name. Until the operator's own
-        NATS credential (points 1 to 6 of the addition) brings the directory's anchor."""
-        name = username.lower()
-        anchors: set[str] = set()
-        for agent in self._attests:
-            record = self._fresh_attestation(agent)
-            if record is None:
-                continue
-            for anchor, named in ((record.owner_anchor, record.owner_name), *record.trusted):
-                if named == name:
-                    anchors.add(anchor)
-        return owner_token(anchors.pop()) if len(anchors) == 1 else None
-
-    def asks(self, username: str) -> list[dict[str, Any]]:
-        """The open asks of every fresh record, as `/v1/asks` rows (the ADR's spellings):
-        "for me" when the asked human is the operator's anchor, "may answer" when the asking
-        agent's attestation names the operator's anchor as owner or trusted; `expired` after
+    def asks(self, anchor: str | None = None) -> list[dict[str, Any]]:
+        """The open asks of every fresh record, as `/v1/asks` rows (the ADR's spellings).
+        `anchor`: the operator's anchor in subject form, as the operator's own NATS credential
+        gives it (points 1 to 6 of the addition, not built); never derived from a login name
+        (point 4). Without it "for me" and "may answer" are None (n/a) and mark nothing. With
+        it: "for me" when the asked human is that anchor, "may answer" when the asking
+        agent's attestation names it as owner or trusted; `expired` after
         24 h (a hint: the asking server decides); `agent_gone` when its presence is not fresh.
         Read-only: no answer, no thread text. The title is plain text, control and direction
         characters stripped."""
-        me = self.operator_token(username)
+        me = anchor
         now = self.server_now
         rows = []
         for agent, (_seq, _at, home, record) in sorted(self._asks.items()):
@@ -415,8 +401,8 @@ class Fleet:
                     "at": ask.asked * 1000,
                     "end": ("expired" if now - ask.asked >= ASK_EXPIRED_SEC
                             else "answered" if ask.answered else "open"),
-                    "for_me": bool(me and human == me),
-                    "may_answer": bool(me and me in names),
+                    "for_me": (human == me) if me else None,
+                    "may_answer": (me in names) if me else None,
                     "agent_gone": gone,
                     "thread_id": ask.mm,
                 })

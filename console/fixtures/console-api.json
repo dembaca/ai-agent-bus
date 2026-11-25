@@ -81,8 +81,8 @@
     "need": "an example ask",
     "at": 1763980900000,
     "end": "open",
-    "for_me": true,
-    "may_answer": true,
+    "for_me": null,
+    "may_answer": null,
     "agent_gone": false,
     "thread_id": "8xqk3b1zwtrd5mfy6nqpe4hc1o"
   },

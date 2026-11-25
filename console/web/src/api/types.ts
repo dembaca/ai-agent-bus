@@ -141,11 +141,12 @@ export interface Ask {
   at: number
   /** `expired` after 24 h is a hint: the asking server decides. */
   end: "open" | "answered" | "expired"
-  /** The strongest mark: its asked human is the operator (ADR-015 point 4). */
-  forMe: boolean
+  /** The strongest mark: its asked human is the operator's anchor (ADR-015
+   * point 4); null (n/a) until the operator's own credential gives the anchor. */
+  forMe: boolean | null
   /** Weaker: an ask to someone else by an agent whose owner or trusts name
    * the operator. */
-  mayAnswer: boolean
+  mayAnswer: boolean | null
   /** The asking agent's presence is not fresh. */
   agentGone: boolean
   /** The thread the ask sits in, for the detail (GET /v1/threads/<id>). */

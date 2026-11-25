@@ -21,15 +21,14 @@ before 0.5.0 are described in the git history.
   client, at most 8000 bytes; a failed publish waits for the next part.
   Hosted (corral) sessions publish both too. The console decodes both
   strictly (a record or line that breaks a rule is dropped whole, its
-  warning carries none of it) and shows the asks read-only, "for me" and
-  "may answer" by anchor, expired after 24 h, "agent gone" without fresh
-  presence; `/v1/stats` gives the bus's share of all tokens per version
+  warning carries none of it) and shows the asks read-only, expired after
+  24 h, "agent gone" without fresh presence; `/v1/stats` gives the bus's share of all tokens per version
   over 7 days and the asks over 24 hours and 7 days, the numbers
   `stats_report` gives on the same lines, with the age of the oldest line.
   The STATS lines are read only with `CONSOLE_STATS_STREAM`. Not in it: the
   login service's `STATS` stream and the rights on both subjects, and the
   operator's own NATS credential; until that brings the operator's anchor,
-  "for me" takes it from the attestations that pair it with the login name.
+  "for me" and "may answer" are n/a and mark nothing (never matched by name).
 
 - **The console's agent card shows harness, model, task, branch and open
   asks** (RT-6.37 step 6, ADR-015). A NATS home's presence now carries the

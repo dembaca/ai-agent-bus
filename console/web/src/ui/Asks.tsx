@@ -13,11 +13,14 @@ export function Asks({ asks, onOpen }: {
 }) {
   const rows = [...asks].sort((a, b) =>
     Number(b.forMe) - Number(a.forMe) || a.at - b.at)
+  // No operator anchor yet (RT-6.43 step 6): "for me" is n/a, never guessed from a name.
+  const unmarked = rows.some((a) => a.forMe === null)
   return (
     <div className="asks">
       <div className="asks__note">
         Read-only: an ask is answered in its thread in the chat; the console
         shows it until the agent ends it (ADR-015 stage 1).
+        {unmarked && <> "For me" is n/a until your own credential on the bus gives your anchor.</>}
       </div>
       <table className="asks__table">
         <thead>
@@ -35,6 +38,7 @@ export function Asks({ asks, onOpen }: {
           {rows.map((ask) => (
             <tr key={ask.id} className="asks__row" onClick={() => onOpen(ask)}>
               <td>
+                {ask.forMe === null && <span title="no operator anchor until your own credential">n/a</span>}
                 {ask.forMe && <span className="chip chip--for-me" title="asked human: you">for me</span>}
                 {!ask.forMe && ask.mayAnswer &&
                   <span className="chip chip--may-answer" title="an agent whose owner or trusts name you">may answer</span>}

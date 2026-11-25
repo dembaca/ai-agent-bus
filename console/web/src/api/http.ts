@@ -32,8 +32,8 @@ export interface WireAsk {
   need: string
   at: number
   end: "open" | "answered" | "expired"
-  for_me: boolean
-  may_answer: boolean
+  for_me: boolean | null
+  may_answer: boolean | null
   agent_gone: boolean
   thread_id: string
 }

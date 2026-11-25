@@ -292,8 +292,9 @@ class Console:
             operator = self._operator(headers)
             if operator is None:
                 return _unauthorized()
-            # RT-6.43 steps 6 and 8: read-only, from the agents' own records
-            return httpd.Response.json(self.fleet.asks(operator.username) if path == "/v1/asks"
+            # RT-6.43 steps 6 and 8: read-only, from the agents' own records; no operator
+            # anchor until the operator's own credential brings it: "for me" stays n/a
+            return httpd.Response.json(self.fleet.asks() if path == "/v1/asks"
                                        else self.stats.reports(), headers=API_HEADERS)
         if path.startswith("/v1/threads/"):
             if self._operator(headers) is None:

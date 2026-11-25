@@ -41,15 +41,12 @@ above already reads, and each part of its STATS line on `<stats>.<name>`.
 The fleet decodes an ask record strictly (`natsbus.decode_ask_record`: a
 record that breaks a rule is dropped whole with a warning that carries
 none of it) and `/v1/asks` lists the asks of every record whose `exp` is
-ahead of the floored clock: "for me" when the asked human's anchor is the
-operator's, "may answer" when the asking agent's attestation names the
-operator's anchor as owner or trusted, `expired` after 24 h (a hint),
-`agent_gone` when its presence is not fresh. Until the operator's own NATS
-credential (points 1 to 6 of the console decision's addition of
-2026-11-25) brings the directory's anchor, the console takes the
-operator's anchor from the login service's attestations that pair one with
-the operator's login name — the same records the asking server maps its
-asked human through; no such record, no mark. Read-only: no answer, no
+ahead of the floored clock, `expired` after 24 h (a hint), `agent_gone`
+when its presence is not fresh. "For me" and "may answer" are `null`
+(`n/a`) and mark nothing until the operator's own NATS credential (points
+1 to 6 of the console decision's addition of 2026-11-25) brings the
+operator's anchor: they compare anchors only, never a login name (point
+4). Read-only: no answer, no
 thread text. `/v1/stats` answers the two stage-1 reports (the bus's share
 of all tokens per version over 7 days; the asks over 24 h and 7 days),
 computed with `stats.py` from lines decoded by `stats.decode_line`; every

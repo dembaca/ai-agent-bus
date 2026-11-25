@@ -117,7 +117,7 @@ def test_the_ask_row_the_fixture_states(fleet_scenario) -> None:
                                         title=ask["need"], asked=ask["at"] // 1000)], 1763980800)
     assert fleet_scenario.on_delivery(f"presence.ask.{ask['home']}.{ask['by']}", record,
                                       ack(5, 5, 1763980800.0), "PRESENCE", "console")
-    assert fleet_scenario.asks("dembaca") == [ask]
+    assert fleet_scenario.asks() == [ask]
 
 
 def test_the_report_the_fixture_states() -> None:

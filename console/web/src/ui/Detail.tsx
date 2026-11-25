@@ -133,7 +133,9 @@ function AskDetail({ ask }: { ask: Ask }) {
         {ask.agentGone && <span className="chip">agent gone</span>}
       </div>
       <div className="detail__ask-note">
-        {ask.forMe
+        {ask.forMe === null
+          ? "Shown read-only; whether it is yours is n/a until your own credential gives your anchor."
+          : ask.forMe
           ? "One of your open asks; this read-only pilot shows it, nothing else."
           : "Another human's ask, shown read-only."}
       </div>

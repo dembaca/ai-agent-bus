@@ -53,33 +53,38 @@ def fleet_with(*records: tuple[str, str, bytes, float]) -> Fleet:
     return f
 
 
-def test_the_asks_list_with_for_me_and_may_answer() -> None:
-    """RT-6.43 step 6: "for me" compares the asked human's anchor with the operator's anchor,
-    as the login service's records pair it with the operator's name; "may answer" when the
-    asking agent's attestation names the operator; people shown by name, never by anchor."""
+def test_the_asks_list_marks_nothing_without_the_operators_own_anchor() -> None:
+    """RT-6.43 step 6: without the operator's own credential there is no operator anchor, and
+    none is derived from the login name (point 4): "for me" and "may answer" are n/a."""
     rec_a = encode_ask_record([
         OpenAsk(mm(1), "approval", "carol~x", "Merge PR 118?", int(NOW) - 60),
-        OpenAsk(mm(2), "question", "dembaca", "Which‮ branch?\x07", int(NOW) - 30, answered=True),
+        OpenAsk(mm(2), "question", "dembaca", "Which\u202e branch?\x07", int(NOW) - 30, answered=True),
     ], int(NOW))
     rec_b = encode_ask_record([OpenAsk(mm(3), "approval", "-", "Deploy?", int(NOW) - 10)], int(NOW))
     f = fleet_with((A, "dev", rec_a, NOW), (B, "ops", rec_b, NOW))
-    assert f.operator_token("Carol") == "carol~x" and f.operator_token("nobody") is None
-    rows = f.asks("carol")
-    assert [r["id"] for r in rows] == [mm(1), mm(2), mm(3)]  # for me first, then oldest first
-    first = rows[0]
-    assert first == {"id": mm(1), "by": A, "display_name": "agent-a", "home": "dev", "kind": "approval",
-                     "human": "carol", "need": "Merge PR 118?", "at": (int(NOW) - 60) * 1000,
-                     "end": "open", "for_me": True, "may_answer": True, "agent_gone": False,
-                     "thread_id": mm(1)}
-    assert rows[1]["for_me"] is False and rows[1]["may_answer"] is True
+    rows = f.asks()
+    assert [r["id"] for r in rows] == [mm(1), mm(2), mm(3)]  # oldest first
+    assert rows[0] == {"id": mm(1), "by": A, "display_name": "agent-a", "home": "dev", "kind": "approval",
+                       "human": "carol", "need": "Merge PR 118?", "at": (int(NOW) - 60) * 1000,
+                       "end": "open", "for_me": None, "may_answer": None, "agent_gone": False,
+                       "thread_id": mm(1)}
     assert rows[1]["end"] == "answered" and rows[1]["need"] == "Which branch?"
-    assert rows[1]["human"] == "dembaca"
-    assert rows[2]["human"] is None and rows[2]["may_answer"] is True  # B's owner is carol
-    # dembaca: may answer A's asks, not B's; for me only the one to dembaca
-    mine = {r["id"]: (r["for_me"], r["may_answer"]) for r in f.asks("dembaca")}
-    assert mine == {mm(1): (False, True), mm(2): (True, True), mm(3): (False, False)}
-    # an operator no record names: nothing marked
-    assert not any(r["for_me"] or r["may_answer"] for r in f.asks("eve"))
+    assert rows[1]["human"] == "dembaca" and rows[2]["human"] is None
+    assert all(r["for_me"] is None and r["may_answer"] is None for r in rows)
+
+
+def test_with_the_operators_anchor_for_me_and_may_answer_compare_anchors() -> None:
+    """RT-6.43 step 6, once the operator's own credential gives the anchor: "for me" compares
+    the asked human's anchor with it, "may answer" when the asking agent's attestation names it."""
+    rec_a = encode_ask_record([OpenAsk(mm(1), "approval", "carol~x", "a", int(NOW) - 60),
+                               OpenAsk(mm(2), "approval", "dembaca", "b", int(NOW) - 30)], int(NOW))
+    rec_b = encode_ask_record([OpenAsk(mm(3), "approval", "-", "c", int(NOW) - 10)], int(NOW))
+    f = fleet_with((A, "dev", rec_a, NOW), (B, "ops", rec_b, NOW))
+    carol = {r["id"]: (r["for_me"], r["may_answer"]) for r in f.asks("carol~x")}
+    assert carol == {mm(1): (True, True), mm(2): (False, True), mm(3): (False, True)}
+    assert [r["id"] for r in f.asks("carol~x")][0] == mm(1)  # for me first
+    # a login name is no anchor: "carol" matches nothing
+    assert not any(r["for_me"] or r["may_answer"] for r in f.asks("carol"))
 
 
 def test_a_record_runs_out_and_the_newest_wins() -> None:
@@ -87,13 +92,13 @@ def test_a_record_runs_out_and_the_newest_wins() -> None:
     the older, an empty one ends the asks."""
     old = encode_ask_record([OpenAsk(mm(1), "approval", "-", "a", int(NOW))], int(NOW) - 1800)
     f = fleet_with((A, "dev", old, NOW))
-    assert f.asks("carol") == []  # iat + 30 min is now: run out
+    assert f.asks() == []  # iat + 30 min is now: run out
     live = encode_ask_record([OpenAsk(mm(1), "approval", "-", "a", int(NOW))], int(NOW))
     f = fleet_with((A, "dev", live, NOW))
-    assert len(f.asks("carol")) == 1
+    assert len(f.asks()) == 1
     f.on_delivery(f"presence.ask.dev.{A}", encode_ask_record([], int(NOW)),
                   ack("PRESENCE", "console", 99, NOW + 1), "PRESENCE", "console")
-    assert f.asks("carol") == []
+    assert f.asks() == []
 
 
 def test_expired_after_24_hours_and_agent_gone() -> None:
@@ -101,10 +106,10 @@ def test_expired_after_24_hours_and_agent_gone() -> None:
     without fresh presence are marked "agent gone"."""
     rec = encode_ask_record([OpenAsk(mm(1), "approval", "-", "a", int(NOW) - ASK_EXPIRED_SEC)], int(NOW))
     f = fleet_with((A, "dev", rec, NOW))
-    assert f.asks("carol")[0]["end"] == "expired"
+    assert f.asks()[0]["end"] == "expired"
     f2 = Fleet()
     f2.on_delivery(f"presence.ask.dev.{A}", rec, ack("PRESENCE", "console", 1, NOW), "PRESENCE", "console")
-    assert f2.asks("carol")[0]["agent_gone"] is True
+    assert f2.asks()[0]["agent_gone"] is True
 
 
 @pytest.mark.parametrize("body", [
@@ -120,7 +125,7 @@ def test_a_bad_record_is_dropped_whole_with_a_warning_that_carries_none_of_it(bo
     with caplog.at_level(logging.WARNING):
         assert not f.on_delivery(f"presence.ask.dev.{A}", body, ack("PRESENCE", "console", 1, NOW),
                                  "PRESENCE", "console")
-    assert f.asks("carol") == []
+    assert f.asks() == []
     assert "dropped" in caplog.text and "props" not in caplog.text and "xxxx" not in caplog.text
 
 
