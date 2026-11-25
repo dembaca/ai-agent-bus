@@ -508,3 +508,49 @@ async def test_a_not_approvers_answer_keeps_the_reminders_going() -> None:
     await port._on_person(_person("home", "dembaca", 61, PersonMessage("unreaction", ASK, "dembaca", emoji="+1")))
     await port._on_person(_person("home", "dembaca", 62, PersonMessage("reaction", ASK, "dembaca", emoji="+1")))
     assert (await remind._answered(port, BOT, ASK, "", "dembaca"))[0]  # type: ignore[arg-type]
+
+
+async def test_a_delivered_not_approver_yes_leaves_the_ask_waiting(monkeypatch: pytest.MonkeyPatch) -> None:
+    """Cross-model review F1: delivered through the inbox and _event_items, a not_approver yes
+    does not mark the ask answered: it stays waiting and holds the queue (reminders go on)."""
+    inner = FakeBus(FakeRegistrar(), trusted={HUMAN: "dembaca"}, names={HUMAN: "dembaca"})
+    inner.registrar.session = inner.registrar.info
+    inner.work_channel_name = "home"
+    port = NatsPort(inner, _settings(), ("home",), echo_wait=0.5)  # type: ignore[arg-type]
+    fake = FakeNats(port)
+    port.use_bus(fake)
+    fake.attestations[ME] = _att()
+    fake.switched.add("home")
+    client = compose.Remembered(port)  # type: ignore[arg-type]
+    monkeypatch.setattr(server, "_get_client", lambda: client)
+    inbox = WebSocketInbox(client=client, watched_channel_ids={WORK}, source=NatsEvents(port))  # type: ignore[arg-type]
+    asks.add(BOT, ASK, "dembaca", "", title="merge?")
+    try:
+        await inbox.ensure_connected()
+        await port._on_person(_person("home", "dembaca", 90, PersonMessage("reaction", ASK, "dembaca", emoji="+1")))
+        await port._on_person(_person("home", "dembaca", 91, PersonMessage("post", MM1, "dembaca", text="yes",
+                                                                           mm_root=ASK)))
+        events = await inbox.take(timeout_sec=2, max_events=10)
+        items = await server._event_items(events)
+        assert items and all(i.get("not_approver") for i in items if i["from_trusted_human"])
+        assert ASK in [w[0] for w in asks.waiting(BOT)]
+        assert ASK in asks.blocking(BOT, "dembaca")
+    finally:
+        await inbox.close()
+
+
+async def test_a_reaction_on_a_nats_post_reads_back_not_approver() -> None:
+    """Cross-model review F2: a person's reaction on an agent's NATS post is read back from the
+    NATS memory under the NATS id and its hu:<anchor> author: marked as its event was."""
+    from mattermost_ai_agent_bus import slim
+
+    port, inner, fake = make(trusted={HUMAN: "dembaca"})
+    assert fake is not None
+    fake.attestations[ME] = _att()
+    fake.switched.add("home")
+    await arrive(port, "home", "agent-alice", 30, Message("post", "a NATS post"))
+    await port._on_person(_person("home", "dembaca", 31, PersonMessage("reaction", MM2, "dembaca",
+                                                                       emoji="+1", ref=30)))
+    (post,) = [p for p in await port.channel_posts(WORK) if p.id == "n1:home:30"]
+    got = await slim.posts(port, [post])  # type: ignore[arg-type]
+    assert got[0]["reactions"][0]["not_approver"] is True

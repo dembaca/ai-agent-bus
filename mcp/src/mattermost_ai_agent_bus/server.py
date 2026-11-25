@@ -2815,8 +2815,9 @@ async def _event_items(events: list[Any], raw: bool = False) -> list[dict[str, A
         # RT-6.9: the first answer by a trusted human ends the ask's wait. A
         # remark emoji answers nothing; the file remembers, so a second
         # reaction or a restarted server counts nothing again.
-        if uid and root and cls == gate.TRUSTED and (
+        if uid and root and cls == gate.TRUSTED and not item.get("not_approver") and (
                 e.kind != "reaction" or item.get("answer") or item.get("choice")):
+            # RT-6.42 step 9: a not_approver answer leaves the ask waiting (reminded, queue held).
             _note_answer(uid, root, e.post.create_at, thread=e.kind != "reaction", questions=questions)
         if raw:
             item |= {"post": e.post.json(), "channel": e.channel.json() if e.channel else None}

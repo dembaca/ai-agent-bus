@@ -1015,10 +1015,13 @@ class NatsPort:
         assert m.emoji is not None
         if not self._keys.take_reaction(m.kind, m.mm, m.emoji, ev.anchor):
             return
-        if m.kind == "reaction":
-            self._judge(("reaction", m.mm, m.emoji, ev.anchor), ev.anchor)
         self._people_at[ch] = max(self._people_at.get(ch, 0), ms)
         on_nats = m.ref is not None and self._where.get(m.ref) == ch
+        if m.kind == "reaction":
+            # Judged under the Mattermost id and, for a NATS post, the id the reads give it.
+            self._judge(("reaction", m.mm, m.emoji, ev.anchor), ev.anchor)
+            if on_nats and m.ref is not None:
+                self._judge(("reaction", post_id(ch, m.ref), m.emoji, ev.anchor), ev.anchor)
         if m.kind == "unreaction":
             if on_nats and m.ref is not None:
                 self._reacts.get(m.ref, {}).pop((m.emoji, uid), None)
@@ -1056,7 +1059,9 @@ class NatsPort:
             if ("post", p.id) in self._unapproved:
                 out.add(("post", p.id))
             for r in p.reactions:
-                if ("reaction", p.id, r.emoji_name, bus.anchor_of_account(r.user_id)) in self._unapproved:
+                # a reaction read from the NATS memory names its person (hu:<anchor>) itself
+                anchor = r.user_id[len(PERSON):] if is_person(r.user_id) else bus.anchor_of_account(r.user_id)
+                if ("reaction", p.id, r.emoji_name, anchor) in self._unapproved:
                     out.add(("reaction", p.id, r.emoji_name, r.user_id))
         return out
 
