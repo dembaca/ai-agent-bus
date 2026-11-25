@@ -5,15 +5,20 @@ before 0.5.0 are described in the git history.
 
 ## 0.100.0
 
-Needs: login service publish right on presence account records, bridge create right on its account consumer.
-Needs: MM_PROPS_PREFIX of at most sixteen characters, for the bridge its seen bucket and widened home consumers.
+Needs: login service updated first, with publish right on presence account records, MM_PROPS_PREFIX at most sixteen characters.
+Needs: for the bridge, its seen bucket, widened home consumers, create right on its account consumer, new publish rights.
 
 People's posts and reactions reach the agents over NATS: the central bridge
 carries them from Mattermost, the login service publishes each account's record
-and the consumers to read them, and the MCP server reads them where the bridge
+and makes the consumers people's posts are read through, and the MCP server reads them where the bridge
 signals, with a person approving only on the login service's fresh approver
 record. The registrar's code moves into the bridge's module, not yet wired.
-Breaking: a props prefix is at most 16 characters.
+Breaking: a props prefix is at most 16 characters. Order: the login service
+first (without its people's consumers a host hears no people over NATS on the
+bridge's signal), then a step-2 bridge with all its new rights — publish on
+`bus.hu.<home>.*` and `presence.bridge.<home>.v1`, the seen bucket's rights and
+the create right of its account consumer — as in
+`services/auth/nats-server.example.conf` and the deployment view.
 
 ### Added
 
@@ -55,8 +60,8 @@ Breaking: a props prefix is at most 16 characters.
   (`services/bridge/internal/store/seen_bucket.json`), widens each home's
   consumer to `bus.hu.<home>.*` and grants the bridge the rights in
   `services/auth/nats-server.example.conf` before this bridge starts: it
-  refuses to start without the bucket. The release's `Needs:` line names
-  the create right. The MCP server reads them (the entry above).
+  refuses to start without the bucket. The release's second `Needs:` line
+  names the create right. The MCP server reads them (the entry above).
 
 - **The bridge reads Mattermost: the WebSocket reader `internal/mmws` and
   two REST methods of `internal/mm` (ADR-016, the bridge's step 2).
