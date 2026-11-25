@@ -993,5 +993,5 @@ test("RT-6.20: state kept by a plugin from before ADR-009 (a window going on) ke
 })
 
 test("RT-6.9 step 1: an inject's length counts Unicode code points, as the server and the hooks do", () => {
-  assert.equal(chars("a\u{1F600}\u2014"), 3)  // "a😀—": 4 UTF-16 units, 3 code points
+  assert.equal(chars("a\u{1F600}\u2014"), 3)  // a, a grinning face, an em dash: 4 UTF-16 units, 3 code points
 })

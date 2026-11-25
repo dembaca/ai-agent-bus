@@ -541,5 +541,5 @@ test("RT-6.27 step 2: the keep-in-step helpers are the OpenCode plugin's, to the
 })
 
 test("RT-6.9 step 1: an inject's length counts Unicode code points, as the server and the hooks do", () => {
-  assert.equal(chars("a\u{1F600}\u2014"), 3)  // "a😀—": 4 UTF-16 units, 3 code points
+  assert.equal(chars("a\u{1F600}\u2014"), 3)  // a, a grinning face, an em dash: 4 UTF-16 units, 3 code points
 })
