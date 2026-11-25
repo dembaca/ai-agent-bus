@@ -16,9 +16,9 @@ from fakes import BOT, WORK, FakeBus, FakeRegistrar
 from test_nats_port import ME, FakeNats, _settings, arrive, make
 from test_natsbus import T0, FakeMsg, _presence_reply, _unit_bus
 
-from mattermost_ai_agent_bus import asks, compose, server
+from mattermost_ai_agent_bus import asks, channel, compose, server
 from mattermost_ai_agent_bus.events import PostEvent, ReactionEvent
-from mattermost_ai_agent_bus.model import Post, Reaction
+from mattermost_ai_agent_bus.model import FileInfo, Post, Reaction
 from mattermost_ai_agent_bus.nats_port import NatsEvents, NatsPort, person_id
 from mattermost_ai_agent_bus.natsbus import (
     UNBOUND,
@@ -140,6 +140,7 @@ async def test_the_records_and_the_signal_count_by_the_servers_clock() -> None:
     """RT-6.42 steps 3, 7, 10: an account's anchor and approver flag, the bridge's signal;
     a message there that does not decode erases what was there (fail closed)."""
     bus, _ = _unit_bus()
+    bus._connected, bus._nc = True, object()  # type: ignore[assignment]  # a live connection
 
     async def presence(subject: str, seq: int, t: float, data: bytes) -> None:
         await bus._on_presence_msg(FakeMsg(subject, _presence_reply(bus, seq, seq, t), data))
@@ -156,13 +157,58 @@ async def test_the_records_and_the_signal_count_by_the_servers_clock() -> None:
     assert not bus.people_switched("home")  # the signal ran out
     await presence(acct, 4, T0 + 902, _account(exp=int(T0) + 2000))
     assert bus.approver("dembaca")
-    await presence(acct, 5, T0 + 903, b"")  # a stray answer erased it
-    assert bus.anchor_of_account(ACCOUNT) == UNBOUND and not bus.approver("dembaca")
+    await presence(acct, 5, T0 + 903, b"")  # a stray answer erased it: no approver
+    # the keys still know the anchor last read (Fable finding 8), the trust does not
+    assert bus.anchor_of_account(ACCOUNT) == "dembaca" and not bus.approver("dembaca")
     await presence(acct, 4, T0 + 902, _account(exp=int(T0) + 2000))  # an older one never overrides
+    assert not bus.approver("dembaca")
+    await presence(acct, 6, T0 + 904, _account(anchor=None, name=None))  # unbound by the service
     assert bus.anchor_of_account(ACCOUNT) == UNBOUND
 
 
+async def test_a_signal_counts_only_while_connected_and_never_past_its_cap() -> None:
+    """Fable findings 4 and 9: while the connection is down or the own echo is old the
+    server's clock stands still, so no signal is fresh; an exp is capped at 3 minutes
+    (a signal) and 15 minutes (a record) from the message's server time."""
+    bus, _ = _unit_bus()
+
+    async def presence(subject: str, seq: int, t: float, data: bytes) -> None:
+        await bus._on_presence_msg(FakeMsg(subject, _presence_reply(bus, seq, seq, t), data))
+
+    await presence("presence.bridge.home.v1", 1, T0, _body(home="home", people=True, iat=1, exp=int(T0) + 99999))
+    await presence(f"presence.account.mattermost.{ACCOUNT}.v1", 2, T0, _account(exp=int(T0) + 99999))
+    assert not bus.people_switched("home")  # not connected
+    bus._connected, bus._nc = True, object()  # type: ignore[assignment]
+    assert bus.people_switched("home") and bus.approver("dembaca")
+    bus._own_echo = time.monotonic() - 1000  # the own presence has not come back
+    assert not bus.people_switched("home")
+    bus._own_echo = time.monotonic()
+    await presence(f"presence.-.{bus.name}", 3, T0 + 181, b'{"v":1,"status":"online"}')
+    assert not bus.people_switched("home") and bus.approver("dembaca")
+    await presence(f"presence.-.{bus.name}", 4, T0 + 901, b'{"v":1,"status":"online"}')
+    assert not bus.approver("dembaca")
+
+
+async def test_a_gap_on_the_persons_consumer_reads_mattermost() -> None:
+    """Fable finding 7: the consumer has no `since`; a gap starts the catch-up there."""
+    bus, _ = _unit_bus()
+    gaps: list[str] = []
+    bus.on_person_gap = gaps.append
+    n = bus.name
+    ok = _body(kind="post", text="x", name="dembaca", mm=MM1)
+    await bus._on_person_deliver("home", "bus.hu.home.a", _hu_reply(n, "home", 10, 1), ok)
+    await bus._on_person_deliver("home", "bus.hu.home.a", _hu_reply(n, "home", 14, 3), ok)
+    assert gaps == ["home"]
+
+
 # --- the port: the switch, the keys, trust ------------------------------------------------------------
+
+def _mm(pid: str, user: str, message: str, at: int, reactions: tuple[tuple[str, str, int], ...] = ()) -> dict[str, Any]:
+    """A Mattermost post as its JSON (a read rebuilds the post from it)."""
+    return {"id": pid, "channel_id": WORK, "user_id": user, "message": message, "create_at": at,
+            "metadata": {"reactions": [{"user_id": u, "post_id": pid, "emoji_name": e, "create_at": t}
+                                       for u, e, t in reactions]}}
+
 
 def _person(where: str, anchor: str, seq: int, message: PersonMessage, t: float | None = None) -> PersonEvent:
     return PersonEvent(where, anchor, seq, time.time() if t is None else t, message)
@@ -188,14 +234,21 @@ def _queued(ev: NatsEvents) -> list[Any]:
     return out
 
 
-async def test_a_persons_post_comes_over_nats_only_while_the_bridge_signals_its_channel() -> None:
-    """RT-6.42 step 9: no fresh signal, the post is Mattermost's; with one, a PostEvent with the
-    Mattermost id, its root (a NATS post in the memory, else mm_root), author hu:<anchor>."""
+async def test_a_persons_post_over_nats_keeps_its_mattermost_id_and_comes_once() -> None:
+    """RT-6.42 step 9: a PostEvent with the Mattermost id, its root (a NATS post in the memory,
+    else mm_root), author hu:<anchor>. Before the signal it is delivered too (Fable finding 6):
+    its later Mattermost copy is the repeat, dropped by its key."""
     port, _, fake = make()
     assert fake is not None
     ev = await _events(port)
-    await port._on_person(_person("home", "dembaca", 20, PersonMessage("post", MM1, "dembaca", text="hi")))
-    assert _queued(ev) == []
+    await port._on_person(_person("home", "dembaca", 20, PersonMessage("post", "e" * 26, "dembaca", text="hi")))
+    assert [e.post.id for e in _queued(ev)] == ["e" * 26]
+    fake.switched.add("home")
+    assert await port.skip(PostEvent(post=Post(id="e" * 26, channel_id=WORK, user_id=HUMAN, message="hi"),
+                                     channel_type=None, edited=False))
+    fake.switched.clear()
+    assert await port.skip(PostEvent(post=Post(id="e" * 26, channel_id=WORK, user_id=HUMAN, message="hi"),
+                                     channel_type=None, edited=False))  # not switched: the key drops it
     fake.switched.add("home")
     await arrive(port, "home", "agent-alice", 30, Message("post", "a root"))
     _queued(ev)
@@ -255,17 +308,77 @@ async def test_when_the_signal_runs_out_mattermost_is_read_from_the_last_people_
     t = time.time()
     await port._on_person(_person("home", "dembaca", 50, PersonMessage("post", MM1, "dembaca", text="a"), t))
     _queued(ev)
-    later = Post(id=MM2, channel_id=WORK, user_id=HUMAN, message="while the bridge was down",
-                 create_at=int(t * 1000) + 5000, reactions=(Reaction(HUMAN, ASK, "+1", int(t * 1000) + 6000),))
-    inner.posts = [Post(id=MM1, channel_id=WORK, user_id=HUMAN, message="a", create_at=int(t * 1000)), later]
+    ms = int(t * 1000)
+    later = _mm(MM2, HUMAN, "while the bridge was down", ms + 5000)
+    # A yes on an ask posted long before (Fable finding 5): the `since` read returns it.
+    ask = _mm(ASK, BOT, "merge?", ms - 600_000, ((HUMAN, "+1", ms + 6000),))
+    inner.posts = [ask, _mm(MM1, HUMAN, "a", ms), later]
     fake.switched.clear()
     await port.check_people()
     for task in list(port._catching_up):
         await task
     got = _queued(ev)
-    assert [(type(e).__name__, getattr(e, "post", None) and e.post.id) for e in got] == [
-        ("PostEvent", MM2), ("ReactionEvent", None)]
-    assert got[0].post.user_id == HUMAN  # read on Mattermost: its own account
+    assert sorted((type(e).__name__, e.post.id if isinstance(e, PostEvent) else e.reaction.post_id)
+                  for e in got) == [("PostEvent", MM2), ("ReactionEvent", ASK)]
+    assert next(e for e in got if isinstance(e, PostEvent)).post.user_id == HUMAN  # its own account
+
+
+async def test_the_catch_up_never_reaches_further_back_than_the_keys(monkeypatch: pytest.MonkeyPatch) -> None:
+    """Fable finding 3 (High): after a quiet hour the keys are gone; a catch-up from the last
+    people event would bring that post again through Mattermost, where a not_approver "go"
+    approves. It starts no earlier than the keys' lifetime allows."""
+    port, inner, fake = make()
+    assert fake is not None
+    ev = await _events(port)
+    now = time.time()
+    port._people_at["home"] = int((now - 7200) * 1000)  # the last people event, two hours ago
+    inner.posts = [_mm(MM1, HUMAN, "go", int((now - 7000) * 1000)), _mm(MM2, HUMAN, "new", int((now - 60) * 1000))]
+    await port._catch_up("home")
+    assert [e.post.id for e in _queued(ev)] == [MM2]
+    assert inner.calls[-1][2] >= int((now - 3600) * 1000)
+
+
+async def test_a_failed_catch_up_is_tried_again_at_the_next_look() -> None:
+    """Fable finding 7: a catch-up whose read fails is owed and done at the next look."""
+    port, inner, fake = make()
+    assert fake is not None
+    ev = await _events(port)
+    calls = {"n": 0}
+    real = inner.channel_posts
+
+    async def flaky(*a: Any, **kw: Any) -> list[Post]:
+        calls["n"] += 1
+        if calls["n"] == 1:
+            raise OSError("down")
+        return await real(*a, **kw)
+
+    inner.channel_posts = flaky  # type: ignore[method-assign]
+    inner.posts = [_mm(MM2, HUMAN, "x", int(time.time() * 1000))]
+    await port._catch_up("home")
+    assert _queued(ev) == [] and port._owed == {"home"}
+    await port.check_people()
+    for task in list(port._catching_up):
+        await task
+    assert [e.post.id for e in _queued(ev)] == [MM2] and not port._owed
+
+
+async def test_a_persons_files_are_read_by_the_posts_mattermost_id() -> None:
+    """Point 18, answer 4: the body has a count; the files come from Mattermost by `mm`."""
+    port, inner, fake = make()
+    assert fake is not None
+    ev = await _events(port)
+    info = FileInfo(id="f" * 26, name="plan.txt")
+    inner.posts = [Post(id=MM1, channel_id=WORK, user_id=HUMAN, message="see", files=(info,))]
+    await port._on_person(_person("home", "dembaca", 70, PersonMessage("post", MM1, "dembaca", text="see", files=1)))
+    (got,) = _queued(ev)
+    assert [f.id for f in got.post.files] == ["f" * 26]
+
+
+def test_not_approver_reaches_a_channel_tag() -> None:
+    """Fable finding 1 (High): in channel mode the mark is a tag attribute too."""
+    item = {"kind": "mention", "from_trusted_human": True, "not_approver": True,
+            "post": {"id": MM1, "message": "go"}}
+    assert channel.notification(item)["meta"]["not_approver"] == "true"
 
 
 async def test_a_trusted_anchor_is_trusted_and_approves_only_with_a_fresh_approver_record(

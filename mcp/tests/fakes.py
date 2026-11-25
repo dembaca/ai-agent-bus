@@ -365,7 +365,10 @@ class FakeChat:
                             since_ms: int | None = None) -> list[Post]:
         self.calls.append(("posts", per_page, since_ms))
         if since_ms is not None:
-            return [p for p in self._posts() if p.create_at >= since_ms]
+            # Mattermost's `since`: created, edited or with a reaction since (a reaction
+            # moves the post's update_at).
+            return [p for p in self._posts() if p.create_at >= since_ms or p.edit_at >= since_ms
+                    or any(r.create_at >= since_ms for r in p.reactions)]
         return self._posts()[:per_page]
 
     async def list_recent(self, *, channel_id: str | None = None, per_page: int = 20,

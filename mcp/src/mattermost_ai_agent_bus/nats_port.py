@@ -323,6 +323,7 @@ class NatsPort:
         self._switched: set[str] = set()  # channels whose people came over NATS at the last look
         self._people_at: dict[str, int] = {}  # channel -> ms of its last people event over NATS
         self._catching_up: set[asyncio.Task[None]] = set()
+        self._owed: set[str] = set()  # channels whose catch-up on Mattermost failed: tried again
         self._watch: asyncio.Task[None] | None = None
 
     def __getattr__(self, name: str) -> Any:
@@ -370,6 +371,7 @@ class NatsPort:
                 bus = NatsBus(self._s, login, owner, self._on_event, on_fatal=self._on_fatal,
                               on_person=self._on_person, **self._bus_options)
                 self._bus = bus
+                bus.on_person_gap = self._person_gap
                 try:
                     bus.link_bot(await self._bot_id())
                 except ValueError:
@@ -879,15 +881,25 @@ class NatsPort:
         elif not on and ch in self._switched:
             self._switched.discard(ch)
             log.info("nats: the bridge's signal for ~%s ran out: its people are read on Mattermost again", ch)
-            task = asyncio.create_task(self._catch_up(ch))
-            self._catching_up.add(task)
-            task.add_done_callback(self._catching_up.discard)
+            self._start_catch_up(ch)
         return on
+
+    def _start_catch_up(self, ch: str) -> None:
+        task = asyncio.create_task(self._catch_up(ch))
+        self._catching_up.add(task)
+        task.add_done_callback(self._catching_up.discard)
+
+    def _person_gap(self, ch: str) -> None:
+        """A gap on the person's consumer (RT-6.42 step 9): what was lost is on Mattermost."""
+        self._start_catch_up(ch)
 
     async def check_people(self) -> None:
         """Look at the bridge's signals of every channel of the bus (RT-6.42 step 9)."""
         for ch in self._people_channels():
             self._note_switch(ch)
+        for ch in list(self._owed):
+            self._owed.discard(ch)
+            self._start_catch_up(ch)
 
     async def _watch_people(self) -> None:
         while True:
@@ -899,19 +911,24 @@ class NatsPort:
 
     async def _catch_up(self, ch: str) -> None:
         """Read the channel on Mattermost from its last people event over NATS on, and deliver
-        the people's posts and reactions no key holds (RT-6.42 step 9)."""
+        the people's posts and reactions no key holds (RT-6.42 step 9). Never from further back
+        than the keys reach (PEOPLE_KEY_SEC): an older event would come again, now with
+        Mattermost's trust. The `since` read also returns older posts with new reactions (a
+        reaction moves a post's update_at). A read that fails is tried again at the next look."""
         cid = (await self._people_map()).get(ch)
         bus = self._live()
         if cid is None or bus is None:
             return
-        since = max(0, self._people_at.get(ch, 0) - PEOPLE_MARGIN_MS)
+        floor = int((time.time() - PEOPLE_KEY_SEC) * 1000) + PEOPLE_MARGIN_MS
+        since = max(0, self._people_at.get(ch, 0) - PEOPLE_MARGIN_MS, floor)
         try:
-            posts = await self.inner.posts_after(since, channel_id=cid)
+            posts = await self.inner.channel_posts(cid, since_ms=since)
             authors = {p.user_id for p in posts} | {r.user_id for p in posts for r in p.reactions}
             bots = await self.inner.bot_accounts(authors - {""})
-        except Exception as exc:  # noqa: BLE001 — logged: what came meanwhile may be missing
-            log.warning("nats: the catch-up of ~%s on Mattermost failed (%s): people's posts since the "
-                        "bridge's signal ran out may be missing", ch, type(exc).__name__)
+        except Exception as exc:  # noqa: BLE001 — tried again at the next look
+            self._owed.add(ch)
+            log.warning("nats: the catch-up of ~%s on Mattermost failed (%s): tried again in %.0f s",
+                        ch, type(exc).__name__, PEOPLE_CHECK_SEC)
             return
         me = self.inner.bot_id
 
@@ -920,9 +937,9 @@ class NatsPort:
 
         for p in sorted(posts, key=lambda p: p.create_at):
             if (p.create_at >= since and person(p.user_id) and not p.from_webhook and not p.type
-                    and self._keys.take(("post", p.id))):
-                self._tell(PostEvent(post=p, channel_type=None, edited=False))
-            for r in p.reactions:
+                    and not p.delete_at and self._keys.take(("post", p.id))):
+                self._tell(PostEvent(post=self.inner.with_links(p), channel_type=None, edited=False))
+            for r in sorted(p.reactions, key=lambda r: r.create_at):
                 if (r.create_at >= since and person(r.user_id)
                         and self._keys.take_reaction("reaction", p.id, r.emoji_name,
                                                      bus.anchor_of_account(r.user_id))):
@@ -967,10 +984,9 @@ class NatsPort:
         if cid is None:
             log.debug("nats: dropped a person's event in ~%s: the channel is not known", ev.where)
             return
-        if not self._note_switch(ev.where):
-            log.debug("nats: a person's event in ~%s is read on Mattermost: no fresh signal of the bridge",
-                      ev.where)
-            return
+        # Delivered also before the signal (or after it ran out): Mattermost delivers it too
+        # then, and the keys drop whichever comes second (RT-6.42 step 9).
+        self._note_switch(ev.where)
         m, ch = ev.message, ev.where
         uid = person_id(ev.anchor)
         self._person_names[uid] = m.name
@@ -979,8 +995,10 @@ class NatsPort:
             if not self._keys.take(("post", m.mm)):
                 return
             self._people_at[ch] = max(self._people_at.get(ch, 0), ms)
-            self._tell(PostEvent(post=self.inner.with_links(self._person_post(ev, cid)),
-                                 channel_type=None, edited=False))
+            post = self.inner.with_links(self._person_post(ev, cid))
+            if m.files:
+                post = await self._with_files(post)
+            self._tell(PostEvent(post=post, channel_type=None, edited=False))
             return
         assert m.emoji is not None
         if not self._keys.take_reaction(m.kind, m.mm, m.emoji, ev.anchor):
@@ -998,6 +1016,17 @@ class NatsPort:
             if (m.emoji, uid) in bucket or len(bucket) < MAX_REACTIONS:
                 bucket[(m.emoji, uid)] = ms
         self._tell(ReactionEvent(Reaction(user_id=uid, post_id=target, emoji_name=m.emoji, create_at=ms), cid))
+
+    async def _with_files(self, post: Post) -> Post:
+        """A person's files stay on Mattermost (point 18): read by the post's Mattermost id,
+        so get_file fetches them; without them on a failed read (logged)."""
+        try:
+            thread = await self.inner.thread(post.id)
+            found = next((p for p in thread.posts if p.id == post.id), None)
+        except Exception as exc:  # noqa: BLE001 — the count stays in the raw post
+            log.info("nats: the files of a person's post were not read (%s)", type(exc).__name__)
+            return post
+        return dataclasses.replace(post, files=found.files) if found is not None else post
 
     def _person_post(self, ev: natsbus.PersonEvent, channel_id: str) -> Post:
         """A person's post as a read gives it: its Mattermost id, its root (the NATS post

@@ -320,6 +320,8 @@ def notification(item: Mapping[str, Any]) -> dict[str, Any]:
         meta["foreign"] = "true"  # ADR-001: another owner's agent, a request
     if item.get("expired"):
         meta["expired"] = "true"  # RT-6.11: too late to approve
+    if item.get("not_approver"):
+        meta["not_approver"] = "true"  # RT-6.42 step 9: no fresh approver record, approves nothing
     if item.get("for_crown"):
         meta["for_crown"] = "true"  # RT-6.6 step 5: the crown holder's to answer or route
     if attached := files.attribute(post.get("files")):

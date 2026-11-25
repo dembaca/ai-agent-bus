@@ -25,6 +25,7 @@ from __future__ import annotations
 
 import asyncio
 import base64
+import dataclasses
 import hashlib
 import inspect
 import ipaddress
@@ -372,6 +373,8 @@ def decode_claim(data: bytes) -> None:
 
 UNBOUND = "-"  # the sender token of an account bound to nobody: never an anchor (OWNER_RE)
 PEOPLE_TEXT_MAX = 16000  # the bridge cuts a person's text there (characters)
+SIGNAL_MAX_SEC = 180.0  # a bridge signal counts at most this long after it was published
+ACCOUNT_MAX_SEC = 900.0  # an account record's approver flag at most this long after its write
 _PEOPLE_KEYS = {
     "post": ({"v", "kind", "text", "name", "mm"}, {"mm_root", "root", "files", "cut"}),
     "reaction": ({"v", "kind", "emoji", "name", "mm"}, {"ref"}),
@@ -822,6 +825,7 @@ class NatsBus:
         self._on_event = on_event
         self._on_fatal = on_fatal
         self._on_person = on_person
+        self.on_person_gap: Callable[[str], None] | None = None  # a gap on a person's consumer (RT-6.42)
         self._heartbeat_sec = heartbeat_sec
         self._gap_sec = gap_reconnect_sec
         self._connect_timeout = connect_timeout
@@ -875,6 +879,7 @@ class NatsBus:
         self._accounts: dict[str, tuple[int, float, AccountRecord | None]] = {}
         # channel -> (stream sequence, server time, exp) of the bridge's signal; exp 0: none
         self._bridge_signal: dict[str, tuple[int, float, float]] = {}
+        self._last_anchor: dict[str, str] = {}  # account -> the anchor of its last record that decoded
 
     def __repr__(self) -> str:
         return f"NatsBus(name={self._name!r}, connected={self._connected})"
@@ -1428,6 +1433,10 @@ class NatsBus:
     def people_switched(self, channel: str) -> bool:
         """A fresh signal of the bridge names the channel (by the server's clock): its people
         come over NATS. False otherwise: they are read on Mattermost, as without a bridge."""
+        if not self.connected or self.own_echo_age() > OWN_ECHO_SEC:
+            # The server's clock stands still while nothing arrives: a signal is not
+            # fresh then, whatever its exp says (people on Mattermost, fail open).
+            return False
         got = self._bridge_signal.get(channel)
         return got is not None and got[2] > self._server_now
 
@@ -1436,6 +1445,10 @@ class NatsBus:
         sender token the bridge publishes it under: the anchor, UNBOUND for none (no record,
         one that did not decode, or `anchor` null). A stale record still names the anchor."""
         got = self._accounts.get(account)
+        if got is not None and got[2] is None:
+            # Erased by a message that does not decode: the anchor last read, for the
+            # keys only (the bridge may still hold it); it binds no trust (approver).
+            return self._last_anchor.get(account, UNBOUND)
         rec = got[2] if got is not None else None
         return rec.anchor if rec is not None and rec.anchor else UNBOUND
 
@@ -1474,6 +1487,7 @@ class NatsBus:
         for account, (_, t, _r) in list(self._accounts.items()):
             if t < cut:
                 del self._accounts[account]
+                self._last_anchor.pop(account, None)
         for ch, members in list(self._members.items()):
             for agent in list(members):
                 if members[agent][1] < cut:
@@ -1547,9 +1561,11 @@ class NatsBus:
             log.warning("nats bus: dropped a person's message on %s: the sender is no anchor", channel)
             return
         if gap:
-            self._gap(key)
-        if key in self._stale:
-            return
+            # The consumer starts with new messages and keeps its position (no `since`):
+            # a reconnect brings nothing back, Mattermost has what was lost (RT-6.42 step 9).
+            log.warning("nats bus: gap on the people of %s: read on Mattermost", channel)
+            if self.on_person_gap is not None:
+                self.on_person_gap(channel)
         if ack.stream_seq <= self._last_seq.get(key, 0):
             return  # a repeat
         self._last_seq[key] = ack.stream_seq
@@ -1653,6 +1669,13 @@ class NatsBus:
                 if (ack.time, ack.stream_seq) > (at0, seq0):
                     try:
                         rec: AccountRecord | None = decode_account(msg.data, t[3])
+                        assert rec is not None
+                        # Never longer than a credential lives (15 min) from its write.
+                        rec = dataclasses.replace(rec, exp=min(rec.exp, ack.time + ACCOUNT_MAX_SEC))
+                        if rec.anchor:
+                            self._last_anchor[t[3]] = rec.anchor
+                        else:
+                            self._last_anchor.pop(t[3], None)
                     except MessageError:
                         rec = None
                         log.warning("nats bus: an account record that does not decode (seq %d): unbound",
@@ -1663,7 +1686,7 @@ class NatsBus:
                 seq0, at0, _exp = self._bridge_signal.get(t[2], (0, 0.0, 0.0))
                 if (ack.time, ack.stream_seq) > (at0, seq0):
                     try:
-                        exp = decode_bridge_signal(msg.data, t[2])
+                        exp = min(decode_bridge_signal(msg.data, t[2]), ack.time + SIGNAL_MAX_SEC)
                     except MessageError:
                         exp = 0.0
                         log.warning("nats bus: a bridge signal that does not decode (seq %d): people on "
