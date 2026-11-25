@@ -135,3 +135,25 @@ async def test_announce_without_trust_and_autonomous(monkeypatch):
     assert card["meta"] == {"project": "infra", "model": "Hermes", "role": "member",
                             "kind": "session", "for": "ops-team"} and card["skills"] == []
     assert "refused" in json.loads(await server.announce(project="x", task="y", model="z", role="boss"))
+
+
+@pytest.mark.asyncio
+async def test_the_presence_states_what_the_hello_states(monkeypatch):
+    """RT-6.37: a NATS home's presence carries the HELLO card's harness, model, task and
+    branch, and the number of this session's asks to a human still waiting."""
+    from mattermost_ai_agent_bus import asks, natsbus, stats
+    c = _Client({"h" * 26: "dembaca"})
+    monkeypatch.setattr(server, "_get_client", lambda: c)
+    monkeypatch.setattr(server, "_hello", {})
+    monkeypatch.setattr(stats, "_client_name", "opencode")
+    monkeypatch.setattr(stats, "_uid", "")
+    monkeypatch.delenv("MM_BOT_USER_ID", raising=False)
+    # before the HELLO: the harness, no model, task or branch, asks unknown (no bot yet)
+    assert server._presence_card() == natsbus.PresenceCard(harness="opencode")
+    await server.announce(project="bus", task="console\n card data", model="OpenCode · GLM 5.3",
+                          branch="console-card-data")
+    assert server._presence_card() == natsbus.PresenceCard(
+        harness="opencode", model="OpenCode · GLM 5.3", task="console card data",
+        branch="console-card-data", asks=0)
+    asks.add("b" * 26, "p" * 26, human="dembaca")
+    assert server._presence_card().asks == 1

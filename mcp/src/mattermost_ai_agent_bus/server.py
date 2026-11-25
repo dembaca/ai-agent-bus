@@ -27,7 +27,7 @@ from . import (
     __version__, a2a, askroute, asks, attach, attest, channel, compose, debug, departed, files, gate, hookapi, hosted,
     lease, life, login, mandate, overhead,
     owners, ownpost, permission,
-    profile, receipt, release, remind, session_file, slim, stall, stats, tasks, unanswered, unread, usage,
+    natsbus, profile, receipt, release, remind, session_file, slim, stall, stats, tasks, unanswered, unread, usage,
 )
 from .a2a import attachment_props, props_view, with_debug
 from .compose import BusClient
@@ -267,11 +267,31 @@ async def _nats_start() -> None:
     """The NATS bus of a home that runs over NATS (RT-6.36); never raises (a
     cancellation, which ends it on exit, is not an error)."""
     try:
-        await compose.start_nats(await _bus_client())
+        client = await _bus_client()
+        port = compose.nats_port_of(client)
+        if port is not None:
+            port.card_source = _presence_card
+        await compose.start_nats(client)
     except asyncio.CancelledError:
         raise
     except Exception as exc:  # noqa: BLE001 — the session never waits for or dies of NATS
         log.warning("NATS bus not started: %s", type(exc).__name__)
+
+
+# What this session's last HELLO stated (announce): model, task, branch, for the presence
+# of a NATS home (RT-6.37). Empty until it announces: the presence then states none of them.
+_hello: dict[str, str] = {}
+
+
+def _presence_card() -> natsbus.PresenceCard:
+    """The HELLO card's data the NATS presence carries for the operator console (RT-6.37,
+    ADR-015): the harness from the handshake, model, task and branch from the last announce,
+    and how many of this session's asks to a human still wait (asks.waiting). natsbus bounds
+    each field."""
+    me = stats.bot_id()
+    return natsbus.PresenceCard(harness=stats.harness(), model=_hello.get("model"),
+                                task=_hello.get("task"), branch=_hello.get("branch"),
+                                asks=len(asks.waiting(me)) if me else None)
 
 
 async def _attest_start() -> None:
@@ -1618,6 +1638,8 @@ async def announce(
     )
     _done_typing()
     stats.set_user(me.id)
+    # the card's data for the next presence of a NATS home (RT-6.37)
+    _hello.update(model=_one_line(model), task=_one_line(task), branch=_one_line(branch))
     text = a2a.styled("\n".join(lines))  # `HELLO`, a blank line, the two lines
     stats.record("post", chars=len(text))
     post = await client.post(lease.with_crown(_unbroadcast(text)[0], me.id,

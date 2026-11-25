@@ -257,10 +257,91 @@ def decode(data: bytes, props_prefix: str = a2a.DEFAULT_PREFIX) -> Message:
 BOT_RE = re.compile(r"[a-z0-9]{26}")  # a Mattermost user id
 
 
-def encode_presence(status: str, bot: str = "", bot_name: str = "") -> bytes:
+# The agent card's data in the presence (RT-6.37, ADR-015): what the HELLO states, for the
+# operator console. Self-stated like the name: shown as text, never trusted. Each field is
+# bounded on both sides, so the presence body stays far below the PRESENCE stream's
+# max_msg_size (4096 bytes) whatever an agent announces.
+HARNESSES = ("claude-code", "opencode", "cursor", "codex", "pi", "other")
+CARD_MODEL_MAX = 64  # characters
+CARD_TASK_MAX = 120  # characters, one line
+CARD_BRANCH_MAX = 100  # characters, a git ref name
+CARD_ASKS_MAX = 999
+# A branch as git allows it, narrowed: ASCII letters, digits and ._/+#-, starting with a
+# letter, a digit or # (a HELLO may name a PR as "#118"); no "..", "//", "/.", no ".lock",
+# "/" or "." at the end (git check-ref-format). Anything else is dropped, never repaired.
+BRANCH_RE = re.compile(r"[A-Za-z0-9#][A-Za-z0-9._/+#-]{0,99}")
+# Control and format characters (C0, DEL, C1, zero-width, bidi overrides, line separators):
+# a card line is plain text on one line.
+_CARD_CONTROL = re.compile("[\x00-\x1f\x7f-\x9f\u200b-\u200f\u2028-\u202e\u2060-\u2069\ufeff]")
+
+
+@dataclass(frozen=True)
+class PresenceCard:
+    """The card's data a presence carries; None: not stated (an older MCP server, or not
+    announced yet). harness: one of HARNESSES; asks: this session's own asks to a human
+    still waiting (asks.waiting)."""
+
+    harness: str | None = None
+    model: str | None = None
+    task: str | None = None
+    branch: str | None = None
+    asks: int | None = None
+
+
+def card_text(v: object, limit: int) -> str | None:
+    """A card line: control characters out, whitespace collapsed, at most `limit` characters;
+    None for no string."""
+    if not isinstance(v, str):
+        return None
+    return " ".join(_CARD_CONTROL.sub(" ", v).split())[:limit].rstrip()
+
+
+def card_branch(v: object) -> str | None:
+    """A branch name when it is a safe git ref name (BRANCH_RE and git's rules), '' for none
+    stated; None for anything else (dropped, never repaired)."""
+    if not isinstance(v, str):
+        return None
+    v = v.strip()
+    if not v:
+        return ""
+    if (not BRANCH_RE.fullmatch(v) or ".." in v or "//" in v or "/." in v
+            or v.endswith((".lock", "/", "."))):
+        return None
+    return v
+
+
+def card_harness(v: object) -> str | None:
+    """One of HARNESSES; any other name is "other" (a harness a newer server knows); None for
+    no string."""
+    if not isinstance(v, str) or not v:
+        return None
+    return v if v in HARNESSES else "other"
+
+
+def card_asks(v: object) -> int | None:
+    """A non-negative int, capped at CARD_ASKS_MAX; None for anything else."""
+    if isinstance(v, bool) or not isinstance(v, int) or v < 0:
+        return None
+    return min(v, CARD_ASKS_MAX)
+
+
+def clean_card(card: PresenceCard) -> PresenceCard:
+    """The card with every field bounded (the encoder's and the decoder's rule)."""
+    return PresenceCard(harness=card_harness(card.harness), model=card_text(card.model, CARD_MODEL_MAX),
+                        task=card_text(card.task, CARD_TASK_MAX), branch=card_branch(card.branch),
+                        asks=card_asks(card.asks))
+
+
+_CARD_KEYS = ("harness", "model", "task", "branch", "asks")
+
+
+def encode_presence(status: str, bot: str = "", bot_name: str = "",
+                    card: PresenceCard | None = None) -> bytes:
     """The presence body; `bot` is the agent's Mattermost bot id (RT-6.37) and `name` that
     bot's username, the name people and coordinator("who") know the agent by (the operator
-    console shows it, ADR-015); each left out when ''."""
+    console shows it, ADR-015); each left out when ''. `card`: the HELLO card's data
+    (harness, model, task, branch, open asks), bounded by clean_card; a field it does not
+    state (None) is left out."""
     if status not in _STATUSES:
         raise MessageError("unknown status")
     body: dict[str, Any] = {"v": 1, "status": status}
@@ -268,7 +349,24 @@ def encode_presence(status: str, bot: str = "", bot_name: str = "") -> bytes:
         body["bot"] = bot
     if bot_name:
         body["name"] = bot_name
+    if card is not None:
+        clean = clean_card(card)
+        for key in _CARD_KEYS:
+            value = getattr(clean, key)
+            if value is not None:
+                body[key] = value
     return _dumps(body).encode()
+
+
+def decode_presence_card(data: bytes) -> PresenceCard:
+    """The card's data a presence body states, each field bounded as the encoder bounds it;
+    a missing or bad field is None and never drops the message (an older MCP server sends
+    none). Self-stated: for display, never for a decision."""
+    try:
+        obj = _obj(data)
+    except MessageError:
+        return PresenceCard()
+    return clean_card(PresenceCard(**{k: obj.get(k) for k in _CARD_KEYS}))
 
 
 def decode_presence(data: bytes) -> str:
@@ -880,6 +978,8 @@ class NatsBus:
         self._records_on = False
         self._bot = ""
         self._bot_name = ""  # the bot's username, stated in the presence for people (ADR-015)
+        # the HELLO card's data for the presence (RT-6.37, ADR-015); None sends none
+        self.card_source: Callable[[], PresenceCard | None] | None = None
         self._synced = False
         self._presence_read = False  # True once the stored presence stream was read (a new session says so in its hello)
         self._memberships: list[str] = []  # channels this bus announces its membership of
@@ -973,7 +1073,7 @@ class NatsBus:
         nc = self._nc
         if nc is not None and self._connected:
             try:
-                await nc.publish(self._presence_subject, encode_presence("bye", self._bot, self._bot_name))
+                await nc.publish(self._presence_subject, self._presence_body("bye"))
                 await asyncio.wait_for(nc.drain(), 5)
             except Exception as exc:  # the bus is going away anyway
                 log.warning("nats bus: stop: %s", type(exc).__name__)
@@ -1078,7 +1178,7 @@ class NatsBus:
             await self._sync(nc)
             if refused:
                 raise NameMismatch("the credential's agent name is not the computed one; nothing sent")
-            await nc.publish(self._presence_subject, encode_presence("online", self._bot, self._bot_name))
+            await nc.publish(self._presence_subject, self._presence_body("online"))
             await self._sync(nc)
             if self._presence_subject in self._denied:
                 # A host and a login service of different releases (RT-6.37): the presence
@@ -1192,7 +1292,7 @@ class NatsBus:
             nc = self._nc
             if nc is not None and self._connected:
                 try:
-                    await nc.publish(self._presence_subject, encode_presence("online", self._bot, self._bot_name))
+                    await nc.publish(self._presence_subject, self._presence_body("online"))
                 except Exception as exc:
                     log.warning("nats bus: heartbeat: %s", type(exc).__name__)
             self._check_own_echo()
@@ -1346,6 +1446,18 @@ class NatsBus:
         """`<presence>.<owner>.<name>` (RT-6.37): the login service lets this agent publish
         its presence there and nowhere else, so the owner in it is pinned like the name."""
         return f"{self._s.presence}.{owner_token(self._owner)}.{self.name}"
+
+    def _presence_body(self, status: str) -> bytes:
+        """This agent's presence body, with the card's data card_source states now (RT-6.37):
+        a change shows with the next heartbeat. A failing source sends no card, never no
+        presence."""
+        card = None
+        if self.card_source is not None:
+            try:
+                card = self.card_source()
+            except Exception as exc:  # noqa: BLE001 — a label, never a reason to look offline
+                log.info("nats bus: the card's data was not read (%s)", type(exc).__name__)
+        return encode_presence(status, self._bot, self._bot_name, card)
 
     def link_bot(self, bot_id: str, username: str = "") -> None:
         """The Mattermost bot this agent's presence names (RT-6.37), and its username for

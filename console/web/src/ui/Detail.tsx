@@ -94,7 +94,9 @@ function FullCard({ card }: { card: AgentCard }) {
         <tr><th>project</th><td>{card.project}</td></tr>
         <tr><th>branch / PR</th>
           <td>
-            {card.pr ? `#${card.pr.number} · ${card.branch ?? "–"}` : card.branch ?? "–"}
+            {card.pr
+              ? `#${card.pr.number} · ${card.branch || "–"}`
+              : card.branch === null ? "n/a" : card.branch || "–"}
           </td></tr>
         <tr><th>capabilities</th><td>{card.capabilities.join(", ") || "–"}</td></tr>
         <tr><th>ctx</th><td>{card.ctx === null ? "n/a" : `${card.ctx} %`}</td></tr>

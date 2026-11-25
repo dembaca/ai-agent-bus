@@ -24,7 +24,8 @@ What goes over NATS, in a NATS home's channel: every post, but the ask for a hum
 (kind ask) and a post with files, which are for people and go to Mattermost. The
 bus's own props (`a2a`) travel as flat keys `<MM_PROPS_PREFIX>a2a_<key>`, the
 agent's own `<MM_PROPS_PREFIX>…` props as they are; the agent card and anything
-else are not sent.
+else are not sent with a post. The card's harness, model, task, branch and open asks
+ride the agent's presence instead (`card_source`, RT-6.37), for the operator console.
 
 Memory. What arrives is kept per channel, at most `memory` posts (the lowest stream
 sequence goes first); `thread` (of a NATS root) and `reactions` read it;
@@ -329,6 +330,9 @@ class NatsPort:
         # they came, for the reads (`unapproved`): key -> monotonic time, kept as long as an ask
         self._unapproved: OrderedDict[tuple[str, ...], float] = OrderedDict()
         self._watch: asyncio.Task[None] | None = None
+        # The HELLO card's data the presence carries (RT-6.37, ADR-015); the MCP server sets
+        # it before start, read at every presence the bus sends. None: no card's data.
+        self.card_source: Callable[[], natsbus.PresenceCard | None] | None = None
 
     def __getattr__(self, name: str) -> Any:
         if name in ("inner", "__setstate__"):
@@ -376,6 +380,7 @@ class NatsPort:
                               on_person=self._on_person, **self._bus_options)
                 self._bus = bus
                 bus.on_person_gap = self._person_gap
+                bus.card_source = self._card
                 try:
                     bus.link_bot(await self._bot_id(), await self._bot_name())
                 except ValueError:
@@ -398,6 +403,10 @@ class NatsPort:
                             ", ".join(self._homes), _describe(exc), delay)
                 await asyncio.sleep(delay)
                 delay = min(delay * 2, START_RETRY_MAX_SEC)
+
+    def _card(self) -> natsbus.PresenceCard | None:
+        """The card's data for the bus's next presence: card_source's, read now."""
+        return self.card_source() if self.card_source is not None else None
 
     async def _bot_id(self) -> str:
         """The Mattermost user id of the bot, as lease._user_id resolves it."""

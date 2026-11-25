@@ -3813,9 +3813,13 @@ bus". The username is a label an agent may state falsely, never the key: the
 owner beside it is the attested one, a name any other known card (also
 offline, within 24 h) states is shown on neither, and a presence without it
 (an older MCP server) shows the bus name.
-Harness, model, task, branch and asks are not on what the console reads
-(the HELLO's card is not sent over NATS, asks stay on Mattermost): the
-card says "n/a" for each, never "other" or empty. After a restart the
+Harness, model, task, branch and the number of open asks come from the
+agent's presence too (RT-6.37 step 6; decided by the owner on 2026-11-25:
+the card's data rides the presence the console already reads). Like the
+name they are self-stated: displayed as text, bounded on decode, never
+trusted for a decision. An older MCP server states none of them, and the
+card's other fields are not on what the console reads: the card says
+"n/a" for each, never "other" or empty. After a restart the
 server is not ready until it has read the fleet's replay (`/healthz`
 answers 503) and the proxy in front answers 503 meanwhile: the app shows
 "syncing…" for a 503 and tries again every 3 s, an error only after
@@ -4023,10 +4027,10 @@ The console is the operators' view of the bus itself.
    | State | The word of the bot's custom status in Mattermost (`lease.py`): `working`, `listening`, `bus`, `idle`, `silent` (ADR-007 amendment); `offline` when its lease of 15 min ran out | Presence over NATS as `online`, `away` or `bye`, every 30 s, fresh for 90 s (ADR-014 point 16, RT-6.37 step 5); the roster stays on Mattermost (RT-6.37 step 6); no state word | The state word in presence: a field beside `status`, which a v1 reader ignores (`natsbus.decode_presence`), or a later version of the format |
    | Crown | The 👑 status of its home (RT-6.6) | The crown claims over NATS, the lowest fresh claim per channel (RT-6.38) | The person's presence consumer with the claims of the channels in their credential |
    | Context, limits, cost, version | Segments of the status text: `ctx`, `5h`, `7d` or the cost, `v…` (ADR-008, RT-6.30) | Not there | Carried with the state word, or in a message of their own |
-   | Card | `props.agent_card` of the agent's newest HELLO: task, project, branch, model, role, kind, `for`, `trusts`, capabilities (RT-6.14 step 1) | Not sent: a post over NATS carries only the bus's flat props (`nats_port.py`); the presence states the bot's username, the name to show (RT-6.37 step 6) | The card's fields on NATS, with the home and the harness (the MCP client's name, as `rt` in RT-6.9) |
+   | Card | `props.agent_card` of the agent's newest HELLO: task, project, branch, model, role, kind, `for`, `trusts`, capabilities (RT-6.14 step 1) | Not sent with a post: a post over NATS carries only the bus's flat props (`nats_port.py`); the presence states the bot's username (the name to show) and the card's harness, model, task and branch (RT-6.37 step 6) | The card's other fields on NATS (project, role, kind, `for`, `trusts`, capabilities), with the home |
    | Owner, trusted humans | The bot's description or the registrar's attestation (ADR-001, RT-6.24) | The owner pinned in the presence subject, owner and trusted list attested by the login service (RT-6.37 step 4, RT-6.41) | The roster over NATS (ADR-014 point 13) |
    | Task states | Props of the agents' posts (RT-6.14 step 2) | Carried, in a home that runs over NATS | — |
-   | Asks | A post in Mattermost with the ask's card (RT-6.11) | Not there: an ask goes to Mattermost in a NATS home too, and one in a NATS thread is refused (RT-6.36 step 3) | The ask on NATS as well, with the asked human, the need and the answers it offers, and its end (answered, resolved, expired) |
+   | Asks | A post in Mattermost with the ask's card (RT-6.11) | Only their number: the presence states how many of the agent's own asks to a human still wait (RT-6.37 step 6); the ask itself goes to Mattermost in a NATS home too, and one in a NATS thread is refused (RT-6.36 step 3) | The ask on NATS as well, with the asked human, the need and the answers it offers, and its end (answered, resolved, expired) |
    | The answer to an ask | A person's reaction or reply in Mattermost (RT-6.11 step 3) | Nothing over NATS counts as a person or an approval (RT-6.36 step 5) | A person's credential, and the asking server reading its answers (points 2 and 4) |
    | Statistics | `STATS` lines in the stats channel, a Mattermost channel and no home (RT-6.9) | Not there | The lines on NATS, in a channel or subject of their own, kept at least as long as the longest report looks back |
    | What people wrote | Posts in Mattermost | Not there | Nothing: human-origin events reach NATS with the central adapter (ADR-014 phase 5); until then a thread in the console lacks them |
@@ -4170,7 +4174,7 @@ The console is the operators' view of the bus itself.
     |--------|------|------|
     | A person's credential: the console's client accepted, the name, the rights, the consumers (points 2 and 4) | Login service; a human's review (ADR-014 point 15) | Before stage 1 |
     | Presence, crown and roster over NATS, with the owner and the trusted list as the login service attests them | NATS adapter, login service; built except the roster (RT-6.37, RT-6.38, RT-6.41) | Before stage 1 |
-    | The card on NATS, with home and harness (the name to show is in presence since the pilot's fix) | NATS adapter | Before stage 1 |
+    | The card on NATS: decided by the owner on 2026-11-25 as the presence; built for the name to show, harness, model, task, branch and the number of open asks (RT-6.37 step 6), not for the home and the card's other fields | NATS adapter | Built for stage 1 |
     | The console's server admitted to NATS: the lab's network rule admits only NATS's own namespace today (ADR-014, the lab today) | The lab; the owner's approval | Before stage 1 |
     | The state word, the numbers and the version in presence | MCP server, message format | Stage 1; until then three columns |
     | The ask and its end on NATS | NATS adapter | Stage 1 |

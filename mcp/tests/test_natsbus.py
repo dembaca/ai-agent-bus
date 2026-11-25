@@ -27,18 +27,28 @@ from mattermost_ai_agent_bus.natsbus import (
     Event,
     GapTracker,
     Message,
+    CARD_ASKS_MAX,
+    CARD_BRANCH_MAX,
+    CARD_MODEL_MAX,
+    CARD_TASK_MAX,
     MessageError,
     NatsBus,
     NameMismatch,
     NatsSettings,
+    PresenceCard,
     agent_name,
     build_hello,
+    card_asks,
+    card_branch,
+    card_harness,
+    card_text,
     crown_candidates,
     crown_holder,
     decode,
     decode_attestation,
     decode_presence,
     decode_presence_bot,
+    decode_presence_card,
     decode_presence_name,
     encode,
     encode_claim,
@@ -1930,3 +1940,87 @@ async def test_the_membership_is_announced_once_synced_renewed_and_after_a_recon
     assert alice._nc is not None
     alice._nc._transport.close()
     await until(lambda: alice._connected and alice._members["home"][alice.name][0] > before, timeout=10)
+
+
+# --- the agent card's data in the presence (RT-6.37, ADR-015) ---------------------------
+
+def test_the_presence_carries_the_card_and_older_readers_keep_reading_it() -> None:
+    """RT-6.37: harness, model, task, branch and open asks ride the presence; the status,
+    bot and name readers (and every older one: they read keys, never reject unknown ones)
+    read the body as before."""
+    card = PresenceCard(harness="opencode", model="GLM 5.3", task="console card data",
+                        branch="console-card-data", asks=2)
+    body = encode_presence("online", BOT, "agent-mac-ai-agent-716d72", card)
+    assert json.loads(body) == {"v": 1, "status": "online", "bot": BOT,
+                                "name": "agent-mac-ai-agent-716d72", "harness": "opencode",
+                                "model": "GLM 5.3", "task": "console card data",
+                                "branch": "console-card-data", "asks": 2}
+    assert decode_presence_card(body) == card
+    assert decode_presence(body) == "online" and decode_presence_bot(body) == BOT
+    assert decode_presence_name(body) == "agent-mac-ai-agent-716d72"
+    # a bye states it too: the console's last card stays filled
+    assert decode_presence_card(encode_presence("bye", BOT, card=card)) == card
+    # an older server states none: every field unknown, never guessed
+    assert decode_presence_card(encode_presence("online", BOT)) == PresenceCard()
+    assert decode_presence_card(b"junk") == PresenceCard()
+    # not announced yet: harness and asks, no model, task or branch
+    early = json.loads(encode_presence("online", card=PresenceCard(harness="claude-code", asks=0)))
+    assert early == {"v": 1, "status": "online", "harness": "claude-code", "asks": 0}
+
+
+def test_the_card_fields_are_bounded_on_both_sides() -> None:
+    """RT-6.37: control characters out, one line, model 64, task 120 characters, a branch
+    only as a safe git ref name, the harness from a fixed set, asks a small non-negative
+    int; a bad field is dropped and never drops the status."""
+    assert card_text("a\x00b\x1b[31m‮c\nd\te f", 64) == "a b [31m c d e f"
+    assert card_text("m" * 200, CARD_MODEL_MAX) == "m" * CARD_MODEL_MAX
+    assert card_text(7, CARD_TASK_MAX) is None
+    for good in ("main", "feat/nats-bridge", "#118", "release/0.100.0", "a+b_c"):
+        assert card_branch(good) == good
+    for bad in ("a..b", "-x", "x/", "x.lock", "x.", "a b", "a//b", "a/.b", "ä", "b" * 101,
+                "x\ny", "@{u}", "x~1", "x:y", None, 3):
+        assert card_branch(bad) is None, bad
+    assert card_branch(" ") == "" and card_branch(" main\n") == "main"
+    assert [card_harness(h) for h in ("pi", "cursor", "vim-mcp", "", 1)] == ["pi", "cursor", "other", None, None]
+    assert [card_asks(a) for a in (0, 3, 10**9, -1, True, 1.5, "2")] == [0, 3, CARD_ASKS_MAX, None, None, None, None]
+    raw = json.dumps({"v": 1, "status": "away", "harness": "<script>", "model": "x" * 500,
+                      "task": "line one\nline two\x07", "branch": "../../etc", "asks": -4}).encode()
+    assert decode_presence(raw) == "away"
+    assert decode_presence_card(raw) == PresenceCard(harness="other", model="x" * CARD_MODEL_MAX,
+                                                    task="line one line two", branch=None, asks=None)
+    # the encoder bounds as the decoder does: nothing unbounded leaves the host
+    sent = json.loads(encode_presence("online", card=PresenceCard(
+        harness="x", model="m" * 500, task="t\x00" * 500, branch="no good", asks=-1)))
+    assert sent == {"v": 1, "status": "online", "harness": "other", "model": "m" * CARD_MODEL_MAX,
+                    "task": " ".join(["t"] * 60)}
+
+
+def test_the_largest_presence_body_stays_far_below_the_streams_limit() -> None:
+    """RT-6.37: the PRESENCE stream's max_msg_size is 4096 bytes; the largest body the
+    encoder can make, with characters JSON escapes longest (astral: 12 bytes each), stays
+    well below it."""
+    wide = "\U0001F600"  # two \\uXXXX escapes in ASCII JSON
+    card = PresenceCard(harness="claude-code", model=wide * 500, task=wide * 500,
+                        branch="b" * CARD_BRANCH_MAX, asks=10**6)
+    body = encode_presence("online", BOT, "a" * 64, card)
+    assert len(body) <= 2600, len(body)  # 2510 bytes today
+    assert decode_presence_card(body).model == wide * CARD_MODEL_MAX
+
+
+def test_the_bus_reads_the_card_at_each_presence() -> None:
+    """RT-6.37: the card's data is read for every presence, so a change shows with the next
+    heartbeat; a failing source sends a presence without it."""
+    bus, _ = _unit_bus()
+    bus.link_bot(BOT, "agent-mac-ai-agent-716d72")
+    assert decode_presence_card(bus._presence_body("online")) == PresenceCard()
+    state = {"asks": 0}
+    bus.card_source = lambda: PresenceCard(harness="claude-code", task="t", asks=state["asks"])
+    assert decode_presence_card(bus._presence_body("online")).asks == 0
+    state["asks"] = 1
+    assert decode_presence_card(bus._presence_body("bye")).asks == 1
+
+    def broken() -> PresenceCard:
+        raise RuntimeError("no")
+    bus.card_source = broken
+    body = bus._presence_body("online")
+    assert decode_presence(body) == "online" and decode_presence_card(body) == PresenceCard()
