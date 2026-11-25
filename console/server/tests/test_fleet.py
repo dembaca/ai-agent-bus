@@ -8,7 +8,9 @@ from __future__ import annotations
 import json
 
 
-from mattermost_ai_agent_bus.natsbus import MAX_AGE_SEC, PRESENCE_FRESH_SEC, encode_presence
+from mattermost_ai_agent_bus.natsbus import (
+    MAX_AGE_SEC, PRESENCE_FRESH_SEC, PresenceCard, encode_presence,
+)
 from console_server.fleet import Fleet, short_name
 
 
@@ -20,6 +22,11 @@ def ack(stream: str, consumer: str, sseq: int, cseq: int, ts: float,
 def presence(agent: str, owner: str = "dembaca", status: str = "online",
              bot: str = "") -> tuple[str, bytes]:
     return f"presence.{owner}.{agent}", encode_presence(status, bot)
+
+
+def presence_with(agent: str, card: PresenceCard, owner: str = "dembaca") -> tuple[str, bytes]:
+    """The presence an MCP server with the card's data sends (RT-6.37)."""
+    return f"presence.{owner}.{agent}", encode_presence("online", "", "", card)
 
 
 def atestation(agent: str, owner: str, trusted: list[tuple[str, str]],
@@ -371,3 +378,43 @@ def test_the_name_returns_only_once_its_holder_is_pruned() -> None:
     feed(f, name_presence("agent-b", "online", "agent-same", 4, 100.0 + MAX_AGE_SEC + 10))
     assert f.card("agent-a") is None  # pruned with its presence
     assert f.card("agent-b")["displayName"] == "agent-same"
+
+
+def test_the_card_states_what_the_presence_states() -> None:
+    """RT-6.37: harness, model, task, branch and open asks come from the
+    presence, bounded on decode as on encode; self-stated, shown as text."""
+    f = Fleet()
+    card = PresenceCard(harness="opencode", model="GLM 5.3", task="review #118",
+                        branch="console-card-data", asks=2)
+    feed(f, (*presence_with("agent-a", card), ack("PRESENCE", "console", 1, 1, 1000.0)))
+    c = f.card("agent-a")
+    assert c is not None
+    assert (c["harness"], c["model"], c["task"], c["branch"], c["openAsks"]) == \
+        ("opencode", "GLM 5.3", "review #118", "console-card-data", 2)
+    assert c["asksForOperator"] is None  # the presence counts asks, not whose
+    # a later presence replaces the card's data, never merges it
+    feed(f, (*presence_with("agent-a", PresenceCard(harness="opencode", asks=0)),
+             ack("PRESENCE", "console", 2, 2, 1010.0)))
+    c = f.card("agent-a")
+    assert c is not None
+    assert (c["model"], c["task"], c["branch"], c["openAsks"]) == ("", "", None, 0)
+    # a body no MCP server makes: each field bounded, the bad ones unknown
+    raw = json.dumps({"v": 1, "status": "online", "harness": "<b>x</b>",
+                      "model": "m" * 900, "task": "a\nb\x1b", "branch": "x y",
+                      "asks": True}).encode()
+    feed(f, ("presence.dembaca.agent-a", raw, ack("PRESENCE", "console", 3, 3, 1020.0)))
+    c = f.card("agent-a")
+    assert c is not None
+    assert (c["harness"], c["model"], c["task"], c["branch"], c["openAsks"]) == \
+        ("other", "m" * 64, "a b", None, None)
+
+
+def test_an_older_mcp_server_leaves_the_card_unknown() -> None:
+    """RT-6.37: a presence without the card's data (an MCP server before it)
+    leaves every field unknown: the app shows n/a, never 0 or empty."""
+    f = Fleet()
+    feed(f, (*presence("agent-a"), ack("PRESENCE", "console", 1, 1, 1000.0)))
+    c = f.card("agent-a")
+    assert c is not None
+    assert (c["harness"], c["model"], c["task"], c["branch"], c["openAsks"]) == \
+        (None, "", "", None, None)

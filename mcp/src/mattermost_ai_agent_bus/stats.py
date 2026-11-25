@@ -81,6 +81,8 @@ def harness(name: str | None = None) -> str:
     for label in ("claude-code", "cursor", "opencode", "codex"):
         if n.startswith(label):
             return label
+    if n == "pi" or n.startswith("pi-"):  # pi's MCP client, by its name or a variant of it
+        return "pi"
     if n:
         return n
     return "claude-code" if os.environ.get("CLAUDECODE") else "other"

@@ -14,7 +14,7 @@ import pytest
 from console_server import config
 from console_server.app import Console
 from mattermost_ai_agent_bus.natsbus import (
-    agent_name, encode_claim, encode_presence, owner_token,
+    PresenceCard, agent_name, encode_claim, encode_presence, owner_token,
 )
 
 FIXTURE = json.loads((Path(__file__).parents[2] / "fixtures" / "console-api.json").read_text())
@@ -38,14 +38,18 @@ def fleet_scenario():
     # encoders (mcp/src/mattermost_ai_agent_bus/natsbus.py): the agent's name
     # is `agent_name` (the login service's hash, never the bot's username),
     # the presence subject `NatsBus._presence_subject`, its body
-    # `encode_presence(status, bot id, bot username)` as `NatsBus` sends it
-    # each heartbeat, membership and crown `encode_claim`.
+    # `encode_presence(status, bot id, bot username, card)` as `NatsBus` sends
+    # it each heartbeat (the card: the HELLO's harness, model, task, branch and
+    # the open asks, RT-6.37), membership and crown `encode_claim`.
     agent = agent_name("dembaca", NKEY_PUBLIC)
     assert agent == FIXTURE["card"]["name"]
     rows = [
         # presence: online, the owner token names the owner, the body the bot
         (f"presence.{owner_token('dembaca')}.{agent}",
-         encode_presence("online", BOT_ID, FIXTURE["card"]["displayName"]),
+         encode_presence("online", BOT_ID, FIXTURE["card"]["displayName"], PresenceCard(
+             harness=FIXTURE["card"]["harness"], model=FIXTURE["card"]["model"],
+             task=FIXTURE["card"]["task"], branch=FIXTURE["card"]["branch"],
+             asks=FIXTURE["card"]["openAsks"])),
          ack(1, 1, 1763980760.0)),
         # membership of the channel dev
         (f"presence.member.dev.{agent}", encode_claim(),

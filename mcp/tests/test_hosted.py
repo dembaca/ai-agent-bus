@@ -1041,3 +1041,25 @@ def test_the_sandbox_instructions_offer_no_session_start():
     got = _server_text({"CORRAL_SANDBOX": "1", "MM_PROJECT_CHANNEL": "proj-x"})
     assert "nothing registers one from inside (RT-6.18); session_start refuses" in got["text"]
     assert "register with session_start" not in got["text"]
+
+
+def test_a_hosted_server_states_the_card_in_its_presence(monkeypatch):
+    """RT-6.37 step 6: a hosted (corral) session's NATS home carries the HELLO card's data
+    too: loading the server hands the port its source, which every presence reads."""
+    from mattermost_ai_agent_bus import natsbus, server
+    from mattermost_ai_agent_bus.nats_port import NatsPort
+    from fakes import FakeBus, FakeRegistrar
+
+    port = NatsPort(FakeBus(FakeRegistrar()),  # type: ignore[arg-type]
+                    natsbus.NatsSettings(servers=("nats://127.0.0.1:4222",), home="home"), ("home",))
+    monkeypatch.setattr(server, "_client", None)
+    monkeypatch.setattr(server, "_hide_lifecycle_tools", lambda: None)
+    monkeypatch.setattr(server, "_hello", {"model": "Opus 5.5", "task": "t", "branch": "main"})
+    monkeypatch.setattr(stats, "_client_name", "claude-code")
+    monkeypatch.setattr(stats, "_uid", "")
+    monkeypatch.delenv("MM_BOT_USER_ID", raising=False)
+    hosted._load_server(port)  # type: ignore[arg-type]
+    assert port.card_source is server._presence_card
+    body = json.loads(natsbus.encode_presence("online", card=port._card()))
+    assert body == {"v": 1, "status": "online", "harness": "claude-code", "model": "Opus 5.5",
+                    "task": "t", "branch": "main"}
