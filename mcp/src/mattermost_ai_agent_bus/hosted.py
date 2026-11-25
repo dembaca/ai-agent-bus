@@ -50,7 +50,7 @@ import socket
 import sys
 import threading
 import time
-from collections.abc import AsyncIterator, Awaitable, Callable, Mapping, MutableMapping
+from collections.abc import AsyncIterator, Awaitable, Callable, Mapping, MutableMapping, Sequence
 from contextlib import AsyncExitStack, asynccontextmanager, suppress
 from pathlib import Path
 from typing import TYPE_CHECKING, Any
@@ -500,16 +500,26 @@ def identity_mismatch(first: Mapping[str, str], other: Mapping[str, str]) -> str
     return f"this relay's session values differ from the first relay's ({', '.join(sorted(keys))}): {_ONE_AGENT}"
 
 
-def outside_workdir(values: Mapping[str, str], workdir: str | None) -> str:
+def workdir_roots(workdir: str) -> tuple[str, ...]:
+    """The corral workdir as the host knows it (from preStart, trusted), and
+    resolved, so a sandbox that sees it by its real path is served too. Only
+    this host value is resolved, never a relay's (RT-6.18 step 6)."""
+    workdir = workdir.strip()
+    if not workdir:
+        return ()
+    return tuple(dict.fromkeys((os.path.normpath(workdir), os.path.realpath(workdir))))
+
+
+def outside_workdir(values: Mapping[str, str], workdirs: Sequence[str]) -> str:
     """Why a relay is refused for naming a directory outside the corral
     session's workdir, or "" (RT-6.18 step 6). The workdir comes from
     preStart, on the host; the relay's directories from the sandbox, so even
     the first relay is held to it. Compared as names, by path components."""
-    if not workdir:
+    if not workdirs:
         return ""
-    root = Path(os.path.normpath(workdir)).parts
+    roots = [Path(os.path.normpath(w)).parts for w in workdirs]
     keys = [k for k in ("CLAUDE_PROJECT_DIR", "MM_WORKSPACE")
-            if values.get(k) and Path(os.path.normpath(values[k])).parts[:len(root)] != root]
+            if values.get(k) and not any(Path(os.path.normpath(values[k])).parts[:len(r)] == r for r in roots)]
     if not keys:
         return ""
     return f"this relay's {', '.join(keys)} lies outside this corral session's workdir: {_ONE_AGENT}"
@@ -529,9 +539,9 @@ class Host:
 
     def __init__(self, key: str, *, client: BusClient | None = None, serve: Serve | None = None,
                  apply: Callable[[Mapping[str, str]], None] = apply_session,
-                 workdir: str | None = None) -> None:
+                 workdirs: Sequence[str] = ()) -> None:
         self._key = key.encode()
-        self._workdir = workdir
+        self._workdirs = tuple(workdirs)
         self._serve = serve
         self._apply = apply
         self.client = client
@@ -553,6 +563,22 @@ class Host:
         if self._serve is None:
             self._serve = _load_server(self.client)
         return self._serve
+
+    def _replace(self, session: Mapping[str, str]) -> None:
+        """A later relay of the same agent (RT-6.18 step 6): a new Claude
+        session id (``/clear``, a reconnect) is noted for postEnd, so
+        ``claude --resume <new id>`` keeps the bot; an MM_WORKSPACE the first
+        relay did not send (a plugin update) is taken. Names are not applied again."""
+        assert self.session is not None
+        sid = session.get("CLAUDE_CODE_SESSION_ID", "")
+        if sid and sid != self.session.get("CLAUDE_CODE_SESSION_ID"):
+            log.info("relay: a new Claude session id in the same project directory "
+                     "(/clear or a reconnect); served as the same agent")
+            self.session = {**self.session, "CLAUDE_CODE_SESSION_ID": sid}
+            note_claude_session(self.session)
+        if session.get("MM_WORKSPACE") and not self.session.get("MM_WORKSPACE"):
+            log.info("relay: names MM_WORKSPACE, the first did not (a plugin update); taken")
+            self.session = {**self.session, "MM_WORKSPACE": session["MM_WORKSPACE"]}
 
     async def handle(self, stream: Any) -> None:
         if self._pending >= MAX_PENDING:
@@ -584,26 +610,22 @@ class Host:
                 return
             # One bot speaks for one agent (#119, RT-6.18 step 6): never another
             # session's relay, the first one included.
-            why = outside_workdir(session, self._workdir)
+            why = outside_workdir(session, self._workdirs)
             if not why and self.session is not None:
                 why = identity_mismatch(self.session, session)
             if why:
                 log.warning("relay refused: %s", why)
                 await _answer(stream, False, why)
                 return
-            if self.session is not None:
-                if session.get("CLAUDE_CODE_SESSION_ID") != self.session.get("CLAUDE_CODE_SESSION_ID"):
-                    log.info("relay: a new Claude session id in the same project directory "
-                             "(/clear or a reconnect); served as the same agent")
-                if session.get("MM_WORKSPACE") and not self.session.get("MM_WORKSPACE"):
-                    log.info("relay: names MM_WORKSPACE, the first did not (a plugin update); taken")
-                    self.session = {**self.session, "MM_WORKSPACE": session["MM_WORKSPACE"]}
             if self.active:
                 why = (f"another relay is connected ({self._holder}): the host serves one per session, "
                        "so another process of this session holds it (RT-6.18 step 6)")
                 log.warning("relay refused: %s", why)
                 await _answer(stream, False, why)
                 return
+            if self.session is not None:
+                # Only a relay that got the slot changes what the host holds.
+                self._replace(session)
             self.active = True
             self._holder = relay_holder(hello, time.time())
             try:
@@ -869,7 +891,7 @@ def _daemon(args: argparse.Namespace, key: str) -> int:
     # Read once into the client; nothing else in this process needs it.
     for name in _TOKEN_ENV:
         os.environ.pop(name, None)
-    host = Host(key, client=client, workdir=os.environ.get("CORRAL_WORKDIR", "").strip() or None)
+    host = Host(key, client=client, workdirs=workdir_roots(os.environ.get("CORRAL_WORKDIR", "")))
     serve_host(host, ready_file=args.ready_file, key=key, watch=watch)
     return 0
 

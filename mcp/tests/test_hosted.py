@@ -269,8 +269,12 @@ async def test_a_new_session_id_in_the_same_project_replaces_the_gone_relay(tmp_
     """RT-6.18 step 6 (#119): after /clear or an MCP reconnect Claude Code may
     name a new session id; in the same named project directory, with the old
     relay gone, it is the same agent and served."""
+    d = session_file.use_hosted_dir(tmp_path / "hosted" / "s")
     host, applied, answer = await _refused_after_first(tmp_path, {**FIRST, "CLAUDE_CODE_SESSION_ID": "s2"})
     assert answer == {"ok": True} and host.served == 2 and applied == [FIRST]
+    # Noted for postEnd, so `claude --resume <new id>` keeps the bot (RT-6.18 step 9).
+    assert (d / hosted.CLAUDE_SID_FILE).read_text() == f"MM_CLAUDE_SID={hosted.sid_key('s2')}\n"
+    assert host.session == {**FIRST, "CLAUDE_CODE_SESSION_ID": "s2"}
 
 
 async def test_a_concurrent_relay_with_a_new_session_id_is_refused(tmp_path):
@@ -287,7 +291,26 @@ async def test_a_concurrent_relay_with_a_new_session_id_is_refused(tmp_path):
         await second.stream.aclose()
 
     await _with_host(host, tmp_path, body, with_services=False)
-    assert host.served == 1
+    assert host.served == 1 and host.session == FIRST
+
+
+async def test_a_refused_concurrent_relay_changes_nothing_the_host_holds(tmp_path):
+    """RT-6.18 step 6 (#119): a relay refused for the busy slot neither adopts
+    its MM_WORKSPACE nor its session id."""
+    old = {"CLAUDE_CODE_SESSION_ID": "s1", "CLAUDE_PROJECT_DIR": "/p", "MM_CHANNEL_PUSH": "0"}
+    host = hosted.Host(KEY, serve=_echo, apply=lambda v: None)
+
+    async def body(ready):
+        first, answer = await _hello(ready["port"], session=old)
+        assert answer["ok"]
+        second, answer = await _hello(ready["port"], session={**old, "CLAUDE_CODE_SESSION_ID": "s2",
+                                                               "MM_WORKSPACE": "/p"})
+        assert answer["ok"] is False and answer["error"].startswith("another relay is connected")
+        await first.stream.aclose()
+        await second.stream.aclose()
+
+    await _with_host(host, tmp_path, body, with_services=False)
+    assert host.session == old
 
 
 @pytest.mark.parametrize("first, other", [
@@ -328,7 +351,7 @@ async def test_the_first_relay_is_held_to_the_corral_workdir(tmp_path):
     a relay naming a directory outside it is refused even when it comes first,
     and the right one is served after it."""
     applied: list = []
-    host = hosted.Host(KEY, serve=_echo, apply=applied.append, workdir="/work/a")
+    host = hosted.Host(KEY, serve=_echo, apply=applied.append, workdirs=("/work/a",))
 
     async def body(ready):
         for wrong in ({"MM_WORKSPACE": "/work/ab"}, {"CLAUDE_PROJECT_DIR": "/work/b", "cwd": "/work/a"},
@@ -346,7 +369,32 @@ async def test_the_first_relay_is_held_to_the_corral_workdir(tmp_path):
 
     await _with_host(host, tmp_path, body, with_services=False)
     assert host.served == 1 and applied[0]["CLAUDE_PROJECT_DIR"] == "/work/a"
-    assert hosted.outside_workdir({"MM_WORKSPACE": "/anywhere"}, None) == ""
+    assert hosted.outside_workdir({"MM_WORKSPACE": "/anywhere"}, ()) == ""
+
+
+async def test_a_workdir_reached_through_a_symlink_serves_its_real_path(tmp_path):
+    """RT-6.18 step 6 (#119): the host resolves its own CORRAL_WORKDIR (never a
+    relay's directory), so a sandbox naming the real path is served."""
+    real = tmp_path / "real"
+    (real / "sub").mkdir(parents=True)
+    link = tmp_path / "link"
+    link.symlink_to(real)
+    roots = hosted.workdir_roots(str(link))
+    assert roots == (str(link), os.path.realpath(real))
+    assert hosted.workdir_roots("  ") == ()
+    host = hosted.Host(KEY, serve=_echo, apply=lambda v: None, workdirs=roots)
+
+    async def body(ready):
+        conn, answer = await _hello(ready["port"], session={"MM_WORKSPACE": os.path.realpath(real / "sub")})
+        assert answer == {"ok": True}
+        await conn.stream.aclose()
+        conn, answer = await _hello(ready["port"], session={"MM_WORKSPACE": str(link / "sub" / ".." / ".." / "x")})
+        assert answer["ok"] is False  # normalised by name, not resolved: ../.. leaves the workdir
+        await conn.stream.aclose()
+
+    await _with_host(host, tmp_path, body, with_services=False)
+    assert host.served == 1
+    assert hosted.outside_workdir({"MM_WORKSPACE": str(link / "sub")}, roots) == ""
 
 
 def test_identity_uses_the_working_directory_only_without_a_named_one():
