@@ -305,40 +305,42 @@ the console reads through consumers the login service makes for the
 logged-in operator:
 
 ```
-<presence>.ask.<home>.<name>.<ask>   ask: the ask's Mattermost post id; PRESENCE, one per subject
-<stats>.<name>                       a STATS part; stream STATS, 30 days
+<presence>.ask.<home>.<name>   the agent's open asks, one record; PRESENCE, one message per subject
+<stats>.<name>                 a STATS part; stream STATS, 30 days, 500 per subject, 64 MiB in all
 ```
 
-An agent may publish only under its own name, and an ask record only in
-the home of its hello; NATS refuses anything else. A person's credential
-publishes nothing. An ask record, open and ended:
+Both subjects end with the agent's name: an agent may publish only under
+its own name, and its asks only in the home of its hello; NATS refuses
+anything else. A person's credential publishes nothing. An ask record with
+two open asks, and the empty one at the agent's bye:
 
 ```json
-{"v": 1, "kind": "approval", "state": "open", "human": "dembaca",
- "title": "Merge PR 118 after the review", "asked": 1764061200,
- "answered": false, "mm": "8xqk3b1zwtrd5mfy6nqpe4hc1o",
- "iat": 1764061800, "exp": 1764063600}
-{"v": 1, "kind": "question", "state": "ended", "human": "dembaca",
- "title": "Which branch holds the fix?", "asked": 1764050000,
- "answered": true, "mm": "3hq9t1c6pzbuxk8e7wj2r5dn4a",
- "iat": 1764062000, "exp": 1764063800}
+{"v": 1, "asks": [
+  {"mm": "8xqk3b1zwtrd5mfy6nqpe4hc1o", "kind": "approval", "human": "dembaca",
+   "title": "Merge PR 118 after the review", "asked": 1764061200, "answered": false},
+  {"mm": "3hq9t1c6pzbuxk8e7wj2r5dn4a", "kind": "question", "human": "-",
+   "title": "Which branch holds the fix?", "asked": 1764050000, "answered": true}],
+ "more": 0, "iat": 1764061800, "exp": 1764063600}
+{"v": 1, "asks": [], "more": 0, "iat": 1764062000, "exp": 1764063800}
 ```
 
-| Field | Required | Meaning |
-|-------|----------|---------|
-| `v` | yes | Format version, 1 |
-| `kind` | yes | `approval` or `question`, as `ask_human` set it |
-| `state` | yes | `open`, or `ended` once at `resolve_ask` or the agent's bye |
-| `human` | yes | The asked human's name; "for me" when it is the operator's |
-| `title` | yes | The ask's title line, at most 200 characters; never its context, recommendation or answer |
-| `asked` | yes | The ask's server time (Unix seconds); after 24 h a yes approves nothing |
-| `answered` | yes | The asking server saw a first answer by a trusted human |
-| `mm` | yes | The ask's Mattermost post id, the last token of the subject |
-| `iat` | yes | When this record was published (Unix seconds) |
-| `exp` | yes | 30 minutes after `iat`; a record past it is not shown |
+| Field | In | Meaning |
+|-------|----|---------|
+| `v` | record | Format version, 1 |
+| `asks` | record | The open asks, oldest first, at most 20; an ended ask leaves the list |
+| `more` | record | Open asks left out: past 20, or past the record's 4 KiB |
+| `iat` | record | When this record was published (Unix seconds) |
+| `exp` | record | 30 minutes after `iat`; a record past it is not shown |
+| `mm` | ask | The ask's Mattermost post id, 26 of `[a-z0-9]`, unique in the list |
+| `kind` | ask | `approval` or `question`, as `ask_human` set it |
+| `human` | ask | The asked human's anchor (a letter or digit, then up to 63 of `[a-z0-9~_-]`), as the session's record from the login service gives it; `-` when it gives none. "For me" compares it with the operator's own anchor, never a name |
+| `title` | ask | The ask's title line, at most 200 characters, shown as plain text with control and direction characters stripped; never the ask's context, recommendation or answer |
+| `asked` | ask | The ask's server time (Unix seconds); after 24 h a yes approves nothing |
+| `answered` | ask | The asking server saw a first answer by a trusted human |
 
-No other key, no `props`, no duplicate key. A `STATS` part on NATS is the
-same JSON object the stats channel's line carries after `STATS `
+The whole record is at most 4 KiB. No other key, no `props`, no duplicate
+key; a record that breaks a rule is dropped whole. A `STATS` part on NATS
+is the same JSON object the stats channel's line carries after `STATS `
 ([arc42 §6.9](arc42/06-runtime-view.md#69-measuring-the-coordination-overhead)),
 at most 8 KiB, for example:
 
@@ -346,16 +348,29 @@ at most 8 KiB, for example:
 {"v": "0.101.0", "sid": "3f9a1c2b7d4e", "part": 2, "rt": "claude-code",
  "kind": "session", "min": 1440, "turns": 31, "turns_timed": 31,
  "turn_sec": 5400, "turn_max_sec": 900, "wakes": {"push": 12},
- "tools": {"post_message": 9, "wait_for_events": 4}, "posts": [9, 4100],
+ "tools": {"post_message": [9, 1800], "wait_for_events": [4, 0]}, "posts": [9, 4100],
  "asks": 2, "asks_answered": 2, "ask_wait_sec": 1260, "crown_sec": 0,
  "tok": {"req": 120, "bus_req": 18, "fixed": 21000, "all": {"in": 1200, "out": 900}}}
 ```
 
-Strings appear only in `v` (a version), `sid` (hex), `rt` (a harness word)
-and `kind` (`session` or `autonomous`); every other value is a number, a
-boolean, a list of numbers, or an object of short keys whose values are
-numbers or such objects. A line that breaks this, or carries a duplicate
-key, is dropped whole: no text, name or link rides along.
+| String | Pattern |
+|--------|---------|
+| `v` | `[0-9]{1,4}\.[0-9]{1,4}\.[0-9]{1,6}` |
+| `sid` | `[0-9a-f]{12}` |
+| `rt` | `claude-code`, `cursor`, `opencode`, `codex`, `pi` or `other` (any other client is published as `other`) |
+| `kind` | `session` or `autonomous` |
+
+No other value is a string: every other value is a number, a boolean, a
+list of numbers, or an object of such values. A string anywhere else, a
+string off its pattern, a duplicate key or a line over 8 KiB drops the
+whole line. Keys come from one fixed allow list in `stats.py`, shared by
+publisher and reader: the top-level fields RT-6.9 names; in `tools` the
+bus's own MCP tool names; in `wakes` and `blocks` the reasons and kinds
+the turn hooks write; in `tok` `req`, `bus_req`, `fixed`, `skill`, `all`
+and `bus`; in `tok.all` and `tok.bus` `in`, `read`, `w5m`, `w1h` and `out`.
+The publisher leaves out any key outside the list, the reader ignores one,
+and no key is ever shown as text, only mapped to the label the list gives
+it.
 
 ## Polling vs WebSocket
 
