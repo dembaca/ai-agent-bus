@@ -25,7 +25,7 @@ func safe(name string) map[string]any {
 	}
 	if name == StatsStream {
 		g["max_age"], g["max_msgs_per_subject"], g["subjects"] = float64(StatsMaxAge), float64(500), []any{"stats.>"}
-		g["max_bytes"], g["max_msg_size"] = float64(64<<20), float64(8192)
+		g["max_bytes"], g["max_msg_size"], g["storage"] = float64(64<<20), float64(8192), "file"
 	}
 	return g
 }
@@ -89,6 +89,11 @@ func TestCheckStream(t *testing.T) {
 		"STATS acknowledges":      {StatsStream, with(StatsStream, func(g map[string]any) { g["no_ack"] = false }), true},
 		"STATS allows direct":     {StatsStream, with(StatsStream, func(g map[string]any) { g["allow_direct"] = true }), true},
 		"STATS no size limit":     {StatsStream, with(StatsStream, func(g map[string]any) { g["max_bytes"] = float64(-1) }), true},
+		"STATS larger messages":   {StatsStream, with(StatsStream, func(g map[string]any) { g["max_msg_size"] = float64(16384) }), true},
+		"STATS smaller messages":  {StatsStream, with(StatsStream, func(g map[string]any) { g["max_msg_size"] = float64(4096) }), true},
+		"STATS no message size":   {StatsStream, with(StatsStream, func(g map[string]any) { delete(g, "max_msg_size") }), true},
+		"STATS in memory":         {StatsStream, with(StatsStream, func(g map[string]any) { g["storage"] = "memory" }), true},
+		"STATS no storage":        {StatsStream, with(StatsStream, func(g map[string]any) { delete(g, "storage") }), true},
 	} {
 		t.Run(name, func(t *testing.T) {
 			err := checkStream(c.stream, subject[c.stream], c.got)

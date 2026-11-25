@@ -3805,7 +3805,7 @@ temporary exception to "no dependency on Mattermost". What this proposal
 did not verify is listed in point 13. The rest of stage 1 (a NATS
 credential per person, the asks, the `STATS` lines on NATS) is specified
 in the addition of 2026-11-25 at the end of this record: fifteen points for
-the owner, none of them built.
+the owner, partly built (the login service's part of points 9 and 12).
 
 The pilot's cards (fixed after the lab pilot, 2026-11-25): a card is keyed
 by the agent's name on the bus (`agent-` and a 26-character hash, the
@@ -4359,8 +4359,11 @@ specified with that work, not here. Stage 1 (point 11) still lacks three
 things: a NATS credential per person in place of the static account, the
 asks, and the `STATS` lines on NATS for its two reports. The scenario "The
 console on the bus as its operator" (RT-6.43) and the bodies in
-`docs/protocol.md` say what is built from these points; nothing of them is
-built yet. Fifteen points, each one decision with a recommendation, its
+`docs/protocol.md` say what is built from these points; built is only the
+login service's part of points 9 and 12: each agent's publish right on its
+one ask record and on its `STATS` subject, for its own name (the ask record
+only in its hello's home), and the `STATS` stream the service makes and
+checks at its start. Fifteen points, each one decision with a recommendation, its
 reason and the alternative, for the owner to answer yes or no. One rule
 runs through all of them: what the console shows of an agent, NATS says
 came from that agent: each of its subjects ends with the agent's NATS

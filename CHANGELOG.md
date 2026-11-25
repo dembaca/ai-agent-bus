@@ -17,7 +17,8 @@ before 0.5.0 are described in the git history.
   not be `deliver`). The service makes the `STATS` stream at its start
   (`<stats>.>`, file storage, 30 days, 64 MiB, 8 KiB per message, at most
   500 per subject, the oldest discarded) and refuses to start on one that
-  keeps more per subject or longer. Its JetStream user needs two more
+  keeps more per subject or longer, takes other than 8 KiB per message, or
+  is not stored on file. Its JetStream user needs two more
   rights: `$JS.API.STREAM.CREATE.STATS` and `$JS.API.STREAM.INFO.STATS`
   (`services/auth/nats-server.example.conf`). No MCP server publishes
   either record yet; the person's credential is separate work.

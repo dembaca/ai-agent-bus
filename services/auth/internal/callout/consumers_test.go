@@ -246,6 +246,10 @@ func TestEnsureStreamsRefusesAnUnsafeStream(t *testing.T) {
 		"PRESENCE keeps many":        {"PRESENCE", strings.Replace(presenceStreamCfg, `"max_msgs_per_subject":1`, `"max_msgs_per_subject":5`, 1)},
 		"PRESENCE keeps all":         {"PRESENCE", strings.Replace(presenceStreamCfg, `"max_msgs_per_subject":1,`, ``, 1)},
 		"PRESENCE acknowledges":      {"PRESENCE", strings.Replace(presenceStreamCfg, `"no_ack":true`, `"no_ack":false`, 1)},
+		// The STATS stream (RT-6.43): message size and storage pinned as created.
+		"STATS larger messages": {"STATS", strings.Replace(statsStreamCfg, `"max_msg_size":8192`, `"max_msg_size":16384`, 1)},
+		"STATS in memory":       {"STATS", strings.Replace(statsStreamCfg, `"storage":"file"`, `"storage":"memory"`, 1)},
+		"STATS keeps 501":       {"STATS", strings.Replace(statsStreamCfg, `"max_msgs_per_subject":500`, `"max_msgs_per_subject":501`, 1)},
 	} {
 		t.Run(name, func(t *testing.T) {
 			l := newLabCfg(t, nil, 0, nil)

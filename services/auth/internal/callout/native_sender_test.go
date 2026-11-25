@@ -30,6 +30,7 @@ import (
 var (
 	busStreamCfg      = consumers.BusStreamJSON("bus", 0)
 	presenceStreamCfg = consumers.PresenceStreamJSON("presence", 0)
+	statsStreamCfg    = consumers.StatsStreamJSON("stats", 0)
 )
 
 type tapped struct {

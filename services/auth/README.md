@@ -266,7 +266,8 @@ signed by the account key, valid 15 minutes from the check:
   of their own, one message per subject, not a key-value bucket; the `STATS`
   lines too (stream `STATS` on `stats.>`: 30 days, 64 MiB, 8 KiB per message,
   at most 500 per subject, the oldest discarded; a stream that keeps more per
-  subject or longer is refused at the start).
+  subject or longer, takes other than 8 KiB per message or is not on file is
+  refused at the start).
   `AUTH_SUBJECT_PREFIX`, `AUTH_PRESENCE_PREFIX` and `AUTH_STATS_PREFIX` set the three prefixes.
   **The proof** is `internal/callout/native_sender_test.go`: an embedded
   nats-server (the version in `go.mod`, 2.15.3) with this callout, attacked
