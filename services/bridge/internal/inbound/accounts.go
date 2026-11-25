@@ -19,13 +19,13 @@ import (
 	"github.com/nats-io/nats.go"
 )
 
-// AccountsConsumer is the name stem of the bridge's own consumer of the login
-// service's account records (RT-6.42 step 3); each start makes one of its own,
-// bridge_accounts_<nonce>.
+// AccountsConsumer is the bridge's own consumer of the login service's account
+// records (RT-6.42 step 3), made by the bridge at every start.
 const AccountsConsumer = "bridge_accounts"
 
-// AccountsFilter is the consumer's filter, fixed in the bridge's create right
-// ($JS.API.CONSUMER.CREATE.PRESENCE.*.presence.account.mattermost.*.v1).
+// AccountsFilter is the consumer's filter. The bridge's create right names the
+// consumer and the filter ($JS.API.CONSUMER.CREATE.PRESENCE.bridge_accounts.
+// presence.account.mattermost.*.v1): it can make or change no other consumer.
 const AccountsFilter = "presence.account.mattermost.*.v1"
 
 // The bridge's own consumer: an idle heartbeat says nothing is pending, and a
@@ -53,13 +53,13 @@ func (a *Accounts) beats() (heartbeat, inactive time.Duration) {
 // record's `exp` and `approver` are the MCP server's to judge: a stale record
 // still names the person, it only approves nothing (point 8).
 //
-// At every start the bridge makes a consumer of its own, under a fresh name
-// and delivery subject (bridge_accounts_<nonce>, deliver.bridge.accounts.<nonce>):
-// deliver last per subject, ack none, an idle heartbeat, gone 30 s after
-// nobody listens. A fresh name, because a create with the config of a consumer
-// that still exists returns that consumer, which hands out nothing it handed
-// out before. Its right names the filter, so the bridge can make no consumer
-// of anything else, and it holds no delete right. The map is caught up at the
+// At every start the bridge makes its consumer bridge_accounts with a fresh
+// delivery subject (deliver.bridge.accounts.<nonce>): deliver last per
+// subject, ack none, an idle heartbeat, gone 30 s after nobody listens. It
+// holds no delete right. A consumer of that name that is still there (a
+// restart within the threshold) refuses the new config, or would hand out
+// nothing again: the bridge then stays unsubscribed for the threshold, so the
+// old one goes, and creates again. The map is caught up at the
 // first delivery with nothing pending, or at the first idle heartbeat (sent
 // only when nothing is); until then no home carries or signals. A consumer
 // that goes silent (NATS was away past the threshold) is replaced by a new one.
@@ -95,12 +95,23 @@ func (a *Accounts) CaughtUp() bool {
 // Run makes consumers and reads them until ctx ends.
 func (a *Accounts) Run(ctx context.Context, nc *nats.Conn) error {
 	for ctx.Err() == nil {
-		if err := a.consume(ctx, nc); err != nil && ctx.Err() == nil {
+		err := a.consume(ctx, nc)
+		if err == nil || ctx.Err() != nil {
+			continue
+		}
+		wait := time.Second
+		if errors.Is(err, errStale) {
+			// unsubscribed now: the old consumer goes after its threshold
+			heartbeat, inactive := a.beats()
+			wait = inactive + heartbeat
+			a.Log.Warn("accounts: the consumer of an earlier start is still there; waiting for it to go",
+				"wait", wait.String(), "error", err)
+		} else {
 			a.Log.Error("accounts: the account records cannot be read; trying again", "error", err)
-			select {
-			case <-ctx.Done():
-			case <-time.After(time.Second):
-			}
+		}
+		select {
+		case <-ctx.Done():
+		case <-time.After(wait):
 		}
 	}
 	return nil
@@ -112,7 +123,7 @@ func (a *Accounts) consume(ctx context.Context, nc *nats.Conn) error {
 	if _, err := rand.Read(nonce); err != nil {
 		return err
 	}
-	name := AccountsConsumer + "_" + hex.EncodeToString(nonce)
+	name := AccountsConsumer
 	deliver := a.Deliver + "." + hex.EncodeToString(nonce)
 	ch := make(chan *nats.Msg, 256)
 	// the subscription first: a push consumer delivers to whom listens
@@ -131,7 +142,7 @@ func (a *Accounts) consume(ctx context.Context, nc *nats.Conn) error {
 	a.staging, a.caughtUp = map[string]string{}, false
 	a.mu.Unlock()
 	if err := a.create(ctx, nc, name, deliver); err != nil {
-		return err
+		return err // errStale: Run waits the threshold, unsubscribed
 	}
 	if a.Ready != nil {
 		select {
@@ -213,19 +224,38 @@ func (a *Accounts) create(ctx context.Context, nc *nats.Conn, name, deliver stri
 		return fmt.Errorf("accounts: create %s: %w", name, err)
 	}
 	var resp struct {
+		Config *struct {
+			DeliverSubject string `json:"deliver_subject"`
+		} `json:"config"`
+		Delivered struct {
+			Consumer uint64 `json:"consumer_seq"`
+		} `json:"delivered"`
 		Error *struct {
-			Code int    `json:"code"`
-			Desc string `json:"description"`
+			Code    int    `json:"code"`
+			ErrCode int    `json:"err_code"`
+			Desc    string `json:"description"`
 		} `json:"error"`
 	}
 	if err := json.Unmarshal(m.Data, &resp); err != nil {
 		return fmt.Errorf("accounts: create %s: %w", name, err)
 	}
-	if resp.Error != nil {
+	switch {
+	case resp.Error != nil && resp.Error.ErrCode == errConsumerExists:
+		return fmt.Errorf("%w: %s", errStale, resp.Error.Desc)
+	case resp.Error != nil:
 		return fmt.Errorf("accounts: create %s: %d %s", name, resp.Error.Code, resp.Error.Desc)
+	case resp.Delivered.Consumer > 0 || resp.Config == nil || resp.Config.DeliverSubject != deliver:
+		// the create returned a consumer that already handed out records
+		return fmt.Errorf("%w: it delivered %d before", errStale, resp.Delivered.Consumer)
 	}
 	return nil
 }
+
+// errConsumerExists is JetStream's "consumer already exists" (another config).
+const errConsumerExists = 10148
+
+// errStale: a consumer of the bridge's name from an earlier start is there.
+var errStale = errors.New("accounts: a consumer of an earlier start")
 
 func (a *Accounts) caught() {
 	a.mu.Lock()

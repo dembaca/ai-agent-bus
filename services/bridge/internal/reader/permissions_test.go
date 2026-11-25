@@ -236,6 +236,14 @@ accounts {
 	}); err == nil {
 		t.Fatal("the bridge created a consumer of the attestations")
 	}
+	// nor may it change another consumer through the create API with its filter
+	if err := bridgeNC.Publish("$JS.API.CONSUMER.CREATE.PRESENCE.bridge_presence."+inbound.AccountsFilter,
+		[]byte(`{"stream_name":"PRESENCE","config":{"name":"bridge_presence","filter_subject":"`+
+			inbound.AccountsFilter+`","deliver_subject":"deliver.bridge.x"}}`)); err != nil {
+		t.Fatal(err)
+	}
+	_ = bridgeNC.Flush()
+	deniedOn(t, denied, "$JS.API.CONSUMER.CREATE.PRESENCE.bridge_presence.")
 	uid := "aaaaaaaaaaaaaaaaaaaaaaaaaa"
 	if err := admin.Publish("presence.account.mattermost."+uid+".v1", []byte(`{"v":1,"account":"`+uid+
 		`","anchor":"alice","name":"alice","approver":true,"token_iat":1,"iat":1,"exp":2}`)); err != nil {
@@ -244,11 +252,11 @@ accounts {
 	_ = admin.Flush()
 	for round := range 2 { // a start, and a restart within the first one's threshold
 		acc := &inbound.Accounts{Log: m.Log, Deliver: "deliver.bridge.accounts", Stream: "PRESENCE",
-			Ready: make(chan struct{}), Heartbeat: 100 * time.Millisecond}
+			Ready: make(chan struct{}), Heartbeat: 100 * time.Millisecond, Inactive: 500 * time.Millisecond}
 		actx, acancel := context.WithCancel(ctx)
 		go func() { _ = acc.Run(actx, bridgeNC) }()
 		<-acc.Ready
-		deadline = time.Now().Add(3 * time.Second)
+		deadline = time.Now().Add(5 * time.Second)
 		for acc.Anchor(uid) != "alice" || !acc.CaughtUp() {
 			if time.Now().After(deadline) {
 				t.Fatalf("start %d: the account record with the documented rights: %q", round, acc.Anchor(uid))
@@ -408,7 +416,7 @@ func documentedBridgeRights(t *testing.T, home string) (publish, subscribe []str
 	// account records' consumer (its filter fixed), no direct get, no whole-stream publish, no bus subscribe.
 	for _, subject := range publish {
 		if strings.HasPrefix(subject, "$JS.API.CONSUMER.CREATE") &&
-			subject != "$JS.API.CONSUMER.CREATE.PRESENCE.*."+inbound.AccountsFilter {
+			subject != "$JS.API.CONSUMER.CREATE.PRESENCE."+inbound.AccountsConsumer+"."+inbound.AccountsFilter {
 			t.Errorf("the bridge may create consumers by %s", subject)
 		}
 		for _, broad := range []string{"$JS.API.CONSUMER.DELETE",

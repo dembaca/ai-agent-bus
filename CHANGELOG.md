@@ -41,8 +41,9 @@ before 0.5.0 are described in the git history.
   carries on `presence.bridge.<home>.v1` while its WebSocket is up and the
   catch-up is done. A publish the server refuses carries nothing and stops
   that home. The bridge makes its own consumer of the account records at
-  every start (`bridge_accounts_<nonce>`, a create right whose subject fixes
-  the filter) and signals no home until it has read them. The operator
+  every start (`bridge_accounts`, a create right whose subject fixes the
+  name and the filter; after a quick restart it waits up to about 30 s for
+  the old one to go) and signals no home until it has read them. The operator
   creates the bucket `BUS_BRIDGE_SEEN`
   (`services/bridge/internal/store/seen_bucket.json`), widens each home's
   consumer to `bus.hu.<home>.*` and grants the bridge the rights in

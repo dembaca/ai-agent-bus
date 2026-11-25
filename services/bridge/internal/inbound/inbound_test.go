@@ -124,8 +124,9 @@ type lab struct {
 	kv   *store.KV
 	seen *store.Seen
 	acc  *Accounts
-	out  chan *nats.Msg // everything on bus.hu.>
-	sig  chan *nats.Msg // everything on presence.bridge.>
+	stop context.CancelFunc // stops acc, the bridge that started first
+	out  chan *nats.Msg     // everything on bus.hu.>
+	sig  chan *nats.Msg     // everything on presence.bridge.>
 }
 
 func newLab(t *testing.T) *lab {
@@ -178,6 +179,7 @@ func newLab(t *testing.T) *lab {
 	l.acc = newAccounts()
 	actx, cancel := context.WithCancel(ctx)
 	t.Cleanup(cancel)
+	l.stop = cancel
 	go func() { _ = l.acc.Run(actx, nc) }()
 	<-l.acc.Ready
 	// the idle heartbeat says the (empty) records are read
@@ -214,7 +216,7 @@ func anchorOf(t *testing.T, a *Accounts, uid string) string {
 
 func newAccounts() *Accounts {
 	return &Accounts{Log: quiet(), Deliver: "deliver.bridge.accounts", Stream: "PRESENCE",
-		Ready: make(chan struct{}), Heartbeat: 100 * time.Millisecond, Inactive: 2 * time.Second}
+		Ready: make(chan struct{}), Heartbeat: 100 * time.Millisecond, Inactive: 500 * time.Millisecond}
 }
 
 func quiet() *slog.Logger { return slog.New(slog.NewTextHandler(io.Discard, nil)) }
@@ -596,7 +598,8 @@ func TestAfterARestartABoundPersonKeepsTheAnchor(t *testing.T) {
 	r := newRig(t, nil)
 	r.record(t, aliceID, `{"v":1,"account":"`+aliceID+`","anchor":"alice","name":"alice",`+
 		`"approver":true,"token_iat":1,"iat":1,"exp":2}`, "alice")
-	again := newAccounts() // the restarted bridge, its old consumer still there
+	r.stop()               // the bridge stops ...
+	again := newAccounts() // ... and starts again, its old consumer still there
 	r.b.Anchors = again
 	r.connect(1)
 	noSignal(t, r.sig) // the records are not read yet
@@ -779,29 +782,17 @@ func TestAQuietHomesWatermarkMovesAlong(t *testing.T) {
 func TestAGoneConsumerIsMadeAgain(t *testing.T) {
 	l := newLab(t)
 	ctx := context.Background()
-	names := func() []string {
-		var out []string
-		st, err := l.js.Stream(ctx, "PRESENCE")
-		if err != nil {
-			t.Fatal(err)
-		}
-		lister := st.ConsumerNames(ctx)
-		for name := range lister.Name() {
-			out = append(out, name)
-		}
-		return out
+	name, deliver := accountConsumer(t, l)
+	if name == "" {
+		t.Fatal("no account consumer")
 	}
-	first := names()
-	if len(first) != 1 {
-		t.Fatalf("consumers %v", first)
-	}
-	if err := l.js.DeleteConsumer(ctx, "PRESENCE", first[0]); err != nil {
+	if err := l.js.DeleteConsumer(ctx, "PRESENCE", name); err != nil {
 		t.Fatal(err)
 	}
 	l.record(t, aliceID, `{"v":1,"account":"`+aliceID+`","anchor":"alice","name":"alice",`+
 		`"approver":true,"token_iat":1,"iat":1,"exp":2}`, "alice")
-	if now := names(); len(now) != 1 || now[0] == first[0] {
-		t.Fatalf("consumers %v after %v", now, first)
+	if again, to := accountConsumer(t, l); again != AccountsConsumer || to == deliver {
+		t.Fatalf("consumer %q to %q after one to %q", again, to, deliver)
 	}
 }
 
@@ -815,7 +806,7 @@ func accountConsumer(t *testing.T, l *lab) (name, deliver string) {
 	}
 	lister := st.ListConsumers(ctx)
 	for info := range lister.Info() {
-		if strings.HasPrefix(info.Name, AccountsConsumer+"_") {
+		if info.Name == AccountsConsumer {
 			name, deliver = info.Name, info.Config.DeliverSubject
 		}
 	}
@@ -836,7 +827,7 @@ func TestANewConsumerKeepsNoStaleAnchor(t *testing.T) {
 	if err := st.Purge(ctx, jetstream.WithPurgeSubject("presence.account.mattermost."+aliceID+".v1")); err != nil {
 		t.Fatal(err)
 	}
-	name, _ := accountConsumer(t, l)
+	name, deliver := accountConsumer(t, l)
 	if name == "" {
 		t.Fatal("no account consumer")
 	}
@@ -845,7 +836,7 @@ func TestANewConsumerKeepsNoStaleAnchor(t *testing.T) {
 	}
 	deadline := time.Now().Add(3 * time.Second)
 	for {
-		if again, _ := accountConsumer(t, l); again != "" && again != name && l.acc.CaughtUp() && l.acc.Anchor(aliceID) == "" {
+		if again, to := accountConsumer(t, l); again != "" && to != deliver && l.acc.CaughtUp() && l.acc.Anchor(aliceID) == "" {
 			return
 		}
 		if time.Now().After(deadline) {
@@ -872,25 +863,45 @@ func TestAGapInTheDeliveriesStartsOver(t *testing.T) {
 	if err := l.nc.PublishMsg(hb); err != nil {
 		t.Fatal(err)
 	}
-	deadline := time.Now().Add(3 * time.Second)
+	// the old consumer is still there: the bridge waits for it to go, then
+	// makes a new one with a fresh delivery subject
+	deadline := time.Now().Add(5 * time.Second)
 	for {
-		ctx := context.Background()
-		st, _ := l.js.Stream(ctx, "PRESENCE")
-		names := []string{}
-		lister := st.ConsumerNames(ctx)
-		for n := range lister.Name() {
-			names = append(names, n)
-		}
-		for _, n := range names {
-			if n != name && strings.HasPrefix(n, AccountsConsumer+"_") {
-				return
-			}
+		if again, to := accountConsumer(t, l); again != "" && to != deliver && l.acc.CaughtUp() {
+			return
 		}
 		if time.Now().After(deadline) {
-			t.Fatalf("no new consumer after a gap: %v", names)
+			t.Fatal("no new consumer after a gap")
 		}
 		time.Sleep(20 * time.Millisecond)
 	}
+}
+
+// RT-6.42 step 3: a restart within the old consumer's threshold finds it
+// still there; the bridge stays unsubscribed for the threshold, creates
+// again and reads the records.
+func TestARestartWithinTheThresholdWaitsForTheOldConsumer(t *testing.T) {
+	l := newLab(t)
+	l.record(t, aliceID, `{"v":1,"account":"`+aliceID+`","anchor":"alice","name":"alice",`+
+		`"approver":true,"token_iat":1,"iat":1,"exp":2}`, "alice")
+	_, old := accountConsumer(t, l)
+	l.stop() // the bridge stops, and starts again at once
+	again := newAccounts()
+	start := time.Now()
+	ctx, cancel := context.WithCancel(context.Background())
+	defer cancel()
+	go func() { _ = again.Run(ctx, l.nc) }()
+	deadline := time.Now().Add(5 * time.Second)
+	for !again.CaughtUp() || again.Anchor(aliceID) != "alice" {
+		if time.Now().After(deadline) {
+			t.Fatal("the restarted bridge never read the records")
+		}
+		time.Sleep(20 * time.Millisecond)
+	}
+	if _, to := accountConsumer(t, l); to == old {
+		t.Fatal("still the old consumer")
+	}
+	t.Logf("read again after %s", time.Since(start).Round(10*time.Millisecond))
 }
 
 // RT-6.42 step 1: the quiet home's watermark moves at the signal only when no

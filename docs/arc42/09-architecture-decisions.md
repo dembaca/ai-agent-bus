@@ -4808,9 +4808,10 @@ registrar's functions can move in later without a second component.
       to a person's anchor from these records through a push consumer and
       gets no read right on the channel directory's bucket. Amended with
       the build (spec author, 2026-11-25): the bridge makes that consumer
-      itself at every start, ack none, a fresh name per start
-      (`bridge_accounts_<nonce>`), last per subject, with a create right
-      whose subject fixes the filter and no delete right. An explicit ack
+      itself at every start, ack none, last per subject, under the fixed
+      name `bridge_accounts` with a fresh delivery subject, with a create
+      right whose subject fixes the name and the filter and no delete
+      right; after a quick restart it waits for the old one to go. An explicit ack
       would need `$JS.ACK.PRESENCE.*.>`, which reaches every `PRESENCE`
       consumer; without acks a lost record fails closed (the person goes
       out as `-`) until its rewrite or the next start. Why: the
