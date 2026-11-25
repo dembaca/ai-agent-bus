@@ -163,7 +163,8 @@ async def test_the_console_reads_the_fleet_sse(rig) -> None:
                 cards = {c["name"]: c for c in event["cards"]}
             elif event["type"] == "card":
                 cards[event["card"]["name"]] = event["card"]
-            if cards.get("agent-one", {}).get("crown") is True:
+            # and agent-two's own card, which may come after the crown's
+            if cards.get("agent-one", {}).get("crown") is True and "agent-two" in cards:
                 break
         assert cards["agent-one"]["state"] == "online"
         assert cards["agent-one"]["crown"] is True

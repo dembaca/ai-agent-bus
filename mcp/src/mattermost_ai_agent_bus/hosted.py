@@ -445,10 +445,15 @@ async def byte_transport(receive: BufferedByteReceiveStream, send: Any) -> Async
 
 
 def _load_server(client: BusClient | None) -> Serve:
-    from . import server
+    from . import compose, server
 
     if client is not None:
         server._client = client  # one client for hook API, heartbeat and tools
+        # the HELLO card's data for a NATS home's presence (RT-6.37 step 6): services()
+        # starts the bus, maybe before; NatsPort reads the source at every presence
+        port = compose.nats_port_of(client)
+        if port is not None:
+            port.card_source = server._presence_card
     server._hide_lifecycle_tools()
     return server.serve
 

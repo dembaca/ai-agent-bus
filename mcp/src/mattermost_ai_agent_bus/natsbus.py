@@ -270,9 +270,12 @@ CARD_ASKS_MAX = 999
 # letter, a digit or # (a HELLO may name a PR as "#118"); no "..", "//", "/.", no ".lock",
 # "/" or "." at the end (git check-ref-format). Anything else is dropped, never repaired.
 BRANCH_RE = re.compile(r"[A-Za-z0-9#][A-Za-z0-9._/+#-]{0,99}")
-# Control and format characters (C0, DEL, C1, zero-width, bidi overrides, line separators):
-# a card line is plain text on one line.
-_CARD_CONTROL = re.compile("[\x00-\x1f\x7f-\x9f\u200b-\u200f\u2028-\u202e\u2060-\u2069\ufeff]")
+# Control and format characters (C0, DEL, C1, soft hyphen, Arabic letter mark, Mongolian
+# vowel separator, zero-width, bidi overrides, line separators, BOM, interlinear
+# annotations, tag characters) and lone surrogates, which no UTF-8 carries: a card line is
+# plain text on one line.
+_CARD_CONTROL = re.compile("[\x00-\x1f\x7f-\x9f\xad\u061c\u180e\u200b-\u200f\u2028-\u202e"
+                           "\u2060-\u2069\ufeff\ufff9-\ufffb\ud800-\udfff\U000e0000-\U000e007f]")
 
 
 @dataclass(frozen=True)

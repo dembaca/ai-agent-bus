@@ -1638,13 +1638,13 @@ async def announce(
     )
     _done_typing()
     stats.set_user(me.id)
-    # the card's data for the next presence of a NATS home (RT-6.37)
-    _hello.update(model=_one_line(model), task=_one_line(task), branch=_one_line(branch))
     text = a2a.styled("\n".join(lines))  # `HELLO`, a blank line, the two lines
     stats.record("post", chars=len(text))
     post = await client.post(lease.with_crown(_unbroadcast(text)[0], me.id,
                                               here=await lease.crown_here(client, me.id)),
                              props=a2a.props("HELLO", card=card))
+    # the card's data for the next presence of a NATS home (RT-6.37), once the HELLO is out
+    _hello.update(model=_one_line(model), task=_one_line(task), branch=_one_line(branch))
     out = await slim.post(client, post)
     warning = await _foreign_coordinator(client, me.id)
     if warning:

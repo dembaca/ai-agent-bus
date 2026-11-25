@@ -1975,6 +1975,11 @@ def test_the_card_fields_are_bounded_on_both_sides() -> None:
     assert card_text("a\x00b\x1b[31m‮c\nd\te f", 64) == "a b [31m c d e f"
     assert card_text("m" * 200, CARD_MODEL_MAX) == "m" * CARD_MODEL_MAX
     assert card_text(7, CARD_TASK_MAX) is None
+    # invisible format characters, tag characters and lone surrogates (no UTF-8 carries one)
+    assert card_text("a\xadb\u061cc\u180ed\ufff9e\U000e0041f\ud83dg", 64) == "a b c d e f g"
+    raw = b'{"v":1,"status":"online","task":"x\\ud83d"}'
+    assert decode_presence_card(raw).task == "x"
+    encode_presence("online", card=decode_presence_card(raw))  # encodes, never raises
     for good in ("main", "feat/nats-bridge", "#118", "release/0.100.0", "a+b_c"):
         assert card_branch(good) == good
     for bad in ("a..b", "-x", "x/", "x.lock", "x.", "a b", "a//b", "a/.b", "ä", "b" * 101,

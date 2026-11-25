@@ -331,7 +331,8 @@ class NatsPort:
         self._unapproved: OrderedDict[tuple[str, ...], float] = OrderedDict()
         self._watch: asyncio.Task[None] | None = None
         # The HELLO card's data the presence carries (RT-6.37, ADR-015); the MCP server sets
-        # it before start, read at every presence the bus sends. None: no card's data.
+        # it (a hosted one maybe after start), read at every presence the bus sends. None:
+        # no card's data.
         self.card_source: Callable[[], natsbus.PresenceCard | None] | None = None
 
     def __getattr__(self, name: str) -> Any:
