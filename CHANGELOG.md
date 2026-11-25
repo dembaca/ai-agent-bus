@@ -53,6 +53,17 @@ before 0.5.0 are described in the git history.
   fleet's replay; it now shows "syncing…" and tries again, an error only
   after two minutes.
 
+### Docs
+
+- **The rest of the console's stage 1, specified** (the console decision,
+  ADR-015, addition of 2026-11-25; the scenario of the console on the bus
+  as its operator, RT-6.43): a NATS credential per logged-in operator from
+  the login service, reading only, in place of the console's static
+  account; the open asks as one bounded record each asking agent
+  publishes under its own name, shown and not answered; the `STATS` lines on a stream of their
+  own beside the chat, decoded so that no text can ride along. Fifteen
+  points for the owner, each with a recommendation; nothing is built.
+
 ## 0.100.0
 
 Needs: login service updated first, with publish right on presence account records, MM_PROPS_PREFIX at most sixteen characters.

@@ -1830,3 +1830,49 @@ The rule that an operator reads the guest channels of agents that trust them onl
 | 9 | The catch-up read on Mattermost fails | Logged and tried again at the next look (10 s); the live events on Mattermost go on |
 | 9 | NATS is disconnected or the own presence does not come back | No signal counts: the channel's people are read on Mattermost |
 | 10 | A JetStream answer lands on an account record | Not decoded: the account counts as unbound until the login service writes it again |
+
+## 6.43 The console on the bus as its operator
+
+**Purpose:** The operator console (ADR-015) reads the bus on NATS as the logged-in person, with a credential the login service issues for that person alone, and shows the open asks and the two stage-1 reports from records the agents publish under their own names. **Specified, not built:** the fifteen points of the console decision's addition of 2026-11-25 (ADR-015) are for the owner; until they are built the pilot reads presence with a static NATS account of the console's own (`console/server/README.md`), and its asks and reports answer empty. The card's fields in presence are specified with that work, not here.
+
+**Trigger:** An operator logs in to the console, or their console session renews or ends; an agent's MCP server posts an ask, sees its first answer, resolves it or ends; a server cuts a part of its `STATS` line (RT-6.9 step 2).
+
+**Participants:** Operator console, Login service, MCP server; NATS server (JetStream), Keycloak
+
+**Quality goal illustrated:** `#secure` The person, not the console — the bus decides what an operator reads, the operator's credential publishes nothing, and every ask and every line comes under the name of the agent that made it
+
+### Sequence
+
+1. **Login.** The operator logs in with the console's own Keycloak client (authorization code with PKCE, ADR-015 point 4). The console's server makes a key pair for this login, kept in memory, and connects to NATS with the operator's access token as the connect token (point 1 of the addition).
+2. **The person's credential.** The auth callout takes the person's path only for a token whose `azp` is `AUTH_CONSOLE_CLIENT_ID` and whose `aud` names it, the agent's path only for the bus's client; the console's client has the standard flow alone (device authorization grant, direct access grants, implicit flow and service accounts off). It checks the token against the realm, requires the operators' group (`AUTH_OPERATOR_GROUP`) in `groups`, and reads the person's anchor from the channel directory's name index by `sub` (RT-6.39, RT-6.41 step 2). The name is `<AUTH_PERSON_PREFIX><anchor>` (points 2 to 4). The user JWT's subject is this login's public key, so it is of no use without the login's seed; it allows no publish, subscribe only on `deliver.<name>.<login>.>` (`<login>`: the first ten characters of that key after its `U`, in lower case), and lives 15 minutes (points 5 and 6).
+3. **What the person reads.** At a login's first issue the login service makes `<name>_<login>_presence` on `PRESENCE`, delivering the last message per subject and then new ones: every agent's presence and attestation, and for each channel the person may see (public channels, their own agents' channels, those of agents that trust them directly, guest channels included; ADR-016 point 4) its crown claims, memberships and ask records (`<presence>.ask.<channel>.*`); and `<name>_<login>_stats` on `STATS`, from 7 days back. At a renewal both are kept with their position while the visible channels are the same; when they changed, the presence consumer is made anew with the new filters. Two logins of one person have consumers of their own. No channel consumers, no direct messages.
+4. **Renewal and end.** Every 10 minutes the server refreshes the operator's access token with the refresh token of the ordinary Keycloak session and asks for a new user JWT. At logout, at the end of the console's session or when a refresh or an issue fails, it closes that connection and drops key and tokens. A person publishes no bye: the login's consumers end by their inactivity threshold, 15 minutes without a subscriber (point 6).
+5. **The asks on NATS.** The asking agent's MCP server, when it has a NATS link, publishes one record of its open asks on `<presence>.ask.<home>.<name>` ([protocol.md](../protocol.md#over-nats-the-consoles-asks-and-stats-lines)): at most 20 asks, a title each of at most 200 characters, the record within 4 KiB, the rest counted in `more`. It publishes at each change (an ask, RT-6.11; its first answer by a trusted human; `resolve_ask`) and every 10 minutes while an ask is open, each valid 30 minutes; at its bye an empty list once. The login service grants each agent exactly that subject, for its own name and its hello's home (points 9 to 11).
+6. **The asks in the console.** The console shows a record while its `exp` is ahead of the console's floored clock; an ask whose `human` is the anchor of the operator's own credential as "for me", one by an agent whose attestation names the operator's anchor as its owner or among its trusted anchors (RT-6.41) as "I may answer"; one whose `asked` is older than 24 h as expired, a hint only; the asks of an agent without fresh presence as "agent gone". `title` is shown as plain text, control and direction characters stripped. It offers no answer: it says the ask is answered in its thread in the chat (point 8).
+7. **`STATS` on NATS.** Each MCP server with a NATS link publishes each part of its `STATS` line on `<stats>.<name>`, the same JSON object it posts in the stats channel, beside that post, with keys outside the allow list of `stats.py` left out and `rt` written as `other` for a client outside the known harnesses; a failed publish waits for the next part (point 13). The login service makes the `STATS` stream at its start (30 days, 64 MiB, 500 per subject) and grants each agent `<stats>.<name>` for its own name only (point 12).
+8. **The reports.** The console decodes each line strictly (point 14: strings only in `v`, `sid`, `rt` and `kind`, each by its pattern; keys from the allow list, others ignored and never shown) and computes the bus's share of all tokens per version and the asks over 24 hours and 7 days with `stats.py`, the numbers `stats_report` gives on the same lines; a missing field shows "n/a"; the view says the age of its oldest line. It shows no agent's name and no report by home or owner (point 15).
+
+### Error Handling
+
+| Step | Failure | System Response |
+|------|---------|----------------|
+| 2 | A token of the bus's client on the person's path, of the console's on the agent's, or one naming both or neither | Refused by the callout: no credential |
+| 2 | The operators' group is missing from `groups` | No credential; a person taken out of the group loses the console at the next renewal, within 15 minutes |
+| 2 | No anchor in the directory for the token's `sub` | No credential; the console says the person is not known to the bus |
+| 2 | The person's credential publishes on any subject | Refused by the NATS server |
+| 2 | An agent starts a device flow or a password grant with the console's client id | Refused by Keycloak: the client has the standard flow alone |
+| 3 | The same operator logs in twice | Each login has its own key, credential and consumers; ending one leaves the other |
+| 4 | The Keycloak refresh fails or the realm session ended | The server closes that operator's connection and drops key and tokens; the browser is sent to log in again |
+| 4 | The login service is down at a renewal | The connection runs until the user JWT's 15 minutes end, then the console shows that operator nothing and says why |
+| 5 | An agent publishes an ask record under another agent's name, in a home that is not its hello's, or on any further subject | Refused by the NATS server: one subject per agent, so it cannot fill `PRESENCE` |
+| 5 | More than 20 open asks, or titles past 4 KiB | The newest are left out and counted in `more` |
+| 5 | A server crashes with an ask open | Its record runs out within 30 minutes and leaves the console; no `ended` is needed |
+| 5 | An agent without a NATS link asks | Not on NATS: the console does not show it (RISK-13) |
+| 6 | A record that is not format v1, over 4 KiB or 20 asks, with an unknown or duplicate key, `props`, a `title` over 200 characters, a `human` that is neither `-` nor an anchor, or a malformed or repeated `mm` | Dropped whole, with a warning that carries none of it |
+| 6 | The asked human answers in the chat | `answered` with the next record; the ask stays listed until the agent ends it |
+| 7 | An agent publishes a `STATS` line under another agent's name | Refused by the NATS server |
+| 7 | An agent floods its own subject | The stream keeps its newest 500 lines; other agents' lines stay |
+| 7 | Many names flood together | The stream keeps 64 MiB and drops the oldest lines of all; the report says the age of its oldest line (RISK-22) |
+| 8 | A line with a string outside `v`, `sid`, `rt` and `kind` or off its pattern, a duplicate key, or over 8 KiB | The whole line is dropped with a warning that carries none of it |
+| 8 | A key outside the allow list | Ignored, never shown |
+| 8 | No lines yet, or none in the window | "n/a", never 0 |
