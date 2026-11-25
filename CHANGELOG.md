@@ -39,7 +39,9 @@ before 0.5.0 are described in the git history.
   > `$JS.API.CONSUMER.CREATE.KV_BUS_DIRECTORY.>` and
   > `$JS.API.CONSUMER.DELETE.KV_BUS_DIRECTORY.*` (the README and
   > `services/auth/nats-server.example.conf`); without them every operator
-  > credential is refused.
+  > credential is refused. 0.101.0 already needs them once its console path
+  > is on (the operator's channel listing of #126), though its entry does not
+  > name them; the next release entry carries them as a `Needs:` line.
 
 ### Fixed
 
