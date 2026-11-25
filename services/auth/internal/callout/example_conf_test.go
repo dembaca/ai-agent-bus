@@ -209,6 +209,8 @@ func TestTheExampleServerConfiguration(t *testing.T) {
 					"$JS.API.CONSUMER.*."+s, "$JS.API.CONSUMER.*."+s+".>")
 			}
 			pub = append(pub, "$JS.API.STREAM.CREATE."+consumers.StatsStream, "$JS.API.STREAM.INFO."+consumers.StatsStream)
+			// the operators' consumers on STATS (RT-6.43)
+			pub = append(pub, "$JS.API.CONSUMER.*."+consumers.StatsStream, "$JS.API.CONSUMER.*."+consumers.StatsStream+".>")
 			kv := "KV_" + directory.DefaultBucket
 			pub = append(pub, "$JS.API.INFO", "$JS.API.STREAM.CREATE."+kv, "$JS.API.STREAM.INFO."+kv,
 				"$JS.API.DIRECT.GET."+kv+".>", "$KV."+directory.DefaultBucket+".>", "$JS.API.STREAM.MSG.GET.PRESENCE", "presence.attest.*.v1", "presence.account.mattermost.*.v1")

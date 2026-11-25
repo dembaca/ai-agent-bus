@@ -123,7 +123,7 @@ func (v *Verifier) Verify(ctx context.Context, raw string) (Identity, error) {
 	if typ, _ := claims["typ"].(string); typ != "Bearer" {
 		return Identity{}, ErrTokenType
 	}
-	if azp, _ := claims["azp"].(string); azp != v.cfg.ClientID {
+	if azp, _ := claims["azp"].(string); azp != v.cfg.ClientID || v.namesOther(claims) {
 		return Identity{}, ErrAudience
 	}
 	sub, _ := claims["sub"].(string)

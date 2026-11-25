@@ -12,6 +12,7 @@ import (
 
 	"github.com/nats-io/nkeys"
 
+	"github.com/dembaca/ai-agent-bus/services/auth/internal/callout"
 	"github.com/dembaca/ai-agent-bus/services/auth/internal/token"
 )
 
@@ -205,5 +206,22 @@ func TestABadJetStreamSeedFileStopsTheStart(t *testing.T) {
 		if err != nil && strings.Contains(err.Error(), "not a seed\n") {
 			t.Errorf("%s: the file's content is in the error", name)
 		}
+	}
+}
+
+// The console's path (RT-6.43): off by default, its three settings read, and
+// a console client that is the bus's own refused.
+func TestTheConsolesSettings(t *testing.T) {
+	s, _, err := LoadSettings(env(nil))
+	if err != nil || s.Callout.Console.ClientID != "" || s.Callout.Console.PersonPrefix != "person-" {
+		t.Fatalf("default %+v, %v", s.Callout.Console, err)
+	}
+	s, _, err = LoadSettings(env(map[string]string{"AUTH_CONSOLE_CLIENT_ID": "bus-console",
+		"AUTH_OPERATOR_GROUP": "BGL_BUS_OPERATORS", "AUTH_PERSON_PREFIX": "op-"}))
+	if err != nil || s.Callout.Console != (callout.Console{ClientID: "bus-console", OperatorGroup: "BGL_BUS_OPERATORS", PersonPrefix: "op-"}) {
+		t.Fatalf("set %+v, %v", s.Callout.Console, err)
+	}
+	if _, _, err := LoadSettings(env(map[string]string{"AUTH_CONSOLE_CLIENT_ID": env(nil)("AUTH_KEYCLOAK_CLIENT_ID")})); !errors.Is(err, ErrConfig) {
+		t.Fatalf("the bus's client as the console's: %v", err)
 	}
 }

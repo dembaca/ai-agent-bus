@@ -294,6 +294,26 @@ There is no `props`: a decoder refuses a `<bus>.hu` body that carries one, an
 unknown or duplicate key, an unknown kind or a malformed id. Edits and deletes are not
 carried.
 
+## Over NATS: an operator's connection
+
+How the operator console's server connects as the logged-in person
+([arc42 §6.43](arc42/06-runtime-view.md#643-the-console-on-the-bus-as-its-operator),
+steps 2 to 4). The login service's side is built; the console does not use it yet.
+
+| Part | Value |
+|------|-------|
+| Connect token | The operator's Keycloak access token, bare (no JSON): `azp` the console's client (`AUTH_CONSOLE_CLIENT_ID`), `aud` naming it and not the bus's client, the operators' group (`AUTH_OPERATOR_GROUP`) in `groups` |
+| Connect nkey | A key pair per login, made by the console's server; it signs the server's nonce |
+| Name | `<AUTH_PERSON_PREFIX><anchor>`, default `person-`, the anchor the directory holds for the token's `sub` with `.` written as `~` |
+| `<login>` | The first ten characters of the login's public key after its `U`, in lower case |
+| Rights | Publish nothing; subscribe only on `deliver.<name>.<login>.>`; 15 minutes |
+| Consumers | `<name>_<login>_presence` on `PRESENCE`, delivering to `deliver.<name>.<login>.presence`, last per subject; `<name>_<login>_stats` on `STATS`, delivering to `deliver.<name>.<login>.stats`, from 7 days back. Both ack none, gone 15 minutes after nobody listens |
+| Renewal | Connect again with the same key and a fresh access token: both consumers keep their position while the visible channels are the same |
+| Refused | Another client's token, one whose `aud` names both clients, an expired one, one without the operators' group, a `sub` without an anchor in the directory: no credential, the reason in the login service's log |
+
+The server subscribes to both deliver subjects by their literal names, with no
+inbox: the credential holds no right to make a request.
+
 ## Over NATS: the console's asks and STATS lines
 
 Specified for the operator console's stage 1, not built

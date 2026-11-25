@@ -69,6 +69,11 @@ type Config struct {
 	// Binding decides whether `sub` may stand for the chat account of that
 	// name, after the chat lookup. Nil: Open.
 	Binding NameBinding
+	// OtherClient is the other path's client (RT-6.43, ADR-015 addition
+	// point 2): a token whose `aud` names it is refused, so a token that
+	// names both the bus's client and the console's gets neither credential.
+	// Empty: no such check.
+	OtherClient string
 }
 
 // withDefaults fills the defaults in and checks every value. It returns the

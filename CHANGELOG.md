@@ -21,6 +21,26 @@ before 0.5.0 are described in the git history.
   rights: `$JS.API.STREAM.CREATE.STATS` and `$JS.API.STREAM.INFO.STATS`
   (`services/auth/nats-server.example.conf`). No MCP server publishes
   either record yet; the person's credential is separate work.
+- **A NATS credential per console operator, in the login service** (the
+  console on the bus as its operator, RT-6.43; points 1 to 6 of the console
+  decision's addition of 2026-11-25, ADR-015). With
+  `AUTH_CONSOLE_CLIENT_ID` (new) set, the auth callout takes a bare access
+  token whose `azp` is the console's own Keycloak client and whose `aud`
+  names it, and never one that also names the bus's client; the agents'
+  path now refuses a token whose `aud` names the console's. It requires the
+  operators' group (`AUTH_OPERATOR_GROUP`, new) at every issue, takes the
+  anchor the channel directory holds for the token's `sub` (no anchor, no
+  credential) and issues `<AUTH_PERSON_PREFIX><anchor>` (new, default
+  `person-`) for 15 minutes: no publish at all, subscribe only on
+  `deliver.<name>.<login>.>`. It makes per login `<name>_<login>_presence`
+  on `PRESENCE` (presence and attestations, and crown claims, memberships
+  and ask records of the channels the person may see: for now the public
+  ones and the person's own in the directory) and `<name>_<login>_stats` on
+  `STATS` from 7 days back, both gone 15 minutes after nobody listens. The
+  JetStream user needs `$JS.API.CONSUMER.*.STATS` and
+  `$JS.API.CONSUMER.*.STATS.>` too. The connection is described in
+  `docs/protocol.md`. The console does not use it yet: its switch and the
+  removal of its static NATS account follow.
 
 ### Changed
 
