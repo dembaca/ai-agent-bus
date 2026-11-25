@@ -48,7 +48,7 @@ def addition() -> str:
 def points() -> dict[int, str]:
     found: dict[int, str] = {}
     parts = re.split(r"^ ?(\d+)\. \*\*", addition(), flags=re.M)
-    for number, body in zip(parts[1::2], parts[2::2]):
+    for number, body in zip(parts[1::2], parts[2::2], strict=True):
         n = int(number)
         assert n not in found, f"point {n} twice"
         found[n] = body
