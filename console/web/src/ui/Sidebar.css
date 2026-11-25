@@ -120,7 +120,8 @@
 
 .side__conn--live i { background: var(--ok); }
 .side__conn--connecting i,
-.side__conn--reconnecting i { background: var(--for-me); }
+.side__conn--reconnecting i,
+.side__conn--syncing i { background: var(--for-me); }
 .side__conn--error i { background: var(--danger); }
 
 .side__crown {

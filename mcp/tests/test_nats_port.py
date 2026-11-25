@@ -67,8 +67,9 @@ class FakeNats:
         self.accounts: dict[str, str] = {}  # Mattermost account -> anchor
         self.approvers: set[str] = set()  # anchors with a fresh approver record
 
-    def link_bot(self, bot_id: str) -> None:
+    def link_bot(self, bot_id: str, username: str = "") -> None:
         self.linked_bot = bot_id
+        self.linked_name = username
 
     def bot_of(self, agent: str) -> str:
         return self.bots.get(agent, "")
@@ -334,7 +335,7 @@ async def test_a_name_mismatch_at_start_is_final_and_a_passing_failure_is_tried_
         def __init__(self, *a: Any, **kw: Any) -> None:
             self.name, self.connected, self.synced = ME, True, True
 
-        def link_bot(self, bot_id: str) -> None: ...
+        def link_bot(self, bot_id: str, username: str = "") -> None: ...
 
         async def member(self, channel: str) -> None: ...
 
@@ -1922,6 +1923,7 @@ async def test_start_links_the_bot_and_announces_membership_of_every_channel_not
     try:
         (fake,) = made
         assert fake.linked_bot == BOT  # the bot's Mattermost id, as the session names it
+        assert fake.linked_name == inner.me.username  # its username, for the console (ADR-015)
         assert lease._nats_link is not None and lease._nats_link() == TAG_A
         assert fake.announced == ["home", "other", "guest"]
         assert fake.claimed_homes == []  # the crown claim is not made at start
@@ -1937,7 +1939,7 @@ async def test_a_bad_bot_id_does_not_stop_the_nats_home(monkeypatch: pytest.Monk
     made: list[FakeNats] = []
 
     class Picky(FakeNats):
-        def link_bot(self, bot_id: str) -> None:
+        def link_bot(self, bot_id: str, username: str = "") -> None:
             raise ValueError("not a Mattermost user id")
 
     def build(*a: Any, **kw: Any) -> FakeNats:
@@ -1957,3 +1959,20 @@ async def test_a_bad_bot_id_does_not_stop_the_nats_home(monkeypatch: pytest.Monk
         await port.stop()
         lease.use_nats_link(None)
 
+
+
+async def test_the_bot_name_falls_back_to_the_environment_then_to_nothing(
+        monkeypatch: pytest.MonkeyPatch) -> None:
+    """ADR-015: the username for the presence comes from get_me; when that fails
+    MM_BOT_USERNAME, else '' (the home starts all the same)."""
+    port, inner, _ = make(bus=False)
+    assert await port._bot_name() == inner.me.username
+
+    async def broken() -> Any:
+        raise RuntimeError("Mattermost is away")
+
+    monkeypatch.setattr(inner, "get_me", broken)
+    monkeypatch.setenv("MM_BOT_USERNAME", "agent-mac-ai-agent-716d72")
+    assert await port._bot_name() == "agent-mac-ai-agent-716d72"
+    monkeypatch.delenv("MM_BOT_USERNAME")
+    assert await port._bot_name() == ""

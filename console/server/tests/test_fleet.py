@@ -8,7 +8,7 @@ from __future__ import annotations
 import json
 
 
-from mattermost_ai_agent_bus.natsbus import encode_presence
+from mattermost_ai_agent_bus.natsbus import MAX_AGE_SEC, PRESENCE_FRESH_SEC, encode_presence
 from console_server.fleet import Fleet, short_name
 
 
@@ -279,3 +279,95 @@ def test_the_attestation_expires_by_the_floored_clock() -> None:
     live_edges = {e["to"] for e in g2.graph()["edges"]
                   if e["from"] == "c" and e["kind"] == "trusts"}
     assert "somebody-else" in live_edges
+
+
+def test_cards_show_the_bot_name_the_presence_states_not_the_bus_id() -> None:
+    """The console pilot's finding: every card showed the agent's name on the bus
+    (`agent-` and 26 characters of hash) and nobody could match it to
+    coordinator("who"). The presence an MCP server publishes in a NATS home
+    states the bot's username beside its id (natsbus.encode_presence, sent by
+    NatsBus each heartbeat): the card shows it, the bus name stays the key."""
+    from mattermost_ai_agent_bus.natsbus import agent_name, owner_token
+    f = Fleet()
+    one = agent_name("dembaca", "UHOSTONE")
+    two = agent_name("dembaca", "UHOSTTWO")
+    assert len(one) == len("agent-") + 26
+    for seq, (agent, bot, label) in enumerate([
+            (one, "pxcexeco5fbwmjxqzt3r1ah9yc", "agent-mac-ai-agent-716d72"),
+            (two, "q1w2e3r4t5y6u7i8o9p0a1s2d3", "agent-himalia-nats-pilo-772844")], 1):
+        feed(f, (f"presence.{owner_token('dembaca')}.{agent}",
+                 encode_presence("online", bot, label), ack("PRESENCE", "console", seq, seq, 100.0 + seq)))
+    cards = {c["name"]: c for c in f.cards()}
+    assert cards[one]["displayName"] == "agent-mac-ai-agent-716d72"
+    assert cards[two]["displayName"] == "agent-himalia-nats-pilo-772844"
+    # not on the wire the console reads: shown as unknown, never guessed
+    assert cards[one]["harness"] is None and cards[one]["model"] == ""
+    assert cards[one]["task"] == "" and cards[one]["openAsks"] is None
+    graph = {n["id"]: n for n in f.graph()["nodes"]}
+    assert graph[two]["label"] == "agent-himalia-nats-pilo-772844"
+
+
+def name_presence(agent: str, status: str, label: str, seq: int,
+                  at: float) -> tuple[str, bytes, str]:
+    return (f"presence.dembaca.{agent}", encode_presence(status, "", label),
+            ack("PRESENCE", "console", seq, seq, at))
+
+
+def test_a_name_two_agents_state_is_shown_for_neither() -> None:
+    """The username is the agent's own statement: one another known card
+    states too names neither card (each shows its bus name), and a name A
+    held stays contested after A said bye."""
+    f = Fleet()
+    feed(f, name_presence("agent-a", "online", "agent-same", 1, 100.0))
+    feed(f, name_presence("agent-b", "online", "agent-same", 2, 101.0))
+    cards = {c["name"]: c for c in f.cards()}
+    assert cards["agent-a"]["displayName"] == "agent-a"
+    assert cards["agent-b"]["displayName"] == "agent-b"
+    feed(f, name_presence("agent-a", "bye", "agent-same", 3, 102.0))
+    cards = {c["name"]: c for c in f.cards()}
+    assert cards["agent-b"]["displayName"] == "agent-b"  # a name A held stays contested
+    assert cards["agent-a"]["displayName"] == "agent-a"
+    # a presence without the name (an older MCP server) shows the bus name
+    feed(f, ("presence.dembaca.agent-c", encode_presence("online"),
+             ack("PRESENCE", "console", 4, 4, 103.0)))
+    assert f.card("agent-c")["displayName"] == "agent-c"
+
+
+def test_an_impostor_after_a_bye_takes_no_name() -> None:
+    """Fable's point: once A says bye, B stating A's username shows it on
+    neither card, not on B's alone."""
+    f = Fleet()
+    feed(f, name_presence("agent-a", "online", "agent-mac-ai-agent-716d72", 1, 100.0))
+    assert f.card("agent-a")["displayName"] == "agent-mac-ai-agent-716d72"
+    feed(f, name_presence("agent-a", "bye", "agent-mac-ai-agent-716d72", 2, 101.0))
+    feed(f, name_presence("agent-b", "online", "agent-mac-ai-agent-716d72", 3, 102.0))
+    assert f.state_of("agent-a") == "offline"
+    assert f.card("agent-b")["displayName"] == "agent-b"
+    assert f.card("agent-a")["displayName"] == "agent-a"
+
+
+def test_an_impostor_after_a_goes_stale_takes_no_name() -> None:
+    """No bye: A misses its heartbeats past the freshness window and is
+    offline by the server's clock; B stating its name still shows it on
+    neither card."""
+    f = Fleet()
+    feed(f, name_presence("agent-a", "online", "agent-mac-ai-agent-716d72", 1, 100.0))
+    feed(f, name_presence("agent-b", "online", "agent-mac-ai-agent-716d72", 2,
+                          100.0 + PRESENCE_FRESH_SEC + 10))
+    assert f.state_of("agent-a") == "offline"
+    assert f.card("agent-b")["displayName"] == "agent-b"
+    assert f.card("agent-a")["displayName"] == "agent-a"
+
+
+def test_the_name_returns_only_once_its_holder_is_pruned() -> None:
+    """A's presence leaves the view only past the stream's 24 h: from then on
+    B's statement is the only one and its card shows the name."""
+    f = Fleet()
+    feed(f, name_presence("agent-a", "online", "agent-same", 1, 100.0))
+    feed(f, name_presence("agent-b", "online", "agent-same", 2, 200.0))
+    late = 100.0 + MAX_AGE_SEC - 100
+    feed(f, name_presence("agent-b", "online", "agent-same", 3, late))
+    assert f.card("agent-b")["displayName"] == "agent-b"  # A still held: contested
+    feed(f, name_presence("agent-b", "online", "agent-same", 4, 100.0 + MAX_AGE_SEC + 10))
+    assert f.card("agent-a") is None  # pruned with its presence
+    assert f.card("agent-b")["displayName"] == "agent-same"

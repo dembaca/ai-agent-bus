@@ -70,17 +70,18 @@ export function AgentCardView({ card, active, onSelect }: {
         {card.crown && <span className="card__crown" title="the crown of its channel">
           <Crown size={12} />
         </span>}
-        <span className={"logo logo--" + card.harness} title={HARNESS_LABEL[card.harness]}
+        <span className={"logo logo--" + (card.harness ?? "other")}
+          title={harnessLabel(card.harness)}
           aria-hidden="true">{logoGlyph(card.harness)}</span>
         <span className="card__name" title={card.name}>{card.displayName}</span>
         <span className="card__since" title="since the last post">
           {card.lastPostAt ? since(card.lastPostAt) : "n/a"}
         </span>
       </div>
-      <div className="card__task">{card.task}</div>
+      <div className="card__task">{card.task || "task n/a"}</div>
       <div className="card__meta">
         <span className="card__model">
-          {[HARNESS_LABEL[card.harness], card.model].filter(Boolean).join(" · ")}
+          {harnessLabel(card.harness)} · {card.model || "model n/a"}
         </span>
         {card.role === "coordinator" && chip("coordinator")}
         <span className="card__for">
@@ -116,8 +117,14 @@ export function AgentCardView({ card, active, onSelect }: {
   )
 }
 
-/** One glyph per harness, "other" as the fallback (ADR-015 point 6). The
- * real logo comes with the server; the pilot marks the harness by letter. */
+/** One glyph per harness, "other" as the fallback (ADR-015 point 6), "?"
+ * for one not on the wire. The real logo comes with the server; the pilot
+ * marks the harness by letter. */
 function logoGlyph(harness: AgentCard["harness"]): string {
-  return HARNESS_LABEL[harness].slice(0, 1)
+  return harness === null ? "?" : HARNESS_LABEL[harness].slice(0, 1)
+}
+
+/** The harness's label; "harness n/a" when the wire does not carry it. */
+export function harnessLabel(harness: AgentCard["harness"]): string {
+  return harness === null ? "harness n/a" : HARNESS_LABEL[harness]
 }

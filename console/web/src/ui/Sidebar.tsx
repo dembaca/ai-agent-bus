@@ -51,7 +51,7 @@ export function Sidebar({ view, setView, openAsks, forMe, conn, operator,
       )}
       <div className="side__foot">
         <span className={"side__conn side__conn--" + conn} title={"fleet stream: " + conn}>
-          <i /> {conn}
+          <i /> {conn === "syncing" ? "syncing…" : conn}
         </span>
         <span>operator: {operator}</span>
         <span className="side__crown"><Crown size={11} /> the crown, a mark on the card</span>
