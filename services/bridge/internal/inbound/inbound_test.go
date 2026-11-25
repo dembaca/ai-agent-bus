@@ -162,13 +162,6 @@ func newLab(t *testing.T) *lab {
 	if err := store.CreateSeenBucket(ctx, js); err != nil {
 		t.Fatal(err)
 	}
-	if _, err := js.CreateOrUpdateConsumer(ctx, "PRESENCE", jetstream.ConsumerConfig{
-		Name: AccountsConsumer, Durable: AccountsConsumer, FilterSubject: "presence.account.mattermost.*.v1",
-		DeliverSubject: "deliver.bridge.accounts", DeliverPolicy: jetstream.DeliverLastPerSubjectPolicy,
-		AckPolicy: jetstream.AckExplicitPolicy, IdleHeartbeat: 100 * time.Millisecond,
-	}); err != nil {
-		t.Fatal(err)
-	}
 	l := &lab{nc: nc, js: js, out: make(chan *nats.Msg, 64), sig: make(chan *nats.Msg, 64)}
 	if l.kv, err = store.Open(ctx, nc, "BUS_BRIDGE"); err != nil {
 		t.Fatal(err)
@@ -182,8 +175,7 @@ func newLab(t *testing.T) *lab {
 	if _, err := nc.ChanSubscribe("presence.bridge.>", l.sig); err != nil {
 		t.Fatal(err)
 	}
-	l.acc = &Accounts{Log: quiet(), Deliver: "deliver.bridge.accounts", Stream: "PRESENCE",
-		Ready: make(chan struct{})}
+	l.acc = newAccounts()
 	actx, cancel := context.WithCancel(ctx)
 	t.Cleanup(cancel)
 	go func() { _ = l.acc.Run(actx, nc) }()
@@ -218,6 +210,11 @@ func anchorOf(t *testing.T, a *Accounts, uid string) string {
 	t.Helper()
 	t.Helper()
 	return a.Anchor(uid)
+}
+
+func newAccounts() *Accounts {
+	return &Accounts{Log: quiet(), Deliver: "deliver.bridge.accounts", Stream: "PRESENCE",
+		Ready: make(chan struct{}), Heartbeat: 100 * time.Millisecond, Inactive: 2 * time.Second}
 }
 
 func quiet() *slog.Logger { return slog.New(slog.NewTextHandler(io.Discard, nil)) }
@@ -592,33 +589,21 @@ func drain(ch chan *nats.Msg) {
 	}
 }
 
-// RT-6.42 step 3: the operator makes bridge_accounts afresh before every
-// start, so the restarted bridge reads the last record of every account
-// again; no home signals before the records are read.
+// RT-6.42 step 3: every start makes a consumer of its own, so a restart —
+// also one within the old consumer's inactive threshold — reads the last
+// record of every account again; no home signals before it has.
 func TestAfterARestartABoundPersonKeepsTheAnchor(t *testing.T) {
 	r := newRig(t, nil)
 	r.record(t, aliceID, `{"v":1,"account":"`+aliceID+`","anchor":"alice","name":"alice",`+
 		`"approver":true,"token_iat":1,"iat":1,"exp":2}`, "alice")
-	// the operator's step before the restart
-	ctx := context.Background()
-	if err := r.js.DeleteConsumer(ctx, "PRESENCE", AccountsConsumer); err != nil {
-		t.Fatal(err)
-	}
-	again := &Accounts{Log: quiet(), Deliver: "deliver.bridge.accounts", Stream: "PRESENCE", Ready: make(chan struct{})}
-	actx, cancel := context.WithCancel(ctx)
-	defer cancel()
-	go func() { _ = again.Run(actx, r.nc) }()
-	<-again.Ready
+	again := newAccounts() // the restarted bridge, its old consumer still there
 	r.b.Anchors = again
 	r.connect(1)
 	noSignal(t, r.sig) // the records are not read yet
-	if _, err := r.js.CreateOrUpdateConsumer(ctx, "PRESENCE", jetstream.ConsumerConfig{
-		Name: AccountsConsumer, Durable: AccountsConsumer, FilterSubject: "presence.account.mattermost.*.v1",
-		DeliverSubject: "deliver.bridge.accounts", DeliverPolicy: jetstream.DeliverLastPerSubjectPolicy,
-		AckPolicy: jetstream.AckExplicitPolicy, IdleHeartbeat: 100 * time.Millisecond,
-	}); err != nil {
-		t.Fatal(err)
-	}
+	ctx, cancel := context.WithCancel(context.Background())
+	defer cancel()
+	go func() { _ = again.Run(ctx, r.nc) }()
+	<-again.Ready
 	waitSignal(t, r.sig) // the retry catches up once they are
 	if got := anchorOf(t, again, aliceID); got != "alice" || !again.CaughtUp() {
 		t.Fatalf("after the restart: %q", got)
@@ -626,6 +611,44 @@ func TestAfterARestartABoundPersonKeepsTheAnchor(t *testing.T) {
 	r.send(alicePost(pid(1), now()))
 	if subject, _ := r.next(t); subject != "bus.hu.home.alice" {
 		t.Fatalf("after the restart: %s", subject)
+	}
+}
+
+// Why a fresh name per start (RT-6.42 step 3): a create with the config of a
+// consumer that still exists returns that consumer, which hands out nothing
+// it handed out before, and one with another config is refused.
+func TestACreateOfAnExistingConsumerHandsOutNothingAgain(t *testing.T) {
+	l := newLab(t)
+	ctx := context.Background()
+	if err := l.nc.Publish("presence.account.mattermost."+aliceID+".v1", []byte("rec")); err != nil {
+		t.Fatal(err)
+	}
+	got := make(chan *nats.Msg, 8)
+	if _, err := l.nc.ChanSubscribe("deliver.probe", got); err != nil {
+		t.Fatal(err)
+	}
+	cfg := jetstream.ConsumerConfig{Name: "probe", FilterSubject: AccountsFilter, DeliverSubject: "deliver.probe",
+		DeliverPolicy: jetstream.DeliverLastPerSubjectPolicy, AckPolicy: jetstream.AckNonePolicy,
+		InactiveThreshold: 30 * time.Second}
+	if _, err := l.js.CreatePushConsumer(ctx, "PRESENCE", cfg); err != nil {
+		t.Fatal(err)
+	}
+	select {
+	case <-got:
+	case <-time.After(3 * time.Second):
+		t.Fatal("the first consumer delivered nothing")
+	}
+	if _, err := l.js.CreatePushConsumer(ctx, "PRESENCE", cfg); err != nil {
+		t.Fatalf("(a) the same config again: %v", err)
+	}
+	select {
+	case m := <-got:
+		t.Fatalf("(a) the same config handed out again: %s", m.Data)
+	case <-time.After(300 * time.Millisecond):
+	}
+	cfg.InactiveThreshold = 31 * time.Second
+	if _, err := l.js.CreatePushConsumer(ctx, "PRESENCE", cfg); err == nil {
+		t.Fatal("(b) another config was taken")
 	}
 }
 
@@ -748,5 +771,36 @@ func TestAQuietHomesWatermarkMovesAlong(t *testing.T) {
 			t.Fatalf("the watermark stays at %d", wm)
 		}
 		time.Sleep(20 * time.Millisecond)
+	}
+}
+
+// RT-6.42 step 3: a consumer that is gone (NATS away past its threshold, or
+// removed) goes silent; the bridge makes a new one and reads the records.
+func TestAGoneConsumerIsMadeAgain(t *testing.T) {
+	l := newLab(t)
+	ctx := context.Background()
+	names := func() []string {
+		var out []string
+		st, err := l.js.Stream(ctx, "PRESENCE")
+		if err != nil {
+			t.Fatal(err)
+		}
+		lister := st.ConsumerNames(ctx)
+		for name := range lister.Name() {
+			out = append(out, name)
+		}
+		return out
+	}
+	first := names()
+	if len(first) != 1 {
+		t.Fatalf("consumers %v", first)
+	}
+	if err := l.js.DeleteConsumer(ctx, "PRESENCE", first[0]); err != nil {
+		t.Fatal(err)
+	}
+	l.record(t, aliceID, `{"v":1,"account":"`+aliceID+`","anchor":"alice","name":"alice",`+
+		`"approver":true,"token_iat":1,"iat":1,"exp":2}`, "alice")
+	if now := names(); len(now) != 1 || now[0] == first[0] {
+		t.Fatalf("consumers %v after %v", now, first)
 	}
 }

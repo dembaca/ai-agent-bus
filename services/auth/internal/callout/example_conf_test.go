@@ -165,7 +165,8 @@ func TestTheExampleServerConfiguration(t *testing.T) {
 				"$JS.ACK.PRESENCE.bridge_presence.>", "$KV.BUS_BRIDGE.>",
 				"$JS.API.STREAM.MSG.GET.KV_BUS_BRIDGE",
 				// people onto NATS (RT-6.42)
-				"bus.hu.home.*", "presence.bridge.home.v1", "$JS.ACK.PRESENCE.bridge_accounts.>",
+				"bus.hu.home.*", "presence.bridge.home.v1",
+				"$JS.API.CONSUMER.CREATE.PRESENCE.*.presence.account.mattermost.*.v1",
 				"$KV.BUS_BRIDGE_SEEN.>",
 				"$JS.API.STREAM.INFO.KV_BUS_BRIDGE_SEEN", "$JS.API.STREAM.MSG.GET.KV_BUS_BRIDGE_SEEN"} {
 				if !strings.Contains(pub, want) {
@@ -177,10 +178,17 @@ func TestTheExampleServerConfiguration(t *testing.T) {
 			// stream info (its subjects filter lists who writes DMs to whom)
 			for _, unwanted := range []string{"bus.>", "$JS.API.STREAM.CREATE",
 				"DIRECT.GET", "$JS.API.STREAM.INFO.BUS", "$JS.API.STREAM.INFO.PRESENCE",
-				"$JS.API.CONSUMER.CREATE", "$JS.API.CONSUMER.DELETE", "$JS.API.CONSUMER.MSG.NEXT",
+				"$JS.API.CONSUMER.DELETE", "$JS.API.CONSUMER.MSG.NEXT",
 				"$JS.API.STREAM.MSG.GET.PRESENCE"} {
 				if strings.Contains(pub, unwanted) {
 					t.Errorf("the bridge may %s: %+v", unwanted, u.Permissions.Publish.Allow)
+				}
+			}
+			// one consumer create, its filter fixed in the subject (RT-6.42)
+			for _, subject := range u.Permissions.Publish.Allow {
+				if strings.HasPrefix(subject, "$JS.API.CONSUMER.CREATE") &&
+					subject != "$JS.API.CONSUMER.CREATE.PRESENCE.*.presence.account.mattermost.*.v1" {
+					t.Errorf("the bridge may create consumers by %s", subject)
 				}
 			}
 			sub := strings.Join(u.Permissions.Subscribe.Allow, " ")

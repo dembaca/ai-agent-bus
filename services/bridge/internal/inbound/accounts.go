@@ -3,6 +3,8 @@ package inbound
 import (
 	"bytes"
 	"context"
+	"crypto/rand"
+	"encoding/hex"
 	"encoding/json"
 	"errors"
 	"fmt"
@@ -11,14 +13,37 @@ import (
 	"regexp"
 	"strings"
 	"sync"
+	"time"
 
 	"github.com/nats-io/nats.go"
 )
 
-// AccountsConsumer is the operator's consumer of the login service's account
-// records (RT-6.42 step 3): last per subject, explicit ack, delivered to
-// deliver.bridge.accounts. The bridge only subscribes and acks.
+// AccountsConsumer is the name stem of the bridge's own consumer of the login
+// service's account records (RT-6.42 step 3); each start makes one of its own,
+// bridge_accounts_<nonce>.
 const AccountsConsumer = "bridge_accounts"
+
+// AccountsFilter is the consumer's filter, fixed in the bridge's create right
+// ($JS.API.CONSUMER.CREATE.PRESENCE.*.presence.account.mattermost.*.v1).
+const AccountsFilter = "presence.account.mattermost.*.v1"
+
+// The bridge's own consumer: an idle heartbeat says nothing is pending, and a
+// consumer nobody listens to is gone after the threshold, before the next.
+const (
+	accountsHeartbeat = 5 * time.Second
+	accountsInactive  = 30 * time.Second
+)
+
+func (a *Accounts) beats() (heartbeat, inactive time.Duration) {
+	heartbeat, inactive = a.Heartbeat, a.Inactive
+	if heartbeat == 0 {
+		heartbeat = accountsHeartbeat
+	}
+	if inactive == 0 {
+		inactive = accountsInactive
+	}
+	return heartbeat, inactive
+}
 
 // Accounts maps a Mattermost account to the person's anchor from the login
 // service's records on `presence.account.mattermost.<user id>.v1`. An account
@@ -27,21 +52,24 @@ const AccountsConsumer = "bridge_accounts"
 // record's `exp` and `approver` are the MCP server's to judge: a stale record
 // still names the person, it only approves nothing (point 8).
 //
-// The bridge reads the records only through the operator's consumer and holds
-// no right to make, reset or read past it. A durable consumer does not hand
-// out again what was acked, so the operator makes bridge_accounts afresh
-// before every start of the bridge (deliver last per subject, an idle
-// heartbeat): it then delivers the last record of every account. The map is
-// caught up at the first delivery that says nothing is pending, or at the
-// first idle heartbeat (sent only when nothing is); until then no home
-// signals, so no session reads people from a bridge that would carry a bound
-// person under `-`. A consumer left over from before the restart delivers
-// nothing old: the bound people go out under `-`, which fails closed.
+// At every start the bridge makes a consumer of its own, under a fresh name
+// and delivery subject (bridge_accounts_<nonce>, deliver.bridge.accounts.<nonce>):
+// deliver last per subject, ack none, an idle heartbeat, gone 30 s after
+// nobody listens. A fresh name, because a create with the config of a consumer
+// that still exists returns that consumer, which hands out nothing it handed
+// out before. Its right names the filter, so the bridge can make no consumer
+// of anything else, and it holds no delete right. The map is caught up at the
+// first delivery with nothing pending, or at the first idle heartbeat (sent
+// only when nothing is); until then no home carries or signals. A consumer
+// that goes silent (NATS was away past the threshold) is replaced by a new one.
 type Accounts struct {
 	Log     *slog.Logger
-	Deliver string        // deliver.bridge.accounts
-	Stream  string        // "PRESENCE", for the ack reply's prefix
-	Ready   chan struct{} // closed once the subscription is active (tests wait on it)
+	Deliver string        // deliver.bridge.accounts: the stem of the delivery subject
+	Stream  string        // "PRESENCE"
+	Ready   chan struct{} // closed once the first consumer is made (tests wait on it)
+	// Heartbeat and Inactive set the consumer's idle heartbeat (5 s) and its
+	// inactive threshold (30 s); the tests shorten them.
+	Heartbeat, Inactive time.Duration
 
 	mu       sync.Mutex
 	anchors  map[string]string // accounts with a record, "" for unbound
@@ -62,36 +90,71 @@ func (a *Accounts) CaughtUp() bool {
 	return a.caughtUp
 }
 
-// Run consumes until ctx ends.
+// Run makes consumers and reads them until ctx ends.
 func (a *Accounts) Run(ctx context.Context, nc *nats.Conn) error {
+	for ctx.Err() == nil {
+		if err := a.consume(ctx, nc); err != nil && ctx.Err() == nil {
+			a.Log.Error("accounts: the account records cannot be read; trying again", "error", err)
+			select {
+			case <-ctx.Done():
+			case <-time.After(time.Second):
+			}
+		}
+	}
+	return nil
+}
+
+// consume makes one consumer and reads it until it goes silent or ctx ends.
+func (a *Accounts) consume(ctx context.Context, nc *nats.Conn) error {
+	nonce := make([]byte, 8)
+	if _, err := rand.Read(nonce); err != nil {
+		return err
+	}
+	name := AccountsConsumer + "_" + hex.EncodeToString(nonce)
+	deliver := a.Deliver + "." + hex.EncodeToString(nonce)
 	ch := make(chan *nats.Msg, 256)
-	sub, err := nc.ChanSubscribe(a.Deliver, ch)
+	// the subscription first: a push consumer delivers to whom listens
+	sub, err := nc.ChanSubscribe(deliver, ch)
 	if err != nil {
-		return fmt.Errorf("accounts: subscribe %s: %w", a.Deliver, err)
+		return fmt.Errorf("accounts: subscribe %s: %w", deliver, err)
 	}
 	defer func() { _ = sub.Unsubscribe() }()
 	if err := nc.Flush(); err != nil {
-		return fmt.Errorf("accounts: subscribe %s: %w", a.Deliver, err)
+		return fmt.Errorf("accounts: subscribe %s: %w", deliver, err)
+	}
+	if err := a.create(ctx, nc, name, deliver); err != nil {
+		return err
 	}
 	if a.Ready != nil {
-		close(a.Ready)
+		select {
+		case <-a.Ready:
+		default:
+			close(a.Ready)
+		}
 	}
+	prefix := "$JS.ACK." + a.Stream + "." + name + "."
+	heartbeat, _ := a.beats()
+	// no message for three heartbeats: the consumer is gone, a new one
+	silence := time.NewTimer(3 * heartbeat)
+	defer silence.Stop()
 	for {
 		select {
 		case <-ctx.Done():
 			return nil
+		case <-silence.C:
+			a.Log.Warn("accounts: the consumer went silent; making a new one", "consumer", name)
+			return nil
 		case m := <-ch:
+			silence.Reset(3 * heartbeat)
 			if m.Header.Get("Status") == "100" && strings.Contains(m.Header.Get("Description"), "Idle") {
 				// the server's idle heartbeat: nothing is pending
 				a.caught()
 				continue
 			}
-			// Only a delivery of the operator's consumer counts (no flow
-			// control, no other status); what may be stored on a record's
-			// subject at all is the login service's alone, and one checks the
-			// subject.
-			if m.Header.Get("Status") != "" ||
-				!strings.HasPrefix(m.Reply, "$JS.ACK."+a.Stream+"."+AccountsConsumer+".") {
+			// Only a delivery of this consumer counts; what may be stored on a
+			// record's subject at all is the login service's alone, and one
+			// checks the subject.
+			if m.Header.Get("Status") != "" || !strings.HasPrefix(m.Reply, prefix) {
 				a.Log.Warn("accounts: not a delivery, dropped", "subject", m.Subject)
 				continue
 			}
@@ -99,11 +162,41 @@ func (a *Accounts) Run(ctx context.Context, nc *nats.Conn) error {
 			if md, err := m.Metadata(); err == nil && md.NumPending == 0 {
 				a.caught()
 			}
-			if err := m.Ack(); err != nil {
-				a.Log.Warn("accounts: ack refused", "error", err)
-			}
 		}
 	}
+}
+
+// create makes the consumer through the create API with the filter in the
+// subject, the form the bridge's right names.
+func (a *Accounts) create(ctx context.Context, nc *nats.Conn, name, deliver string) error {
+	heartbeat, inactive := a.beats()
+	body, err := json.Marshal(map[string]any{"stream_name": a.Stream, "action": "create", "config": map[string]any{
+		"name": name, "filter_subject": AccountsFilter, "deliver_subject": deliver,
+		"deliver_policy": "last_per_subject", "ack_policy": "none",
+		"idle_heartbeat": int64(heartbeat), "inactive_threshold": int64(inactive),
+	}})
+	if err != nil {
+		return err
+	}
+	rctx, cancel := context.WithTimeout(ctx, 5*time.Second)
+	defer cancel()
+	m, err := nc.RequestWithContext(rctx, "$JS.API.CONSUMER.CREATE."+a.Stream+"."+name+"."+AccountsFilter, body)
+	if err != nil {
+		return fmt.Errorf("accounts: create %s: %w", name, err)
+	}
+	var resp struct {
+		Error *struct {
+			Code int    `json:"code"`
+			Desc string `json:"description"`
+		} `json:"error"`
+	}
+	if err := json.Unmarshal(m.Data, &resp); err != nil {
+		return fmt.Errorf("accounts: create %s: %w", name, err)
+	}
+	if resp.Error != nil {
+		return fmt.Errorf("accounts: create %s: %d %s", name, resp.Error.Code, resp.Error.Desc)
+	}
+	return nil
 }
 
 func (a *Accounts) caught() {

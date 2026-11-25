@@ -40,12 +40,15 @@ before 0.5.0 are described in the git history.
   from its watermark, at most 10 minutes back; it signals each home it
   carries on `presence.bridge.<home>.v1` while its WebSocket is up and the
   catch-up is done. A publish the server refuses carries nothing and stops
-  that home. The operator makes `bridge_accounts` afresh before every start
-  of the bridge, which signals no home until it has read the records. The operator creates the bucket `BUS_BRIDGE_SEEN`
-  (`services/bridge/internal/store/seen_bucket.json`) and the consumer
-  `bridge_accounts`, widens each home's consumer to `bus.hu.<home>.*` and
-  grants the bridge the rights in `services/auth/nats-server.example.conf`
-  before this bridge starts: it refuses to start without the bucket. The
+  that home. The bridge makes its own consumer of the account records at
+  every start (`bridge_accounts_<nonce>`, a create right whose subject fixes
+  the filter) and signals no home until it has read them. The operator
+  creates the bucket `BUS_BRIDGE_SEEN`
+  (`services/bridge/internal/store/seen_bucket.json`), widens each home's
+  consumer to `bus.hu.<home>.*` and grants the bridge the rights in
+  `services/auth/nats-server.example.conf` before this bridge starts: it
+  refuses to start without the bucket. The release says so in its notice:
+  `Needs: bridge create right on presence account consumer.` The
   login service's account records and the MCP server's reader are not built
   yet, so everyone goes out under `-` and sessions still read people on
   Mattermost.
