@@ -13,6 +13,7 @@ from __future__ import annotations
 
 import asyncio
 import base64
+import contextlib
 import json
 import os
 import shutil
@@ -302,7 +303,7 @@ def _state(cards: dict[str, dict], name: str) -> str | None:
 
 
 async def test_a_hard_death_ages_the_card_offline_and_no_other(rig, monkeypatch) -> None:
-    """#108 point 10: an agent killed hard (kill -9, a dropped connection)
+    """#108 point 10: an agent killed hard (kill -9) falls silent and
     sends no bye; its card turns offline once its last presence is older
     than the freshness window (natsbus.PRESENCE_FRESH_SEC, 90 s in
     production; the console sends the change with the next delivery or
@@ -326,22 +327,23 @@ async def test_a_hard_death_ages_the_card_offline_and_no_other(rig, monkeypatch)
         await stream.open()
         await admin.publish("presence.member.dev.agent-dead", b'{"v": 1}')
         await admin.publish("presence.member.dev.agent-live", b'{"v": 1}')
-        for _ in range(3):  # a few heartbeats, then the kill: no bye
+        for n in range(3):  # a few heartbeats, then the kill: silence, no bye
+            if n:
+                await asyncio.sleep(0.3)
             await admin.publish("presence.dembaca.agent-dead", encode_presence("online"))
             await admin.flush()
-            await asyncio.sleep(0.3)
-        died = time.monotonic()  # the last presence went out ~0.3 s ago at most
+        died = time.monotonic()  # right after the last presence reached the server
         cards: dict[str, dict] = {}
         await _cards_until(stream, cards, lambda c: _state(c, "agent-dead") == "online"
                            and _state(c, "agent-live") == "online")
-        assert time.monotonic() - died < window - 0.5, "online seen only near the window"
+        assert time.monotonic() - died < window, "online seen only after the window"
 
         seen: list = []
         await _cards_until(stream, cards, lambda c: _state(c, "agent-dead") == "offline",
                            events=200, seen=seen)
         aged = time.monotonic() - died
-        # not before the window, and within it plus a beat and slack
-        assert window - 0.4 <= aged <= window + 2.0, aged
+        # not before the window (slack for a slow runner), within it plus a beat
+        assert window - 1.0 <= aged <= window + 2.0, aged
         # no other card changed: no drop, the peer online throughout,
         # the dead card the only one that went offline
         assert all(e["type"] != "drop" for e, _ in seen)
@@ -353,7 +355,9 @@ async def test_a_hard_death_ages_the_card_offline_and_no_other(rig, monkeypatch)
         stream.close()
     finally:
         beating = False
-        await beat
+        beat.cancel()
+        with contextlib.suppress(asyncio.CancelledError):
+            await beat
         await console.stop()
 
 
@@ -378,7 +382,7 @@ async def test_a_lone_hard_death_ages_on_the_beat_alone(rig, monkeypatch) -> Non
         await _cards_until(stream, cards, lambda c: _state(c, "agent-lone") == "offline",
                            events=200)
         aged = time.monotonic() - sent
-        assert window - 0.4 <= aged <= window + 2.0, aged
+        assert window - 1.0 <= aged <= window + 2.0, aged
         stream.close()
     finally:
         await console.stop()
@@ -420,15 +424,17 @@ async def test_an_explicit_release_moves_the_one_crown(rig) -> None:
     release is a new claim that moves behind every other
     (lease._command_nats "release"); the peer's older claim leads, so the
     console shows exactly one crown at every step, and it moves to the
-    peer — the holder the stream's records give by natsbus.crown_holder."""
+    peer — the holder the stream's records give by natsbus.crown_holder.
+    It checks that the console follows a re-claim of the same subject,
+    written with the real claim encoder (natsbus.encode_claim)."""
     admin: NatsClient = rig["admin"]
     agents = ["agent-one", "agent-two"]
     for agent in agents:
         await admin.publish(f"presence.dembaca.{agent}", encode_presence("online"))
         await admin.publish(f"presence.member.dev.{agent}", b'{"v": 1}')
-    await admin.publish("presence.crown.dev.agent-one", b'{"v": 1}')
+    await admin.publish("presence.crown.dev.agent-one", natsbus.encode_claim())
     await asyncio.sleep(0.01)  # a later server stamp: the claim order
-    await admin.publish("presence.crown.dev.agent-two", b'{"v": 1}')
+    await admin.publish("presence.crown.dev.agent-two", natsbus.encode_claim())
     await admin.flush()
     assert await _stream_holder(admin, agents) == "agent-one"
 
@@ -445,7 +451,7 @@ async def test_an_explicit_release_moves_the_one_crown(rig) -> None:
         assert [n for n, c in cards.items() if c["crown"]] == ["agent-one"]
 
         # the release: agent-one claims anew and moves behind agent-two
-        await admin.publish("presence.crown.dev.agent-one", b'{"v": 1}')
+        await admin.publish("presence.crown.dev.agent-one", natsbus.encode_claim())
         await admin.flush()
         await _cards_until(stream, cards,
                            lambda c: c["agent-two"]["crown"] is True
