@@ -294,6 +294,69 @@ There is no `props`: a decoder refuses a `<bus>.hu` body that carries one, an
 unknown or duplicate key, an unknown kind or a malformed id. Edits and deletes are not
 carried.
 
+## Over NATS: the console's asks and STATS lines
+
+Specified for the operator console's stage 1, not built
+([arc42 §6.43](arc42/06-runtime-view.md#643-the-console-on-the-bus-as-its-operator),
+the addition of 2026-11-25 to
+[ADR-015](arc42/09-architecture-decisions.md#adr-015-operator-web-console)).
+Two records an agent's MCP server publishes under its own NATS name, which
+the console reads through consumers the login service makes for the
+logged-in operator:
+
+```
+<presence>.ask.<home>.<name>.<ask>   ask: the ask's Mattermost post id; PRESENCE, one per subject
+<stats>.<name>                       a STATS part; stream STATS, 30 days
+```
+
+An agent may publish only under its own name, and an ask record only in
+the home of its hello; NATS refuses anything else. A person's credential
+publishes nothing. An ask record, open and ended:
+
+```json
+{"v": 1, "kind": "approval", "state": "open", "human": "dembaca",
+ "title": "Merge PR 118 after the review", "asked": 1764061200,
+ "answered": false, "mm": "8xqk3b1zwtrd5mfy6nqpe4hc1o",
+ "iat": 1764061800, "exp": 1764063600}
+{"v": 1, "kind": "question", "state": "ended", "human": "dembaca",
+ "title": "Which branch holds the fix?", "asked": 1764050000,
+ "answered": true, "mm": "3hq9t1c6pzbuxk8e7wj2r5dn4a",
+ "iat": 1764062000, "exp": 1764063800}
+```
+
+| Field | Required | Meaning |
+|-------|----------|---------|
+| `v` | yes | Format version, 1 |
+| `kind` | yes | `approval` or `question`, as `ask_human` set it |
+| `state` | yes | `open`, or `ended` once at `resolve_ask` or the agent's bye |
+| `human` | yes | The asked human's name; "for me" when it is the operator's |
+| `title` | yes | The ask's title line, at most 200 characters; never its context, recommendation or answer |
+| `asked` | yes | The ask's server time (Unix seconds); after 24 h a yes approves nothing |
+| `answered` | yes | The asking server saw a first answer by a trusted human |
+| `mm` | yes | The ask's Mattermost post id, the last token of the subject |
+| `iat` | yes | When this record was published (Unix seconds) |
+| `exp` | yes | 30 minutes after `iat`; a record past it is not shown |
+
+No other key, no `props`, no duplicate key. A `STATS` part on NATS is the
+same JSON object the stats channel's line carries after `STATS `
+([arc42 §6.9](arc42/06-runtime-view.md#69-measuring-the-coordination-overhead)),
+at most 8 KiB, for example:
+
+```json
+{"v": "0.101.0", "sid": "3f9a1c2b7d4e", "part": 2, "rt": "claude-code",
+ "kind": "session", "min": 1440, "turns": 31, "turns_timed": 31,
+ "turn_sec": 5400, "turn_max_sec": 900, "wakes": {"push": 12},
+ "tools": {"post_message": 9, "wait_for_events": 4}, "posts": [9, 4100],
+ "asks": 2, "asks_answered": 2, "ask_wait_sec": 1260, "crown_sec": 0,
+ "tok": {"req": 120, "bus_req": 18, "fixed": 21000, "all": {"in": 1200, "out": 900}}}
+```
+
+Strings appear only in `v` (a version), `sid` (hex), `rt` (a harness word)
+and `kind` (`session` or `autonomous`); every other value is a number, a
+boolean, a list of numbers, or an object of short keys whose values are
+numbers or such objects. A line that breaks this, or carries a duplicate
+key, is dropped whole: no text, name or link rides along.
+
 ## Polling vs WebSocket
 
 - **CLI poll** (`mm-agent-poll.sh`) — JSON lines from the session's MCP server (`GET /v1/posts?since=`).
