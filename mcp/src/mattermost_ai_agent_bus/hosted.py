@@ -20,7 +20,7 @@ A relay opens with one handshake line, ``{"key": …, "session": {…}, "pid": �
 "ppid": …}``; its process ids only name the relay that holds the one slot in
 the refusal of a second (RT-6.18 step 6). The
 session values are names only (NAMING): the Claude Code session id, project
-directory and working directory, the channel flag, CLAUDECODE. They are
+directory, MM_WORKSPACE and working directory, the channel flag, CLAUDECODE. They are
 checked for type and length and never opened, resolved or entered on the host;
 HOME, XDG_STATE_HOME and anything else the relay sends are ignored. The host
 answers ``{"ok": true}`` or ``{"ok": false, "error": …}``. A closed relay
@@ -96,9 +96,13 @@ _HARNESS = re.compile(r"[a-z0-9][a-z0-9._-]{0,31}")
 _no_relay_since: float | None = None
 
 # What a relay may tell the host: names only, with their longest length.
-NAMING = {"CLAUDE_CODE_SESSION_ID": 256, "CLAUDE_PROJECT_DIR": 4096, "cwd": 4096,
-          "MM_CHANNEL_PUSH": 1, "CLAUDECODE": 16}
-_NAMING_PATHS = ("CLAUDE_PROJECT_DIR", "cwd")
+NAMING = {"CLAUDE_CODE_SESSION_ID": 256, "CLAUDE_PROJECT_DIR": 4096, "MM_WORKSPACE": 4096,
+          "cwd": 4096, "MM_CHANNEL_PUSH": 1, "CLAUDECODE": 16}
+_NAMING_PATHS = ("CLAUDE_PROJECT_DIR", "MM_WORKSPACE", "cwd")
+# The session values that say which agent a relay speaks for (RT-6.18 step 6):
+# a relay that differs from the first one in these is refused. The working
+# directory counts only when neither directory is named.
+_IDENTITY = ("CLAUDE_CODE_SESSION_ID", "CLAUDE_PROJECT_DIR", "MM_WORKSPACE")
 
 # What preStart may hand the host process on stdin besides the key: the bus
 # settings (MM_*, MATTERMOST_*), the corral session's names and the network
@@ -162,7 +166,7 @@ def session_values(environ: Mapping[str, str], cwd: str | None = None) -> dict[s
     """What the relay tells the host about this session: names only (NAMING)."""
     from . import channel
 
-    out = {k: environ[k] for k in ("CLAUDE_CODE_SESSION_ID", "CLAUDE_PROJECT_DIR", "CLAUDECODE")
+    out = {k: environ[k] for k in ("CLAUDE_CODE_SESSION_ID", "CLAUDE_PROJECT_DIR", "MM_WORKSPACE", "CLAUDECODE")
            if environ.get(k)}
     # Claude Code is among the relay's ancestors, not the host's (RT-6.12).
     out["MM_CHANNEL_PUSH"] = "1" if channel.enabled() else "0"
@@ -463,6 +467,30 @@ def relay_holder(hello: Mapping[str, Any], since: float) -> str:
 
 
 
+def identity(values: Mapping[str, str]) -> dict[str, str]:
+    """The session values that name the agent a relay speaks for (RT-6.18
+    step 6): the session id and the named directories, the working directory
+    only when no directory is named. Directories as names, normalised."""
+    out = {k: values[k] for k in _IDENTITY if values.get(k)}
+    if "CLAUDE_PROJECT_DIR" not in out and "MM_WORKSPACE" not in out and values.get("cwd"):
+        out["cwd"] = values["cwd"]
+    return {k: v if k == "CLAUDE_CODE_SESSION_ID" else os.path.normpath(v) for k, v in out.items()}
+
+
+def identity_mismatch(first: Mapping[str, str], other: Mapping[str, str]) -> str:
+    """Why a relay is refused for another agent's session values, or "" when
+    it speaks for the same one (RT-6.18 step 6). Names the differing keys,
+    never their values: the session id is the sandbox's, not for the log."""
+    a, b = identity(first), identity(other)
+    keys = sorted(k for k in a.keys() | b.keys() if a.get(k) != b.get(k))
+    if not keys:
+        return ""
+    return (f"this relay's session values differ from the first relay's ({', '.join(keys)}): "
+            "the host serves one agent with one bot, so another session's relay would post "
+            "and answer as this bot (RT-6.18 step 6). Start the bus's MCP server from the "
+            "session it was started for")
+
+
 async def _answer(stream: Any, ok: bool, error: str = "") -> None:
     body: dict[str, Any] = {"ok": True} if ok else {"ok": False, "error": error}
     with suppress(anyio.BrokenResourceError, anyio.ClosedResourceError, OSError):
@@ -472,7 +500,8 @@ async def _answer(stream: Any, ok: bool, error: str = "") -> None:
 class Host:
     """Takes relay connections: each after a handshake with the session key,
     one at a time. The server is loaded on the first one, after its session
-    values are applied; later ones keep those."""
+    values are applied; later ones must speak for the same agent (session id
+    and directories, RT-6.18 step 6) and keep those."""
 
     def __init__(self, key: str, *, client: BusClient | None = None, serve: Serve | None = None,
                  apply: Callable[[Mapping[str, str]], None] = apply_session) -> None:
@@ -492,7 +521,9 @@ class Host:
             self.session = session
             note_claude_session(session)
         elif session != self.session:
-            log.info("relay: its session values differ from the first relay's; the first stay")
+            # Same agent (handle refused any other, RT-6.18 step 6): the channel
+            # flag or working directory may differ; the first relay's stay.
+            log.info("relay: its channel flag or working directory differ from the first relay's; the first stay")
         if self._serve is None:
             self._serve = _load_server(self.client)
         return self._serve
@@ -524,6 +555,11 @@ class Host:
             except ValueError as exc:
                 log.warning("relay refused: %s", exc)
                 await _answer(stream, False, str(exc))
+                return
+            if self.session is not None and (why := identity_mismatch(self.session, session)):
+                # One bot speaks for one agent (#119): never another session's relay.
+                log.warning("relay refused: %s", why)
+                await _answer(stream, False, why)
                 return
             if self.active:
                 why = (f"another relay is connected ({self._holder}): the host serves one per session, "

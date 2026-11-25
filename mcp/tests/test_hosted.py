@@ -194,6 +194,98 @@ async def test_refusal_names_the_relay_that_holds_the_slot(tmp_path):
     assert hosted.relay_holder({"pid": 2**31, "ppid": 3}, 0).startswith("says parent 3; since ")
 
 
+FIRST = {"CLAUDE_CODE_SESSION_ID": "s1", "CLAUDE_PROJECT_DIR": "/p", "MM_WORKSPACE": "/p",
+         "cwd": "/p", "MM_CHANNEL_PUSH": "0"}
+
+
+async def _refused_after_first(tmp_path, other: dict) -> tuple[hosted.Host, list, str]:
+    """A first relay with FIRST, closed; then one with `other`: its answer."""
+    applied: list = []
+    host = hosted.Host(KEY, serve=_echo, apply=applied.append)
+    answers: list = []
+
+    async def body(ready):
+        first, answer = await _hello(ready["port"], session=FIRST)
+        assert answer == {"ok": True}
+        await first.stream.aclose()
+        with anyio.fail_after(5):
+            while host.active:
+                await anyio.sleep(0.01)
+        second, answer = await _hello(ready["port"], session=other)
+        answers.append(answer)
+        await second.stream.aclose()
+
+    await _with_host(host, tmp_path, body, with_services=False)
+    return host, applied, answers[0]
+
+
+async def test_a_relay_of_the_same_agent_is_served(tmp_path):
+    """RT-6.18 step 6 (#119): a reconnect with the same session id and
+    directories is served; another channel flag or a trailing slash refuses nothing."""
+    same = {**FIRST, "MM_WORKSPACE": "/p/", "MM_CHANNEL_PUSH": "1", "cwd": "/elsewhere"}
+    host, applied, answer = await _refused_after_first(tmp_path, same)
+    assert answer == {"ok": True}
+    assert host.served == 2 and applied == [FIRST] and host.session == FIRST
+
+
+@pytest.mark.parametrize("other, keys", [
+    ({**FIRST, "CLAUDE_CODE_SESSION_ID": "s2"}, "CLAUDE_CODE_SESSION_ID"),
+    ({**FIRST, "MM_WORKSPACE": "/q"}, "MM_WORKSPACE"),
+    ({k: v for k, v in FIRST.items() if k != "MM_WORKSPACE"}, "MM_WORKSPACE"),
+    ({**FIRST, "CLAUDE_PROJECT_DIR": "/q", "MM_WORKSPACE": "/q"}, "CLAUDE_PROJECT_DIR, MM_WORKSPACE"),
+])
+async def test_a_relay_of_another_agent_is_refused(tmp_path, other, keys):
+    """RT-6.18 step 6 (#119): one bot speaks for one agent. A relay whose session
+    id or workspace differs from the first relay's is refused, naming the keys
+    but not their values, and the first relay's names stay."""
+    host, applied, answer = await _refused_after_first(tmp_path, other)
+    assert answer["ok"] is False
+    assert answer["error"].startswith(
+        f"this relay's session values differ from the first relay's ({keys}): "
+        "the host serves one agent with one bot")
+    assert "RT-6.18 step 6" in answer["error"]
+    assert "s2" not in answer["error"] and "/q" not in answer["error"]
+    assert host.served == 1 and applied == [FIRST] and host.session == FIRST
+
+
+async def test_another_agents_relay_is_refused_while_the_first_is_connected(tmp_path):
+    """RT-6.18 step 6 (#119): the mismatch is the refusal's reason, not the busy slot."""
+    host = hosted.Host(KEY, serve=_echo, apply=lambda v: None)
+
+    async def body(ready):
+        first, answer = await _hello(ready["port"], session=FIRST)
+        assert answer["ok"]
+        second, answer = await _hello(ready["port"], session={**FIRST, "CLAUDE_CODE_SESSION_ID": "s2"})
+        assert answer["ok"] is False and answer["error"].startswith("this relay's session values differ")
+        await first.stream.aclose()
+        await second.stream.aclose()
+
+    await _with_host(host, tmp_path, body, with_services=False)
+
+
+def test_identity_uses_the_working_directory_only_without_a_named_one():
+    """RT-6.18 step 6: with no directory named, the working directory tells agents apart."""
+    assert hosted.identity_mismatch({"cwd": "/a"}, {"cwd": "/b"}).startswith(
+        "this relay's session values differ from the first relay's (cwd)")
+    assert hosted.identity_mismatch({"cwd": "/a"}, {"cwd": "/a/"}) == ""
+    assert hosted.identity_mismatch({"CLAUDE_PROJECT_DIR": "/p", "cwd": "/a"},
+                                    {"CLAUDE_PROJECT_DIR": "/p", "cwd": "/b"}) == ""
+
+
+def test_the_relays_refusal_for_another_agent_reaches_its_client(monkeypatch, capsys):
+    """RT-6.18 step 6 and error handling (#119): the relay sends MM_WORKSPACE,
+    and the host's reason for refusing it reaches the client on stderr, exit 1."""
+    seen: list = []
+    why = ("this relay's session values differ from the first relay's (MM_WORKSPACE): "
+           "the host serves one agent with one bot")
+    port = _fake_host({"ok": False, "error": why}, seen)
+    t, result, *_ = _relay(port, monkeypatch, MM_WORKSPACE="/w")
+    t.join(10)
+    assert result == [1]
+    assert seen[0]["session"]["MM_WORKSPACE"] == "/w"
+    assert f"refused the relay: {why}" in capsys.readouterr().err
+
+
 def test_apply_session_sets_names_and_never_changes_directory(tmp_path, monkeypatch):
     """RT-6.18 step 4: names for the server's files; the host's cwd stays."""
     env = {"HOME": "/host/home", "XDG_STATE_HOME": "/host/state", "CLAUDE_PROJECT_DIR": "/old",
