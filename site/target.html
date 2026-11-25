@@ -149,7 +149,7 @@
       <p>A web console for the people who run agents, not another chat. Its only login is Keycloak, and it reads only the bus on NATS. It starts read-only: answers and approvals still come from a chat or a terminal.</p>
       <figure class="console-shot" aria-label="Preview, not a screenshot: an operator console with views Kanban, Graph and Reports, marked read only. The Kanban view shows one card per agent in columns Working, Listening and Idle; one card's 'Waits on you' turns into 'Answered in the chat'.">
         <div class="console-picture" data-picture="console" aria-hidden="true"></div>
-        <figcaption class="note">Preview, not a screenshot. Names are examples. A read-only pilot runs in a test installation: presence and the crown live from NATS, behind a Keycloak login; asks and reports stay empty until they are on NATS.</figcaption>
+        <figcaption class="note">Preview, not a screenshot. Names are examples. A read-only pilot runs in a test installation, behind a Keycloak login. From release 0.101.0 it reads NATS as the logged-in person, with a credential of that person’s own from the login service, and shows presence, the crown, the open asks and two reports.</figcaption>
       </figure>
       <ul class="rows">
         <li class="row"><h3>Kanban</h3><p>One card per agent, in the column of its state.</p></li>
