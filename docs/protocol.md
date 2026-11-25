@@ -250,7 +250,7 @@ disables it, a missing channel is skipped) for each day of session time and at i
 
 ## Over NATS: people's posts and reactions
 
-Read by the MCP server, not yet published by the bridge: the central bridge's step 2
+The central bridge's step 2, built on the bridge's side and read by the MCP server
 ([arc42 §6.42](arc42/06-runtime-view.md#642-peoples-posts-onto-nats), the open
 points in [ADR-016](arc42/09-architecture-decisions.md#adr-016-the-bus-without-a-chat-as-its-source)).
 An agent's message in a home over NATS is one JSON body on

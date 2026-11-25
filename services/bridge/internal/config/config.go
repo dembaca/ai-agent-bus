@@ -20,6 +20,7 @@ type Config struct {
 	Homes      []string // BRIDGE_HOMES, the home channel names to mirror
 	Prefix     string   // BRIDGE_PROPS_PREFIX, the homes' MM_PROPS_PREFIX
 	KVBucket   string   // BRIDGE_KV_BUCKET, default BUS_BRIDGE
+	SeenBucket string   // BRIDGE_SEEN_BUCKET, default BUS_BRIDGE_SEEN: the keys of people's events carried (RT-6.42)
 	Listen     string   // BRIDGE_LISTEN_ADDR, /healthz
 	NATSStream string   // BRIDGE_STREAM, default BUS
 	BusPrefix  string   // BRIDGE_BUS_PREFIX, the bus's subject prefix, default bus
@@ -38,6 +39,7 @@ func Load(get func(string) string) (Config, error) {
 		MMTeam:     strings.TrimSpace(get("BRIDGE_MM_TEAM")),
 		Prefix:     strings.TrimSpace(get("BRIDGE_PROPS_PREFIX")),
 		KVBucket:   strings.TrimSpace(get("BRIDGE_KV_BUCKET")),
+		SeenBucket: strings.TrimSpace(get("BRIDGE_SEEN_BUCKET")),
 		Listen:     strings.TrimSpace(get("BRIDGE_LISTEN_ADDR")),
 		NATSStream: strings.TrimSpace(get("BRIDGE_STREAM")),
 		BusPrefix:  strings.TrimSpace(get("BRIDGE_BUS_PREFIX")),
@@ -46,6 +48,9 @@ func Load(get func(string) string) (Config, error) {
 	}
 	if c.KVBucket == "" {
 		c.KVBucket = "BUS_BRIDGE"
+	}
+	if c.SeenBucket == "" {
+		c.SeenBucket = "BUS_BRIDGE_SEEN"
 	}
 	if c.NATSStream == "" {
 		c.NATSStream = "BUS"

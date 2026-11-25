@@ -82,7 +82,7 @@ cannot be used end to end until both change.
 | `AUTH_ACCOUNT` | — | the tenant's account the agents land in |
 | `AUTH_LOBBY` | unset | the lobby's channel name |
 | `AUTH_SUBJECT_PREFIX`, `AUTH_PRESENCE_PREFIX`, `AUTH_NAME_PREFIX` | `bus`, `presence`, `agent-` | subject prefix of channels and direct messages, of presence and crown claims (must differ, and neither may be `deliver`), the start of agent names |
-| `AUTH_JS_SEED_FILE`, `AUTH_JS_URL` | —, `AUTH_NATS_URL` | file with the user nkey seed of the service's own user in the tenant account, the only one with JetStream API rights, and its server; required with `AUTH_NATS_URL`: the service makes the streams and every agent's consumers (RT-6.35) and does not start without them. That user needs only (`TestTheDocumentedMinimalRightsSuffice`): publish `$JS.API.STREAM.CREATE.<S>`, `$JS.API.STREAM.INFO.<S>`, `$JS.API.CONSUMER.*.<S>` and `$JS.API.CONSUMER.*.<S>.>` for `<S>` = `BUS`, `PRESENCE`; for the channel directory (RT-6.39) `$JS.API.INFO`, `$JS.API.STREAM.CREATE.KV_BUS_DIRECTORY`, `$JS.API.STREAM.INFO.KV_BUS_DIRECTORY`, `$JS.API.DIRECT.GET.KV_BUS_DIRECTORY.>` and `$KV.BUS_DIRECTORY.>` (with another `AUTH_DIRECTORY_BUCKET`, its name in place of `BUS_DIRECTORY`); for the attestations (RT-6.41) `$JS.API.STREAM.MSG.GET.PRESENCE` and `<presence>.attest.*.v1`; subscribe `_INBOX.>` |
+| `AUTH_JS_SEED_FILE`, `AUTH_JS_URL` | —, `AUTH_NATS_URL` | file with the user nkey seed of the service's own user in the tenant account, the only one with JetStream API rights, and its server; required with `AUTH_NATS_URL`: the service makes the streams and every agent's consumers (RT-6.35) and does not start without them. That user needs only (`TestTheDocumentedMinimalRightsSuffice`): publish `$JS.API.STREAM.CREATE.<S>`, `$JS.API.STREAM.INFO.<S>`, `$JS.API.CONSUMER.*.<S>` and `$JS.API.CONSUMER.*.<S>.>` for `<S>` = `BUS`, `PRESENCE`; for the channel directory (RT-6.39) `$JS.API.INFO`, `$JS.API.STREAM.CREATE.KV_BUS_DIRECTORY`, `$JS.API.STREAM.INFO.KV_BUS_DIRECTORY`, `$JS.API.DIRECT.GET.KV_BUS_DIRECTORY.>` and `$KV.BUS_DIRECTORY.>` (with another `AUTH_DIRECTORY_BUCKET`, its name in place of `BUS_DIRECTORY`); for the attestations (RT-6.41) `$JS.API.STREAM.MSG.GET.PRESENCE` and `<presence>.attest.*.v1`; for the account records of people (RT-6.42) `<presence>.account.mattermost.*.v1`; subscribe `_INBOX.>` |
 | `AUTH_REQUEST_TIMEOUT` | `1.5s` | bound of one request (token check, chat lookups, answer), at most 10 s; keep it below the server's callout timeout |
 | `AUTH_BRAKE_FILE` | unset | the emergency brake (below) |
 | `AUTH_KEYCLOAK_ISSUER`, `AUTH_KEYCLOAK_JWKS_URL`, `AUTH_KEYCLOAK_CLIENT_ID` | — | the realm and the bus's client |
@@ -203,6 +203,8 @@ and a *group mapper* that writes the user's groups into the configured claim.
     agents. Chat usernames should only be changeable by admins.
 
 ## Auth callout (`internal/callout`)
+
+Exactly one instance runs: the account record's lock per `sub` and the consumers' lock per agent live in the process, and the callout's queue group (`authd`) would let a second instance start silently and share the logins; a second instance would need a compare-and-set spanning instances (on the guard's key-value revision or JetStream's expected last sequence), which is not built.
 
 The NATS server sends every client that is not one of its `auth_users` to
 `$SYS.REQ.USER.AUTH`; the service answers with a user JWT or a refusal.

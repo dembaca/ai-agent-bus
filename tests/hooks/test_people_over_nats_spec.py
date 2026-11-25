@@ -1,8 +1,8 @@
 """The v1 bodies of people's posts onto NATS (RT-6.42), as docs/protocol.md shows them.
 
-The MCP server's reader is built and tested in mcp/tests/test_people_over_nats.py;
-the bridge's step 2 brings a Go test beside the bridge. Until both stand, this one
-pins the contract the code packages share,
+RT-6.42 is built in all three parts: the login service (services/auth), the
+bridge (services/bridge/internal/inbound and its Go tests) and the MCP server's
+reader (mcp/tests/test_people_over_nats.py). This one pins the contract they share,
 so an edit of the examples that breaks a rule of the spec fails here: every body
 is format v1 with a known kind, carries the Mattermost post id, has no `props`
 and only the fields its kind allows, the field table lists exactly

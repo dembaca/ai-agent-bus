@@ -22,6 +22,7 @@ import (
 	"github.com/nats-io/nkeys"
 
 	"github.com/dembaca/ai-agent-bus/services/auth/internal/consumers"
+	"github.com/dembaca/ai-agent-bus/services/auth/internal/testrealm"
 	"github.com/dembaca/ai-agent-bus/services/auth/internal/token"
 )
 
@@ -79,7 +80,7 @@ func (c *cl) login(owner string, host nkeys.KeyPair, hello Hello) (*agent, error
 }
 
 func (c *cl) setup() {
-	c.chat.Users["bob"] = token.User{Username: "bob", AuthKnown: true, AuthService: token.OpenIDService, AuthData: "sub-bob"}
+	c.chat.Users["bob"] = token.User{Username: "bob", ID: testrealm.ChatID("bob"), AuthKnown: true, AuthService: token.OpenIDService, AuthData: "sub-bob"}
 	c.chat.Channels["bob"] = []string{"home", "secret"}
 }
 
@@ -266,7 +267,9 @@ func TestALoginMakesTheConsumers(t *testing.T) {
 		{"BUS", "_ch_home", "ch.home", []string{"bus.ch.home.*"}},
 		{"BUS", "_ch_secret", "ch.secret", []string{"bus.ch.secret.*"}},
 		{"BUS", "_dm", "dm", []string{"bus.dm." + bob.name + ".*"}},
-		{"PRESENCE", "_presence", "presence", []string{"presence.*.*", "presence.attest.*.v1", "presence.crown.home.*", "presence.member.home.*", "presence.crown.secret.*", "presence.member.secret.*"}},
+		{"BUS", "_hu_home", "hu.home", []string{"bus.hu.home.*"}},
+		{"BUS", "_hu_secret", "hu.secret", []string{"bus.hu.secret.*"}},
+		{"PRESENCE", "_presence", "presence", []string{"presence.*.*", "presence.attest.*.v1", "presence.account.mattermost.*.v1", "presence.crown.home.*", "presence.member.home.*", "presence.bridge.home.v1", "presence.crown.secret.*", "presence.member.secret.*", "presence.bridge.secret.v1"}},
 	} {
 		ci := c.info(w.stream, bob.name+w.name)
 		if ci == nil {
@@ -289,7 +292,7 @@ func TestALoginMakesTheConsumers(t *testing.T) {
 			t.Errorf("%s delivers %v", w.name, cfg.DeliverPolicy)
 		}
 	}
-	if n := len(c.consumersOf(bob)); n != 4 {
+	if n := len(c.consumersOf(bob)); n != 6 {
 		t.Errorf("%d consumers: %v", n, c.consumersOf(bob))
 	}
 }
@@ -551,12 +554,12 @@ func TestAByeOnTheOwnPresenceSubjectRemovesTheOwnConsumers(t *testing.T) {
 	}
 	say(alice, alice.presence(), `{"status":"online"}`)
 	time.Sleep(300 * time.Millisecond)
-	if len(c.consumersOf(alice)) != 3 {
+	if len(c.consumersOf(alice)) != 4 {
 		t.Fatal("a heartbeat removed consumers")
 	}
 	say(bob, bob.presence(), `{"status":"bye"}`)
 	waitFor(t, "bob's consumers removed", func() bool { return len(c.consumersOf(bob)) == 0 })
-	if n := len(c.consumersOf(alice)); n != 3 {
+	if n := len(c.consumersOf(alice)); n != 4 {
 		t.Errorf("bob's bye touched alice's consumers: %d left", n)
 	}
 	// Alice cannot say bye as bob: the subject is hers alone.
@@ -588,13 +591,13 @@ func TestALateByeLeavesANewLoginsConsumers(t *testing.T) {
 	if _, err := c.login("alice", host, Hello{Home: "home"}); err != nil {
 		t.Fatal(err)
 	}
-	if n := len(c.consumersOf(alice)); n != 3 {
+	if n := len(c.consumersOf(alice)); n != 4 {
 		t.Fatalf("after the new login: %d consumers", n)
 	}
 	if err := c.mgr.RemoveBefore(context.Background(), alice.name, bye); err != nil {
 		t.Fatal(err)
 	}
-	if n := len(c.consumersOf(alice)); n != 3 {
+	if n := len(c.consumersOf(alice)); n != 4 {
 		t.Errorf("the late bye removed the new login's consumers: %d left", n)
 	}
 }
@@ -622,12 +625,12 @@ func TestTheBrakeRemovesTheStoppedOwnersConsumers(t *testing.T) {
 		_ = os.Chtimes(c.brake, later, later)
 	}
 	time.Sleep(200 * time.Millisecond)
-	if len(c.consumersOf(alice)) != 3 || len(c.consumersOf(bob)) != 3 {
+	if len(c.consumersOf(alice)) != 4 || len(c.consumersOf(bob)) != 4 {
 		t.Fatal("consumers removed without the brake")
 	}
 	set("alice\n", 10*time.Second)
 	waitFor(t, "alice's consumers removed", func() bool { return len(c.consumersOf(alice)) == 0 })
-	if len(c.consumersOf(bob)) != 3 {
+	if len(c.consumersOf(bob)) != 4 {
 		t.Errorf("bob's consumers touched: %v", c.consumersOf(bob))
 	}
 	set("*\n", 20*time.Second)
@@ -642,7 +645,7 @@ func TestRemoveOwner(t *testing.T) {
 	if err := c.mgr.RemoveOwner(ctx5(t), "Alice"); err != nil {
 		t.Fatal(err)
 	}
-	if len(c.consumersOf(alice)) != 0 || len(c.consumersOf(bob)) != 3 {
+	if len(c.consumersOf(alice)) != 0 || len(c.consumersOf(bob)) != 4 {
 		t.Errorf("alice %v, bob %v", c.consumersOf(alice), c.consumersOf(bob))
 	}
 }
@@ -750,7 +753,7 @@ func TestAByeHandledAfterAReloginLeavesTheConsumers(t *testing.T) {
 	}
 	release()
 	waitFor(t, "the late bye is handled", func() bool { return strings.Contains(c.logs.String(), "logged in again since") })
-	if n := len(c.consumersOf(alice)); n != 3 {
+	if n := len(c.consumersOf(alice)); n != 4 {
 		t.Errorf("the late bye removed the new login's consumers: %d left", n)
 	}
 }
@@ -823,8 +826,8 @@ func TestAgentsWhoseNamesShareAPrefixDoNotShareConsumers(t *testing.T) {
 	if c.info("BUS", "x_y_ch_home") == nil || c.info("BUS", "x_y_dm") == nil || c.info("PRESENCE", "x_y_presence") == nil {
 		t.Errorf("removing x removed x_y's consumers (%d left)", count("x_y_"))
 	}
-	if count("x_") != 3 {
-		t.Errorf("x left %d consumers beside x_y's three", count("x_")-3)
+	if count("x_") != 4 {
+		t.Errorf("x left %d consumers beside x_y's four", count("x_")-4)
 	}
 	// The fallback, with no presence consumer to read, goes by metadata too:
 	// a consumer of x_y's name that is not x_y's own is not deleted.
@@ -888,7 +891,7 @@ func TestAByeWithManyOtherConsumersRemovesOnlyTheLeaversAndListsNothing(t *testi
 			}
 		}
 	}
-	if left != 30*3 {
+	if left != 30*4 {
 		t.Errorf("%d consumers of the others left, want %d", left, 90)
 	}
 }
@@ -926,8 +929,19 @@ func TestTheDocumentedMinimalRightsSuffice(t *testing.T) {
 	if err != nil {
 		t.Fatalf("login: %v", err)
 	}
-	if n := len(c.consumersOf(a)); n != 3 {
+	if n := len(c.consumersOf(a)); n != 4 {
 		t.Fatalf("%d consumers", n)
+	}
+	// The account record (RT-6.42) needs only its own publish right: a login of
+	// a proven account with the real stream's read-back, under these rights.
+	l.svc.SetAttester(NATSAttester{NC: nc, Stream: consumers.PresenceStream})
+	l.svc.SetAnchors(guardedAnchor("alice"))
+	if _, err := c.login("alice", newHost(), Hello{Home: "home"}); err != nil {
+		t.Fatalf("login with an account record: %v", err)
+	}
+	if m, err := c.js.GetLastMsg("PRESENCE", "presence.account.mattermost."+testrealm.ChatID("alice")+".v1"); err != nil ||
+		!strings.Contains(string(m.Data), `"account":"`+testrealm.ChatID("alice")+`"`) {
+		t.Fatalf("the account record is not there: %v", err)
 	}
 	// History needs no more rights: a login with since reads only the
 	// stream's info, never a message.

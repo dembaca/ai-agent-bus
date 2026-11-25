@@ -172,6 +172,7 @@ func (c *Client) User(ctx context.Context, username string) (token.User, error) 
 	}
 	tu := token.User{
 		Username:    u.Username,
+		ID:          u.ID,
 		Bot:         u.IsBot,
 		Guest:       hasRole(u.Roles, "system_guest"),
 		Deactivated: u.DeleteAt != 0,

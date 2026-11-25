@@ -128,6 +128,19 @@ type NATSAttester struct {
 // bytes as the last message on its subject. Until then, or past ctx, the
 // login is refused: a credential without its attestation would look whole.
 func (n NATSAttester) Publish(ctx context.Context, subject string, body []byte) error {
+	return n.publish(ctx, subject, body, func(stored []byte) bool { return bytes.Equal(stored, body) })
+}
+
+// PublishRecord is Publish for a subject several logins may write (an account
+// record: one per account, not per agent): it counts as written once the
+// stream's last message on the subject is these bytes or one accept takes as
+// at least as good, so a second login's record landing first does not make
+// this one wait out its deadline (RecordPublisher).
+func (n NATSAttester) PublishRecord(ctx context.Context, subject string, body []byte, accept func(stored []byte) bool) error {
+	return n.publish(ctx, subject, body, func(stored []byte) bool { return bytes.Equal(stored, body) || accept(stored) })
+}
+
+func (n NATSAttester) publish(ctx context.Context, subject string, body []byte, ok func(stored []byte) bool) error {
 	if err := n.NC.Publish(subject, body); err != nil {
 		return err
 	}
@@ -152,7 +165,7 @@ func (n NATSAttester) Publish(ctx context.Context, subject string, body []byte) 
 		if err := json.Unmarshal(m.Data, &got); err != nil {
 			return fmt.Errorf("reading it back: %w", err)
 		}
-		if got.Message != nil && bytes.Equal(got.Message.Data, body) {
+		if got.Message != nil && ok(got.Message.Data) {
 			return nil
 		}
 		if got.Error != nil && got.Error.Code != 404 {

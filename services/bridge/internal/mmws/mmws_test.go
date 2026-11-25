@@ -617,3 +617,26 @@ func (h *recorder) has(s string) bool {
 	}
 	return false
 }
+
+// Given a socket that drops after its handshake and one that stays, the
+// markers number the connections and Up names the one that is up: the
+// bridge's signal goes out only while the socket it caught up on is the
+// live one (RT-6.42 step 7).
+func TestUpNamesTheLiveConnection(t *testing.T) {
+	f := newFake(t)
+	f.scripts = []func(*websocket.Conn){authOK(), authOK(still)}
+	r := run(t, f)
+	if ev, ok := next(t, r).(*Reconnected); !ok || ev.Conn != 1 {
+		t.Fatalf("first marker %+v", ev)
+	}
+	if ev, ok := next(t, r).(*Reconnected); !ok || ev.Conn != 2 {
+		t.Fatalf("second marker %+v", ev)
+	}
+	deadline := time.Now().Add(2 * time.Second)
+	for r.Up() != 2 {
+		if time.Now().After(deadline) {
+			t.Fatalf("Up %d, want 2", r.Up())
+		}
+		time.Sleep(5 * time.Millisecond)
+	}
+}
