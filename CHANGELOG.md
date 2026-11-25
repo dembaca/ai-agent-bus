@@ -5,15 +5,25 @@ before 0.5.0 are described in the git history.
 
 ## Unreleased
 
+- **The registrar's code moves into the bridge's module** (ADR-016, step 3 of
+  "all of Mattermost in one service"). The core and Mattermost packages of
+  `github.com/dembaca/mattermost-agent-registrar` (main at `c984d19`) are
+  imported into `services/bridge/internal/registrar/` with their tests, their
+  import paths adjusted to the bridge's module; the packages need no new
+  dependency. Nothing is wired: `cmd/bridged`, the routes, the settings and
+  every behaviour are unchanged, and `go test ./...` in `services/bridge`
+  stays green. The arc42 building-block view says the registrar package is
+  imported but not yet active.
+
 ### Docs
 
 - **The central bridge's step 2 is specified** (ADR-016, RT-6.42): people's
   posts and reactions in a bound Mattermost channel reach NATS through the
   bridge on `bus.hu.<home>.<anchor>`, vouched for by the bridge's publish
-  right; the v1 bodies are in `docs/protocol.md`. Eighteen open points wait for
-  the owner as recommendations, and the risk of the bridge as the only voucher
-  for people is recorded (RISK-21). Nothing is built; the deployment view now says
-  the bridge's first step runs in the lab.
+  right; the v1 bodies are in `docs/protocol.md`. The owner accepted the
+  eighteen points as recommended, and the risk of the bridge as the only
+  voucher for people is recorded (RISK-21). The bridge's side is built (see
+  Added); the deployment view now says the bridge's first step runs in the lab.
 
 ### Breaking
 
