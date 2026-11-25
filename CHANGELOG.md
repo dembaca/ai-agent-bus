@@ -17,6 +17,33 @@ before 0.5.0 are described in the git history.
   unaffected. The static-text budget test measures each session configuration
   on its own and holds the worst one under its bound (#104).
 
+### Added
+
+- **The bridge reads Mattermost: the WebSocket reader `internal/mmws` and
+  two REST methods of `internal/mm` (ADR-016, the bridge's step 2).
+  `mmws` dials Mattermost's WebSocket with the bot
+  token, reconnects with backoff when the socket drops and emits typed
+  events — `Posted`, `Reaction` (added and removed) and a `Reconnected`
+  marker whose `Since` is the greatest event `create_at` it handed out,
+  the catch-up hint (Mattermost's `since` is strict: read from `Since`
+  minus a margin and dedup by key) — and nothing else: whose post is a
+  bot's (a drop) or
+  a person's (carried) stays the caller's decision, so it filters,
+  stores and publishes nowhere. A post comes out with the fields the
+  drop rules read — type, props, the files it carries (`file_ids`'
+  count), the delete mark — and a
+  reaction with the channel it happened in; a quiet socket is taken
+  again by a read deadline (renewed per frame and per ping), the auth
+  reply is found by its `seq_reply` wherever it sits in the stream, and
+  `mm.GetUser` reads a user's `is_bot`, `mm.PostsSince` the channel's
+  posts from a reconnect's hint with `update_at` and `edit_at` (and the
+  delete mark and the props) kept, a body past its 32 MiB cap named
+  `ErrTooLarge` — always for the same caller, never filtered here. Nothing is wired into
+  `bridged` — no publish, no consumer, no configuration, no right beyond
+  what step 1 already holds — so the bridge behaves exactly as before.
+  One new dependency, `gorilla/websocket` (v1.5.3): the WebSocket client,
+  and the fake Mattermost its tests run against.
+
 ## 0.99.0
 
 The operator console's read-only pilot (its server, browser app and image), the
