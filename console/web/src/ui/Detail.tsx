@@ -79,11 +79,12 @@ function FullCard({ card }: { card: AgentCard }) {
   return (
     <table className="detail__table">
       <tbody>
-        <tr><th>name</th><td>{card.name}</td></tr>
+        <tr><th>name</th><td>{card.displayName}</td></tr>
+        <tr><th>id on the bus</th><td>{card.name}</td></tr>
         <tr><th>state</th><td>{card.state}</td></tr>
         <tr><th>home</th><td>{card.home}</td></tr>
         <tr><th>harness · model</th>
-          <td>{HARNESS_LABEL[card.harness]} · {card.model}</td></tr>
+          <td>{card.harness === null ? "n/a" : HARNESS_LABEL[card.harness]} · {card.model || "n/a"}</td></tr>
         <tr><th>role</th>
           <td className="detail__role">
             {card.role}{card.crown && <span className="detail__crown"><Crown size={11} /></span>}
@@ -99,7 +100,7 @@ function FullCard({ card }: { card: AgentCard }) {
         <tr><th>ctx</th><td>{card.ctx === null ? "n/a" : `${card.ctx} %`}</td></tr>
         <tr><th>limits / cost</th><td>{card.limits ?? "n/a"}</td></tr>
         <tr><th>version</th><td>{card.version || "n/a"}</td></tr>
-        <tr><th>task</th><td>{card.task}</td></tr>
+        <tr><th>task</th><td>{card.task || "n/a"}</td></tr>
         <tr><th>HELLO since</th><td>{since(card.helloAt)}</td></tr>
         <tr><th>last post</th>
           <td>

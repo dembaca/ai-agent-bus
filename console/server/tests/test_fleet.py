@@ -126,3 +126,51 @@ def test_attested_owner_names_the_agent() -> None:
     feed(f, (s_att2, d_att2, ack("PRESENCE", "console", 3, 3, 1002.0)))
     (card,) = f.cards()
     assert card["for"] == "dembaca"
+
+
+def test_cards_show_the_bot_name_the_presence_states_not_the_bus_id() -> None:
+    """The console pilot's finding: every card showed the agent's name on the bus
+    (`agent-` and 26 characters of hash) and nobody could match it to
+    coordinator("who"). The presence an MCP server publishes in a NATS home
+    states the bot's username beside its id (natsbus.encode_presence, sent by
+    NatsBus each heartbeat): the card shows it, the bus name stays the key."""
+    from mattermost_ai_agent_bus.natsbus import agent_name, owner_token
+    f = Fleet()
+    one = agent_name("dembaca", "UHOSTONE")
+    two = agent_name("dembaca", "UHOSTTWO")
+    assert len(one) == len("agent-") + 26
+    for seq, (agent, bot, label) in enumerate([
+            (one, "pxcexeco5fbwmjxqzt3r1ah9yc", "agent-mac-ai-agent-716d72"),
+            (two, "q1w2e3r4t5y6u7i8o9p0a1s2d3", "agent-himalia-nats-pilo-772844")], 1):
+        feed(f, (f"presence.{owner_token('dembaca')}.{agent}",
+                 encode_presence("online", bot, label), ack("PRESENCE", "console", seq, seq, 100.0 + seq)))
+    cards = {c["name"]: c for c in f.cards()}
+    assert cards[one]["displayName"] == "agent-mac-ai-agent-716d72"
+    assert cards[two]["displayName"] == "agent-himalia-nats-pilo-772844"
+    # not on the wire the console reads: shown as unknown, never guessed
+    assert cards[one]["harness"] is None and cards[one]["model"] == ""
+    assert cards[one]["task"] == "" and cards[one]["openAsks"] is None
+    graph = {n["id"]: n for n in f.graph()["nodes"]}
+    assert graph[two]["label"] == "agent-himalia-nats-pilo-772844"
+
+
+def test_a_name_two_live_agents_state_is_shown_for_neither() -> None:
+    """The username is the agent's own statement: one another agent that is not
+    offline states too names neither card (each shows its bus name); a stale
+    claim of a gone agent does not hide the live one's."""
+    f = Fleet()
+    feed(f, ("presence.dembaca.agent-a", encode_presence("online", "", "agent-same"),
+             ack("PRESENCE", "console", 1, 1, 100.0)))
+    feed(f, ("presence.dembaca.agent-b", encode_presence("online", "", "agent-same"),
+             ack("PRESENCE", "console", 2, 2, 101.0)))
+    cards = {c["name"]: c for c in f.cards()}
+    assert cards["agent-a"]["displayName"] == "agent-a"
+    assert cards["agent-b"]["displayName"] == "agent-b"
+    feed(f, ("presence.dembaca.agent-a", encode_presence("bye", "", "agent-same"),
+             ack("PRESENCE", "console", 3, 3, 102.0)))
+    cards = {c["name"]: c for c in f.cards()}
+    assert cards["agent-b"]["displayName"] == "agent-same"
+    assert cards["agent-a"]["displayName"] == "agent-a"  # gone, and the name is b's
+    # a presence without the name (an older MCP server) shows the bus name
+    feed(f, ("presence.dembaca.agent-b", encode_presence("online"), ack("PRESENCE", "console", 4, 4, 103.0)))
+    assert f.card("agent-b")["displayName"] == "agent-b"

@@ -39,7 +39,7 @@ export const HARNESS_LABEL: Record<Harness, string> = {
 
 /** How the fleet stream stands — one state for the whole console, shown in
  * the sidebar; every view's failed load lands here too. */
-export type ConnState = "connecting" | "live" | "reconnecting" | "error"
+export type ConnState = "connecting" | "live" | "reconnecting" | "syncing" | "error"
 
 /** The operator the console is logged in as (`GET /v1/me`; the server runs
  * the Keycloak authorization-code flow with PKCE, the browser holds a
@@ -52,14 +52,18 @@ export interface Operator {
 
 /** The Kanban card (ADR-015 point 6): what sits on the card itself. */
 export interface AgentCard {
-  /** The agent's name on the bus, and its short name for lists. */
+  /** The agent's name on the bus: the stable key (on NATS `agent-` and a
+   * 26-character hash, the subject's last token). */
   name: string
+  /** What the card shows: the bot's username the agent states (the name
+   * coordinator("who") shows), else the short bus name. */
   displayName: string
   home: string
   state: AgentState
   /** The crown is a mark on the card, not a column (ADR-015 point 6). */
   crown: boolean
-  harness: Harness
+  /** null: not on the wire (on NATS the HELLO's card stays on Mattermost). */
+  harness: Harness | null
   model: string
   /** One line; customers as placeholders in production. */
   task: string

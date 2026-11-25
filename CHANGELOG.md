@@ -3,6 +3,21 @@
 Every version bump in `.claude-plugin/plugin.json` gets an entry here. Versions
 before 0.5.0 are described in the git history.
 
+## Unreleased
+
+### Fixed
+
+- The operator console's cards showed each agent's name on the bus (`agent-`
+  and a 26-character hash) instead of the name `coordinator("who")` shows. An
+  agent's presence over NATS now also states its bot's username (`name`
+  beside `bot`, RT-6.37), and the card shows it; the bus name stays in the
+  detail as "id on the bus". A username two live agents state names neither
+  card. Harness, model and task are not on what the console reads: the card
+  says "n/a" instead of "other" or nothing (ADR-015).
+- After a restart the console showed a red 503 while its server read the
+  fleet's replay; it now shows "syncing…" and tries again, an error only
+  after two minutes.
+
 ## 0.100.0
 
 Needs: login service updated first, with publish right on presence account records, MM_PROPS_PREFIX at most sixteen characters.

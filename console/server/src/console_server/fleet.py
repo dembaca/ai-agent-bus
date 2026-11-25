@@ -7,10 +7,14 @@ bus does (echoes, claims, publication). Everything pure here: the live
 connection (``nats_read``) feeds it subjects, bodies and ack metadata.
 
 What a NATS home carries today is less than a Mattermost card: presence
-knows ``online``/``away``, the crown claims and the memberships, the
-attestation names the owner and the trusted humans — everything else on
-the card is unknown, never guessed as empty string or zero: the app
-shows ``n/a``.
+knows ``online``/``away`` and the agent's bot (its id and, since the
+presence states it, its username: the name people and coordinator("who")
+know the agent by), the crown claims and the memberships, the attestation
+names the owner and the trusted humans. The HELLO's card (harness, model,
+task, branch) never goes over NATS (``nats_port``: "the agent card and
+anything else are not sent"), and asks are no NATS records yet —
+everything else on the card is unknown, never guessed as empty string,
+zero or "other": the app shows ``n/a``.
 """
 from __future__ import annotations
 
@@ -21,7 +25,8 @@ from typing import Any
 from mattermost_ai_agent_bus import natsbus
 from mattermost_ai_agent_bus.natsbus import (
     AGENT_RE, CHANNEL_RE, Attestation, decode_attestation,
-    decode_claim, decode_presence, decode_presence_bot, owner_of_token,
+    decode_claim, decode_presence, decode_presence_bot, decode_presence_name,
+    owner_of_token,
     parse_ack,
 )
 
@@ -37,6 +42,8 @@ class Fleet:
     _presence_seq: dict[str, tuple[int, float]] = field(default_factory=dict)
     _owners: dict[str, str] = field(default_factory=dict)
     _bots: dict[str, str] = field(default_factory=dict)
+    # agent -> the bot's username its presence states (a label, not an identity)
+    _names: dict[str, str] = field(default_factory=dict)
     # channel -> agent -> (stream sequence, server time) of its membership
     _members: dict[str, dict[str, tuple[int, float]]] = field(default_factory=dict)
     # channel -> agent -> stream sequence of its crown claim
@@ -96,6 +103,11 @@ class Fleet:
                     self._bots[agent] = bot
                 else:
                     self._bots.pop(agent, None)
+                label = decode_presence_name(data)
+                if label:
+                    self._names[agent] = label
+                else:
+                    self._names.pop(agent, None)
                 owner = owner_of_token(t[1])
                 if owner:
                     self._owners[agent] = owner
@@ -145,6 +157,7 @@ class Fleet:
                 self._presence_seq.pop(agent, None)
                 self._owners.pop(agent, None)
                 self._bots.pop(agent, None)
+                self._names.pop(agent, None)
         self._attests = {a: row for a, row in self._attests.items()
                          if row[1] >= edge}
         for ch in list(self._members):
@@ -189,6 +202,20 @@ class Fleet:
     def _members_channels_agents(self) -> list[str]:
         return [a for ch in self._members.values() for a in ch]
 
+    def shown_name(self, agent: str) -> str:
+        """The name a card shows: the bot's username the agent's presence states,
+        the name coordinator("who") shows. The agent states it of itself, so it is
+        a label, never the key (the key is the agent's name on the bus, the
+        subject's last token): a username another agent that is not offline
+        states too is not shown, and neither is an absent one — the card shows
+        the short bus name then."""
+        label = self._names.get(agent, "")
+        if label and not any(other != agent and named == label
+                             and self.state_of(other) != "offline"
+                             for other, named in self._names.items()):
+            return label
+        return short_name(agent)
+
     # --- the wire (ADR-015 point 10, the app's contract) -------------------------------
 
     def cards(self) -> list[dict[str, Any]]:
@@ -207,11 +234,12 @@ class Fleet:
             presence = self._presence.get(agent, (0.0, "offline"))
             out.append({
                 "name": agent,
-                "displayName": short_name(agent),
+                "displayName": self.shown_name(agent),
                 "home": crowns.get(agent) or (channels[0] if channels else ""),
                 "state": self.state_of(agent),
                 "crown": agent in crowns,
-                "harness": "other",
+                # not on the wire: the HELLO's card stays on Mattermost
+                "harness": None,
                 "model": "",
                 "task": "",
                 "role": "member",
@@ -266,7 +294,7 @@ class Fleet:
         for agent in self.agents():
             crown = any(self.holder_of(ch) == agent for ch in self._claims)
             node: dict[str, Any] = {"id": agent, "kind": "agent",
-                                   "label": short_name(agent),
+                                   "label": self.shown_name(agent),
                                    "state": self.state_of(agent)}
             if crown:
                 node["crown"] = True
