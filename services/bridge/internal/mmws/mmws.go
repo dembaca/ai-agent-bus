@@ -20,6 +20,8 @@ import (
 	"time"
 
 	"github.com/gorilla/websocket"
+
+	"github.com/dembaca/ai-agent-bus/services/bridge/internal/netloc"
 )
 
 // Posted is one `posted` event: what somebody wrote in a channel, with
@@ -93,13 +95,18 @@ func (*Reconnected) event() {}
 // A read quiet beyond idle takes the socket again — a half-open
 // connection must not hang the reader — and Mattermost pings far more
 // often, so idle only ever fires on a broken peer. A frame past
-// maxFrame is a broken peer's, not a post: dropped and taken again.
+// maxFrame is a broken peer's, not a post: dropped and taken again,
+// during the auth challenge too. The whole challenge, write and reply,
+// has authWait; more than maxEarly events before the reply is a broken
+// peer's flood, not Mattermost's queue (as many as Events holds).
 const (
 	firstBackoff = time.Second
 	maxBackoff   = 30 * time.Second
 	steady       = 30 * time.Second
 	readIdle     = 150 * time.Second
 	maxFrame     = 1 << 20 // 1 MiB
+	authWait     = 20 * time.Second
+	maxEarly     = 128
 )
 
 // Reader reads Mattermost's WebSocket until its context ends. Nothing
@@ -112,6 +119,9 @@ type Reader struct {
 	first  time.Duration
 	max    time.Duration
 	idle   time.Duration
+	steady time.Duration // the uptime that earns the first wait again; tests shorten it
+	auth   time.Duration // the whole auth challenge's bound; tests shorten it
+	http   bool          // plain http to a host that is not loopback allowed (WithPlainHTTP)
 	events chan Event
 
 	since int64         // the greatest CreateAt handed out, posts and reactions alike
@@ -133,7 +143,9 @@ func New(baseURL, token string) *Reader {
 		first:  firstBackoff,
 		max:    maxBackoff,
 		idle:   readIdle,
-		events: make(chan Event, 128),
+		steady: steady,
+		auth:   authWait,
+		events: make(chan Event, maxEarly),
 	}
 }
 
@@ -159,6 +171,17 @@ func (r *Reader) WithIdle(idle time.Duration) *Reader {
 	return r
 }
 
+// WithPlainHTTP allows an http base URL whose host is not loopback. The
+// token then crosses the network in clear text (the auth challenge over
+// ws://), so it is off by default: an http URL to any other host is
+// refused, and only a lab on a network it trusts turns it on
+// (BRIDGE_MM_ALLOW_HTTP). A loopback host — a test, a local lab — needs
+// no opt-in: its traffic never leaves the machine.
+func (r *Reader) WithPlainHTTP(allow bool) *Reader {
+	r.http = allow
+	return r
+}
+
 // Events is where the typed events arrive. Run stops reading from
 // Mattermost while nobody takes them: an event is never dropped on the
 // floor to keep the socket moving, a wait past a few seconds is logged,
@@ -171,25 +194,30 @@ func (r *Reader) Events() <-chan Event { return r.events }
 // it then returns. The Reconnected marker goes out after every successful
 // connect, the first one included (with the Since of everything seen so
 // far, 0 at a cold start).
+//
+// The wait is decided from the connection that just ended, before it is
+// slept: a socket that held for steady reconnects after the first wait,
+// not after what earlier failures had built up (#131).
 func (r *Reader) Run(ctx context.Context) error {
-	wait := r.first
+	var wait time.Duration // none yet: the first drop waits `first`
 	for ctx.Err() == nil {
 		up := r.connect(ctx)
+		wait = r.waitAfter(up, wait)
 		select {
 		case <-ctx.Done():
 		case <-time.After(wait):
 		}
-		wait = r.waitAfter(up, wait)
 	}
 	return ctx.Err()
 }
 
 // waitAfter says what Run waits after a connection ended: one that
 // stayed up for steady earned the first wait again — a socket that
-// carried the bus for a while starts over — anything else doubles the
-// last, capped at max. The first wait is `first` whatever max says.
+// carried the bus for a while starts over — and so does the first drop
+// (last 0); anything else doubles the last, capped at max. The first
+// wait is `first` whatever max says.
 func (r *Reader) waitAfter(up, last time.Duration) time.Duration {
-	if up >= steady {
+	if up >= r.steady || last <= 0 {
 		return r.first
 	}
 	return min(2*last, r.max)
@@ -211,6 +239,9 @@ func (r *Reader) connect(ctx context.Context) time.Duration {
 		return 0
 	}
 	defer conn.Close()
+	// The frame cap holds from the first frame on: a peer must not send
+	// an unbounded one while the reader waits for the auth reply.
+	conn.SetReadLimit(maxFrame)
 	// The context ends this socket from the first byte — the auth wait
 	// included, whose own deadline a cancellation must not have to wait
 	// out. The watcher leaves with the connection (stop below).
@@ -287,6 +318,11 @@ func (e *AuthError) Error() string {
 // sequence lands. An event that arrives first is carried out with the
 // connection's own marker after it, and a reply with any status but OK
 // is the refusal.
+//
+// The whole challenge has one deadline (auth), not one per frame: a peer
+// that keeps sending events and never the reply fails it in time, and
+// one that floods more than maxEarly events before it fails it at once
+// (#131).
 func (r *Reader) prove(ctx context.Context, conn *websocket.Conn) ([]Event, error) {
 	challenge := struct {
 		Seq    int               `json:"seq"`
@@ -295,7 +331,9 @@ func (r *Reader) prove(ctx context.Context, conn *websocket.Conn) ([]Event, erro
 	}{Seq: 1, Action: "authentication_challenge", Data: map[string]string{"token": r.token}}
 	// The write is bounded too: a server that stalls after the handshake
 	// must not outlive the context.
-	conn.SetWriteDeadline(time.Now().Add(20 * time.Second))
+	deadline := time.Now().Add(r.auth)
+	conn.SetWriteDeadline(deadline)
+	conn.SetReadDeadline(deadline)
 	if err := conn.WriteJSON(challenge); err != nil {
 		return nil, fmt.Errorf("mmws: sending the auth challenge: %w", err)
 	}
@@ -303,7 +341,6 @@ func (r *Reader) prove(ctx context.Context, conn *websocket.Conn) ([]Event, erro
 	// them out after its own marker — theirs, but never before it.
 	var early []Event
 	for {
-		conn.SetReadDeadline(time.Now().Add(20 * time.Second))
 		var frame struct {
 			Event     string          `json:"event"`
 			Status    string          `json:"status"`
@@ -314,18 +351,21 @@ func (r *Reader) prove(ctx context.Context, conn *websocket.Conn) ([]Event, erro
 			} `json:"broadcast"`
 		}
 		if err := conn.ReadJSON(&frame); err != nil {
-			return early, fmt.Errorf("mmws: reading the auth reply: %w", err)
+			return nil, fmt.Errorf("mmws: reading the auth reply: %w", err)
 		}
 		if frame.SeqReply == 0 {
 			// an event before the reply (hello first is legal): kept for
 			// the connection's own marker, which always goes out first
 			if ev := r.typedEvent(frame.Event, frame.Data, frame.Broadcast.ChannelID); ev != nil {
+				if len(early) == maxEarly {
+					return nil, fmt.Errorf("mmws: more than %d events before the auth reply", maxEarly)
+				}
 				early = append(early, ev)
 			}
 			continue
 		}
 		if frame.Status != "OK" {
-			return early, &AuthError{Status: frame.Status}
+			return nil, &AuthError{Status: frame.Status}
 		}
 		return early, nil
 	}
@@ -337,7 +377,6 @@ func (r *Reader) prove(ctx context.Context, conn *websocket.Conn) ([]Event, erro
 // deadline, renewed by every frame and every ping, so a half-open socket
 // is taken again instead of hanging.
 func (r *Reader) read(ctx context.Context, conn *websocket.Conn) {
-	conn.SetReadLimit(maxFrame)
 	// Answer pings; a pong is all Mattermost asks of a quiet client.
 	conn.SetPingHandler(func(ping string) error {
 		conn.SetReadDeadline(time.Now().Add(r.idle))
@@ -495,19 +534,25 @@ func (r *Reader) emit(ctx context.Context, ev Event) {
 // url derives the WebSocket URL from the base URL: https becomes wss,
 // http ws, on Mattermost's own path below whatever path the base carries
 // (a Mattermost behind a proxy keeps its prefix). For the logs the
-// caller redacts it; the wire only ever sees the whole form.
+// caller redacts it; the wire only ever sees the whole form. An http URL
+// would carry the token in clear text: it is refused unless its host is
+// loopback or WithPlainHTTP allowed it.
 func (r *Reader) url() (*url.URL, error) {
 	u, err := url.Parse(r.base)
 	if err != nil {
-		return nil, fmt.Errorf("mmws: %q: %w", r.base, err)
+		return nil, fmt.Errorf("mmws: the base URL does not parse: %w", err)
 	}
 	switch u.Scheme {
 	case "https":
 		u.Scheme = "wss"
 	case "http":
+		if !r.http && !netloc.Loopback(u.Hostname()) {
+			return nil, fmt.Errorf("mmws: %q: http to a host that is not loopback "+
+				"would send the bot token in clear text; use https", u.Redacted())
+		}
 		u.Scheme = "ws"
 	default:
-		return nil, fmt.Errorf("mmws: %q: neither http nor https", r.base)
+		return nil, fmt.Errorf("mmws: %s: neither http nor https", u.Redacted())
 	}
 	u.Path = strings.TrimRight(u.Path, "/") + "/api/v4/websocket"
 	return u, nil

@@ -186,3 +186,27 @@ func TestServerTime(t *testing.T) {
 		t.Fatalf("%d %v", got, err)
 	}
 }
+
+// Given a Mattermost that answers an API call with a redirect, the client
+// does not follow it: Go would resend the Authorization header to a
+// same-host redirect, so a 30x to http would carry the token in clear
+// text (#131). The 30x is the call's error.
+func TestRedirectIsNotFollowed(t *testing.T) {
+	followed := false
+	c := fake(t, func(w http.ResponseWriter, r *http.Request) {
+		if r.URL.Path == "/elsewhere" {
+			followed = true
+			_, _ = w.Write([]byte(`{"id":"u1"}`))
+			return
+		}
+		http.Redirect(w, r, "/elsewhere", http.StatusFound)
+	})
+	_, err := c.Me(context.Background())
+	var se *StatusError
+	if !errors.As(err, &se) || se.Status != http.StatusFound {
+		t.Fatalf("got %v, want the 302 as a StatusError", err)
+	}
+	if followed {
+		t.Error("the client followed the redirect")
+	}
+}

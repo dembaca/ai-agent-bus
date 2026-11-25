@@ -5,6 +5,7 @@ import (
 	"context"
 	"encoding/json"
 	"errors"
+	"fmt"
 	"io"
 	"log/slog"
 	"net/http"
@@ -529,6 +530,171 @@ func TestWaitAfter(t *testing.T) {
 	}
 	if got := r.waitAfter(steady-1, 4*time.Second); got != 4*time.Second {
 		t.Errorf("got %v just under steady, want the wait kept", got)
+	}
+	if got := r.waitAfter(0, 0); got != time.Second {
+		t.Errorf("got %v after the first drop, want the first wait", got)
+	}
+}
+
+// Given a reader whose failed dials built the wait up, when a connection
+// then holds past steady and drops, the reader is back after the first
+// wait, not after the stale one the failures left (#131, point 1).
+func TestSteadyConnectionResetsTheWait(t *testing.T) {
+	const hold = 150 * time.Millisecond
+	f := newFake(t)
+	fail := func(conn *websocket.Conn) { _ = conn.Close() } // a drop before the challenge
+	f.scripts = []func(*websocket.Conn){fail, fail, fail, fail, fail, fail,
+		authOK(func(*websocket.Conn) { time.Sleep(hold) }), // up past steady, then dropped
+		authOK(still)}
+	// Six failures wait 10, 20 … 320 ms; the stale wait would be 640 ms.
+	r := New(f.srv.URL, "tok").WithBackoff(10*time.Millisecond, 2*time.Second)
+	r.steady = 100 * time.Millisecond
+	runReader(t, r)
+
+	reconnected(t, next(t, r), 0)
+	start := time.Now()
+	ev := next(t, r)
+	gap := time.Since(start)
+	if rc, ok := ev.(*Reconnected); !ok || rc.Conn != 2 {
+		t.Fatalf("got %#v, want the second connection's marker", ev)
+	}
+	if gap > hold+300*time.Millisecond {
+		t.Errorf("reconnected %v after the steady connection came up, want about %v plus the first wait",
+			gap, hold)
+	}
+}
+
+// authThen reads the challenge and runs before the reply — what a broken
+// or hostile peer sends while the reader waits for it — then replies OK
+// if the reader is still there.
+func authThen(before func(*websocket.Conn)) func(*websocket.Conn) {
+	return func(conn *websocket.Conn) {
+		challenge, ok := readChallenge(conn)
+		if !ok {
+			return
+		}
+		before(conn)
+		write(conn, map[string]any{"status": "OK", "seq_reply": challenge.Seq,
+			"data": map[string]any{}})
+		still(conn)
+	}
+}
+
+// failsTheHandshake checks that the first connection's script failed the
+// handshake: the first marker the reader hands out is the second
+// connection's, numbered 1, and nothing of the first came out.
+func failsTheHandshake(t *testing.T, f *fakeMM, r *Reader) {
+	t.Helper()
+	ev := next(t, r)
+	rc, ok := ev.(*Reconnected)
+	if !ok || rc.Conn != 1 || rc.Since != 0 {
+		t.Fatalf("got %#v, want the marker of the connection after the refused one", ev)
+	}
+	if got := f.connections(); got < 2 {
+		t.Fatalf("got %d connections, want the first handshake failed", got)
+	}
+	select {
+	case ev := <-r.Events():
+		t.Fatalf("got %#v from the failed handshake, want nothing", ev)
+	case <-time.After(50 * time.Millisecond):
+	}
+}
+
+// Given a peer that sends a frame past the cap before the auth reply —
+// valid JSON, so only the read limit can refuse it — the handshake fails
+// and the reader comes back on the next connection (#131, point 2).
+func TestOversizedFrameDuringTheChallenge(t *testing.T) {
+	f := newFake(t)
+	f.scripts = []func(*websocket.Conn){
+		authThen(func(conn *websocket.Conn) {
+			write(conn, map[string]any{"event": "typing",
+				"data": map[string]any{"pad": strings.Repeat("x", maxFrame+1024)}})
+		}),
+		authOK(still),
+	}
+	failsTheHandshake(t, f, run(t, f))
+}
+
+// Given a peer that keeps sending events but never the reply, each well
+// inside a per-frame deadline, the one deadline of the whole challenge
+// ends the handshake in time (#131, point 2).
+func TestChallengeHasOneDeadline(t *testing.T) {
+	f := newFake(t)
+	f.scripts = []func(*websocket.Conn){
+		authThen(func(conn *websocket.Conn) {
+			for {
+				if err := conn.WriteJSON(map[string]any{"event": "typing"}); err != nil {
+					return // the reader gave up
+				}
+				time.Sleep(10 * time.Millisecond)
+			}
+		}),
+		authOK(still),
+	}
+	r := New(f.srv.URL, "tok").WithBackoff(time.Millisecond, 4*time.Millisecond)
+	r.auth = 200 * time.Millisecond
+	runReader(t, r)
+	failsTheHandshake(t, f, r)
+}
+
+// Given a peer that sends posts before the reply, the reader keeps up to
+// maxEarly of them and hands all of them out after its marker; one more
+// is a broken peer's flood and fails the handshake instead of growing
+// without bound, and none of it is handed out (#131, point 2).
+func TestEarlyEventsAreCapped(t *testing.T) {
+	flood := func(n int) func(*websocket.Conn) {
+		return authThen(func(conn *websocket.Conn) {
+			for i := range n {
+				postEvent(conn, map[string]any{"id": fmt.Sprintf("p%d", i), "user_id": "u1",
+					"channel_id": "ch1", "create_at": 100 + i, "message": "early"})
+			}
+		})
+	}
+	t.Run("exactly the cap", func(t *testing.T) {
+		f := newFake(t)
+		f.scripts = []func(*websocket.Conn){flood(maxEarly)}
+		r := run(t, f)
+		reconnected(t, next(t, r), 0)
+		for i := range maxEarly {
+			post, ok := next(t, r).(*Posted)
+			if !ok || post.PostID != fmt.Sprintf("p%d", i) {
+				t.Fatalf("event %d: got %#v, want post p%d", i, post, i)
+			}
+		}
+	})
+	t.Run("one past the cap", func(t *testing.T) {
+		f := newFake(t)
+		f.scripts = []func(*websocket.Conn){flood(maxEarly + 1), authOK(still)}
+		failsTheHandshake(t, f, run(t, f))
+	})
+}
+
+// Given an http base URL, the reader dials ws:// only to a loopback host
+// or with the opt-in: anywhere else the token would cross the network in
+// clear text (#131, point 3).
+func TestPlainHTTPOnlyToLoopback(t *testing.T) {
+	for _, tc := range []struct {
+		base  string
+		allow bool
+		want  string // the ws URL, "" for a refusal
+	}{
+		{"https://chat.example", false, "wss://chat.example/api/v4/websocket"},
+		{"http://chat.example", false, ""},
+		{"http://10.0.0.5:8065", false, ""},
+		{"http://chat.example", true, "ws://chat.example/api/v4/websocket"},
+		{"http://127.0.0.1:8065", false, "ws://127.0.0.1:8065/api/v4/websocket"},
+		{"http://[::1]:8065/mm", false, "ws://[::1]:8065/mm/api/v4/websocket"},
+		{"http://LocalHost:8065", false, "ws://LocalHost:8065/api/v4/websocket"},
+	} {
+		u, err := New(tc.base, "tok").WithPlainHTTP(tc.allow).url()
+		switch {
+		case tc.want == "" && err == nil:
+			t.Errorf("%s (allow %v): got %s, want a refusal", tc.base, tc.allow, u)
+		case tc.want != "" && err != nil:
+			t.Errorf("%s (allow %v): %v", tc.base, tc.allow, err)
+		case tc.want != "" && u.String() != tc.want:
+			t.Errorf("%s (allow %v): got %s, want %s", tc.base, tc.allow, u, tc.want)
+		}
 	}
 }
 
