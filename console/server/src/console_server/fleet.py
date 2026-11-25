@@ -10,11 +10,13 @@ What a NATS home carries today is less than a Mattermost card: presence
 knows ``online``/``away`` and the agent's bot (its id and, since the
 presence states it, its username: the name people and coordinator("who")
 know the agent by), the crown claims and the memberships, the attestation
-names the owner and the trusted humans. The HELLO's card (harness, model,
-task, branch) never goes over NATS (``nats_port``: "the agent card and
-anything else are not sent"), and asks are no NATS records yet —
-everything else on the card is unknown, never guessed as empty string,
-zero or "other": the app shows ``n/a``.
+names the owner and the trusted humans. The presence also states the
+HELLO card's harness, model, task, branch and the number of the agent's
+open asks (RT-6.37, ``natsbus.decode_presence_card``, bounded there);
+self-stated like the name, they are shown as text and decide nothing. An
+older MCP server states none of them, and everything else on the card is
+unknown too: never guessed as empty string, zero or "other", the app
+shows ``n/a``.
 """
 from __future__ import annotations
 
@@ -25,7 +27,8 @@ from typing import Any
 from mattermost_ai_agent_bus import natsbus
 from mattermost_ai_agent_bus.natsbus import (
     AGENT_RE, CHANNEL_RE, Attestation, decode_attestation,
-    decode_claim, decode_presence, decode_presence_bot, decode_presence_name,
+    PresenceCard, decode_claim, decode_presence, decode_presence_bot, decode_presence_card,
+    decode_presence_name,
     owner_of_token,
     parse_ack,
 )
@@ -44,6 +47,8 @@ class Fleet:
     _bots: dict[str, str] = field(default_factory=dict)
     # agent -> the bot's username its presence states (a label, not an identity)
     _names: dict[str, str] = field(default_factory=dict)
+    # agent -> the HELLO card's data its presence states (self-stated, bounded)
+    _cards: dict[str, PresenceCard] = field(default_factory=dict)
     # channel -> agent -> (stream sequence, server time) of its membership
     _members: dict[str, dict[str, tuple[int, float]]] = field(default_factory=dict)
     # channel -> agent -> stream sequence of its crown claim
@@ -120,6 +125,7 @@ class Fleet:
                     self._bots[agent] = bot
                 else:
                     self._bots.pop(agent, None)
+                self._cards[agent] = decode_presence_card(data)
                 label = decode_presence_name(data)
                 if label:
                     self._names[agent] = label
@@ -183,6 +189,7 @@ class Fleet:
                 self._owners.pop(agent, None)
                 self._bots.pop(agent, None)
                 self._names.pop(agent, None)
+                self._cards.pop(agent, None)
         self._attests = {a: row for a, row in self._attests.items()
                          if row[1] >= edge}
         for ch in list(self._members):
@@ -259,29 +266,31 @@ class Fleet:
             record = att[2] if att and att[2].exp > self.server_now else None
             channels = sorted(ch for ch in self._members if agent in self._members[ch])
             presence = self._presence.get(agent, (0.0, "offline"))
+            stated = self._cards.get(agent, PresenceCard())
             out.append({
                 "name": agent,
                 "displayName": self.shown_name(agent),
                 "home": crowns.get(agent) or (channels[0] if channels else ""),
                 "state": self.state_of(agent),
                 "crown": agent in crowns,
-                # not on the wire: the HELLO's card stays on Mattermost
-                "harness": None,
-                "model": "",
-                "task": "",
+                # the HELLO card's data the presence states (RT-6.37); n/a when an
+                # older MCP server states none
+                "harness": stated.harness,
+                "model": stated.model or "",
+                "task": stated.task or "",
                 "role": "member",
                 "for": record.owner_name if record else self._owners.get(agent, ""),
                 "autonomous": False,
                 "trusts": [name for _anchor, name in record.trusted] if record else [],
                 "capabilities": [],
                 "project": "",
-                "branch": None,
+                "branch": stated.branch,
                 "pr": None,
                 "ctx": None,
                 "limits": None,
                 "version": "",
-                # unknown is null here, not 0: asks do not lie on NATS yet
-                "openAsks": None,
+                # unknown is null here, not 0: an older MCP server states no asks
+                "openAsks": stated.asks,
                 "asksForOperator": None,
                 "helloAt": int(presence[0] * 1000),
                 "lastPostAt": None,

@@ -81,7 +81,7 @@ cannot be used end to end until both change.
 | `AUTH_NATS_CA_FILE`, `AUTH_NATS_CERT_FILE`, `AUTH_NATS_KEY_FILE` | unset | the CA for the server's TLS certificate (unset: the system's), and a client certificate with its key if the server asks for one |
 | `AUTH_ACCOUNT` | — | the tenant's account the agents land in |
 | `AUTH_LOBBY` | unset | the lobby's channel name |
-| `AUTH_SUBJECT_PREFIX`, `AUTH_PRESENCE_PREFIX`, `AUTH_STATS_PREFIX`, `AUTH_NAME_PREFIX` | `bus`, `presence`, `stats`, `agent-` | subject prefix of channels and direct messages, of presence and crown claims, of the agents' `STATS` lines (stream `STATS`, RT-6.43; all three must differ, and none may be `deliver`), the start of agent names |
+| `AUTH_SUBJECT_PREFIX`, `AUTH_PRESENCE_PREFIX`, `AUTH_STATS_PREFIX`, `AUTH_NAME_PREFIX` | `bus`, `presence`, `stats`, `agent-` | subject prefix of channels and direct messages, of presence and crown claims, of the agents' `STATS` lines (stream `STATS`, RT-6.43; all three must differ, and none may be `deliver` or `_INBOX`), the start of agent names |
 | `AUTH_JS_SEED_FILE`, `AUTH_JS_URL` | —, `AUTH_NATS_URL` | file with the user nkey seed of the service's own user in the tenant account, the only one with JetStream API rights, and its server; required with `AUTH_NATS_URL`: the service makes the streams and every agent's consumers (RT-6.35) and does not start without them. That user needs only (`TestTheDocumentedMinimalRightsSuffice`): publish `$JS.API.STREAM.CREATE.<S>`, `$JS.API.STREAM.INFO.<S>`, `$JS.API.CONSUMER.*.<S>` and `$JS.API.CONSUMER.*.<S>.>` for `<S>` = `BUS`, `PRESENCE`; `$JS.API.STREAM.CREATE.STATS` and `$JS.API.STREAM.INFO.STATS` for the `STATS` lines (RT-6.43), and `$JS.API.CONSUMER.*.STATS` and `$JS.API.CONSUMER.*.STATS.>` for the operators' consumers on them, and `<presence>.person.*.v1` for each console login's own record (RT-6.43); for the channel directory (RT-6.39) `$JS.API.INFO`, `$JS.API.STREAM.CREATE.KV_BUS_DIRECTORY`, `$JS.API.STREAM.INFO.KV_BUS_DIRECTORY`, `$JS.API.DIRECT.GET.KV_BUS_DIRECTORY.>` and `$KV.BUS_DIRECTORY.>` (with another `AUTH_DIRECTORY_BUCKET`, its name in place of `BUS_DIRECTORY`); for the attestations (RT-6.41) `$JS.API.STREAM.MSG.GET.PRESENCE` and `<presence>.attest.*.v1`; for the account records of people (RT-6.42) `<presence>.account.mattermost.*.v1`; subscribe `_INBOX.>` |
 | `AUTH_REQUEST_TIMEOUT` | `1.5s` | bound of one request (token check, chat lookups, answer), at most 10 s; keep it below the server's callout timeout |
 | `AUTH_BRAKE_FILE` | unset | the emergency brake (below) |
@@ -267,7 +267,8 @@ signed by the account key, valid 15 minutes from the check:
   of their own, one message per subject, not a key-value bucket; the `STATS`
   lines too (stream `STATS` on `stats.>`: 30 days, 64 MiB, 8 KiB per message,
   at most 500 per subject, the oldest discarded; a stream that keeps more per
-  subject or longer is refused at the start).
+  subject or longer, takes other than 8 KiB per message or is not on file is
+  refused at the start).
   `AUTH_SUBJECT_PREFIX`, `AUTH_PRESENCE_PREFIX` and `AUTH_STATS_PREFIX` set the three prefixes.
   **The proof** is `internal/callout/native_sender_test.go`: an embedded
   nats-server (the version in `go.mod`, 2.15.3) with this callout, attacked

@@ -186,3 +186,20 @@ func TestTheStatsPrefixIsChecked(t *testing.T) {
 		}
 	}
 }
+
+// No prefix may be the inbox prefix: an agent's rights would then reach reply
+// subjects.
+func TestNoPrefixIsTheInbox(t *testing.T) {
+	ok := Config{Account: "BUS"}.WithDefaults()
+	for name, edit := range map[string]func(*Config){
+		"subject":  func(c *Config) { c.Subjects.Prefix = "_INBOX" },
+		"presence": func(c *Config) { c.Subjects.Presence = "_INBOX" },
+		"stats":    func(c *Config) { c.Subjects.Stats = "_INBOX" },
+	} {
+		c := ok
+		edit(&c)
+		if err := c.check(); err == nil || !strings.Contains(err.Error(), "inbox prefix") {
+			t.Errorf("%s: %v", name, err)
+		}
+	}
+}

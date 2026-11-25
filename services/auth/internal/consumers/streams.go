@@ -157,8 +157,16 @@ func checkStream(name, subject string, got map[string]any) error {
 	if name == PresenceStream && num("max_msgs_per_subject") != 1 {
 		bad = append(bad, "max_msgs_per_subject is not 1")
 	}
-	if n := num("max_msgs_per_subject"); name == StatsStream && (n <= 0 || n > StatsMaxMsgsPerSubject) {
-		bad = append(bad, fmt.Sprintf("max_msgs_per_subject is not within 1 and %d", StatsMaxMsgsPerSubject))
+	if name == StatsStream { // RT-6.43: pinned as created
+		if n := num("max_msgs_per_subject"); n <= 0 || n > StatsMaxMsgsPerSubject {
+			bad = append(bad, fmt.Sprintf("max_msgs_per_subject is not within 1 and %d", StatsMaxMsgsPerSubject))
+		}
+		if num("max_msg_size") != statsMaxMsgSize {
+			bad = append(bad, fmt.Sprintf("max_msg_size is not %d", statsMaxMsgSize))
+		}
+		if got["storage"] != "file" {
+			bad = append(bad, "storage is not file")
+		}
 	}
 	if set(got["subject_transform"]) {
 		bad = append(bad, "subject_transform is set")

@@ -252,6 +252,7 @@ def test_asks_are_counted_with_their_waits_and_what_stays_open():
 @pytest.mark.parametrize("client,label", [
     ("claude-code", "claude-code"), ("Claude-Code", "claude-code"), ("cursor-vscode", "cursor"),
     ("opencode", "opencode"), ("codex-mcp-client", "codex"), ("codex", "codex"),
+    ("pi", "pi"), ("pi-coding-agent", "pi"), ("pixel", "pixel"),
     ("  Some Client  ", "some client"), ("x" * 50, "x" * 32),
 ])
 def test_the_harness_is_named_after_the_mcp_client(client, label, monkeypatch):

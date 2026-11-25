@@ -30,6 +30,7 @@ import (
 var (
 	busStreamCfg      = consumers.BusStreamJSON("bus", 0)
 	presenceStreamCfg = consumers.PresenceStreamJSON("presence", 0)
+	statsStreamCfg    = consumers.StatsStreamJSON("stats", 0)
 )
 
 type tapped struct {
@@ -860,10 +861,12 @@ func TestNativeAskRecordAndStatsOnlyUnderOwnName(t *testing.T) {
 	if n.last("PRESENCE") != before+1 || n.last(consumers.StatsStream) != stats+1 {
 		t.Error("a refused ask record or STATS line was stored")
 	}
-	if _, err := n.a.nc.SubscribeSync("stats.>"); err != nil {
-		t.Fatal(err)
-	}
-	if !n.a.denied(t) {
-		t.Error("an agent may read the STATS lines")
+	for _, s := range []string{"stats.>", "presence.ask.>", "presence.ask.home.*"} {
+		if _, err := n.a.nc.SubscribeSync(s); err != nil {
+			t.Fatal(err)
+		}
+		if !n.a.denied(t) {
+			t.Errorf("an agent may subscribe to %s", s)
+		}
 	}
 }

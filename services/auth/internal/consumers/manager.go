@@ -224,11 +224,11 @@ func (m *Manager) ensure(ctx context.Context, name, cfg, subject string) error {
 		case err == nil:
 			return checkStream(name, subject, info.Config)
 		case !isAPI(err, errStreamNotFound):
-			return fmt.Errorf("stream %s: %w", name, err)
+			return streamErr(name, err)
 		}
 		err = m.api(ctx, "$JS.API.STREAM.CREATE."+name, cfg, nil)
 		if err != nil && !isAPI(err, errStreamNameInUse) {
-			return fmt.Errorf("stream %s: %w", name, err)
+			return streamErr(name, err)
 		}
 		if err == nil {
 			m.log.Info("consumers", "event", "stream created", "stream", name)
@@ -236,6 +236,18 @@ func (m *Manager) ensure(ctx context.Context, name, cfg, subject string) error {
 		// Read back, whatever the server kept is what gets checked.
 	}
 	return fmt.Errorf("stream %s: neither found nor created", name)
+}
+
+// streamErr names the JetStream user's missing rights when JetStream did not
+// answer: a refused publish is dropped, so a request without the right only
+// times out (an upgrade that adds a stream, STATS for RT-6.43, needs two new
+// rights before the service starts).
+func streamErr(name string, err error) error {
+	if errors.Is(err, context.DeadlineExceeded) || errors.Is(err, nats.ErrTimeout) || errors.Is(err, nats.ErrNoResponders) {
+		return fmt.Errorf("stream %s: no answer from JetStream (%w): the login service's JetStream user needs publish on $JS.API.STREAM.INFO.%s and $JS.API.STREAM.CREATE.%s",
+			name, err, name, name)
+	}
+	return fmt.Errorf("stream %s: %w", name, err)
 }
 
 // spec is one consumer an agent should have.

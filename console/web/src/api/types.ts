@@ -62,7 +62,9 @@ export interface AgentCard {
   state: AgentState
   /** The crown is a mark on the card, not a column (ADR-015 point 6). */
   crown: boolean
-  /** null: not on the wire (on NATS the HELLO's card stays on Mattermost). */
+  /** null: not on the wire (an older MCP server states no card's data in its
+   * presence). Harness, model, task, branch and open asks are self-stated
+   * (RT-6.37): shown as text, never trusted. */
   harness: Harness | null
   model: string
   /** One line; customers as placeholders in production. */
@@ -74,6 +76,7 @@ export interface AgentCard {
   trusts: string[]
   capabilities: string[]
   project: string
+  /** null: not stated (n/a); "": the agent stated no branch. */
   branch: string | null
   pr: { number: number; url: string } | null
   /** Percent, or null when the bus does not carry it yet: unknown, never 0. */
@@ -81,8 +84,9 @@ export interface AgentCard {
   /** The limits or the cost, when the card carries it. */
   limits: string | null
   version: string
-  /** Its open asks, `asksForOperator` of those the operator's; `null`
-   * while asks do not lie on NATS (unknown is never guessed as 0). */
+  /** Its open asks (its own asks to a human still waiting, as its presence
+   * states them), `asksForOperator` of those the operator's; `null` when not
+   * stated (unknown is never guessed as 0). */
   openAsks: number | null
   asksForOperator: number | null
   /** Since the HELLO, and the last post (both the servers's clock). */

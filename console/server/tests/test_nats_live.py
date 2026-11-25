@@ -16,19 +16,23 @@ login service's own live test (``services/auth``).
 from __future__ import annotations
 
 import asyncio
+import base64
+import contextlib
 import json
 import os
 import shutil
 import socket
 import subprocess
 import time
+from datetime import datetime, timezone
 
 import pytest
 from nats.aio.client import Client as NatsClient
 
 from console_server import auth, config
 from console_server.nats_read import PersonReader, View
-from mattermost_ai_agent_bus.natsbus import encode_presence
+from mattermost_ai_agent_bus import natsbus
+from mattermost_ai_agent_bus.natsbus import decode_presence, encode_presence
 
 pytestmark = pytest.mark.skipif(
     os.environ.get("MM_TEST_NATS") != "1" or not (
@@ -233,3 +237,167 @@ async def test_a_login_whose_subjects_are_not_granted_reads_nothing(rig) -> None
     r.start()
     await asyncio.sleep(1.0)
     assert r.view.fleet.cards() == []
+
+
+# --- the pilot's ageing and crown handover (#108 points 10 and 11) -------------------
+
+
+def _states(r: PersonReader) -> dict[str, str]:
+    return {c["name"]: c["state"] for c in r.view.fleet.cards()}
+
+
+def _crowns(r: PersonReader) -> list[str]:
+    return [c["name"] for c in r.view.fleet.cards() if c["crown"]]
+
+
+async def test_a_hard_death_ages_the_card_offline_and_no_other(rig, monkeypatch) -> None:
+    """#108 point 10: an agent killed hard (kill -9) falls silent and
+    sends no bye; its card turns offline once its last presence is older
+    than the freshness window (natsbus.PRESENCE_FRESH_SEC, 90 s in
+    production). The window is shortened to 2 s here; the peer beats every
+    0.5 s (30 s / 90 s in production) and its card never changes state."""
+    window = 2.0
+    monkeypatch.setattr(natsbus, "PRESENCE_FRESH_SEC", window)
+    admin: NatsClient = rig["admin"]
+    r: PersonReader = rig["good"]
+    await make_consumers(admin, r)
+    await publish_record(admin, r)
+    r.renew_sec = 600.0
+    r.start()
+    beating = True
+
+    async def peer() -> None:
+        while beating:
+            await admin.publish("presence.dembaca.agent-live", encode_presence("online"))
+            await asyncio.sleep(0.5)
+
+    beat = asyncio.ensure_future(peer())
+    try:
+        await admin.publish("presence.member.dev.agent-dead", b'{"v": 1}')
+        await admin.publish("presence.member.dev.agent-live", b'{"v": 1}')
+        for n in range(3):  # a few heartbeats, then the kill: silence, no bye
+            if n:
+                await asyncio.sleep(0.3)
+            await admin.publish("presence.dembaca.agent-dead", encode_presence("online"))
+            await admin.flush()
+        died = time.monotonic()  # right after the last presence reached the server
+        await until(lambda: _states(r).get("agent-dead") == "online"
+                    and _states(r).get("agent-live") == "online", what="both online")
+        assert time.monotonic() - died < window, "online seen only after the window"
+
+        seen: list[dict[str, str]] = []
+
+        def dead() -> bool:
+            seen.append(_states(r))
+            return seen[-1].get("agent-dead") == "offline"
+
+        await until(dead, what="the dead card offline")
+        aged = time.monotonic() - died
+        # not before the window (slack for a slow runner), within it plus a beat
+        assert window - 1.0 <= aged <= window + 2.0, aged
+        # no other card changed: the peer online throughout, no crown
+        for state in seen:
+            assert state["agent-live"] == "online"
+        assert _crowns(r) == []
+        assert card(r, "agent-dead")["home"] == "dev"
+        assert set(_states(r)) == {"agent-dead", "agent-live"}
+    finally:
+        beating = False
+        beat.cancel()
+        with contextlib.suppress(asyncio.CancelledError):
+            await beat
+
+
+async def test_a_lone_hard_death_ages_without_a_delivery(rig, monkeypatch) -> None:
+    """#108 point 10 with no deliveries at all (a killed lone agent): the
+    wall-clock floor (#109) ages the card; window 2 s instead of 90 s."""
+    window = 2.0
+    monkeypatch.setattr(natsbus, "PRESENCE_FRESH_SEC", window)
+    admin: NatsClient = rig["admin"]
+    r: PersonReader = rig["good"]
+    await make_consumers(admin, r)
+    await publish_record(admin, r)
+    r.renew_sec = 600.0
+    r.start()
+    await admin.publish("presence.dembaca.agent-lone", encode_presence("online"))
+    await admin.flush()
+    sent = time.monotonic()
+    await until(lambda: _states(r).get("agent-lone") == "online", what="online")
+    await until(lambda: _states(r).get("agent-lone") == "offline", what="offline")
+    aged = time.monotonic() - sent
+    assert window - 1.0 <= aged <= window + 2.0, aged
+
+
+def _stamp(text: str) -> float:
+    """A JetStream RFC 3339 time (nanoseconds) as epoch seconds."""
+    head, _, frac = text.rstrip("Z").partition(".")
+    return (datetime.fromisoformat(head).replace(tzinfo=timezone.utc).timestamp()
+            + float("0." + (frac or "0")))
+
+
+async def _last(admin: NatsClient, subject: str) -> tuple[int, float, bytes]:
+    reply = await admin.request("$JS.API.STREAM.MSG.GET.PRESENCE",
+                                json.dumps({"last_by_subj": subject}).encode(), timeout=5.0)
+    msg = json.loads(reply.data)["message"]
+    return msg["seq"], _stamp(msg["time"]), base64.b64decode(msg.get("data", ""))
+
+
+async def _stream_holder(admin: NatsClient, agents: list[str]) -> str | None:
+    """The crown of dev computed straight from the stream's records with
+    the rule the MCP side's coordinator("who") uses (natsbus.crown_holder,
+    RT-6.38) — not from the console's fleet."""
+    claims: dict[str, int] = {}
+    at: dict[str, float] = {}
+    presence: dict[str, tuple[float, str]] = {}
+    now = 0.0
+    for agent in agents:
+        seq, t, _ = await _last(admin, f"presence.crown.dev.{agent}")
+        claims[agent], at[agent] = seq, t
+        _seq, pt, data = await _last(admin, f"presence.dembaca.{agent}")
+        presence[agent] = (pt, decode_presence(data))
+        now = max(now, t, pt)
+    return natsbus.crown_holder(claims, presence, now, at=at)
+
+
+async def test_an_explicit_release_moves_the_one_crown(rig) -> None:
+    """#108 point 11, the crown of a home over NATS (RT-6.38): the holder's
+    release is a new claim that moves behind every other
+    (lease._command_nats "release"); the peer's older claim leads, so the
+    console shows exactly one crown at every step, and it moves to the
+    peer — the holder the stream's records give by natsbus.crown_holder.
+    It checks that the console follows a re-claim of the same subject,
+    written with the real claim encoder (natsbus.encode_claim)."""
+    admin: NatsClient = rig["admin"]
+    r: PersonReader = rig["good"]
+    agents = ["agent-one", "agent-two"]
+    for agent in agents:
+        await admin.publish(f"presence.dembaca.{agent}", encode_presence("online"))
+        await admin.publish(f"presence.member.dev.{agent}", b'{"v": 1}')
+    await admin.publish("presence.crown.dev.agent-one", natsbus.encode_claim())
+    await asyncio.sleep(0.01)  # a later server stamp: the claim order
+    await admin.publish("presence.crown.dev.agent-two", natsbus.encode_claim())
+    await admin.flush()
+    assert await _stream_holder(admin, agents) == "agent-one"
+
+    await make_consumers(admin, r)
+    await publish_record(admin, r)
+    r.renew_sec = 600.0
+    r.start()
+    seen: list[list[str]] = []
+
+    def crowns_are(names: list[str]) -> bool:
+        seen.append(_crowns(r))
+        return seen[-1] == names and "agent-two" in _states(r)
+
+    await until(lambda: crowns_are(["agent-one"]), what="agent-one's crown")
+
+    # the release: agent-one claims anew and moves behind agent-two
+    await admin.publish("presence.crown.dev.agent-one", natsbus.encode_claim())
+    await admin.flush()
+    await until(lambda: crowns_are(["agent-two"]), what="the crown moved")
+    assert await _stream_holder(admin, agents) == "agent-two"
+    assert r.view.fleet.holder_of("dev") == "agent-two"
+    # never two crowns on the way
+    assert all(len(c) <= 1 for c in seen)
+    assert card(r, "agent-two")["home"] == "dev"
+    assert card(r, "agent-one")["state"] == card(r, "agent-two")["state"] == "online"
