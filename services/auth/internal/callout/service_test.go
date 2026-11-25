@@ -83,7 +83,7 @@ accounts {
     # services/auth/README.md and RT-6.35 document.
     { user: jsmin, password: pwd, permissions: {
       publish: [ "$JS.API.STREAM.CREATE.BUS", "$JS.API.STREAM.INFO.BUS", "$JS.API.CONSUMER.*.BUS", "$JS.API.CONSUMER.*.BUS.>",
-        "$JS.API.STREAM.CREATE.PRESENCE", "$JS.API.STREAM.INFO.PRESENCE", "$JS.API.CONSUMER.*.PRESENCE", "$JS.API.CONSUMER.*.PRESENCE.>", "$JS.API.STREAM.CREATE.STATS", "$JS.API.STREAM.INFO.STATS", "$JS.API.CONSUMER.*.STATS", "$JS.API.CONSUMER.*.STATS.>", "$JS.API.STREAM.MSG.GET.PRESENCE", "presence.attest.*.v1", "presence.account.mattermost.*.v1" ]
+        "$JS.API.STREAM.CREATE.PRESENCE", "$JS.API.STREAM.INFO.PRESENCE", "$JS.API.CONSUMER.*.PRESENCE", "$JS.API.CONSUMER.*.PRESENCE.>", "$JS.API.STREAM.CREATE.STATS", "$JS.API.STREAM.INFO.STATS", "$JS.API.CONSUMER.*.STATS", "$JS.API.CONSUMER.*.STATS.>", "presence.person.*.v1", "$JS.API.STREAM.MSG.GET.PRESENCE", "presence.attest.*.v1", "presence.account.mattermost.*.v1" ]
       subscribe: [ "_INBOX.>" ] } },
     # The same without the right to publish attestations: a refused publish
     # must refuse the login (RT-6.41).

@@ -69,15 +69,18 @@ before 0.5.0 are described in the git history.
   anchor the channel directory holds for the token's `sub` (no anchor, no
   credential) and issues `<AUTH_PERSON_PREFIX><anchor>` (new, default
   `person-`) for 15 minutes: no publish at all, subscribe only on
-  `deliver.<name>.<login>.>`. It makes per login `<name>_<login>_presence`
+  `deliver.person.<login>.>` (`<login>` the login's whole public key), and
+  writes the login's own record (name and anchor) on
+  `<presence>.person.<login>.v1`, which only that login's consumer
+  delivers. It makes per login `<name>_<login>_presence`
   on `PRESENCE` (presence and attestations, and crown claims, memberships
   and ask records of the channels the person may see: for now the public
   ones and the person's own in the directory) and `<name>_<login>_stats` on
   `STATS` from 7 days back, both gone 15 minutes after nobody listens. The
   JetStream user needs `$JS.API.CONSUMER.*.STATS` and
-  `$JS.API.CONSUMER.*.STATS.>` too (for the release's entry, since
+  `$JS.API.CONSUMER.*.STATS.>` and `presence.person.*.v1` too (for the release's entry, since
   doc-check takes a `Needs:` line in a version's entry only:
-  `Needs: login service updated first, its jetstream user with consumer rights on the stats stream.`).
+  `Needs: login service updated first, its jetstream user with consumer rights on stats, new publish rights.`).
   One person holds consumers for at most `AUTH_PERSON_MAX_LOGINS` (new,
   default 8) logins at once; the consumers are kept in memory.
   `AUTH_OPERATOR_GROUP` must be a full group path (`/…`). The connection is described in
