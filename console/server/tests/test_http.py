@@ -90,10 +90,13 @@ async def test_me_answers_the_stand_in_operator(console: Console) -> None:
 
 async def test_asks_and_stats_answer_empty_until_nats_carries_them(
         console: Console) -> None:
-    for path, what in (("/v1/asks", []), ("/v1/stats", [])):
-        status, _headers, body = await get(console, path)
-        assert status == 200, what
-        assert json.loads(body) == (what)
+    """RT-6.43 steps 6 and 8: no ask record, no asks; no STATS line, every value n/a."""
+    status, _headers, body = await get(console, "/v1/asks")
+    assert status == 200 and json.loads(body) == []
+    status, _headers, body = await get(console, "/v1/stats")
+    reports = json.loads(body)
+    assert status == 200 and [r["id"] for r in reports] == ["share-per-version", "asks-24h", "asks-7d"]
+    assert all(f["value"] is None for r in reports for f in r["fields"])
 
 
 async def test_threads_answer_an_empty_page(console: Console) -> None:
@@ -460,7 +463,7 @@ async def test_a_ended_nats_reader_fails_healthz() -> None:
                                nats_seed_file="/none")
     c = Console(settings)
 
-    async def dead(settings, fleet, on_change):
+    async def dead(settings, fleet, on_change, book=None):
         raise RuntimeError("the reader died on the seed")
 
     import console_server.app as app_module

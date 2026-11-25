@@ -253,6 +253,7 @@ async def _lifespan(_server: Any) -> AsyncIterator[dict[str, Any]]:
     finally:
         nats.cancel()
         await asyncio.gather(nats, return_exceptions=True)  # a start under way ends here, not later
+        await _final_stats_on_nats()
         await compose.stop_nats(_client)
         task.cancel()
         attested.cancel()
@@ -270,12 +271,45 @@ async def _nats_start() -> None:
         client = await _bus_client()
         port = compose.nats_port_of(client)
         if port is not None:
-            port.card_source = _presence_card
+            wire_nats(port)
         await compose.start_nats(client)
     except asyncio.CancelledError:
         raise
     except Exception as exc:  # noqa: BLE001 — the session never waits for or dies of NATS
         log.warning("NATS bus not started: %s", type(exc).__name__)
+
+
+async def _final_stats_on_nats() -> None:
+    """RT-6.43 step 7: the session's last STATS part on NATS too, while the bus still runs; the
+    exit handler posts the same object to the chat (stats.final). Nothing for a bot kept for
+    `--continue`, which posts no last part either. Never raises."""
+    if stats.nats_publish is None or _client is None or _exit_handled or _client.keeps_bot_on_exit:
+        return
+    try:
+        await asyncio.wait_for(stats.publish_nats(stats.final(VERSION, _fixed())), 5)
+    except Exception as exc:  # noqa: BLE001 — never block the end
+        log.info("overhead stats: the last part not on NATS: %s", type(exc).__name__)
+
+
+def wire_nats(port: Any) -> None:
+    """What the NATS bus publishes besides the chat, read from this server (ADR-015, RT-6.37,
+    RT-6.43): the HELLO card's data in the presence, the record of the open asks (at once
+    after each change of the asks file) and each STATS part. The host process does the same
+    for a hosted session (hosted._load_server)."""
+    port.card_source = _presence_card
+    port.ask_source = _open_asks
+    asks.on_change = port.asks_changed
+    stats.nats_publish = port.publish_stats
+
+
+def _open_asks() -> list[natsbus.OpenAsk]:
+    """This session's open asks for the record on NATS (RT-6.43 step 5): the asked human by
+    name, which the bus maps to its anchor through the own attestation."""
+    me = stats.bot_id()
+    if not me:
+        return []
+    return [natsbus.OpenAsk(mm=pid, kind=kind, human=human, title=title, asked=at, answered=done)
+            for pid, at, human, title, kind, done in asks.records(me)]
 
 
 # What this session's last HELLO stated (announce): model, task, branch, for the presence
@@ -2140,7 +2174,7 @@ async def ask_human(
     out = await _post_ask(client, me, to=target, head=head, need=need, context=context,
                           recommendation=recommendation, decision=decision, where=where,
                           blocking=blocking, answers=answer_list, root_id=root_id,
-                          human=who if coord else "")
+                          human=who if coord else "", kind=effective)
     out["kind"] = effective
     if answer_list:
         out["answers"] = answer_list  # what was posted, by position
@@ -2217,7 +2251,7 @@ async def _post_queued(client: ChatPort, me: Any, key: str,
                 recommendation=rec, decision=dec, where=where,
                 blocking=e["blocking"], answers=answers,
                 root_id=e.get("link", ""),
-                human=e["who"] if coord else "")
+                human=e["who"] if coord else "", kind=str(e.get("kind") or ""))
         except Exception as exc:
             posted = set(asks.open_asks(me.id)) - before
             if not posted:
@@ -2248,7 +2282,7 @@ remind.advance = _advance_queue
 async def _post_ask(client: ChatPort, me: Any, *, to: str, head: str, need: str,
                     context: str, recommendation: str, decision: str, where: str,
                     blocking: bool, answers: list[str], root_id: str,
-                    human: str = "", forwarded: bool = False) -> dict[str, Any]:
+                    human: str = "", forwarded: bool = False, kind: str = "") -> dict[str, Any]:
     """Post and record an ask to `to` (RT-6.11 step 1); with human, a
     question to the 👑 `to` that falls back to that human (RT-6.25 step 3)."""
     # The question is the card's title, so it stands in the card; the text
@@ -2288,7 +2322,7 @@ async def _post_ask(client: ChatPort, me: Any, *, to: str, head: str, need: str,
     # a later post in a shared thread; too late after 24 h (RT-6.11).
     post = await client.post(text, props=shown)
     asks.add(me.id, post.id, to, post.id, title=head, question=human, blocking=blocking,
-             answers=answers or None)
+             answers=answers or None, kind=kind, at=post.create_at / 1000 if post.create_at else 0)
     # RT-6.9: coord marks a question to the 👑 (RT-6.25), else it reached a human.
     # forwarded: the server's ask for a question the 👑 left open, which counts already.
     stats.record("ask", id=post.id, **({"coord": 1} if human else {}), **({"forwarded": 1} if forwarded else {}))
@@ -3314,7 +3348,7 @@ def _cleanup_on_exit() -> None:
     except Exception as exc:  # noqa: BLE001 — never block teardown
         log.info("BYE skipped: %s", exc)
     try:
-        data = stats.summary(VERSION, _fixed())
+        data = stats.final(VERSION, _fixed())
         if data:
             log.info("overhead stats: %s", stats.post_sync(_client, data))
     except Exception as exc:  # noqa: BLE001 — never block teardown

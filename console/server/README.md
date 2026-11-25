@@ -15,7 +15,8 @@ disk.
 Pilot deviation, decided by the owner (2026-11-24): **one read-only NATS
 account for the whole console** — lab, one tenant. ADR-015 way A (a
 credential per person, made by the login service) follows after the
-pilot.
+pilot: the login service issues it already (RT-6.43), the console does
+not use it yet.
 
 ## What it reads
 
@@ -32,8 +33,29 @@ does not carry today, and those fields from an older MCP server, arrive as
 unknown (`null`/empty), never guessed as zero — the app shows `n/a`.
 
 Presence today carries `online`/`away` (format v1) — the Kanban's two
-extra columns. Asks and the STATS lines do not lie on NATS yet:
-`/v1/asks` and `/v1/stats` answer empty until they do (stage 1's cut).
+extra columns.
+
+The asks and the reports (RT-6.43 steps 6 and 8): every MCP server with a
+NATS link publishes one record of its open asks on
+`<presence>.ask.<home>.<name>`, inside the `PRESENCE` stream the consumer
+above already reads, and each part of its STATS line on `<stats>.<name>`.
+The fleet decodes an ask record strictly (`natsbus.decode_ask_record`: a
+record that breaks a rule is dropped whole with a warning that carries
+none of it) and `/v1/asks` lists the asks of every record whose `exp` is
+ahead of the floored clock, `expired` after 24 h (a hint), `agent_gone`
+when its presence is not fresh. "For me" and "may answer" are `null`
+(`n/a`) and mark nothing until the console connects with the operator's own NATS
+credential (points 1 to 6 of the console decision's addition of
+2026-11-25, issued by the login service but not used here yet) and takes
+the operator's anchor from the login's own record: they compare anchors only, never a login name (point
+4). Read-only: no answer, no
+thread text. `/v1/stats` answers the two stage-1 reports (the bus's share
+of all tokens per version over 7 days; the asks over 24 h and 7 days),
+computed with `stats.py` from lines decoded by `stats.decode_line`; every
+value without lines is `null` (`n/a`). The STATS lines are read only when
+`CONSOLE_STATS_STREAM` names their stream: the pilot's account has no
+right on it, so the reports say `n/a` until the operator's own credential
+reads them through the login service's consumer.
 
 ## NATS account for the lab (the pilot's deviation)
 
@@ -105,6 +127,9 @@ the read.
 | `CONSOLE_NATS_CA_FILE` | the CA for `tls://` |
 | `CONSOLE_DELIVER_SUBJECT` | default `deliver.console.presence` |
 | `CONSOLE_PRESENCE_SUBJECT`, `CONSOLE_PRESENCE_STREAM` | defaults `presence`, `PRESENCE` |
+| `CONSOLE_STATS_STREAM` | the STATS lines' stream (`STATS`); empty (the default) reads none: the reports say `n/a` |
+| `CONSOLE_STATS_SUBJECT` | the lines' prefix, the login service's `AUTH_STATS_PREFIX`, default `stats` |
+| `CONSOLE_STATS_DELIVER_SUBJECT`, `CONSOLE_STATS_CONSUMER_NAME` | defaults `deliver.console.stats`, `console_stats`; the account needs the consumer's CREATE/DELETE and this deliver subject |
 | `CONSOLE_WEB_DIR` | the built browser app (`console/web/dist`) |
 | `CONSOLE_SESSION_SEC` | session lifetime, default 8 h |
 | `CONSOLE_LOGIN_OFF` | **tests and the mock only** (loopback): no login, the operator is a stand-in |

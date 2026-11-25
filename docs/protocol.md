@@ -317,7 +317,11 @@ inbox: the credential holds no right to make a request.
 
 ## Over NATS: the console's asks and STATS lines
 
-Specified for the operator console's stage 1, not built
+Built in the MCP server (`natsbus.encode_ask_record`, `NatsBus.publish_asks`,
+`stats.nats_body`) and the console (`natsbus.decode_ask_record`,
+`stats.decode_line`), and in the login service (the `STATS` stream and
+each agent's rights on both subjects, `services/auth`). For the operator
+console's stage 1
 ([arc42 §6.43](arc42/06-runtime-view.md#643-the-console-on-the-bus-as-its-operator),
 the addition of 2026-11-25 to
 [ADR-015](arc42/09-architecture-decisions.md#adr-015-operator-web-console)).
@@ -351,7 +355,7 @@ two open asks, and the empty one at the agent's bye:
 | `asks` | record | The open asks, oldest first, at most 20; an ended ask leaves the list |
 | `more` | record | Open asks left out: past 20, or past the record's 4 KiB |
 | `iat` | record | When this record was published (Unix seconds) |
-| `exp` | record | 30 minutes after `iat`; a record past it is not shown |
+| `exp` | record | 30 minutes after `iat` (a reader drops a record whose `exp` is not after `iat` or more than 30 minutes after it); a record past it, or more than 30 minutes after the server stored it, is not shown |
 | `mm` | ask | The ask's Mattermost post id, 26 of `[a-z0-9]`, unique in the list |
 | `kind` | ask | `approval` or `question`, as `ask_human` set it |
 | `human` | ask | The asked human's anchor in its subject form, as the session's record from the login service gives it: the directory's anchor (a lower-case letter or digit, then up to 63 of `[a-z0-9._-]`) with every `.` written as `~`, the encoding of the presence subject's owner token (`ownerToken` in `services/auth/internal/callout/perms.go`, `natsbus.owner_token` in the MCP server), so a lower-case letter or digit, then up to 63 of `[a-z0-9~_-]`; `-` when the record gives none. "For me" compares it, in that form, with the operator's own anchor in the same form, never with a name |
@@ -359,8 +363,12 @@ two open asks, and the empty one at the agent's bye:
 | `asked` | ask | The ask's server time (Unix seconds); after 24 h a yes approves nothing |
 | `answered` | ask | The asking server saw a first answer by a trusted human |
 
-The whole record is at most 4 KiB. No other key, no `props`, no duplicate
-key; a record that breaks a rule is dropped whole. A `STATS` part on NATS
+The whole record is at most 4 KiB; the MCP server's encoder stops at 3840
+bytes, since the stream's limit counts headers too (it sends none). No
+other key, no `props`, no duplicate key; a record that breaks a rule is
+dropped whole. The server publishes it at each change, every 10 minutes
+while an ask is open, and an empty list at its bye; a refused publish is
+tried again after a minute or the next change. A `STATS` part on NATS
 is the same JSON object the stats channel's line carries after `STATS `
 ([arc42 §6.9](arc42/06-runtime-view.md#69-measuring-the-coordination-overhead)),
 at most 8 KiB, for example:
@@ -381,10 +389,18 @@ at most 8 KiB, for example:
 | `rt` | `claude-code`, `cursor`, `opencode`, `codex`, `pi` or `other` (any other client is published as `other`) |
 | `kind` | `session` or `autonomous` |
 
-No other value is a string: every other value is a number, a boolean, a
-list of numbers, or an object of such values. A string anywhere else, a
-string off its pattern, a duplicate key or a line over 8 KiB drops the
-whole line. Keys come from one fixed allow list in `stats.py`, shared by
+No other value is a string. Each listed key has one type: `part` an
+integer, `final` a boolean, `posts` and `compact` a pair of numbers,
+`wakes` and `blocks` objects of numbers, `tools` an object of pairs, `tok`
+its numbers and the objects `all` and `bus` of numbers, every other listed
+key one number; each number an integer from 0 to 10^12, and a share is shown within 0 to 100. A key outside the list may
+hold a number, a boolean, a list of numbers or an object of such values,
+and is ignored. A string anywhere else, a
+string off its pattern, a listed key of another type or out of range, a
+duplicate key or a line over 8 KiB drops the whole line. A reader counts
+each line once by its stream sequence. The publisher sends at most 8000 bytes. Keys come from one
+fixed allow list in `stats.py` (`LINE_KEYS` with their labels,
+`TOOL_NAMES`, `WAKE_REASONS`, `BLOCK_KINDS`, `TOK_KEYS`, `TOK_TYPES`), shared by
 publisher and reader: the top-level fields RT-6.9 names; in `tools` the
 bus's own MCP tool names; in `wakes` and `blocks` the reasons and kinds
 the turn hooks write; in `tok` `req`, `bus_req`, `fixed`, `skill`, `all`

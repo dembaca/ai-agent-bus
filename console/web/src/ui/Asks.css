@@ -22,4 +22,3 @@
 
 .asks__need { max-width: 520px; overflow-wrap: anywhere; }
 
-.asks__answers { display: flex; flex-wrap: wrap; gap: 4px; max-width: 260px; }

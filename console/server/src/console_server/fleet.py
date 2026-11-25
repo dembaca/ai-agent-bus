@@ -20,6 +20,7 @@ shows ``n/a``.
 """
 from __future__ import annotations
 
+import logging
 import time
 from dataclasses import dataclass, field
 from typing import Any
@@ -27,11 +28,16 @@ from typing import Any
 from mattermost_ai_agent_bus import natsbus
 from mattermost_ai_agent_bus.natsbus import (
     AGENT_RE, CHANNEL_RE, Attestation, decode_attestation,
-    PresenceCard, decode_claim, decode_presence, decode_presence_bot, decode_presence_card,
-    decode_presence_name,
-    owner_of_token,
+    AskRecord, PresenceCard, card_text, decode_ask_record, decode_claim, decode_presence,
+    decode_presence_bot, decode_presence_card, decode_presence_name,
+    owner_of_token, owner_token,
     parse_ack,
 )
+
+log = logging.getLogger(__name__)
+# An ask older than this is shown as expired: a hint, a yes approves nothing then (RT-6.11);
+# whether it does stays the asking server's check.
+ASK_EXPIRED_SEC = 24 * 3600
 
 
 @dataclass
@@ -54,6 +60,8 @@ class Fleet:
     # channel -> agent -> stream sequence of its crown claim
     _claims: dict[str, dict[str, int]] = field(default_factory=dict)
     _claim_at: dict[tuple[str, str], float] = field(default_factory=dict)
+    # agent -> (stream sequence, server time, home, record) of its open asks (RT-6.43 step 6)
+    _asks: dict[str, tuple[int, float, str, AskRecord]] = field(default_factory=dict)
     # agent -> Attestation (the login service's record, RT-6.41)
     _attests: dict[str, tuple[int, float, Attestation]] = field(default_factory=dict)
     _presence_cseq: int = 0
@@ -156,6 +164,19 @@ class Fleet:
                     members[t[3]] = (ack.stream_seq, ack.time)
                     return True
                 return False
+            if (len(t) == 4 and t[0] == p and t[1] == "ask"
+                    and CHANNEL_RE.fullmatch(t[2]) and AGENT_RE.fullmatch(t[3])):
+                try:
+                    record = decode_ask_record(data)
+                except Exception:
+                    # dropped whole (RT-6.43 step 6), the warning carries none of it
+                    log.warning("console: an ask record of %s dropped: not format v1 or past its bounds", t[3])
+                    return False
+                seq0, at0, _h, _r = self._asks.get(t[3], (0, 0.0, "", record))
+                if (ack.time, ack.stream_seq) > (at0, seq0):
+                    self._asks[t[3]] = (ack.stream_seq, ack.time, t[2], record)
+                    return True
+                return False
             if (len(t) == 4 and t[0] == p and t[1] == "attest"
                     and t[3] == "v1" and AGENT_RE.fullmatch(t[2])):
                 att = decode_attestation(data, t[2])
@@ -192,6 +213,7 @@ class Fleet:
                 self._cards.pop(agent, None)
         self._attests = {a: row for a, row in self._attests.items()
                          if row[1] >= edge}
+        self._asks = {a: row for a, row in self._asks.items() if self._ask_exp(row) > self.server_now}
         for ch in list(self._members):
             self._members[ch] = {a: m for a, m in self._members[ch].items() if m[1] >= edge}
             if not self._members[ch]:
@@ -338,6 +360,61 @@ class Fleet:
         return {"nodes": nodes, "edges": [{"id": e["id"], "from": e["from"], "to": e["to"],
                                           "kind": e["kind"]} for e in edges],
                 "cutDepth": None}
+
+
+    # --- the asks (RT-6.43 step 6; ADR-015 addition of 2026-11-25, points 8 to 11) --------
+
+    @staticmethod
+    def _ask_exp(row: tuple[int, float, str, AskRecord]) -> float:
+        """When a record runs out: its `exp`, but never later than ASK_VALID_SEC after the
+        server stored it (the agent's own clock is not trusted)."""
+        return min(row[3].exp, row[1] + natsbus.ASK_VALID_SEC)
+
+    def _fresh_attestation(self, agent: str) -> Attestation | None:
+        att = self._attests.get(agent)
+        return att[2] if att and att[2].exp > self.server_now else None
+
+    def asks(self, anchor: str | None = None) -> list[dict[str, Any]]:
+        """The open asks of every fresh record, as `/v1/asks` rows (the ADR's spellings).
+        `anchor`: the operator's anchor in subject form, as the operator's own NATS credential
+        gives it (points 1 to 6 of the addition, not built); never derived from a login name
+        (point 4). Without it "for me" and "may answer" are None (n/a) and mark nothing. With
+        it: "for me" when the asked human is that anchor, "may answer" when the asking
+        agent's attestation names it as owner or trusted; `expired` after
+        24 h (a hint: the asking server decides); `agent_gone` when its presence is not fresh.
+        Read-only: no answer, no thread text. The title is plain text, control and direction
+        characters stripped."""
+        me = anchor
+        now = self.server_now
+        rows = []
+        for agent, row in sorted(self._asks.items()):
+            _seq, _at, home, record = row
+            if self._ask_exp(row) <= now:
+                continue
+            att = self._fresh_attestation(agent)
+            people = ([(att.owner_anchor, att.owner_name), *att.trusted] if att else [])
+            names = {owner_token(anchor): named for anchor, named in people}
+            gone = self.state_of(agent) == "offline"
+            for ask in record.asks:
+                human = None if ask.human == natsbus.NO_OWNER else ask.human
+                rows.append({
+                    "id": ask.mm,
+                    "by": agent,
+                    "display_name": self.shown_name(agent),
+                    "home": home,
+                    "kind": ask.kind,
+                    "human": names.get(human, human) if human else None,
+                    "need": card_text(ask.title, natsbus.ASK_TITLE_MAX) or "",
+                    "at": ask.asked * 1000,
+                    "end": ("expired" if now - ask.asked >= ASK_EXPIRED_SEC
+                            else "answered" if ask.answered else "open"),
+                    # the anchor must also be one the asking agent's attestation names
+                    "for_me": (human == me and me in names) if me else None,
+                    "may_answer": (me in names) if me else None,
+                    "agent_gone": gone,
+                    "thread_id": ask.mm,
+                })
+        return sorted(rows, key=lambda r: (not r["for_me"], r["at"]))
 
 
 def short_name(name: str) -> str:

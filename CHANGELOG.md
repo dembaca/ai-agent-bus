@@ -7,6 +7,31 @@ before 0.5.0 are described in the git history.
 
 ### Added
 
+- **The console shows the open asks and two reports from NATS** (RT-6.43
+  steps 5 to 8, the console decision ADR-015, points 8 to 15 of its
+  addition of 2026-11-25). Each MCP server with a NATS link publishes one
+  record of its open asks on `<presence>.ask.<home>.<name>`: at most 20,
+  oldest first, a title of at most 200 characters each and no body, the
+  asked human as the anchor its own attestation pairs with the name (`-`
+  without one), the rest counted in `more`, the body at most 3840 bytes
+  (the stream's 4 KiB count headers too); at each change, every 10 minutes
+  while an ask is open, valid 30 minutes, an empty list at its bye. Each
+  STATS part also goes on `<stats>.<name>`, the chat line's object with
+  keys from one allow list in `stats.py`, each of the type the list gives
+  it (numbers 0 to 10^12), `rt` as `other` for an unknown
+  client, at most 8000 bytes; a failed publish waits for the next part.
+  Hosted (corral) sessions publish both too. The console decodes both
+  strictly (a record or line that breaks a rule is dropped whole, its
+  warning carries none of it; a record lives at most 30 minutes after the
+  server stored it; a replayed line counts once) and shows the asks read-only, expired after
+  24 h, "agent gone" without fresh presence; `/v1/stats` gives the bus's share of all tokens per version
+  over 7 days and the asks over 24 hours and 7 days, the numbers
+  `stats_report` gives on the same lines, with the age of the oldest line.
+  The STATS lines are read only with `CONSOLE_STATS_STREAM`. The console does not
+  connect with the operator's own NATS credential yet (the login service
+  issues it, see below); until it takes the operator's anchor from that
+  credential's own record, "for me" and "may answer" are n/a and mark
+  nothing (never matched by name).
 - **The login service's part of the console's asks and `STATS` lines**
   (the console on the bus as its operator, RT-6.43; points 9 and 12 of the
   console decision's addition of 2026-11-25, ADR-015). Each agent's
@@ -22,8 +47,7 @@ before 0.5.0 are described in the git history.
   rights, `$JS.API.STREAM.CREATE.STATS` and `$JS.API.STREAM.INFO.STATS`
   (`services/auth/nats-server.example.conf`): without them the login
   service refuses to start, with an error that names both. No prefix may be
-  `_INBOX`. No MCP server publishes
-  either record yet; the person's credential is separate work.
+  `_INBOX`.
 - **A NATS credential per console operator, in the login service** (the
   console on the bus as its operator, RT-6.43; points 1 to 6 of the console
   decision's addition of 2026-11-25, ADR-015). With

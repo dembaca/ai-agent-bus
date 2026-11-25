@@ -470,6 +470,126 @@ def normalise_trusted(names: Iterable[str]) -> tuple[tuple[str, ...], bool]:
     return tuple(out)[:MAX_TRUSTED], cut or len(out) > MAX_TRUSTED
 
 
+# --- the open asks, one record per agent (RT-6.43 step 5, ADR-015 addition of 2026-11-25) -----
+# `<presence>.ask.<home>.<name>` in PRESENCE: the asking agent's open asks, for the operator
+# console. A title and no body; bounded so that no agent can stretch it.
+ASK_MAX = 20  # asks in one record; the rest is counted in `more`
+ASK_TITLE_MAX = 200  # characters
+ASK_RECORD_MAX = 4096  # bytes, the whole record: what a reader accepts (protocol.md)
+# What the encoder makes at most: the PRESENCE stream's max_msg_size (4096) counts headers
+# too; this bus sends none, the margin keeps a record valid if a client library adds one.
+ASK_BODY_MAX = 3840
+ASK_VALID_SEC = 1800  # `exp` - `iat`: a record not renewed runs out after 30 min
+ASK_RENEW_SEC = 600.0  # renewed this often while an ask is open
+ASK_KINDS = ("approval", "question")
+# The asked human's anchor in subject form (owner_token's encoding: "." as "~"); "-": none.
+HUMAN_TOKEN_RE = re.compile(r"[a-z0-9][a-z0-9~_-]{0,63}")
+_ASK_RECORD_KEYS = frozenset({"v", "asks", "more", "iat", "exp"})
+_ASK_KEYS = frozenset({"mm", "kind", "human", "title", "asked", "answered"})
+
+
+@dataclass(frozen=True)
+class OpenAsk:
+    """One open ask as the record carries it: `mm` the ask's Mattermost post id, `human` the
+    asked human's anchor in subject form or NO_OWNER (in what the MCP server hands the bus:
+    the asked human's username, which the bus maps through its attestation), `asked` server
+    time in Unix seconds, `answered` a trusted human's first answer was seen."""
+
+    mm: str
+    kind: str
+    human: str
+    title: str
+    asked: int
+    answered: bool = False
+
+
+@dataclass(frozen=True)
+class AskRecord:
+    asks: tuple[OpenAsk, ...]
+    more: int
+    iat: int
+    exp: int
+
+
+def _ask_obj(a: OpenAsk) -> dict[str, Any]:
+    return {"mm": a.mm, "kind": a.kind, "human": a.human, "title": a.title,
+            "asked": a.asked, "answered": a.answered}
+
+
+def encode_ask_record(asks: Iterable[OpenAsk], iat: int, more: int = 0) -> bytes:
+    """The ask record (protocol.md): the open asks oldest first, at most ASK_MAX, each title
+    cut to one line of ASK_TITLE_MAX characters, the whole within ASK_BODY_MAX bytes; the
+    newest that do not fit are counted in `more`, as is an ask with a malformed id or a
+    repeated one. A `human` off HUMAN_TOKEN_RE goes as NO_OWNER, an unknown kind as approval."""
+    seen: set[str] = set()
+    clean: list[OpenAsk] = []
+    for a in asks:
+        if not isinstance(a.mm, str) or not BOT_RE.fullmatch(a.mm) or a.mm in seen:
+            more += 1
+            continue
+        seen.add(a.mm)
+        clean.append(OpenAsk(
+            mm=a.mm, kind=a.kind if a.kind in ASK_KINDS else "approval",
+            human=a.human if a.human == NO_OWNER or HUMAN_TOKEN_RE.fullmatch(a.human or "") else NO_OWNER,
+            title=card_text(a.title, ASK_TITLE_MAX) or "",
+            asked=max(0, int(a.asked)), answered=bool(a.answered)))
+    clean.sort(key=lambda a: a.asked)
+    kept, more = clean[:ASK_MAX], more + max(0, len(clean) - ASK_MAX)
+    iat = int(iat)
+    while True:
+        body = _dumps({"v": 1, "asks": [_ask_obj(a) for a in kept], "more": more,
+                       "iat": iat, "exp": iat + ASK_VALID_SEC}).encode()
+        if len(body) <= ASK_BODY_MAX or not kept:
+            return body
+        kept.pop()  # the newest goes first
+        more += 1
+
+
+def _nonneg(v: object, what: str) -> int:
+    if isinstance(v, bool) or not isinstance(v, int) or v < 0:
+        raise MessageError(f"{what} is not a non-negative integer")
+    return v
+
+
+def decode_ask_record(data: bytes) -> AskRecord:
+    """Strict: a record that is not format v1 within ASK_RECORD_MAX bytes, with an unknown,
+    missing or duplicate key, more than ASK_MAX asks, a title over ASK_TITLE_MAX characters,
+    a `human` that is neither NO_OWNER nor an anchor in subject form, or a malformed or
+    repeated `mm`, or an `exp` not after `iat` or more than ASK_VALID_SEC after it raises
+    MessageError (dropped whole; the text carries none of it)."""
+    if len(data) > ASK_RECORD_MAX:
+        raise MessageError("ask record too big")
+    obj = _obj(data)
+    if set(obj) != _ASK_RECORD_KEYS:
+        raise MessageError("ask record keys")
+    raw = obj["asks"]
+    if not isinstance(raw, list) or len(raw) > ASK_MAX:
+        raise MessageError("ask record list")
+    iat, exp = _nonneg(obj["iat"], "iat"), _nonneg(obj["exp"], "exp")
+    if not iat < exp <= iat + ASK_VALID_SEC:
+        raise MessageError("ask record validity")
+    out: list[OpenAsk] = []
+    seen: set[str] = set()
+    for a in raw:
+        if not isinstance(a, dict) or set(a) != _ASK_KEYS:
+            raise MessageError("ask keys")
+        mm, kind, human, title, answered = a["mm"], a["kind"], a["human"], a["title"], a["answered"]
+        if not isinstance(mm, str) or not BOT_RE.fullmatch(mm) or mm in seen:
+            raise MessageError("ask id")
+        seen.add(mm)
+        if kind not in ASK_KINDS:
+            raise MessageError("ask kind")
+        if not isinstance(human, str) or not (human == NO_OWNER or HUMAN_TOKEN_RE.fullmatch(human)):
+            raise MessageError("ask human")
+        if not isinstance(title, str) or len(title) > ASK_TITLE_MAX:
+            raise MessageError("ask title")
+        if not isinstance(answered, bool):
+            raise MessageError("ask answered")
+        out.append(OpenAsk(mm=mm, kind=kind, human=human, title=title,
+                           asked=_nonneg(a["asked"], "asked"), answered=answered))
+    return AskRecord(asks=tuple(out), more=_nonneg(obj["more"], "more"), iat=iat, exp=exp)
+
+
 def encode_claim() -> bytes:
     return _dumps({"v": 1}).encode()
 
@@ -857,6 +977,7 @@ class NatsSettings:
     lobby_channel: str = "lobby"  # the login service's AUTH_LOBBY: its name, to subscribe literally
     bus: str = "bus"
     presence: str = "presence"
+    stats: str = "stats"  # the login service's AUTH_STATS_PREFIX: STATS lines on <stats>.<name> (RT-6.43)
     name_prefix: str = "agent-"
     props_prefix: str = a2a.DEFAULT_PREFIX  # MM_PROPS_PREFIX, one setting of the whole bus (RT-6.16)
     tls_ca_file: str | None = None  # CA bundle that verifies a tls:// server (default: the system's)
@@ -929,9 +1050,11 @@ class NatsBus:
                  connect_timeout: float = 5.0, renew_sec: float = RENEW_SEC,
                  send_wait_sec: float = SEND_WAIT_SEC, member_renew_sec: float = MEMBER_RENEW_SEC,
                  on_fatal: FatalCallback | None = None, on_person: PersonCallback | None = None) -> None:
-        for what, v in (("bus", settings.bus), ("presence", settings.presence)):
+        for what, v in (("bus", settings.bus), ("presence", settings.presence), ("stats", settings.stats)):
             if not PREFIX_RE.fullmatch(v) or v == DELIVER:
                 raise ValueError(f"invalid {what} prefix")
+        if len({settings.bus, settings.presence, settings.stats}) != 3:
+            raise ValueError("the bus, presence and stats prefixes must differ")
         for url in settings.servers:
             _check_server(url)
         _schemes(settings.servers)  # one scheme per pool, also for settings built around the check
@@ -969,6 +1092,7 @@ class NatsBus:
         self._stale: set[str] = set()  # channels with a gap, dropped until the reconnect
         self._last_seq: dict[str, int] = {}  # channel (or "@dm") -> last stream sequence delivered
         self._server_now = 0.0  # the newest server timestamp seen: the host's "now"
+        self._server_now_mono = 0.0  # the monotonic clock when it was seen (for _iat)
         self._last_prune = 0.0
         self._presence: dict[str, tuple[float, str]] = {}
         self._owners: dict[str, str] = {}  # agent -> owner its presence subject names (RT-6.37)
@@ -983,6 +1107,15 @@ class NatsBus:
         self._bot_name = ""  # the bot's username, stated in the presence for people (ADR-015)
         # the HELLO card's data for the presence (RT-6.37, ADR-015); None sends none
         self.card_source: Callable[[], PresenceCard | None] | None = None
+        # The open asks for the ask record (RT-6.43 step 5): the MCP server sets it (a hosted
+        # one maybe after start); `human` is the asked human's username, mapped here through
+        # the own attestation. None publishes no record.
+        self.ask_source: Callable[[], Iterable[OpenAsk]] | None = None
+        self._ask_now = asyncio.Event()
+        self._ask_sent: tuple[OpenAsk, ...] | None = None  # the asks of the last record published
+        self._ask_sent_at = 0.0  # monotonic
+        self._ask_failed: tuple[tuple[OpenAsk, ...], float] | None = None  # (asks, retry after)
+        self._loop: asyncio.AbstractEventLoop | None = None  # the bus's loop, for asks_changed
         self._synced = False
         self._presence_read = False  # True once the stored presence stream was read (a new session says so in its hello)
         self._memberships: list[str] = []  # channels this bus announces its membership of
@@ -1054,7 +1187,9 @@ class NatsBus:
             # (a send raises "not connected" until it has).
             log.warning("nats bus: first connect failed, retrying: %s", connect_reason(exc))
             retry = True
-        self._tasks = [asyncio.create_task(self._supervise()), asyncio.create_task(self._heartbeat())]
+        self._loop = asyncio.get_running_loop()
+        self._tasks = [asyncio.create_task(self._supervise()), asyncio.create_task(self._heartbeat()),
+                       asyncio.create_task(self._announce_asks())]
         if self._memberships:
             self._start_member_task()
         if retry:
@@ -1075,6 +1210,11 @@ class NatsBus:
         self._tasks = []
         nc = self._nc
         if nc is not None and self._connected:
+            if self.ask_source is not None:
+                try:  # at the bye an empty list once: the console drops the asks at once (RT-6.43 step 5)
+                    await nc.publish(self._ask_subject, encode_ask_record((), self._iat()))
+                except Exception as exc:  # noqa: BLE001 — the record runs out by its exp anyway
+                    log.info("nats bus: stop: the empty ask record: %s", type(exc).__name__)
             try:
                 await nc.publish(self._presence_subject, self._presence_body("bye"))
                 await asyncio.wait_for(nc.drain(), 5)
@@ -1450,6 +1590,95 @@ class NatsBus:
         its presence there and nowhere else, so the owner in it is pinned like the name."""
         return f"{self._s.presence}.{owner_token(self._owner)}.{self.name}"
 
+    # --- the ask record and the STATS lines (RT-6.43 steps 5 and 7) -------------------------
+
+    @property
+    def _ask_subject(self) -> str:
+        """`<presence>.ask.<home>.<name>`: the one subject the login service grants this agent
+        for its open asks, for its own name and its hello's home."""
+        return f"{self._s.presence}.ask.{self._channel(self._s.home)}.{self.name}"
+
+    def _iat(self) -> int:
+        """A record's issue time: the server's clock as this host last saw it, carried forward
+        by the monotonic clock (a quiet stream must not make a fresh record look old)."""
+        if not self._server_now:
+            return int(time.time())
+        return int(self._server_now + max(0.0, time.monotonic() - self._server_now_mono))
+
+    def human_token(self, name: str) -> str:
+        """The asked human's anchor in subject form, as this agent's own attestation from the
+        login service pairs it with that name (RT-6.41); NO_OWNER when the record names no
+        such person (or two anchors for one name), or there is no fresh record."""
+        att = self.attestation_of(self.name)
+        if att is None or not name:
+            return NO_OWNER
+        people = [(att.owner_anchor, att.owner_name), *att.trusted]
+        anchors = {anchor for anchor, named in people if named == name.lower()}
+        return owner_token(anchors.pop()) if len(anchors) == 1 else NO_OWNER
+
+    def asks_changed(self) -> None:
+        """An ask was posted, answered or ended: the record goes out now, not at the next check.
+        Safe from any thread: the event is set in the bus's own loop."""
+        loop = self._loop
+        if loop is None or loop.is_closed():
+            return  # not started: the first check after start publishes
+        try:
+            running = asyncio.get_running_loop()
+        except RuntimeError:
+            running = None
+        if running is loop:
+            self._ask_now.set()
+        else:
+            loop.call_soon_threadsafe(self._ask_now.set)
+
+    async def _announce_asks(self) -> None:
+        """Publish the ask record at each change and every ASK_RENEW_SEC while an ask is open;
+        checked every heartbeat, at once after asks_changed."""
+        while not self._stopping:
+            try:
+                await asyncio.wait_for(self._ask_now.wait(), self._heartbeat_sec)
+            except asyncio.TimeoutError:
+                pass
+            self._ask_now.clear()
+            if self._stopping or not self.connected or self.ask_source is None:
+                continue
+            try:
+                await self.publish_asks()
+            except asyncio.CancelledError:
+                raise
+            except Exception as exc:  # noqa: BLE001 — the next check tries again
+                log.info("nats bus: the ask record was not published: %s", type(exc).__name__)
+
+    async def publish_asks(self) -> bool:
+        """The ask record, when the asks changed since the last one (the first check after start
+        counts as a change) or it is due for renewal; True when one went out. A refused publish
+        is tried again after a minute or a change."""
+        source = self.ask_source
+        if source is None:
+            return False
+        asks = tuple(dataclasses.replace(a, human=self.human_token(a.human)) for a in source())
+        now = time.monotonic()
+        due = bool(asks) and now - self._ask_sent_at >= ASK_RENEW_SEC
+        # The first check publishes even an empty list: it replaces a record a predecessor of
+        # this agent left (a crash), which would otherwise stand until its exp.
+        if asks == self._ask_sent and not due:
+            return False
+        if self._ask_failed is not None and self._ask_failed[0] == asks and now < self._ask_failed[1]:
+            return False
+        try:
+            await self._publish(self._ask_subject, encode_ask_record(asks, self._iat()))
+        except NatsBusError:
+            self._ask_failed = (asks, now + 60.0)
+            raise
+        self._ask_failed = None
+        self._ask_sent, self._ask_sent_at = asks, now
+        return True
+
+    async def publish_stats(self, body: bytes) -> None:
+        """One STATS part on `<stats>.<name>` (RT-6.43 step 7), the body stats.nats_body made;
+        raises NatsBusError when it was not sent."""
+        await self._publish(f"{self._s.stats}.{self.name}", body)
+
     def _presence_body(self, status: str) -> bytes:
         """This agent's presence body, with the card's data card_source states now (RT-6.37):
         a change shows with the next heartbeat. A failing source sends no card, never no
@@ -1604,6 +1833,7 @@ class NatsBus:
         if server_time <= self._server_now:
             return
         self._server_now = server_time
+        self._server_now_mono = time.monotonic()
         if server_time - self._last_prune < 60.0:
             return
         self._last_prune = server_time

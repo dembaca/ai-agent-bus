@@ -106,6 +106,13 @@ def _isolate_bus_env(monkeypatch, tmp_path, request):
 
     if "release_segment" not in request.keywords:
         monkeypatch.setattr(release, "segment", lambda: "")
+    # What wire_nats hands this process (RT-6.43): the NATS publishers, the STATS lines kept.
+    from mattermost_ai_agent_bus import asks as _asks, stats as _stats
+
+    monkeypatch.setattr(_stats, "nats_publish", None)
+    monkeypatch.setattr(_stats, "_unpublished", [])
+    monkeypatch.setattr(_stats, "_final", None)
+    monkeypatch.setattr(_asks, "on_change", None)
     yield
     # monkeypatch restores the real environment itself; session_start also writes
     # into os.environ, so make sure nothing leaks into the next test.
