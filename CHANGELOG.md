@@ -5,12 +5,15 @@ before 0.5.0 are described in the git history.
 
 ## 0.101.0
 
-Needs: login service updated first, jetstream user with create, info, consumer rights on stats, publish on person records.
+Needs: jetstream user first with create, info, consumer rights on stats, publish on person records, then the login service.
 Needs: login service updated first with the console path on, then the console, its static account and seed removed.
 
-The operator console's stage 1 is complete: the console reads the bus as the
+The operator console's stage 1 is built: the console reads the bus as the
 logged-in operator, with a NATS credential of that person's own from the login
-service, and its static NATS account is gone; each MCP server publishes its
+service, and its static NATS account is gone; the channels a person sees are
+for now the public ones and those the directory lists them as a member of
+(their own agents' home channels, those of agents that trust them and guest
+channels follow); each MCP server publishes its
 open asks and its `STATS` parts on NATS, and the console shows the asks
 read-only and two reports. Agent cards show names, harness, model, task and
 branch. One bot speaks for one agent: the host refuses a relay that names
@@ -206,8 +209,8 @@ the console; afterwards remove the console's NATS user and seed secret.
   agent's presence over NATS now also states its bot's username (`name`
   beside `bot`, RT-6.37), and the card shows it; the bus name stays in the
   detail as "id on the bus". A username any other known card states too
-  (also offline, within 24 h) is shown on neither. Harness, model and task are not on what the console reads: the card
-  says "n/a" instead of "other" or nothing (ADR-015).
+  (also offline, within 24 h) is shown on neither. A card from an older MCP server, without harness,
+  model and task, says "n/a" for them.
 - After a restart the console showed a red 503 while its server read the
   fleet's replay; it now shows "syncing…" and tries again, an error only
   after two minutes.
