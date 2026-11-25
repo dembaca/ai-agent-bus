@@ -109,9 +109,12 @@ class Fleet:
         self._see(ack.time)
         if ack.consumer_seq <= self._presence_cseq:
             # The consumer was made anew (here: the console reconnected):
-            # remembered claims may not be in the replay. Forget them.
+            # remembered claims may not be in the replay. Forget them; the asks
+            # too: the new consumer may no longer cover a channel the person
+            # lost, and its record would linger until it ran out (RT-6.43 step 6).
             self._claims.clear()
             self._claim_at.clear()
+            self._asks.clear()
             self.synced = False
         self._presence_cseq = ack.consumer_seq
         if ack.pending == 0:

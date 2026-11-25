@@ -19,6 +19,9 @@ NOW = 1764061800.0
 NKEY = "UDXU4RCSJNZOIQHZNWXHXORDPRTGNJAHAHFRGZNEEJCPQTT2M7NFCNF4"
 A = agent_name("dembaca", NKEY)
 B = agent_name("carol", NKEY)
+# The login service's STATS consumer of one login (`consumers.PersonConsumerNames`:
+# "<person>_<login>_stats", the login its public key in lower case).
+STATS_CONSUMER = "person-dembaca_u" + "a" * 55 + "_stats"
 
 
 def ack(stream: str, consumer: str, seq: int, ts: float) -> str:
@@ -99,6 +102,19 @@ def test_a_record_runs_out_and_the_newest_wins() -> None:
     assert f.asks() == []
 
 
+def test_a_consumer_made_anew_forgets_the_held_asks() -> None:
+    """RT-6.43 step 6: a presence consumer made anew may no longer cover a channel the
+    person lost; its asks do not linger, only what the new consumer replays is shown."""
+    rec_a = encode_ask_record([OpenAsk(mm(1), "approval", "-", "a", int(NOW))], int(NOW))
+    rec_b = encode_ask_record([OpenAsk(mm(3), "approval", "-", "c", int(NOW))], int(NOW))
+    f = fleet_with((A, "dev", rec_a, NOW), (B, "ops", rec_b, NOW))
+    assert sorted(r["id"] for r in f.asks()) == [mm(1), mm(3)]
+    # the new consumer starts its count again at 1 and replays only "ops"
+    anew = f"$JS.ACK.PRESENCE.console.1.10.1.{int((NOW + 1) * 1e9)}.0"
+    f.on_delivery(f"presence.ask.ops.{B}", rec_b, anew, "PRESENCE", "console")
+    assert [r["id"] for r in f.asks()] == [mm(3)]
+
+
 def test_expired_after_24_hours_and_agent_gone() -> None:
     """RT-6.43 step 6: an ask older than 24 h is marked expired (a hint); the asks of an agent
     without fresh presence are marked "agent gone"."""
@@ -141,8 +157,8 @@ def book_with(*lines: tuple[str, dict, float]) -> StatsBook:
     for i, (agent, line, at) in enumerate(lines, 1):
         body = stats.nats_body(line)
         assert body is not None
-        assert book.on_delivery(f"stats.{agent}", body, ack("STATS", "console_stats", i, at),
-                                "STATS", "console_stats")
+        assert book.on_delivery(f"stats.{agent}", body, ack("STATS", STATS_CONSUMER, i, at),
+                                "STATS", STATS_CONSUMER)
     return book
 
 
@@ -181,17 +197,17 @@ def test_a_line_with_text_is_dropped_and_old_lines_leave(caplog) -> None:
     book = book_with((A, LINE, NOW - 8 * 86400))
     bad = json.dumps(LINE | {"turns": "see https://evil.example"}).encode()
     with caplog.at_level(logging.WARNING):
-        assert not book.on_delivery(f"stats.{A}", bad, ack("STATS", "console_stats", 2, NOW),
-                                    "STATS", "console_stats")
+        assert not book.on_delivery(f"stats.{A}", bad, ack("STATS", STATS_CONSUMER, 2, NOW),
+                                    "STATS", STATS_CONSUMER)
     assert "dropped" in caplog.text and "evil" not in caplog.text
     assert book.on_delivery(f"stats.{A}", stats.nats_body(LINE) or b"",
-                            ack("STATS", "console_stats", 3, NOW), "STATS", "console_stats")
+                            ack("STATS", STATS_CONSUMER, 3, NOW), "STATS", STATS_CONSUMER)
     assert fields(book.reports()[0])["lines"] == 1  # the 8-day-old line is gone
     # a subject that is not <stats>.<agent>, or a delivery of another consumer: nothing
     assert not book.on_delivery("stats.x.y", stats.nats_body(LINE) or b"",
-                                ack("STATS", "console_stats", 4, NOW), "STATS", "console_stats")
+                                ack("STATS", STATS_CONSUMER, 4, NOW), "STATS", STATS_CONSUMER)
     assert not book.on_delivery(f"stats.{A}", stats.nats_body(LINE) or b"",
-                                ack("STATS", "other", 5, NOW), "STATS", "console_stats")
+                                ack("STATS", "other", 5, NOW), "STATS", STATS_CONSUMER)
 
 
 def test_for_me_needs_the_anchor_among_the_asking_agents_attested_names() -> None:
@@ -221,7 +237,7 @@ def test_a_replay_after_a_reconnect_counts_each_line_once() -> None:
     book = StatsBook()
     body = stats.nats_body(LINE) or b""
     for _replay in range(3):
-        book.on_delivery(f"stats.{A}", body, ack("STATS", "console_stats", 7, NOW), "STATS", "console_stats")
+        book.on_delivery(f"stats.{A}", body, ack("STATS", STATS_CONSUMER, 7, NOW), "STATS", STATS_CONSUMER)
     assert fields(book.reports()[0])["lines"] == 1 and fields(book.reports()[1])["asks"] == 3
 
 

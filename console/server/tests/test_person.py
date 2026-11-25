@@ -390,7 +390,8 @@ VERIFIED = auth.Operator(username="dembaca", display="D", groups=("operators",),
                          sub="sub-dembaca")
 
 
-async def logged_in(c: Console, dialer: Dialer, cookie: str | None = None) -> str:
+async def logged_in(c: Console, dialer: Dialer, cookie: str | None = None,
+                    send_record: bool = True) -> str:
     async def fake_exchange(*a: Any, **k: Any) -> auth.Tokens:
         return auth.Tokens("login-access", "login-refresh")
 
@@ -412,9 +413,10 @@ async def logged_in(c: Console, dialer: Dialer, cookie: str | None = None) -> st
                    if v.startswith("choirbus_session=")).split(";")[0]
         view = c.sessions.view(new.split("=", 1)[1])
         await until(lambda: view.reader.connects >= 1)
-        conn = dialer.conns[-1]
-        await conn.subs[view.reader.deliver_presence](record(view.reader, 1))
-        assert view.reader.state == "reading"
+        if send_record:
+            conn = dialer.conns[-1]
+            await conn.subs[view.reader.deliver_presence](record(view.reader, 1))
+            assert view.reader.state == "reading"
     return new
 
 
@@ -455,6 +457,77 @@ async def test_no_reader_before_a_login_and_one_per_login(console: Console) -> N
     await until(lambda: not view.reader.running)
     assert not view.reader.holds_secrets and dialer.conns[0].is_closed
     assert console.sessions.views() == []
+
+
+async def test_asks_and_stats_are_each_sessions_own(console: Console) -> None:
+    """RT-6.43 steps 6 and 8: two logins with their own fleets and their own anchors see
+    their own asks and reports by their cookie; "for me" follows each login's own record,
+    n/a until it came."""
+    from mattermost_ai_agent_bus.natsbus import (
+        OpenAsk, agent_name, encode_ask_record, encode_presence)
+    from test_asks_stats import NKEY, mm
+    now = int(time.time())
+    agents = {"dembaca": agent_name("dembaca", NKEY), "carol~x": agent_name("carol", NKEY)}
+
+    def attest(agent: str, anchor: str) -> bytes:
+        owner = {"anchor": anchor.replace("~", "."), "name": anchor.split("~")[0]}
+        return json.dumps({"v": 1, "agent": agent, "owner": owner,
+                           "trusted": [], "cut": False, "iat": now, "exp": now + 900}).encode()
+
+    def own(anchor: str) -> bytes:
+        return json.dumps({"v": 1, "name": f"person-{anchor}", "anchor": anchor,
+                           "iat": now, "exp": now + 900}).encode()
+
+    dialer = Dialer()
+    sessions = []
+    for i, anchor in enumerate(agents, 1):
+        cookie = await logged_in(console, dialer, send_record=False)
+        view = console.sessions.view(cookie.split("=", 1)[1])
+        assert view.reader is not None
+        pres = dialer.conns[-1].subs[view.reader.deliver_presence]
+        agent = agents[anchor]
+        ask = encode_ask_record([OpenAsk(mm(i), "approval", anchor, f"ask {i}", now - 60)], now)
+        for seq, (subject, data) in enumerate([
+                (f"presence.{anchor}.{agent}", encode_presence("online", "", f"agent-{i}")),
+                (f"presence.attest.{agent}.v1", attest(agent, anchor)),
+                (f"presence.ask.home{i}.{agent}", ask)], 2):
+            await pres(SimpleNamespace(subject=subject, data=data,
+                                       reply=ack("svc-own-name", seq)))
+        sessions.append((cookie, view, anchor))
+    # only the first login reports a STATS line
+    cookie1, view1, _a = sessions[0]
+    body = stats.nats_body(LINE)
+    assert body is not None
+    stats_cb = dialer.conns[0].subs[view1.reader.deliver_stats]  # type: ignore[union-attr]
+    await stats_cb(SimpleNamespace(subject=f"stats.{agents['dembaca']}", data=body,
+                                   reply=ack("svc-stats", 1).replace("PRESENCE", "STATS")))
+
+    async def asks(cookie: str) -> list[dict[str, Any]]:
+        status, _h, b = await get(console, "/v1/asks", cookie=cookie)
+        assert status == 200
+        return json.loads(b)
+
+    async def lines(cookie: str) -> Any:
+        status, _h, b = await get(console, "/v1/stats", cookie=cookie)
+        assert status == 200
+        return fields(json.loads(b)[0])["lines"]
+
+    for i, (cookie, _view, _anchor) in enumerate(sessions, 1):
+        rows = await asks(cookie)
+        assert [r["id"] for r in rows] == [mm(i)]          # its own fleet only
+        assert rows[0]["for_me"] is None                   # n/a: no own record yet
+    assert await lines(cookie1) == 1
+    assert await lines(sessions[1][0]) is None             # no STATS line delivered there
+    # each login's own record arrives: "for me" by its own anchor
+    for seq, (cookie, view, anchor) in enumerate(sessions, 10):
+        conn = dialer.conns[sessions.index((cookie, view, anchor))]
+        await conn.subs[view.reader.deliver_presence](  # type: ignore[union-attr]
+            SimpleNamespace(subject=view.reader.record_subject,  # type: ignore[union-attr]
+                            data=own(anchor), reply=ack("svc-own-name", seq)))
+        assert view.reader.anchor == anchor                # type: ignore[union-attr]
+    for i, (cookie, _view, _anchor) in enumerate(sessions, 1):
+        rows = await asks(cookie)
+        assert [(r["id"], r["for_me"], r["may_answer"]) for r in rows] == [(mm(i), True, True)]
 
 
 async def test_a_second_login_from_one_browser_ends_the_first(console: Console) -> None:

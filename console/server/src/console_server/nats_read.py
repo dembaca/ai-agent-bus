@@ -23,8 +23,10 @@ closes; a delivery seen on both is dropped the second time, so no repeat
 reads as a consumer made anew. A refresh the realm refuses, a refreshed
 token without the operators' group or of another ``sub``, ends the
 session. A connect the login service refuses (not an operator, unknown to
-the directory, too many logins) ends the reading at once, its key and
-tokens wiped, its reason shown to the browser; it is not retried.
+the directory, too many logins; NATS says the same when the service is
+down) is retried with fresh tokens and backoff until the current
+credential's ``exp``; then the reading ends, its key and tokens wiped,
+its reason shown to the browser.
 
 Connection rules as the mcp package's transport (``natsbus``): ``tls://``
 anywhere, ``nats://`` only to a loopback host, TLS first on the connection.
