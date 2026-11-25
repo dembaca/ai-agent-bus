@@ -2493,7 +2493,7 @@ async def stats_report(versions: int = 3) -> str:
     except Exception as exc:  # noqa: BLE001 — off the bus, the channel missing or not readable
         why = str(exc).split(" for url ")[0] or type(exc).__name__
         return _refused("stats_report", f"cannot read ~{name}: {why}"[:300])
-    return _out("stats_report", {"channel": name, "versions": rows[-max(1, versions):]})
+    return _out("stats_report", {"channel": name, "versions": stats.brief(rows[-max(1, versions):])})
 
 
 @tool()
@@ -2614,10 +2614,13 @@ async def wait_for_events(
         for item in payload:
             slim.cut_item(item)  # RT-6.12 step 3: the rest via get_thread
     # RT-6.9 step 2: the poll, empty or not, and what it handed over, by author class.
-    stats.record("poll", empty=int(not events))
-    for e, item in zip(events, payload, strict=False):
-        body = len(channel.notification(item)["content"])  # the message, as a pushed tag holds it
-        _note_inbound(_inbound_class(e, item), body, len(_dump(item)) - body)
+    try:
+        stats.record("poll", empty=int(not events))
+        for e, item in zip(events, payload, strict=False):
+            body = len(channel.notification(item)["content"])  # the message, as a pushed tag holds it
+            _note_inbound(_inbound_class(e, item), body, len(_dump(item)) - body)
+    except Exception as exc:  # noqa: BLE001 — a counter never fails the call
+        log.warning("poll not counted: %s", type(exc).__name__)
     more = getattr(inbox, "pending", 0)
     if events and more:
         # More than max_events were queued; mentions and DMs came first.
@@ -3116,9 +3119,11 @@ async def _push_delivered(item: dict[str, Any]) -> None:
             else:
                 await _typing_for_task(batch.events, batch.items)
         await _note_delivered([item.event], [item])
-        if item.get(channel.PUSHED):  # held for the digest, quiet, dropped: not handed over (RT-6.9)
+        # PUSHED: it went out into the session and reached the agent; an item held for the
+        # digest, a quiet one or one dropped was not handed over (RT-6.9) and nobody asked it yet.
+        if item.get(channel.PUSHED):
             _note_heard([item.event], [item], pushed=True)
-        if item.get(channel.PUSHED):  # held for the digest or dropped: nobody asked it yet
+        if item.get(channel.PUSHED):  # it may now wait for an answer (RT-6.2 step 2)
             await _note_unanswered([item.event], [item])
         if item.get(channel.PUSHED):  # RT-6.9 step 2: the tag's text and its attributes
             tag = channel.notification(item)
@@ -3198,10 +3203,11 @@ async def _push_intercept(item: dict[str, Any]) -> bool:
                 if item.get("kind") != "dm":
                     return False  # in a channel it may be another agent's prompt
                 permission.note("unknown id", rid, reason=f"{behavior} for an id that is not open")
+                text = (f"No open permission prompt `{rid}`: answered in the terminal, or more "
+                        "than 24 h old.")
+                stats.record("post", chars=len(text), w="other")  # RT-6.9: the server's own post
                 with unanswered.server_line():  # RT-6.2 step 2: the server's line, no answer
-                    await _posted(client, await client.post(
-                        f"No open permission prompt `{rid}`: answered in the terminal, or more "
-                        "than 24 h old.", root_id=post.get("id")))
+                    await _posted(client, await client.post(text, root_id=post.get("id")))
                 return True
         pending = _relay.take(rid)
         if pending is None:  # expired since the check above
@@ -3211,10 +3217,10 @@ async def _push_intercept(item: dict[str, Any]) -> bool:
         permission.note("verdict sent", rid, pending.tool,
                         f"{behavior} by {who}" + ("" if _pusher.connection is not None else ", no connection"))
         word = f"{a2a.symbol(Mark.ALLOWED)} allowed" if behavior == "allow" else f"{a2a.symbol(Mark.DENIED)} denied"
+        text = f"{word} by {who} · `{rid}` sent to Claude Code; it applies unless the terminal answered first."
+        stats.record("post", chars=len(text), w="other")  # RT-6.9: the server's own post
         with unanswered.server_line():  # RT-6.2 step 2: the server's line, no answer
-            await _posted(client, await client.post(
-                f"{word} by {who} · `{rid}` sent to Claude Code; it applies unless the terminal "
-                "answered first.", root_id=pending.post_id))
+            await _posted(client, await client.post(text, root_id=pending.post_id))
         asks.resolve((await client.get_me()).id, pending.post_id)
         _done_typing()
         return True
@@ -3232,10 +3238,10 @@ async def permissions_obsolete(client: ChatPort) -> None:
         permission.note("closed at turn end", rid, pending.tool, "answered in the terminal")
         try:
             uid = uid or (await client.get_me()).id
+            text = f"{a2a.symbol(Mark.DESKTOP)} Answered in the terminal · `{rid}`: this prompt is closed."
+            stats.record("post", chars=len(text), w="other")  # RT-6.9: the server's own post
             with unanswered.server_line():  # RT-6.2 step 2: the server's line, no answer
-                await _posted(client, await client.post(
-                    f"{a2a.symbol(Mark.DESKTOP)} Answered in the terminal · `{rid}`: this prompt is closed.",
-                    root_id=pending.post_id))
+                await _posted(client, await client.post(text, root_id=pending.post_id))
             asks.resolve(uid, pending.post_id)
         except Exception as exc:  # noqa: BLE001 — a note, never fail the turn's end
             log.info("permission prompt %s: no terminal note: %s", rid, exc)

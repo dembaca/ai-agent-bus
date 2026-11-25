@@ -409,7 +409,7 @@ the turn hooks write; in `tok` `req`, `bus_req`, `fixed`, `skill`, `all`
 and `bus`; in `tok.all` and `tok.bus` `in`, `read`, `w5m`, `w1h` and `out`;
 in `post_words` the bus words and `ask`, `plain`, `other`; in `inbound`
 `agent`, `human`, `event` and `envelope`; in `inject` `start`, `check`,
-`digest`, `drain`, `signoff`, `listen`, `idle`, `compact` and `other`.
+`digest`, `drain`, `signoff`, `listen`, `idle`, `compact`, `wake` and `other`.
 The publisher leaves out any key outside the list, the reader ignores one,
 and no key is ever shown as text, only mapped to the label the list gives
 it.

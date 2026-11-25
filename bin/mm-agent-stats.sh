@@ -181,15 +181,16 @@ report="$(jq -c '
   # _traffic_of): own posts by word, messages handed in by author class,
   # polls, hook texts, each [n, chars]
   # summed per key; HELLO, IDLE, BYE, the server'"'"'s own posts and events, the
-  # envelope (characters only), empty polls (items only) and every hook text are
-  # bus overhead, the rest coordination. null when no line has the counts.
+  # envelope (characters only), empty polls (items only, at most a line'"'"'s polls)
+  # and every hook text but a woken post'"'"'s (wake) are bus overhead, the rest
+  # coordination. null when no line has the counts.
   def sumpairs($k): [.[] | (.[$k] // {}) | to_entries[]] | group_by(.key)
     | map({key: .[0].key, value: [(map(.value[0]) | add), (map(.value[1]) | add)]}) | from_entries;
   def traffic_of: length as $of
     | map(select(.post_words != null or .inbound != null or .polls != null or .inject != null))
     | if length == 0 then null else
       sumpairs("post_words") as $p | sumpairs("inbound") as $i | sumpairs("inject") as $j
-      | sum((.polls // [0, 0])[0]) as $calls | sum((.polls // [0, 0])[1]) as $empty
+      | sum((.polls // [0, 0])[0]) as $calls | sum((.polls // [0, 0]) | [.[1], .[0]] | min) as $empty
       | ($p | to_entries | map(select(.key | IN("HELLO", "IDLE", "BYE", "other")) | .value)
          + [$i.event // empty]
          + ($j | to_entries | map(select(.key | IN("start", "check", "digest", "drain", "signoff",
@@ -197,7 +198,7 @@ report="$(jq -c '
       | ($p | to_entries | map(select(.key | IN("TASK", "DELEGATE", "ACK", "PROGRESS", "BLOCKED",
                                                  "WAITING", "RESULT", "DONE", "NO", "CANCEL", "HANDOVER",
                                                  "ASSIGNMENTS", "ask", "plain")) | .value)
-         + [$i.agent // empty, $i.human // empty]) as $c
+         + [$i.agent // empty, $i.human // empty, $j.wake // empty]) as $c
       | [($o | map(.[0]) | add // 0) + $empty, ($o | map(.[1]) | add // 0) + ($i.envelope // [0, 0])[1]] as $ovh
       | [($c | map(.[0]) | add // 0), ($c | map(.[1]) | add // 0)] as $coord
       | {lines: length, of: $of, posts: $p, inbound: $i, inject: $j, polls: $calls,

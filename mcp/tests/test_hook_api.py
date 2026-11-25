@@ -494,7 +494,7 @@ async def test_stat_counts_into_the_servers_own_file(api):
     # RT-6.9 step 1: a text put into the context, by kind and length only.
     for bad in ({"k": "inject", "name": "drain", "chars": 1, "text": "x"}, {"k": "inject", "name": "mine", "chars": 1},
                 {"k": "inject", "name": "drain", "chars": "12"}, {"k": "inject", "name": "drain", "chars": -1},
-                {"k": "inject", "name": "drain"}):
+                {"k": "inject", "name": "drain"}, {"k": "inject", "name": "drain", "chars": 10**7 + 1}):
         assert (await h.post("/v1/stat", json=bad)).status_code == 400
     for bad in ({"k": "evil"}, {"k": "turn", "Bad": 1}, {"k": "turn", "a": [1]},
                 {"k": "turn", "a": 1, "b": 2, "c": 3, "d": 4, "e": 5}, {"k": "wake", "a": "x" * 5000}):

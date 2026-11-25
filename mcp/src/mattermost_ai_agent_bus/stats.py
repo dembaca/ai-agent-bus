@@ -720,7 +720,7 @@ POST_WORDS = frozenset({*a2a.WORDS, "ask", "plain", "other"})
 INBOUND_CLASSES = frozenset({"agent", "human", "event"})
 INBOUND_KEYS = INBOUND_CLASSES | {"envelope"}
 INJECT_KINDS = frozenset({"start", "check", "digest", "drain", "signoff", "listen", "idle", "compact",
-                          "other"})
+                          "wake", "other"})
 _SUB_KEYS: dict[str, frozenset[str]] = {"wakes": WAKE_REASONS, "blocks": BLOCK_KINDS,
                                         "tools": TOOL_NAMES, "tok": TOK_KEYS, "post_words": POST_WORDS,
                                         "inbound": INBOUND_KEYS, "inject": INJECT_KINDS}
@@ -729,14 +729,17 @@ _SUB_KEYS: dict[str, frozenset[str]] = {"wakes": WAKE_REASONS, "blocks": BLOCK_K
 # because of the bus: sign-on and sign-off posts (HELLO, IDLE, BYE), the server's own posts
 # and events, the envelope, empty polls, hook texts. Coordination is what any medium between
 # agents would carry: task words, asks, plain replies, the bodies of messages from agents and
-# humans. Task work, the rest of a session, needs the token split of a later stage.
+# humans, and `wake`, a hook or plugin text that carries one woken post's body. A digest
+# carries peers' posts too but stays overhead (only its head of about 120 characters is
+# wording of the bus), so the overhead share is an upper bound until the token split of a
+# later stage separates message text. Task work, the rest of a session, needs that split too.
 OVERHEAD = "overhead"
 COORDINATION = "coordination"
 OVERHEAD_WORDS = frozenset({"HELLO", "IDLE", "BYE", "other"})
 CATEGORY_OF: dict[str, dict[str, str]] = {
     "post_words": {w: OVERHEAD if w in OVERHEAD_WORDS else COORDINATION for w in POST_WORDS},
     "inbound": {"agent": COORDINATION, "human": COORDINATION, "event": OVERHEAD, "envelope": OVERHEAD},
-    "inject": dict.fromkeys(INJECT_KINDS, OVERHEAD),
+    "inject": {k: COORDINATION if k == "wake" else OVERHEAD for k in INJECT_KINDS},
 }
 TRAFFIC_KEYS = ("post_words", "inbound", "polls", "inject")
 
@@ -1223,7 +1226,8 @@ def _traffic_of(rows: list[dict[str, Any]]) -> dict[str, Any] | None:
         return None
     posts, inbound, inject = _pairs(rows, "post_words"), _pairs(rows, "inbound"), _pairs(rows, "inject")
     calls = _sum(rows, lambda r: (r.get("polls") or [0, 0])[0])
-    empty = _sum(rows, lambda r: (r.get("polls") or [0, 0])[1])
+    # A line's own word: never more empty polls than polls.
+    empty = _sum(rows, lambda r: min((r.get("polls") or [0, 0])[1], (r.get("polls") or [0, 0])[0]))
     cat = {OVERHEAD: [empty, 0], COORDINATION: [0, 0]}
     for key, sums in (("post_words", posts), ("inbound", inbound), ("inject", inject)):
         for k, (n, c) in sums.items():
@@ -1262,6 +1266,21 @@ def asks_summary(lines: list[dict[str, Any]]) -> dict[str, Any] | None:
     """The asks of all the lines together, as report() sums them per harness (RT-6.9 step 3):
     the operator console's asks report (RT-6.43 step 8). None without the fields."""
     return _asks_of(_marked(lines))
+
+
+TRAFFIC_DETAIL = ("posts", "inbound", "inject")
+
+
+def brief(rows: list[dict[str, Any]]) -> list[dict[str, Any]]:
+    """report()'s rows as the stats_report tool returns them (RT-6.9 step 3): the traffic
+    by category with its sums, shares and coverage only; the sums per key stay in
+    `mm-agent-stats.sh report --json` and the console, so asking an agent for the report
+    puts no more into its context than it needs."""
+    out = []
+    for row in rows:
+        t = row.get("traffic")
+        out.append(row | {"traffic": {k: v for k, v in t.items() if k not in TRAFFIC_DETAIL}} if t else row)
+    return out
 
 
 def traffic_summary(lines: list[dict[str, Any]]) -> dict[str, Any] | None:

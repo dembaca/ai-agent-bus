@@ -888,6 +888,7 @@ async def usage_route(client: ChatPort, query: Mapping[str, str],
 STAT_KINDS = frozenset({"turn", "turn_end", "block", "compact", "wake", "transcript", "inject"})
 MAX_STAT_FIELDS = 4
 MAX_STAT_VALUE = 4096
+MAX_INJECT_CHARS = 10**7  # an inject's length: no text put into a context comes near it
 _FIELD = re.compile(r"[a-z][a-z_]{0,15}")
 
 
@@ -921,9 +922,11 @@ async def stat(client: ChatPort, query: Mapping[str, str], body: Mapping[str, An
                 or (isinstance(v, str) and len(v) <= MAX_STAT_VALUE and "\x00" not in v)):
             raise BadRequest("fields: short lowercase names, numbers or strings")
     if kind == "inject" and (set(values) != {"name", "chars"} or values["name"] not in stats.INJECT_KINDS
-                             or type(values["chars"]) is not int or values["chars"] < 0):
+                             or type(values["chars"]) is not int
+                             or not 0 <= values["chars"] <= MAX_INJECT_CHARS):
         # A text put into the context: its kind and length only, never the text (RT-6.9 step 1).
-        raise BadRequest(f"inject: name (one of {', '.join(sorted(stats.INJECT_KINDS))}) and chars only")
+        raise BadRequest(f"inject: name (one of {', '.join(sorted(stats.INJECT_KINDS))}) "
+                         f"and chars (0 to {MAX_INJECT_CHARS}) only")
     stats.set_user(await _uid(client))
     stats.record(kind, **values)
     return 200, {"ok": True}

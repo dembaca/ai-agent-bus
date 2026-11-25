@@ -1004,3 +1004,91 @@ def test_the_report_groups_the_traffic_into_overhead_and_coordination():
     assert set(stats.CATEGORY_OF["post_words"]) == stats.POST_WORDS
     assert set(stats.CATEGORY_OF["inbound"]) == stats.INBOUND_KEYS
     assert set(stats.CATEGORY_OF["inject"]) == stats.INJECT_KINDS
+
+
+def test_every_post_of_the_server_is_counted():
+    """RT-6.9 step 1: every chat post an MCP server module makes notes `post` with its word
+    (or `other`) just before it: none of the server's own posts is missing from `posts`
+    and `post_words`. Leaves out the chat adapters themselves, the STATS lines (to a
+    channel no agent reads) and the login's HTTP calls."""
+    import re
+    from pathlib import Path
+
+    src = Path(stats.__file__).parent
+    skip = {"client.py", "port.py", "nats_port.py", "natsbus.py", "compose.py", "login.py", "stats.py",
+            "mattermost_ws.py"}
+    missing = []
+    for f in sorted(src.glob("*.py")):
+        if f.name in skip:
+            continue
+        lines = f.read_text().splitlines()
+        for i, line in enumerate(lines):
+            if re.search(r"\b(?:self\.)?client\.post\(", line) and "def " not in line:
+                if not any('stats.record("post"' in x for x in lines[max(0, i - 10):i + 1]):
+                    missing.append(f"{f.name}:{i + 1}")
+    assert missing == []
+
+
+async def test_the_servers_own_posts_count_as_other(monkeypatch):
+    """RT-6.9 step 1: the answer on departed or absent agents is the server's own post."""
+    from types import SimpleNamespace
+
+    from mattermost_ai_agent_bus import departed, lease
+
+    posted = []
+
+    class Client:
+        permalink_base, work_channel_name = "https://x", "agents"
+
+        async def post(self, text, **kw):
+            posted.append(text)
+
+    async def here(*a, **kw):
+        return False
+
+    monkeypatch.setattr(lease, "crown_here", here)
+    monkeypatch.setattr(departed, "reply_text", lambda *a: "agent-x left the bus")
+    await departed.tell(Client(), SimpleNamespace(thread="r", channel_id="c"), UID, [])
+    assert posted and [(e["w"], e["chars"]) for e in _events() if e["k"] == "post"] == [("other", len(posted[0]))]
+
+
+def test_stats_report_returns_the_category_sums_only():
+    """RT-6.9 step 3: asked for the report, an agent gets the traffic's sums, shares and
+    coverage; the sums per key stay in the script's --json and the console."""
+    line = {"v": "0.102.0", "post_words": {"TASK": [1, 30]}, "inbound": {"agent": [1, 9]},
+            "polls": [2, 5], "inject": {"wake": [1, 40], "digest": [1, 100]}}
+    full = stats.report([line])
+    t = stats.brief(full)[0]["traffic"]
+    assert set(t) == {"lines", "of", "polls", "empty_polls", "empty_polls_pct", "overhead", "coordination",
+                      "overhead_chars_pct"}
+    # A woken post's text is coordination; a line's empty polls never exceed its polls.
+    assert t["coordination"] == [3, 79] and t["overhead"] == [1 + 2, 100]
+    assert (t["empty_polls"], t["empty_polls_pct"]) == (2, 100)
+    assert "posts" in full[0]["traffic"]
+
+
+async def test_a_counter_that_fails_never_fails_wait_for_events(monkeypatch):
+    """RT-6.9: the poll's counting is bookkeeping: should it raise, the events still go out."""
+    class Inbox:
+        pending = 0
+
+        async def wait_for_events(self, timeout_sec, max_events):
+            return []
+
+    def boom(*a, **kw):
+        raise OSError("disk full")
+
+    async def nothing(*a, **kw):
+        return None
+
+    async def no_items(events, raw=False):
+        return []
+
+    monkeypatch.setattr(server, "_get_inbox", lambda: Inbox())
+    monkeypatch.setattr(server, "_event_items", no_items)
+    for name in ("_note_delivered", "_note_unanswered", "_typing_for_task", "_crown_events",
+                 "_compact_bystander"):
+        monkeypatch.setattr(server, name, nothing)
+    monkeypatch.setattr(server, "_confirmed", None)
+    monkeypatch.setattr(stats, "record", lambda kind, **v: boom() if kind == "poll" else None)
+    assert json.loads(await server.wait_for_events(timeout_sec=0)) == []

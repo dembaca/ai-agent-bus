@@ -2,6 +2,7 @@
 
 import inspect
 import json
+import re
 import time
 from pathlib import Path
 
@@ -484,20 +485,33 @@ def test_instructions_budget(monkeypatch, variant, mode):
     assert len(server._instructions()) <= _INSTRUCTION_BUDGET[variant][mode]
 
 
-# What the model reads of the bus, hashed (RT-6.9, #139): the MCP instructions in every
-# variant, the tool names, docstrings and argument schemas, the skill and its side files,
-# the hooks' description, the turn-end and wake texts (turnend.py), the channel check, a
-# pushed tag, and the sentences the hooks and the listener print. Counting what the bus
-# costs must not cost tokens itself: a change here is a deliberate one, with this hash
-# updated in the same PR and a reason in its body. The plugin version is left out.
-_MODEL_TEXT_SHA256 = "48be1c125658dc552cb5db34b867043f6b4e0d1a28a76929bec7a38fa5f82850"
+# What the model reads of the bus, hashed (RT-6.9, the token split's first stage): the MCP
+# instructions in every variant; the tool names, docstrings and argument schemas; the
+# skill and its side files; the hooks' description (hooks.json); the turn-end, wake and
+# handoff texts (turnend.py); the lines the hooks' reasons are built of and those the
+# listener prints; the lines the clients the agent runs print (mm-agent-post.sh, -poll,
+# -status); the string literals of the OpenCode plugin and the pi extension that hold a
+# sentence (their block, wake, banner and notice texts, renamedText among them); the
+# channel check, a digest, pushed tags with each conditional attribute, ASK_PUSH_HINT and
+# the more_pending item of wait_for_events. Counting what the bus costs must not cost
+# tokens itself: a change here is a deliberate one, with this hash updated in the same PR
+# and a reason in its body. The plugin version and a digest's clock time are left out.
+_MODEL_TEXT_SHA256 = "6a40dc0d318b2f8f01488d7222e939909cf1558a7c7f24e9fcf17641f4be4bc2"
 _ROOT = Path(__file__).resolve().parents[2]
+# A one-line string literal of TypeScript, or a comment (skipped, so a quote in a comment is none).
+_TS_TOKEN = re.compile(r'//[^\n]*|/\*.*?\*/|"(?:[^"\\\n]|\\.)*"|\'(?:[^\'\\\n]|\\.)*\'|`(?:[^`\\\n]|\\.)*`', re.S)
+
+
+def _sentences(source: str) -> list[str]:
+    """The string literals of a TypeScript source that hold a sentence (a space, 20 or more
+    characters): what a plugin can put into the model's context."""
+    return [m[0] for m in _TS_TOKEN.finditer(source)
+            if m[0][0] in "\"'`" and len(m[0]) >= 22 and " " in m[0]]
 
 
 def _model_text(monkeypatch) -> bytes:
     import asyncio
     import hashlib
-    import re
 
     parts: list[str] = []
     names = ("HOST_MANAGED", "HOSTED", "UNAVAILABLE", "PUSH", "RELAY")
@@ -517,24 +531,47 @@ def _model_text(monkeypatch) -> bytes:
     files = sorted((_ROOT / "skills").rglob("*.md")) + [
         _ROOT / "hooks" / "hooks.json", _ROOT / "mcp" / "src" / "mattermost_ai_agent_bus" / "turnend.py"]
     parts += [f.read_text() for f in files]
+    # Pushed tags: the channel check, a digest, and one tag per conditional attribute.
     parts.append(json.dumps(channel.check("0" * 8), sort_keys=True))
-    parts.append(json.dumps(channel.notification(
-        {"kind": "mention", "from_agent": True, "from_trusted_human": False,
-         "post": {"id": "p" * 26, "root_id": "r" * 26, "author": "a", "message": "TASK x"}}), sort_keys=True))
+    post = {"id": "p" * 26, "root_id": "r" * 26, "channel": "c", "author": "a", "shown_as": "A",
+            "at": "12:00", "message": "TASK x", "files": [{"id": "f" * 26, "name": "n.txt"}], "edited": True}
+    base = {"kind": "mention", "from_agent": True, "from_trusted_human": False, "post": post}
+    extras = [{}, {"trusted_human": "h", "from_trusted_human": True}, {"ask": "q", "emoji": "+1", "answer": "yes"},
+              {"to": "all", "intent": "fyi"}, {"departed": "x", "not_here": "y"},
+              {"foreign": True, "owner": "o", "root_from_trusted_human": "h"}, {"advice": "a"},
+              {"mandated": "m", "mandated_by": "b"}, {"choice": "c", "chosen": "d"}, {"guest": True},
+              {"lobby": True}, {"expired": True}, {"not_approver": True}, {"for_crown": True},
+              {"debug": "d"}, {"kind": "reaction"}]
+    parts += [json.dumps(channel.notification(base | x), sort_keys=True) for x in extras]
+    held = [base, base | {"intent": "fyi"}, base | {"gated": "untrusted"}, {"kind": "stall", "post": {"message": "s"}}]
+    parts.append(re.sub(r"\d\d:\d\d", "<t>", json.dumps(channel.digest(held * 6, 0.0), sort_keys=True)))
+    parts.append(server.ASK_PUSH_HINT)
+    parts += [line.strip() for line in (_ROOT / "mcp" / "src" / "mattermost_ai_agent_bus" / "server.py")
+              .read_text().splitlines() if '"kind": "more_pending"' in line]
     # The hooks' and the listener's sentences: what a hook's reason is built of, what the
-    # listener prints.
+    # listener prints; the lines the agent's clients print.
     for f in sorted((_ROOT / "hooks").glob("*.sh")) + [_ROOT / "bin" / "mm-agent-listen.sh"]:
         for line in f.read_text().splitlines():
             if m := re.match(r"\s*((?:answer_)?reason\+?=.*)", line):
                 parts.append(m[1])
             parts += re.findall(r'(?:echo|say [a-z]+) ("[^"]*")', line)
+    for name in ("mm-agent-post.sh", "mm-agent-poll.sh", "mm-agent-status.sh"):
+        parts += [line.strip() for line in (_ROOT / "bin" / name).read_text().splitlines()
+                  if re.search(r"\b(echo|printf)\b", line)]
+    # The plugins' sentences.
+    for f in (_ROOT / "opencode" / "plugin" / "mattermost-agent-bus.ts", _ROOT / "pi" / "mattermost-agent-bus.ts"):
+        parts += _sentences(f.read_text())
     text = "\x00".join(parts).replace(server.VERSION, "<version>")
     return hashlib.sha256(text.encode()).hexdigest().encode()
 
 
 def test_counting_costs_no_model_tokens(monkeypatch):
-    """RT-6.9 (#139): the instructions, tool docs, skill, hook and pushed texts are
-    byte-identical to what _MODEL_TEXT_SHA256 pins: the measurement runs in code only."""
+    """RT-6.9 (the token split's first stage): what the model reads of the bus is
+    byte-identical to what _MODEL_TEXT_SHA256 pins, so the measurement runs in code only:
+    the instructions, the tool docs and schemas, the skill, hooks.json, turnend.py, the
+    hooks' reasons and the listener's lines, the lines of mm-agent-post.sh, -poll and
+    -status, the OpenCode plugin's and the pi extension's sentences, the channel check, a
+    digest, pushed tags with each conditional attribute, ASK_PUSH_HINT and more_pending."""
     got = _model_text(monkeypatch).decode()
     assert got == _MODEL_TEXT_SHA256, (
         f"the text the model reads changed ({got}): on purpose? update _MODEL_TEXT_SHA256 "

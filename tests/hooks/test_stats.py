@@ -272,6 +272,29 @@ def test_the_traffic_by_category_is_the_tools(mm, run):
     assert ["0.101.0", "-", "-", "-", "-", "-", "-", "-"] in cells
 
 
+def test_every_key_maps_the_same_in_the_script_as_in_the_tool(mm, run):
+    """RT-6.9 step 3: each key of the fixed lists (every bus word of POST_WORDS, every
+    author class, every hook text kind) lands in the same category in the script's jq as
+    in stats.CATEGORY_OF: one version per key, so a key the two map apart shows."""
+    from mattermost_ai_agent_bus import stats
+
+    keys = ([("post_words", k) for k in sorted(stats.POST_WORDS)]
+            + [("inbound", k) for k in sorted(stats.INBOUND_KEYS)]
+            + [("inject", k) for k in sorted(stats.INJECT_KINDS)])
+    lines = [{"v": f"0.0.{i}", "min": 1, field: {key: [1, 10]}} for i, (field, key) in enumerate(keys)]
+    mm.posts[:0] = [{"id": f"s{i}", "user_id": "x" * 26, "create_at": 1,
+                     "message": "STATS " + json.dumps(line)} for i, line in enumerate(lines)]
+    r = run(REPORT, "report", "agents-stats", "--json")
+    assert r.code == 0, r.stderr
+    got = {row["version"]: row["traffic"] for row in json.loads(r.stdout)}
+    for i, (field, key) in enumerate(keys):
+        t = got[f"0.0.{i}"]
+        into = stats.CATEGORY_OF[field][key]
+        chars = {stats.OVERHEAD: t["overhead"][1], stats.COORDINATION: t["coordination"][1]}
+        assert chars[into] == 10 and sum(chars.values()) == 10, (field, key)
+    assert json.loads(r.stdout) == stats.report(lines)
+
+
 def test_off_counts_nothing(mm, run):
     run(PROMPT, MM_STATS_CHANNEL="off")
     assert events(run) == []

@@ -212,7 +212,7 @@ export function wakeBackoffMs(repeats: number): number {
 
 // The kinds of text put into the context the stats know (stats.INJECT_KINDS, RT-6.9 step 1);
 // any other counts as "other". Only the kind and the length go to the server, never the text.
-const INJECT_KINDS = new Set(["start", "check", "digest", "drain", "signoff", "listen", "idle", "compact"])
+const INJECT_KINDS = new Set(["start", "check", "digest", "drain", "signoff", "listen", "idle", "compact", "wake"])
 export function injectKind(name: string): string {
   return INJECT_KINDS.has(name) ? name : "other"
 }

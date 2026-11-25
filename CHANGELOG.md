@@ -26,14 +26,24 @@ before 0.5.0 are described in the git history.
   `human`, `event`, and the envelope's characters), `polls` (calls of
   `wait_for_events` and the empty ones) and `inject` (texts the hooks, the
   listener, the OpenCode plugin, the pi extension and the pusher put into
-  the context, by kind). Hooks and plugins send the new `POST /v1/stat`
-  kind `inject` with a kind and a length only, never the text. The reader
+  the context, by kind; `wake`, a text carrying one woken post's body,
+  counts as coordination). Hooks and plugins send the new `POST /v1/stat`
+  kind `inject` with a kind and a length (at most 10^7) only, never the
+  text. The server's own posts (reminders, acknowledgements, permission
+  notes, answers on departed agents, login notices) now count too, as
+  `other`. The reader
   maps them to bus overhead and coordination (`stats.CATEGORY_OF`, so a
   changed mapping applies to old lines too): `mm-agent-stats.sh report`,
   `stats_report` and the console gain the report "bus traffic by
   category", with a coverage line; lines of older publishers show n/a,
-  never 0. Zero added model tokens: no instruction, tool doc, skill text,
-  hook text or tool result field changes, and a test pins them by hash.
+  never 0; `stats_report` returns only the category sums, shares and
+  coverage of it, the per-key sums stay in the script's `--json` and the
+  console. A digest counts as overhead, so the overhead share is an upper
+  bound until the token split by content. Zero added model tokens: no
+  instruction, tool doc or schema, skill text, hook or listener text,
+  client line, plugin sentence, pushed tag or hint changes, and no tool
+  result field is added; a test pins all of these by hash. Only
+  `stats_report`, when asked, returns a few more numbers.
 
 ### Changed
 
