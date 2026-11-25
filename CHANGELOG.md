@@ -21,9 +21,10 @@ before 0.5.0 are described in the git history.
   with the same key; a refused refresh, a lost group or a logout closes
   the connection, drops key and tokens and ends the session. The console
   never derives the person's name: it subscribes by the login alone
-  (`deliver.person.<login>.presence`, `.stats`, `.self`, `<login>` from
-  the whole public key) and takes name and anchor from the login
-  service's record on `.self`. A connect the login service refuses ends
+  (`deliver.person.<login>.presence` and `.stats`, `<login>` the whole
+  public key) and takes name, anchor and the credential's end from the
+  login's own record (`presence.person.<login>.v1`), which arrives with
+  the presence lines; until it does, the reading says it waits. A connect the login service refuses ends
   that session's reading at once, key and tokens wiped, no retry, and
   `/v1/me` shows the reading's state as `bus`. A new login from one
   browser ends its old session; at most four sessions per person, the

@@ -7,10 +7,12 @@ only, and connects with the operator's Keycloak access token, bare, as the
 connect token; the key signs the server's nonce. The login service issues
 the person's credential and makes the login's consumers. The console never
 derives the person's name: it subscribes by the login alone —
-``deliver.person.<login>.presence``, ``.stats`` and ``.self``, ``<login>``
-the login's whole public key after its ``U`` in lower case — and learns its
-NATS name and anchor from the record the login service writes on
-``.self`` (``name``, ``anchor``). No inbox, no JetStream API, nothing
+``deliver.person.<login>.presence`` and ``.stats``, ``<login>`` the login's
+whole public key in lower case — and learns its NATS name and anchor from
+the login's own record, which the service writes at each issue on
+``<presence>.person.<login>.v1`` (``{"v":1,"name","anchor","iat","exp"}``)
+and only this login's presence consumer delivers, with the rest. Its
+``exp`` is that credential's end. No inbox, no JetStream API, nothing
 published.
 
 Every ``RENEW_SEC`` (10 minutes) the reader refreshes the access token with
@@ -59,6 +61,7 @@ CONNECT_TIMEOUT_SEC = 5.0
 REACH_TIMEOUT_SEC = 3.0
 PERSON = "person"          # deliver.person.<login>.… (the login service's contract)
 RECORD_MAX = 4096
+RECORD_WAIT_SEC = 30.0     # no own record this long after a connect: say so
 SEEN_MAX = 512             # deliveries remembered to drop a renewal's repeats
 
 
@@ -102,9 +105,9 @@ async def reachable(settings: config.Settings,
 
 
 def login_of(public_key: str) -> str:
-    """A login's token in subjects: its whole public key after the ``U``, in
-    lower case (55 characters, far above 130 bits)."""
-    return public_key[1:].lower()
+    """A login's token in subjects: its whole public key in lower case (56
+    characters), as the login service's ``callout.loginOf``."""
+    return public_key.lower()
 
 
 def consumer_of(reply: str | None) -> str:
@@ -115,22 +118,25 @@ def consumer_of(reply: str | None) -> str:
     return t[3 if len(t) == 9 else 5]
 
 
-def decode_self(data: bytes) -> tuple[str, str] | None:
-    """The login service's record of this login: ``name`` and ``anchor``."""
+def decode_record(data: bytes) -> tuple[str, str, int] | None:
+    """The login's own record (``callout.PersonRecord``): name, anchor (its
+    subject form) and ``exp``, the credential's end; None if it is not
+    format 1 or not well formed."""
     if len(data) > RECORD_MAX:
         return None
     try:
         doc = json.loads(data)
     except ValueError:
         return None
-    if not isinstance(doc, dict):
+    if not isinstance(doc, dict) or doc.get("v") != 1:
         return None
-    name, anchor = doc.get("name"), doc.get("anchor")
+    name, anchor, exp = doc.get("name"), doc.get("anchor"), doc.get("exp")
     if not (isinstance(name, str) and isinstance(anchor, str)
             and 0 < len(name) <= 128 and 0 < len(anchor) <= 128
-            and all(c.isprintable() for c in name + anchor)):
+            and all(c.isprintable() and c not in ". *>" for c in name + anchor)
+            and isinstance(exp, int) and not isinstance(exp, bool) and exp > 0):
         return None
-    return name, anchor
+    return name, anchor, exp
 
 
 class View:
@@ -156,8 +162,9 @@ class View:
         """What the browser sees of this session's reading (``/v1/me``)."""
         r = self.reader
         if r is None:
-            return {"state": "off", "name": None, "anchor": None}
-        return {"state": r.state, "name": r.name, "anchor": r.anchor}
+            return {"state": "off", "name": None, "anchor": None, "until": None}
+        return {"state": r.state, "name": r.name, "anchor": r.anchor,
+                "until": r.credential_exp}
 
 
 class Conn(Protocol):
@@ -191,9 +198,11 @@ class PersonReader:
         base = f"deliver.{PERSON}.{self.login}"
         self.deliver_presence = f"{base}.presence"
         self.deliver_stats = f"{base}.stats"
-        self.deliver_self = f"{base}.self"
-        self.name: str | None = None            # from the login service's record
+        self.record_subject = f"{settings.presence_subject}.{PERSON}.{self.login}.v1"
+        self.name: str | None = None            # from the login's own record
         self.anchor: str | None = None
+        self.credential_exp: int | None = None  # the record's exp (Unix seconds)
+        self._record = asyncio.Event()
         self.state = "connecting"
         self.connects = 0
         self._nc: Conn | None = None
@@ -353,10 +362,27 @@ class PersonReader:
                 await old.close()
             backoff = 1.0
             self.connects += 1
-            self.state = "reading"
+            started = time.monotonic()
+            if self._record.is_set():
+                self.state = "reading"
+            else:
+                self.state = "waiting: for the login's own record"
             wait = max(0.0, min(self.renew_sec, self.until - time.time()))
+            if self.credential_exp is not None:
+                # renew five minutes before the credential's own end, never
+                # more often than a minute (a skewed clock must not hammer)
+                wait = min(wait, max(60.0, self.credential_exp - 300 - time.time()))
             try:
-                await asyncio.wait_for(asyncio.shield(closed), wait)
+                if not self._record.is_set():
+                    try:
+                        await asyncio.wait_for(asyncio.shield(self._record.wait()),
+                                               min(RECORD_WAIT_SEC, wait))
+                    except asyncio.TimeoutError:
+                        if not self._record.is_set() and not closed.done():
+                            self.state = ("waiting: no record from the login service"
+                                          f" after {RECORD_WAIT_SEC:.0f} s")
+                rest = max(0.0, wait - (time.monotonic() - started))
+                await asyncio.wait_for(asyncio.shield(closed), rest)
                 self.state = "waiting: reconnecting"
                 log.info("console: login %.10s…: connection ended; again", self.login)
             except asyncio.TimeoutError:
@@ -403,10 +429,22 @@ class PersonReader:
         async def presence(msg: Any) -> None:
             if self._repeat(msg.reply):
                 return
+            # the consumers' names are the login service's; what arrives on
+            # this login's own deliver subject is its consumer's
             consumer = consumer_of(msg.reply)
-            # only this login's consumer may feed the fleet
-            if not consumer.endswith(f"_{login}_presence") and consumer != f"{login}_presence":
+            if not consumer:
                 return
+            if msg.subject == self.record_subject:
+                record = decode_record(msg.data)
+                if record is None:
+                    log.warning("console: login %.10s…: an unreadable own record", login)
+                else:
+                    self.name, self.anchor, self.credential_exp = record
+                    self._record.set()
+                    if self.state.startswith("waiting: no record") or \
+                            self.state.startswith("waiting: for the login"):
+                        self.state = "reading"
+                    view.fire()
             if view.fleet.on_delivery(msg.subject, msg.data, msg.reply,
                                       settings.presence_stream, consumer):
                 view.fire()
@@ -414,14 +452,6 @@ class PersonReader:
         async def stats(msg: Any) -> None:
             view.stats_lines += 1     # read and shown with the reports (step 8)
 
-        async def own(msg: Any) -> None:
-            record = decode_self(msg.data)
-            if record is None:
-                log.warning("console: login %.10s…: an unreadable own record", login)
-                return
-            self.name, self.anchor = record
-
-        await nc.subscribe(self.deliver_self, cb=own)
         await nc.subscribe(self.deliver_presence, cb=presence)
         await nc.subscribe(self.deliver_stats, cb=stats)
         await nc.flush()

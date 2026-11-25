@@ -194,17 +194,21 @@ async def test_a_renewal_keeps_the_consumers_position(rig) -> None:
 
 
 async def test_the_login_learns_its_name_from_its_own_record(rig) -> None:
-    """The console never derives the person's name: the login service's
-    record on ``deliver.person.<login>.self`` names it and its anchor."""
+    """The console never derives the person's name: the login's own record
+    on ``presence.person.<login>.v1``, delivered with the presence lines,
+    names it and its anchor."""
     admin: NatsClient = rig["admin"]
     r: PersonReader = rig["good"]
     await make_consumers(admin, r)
     r.renew_sec = 600.0
     r.start()
-    await until(lambda: r.state == "reading", what="the connect")
-    await admin.publish(r.deliver_self, b'{"name": "person-dembaca", "anchor": "dembaca"}')
+    await until(lambda: r.connects >= 1, what="the connect")
+    # the login service writes it into PRESENCE at each issue
+    await admin.publish(r.record_subject, json.dumps(
+        {"v": 1, "name": "person-dembaca", "anchor": "dembaca",
+         "iat": int(time.time()), "exp": int(time.time()) + 900}).encode())
     await until(lambda: r.name == "person-dembaca", what="the record")
-    assert r.anchor == "dembaca"
+    assert r.anchor == "dembaca" and r.state == "reading"
 
 
 async def test_a_login_whose_subjects_are_not_granted_reads_nothing(rig) -> None:

@@ -28,7 +28,7 @@ from test_http import get
 SETTINGS = config.Settings(public_url="http://127.0.0.1:8747",
                            issuer="http://127.0.0.1:8747/kc",
                            client_id="console", operator_group="operators",
-                           nats_url="nats://127.0.0.1:4")
+                           nats_url="nats://127.0.0.1:4", listen_port=0)
 
 
 class FakeConn:
@@ -108,39 +108,54 @@ def online(agent: str, reply: str) -> SimpleNamespace:
                            data=b'{"v":1,"status":"online"}', reply=reply)
 
 
+def record(r: PersonReader, sseq: int, data: bytes | None = None) -> SimpleNamespace:
+    body = data if data is not None else json.dumps(
+        {"v": 1, "name": "person-ann~k", "anchor": "ann~k",
+         "iat": int(time.time()), "exp": int(time.time()) + 900}).encode()
+    return SimpleNamespace(subject=r.record_subject, data=body,
+                           reply=ack("svc-own-name", sseq))
+
+
 async def test_the_reader_subscribes_by_the_login_and_learns_its_name() -> None:
     """Step 1: the login's own key and the operator's access token; the
     login's subjects by its whole key, never a name the console made up;
-    the name and anchor come from the login service's record."""
+    the name, anchor and credential end come from the login's own record,
+    delivered with the presence lines. Until it comes the reader waits."""
     dialer = Dialer()
     r, view = reader_with(dialer, renew=None)
     r.start()
     try:
-        await until(lambda: r.state == "reading")
+        await until(lambda: r.state.startswith("waiting: for the login"))
         assert dialer.tokens == ["first-access"]
         assert dialer.keys[0].startswith("U") and dialer.keys[0] == r.public_key
-        login = r.public_key[1:].lower()
-        assert len(login) >= 26
+        login = r.public_key.lower()
+        assert len(login) == 56
         assert set(dialer.conns[0].subs) == {
-            f"deliver.person.{login}.presence", f"deliver.person.{login}.stats",
-            f"deliver.person.{login}.self"}
+            f"deliver.person.{login}.presence", f"deliver.person.{login}.stats"}
+        assert r.record_subject == f"presence.person.{login}.v1"
         assert r.name is None and view.bus()["name"] is None
-        own = dialer.conns[0].subs[r.deliver_self]
-        await own(SimpleNamespace(subject=r.deliver_self, reply=None,
-                                  data=b'{"name": "person-dembaca", "anchor": "dembaca"}'))
-        assert (r.name, r.anchor) == ("person-dembaca", "dembaca")
-        assert view.bus() == {"state": "reading", "name": "person-dembaca",
-                              "anchor": "dembaca"}
-        await own(SimpleNamespace(subject=r.deliver_self, reply=None, data=b"[1]"))
-        assert r.name == "person-dembaca"          # an unreadable record changes nothing
+        cb = dialer.conns[0].subs[r.deliver_presence]
+        # an unreadable record changes nothing; one without JetStream's reply is dropped
+        await cb(record(r, 1, b'{"v": 2, "name": "x", "anchor": "y", "exp": 1}'))
+        await cb(SimpleNamespace(subject=r.record_subject, reply=None,
+                                 data=record(r, 9).data))
+        assert r.name is None
+        good = record(r, 2)
+        await cb(good)
+        assert (r.name, r.anchor) == ("person-ann~k", "ann~k")
+        assert r.credential_exp == json.loads(good.data)["exp"]
+        assert r.state == "reading"
+        assert view.bus() == {"state": "reading", "name": "person-ann~k",
+                              "anchor": "ann~k", "until": r.credential_exp}
+        assert view.fleet.cards() == []      # the record is no agent
 
         wake = asyncio.Event()
         view.wakes.add(wake)
-        cb = dialer.conns[0].subs[r.deliver_presence]
-        # another login's consumer (or the old static one) is dropped
-        await cb(online("agent-a", ack("console", 1)))
+        # a delivery without JetStream metadata is dropped
+        await cb(SimpleNamespace(subject="presence.dembaca.agent-a",
+                                 data=b'{"v":1,"status":"online"}', reply=None))
         assert view.fleet.cards() == [] and not wake.is_set()
-        await cb(online("agent-a", ack(f"person-dembaca_{login}_presence", 2)))
+        await cb(online("agent-a", ack("svc-own-name", 3)))
         assert [c["name"] for c in view.fleet.cards()] == ["agent-a"]
         assert view.fleet.synced and wake.is_set()
         await dialer.conns[0].subs[r.deliver_stats](
@@ -150,6 +165,20 @@ async def test_the_reader_subscribes_by_the_login_and_learns_its_name() -> None:
         await r.aclose()
     assert not r.holds_secrets            # key wiped, tokens dropped
     assert dialer.conns[0].is_closed
+
+
+async def test_no_record_in_time_is_shown() -> None:
+    dialer = Dialer()
+    r, view = reader_with(dialer, renew=None)
+    with mock.patch.object(nats_read, "RECORD_WAIT_SEC", 0.05):
+        r.start()
+        try:
+            await until(lambda: r.state.startswith("waiting: no record"))
+            assert view.bus()["state"].startswith("waiting: no record")
+            await dialer.conns[0].subs[r.deliver_presence](record(r, 1))
+            assert r.state == "reading"
+        finally:
+            await r.aclose()
 
 
 async def test_two_logins_of_one_person_have_their_own_keys() -> None:
@@ -192,9 +221,9 @@ async def test_a_renewals_overlap_drops_repeats_not_a_new_consumer() -> None:
     r, view = reader_with(dialer, renew=None)
     r.start()
     try:
-        await until(lambda: r.state == "reading")
+        await until(lambda: r.state.startswith("waiting"))
         cb = dialer.conns[0].subs[r.deliver_presence]
-        consumer = f"person-dembaca_{r.login}_presence"
+        consumer = "svc-own-name"
         crown = SimpleNamespace(subject="presence.crown.dev.agent-a", data=b'{"v": 1}',
                                 reply=ack(consumer, 2, 2))
         await cb(online("agent-a", ack(consumer, 1, 1)))
@@ -278,7 +307,7 @@ async def test_a_cancel_during_the_close_still_wipes() -> None:
     dialer = Dialer()
     r, _view = reader_with(dialer, renew=None)
     r.start()
-    await until(lambda: r.state == "reading")
+    await until(lambda: r.connects == 1)
     dialer.conns[0].close_gate = asyncio.Event()      # the close never ends
     r.stop()
     assert not r.holds_secrets                        # at once, before any await
@@ -326,7 +355,10 @@ async def logged_in(c: Console, dialer: Dialer, cookie: str | None = None) -> st
         new = next(v for v in headers["__set-cookie__"]
                    if v.startswith("choirbus_session=")).split(";")[0]
         view = c.sessions.view(new.split("=", 1)[1])
-        await until(lambda: view.reader.state == "reading")
+        await until(lambda: view.reader.connects >= 1)
+        conn = dialer.conns[-1]
+        await conn.subs[view.reader.deliver_presence](record(view.reader, 1))
+        assert view.reader.state == "reading"
     return new
 
 
@@ -356,7 +388,7 @@ async def test_no_reader_before_a_login_and_one_per_login(console: Console) -> N
     assert view.reader is not None and view.reader.running
     # the fleet the session shows is its own reader's
     cb = dialer.conns[0].subs[view.reader.deliver_presence]
-    await cb(online("agent-a", ack(f"p_{view.reader.login}_presence", 1)))
+    await cb(online("agent-a", ack("svc", 2)))
     status, _h, body = await get(console, "/v1/graph", cookie=cookie)
     assert status == 200 and "agent-a" in json.dumps(json.loads(body))
     assert console.fleet.cards() == []             # the stand-in stays empty
@@ -485,7 +517,7 @@ async def test_healthz_is_ready_when_nats_answers() -> None:
         writer.close()
     server = await asyncio.start_server(nothing, "127.0.0.1", 0)
     port = server.sockets[0].getsockname()[1]
-    c = Console(config.Settings(public_url="http://127.0.0.1:8747", login_off=True,
+    c = Console(config.Settings(public_url="http://127.0.0.1:8747", login_off=True, listen_port=0,
                                 nats_url=f"nats://127.0.0.1:{port}"))
     await c.start()
     try:

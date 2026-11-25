@@ -29,10 +29,15 @@ The login service's auth callout checks the token (the console's client,
 the operators' group) and issues the person's credential: 15 minutes,
 publish nothing, subscribe only to the login's own deliver subjects, and
 it makes the login's consumers. The server never derives the person's
-name: it subscribes to `deliver.person.<login>.presence`, `.stats` and
-`.self` by their literal names (`<login>`: the login's whole public key
-after its `U`, lower case) and learns the name and anchor from the
-record the login service writes on `.self` (`name`, `anchor`) — no
+name: it subscribes to `deliver.person.<login>.presence` and `.stats` by
+their literal names (`<login>`: the login's whole public key, lower case)
+and learns the name and anchor from the login's own record, which the
+service writes at each issue on `presence.person.<login>.v1`
+(`{"v":1,"name","anchor","iat","exp"}`, the anchor in its subject form)
+and which arrives with the presence lines; its `exp` is that credential's
+end, and the renewal comes five minutes before it at the latest. Until
+the record arrives the reading says `waiting: …`, and after 30 s without
+it says so — no
 inbox, no JetStream call, nothing published. Each session has its own
 fleet: what that person's consumers deliver (their presence consumer
 delivers the last message per subject, then new ones). From the
