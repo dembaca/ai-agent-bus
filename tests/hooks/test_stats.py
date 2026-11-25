@@ -301,3 +301,41 @@ def test_every_key_maps_the_same_in_the_script_as_in_the_tool(mm, run):
 def test_off_counts_nothing(mm, run):
     run(PROMPT, MM_STATS_CHANNEL="off")
     assert events(run) == []
+
+
+def test_the_tokens_by_category_are_the_tools(mm, run):
+    """RT-6.9 step 3: the tokens by category (an estimate), the same JSON from the script
+    as from stats_report, per version and role: overhead held to the total, coordination
+    to the rest, task work the remainder; a line without the split or of another method
+    leaves the version n/a and counts in the coverage, never as 0."""
+    from mattermost_ai_agent_bus import stats
+
+    tok = {"req": 40, "all": {"in": 1000, "read": 90_000, "w5m": 3000, "w1h": 0, "out": 2000},
+           "ovh": {"in": 100, "read": 20_000, "w5m": 500, "out": 300},
+           "coord": {"in": 400, "read": 5000, "w5m": 900, "out": 600}, "req_ovh": 3, "req_coord": 5, "m": 1}
+    forged = {"all": {"in": 10, "out": 10}, "ovh": {"in": 30, "out": 4}, "coord": {"in": 5, "out": 9},
+              "m": 1}
+    lines = [{"v": "0.101.0", "min": 60, "rt": "claude-code", "tok": {"req": 3, "all": {"in": 5}}},
+             {"v": "0.102.0", "sid": "5e55", "min": 60, "rt": "claude-code", "crown_sec": 3000, "tok": tok},
+             {"v": "0.102.0", "sid": "a1b2", "min": 30, "rt": "claude-code", "crown_sec": 0, "tok": forged},
+             {"v": "0.102.0", "sid": "c3d4", "min": 30, "rt": "opencode", "tok": tok | {"m": 2}},
+             {"v": "0.102.0", "sid": "e5f6", "min": 30, "rt": "cursor"}]
+    mm.posts[:0] = [{"id": f"s{i}", "user_id": "x" * 26, "create_at": 1,
+                     "message": "STATS " + json.dumps(line)} for i, line in enumerate(lines)]
+    r = run(REPORT, "report", "agents-stats", "--json")
+    assert r.code == 0, r.stderr
+    got = json.loads(r.stdout)
+    assert got == stats.report(lines)
+    old, s = got[0]["split"], got[1]["split"]
+    assert old is None and (s["lines"], s["of"], s["harnesses"]) == (2, 4, ["claude-code"])
+    assert s["estimated"] is True and s["method"] == 1 and (s["req_ovh"], s["req_coord"]) == (3, 5)
+    # The forged line: overhead held to its total (10), coordination to the rest (0).
+    assert s["types"]["overhead"]["in"] == 100 + 10 and s["types"]["coordination"]["in"] == 400
+    assert s["types"]["task"]["out"] == 2000 - 300 - 600 + 10 - 4 - 6
+    assert sum(s["raw"].values()) == 96_000 + 20
+    assert all(0 <= p <= 100 for p in (*s["eq_pct"].values(), *s["raw_pct"].values()))
+    cells = [line.split() for line in run(REPORT, "report", "agents-stats").stdout.splitlines()]
+    assert ["0.102.0", "2/4", f"{s['eq_pct']['task']}%", f"{s['eq_pct']['overhead']}%",
+            f"{s['eq_pct']['coordination']}%", f"{s['raw_pct']['task']}%", f"{s['raw_pct']['overhead']}%",
+            f"{s['raw_pct']['coordination']}%", "3", "5"] in cells
+    assert ["0.101.0", "-", "-", "-", "-", "-", "-", "-", "-", "-"] in cells

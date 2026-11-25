@@ -709,7 +709,11 @@ TOOL_NAMES = frozenset({
 # The reasons and kinds the turn hooks, the listener and the plugins write.
 WAKE_REASONS = frozenset({"addressed", "digest", "dm", "reaction", "stall", "over", "replaced", "?"})
 BLOCK_KINDS = frozenset({"drain", "signoff", "answer", "listen", "other", "?"})
-TOK_KEYS = frozenset({"req", "bus_req", "fixed", "skill", "all", "bus"})
+# The token split (RT-6.9 step 2, Claude Code): `ovh` and `coord` by token type, the
+# requests whose new input was the bus's only (`req_ovh`, `req_coord`), the method `m`.
+TOK_KEYS = frozenset({"req", "bus_req", "fixed", "skill", "all", "bus", "ovh", "coord", "req_ovh",
+                      "req_coord", "m"})
+TOK_OBJECTS = ("all", "bus", "ovh", "coord")
 TOK_TYPES = frozenset(overhead.KEYS)  # in, read, w5m, w1h, out
 # The bus traffic by kind (RT-6.9 step 2): own posts by bus word, `ask` (ask_human, its link
 # and resolve_ask's note), `plain` (a post without a word) and `other` (what the server posts
@@ -732,10 +736,11 @@ _SUB_KEYS: dict[str, frozenset[str]] = {"wakes": WAKE_REASONS, "blocks": BLOCK_K
 # humans, and `wake`, a hook or plugin text that carries one woken post's body. A digest
 # carries peers' posts too but stays overhead (only its head of about 120 characters is
 # wording of the bus), so the overhead share is an upper bound until the token split of a
-# later stage separates message text. Task work, the rest of a session, needs that split too.
+# later stage separates message text. Task work, the rest of a session, needs the token
+# split (`tok.ovh`, `tok.coord`; _split_of).
 OVERHEAD = "overhead"
 COORDINATION = "coordination"
-OVERHEAD_WORDS = frozenset({"HELLO", "IDLE", "BYE", "other"})
+OVERHEAD_WORDS = overhead.OVERHEAD_WORDS | {"other"}
 CATEGORY_OF: dict[str, dict[str, str]] = {
     "post_words": {w: OVERHEAD if w in OVERHEAD_WORDS else COORDINATION for w in POST_WORDS},
     "inbound": {"agent": COORDINATION, "human": COORDINATION, "event": OVERHEAD, "envelope": OVERHEAD},
@@ -782,7 +787,7 @@ def _tok(v: object) -> bool:
     if not isinstance(v, dict):
         return False
     for k, x in v.items():
-        if k in ("all", "bus"):
+        if k in TOK_OBJECTS:
             if not _nums(x):
                 return False
         elif k in TOK_KEYS:
@@ -831,13 +836,13 @@ def _value(v: object, depth: int = 0) -> bool:
 def _allowed(key: str, value: Any) -> Any:
     """The value with every key outside the allow list left out (one level of keys below
     `wakes`, `blocks`, `tools`, `tok`, `post_words`, `inbound` and `inject`, and the token
-    types below `tok.all` and `tok.bus`)."""
+    types below `tok.all`, `tok.bus`, `tok.ovh` and `tok.coord`)."""
     sub = _SUB_KEYS.get(key)
     if sub is None or not isinstance(value, dict):
         return value
     out = {k: v for k, v in value.items() if k in sub}
     if key == "tok":
-        for k in ("all", "bus"):
+        for k in TOK_OBJECTS:
             if isinstance(out.get(k), dict):
                 out[k] = {t: n for t, n in out[k].items() if t in TOK_TYPES}
     return out
@@ -1204,6 +1209,49 @@ def _tok_of(rows: list[dict[str, Any]]) -> dict[str, Any] | None:
     }
 
 
+TASK = "task"
+SPLIT_CATEGORIES = (TASK, OVERHEAD, COORDINATION)
+# The one-line note the reports carry beside the split (RT-6.9 step 3).
+SPLIT_NOTE = ("estimated: exact totals per token type from Claude Code's transcript, split by content "
+              "at 4 characters per token; text and thinking by what drove the request, a convention")
+
+
+def _split_of(rows: list[dict[str, Any]]) -> dict[str, Any] | None:
+    """The tokens by category (RT-6.9 step 3), an estimate: per token type, the line's
+    overhead held to its total, coordination to the rest, task work the remainder, summed
+    over the lines of the method this reader knows (tok.m == 1); raw tokens and input-token
+    equivalents (_eq) with each category's share. `lines` of `of` lines carry it, from the
+    harnesses named; None when none does: n/a, never 0."""
+    total = len(rows)
+    rows = [r for r in rows if isinstance(r.get("tok"), dict) and r["tok"].get("m") == overhead.METHOD]
+    if not rows:
+        return None
+    types = {c: dict.fromkeys(overhead.KEYS, 0) for c in SPLIT_CATEGORIES}
+    for r in rows:
+        tok = r["tok"]
+        for k in overhead.KEYS:
+            a = (tok.get("all") or {}).get(k) or 0
+            o = min(max((tok.get("ovh") or {}).get(k) or 0, 0), a)
+            c = min(max((tok.get("coord") or {}).get(k) or 0, 0), a - o)
+            types[OVERHEAD][k] += o
+            types[COORDINATION][k] += c
+            types[TASK][k] += a - o - c
+    raw = {c: sum(types[c].values()) for c in SPLIT_CATEGORIES}
+    eq = {c: _eq(types[c]) for c in SPLIT_CATEGORIES}
+    raw_all, eq_all = sum(raw.values()), sum(eq.values())
+    return {
+        "estimated": True, "method": overhead.METHOD, "lines": len(rows), "of": total,
+        "harnesses": sorted({str(r["rt"]) if r.get("rt") is not None else "other" for r in rows}),
+        "req": _sum(rows, lambda r: r["tok"].get("req")),
+        "req_ovh": _sum(rows, lambda r: r["tok"].get("req_ovh")),
+        "req_coord": _sum(rows, lambda r: r["tok"].get("req_coord")),
+        "raw": raw, "eq": {c: _round(v) for c, v in eq.items()},
+        "raw_pct": {c: _pct(v, raw_all) for c, v in raw.items()},
+        "eq_pct": {c: _pct(v, eq_all) for c, v in eq.items()},
+        "types": types,
+    }
+
+
 def _pairs(rows: list[dict[str, Any]], key: str) -> dict[str, list[int]]:
     out: dict[str, list[int]] = {}
     for r in rows:
@@ -1271,16 +1319,30 @@ def asks_summary(lines: list[dict[str, Any]]) -> dict[str, Any] | None:
 TRAFFIC_DETAIL = ("posts", "inbound", "inject")
 
 
+def _no_types(split: dict[str, Any] | None) -> dict[str, Any] | None:
+    return {k: v for k, v in split.items() if k != "types"} if split else split
+
+
 def brief(rows: list[dict[str, Any]]) -> list[dict[str, Any]]:
     """report()'s rows as the stats_report tool returns them (RT-6.9 step 3): the traffic
-    by category with its sums, shares and coverage only; the sums per key stay in
-    `mm-agent-stats.sh report --json` and the console, so asking an agent for the report
-    puts no more into its context than it needs."""
+    by category and the tokens by category with their sums, shares and coverage only; the
+    sums per key and per token type stay in `mm-agent-stats.sh report --json` and the
+    console, so asking an agent for the report puts no more into its context than it needs."""
     out = []
     for row in rows:
         t = row.get("traffic")
-        out.append(row | {"traffic": {k: v for k, v in t.items() if k not in TRAFFIC_DETAIL}} if t else row)
+        if t:
+            row = row | {"traffic": {k: v for k, v in t.items() if k not in TRAFFIC_DETAIL}}
+        row = row | {"split": _no_types(row.get("split")),
+                     "roles": [r | {"split": _no_types(r.get("split"))} for r in row.get("roles") or []]}
+        out.append(row)
     return out
+
+
+def split_summary(lines: list[dict[str, Any]]) -> dict[str, Any] | None:
+    """The tokens by category of all the lines together, as report() sums them per version
+    (RT-6.9 step 3): the operator console's report (RT-6.43 step 8)."""
+    return _split_of(_marked(lines))
 
 
 def traffic_summary(lines: list[dict[str, Any]]) -> dict[str, Any] | None:
@@ -1322,6 +1384,7 @@ def report(lines: list[dict[str, Any]]) -> list[dict[str, Any]]:
             "skill": _max(r.get("skill") for r in rows),
             "tok": _tok_of(rows),
             "traffic": _traffic_of(rows),
+            "split": _split_of(rows),
             "settled": _settled_of(rows),
             "saved": _saved_of(rows),
             "harness": [{"harness": rt, "sessions": _sessions(rs), "turns": _turns_of(rs),
@@ -1329,8 +1392,8 @@ def report(lines: list[dict[str, Any]]) -> list[dict[str, Any]]:
                         for rt, rs in sorted(by_rt.items())],
             "roles": [{"role": role, "parts": len(rs), "sessions": _sessions(rs),
                        "hours": _round(_sum(rs, lambda r: r.get("min")) / 60 * 10) / 10,
-                       "tok": _tok_of(rs), "turns": _turns_of(rs), "asks": _asks_of(rs),
-                       "settled": _settled_of(rs)}
+                       "tok": _tok_of(rs), "split": _split_of(rs), "turns": _turns_of(rs),
+                       "asks": _asks_of(rs), "settled": _settled_of(rs)}
                       for role, rs in sorted(by_role.items())],
             "plugin_turns_per_h": _tenth(plugin, hours),
             "all_turns": everything,

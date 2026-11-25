@@ -7,6 +7,7 @@ import threading
 import pytest
 
 from mattermost_ai_agent_bus import overhead, session_file, stats
+from mattermost_ai_agent_bus.overhead import CHARS_PER_TOKEN, KEYS
 
 BUS = "mcp__plugin_ai-agent-bus_ai-agent-bus__"
 FIXED = overhead.Fixed(instructions=400, tools=4000, skill=20000)
@@ -32,15 +33,20 @@ class Transcript:
             "role": "user", "content": [{"type": "tool_result", "tool_use_id": i, "content": body}
                                         for i, body in pairs]}})
 
-    def request(self, *tools, read=100_000, out=200, ts=T0, w1h=0):
-        """One model request: its usage on each content entry, as Claude Code writes it."""
+    def request(self, *tools, read=100_000, out=200, ts=T0, w1h=0, fresh=10, w5m=1000, text="ok",
+                old=False):
+        """One model request: its usage on each content entry, as Claude Code writes it
+        (`old`: as before the 5 min / 1 h split of cache writes, without `origin`)."""
         self.n += 1
         rid = f"req_{self.n}"
-        usage = {"input_tokens": 10, "cache_read_input_tokens": read,
-                 "cache_creation_input_tokens": 1000 + w1h, "output_tokens": out,
-                 "cache_creation": {"ephemeral_5m_input_tokens": 1000, "ephemeral_1h_input_tokens": w1h}}
-        blocks = [{"type": "text", "text": "ok"}] + [
+        usage = {"input_tokens": fresh, "cache_read_input_tokens": read,
+                 "cache_creation_input_tokens": w5m + w1h, "output_tokens": out}
+        if not old:
+            usage["cache_creation"] = {"ephemeral_5m_input_tokens": w5m, "ephemeral_1h_input_tokens": w1h}
+        blocks = ([{"type": "text", "text": text}] if text is not None else []) + [
             {"type": "tool_use", "id": tid, "name": name, "input": inp} for tid, name, inp in tools]
+        # Thinking whose text the transcript leaves out: no characters, still a request.
+        blocks = blocks or [{"type": "thinking", "thinking": "", "signature": "s"}]
         for b in blocks:
             self.rows.append({"type": "assistant", "isSidechain": False, "requestId": rid,
                               "timestamp": ts, "message": {"id": rid, "usage": usage, "content": [b]}})
@@ -243,3 +249,198 @@ def test_the_host_checks_the_opened_file_once_more(tmp_path, monkeypatch):
     assert overhead.measure(projects / "swapped" / "t.jsonl", 0, FIXED) is None
     monkeypatch.setattr(session_file, "_fd_path", lambda fd: None)
     assert overhead.measure(inside, 0, FIXED) is None  # cannot tell where it is: nothing
+
+
+
+# --- the token split by category (RT-6.9 step 2, method 1: an estimate) -------------------
+
+INPUT = ("in", "read", "w5m", "w1h")
+SRC = 'source="plugin:ai-agent-bus:ai-agent-bus"'
+
+
+def tag(body, kind="mention", trusted=False, post_id="p" * 26, agent=True):
+    """A pushed tag as Claude Code writes it: envelope and body."""
+    head = (f'<channel {SRC} kind="{kind}"' + (f' post_id="{post_id}"' if post_id else "")
+            + f' from_trusted_human="{str(trusted).lower()}" from_agent="{str(agent).lower()}">')
+    return head + body + "</channel>", len(head) + len("</channel>")
+
+
+def inputs(r, cat):
+    return sum(r[cat][k] for k in INPUT)
+
+
+def task(r):
+    return {k: r["all"][k] - r["ovh"][k] - r["coord"][k] for k in KEYS}
+
+
+def holds(r):
+    """The invariant: per token type, overhead and coordination never exceed the exact
+    total, so task work (the rest) is 0 or more and the three add up to `all`."""
+    assert r["m"] == 1
+    for k in KEYS:
+        assert 0 <= r["ovh"][k] and 0 <= r["coord"][k] and task(r)[k] >= 0
+        assert r["ovh"][k] + r["coord"][k] + task(r)[k] == r["all"][k]
+    return r
+
+
+def test_a_peer_task_drives_one_request_then_the_work_is_task(tmp_path):
+    """RT-6.9 step 2: a peer's TASK wakes the turn, three Read rounds follow. The body is
+    coordination input, the envelope overhead; the first request's text output goes by its
+    driver (the message), every later request's to task work, while the message stays in
+    the context as coordination input of each later request."""
+    t = Transcript()
+    text, env = tag("TASK " + "b" * 395)
+    t.user(text, origin="channel", meta=True)
+    read = ("r1", "Read", {"file_path": "/x"})
+    t.request(read, read=0, w5m=0, fresh=100_000, out=1000)
+    for i in range(3):
+        t.results((f"r{i + 1}", "z" * 8000))
+        t.request(*([(f"r{i + 2}", "Read", {"file_path": "/x"})] if i < 2 else []),
+                  read=0, w5m=0, fresh=100_000, out=1000)
+    r = holds(measure(t, tmp_path))
+    call = len(json.dumps({"file_path": "/x"})) / CHARS_PER_TOKEN
+    assert r["coord"]["out"] == round((1000 - call) * 400 / (400 + env))
+    assert r["ovh"]["out"] == round((1000 - call) * env / (400 + env))
+    # The body counts in each of the four requests; the first request's text ("ok") stays
+    # in the context of the three later ones, by its driver.
+    assert r["coord"]["in"] == round(4 * 400 / CHARS_PER_TOKEN + 3 * 2 * 400 / (400 + env) / CHARS_PER_TOKEN)
+    assert r["req_coord"] == 1 and r["req_ovh"] == 0
+
+
+def test_empty_polls_are_overhead(tmp_path):
+    """RT-6.9 step 2: an empty wait_for_events (call and result) is overhead, and the
+    request it drives counts as overhead whole."""
+    t = Transcript()
+    t.user("check the bus", origin="human")
+    t.request(("w1", BUS + "wait_for_events", {"timeout_sec": 30}), text=None, out=50)
+    t.results(("w1", '{"result":"[]"}'))
+    t.request(out=40)
+    r = holds(measure(t, tmp_path))
+    assert r["ovh"]["out"] == round(len(json.dumps({"timeout_sec": 30})) / 4) + 40
+    assert r["coord"] == dict.fromkeys(KEYS, 0)
+    assert r["req_ovh"] == 1 and r["req_coord"] == 0
+
+
+def test_a_poll_with_messages_splits_envelope_and_bodies(tmp_path):
+    """RT-6.9 step 2: a wait_for_events result: the bodies of the agents' posts are
+    coordination, a trusted human's task work, the server's own events and the JSON
+    around them overhead."""
+    items = [{"kind": "mention", "from_agent": True, "from_trusted_human": False,
+              "post": {"id": "p" * 26, "message": "RESULT " + "c" * 93}},
+             {"kind": "dm", "from_agent": False, "from_trusted_human": True,
+              "post": {"id": "q" * 26, "message": "please " + "h" * 193}},
+             {"kind": "stall", "from_agent": False, "from_trusted_human": False,
+              "post": {"message": "s" * 400}}]
+    body = json.dumps({"result": json.dumps(items)})
+    t = Transcript()
+    t.user("go", origin="human")
+    t.request(("w1", BUS + "wait_for_events", {}), text=None, out=0)
+    t.results(("w1", body))
+    t.request(text=None, out=0)
+    r = holds(measure(t, tmp_path))
+    assert inputs(r, "coord") == round(100 / 4)
+    fixed = (400 + 4000) / 4
+    assert inputs(r, "ovh") == round(2 * fixed + len("{}") / 4 + (len(body) - 300) / 4)
+
+
+@pytest.mark.parametrize("word,cat", [("IDLE", "ovh"), ("DONE", "coord")])
+def test_an_idle_post_is_overhead_a_done_coordination(tmp_path, word, cat):
+    """RT-6.9 step 2: own posts go by their bus word: HELLO, IDLE, BYE are overhead,
+    the other words and plain replies coordination; the call is sized exactly."""
+    t = Transcript()
+    t.user("finish", origin="human")
+    inp = {"root_id": "r" * 26, "message": f"{word} " + "x" * 395}
+    t.request(("p1", BUS + "reply_in_thread", inp), text=None, out=500)
+    r = holds(measure(t, tmp_path))
+    other = "coord" if cat == "ovh" else "ovh"
+    assert r[cat]["out"] == round(len(json.dumps(inp)) / 4) and r[other]["out"] == 0
+
+
+def test_a_trusted_humans_prompt_over_the_bus_is_task_work(tmp_path):
+    """RT-6.9 step 2: a trusted human's prompt over the bus stands for a typed one: its
+    body is task work, only the envelope overhead; nothing is coordination."""
+    t = Transcript()
+    text, env = tag("please fix the bug " + "x" * 381, kind="dm", trusted=True, agent=False)
+    t.user(text, origin="channel", meta=True)
+    t.request(read=0, w5m=0, fresh=100_000, out=100)
+    r = holds(measure(t, tmp_path))
+    assert r["coord"] == dict.fromkeys(KEYS, 0)
+    assert r["ovh"]["in"] == round((400 + 4000 + env) / 4)
+    assert r["ovh"]["out"] == round(100 * env / (env + 400))
+
+
+def test_deferred_tools_loaded_by_search(tmp_path):
+    """RT-6.9 step 2: with deferred tools the bus's schemas are not in the fixed text; once
+    loaded by tool search they are overhead, the other schemas of the result task work."""
+    def run(bus_schema):
+        t = Transcript()
+        t.other({"type": "attachment", "attachment": {"type": "deferred_tools_delta",
+                                                       "addedNames": [BUS + "get_thread"]}})
+        t.user("look", origin="human")
+        t.request(("s1", "ToolSearch", {"query": "select:get_thread"}), text=None, out=0)
+        t.results(("s1", f"<functions>{bus_schema}<function>{'o' * 400}</function></functions>"))
+        t.request(text=None, out=0)
+        return holds(measure(t, tmp_path))
+
+    schema = '<function>{"name": "' + BUS + 'get_thread", "d": "' + "d" * 300 + '"}</function>'
+    with_bus, without = run(schema), run("")
+    assert inputs(without, "ovh") == round(2 * 400 / 4)          # the instructions only
+    assert inputs(with_bus, "ovh") == round(2 * 400 / 4 + len(schema) / 4)
+
+
+def test_a_compaction_resets_the_segments_and_splits_its_summary(tmp_path):
+    """RT-6.9 step 2: a compaction drops the segments; its summary is split by the shares
+    of the context before it."""
+    t = Transcript()
+    t.user("a" * 400, origin="human")
+    text, env = tag("TASK " + "b" * 395)
+    t.user(text, origin="channel", meta=True)
+    t.request(text=None, out=0)
+    t.other({"type": "system", "subtype": "compact_boundary"})
+    t.other({"type": "user", "isSidechain": False, "isCompactSummary": True, "timestamp": T0,
+             "message": {"role": "user", "content": "s" * 1000}})
+    t.request(text=None, out=0)
+    r = holds(measure(t, tmp_path))
+    before = 400 / 4
+    after = 1000 * 400 / (800 + env) / 4
+    assert inputs(r, "coord") == round(before + after)
+
+
+def test_the_positional_cache_split(tmp_path):
+    """RT-6.9 step 2: the harness caches from the front, so the bus's fixed text and the
+    old messages fall into cache reads, the newest message into fresh input."""
+    t = Transcript()
+    t.user("a" * 4000, origin="human")
+    text, env = tag("TASK " + "b" * 3995, post_id="p" * 28)
+    pad = (-env) % 4
+    text, env = tag("TASK " + "b" * 3995, post_id="p" * (28 + pad))
+    t.user(text, origin="channel", meta=True)
+    t.request(text=None, out=0, read=2000 + 1100 + 1000, w5m=env // 4, fresh=1000)
+    r = holds(measure(t, tmp_path))
+    assert r["ovh"] == {"in": 0, "read": 1100, "w5m": env // 4, "w1h": 0, "out": 0}
+    assert r["coord"] == {"in": 1000, "read": 0, "w5m": 0, "w1h": 0, "out": 0}
+    assert task(r)["read"] == 3000
+
+
+def test_the_split_never_exceeds_the_total(tmp_path):
+    """RT-6.9 step 2: segments that would exceed the exact input are scaled down to it; a
+    tool call larger than the booked output is held to it. The three still add up."""
+    t = Transcript()
+    text, _env = tag("TASK " + "b" * 40_000)
+    t.user(text, origin="channel", meta=True)
+    t.request(("p1", BUS + "reply_in_thread", {"message": "ACK " + "x" * 9000}), read=50, w5m=50, fresh=50,
+              w1h=50, out=10)
+    r = holds(measure(t, tmp_path))
+    assert inputs(r, "ovh") + inputs(r, "coord") <= 200 and r["coord"]["out"] == 10
+
+
+def test_an_older_transcript_still_splits(tmp_path):
+    """RT-6.9: a transcript of an older format (no `origin`, no 5 min / 1 h split of the
+    cache writes, a tag as plain text) splits the same way; its writes count as 5 min."""
+    t = Transcript()
+    text, env = tag("TASK " + "b" * 395)
+    t.user(text)
+    t.request(read=0, w5m=0, fresh=100_000, out=0, text=None, old=True)
+    r = holds(measure(t, tmp_path))
+    assert r["coord"]["in"] == 100 and r["ovh"]["in"] == round((4400 + env) / 4)
+    assert r["all"]["w1h"] == 0

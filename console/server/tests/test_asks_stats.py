@@ -152,6 +152,11 @@ LINE = {"v": "0.101.0", "sid": "3f9a1c2b7d4e", "part": 1, "rt": "claude-code", "
                 "bus": {"in": 100, "out": 10}}}
 
 
+# The token split of a Claude Code line (RT-6.9 step 2): overhead and coordination by
+# token type against tok.all of LINE, the method's number.
+SPLIT = {"ovh": {"in": 300, "out": 30}, "coord": {"in": 200, "out": 20}, "req_ovh": 1, "req_coord": 2, "m": 1}
+
+
 def book_with(*lines: tuple[str, dict, float]) -> StatsBook:
     book = StatsBook()
     for i, (agent, line, at) in enumerate(lines, 1):
@@ -170,14 +175,17 @@ def test_the_two_reports_are_stats_reports_numbers() -> None:
     """RT-6.43 step 8: the share per version over 7 days and the asks over 24 h and 7 days,
     computed with stats.py; the same numbers stats_report gives on the same lines."""
     older = LINE | {"sid": "aaaaaaaaaaaa", "v": "0.100.0", "asks": 5, "asks_answered": 5,
-                    "ask_wait_sec": 50, "ask_wait_max_sec": 20}
+                    "ask_wait_sec": 50, "ask_wait_max_sec": 20, "tok": LINE["tok"] | SPLIT}
     book = book_with((A, older, NOW - 3 * 86400), (B, LINE, NOW - 600))
-    share, day, week, _traffic = book.reports()
+    share, day, week, _traffic, _split = book.reports()
     assert (share["window"], day["window"], week["window"]) == ("7 d", "24 h", "7 d")
     lines = [stats.decode_line(stats.nats_body(older) or b""), stats.decode_line(stats.nats_body(LINE) or b"")]
-    by_version = {row["version"]: row["tok"]["bus_share_pct"] for row in stats.report(lines)}
+    # The overhead segment of the token split; a version without it n/a, never 0.
+    by_version = {row["version"]: (row["split"] or {}).get("eq_pct", {}).get("overhead")
+                  for row in stats.report(lines)}
     got = fields(share)
-    assert got["version 0.100.0"] == by_version["0.100.0"] and got["version 0.101.0"] == by_version["0.101.0"]
+    assert got["version 0.100.0"] == by_version["0.100.0"] == 30 and got["version 0.101.0"] is None
+    assert share["title"] == "bus overhead share of all tokens, per version" and "estimated" in share["note"]
     assert got["lines"] == 2 and got["age of the oldest line"] == 3 * 86400 - 600  # by the newest stamp
     assert fields(day)["asks"] == 3 and fields(day)["answered share"] == 67
     want = stats.asks_summary(lines) or {}
@@ -213,6 +221,51 @@ def test_the_traffic_report_is_stats_reports_numbers() -> None:
     assert (got["lines with these counts"], got["lines"]) == (1, 2)
     old = next(r for r in book_with((A, LINE, NOW)).reports() if r["id"] == "traffic-by-category")
     assert fields(old)["lines"] == 1 and fields(old)["bus overhead, items"] is None
+
+
+def test_the_tokens_by_category_are_stats_reports_numbers() -> None:
+    """RT-6.9 step 3, RT-6.43 step 8: the tokens by category over 7 days, one stacked bar
+    for the fleet, per version, per role and per harness, each the split stats_report gives
+    on the same strictly decoded lines, marked estimated, in input-token equivalents and
+    raw tokens; a line without the split counts in the coverage only, never as 0."""
+    new = LINE | {"sid": "bbbbbbbbbbbb", "v": "0.102.0", "crown_sec": 0, "tok": LINE["tok"] | SPLIT}
+    other = LINE | {"sid": "cccccccccccc", "v": "0.102.0", "rt": "opencode"}
+    del other["tok"]
+    book = book_with((A, LINE, NOW - 3 * 86400), (B, new, NOW - 600), (B, other, NOW - 500))
+    report = next(r for r in book.reports() if r["id"] == "tokens-by-category")
+    lines = [stats.decode_line(stats.nats_body(x) or b"") for x in (LINE, new, other)]
+    want = stats.split_summary(lines) or {}
+    rows = {row["version"]: row["split"] for row in stats.report(lines)}
+    bars = {s["label"]: s for s in report["stacks"]}
+    assert report["window"] == "7 d" and "estimated" in report["note"] and "from 1 of 3 lines (claude-code)" in report["note"]
+    assert set(bars) == {"fleet", "version 0.102.0", "role worker", "harness claude-code"}
+    assert all(s["estimated"] is True for s in report["stacks"])
+    for label, split in (("fleet", want), ("version 0.102.0", rows["0.102.0"])):
+        eq = {seg["category"]: (seg["value"], seg["percent"]) for seg in bars[label]["segments"]}
+        raw = {seg["category"]: (seg["value"], seg["percent"]) for seg in bars[label]["raw"]}
+        assert eq == {c: (split["eq"][c], split["eq_pct"][c]) for c in stats.SPLIT_CATEGORIES}
+        assert raw == {c: (split["raw"][c], split["raw_pct"][c]) for c in stats.SPLIT_CATEGORIES}
+    assert raw == {"task": (550, 50), "overhead": (330, 30), "coordination": (220, 20)}
+    got = fields(report)
+    assert (got["lines with the split"], got["lines"]) == (1, 3)
+    assert (got["requests driven by the bus alone"], got["requests driven by coordination"]) == (1, 2)
+    old = next(r for r in book_with((A, LINE, NOW)).reports() if r["id"] == "tokens-by-category")
+    assert old["stacks"] == [] and fields(old)["lines with the split"] is None
+
+
+def test_forged_split_values_stay_within_0_to_100() -> None:
+    """RT-6.9 step 3: a strictly decoded line whose overhead and coordination exceed its
+    totals (an agent's numbers are its own word) still shows shares within 0 to 100 %,
+    overhead held to the total, coordination to the rest, task work never below 0."""
+    forged = LINE | {"tok": LINE["tok"] | {"ovh": {"in": 10**12, "out": 5}, "coord": {"in": 10**12, "out": 10**12},
+                                           "m": 1}}
+    reports = book_with((A, forged, NOW)).reports()
+    bar = next(r for r in reports if r["id"] == "tokens-by-category")["stacks"][0]
+    for segs in (bar["segments"], bar["raw"]):
+        assert all(0 <= s["percent"] <= 100 and s["value"] >= 0 for s in segs)
+    raw = {s["category"]: s["value"] for s in bar["raw"]}
+    assert raw == {"task": 0, "overhead": 1000 + 5, "coordination": 95}
+    assert 0 <= fields(reports[0])["version 0.101.0"] <= 100
 
 
 def test_a_line_with_text_is_dropped_and_old_lines_leave(caplog) -> None:
@@ -279,7 +332,8 @@ def test_a_report_that_cannot_be_computed_says_n_a(monkeypatch) -> None:
 def test_a_share_is_held_to_0_to_100(monkeypatch) -> None:
     """An agent's numbers are its own word: a share outside 0 to 100 is shown at the bound."""
     book = book_with((A, LINE, NOW))
-    monkeypatch.setattr(stats, "report", lambda lines: [{"version": "0.101.0", "tok": {"bus_share_pct": 1.3e11}}])
+    monkeypatch.setattr(stats, "report",
+                        lambda lines: [{"version": "0.101.0", "split": {"eq_pct": {"overhead": 1.3e11}}}])
     monkeypatch.setattr(stats, "asks_summary", lambda lines: {"answered_pct": -7})
     reports = book.reports()
     assert fields(reports[0])["version 0.101.0"] == 100 and fields(reports[1])["answered share"] == 0

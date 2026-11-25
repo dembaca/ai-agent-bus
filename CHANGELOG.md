@@ -45,8 +45,33 @@ before 0.5.0 are described in the git history.
   result field is added; a test pins all of these by hash. Only
   `stats_report`, when asked, returns a few more numbers.
 
+- **Tokens by category for Claude Code, an estimate marked as such** (the
+  second stage of splitting the tokens into task work, bus overhead and
+  multi-agent coordination, #139; the overhead measurement, RT-6.9; the
+  decision on attribution by content, ADR-017). The same pass over the
+  transcript keeps the context's segments by category, lays each request's
+  exact token types over them by position (cache read from the front, then
+  cache write 1 h, 5 min, fresh input), sizes tool calls in the output
+  exactly and splits text and thinking by what drove the request (a
+  convention). `tok` gains `ovh` and `coord` (each `{in, read, w5m, w1h,
+  out}`), `req_ovh`, `req_coord` and the method number `m` (1); task work
+  is the rest, never sent, so the three add up to the exact totals.
+  `mm-agent-stats.sh report`, `stats_report` (sums, shares and coverage
+  only) and the console gain the report "tokens by category": in the
+  console one stacked bar per row (fleet, version, role, harness),
+  input-token equivalents by default and raw tokens on a switch, each bar
+  marked "estimated" with a one-line note on the method and the coverage.
+  A trusted human's prompt over the bus counts as task work here, a digest
+  as overhead. Zero added model tokens: the hash test of the text the
+  model reads is unchanged.
+
 ### Changed
 
+- **The console's report on the token share per version shows the bus
+  overhead share of all tokens**, the overhead segment of the token split
+  in input-token equivalents, marked estimated (n/a for versions without
+  the split); the bus and coordination share stays in the script's token
+  table, from `tok.bus`, for comparison across versions (RT-6.43 step 8).
 - **The console's report "the bus's share of all tokens, per version" is
   now "bus and coordination share of all tokens, per version"**, and the
   script's column "bus share" "bus and coordination share": the measure

@@ -96,9 +96,12 @@ operator's anchor from the login's own record with the asked human's
 anchor, never a login name (point 4 of the console decision's addition of
 2026-11-25); until that record came they are `null` (`n/a`) and mark
 nothing. Read-only: no answer, no thread text. `/v1/stats` answers the
-stage-1 reports (the bus and coordination share of all tokens per version
-over 7 days; the asks over 24 h and 7 days; the bus traffic by category
-over 7 days, exact counts of bus overhead and coordination), computed with `stats.py` from lines
+reports (the bus overhead share of all tokens per version over 7 days,
+estimated; the asks over 24 h and 7 days; the bus traffic by category
+over 7 days, exact counts of bus overhead and coordination; the tokens by
+category over 7 days, an estimate marked so, as stacked bars in `stacks`
+for the fleet, per version, per role and per harness, in input-token
+equivalents and raw tokens), computed with `stats.py` from lines
 decoded by `stats.decode_line`, each line once by its stream sequence;
 every value without lines is `null` (`n/a`).
 

@@ -96,7 +96,7 @@ async def test_asks_and_stats_answer_empty_until_nats_carries_them(
     status, _headers, body = await get(console, "/v1/stats")
     reports = json.loads(body)
     assert status == 200 and [r["id"] for r in reports] == ["share-per-version", "asks-24h", "asks-7d",
-                                                                 "traffic-by-category"]
+                                                                 "traffic-by-category", "tokens-by-category"]
     assert all(f["value"] is None for r in reports for f in r["fields"])
 
 

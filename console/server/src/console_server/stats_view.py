@@ -6,9 +6,11 @@ Each MCP server publishes each part of its STATS line on ``<stats>.<name>`` (str
 ``v``, ``sid``, ``rt`` and ``kind``, each by its pattern; keys from the allow list of
 ``stats.py``, others ignored and never shown — and a line that breaks a rule is dropped
 whole with a warning that carries none of it. The reports are computed with ``stats.py``,
-the numbers ``stats_report`` gives on the same lines: the bus and coordination share of all
-tokens per version over 7 days, the asks over 24 hours and 7 days, and the bus traffic by
-category over 7 days (RT-6.9 step 3: exact counts, grouped by ``stats.CATEGORY_OF``). A missing value is ``None``
+the numbers ``stats_report`` gives on the same lines: the bus overhead share of all tokens
+per version over 7 days, the asks over 24 hours and 7 days, the bus traffic by category over
+7 days (RT-6.9 step 3: exact counts, grouped by ``stats.CATEGORY_OF``) and the tokens by
+category over 7 days (an estimate, marked so: one stacked bar of task work, bus overhead and
+coordination for the fleet, per version, per role and per harness). A missing value is ``None``
 ("n/a", never 0); each report says the age of the oldest line it holds. No agent's name,
 no report by home or owner: the subject's name only says whose line it is.
 """
@@ -90,14 +92,15 @@ class StatsBook:
         oldest = {"label": "age of the oldest line", "unit": "s",
                   "value": round(self.server_now - min(held)) if held else None}
         week = self._within(WEEK_SEC)
+        rows = _safe(stats.report, week) or []
+        # The overhead segment of the token split (RT-6.9 step 3), in input-token
+        # equivalents: a version without the split is n/a, never 0.
         share = [{"label": f"version {row['version']}", "unit": "%",
-                  "value": _pct((row["tok"] or {}).get("bus_share_pct"))}
-                 for row in _safe(stats.report, week) or []]
-        # The share counts every request the bus caused whole: bus overhead and the
-        # coordination it carries together, not overhead alone (RT-6.9 step 3).
-        out = [{"id": "share-per-version", "title": "bus and coordination share of all tokens, per version",
-                "window": "7 d", "fields": [*share, {"label": "lines", "unit": "count",
-                                                    "value": len(week) or None}, oldest]}]
+                  "value": _pct(((row.get("split") or {}).get("eq_pct") or {}).get(stats.OVERHEAD))}
+                 for row in rows]
+        out = [{"id": "share-per-version", "title": "bus overhead share of all tokens, per version",
+                "window": "7 d", "note": stats.SPLIT_NOTE,
+                "fields": [*share, {"label": "lines", "unit": "count", "value": len(week) or None}, oldest]}]
         for rid, window, sec in (("asks-24h", "24 h", DAY_SEC), ("asks-7d", "7 d", WEEK_SEC)):
             a = _safe(stats.asks_summary, self._within(sec)) or {}
             out.append({"id": rid, "title": "asks to humans", "window": window, "fields": [
@@ -121,7 +124,34 @@ class StatsBook:
             {"label": "lines with these counts", "unit": "count", "value": t.get("lines")},
             {"label": "lines", "unit": "count", "value": len(week) or None},
             oldest]})
+        out.append(self._split_report(week, rows, oldest))
         return out
+
+    def _split_report(self, week: list[dict[str, Any]], rows: list[dict[str, Any]],
+                      oldest: dict[str, Any]) -> dict[str, Any]:
+        """The tokens by category over 7 days (RT-6.9 step 3, RT-6.43 step 8): one stacked
+        bar for the fleet, per version, per role and per harness, in input-token
+        equivalents (`segments`) and raw tokens (`raw`), each marked estimated."""
+        fleet = _safe(stats.split_summary, week)
+        stacks = [_stack("fleet", fleet)]
+        stacks += [_stack(f"version {row['version']}", row.get("split")) for row in rows]
+        for key, name in (("role", stats._role), ("harness", lambda r: str(r.get("rt") or "other"))):
+            groups: dict[str, list[dict[str, Any]]] = {}
+            for line in week:
+                groups.setdefault(name(line), []).append(line)
+            stacks += [_stack(f"{key} {g}", _safe(stats.split_summary, ls)) for g, ls in sorted(groups.items())]
+        f = fleet or {}
+        harnesses = ", ".join(f.get("harnesses") or []) or "none"
+        return {"id": "tokens-by-category", "title": "tokens by category", "window": "7 d",
+                "note": f"{stats.SPLIT_NOTE}; from {f.get('lines', 0)} of {len(week)} lines ({harnesses})",
+                "fields": [{"label": "lines with the split", "unit": "count", "value": f.get("lines")},
+                           {"label": "lines", "unit": "count", "value": len(week) or None},
+                           {"label": "requests driven by the bus alone", "unit": "count",
+                            "value": f.get("req_ovh")},
+                           {"label": "requests driven by coordination", "unit": "count",
+                            "value": f.get("req_coord")},
+                           oldest],
+                "stacks": [s for s in stacks if s is not None]}
 
 
 def _safe(compute: Any, lines: list[dict[str, Any]]) -> Any:
@@ -131,6 +161,22 @@ def _safe(compute: Any, lines: list[dict[str, Any]]) -> Any:
         return compute(lines)
     except Exception as exc:  # noqa: BLE001 - one bad line never takes the reports down
         log.warning("console: a STATS report not computed (%s)", type(exc).__name__)
+        return None
+
+
+def _segments(split: dict[str, Any], values: str, shares: str) -> list[dict[str, Any]]:
+    return [{"category": c, "value": split[values][c], "percent": _pct(split[shares][c])}
+            for c in stats.SPLIT_CATEGORIES]
+
+
+def _stack(label: str, split: dict[str, Any] | None) -> dict[str, Any] | None:
+    """One stacked bar: the three categories with their shares, none without the split."""
+    if not split:
+        return None
+    try:
+        return {"label": label, "estimated": True, "segments": _segments(split, "eq", "eq_pct"),
+                "raw": _segments(split, "raw", "raw_pct")}
+    except (KeyError, TypeError):  # a split without its sums: no bar, never a failed report
         return None
 
 
