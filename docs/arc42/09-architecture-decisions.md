@@ -4861,13 +4861,10 @@ registrar's functions can move in later without a second component.
        path. A reaction is bounded by its own time, not its post's: the
        bridge carries a reaction whose `create_at` is after the watermark
        and within the 10 minutes, also on an older post (an ask). It finds
-       them through the same `since` read, which returns posts whose
-       reactions changed with their current reactions, and compares those
-       with what it carried; whether `since` returns a post whose only
-       change is a reaction is to be checked against Mattermost at build,
-       and if not, the bridge reads the reactions of every post of that
-       read and, for older targets, of every post id it has seen in the
-       channel within the last hour, asks included. A removal has no time
+       them through the same `since` read alone: Mattermost raises a post's
+       `update_at` when a reaction is added or removed, so the read returns
+       that post with its current reactions (`metadata.reactions`), which
+       the bridge compares with the keys it carried. A removal has no time
        of its own (Mattermost sends `reaction_removed` with `create_at` 0),
        so the catch-up sees it only as a reaction missing on reread: the
        bridge compares the reread reactions of a post with the reaction
@@ -4883,7 +4880,7 @@ registrar's functions can move in later without a second component.
        the opposite kind for the same `mm`, emoji and sender clears the
        key, so a 👍 taken back and given again counts again (chosen over
        adding the reaction's `create_at` to the key). The bridge keeps the
-       keys it carried and the post ids it has seen in a bucket of their
+       keys it carried in a bucket of their
        own, `BUS_BRIDGE_SEEN`, with `max_age` one hour (longer than the
        catch-up bound and any key's use) and `discard: old`, so they never
        fill `BUS_BRIDGE`, whose first-step `pos.<home>` keys have no age
