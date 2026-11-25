@@ -759,6 +759,9 @@ async def services(key: str, client: BusClient) -> AsyncIterator[str]:
     finally:
         nats.cancel()
         await asyncio.gather(nats, return_exceptions=True)  # a start under way ends here, not later
+        from . import server
+
+        await server._final_stats_on_nats()  # the last STATS part on NATS too (RT-6.43 step 7)
         await compose.stop_nats(client)
         task.cancel()
         if logging_in is not None:

@@ -555,7 +555,8 @@ def decode_ask_record(data: bytes) -> AskRecord:
     """Strict: a record that is not format v1 within ASK_RECORD_MAX bytes, with an unknown,
     missing or duplicate key, more than ASK_MAX asks, a title over ASK_TITLE_MAX characters,
     a `human` that is neither NO_OWNER nor an anchor in subject form, or a malformed or
-    repeated `mm` raises MessageError (dropped whole; the text carries none of it)."""
+    repeated `mm`, or an `exp` not after `iat` or more than ASK_VALID_SEC after it raises
+    MessageError (dropped whole; the text carries none of it)."""
     if len(data) > ASK_RECORD_MAX:
         raise MessageError("ask record too big")
     obj = _obj(data)
@@ -564,6 +565,9 @@ def decode_ask_record(data: bytes) -> AskRecord:
     raw = obj["asks"]
     if not isinstance(raw, list) or len(raw) > ASK_MAX:
         raise MessageError("ask record list")
+    iat, exp = _nonneg(obj["iat"], "iat"), _nonneg(obj["exp"], "exp")
+    if not iat < exp <= iat + ASK_VALID_SEC:
+        raise MessageError("ask record validity")
     out: list[OpenAsk] = []
     seen: set[str] = set()
     for a in raw:
@@ -583,8 +587,7 @@ def decode_ask_record(data: bytes) -> AskRecord:
             raise MessageError("ask answered")
         out.append(OpenAsk(mm=mm, kind=kind, human=human, title=title,
                            asked=_nonneg(a["asked"], "asked"), answered=answered))
-    return AskRecord(asks=tuple(out), more=_nonneg(obj["more"], "more"),
-                     iat=_nonneg(obj["iat"], "iat"), exp=_nonneg(obj["exp"], "exp"))
+    return AskRecord(asks=tuple(out), more=_nonneg(obj["more"], "more"), iat=iat, exp=exp)
 
 
 def encode_claim() -> bytes:
@@ -1089,6 +1092,7 @@ class NatsBus:
         self._stale: set[str] = set()  # channels with a gap, dropped until the reconnect
         self._last_seq: dict[str, int] = {}  # channel (or "@dm") -> last stream sequence delivered
         self._server_now = 0.0  # the newest server timestamp seen: the host's "now"
+        self._server_now_mono = 0.0  # the monotonic clock when it was seen (for _iat)
         self._last_prune = 0.0
         self._presence: dict[str, tuple[float, str]] = {}
         self._owners: dict[str, str] = {}  # agent -> owner its presence subject names (RT-6.37)
@@ -1111,6 +1115,7 @@ class NatsBus:
         self._ask_sent: tuple[OpenAsk, ...] | None = None  # the asks of the last record published
         self._ask_sent_at = 0.0  # monotonic
         self._ask_failed: tuple[tuple[OpenAsk, ...], float] | None = None  # (asks, retry after)
+        self._loop: asyncio.AbstractEventLoop | None = None  # the bus's loop, for asks_changed
         self._synced = False
         self._presence_read = False  # True once the stored presence stream was read (a new session says so in its hello)
         self._memberships: list[str] = []  # channels this bus announces its membership of
@@ -1182,6 +1187,7 @@ class NatsBus:
             # (a send raises "not connected" until it has).
             log.warning("nats bus: first connect failed, retrying: %s", connect_reason(exc))
             retry = True
+        self._loop = asyncio.get_running_loop()
         self._tasks = [asyncio.create_task(self._supervise()), asyncio.create_task(self._heartbeat()),
                        asyncio.create_task(self._announce_asks())]
         if self._memberships:
@@ -1593,8 +1599,11 @@ class NatsBus:
         return f"{self._s.presence}.ask.{self._channel(self._s.home)}.{self.name}"
 
     def _iat(self) -> int:
-        """A record's issue time: the server's clock as this host last saw it."""
-        return int(self._server_now or time.time())
+        """A record's issue time: the server's clock as this host last saw it, carried forward
+        by the monotonic clock (a quiet stream must not make a fresh record look old)."""
+        if not self._server_now:
+            return int(time.time())
+        return int(self._server_now + max(0.0, time.monotonic() - self._server_now_mono))
 
     def human_token(self, name: str) -> str:
         """The asked human's anchor in subject form, as this agent's own attestation from the
@@ -1608,8 +1617,19 @@ class NatsBus:
         return owner_token(anchors.pop()) if len(anchors) == 1 else NO_OWNER
 
     def asks_changed(self) -> None:
-        """An ask was posted, answered or ended: the record goes out now, not at the next check."""
-        self._ask_now.set()
+        """An ask was posted, answered or ended: the record goes out now, not at the next check.
+        Safe from any thread: the event is set in the bus's own loop."""
+        loop = self._loop
+        if loop is None or loop.is_closed():
+            return  # not started: the first check after start publishes
+        try:
+            running = asyncio.get_running_loop()
+        except RuntimeError:
+            running = None
+        if running is loop:
+            self._ask_now.set()
+        else:
+            loop.call_soon_threadsafe(self._ask_now.set)
 
     async def _announce_asks(self) -> None:
         """Publish the ask record at each change and every ASK_RENEW_SEC while an ask is open;
@@ -1630,15 +1650,18 @@ class NatsBus:
                 log.info("nats bus: the ask record was not published: %s", type(exc).__name__)
 
     async def publish_asks(self) -> bool:
-        """The ask record, when the asks changed since the last one or it is due for renewal;
-        True when one went out. A refused publish is tried again after a minute or a change."""
+        """The ask record, when the asks changed since the last one (the first check after start
+        counts as a change) or it is due for renewal; True when one went out. A refused publish
+        is tried again after a minute or a change."""
         source = self.ask_source
         if source is None:
             return False
         asks = tuple(dataclasses.replace(a, human=self.human_token(a.human)) for a in source())
         now = time.monotonic()
         due = bool(asks) and now - self._ask_sent_at >= ASK_RENEW_SEC
-        if (asks == self._ask_sent and not due) or (self._ask_sent is None and not asks):
+        # The first check publishes even an empty list: it replaces a record a predecessor of
+        # this agent left (a crash), which would otherwise stand until its exp.
+        if asks == self._ask_sent and not due:
             return False
         if self._ask_failed is not None and self._ask_failed[0] == asks and now < self._ask_failed[1]:
             return False
@@ -1810,6 +1833,7 @@ class NatsBus:
         if server_time <= self._server_now:
             return
         self._server_now = server_time
+        self._server_now_mono = time.monotonic()
         if server_time - self._last_prune < 60.0:
             return
         self._last_prune = server_time

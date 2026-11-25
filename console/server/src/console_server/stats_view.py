@@ -36,8 +36,10 @@ class StatsBook:
     """The STATS lines of the last 7 days, by server time, decoded strictly."""
 
     stats_subject: str = "stats"
-    # (server time, line) in arrival order
-    _lines: deque[tuple[float, dict[str, Any]]] = field(default_factory=lambda: deque(maxlen=MAX_LINES))
+    # (server time, stream sequence, line) in arrival order
+    _lines: deque[tuple[float, int, dict[str, Any]]] = field(default_factory=deque)
+    # the stream sequences held: a consumer made anew replays 7 days, counted once
+    _seqs: set[int] = field(default_factory=set)
     _server_now: float = 0.0
     _seen_at: tuple[float, float] | None = None  # (server time, monotonic) of the newest stamp
 
@@ -55,6 +57,8 @@ class StatsBook:
         ack = parse_ack(reply, stream, consumer)
         if ack is None:
             return False
+        if ack.stream_seq in self._seqs:
+            return False  # a replay after a reconnect: this line is held already
         t = subject.split(".")
         if len(t) != 2 or t[0] != self.stats_subject or not AGENT_RE.fullmatch(t[1]):
             return False
@@ -66,31 +70,32 @@ class StatsBook:
         if ack.time > self._server_now:
             self._server_now = ack.time
             self._seen_at = (ack.time, time.monotonic())
-        self._lines.append((ack.time, line))
+        self._lines.append((ack.time, ack.stream_seq, line))
+        self._seqs.add(ack.stream_seq)
         edge = self.server_now - WEEK_SEC
-        while self._lines and self._lines[0][0] < edge:
-            self._lines.popleft()
+        while self._lines and (self._lines[0][0] < edge or len(self._lines) > MAX_LINES):
+            self._seqs.discard(self._lines.popleft()[1])
         return True
 
     def _within(self, sec: float) -> list[dict[str, Any]]:
         edge = self.server_now - sec
-        return [line for at, line in self._lines if at >= edge]
+        return [line for at, _seq, line in self._lines if at >= edge]
 
     def reports(self) -> list[dict[str, Any]]:
         """`/v1/stats`: the share per version over 7 days, the asks over 24 h and 7 days."""
         edge = self.server_now - WEEK_SEC
-        held = [at for at, _ in self._lines if at >= edge]
+        held = [at for at, _seq, _line in self._lines if at >= edge]
         oldest = {"label": "age of the oldest line", "unit": "s",
                   "value": round(self.server_now - min(held)) if held else None}
         week = self._within(WEEK_SEC)
         share = [{"label": f"version {row['version']}", "unit": "%",
                   "value": (row["tok"] or {}).get("bus_share_pct")}
-                 for row in stats.report(week)]
+                 for row in _safe(stats.report, week) or []]
         out = [{"id": "share-per-version", "title": "the bus's share of all tokens, per version",
                 "window": "7 d", "fields": [*share, {"label": "lines", "unit": "count",
                                                     "value": len(week) or None}, oldest]}]
         for rid, window, sec in (("asks-24h", "24 h", DAY_SEC), ("asks-7d", "7 d", WEEK_SEC)):
-            a = stats.asks_summary(self._within(sec)) or {}
+            a = _safe(stats.asks_summary, self._within(sec)) or {}
             out.append({"id": rid, "title": "asks to humans", "window": window, "fields": [
                 {"label": "asks", "unit": "count", "value": a.get("asks")},
                 {"label": "answered", "unit": "count", "value": a.get("answered")},
@@ -100,3 +105,13 @@ class StatsBook:
                 {"label": "still open at the part's end", "unit": "count", "value": a.get("open")},
                 oldest]})
         return out
+
+
+def _safe(compute: Any, lines: list[dict[str, Any]]) -> Any:
+    """A report over lines the strict decoder let in; should a line still break the
+    arithmetic, the report says n/a instead of failing /v1/stats."""
+    try:
+        return compute(lines)
+    except Exception as exc:  # noqa: BLE001 - one bad line never takes the reports down
+        log.warning("console: a STATS report not computed (%s)", type(exc).__name__)
+        return None

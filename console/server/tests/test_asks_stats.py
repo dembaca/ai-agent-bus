@@ -205,3 +205,45 @@ def test_the_stats_consumer_reads_seven_days_of_every_name() -> None:
     assert spec["config"]["deliver_policy"] == "by_start_time"
     assert spec["config"]["opt_start_time"] == "2025-11-18T09:10:00Z"
     assert spec["config"]["deliver_subject"] == "deliver.console.stats"
+
+
+def test_for_me_needs_the_anchor_among_the_asking_agents_attested_names() -> None:
+    """RT-6.43 step 6: an agent cannot make an ask "for me" by naming an anchor its
+    attestation does not hold."""
+    rec_b = encode_ask_record([OpenAsk(mm(4), "approval", "dembaca", "d", int(NOW) - 5)], int(NOW))
+    f = fleet_with((B, "ops", rec_b, NOW))
+    assert f.asks("dembaca")[0]["for_me"] is False
+
+
+def test_a_record_lives_at_most_30_minutes_after_the_server_stored_it() -> None:
+    """The agent's own clock is not trusted: a record past ack time + 30 min is gone, and one
+    whose exp lies further than 30 min after iat is dropped by the decoder."""
+    rec = encode_ask_record([OpenAsk(mm(1), "approval", "-", "a", int(NOW))], int(NOW) + 10**6)
+    f = fleet_with((A, "dev", rec, NOW))
+    assert len(f.asks()) == 1  # stored now: shown
+    f._see(NOW + 1801)
+    assert f.asks() == []
+    far = json.loads(rec)
+    far["exp"] = far["iat"] + 10**9
+    assert not Fleet().on_delivery(f"presence.ask.dev.{A}", json.dumps(far).encode(),
+                                   ack("PRESENCE", "console", 1, NOW), "PRESENCE", "console")
+
+
+def test_a_replay_after_a_reconnect_counts_each_line_once() -> None:
+    """A STATS consumer made anew replays 7 days: the stream sequence counts a line once."""
+    book = StatsBook()
+    body = stats.nats_body(LINE) or b""
+    for _replay in range(3):
+        book.on_delivery(f"stats.{A}", body, ack("STATS", "console_stats", 7, NOW), "STATS", "console_stats")
+    assert fields(book.reports()[0])["lines"] == 1 and fields(book.reports()[1])["asks"] == 3
+
+
+def test_a_report_that_cannot_be_computed_says_n_a(monkeypatch) -> None:
+    book = book_with((A, LINE, NOW))
+
+    def boom(_lines: list) -> None:
+        raise OverflowError
+    monkeypatch.setattr(stats, "report", boom)
+    monkeypatch.setattr(stats, "asks_summary", boom)
+    reports = book.reports()
+    assert fields(reports[1])["asks"] is None and len(reports[0]["fields"]) == 2

@@ -334,7 +334,7 @@ two open asks, and the empty one at the agent's bye:
 | `asks` | record | The open asks, oldest first, at most 20; an ended ask leaves the list |
 | `more` | record | Open asks left out: past 20, or past the record's 4 KiB |
 | `iat` | record | When this record was published (Unix seconds) |
-| `exp` | record | 30 minutes after `iat`; a record past it is not shown |
+| `exp` | record | 30 minutes after `iat` (a reader drops a record whose `exp` is not after `iat` or more than 30 minutes after it); a record past it, or more than 30 minutes after the server stored it, is not shown |
 | `mm` | ask | The ask's Mattermost post id, 26 of `[a-z0-9]`, unique in the list |
 | `kind` | ask | `approval` or `question`, as `ask_human` set it |
 | `human` | ask | The asked human's anchor in its subject form, as the session's record from the login service gives it: the directory's anchor (a lower-case letter or digit, then up to 63 of `[a-z0-9._-]`) with every `.` written as `~`, the encoding of the presence subject's owner token (`ownerToken` in `services/auth/internal/callout/perms.go`, `natsbus.owner_token` in the MCP server), so a lower-case letter or digit, then up to 63 of `[a-z0-9~_-]`; `-` when the record gives none. "For me" compares it, in that form, with the operator's own anchor in the same form, never with a name |
@@ -368,10 +368,16 @@ at most 8 KiB, for example:
 | `rt` | `claude-code`, `cursor`, `opencode`, `codex`, `pi` or `other` (any other client is published as `other`) |
 | `kind` | `session` or `autonomous` |
 
-No other value is a string: every other value is a number, a boolean, a
-list of numbers, or an object of such values. A string anywhere else, a
-string off its pattern, a duplicate key or a line over 8 KiB drops the
-whole line. The publisher sends at most 8000 bytes. Keys come from one
+No other value is a string. Each listed key has one type: `part` an
+integer, `final` a boolean, `posts` and `compact` a pair of numbers,
+`wakes` and `blocks` objects of numbers, `tools` an object of pairs, `tok`
+its numbers and the objects `all` and `bus` of numbers, every other listed
+key one number; each number from 0 to 10^12. A key outside the list may
+hold a number, a boolean, a list of numbers or an object of such values,
+and is ignored. A string anywhere else, a
+string off its pattern, a listed key of another type or out of range, a
+duplicate key or a line over 8 KiB drops the whole line. A reader counts
+each line once by its stream sequence. The publisher sends at most 8000 bytes. Keys come from one
 fixed allow list in `stats.py` (`LINE_KEYS` with their labels,
 `TOOL_NAMES`, `WAKE_REASONS`, `BLOCK_KINDS`, `TOK_KEYS`, `TOK_TYPES`), shared by
 publisher and reader: the top-level fields RT-6.9 names; in `tools` the

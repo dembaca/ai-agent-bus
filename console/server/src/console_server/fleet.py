@@ -213,7 +213,7 @@ class Fleet:
                 self._cards.pop(agent, None)
         self._attests = {a: row for a, row in self._attests.items()
                          if row[1] >= edge}
-        self._asks = {a: row for a, row in self._asks.items() if row[3].exp > self.server_now}
+        self._asks = {a: row for a, row in self._asks.items() if self._ask_exp(row) > self.server_now}
         for ch in list(self._members):
             self._members[ch] = {a: m for a, m in self._members[ch].items() if m[1] >= edge}
             if not self._members[ch]:
@@ -364,6 +364,12 @@ class Fleet:
 
     # --- the asks (RT-6.43 step 6; ADR-015 addition of 2026-11-25, points 8 to 11) --------
 
+    @staticmethod
+    def _ask_exp(row: tuple[int, float, str, AskRecord]) -> float:
+        """When a record runs out: its `exp`, but never later than ASK_VALID_SEC after the
+        server stored it (the agent's own clock is not trusted)."""
+        return min(row[3].exp, row[1] + natsbus.ASK_VALID_SEC)
+
     def _fresh_attestation(self, agent: str) -> Attestation | None:
         att = self._attests.get(agent)
         return att[2] if att and att[2].exp > self.server_now else None
@@ -381,8 +387,9 @@ class Fleet:
         me = anchor
         now = self.server_now
         rows = []
-        for agent, (_seq, _at, home, record) in sorted(self._asks.items()):
-            if record.exp <= now:
+        for agent, row in sorted(self._asks.items()):
+            _seq, _at, home, record = row
+            if self._ask_exp(row) <= now:
                 continue
             att = self._fresh_attestation(agent)
             people = ([(att.owner_anchor, att.owner_name), *att.trusted] if att else [])
@@ -401,7 +408,8 @@ class Fleet:
                     "at": ask.asked * 1000,
                     "end": ("expired" if now - ask.asked >= ASK_EXPIRED_SEC
                             else "answered" if ask.answered else "open"),
-                    "for_me": (human == me) if me else None,
+                    # the anchor must also be one the asking agent's attestation names
+                    "for_me": (human == me and me in names) if me else None,
                     "may_answer": (me in names) if me else None,
                     "agent_gone": gone,
                     "thread_id": ask.mm,

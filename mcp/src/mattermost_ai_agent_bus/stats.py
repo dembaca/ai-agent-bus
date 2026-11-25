@@ -677,8 +677,71 @@ class LineError(ValueError):
     """A STATS line breaks the NATS rules: dropped whole. The text never holds any of it."""
 
 
+# A number on the line: non-negative, finite, at most this (no count or second of a part comes
+# near it), so no sum over a week's lines can overflow or go negative.
+NUM_MAX = 1e12
+
+
 def _number(v: object) -> bool:
-    return isinstance(v, (int, float)) and not isinstance(v, bool) and math.isfinite(v)
+    """Any finite number (for a key outside the allow list, which is ignored anyway)."""
+    if isinstance(v, bool):
+        return False
+    if isinstance(v, int):
+        return True
+    return isinstance(v, float) and math.isfinite(v)
+
+
+def _num(v: object) -> bool:
+    """A count or a time on the line: a number 0 to NUM_MAX, never a boolean."""
+    if isinstance(v, bool) or not isinstance(v, (int, float)):
+        return False
+    return 0 <= v <= NUM_MAX  # an int compares exactly; inf and nan fail here
+
+
+def _nums(v: object) -> bool:
+    return isinstance(v, dict) and all(_num(x) for x in v.values())
+
+
+def _pair(v: object) -> bool:
+    return isinstance(v, list) and len(v) == 2 and all(_num(x) for x in v)
+
+
+def _tok(v: object) -> bool:
+    if not isinstance(v, dict):
+        return False
+    for k, x in v.items():
+        if k in ("all", "bus"):
+            if not _nums(x):
+                return False
+        elif k in TOK_KEYS:
+            if not _num(x):
+                return False
+        elif not _value(x):
+            return False
+    return True
+
+
+def _typed(key: str, v: object) -> bool:
+    """The type the allow list gives `key` (protocol.md): the four strings by their pattern,
+    `final` a boolean, `part` an integer, `posts` and `compact` a pair of numbers, `wakes`
+    and `blocks` objects of numbers, `tools` an object of pairs, `tok` its fixed shape, every
+    other listed key one number; each number 0 to NUM_MAX."""
+    check = STRING_FIELDS.get(key)
+    if check is not None:
+        return isinstance(v, str) and check(v)
+    if key == "final":
+        return isinstance(v, bool)
+    if key == "part":
+        return isinstance(v, int) and _num(v)
+    if key in ("posts", "compact"):
+        return _pair(v)
+    if key in ("wakes", "blocks"):
+        return _nums(v)
+    if key == "tools":
+        return isinstance(v, dict) and all(_pair(x) for x in v.values())
+    if key == "tok":
+        return _tok(v)
+    return _num(v)
 
 
 def _value(v: object, depth: int = 0) -> bool:
@@ -719,27 +782,41 @@ def _strict(name: str) -> Any:
     raise LineError("NaN and Infinity are not JSON")
 
 
+def _float(text: str) -> float:
+    f = float(text)
+    if not math.isfinite(f):
+        raise LineError("a number out of range")
+    return f
+
+
+def _int(text: str) -> int:
+    if len(text) > 20:
+        raise LineError("a number out of range")
+    return int(text)
+
+
 def decode_line(data: bytes) -> dict[str, Any]:
     """A STATS line from NATS, strictly (ADR-015 point 14): at most NATS_LINE_MAX bytes, a JSON
     object without a duplicate key; strings only in `v`, `sid`, `rt` and `kind`, each by its
-    pattern; every other value a number, a boolean, a list of numbers or an object of such.
+    pattern; every listed key of the type the allow list gives it (_typed), every other value
+    a number, a boolean, a list of numbers or an object of such.
     Anything else raises LineError (the whole line is dropped). Keys outside the allow list
     are left out of what it returns, never shown."""
     if len(data) > NATS_LINE_MAX:
         raise LineError("line too big")
     try:
-        obj = json.loads(data.decode("utf-8"), object_pairs_hook=_dup_free, parse_constant=_strict)
+        obj = json.loads(data.decode("utf-8"), object_pairs_hook=_dup_free, parse_constant=_strict,
+                         parse_float=_float, parse_int=_int)
     except LineError:
         raise
-    except (ValueError, RecursionError):
+    except (ValueError, RecursionError, OverflowError):
         raise LineError("not JSON") from None
     if not isinstance(obj, dict):
         raise LineError("not an object")
     for key, value in obj.items():
-        check = STRING_FIELDS.get(key)
-        if check is not None and isinstance(value, str):
-            if not check(value):
-                raise LineError("a string off its pattern")
+        if key in LINE_KEYS:
+            if not _typed(key, value):
+                raise LineError("a value of the wrong type or range")
         elif not _value(value):
             raise LineError("a value of the wrong type")
     return {k: _allowed(k, v) for k, v in obj.items() if k in LINE_KEYS}
@@ -777,7 +854,11 @@ async def publish_nats(data: dict[str, Any] | None) -> str:
     send = nats_publish
     if send is None:
         return "off"
-    body = nats_body(data) if data else None
+    try:
+        body = nats_body(data) if data else None
+    except Exception as exc:  # noqa: BLE001 — never raises: the chat line goes on
+        log.info("overhead stats: the part is not published on NATS: %s", type(exc).__name__)
+        body = None
     if body is not None:
         _unpublished.append(body)
         del _unpublished[:-UNPUBLISHED_MAX]

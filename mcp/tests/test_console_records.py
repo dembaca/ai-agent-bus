@@ -97,6 +97,9 @@ def test_the_encoder_cleans_what_it_is_handed() -> None:
     lambda o: o["asks"][0].update(asked=-1),
     lambda o: o.update(asks=[dict(o["asks"][0], mm=_id(i)) for i in range(ASK_MAX + 1)]),
     lambda o: o.update(more="0"),
+    lambda o: o.update(exp=o["iat"] + ASK_VALID_SEC + 1),
+    lambda o: o.update(exp=o["iat"] + 10**9),
+    lambda o: o.update(exp=o["iat"]),
 ])
 def test_the_decoder_drops_a_record_that_breaks_a_rule(mutate) -> None:
     """RT-6.43 step 6: not format v1, an unknown key, `props`, a long title, a human that is
@@ -124,7 +127,7 @@ def _bus_with_capture() -> tuple[Any, list[tuple[str, bytes]]]:
     async def publish(subject: str, body: bytes) -> None:
         sent.append((subject, body))
     bus._publish = publish  # type: ignore[method-assign]
-    bus._server_now = 1764061800.0
+    bus._server_now, bus._server_now_mono = 1764061800.0, natsbus.time.monotonic()
     bus._attest[bus.name] = (1, 1.0, Attestation(
         owner_anchor="dembaca", owner_name="dembaca",
         trusted=(("dembaca", "dembaca"), ("carol.x", "carol")), cut=False, exp=2e9))
@@ -158,6 +161,35 @@ def test_the_bus_publishes_at_a_change_and_renews_while_an_ask_is_open() -> None
     assert first.exp == first.iat + ASK_VALID_SEC and first.iat == 1764061800
     assert decode_ask_record(sent[2][1]).asks[1].answered
     assert decode_ask_record(sent[3][1]).asks == () and len(sent) == 4
+
+
+def test_a_new_server_replaces_a_predecessors_record_and_its_clock_runs_on(monkeypatch) -> None:
+    """RT-6.43 step 5: the first check publishes even an empty list (a crashed predecessor's
+    record is replaced); `iat` is the server clock carried forward by the monotonic one, so
+    a quiet stream does not make a fresh record look old."""
+    bus, sent = _bus_with_capture()
+    bus._server_now_mono = natsbus.time.monotonic() - 2000  # the last delivery 2000 s ago
+    bus.ask_source = lambda: []
+    assert asyncio.run(bus.publish_asks())
+    rec = decode_ask_record(sent[0][1])
+    assert rec.asks == () and rec.iat >= 1764061800 + 2000
+    assert not asyncio.run(bus.publish_asks())
+
+
+def test_asks_changed_is_safe_from_another_thread() -> None:
+    """asks.on_change may run off the bus's loop: the event is set in that loop."""
+    import threading
+
+    bus, _ = _unit_bus()
+    bus.asks_changed()  # not started: nothing, no error
+
+    async def run() -> None:
+        bus._loop = asyncio.get_running_loop()
+        t = threading.Thread(target=bus.asks_changed)
+        t.start()
+        t.join()
+        await asyncio.wait_for(bus._ask_now.wait(), 1)
+    asyncio.run(run())
 
 
 def test_without_a_fresh_attestation_every_human_is_dash() -> None:
@@ -237,13 +269,13 @@ def test_the_largest_record_goes_out_without_headers_within_the_streams_limit() 
     bus, _ = _unit_bus()
     nc = _Nc()
     bus._nc, bus._connected = nc, True  # type: ignore[assignment]
-    bus._server_now = 2.0**40
+    bus._server_now, bus._server_now_mono = 2.0**40, natsbus.time.monotonic()
     bus.ask_source = lambda: [OpenAsk(_id(i), "question", "x" * 64, "\U0001F600" * 300, 2**40)
                               for i in range(ASK_MAX + 5)]
     asyncio.run(bus.publish_asks())
     subject, body = nc.sent[0]
     assert subject == f"presence.ask.home.{bus.name}" and len(body) <= ASK_BODY_MAX
-    line = stats.nats_body(LINE | {"tools": {n: [10**15, 10**15] for n in stats.TOOL_NAMES}})
+    line = stats.nats_body(LINE | {"tools": {n: [10**12, 10**12] for n in stats.TOOL_NAMES}})
     assert line is not None and len(line) <= stats.NATS_BODY_MAX
     asyncio.run(bus.publish_stats(line))
     assert nc.sent[1] == (f"stats.{bus.name}", line)
@@ -330,12 +362,42 @@ def test_the_nats_line_is_the_chat_lines_object_within_the_allow_list() -> None:
     {"kind": "worker"},
     {"tools": {"post_message": [1, "a"]}},
     {"turns": None},
+    {"v": {"<b>EVIL TEXT</b>": 1}},
+    {"v": 7},
+    {"sid": {"x": 1}},
+    {"sid": [1]},
+    {"rt": True},
+    {"kind": ["session"]},
+    {"tok": 5},
+    {"tok": [1, 2]},
+    {"tok": {"all": 5, "bus": 3}},
+    {"tok": {"all": {"in": [1]}}},
+    {"tok": {"req": -1}},
+    {"asks": [1, 2]},
+    {"asks": {"a": 1}},
+    {"asks": True},
+    {"asks": -5},
+    {"asks": 1e308},
+    {"asks": 10**19},
+    {"min": {"a": 1}},
+    {"ask_wait_max_sec": [9]},
+    {"wakes": 3},
+    {"blocks": [1]},
+    {"tools": True},
+    {"tools": {"post_message": [1, 2, 3]}},
+    {"posts": [1]},
+    {"part": {"a": 1}},
+    {"part": 1.5},
+    {"final": [1]},
 ])
 def test_the_reader_drops_a_line_with_text_in_it(bad) -> None:
-    """RT-6.43 step 8: a string outside the four fields, or one off its pattern, drops the
-    whole line."""
+    """RT-6.43 step 8: a string outside the four fields, one off its pattern, or a listed key
+    of another type than the allow list gives it (an object as `v` would become a label;
+    a negative, huge or non-number count would break the sums) drops the whole line."""
     with pytest.raises(stats.LineError):
         stats.decode_line(json.dumps(LINE | bad).encode())
+    if "rt" not in bad:  # an unknown client the publisher writes as `other`
+        assert stats.nats_body(LINE | bad) is None  # and the publisher never sends one
 
 
 def test_the_reader_drops_a_duplicate_key_and_a_long_line_and_ignores_unknown_keys() -> None:
@@ -346,6 +408,9 @@ def test_the_reader_drops_a_duplicate_key_and_a_long_line_and_ignores_unknown_ke
         stats.decode_line(body[:-1] + b"," + b" " * stats.NATS_LINE_MAX + b"}")
     with pytest.raises(stats.LineError):
         stats.decode_line(b"[1]")
+    for huge in (b'{"asks": ' + b"9" * 4000 + b"}", b'{"asks": 1e400}'):
+        with pytest.raises(stats.LineError):
+            stats.decode_line(huge)
     assert "x_note" not in stats.decode_line(json.dumps(LINE | {"x_note": 3}).encode())
 
 
@@ -375,6 +440,13 @@ def test_a_failed_publish_waits_for_the_next_part(monkeypatch) -> None:
             raise RuntimeError("down")
         sent.append(body)
     assert asyncio.run(stats.publish_nats(LINE)) == "off"
+
+    def broken(_data: Any) -> bytes:
+        raise RuntimeError("no")
+    monkeypatch.setattr(stats, "nats_publish", publish)
+    with monkeypatch.context() as m:
+        m.setattr(stats, "nats_body", broken)
+        assert asyncio.run(stats.publish_nats(LINE)) == "published"  # never raises
     monkeypatch.setattr(stats, "nats_publish", publish)
     assert asyncio.run(stats.publish_nats(LINE)) == "kept"
     fail[0] = False
@@ -415,3 +487,31 @@ def test_the_protocols_examples_pass_the_real_decoders() -> None:
     line = json.loads(blocks[1])
     assert stats.decode_line(json.dumps(line).encode())["sid"] == "3f9a1c2b7d4e"
     assert stats.nats_body(line) is not None
+
+
+@pytest.mark.asyncio
+async def test_a_hosted_session_publishes_its_last_part_before_the_bus_stops(monkeypatch) -> None:
+    """RT-6.43 step 7: hosted.services ends with the last STATS part on NATS, then the bus."""
+    from mattermost_ai_agent_bus import attest, compose, lease, login, release
+    from fakes import FakeBus, FakeRegistrar
+
+    order: list[str] = []
+
+    async def idle(*_a: Any, **_k: Any) -> None:
+        return None
+
+    async def final() -> None:
+        order.append("final")
+
+    async def stop(_client: Any) -> None:
+        order.append("stop")
+    monkeypatch.setattr(lease, "heartbeat", idle)
+    monkeypatch.setattr(attest, "start", idle)
+    monkeypatch.setattr(release, "check_loop", idle)
+    monkeypatch.setattr(login, "start", lambda _get: None)
+    monkeypatch.setattr(compose, "start_nats", idle)
+    monkeypatch.setattr(compose, "stop_nats", stop)
+    monkeypatch.setattr(server, "_final_stats_on_nats", final)
+    async with hosted.services("k" * 32, FakeBus(FakeRegistrar())):  # type: ignore[arg-type]
+        pass
+    assert order == ["final", "stop"]

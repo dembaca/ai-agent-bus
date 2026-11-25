@@ -17,11 +17,13 @@ before 0.5.0 are described in the git history.
   (the stream's 4 KiB count headers too); at each change, every 10 minutes
   while an ask is open, valid 30 minutes, an empty list at its bye. Each
   STATS part also goes on `<stats>.<name>`, the chat line's object with
-  keys from one allow list in `stats.py`, `rt` as `other` for an unknown
+  keys from one allow list in `stats.py`, each of the type the list gives
+  it (numbers 0 to 10^12), `rt` as `other` for an unknown
   client, at most 8000 bytes; a failed publish waits for the next part.
   Hosted (corral) sessions publish both too. The console decodes both
   strictly (a record or line that breaks a rule is dropped whole, its
-  warning carries none of it) and shows the asks read-only, expired after
+  warning carries none of it; a record lives at most 30 minutes after the
+  server stored it; a replayed line counts once) and shows the asks read-only, expired after
   24 h, "agent gone" without fresh presence; `/v1/stats` gives the bus's share of all tokens per version
   over 7 days and the asks over 24 hours and 7 days, the numbers
   `stats_report` gives on the same lines, with the age of the oldest line.
