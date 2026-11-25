@@ -1,9 +1,14 @@
 package directory
 
 import (
+	"context"
+	"errors"
 	"slices"
+	"strings"
 	"testing"
 	"time"
+
+	"github.com/nats-io/nats.go/jetstream"
 )
 
 // The trust index an operator's channels are read from (RT-6.43 step 3):
@@ -94,33 +99,124 @@ func TestThePruneDropsOnlyExpiredRecords(t *testing.T) {
 	}
 }
 
-// TrustIndex writes each record and sweeps at most every PruneEvery.
-func TestTheTrustIndexSweepsNowAndThen(t *testing.T) {
+// Index only writes, even with an expired record in the bucket: the sweep
+// never runs inside a login. Sweep, in the background, purges the expired
+// records every Every and stops with its context.
+func TestTheTrustIndexSweepsInTheBackgroundOnly(t *testing.T) {
 	s, _ := open(t)
 	now := time.Unix(1_800_000_000, 0)
-	ix := &TrustIndex{Store: s, Now: func() time.Time { return now }}
-	put := func(agent string, exp int64) {
-		t.Helper()
-		if err := ix.Index(ctx(t), AgentTrust{Agent: agent, Owner: "ann.k", Exp: exp}); err != nil {
-			t.Fatal(err)
-		}
-	}
+	ix := &TrustIndex{Store: s, Now: func() time.Time { return now }, Every: 10 * time.Millisecond}
 	count := func() int {
+		t.Helper()
 		keys, err := s.keysWith(ctx(t), agentTrustPrefix)
 		if err != nil {
 			t.Fatal(err)
 		}
 		return len(keys)
 	}
-	put("agent-a", now.Unix()+60)
-	now = now.Add(2 * time.Minute) // agent-a expired, the sweep not due
-	put("agent-b", now.Unix()+900)
-	if n := count(); n != 2 {
-		t.Fatalf("%d records before the sweep is due", n)
+	for agent, exp := range map[string]int64{"agent-a": now.Unix() - 1, "agent-b": now.Unix() + 900} {
+		if err := ix.Index(ctx(t), AgentTrust{Agent: agent, Owner: "ann.k", Exp: exp}); err != nil {
+			t.Fatal(err)
+		}
 	}
-	now = now.Add(PruneEvery)
-	put("agent-c", now.Unix()+900)
 	if n := count(); n != 2 {
-		t.Fatalf("%d records after the sweep", n)
+		t.Fatalf("%d records after Index alone", n)
+	}
+	sctx, cancel := context.WithCancel(context.Background())
+	done := make(chan struct{})
+	go func() {
+		defer close(done)
+		ix.Sweep(sctx)
+	}()
+	deadline := time.Now().Add(3 * time.Second)
+	for count() != 1 {
+		if time.Now().After(deadline) {
+			t.Fatalf("%d records, the sweep did not run", count())
+		}
+		time.Sleep(10 * time.Millisecond)
+	}
+	cancel()
+	select {
+	case <-done:
+	case <-time.After(3 * time.Second):
+		t.Fatal("the sweep did not stop with its context")
+	}
+}
+
+// The prune purges: an ended agent's name keeps one marker, not its
+// records.
+func TestThePruneLeavesNoHistory(t *testing.T) {
+	s, _ := open(t)
+	now := time.Unix(1_800_000_000, 0)
+	for range 3 {
+		if err := s.PutAgentTrust(ctx(t), AgentTrust{Agent: "agent-old", Owner: "ann.k", Exp: now.Unix()}); err != nil {
+			t.Fatal(err)
+		}
+	}
+	if err := s.PruneAgentTrust(ctx(t), now); err != nil {
+		t.Fatal(err)
+	}
+	h, err := s.kv.History(ctx(t), agentTrustKey("agent-old"))
+	if err != nil || len(h) != 1 || h[0].Operation() != jetstream.KeyValuePurge {
+		t.Fatalf("history %v, %v", h, err)
+	}
+}
+
+// The purge names the revision it read: a record the next issue wrote in
+// between stays.
+func TestThePurgeKeepsARecordRewrittenMeanwhile(t *testing.T) {
+	s, _ := open(t)
+	now := time.Unix(1_800_000_000, 0)
+	r := AgentTrust{Agent: "agent-a", Owner: "ann.k", Channels: []string{"annhome"}, Exp: now.Unix()}
+	if err := s.PutAgentTrust(ctx(t), r); err != nil {
+		t.Fatal(err)
+	}
+	_, rev, ok, err := s.agentTrust(ctx(t), agentTrustKey("agent-a"))
+	if err != nil || !ok {
+		t.Fatalf("read: %v %v", ok, err)
+	}
+	r.Exp = now.Unix() + 900
+	if err := s.PutAgentTrust(ctx(t), r); err != nil {
+		t.Fatal(err)
+	}
+	if err := s.purgeAt(ctx(t), agentTrustKey("agent-a"), rev); err != nil {
+		t.Fatal(err)
+	}
+	got, _, ok, err := s.agentTrust(ctx(t), agentTrustKey("agent-a"))
+	if err != nil || !ok || got.Exp != r.Exp {
+		t.Fatalf("the rewritten record: %+v %v %v", got, ok, err)
+	}
+}
+
+// An owner or trusted anchor that is no anchor refuses the record.
+func TestARecordWithJunkAnchorsIsRefused(t *testing.T) {
+	s, _ := open(t)
+	for _, r := range []AgentTrust{
+		{Agent: "agent-x", Owner: "Ann K"},
+		{Agent: "agent-x", Owner: "ann.k", Trusted: []string{"bob", ""}},
+		{Agent: "agent-x", Owner: "ann.k", Trusted: []string{"../bob"}},
+		{Agent: "agent-x", Owner: "ann.k", Trusted: []string{strings.Repeat("b", 65)}},
+	} {
+		if err := s.PutAgentTrust(ctx(t), r); !errors.Is(err, ErrBadKey) {
+			t.Errorf("%+v: %v", r, err)
+		}
+	}
+	if err := s.PutAgentTrust(ctx(t), AgentTrust{Agent: "agent-x", Owner: "ann.k", Trusted: []string{"bob", "sub-cat.1"}}); err != nil {
+		t.Fatal(err)
+	}
+}
+
+// A trust record that cannot be read fails the operator's channel list
+// closed: no partial answer.
+func TestACorruptTrustRecordFailsTheListClosed(t *testing.T) {
+	s, _ := open(t)
+	if _, err := s.Login(ctx(t), "sub-ann", "ann.k", "ann.k"); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := s.kv.Put(ctx(t), agentTrustKey("agent-bad"), []byte("{not json")); err != nil {
+		t.Fatal(err)
+	}
+	if got, err := (Persons{Store: s}).Visible(ctx(t), "sub-ann"); err == nil {
+		t.Fatalf("listed %v", got)
 	}
 }

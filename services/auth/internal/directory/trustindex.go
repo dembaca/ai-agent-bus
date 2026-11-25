@@ -5,8 +5,8 @@ import (
 	"encoding/hex"
 	"encoding/json"
 	"fmt"
+	"log/slog"
 	"slices"
-	"sync"
 	"time"
 
 	"github.com/nats-io/nats.go/jetstream"
@@ -54,11 +54,17 @@ func (r AgentTrust) opens(anchor string, now time.Time) bool {
 	return anchor != "" && r.Exp > now.Unix() && (r.Owner == anchor || slices.Contains(r.Trusted, anchor))
 }
 
-// PutAgentTrust writes an agent's record, replacing the one before. Channels
+// PutAgentTrust writes an agent's record, replacing the one before. An owner
+// or a trusted anchor that is no anchor (anchorRE) refuses the record; channels
 // that are no channel token are left out.
 func (s *Store) PutAgentTrust(ctx context.Context, r AgentTrust) error {
-	if r.Agent == "" || len(r.Agent) > 128 || r.Owner == "" {
+	if r.Agent == "" || len(r.Agent) > 128 || !anchorRE.MatchString(r.Owner) {
 		return fmt.Errorf("%w: agent %.64q owner %.64q", ErrBadKey, r.Agent, r.Owner)
+	}
+	for _, a := range r.Trusted {
+		if !anchorRE.MatchString(a) {
+			return fmt.Errorf("%w: trusted anchor %.64q", ErrBadKey, a)
+		}
 	}
 	var chs []string
 	for _, c := range r.Channels {
@@ -114,8 +120,10 @@ func (s *Store) TrustOpened(ctx context.Context, anchor string, now time.Time) (
 	return slices.Compact(out), nil
 }
 
-// PruneAgentTrust deletes the records expired before now; a record written
-// again meanwhile stays (the delete names the revision it read).
+// PruneAgentTrust purges the records expired before now, their history
+// with them, so the names of ended agents leave one marker each, not their
+// records; a record written again meanwhile stays (the purge names the
+// revision it read).
 func (s *Store) PruneAgentTrust(ctx context.Context, now time.Time) error {
 	keys, err := s.keysWith(ctx, agentTrustPrefix)
 	if err != nil {
@@ -129,48 +137,80 @@ func (s *Store) PruneAgentTrust(ctx context.Context, now time.Time) error {
 		if !ok || r.Exp > now.Unix() {
 			continue
 		}
-		err = s.kv.Delete(ctx, k, jetstream.LastRevision(rev))
-		if err != nil && !isWrongSequence(err) {
+		if err := s.purgeAt(ctx, k, rev); err != nil {
 			return err
 		}
 	}
 	return nil
 }
 
-// PruneEvery is how often TrustIndex deletes expired records.
-const PruneEvery = 5 * time.Minute
+// purgeAt purges key if it is still at revision rev; a key written since
+// stays, and that is no error.
+func (s *Store) purgeAt(ctx context.Context, key string, rev uint64) error {
+	err := s.kv.Purge(ctx, key, jetstream.LastRevision(rev))
+	if err != nil && !isWrongSequence(err) {
+		return err
+	}
+	return nil
+}
 
-// TrustIndex is callout.TrustIndex over the directory: it writes an agent's
-// record at each issue and, at most every PruneEvery, deletes the expired
-// ones, so the names of ended agents do not fill the bucket.
+// SweepEvery is how often TrustIndex.Sweep runs; sweepTimeout bounds one
+// round.
+const (
+	SweepEvery   = 5 * time.Minute
+	sweepTimeout = time.Minute
+)
+
+// TrustIndex is callout.TrustIndex over the directory: Index writes an
+// agent's record at each issue, and nothing else, within the login; Sweep,
+// in the background, purges the expired records so the names of ended
+// agents do not fill the bucket.
 type TrustIndex struct {
 	Store *Store
 	// Now is the clock; nil is time.Now.
 	Now func() time.Time
-
-	mu        sync.Mutex
-	lastPrune time.Time
+	// Every is the sweep's interval; 0 is SweepEvery.
+	Every time.Duration
+	// Log gets a failed sweep; nil is slog.Default().
+	Log *slog.Logger
 }
 
 // Index implements callout.TrustIndex.
 func (t *TrustIndex) Index(ctx context.Context, r AgentTrust) error {
-	if err := t.Store.PutAgentTrust(ctx, r); err != nil {
-		return err
+	return t.Store.PutAgentTrust(ctx, r)
+}
+
+// Sweep purges the expired records every Every until ctx ends; each round has its own timeout. A failed round
+// only leaves expired records, which count for nothing; the next takes them.
+func (t *TrustIndex) Sweep(ctx context.Context) {
+	every := t.Every
+	if every <= 0 {
+		every = SweepEvery
 	}
+	log := t.Log
+	if log == nil {
+		log = slog.Default()
+	}
+	tick := time.NewTicker(every)
+	defer tick.Stop()
+	for {
+		select {
+		case <-ctx.Done():
+			return
+		case <-tick.C:
+		}
+		if err := t.sweepOnce(ctx); err != nil && ctx.Err() == nil {
+			log.Warn("trust index sweep failed", "reason", err.Error())
+		}
+	}
+}
+
+func (t *TrustIndex) sweepOnce(ctx context.Context) error {
+	ctx, cancel := context.WithTimeout(ctx, sweepTimeout)
+	defer cancel()
 	now := time.Now()
 	if t.Now != nil {
 		now = t.Now()
 	}
-	t.mu.Lock()
-	due := now.Sub(t.lastPrune) >= PruneEvery
-	if due {
-		t.lastPrune = now
-	}
-	t.mu.Unlock()
-	if due {
-		// A failed sweep only leaves expired records, which count for
-		// nothing; the next sweep takes them.
-		_ = t.Store.PruneAgentTrust(ctx, now)
-	}
-	return nil
+	return t.Store.PruneAgentTrust(ctx, now)
 }

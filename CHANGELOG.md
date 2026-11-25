@@ -27,7 +27,11 @@ before 0.5.0 are described in the git history.
   operator as owner or trusted, never over several steps. A dropped trust
   or an ended agent leaves the view at the operator's next renewal after
   the agent's next credential or the record's expiry. A record that
-  cannot be written or read refuses that credential.
+  cannot be written or read refuses that credential. The login service
+  purges expired records every 5 minutes in the background, never inside
+  an agent's login. Each operator credential reads every record, which
+  suits tens to low hundreds of agents (the risk that the console shows
+  less than there is, RISK-13).
 
 ### Fixed
 
