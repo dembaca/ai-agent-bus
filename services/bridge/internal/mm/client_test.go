@@ -150,3 +150,22 @@ func TestTooLarge(t *testing.T) {
 		t.Fatalf("got %v, want ErrTooLarge", err)
 	}
 }
+
+// Given a since read whose posts carry their reactions in the metadata, the
+// reactions come back with the post, and a post without metadata says so:
+// the catch-up reads a removal only from a list it knows (RT-6.42 step 1).
+func TestPostsSinceCarriesTheReactions(t *testing.T) {
+	c := fake(t, func(w http.ResponseWriter, r *http.Request) {
+		_, _ = w.Write([]byte(`{"order":["p1","p2"],"posts":{` +
+			`"p1":{"id":"p1","create_at":1,"metadata":{"reactions":[{"user_id":"u1","post_id":"p1","emoji_name":"+1","create_at":5}]}},` +
+			`"p2":{"id":"p2","create_at":2}}}`))
+	})
+	posts, err := c.PostsSince(context.Background(), "ch", 0)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(posts) != 2 || !posts[0].HasMetadata || len(posts[0].Reactions) != 1 ||
+		posts[0].Reactions[0] != (Reaction{UserID: "u1", EmojiName: "+1", CreateAt: 5}) || posts[1].HasMetadata {
+		t.Fatalf("%+v", posts)
+	}
+}

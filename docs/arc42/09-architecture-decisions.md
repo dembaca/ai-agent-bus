@@ -4736,8 +4736,11 @@ registrar's functions can move in later without a second component.
    One bot per agent is the next step. Built (#90) and deployed in the lab
    since 2026-11-24.
 2. **People's posts and reactions onto NATS**, vouched for as point 3 says.
-   Specified, not built: the scenario "People's posts onto NATS" (RT-6.42)
-   and the bodies in `docs/protocol.md`. The bridge reads its bot's
+   Specified in the scenario "People's posts onto NATS" (RT-6.42) and the
+   bodies in `docs/protocol.md`; the owner accepted all eighteen points as
+   recommended. Built on the bridge's side (`services/bridge/internal/inbound`);
+   not built: the login service's account records and per-agent consumers,
+   and the MCP server's reader. The bridge reads its bot's
    Mattermost WebSocket in the bound home channels and publishes each
    person's post and reaction on NATS. Eighteen points are open, each one
    decision with a recommendation, its reason and the alternative, for the

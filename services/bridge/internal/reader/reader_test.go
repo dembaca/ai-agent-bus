@@ -244,3 +244,39 @@ func mustPublish(t *testing.T, nc *nats.Conn, subject, body string) {
 		t.Fatal(err)
 	}
 }
+
+// RT-6.42 step 6 (point 17): the home's consumer also delivers the people's
+// events the bridge carried; the reader never mirrors one back into
+// Mattermost, it only remembers the post's stream sequence, so an agent's
+// reply to that sequence threads on the person's post and a person's reply
+// names its root.
+func TestAPersonsEventIsRememberedNeverMirroredBack(t *testing.T) {
+	nc, js := lab(t)
+	if _, err := js.CreateOrUpdateConsumer(context.Background(), "BUS", jetstream.ConsumerConfig{
+		Name: "bridge_home", Durable: "bridge_home", FilterSubjects: []string{"bus.ch.home.*", "bus.hu.home.*"},
+		DeliverSubject: "deliver.bridge.home", DeliverPolicy: jetstream.DeliverNewPolicy,
+		AckPolicy: jetstream.AckExplicitPolicy, AckWait: 2 * time.Second, MaxAckPending: 8,
+	}); err != nil {
+		t.Fatal(err)
+	}
+	kv := operatorBucket(t, nc, js)
+	s := &sink{got: make(chan [3]string, 8), react: make(chan string, 4)}
+	cancel, _ := start(t, nc, js, kv, s)
+	defer cancel()
+	person := "q1w2e3r4t5y6u7i8o9p0a1s2d3"
+	mustPublish(t, nc, "bus.hu.home.alice", `{"v":1,"kind":"post","text":"go","name":"alice","mm":"`+person+`","files":0}`)
+	mustPublish(t, nc, "bus.hu.home.alice", `{"v":1,"kind":"reaction","emoji":"+1","name":"alice","mm":"`+person+`"}`)
+	mustPublish(t, nc, "bus.ch.home.agent-b", `{"v":1,"kind":"post","text":"on it","root":1}`)
+	reply := until(t, s, mirror.SenderMark+"**agent-b**\n\non it")
+	if reply[1] != person {
+		t.Fatalf("the agent's reply threads on %q, want the person's post", reply[1])
+	}
+	select {
+	case again := <-s.got:
+		t.Fatalf("mirrored back: %+v", again)
+	case <-time.After(200 * time.Millisecond):
+	}
+	if seq, ok, err := kv.Seq(context.Background(), "home", person); err != nil || !ok || seq != 1 {
+		t.Fatalf("the person's post's sequence: %d %v %v", seq, ok, err)
+	}
+}

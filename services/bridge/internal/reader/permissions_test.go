@@ -15,6 +15,7 @@ import (
 	"github.com/nats-io/nats.go"
 	"github.com/nats-io/nats.go/jetstream"
 
+	"github.com/dembaca/ai-agent-bus/services/bridge/internal/inbound"
 	"github.com/dembaca/ai-agent-bus/services/bridge/internal/mirror"
 	"github.com/dembaca/ai-agent-bus/services/bridge/internal/presence"
 	"github.com/dembaca/ai-agent-bus/services/bridge/internal/store"
@@ -200,6 +201,62 @@ accounts {
 	}
 	_ = bridgeNC.Flush()
 	deniedOn(t, denied, "bus.ch.home.agent-b")
+	// People onto NATS (RT-6.42 steps 4, 7 and 3): a person's event in its own
+	// home and the home's signal pass, another home's is refused; the seen
+	// bucket binds; the account records arrive through bridge_accounts, and
+	// the bridge's ack lands there.
+	if err := bridgeNC.Publish("bus.hu.home.alice", []byte(`{"v":1}`)); err != nil {
+		t.Fatal(err)
+	}
+	if err := bridgeNC.Publish("presence.bridge.home.v1", []byte(`{"v":1}`)); err != nil {
+		t.Fatal(err)
+	}
+	_ = bridgeNC.Flush()
+	storedOn(t, ajs, "BUS", "bus.hu.home.alice")
+	storedOn(t, ajs, "PRESENCE", "presence.bridge.home.v1")
+	for _, subject := range []string{"bus.hu.other.alice", "presence.bridge.other.v1", "bus.dm.alice.bob"} {
+		if err := bridgeNC.Publish(subject, []byte("x")); err != nil {
+			t.Fatal(err)
+		}
+		_ = bridgeNC.Flush()
+		deniedOn(t, denied, subject)
+	}
+	if err := store.CreateSeenBucket(ctx, ajs); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := store.OpenSeen(ctx, bridgeNC, "BUS_BRIDGE_SEEN"); err != nil {
+		t.Fatalf("the bridge may not bind to its seen bucket: %v", err)
+	}
+	if _, err := ajs.CreateOrUpdateConsumer(ctx, "PRESENCE", jetstream.ConsumerConfig{
+		Name: inbound.AccountsConsumer, Durable: inbound.AccountsConsumer,
+		FilterSubject: "presence.account.mattermost.*.v1", DeliverSubject: "deliver.bridge.accounts",
+		DeliverPolicy: jetstream.DeliverLastPerSubjectPolicy, AckPolicy: jetstream.AckExplicitPolicy,
+	}); err != nil {
+		t.Fatal(err)
+	}
+	acc := &inbound.Accounts{Log: m.Log, Deliver: "deliver.bridge.accounts", Stream: "PRESENCE",
+		Ready: make(chan struct{})}
+	actx, acancel := context.WithCancel(ctx)
+	defer acancel()
+	go func() { _ = acc.Run(actx, bridgeNC) }()
+	<-acc.Ready
+	uid := "aaaaaaaaaaaaaaaaaaaaaaaaaa"
+	if err := admin.Publish("presence.account.mattermost."+uid+".v1", []byte(`{"v":1,"account":"`+uid+
+		`","anchor":"alice","name":"alice","approver":true,"token_iat":1,"iat":1,"exp":2}`)); err != nil {
+		t.Fatal(err)
+	}
+	pst, err := ajs.Stream(ctx, "PRESENCE")
+	if err != nil {
+		t.Fatal(err)
+	}
+	deadline = time.Now().Add(3 * time.Second)
+	for acc.Anchor(uid) != "alice" || consumerPending(t, pst, inbound.AccountsConsumer) != 0 {
+		if time.Now().After(deadline) {
+			t.Fatalf("the account record: anchor %q, %d unacked", acc.Anchor(uid),
+				consumerPending(t, pst, inbound.AccountsConsumer))
+		}
+		time.Sleep(20 * time.Millisecond)
+	}
 	// The reply subject of a request is not checked against publish
 	// permissions (the server refuses only replies to $JS. since 2.15), so the
 	// bridge's answers can land on any subject. With direct get off, the answer

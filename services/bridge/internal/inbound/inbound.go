@@ -1,0 +1,513 @@
+// Package inbound carries people's posts and reactions in the bound home
+// channels from Mattermost onto NATS (RT-6.42, step 2 of ADR-016): it takes
+// the WebSocket reader's events (internal/mmws), drops what is no person's
+// own post or reaction, maps the account to the person's anchor from the
+// login service's records, publishes on `<bus>.hu.<home>.<anchor>` once per
+// key, catches up over REST after a reconnect, and signals each home it
+// carries on `presence.bridge.<home>.v1`. The author is the event's user id
+// alone, never a name, a prop or the text.
+package inbound
+
+import (
+	"context"
+	"errors"
+	"fmt"
+	"log/slog"
+	"strings"
+	"time"
+
+	"github.com/dembaca/ai-agent-bus/services/bridge/internal/mm"
+	"github.com/dembaca/ai-agent-bus/services/bridge/internal/mmws"
+)
+
+// Mattermost is what the bridge reads there.
+type Mattermost interface {
+	Me(ctx context.Context) (string, error)
+	GetUser(ctx context.Context, userID string) (mm.User, error)
+	PostsSince(ctx context.Context, channelID string, since int64) ([]mm.Post, error)
+	ChannelIDByName(ctx context.Context, team, name string) (string, error)
+}
+
+// Publisher is a core NATS publish without a reply subject (the BUS stream
+// acknowledges nothing).
+type Publisher interface {
+	Publish(subject string, data []byte) error
+}
+
+// Store is the part of BUS_BRIDGE this step reads and writes.
+type Store interface {
+	Seq(ctx context.Context, home, post string) (uint64, bool, error)
+	Watermark(ctx context.Context, home string) (int64, bool, error)
+	SetWatermark(ctx context.Context, home string, ms int64) error
+}
+
+// Seen is BUS_BRIDGE_SEEN (store.Seen).
+type Seen interface {
+	Post(ctx context.Context, post string) (bool, error)
+	MarkPost(ctx context.Context, post string) error
+	Reactions(ctx context.Context, post string) (map[string]string, error)
+	SetReactions(ctx context.Context, post string, kinds map[string]string) error
+}
+
+// Anchors maps a Mattermost user id to an anchor, "" when unbound (Accounts).
+type Anchors interface {
+	Anchor(userID string) string
+}
+
+// The defaults of the step's bounds (RT-6.42 steps 1 and 7).
+const (
+	DefaultReach       = 10 * time.Minute // the catch-up reaches back at most this far
+	DefaultMargin      = 5 * time.Second  // and from the watermark minus this
+	DefaultSignalEvery = time.Minute
+	DefaultSignalValid = 3 * time.Minute
+	DefaultRetry       = 15 * time.Second // a stopped home tries again this often
+	userTTL            = 10 * time.Minute
+)
+
+// Bridge is the inbound path of all homes.
+type Bridge struct {
+	Homes     []string
+	Team      string
+	BusPrefix string // "bus"
+	Log       *slog.Logger
+	MM        Mattermost
+	NATS      Publisher
+	Store     Store
+	Seen      Seen
+	Anchors   Anchors
+	Events    <-chan mmws.Event
+	Up        func() uint64 // mmws.Reader.Up: the connection that is up now
+	Now       func() time.Time
+
+	Reach, Margin, SignalEvery, SignalValid, Retry time.Duration
+
+	me    string
+	homes []*home
+	byCID map[string]*home
+	users map[string]cachedUser
+}
+
+type home struct {
+	name string
+	cid  string
+	// caughtUp is the connection this home caught up on; 0 before it did,
+	// and while the home is stopped.
+	caughtUp uint64
+	stopped  bool
+	wm       int64
+}
+
+type cachedUser struct {
+	u  mm.User
+	at time.Time
+}
+
+func (b *Bridge) defaults() {
+	if b.Now == nil {
+		b.Now = time.Now
+	}
+	if b.Reach == 0 {
+		b.Reach = DefaultReach
+	}
+	if b.Margin == 0 {
+		b.Margin = DefaultMargin
+	}
+	if b.SignalEvery == 0 {
+		b.SignalEvery = DefaultSignalEvery
+	}
+	if b.SignalValid == 0 {
+		b.SignalValid = DefaultSignalValid
+	}
+	if b.Retry == 0 {
+		b.Retry = DefaultRetry
+	}
+	if b.BusPrefix == "" {
+		b.BusPrefix = "bus"
+	}
+	b.users = map[string]cachedUser{}
+	b.byCID = map[string]*home{}
+	b.homes = b.homes[:0]
+	for _, name := range b.Homes {
+		b.homes = append(b.homes, &home{name: name, stopped: true})
+	}
+}
+
+// Run carries until ctx ends.
+func (b *Bridge) Run(ctx context.Context) error {
+	b.defaults()
+	signal := time.NewTicker(b.SignalEvery)
+	defer signal.Stop()
+	retry := time.NewTicker(b.Retry)
+	defer retry.Stop()
+	for {
+		select {
+		case <-ctx.Done():
+			return nil
+		case ev := <-b.Events:
+			switch ev := ev.(type) {
+			case *mmws.Reconnected:
+				for _, h := range b.homes {
+					b.catchUp(ctx, h, ev.Conn)
+				}
+			case *mmws.Posted:
+				if h := b.byCID[ev.ChannelID]; h != nil && b.carrying(h) {
+					b.guard(h, b.post(ctx, h, fromLive(ev), false, 0))
+				}
+			case *mmws.Reaction:
+				if h := b.byCID[ev.ChannelID]; h != nil && b.carrying(h) {
+					b.guard(h, b.reaction(ctx, h, ev.PostID, ev.UserID, ev.EmojiName, ev.CreateAt, ev.Added))
+				}
+			}
+		case <-signal.C:
+			for _, h := range b.homes {
+				b.signal(h)
+			}
+		case <-retry.C:
+			if up := b.Up(); up != 0 {
+				for _, h := range b.homes {
+					if h.stopped {
+						b.catchUp(ctx, h, up)
+					}
+				}
+			}
+		}
+	}
+}
+
+// carrying: a stopped home takes no live event; its catch-up, when it runs
+// again, reads them from the watermark on.
+func (b *Bridge) carrying(h *home) bool { return !h.stopped && h.caughtUp != 0 }
+
+// guard stops a home on an error it cannot carry past (a refused bucket write,
+// Mattermost out of reach): the signal stops with it, so sessions read that
+// channel's people on Mattermost again, and the retry catches up later.
+func (b *Bridge) guard(h *home, err error) {
+	if err == nil || errors.Is(err, context.Canceled) {
+		return
+	}
+	if !h.stopped {
+		b.Log.Error("inbound: a home stopped carrying people; retrying", "home", h.name, "error", err)
+	}
+	h.stopped, h.caughtUp = true, 0
+}
+
+// ready is the signal's condition: the socket this home caught up on is the
+// one that is up, and the home is carrying.
+func (b *Bridge) ready(h *home) bool {
+	return !h.stopped && h.caughtUp != 0 && h.caughtUp == b.Up()
+}
+
+// signal publishes the home's signal (RT-6.42 step 7) while it is ready.
+func (b *Bridge) signal(h *home) {
+	if !b.ready(h) {
+		return
+	}
+	now := b.Now()
+	body, err := marshal(struct {
+		V      int    `json:"v"`
+		Home   string `json:"home"`
+		People bool   `json:"people"`
+		Iat    int64  `json:"iat"`
+		Exp    int64  `json:"exp"`
+	}{1, h.name, true, now.Unix(), now.Add(b.SignalValid).Unix()})
+	if err == nil {
+		err = b.NATS.Publish("presence.bridge."+h.name+".v1", body)
+	}
+	if err != nil {
+		b.Log.Warn("inbound: the signal was not published", "home", h.name, "error", err)
+	}
+}
+
+// catchUp reads a home's posts since its watermark over REST and carries what
+// the socket may have missed (RT-6.42 step 1, point 11). Nothing from before
+// the first start is carried: a home without a watermark gets one, now.
+func (b *Bridge) catchUp(ctx context.Context, h *home, conn uint64) {
+	err := func() error {
+		if b.me == "" {
+			me, err := b.MM.Me(ctx)
+			if err != nil {
+				return err
+			}
+			b.me = me
+		}
+		if h.cid == "" {
+			cid, err := b.MM.ChannelIDByName(ctx, b.Team, h.name)
+			if err != nil {
+				return err
+			}
+			h.cid = cid
+			b.byCID[cid] = h
+		}
+		now := b.Now().UnixMilli()
+		wm, ok, err := b.Store.Watermark(ctx, h.name)
+		if err != nil {
+			return fmt.Errorf("BUS_BRIDGE: %w", err)
+		}
+		if !ok {
+			if err := b.Store.SetWatermark(ctx, h.name, now); err != nil {
+				return fmt.Errorf("BUS_BRIDGE: %w", err)
+			}
+			h.wm = now
+			return nil
+		}
+		h.wm = wm
+		lower := wm - b.Margin.Milliseconds()
+		if floor := now - b.Reach.Milliseconds(); lower < floor {
+			b.Log.Warn("inbound: the catch-up reaches back only so far; older posts are not carried",
+				"home", h.name, "watermark", wm, "from", floor)
+			lower = floor
+		}
+		posts, err := b.MM.PostsSince(ctx, h.cid, lower)
+		if err != nil {
+			return err
+		}
+		for _, p := range posts {
+			if p.ChannelID != "" && p.ChannelID != h.cid {
+				continue
+			}
+			if p.CreateAt > lower {
+				if err := b.post(ctx, h, fromREST(p), true, lower); err != nil {
+					return err
+				}
+			}
+			if err := b.reactionsOf(ctx, h, p, lower); err != nil {
+				return err
+			}
+		}
+		return nil
+	}()
+	if err != nil {
+		b.guard(h, err)
+		return
+	}
+	if h.stopped {
+		b.Log.Info("inbound: carrying people", "home", h.name)
+	}
+	h.stopped, h.caughtUp = false, conn
+	b.signal(h)
+}
+
+// reactionsOf carries what the read says changed in a post's reactions: a
+// reaction after the bound that was not carried, and a removal of one that
+// was. A reaction on an agent's post (an ask) is carried like any other.
+func (b *Bridge) reactionsOf(ctx context.Context, h *home, p mm.Post, lower int64) error {
+	if !p.HasMetadata || !mmID.MatchString(p.ID) {
+		return nil
+	}
+	current := map[string]bool{}
+	for _, r := range p.Reactions {
+		current[r.EmojiName+" "+r.UserID] = true
+		if r.CreateAt > lower {
+			if err := b.reaction(ctx, h, p.ID, r.UserID, r.EmojiName, r.CreateAt, true); err != nil {
+				return err
+			}
+		}
+	}
+	kinds, err := b.Seen.Reactions(ctx, p.ID)
+	if err != nil {
+		return fmt.Errorf("BUS_BRIDGE_SEEN: %w", err)
+	}
+	for key, kind := range kinds {
+		if kind != "reaction" || current[key] {
+			continue
+		}
+		emoji, uid, _ := strings.Cut(key, " ")
+		if err := b.reaction(ctx, h, p.ID, uid, emoji, 0, false); err != nil {
+			return err
+		}
+	}
+	return nil
+}
+
+// post is a post from the socket or the catch-up, in one shape.
+type post struct {
+	id, user, root, kind, text string
+	props                      map[string]any
+	files                      int
+	createAt, editAt, deleteAt int64
+}
+
+func fromLive(p *mmws.Posted) post {
+	return post{id: p.PostID, user: p.UserID, root: p.RootID, kind: p.Type, text: p.Message,
+		props: p.Props, files: p.FileCount, createAt: p.CreateAt, editAt: p.EditAt, deleteAt: p.DeleteAt}
+}
+
+func fromREST(p mm.Post) post {
+	return post{id: p.ID, user: p.UserID, root: p.RootID, kind: p.Type, text: p.Message,
+		props: p.Props, files: p.FileCount, createAt: p.CreateAt, editAt: p.EditAt, deleteAt: p.DeleteAt}
+}
+
+// dropReason is why a post is no person's own (RT-6.42 step 2), "" when it is
+// one. The bot mark needs Mattermost and is checked after.
+func (b *Bridge) dropReason(p post, caught bool) string {
+	switch {
+	case !mmID.MatchString(p.id) || !mmID.MatchString(p.user) || (p.root != "" && !mmID.MatchString(p.root)):
+		return "malformed id"
+	case p.user == b.me:
+		return "the bridge's own"
+	case p.kind != "":
+		return "not an ordinary post"
+	case p.deleteAt != 0:
+		return "deleted"
+	case !caught && p.editAt != 0:
+		// a new post is never edited; an edit is not carried (point 5)
+		return "edited"
+	}
+	if _, ok := p.props["from_webhook"]; ok {
+		return "from a webhook"
+	}
+	if _, ok := p.props["override_username"]; ok {
+		return "override_username"
+	}
+	return ""
+}
+
+// post carries one person's post once. In a catch-up it carries only what was
+// created after lower; `since` also returns older posts that were edited, and
+// those never go out again.
+func (b *Bridge) post(ctx context.Context, h *home, p post, caught bool, lower int64) error {
+	if caught && p.createAt <= lower {
+		return nil
+	}
+	if why := b.dropReason(p, caught); why != "" {
+		b.Log.Info("inbound: a post dropped", "home", h.name, "post", p.id, "why", why)
+		return nil
+	}
+	u, err := b.user(ctx, p.user)
+	if gone(err) {
+		b.Log.Info("inbound: a post dropped", "home", h.name, "post", p.id, "why", "no such account")
+		return nil
+	}
+	if err != nil {
+		return err
+	}
+	if u.IsBot {
+		b.Log.Info("inbound: a post dropped", "home", h.name, "post", p.id, "why", "a bot's")
+		return nil
+	}
+	done, err := b.Seen.Post(ctx, p.id)
+	if err != nil {
+		return fmt.Errorf("BUS_BRIDGE_SEEN: %w", err)
+	}
+	if done {
+		return nil
+	}
+	body := PostBody{Text: p.text, Name: u.Username, MM: p.id, MMRoot: p.root, Files: p.files}
+	if p.root != "" {
+		seq, ok, err := b.Store.Seq(ctx, h.name, p.root)
+		if err != nil {
+			return fmt.Errorf("BUS_BRIDGE: %w", err)
+		}
+		if ok {
+			body.Root = seq
+		}
+	}
+	raw, err := EncodePost(body)
+	if err != nil {
+		b.Log.Warn("inbound: a post that does not encode, dropped", "home", h.name, "post", p.id, "error", err)
+		return nil
+	}
+	if err := b.publish(h, p.user, raw); err != nil {
+		return err
+	}
+	if err := b.Seen.MarkPost(ctx, p.id); err != nil {
+		return fmt.Errorf("BUS_BRIDGE_SEEN: %w", err)
+	}
+	return b.advance(ctx, h, p.createAt)
+}
+
+// reaction carries one person's reaction or its removal once per kind: the key
+// is the post, emoji, sender and kind, and the opposite kind clears it.
+func (b *Bridge) reaction(ctx context.Context, h *home, postID, userID, emoji string, at int64, added bool) error {
+	if !mmID.MatchString(postID) || !mmID.MatchString(userID) || !emojiRE.MatchString(emoji) {
+		b.Log.Info("inbound: a reaction dropped", "home", h.name, "why", "malformed")
+		return nil
+	}
+	if userID == b.me {
+		return nil
+	}
+	u, err := b.user(ctx, userID)
+	if gone(err) {
+		return nil
+	}
+	if err != nil {
+		return err
+	}
+	if u.IsBot {
+		return nil
+	}
+	kind := "unreaction"
+	if added {
+		kind = "reaction"
+	}
+	kinds, err := b.Seen.Reactions(ctx, postID)
+	if err != nil {
+		return fmt.Errorf("BUS_BRIDGE_SEEN: %w", err)
+	}
+	key := emoji + " " + userID
+	if kinds[key] == kind {
+		return nil
+	}
+	body := ReactionBody{Emoji: emoji, Name: u.Username, MM: postID}
+	seq, ok, err := b.Store.Seq(ctx, h.name, postID)
+	if err != nil {
+		return fmt.Errorf("BUS_BRIDGE: %w", err)
+	}
+	if ok {
+		body.Ref = seq
+	}
+	raw, err := EncodeReaction(body, added)
+	if err != nil {
+		return err
+	}
+	if err := b.publish(h, userID, raw); err != nil {
+		return err
+	}
+	kinds[key] = kind
+	if err := b.Seen.SetReactions(ctx, postID, kinds); err != nil {
+		return fmt.Errorf("BUS_BRIDGE_SEEN: %w", err)
+	}
+	return b.advance(ctx, h, at)
+}
+
+// publish sends on <bus>.hu.<home>.<anchor>, "-" for an unbound account.
+func (b *Bridge) publish(h *home, userID string, body []byte) error {
+	subject := b.BusPrefix + ".hu." + h.name + "." + SenderToken(b.Anchors.Anchor(userID))
+	if err := b.NATS.Publish(subject, body); err != nil {
+		return fmt.Errorf("publish %s: %w", subject, err)
+	}
+	return nil
+}
+
+// advance moves the watermark to the newest create_at carried; a removal has
+// none (0) and moves nothing.
+func (b *Bridge) advance(ctx context.Context, h *home, at int64) error {
+	if at <= h.wm {
+		return nil
+	}
+	if err := b.Store.SetWatermark(ctx, h.name, at); err != nil {
+		return fmt.Errorf("BUS_BRIDGE: %w", err)
+	}
+	h.wm = at
+	return nil
+}
+
+// user reads an account from Mattermost, cached: whether it is a bot is
+// Mattermost's to say (point 6), and its username is shown.
+func (b *Bridge) user(ctx context.Context, id string) (mm.User, error) {
+	if c, ok := b.users[id]; ok && b.Now().Sub(c.at) < userTTL {
+		return c.u, nil
+	}
+	u, err := b.MM.GetUser(ctx, id)
+	if err != nil {
+		return mm.User{}, err
+	}
+	b.users[id] = cachedUser{u: u, at: b.Now()}
+	return u, nil
+}
+
+// gone: Mattermost says the account does not exist; nobody to carry.
+func gone(err error) bool {
+	var se *mm.StatusError
+	return errors.As(err, &se) && se.Status == 404
+}

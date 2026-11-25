@@ -29,6 +29,25 @@ before 0.5.0 are described in the git history.
 
 ### Added
 
+- **The central bridge carries people's posts and reactions onto NATS**
+  (RT-6.42, step 2 of ADR-016, the bridge's side). `bridged` reads its bot's
+  Mattermost WebSocket in the channels of `BRIDGE_HOMES`, drops bots' posts
+  and reactions (Mattermost's `is_bot`), webhooks, `override_username`,
+  system, deleted and edited posts and its own, and publishes each person's
+  post, reaction and removed reaction once on `bus.hu.<home>.<anchor>`, the
+  anchor from the login service's account record (`-` without one), with the
+  v1 body of `docs/protocol.md`. After a reconnect it catches up over REST
+  from its watermark, at most 10 minutes back; it signals each home it
+  carries on `presence.bridge.<home>.v1` while its WebSocket is up and the
+  catch-up is done. The operator creates the bucket `BUS_BRIDGE_SEEN`
+  (`services/bridge/internal/store/seen_bucket.json`) and the consumer
+  `bridge_accounts`, widens each home's consumer to `bus.hu.<home>.*` and
+  grants the bridge the rights in `services/auth/nats-server.example.conf`
+  before this bridge starts: it refuses to start without the bucket. The
+  login service's account records and the MCP server's reader are not built
+  yet, so everyone goes out under `-` and sessions still read people on
+  Mattermost.
+
 - **The bridge reads Mattermost: the WebSocket reader `internal/mmws` and
   two REST methods of `internal/mm` (ADR-016, the bridge's step 2).
   `mmws` dials Mattermost's WebSocket with the bot

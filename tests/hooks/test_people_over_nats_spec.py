@@ -1,8 +1,8 @@
 """The v1 bodies of people's posts onto NATS (RT-6.42), as docs/protocol.md shows them.
 
-RT-6.42 is specified, not built: the bridge's step 2 and the MCP server's reader
-bring their own tests (a Go test beside the bridge, mcp/tests for the decoder) and
-replace this one. Until then it pins the contract the code packages start from,
+RT-6.42 is built on the bridge's side (services/bridge/internal/inbound and its Go
+tests); the MCP server's reader is not, and brings its own tests (mcp/tests for
+the decoder), which replace this one. Until then it pins the contract the code packages start from,
 so an edit of the examples that breaks a rule of the spec fails here: every body
 is format v1 with a known kind, carries the Mattermost post id, has no `props`
 and only the fields its kind allows, the field table lists exactly

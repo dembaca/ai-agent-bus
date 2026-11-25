@@ -167,6 +167,19 @@ type Post struct {
 	EditAt    int64          // ms, 0 when never edited
 	DeleteAt  int64          // ms, past 0: deleted
 	Message   string
+	// Reactions are the post's current reactions, from its metadata: the
+	// catch-up compares them with what it carried (RT-6.42 step 1).
+	// HasMetadata says the answer held a metadata object at all; without
+	// one, no reaction list is known and nothing may be read as removed.
+	Reactions   []Reaction
+	HasMetadata bool
+}
+
+// Reaction is one of a post's current reactions.
+type Reaction struct {
+	UserID    string
+	EmojiName string
+	CreateAt  int64 // ms
 }
 
 // postJSON is a post as Mattermost writes it on the wire.
@@ -183,6 +196,13 @@ type postJSON struct {
 	EditAt    int64          `json:"edit_at"`
 	DeleteAt  int64          `json:"delete_at"`
 	Message   string         `json:"message"`
+	Metadata  *struct {
+		Reactions []struct {
+			UserID    string `json:"user_id"`
+			EmojiName string `json:"emoji_name"`
+			CreateAt  int64  `json:"create_at"`
+		} `json:"reactions"`
+	} `json:"metadata"`
 }
 
 // PostsSince reads a channel's posts from since on, for the catch-up
@@ -209,19 +229,28 @@ func (c *Client) PostsSince(ctx context.Context, channelID string, since int64) 
 	out := make([]Post, 0, len(list.Order))
 	for _, id := range list.Order {
 		if raw, ok := list.Posts[id]; ok {
+			var reactions []Reaction
+			if raw.Metadata != nil {
+				for _, re := range raw.Metadata.Reactions {
+					reactions = append(reactions, Reaction{UserID: re.UserID,
+						EmojiName: re.EmojiName, CreateAt: re.CreateAt})
+				}
+			}
 			out = append(out, Post{
-				ID:        raw.ID,
-				UserID:    raw.UserID,
-				ChannelID: raw.ChannelID,
-				RootID:    raw.RootID,
-				Type:      raw.Type,
-				Props:     raw.Props,
-				FileCount: len(raw.FileIDs),
-				CreateAt:  raw.CreateAt,
-				UpdateAt:  raw.UpdateAt,
-				EditAt:    raw.EditAt,
-				DeleteAt:  raw.DeleteAt,
-				Message:   raw.Message,
+				Reactions:   reactions,
+				HasMetadata: raw.Metadata != nil,
+				ID:          raw.ID,
+				UserID:      raw.UserID,
+				ChannelID:   raw.ChannelID,
+				RootID:      raw.RootID,
+				Type:        raw.Type,
+				Props:       raw.Props,
+				FileCount:   len(raw.FileIDs),
+				CreateAt:    raw.CreateAt,
+				UpdateAt:    raw.UpdateAt,
+				EditAt:      raw.EditAt,
+				DeleteAt:    raw.DeleteAt,
+				Message:     raw.Message,
 			})
 		}
 	}
