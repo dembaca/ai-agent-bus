@@ -254,7 +254,7 @@ func TestAnOlderTokenNeverReplacesTheRecord(t *testing.T) {
 		t.Fatalf("records %+v", rs)
 	}
 	// The guard is the directory's: it keeps the newest iat per identity.
-	if ok, err := dir.NewestToken(ctx5(t), "sub-alice", now-20); err != nil || ok {
+	if ok, err := dir.NewestToken(ctx5(t), "sub-alice", now-20, false); err != nil || ok {
 		t.Errorf("an older iat passes the guard: %v %v", ok, err)
 	}
 }
@@ -298,4 +298,95 @@ func TestAPasswordAccountGetsNoRecord(t *testing.T) {
 
 func tokenUserPassword(name string) token.User {
 	return token.User{Username: name, ID: testrealm.ChatID(name), AuthKnown: true}
+}
+
+// gatedAttester blocks the publish of the record with `gate` set until
+// `release` closes, and records the order of the records' publishes.
+type gatedAttester struct {
+	fakeAttester
+	gateIat int64
+	entered chan struct{}
+	release chan struct{}
+}
+
+func (g *gatedAttester) Publish(ctx context.Context, subject string, body []byte) error {
+	var r AccountRecord
+	if json.Unmarshal(body, &r) == nil && r.TokenIat == g.gateIat && strings.Contains(subject, ".account.") {
+		close(g.entered)
+		<-g.release
+	}
+	return g.fakeAttester.Publish(ctx, subject, body)
+}
+
+// RT-6.42 step 3: the guard and the write are one step per identity. An older
+// token that passed the guard and is slow to publish does not overwrite the
+// newer token's record written meanwhile: the newer login waits for it.
+func TestTheGuardAndTheWriteAreOneStepPerIdentity(t *testing.T) {
+	l, _, dir := accountLab(t)
+	g := &gatedAttester{gateIat: 100, entered: make(chan struct{}), release: make(chan struct{})}
+	guard := directory.Anchors{Store: dir}
+	id := testrealm.ChatID("alice")
+	rec := func(iat int64) {
+		if _, err := l.svc.accountRecord(ctx5(t), g, guard, "sub-alice", id, "alice", true, "alice", time.Unix(iat, 0), iat, iat+900); err != nil {
+			t.Error(err)
+		}
+	}
+	done := make(chan struct{})
+	go func() { rec(100); close(done) }()
+	<-g.entered
+	newer := make(chan struct{})
+	go func() { rec(200); close(newer) }()
+	select {
+	case <-newer:
+		t.Fatal("the newer login did not wait for the older one's write")
+	case <-time.After(300 * time.Millisecond):
+	}
+	close(g.release)
+	<-done
+	<-newer
+	rs := g.records()
+	if len(rs) != 2 || rs[1].TokenIat != 200 {
+		t.Fatalf("the last record is not the newest token's: %+v", rs)
+	}
+}
+
+// The account record's subject is the account's, not the agent's: agents of
+// one person logging in at once (here against the real stream, which reads
+// the record back) are all let in.
+func TestSeveralAgentsOfOnePersonLoggingInAtOnceAreAllLetIn(t *testing.T) {
+	c := newConsumerLab(t, nil)
+	c.setup()
+	nc, js := c.lab.admin()
+	_ = js
+	jsc, err := jetstream.New(nc)
+	if err != nil {
+		t.Fatal(err)
+	}
+	dir, err := directory.Open(ctx5(t), jsc, "", false)
+	if err != nil {
+		t.Fatal(err)
+	}
+	c.lab.svc.SetAnchors(directory.Anchors{Store: dir})
+	c.lab.svc.SetAttester(NATSAttester{NC: nc, Stream: "PRESENCE"})
+	const n = 6
+	errs := make(chan error, n)
+	for range n {
+		go func() {
+			_, err := c.login("bob", newHost(), Hello{Home: "home"})
+			errs <- err
+		}()
+	}
+	for range n {
+		if err := <-errs; err != nil {
+			t.Errorf("a login was refused: %v", err)
+		}
+	}
+	m, err := c.js.GetLastMsg("PRESENCE", "presence.account.mattermost."+testrealm.ChatID("bob")+".v1")
+	if err != nil {
+		t.Fatal(err)
+	}
+	var r AccountRecord
+	if err := json.Unmarshal(m.Data, &r); err != nil || r.Account != testrealm.ChatID("bob") || r.Anchor != "bob" {
+		t.Errorf("record %s: %v", m.Data, err)
+	}
 }

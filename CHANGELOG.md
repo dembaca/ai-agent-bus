@@ -19,7 +19,10 @@ before 0.5.0 are described in the git history.
   JetStream user needs the publish right `<presence>.account.mattermost.*.v1`
   (`services/auth/nats-server.example.conf`). The bridge and the MCP server do
   not read them yet; the record at a login without an agent and at a change of
-  the binding is not built.
+  the binding is not built. Upgrade: without the publish right every login of a
+  proven Mattermost account is refused, so the login service's NATS user gets it
+  first; the release's `Needs:` line (not allowed under Unreleased) is `Needs:
+  login service publish right on presence account records.`
 
 ### Docs
 
