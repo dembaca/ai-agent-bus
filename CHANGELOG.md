@@ -24,6 +24,16 @@ before 0.5.0 are described in the git history.
   first; the release's `Needs:` line (not allowed under Unreleased) is `Needs:
   login service publish right on presence account records.`
 
+- **The registrar's code moves into the bridge's module** (ADR-016, step 3 of
+  "all of Mattermost in one service"). The core and Mattermost packages of
+  `github.com/dembaca/mattermost-agent-registrar` (main at `c984d19`) are
+  imported into `services/bridge/internal/registrar/` with their tests, their
+  import paths adjusted to the bridge's module; the packages need no new
+  dependency. Nothing is wired: `cmd/bridged`, the routes, the settings and
+  every behaviour are unchanged, and `go test ./...` in `services/bridge`
+  stays green. The arc42 building-block view says the registrar package is
+  imported but not yet active.
+
 ### Docs
 
 - **The central bridge's step 2 is specified** (ADR-016, RT-6.42): people's
@@ -31,8 +41,8 @@ before 0.5.0 are described in the git history.
   bridge on `bus.hu.<home>.<anchor>`, vouched for by the bridge's publish
   right; the v1 bodies are in `docs/protocol.md`. Eighteen open points wait for
   the owner as recommendations, and the risk of the bridge as the only voucher
-  for people is recorded (RISK-21). Nothing is built; the deployment view now says
-  the bridge's first step runs in the lab.
+  for people is recorded (RISK-21). Only the login service's part is built (see Added); the deployment
+  view now says the bridge's first step runs in the lab.
 
 ### Breaking
 
@@ -45,6 +55,33 @@ before 0.5.0 are described in the git history.
   prefix does not start until it is shortened; `x_`, `bgl_` and `bridge_` are
   unaffected. The static-text budget test measures each session configuration
   on its own and holds the worst one under its bound (#104).
+
+### Added
+
+- **The bridge reads Mattermost: the WebSocket reader `internal/mmws` and
+  two REST methods of `internal/mm` (ADR-016, the bridge's step 2).
+  `mmws` dials Mattermost's WebSocket with the bot
+  token, reconnects with backoff when the socket drops and emits typed
+  events — `Posted`, `Reaction` (added and removed) and a `Reconnected`
+  marker whose `Since` is the greatest event `create_at` it handed out,
+  the catch-up hint (Mattermost's `since` is strict: read from `Since`
+  minus a margin and dedup by key) — and nothing else: whose post is a
+  bot's (a drop) or
+  a person's (carried) stays the caller's decision, so it filters,
+  stores and publishes nowhere. A post comes out with the fields the
+  drop rules read — type, props, the files it carries (`file_ids`'
+  count), the delete mark — and a
+  reaction with the channel it happened in; a quiet socket is taken
+  again by a read deadline (renewed per frame and per ping), the auth
+  reply is found by its `seq_reply` wherever it sits in the stream, and
+  `mm.GetUser` reads a user's `is_bot`, `mm.PostsSince` the channel's
+  posts from a reconnect's hint with `update_at` and `edit_at` (and the
+  delete mark and the props) kept, a body past its 32 MiB cap named
+  `ErrTooLarge` — always for the same caller, never filtered here. Nothing is wired into
+  `bridged` — no publish, no consumer, no configuration, no right beyond
+  what step 1 already holds — so the bridge behaves exactly as before.
+  One new dependency, `gorilla/websocket` (v1.5.3): the WebSocket client,
+  and the fake Mattermost its tests run against.
 
 ## 0.99.0
 
