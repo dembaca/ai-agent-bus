@@ -121,8 +121,12 @@ function parseEnvFile(text: string): Record<string, string> {
 }
 
 // One call to the hook API; null for no server, no bus session or any failure.
-// missing: called when no endpoint file is there.
-export function hookApi(env: Env, directory: string, missing: () => void = () => {}) {
+// missing: called when no endpoint file is there. client: the harness session
+// the caller speaks for, sent as CLIENT_HEADER (the host refuses another one's
+// with 403 and client_session "refused", RT-6.18 step 6); forbidden: called then.
+export const CLIENT_HEADER = "X-Bus-Client-Session"
+export function hookApi(env: Env, directory: string, missing: () => void = () => {},
+                        client: { session?: () => string; forbidden?: () => void } = {}) {
   // signal: ends the call when it aborts (an unload, a shutdown), as the timeout does.
   return async (method: "GET" | "POST", path: string, body?: Json, ms = QUICK_MS, signal?: AbortSignal): Promise<Json | null> => {
     let endpoint = env.MM_BUS_ENDPOINT || ""
@@ -142,13 +146,17 @@ export function hookApi(env: Env, directory: string, missing: () => void = () =>
       }
       if (!endpoint || !key) return null
     }
+    const session = client.session?.() || ""
     try {
       const res = await fetch(endpoint.replace(/\/$/, "") + path, {
         method,
-        headers: { Authorization: `Bearer ${key}`, ...(body ? { "Content-Type": "application/json" } : {}) },
+        headers: { Authorization: `Bearer ${key}`, ...(body ? { "Content-Type": "application/json" } : {}),
+                   ...(session ? { [CLIENT_HEADER]: session } : {}) },
         body: body ? JSON.stringify(body) : undefined,
         signal: signal ? AbortSignal.any([AbortSignal.timeout(ms), signal]) : AbortSignal.timeout(ms),
       })
+      // Only the host's refusal of another session, not a route's own 403.
+      if (res.status === 403 && (await res.json().catch(() => null))?.client_session === "refused") client.forbidden?.()
       if (res.status !== 200) return null
       return (await res.json()) as Json
     } catch {
