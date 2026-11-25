@@ -3,7 +3,22 @@
 Every version bump in `.claude-plugin/plugin.json` gets an entry here. Versions
 before 0.5.0 are described in the git history.
 
-## Unreleased
+## 0.100.0
+
+Needs: login service updated first, with publish right on presence account records, MM_PROPS_PREFIX at most sixteen characters.
+Needs: for the bridge, its seen bucket, widened home consumers, create right on its account consumer, new publish rights.
+
+People's posts and reactions reach the agents over NATS: the central bridge
+carries them from Mattermost, the login service publishes each account's record
+and makes the consumers people's posts are read through, and the MCP server reads them where the bridge
+signals, with a person approving only on the login service's fresh approver
+record. The registrar's code moves into the bridge's module, not yet wired.
+Breaking: a props prefix is at most 16 characters. Order: the login service
+first (without its people's consumers a host hears no people over NATS on the
+bridge's signal), then a step-2 bridge with all its new rights — publish on
+`bus.hu.<home>.*` and `presence.bridge.<home>.v1`, the seen bucket's rights and
+the create right of its account consumer — as in
+`services/auth/nats-server.example.conf` and the deployment view.
 
 ### Added
 
@@ -45,9 +60,8 @@ before 0.5.0 are described in the git history.
   (`services/bridge/internal/store/seen_bucket.json`), widens each home's
   consumer to `bus.hu.<home>.*` and grants the bridge the rights in
   `services/auth/nats-server.example.conf` before this bridge starts: it
-  refuses to start without the bucket. The release says so in its notice:
-  `Needs: bridge create right on presence account consumer.` The
-  MCP server reads them (the entry above).
+  refuses to start without the bucket. The release's second `Needs:` line
+  names the create right. The MCP server reads them (the entry above).
 
 - **The bridge reads Mattermost: the WebSocket reader `internal/mmws` and
   two REST methods of `internal/mm` (ADR-016, the bridge's step 2).
@@ -88,8 +102,7 @@ before 0.5.0 are described in the git history.
   them (see above); the record at a login without an agent and at a change of
   the binding is not built. Upgrade: without the publish right every login of a
   proven Mattermost account is refused, so the login service's NATS user gets it
-  first; the release's `Needs:` line (not allowed under Unreleased) is `Needs:
-  login service publish right on presence account records.`
+  first, as the release's `Needs:` line says.
 
 - **The registrar's code moves into the bridge's module** (ADR-016, step 3 of
   "all of Mattermost in one service"). The core and Mattermost packages of
