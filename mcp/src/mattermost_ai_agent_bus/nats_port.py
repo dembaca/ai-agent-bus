@@ -138,6 +138,7 @@ PERSON = "hu:"  # the author id of a person over NATS: PERSON + anchor (RT-6.42)
 PEOPLE_KEY_SEC = 3600.0  # how long a person's event key drops its repeat (RT-6.42 step 9)
 PEOPLE_KEYS_MAX = 100_000  # keys held at most; the oldest go first
 PEOPLE_CHECK_SEC = 10.0  # how often the bridge's signals are looked at (RT-6.42 step 9)
+UNAPPROVED_SEC = 86400.0  # how long the reads remember an event without approver: an ask's 24 h
 PEOPLE_MARGIN_MS = 60_000  # the catch-up on Mattermost reads this much before the last people event
 
 
@@ -323,7 +324,10 @@ class NatsPort:
         self._switched: set[str] = set()  # channels whose people came over NATS at the last look
         self._people_at: dict[str, int] = {}  # channel -> ms of its last people event over NATS
         self._catching_up: set[asyncio.Task[None]] = set()
-        self._owed: set[str] = set()  # channels whose catch-up on Mattermost failed: tried again
+        self._owed: dict[str, int] = {}  # channel -> start of a catch-up that failed: tried again
+        # Events that came over NATS from a person without a fresh approver record, judged as
+        # they came, for the reads (`unapproved`): key -> monotonic time, kept as long as an ask
+        self._unapproved: OrderedDict[tuple[str, ...], float] = OrderedDict()
         self._watch: asyncio.Task[None] | None = None
 
     def __getattr__(self, name: str) -> Any:
@@ -884,22 +888,24 @@ class NatsPort:
             self._start_catch_up(ch)
         return on
 
-    def _start_catch_up(self, ch: str) -> None:
-        task = asyncio.create_task(self._catch_up(ch))
+    def _start_catch_up(self, ch: str, start: int | None = None) -> None:
+        task = asyncio.create_task(self._catch_up(ch, start))
         self._catching_up.add(task)
         task.add_done_callback(self._catching_up.discard)
 
     def _person_gap(self, ch: str) -> None:
-        """A gap on the person's consumer (RT-6.42 step 9): what was lost is on Mattermost."""
-        self._start_catch_up(ch)
+        """A gap on the person's consumer (RT-6.42 step 9): what was lost is on Mattermost,
+        read from the last people event before the gap (taken now: the event that showed
+        the gap moves it on before the task runs)."""
+        self._start_catch_up(ch, self._people_at.get(ch, 0))
 
     async def check_people(self) -> None:
         """Look at the bridge's signals of every channel of the bus (RT-6.42 step 9)."""
         for ch in self._people_channels():
             self._note_switch(ch)
-        for ch in list(self._owed):
-            self._owed.discard(ch)
-            self._start_catch_up(ch)
+        for ch, start in list(self._owed.items()):
+            del self._owed[ch]
+            self._start_catch_up(ch, start)
 
     async def _watch_people(self) -> None:
         while True:
@@ -909,7 +915,7 @@ class NatsPort:
             except Exception as exc:  # noqa: BLE001 — the next look tries again
                 log.warning("nats: the bridge's signals were not looked at: %s", type(exc).__name__)
 
-    async def _catch_up(self, ch: str) -> None:
+    async def _catch_up(self, ch: str, start: int | None = None) -> None:
         """Read the channel on Mattermost from its last people event over NATS on, and deliver
         the people's posts and reactions no key holds (RT-6.42 step 9). Never from further back
         than the keys reach (PEOPLE_KEY_SEC): an older event would come again, now with
@@ -919,14 +925,19 @@ class NatsPort:
         bus = self._live()
         if cid is None or bus is None:
             return
-        floor = int((time.time() - PEOPLE_KEY_SEC) * 1000) + PEOPLE_MARGIN_MS
-        since = max(0, self._people_at.get(ch, 0) - PEOPLE_MARGIN_MS, floor)
+        # The floor compares a clock here with Mattermost's create_at: the later of this
+        # host's and the NATS server's, so a host clock behind does not reopen the replay;
+        # a skew of more than PEOPLE_MARGIN_MS beyond both still could.
+        now = max(time.time(), bus.server_now)
+        floor = int((now - PEOPLE_KEY_SEC) * 1000) + PEOPLE_MARGIN_MS
+        last = self._people_at.get(ch, 0) if start is None else start
+        since = max(0, last - PEOPLE_MARGIN_MS, floor)
         try:
             posts = await self.inner.channel_posts(cid, since_ms=since)
             authors = {p.user_id for p in posts} | {r.user_id for p in posts for r in p.reactions}
             bots = await self.inner.bot_accounts(authors - {""})
         except Exception as exc:  # noqa: BLE001 — tried again at the next look
-            self._owed.add(ch)
+            self._owed[ch] = min(self._owed.get(ch, last), last)
             log.warning("nats: the catch-up of ~%s on Mattermost failed (%s): tried again in %.0f s",
                         ch, type(exc).__name__, PEOPLE_CHECK_SEC)
             return
@@ -994,6 +1005,7 @@ class NatsPort:
         if m.kind == "post":
             if not self._keys.take(("post", m.mm)):
                 return
+            self._judge(("post", m.mm), ev.anchor)
             self._people_at[ch] = max(self._people_at.get(ch, 0), ms)
             post = self.inner.with_links(self._person_post(ev, cid))
             if m.files:
@@ -1003,6 +1015,8 @@ class NatsPort:
         assert m.emoji is not None
         if not self._keys.take_reaction(m.kind, m.mm, m.emoji, ev.anchor):
             return
+        if m.kind == "reaction":
+            self._judge(("reaction", m.mm, m.emoji, ev.anchor), ev.anchor)
         self._people_at[ch] = max(self._people_at.get(ch, 0), ms)
         on_nats = m.ref is not None and self._where.get(m.ref) == ch
         if m.kind == "unreaction":
@@ -1016,6 +1030,35 @@ class NatsPort:
             if (m.emoji, uid) in bucket or len(bucket) < MAX_REACTIONS:
                 bucket[(m.emoji, uid)] = ms
         self._tell(ReactionEvent(Reaction(user_id=uid, post_id=target, emoji_name=m.emoji, create_at=ms), cid))
+
+    def _judge(self, key: tuple[str, ...], anchor: str) -> None:
+        """Remember an event that came without a fresh approver record (RT-6.42 step 9)."""
+        bus = self._live()
+        if bus is None or bus.approver(anchor):
+            self._unapproved.pop(key, None)
+            return
+        now = time.monotonic()
+        while self._unapproved and (len(self._unapproved) >= PEOPLE_KEYS_MAX
+                                    or next(iter(self._unapproved.values())) < now - UNAPPROVED_SEC):
+            self._unapproved.popitem(last=False)
+        self._unapproved[key] = now
+        self._unapproved.move_to_end(key)
+
+    async def unapproved(self, posts: Sequence[Post]) -> set[tuple[str, ...]]:
+        """What of these came over NATS from a person without a fresh approver record, as
+        the event was judged (RT-6.42 step 9): a post by its Mattermost id, a reaction by
+        its post, emoji and the anchor its account's record names."""
+        bus = self._live()
+        if bus is None or not self._unapproved:
+            return set()
+        out: set[tuple[str, ...]] = set()
+        for p in posts:
+            if ("post", p.id) in self._unapproved:
+                out.add(("post", p.id))
+            for r in p.reactions:
+                if ("reaction", p.id, r.emoji_name, bus.anchor_of_account(r.user_id)) in self._unapproved:
+                    out.add(("reaction", p.id, r.emoji_name, r.user_id))
+        return out
 
     async def _with_files(self, post: Post) -> Post:
         """A person's files stay on Mattermost (point 18): read by the post's Mattermost id,

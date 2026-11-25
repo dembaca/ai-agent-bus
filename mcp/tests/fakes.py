@@ -247,6 +247,9 @@ class FakeChat:
     async def may_approve(self, user_id: str) -> bool | None:
         return None
 
+    async def unapproved(self, posts: Sequence[Post]) -> set[tuple[str, ...]]:
+        return set()
+
     async def bot_accounts(self, user_ids: set[str]) -> set[str]:
         return set(user_ids) & (self._agents | {u.id for u in self.bots.values()})
 

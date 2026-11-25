@@ -355,7 +355,7 @@ async def test_a_failed_catch_up_is_tried_again_at_the_next_look() -> None:
     inner.channel_posts = flaky  # type: ignore[method-assign]
     inner.posts = [_mm(MM2, HUMAN, "x", int(time.time() * 1000))]
     await port._catch_up("home")
-    assert _queued(ev) == [] and port._owed == {"home"}
+    assert _queued(ev) == [] and set(port._owed) == {"home"}
     await port.check_people()
     for task in list(port._catching_up):
         await task
@@ -418,3 +418,55 @@ async def test_a_trusted_anchor_is_trusted_and_approves_only_with_a_fresh_approv
         assert "not_approver" not in again[0] and server._ask_answer(react_e, again[1])
     finally:
         await inbox.close()
+
+
+async def test_the_catch_up_after_a_gap_starts_before_the_event_that_showed_it() -> None:
+    """Fable re-review: the event that shows a gap moves the last people event on before
+    the catch-up runs; the catch-up starts from the one before the gap."""
+    port, inner, fake = make()
+    assert fake is not None
+    fake.switched.add("home")
+    ev = await _events(port)
+    t = time.time()
+    await port._on_person(_person("home", "dembaca", 80, PersonMessage("post", MM1, "dembaca", text="a"), t - 300))
+    lost = _mm(MM2, HUMAN, "lost in the gap", int((t - 200) * 1000))
+    inner.posts = [lost]
+    port._person_gap("home")  # the bus saw the gap; then it delivers the event that showed it
+    await port._on_person(_person("home", "dembaca", 90, PersonMessage("post", ASK, "dembaca", text="b"), t))
+    for task in list(port._catching_up):
+        await task
+    ids = [e.post.id for e in _queued(ev)]
+    assert MM2 in ids
+    assert inner.calls[-1][2] <= int((t - 300) * 1000)
+
+
+async def test_a_post_read_back_carries_not_approver_as_its_event_did(monkeypatch: pytest.MonkeyPatch) -> None:
+    """Answer to question 5: get_thread, list_recent and an ask's card read back what came over
+    NATS from a trusted person without a fresh approver record, marked not_approver, as
+    wait_for_events marked it; once an approver record was fresh at its arrival, nothing."""
+    from mattermost_ai_agent_bus import slim
+
+    inner = FakeBus(FakeRegistrar(), trusted={HUMAN: "dembaca"}, names={HUMAN: "dembaca"})
+    inner.registrar.session = inner.registrar.info
+    inner.work_channel_name = "home"
+    port = NatsPort(inner, _settings(), ("home",), echo_wait=0.5)  # type: ignore[arg-type]
+    fake = FakeNats(port)
+    port.use_bus(fake)
+    fake.attestations[ME] = _att()
+    fake.accounts[HUMAN] = "dembaca"
+    fake.switched.add("home")
+    await port._on_person(_person("home", "dembaca", 60, PersonMessage("post", MM1, "dembaca", text="go", mm_root=ASK)))
+    await port._on_person(_person("home", "dembaca", 61, PersonMessage("reaction", ASK, "dembaca", emoji="+1")))
+    # Mattermost's copies, as get_thread reads them: the person's own account.
+    reply = Post(id=MM1, channel_id=WORK, root_id=ASK, user_id=HUMAN, message="go")
+    ask = Post(id=ASK, channel_id=WORK, user_id=BOT, message="merge?", kind="ask",
+               reactions=(Reaction(HUMAN, ASK, "+1", 1),))
+    got = await slim.posts(port, [ask, reply])  # type: ignore[arg-type]
+    by_id = {p["id"]: p for p in got}
+    assert by_id[MM1]["not_approver"] is True
+    assert by_id[ASK]["reactions"][0]["not_approver"] is True
+    # an approver at arrival: nothing marked
+    fake.approvers.add("dembaca")
+    await port._on_person(_person("home", "dembaca", 62, PersonMessage("post", MM2, "dembaca", text="ok")))
+    other = Post(id=MM2, channel_id=WORK, user_id=HUMAN, message="ok")
+    assert "not_approver" not in (await slim.posts(port, [other]))[0]  # type: ignore[arg-type]

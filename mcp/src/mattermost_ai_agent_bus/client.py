@@ -724,6 +724,9 @@ class MattermostAdapter:
     async def may_approve(self, user_id: str) -> bool | None:
         return None  # Mattermost: the trusted list alone (RT-6.8); over NATS see RT-6.42
 
+    async def unapproved(self, posts: Sequence[Post]) -> set[tuple[str, ...]]:
+        return set()  # nothing comes over NATS here (RT-6.42)
+
     async def bot_accounts(self, user_ids: set[str]) -> set[str]:
         names = await self.usernames(user_ids)
         return {i for i in names if self._accounts[i].bot}
