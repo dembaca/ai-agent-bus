@@ -50,13 +50,14 @@ func CreateSeenBucket(ctx context.Context, js jetstream.JetStream) error {
 }
 
 // OpenSeen binds to the operator's seen bucket. Besides direct get it refuses
-// a bucket without an age limit of at most a day or with `discard: new`:
-// either would let the keys fill the bucket until every write is refused.
+// a bucket whose age limit is not between an hour and a day — shorter, a key
+// is gone while it is still needed and an event goes out twice; none, the keys
+// fill the bucket — and one with `discard: new`, which then refuses every write.
 func OpenSeen(ctx context.Context, nc *nats.Conn, bucket string) (*Seen, error) {
 	kv, err := openBucket(ctx, nc, bucket, "services/bridge/internal/store/seen_bucket.json",
 		func(c jetstream.StreamConfig) error {
-			if c.MaxAge <= 0 || c.MaxAge > 24*time.Hour {
-				return fmt.Errorf("max_age %s, not an hour", c.MaxAge)
+			if c.MaxAge < time.Hour || c.MaxAge > 24*time.Hour {
+				return fmt.Errorf("max_age %s, not between an hour and a day", c.MaxAge)
 			}
 			if c.Discard != jetstream.DiscardOld {
 				return errors.New("discard is not old")

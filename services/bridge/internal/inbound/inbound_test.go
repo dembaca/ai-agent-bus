@@ -46,12 +46,14 @@ type fakeMM struct {
 	posts []map[string]any // what /channels/<cid>/posts?since= returns
 	since atomic.Int64
 	fail  atomic.Bool // every answer a 500
-	srv   *httptest.Server
+	// failUser answers a 500 for that user's next reads (a count per id)
+	failUser map[string]int
+	srv      *httptest.Server
 }
 
 func newFakeMM(t *testing.T) *fakeMM {
 	t.Helper()
-	f := &fakeMM{}
+	f := &fakeMM{failUser: map[string]int{}}
 	users := map[string]map[string]any{
 		botID:   {"id": botID, "username": "bridge", "is_bot": true},
 		aliceID: {"id": aliceID, "username": "alice", "is_bot": false},
@@ -66,9 +68,19 @@ func newFakeMM(t *testing.T) *fakeMM {
 		}
 		p := strings.TrimPrefix(r.URL.Path, "/api/v4")
 		switch {
+		case p == "/system/ping":
+			_, _ = w.Write([]byte(`{"status":"OK"}`)) // net/http sets the Date header
 		case p == "/users/me":
 			_ = json.NewEncoder(w).Encode(users[botID])
 		case strings.HasPrefix(p, "/users/"):
+			f.mu.Lock()
+			if n := f.failUser[strings.TrimPrefix(p, "/users/")]; n > 0 {
+				f.failUser[strings.TrimPrefix(p, "/users/")] = n - 1
+				f.mu.Unlock()
+				w.WriteHeader(http.StatusBadGateway)
+				return
+			}
+			f.mu.Unlock()
 			u, ok := users[strings.TrimPrefix(p, "/users/")]
 			if !ok {
 				w.WriteHeader(http.StatusNotFound)
@@ -186,12 +198,21 @@ func (l *lab) record(t *testing.T, uid, body string, want string) {
 		t.Fatal(err)
 	}
 	deadline := time.Now().Add(3 * time.Second)
-	for l.acc.Anchor(uid) != want {
+	for anchorOf(t, l.acc, uid) != want {
 		if time.Now().After(deadline) {
-			t.Fatalf("anchor of %s: %q, want %q", uid, l.acc.Anchor(uid), want)
+			t.Fatalf("anchor of %s: %q, want %q", uid, anchorOf(t, l.acc, uid), want)
 		}
 		time.Sleep(10 * time.Millisecond)
 	}
+}
+
+func anchorOf(t *testing.T, a *Accounts, uid string) string {
+	t.Helper()
+	anchor, err := a.Anchor(context.Background(), uid)
+	if err != nil {
+		t.Fatal(err)
+	}
+	return anchor
 }
 
 func quiet() *slog.Logger { return slog.New(slog.NewTextHandler(io.Discard, nil)) }
@@ -213,7 +234,7 @@ func newRig(t *testing.T, seen Seen) *rig {
 		seen = l.seen
 	}
 	r.b = &Bridge{Homes: []string{"home"}, Team: "team", BusPrefix: "bus", Log: quiet(),
-		MM: mm.New(r.mm.srv.URL, "tok"), NATS: l.nc, Store: l.kv, Seen: seen, Anchors: l.acc,
+		MM: mm.New(r.mm.srv.URL, "tok"), NATS: Confirmed{NC: l.nc}, Store: l.kv, Seen: seen, Anchors: l.acc,
 		Events: r.events, Up: r.up.Load, SignalEvery: 50 * time.Millisecond, Retry: 50 * time.Millisecond}
 	ctx, cancel := context.WithCancel(context.Background())
 	done := make(chan struct{})
@@ -398,13 +419,15 @@ func TestTheCatchUpCarriesWhatTheSocketMissed(t *testing.T) {
 	r.connect(1) // first start: no watermark, nothing from before
 	r.none(t)
 	wm, ok, err := r.kv.Watermark(context.Background(), "home")
-	if !ok || err != nil || wm < t0 {
+	if !ok || err != nil || wm < t0-1000 || wm > now() {
 		t.Fatalf("first start's watermark %d %v %v", wm, ok, err)
 	}
 	// a reaction carried live, later removed during the gap
 	r.send(&mmws.Reaction{PostID: pid(2), UserID: bobID, ChannelID: cid, EmojiName: "eyes", CreateAt: wm + 1, Added: true})
 	r.next(t)
-	wm = wm + 1
+	r.send(&mmws.Reaction{PostID: pid(7), UserID: bobID, ChannelID: cid, EmojiName: "eyes", CreateAt: wm + 1, Added: true})
+	r.next(t)
+	wm, _, _ = r.kv.Watermark(context.Background(), "home")
 	r.up.Store(0) // the socket drops
 	ask := pid(3) // an agent's ask, older than the watermark
 	r.mm.setPosts(
@@ -417,6 +440,9 @@ func TestTheCatchUpCarriesWhatTheSocketMissed(t *testing.T) {
 			"create_at": wm - 1000, "update_at": wm + 300, "metadata": map[string]any{}},
 		map[string]any{"id": pid(5), "user_id": aliceID, "channel_id": cid, "message": "during the gap",
 			"create_at": wm + 400, "update_at": wm + 400, "metadata": map[string]any{}},
+		// deleted since: its reactions are gone with it, which is no removal
+		map[string]any{"id": pid(7), "user_id": otherID, "channel_id": cid, "message": "deleted",
+			"create_at": wm - 2000, "update_at": wm + 500, "delete_at": wm + 500, "metadata": map[string]any{}},
 	)
 	r.connect(2)
 	got := map[string]string{}
@@ -436,6 +462,8 @@ func TestTheCatchUpCarriesWhatTheSocketMissed(t *testing.T) {
 	r.connect(3)
 	r.none(t)
 	// a gap past ten minutes: what is older is not carried
+	r.up.Store(0)
+	time.Sleep(100 * time.Millisecond) // no signal tick moves the watermark now
 	if err := r.kv.SetWatermark(context.Background(), "home", t0-30*60000); err != nil {
 		t.Fatal(err)
 	}
@@ -556,5 +584,149 @@ func drain(ch chan *nats.Msg) {
 		default:
 			return
 		}
+	}
+}
+
+// RT-6.42 step 3: after a restart the operator's consumer does not deliver
+// the records the bridge acked before; an account it has not heard of since
+// is looked up, so a bound person is still carried under the anchor.
+func TestAfterARestartABoundPersonKeepsTheAnchor(t *testing.T) {
+	r := newRig(t, nil)
+	r.record(t, aliceID, `{"v":1,"account":"`+aliceID+`","anchor":"alice","name":"alice",`+
+		`"approver":true,"token_iat":1,"iat":1,"exp":2}`, "alice")
+	// the restarted bridge: a new reader of the same consumer, which has
+	// nothing to deliver
+	again := &Accounts{Log: quiet(), Deliver: "deliver.bridge.accounts", Stream: "PRESENCE", Ready: make(chan struct{})}
+	ctx, cancel := context.WithCancel(context.Background())
+	defer cancel()
+	go func() { _ = again.Run(ctx, r.nc) }()
+	<-again.Ready
+	if got := anchorOf(t, again, aliceID); got != "alice" {
+		t.Fatalf("after the restart: %q", got)
+	}
+	if got := anchorOf(t, again, bobID); got != "" {
+		t.Fatalf("an account without a record: %q", got)
+	}
+	r.b.Anchors = again
+	r.connect(1)
+	r.send(alicePost(pid(1), now()))
+	if subject, _ := r.next(t); subject != "bus.hu.home.alice" {
+		t.Fatalf("after the restart: %s", subject)
+	}
+}
+
+// RT-6.42 step 1 and its error table: a catch-up that fails half way moves
+// no watermark, so the retry carries the older posts too; the read goes
+// oldest first, a root before its reply.
+func TestAnInterruptedCatchUpLosesNothing(t *testing.T) {
+	r := newRig(t, nil)
+	r.connect(1) // the first start sets the watermark
+	r.none(t)
+	wm, _, _ := r.kv.Watermark(context.Background(), "home")
+	r.up.Store(0)
+	r.mm.mu.Lock()
+	r.mm.failUser[bobID] = 1 // Mattermost fails once on bob, the older post
+	r.mm.mu.Unlock()
+	r.mm.setPosts(
+		map[string]any{"id": pid(2), "user_id": aliceID, "channel_id": cid, "message": "newer",
+			"create_at": wm + 200, "update_at": wm + 200, "metadata": map[string]any{}},
+		map[string]any{"id": pid(1), "user_id": bobID, "channel_id": cid, "message": "older",
+			"create_at": wm + 100, "update_at": wm + 100, "metadata": map[string]any{}},
+	)
+	r.connect(2)
+	// the retry (every 50 ms here) carries both, the older first
+	_, first := r.next(t)
+	_, second := r.next(t)
+	if first["mm"] != pid(1) || second["mm"] != pid(2) {
+		t.Fatalf("carried %v then %v, want the older then the newer", first["mm"], second["mm"])
+	}
+	r.none(t)
+}
+
+// RT-6.42 step 4: a publish the server refuses is an error, nothing is
+// marked carried, the home stops and its signal with it.
+func TestARefusedPublishStopsTheHome(t *testing.T) {
+	r := newRig(t, nil)
+	refusing := &refuser{}
+	r.b.NATS = refusing
+	r.connect(1)
+	at := now()
+	// the retry's catch-up finds the post again, and is refused again
+	r.mm.setPosts(map[string]any{"id": pid(1), "user_id": aliceID, "channel_id": cid, "message": "go ahead",
+		"create_at": at, "update_at": at})
+	r.send(alicePost(pid(1), at))
+	r.none(t)
+	if done, _ := r.seen.Post(context.Background(), pid(1)); done {
+		t.Fatal("a refused post is marked carried")
+	}
+	before := refusing.signals.Load()
+	time.Sleep(300 * time.Millisecond)
+	if refusing.signals.Load() != before {
+		t.Fatal("a stopped home still signals")
+	}
+}
+
+type refuser struct{ signals atomic.Int64 }
+
+func (f *refuser) Publish(subject string, _ []byte) error {
+	if strings.HasPrefix(subject, "presence.bridge.") {
+		f.signals.Add(1)
+		return nil
+	}
+	return errors.New("publish " + subject + ": refused: permissions violation")
+}
+
+// Confirmed returns the server's refusal of a publish as an error.
+func TestConfirmedSeesARefusal(t *testing.T) {
+	dir := t.TempDir()
+	opts := &natsserver.Options{Host: "127.0.0.1", Port: -1, NoLog: true, NoSigs: true, StoreDir: dir,
+		Users: []*natsserver.User{{Username: "u", Password: "pw",
+			Permissions: &natsserver.Permissions{Publish: &natsserver.SubjectPermission{Allow: []string{"bus.hu.home.*"}}}}}}
+	srv, err := natsserver.NewServer(opts)
+	if err != nil {
+		t.Fatal(err)
+	}
+	go srv.Start()
+	if !srv.ReadyForConnections(5 * time.Second) {
+		t.Fatal("nats-server not ready")
+	}
+	t.Cleanup(srv.Shutdown)
+	nc, err := nats.Connect(srv.ClientURL(), nats.UserInfo("u", "pw"),
+		nats.ErrorHandler(func(*nats.Conn, *nats.Subscription, error) {}))
+	if err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(nc.Close)
+	c := Confirmed{NC: nc}
+	if err := c.Publish("bus.hu.home.alice", []byte("{}")); err != nil {
+		t.Fatalf("an allowed publish: %v", err)
+	}
+	if err := c.Publish("bus.hu.other.alice", []byte("{}")); err == nil {
+		t.Fatal("a refused publish passed")
+	}
+	if err := c.Publish("bus.hu.home.bob", []byte("{}")); err != nil {
+		t.Fatalf("an allowed publish after a refusal: %v", err)
+	}
+}
+
+// RT-6.42 step 1: while a home is connected and quiet its watermark moves
+// along with Mattermost's clock, a minute behind, so a later reconnect does
+// not reach back to the last carried post.
+func TestAQuietHomesWatermarkMovesAlong(t *testing.T) {
+	r := newRig(t, nil)
+	if err := r.kv.SetWatermark(context.Background(), "home", now()-5*60000); err != nil {
+		t.Fatal(err)
+	}
+	r.connect(1)
+	deadline := time.Now().Add(3 * time.Second)
+	for {
+		wm, _, _ := r.kv.Watermark(context.Background(), "home")
+		if wm >= now()-liveSlack.Milliseconds()-2000 {
+			break
+		}
+		if time.Now().After(deadline) {
+			t.Fatalf("the watermark stays at %d", wm)
+		}
+		time.Sleep(20 * time.Millisecond)
 	}
 }

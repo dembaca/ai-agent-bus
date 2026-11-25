@@ -107,8 +107,9 @@ func run(log *slog.Logger) error {
 	}
 
 	// People onto NATS (RT-6.42): the account records, the WebSocket and the
-	// inbound path. None of them stops the bridge: without the socket the
-	// signal runs out and sessions read people on Mattermost (step 9).
+	// inbound path. A lost socket or a stopped home does not stop the bridge:
+	// the signal runs out and sessions read people on Mattermost (step 9); a
+	// subscription to the account records that cannot be made does.
 	accounts := &inbound.Accounts{Log: log, Deliver: cfg.Deliver + ".accounts", Stream: "PRESENCE"}
 	wg.Add(1)
 	go func() {
@@ -126,7 +127,7 @@ func run(log *slog.Logger) error {
 		_ = ws.Run(ctx)
 	}()
 	in := &inbound.Bridge{Homes: cfg.Homes, Team: cfg.MMTeam, BusPrefix: cfg.BusPrefix, Log: log,
-		MM: client, NATS: nc, Store: kv, Seen: seen, Anchors: accounts, Events: ws.Events(), Up: ws.Up}
+		MM: client, NATS: inbound.Confirmed{NC: nc}, Store: kv, Seen: seen, Anchors: accounts, Events: ws.Events(), Up: ws.Up}
 	go func() {
 		defer wg.Done()
 		_ = in.Run(ctx)
@@ -158,7 +159,12 @@ func connect(cfg config.Config) (*nats.Conn, error) {
 	// the shared _INBOX.> it would read every answer the login service's user
 	// gets — the channel directory's raw values among them (RT-6.36 step 1).
 	opts := []nats.Option{nats.Name("bridge"), nats.MaxReconnects(-1),
-		nats.ReconnectWait(2 * time.Second), nats.CustomInboxPrefix(cfg.Inbox)}
+		nats.ReconnectWait(2 * time.Second), nats.CustomInboxPrefix(cfg.Inbox),
+		// A refused publish or subscribe is logged with its subject; the inbound
+		// path also sees its own refusals as errors (inbound.Confirmed).
+		nats.ErrorHandler(func(_ *nats.Conn, _ *nats.Subscription, err error) {
+			slog.Error("bridge: NATS refused", "error", err)
+		})}
 	seed, err := nats.NkeyOptionFromSeed(cfg.SeedFile)
 	if err != nil {
 		return nil, fmt.Errorf("BRIDGE_NATS_SEED_FILE: %w", err)

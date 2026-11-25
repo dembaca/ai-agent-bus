@@ -77,6 +77,32 @@ func (c *Client) Me(ctx context.Context) (string, error) {
 	return c.me, nil
 }
 
+// ServerTime is Mattermost's clock in ms, from the Date header of a ping
+// (whole seconds, so never ahead of it): the catch-up's watermark is on
+// Mattermost's clock, since a post's create_at is (RT-6.42 step 1).
+func (c *Client) ServerTime(ctx context.Context) (int64, error) {
+	req, err := http.NewRequestWithContext(ctx, "GET", c.base+"/api/v4/system/ping", nil)
+	if err != nil {
+		return 0, err
+	}
+	req.Header.Set("Authorization", "Bearer "+c.token)
+	resp, err := c.http.Do(req)
+	if err != nil {
+		return 0, err
+	}
+	defer resp.Body.Close()
+	_, _ = io.Copy(io.Discard, io.LimitReader(resp.Body, 4096))
+	if resp.StatusCode < 200 || resp.StatusCode > 299 {
+		return 0, &StatusError{Status: resp.StatusCode,
+			Err: fmt.Errorf("mattermost GET /api/v4/system/ping: %s", resp.Status)}
+	}
+	at, err := http.ParseTime(resp.Header.Get("Date"))
+	if err != nil {
+		return 0, fmt.Errorf("mattermost: the ping's Date header %q: %w", resp.Header.Get("Date"), err)
+	}
+	return at.UnixMilli(), nil
+}
+
 // ChannelIDByName resolves a channel in a team by its name.
 func (c *Client) ChannelIDByName(ctx context.Context, team, name string) (string, error) {
 	var ch struct {

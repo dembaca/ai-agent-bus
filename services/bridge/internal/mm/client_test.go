@@ -169,3 +169,20 @@ func TestPostsSinceCarriesTheReactions(t *testing.T) {
 		t.Fatalf("%+v", posts)
 	}
 }
+
+// ServerTime is Mattermost's clock from the ping's Date header (RT-6.42
+// step 1: the watermark is on Mattermost's clock).
+func TestServerTime(t *testing.T) {
+	c := fake(t, func(w http.ResponseWriter, r *http.Request) {
+		if r.URL.Path != "/api/v4/system/ping" {
+			w.WriteHeader(http.StatusNotFound)
+			return
+		}
+		w.Header().Set("Date", "Wed, 25 Nov 2026 10:00:00 GMT")
+		_, _ = w.Write([]byte(`{"status":"OK"}`))
+	})
+	got, err := c.ServerTime(context.Background())
+	if err != nil || got != 1795600800000 {
+		t.Fatalf("%d %v", got, err)
+	}
+}

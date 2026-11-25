@@ -210,3 +210,18 @@ func TestTheSeenBucket(t *testing.T) {
 		t.Fatal("a key that is no id")
 	}
 }
+
+// RT-6.42 step 1: a seen bucket that keeps its keys less than an hour lets an
+// event go out twice; it is refused.
+func TestASeenBucketShorterThanAnHourIsRefused(t *testing.T) {
+	_, nc := open(t)
+	ctx := context.Background()
+	js, _ := jetstream.New(nc)
+	if _, err := js.CreateStream(ctx, jetstream.StreamConfig{Name: "KV_SHORT", Subjects: []string{"$KV.SHORT.>"},
+		MaxMsgsPerSubject: 1, Discard: jetstream.DiscardOld, MaxAge: time.Minute}); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := OpenSeen(ctx, nc, "SHORT"); err == nil {
+		t.Fatal("bound to a bucket that keeps its keys a minute")
+	}
+}

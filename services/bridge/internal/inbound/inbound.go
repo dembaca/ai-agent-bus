@@ -13,6 +13,7 @@ import (
 	"errors"
 	"fmt"
 	"log/slog"
+	"sort"
 	"strings"
 	"time"
 
@@ -26,10 +27,13 @@ type Mattermost interface {
 	GetUser(ctx context.Context, userID string) (mm.User, error)
 	PostsSince(ctx context.Context, channelID string, since int64) ([]mm.Post, error)
 	ChannelIDByName(ctx context.Context, team, name string) (string, error)
+	// ServerTime is Mattermost's clock (ms): the watermark is on its clock.
+	ServerTime(ctx context.Context) (int64, error)
 }
 
-// Publisher is a core NATS publish without a reply subject (the BUS stream
-// acknowledges nothing).
+// Publisher publishes without a reply subject (the BUS stream acknowledges
+// nothing) and returns only once the server took it: a refused publish (a
+// missing right) is an error, before anything is marked carried (Confirmed).
 type Publisher interface {
 	Publish(subject string, data []byte) error
 }
@@ -50,8 +54,10 @@ type Seen interface {
 }
 
 // Anchors maps a Mattermost user id to an anchor, "" when unbound (Accounts).
+// A lookup that fails is an error: the home stops rather than carry a bound
+// person under "-".
 type Anchors interface {
-	Anchor(userID string) string
+	Anchor(ctx context.Context, userID string) (string, error)
 }
 
 // The defaults of the step's bounds (RT-6.42 steps 1 and 7).
@@ -81,10 +87,11 @@ type Bridge struct {
 
 	Reach, Margin, SignalEvery, SignalValid, Retry time.Duration
 
-	me    string
-	homes []*home
-	byCID map[string]*home
-	users map[string]cachedUser
+	me     string
+	offset int64 // Mattermost's clock minus the bridge's, ms, from the last catch-up
+	homes  []*home
+	byCID  map[string]*home
+	users  map[string]cachedUser
 }
 
 type home struct {
@@ -155,12 +162,12 @@ func (b *Bridge) Run(ctx context.Context) error {
 				}
 			case *mmws.Reaction:
 				if h := b.byCID[ev.ChannelID]; h != nil && b.carrying(h) {
-					b.guard(h, b.reaction(ctx, h, ev.PostID, ev.UserID, ev.EmojiName, ev.CreateAt, ev.Added))
+					b.guard(h, b.reaction(ctx, h, ev.PostID, ev.UserID, ev.EmojiName, ev.CreateAt, ev.Added, false))
 				}
 			}
 		case <-signal.C:
 			for _, h := range b.homes {
-				b.signal(h)
+				b.signal(ctx, h)
 			}
 		case <-retry.C:
 			if up := b.Up(); up != 0 {
@@ -197,8 +204,11 @@ func (b *Bridge) ready(h *home) bool {
 	return !h.stopped && h.caughtUp != 0 && h.caughtUp == b.Up()
 }
 
-// signal publishes the home's signal (RT-6.42 step 7) while it is ready.
-func (b *Bridge) signal(h *home) {
+// signal publishes the home's signal (RT-6.42 step 7) while it is ready, and
+// moves the watermark of a quiet home along: while the socket is up, what is
+// older than a minute has come in live, so a later catch-up need not reach
+// back to the last carried post (and warn of a gap that was none).
+func (b *Bridge) signal(ctx context.Context, h *home) {
 	if !b.ready(h) {
 		return
 	}
@@ -216,11 +226,21 @@ func (b *Bridge) signal(h *home) {
 	if err != nil {
 		b.Log.Warn("inbound: the signal was not published", "home", h.name, "error", err)
 	}
+	b.guard(h, b.advance(ctx, h, now.UnixMilli()+b.offset-liveSlack.Milliseconds()))
 }
+
+// liveSlack is how far behind Mattermost's clock a connected home's watermark
+// moves without a carried event: what the socket handed out but the bridge
+// has not taken yet stays after it.
+const liveSlack = time.Minute
 
 // catchUp reads a home's posts since its watermark over REST and carries what
 // the socket may have missed (RT-6.42 step 1, point 11). Nothing from before
-// the first start is carried: a home without a watermark gets one, now.
+// the first start is carried: a home without a watermark gets Mattermost's
+// clock as one. The read is carried oldest first and the watermark moves only
+// once the whole read went through, to Mattermost's clock at the read's start:
+// a read that fails half way is read again from the old watermark, and a reply
+// never goes out before its root.
 func (b *Bridge) catchUp(ctx context.Context, h *home, conn uint64) {
 	err := func() error {
 		if b.me == "" {
@@ -238,7 +258,12 @@ func (b *Bridge) catchUp(ctx context.Context, h *home, conn uint64) {
 			h.cid = cid
 			b.byCID[cid] = h
 		}
-		now := b.Now().UnixMilli()
+		local := b.Now()
+		now, err := b.MM.ServerTime(ctx)
+		if err != nil {
+			return err
+		}
+		b.offset = now - local.UnixMilli()
 		wm, ok, err := b.Store.Watermark(ctx, h.name)
 		if err != nil {
 			return fmt.Errorf("BUS_BRIDGE: %w", err)
@@ -253,7 +278,7 @@ func (b *Bridge) catchUp(ctx context.Context, h *home, conn uint64) {
 		h.wm = wm
 		lower := wm - b.Margin.Milliseconds()
 		if floor := now - b.Reach.Milliseconds(); lower < floor {
-			b.Log.Warn("inbound: the catch-up reaches back only so far; older posts are not carried",
+			b.Log.Warn("inbound: a gap longer than the catch-up reaches; older posts are not carried",
 				"home", h.name, "watermark", wm, "from", floor)
 			lower = floor
 		}
@@ -261,6 +286,12 @@ func (b *Bridge) catchUp(ctx context.Context, h *home, conn uint64) {
 		if err != nil {
 			return err
 		}
+		sort.SliceStable(posts, func(i, j int) bool {
+			if posts[i].CreateAt != posts[j].CreateAt {
+				return posts[i].CreateAt < posts[j].CreateAt
+			}
+			return posts[i].ID < posts[j].ID
+		})
 		for _, p := range posts {
 			if p.ChannelID != "" && p.ChannelID != h.cid {
 				continue
@@ -274,7 +305,7 @@ func (b *Bridge) catchUp(ctx context.Context, h *home, conn uint64) {
 				return err
 			}
 		}
-		return nil
+		return b.advance(ctx, h, now)
 	}()
 	if err != nil {
 		b.guard(h, err)
@@ -284,21 +315,26 @@ func (b *Bridge) catchUp(ctx context.Context, h *home, conn uint64) {
 		b.Log.Info("inbound: carrying people", "home", h.name)
 	}
 	h.stopped, h.caughtUp = false, conn
-	b.signal(h)
+	b.signal(ctx, h)
 }
 
 // reactionsOf carries what the read says changed in a post's reactions: a
 // reaction after the bound that was not carried, and a removal of one that
-// was. A reaction on an agent's post (an ask) is carried like any other.
+// was. Mattermost moves a post's update_at on every added or removed
+// reaction, so the `since` read returns it with its current reactions. A
+// reaction on an agent's post (an ask) is carried like any other; a deleted
+// post's reactions are not, its removal is no person taking one back (point 5).
 func (b *Bridge) reactionsOf(ctx context.Context, h *home, p mm.Post, lower int64) error {
-	if !p.HasMetadata || !mmID.MatchString(p.ID) {
+	if !p.HasMetadata || p.DeleteAt != 0 || !mmID.MatchString(p.ID) {
 		return nil
 	}
+	reactions := append([]mm.Reaction(nil), p.Reactions...)
+	sort.SliceStable(reactions, func(i, j int) bool { return reactions[i].CreateAt < reactions[j].CreateAt })
 	current := map[string]bool{}
-	for _, r := range p.Reactions {
+	for _, r := range reactions {
 		current[r.EmojiName+" "+r.UserID] = true
 		if r.CreateAt > lower {
-			if err := b.reaction(ctx, h, p.ID, r.UserID, r.EmojiName, r.CreateAt, true); err != nil {
+			if err := b.reaction(ctx, h, p.ID, r.UserID, r.EmojiName, r.CreateAt, true, true); err != nil {
 				return err
 			}
 		}
@@ -307,12 +343,17 @@ func (b *Bridge) reactionsOf(ctx context.Context, h *home, p mm.Post, lower int6
 	if err != nil {
 		return fmt.Errorf("BUS_BRIDGE_SEEN: %w", err)
 	}
-	for key, kind := range kinds {
-		if kind != "reaction" || current[key] {
+	keys := make([]string, 0, len(kinds))
+	for key := range kinds {
+		keys = append(keys, key)
+	}
+	sort.Strings(keys)
+	for _, key := range keys {
+		if kinds[key] != "reaction" || current[key] {
 			continue
 		}
 		emoji, uid, _ := strings.Cut(key, " ")
-		if err := b.reaction(ctx, h, p.ID, uid, emoji, 0, false); err != nil {
+		if err := b.reaction(ctx, h, p.ID, uid, emoji, 0, false, true); err != nil {
 			return err
 		}
 	}
@@ -407,18 +448,22 @@ func (b *Bridge) post(ctx context.Context, h *home, p post, caught bool, lower i
 		b.Log.Warn("inbound: a post that does not encode, dropped", "home", h.name, "post", p.id, "error", err)
 		return nil
 	}
-	if err := b.publish(h, p.user, raw); err != nil {
+	if err := b.publish(ctx, h, p.user, raw); err != nil {
 		return err
 	}
 	if err := b.Seen.MarkPost(ctx, p.id); err != nil {
 		return fmt.Errorf("BUS_BRIDGE_SEEN: %w", err)
+	}
+	if caught {
+		return nil // the catch-up moves the watermark once, at its end
 	}
 	return b.advance(ctx, h, p.createAt)
 }
 
 // reaction carries one person's reaction or its removal once per kind: the key
 // is the post, emoji, sender and kind, and the opposite kind clears it.
-func (b *Bridge) reaction(ctx context.Context, h *home, postID, userID, emoji string, at int64, added bool) error {
+func (b *Bridge) reaction(ctx context.Context, h *home, postID, userID, emoji string, at int64,
+	added, caught bool) error {
 	if !mmID.MatchString(postID) || !mmID.MatchString(userID) || !emojiRE.MatchString(emoji) {
 		b.Log.Info("inbound: a reaction dropped", "home", h.name, "why", "malformed")
 		return nil
@@ -460,19 +505,26 @@ func (b *Bridge) reaction(ctx context.Context, h *home, postID, userID, emoji st
 	if err != nil {
 		return err
 	}
-	if err := b.publish(h, userID, raw); err != nil {
+	if err := b.publish(ctx, h, userID, raw); err != nil {
 		return err
 	}
 	kinds[key] = kind
 	if err := b.Seen.SetReactions(ctx, postID, kinds); err != nil {
 		return fmt.Errorf("BUS_BRIDGE_SEEN: %w", err)
 	}
+	if caught {
+		return nil
+	}
 	return b.advance(ctx, h, at)
 }
 
 // publish sends on <bus>.hu.<home>.<anchor>, "-" for an unbound account.
-func (b *Bridge) publish(h *home, userID string, body []byte) error {
-	subject := b.BusPrefix + ".hu." + h.name + "." + SenderToken(b.Anchors.Anchor(userID))
+func (b *Bridge) publish(ctx context.Context, h *home, userID string, body []byte) error {
+	anchor, err := b.Anchors.Anchor(ctx, userID)
+	if err != nil {
+		return fmt.Errorf("the account record of %s: %w", userID, err)
+	}
+	subject := b.BusPrefix + ".hu." + h.name + "." + SenderToken(anchor)
 	if err := b.NATS.Publish(subject, body); err != nil {
 		return fmt.Errorf("publish %s: %w", subject, err)
 	}

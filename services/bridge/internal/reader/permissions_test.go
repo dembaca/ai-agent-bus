@@ -250,12 +250,27 @@ accounts {
 		t.Fatal(err)
 	}
 	deadline = time.Now().Add(3 * time.Second)
-	for acc.Anchor(uid) != "alice" || consumerPending(t, pst, inbound.AccountsConsumer) != 0 {
+	anchor := func(a *inbound.Accounts) string {
+		got, err := a.Anchor(ctx, uid)
+		if err != nil {
+			t.Fatalf("the account lookup with the documented rights: %v", err)
+		}
+		return got
+	}
+	for anchor(acc) != "alice" || consumerPending(t, pst, inbound.AccountsConsumer) != 0 {
 		if time.Now().After(deadline) {
-			t.Fatalf("the account record: anchor %q, %d unacked", acc.Anchor(uid),
-				consumerPending(t, pst, inbound.AccountsConsumer))
+			t.Fatalf("the account record: %d unacked", consumerPending(t, pst, inbound.AccountsConsumer))
 		}
 		time.Sleep(20 * time.Millisecond)
+	}
+	// a restarted bridge gets the acked record no more from the consumer; it
+	// looks the account up through the message-get API
+	again := &inbound.Accounts{Log: m.Log, Deliver: "deliver.bridge.accounts", Stream: "PRESENCE",
+		Ready: make(chan struct{})}
+	go func() { _ = again.Run(actx, bridgeNC) }()
+	<-again.Ready
+	if got := anchor(again); got != "alice" {
+		t.Fatalf("the lookup after a restart: %q", got)
 	}
 	// The reply subject of a request is not checked against publish
 	// permissions (the server refuses only replies to $JS. since 2.15), so the
