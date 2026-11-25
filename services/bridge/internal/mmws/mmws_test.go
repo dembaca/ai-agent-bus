@@ -84,16 +84,35 @@ func write(conn *websocket.Conn, v any) {
 	_ = conn.WriteJSON(v)
 }
 
+// readChallenge reads the reader's first frame as Mattermost does: only
+// the action "authentication_challenge" with a token is one. Any other
+// action makes a real server drop the socket without a close frame (1006),
+// so the fake does the same and says no — a misspelt action fails every
+// test that authenticates instead of slipping through.
+func readChallenge(conn *websocket.Conn) (struct{ Seq int }, bool) {
+	var frame struct {
+		Seq    int               `json:"seq"`
+		Action string            `json:"action"`
+		Data   map[string]string `json:"data"`
+	}
+	if err := conn.ReadJSON(&frame); err != nil {
+		return struct{ Seq int }{}, false
+	}
+	if frame.Action != "authentication_challenge" || frame.Data["token"] == "" {
+		_ = conn.Close()
+		return struct{ Seq int }{}, false
+	}
+	return struct{ Seq int }{frame.Seq}, true
+}
+
 // authOK reads the auth challenge and answers it as Mattermost does: the
 // hello is queued before the reply (HubRegister precedes the OK), so
 // hello goes first — the reader must not take it for the reply — then
 // the OK reply, then the steps on the socket.
 func authOK(steps ...func(*websocket.Conn)) func(*websocket.Conn) {
 	return func(conn *websocket.Conn) {
-		var challenge struct {
-			Seq int `json:"seq"`
-		}
-		if err := conn.ReadJSON(&challenge); err != nil {
+		challenge, ok := readChallenge(conn)
+		if !ok {
 			return // the reader hung up before asking
 		}
 		write(conn, map[string]any{"event": "hello",
@@ -111,10 +130,7 @@ func authOK(steps ...func(*websocket.Conn)) func(*websocket.Conn) {
 // no session to queue hello for), which reads as the drop it then
 // behaves like.
 func authClosed(conn *websocket.Conn) {
-	var challenge struct {
-		Seq int `json:"seq"`
-	}
-	if err := conn.ReadJSON(&challenge); err != nil {
+	if _, ok := readChallenge(conn); !ok {
 		return
 	}
 	_ = conn.WriteControl(websocket.CloseMessage,
@@ -126,10 +142,8 @@ func authClosed(conn *websocket.Conn) {
 // that says no instead of closing. Mattermost does not; the reader still
 // knows the shape.
 func authRefused(conn *websocket.Conn) {
-	var challenge struct {
-		Seq int `json:"seq"`
-	}
-	if err := conn.ReadJSON(&challenge); err != nil {
+	challenge, ok := readChallenge(conn)
+	if !ok {
 		return
 	}
 	write(conn, map[string]any{"status": "FAIL", "seq_reply": challenge.Seq,
@@ -423,10 +437,8 @@ func TestStalledSocket(t *testing.T) {
 func TestEarlyEventsFollowTheMarker(t *testing.T) {
 	f := newFake(t)
 	f.scripts = []func(*websocket.Conn){func(conn *websocket.Conn) {
-		var challenge struct {
-			Seq int `json:"seq"`
-		}
-		if err := conn.ReadJSON(&challenge); err != nil {
+		challenge, ok := readChallenge(conn)
+		if !ok {
 			return // the reader hung up before asking
 		}
 		// The reply first — the other legal order — then a post; the
@@ -441,10 +453,8 @@ func TestEarlyEventsFollowTheMarker(t *testing.T) {
 	// A second script with an event between hello (first, as the wire) and
 	// the reply: the marker must still head the connection.
 	f.scripts = append(f.scripts, func(conn *websocket.Conn) {
-		var challenge struct {
-			Seq int `json:"seq"`
-		}
-		if err := conn.ReadJSON(&challenge); err != nil {
+		challenge, ok := readChallenge(conn)
+		if !ok {
 			return
 		}
 		write(conn, map[string]any{"event": "hello",

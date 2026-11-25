@@ -93,6 +93,13 @@ before 0.5.0 are described in the git history.
 
 ### Fixed
 
+- **The bridge's Mattermost reader authenticates again.** It sent the
+  WebSocket action `auth_challenge`; Mattermost knows only
+  `authentication_challenge` and closed the socket (1006), so the reader
+  logged "the socket ended during the auth challenge; likely a refused
+  token" every few seconds and read nothing. The test server now refuses
+  any other action.
+
 - **The console's clock ages without deliveries too** (`Part of #108`).
   "Now" stood still between deliveries, so a killed lone agent stayed
   `online` with its crown forever. The fleet's "now" carries a
