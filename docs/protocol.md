@@ -308,8 +308,8 @@ steps 2 to 4). The login service's side is built; the console does not use it ye
 | `<login>` | The first ten characters of the login's public key after its `U`, in lower case |
 | Rights | Publish nothing; subscribe only on `deliver.<name>.<login>.>`; 15 minutes |
 | Consumers | `<name>_<login>_presence` on `PRESENCE`, delivering to `deliver.<name>.<login>.presence`, last per subject; `<name>_<login>_stats` on `STATS`, delivering to `deliver.<name>.<login>.stats`, from 7 days back. Both ack none, gone 15 minutes after nobody listens |
-| Renewal | Connect again with the same key and a fresh access token: both consumers keep their position while the visible channels are the same |
-| Refused | Another client's token, one whose `aud` names both clients, an expired one, one without the operators' group, a `sub` without an anchor in the directory: no credential, the reason in the login service's log |
+| Renewal | Connect again with the same key and a fresh access token, also on every NATS reconnect (it runs the callout again): both consumers keep their position while the visible channels are the same |
+| Refused | Another client's token, one whose `aud` names both clients, an expired one, one without the operators' group, a `sub` without an anchor in the directory, a new login above `AUTH_PERSON_MAX_LOGINS` (default 8) of one person: no credential, the reason in the login service's log |
 
 The server subscribes to both deliver subjects by their literal names, with no
 inbox: the credential holds no right to make a request.

@@ -29,7 +29,7 @@ func Client(raw string) string {
 
 // VerifyRealm checks raw as Verify does (signature by the realm's JWKS,
 // issuer, `exp`, `aud` naming Config.Audience, `azp` = Config.ClientID, an
-// access token, no `aud` naming Config.OtherClient) and returns the identity
+// access token, no `aud` naming one of Config.OtherClients) and returns the identity
 // with its `sub` and groups. It asks no chat: Owner is the token's
 // preferred_username, for the log only, and ChatOpenID stays false.
 func (v *Verifier) VerifyRealm(ctx context.Context, raw string) (Identity, error) {
@@ -57,9 +57,11 @@ func (v *Verifier) VerifyRealm(ctx context.Context, raw string) (Identity, error
 
 // namesOther: the token's `aud` names the other path's client.
 func (v *Verifier) namesOther(claims jwt.MapClaims) bool {
-	if v.cfg.OtherClient == "" {
-		return false
-	}
 	aud, _ := claims.GetAudience()
-	return slices.Contains(aud, v.cfg.OtherClient)
+	for _, o := range v.cfg.OtherClients {
+		if o != "" && slices.Contains(aud, o) {
+			return true
+		}
+	}
+	return false
 }

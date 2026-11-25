@@ -13,6 +13,7 @@ import (
 	"net/url"
 	"os"
 	"regexp"
+	"strconv"
 	"strings"
 	"time"
 
@@ -189,6 +190,13 @@ func LoadSettings(getenv func(string) string) (Settings, bool, error) {
 	// token of the console's own client, never of the bus's.
 	s.Callout.Console = callout.Console{ClientID: get("AUTH_CONSOLE_CLIENT_ID"),
 		OperatorGroup: get("AUTH_OPERATOR_GROUP"), PersonPrefix: get("AUTH_PERSON_PREFIX")}
+	if v := get("AUTH_PERSON_MAX_LOGINS"); v != "" {
+		n, err := strconv.Atoi(v)
+		if err != nil || n < 1 || n > 64 {
+			return Settings{}, true, fmt.Errorf("%w: AUTH_PERSON_MAX_LOGINS: a number from 1 to 64, got %q", ErrConfig, v)
+		}
+		s.Callout.Console.MaxLogins = n
+	}
 	if c := s.Callout.Console.ClientID; c != "" && (c == s.Token.ClientID || c == s.Token.Audience) {
 		return Settings{}, true, fmt.Errorf("%w: AUTH_CONSOLE_CLIENT_ID must differ from the bus's client and audience", ErrConfig)
 	}
@@ -293,7 +301,9 @@ func RunCallout(ctx context.Context, s Settings, log *slog.Logger) error {
 	}
 	tc := s.Token
 	tc.KeyFetchError = func(err error) { log.Warn("JWKS fetch failed", "reason", err.Error()) }
-	tc.OtherClient = s.Callout.Console.ClientID
+	if s.Callout.Console.ClientID != "" {
+		tc.OtherClients = []string{s.Callout.Console.ClientID}
+	}
 	v, err := token.New(ctx, tc, mm)
 	if err != nil {
 		return fmt.Errorf("%w: %v", ErrConfig, err)
@@ -496,11 +506,17 @@ func personVerifier(ctx context.Context, s Settings, bus token.Config, dir token
 	if s.Callout.Console.ClientID == "" {
 		return nil, nil
 	}
+	return token.New(ctx, personTokenConfig(s, bus), dir)
+}
+
+// personTokenConfig: the console's client as `azp` and audience; a token
+// whose `aud` names the bus's client or the bus's audience is refused.
+func personTokenConfig(s Settings, bus token.Config) token.Config {
 	pc := bus
 	pc.ClientID, pc.Audience, pc.ApproverGroup = s.Callout.Console.ClientID, "", ""
-	pc.OtherClient = bus.Audience
-	if pc.OtherClient == "" {
-		pc.OtherClient = bus.ClientID
+	pc.OtherClients = []string{bus.ClientID}
+	if bus.Audience != "" && bus.Audience != bus.ClientID {
+		pc.OtherClients = append(pc.OtherClients, bus.Audience)
 	}
-	return token.New(ctx, pc, dir)
+	return pc
 }

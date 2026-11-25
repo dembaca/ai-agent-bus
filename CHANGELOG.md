@@ -38,7 +38,12 @@ before 0.5.0 are described in the git history.
   ones and the person's own in the directory) and `<name>_<login>_stats` on
   `STATS` from 7 days back, both gone 15 minutes after nobody listens. The
   JetStream user needs `$JS.API.CONSUMER.*.STATS` and
-  `$JS.API.CONSUMER.*.STATS.>` too. The connection is described in
+  `$JS.API.CONSUMER.*.STATS.>` too (for the release's entry, since
+  doc-check takes a `Needs:` line in a version's entry only:
+  `Needs: login service updated first, its jetstream user with consumer rights on the stats stream.`).
+  One person holds consumers for at most `AUTH_PERSON_MAX_LOGINS` (new,
+  default 8) logins at once; the consumers are kept in memory.
+  `AUTH_OPERATOR_GROUP` must be a full group path (`/…`). The connection is described in
   `docs/protocol.md`. The console does not use it yet: its switch and the
   removal of its static NATS account follow.
 

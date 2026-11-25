@@ -25,7 +25,7 @@ import (
 
 const (
 	consoleClient = "bus-console"
-	operators     = "bus-operators"
+	operators     = "/bus-operators"
 )
 
 // fakePersons is the directory's part: anchors by sub, visible channels.
@@ -70,7 +70,7 @@ func personLab(t *testing.T) (*cl, *fakePersons) {
 	}
 	l.svc.SetConsumers(c.mgr)
 	cfg := l.realm.Config()
-	cfg.ClientID, cfg.ApproverGroup, cfg.OtherClient = consoleClient, "", testrealm.Client
+	cfg.ClientID, cfg.ApproverGroup, cfg.OtherClients = consoleClient, "", []string{testrealm.Client}
 	ctx, cancel := context.WithCancel(context.Background())
 	t.Cleanup(cancel)
 	pv, err := token.New(ctx, cfg, l.chat)
@@ -299,14 +299,17 @@ func TestTheConsolesConfigurationIsChecked(t *testing.T) {
 	}
 	for name, con := range map[string]Console{
 		"no operators' group":     {ClientID: "c", PersonPrefix: "person-"},
-		"prefix = name prefix":    {ClientID: "c", OperatorGroup: "g", PersonPrefix: "agent-"},
-		"prefix starts the other": {ClientID: "c", OperatorGroup: "g", PersonPrefix: "a-"},
-		"other starts the prefix": {ClientID: "c", OperatorGroup: "g", PersonPrefix: "agent-p-"},
-		"not ending in -":         {ClientID: "c", OperatorGroup: "g", PersonPrefix: "brid"},
-		"a dot":                   {ClientID: "c", OperatorGroup: "g", PersonPrefix: "p.x-"},
+		"a group without a path":  {ClientID: "c", OperatorGroup: "g", PersonPrefix: "person-"},
+		"only the root":           {ClientID: "c", OperatorGroup: "/", PersonPrefix: "person-"},
+		"prefix = name prefix":    {ClientID: "c", OperatorGroup: "/g", PersonPrefix: "agent-"},
+		"prefix starts the other": {ClientID: "c", OperatorGroup: "/g", PersonPrefix: "a-"},
+		"other starts the prefix": {ClientID: "c", OperatorGroup: "/g", PersonPrefix: "agent-p-"},
+		"not ending in -":         {ClientID: "c", OperatorGroup: "/g", PersonPrefix: "brid"},
+		"a dot":                   {ClientID: "c", OperatorGroup: "/g", PersonPrefix: "p.x-"},
+		"more than 64 logins":     {ClientID: "c", OperatorGroup: "/g", PersonPrefix: "person-", MaxLogins: 65},
 	} {
 		c := base
-		c.Console = con
+		c.Console = con.withDefaults()
 		if name == "prefix starts the other" {
 			c.NamePrefix = "a-b-"
 		}
@@ -315,8 +318,8 @@ func TestTheConsolesConfigurationIsChecked(t *testing.T) {
 		}
 	}
 	c := base
-	c.Console = Console{ClientID: "c", OperatorGroup: "g", PersonPrefix: "person-"}
-	if err := c.check(); err != nil {
+	c.Console = Console{ClientID: "c", OperatorGroup: "/g", PersonPrefix: "person-"}.withDefaults()
+	if err := c.check(); err != nil || c.Console.MaxLogins != DefaultMaxLogins {
 		t.Fatal(err)
 	}
 }
@@ -338,16 +341,43 @@ func TestTheDocumentedMinimalRightsMakeAnOperatorsConsumers(t *testing.T) {
 		t.Fatal(err)
 	}
 	for range 2 { // made, then kept
-		if err := mgr.EnsurePerson(ctx5(t), "person-ann~k", "abcdefghij", []string{"home"}); err != nil {
+		if err := mgr.EnsurePerson(ctx5(t), "person-ann~k", "abcdefghij", []string{"home"}, 8); err != nil {
 			t.Fatalf("EnsurePerson: %v", err)
 		}
 	}
-	if err := mgr.EnsurePerson(ctx5(t), "person-ann~k", "abcdefghij", []string{"home", "lobby"}); err != nil {
+	if err := mgr.EnsurePerson(ctx5(t), "person-ann~k", "abcdefghij", []string{"home", "lobby"}, 8); err != nil {
 		t.Fatalf("EnsurePerson with other channels: %v", err)
 	}
 	for _, bad := range [][2]string{{"person.x", "abcdefghij"}, {"person-x", "ABCDEFGHIJ"}, {"person-x", "abc"}, {"person-*", "abcdefghij"}} {
-		if mgr.EnsurePerson(ctx5(t), bad[0], bad[1], nil) == nil {
+		if mgr.EnsurePerson(ctx5(t), bad[0], bad[1], nil, 8) == nil {
 			t.Errorf("EnsurePerson(%q, %q) accepted", bad[0], bad[1])
 		}
+	}
+}
+
+// One person holds consumers for at most MaxLogins logins at once: a new one
+// above it is refused, a renewal of a held one passes (RT-6.43).
+func TestAnOperatorsLoginsAreCapped(t *testing.T) {
+	c, _ := personLab(t)
+	c.svc.cfg.Console.MaxLogins = 2
+	keys := []nkeys.KeyPair{newHost(), newHost()}
+	for _, k := range keys {
+		if _, err := c.operator(c.consoleToken("ann", nil), k); err != nil {
+			t.Fatal(err)
+		}
+	}
+	seen := len(c.logs.String())
+	if _, err := c.operator(c.consoleToken("ann", nil), newHost()); err == nil {
+		t.Fatal("a third login connected")
+	}
+	if !strings.Contains(c.logs.String()[seen:], "too many logins") {
+		t.Fatal("no reason in the log")
+	}
+	if _, err := c.operator(c.consoleToken("ann", nil), keys[0]); err != nil {
+		t.Fatalf("a renewal: %v", err)
+	}
+	pres, stats := consumers.PersonConsumerNames("person-ann~k", loginToken(keys[0]))
+	if !c.info("PRESENCE", pres).Config.MemoryStorage || !c.info("STATS", stats).Config.MemoryStorage {
+		t.Fatal("not in memory")
 	}
 }

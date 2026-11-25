@@ -20,7 +20,7 @@ func consoleClaims(c jwt.MapClaims) {
 
 func TestVerifyRealmTakesTheConsolesTokenWithoutTheChat(t *testing.T) {
 	r := newRealm(t)
-	v := verifier(t, r, brokenChat{}, func(c *Config) { c.ClientID, c.ApproverGroup, c.OtherClient = console, "", client })
+	v := verifier(t, r, brokenChat{}, func(c *Config) { c.ClientID, c.ApproverGroup, c.OtherClients = console, "", []string{client} })
 	id, err := v.VerifyRealm(context.Background(), r.token(consoleClaims))
 	if err != nil {
 		t.Fatal(err)
@@ -57,7 +57,7 @@ func TestVerifyRealmTakesTheConsolesTokenWithoutTheChat(t *testing.T) {
 
 func TestTheBusPathRefusesATokenThatAlsoNamesTheConsole(t *testing.T) {
 	r := newRealm(t)
-	v := verifier(t, r, human(nil), func(c *Config) { c.OtherClient = console })
+	v := verifier(t, r, human(nil), func(c *Config) { c.OtherClients = []string{console} })
 	if _, err := v.Verify(context.Background(), r.token(nil)); err != nil {
 		t.Fatalf("the bus's own token: %v", err)
 	}

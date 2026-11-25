@@ -2,6 +2,7 @@ package consumers
 
 import (
 	"context"
+	"errors"
 	"fmt"
 	"regexp"
 	"slices"
@@ -22,6 +23,10 @@ import (
 // PersonInactiveThreshold: a login's consumers go 15 minutes after nobody
 // listens on their deliver subject (shorter than an agent's hour).
 const PersonInactiveThreshold = 15 * time.Minute
+
+// ErrTooManyLogins: the person holds consumers for as many logins as allowed;
+// a renewal of one of them still passes.
+var ErrTooManyLogins = errors.New("consumers: too many logins of this person")
 
 // PersonStatsHistory is how far back the stats consumer starts.
 const PersonStatsHistory = 7 * 24 * time.Hour
@@ -67,8 +72,12 @@ func (m *Manager) personFilters(channels []string) []string {
 // renewal with the same visible channels both are kept with their position;
 // when the channels changed, the presence consumer is made anew and
 // delivers the last message per subject again. A consumer of that name that
-// belongs to someone else is an error.
-func (m *Manager) EnsurePerson(ctx context.Context, person, login string, channels []string) error {
+// belongs to someone else is an error. A new login of a person who already
+// holds maxLogins others is refused with ErrTooManyLogins: without the cap one
+// operator could fill the streams with consumers, each staying 15 minutes.
+// The consumers are kept in memory: a server restart drops them with the
+// connections, and the reconnect's callout makes them again.
+func (m *Manager) EnsurePerson(ctx context.Context, person, login string, channels []string, maxLogins int) error {
 	if !personRE.MatchString(person) || !personLoginRE.MatchString(login) {
 		return fmt.Errorf("consumers: person %q or login %q is not valid", person, login)
 	}
@@ -80,9 +89,12 @@ func (m *Manager) EnsurePerson(ctx context.Context, person, login string, channe
 			return fmt.Errorf("consumers: channel %q is not valid", ch)
 		}
 	}
-	unlock := m.lock("person\x00" + person + "\x00" + login)
+	unlock := m.lock("person\x00" + person) // one person's logins one at a time: the cap holds
 	defer unlock()
 	presName, statsName := PersonConsumerNames(person, login)
+	if err := m.capLogins(ctx, person, login, maxLogins); err != nil {
+		return err
+	}
 	meta := func() map[string]string {
 		return map[string]string{metaPerson: person, metaPersonLogin: login}
 	}
@@ -91,6 +103,7 @@ func (m *Manager) EnsurePerson(ctx context.Context, person, login string, channe
 		Durable: presName, DeliverSubject: PersonDeliver(person, login, "presence"),
 		AckPolicy: nats.AckNonePolicy, DeliverPolicy: nats.DeliverLastPerSubjectPolicy,
 		FilterSubjects: filters, InactiveThreshold: PersonInactiveThreshold, Metadata: meta(),
+		MemoryStorage: true,
 	}
 	pres.Metadata[metaChannels] = strings.Join(channels, ",")
 	if err := m.ensurePersonConsumer(ctx, PresenceStream, pres, person); err != nil {
@@ -100,7 +113,7 @@ func (m *Manager) EnsurePerson(ctx context.Context, person, login string, channe
 	stats := &nats.ConsumerConfig{
 		Durable: statsName, DeliverSubject: PersonDeliver(person, login, "stats"),
 		AckPolicy: nats.AckNonePolicy, DeliverPolicy: nats.DeliverByStartTimePolicy, OptStartTime: &start,
-		InactiveThreshold: PersonInactiveThreshold, Metadata: meta(),
+		InactiveThreshold: PersonInactiveThreshold, Metadata: meta(), MemoryStorage: true,
 	}
 	return m.ensurePersonConsumer(ctx, StatsStream, stats, person)
 }
@@ -140,6 +153,33 @@ func samePerson(have, want nats.ConsumerConfig) bool {
 		have.DeliverSubject == want.DeliverSubject && have.AckPolicy == nats.AckNonePolicy &&
 		!have.FlowControl && have.Heartbeat == 0 && have.DeliverGroup == "" &&
 		have.InactiveThreshold == want.InactiveThreshold && have.DeliverPolicy == want.DeliverPolicy &&
+		have.MemoryStorage == want.MemoryStorage &&
 		have.Metadata[metaPersonLogin] == want.Metadata[metaPersonLogin] &&
 		have.Metadata[metaChannels] == want.Metadata[metaChannels]
+}
+
+// capLogins refuses a new login when the person's other logins on PRESENCE
+// reach maxLogins (< 1: no cap). The login's own consumer counts as a renewal.
+func (m *Manager) capLogins(ctx context.Context, person, login string, maxLogins int) error {
+	if maxLogins < 1 {
+		return nil
+	}
+	cis, err := m.list(ctx, PresenceStream)
+	if err != nil {
+		return err
+	}
+	others := 0
+	for _, ci := range cis {
+		if ci.Config.Metadata[metaPerson] != person || ci.Config.Metadata[metaAgent] != "" {
+			continue
+		}
+		if ci.Config.Metadata[metaPersonLogin] == login {
+			return nil
+		}
+		others++
+	}
+	if others >= maxLogins {
+		return fmt.Errorf("%w: %d", ErrTooManyLogins, others)
+	}
+	return nil
 }

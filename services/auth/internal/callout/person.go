@@ -32,6 +32,10 @@ import (
 // DefaultPersonPrefix starts a person's NATS name.
 const DefaultPersonPrefix = "person-"
 
+// DefaultMaxLogins: logins one person may hold at once (browsers, tabs of
+// separate sessions); each holds two consumers until 15 minutes after it ends.
+const DefaultMaxLogins = 8
+
 // maxPersonSubs: the two deliver subjects, with room for a reconnect.
 const maxPersonSubs = 8
 
@@ -46,11 +50,17 @@ type Console struct {
 	OperatorGroup string
 	// PersonPrefix starts a person's name (AUTH_PERSON_PREFIX).
 	PersonPrefix string
+	// MaxLogins bounds the logins one person holds consumers for at once
+	// (AUTH_PERSON_MAX_LOGINS); a new login above it is refused.
+	MaxLogins int
 }
 
 func (c Console) withDefaults() Console {
 	if c.PersonPrefix == "" {
 		c.PersonPrefix = DefaultPersonPrefix
+	}
+	if c.MaxLogins == 0 {
+		c.MaxLogins = DefaultMaxLogins
 	}
 	return c
 }
@@ -65,8 +75,10 @@ func (c Config) checkConsole() error {
 		return nil
 	}
 	switch {
-	case strings.TrimSpace(con.OperatorGroup) == "":
-		return errors.New("callout: the operators' group must be set with the console's client")
+	case !strings.HasPrefix(con.OperatorGroup, "/") || len(strings.TrimSpace(con.OperatorGroup)) < 2:
+		return errors.New("callout: the operators' group must be set with the console's client, as a full path (\"/group\", the group mapper's full path on)")
+	case con.MaxLogins < 1 || con.MaxLogins > 64:
+		return fmt.Errorf("callout: at most %d logins per person: from 1 to 64", con.MaxLogins)
 	case !plain(con.PersonPrefix) || !strings.HasSuffix(con.PersonPrefix, "-"):
 		return fmt.Errorf("callout: person prefix %q: letters, digits, - and _, ending in -", con.PersonPrefix)
 	case strings.HasPrefix(con.PersonPrefix, c.NamePrefix) || strings.HasPrefix(c.NamePrefix, con.PersonPrefix):
@@ -92,7 +104,7 @@ type Persons interface {
 // PersonConsumers makes a login's consumers (consumers.Manager). The
 // service's Consumers must offer it for the path to issue anything.
 type PersonConsumers interface {
-	EnsurePerson(ctx context.Context, person, login string, channels []string) error
+	EnsurePerson(ctx context.Context, person, login string, channels []string, maxLogins int) error
 }
 
 type personHooks struct {
@@ -206,7 +218,7 @@ func (s *Service) authorizePerson(ctx context.Context, req *jwt.AuthorizationReq
 		if !ok {
 			return "", who, ErrPersonPath
 		}
-		if err := pc.EnsurePerson(ctx, person, login, channels); err != nil {
+		if err := pc.EnsurePerson(ctx, person, login, channels, s.cfg.Console.MaxLogins); err != nil {
 			return "", who, fmt.Errorf("consumers could not be made: %w", err)
 		}
 	}
