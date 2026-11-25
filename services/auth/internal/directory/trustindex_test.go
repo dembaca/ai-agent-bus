@@ -3,6 +3,7 @@ package directory
 import (
 	"context"
 	"errors"
+	"log/slog"
 	"slices"
 	"strings"
 	"testing"
@@ -206,17 +207,39 @@ func TestARecordWithJunkAnchorsIsRefused(t *testing.T) {
 	}
 }
 
-// A trust record that cannot be read fails the operator's channel list
-// closed: no partial answer.
-func TestACorruptTrustRecordFailsTheListClosed(t *testing.T) {
-	s, _ := open(t)
+// A trust record that cannot be read opens nothing, the others still do; the
+// warning names its key, never its content, and the sweep purges it. A
+// bucket that cannot be read fails the list closed.
+func TestACorruptTrustRecordOpensNothingAndIsSwept(t *testing.T) {
+	s, nc := open(t)
+	now := time.Unix(1_800_000_000, 0)
 	if _, err := s.Login(ctx(t), "sub-ann", "ann.k", "ann.k"); err != nil {
 		t.Fatal(err)
 	}
-	if _, err := s.kv.Put(ctx(t), agentTrustKey("agent-bad"), []byte("{not json")); err != nil {
+	if err := s.PutAgentTrust(ctx(t), AgentTrust{Agent: "agent-ok", Owner: "ann.k", Channels: []string{"annhome"}, Exp: now.Unix() + 900}); err != nil {
 		t.Fatal(err)
 	}
-	if got, err := (Persons{Store: s}).Visible(ctx(t), "sub-ann"); err == nil {
-		t.Fatalf("listed %v", got)
+	if _, err := s.kv.Put(ctx(t), agentTrustKey("agent-bad"), []byte(`{"owner":"ann.k","channels":["secret"`)); err != nil {
+		t.Fatal(err)
+	}
+	var logs strings.Builder
+	p := Persons{Store: s, Now: func() time.Time { return now }, Log: slog.New(slog.NewTextHandler(&logs, nil))}
+	got, err := p.Visible(ctx(t), "sub-ann")
+	if err != nil || !slices.Equal(got, []string{"annhome"}) {
+		t.Fatalf("visible %v, %v", got, err)
+	}
+	if !strings.Contains(logs.String(), agentTrustKey("agent-bad")) || strings.Contains(logs.String(), "secret") {
+		t.Errorf("the warning: %s", logs.String())
+	}
+	if err := s.PruneAgentTrust(ctx(t), now); err != nil {
+		t.Fatal(err)
+	}
+	keys, err := s.keysWith(ctx(t), agentTrustPrefix)
+	if err != nil || !slices.Equal(keys, []string{agentTrustKey("agent-ok")}) {
+		t.Fatalf("after the sweep: %v, %v", keys, err)
+	}
+	nc.Close()
+	if got, err := p.Visible(ctx(t), "sub-ann"); err == nil {
+		t.Fatalf("listed %v without the bucket", got)
 	}
 }

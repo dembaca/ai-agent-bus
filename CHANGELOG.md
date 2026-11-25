@@ -31,7 +31,15 @@ before 0.5.0 are described in the git history.
   purges expired records every 5 minutes in the background, never inside
   an agent's login. Each operator credential reads every record, which
   suits tens to low hundreds of agents (the risk that the console shows
-  less than there is, RISK-13).
+  less than there is, RISK-13). A trust record that cannot be read opens
+  nothing and is logged without its content; the sweep purges it.
+
+  > Upgrade note: the login service's JetStream user needs the consumer rights on
+  > the directory's bucket for its key listings,
+  > `$JS.API.CONSUMER.CREATE.KV_BUS_DIRECTORY.>` and
+  > `$JS.API.CONSUMER.DELETE.KV_BUS_DIRECTORY.*` (the README and
+  > `services/auth/nats-server.example.conf`); without them every operator
+  > credential is refused.
 
 ### Fixed
 

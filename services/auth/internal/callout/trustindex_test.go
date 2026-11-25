@@ -11,6 +11,7 @@ import (
 
 	"github.com/dembaca/ai-agent-bus/services/auth/internal/directory"
 	"github.com/dembaca/ai-agent-bus/services/auth/internal/token"
+	"github.com/nats-io/nats.go"
 	"github.com/nats-io/nats.go/jetstream"
 )
 
@@ -78,11 +79,17 @@ func TestAGrantedGuestChannelIsIndexed(t *testing.T) {
 	}
 }
 
-// A trust record the operator's channels cannot be read from refuses the
-// operator's credential: fail closed, never a partial list.
-func TestACorruptTrustRecordRefusesTheOperator(t *testing.T) {
+// A trust record that cannot be read opens nothing and refuses no operator;
+// a directory bucket that cannot be read refuses the operator's credential:
+// fail closed, never a partial list.
+func TestACorruptTrustRecordOpensNothingButALostBucketRefuses(t *testing.T) {
 	c, _ := personLab(t)
-	js, err := jetstream.New(c.nc)
+	dnc, err := nats.Connect(c.url, nats.UserInfo("admin", "pwd"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(dnc.Close)
+	js, err := jetstream.New(dnc)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -93,20 +100,26 @@ func TestACorruptTrustRecordRefusesTheOperator(t *testing.T) {
 	if _, err := dir.Login(ctx5(t), "sub-ann", "ann.k", "ann.k"); err != nil {
 		t.Fatal(err)
 	}
-	c.svc.SetPersons(c.svc.personHooks().verifier, directory.Persons{Store: dir})
-	if _, err := c.operator(c.consoleToken("ann", nil), newHost()); err != nil {
-		t.Fatalf("before the corrupt record: %v", err)
-	}
+	c.svc.SetPersons(c.svc.personHooks().verifier, directory.Persons{Store: dir, Log: slogTo(c.logs)})
 	kv, err := js.KeyValue(ctx5(t), directory.DefaultBucket)
 	if err != nil {
 		t.Fatal(err)
 	}
-	if _, err := kv.Put(ctx5(t), "agenttrust."+hex.EncodeToString([]byte("agent-bad")), []byte("{not json")); err != nil {
+	if _, err := kv.Put(ctx5(t), "agenttrust."+hex.EncodeToString([]byte("agent-bad")), []byte(`{"channels":["secretroom"`)); err != nil {
 		t.Fatal(err)
 	}
 	seen := len(c.logs.String())
+	if _, err := c.operator(c.consoleToken("ann", nil), newHost()); err != nil {
+		t.Fatalf("with a corrupt record: %v", err)
+	}
+	logs := c.logs.String()[seen:]
+	if !strings.Contains(logs, "cannot be read") || strings.Contains(logs, "secretroom") {
+		t.Errorf("the log: %s", logs)
+	}
+	dnc.Close()
+	seen = len(c.logs.String())
 	if _, err := c.operator(c.consoleToken("ann", nil), newHost()); err == nil {
-		t.Fatal("the operator connected")
+		t.Fatal("the operator connected without the directory")
 	}
 	if !strings.Contains(c.logs.String()[seen:], token.ErrDirectory.Error()) {
 		t.Errorf("no %q in the log", token.ErrDirectory.Error())

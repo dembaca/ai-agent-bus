@@ -360,7 +360,7 @@ func RunCallout(ctx context.Context, s Settings, log *slog.Logger) error {
 	svc.SetTrustIndex(trustIndex)
 	svc.SetAttester(callout.NATSAttester{NC: jsnc, Stream: consumers.PresenceStream})
 	if pv != nil {
-		svc.SetPersons(pv, directory.Persons{Store: dir})
+		svc.SetPersons(pv, directory.Persons{Store: dir, Log: log})
 		log.Info("the console's path on", "client", s.Callout.Console.ClientID, "operators", s.Callout.Console.OperatorGroup)
 	}
 	runCtx, stop := context.WithCancel(ctx)

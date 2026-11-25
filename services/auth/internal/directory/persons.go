@@ -2,6 +2,7 @@ package directory
 
 import (
 	"context"
+	"log/slog"
 	"slices"
 	"time"
 )
@@ -14,6 +15,9 @@ type Persons struct {
 	Store *Store
 	// Now is the clock the trust index is read with; nil is time.Now.
 	Now func() time.Time
+	// Log gets the keys of trust records that cannot be read; nil is
+	// slog.Default().
+	Log *slog.Logger
 }
 
 // Anchor is the anchor of the identity `sub`; false when the directory has
@@ -30,8 +34,9 @@ func (p Persons) Anchor(ctx context.Context, sub string) (string, bool, error) {
 // point 4, RT-6.43 step 3): the public ones, those it is a member of, and the
 // channels of the agents that are the person's or trust the person directly,
 // by the trust index the login service writes at each agent's credential
-// (TrustOpened): only unexpired records, never over several steps. A read
-// that fails is an error, no partial list.
+// (TrustOpened): only unexpired records, never over several steps. A trust
+// record that cannot be read opens nothing and is logged by its key; a read
+// of the bucket that fails is an error, no partial list.
 func (p Persons) Visible(ctx context.Context, sub string) ([]string, error) {
 	if err := checkKey(sub); err != nil {
 		return nil, err
@@ -55,9 +60,17 @@ func (p Persons) Visible(ctx context.Context, sub string) ([]string, error) {
 		if p.Now != nil {
 			now = p.Now()
 		}
-		opened, err := p.Store.TrustOpened(ctx, id.Anchor, now)
+		opened, unreadable, err := p.Store.TrustOpened(ctx, id.Anchor, now)
 		if err != nil {
 			return nil, err
+		}
+		if len(unreadable) > 0 {
+			log := p.Log
+			if log == nil {
+				log = slog.Default()
+			}
+			// The keys only, never a value: they open nothing.
+			log.Warn("trust records that cannot be read open nothing", "keys", unreadable)
 		}
 		out = append(out, opened...)
 	}

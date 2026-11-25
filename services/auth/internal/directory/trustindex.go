@@ -4,6 +4,7 @@ import (
 	"context"
 	"encoding/hex"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"log/slog"
 	"slices"
@@ -85,28 +86,49 @@ func (s *Store) PutAgentTrust(ctx context.Context, r AgentTrust) error {
 	return err
 }
 
+// errUnreadable: a trust record is there but is no record. It opens
+// nothing, and the sweep purges it.
+var errUnreadable = errors.New("directory: unreadable trust record")
+
+// agentTrust reads the record at key with its revision; false when there is
+// none. A value that is no record is errUnreadable, with its revision; any
+// other error is the bucket's.
 func (s *Store) agentTrust(ctx context.Context, key string) (AgentTrust, uint64, bool, error) {
 	var r AgentTrust
-	rev, ok, err := s.get(ctx, key, &r)
-	return r, rev, ok, err
+	e, err := s.kv.Get(ctx, key)
+	if errors.Is(err, jetstream.ErrKeyNotFound) {
+		return r, 0, false, nil
+	}
+	if err != nil {
+		return r, 0, false, err
+	}
+	if err := json.Unmarshal(e.Value(), &r); err != nil {
+		return AgentTrust{}, e.Revision(), true, errUnreadable
+	}
+	return r, e.Revision(), true, nil
 }
 
 // TrustOpened lists the channels of the unexpired records that open to the
-// person with anchor (AgentTrust.opens). A record that cannot be read is an
-// error: no partial answer.
-func (s *Store) TrustOpened(ctx context.Context, anchor string, now time.Time) ([]string, error) {
+// person with anchor (AgentTrust.opens). A record that cannot be read opens
+// nothing: its key is in unreadable, never its content. A failed listing or
+// read of the bucket is an error: no partial answer.
+func (s *Store) TrustOpened(ctx context.Context, anchor string, now time.Time) (channels, unreadable []string, err error) {
 	if anchor == "" {
-		return nil, nil
+		return nil, nil, nil
 	}
 	keys, err := s.keysWith(ctx, agentTrustPrefix)
 	if err != nil {
-		return nil, err
+		return nil, nil, err
 	}
 	var out []string
 	for _, k := range keys {
 		r, _, ok, err := s.agentTrust(ctx, k)
+		if errors.Is(err, errUnreadable) {
+			unreadable = append(unreadable, k)
+			continue
+		}
 		if err != nil {
-			return nil, err
+			return nil, nil, err
 		}
 		if ok && r.opens(anchor, now) {
 			for _, c := range r.Channels {
@@ -117,13 +139,13 @@ func (s *Store) TrustOpened(ctx context.Context, anchor string, now time.Time) (
 		}
 	}
 	slices.Sort(out)
-	return slices.Compact(out), nil
+	return slices.Compact(out), unreadable, nil
 }
 
-// PruneAgentTrust purges the records expired before now, their history
-// with them, so the names of ended agents leave one marker each, not their
-// records; a record written again meanwhile stays (the purge names the
-// revision it read).
+// PruneAgentTrust purges the records expired before now and those that
+// cannot be read, their history with them, so the names of ended agents
+// leave one marker each, not their records; a record written again
+// meanwhile stays (the purge names the revision it read).
 func (s *Store) PruneAgentTrust(ctx context.Context, now time.Time) error {
 	keys, err := s.keysWith(ctx, agentTrustPrefix)
 	if err != nil {
@@ -131,10 +153,10 @@ func (s *Store) PruneAgentTrust(ctx context.Context, now time.Time) error {
 	}
 	for _, k := range keys {
 		r, rev, ok, err := s.agentTrust(ctx, k)
-		if err != nil {
+		if err != nil && !errors.Is(err, errUnreadable) {
 			return err
 		}
-		if !ok || r.Exp > now.Unix() {
+		if !ok || (err == nil && r.Exp > now.Unix()) {
 			continue
 		}
 		if err := s.purgeAt(ctx, k, rev); err != nil {
