@@ -389,6 +389,12 @@ def test_the_nats_line_is_the_chat_lines_object_within_the_allow_list() -> None:
     {"part": {"a": 1}},
     {"part": 1.5},
     {"final": [1]},
+    {"asks_answered": 1e-300},
+    {"tok": {"all": {"in": 1e-320}, "bus": {"in": 5}}},
+    {"min": 1.5},
+    {"wakes": {"dm": 0.5}},
+    {"posts": [1, 2.5]},
+    {"tools": {"post_message": [1.0, 2]}},
 ])
 def test_the_reader_drops_a_line_with_text_in_it(bad) -> None:
     """RT-6.43 step 8: a string outside the four fields, one off its pattern, or a listed key
@@ -515,3 +521,13 @@ async def test_a_hosted_session_publishes_its_last_part_before_the_bus_stops(mon
     async with hosted.services("k" * 32, FakeBus(FakeRegistrar())):  # type: ignore[arg-type]
         pass
     assert order == ["final", "stop"]
+
+
+def test_a_negative_wait_from_a_skewed_clock_counts_zero() -> None:
+    """An answer event's wait below 0 (a clock that ran back) is 0, so an honest part always
+    passes the typed check."""
+    events = [{"k": "part", "t": 1, "sid": "3f9a1c2b7d4e", "n": 1},
+              {"k": "ask", "t": 2, "id": "p"}, {"k": "answer", "t": 3, "id": "p", "wait": -40, "at": 3}]
+    data, _ = stats._summarize(events, "0.101.0", None, 10.0, final=True)
+    assert data["ask_wait_sec"] == 0 and data["ask_wait_max_sec"] == 0
+    assert stats.nats_body(data) is not None

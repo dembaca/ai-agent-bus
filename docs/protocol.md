@@ -372,7 +372,7 @@ No other value is a string. Each listed key has one type: `part` an
 integer, `final` a boolean, `posts` and `compact` a pair of numbers,
 `wakes` and `blocks` objects of numbers, `tools` an object of pairs, `tok`
 its numbers and the objects `all` and `bus` of numbers, every other listed
-key one number; each number from 0 to 10^12. A key outside the list may
+key one number; each number an integer from 0 to 10^12, and a share is shown within 0 to 100. A key outside the list may
 hold a number, a boolean, a list of numbers or an object of such values,
 and is ignored. A string anywhere else, a
 string off its pattern, a listed key of another type or out of range, a

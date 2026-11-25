@@ -204,7 +204,7 @@ def _asks(events: list[dict[str, Any]], now: float) -> dict[str, int]:
         # have closed in an earlier part, with the advice.
         if (e.get("k") == "answer" and e.get("id") and e["id"] not in waits and e["id"] not in coord
                 and not e.get("coord")):
-            waits[e["id"]] = int(e.get("wait", 0))
+            waits[e["id"]] = max(0, int(e.get("wait", 0)))  # a skewed clock never counts below 0
     open_at = [t for pid, t in posted.items() if pid not in waits]
     return {
         "asks": len(set(posted) | set(waits)),
@@ -692,10 +692,11 @@ def _number(v: object) -> bool:
 
 
 def _num(v: object) -> bool:
-    """A count or a time on the line: a number 0 to NUM_MAX, never a boolean."""
-    if isinstance(v, bool) or not isinstance(v, (int, float)):
+    """A count or a time on the line: an integer 0 to NUM_MAX, never a boolean or a fraction
+    (the builder writes integers only; a tiny fraction would blow up a share or a mean)."""
+    if isinstance(v, bool) or not isinstance(v, int):
         return False
-    return 0 <= v <= NUM_MAX  # an int compares exactly; inf and nan fail here
+    return 0 <= v <= NUM_MAX
 
 
 def _nums(v: object) -> bool:

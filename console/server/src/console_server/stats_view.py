@@ -89,7 +89,7 @@ class StatsBook:
                   "value": round(self.server_now - min(held)) if held else None}
         week = self._within(WEEK_SEC)
         share = [{"label": f"version {row['version']}", "unit": "%",
-                  "value": (row["tok"] or {}).get("bus_share_pct")}
+                  "value": _pct((row["tok"] or {}).get("bus_share_pct"))}
                  for row in _safe(stats.report, week) or []]
         out = [{"id": "share-per-version", "title": "the bus's share of all tokens, per version",
                 "window": "7 d", "fields": [*share, {"label": "lines", "unit": "count",
@@ -99,7 +99,7 @@ class StatsBook:
             out.append({"id": rid, "title": "asks to humans", "window": window, "fields": [
                 {"label": "asks", "unit": "count", "value": a.get("asks")},
                 {"label": "answered", "unit": "count", "value": a.get("answered")},
-                {"label": "answered share", "unit": "%", "value": a.get("answered_pct")},
+                {"label": "answered share", "unit": "%", "value": _pct(a.get("answered_pct"))},
                 {"label": "mean wait for an answer", "unit": "s", "value": a.get("mean_wait_sec")},
                 {"label": "longest wait for an answer", "unit": "s", "value": a.get("max_wait_sec")},
                 {"label": "still open at the part's end", "unit": "count", "value": a.get("open")},
@@ -115,3 +115,8 @@ def _safe(compute: Any, lines: list[dict[str, Any]]) -> Any:
     except Exception as exc:  # noqa: BLE001 - one bad line never takes the reports down
         log.warning("console: a STATS report not computed (%s)", type(exc).__name__)
         return None
+
+
+def _pct(v: Any) -> Any:
+    """A share, held to 0 to 100 (an agent's numbers about itself are its own word)."""
+    return None if v is None else min(100, max(0, v))

@@ -247,3 +247,12 @@ def test_a_report_that_cannot_be_computed_says_n_a(monkeypatch) -> None:
     monkeypatch.setattr(stats, "asks_summary", boom)
     reports = book.reports()
     assert fields(reports[1])["asks"] is None and len(reports[0]["fields"]) == 2
+
+
+def test_a_share_is_held_to_0_to_100(monkeypatch) -> None:
+    """An agent's numbers are its own word: a share outside 0 to 100 is shown at the bound."""
+    book = book_with((A, LINE, NOW))
+    monkeypatch.setattr(stats, "report", lambda lines: [{"version": "0.101.0", "tok": {"bus_share_pct": 1.3e11}}])
+    monkeypatch.setattr(stats, "asks_summary", lambda lines: {"answered_pct": -7})
+    reports = book.reports()
+    assert fields(reports[0])["version 0.101.0"] == 100 and fields(reports[1])["answered share"] == 0
