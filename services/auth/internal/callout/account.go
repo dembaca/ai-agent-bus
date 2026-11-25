@@ -64,9 +64,10 @@ func (s *Service) accountSubject(account string) string {
 // The guard and the write are one step per identity (a lock per `sub`): else
 // an older token could pass the guard, be overtaken by a newer one and write
 // after it, leaving the older approver flag. The lock lives in this process:
-// the login service runs as one instance (the deployment view, as the
-// consumers' own per-agent lock does); a second instance would need the
-// guard's revision carried over the write. A stored record that is a newer
+// the login service runs as exactly one instance (the deployment view and the
+// README, as the consumers' own per-agent lock needs); a second instance would
+// need a compare-and-set spanning instances, on the guard's key-value revision
+// or JetStream's expected last sequence. Not built. A stored record that is a newer
 // one for the same account counts as written, never as a refusal.
 func (s *Service) accountRecord(ctx context.Context, a Attester, guard TokenGuard, sub, chatID, name string, approver bool, anchor string, tokenIat time.Time, iat, exp int64) (skipped string, err error) {
 	switch {

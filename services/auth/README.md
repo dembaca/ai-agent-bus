@@ -204,6 +204,8 @@ and a *group mapper* that writes the user's groups into the configured claim.
 
 ## Auth callout (`internal/callout`)
 
+Exactly one instance runs: the account record's lock per `sub` and the consumers' lock per agent live in the process, and the callout's queue group (`authd`) would let a second instance start silently and share the logins; a second instance would need a compare-and-set spanning instances (on the guard's key-value revision or JetStream's expected last sequence), which is not built.
+
 The NATS server sends every client that is not one of its `auth_users` to
 `$SYS.REQ.USER.AUTH`; the service answers with a user JWT or a refusal.
 
