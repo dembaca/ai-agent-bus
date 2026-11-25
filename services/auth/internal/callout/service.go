@@ -134,10 +134,11 @@ type Service struct {
 	subLocks map[string]*subLock // one lock per identity while its account record is written
 
 	cmu       sync.RWMutex
-	consumers Consumers // nil: none are made
-	anchors   Anchors   // nil: the anchor is the owner's name, as before ADR-016
-	attester  Attester  // nil: no attestation is published
-	trust     Trust     // nil: a trusted name is its own anchor
+	consumers Consumers   // nil: none are made
+	anchors   Anchors     // nil: the anchor is the owner's name, as before ADR-016
+	attester  Attester    // nil: no attestation is published
+	trust     Trust       // nil: a trusted name is its own anchor
+	persons   personHooks // the console's path (person.go); unset: none issued
 }
 
 // SetAnchors sets where anchors come from. nil (the default) takes the
@@ -316,6 +317,9 @@ func (s *Service) request(data []byte, now time.Time) (*jwt.AuthorizationRequest
 // authorize returns the user JWT for req, and log attributes without secrets.
 func (s *Service) authorize(ctx context.Context, req *jwt.AuthorizationRequestClaims, now time.Time) (string, []any, error) {
 	opts := req.ConnectOptions
+	if raw, ok := s.personToken(opts.Token); ok {
+		return s.authorizePerson(ctx, req, raw, now)
+	}
 	var hello Hello
 	if err := json.Unmarshal([]byte(opts.Token), &hello); err != nil || hello.Token == "" {
 		return "", nil, ErrRequest

@@ -6,12 +6,14 @@ import (
 	"log/slog"
 	"os"
 	"path/filepath"
+	"slices"
 	"strings"
 	"testing"
 	"time"
 
 	"github.com/nats-io/nkeys"
 
+	"github.com/dembaca/ai-agent-bus/services/auth/internal/callout"
 	"github.com/dembaca/ai-agent-bus/services/auth/internal/token"
 )
 
@@ -205,5 +207,44 @@ func TestABadJetStreamSeedFileStopsTheStart(t *testing.T) {
 		if err != nil && strings.Contains(err.Error(), "not a seed\n") {
 			t.Errorf("%s: the file's content is in the error", name)
 		}
+	}
+}
+
+// The console's path (RT-6.43): off by default, its three settings read, and
+// a console client that is the bus's own refused.
+func TestTheConsolesSettings(t *testing.T) {
+	s, _, err := LoadSettings(env(nil))
+	if err != nil || s.Callout.Console.ClientID != "" || s.Callout.Console.PersonPrefix != "person-" {
+		t.Fatalf("default %+v, %v", s.Callout.Console, err)
+	}
+	s, _, err = LoadSettings(env(map[string]string{"AUTH_CONSOLE_CLIENT_ID": "bus-console",
+		"AUTH_OPERATOR_GROUP": "/BGL_BUS_OPERATORS", "AUTH_PERSON_PREFIX": "op-"}))
+	if err != nil || s.Callout.Console != (callout.Console{ClientID: "bus-console", OperatorGroup: "/BGL_BUS_OPERATORS", PersonPrefix: "op-", MaxLogins: 8}) {
+		t.Fatalf("set %+v, %v", s.Callout.Console, err)
+	}
+	if _, _, err := LoadSettings(env(map[string]string{"AUTH_CONSOLE_CLIENT_ID": env(nil)("AUTH_KEYCLOAK_CLIENT_ID")})); !errors.Is(err, ErrConfig) {
+		t.Fatalf("the bus's client as the console's: %v", err)
+	}
+}
+
+// The console's token check refuses the bus's client and the bus's audience
+// in `aud`; the logins per person are bounded (RT-6.43).
+func TestTheConsolesTokenCheckRefusesBothOfTheBus(t *testing.T) {
+	s, _, err := LoadSettings(env(map[string]string{"AUTH_CONSOLE_CLIENT_ID": "bus-console",
+		"AUTH_OPERATOR_GROUP": "/ops", "AUTH_KEYCLOAK_AUDIENCE": "bus-api", "AUTH_PERSON_MAX_LOGINS": "3"}))
+	if err != nil || s.Callout.Console.MaxLogins != 3 {
+		t.Fatalf("%+v, %v", s.Callout.Console, err)
+	}
+	pc := personTokenConfig(s, s.Token)
+	if pc.ClientID != "bus-console" || pc.Audience != "" || !slices.Equal(pc.OtherClients, []string{"agent-bus", "bus-api"}) {
+		t.Fatalf("%+v", pc)
+	}
+	for _, v := range []string{"0", "65", "x"} {
+		if _, _, err := LoadSettings(env(map[string]string{"AUTH_PERSON_MAX_LOGINS": v})); !errors.Is(err, ErrConfig) {
+			t.Errorf("AUTH_PERSON_MAX_LOGINS=%s: %v", v, err)
+		}
+	}
+	if _, _, err := LoadSettings(env(map[string]string{"AUTH_CONSOLE_CLIENT_ID": "bus-api", "AUTH_KEYCLOAK_AUDIENCE": "bus-api"})); !errors.Is(err, ErrConfig) {
+		t.Fatalf("the bus's audience as the console's client: %v", err)
 	}
 }
