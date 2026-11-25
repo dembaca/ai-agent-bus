@@ -60,6 +60,9 @@ class Client:
     async def usernames(self, ids):
         return {i: self.names[i] for i in ids if i in self.names}
 
+    async def unapproved(self, posts):
+        return set()  # nothing over NATS (RT-6.42)
+
     async def trusted_humans(self):
         return self.trusted
 

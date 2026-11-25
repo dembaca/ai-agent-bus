@@ -59,6 +59,9 @@ class _Client:
     async def trusted_humans(self):
         return {HUMAN: "dembaca"}
 
+    async def may_approve(self, uid):
+        return None  # Mattermost's trust alone (RT-6.42 is NATS only)
+
     async def agents(self, ids):
         return {AGENT} & set(ids)
 

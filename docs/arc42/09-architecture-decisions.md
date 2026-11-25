@@ -4739,10 +4739,10 @@ registrar's functions can move in later without a second component.
    Specified in the scenario "People's posts onto NATS" (RT-6.42) and the
    bodies in `docs/protocol.md`; the owner accepted all eighteen points as
    recommended. Built in the login service (the account record at a
-   credential issue, the per-agent `<agent>_hu_<channel>` consumers) and on
-   the bridge's side (`services/bridge/internal/inbound`); not built: the
-   record at a login without an agent or a change of the binding, and the
-   MCP server's reader. The bridge reads its bot's
+   credential issue, the per-agent `<agent>_hu_<channel>` consumers), on
+   the bridge's side (`services/bridge/internal/inbound`) and in the MCP
+   server (the reader of step 9); not built: the record at a login without
+   an agent or a change of the binding. The bridge reads its bot's
    Mattermost WebSocket in the bound home channels and publishes each
    person's post and reaction on NATS. The eighteen points were each one
    decision with a recommendation, its reason and the alternative, for the

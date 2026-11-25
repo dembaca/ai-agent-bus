@@ -198,6 +198,24 @@ class ChatPort(Protocol):
         (the Mattermost adapter always)."""
         ...
 
+    async def bot_accounts(self, user_ids: set[str]) -> set[str]:
+        """The ids among ``user_ids`` of bot accounts, bus agents or not; raises when the
+        accounts cannot be read. People over NATS (RT-6.42) are none."""
+        ...
+
+    async def unapproved(self, posts: Sequence[Post]) -> set[tuple[str, ...]]:
+        """Of these posts and their reactions, those that came over NATS from a person
+        without a fresh approver record (RT-6.42 step 9), as `("post", id)` and
+        `("reaction", post id, emoji, user id)`: a read marks them not_approver as the
+        event did. Empty where nothing comes over NATS (the Mattermost adapter always)."""
+        ...
+
+    async def may_approve(self, user_id: str) -> bool | None:
+        """Whether a trusted human's event may approve an ask (RT-6.42 step 9): for a person
+        over NATS, a fresh record of the login service that says `approver`; None where the
+        chat's trust alone decides (the Mattermost adapter always)."""
+        ...
+
     async def own_anchors(self) -> frozenset[str] | None:
         """The anchors of this session's own trusted humans as the login service resolved
         them (its own fresh attestation); None where there are none (the Mattermost

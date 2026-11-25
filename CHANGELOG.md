@@ -7,6 +7,25 @@ before 0.5.0 are described in the git history.
 
 ### Added
 
+- **The MCP server reads people's posts from NATS** (RT-6.42, ADR-016 step 2):
+  in a channel of a NATS session (the home, a guest channel, the lobby) whose
+  bridge signal is fresh, people's posts and reactions come from the person's
+  consumer `<agent>_hu_<channel>` on `bus.hu.<channel>.<anchor>`, decoded
+  strictly, and Mattermost's events of people there are dropped; without a
+  signal, people are read on Mattermost as before, and when it runs out the
+  server reads Mattermost from the last people event on. A key per event,
+  held for an hour, drops the repeat at a switch. A person over NATS is
+  trusted by the anchors of the session's own attestation (`hu:<anchor>`,
+  never `hu:-`), and an event of a trusted person without a fresh approver
+  record of the login service is marked `not_approver` and approves nothing,
+  also as a yes on an ask, a relayed tool permission, a channel tag and what `get_thread`,
+  `list_recent` and an ask's card read back; it does not stop an ask's
+  reminders. A
+  signal counts only while NATS is connected and the session's own presence
+  comes back; a person's files are read from Mattermost by the post's id.
+  Other bots, webhooks, system posts and direct messages stay on Mattermost. It reads what the bridge and the login service publish (the
+  entries below).
+
 - **The central bridge carries people's posts and reactions onto NATS**
   (RT-6.42, step 2 of ADR-016, the bridge's side). `bridged` reads its bot's
   Mattermost WebSocket in the channels of `BRIDGE_HOMES`, drops bots' posts
@@ -28,8 +47,7 @@ before 0.5.0 are described in the git history.
   `services/auth/nats-server.example.conf` before this bridge starts: it
   refuses to start without the bucket. The release says so in its notice:
   `Needs: bridge create right on presence account consumer.` The
-  MCP server's reader is not built yet, so sessions still read people on
-  Mattermost.
+  MCP server reads them (the entry above).
 
 - **The bridge reads Mattermost: the WebSocket reader `internal/mmws` and
   two REST methods of `internal/mm` (ADR-016, the bridge's step 2).
@@ -66,8 +84,8 @@ before 0.5.0 are described in the git history.
   proven Mattermost account the service publishes that account's record (anchor,
   `approver`, `token_iat`), never replacing it with an older token's; its
   JetStream user needs the publish right `<presence>.account.mattermost.*.v1`
-  (`services/auth/nats-server.example.conf`). The MCP server does not read them
-  yet (the bridge does, see above); the record at a login without an agent and at a change of
+  (`services/auth/nats-server.example.conf`). The bridge and the MCP server read
+  them (see above); the record at a login without an agent and at a change of
   the binding is not built. Upgrade: without the publish right every login of a
   proven Mattermost account is refused, so the login service's NATS user gets it
   first; the release's `Needs:` line (not allowed under Unreleased) is `Needs:

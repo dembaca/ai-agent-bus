@@ -184,31 +184,36 @@ def _apply(t: dict[str, Any], p: Post, author: str,
 
 
 def answering(reactions: Collection[Reaction], names: Mapping[str, str],
-              human: str, trusted: Collection[str] = ()) -> list[Reaction]:
+              human: str, trusted: Collection[str] = (),
+              unapproved: Collection[tuple[str, ...]] = ()) -> list[Reaction]:
     """The reactions that answer an ask to `human` (RT-6.11): a yes, no or
-    choice emoji by that human or a trusted human (ids in `trusted`)."""
+    choice emoji by that human or a trusted human (ids in `trusted`); never one
+    in `unapproved` (port.unapproved: over NATS without an approver, RT-6.42)."""
     human = human.lower()
     return [r for r in reactions if asks.is_answer(r.emoji_name)
+            and ("reaction", r.post_id, r.emoji_name, r.user_id) not in unapproved
             and ((bool(human) and names.get(r.user_id, "").lower() == human) or r.user_id in trusted)]
 
 
 def ask_answered(ask: Post, thread: Collection[Post],
                  reactions: Collection[Reaction], names: Mapping[str, str],
-                 human: str, trusted: Collection[str] = ()) -> bool:
+                 human: str, trusted: Collection[str] = (),
+                 unapproved: Collection[tuple[str, ...]] = ()) -> bool:
     """Whether an ask to `human` is answered on Mattermost (RT-6.11, RT-6.19): a
     yes/no reaction by that human or a trusted human (ids in `trusted`), or a
     reply by that human in the ask's thread after it. A reaction by an agent or
-    anyone else changes nothing. `names` maps user ids, the reacting accounts
-    included, to usernames."""
+    anyone else changes nothing, nor an answer in `unapproved` (port.unapproved,
+    RT-6.42: the human is still waited for). `names` maps user ids, the reacting
+    accounts included, to usernames."""
     human = human.lower()
 
     def by_human(uid: str) -> bool:
         return bool(human) and names.get(uid, "").lower() == human
 
-    if answering(reactions, names, human, trusted):
+    if answering(reactions, names, human, trusted, unapproved):
         return True
     root, at = ask.thread, ask.create_at
-    return any(p.thread == root and p.create_at > at
+    return any(p.thread == root and p.create_at > at and ("post", p.id) not in unapproved
                and not p.delete_at and by_human(p.user_id) for p in thread)
 
 
@@ -232,10 +237,12 @@ def ask_closers(posts: Sequence[Post]) -> set[str]:
 
 
 def open_asks(posts: Sequence[Post], names: Mapping[str, str],
-              trusted: Collection[str] = (), foreign: Collection[str] = ()) -> list[dict[str, Any]]:
+              trusted: Collection[str] = (), foreign: Collection[str] = (),
+              unapproved: Collection[tuple[str, ...]] = ()) -> list[dict[str, Any]]:
     """Asks to humans still waiting: not answered by the human asked or a
-    trusted human (ask_answered), and not closed by a peer agent (resolved;
-    a foreign agent's ✅, ids in `foreign`, closes nothing)."""
+    trusted human (ask_answered; an answer in `unapproved`, RT-6.42, answers
+    nothing), and not closed by a peer agent (resolved; a foreign agent's ✅,
+    ids in `foreign`, closes nothing)."""
     order = _live(posts)
     out = []
     for p in order:
@@ -245,7 +252,7 @@ def open_asks(posts: Sequence[Post], names: Mapping[str, str],
         # ❓ @<agent>: a question to the home's 👑 (RT-6.25), which answers it.
         human = a2a.ask_head(msg)
         question = human is not None and human[0] == "question"
-        if (ask_answered(p, order, p.reactions, names, human[1] if human else "", trusted)
+        if (ask_answered(p, order, p.reactions, names, human[1] if human else "", trusted, unapproved)
                 or resolved(p.reactions, names, foreign)
                 # A trusted human's reply answers a question to the 👑 as well.
                 or (question and any(q.thread == p.id and q.create_at > p.create_at
