@@ -494,6 +494,16 @@ async def test_a_not_approvers_answer_keeps_the_reminders_going() -> None:
     reactions = await port.reactions(ASK)
     # without the verdict it would count (the reminders used to stop here)
     assert tasks.ask_answered(Post(id=ASK, create_at=1000), [], reactions, {HUMAN: "dembaca"}, "dembaca")
+    # the coordinator's open-ask list and the stall's answer time take the same verdict
+    from mattermost_ai_agent_bus import stall
+    flagged = await port.unapproved([Post(id=ASK, reactions=tuple(reactions))])
+    asked = Post(id=ASK, user_id=BOT, kind="ask", message="@dembaca merge?", create_at=1000,
+                 reactions=tuple(reactions))
+    names = {HUMAN: "dembaca"}
+    assert not tasks.open_asks([asked], names, {HUMAN})  # without the verdict: answered
+    assert [a["ask"] for a in tasks.open_asks([asked], names, {HUMAN}, (), flagged)] == [ASK]
+    assert stall.answered_since([asked], names, {HUMAN}, 5000) == 2000
+    assert stall.answered_since([asked], names, {HUMAN}, 5000, flagged) == 0
     fake.approvers.add("dembaca")  # given again by an approver
     await port._on_person(_person("home", "dembaca", 61, PersonMessage("unreaction", ASK, "dembaca", emoji="+1")))
     await port._on_person(_person("home", "dembaca", 62, PersonMessage("reaction", ASK, "dembaca", emoji="+1")))

@@ -237,10 +237,12 @@ def ask_closers(posts: Sequence[Post]) -> set[str]:
 
 
 def open_asks(posts: Sequence[Post], names: Mapping[str, str],
-              trusted: Collection[str] = (), foreign: Collection[str] = ()) -> list[dict[str, Any]]:
+              trusted: Collection[str] = (), foreign: Collection[str] = (),
+              unapproved: Collection[tuple[str, ...]] = ()) -> list[dict[str, Any]]:
     """Asks to humans still waiting: not answered by the human asked or a
-    trusted human (ask_answered), and not closed by a peer agent (resolved;
-    a foreign agent's ✅, ids in `foreign`, closes nothing)."""
+    trusted human (ask_answered; an answer in `unapproved`, RT-6.42, answers
+    nothing), and not closed by a peer agent (resolved; a foreign agent's ✅,
+    ids in `foreign`, closes nothing)."""
     order = _live(posts)
     out = []
     for p in order:
@@ -250,7 +252,7 @@ def open_asks(posts: Sequence[Post], names: Mapping[str, str],
         # ❓ @<agent>: a question to the home's 👑 (RT-6.25), which answers it.
         human = a2a.ask_head(msg)
         question = human is not None and human[0] == "question"
-        if (ask_answered(p, order, p.reactions, names, human[1] if human else "", trusted)
+        if (ask_answered(p, order, p.reactions, names, human[1] if human else "", trusted, unapproved)
                 or resolved(p.reactions, names, foreign)
                 # A trusted human's reply answers a question to the 👑 as well.
                 or (question and any(q.thread == p.id and q.create_at > p.create_at

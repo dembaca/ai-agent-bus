@@ -754,7 +754,7 @@ async def _overview(client: ChatPort, action: str) -> dict[str, Any]:
                 foreign = (await owners.foreign(client, tasks.ask_closers(posts))) if await gate.active(client) else {}
                 row["tasks"] = await _tasks(client, posts, names, {crown} - {""},
                                             home=ch["role"] == "home")
-                row["asks"] = tasks.open_asks(posts, names, trusted, set(foreign))
+                row["asks"] = tasks.open_asks(posts, names, trusted, set(foreign), await client.unapproved(posts))
                 at = {p.id: p.create_at for p in posts}
                 queue += [(at.get(a["ask"], 0), ch["name"], a) for a in row["asks"]]
         except Exception as exc:  # noqa: BLE001 — that channel as an error row
@@ -2391,7 +2391,8 @@ async def coordinator(action: str = "who", scope: str = "home") -> str:
             foreign = (await owners.foreign(client, tasks.ask_closers(posts))) if await gate.active(client) else {}
             return _out("coordinator", {
                 "tasks": await _tasks(client, posts, names),
-                "asks": tasks.open_asks(posts, names, trusted, set(foreign)) + await _queued_rows(client)})
+                "asks": tasks.open_asks(posts, names, trusted, set(foreign), await client.unapproved(posts))
+                + await _queued_rows(client)})
         rows = await lease.roster(client)
         return _out("coordinator", {"roster": tasks.roster(
             rows, posts, names, await _owners_of(client, rows), await _usage_of(client, rows)),

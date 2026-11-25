@@ -113,7 +113,8 @@ _seen_answers: dict[str, int] = {}  # answer → first look that saw it, for one
 
 
 def answered_since(posts: Sequence[Post], names: Mapping[str, str],
-                   trusted: Collection[str], now_ms: int) -> int:
+                   trusted: Collection[str], now_ms: int,
+                   unapproved: Collection[tuple[str, ...]] = ()) -> int:
     """Epoch ms of the newest reaction that answers an ask among `posts`, by
     the rule that ends its shield (tasks.answering: the human asked or a
     trusted one); 0 without one. A reply is a post and counts in quiet_since
@@ -124,7 +125,7 @@ def answered_since(posts: Sequence[Post], names: Mapping[str, str],
         if p.kind != a2a.ASK or p.delete_at:
             continue
         head = a2a.ask_head(p.message)
-        for r in tasks.answering(p.reactions, names, head[1] if head else "", trusted):
+        for r in tasks.answering(p.reactions, names, head[1] if head else "", trusted, unapproved):
             at = r.create_at or _seen_answers.setdefault(f"{p.id}:{r.user_id}:{r.emoji_name}", now_ms)
             newest = max(newest, at)
     return newest
@@ -141,7 +142,7 @@ def _last(thread: Sequence[Post], names: Mapping[str, str]) -> tuple[int, str]:
 def items(posts: Sequence[Post], names: Mapping[str, str], classes: list[str],
           rows: Sequence[Mapping[str, Any]], reachable: set[str], now_ms: int,
           trusted: Collection[str] = (), me: str = "",
-          foreign: Collection[str] = ()) -> list[dict[str, Any]]:
+          foreign: Collection[str] = (), unapproved: Collection[tuple[str, ...]] = ()) -> list[dict[str, Any]]:
     """The open items, longest quiet first: {what, id, title, next, last, at}.
     An ask still within its 24 h by `me` (the crown holder) or by an agent in
     `reachable` is marked reminded: that agent's server reminds the human
@@ -158,7 +159,7 @@ def items(posts: Sequence[Post], names: Mapping[str, str], classes: list[str],
     out: list[dict[str, Any]] = []
     on_human: dict[str, dict[str, Any]] = {}  # agent → its reminded ask
     by_id = {p.id: p for p in live}
-    for a in tasks.open_asks(live, names, trusted, foreign):
+    for a in tasks.open_asks(live, names, trusted, foreign, unapproved):
         post = by_id.get(a["ask"])
         asked = _at(post) if post else 0
         at, last = _last(by_thread.get((post.root_id if post else "") or a["ask"], []), names)
@@ -348,9 +349,10 @@ async def _look(client: ChatPort, uid: str, now: float, chan: str = "", name: st
     # turn) start no quiet period: only someone else's activity does.
     quiet, own = quiet_since(posts, classes, uid)
     trusted = await client.trusted_humans()
+    unapproved = await client.unapproved(posts)  # RT-6.42: a not_approver answer answers nothing
     # RT-6.19 step 2 (0.71.33): a human's answer on an ask is activity like
     # their post: the task it shielded gets MM_STALL_SEC before it is due.
-    quiet = max(quiet, answered_since(posts, names, trusted, now_ms))
+    quiet = max(quiet, answered_since(posts, names, trusted, now_ms, unapproved))
     if any(r.status == "working" and r.username != names.get(uid) for r in roster):
         quiet = now_ms
     untrusted: set[str] = set()
@@ -363,7 +365,7 @@ async def _look(client: ChatPort, uid: str, now: float, chan: str = "", name: st
     # A foreign agent's ✅ keeps an ask open (RT-6.11, ADR-001).
     foreign = await owners.foreign(client, tasks.ask_closers(posts)) if gated else {}
     found = items(posts, names, classes, rows, {r.username for r in roster}, now_ms, trusted,
-                  me=names.get(uid, ""), foreign=set(foreign))
+                  me=names.get(uid, ""), foreign=set(foreign), unapproved=unapproved)
     if chan:
         for i in found:
             i["channel"] = name
