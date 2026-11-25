@@ -5,6 +5,25 @@ before 0.5.0 are described in the git history.
 
 ## Unreleased
 
+### Added
+
+- **The login service's part of people's posts on NATS** (ADR-016 step 2, points
+  7, 8 and 16; RT-6.42): each agent gets, for every granted channel, a consumer
+  `<agent>_hu_<channel>` on `<bus>.hu.<channel>.*` beside its channel consumer
+  (ack none, deleted with it at a dropped channel and at the bye), and its
+  presence consumer also reads the account records
+  (`<presence>.account.mattermost.*.v1`) and the bridge's signal per granted
+  channel (`<presence>.bridge.<channel>.v1`). At each credential issue for a
+  proven Mattermost account the service publishes that account's record (anchor,
+  `approver`, `token_iat`), never replacing it with an older token's; its
+  JetStream user needs the publish right `<presence>.account.mattermost.*.v1`
+  (`services/auth/nats-server.example.conf`). The bridge and the MCP server do
+  not read them yet; the record at a login without an agent and at a change of
+  the binding is not built. Upgrade: without the publish right every login of a
+  proven Mattermost account is refused, so the login service's NATS user gets it
+  first; the release's `Needs:` line (not allowed under Unreleased) is `Needs:
+  login service publish right on presence account records.`
+
 - **The registrar's code moves into the bridge's module** (ADR-016, step 3 of
   "all of Mattermost in one service"). The core and Mattermost packages of
   `github.com/dembaca/mattermost-agent-registrar` (main at `c984d19`) are
@@ -22,8 +41,8 @@ before 0.5.0 are described in the git history.
   bridge on `bus.hu.<home>.<anchor>`, vouched for by the bridge's publish
   right; the v1 bodies are in `docs/protocol.md`. Eighteen open points wait for
   the owner as recommendations, and the risk of the bridge as the only voucher
-  for people is recorded (RISK-21). Nothing is built; the deployment view now says
-  the bridge's first step runs in the lab.
+  for people is recorded (RISK-21). Only the login service's part is built (see Added); the deployment
+  view now says the bridge's first step runs in the lab.
 
 ### Breaking
 
