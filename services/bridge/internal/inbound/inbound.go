@@ -221,9 +221,10 @@ func (b *Bridge) guard(h *home, err error) {
 }
 
 // ready is the signal's condition: the socket this home caught up on is the
-// one that is up, and the home is carrying.
+// one that is up, the home is carrying, and the account records are read (not
+// while a new consumer reads them afresh).
 func (b *Bridge) ready(h *home) bool {
-	return !h.stopped && h.caughtUp != 0 && h.caughtUp == b.Up()
+	return !h.stopped && h.caughtUp != 0 && h.caughtUp == b.Up() && b.Anchors.CaughtUp()
 }
 
 // signal publishes the home's signal (RT-6.42 step 7) while it is ready, and

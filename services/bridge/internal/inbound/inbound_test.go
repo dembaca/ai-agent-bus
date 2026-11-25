@@ -926,3 +926,20 @@ func TestTheWatermarkWaitsForQueuedEvents(t *testing.T) {
 		t.Fatalf("did not move when nothing was queued: %d %v", wm, ok)
 	}
 }
+
+// RT-6.42 step 7: while the account records are read afresh (a new
+// consumer), a quiet home sends no signal.
+func TestNoSignalWhileTheRecordsAreReadAgain(t *testing.T) {
+	r := newRig(t, nil)
+	r.connect(1)
+	waitSignal(t, r.sig)
+	pending := &notCaughtUp{r.acc}
+	r.b.Anchors = pending
+	r.send(&mmws.Posted{PostID: pid(9), UserID: aliceID, ChannelID: elsewID}) // hands the swap over
+	drain(r.sig)
+	noSignal(t, r.sig)
+}
+
+type notCaughtUp struct{ *Accounts }
+
+func (notCaughtUp) CaughtUp() bool { return false }
