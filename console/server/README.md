@@ -74,9 +74,32 @@ that session first, and one person keeps at most four sessions (by
 
 
 Presence today carries `online`/`away` (format v1) — the Kanban's two
-extra columns. The `STATS` lines arrive and are counted; they are decoded
-for the reports with RT-6.43 step 8. Asks do not lie on NATS yet:
-`/v1/asks` and `/v1/stats` answer empty until they do (stage 1's cut).
+extra columns.
+
+The asks and the reports (the console on the bus as its operator,
+RT-6.43, steps 6 to 8): every MCP server with a NATS link publishes one
+record of its open asks on `<presence>.ask.<home>.<name>`, inside the
+`PRESENCE` stream, and each part of its STATS line on `<stats>.<name>`.
+Both reach a session through the login's own consumers, never one of the
+console's: the presence consumer the login service makes delivers the ask
+records of every channel the person may see with the presence lines, on
+`deliver.person.<login>.presence`; the stats consumer delivers the
+`STATS` stream from 7 days back on `deliver.person.<login>.stats`. Each
+session keeps its own fleet and its own reports.
+
+The fleet decodes an ask record strictly (`natsbus.decode_ask_record`: a
+record that breaks a rule is dropped whole with a warning that carries
+none of it) and `/v1/asks` lists the asks of every record whose `exp` is
+ahead of the floored clock, `expired` after 24 h (a hint), `agent_gone`
+when its presence is not fresh. "For me" and "may answer" compare the
+operator's anchor from the login's own record with the asked human's
+anchor, never a login name (point 4 of the console decision's addition of
+2026-11-25); until that record came they are `null` (`n/a`) and mark
+nothing. Read-only: no answer, no thread text. `/v1/stats` answers the
+two stage-1 reports (the bus's share of all tokens per version over 7
+days; the asks over 24 h and 7 days), computed with `stats.py` from lines
+decoded by `stats.decode_line`, each line once by its stream sequence;
+every value without lines is `null` (`n/a`).
 
 ## NATS for the console
 
@@ -100,6 +123,7 @@ never reads the file.
 | `CONSOLE_NATS_URL` | `tls://` anywhere, `nats://` loopback only (as `natsbus`) |
 | `CONSOLE_NATS_CA_FILE` | the CA for `tls://` |
 | `CONSOLE_PRESENCE_SUBJECT`, `CONSOLE_PRESENCE_STREAM` | defaults `presence`, `PRESENCE` |
+| `CONSOLE_STATS_SUBJECT`, `CONSOLE_STATS_STREAM` | the STATS lines' prefix (the login service's `AUTH_STATS_PREFIX`) and stream, defaults `stats`, `STATS` |
 | `CONSOLE_NATS_SEED_FILE` | **gone**: set, it refuses the start (the static account's secret goes with it) |
 | `CONSOLE_WEB_DIR` | the built browser app (`console/web/dist`) |
 | `CONSOLE_SESSION_SEC` | session lifetime, default 8 h |

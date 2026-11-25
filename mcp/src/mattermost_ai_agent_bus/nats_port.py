@@ -25,7 +25,9 @@ What goes over NATS, in a NATS home's channel: every post, but the ask for a hum
 bus's own props (`a2a`) travel as flat keys `<MM_PROPS_PREFIX>a2a_<key>`, the
 agent's own `<MM_PROPS_PREFIX>…` props as they are; the agent card and anything
 else are not sent with a post. The card's harness, model, task, branch and open asks
-ride the agent's presence instead (`card_source`, RT-6.37), for the operator console.
+ride the agent's presence instead (`card_source`, RT-6.37), for the operator console;
+the open asks go as one record on `<presence>.ask.<home>.<name>` (`ask_source`) and each
+STATS part on `<stats>.<name>` (`publish_stats`), RT-6.43.
 
 Memory. What arrives is kept per channel, at most `memory` posts (the lowest stream
 sequence goes first); `thread` (of a NATS root) and `reactions` read it;
@@ -194,6 +196,10 @@ class BusLike(Protocol):
 
     def presence_snapshot(self) -> dict[str, tuple[float, str]]: ...
 
+    def asks_changed(self) -> None: ...
+
+    async def publish_stats(self, body: bytes) -> None: ...
+
     async def member(self, channel: str) -> None: ...
 
     async def claim(self, channel: str) -> None: ...
@@ -334,6 +340,9 @@ class NatsPort:
         # it (a hosted one maybe after start), read at every presence the bus sends. None:
         # no card's data.
         self.card_source: Callable[[], natsbus.PresenceCard | None] | None = None
+        # The open asks for the ask record on `<presence>.ask.<home>.<name>` (RT-6.43 step 5);
+        # set like card_source, read at every check of the bus. None: no record.
+        self.ask_source: Callable[[], list[natsbus.OpenAsk]] | None = None
 
     def __getattr__(self, name: str) -> Any:
         if name in ("inner", "__setstate__"):
@@ -382,6 +391,7 @@ class NatsPort:
                 self._bus = bus
                 bus.on_person_gap = self._person_gap
                 bus.card_source = self._card
+                bus.ask_source = self._asks
                 try:
                     bus.link_bot(await self._bot_id(), await self._bot_name())
                 except ValueError:
@@ -404,6 +414,21 @@ class NatsPort:
                             ", ".join(self._homes), _describe(exc), delay)
                 await asyncio.sleep(delay)
                 delay = min(delay * 2, START_RETRY_MAX_SEC)
+
+    def _asks(self) -> list[natsbus.OpenAsk]:
+        """The open asks for the bus's next ask record: ask_source's, read now."""
+        return self.ask_source() if self.ask_source is not None else []
+
+    def asks_changed(self) -> None:
+        """An ask was posted, answered or ended: the bus publishes its record now (RT-6.43)."""
+        changed = getattr(self._bus, "asks_changed", None)  # a test's bus may have none
+        if changed is not None:
+            changed()
+
+    async def publish_stats(self, body: bytes) -> None:
+        """One STATS part on `<stats>.<name>` (RT-6.43 step 7); raises when it was not sent
+        (no bus yet, or the server refused it), so stats keeps it for the next part."""
+        await self._require().publish_stats(body)
 
     def _card(self) -> natsbus.PresenceCard | None:
         """The card's data for the bus's next presence: card_source's, read now."""

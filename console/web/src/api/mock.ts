@@ -105,32 +105,32 @@ type AskWire = Omit<Ask, "displayName">
 
 const asks = (): AskWire[] => [
   {
-    id: "ask-bridge-way", by: "agent-mac-ai-agent-164534", human: "dembaca",
+    id: "8xqk3b1zwtrd5mfy6nqpe4hc1o", by: "agent-mac-ai-agent-164534", home: "ai-agent-bus-dev",
+    kind: "question", human: "dembaca",
     need: "Is today's bridge the documented interim: every agent mirrors its own NATS posts into Mattermost?",
-    answers: ["interim today", "central bridge", "something else"],
-    at: now() - 14 * minute, end: "open", forMe: true, mayAnswer: true,
-    threadId: "thread-bridge-way",
+    at: now() - 14 * minute, end: "open", forMe: true, mayAnswer: true, agentGone: false,
+    threadId: "8xqk3b1zwtrd5mfy6nqpe4hc1o",
   },
   {
-    id: "ask-smart-compact", by: "agent-mac-ai-agent-b7ccf7", human: "dembaca",
+    id: "3hq9t1c6pzbuxk8e7wj2r5dn4a", by: "agent-mac-ai-agent-b7ccf7", home: "ai-agent-bus-dev",
+    kind: "question", human: "dembaca",
     need: "Which strategy should smart-compact use in your Claude sessions?",
-    answers: ["smart", "compact", "keepalive", "off"],
-    at: now() - 38 * minute, end: "open", forMe: true, mayAnswer: true,
-    threadId: "thread-smart-compact",
+    at: now() - 38 * minute, end: "answered", forMe: true, mayAnswer: true, agentGone: false,
+    threadId: "3hq9t1c6pzbuxk8e7wj2r5dn4a",
   },
   {
-    id: "ask-console-scope", by: "agent-mac-chat-next-3b92c9", human: "somebody-else",
+    id: "p4n8c2vxk7mq1zr6d3wy5ehb9t", by: "agent-mac-chat-next-3b92c9", home: "chat-next",
+    kind: "approval", human: "somebody-else",
     need: "Does the pilot console show the guest channels read-only, or only the homes?",
-    answers: ["read-only guests", "homes only"],
-    at: now() - 31 * 60 * minute, end: "open", forMe: false, mayAnswer: true,
-    threadId: "thread-console-scope",
+    at: now() - 31 * 60 * minute, end: "expired", forMe: false, mayAnswer: true, agentGone: true,
+    threadId: "p4n8c2vxk7mq1zr6d3wy5ehb9t",
   },
   {
-    id: "ask-image-digest", by: "agent-mac-ai-agent-b7ccf7", human: "dembaca",
+    id: "z7k2m9q4w1x8c5v3b6n0rjtyhd", by: "agent-mac-ai-agent-b7ccf7", home: "ai-agent-bus-dev",
+    kind: "approval", human: "dembaca",
     need: "Pull the login service image digest into the lab answer?",
-    answers: ["go", "no-go"],
-    at: now() - 26 * 60 * minute, end: "expired", forMe: true, mayAnswer: true,
-    threadId: "thread-image-digest",
+    at: now() - 26 * 60 * minute, end: "expired", forMe: true, mayAnswer: true, agentGone: false,
+    threadId: "z7k2m9q4w1x8c5v3b6n0rjtyhd",
   },
 ]
 
@@ -222,36 +222,32 @@ const tasksOf = (name: string): TaskRow[] => {
   return all[name] ?? []
 }
 
+const asksReport = (id: string, window: "24 h" | "7 d", n: number): Report => ({
+  id, title: "asks to humans", window,
+  fields: [
+    { label: "asks", value: n, unit: "count" },
+    { label: "answered", value: n - 1, unit: "count" },
+    { label: "answered share", value: Math.round(((n - 1) / n) * 100), unit: "%" },
+    { label: "mean wait for an answer", value: 630, unit: "s" },
+    { label: "longest wait for an answer", value: 2280, unit: "s" },
+    { label: "still open at the part's end", value: 1, unit: "count" },
+    { label: "age of the oldest line", value: 5 * 86400, unit: "s" },
+  ],
+})
+
+// The server's two stage-1 reports (RT-6.43 step 8): no names, counts and seconds only.
 const stats = (): Report[] => [
   {
-    id: "open-asks", title: "open asks", window: "live",
+    id: "share-per-version", title: "the bus's share of all tokens, per version", window: "7 d",
     fields: [
-      { label: "open now", value: 3, unit: "count" },
-      { label: "oldest since", value: 1860, unit: "s" },
-      { label: "for me", value: 2, unit: "count" },
-      { label: "the oldest for me since", value: 2280, unit: "s" },
+      { label: "version 0.100.0", value: 7.4, unit: "%" },
+      { label: "version 0.99.0", value: null, unit: "%" },
+      { label: "lines", value: 42, unit: "count" },
+      { label: "age of the oldest line", value: 5 * 86400, unit: "s" },
     ],
   },
-  {
-    id: "states-per-home", title: "agents by state now, per home", window: "live",
-    warn: "a channel with fresh presence and no crown holder for longer than 90 s",
-    fields: [],
-    bars: [
-      { label: "~ai-agent-bus-dev · working", value: 4 },
-      { label: "~ai-agent-bus-dev · listening", value: 1 },
-      { label: "~ai-agent-bus-dev · idle", value: 1 },
-      { label: "~ai-agent-bus-dev · offline", value: 1 },
-      { label: "~chat-next · silent", value: 1 },
-    ],
-  },
-  {
-    id: "share-per-version", title: "the bus's share per version", window: "live",
-    fields: [
-      { label: "0.97.0", value: 7, unit: "count" },
-      { label: "0.96.0", value: null, unit: "count" },
-      { label: "0.95.0", value: 1, unit: "count" },
-    ],
-  },
+  asksReport("asks-24h", "24 h", 4),
+  asksReport("asks-7d", "7 d", 19),
 ]
 
 const graph = (): GraphData => ({

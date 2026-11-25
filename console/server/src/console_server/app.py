@@ -2,8 +2,9 @@
 fleet view, the Keycloak login, the HTTP side and the built browser app.
 
 Read-only (ADR-015 stage 1): the only endpoints that answer with state
-are reads; ``/v1/asks`` and ``/v1/stats`` answer empty until asks and
-the STATS lines lie on NATS (the pilot shows presence and crown, live).
+are reads; ``/v1/asks`` lists the open asks of the agents' ask records
+and ``/v1/stats`` the two stage-1 reports from their STATS lines: shown,
+never answered.
 Each logged-in operator reads the bus with a NATS connection of their own
 (RT-6.43): the fleet a session shows is what that person's consumers
 deliver, and there is no reader before a login.
@@ -69,7 +70,7 @@ class Console:
         self.settings = settings
         # the stand-in view: login off (tests and the mock) and sessions made
         # without one; nothing feeds it — every login has a view of its own
-        self.standin = View(settings.presence_subject)
+        self.standin = View(settings.presence_subject, settings.stats_subject)
         self.sessions = auth.Sessions()
         self.keyring = auth.Keyring()
         self.endpoints: auth.Endpoints | None = None
@@ -287,12 +288,14 @@ class Console:
                  "bus": view.bus()}, headers=API_HEADERS)
         if path == "/v1/fleet":
             return self._stream(self._session_token(headers))
-        for route in ("/v1/asks", "/v1/stats"):
-            if path == route:
-                if self._operator(headers) is None:
-                    return _unauthorized()
-                # empty until asks and STATS lie on NATS (the stage 1 cut)
-                return httpd.Response.json([], headers=API_HEADERS)
+        if path in ("/v1/asks", "/v1/stats"):
+            if self._operator(headers) is None:
+                return _unauthorized()
+            # RT-6.43 steps 6 and 8: read-only, from the agents' own records as this
+            # session's own consumers deliver them; "for me" by the operator's anchor
+            view = self._view(self._session_token(headers))
+            return httpd.Response.json(view.asks() if path == "/v1/asks"
+                                       else view.stats.reports(), headers=API_HEADERS)
         if path.startswith("/v1/threads/"):
             if self._operator(headers) is None:
                 return _unauthorized()
@@ -409,7 +412,7 @@ class Console:
         """A session with a view of its own; with NATS set, a reader that
         connects as this operator with a key pair made for this login."""
         s = self.settings
-        view = View(s.presence_subject)
+        view = View(s.presence_subject, s.stats_subject)
         if s.nats_url:
             sub = operator.sub
 

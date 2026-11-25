@@ -121,18 +121,20 @@ function FullCard({ card }: { card: AgentCard }) {
   )
 }
 
-/** One ask in the pane: the need and the answers it offers. Read-only:
- * nothing here answers it — that stays in the humans' chat until the
- * owner opens answering (stage 1). */
+/** One ask in the pane: its title and kind. Read-only: nothing here
+ * answers it — that stays in its thread in the chat (stage 1). */
 function AskDetail({ ask }: { ask: Ask }) {
   return (
     <div className="detail__ask">
       <div className="detail__ask-need">{ask.need}</div>
       <div className="detail__ask-answers">
-        {ask.answers.map((a) => <span key={a} className="chip">{a}</span>)}
+        <span className="chip">{ask.kind}</span>
+        {ask.agentGone && <span className="chip">agent gone</span>}
       </div>
       <div className="detail__ask-note">
-        {ask.forMe
+        {ask.forMe === null
+          ? "Shown read-only; whether it is yours is n/a until your own credential gives your anchor."
+          : ask.forMe
           ? "One of your open asks; this read-only pilot shows it, nothing else."
           : "Another human's ask, shown read-only."}
       </div>

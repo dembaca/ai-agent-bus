@@ -487,9 +487,10 @@ def _load_server(client: BusClient | None) -> Serve:
         server._client = client  # one client for hook API, heartbeat and tools
         # the HELLO card's data for a NATS home's presence (RT-6.37 step 6): services()
         # starts the bus, maybe before; NatsPort reads the source at every presence
+        # and the record of its open asks and its STATS parts (RT-6.43 steps 5 and 7)
         port = compose.nats_port_of(client)
         if port is not None:
-            port.card_source = server._presence_card
+            server.wire_nats(port)
     server._hide_lifecycle_tools()
     return server.serve
 
@@ -758,6 +759,9 @@ async def services(key: str, client: BusClient) -> AsyncIterator[str]:
     finally:
         nats.cancel()
         await asyncio.gather(nats, return_exceptions=True)  # a start under way ends here, not later
+        from . import server
+
+        await server._final_stats_on_nats()  # the last STATS part on NATS too (RT-6.43 step 7)
         await compose.stop_nats(client)
         task.cancel()
         if logging_in is not None:

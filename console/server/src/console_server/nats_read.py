@@ -51,6 +51,7 @@ from mattermost_ai_agent_bus.natsbus import connect_reason, parse_ack
 from . import config
 from .auth import Refused, Tokens
 from .fleet import Fleet
+from .stats_view import StatsBook
 
 
 log = logging.getLogger("console.nats")
@@ -189,11 +190,12 @@ class View:
     """What one session shows: its own fleet, fed by its own reader (or by
     nobody, without NATS), and one wake per live fleet stream."""
 
-    def __init__(self, presence_subject: str) -> None:
+    def __init__(self, presence_subject: str, stats_subject: str = "stats") -> None:
         self.fleet = Fleet(presence_subject=presence_subject)
+        self.stats = StatsBook(stats_subject=stats_subject)   # the STATS reports (step 8)
         self.wakes: set[asyncio.Event] = set()
         self.reader: PersonReader | None = None
-        self.stats_lines = 0          # STATS deliveries; decoded with step 8
+        self.stats_lines = 0          # STATS deliveries read; the book keeps the valid ones
 
     def fire(self) -> None:
         for wake in list(self.wakes):
@@ -203,6 +205,13 @@ class View:
         """The session ended: the reader stops and drops key and tokens."""
         if self.reader is not None:
             self.reader.stop()
+
+    def asks(self) -> list[dict[str, Any]]:
+        """The open asks this session's consumers delivered (RT-6.43 step 6): "for me" and
+        "may answer" compare the operator's anchor from the login's own record, never the
+        login name; n/a until that record came."""
+        anchor = self.reader.anchor if self.reader is not None else None
+        return self.fleet.asks(anchor)
 
     def bus(self) -> dict[str, Any]:
         """What the browser sees of this session's reading (``/v1/me``)."""
@@ -485,8 +494,12 @@ class PersonReader:
                 view.fire()
 
         async def stats(msg: Any) -> None:
-            if self._stats.take(msg.reply):
-                view.stats_lines += 1     # read and shown with the reports (step 8)
+            consumer = self._stats.take(msg.reply)
+            if consumer:
+                view.stats_lines += 1
+                # decoded strictly; a line outside the rules is dropped (steps 7 and 8)
+                view.stats.on_delivery(msg.subject, msg.data, msg.reply,
+                                       settings.stats_stream, consumer)
 
         await nc.subscribe(self.deliver_presence, cb=presence)
         await nc.subscribe(self.deliver_stats, cb=stats)

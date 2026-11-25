@@ -4,13 +4,13 @@
 // (`console/server/tests/test_wire_contract.py`, which builds this card from
 // live deliveries). Cards, events and thread pages are the app's camelCase
 // shapes; ask rows and `/v1/me` use the ADR's spellings (`for_me`, …) and are
-// mapped in `http.ts`.
+// mapped in `http.ts`; a report is `/v1/stats`' shape as the app takes it.
 //
 // A JSON import widens literal unions (`state`, the event `type`, `end`) to
 // plain strings, so the structural assertion is a `satisfies` on the widened
 // shape and the literal words are guarded at load. The guards and the fixture
 // itself run in development only: the production bundle carries neither.
-import { AGENT_STATES, HARNESS_LABEL, type AgentCard, type Post, type ThreadPage } from "./types"
+import { AGENT_STATES, HARNESS_LABEL, type AgentCard, type Post, type Report, type ThreadPage } from "./types"
 import type { WireAsk } from "./http"
 import fixture from "../../../fixtures/console-api.json"
 // The fixture's envelope, widened where the JSON import widens it
@@ -24,8 +24,11 @@ type FixtureEvShape = {
 let shapes: {
   card: Omit<AgentCard, "state" | "harness" | "role"> & { state: string; harness: string | null; role: string },
   page: ThreadPage, events: FixtureEvShape,
-  ask: Omit<WireAsk, "end"> & { end: string }
+  ask: Omit<WireAsk, "end" | "kind"> & { end: string; kind: string }
+  report: Omit<Report, "window" | "fields"> & { window: string; fields: ReportFieldShape[] }
 } | null = null
+
+type ReportFieldShape = Omit<Report["fields"][number], "unit"> & { unit: string }
 
 if (!import.meta.env.PROD) {
   type CardShape = Omit<AgentCard, "state" | "harness" | "role">
@@ -34,7 +37,20 @@ if (!import.meta.env.PROD) {
   const firstPost = fixture.page.posts[0] satisfies Post
   const page = { rootId: fixture.page.rootId, posts: [firstPost], next: fixture.page.next } satisfies ThreadPage
   const events = fixture.events satisfies FixtureEvShape
-  const ask = fixture.ask satisfies Omit<WireAsk, "end"> & { end: string }
+  const ask = fixture.ask satisfies Omit<WireAsk, "end" | "kind"> & { end: string; kind: string }
+  const report = fixture.report satisfies Omit<Report, "window" | "fields">
+    & { window: string; fields: ReportFieldShape[] }
+  if (ask.kind !== "approval" && ask.kind !== "question") {
+    throw new Error(`wire fixture: unknown ask kind ${ask.kind}`)
+  }
+  if (!["live", "24 h", "7 d", "90 d"].includes(report.window)) {
+    throw new Error(`wire fixture: unknown report window ${report.window}`)
+  }
+  for (const field of report.fields) {
+    if (!["count", "s", "%"].includes(field.unit)) {
+      throw new Error(`wire fixture: unknown report unit ${field.unit}`)
+    }
+  }
   if (!(AGENT_STATES as readonly string[]).includes(card.state)) {
     throw new Error(`wire fixture: unknown state ${card.state}`)
   }
@@ -54,7 +70,7 @@ if (!import.meta.env.PROD) {
   if (ask.end !== "open") {
     throw new Error(`wire fixture: the example ask is not open (${ask.end})`)
   }
-  shapes = { card, page, events, ask }
+  shapes = { card, page, events, ask, report }
 }
 
 export const wire_shapes = shapes

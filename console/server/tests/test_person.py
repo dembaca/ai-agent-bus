@@ -23,6 +23,8 @@ import pytest
 from console_server import auth, config, nats_read
 from console_server.app import Console
 from console_server.nats_read import PersonReader, View
+from mattermost_ai_agent_bus import stats
+from test_asks_stats import A, LINE, fields
 from test_http import get
 
 SETTINGS = config.Settings(public_url="http://127.0.0.1:8747",
@@ -167,6 +169,16 @@ async def test_the_reader_subscribes_by_the_login_and_learns_its_name() -> None:
         await st(SimpleNamespace(subject="stats.agent-a", data=b"{}",
                                  reply=ack("other", 2).replace("PRESENCE", "STATS")))
         assert view.stats_lines == 1             # no reply, another consumer: dropped
+        assert fields(view.stats.reports()[0])["lines"] == 1   # "{}": a line, all fields absent
+        # a line within the rules reaches the session's reports (RT-6.43 steps 7 and 8)
+        await st(SimpleNamespace(subject=f"stats.{A}", data=stats.nats_body(LINE),
+                                 reply=ack("svc-stats", 7).replace("PRESENCE", "STATS")))
+        assert view.stats_lines == 2
+        assert fields(view.stats.reports()[0])["lines"] == 2
+        # the asks compare the anchor of the login's own record (RT-6.43 step 6)
+        with mock.patch.object(view.fleet, "asks", return_value=[]) as asks:
+            assert view.asks() == []
+        asks.assert_called_once_with("ann~k")
         # another consumer's presence is dropped too: the first name is pinned
         await cb(online("agent-b", ack("another-consumer", 4)))
         assert [c["name"] for c in view.fleet.cards()] == ["agent-a"]

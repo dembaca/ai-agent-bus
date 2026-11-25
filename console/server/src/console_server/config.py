@@ -43,6 +43,10 @@ class Settings:
     nats_ca_file: str = ""
     presence_subject: str = "presence"
     presence_stream: str = "PRESENCE"
+    # the STATS lines (RT-6.43 step 7): the login service's STATS stream, which the
+    # login's own stats consumer delivers; each line lies on <stats>.<agent>
+    stats_subject: str = "stats"
+    stats_stream: str = "STATS"
 
     # the built browser app (console/web/dist)
     web_dir: str = ""
@@ -82,6 +86,8 @@ def find() -> Settings:
         nats_ca_file=given("CONSOLE_NATS_CA_FILE"),
         presence_subject=given("CONSOLE_PRESENCE_SUBJECT") or "presence",
         presence_stream=given("CONSOLE_PRESENCE_STREAM") or "PRESENCE",
+        stats_subject=given("CONSOLE_STATS_SUBJECT") or "stats",
+        stats_stream=given("CONSOLE_STATS_STREAM") or "STATS",
         web_dir=given("CONSOLE_WEB_DIR"),
     )
     if given("CONSOLE_NATS_SEED_FILE"):
@@ -128,6 +134,11 @@ def _check(s: Settings) -> None:
     for name in (s.presence_subject, s.presence_stream):
         if not name or any(c in name for c in ". *>"):
             raise ConfigError("CONSOLE_PRESENCE_SUBJECT/STREAM: one plain token")
+    for name in (s.stats_subject, s.stats_stream):
+        if not name or any(c in name for c in ". *>"):
+            raise ConfigError("CONSOLE_STATS_SUBJECT/STREAM: one plain token")
+    if s.stats_subject in (s.presence_subject, "deliver"):
+        raise ConfigError("CONSOLE_STATS_SUBJECT: not the presence prefix, not deliver")
 
 
 def _https(s: Settings) -> Settings:
