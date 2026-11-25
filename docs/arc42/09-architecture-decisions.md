@@ -3288,7 +3288,10 @@ separately.
       (ADR-016, accepted 2026-11-23), not built yet: not the central
       adapter alone. Each chat product's bridge vouches for the humans of
       its chat, with a key of its own and only for the channels bound to
-      it; the central adapter is the bridge for Mattermost. Later a
+      it; the central adapter is the bridge for Mattermost. Amended by
+      step 2 of the addition "all of Mattermost in one service" (ADR-016,
+      decision point 2, open): recommended is no key, the bridge vouches by
+      its NATS publish right alone; the risk is RISK-21. Later a
       Keycloak login on NATS itself counts as much, with the operator
       console's answer path (ADR-015 open point 2). Whether an answer
       approves stays the asking agent's MCP server's check, as above.
@@ -4730,9 +4733,239 @@ registrar's functions can move in later without a second component.
    The bridge posts what the agents send over NATS into Mattermost under one
    bot account and names the agent in each post (`shown_as` and the NATS id
    in the post's props); agents reading Mattermost drop what carries that id.
-   One bot per agent is the next step. Being built.
+   One bot per agent is the next step. Built (#90) and deployed in the lab
+   since 2026-11-24.
 2. **People's posts and reactions onto NATS**, vouched for as point 3 says.
-   Open.
+   Specified, not built: the scenario "People's posts onto NATS" (RT-6.42)
+   and the bodies in `docs/protocol.md`. The bridge reads its bot's
+   Mattermost WebSocket in the bound home channels and publishes each
+   person's post and reaction on NATS. Eighteen points are open, each one
+   decision with a recommendation, its reason and the alternative, for the
+   owner to answer yes or no; points 15 to 18 are details the first draft
+   filled in without saying so.
+   1. **A subject of its own, `<bus>.hu.<home>.<anchor>`, apart from
+      `<bus>.ch`.** Recommended. Why: the sender stays the subject's last
+      token (ADR-014 point 16), here the person's anchor; no agent's right
+      overlaps it, and no agent decoder can take a person's event for an
+      agent's or the reverse. The bridge may publish `<bus>.hu.<HOME>.*` for
+      each home it serves, never `<bus>.hu.>` and never `<bus>.ch` or
+      `<bus>.dm`. Alternative: on `<bus>.ch` with the bridge as the sender
+      and the person in the body. Rejected: readers take the sender from
+      the subject alone, never from a body.
+   2. **The bridge alone vouches for people, by its NATS publish right,
+      with no signature per event.** Recommended, with its cost stated:
+      this reverses the plan of the NATS decision that the adapter signs
+      every human-origin event with a key the hosts pin (ADR-014 point
+      10). The bridge chooses the anchor it publishes under, so whoever
+      controls it can post any trusted person's "go" in every home it
+      serves, and the account records (point 7) do not limit that: they
+      tell the bridge whom an account is, they do not check what it sends.
+      A signature would not limit it either while the bridge holds the
+      signing key; it would only matter for a reader without NATS, and none
+      exists yet. Why: one key less to keep, rotate and pin, and the NATS
+      server already checks who may publish where. The risk is recorded
+      (RISK-21). Alternative: the login service, not the bridge, signs a
+      short-lived statement per account that the bridge attaches and the
+      hosts check; then a captured bridge can speak only for people whose
+      statement it holds. Its cost: a second signing path in the login
+      service and a check in every host.
+   3. **An account bound to nobody is carried under the token `-` and is
+      never trusted.** Recommended. Why: people the bridge cannot resolve
+      still reach the coordinator as untrusted people do on Mattermost
+      today (RT-6.16), and `-` is no anchor, so no trust list can name it.
+      Alternative: drop their posts. Then an unbound person who writes in
+      a bound channel is silently unheard.
+   4. **All unbound people share the one sender `-`.** Recommended. Why:
+      nothing trusts them, so telling them apart decides nothing; a
+      reaction counts per post, emoji and sender, so one unbound person's
+      `unreaction` can take off another's, which approves or refuses
+      nothing either. The body's `name` still shows who wrote. Alternative:
+      a token per account (`mm~<user id>`) that is never trusted. It keeps
+      reactions apart, at the cost of a second kind of sender token every
+      reader must refuse as an anchor.
+   5. **Edits and deletes are not carried.** Recommended. Why: an agent
+      may already have acted on the first text; an edit that changes "go"
+      into something else after an approval must not reach the agent as
+      the same post. A person who changes their mind writes a new post.
+      Alternative: carry an edit as a new kind that names the old post. It
+      needs every reader to decide what an edit of an answered ask means.
+   6. **Bot posts are dropped.** Recommended. Why: `<bus>.hu` is for
+      people; a bot's post carried there would speak as a person. Today
+      nothing is lost: the MCP server still reads other bots' posts on
+      Mattermost, only people's events move to NATS. Its cost comes later:
+      once agents hold no Mattermost token, an agent that runs without
+      NATS is invisible to them. Alternative: carry bot posts on a subject
+      of their own, never a person and never trusted.
+   7. **The login service publishes one record per bound account.**
+      Recommended: `<presence>.account.mattermost.<user id>.v1`, written by
+      the login service alone, like the attestation records
+      (`<presence>.attest.*`, RT-6.41), at each credential issue of that
+      identity's agents and when an administrator changes the binding
+      (`anchor` `null` once unbound). The bridge maps a Mattermost account
+      to a person's anchor from these records through a push consumer and
+      gets no read right on the channel directory's bucket. Why: the
+      directory's raw values are not the bridge's to read (they hold every
+      identity and binding), and the hosts need the same record for point
+      8. Alternative: a read right on the directory's account index.
+      Simpler, but it gives the component with the Mattermost
+      administrator right the whole directory too.
+   8. **Who may approve (the approvers' group of the NATS decision,
+      ADR-014 point 10): an `approver` flag in that record, from the
+      newest Keycloak token.** Recommended. The record carries the token's
+      `iat` (`token_iat`); the login service never overwrites a record with
+      one from an older token, so an older but still valid token replayed
+      from another host cannot flip the flag back after a removal from the
+      group. It keeps the newest `token_iat` per identity in the directory,
+      its own store, and compares with that, not with the record on NATS,
+      so a record erased by a stray answer does not reset the guard. The flag counts until the record's `exp`, the expiry of the
+      NATS credential issued from that token (15 minutes); a stale record
+      still names the anchor but approves nothing. The MCP server lets a
+      person's post or reaction approve an ask only when the person is in
+      the session's trusted list and a fresh record says `approver`, as
+      the owner decided on 2026-11-22 (Keycloak group plus trust list).
+      Why: Keycloak decides the group, and only the login service reads
+      Keycloak tokens; a stale flag fails closed. Alternative: the bridge
+      or the login service asks Keycloak's admin API per event. That needs
+      an admin right in Keycloak for a check the token already answers.
+   9. **An approver who runs no agent gets a record by a login of their
+      own.** Recommended: the host login (RT-6.34) gets a mode that logs a
+      person in without starting an agent; the login service checks the
+      token as for an agent and writes only the account record, valid for
+      15 minutes and renewed while that login runs. Why: without it a
+      record exists only while the person runs an agent, so a trusted
+      approver without one could never approve, which narrows the decision
+      of 2026-11-22. Alternative: the operator console's Keycloak login
+      (ADR-015) writes the record through the login service. It needs the
+      console's path to the login service, which is not built.
+   10. **Before the account records exist, every person is carried under
+       `-`.** Recommended: nobody is trusted over NATS, a person's post
+       reaches only the coordinator and approves nothing, until the login
+       service writes the records (point 7). Why: a Mattermost username is
+       chosen by its holder, can be renamed and, once freed, taken; the
+       Mattermost path pins trust by account id today, and a name would
+       let a renamed account set a mandate or count as a trusted root.
+       Alternative: an explicit bridge-wide mode that takes a lower-case
+       Mattermost username as the anchor, as the login service does before
+       the import (RT-6.41 step 2), for every account alike, never decided
+       per account, ending at the import, and never approving. It keeps
+       people heard during the move, with the rename risk above.
+   11. **A gap in the WebSocket is caught up over REST.** Recommended: on
+       each reconnect the bridge reads each home channel's posts since its
+       watermark (`GET /channels/{id}/posts?since=`) and carries only posts
+       whose `create_at` is after the watermark, the newest `create_at` it
+       carried, kept in `BUS_BRIDGE`; `since` also returns edited posts,
+       which are never carried again. On its first start, or with no
+       watermark, it carries nothing from before; it reaches back at most
+       10 minutes, and what is older is logged as a gap, not carried. Each
+       caught-up post and reaction passes the same drop rules as the live
+       path. A reaction is bounded by its own time, not its post's: the
+       bridge carries a reaction whose `create_at` is after the watermark
+       and within the 10 minutes, also on an older post (an ask). It finds
+       them through the same `since` read, which returns posts whose
+       reactions changed with their current reactions, and compares those
+       with what it carried; whether `since` returns a post whose only
+       change is a reaction is to be checked against Mattermost at build,
+       and if not, the bridge reads the reactions of every post of that
+       read and, for older targets, of every post id it has seen in the
+       channel within the last hour, asks included. A reaction on an ask is
+       carried like any other, although the ask itself, an agent's
+       Mattermost post, is not. A removal found this way is carried as
+       an `unreaction`. An event's key is a post's `mm`, and for a reaction
+       or unreaction its `mm`, emoji, sender and kind together; an event of
+       the opposite kind for the same `mm`, emoji and sender clears the
+       key, so a 👍 taken back and given again counts again (chosen over
+       adding the reaction's `create_at` to the key). The bridge keeps the
+       keys it carried and the post ids it has seen in a bucket of their
+       own, `BUS_BRIDGE_SEEN`, with `max_age` one hour (longer than the
+       catch-up bound and any key's use) and `discard: old`, so they never
+       fill `BUS_BRIDGE`, whose first-step `pos.<home>` keys have no age
+       limit and whose `discard: new` would then refuse every write; the
+       watermark per home stays in `BUS_BRIDGE`. The MCP server drops an
+       event whose key it holds, and keeps its keys for the same hour. Why: in a switched channel the MCP
+       server no longer reads people on Mattermost (point 12), so a "go"
+       posted during a reconnect would never arrive; the watermark and the
+       age bound keep an old, edited "go" from going out as new.
+       Alternative: accept the gap and log it. A lost approval then shows
+       only as an ask that stays open.
+   12. **The MCP server switches a channel to NATS on the bridge's own
+       signal, not on `MM_BRIDGE_BOT`.** Recommended: the bridge publishes
+       `{"v":1, "home", "people":true, "iat", "exp"}` on
+       `<presence>.bridge.<home>.v1` every minute, valid 3 minutes, but only
+       while its WebSocket is connected and its catch-up (point 11) is done;
+       it stops on a disconnect, and the signal runs out. While a fresh one
+       names a channel, the MCP server takes that channel's people from
+       NATS only and drops the Mattermost side's; without one it reads the
+       Mattermost side, as today. When the signal runs out, the server
+       first reads that channel on Mattermost from its last people event
+       on, so what came while the bridge was gone is not lost. At a switch
+       both sides may deliver the same event once, and the server drops the
+       second by its key, cleared by an event of the opposite kind (point 11). No new setting. Why: lab hosts set
+       `MM_BRIDGE_BOT` already for the first step, so with it as the switch
+       an upgraded host before an upgraded bridge leaves people unheard,
+       silently. Alternative: `MM_BRIDGE_BOT` as the switch with a release
+       order (point 13).
+   13. **No upgrade order.** Recommended, following point 12: hosts and
+       bridge upgrade in any order, since a host switches only when the
+       bridge says so. Alternative, if point 12 is declined: the release
+       that reads people from NATS says in its CHANGELOG `Needs:` line that
+       the bridge's step 2 runs first.
+   14. **Guests, direct messages and asks follow the channel.**
+       Recommended: the switch of point 12 is per channel, not per
+       session: a session reads a guest channel's people from NATS when
+       the bridge signals that channel, else from Mattermost. Direct
+       messages between a person and an agent stay on Mattermost (the
+       bridge reads only the channels of `BRIDGE_HOMES`). An ask stays a
+       Mattermost post (RT-6.36 step 3); in a switched channel the replies
+       and reactions to it arrive over NATS, found by `mm_root` and `mm`.
+       Alternative: switch per session home only, with guest channels on
+       Mattermost. Simpler, but one channel is then read two ways by
+       different sessions.
+   15. **The `BUS` stream carries `<bus>.hu.>`** beside `<bus>.ch.>`.
+       Recommended. Why: a person's post gets a stream sequence like an
+       agent's, so `root` and `ref` stay one numbering. Alternative: a
+       stream of its own. Then a reply across the two needs a second kind
+       of reference.
+   16. **Each agent gets one consumer per granted channel for people,
+       named `<agent>_hu_<channel>`, deliver subject
+       `deliver.<name>.hu.<channel>`, ack none.** Recommended: the login
+       service makes it beside the agent's `<agent>_ch_<channel>` and the
+       agent's bye deletes both. Why: the same rules as for agents' traffic
+       (ADR-014 point 16), and a channel the agent may not read gives it
+       no people either. Alternative: widen the existing consumer's filter
+       to both subjects. One consumer less, but a change to every agent's
+       consumer at once.
+   17. **The bridge never mirrors a `<bus>.hu` message back into
+       Mattermost.** Recommended: its per-home consumer reads `<bus>.hu`
+       only to learn the sequence of what it carried. Why: the person's
+       post is already in Mattermost; a mirror would show it twice and
+       loop. Alternative: none sensible.
+   18. **The body's fields**: `v`, `kind`, `mm`, `name` (display only),
+       for a post `text` (cut at 16 000 characters and to fit the stream's
+       64 KiB, then marked `cut`), `mm_root`, `root`, `files` (a count;
+       files stay on Mattermost), for a reaction `emoji` and `ref`; no `props`.
+       Recommended. Why: the Mattermost ids let an agent answer a person
+       and match an ask; nothing in the body names the author. Alternative:
+       carry files over NATS. Not needed while agents can read Mattermost.
+
+   Security, whichever way the points are decided: the author comes only
+   from the WebSocket event's `user_id`. The bridge drops posts with
+   `from_webhook` or `override_username`, system posts, posts and
+   reactions by bots and its own; it strips every prop a person set (the
+   body has none). Its NATS rights for this step: publish
+   `<bus>.hu.<HOME>.*` and `<presence>.bridge.<HOME>.v1` per home, read
+   the account records through its own consumer; nothing on `<bus>.ch`,
+   `<bus>.dm` or `<bus>.hu.>`. NATS checks no reply subject, and
+   JetStream answers onto it: an agent holds no JetStream right, but the
+   bridge's and the login service's users do, so a JetStream answer
+   (a key-value or stream read, an ack) can be routed onto a person's
+   subject, an account record or a bridge record. Every decoder of these
+   is strict: a body of format v1 with exactly its fields, no unknown key,
+   no duplicate key; an empty or header-only message is refused. A record
+   that does not decode counts as unbound and no approver; since
+   `PRESENCE` keeps one message per subject, a stray answer can erase a
+   record until the next write, which fails closed. Direct get
+   (`allow_direct`) stays off on every stream, so no stored message can be
+   replayed onto these subjects.
 3. **The registrar moves into the bridge.** One bot per agent needs what the
    registrar does today: an account allowed to create bots and their tokens.
    The bridge takes over bot creation for homes over NATS; the registrar keeps
