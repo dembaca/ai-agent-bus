@@ -29,6 +29,8 @@ type fakeAttester struct {
 	mu  sync.Mutex
 	got []published
 	err error
+	// failOn: a publish whose subject contains it fails
+	failOn string
 }
 
 func (f *fakeAttester) Publish(_ context.Context, subject string, body []byte) error {
@@ -36,6 +38,9 @@ func (f *fakeAttester) Publish(_ context.Context, subject string, body []byte) e
 	defer f.mu.Unlock()
 	if f.err != nil {
 		return f.err
+	}
+	if f.failOn != "" && strings.Contains(subject, f.failOn) {
+		return errors.New("publish refused")
 	}
 	f.got = append(f.got, published{subject, body})
 	return nil

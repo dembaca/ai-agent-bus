@@ -235,6 +235,7 @@ type spec struct {
 	stream, name, deliver string
 	channel               string // "": not a channel consumer
 	dm                    bool   // the direct-message consumer (since key SinceDM)
+	hu                    bool   // a channel's people (RT-6.42): no since key, made with its channel consumer
 	presence              bool
 	filters               []string
 }
@@ -243,11 +244,19 @@ func (m *Manager) desired(agent string, channels []string) []spec {
 	var out []spec
 	// every agent: owner token and name; everyone's attestation (the login
 	// service's vouching for an agent's owner and trust list)
-	filters := []string{m.cfg.Presence + ".*.*", m.cfg.Presence + ".attest.*.v1"}
+	// and the account records of the people (RT-6.42: who a Mattermost
+	// account is, and whether it approves)
+	filters := []string{m.cfg.Presence + ".*.*", m.cfg.Presence + ".attest.*.v1", m.cfg.Presence + ".account.mattermost.*.v1"}
 	for _, ch := range channels {
 		out = append(out, spec{stream: BusStream, name: agent + "_ch_" + ch, channel: ch,
-			deliver: DeliverPrefix + "." + agent + ".ch." + ch, filters: []string{m.cfg.Bus + ".ch." + ch + ".*"}})
-		filters = append(filters, m.cfg.Presence+".crown."+ch+".*", m.cfg.Presence+".member."+ch+".*")
+			deliver: DeliverPrefix + "." + agent + ".ch." + ch, filters: []string{m.cfg.Bus + ".ch." + ch + ".*"}},
+			// the channel's people, on a subject of their own (RT-6.42 step 8,
+			// ADR-016 step 2 point 16): the sender is the last token, the
+			// anchor; only the bridge may publish there
+			spec{stream: BusStream, name: agent + "_hu_" + ch, hu: true,
+				deliver: DeliverPrefix + "." + agent + ".hu." + ch, filters: []string{m.cfg.Bus + ".hu." + ch + ".*"}})
+		filters = append(filters, m.cfg.Presence+".crown."+ch+".*", m.cfg.Presence+".member."+ch+".*",
+			m.cfg.Presence+".bridge."+ch+".v1") // whether the bridge carries the channel's people
 	}
 	out = append(out,
 		spec{stream: BusStream, name: agent + "_dm", dm: true, deliver: DeliverPrefix + "." + agent + ".dm",
@@ -465,7 +474,7 @@ func (m *Manager) previous(ctx context.Context, agent string, pres *consumerInfo
 		if chs, ok := pres.Config.Metadata[metaChannels]; ok {
 			var out []named
 			for _, ch := range splitChannels(chs) {
-				out = append(out, named{BusStream, agent + "_ch_" + ch})
+				out = append(out, named{BusStream, agent + "_ch_" + ch}, named{BusStream, agent + "_hu_" + ch})
 			}
 			return append(out, named{BusStream, agent + "_dm"}, named{PresenceStream, agent + "_presence"})
 		}

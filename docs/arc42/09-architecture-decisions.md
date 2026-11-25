@@ -4738,9 +4738,11 @@ registrar's functions can move in later without a second component.
 2. **People's posts and reactions onto NATS**, vouched for as point 3 says.
    Specified in the scenario "People's posts onto NATS" (RT-6.42) and the
    bodies in `docs/protocol.md`; the owner accepted all eighteen points as
-   recommended. Built on the bridge's side (`services/bridge/internal/inbound`);
-   not built: the login service's account records and per-agent consumers,
-   and the MCP server's reader. The bridge reads its bot's
+   recommended. Built in the login service (the account record at a
+   credential issue, the per-agent `<agent>_hu_<channel>` consumers) and on
+   the bridge's side (`services/bridge/internal/inbound`); not built: the
+   record at a login without an agent or a change of the binding, and the
+   MCP server's reader. The bridge reads its bot's
    Mattermost WebSocket in the bound home channels and publishes each
    person's post and reaction on NATS. The eighteen points were each one
    decision with a recommendation, its reason and the alternative, for the
@@ -4963,6 +4965,12 @@ registrar's functions can move in later without a second component.
        Recommended. Why: the Mattermost ids let an agent answer a person
        and match an ask; nothing in the body names the author. Alternative:
        carry files over NATS. Not needed while agents can read Mattermost.
+
+   Built on the login service's side (this addition, RT-6.42 steps 3 and 8,
+   points 7, 8 and 16): the account record at each credential issue with the
+   `token_iat` guard in the directory, and the `<agent>_hu_<channel>` consumer
+   with the presence consumer's extra filters. Not built there: the record at
+   a login without an agent (point 9) and at a change of the binding.
 
    Security, whichever way the points are decided: the author comes only
    from the WebSocket event's `user_id`. The bridge drops posts with

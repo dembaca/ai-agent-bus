@@ -210,7 +210,7 @@ func TestTheExampleServerConfiguration(t *testing.T) {
 			}
 			kv := "KV_" + directory.DefaultBucket
 			pub = append(pub, "$JS.API.INFO", "$JS.API.STREAM.CREATE."+kv, "$JS.API.STREAM.INFO."+kv,
-				"$JS.API.DIRECT.GET."+kv+".>", "$KV."+directory.DefaultBucket+".>", "$JS.API.STREAM.MSG.GET.PRESENCE", "presence.attest.*.v1")
+				"$JS.API.DIRECT.GET."+kv+".>", "$KV."+directory.DefaultBucket+".>", "$JS.API.STREAM.MSG.GET.PRESENCE", "presence.attest.*.v1", "presence.account.mattermost.*.v1")
 			p := u.Permissions
 			if p == nil || p.Publish == nil || p.Subscribe == nil {
 				t.Fatalf("the JetStream user has no permissions: %+v", p)

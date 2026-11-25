@@ -130,6 +130,9 @@ type Service struct {
 	now      func() time.Time
 	pending  chan struct{}
 
+	subMu    sync.Mutex          // guards subLocks
+	subLocks map[string]*subLock // one lock per identity while its account record is written
+
 	cmu       sync.RWMutex
 	consumers Consumers // nil: none are made
 	anchors   Anchors   // nil: the anchor is the owner's name, as before ADR-016
@@ -388,6 +391,15 @@ func (s *Service) authorize(ctx context.Context, req *jwt.AuthorizationRequestCl
 		if err := s.attest(ctx, at, tr, agent, directory.Trusted{Anchor: anchor, Name: id.Owner},
 			hello.Trusted, hello.TrustedCut, uc.IssuedAt, uc.Expires); err != nil {
 			return "", who, fmt.Errorf("attestation: %w", err)
+		}
+		// The record of the chat account behind the login (RT-6.42 step 3).
+		guard, _ := s.anchorHook().(TokenGuard)
+		skipped, err := s.accountRecord(ctx, at, guard, id.Subject, id.ChatID, id.Owner, id.Approver, anchor, id.IssuedAt, uc.IssuedAt, uc.Expires)
+		if err != nil {
+			return "", who, fmt.Errorf("account record: %w", err)
+		}
+		if skipped != "" && id.ChatID != "" {
+			s.log.Info("auth callout", "event", "account record kept", "sub", id.Subject, "reason", skipped)
 		}
 	}
 	return userJWT, who, nil
