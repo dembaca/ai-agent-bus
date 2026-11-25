@@ -531,3 +531,16 @@ def test_a_negative_wait_from_a_skewed_clock_counts_zero() -> None:
     data, _ = stats._summarize(events, "0.101.0", None, 10.0, final=True)
     assert data["ask_wait_sec"] == 0 and data["ask_wait_max_sec"] == 0
     assert stats.nats_body(data) is not None
+
+
+def test_the_harness_names_agree_everywhere() -> None:
+    """The card's harness (natsbus.HARNESSES), the STATS line's `rt` (stats.RUNTIMES) and the
+    console's `Harness` union (console/web/src/api/types.ts) name the same harnesses."""
+    import re
+    from pathlib import Path
+
+    assert set(natsbus.HARNESSES) == set(stats.RUNTIMES)
+    ts = (Path(__file__).parents[2] / "console" / "web" / "src" / "api" / "types.ts").read_text()
+    union = re.search(r"export type Harness =([^\n]*\n[^\n]*)", ts)
+    assert union is not None
+    assert set(re.findall(r'"([a-z-]+)"', union.group(1))) == set(stats.RUNTIMES)

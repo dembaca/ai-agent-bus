@@ -25,6 +25,7 @@ export const AGENT_STATES: readonly AgentState[] = [
 ]
 
 /** The card's harness decides the logo: these, else "other" (ADR-015 point 6). */
+// Held equal to natsbus.HARNESSES and stats.RUNTIMES by mcp/tests/test_console_records.py.
 export type Harness =
   | "claude-code" | "opencode" | "cursor" | "codex" | "pi" | "other"
 
