@@ -3817,10 +3817,11 @@ Harness, model, task, branch and the number of open asks come from the
 agent's presence too (RT-6.37 step 6; decided by the owner on 2026-11-25:
 the card's data rides the presence the console already reads). Like the
 name they are self-stated: displayed as text, bounded on decode, never
-trusted for a decision. An older MCP server states none of them, a field
-that breaks its bound (a branch that is no safe git ref name) is left out
-and looks the same, and the card's other fields are not on what the console reads: the card says
-"n/a" for each, never "other" or empty. After a restart the
+trusted for a decision. An older MCP server states none of them, and a
+field that breaks its bound (a branch that is no safe git ref name) is
+left out: the card says "n/a" for it, never "other" or empty. The card's
+other fields (project, role, kind, `for`, `trusts`, capabilities) are not
+on what the console reads: it says "n/a" for each. After a restart the
 server is not ready until it has read the fleet's replay (`/healthz`
 answers 503) and the proxy in front answers 503 meanwhile: the app shows
 "syncing…" for a 503 and tries again every 3 s, an error only after

@@ -16,7 +16,9 @@ before 0.5.0 are described in the git history.
   characters, model 64 and task 120 characters, branch a safe git ref of
   at most 100, asks capped at 999), well below the stream's 4 KiB limit;
   older readers ignore the keys, and a card from an older MCP server says
-  "n/a". Self-stated like the name: displayed, never trusted.
+  "n/a". Self-stated like the name: displayed, never trusted. The
+  harness name also changes the `rt` of `STATS` lines: a pi client
+  (`pi`, `pi-…`) now counts as `pi`, no longer by its own name.
 
 ### Fixed
 
