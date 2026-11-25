@@ -7,6 +7,16 @@ before 0.5.0 are described in the git history.
 
 ### Fixed
 
+- **The console's clock ages without deliveries too** (`Part of #108`).
+  "Now" stood still between deliveries, so a killed lone agent stayed
+  `online` with its crown forever. The fleet's "now" carries a
+  **monotonic** floor: presence older than the freshness window ages out
+  on its own and the crown drops with it, a jump of the host's wall clock
+  changes nothing, and the floor re-anchors only on a genuinely newer
+  server stamp (a replay of old stamps revives nothing). The attestation
+  expiry reads the floored clock too. The deployment view says the
+  bridge runs since the lab sync on 2026-11-24 and the console is planned
+  for the pilot.
 - The operator console's cards showed each agent's name on the bus (`agent-`
   and a 26-character hash) instead of the name `coordinator("who")` shows. An
   agent's presence over NATS now also states its bot's username (`name`

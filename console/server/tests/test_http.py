@@ -571,3 +571,63 @@ async def test_a_pending_delivery_stamps_no_sync() -> None:
     assert f.on_delivery("presence.dembaca.b", b'{"v":1,"status":"online"}',
                          ack(2, 2, 1001.0, 0), "PRESENCE", "console")
     assert f.synced is True and f.last_sync_at is not None
+
+
+async def test_an_aged_card_reaches_the_stream_on_the_beat() -> None:
+    """The keep-alive beat carries aging: a presence that the floored
+    clock ages out (no delivery for it) goes to the operator as a `card`
+    event — offline — within one beat, not only at the next delivery."""
+    from console_server import config
+    from console_server.app import Console
+
+    c = Console(config.Settings(public_url="http://127.0.0.1:8747",
+                                login_off=True,
+                                nats_url="nats://127.0.0.1:4",
+                                nats_seed_file="/none",
+                                health_sync_bound=100.0))
+    await c.start()
+    try:
+        import time as _t
+        # an agent's presence: fresh on arrival (85 s of the 90 s window
+        # gone at the anchor), so the first snapshot shows it online —
+        # the beat 15 s later ages it past the window, and the diff
+        # carries the offline card without any delivery
+        c.fleet._presence["agent-a"] = (2000.0, "online")
+        c.fleet._presence_seq["agent-a"] = (1, 2000.0)
+        c.fleet.last_server_now_wall = (2000.0, _t.monotonic() - 85.0)
+        c.fleet.synced = True
+        token = c.sessions.issue(auth.Operator(username="d", display="d",
+                                               groups=()), 3600)
+        cookie = f"choirbus_session={token}"
+
+        reader, writer = await asyncio.open_connection(
+            "127.0.0.1", c._http.bound_port)
+        writer.write(("GET /v1/fleet HTTP/1.1\r\nHost: x\r\nCookie: " + cookie + "\r\n\r\n").encode())
+        await asyncio.wait_for(reader.readuntil(b"\r\n\r\n"), 5.0)
+
+        async def events(n, timeout=35.0):
+            out = []
+            deadline = asyncio.get_event_loop().time() + timeout
+            while len(out) < n:
+                line = await asyncio.wait_for(
+                    reader.readline(), deadline - asyncio.get_event_loop().time())
+                if line.startswith(b"data: "):
+                    out.append(json.loads(line[6:]))
+                if asyncio.get_event_loop().time() > deadline:
+                    break
+            return out
+
+        first = (await events(1))[0]
+        assert first["type"] == "snapshot"
+        assert "agent-a" in [card["name"] for card in first["cards"]]
+        # the stream's seen set now holds the online card; the aging
+        # happens on the floored clock as time passes — with the
+        # backdated anchor the card is already offline on the next diff
+        # (the beat fires at SSE_KEEPALIVE = 15 s)
+        cards = await events(1)
+        assert cards and cards[0]["type"] == "card"
+        assert cards[0]["card"]["name"] == "agent-a"
+        assert cards[0]["card"]["state"] == "offline"
+        writer.close()
+    finally:
+        await c.stop()
