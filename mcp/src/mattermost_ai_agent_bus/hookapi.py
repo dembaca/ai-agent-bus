@@ -206,6 +206,7 @@ class HookAPI:
         # beside the new one: the exit work removes both (RT-6.10).
         self._moving: Path | None = None
         self._uid = ""
+        self._unnamed_logged = False  # RT-6.18 step 6: a call without the client header, logged once
         self._open = 0
         self._heavy = asyncio.Semaphore(MAX_HEAVY_RUNS)
         self._writes = False
@@ -433,6 +434,15 @@ class HookAPI:
         raw = await asyncio.wait_for(reader.readexactly(length), READ_TIMEOUT_SEC) if length else b""
         if route is None:
             return 404, {"error": "no such route"}
+        # RT-6.18 step 6: the hooks of another OpenCode session than the one the
+        # host serves are refused, marked so the plugin tells its session.
+        sent = headers.get(CLIENT_HEADER, "")
+        if why := hosted.client_session_refusal(sent):
+            log.warning("hook API %s %s refused: %s", method, url.path, why)
+            return 403, {"error": why, "client_session": "refused"}
+        if not sent and route is not waiting and os.environ.get("OPENCODE_SESSION_ID") and not self._unnamed_logged:
+            self._unnamed_logged = True
+            log.info("hook API: a call without %s (an older plugin): served", CLIENT_HEADER)
         query = {k: v[-1] for k, v in parse_qs(url.query).items()}
         payload: Any = {"data": raw} if route is files_route else json.loads(raw) if raw else {}
         if not isinstance(payload, dict):
@@ -1171,6 +1181,16 @@ async def handoff(client: ChatPort, query: Mapping[str, str],
     return 200, {"context": turnend.handoff(got["posts"], uid, skill=skill, runtime=runtime)}
 
 
+async def waiting(client: ChatPort, query: Mapping[str, str], body: Mapping[str, Any]) -> Reply:
+    """A harness plugin waits for its first session (RT-6.18 step 11, RT-6.20
+    step 1): the host holds back its no-relay warning."""
+    hosted.client_waiting()
+    return 200, {"ok": True}
+
+
+# The harness session a hook call speaks for (RT-6.18 step 6), lower case as read.
+CLIENT_HEADER = "x-bus-client-session"
+
 _ROUTES: dict[tuple[str, str], Route] = {
     ("GET", "/v1/me"): me,
     ("GET", "/v1/pending"): pending,
@@ -1187,6 +1207,7 @@ _ROUTES: dict[tuple[str, str], Route] = {
     ("GET", "/v1/turn-end"): turn_end,
     ("GET", "/v1/wake"): wake,
     ("GET", "/v1/handoff"): handoff,
+    ("POST", "/v1/waiting"): waiting,
 }
 # Routes that make several Mattermost calls: at most MAX_HEAVY_RUNS at once.
 _HEAVY_ROUTES = frozenset({pending, presence, post_route, reply_route, files_route, turn_end, wake,

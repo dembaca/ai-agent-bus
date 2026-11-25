@@ -949,6 +949,31 @@ async def test_no_relay_warns_once_by_dm_and_a_late_relay_clears_it(tmp_path, mo
     assert sum("relay: none since" in r.getMessage() for r in caplog.records) == 1
 
 
+async def test_a_plugin_waiting_for_its_session_holds_back_the_alarm(tmp_path, monkeypatch):
+    """RT-6.18 step 11, RT-6.20 step 1 (#119): the OpenCode plugin starts the
+    relay only once a session prompted and says meanwhile that it waits
+    (POST /v1/waiting): no warning and no DM until RELAY_WARN_SEC after its
+    last signal; then they come as before."""
+    session_file.use_hosted_dir(tmp_path / "hosted" / "s")
+    monkeypatch.setattr(hosted, "RELAY_WARN_SEC", 0.3)
+    monkeypatch.setattr(hosted, "_no_relay_since", None)
+    monkeypatch.setattr(hosted, "_waiting_at", None)
+    monkeypatch.setenv("MM_RESPONSIBLE_HUMAN", "alice")
+    client = _DMClient()
+    host = hosted.Host(KEY, client=client, serve=_echo)
+
+    async def body(ready):
+        for _ in range(4):  # the plugin's signal, renewed while it waits
+            hosted.client_waiting()
+            await anyio.sleep(0.15)
+        assert hosted.relay_warning() == "" and client.posts == []
+        await anyio.sleep(0.5)  # the signals stopped, no relay came
+        assert hosted.relay_warning().startswith("relay: none since ")
+
+    await _with_host(host, tmp_path, body, key=KEY)
+    assert len(client.posts) == 1
+
+
 async def test_a_relay_within_the_time_raises_no_alarm(tmp_path, monkeypatch):
     """RT-6.18: a harness that starts slowly (a first uv build) and connects
     before RELAY_WARN_SEC gets no warning and its human no DM."""

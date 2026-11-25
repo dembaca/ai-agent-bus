@@ -404,3 +404,42 @@ async def test_turn_end_asks_only_when_the_bus_changed_since_the_idle(api, unrea
     assert (await h.get("/v1/turn-end?push=0")).json() == {"action": "idle"}
     ownpost.delivered(UID)
     assert (await h.get("/v1/turn-end?push=0")).json()["action"] == "signoff"
+
+
+async def test_hooks_of_another_opencode_session_are_refused(api, monkeypatch, caplog):
+    """RT-6.18 step 6, RT-6.20 step 1 (#119): the host serves the OpenCode
+    session whose relay came first (OPENCODE_SESSION_ID); a hook call naming
+    another one gets 403, marked for the plugin, and changes nothing. The
+    same session and a call without the header (an older plugin, logged once)
+    are served; without OPENCODE_SESSION_ID nothing is compared."""
+    from mattermost_ai_agent_bus import hosted
+
+    client = FakeClient()
+    h = await api(client)
+    monkeypatch.setenv("OPENCODE_SESSION_ID", "ses_a")
+    other = await h.post("/v1/presence", json={"state": "working", "label": "x"},
+                         headers={"X-Bus-Client-Session": "ses_b"})
+    assert other.status_code == 403
+    assert other.json()["client_session"] == "refused"
+    assert "another OpenCode session" in other.json()["error"] and "ses_" not in other.json()["error"]
+    assert (await h.get("/v1/wake", params={"since": "0"}, headers={"X-Bus-Client-Session": "ses_b"})).status_code == 403
+    assert (await h.get("/v1/me", headers={"X-Bus-Client-Session": "ses_a"})).status_code == 200
+    with caplog.at_level("INFO", logger="mattermost_ai_agent_bus.hookapi"):
+        assert (await h.get("/v1/me")).status_code == 200
+        assert (await h.get("/v1/me")).status_code == 200
+    assert sum("without x-bus-client-session" in r.getMessage() for r in caplog.records) == 1
+    monkeypatch.delenv("OPENCODE_SESSION_ID")
+    assert (await h.get("/v1/me", headers={"X-Bus-Client-Session": "ses_b"})).status_code == 200
+    assert hosted.client_session_refusal("ses_b", {"OPENCODE_SESSION_ID": "ses_a"})
+    assert hosted.client_session_refusal("", {"OPENCODE_SESSION_ID": "ses_a"}) == ""
+
+
+async def test_a_waiting_plugin_is_noted(api, monkeypatch):
+    """RT-6.18 step 11, RT-6.20 step 1: POST /v1/waiting notes that a plugin
+    waits for its first session, which holds back the no-relay warning."""
+    from mattermost_ai_agent_bus import hosted
+
+    monkeypatch.setattr(hosted, "_waiting_at", None)
+    h = await api(FakeClient())
+    assert (await h.post("/v1/waiting", json={})).json() == {"ok": True}
+    assert hosted._waiting_at is not None

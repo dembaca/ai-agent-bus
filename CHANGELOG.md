@@ -5,20 +5,26 @@ before 0.5.0 are described in the git history.
 
 ## Unreleased
 
-- **One bus session per OpenCode process** (#119, RT-6.20 step 1, RT-6.18
-  step 6). An OpenCode server serves many sessions but carries one bot: the
-  plugin binds the bus to the first top-level session it sees. Every other
-  top-level session of that process is told so in the session ("No bus in
+- **One bus session per OpenCode process under corral** (#119, RT-6.20
+  step 1, RT-6.18 step 6). An OpenCode server serves many sessions but a
+  corral session carries one bot: the plugin binds the bus to the first
+  top-level session that prompts. Every other top-level session of that
+  process (`/new` in the TUI too) is told so in the session ("No bus in
   this session: …"), its hooks call nothing and its bus tool calls are
-  refused; a subagent of the bound session keeps the bus. Under corral the
-  bus server starts only once a session is bound, with its id as
-  `OPENCODE_SESSION_ID`, which the host compares like a Claude session id:
-  a second OpenCode process in one corral session is refused instead of
-  posting as the first one's bot. This replaces the check for `--service` in
-  the command line, which missed other spellings of a shared server and only
-  logged that the bus was gone. `bus_info` shows `pid` and, for OpenCode,
-  `client_session`. A bound session whose bot changed is told old → new;
-  nothing carries over. Without corral the rule holds per project directory.
+  pointed at a tool that fails with the reason; a subagent of the bound
+  session keeps the bus. The bus server starts only once a session
+  prompted, with its id as `OPENCODE_SESSION_ID`, which the host compares
+  like a Claude session id, for the relay and, by the header
+  `X-Bus-Client-Session`, for the hook API (`403` for another session's
+  hooks): a second or restarted OpenCode process in one corral session gets
+  no bus and is told to continue the first session (`opencode --continue`)
+  or start a new corral session. Until a session prompts, the plugin says it
+  waits (`POST /v1/waiting`), which holds back the no-relay warning. This
+  replaces the check for `--service` in the command line, which missed
+  other spellings of a shared server and only logged that the bus was
+  gone. `bus_info` shows `pid` and, for OpenCode, `client_session`. A bound
+  session whose bot changed is told old → new; nothing carries over.
+  Without corral OpenCode behaves as before.
 
 - **The console's clock ages without deliveries too** (`Part of #108`).
   "Now" stood still between deliveries, so a killed lone agent stayed

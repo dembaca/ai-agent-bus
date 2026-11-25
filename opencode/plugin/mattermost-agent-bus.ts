@@ -36,9 +36,9 @@
 // use: the turn state is kept in the plugin's storage, so a reload goes on.
 // One bus session per OpenCode process (RT-6.20 step 1, RT-6.18 step 6,
 // #119): with a corral session's relay variables the first top-level session
-// the process sees carries the bus, in any server, shared or private; every
-// other top-level session is told so on its prompt and its hooks and bus tools
-// do nothing. Without them the same holds per location (its one server, one bot).
+// that prompts carries the bus, in any server, shared or private; every other
+// top-level session is told so on its prompt, and its hooks and bus tools do
+// nothing. Without them every top-level session of the location has its server.
 
 import type { Plugin } from "@opencode/plugin"
 import { createHash } from "node:crypto"
@@ -72,6 +72,8 @@ export const WAKE_BACKOFF_MS = 60_000
 export const WAKE_BACKOFF_MAX_MS = 30 * 60_000
 const RESUBSCRIBE_MS = 1000
 const KEEP_MS = 24 * 3600_000 // turn state older than a day is not restored
+// How long the first prompt waits for OpenCode to reload its MCP servers (RT-6.20 step 1).
+const RELOAD_MS = 10_000
 const BOTS_KEY = "ai-agent-bus/bots" // OpenCode session id → its bot, to tell a changed one (RT-6.20 step 3)
 
 type Env = Record<string, string | undefined>
@@ -131,8 +133,12 @@ function parseEnvFile(text: string): Record<string, string> {
 }
 
 // One call to the hook API; null for no server, no bus session or any failure.
-// missing: called when no endpoint file is there.
-export function hookApi(env: Env, directory: string, missing: () => void = () => {}) {
+// missing: called when no endpoint file is there. client: the harness session
+// the caller speaks for, sent as CLIENT_HEADER (the host refuses another one's
+// with 403 and client_session "refused", RT-6.18 step 6); forbidden: called then.
+export const CLIENT_HEADER = "X-Bus-Client-Session"
+export function hookApi(env: Env, directory: string, missing: () => void = () => {},
+                        client: { session?: () => string; forbidden?: () => void } = {}) {
   // signal: ends the call when it aborts (an unload, a shutdown), as the timeout does.
   return async (method: "GET" | "POST", path: string, body?: Json, ms = QUICK_MS, signal?: AbortSignal): Promise<Json | null> => {
     let endpoint = env.MM_BUS_ENDPOINT || ""
@@ -152,13 +158,17 @@ export function hookApi(env: Env, directory: string, missing: () => void = () =>
       }
       if (!endpoint || !key) return null
     }
+    const session = client.session?.() || ""
     try {
       const res = await fetch(endpoint.replace(/\/$/, "") + path, {
         method,
-        headers: { Authorization: `Bearer ${key}`, ...(body ? { "Content-Type": "application/json" } : {}) },
+        headers: { Authorization: `Bearer ${key}`, ...(body ? { "Content-Type": "application/json" } : {}),
+                   ...(session ? { [CLIENT_HEADER]: session } : {}) },
         body: body ? JSON.stringify(body) : undefined,
         signal: signal ? AbortSignal.any([AbortSignal.timeout(ms), signal]) : AbortSignal.timeout(ms),
       })
+      // Only the host's refusal of another session, not a route's own 403.
+      if (res.status === 403 && (await res.json().catch(() => null))?.client_session === "refused") client.forbidden?.()
       if (res.status !== 200) return null
       return (await res.json()) as Json
     } catch {
@@ -232,12 +242,12 @@ export function relayVars(env: Env): boolean {
   return Boolean(env.MM_BUS_MCP_ENDPOINT || env.MM_BUS_ENDPOINT)
 }
 
-// The session that carries the bus, per scope: "process" under relay
-// variables, else the location's real directory (RT-6.20 step 1). Kept on
-// globalThis, so every plugin instance of the process, and one that OpenCode
-// loads again after an idle unload, sees the same; never stored on disk: a
-// new process binds afresh.
-export type Bound = { id: string; dir: string }
+// The session that carries the bus under relay variables (RT-6.20 step 1),
+// per process. Kept on globalThis, so every plugin instance of the process,
+// and one that OpenCode loads again after an idle unload, sees the same; never
+// stored on disk: a new process binds afresh. refused: the host's hook API
+// serves another OpenCode session (RT-6.18 step 6): this process has no bus.
+export type Bound = { id: string; dir: string; refused?: boolean }
 const BOUND = Symbol.for("ai-agent-bus.bound")
 export function bindings(): Map<string, Bound> {
   const g = globalThis as any
@@ -245,13 +255,16 @@ export function bindings(): Map<string, Bound> {
 }
 
 // What a top-level session that does not carry the bus is told (RT-6.20 step 1).
-export function noBusText(relay: boolean): string {
-  return relay
-    ? "No bus in this session: this OpenCode server already carries the bus for another session (one agent, one bot). " +
-      "Start `opencode` on its own for this session, in its own corral session (adapters/opencode.md)."
-    : "No bus in this session: this OpenCode server already carries the bus for another session in this directory " +
-      "(one agent, one bot). Start `opencode` on its own for this session, in its own directory or worktree (adapters/opencode.md)."
-}
+export const NO_BUS = "No bus in this session: this OpenCode server already carries the bus for another session " +
+  "(one agent, one bot). Start `opencode` on its own for this session, in its own corral session (adapters/opencode.md)."
+// What the bound session is told when the host serves another OpenCode
+// session (RT-6.18 step 6): a restart with a new session, a second process.
+export const HOST_REFUSED = "No bus in this session: this corral session's bus already serves another OpenCode " +
+  "session (one agent, one bot). Continue that session (`opencode --continue` or `--session <id>`) or start a new " +
+  "corral session (adapters/opencode.md)."
+// The tool a refused bus tool call is pointed at (RT-6.20 step 1): it fails
+// with the reason, so the call never reaches the bus server.
+export const REFUSAL_TOOL = "ai_agent_bus_not_in_this_session"
 
 // What the bound session is told when its bot is another than the one it had
 // (RT-6.20 step 3): the name changed, nothing else carries over.
@@ -371,12 +384,11 @@ export async function setup(ctx: Plugin.Context) {
   const directory = String(ctx.location.directory)
   const realDir = real(directory) || directory
   const env = process.env as Env
-  // One bus session per process under relay variables, per location without
-  // (RT-6.20 step 1, #119): not the server's command line, which may be spelt
-  // in any way, decides, but which session came first.
+  // One bus session per process under relay variables (RT-6.20 step 1,
+  // #119): not the server's command line, which may be spelt in any way,
+  // decides, but which session prompted first.
   const relay = relayVars(env)
-  const scope = relay ? "process" : `dir:${realDir}`
-  const bound = (): Bound | undefined => bindings().get(scope)
+  const bound = (): Bound | undefined => (relay ? bindings().get("process") : undefined)
   const storeKey = `${SERVER}/${sha16(realDir)}`
   let unkeyed = false // a hand-configured server without MM_WORKSPACE
   let warned = false
@@ -384,6 +396,10 @@ export async function setup(ctx: Plugin.Context) {
     if (!unkeyed || warned) return
     warned = true
     console.warn(`[${SERVER}] no MCP server found for ${directory}; set MM_WORKSPACE in its environment (adapters/opencode.md)`)
+  }, {
+    // Every call names the bound session; the host refuses another's (RT-6.18 step 6).
+    session: () => bound()?.id || "",
+    forbidden: () => void hostRefused(),
   })
   const label = basename(realDir).slice(0, 64) // the presence label's limit (RT-6.17)
   const turns = new Map<string, Turn>() // top-level sessions only
@@ -445,26 +461,31 @@ export async function setup(ctx: Plugin.Context) {
     }
   }
 
-  // The session this instance serves: the bound one, if it is of this location.
+  // The session this instance serves: under relay variables the bound one, if
+  // it is of this location and the host serves it; else any top-level one.
   const carries = (id: string): boolean => {
+    if (!relay) return Boolean(id)
     const b = bound()
-    return Boolean(id) && b?.id === id && b.dir === realDir
+    return Boolean(id) && b?.id === id && b.dir === realDir && !b.refused
   }
-  // The first top-level session seen binds the bus (RT-6.20 step 1); under
-  // relay variables the MCP server is added only now, with its id (reload).
-  const bind = (id: string): boolean => {
-    if (!bound()) {
-      bindings().set(scope, { id, dir: realDir })
-      if (relay) void Promise.resolve().then(() => (ctx.mcp as any).reload?.()).catch(() => {})
-    }
-    return carries(id)
+  // The first top-level session that prompts binds the bus (RT-6.20 step 1);
+  // the MCP server is added only now, with its id: OpenCode reloads its MCP
+  // servers, awaited (at most RELOAD_MS) before the prompt's turn runs.
+  const bind = async (id: string) => {
+    if (bound()) return
+    bindings().set("process", { id, dir: realDir })
+    const reload = (ctx.mcp as any).reload
+    if (typeof reload !== "function") return
+    let timer: ReturnType<typeof setTimeout> | undefined
+    await Promise.race([Promise.resolve().then(() => reload()).catch(() => {}),
+                        new Promise<void>((r) => (timer = setTimeout(r, RELOAD_MS)))])
+    clearTimeout(timer)
   }
   // A top-level session that does not carry the bus: told once, visibly, in
   // the session, and in OpenCode's log (RT-6.20 step 1).
-  const refuse = async (id: string) => {
+  const refuse = async (id: string, text = NO_BUS) => {
     if (told.has(id)) return
     told.add(id)
-    const text = noBusText(relay)
     console.warn(`[${SERVER}] ${text}`)
     try {
       await ctx.session.synthetic({ sessionID: id, text, description: "AI agent bus: not in this session",
@@ -492,6 +513,15 @@ export async function setup(ctx: Plugin.Context) {
   }
   // Ours and bound: the hooks act on the bus only for it (RT-6.20 step 1).
   const mine = async (id: string): Promise<boolean> => (await topLevel(id)) && carries(id)
+  // The host's hook API refused the bound session (403, RT-6.18 step 6): this
+  // process has no bus; the session is told once and the hooks stop.
+  const hostRefused = async () => {
+    const b = bound()
+    if (!b || b.refused) return
+    b.refused = true
+    if (b.dir === realDir) await refuse(b.id, HOST_REFUSED)
+    nudge()
+  }
 
   const stat = (k: string, fields: Json = {}) => bus("POST", "/v1/stat", { k, ...fields })
   // One call at a time: the prompt hook's `working` and an interrupt's `idle`
@@ -519,8 +549,8 @@ export async function setup(ctx: Plugin.Context) {
   // A human's prompt starts a turn (RT-6.20 step 3).
   const humanTurn = async (id: string) => {
     if (!(await topLevel(id))) return
-    if (!bind(id)) {
-      await refuse(id)
+    if (!carries(id)) {
+      await refuse(id, bound()?.id === id && bound()?.refused ? HOST_REFUSED : NO_BUS)
       return
     }
     const t = turn(id)
@@ -713,6 +743,9 @@ export async function setup(ctx: Plugin.Context) {
   const listen = async () => {
     let replaced = 0
     while (!closed) {
+      // Under relay variables, before a session prompted: the host hears that
+      // a plugin waits for one and holds back its no-relay warning (RT-6.18 step 11).
+      if (relay && !bound()) void bus("POST", "/v1/waiting", {})
       const id = last
       const t = id ? turns.get(id) : undefined
       // No session to wake, a turn at work (its human is there, and a wake
@@ -759,14 +792,9 @@ export async function setup(ctx: Plugin.Context) {
         if (id) {
           tops.set(id, !d.parentID && ours(d.location))
           parents.set(id, String(d.parentID || ""))
-          // The first top-level session seen binds the bus (RT-6.20 step 1).
-          if (tops.get(id)) bind(id)
         }
         break
       case "session.deleted":
-        // Without relay variables a deleted bound session frees the bus for the
-        // next one; under them the host holds the first session's id (RT-6.18 step 6).
-        if (!relay && carries(id)) bindings().delete(scope)
         if (turns.delete(id)) {
           if (last === id) last = ""
           await save()
@@ -817,27 +845,50 @@ export async function setup(ctx: Plugin.Context) {
     if (b && b.dir === realDir) unkeyed = addMcp(editor, options, root, directory, env, b.id)
     else dropMcp(editor)
   }))
-  // The bus tools refuse a session outside the bound one's tree: a second
-  // top-level session of the same location shares the location's MCP server,
-  // which speaks as the bound session's bot (RT-6.20 step 1).
-  await keep((ctx as any).tool?.hook?.("execute.before", async (ev: any) => {
-    const name = String(ev?.tool || "")
-    if (![...busNames].some((n) => name === n || name.startsWith(`${n}_`))) return
-    const id = String(ev?.sessionID || "")
-    if (!bound() || (await inTree(id))) return
-    throw new Error(noBusText(relay))
-  }) ?? Promise.resolve())
+  if (relay) {
+    // A second top-level session of the bound one's location shares the
+    // location's MCP server, which speaks as the bound session's bot: its bus
+    // tool calls are pointed at a tool that fails with the reason (RT-6.20
+    // step 1), not refused by a throw alone.
+    const tool: any = (ctx as any).tool
+    if (typeof tool?.hook !== "function" || typeof tool?.transform !== "function") {
+      console.warn(`[${SERVER}] this OpenCode has no tool hook: a second session of this server could call the bus ` +
+        `tools of the first (adapters/opencode.md)`)
+    } else {
+      await keep(tool.transform((editor: any) => {
+        if (editor.get?.(REFUSAL_TOOL)) return
+        editor.add({ name: REFUSAL_TOOL, description: "Not for use: answers a bus tool call from an OpenCode session that carries no bus.",
+          input: { type: "object", properties: {}, additionalProperties: true },
+          execute: async () => {
+            throw new Error(bound()?.refused ? HOST_REFUSED : NO_BUS)
+          } })
+      }))
+      await keep(tool.hook("execute.before", async (ev: any) => {
+        const name = String(ev?.tool || "")
+        if (![...busNames].some((n) => name === n || name.startsWith(`${n}_`))) return
+        const b = bound()
+        if (b && !b.refused && (await inTree(String(ev?.sessionID || "")))) return
+        if (!b) return // nothing bound: no bus server runs under relay variables
+        ev.tool = REFUSAL_TOOL
+        ev.input = {}
+      }))
+    }
+  }
   const skill = skillInfo(root)
   if (skill) {
     await keep(ctx.skill.transform((editor: any) => {
       if (!editor.get(SKILL)) editor.add(skill)
     }))
   }
-  await keep(ctx.session.hook("prompt", (ev: any) => {
+  await keep(ctx.session.hook("prompt", async (ev: any) => {
     const t = turns.get(ev?.sessionID)
     // The plugin's own input (marked, or the text it just sent) is not the human's.
     if (ev?.metadata?.[MARK] || ev?.prompt?.metadata?.[MARK] || (t?.sent && ev?.prompt?.text === t.sent)) return
-    void humanTurn(String(ev?.sessionID || ""))
+    const id = String(ev?.sessionID || "")
+    // Under relay variables the first top-level session that prompts binds
+    // the bus, before its turn runs (RT-6.20 step 1).
+    if (relay && !bound() && (await topLevel(id))) await bind(id)
+    void humanTurn(id)
   }))
 
   void (async () => {
