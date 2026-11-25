@@ -324,14 +324,44 @@ async def test_a_new_session_id_without_a_project_directory_is_refused(tmp_path,
     assert answer["ok"] is False and "(CLAUDE_CODE_SESSION_ID)" in answer["error"]
 
 
-async def test_known_gap_same_workspace_without_session_id_is_served(tmp_path):
-    """RT-6.18 error table, known gap (#119): two OpenCode sessions in one
-    directory send no session id and the same MM_WORKSPACE, so the host cannot
-    tell them apart and serves the second. Step 2 of #119 closes this in the
-    OpenCode plugin; this test pins today's behaviour until then."""
-    same = {"MM_WORKSPACE": "/p", "cwd": "/p", "MM_CHANNEL_PUSH": "0"}
-    host, _, answer = await _refused_after_first(tmp_path, dict(same), same)
+async def test_two_opencode_sessions_in_one_workspace_are_told_apart(tmp_path):
+    """RT-6.18 step 6, RT-6.20 step 1 (#119): the OpenCode plugin binds the bus
+    to one session per process and hands its id to the server as
+    OPENCODE_SESSION_ID. Two OpenCode processes in one workspace send the same
+    MM_WORKSPACE but another session id: the second is refused, naming the key.
+    The same session again (a reload) is served."""
+    first = {"OPENCODE_SESSION_ID": "ses_a", "MM_WORKSPACE": "/p", "cwd": "/p", "MM_CHANNEL_PUSH": "0"}
+    (tmp_path / "a").mkdir()
+    (tmp_path / "b").mkdir()
+    host, _, answer = await _refused_after_first(tmp_path / "a", {**first, "OPENCODE_SESSION_ID": "ses_b"}, first)
+    assert answer["ok"] is False
+    assert "(OPENCODE_SESSION_ID)" in answer["error"] and "ses_" not in answer["error"]
+    assert host.served == 1
+    host, _, answer = await _refused_after_first(tmp_path / "b", dict(first), first)
     assert answer == {"ok": True} and host.served == 2
+    # A relay without the id after one with it, or the other way round, is another agent too.
+    no_id = {k: v for k, v in first.items() if k != "OPENCODE_SESSION_ID"}
+    assert hosted.identity_mismatch(first, no_id)
+    assert hosted.identity_mismatch(no_id, first)
+
+
+def test_the_opencode_session_id_is_a_name_the_relay_sends_and_the_host_applies():
+    """RT-6.18 steps 3–4, RT-6.20 step 1 (#119): OPENCODE_SESSION_ID goes from
+    the relay's environment into the handshake, is checked like the Claude
+    session id, and becomes the host server's name (bus_info's client_session)."""
+    values = hosted.session_values({"OPENCODE_SESSION_ID": "ses_a", "MM_WORKSPACE": "/p"}, cwd="/p")
+    assert values["OPENCODE_SESSION_ID"] == "ses_a"
+    checked = hosted.check_session(values)
+    assert checked["OPENCODE_SESSION_ID"] == "ses_a"
+    with pytest.raises(ValueError, match="OPENCODE_SESSION_ID"):
+        hosted.check_session({"OPENCODE_SESSION_ID": "x" * 257})
+    env: dict[str, str] = {"OPENCODE_SESSION_ID": "stale"}
+    hosted.apply_session(checked, environ=env)
+    assert env["OPENCODE_SESSION_ID"] == "ses_a"
+    env = {"OPENCODE_SESSION_ID": "stale"}
+    hosted.apply_session({"cwd": "/p"}, environ=env)
+    assert "OPENCODE_SESSION_ID" not in env
+    assert hosted.identity(checked)["OPENCODE_SESSION_ID"] == "ses_a"  # an id, not a path
 
 
 async def test_a_workspace_named_after_a_plugin_update_is_taken(tmp_path):
@@ -917,6 +947,31 @@ async def test_no_relay_warns_once_by_dm_and_a_late_relay_clears_it(tmp_path, mo
     assert "agent-oc (opencode under corral)" in text and "no relay since" in text
     assert text.endswith("blob/main/adapters/opencode.md (RT-6.18). This message comes once per session.")
     assert sum("relay: none since" in r.getMessage() for r in caplog.records) == 1
+
+
+async def test_a_plugin_waiting_for_its_session_holds_back_the_alarm(tmp_path, monkeypatch):
+    """RT-6.18 step 11, RT-6.20 step 1 (#119): the OpenCode plugin starts the
+    relay only once a session prompted and says meanwhile that it waits
+    (POST /v1/waiting): no warning and no DM until RELAY_WARN_SEC after its
+    last signal; then they come as before."""
+    session_file.use_hosted_dir(tmp_path / "hosted" / "s")
+    monkeypatch.setattr(hosted, "RELAY_WARN_SEC", 0.3)
+    monkeypatch.setattr(hosted, "_no_relay_since", None)
+    monkeypatch.setattr(hosted, "_waiting_at", None)
+    monkeypatch.setenv("MM_RESPONSIBLE_HUMAN", "alice")
+    client = _DMClient()
+    host = hosted.Host(KEY, client=client, serve=_echo)
+
+    async def body(ready):
+        for _ in range(4):  # the plugin's signal, renewed while it waits
+            hosted.client_waiting()
+            await anyio.sleep(0.15)
+        assert hosted.relay_warning() == "" and client.posts == []
+        await anyio.sleep(0.5)  # the signals stopped, no relay came
+        assert hosted.relay_warning().startswith("relay: none since ")
+
+    await _with_host(host, tmp_path, body, key=KEY)
+    assert len(client.posts) == 1
 
 
 async def test_a_relay_within_the_time_raises_no_alarm(tmp_path, monkeypatch):

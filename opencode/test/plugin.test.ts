@@ -12,8 +12,8 @@ import { dirname, join } from "node:path"
 import { after, afterEach, before, beforeEach, mock, test } from "node:test"
 import { fileURLToPath } from "node:url"
 
-import plugin, { addMcp, busFile, busRoot, dropMcp, MARK, RETRY_SEC, retryMs, SERVER, serviceWithRelay, setup, SKILL, skillInfo,
-  timing, WAIT_SEC, venvDir, WAKE_BACKOFF_MAX_MS, WAKE_BACKOFF_MS, wakeBackoffMs, waitSec } from "../plugin/mattermost-agent-bus.ts"
+import plugin, { addMcp, bindings, busFile, busRoot, CLIENT_HEADER, dropMcp, HOST_REFUSED, MARK, NO_BUS, REFUSAL_TOOL, relayVars,
+  renamedText, RETRY_SEC, retryMs, SERVER, setup, SKILL, skillInfo, timing, WAIT_SEC, venvDir, WAKE_BACKOFF_MAX_MS, WAKE_BACKOFF_MS, wakeBackoffMs, waitSec } from "../plugin/mattermost-agent-bus.ts"
 import entry from "../server.ts"
 
 const HERE = dirname(fileURLToPath(import.meta.url))
@@ -23,7 +23,7 @@ const tmp = realpathSync(mkdtempSync(join(tmpdir(), "mm-oc-")))
 const ws = join(tmp, "ws")
 const sha16 = (s: string) => createHash("sha1").update(s).digest("hex").slice(0, 16)
 
-type Call = { method: string; path: string; body: any }
+type Call = { method: string; path: string; body: any; session?: string }
 let calls: Call[] = []
 let answers: Record<string, any> = {}
 let server: Server
@@ -44,6 +44,9 @@ const until = async (cond: () => boolean, what: string, ms = 3000) => {
 const HOLD = Symbol("hold")
 // A server before 0.71.8: a wake without `until` is a 400.
 const OLD = Symbol("old")
+// The host refuses the caller's OpenCode session (RT-6.18 step 6), and a route's own 403.
+const REFUSED = Symbol("refused")
+const FORBIDDEN = Symbol("forbidden")
 let held: Array<{ res: ServerResponse; path: string }> = []
 let dropped = 0 // held requests the client aborted
 // An answer of { [LATER]: ms, body } goes out after ms; `done` lists the calls
@@ -59,12 +62,13 @@ const answerWake = (body: any) => {
 const idleIn = (window = 5400) => () => ({ action: "idle", listen_since: nowSec(), listen_until: nowSec() + window })
 const paths = () => rest().map((c) => c.method + " " + c.path)
 const wakes = () => calls.filter((c) => c.path.startsWith("/v1/wake"))
-// The calls but the long poll, which runs on between turns.
-const rest = () => calls.filter((c) => !c.path.startsWith("/v1/wake"))
+// The calls but the long poll, which runs on between turns, the bot check of
+// a human turn (RT-6.20 step 3) and the wait signal (RT-6.18 step 11), tested apart.
+const rest = () => calls.filter((c) => !c.path.startsWith("/v1/wake") && c.path !== "/v1/me" && c.path !== "/v1/waiting")
 
 before(async () => {
   for (const v of ["CLAUDE_CODE_SESSION_ID", "CLAUDE_PROJECT_DIR", "CURSOR_PROJECT_DIR", "MM_WORKSPACE",
-                   "MM_BUS_ENDPOINT", "MM_BUS_KEY", "MM_AGENT_BUS_ROOT", "MM_LISTEN_POLL_SEC"]) delete process.env[v]
+                   "MM_BUS_ENDPOINT", "MM_BUS_MCP_ENDPOINT", "MM_BUS_KEY", "MM_AGENT_BUS_ROOT", "MM_LISTEN_POLL_SEC"]) delete process.env[v]
   mkdirSync(join(ws, ".git"), { recursive: true })
   mkdirSync(join(ws, "sub", "deeper"), { recursive: true })
   server = createServer((req: IncomingMessage, res: ServerResponse) => {
@@ -76,7 +80,8 @@ before(async () => {
         return
       }
       const path = req.url || ""
-      const call = { method: req.method || "", path, body: raw ? JSON.parse(raw) : null }
+      const session = String(req.headers[CLIENT_HEADER.toLowerCase()] || "")
+      const call = { method: req.method || "", path, body: raw ? JSON.parse(raw) : null, ...(session ? { session } : {}) }
       calls.push(call)
       const route = path.split("?")[0]
       const answer = typeof answers[route] === "function" ? answers[route](path, call.body) : answers[route]
@@ -98,6 +103,11 @@ before(async () => {
             dropped += 1
           }
         })
+        return
+      }
+      if (answer === REFUSED || answer === FORBIDDEN) {
+        res.writeHead(403, { "Content-Type": "application/json" })
+          .end(JSON.stringify({ error: "x", ...(answer === REFUSED ? { client_session: "refused" } : {}) }))
         return
       }
       if (answer === OLD) {
@@ -132,6 +142,7 @@ beforeEach(() => {
   process.env.XDG_STATE_HOME = join(tmp, "state")
   writeFileSync(join(dir, `endpoint-${sha16(ws)}.env`), `MM_BUS_ENDPOINT=${endpoint}\nMM_BUS_KEY=${KEY}\nMM_BUS_PID=1\n`)
   timing.minRetrySec = 0.01 // the tests' pauses are short; the clamp is tested apart
+  bindings().clear() // each test is a new OpenCode process (RT-6.20 step 1)
   mock.timers.enable({ apis: ["Date"], now: Date.now() })
 })
 
@@ -154,6 +165,7 @@ function fakeCtx(opts: Record<string, unknown> = {}, sessions: Record<string, { 
   const hooks: Record<string, (ev: any) => any> = {}
   const mcpServers = new Map<string, any>()
   const skills = new Map<string, any>()
+  const tools = new Map<string, any>()
   const queue: any[] = []
   let waiter: (() => void) | null = null
   let handled: Array<() => void> = []
@@ -170,6 +182,16 @@ function fakeCtx(opts: Record<string, unknown> = {}, sessions: Record<string, { 
     skill: {
       transform: async (cb: any) => {
         cb({ list: () => [...skills.values()], get: (id: string) => skills.get(id), add: (s: any) => skills.set(s.id, s) })
+        return { dispose: async () => {} }
+      },
+    },
+    tool: {
+      hook: async (name: string, cb: any) => {
+        hooks[`tool:${name}`] = cb
+        return { dispose: async () => void delete hooks[`tool:${name}`] }
+      },
+      transform: async (cb: any) => {
+        cb({ get: (id: string) => tools.get(id), add: (t: any) => tools.set(t.name, t) })
         return { dispose: async () => {} }
       },
     },
@@ -217,7 +239,7 @@ function fakeCtx(opts: Record<string, unknown> = {}, sessions: Record<string, { 
       waiter = null
       w?.()
     })
-  return { ctx, sent, hooks, mcpServers, skills, store, emit }
+  return { ctx, sent, hooks, mcpServers, skills, tools, store, emit }
 }
 
 async function start(opts: Record<string, unknown> = {}, sessions: Record<string, { parentID?: string; dir?: string }> = {},
@@ -657,47 +679,206 @@ test("RT-6.20: a failed turn-end check leaves a listening session listening", as
   await fx.cleanup()
 })
 
-test("RT-6.20 step 1, RT-6.18 step 6: the background service with a corral session's relay variables does nothing (#70)", async () => {
-  const relay = { MM_BUS_MCP_ENDPOINT: "tcp://127.0.0.1:9", MM_BUS_ENDPOINT: "http://127.0.0.1:9", MM_BUS_KEY: "k" }
-  const service = ["/$bunfs/root/opencode", "serve", "--service"]
-  assert.equal(serviceWithRelay(service, relay), true)
-  assert.equal(serviceWithRelay(["opencode", "serve", "--service=true"], relay), true)
-  assert.equal(serviceWithRelay(["opencode", "serve", "--service=false"], relay), false)
-  assert.equal(serviceWithRelay(service, {}), false) // without corral the service is OpenCode's normal home
-  assert.equal(serviceWithRelay(["opencode", "serve", "--stdio", "--port", "0"], relay), false) // --standalone's server
+// Under a corral session's relay variables (RT-6.18) the bus is the host's.
+const withRelay = async (body: () => Promise<void>) => {
+  process.env.MM_BUS_MCP_ENDPOINT = "tcp://127.0.0.1:9"
+  process.env.MM_BUS_ENDPOINT = endpoint
+  process.env.MM_BUS_KEY = KEY
+  try {
+    await body()
+  } finally {
+    for (const v of ["MM_BUS_MCP_ENDPOINT", "MM_BUS_ENDPOINT", "MM_BUS_KEY"]) delete process.env[v]
+  }
+}
+
+// A plugin under relay variables in a host whose reload runs the MCP transforms again.
+async function startRelay(sessions: Record<string, { parentID?: string; dir?: string }> = {}, dir = ws) {
+  const fx = fakeCtx({}, sessions)
+  fx.ctx.location = { directory: dir }
+  const runs: any[] = []
+  const editor = () => ({ list: () => [...fx.mcpServers.entries()], get: (n: string) => fx.mcpServers.get(n),
+    set: (n: string, c: any) => fx.mcpServers.set(n, c), remove: (n: string) => void fx.mcpServers.delete(n),
+    update: (n: string, f: (c: any) => void) => f(fx.mcpServers.get(n)) })
+  let reloads = 0
+  fx.ctx.mcp.transform = async (cb: any) => {
+    runs.push(cb)
+    cb(editor())
+    return { dispose: async () => {} }
+  }
+  fx.ctx.mcp.reload = async () => {
+    reloads += 1
+    for (const cb of runs) cb(editor())
+  }
+  const cleanup = (await setup(fx.ctx)) as () => Promise<void>
+  live.push(cleanup)
+  const prompt = async (id: string) => {
+    await fx.hooks.prompt({ sessionID: id, messageID: "m", prompt: { text: "hi" }, delivery: "steer" })
+    await settle()
+  }
+  return { ...fx, cleanup, prompt, reloads: () => reloads,
+           ended: (id: string) => fx.emit("session.execution.succeeded", { sessionID: id }) }
+}
+
+test("RT-6.20 step 1, RT-6.18 step 6: one bus session per OpenCode process, in any server (#119)", async () => {
+  assert.equal(relayVars({ MM_BUS_MCP_ENDPOINT: "tcp://127.0.0.1:9" }), true)
+  assert.equal(relayVars({}), false)
   const argv = process.argv
   const warn = mock.method(console, "warn", () => {})
   try {
-    process.argv = [...argv, "--service"]
-    process.env.MM_BUS_MCP_ENDPOINT = relay.MM_BUS_MCP_ENDPOINT
-    const fx = fakeCtx()
-    // A bus server configured by hand, under the plugin's name or another, goes too.
-    const other = { type: "local", command: ["other-mcp"] }
-    fx.mcpServers.set(SERVER, { type: "local", command: ["my-bus"] })
-    fx.mcpServers.set("bus", { type: "local", command: ["uv", "run", "mattermost-ai-agent-bus-mcp"] })
-    fx.mcpServers.set("other", other)
-    const cleanup: any = await setup(fx.ctx)
-    assert.deepEqual([...fx.mcpServers.entries()], [["other", other]]) // no second relay to the host process
-    await cleanup()
-    assert.equal(fx.skills.size, 0)
-    assert.deepEqual(Object.keys(fx.hooks), [])
-    await settle()
-    assert.deepEqual(calls, []) // no long poll either
-    assert.equal(warn.mock.callCount(), 1)
-    assert.match(String(warn.mock.calls[0].arguments[0]), /background service.*--standalone/)
-    // The same service without the relay variables serves as before.
-    delete process.env.MM_BUS_MCP_ENDPOINT
-    const plain = await start()
-    assert.ok(plain.mcpServers.has(SERVER))
-    // A host whose editor cannot remove keeps them, and nothing breaks.
-    const old = new Map([["bus", { command: ["mattermost-ai-agent-bus-mcp"] }]])
-    assert.deepEqual(dropMcp({ list: () => [...old.entries()], get: (n: string) => old.get(n) }), [])
-    assert.equal(old.size, 1)
+    process.argv = [...argv, "serve", "--service"] // any spelling of a shared server: it decides nothing
+    await withRelay(async () => {
+      const fx = await startRelay({ sub: { parentID: "s1" } })
+      // No session has prompted: no bus server, no relay without a session id.
+      assert.equal(fx.mcpServers.has(SERVER), false)
+      // A session created first binds nothing: the first that prompts does.
+      await fx.emit("session.created", { sessionID: "s2", location: { directory: ws } })
+      assert.equal(fx.reloads(), 0)
+      await fx.prompt("s1")
+      // The reload ran before the prompt's turn: the server is there, with the session's id.
+      assert.equal(fx.reloads(), 1)
+      assert.equal(fx.mcpServers.get(SERVER).environment.OPENCODE_SESSION_ID, "s1")
+      await until(() => rest().some((c) => c.body?.state === "working"), "the bound session's turn")
+      // Every hook call names the bound session (RT-6.18 step 6).
+      assert.ok(rest().every((c) => c.session === "s1"))
+      // The second session: told once in the session, no hook API call.
+      calls = []
+      const sent = fx.sent.length
+      await fx.prompt("s2")
+      await fx.ended("s2")
+      await fx.prompt("s2")
+      await fx.emit("session.compaction.ended", { sessionID: "s2" })
+      await settle()
+      assert.deepEqual(rest(), [])
+      const told = fx.sent.slice(sent)
+      assert.equal(told.length, 1)
+      assert.equal(told[0].sessionID, "s2")
+      assert.equal(told[0].text, NO_BUS)
+      assert.match(NO_BUS, /^No bus in this session: this OpenCode server already carries the bus for another session/)
+      assert.equal(told[0].resume, false)
+      assert.equal(warn.mock.callCount(), 1)
+      // Its bus tool calls are pointed at the refusal tool, which fails with the reason;
+      // the bound session's and its subagent's, and other tools, are left alone.
+      const hook = fx.hooks["tool:execute.before"]
+      const call = (sessionID: string, tool = `${SERVER}_post_message`) => ({ tool, sessionID, input: { message: "x" } })
+      const refused = call("s2")
+      await hook(refused)
+      assert.deepEqual([refused.tool, refused.input], [REFUSAL_TOOL, {}])
+      await assert.rejects(fx.tools.get(REFUSAL_TOOL).execute({}, {}), (e: Error) => e.message === NO_BUS)
+      for (const ok of [call("s1"), call("sub"), call("s2", "bash")]) {
+        await hook(ok)
+        assert.deepEqual(ok.input, { message: "x" })
+        assert.notEqual(ok.tool, REFUSAL_TOOL)
+      }
+      // The bound session's turn goes on as before.
+      calls = []
+      await fx.ended("s1")
+      assert.match(rest()[0].path, /^\/v1\/turn-end\?/)
+      assert.equal(rest()[0].session, "s1")
+      // Another location of the same process runs no bus server.
+      const far = await startRelay({}, tmp)
+      assert.equal(far.mcpServers.has(SERVER), false)
+    })
   } finally {
     process.argv = argv
-    delete process.env.MM_BUS_MCP_ENDPOINT
     warn.mock.restore()
   }
+})
+
+test("RT-6.18 step 6, RT-6.20 step 1: the host serves another OpenCode session: told once, the hooks stop (#119)", async () => {
+  const warn = mock.method(console, "warn", () => {})
+  try {
+    await withRelay(async () => {
+      // A route's own 403 is no refusal of the session.
+      answers["/v1/stat"] = FORBIDDEN
+      answers["/v1/presence"] = REFUSED
+      const fx = await startRelay()
+      await fx.prompt("s1")
+      await until(() => fx.sent.length === 1, "told")
+      assert.equal(fx.sent[0].text, HOST_REFUSED)
+      assert.match(HOST_REFUSED, /--continue/)
+      calls = []
+      await fx.ended("s1")
+      await fx.prompt("s1")
+      await settle(150)
+      assert.deepEqual(rest(), []) // the hooks stop
+      assert.equal(fx.sent.length, 1) // once
+      const ev = { tool: `${SERVER}_bus_info`, sessionID: "s1", input: {} }
+      await fx.hooks["tool:execute.before"](ev)
+      assert.equal(ev.tool, REFUSAL_TOOL)
+      await assert.rejects(fx.tools.get(REFUSAL_TOOL).execute({}, {}), (e: Error) => e.message === HOST_REFUSED)
+    })
+  } finally {
+    warn.mock.restore()
+  }
+})
+
+test("RT-6.20 step 1, RT-6.18 step 6: the bound id reaches a hand-configured server; one without a tool hook is warned of", async () => {
+  // A server configured by hand gets the id too.
+  const m = new Map<string, any>([["bus", { type: "local", command: ["mattermost-ai-agent-bus-mcp"], environment: { MM_WORKSPACE: ws } }]])
+  const editor = { list: () => [...m.entries()], get: (n: string) => m.get(n), set: (n: string, c: any) => m.set(n, c),
+                   update: (n: string, f: (c: any) => void) => f(m.get(n)) }
+  assert.equal(addMcp(editor, {}, null, ws, {}, "ses_B"), false)
+  assert.deepEqual(m.get("bus").environment, { MM_WORKSPACE: ws, OPENCODE_SESSION_ID: "ses_B" })
+  // A host whose editor cannot remove keeps them, and nothing breaks.
+  const old = new Map([["bus", { command: ["mattermost-ai-agent-bus-mcp"] }]])
+  assert.deepEqual(dropMcp({ list: () => [...old.entries()], get: (n: string) => old.get(n) }), [])
+  assert.equal(old.size, 1)
+  const warn = mock.method(console, "warn", () => {})
+  try {
+    await withRelay(async () => {
+      const fx = fakeCtx()
+      // A bus server configured by hand under another name goes while no session is bound.
+      fx.mcpServers.set("bus", { type: "local", command: ["uv", "run", "mattermost-ai-agent-bus-mcp"] })
+      delete fx.ctx.tool
+      live.push(await setup(fx.ctx) as any)
+      assert.deepEqual([...fx.mcpServers.keys()], [])
+      assert.equal(warn.mock.callCount(), 1)
+      assert.match(String(warn.mock.calls[0].arguments[0]), /no tool hook/)
+    })
+  } finally {
+    warn.mock.restore()
+  }
+})
+
+test("RT-6.18 step 11, RT-6.20 step 1: before a session prompts the plugin tells the host it waits", async () => {
+  await withRelay(async () => {
+    const fx = await startRelay()
+    await until(() => calls.some((c) => c.path === "/v1/waiting"), "the wait signal")
+    assert.equal(calls.find((c) => c.path === "/v1/waiting")!.session, undefined) // no session yet
+    await fx.prompt("s1")
+    calls = []
+    await settle(150)
+    assert.equal(calls.filter((c) => c.path === "/v1/waiting").length, 0)
+  })
+})
+
+test("RT-6.20: without relay variables every top-level session of the location keeps its server, no header", async () => {
+  const fx = await start()
+  await fx.prompt("s1")
+  await fx.prompt("s2")
+  assert.equal(fx.sent.length, 0)
+  assert.equal(rest().filter((c) => c.body?.state === "working").length, 2)
+  assert.ok(calls.every((c) => c.session === undefined))
+  assert.equal(fx.hooks["tool:execute.before"], undefined)
+  await fx.cleanup()
+})
+
+test("RT-6.20 step 3: a changed bot for the same session is said in it, old → new (#119)", async () => {
+  const store = new Map<string, any>()
+  answers["/v1/me"] = { username: "oc-old" }
+  const first = await start({}, {}, store)
+  await first.prompt("s1")
+  await until(() => store.has("ai-agent-bus/bots"), "the bot noted")
+  assert.equal(first.sent.length, 0)
+  await first.cleanup()
+  answers["/v1/me"] = { username: "oc-new" }
+  const second = await start({}, {}, store)
+  await second.prompt("s1")
+  await until(() => second.sent.length === 1, "told")
+  assert.equal(second.sent[0].text, renamedText("oc-old", "oc-new"))
+  assert.match(second.sent[0].text, /@oc-old → @oc-new\. Nothing carries over/)
+  assert.equal(second.sent[0].resume, false)
+  await second.cleanup()
 })
 
 test("RT-6.20: a hand-configured server without MM_WORKSPACE that cannot be found: one warning", async () => {

@@ -6,6 +6,7 @@ entry and no further membership behave as before."""
 
 import asyncio
 import json
+import os
 import time
 
 import anyio
@@ -436,6 +437,18 @@ async def test_bus_info_lists_home_guests_and_lobby(chat, monkeypatch):
     monkeypatch.setattr(server, "_get_client", lambda: chat)
     info = json.loads(await server.bus_info())
     assert (info["home"], info["guests"], info["lobby"]) == ("agents", ["guest-a"], "lobby")
+
+
+async def test_bus_info_names_the_process_and_the_opencode_session(chat, monkeypatch):
+    """RT-6.20 step 1, RT-6.18 step 6 (#119): bus_info shows the server's pid and,
+    for OpenCode, the session the plugin bound the bus to; none elsewhere."""
+    monkeypatch.setattr(server, "_get_client", lambda: chat)
+    monkeypatch.delenv("OPENCODE_SESSION_ID", raising=False)
+    info = json.loads(await server.bus_info())
+    assert info["pid"] == os.getpid() and "client_session" not in info
+    monkeypatch.setenv("OPENCODE_SESSION_ID", "ses_a")
+    info = json.loads(await server.bus_info())
+    assert info["client_session"] == "ses_a"
 
 
 # --- the lobby (RT-6.22 step 3, WP5) ----------------------------------------------------

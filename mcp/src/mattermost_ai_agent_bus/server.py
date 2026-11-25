@@ -996,7 +996,7 @@ async def bus_info() -> str:
     """This bus session at a glance: plugin/MCP version, bot, responsible and
     trusted humans, channels (home, guests, lobby, with ids in `channels`; RT-6.22); update: a newer
     installed plugin, taking a restart (`claude --resume <id>`). ask_mode: RT-6.25. mandate: RT-6.26.
-    release: RT-6.30, RT-6.32; you never install it. over_nats: RT-6.36.
+    release: RT-6.30, RT-6.32; you never install it. over_nats: RT-6.36. client_session: RT-6.20.
 
     responsible names who answers for you and kind is "session" or
     "autonomous" — announce puts both into your HELLO (for / trusts). trusted_humans says
@@ -1042,6 +1042,8 @@ async def bus_info() -> str:
         "version": VERSION,
         "on_bus": True,
         "bot": {"username": me.username, "id": me.id},
+        "pid": os.getpid(),
+        **({"client_session": sid} if (sid := os.environ.get("OPENCODE_SESSION_ID", "")) else {}),
         "responsible": (os.environ.get("MM_RESPONSIBLE_HUMAN", "").strip().lstrip("@")
                         or next((h["username"] for h in humans if h["username"]), None)),
         "kind": "autonomous" if os.environ.get("MM_AGENT_KIND") == "autonomous" else "session",

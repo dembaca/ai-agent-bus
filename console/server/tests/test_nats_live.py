@@ -12,21 +12,25 @@ whole, live and correct.
 from __future__ import annotations
 
 import asyncio
+import base64
+import contextlib
 import json
 import os
 import shutil
 import socket
 import subprocess
 import time
+from datetime import datetime, timezone
 
 import pytest
 import nkeys
 from nats.aio.client import Client as NatsClient
 
-from console_server import config
+from console_server import config, httpd
 from console_server.app import Console
 from console_server.fleet import short_name
-from mattermost_ai_agent_bus.natsbus import encode_presence
+from mattermost_ai_agent_bus import natsbus
+from mattermost_ai_agent_bus.natsbus import decode_presence, encode_presence
 
 pytestmark = pytest.mark.skipif(
     os.environ.get("MM_TEST_NATS") != "1" or not (
@@ -270,3 +274,197 @@ async def test_the_account_publishes_nothing(rig) -> None:
         assert "permission" in str(got).lower() or "violation" in str(got).lower()
     finally:
         await nc.close()
+
+
+# --- the pilot's ageing and crown handover (#108 points 10 and 11) -------------------
+
+
+async def _cards_until(stream: Stream, cards: dict[str, dict], done,
+                       events: int = 60, seen: list | None = None) -> None:
+    """Fold the stream's events into ``cards`` until ``done(cards)``;
+    each folded state is appended to ``seen`` (a copy) when given."""
+    for _ in range(events):
+        event = await stream.event()
+        if event["type"] == "snapshot":
+            cards.clear()
+            cards.update({c["name"]: c for c in event["cards"]})
+        elif event["type"] == "card":
+            cards[event["card"]["name"]] = event["card"]
+        elif event["type"] == "drop":
+            cards.pop(event["name"], None)
+        if seen is not None:
+            seen.append((event, {n: dict(c) for n, c in cards.items()}))
+        if done(cards):
+            return
+    raise AssertionError(f"the stream never got there: {cards}")
+
+
+def _state(cards: dict[str, dict], name: str) -> str | None:
+    return cards.get(name, {}).get("state")
+
+
+async def test_a_hard_death_ages_the_card_offline_and_no_other(rig, monkeypatch) -> None:
+    """#108 point 10: an agent killed hard (kill -9) falls silent and
+    sends no bye; its card turns offline once its last presence is older
+    than the freshness window (natsbus.PRESENCE_FRESH_SEC, 90 s in
+    production; the console sends the change with the next delivery or
+    SSE beat). The window is shortened to 2 s here; the peer beats every
+    0.5 s (30 s / 90 s in production) and its card never changes state."""
+    window = 2.0
+    monkeypatch.setattr(natsbus, "PRESENCE_FRESH_SEC", window)
+    admin: NatsClient = rig["admin"]
+    console = Console(settings_of(rig))
+    await console.start()
+    beating = True
+
+    async def peer() -> None:
+        while beating:
+            await admin.publish("presence.dembaca.agent-live", encode_presence("online"))
+            await asyncio.sleep(0.5)
+
+    beat = asyncio.ensure_future(peer())
+    try:
+        stream = Stream(console)
+        await stream.open()
+        await admin.publish("presence.member.dev.agent-dead", b'{"v": 1}')
+        await admin.publish("presence.member.dev.agent-live", b'{"v": 1}')
+        for n in range(3):  # a few heartbeats, then the kill: silence, no bye
+            if n:
+                await asyncio.sleep(0.3)
+            await admin.publish("presence.dembaca.agent-dead", encode_presence("online"))
+            await admin.flush()
+        died = time.monotonic()  # right after the last presence reached the server
+        cards: dict[str, dict] = {}
+        await _cards_until(stream, cards, lambda c: _state(c, "agent-dead") == "online"
+                           and _state(c, "agent-live") == "online")
+        assert time.monotonic() - died < window, "online seen only after the window"
+
+        seen: list = []
+        await _cards_until(stream, cards, lambda c: _state(c, "agent-dead") == "offline",
+                           events=200, seen=seen)
+        aged = time.monotonic() - died
+        # not before the window (slack for a slow runner), within it plus a beat
+        assert window - 1.0 <= aged <= window + 2.0, aged
+        # no other card changed: no drop, the peer online throughout,
+        # the dead card the only one that went offline
+        assert all(e["type"] != "drop" for e, _ in seen)
+        for _e, state in seen:
+            assert state["agent-live"]["state"] == "online"
+            assert not any(c["crown"] for c in state.values())
+        assert cards["agent-dead"]["home"] == "dev"
+        assert set(cards) == {"agent-dead", "agent-live"}
+        stream.close()
+    finally:
+        beating = False
+        beat.cancel()
+        with contextlib.suppress(asyncio.CancelledError):
+            await beat
+        await console.stop()
+
+
+async def test_a_lone_hard_death_ages_on_the_beat_alone(rig, monkeypatch) -> None:
+    """#108 point 10 with no deliveries at all (a killed lone agent): the
+    wall-clock floor (#109) ages the card and the SSE beat (15 s in
+    production, 0.5 s here) carries it; window 2 s instead of 90 s."""
+    window = 2.0
+    monkeypatch.setattr(natsbus, "PRESENCE_FRESH_SEC", window)
+    monkeypatch.setattr(httpd, "SSE_KEEPALIVE_SEC", 0.5)
+    admin: NatsClient = rig["admin"]
+    console = Console(settings_of(rig))
+    await console.start()
+    try:
+        stream = Stream(console)
+        await stream.open()
+        await admin.publish("presence.dembaca.agent-lone", encode_presence("online"))
+        await admin.flush()
+        sent = time.monotonic()
+        cards: dict[str, dict] = {}
+        await _cards_until(stream, cards, lambda c: _state(c, "agent-lone") == "online")
+        await _cards_until(stream, cards, lambda c: _state(c, "agent-lone") == "offline",
+                           events=200)
+        aged = time.monotonic() - sent
+        assert window - 1.0 <= aged <= window + 2.0, aged
+        stream.close()
+    finally:
+        await console.stop()
+
+
+def _stamp(text: str) -> float:
+    """A JetStream RFC 3339 time (nanoseconds) as epoch seconds."""
+    head, _, frac = text.rstrip("Z").partition(".")
+    return (datetime.fromisoformat(head).replace(tzinfo=timezone.utc).timestamp()
+            + float("0." + (frac or "0")))
+
+
+async def _last(admin: NatsClient, subject: str) -> tuple[int, float, bytes]:
+    reply = await admin.request("$JS.API.STREAM.MSG.GET.PRESENCE",
+                                json.dumps({"last_by_subj": subject}).encode(), timeout=5.0)
+    msg = json.loads(reply.data)["message"]
+    return msg["seq"], _stamp(msg["time"]), base64.b64decode(msg.get("data", ""))
+
+
+async def _stream_holder(admin: NatsClient, agents: list[str]) -> str | None:
+    """The crown of dev computed straight from the stream's records with
+    the rule the MCP side's coordinator("who") uses (natsbus.crown_holder,
+    RT-6.38) — not from the console's fleet."""
+    claims: dict[str, int] = {}
+    at: dict[str, float] = {}
+    presence: dict[str, tuple[float, str]] = {}
+    now = 0.0
+    for agent in agents:
+        seq, t, _ = await _last(admin, f"presence.crown.dev.{agent}")
+        claims[agent], at[agent] = seq, t
+        _seq, pt, data = await _last(admin, f"presence.dembaca.{agent}")
+        presence[agent] = (pt, decode_presence(data))
+        now = max(now, t, pt)
+    return natsbus.crown_holder(claims, presence, now, at=at)
+
+
+async def test_an_explicit_release_moves_the_one_crown(rig) -> None:
+    """#108 point 11, the crown of a home over NATS (RT-6.38): the holder's
+    release is a new claim that moves behind every other
+    (lease._command_nats "release"); the peer's older claim leads, so the
+    console shows exactly one crown at every step, and it moves to the
+    peer — the holder the stream's records give by natsbus.crown_holder.
+    It checks that the console follows a re-claim of the same subject,
+    written with the real claim encoder (natsbus.encode_claim)."""
+    admin: NatsClient = rig["admin"]
+    agents = ["agent-one", "agent-two"]
+    for agent in agents:
+        await admin.publish(f"presence.dembaca.{agent}", encode_presence("online"))
+        await admin.publish(f"presence.member.dev.{agent}", b'{"v": 1}')
+    await admin.publish("presence.crown.dev.agent-one", natsbus.encode_claim())
+    await asyncio.sleep(0.01)  # a later server stamp: the claim order
+    await admin.publish("presence.crown.dev.agent-two", natsbus.encode_claim())
+    await admin.flush()
+    assert await _stream_holder(admin, agents) == "agent-one"
+
+    console = Console(settings_of(rig))
+    await console.start()
+    try:
+        stream = Stream(console)
+        await stream.open()
+        cards: dict[str, dict] = {}
+        seen: list = []
+        await _cards_until(stream, cards,
+                           lambda c: c.get("agent-one", {}).get("crown") is True
+                           and "agent-two" in c, seen=seen)
+        assert [n for n, c in cards.items() if c["crown"]] == ["agent-one"]
+
+        # the release: agent-one claims anew and moves behind agent-two
+        await admin.publish("presence.crown.dev.agent-one", natsbus.encode_claim())
+        await admin.flush()
+        await _cards_until(stream, cards,
+                           lambda c: c["agent-two"]["crown"] is True
+                           and c["agent-one"]["crown"] is False, seen=seen)
+        assert [n for n, c in cards.items() if c["crown"]] == ["agent-two"]
+        assert await _stream_holder(admin, agents) == "agent-two"
+        assert console.fleet.holder_of("dev") == "agent-two"
+        # never two crowns on the way (a wave lists agent-one's loss first)
+        for _e, state in seen:
+            assert sum(1 for c in state.values() if c["crown"]) <= 1
+        assert cards["agent-two"]["home"] == "dev"
+        assert cards["agent-one"]["state"] == cards["agent-two"]["state"] == "online"
+        stream.close()
+    finally:
+        await console.stop()

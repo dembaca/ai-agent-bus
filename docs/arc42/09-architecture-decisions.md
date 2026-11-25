@@ -3802,7 +3802,10 @@ never transitively, an agent's guest channels reading only (open point 3
 and point 4, in place of the whole tenant this proposal first recommended). Until the bus has its own channel directory, the login service
 takes membership for that from Mattermost behind a replaceable interface: a
 temporary exception to "no dependency on Mattermost". What this proposal
-did not verify is listed in point 13.
+did not verify is listed in point 13. The rest of stage 1 (a NATS
+credential per person, the asks, the `STATS` lines on NATS) is specified
+in the addition of 2026-11-25 at the end of this record: fifteen points for
+the owner, none of them built.
 
 The pilot's cards (fixed after the lab pilot, 2026-11-25): a card is keyed
 by the agent's name on the bus (`agent-` and a 26-character hash, the
@@ -4352,6 +4355,274 @@ trusted; the owner beside it comes from the login service's attestation.
 Not part of this proposal: a chat for people, a mobile app, more than one
 tenant in the interface, approvals through a broker, anything outside the
 lab, and Mattermost in any form.
+
+**Addition, proposed on 2026-11-25: the rest of stage 1.** The pilot
+(2026-11-24) reads presence with one static NATS account of the console's
+own, the pilot's documented deviation (`console/server/README.md`). The
+names on the cards come with #118, and the card's fields (kind, model, task,
+branch, the count of open asks) come in presence, decided on 2026-11-25 and
+specified with that work, not here. Stage 1 (point 11) still lacks three
+things: a NATS credential per person in place of the static account, the
+asks, and the `STATS` lines on NATS for its two reports. The scenario "The
+console on the bus as its operator" (RT-6.43) and the bodies in
+`docs/protocol.md` say what is built from these points; nothing of them is
+built yet. Fifteen points, each one decision with a recommendation, its
+reason and the alternative, for the owner to answer yes or no. One rule
+runs through all of them: what the console shows of an agent, NATS says
+came from that agent: each of its subjects ends with the agent's NATS
+name, and NATS refuses a publish under another name (ADR-014 point 16).
+So no agent can publish another agent's asks or line, and nothing an
+agent publishes passes for a person's word.
+
+*A credential per person*
+
+1. **The console is on NATS with the logged-in operator's own credential,
+   which the login service's auth callout issues for that person's Keycloak
+   access token.** Recommended (the operator's own credential, way A of
+   point 2, made concrete). Why: what a person reads is decided by the login
+   service through consumers it makes, not by the console; without an
+   operator logged in the console holds no NATS credential at all; and a
+   later answer can come under the person's own name. The console's server
+   sends the access token it already verifies at login as the connect
+   token; the callout checks it against the realm as it checks an agent's.
+   Alternative: keep one account of the console's own and filter per
+   operator in the server by the visibility rule (way B). Rejected: a
+   standing credential that reads everything, and the console, not the bus,
+   would decide who sees what.
+2. **Two clients, two paths, never both.** Recommended: the callout issues a
+   person's credential only for a token whose `azp` is the console's client
+   (`AUTH_CONSOLE_CLIENT_ID`, new) and whose `aud` names it, and an agent's
+   only for the bus's client, as today; a token that names both, or
+   neither, is refused. The console's client in Keycloak is public with the
+   standard flow (authorization code with PKCE) alone: the device
+   authorization grant, direct access grants, the implicit flow and service
+   accounts are off, the redirect URI exact. Otherwise an agent could start
+   a device flow with the console's client id and, once a person approved
+   it, hold a person's credential. The user JWT is bound to the key of this
+   login: its subject is the public key the console's server presented in
+   its connect (as an agent's is its host key, ADR-014 point 7), so the
+   JWT is of no use without that login's seed. Why: the agents' path is not
+   widened: a token of the bus's device flow never becomes a person's
+   credential, a console login never an agent's (the first check of point
+   13). Alternative: one client for both. Rejected: the console's code flow
+   and the bus's device flow differ in lifetime (no `offline_access` for
+   the console) and in what the person agrees to.
+3. **The operators' group is checked at every issue.** Recommended: the
+   token's `groups` claim must hold the operators' group
+   (`AUTH_OPERATOR_GROUP`, new; in the lab `BGL_BUS_OPERATORS`, the group
+   the console already checks at login, `CONSOLE_OPERATOR_GROUP`); a person
+   taken out of it loses the console at the next renewal, at most 15
+   minutes later. Why: the gate is on the bus, not only in the interface
+   (point 4). Alternative: the approvers' group. Rejected: looking is not
+   approving (open point 4).
+4. **The person's NATS name comes from the directory, not from the token's
+   text.** Recommended: `<AUTH_PERSON_PREFIX><anchor>` (new setting,
+   default `person-`; it must differ from `AUTH_NAME_PREFIX` and neither
+   may start the other), the anchor read from the channel directory's name
+   index by the token's `sub` (RT-6.39, RT-6.41 step 2), `.` written as `~`
+   as in the presence subject. A `sub` without an anchor gets no
+   credential. Why: a name no agent's can take, bound to the identity, and
+   the same anchor the visibility rule and an account record use;
+   `preferred_username` may hold a `.` and may pass to someone else.
+   Alternative: a name derived from `preferred_username` (point 2's first
+   sketch). Rejected: a renamed or reused name would inherit another
+   person's view.
+5. **Reading only, and only through consumers the login service makes.**
+   Recommended: the person's user JWT allows no publish on any subject,
+   subscribe only on `deliver.<name>.<login>.>`, and no `$JS.API` right;
+   `<login>` is the first ten characters of the login's public key after
+   its leading `U`, in lower case, so two logins of one operator (two
+   browsers) never share a consumer. At a login's first issue the login
+   service makes `<name>_<login>_presence` on `PRESENCE`, delivering the
+   last message per subject and then new ones: every agent's presence and
+   attestation, as every agent reads them, and the crown claims,
+   memberships and ask records of point 9 for the channels the person may
+   see (the visibility rule of ADR-016 point 4: public channels, the
+   person's own agents' channels and those of agents that trust the person
+   directly, guest channels included); and `<name>_<login>_stats` on
+   `STATS` (point 12), from 7 days back. At a renewal both are kept with
+   their position while the visible channels are the same; when they
+   changed, the presence consumer is made anew with the new filters and
+   delivers the last message per subject again, as an agent's at a new
+   host session (RT-6.35 step 2). No channel consumers: stage 1 shows no
+   thread text. Why: a console that cannot publish cannot answer, remark or
+   claim anything, whoever takes over its server; the risk of the server
+   holding operators' keys (RISK-12) shrinks to reading. Alternative:
+   rights per operator group, one set for every operator (the whole
+   tenant). Rejected: the owner decided the visibility per person on
+   2026-11-23 (open point 3).
+6. **The credential lives as long as the login, no longer.** Recommended: a
+   key pair per login, made by the console's server and kept in its memory
+   only; a user JWT of 15 minutes, renewed every 10 with a fresh access
+   token, which the server gets with the refresh token of the operator's
+   ordinary Keycloak session (no `offline_access` for the console's
+   client); at logout, at the end of the console's session
+   (`CONSOLE_SESSION_SEC`) or when a refresh fails, the server closes that
+   connection and drops key and tokens. A person publishes nothing, so no
+   bye ends their consumers: a login's consumers end by their inactivity
+   threshold, 15 minutes without a subscriber on their deliver subject
+   (shorter than an agent's hour), and the console's server, which holds
+   no JetStream right, deletes none. Why: as for an agent's credential
+   (ADR-014 point 7); a person disabled in Keycloak loses the console
+   within 15 minutes, the bound of the risk of a disabled person's access
+   (RISK-10). Alternative: one long-lived credential per person. Rejected:
+   a stolen one would outlive the session.
+7. **The static account goes when the person's path runs.** Recommended:
+   the console's own NATS user ("NATS account for the lab" in the server's
+   README) is removed in the release that ships points 1 to 6, not kept as
+   a fallback; with no operator logged in the console then reads nothing,
+   and its readiness probe no longer waits for a presence read of its own.
+   Why: two paths would keep the standing credential the person's path
+   exists to remove. Alternative: keep the static account for presence
+   alone, which every agent reads anyway. Rejected for the same reason, and
+   presence would stay the console's view, not the person's.
+
+*Asks*
+
+8. **Stage 1 shows the asks and does not answer them.** Recommended: the
+   console lists the open asks of the channels a person may see, with "for
+   me" and "I may answer" (point 4) and marked expired after 24 h, and says
+   where to answer: in the ask's thread in the chat, as today (point 11).
+   Why: an answer from the console is only sound when it is as strong as a
+   trusted human's 👍 in Mattermost, tied to the person's identity and
+   approver record and never to the console's; nothing of that is built,
+   and the owner decided reading only until it is reviewed (open point 5).
+   Alternative, for a later stage: the person's credential may publish a
+   `reaction` or `post` (format v1) on `<bus>.hu.<home>.<anchor>` for the
+   asking agent's home and the person's own anchor only, and the asking
+   server counts it by the rule for people's events (RT-6.42 step 9): a
+   trusted anchor, a fresh account record that says `approver`, within
+   24 h. Open before that: two publishers on one subject (the bridge and
+   the person); an account record for a person without a Mattermost
+   account (today's records are keyed by the Mattermost id,
+   `<presence>.account.mattermost.<id>.v1`); a fresh login for each yes
+   (Keycloak's `max_age`); the `Origin` check of point 4; and a human's
+   review of the console's server (ADR-014 point 15). A captured server
+   would then answer as every approver logged in (RISK-12), beside the
+   bridge's own power to vouch for people (RISK-21).
+9. **The asking agent's MCP server publishes its open asks as one record,
+   on a subject of its own.** Recommended: `<presence>.ask.<home>.<name>`
+   in the `PRESENCE` stream (one message per subject), `<home>` the token
+   of the agent's home channel, `<name>` its NATS name; the login service
+   grants each agent exactly that subject, for its own name and the home
+   of its hello only. Every server with a NATS link publishes, whether its
+   home runs over NATS or not. Why: one subject per agent, as its presence,
+   so an agent cannot fill `PRESENCE` (16 MiB, the oldest discarded) with
+   subjects of its own and push out presence, attestations, crown claims
+   or account records; and the subject names the agent, so no agent can
+   publish, change or end another agent's asks, nor file them in a home
+   that is not its own. Alternative: a record per ask, on
+   `<presence>.ask.<home>.<name>.<ask>`. Rejected: an agent could make
+   subjects without bound and flood the stream every agent's presence
+   lives in. Alternative: a stream of its own for asks (`ASKS`, one subject
+   per ask, a cap of subjects per agent). Possible, but a second stream,
+   consumer and set of rights for what one bounded record carries.
+   Alternative: the central bridge reads the asks from Mattermost and
+   publishes them. Rejected for now: asks move into the bridge only as
+   they move to NATS (ADR-016, its addition of 2026-11-24, point 4), and
+   the bridge would vouch for agents' words it only saw.
+10. **The record lists at most 20 asks, a title each, never an ask's
+    body.** Recommended: format v1 with `asks`, the open asks oldest first,
+    each with `mm` (the ask's Mattermost post id, unique in the list),
+    `kind` (`approval` or `question`), `human` (the asked human's anchor
+    in its subject form, `.` written as `~` as in the presence subject's
+    owner token, `ownerToken` in the login service and
+    `natsbus.owner_token` in the MCP server; as the session's own record
+    from the login service gives it, RT-6.41, or `-` when it gives none), `title` (the ask's title line, at most 200
+    characters), `asked` (the ask's server time) and `answered` (the server
+    saw a first answer by a trusted human); `more`, the open asks the list
+    leaves out; `iat` and `exp`. The whole record is at most 4 KiB: past 20
+    asks, or when the titles do not fit, the newest are left out and
+    counted in `more`. No `props`, no context, recommendation or answer
+    text. The console renders `title` as plain text, never as markup or a
+    link, with control and direction characters stripped; a `human` that
+    is not `-` or an anchor in that form (a lower-case letter or digit,
+    then up to 63 of `[a-z0-9~_-]`) drops the record. "For me" compares
+    `human` with the anchor of the operator's own credential in the same
+    subject form, never with a name; "I may
+    answer" means the operator's anchor is among the asking agent's owner
+    and trusted anchors in its attestation (RT-6.41). Why: enough to see
+    what waits on whom, within a bound no agent can stretch; the rest is
+    read where it is answered. Alternative: the whole ask. Rejected: more
+    text in the console's memory (point 15) for no decision it can take
+    there. Alternative: the count alone, which presence carries. Rejected:
+    no "for me" from a count.
+11. **An ask record is fresh or gone.** Recommended: the server publishes
+    the record at each change (an ask, its first answer, `resolve_ask`)
+    and every 10 minutes while an ask is open, each valid 30 minutes
+    (`exp`); an ended ask leaves the list, and at its bye the server
+    publishes an empty list once. The console shows a record only while
+    `exp` is ahead of its floored clock, and marks the asks of an agent
+    whose presence is not fresh "agent gone". Expired after 24 h is
+    computed from `asked` and is a hint only: whether a yes approves stays
+    the asking server's check (RT-6.11 step 5). Why: a crashed server's
+    asks disappear within 30 minutes instead of standing for a day.
+    Alternative: no renewal, the stream's 24 h. Rejected: a dead agent's
+    asks would look open for a day.
+
+*`STATS` on NATS*
+
+12. **A stream of its own, `STATS`, on `<stats>.<name>`.** Recommended:
+    the login service makes it at its start, as `BUS` and `PRESENCE`
+    (RT-6.35 step 1): subjects `<stats>.>` (`AUTH_STATS_PREFIX`, new,
+    default `stats`, different from the other prefixes and not
+    `deliver`), 30 days, 64 MiB in all, at most 8 KiB per message and 500
+    messages per subject, the oldest discarded; and grants each agent
+    publish on `<stats>.<name>` for its own name only. Why: no agent's
+    channel consumer delivers them, and the retention covers the 7-day
+    reports with room. The 500 per subject bound what one name can flood:
+    it pushes out only its own oldest lines. Many names together (each a
+    new credential, a new process) can still push out the oldest lines of
+    all within the 64 MiB; a report then says the age of its oldest line
+    (RISK-22). Alternative: on the `BUS` stream as `<bus>.stats.<name>`.
+    Rejected: 14 days, and every filter on `<bus>.>` would have to leave
+    them out. Alternative: one shared subject without the name. Rejected:
+    no bound per agent, and the name says no more than the chat line's
+    author does today.
+13. **Each MCP server publishes the same line on NATS, beside the chat.**
+    Recommended: every server with a NATS link publishes each part (once
+    per day of session time and at the session's end, RT-6.9 step 2) as
+    the same JSON object it posts after `STATS ` in the stats channel; a
+    failed publish is kept and tried again with the next part, as a failed
+    post is. The chat line, `stats_report` and `bin/mm-agent-stats.sh` stay
+    as they are. Why: one parser (`stats.py`) for both, and the console's
+    numbers can be held to `stats_report`'s on the same lines.
+    Alternative: NATS in place of the chat line. Rejected for stage 1:
+    every agent without a NATS link would vanish from the reports.
+14. **No free text rides along.** Recommended: every reader decodes a line
+    strictly: at most 8 KiB, no duplicate key; strings only in `v`
+    (`[0-9]{1,4}\.[0-9]{1,4}\.[0-9]{1,6}`), `sid` (12 lower-case hex
+    digits), `rt` (one of `claude-code`, `cursor`, `opencode`, `codex`,
+    `pi`, `other`: the publisher writes `other` on NATS for any other
+    client name) and `kind` (`session` or `autonomous`); every other value
+    a number, a boolean, a list of numbers, or an object of such values. A
+    string anywhere else, or a string field off its pattern, drops the
+    whole line, with a warning that carries none of it. Keys are strings
+    too, so they come from one fixed allow list in `stats.py`, shared by
+    publisher and reader (the protocol names it): the publisher leaves out
+    any key outside it, the reader ignores such a key, and no key is ever
+    shown as text, only mapped to a label the list gives it. The line
+    names no person, home, post or text (RT-6.9). Why: a steered agent can
+    still write wrong numbers about itself, as in the chat today, but no
+    text, no name and no link. Alternative: keys by a pattern alone.
+    Rejected: a 64-character key is room for a message.
+15. **What the console shows of it.** Recommended: stage 1's two reports
+    (point 8): the bus's share of all tokens per version over 7 days, and
+    the asks over 24 hours and 7 days, computed with `stats.py`, the same
+    numbers `stats_report` gives on the same lines (a test); a missing
+    field as "n/a"; the age of the oldest line it holds. Every operator
+    sees every line: the lines carry no content. The console neither shows
+    nor groups by an agent's name and has no report by home or owner (open
+    point 7 stays open). Why: the reports stage 1 promised, and nothing
+    that turns overhead counters into a record per person. Alternative:
+    reports per agent. Rejected: not asked for, and it would be such a
+    record.
+
+Not part of this addition: answering an ask from the console (point 8),
+threads and people's posts in the console, the card's fields in presence
+(decided on 2026-11-25, specified with that work), the reports of stage 2,
+a recorder (open point 8), `stats_report` reading NATS, reports by home
+or owner, a second replica of the console, and anything outside the lab.
 
 ---
 

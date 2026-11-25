@@ -19,7 +19,7 @@ host chose for the session, listens on 127.0.0.1 and serves
 A relay opens with one handshake line, ``{"key": …, "session": {…}, "pid": …,
 "ppid": …}``; its process ids only name the relay that holds the one slot in
 the refusal of a second (RT-6.18 step 6). The
-session values are names only (NAMING): the Claude Code session id, project
+session values are names only (NAMING): the Claude Code or OpenCode session id, project
 directory, MM_WORKSPACE and working directory, the channel flag, CLAUDECODE. They are
 checked for type and length and never opened, resolved or entered on the host;
 HOME, XDG_STATE_HOME and anything else the relay sends are ignored. The host
@@ -94,15 +94,22 @@ _HARNESS = re.compile(r"[a-z0-9][a-z0-9._-]{0,31}")
 # Set once RELAY_WARN_SEC passed without a handshake: the host process's start
 # (epoch s); a later handshake clears it (relay_warning).
 _no_relay_since: float | None = None
+# The last time a harness plugin said it waits for its first session (the
+# hook API's POST /v1/waiting, RT-6.18 step 11): the OpenCode plugin starts
+# the relay only once a session prompted (RT-6.20 step 1). Epoch s.
+_waiting_at: float | None = None
 
 # What a relay may tell the host: names only, with their longest length.
-NAMING = {"CLAUDE_CODE_SESSION_ID": 256, "CLAUDE_PROJECT_DIR": 4096, "MM_WORKSPACE": 4096,
+NAMING = {"CLAUDE_CODE_SESSION_ID": 256, "OPENCODE_SESSION_ID": 256, "CLAUDE_PROJECT_DIR": 4096, "MM_WORKSPACE": 4096,
           "cwd": 4096, "MM_CHANNEL_PUSH": 1, "CLAUDECODE": 16}
 _NAMING_PATHS = ("CLAUDE_PROJECT_DIR", "MM_WORKSPACE", "cwd")
 # The session values that say which agent a relay speaks for (RT-6.18 step 6):
 # a relay that differs from the first one in these is refused. The working
-# directory counts only when neither directory is named.
-_IDENTITY = ("CLAUDE_CODE_SESSION_ID", "CLAUDE_PROJECT_DIR", "MM_WORKSPACE")
+# directory counts only when neither directory is named. OPENCODE_SESSION_ID:
+# the OpenCode session the plugin bound the bus to (RT-6.20 step 1), so two
+# OpenCode processes in one workspace are told apart.
+_IDENTITY = ("CLAUDE_CODE_SESSION_ID", "OPENCODE_SESSION_ID", "CLAUDE_PROJECT_DIR", "MM_WORKSPACE")
+_IDS = ("CLAUDE_CODE_SESSION_ID", "OPENCODE_SESSION_ID")
 
 # What preStart may hand the host process on stdin besides the key: the bus
 # settings (MM_*, MATTERMOST_*), the corral session's names and the network
@@ -166,7 +173,8 @@ def session_values(environ: Mapping[str, str], cwd: str | None = None) -> dict[s
     """What the relay tells the host about this session: names only (NAMING)."""
     from . import channel
 
-    out = {k: environ[k] for k in ("CLAUDE_CODE_SESSION_ID", "CLAUDE_PROJECT_DIR", "MM_WORKSPACE", "CLAUDECODE")
+    out = {k: environ[k] for k in ("CLAUDE_CODE_SESSION_ID", "OPENCODE_SESSION_ID", "CLAUDE_PROJECT_DIR",
+                                   "MM_WORKSPACE", "CLAUDECODE")
            if environ.get(k)}
     # Claude Code is among the relay's ancestors, not the host's (RT-6.12).
     out["MM_CHANNEL_PUSH"] = "1" if channel.enabled() else "0"
@@ -274,20 +282,47 @@ def relay_warning() -> str:
             f"is the bus plugin installed in the harness? ({adapter_doc()})")
 
 
+def client_session_refusal(sent: str, environ: Mapping[str, str] | None = None) -> str:
+    """Why the hook API refuses a caller, or "" (RT-6.18 step 6): the host
+    serves the OpenCode session whose relay came first (OPENCODE_SESSION_ID);
+    a hook call naming another one is refused, so a second OpenCode process
+    or a restarted one never sets this bot's presence or reads its posts. A
+    call without the header (an older plugin, another harness) is served."""
+    own = (os.environ if environ is None else environ).get("OPENCODE_SESSION_ID", "")
+    if not own or not sent or hmac.compare_digest(sent.encode(), own.encode()):
+        return ""
+    return ("this bus serves another OpenCode session: " + _ONE_AGENT_HOOKS)
+
+
 def relay_connected() -> None:
     """A handshake arrived: the warning goes (the DM, once sent, stays sent)."""
     global _no_relay_since
     _no_relay_since = None
 
 
+def client_waiting(now: float | None = None) -> None:
+    """A harness plugin waits for its first session (RT-6.18 step 11): the
+    no-relay warning waits RELAY_WARN_SEC after the last such signal."""
+    global _waiting_at
+    _waiting_at = time.time() if now is None else now
+
+
 async def relay_watch(host: Host, started: float) -> None:
     """RELAY_WARN_SEC after the start, still no relay: the warning in bus_info
-    and /v1/me, one log line and one DM to the responsible human. Runs once per
-    host process, so the DM never repeats in the session."""
+    and /v1/me, one log line and one DM to the responsible human. While a
+    plugin says it waits for a session (client_waiting), RELAY_WARN_SEC after
+    its last signal instead. Runs once per host process, so the DM never
+    repeats in the session."""
     global _no_relay_since
-    await anyio.sleep(RELAY_WARN_SEC)
-    if host.served:
-        return
+    due = started + RELAY_WARN_SEC
+    while True:
+        await anyio.sleep(max(0.0, due - time.time()))
+        if host.served:
+            return
+        waited = _waiting_at
+        if waited is None or waited + RELAY_WARN_SEC <= time.time():
+            break
+        due = waited + RELAY_WARN_SEC
     _no_relay_since = started
     line = relay_warning()
     log.warning("%s", line)
@@ -360,9 +395,10 @@ def apply_session(values: Mapping[str, str], *,
     says whether it serves as a channel. Never opened, resolved or entered:
     the host's working directory stays its own."""
     env = os.environ if environ is None else environ
-    for name in ("CLAUDE_CODE_SESSION_ID", "CLAUDE_SESSION_ID", "CLAUDE_PROJECT_DIR", "CLAUDECODE"):
+    for name in ("CLAUDE_CODE_SESSION_ID", "CLAUDE_SESSION_ID", "OPENCODE_SESSION_ID", "CLAUDE_PROJECT_DIR",
+                 "CLAUDECODE"):
         env.pop(name, None)
-    for name in ("CLAUDE_CODE_SESSION_ID", "CLAUDECODE", "MM_CHANNEL_PUSH"):
+    for name in ("CLAUDE_CODE_SESSION_ID", "OPENCODE_SESSION_ID", "CLAUDECODE", "MM_CHANNEL_PUSH"):
         if values.get(name):
             env[name] = values[name]
     project = values.get("CLAUDE_PROJECT_DIR") or values.get("cwd")
@@ -479,11 +515,12 @@ def identity(values: Mapping[str, str]) -> dict[str, str]:
     out = {k: values[k] for k in _IDENTITY if values.get(k)}
     if "CLAUDE_PROJECT_DIR" not in out and "MM_WORKSPACE" not in out and values.get("cwd"):
         out["cwd"] = values["cwd"]
-    return {k: v if k == "CLAUDE_CODE_SESSION_ID" else os.path.normpath(v) for k, v in out.items()}
+    return {k: v if k in _IDS else os.path.normpath(v) for k, v in out.items()}
 
 
 _ONE_AGENT = ("the host serves one agent with one bot, so another session's relay would post "
               "and answer as this bot (RT-6.18 step 6). Run each agent in its own corral session")
+_ONE_AGENT_HOOKS = ("one agent, one bot (RT-6.18 step 6). Continue that session or start a new corral session")
 
 
 def identity_mismatch(first: Mapping[str, str], other: Mapping[str, str]) -> str:
