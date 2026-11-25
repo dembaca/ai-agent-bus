@@ -292,7 +292,7 @@ func (r *Reader) prove(ctx context.Context, conn *websocket.Conn) ([]Event, erro
 		Seq    int               `json:"seq"`
 		Action string            `json:"action"`
 		Data   map[string]string `json:"data"`
-	}{Seq: 1, Action: "auth_challenge", Data: map[string]string{"token": r.token}}
+	}{Seq: 1, Action: "authentication_challenge", Data: map[string]string{"token": r.token}}
 	// The write is bounded too: a server that stalls after the handshake
 	// must not outlive the context.
 	conn.SetWriteDeadline(time.Now().Add(20 * time.Second))
