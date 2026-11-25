@@ -16,6 +16,9 @@ var ErrNoSuchUser = errors.New("no such user")
 // User is what the verifier needs to know about a chat account.
 type User struct {
 	Username string
+	// ID is the chat's own id of the account (Mattermost's user id), what the
+	// account record is keyed by (RT-6.42).
+	ID string
 	// Bot is true for a bot account: a bot never stands for a human.
 	Bot bool
 	// Guest is true for a guest account: a guest owns no agents.

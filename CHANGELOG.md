@@ -5,6 +5,22 @@ before 0.5.0 are described in the git history.
 
 ## Unreleased
 
+### Added
+
+- **The login service's part of people's posts on NATS** (ADR-016 step 2, points
+  7, 8 and 16; RT-6.42): each agent gets, for every granted channel, a consumer
+  `<agent>_hu_<channel>` on `<bus>.hu.<channel>.*` beside its channel consumer
+  (ack none, deleted with it at a dropped channel and at the bye), and its
+  presence consumer also reads the account records
+  (`<presence>.account.mattermost.*.v1`) and the bridge's signal per granted
+  channel (`<presence>.bridge.<channel>.v1`). At each credential issue for a
+  proven Mattermost account the service publishes that account's record (anchor,
+  `approver`, `token_iat`), never replacing it with an older token's; its
+  JetStream user needs the publish right `<presence>.account.mattermost.*.v1`
+  (`services/auth/nats-server.example.conf`). The bridge and the MCP server do
+  not read them yet; the record at a login without an agent and at a change of
+  the binding is not built.
+
 ### Docs
 
 - **The central bridge's step 2 is specified** (ADR-016, RT-6.42): people's

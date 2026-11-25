@@ -4947,6 +4947,12 @@ registrar's functions can move in later without a second component.
        and match an ask; nothing in the body names the author. Alternative:
        carry files over NATS. Not needed while agents can read Mattermost.
 
+   Built on the login service's side (this addition, RT-6.42 steps 3 and 8,
+   points 7, 8 and 16): the account record at each credential issue with the
+   `token_iat` guard in the directory, and the `<agent>_hu_<channel>` consumer
+   with the presence consumer's extra filters. Not built there: the record at
+   a login without an agent (point 9) and at a change of the binding.
+
    Security, whichever way the points are decided: the author comes only
    from the WebSocket event's `user_id`. The bridge drops posts with
    `from_webhook` or `override_username`, system posts, posts and

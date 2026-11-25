@@ -389,6 +389,15 @@ func (s *Service) authorize(ctx context.Context, req *jwt.AuthorizationRequestCl
 			hello.Trusted, hello.TrustedCut, uc.IssuedAt, uc.Expires); err != nil {
 			return "", who, fmt.Errorf("attestation: %w", err)
 		}
+		// The record of the chat account behind the login (RT-6.42 step 3).
+		guard, _ := s.anchorHook().(TokenGuard)
+		written, err := s.accountRecord(ctx, at, guard, id.Subject, id.ChatID, id.Owner, id.Approver, anchor, id.IssuedAt, uc.IssuedAt, uc.Expires)
+		if err != nil {
+			return "", who, fmt.Errorf("account record: %w", err)
+		}
+		if id.ChatID != "" && guard != nil && !written {
+			s.log.Info("auth callout", "event", "account record kept", "sub", id.Subject, "reason", "a newer token wrote it, or this one has no iat")
+		}
 	}
 	return userJWT, who, nil
 }
