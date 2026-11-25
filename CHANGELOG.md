@@ -5,6 +5,21 @@ before 0.5.0 are described in the git history.
 
 ## Unreleased
 
+- **One bus session per OpenCode process** (#119, RT-6.20 step 1, RT-6.18
+  step 6). An OpenCode server serves many sessions but carries one bot: the
+  plugin binds the bus to the first top-level session it sees. Every other
+  top-level session of that process is told so in the session ("No bus in
+  this session: …"), its hooks call nothing and its bus tool calls are
+  refused; a subagent of the bound session keeps the bus. Under corral the
+  bus server starts only once a session is bound, with its id as
+  `OPENCODE_SESSION_ID`, which the host compares like a Claude session id:
+  a second OpenCode process in one corral session is refused instead of
+  posting as the first one's bot. This replaces the check for `--service` in
+  the command line, which missed other spellings of a shared server and only
+  logged that the bus was gone. `bus_info` shows `pid` and, for OpenCode,
+  `client_session`. A bound session whose bot changed is told old → new;
+  nothing carries over. Without corral the rule holds per project directory.
+
 - **The console's clock ages without deliveries too** (`Part of #108`).
   "Now" stood still between deliveries, so a killed lone agent stayed
   `online` with its crown forever. The fleet's "now" carries a

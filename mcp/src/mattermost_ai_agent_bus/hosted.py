@@ -19,7 +19,7 @@ host chose for the session, listens on 127.0.0.1 and serves
 A relay opens with one handshake line, ``{"key": …, "session": {…}, "pid": …,
 "ppid": …}``; its process ids only name the relay that holds the one slot in
 the refusal of a second (RT-6.18 step 6). The
-session values are names only (NAMING): the Claude Code session id, project
+session values are names only (NAMING): the Claude Code or OpenCode session id, project
 directory, MM_WORKSPACE and working directory, the channel flag, CLAUDECODE. They are
 checked for type and length and never opened, resolved or entered on the host;
 HOME, XDG_STATE_HOME and anything else the relay sends are ignored. The host
@@ -96,13 +96,16 @@ _HARNESS = re.compile(r"[a-z0-9][a-z0-9._-]{0,31}")
 _no_relay_since: float | None = None
 
 # What a relay may tell the host: names only, with their longest length.
-NAMING = {"CLAUDE_CODE_SESSION_ID": 256, "CLAUDE_PROJECT_DIR": 4096, "MM_WORKSPACE": 4096,
+NAMING = {"CLAUDE_CODE_SESSION_ID": 256, "OPENCODE_SESSION_ID": 256, "CLAUDE_PROJECT_DIR": 4096, "MM_WORKSPACE": 4096,
           "cwd": 4096, "MM_CHANNEL_PUSH": 1, "CLAUDECODE": 16}
 _NAMING_PATHS = ("CLAUDE_PROJECT_DIR", "MM_WORKSPACE", "cwd")
 # The session values that say which agent a relay speaks for (RT-6.18 step 6):
 # a relay that differs from the first one in these is refused. The working
-# directory counts only when neither directory is named.
-_IDENTITY = ("CLAUDE_CODE_SESSION_ID", "CLAUDE_PROJECT_DIR", "MM_WORKSPACE")
+# directory counts only when neither directory is named. OPENCODE_SESSION_ID:
+# the OpenCode session the plugin bound the bus to (RT-6.20 step 1), so two
+# OpenCode processes in one workspace are told apart.
+_IDENTITY = ("CLAUDE_CODE_SESSION_ID", "OPENCODE_SESSION_ID", "CLAUDE_PROJECT_DIR", "MM_WORKSPACE")
+_IDS = ("CLAUDE_CODE_SESSION_ID", "OPENCODE_SESSION_ID")
 
 # What preStart may hand the host process on stdin besides the key: the bus
 # settings (MM_*, MATTERMOST_*), the corral session's names and the network
@@ -166,7 +169,8 @@ def session_values(environ: Mapping[str, str], cwd: str | None = None) -> dict[s
     """What the relay tells the host about this session: names only (NAMING)."""
     from . import channel
 
-    out = {k: environ[k] for k in ("CLAUDE_CODE_SESSION_ID", "CLAUDE_PROJECT_DIR", "MM_WORKSPACE", "CLAUDECODE")
+    out = {k: environ[k] for k in ("CLAUDE_CODE_SESSION_ID", "OPENCODE_SESSION_ID", "CLAUDE_PROJECT_DIR",
+                                   "MM_WORKSPACE", "CLAUDECODE")
            if environ.get(k)}
     # Claude Code is among the relay's ancestors, not the host's (RT-6.12).
     out["MM_CHANNEL_PUSH"] = "1" if channel.enabled() else "0"
@@ -360,9 +364,10 @@ def apply_session(values: Mapping[str, str], *,
     says whether it serves as a channel. Never opened, resolved or entered:
     the host's working directory stays its own."""
     env = os.environ if environ is None else environ
-    for name in ("CLAUDE_CODE_SESSION_ID", "CLAUDE_SESSION_ID", "CLAUDE_PROJECT_DIR", "CLAUDECODE"):
+    for name in ("CLAUDE_CODE_SESSION_ID", "CLAUDE_SESSION_ID", "OPENCODE_SESSION_ID", "CLAUDE_PROJECT_DIR",
+                 "CLAUDECODE"):
         env.pop(name, None)
-    for name in ("CLAUDE_CODE_SESSION_ID", "CLAUDECODE", "MM_CHANNEL_PUSH"):
+    for name in ("CLAUDE_CODE_SESSION_ID", "OPENCODE_SESSION_ID", "CLAUDECODE", "MM_CHANNEL_PUSH"):
         if values.get(name):
             env[name] = values[name]
     project = values.get("CLAUDE_PROJECT_DIR") or values.get("cwd")
@@ -474,7 +479,7 @@ def identity(values: Mapping[str, str]) -> dict[str, str]:
     out = {k: values[k] for k in _IDENTITY if values.get(k)}
     if "CLAUDE_PROJECT_DIR" not in out and "MM_WORKSPACE" not in out and values.get("cwd"):
         out["cwd"] = values["cwd"]
-    return {k: v if k == "CLAUDE_CODE_SESSION_ID" else os.path.normpath(v) for k, v in out.items()}
+    return {k: v if k in _IDS else os.path.normpath(v) for k, v in out.items()}
 
 
 _ONE_AGENT = ("the host serves one agent with one bot, so another session's relay would post "

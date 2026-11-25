@@ -34,10 +34,11 @@
 // (parentID) is left alone. OpenCode 2 runs one plugin instance per location
 // in its long-running service and unloads a location after an hour without
 // use: the turn state is kept in the plugin's storage, so a reload goes on.
-// That service is shared by the machine and outlives a corral session: one
-// started inside a sandbox carries that session's relay variables, so it does
-// nothing; corral runs the session in a private server (--standalone), whose
-// relay is the one the host process serves (RT-6.20 step 1, RT-6.18 step 6).
+// One bus session per OpenCode process (RT-6.20 step 1, RT-6.18 step 6,
+// #119): with a corral session's relay variables the first top-level session
+// the process sees carries the bus, in any server, shared or private; every
+// other top-level session is told so on its prompt and its hooks and bus tools
+// do nothing. Without them the same holds per location (its one server, one bot).
 
 import type { Plugin } from "@opencode/plugin"
 import { createHash } from "node:crypto"
@@ -71,6 +72,7 @@ export const WAKE_BACKOFF_MS = 60_000
 export const WAKE_BACKOFF_MAX_MS = 30 * 60_000
 const RESUBSCRIBE_MS = 1000
 const KEEP_MS = 24 * 3600_000 // turn state older than a day is not restored
+const BOTS_KEY = "ai-agent-bus/bots" // OpenCode session id → its bot, to tell a changed one (RT-6.20 step 3)
 
 type Env = Record<string, string | undefined>
 type Json = Record<string, any>
@@ -224,23 +226,49 @@ export function busRoot(options: Options, env: Env, here: string): string | null
   return null
 }
 
-// OpenCode's long-running background service (`opencode serve --service`, the
-// command its clients start it with: `cli.service-config` in OpenCode 2.4.0) with a corral session's relay variables:
-// it took them from the sandboxed command that started it. Its relay would
-// take the host process's one relay slot from the session's own server, and
-// its long poll the session's (RT-6.20 step 1).
-export function serviceWithRelay(argv: readonly string[], env: Env): boolean {
-  return argv.some((a) => a === "--service" || a === "--service=true") &&
-    Boolean(env.MM_BUS_MCP_ENDPOINT || env.MM_BUS_ENDPOINT)
+// A corral session's relay variables (RT-6.18): the bus of this process is
+// the host's, which serves one agent with one bot.
+export function relayVars(env: Env): boolean {
+  return Boolean(env.MM_BUS_MCP_ENDPOINT || env.MM_BUS_ENDPOINT)
+}
+
+// The session that carries the bus, per scope: "process" under relay
+// variables, else the location's real directory (RT-6.20 step 1). Kept on
+// globalThis, so every plugin instance of the process, and one that OpenCode
+// loads again after an idle unload, sees the same; never stored on disk: a
+// new process binds afresh.
+export type Bound = { id: string; dir: string }
+const BOUND = Symbol.for("ai-agent-bus.bound")
+export function bindings(): Map<string, Bound> {
+  const g = globalThis as any
+  return (g[BOUND] ??= new Map<string, Bound>())
+}
+
+// What a top-level session that does not carry the bus is told (RT-6.20 step 1).
+export function noBusText(relay: boolean): string {
+  return relay
+    ? "No bus in this session: this OpenCode server already carries the bus for another session (one agent, one bot). " +
+      "Start `opencode` on its own for this session, in its own corral session (adapters/opencode.md)."
+    : "No bus in this session: this OpenCode server already carries the bus for another session in this directory " +
+      "(one agent, one bot). Start `opencode` on its own for this session, in its own directory or worktree (adapters/opencode.md)."
+}
+
+// What the bound session is told when its bot is another than the one it had
+// (RT-6.20 step 3): the name changed, nothing else carries over.
+export function renamedText(old: string, now: string): string {
+  return `Your bus bot changed for this OpenCode session: @${old} → @${now}. Nothing carries over from @${old} ` +
+    `(threads, asks, trust): say so in your next HELLO (announce) if others knew you as @${old}.`
 }
 
 // A local MCP entry that runs the bus's server, under any name.
 const runsBus = (cfg: any): boolean =>
   Array.isArray(cfg?.command) && cfg.command.some((a: unknown) => String(a).includes("mattermost-ai-agent-bus-mcp"))
 
-// The MCP transform in that service: every bus server goes, the plugin's name
-// and a hand-configured one alike, or it would relay there all the same. A
-// host without remove() keeps them (none known: 2.1.2 has it). The names removed.
+// The MCP transform of a location whose sessions do not carry the bus under
+// relay variables: every bus server goes, the plugin's name and a
+// hand-configured one alike, or it would relay with no session or another's
+// (RT-6.20 step 1). A host without remove() keeps them (none known: 2.1.2 has
+// it). The names removed.
 export function dropMcp(editor: any): string[] {
   if (typeof editor?.remove !== "function") return []
   const names = editor.list().filter(([n, cfg]: [string, any]) => n === SERVER || runsBus(cfg)).map(([n]: [string]) => n)
@@ -252,9 +280,19 @@ export function dropMcp(editor: any): string[] {
 // The MCP transform: the server, unless the user has it (by name, or another
 // local entry that runs mattermost-ai-agent-bus-mcp). true: the user's server
 // has no MM_WORKSPACE, so its endpoint file may lie where the plugin does not look.
+// session: the bound OpenCode session's id, as OPENCODE_SESSION_ID, which the
+// relay hands the host as an identity value (RT-6.18 step 6, RT-6.20 step 1);
+// a server configured by hand gets it too.
 export function addMcp(editor: any, options: Options, root: string | null, directory: string,
-                       env: Env = {}): boolean {
-  const own = editor.get(SERVER) ?? editor.list().find(([, cfg]: [string, any]) => runsBus(cfg))?.[1]
+                       env: Env = {}, session = ""): boolean {
+  const ownName: string | undefined = editor.get(SERVER) ? SERVER
+    : editor.list().find(([, cfg]: [string, any]) => runsBus(cfg))?.[0]
+  const own = ownName ? editor.get(ownName) : undefined
+  if (own && session && typeof editor.update === "function") {
+    editor.update(ownName, (cfg: any) => {
+      cfg.environment = { ...(cfg.environment ?? {}), OPENCODE_SESSION_ID: session }
+    })
+  }
   if (options.mcp !== false && !own) {
     const command =
       options.command ??
@@ -271,7 +309,7 @@ export function addMcp(editor: any, options: Options, root: string | null, direc
     // host copy (RT-6.28), whose own mcp/.venv is the host's.
     const venv = !options.command && root ? { UV_PROJECT_ENVIRONMENT: venvDir(env, root) } : {}
     const environment = { CLAUDE_CODE_SESSION_ID: "", CLAUDE_PROJECT_DIR: "", MM_CHANNEL_PUSH: "0", MM_WORKSPACE: dir,
-                          ...venv, ...(options.environment ?? {}) }
+                          ...venv, ...(options.environment ?? {}), ...(session ? { OPENCODE_SESSION_ID: session } : {}) }
     if (command) editor.set(SERVER, { type: "local", command, environment, cwd: dir })
   }
   return Boolean(own && !own.environment?.MM_WORKSPACE)
@@ -333,19 +371,12 @@ export async function setup(ctx: Plugin.Context) {
   const directory = String(ctx.location.directory)
   const realDir = real(directory) || directory
   const env = process.env as Env
-  if (serviceWithRelay(process.argv, env)) {
-    console.warn(`[${SERVER}] OpenCode's background service holds a corral session's relay variables: no bus ` +
-      `server, skill or turn cycle here, the session's own server (--standalone) has them (adapters/opencode.md)`)
-    // Only a transform that takes every bus server out, a configured one too.
-    try {
-      const reg: any = await ctx.mcp.transform((editor: any) => void dropMcp(editor))
-      return async () => {
-        await reg?.dispose?.().catch(() => {})
-      }
-    } catch {
-      return // an older or newer host without this hook
-    }
-  }
+  // One bus session per process under relay variables, per location without
+  // (RT-6.20 step 1, #119): not the server's command line, which may be spelt
+  // in any way, decides, but which session came first.
+  const relay = relayVars(env)
+  const scope = relay ? "process" : `dir:${realDir}`
+  const bound = (): Bound | undefined => bindings().get(scope)
   const storeKey = `${SERVER}/${sha16(realDir)}`
   let unkeyed = false // a hand-configured server without MM_WORKSPACE
   let warned = false
@@ -357,6 +388,10 @@ export async function setup(ctx: Plugin.Context) {
   const label = basename(realDir).slice(0, 64) // the presence label's limit (RT-6.17)
   const turns = new Map<string, Turn>() // top-level sessions only
   const tops = new Map<string, boolean>() // session id → a top-level session of this location
+  const parents = new Map<string, string>() // session id → its parent's ("" for a top-level one)
+  const told = new Set<string>() // top-level sessions told that they carry no bus
+  const busNames = new Set<string>([SERVER]) // the MCP servers that run the bus here
+  let botChecked = false
   let last = "" // the top-level session that had a prompt or ended a turn last: the one a wake starts
   let wakeFailedAt = 0
   let closed = false
@@ -401,6 +436,7 @@ export async function setup(ctx: Plugin.Context) {
     try {
       const info: any = await ctx.session.get({ sessionID: id } as any)
       if (!info?.id) return false
+      parents.set(id, String(info.parentID || ""))
       const top = !info.parentID && ours(info.location)
       tops.set(id, top)
       return top
@@ -408,6 +444,54 @@ export async function setup(ctx: Plugin.Context) {
       return false
     }
   }
+
+  // The session this instance serves: the bound one, if it is of this location.
+  const carries = (id: string): boolean => {
+    const b = bound()
+    return Boolean(id) && b?.id === id && b.dir === realDir
+  }
+  // The first top-level session seen binds the bus (RT-6.20 step 1); under
+  // relay variables the MCP server is added only now, with its id (reload).
+  const bind = (id: string): boolean => {
+    if (!bound()) {
+      bindings().set(scope, { id, dir: realDir })
+      if (relay) void Promise.resolve().then(() => (ctx.mcp as any).reload?.()).catch(() => {})
+    }
+    return carries(id)
+  }
+  // A top-level session that does not carry the bus: told once, visibly, in
+  // the session, and in OpenCode's log (RT-6.20 step 1).
+  const refuse = async (id: string) => {
+    if (told.has(id)) return
+    told.add(id)
+    const text = noBusText(relay)
+    console.warn(`[${SERVER}] ${text}`)
+    try {
+      await ctx.session.synthetic({ sessionID: id, text, description: "AI agent bus: not in this session",
+        metadata: { [MARK]: "nobus" }, delivery: "steer", resume: false } as any)
+    } catch {
+      // the log line stays
+    }
+  }
+  // A session of the bound one's tree (itself or its subagents, by parentID):
+  // the bus tools serve it (RT-6.20 step 1).
+  const inTree = async (id: string): Promise<boolean> => {
+    for (let cur = id, hops = 0; cur && hops < 16; hops++) {
+      if (carries(cur)) return true
+      if (!parents.has(cur)) {
+        try {
+          const info: any = await ctx.session.get({ sessionID: cur } as any)
+          parents.set(cur, String(info?.parentID || ""))
+        } catch {
+          return false
+        }
+      }
+      cur = parents.get(cur) || ""
+    }
+    return false
+  }
+  // Ours and bound: the hooks act on the bus only for it (RT-6.20 step 1).
+  const mine = async (id: string): Promise<boolean> => (await topLevel(id)) && carries(id)
 
   const stat = (k: string, fields: Json = {}) => bus("POST", "/v1/stat", { k, ...fields })
   // One call at a time: the prompt hook's `working` and an interrupt's `idle`
@@ -435,6 +519,10 @@ export async function setup(ctx: Plugin.Context) {
   // A human's prompt starts a turn (RT-6.20 step 3).
   const humanTurn = async (id: string) => {
     if (!(await topLevel(id))) return
+    if (!bind(id)) {
+      await refuse(id)
+      return
+    }
     const t = turn(id)
     Object.assign(t, { busy: true, turn: true, aborted: false, drains: 0, signoffAsked: false, byBus: false,
                        heldSince: 0, wakeKey: "", wakeRepeats: 0, wakeAfter: 0 })
@@ -446,11 +534,33 @@ export async function setup(ctx: Plugin.Context) {
     await working
     await save()
     nudge()
+    await checkBot(id)
+  }
+
+  // The bot of the bound session, once per setup: another than the one it had
+  // before (a new registration after a restart) is said in the session, old →
+  // new; no trust carries over (RT-6.20 step 3, #119).
+  const checkBot = async (id: string) => {
+    if (botChecked) return
+    const r = await bus("GET", "/v1/me")
+    const now = String(r?.username || "")
+    if (!now) return
+    botChecked = true
+    try {
+      const bots: Json = ((await ctx.storage.get(BOTS_KEY)) as Json | undefined) ?? {}
+      const old = String(bots[id]?.username || "")
+      if (old && old !== now) await send(id, renamedText(old, now), "context", "AI agent bus: your bot changed")
+      bots[id] = { username: now, at: Date.now() }
+      for (const [k, v] of Object.entries<any>(bots)) if (Date.now() - Number(v?.at || 0) > 30 * 86400_000) delete bots[k]
+      await ctx.storage.set(BOTS_KEY, bots)
+    } catch {
+      // no storage: nothing to compare
+    }
   }
 
   // The Stop hook's checks, asked of the server (RT-6.20; RT-6.2 steps 1–2).
   const turnEnded = async (id: string) => {
-    if (!(await topLevel(id))) return
+    if (!(await mine(id))) return
     const t = turn(id)
     if (t.inFlight) return
     if (t.compactOnly) {
@@ -511,7 +621,7 @@ export async function setup(ctx: Plugin.Context) {
   // The human stopped the turn: no checks, no turn end (RT-6.9), no wake-up
   // until their next prompt.
   const interrupted = async (id: string) => {
-    if (!(await topLevel(id))) return
+    if (!(await mine(id))) return
     const t = turn(id)
     t.aborted = true
     t.turn = false
@@ -525,7 +635,7 @@ export async function setup(ctx: Plugin.Context) {
 
   // After a compaction: the own latest posts as context (RT-6.7).
   const compacted = async (id: string) => {
-    if (!(await topLevel(id))) return
+    if (!(await mine(id))) return
     const r = await bus("GET", "/v1/handoff")
     const text = String(r?.context || "")
     if (!text) return
@@ -607,7 +717,7 @@ export async function setup(ctx: Plugin.Context) {
       const t = id ? turns.get(id) : undefined
       // No session to wake, a turn at work (its human is there, and a wake
       // would only be held), no gates, or the last wake just failed.
-      if (!id || !t || !t.listening || t.aborted || anyBusy() || Date.now() - wakeFailedAt < WAKE_RETRY_MS) {
+      if (!id || !t || !carries(id) || !t.listening || t.aborted || anyBusy() || Date.now() - wakeFailedAt < WAKE_RETRY_MS) {
         await pause(id && Date.now() - wakeFailedAt < WAKE_RETRY_MS ? RETRY : IDLE_PAUSE_MS)
         continue
       }
@@ -646,16 +756,24 @@ export async function setup(ctx: Plugin.Context) {
     const id = String(d.sessionID || "")
     switch (ev?.type) {
       case "session.created":
-        if (id) tops.set(id, !d.parentID && ours(d.location))
+        if (id) {
+          tops.set(id, !d.parentID && ours(d.location))
+          parents.set(id, String(d.parentID || ""))
+          // The first top-level session seen binds the bus (RT-6.20 step 1).
+          if (tops.get(id)) bind(id)
+        }
         break
       case "session.deleted":
+        // Without relay variables a deleted bound session frees the bus for the
+        // next one; under them the host holds the first session's id (RT-6.18 step 6).
+        if (!relay && carries(id)) bindings().delete(scope)
         if (turns.delete(id)) {
           if (last === id) last = ""
           await save()
         }
         break
       case "session.execution.started":
-        if (turns.has(id)) turn(id).busy = true
+        if (turns.has(id) && carries(id)) turn(id).busy = true
         break
       case "session.execution.succeeded":
       case "session.execution.failed":
@@ -667,7 +785,7 @@ export async function setup(ctx: Plugin.Context) {
         break
       case "session.compaction.started":
         // Asked for between turns (/compact): its execution ends no turn.
-        if (turns.has(id) && !turns.get(id)!.turn) turn(id).compactOnly = true
+        if (turns.has(id) && carries(id) && !turns.get(id)!.turn) turn(id).compactOnly = true
         break
       case "session.compaction.ended":
         await compacted(id)
@@ -687,8 +805,28 @@ export async function setup(ctx: Plugin.Context) {
 
   const root = busRoot(options, env, fileURLToPath(import.meta.url))
   await keep(ctx.mcp.transform((editor: any) => {
-    unkeyed = addMcp(editor, options, root, directory, env)
+    for (const [n, cfg] of editor.list()) if (n === SERVER || runsBus(cfg)) busNames.add(n)
+    if (!relay) {
+      unkeyed = addMcp(editor, options, root, directory, env)
+      return
+    }
+    // Under relay variables only the location of the bound session runs the
+    // server, with its id; before a session is bound, or for another
+    // location's, none (RT-6.20 step 1, RT-6.18 step 6).
+    const b = bound()
+    if (b && b.dir === realDir) unkeyed = addMcp(editor, options, root, directory, env, b.id)
+    else dropMcp(editor)
   }))
+  // The bus tools refuse a session outside the bound one's tree: a second
+  // top-level session of the same location shares the location's MCP server,
+  // which speaks as the bound session's bot (RT-6.20 step 1).
+  await keep((ctx as any).tool?.hook?.("execute.before", async (ev: any) => {
+    const name = String(ev?.tool || "")
+    if (![...busNames].some((n) => name === n || name.startsWith(`${n}_`))) return
+    const id = String(ev?.sessionID || "")
+    if (!bound() || (await inTree(id))) return
+    throw new Error(noBusText(relay))
+  }) ?? Promise.resolve())
   const skill = skillInfo(root)
   if (skill) {
     await keep(ctx.skill.transform((editor: any) => {

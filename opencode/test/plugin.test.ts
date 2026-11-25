@@ -12,8 +12,8 @@ import { dirname, join } from "node:path"
 import { after, afterEach, before, beforeEach, mock, test } from "node:test"
 import { fileURLToPath } from "node:url"
 
-import plugin, { addMcp, busFile, busRoot, dropMcp, MARK, RETRY_SEC, retryMs, SERVER, serviceWithRelay, setup, SKILL, skillInfo,
-  timing, WAIT_SEC, venvDir, WAKE_BACKOFF_MAX_MS, WAKE_BACKOFF_MS, wakeBackoffMs, waitSec } from "../plugin/mattermost-agent-bus.ts"
+import plugin, { addMcp, bindings, busFile, busRoot, dropMcp, MARK, noBusText, relayVars, renamedText, RETRY_SEC, retryMs, SERVER,
+  setup, SKILL, skillInfo, timing, WAIT_SEC, venvDir, WAKE_BACKOFF_MAX_MS, WAKE_BACKOFF_MS, wakeBackoffMs, waitSec } from "../plugin/mattermost-agent-bus.ts"
 import entry from "../server.ts"
 
 const HERE = dirname(fileURLToPath(import.meta.url))
@@ -59,12 +59,13 @@ const answerWake = (body: any) => {
 const idleIn = (window = 5400) => () => ({ action: "idle", listen_since: nowSec(), listen_until: nowSec() + window })
 const paths = () => rest().map((c) => c.method + " " + c.path)
 const wakes = () => calls.filter((c) => c.path.startsWith("/v1/wake"))
-// The calls but the long poll, which runs on between turns.
-const rest = () => calls.filter((c) => !c.path.startsWith("/v1/wake"))
+// The calls but the long poll, which runs on between turns, and the bot check
+// of a human turn (RT-6.20 step 3; tested apart).
+const rest = () => calls.filter((c) => !c.path.startsWith("/v1/wake") && c.path !== "/v1/me")
 
 before(async () => {
   for (const v of ["CLAUDE_CODE_SESSION_ID", "CLAUDE_PROJECT_DIR", "CURSOR_PROJECT_DIR", "MM_WORKSPACE",
-                   "MM_BUS_ENDPOINT", "MM_BUS_KEY", "MM_AGENT_BUS_ROOT", "MM_LISTEN_POLL_SEC"]) delete process.env[v]
+                   "MM_BUS_ENDPOINT", "MM_BUS_MCP_ENDPOINT", "MM_BUS_KEY", "MM_AGENT_BUS_ROOT", "MM_LISTEN_POLL_SEC"]) delete process.env[v]
   mkdirSync(join(ws, ".git"), { recursive: true })
   mkdirSync(join(ws, "sub", "deeper"), { recursive: true })
   server = createServer((req: IncomingMessage, res: ServerResponse) => {
@@ -132,6 +133,7 @@ beforeEach(() => {
   process.env.XDG_STATE_HOME = join(tmp, "state")
   writeFileSync(join(dir, `endpoint-${sha16(ws)}.env`), `MM_BUS_ENDPOINT=${endpoint}\nMM_BUS_KEY=${KEY}\nMM_BUS_PID=1\n`)
   timing.minRetrySec = 0.01 // the tests' pauses are short; the clamp is tested apart
+  bindings().clear() // each test is a new OpenCode process (RT-6.20 step 1)
   mock.timers.enable({ apis: ["Date"], now: Date.now() })
 })
 
@@ -171,6 +173,12 @@ function fakeCtx(opts: Record<string, unknown> = {}, sessions: Record<string, { 
       transform: async (cb: any) => {
         cb({ list: () => [...skills.values()], get: (id: string) => skills.get(id), add: (s: any) => skills.set(s.id, s) })
         return { dispose: async () => {} }
+      },
+    },
+    tool: {
+      hook: async (name: string, cb: any) => {
+        hooks[`tool:${name}`] = cb
+        return { dispose: async () => void delete hooks[`tool:${name}`] }
       },
     },
     session: {
@@ -403,7 +411,8 @@ test("RT-6.20, RT-6.2 step 2: a bus post without an answer in its thread: one ro
   await fx.ended()
   // The sign-off was not asked yet: the server may still ask for it.
   assert.match(rest()[0].path, /drains=0&signoff_asked=0&by_bus=0&push=1&unanswered=1$/)
-  // Another session's prompt while the check was out (`last` moved on): nothing is marked.
+  // Another top-level session's prompt while the check was out carries no bus
+  // (RT-6.20 step 1): `last` stays, the bound session's answer is marked.
   await fx.prompt()
   calls = []
   answers["/v1/turn-end"] = HOLD
@@ -414,7 +423,7 @@ test("RT-6.20, RT-6.2 step 2: a bus post without an answer in its thread: one ro
   held = held.filter((x) => x !== h)
   h.res.writeHead(200, { "Content-Type": "application/json" }).end(JSON.stringify(answer))
   await ending
-  assert.deepEqual(calls.filter((c) => c.path === "/v1/reminded"), [])
+  assert.deepEqual(calls.filter((c) => c.path === "/v1/reminded").map((c) => c.body), [{ post_ids: ["p1"] }])
   await fx.cleanup()
 })
 
@@ -546,19 +555,17 @@ test("RT-6.20: a counter the woken turn cannot clear wakes again only after 1, 2
   await fx.cleanup()
 })
 
-test("RT-6.20: nothing is asked while another session works, without gates or after an interrupt", async () => {
+test("RT-6.20: nothing is asked while the session works, without gates or after an interrupt", async () => {
   const fx = await start()
   await fx.prompt("s1")
-  await fx.prompt("s2")
-  await fx.ended("s1")
   await settle(150)
-  assert.equal(wakes().length, 0) // s2 is at work: its human is there
+  assert.equal(wakes().length, 0) // s1 is at work: its human is there
   answers["/v1/turn-end"] = { action: "idle" } // no gates (not a project channel, BYE, MM_LISTEN_SEC=0)
   calls = []
-  await fx.ended("s2")
+  await fx.ended("s1")
   assert.deepEqual(rest().slice(-1).map((c) => c.body), [{ state: "idle", label: "ws" }])
   await settle(150)
-  assert.equal(wakes().length, 0) // s2 ended its turn last, without gates: idle, nothing to wake
+  assert.equal(wakes().length, 0) // ended without gates: idle, nothing to wake
   // A prompt makes its session the current one.
   answers["/v1/turn-end"] = idleIn(10)
   await fx.prompt("s1")
@@ -657,47 +664,145 @@ test("RT-6.20: a failed turn-end check leaves a listening session listening", as
   await fx.cleanup()
 })
 
-test("RT-6.20 step 1, RT-6.18 step 6: the background service with a corral session's relay variables does nothing (#70)", async () => {
-  const relay = { MM_BUS_MCP_ENDPOINT: "tcp://127.0.0.1:9", MM_BUS_ENDPOINT: "http://127.0.0.1:9", MM_BUS_KEY: "k" }
-  const service = ["/$bunfs/root/opencode", "serve", "--service"]
-  assert.equal(serviceWithRelay(service, relay), true)
-  assert.equal(serviceWithRelay(["opencode", "serve", "--service=true"], relay), true)
-  assert.equal(serviceWithRelay(["opencode", "serve", "--service=false"], relay), false)
-  assert.equal(serviceWithRelay(service, {}), false) // without corral the service is OpenCode's normal home
-  assert.equal(serviceWithRelay(["opencode", "serve", "--stdio", "--port", "0"], relay), false) // --standalone's server
+// Under a corral session's relay variables (RT-6.18) the bus is the host's.
+const withRelay = async (body: () => Promise<void>) => {
+  process.env.MM_BUS_MCP_ENDPOINT = "tcp://127.0.0.1:9"
+  process.env.MM_BUS_ENDPOINT = endpoint
+  process.env.MM_BUS_KEY = KEY
+  try {
+    await body()
+  } finally {
+    for (const v of ["MM_BUS_MCP_ENDPOINT", "MM_BUS_ENDPOINT", "MM_BUS_KEY"]) delete process.env[v]
+  }
+}
+
+test("RT-6.20 step 1, RT-6.18 step 6: one bus session per OpenCode process, in any server (#119)", async () => {
+  assert.equal(relayVars({ MM_BUS_MCP_ENDPOINT: "tcp://127.0.0.1:9" }), true)
+  assert.equal(relayVars({}), false)
   const argv = process.argv
   const warn = mock.method(console, "warn", () => {})
   try {
-    process.argv = [...argv, "--service"]
-    process.env.MM_BUS_MCP_ENDPOINT = relay.MM_BUS_MCP_ENDPOINT
-    const fx = fakeCtx()
-    // A bus server configured by hand, under the plugin's name or another, goes too.
-    const other = { type: "local", command: ["other-mcp"] }
-    fx.mcpServers.set(SERVER, { type: "local", command: ["my-bus"] })
-    fx.mcpServers.set("bus", { type: "local", command: ["uv", "run", "mattermost-ai-agent-bus-mcp"] })
-    fx.mcpServers.set("other", other)
-    const cleanup: any = await setup(fx.ctx)
-    assert.deepEqual([...fx.mcpServers.entries()], [["other", other]]) // no second relay to the host process
-    await cleanup()
-    assert.equal(fx.skills.size, 0)
-    assert.deepEqual(Object.keys(fx.hooks), [])
-    await settle()
-    assert.deepEqual(calls, []) // no long poll either
-    assert.equal(warn.mock.callCount(), 1)
-    assert.match(String(warn.mock.calls[0].arguments[0]), /background service.*--standalone/)
-    // The same service without the relay variables serves as before.
-    delete process.env.MM_BUS_MCP_ENDPOINT
-    const plain = await start()
-    assert.ok(plain.mcpServers.has(SERVER))
-    // A host whose editor cannot remove keeps them, and nothing breaks.
-    const old = new Map([["bus", { command: ["mattermost-ai-agent-bus-mcp"] }]])
-    assert.deepEqual(dropMcp({ list: () => [...old.entries()], get: (n: string) => old.get(n) }), [])
-    assert.equal(old.size, 1)
+    // Any spelling of a shared server: the command line decides nothing.
+    process.argv = [...argv, "serve", "--service"]
+    await withRelay(async () => {
+      const fx = await start({}, { sub: { parentID: "s1" } })
+      let reloads = 0
+      fx.ctx.mcp.reload = async () => {
+        reloads += 1
+      }
+      // No session bound yet: no bus server, no relay without a session id.
+      assert.equal(fx.mcpServers.has(SERVER), false)
+      await fx.prompt("s1")
+      // The first top-level session carries the bus: the server is added again, with its id.
+      await until(() => reloads === 1, "the MCP server reloaded for the bound session")
+      // The second session: told in the session, once, and no hook API call.
+      calls = []
+      const sent = fx.sent.length
+      await fx.prompt("s2")
+      await fx.ended("s2")
+      await fx.prompt("s2")
+      await fx.emit("session.compaction.ended", { sessionID: "s2" })
+      assert.deepEqual(calls, [])
+      const told = fx.sent.slice(sent)
+      assert.equal(told.length, 1)
+      assert.equal(told[0].sessionID, "s2")
+      assert.equal(told[0].text, noBusText(true))
+      assert.match(told[0].text, /^No bus in this session: this OpenCode server already carries the bus for another session/)
+      assert.equal(told[0].resume, false)
+      assert.equal(warn.mock.callCount(), 1)
+      // Its bus tool calls are refused; the bound session's and its subagent's run.
+      const hook = fx.hooks["tool:execute.before"]
+      await assert.rejects(hook({ tool: `${SERVER}_post_message`, sessionID: "s2" }), /No bus in this session/)
+      await hook({ tool: `${SERVER}_post_message`, sessionID: "s1" })
+      await hook({ tool: `${SERVER}_post_message`, sessionID: "sub" })
+      await hook({ tool: "bash", sessionID: "s2" })
+      // The bound session's turn goes on as before.
+      calls = []
+      await fx.ended("s1")
+      assert.match(rest()[0].path, /^\/v1\/turn-end\?/)
+      await fx.cleanup()
+    })
   } finally {
     process.argv = argv
-    delete process.env.MM_BUS_MCP_ENDPOINT
     warn.mock.restore()
   }
+})
+
+test("RT-6.20 step 1, RT-6.18 step 6: the bound session's id reaches the server; another location's has none", async () => {
+  await withRelay(async () => {
+    const again = fakeCtx()
+    const runs: any[] = []
+    again.ctx.mcp.transform = async (cb: any) => {
+      runs.push(cb)
+      cb({ list: () => [...again.mcpServers.entries()], get: (n: string) => again.mcpServers.get(n),
+           set: (n: string, c: any) => again.mcpServers.set(n, c), remove: (n: string) => void again.mcpServers.delete(n) })
+      return { dispose: async () => {} }
+    }
+    again.ctx.mcp.reload = async () => {
+      again.mcpServers.clear()
+      for (const cb of runs) cb({ list: () => [...again.mcpServers.entries()], get: (n: string) => again.mcpServers.get(n),
+        set: (n: string, c: any) => again.mcpServers.set(n, c), remove: (n: string) => void again.mcpServers.delete(n) })
+    }
+    // A bus server configured by hand under another name goes while no session is bound.
+    again.mcpServers.set("bus", { type: "local", command: ["uv", "run", "mattermost-ai-agent-bus-mcp"] })
+    live.push(await setup(again.ctx) as any)
+    assert.deepEqual([...again.mcpServers.keys()], [])
+    await again.emit("session.created", { sessionID: "ses_A", location: { directory: ws } })
+    await until(() => again.mcpServers.has(SERVER), "added for the bound session")
+    assert.equal(again.mcpServers.get(SERVER).environment.OPENCODE_SESSION_ID, "ses_A")
+    // Another location of the same process: no server at all.
+    const far = fakeCtx()
+    far.ctx.location = { directory: tmp }
+    live.push(await setup(far.ctx) as any)
+    assert.equal(far.mcpServers.has(SERVER), false)
+  })
+  // A server configured by hand gets the id too.
+  const m = new Map<string, any>([["bus", { type: "local", command: ["mattermost-ai-agent-bus-mcp"], environment: { MM_WORKSPACE: ws } }]])
+  const editor = { list: () => [...m.entries()], get: (n: string) => m.get(n), set: (n: string, c: any) => m.set(n, c),
+                   update: (n: string, f: (c: any) => void) => f(m.get(n)) }
+  assert.equal(addMcp(editor, {}, null, ws, {}, "ses_B"), false)
+  assert.deepEqual(m.get("bus").environment, { MM_WORKSPACE: ws, OPENCODE_SESSION_ID: "ses_B" })
+  // A host whose editor cannot remove keeps them, and nothing breaks.
+  const old = new Map([["bus", { command: ["mattermost-ai-agent-bus-mcp"] }]])
+  assert.deepEqual(dropMcp({ list: () => [...old.entries()], get: (n: string) => old.get(n) }), [])
+  assert.equal(old.size, 1)
+})
+
+test("RT-6.20 step 1: without relay variables one session per location; a deleted one frees it", async () => {
+  const warn = mock.method(console, "warn", () => {})
+  try {
+    const fx = await start()
+    await fx.prompt("s1")
+    calls = []
+    await fx.prompt("s2")
+    assert.deepEqual(calls, [])
+    assert.equal(fx.sent.at(-1).text, noBusText(false))
+    await fx.emit("session.deleted", { sessionID: "s1" })
+    await fx.prompt("s3")
+    assert.ok(rest().some((c) => c.body?.state === "working"))
+    await fx.cleanup()
+  } finally {
+    warn.mock.restore()
+  }
+})
+
+test("RT-6.20 step 3: a changed bot for the same session is said in it, old → new (#119)", async () => {
+  const store = new Map<string, any>()
+  answers["/v1/me"] = { username: "oc-old" }
+  const first = await start({}, {}, store)
+  await first.prompt("s1")
+  await until(() => store.has("ai-agent-bus/bots"), "the bot noted")
+  assert.equal(first.sent.length, 0)
+  await first.cleanup()
+  bindings().clear() // a new OpenCode process
+  answers["/v1/me"] = { username: "oc-new" }
+  const second = await start({}, {}, store)
+  await second.prompt("s1")
+  await until(() => second.sent.length === 1, "told")
+  assert.equal(second.sent[0].text, renamedText("oc-old", "oc-new"))
+  assert.match(second.sent[0].text, /@oc-old → @oc-new\. Nothing carries over/)
+  assert.equal(second.sent[0].resume, false)
+  await second.cleanup()
 })
 
 test("RT-6.20: a hand-configured server without MM_WORKSPACE that cannot be found: one warning", async () => {
@@ -802,6 +907,7 @@ test("RT-6.20: the turn state survives OpenCode unloading the location", async (
 test("RT-6.20: state kept by a plugin from before ADR-009 (a window going on) keeps listening", async () => {
   const store = new Map<string, any>()
   store.set(`${SERVER}/${sha16(ws)}`, { last: "s1", turns: { s1: { idleAt: Date.now() - 1000, listenUntil: nowSec() + 600 } } })
+  bindings().set(`dir:${ws}`, { id: "s1", dir: ws }) // the same process, after an unload (RT-6.20 step 1)
   const fx = await start({}, {}, store)
   await until(() => held.length === 1, "asked again")
   await fx.cleanup()

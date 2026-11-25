@@ -184,24 +184,35 @@ loaded), and with it the plugin and its relay: the next use loads both again, an
 host process takes the relay back. Whether a `--standalone` server unloads at all is
 unverified; set `false` if the bot drops out after an hour without use.
 
-**The background service is not the session's.** corral runs OpenCode with its own
-private server (`--standalone`), whose plugin starts the session's relay. Any OpenCode
-command in the sandbox that runs without `--standalone` (`opencode session list`,
-`opencode run` …) starts the background service (`opencode serve --service`) with the
-sandbox's environment, this session's `MM_BUS_*` variables included; the service is
-shared by the machine and outlives the session. The plugin does nothing there: no
-server (it also takes out a bus server you configured), no skill, no turn cycle, one
-line in OpenCode's log. So an OpenCode command inside the sandbox without
-`--standalone` runs without the bus: use `--standalone`. And a service an earlier
-session started no longer relays later sessions under that earlier session's bot
+**One bus session per OpenCode process.** One agent has one bot, and an OpenCode
+server serves many sessions. So the plugin binds the bus to the first top-level
+session the process sees; every other top-level session of that process (a new
+session in the TUI, another client of a shared server) gets one note in the session,
+`No bus in this session: this OpenCode server already carries the bus for another
+session (one agent, one bot). …`, and its hooks and bus tool calls do nothing. A
+subagent of the bound session keeps the bus. Under corral this holds in any server,
+whatever its command line: the bus server starts only once a session is bound, with
+that session's id (`OPENCODE_SESSION_ID`, shown by `bus_info` as `client_session`
+next to the server's `pid`), and the host refuses a relay with another id, so a
+second OpenCode process in the same corral session (a second `--standalone`, or the
+background service started from inside the sandbox) gets no bus tools
 ([RT-6.20](../docs/arc42/06-runtime-view.md#620-opencode-turn-cycle-through-its-plugin)
-step 1). The host serves one relay per session, so with an older plugin such a service
-took the slot, and the session's server failed with `another relay is connected`. The
-refusal names the holder as it describes itself (`says pid …, parent …; since …`): the
-ids come from the sandbox, so look them up inside it (`ps -o pid,command -p <parent>`)
-and check the command before you stop anything. For a service: `opencode service stop`, then reload the
-session's MCP server
-([RT-6.18](../docs/arc42/06-runtime-view.md#618-keyless-host-managed-session) step 6).
+step 1, [RT-6.18](../docs/arc42/06-runtime-view.md#618-keyless-host-managed-session)
+step 6). Without corral the same holds per project directory (its one server, one
+bot). To run a second agent, start it on its own: `corral run opencode` in a corral
+session of its own; without corral, `opencode --standalone` in its own directory
+or worktree. When the bound session's bot changes (a new registration after a
+restart), the session is told old → new; nothing carries over from the old bot.
+
+The background service (`opencode serve --service`) outlives a corral session, and
+any OpenCode command in the sandbox without `--standalone` (`opencode session list`,
+`opencode run` …) starts it with the sandbox's environment, this session's `MM_BUS_*`
+variables included. corral runs OpenCode with its own private server
+(`--standalone`): keep using it inside the sandbox. If a relay is refused with
+`another relay is connected (says pid …, parent …; since …)`, the ids come from the
+sandbox: look them up inside it (`ps -o pid,command -p <parent>`) and check the
+command before you stop anything. For a service: `opencode service stop`, then reload
+the session's MCP server.
 
 ## Skill / instructions
 
@@ -215,7 +226,8 @@ only `SKILL.md`: it points to the files next to it, such as
 
 ## MCP
 
-One server per project directory, shared by its sessions, so one bot per workspace.
+One server per project directory, so one bot per workspace, and one bus session per
+OpenCode process (above): further sessions there are told they carry no bus.
 By hand (without the plugin's, or with `mcp: false`), in the project's `opencode.json`:
 
 ```json
