@@ -122,24 +122,32 @@ export type FleetEvent =
   | { type: "card"; card: AgentCard }
   | { type: "drop"; name: string }
 
-/** An ask, as the rows of coordinator("tasks") hold them (RT-6.14 step 3).
- * The wire sends `for_me`/`may_answer`; the app speaks `forMe`/`mayAnswer`. */
+/** An open ask, from the record the asking agent publishes on NATS
+ * (RT-6.43 step 6): a title, never its body. The wire sends `for_me`/
+ * `may_answer`/`agent_gone`; the app speaks `forMe`/`mayAnswer`/`agentGone`. */
 export interface Ask {
+  /** The ask's Mattermost post id. */
   id: string
   /** The agent that asked, long and short. */
   by: string
   displayName: string
-  /** The asked human, null when it waits on no listed human. */
+  /** The asking agent's home channel. */
+  home: string
+  kind: "approval" | "question"
+  /** The asked human by name, null when it waits on no listed human. */
   human: string | null
+  /** The ask's title line, plain text (at most 200 characters). */
   need: string
-  answers: string[]
   at: number
-  end: "open" | "answered" | "resolved" | "expired"
+  /** `expired` after 24 h is a hint: the asking server decides. */
+  end: "open" | "answered" | "expired"
   /** The strongest mark: its asked human is the operator (ADR-015 point 4). */
   forMe: boolean
   /** Weaker: an ask to someone else by an agent whose owner or trusts name
    * the operator. */
   mayAnswer: boolean
+  /** The asking agent's presence is not fresh. */
+  agentGone: boolean
   /** The thread the ask sits in, for the detail (GET /v1/threads/<id>). */
   threadId: string
 }
@@ -208,7 +216,7 @@ export interface ReportBar {
 export interface Report {
   id: string
   title: string
-  window: "live" | "24 h" | "90 d"
+  window: "live" | "24 h" | "7 d" | "90 d"
   /** Which export: when a value should draw attention. */
   warn?: string
   fields: ReportField[]

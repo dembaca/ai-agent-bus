@@ -1,5 +1,5 @@
 {
-  "//": "The console API's wire contract in one place (ADR-015 point 10): both sides hold to it \u2014 console/server/tests/test_wire_contract.py builds this card from live deliveries, and console/web/src/api/wire.ts fails its typecheck when the app's types drift from it. Fleet cards, events and thread pages are the app's camelCase shapes; ask rows and /v1/me use the ADR's spellings and are mapped in the app's http.ts.",
+  "//": "The console API's wire contract in one place (ADR-015 point 10): both sides hold to it \u2014 console/server/tests/test_wire_contract.py builds this card from live deliveries, and console/web/src/api/wire.ts fails its typecheck when the app's types drift from it. Fleet cards, events and thread pages are the app's camelCase shapes; ask rows and /v1/me use the ADR's spellings and are mapped in the app's http.ts; the report is one of /v1/stats as the app takes it.",
   "card": {
     "name": "agent-oudzj4bhpl62iahctur5s5sf44",
     "displayName": "agent-himalia-nats-pilo-772844",
@@ -72,20 +72,19 @@
     }
   },
   "ask": {
-    "id": "ask-1",
+    "id": "8xqk3b1zwtrd5mfy6nqpe4hc1o",
     "by": "agent-oudzj4bhpl62iahctur5s5sf44",
     "display_name": "agent-himalia-nats-pilo-772844",
+    "home": "dev",
+    "kind": "approval",
     "human": "dembaca",
     "need": "an example ask",
-    "answers": [
-      "go",
-      "no-go"
-    ],
     "at": 1763980900000,
     "end": "open",
     "for_me": true,
     "may_answer": true,
-    "thread_id": "thread-1"
+    "agent_gone": false,
+    "thread_id": "8xqk3b1zwtrd5mfy6nqpe4hc1o"
   },
   "me": {
     "username": "dembaca",
@@ -106,5 +105,47 @@
       }
     ],
     "next": null
+  },
+  "report": {
+    "id": "asks-24h",
+    "title": "asks to humans",
+    "window": "24 h",
+    "fields": [
+      {
+        "label": "asks",
+        "unit": "count",
+        "value": 2
+      },
+      {
+        "label": "answered",
+        "unit": "count",
+        "value": 2
+      },
+      {
+        "label": "answered share",
+        "unit": "%",
+        "value": 100
+      },
+      {
+        "label": "mean wait for an answer",
+        "unit": "s",
+        "value": 630
+      },
+      {
+        "label": "longest wait for an answer",
+        "unit": "s",
+        "value": 0
+      },
+      {
+        "label": "still open at the part's end",
+        "unit": "count",
+        "value": 0
+      },
+      {
+        "label": "age of the oldest line",
+        "unit": "s",
+        "value": 0
+      }
+    ]
   }
 }

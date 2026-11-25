@@ -20,6 +20,7 @@ import json
 import logging
 import ssl
 import time
+from datetime import datetime, timezone
 from pathlib import Path
 from typing import Any, Callable
 
@@ -28,6 +29,7 @@ from nats.aio.client import Client as NatsClient
 
 from . import config
 from .fleet import Fleet
+from .stats_view import StatsBook
 
 
 log = logging.getLogger("console.nats")
@@ -83,6 +85,38 @@ def consumer_spec(settings: config.Settings) -> dict[str, Any]:
     }
 
 
+def stats_consumer_spec(settings: config.Settings, now: float | None = None) -> dict[str, Any]:
+    """The console's STATS consumer (RT-6.43 step 7): a push consumer on the STATS stream, no
+    acks, from 7 days back, every `<stats>.<name>` line, an hour idle."""
+    start = (time.time() if now is None else now) - 7 * 86400
+    return {
+        "stream_name": settings.stats_stream,
+        "config": {
+            "ack_policy": "none",
+            "ack_wait": 0,
+            "deliver_policy": "by_start_time",
+            "opt_start_time": datetime.fromtimestamp(start, timezone.utc).strftime("%Y-%m-%dT%H:%M:%SZ"),
+            "deliver_subject": settings.stats_deliver_subject,
+            "filter_subject": f"{settings.stats_subject}.>",
+            "inactive_threshold": 3600 * 1_000_000_000,
+        },
+    }
+
+
+async def ensure_stats_consumer(nc: NatsClient, settings: config.Settings) -> None:
+    """Delete then create the STATS consumer, as the presence one; a refusal is logged and
+    leaves the reports empty ("n/a"), never the fleet."""
+    try:
+        await _api(nc, f"$JS.API.CONSUMER.DELETE.{settings.stats_stream}"
+                      f".{settings.stats_consumer_name}", {})
+        body = await _api(nc, f"$JS.API.CONSUMER.CREATE.{settings.stats_stream}"
+                              f".{settings.stats_consumer_name}", stats_consumer_spec(settings))
+        if body.get("error") is not None:
+            raise NatsError("consumer create refused")
+    except Exception as exc:  # noqa: BLE001 - the reports wait, the fleet goes on
+        log.warning("console: no STATS consumer (%s); the reports say n/a", exc)
+
+
 async def _api(nc: NatsClient, subject: str,
                 payload: dict[str, Any]) -> dict[str, Any]:
     reply = await nc.request(subject, json.dumps(payload).encode(),
@@ -121,7 +155,7 @@ async def ensure_consumer(nc: NatsClient, settings: config.Settings,
 
 
 async def read_forever(settings: config.Settings, fleet: Fleet,
-                       on_change: Callable[[], None]) -> None:
+                       on_change: Callable[[], None], book: StatsBook | None = None) -> None:
     """Connect, subscribe the console's deliver subject, remake the
     consumer (its replay flows to exactly this subscription) and feed
     every delivery to the reader. One failed delivery never ends the
@@ -170,6 +204,13 @@ async def read_forever(settings: config.Settings, fleet: Fleet,
 
                 await nc.subscribe(settings.deliver_subject, cb=handle)
                 await ensure_consumer(nc, settings, fleet)
+                if book is not None and settings.stats_stream:
+                    async def take(msg: object, book: StatsBook = book) -> None:
+                        book.on_delivery(msg.subject, msg.data, msg.reply,  # type: ignore[attr-defined]
+                                         settings.stats_stream, settings.stats_consumer_name)
+
+                    await nc.subscribe(settings.stats_deliver_subject, cb=take)
+                    await ensure_stats_consumer(nc, settings)
                 backoff = 1.0
                 # the connection ends by its own word (ended), or by the
                 # idle watchdog asking for a replay; it wakes every quarter

@@ -26,10 +26,11 @@ import json
 import logging
 import math
 import os
+import re
 import secrets
 import time
 from collections import Counter, defaultdict
-from collections.abc import Callable, Iterable
+from collections.abc import Awaitable, Callable, Iterable
 from pathlib import Path
 from typing import TYPE_CHECKING, Any
 
@@ -503,6 +504,18 @@ def summary(version: str, fixed: overhead.Fixed | None = None) -> dict[str, Any]
     return _summarize(events, version, fixed, time.time(), final=True)[0]
 
 
+_final: dict[str, Any] | None = None
+
+
+def final(version: str, fixed: overhead.Fixed | None = None) -> dict[str, Any] | None:
+    """summary(), once per process until post_sync: the session's last part goes on NATS
+    before the bus stops and to the chat at exit, the same object (RT-6.43 step 7)."""
+    global _final
+    if _final is None:
+        _final = summary(version, fixed)
+    return _final
+
+
 def due(now: float | None = None) -> float | None:
     """Seconds until the current part is PART_SEC old (0 or less: due), None
     without counters. Reads only the part records and the first event: before
@@ -609,6 +622,176 @@ def _lock(uid: str) -> int | None:
     return fd
 
 
+# --- the line on NATS (RT-6.43 step 7, ADR-015 addition of 2026-11-25, points 13 and 14) ---
+# Each part also goes on `<stats>.<name>` as the same JSON object, decoded strictly by every
+# reader: strings only in four fields, each by its pattern; keys only from this allow list,
+# which the publisher and the console share. No key is ever shown as text: a reader maps it
+# to the label the list gives it.
+NATS_LINE_MAX = 8192  # bytes, what a reader accepts; the STATS stream's max_msg_size
+NATS_BODY_MAX = 8000  # what the publisher sends at most: max_msg_size counts headers too
+RUNTIMES = ("claude-code", "cursor", "opencode", "codex", "pi", "other")
+VERSION_RE = re.compile(r"[0-9]{1,4}\.[0-9]{1,4}\.[0-9]{1,6}")
+SID_RE = re.compile(r"[0-9a-f]{12}")
+STRING_FIELDS: dict[str, Callable[[str], bool]] = {
+    "v": lambda v: VERSION_RE.fullmatch(v) is not None,
+    "sid": lambda v: SID_RE.fullmatch(v) is not None,
+    "rt": lambda v: v in RUNTIMES,
+    "kind": lambda v: v in ("session", "autonomous"),
+}
+# The top-level fields RT-6.9 names, with their labels.
+LINE_KEYS: dict[str, str] = {
+    "v": "version", "sid": "session", "part": "part", "final": "last part", "rt": "harness",
+    "kind": "kind", "min": "minutes", "turns": "turns", "turns_timed": "turns timed",
+    "turn_sec": "turn time", "turn_max_sec": "longest turn", "bus_turns": "bus turns",
+    "bus_turns_timed": "bus turns timed", "bus_turn_sec": "bus turn time",
+    "bus_turn_max_sec": "longest bus turn", "wakes": "wake-ups", "blocks": "forced rounds",
+    "tools": "tool results", "posts": "posts", "compact": "compaction handoffs",
+    "static": "fixed text", "skill": "skill size", "asks": "asks", "asks_answered": "asks answered",
+    "ask_wait_sec": "answer wait", "ask_wait_max_sec": "longest answer wait",
+    "asks_open": "asks open", "ask_open_sec": "open ask time", "ask_open_max_sec": "longest open ask",
+    "ask_reminders": "ask reminders", "asks_idle": "answers while idle", "saved_n": "waits saved",
+    "saved_sec": "waiting saved", "saved_max_sec": "longest wait saved",
+    "saved_open_n": "waits saved, open", "saved_open_sec": "waiting saved, open",
+    "crown_sec": "crown time", "bus_turns_agent": "bus turns woken by agents",
+    "bus_turns_human": "bus turns woken by humans", "asks_crown": "questions to the coordinator",
+    "asks_crown_answered": "questions the coordinator answered", "asks_human": "asks to humans",
+    "tasks_agent_only": "tasks closed by agents", "tasks_with_human": "tasks closed with a human",
+    "human_posts_trusted": "posts by trusted humans", "human_posts_other": "posts by other humans",
+    "human_answers": "answers by humans", "tok": "tokens",
+}
+# The bus's own MCP tools (the names server._out counts), and "?" for none.
+TOOL_NAMES = frozenset({
+    "announce", "ask_human", "attach", "bus_info", "channel_ok", "coordinator", "get_file", "get_me",
+    "get_thread", "list_recent", "post_message", "reply_in_thread", "resolve_ask", "session_end",
+    "session_start", "stats_report", "wait_for_events", "?"})
+# The reasons and kinds the turn hooks, the listener and the plugins write.
+WAKE_REASONS = frozenset({"addressed", "digest", "dm", "reaction", "stall", "over", "replaced", "?"})
+BLOCK_KINDS = frozenset({"drain", "signoff", "answer", "listen", "other", "?"})
+TOK_KEYS = frozenset({"req", "bus_req", "fixed", "skill", "all", "bus"})
+TOK_TYPES = frozenset(overhead.KEYS)  # in, read, w5m, w1h, out
+_SUB_KEYS: dict[str, frozenset[str]] = {"wakes": WAKE_REASONS, "blocks": BLOCK_KINDS,
+                                        "tools": TOOL_NAMES, "tok": TOK_KEYS}
+
+
+class LineError(ValueError):
+    """A STATS line breaks the NATS rules: dropped whole. The text never holds any of it."""
+
+
+def _number(v: object) -> bool:
+    return isinstance(v, (int, float)) and not isinstance(v, bool) and math.isfinite(v)
+
+
+def _value(v: object, depth: int = 0) -> bool:
+    """A number, a boolean, a list of numbers, or an object of such values (no string)."""
+    if isinstance(v, bool) or _number(v):
+        return True
+    if isinstance(v, list):
+        return all(_number(x) for x in v)
+    if isinstance(v, dict) and depth < 3:
+        return all(_value(x, depth + 1) for x in v.values())
+    return False
+
+
+def _allowed(key: str, value: Any) -> Any:
+    """The value with every key outside the allow list left out (one level of keys below
+    `wakes`, `blocks`, `tools` and `tok`, and the token types below `tok.all` and `tok.bus`)."""
+    sub = _SUB_KEYS.get(key)
+    if sub is None or not isinstance(value, dict):
+        return value
+    out = {k: v for k, v in value.items() if k in sub}
+    if key == "tok":
+        for k in ("all", "bus"):
+            if isinstance(out.get(k), dict):
+                out[k] = {t: n for t, n in out[k].items() if t in TOK_TYPES}
+    return out
+
+
+def _dup_free(pairs: list[tuple[str, Any]]) -> dict[str, Any]:
+    out: dict[str, Any] = {}
+    for k, v in pairs:
+        if k in out:
+            raise LineError("duplicate key")
+        out[k] = v
+    return out
+
+
+def _strict(name: str) -> Any:
+    raise LineError("NaN and Infinity are not JSON")
+
+
+def decode_line(data: bytes) -> dict[str, Any]:
+    """A STATS line from NATS, strictly (ADR-015 point 14): at most NATS_LINE_MAX bytes, a JSON
+    object without a duplicate key; strings only in `v`, `sid`, `rt` and `kind`, each by its
+    pattern; every other value a number, a boolean, a list of numbers or an object of such.
+    Anything else raises LineError (the whole line is dropped). Keys outside the allow list
+    are left out of what it returns, never shown."""
+    if len(data) > NATS_LINE_MAX:
+        raise LineError("line too big")
+    try:
+        obj = json.loads(data.decode("utf-8"), object_pairs_hook=_dup_free, parse_constant=_strict)
+    except LineError:
+        raise
+    except (ValueError, RecursionError):
+        raise LineError("not JSON") from None
+    if not isinstance(obj, dict):
+        raise LineError("not an object")
+    for key, value in obj.items():
+        check = STRING_FIELDS.get(key)
+        if check is not None and isinstance(value, str):
+            if not check(value):
+                raise LineError("a string off its pattern")
+        elif not _value(value):
+            raise LineError("a value of the wrong type")
+    return {k: _allowed(k, v) for k, v in obj.items() if k in LINE_KEYS}
+
+
+def nats_body(data: dict[str, Any]) -> bytes | None:
+    """The part as it goes on NATS: the same object, keys outside the allow list left out,
+    `rt` written as `other` for a client outside RUNTIMES; None when it would not pass
+    decode_line (then it is not published)."""
+    line = {k: _allowed(k, v) for k, v in data.items() if k in LINE_KEYS}
+    if isinstance(line.get("rt"), str) and line["rt"] not in RUNTIMES:
+        line["rt"] = "other"
+    body = json.dumps(line, separators=(",", ":"), allow_nan=False).encode()
+    if len(body) > NATS_BODY_MAX:
+        log.info("overhead stats: the part is not published on NATS: too big")
+        return None
+    try:
+        decode_line(body)
+    except LineError as exc:
+        log.info("overhead stats: the part is not published on NATS: %s", exc)
+        return None
+    return body
+
+
+# Sends a body on `<stats>.<name>` (NatsPort.publish_stats); set by the MCP server when its
+# home runs over NATS. A failed publish waits for the next part, as a failed post does.
+nats_publish: Callable[[bytes], Awaitable[None]] | None = None
+_unpublished: list[bytes] = []
+UNPUBLISHED_MAX = 30
+
+
+async def publish_nats(data: dict[str, Any] | None) -> str:
+    """Publish the part on NATS beside its chat line (RT-6.43 step 7), after any whose publish
+    had failed; never raises. "off" without a NATS link."""
+    send = nats_publish
+    if send is None:
+        return "off"
+    body = nats_body(data) if data else None
+    if body is not None:
+        _unpublished.append(body)
+        del _unpublished[:-UNPUBLISHED_MAX]
+    while _unpublished:
+        try:
+            await send(_unpublished[0])
+        except Exception as exc:  # noqa: BLE001 — kept for the next part
+            log.info("overhead stats: not published on NATS (%s), kept for the next part",
+                     type(exc).__name__)
+            return "kept"
+        _unpublished.pop(0)
+    return "published"
+
+
 # Day's parts cut but not posted yet (the post failed): posted before the next
 # part and before the session's last line, so no day is lost to a blip.
 _unposted: list[str] = []
@@ -645,6 +828,7 @@ async def tick(client: ChatPort, uid: str) -> float | None:
         version, fixed = _source()
         data = cut(version, fixed)
         if data:
+            await publish_nats(data)  # beside the chat line, whatever becomes of the post
             _unposted.append(_line(data))
             await client.post(_unposted[-1], channel_id=cid)
             _unposted.pop()
@@ -677,6 +861,8 @@ def post_sync(client: ChatPort, data: dict[str, Any]) -> str:
     except Exception as exc:  # noqa: BLE001 — exit handler: fail open
         return f"failed: {type(exc).__name__}"
     finally:
+        global _final
+        _final = None
         f = _path()
         if f is not None:
             f.unlink(missing_ok=True)
@@ -877,11 +1063,21 @@ def _role(r: dict[str, Any]) -> str:
     return "coordinator" if r["crown_sec"] * 2 > (r.get("min") or 0) * 60 else "worker"
 
 
+def _marked(lines: list[dict[str, Any]]) -> list[dict[str, Any]]:
+    return [r | {"_s": r["sid"] if r.get("sid") not in (None, False) else f"#{i}"}
+            for i, r in enumerate(lines)]
+
+
+def asks_summary(lines: list[dict[str, Any]]) -> dict[str, Any] | None:
+    """The asks of all the lines together, as report() sums them per harness (RT-6.9 step 3):
+    the operator console's asks report (RT-6.43 step 8). None without the fields."""
+    return _asks_of(_marked(lines))
+
+
 def report(lines: list[dict[str, Any]]) -> list[dict[str, Any]]:
     """The STATS lines summed up per version, oldest first (RT-6.9 step 3).
     A session's parts (one sid) count as one session."""
-    lines = [r | {"_s": r["sid"] if r.get("sid") not in (None, False) else f"#{i}"}
-             for i, r in enumerate(lines)]
+    lines = _marked(lines)
     groups: dict[str, list[dict[str, Any]]] = defaultdict(list)
     for line in lines:
         groups[str(line.get("v"))].append(line)

@@ -7,6 +7,30 @@ before 0.5.0 are described in the git history.
 
 ### Added
 
+- **The console shows the open asks and two reports from NATS** (RT-6.43
+  steps 5 to 8, the console decision ADR-015, points 8 to 15 of its
+  addition of 2026-11-25). Each MCP server with a NATS link publishes one
+  record of its open asks on `<presence>.ask.<home>.<name>`: at most 20,
+  oldest first, a title of at most 200 characters each and no body, the
+  asked human as the anchor its own attestation pairs with the name (`-`
+  without one), the rest counted in `more`, the body at most 3840 bytes
+  (the stream's 4 KiB count headers too); at each change, every 10 minutes
+  while an ask is open, valid 30 minutes, an empty list at its bye. Each
+  STATS part also goes on `<stats>.<name>`, the chat line's object with
+  keys from one allow list in `stats.py`, `rt` as `other` for an unknown
+  client, at most 8000 bytes; a failed publish waits for the next part.
+  Hosted (corral) sessions publish both too. The console decodes both
+  strictly (a record or line that breaks a rule is dropped whole, its
+  warning carries none of it) and shows the asks read-only, "for me" and
+  "may answer" by anchor, expired after 24 h, "agent gone" without fresh
+  presence; `/v1/stats` gives the bus's share of all tokens per version
+  over 7 days and the asks over 24 hours and 7 days, the numbers
+  `stats_report` gives on the same lines, with the age of the oldest line.
+  The STATS lines are read only with `CONSOLE_STATS_STREAM`. Not in it: the
+  login service's `STATS` stream and the rights on both subjects, and the
+  operator's own NATS credential; until that brings the operator's anchor,
+  "for me" takes it from the attestations that pair it with the login name.
+
 - **The console's agent card shows harness, model, task, branch and open
   asks** (RT-6.37 step 6, ADR-015). A NATS home's presence now carries the
   HELLO card's data: the harness from the MCP handshake, model, task and

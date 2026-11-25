@@ -95,8 +95,8 @@ def test_the_events_the_fixture_states(fleet_scenario) -> None:
 def test_the_app_side_shapes_split_by_seam() -> None:
     """Cards and events are the app's camelCase shapes; asks and /v1/me
     keep the ADR's spellings (`for_me`, `may_answer`, `display_name`) —
-    exactly the two seams http.ts maps. The unused-ask seam is pinned
-    here so the fixture keeps it while /v1/asks answers empty."""
+    exactly the two seams http.ts maps (the ask row itself is built from
+    an MCP server's record in test_the_ask_row_the_fixture_states)."""
     ask = FIXTURE["ask"]
     assert set(ask) >= {"for_me", "may_answer", "display_name", "thread_id"}
     me = FIXTURE["me"]
@@ -104,3 +104,36 @@ def test_the_app_side_shapes_split_by_seam() -> None:
     page = FIXTURE["page"]
     assert set(page) == {"rootId", "posts", "next"}
     assert set(page["posts"][0]) == {"id", "rootId", "author", "at", "message"}
+
+
+def test_the_ask_row_the_fixture_states(fleet_scenario) -> None:
+    """RT-6.43 step 6: the ask row the app takes, built from the record an MCP server
+    publishes (`natsbus.encode_ask_record`, as `NatsBus.publish_asks` sends it on
+    `<presence>.ask.<home>.<name>`) and read by the fleet's strict decoder."""
+    from mattermost_ai_agent_bus.natsbus import OpenAsk, encode_ask_record
+
+    ask = FIXTURE["ask"]
+    record = encode_ask_record([OpenAsk(mm=ask["id"], kind=ask["kind"], human="dembaca",
+                                        title=ask["need"], asked=ask["at"] // 1000)], 1763980800)
+    assert fleet_scenario.on_delivery(f"presence.ask.{ask['home']}.{ask['by']}", record,
+                                      ack(5, 5, 1763980800.0), "PRESENCE", "console")
+    assert fleet_scenario.asks("dembaca") == [ask]
+
+
+def test_the_report_the_fixture_states() -> None:
+    """RT-6.43 step 8: a report as `/v1/stats` sends it, from the protocol's example line as
+    an MCP server publishes it (`stats.nats_body`) on `<stats>.<name>`."""
+    from mattermost_ai_agent_bus import stats
+    from console_server.stats_view import StatsBook
+
+    line = {"v": "0.101.0", "sid": "3f9a1c2b7d4e", "part": 2, "rt": "claude-code",
+            "kind": "session", "min": 1440, "turns": 31, "asks": 2, "asks_answered": 2,
+            "ask_wait_sec": 1260, "crown_sec": 0}
+    book = StatsBook()
+    body = stats.nats_body(line)
+    assert body is not None
+    assert book.on_delivery(f"stats.{FIXTURE['card']['name']}", body,
+                            "$JS.ACK.STATS.console_stats.1.1.1.1763980800000000000.0",
+                            "STATS", "console_stats")
+    report = next(r for r in book.reports() if r["id"] == FIXTURE["report"]["id"])
+    assert report == FIXTURE["report"]

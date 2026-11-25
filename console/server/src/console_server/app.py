@@ -2,8 +2,9 @@
 fleet view, the Keycloak login, the HTTP side and the built browser app.
 
 Read-only (ADR-015 stage 1): the only endpoints that answer with state
-are reads; ``/v1/asks`` and ``/v1/stats`` answer empty until asks and
-the STATS lines lie on NATS (the pilot shows presence and crown, live).
+are reads; ``/v1/asks`` lists the open asks of the agents' ask records
+and ``/v1/stats`` the two stage-1 reports from their STATS lines
+(RT-6.43): shown, never answered.
 
 The reviews' edges, held here as invariants: the login refuses when the
 operators group is unset (fail closed), a stream ends with its session
@@ -28,6 +29,7 @@ from urllib.parse import urlsplit
 from . import auth, config, httpd
 from .auth import Endpoints
 from .fleet import Fleet
+from .stats_view import StatsBook
 from .nats_read import read_forever
 
 log = logging.getLogger("console")
@@ -62,6 +64,7 @@ class Console:
     def __init__(self, settings: config.Settings):
         self.settings = settings
         self.fleet = Fleet(presence_subject=settings.presence_subject)
+        self.stats = StatsBook(stats_subject=settings.stats_subject)
         self.sessions = auth.Sessions()
         self.keyring = auth.Keyring()
         self.endpoints: auth.Endpoints | None = None
@@ -94,7 +97,7 @@ class Console:
                                                  name="console-discovery")
         if self.settings.nats_url:
             self._nats_task = asyncio.create_task(
-                read_forever(self.settings, self.fleet, self.fire),
+                read_forever(self.settings, self.fleet, self.fire, self.stats),
                 name="console-nats")
 
             def _nats_done(task: "asyncio.Task[None]") -> None:
@@ -285,12 +288,13 @@ class Console:
                  "groups": list(operator.groups)}, headers=API_HEADERS)
         if path == "/v1/fleet":
             return self._stream(self._session_token(headers))
-        for route in ("/v1/asks", "/v1/stats"):
-            if path == route:
-                if self._operator(headers) is None:
-                    return _unauthorized()
-                # empty until asks and STATS lie on NATS (the stage 1 cut)
-                return httpd.Response.json([], headers=API_HEADERS)
+        if path in ("/v1/asks", "/v1/stats"):
+            operator = self._operator(headers)
+            if operator is None:
+                return _unauthorized()
+            # RT-6.43 steps 6 and 8: read-only, from the agents' own records
+            return httpd.Response.json(self.fleet.asks(operator.username) if path == "/v1/asks"
+                                       else self.stats.reports(), headers=API_HEADERS)
         if path.startswith("/v1/threads/"):
             if self._operator(headers) is None:
                 return _unauthorized()

@@ -296,7 +296,11 @@ carried.
 
 ## Over NATS: the console's asks and STATS lines
 
-Specified for the operator console's stage 1, not built
+Built in the MCP server (`natsbus.encode_ask_record`, `NatsBus.publish_asks`,
+`stats.nats_body`) and the console (`natsbus.decode_ask_record`,
+`stats.decode_line`); the login service's `STATS` stream and the rights on
+both subjects come with its own part, not built yet. For the operator
+console's stage 1
 ([arc42 §6.43](arc42/06-runtime-view.md#643-the-console-on-the-bus-as-its-operator),
 the addition of 2026-11-25 to
 [ADR-015](arc42/09-architecture-decisions.md#adr-015-operator-web-console)).
@@ -338,8 +342,12 @@ two open asks, and the empty one at the agent's bye:
 | `asked` | ask | The ask's server time (Unix seconds); after 24 h a yes approves nothing |
 | `answered` | ask | The asking server saw a first answer by a trusted human |
 
-The whole record is at most 4 KiB. No other key, no `props`, no duplicate
-key; a record that breaks a rule is dropped whole. A `STATS` part on NATS
+The whole record is at most 4 KiB; the MCP server's encoder stops at 3840
+bytes, since the stream's limit counts headers too (it sends none). No
+other key, no `props`, no duplicate key; a record that breaks a rule is
+dropped whole. The server publishes it at each change, every 10 minutes
+while an ask is open, and an empty list at its bye; a refused publish is
+tried again after a minute or the next change. A `STATS` part on NATS
 is the same JSON object the stats channel's line carries after `STATS `
 ([arc42 §6.9](arc42/06-runtime-view.md#69-measuring-the-coordination-overhead)),
 at most 8 KiB, for example:
@@ -363,7 +371,9 @@ at most 8 KiB, for example:
 No other value is a string: every other value is a number, a boolean, a
 list of numbers, or an object of such values. A string anywhere else, a
 string off its pattern, a duplicate key or a line over 8 KiB drops the
-whole line. Keys come from one fixed allow list in `stats.py`, shared by
+whole line. The publisher sends at most 8000 bytes. Keys come from one
+fixed allow list in `stats.py` (`LINE_KEYS` with their labels,
+`TOOL_NAMES`, `WAKE_REASONS`, `BLOCK_KINDS`, `TOK_KEYS`, `TOK_TYPES`), shared by
 publisher and reader: the top-level fields RT-6.9 names; in `tools` the
 bus's own MCP tool names; in `wakes` and `blocks` the reasons and kinds
 the turn hooks write; in `tok` `req`, `bus_req`, `fixed`, `skill`, `all`

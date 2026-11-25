@@ -44,6 +44,12 @@ class Settings:
     presence_stream: str = "PRESENCE"
     deliver_subject: str = "deliver.console.presence"
     consumer_name: str = "console"
+    # the STATS lines (RT-6.43 step 7): read only when a stream is named, since the pilot's
+    # account has no right on it; the person's credential brings its own consumer
+    stats_subject: str = "stats"
+    stats_stream: str = ""
+    stats_deliver_subject: str = "deliver.console.stats"
+    stats_consumer_name: str = "console_stats"
 
     # the built browser app (console/web/dist)
     web_dir: str = ""
@@ -88,6 +94,10 @@ def find() -> Settings:
         presence_stream=given("CONSOLE_PRESENCE_STREAM") or "PRESENCE",
         deliver_subject=given("CONSOLE_DELIVER_SUBJECT") or "deliver.console.presence",
         consumer_name=given("CONSOLE_CONSUMER_NAME") or "console",
+        stats_subject=given("CONSOLE_STATS_SUBJECT") or "stats",
+        stats_stream=given("CONSOLE_STATS_STREAM"),
+        stats_deliver_subject=given("CONSOLE_STATS_DELIVER_SUBJECT") or "deliver.console.stats",
+        stats_consumer_name=given("CONSOLE_STATS_CONSUMER_NAME") or "console_stats",
         web_dir=given("CONSOLE_WEB_DIR"),
         health_sync_bound=_float(given, "CONSOLE_HEALTH_SYNC_BOUND", 180.0),
     )
@@ -152,6 +162,16 @@ def _check(s: Settings) -> None:
     for name in (s.presence_subject, s.presence_stream, s.consumer_name):
         if not name or any(c in name for c in ". *>"):
             raise ConfigError("CONSOLE_PRESENCE_SUBJECT/STREAM/CONSUMER_NAME: one plain token")
+    for name in (s.stats_subject, s.stats_consumer_name):
+        if not name or any(c in name for c in ". *>"):
+            raise ConfigError("CONSOLE_STATS_SUBJECT/CONSUMER_NAME: one plain token")
+    if s.stats_stream and any(c in s.stats_stream for c in ". *>"):
+        raise ConfigError("CONSOLE_STATS_STREAM: one plain token")
+    if s.stats_subject in (s.presence_subject, "deliver"):
+        raise ConfigError("CONSOLE_STATS_SUBJECT: not the presence prefix, not deliver")
+    if (not s.stats_deliver_subject.startswith("deliver.")
+            or s.stats_deliver_subject == s.deliver_subject):
+        raise ConfigError("CONSOLE_STATS_DELIVER_SUBJECT: deliver.<name>.…, not the presence one")
     if not (30.0 <= s.health_sync_bound <= 24 * 3600.0):
         raise ConfigError("CONSOLE_HEALTH_SYNC_BOUND: 30 s to 24 h (the probe"
                           " went red forever below, or never, above)")

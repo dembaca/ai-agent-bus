@@ -26,13 +26,15 @@ export interface WireAsk {
   id: string
   by: string
   display_name: string
+  home: string
+  kind: "approval" | "question"
   human: string | null
   need: string
-  answers: string[]
   at: number
-  end: "open" | "answered" | "resolved" | "expired"
+  end: "open" | "answered" | "expired"
   for_me: boolean
   may_answer: boolean
+  agent_gone: boolean
   thread_id: string
 }
 
@@ -75,13 +77,15 @@ function askOf(row: WireAsk): Ask {
     id: row.id,
     by: row.by,
     displayName: row.display_name,
+    home: row.home,
+    kind: row.kind,
     human: row.human,
     need: row.need,
-    answers: row.answers,
     at: row.at,
     end: row.end,
     forMe: row.for_me,
     mayAnswer: row.may_answer,
+    agentGone: row.agent_gone,
     threadId: row.thread_id,
   }
 }

@@ -20,6 +20,9 @@ look at. It lives next to the other per-bot state, asks-<uid>.env:
                                        human asked if it does not answer in time
                                        (- once settled), whether it blocks; kept
                                        like TITLE, so an answer is known as advice
+    KIND=<post_id> question            the ask's kind when ask_human made it a
+                                       question (none: an approval), for the
+                                       record on NATS (RT-6.43); kept like TITLE
     QUEUED=<target> <base64 of json>   an ask to <target> that waits behind an
                                        open one (RT-6.11 step 2): every field of
                                        ask_human on one line, posted when the
@@ -40,6 +43,7 @@ import json
 import os
 import time
 import uuid
+from collections.abc import Callable
 from pathlib import Path
 from typing import Any
 
@@ -55,6 +59,9 @@ APPROVAL_SEC = 86400
 TITLES = 50
 # Asks that wait behind an open ask to the same target, per target (RT-6.11).
 QUEUE_MAX = 5
+# Called after every write of the file in this process: the MCP server sets it, so the
+# record of its open asks on NATS goes out at once (RT-6.43 step 5). Never raises here.
+on_change: Callable[[], None] | None = None
 
 
 def answer_of(emoji: str) -> str | None:
@@ -193,6 +200,16 @@ def _all_answers(uid: str) -> dict[str, str]:
     return out
 
 
+def kinds(uid: str) -> dict[str, str]:
+    """The asks ask_human made questions (RT-6.43): post id -> "question"."""
+    out: dict[str, str] = {}
+    for v in _lines(uid, "KIND"):
+        pid, _, kind = v.partition(" ")
+        out.pop(pid, None)
+        out[pid] = kind.strip()
+    return out
+
+
 def questions(uid: str) -> dict[str, str]:
     """The questions to the 👑 (RT-6.25), open or not: "<human> <0|1>" each,
     oldest first."""
@@ -207,7 +224,7 @@ def _write(uid: str, asks: dict[str, float], seen: set[str],
            whom: dict[str, str] | None = None, done: set[str] | None = None,
            title: dict[str, str] | None = None, question: dict[str, str] | None = None,
            answers: dict[str, str] | None = None,
-           queue: list[dict[str, Any]] | None = None) -> None:
+           queue: list[dict[str, Any]] | None = None, kind: dict[str, str] | None = None) -> None:
     if whom is None:
         whom = _read_all(uid)[2]
     if done is None:
@@ -220,6 +237,10 @@ def _write(uid: str, asks: dict[str, float], seen: set[str],
     for pid, blob in (answers or {}).items():
         ans.pop(pid, None)
         ans[pid] = blob
+    ks = kinds(uid)
+    for pid, val in (kind or {}).items():
+        ks.pop(pid, None)
+        ks[pid] = val
     qs = questions(uid)
     for pid, val in (question or {}).items():
         qs.pop(pid, None)
@@ -232,13 +253,19 @@ def _write(uid: str, asks: dict[str, float], seen: set[str],
     lines += [f"TITLE={p} {t}" for p, t in list(heads.items())[-TITLES:]]
     lines += [f"ANSWERS={p} {b}" for p, b in list(ans.items())[-TITLES:]]
     lines += [f"QUESTION={p} {v}" for p, v in list(qs.items())[-TITLES:]]
+    lines += [f"KIND={p} {v}" for p, v in list(ks.items())[-TITLES:]]
     lines += [f"QUEUED={e['target']} " + base64.b64encode(json.dumps(e).encode()).decode()
               for e in (queued(uid) if queue is None else queue)]
     path = _path(uid)
     if not lines:
         path.unlink(missing_ok=True)
-        return
-    session_file.write_private(path, "\n".join(lines) + "\n")
+    else:
+        session_file.write_private(path, "\n".join(lines) + "\n")
+    if on_change is not None:
+        try:
+            on_change()
+        except Exception:  # noqa: BLE001 — a record on NATS never fails a write here
+            pass
 
 
 def open_asks(uid: str) -> list[str]:
@@ -267,17 +294,39 @@ def is_open(uid: str, post_id: str) -> bool:
 
 def add(uid: str, post_id: str, human: str = "", root_id: str = "", title: str = "",
         *, question: str = "", blocking: bool = False,
-        answers: list[str] | None = None) -> None:
+        answers: list[str] | None = None, kind: str = "", at: float = 0) -> None:
     """An open ask to `human`; with question, a question to the 👑 `human`
-    that falls back to the human `question` names (RT-6.25)."""
+    that falls back to the human `question` names (RT-6.25). kind: ask_human's
+    (`question` is kept, an approval needs no line); at: the post's server time
+    (default now)."""
     asks, seen, whom = _read_all(uid)
-    asks[post_id] = time.time()
+    asks[post_id] = at or time.time()
     if human or root_id:
         whom[post_id] = f"{human.lower() or '-'} {root_id}".rstrip()
     _write(uid, asks, seen, whom, title={post_id: " ".join(title.split())} if title.strip() else None,
            question={post_id: f"{question.lower()} {int(blocking)}"} if question else None,
            answers={post_id: base64.b64encode(json.dumps(answers).encode()).decode()}
-           if answers else None)
+           if answers else None,
+           kind={post_id: "question"} if kind == "question" else None)
+
+
+def records(uid: str) -> list[tuple[str, int, str, str, str, bool]]:
+    """The open asks to someone, for the record on NATS (RT-6.43 step 5), oldest first: post
+    id, when (seconds), the asked name ('' for none), the title, the kind (`approval` or
+    `question`) and whether a trusted human answered it. A permission prompt, which names
+    no one here, is left out."""
+    asks, _, whom = _read_all(uid)
+    done = _read_answered(uid)
+    heads = titles(uid)
+    ks = kinds(uid)
+    out = []
+    for pid, at in sorted(asks.items(), key=lambda kv: kv[1]):
+        if pid not in whom:
+            continue
+        human = whom[pid].split(" ")[0]
+        out.append((pid, int(at), "" if human == "-" else human, heads.get(pid, ""),
+                    ks.get(pid) or "approval", pid in done))
+    return out
 
 
 def questions_open(uid: str) -> list[tuple[str, float, str, str]]:
