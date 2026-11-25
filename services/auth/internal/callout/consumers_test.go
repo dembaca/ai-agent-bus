@@ -932,6 +932,17 @@ func TestTheDocumentedMinimalRightsSuffice(t *testing.T) {
 	if n := len(c.consumersOf(a)); n != 4 {
 		t.Fatalf("%d consumers", n)
 	}
+	// The account record (RT-6.42) needs only its own publish right: a login of
+	// a proven account with the real stream's read-back, under these rights.
+	l.svc.SetAttester(NATSAttester{NC: nc, Stream: consumers.PresenceStream})
+	l.svc.SetAnchors(guardedAnchor("alice"))
+	if _, err := c.login("alice", newHost(), Hello{Home: "home"}); err != nil {
+		t.Fatalf("login with an account record: %v", err)
+	}
+	if m, err := c.js.GetLastMsg("PRESENCE", "presence.account.mattermost."+testrealm.ChatID("alice")+".v1"); err != nil ||
+		!strings.Contains(string(m.Data), `"account":"`+testrealm.ChatID("alice")+`"`) {
+		t.Fatalf("the account record is not there: %v", err)
+	}
 	// History needs no more rights: a login with since reads only the
 	// stream's info, never a message.
 	c.publish("bus.ch.home.agent-other", "m1")

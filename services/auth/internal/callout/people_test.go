@@ -390,3 +390,13 @@ func TestSeveralAgentsOfOnePersonLoggingInAtOnceAreAllLetIn(t *testing.T) {
 		t.Errorf("record %s: %v", m.Data, err)
 	}
 }
+
+// guardedAnchor is an anchor that is also a guard that lets every token pass:
+// for tests that need a record without the directory's bucket.
+type guardedAnchor string
+
+func (g guardedAnchor) Anchor(context.Context, string, string) (string, error) { return string(g), nil }
+
+func (guardedAnchor) NewestToken(context.Context, string, int64, bool) (bool, error) {
+	return true, nil
+}
