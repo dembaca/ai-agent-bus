@@ -231,12 +231,14 @@ class Fleet:
         """The name a card shows: the bot's username the agent's presence states,
         the name coordinator("who") shows. The agent states it of itself, so it is
         a label, never the key (the key is the agent's name on the bus, the
-        subject's last token): a username another agent that is not offline
-        states too is not shown, and neither is an absent one — the card shows
-        the short bus name then."""
+        subject's last token). A username any other known card states too
+        (offline ones included, while the stream keeps their presence, 24 h)
+        is shown on neither, so no agent takes over the name of one that went
+        away; an absent one is not shown either — the card shows the short
+        bus name then. An agent may still state a name falsely that no other
+        card holds: the owner beside it is the attested one."""
         label = self._names.get(agent, "")
         if label and not any(other != agent and named == label
-                             and self.state_of(other) != "offline"
                              for other, named in self._names.items()):
             return label
         return short_name(agent)

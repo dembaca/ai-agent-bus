@@ -3809,9 +3809,10 @@ by the agent's name on the bus (`agent-` and a 26-character hash, the
 presence subject's last token) and shows the bot's username the agent's
 presence states (`name` beside `bot`, RT-6.37 step 6), the name
 `coordinator("who")` shows; the bus name stays in the detail as "id on the
-bus". The username is the agent's own statement, a label and never the
-key: one that another agent that is not offline states too names neither
-card, and a presence without it (an older MCP server) shows the bus name.
+bus". The username is a label an agent may state falsely, never the key: the
+owner beside it is the attested one, a name any other known card (also
+offline, within 24 h) states is shown on neither, and a presence without it
+(an older MCP server) shows the bus name.
 Harness, model, task, branch and asks are not on what the console reads
 (the HELLO's card is not sent over NATS, asks stay on Mattermost): the
 card says "n/a" for each, never "other" or empty. After a restart the

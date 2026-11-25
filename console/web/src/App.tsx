@@ -69,7 +69,6 @@ export function App({ api }: { api: ConsoleApi }) {
     }
   }, [])
   const onState = useCallback((state: ConnState) => {
-    if (state === "live") syncingSince.current = null
     if (state !== "error") {
       setConn(state)
       return
@@ -88,7 +87,10 @@ export function App({ api }: { api: ConsoleApi }) {
   useEffect(() => {
     let gone = false
     api.me()
-      .then((who) => { if (!gone) setMe(who) })
+      .then((who) => {
+        syncingSince.current = null  // a load that answered: no longer syncing
+        if (!gone) setMe(who)
+      })
       .catch((error: unknown) => {
         if (!gone && !syncing(error)) {
           setConn("error")
@@ -106,6 +108,7 @@ export function App({ api }: { api: ConsoleApi }) {
   const loadAsks = useCallback(async () => {
     try {
       setAsks(await api.asks())
+      syncingSince.current = null  // a load that answered: no longer syncing
     } catch (error: unknown) {
       fail("asks", error)
     }

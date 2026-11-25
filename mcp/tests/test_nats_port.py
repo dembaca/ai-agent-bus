@@ -1959,3 +1959,20 @@ async def test_a_bad_bot_id_does_not_stop_the_nats_home(monkeypatch: pytest.Monk
         await port.stop()
         lease.use_nats_link(None)
 
+
+
+async def test_the_bot_name_falls_back_to_the_environment_then_to_nothing(
+        monkeypatch: pytest.MonkeyPatch) -> None:
+    """ADR-015: the username for the presence comes from get_me; when that fails
+    MM_BOT_USERNAME, else '' (the home starts all the same)."""
+    port, inner, _ = make(bus=False)
+    assert await port._bot_name() == inner.me.username
+
+    async def broken() -> Any:
+        raise RuntimeError("Mattermost is away")
+
+    monkeypatch.setattr(inner, "get_me", broken)
+    monkeypatch.setenv("MM_BOT_USERNAME", "agent-mac-ai-agent-716d72")
+    assert await port._bot_name() == "agent-mac-ai-agent-716d72"
+    monkeypatch.delenv("MM_BOT_USERNAME")
+    assert await port._bot_name() == ""

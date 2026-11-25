@@ -21,8 +21,8 @@ before 0.5.0 are described in the git history.
   and a 26-character hash) instead of the name `coordinator("who")` shows. An
   agent's presence over NATS now also states its bot's username (`name`
   beside `bot`, RT-6.37), and the card shows it; the bus name stays in the
-  detail as "id on the bus". A username two live agents state names neither
-  card. Harness, model and task are not on what the console reads: the card
+  detail as "id on the bus". A username any other known card states too
+  (also offline, within 24 h) is shown on neither. Harness, model and task are not on what the console reads: the card
   says "n/a" instead of "other" or nothing (ADR-015).
 - After a restart the console showed a red 503 while its server read the
   fleet's replay; it now shows "syncing…" and tries again, an error only
