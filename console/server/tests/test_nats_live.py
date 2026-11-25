@@ -93,6 +93,15 @@ async def make_consumers(admin: NatsClient, r: PersonReader) -> None:
         assert not json.loads(reply.data).get("error"), reply.data
 
 
+async def publish_record(admin: NatsClient, r: PersonReader) -> None:
+    """The login's own record, as the login service writes it into PRESENCE
+    at each issue; the reader is "reading" only once it came."""
+    await admin.publish(r.record_subject, json.dumps(
+        {"v": 1, "name": "person-dembaca", "anchor": "dembaca",
+         "iat": int(time.time()), "exp": int(time.time()) + 900}).encode())
+    await admin.flush()
+
+
 @pytest.fixture
 async def rig(tmp_path):
     binary = os.environ.get("MM_NATS_SERVER") or shutil.which("nats-server")
@@ -163,9 +172,11 @@ async def test_the_login_reads_the_fleet_its_consumers_deliver(rig) -> None:
     await admin.publish("stats.agent-one", b'{"v": "0.101.0"}')
     await admin.flush()
     await make_consumers(admin, r)
+    await publish_record(admin, r)
     r.renew_sec = 600.0
     r.start()
     await until(lambda: card(r, "agent-one").get("crown") is True, what="the replay")
+    await until(lambda: r.state == "reading", what="the own record")
     one = card(r, "agent-one")
     assert one["state"] == "online" and one["home"] == "dev" and one["for"] == "dembaca"
     assert card(r, "agent-two")["state"] == "away"
@@ -184,13 +195,15 @@ async def test_a_renewal_keeps_the_consumers_position(rig) -> None:
     await admin.publish("presence.crown.dev.agent-one", b'{"v": 1}')
     await admin.flush()
     await make_consumers(admin, r)
+    await publish_record(admin, r)
     r.start()
     await until(lambda: card(r, "agent-one").get("crown") is True, what="the replay")
     await until(lambda: r.connects >= 3, what="two renewals")
     await admin.publish("presence.dembaca.agent-three", encode_presence("online"))
     await until(lambda: card(r, "agent-three").get("state") == "online", what="after renewal")
     assert card(r, "agent-one").get("crown") is True   # not forgotten
-    assert r.state == "reading"
+    await until(lambda: r.state == "reading", what="reading after renewals")
+    assert r.name == "person-dembaca"
 
 
 async def test_the_login_learns_its_name_from_its_own_record(rig) -> None:
