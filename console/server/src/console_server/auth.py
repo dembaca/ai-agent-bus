@@ -51,6 +51,9 @@ class Operator:
     username: str
     display: str
     groups: tuple[str, ...]
+    # the token's `sub`: who the person is (a username may pass to someone
+    # else); a renewal must name the same one
+    sub: str = ""
 
 
 @dataclass
@@ -185,9 +188,9 @@ async def _token_call(endpoints: Endpoints, form: dict[str, str],
     else:
         async with httpx.AsyncClient(timeout=10.0, follow_redirects=False) as client:
             res = await client.post(endpoints.token, data=form)
-            if 400 <= res.status_code < 500:
+            if res.status_code in (400, 401):
                 # the realm said no (invalid_grant: the session ended, or the
-                # client's grant is off): a refusal, not a passing fault
+                # client's grant is off): a refusal. 408, 429 and 5xx pass
                 raise Refused(f"token endpoint refused the {what}")
             if res.status_code != 200 or len(res.content) > MAX_DOC:
                 raise AuthError(f"token endpoint failed on the {what}")
@@ -299,10 +302,13 @@ def _check_claims(settings: config.Settings, endpoints: Endpoints,
         # group with its full path ("/operators") when the realm's group
         # mapper writes the full path
         raise Refused("not a member of the operators group")
+    sub = payload.get("sub")
+    if not isinstance(sub, str) or not sub:
+        raise Refused("token without a sub")
     display = payload.get("name")
     return Operator(username=username,
                     display=display if isinstance(display, str) and display else username,
-                    groups=tuple(groups))
+                    groups=tuple(groups), sub=sub)
 
 
 @dataclass
@@ -327,13 +333,23 @@ class Sessions:
         if close is not None:
             close()
 
-    def issue(self, operator: Operator, ttl: float, view: Any = None) -> str:
+    def issue(self, operator: Operator, ttl: float, view: Any = None,
+              per_person: int = 0) -> str:
+        """A new session; with ``per_person`` the same person's oldest
+        sessions are closed until this one is within the cap (by ``sub``,
+        else the username), below the login service's own cap."""
         token = secrets.token_urlsafe(32)
         at = time.time()
         for d, row in list(self._sessions.items()):  # sweep: expired sessions go
             if row[0] <= at:
                 del self._sessions[d]
                 self._close(row)
+        if per_person > 0:
+            who = operator.sub or operator.username
+            mine = sorted((row[0], d) for d, row in self._sessions.items()
+                          if (row[1].sub or row[1].username) == who)
+            for _until, d in mine[:max(0, len(mine) - per_person + 1)]:
+                self._close(self._sessions.pop(d))
         self._sessions[self._digest(token)] = (at + ttl, operator, view)
         return token
 

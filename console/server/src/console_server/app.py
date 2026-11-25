@@ -42,6 +42,8 @@ STATE_MAX = 64                     # then the oldest goes, never all
 STATE_RATE_MAX = 16                # new states per minute; past that /login
 STATE_RATE_SEC = 60.0              # answers 429 without creating one
 STREAMS_PER_OPERATOR = 4            # every further stream answers 429
+SESSIONS_PER_OPERATOR = 4           # a fifth login closes the oldest (the
+                                    # login service allows 8 per person)
 REACH_CACHE_SEC = 5.0               # /healthz asks NATS at most this often
 STATIC_TYPES = {".html": "text/html; charset=utf-8",
                 ".js": "text/javascript; charset=utf-8",
@@ -276,9 +278,13 @@ class Console:
                 return _unauthorized()
             operator = self._operator(headers)
             assert operator is not None
+            view = self._view(self._session_token(headers))
             return httpd.Response.json(
                 {"username": operator.username, "display_name": operator.display,
-                 "groups": list(operator.groups)}, headers=API_HEADERS)
+                 "groups": list(operator.groups),
+                 # the session's own reading (RT-6.43): "reading", "waiting: …",
+                 # "refused: …", "ended…" — the reason a fleet stays empty
+                 "bus": view.bus()}, headers=API_HEADERS)
         if path == "/v1/fleet":
             return self._stream(self._session_token(headers))
         for route in ("/v1/asks", "/v1/stats"):
@@ -376,6 +382,10 @@ class Console:
             # fault, not the person's
             log.warning("console login failed: %s", exc)
             return httpd.Response.text(f"login failed: {exc}", 502)
+        presented = self._session_token(headers)
+        if presented:
+            # a login from a browser that still holds a session ends that one
+            self.sessions.drop(presented)
         token = self._open_session(operator, tokens)
         response = httpd.Response.see("/")
         response.headers = response.headers + (
@@ -393,29 +403,30 @@ class Console:
         s = self.settings
         view = View(s.presence_subject)
         if s.nats_url:
-            username = operator.username
+            sub = operator.sub
 
             async def renew(refresh: str) -> auth.Tokens:
-                return await self._renew(username, refresh)
+                return await self._renew(sub, refresh)
 
-            view.reader = PersonReader(s, username, tokens, renew, view,
+            view.reader = PersonReader(s, tokens, renew, view,
                                        until=time.time() + s.session_sec,
                                        on_end=lambda: self.sessions.end(view))
-        token = self.sessions.issue(operator, s.session_sec, view)
+        token = self.sessions.issue(operator, s.session_sec, view,
+                                    per_person=SESSIONS_PER_OPERATOR)
         if view.reader is not None:
             view.reader.start()
         return token
 
-    async def _renew(self, username: str, refresh: str) -> auth.Tokens:
+    async def _renew(self, sub: str, refresh: str) -> auth.Tokens:
         """Fresh tokens for a login's renewal, verified as at the login: the
-        realm's refusal or a token without the operators' group is
-        ``auth.Refused`` and ends the session (RT-6.43 step 4)."""
+        realm's refusal, a token without the operators' group or of another
+        ``sub`` is ``auth.Refused`` and ends the session (RT-6.43 step 4)."""
         if self.endpoints is None:
             raise auth.AuthError("the issuer's endpoints are not in")
         tokens = await auth.refresh(self.endpoints, self.settings.client_id, refresh)
         operator = await auth.verify(self.settings, self.endpoints, self.keyring,
                                      tokens.access)
-        if operator.username != username:
+        if operator.sub != sub:
             raise auth.Refused("the refreshed token names another person")
         return tokens
 

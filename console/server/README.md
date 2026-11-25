@@ -26,11 +26,14 @@ and connects to `CONSOLE_NATS_URL` with the operator's Keycloak access
 token, bare, as the connect token; the key signs the server's nonce
 ([protocol.md, an operator's connection](../../docs/protocol.md#over-nats-an-operators-connection)).
 The login service's auth callout checks the token (the console's client,
-the operators' group) and issues `person-<anchor>`: 15 minutes, publish
-nothing, subscribe only `deliver.<name>.<login>.>`, and it makes the
-login's two push consumers. The server subscribes to
-`deliver.<name>.<login>.presence` and `.stats` by their literal names —
-no inbox, no JetStream call, nothing published. Each session has its own
+the operators' group) and issues the person's credential: 15 minutes,
+publish nothing, subscribe only to the login's own deliver subjects, and
+it makes the login's consumers. The server never derives the person's
+name: it subscribes to `deliver.person.<login>.presence`, `.stats` and
+`.self` by their literal names (`<login>`: the login's whole public key
+after its `U`, lower case) and learns the name and anchor from the
+record the login service writes on `.self` (`name`, `anchor`) — no
+inbox, no JetStream call, nothing published. Each session has its own
 fleet: what that person's consumers deliver (their presence consumer
 delivers the last message per subject, then new ones). From the
 deliveries (their JetStream metadata is the server's clock — never the
@@ -43,23 +46,24 @@ token with the refresh token of the ordinary Keycloak session (the
 standard flow's; no `offline_access`), checks it as at the login (the
 signature, the console's client, the operators' group, the same person)
 and connects again with the same key: the consumers keep their position.
-The new connection stands before the old one closes, and subscribes only
-after it, so no delivery is read twice. A lost connection is taken again
-the same way. When Keycloak refuses the refresh (the session ended) or
-the refreshed token lacks the operators' group, the console session
-ends: the key and the tokens are dropped and the browser is sent to log
-in. A passing failure (Keycloak or the login service unreachable) is
-retried while the old connection runs, up to the credential's 15
-minutes. Logout and the end of the session (`CONSOLE_SESSION_SEC`) close
-the connection and drop key and tokens the same way.
+The new connection subscribes while the old one still stands, then the
+old one closes; a delivery seen on both is dropped the second time. A
+lost connection is taken again the same way. When Keycloak refuses the
+refresh (400 or 401; 408, 429 and 5xx are passing) or the refreshed
+token lacks the operators' group or names another `sub`, the console
+session ends: the key and the tokens are dropped and the browser is sent
+to log in. A passing failure (Keycloak or NATS unreachable) is retried
+while the old connection runs, up to the credential's 15 minutes. When
+the login service refuses the connect (no operator, no anchor, too many
+logins of the person), the reading of that session ends at once, key and
+tokens wiped, no retry; the session stays and `/v1/me` says why in
+`bus.state` (`reading`, `waiting: …`, `refused: …`, `ended: …`, with
+`bus.name` and `bus.anchor` once the record came). Logout and the end of
+the session (`CONSOLE_SESSION_SEC`) close the connection and drop key and
+tokens the same way. A login from a browser that holds a session ends
+that session first, and one person keeps at most four sessions (by
+`sub`): a fifth closes the oldest, below the login service's own cap.
 
-**Name.** The person's NATS name is `CONSOLE_PERSON_PREFIX` (the login
-service's `AUTH_PERSON_PREFIX`, default `person-`) and the token's
-`preferred_username` as an owner token (`.` as `~`), the way an agent's
-host computes its own name. The login service names the person after the
-directory's anchor; for an identity whose anchor is not its username (the
-limit of RT-6.39 step 2, #86) NATS refuses the subscriptions and the
-server reads nothing for that login, with a warning in its log.
 
 Presence today carries `online`/`away` (format v1) — the Kanban's two
 extra columns. The `STATS` lines arrive and are counted; they are decoded
@@ -87,7 +91,6 @@ never reads the file.
 | `CONSOLE_TOKEN_ALGS` | the access token's allowed algs, default `RS256` (asymmetric only, never `HS*`/`none`) |
 | `CONSOLE_NATS_URL` | `tls://` anywhere, `nats://` loopback only (as `natsbus`) |
 | `CONSOLE_NATS_CA_FILE` | the CA for `tls://` |
-| `CONSOLE_PERSON_PREFIX` | the login service's `AUTH_PERSON_PREFIX`, default `person-` (letters, digits, `-` and `_`, ending in `-`) |
 | `CONSOLE_PRESENCE_SUBJECT`, `CONSOLE_PRESENCE_STREAM` | defaults `presence`, `PRESENCE` |
 | `CONSOLE_NATS_SEED_FILE` | **gone**: set, it refuses the start (the static account's secret goes with it) |
 | `CONSOLE_WEB_DIR` | the built browser app (`console/web/dist`) |

@@ -5,25 +5,24 @@ ADR-015, points 1 and 5 to 7). No static account any more.
 At a login the server makes a key pair for that login, kept in memory
 only, and connects with the operator's Keycloak access token, bare, as the
 connect token; the key signs the server's nonce. The login service issues
-the person's credential (``<person prefix><owner token>``, 15 minutes,
-publish nothing, subscribe only ``deliver.<name>.<login>.>``) and makes the
-login's two push consumers. The console subscribes their deliver subjects
-by their literal names — no inbox, no JetStream API, nothing published.
+the person's credential and makes the login's consumers. The console never
+derives the person's name: it subscribes by the login alone —
+``deliver.person.<login>.presence``, ``.stats`` and ``.self``, ``<login>``
+the login's whole public key after its ``U`` in lower case — and learns its
+NATS name and anchor from the record the login service writes on
+``.self`` (``name``, ``anchor``). No inbox, no JetStream API, nothing
+published.
 
 Every ``RENEW_SEC`` (10 minutes) the reader refreshes the access token with
 the refresh token of the operator's ordinary Keycloak session and connects
 again with the same key: the consumers keep their position. The new
-connection is opened first and subscribed only once the old one is closed,
-so no delivery reaches two subscriptions (a repeated consumer sequence
-would read as a consumer made anew). A refresh the realm refuses, or a
-refreshed token without the operators' group, ends the console session.
-
-The name is computed from the token's ``preferred_username``, as an agent's
-host computes its own (``natsbus.owner_token``): the login service names
-the person after the directory's anchor, which is the username for every
-identity from before the import. Where the two differ the server refuses
-the subscriptions; the reader then stops reading and says so (the limit of
-RT-6.39 step 2, #86).
+connection subscribes while the old one still stands, then the old one
+closes; a delivery seen on both is dropped the second time, so no repeat
+reads as a consumer made anew. A refresh the realm refuses, a refreshed
+token without the operators' group or of another ``sub``, ends the
+session. A connect the login service refuses (not an operator, unknown to
+the directory, too many logins) ends the reading at once, its key and
+tokens wiped, its reason shown to the browser; it is not retried.
 
 Connection rules as the mcp package's transport (``natsbus``): ``tls://``
 anywhere, ``nats://`` only to a loopback host, TLS first on the connection.
@@ -32,10 +31,12 @@ from __future__ import annotations
 
 import asyncio
 import base64
+import json
 import logging
 import os
 import ssl
 import time
+from collections import deque
 from collections.abc import Awaitable, Callable
 from typing import Any, Protocol
 from urllib.parse import urlsplit
@@ -43,7 +44,7 @@ from urllib.parse import urlsplit
 import nkeys  # type: ignore[import-untyped]
 from nats.aio.client import Client as NatsClient
 
-from mattermost_ai_agent_bus.natsbus import connect_reason, owner_token
+from mattermost_ai_agent_bus.natsbus import connect_reason, parse_ack
 
 from . import config
 from .auth import Refused, Tokens
@@ -56,16 +57,13 @@ RENEW_SEC = 600.0          # the credential lives 15 minutes; renewed every 10
 BACKOFF_MAX_SEC = 60.0
 CONNECT_TIMEOUT_SEC = 5.0
 REACH_TIMEOUT_SEC = 3.0
-
-
-class NameRefused(Exception):
-    """The server refused this login's deliver subjects: the credential
-    carries another name than the one computed from the username."""
+PERSON = "person"          # deliver.person.<login>.… (the login service's contract)
+RECORD_MAX = 4096
+SEEN_MAX = 512             # deliveries remembered to drop a renewal's repeats
 
 
 class Ended(Exception):
-    """The session's reading ends: the realm refused the renewal, the
-    operators' group is gone, or the console session ran out."""
+    """The session's reading ends; its text is the state the browser sees."""
 
 
 Renew = Callable[[str], Awaitable[Tokens]]   # the refresh token → fresh tokens
@@ -103,16 +101,36 @@ async def reachable(settings: config.Settings,
     return True
 
 
-def person_name(prefix: str, username: str) -> str:
-    """``<person prefix><owner token>``, as the login service names a
-    person whose anchor is their username (``callout/person.go``)."""
-    return prefix + owner_token(username)
-
-
 def login_of(public_key: str) -> str:
-    """A login's token in names and subjects: the first ten characters of
-    its public key after the ``U``, in lower case (``callout.loginOf``)."""
-    return public_key[1:11].lower()
+    """A login's token in subjects: its whole public key after the ``U``, in
+    lower case (55 characters, far above 130 bits)."""
+    return public_key[1:].lower()
+
+
+def consumer_of(reply: str | None) -> str:
+    """The consumer named in a JetStream delivery's reply subject, or ''."""
+    t = (reply or "").split(".")
+    if t[:2] != ["$JS", "ACK"] or len(t) not in (9, 11, 12):
+        return ""
+    return t[3 if len(t) == 9 else 5]
+
+
+def decode_self(data: bytes) -> tuple[str, str] | None:
+    """The login service's record of this login: ``name`` and ``anchor``."""
+    if len(data) > RECORD_MAX:
+        return None
+    try:
+        doc = json.loads(data)
+    except ValueError:
+        return None
+    if not isinstance(doc, dict):
+        return None
+    name, anchor = doc.get("name"), doc.get("anchor")
+    if not (isinstance(name, str) and isinstance(anchor, str)
+            and 0 < len(name) <= 128 and 0 < len(anchor) <= 128
+            and all(c.isprintable() for c in name + anchor)):
+        return None
+    return name, anchor
 
 
 class View:
@@ -134,6 +152,13 @@ class View:
         if self.reader is not None:
             self.reader.stop()
 
+    def bus(self) -> dict[str, Any]:
+        """What the browser sees of this session's reading (``/v1/me``)."""
+        r = self.reader
+        if r is None:
+            return {"state": "off", "name": None, "anchor": None}
+        return {"state": r.state, "name": r.name, "anchor": r.anchor}
+
 
 class Conn(Protocol):
     """What the reader uses of a NATS client (a seam for the tests)."""
@@ -149,9 +174,8 @@ class PersonReader:
     """One operator's login on the bus: its key, its tokens, its
     connection, renewed every ``renew_sec`` until the session ends."""
 
-    def __init__(self, settings: config.Settings, username: str,
-                 tokens: Tokens, renew: Renew, view: View, until: float,
-                 on_end: Callable[[], None],
+    def __init__(self, settings: config.Settings, tokens: Tokens, renew: Renew,
+                 view: View, until: float, on_end: Callable[[], None],
                  renew_sec: float = RENEW_SEC) -> None:
         self.settings = settings
         self.view = view
@@ -163,22 +187,25 @@ class PersonReader:
         self._key: Any = nkeys.from_seed(
             nkeys.encode_seed(os.urandom(32), nkeys.PREFIX_BYTE_USER))
         self.public_key: str = self._key.public_key.decode()
-        self.name = person_name(settings.person_prefix, username)
         self.login = login_of(self.public_key)
-        self.presence_consumer = f"{self.name}_{self.login}_presence"
-        self.stats_consumer = f"{self.name}_{self.login}_stats"
-        self.deliver_presence = f"deliver.{self.name}.{self.login}.presence"
-        self.deliver_stats = f"deliver.{self.name}.{self.login}.stats"
+        base = f"deliver.{PERSON}.{self.login}"
+        self.deliver_presence = f"{base}.presence"
+        self.deliver_stats = f"{base}.stats"
+        self.deliver_self = f"{base}.self"
+        self.name: str | None = None            # from the login service's record
+        self.anchor: str | None = None
         self.state = "connecting"
         self.connects = 0
         self._nc: Conn | None = None
         self._task: asyncio.Task[None] | None = None
         self._stopped = False
+        self._seen: deque[tuple[int, int]] = deque(maxlen=SEEN_MAX)
+        self._seen_set: set[tuple[int, int]] = set()
+        self._last_cseq = 0
 
     # --- the seam: one connection with this login's key -------------------------
 
-    async def dial(self, access: str, lost: Callable[[], Awaitable[None]],
-                   refused: list[str]) -> Conn:
+    async def dial(self, access: str, lost: Callable[[], Awaitable[None]]) -> Conn:
         key = self._key
         nc = NatsClient()
         # nats-py has no argument for the public key with a signature
@@ -189,8 +216,6 @@ class PersonReader:
             return base64.b64encode(key.sign(nonce.encode()))
 
         async def error(exc: Exception) -> None:
-            if "permissions violation" in str(exc).lower():
-                refused.append("permissions violation")
             log.warning("console: NATS %s", connect_reason(exc))
 
         kw: dict[str, Any] = {}
@@ -216,11 +241,12 @@ class PersonReader:
     # --- the lifecycle -----------------------------------------------------------
 
     def start(self) -> None:
-        self._task = asyncio.create_task(self._run(), name=f"console-{self.login}")
+        self._task = asyncio.create_task(self._run(), name="console-login")
 
     def stop(self) -> None:
         """Logout or the session's end: close and drop key and tokens."""
         self._stopped = True
+        self._wipe()
         if self._task is not None and not self._task.done():
             self._task.cancel()
 
@@ -240,27 +266,35 @@ class PersonReader:
     def holds_secrets(self) -> bool:
         return self._key is not None or self._tokens is not None
 
+    def _wipe(self) -> None:
+        self._tokens = None
+        if self._key is not None:
+            self._key.wipe()
+            self._key = None
+
     async def _run(self) -> None:
-        ended = False
+        ended, ends_session = False, False
         try:
             await self._loop()
         except Ended as exc:
             ended = True
-            log.info("console: %s's reading ends: %s", self.name, exc)
+            self.state = str(exc)
+            ends_session = self.state.startswith("ended")
+            log.info("console: login %.10s… reading ends: %s", self.login, exc)
         finally:
-            self.state = "ended"
+            # the wipe first: a cancel during the close cannot skip it
+            self._wipe()
+            if not ended:
+                self.state = "ended"
             nc, self._nc = self._nc, None
-            if nc is not None and not nc.is_closed:
-                try:
+            try:
+                if nc is not None and not nc.is_closed:
                     await asyncio.wait_for(asyncio.shield(nc.close()), 2)
-                except Exception:  # noqa: BLE001
-                    pass
-            self._tokens = None
-            if self._key is not None:
-                self._key.wipe()
-                self._key = None
-            if ended and not self._stopped:
-                self._on_end()
+            except BaseException:  # noqa: BLE001 - closing is best effort
+                pass
+            finally:
+                if ends_session and not self._stopped:
+                    self._on_end()
 
     async def _loop(self) -> None:
         assert self._tokens is not None
@@ -268,7 +302,7 @@ class PersonReader:
         backoff = 1.0
         while True:
             if time.time() >= self.until:
-                raise Ended("the console session ran out")
+                raise Ended("ended: the console session ran out")
             if access is None:
                 # every connect after the first takes a fresh access token
                 access = await self._fresh(backoff)
@@ -281,53 +315,50 @@ class PersonReader:
                 if not closed.done():
                     closed.set_result(None)
 
-            refused: list[str] = []
             try:
-                nc = await self.dial(access, lost, refused)
+                nc = await self.dial(access, lost)
             except asyncio.CancelledError:
                 raise
-            except Exception as exc:  # noqa: BLE001 - every refusal retries
+            except Exception as exc:  # noqa: BLE001
                 access = None
-                self.state = ("refused by the bus" if "authorization" in str(exc).lower()
-                              else "the bus is unreachable")
-                log.warning("console: %s cannot connect (%s; %s); retrying in %.0f s",
-                            self.name, connect_reason(exc), self.state, backoff)
+                if "authorization" in str(exc).lower():
+                    # the login service refused this login (no operator, no
+                    # anchor, too many logins): not retried, nothing kept
+                    raise Ended("refused: the bus refused this login (not an"
+                                " operator, unknown to the directory, or too"
+                                " many logins); log out and in again") from None
+                self.state = "waiting: the bus is unreachable"
+                log.warning("console: login %.10s… cannot connect (%s); retrying in %.0f s",
+                            self.login, connect_reason(exc), backoff)
                 await asyncio.sleep(backoff)
                 backoff = min(backoff * 2, BACKOFF_MAX_SEC)
                 continue
             access = None
             old, self._nc = self._nc, nc
-            if old is not None and not old.is_closed:
-                # the old connection first: one subscription per subject
-                await old.close()
             try:
-                await self._subscribe(nc, refused)
-            except NameRefused:
-                self.state = "the bus knows this person under another name"
-                log.warning("console: the bus refused %s's deliver subjects: its"
-                            " anchor is not its username (#86); reading nothing",
-                            self.name)
-                await nc.close()
-                self._nc = None
-                await asyncio.sleep(max(0.0, self.until - time.time()))
-                raise Ended("the console session ran out") from None
+                # overlap: the new subscriptions stand before the old
+                # connection closes; repeats are dropped in _presence
+                await self._subscribe(nc)
             except asyncio.CancelledError:
                 raise
             except Exception as exc:  # noqa: BLE001
-                log.warning("console: %s: subscribe failed (%s)", self.name,
-                            connect_reason(exc))
+                log.warning("console: login %.10s…: subscribe failed (%s)",
+                            self.login, connect_reason(exc))
+                self._nc = old
                 await nc.close()
                 await asyncio.sleep(backoff)
                 backoff = min(backoff * 2, BACKOFF_MAX_SEC)
                 continue
+            if old is not None and not old.is_closed:
+                await old.close()
             backoff = 1.0
             self.connects += 1
             self.state = "reading"
             wait = max(0.0, min(self.renew_sec, self.until - time.time()))
             try:
                 await asyncio.wait_for(asyncio.shield(closed), wait)
-                self.state = "reconnecting"
-                log.info("console: %s's connection ended; connecting again", self.name)
+                self.state = "waiting: reconnecting"
+                log.info("console: login %.10s…: connection ended; again", self.login)
             except asyncio.TimeoutError:
                 pass   # the renewal: a fresh token, the same key
 
@@ -341,30 +372,56 @@ class PersonReader:
         except asyncio.CancelledError:
             raise
         except Refused as exc:
-            raise Ended(f"the renewal was refused ({exc})") from None
+            raise Ended(f"ended: the renewal was refused ({exc})") from None
         except Exception as exc:  # noqa: BLE001 - the realm or the network, passing
-            self.state = "the renewal is failing"
-            log.warning("console: %s's renewal failed (%s); retrying in %.0f s",
-                        self.name, type(exc).__name__, backoff)
+            self.state = "waiting: the renewal is failing"
+            log.warning("console: login %.10s…: renewal failed (%s); retrying in %.0f s",
+                        self.login, type(exc).__name__, backoff)
             await asyncio.sleep(backoff)
             return None
 
-    async def _subscribe(self, nc: Conn, refused: list[str]) -> None:
-        view, settings = self.view, self.settings
+    def _repeat(self, reply: str | None) -> bool:
+        """A delivery already read on the other connection of a renewal's
+        overlap. A consumer made anew starts its sequence again with other
+        stream sequences, so it is no repeat."""
+        ack = parse_ack(reply)
+        if ack is None:
+            return False
+        key = (ack.consumer_seq, ack.stream_seq)
+        if ack.consumer_seq <= self._last_cseq and key in self._seen_set:
+            return True
+        if len(self._seen) == self._seen.maxlen:
+            self._seen_set.discard(self._seen[0])
+        self._seen.append(key)
+        self._seen_set.add(key)
+        self._last_cseq = ack.consumer_seq
+        return False
+
+    async def _subscribe(self, nc: Conn) -> None:
+        view, settings, login = self.view, self.settings, self.login
 
         async def presence(msg: Any) -> None:
+            if self._repeat(msg.reply):
+                return
+            consumer = consumer_of(msg.reply)
+            # only this login's consumer may feed the fleet
+            if not consumer.endswith(f"_{login}_presence") and consumer != f"{login}_presence":
+                return
             if view.fleet.on_delivery(msg.subject, msg.data, msg.reply,
-                                      settings.presence_stream,
-                                      self.presence_consumer):
+                                      settings.presence_stream, consumer):
                 view.fire()
 
         async def stats(msg: Any) -> None:
             view.stats_lines += 1     # read and shown with the reports (step 8)
 
+        async def own(msg: Any) -> None:
+            record = decode_self(msg.data)
+            if record is None:
+                log.warning("console: login %.10s…: an unreadable own record", login)
+                return
+            self.name, self.anchor = record
+
+        await nc.subscribe(self.deliver_self, cb=own)
         await nc.subscribe(self.deliver_presence, cb=presence)
         await nc.subscribe(self.deliver_stats, cb=stats)
-        # two round trips: every -ERR for the SUBs has been handled (natsbus._sync)
         await nc.flush()
-        await nc.flush()
-        if refused:
-            raise NameRefused()

@@ -2,12 +2,9 @@
 from __future__ import annotations
 
 import os
-import re
 from collections.abc import Callable
 from dataclasses import dataclass, field
 from urllib.parse import urlsplit
-
-PREFIX_RE = re.compile(r"[A-Za-z0-9_-]{0,31}-")
 
 
 class ConfigError(Exception):
@@ -46,9 +43,6 @@ class Settings:
     nats_ca_file: str = ""
     presence_subject: str = "presence"
     presence_stream: str = "PRESENCE"
-    # the login service's AUTH_PERSON_PREFIX: a person's NATS name is it
-    # and the owner token of their username
-    person_prefix: str = "person-"
 
     # the built browser app (console/web/dist)
     web_dir: str = ""
@@ -88,7 +82,6 @@ def find() -> Settings:
         nats_ca_file=given("CONSOLE_NATS_CA_FILE"),
         presence_subject=given("CONSOLE_PRESENCE_SUBJECT") or "presence",
         presence_stream=given("CONSOLE_PRESENCE_STREAM") or "PRESENCE",
-        person_prefix=given("CONSOLE_PERSON_PREFIX") or "person-",
         web_dir=given("CONSOLE_WEB_DIR"),
     )
     if given("CONSOLE_NATS_SEED_FILE"):
@@ -135,10 +128,6 @@ def _check(s: Settings) -> None:
     for name in (s.presence_subject, s.presence_stream):
         if not name or any(c in name for c in ". *>"):
             raise ConfigError("CONSOLE_PRESENCE_SUBJECT/STREAM: one plain token")
-    if not PREFIX_RE.fullmatch(s.person_prefix):
-        # as the login service's AUTH_PERSON_PREFIX (callout.checkConsole)
-        raise ConfigError("CONSOLE_PERSON_PREFIX: letters, digits, - and _,"
-                          " ending in - (the login service's AUTH_PERSON_PREFIX)")
 
 
 def _https(s: Settings) -> Settings:

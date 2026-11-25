@@ -19,11 +19,15 @@ before 0.5.0 are described in the git history.
   ordinary Keycloak session's refresh token (no `offline_access`), checks
   it as at the login (operators' group, same person) and connects again
   with the same key; a refused refresh, a lost group or a logout closes
-  the connection, drops key and tokens and ends the session. The person's
-  name is `CONSOLE_PERSON_PREFIX` (new, default `person-`, as the login
-  service's `AUTH_PERSON_PREFIX`) and the owner token of
-  `preferred_username`: an identity whose anchor is not its username
-  reads nothing yet (#86). `CONSOLE_NATS_SEED_FILE` now refuses the start
+  the connection, drops key and tokens and ends the session. The console
+  never derives the person's name: it subscribes by the login alone
+  (`deliver.person.<login>.presence`, `.stats`, `.self`, `<login>` from
+  the whole public key) and takes name and anchor from the login
+  service's record on `.self`. A connect the login service refuses ends
+  that session's reading at once, key and tokens wiped, no retry, and
+  `/v1/me` shows the reading's state as `bus`. A new login from one
+  browser ends its old session; at most four sessions per person, the
+  oldest closed. `CONSOLE_NATS_SEED_FILE` now refuses the start
   (the file is never read); `CONSOLE_DELIVER_SUBJECT`,
   `CONSOLE_CONSUMER_NAME` and `CONSOLE_HEALTH_SYNC_BOUND` are gone.
   `/healthz` (readiness) answers 200 when the NATS server answers on

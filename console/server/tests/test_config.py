@@ -102,17 +102,3 @@ def test_a_static_seed_refuses_the_start_unread(monkeypatch: pytest.MonkeyPatch,
     with pytest.raises(config.ConfigError, match="static NATS account is gone"):
         config.find()
     assert str(seed) not in opened
-
-
-def test_the_person_prefix_is_the_login_services(monkeypatch: pytest.MonkeyPatch) -> None:
-    for k, v in {"CONSOLE_PUBLIC_URL": "http://127.0.0.1:8747",
-                 "CONSOLE_LOGIN_OFF": "1",
-                 "CONSOLE_NATS_URL": "nats://127.0.0.1:4222"}.items():
-        monkeypatch.setenv(k, v)
-    assert config.find().person_prefix == "person-"
-    for bad in ("person", "per.son-", "op*-", "a b-"):
-        monkeypatch.setenv("CONSOLE_PERSON_PREFIX", bad)
-        with pytest.raises(config.ConfigError, match="CONSOLE_PERSON_PREFIX"):
-            config.find()
-    monkeypatch.setenv("CONSOLE_PERSON_PREFIX", "op-")
-    assert config.find().person_prefix == "op-"

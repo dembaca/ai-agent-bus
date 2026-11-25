@@ -60,11 +60,11 @@ async def renew(refresh: str) -> auth.Tokens:
     return auth.Tokens("fresh-access", refresh)
 
 
-def reader_for(url: str, username: str, renew_sec: float = 600.0) -> PersonReader:
+def reader_for(url: str, renew_sec: float = 600.0) -> PersonReader:
     settings = config.Settings(public_url="http://127.0.0.1:8747", login_off=True,
                                nats_url=url)
     view = View("presence")
-    view.reader = PersonReader(settings, username, auth.Tokens("an-access", "a-refresh"),
+    view.reader = PersonReader(settings, auth.Tokens("an-access", "a-refresh"),
                                renew, view, until=time.time() + 3600,
                                on_end=lambda: None, renew_sec=renew_sec)
     return view.reader
@@ -81,9 +81,9 @@ async def make_consumers(admin: NatsClient, r: PersonReader) -> None:
     """What the login service makes at a person's first issue
     (``consumers.EnsurePerson``)."""
     for stream, name, deliver, policy, subject in (
-            ("PRESENCE", r.presence_consumer, r.deliver_presence,
+            ("PRESENCE", f"person-dembaca_{r.login}_presence", r.deliver_presence,
              "last_per_subject", "presence.>"),
-            ("STATS", r.stats_consumer, r.deliver_stats, "all", "stats.>")):
+            ("STATS", f"person-dembaca_{r.login}_stats", r.deliver_stats, "all", "stats.>")):
         spec = {"stream_name": stream, "config": {
             "name": name, "ack_policy": "none", "deliver_policy": policy,
             "deliver_subject": deliver, "filter_subject": subject,
@@ -99,9 +99,9 @@ async def rig(tmp_path):
     port = free_port()
     url = "nats://127.0.0.1:%d" % port
     # the readers first: each login's key exists before the server knows it
-    good = reader_for(url, "dembaca", renew_sec=0.5)
-    # a login whose credential carries another name than its username (#86)
-    wrong = reader_for(url, "mallory")
+    good = reader_for(url, renew_sec=0.5)
+    # a login whose credential grants another login's subjects
+    wrong = reader_for(url)
     admin_pw = os.urandom(8).hex()
     conf = tmp_path / "nats.conf"
     conf.write_text(
@@ -109,8 +109,8 @@ async def rig(tmp_path):
         + 'jetstream { store_dir: "%s" }\n' % (tmp_path / "js")
         + "accounts { BUS { jetstream: enabled\n users: ["
         + '{ user: admin, password: "%s"},' % admin_pw
-        + person_user(good.public_key, f"deliver.{good.name}.{good.login}.>") + ","
-        + person_user(wrong.public_key, f"deliver.person-dembaca.{wrong.login}.>")
+        + person_user(good.public_key, f"deliver.person.{good.login}.>") + ","
+        + person_user(wrong.public_key, f"deliver.person.{good.login}.>")
         + "] } }\n")
     proc = subprocess.Popen([binary, "-c", str(conf)],
                              stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
@@ -193,10 +193,26 @@ async def test_a_renewal_keeps_the_consumers_position(rig) -> None:
     assert r.state == "reading"
 
 
-async def test_a_credential_of_another_name_reads_nothing(rig) -> None:
-    """The anchor is not the username (#86): the server refuses the
-    login's subscriptions, the reader says so and reads nothing."""
-    r: PersonReader = rig["wrong"]
+async def test_the_login_learns_its_name_from_its_own_record(rig) -> None:
+    """The console never derives the person's name: the login service's
+    record on ``deliver.person.<login>.self`` names it and its anchor."""
+    admin: NatsClient = rig["admin"]
+    r: PersonReader = rig["good"]
+    await make_consumers(admin, r)
+    r.renew_sec = 600.0
     r.start()
-    await until(lambda: "another name" in r.state, what="the refusal")
+    await until(lambda: r.state == "reading", what="the connect")
+    await admin.publish(r.deliver_self, b'{"name": "person-dembaca", "anchor": "dembaca"}')
+    await until(lambda: r.name == "person-dembaca", what="the record")
+    assert r.anchor == "dembaca"
+
+
+async def test_a_login_whose_subjects_are_not_granted_reads_nothing(rig) -> None:
+    """A credential for another login's subjects: NATS refuses the
+    subscriptions, and nothing reaches the fleet."""
+    admin: NatsClient = rig["admin"]
+    r: PersonReader = rig["wrong"]
+    await admin.publish("presence.dembaca.agent-one", encode_presence("online"))
+    r.start()
+    await asyncio.sleep(1.0)
     assert r.view.fleet.cards() == []

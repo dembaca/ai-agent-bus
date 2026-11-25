@@ -52,7 +52,7 @@ def token(private, kid="kid-1", alg="RS256", iss="https://kc/realms/x",
     head = {"alg": alg, "kid": kid, "typ": "Bearer"}
     payload = {"iss": iss, "aud": aud, "azp": azp,
                "exp": exp if exp is not None else int(now) + 300,
-               "iat": int(now), "preferred_username": username,
+               "iat": int(now), "preferred_username": username, "sub": "sub-1",
                "name": "Dem Bac", "groups": list(groups)}
     return sign(private, head, payload)
 
@@ -104,7 +104,7 @@ async def test_every_wrong_token_is_refused() -> None:
     # the groups claim broken is refused, not read as empty
     head = {"alg": "RS256", "kid": "kid-1", "typ": "Bearer"}
     payload = {"iss": "https://kc/realms/x", "aud": "console", "azp": "console",
-               "exp": int(time.time()) + 300, "preferred_username": "d",
+               "exp": int(time.time()) + 300, "preferred_username": "d", "sub": "s",
                "groups": "no list is fine (rejected to empty)", "name": "D"}
     with pytest.raises(auth.AuthError, match="not a member"):
         await auth.verify(SETTINGS, ENDPOINTS, keyring, sign(private, head, payload))
