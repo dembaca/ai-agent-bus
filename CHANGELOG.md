@@ -3,7 +3,17 @@
 Every version bump in `.claude-plugin/plugin.json` gets an entry here. Versions
 before 0.5.0 are described in the git history.
 
-## Unreleased
+## 0.100.0
+
+Needs: login service publish right on presence account records, bridge create right on its account consumer.
+Needs: MM_PROPS_PREFIX of at most sixteen characters, for the bridge its seen bucket and widened home consumers.
+
+People's posts and reactions reach the agents over NATS: the central bridge
+carries them from Mattermost, the login service publishes each account's record
+and the consumers to read them, and the MCP server reads them where the bridge
+signals, with a person approving only on the login service's fresh approver
+record. The registrar's code moves into the bridge's module, not yet wired.
+Breaking: a props prefix is at most 16 characters.
 
 ### Added
 
@@ -45,9 +55,8 @@ before 0.5.0 are described in the git history.
   (`services/bridge/internal/store/seen_bucket.json`), widens each home's
   consumer to `bus.hu.<home>.*` and grants the bridge the rights in
   `services/auth/nats-server.example.conf` before this bridge starts: it
-  refuses to start without the bucket. The release says so in its notice:
-  `Needs: bridge create right on presence account consumer.` The
-  MCP server reads them (the entry above).
+  refuses to start without the bucket. The release's `Needs:` line names
+  the create right. The MCP server reads them (the entry above).
 
 - **The bridge reads Mattermost: the WebSocket reader `internal/mmws` and
   two REST methods of `internal/mm` (ADR-016, the bridge's step 2).
@@ -88,8 +97,7 @@ before 0.5.0 are described in the git history.
   them (see above); the record at a login without an agent and at a change of
   the binding is not built. Upgrade: without the publish right every login of a
   proven Mattermost account is refused, so the login service's NATS user gets it
-  first; the release's `Needs:` line (not allowed under Unreleased) is `Needs:
-  login service publish right on presence account records.`
+  first, as the release's `Needs:` line says.
 
 - **The registrar's code moves into the bridge's module** (ADR-016, step 3 of
   "all of Mattermost in one service"). The core and Mattermost packages of
