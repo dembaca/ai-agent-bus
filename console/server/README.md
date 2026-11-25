@@ -72,6 +72,14 @@ tokens the same way. A login from a browser that holds a session ends
 that session first, and one person keeps at most four sessions (by
 `sub`): a fifth closes the oldest, below the login service's own cap.
 
+The logout (the sidebar's button, `POST /logout`; a GET answers 405)
+ends Keycloak's session too (RT-6.43 step 9): after dropping its own
+session the server redirects to the realm's `end_session_endpoint` with
+`client_id`, `post_logout_redirect_uri=<CONSOLE_PUBLIC_URL>/` and the
+login's ID token as `id_token_hint` while it runs (kept in memory with
+the session). Without one (after a restart, or once it expired) Keycloak
+asks the person to confirm the logout.
+
 
 Presence today carries `online`/`away` (format v1) — the Kanban's two
 extra columns.
@@ -135,6 +143,9 @@ never reads the file.
   (the console is its own client, not the bus's device-flow client,
   ADR-014 point 6);
 - one valid redirect URI: `<CONSOLE_PUBLIC_URL>/callback`, exact;
+- one valid post logout redirect URI: `<CONSOLE_PUBLIC_URL>/`, exact
+  (the logout's way back, RT-6.43 step 9; without it Keycloak refuses
+  the logout's redirect);
 - the **standard flow alone** (device authorization grant, direct access
   grants, implicit flow and service accounts off), refresh tokens on as
   Keycloak's default, and **no `offline_access`**: the server renews

@@ -15,6 +15,19 @@ before 0.5.0 are described in the git history.
   `BRIDGE_MM_ALLOW_HTTP=true` (default off, a warning at start). The
   bridge's WebSocket reader refuses such a URL on its own too.
 
+### Changed
+
+- **The operator console's logout ends the Keycloak session too** (#108
+  point 3, RT-6.43 step 9). Before, it ended only the console's cookie,
+  and `/login` came straight back in through the realm's single sign-on,
+  without a password: on a shared machine the next person was logged in as
+  the previous operator. Now a button in the sidebar POSTs `/logout`; the
+  server drops its session and redirects to Keycloak's end-session endpoint
+  with the login's ID token as the hint (Keycloak asks to confirm without
+  one, after a restart or once it expired). `GET /logout` answers 405. The
+  console's Keycloak client needs `<CONSOLE_PUBLIC_URL>/` as a valid post
+  logout redirect URI.
+
 ### Fixed
 
 - **The central bridge's WebSocket reader reconnects promptly and bounds

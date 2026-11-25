@@ -256,6 +256,13 @@ class Console:
     async def handle(self, path: str, query: dict[str, str],
                      headers: dict[str, str]) -> httpd.Response | httpd.SSE:
         s = self.settings
+        if (headers.get(":method", "GET") == "POST") != (path == "/logout"):
+            # the logout alone changes state and takes POST only, so no
+            # cross-site link or <img> can end a session (RT-6.43 step 9)
+            return httpd.Response(status=405, body=b"method not allowed",
+                                  content_type="text/plain",
+                                  headers=(("Allow", "POST" if path == "/logout"
+                                            else "GET"),))
         if path == s.health_path:
             # readiness: the settings held at the start, and the NATS server
             # answers (a TLS handshake for tls://). There is no reader before
@@ -317,12 +324,25 @@ class Console:
             fetch_site = headers.get("sec-fetch-site", "")
             if fetch_site and fetch_site not in ("same-origin", "same-site", "none"):
                 return httpd.Response.text("cross-site logout", 403)
-            response = httpd.Response.see(s.login_off and "/" or "/login")
+            token = self._session_token(headers)
+            # the server ends it, not only the cookie
+            hint = self.sessions.drop(token) if token else ""
+            # RT-6.43 step 9: then the realm's own session (RP-initiated
+            # logout), so /login does not slip back in through Keycloak's
+            # single sign-on; with no live session (a restart) or an expired
+            # ID token the realm asks the person to confirm instead
+            target = "/"
+            if not s.login_off:
+                target = "/login"
+                if self.endpoints is not None:
+                    target = auth.logout_url(self.endpoints, s.client_id,
+                                             f"{self.base()}/", hint) or target
+                if target == "/login":
+                    log.warning("console logout: no end-session endpoint;"
+                                " the realm's session stays")
+            response = httpd.Response.see(target)
             response.headers = response.headers + (
                 ("Set-Cookie", f"{COOKIE}=; Path=/; Max-Age=0"),)
-            token = self._session_token(headers)
-            if token:
-                self.sessions.drop(token)  # the server ends it, not only the cookie
             return response
         # the browser app
         operator = self._operator(headers)
@@ -423,7 +443,8 @@ class Console:
                                        until=time.time() + s.session_sec,
                                        on_end=lambda: self.sessions.end(view))
         token = self.sessions.issue(operator, s.session_sec, view,
-                                    per_person=SESSIONS_PER_OPERATOR)
+                                    per_person=SESSIONS_PER_OPERATOR,
+                                    id_token=tokens.id)
         if view.reader is not None:
             view.reader.start()
         return token

@@ -10,12 +10,19 @@ stands the operator in (loopback only, tests and the mock).
 from __future__ import annotations
 
 import asyncio
+import base64
 import json
+import time
 
 import pytest
 
 from console_server import auth, config
 from console_server.app import COOKIE, Console
+
+# an ID token as the realm sends it (only its exp is read: the console
+# hands it back to the realm as the logout's hint, RT-6.43 step 9)
+ID_TOKEN = "e30." + base64.urlsafe_b64encode(json.dumps(
+    {"exp": int(time.time()) + 300}).encode()).rstrip(b"=").decode() + ".sig"
 
 SETTINGS = config.Settings(public_url="http://127.0.0.1:8747",
                           login_off=True, nats_url="")
@@ -28,9 +35,12 @@ async def client(console: Console) -> tuple[asyncio.StreamReader, asyncio.Stream
 
 async def get(console: Console, path: str, cookie: str | None = None,
               origin: str | None = None,
-              sec_fetch_site: str | None = None) -> tuple[int, dict[str, object], bytes]:
+              sec_fetch_site: str | None = None,
+              method: str = "GET") -> tuple[int, dict[str, object], bytes]:
     reader, writer = await client(console)
-    head = f"GET {path} HTTP/1.1\r\nHost: x\r\n"
+    head = f"{method} {path} HTTP/1.1\r\nHost: x\r\n"
+    if method == "POST":
+        head += "Content-Length: 0\r\n"
     if cookie:
         head += f"Cookie: {cookie}\r\n"
     if origin:
@@ -220,7 +230,8 @@ async def test_the_login_flow_sets_the_cookie(tmp_path) -> None:
     c.endpoints = auth.Endpoints(issuer=settings.issuer,
                                  authorization="http://127.0.0.1:8747/kc/auth",
                                  token="http://127.0.0.1:8747/kc/token",
-                                 jwks="http://127.0.0.1:8747/kc/certs")
+                                 jwks="http://127.0.0.1:8747/kc/certs",
+                                 end_session="http://127.0.0.1:8747/kc/logout")
 
     async def fake_discover(issuer: str) -> auth.Endpoints:
         assert issuer == settings.issuer
@@ -253,7 +264,7 @@ async def test_the_login_flow_sets_the_cookie(tmp_path) -> None:
         import unittest.mock as mock
 
         async def fake_exchange(*args, **kwargs):
-            return auth.Tokens(access="a-token", refresh="r-token")
+            return auth.Tokens(access="a-token", refresh="r-token", id=ID_TOKEN)
 
         async def fake_verify(*args, **kwargs):
             return verified
@@ -279,10 +290,26 @@ async def test_the_login_flow_sets_the_cookie(tmp_path) -> None:
 
         # logout ends the session on the server: the cookie, even copied,
         # is worthless afterwards
-        status, _h, _b = await get(c, "/logout", cookie=cookie.split(";")[0])
+        status, headers, _b = await get(c, "/logout", cookie=cookie.split(";")[0],
+                                        method="POST")
         assert status == 303
         status, _h, _b = await get(c, "/v1/me", cookie=cookie.split(";")[0])
         assert status == 401
+        # RT-6.43 step 9: and then the realm's session, with the login's ID
+        # token as the hint and the console's own address to come back to
+        where = str(headers["location"])
+        assert where.startswith("http://127.0.0.1:8747/kc/logout?client_id=console")
+        query = parse_qs(urlsplit(where).query)
+        assert query["post_logout_redirect_uri"] == ["http://127.0.0.1:8747/"]
+        assert query["id_token_hint"] == [ID_TOKEN]
+        # a second logout (the session already gone, as after a restart):
+        # still the realm's logout, without a hint
+        status, headers, _b = await get(c, "/logout", cookie=cookie.split(";")[0],
+                                        method="POST")
+        assert status == 303
+        where = str(headers["location"])
+        assert where.startswith("http://127.0.0.1:8747/kc/logout?")
+        assert "id_token_hint" not in where
     finally:
         await c.stop()
 
@@ -348,19 +375,50 @@ async def test_a_cross_site_page_cannot_log_the_operator_out() -> None:
                                                groups=("operators",)), 3600)
         cookie = f"choirbus_session={token}"
         status, _h, _b = await get(c, "/logout", cookie=cookie,
-                                   origin="http://evil.example")
+                                   origin="http://evil.example", method="POST")
         assert status == 403
         assert c.sessions.get(token) is not None  # the session stands
-        # a cross-site <img> sends no Origin at all — Fetch Metadata says it
+        # a cross-site form without Origin (an old browser): Fetch Metadata
         status, _h, _b = await get(c, "/logout", cookie=cookie,
-                                   sec_fetch_site="cross-site")
+                                   sec_fetch_site="cross-site", method="POST")
         assert status == 403
         assert c.sessions.get(token) is not None
-        # the console's own origin (or none, a typed address bar) is fine
-        status, _h, _b = await get(c, "/logout", cookie=cookie,
-                                   origin="http://127.0.0.1:8747")
-        assert status == 303
+        # a link or an <img> is a GET: the logout takes POST only (RT-6.43 step 9)
+        status, headers, _b = await get(c, "/logout", cookie=cookie)
+        assert status == 405 and headers.get("allow") == "POST"
+        assert c.sessions.get(token) is not None
+        # the console's own origin (or none, a typed address bar) is fine;
+        # a realm without an end-session endpoint: back to the login
+        status, headers, _b = await get(c, "/logout", cookie=cookie,
+                                        origin="http://127.0.0.1:8747", method="POST")
+        assert status == 303 and headers.get("location") == "/login"
         assert c.sessions.get(token) is None
+    finally:
+        await c.stop()
+
+
+async def test_post_is_the_logouts_alone() -> None:
+    """Only the logout takes POST; every other route stays GET, and a POST
+    body beyond the small bound is refused before any handler runs."""
+    c = Console(SETTINGS)
+    await c.start()
+    try:
+        status, headers, _b = await get(c, "/v1/me", method="POST")
+        assert status == 405 and headers.get("allow") == "GET"
+        reader, writer = await client(c)
+        writer.write(b"POST /logout HTTP/1.1\r\nHost: x\r\n"
+                     b"Content-Length: 999999\r\n\r\n")
+        line = await asyncio.wait_for(reader.readline(), 5.0)
+        writer.close()
+        assert line.split()[1] == b"400"
+        reader, writer = await client(c)
+        writer.write(b"PUT /logout HTTP/1.1\r\nHost: x\r\n\r\n")
+        line = await asyncio.wait_for(reader.readline(), 5.0)
+        writer.close()
+        assert line.split()[1] == b"400"
+        # login off (the mock): the logout goes back to the app
+        status, headers, _b = await get(c, "/logout", method="POST")
+        assert status == 303 and headers.get("location") == "/"
     finally:
         await c.stop()
 

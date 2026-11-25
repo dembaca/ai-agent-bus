@@ -63,6 +63,8 @@ class Endpoints:
     token: str
     jwks: str
     discovered_at: float = 0.0
+    # RP-initiated logout (RT-6.43 step 9); "" when the realm names none
+    end_session: str = ""
 
 
 async def _get(url: str, limit: int, fetch: Fetch | None) -> bytes:
@@ -92,7 +94,10 @@ async def discover(issuer: str, fetch: Fetch | None = None) -> Endpoints:
     out = Endpoints(issuer=issuer,
                     authorization=_same(issuer, doc.get("authorization_endpoint")),
                     token=_same(issuer, doc.get("token_endpoint")),
-                    jwks=_same(issuer, doc.get("jwks_uri")))
+                    jwks=_same(issuer, doc.get("jwks_uri")),
+                    end_session=(_same(issuer, doc["end_session_endpoint"])
+                                 if doc.get("end_session_endpoint") is not None
+                                 else ""))
     out.discovered_at = time.monotonic()
     return out
 
@@ -168,13 +173,45 @@ def login_url(endpoints: Endpoints, client_id: str, redirect_uri: str,
     return url, state, verifier
 
 
+def _unexpired(id_token: str, now: float) -> bool:
+    """Whether an ID token still runs by its own ``exp`` — read, not
+    verified: it goes back only to the realm that signed it, as a hint."""
+    try:
+        payload = json.loads(_unb64u(id_token.split(".")[1]))
+    except (IndexError, ValueError, TypeError):
+        return False
+    exp = payload.get("exp") if isinstance(payload, dict) else None
+    return isinstance(exp, (int, float)) and not isinstance(exp, bool) and exp > now
+
+
+def logout_url(endpoints: Endpoints, client_id: str, post_logout_redirect_uri: str,
+               id_token: str = "", now: float | None = None) -> str:
+    """The realm's end-session URL for an RP-initiated logout (RT-6.43
+    step 9): ``client_id`` and ``post_logout_redirect_uri`` always, the
+    login's ID token as ``id_token_hint`` only while it runs — without it
+    the realm asks the person to confirm the logout. "" when the realm
+    names no end-session endpoint."""
+    from urllib.parse import quote
+    if not endpoints.end_session:
+        return ""
+    at = time.time() if now is None else now
+    sep = "&" if "?" in endpoints.end_session else "?"
+    url = (f"{endpoints.end_session}{sep}client_id={quote(client_id, safe='')}"
+           f"&post_logout_redirect_uri={quote(post_logout_redirect_uri, safe='')}")
+    if id_token and _unexpired(id_token, at):
+        url += f"&id_token_hint={quote(id_token, safe='')}"
+    return url
+
+
 @dataclass(repr=False)
 class Tokens:
     """A login's Keycloak tokens, in memory only and never printed: the
     access token (the NATS connect token, RT-6.43) and the refresh token
-    of the ordinary session (no ``offline_access``), empty if none came."""
+    of the ordinary session (no ``offline_access``), empty if none came;
+    the ID token, kept only as the logout's hint (RT-6.43 step 9)."""
     access: str
     refresh: str = ""
+    id: str = ""
 
     def __repr__(self) -> str:
         return "Tokens(…)"
@@ -198,8 +235,10 @@ async def _token_call(endpoints: Endpoints, form: dict[str, str],
     if not isinstance(doc, dict) or not isinstance(doc.get("access_token"), str):
         raise AuthError("no access token in the answer")
     refresh = doc.get("refresh_token")
+    id_token = doc.get("id_token")
     return Tokens(access=doc["access_token"],
-                  refresh=refresh if isinstance(refresh, str) else "")
+                  refresh=refresh if isinstance(refresh, str) else "",
+                  id=id_token if isinstance(id_token, str) else "")
 
 
 async def exchange(endpoints: Endpoints, client_id: str, redirect_uri: str,
@@ -323,6 +362,8 @@ class Sessions:
     tokens."""
     secret: bytes = field(default_factory=lambda: secrets.token_bytes(32))
     _sessions: dict[str, tuple[float, Operator, Any]] = field(default_factory=dict)
+    # each session's ID token, the logout's hint (RT-6.43 step 9); goes with it
+    _hints: dict[str, str] = field(default_factory=dict, repr=False)
 
     def _digest(self, token: str) -> str:
         return hmac.new(self.secret, token.encode(), hashlib.sha256).hexdigest()
@@ -334,7 +375,7 @@ class Sessions:
             close()
 
     def issue(self, operator: Operator, ttl: float, view: Any = None,
-              per_person: int = 0) -> str:
+              per_person: int = 0, id_token: str = "") -> str:
         """A new session; with ``per_person`` the same person's oldest
         sessions are closed until this one is within the cap (by ``sub``,
         else the username), below the login service's own cap."""
@@ -343,27 +384,37 @@ class Sessions:
         for d, row in list(self._sessions.items()):  # sweep: expired sessions go
             if row[0] <= at:
                 del self._sessions[d]
+                self._hints.pop(d, None)
                 self._close(row)
         if per_person > 0:
             who = operator.sub or operator.username
             mine = sorted((row[0], d) for d, row in self._sessions.items()
                           if (row[1].sub or row[1].username) == who)
             for _until, d in mine[:max(0, len(mine) - per_person + 1)]:
+                self._hints.pop(d, None)
                 self._close(self._sessions.pop(d))
         self._sessions[self._digest(token)] = (at + ttl, operator, view)
+        if id_token:
+            self._hints[self._digest(token)] = id_token
         return token
 
-    def drop(self, token: str) -> None:
-        """Logout: the server ends the session, not only the cookie."""
-        row = self._sessions.pop(self._digest(token), None)
-        if row is not None:
-            self._close(row)
+    def drop(self, token: str) -> str:
+        """Logout: the server ends the session, not only the cookie.
+        Returns the session's ID token for the realm's logout, "" if none."""
+        digest = self._digest(token)
+        hint = self._hints.pop(digest, "")
+        row = self._sessions.pop(digest, None)
+        if row is None:
+            return ""
+        self._close(row)
+        return hint
 
     def end(self, view: Any) -> None:
         """The session whose view this is ends (its reader ended it)."""
         for d, row in list(self._sessions.items()):
             if row[2] is view:
                 del self._sessions[d]
+                self._hints.pop(d, None)
                 self._close(row)
 
     def views(self) -> list[Any]:
@@ -387,6 +438,7 @@ class Sessions:
         at = time.time() if now is None else now
         if at > until:
             del self._sessions[digest]
+            self._hints.pop(digest, None)
             self._close(row)
             return None
         return operator
