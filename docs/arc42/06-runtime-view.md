@@ -1814,7 +1814,7 @@ The rule that an operator reads the guest channels of agents that trust them onl
 
 | Step | Failure | System Response |
 |------|---------|----------------|
-| 1 | The WebSocket drops | The bridge reconnects and catches up over REST; what it carried before is not sent again |
+| 1 | The WebSocket drops | The bridge reconnects and catches up over REST; what it carried before is not sent again. It waits 1 s after a socket that held 30 s, otherwise twice the last wait up to 30 s. A handshake that takes longer than 20 s in all, or a peer that sends a frame over 1 MiB or more than 128 events before the authentication reply, counts as a failed connection |
 | 1 | A gap longer than 10 minutes, or a first start | What is older is not carried; the bridge logs the gap |
 | 1 | During a gap, a person removes a reaction older than an hour, or one the bridge never saw | Lost: no key to miss on reread, no `unreaction` is carried |
 | 1 | `BUS_BRIDGE` or `BUS_BRIDGE_SEEN` refuses a write (full, or a missing right) | The bridge logs the refusal with the bucket's name, stops carrying that home and stops its signal, so sessions read people on Mattermost again (step 9); it retries, and carries on from its watermark once the operator has made room |

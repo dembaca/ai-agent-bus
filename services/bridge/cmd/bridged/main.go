@@ -120,7 +120,10 @@ func run(log *slog.Logger) error {
 			stop()
 		}
 	}()
-	ws := mmws.New(cfg.MMURL, cfg.MMToken)
+	ws := mmws.New(cfg.MMURL, cfg.MMToken).WithPlainHTTP(cfg.MMAllowHTTP)
+	if cfg.MMAllowHTTP && strings.HasPrefix(cfg.MMURL, "http://") {
+		log.Warn("bridge: BRIDGE_MM_ALLOW_HTTP is on; the bot token goes to Mattermost in clear text")
+	}
 	wg.Add(2)
 	go func() {
 		defer wg.Done()

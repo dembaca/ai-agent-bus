@@ -4,28 +4,33 @@ package config
 
 import (
 	"fmt"
+	"net/url"
 	"os"
 	"regexp"
+	"strconv"
 	"strings"
+
+	"github.com/dembaca/ai-agent-bus/services/bridge/internal/mmws"
 )
 
 // Config is the bridge's whole configuration.
 type Config struct {
-	NATSURL    string   // BRIDGE_NATS_URL, tls:// in the lab
-	SeedFile   string   // BRIDGE_NATS_SEED_FILE, the read-only user's nkey seed
-	CAFile     string   // BRIDGE_CA_FILE, optional: the server's CA
-	MMURL      string   // BRIDGE_MM_URL
-	MMToken    string   // BRIDGE_MM_TOKEN_FILE
-	MMTeam     string   // BRIDGE_MM_TEAM
-	Homes      []string // BRIDGE_HOMES, the home channel names to mirror
-	Prefix     string   // BRIDGE_PROPS_PREFIX, the homes' MM_PROPS_PREFIX
-	KVBucket   string   // BRIDGE_KV_BUCKET, default BUS_BRIDGE
-	SeenBucket string   // BRIDGE_SEEN_BUCKET, default BUS_BRIDGE_SEEN: the keys of people's events carried (RT-6.42)
-	Listen     string   // BRIDGE_LISTEN_ADDR, /healthz
-	NATSStream string   // BRIDGE_STREAM, default BUS
-	BusPrefix  string   // BRIDGE_BUS_PREFIX, the bus's subject prefix, default bus
-	Deliver    string   // BRIDGE_DELIVER, the operator's push consumer prefix, default deliver.bridge
-	Inbox      string   // BRIDGE_INBOX, the bridge's own reply inbox prefix, default _INBOX_bridge; it must match the right _INBOX_bridge.>
+	NATSURL     string   // BRIDGE_NATS_URL, tls:// in the lab
+	SeedFile    string   // BRIDGE_NATS_SEED_FILE, the read-only user's nkey seed
+	CAFile      string   // BRIDGE_CA_FILE, optional: the server's CA
+	MMURL       string   // BRIDGE_MM_URL, https; http only to a loopback host or with MMAllowHTTP
+	MMAllowHTTP bool     // BRIDGE_MM_ALLOW_HTTP, default false: http to any host, the token in clear text
+	MMToken     string   // BRIDGE_MM_TOKEN_FILE
+	MMTeam      string   // BRIDGE_MM_TEAM
+	Homes       []string // BRIDGE_HOMES, the home channel names to mirror
+	Prefix      string   // BRIDGE_PROPS_PREFIX, the homes' MM_PROPS_PREFIX
+	KVBucket    string   // BRIDGE_KV_BUCKET, default BUS_BRIDGE
+	SeenBucket  string   // BRIDGE_SEEN_BUCKET, default BUS_BRIDGE_SEEN: the keys of people's events carried (RT-6.42)
+	Listen      string   // BRIDGE_LISTEN_ADDR, /healthz
+	NATSStream  string   // BRIDGE_STREAM, default BUS
+	BusPrefix   string   // BRIDGE_BUS_PREFIX, the bus's subject prefix, default bus
+	Deliver     string   // BRIDGE_DELIVER, the operator's push consumer prefix, default deliver.bridge
+	Inbox       string   // BRIDGE_INBOX, the bridge's own reply inbox prefix, default _INBOX_bridge; it must match the right _INBOX_bridge.>
 }
 
 // Load reads the environment. A missing required value is an error naming it.
@@ -100,6 +105,26 @@ func Load(get func(string) string) (Config, error) {
 	case len(c.Homes) == 0:
 		return Config{}, fmt.Errorf("BRIDGE_HOMES is required: at least one home channel name")
 
+	}
+	if v := strings.TrimSpace(get("BRIDGE_MM_ALLOW_HTTP")); v != "" {
+		allow, err := strconv.ParseBool(v)
+		if err != nil {
+			return Config{}, fmt.Errorf("BRIDGE_MM_ALLOW_HTTP %q is neither true nor false", v)
+		}
+		c.MMAllowHTTP = allow
+	}
+	// The bot token goes to Mattermost with every REST call and in the
+	// WebSocket's auth challenge: over http it crosses the network in clear
+	// text. Only a loopback host (a local lab) or the explicit opt-in may
+	// have it (#131).
+	u, err := url.Parse(c.MMURL)
+	if err != nil || u.Host == "" || (u.Scheme != "https" && u.Scheme != "http") {
+		return Config{}, fmt.Errorf("BRIDGE_MM_URL %q is no http(s) URL", c.MMURL)
+	}
+	if u.Scheme == "http" && !c.MMAllowHTTP && !mmws.Loopback(u.Hostname()) {
+		return Config{}, fmt.Errorf("BRIDGE_MM_URL %s is http to a host that is not loopback: the bot "+
+			"token would cross the network in clear text; use https, or set BRIDGE_MM_ALLOW_HTTP=true "+
+			"on a network you trust", u.Redacted())
 	}
 	return c, nil
 }

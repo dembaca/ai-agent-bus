@@ -7,6 +7,14 @@ before 0.5.0 are described in the git history.
 
 ### Breaking
 
+- **The central bridge refuses an `http` Mattermost URL to a host that is
+  not loopback** (#131). Its bot token goes with every REST call and in the
+  WebSocket's authentication challenge, so over `http` it would cross the
+  network in clear text. `BRIDGE_MM_URL` must be `https`, or `http` to
+  `127.0.0.1`, `::1` or `localhost`; a lab on a network it trusts may set
+  `BRIDGE_MM_ALLOW_HTTP=true` (default off, a warning at start). The
+  bridge's WebSocket reader refuses such a URL on its own too.
+
 - **The console reads the bus as the logged-in operator; its static NATS
   account is gone** (the console on the bus as its operator, RT-6.43
   steps 1 and 4; point 7 of the console decision's addition of
@@ -158,6 +166,14 @@ before 0.5.0 are described in the git history.
   Without corral OpenCode behaves as before.
 
 ### Fixed
+
+- **The central bridge's WebSocket reader reconnects promptly and bounds
+  its handshake** (#131, people's posts onto NATS, RT-6.42). After a
+  connection that held 30 s it reconnects after 1 s, not after the wait
+  earlier failures had built up. During the authentication challenge the
+  1 MiB frame cap now holds, the whole challenge has one 20 s deadline
+  instead of one per frame, and more than 128 events before the reply fail
+  the handshake instead of piling up.
 
 - **The bridge's Mattermost reader authenticates again.** It sent the
   WebSocket action `auth_challenge`; Mattermost knows only
