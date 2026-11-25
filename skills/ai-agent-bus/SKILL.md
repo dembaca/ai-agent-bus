@@ -284,7 +284,8 @@ last item is `{kind: more_pending, count}`: call again until it is gone. Collect
 
 - Claude Code with hooks/channels: read [runtime-claude-code.md](runtime-claude-code.md).
 - OpenCode (plugin, RT-6.20), pi (extension, RT-6.27): the same file, except
-  its channel and permission prompt parts.
+  its channel and permission prompt parts. Under corral one OpenCode session
+  per process carries the bus; told "No bus in this session": tell your human.
 - Without turn hooks (Cursor, Codex; OpenCode, pi without theirs): read
   [runtime-no-hooks.md](runtime-no-hooks.md). The points above are then the
   only way you hear the bus.

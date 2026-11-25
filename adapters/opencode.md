@@ -184,24 +184,38 @@ loaded), and with it the plugin and its relay: the next use loads both again, an
 host process takes the relay back. Whether a `--standalone` server unloads at all is
 unverified; set `false` if the bot drops out after an hour without use.
 
-**The background service is not the session's.** corral runs OpenCode with its own
-private server (`--standalone`), whose plugin starts the session's relay. Any OpenCode
-command in the sandbox that runs without `--standalone` (`opencode session list`,
-`opencode run` …) starts the background service (`opencode serve --service`) with the
-sandbox's environment, this session's `MM_BUS_*` variables included; the service is
-shared by the machine and outlives the session. The plugin does nothing there: no
-server (it also takes out a bus server you configured), no skill, no turn cycle, one
-line in OpenCode's log. So an OpenCode command inside the sandbox without
-`--standalone` runs without the bus: use `--standalone`. And a service an earlier
-session started no longer relays later sessions under that earlier session's bot
+**One bus session per OpenCode process under corral.** One agent has one bot, and an
+OpenCode server serves many sessions. So under corral the plugin binds the bus to the
+first top-level session that prompts in the OpenCode process; every other top-level
+session of that process gets one note in the session, `No bus in this session: this
+OpenCode server already carries the bus for another session (one agent, one bot). …`,
+and its hooks and bus tool calls do nothing. That includes `/new` in the TUI: a new
+session there has no bus. A subagent of the bound session keeps the bus. This holds in
+any server, whatever its command line: the bus server starts only once a session
+prompted, with that session's id (`OPENCODE_SESSION_ID`, shown by `bus_info` as
+`client_session` next to the server's `pid`), and the host serves only that session,
+for its relay and its hooks alike. So **quitting and restarting `opencode` in one corral
+session needs the same session**: `opencode --continue` or `opencode --session <id>`;
+a new session there gets the note `No bus in this session: this corral session's bus
+already serves another OpenCode session …` and no bus. For a new session, start a new
+corral session. The same holds for a second OpenCode process in the corral session (a
+second `--standalone`, or the background service started from inside the sandbox)
 ([RT-6.20](../docs/arc42/06-runtime-view.md#620-opencode-turn-cycle-through-its-plugin)
-step 1). The host serves one relay per session, so with an older plugin such a service
-took the slot, and the session's server failed with `another relay is connected`. The
-refusal names the holder as it describes itself (`says pid …, parent …; since …`): the
-ids come from the sandbox, so look them up inside it (`ps -o pid,command -p <parent>`)
-and check the command before you stop anything. For a service: `opencode service stop`, then reload the
-session's MCP server
-([RT-6.18](../docs/arc42/06-runtime-view.md#618-keyless-host-managed-session) step 6).
+step 1, [RT-6.18](../docs/arc42/06-runtime-view.md#618-keyless-host-managed-session)
+step 6). When the bound session's bot changes (a new registration after a restart), the
+session is told old → new; nothing carries over from the old bot. Without corral
+nothing of this applies: every session of a project directory shares its one server
+and bot, as before.
+
+The background service (`opencode serve --service`) outlives a corral session, and
+any OpenCode command in the sandbox without `--standalone` (`opencode session list`,
+`opencode run` …) starts it with the sandbox's environment, this session's `MM_BUS_*`
+variables included. corral runs OpenCode with its own private server
+(`--standalone`): keep using it inside the sandbox. If a relay is refused with
+`another relay is connected (says pid …, parent …; since …)`, the ids come from the
+sandbox: look them up inside it (`ps -o pid,command -p <parent>`) and check the
+command before you stop anything. For a service: `opencode service stop`, then reload
+the session's MCP server.
 
 ## Skill / instructions
 
@@ -215,7 +229,8 @@ only `SKILL.md`: it points to the files next to it, such as
 
 ## MCP
 
-One server per project directory, shared by its sessions, so one bot per workspace.
+One server per project directory, shared by its sessions, so one bot per workspace
+(under corral one bus session per OpenCode process, above).
 By hand (without the plugin's, or with `mcp: false`), in the project's `opencode.json`:
 
 ```json
