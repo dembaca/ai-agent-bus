@@ -17,6 +17,11 @@ before 0.5.0 are described in the git history.
 
 ### Fixed
 
+- **The deployment view says what runs in the lab** (#108). The central
+  bridge carries people's posts and reactions onto NATS in the lab since
+  2026-11-25 (step 2, RT-6.42), and the introduction names the bridge and
+  the operator console beside the login service as the lab's containers.
+
 - **The central bridge's WebSocket reader reconnects promptly and bounds
   its handshake** (#131, people's posts onto NATS, RT-6.42). After a
   connection that held 30 s it reconnects after 1 s, not after the wait
