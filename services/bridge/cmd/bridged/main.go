@@ -121,8 +121,9 @@ func run(log *slog.Logger) error {
 		}
 	}()
 	ws := mmws.New(cfg.MMURL, cfg.MMToken).WithPlainHTTP(cfg.MMAllowHTTP)
-	if cfg.MMAllowHTTP && strings.HasPrefix(cfg.MMURL, "http://") {
-		log.Warn("bridge: BRIDGE_MM_ALLOW_HTTP is on; the bot token goes to Mattermost in clear text")
+	if cfg.MMPlainHTTP {
+		log.Warn("bridge: BRIDGE_MM_URL is http to a host that is not loopback (BRIDGE_MM_ALLOW_HTTP);" +
+			" the bot token goes to Mattermost in clear text")
 	}
 	wg.Add(2)
 	go func() {

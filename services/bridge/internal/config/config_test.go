@@ -41,17 +41,20 @@ func TestPlainHTTPNeedsLoopbackOrTheOptIn(t *testing.T) {
 	}
 	for _, tc := range []struct {
 		url, allow string
-		ok         bool
+		ok, plain  bool
 	}{
-		{"https://chat.example", "", true},
-		{"http://chat.example", "", false},
-		{"http://chat.example", "false", false},
-		{"http://chat.example", "true", true},
-		{"http://chat.example", "yes please", false},
-		{"http://127.0.0.1:8065", "", true},
-		{"http://localhost:8065", "", true},
-		{"ftp://chat.example", "true", false},
-		{"chat.example", "", false},
+		{"https://chat.example", "", true, false},
+		{"https://chat.example", "true", true, false},
+		{"http://chat.example", "", false, false},
+		{"http://chat.example", "false", false, false},
+		{"http://chat.example", "true", true, true},
+		{"HTTP://chat.example", "true", true, true},
+		{"http://chat.example", "yes please", false, false},
+		{"http://127.0.0.1:8065", "", true, false},
+		{"http://localhost:8065", "true", true, false},
+		{"ftp://chat.example", "true", false, false},
+		{"chat.example", "", false, false},
+		{"http://:8065", "true", false, false},
 	} {
 		c, err := load(tc.url, tc.allow)
 		if (err == nil) != tc.ok {
@@ -59,6 +62,9 @@ func TestPlainHTTPNeedsLoopbackOrTheOptIn(t *testing.T) {
 		}
 		if err == nil && c.MMAllowHTTP != (tc.allow == "true") {
 			t.Errorf("%s %q: MMAllowHTTP %v", tc.url, tc.allow, c.MMAllowHTTP)
+		}
+		if err == nil && c.MMPlainHTTP != tc.plain {
+			t.Errorf("%s %q: MMPlainHTTP %v, want %v (the start-up warning)", tc.url, tc.allow, c.MMPlainHTTP, tc.plain)
 		}
 	}
 }

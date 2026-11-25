@@ -174,6 +174,11 @@ before 0.5.0 are described in the git history.
   1 MiB frame cap now holds, the whole challenge has one 20 s deadline
   instead of one per frame, and more than 128 events before the reply fail
   the handshake instead of piling up.
+- **The central bridge's REST client follows no redirect** (#131). Go's
+  HTTP client resends the `Authorization` header to a redirect on the same
+  host, so a 30x from `https` to `http` would have sent the bot token in
+  clear text. Mattermost's API does not redirect; a 30x is now the call's
+  error.
 
 - **The bridge's Mattermost reader authenticates again.** It sent the
   WebSocket action `auth_challenge`; Mattermost knows only

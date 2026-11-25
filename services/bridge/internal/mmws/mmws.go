@@ -14,13 +14,14 @@ import (
 	"errors"
 	"fmt"
 	"log/slog"
-	"net"
 	"net/url"
 	"strings"
 	"sync/atomic"
 	"time"
 
 	"github.com/gorilla/websocket"
+
+	"github.com/dembaca/ai-agent-bus/services/bridge/internal/netloc"
 )
 
 // Posted is one `posted` event: what somebody wrote in a channel, with
@@ -350,21 +351,21 @@ func (r *Reader) prove(ctx context.Context, conn *websocket.Conn) ([]Event, erro
 			} `json:"broadcast"`
 		}
 		if err := conn.ReadJSON(&frame); err != nil {
-			return early, fmt.Errorf("mmws: reading the auth reply: %w", err)
+			return nil, fmt.Errorf("mmws: reading the auth reply: %w", err)
 		}
 		if frame.SeqReply == 0 {
 			// an event before the reply (hello first is legal): kept for
 			// the connection's own marker, which always goes out first
 			if ev := r.typedEvent(frame.Event, frame.Data, frame.Broadcast.ChannelID); ev != nil {
 				if len(early) == maxEarly {
-					return early, fmt.Errorf("mmws: more than %d events before the auth reply", maxEarly)
+					return nil, fmt.Errorf("mmws: more than %d events before the auth reply", maxEarly)
 				}
 				early = append(early, ev)
 			}
 			continue
 		}
 		if frame.Status != "OK" {
-			return early, &AuthError{Status: frame.Status}
+			return nil, &AuthError{Status: frame.Status}
 		}
 		return early, nil
 	}
@@ -539,32 +540,20 @@ func (r *Reader) emit(ctx context.Context, ev Event) {
 func (r *Reader) url() (*url.URL, error) {
 	u, err := url.Parse(r.base)
 	if err != nil {
-		return nil, fmt.Errorf("mmws: %q: %w", r.base, err)
+		return nil, fmt.Errorf("mmws: the base URL does not parse: %w", err)
 	}
 	switch u.Scheme {
 	case "https":
 		u.Scheme = "wss"
 	case "http":
-		if !r.http && !Loopback(u.Hostname()) {
+		if !r.http && !netloc.Loopback(u.Hostname()) {
 			return nil, fmt.Errorf("mmws: %q: http to a host that is not loopback "+
 				"would send the bot token in clear text; use https", u.Redacted())
 		}
 		u.Scheme = "ws"
 	default:
-		return nil, fmt.Errorf("mmws: %q: neither http nor https", r.base)
+		return nil, fmt.Errorf("mmws: %s: neither http nor https", u.Redacted())
 	}
 	u.Path = strings.TrimRight(u.Path, "/") + "/api/v4/websocket"
 	return u, nil
-}
-
-// Loopback says whether host (a URL's Hostname) never leaves the
-// machine: localhost or a loopback address. A name that merely resolves
-// to one does not count, since its resolution is not this reader's to
-// trust.
-func Loopback(host string) bool {
-	if strings.EqualFold(host, "localhost") {
-		return true
-	}
-	ip := net.ParseIP(host)
-	return ip != nil && ip.IsLoopback()
 }

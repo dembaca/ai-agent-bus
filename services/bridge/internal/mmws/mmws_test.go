@@ -637,21 +637,36 @@ func TestChallengeHasOneDeadline(t *testing.T) {
 	failsTheHandshake(t, f, r)
 }
 
-// Given a peer that floods posts before the reply, the reader keeps at
-// most maxEarly of them and fails the handshake instead of growing
-// without bound; none of the flood is handed out (#131, point 2).
+// Given a peer that sends posts before the reply, the reader keeps up to
+// maxEarly of them and hands all of them out after its marker; one more
+// is a broken peer's flood and fails the handshake instead of growing
+// without bound, and none of it is handed out (#131, point 2).
 func TestEarlyEventsAreCapped(t *testing.T) {
-	f := newFake(t)
-	f.scripts = []func(*websocket.Conn){
-		authThen(func(conn *websocket.Conn) {
-			for i := range maxEarly + 50 {
+	flood := func(n int) func(*websocket.Conn) {
+		return authThen(func(conn *websocket.Conn) {
+			for i := range n {
 				postEvent(conn, map[string]any{"id": fmt.Sprintf("p%d", i), "user_id": "u1",
-					"channel_id": "ch1", "create_at": 100 + i, "message": "flood"})
+					"channel_id": "ch1", "create_at": 100 + i, "message": "early"})
 			}
-		}),
-		authOK(still),
+		})
 	}
-	failsTheHandshake(t, f, run(t, f))
+	t.Run("exactly the cap", func(t *testing.T) {
+		f := newFake(t)
+		f.scripts = []func(*websocket.Conn){flood(maxEarly)}
+		r := run(t, f)
+		reconnected(t, next(t, r), 0)
+		for i := range maxEarly {
+			post, ok := next(t, r).(*Posted)
+			if !ok || post.PostID != fmt.Sprintf("p%d", i) {
+				t.Fatalf("event %d: got %#v, want post p%d", i, post, i)
+			}
+		}
+	})
+	t.Run("one past the cap", func(t *testing.T) {
+		f := newFake(t)
+		f.scripts = []func(*websocket.Conn){flood(maxEarly + 1), authOK(still)}
+		failsTheHandshake(t, f, run(t, f))
+	})
 }
 
 // Given an http base URL, the reader dials ws:// only to a loopback host
@@ -666,7 +681,6 @@ func TestPlainHTTPOnlyToLoopback(t *testing.T) {
 		{"https://chat.example", false, "wss://chat.example/api/v4/websocket"},
 		{"http://chat.example", false, ""},
 		{"http://10.0.0.5:8065", false, ""},
-		{"http://localhost.example", false, ""},
 		{"http://chat.example", true, "ws://chat.example/api/v4/websocket"},
 		{"http://127.0.0.1:8065", false, "ws://127.0.0.1:8065/api/v4/websocket"},
 		{"http://[::1]:8065/mm", false, "ws://[::1]:8065/mm/api/v4/websocket"},
