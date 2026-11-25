@@ -3,6 +3,9 @@
 import asyncio
 import inspect
 import json
+import os
+import subprocess
+import sys
 import time
 
 import httpx
@@ -64,6 +67,61 @@ def test_stats_report_reads_the_channel_with_the_bots_session(monkeypatch):
     assert "stats are off" in asyncio.run(server.stats_report())
 
 
+# The bound for the per-turn text, measured at 0.99.0 in the worst
+# configuration a session can have: the channel push with trusted humans plus a
+# NATS home (13,250 characters: 3,431 instructions and 9,819 tool docs).
+# Without them the text is 12,434. It is a ratchet on the measured text, not an
+# outside limit: an addition raises it consciously, with its reason here.
+STATIC_BOUND = 13_300
+
+
+def static_text_in(env_overrides: dict[str, str]) -> int:
+    """The per-turn text of a fresh interpreter with exactly this environment.
+
+    The instructions and the tool list are built at import (`server._fixed`),
+    so a host's configuration can only be measured in a process of its own:
+    reading the test's own `MM_*` would make the number depend on whoever runs
+    the suite (issue #104).
+    """
+    code = ("from mattermost_ai_agent_bus import server\n"
+            "f = server._fixed()\n"
+            "assert len(server._instructions()) == f.instructions, \\\n"
+            "    'the served instructions are not what _instructions builds'\n"
+            "print(f.instructions + f.tools)\n")
+    env = {"PATH": os.environ.get("PATH", ""), "HOME": os.environ.get("HOME", "")}
+    env.update(env_overrides)
+    out = subprocess.run([sys.executable, "-c", code], env=env, capture_output=True, text=True,
+                         check=True, cwd=os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
+    return int(out.stdout.strip().splitlines()[-1])
+
+
+def test_the_static_text_holds_in_every_configuration():
+    """RT-6.9: the text every turn carries, under the bound, whatever the
+    session's configuration adds — the channel push, the permission relay's
+    trusted humans, a NATS home (#104: each was measured on its own, and the
+    combination was 350 over the old 12,900)."""
+    # MM_CHANNEL_PUSH=0 without push: unset, channel.enabled() reads the parent
+    # command line, and a suite started from a channel session would measure
+    # push where it means base (#104 review).
+    configs = {
+        "base": {"MM_CHANNEL_PUSH": "0"},
+        "channel push": {"MM_CHANNEL_PUSH": "1"},
+        "push, trusted humans": {"MM_CHANNEL_PUSH": "1", "MM_TRUSTED_HUMANS": "alice,bob"},
+        "a NATS home": {"MM_CHANNEL_PUSH": "0", "MM_NATS_HOMES": "nats-pilot"},
+        "push, trusted humans, a NATS home": {
+            "MM_CHANNEL_PUSH": "1", "MM_TRUSTED_HUMANS": "alice,bob", "MM_NATS_HOMES": "nats-pilot"},
+    }
+    measured = {label: static_text_in(env) for label, env in configs.items()}
+    for label, static in measured.items():
+        assert static < STATIC_BOUND, f"{label}: {static} >= {STATIC_BOUND}"
+    # The combination is the one the bound is set by: it must be there, be the
+    # largest, and keep its place. Removing it from the list above is a KeyError
+    # here, not a quietly smaller maximum.
+    worst = measured["push, trusted humans, a NATS home"]
+    assert worst == max(measured.values()), measured
+    assert worst >= 13_200, measured
+
+
 def test_static_is_per_turn_text_and_the_skill_its_own_field():
     """RT-6.9 step 2: `static` is what every turn carries, the instructions
     and the tool docs; the skill is in the context only once loaded, so it
@@ -71,7 +129,11 @@ def test_static_is_per_turn_text_and_the_skill_its_own_field():
     stats.record("turn")
     f = server._fixed()
     s = stats.summary("0.53.0", f)
-    assert s["static"] == f.instructions + f.tools == len(server._instructions()) + f.tools
+    # `_fixed` counts the served instructions (`mcp.instructions`) and the tool
+    # docs; that they are what `_instructions()` builds is asserted in a fresh
+    # interpreter by test_the_static_text_holds_in_every_configuration, since a
+    # running suite may have changed MM_* since this module was imported (#104).
+    assert s["static"] == f.instructions + f.tools
     # + get_file (RT-6.23), channel names (RT-6.22); + ask_human's kind, advice, ask_mode (RT-6.25)
     # + coordinator's scope (RT-6.14 step 9); + mandated on events, the instructions (RT-6.26)
     # + ask_human's alternatives and `choice` on reactions (RT-6.11)
@@ -79,8 +141,8 @@ def test_static_is_per_turn_text_and_the_skill_its_own_field():
     # + the hint on wait_for_events and the instructions' line on asks (RT-6.11, 0.71.30), only_human (RT-6.25, 0.71.32), props (RT-6.16, 0.71.34), no `question` argument (RT-6.11, 0.73.0), the prefix in the instructions (RT-6.16, 0.74.0), which fields the floor reads (RT-6.25 step 1, 0.86.1), for_crown on events and in the instructions (RT-6.6 step 5, 0.88.0), answer in the thread in the instructions (RT-6.2 step 2, 0.89.0), the attach tool, `files` on post_message and reply_in_thread and their line in the instructions (RT-6.33, 0.90.0), one terminal sentence once the result is on the bus (RT-6.2 step 2, 0.94.0), the host's login-approval ask is not the agent's (RT-6.34)
     # + attach's doc (RT-6.33): served on every turn since 0.90.0 but counted
     # only from the #98 fix, which also made the count independent of the
-    # interpreter; the worst variant is push (no host-managed) at 12,844.
-    assert s["skill"] == f.skill > 11_000 and s["static"] < 12_900
+    # interpreter.
+    assert s["skill"] == f.skill > 11_000 and s["static"] < STATIC_BOUND
 
 
 def test_the_tool_text_is_the_same_on_every_python():

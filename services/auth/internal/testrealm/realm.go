@@ -7,7 +7,9 @@ import (
 	"context"
 	"crypto/rand"
 	"crypto/rsa"
+	"crypto/sha256"
 	"encoding/base64"
+	"encoding/hex"
 	"encoding/json"
 	"math/big"
 	"net/http"
@@ -104,7 +106,7 @@ type Chat struct {
 func NewChat(names ...string) *Chat {
 	c := &Chat{Users: map[string]token.User{}, Channels: map[string][]string{}}
 	for _, n := range names {
-		c.Users[n] = token.User{Username: n, AuthKnown: true, AuthService: token.OpenIDService, AuthData: "sub-" + n}
+		c.Users[n] = token.User{Username: n, ID: ChatID(n), AuthKnown: true, AuthService: token.OpenIDService, AuthData: "sub-" + n}
 	}
 	return c
 }
@@ -128,4 +130,11 @@ func (c *Chat) Memberships(_ context.Context, name string, channels []string) (m
 		}
 	}
 	return out, nil
+}
+
+// ChatID is the chat id NewChat gives a human: 26 characters of [a-z0-9], as
+// Mattermost's user ids are.
+func ChatID(name string) string {
+	h := sha256.Sum256([]byte(name))
+	return hex.EncodeToString(h[:])[:26]
 }

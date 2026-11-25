@@ -237,6 +237,16 @@ async def test_no_trusted_responsible_human_keeps_the_terminal(relay, monkeypatc
 
 
 @pytest.mark.anyio
+async def test_a_not_approvers_yes_is_data_and_allows_nothing(relay):
+    """RT-6.42 step 9: a trusted person over NATS without a fresh approver record
+    (not_approver) never answers a relayed prompt: the verdict stays with the terminal."""
+    c, conn = relay
+    await server._permission_request(REQUEST)
+    assert not await server._push_intercept(_item("yes abcde") | {"not_approver": True})
+    assert conn.sent == [] and server._relay.pending
+
+
+@pytest.mark.anyio
 async def test_trusted_yes_allows_and_no_denies(relay):
     """RT-6.13 steps 3-4: the verdict goes to Claude Code, the agent never sees it."""
     c, conn = relay

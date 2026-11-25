@@ -9,9 +9,11 @@ package reader
 
 import (
 	"context"
+	"encoding/json"
 	"errors"
 	"fmt"
 	"log/slog"
+	"regexp"
 	"strings"
 	"time"
 
@@ -179,8 +181,13 @@ func mustSeq(m *nats.Msg) uint64 {
 func (r *Reader) one(ctx context.Context, m *nats.Msg,
 	channelID func(context.Context) (string, error)) error {
 	parts := strings.Split(m.Subject, ".")
-	// <prefix>.ch.<home>.<sender>; anything else under the consumer's filter is
-	// not this home's post and must not stop the reader (a sub-subject).
+	// <prefix>.ch.<home>.<sender>, or <prefix>.hu.<home>.<anchor> for a
+	// person's event the bridge carried itself; anything else under the
+	// consumer's filter is not this home's post and must not stop the reader
+	// (a sub-subject).
+	if len(parts) == 4 && parts[0] == r.Prefix && parts[1] == "hu" && parts[2] == r.Home {
+		return r.person(ctx, m)
+	}
 	if len(parts) != 4 || parts[0] != r.Prefix || parts[1] != "ch" || parts[2] != r.Home {
 		r.Log.Warn("bridge: unexpected subject skipped", "subject", m.Subject)
 		return r.save(ctx, mustSeq(m), mirror.Post{})
@@ -204,3 +211,34 @@ func (r *Reader) one(ctx context.Context, m *nats.Msg,
 	}
 	return r.Mirror.Handle(ctx, channelID, parts[3], seq, msg)
 }
+
+// person reads a person's event the bridge carried (RT-6.42 step 6): never
+// mirrored back into Mattermost (the post is already there, point 17), only
+// its stream sequence is remembered with its Mattermost post, so a person's
+// reply or reaction can name its `root` or `ref`, and an agent's reply or
+// reaction by that sequence lands on the person's post.
+func (r *Reader) person(ctx context.Context, m *nats.Msg) error {
+	seq := mustSeq(m)
+	pos, ok, err := r.Store.Position(ctx, r.Home)
+	if err != nil {
+		return err
+	}
+	if ok && seq <= pos {
+		return nil
+	}
+	var body struct {
+		V      int    `json:"v"`
+		Kind   string `json:"kind"`
+		MM     string `json:"mm"`
+		MMRoot string `json:"mm_root"`
+	}
+	if err := json.Unmarshal(m.Data, &body); err != nil || body.V != 1 || body.Kind != "post" ||
+		!mmID.MatchString(body.MM) || (body.MMRoot != "" && !mmID.MatchString(body.MMRoot)) {
+		// a reaction, or nothing the bridge wrote: only the position moves
+		return r.save(ctx, seq, mirror.Post{})
+	}
+	return r.save(ctx, seq, mirror.Post{ID: body.MM, RootID: body.MMRoot})
+}
+
+// mmID is a Mattermost id: 26 characters of [a-z0-9].
+var mmID = regexp.MustCompile(`^[a-z0-9]{26}$`)

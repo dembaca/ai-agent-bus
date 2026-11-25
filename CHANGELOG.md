@@ -16,6 +16,213 @@ before 0.5.0 are described in the git history.
   bridge runs since the lab sync on 2026-11-24 and the console is planned
   for the pilot.
 
+## 0.100.0
+
+Needs: login service updated first, with publish right on presence account records, MM_PROPS_PREFIX at most sixteen characters.
+Needs: for the bridge, its seen bucket, widened home consumers, create right on its account consumer, new publish rights.
+
+People's posts and reactions reach the agents over NATS: the central bridge
+carries them from Mattermost, the login service publishes each account's record
+and makes the consumers people's posts are read through, and the MCP server reads them where the bridge
+signals, with a person approving only on the login service's fresh approver
+record. The registrar's code moves into the bridge's module, not yet wired.
+Breaking: a props prefix is at most 16 characters. Order: the login service
+first (without its people's consumers a host hears no people over NATS on the
+bridge's signal), then a step-2 bridge with all its new rights — publish on
+`bus.hu.<home>.*` and `presence.bridge.<home>.v1`, the seen bucket's rights and
+the create right of its account consumer — as in
+`services/auth/nats-server.example.conf` and the deployment view.
+
+### Added
+
+- **The MCP server reads people's posts from NATS** (RT-6.42, ADR-016 step 2):
+  in a channel of a NATS session (the home, a guest channel, the lobby) whose
+  bridge signal is fresh, people's posts and reactions come from the person's
+  consumer `<agent>_hu_<channel>` on `bus.hu.<channel>.<anchor>`, decoded
+  strictly, and Mattermost's events of people there are dropped; without a
+  signal, people are read on Mattermost as before, and when it runs out the
+  server reads Mattermost from the last people event on. A key per event,
+  held for an hour, drops the repeat at a switch. A person over NATS is
+  trusted by the anchors of the session's own attestation (`hu:<anchor>`,
+  never `hu:-`), and an event of a trusted person without a fresh approver
+  record of the login service is marked `not_approver` and approves nothing,
+  also as a yes on an ask, a relayed tool permission, a channel tag and what `get_thread`,
+  `list_recent` and an ask's card read back; it does not stop an ask's
+  reminders. A
+  signal counts only while NATS is connected and the session's own presence
+  comes back; a person's files are read from Mattermost by the post's id.
+  Other bots, webhooks, system posts and direct messages stay on Mattermost. It reads what the bridge and the login service publish (the
+  entries below).
+
+- **The central bridge carries people's posts and reactions onto NATS**
+  (RT-6.42, step 2 of ADR-016, the bridge's side). `bridged` reads its bot's
+  Mattermost WebSocket in the channels of `BRIDGE_HOMES`, drops bots' posts
+  and reactions (Mattermost's `is_bot`), webhooks, `override_username`,
+  system, deleted and edited posts and its own, and publishes each person's
+  post, reaction and removed reaction once on `bus.hu.<home>.<anchor>`, the
+  anchor from the login service's account record (`-` without one), with the
+  v1 body of `docs/protocol.md`. After a reconnect it catches up over REST
+  from its watermark, at most 10 minutes back; it signals each home it
+  carries on `presence.bridge.<home>.v1` while its WebSocket is up and the
+  catch-up is done. A publish the server refuses carries nothing and stops
+  that home. The bridge makes its own consumer of the account records at
+  every start (`bridge_accounts`, a create right whose subject fixes the
+  name and the filter; after a quick restart it waits up to about 30 s for
+  the old one to go) and signals no home until it has read them. The operator
+  creates the bucket `BUS_BRIDGE_SEEN`
+  (`services/bridge/internal/store/seen_bucket.json`), widens each home's
+  consumer to `bus.hu.<home>.*` and grants the bridge the rights in
+  `services/auth/nats-server.example.conf` before this bridge starts: it
+  refuses to start without the bucket. The release's second `Needs:` line
+  names the create right. The MCP server reads them (the entry above).
+
+- **The bridge reads Mattermost: the WebSocket reader `internal/mmws` and
+  two REST methods of `internal/mm` (ADR-016, the bridge's step 2).
+  `mmws` dials Mattermost's WebSocket with the bot
+  token, reconnects with backoff when the socket drops and emits typed
+  events — `Posted`, `Reaction` (added and removed) and a `Reconnected`
+  marker whose `Since` is the greatest event `create_at` it handed out,
+  the catch-up hint (Mattermost's `since` is strict: read from `Since`
+  minus a margin and dedup by key) — and nothing else: whose post is a
+  bot's (a drop) or
+  a person's (carried) stays the caller's decision, so it filters,
+  stores and publishes nowhere. A post comes out with the fields the
+  drop rules read — type, props, the files it carries (`file_ids`'
+  count), the delete mark — and a
+  reaction with the channel it happened in; a quiet socket is taken
+  again by a read deadline (renewed per frame and per ping), the auth
+  reply is found by its `seq_reply` wherever it sits in the stream, and
+  `mm.GetUser` reads a user's `is_bot`, `mm.PostsSince` the channel's
+  posts from a reconnect's hint with `update_at` and `edit_at` (and the
+  delete mark and the props) kept, a body past its 32 MiB cap named
+  `ErrTooLarge` — always for the same caller, never filtered here. Nothing is wired into
+  `bridged` — no publish, no consumer, no configuration, no right beyond
+  what step 1 already holds — so the bridge behaves exactly as before.
+  One new dependency, `gorilla/websocket` (v1.5.3): the WebSocket client,
+  and the fake Mattermost its tests run against.
+
+- **The login service's part of people's posts on NATS** (ADR-016 step 2, points
+  7, 8 and 16; RT-6.42): each agent gets, for every granted channel, a consumer
+  `<agent>_hu_<channel>` on `<bus>.hu.<channel>.*` beside its channel consumer
+  (ack none, deleted with it at a dropped channel and at the bye), and its
+  presence consumer also reads the account records
+  (`<presence>.account.mattermost.*.v1`) and the bridge's signal per granted
+  channel (`<presence>.bridge.<channel>.v1`). At each credential issue for a
+  proven Mattermost account the service publishes that account's record (anchor,
+  `approver`, `token_iat`), never replacing it with an older token's; its
+  JetStream user needs the publish right `<presence>.account.mattermost.*.v1`
+  (`services/auth/nats-server.example.conf`). The bridge and the MCP server read
+  them (see above); the record at a login without an agent and at a change of
+  the binding is not built. Upgrade: without the publish right every login of a
+  proven Mattermost account is refused, so the login service's NATS user gets it
+  first, as the release's `Needs:` line says.
+
+- **The registrar's code moves into the bridge's module** (ADR-016, step 3 of
+  "all of Mattermost in one service"). The core and Mattermost packages of
+  `github.com/dembaca/mattermost-agent-registrar` (main at `c984d19`) are
+  imported into `services/bridge/internal/registrar/` with their tests, their
+  import paths adjusted to the bridge's module; the packages need no new
+  dependency. Nothing is wired: `cmd/bridged`, the routes, the settings and
+  every behaviour are unchanged, and `go test ./...` in `services/bridge`
+  stays green. The arc42 building-block view says the registrar package is
+  imported but not yet active.
+
+### Docs
+
+- **The central bridge's step 2 is specified** (ADR-016, RT-6.42): people's
+  posts and reactions in a bound Mattermost channel reach NATS through the
+  bridge on `bus.hu.<home>.<anchor>`, vouched for by the bridge's publish
+  right; the v1 bodies are in `docs/protocol.md`. The owner accepted the
+  eighteen points as recommended, and the risk of the bridge as the only
+  voucher for people is recorded (RISK-21). The login service's part and the
+  bridge's side are built (see Added); the deployment view now says the
+  bridge's first step runs in the lab.
+
+### Breaking
+
+- **A props prefix is at most 16 characters** (RT-6.16 step 8). The
+  per-turn instructions name the prefix (`props keys start with <prefix>`), so
+  an absurd one would grow the text carried every turn; the server now refuses
+  one that long at start, beside the existing refusal of one a bus or
+  Mattermost key can start with, and the bridge's `BRIDGE_PROPS_PREFIX` holds
+  the same limit (it must equal the homes' prefix). A deployment with a longer
+  prefix does not start until it is shortened; `x_`, `bgl_` and `bridge_` are
+  unaffected. The static-text budget test measures each session configuration
+  on its own and holds the worst one under its bound (#104).
+
+## 0.99.0
+
+The operator console's read-only pilot (its server, browser app and image), the
+central bridge's first step from NATS to Mattermost, and three fixes in the MCP
+server: a crashing tool names its cause, the server imports on Python 3.11 again,
+and the tool text is the same on every Python. Nothing is breaking.
+
+### Added
+
+- **The console's server, the pilot's live view** (ADR-015). `console/server`
+  reads the NATS homes' presence, crown claims and memberships through a
+  push consumer of its own on the PRESENCE stream (the shape the login
+  service makes for an agent: no acks, replay of the last message per
+  subject, the server's own clock from the deliveries' JetStream
+  metadata), with one read-only NATS account — the pilot's documented
+  deviation from ADR-015 way A, lab and one tenant only. It serves the
+  API of ADR-015 point 10 (`/v1/fleet` streamed over SSE, `/v1/me`,
+  `/v1/asks` and `/v1/stats` empty until those lie on NATS, `/v1/graph`,
+  `/v1/threads/<id>`) and the built browser app; an operator logs in over
+  Keycloak (authorization code with PKCE, a client of the console's own,
+  members of an operators group), the access token verified against the
+  realm's JWKS — rules the login service's Go verifier set — and what a
+  NATS home does not carry shows as unknown, never as zero. Python,
+  reusing the mcp package's NATS reading (`natsbus.py`) by editable path
+  dependency; the NATS tests run against a real nats-server like the
+  MCP ones.
+- **The console's `/healthz` answers readiness, not only liveness** (ADR-015).
+  It went 503 only when the NATS reader ended without a stop; a reader that
+  silently never synced still said ok. It now answers 503 until the reader
+  has synced — a finished replay with zero messages included, so an empty
+  fleet reads healthy — and again once no replay arrived within
+  `CONSOLE_HEALTH_SYNC_BOUND` (30 s to 24 h, default 180 s; the reader
+  reconnects for a replay between 5/8 and 7/8 of the bound, checked every
+  quarter of it). Beside it, `GET /livez` answers liveness:
+  503 only when the reader ended without a stop — a liveness probe on
+  `/healthz` would restart the pod while NATS is merely slow. The
+  docs follow: the console's row in the deployment view (settings, the
+  image, the Keycloak setup, one replica), the README's deployment notes
+  (a container-usable `CONSOLE_ADDR`, the group mapper and
+  `preferred_username` required, `handshake_first`, `/healthz` and
+  `/livez`, `CONSOLE_TOKEN_ALGS`/`CONSOLE_CONSUMER_NAME` in the settings
+  table), and ADR-015's status cell states the pilot as built once.
+- **The operator console's browser app, a read-only pilot** (ADR-015 point
+  14). `console/web` inherits the toolchain of `site/` (React,
+  TypeScript, Vite) and implements the four views against a mock of the API
+  in ADR-015 point 10: the Kanban of agents by state (the crown a mark on the
+  card, not a column), the asks with *for me* and *may answer*, the graph
+  (trusts and coordinates, cut at depth two with a mark), and the reports
+  (counts and seconds, a missing field `n/a`, never 0). The detail pane shows
+  the full card, the task rows an agent holds, its HELLO thread and the
+  threads of its open asks. Nothing posts — an ask gets no answer button
+  (stage 1, reading only); the same `ConsoleApi` interface hides the mock and
+  the future console server behind `VITE_CONSOLE_API`.
+- **The console's image is published** (ADR-015). `checks.yml` gains a
+  `publish-console` job: a push to `main` that changes `console/`, `mcp/` or
+  that workflow, and only after the console's browser build and the console
+  server's tests with the image smoke have passed, builds `console/server/Dockerfile` from the
+  repository root and pushes
+  `ghcr.io/dembaca/ai-agent-bus-console:<full commit SHA>` and `:main` with a
+  build provenance attestation; the digest stands in the job's summary, and a
+  deployment names it by that digest. A push that changes nothing under
+  `console/` builds no image.
+- **The central bridge, step 1: NATS to Mattermost** (ADR-016 point 4).
+  `services/bridge` (Go) mirrors a NATS home's posts and reactions into its
+  Mattermost channel with one bridge bot: the sender above the text, the NATS
+  id in `<prefix>nats_id`, a reply under the mirrored root, a reaction counted
+  per message and emoji. It reads as a NATS user read-only on the bus, through
+  push consumers and a KV bucket (`BUS_BRIDGE`) the operator creates, keeps its
+  position per home, so a redelivery is never mirrored twice, and answers
+  `/healthz`. One way only: what a person writes on a copy does not reach the
+  NATS thread yet. The hosts of a mirrored home run 0.98.0 or later first,
+  whose `MM_BRIDGE_BOT` drops the copies.
+
 ### Fixed
 
 - **The tool text is the same on every Python** (#98). The per-turn `static`

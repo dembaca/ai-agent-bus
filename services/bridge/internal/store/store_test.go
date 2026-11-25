@@ -134,3 +134,94 @@ func TestTheOperatorConfigIsTheBucketTheStoreNeeds(t *testing.T) {
 		t.Fatalf("bucket.json: %+v", cfg)
 	}
 }
+
+// RT-6.42 steps 1 and 5: a mirrored post's way back from its Mattermost id to
+// its sequence, and a home's watermark.
+func TestTheWayBackAndTheWatermark(t *testing.T) {
+	kv, _ := open(t)
+	ctx := context.Background()
+	if _, ok, _ := kv.Seq(ctx, "home", "q1w2e3r4t5y6u7i8o9p0a1s2d3"); ok {
+		t.Fatal("a sequence before any save")
+	}
+	if err := kv.Save(ctx, "home", 12, mirror.Post{ID: "q1w2e3r4t5y6u7i8o9p0a1s2d3"}); err != nil {
+		t.Fatal(err)
+	}
+	if seq, ok, err := kv.Seq(ctx, "home", "q1w2e3r4t5y6u7i8o9p0a1s2d3"); err != nil || !ok || seq != 12 {
+		t.Fatalf("%d %v %v", seq, ok, err)
+	}
+	if _, ok, _ := kv.Seq(ctx, "other", "q1w2e3r4t5y6u7i8o9p0a1s2d3"); ok {
+		t.Fatal("the way back crosses homes")
+	}
+	if _, ok, _ := kv.Watermark(ctx, "home"); ok {
+		t.Fatal("a watermark before any")
+	}
+	if err := kv.SetWatermark(ctx, "home", 1700000000123); err != nil {
+		t.Fatal(err)
+	}
+	if wm, ok, err := kv.Watermark(ctx, "home"); err != nil || !ok || wm != 1700000000123 {
+		t.Fatalf("%d %v %v", wm, ok, err)
+	}
+}
+
+// RT-6.42 step 1: the seen bucket is the operator's, with an age limit and
+// discard old; a bucket without them is refused, and a reaction's kind is
+// replaced by the opposite one.
+func TestTheSeenBucket(t *testing.T) {
+	_, nc := open(t)
+	ctx := context.Background()
+	js, _ := jetstream.New(nc)
+	if _, err := OpenSeen(ctx, nc, "BUS_BRIDGE_SEEN"); err == nil {
+		t.Fatal("bound to a bucket nobody made")
+	}
+	if _, err := js.CreateStream(ctx, jetstream.StreamConfig{Name: "KV_BAD", Subjects: []string{"$KV.BAD.>"},
+		MaxMsgsPerSubject: 1, Discard: jetstream.DiscardNew}); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := OpenSeen(ctx, nc, "BAD"); err == nil {
+		t.Fatal("bound to a bucket without an age limit")
+	}
+	if err := CreateSeenBucket(ctx, js); err != nil {
+		t.Fatal(err)
+	}
+	seen, err := OpenSeen(ctx, nc, "BUS_BRIDGE_SEEN")
+	if err != nil {
+		t.Fatal(err)
+	}
+	post := "q1w2e3r4t5y6u7i8o9p0a1s2d3"
+	if done, err := seen.Post(ctx, post); done || err != nil {
+		t.Fatalf("%v %v", done, err)
+	}
+	if err := seen.MarkPost(ctx, post); err != nil {
+		t.Fatal(err)
+	}
+	if done, err := seen.Post(ctx, post); !done || err != nil {
+		t.Fatalf("%v %v", done, err)
+	}
+	if err := seen.SetReactions(ctx, post, map[string]string{"+1 u": "reaction"}); err != nil {
+		t.Fatal(err)
+	}
+	if err := seen.SetReactions(ctx, post, map[string]string{"+1 u": "unreaction"}); err != nil {
+		t.Fatal(err)
+	}
+	if kinds, err := seen.Reactions(ctx, post); err != nil || kinds["+1 u"] != "unreaction" {
+		t.Fatalf("%v %v", kinds, err)
+	}
+	if err := seen.MarkPost(ctx, "a.b"); err == nil {
+		t.Fatal("a key that is no id")
+	}
+}
+
+// RT-6.42 step 1: a seen bucket that keeps its keys less than an hour lets an
+// event go out twice; it is refused.
+func TestASeenBucketShorterThanAnHourIsRefused(t *testing.T) {
+	_, nc := open(t)
+	ctx := context.Background()
+	js, _ := jetstream.New(nc)
+	if _, err := js.CreateStream(ctx, jetstream.StreamConfig{Name: "KV_SHORT", Subjects: []string{"$KV.SHORT.>"},
+		MaxMsgsPerSubject: 1, Discard: jetstream.DiscardOld, MaxAge: time.Minute}); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := OpenSeen(ctx, nc, "SHORT"); err == nil {
+		t.Fatal("bound to a bucket that keeps its keys a minute")
+	}
+}

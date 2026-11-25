@@ -20,6 +20,7 @@ type Config struct {
 	Homes      []string // BRIDGE_HOMES, the home channel names to mirror
 	Prefix     string   // BRIDGE_PROPS_PREFIX, the homes' MM_PROPS_PREFIX
 	KVBucket   string   // BRIDGE_KV_BUCKET, default BUS_BRIDGE
+	SeenBucket string   // BRIDGE_SEEN_BUCKET, default BUS_BRIDGE_SEEN: the keys of people's events carried (RT-6.42)
 	Listen     string   // BRIDGE_LISTEN_ADDR, /healthz
 	NATSStream string   // BRIDGE_STREAM, default BUS
 	BusPrefix  string   // BRIDGE_BUS_PREFIX, the bus's subject prefix, default bus
@@ -38,6 +39,7 @@ func Load(get func(string) string) (Config, error) {
 		MMTeam:     strings.TrimSpace(get("BRIDGE_MM_TEAM")),
 		Prefix:     strings.TrimSpace(get("BRIDGE_PROPS_PREFIX")),
 		KVBucket:   strings.TrimSpace(get("BRIDGE_KV_BUCKET")),
+		SeenBucket: strings.TrimSpace(get("BRIDGE_SEEN_BUCKET")),
 		Listen:     strings.TrimSpace(get("BRIDGE_LISTEN_ADDR")),
 		NATSStream: strings.TrimSpace(get("BRIDGE_STREAM")),
 		BusPrefix:  strings.TrimSpace(get("BRIDGE_BUS_PREFIX")),
@@ -46,6 +48,9 @@ func Load(get func(string) string) (Config, error) {
 	}
 	if c.KVBucket == "" {
 		c.KVBucket = "BUS_BRIDGE"
+	}
+	if c.SeenBucket == "" {
+		c.SeenBucket = "BUS_BRIDGE_SEEN"
 	}
 	if c.NATSStream == "" {
 		c.NATSStream = "BUS"
@@ -66,6 +71,12 @@ func Load(get func(string) string) (Config, error) {
 		return Config{}, fmt.Errorf("BRIDGE_PROPS_PREFIX %q is no props prefix: lower-case letters and "+
 			"digits, starting with a letter, ending with _ (for example x_ or abc_), and none the bus "+
 			"or Mattermost writes (a2a_, agent_, from_, override_, webhook_, channel_, disable_, icon_)", c.Prefix)
+	}
+	// The homes' servers refuse a prefix longer than this (a2a.PREFIX_MAX): the
+	// per-turn instructions name it, so the two sides must agree on one limit.
+	if len(c.Prefix) > prefixMax {
+		return Config{}, fmt.Errorf("BRIDGE_PROPS_PREFIX %q is longer than %d characters, the homes' limit",
+			c.Prefix, prefixMax)
 	}
 	if c.Listen == "" {
 		c.Listen = "127.0.0.1:8095"
@@ -95,6 +106,10 @@ func Load(get func(string) string) (Config, error) {
 
 // propsPrefix is the bus's own rule (a2a.user_prefix): one segment, ending in _.
 var propsPrefix = regexp.MustCompile(`^[a-z][a-z0-9]*_$`)
+
+// prefixMax is the homes' limit (a2a.PREFIX_MAX): the prefix is in their
+// per-turn instructions, so it stays short.
+const prefixMax = 16
 
 // reservedPrefixes are the first segments the bus or Mattermost writes into
 // props; a prefix that names one of them would let a sender's prop be read as

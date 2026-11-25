@@ -557,3 +557,24 @@ func TestConfig(t *testing.T) {
 		t.Error("no Directory: accepted")
 	}
 }
+
+// RT-6.42 step 3: the identity carries the chat's id of the account and the
+// token's issue time for the account record, the id only when the account is
+// proven to be the token's.
+func TestTheIdentityCarriesTheChatIDOfAProvenAccountAndTheIssueTime(t *testing.T) {
+	r := newRealm(t)
+	iat := time.Now().Add(-time.Minute).Unix()
+	tok := r.token(func(c jwt.MapClaims) { c["iat"] = iat })
+	id, err := verifier(t, r, human(func(u *User) { u.ID = "abcdefghijklmnopqrstuvwxyz" }), nil).Verify(context.Background(), tok)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if id.ChatID != "abcdefghijklmnopqrstuvwxyz" || id.IssuedAt.Unix() != iat {
+		t.Errorf("ChatID %q, IssuedAt %v", id.ChatID, id.IssuedAt)
+	}
+	pw := human(func(u *User) { u.ID, u.AuthService, u.AuthData = "abcdefghijklmnopqrstuvwxyz", "", "" })
+	id, err = verifier(t, r, pw, nil).Verify(context.Background(), tok)
+	if err != nil || id.ChatID != "" {
+		t.Errorf("a password account: ChatID %q, %v", id.ChatID, err)
+	}
+}

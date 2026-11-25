@@ -1,7 +1,9 @@
-// bridged mirrors the posts of NATS homes into Mattermost with one bot, one
-// way (ADR-016 point 4, RT-6.36). NATS stays the source: the bridge reads a
+// bridged mirrors the posts of NATS homes into Mattermost with one bot
+// (ADR-016 point 4, RT-6.36). NATS stays the source: the bridge reads a
 // home's stream, writes each message once, and remembers the id so a restart
-// goes on where it stopped.
+// goes on where it stopped. The other way it carries people's posts and
+// reactions in those home channels onto NATS (step 2, RT-6.42): it reads its
+// bot's Mattermost WebSocket and publishes on <bus>.hu.<home>.<anchor>.
 package main
 
 import (
@@ -22,9 +24,11 @@ import (
 	"github.com/nats-io/nats.go"
 
 	"github.com/dembaca/ai-agent-bus/services/bridge/internal/config"
+	"github.com/dembaca/ai-agent-bus/services/bridge/internal/inbound"
 	"github.com/dembaca/ai-agent-bus/services/bridge/internal/links"
 	"github.com/dembaca/ai-agent-bus/services/bridge/internal/mirror"
 	"github.com/dembaca/ai-agent-bus/services/bridge/internal/mm"
+	"github.com/dembaca/ai-agent-bus/services/bridge/internal/mmws"
 	"github.com/dembaca/ai-agent-bus/services/bridge/internal/presence"
 	"github.com/dembaca/ai-agent-bus/services/bridge/internal/reader"
 	"github.com/dembaca/ai-agent-bus/services/bridge/internal/store"
@@ -52,6 +56,10 @@ func run(log *slog.Logger) error {
 	}
 	defer nc.Close()
 	kv, err := store.Open(ctx, nc, cfg.KVBucket)
+	if err != nil {
+		return err
+	}
+	seen, err := store.OpenSeen(ctx, nc, cfg.SeenBucket)
 	if err != nil {
 		return err
 	}
@@ -98,6 +106,33 @@ func run(log *slog.Logger) error {
 		}()
 	}
 
+	// People onto NATS (RT-6.42): the account records, the WebSocket and the
+	// inbound path. A lost socket or a stopped home does not stop the bridge:
+	// the signal runs out and sessions read people on Mattermost (step 9); a
+	// subscription to the account records that cannot be made does.
+	accounts := &inbound.Accounts{Log: log, Deliver: cfg.Deliver + ".accounts", Stream: "PRESENCE"}
+	wg.Add(1)
+	go func() {
+		defer wg.Done()
+		if err := accounts.Run(ctx, nc); err != nil && ctx.Err() == nil {
+			log.Error("bridge: the account records stopped", "error", err)
+			h.failed.Store(true)
+			stop()
+		}
+	}()
+	ws := mmws.New(cfg.MMURL, cfg.MMToken)
+	wg.Add(2)
+	go func() {
+		defer wg.Done()
+		_ = ws.Run(ctx)
+	}()
+	in := &inbound.Bridge{Homes: cfg.Homes, Team: cfg.MMTeam, BusPrefix: cfg.BusPrefix, Log: log,
+		MM: client, NATS: inbound.Confirmed{NC: nc}, Store: kv, Seen: seen, Anchors: accounts, Events: ws.Events(), Up: ws.Up}
+	go func() {
+		defer wg.Done()
+		_ = in.Run(ctx)
+	}()
+
 	mux := http.NewServeMux()
 	mux.Handle("GET /healthz", h)
 	srv := &http.Server{Addr: cfg.Listen, Handler: mux, ReadHeaderTimeout: 5 * time.Second}
@@ -117,13 +152,19 @@ func run(log *slog.Logger) error {
 	return nil
 }
 
-// connect is the bridge's own NATS user: read-only on the bus (RT-6.36).
+// connect is the bridge's own NATS user: it reads the bus and publishes only
+// people's events and its signal in its homes (RT-6.36, RT-6.42).
 func connect(cfg config.Config) (*nats.Conn, error) {
 	// The answers to the bridge's own requests go to its own inbox prefix: with
 	// the shared _INBOX.> it would read every answer the login service's user
 	// gets — the channel directory's raw values among them (RT-6.36 step 1).
 	opts := []nats.Option{nats.Name("bridge"), nats.MaxReconnects(-1),
-		nats.ReconnectWait(2 * time.Second), nats.CustomInboxPrefix(cfg.Inbox)}
+		nats.ReconnectWait(2 * time.Second), nats.CustomInboxPrefix(cfg.Inbox),
+		// A refused publish or subscribe is logged with its subject; the inbound
+		// path also sees its own refusals as errors (inbound.Confirmed).
+		nats.ErrorHandler(func(_ *nats.Conn, _ *nats.Subscription, err error) {
+			slog.Error("bridge: NATS refused", "error", err)
+		})}
 	seed, err := nats.NkeyOptionFromSeed(cfg.SeedFile)
 	if err != nil {
 		return nil, fmt.Errorf("BRIDGE_NATS_SEED_FILE: %w", err)

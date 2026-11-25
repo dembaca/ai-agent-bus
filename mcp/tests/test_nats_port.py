@@ -62,6 +62,10 @@ class FakeNats:
         self.server_now = 0.0  # the newest server time seen (RT-6.38)
         self.claims: dict[str, dict[str, tuple[int, float]]] = {}  # channel -> agent -> (sequence, server time)
         self.echo_age = 0.0  # monotonic seconds since the own presence came back (RT-6.38 step 2)
+        # People over NATS (RT-6.42): the bridge's signals, the login service's account records.
+        self.switched: set[str] = set()
+        self.accounts: dict[str, str] = {}  # Mattermost account -> anchor
+        self.approvers: set[str] = set()  # anchors with a fresh approver record
 
     def link_bot(self, bot_id: str) -> None:
         self.linked_bot = bot_id
@@ -110,6 +114,15 @@ class FakeNats:
 
     def presence_of(self, agent: str) -> str:
         return self.presence.get(agent, "offline")
+
+    def people_switched(self, channel: str) -> bool:
+        return channel in self.switched
+
+    def anchor_of_account(self, account: str) -> str:
+        return self.accounts.get(account, "-")
+
+    def approver(self, anchor: str) -> bool:
+        return anchor in self.approvers
 
     async def start(self) -> None: ...
 

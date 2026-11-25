@@ -163,7 +163,7 @@ async def reply_text(client: ChatPort, author: str, *, dm: bool, guest: str = ""
         return f"{head}. {coord} ({a2a.symbol(Mark.CROWN)}) will look at it."
     where = f"~{(await client.get_channel(guest)).name}" if guest else "right now"
     trusted = await client.trusted_humans()
-    names = [n for n in trusted.values() if n] or sorted(
+    names = list(dict.fromkeys(n for n in trusted.values() if n)) or sorted(
         (await client.usernames(set(trusted))).values())
     return f"{head}, and no agent coordinates {where}. Ask {', '.join(names)}."
 

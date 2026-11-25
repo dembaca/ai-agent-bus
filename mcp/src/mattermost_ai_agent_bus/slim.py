@@ -21,6 +21,7 @@ from __future__ import annotations
 import re
 import time
 from collections.abc import Mapping, Sequence
+from collections.abc import Set as AbstractSet
 from typing import TYPE_CHECKING, Any
 
 from . import files, asks, a2a
@@ -203,10 +204,18 @@ async def _facts(client: ChatPort, posts: Sequence[Post],
         trusted = await client.trusted_humans()
     except Exception:  # noqa: BLE001 — no names: no flag, no chosen. Reactions still show.
         trusted = {}
+    try:
+        # RT-6.42 step 9: what came over NATS from a person without a fresh approver
+        # record is marked not_approver here too, as wait_for_events marks it.
+        unapproved = await client.unapproved(posts) if trusted else set()
+    except Exception:  # noqa: BLE001 — unknown: nothing marked (the events marked it)
+        unapproved = set()
     out: dict[str, Any] = {}
     for p in posts:
         if p.reactions:
-            out[p.id] = _reactions(p, users, trusted)
+            out[p.id] = _reactions(p, users, trusted, unapproved)
+        if p.user_id in trusted and ("post", p.id) in unapproved:
+            out.setdefault(p.id, {})["not_approver"] = True
     asks_only = [p for p in posts if p.kind == a2a.ASK]
     if not asks_only:
         return out
@@ -250,6 +259,8 @@ async def _facts(client: ChatPort, posts: Sequence[Post],
                     facts["chosen"] = answers[0 if answer == "yes" else 1]
             else:
                 continue
+            if ("reaction", p.id, r.emoji_name, r.user_id) in unapproved:
+                facts["answer_not_approver"] = True  # RT-6.42 step 9: no approver: approves nothing
             if p.edit_at and r.create_at < p.edit_at:
                 # The card was edited after this reaction: what it approved is not what
                 # the human saw. Keep the fact that an answer exists, drop the verdict.
@@ -267,11 +278,16 @@ async def _facts(client: ChatPort, posts: Sequence[Post],
 REACTIONS_MAX = 8
 
 
-def _reactions(p: Post, users: dict[str, str], trusted: Mapping[str, str]) -> dict[str, Any]:
+def _reactions(p: Post, users: dict[str, str], trusted: Mapping[str, str],
+               unapproved: AbstractSet[tuple[str, ...]] = frozenset()) -> dict[str, Any]:
     """A post's reactions, the trusted humans' first, at most REACTIONS_MAX, with
-    the count of all of them (RT-6.11)."""
+    the count of all of them (RT-6.11); a trusted one that came over NATS without a
+    fresh approver record is marked not_approver (RT-6.42)."""
     rows = [{"emoji": r.emoji_name, "author": users.get(r.user_id) or r.user_id,
-             "trusted_human": r.user_id in trusted} for r in p.reactions]
+             "trusted_human": r.user_id in trusted,
+             **({"not_approver": True} if r.user_id in trusted
+                and ("reaction", p.id, r.emoji_name, r.user_id) in unapproved else {})}
+            for r in p.reactions]
     kept = ([row for row in rows if row["trusted_human"]]
             + [row for row in rows if not row["trusted_human"]])[:REACTIONS_MAX]
     return {"reactions": kept, "reactions_total": len(rows)}
@@ -302,7 +318,11 @@ def _one(p: Post, users: dict[str, str], channels: dict[str, str],
         if got.get("reactions"):
             out["reactions"] = got["reactions"]  # RT-6.11: who answered, on any post
             out["reactions_total"] = got["reactions_total"]
-        card = {k: v for k, v in got.items() if k not in ("reactions", "reactions_total")}
+        if got.get("not_approver"):
+            out["not_approver"] = True  # RT-6.42: a person over NATS without the approvers' group
+        card = {k: v for k, v in got.items() if k not in ("reactions", "reactions_total", "not_approver")}
+        if card.pop("answer_not_approver", False):
+            card["not_approver"] = True  # the answer is by a person over NATS without the group
         if card:
             out["ask_card"] = card  # what a 👍 approves; `ask` is the ask's id elsewhere
     if shown:  # #66: to show and to DM (to=), never an identity; `author` decides

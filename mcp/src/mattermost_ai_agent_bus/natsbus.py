@@ -9,7 +9,8 @@ The permission model, from the host's side:
   the side channel of condition 1).
 * The host never talks to JetStream. It reads only through the push consumers the
   login service makes for its agent (ack none), subscribed by their literal deliver
-  subject `deliver.<name>.ch.<channel>`, `.dm` and `.presence`.
+  subject `deliver.<name>.ch.<channel>`, `.hu.<channel>` (people, RT-6.42), `.dm` and
+  `.presence`.
 * The login service gets everything in the CONNECT `auth_token` (Keycloak access
   token, channels, `since`) and the host's nkey signature over the server's nonce.
   The credential lives 15 minutes; the server closes the connection at expiry. The
@@ -24,6 +25,7 @@ from __future__ import annotations
 
 import asyncio
 import base64
+import dataclasses
 import hashlib
 import inspect
 import ipaddress
@@ -360,6 +362,137 @@ def decode_claim(data: bytes) -> None:
     _obj(data)
 
 
+# --- people over NATS (RT-6.42) ------------------------------------------------------
+# The central bridge publishes a person's post or reaction in a bound Mattermost channel
+# on `<bus>.hu.<channel>.<anchor>`; the anchor (the subject's last token, "." as "~") is
+# the person, UNBOUND an account bound to nobody. The login service writes one record per
+# bound Mattermost account (`<presence>.account.mattermost.<user id>.v1`), the bridge its
+# signal per channel (`<presence>.bridge.<channel>.v1`). Every decoder here is strict:
+# format v1 with exactly its fields, no unknown or duplicate key; an empty message is no
+# JSON and refused (a JetStream answer routed onto one of these subjects, ADR-016 step 2).
+
+UNBOUND = "-"  # the sender token of an account bound to nobody: never an anchor (OWNER_RE)
+PEOPLE_TEXT_MAX = 16000  # the bridge cuts a person's text there (characters)
+SIGNAL_MAX_SEC = 180.0  # a bridge signal counts at most this long after it was published
+ACCOUNT_MAX_SEC = 900.0  # an account record's approver flag at most this long after its write
+_PEOPLE_KEYS = {
+    "post": ({"v", "kind", "text", "name", "mm"}, {"mm_root", "root", "files", "cut"}),
+    "reaction": ({"v", "kind", "emoji", "name", "mm"}, {"ref"}),
+    "unreaction": ({"v", "kind", "emoji", "name", "mm"}, {"ref"}),
+}
+_ACCOUNT_KEYS = {"v", "account", "anchor", "name", "approver", "token_iat", "iat", "exp"}
+_BRIDGE_KEYS = {"v", "home", "people", "iat", "exp"}
+
+
+@dataclass(frozen=True)
+class PersonMessage:
+    """A person's post, reaction or unreaction as the bridge carried it (format v1). The
+    person is not part of it: it is the subject's last token. `name` is for display only."""
+
+    kind: str  # "post" | "reaction" | "unreaction"
+    mm: str  # the Mattermost post id: the person's post, or the post reacted to
+    name: str
+    text: str = ""
+    mm_root: str | None = None  # post: the Mattermost id of the thread's root
+    root: int | None = None  # post: the root's stream sequence, when it is on NATS
+    files: int = 0  # post: how many files it holds (they stay on Mattermost)
+    cut: bool = False  # post: the bridge cut the text
+    emoji: str | None = None
+    ref: int | None = None  # reaction: the reacted post's stream sequence, when it is on NATS
+
+
+def _exact(obj: dict[str, Any], required: set[str], optional: Iterable[str] = ()) -> None:
+    keys = set(obj)
+    if not required <= keys or not keys <= required | set(optional):
+        raise MessageError("not exactly the fields of its kind")
+
+
+def _mm_id(v: object, what: str) -> str:
+    if not isinstance(v, str) or not BOT_RE.fullmatch(v):
+        raise MessageError(f"{what} is not a Mattermost id")
+    return v
+
+
+def decode_person(data: bytes) -> PersonMessage:
+    """Strict (RT-6.42 step 9): a `<bus>.hu` body of format v1 with exactly the fields of its
+    kind, no `props`, well-formed ids; anything else raises MessageError."""
+    obj = _obj(data)
+    kind = obj.get("kind")
+    if not isinstance(kind, str) or kind not in _PEOPLE_KEYS:
+        raise MessageError("unknown kind")
+    _exact(obj, *_PEOPLE_KEYS[kind])
+    mm = _mm_id(obj["mm"], "mm")
+    name = obj["name"]
+    if not isinstance(name, str) or not USERNAME_RE.fullmatch(name):
+        raise MessageError("name is not a username")
+    if kind == "post":
+        text = obj["text"]
+        if not isinstance(text, str) or not _wellformed(text) or len(text) > PEOPLE_TEXT_MAX:
+            raise MessageError("text is not a string of at most 16000 characters")
+        mm_root = _mm_id(obj["mm_root"], "mm_root") if "mm_root" in obj else None
+        root = obj.get("root")
+        if root is not None and not _seq(root):
+            raise MessageError("root is not a sequence")
+        files = obj.get("files", 0)
+        if isinstance(files, bool) or not isinstance(files, int) or files < 0:
+            raise MessageError("files is not a count")
+        cut = obj.get("cut", False)
+        if not isinstance(cut, bool):
+            raise MessageError("cut is not a boolean")
+        return PersonMessage(kind, mm, name, text=text, mm_root=mm_root, root=root, files=files, cut=cut)
+    emoji = obj["emoji"]
+    if (not isinstance(emoji, str) or not emoji or len(emoji) > 64
+            or emoji.splitlines() != [emoji] or not _wellformed(emoji)):
+        raise MessageError("an emoji is one line of at most 64 characters")
+    ref = obj.get("ref")
+    if ref is not None and not _seq(ref):
+        raise MessageError("ref is not a sequence")
+    return PersonMessage(kind, mm, name, emoji=emoji, ref=ref)
+
+
+@dataclass(frozen=True)
+class AccountRecord:
+    """The login service's record of a Mattermost account (RT-6.42 step 3): the person it is
+    bound to (`anchor`, None once unbound), whether the Keycloak token behind it placed the
+    person in the approvers' group, and until when that counts (`exp`, server time)."""
+
+    account: str
+    anchor: str | None
+    name: str | None
+    approver: bool
+    exp: float
+
+
+def decode_account(data: bytes, account: str) -> AccountRecord:
+    """Strict: exactly the fields of a v1 record of `account`; anything else raises."""
+    obj = _obj(data)
+    _exact(obj, _ACCOUNT_KEYS)
+    if obj["account"] != account:
+        raise MessageError("record of another account")
+    anchor, name = obj["anchor"], obj["name"]
+    if anchor is not None and (not isinstance(anchor, str) or not OWNER_RE.fullmatch(anchor)):
+        raise MessageError("anchor is not an anchor")
+    if name is not None and (not isinstance(name, str) or not USERNAME_RE.fullmatch(name)):
+        raise MessageError("name is not a username")
+    if not isinstance(obj["approver"], bool):
+        raise MessageError("approver is not a boolean")
+    _int(obj, "token_iat")
+    _int(obj, "iat")
+    return AccountRecord(account, anchor, name, obj["approver"], float(_int(obj, "exp")))
+
+
+def decode_bridge_signal(data: bytes, channel: str) -> float:
+    """Strict: the bridge's v1 signal for `channel`, `people` true; returns its `exp`."""
+    obj = _obj(data)
+    _exact(obj, _BRIDGE_KEYS)
+    if obj["home"] != channel:
+        raise MessageError("signal of another channel")
+    if obj["people"] is not True:
+        raise MessageError("people is not true")
+    _int(obj, "iat")
+    return float(_int(obj, "exp"))
+
+
 # --- JetStream metadata and gaps -----------------------------------------------------
 
 @dataclass(frozen=True)
@@ -652,12 +785,24 @@ class Event:
     message: Message
 
 
+@dataclass(frozen=True)
+class PersonEvent:
+    """A person's event from `<bus>.hu.<where>.<anchor>` (RT-6.42)."""
+
+    where: str  # the channel name
+    anchor: str  # the subject's last token as a person: an anchor, or UNBOUND
+    stream_seq: int
+    time: float  # the server's timestamp, seconds since the epoch
+    message: PersonMessage
+
+
 class LoginLike(Protocol):
     async def access_token(self) -> str: ...
     def nkey(self) -> NKey: ...
 
 
 EventCallback = Callable[[Event], Awaitable[None] | None]
+PersonCallback = Callable[[PersonEvent], Awaitable[None] | None]
 FatalCallback = Callable[[NatsBusError], Awaitable[None] | None]
 DM_SINCE = "@dm"  # the key of `since` for direct messages (no channel name can look like it)
 
@@ -667,7 +812,7 @@ class NatsBus:
                  *, heartbeat_sec: float = HEARTBEAT_SEC, gap_reconnect_sec: float = GAP_RECONNECT_SEC,
                  connect_timeout: float = 5.0, renew_sec: float = RENEW_SEC,
                  send_wait_sec: float = SEND_WAIT_SEC, member_renew_sec: float = MEMBER_RENEW_SEC,
-                 on_fatal: FatalCallback | None = None) -> None:
+                 on_fatal: FatalCallback | None = None, on_person: PersonCallback | None = None) -> None:
         for what, v in (("bus", settings.bus), ("presence", settings.presence)):
             if not PREFIX_RE.fullmatch(v) or v == DELIVER:
                 raise ValueError(f"invalid {what} prefix")
@@ -679,6 +824,8 @@ class NatsBus:
         self._owner = owner
         self._on_event = on_event
         self._on_fatal = on_fatal
+        self._on_person = on_person
+        self.on_person_gap: Callable[[str], None] | None = None  # a gap on a person's consumer (RT-6.42)
         self._heartbeat_sec = heartbeat_sec
         self._gap_sec = gap_reconnect_sec
         self._connect_timeout = connect_timeout
@@ -727,6 +874,12 @@ class NatsBus:
         self._claim_at: dict[tuple[str, str], float] = {}  # (channel, agent) -> server time of the claim
         self._presence_cseq = 0  # the presence consumer's last delivery number: a lower one is a consumer made anew
         self._own_echo = time.monotonic()  # when this agent's own presence last came back (monotonic, never server time)
+        # RT-6.42: account -> (stream sequence, server time, record); None: a message there that
+        # does not decode (a stray answer erased it): unbound and no approver, fail closed.
+        self._accounts: dict[str, tuple[int, float, AccountRecord | None]] = {}
+        # channel -> (stream sequence, server time, exp) of the bridge's signal; exp 0: none
+        self._bridge_signal: dict[str, tuple[int, float, float]] = {}
+        self._last_anchor: dict[str, str] = {}  # account -> the anchor of its last record that decoded
 
     def __repr__(self) -> str:
         return f"NatsBus(name={self._name!r}, connected={self._connected})"
@@ -896,6 +1049,10 @@ class NatsBus:
         try:
             for ch in self.channels:
                 await nc.subscribe(f"{DELIVER}.{name}.ch.{ch}", cb=self._handler(ch))
+            for ch in self.channels:
+                # People's posts (RT-6.42): `<name>_hu_<channel>`; nothing comes before the
+                # login service makes the consumer, and the subscription is the agent's own.
+                await nc.subscribe(f"{DELIVER}.{name}.hu.{ch}", cb=self._person_handler(ch))
             await nc.subscribe(f"{DELIVER}.{name}.dm", cb=self._handler(DM_SINCE))
             await nc.subscribe(f"{DELIVER}.{name}.presence", cb=self._on_presence_msg)
             # The server answers a refused SUB with -ERR before the PONG of a flush: a
@@ -1272,6 +1429,37 @@ class NatsBus:
         return crown_holder(self._claims.get(channel, {}), self._presence,
                             self._server_now if now is None else now, at=self.claim_times(channel))
 
+    # --- people over NATS (RT-6.42) ------------------------------------------------------
+    def people_switched(self, channel: str) -> bool:
+        """A fresh signal of the bridge names the channel (by the server's clock): its people
+        come over NATS. False otherwise: they are read on Mattermost, as without a bridge."""
+        if not self.connected or self.own_echo_age() > OWN_ECHO_SEC:
+            # The server's clock stands still while nothing arrives: a signal is not
+            # fresh then, whatever its exp says (people on Mattermost, fail open).
+            return False
+        got = self._bridge_signal.get(channel)
+        return got is not None and got[2] > self._server_now
+
+    def anchor_of_account(self, account: str) -> str:
+        """The person a Mattermost account is bound to by the login service's record, as the
+        sender token the bridge publishes it under: the anchor, UNBOUND for none (no record,
+        one that did not decode, or `anchor` null). A stale record still names the anchor."""
+        got = self._accounts.get(account)
+        if got is not None and got[2] is None:
+            # Erased by a message that does not decode: the anchor last read, for the
+            # keys only (the bridge may still hold it); it binds no trust (approver).
+            return self._last_anchor.get(account, UNBOUND)
+        rec = got[2] if got is not None else None
+        return rec.anchor if rec is not None and rec.anchor else UNBOUND
+
+    def approver(self, anchor: str) -> bool:
+        """A fresh record (exp after the server's now) binds an account to `anchor` and says
+        `approver` (RT-6.42 step 9, ADR-016 step 2 point 8); never for UNBOUND."""
+        if anchor == UNBOUND:
+            return False
+        return any(rec is not None and rec.anchor == anchor and rec.approver and rec.exp > self._server_now
+                   for _, _, rec in self._accounts.values())
+
     # --- receiving ----------------------------------------------------------------------
     def _handler(self, where: str) -> Callable[[Any], Awaitable[None]]:
         async def handle(msg: Any) -> None:
@@ -1296,6 +1484,10 @@ class NatsBus:
         for agent, (_, t, _a) in list(self._attest.items()):
             if t < cut:
                 del self._attest[agent]
+        for account, (_, t, _r) in list(self._accounts.items()):
+            if t < cut:
+                del self._accounts[account]
+                self._last_anchor.pop(account, None)
         for ch, members in list(self._members.items()):
             for agent in list(members):
                 if members[agent][1] < cut:
@@ -1343,6 +1535,54 @@ class NatsBus:
                 await res
         except Exception as exc:
             log.warning("nats bus: event callback failed: %s", type(exc).__name__)
+
+    def _person_handler(self, channel: str) -> Callable[[Any], Awaitable[None]]:
+        async def handle(msg: Any) -> None:
+            await self._on_person_deliver(channel, msg.subject, msg.reply, msg.data)
+        return handle
+
+    async def _on_person_deliver(self, channel: str, subject: str, reply: str | None, data: bytes) -> None:
+        """A person's event (RT-6.42) from `<name>_hu_<channel>`: the subject is
+        `<bus>.hu.<channel>.<anchor>`, the person its last token, never the body's."""
+        key = f"hu.{channel}"  # its gaps and repeats, apart from the channel's agents
+        ack = parse_ack(reply, BUS_STREAM, f"{self.name}_hu_{channel}")
+        if ack is None:
+            log.warning("nats bus: dropped a person's message on %s without this consumer's JetStream metadata",
+                        channel)
+            return
+        self._see(ack.time)
+        gap = self._gaps.observe(key, ack.consumer_seq)
+        tokens = subject.split(".")
+        if len(tokens) != 4 or tokens[:3] != [self._s.bus, "hu", channel]:
+            log.warning("nats bus: dropped a person's message on %s with an unexpected subject", channel)
+            return
+        anchor = tokens[3] if tokens[3] == UNBOUND else owner_of_token(tokens[3])
+        if not anchor:
+            log.warning("nats bus: dropped a person's message on %s: the sender is no anchor", channel)
+            return
+        if gap:
+            # The consumer starts with new messages and keeps its position (no `since`):
+            # a reconnect brings nothing back, Mattermost has what was lost (RT-6.42 step 9).
+            log.warning("nats bus: gap on the people of %s: read on Mattermost", channel)
+            if self.on_person_gap is not None:
+                self.on_person_gap(channel)
+        if ack.stream_seq <= self._last_seq.get(key, 0):
+            return  # a repeat
+        self._last_seq[key] = ack.stream_seq
+        try:
+            message = decode_person(data)
+        except MessageError as exc:
+            log.warning("nats bus: dropped a malformed person's message on %s (seq %d): %s",
+                        channel, ack.stream_seq, exc)
+            return
+        if self._on_person is None:
+            return
+        try:
+            res = self._on_person(PersonEvent(channel, anchor, ack.stream_seq, ack.time, message))
+            if inspect.isawaitable(res):
+                await res
+        except Exception as exc:
+            log.warning("nats bus: person callback failed: %s", type(exc).__name__)
 
     def _gap(self, where: str) -> None:
         """A gap on `where`: it is dropped (stale) until a reconnect restarts it from
@@ -1421,6 +1661,37 @@ class NatsBus:
                 seq0, at0 = members.get(t[3], (0, 0.0))
                 if (ack.time, ack.stream_seq) > (at0, seq0):
                     members[t[3]] = (ack.stream_seq, ack.time)
+            elif len(t) == 5 and t[0] == p and t[1:3] == ["account", "mattermost"] and t[4] == "v1" \
+                    and BOT_RE.fullmatch(t[3]):
+                # RT-6.42 step 3: the newest message counts; one that does not decode erases
+                # the record (unbound, no approver) until the login service writes it again.
+                seq0, at0, _rec = self._accounts.get(t[3], (0, 0.0, None))
+                if (ack.time, ack.stream_seq) > (at0, seq0):
+                    try:
+                        rec: AccountRecord | None = decode_account(msg.data, t[3])
+                        assert rec is not None
+                        # Never longer than a credential lives (15 min) from its write.
+                        rec = dataclasses.replace(rec, exp=min(rec.exp, ack.time + ACCOUNT_MAX_SEC))
+                        if rec.anchor:
+                            self._last_anchor[t[3]] = rec.anchor
+                        else:
+                            self._last_anchor.pop(t[3], None)
+                    except MessageError:
+                        rec = None
+                        log.warning("nats bus: an account record that does not decode (seq %d): unbound",
+                                    ack.stream_seq)
+                    self._accounts[t[3]] = (ack.stream_seq, ack.time, rec)
+            elif len(t) == 4 and t[0] == p and t[1] == "bridge" and t[3] == "v1" and CHANNEL_RE.fullmatch(t[2]):
+                # RT-6.42 step 7: the bridge carries the channel's people while this is fresh.
+                seq0, at0, _exp = self._bridge_signal.get(t[2], (0, 0.0, 0.0))
+                if (ack.time, ack.stream_seq) > (at0, seq0):
+                    try:
+                        exp = min(decode_bridge_signal(msg.data, t[2]), ack.time + SIGNAL_MAX_SEC)
+                    except MessageError:
+                        exp = 0.0
+                        log.warning("nats bus: a bridge signal that does not decode (seq %d): people on "
+                                    "Mattermost", ack.stream_seq)
+                    self._bridge_signal[t[2]] = (ack.stream_seq, ack.time, exp)
             elif len(t) == 4 and t[0] == p and t[1] == "attest" and t[3] == "v1" and AGENT_RE.fullmatch(t[2]):
                 att = decode_attestation(msg.data, t[2])
                 seq0, at0, _old = self._attest.get(t[2], (0, 0.0, att))
