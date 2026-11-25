@@ -1,14 +1,17 @@
 package consumers
 
 import (
+	"context"
 	"encoding/json"
 	"errors"
 	"fmt"
 	"maps"
+	"strings"
 	"sync"
 	"testing"
 	"time"
 
+	"github.com/nats-io/nats-server/v2/server"
 	"github.com/nats-io/nats.go"
 )
 
@@ -23,6 +26,10 @@ func safe(name string) map[string]any {
 	if name == PresenceStream {
 		g["max_age"], g["max_msgs_per_subject"], g["subjects"] = float64(PresenceMaxAge), float64(1), []any{"presence.>"}
 	}
+	if name == StatsStream {
+		g["max_age"], g["max_msgs_per_subject"], g["subjects"] = float64(StatsMaxAge), float64(500), []any{"stats.>"}
+		g["max_bytes"], g["max_msg_size"], g["storage"] = float64(64<<20), float64(8192), "file"
+	}
 	return g
 }
 
@@ -33,7 +40,7 @@ func with(name string, edit func(map[string]any)) map[string]any {
 }
 
 func TestCheckStream(t *testing.T) {
-	subject := map[string]string{BusStream: "bus.>", PresenceStream: "presence.>"}
+	subject := map[string]string{BusStream: "bus.>", PresenceStream: "presence.>", StatsStream: "stats.>"}
 	for name, c := range map[string]struct {
 		stream string
 		got    map[string]any
@@ -73,6 +80,23 @@ func TestCheckStream(t *testing.T) {
 		"BUS discards new":              {BusStream, with(BusStream, func(g map[string]any) { g["discard"] = "new" }), true},
 		"PRESENCE keeps many":           {PresenceStream, with(PresenceStream, func(g map[string]any) { g["max_msgs_per_subject"] = float64(5) }), true},
 		"PRESENCE keeps all":            {PresenceStream, with(PresenceStream, func(g map[string]any) { delete(g, "max_msgs_per_subject") }), true},
+		// The STATS lines (RT-6.43): 30 days, at most 500 per agent's subject.
+		"STATS safe":              {StatsStream, safe(StatsStream), false},
+		"STATS keeps fewer":       {StatsStream, with(StatsStream, func(g map[string]any) { g["max_msgs_per_subject"] = float64(100) }), false},
+		"STATS keeps 501":         {StatsStream, with(StatsStream, func(g map[string]any) { g["max_msgs_per_subject"] = float64(501) }), true},
+		"STATS keeps all":         {StatsStream, with(StatsStream, func(g map[string]any) { delete(g, "max_msgs_per_subject") }), true},
+		"STATS max_age 31 days":   {StatsStream, with(StatsStream, func(g map[string]any) { g["max_age"] = float64(31 * 24 * time.Hour) }), true},
+		"STATS max_age unlimited": {StatsStream, with(StatsStream, func(g map[string]any) { g["max_age"] = float64(0) }), true},
+		"STATS other subject":     {StatsStream, with(StatsStream, func(g map[string]any) { g["subjects"] = []any{"bus.>"} }), true},
+		"STATS discards new":      {StatsStream, with(StatsStream, func(g map[string]any) { g["discard"] = "new" }), true},
+		"STATS acknowledges":      {StatsStream, with(StatsStream, func(g map[string]any) { g["no_ack"] = false }), true},
+		"STATS allows direct":     {StatsStream, with(StatsStream, func(g map[string]any) { g["allow_direct"] = true }), true},
+		"STATS no size limit":     {StatsStream, with(StatsStream, func(g map[string]any) { g["max_bytes"] = float64(-1) }), true},
+		"STATS larger messages":   {StatsStream, with(StatsStream, func(g map[string]any) { g["max_msg_size"] = float64(16384) }), true},
+		"STATS smaller messages":  {StatsStream, with(StatsStream, func(g map[string]any) { g["max_msg_size"] = float64(4096) }), true},
+		"STATS no message size":   {StatsStream, with(StatsStream, func(g map[string]any) { delete(g, "max_msg_size") }), true},
+		"STATS in memory":         {StatsStream, with(StatsStream, func(g map[string]any) { g["storage"] = "memory" }), true},
+		"STATS no storage":        {StatsStream, with(StatsStream, func(g map[string]any) { delete(g, "storage") }), true},
 	} {
 		t.Run(name, func(t *testing.T) {
 			err := checkStream(c.stream, subject[c.stream], c.got)
@@ -88,6 +112,7 @@ func TestTheCreationRequestsPassTheCheck(t *testing.T) {
 	for stream, c := range map[string]struct{ json, subject string }{
 		BusStream:      {BusStreamJSON("bus", 0), "bus.>"},
 		PresenceStream: {PresenceStreamJSON("presence", 0), "presence.>"},
+		StatsStream:    {StatsStreamJSON("stats", 0), "stats.>"},
 	} {
 		var got map[string]any
 		if err := json.Unmarshal([]byte(c.json), &got); err != nil {
@@ -181,4 +206,111 @@ func TestTheLocksMapDoesNotGrow(t *testing.T) {
 	}
 	unlock()
 	<-got
+}
+
+// The STATS stream's creation request says what the spec says (RT-6.43): its
+// own subjects, file storage, 30 days, 64 MiB, 8 KiB per line, 500 per
+// subject, the oldest discarded.
+func TestTheStatsStreamDefinition(t *testing.T) {
+	var got map[string]any
+	if err := json.Unmarshal([]byte(StatsStreamJSON("st", 0)), &got); err != nil {
+		t.Fatal(err)
+	}
+	for k, want := range map[string]any{
+		"name": "STATS", "storage": "file", "retention": "limits", "discard": "old", "no_ack": true,
+		"max_age": float64(30 * 24 * time.Hour), "max_bytes": float64(64 << 20), "max_msg_size": float64(8192),
+		"max_msgs_per_subject": float64(500), "num_replicas": float64(1),
+	} {
+		if got[k] != want {
+			t.Errorf("%s = %v, want %v", k, got[k], want)
+		}
+	}
+	if subs, _ := got["subjects"].([]any); len(subs) != 1 || subs[0] != "st.>" {
+		t.Errorf("subjects %v", got["subjects"])
+	}
+	if err := json.Unmarshal([]byte(StatsStreamJSON("st", 1<<20)), &got); err != nil || got["max_bytes"] != float64(1<<20) {
+		t.Errorf("max_bytes %v, %v", got["max_bytes"], err)
+	}
+}
+
+// The STATS prefix is checked like the other two (RT-6.43).
+func TestTheStatsPrefixMustDiffer(t *testing.T) {
+	for _, stats := range []string{"bus", "presence", DeliverPrefix, "a.b"} {
+		if _, err := New(nil, Config{Bus: "bus", Presence: "presence", Stats: stats}); err == nil {
+			t.Errorf("stats prefix %q accepted", stats)
+		}
+	}
+}
+
+// match is NATS's subject match of a filter (with * and >) against a subject.
+func match(filter, subject string) bool {
+	f, s := strings.Split(filter, "."), strings.Split(subject, ".")
+	for i, tok := range f {
+		switch {
+		case tok == ">":
+			return len(s) > i
+		case i >= len(s):
+			return false
+		case tok != "*" && tok != s[i]:
+			return false
+		}
+	}
+	return len(f) == len(s)
+}
+
+// An agent's consumers never deliver an ask record (RT-6.43), its own or
+// another agent's in a channel it shares: the console reads them, agents do not.
+func TestNoAgentConsumerDeliversAnAskRecord(t *testing.T) {
+	m := &Manager{cfg: Config{Bus: "bus", Presence: "presence", Stats: "stats"}}
+	for _, w := range m.desired("agent-a", []string{"home", "ga"}) {
+		for _, f := range w.filters {
+			for _, s := range []string{"presence.ask.home.agent-b", "presence.ask.ga.agent-a", "stats.agent-b"} {
+				if match(f, s) {
+					t.Errorf("consumer %s (filter %s) delivers %s", w.name, f, s)
+				}
+			}
+		}
+	}
+	if !match("presence.*.*", "presence.alice.agent-b") || match("presence.*.*", "presence.ask.home.agent-b") {
+		t.Fatal("matcher broken")
+	}
+}
+
+// A JetStream user without the STATS rights (an upgrade that skipped them)
+// gets an error that names the two rights, not a bare timeout (RT-6.43).
+func TestMissingStatsRightsAreNamed(t *testing.T) {
+	var allow []string
+	for _, s := range []string{BusStream, PresenceStream} {
+		allow = append(allow, "$JS.API.STREAM.CREATE."+s, "$JS.API.STREAM.INFO."+s)
+	}
+	srv, err := server.NewServer(&server.Options{Host: "127.0.0.1", Port: -1, JetStream: true,
+		StoreDir: t.TempDir(), NoLog: true, NoSigs: true,
+		Users: []*server.User{{Username: "js", Password: "pwd", Permissions: &server.Permissions{
+			Publish:   &server.SubjectPermission{Allow: allow},
+			Subscribe: &server.SubjectPermission{Allow: []string{"_INBOX.>"}},
+		}}}})
+	if err != nil {
+		t.Fatal(err)
+	}
+	go srv.Start()
+	if !srv.ReadyForConnections(5 * time.Second) {
+		t.Fatal("nats-server not ready")
+	}
+	t.Cleanup(srv.Shutdown)
+	nc, err := nats.Connect(srv.ClientURL(), nats.UserInfo("js", "pwd"), nats.ErrorHandler(func(*nats.Conn, *nats.Subscription, error) {}))
+	if err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(nc.Close)
+	m, err := New(nc, Config{Bus: "bus", Presence: "presence"})
+	if err != nil {
+		t.Fatal(err)
+	}
+	ctx, cancel := context.WithTimeout(context.Background(), 2*time.Second)
+	defer cancel()
+	err = m.EnsureStreams(ctx)
+	if err == nil || !strings.Contains(err.Error(), "$JS.API.STREAM.INFO.STATS") || !strings.Contains(err.Error(), "$JS.API.STREAM.CREATE.STATS") {
+		t.Fatalf("EnsureStreams: %v", err)
+	}
+	t.Log(err)
 }

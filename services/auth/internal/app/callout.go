@@ -122,7 +122,7 @@ func LoadSettings(getenv func(string) string) (Settings, bool, error) {
 		Account:    get("AUTH_ACCOUNT"),
 		Lobby:      get("AUTH_LOBBY"),
 		NamePrefix: get("AUTH_NAME_PREFIX"),
-		Subjects:   callout.Subjects{Prefix: get("AUTH_SUBJECT_PREFIX"), Presence: get("AUTH_PRESENCE_PREFIX")},
+		Subjects:   callout.Subjects{Prefix: get("AUTH_SUBJECT_PREFIX"), Presence: get("AUTH_PRESENCE_PREFIX"), Stats: get("AUTH_STATS_PREFIX")},
 	}
 	s.Token = token.Config{
 		Issuer:        get("AUTH_KEYCLOAK_ISSUER"),
@@ -306,7 +306,8 @@ func RunCallout(ctx context.Context, s Settings, log *slog.Logger) error {
 		return fmt.Errorf("NATS (JetStream): %w", err)
 	}
 	defer jsnc.Close()
-	mgr, err := consumers.New(jsnc, consumers.Config{Bus: s.Callout.Subjects.Prefix, Presence: s.Callout.Subjects.Presence, Log: log})
+	mgr, err := consumers.New(jsnc, consumers.Config{Bus: s.Callout.Subjects.Prefix, Presence: s.Callout.Subjects.Presence,
+		Stats: s.Callout.Subjects.Stats, Log: log})
 	if err != nil {
 		return fmt.Errorf("%w: %v", ErrConfig, err)
 	}
@@ -351,7 +352,7 @@ func RunCallout(ctx context.Context, s Settings, log *slog.Logger) error {
 		}
 	}
 	svc.SetConsumers(mgr)
-	log.Info("consumer management on", "bus", s.Callout.Subjects.Prefix, "presence", s.Callout.Subjects.Presence)
+	log.Info("consumer management on", "bus", s.Callout.Subjects.Prefix, "presence", s.Callout.Subjects.Presence, "stats", s.Callout.Subjects.Stats)
 	log.Info("auth callout serving", "account", s.Callout.Account, "binding", s.Binding)
 	if adminErr != nil {
 		go func() {

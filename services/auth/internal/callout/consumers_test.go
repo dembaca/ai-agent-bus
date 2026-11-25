@@ -175,7 +175,7 @@ func TestEnsureStreamsCreatesTheSafeConfig(t *testing.T) {
 			t.Fatal(err)
 		}
 	}
-	for _, st := range []string{"BUS", "PRESENCE"} {
+	for _, st := range []string{"BUS", "PRESENCE", "STATS"} {
 		r, err := nc.Request("$JS.API.STREAM.INFO."+st, nil, 2*time.Second)
 		if err != nil {
 			t.Fatal(err)
@@ -202,6 +202,15 @@ func TestEnsureStreamsCreatesTheSafeConfig(t *testing.T) {
 			wantAge, wantBytes = float64(24*time.Hour), float64(16<<20)
 			if g["max_msgs_per_subject"] != float64(1) {
 				t.Errorf("PRESENCE max_msgs_per_subject = %v", g["max_msgs_per_subject"])
+			}
+		}
+		if st == "STATS" { // RT-6.43
+			wantAge, wantBytes = float64(30*24*time.Hour), float64(64<<20)
+			if g["max_msgs_per_subject"] != float64(500) || g["max_msg_size"] != float64(8192) || g["storage"] != "file" {
+				t.Errorf("STATS: %v", g)
+			}
+			if subs, _ := g["subjects"].([]any); len(subs) != 1 || subs[0] != "stats.>" {
+				t.Errorf("STATS subjects %v", g["subjects"])
 			}
 		}
 		if g["max_age"] != wantAge || g["max_bytes"] != wantBytes || g["discard"] != "old" ||
@@ -237,6 +246,10 @@ func TestEnsureStreamsRefusesAnUnsafeStream(t *testing.T) {
 		"PRESENCE keeps many":        {"PRESENCE", strings.Replace(presenceStreamCfg, `"max_msgs_per_subject":1`, `"max_msgs_per_subject":5`, 1)},
 		"PRESENCE keeps all":         {"PRESENCE", strings.Replace(presenceStreamCfg, `"max_msgs_per_subject":1,`, ``, 1)},
 		"PRESENCE acknowledges":      {"PRESENCE", strings.Replace(presenceStreamCfg, `"no_ack":true`, `"no_ack":false`, 1)},
+		// The STATS stream (RT-6.43): message size and storage pinned as created.
+		"STATS larger messages": {"STATS", strings.Replace(statsStreamCfg, `"max_msg_size":8192`, `"max_msg_size":16384`, 1)},
+		"STATS in memory":       {"STATS", strings.Replace(statsStreamCfg, `"storage":"file"`, `"storage":"memory"`, 1)},
+		"STATS keeps 501":       {"STATS", strings.Replace(statsStreamCfg, `"max_msgs_per_subject":500`, `"max_msgs_per_subject":501`, 1)},
 	} {
 		t.Run(name, func(t *testing.T) {
 			l := newLabCfg(t, nil, 0, nil)
