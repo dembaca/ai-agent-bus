@@ -4736,12 +4736,17 @@ registrar's functions can move in later without a second component.
    One bot per agent is the next step. Built (#90) and deployed in the lab
    since 2026-11-24.
 2. **People's posts and reactions onto NATS**, vouched for as point 3 says.
-   Specified, not built: the scenario "People's posts onto NATS" (RT-6.42)
-   and the bodies in `docs/protocol.md`. The bridge reads its bot's
+   Specified in the scenario "People's posts onto NATS" (RT-6.42) and the
+   bodies in `docs/protocol.md`; the owner accepted all eighteen points as
+   recommended. Built in the login service (the account record at a
+   credential issue, the per-agent `<agent>_hu_<channel>` consumers) and on
+   the bridge's side (`services/bridge/internal/inbound`); not built: the
+   record at a login without an agent or a change of the binding, and the
+   MCP server's reader. The bridge reads its bot's
    Mattermost WebSocket in the bound home channels and publishes each
-   person's post and reaction on NATS. Eighteen points are open, each one
+   person's post and reaction on NATS. The eighteen points were each one
    decision with a recommendation, its reason and the alternative, for the
-   owner to answer yes or no; points 15 to 18 are details the first draft
+   owner to answer yes or no; points 15 to 18 were details the first draft
    filled in without saying so.
    1. **A subject of its own, `<bus>.hu.<home>.<anchor>`, apart from
       `<bus>.ch`.** Recommended. Why: the sender stays the subject's last
@@ -4803,7 +4808,15 @@ registrar's functions can move in later without a second component.
       identity's agents and when an administrator changes the binding
       (`anchor` `null` once unbound). The bridge maps a Mattermost account
       to a person's anchor from these records through a push consumer and
-      gets no read right on the channel directory's bucket. Why: the
+      gets no read right on the channel directory's bucket. Amended with
+      the build (spec author, 2026-11-25): the bridge makes that consumer
+      itself at every start, ack none, last per subject, under the fixed
+      name `bridge_accounts` with a fresh delivery subject, with a create
+      right whose subject fixes the name and the filter and no delete
+      right; after a quick restart it waits for the old one to go. An explicit ack
+      would need `$JS.ACK.PRESENCE.*.>`, which reaches every `PRESENCE`
+      consumer; without acks a lost record fails closed (the person goes
+      out as `-`) until its rewrite or the next start. Why: the
       directory's raw values are not the bridge's to read (they hold every
       identity and binding), and the hosts need the same record for point
       8. Alternative: a read right on the directory's account index.

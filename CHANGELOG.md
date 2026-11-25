@@ -7,56 +7,29 @@ before 0.5.0 are described in the git history.
 
 ### Added
 
-- **The login service's part of people's posts on NATS** (ADR-016 step 2, points
-  7, 8 and 16; RT-6.42): each agent gets, for every granted channel, a consumer
-  `<agent>_hu_<channel>` on `<bus>.hu.<channel>.*` beside its channel consumer
-  (ack none, deleted with it at a dropped channel and at the bye), and its
-  presence consumer also reads the account records
-  (`<presence>.account.mattermost.*.v1`) and the bridge's signal per granted
-  channel (`<presence>.bridge.<channel>.v1`). At each credential issue for a
-  proven Mattermost account the service publishes that account's record (anchor,
-  `approver`, `token_iat`), never replacing it with an older token's; its
-  JetStream user needs the publish right `<presence>.account.mattermost.*.v1`
-  (`services/auth/nats-server.example.conf`). The bridge and the MCP server do
-  not read them yet; the record at a login without an agent and at a change of
-  the binding is not built. Upgrade: without the publish right every login of a
-  proven Mattermost account is refused, so the login service's NATS user gets it
-  first; the release's `Needs:` line (not allowed under Unreleased) is `Needs:
-  login service publish right on presence account records.`
-
-- **The registrar's code moves into the bridge's module** (ADR-016, step 3 of
-  "all of Mattermost in one service"). The core and Mattermost packages of
-  `github.com/dembaca/mattermost-agent-registrar` (main at `c984d19`) are
-  imported into `services/bridge/internal/registrar/` with their tests, their
-  import paths adjusted to the bridge's module; the packages need no new
-  dependency. Nothing is wired: `cmd/bridged`, the routes, the settings and
-  every behaviour are unchanged, and `go test ./...` in `services/bridge`
-  stays green. The arc42 building-block view says the registrar package is
-  imported but not yet active.
-
-### Docs
-
-- **The central bridge's step 2 is specified** (ADR-016, RT-6.42): people's
-  posts and reactions in a bound Mattermost channel reach NATS through the
-  bridge on `bus.hu.<home>.<anchor>`, vouched for by the bridge's publish
-  right; the v1 bodies are in `docs/protocol.md`. Eighteen open points wait for
-  the owner as recommendations, and the risk of the bridge as the only voucher
-  for people is recorded (RISK-21). Only the login service's part is built (see Added); the deployment
-  view now says the bridge's first step runs in the lab.
-
-### Breaking
-
-- **A props prefix is at most 16 characters** (RT-6.16 step 8). The
-  per-turn instructions name the prefix (`props keys start with <prefix>`), so
-  an absurd one would grow the text carried every turn; the server now refuses
-  one that long at start, beside the existing refusal of one a bus or
-  Mattermost key can start with, and the bridge's `BRIDGE_PROPS_PREFIX` holds
-  the same limit (it must equal the homes' prefix). A deployment with a longer
-  prefix does not start until it is shortened; `x_`, `bgl_` and `bridge_` are
-  unaffected. The static-text budget test measures each session configuration
-  on its own and holds the worst one under its bound (#104).
-
-### Added
+- **The central bridge carries people's posts and reactions onto NATS**
+  (RT-6.42, step 2 of ADR-016, the bridge's side). `bridged` reads its bot's
+  Mattermost WebSocket in the channels of `BRIDGE_HOMES`, drops bots' posts
+  and reactions (Mattermost's `is_bot`), webhooks, `override_username`,
+  system, deleted and edited posts and its own, and publishes each person's
+  post, reaction and removed reaction once on `bus.hu.<home>.<anchor>`, the
+  anchor from the login service's account record (`-` without one), with the
+  v1 body of `docs/protocol.md`. After a reconnect it catches up over REST
+  from its watermark, at most 10 minutes back; it signals each home it
+  carries on `presence.bridge.<home>.v1` while its WebSocket is up and the
+  catch-up is done. A publish the server refuses carries nothing and stops
+  that home. The bridge makes its own consumer of the account records at
+  every start (`bridge_accounts`, a create right whose subject fixes the
+  name and the filter; after a quick restart it waits up to about 30 s for
+  the old one to go) and signals no home until it has read them. The operator
+  creates the bucket `BUS_BRIDGE_SEEN`
+  (`services/bridge/internal/store/seen_bucket.json`), widens each home's
+  consumer to `bus.hu.<home>.*` and grants the bridge the rights in
+  `services/auth/nats-server.example.conf` before this bridge starts: it
+  refuses to start without the bucket. The release says so in its notice:
+  `Needs: bridge create right on presence account consumer.` The
+  MCP server's reader is not built yet, so sessions still read people on
+  Mattermost.
 
 - **The bridge reads Mattermost: the WebSocket reader `internal/mmws` and
   two REST methods of `internal/mm` (ADR-016, the bridge's step 2).
@@ -82,6 +55,56 @@ before 0.5.0 are described in the git history.
   what step 1 already holds — so the bridge behaves exactly as before.
   One new dependency, `gorilla/websocket` (v1.5.3): the WebSocket client,
   and the fake Mattermost its tests run against.
+
+- **The login service's part of people's posts on NATS** (ADR-016 step 2, points
+  7, 8 and 16; RT-6.42): each agent gets, for every granted channel, a consumer
+  `<agent>_hu_<channel>` on `<bus>.hu.<channel>.*` beside its channel consumer
+  (ack none, deleted with it at a dropped channel and at the bye), and its
+  presence consumer also reads the account records
+  (`<presence>.account.mattermost.*.v1`) and the bridge's signal per granted
+  channel (`<presence>.bridge.<channel>.v1`). At each credential issue for a
+  proven Mattermost account the service publishes that account's record (anchor,
+  `approver`, `token_iat`), never replacing it with an older token's; its
+  JetStream user needs the publish right `<presence>.account.mattermost.*.v1`
+  (`services/auth/nats-server.example.conf`). The MCP server does not read them
+  yet (the bridge does, see above); the record at a login without an agent and at a change of
+  the binding is not built. Upgrade: without the publish right every login of a
+  proven Mattermost account is refused, so the login service's NATS user gets it
+  first; the release's `Needs:` line (not allowed under Unreleased) is `Needs:
+  login service publish right on presence account records.`
+
+- **The registrar's code moves into the bridge's module** (ADR-016, step 3 of
+  "all of Mattermost in one service"). The core and Mattermost packages of
+  `github.com/dembaca/mattermost-agent-registrar` (main at `c984d19`) are
+  imported into `services/bridge/internal/registrar/` with their tests, their
+  import paths adjusted to the bridge's module; the packages need no new
+  dependency. Nothing is wired: `cmd/bridged`, the routes, the settings and
+  every behaviour are unchanged, and `go test ./...` in `services/bridge`
+  stays green. The arc42 building-block view says the registrar package is
+  imported but not yet active.
+
+### Docs
+
+- **The central bridge's step 2 is specified** (ADR-016, RT-6.42): people's
+  posts and reactions in a bound Mattermost channel reach NATS through the
+  bridge on `bus.hu.<home>.<anchor>`, vouched for by the bridge's publish
+  right; the v1 bodies are in `docs/protocol.md`. The owner accepted the
+  eighteen points as recommended, and the risk of the bridge as the only
+  voucher for people is recorded (RISK-21). The login service's part and the
+  bridge's side are built (see Added); the deployment view now says the
+  bridge's first step runs in the lab.
+
+### Breaking
+
+- **A props prefix is at most 16 characters** (RT-6.16 step 8). The
+  per-turn instructions name the prefix (`props keys start with <prefix>`), so
+  an absurd one would grow the text carried every turn; the server now refuses
+  one that long at start, beside the existing refusal of one a bus or
+  Mattermost key can start with, and the bridge's `BRIDGE_PROPS_PREFIX` holds
+  the same limit (it must equal the homes' prefix). A deployment with a longer
+  prefix does not start until it is shortened; `x_`, `bgl_` and `bridge_` are
+  unaffected. The static-text budget test measures each session configuration
+  on its own and holds the worst one under its bound (#104).
 
 ## 0.99.0
 

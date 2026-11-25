@@ -16,6 +16,7 @@ import (
 	"log/slog"
 	"net/url"
 	"strings"
+	"sync/atomic"
 	"time"
 
 	"github.com/gorilla/websocket"
@@ -69,8 +70,14 @@ type Reaction struct {
 // reads from Since minus a margin (some seconds) and dedups the posts by
 // their id and the reactions by their post, user, emoji and kind — the
 // live path may have handed out what the read finds again.
+//
+// Conn numbers the connection (1, 2, …): the caller that caught up after
+// this marker compares it with Up, so a socket that dropped and came back
+// while the caller was still reading is not taken for the one it caught up
+// on (the bridge's signal, RT-6.42 step 7, goes out only while both agree).
 type Reconnected struct {
 	Since int64
+	Conn  uint64
 }
 
 // Event is what the reader emits: *Posted, *Reaction or *Reconnected.
@@ -107,8 +114,14 @@ type Reader struct {
 	idle   time.Duration
 	events chan Event
 
-	since int64 // the greatest CreateAt handed out, posts and reactions alike
+	since int64         // the greatest CreateAt handed out, posts and reactions alike
+	conns uint64        // connections proven so far
+	up    atomic.Uint64 // the live connection's number, 0 while none is up
 }
+
+// Up is the number of the connection that is up now (Reconnected.Conn),
+// 0 while the socket is down. It may be read from any goroutine.
+func (r *Reader) Up() uint64 { return r.up.Load() }
 
 // New returns a reader for baseURL (no trailing slash) with a bot token.
 // The backoff starts at 1 s and doubles per drop up to 30 s; WithBackoff
@@ -242,7 +255,10 @@ func (r *Reader) connect(ctx context.Context) time.Duration {
 	// The marker first, whatever the handshake interleaved: the caller
 	// ends its catch-up reading where the marker of the next connect
 	// says, so an early event must never claim to predate it.
-	r.emit(ctx, &Reconnected{Since: hint})
+	r.conns++
+	r.up.Store(r.conns)
+	defer r.up.Store(0)
+	r.emit(ctx, &Reconnected{Since: hint, Conn: r.conns})
 	for _, ev := range early {
 		r.emit(ctx, ev)
 	}

@@ -77,6 +77,32 @@ func (c *Client) Me(ctx context.Context) (string, error) {
 	return c.me, nil
 }
 
+// ServerTime is Mattermost's clock in ms, from the Date header of a ping
+// (whole seconds, so never ahead of it): the catch-up's watermark is on
+// Mattermost's clock, since a post's create_at is (RT-6.42 step 1).
+func (c *Client) ServerTime(ctx context.Context) (int64, error) {
+	req, err := http.NewRequestWithContext(ctx, "GET", c.base+"/api/v4/system/ping", nil)
+	if err != nil {
+		return 0, err
+	}
+	req.Header.Set("Authorization", "Bearer "+c.token)
+	resp, err := c.http.Do(req)
+	if err != nil {
+		return 0, err
+	}
+	defer resp.Body.Close()
+	_, _ = io.Copy(io.Discard, io.LimitReader(resp.Body, 4096))
+	if resp.StatusCode < 200 || resp.StatusCode > 299 {
+		return 0, &StatusError{Status: resp.StatusCode,
+			Err: fmt.Errorf("mattermost GET /api/v4/system/ping: %s", resp.Status)}
+	}
+	at, err := http.ParseTime(resp.Header.Get("Date"))
+	if err != nil {
+		return 0, fmt.Errorf("mattermost: the ping's Date header %q: %w", resp.Header.Get("Date"), err)
+	}
+	return at.UnixMilli(), nil
+}
+
 // ChannelIDByName resolves a channel in a team by its name.
 func (c *Client) ChannelIDByName(ctx context.Context, team, name string) (string, error) {
 	var ch struct {
@@ -167,6 +193,19 @@ type Post struct {
 	EditAt    int64          // ms, 0 when never edited
 	DeleteAt  int64          // ms, past 0: deleted
 	Message   string
+	// Reactions are the post's current reactions, from its metadata: the
+	// catch-up compares them with what it carried (RT-6.42 step 1).
+	// HasMetadata says the answer held a metadata object at all; without
+	// one, no reaction list is known and nothing may be read as removed.
+	Reactions   []Reaction
+	HasMetadata bool
+}
+
+// Reaction is one of a post's current reactions.
+type Reaction struct {
+	UserID    string
+	EmojiName string
+	CreateAt  int64 // ms
 }
 
 // postJSON is a post as Mattermost writes it on the wire.
@@ -183,6 +222,13 @@ type postJSON struct {
 	EditAt    int64          `json:"edit_at"`
 	DeleteAt  int64          `json:"delete_at"`
 	Message   string         `json:"message"`
+	Metadata  *struct {
+		Reactions []struct {
+			UserID    string `json:"user_id"`
+			EmojiName string `json:"emoji_name"`
+			CreateAt  int64  `json:"create_at"`
+		} `json:"reactions"`
+	} `json:"metadata"`
 }
 
 // PostsSince reads a channel's posts from since on, for the catch-up
@@ -209,19 +255,28 @@ func (c *Client) PostsSince(ctx context.Context, channelID string, since int64) 
 	out := make([]Post, 0, len(list.Order))
 	for _, id := range list.Order {
 		if raw, ok := list.Posts[id]; ok {
+			var reactions []Reaction
+			if raw.Metadata != nil {
+				for _, re := range raw.Metadata.Reactions {
+					reactions = append(reactions, Reaction{UserID: re.UserID,
+						EmojiName: re.EmojiName, CreateAt: re.CreateAt})
+				}
+			}
 			out = append(out, Post{
-				ID:        raw.ID,
-				UserID:    raw.UserID,
-				ChannelID: raw.ChannelID,
-				RootID:    raw.RootID,
-				Type:      raw.Type,
-				Props:     raw.Props,
-				FileCount: len(raw.FileIDs),
-				CreateAt:  raw.CreateAt,
-				UpdateAt:  raw.UpdateAt,
-				EditAt:    raw.EditAt,
-				DeleteAt:  raw.DeleteAt,
-				Message:   raw.Message,
+				Reactions:   reactions,
+				HasMetadata: raw.Metadata != nil,
+				ID:          raw.ID,
+				UserID:      raw.UserID,
+				ChannelID:   raw.ChannelID,
+				RootID:      raw.RootID,
+				Type:        raw.Type,
+				Props:       raw.Props,
+				FileCount:   len(raw.FileIDs),
+				CreateAt:    raw.CreateAt,
+				UpdateAt:    raw.UpdateAt,
+				EditAt:      raw.EditAt,
+				DeleteAt:    raw.DeleteAt,
+				Message:     raw.Message,
 			})
 		}
 	}

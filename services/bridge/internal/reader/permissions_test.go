@@ -15,6 +15,7 @@ import (
 	"github.com/nats-io/nats.go"
 	"github.com/nats-io/nats.go/jetstream"
 
+	"github.com/dembaca/ai-agent-bus/services/bridge/internal/inbound"
 	"github.com/dembaca/ai-agent-bus/services/bridge/internal/mirror"
 	"github.com/dembaca/ai-agent-bus/services/bridge/internal/presence"
 	"github.com/dembaca/ai-agent-bus/services/bridge/internal/store"
@@ -200,6 +201,70 @@ accounts {
 	}
 	_ = bridgeNC.Flush()
 	deniedOn(t, denied, "bus.ch.home.agent-b")
+	// People onto NATS (RT-6.42 steps 4, 7 and 3): a person's event in its own
+	// home and the home's signal pass, another home's is refused; the seen
+	// bucket binds; the account records arrive through bridge_accounts, and
+	// the bridge's ack lands there.
+	if err := bridgeNC.Publish("bus.hu.home.alice", []byte(`{"v":1}`)); err != nil {
+		t.Fatal(err)
+	}
+	if err := bridgeNC.Publish("presence.bridge.home.v1", []byte(`{"v":1}`)); err != nil {
+		t.Fatal(err)
+	}
+	_ = bridgeNC.Flush()
+	storedOn(t, ajs, "BUS", "bus.hu.home.alice")
+	storedOn(t, ajs, "PRESENCE", "presence.bridge.home.v1")
+	for _, subject := range []string{"bus.hu.other.alice", "presence.bridge.other.v1", "bus.dm.alice.bob"} {
+		if err := bridgeNC.Publish(subject, []byte("x")); err != nil {
+			t.Fatal(err)
+		}
+		_ = bridgeNC.Flush()
+		deniedOn(t, denied, subject)
+	}
+	if err := store.CreateSeenBucket(ctx, ajs); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := store.OpenSeen(ctx, bridgeNC, "BUS_BRIDGE_SEEN"); err != nil {
+		t.Fatalf("the bridge may not bind to its seen bucket: %v", err)
+	}
+	// the account records: the bridge makes its consumer itself, with only the
+	// documented create right; a consumer of another filter is refused
+	if err := probe(ctx, func(c context.Context) error {
+		_, err := bjs.CreateOrUpdateConsumer(c, "PRESENCE", jetstream.ConsumerConfig{
+			Name: "evil", FilterSubject: "presence.attest.*.v1", AckPolicy: jetstream.AckNonePolicy})
+		return err
+	}); err == nil {
+		t.Fatal("the bridge created a consumer of the attestations")
+	}
+	// nor may it change another consumer through the create API with its filter
+	if err := bridgeNC.Publish("$JS.API.CONSUMER.CREATE.PRESENCE.bridge_presence."+inbound.AccountsFilter,
+		[]byte(`{"stream_name":"PRESENCE","config":{"name":"bridge_presence","filter_subject":"`+
+			inbound.AccountsFilter+`","deliver_subject":"deliver.bridge.x"}}`)); err != nil {
+		t.Fatal(err)
+	}
+	_ = bridgeNC.Flush()
+	deniedOn(t, denied, "$JS.API.CONSUMER.CREATE.PRESENCE.bridge_presence.")
+	uid := "aaaaaaaaaaaaaaaaaaaaaaaaaa"
+	if err := admin.Publish("presence.account.mattermost."+uid+".v1", []byte(`{"v":1,"account":"`+uid+
+		`","anchor":"alice","name":"alice","approver":true,"token_iat":1,"iat":1,"exp":2}`)); err != nil {
+		t.Fatal(err)
+	}
+	_ = admin.Flush()
+	for round := range 2 { // a start, and a restart within the first one's threshold
+		acc := &inbound.Accounts{Log: m.Log, Deliver: "deliver.bridge.accounts", Stream: "PRESENCE",
+			Ready: make(chan struct{}), Heartbeat: 100 * time.Millisecond, Inactive: 500 * time.Millisecond}
+		actx, acancel := context.WithCancel(ctx)
+		go func() { _ = acc.Run(actx, bridgeNC) }()
+		<-acc.Ready
+		deadline = time.Now().Add(5 * time.Second)
+		for acc.Anchor(uid) != "alice" || !acc.CaughtUp() {
+			if time.Now().After(deadline) {
+				t.Fatalf("start %d: the account record with the documented rights: %q", round, acc.Anchor(uid))
+			}
+			time.Sleep(20 * time.Millisecond)
+		}
+		acancel()
+	}
 	// The reply subject of a request is not checked against publish
 	// permissions (the server refuses only replies to $JS. since 2.15), so the
 	// bridge's answers can land on any subject. With direct get off, the answer
@@ -347,10 +412,14 @@ func documentedBridgeRights(t *testing.T, home string) (publish, subscribe []str
 			list[j] = strings.ReplaceAll(list[j], "<HOME>", home)
 		}
 	}
-	// and it stays narrow: no consumer API of its own (the operator makes the
-	// consumers), no direct get, no whole-stream publish, no bus subscribe.
+	// and it stays narrow: no consumer API of its own but the create of its
+	// account records' consumer (its filter fixed), no direct get, no whole-stream publish, no bus subscribe.
 	for _, subject := range publish {
-		for _, broad := range []string{"$JS.API.CONSUMER.CREATE", "$JS.API.CONSUMER.DELETE",
+		if strings.HasPrefix(subject, "$JS.API.CONSUMER.CREATE") &&
+			subject != "$JS.API.CONSUMER.CREATE.PRESENCE."+inbound.AccountsConsumer+"."+inbound.AccountsFilter {
+			t.Errorf("the bridge may create consumers by %s", subject)
+		}
+		for _, broad := range []string{"$JS.API.CONSUMER.DELETE",
 			"$JS.API.CONSUMER.MSG.NEXT", "$JS.API.STREAM.CREATE", "DIRECT.GET"} {
 			if strings.Contains(subject, broad) {
 				t.Errorf("the bridge may %s: %s", broad, subject)
