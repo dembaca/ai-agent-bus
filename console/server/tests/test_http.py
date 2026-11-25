@@ -19,10 +19,11 @@ import pytest
 from console_server import auth, config
 from console_server.app import COOKIE, Console
 
-# an ID token as the realm sends it (only its exp is read: the console
-# hands it back to the realm as the logout's hint, RT-6.43 step 9)
+# an ID token as the realm sends it, already expired: the console reads
+# nothing in it and hands it back to the realm as the logout's hint all
+# the same (RT-6.43 step 9)
 ID_TOKEN = "e30." + base64.urlsafe_b64encode(json.dumps(
-    {"exp": int(time.time()) + 300}).encode()).rstrip(b"=").decode() + ".sig"
+    {"exp": int(time.time()) - 60}).encode()).rstrip(b"=").decode() + ".sig"
 
 SETTINGS = config.Settings(public_url="http://127.0.0.1:8747",
                           login_off=True, nats_url="")

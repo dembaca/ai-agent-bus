@@ -3984,8 +3984,9 @@ The console is the operators' view of the bus itself.
      then sends the browser to the realm's `end_session_endpoint` from the
      discovery document with `client_id`, `post_logout_redirect_uri`
      (`<CONSOLE_PUBLIC_URL>/`, registered on the console's client) and the
-     login's ID token as `id_token_hint` while it runs; without one (a
-     restart, an expired token) Keycloak asks the person to confirm
+     login's stored ID token as `id_token_hint`, expired or not (Keycloak
+     checks its signature, not its expiry); without one (after a restart)
+     Keycloak asks the person to confirm
      (RT-6.43 step 9).
    - **Opening the console:** members of an operators' group in Keycloak
      (open point 4). The login service checks it at every issue of a

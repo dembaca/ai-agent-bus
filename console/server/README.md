@@ -76,9 +76,10 @@ The logout (the sidebar's button, `POST /logout`; a GET answers 405)
 ends Keycloak's session too (RT-6.43 step 9): after dropping its own
 session the server redirects to the realm's `end_session_endpoint` with
 `client_id`, `post_logout_redirect_uri=<CONSOLE_PUBLIC_URL>/` and the
-login's ID token as `id_token_hint` while it runs (kept in memory with
-the session). Without one (after a restart, or once it expired) Keycloak
-asks the person to confirm the logout.
+login's stored ID token as `id_token_hint`, expired or not (kept in
+memory with the session; Keycloak checks the hint's signature, not its
+expiry). Without one (after a restart) Keycloak asks the person to
+confirm the logout.
 
 
 Presence today carries `online`/`away` (format v1) — the Kanban's two

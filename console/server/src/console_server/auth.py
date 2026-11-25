@@ -173,32 +173,22 @@ def login_url(endpoints: Endpoints, client_id: str, redirect_uri: str,
     return url, state, verifier
 
 
-def _unexpired(id_token: str, now: float) -> bool:
-    """Whether an ID token still runs by its own ``exp`` — read, not
-    verified: it goes back only to the realm that signed it, as a hint."""
-    try:
-        payload = json.loads(_unb64u(id_token.split(".")[1]))
-    except (IndexError, ValueError, TypeError):
-        return False
-    exp = payload.get("exp") if isinstance(payload, dict) else None
-    return isinstance(exp, (int, float)) and not isinstance(exp, bool) and exp > now
-
-
 def logout_url(endpoints: Endpoints, client_id: str, post_logout_redirect_uri: str,
-               id_token: str = "", now: float | None = None) -> str:
+               id_token: str = "") -> str:
     """The realm's end-session URL for an RP-initiated logout (RT-6.43
     step 9): ``client_id`` and ``post_logout_redirect_uri`` always, the
-    login's ID token as ``id_token_hint`` only while it runs — without it
-    the realm asks the person to confirm the logout. "" when the realm
-    names no end-session endpoint."""
+    login's stored ID token as ``id_token_hint`` whenever there is one,
+    expired or not (OpenID Connect allows it; Keycloak checks the hint's
+    signature, not its expiry) — without one, as after a restart, the realm
+    asks the person to confirm the logout. "" when the realm names no
+    end-session endpoint."""
     from urllib.parse import quote
     if not endpoints.end_session:
         return ""
-    at = time.time() if now is None else now
     sep = "&" if "?" in endpoints.end_session else "?"
     url = (f"{endpoints.end_session}{sep}client_id={quote(client_id, safe='')}"
            f"&post_logout_redirect_uri={quote(post_logout_redirect_uri, safe='')}")
-    if id_token and _unexpired(id_token, at):
+    if id_token:
         url += f"&id_token_hint={quote(id_token, safe='')}"
     return url
 

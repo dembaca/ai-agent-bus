@@ -23,10 +23,11 @@ before 0.5.0 are described in the git history.
   without a password: on a shared machine the next person was logged in as
   the previous operator. Now a button in the sidebar POSTs `/logout`; the
   server drops its session and redirects to Keycloak's end-session endpoint
-  with the login's ID token as the hint (Keycloak asks to confirm without
-  one, after a restart or once it expired). `GET /logout` answers 405. The
-  console's Keycloak client needs `<CONSOLE_PUBLIC_URL>/` as a valid post
-  logout redirect URI.
+  with the login's stored ID token as the hint, expired or not (Keycloak
+  asks to confirm only without one, after a restart). `GET /logout`
+  answers 405. The
+  console's Keycloak client needs `<CONSOLE_PUBLIC_URL>/` under "Valid post
+  logout redirect URIs" before rollout.
 
 ### Fixed
 

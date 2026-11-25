@@ -329,8 +329,8 @@ class Console:
             hint = self.sessions.drop(token) if token else ""
             # RT-6.43 step 9: then the realm's own session (RP-initiated
             # logout), so /login does not slip back in through Keycloak's
-            # single sign-on; with no live session (a restart) or an expired
-            # ID token the realm asks the person to confirm instead
+            # single sign-on; the stored ID token is the hint, expired or not;
+            # with no live session (a restart) the realm asks to confirm
             target = "/"
             if not s.login_off:
                 target = "/login"

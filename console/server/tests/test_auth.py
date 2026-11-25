@@ -171,24 +171,24 @@ def _id_token(payload: dict) -> str:
     return "e30." + _b64u(json.dumps(payload).encode()) + ".sig"
 
 
-def test_logout_url_hints_only_with_a_running_id_token() -> None:
+def test_logout_url_hints_with_the_stored_id_token() -> None:
     """RT-6.43 step 9: the realm's end-session URL with the client and the
-    address to come back to always, the ID token as the hint only while
-    its exp runs; no end-session endpoint, no URL."""
+    address to come back to always, the stored ID token as the hint even
+    once expired (the realm checks its signature, not its expiry); without
+    one no hint; no end-session endpoint, no URL."""
     ends = auth.Endpoints(issuer=ENDPOINTS.issuer, authorization=ENDPOINTS.authorization,
                           token=ENDPOINTS.token, jwks=ENDPOINTS.jwks,
                           end_session="https://kc/realms/x/logout")
     back = "https://console.example/"
-    fresh = _id_token({"exp": 2000})
-    url = auth.logout_url(ends, "console", back, fresh, now=1000)
-    assert url == ("https://kc/realms/x/logout?client_id=console"
-                   "&post_logout_redirect_uri=https%3A%2F%2Fconsole.example%2F"
-                   f"&id_token_hint={fresh}")
-    for stale in (_id_token({"exp": 999}), _id_token({}), _id_token({"exp": True}),
-                  "garbage", "a.!!!.c", ""):
-        url = auth.logout_url(ends, "console", back, stale, now=1000)
-        assert "id_token_hint" not in url and "client_id=console" in url
-    assert auth.logout_url(ENDPOINTS, "console", back, fresh, now=1000) == ""
+    for stored in (_id_token({"exp": int(time.time()) + 300}),
+                   _id_token({"exp": 999})):          # expired: still the hint
+        url = auth.logout_url(ends, "console", back, stored)
+        assert url == ("https://kc/realms/x/logout?client_id=console"
+                       "&post_logout_redirect_uri=https%3A%2F%2Fconsole.example%2F"
+                       f"&id_token_hint={stored}")
+    url = auth.logout_url(ends, "console", back, "")
+    assert "id_token_hint" not in url and "client_id=console" in url
+    assert auth.logout_url(ENDPOINTS, "console", back, "stored") == ""
 
 
 async def test_discovery_reads_the_end_session_endpoint() -> None:
