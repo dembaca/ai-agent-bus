@@ -333,7 +333,7 @@ two open asks, and the empty one at the agent's bye:
 | `exp` | record | 30 minutes after `iat`; a record past it is not shown |
 | `mm` | ask | The ask's Mattermost post id, 26 of `[a-z0-9]`, unique in the list |
 | `kind` | ask | `approval` or `question`, as `ask_human` set it |
-| `human` | ask | The asked human's anchor (a letter or digit, then up to 63 of `[a-z0-9~_-]`), as the session's record from the login service gives it; `-` when it gives none. "For me" compares it with the operator's own anchor, never a name |
+| `human` | ask | The asked human's anchor in its subject form, as the session's record from the login service gives it: the directory's anchor (a lower-case letter or digit, then up to 63 of `[a-z0-9._-]`) with every `.` written as `~`, the encoding of the presence subject's owner token (`ownerToken` in `services/auth/internal/callout/perms.go`, `natsbus.owner_token` in the MCP server), so a lower-case letter or digit, then up to 63 of `[a-z0-9~_-]`; `-` when the record gives none. "For me" compares it, in that form, with the operator's own anchor in the same form, never with a name |
 | `title` | ask | The ask's title line, at most 200 characters, shown as plain text with control and direction characters stripped; never the ask's context, recommendation or answer |
 | `asked` | ask | The ask's server time (Unix seconds); after 24 h a yes approves nothing |
 | `answered` | ask | The asking server saw a first answer by a trusted human |

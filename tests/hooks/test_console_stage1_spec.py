@@ -180,3 +180,9 @@ def test_the_scenario_and_its_risk_exist():
     assert "## 6.43 The console on the bus as its operator" in (ROOT / "docs" / "arc42" / "06-runtime-view.md").read_text()
     assert "| RISK-22 |" in (ROOT / "docs" / "arc42" / "11-risks-and-technical-debt.md").read_text()
     assert "RT-6.43" in addition()
+
+
+def test_a_dotted_anchor_counts_in_its_subject_form():
+    assert ANCHOR.fullmatch("jane.doe".replace(".", "~"))
+    assert not ANCHOR.fullmatch("jane.doe")
+    assert "with every `.` written as `~`" in section()

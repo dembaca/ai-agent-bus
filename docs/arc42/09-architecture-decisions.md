@@ -4518,9 +4518,11 @@ agent publishes passes for a person's word.
 10. **The record lists at most 20 asks, a title each, never an ask's
     body.** Recommended: format v1 with `asks`, the open asks oldest first,
     each with `mm` (the ask's Mattermost post id, unique in the list),
-    `kind` (`approval` or `question`), `human` (the asked human's anchor,
-    as the session's own record from the login service gives it, RT-6.41,
-    or `-` when it gives none), `title` (the ask's title line, at most 200
+    `kind` (`approval` or `question`), `human` (the asked human's anchor
+    in its subject form, `.` written as `~` as in the presence subject's
+    owner token, `ownerToken` in the login service and
+    `natsbus.owner_token` in the MCP server; as the session's own record
+    from the login service gives it, RT-6.41, or `-` when it gives none), `title` (the ask's title line, at most 200
     characters), `asked` (the ask's server time) and `answered` (the server
     saw a first answer by a trusted human); `more`, the open asks the list
     leaves out; `iat` and `exp`. The whole record is at most 4 KiB: past 20
@@ -4528,9 +4530,10 @@ agent publishes passes for a person's word.
     counted in `more`. No `props`, no context, recommendation or answer
     text. The console renders `title` as plain text, never as markup or a
     link, with control and direction characters stripped; a `human` that
-    is not `-` or an anchor (a letter or digit, then up to 63 of
-    `[a-z0-9~_-]`) drops the record. "For me" compares `human` with the
-    anchor of the operator's own credential, never with a name; "I may
+    is not `-` or an anchor in that form (a lower-case letter or digit,
+    then up to 63 of `[a-z0-9~_-]`) drops the record. "For me" compares
+    `human` with the anchor of the operator's own credential in the same
+    subject form, never with a name; "I may
     answer" means the operator's anchor is among the asking agent's owner
     and trusted anchors in its attestation (RT-6.41). Why: enough to see
     what waits on whom, within a bound no agent can stretch; the rest is
