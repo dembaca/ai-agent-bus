@@ -4806,7 +4806,14 @@ registrar's functions can move in later without a second component.
       identity's agents and when an administrator changes the binding
       (`anchor` `null` once unbound). The bridge maps a Mattermost account
       to a person's anchor from these records through a push consumer and
-      gets no read right on the channel directory's bucket. Why: the
+      gets no read right on the channel directory's bucket. Amended with
+      the build (spec author, 2026-11-25): the bridge makes that consumer
+      itself at every start, ack none, a fresh name per start
+      (`bridge_accounts_<nonce>`), last per subject, with a create right
+      whose subject fixes the filter and no delete right. An explicit ack
+      would need `$JS.ACK.PRESENCE.*.>`, which reaches every `PRESENCE`
+      consumer; without acks a lost record fails closed (the person goes
+      out as `-`) until its rewrite or the next start. Why: the
       directory's raw values are not the bridge's to read (they hold every
       identity and binding), and the hosts need the same record for point
       8. Alternative: a read right on the directory's account index.
