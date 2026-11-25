@@ -25,7 +25,9 @@ before 0.5.0 are described in the git history.
   public key) and takes name, anchor and the credential's end from the
   login's own record (`presence.person.<login>.v1`), which arrives with
   the presence lines; until it does, the reading says it waits. A connect the login service refuses ends
-  that session's reading at once, key and tokens wiped, no retry, and
+  that session's reading once the current credential has run out
+  (retried until then, since NATS says the same for a login service that
+  is down), key and tokens wiped, and
   `/v1/me` shows the reading's state as `bus`. A new login from one
   browser ends its old session; at most four sessions per person, the
   oldest closed. `CONSOLE_NATS_SEED_FILE` now refuses the start

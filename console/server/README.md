@@ -58,11 +58,12 @@ refresh (400 or 401; 408, 429 and 5xx are passing) or the refreshed
 token lacks the operators' group or names another `sub`, the console
 session ends: the key and the tokens are dropped and the browser is sent
 to log in. A passing failure (Keycloak or NATS unreachable) is retried
-while the old connection runs, up to the credential's 15 minutes. When
-the login service refuses the connect (no operator, no anchor, too many
-logins of the person), the reading of that session ends at once, key and
-tokens wiped, no retry; the session stays and `/v1/me` says why in
-`bus.state` (`reading`, `waiting: …`, `refused: …`, `ended: …`, with
+while the old connection runs, up to the credential's 15 minutes. NATS answers
+a refused connect (no operator, no anchor, too many logins of the person)
+and a login service that is down or slow alike, so the server retries
+with fresh tokens until the current credential's `exp`; only then does
+the session's reading end, key and tokens wiped, while the session stays
+and `/v1/me` says why in `bus.state` (`reading`, `waiting: …`, `refused: …`, `ended: …`, with
 `bus.name` and `bus.anchor` once the record came). Logout and the end of
 the session (`CONSOLE_SESSION_SEC`) close the connection and drop key and
 tokens the same way. A login from a browser that holds a session ends

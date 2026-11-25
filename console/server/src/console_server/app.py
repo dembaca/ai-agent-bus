@@ -372,6 +372,14 @@ class Console:
         self._pending.pop(state, None)
         try:
             tokens = await auth.exchange(self.endpoints, s.client_id, redirect, code, verifier)
+        except auth.Refused as exc:
+            # a stale or used code: nothing about the person
+            log.warning("console login: the code was refused: %s", exc)
+            return httpd.Response.text("login expired, please try again", 400)
+        except (auth.AuthError, httpx.HTTPError, OSError, TimeoutError) as exc:
+            log.warning("console login failed: %s", exc)
+            return httpd.Response.text(f"login failed: {exc}", 502)
+        try:
             operator = await auth.verify(s, self.endpoints, self.keyring, tokens.access)
         except auth.Refused as exc:
             log.warning("console login refused: %s", exc)

@@ -158,9 +158,18 @@ async def test_the_reader_subscribes_by_the_login_and_learns_its_name() -> None:
         await cb(online("agent-a", ack("svc-own-name", 3)))
         assert [c["name"] for c in view.fleet.cards()] == ["agent-a"]
         assert view.fleet.synced and wake.is_set()
-        await dialer.conns[0].subs[r.deliver_stats](
-            SimpleNamespace(subject="stats.agent-a", data=b"{}", reply=None))
-        assert view.stats_lines == 1
+        st = dialer.conns[0].subs[r.deliver_stats]
+        line = SimpleNamespace(subject="stats.agent-a", data=b"{}",
+                               reply=ack("svc-stats", 1).replace("PRESENCE", "STATS"))
+        await st(line)
+        await st(line)                           # the overlap's repeat counts once
+        await st(SimpleNamespace(subject="stats.agent-a", data=b"{}", reply=None))
+        await st(SimpleNamespace(subject="stats.agent-a", data=b"{}",
+                                 reply=ack("other", 2).replace("PRESENCE", "STATS")))
+        assert view.stats_lines == 1             # no reply, another consumer: dropped
+        # another consumer's presence is dropped too: the first name is pinned
+        await cb(online("agent-b", ack("another-consumer", 4)))
+        assert [c["name"] for c in view.fleet.cards()] == ["agent-a"]
     finally:
         await r.aclose()
     assert not r.holds_secrets            # key wiped, tokens dropped
@@ -258,12 +267,13 @@ async def test_a_refused_renewal_ends_the_session() -> None:
     assert dialer.conns[0].is_closed
 
 
-async def test_the_bus_refusing_the_login_ends_the_reading_at_once() -> None:
-    """The login service refuses the connect (not an operator, no anchor,
-    the cap of logins per person): no retry and no Keycloak refresh; key
-    and tokens are wiped at once, the reason is the state the browser
-    sees, and the session stays so it can be shown."""
-    dialer = Dialer("authz")
+async def test_a_refused_connect_is_retried_until_the_credential_ends() -> None:
+    """NATS answers "authorization violation" alike for a refusal and for a
+    login service that is down or slow: the reader retries with fresh
+    tokens until the current credential's end, then the reading ends, key
+    and tokens wiped, the reason the state the browser sees; the session
+    stays so it can be shown."""
+    dialer = Dialer(*["authz"] * 50)
     calls: list[str] = []
     ended: list[bool] = []
 
@@ -271,12 +281,46 @@ async def test_the_bus_refusing_the_login_ends_the_reading_at_once() -> None:
         calls.append(refresh)
         return auth.Tokens("x", "y")
     r, view = reader_with(dialer, renew, on_end=lambda: ended.append(True))
-    r.start()
-    await until(lambda: not r.running)
+    with mock.patch.object(nats_read, "CREDENTIAL_SEC", 0.3), \
+            mock.patch.object(nats_read, "BACKOFF_MAX_SEC", 0.05):
+        r.start()
+        await until(lambda: r.state.startswith("waiting: the bus refused"))
+        await until(lambda: not r.running)
     assert r.state.startswith("refused:") and "too many logins" in r.state
     assert view.bus()["state"] == r.state
     assert not r.holds_secrets
-    assert calls == [] and len(dialer.tokens) == 1 and ended == []
+    assert len(dialer.tokens) >= 2 and calls and ended == []
+
+
+async def test_an_outage_at_renewal_recovers() -> None:
+    """The login service is down at a renewal (NATS: authorization
+    violation): the reading waits and comes back once the service is."""
+    dialer = Dialer("ok", "authz", "authz", "ok")
+
+    async def renew(refresh: str) -> auth.Tokens:
+        return auth.Tokens("fresh", refresh)
+    r, _view = reader_with(dialer, renew, renew_sec=0.05)
+    with mock.patch.object(nats_read, "BACKOFF_MAX_SEC", 0.05):
+        r.start()
+        try:
+            await until(lambda: r.connects >= 2, timeout=8.0)
+            assert r.running and r.holds_secrets
+        finally:
+            await r.aclose()
+    assert len(dialer.tokens) >= 4
+
+
+def test_the_own_record_is_decoded_strictly() -> None:
+    now = 1_800_000_000
+    good = {"v": 1, "name": "person-ann", "anchor": "ann", "iat": now, "exp": now + 900}
+    assert nats_read.decode_record(json.dumps(good).encode(), now=now) == (
+        "person-ann", "ann", now + 900)
+    for bad in ({**good, "v": True}, {**good, "v": 1.0}, {**good, "iat": float(now)},
+                {k: v for k, v in good.items() if k != "iat"}, {**good, "extra": 1},
+                {**good, "iat": now + 120}, {**good, "exp": now - 1},
+                {**good, "exp": now + 1201}, {**good, "name": 5},
+                {**good, "anchor": "a.b"}):
+        assert nats_read.decode_record(json.dumps(bad).encode(), now=now) is None, bad
 
 
 async def test_a_passing_failure_waits_and_retries() -> None:
@@ -388,7 +432,7 @@ async def test_no_reader_before_a_login_and_one_per_login(console: Console) -> N
     assert view.reader is not None and view.reader.running
     # the fleet the session shows is its own reader's
     cb = dialer.conns[0].subs[view.reader.deliver_presence]
-    await cb(online("agent-a", ack("svc", 2)))
+    await cb(online("agent-a", ack("svc-own-name", 2)))
     status, _h, body = await get(console, "/v1/graph", cookie=cookie)
     assert status == 200 and "agent-a" in json.dumps(json.loads(body))
     assert console.fleet.cards() == []             # the stand-in stays empty
@@ -427,14 +471,13 @@ async def test_a_persons_fifth_session_closes_the_oldest(console: Console) -> No
     assert dialer.conns[0].is_closed
 
 
-async def test_the_services_cap_refusal_shows_and_stops(console: Console) -> None:
-    """The login service refuses a login past its cap: the session shows
-    why, reads nothing, and asks Keycloak for nothing more."""
-    dialer = Dialer("authz")
-    refreshed: list[str] = []
+async def test_the_services_refusal_shows_after_the_credential(console: Console) -> None:
+    """The login service keeps refusing a login (its cap, say): retried
+    until the credential's end, then the session shows why and holds no
+    secret."""
+    dialer = Dialer(*["authz"] * 50)
 
     async def renew(sub: str, refresh: str) -> auth.Tokens:
-        refreshed.append(refresh)
         return auth.Tokens("x", "y")
     console._renew = renew  # type: ignore[method-assign]
 
@@ -450,17 +493,34 @@ async def test_the_services_cap_refusal_shows_and_stops(console: Console) -> Non
                 if v.startswith("choirbus_flow=")).split(";")[0]
     with mock.patch.object(auth, "exchange", fake_exchange), \
             mock.patch.object(auth, "verify", fake_verify), \
-            mock.patch.object(PersonReader, "dial", lambda self, *a: dialer(self, *a)):
+            mock.patch.object(PersonReader, "dial", lambda self, *a: dialer(self, *a)), \
+            mock.patch.object(nats_read, "CREDENTIAL_SEC", 0.3), \
+            mock.patch.object(nats_read, "BACKOFF_MAX_SEC", 0.05):
         status, headers, _b = await get(console, f"/callback?code=x&state={state}",
                                         cookie=flow)
-    cookie = next(v for v in headers["__set-cookie__"]
-                  if v.startswith("choirbus_session=")).split(";")[0]
-    view = console.sessions.views()[0]
-    await until(lambda: not view.reader.running)
+        cookie = next(v for v in headers["__set-cookie__"]
+                      if v.startswith("choirbus_session=")).split(";")[0]
+        view = console.sessions.views()[0]
+        await until(lambda: not view.reader.running)
     status, _h, body = await get(console, "/v1/me", cookie=cookie)
     assert status == 200
     assert json.loads(body)["bus"]["state"].startswith("refused:")
-    assert refreshed == [] and not view.reader.holds_secrets
+    assert not view.reader.holds_secrets
+
+
+async def test_a_stale_code_says_the_login_expired(console: Console) -> None:
+    async def stale(*a: Any, **k: Any) -> auth.Tokens:
+        raise auth.Refused("token endpoint refused the code")
+    status, headers, _b = await get(console, "/login")
+    from urllib.parse import parse_qs, urlsplit
+    state = parse_qs(urlsplit(headers["location"]).query)["state"][0]
+    flow = next(v for v in headers["__set-cookie__"]
+                if v.startswith("choirbus_flow=")).split(";")[0]
+    with mock.patch.object(auth, "exchange", stale):
+        status, _h, body = await get(console, f"/callback?code=x&state={state}",
+                                     cookie=flow)
+    assert status == 400 and body == b"login expired, please try again"
+    assert b"operators" not in body
 
 
 async def test_a_refused_renewal_sends_the_browser_to_login(console: Console) -> None:

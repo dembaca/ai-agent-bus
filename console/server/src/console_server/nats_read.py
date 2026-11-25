@@ -62,6 +62,9 @@ REACH_TIMEOUT_SEC = 3.0
 PERSON = "person"          # deliver.person.<login>.… (the login service's contract)
 RECORD_MAX = 4096
 RECORD_WAIT_SEC = 30.0     # no own record this long after a connect: say so
+CREDENTIAL_SEC = 900.0     # a person's credential, when no record told its exp
+RECORD_LEEWAY_SEC = 60.0   # an own record's iat may lie this far ahead
+RECORD_SPAN_MAX_SEC = 1200.0   # exp at most 20 minutes after iat
 SEEN_MAX = 512             # deliveries remembered to drop a renewal's repeats
 
 
@@ -118,25 +121,68 @@ def consumer_of(reply: str | None) -> str:
     return t[3 if len(t) == 9 else 5]
 
 
-def decode_record(data: bytes) -> tuple[str, str, int] | None:
+def _int(value: object) -> bool:
+    return type(value) is int          # not a bool, not a float
+
+
+def decode_record(data: bytes, now: float | None = None) -> tuple[str, str, int] | None:
     """The login's own record (``callout.PersonRecord``): name, anchor (its
-    subject form) and ``exp``, the credential's end; None if it is not
-    format 1 or not well formed."""
+    subject form) and ``exp``, the credential's end. Strict: exactly the
+    five fields, ``v`` the integer 1, ``iat`` not ahead (a minute's
+    leeway), ``exp`` still ahead and at most 20 minutes after ``iat``;
+    anything else is None and dropped."""
     if len(data) > RECORD_MAX:
         return None
     try:
         doc = json.loads(data)
     except ValueError:
         return None
-    if not isinstance(doc, dict) or doc.get("v") != 1:
+    if not isinstance(doc, dict) or set(doc) != {"v", "name", "anchor", "iat", "exp"}:
         return None
-    name, anchor, exp = doc.get("name"), doc.get("anchor"), doc.get("exp")
-    if not (isinstance(name, str) and isinstance(anchor, str)
+    v, name, anchor = doc["v"], doc["name"], doc["anchor"]
+    iat, exp = doc["iat"], doc["exp"]
+    at = time.time() if now is None else now
+    if not (_int(v) and v == 1 and _int(iat) and _int(exp)
+            and isinstance(name, str) and isinstance(anchor, str)
             and 0 < len(name) <= 128 and 0 < len(anchor) <= 128
             and all(c.isprintable() and c not in ". *>" for c in name + anchor)
-            and isinstance(exp, int) and not isinstance(exp, bool) and exp > 0):
+            and iat <= at + RECORD_LEEWAY_SEC and exp > at
+            and iat < exp <= iat + RECORD_SPAN_MAX_SEC):
         return None
     return name, anchor, exp
+
+
+class Dedupe:
+    """One consumer's deliveries across a renewal's overlap: its name pinned
+    at the first delivery (others are dropped), and a delivery already read
+    on the other connection dropped the second time. A consumer made anew
+    starts its sequence again over other stream sequences: no repeat."""
+
+    def __init__(self) -> None:
+        self.consumer = ""
+        self._seen: deque[tuple[int, int]] = deque(maxlen=SEEN_MAX)
+        self._seen_set: set[tuple[int, int]] = set()
+        self._last_cseq = 0
+
+    def take(self, reply: str | None) -> str:
+        """The consumer's name for a delivery to read, '' to drop it."""
+        consumer = consumer_of(reply)
+        ack = parse_ack(reply)
+        if not consumer or ack is None:
+            return ""
+        if not self.consumer:
+            self.consumer = consumer
+        elif consumer != self.consumer:
+            return ""
+        key = (ack.consumer_seq, ack.stream_seq)
+        if ack.consumer_seq <= self._last_cseq and key in self._seen_set:
+            return ""
+        if len(self._seen) == self._seen.maxlen:
+            self._seen_set.discard(self._seen[0])
+        self._seen.append(key)
+        self._seen_set.add(key)
+        self._last_cseq = ack.consumer_seq
+        return consumer
 
 
 class View:
@@ -208,9 +254,9 @@ class PersonReader:
         self._nc: Conn | None = None
         self._task: asyncio.Task[None] | None = None
         self._stopped = False
-        self._seen: deque[tuple[int, int]] = deque(maxlen=SEEN_MAX)
-        self._seen_set: set[tuple[int, int]] = set()
-        self._last_cseq = 0
+        self._presence = Dedupe()
+        self._stats = Dedupe()
+        self._started = time.time()
 
     # --- the seam: one connection with this login's key -------------------------
 
@@ -331,12 +377,20 @@ class PersonReader:
             except Exception as exc:  # noqa: BLE001
                 access = None
                 if "authorization" in str(exc).lower():
-                    # the login service refused this login (no operator, no
-                    # anchor, too many logins): not retried, nothing kept
-                    raise Ended("refused: the bus refused this login (not an"
-                                " operator, unknown to the directory, or too"
-                                " many logins); log out and in again") from None
-                self.state = "waiting: the bus is unreachable"
+                    # NATS says the same for a refusal (no operator, no
+                    # anchor, too many logins) and for a login service that
+                    # is down or slow: retried until the current credential
+                    # ends, then the reading ends and its secrets go
+                    end = (self.credential_exp if self.credential_exp is not None
+                           else self._started + CREDENTIAL_SEC)
+                    if time.time() >= end:
+                        raise Ended("refused: the bus refused this login (not an"
+                                    " operator, unknown to the directory, too"
+                                    " many logins, or the login service is"
+                                    " down); log out and in again") from None
+                    self.state = "waiting: the bus refused the connect; retrying"
+                else:
+                    self.state = "waiting: the bus is unreachable"
                 log.warning("console: login %.10s… cannot connect (%s); retrying in %.0f s",
                             self.login, connect_reason(exc), backoff)
                 await asyncio.sleep(backoff)
@@ -406,32 +460,13 @@ class PersonReader:
             await asyncio.sleep(backoff)
             return None
 
-    def _repeat(self, reply: str | None) -> bool:
-        """A delivery already read on the other connection of a renewal's
-        overlap. A consumer made anew starts its sequence again with other
-        stream sequences, so it is no repeat."""
-        ack = parse_ack(reply)
-        if ack is None:
-            return False
-        key = (ack.consumer_seq, ack.stream_seq)
-        if ack.consumer_seq <= self._last_cseq and key in self._seen_set:
-            return True
-        if len(self._seen) == self._seen.maxlen:
-            self._seen_set.discard(self._seen[0])
-        self._seen.append(key)
-        self._seen_set.add(key)
-        self._last_cseq = ack.consumer_seq
-        return False
-
     async def _subscribe(self, nc: Conn) -> None:
         view, settings, login = self.view, self.settings, self.login
 
         async def presence(msg: Any) -> None:
-            if self._repeat(msg.reply):
-                return
-            # the consumers' names are the login service's; what arrives on
-            # this login's own deliver subject is its consumer's
-            consumer = consumer_of(msg.reply)
+            # the consumers' names are the login service's: the first seen
+            # on this login's own deliver subject is pinned
+            consumer = self._presence.take(msg.reply)
             if not consumer:
                 return
             if msg.subject == self.record_subject:
@@ -450,7 +485,8 @@ class PersonReader:
                 view.fire()
 
         async def stats(msg: Any) -> None:
-            view.stats_lines += 1     # read and shown with the reports (step 8)
+            if self._stats.take(msg.reply):
+                view.stats_lines += 1     # read and shown with the reports (step 8)
 
         await nc.subscribe(self.deliver_presence, cb=presence)
         await nc.subscribe(self.deliver_stats, cb=stats)
