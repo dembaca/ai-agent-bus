@@ -52,7 +52,7 @@ def token(private, kid="kid-1", alg="RS256", iss="https://kc/realms/x",
     head = {"alg": alg, "kid": kid, "typ": "Bearer"}
     payload = {"iss": iss, "aud": aud, "azp": azp,
                "exp": exp if exp is not None else int(now) + 300,
-               "iat": int(now), "preferred_username": username,
+               "iat": int(now), "preferred_username": username, "sub": "sub-1",
                "name": "Dem Bac", "groups": list(groups)}
     return sign(private, head, payload)
 
@@ -104,7 +104,7 @@ async def test_every_wrong_token_is_refused() -> None:
     # the groups claim broken is refused, not read as empty
     head = {"alg": "RS256", "kid": "kid-1", "typ": "Bearer"}
     payload = {"iss": "https://kc/realms/x", "aud": "console", "azp": "console",
-               "exp": int(time.time()) + 300, "preferred_username": "d",
+               "exp": int(time.time()) + 300, "preferred_username": "d", "sub": "s",
                "groups": "no list is fine (rejected to empty)", "name": "D"}
     with pytest.raises(auth.AuthError, match="not a member"):
         await auth.verify(SETTINGS, ENDPOINTS, keyring, sign(private, head, payload))
@@ -134,11 +134,37 @@ async def test_exchange_with_a_fake_token_endpoint() -> None:
     async def post(url: str, form: dict) -> bytes:
         assert url == ENDPOINTS.token
         assert form["code_verifier"] == "the-verifier"
-        return json.dumps({"access_token": "x.y.z", "id_token": "no"}).encode()
-    raw = await auth.exchange(ENDPOINTS, "console",
-                              "https://console.example/callback",
-                              "the-code", "the-verifier", post=post)
-    assert raw == "x.y.z"
+        return json.dumps({"access_token": "x.y.z", "id_token": "no",
+                           "refresh_token": "r.r.r"}).encode()
+    tokens = await auth.exchange(ENDPOINTS, "console",
+                                 "https://console.example/callback",
+                                 "the-code", "the-verifier", post=post)
+    assert (tokens.access, tokens.refresh) == ("x.y.z", "r.r.r")
+    assert "x.y.z" not in repr(tokens) and "r.r.r" not in repr(tokens)
+
+
+async def test_refresh_uses_the_sessions_refresh_token() -> None:
+    """RT-6.43 step 4: the renewal's grant is the ordinary session's
+    refresh token for the console's public client, no offline scope; a
+    rotated refresh token replaces the old one, none in the answer keeps
+    it; no refresh token at all is a refusal, never a passing fault."""
+    seen: list[dict] = []
+
+    async def post(url: str, form: dict) -> bytes:
+        seen.append(form)
+        body: dict = {"access_token": "fresh"}
+        if form["refresh_token"] == "old":
+            body["refresh_token"] = "rotated"
+        return json.dumps(body).encode()
+    tokens = await auth.refresh(ENDPOINTS, "console", "old", post=post)
+    assert (tokens.access, tokens.refresh) == ("fresh", "rotated")
+    assert seen[0] == {"grant_type": "refresh_token", "refresh_token": "old",
+                       "client_id": "console"}
+    assert "scope" not in seen[0]           # no offline_access asked for
+    tokens = await auth.refresh(ENDPOINTS, "console", "kept", post=post)
+    assert tokens.refresh == "kept"
+    with pytest.raises(auth.Refused):
+        await auth.refresh(ENDPOINTS, "console", "", post=post)
 
 
 def test_sessions_hash_the_token_in_memory() -> None:

@@ -78,8 +78,7 @@ def test_the_card_the_fixture_states(fleet_scenario) -> None:
 
 def test_the_events_the_fixture_states(fleet_scenario) -> None:
     console = Console(config.Settings(public_url="http://127.0.0.1:8747",
-                                     login_off=True, nats_url="nats://127.0.0.1:4",
-                                     nats_seed_file="/none"))
+                                     login_off=True, nats_url="nats://127.0.0.1:4"))
     console.fleet = fleet_scenario
     console.fleet.synced = True
     stream = console._stream(token=None)
@@ -125,6 +124,7 @@ def test_the_report_the_fixture_states() -> None:
     an MCP server publishes it (`stats.nats_body`) on `<stats>.<name>`."""
     from mattermost_ai_agent_bus import stats
     from console_server.stats_view import StatsBook
+    from test_asks_stats import STATS_CONSUMER
 
     line = {"v": "0.101.0", "sid": "3f9a1c2b7d4e", "part": 2, "rt": "claude-code",
             "kind": "session", "min": 1440, "turns": 31, "asks": 2, "asks_answered": 2,
@@ -133,7 +133,7 @@ def test_the_report_the_fixture_states() -> None:
     body = stats.nats_body(line)
     assert body is not None
     assert book.on_delivery(f"stats.{FIXTURE['card']['name']}", body,
-                            "$JS.ACK.STATS.console_stats.1.1.1.1763980800000000000.0",
-                            "STATS", "console_stats")
+                            f"$JS.ACK.STATS.{STATS_CONSUMER}.1.1.1.1763980800000000000.0",
+                            "STATS", STATS_CONSUMER)
     report = next(r for r in book.reports() if r["id"] == FIXTURE["report"]["id"])
     assert report == FIXTURE["report"]

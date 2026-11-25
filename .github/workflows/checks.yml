@@ -203,10 +203,6 @@ jobs:
       - name: image builds, and the server starts
         run: |
           docker build -t console-test -f console/server/Dockerfile .
-          seed="$(uv run --directory console/server python -c "import nkeys, os; print(nkeys.encode_seed(os.urandom(32), nkeys.PREFIX_BYTE_USER).decode())")"
-          printf '%s' "$seed" > "$RUNNER_TEMP/console.seed"
-          chmod 600 "$RUNNER_TEMP/console.seed"
-          sudo chown 65532 "$RUNNER_TEMP/console.seed"  # the container's nonroot
           docker run -d --name console-test -p 127.0.0.1:8747:8747 \
             -e CONSOLE_PUBLIC_URL=http://127.0.0.1:8747 \
             -e CONSOLE_ISSUER=http://127.0.0.1:19999 \
@@ -214,8 +210,6 @@ jobs:
             -e CONSOLE_OPERATOR_GROUP=operators \
             -e CONSOLE_ADDR=0.0.0.0:8747 \
             -e CONSOLE_NATS_URL=nats://127.0.0.1:4222 \
-            -e CONSOLE_NATS_SEED_FILE=/run/console.seed \
-            -v "$RUNNER_TEMP/console.seed:/run/console.seed:ro" \
             console-test
           # /livez is liveness and answers 200 as soon as the server
           # listens; /healthz (readiness) stays 503 in this smoke by
@@ -225,13 +219,14 @@ jobs:
             sleep 1
           done
           # /livez is liveness (200, NATS-less container and all); /healthz
-          # is readiness and rightly answers 503 not synced in this smoke —
+          # is readiness and rightly answers 503 in this smoke, no NATS
+          # server answering (RT-6.43: no seed, no reader before a login) —
           # an assertion both ways, not a curl that passed by chance
           status=0
           curl -fsS http://127.0.0.1:8747/livez | grep -q ok || status=1
           code=$(curl -s -o /dev/null -w "%{http_code}" http://127.0.0.1:8747/healthz)
           [ "$code" = "503" ] || status=1
-          curl -sS http://127.0.0.1:8747/healthz | grep -q "not synced" || status=1
+          curl -sS http://127.0.0.1:8747/healthz | grep -q "does not answer" || status=1
           docker logs console-test 2>&1 | tail -40
           docker rm -f console-test
           exit $status

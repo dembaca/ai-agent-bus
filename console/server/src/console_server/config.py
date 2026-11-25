@@ -36,26 +36,21 @@ class Settings:
     listen_host: str = "127.0.0.1"
     listen_port: int = 8747
 
-    # the read-only NATS side: one static account (the pilot's deviation)
+    # the read-only NATS side: one connection per logged-in operator, with a
+    # credential the login service issues for that person (RT-6.43); no
+    # static account, no seed
     nats_url: str = ""
-    nats_seed_file: str = ""
     nats_ca_file: str = ""
     presence_subject: str = "presence"
     presence_stream: str = "PRESENCE"
-    deliver_subject: str = "deliver.console.presence"
-    consumer_name: str = "console"
-    # the STATS lines (RT-6.43 step 7): read only when a stream is named, since the pilot's
-    # account has no right on it; the person's credential brings its own consumer
+    # the STATS lines (RT-6.43 step 7): the login service's STATS stream, which the
+    # login's own stats consumer delivers; each line lies on <stats>.<agent>
     stats_subject: str = "stats"
-    stats_stream: str = ""
-    stats_deliver_subject: str = "deliver.console.stats"
-    stats_consumer_name: str = "console_stats"
+    stats_stream: str = "STATS"
 
     # the built browser app (console/web/dist)
     web_dir: str = ""
     health_path: str = "/healthz"
-    # /healthz goes 503 once the reader has seen no replay for this long
-    health_sync_bound: float = 180.0
     extra: tuple[tuple[str, str], ...] = field(default_factory=tuple)
 
 
@@ -88,31 +83,22 @@ def find() -> Settings:
         listen_host=host,
         listen_port=port,
         nats_url=given("CONSOLE_NATS_URL"),
-        nats_seed_file=given("CONSOLE_NATS_SEED_FILE"),
         nats_ca_file=given("CONSOLE_NATS_CA_FILE"),
         presence_subject=given("CONSOLE_PRESENCE_SUBJECT") or "presence",
         presence_stream=given("CONSOLE_PRESENCE_STREAM") or "PRESENCE",
-        deliver_subject=given("CONSOLE_DELIVER_SUBJECT") or "deliver.console.presence",
-        consumer_name=given("CONSOLE_CONSUMER_NAME") or "console",
         stats_subject=given("CONSOLE_STATS_SUBJECT") or "stats",
-        stats_stream=given("CONSOLE_STATS_STREAM"),
-        stats_deliver_subject=given("CONSOLE_STATS_DELIVER_SUBJECT") or "deliver.console.stats",
-        stats_consumer_name=given("CONSOLE_STATS_CONSUMER_NAME") or "console_stats",
+        stats_stream=given("CONSOLE_STATS_STREAM") or "STATS",
         web_dir=given("CONSOLE_WEB_DIR"),
-        health_sync_bound=_float(given, "CONSOLE_HEALTH_SYNC_BOUND", 180.0),
     )
+    if given("CONSOLE_NATS_SEED_FILE"):
+        # the static account is gone (RT-6.43): a leftover setting points at a
+        # secret that must go too, so the start refuses; the file is never read
+        raise ConfigError("CONSOLE_NATS_SEED_FILE: the console's static NATS"
+                          " account is gone, every operator reads with a"
+                          " credential of their own; remove the setting, the"
+                          " secret and the account's user")
     _check(settings)
     return _https(settings)
-
-
-def _float(given: Callable[[str], str], name: str, default: float) -> float:
-    raw = given(name)
-    if not raw:
-        return default
-    try:
-        return float(raw)
-    except ValueError as exc:
-        raise ConfigError(f"{name}: a number of seconds, got {raw!r}") from exc
 
 
 def _required(given: Callable[[str], str], name: str) -> str:
@@ -136,15 +122,6 @@ def _check(s: Settings) -> None:
                           " CONSOLE_ADDR: it would serve without a login")
     if not s.login_off:
         _url(s.issuer, "CONSOLE_ISSUER")
-    if s.nats_seed_file:
-        try:
-            mode = os.stat(s.nats_seed_file).st_mode & 0o777
-            if mode & 0o077:
-                raise ConfigError("CONSOLE_NATS_SEED_FILE must be readable by"
-                                  f" its owner only (mode {mode:o})")
-            open(s.nats_seed_file, "rb").read(4096)  # readable, and no directory
-        except OSError as exc:
-            raise ConfigError(f"CONSOLE_NATS_SEED_FILE cannot be read: {exc}") from exc
     _url(s.public_url, "CONSOLE_PUBLIC_URL")
     if not s.nats_url:
         raise ConfigError("CONSOLE_NATS_URL is required")
@@ -154,27 +131,14 @@ def _check(s: Settings) -> None:
     if parts.scheme == "nats" and parts.hostname not in ("127.0.0.1", "::1", "localhost"):
         raise ConfigError("CONSOLE_NATS_URL: nats:// only to a loopback host"
                           " (a token to anywhere else would go in the clear); use tls://")
-    if not s.nats_seed_file:
-        raise ConfigError("CONSOLE_NATS_SEED_FILE is required"
-                          " (the console's read-only account, the pilot's deviation from ADR-015)")
-    if s.deliver_subject.count(".") < 1 or not s.deliver_subject.startswith("deliver."):
-        raise ConfigError("CONSOLE_DELIVER_SUBJECT: deliver.<name>.…")
-    for name in (s.presence_subject, s.presence_stream, s.consumer_name):
+    for name in (s.presence_subject, s.presence_stream):
         if not name or any(c in name for c in ". *>"):
-            raise ConfigError("CONSOLE_PRESENCE_SUBJECT/STREAM/CONSUMER_NAME: one plain token")
-    for name in (s.stats_subject, s.stats_consumer_name):
+            raise ConfigError("CONSOLE_PRESENCE_SUBJECT/STREAM: one plain token")
+    for name in (s.stats_subject, s.stats_stream):
         if not name or any(c in name for c in ". *>"):
-            raise ConfigError("CONSOLE_STATS_SUBJECT/CONSUMER_NAME: one plain token")
-    if s.stats_stream and any(c in s.stats_stream for c in ". *>"):
-        raise ConfigError("CONSOLE_STATS_STREAM: one plain token")
+            raise ConfigError("CONSOLE_STATS_SUBJECT/STREAM: one plain token")
     if s.stats_subject in (s.presence_subject, "deliver"):
         raise ConfigError("CONSOLE_STATS_SUBJECT: not the presence prefix, not deliver")
-    if (not s.stats_deliver_subject.startswith("deliver.")
-            or s.stats_deliver_subject == s.deliver_subject):
-        raise ConfigError("CONSOLE_STATS_DELIVER_SUBJECT: deliver.<name>.…, not the presence one")
-    if not (30.0 <= s.health_sync_bound <= 24 * 3600.0):
-        raise ConfigError("CONSOLE_HEALTH_SYNC_BOUND: 30 s to 24 h (the probe"
-                          " went red forever below, or never, above)")
 
 
 def _https(s: Settings) -> Settings:

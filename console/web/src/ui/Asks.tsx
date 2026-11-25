@@ -38,7 +38,7 @@ export function Asks({ asks, onOpen }: {
           {rows.map((ask) => (
             <tr key={ask.id} className="asks__row" onClick={() => onOpen(ask)}>
               <td>
-                {ask.forMe === null && <span title="no operator anchor until your own credential">n/a</span>}
+                {ask.forMe === null && <span title="no operator anchor until the login's own record has arrived">n/a</span>}
                 {ask.forMe && <span className="chip chip--for-me" title="asked human: you">for me</span>}
                 {!ask.forMe && ask.mayAnswer &&
                   <span className="chip chip--may-answer" title="an agent whose owner or trusts name you">may answer</span>}

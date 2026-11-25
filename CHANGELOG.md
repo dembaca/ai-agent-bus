@@ -5,6 +5,46 @@ before 0.5.0 are described in the git history.
 
 ## Unreleased
 
+### Breaking
+
+- **The console reads the bus as the logged-in operator; its static NATS
+  account is gone** (the console on the bus as its operator, RT-6.43
+  steps 1 and 4; point 7 of the console decision's addition of
+  2026-11-25, ADR-015). At each login the console's server makes a key
+  pair for that login, in memory only, and connects to NATS with the
+  operator's Keycloak access token as the connect token; the login
+  service issues the person's credential and the login's two consumers,
+  and the session shows what they deliver: one reader per session, none
+  before a login. Every 10 minutes it refreshes the token with the
+  ordinary Keycloak session's refresh token (no `offline_access`), checks
+  it as at the login (operators' group, same person) and connects again
+  with the same key; a refused refresh, a lost group or a logout closes
+  the connection, drops key and tokens and ends the session. The console
+  never derives the person's name: it subscribes by the login alone
+  (`deliver.person.<login>.presence` and `.stats`, `<login>` the whole
+  public key) and takes name, anchor and the credential's end from the
+  login's own record (`presence.person.<login>.v1`), which arrives with
+  the presence lines; until it does, the reading says it waits. A connect the login service refuses ends
+  that session's reading once the current credential has run out
+  (retried until then, since NATS says the same for a login service that
+  is down), key and tokens wiped, and
+  `/v1/me` shows the reading's state as `bus`. A new login from one
+  browser ends its old session; at most four sessions per person, the
+  oldest closed. `CONSOLE_NATS_SEED_FILE` now refuses the start
+  (the file is never read); `CONSOLE_DELIVER_SUBJECT`,
+  `CONSOLE_CONSUMER_NAME` and `CONSOLE_HEALTH_SYNC_BOUND` are gone.
+  `/healthz` (readiness) answers 200 when the NATS server answers on
+  `CONSOLE_NATS_URL` (a verified TLS handshake for `tls://`), no longer
+  after a fleet replay; `/livez` answers 200 while the server serves.
+  Rollout, in this order: the login service with its console path on
+  (`AUTH_CONSOLE_CLIENT_ID`, `AUTH_OPERATOR_GROUP`), the console's
+  Keycloak client with refresh tokens and no `offline_access`, then the
+  console without `CONSOLE_NATS_SEED_FILE`; afterwards remove the
+  pilot's console user from the NATS server's configuration and its
+  seed secret. The release's `Needs:` line, to be written under its
+  version: "login service updated first with the console path on, then
+  the console, its static account and seed removed."
+
 ### Added
 
 - **The console shows the open asks and two reports from NATS** (RT-6.43
@@ -27,11 +67,13 @@ before 0.5.0 are described in the git history.
   24 h, "agent gone" without fresh presence; `/v1/stats` gives the bus's share of all tokens per version
   over 7 days and the asks over 24 hours and 7 days, the numbers
   `stats_report` gives on the same lines, with the age of the oldest line.
-  The STATS lines are read only with `CONSOLE_STATS_STREAM`. The console does not
-  connect with the operator's own NATS credential yet (the login service
-  issues it, see below); until it takes the operator's anchor from that
-  credential's own record, "for me" and "may answer" are n/a and mark
-  nothing (never matched by name).
+  Both reach a session through the login's own consumers (see the
+  breaking change above: the ask records with the presence lines, the
+  STATS lines from 7 days back; `CONSOLE_STATS_SUBJECT` and
+  `CONSOLE_STATS_STREAM`, defaults `stats` and `STATS`, name where they
+  lie). "For me" and "may answer" compare the operator's anchor from the
+  login's own record, never a name; until that record came they are n/a
+  and mark nothing.
 - **The login service's part of the console's asks and `STATS` lines**
   (the console on the bus as its operator, RT-6.43; points 9 and 12 of the
   console decision's addition of 2026-11-25, ADR-015). Each agent's

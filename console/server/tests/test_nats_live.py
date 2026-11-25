@@ -1,13 +1,17 @@
 """The console's NATS side against a real nats-server (2.15.3, as the mcp
 transport tests: ``MM_TEST_NATS=1`` and a binary in ``MM_NATS_SERVER``;
-CI downloads it, this sandbox keeps one under scratchpad/nats).
+CI downloads it).
 
-The lab in miniature: one tenant account, an admin that makes the
-PRESENCE stream, two agents that publish presence, claims and
-memberships exactly as the login service permits them — and the
-console's read-only account, which may create its own consumer and read,
-and publish nothing else. The fleet the browser sees over SSE comes out
-whole, live and correct.
+The lab in miniature, without the login service: an admin makes the
+PRESENCE and STATS streams and, as the login service does at a person's
+first issue (RT-6.43 step 3), the login's two push consumers; the server
+holds the login's public key as an nkey user with the rights the login
+service writes into a person's credential (publish nothing, subscribe only
+``deliver.<name>.<login>.>``). The console's reader connects with that
+login's key and an access token (the token rides along as with the auth
+callout; a static nkey user ignores it), reads the fleet, renews with the
+same key and keeps the consumers' position. The auth callout itself is the
+login service's own live test (``services/auth``).
 """
 from __future__ import annotations
 
@@ -23,12 +27,10 @@ import time
 from datetime import datetime, timezone
 
 import pytest
-import nkeys
 from nats.aio.client import Client as NatsClient
 
-from console_server import config, httpd
-from console_server.app import Console
-from console_server.fleet import short_name
+from console_server import auth, config
+from console_server.nats_read import PersonReader, View
 from mattermost_ai_agent_bus import natsbus
 from mattermost_ai_agent_bus.natsbus import decode_presence, encode_presence
 
@@ -48,6 +50,8 @@ PRESENCE_STREAM = {
     "discard": "new",
     "duplicate_window": 100 * 1_000_000,
 }
+STATS_STREAM = {"name": "STATS", "subjects": ["stats.>"], "retention": "limits",
+                "max_msgs_per_subject": 500, "no_ack": True}
 
 
 def free_port() -> int:
@@ -56,16 +60,61 @@ def free_port() -> int:
         return s.getsockname()[1]
 
 
+async def renew(refresh: str) -> auth.Tokens:
+    return auth.Tokens("fresh-access", refresh)
+
+
+def reader_for(url: str, renew_sec: float = 600.0) -> PersonReader:
+    settings = config.Settings(public_url="http://127.0.0.1:8747", login_off=True,
+                               nats_url=url)
+    view = View("presence")
+    view.reader = PersonReader(settings, auth.Tokens("an-access", "a-refresh"),
+                               renew, view, until=time.time() + 3600,
+                               on_end=lambda: None, renew_sec=renew_sec)
+    return view.reader
+
+
+def person_user(public_key: str, grant: str) -> str:
+    """The rights the login service writes into a person's user JWT
+    (``callout.personPermissions``), as a static nkey user."""
+    return ('{ nkey: "%s", permissions: { publish: { deny: [">"] },'
+            ' subscribe: { allow: ["%s"] } } }' % (public_key, grant))
+
+
+async def make_consumers(admin: NatsClient, r: PersonReader) -> None:
+    """What the login service makes at a person's first issue
+    (``consumers.EnsurePerson``)."""
+    for stream, name, deliver, policy, subject in (
+            ("PRESENCE", f"person-dembaca_{r.login}_presence", r.deliver_presence,
+             "last_per_subject", "presence.>"),
+            ("STATS", f"person-dembaca_{r.login}_stats", r.deliver_stats, "all", "stats.>")):
+        spec = {"stream_name": stream, "config": {
+            "name": name, "ack_policy": "none", "deliver_policy": policy,
+            "deliver_subject": deliver, "filter_subject": subject,
+            "inactive_threshold": 900 * 1_000_000_000}}
+        reply = await admin.request(f"$JS.API.CONSUMER.CREATE.{stream}.{name}",
+                                    json.dumps(spec).encode(), timeout=5.0)
+        assert not json.loads(reply.data).get("error"), reply.data
+
+
+async def publish_record(admin: NatsClient, r: PersonReader) -> None:
+    """The login's own record, as the login service writes it into PRESENCE
+    at each issue; the reader is "reading" only once it came."""
+    await admin.publish(r.record_subject, json.dumps(
+        {"v": 1, "name": "person-dembaca", "anchor": "dembaca",
+         "iat": int(time.time()), "exp": int(time.time()) + 900}).encode())
+    await admin.flush()
+
+
 @pytest.fixture
 async def rig(tmp_path):
     binary = os.environ.get("MM_NATS_SERVER") or shutil.which("nats-server")
     port = free_port()
-    # the console's read-only account: it may make its own presence
-    # consumer and read its deliver subject, and nothing else
-    seed = nkeys.encode_seed(os.urandom(32), nkeys.PREFIX_BYTE_USER).decode()
-    seed_file = tmp_path / "console.seed"
-    seed_file.write_text(seed)
-    console_pub = nkeys.from_seed(seed.encode()).public_key.decode()
+    url = "nats://127.0.0.1:%d" % port
+    # the readers first: each login's key exists before the server knows it
+    good = reader_for(url, renew_sec=0.5)
+    # a login whose credential grants another login's subjects
+    wrong = reader_for(url)
     admin_pw = os.urandom(8).hex()
     conf = tmp_path / "nats.conf"
     conf.write_text(
@@ -73,14 +122,11 @@ async def rig(tmp_path):
         + 'jetstream { store_dir: "%s" }\n' % (tmp_path / "js")
         + "accounts { BUS { jetstream: enabled\n users: ["
         + '{ user: admin, password: "%s"},' % admin_pw
-        + '{ nkey: "%s", permissions: {' % console_pub
-        + 'publish: { allow: ["$JS.API.CONSUMER.CREATE.PRESENCE.console",'
-        + ' "$JS.API.CONSUMER.DELETE.PRESENCE.console"]},'
-        + 'subscribe: { allow: ["deliver.console.presence", "_INBOX_console.>"]}'
-        + "} }] } }\n")
+        + person_user(good.public_key, f"deliver.person.{good.login}.>") + ","
+        + person_user(wrong.public_key, f"deliver.person.{good.login}.>")
+        + "] } }\n")
     proc = subprocess.Popen([binary, "-c", str(conf)],
                              stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
-    url = "nats://127.0.0.1:%d" % port
     admin = NatsClient()
     try:
         for _ in range(100):
@@ -92,22 +138,17 @@ async def rig(tmp_path):
                 await asyncio.sleep(0.1)
         else:
             pytest.fail("nats-server did not start")
-        reply = await admin.request("$JS.API.STREAM.CREATE.PRESENCE",
-                                    json.dumps(PRESENCE_STREAM).encode(), timeout=5.0)
-        body = json.loads(reply.data)
-        assert not body.get("error"), body
-        yield {"url": url, "admin": admin, "seed_file": str(seed_file)}
+        for name, spec in (("PRESENCE", PRESENCE_STREAM), ("STATS", STATS_STREAM)):
+            reply = await admin.request(f"$JS.API.STREAM.CREATE.{name}",
+                                        json.dumps(spec).encode(), timeout=5.0)
+            assert not json.loads(reply.data).get("error"), reply.data
+        yield {"url": url, "admin": admin, "good": good, "wrong": wrong}
     finally:
+        for r in (good, wrong):
+            await r.aclose()
         await admin.close()
         proc.terminate()
         proc.wait(10)
-
-
-def settings_of(rig) -> config.Settings:
-    return config.Settings(public_url="http://127.0.0.1:8747",
-                           login_off=True,
-                           nats_url=rig["url"],
-                           nats_seed_file=str(rig["seed_file"]))
 
 
 async def until(pred, timeout: float = 8.0, what: str = "") -> None:
@@ -118,203 +159,111 @@ async def until(pred, timeout: float = 8.0, what: str = "") -> None:
         await asyncio.sleep(0.05)
 
 
-class Stream:
-    """A raw client of one fleet stream: the head, then the events. The
-    console listens before `start()` returns, so no connect race exists —
-    the flake (#105) was a card assertion breaking one event early, fixed
-    in the tests that read cards."""
-
-    def __init__(self, console: Console) -> None:
-        self.console = console
-
-    async def open(self) -> None:
-        self.reader, self.writer = await asyncio.open_connection(
-            "127.0.0.1", self.console._http.bound_port)
-        self.writer.write(b"GET /v1/fleet HTTP/1.1\r\nHost: x\r\n\r\n")
-        await asyncio.wait_for(self.reader.readuntil(b"\r\n\r\n"), 5.0)
-
-    async def event(self, timeout: float = 10.0) -> dict:
-        line = await asyncio.wait_for(self.reader.readline(), timeout)
-        while line in (b"\n", b"\r\n") or line.startswith(b":"):  # blanks and beats
-            line = await asyncio.wait_for(self.reader.readline(), timeout)
-        return json.loads(line[len(b"data: "):])
-
-    def close(self) -> None:
-        self.writer.close()
+def card(r: PersonReader, name: str) -> dict:
+    return next((c for c in r.view.fleet.cards() if c["name"] == name), {})
 
 
-async def test_the_console_reads_the_fleet_sse(rig) -> None:
+async def test_the_login_reads_the_fleet_its_consumers_deliver(rig) -> None:
+    """RT-6.43 steps 1 and 3: the reader connects with the login's key,
+    subscribes its two deliver subjects and reads presence, membership
+    and crown from the replay and live; a STATS line arrives too."""
     admin: NatsClient = rig["admin"]
-    console = Console(settings_of(rig))
-    await console.start()
-    try:
-        stream = Stream(console)
-        await stream.open()
-        await admin.publish("presence.dembaca.agent-one", encode_presence("online", "bot1"))
-        await admin.publish("presence.member.dev.agent-one", b'{"v": 1}')
-        await admin.publish("presence.crown.dev.agent-one", b'{"v": 1}')
-        await admin.publish("presence.dembaca.agent-two", encode_presence("away"))
-
-        # the replay reaches the console: a snapshot, then card events.
-        # The flake (#105) was here: breaking on agent-one's FIRST card
-        # races the claim's own card event — wait for its crown instead
-        # (presence, member and claim replay in one burst), bounded by
-        # the stream's events.
-        cards: dict[str, dict] = {}
-        for _ in range(30):
-            event = await stream.event()
-            if event["type"] == "snapshot":
-                cards = {c["name"]: c for c in event["cards"]}
-            elif event["type"] == "card":
-                cards[event["card"]["name"]] = event["card"]
-            # and agent-two's own card, which may come after the crown's
-            if cards.get("agent-one", {}).get("crown") is True and "agent-two" in cards:
-                break
-        assert cards["agent-one"]["state"] == "online"
-        assert cards["agent-one"]["crown"] is True
-        assert cards["agent-one"]["home"] == "dev"
-        assert cards["agent-one"]["for"] == "dembaca"
-        assert cards["agent-two"]["state"] == "away"
-        assert cards["agent-two"]["ctx"] is None
-        assert cards["agent-two"]["openAsks"] is None  # unknown, never 0
-        assert short_name("agent-one") == "agent-one"
-
-        # a change arrives as one "card" event per change, the app's alphabet
-        await admin.publish("presence.dembaca.agent-two", encode_presence("online"))
-        changed = None
-        for _ in range(10):
-            event = await stream.event()
-            if event["type"] == "card" and event["card"]:
-                changed = event["card"]
-                break
-        assert changed is not None
-        assert changed["name"] == "agent-two"
-        assert changed["state"] == "online"
-
-        # the graph answers the API too (raw, same facts)
-        answer = await console.handle("/v1/graph", {}, {})
-        assert answer and answer.status == 200
-        graph = json.loads(answer.body)
-        names = {n["id"] for n in graph["nodes"]}
-        assert {"dembaca", "dev", "agent-one", "agent-two"} <= names
-        edges = {(e["from"], e["to"]) for e in graph["edges"]}
-        assert ("agent-one", "dev") in edges
-        stream.close()
-    finally:
-        await console.stop()
-
-
-async def test_a_restart_replays_the_fleet(rig) -> None:
-    """The reviews' restart probe: a consumer recreated under its own name
-    replays nothing, so the console deletes it first — a restart finds the
-    fleet (presence, membership, crown) as the stream holds it."""
-    admin: NatsClient = rig["admin"]
-    await admin.publish("presence.dembaca.agent-one", encode_presence("online"))
+    r: PersonReader = rig["good"]
+    await admin.publish("presence.dembaca.agent-one", encode_presence("online", "bot1"))
     await admin.publish("presence.member.dev.agent-one", b'{"v": 1}')
     await admin.publish("presence.crown.dev.agent-one", b'{"v": 1}')
-
-    console = Console(settings_of(rig))
-    await console.start()
-    try:
-        stream = Stream(console)
-        await stream.open()
-        cards = {}
-        for _ in range(30):
-            event = await stream.event()
-            if event["type"] == "snapshot":
-                cards = {c["name"]: c for c in event["cards"]}
-            elif event["type"] == "card":
-                cards[event["card"]["name"]] = event["card"]
-            if cards.get("agent-one", {}).get("crown") is True:
-                break
-        assert cards["agent-one"]["crown"] is True
-        stream.close()
-
-        # the restart: the old connection and its consumer die; the state
-        # lives in the stream, and the replay of the new consumer renews it
-        await console.stop()
-        await console.start()
-        again = Stream(console)
-        await again.open()
-        fresh = {}
-        for _ in range(30):
-            event = await again.event()
-            if event["type"] == "snapshot":
-                fresh = {c["name"]: c for c in event["cards"]}
-            elif event["type"] == "card":
-                fresh[event["card"]["name"]] = event["card"]
-            if fresh.get("agent-one", {}).get("crown") is True:
-                break
-        assert fresh["agent-one"]["crown"] is True
-        assert fresh["agent-one"]["home"] == "dev"
-        again.close()
-    finally:
-        await console.stop()
+    await admin.publish("presence.dembaca.agent-two", encode_presence("away"))
+    await admin.publish("stats.agent-one", b'{"v": "0.101.0"}')
+    await admin.flush()
+    await make_consumers(admin, r)
+    await publish_record(admin, r)
+    r.renew_sec = 600.0
+    r.start()
+    await until(lambda: card(r, "agent-one").get("crown") is True, what="the replay")
+    await until(lambda: r.state == "reading", what="the own record")
+    one = card(r, "agent-one")
+    assert one["state"] == "online" and one["home"] == "dev" and one["for"] == "dembaca"
+    assert card(r, "agent-two")["state"] == "away"
+    await until(lambda: r.view.stats_lines >= 1, what="the STATS line")
+    await admin.publish("presence.dembaca.agent-two", encode_presence("online"))
+    await until(lambda: card(r, "agent-two").get("state") == "online", what="a change")
 
 
-async def test_the_account_publishes_nothing(rig) -> None:
-    """The read-only account's grant: it cannot publish on the bus's
-    subjects — a probe that a wider grant would catch."""
-    import nats
-    seed = open(rig["seed_file"]).read()
-    nc = await nats.connect(servers=[rig["url"]], nkeys_seed_str=seed,
-                            inbox_prefix="_INBOX_console",
-                            allow_reconnect=False, connect_timeout=5.0)
-    refused = asyncio.get_running_loop().create_future()
+async def test_a_renewal_keeps_the_consumers_position(rig) -> None:
+    """Step 4: a renewal connects again with the same key; the consumers
+    keep their position, so what was read stays and what is new arrives
+    once (no consumer sequence seen twice, no claims forgotten)."""
+    admin: NatsClient = rig["admin"]
+    r: PersonReader = rig["good"]
+    await admin.publish("presence.dembaca.agent-one", encode_presence("online"))
+    await admin.publish("presence.crown.dev.agent-one", b'{"v": 1}')
+    await admin.flush()
+    await make_consumers(admin, r)
+    await publish_record(admin, r)
+    r.start()
+    await until(lambda: card(r, "agent-one").get("crown") is True, what="the replay")
+    await until(lambda: r.connects >= 3, what="two renewals")
+    await admin.publish("presence.dembaca.agent-three", encode_presence("online"))
+    await until(lambda: card(r, "agent-three").get("state") == "online", what="after renewal")
+    assert card(r, "agent-one").get("crown") is True   # not forgotten
+    await until(lambda: r.state == "reading", what="reading after renewals")
+    assert r.name == "person-dembaca"
 
-    async def err_cb(exc: BaseException) -> None:
-        if not refused.done():
-            refused.set_result(exc)
 
-    nc._error_cb = err_cb
-    try:
-        await nc.publish("presence.dembaca.spy", b'{"v": 1}')
-        await nc.flush(2.0)
-        got = await asyncio.wait_for(refused, 5.0)
-        assert "permission" in str(got).lower() or "violation" in str(got).lower()
-    finally:
-        await nc.close()
+async def test_the_login_learns_its_name_from_its_own_record(rig) -> None:
+    """The console never derives the person's name: the login's own record
+    on ``presence.person.<login>.v1``, delivered with the presence lines,
+    names it and its anchor."""
+    admin: NatsClient = rig["admin"]
+    r: PersonReader = rig["good"]
+    await make_consumers(admin, r)
+    r.renew_sec = 600.0
+    r.start()
+    await until(lambda: r.connects >= 1, what="the connect")
+    # the login service writes it into PRESENCE at each issue
+    await admin.publish(r.record_subject, json.dumps(
+        {"v": 1, "name": "person-dembaca", "anchor": "dembaca",
+         "iat": int(time.time()), "exp": int(time.time()) + 900}).encode())
+    await until(lambda: r.name == "person-dembaca", what="the record")
+    assert r.anchor == "dembaca" and r.state == "reading"
+
+
+async def test_a_login_whose_subjects_are_not_granted_reads_nothing(rig) -> None:
+    """A credential for another login's subjects: NATS refuses the
+    subscriptions, and nothing reaches the fleet."""
+    admin: NatsClient = rig["admin"]
+    r: PersonReader = rig["wrong"]
+    await admin.publish("presence.dembaca.agent-one", encode_presence("online"))
+    r.start()
+    await asyncio.sleep(1.0)
+    assert r.view.fleet.cards() == []
 
 
 # --- the pilot's ageing and crown handover (#108 points 10 and 11) -------------------
 
 
-async def _cards_until(stream: Stream, cards: dict[str, dict], done,
-                       events: int = 60, seen: list | None = None) -> None:
-    """Fold the stream's events into ``cards`` until ``done(cards)``;
-    each folded state is appended to ``seen`` (a copy) when given."""
-    for _ in range(events):
-        event = await stream.event()
-        if event["type"] == "snapshot":
-            cards.clear()
-            cards.update({c["name"]: c for c in event["cards"]})
-        elif event["type"] == "card":
-            cards[event["card"]["name"]] = event["card"]
-        elif event["type"] == "drop":
-            cards.pop(event["name"], None)
-        if seen is not None:
-            seen.append((event, {n: dict(c) for n, c in cards.items()}))
-        if done(cards):
-            return
-    raise AssertionError(f"the stream never got there: {cards}")
+def _states(r: PersonReader) -> dict[str, str]:
+    return {c["name"]: c["state"] for c in r.view.fleet.cards()}
 
 
-def _state(cards: dict[str, dict], name: str) -> str | None:
-    return cards.get(name, {}).get("state")
+def _crowns(r: PersonReader) -> list[str]:
+    return [c["name"] for c in r.view.fleet.cards() if c["crown"]]
 
 
 async def test_a_hard_death_ages_the_card_offline_and_no_other(rig, monkeypatch) -> None:
     """#108 point 10: an agent killed hard (kill -9) falls silent and
     sends no bye; its card turns offline once its last presence is older
     than the freshness window (natsbus.PRESENCE_FRESH_SEC, 90 s in
-    production; the console sends the change with the next delivery or
-    SSE beat). The window is shortened to 2 s here; the peer beats every
+    production). The window is shortened to 2 s here; the peer beats every
     0.5 s (30 s / 90 s in production) and its card never changes state."""
     window = 2.0
     monkeypatch.setattr(natsbus, "PRESENCE_FRESH_SEC", window)
     admin: NatsClient = rig["admin"]
-    console = Console(settings_of(rig))
-    await console.start()
+    r: PersonReader = rig["good"]
+    await make_consumers(admin, r)
+    await publish_record(admin, r)
+    r.renew_sec = 600.0
+    r.start()
     beating = True
 
     async def peer() -> None:
@@ -324,8 +273,6 @@ async def test_a_hard_death_ages_the_card_offline_and_no_other(rig, monkeypatch)
 
     beat = asyncio.ensure_future(peer())
     try:
-        stream = Stream(console)
-        await stream.open()
         await admin.publish("presence.member.dev.agent-dead", b'{"v": 1}')
         await admin.publish("presence.member.dev.agent-live", b'{"v": 1}')
         for n in range(3):  # a few heartbeats, then the kill: silence, no bye
@@ -334,59 +281,51 @@ async def test_a_hard_death_ages_the_card_offline_and_no_other(rig, monkeypatch)
             await admin.publish("presence.dembaca.agent-dead", encode_presence("online"))
             await admin.flush()
         died = time.monotonic()  # right after the last presence reached the server
-        cards: dict[str, dict] = {}
-        await _cards_until(stream, cards, lambda c: _state(c, "agent-dead") == "online"
-                           and _state(c, "agent-live") == "online")
+        await until(lambda: _states(r).get("agent-dead") == "online"
+                    and _states(r).get("agent-live") == "online", what="both online")
         assert time.monotonic() - died < window, "online seen only after the window"
 
-        seen: list = []
-        await _cards_until(stream, cards, lambda c: _state(c, "agent-dead") == "offline",
-                           events=200, seen=seen)
+        seen: list[dict[str, str]] = []
+
+        def dead() -> bool:
+            seen.append(_states(r))
+            return seen[-1].get("agent-dead") == "offline"
+
+        await until(dead, what="the dead card offline")
         aged = time.monotonic() - died
         # not before the window (slack for a slow runner), within it plus a beat
         assert window - 1.0 <= aged <= window + 2.0, aged
-        # no other card changed: no drop, the peer online throughout,
-        # the dead card the only one that went offline
-        assert all(e["type"] != "drop" for e, _ in seen)
-        for _e, state in seen:
-            assert state["agent-live"]["state"] == "online"
-            assert not any(c["crown"] for c in state.values())
-        assert cards["agent-dead"]["home"] == "dev"
-        assert set(cards) == {"agent-dead", "agent-live"}
-        stream.close()
+        # no other card changed: the peer online throughout, no crown
+        for state in seen:
+            assert state["agent-live"] == "online"
+        assert _crowns(r) == []
+        assert card(r, "agent-dead")["home"] == "dev"
+        assert set(_states(r)) == {"agent-dead", "agent-live"}
     finally:
         beating = False
         beat.cancel()
         with contextlib.suppress(asyncio.CancelledError):
             await beat
-        await console.stop()
 
 
-async def test_a_lone_hard_death_ages_on_the_beat_alone(rig, monkeypatch) -> None:
+async def test_a_lone_hard_death_ages_without_a_delivery(rig, monkeypatch) -> None:
     """#108 point 10 with no deliveries at all (a killed lone agent): the
-    wall-clock floor (#109) ages the card and the SSE beat (15 s in
-    production, 0.5 s here) carries it; window 2 s instead of 90 s."""
+    wall-clock floor (#109) ages the card; window 2 s instead of 90 s."""
     window = 2.0
     monkeypatch.setattr(natsbus, "PRESENCE_FRESH_SEC", window)
-    monkeypatch.setattr(httpd, "SSE_KEEPALIVE_SEC", 0.5)
     admin: NatsClient = rig["admin"]
-    console = Console(settings_of(rig))
-    await console.start()
-    try:
-        stream = Stream(console)
-        await stream.open()
-        await admin.publish("presence.dembaca.agent-lone", encode_presence("online"))
-        await admin.flush()
-        sent = time.monotonic()
-        cards: dict[str, dict] = {}
-        await _cards_until(stream, cards, lambda c: _state(c, "agent-lone") == "online")
-        await _cards_until(stream, cards, lambda c: _state(c, "agent-lone") == "offline",
-                           events=200)
-        aged = time.monotonic() - sent
-        assert window - 1.0 <= aged <= window + 2.0, aged
-        stream.close()
-    finally:
-        await console.stop()
+    r: PersonReader = rig["good"]
+    await make_consumers(admin, r)
+    await publish_record(admin, r)
+    r.renew_sec = 600.0
+    r.start()
+    await admin.publish("presence.dembaca.agent-lone", encode_presence("online"))
+    await admin.flush()
+    sent = time.monotonic()
+    await until(lambda: _states(r).get("agent-lone") == "online", what="online")
+    await until(lambda: _states(r).get("agent-lone") == "offline", what="offline")
+    aged = time.monotonic() - sent
+    assert window - 1.0 <= aged <= window + 2.0, aged
 
 
 def _stamp(text: str) -> float:
@@ -429,6 +368,7 @@ async def test_an_explicit_release_moves_the_one_crown(rig) -> None:
     It checks that the console follows a re-claim of the same subject,
     written with the real claim encoder (natsbus.encode_claim)."""
     admin: NatsClient = rig["admin"]
+    r: PersonReader = rig["good"]
     agents = ["agent-one", "agent-two"]
     for agent in agents:
         await admin.publish(f"presence.dembaca.{agent}", encode_presence("online"))
@@ -439,32 +379,25 @@ async def test_an_explicit_release_moves_the_one_crown(rig) -> None:
     await admin.flush()
     assert await _stream_holder(admin, agents) == "agent-one"
 
-    console = Console(settings_of(rig))
-    await console.start()
-    try:
-        stream = Stream(console)
-        await stream.open()
-        cards: dict[str, dict] = {}
-        seen: list = []
-        await _cards_until(stream, cards,
-                           lambda c: c.get("agent-one", {}).get("crown") is True
-                           and "agent-two" in c, seen=seen)
-        assert [n for n, c in cards.items() if c["crown"]] == ["agent-one"]
+    await make_consumers(admin, r)
+    await publish_record(admin, r)
+    r.renew_sec = 600.0
+    r.start()
+    seen: list[list[str]] = []
 
-        # the release: agent-one claims anew and moves behind agent-two
-        await admin.publish("presence.crown.dev.agent-one", natsbus.encode_claim())
-        await admin.flush()
-        await _cards_until(stream, cards,
-                           lambda c: c["agent-two"]["crown"] is True
-                           and c["agent-one"]["crown"] is False, seen=seen)
-        assert [n for n, c in cards.items() if c["crown"]] == ["agent-two"]
-        assert await _stream_holder(admin, agents) == "agent-two"
-        assert console.fleet.holder_of("dev") == "agent-two"
-        # never two crowns on the way (a wave lists agent-one's loss first)
-        for _e, state in seen:
-            assert sum(1 for c in state.values() if c["crown"]) <= 1
-        assert cards["agent-two"]["home"] == "dev"
-        assert cards["agent-one"]["state"] == cards["agent-two"]["state"] == "online"
-        stream.close()
-    finally:
-        await console.stop()
+    def crowns_are(names: list[str]) -> bool:
+        seen.append(_crowns(r))
+        return seen[-1] == names and "agent-two" in _states(r)
+
+    await until(lambda: crowns_are(["agent-one"]), what="agent-one's crown")
+
+    # the release: agent-one claims anew and moves behind agent-two
+    await admin.publish("presence.crown.dev.agent-one", natsbus.encode_claim())
+    await admin.flush()
+    await until(lambda: crowns_are(["agent-two"]), what="the crown moved")
+    assert await _stream_holder(admin, agents) == "agent-two"
+    assert r.view.fleet.holder_of("dev") == "agent-two"
+    # never two crowns on the way
+    assert all(len(c) <= 1 for c in seen)
+    assert card(r, "agent-two")["home"] == "dev"
+    assert card(r, "agent-one")["state"] == card(r, "agent-two")["state"] == "online"

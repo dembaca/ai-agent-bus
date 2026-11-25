@@ -109,9 +109,12 @@ class Fleet:
         self._see(ack.time)
         if ack.consumer_seq <= self._presence_cseq:
             # The consumer was made anew (here: the console reconnected):
-            # remembered claims may not be in the replay. Forget them.
+            # remembered claims may not be in the replay. Forget them; the asks
+            # too: the new consumer may no longer cover a channel the person
+            # lost, and its record would linger until it ran out (RT-6.43 step 6).
             self._claims.clear()
             self._claim_at.clear()
+            self._asks.clear()
             self.synced = False
         self._presence_cseq = ack.consumer_seq
         if ack.pending == 0:
@@ -376,8 +379,8 @@ class Fleet:
 
     def asks(self, anchor: str | None = None) -> list[dict[str, Any]]:
         """The open asks of every fresh record, as `/v1/asks` rows (the ADR's spellings).
-        `anchor`: the operator's anchor in subject form, as the operator's own NATS credential
-        gives it (points 1 to 6 of the addition, not built); never derived from a login name
+        `anchor`: the operator's anchor in subject form, as the login's own record of the
+        operator's NATS credential gives it (points 1 to 6 of the addition); never derived from a login name
         (point 4). Without it "for me" and "may answer" are None (n/a) and mark nothing. With
         it: "for me" when the asked human is that anchor, "may answer" when the asking
         agent's attestation names it as owner or trusted; `expired` after
