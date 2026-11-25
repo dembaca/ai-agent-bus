@@ -1,8 +1,10 @@
 """The rest of the console's stage 1 (RT-6.43), as the console decision's
 addition of 2026-11-25 (ADR-015) and docs/protocol.md specify it.
 
-Nothing of RT-6.43 is built yet. This test pins the spec until the code's own
-tests reference the scenario: the addition holds fifteen points, numbered
+Of RT-6.43 the login service's rights and the STATS stream (services/auth)
+and the MCP server's and the console's records, decoders and views
+(mcp/tests/test_console_records.py, console/server/tests/test_asks_stats.py)
+are built; the person's credential is not. This test pins the spec: the addition holds fifteen points, numbered
 once each, every one with a recommendation and an alternative, and keeps its
 bounds (200 characters, 20 asks in 4 KiB, 15 minutes, 30 days and 500 per
 subject, the console's own `azp`); the ask record's example bodies carry

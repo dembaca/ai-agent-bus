@@ -208,6 +208,7 @@ func TestTheExampleServerConfiguration(t *testing.T) {
 				pub = append(pub, "$JS.API.STREAM.CREATE."+s, "$JS.API.STREAM.INFO."+s,
 					"$JS.API.CONSUMER.*."+s, "$JS.API.CONSUMER.*."+s+".>")
 			}
+			pub = append(pub, "$JS.API.STREAM.CREATE."+consumers.StatsStream, "$JS.API.STREAM.INFO."+consumers.StatsStream)
 			kv := "KV_" + directory.DefaultBucket
 			pub = append(pub, "$JS.API.INFO", "$JS.API.STREAM.CREATE."+kv, "$JS.API.STREAM.INFO."+kv,
 				"$JS.API.DIRECT.GET."+kv+".>", "$KV."+directory.DefaultBucket+".>", "$JS.API.STREAM.MSG.GET.PRESENCE", "presence.attest.*.v1", "presence.account.mattermost.*.v1")
@@ -262,6 +263,14 @@ func TestTheExampleServerConfiguration(t *testing.T) {
 	}
 	if err := mgr.EnsureStreams(ctx5(t)); err != nil {
 		t.Fatalf("EnsureStreams: %v", err)
+	}
+	// The STATS stream (RT-6.43) is made with the example's rights, and found
+	// again at the next start.
+	if err := mgr.EnsureStreams(ctx5(t)); err != nil {
+		t.Fatalf("EnsureStreams on existing streams: %v", err)
+	}
+	if _, err := nc.Request("$JS.API.STREAM.INFO."+consumers.StatsStream, nil, 2*time.Second); err != nil {
+		t.Fatalf("STATS: %v", err)
 	}
 	// The channel directory (ADR-016): the same user makes its bucket, opens
 	// it again, writes and reads it with exactly these rights.

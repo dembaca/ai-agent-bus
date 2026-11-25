@@ -298,8 +298,8 @@ carried.
 
 Built in the MCP server (`natsbus.encode_ask_record`, `NatsBus.publish_asks`,
 `stats.nats_body`) and the console (`natsbus.decode_ask_record`,
-`stats.decode_line`); the login service's `STATS` stream and the rights on
-both subjects come with its own part, not built yet. For the operator
+`stats.decode_line`), and in the login service (the `STATS` stream and
+each agent's rights on both subjects, `services/auth`). For the operator
 console's stage 1
 ([arc42 §6.43](arc42/06-runtime-view.md#643-the-console-on-the-bus-as-its-operator),
 the addition of 2026-11-25 to

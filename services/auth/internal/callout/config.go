@@ -4,6 +4,8 @@ import (
 	"errors"
 	"fmt"
 	"time"
+
+	"github.com/dembaca/ai-agent-bus/services/auth/internal/consumers"
 )
 
 // Defaults of the configuration.
@@ -12,6 +14,7 @@ const (
 	DefaultNamePrefix = "agent-"
 	DefaultPrefix     = "bus"
 	DefaultPresence   = "presence"
+	DefaultStats      = consumers.DefaultStatsPrefix
 	// DeliverPrefix starts the subjects push consumers deliver to; fixed,
 	// and neither of the two prefixes may take it.
 	DeliverPrefix = "deliver"
@@ -45,6 +48,9 @@ func (c Config) WithDefaults() Config {
 	if c.Subjects.Presence == "" {
 		c.Subjects.Presence = DefaultPresence
 	}
+	if c.Subjects.Stats == "" {
+		c.Subjects.Stats = DefaultStats
+	}
 	if c.Timeout == 0 {
 		c.Timeout = DefaultTimeout
 	}
@@ -70,14 +76,41 @@ func (c Config) check() error {
 			return fmt.Errorf("callout: %s %q is the deliver prefix: an agent could publish onto deliver subjects", what, v)
 		}
 	}
+	for what, v := range map[string]string{"subject prefix": c.Subjects.Prefix, "presence prefix": c.Subjects.Presence, "stats prefix": c.Subjects.Stats} {
+		if v == inboxPrefix {
+			return fmt.Errorf("callout: %s %q is the inbox prefix: an agent could publish onto replies", what, v)
+		}
+	}
 	if c.Subjects.Presence == c.Subjects.Prefix {
 		return fmt.Errorf("callout: presence prefix %q must differ from the subject prefix (they would overlap)", c.Subjects.Presence)
+	}
+	if err := c.Subjects.checkStats(); err != nil {
+		return err
 	}
 	if c.Timeout <= 0 || c.Timeout > 10*time.Second {
 		return fmt.Errorf("callout: timeout %s: must be above 0 and at most 10s", c.Timeout)
 	}
 	return nil
 }
+
+// checkStats checks the STATS prefix (RT-6.43): a plain token, not the deliver
+// prefix, and neither of the other two: an agent's STATS right would
+// otherwise be a post or a presence subject.
+func (s Subjects) checkStats() error {
+	switch {
+	case s.Stats == "" || !plain(s.Stats):
+		return fmt.Errorf("callout: stats prefix %q: letters, digits, - and _ only", s.Stats)
+	case s.Stats == DeliverPrefix:
+		return fmt.Errorf("callout: stats prefix %q is the deliver prefix: an agent could publish onto deliver subjects", s.Stats)
+	case s.Stats == s.Prefix || s.Stats == s.Presence:
+		return fmt.Errorf("callout: stats prefix %q must differ from the subject and the presence prefix (they would overlap)", s.Stats)
+	}
+	return nil
+}
+
+// inboxPrefix starts the reply subjects of requests (nats.go's _INBOX): no
+// prefix of the bus may take it.
+const inboxPrefix = "_INBOX"
 
 func plain(s string) bool {
 	for _, r := range s {

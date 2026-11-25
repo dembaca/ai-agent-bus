@@ -28,9 +28,24 @@ before 0.5.0 are described in the git history.
   over 7 days and the asks over 24 hours and 7 days, the numbers
   `stats_report` gives on the same lines, with the age of the oldest line.
   The STATS lines are read only with `CONSOLE_STATS_STREAM`. Not in it: the
-  login service's `STATS` stream and the rights on both subjects, and the
   operator's own NATS credential; until that brings the operator's anchor,
   "for me" and "may answer" are n/a and mark nothing (never matched by name).
+- **The login service's part of the console's asks and `STATS` lines**
+  (the console on the bus as its operator, RT-6.43; points 9 and 12 of the
+  console decision's addition of 2026-11-25, ADR-015). Each agent's
+  credential may publish its one ask record on
+  `<presence>.ask.<home>.<name>`, under its own name and in its hello's
+  home only, and its `STATS` line on `<stats>.<name>` (`AUTH_STATS_PREFIX`,
+  new, default `stats`; it must differ from the other two prefixes and
+  not be `deliver`). The service makes the `STATS` stream at its start
+  (`<stats>.>`, file storage, 30 days, 64 MiB, 8 KiB per message, at most
+  500 per subject, the oldest discarded) and refuses to start on one that
+  keeps more per subject or longer, takes other than 8 KiB per message, or
+  is not stored on file. Its JetStream user needs two more
+  rights, `$JS.API.STREAM.CREATE.STATS` and `$JS.API.STREAM.INFO.STATS`
+  (`services/auth/nats-server.example.conf`): without them the login
+  service refuses to start, with an error that names both. No prefix may be
+  `_INBOX`. The person's credential is separate work.
 
 - **The console's agent card shows harness, model, task, branch and open
   asks** (RT-6.37 step 6, ADR-015). A NATS home's presence now carries the
@@ -41,7 +56,9 @@ before 0.5.0 are described in the git history.
   characters, model 64 and task 120 characters, branch a safe git ref of
   at most 100, asks capped at 999), well below the stream's 4 KiB limit;
   older readers ignore the keys, and a card from an older MCP server says
-  "n/a". Self-stated like the name: displayed, never trusted.
+  "n/a". Self-stated like the name: displayed, never trusted. The
+  harness name also changes the `rt` of `STATS` lines: a pi client
+  (`pi`, `pi-…`) now counts as `pi`, no longer by its own name.
 
 ### Changed
 

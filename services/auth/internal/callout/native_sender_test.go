@@ -30,6 +30,7 @@ import (
 var (
 	busStreamCfg      = consumers.BusStreamJSON("bus", 0)
 	presenceStreamCfg = consumers.PresenceStreamJSON("presence", 0)
+	statsStreamCfg    = consumers.StatsStreamJSON("stats", 0)
 )
 
 type tapped struct {
@@ -824,5 +825,48 @@ func TestNativeMemberSubjectIsOwnAndOnlyInGrantedChannels(t *testing.T) {
 	}
 	if !seen["presence.member.home."+n.b.name] || seen["presence.member.secret."+n.b.name] {
 		t.Errorf("alice's view of bob's memberships: %v", seen)
+	}
+}
+
+// The console's asks and STATS lines (RT-6.43), as the real server enforces the
+// credential: bob may publish his one ask record in his home and his STATS line;
+// not in his guest channel, and alice may publish neither under bob's name nor
+// on a further subject.
+func TestNativeAskRecordAndStatsOnlyUnderOwnName(t *testing.T) {
+	n := newNative(t, busStreamCfg) // alice: home; bob: home and secret (a guest)
+	n.stream(consumers.StatsStream, consumers.StatsStreamJSON("stats", 0))
+	before, stats := n.last("PRESENCE"), n.last(consumers.StatsStream)
+	n.bobPosts("presence.ask.home."+n.b.name, `{"v":1,"asks":[],"more":0}`)
+	n.bobPosts("stats."+n.b.name, `{"v":"0.101.0"}`)
+	if n.last("PRESENCE") != before+1 || n.last(consumers.StatsStream) != stats+1 {
+		t.Fatalf("bob's own ask record or STATS line was not stored: %d -> %d, %d -> %d",
+			before, n.last("PRESENCE"), stats, n.last(consumers.StatsStream))
+	}
+	refused := func(a *agent, subject string) {
+		t.Helper()
+		if err := a.nc.Publish(subject, []byte("x")); err != nil {
+			t.Fatal(err)
+		}
+		if !a.denied(t) {
+			t.Errorf("publish %s by %s: not refused", subject, a.name)
+		}
+	}
+	refused(n.b, "presence.ask.secret."+n.b.name) // a guest channel is not the home
+	refused(n.a, "presence.ask.home."+n.b.name)   // another agent's record
+	refused(n.a, "presence.ask.home."+n.a.name+".1")
+	refused(n.a, "presence.ask.secret."+n.a.name)
+	refused(n.a, "stats."+n.b.name)
+	refused(n.a, "stats."+n.a.name+".x")
+	refused(n.a, "stats.x")
+	if n.last("PRESENCE") != before+1 || n.last(consumers.StatsStream) != stats+1 {
+		t.Error("a refused ask record or STATS line was stored")
+	}
+	for _, s := range []string{"stats.>", "presence.ask.>", "presence.ask.home.*"} {
+		if _, err := n.a.nc.SubscribeSync(s); err != nil {
+			t.Fatal(err)
+		}
+		if !n.a.denied(t) {
+			t.Errorf("an agent may subscribe to %s", s)
+		}
 	}
 }
