@@ -19,7 +19,8 @@ before 0.5.0 are described in the git history.
   never `hu:-`), and an event of a trusted person without a fresh approver
   record of the login service is marked `not_approver` and approves nothing,
   also as a yes on an ask, a relayed tool permission, a channel tag and what `get_thread`,
-  `list_recent` and an ask's card read back. A
+  `list_recent` and an ask's card read back; it does not stop an ask's
+  reminders. A
   signal counts only while NATS is connected and the session's own presence
   comes back; a person's files are read from Mattermost by the post's id.
   Other bots, webhooks, system posts and direct messages stay on Mattermost. Nothing changes until the bridge and the login

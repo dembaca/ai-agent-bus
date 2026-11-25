@@ -470,3 +470,31 @@ async def test_a_post_read_back_carries_not_approver_as_its_event_did(monkeypatc
     await port._on_person(_person("home", "dembaca", 62, PersonMessage("post", MM2, "dembaca", text="ok")))
     other = Post(id=MM2, channel_id=WORK, user_id=HUMAN, message="ok")
     assert "not_approver" not in (await slim.posts(port, [other]))[0]  # type: ignore[arg-type]
+
+
+async def test_a_not_approvers_answer_keeps_the_reminders_going() -> None:
+    """Spec author's decision: a yes over NATS without a fresh approver record answers
+    nothing, so the reminders go on and the human learns the ask still waits."""
+    from mattermost_ai_agent_bus import remind, tasks
+
+    inner = FakeBus(FakeRegistrar(), trusted={HUMAN: "dembaca"}, names={HUMAN: "dembaca"})
+    inner.registrar.session = inner.registrar.info
+    inner.work_channel_name = "home"
+    port = NatsPort(inner, _settings(), ("home",), echo_wait=0.5)  # type: ignore[arg-type]
+    fake = FakeNats(port)
+    port.use_bus(fake)
+    fake.accounts[HUMAN] = "dembaca"
+    fake.switched.add("home")
+    ask = _mm(ASK, BOT, "merge?", 1000, ((HUMAN, "+1", 2000),))
+    inner.posts = [ask]
+    inner.reacts[ASK] = [Reaction(HUMAN, ASK, "+1", 2000)]
+    await port._on_person(_person("home", "dembaca", 60, PersonMessage("reaction", ASK, "dembaca", emoji="+1")))
+    answered, _ = await remind._answered(port, BOT, ASK, "", "dembaca")  # type: ignore[arg-type]
+    assert not answered
+    reactions = await port.reactions(ASK)
+    # without the verdict it would count (the reminders used to stop here)
+    assert tasks.ask_answered(Post(id=ASK, create_at=1000), [], reactions, {HUMAN: "dembaca"}, "dembaca")
+    fake.approvers.add("dembaca")  # given again by an approver
+    await port._on_person(_person("home", "dembaca", 61, PersonMessage("unreaction", ASK, "dembaca", emoji="+1")))
+    await port._on_person(_person("home", "dembaca", 62, PersonMessage("reaction", ASK, "dembaca", emoji="+1")))
+    assert (await remind._answered(port, BOT, ASK, "", "dembaca"))[0]  # type: ignore[arg-type]
