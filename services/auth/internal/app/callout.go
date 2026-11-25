@@ -356,6 +356,7 @@ func RunCallout(ctx context.Context, s Settings, log *slog.Logger) error {
 	}
 	svc.SetAnchors(directory.Anchors{Store: dir, Log: log})
 	svc.SetTrust(directory.Trust{Store: dir})
+	svc.SetTrustIndex(&directory.TrustIndex{Store: dir})
 	svc.SetAttester(callout.NATSAttester{NC: jsnc, Stream: consumers.PresenceStream})
 	if pv != nil {
 		svc.SetPersons(pv, directory.Persons{Store: dir})

@@ -15,6 +15,20 @@ before 0.5.0 are described in the git history.
   `BRIDGE_MM_ALLOW_HTTP=true` (default off, a warning at start). The
   bridge's WebSocket reader refuses such a URL on its own too.
 
+### Added
+
+- **The operator console shows the channels of the operator's own agents
+  and of agents that trust the operator directly** (#128, the console on
+  the bus as its operator, RT-6.43 step 3). At each agent's credential the
+  login service writes a record into the directory's bucket: the owner's
+  anchor, the trusted anchors as its attestation names them and the home
+  and guest channels it granted (never the lobby). An operator's
+  consumers add the channels of every unexpired record that names the
+  operator as owner or trusted, never over several steps. A dropped trust
+  or an ended agent leaves the view at the operator's next renewal after
+  the agent's next credential or the record's expiry. A record that
+  cannot be written or read refuses that credential.
+
 ### Fixed
 
 - **The central bridge's WebSocket reader reconnects promptly and bounds
