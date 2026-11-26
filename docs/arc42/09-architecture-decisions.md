@@ -26,6 +26,7 @@ code does today and point here where a decision will change them.
 | ADR-014 | Agent-to-agent traffic over NATS JetStream; Mattermost stays the humans' chat behind one central adapter per tenant; agents log in through Keycloak (device flow) and a login service issues 15-minute NATS credentials bound to the host's own key; a clean-room build from Cotal's protocol description with a message format of the bus's own (no wire compatibility with Cotal); tools, hook API and bus logic unchanged behind the ports; parallel operation switched per home channel, the registrar shut down last; the sender NATS-native (last subject token, agents read only through push consumers the login service makes, no signed envelope) | Accepted (2026-11-22) by the owner, with the review's recommendations; three later points open (below), none of them blocks the first NATS code. Phase 2 built; phase 3 built in part in 0.97.0: the login service with the host's Keycloak login, consumers, a home over NATS, owner, presence and crown over NATS (RT-6.34 to RT-6.38), the attestation after 0.97.0 (RT-6.41); not built: the central adapter, the pod path, role addressing, files and DMs over NATS, signed human-origin events, shutting the registrar down | — |
 | ADR-015 | Operator web console: a web application for the people who look after the agents, with the agents by state, who trusts and who coordinates whom, the bus's statistics as charts, and the open asks answered beside their thread; no chat. It stands alone on the bus on NATS, with Keycloak as its only login and no dependency on Mattermost (decided by the owner on 2026-11-23). Recommended: on NATS as the logged-in operator, with a credential of that person's own from the login service, so NATS says who answered and the asking agent's server still decides whether it approves | Proposed (2026-11-23), not accepted; eight points open for the owner, three decided on 2026-11-23 (ADR-016). Stage 1's read-only pilot is built (2026-11-24): the browser app (#89) and its server (#94) — the login of point 4 and the API of point 10 with its SSE — one read-only NATS account, the pilot's documented deviation, since replaced: the console reads as each logged-in operator with a credential of that person's own from the login service (the addition of 2026-11-25, points 1 to 7, RT-6.43), and the static account is gone. The fleet's "now" carries a monotonic floor: a delivery-silent console ages presence out and drops the crown, a jump of the host's wall clock changes nothing, and only a genuinely newer server stamp re-anchors it (#108). Of the addition of 2026-11-25, the asks and `STATS` on NATS are built too (points 8 to 15, the MCP server's and the console's part, and the login service's stream and rights for them): each MCP server publishes its ask record and its `STATS` parts, the console receives them through each login's own consumers, decodes them strictly and shows the asks read-only and the two reports | — |
 | ADR-016 | The bus without a chat as its source: Keycloak is the root of identity, keyed by `sub`, with chat accounts bound to it per product; a channel directory on NATS that only the login service writes (name, public or not, members, a binding per chat) replaces Mattermost membership behind `callout.Channels`; one bridge per chat product vouches for its humans, and later a Keycloak login on NATS itself; the login service attests trust lists; agents need no chat. Decided by the owner on 2026-11-23: the directory, Mattermost membership behind a replaceable interface until then, and for the console reading only, a Python server and what an operator sees | Accepted (2026-11-23) by the owner, its nine open points decided by the owner the same day; it changes ADR-014 points 6, 10, 11 and 16. Built in part: the channel directory (RT-6.39) and "in doubt, foreign" (RT-6.16) in 0.97.0; after 0.97.0 the admin API with the import from Mattermost (RT-6.40) and the attested trust lists (RT-6.41). Not built: the bridges, `checkChat` as a binding, agents without a chat, the host's agent name from an anchor that is not the username. Addition 2026-11-24: all Mattermost functions in one service, the bridge in `services/bridge`, the registrar's move as an open step; built step by step, the pilot with one bridge bot | — |
+| ADR-017 | The token split attributes tokens by content, not by cause: a request's tokens go to task work, bus overhead or multi-agent coordination by what its context and output hold, never all to the bus because the bus started the turn | Decided 2026-11-26 with the issue on the token split (#139, its proposed defaults); built for Claude Code (the overhead measurement, RT-6.9 step 2, method 1) | #139 |
 
 
 **Terms.** An agent's **home** is the first entry of `MM_PROJECT_CHANNEL`,
@@ -3550,7 +3551,8 @@ separately.
       (ADR-016, RT-6.39), the host the token's `preferred_username`
       (`NatsBus.name` in `natsbus.py`, `_owner_of` in `nats_port.py`); the
       two agree only while the anchor equals the username, so an identity
-      whose anchor is its `sub` stops with `NameMismatch`. Not built yet.
+      whose anchor is its `sub` (its name was held) or its old name (renamed
+      in Keycloak) stops with `NameMismatch`. Not built yet (RISK-19).
 
     **Conditions** the model holds under (each one is part of the test):
     1. **Message ids are stream-wide.** An agent that guesses another's
@@ -4109,7 +4111,8 @@ The console is the operators' view of the bus itself.
 
    | Report | Fields (RT-6.9) | Window | Chart | Warn when | Stage |
    |--------|-----------------|--------|-------|-----------|-------|
-   | The bus and coordination share of all tokens (named "the bus's share" until the traffic split, RT-6.9 step 3) | `tok.bus`, `tok.all` | per version, 7 d | line per version | higher than the version before without a reason in `CHANGELOG.md` (quality goal 6) | 1 |
+   | The bus overhead share of all tokens (the overhead segment of the token split, estimated; named "the bus's share" until the traffic split and "the bus and coordination share" until the token split, RT-6.9 step 3) | `tok.ovh`, `tok.all` | per version, 7 d | line per version | higher than the version before without a reason in `CHANGELOG.md` (quality goal 6) | 1 |
+   | Tokens by category: task work, bus overhead and coordination, estimated (the token split, ADR-017, RT-6.9 step 3) | `tok.all`, `tok.ovh`, `tok.coord`, `tok.m` | fleet, per version, per role, per harness, 7 d | stacked bar per row, equivalents or raw | — | 2 |
    | Bus traffic by category: bus overhead and coordination in items and characters, the share of empty polls, the coverage (added with the traffic counts, RT-6.9 step 3) | `post_words`, `inbound`, `polls`, `inject` | 7 d | numbers | — | 1 |
    | Requests the bus caused per hour, fixed tokens per request | `tok.bus_req`, `tok.req`, `tok.fixed`, `min` | 7 d | small multiples per version | — | 2 |
    | Turns: share the bus started, mean and longest | `turns`, `bus_turns`, `turns_timed`, `turn_sec`, `turn_max_sec` | 24 h, 7 d | bars per harness | — | 2 |
@@ -4653,7 +4656,12 @@ agent publishes passes for a person's word.
     record. The owner's wish for a view per agent in the issue on the
     token split (#139) does not change this as long as that issue's open
     question is not decided: the traffic report too is by fleet only, and
-    its counts carry no peer, so no one sees who talks to whom.
+    its counts carry no peer, so no one sees who talks to whom. The tokens
+    by category (the token split, ADR-017; RT-6.9 step 3) follow the same
+    rule: one stacked bar of task work, bus overhead and coordination for
+    the fleet, per version, per role and per harness, never per agent, each
+    marked "estimated"; and the share per version becomes the overhead
+    segment of that split ("the bus overhead share of all tokens").
 
 Not part of this addition: answering an ask from the console (point 8),
 threads and people's posts in the console, the card's fields in presence
@@ -4760,9 +4768,11 @@ source of identity and membership.
      name from the token's `preferred_username` (`NatsBus.name` in
      `natsbus.py`, `_owner_of` in `nats_port.py`), so the two agree only
      while the anchor equals the username, which holds for every identity
-     known before the import; an identity whose anchor is its `sub` gets a
-     credential whose name differs, and the host stops with `NameMismatch`
-     (RISK-19).
+     known before the import and, since the anchor fix for new identities
+     (#86), for a new one after it whose
+     username is free; an identity whose anchor is its `sub` (its name was
+     held) or its old name (renamed) gets a credential whose name differs,
+     and the host stops with `NameMismatch` (RISK-19).
    - The login service's check of the chat account (`checkChat`) thereby
      turns from a gate into a binding: a human without a Mattermost account
      may start agents; if the binding is missing, only this chat does not
@@ -4897,8 +4907,8 @@ for a channel not bound to it is dropped.
 directory and the chat drifting apart, and visibility through trust
 (RISK-15 to RISK-17 in Section 11); and the agent's name on NATS: the
 login service names it after the directory's anchor, the host computes it
-from `preferred_username`, so an identity whose anchor differs stops with
-`NameMismatch` (fails closed; RISK-19).
+from `preferred_username`, so an identity whose anchor differs (renamed, or
+its name held by another) stops with `NameMismatch` (fails closed; RISK-19).
 
 **Decided by the owner on 2026-11-23**, one decision on each of the nine
 points the proposal left open; the numbers are those of the former open
@@ -4968,7 +4978,11 @@ to whom a guest opens their channel read-only (decision 6). Settled before
 the first code on the directory (coordinator, 2026-11-23): the fixed token
 in the presence subject and the seed for the name (decisions 7 and 9) are
 one field per identity, `anchor`: for today's identities today's name, for
-new ones `sub`, never changed. Two fields could only drift apart. A key
+new ones `sub`, never changed. Changed by the anchor fix for new identities (#86): a new identity after the
+import also takes its username when it is free, and only falls back to its
+`sub` when another identity holds that name; the host computes its agent's
+name from the username, and a name as anchor grants nothing (membership,
+the account index and claims go by `sub`). Two fields could only drift apart. A key
 `anchor.<value>` with the `sub` as its value keeps a value from being given
 out twice.
 
@@ -5346,3 +5360,42 @@ Mattermost-related functions are in one service".
 Not part of this decision: building a bridge for Teams or Zulip, the
 console's way of answering, several tenants, and the time at which
 Mattermost could be switched off.
+
+---
+
+## ADR-017: The token split attributes by content, not by cause
+
+**Status:** Decided 2026-11-26 with the issue on splitting the tokens into
+task work, bus overhead and multi-agent coordination (#139), by its
+proposed defaults; built for Claude Code in the overhead measurement
+(RT-6.9 step 2, method 1). OpenCode and pi follow once their plugins send
+usage.
+
+**Context:** The overhead measurement (RT-6.9) counts a request the bus
+started whole as the bus's: a turn a peer's message, the listener or the
+`Stop` hook woke. That mixes what the bus itself costs (its fixed text,
+hook texts, empty polls, sign-on posts) with what talking to other agents
+costs (a `TASK` read, a `RESULT` written), and a peer's `TASK` that starts
+an hour of work makes the whole hour look like overhead.
+
+**Decision:** Every token of a measured request goes to the category of
+the content it stands for. The input by its position in the context
+(segments with a category each, the exact cache types laid over them from
+the front); tool calls in the output by their tool; the rest of the output
+(text, thinking) by what drove the request, a stated convention. Task work
+is the rest, so the three add up to the exact totals. Who woke a turn
+stays visible beside it, in the exact counts (`bus_turns_agent`,
+`bus_turns_human`).
+
+**Alternative:** Attribution by cause, the rule before (a whole request
+the bus started counts as the bus's). Rejected: a peer's `TASK` would make
+all the work it starts look like overhead, and the overhead could not be
+told from coordination.
+
+**Consequences:** The split is an estimate (4 characters per token,
+approximate cache boundaries, the driver rule) and every report marks it
+"estimated" with a one-line note (the risk that an estimate is read as exact, RISK-25). `tok.bus`, the measure by
+cause, stays on the line for a transition, so the share per version stays
+comparable across versions. The split runs in code on the transcript the
+server reads anyway: no token enters a context.
+

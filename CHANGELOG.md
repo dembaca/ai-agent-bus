@@ -5,6 +5,10 @@ before 0.5.0 are described in the git history.
 
 ## Unreleased
 
+### Changed
+
+- **The central bridge logs one INFO line per person post, reaction or removal of a reaction it carries onto NATS** (#134, RT-6.42): `inbound: carried` with the home, `what` (`post`, `reaction` or `unreaction`), the Mattermost post id and the subject, no text and no name beyond the anchor.
+
 ### Breaking
 
 - **The central bridge refuses an `http` Mattermost URL to a host that is
@@ -90,8 +94,33 @@ before 0.5.0 are described in the git history.
   result field is added; a test pins all of these by hash. Only
   `stats_report`, when asked, returns a few more numbers.
 
+- **Tokens by category for Claude Code, an estimate marked as such** (the
+  second stage of splitting the tokens into task work, bus overhead and
+  multi-agent coordination, #139; the overhead measurement, RT-6.9; the
+  decision on attribution by content, ADR-017). The same pass over the
+  transcript keeps the context's segments by category, lays each request's
+  exact token types over them by position (cache read from the front, then
+  cache write 1 h, 5 min, fresh input), sizes tool calls in the output
+  exactly and splits text and thinking by what drove the request (a
+  convention). `tok` gains `ovh` and `coord` (each `{in, read, w5m, w1h,
+  out}`), `req_ovh`, `req_coord` and the method number `m` (1); task work
+  is the rest, never sent, so the three add up to the exact totals.
+  `mm-agent-stats.sh report`, `stats_report` (sums, shares and coverage
+  only) and the console gain the report "tokens by category": in the
+  console one stacked bar per row (fleet, version, role, harness),
+  input-token equivalents by default and raw tokens on a switch, each bar
+  marked "estimated" with a one-line note on the method and the coverage.
+  A trusted human's prompt over the bus counts as task work here, a digest
+  as overhead. Zero added model tokens: the hash test of the text the
+  model reads is unchanged.
+
 ### Changed
 
+- **The console's report on the token share per version shows the bus
+  overhead share of all tokens**, the overhead segment of the token split
+  in input-token equivalents, marked estimated (n/a for versions without
+  the split); the bus and coordination share stays in the script's token
+  table, from `tok.bus`, for comparison across versions (RT-6.43 step 8).
 - **The console's report "the bus's share of all tokens, per version" is
   now "bus and coordination share of all tokens, per version"**, and the
   script's column "bus share" "bus and coordination share": the measure
@@ -101,6 +130,16 @@ before 0.5.0 are described in the git history.
 
 ### Fixed
 
+- **A NATS home starts for an identity first seen after the directory
+  import** (#86, the channel directory's anchors, RT-6.39). The login service
+  gave such an identity its Keycloak `sub` as anchor, so the agent name and
+  the presence owner token it issued differed from the ones the host computes
+  from the username, and the home stopped with `NameMismatch`. A new identity
+  now takes its username as anchor when it is free, as before the import; a
+  name another identity holds still gives the `sub` (the host then still
+  stops, never with a wrong name). Anchors already given do not move. The
+  remaining cases, an account renamed in Keycloak and a new one whose name
+  was held, stay a known limit (RISK-19).
 - **A pi session gets the bus's instructions** (#153, RT-6.27). pi hands an MCP
   server's `instructions` to the model only for servers with deferred or Code
   Mode tools, and the bus is registered `direct`, so a pi agent missed the rules

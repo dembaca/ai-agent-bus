@@ -1092,3 +1092,64 @@ async def test_a_counter_that_fails_never_fails_wait_for_events(monkeypatch):
     monkeypatch.setattr(server, "_confirmed", None)
     monkeypatch.setattr(stats, "record", lambda kind, **v: boom() if kind == "poll" else None)
     assert json.loads(await server.wait_for_events(timeout_sec=0)) == []
+
+
+SPLIT_TOK = {"req": 50, "bus_req": 9, "fixed": 1000,
+             "all": {"in": 1000, "read": 80_000, "w5m": 2000, "w1h": 1000, "out": 3000},
+             "bus": {"in": 400, "read": 9000, "w5m": 800, "w1h": 0, "out": 900},
+             "ovh": {"in": 100, "read": 8000, "w5m": 200, "w1h": 0, "out": 400},
+             "coord": {"in": 300, "read": 1000, "w5m": 600, "w1h": 0, "out": 500},
+             "req_ovh": 4, "req_coord": 6, "m": 1}
+
+
+def test_the_token_split_decodes_within_its_bounds_and_drops_unknown_keys():
+    """RT-6.9 step 2, RT-6.43 step 7: tok.ovh and tok.coord pass the strict decoder as
+    objects of numbers 0 to NUM_MAX, req_ovh, req_coord and m as numbers; a token type or
+    a key outside the lists is left out, never shown; another shape drops the line."""
+    tok = SPLIT_TOK | {"ovh": SPLIT_TOK["ovh"] | {"peer": 7}, "per_agent": {"x": 1}}
+    got = stats.decode_line(json.dumps({"v": "0.103.0", "tok": tok}).encode())["tok"]
+    assert got == SPLIT_TOK
+    for bad in ({"ovh": {"in": -1}}, {"coord": {"out": 10**13}}, {"coord": 5}, {"m": 1.5},
+                {"req_ovh": True}, {"ovh": {"in": [1, 2]}}):
+        with pytest.raises(stats.LineError):
+            stats.decode_line(json.dumps({"v": "0.103.0", "tok": SPLIT_TOK | bad}).encode())
+    big = {k: 10**12 for k in overhead.KEYS}
+    line = {"v": "0.103.0", "sid": "3f9a1c2b7d4e", "rt": "claude-code", "tok": {
+        "req": 10**12, "bus_req": 10**12, "fixed": 10**12, "skill": 1, "all": big, "bus": big,
+        "ovh": big, "coord": big, "req_ovh": 10**12, "req_coord": 10**12, "m": 1}}
+    body = stats.nats_body(line)
+    assert body is not None and len(body) <= stats.NATS_BODY_MAX
+    assert len(json.dumps(line["tok"], separators=(",", ":"))) < 600   # RT-6.9: a whole tok at its bounds
+
+
+def test_the_report_splits_the_tokens_by_category():
+    """RT-6.9 step 3: the tokens by category, an estimate: task work the remainder per
+    token type, shares in raw tokens and input-token equivalents; lines without the split
+    (older publishers, other harnesses) count in the coverage and leave a version n/a,
+    never 0; forged values stay within 0 to 100 %."""
+    lines = [{"v": "0.102.0", "rt": "claude-code", "tok": {"req": 5, "all": {"in": 10}}},
+             {"v": "0.103.0", "sid": "a" * 12, "rt": "claude-code", "min": 60, "crown_sec": 3600,
+              "tok": SPLIT_TOK},
+             {"v": "0.103.0", "sid": "b" * 12, "rt": "opencode", "min": 60},
+             {"v": "0.103.0", "sid": "c" * 12, "rt": "claude-code", "min": 60, "crown_sec": 0,
+              "tok": {"all": {"in": 10}, "ovh": {"in": 50}, "coord": {"in": 50}, "m": 1}}]
+    rows = {r["version"]: r for r in stats.report(lines)}
+    assert rows["0.102.0"]["split"] is None
+    s = rows["0.103.0"]["split"]
+    assert (s["lines"], s["of"], s["harnesses"], s["estimated"]) == (2, 3, ["claude-code"], True)
+    assert s["types"]["overhead"]["in"] == 110 and s["types"]["coordination"]["in"] == 300
+    assert s["types"]["task"] == {"in": 600, "read": 71_000, "w5m": 1200, "w1h": 1000, "out": 2100}
+    assert s["raw"] == {"task": 75_900, "overhead": 8710, "coordination": 2400}
+    assert s["eq"]["overhead"] == round(110 + 800 + 250 + 2000)
+    assert all(0 <= p <= 100 for p in (*s["eq_pct"].values(), *s["raw_pct"].values()))
+    assert (s["req_ovh"], s["req_coord"]) == (4, 6)
+    roles = {r["role"]: r["split"] for r in rows["0.103.0"]["roles"]}
+    assert roles["coordinator"]["lines"] == 1 and roles["unknown"] is None
+    assert stats.split_summary(lines) == s | {"of": 4}
+    # Another method's lines are kept apart: not summed, counted in the coverage only.
+    assert stats.split_summary([lines[1] | {"tok": SPLIT_TOK | {"m": 2}}]) is None
+    # stats_report: the sums, shares and coverage, not the token types.
+    brief = stats.brief(stats.report(lines))[-1]
+    assert set(brief["split"]) == {"estimated", "lines", "of", "harnesses", "raw", "eq", "raw_pct", "eq_pct"}
+    assert brief["split"]["eq_pct"] == s["eq_pct"]
+    assert all("types" not in (r["split"] or {}) for r in brief["roles"])

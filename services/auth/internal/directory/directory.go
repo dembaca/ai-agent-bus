@@ -382,7 +382,8 @@ func (s *Store) Identity(ctx context.Context, sub string) (Identity, uint64, boo
 // the new display name. A new one gets `today` as its anchor when that is
 // given and free, else its `sub` (lower-cased); the anchor index is written
 // first, so two logins never share an anchor. `today` is the caller's
-// choice: today's name before the import, "" after it (decisions 7 and 9).
+// choice: Anchors passes today's name, before and after the import (#86);
+// "" gives the sub.
 func (s *Store) Login(ctx context.Context, sub, display, today string) (Identity, error) {
 	for attempt := 0; attempt < 3; attempt++ {
 		id, rev, ok, err := s.Identity(ctx, sub)

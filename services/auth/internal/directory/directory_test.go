@@ -139,8 +139,9 @@ const (
 	subLetter = "ab12cd34-0000-4111-8222-333344445555"
 )
 
-// Decisions 7 and 9: an anchor is given once and never changed; before the
-// import it is today's name, after it a new identity's sub; no anchor twice.
+// Decisions 7 and 9, RT-6.39 step 2: an anchor is given once and never
+// changed; a new identity's is today's name when it is free, before and after
+// the import (#86), else its sub; no anchor twice.
 func TestAnchorsAreFixedAndNeverShared(t *testing.T) {
 	s, _ := open(t)
 	a := Anchors{Store: s}
@@ -199,14 +200,71 @@ func TestAnchorsAreFixedAndNeverShared(t *testing.T) {
 	if got := anchor("sub-alice", "alice"); got != "alice" {
 		t.Fatalf("an identity known before the import: %q", got)
 	}
-	if got := anchor(subNew, "newbie"); got != subNew {
+	// An identity known before the import keeps its anchor after it, also
+	// when renamed in Keycloak.
+	if got := anchor("sub-alice", "alice.later"); got != "alice" {
+		t.Fatalf("an imported identity's anchor moved: %q", got)
+	}
+	// A new identity after the import takes its free username (#86): the
+	// host computes its agent name and presence token from that name.
+	if got := anchor(subNew, "newbie"); got != "newbie" {
 		t.Fatalf("a new identity after the import: %q", got)
+	}
+	if got := anchor(subNew, "newbie.renamed"); got != "newbie" {
+		t.Fatalf("its anchor moved: %q", got)
+	}
+	// A name an identity holds is never handed out: the new one falls back
+	// to its sub (its host then stops with NameMismatch, never a wrong name).
+	const subLate = "5c4b3a29-1111-4222-8333-444455556666"
+	if got := anchor(subLate, "first.last"); got != subLate {
+		t.Fatalf("a held name after the import: %q", got)
+	}
+	if got := anchor(subLate, "free.now"); got != subLate {
+		t.Fatalf("the fallback anchor moved: %q", got)
 	}
 	if _, err := a.Anchor(ctx(t), "sub.>", "x"); !errors.Is(err, ErrBadKey) {
 		t.Fatalf("a sub with a wildcard: %v", err)
 	}
-	if _, err := a.Anchor(ctx(t), "_starts-odd", "x"); !errors.Is(err, ErrAnchorShape) {
-		t.Fatalf("a sub that is no owner token: %v", err)
+	if _, err := a.Anchor(ctx(t), "_starts-odd", "alice"); !errors.Is(err, ErrAnchorShape) {
+		t.Fatalf("a sub that is no owner token, its name held: %v", err)
+	}
+}
+
+// RT-6.39 step 2, #86: two new identities that log in at once after the
+// import with the same username: exactly one gets the name, the other its sub.
+func TestTwoNewcomersRaceForOneName(t *testing.T) {
+	s, _ := open(t)
+	if err := s.MarkImported(ctx(t), time.Now()); err != nil {
+		t.Fatal(err)
+	}
+	a := Anchors{Store: s}
+	subs := []string{subNew, subOther}
+	got := make([]string, len(subs))
+	errs := make([]error, len(subs))
+	var wg sync.WaitGroup
+	for i, sub := range subs {
+		wg.Add(1)
+		go func() {
+			defer wg.Done()
+			got[i], errs[i] = a.Anchor(ctx(t), sub, "dana")
+		}()
+	}
+	wg.Wait()
+	named := 0
+	for i, sub := range subs {
+		if errs[i] != nil {
+			t.Fatalf("%s: %v", sub, errs[i])
+		}
+		switch got[i] {
+		case "dana":
+			named++
+		case strings.ToLower(sub):
+		default:
+			t.Fatalf("%s got %q", sub, got[i])
+		}
+	}
+	if named != 1 {
+		t.Fatalf("the name went to %d identities: %v", named, got)
 	}
 }
 
@@ -219,6 +277,9 @@ func TestANameCannotSquatAnotherIdentitysSub(t *testing.T) {
 	squat, err := a.Anchor(ctx(t), subSquat, subLetter) // calls itself the victim's sub
 	if err != nil || squat != subLetter {
 		t.Fatalf("the squatter: %q %v", squat, err)
+	}
+	if _, err := a.Anchor(ctx(t), "sub-namesake", "victim"); err != nil { // the victim's username is held
+		t.Fatal(err)
 	}
 	if err := s.MarkImported(ctx(t), time.Now()); err != nil {
 		t.Fatal(err)
@@ -336,6 +397,9 @@ func TestALongSubStillGetsASuffix(t *testing.T) {
 	if got, err := a.Anchor(ctx(t), "sub-squatter", long); err != nil || got != long {
 		t.Fatalf("the squatter: %q %v", got, err)
 	}
+	if _, err := a.Anchor(ctx(t), "sub-namesake", "victim"); err != nil { // the victim's username is held
+		t.Fatal(err)
+	}
 	if err := s.MarkImported(ctx(t), time.Now()); err != nil {
 		t.Fatal(err)
 	}
@@ -357,6 +421,9 @@ func TestNineSquattersAreRefusedNotShared(t *testing.T) {
 		if _, err := a.Anchor(ctx(t), "sub-"+strconv.Itoa(i), subLetter+"."+strconv.Itoa(i)); err != nil {
 			t.Fatal(err)
 		}
+	}
+	if _, err := a.Anchor(ctx(t), "sub-namesake", "victim"); err != nil { // the victim's username is held
+		t.Fatal(err)
 	}
 	if err := s.MarkImported(ctx(t), time.Now()); err != nil {
 		t.Fatal(err)
