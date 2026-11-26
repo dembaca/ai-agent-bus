@@ -330,6 +330,7 @@ class Login:
         self._mark_seen = 0.0  # the stored deadline this object has taken in, 0 for none
         self._mark_until = 0.0  # ... and the effective (capped) deadline that gave
         self._nkey: nkeys.KeyPair | None = None
+        self._nkey_guard = threading.Lock()
 
     def __repr__(self) -> str:
         return (f"Login(issuer={self.settings.issuer!r}, client_id={self.settings.client_id!r}, "
@@ -339,26 +340,27 @@ class Login:
     def nkey(self) -> NKey:
         """The host's NATS user key: loaded from its store (`MM_LOGIN_NKEY=host`)
         or new for this process. The seed stays here."""
-        if self._nkey is None:
-            seed: str | None = None
-            try:
-                seed = self._nkey_store.load(keystore.NKEY_SEED)
-            except keystore.KeyStoreError as exc:
-                log.warning("stored nkey not used: %s", exc)
-            kp = None
-            if seed:
+        with self._nkey_guard:  # one key, whichever thread asks first (export_seed, _io)
+            if self._nkey is None:
+                seed: str | None = None
                 try:
-                    kp = nkeys.from_seed(seed.encode("ascii"))
-                except (nkeys.NkeysError, UnicodeEncodeError, ValueError):
-                    log.warning("stored nkey seed is not valid: a new one is made")
-            if kp is None:
-                new_seed = nkeys.encode_seed(os.urandom(32), nkeys.PREFIX_BYTE_USER)
-                kp = nkeys.from_seed(new_seed)
-                try:
-                    self._nkey_store.save(keystore.NKEY_SEED, bytes(new_seed).decode("ascii"))
+                    seed = self._nkey_store.load(keystore.NKEY_SEED)
                 except (keystore.KeyStoreError, OSError) as exc:
-                    log.warning("nkey seed not stored: %s", type(exc).__name__)
-            self._nkey = kp
+                    log.warning("stored nkey not used: %s", type(exc).__name__ if isinstance(exc, OSError) else exc)
+                kp = None
+                if seed:
+                    try:
+                        kp = nkeys.from_seed(seed.encode("ascii"))
+                    except (nkeys.NkeysError, UnicodeEncodeError, ValueError):
+                        log.warning("stored nkey seed is not valid: a new one is made")
+                if kp is None:
+                    new_seed = nkeys.encode_seed(os.urandom(32), nkeys.PREFIX_BYTE_USER)
+                    kp = nkeys.from_seed(new_seed)
+                    try:
+                        self._nkey_store.save(keystore.NKEY_SEED, bytes(new_seed).decode("ascii"))
+                    except (keystore.KeyStoreError, OSError) as exc:
+                        log.warning("nkey seed not stored: %s", type(exc).__name__)
+                self._nkey = kp
         kp = self._nkey
 
         def sign(nonce: bytes) -> bytes:
@@ -382,16 +384,16 @@ class Login:
         async with self._lock:
             if self._fresh():
                 return self._tokens.access
-            await self._io(self.nkey)  # loaded off the event loop: a keychain call blocks
             self._tokens = _Tokens()
             human = self._human().strip()
+            if self._migrate:  # first, so a stored seed moves rather than being replaced
+                self._migrate = False
+                await self._io(self._migrate_old, human)
+            await self._io(self.nkey)  # loaded off the event loop: a keychain call blocks
             if not human:
                 raise LoginError("no responsible human to approve a login "
                                  "(set MM_RESPONSIBLE_HUMAN or MM_TRUSTED_HUMANS)")
             entry = keystore.refresh_entry(self.settings.issuer, self.settings.client_id, human)
-            if self._migrate:  # migrate_from takes each entry's lock itself
-                self._migrate = False
-                await self._io(self._migrate_old, human)
             async with self._file_lock(entry):
                 # The mark on the host, whoever left it: a cooldown another process set
                 # while this one was running counts too, so it is read before every
@@ -466,17 +468,22 @@ class Login:
         nkey seed an earlier version kept in the host's state directory move to this
         store (keystore.migrate_from). Under corral that directory is not reachable."""
         old = keystore.HostFile(session_file.host_state_dir() / "login")
-        names = [self._entry(human), keystore.cooldown_entry(self.settings.issuer, self.settings.client_id, human),
-                 keystore.NKEY_SEED]
+        names = [keystore.NKEY_SEED]
+        if human:
+            names[:0] = [self._entry(human),
+                         keystore.cooldown_entry(self.settings.issuer, self.settings.client_id, human)]
         try:
-            keystore.migrate_from(old, self._store, names)
+            # The store itself, never the Deferred wrapper: migrate_from leaves a store
+            # at the old place alone only when it sees what it is (else it wipes it).
+            new = self._store.resolve() if isinstance(self._store, Deferred) else self._store
+            keystore.migrate_from(old, new, names)
         except (keystore.KeyStoreError, OSError) as exc:
             log.warning("login: the earlier store was not taken over (%s)", type(exc).__name__)
 
-    def forget(self) -> None:
-        """Drop every token, in memory and in the store."""
+    async def forget(self) -> None:
+        """Drop every token, in memory and in the store (off the event loop)."""
         self._tokens = _Tokens()
-        self._drop_refresh(self._human().strip())
+        await self._io(self._drop_refresh, self._human().strip())
 
     def _entry(self, human: str) -> str:
         return keystore.refresh_entry(self.settings.issuer, self.settings.client_id, human)
@@ -491,6 +498,9 @@ class Login:
             data = json.loads(raw)
         except keystore.KeyStoreError as exc:
             log.warning("stored refresh token not used: %s", exc)
+            return None
+        except OSError as exc:  # the store's choice or a keychain call failed
+            log.warning("stored refresh token not used: %s", type(exc).__name__)
             return None
         except ValueError:
             log.warning("stored refresh token not used: not readable")

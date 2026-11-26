@@ -617,3 +617,95 @@ def test_migrate_between_stores_at_the_same_place_does_nothing(tmp_path):
     a.save("refresh_a", SECRET)
     assert keystore.migrate_from(a, b, ["refresh_a"]) == []
     assert a.load("refresh_a") == SECRET
+
+
+class LateStore:
+    """A wrapper that chooses its store on first use, as the login's is."""
+
+    def __init__(self, store):
+        self._store = store
+
+    def resolve(self):
+        return self._store
+
+    def load(self, name):
+        return self.resolve().load(name)
+
+    def save(self, name, value):
+        self.resolve().save(name, value)
+
+    def delete(self, name):
+        self.resolve().delete(name)
+
+    def try_lock(self, name):
+        return self.resolve().try_lock(name)
+
+    def unlock(self, handle):
+        self.resolve().unlock(handle)
+
+
+def test_migrate_never_deletes_through_a_wrapper_onto_the_same_directory(tmp_path):
+    d = tmp_path / "login"
+    old = keystore.HostFile(d)
+    old.save("refresh_a", SECRET)
+    old.save(keystore.NKEY_SEED, "SEED")
+    names = ["refresh_a", keystore.NKEY_SEED]
+    assert keystore.migrate_from(old, LateStore(keystore.HostFile(d)), names) == []
+    assert keystore.migrate_from(LateStore(old), LateStore(LateStore(keystore.HostFile(d))), names) == []
+    (tmp_path / "link").symlink_to(d)  # the same directory under another name
+    assert keystore.migrate_from(old, LateStore(keystore.HostFile(tmp_path / "link")), names) == []
+    assert old.load("refresh_a") == SECRET and old.load(keystore.NKEY_SEED) == "SEED"
+
+
+def test_migrate_through_a_wrapper_onto_a_keychain_still_moves(tmp_path):
+    old = keystore.HostFile(tmp_path / "login")
+    old.save("refresh_a", SECRET)
+    new = LateStore(keystore.MacKeychain(tmp_path / "login", runner=FakeCli()))
+    assert keystore.migrate_from(old, new, ["refresh_a"]) == ["refresh_a"]
+    assert new.load("refresh_a") == SECRET and old.load("refresh_a") is None
+
+
+def test_same_keychain_class_and_service_is_the_same_place(tmp_path):
+    a = keystore.MacKeychain(tmp_path / "a", runner=FakeCli())
+    b = LateStore(keystore.MacKeychain(tmp_path / "b", runner=FakeCli()))
+    assert keystore._same_place(a, b)
+    assert not keystore._same_place(a, keystore.MacKeychain(tmp_path, runner=FakeCli(), service="other"))
+    assert not keystore._same_place(a, keystore.SecretTool(tmp_path / "a", runner=FakeCli()))
+
+
+def test_a_failed_short_write_keeps_the_long_value_in_its_file(tmp_path):
+    cli = FakeCli()
+    d = tmp_path / "login"
+    s = keystore.MacKeychain(d, runner=cli)
+    long_value = SECRET * 200
+    s.save("refresh_a", long_value)
+    cli.mac_i_takes = False  # the keychain write does not take
+    with pytest.raises(keystore.KeyStoreError, match="refresh_a: keychain write failed"):
+        s.save("refresh_a", "short")
+    assert (d / "overflow" / "refresh_a").exists() and s.load("refresh_a") == long_value
+
+
+def test_choose_falls_back_to_the_unrecorded_file_when_the_marker_cannot_be_written(state, caplog, monkeypatch):
+    def unwritable(*a, **k):
+        raise PermissionError(13, "Permission denied")
+    monkeypatch.setattr(keystore, "_choice_lock", unwritable)
+
+    def never(*a):
+        raise AssertionError("no probe without a recorded choice")
+    with caplog.at_level("WARNING"):
+        s = keystore.choose({}, runner=never, **MAC)
+    assert isinstance(s, keystore.HostFile) and s.directory == state / "mm-agent-bus" / "login"
+    assert "the choice cannot be recorded (PermissionError)" in caplog.text
+    assert not (s.directory / "store_backend").exists()
+
+
+def test_choose_on_a_read_only_state_dir_returns_the_file_store(tmp_path, monkeypatch):
+    ro = tmp_path / "ro"
+    ro.mkdir()
+    monkeypatch.setenv("XDG_STATE_HOME", str(ro / "state"))
+    ro.chmod(0o500)
+    try:
+        s = keystore.choose({}, runner=FakeCli(), **MAC)
+    finally:
+        ro.chmod(0o700)
+    assert isinstance(s, keystore.HostFile)

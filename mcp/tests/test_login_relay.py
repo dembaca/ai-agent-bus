@@ -282,7 +282,7 @@ async def test_one_open_approval_at_a_time_and_one_per_cooldown_and_refusals_rat
     assert dm.events == ["waiting"]                    # one DM, one ask, not five
     await relayed._on({"event": "settled", "outcome": "expired"})
     await relayed._on({"event": "settled", "outcome": "expired"})   # nothing open: ignored
-    await relayed._on(dict(waiting))                   # within the cooldown: no DM
+    await relayed._on(dict(waiting))                   # within the cooldown: deferred, not now
     clock[0] += login.COOLDOWN_SEC
     await relayed._on(dict(waiting))
     for _ in range(3):
@@ -450,3 +450,122 @@ async def test_the_relays_handshake_answer_offers_the_login_only_with_a_relayed_
     monkeypatch.setattr(login, "_current", relayed)
     assert hosted._login_offer() == {"login": {"issuer": ISSUER, "client_id": "agent-bus",
                                                "nkey": "ephemeral", "human": "alice"}}
+
+
+# --- review fixes: the store kept, approvals that end with their relay -------------------
+
+async def test_the_migration_leaves_a_chosen_file_store_at_the_old_place_alone(tmp_path, monkeypatch):
+    """RT-6.34, #154: with keystore.default() a HostFile at <state dir>/login (no keychain),
+    the real migrate_from must see the store itself, not its Deferred wrapper, or it
+    would move the entries onto themselves and delete them."""
+    place = tmp_path / "state" / "mm-agent-bus" / "login"
+    monkeypatch.setattr(keystore, "_chosen", keystore.HostFile(place))
+    put(keystore.HostFile(place), "refresh-secret-0")
+    # a seed in the same place, as MM_LOGIN_NKEY=host keeps it
+    kept = login.Login(login.Settings(ISSUER, "agent-bus", "host"), store=keystore.Ephemeral()).export_seed()
+    keystore.HostFile(place).save(keystore.NKEY_SEED, kept)
+    script = Script()
+    lg = login.Login(login.Settings(ISSUER, "agent-bus", "host"), store=login.default_store(),
+                     human=lambda: "alice", notifier=Note(), migrate=True,
+                     http=httpx.AsyncClient(transport=httpx.MockTransport(script)),
+                     sleep=lambda s: asyncio.sleep(0))
+    for _ in range(2):  # every start
+        lg._migrate, lg._tokens = True, login._Tokens()
+        await lg.access_token()
+    files = keystore.HostFile(place)
+    assert stored(files) == "refresh-secret-2" and files.load(keystore.NKEY_SEED) == kept
+    assert script.device_requests == 0
+
+
+async def test_a_stored_seed_moves_before_the_key_is_made(tmp_path):
+    old = keystore.HostFile(tmp_path / "state" / "mm-agent-bus" / "login")
+    seed = login.Login(login.Settings(ISSUER, "agent-bus", "host"), store=keystore.Ephemeral()).export_seed()
+    old.save(keystore.NKEY_SEED, seed)
+    store = keystore.HostFile(tmp_path / "new")
+    lg = login.Login(login.Settings(ISSUER, "agent-bus", "host"), store=store, human=lambda: "alice",
+                     notifier=Note(), migrate=True, sleep=lambda s: asyncio.sleep(0),
+                     http=httpx.AsyncClient(transport=httpx.MockTransport(Script())))
+    await lg.access_token()
+    assert store.load(keystore.NKEY_SEED) == seed and lg.export_seed() == seed
+    assert old.load(keystore.NKEY_SEED) is None
+
+
+def test_two_threads_asking_for_the_key_get_one():
+    import threading
+    lg = login.Login(login.Settings(ISSUER, "agent-bus", "host"), store=keystore.Ephemeral())
+    keys: list[str] = []
+    threads = [threading.Thread(target=lambda: keys.append(lg.nkey().public_key)) for _ in range(8)]
+    for t in threads:
+        t.start()
+    for t in threads:
+        t.join()
+    assert len(set(keys)) == 1 and lg.export_seed()
+
+
+async def test_a_relay_that_dies_mid_approval_settles_its_ask_and_the_next_gets_a_dm():
+    dm, clock = Note(), [1000.0]
+    relayed = _relayed(dm, clock)
+    lines: asyncio.Queue[bytes] = asyncio.Queue()
+
+    async def send_line(data: bytes) -> None:
+        pass
+
+    serving = asyncio.create_task(relayed.serve(relayed.claim(), lines.get, send_line))
+    await asyncio.sleep(0)
+    await lines.put(json.dumps({"event": "waiting", "code": "ABCD-EFGH", "expires_in": 600}).encode())
+    await asyncio.sleep(0.01)
+    await lines.put(b"")                               # the relay is gone
+    await asyncio.gather(serving, return_exceptions=True)
+    await asyncio.sleep(0)
+    assert dm.events == ["waiting", "settled:failed"] and not relayed.busy()
+    clock[0] += login.COOLDOWN_SEC
+    await relayed._on({"event": "waiting", "code": "WXYZ-QRST", "expires_in": 600})
+    await asyncio.sleep(0)
+    assert dm.events[-1] == "waiting" and dm.grants[-1].user_code == "WXYZ-QRST"
+
+
+async def test_a_restart_within_the_cooldown_gets_its_dm_when_it_ends():
+    dm, clock, waited = Note(), [1000.0], []
+
+    async def sleep(sec):
+        waited.append(sec)
+        clock[0] += sec
+
+    relayed = _relayed(dm, clock, sleep=sleep)
+    await relayed._on({"event": "waiting", "code": "ABCD-EFGH", "expires_in": 600})
+    await relayed._on({"event": "settled", "outcome": "failed"})   # the relay restarted
+    clock[0] += 10
+    await relayed._on({"event": "waiting", "code": "IJKL-MNOP", "expires_in": 600})
+    await relayed._on({"event": "waiting", "code": "WXYZ-QRST", "expires_in": 600})  # the newest wins
+    for _ in range(5):
+        await asyncio.sleep(0)
+    assert waited == [login.COOLDOWN_SEC - 10]            # the floor stays
+    assert dm.events == ["waiting", "settled:failed", "waiting"]
+    assert dm.grants[-1].user_code == "WXYZ-QRST" and dm.grants[-1].expires_in == 550
+
+
+async def test_an_open_approval_ends_at_its_expiry():
+    dm, clock = Note(), [1000.0]
+    relayed = _relayed(dm, clock)
+    await relayed._on({"event": "waiting", "code": "ABCD-EFGH", "expires_in": 120})
+    clock[0] += 120
+    await relayed._on({"event": "waiting", "code": "WXYZ-QRST", "expires_in": 120})
+    for _ in range(3):
+        await asyncio.sleep(0)
+    assert dm.events == ["waiting", "settled:expired", "waiting"]
+
+
+def test_the_host_clears_the_old_host_store_once_but_never_its_own(tmp_path, monkeypatch):
+    settings = login.Settings(ISSUER, "agent-bus", "host")
+    old = keystore.HostFile(tmp_path / "state" / "mm-agent-bus" / "login")
+    put(old, "refresh-secret-old")
+    old.save(keystore.NKEY_SEED, "SUold")
+    monkeypatch.setattr(keystore, "_chosen", old)          # the host's own store is that place
+    assert login_relay.clear_old_host_store(settings, "alice") == []
+    assert stored(old) == "refresh-secret-old"
+    monkeypatch.setattr(keystore, "_chosen", keystore.Ephemeral())   # a keychain, say
+    held = old.try_lock(keystore.NKEY_SEED)                # one entry in use: left alone
+    gone = login_relay.clear_old_host_store(settings, "alice")
+    old.unlock(held)
+    assert gone == [keystore.refresh_entry(ISSUER, "agent-bus", "alice")]
+    assert stored(old) is None and old.load(keystore.NKEY_SEED) == "SUold"

@@ -32,6 +32,7 @@ from __future__ import annotations
 
 import asyncio
 import contextlib
+import dataclasses
 import json
 import logging
 import re
@@ -42,7 +43,7 @@ from typing import Any
 
 import nkeys
 
-from . import login, owners
+from . import keystore, login, owners, session_file
 from .login import ApprovalDenied, ConfigError, DeviceGrant, LoginError, NKey, NotifyError, Settings, WrongHuman
 
 log = logging.getLogger(__name__)
@@ -96,8 +97,10 @@ class RelayedLogin:
     def __init__(self, settings: Settings, *, notifier: Any = None,
                  human: Callable[[], str] = owners.responsible_human,
                  now: Callable[[], float] = time.monotonic,
-                 channel_wait_sec: float = CHANNEL_WAIT_SEC) -> None:
+                 channel_wait_sec: float = CHANNEL_WAIT_SEC,
+                 sleep: Callable[[float], Awaitable[None]] = asyncio.sleep) -> None:
         self.settings = settings
+        self._sleep = sleep
         self._notifier = notifier
         self._human = human
         self._now = now
@@ -110,8 +113,12 @@ class RelayedLogin:
         self._kp: nkeys.KeyPair | None = None
         self._tasks: set[asyncio.Task[None]] = set()
         self._approval_open = False
+        self._approval_id = 0
+        self._approval_until = 0.0
         self._last_waiting: float | None = None
         self._last_refused: float | None = None
+        # The newest approval that came within the cooldown: DMed when it ends.
+        self._deferred: tuple[DeviceGrant, float] | None = None
 
     def __repr__(self) -> str:
         return (f"RelayedLogin(issuer={self.settings.issuer!r}, "
@@ -128,6 +135,10 @@ class RelayedLogin:
                 await self._notifier.start()
             except Exception as exc:  # noqa: BLE001
                 log.warning("login: an earlier ask was not settled (%s)", type(exc).__name__)
+        try:
+            await asyncio.to_thread(clear_old_host_store, self.settings, self._human().strip())
+        except Exception as exc:  # noqa: BLE001
+            log.warning("login: the earlier host store was not cleared (%s)", type(exc).__name__)
         try:
             await asyncio.wait_for(self._ready.wait(), self._wait)
         except TimeoutError:
@@ -225,6 +236,10 @@ class RelayedLogin:
                 for fut in self._waiters.values():
                     if not fut.done():
                         fut.set_exception(_Closed())
+                # The relay is gone mid-approval: its ask is settled, its code dropped.
+                self._deferred = None
+                if self._approval_open:
+                    self._close_approval("failed")
             self.release(claim)
             log.info("login: the sandbox's login channel closed")
 
@@ -249,12 +264,12 @@ class RelayedLogin:
         if event == "waiting":
             grant = self._grant(msg)
             if grant is not None:
-                self._approval_open = True
-                self._last_waiting = self._now()
-                self._spawn(self._notifier.waiting(grant), "the DM with the approval was not sent")
-        elif event == "settled" and msg.get("outcome") in OUTCOMES and self._approval_open:
-            self._approval_open = False
-            self._spawn(self._notifier.settled(str(msg["outcome"])), "the ask was not settled")
+                self._offer_approval(grant)
+        elif event == "settled" and msg.get("outcome") in OUTCOMES:
+            if self._approval_open:
+                self._close_approval(str(msg["outcome"]))
+            else:
+                self._deferred = None  # it ended before its DM went out
         elif event == "refused":
             if self._last_refused is not None and self._now() - self._last_refused < login.COOLDOWN_SEC:
                 log.info("login: another refusal within the cooldown; no DM")
@@ -265,22 +280,59 @@ class RelayedLogin:
     def _grant(self, msg: dict[str, Any]) -> DeviceGrant | None:
         """The approval to DM: only the user code comes from the sandbox (a strict
         pattern); the link is built here from the configured issuer, so no text
-        of the sandbox's reaches the DM. One open approval at a time, at most one
-        per cooldown."""
+        of the sandbox's reaches the DM."""
         code, expires = msg.get("code"), msg.get("expires_in")
         if not isinstance(code, str) or not USER_CODE.fullmatch(code):
             log.warning("login: the sandbox's user code is not one; no DM")
-            return None
-        if self._approval_open:
-            log.warning("login: an approval is already open; no second DM")
-            return None
-        if self._last_waiting is not None and self._now() - self._last_waiting < login.COOLDOWN_SEC:
-            log.warning("login: another approval within the cooldown; no DM")
             return None
         uri = f"{self.settings.issuer}/device"
         minutes = expires if type(expires) is int and 0 < expires <= 3600 else 600
         return DeviceGrant(verification_uri=uri, verification_uri_complete=f"{uri}?user_code={code}",
                            user_code=code, expires_in=minutes)
+
+    def _offer_approval(self, grant: DeviceGrant) -> None:
+        """One open approval at a time (an open one ends at its expiry), and at most
+        one DM per cooldown: a newer one within it waits until the cooldown ends."""
+        now = self._now()
+        if self._approval_open and now >= self._approval_until:
+            self._close_approval("expired")
+        if self._approval_open:
+            log.warning("login: an approval is already open; no second DM")
+            return
+        wait = 0.0 if self._last_waiting is None else self._last_waiting + login.COOLDOWN_SEC - now
+        if wait > 0:
+            first = self._deferred is None
+            self._deferred = (grant, now)  # the newest code wins
+            if first:
+                log.info("login: another approval within the cooldown; its DM follows in %d s", int(wait) + 1)
+                self._spawn(self._later(wait), "the deferred DM was not sent")
+            return
+        self._deferred = None
+        self._approval_open = True
+        self._approval_id += 1
+        self._last_waiting = now
+        self._approval_until = now + grant.expires_in
+        self._spawn(self._notifier.waiting(grant), "the DM with the approval was not sent")
+        self._spawn(self._expire(self._approval_id, grant.expires_in), "the expired ask was not settled")
+
+    async def _later(self, wait: float) -> None:
+        await self._sleep(wait)
+        item, self._deferred = self._deferred, None
+        if item is None:
+            return
+        grant, at = item
+        left = grant.expires_in - int(self._now() - at)
+        if left > 0:
+            self._offer_approval(dataclasses.replace(grant, expires_in=left))
+
+    async def _expire(self, approval: int, seconds: float) -> None:
+        await asyncio.sleep(seconds)
+        if self._approval_open and self._approval_id == approval:
+            self._close_approval("expired")
+
+    def _close_approval(self, outcome: str) -> None:
+        self._approval_open = False
+        self._spawn(self._notifier.settled(outcome), "the ask was not settled")
 
     def _spawn(self, coro: Awaitable[None], what: str) -> None:
         async def run() -> None:
@@ -292,6 +344,37 @@ class RelayedLogin:
         task = asyncio.create_task(run())
         self._tasks.add(task)
         task.add_done_callback(self._tasks.discard)
+
+
+def clear_old_host_store(settings: Settings, human: str) -> list[str]:
+    """The host process of a keyless session, once: an earlier version kept the
+    refresh token, its cooldown and the nkey seed in the host's state directory;
+    the relay's login holds them now, so they go, each under its lock. Not when
+    this host's own store (keystore.default(), which the plain servers on this
+    host use) is that very directory. The names removed."""
+    old = keystore.HostFile(session_file.host_state_dir() / "login")
+    chosen = keystore.default()
+    if isinstance(chosen, keystore.HostFile) and chosen.directory.resolve() == old.directory.resolve():
+        return []
+    gone: list[str] = []
+    names = [keystore.NKEY_SEED]
+    if human:
+        names[:0] = [keystore.refresh_entry(settings.issuer, settings.client_id, human),
+                     keystore.cooldown_entry(settings.issuer, settings.client_id, human)]
+    for name in names:
+        if old.load(name) is None:
+            continue
+        handle = old.try_lock(name)
+        if handle is None:
+            continue  # in use: left for the next session
+        try:
+            old.delete(name)
+            gone.append(name)
+        finally:
+            old.unlock(handle)
+    if gone:
+        log.info("login: %d entries of the earlier host store removed", len(gone))
+    return gone
 
 
 # --- the relay in the sandbox ---------------------------------------------------------

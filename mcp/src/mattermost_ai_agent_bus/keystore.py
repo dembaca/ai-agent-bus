@@ -375,6 +375,10 @@ class MacKeychain(_Keychain):
         long_value = self._overflow.load(name)
         if long_value is not None:
             return long_value
+        return self._load_item(name)
+
+    def _load_item(self, name: str) -> str | None:
+        """The keychain item alone, past the overflow file."""
         r = self._find(name, "-w")
         if r.code == _MAC_NOT_FOUND:
             return None
@@ -403,9 +407,9 @@ class MacKeychain(_Keychain):
             self._delete_item(name)
             return
         r = self._run([self.tool, "-i"], line.encode("ascii"), self.timeout)
+        if r.code != 0 or self._load_item(name) != value:
+            raise KeyStoreError(f"{name}: keychain write failed")  # a long value kept stays
         self._overflow.delete(name)
-        if r.code != 0 or self.load(name) != value:
-            raise KeyStoreError(f"{name}: keychain write failed")
 
     def delete(self, name: str) -> None:
         self._check(name)
@@ -530,7 +534,9 @@ def choose(environ: Mapping[str, str] | None = None, *, platform: str = sys.plat
     """Under corral the 0600 file in the sandbox's home, never a keychain
     (#154 decision 10). Else what the marker in `store_directory()` recorded;
     at the first start the system keychain if it answers within
-    `probe_timeout`, else the 0600 file, and the marker records it."""
+    `probe_timeout`, else the 0600 file, and the marker records it. When the
+    lock or the marker cannot be written (OSError), the 0600 file in that
+    directory, unrecorded, with a warning: never an exception."""
     directory = store_directory(environ)
     files = HostFile(directory)
     if under_corral(environ):
@@ -540,6 +546,15 @@ def choose(environ: Mapping[str, str] | None = None, *, platform: str = sys.plat
         candidate = MacKeychain(directory, tool, runner=runner, timeout=probe_timeout)
     elif platform.startswith("linux") and (tool := find_tool("secret-tool")):
         candidate = SecretTool(directory, tool, runner=runner, timeout=probe_timeout)
+    try:
+        return _choose_recorded(directory, files, candidate)
+    except OSError as exc:
+        log.warning("key store: the choice cannot be recorded (%s), using the 0600 file without it",
+                    type(exc).__name__)
+        return files
+
+
+def _choose_recorded(directory: Path, files: HostFile, candidate: _Keychain | None) -> KeyStore:
     with _choice_lock(directory):
         try:
             recorded = files.load(BACKEND_ENTRY)
@@ -576,20 +591,40 @@ def default() -> KeyStore:
         return _chosen
 
 
+def _unwrap(store: KeyStore) -> object:
+    """The store behind a wrapper that chooses it late (one with `resolve()`)."""
+    seen: object = store
+    for _ in range(8):
+        resolve = getattr(seen, "resolve", None)
+        if not callable(resolve) or isinstance(seen, (HostFile, _Keychain, Ephemeral)):
+            break
+        seen = resolve()
+    return seen
+
+
+def _same_dir(a: Path, b: Path) -> bool:
+    try:
+        return os.path.samefile(a, b)
+    except OSError:  # one of them not there (yet)
+        return a.resolve() == b.resolve()
+
+
 def _same_place(a: KeyStore, b: KeyStore) -> bool:
-    if a is b:
+    x, y = _unwrap(a), _unwrap(b)
+    if x is y:
         return True
-    if isinstance(a, HostFile) and isinstance(b, HostFile):
-        return a.directory.resolve() == b.directory.resolve()
-    return (isinstance(a, _Keychain) and type(a) is type(b)
-            and a.service == b.service)
+    if isinstance(x, HostFile) and isinstance(y, HostFile):
+        return _same_dir(x.directory, y.directory)
+    return (isinstance(x, _Keychain) and isinstance(y, _Keychain) and type(x) is type(y)
+            and x.service == y.service)
 
 
 def migrate_from(old: KeyStore, new: KeyStore, names: Iterable[str]) -> list[str]:
     """Move entries once from `old` to `new`: an entry `new` lacks is copied,
     and every entry `new` then holds is removed from `old`. Each name under
     `new`'s lock; one whose lock another holder has is left for a later call.
-    The names moved or cleared; stores at the same place are left alone."""
+    The names moved or cleared. Stores at the same place, also behind a
+    wrapper with `resolve()`, are left alone: a move there would delete them."""
     if _same_place(old, new):
         return []
     moved: list[str] = []
