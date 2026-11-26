@@ -58,6 +58,9 @@ instead, served next to the WebSocket inbox in the server's event loop:
                             latest posts and the bus skill after a compaction,
                             the skill verbatim unless the runtime's cap would cut
                             it (RT-6.7, RT-6.20)
+    GET  /v1/instructions   {instructions}: the MCP instructions this server serves its
+                            model, for a harness that cannot receive an MCP server's
+                            instructions itself (pi's exposure direct, RT-6.27, #153)
 
 HTTP/1.1 on 127.0.0.1 only, an ephemeral port, one random key per server: every
 request carries ``Authorization: Bearer <key>``, compared in constant time, or
@@ -1188,6 +1191,16 @@ async def handoff(client: ChatPort, query: Mapping[str, str],
     return 200, {"context": turnend.handoff(got["posts"], uid, skill=skill, runtime=runtime)}
 
 
+async def instructions(client: ChatPort, query: Mapping[str, str], body: Mapping[str, Any]) -> Reply:
+    """The MCP instructions this server serves its model (RT-6.27, #153): a harness whose MCP
+    client drops an MCP server's `instructions` (pi, exposure direct) asks for them here and
+    puts them into the session as a system prompt section. The text the server would serve,
+    never a copy."""
+    from . import server  # the module holds the served text; imported here, not at load, against a cycle
+
+    return 200, {"instructions": server.mcp.instructions or ""}
+
+
 async def waiting(client: ChatPort, query: Mapping[str, str], body: Mapping[str, Any]) -> Reply:
     """A harness plugin waits for its first session (RT-6.18 step 11, RT-6.20
     step 1): the host holds back its no-relay warning."""
@@ -1214,6 +1227,7 @@ _ROUTES: dict[tuple[str, str], Route] = {
     ("GET", "/v1/turn-end"): turn_end,
     ("GET", "/v1/wake"): wake,
     ("GET", "/v1/handoff"): handoff,
+    ("GET", "/v1/instructions"): instructions,
     ("POST", "/v1/waiting"): waiting,
 }
 # Routes that make several Mattermost calls: at most MAX_HEAVY_RUNS at once.

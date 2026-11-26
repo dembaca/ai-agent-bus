@@ -49,7 +49,10 @@ const answerWake = (body: any) => {
   h!.res.writeHead(200, { "Content-Type": "application/json" }).end(JSON.stringify(body))
 }
 const nowSec = () => Math.floor(Date.now() / 1000)
-const rest = () => calls.filter((c) => !c.path.startsWith("/v1/wake")).map((c) => c.method + " " + c.path)
+// The calls of a test besides the session's own two: the long poll and the instructions
+// the session start asks for (RT-6.27 step 1, #153).
+const rest = () => calls.filter((c) => !c.path.startsWith("/v1/wake") && c.path !== "/v1/instructions")
+  .map((c) => c.method + " " + c.path)
 const wakes = () => calls.filter((c) => c.path.startsWith("/v1/wake"))
 const bodies = (path: string) => calls.filter((c) => c.path === path).map((c) => c.body)
 
@@ -110,7 +113,7 @@ beforeEach(() => {
   dropped = 0
   answers = { "/v1/presence": { ok: true }, "/v1/stat": { ok: true }, "/v1/usage": { ok: true },
               "/v1/turn-end": () => ({ action: "idle", listen_since: nowSec(), listen_until: nowSec() + 5400 }),
-              "/v1/wake": HOLD, "/v1/handoff": { context: "" } }
+              "/v1/wake": HOLD, "/v1/handoff": { context: "" }, "/v1/instructions": { instructions: "" } }
   timing.minRetrySec = 0.01
 })
 
@@ -162,9 +165,9 @@ const started = async (env?: Record<string, string | undefined>) => {
 test("RT-6.27 step 1: the MCP server and the skill at session_start, nothing when loaded", async () => {
   const f = fakePi()
   assert.deepEqual(f.registered, [])
-  assert.deepEqual(Object.keys(f.handlers).sort(), ["agent_settled", "agent_start", "input", "resources_discover",
-    "session_before_compact", "session_compact", "session_compact_failed", "session_shutdown", "session_start",
-    "turn_end"])
+  assert.deepEqual(Object.keys(f.handlers).sort(), ["agent_settled", "agent_start", "before_agent_start", "input",
+    "resources_discover", "session_before_compact", "session_compact", "session_compact_failed", "session_shutdown",
+    "session_start", "turn_end"])
   await settle(30)
   assert.equal(calls.length, 0, "no request before the session starts")
   await f.emit("session_start", { reason: "startup" })
@@ -176,6 +179,21 @@ test("RT-6.27 step 1: the MCP server and the skill at session_start, nothing whe
     description: f.registered[0].config.description } }])
   assert.deepEqual(await f.emit("resources_discover", { cwd: ws, reason: "startup" }),
                    { skillPaths: [join(REPO, "skills", SKILL)] })
+})
+
+test("RT-6.27 step 1: the server's instructions reach the model as a system prompt section (#153)", async () => {
+  answers["/v1/instructions"] = { instructions: "AI agent bus 0.101.0, chat: Mattermost. Answer in the thread." }
+  const f = await started()
+  const options: any = { sections: {} }
+  await f.emit("before_agent_start", { messageType: "user", prompt: "hi", systemPromptOptions: options })
+  assert.equal(options.sections[SERVER], "AI agent bus 0.101.0, chat: Mattermost. Answer in the thread.")
+})
+
+test("RT-6.27 step 1: without the server's instructions the system prompt is left alone (#153)", async () => {
+  const f = await started()
+  const options: any = { sections: { other: "x" } }
+  await f.emit("before_agent_start", { messageType: "user", prompt: "hi", systemPromptOptions: options })
+  assert.deepEqual(options.sections, { other: "x" })
 })
 
 test("RT-6.27 step 1: without a checkout no server and no skill; the rest goes on", async () => {

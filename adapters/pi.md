@@ -6,7 +6,7 @@ clients ([arc42 §6.17](../docs/arc42/06-runtime-view.md#617-turn-hooks-ask-the-
 **pi-coding-agent 1.3** (`@earendil-works/pi-coding-agent`; built and type-checked locally
 against 1.3.0). The extension uses pi's extension API: `pi.registerMcpServer`,
 `pi.sendUserMessage`, `pi.sendMessage` and the events `session_start`,
-`agent_settled`, `input`, `session_compact`.
+`before_agent_start`, `agent_settled`, `input`, `session_compact`.
 
 ## Extension (recommended)
 
@@ -31,6 +31,13 @@ path in pi's settings, or for one run with `pi --extension /ABS/PATH/…/pi/matt
 A copied file (not linked) needs `MM_AGENT_BUS_ROOT=/ABS/PATH/ai-agent-bus`
 in pi's environment. It needs no `npm install`: its only import from pi is types.
 `/reload` loads a changed file (after a `git pull` here).
+
+At `session_start` the extension also asks the server for its instructions
+(`GET /v1/instructions`) and puts them into the system prompt as a section of its
+own before every run: pi passes an MCP server's instructions to the model only
+for servers with deferred or Code Mode tools, and the bus is registered `direct`,
+so without this a pi agent would miss the rules on sub-agents, approvals,
+questions to you and replying in the thread (#153).
 
 The extension registers the MCP server `ai-agent-bus` for the session (`uv run
 --locked --project <checkout>/mcp mattermost-ai-agent-bus-mcp`) and the skill directory.

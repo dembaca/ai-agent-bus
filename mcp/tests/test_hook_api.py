@@ -138,6 +138,17 @@ async def test_pending_counts_and_details_when_asked(api, monkeypatch):
     assert calls == ["channels"]
 
 
+async def test_the_served_instructions_are_handed_out(api):
+    """RT-6.27 step 1, #153: pi's exposure direct drops an MCP server's own instructions, so
+    the extension asks for them here — the text this server serves its model, not a copy."""
+    from mattermost_ai_agent_bus import server
+
+    _, h = await api(FakeClient())
+    got = (await h.get("/v1/instructions")).json()
+    assert got == {"instructions": server.mcp.instructions}
+    assert got["instructions"], "the test's server serves no instructions"
+
+
 async def test_last_post_from_the_file_else_the_channel(api):
     """RT-6.17, RT-6.2 step 2: last-<uid>.env first, without a request; else
     the channel's last 100 posts, without the crown; at 0 when none is own."""
