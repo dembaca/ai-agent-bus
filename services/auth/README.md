@@ -113,6 +113,50 @@ A service that starts with half its configuration is worse than one that refuses
 A taken port is a start failure too, but exit code 1 rather than the
 configuration's 2: the configuration was fine.
 
+## Keys: making the static NATS keys
+
+The server's static users and the account key are made once, by hand, before
+the first start. Everything else — a person's and an agent's nkey — is made by
+the login service at runtime; nobody handles those.
+
+**Tool.** `nsc` from the `nats-io/nats-tools` Homebrew tap
+(`brew install nats-io/nats-tools/nsc`) or `nk` from `go install
+github.com/nats-io/nkeys/nk@latest`. The examples below use `nsc`.
+
+**Which keys are static:**
+
+- the login service's four: its callout user (`CB_AUTH_NATS_SEED_FILE`), the
+  account key that signs the user JWTs and the answers (`CB_AUTH_ISSUER_SEED_FILE`),
+  the curve key of the handshake (`CB_AUTH_XKEY_SEED_FILE`) and its JetStream
+  user (`CB_AUTH_JS_SEED_FILE`);
+- the central bridge's user (`<BRIDGE_USER_PUBLIC_NKEY>` in the example server
+  configuration) and the console's `console-metrics` user
+  (`<CONSOLE_METRICS_PUBLIC_NKEY>`, `CB_CONSOLE_METRICS_NKEY_SEED_FILE`);
+- an operator's user, if the lab gives NATS itself one for administration — it
+  is the lab's, not this repository's.
+
+**The rule: the seed goes straight into the secret store and is never printed.**
+Only the public key is copied out, into the server configuration and the other
+users' records.
+
+```bash
+umask 077                                   # the file is 0600 from the moment it exists
+nsc generate nkey --user > /run/secrets/callout-user.seed
+grep '^U' /run/secrets/callout-user.seed    # the public key, for auth_users
+```
+
+The same with a secret store, and with the other kinds:
+
+```bash
+nsc generate nkey --account > /run/secrets/issuer.seed    # A…, auth_callout.issuer
+nsc generate nkey --curve   > /run/secrets/xkey.seed      # X…, auth_callout.xkey
+vault kv put secret/bus/callout-user seed="$(cat /run/secrets/callout-user.seed)"
+```
+
+A seed that reached a terminal, a chat, a log line or a commit is burned:
+generate a new one. The service reads the seed file at start, never a variable
+holding it.
+
 ## Endpoints
 
 | Path | Answer |
