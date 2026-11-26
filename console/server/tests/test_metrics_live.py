@@ -225,4 +225,7 @@ async def test_the_reading_survives_a_server_restart(live_nats, tmp_path) -> Non
             await task
         except (asyncio.CancelledError, TimeoutError):
             pass
-        await pnc.drain()
+        try:
+            await pnc.drain()
+        except Exception:  # noqa: BLE001 - its server may already be gone
+            pass
