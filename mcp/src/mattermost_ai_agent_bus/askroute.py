@@ -13,7 +13,7 @@ to the home's 👑; approvals, the 👑's own asks and every ask in `direct` go 
 the human. Routing is not authority: the 👑's answer is from_agent, never
 from_trusted_human, so it approves nothing (ADR-001).
 
-The default is MM_ASK_ROUTE. A trusted human switches a home with a top-level
+The default is CB_ASK_ROUTE. A trusted human switches a home with a top-level
 post there whose first line is `ask-mode coordinator` or `ask-mode direct`
 (command). Each server that sees it keeps it in askmode-<uid>.env, 0600:
 
@@ -39,10 +39,10 @@ when it is newer (SOURCE=registrar, AT=set_at_ms) and set by one of its
 trusted humans. A switching post then changes nothing.
 
 A question to the 👑 that neither it nor a trusted human answered within
-MM_ASK_ROUTE_WAIT_MIN minutes (default 15) is asked of the human by the asking
+CB_ASK_ROUTE_WAIT_MIN minutes (default 15) is asked of the human by the asking
 agent's server, once (tick, from the reminders' heartbeat and under their lock,
 remind.tick). The post itself is the server's (fallback): it builds an ask card.
-Sooner, MM_ACK_WAIT_SEC after it, when the 👑 set no receipt (ADR-007 step 5,
+Sooner, CB_ACK_WAIT_SEC after it, when the 👑 set no receipt (ADR-007 step 5,
 receipt.missing): neither 👀 nor ⏳ from a holder with the marker, or no 👀 from
 one that turned silent.
 """
@@ -50,7 +50,6 @@ one that turned silent.
 from __future__ import annotations
 
 import logging
-import os
 import re
 import time
 from collections.abc import Awaitable, Callable
@@ -58,6 +57,7 @@ from pathlib import Path
 from typing import TYPE_CHECKING
 
 from . import a2a, asks, attest, lease, life, owners, receipt, session_file, stats
+from . import config
 from .model import Mark, Post
 
 if TYPE_CHECKING:
@@ -71,8 +71,8 @@ NO_CROWN = f"no {CROWN} reachable in your home: asked the human at once"
 KINDS = (QUESTION, APPROVAL)
 DIRECT, COORDINATOR = "direct", "coordinator"
 MODES = (DIRECT, COORDINATOR)
-ENV = "MM_ASK_ROUTE"
-WAIT_ENV = "MM_ASK_ROUTE_WAIT_MIN"
+ENV = "CB_ASK_ROUTE"
+WAIT_ENV = "CB_ASK_ROUTE_WAIT_MIN"
 WAIT_MIN = 15
 # The server's own event when it asked the human instead of the 👑 (step 6).
 KIND = "ask_route"
@@ -150,9 +150,9 @@ _warned: set[str] = set()
 
 
 def env_mode() -> str:
-    """MM_ASK_ROUTE: direct or coordinator; unset or anything else is direct,
+    """CB_ASK_ROUTE: direct or coordinator; unset or anything else is direct,
     the latter logged once."""
-    raw = os.environ.get(ENV, "").strip().lower()
+    raw = config.env(ENV).strip().lower()
     if raw in MODES:
         return raw
     if raw and raw not in _warned:
@@ -163,8 +163,8 @@ def env_mode() -> str:
 
 def wait_sec() -> int:
     """How long a question waits for the 👑 before the human is asked
-    (MM_ASK_ROUTE_WAIT_MIN, default 15 min, at least 1)."""
-    raw = os.environ.get(WAIT_ENV, "").strip()
+    (CB_ASK_ROUTE_WAIT_MIN, default 15 min, at least 1)."""
+    raw = config.env(WAIT_ENV).strip()
     return (max(1, int(raw)) if raw.isdigit() else WAIT_MIN) * 60
 
 
@@ -530,10 +530,10 @@ _receipt_looked: dict[str, bool] = {}
 
 
 async def _no_receipt(client: ChatPort, pid: str, at: float, coord: str, now: float) -> bool:
-    """ADR-007 step 5 (RT-6.25 step 6): MM_ACK_WAIT_SEC after the question, once,
+    """ADR-007 step 5 (RT-6.25 step 6): CB_ACK_WAIT_SEC after the question, once,
     the 👑's receipts on it: neither 👀 nor ⏳ from a holder that sets them, or
     no 👀 from one that turned silent, and the human is asked now instead of
-    after MM_ASK_ROUTE_WAIT_MIN (receipt.missing). A holder without the marker
+    after CB_ASK_ROUTE_WAIT_MIN (receipt.missing). A holder without the marker
     (an older plugin) and a read that fails: the long wait, as before."""
     if not coord or at + life.ack_wait_sec() > now:
         return False

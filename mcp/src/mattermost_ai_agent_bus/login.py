@@ -1,7 +1,7 @@
 """The host's Keycloak login and its NATS user key (RT-6.34, ADR-014 points 6, 7, 9).
 
 A building block for the NATS adapter that follows; nothing uses it yet, and
-without `MM_LOGIN_ISSUER` and `MM_LOGIN_CLIENT_ID` it is off and changes
+without `CB_LOGIN_ISSUER` and `CB_LOGIN_CLIENT_ID` it is off and changes
 nothing. It delivers
 
 * `access_token()`: a Keycloak access token with at least 60 s left, from the
@@ -83,7 +83,7 @@ MAX_CAUSE_CHARS = 120  # the error text a cooldown reports, on one line
 # these are ever reported: anything else says "failed".
 COOLDOWN_WHY = ("was declined", "expired", "was refused", "lacked the realm role", "failed")
 LOCK_POLL_SEC = 0.2
-NKEY_ENV = "MM_LOGIN_NKEY"
+NKEY_ENV = "CB_LOGIN_NKEY"
 NKEY_STORES = ("ephemeral", "host")
 
 
@@ -92,7 +92,7 @@ class LoginError(Exception):
 
 
 class ConfigError(LoginError):
-    """MM_LOGIN_* is set wrongly."""
+    """CB_LOGIN_* is set wrongly."""
 
 
 class ApprovalDenied(LoginError):
@@ -216,13 +216,13 @@ def settings_from_env() -> Settings | None:
     """The settings, or None when the login is off. Both variables unset: off,
     silently. One without the other, or a wrong value: off, with the reason in
     the log."""
-    issuer, client = env("MM_LOGIN_ISSUER").strip(), env("MM_LOGIN_CLIENT_ID").strip()
+    issuer, client = env("CB_LOGIN_ISSUER").strip(), env("CB_LOGIN_CLIENT_ID").strip()
     if not issuer and not client:
         return None
     try:
         if not issuer or not client:
-            raise ConfigError("MM_LOGIN_ISSUER and MM_LOGIN_CLIENT_ID must both be set")
-        check_url(issuer, "MM_LOGIN_ISSUER")
+            raise ConfigError("CB_LOGIN_ISSUER and CB_LOGIN_CLIENT_ID must both be set")
+        check_url(issuer, "CB_LOGIN_ISSUER")
         store = env(NKEY_ENV, "ephemeral").strip().lower()
         if store not in NKEY_STORES:
             raise ConfigError(f"{NKEY_ENV} must be one of: {', '.join(NKEY_STORES)}")
@@ -338,7 +338,7 @@ class Login:
 
     # --- the user nkey --------------------------------------------------------
     def nkey(self) -> NKey:
-        """The host's NATS user key: loaded from its store (`MM_LOGIN_NKEY=host`)
+        """The host's NATS user key: loaded from its store (`CB_LOGIN_NKEY=host`)
         or new for this process. The seed stays here."""
         with self._nkey_guard:  # one key, whichever thread asks first (export_seed, _io)
             if self._nkey is None:
@@ -392,7 +392,7 @@ class Login:
             await self._io(self.nkey)  # loaded off the event loop: a keychain call blocks
             if not human:
                 raise LoginError("no responsible human to approve a login "
-                                 "(set MM_RESPONSIBLE_HUMAN or MM_TRUSTED_HUMANS)")
+                                 "(set CB_RESPONSIBLE_HUMAN or CB_TRUSTED_HUMANS)")
             entry = keystore.refresh_entry(self.settings.issuer, self.settings.client_id, human)
             async with self._file_lock(entry):
                 # The mark on the host, whoever left it: a cooldown another process set

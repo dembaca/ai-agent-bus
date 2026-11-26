@@ -7,13 +7,13 @@
 #
 # A bot an agent registered itself (mcp-*.env) outlives its process for
 # `claude --continue` or its workspace's next server; it counts as abandoned
-# only once its file is untouched for MM_SESSION_KEEP_SEC (default 24 h).
+# only once its file is untouched for CB_SESSION_KEEP_SEC (default 24 h).
 # So does a corral session's bot that postEnd kept for `claude --continue`
-# (RT-6.18 step 9): its file carries MM_SERVER_ENDED, and the grace period
+# (RT-6.18 step 9): its file carries CB_SERVER_ENDED, and the grace period
 # counts from that mark. --force includes them sooner.
 #
 # A session file exists for the whole run of a session, so it is NOT evidence
-# that a bot is abandoned. Each file records MM_SESSION_PID, the supervising
+# that a bot is abandoned. Each file records CB_SESSION_PID, the supervising
 # corral process; while that process is alive the session is in use and is
 # skipped. Without that check a sweep unregisters the bot of the session it is
 # running alongside, killing a live agent's credentials mid-task.
@@ -33,7 +33,7 @@
 # no session file but would lose its crown lease if they went sooner.
 #
 # A keyless corral session (RT-6.18) has its MCP server running on the host:
-# its session file records MM_BUS_HOST_PID, and the process keeps its files in
+# its session file records CB_BUS_HOST_PID, and the process keeps its files in
 # <sid>.host.json, <sid>.host.log and hosted/<sid>/. While that process runs,
 # its session is left alone (it ends with its watchdog and unregisters the bot
 # itself); the files go only once the session file is gone: the readiness
@@ -54,7 +54,7 @@ cd /
 # No credential in any process environment (arc42 §7.3): the operator's token
 # and secret stay in this shell; helpers get them on fd 3 (mm_with_token,
 # mm_with_secret), curl on stdin.
-export -n MM_BOT_TOKEN MATTERMOST_TOKEN MM_REG_SECRET 2>/dev/null || true
+export -n CB_MM_BOT_TOKEN MM_BOT_TOKEN MATTERMOST_TOKEN MM_REG_SECRET 2>/dev/null || true
 
 APPLY=0
 FORCE=0
@@ -76,7 +76,8 @@ KEEP_SEC="$(mm_keep_sec)"
 
 note() { echo "$*" >&2; }
 
-field() { sed -n "s/^$2=//p" "$1" | head -n1; }
+# field FILE KEY [OLD_KEY]: the new key first, else the old one (#169).
+field() { mm_kv "$@"; }
 
 # A session is live when its supervising process still exists.
 is_live() {
@@ -106,7 +107,7 @@ if [[ -z "${MM_AGENT_PREFIX:-}" && -z "${MM_REG_BOT_NAME:-}" ]]; then
     not_a_session "$f" && continue
     [[ -n "$(field "$f" MM_AGENT_PREFIX)$(field "$f" MM_REG_BOT_NAME)" ]] || continue
     PREFIX="$(MM_AGENT_PREFIX="$(field "$f" MM_AGENT_PREFIX)" \
-      MM_BOT_USERNAME="$(field "$f" MM_BOT_USERNAME)" \
+      CB_MM_BOT_USERNAME="$(field "$f" CB_MM_BOT_USERNAME MM_BOT_USERNAME)" \
       MM_REG_BOT_NAME="$(field "$f" MM_REG_BOT_NAME)" mm_agent_prefix)"
     break
   done
@@ -122,18 +123,18 @@ for f in "$STATE_DIR"/*.env; do
   not_a_session "$f" && continue
   name="$(field "$f" MM_REG_BOT_NAME)"
   # Files from before MM_REG_BOT_NAME carry only the username.
-  [[ -n "$name" ]] || { name="$(field "$f" MM_BOT_USERNAME)"; name="${name#"$PREFIX"}"; }
+  [[ -n "$name" ]] || { name="$(field "$f" CB_MM_BOT_USERNAME MM_BOT_USERNAME)"; name="${name#"$PREFIX"}"; }
   [[ -n "$name" ]] || { note "skip $(basename "$f") (no bot name)"; continue; }
 
-  pid="$(field "$f" MM_SESSION_PID)"
-  hpid="$(field "$f" MM_BUS_HOST_PID)"
+  pid="$(field "$f" CB_SESSION_PID MM_SESSION_PID)"
+  hpid="$(field "$f" CB_BUS_HOST_PID MM_BUS_HOST_PID)"
   # A server without a session id that ended marked its file and kept the bot
-  # for the workspace's next server (RT-6.10): its harness (MM_SESSION_PID)
+  # for the workspace's next server (RT-6.10): its harness (CB_SESSION_PID)
   # may live on, so only the grace period below counts.
   # So does a corral session's bot that postEnd kept for `claude --continue`
   # (RT-6.18 step 9).
   ended=0
-  ended_at="$(field "$f" MM_SERVER_ENDED)"
+  ended_at="$(field "$f" CB_SERVER_ENDED MM_SERVER_ENDED)"
   if [[ -n "$ended_at" ]]; then
     pid="" hpid="" ended=1
   fi
@@ -151,7 +152,7 @@ for f in "$STATE_DIR"/*.env; do
   fi
   if [[ "$FORCE" -eq 0 && -z "$pid" && "$ended" -eq 0 ]]; then
     # Written before this guard existed: cannot prove it is dead.
-    note "UNKNOWN ${name} (no MM_SESSION_PID) — skipping; use --force to include"
+    note "UNKNOWN ${name} (no CB_SESSION_PID) — skipping; use --force to include"
     ACTIVE_NAMES+=("$name")
     skipped=$((skipped + 1))
     continue
@@ -197,15 +198,15 @@ done
 shopt -u nullglob
 
 # --- 2. orphans with no session file ----------------------------------------
-if [[ -n "${MM_REG_SECRET:-}" && -n "${MM_BOT_TOKEN:-${MATTERMOST_TOKEN:-}}" ]]; then
-  team="${MM_TEAM_ID:-}"
+if [[ -n "${MM_REG_SECRET:-}" && -n "${CB_MM_BOT_TOKEN:-}" ]]; then
+  team="${CB_MM_TEAM_ID:-}"
   if [[ -z "$team" ]]; then
     mm_api GET "/api/v4/teams/name/$(mm_team)" &&
-      [[ "$MM_API_STATUS" == "200" ]] &&
-      team="$(jq -r '.id' <<<"$MM_API_BODY")"
+      [[ "$CB_MM_API_STATUS" == "200" ]] &&
+      team="$(jq -r '.id' <<<"$CB_MM_API_BODY")"
   fi
   if [[ -n "$team" ]] && mm_api GET "/api/v4/users?in_team=${team}&per_page=200" &&
-     [[ "$MM_API_STATUS" == "200" ]]; then
+     [[ "$CB_MM_API_STATUS" == "200" ]]; then
     while read -r uname; do
       [[ -n "$uname" ]] || continue
       short="${uname#"$PREFIX"}"
@@ -215,7 +216,7 @@ if [[ -n "${MM_REG_SECRET:-}" && -n "${MM_BOT_TOKEN:-${MATTERMOST_TOKEN:-}}" ]];
         [[ "$short" == "$a" ]] && skip=1 && break
       done
       [[ "$short" == "${MM_REG_BOT_NAME:-}" ]] && skip=1
-      [[ "$uname" == "${MM_BOT_USERNAME:-}" ]] && skip=1
+      [[ "$uname" == "${CB_MM_BOT_USERNAME:-}" ]] && skip=1
       [[ "$skip" -eq 1 ]] && continue
 
       if [[ "$APPLY" -eq 0 ]]; then
@@ -229,7 +230,7 @@ if [[ -n "${MM_REG_SECRET:-}" && -n "${MM_BOT_TOKEN:-${MATTERMOST_TOKEN:-}}" ]];
         note "FAILED ${uname}"
         kept=$((kept + 1))
       fi
-    done < <(jq -r --arg p "$PREFIX" '.[] | select(.username | startswith($p)) | select(.delete_at == 0) | .username' <<<"$MM_API_BODY")
+    done < <(jq -r --arg p "$PREFIX" '.[] | select(.username | startswith($p)) | select(.delete_at == 0) | .username' <<<"$CB_MM_API_BODY")
   fi
 elif [[ "$APPLY" -eq 1 ]]; then
   note "(set MM_REG_SECRET to also sweep orphans that have no session file)"
@@ -238,10 +239,10 @@ fi
 # --- 3. state files of bots without a session ---------------------------------
 # Bots that still have a session file (live, or kept after a failed unregister)
 # keep their state; so does this shell's own bot.
-KEEP_UIDS=" ${MM_BOT_USER_ID:-} "
+KEEP_UIDS=" ${CB_MM_BOT_USER_ID:-} "
 shopt -s nullglob
 for f in "$STATE_DIR"/*.env; do
-  not_a_session "$f" || KEEP_UIDS+="$(field "$f" MM_BOT_USER_ID) "
+  not_a_session "$f" || KEEP_UIDS+="$(field "$f" CB_MM_BOT_USER_ID MM_BOT_USER_ID) "
 done
 stale=0
 for f in "$STATE_DIR"/*-*.env "$STATE_DIR"/stats-*.jsonl "$STATE_DIR"/permission-*.log "$STATE_DIR"/crown-*.log; do
@@ -263,12 +264,12 @@ fi
 
 # --- 4. endpoint files of servers that are gone ------------------------------
 # A crashed MCP server leaves its endpoint file (RT-6.17). Removed once its
-# MM_BUS_PID is no longer alive and the file is an hour old: a server starting
+# CB_BUS_PID is no longer alive and the file is an hour old: a server starting
 # right now may not have been seen alive yet.
 gone=0
 for f in "$STATE_DIR"/endpoint-*.env "$STATE_DIR"/endpoint-*.env.tmp; do
   [[ "$(basename "$f")" =~ $ENDPOINT_RE ]] || continue
-  is_live "$(field "$f" MM_BUS_PID)" && continue
+  is_live "$(field "$f" CB_BUS_PID MM_BUS_PID)" && continue
   [[ -n "$(find "$f" -mmin +60 2>/dev/null)" ]] || continue
   gone=$((gone + 1))
   [[ "$APPLY" -eq 1 ]] && rm -f "$f"

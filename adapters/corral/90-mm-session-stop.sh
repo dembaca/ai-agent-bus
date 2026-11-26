@@ -14,7 +14,7 @@ set -uo pipefail
 
 # No credential in any process environment (arc42 §7.3): one that arrived in
 # ours stays visible in this process, but no child gets it.
-unset MM_BOT_TOKEN MATTERMOST_TOKEN CDPATH
+unset CB_MM_BOT_TOKEN MM_BOT_TOKEN MATTERMOST_TOKEN CDPATH
 export -n MM_REG_SECRET 2>/dev/null || true
 
 # --- what a sandbox can write (arc42 §7.1, §7.3) -------------------------------
@@ -106,10 +106,13 @@ self_update() {
   layout="$(dirname "$ROOT")"
   [[ "${layout##*/}" == releases && -f "$ROOT/bin/mm-agent-host-install.sh" && ! -L "$out" ]] || return 0
   declare -F mm_bounded >/dev/null || return 0
-  host="${MM_BUS_HOST_DIR:-$(dirname "$layout")/current}"
-  e=(PATH="$PATH" MM_BUS_HOST_DIR="$host" UV_HTTP_TIMEOUT=60)
+  # Old and new names that differ (#169): no update with either of them.
+  if [[ -n "${CB_ENV_ERR:-}" ]]; then log "self-update: skipped, ${CB_ENV_ERR}"; return 0; fi
+  host="${CB_BUS_HOST_DIR:-$(dirname "$layout")/current}"
+  e=(PATH="$PATH" CB_BUS_HOST_DIR="$host" MM_BUS_HOST_DIR="$host" UV_HTTP_TIMEOUT=60)
   for v in HOME USER LOGNAME LANG LC_ALL TMPDIR XDG_STATE_HOME CORRAL_SANDBOX CORRAL_SESSION_ID CORRAL_WORKDIR \
-           MM_RELEASE_URL MM_RELEASE_SIGNERS MM_REGISTRAR_KEYS MM_REGISTER_URL MM_CHAT_URL \
+           CB_RELEASE_URL MM_RELEASE_URL CB_RELEASE_SIGNERS MM_RELEASE_SIGNERS MM_REGISTRAR_KEYS MM_REGISTER_URL \
+           CB_MM_CHAT_URL MM_CHAT_URL MATTERMOST_URL \
            SSL_CERT_FILE SSL_CERT_DIR HTTPS_PROXY https_proxy NO_PROXY no_proxy; do
     if [[ -n "${!v+set}" ]]; then e+=("$v=${!v}"); fi
   done
@@ -122,13 +125,13 @@ self_update() {
     log "self-update: stopped after ${SELF_UPDATE_MAX} s; nothing changed (${out})"
     return 0
   fi
-  if [[ -f "$STATE_DIR/$MM_AUTO_FILE" && ! -L "$STATE_DIR/$MM_AUTO_FILE" ]]; then
-    result="$(sed -n 's/^RESULT=//p' "$STATE_DIR/$MM_AUTO_FILE" | tail -n1)"
-    at="$(sed -n 's/^RESULT_AT=//p' "$STATE_DIR/$MM_AUTO_FILE" | tail -n1)"
+  if [[ -f "$STATE_DIR/$CB_AUTO_FILE" && ! -L "$STATE_DIR/$CB_AUTO_FILE" ]]; then
+    result="$(sed -n 's/^RESULT=//p' "$STATE_DIR/$CB_AUTO_FILE" | tail -n1)"
+    at="$(sed -n 's/^RESULT_AT=//p' "$STATE_DIR/$CB_AUTO_FILE" | tail -n1)"
   fi
   [[ "$at" =~ ^[0-9]+$ && "$at" -ge "$start" ]] || return 0
   case "$result" in updated | refused | failed | waiting | held) ;; *) return 0 ;; esac
-  line="$(tail -n1 "$STATE_DIR/$MM_AUTO_LOG" 2>/dev/null | cut -d' ' -f2- | cut -c1-300)" || line=""
+  line="$(tail -n1 "$STATE_DIR/$CB_AUTO_LOG" 2>/dev/null | cut -d' ' -f2- | cut -c1-300)" || line=""
   [[ -z "$line" ]] || log "self-update: ${line}"
 }
 trap 'self_update' EXIT
@@ -136,7 +139,10 @@ shopt -u nocasematch
 
 BIN="$ROOT/bin"
 # shellcheck source=../../bin/mm-agent-lib.sh
-source "$BIN/mm-agent-lib.sh"
+CB_ENV_DEFER=1 source "$BIN/mm-agent-lib.sh"
+# Old and new names that differ (#169): the bot still goes, with the new
+# names' values; the self-update is skipped (self_update).
+[[ -z "$CB_ENV_ERR" ]] || log "refused: ${CB_ENV_ERR}"
 
 SESSION_FILE="${STATE_DIR}/${SESSION_KEY}.env"
 
@@ -147,9 +153,9 @@ fi
 
 # Load the session. The token goes into a variable that is not exported, and
 # from there to the helpers on fd 3 only (arc42 §7.3).
-export MM_AGENT_SESSION_FILE="$SESSION_FILE"
+mm_env_set CB_AGENT_SESSION_FILE MM_AGENT_SESSION_FILE "$SESSION_FILE"
 mm_load_session_file || true
-export -n MM_BOT_TOKEN MATTERMOST_TOKEN 2>/dev/null || true
+export -n CB_MM_BOT_TOKEN MM_BOT_TOKEN MATTERMOST_TOKEN 2>/dev/null || true
 
 # --- keep the bot for `claude --continue`? (RT-6.18 step 9) --------------------
 # corral cannot tell postEnd whether the session will be resumed. A Claude Code
@@ -161,9 +167,9 @@ export -n MM_BOT_TOKEN MATTERMOST_TOKEN 2>/dev/null || true
 hosted="${STATE_DIR}/hosted/${SESSION_KEY}"
 KEEP=0 KEPT_SID="" KEPT_WORKDIR=""
 if [[ "${CORRAL_AGENT:-}" == claude && "${CORRAL_AGENT_EXIT:-}" != aborted &&
-      -n "${MM_REG_BOT_NAME:-}" && -n "${MM_BOT_TOKEN:-}" &&
+      -n "${MM_REG_BOT_NAME:-}" && -n "${CB_MM_BOT_TOKEN:-}" &&
       -d "$hosted" && ! -L "$hosted" && ! -L "$hosted/claude-sid.env" ]]; then
-  KEPT_SID="$(mm_read_file "$hosted/claude-sid.env" 256 | sed -n 's/^MM_CLAUDE_SID=//p' | head -n1)" || KEPT_SID=""
+  KEPT_SID="$(mm_read_file "$hosted/claude-sid.env" 256 | mm_kv - CB_CLAUDE_SID MM_CLAUDE_SID)" || KEPT_SID=""
   KEPT_WORKDIR="$(mm_workdir_key "${CORRAL_WORKDIR:-}")" || KEPT_WORKDIR=""
   if [[ "$KEPT_SID" =~ ^[0-9a-f]{16}$ && "$KEPT_WORKDIR" =~ ^[0-9a-f]{16}$ ]]; then KEEP=1; fi
 fi
@@ -176,8 +182,8 @@ fi
 # pid alone may name another process by now, and the server's watchdog on
 # corral's pid stops it anyway — with its exit work, so then nothing is kept.
 proc_start() { ps -o lstart= -p "$1" 2>/dev/null | tr -s ' ' | sed -e 's/^ //' -e 's/ $//'; }
-hpid="$(sed -n 's/^MM_BUS_HOST_PID=//p' "$SESSION_FILE" | head -n1)"
-hstart="$(sed -n 's/^MM_BUS_HOST_START=//p' "$SESSION_FILE" | head -n1)"
+hpid="$(mm_kv "$SESSION_FILE" CB_BUS_HOST_PID MM_BUS_HOST_PID)"
+hstart="$(mm_kv "$SESSION_FILE" CB_BUS_HOST_START MM_BUS_HOST_START)"
 sig=TERM
 [[ "$KEEP" -eq 0 ]] || sig=USR1
 if [[ "$hpid" =~ ^[0-9]+$ && -z "$hstart" ]]; then
@@ -203,9 +209,10 @@ rm -f "${STATE_DIR}/${SESSION_KEY}.host.json"
 if [[ "$KEEP" -eq 1 ]]; then
   tmp=""
   if tmp="$(umask 077 && mktemp "${STATE_DIR}/.${SESSION_KEY}.env.XXXXXX")" &&
-     { grep -Ev '^(MM_BUS_HOST_[A-Z_]*|MM_SESSION_PID|MM_SERVER_ENDED|MM_KEPT_[A-Z_]*)=' "$SESSION_FILE"
-       printf 'MM_SERVER_ENDED=%s\nMM_KEPT_WORKDIR=%s\nMM_KEPT_CLAUDE_SID=%s\n' \
-         "$(date +%s)" "$KEPT_WORKDIR" "$KEPT_SID"; } >"$tmp" &&
+     { grep -Ev '^(CB|MM)_(BUS_HOST_[A-Z_]*|SESSION_PID|SERVER_ENDED|KEPT_[A-Z_]*)=' "$SESSION_FILE"
+       ended="$(date +%s)"
+       printf '%s_SERVER_ENDED=%s\n%s_KEPT_WORKDIR=%s\n%s_KEPT_CLAUDE_SID=%s\n' \
+         CB "$ended" CB "$KEPT_WORKDIR" CB "$KEPT_SID" MM "$ended" MM "$KEPT_WORKDIR" MM "$KEPT_SID"; } >"$tmp" &&
      mv -f "$tmp" "$SESSION_FILE"; then
     # Offline as a safety net: the host process did it already.
     mm_with_token "$BIN/mm-agent-status.sh" offline >/dev/null 2>&1 || true
@@ -223,7 +230,7 @@ if [[ -z "${MM_REG_BOT_NAME:-}" ]]; then
   exit 0
 fi
 
-if [[ -z "${MM_REG_SECRET:-${MM_BOT_TOKEN:-}}" ]]; then
+if [[ -z "${MM_REG_SECRET:-${CB_MM_BOT_TOKEN:-}}" ]]; then
   log "WARNING: no credential for ${MM_REG_BOT_NAME}; keeping ${SESSION_FILE} so it can be retried"
   exit 0
 fi

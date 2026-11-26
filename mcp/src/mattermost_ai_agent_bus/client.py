@@ -22,6 +22,7 @@ from . import a2a, asks, attest, links, owners, ownpost, profile, session_file, 
 # Neutral helpers that lived here, re-exported: client.X is the moved X.
 from .a2a import DEBUG_TITLE as DEBUG_TITLE, JWS_MIN as JWS_MIN, PROP_VALUE_MAX as PROP_VALUE_MAX
 from .a2a import attachment_props as attachment_props, props_view as props_view, with_debug as with_debug
+from . import config
 from .config import env as env
 from .homes import guest_ids as guest_ids, lobby_ids as lobby_ids
 from .homes import watched_channel_ids as watched_channel_ids
@@ -255,7 +256,7 @@ def dm_partner(channel: Channel, me: str) -> str:
 _NAME_RE = re.compile(r"^[a-z0-9]([a-z0-9-]{0,30}[a-z0-9])?$")
 # A bot description (its owner and trusted list, ADR-003) is read again after this.
 DESCRIPTION_TTL_SEC = 600.0
-# How long a failed lookup of MM_TRUSTED_HUMANS waits before it asks again (ADR-016).
+# How long a failed lookup of CB_TRUSTED_HUMANS waits before it asks again (ADR-016).
 TRUSTED_RETRY_SEC = 60
 # The most a registrar's answer with a signed record may hold (an ask mode, a
 # mandate, an attestation: RT-6.25 step 8, RT-6.26 step 8, RT-6.24 step 5).
@@ -323,7 +324,7 @@ def _channel_error(exc: httpx.HTTPStatusError, what: str) -> Exception:
 
 
 def channel_list(value: str) -> list[str]:
-    """MM_PROJECT_CHANNEL as a list (ADR-002, RT-6.22): comma-separated names,
+    """CB_MM_PROJECT_CHANNEL as a list (ADR-002, RT-6.22): comma-separated names,
     each trimmed of blanks and a leading ~, empty and repeated ones dropped.
     The first is the home, the others guest channels joined at start."""
     names = (n.strip().lstrip("~").strip() for n in value.split(","))
@@ -332,7 +333,7 @@ def channel_list(value: str) -> list[str]:
 
 # The channels Mattermost puts every member into on joining the team: the bot
 # is in them only because the registrar added it to the team, so they are
-# guests only when MM_PROJECT_CHANNEL names them (RT-6.22 step 1).
+# guests only when CB_MM_PROJECT_CHANNEL names them (RT-6.22 step 1).
 TEAM_DEFAULT_CHANNELS = frozenset({"town-square", "off-topic"})
 
 # How long the guest channels (memberships) are kept before they are read
@@ -350,7 +351,7 @@ def _registration_fields(name: str, display: str) -> dict[str, Any]:
     responsible = responsible_human()
     body: dict[str, Any] = {
         "name": name, "display_name": display,
-        "kind": "autonomous" if env("MM_AGENT_KIND") == "autonomous" else "session",
+        "kind": "autonomous" if env("CB_AGENT_KIND") == "autonomous" else "session",
     }
     if responsible:
         body["responsible"] = responsible
@@ -400,7 +401,7 @@ class MattermostAdapter:
     team_name: str = "agents"
     channel_name: str = "agents"
     project_channel_name: str = ""
-    # MM_PROJECT_CHANNEL entries 2..n (RT-6.22); a list given as
+    # CB_MM_PROJECT_CHANNEL entries 2..n (RT-6.22); a list given as
     # project_channel_name is split into the home and these.
     guest_channel_names: list[str] = field(default_factory=list)
     _client: httpx.AsyncClient | None = field(default=None, repr=False, init=False)
@@ -419,7 +420,7 @@ class MattermostAdapter:
     _channels: dict[str, Channel] = field(
         default_factory=dict, repr=False, init=False
     )
-    # MM_PROJECT_CHANNEL_ID values that are not the project channel (#258), logged once.
+    # CB_MM_PROJECT_CHANNEL_ID values that are not the project channel (#258), logged once.
     _not_home: set[str] = field(default_factory=set, repr=False, init=False)
     # user id -> its name, bot mark and deletion: one read fills all (RT-6.16 step 1).
     _accounts: dict[str, Account] = field(default_factory=dict, repr=False, init=False)
@@ -470,7 +471,7 @@ class MattermostAdapter:
 
     @property
     def project_channels(self) -> str:
-        """MM_PROJECT_CHANNEL as configured, the home first: for the session file."""
+        """CB_MM_PROJECT_CHANNEL as configured, the home first: for the session file."""
         return ",".join(n for n in (self.project_channel_name, *self.guest_channel_names) if n)
 
     @property
@@ -484,7 +485,7 @@ class MattermostAdapter:
             return True
         return (session_file.keyed_on_workspace()
                 and bool(self.token)
-                and session_file.parse(session_file.session_file_path()).get("MM_BOT_TOKEN")
+                and config.value(session_file.parse(session_file.session_file_path()), "CB_MM_BOT_TOKEN")
                 == self.token
                 and a2a.word(ownpost.read(self.session.user_id).get("MSG", "")) != "BYE")
 
@@ -493,7 +494,7 @@ class MattermostAdapter:
         """The bot's user id as far as it is known without a request."""
         if self.session:
             return self.session.user_id
-        return (self._me.id if self._me else "") or env("MM_BOT_USER_ID")
+        return (self._me.id if self._me else "") or env("CB_MM_BOT_USER_ID")
 
     @property
     def work_channel_name(self) -> str:
@@ -503,19 +504,19 @@ class MattermostAdapter:
 
     @classmethod
     def from_env(cls) -> MattermostAdapter:
-        base = (env("MM_CHAT_URL") or env("MATTERMOST_URL")).rstrip("/")
+        base = env("CB_MM_CHAT_URL").rstrip("/")
         if not base:
-            raise RuntimeError("MM_CHAT_URL or MATTERMOST_URL is required")
-        token = env("MM_BOT_TOKEN") or env("MATTERMOST_TOKEN") or None
+            raise RuntimeError("CB_MM_CHAT_URL is required")
+        token = env("CB_MM_BOT_TOKEN") or None
         reg = env("MM_REGISTER_URL") or f"{base}/register/v1/agents"
         return cls(
             base_url=base,
             token=token,
             register_url=reg.rstrip("/"),
             reg_secret=env("MM_REG_SECRET") or None,
-            team_name=env("MM_TEAM", "agents"),
-            channel_name=env("MM_CHANNEL", "agents"),
-            project_channel_name=env("MM_PROJECT_CHANNEL"),
+            team_name=env("CB_MM_TEAM", "agents"),
+            channel_name=env("CB_MM_CHANNEL", "agents"),
+            project_channel_name=env("CB_MM_PROJECT_CHANNEL"),
         )
 
     def _http(self) -> httpx.AsyncClient:
@@ -531,7 +532,7 @@ class MattermostAdapter:
     def _auth_headers(self, bearer: str | None = None) -> dict[str, str]:
         tok = bearer if bearer is not None else self.token
         if not tok:
-            raise RuntimeError("bot token required (session_start or MM_BOT_TOKEN)")
+            raise RuntimeError("bot token required (session_start or CB_MM_BOT_TOKEN)")
         return {"Authorization": f"Bearer {tok}"}
 
     async def _api(
@@ -774,7 +775,7 @@ class MattermostAdapter:
     def modes_url(self, channel_id: str) -> str:
         """Where the registrar publishes a home's ask mode (RT-6.25 step 8),
         found like bin/mm-agent-registrar-keys.sh finds its keys: from
-        MM_REGISTER_URL `/agents` → `/modes/<id>`, else MM_CHAT_URL +
+        MM_REGISTER_URL `/agents` → `/modes/<id>`, else CB_MM_CHAT_URL +
         `/register/v1/modes/<id>`."""
         reg = (self.register_url or f"{self.base_url}/register/v1/agents").rstrip("/")
         root = reg.removesuffix("/agents")
@@ -858,14 +859,13 @@ class MattermostAdapter:
         self._team_id = None
         self._channel_ids.clear()
         self._guests = None
-        os.environ["MM_CHAT_URL"] = info.url
-        os.environ["MATTERMOST_URL"] = info.url
+        # Under every name, so no old name the harness set disagrees (docs/env-names.md).
+        config.put("CB_MM_CHAT_URL", info.url)
         os.environ["MM_REG_BOT_NAME"] = info.name
-        os.environ["MM_BOT_USERNAME"] = info.username
+        config.put("CB_MM_BOT_USERNAME", info.username)
         os.environ["MM_AGENT_PREFIX"] = info.prefix
-        os.environ["MM_BOT_USER_ID"] = info.user_id
-        os.environ["MM_BOT_TOKEN"] = info.bot_token
-        os.environ["MATTERMOST_TOKEN"] = info.bot_token
+        config.put("CB_MM_BOT_USER_ID", info.user_id)
+        config.put("CB_MM_BOT_TOKEN", info.bot_token)
         if info.attestation:  # RT-6.24: the server checks and logs it
             os.environ[attest.ENV] = info.attestation
         else:
@@ -898,22 +898,22 @@ class MattermostAdapter:
         data = session_file.read()
         if not data:
             return None
-        url = (data.get("MM_CHAT_URL") or self.base_url).rstrip("/")
+        url = (config.value(data, "CB_MM_CHAT_URL") or self.base_url).rstrip("/")
         try:
             with httpx.Client(timeout=5.0) as http:
                 me = http.get(f"{url}/api/v4/users/me",
-                              headers={"Authorization": f"Bearer {data['MM_BOT_TOKEN']}"})
+                              headers={"Authorization": f"Bearer {config.value(data, 'CB_MM_BOT_TOKEN')}"})
             if me.status_code == 401:
                 session_file.remove()
                 return None
         except httpx.HTTPError:
             pass  # unreachable now; the token is most likely still good
         info = SessionInfo(url=url, name=data["MM_REG_BOT_NAME"],
-                           username=data.get("MM_BOT_USERNAME", ""),
-                           user_id=data.get("MM_BOT_USER_ID", ""),
-                           bot_token=data["MM_BOT_TOKEN"],
+                           username=config.value(data, "CB_MM_BOT_USERNAME"),
+                           user_id=config.value(data, "CB_MM_BOT_USER_ID"),
+                           bot_token=config.value(data, "CB_MM_BOT_TOKEN"),
                            attestation=data.get(attest.ENV, ""))
-        self._take(info)  # rewrites the file: MM_SESSION_PID is this server's parent now
+        self._take(info)  # rewrites the file: CB_SESSION_PID is this server's parent now
         self.adopted = True
         return info
 
@@ -923,7 +923,7 @@ class MattermostAdapter:
         A server keeps its bot when it ends, for `claude --continue` or the
         workspace's next server; nothing tells a resume from a real end. A
         session file whose Claude process is gone and that was untouched for
-        MM_SESSION_KEEP_SEC (default 24 h) is taken as ended, and so is one
+        CB_SESSION_KEEP_SEC (default 24 h) is taken as ended, and so is one
         whose server marked its end that long ago (its harness may live on):
         its bot is deleted with its own token, the file removed. So is the bot
         this workspace's ended server left, which a new registration here
@@ -934,16 +934,16 @@ class MattermostAdapter:
         now = time.time()
         own = session_file.session_file_path()
         paths = session_file.others()
-        if session_file.keyed_on_workspace() and session_file.ENDED in session_file.parse(own):
+        if session_file.keyed_on_workspace() and session_file.ended_at(session_file.parse(own)) is not None:
             paths.append(own)
         for path in paths:
             data = session_file.parse(path)
-            name, token = data.get("MM_REG_BOT_NAME"), data.get("MM_BOT_TOKEN")
+            name, token = data.get("MM_REG_BOT_NAME"), config.value(data, "CB_MM_BOT_TOKEN")
             ended = session_file.ended_at(data)
             if not name or not token:
                 continue
             if path != own and (now - ended < keep if ended is not None
-                                else _pid_alive(data.get("MM_SESSION_PID", ""))):
+                                else _pid_alive(config.value(data, "CB_SESSION_PID"))):
                 continue
             try:
                 if path != own and ended is None and now - path.stat().st_mtime < keep:
@@ -989,10 +989,10 @@ class MattermostAdapter:
 
     async def finish_session_setup(self) -> dict[str, Any]:
         """What session_start leaves undone: join the home and the guest
-        channels (MM_PROJECT_CHANNEL, RT-6.22), empty the inbox.
+        channels (CB_MM_PROJECT_CHANNEL, RT-6.22), empty the inbox.
 
         Best effort — the bot is already registered, so a failure is reported,
-        never raised. The registrar only makes the bot a member of MM_CHANNEL;
+        never raised. The registrar only makes the bot a member of CB_MM_CHANNEL;
         without the join, posting to the project channel is a 403 even though
         reading it works. A guest channel that cannot be joined is reported
         once, here (guest_channels, guest_warning), and the session goes on.
@@ -1047,14 +1047,9 @@ class MattermostAdapter:
         ownpost.remove(uid)
         unanswered.remove(uid)
         watermark.remove(uid)
-        for key in (
-            "MM_REG_BOT_NAME",
-            "MM_BOT_USERNAME",
-            "MM_BOT_USER_ID",
-            "MM_BOT_TOKEN",
-            "MATTERMOST_TOKEN",
-        ):
-            os.environ.pop(key, None)
+        os.environ.pop("MM_REG_BOT_NAME", None)
+        for key in ("CB_MM_BOT_USERNAME", "CB_MM_BOT_USER_ID", "CB_MM_BOT_TOKEN"):
+            config.drop(key)
 
     def keep_sync(self) -> str:
         """Leave the bot to the host session hooks instead of unregistering it
@@ -1082,7 +1077,7 @@ class MattermostAdapter:
         Runs from the process exit handler, where no event loop is available.
         Session bots are ephemeral by design, so this covers both our own
         ``session_start`` and a bot the host registered and handed over via
-        MM_BOT_TOKEN; only ``agent-*`` bots (the registrar's prefix,
+        CB_MM_BOT_TOKEN; only ``agent-*`` bots (the registrar's prefix,
         session_file.agent_prefix) are touched, never a human. Best
         effort, never raises; returns a short outcome for the log.
         """
@@ -1152,9 +1147,9 @@ class MattermostAdapter:
     async def trusted_humans(self) -> dict[str, str]:
         """The humans whose posts may approve actions (RT-6.8): {user_id: username}.
 
-        MM_TRUSTED_HUMAN_USER_IDS with MM_TRUSTED_HUMANS (set by host hooks), else
-        the usernames in MM_TRUSTED_HUMANS looked up with the bot token. MM_OWNER
-        and MM_OWNER_USER_ID (one human) are read as well. Nothing is inferred:
+        CB_MM_TRUSTED_HUMAN_USER_IDS with CB_TRUSTED_HUMANS (set by host hooks), else
+        the usernames in CB_TRUSTED_HUMANS looked up with the bot token. CB_OWNER
+        and CB_MM_OWNER_USER_ID (one human) are read as well. Nothing is inferred:
         MM_REG_SECRET is the registrar's shared secret, nobody's personal token.
         Cached; {} when none.
         """
@@ -1170,8 +1165,8 @@ class MattermostAdapter:
         source = ""
         failed = False  # a lookup failed: not cached, the next call asks again (ADR-016)
         missing: list[str] = []  # configured names with no human account (404, invalid, a bot)
-        ids = names("MM_TRUSTED_HUMAN_USER_IDS") or names("MM_OWNER_USER_ID")
-        wanted = names("MM_TRUSTED_HUMANS") or names("MM_OWNER")
+        ids = names("CB_MM_TRUSTED_HUMAN_USER_IDS") or names("CB_MM_OWNER_USER_ID")
+        wanted = names("CB_TRUSTED_HUMANS") or names("CB_OWNER")
         try:
             if ids:
                 trusted = {i: (wanted[k] if k < len(wanted) else "") for k, i in enumerate(ids)}
@@ -1196,7 +1191,7 @@ class MattermostAdapter:
                         trusted[u["id"]] = n
                     else:
                         missing.append(n)
-                source = "MM_TRUSTED_HUMANS"
+                source = "CB_TRUSTED_HUMANS"
         except (httpx.HTTPError, KeyError, ValueError):
             trusted, failed = {}, True
         if failed:
@@ -1208,7 +1203,7 @@ class MattermostAdapter:
         self.trusted_source = source if trusted else (
             f"not resolved: a lookup failed, asked again in {TRUSTED_RETRY_SEC} s" if failed
             else f"configured, no account found for: {', '.join(missing)}" if missing
-            else "none: set MM_TRUSTED_HUMANS")
+            else "none: set CB_TRUSTED_HUMANS")
         return trusted
 
     @property
@@ -1245,7 +1240,7 @@ class MattermostAdapter:
     ) -> str:
         """Resolve a channel name to its id.
 
-        Defaults to the work channel (project channel when set, else MM_CHANNEL).
+        Defaults to the work channel (project channel when set, else CB_MM_CHANNEL).
         Never creates a channel: a missing one is NotFound (Mattermost's 404, as
         an invalid name is its 400); one the bot may not see is NotAllowed.
         """
@@ -1713,20 +1708,20 @@ class MattermostAdapter:
 
     async def work_channel_id(self) -> str:
         """The work channel's id, resolved in the shell CLI's order
-        (mm_work_channel_id): MM_PROJECT_CHANNEL_ID, the project channel's name,
-        MM_CHANNEL_ID, the default channel's name. One home (ADR-002, #258):
-        MM_PROJECT_CHANNEL_ID counts only while it is the project channel's
+        (mm_work_channel_id): CB_MM_PROJECT_CHANNEL_ID, the project channel's name,
+        CB_MM_CHANNEL_ID, the default channel's name. One home (ADR-002, #258):
+        CB_MM_PROJECT_CHANNEL_ID counts only while it is the project channel's
         (no name configured, or the id's channel has that name); an id of
         another channel, or of one the chat refuses (gone, not allowed), is
         passed over for the name, logged once. A read that fails otherwise
         keeps the id, as the shell CLI does (fail-open)."""
-        pid = env("MM_PROJECT_CHANNEL_ID")
+        pid = env("CB_MM_PROJECT_CHANNEL_ID")
         if pid and (not self.project_channel_name or await self._is_home(pid)):
             return pid
         if pid:
             return await self.get_channel_id()
-        if not self.project_channel_name and env("MM_CHANNEL_ID"):
-            return env("MM_CHANNEL_ID")
+        if not self.project_channel_name and env("CB_MM_CHANNEL_ID"):
+            return env("CB_MM_CHANNEL_ID")
         return await self.get_channel_id()
 
     async def _is_home(self, channel_id: str) -> bool:
@@ -1739,21 +1734,21 @@ class MattermostAdapter:
         except (NotFound, NotAllowed) as exc:
             why = f"is refused: {exc}"
         except Exception as exc:  # noqa: BLE001 — fail-open, as the shell CLI: the id stays
-            log.info("MM_PROJECT_CHANNEL_ID %s not read now, kept: %s", channel_id, exc)
+            log.info("CB_MM_PROJECT_CHANNEL_ID %s not read now, kept: %s", channel_id, exc)
             return True
         else:
             if name.lower() == self.project_channel_name.lstrip("~").lower():
                 return True
             why = f"is ~{name}"
         self._not_home.add(channel_id)
-        log.warning("MM_PROJECT_CHANNEL_ID %s %s, not ~%s: the home is resolved by its name",
+        log.warning("CB_MM_PROJECT_CHANNEL_ID %s %s, not ~%s: the home is resolved by its name",
                     channel_id, why, self.project_channel_name)
         return False
 
     async def lobby_channel_id(self) -> str:
-        """MM_CHANNEL's id (ADR-002: the lobby), by the id the host passed or by name."""
-        if _ID.fullmatch(env("MM_CHANNEL_ID")):
-            return env("MM_CHANNEL_ID")
+        """CB_MM_CHANNEL's id (ADR-002: the lobby), by the id the host passed or by name."""
+        if _ID.fullmatch(env("CB_MM_CHANNEL_ID")):
+            return env("CB_MM_CHANNEL_ID")
         return await self.get_channel_id(self.channel_name)
 
     def forget_guests(self) -> None:
@@ -1763,9 +1758,9 @@ class MattermostAdapter:
     async def guest_channel_ids(self) -> set[str]:
         """The bot's guest channels (ADR-002, RT-6.22): every team channel it
         is a member of (open or private) other than its home, the lobby
-        (MM_CHANNEL, lobby_ids) and the stats channel, and other than the
-        team's default channels (TEAM_DEFAULT_CHANNELS) unless MM_PROJECT_CHANNEL
-        names them. The MM_PROJECT_CHANNEL entries 2..n are among them once joined. Kept GUEST_TTL_SEC and
+        (CB_MM_CHANNEL, lobby_ids) and the stats channel, and other than the
+        team's default channels (TEAM_DEFAULT_CHANNELS) unless CB_MM_PROJECT_CHANNEL
+        names them. The CB_MM_PROJECT_CHANNEL entries 2..n are among them once joined. Kept GUEST_TTL_SEC and
         forgotten on a membership event (forget_guests); raises when the
         memberships cannot be read."""
         now = time.monotonic()

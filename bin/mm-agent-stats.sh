@@ -1,9 +1,9 @@
 #!/usr/bin/env bash
 # Coordination overhead per plugin version (RT-6.9), from the STATS lines that
-# every session posts to MM_STATS_CHANNEL: one per day of session time and one
+# every session posts to CB_MM_STATS_CHANNEL: one per day of session time and one
 # at its end (since 0.91.0; before, only at the end).
 #
-#   mm-agent-stats.sh report [channel]   # default: MM_STATS_CHANNEL, else agents-stats
+#   mm-agent-stats.sh report [channel]   # default: CB_MM_STATS_CHANNEL, else agents-stats
 #   mm-agent-stats.sh report --json      # the aggregated numbers as JSON
 #
 # Columns: sessions (a session's daily parts count once), hours on the bus,
@@ -54,24 +54,24 @@ for a in "$@"; do
     *) CHANNEL="$a" ;;
   esac
 done
-CHANNEL="${CHANNEL:-${MM_STATS_CHANNEL:-agents-stats}}"
+CHANNEL="${CHANNEL:-${CB_MM_STATS_CHANNEL:-agents-stats}}"
 CHANNEL="${CHANNEL#\~}"
-[[ "$CHANNEL" =~ ^(off|none|0|false)$ ]] && { echo "stats are off (MM_STATS_CHANNEL=$CHANNEL); pass a channel" >&2; exit 2; }
+[[ "$CHANNEL" =~ ^(off|none|0|false)$ ]] && { echo "stats are off (CB_MM_STATS_CHANNEL=$CHANNEL); pass a channel" >&2; exit 2; }
 
 CID="$(mm_work_channel_id "$CHANNEL")" || exit 1
 # A non-member cannot read a channel; joining a public one is harmless.
-if [[ -n "${MM_BOT_USER_ID:-}" ]]; then
-  mm_api POST "/api/v4/channels/${CID}/members" "{\"user_id\":\"${MM_BOT_USER_ID}\"}" >/dev/null || true
+if [[ -n "${CB_MM_BOT_USER_ID:-}" ]]; then
+  mm_api POST "/api/v4/channels/${CID}/members" "{\"user_id\":\"${CB_MM_BOT_USER_ID}\"}" >/dev/null || true
 fi
 
 lines="[]"
 for page in 0 1 2 3 4 5 6 7 8 9; do
   mm_api GET "/api/v4/channels/${CID}/posts?per_page=200&page=${page}" || break
-  [[ "$MM_API_STATUS" == "200" ]] || { echo "could not read ~${CHANNEL}: HTTP ${MM_API_STATUS}" >&2; exit 1; }
+  [[ "$CB_MM_API_STATUS" == "200" ]] || { echo "could not read ~${CHANNEL}: HTTP ${CB_MM_API_STATUS}" >&2; exit 1; }
   got="$(jq -c '[.posts // {} | .[] | .message | select(startswith("STATS "))
-                 | ltrimstr("STATS ") | (try fromjson catch empty) | select(type == "object")]' <<<"$MM_API_BODY")"
+                 | ltrimstr("STATS ") | (try fromjson catch empty) | select(type == "object")]' <<<"$CB_MM_API_BODY")"
   lines="$(jq -c --argjson a "$lines" --argjson b "$got" -n '$a + $b')"
-  [[ "$(jq '.order | length' <<<"$MM_API_BODY")" -eq 200 ]] || break
+  [[ "$(jq '.order | length' <<<"$CB_MM_API_BODY")" -eq 200 ]] || break
 done
 
 report="$(jq -c '

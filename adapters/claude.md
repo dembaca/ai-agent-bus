@@ -52,22 +52,28 @@ The server is required: the shell scripts in `bin/` are its clients and hold no 
 The plugin's server takes its settings from Claude Code's environment:
 
 ```bash
-export MM_CHAT_URL="https://chat.example.com"
-export MM_REGISTER_URL="${MM_CHAT_URL}/register/v1/agents"
+export CB_MM_CHAT_URL="https://chat.example.com"
+export MM_REGISTER_URL="${CB_MM_CHAT_URL}/register/v1/agents"
 export MM_REG_SECRET="…"               # enrollment token or shared secret (README, Registrar); better: from a password manager, see below
-export MM_TEAM=yourteam
-export MM_CHANNEL=agents
-export MM_PROJECT_CHANNEL=proj-foo     # optional, must already exist
+export CB_MM_TEAM=yourteam
+export CB_MM_CHANNEL=agents
+export CB_MM_PROJECT_CHANNEL=proj-foo  # optional, must already exist
 ```
+
+The bus's own variables carry the `CB_` prefix since 0.103.0; the registrar's
+(`MM_REG_SECRET`, `MM_REGISTER_URL`, `MM_REGISTRAR_KEYS`, …) keep theirs. An old name
+([docs/env-names.md](../docs/env-names.md) maps them) still works in 0.103.0 with a
+deprecation warning; old and new name set to different values refuse the start; the
+release that removes the fallbacks refuses an old name set alone.
 
 A secret in Claude Code's environment is in the agent's shell as well (as before
 0.40.0). To keep it in the MCP server alone, add the server by hand instead of the
 plugin's, with a command that reads it itself, e.g.
 `claude mcp add ai-agent-bus -- sh -c 'MM_REG_SECRET="$(gopass show -o bus/registrar)" exec uv run --project /path/to/ai-agent-bus/mcp mattermost-ai-agent-bus-mcp'`.
 
-The skill keys off `MM_BUS_MCP_ENDPOINT` (a corral session, whose token stays on the host,
+The skill keys off `CB_BUS_MCP_ENDPOINT` (a corral session, whose token stays on the host,
 [arc42 §6.18](../docs/arc42/06-runtime-view.md#618-keyless-host-managed-session)) or
-`MM_BOT_TOKEN`: either set means a session already exists and must not be started or
+`CB_MM_BOT_TOKEN`: either set means a session already exists and must not be started or
 stopped by the agent.
 
 **Long-running sessions.** Claude Code v2.1.290+ compacts a long conversation by itself
@@ -80,12 +86,12 @@ while the terminal is idle. `CLAUDE_CODE_IDLE_COMPACT_MIN_TOKENS=100000` makes i
 `session_start`, `session_end`, `get_me`, `post_message`, `reply_in_thread`,
 `ask_human`, `resolve_ask`, `get_thread`, `get_file`, `list_recent`, `wait_for_events`, `stats_report`.
 
-Posts go to the home (the first `MM_PROJECT_CHANNEL` entry, otherwise `MM_CHANNEL`), or to a
+Posts go to the home (the first `CB_MM_PROJECT_CHANNEL` entry, otherwise `CB_MM_CHANNEL`), or to a
 guest channel or the lobby by name; what wakes the agent where is
 [RT-6.22](../docs/arc42/06-runtime-view.md#622-guest-channels). Reply with `reply_in_thread`.
 
 `session_start` appends a session suffix to the name (the registrar keeps a name taken even
-after its bot is removed), joins `MM_PROJECT_CHANNEL`, marks the welcome DM read and writes a 0600 session
+after its bot is removed), joins `CB_MM_PROJECT_CHANNEL`, marks the welcome DM read and writes a 0600 session
 file under `~/.local/state/mm-agent-bus/`, named after the Claude Code session
 (`CLAUDE_CODE_SESSION_ID`), so two sessions in one checkout keep their own bots; only
 without that variable is it keyed on the directory the server runs in
@@ -95,7 +101,7 @@ it: they hold no token and ask the MCP server over a local API
 ([arc42 §6.17](../docs/arc42/06-runtime-view.md#617-turn-hooks-ask-the-mcp-server)). When the process ends the server keeps its bot, so that
 `claude --resume <id>` — which keeps the session id — takes the same bot over instead of
 starting under a new name; a bot whose session does not resume is unregistered by a
-later session's `session_start` after `MM_SESSION_KEEP_SEC` (24 h), or by
+later session's `session_start` after `CB_SESSION_KEEP_SEC` (24 h), or by
 `bin/mm-agent-sweep.sh` ([arc42 §6.10](../docs/arc42/06-runtime-view.md#610-session-registered-by-the-agent)). The hooks run under `bash` (the scripts use bash syntax; `sh` is dash
 on Debian). Without a running MCP server with a bus session they do nothing.
 

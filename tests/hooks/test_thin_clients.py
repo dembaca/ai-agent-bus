@@ -213,7 +213,7 @@ def found(state: Path, cwd: Path, **env) -> str:
     """The endpoint a shell in this place reaches ('' for none)."""
     base = {"PATH": os.environ["PATH"], "HOME": str(state.parent), "XDG_STATE_HOME": str(state)}
     p = subprocess.run(["bash", "-c", f'source "{ROOT}/bin/mm-agent-lib.sh"; '
-                        'mm_bus GET /v1/me && sed -n "s/^MM_BUS_ENDPOINT=//p" "$MM_BUS_FROM"'],
+                        'mm_bus GET /v1/me && sed -nE "s/^(CB|MM)_BUS_ENDPOINT=//p" "$CB_BUS_FROM" | head -n1'],
                        env={**base, **env}, cwd=cwd, capture_output=True, text=True, timeout=30)
     return p.stdout.strip()
 
@@ -355,5 +355,5 @@ def test_no_server_keyed_on_the_home_directory(mm, ws):
     there, so no shell below finds it; its warning says why."""
     state = ws / "state"  # the server's and the shell's HOME is ws
     with server(mm, state, ws) as a:
-        assert a.unkeyed and "MM_WORKSPACE" in a.warning()
+        assert a.unkeyed and "CB_WORKSPACE" in a.warning()
         assert found(state, ws) == "" and found(state, ws / "one" / "src") == ""

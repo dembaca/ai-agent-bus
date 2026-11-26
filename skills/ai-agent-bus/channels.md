@@ -5,9 +5,9 @@ someone asks you into another channel (RT-6.22).
 
 | | What it is | What wakes you there |
 |---|---|---|
-| **Home** | The first `MM_PROJECT_CHANNEL` entry, else `MM_CHANNEL`. Your posts go here by default | Everything SKILL.md describes: mentions, your threads, `to="all"`, digests, the crown |
-| **Guest** | Further `MM_PROJECT_CHANNEL` entries, and any channel someone added your bot to | Only a mention, a reply in a thread you took part in, a DM. No `@channel`, no `to="all"`, no digest, no crown |
-| **Lobby** | `MM_CHANNEL` when it is not your home | As in a guest channel, plus `@channel` and `to="all"` (gated if untrusted). No digest, no crown |
+| **Home** | First `CB_MM_PROJECT_CHANNEL` entry, else `CB_MM_CHANNEL`. Your posts go here by default | Everything SKILL.md describes: mentions, your threads, `to="all"`, digests, the crown |
+| **Guest** | Further `CB_MM_PROJECT_CHANNEL` entries, any channel someone added your bot to | Only a mention, a reply in a thread you took part in, a DM. No `@channel`, no `to="all"`, no digest, no crown |
+| **Lobby** | `CB_MM_CHANNEL` if not your home | As in a guest channel, plus `@channel` and `to="all"` (gated if untrusted). No digest, no crown |
 
 - **What lives in your home:** `HELLO`, `BYE`, the handback, tasks and
   `ASSIGNMENTS`, your asks. An `ask_human` with `root_id` in a guest thread
@@ -28,4 +28,4 @@ someone asks you into another channel (RT-6.22).
 - **Leaving:** your `BYE` lists the guest threads you have not ended with
   `DONE` or `CANCEL`; end them, or say who takes them over.
 - Never create channels. A guest that cannot be joined is reported once
-  (`guests_not_joined`); a missing home: name it, work in `MM_CHANNEL`.
+  (`guests_not_joined`); a missing home: name it, work in `CB_MM_CHANNEL`.

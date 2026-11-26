@@ -2,7 +2,7 @@
 # Show the registrar's public keys for pinning (RT-6.24, arc42 §7.3).
 #
 # Reads GET <registrar>/register/v1/keys (from MM_REGISTER_URL, else
-# MM_CHAT_URL) and prints each key's `x` (base64url raw Ed25519 public key)
+# CB_MM_CHAT_URL) and prints each key's `x` (base64url raw Ed25519 public key)
 # with its kid, the kid computed here from `x` when openssl is at hand. The bus
 # never trusts this endpoint at runtime: compare the values with the
 # registrar's operator out of band, then pin them yourself in
@@ -15,7 +15,7 @@ source "$LIB"
 
 case "${1:-}" in
   -h | --help)
-    echo "usage: $0    (uses MM_REGISTER_URL, else MM_CHAT_URL)" >&2
+    echo "usage: $0    (uses MM_REGISTER_URL, else CB_MM_CHAT_URL)" >&2
     exit 2 ;;
 esac
 

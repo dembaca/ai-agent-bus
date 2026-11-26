@@ -10,7 +10,7 @@ listener and the Stop hook's listen window.
 Claude Code never acknowledges such a notification and drops it silently when
 the session did not opt the server in. So the server looks at how its Claude
 Code was started (an ancestor process named claude with --channels or
---dangerously-load-development-channels naming this plugin; MM_CHANNEL_PUSH=1
+--dangerously-load-development-channels naming this plugin; CB_CHANNEL_PUSH=1
 or 0 overrides that), and it still checks: its first push asks the agent to call channel_ok with a
 code only that push carries. Until the agent does, the server reads nothing
 from the inbox (nothing is marked read unseen) and the hooks keep the
@@ -18,7 +18,7 @@ listener; channel-<uid>.env says it is confirmed.
 
 Pushing is a wake-up, and every wake-up is a model turn: the same rules as the
 background listener decide what wakes the agent at once. Everything else is
-held and pushed as one digest once the oldest is MM_LISTEN_DIGEST_SEC old.
+held and pushed as one digest once the oldest is CB_LISTEN_DIGEST_SEC old.
 
 Two constraints of the preview shape the transport:
   - Claude Code does not register a channel on MCP revision 2026-07-28, which
@@ -48,6 +48,7 @@ from mcp.shared.jsonrpc_dispatcher import JSONRPCDispatcher
 from mcp_types import INVALID_REQUEST
 
 from . import a2a, files, life, permission, session_file, slim, stats, tasks
+from . import config
 
 log = logging.getLogger(__name__)
 
@@ -65,8 +66,8 @@ FLAGS = ("--channels", "--dangerously-load-development-channels")
 
 
 def enabled() -> bool:
-    """MM_CHANNEL_PUSH overrides; unset, Claude Code's own command line decides."""
-    value = os.environ.get("MM_CHANNEL_PUSH", "").strip().lower()
+    """CB_CHANNEL_PUSH overrides; unset, Claude Code's own command line decides."""
+    value = config.env("CB_CHANNEL_PUSH").strip().lower()
     if value in ("1", "true", "yes", "on"):
         return True
     if value in ("0", "false", "no", "off"):
@@ -152,7 +153,7 @@ def _parent(pid: int) -> int:
 
 def digest_sec() -> float:
     try:
-        return max(0.0, float(os.environ.get("MM_LISTEN_DIGEST_SEC", "1800")))
+        return max(0.0, float(config.env("CB_LISTEN_DIGEST_SEC", "1800")))
     except ValueError:
         return 1800.0
 
