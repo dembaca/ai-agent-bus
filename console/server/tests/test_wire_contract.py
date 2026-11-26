@@ -183,3 +183,26 @@ def test_the_report_the_fixture_states() -> None:
                             "STATS", STATS_CONSUMER)
     report = next(r for r in book.reports() if r["id"] == FIXTURE["report"]["id"])
     assert report == FIXTURE["report"]
+
+
+def test_the_agent_stats_row_the_fixture_states() -> None:
+    """/v1/agent-stats (#201): the row as the server sends it, one per agent, from the
+    same protocol line as the report above — the token sums of both windows and the
+    24-hour counts; a field the line does not carry is n/a, never 0."""
+    from mattermost_ai_agent_bus import stats
+    from console_server.stats_view import StatsBook
+    from test_asks_stats import STATS_CONSUMER
+
+    line = {"v": "0.101.0", "sid": "3f9a1c2b7d4e", "part": 2, "rt": "claude-code",
+            "kind": "session", "min": 1440, "turns": 31, "asks": 2, "asks_answered": 2,
+            "ask_wait_sec": 1260, "crown_sec": 0,
+            "tok": {"req": 120, "bus_req": 18, "fixed": 21000, "all": {"in": 1200, "read": 90000, "out": 900},
+                    "ovh": {"in": 150, "read": 21000, "out": 80}, "coord": {"in": 300, "read": 4000, "out": 160},
+                    "req_ovh": 6, "req_coord": 9, "m": 1}}
+    book = StatsBook()
+    body = stats.nats_body(line)
+    assert body is not None
+    assert book.on_delivery(f"stats.{FIXTURE['card']['name']}", body,
+                            f"$JS.ACK.STATS.{STATS_CONSUMER}.1.1.1.1763980800000000000.0",
+                            "STATS", STATS_CONSUMER)
+    assert book.agent_rows() == FIXTURE["agentStats"]

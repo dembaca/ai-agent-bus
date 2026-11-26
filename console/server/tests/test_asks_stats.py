@@ -359,3 +359,44 @@ def test_a_line_with_the_plugins_split_counts_in_the_tokens_by_category() -> Non
     assert "harness opencode" in bars and fields(report)["lines with the split"] == 1
     assert {seg["category"]: seg["value"] for seg in bars["fleet"]["raw"]} == {
         "task": 550, "overhead": 330, "coordination": 220}
+
+
+def test_agent_rows_sums_each_window_per_agent() -> None:
+    """/v1/agent-stats (#201): one row per agent, the 24-hour and the 7-day token sums
+    of its parts (all and by type, the input's overhead and coordination), and the
+    posts, wakes and tool calls of the last 24 hours; the parts of other agents never
+    mix in."""
+    today = LINE | {"sid": "aaaaaaaaaaaa", "v": "0.102.0", "min": 30, "posts": [4, 500],
+                    "wakes": {"addressed": 2, "digest": 1}, "tools": {"ask_human": [3, 900], "get_thread": [1, 200]},
+                    "tok": {"req": 5, "all": {"in": 100, "read": 700, "out": 40},
+                            "ovh": {"in": 30, "read": 100}, "coord": {"in": 20, "read": 50}}}
+    yesterday = LINE | {"sid": "bbbbbbbbbbbb", "posts": [2, 100], "turns": 1,
+                        "tok": {"req": 1, "all": {"in": 10, "out": 5}, "ovh": {"in": 2}, "coord": {"in": 1}}}
+    other = LINE | {"sid": "cccccccccccc", "rt": "opencode", "posts": [9, 90], "min": 45,
+                    "tok": {"req": 9, "all": {"read": 5000}, "ovh": {"read": 500}, "coord": {"read": 400}}}
+    book = book_with((A, yesterday, NOW - 2 * 86400), (B, other, NOW - 3 * 86400),
+                     (A, today, NOW - 600))
+    assert book.agent_rows() == [
+        {"agent": B,
+         "tok24h": None, "tok7d": {"all": 5000, "in": None, "read": 5000, "w5m": None, "w1h": None,
+                                   "out": None, "ovh": 500, "coord": 400},
+         "posts24h": None, "wakes24h": None, "tools24h": None},
+        {"agent": A,
+         "tok24h": {"all": 840, "in": 100, "read": 700, "w5m": None, "w1h": None, "out": 40,
+                    "ovh": 130, "coord": 70},
+         "tok7d": {"all": 855, "in": 110, "read": 700, "w5m": None, "w1h": None, "out": 45,
+                   "ovh": 132, "coord": 71},
+         "posts24h": 4, "wakes24h": 3, "tools24h": 4}]
+
+
+def test_agent_rows_without_tok_is_na_never_zero() -> None:
+    """/v1/agent-stats: the reports' rule (RT-6.43 step 8) — a field no part of the
+    window carries is n/a (None), never 0, and so is a whole window without tok; a
+    part outside the window counts nowhere."""
+    plain = LINE | {"sid": "dddddddddddd", "posts": [1, 20]}
+    del plain["tok"]
+    book = book_with((A, plain, NOW - 600), (A, LINE, NOW - 3 * 86400))
+    assert book.agent_rows() == [{"agent": A, "tok24h": None,
+                                  "tok7d": {"all": 1100, "in": 1000, "read": None, "w5m": None,
+                                            "w1h": None, "out": 100, "ovh": None, "coord": None},
+                                  "posts24h": 1, "wakes24h": None, "tools24h": None}]

@@ -39,8 +39,8 @@ class StatsBook:
     """The STATS lines of the last 7 days, by server time, decoded strictly."""
 
     stats_subject: str = "stats"
-    # (server time, stream sequence, line) in arrival order
-    _lines: deque[tuple[float, int, dict[str, Any]]] = field(default_factory=deque)
+    # (server time, stream sequence, agent, line) in arrival order
+    _lines: deque[tuple[float, int, str, dict[str, Any]]] = field(default_factory=deque)
     # the stream sequences held: a consumer made anew replays 7 days, counted once
     _seqs: set[int] = field(default_factory=set)
     _server_now: float = 0.0
@@ -76,7 +76,7 @@ class StatsBook:
         if ack.time > self._server_now:
             self._server_now = ack.time
             self._seen_at = (ack.time, time.monotonic())
-        self._lines.append((ack.time, ack.stream_seq, line))
+        self._lines.append((ack.time, ack.stream_seq, t[1], line))
         self._seqs.add(ack.stream_seq)
         edge = self.server_now - WEEK_SEC
         while self._lines and (self._lines[0][0] < edge or len(self._lines) > MAX_LINES):
@@ -85,20 +85,20 @@ class StatsBook:
 
     def _within(self, sec: float) -> list[dict[str, Any]]:
         edge = self.server_now - sec
-        return [line for at, _seq, line in self._lines if at >= edge]
+        return [line for _at, _seq, _agent, line in self._lines if _at >= edge]
 
     def within(self, sec: float) -> list[tuple[float, int, dict[str, Any]]]:
         """The decoded lines of the last `sec` seconds, oldest first — the
         (server time, stream sequence, line) rows the reports (and #158's
         /metrics) compute over; raw, never shown to a browser."""
         edge = self.server_now - sec
-        return [row for row in self._lines if row[0] >= edge]
+        return [(at, seq, line) for at, seq, _agent, line in self._lines if at >= edge]
 
     def reports(self) -> list[dict[str, Any]]:
         """`/v1/stats`: the share per version over 7 days, the asks over 24 h and 7 days, the
         bus traffic by category over 7 days."""
         edge = self.server_now - WEEK_SEC
-        held = [at for at, _seq, _line in self._lines if at >= edge]
+        held = [at for at, _seq, _agent, _line in self._lines if at >= edge]
         oldest = {"label": "age of the oldest line", "unit": "s",
                   "value": round(self.server_now - min(held)) if held else None}
         week = self._within(WEEK_SEC)
@@ -163,6 +163,33 @@ class StatsBook:
                            oldest],
                 "stacks": [s for s in stacks if s is not None]}
 
+    def agent_rows(self) -> list[dict[str, Any]]:
+        """`/v1/agent-stats` (#201): one row per agent whose parts the 7-day window
+        holds, the canvas's per-agent numbers: the token sums of the last 24 hours
+        and of the window (``tok24h``/``tok7d``: ``all`` and the split by type, plus
+        the bus overhead and coordination of the input), and the posts, wakes and
+        tool calls of the last 24 hours. A field no part of the window carries is
+        ``None`` ("n/a", never 0) — the reports' rule (RT-6.43 step 8) — and so is
+        a window without any ``tok`` at all; ``all`` sums the types each part
+        states. The row carries the bus name (``stats.<name>``); no report by home
+        or owner."""
+        edge = self.server_now - WEEK_SEC
+        day = self.server_now - DAY_SEC
+        groups: dict[str, list[tuple[float, dict[str, Any]]]] = {}
+        for at, _seq, agent, line in self._lines:
+            if at >= edge:
+                groups.setdefault(agent, []).append((at, line))
+        return [self._row(agent, rows, day) for agent, rows in sorted(groups.items())]
+
+    def _row(self, agent: str, rows: list[tuple[float, dict[str, Any]]],
+             day: float) -> dict[str, Any]:
+        return {"agent": agent,
+                "tok24h": _tok([line for at, line in rows if at >= day]),
+                "tok7d": _tok([line for _at, line in rows]),
+                "posts24h": _count([line for at, line in rows if at >= day], "posts"),
+                "wakes24h": _count([line for at, line in rows if at >= day], "wakes"),
+                "tools24h": _count([line for at, line in rows if at >= day], "tools")}
+
 
 def _safe(compute: Any, lines: list[dict[str, Any]]) -> Any:
     """A report over lines the strict decoder let in; should a line still break the
@@ -193,3 +220,46 @@ def _stack(label: str, split: dict[str, Any] | None) -> dict[str, Any] | None:
 def _pct(v: Any) -> Any:
     """A share, held to 0 to 100 (an agent's numbers about itself are its own word)."""
     return None if v is None else min(100, max(0, v))
+
+
+# The token types a part may state (stats.TOK_TYPES): fresh input, cache read
+# (5 min, 1 h), cache write and output — the detail's "tokens/cache split".
+_TOK_SHOWN = ("in", "read", "w5m", "w1h", "out")
+
+
+def _tok(lines: list[dict[str, Any]]) -> dict[str, Any] | None:
+    """The token sums of a window's parts: ``all`` and each stated type summed,
+    the input's bus overhead and coordination summed; None without any ``tok``
+    (a runtime that reports no usage, an older publisher). A type no part
+    states is None, never 0."""
+    parts = [line["tok"] for line in lines if isinstance(line.get("tok"), dict)]
+    if not parts:
+        return None
+
+    def _summed(obj: str) -> dict[str, int]:
+        out: dict[str, int] = {}
+        for part in parts:
+            for key, value in (part.get(obj) or {}).items():
+                out[key] = out.get(key, 0) + int(value)
+        return out
+
+    types = _summed("all")
+    return {"all": sum(types.values()) or None,
+            **{key: types.get(key) for key in _TOK_SHOWN},
+            "ovh": sum(_summed("ovh").values()) or None,
+            "coord": sum(_summed("coord").values()) or None}
+
+
+def _count(lines: list[dict[str, Any]], key: str) -> int | None:
+    """A window's sum of a part's counted field: posts by their count, wakes
+    over their per-reason counts, tools over their per-tool counts (each a
+    [count, characters] pair); None when no part of the window carries the
+    field, never 0 for a missing field."""
+    parts = [line[key] for line in lines if key in line]
+    if not parts:
+        return None
+    if key == "posts":
+        return sum(int(p[0]) for p in parts)
+    if key == "tools":
+        return sum(int(v[0]) for part in parts for v in part.values())
+    return sum(int(value) for part in parts for value in part.values())

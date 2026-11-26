@@ -7,6 +7,8 @@ before 0.5.0 are described in the git history.
 
 ### Added
 
+- **The console's per-agent numbers** (#201's first piece, the design canvas's data): `GET /v1/agent-stats` serves one row per agent whose `STATS` parts the session's 7-day reading holds — the token sums of the last 24 hours and of the window (`all`, the split by token type, the input's bus overhead and coordination; n/a without `tok`, never 0) and the posts, wakes and tool calls of 24 hours, read-only from the same consumers as the reports. The browser app's API gains the wire types and the mock rows; no page shows them yet (the design PR #185's follow-ups own the UI).
+
 - **The central bridge sweeps the agent bots it made** (#151 step 2, RT-6.44): every 10 minutes it disables a bot it made for an agent that has shown no presence and posted nothing for longer than `CB_BRIDGE_MM_BOT_KEEP` (default `24h`, at least `1h`), and revokes the bot's tokens; at most 20 bots per pass, none while the presence feed is stale. A bot is the bridge's only by its prefix and its mark in the description together, never by the prefix alone, so the registrar's bots stay the host sweep's. Last seen is kept in memory: after a restart every bot counts as seen at the start. An agent that comes back gets its bot enabled again and a fresh token at its next message; only bots the sweep disabled (their description marked ` (swept)`) come back, one an admin disabled stays off. No new right, no new endpoint, nothing persisted; hosts notice nothing.
 
 ## 0.103.0
