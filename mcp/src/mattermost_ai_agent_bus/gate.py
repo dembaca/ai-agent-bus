@@ -81,6 +81,55 @@ async def author_classes(client: ChatPort, posts: Sequence[Post]) -> list[str]:
     return [author_class(p, trusted, agents, foreign) for p in posts]
 
 
+# RT-6.6 step 5: a thread root's author, read once per root ('' for a webhook
+# post); the oldest go first beyond ROOTS_KEPT. Whether that author is a
+# reachable peer of the home is read from the roster each time, at most every
+# COORD_TTL_SEC (_reach), never kept with the root.
+_roots: dict[str, str] = {}
+ROOTS_KEPT = 2000
+_reach: tuple[float, frozenset[str]] | None = None
+
+
+async def _reachable_here(client: ChatPort) -> frozenset[str]:
+    """The ids of the home's reachable peers (lease.roster, the same rows
+    RT-6.21 reads for departed and not here), without the ambassadors of
+    other homes and without foreign agents (owners.foreign, in doubt
+    foreign: ADR-001, the crown defers only to a peer); empty when the roster
+    cannot be read, and so for COORD_TTL_SEC."""
+    global _reach
+    now = time.monotonic()
+    if _reach is None or now - _reach[0] > COORD_TTL_SEC:
+        ids = {r.user_id for r in await lease.roster(client) if r.user_id and not r.crown_of}
+        _reach = (now, frozenset(ids - set(await owners.foreign(client, ids))))
+    return _reach[1]
+
+
+async def other_agents_thread(client: ChatPort, root_id: str, uid: str) -> bool | None:
+    """Whether the thread `root_id` is another agent's (RT-6.6 step 5): its
+    root was posted by a peer of this home, not `uid`, that the roster shows
+    as reachable now. A root by a human, a webhook, this agent, a foreign
+    agent, or one departed, not here or not reachable is not (the crown
+    wakes as before).
+    None: the root cannot be read (unsure: the caller wakes as before)."""
+    author = _roots.get(root_id)
+    if author is None:
+        try:
+            thread = await client.thread(root_id)
+        except Exception as exc:  # noqa: BLE001 — unsure
+            log.info("thread root %s not read: %s", root_id, type(exc).__name__)
+            return None
+        root = next((p for p in thread.posts if p.id == root_id), None)
+        if root is None:
+            return None
+        author = "" if root.from_webhook else root.user_id
+        _roots[root_id] = author
+        while len(_roots) > ROOTS_KEPT:
+            del _roots[next(iter(_roots))]
+    if not author or author == uid:
+        return False
+    return author in await _reachable_here(client)
+
+
 def wake_reason(kind: str, post: Post, in_my_thread: bool) -> str:
     """Why the post would wake a worker (RT-6.2 step 4): mention, dm, thread or
     broadcast (@channel in the text, or props to="all"); '' for a post that

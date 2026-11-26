@@ -470,6 +470,30 @@ def test_the_push_says_when_only_the_crown_woke_the_agent():
     assert "for_crown" not in channel.notification(plain)["meta"]
 
 
+def test_the_crown_leaves_a_reply_in_another_agents_thread_to_it():
+    """RT-6.6 step 5 (#207): a human's plain reply in a thread that belongs to
+    another agent (agent_thread: its root is by that agent or names it) wakes
+    that agent, the thread's starter, and not the crown: neither as
+    coordinator nor where it posted in that thread. A reply naming the crown,
+    a stall, a DM and a departed or absent agent still wake it; unsure of the
+    root (agent_thread False) and a human's plain post elsewhere stay the crown's."""
+    def why(item, coordinator=True, in_my_thread=False, **kw):
+        return channel.wake_reason(item, coordinator=coordinator, in_my_thread=in_my_thread, **kw)
+
+    reply = _post("postgres, please", trusted=True, root="r")
+    assert why(reply) == channel.CROWN  # a human's root naming no agent, or unsure
+    assert why(reply, agent_thread=True) == ""
+    assert why(reply, agent_thread=True, in_my_thread=True) == ""  # the 👑 posted in it
+    # The starter (no crown) and another participant wake as before.
+    assert why(reply, coordinator=False, in_my_thread=True, my_root=True) == channel.ADDRESSED
+    assert why(reply, coordinator=False, in_my_thread=True, agent_thread=True) == channel.ADDRESSED
+    assert why(_post("what is open?", trusted=True)) == channel.CROWN
+    for item in (_post("thoughts?", kind="mention", root="r"), _post("stuck", kind="stall", root="r"),
+                 _post("hi", kind="dm", root="r"), reply | {"departed": "agent-hogan"},
+                 reply | {"not_here": "agent-hogan (~ops)"}):
+        assert why(item, agent_thread=True) == channel.ADDRESSED, item
+
+
 def test_an_fyi_post_wakes_only_whom_it_names():
     """RT-6.14, RT-6.12 step 3: an agent's fyi post (DONE, RESULT, IDLE…) wakes
     no coordinator and no one who only posted in the thread; it does wake
