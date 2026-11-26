@@ -12,6 +12,8 @@ login's key and an access token (the token rides along as with the auth
 callout; a static nkey user ignores it), reads the fleet, renews with the
 same key and keeps the consumers' position. The auth callout itself is the
 login service's own live test (``services/auth``).
+
+(The test binary's MM_NATS_SERVER name itself is renamed in the MCP server and tools' round of #169, not the console's.)
 """
 from __future__ import annotations
 

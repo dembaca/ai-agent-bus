@@ -176,15 +176,15 @@ def _required(given: Callable[[str], str], name: str, new_name: str = "") -> str
 
 def _check(s: Settings) -> None:
     if not s.login_off and (not s.issuer or not s.client_id):
-        raise ConfigError("CONSOLE_ISSUER and CONSOLE_CLIENT_ID are required"
+        raise ConfigError("CB_CONSOLE_ISSUER and CB_CONSOLE_CLIENT_ID are required"
                           " (or CONSOLE_LOGIN_OFF=1 for tests)")
     if not s.login_off and not s.operator_group:
         # fail closed (the reviews' blocker): an unset group would admit
         # every user of the realm
-        raise ConfigError("CONSOLE_OPERATOR_GROUP is required: only its"
+        raise ConfigError("CB_CONSOLE_OPERATOR_GROUP is required: only its"
                           " members may log in")
     if s.login_off and s.listen_host not in ("127.0.0.1", "::1", "localhost"):
-        raise ConfigError("CONSOLE_LOGIN_OFF=1 refuses a non-loopback"
+        raise ConfigError("CB_CONSOLE_LOGIN_OFF=1 refuses a non-loopback"
                           " CONSOLE_ADDR: it would serve without a login")
     if not s.login_off:
         _url(s.issuer, "CONSOLE_ISSUER")
@@ -193,9 +193,9 @@ def _check(s: Settings) -> None:
         raise ConfigError("CB_CONSOLE_NATS_URL is required")
     parts = urlsplit(s.nats_url)
     if parts.scheme not in ("tls", "nats"):
-        raise ConfigError("CONSOLE_NATS_URL: tls:// or nats:// URL")
+        raise ConfigError("CB_CONSOLE_NATS_URL: tls:// or nats:// URL")
     if parts.scheme == "nats" and parts.hostname not in ("127.0.0.1", "::1", "localhost"):
-        raise ConfigError("CONSOLE_NATS_URL: nats:// only to a loopback host"
+        raise ConfigError("CB_CONSOLE_NATS_URL: nats:// only to a loopback host"
                           " (a token to anywhere else would go in the clear); use tls://")
     for name in (s.presence_subject, s.presence_stream):
         if not name or any(c in name for c in ". *>"):
