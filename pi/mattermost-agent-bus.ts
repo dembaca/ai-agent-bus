@@ -93,6 +93,45 @@ export const USAGE_EVERY_MS = 60_000
 export type Deps = { env?: Env; here?: string; waitSec?: number; retrySec?: number }
 
 type Env = Record<string, string | undefined>
+// --- the CB_ names (docs/env-names.md, #169) -------------------------------
+// The reading rule of the bus's page: the new name first, else the old one,
+// with one deprecation warning per process; empty counts as set, an unexpanded
+// ${NAME} counts as unset, and two names with different values are a conflict
+// reported once (the extension then behaves as without a bus). A file the bus
+// wrote keeps the last line of either spelling, nothing refuses.
+const PLACEHOLDER = /^\$\{[A-Za-z_][A-Za-z0-9_]*\}$/
+const warned = new Set<string>()
+export class EnvConflict extends Error {}
+
+export function envFirst(env: Env, names: readonly string[], warn = true): string {
+  const found = names
+    .map((n) => [n, env[n]] as const)
+    .filter(([, v]) => v !== undefined && !PLACEHOLDER.test(v as string))
+  if (!found.length) return ""
+  if (new Set(found.map(([, v]) => v)).size > 1) {
+    throw new EnvConflict(`${found.map(([n]) => n).join(", ")} are set to different values; ` +
+                          `set only ${names[0]}`)
+  }
+  const [from, value] = found[0]
+  if (warn && from !== names[0] && !warned.has(from)) {
+    warned.add(from)
+    console.warn(`[${SERVER}] ${from} is deprecated; set ${names[0]} instead ` +
+                 `(the old name goes in a later release)`)
+  }
+  return value as string
+}
+
+// A setting of one of the bus's own files: the last line of either spelling
+// wins (bin/mm-agent-lib.sh's mm_kv and config.value read alike).
+export function fileFirst(text: string, names: readonly string[]): string {
+  let got = ""
+  for (const line of text.split("\n")) {
+    const i = line.indexOf("=")
+    if (i > 0 && names.includes(line.slice(0, i))) got = line.slice(i + 1)
+  }
+  return got
+}
+
 type Json = Record<string, any>
 
 // keep-in-step: from here to the end marker, the same text in
@@ -140,8 +179,16 @@ export function hookApi(env: Env, directory: string, missing: () => void = () =>
                         client: { session?: () => string; forbidden?: () => void } = {}) {
   // signal: ends the call when it aborts (an unload, a shutdown), as the timeout does.
   return async (method: "GET" | "POST", path: string, body?: Json, ms = QUICK_MS, signal?: AbortSignal): Promise<Json | null> => {
-    let endpoint = env.MM_BUS_ENDPOINT || ""
-    let key = env.MM_BUS_KEY || ""
+    let endpoint = ""
+    let key = ""
+    try {
+      endpoint = envFirst(env, ["CB_BUS_ENDPOINT", "MM_BUS_ENDPOINT"])
+      key = envFirst(env, ["CB_BUS_KEY", "MM_BUS_KEY"])
+    } catch (e) {
+      if (!(e instanceof EnvConflict)) throw e
+      console.warn(`[${SERVER}] ${e.message}`)
+      return null
+    }
     if (!endpoint || !key) {
       const f = busFile(env, directory)
       if (!f) {
@@ -149,9 +196,9 @@ export function hookApi(env: Env, directory: string, missing: () => void = () =>
         return null
       }
       try {
-        const vars = parseEnvFile(readFileSync(f, "utf8"))
-        endpoint = vars.MM_BUS_ENDPOINT || ""
-        key = vars.MM_BUS_KEY || ""
+        const text = readFileSync(f, "utf8")
+        endpoint = fileFirst(text, ["CB_BUS_ENDPOINT", "MM_BUS_ENDPOINT"])
+        key = fileFirst(text, ["CB_BUS_KEY", "MM_BUS_KEY"])
       } catch {
         return null
       }
@@ -564,10 +611,18 @@ export class Meter {
 }
 // ---- end of the token split ----
 
-// The bus checkout: MM_AGENT_BUS_ROOT, or the checkout this file really lies
-// in (pi/; a symlink into ~/.pi/agent/extensions/ resolves).
+// The bus checkout: CB_AGENT_BUS_ROOT (the old MM_ name still read), or the
+// checkout this file really lies in (pi/; a symlink into ~/.pi/agent/extensions/
+// resolves).
 export function busRoot(env: Env, here: string): string | null {
-  for (const dir of [env.MM_AGENT_BUS_ROOT, dirname(dirname(real(here) || here))]) {
+  let configured = ""
+  try {
+    configured = envFirst(env, ["CB_AGENT_BUS_ROOT", "MM_AGENT_BUS_ROOT"])
+  } catch (e) {
+    if (!(e instanceof EnvConflict)) throw e
+    console.warn(`[${SERVER}] ${e.message}`)
+  }
+  for (const dir of [configured, dirname(dirname(real(here) || here))]) {
     if (dir && existsSync(join(dir, "mcp", "pyproject.toml"))) return dir
   }
   return null
@@ -583,7 +638,13 @@ const shq = (s: string) => `'${s.replace(/'/g, `'\\''`)}'`
 // the config, never the secret. None under corral (MM_BUS_MCP_ENDPOINT): the
 // host hooks registered the bot, the server is a relay (RT-6.18).
 export function secretCommand(env: Env): string | null {
-  if (env.MM_BUS_MCP_ENDPOINT) return null
+  try {
+    if (envFirst(env, ["CB_BUS_MCP_ENDPOINT", "MM_BUS_MCP_ENDPOINT"])) return null
+  } catch (e) {
+    if (!(e instanceof EnvConflict)) throw e
+    console.warn(`[${SERVER}] ${e.message}`)
+    return null  // a relay is there: the secret stays out of the config
+  }
   const path = env.MM_REG_SECRET_GOPASS?.trim()
   if (path) return `!gopass show -o ${shq(path)}`
   const cmd = env.MM_REG_SECRET_CMD?.trim()
@@ -602,7 +663,11 @@ export function mcpConfig(root: string, workspace: string, env: Env = {}) {
   return {
     command: "uv",
     args: ["run", "--locked", "--project", join(root, "mcp"), "mattermost-ai-agent-bus-mcp"],
-    env: { CLAUDE_CODE_SESSION_ID: "", CLAUDE_PROJECT_DIR: "", MM_CHANNEL_PUSH: "0", MM_WORKSPACE: workspace,
+    // The two settings go under both names, so a child of either version reads
+    // them (#169); the server reads CB_ first.
+    env: { CLAUDE_CODE_SESSION_ID: "", CLAUDE_PROJECT_DIR: "",
+           CB_CHANNEL_PUSH: "0", MM_CHANNEL_PUSH: "0",
+           CB_WORKSPACE: workspace, MM_WORKSPACE: workspace,
            UV_PROJECT_ENVIRONMENT: venvDir(env, root), ...(secret ? { MM_REG_SECRET: secret } : {}) },
     cwd: workspace,
     exposure: "direct" as const,

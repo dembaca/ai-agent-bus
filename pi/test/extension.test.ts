@@ -12,7 +12,7 @@ import { fileURLToPath } from "node:url"
 
 import ocBus from "../../opencode/plugin/mattermost-agent-bus.ts"
 import { busFile as ocBusFile } from "../../opencode/plugin/mattermost-agent-bus.ts"
-import mattermostAgentBus, { busFile, busRoot, create, hookApi, MCP_TIMEOUT_SEC, mcpConfig, secretCommand, SERVER, SKILL,
+import mattermostAgentBus, { busFile, busRoot, create, envFirst, EnvConflict, fileFirst, hookApi, MCP_TIMEOUT_SEC, mcpConfig, secretCommand, SERVER, SKILL,
   chars, timing, venvDir, waitSec, wakeBackoffMs, contextSegments, COORDINATION, Meter, OVERHEAD, requestSplit, Segments,
   TASK, toolCategory, waitResult, busTool, pyJson } from "../mattermost-agent-bus.ts"
 
@@ -128,7 +128,7 @@ afterEach(async () => {
 
 // A fake pi: the ExtensionAPI parts the extension uses, and one context for
 // the session, as pi hands them to the factory and to every handler.
-function fakePi(env: Record<string, string | undefined> = { MM_BUS_ENDPOINT: endpoint, MM_BUS_KEY: KEY },
+function fakePi(env: Record<string, string | undefined> = { CB_BUS_ENDPOINT: endpoint, CB_BUS_KEY: KEY },
                 here = join(REPO, "pi", "mattermost-agent-bus.ts")) {
   const handlers: Record<string, Array<(e: any, c: any) => any>> = {}
   const registered: Array<{ name: string; config: any }> = []
@@ -174,7 +174,8 @@ test("RT-6.27 step 1: the MCP server and the skill at session_start, nothing whe
   await f.emit("session_start", { reason: "startup" })
   assert.deepEqual(f.registered, [{ name: SERVER, config: {
     command: "uv", args: ["run", "--locked", "--project", join(REPO, "mcp"), "mattermost-ai-agent-bus-mcp"],
-    env: { CLAUDE_CODE_SESSION_ID: "", CLAUDE_PROJECT_DIR: "", MM_CHANNEL_PUSH: "0", MM_WORKSPACE: ws,
+    env: { CLAUDE_CODE_SESSION_ID: "", CLAUDE_PROJECT_DIR: "",
+           CB_CHANNEL_PUSH: "0", MM_CHANNEL_PUSH: "0", CB_WORKSPACE: ws, MM_WORKSPACE: ws,
            UV_PROJECT_ENVIRONMENT: join(homedir(), ".cache", "mm-agent-bus", `venv-${sha16(realpathSync(REPO))}`) },
     cwd: ws, exposure: "direct", timeout: MCP_TIMEOUT_SEC,
     description: f.registered[0].config.description } }])
@@ -218,7 +219,7 @@ test("RT-6.27 step 1: an empty text drops a section left from before (#155)", as
 })
 
 test("RT-6.27 step 1: without a checkout no server and no skill; the rest goes on", async () => {
-  const f = fakePi({ MM_BUS_ENDPOINT: endpoint, MM_BUS_KEY: KEY }, join(tmp, "elsewhere", "x.ts"))
+  const f = fakePi({ CB_BUS_ENDPOINT: endpoint, CB_BUS_KEY: KEY }, join(tmp, "elsewhere", "x.ts"))
   await f.emit("session_start", { reason: "startup" })
   assert.deepEqual(f.registered, [])
   assert.equal(await f.emit("resources_discover", { cwd: ws, reason: "startup" }), undefined)
@@ -504,12 +505,12 @@ test("RT-6.27 step 2: the server is found like the OpenCode plugin finds it", as
   mkdirSync(dir, { recursive: true })
   assert.equal(busFile(env, ws), null)
   assert.equal(await hookApi(env, ws)("GET", "/v1/handoff"), null, "no file: no call")
-  writeFileSync(join(dir, `endpoint-${sha16(ws)}.env`), `MM_BUS_ENDPOINT=${endpoint}\nMM_BUS_KEY=${KEY}\n`)
+  writeFileSync(join(dir, `endpoint-${sha16(ws)}.env`), `CB_BUS_ENDPOINT=${endpoint}\nCB_BUS_KEY=${KEY}\n`)
   assert.equal(busFile(env, ws), join(dir, `endpoint-${sha16(ws)}.env`))
   assert.equal(busFile(env, ws), ocBusFile(env, ws), "the same file as the OpenCode plugin's")
   assert.deepEqual(await hookApi(env, join(ws, "."))("GET", "/v1/handoff"), { context: "" })
   assert.equal(busRoot({}, join(REPO, "pi", "mattermost-agent-bus.ts")), REPO)
-  assert.equal(busRoot({ MM_AGENT_BUS_ROOT: REPO }, "/nowhere/x.ts"), REPO)
+  assert.equal(busRoot({ CB_AGENT_BUS_ROOT: REPO }, "/nowhere/x.ts"), REPO)
   assert.equal(waitSec(), 50)
   assert.equal(waitSec(500), 55)
   assert.equal(typeof ocBus.setup, "function")
@@ -534,7 +535,7 @@ test("RT-6.27 step 1: the server's environment in the user's cache, one per chec
   assert.equal(venv({ HOME: "/h" }, link), venv({ HOME: "/h" }))
   assert.notEqual(venvDir({ HOME: "/h" }, tmp), venvDir({ HOME: "/h" }, REPO))
   // Outside corral alike: one rule, one more environment per user.
-  assert.equal(venv({ HOME: "/h", MM_BUS_MCP_ENDPOINT: "tcp://127.0.0.1:1" }), venv({ HOME: "/h" }))
+  assert.equal(venv({ HOME: "/h", CB_BUS_MCP_ENDPOINT: "tcp://127.0.0.1:1" }), venv({ HOME: "/h" }))
 })
 
 test("RT-6.27 step 1: the secret by its command for the server alone, never its value", () => {
@@ -548,7 +549,7 @@ test("RT-6.27 step 1: the secret by its command for the server alone, never its 
   const none = mcpConfig(REPO, ws, { MM_REG_SECRET: secret })
   assert.ok(!("MM_REG_SECRET" in none.env) && !JSON.stringify(none).includes(secret), "none: pi's environment")
   // Under corral the host hooks registered the bot: the server is a relay.
-  assert.equal(secretCommand({ MM_BUS_MCP_ENDPOINT: "tcp://127.0.0.1:1", MM_REG_SECRET_GOPASS: "a" }), null)
+  assert.equal(secretCommand({ CB_BUS_MCP_ENDPOINT: "tcp://127.0.0.1:1", MM_REG_SECRET_GOPASS: "a" }), null)
 })
 
 test("RT-6.27 step 5: no wake-up while pi compacts; a poll that was out is dropped", async () => {
@@ -829,4 +830,35 @@ test("RT-6.9 step 2: the uncovered front per input type, oldest first (amendment
   assert.deepEqual([f.h_in, f.h_read, f.h_w], [0, 30, 10])
   assert.equal(f.h_out, undefined)
   for (const x of ["in", "read", "w"]) assert.ok(f[`h_${x}`] + f[`o_${x}`] + f[`c_${x}`] <= f[`a_${x}`])
+})
+
+
+// --- the CB_ names (#169) --------------------------------------------------
+
+test("RT-6.27: a setting reads CB_ first, then MM_ with one warning", () => {
+  assert.equal(envFirst({ CB_WORKSPACE: "/n" }, ["CB_WORKSPACE", "MM_WORKSPACE"]), "/n")
+  const got: string[] = []
+  const orig = console.warn
+  console.warn = (...a: unknown[]) => { got.push(a.map(String).join(" ")) }
+  try {
+    assert.equal(envFirst({ MM_AGENT_BUS_ROOT: "/o" }, ["CB_AGENT_BUS_ROOT", "MM_AGENT_BUS_ROOT"]), "/o")
+    assert.equal(envFirst({ MM_AGENT_BUS_ROOT: "/o2" }, ["CB_AGENT_BUS_ROOT", "MM_AGENT_BUS_ROOT"]), "/o2")
+  } finally { console.warn = orig }
+  assert.equal(got.filter((m) => m.includes("MM_AGENT_BUS_ROOT is deprecated")).length, 1)
+})
+
+test("RT-6.27: empty counts as set, a ${NAME} placeholder as unset, a conflict names both", () => {
+  assert.equal(envFirst({ CB_WORKSPACE: "" }, ["CB_WORKSPACE", "MM_WORKSPACE"]), "")
+  assert.throws(() => envFirst({ CB_WORKSPACE: "", MM_WORKSPACE: "/o" },
+                               ["CB_WORKSPACE", "MM_WORKSPACE"]), EnvConflict)
+  assert.equal(envFirst({ CB_WORKSPACE: "${CB_WORKSPACE}", MM_WORKSPACE: "/o" },
+                        ["CB_WORKSPACE", "MM_WORKSPACE"]), "/o")
+  assert.throws(() => envFirst({ CB_BUS_KEY: "new-secret", MM_BUS_KEY: "old-secret" },
+                               ["CB_BUS_KEY", "MM_BUS_KEY"]),
+                (e: Error) => e instanceof EnvConflict && !e.message.includes("secret"))
+})
+
+test("RT-6.27: a file the bus wrote keeps the last line of either spelling", () => {
+  assert.equal(fileFirst("MM_BUS_KEY=a\nCB_BUS_KEY=b\n", ["CB_BUS_KEY", "MM_BUS_KEY"]), "b")
+  assert.equal(fileFirst("CB_BUS_KEY=new\nMM_BUS_KEY=old\n", ["CB_BUS_KEY", "MM_BUS_KEY"]), "old")
 })

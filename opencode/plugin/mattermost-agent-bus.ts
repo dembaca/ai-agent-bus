@@ -82,6 +82,46 @@ const BOTS_KEY = "ai-agent-bus/bots" // OpenCode session id → its bot, to tell
 
 type Env = Record<string, string | undefined>
 type Json = Record<string, any>
+
+// --- the CB_ names (docs/env-names.md, #169) -------------------------------
+// The reading rule of the bus's page: the new name first, else the old one,
+// with one deprecation warning per process; empty counts as set, an unexpanded
+// ${NAME} counts as unset, and two names with different values are a conflict
+// the caller reports once (the plugin then behaves as without a bus). A file
+// the bus wrote keeps the last line of either spelling: a downgraded writer's
+// later old key counts, and nothing refuses.
+const PLACEHOLDER = /^\$\{[A-Za-z_][A-Za-z0-9_]*\}$/
+const warned = new Set<string>()
+export class EnvConflict extends Error {}
+
+export function envFirst(env: Env, names: readonly string[], warn = true): string {
+  const found = names
+    .map((n) => [n, env[n]] as const)
+    .filter(([, v]) => v !== undefined && !PLACEHOLDER.test(v as string))
+  if (!found.length) return ""
+  if (new Set(found.map(([, v]) => v)).size > 1) {
+    throw new EnvConflict(`${found.map(([n]) => n).join(", ")} are set to different values; ` +
+                          `set only ${names[0]}`)
+  }
+  const [from, value] = found[0]
+  if (warn && from !== names[0] && !warned.has(from)) {
+    warned.add(from)
+    console.warn(`[${SERVER}] ${from} is deprecated; set ${names[0]} instead ` +
+                 `(the old name goes in a later release)`)
+  }
+  return value as string
+}
+
+// A setting of one of the bus's own files: the last line of either spelling
+// wins (bin/mm-agent-lib.sh's mm_kv and config.value read alike).
+export function fileFirst(text: string, names: readonly string[]): string {
+  let got = ""
+  for (const line of text.split("\n")) {
+    const i = line.indexOf("=")
+    if (i > 0 && names.includes(line.slice(0, i))) got = line.slice(i + 1)
+  }
+  return got
+}
 type Kind = "drain" | "answer" | "signoff" | "wake" | "context"
 
 export type Options = {
@@ -145,8 +185,16 @@ export function hookApi(env: Env, directory: string, missing: () => void = () =>
                         client: { session?: () => string; forbidden?: () => void } = {}) {
   // signal: ends the call when it aborts (an unload, a shutdown), as the timeout does.
   return async (method: "GET" | "POST", path: string, body?: Json, ms = QUICK_MS, signal?: AbortSignal): Promise<Json | null> => {
-    let endpoint = env.MM_BUS_ENDPOINT || ""
-    let key = env.MM_BUS_KEY || ""
+    let endpoint = ""
+    let key = ""
+    try {
+      endpoint = envFirst(env, ["CB_BUS_ENDPOINT", "MM_BUS_ENDPOINT"])
+      key = envFirst(env, ["CB_BUS_KEY", "MM_BUS_KEY"])
+    } catch (e) {
+      if (!(e instanceof EnvConflict)) throw e
+      console.warn(`[${SERVER}] ${e.message}`)
+      return null
+    }
     if (!endpoint || !key) {
       const f = busFile(env, directory)
       if (!f) {
@@ -154,9 +202,9 @@ export function hookApi(env: Env, directory: string, missing: () => void = () =>
         return null
       }
       try {
-        const vars = parseEnvFile(readFileSync(f, "utf8"))
-        endpoint = vars.MM_BUS_ENDPOINT || ""
-        key = vars.MM_BUS_KEY || ""
+        const text = readFileSync(f, "utf8")
+        endpoint = fileFirst(text, ["CB_BUS_ENDPOINT", "MM_BUS_ENDPOINT"])
+        key = fileFirst(text, ["CB_BUS_KEY", "MM_BUS_KEY"])
       } catch {
         return null
       }
@@ -263,8 +311,20 @@ export async function loadSplit(root: string | null): Promise<Split | null> {
 
 // The bus checkout: the option, MM_AGENT_BUS_ROOT, or the checkout this file
 // really lies in (opencode/plugin/) (a symlink into .opencode/plugins/ resolves).
+// The checkout from the environment: CB_AGENT_BUS_ROOT first (#169). A conflict
+// is reported once and yields none, so the plugin finds its own checkout.
+function rootOf(env: Env): string {
+  try {
+    return envFirst(env, ["CB_AGENT_BUS_ROOT", "MM_AGENT_BUS_ROOT"])
+  } catch (e) {
+    if (!(e instanceof EnvConflict)) throw e
+    console.warn(`[${SERVER}] ${e.message}`)
+    return ""
+  }
+}
+
 export function busRoot(options: Options, env: Env, here: string): string | null {
-  for (const dir of [options.root, env.MM_AGENT_BUS_ROOT, dirname(dirname(dirname(real(here) || here)))]) {
+  for (const dir of [options.root, rootOf(env), dirname(dirname(dirname(real(here) || here)))]) {
     if (dir && existsSync(join(dir, "mcp", "pyproject.toml"))) return dir
   }
   return null
@@ -273,7 +333,14 @@ export function busRoot(options: Options, env: Env, here: string): string | null
 // A corral session's relay variables (RT-6.18): the bus of this process is
 // the host's, which serves one agent with one bot.
 export function relayVars(env: Env): boolean {
-  return Boolean(env.MM_BUS_MCP_ENDPOINT || env.MM_BUS_ENDPOINT)
+  try {
+    return Boolean(envFirst(env, ["CB_BUS_MCP_ENDPOINT", "MM_BUS_MCP_ENDPOINT"]) ||
+                   envFirst(env, ["CB_BUS_ENDPOINT", "MM_BUS_ENDPOINT"]))
+  } catch (e) {
+    if (!(e instanceof EnvConflict)) throw e
+    console.warn(`[${SERVER}] ${e.message}`)
+    return true  // a relay is there; the call reports the conflict
+  }
 }
 
 // The session that carries the bus under relay variables (RT-6.20 step 1),
@@ -355,7 +422,11 @@ export function addMcp(editor: any, options: Options, root: string | null, direc
     // the tree may be read-only, a checkout under a corral read grant or the
     // host copy (RT-6.28), whose own mcp/.venv is the host's.
     const venv = !options.command && root ? { UV_PROJECT_ENVIRONMENT: venvDir(env, root) } : {}
-    const environment = { CLAUDE_CODE_SESSION_ID: "", CLAUDE_PROJECT_DIR: "", MM_CHANNEL_PUSH: "0", MM_WORKSPACE: dir,
+    // The two settings go under both names, so a child of either version reads
+    // them (#169); the server reads CB_ first.
+    const environment = { CLAUDE_CODE_SESSION_ID: "", CLAUDE_PROJECT_DIR: "",
+                          CB_CHANNEL_PUSH: "0", MM_CHANNEL_PUSH: "0",
+                          CB_WORKSPACE: dir, MM_WORKSPACE: dir,
                           ...venv, ...(options.environment ?? {}), ...(session ? { OPENCODE_SESSION_ID: session } : {}) }
     // Direct tools, not Code Mode (issue #152): the model sees the bus tools and
     // their docs as written, as in Claude Code and pi, and the token split counts
@@ -365,7 +436,7 @@ export function addMcp(editor: any, options: Options, root: string | null, direc
     // #152. `false` is the server's whole setting, no per-tool one.
     if (command) editor.set(SERVER, { type: "local", command, environment, cwd: dir, codemode: false })
   }
-  return Boolean(own && !own.environment?.MM_WORKSPACE)
+  return Boolean(own && !own.environment?.CB_WORKSPACE && !own.environment?.MM_WORKSPACE)
 }
 
 // The skill as OpenCode reads a SKILL.md: name and description from the
@@ -438,7 +509,8 @@ export async function setup(ctx: Plugin.Context) {
   const bus = hookApi(env, directory, () => {
     if (!unkeyed || warned) return
     warned = true
-    console.warn(`[${SERVER}] no MCP server found for ${directory}; set MM_WORKSPACE in its environment (adapters/opencode.md)`)
+    console.warn(`[${SERVER}] no MCP server found for ${directory}; set CB_WORKSPACE in its environment ` +
+                 `(MM_WORKSPACE is still read; adapters/opencode.md)`)
   }, {
     // Every call names the bound session; the host refuses another's (RT-6.18 step 6).
     session: () => bound()?.id || "",
