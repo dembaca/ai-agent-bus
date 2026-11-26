@@ -90,7 +90,10 @@ memory with the session; Keycloak checks the hint's signature, not its
 expiry). Without one (after a restart) Keycloak asks the person to
 confirm the logout. The hint travels in the redirect URL (the browser's
 history, Keycloak's and its proxy's access logs); the redirect is
-`no-store` and `no-referrer`. Without an end-session endpoint, or before
+`no-store` and `no-referrer`; the pages themselves send
+`Referrer-Policy: same-origin`, so the browser names the console's origin
+on the logout POST (under `no-referrer` it sends `Origin: null`, which the
+logout refuses). Without an end-session endpoint, or before
 the issuer's endpoints are discovered, the logout ends the console's
 session and answers a page that says the Keycloak session is still open.
 
