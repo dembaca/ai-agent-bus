@@ -86,6 +86,29 @@ func TestRunRefusesInvalidConfiguration(t *testing.T) {
 	}
 }
 
+// Both names of one setting set to different values: the start exits 2, the
+// message names both names and shows neither value.
+func TestRunRefusesDisagreeingNames(t *testing.T) {
+	lookup := envname.Map(map[string]string{"CB_AUTH_LISTEN_ADDR": ":8101", "AUTH_LISTEN_ADDR": ":8202"})
+
+	var code int
+	out := captureStdout(t, func() { code = run(lookup) })
+
+	if code != exitConfigError {
+		t.Fatalf("run = %d, want %d", code, exitConfigError)
+	}
+	for _, n := range []string{"CB_AUTH_LISTEN_ADDR", " AUTH_LISTEN_ADDR", "AUTH_LISTEN_ADDR "} {
+		if !strings.Contains(out, n) {
+			t.Errorf("output does not name %q: %q", n, out)
+		}
+	}
+	for _, v := range []string{"8101", "8202"} {
+		if strings.Contains(out, v) {
+			t.Errorf("output shows the value %s: %q", v, out)
+		}
+	}
+}
+
 func TestDispatchDirWithoutArgsPrintsUsage(t *testing.T) {
 	var out, errb strings.Builder
 	code, ok := dispatch([]string{"authd", "dir"}, envname.Map(nil), &out, &errb)

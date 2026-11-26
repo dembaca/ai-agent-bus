@@ -204,8 +204,9 @@ The tables below map 158 old names (each name counted once) to new names;
 10 more keep their names and go with the registrar. The check for this page
 found:
 
-- No new name is in use in the repository today: there is no `CB_` name
-  anywhere yet.
+- No new name was in use in the repository before the rename: no `CB_`
+  name existed. The built components' new names are the ones in these
+  tables.
 - No two old names map to one new name, with two deliberate exceptions.
   `MATTERMOST_URL` is today an alias of `MM_CHAT_URL`, and `MATTERMOST_TOKEN`
   an alias of `MM_BOT_TOKEN`. Each pair is one setting already, so each maps
@@ -371,6 +372,9 @@ request renames them by the same rule, without a fallback:
 
 All in `services/auth/`. Its binary `authd` runs the service; its directory
 commands read the two `AUTHD_` names and two of the service's names (noted).
+Besides the files a row lists, every name here appears in the service's
+rename table `internal/envname/envname.go`, which maps each new name to its
+old one.
 
 | Old name | New name | Mattermost | Where it appears | Note |
 |---|---|---|---|---|

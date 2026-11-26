@@ -5160,7 +5160,7 @@ themselves so), the identity gets its `sub` with a suffix `.1` to `.8`,
 shortened for a long `sub` so that the suffix fits. Only nine usernames
 carrying exactly these values can lock it out, and each of them costs an
 identity of its own; then issuing is refused (RT-6.39). After the import
-the operator sets `AUTH_DIRECTORY_IMPORTED=true`: a lost bucket or one
+the operator sets `CB_AUTH_DIRECTORY_IMPORTED=true`: a lost bucket or one
 without `meta.imported` then refuses every issue instead of falling back to
 Mattermost. Two points for the changeover follow from it:
 

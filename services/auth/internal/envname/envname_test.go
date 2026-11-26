@@ -2,6 +2,9 @@ package envname
 
 import (
 	"fmt"
+	"os"
+	"reflect"
+	"regexp"
 	"strings"
 	"testing"
 )
@@ -187,21 +190,31 @@ func TestCheckReportsEveryDisagreement(t *testing.T) {
 	}
 }
 
-// The table is the mapping of docs/env-names.md: 44 names, each CB_ plus the
-// old name except the three Mattermost ones.
-func TestTheTable(t *testing.T) {
-	if n := len(Service()) + len(Authd()); n != 44 {
-		t.Fatalf("%d names, want 44", n)
+// The rename table is the login service's table of docs/env-names.md, row
+// for row: 44 new names, each with the one old name the doc gives it.
+func TestTheRenamesAreTheDocsTable(t *testing.T) {
+	doc, err := os.ReadFile("../../../../docs/env-names.md")
+	if err != nil {
+		t.Fatal(err)
 	}
-	mm := map[string]string{"CB_AUTH_MM_URL": "AUTH_MATTERMOST_URL", "CB_AUTH_MM_TEAM": "AUTH_MATTERMOST_TEAM", "CB_AUTH_MM_TOKEN_FILE": "AUTH_MATTERMOST_TOKEN_FILE"}
-	for n, old := range renamed {
-		want := strings.TrimPrefix(n, "CB_")
-		if m, ok := mm[n]; ok {
-			want = m
-		}
-		if len(old) != 1 || old[0] != want {
-			t.Errorf("%s: old %v, want %s", n, old, want)
-		}
+	_, section, ok := strings.Cut(string(doc), "\n### The login service and authd (44)\n")
+	if !ok {
+		t.Fatal("docs/env-names.md has no section \"The login service and authd (44)\"")
+	}
+	section, _, _ = strings.Cut(section, "\n### ")
+	row := regexp.MustCompile("(?m)^\\| `([A-Z0-9_]+)` \\| `(CB_[A-Z0-9_]+)` \\|")
+	want := map[string][]string{}
+	for _, m := range row.FindAllStringSubmatch(section, -1) {
+		want[m[2]] = []string{m[1]}
+	}
+	if len(want) != 44 {
+		t.Fatalf("the doc's login table has %d rows, want 44: %v", len(want), want)
+	}
+	if n := len(Service()) + len(Authd()); n != 44 {
+		t.Fatalf("Service and Authd list %d names, want 44", n)
+	}
+	if !reflect.DeepEqual(renamed, want) {
+		t.Fatalf("the rename table is %v\nthe doc says %v", renamed, want)
 	}
 }
 
