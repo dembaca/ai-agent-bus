@@ -18,7 +18,7 @@ const minute = 60_000
 const cards = (): CardWire[] => [
 
   {
-    name: "agent-mac-ai-agent-164534", home: "~ai-agent-bus-dev", state: "working",
+    name: "agent-mac-ai-agent-164534", home: "~ai-agent-bus-dev", guests: ["~chat-next"], state: "working",
     crown: true, harness: "claude-code", model: "Opus 5.5",
     task: "coordinate the merge window, the bridge and the console plan",
     role: "coordinator", for: "dembaca", autonomous: false, trusts: ["dembaca"],
@@ -28,7 +28,7 @@ const cards = (): CardWire[] => [
     tasks: [],
   },
   {
-    name: "agent-mac-ai-agent-bb8f09", home: "~ai-agent-bus-dev", state: "working",
+    name: "agent-mac-ai-agent-bb8f09", home: "~ai-agent-bus-dev", guests: ["~bgl-infra"], state: "working",
     crown: false, harness: "opencode", model: "GLM 5.3",
     task: "the console's browser app against a mock of the API",
     role: "member", for: "dembaca", autonomous: false, trusts: ["dembaca"],
@@ -40,7 +40,7 @@ const cards = (): CardWire[] => [
     tasks: [],
   },
   {
-    name: "agent-mac-ai-agent-d2f798", home: "~ai-agent-bus-dev", state: "bus",
+    name: "agent-mac-ai-agent-d2f798", home: "~ai-agent-bus-dev", guests: [], state: "bus",
     crown: false, harness: "opencode", model: "DeepSeek V4.1 Flash",
     task: "the interim bridge: mirror NATS posts into Mattermost (ADR-014 point 14)",
     role: "member", for: "dembaca", autonomous: false, trusts: ["dembaca"],
@@ -50,7 +50,7 @@ const cards = (): CardWire[] => [
     tasks: [],
   },
   {
-    name: "agent-mac-ai-agent-6d2afc", home: "~ai-agent-bus-dev", state: "working",
+    name: "agent-mac-ai-agent-6d2afc", home: "~ai-agent-bus-dev", guests: [], state: "working",
     crown: false, harness: "opencode", model: "GLM 5.3",
     task: "an end-to-end run of a NATS home against a local nats-server",
     role: "member", for: "dembaca", autonomous: false, trusts: ["dembaca"],
@@ -60,7 +60,7 @@ const cards = (): CardWire[] => [
     tasks: [],
   },
   {
-    name: "agent-mac-ai-agent-b7ccf7", home: "~ai-agent-bus-dev", state: "listening",
+    name: "agent-mac-ai-agent-b7ccf7", home: "~ai-agent-bus-dev", guests: ["~bgl-infra"], state: "listening",
     crown: false, harness: "claude-code", model: "Opus 5.5",
     task: "arc42 docs: accuracy fixes in three PRs, with Fable subagents",
     role: "member", for: "dembaca", autonomous: false, trusts: ["dembaca"],
@@ -70,7 +70,7 @@ const cards = (): CardWire[] => [
     tasks: [],
   },
   {
-    name: "agent-mac-ai-agent-831e38", home: "~ai-agent-bus-dev", state: "idle",
+    name: "agent-mac-ai-agent-831e38", home: "~ai-agent-bus-dev", guests: [], state: "idle",
     crown: false, harness: "opencode", model: "Cloud Reason",
     task: "no task yet, waiting for one",
     role: "member", for: "dembaca", autonomous: false, trusts: ["dembaca"],
@@ -80,7 +80,7 @@ const cards = (): CardWire[] => [
     tasks: [],
   },
   {
-    name: "agent-mac-ai-agent-716d72", home: "~ai-agent-bus-dev", state: "offline",
+    name: "agent-mac-ai-agent-716d72", home: "~ai-agent-bus-dev", guests: [], state: "offline",
     crown: false, harness: "claude-code", model: "Opus 5.5",
     task: "gone: lease ran out mid-afternoon",
     role: "member", for: "dembaca", autonomous: false, trusts: ["dembaca"],
@@ -90,7 +90,7 @@ const cards = (): CardWire[] => [
     tasks: [],
   },
   {
-    name: "agent-mac-chat-next-3b92c9", home: "~chat-next", state: "silent",
+    name: "agent-mac-chat-next-3b92c9", home: "~chat-next", guests: ["~bgl-infra"], state: "silent",
     crown: true, harness: "claude-code", model: "Opus 5.5",
     task: "operator console draft decisions, mandated coordinator",
     role: "coordinator", for: "dembaca", autonomous: false, trusts: ["dembaca"],
@@ -236,7 +236,7 @@ const asksReport = (id: string, window: "24 h" | "7 d", n: number): Report => ({
   ],
 })
 
-const SPLIT_NOTE = "estimated: exact totals per token type from Claude Code's transcript, split by content "
+const SPLIT_NOTE = "estimated: exact totals per token type from the harness (Claude Code, OpenCode, pi), split by content "
   + "at 4 characters per token; text and thinking by what drove the request, a convention"
 
 // The server's reports (RT-6.43 step 8): no names, counts and seconds only.
@@ -301,7 +301,7 @@ function stack(label: string, eq: number[], raw: number[]): ReportStack {
 
 const graph = (): GraphData => ({
   nodes: [
-    { id: "dembaca", kind: "person", label: "dembaca" },
+    { id: "dembaca", kind: "person", label: "dembaca", you: true },
     { id: "~ai-agent-bus-dev", kind: "channel", label: "~ai-agent-bus-dev" },
     { id: "~chat-next", kind: "channel", label: "~chat-next" },
     { id: "~bgl-infra", kind: "channel", label: "~bgl-infra" },
@@ -331,6 +331,9 @@ const graph = (): GraphData => ({
     { id: "m4", from: "agent-mac-ai-agent-6d2afc", to: "~ai-agent-bus-dev", kind: "coordinates" },
     { id: "m5", from: "agent-mac-ai-agent-b7ccf7", to: "~ai-agent-bus-dev", kind: "coordinates" },
     { id: "m6", from: "agent-mac-chat-next-3b92c9", to: "~chat-next", kind: "coordinates" },
+    // a guest channel: a channel the agent only visits (RT-6.16)
+    { id: "g1", from: "agent-mac-ai-agent-bb8f09", to: "~bgl-infra", kind: "guest" },
+    { id: "g2", from: "agent-mac-ai-agent-164534", to: "~chat-next", kind: "guest" },
     // the cut: followed further only to a depth of two, with a mark where it is cut
     { id: "c1", from: "agent-mac-ai-agent-164534", to: "agent-mac-ai-agent-bb8f09", kind: "coordinates", cut: true },
   ],
@@ -361,7 +364,7 @@ export const liveAskEnd = (i: number): Ask["end"] | null =>
   i < ASK_PERIOD ? null : Math.floor(i / ASK_PERIOD) % 2 === 1 ? "open" : "answered"
 
 const visitor = (): CardWire => ({
-  name: "agent-mac-ai-agent-e41a07", home: "~ai-agent-bus-dev", state: "working",
+  name: "agent-mac-ai-agent-e41a07", home: "~ai-agent-bus-dev", guests: [], state: "working",
   crown: false, harness: "cursor", model: "Composer 2",
   task: "a short look at the console's graph view, then gone again",
   role: "member", for: "dembaca", autonomous: false, trusts: ["dembaca"],

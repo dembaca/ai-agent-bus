@@ -41,6 +41,31 @@ before 0.5.0 are described in the git history.
 
 ### Added
 
+- **The token split for OpenCode and pi** (#139 stage 2b, RT-6.9 steps
+  1 to 3, ADR-017). The OpenCode plugin and the pi extension attribute
+  each turn's model requests in process, by the rules the server applies
+  to Claude Code's transcript, and post the sums as one `usage` stat
+  event per turn (`POST /v1/stat` with `k: usage`: exactly 18 integer
+  fields, numbers only, among them the input their segments did not cover). The server folds them into the line's `tok`
+  (method 1) and adds the bus's fixed instructions and tool docs, which
+  the plugins cannot see, as overhead per request, placed only into that
+  uncovered input. Such a line counts in the tokens by category; the older
+  bus share by cause counts only lines with `tok.bus`, so it never
+  reads as 0 %. No token is added to any context.
+- **The operator console's API carries each agent's guest channels and
+  marks the operator's own person node** (#147). A fleet card names its
+  `home` and, beside it, its `guests`: the channels its memberships name
+  that are not its home (every granted channel gets one, RT-6.37). The
+  home is what the bus itself states — the channel of the agent's ask
+  record's subject first (RT-6.43 step 5), else the channel it claims the
+  crown of (only a home may be claimed, RT-6.38), else the first channel
+  its memberships name — never guessed from an agent's name. `/v1/graph`
+  draws the home as a `coordinates` edge and each guest channel as a
+  `guest` edge, and marks the person node the logged-in operator's anchor
+  names with `you`; that anchor is read from the login's own record,
+  never from anything the browser sends. No new right: all of it comes
+  from presence, crown claims, memberships and the login's own record.
+
 - **The operator console shows the channels of the operator's own agents
   and of agents that trust the operator directly** (#128, the console on
   the bus as its operator, RT-6.43 step 3). At each agent's credential the
@@ -140,6 +165,13 @@ before 0.5.0 are described in the git history.
 
 ### Fixed
 
+- **The registrar's Mattermost adapter in the central bridge keeps its admin
+  token off plain `http`** (#135). It follows the rule the bridge's own
+  client and WebSocket reader got in #131: an `http` URL only to a loopback
+  host or with its `AllowHTTP` setting (the bridge's
+  `BRIDGE_MM_ALLOW_HTTP`), refused when the adapter is made and at each
+  call, and no redirect followed, so a 30x is an error. The adapter is not
+  yet active in `bridged`.
 - **A NATS home starts for an identity first seen after the directory
   import** (#86, the channel directory's anchors, RT-6.39). The login service
   gave such an identity its Keycloak `sub` as anchor, so the agent name and
@@ -150,6 +182,13 @@ before 0.5.0 are described in the git history.
   stops, never with a wrong name). Anchors already given do not move. The
   remaining cases, an account renamed in Keycloak and a new one whose name
   was held, stay a known limit (RISK-19).
+- **Two follow-ups from the WebSocket security review** (#85, RT-6.36). The
+  login service's refusal test now asserts an authorization error and that the
+  same identity connects on the standard listener of the same rig, so a
+  listener that fails for another reason can no longer pass it. A WebSocket
+  server that answers the upgrade with a redirect is still refused before any
+  byte goes there, and the bus's log names that reason instead of leaving an
+  operator with a bare timeout.
 - **The central bridge's WebSocket reader reconnects promptly and bounds
   its handshake** (#131, people's posts onto NATS, RT-6.42). After a
   connection that held 30 s it reconnects after 1 s, not after the wait
@@ -165,6 +204,22 @@ before 0.5.0 are described in the git history.
 
 ### Docs
 
+- **The one operating model for the host login, documented, not built yet**
+  (the owner's decision 10, #154, step 1 of 5). The NATS decision (ADR-014) gets an amendment of
+  2026-11-26: the rule "credentials stay on the host, never in a sandbox"
+  goes; one operating model with and without corral, in which the MCP
+  server logs in itself and keeps the refresh token and the host key in
+  the system keychain or a 0600 file, under corral in the sandbox's own
+  home. The price is named: an agent can read them, and the token, its
+  human's offline token shared by all sessions on the host, yields new
+  agents of that owner with any key, but approves nothing. The keyless host
+  session (RT-6.18) and the host login (RT-6.34) say what is decided and
+  what still runs. New risks: the readable token with its planned
+  protections and what they miss, detection in the login service, an offline maximum and
+  DPoP (RISK-26), and two findings the login service review of 2026-11-22 rated high, raised again,
+  the token's binding and storage (RISK-27) and an emergency brake that
+  acts only at the next issue (RISK-28). The site's security answers say
+  what is true today and what is decided.
 - **The deployment and building block views say what runs in the lab**
   (#108). The central bridge carries people's posts and reactions onto
   NATS in the lab since 2026-11-25 (step 2, RT-6.42), and the deployment

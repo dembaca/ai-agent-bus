@@ -19,6 +19,7 @@ import (
 	"time"
 
 	"github.com/dembaca/ai-agent-bus/services/bridge/internal/mirror"
+	"github.com/dembaca/ai-agent-bus/services/bridge/internal/netloc"
 )
 
 // StatusError is Mattermost's answer to one request. Create, React and Unreact
@@ -56,16 +57,7 @@ type Client struct {
 // New returns a client for baseURL (no trailing slash) with a bot token.
 func New(baseURL, token string) *Client {
 	return &Client{base: strings.TrimRight(baseURL, "/"), token: token,
-		http: &http.Client{Timeout: 20 * time.Second, CheckRedirect: noRedirect}}
-}
-
-// noRedirect keeps a redirect from being followed: Mattermost's API does
-// not redirect, and Go's client resends the Authorization header to a
-// redirect on the same host, so a 30x from https to http would carry the
-// token in clear text (#131). The 30x comes back as the response, which
-// request reports as the status it is.
-func noRedirect(*http.Request, []*http.Request) error {
-	return http.ErrUseLastResponse
+		http: &http.Client{Timeout: 20 * time.Second, CheckRedirect: netloc.NoRedirect}}
 }
 
 // Me resolves the bot's own user id, which a reaction needs.
