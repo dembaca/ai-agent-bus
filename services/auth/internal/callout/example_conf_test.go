@@ -1,6 +1,7 @@
 package callout
 
 import (
+	"context"
 	"crypto/ecdsa"
 	"crypto/elliptic"
 	"crypto/rand"
@@ -24,6 +25,7 @@ import (
 
 	"github.com/dembaca/ai-agent-bus/services/auth/internal/consumers"
 	"github.com/dembaca/ai-agent-bus/services/auth/internal/directory"
+	"github.com/dembaca/ai-agent-bus/services/auth/internal/testrealm"
 )
 
 const exampleConf = "../../nats-server.example.conf"
@@ -70,31 +72,35 @@ func selfSigned(t *testing.T) (certFile, keyFile string) {
 // placeholders filled a server starts from it: the callout is set as the
 // README says, and the JetStream user has exactly the documented minimal
 // rights and can make the streams with them.
-func TestTheExampleServerConfiguration(t *testing.T) {
+// exampleKeys are the keys and the certificate exampleConfig fills in.
+type exampleKeys struct {
+	issuer, xkey, svcUser, jsUser                          nkeys.KeyPair
+	issuerPub, xkeyPub, svcPub, jsPub, bridgePub, certFile string
+}
+
+// exampleConfig fills the example's placeholders with keys made here and
+// parses it as the server does.
+func exampleConfig(t *testing.T) (*server.Options, exampleKeys) {
+	t.Helper()
 	raw, err := os.ReadFile(exampleConf)
 	if err != nil {
 		t.Fatal(err)
 	}
 	text := string(raw)
-	// No nkey (public or seed) and nothing that looks like a password.
-	if m := regexp.MustCompile(`\b[A-Z2-7]{56,}\b`).FindString(text); m != "" {
-		t.Fatalf("the example holds a key: %s", m)
-	}
-	if regexp.MustCompile(`(?i)\b(password|token|seed)\s*[:=]`).MatchString(text) {
-		t.Fatal("the example sets a password, token or seed")
-	}
-
-	issuer, _ := nkeys.CreateAccount()
-	issuerPub, _ := issuer.PublicKey()
-	xkey, _ := nkeys.CreateCurveKeys()
-	xkeyPub, _ := xkey.PublicKey()
-	svcUser, _ := nkeys.CreateUser()
-	svcPub, _ := svcUser.PublicKey()
-	jsUser, _ := nkeys.CreateUser()
-	jsPub, _ := jsUser.PublicKey()
+	var k exampleKeys
+	k.issuer, _ = nkeys.CreateAccount()
+	k.issuerPub, _ = k.issuer.PublicKey()
+	k.xkey, _ = nkeys.CreateCurveKeys()
+	k.xkeyPub, _ = k.xkey.PublicKey()
+	k.svcUser, _ = nkeys.CreateUser()
+	k.svcPub, _ = k.svcUser.PublicKey()
+	k.jsUser, _ = nkeys.CreateUser()
+	k.jsPub, _ = k.jsUser.PublicKey()
 	bridgeUser, _ := nkeys.CreateUser()
-	bridgePub, _ := bridgeUser.PublicKey()
+	k.bridgePub, _ = bridgeUser.PublicKey()
 	certFile, keyFile := selfSigned(t)
+	k.certFile = certFile
+	issuerPub, xkeyPub, svcPub, jsPub, bridgePub := k.issuerPub, k.xkeyPub, k.svcPub, k.jsPub, k.bridgePub
 	for placeholder, value := range map[string]string{
 		"<ISSUER_ACCOUNT_PUBLIC_KEY>": issuerPub,
 		"<XKEY_PUBLIC_KEY>":           xkeyPub,
@@ -123,6 +129,74 @@ func TestTheExampleServerConfiguration(t *testing.T) {
 	if err != nil {
 		t.Fatalf("the example does not parse: %v", err)
 	}
+	return opts, k
+}
+
+// restricts says whether a publish or subscribe rule limits its user: an
+// allow list, or a deny of every subject (">"). Without one the user may
+// publish or subscribe to any subject of its account (#172); a deny list of
+// single subjects still allows all the rest. An empty publish allow list
+// counts (the server then allows no subject, allow_responses aside), an
+// empty subscribe allow list does not (the server then builds none).
+func restricts(p *server.SubjectPermission, publish bool) bool {
+	if p == nil {
+		return false
+	}
+	if len(p.Allow) > 0 || (publish && p.Allow != nil) {
+		return true
+	}
+	return slices.Contains(p.Deny, ">")
+}
+
+// Every user of the example, in every account, names what it may publish
+// and what it may subscribe to (#172): a user without both may do the other
+// on any subject of its account. A user added later fails here, not only the
+// users the test below pins one by one.
+func TestEveryExampleUserHasPublishAndSubscribeRules(t *testing.T) {
+	opts, _ := exampleConfig(t)
+	if len(opts.Nkeys)+len(opts.Users) == 0 {
+		t.Fatal("the example has no users")
+	}
+	check := func(who string, acc *server.Account, p *server.Permissions) {
+		where := "no account"
+		if acc != nil {
+			where = acc.Name
+		}
+		if p == nil {
+			t.Errorf("%s (%s) has no permissions: it may publish and subscribe to anything", who, where)
+			return
+		}
+		if !restricts(p.Publish, true) {
+			t.Errorf("%s (%s) has no publish rule: it may publish anything (%+v)", who, where, p.Publish)
+		}
+		if !restricts(p.Subscribe, false) {
+			t.Errorf("%s (%s) has no subscribe rule: it may subscribe to anything (%+v)", who, where, p.Subscribe)
+		}
+	}
+	for _, u := range opts.Nkeys {
+		check("nkey user "+u.Nkey, u.Account, u.Permissions)
+	}
+	for _, u := range opts.Users {
+		check("user "+u.Username, u.Account, u.Permissions)
+	}
+}
+
+func TestTheExampleServerConfiguration(t *testing.T) {
+	raw, err := os.ReadFile(exampleConf)
+	if err != nil {
+		t.Fatal(err)
+	}
+	text := string(raw)
+	// No nkey (public or seed) and nothing that looks like a password.
+	if m := regexp.MustCompile(`\b[A-Z2-7]{56,}\b`).FindString(text); m != "" {
+		t.Fatalf("the example holds a key: %s", m)
+	}
+	if regexp.MustCompile(`(?i)\b(password|token|seed)\s*[:=]`).MatchString(text) {
+		t.Fatal("the example sets a password, token or seed")
+	}
+	opts, k := exampleConfig(t)
+	issuerPub, xkeyPub, svcPub, jsPub, bridgePub := k.issuerPub, k.xkeyPub, k.svcPub, k.jsPub, k.bridgePub
+	jsUser, certFile := k.jsUser, k.certFile
 
 	co := opts.AuthCallout
 	if co == nil {
@@ -152,6 +226,22 @@ func TestTheExampleServerConfiguration(t *testing.T) {
 		case svcPub:
 			if u.Account == nil || u.Account.Name != "AUTH" {
 				t.Errorf("the callout's user is not in AUTH: %+v", u.Account)
+			}
+			// The requests, and one answer to each on the reply subject the
+			// server set (allow_responses); nothing else (#172).
+			p := u.Permissions
+			if p == nil || p.Publish == nil || p.Subscribe == nil || p.Response == nil {
+				t.Fatalf("the callout's user lacks rights: %+v", p)
+			}
+			if len(p.Publish.Allow) != 0 || !slices.Equal(p.Publish.Deny, []string{">"}) {
+				t.Errorf("the callout's user publishes %v (deny %v), want nothing but answers",
+					p.Publish.Allow, p.Publish.Deny)
+			}
+			if !slices.Equal(p.Subscribe.Allow, []string{Subject}) || len(p.Subscribe.Deny) != 0 {
+				t.Errorf("the callout's user subscribes to %v (deny %v), want %s", p.Subscribe.Allow, p.Subscribe.Deny, Subject)
+			}
+			if want := (server.ResponsePermission{MaxMsgs: 1, Expires: 2 * time.Minute}); *p.Response != want {
+				t.Errorf("the callout's user answers %+v, want %+v", *p.Response, want)
 			}
 		case bridgePub:
 			if u.Account == nil || u.Account.Name != "BUS" {
@@ -291,6 +381,66 @@ func TestTheExampleServerConfiguration(t *testing.T) {
 		}
 		if id, err := (directory.Anchors{Store: dir}).Anchor(ctx5(t), "0b6f3c1e-sub", "alice"); err != nil || id != "alice" {
 			t.Fatalf("anchor %q, %v", id, err)
+		}
+	}
+
+	// The callout with the example's rights for its user (#172): the login
+	// service gets the request and answers it, and an agent logs in.
+	realm, chat := testrealm.New(t), testrealm.NewChat("alice")
+	chat.Channels["alice"] = []string{"home"}
+	brake := filepath.Join(t.TempDir(), "brake")
+	if err := os.WriteFile(brake, []byte("# nobody stopped\n"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	svc, err := New(Config{Account: "BUS", Lobby: "lobby"}.WithDefaults(), k.issuer, k.xkey, realm.Verifier(chat), chat,
+		NewBrake(brake, nil), slogTo(logs))
+	if err != nil {
+		t.Fatal(err)
+	}
+	refused := make(chan error, 8)
+	svcNC, err := nats.Connect(srv.ClientURL(), nats.RootCAs(certFile), nats.TLSHandshakeFirst(),
+		nats.Nkey(svcPub, k.svcUser.Sign),
+		nats.ErrorHandler(func(_ *nats.Conn, _ *nats.Subscription, err error) { refused <- err }))
+	if err != nil {
+		t.Fatalf("the callout's user cannot connect: %v", err)
+	}
+	ctx, cancel := context.WithCancel(context.Background())
+	done := make(chan struct{})
+	go func() { _ = svc.Serve(ctx, svcNC); close(done) }()
+	t.Cleanup(func() { cancel(); <-done; svcNC.Close() })
+	if err := svcNC.Flush(); err != nil {
+		t.Fatal(err)
+	}
+	host := newHost()
+	hostPub, _ := host.PublicKey()
+	hello, _ := jsonMarshal(Hello{Token: realm.Token("alice", nil), Home: "home"})
+	agentNC, err := nats.Connect(srv.ClientURL(), nats.RootCAs(certFile), nats.TLSHandshakeFirst(),
+		nats.Nkey(hostPub, host.Sign), nats.Token(string(hello)), nats.MaxReconnects(0))
+	if err != nil {
+		t.Fatalf("an agent cannot log in through the callout: %v (log: %s)", err, logs.String())
+	}
+	agentNC.Close()
+	if !strings.Contains(logs.String(), `"event":"issued"`) {
+		t.Errorf("no credential issued: %s", logs.String())
+	}
+	select {
+	case err := <-refused:
+		t.Fatalf("the callout's answer was refused: %v", err)
+	default:
+	}
+	// Anything but an answer is refused, a server inbox and the request
+	// subject included.
+	for _, subject := range []string{"bus.ch.home.someone", "$SYS._INBOX.abc.def", Subject} {
+		if err := svcNC.Publish(subject, nil); err != nil {
+			t.Fatal(err)
+		}
+		select {
+		case err := <-refused:
+			if !strings.Contains(err.Error(), "Permissions Violation") {
+				t.Errorf("publish %s: %v, want a permissions violation", subject, err)
+			}
+		case <-time.After(2 * time.Second):
+			t.Errorf("the callout's user may publish %s", subject)
 		}
 	}
 }
