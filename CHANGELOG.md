@@ -14,8 +14,53 @@ before 0.5.0 are described in the git history.
   `127.0.0.1`, `::1` or `localhost`; a lab on a network it trusts may set
   `BRIDGE_MM_ALLOW_HTTP=true` (default off, a warning at start). The
   bridge's WebSocket reader refuses such a URL on its own too.
+- **The operator console's `GET /logout` answers 405** (#108 point 3,
+  RT-6.43 step 9). The logout is a POST now, from the sidebar's button; a
+  bookmark or link to `/logout` no longer logs out. The release's entry
+  needs the line `Needs: keycloak post logout redirect uri for the console
+  client.` (the console's client lists `<CONSOLE_PUBLIC_URL>/` under "Valid
+  post logout redirect URIs").
+
+### Changed
+
+- **The operator console's logout ends the Keycloak session too** (#108
+  point 3, RT-6.43 step 9). Before, it ended only the console's cookie,
+  and `/login` came straight back in through the realm's single sign-on,
+  without a password: on a shared machine the next person was logged in as
+  the previous operator. Now a button in the sidebar POSTs `/logout`; the
+  server drops its session and redirects to Keycloak's end-session endpoint
+  with the login's stored ID token as the hint, expired or not (Keycloak
+  asks to confirm only without one, after a restart). The
+  console's Keycloak client needs `<CONSOLE_PUBLIC_URL>/` under "Valid post
+  logout redirect URIs" before rollout.
 
 ### Added
+
+- **The operator console shows the channels of the operator's own agents
+  and of agents that trust the operator directly** (#128, the console on
+  the bus as its operator, RT-6.43 step 3). At each agent's credential the
+  login service writes a record into the directory's bucket: the owner's
+  anchor, the trusted anchors as its attestation names them and the home
+  and guest channels it granted (never the lobby). An operator's
+  consumers add the channels of every unexpired record that names the
+  operator as owner or trusted, never over several steps. A dropped trust
+  or an ended agent leaves the view at the operator's next renewal after
+  the agent's next credential or the record's expiry. A record that
+  cannot be written or read refuses that credential. The login service
+  purges expired records every 5 minutes in the background, never inside
+  an agent's login. Each operator credential reads every record, which
+  suits tens to low hundreds of agents (the risk that the console shows
+  less than there is, RISK-13). A trust record that cannot be read opens
+  nothing and is logged without its content; the sweep purges it.
+
+  > Upgrade note: the login service's JetStream user needs the consumer rights on
+  > the directory's bucket for its key listings,
+  > `$JS.API.CONSUMER.CREATE.KV_BUS_DIRECTORY.>` and
+  > `$JS.API.CONSUMER.DELETE.KV_BUS_DIRECTORY.*` (the README and
+  > `services/auth/nats-server.example.conf`); without them every operator
+  > credential is refused. 0.101.0 already needs them once its console path
+  > is on (the operator's channel listing of #126), though its entry does not
+  > name them; the next release entry carries them as a `Needs:` line.
 
 - **The bus traffic by category, exact counts for every harness** (the
   first stage of splitting the tokens into task work, bus overhead and
@@ -93,6 +138,19 @@ before 0.5.0 are described in the git history.
   host, so a 30x from `https` to `http` would have sent the bot token in
   clear text. Mattermost's API does not redirect; a 30x is now the call's
   error.
+
+### Docs
+
+- **The deployment and building block views say what runs in the lab**
+  (#108). The central bridge carries people's posts and reactions onto
+  NATS in the lab since 2026-11-25 (step 2, RT-6.42), and the deployment
+  view's introduction names the bridge and the operator console beside
+  the login service as the lab's containers.
+- **A coordinator listening as a channel and the silence rule** (#108,
+  the coordinator scenario, RT-6.6): such a session counts as alive while
+  its MCP server renews the status lease and its 👀 on receipt comes within
+  the 45 s; one whose host stopped delivering, so no 👀 comes, is silent
+  like any other.
 
 ## 0.101.0
 

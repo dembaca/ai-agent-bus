@@ -2,7 +2,9 @@ package directory
 
 import (
 	"context"
+	"log/slog"
 	"slices"
+	"time"
 )
 
 // Persons is what the callout reads for an operator's credential (RT-6.43,
@@ -11,6 +13,11 @@ import (
 // never made here, and the channels that person may see.
 type Persons struct {
 	Store *Store
+	// Now is the clock the trust index is read with; nil is time.Now.
+	Now func() time.Time
+	// Log gets the keys of trust records that cannot be read; nil is
+	// slog.Default().
+	Log *slog.Logger
 }
 
 // Anchor is the anchor of the identity `sub`; false when the directory has
@@ -23,10 +30,13 @@ func (p Persons) Anchor(ctx context.Context, sub string) (string, bool, error) {
 	return id.Anchor, true, nil
 }
 
-// Visible lists, sorted, the channels the identity `sub` may see: the public
-// ones and those it is a member of (ADR-016 point 4). The channels of agents
-// that trust the person directly, without the person being a member, are not
-// in it yet (an open point of RT-6.43).
+// Visible lists, sorted, the channels the identity `sub` may see (ADR-016
+// point 4, RT-6.43 step 3): the public ones, those it is a member of, and the
+// channels of the agents that are the person's or trust the person directly,
+// by the trust index the login service writes at each agent's credential
+// (TrustOpened): only unexpired records, never over several steps. A trust
+// record that cannot be read opens nothing and is logged by its key; a read
+// of the bucket that fails is an error, no partial list.
 func (p Persons) Visible(ctx context.Context, sub string) ([]string, error) {
 	if err := checkKey(sub); err != nil {
 		return nil, err
@@ -41,5 +51,29 @@ func (p Persons) Visible(ctx context.Context, sub string) ([]string, error) {
 			out = append(out, c.Name)
 		}
 	}
-	return out, nil
+	id, _, ok, err := p.Store.Identity(ctx, sub)
+	if err != nil {
+		return nil, err
+	}
+	if ok && id.Anchor != "" {
+		now := time.Now()
+		if p.Now != nil {
+			now = p.Now()
+		}
+		opened, unreadable, err := p.Store.TrustOpened(ctx, id.Anchor, now)
+		if err != nil {
+			return nil, err
+		}
+		if len(unreadable) > 0 {
+			log := p.Log
+			if log == nil {
+				log = slog.Default()
+			}
+			// The keys only, never a value: they open nothing.
+			log.Warn("trust records that cannot be read open nothing", "keys", unreadable)
+		}
+		out = append(out, opened...)
+	}
+	slices.Sort(out)
+	return slices.Compact(out), nil
 }

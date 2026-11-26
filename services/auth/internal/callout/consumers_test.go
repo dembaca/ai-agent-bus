@@ -19,9 +19,11 @@ import (
 	"time"
 
 	"github.com/nats-io/nats.go"
+	"github.com/nats-io/nats.go/jetstream"
 	"github.com/nats-io/nkeys"
 
 	"github.com/dembaca/ai-agent-bus/services/auth/internal/consumers"
+	"github.com/dembaca/ai-agent-bus/services/auth/internal/directory"
 	"github.com/dembaca/ai-agent-bus/services/auth/internal/testrealm"
 	"github.com/dembaca/ai-agent-bus/services/auth/internal/token"
 )
@@ -966,6 +968,32 @@ func TestTheDocumentedMinimalRightsSuffice(t *testing.T) {
 	}
 	if ci := c.info("BUS", h.name+"_ch_home"); ci == nil || ci.Config.OptStartSeq != 2 {
 		t.Fatalf("login with since: %+v", ci)
+	}
+	// The directory's key listings (the channels, an operator's trust
+	// index, the sweep) work with the documented rights too.
+	djs, err := jetstream.New(nc)
+	if err != nil {
+		t.Fatal(err)
+	}
+	dir, err := directory.Open(ctx5(t), djs, "", false)
+	if err != nil {
+		t.Fatalf("the directory: %v", err)
+	}
+	if _, err := dir.PutChannel(ctx5(t), directory.Channel{Name: "open", Owner: "sub-x", Public: true}, 0); err != nil {
+		t.Fatal(err)
+	}
+	now := time.Now()
+	if err := dir.PutAgentTrust(ctx5(t), directory.AgentTrust{Agent: "agent-a", Owner: "ann.k", Channels: []string{"annhome"}, Exp: now.Unix() + 60}); err != nil {
+		t.Fatal(err)
+	}
+	if chs, err := dir.ListChannels(ctx5(t)); err != nil || len(chs) != 1 {
+		t.Fatalf("ListChannels: %v %v", chs, err)
+	}
+	if chs, _, err := dir.TrustOpened(ctx5(t), "ann.k", now); err != nil || len(chs) != 1 {
+		t.Fatalf("TrustOpened: %v %v", chs, err)
+	}
+	if err := dir.PruneAgentTrust(ctx5(t), now.Add(time.Hour)); err != nil {
+		t.Fatalf("PruneAgentTrust: %v", err)
 	}
 	if err := mgr.SweepBrake(ctx5(t), NewBrake("", nil)); err != nil {
 		t.Fatalf("SweepBrake: %v", err)

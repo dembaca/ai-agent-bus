@@ -3971,11 +3971,24 @@ The console is the operators' view of the bus itself.
      server runs the authorization-code flow with PKCE; the browser holds
      one session cookie of the server's own, `HttpOnly`; `Secure` off
      loopback only; `SameSite=Lax`, sent same-origin only — every call is
-     a GET without side effects, so CSRF has nothing to act on, and the
-     console answers no cross-origin request (no CORS); the answer button
-     of a later stage, a POST, gets an `Origin` check with it. The session
+     a GET without side effects but the logout, so CSRF has nothing to act
+     on, and the console answers no cross-origin request (no CORS); the
+     logout is a POST with an `Origin` and Fetch Metadata check, and the
+     answer button of a later stage, a POST too, gets the same. The session
      lives in the server's memory: a restart logs every operator out,
      which is the state the pilot wants.
+   - **The logout ends Keycloak's session too (2026-11-25, #108 point 3):**
+     ending only the console's cookie left the realm's single sign-on
+     open, so `/login` came straight back in without a password, on a
+     shared machine as the previous operator. The logout is an
+     RP-initiated logout (OpenID Connect): the server drops its session,
+     then sends the browser to the realm's `end_session_endpoint` from the
+     discovery document with `client_id`, `post_logout_redirect_uri`
+     (`<CONSOLE_PUBLIC_URL>/`, registered on the console's client) and the
+     login's stored ID token as `id_token_hint`, expired or not (Keycloak
+     checks its signature, not its expiry); without one (after a restart)
+     Keycloak asks the person to confirm
+     (RT-6.43 step 9).
    - **Opening the console:** members of an operators' group in Keycloak
      (open point 4). The login service checks it at every issue of a
      person's credential, so the gate is on the bus, not only in the
@@ -4375,7 +4388,9 @@ service's part of points 9 and 12 (each agent's publish right on its one
 ask record and on its `STATS` subject, for its own name, the ask record
 only in its hello's home, and the `STATS` stream the service makes and
 checks at its start), its part of points 1 to 6 (the person's
-credential and each login's consumers), the MCP server's and the
+credential and each login's consumers, with the channels of the person's
+own agents and of agents that trust the person directly from the login
+service's trust index, point 5), the MCP server's and the
 console's part of points 8 to 15, and the console's use of the person's
 credential (its side of points 1, 4 and 6, and point 7); the static
 account is gone. Fifteen points, each one decision with a recommendation, its
@@ -4819,7 +4834,8 @@ source of identity and membership.
    the agent's owner, never by a message on the bus or in the chat and never
    by an administrator of the directory. An entry in the directory without a
    host's list behind it does not count. Built on the login service's side
-   (RT-6.41, see the end).
+   (RT-6.41, see the end), and so is the visibility rule for the operator's
+   consumers (RT-6.43 step 3).
    - This needs the owner's visibility rule: an operator sees the public
      channels, the channels of their own agents and the channels of the
      agents that trust them directly. Not over several steps: someone
@@ -5371,7 +5387,7 @@ told from coordination.
 
 **Consequences:** The split is an estimate (4 characters per token,
 approximate cache boundaries, the driver rule) and every report marks it
-"estimated" with a one-line note (the risk that an estimate is read as exact, RISK-23). `tok.bus`, the measure by
+"estimated" with a one-line note (the risk that an estimate is read as exact, RISK-25). `tok.bus`, the measure by
 cause, stays on the line for a transition, so the share per version stays
 comparable across versions. The split runs in code on the transcript the
 server reads anyway: no token enters a context.

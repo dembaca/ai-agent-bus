@@ -356,13 +356,23 @@ func RunCallout(ctx context.Context, s Settings, log *slog.Logger) error {
 	}
 	svc.SetAnchors(directory.Anchors{Store: dir, Log: log})
 	svc.SetTrust(directory.Trust{Store: dir})
+	trustIndex := &directory.TrustIndex{Store: dir, Log: log}
+	svc.SetTrustIndex(trustIndex)
 	svc.SetAttester(callout.NATSAttester{NC: jsnc, Stream: consumers.PresenceStream})
 	if pv != nil {
-		svc.SetPersons(pv, directory.Persons{Store: dir})
+		svc.SetPersons(pv, directory.Persons{Store: dir, Log: log})
 		log.Info("the console's path on", "client", s.Callout.Console.ClientID, "operators", s.Callout.Console.OperatorGroup)
 	}
 	runCtx, stop := context.WithCancel(ctx)
 	defer stop()
+	// The trust index's sweep runs beside the logins, never inside one; it
+	// stops with the service.
+	swept := make(chan struct{})
+	go func() {
+		defer close(swept)
+		trustIndex.Sweep(runCtx)
+	}()
+	defer func() { stop(); <-swept }()
 	var adminErr <-chan error
 	if s.AdminListenAddr != "" {
 		binding := s.Binding
