@@ -607,3 +607,52 @@ func TestTheBridgeRecordsAreTheMCPFixtures(t *testing.T) {
 		}
 	}
 }
+
+// The release route gets a read bucket of its own, keyed like the record reads:
+// 120 a minute, and behind a trusted proxy the client's address.
+func TestTheReleaseRouteIsRateLimited(t *testing.T) {
+	ok := http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) { w.WriteHeader(http.StatusOK) })
+	h, err := ReadLimit(ok, nil)
+	if err != nil {
+		t.Fatal(err)
+	}
+	req := func(peer, xff string) int {
+		r := httptest.NewRequest(http.MethodGet, "/register/v1/release", nil)
+		r.RemoteAddr = peer
+		if xff != "" {
+			r.Header.Set("X-Forwarded-For", xff)
+		}
+		rr := httptest.NewRecorder()
+		h.ServeHTTP(rr, r)
+		return rr.Code
+	}
+	for i := 0; i < 120; i++ {
+		if code := req("192.0.2.1:4711", ""); code != http.StatusOK {
+			t.Fatalf("read %d: %d", i+1, code)
+		}
+	}
+	if code := req("192.0.2.1:4711", ""); code != http.StatusTooManyRequests {
+		t.Fatalf("the 121st read: %d", code)
+	}
+
+	gated, err := ReadLimit(ok, []string{"10.0.0.0/8"})
+	if err != nil {
+		t.Fatal(err)
+	}
+	r := httptest.NewRequest(http.MethodGet, "/register/v1/release", nil)
+	r.RemoteAddr = "10.1.2.3:4711"
+	for i := 0; i < 120; i++ {
+		r.Header.Set("X-Forwarded-For", "203.0.113.9")
+		rr := httptest.NewRecorder()
+		gated.ServeHTTP(rr, r)
+		if rr.Code != http.StatusOK {
+			t.Fatalf("client read %d: %d", i+1, rr.Code)
+		}
+	}
+	r.Header.Set("X-Forwarded-For", "203.0.113.10") // another client behind the same proxy
+	rr := httptest.NewRecorder()
+	gated.ServeHTTP(rr, r)
+	if rr.Code != http.StatusOK {
+		t.Fatalf("the proxy's next client: %d", rr.Code)
+	}
+}

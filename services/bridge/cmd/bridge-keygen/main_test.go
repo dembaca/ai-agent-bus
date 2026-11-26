@@ -43,42 +43,30 @@ func TestTheKeygenWritesAUsableKey(t *testing.T) {
 		t.Fatalf("file %q, want %q", printed["file"], path)
 	}
 	if _, ok := printed["seed"]; ok {
-		t.Fatal("the seed went to stdout although -out named a file")
+		t.Fatal("the seed went to stdout")
 	}
 	if ls := strings.Split(strings.TrimSpace(out.String()), "\n"); ls[len(ls)-1] != "MM_REGISTRAR_KEYS entry: "+a.Key().X {
 		t.Fatalf("last line %q", ls[len(ls)-1])
 	}
 
-	// Without -out the seed is printed once, and it parses too.
-	var bare bytes.Buffer
-	if err := run("", &bare); err != nil {
-		t.Fatal(err)
-	}
-	bp := lines(bare.String())
-	if _, ok := bp["file"]; ok {
-		t.Fatal("a file was named without -out")
-	}
-	if _, err := core.ParseSeed(bp["seed"]); err != nil {
-		t.Fatalf("the printed seed: %v", err)
-	}
-	if bp["public"] != coreKid(t, bp["seed"]) {
-		t.Fatalf("printed public %q is not the seed's", bp["public"])
-	}
 }
 
-// coreKid is the kid of a printed seed: the public key's, as the bridge's
-// attestor computes it.
-func coreKid(t *testing.T, seed string) string {
-	t.Helper()
-	b, err := core.ParseSeed(seed)
-	if err != nil {
+// The seed never goes to stdout, and an existing file is never overwritten: a
+// second keygen would otherwise break every host's pin.
+func TestTheKeygenNeedsANewFileAndWritesNoSeed(t *testing.T) {
+	if err := run("", &bytes.Buffer{}); err == nil || !strings.Contains(err.Error(), "-out") {
+		t.Fatalf("run without -out: %v", err)
+	}
+	path := filepath.Join(t.TempDir(), "signing-key")
+	if err := os.WriteFile(path, []byte("old"), 0o600); err != nil {
 		t.Fatal(err)
 	}
-	a, err := signing.FromSeed(b)
-	if err != nil {
-		t.Fatal(err)
+	if err := run(path, &bytes.Buffer{}); err == nil || !strings.Contains(err.Error(), "exists") {
+		t.Fatalf("run over an existing file: %v", err)
 	}
-	return a.Key().X
+	if b, err := os.ReadFile(path); err != nil || string(b) != "old" {
+		t.Fatalf("the existing file changed: %q %v", b, err)
+	}
 }
 
 // lines reads the keygen's labelled output into a map.

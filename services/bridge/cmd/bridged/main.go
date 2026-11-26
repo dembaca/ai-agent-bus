@@ -12,7 +12,9 @@ import (
 	"crypto/x509"
 	"errors"
 	"fmt"
+	"io"
 	"log/slog"
+	"net"
 	"net/http"
 	"os"
 	"os/signal"
@@ -205,56 +207,65 @@ func run(log *slog.Logger) error {
 				"(CB_BRIDGE_COMMANDS_ALLOW_HTTP); the command tokens and the records go in clear text")
 		}
 	}
-	if att != nil {
-		// The release record (RT-6.32, #151 step 4): the registrar's route and
-		// record with the bridge's key; unset, the registrar's exact 404, which
-		// a host treats as normal, never a refused start.
-		var rel http.Handler
-		if cfg.ReleaseSignersFile == "" && cfg.ReleaseVersion == "" {
-			rel = &release.Handler{Attest: att, SetAt: started}
-		} else {
-			var text string
-			if cfg.ReleaseSignersFile != "" {
-				var err error
-				if text, err = release.SignersText(cfg.ReleaseSignersFile); err != nil {
-					return fmt.Errorf("CB_BRIDGE_RELEASE_SIGNERS_FILE: %w", err)
-				}
+	// The release record (RT-6.32, #151 step 4): the registrar's route is always
+	// answered, with the registrar's exact 404 while no release is set — a host
+	// treats it as normal, and an absent route would count as a failed read. The
+	// record itself is signed with the same key.
+	var rel http.Handler = http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
+		w.Header().Set("Cache-Control", "no-store")
+		w.Header().Set("Content-Type", "application/json")
+		w.WriteHeader(http.StatusNotFound)
+		_, _ = io.WriteString(w, `{"error":"no release set"}`)
+	})
+	if cfg.ReleaseSignersFile != "" || cfg.ReleaseVersion != "" {
+		var text string
+		if cfg.ReleaseSignersFile != "" {
+			var err error
+			if text, err = release.SignersText(cfg.ReleaseSignersFile); err != nil {
+				return fmt.Errorf("CB_BRIDGE_RELEASE_SIGNERS_FILE: %w", err)
 			}
-			h, err := release.New(text, cfg.ReleaseVersion, att, started)
-			if err != nil {
-				return err
-			}
-			rel = h
 		}
-		mux.Handle("GET /register/v1/release", rel)
+		h, err := release.New(text, cfg.ReleaseVersion, att, started)
+		if err != nil {
+			return err
+		}
+		rel = h
 		log.Info("bridge: the release record is served", "version", cfg.ReleaseVersion,
 			"signers", cfg.ReleaseSignersFile != "", "kid", att.Kid())
 	}
-	srv := &http.Server{Addr: cfg.Listen, Handler: mux, ReadHeaderTimeout: 5 * time.Second}
+	gated, err := commands.ReadLimit(rel, cfg.TrustedProxies)
+	if err != nil {
+		return err
+	}
+	mux.Handle("GET /register/v1/release", gated)
+	mainLn, err := net.Listen("tcp", cfg.Listen)
+	if err != nil {
+		return fmt.Errorf("CB_BRIDGE_LISTEN_ADDR: %w", err)
+	}
+	srv := &http.Server{Handler: mux, ReadHeaderTimeout: 5 * time.Second,
+		ReadTimeout: 30 * time.Second, IdleTimeout: 120 * time.Second}
 	go func() {
-		if err := srv.ListenAndServe(); err != nil && !errors.Is(err, http.ErrServerClosed) {
+		if err := srv.Serve(mainLn); err != nil && !errors.Is(err, http.ErrServerClosed) {
 			log.Error("bridge: healthz", "error", err)
 		}
 	}()
 	var cmdSrv *http.Server
 	if cmds != nil {
-		cmdSrv = &http.Server{Addr: cfg.CommandsListen, Handler: cmds.Commands(), ReadHeaderTimeout: 5 * time.Second}
-		tlsOn := cfg.CommandsTLSCertFile != ""
-		if tlsOn {
+		cmdLn, err := net.Listen("tcp", cfg.CommandsListen)
+		if err != nil {
+			return fmt.Errorf("CB_BRIDGE_COMMANDS_LISTEN_ADDR: %w", err)
+		}
+		if cfg.CommandsTLSCertFile != "" {
 			tcfg, err := commands.TLSConfig(cfg.CommandsTLSCertFile, cfg.CommandsTLSKeyFile)
 			if err != nil {
 				return err
 			}
-			cmdSrv.TLSConfig = tcfg
+			cmdLn = tls.NewListener(cmdLn, tcfg)
 		}
+		cmdSrv = &http.Server{Handler: cmds.Commands(), ReadHeaderTimeout: 5 * time.Second,
+			ReadTimeout: 30 * time.Second, IdleTimeout: 120 * time.Second}
 		go func() {
-			var err error
-			if tlsOn {
-				err = cmdSrv.ListenAndServeTLS("", "")
-			} else {
-				err = cmdSrv.ListenAndServe()
-			}
-			if err != nil && !errors.Is(err, http.ErrServerClosed) {
+			if err := cmdSrv.Serve(cmdLn); err != nil && !errors.Is(err, http.ErrServerClosed) {
 				log.Error("bridge: the slash commands stopped", "error", err)
 			}
 		}()

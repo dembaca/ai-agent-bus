@@ -28,8 +28,12 @@ before 0.5.0 are described in the git history.
   serves the release record's route (`GET /register/v1/release`, the handler
   from step 4): with `CB_BRIDGE_RELEASE_SIGNERS_FILE` and
   `CB_BRIDGE_RELEASE_VERSION` the signed record, else the registrar's exact
-  404, so a host's release check reads it unchanged. The release that carries this pins the
-  bridge's key on every host beside the registrar's; its `Needs:` line says so.
+  404, so a host's release check reads it unchanged. The records are one whole-state
+  value per key with a revision-checked write: the bridge runs **one replica**
+  with a `Recreate` rollout, and a second writer is refused rather than merged.
+  The release that carries this pins the bridge's key on every host beside the
+  registrar's:
+  Needs: bridge signing key pinned on the hosts beside the registrar key.
 
 ### Docs
 

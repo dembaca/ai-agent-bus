@@ -98,3 +98,47 @@ func TestTheRecordsOperatorConfig(t *testing.T) {
 		t.Fatalf("the missing-bucket error: %v", err)
 	}
 }
+
+// One bridge replica owns the records: a second writer's save fails instead of
+// silently replacing the first's state, and after a reload it may write on top.
+// A rolling update that overlapped must not sign or store stale state.
+func TestTheSecondWriterIsRefused(t *testing.T) {
+	_, nc := open(t)
+	ctx := context.Background()
+	js, err := jetstream.New(nc)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := CreateRecordsBucket(ctx, js); err != nil {
+		t.Fatal(err)
+	}
+	a, err := OpenRecords(ctx, nc, "BUS_BRIDGE_RECORDS")
+	if err != nil {
+		t.Fatal(err)
+	}
+	b, err := OpenRecords(ctx, nc, "BUS_BRIDGE_RECORDS")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, err := a.Load("modes"); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := b.Load("modes"); err != nil {
+		t.Fatal(err)
+	}
+	if err := a.Save("modes", []byte(`{"a":1}`)); err != nil {
+		t.Fatal(err)
+	}
+	if err := b.Save("modes", []byte(`{"b":2}`)); err == nil || !strings.Contains(err.Error(), "one bridge") {
+		t.Fatalf("the second writer: %v", err)
+	}
+	if got, err := a.Load("modes"); err != nil || string(got) != `{"a":1}` {
+		t.Fatalf("the first writer's state: %q %v", got, err)
+	}
+	if _, err := b.Load("modes"); err != nil {
+		t.Fatal(err)
+	}
+	if err := b.Save("modes", []byte(`{"b":2}`)); err != nil {
+		t.Fatalf("after a reload: %v", err)
+	}
+}

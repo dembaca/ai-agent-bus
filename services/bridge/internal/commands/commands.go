@@ -359,12 +359,35 @@ func (s *Server) record(w http.ResponseWriter, r *http.Request, rate *limiter,
 // an IP, or a chain of nothing but proxies, falls back to the peer (never to a
 // header a stranger wrote).
 func (s *Server) clientIP(r *http.Request) string {
+	return clientIPOf(r, s.trustedProxies)
+}
+
+// ReadLimit wraps a public read route in a bucket of its own (120 a minute),
+// keyed like the records' reads. It is for the release record, which the
+// bridge serves beside the commands but does not own.
+func ReadLimit(h http.Handler, proxies []string) (http.Handler, error) {
+	p, err := parseProxies(proxies)
+	if err != nil {
+		return nil, err
+	}
+	rate := newLimiter(readRatePerMin)
+	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if !rate.allow(clientIPOf(r, p)) {
+			http.Error(w, "rate limit", http.StatusTooManyRequests)
+			return
+		}
+		h.ServeHTTP(w, r)
+	}), nil
+}
+
+// clientIPOf is clientIP over an explicit proxy list.
+func clientIPOf(r *http.Request, proxies []netip.Prefix) string {
 	peer := r.RemoteAddr
 	if host, _, err := net.SplitHostPort(r.RemoteAddr); err == nil && host != "" {
 		peer = host
 	}
 	ip, err := netip.ParseAddr(peer)
-	if err != nil || !s.trusted(ip) {
+	if err != nil || !trusted(proxies, ip) {
 		return peer
 	}
 	var entries []string
@@ -376,7 +399,7 @@ func (s *Server) clientIP(r *http.Request) string {
 		if err != nil {
 			return peer
 		}
-		if s.trusted(entry) {
+		if trusted(proxies, entry) {
 			continue
 		}
 		return entry.String()
@@ -385,8 +408,8 @@ func (s *Server) clientIP(r *http.Request) string {
 }
 
 // trusted says whether addr is one of the configured proxies.
-func (s *Server) trusted(addr netip.Addr) bool {
-	for _, p := range s.trustedProxies {
+func trusted(proxies []netip.Prefix, addr netip.Addr) bool {
+	for _, p := range proxies {
 		if p.Contains(addr) {
 			return true
 		}

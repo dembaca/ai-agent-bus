@@ -9,8 +9,10 @@ package signing
 
 import (
 	"fmt"
+	"io"
 	"os"
 	"strings"
+	"syscall"
 	"time"
 
 	"github.com/dembaca/ai-agent-bus/services/bridge/internal/registrar/core"
@@ -61,10 +63,18 @@ func ReadTokenFile(path string) ([]string, error) {
 	return out, nil
 }
 
-// readPrivate refuses a file any other user can read: the error names the file
-// and its mode, never what is in it.
+// readPrivate opens the file once, checks the very handle it then reads (no
+// stat-then-read race), and refuses a file any other user can read or owns: a
+// group- or world-readable copy, or one owned by another account, is a leaked
+// or swapped copy. The error names the file and its mode or owner, never what
+// is in it.
 func readPrivate(path string) ([]byte, error) {
-	info, err := os.Stat(path)
+	f, err := os.Open(path)
+	if err != nil {
+		return nil, fmt.Errorf("%s: %w", path, err)
+	}
+	defer f.Close()
+	info, err := f.Stat()
 	if err != nil {
 		return nil, fmt.Errorf("%s: %w", path, err)
 	}
@@ -72,7 +82,11 @@ func readPrivate(path string) ([]byte, error) {
 		return nil, fmt.Errorf("%s is %04o: the bridge's key and token files must be 0600, "+
 			"readable by its own user only", path, m)
 	}
-	b, err := os.ReadFile(path)
+	if st, ok := info.Sys().(*syscall.Stat_t); ok && int(st.Uid) != os.Getuid() {
+		return nil, fmt.Errorf("%s is owned by uid %d, not by the bridge's own uid %d: the "+
+			"bridge reads only key and token files of its own user", path, st.Uid, os.Getuid())
+	}
+	b, err := io.ReadAll(f)
 	if err != nil {
 		return nil, fmt.Errorf("%s: %w", path, err)
 	}

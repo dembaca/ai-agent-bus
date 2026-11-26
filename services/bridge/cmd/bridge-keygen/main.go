@@ -4,14 +4,15 @@
 //
 //	bridge-keygen -out /run/secrets/bridge-signing-key
 //
-// The seed goes to the file, 0600, and never to the log; without -out it is
-// printed once to stdout, for an operator who pipes it into a secret store.
+// The seed goes to the file, 0600, and never to stdout or a log: the operator
+// writes it straight into the secret store. The file must not exist yet.
 package main
 
 import (
 	"crypto/ed25519"
 	"crypto/rand"
 	"encoding/base64"
+	"errors"
 	"flag"
 	"fmt"
 	"io"
@@ -21,18 +22,25 @@ import (
 )
 
 func main() {
-	out := flag.String("out", "", "the file the base64url seed goes to (0600); without it the seed is printed once")
+	out := flag.String("out", "", "the file the base64url seed goes to (required, 0600, must not exist)")
 	flag.Parse()
+	if *out == "" {
+		fmt.Fprintln(os.Stderr, "bridge-keygen: -out <file> is required: the seed never goes to stdout")
+		os.Exit(2)
+	}
 	if err := run(*out, os.Stdout); err != nil {
 		fmt.Fprintln(os.Stderr, "bridge-keygen:", err)
 		os.Exit(1)
 	}
 }
 
-// run makes a key, writes the seed to out when out is set and prints what the
-// operator needs: the public key, its kid, the file (or the seed), and the
-// MM_REGISTRAR_KEYS entry.
+// run makes a key, writes the seed to out (which must not exist) and prints
+// what the operator needs: the public key, its kid, the file, and the
+// MM_REGISTRAR_KEYS entry. The seed is never printed.
 func run(out string, w io.Writer) error {
+	if out == "" {
+		return fmt.Errorf("-out <file> is required: the seed never goes to stdout")
+	}
 	seed := make([]byte, ed25519.SeedSize)
 	if _, err := rand.Read(seed); err != nil {
 		return err
@@ -45,27 +53,23 @@ func run(out string, w io.Writer) error {
 	pub := a.Key().X
 	fmt.Fprintf(w, "public %s\n", pub)
 	fmt.Fprintf(w, "kid %s\n", a.Kid())
-	if out == "" {
-		fmt.Fprintf(w, "seed %s\n", enc)
-	} else {
-		if err := writePrivate(out, enc+"\n"); err != nil {
-			return err
-		}
-		fmt.Fprintf(w, "file %s\n", out)
+	if err := writePrivate(out, enc+"\n"); err != nil {
+		return err
 	}
+	fmt.Fprintf(w, "file %s\n", out)
 	// The form a host pins: base64url raw public keys, comma-separated.
 	fmt.Fprintf(w, "MM_REGISTRAR_KEYS entry: %s\n", pub)
 	return nil
 }
 
-// writePrivate writes the seed 0600, also over a file that was less private.
+// writePrivate creates the seed file 0600 and refuses an existing one: a
+// second keygen must not overwrite the key the hosts pinned.
 func writePrivate(path, text string) error {
-	f, err := os.OpenFile(path, os.O_WRONLY|os.O_CREATE|os.O_TRUNC, 0o600)
+	f, err := os.OpenFile(path, os.O_WRONLY|os.O_CREATE|os.O_EXCL, 0o600)
 	if err != nil {
-		return err
-	}
-	if err := f.Chmod(0o600); err != nil {
-		_ = f.Close()
+		if errors.Is(err, os.ErrExist) {
+			return fmt.Errorf("%s exists: refusing to overwrite a signing key", path)
+		}
 		return err
 	}
 	_, err = fmt.Fprint(f, text)
