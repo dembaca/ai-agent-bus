@@ -3979,7 +3979,14 @@ Nothing of it is built.
   runs reaches no other owner and no other host. It does reach every
   session that runs from the same writable plugin tree: under corral the
   sessions that share a sandbox home share its plugin cache and its
-  store, without corral all of one user's sessions on the host (RISK-37).
+  store, without corral all of one user's sessions on the host. That
+  code is also what tells each of those sessions' agents which event is
+  `from_trusted_human` or `mandated`, today done under corral by the
+  host process from the signed host copy (RT-6.1 step 6). So once it
+  runs from the writable tree, a steered agent can hand a neighbouring
+  session a forged approval or mandate, and that session acts on it
+  with its own tools and grants; the bus itself still lets no agent
+  approve (RISK-37).
   Against a stolen refresh token the protection against stolen tokens of
   decision 10 stays what it is: its detection in the login service is
   built (0.102.0) and catches a token or host key used from another
@@ -3988,8 +3995,8 @@ Nothing of it is built.
   a release is genuine stays the operator console's check of the release
   signature when the administrator moves the version it pins (#192, an
   open issue, not yet written as a decision). Both are rows of the
-  acceptance below. Rejected: keeping both, and keeping only the host
-  copy.
+  acceptance below. Rejected: keeping the relay with its host process
+  and the signed host copy, and keeping only the signed host copy.
 - **Two bots of one agent.** "The agent's own bot" names two accounts
   during the move: the registrar's bot, made per session, whose token
   the MCP server holds; and the bridge's bot `<prefix><NATS name>`
@@ -4029,6 +4036,24 @@ Nothing of it is built.
     react there, never open a DM to anyone else; so a steered agent
     cannot reach a person through the bridge who did not write to it
     first (RISK-29).
+  - Proposed: the session's requests to the bridge that are no channel
+    message (the history read, file parts and the header line, pieces 5,
+    8 and 9) go on `<req>.<kind>.<agent>`, `<kind>` one of `history`,
+    `file`, `header`, the sender as the last token as everywhere. `<req>`
+    is a prefix of its own beside the bus's, presence's and STATS's,
+    which no stream covers: the tenant stream takes every subject under
+    the bus prefix (`consumers/streams.go`), with a size limit and
+    `discard: old` (point 16), so file parts there would push out
+    channel traffic and keep file content for the stream's keep time.
+    The bridge answers on `deliver.<agent>.req.<request id>`, which only
+    that agent reads (its one subscribe right, `deliver.<agent>.>`) and
+    no stream covers either. Today an agent has no such right
+    (`callout/perms.go`): the login service grants it publish on
+    `<req>.*.<agent>` alone, the bridge subscribe on `<req>.>` and
+    publish on `deliver.*.req.>`; `callout/perms_test.go` gets the cases
+    that an agent publishes there only under its own name and never on
+    `deliver.>`. Nothing on these subjects is kept: a lost message fails
+    the request, and the tool reports an error.
   - Each piece updates its scenario in Section 6 and gets unit tests in
     `mcp/tests/` and, for the bridge's side, Go tests in
     `services/bridge`. Where a piece carries messages, the fault-run rig
@@ -4082,8 +4107,10 @@ Nothing of it is built.
        the recipient's server states its home's flag in its presence,
        from its own credential, and the sender reads it there, so no
        session reads the directory and none needs a new right. A
-       recipient that states it wrongly misroutes only DMs to itself,
-       and it reads both paths during a change anyway.
+       presence without the flag (an older plugin, a recipient never
+       seen) counts as off. A recipient that states it wrongly misroutes
+       only DMs to itself, and it reads both paths during a change
+       anyway.
      - Switch: agent DMs over NATS. Way back: new DMs go between the
        registrar's bots again; a DM sent over NATS stays in the
        recipient's consumer and is read there.
@@ -4122,20 +4149,28 @@ Nothing of it is built.
        (`check_people`, `_catch_up`); unread counts rest on Mattermost's
        mark as viewed (`view_channel`).
      - Moves: proposed, to a read through the bridge: the session sends
-       a request over NATS naming the channel or thread and `since`, and
-       the bridge answers from Mattermost with the agent's own bridge
-       bot, under the rule above that it reads only in the agent's
-       channels. Rejected: a replay of the people subjects with `since`
+       a request on `<req>.history.<agent>` (above) naming the channel or
+       thread and `since`, and the bridge answers from Mattermost with
+       the agent's own bridge bot, under the rule above that it reads
+       only in the agent's channels. Each person's post in the answer
+       names its author by anchor and carries that person's account
+       record, and the session checks it as it checks a person's event
+       (RT-6.42), with the same freshness rule: so a reply or 👍 a
+       trusted human gave while the session was away approves as it
+       would have live, and a post without a fresh record approves
+       nothing. Rejected: a replay of the people subjects with `since`
        alone, since the stream keeps them only for its keep time and
        holds no thread older than that. Mark as viewed becomes the
        durable consumer, the read mark the registrar successors' table
        already names (point 13).
-     - Switch: people's history from NATS. Way back: Mattermost's reads
-       again; nothing in flight.
-     - Test: the reads without Mattermost; `testrig`: what a session
-       away during a run reads back. Lab: a person posts while the
-       session is stopped; after its start the post and its thread are
-       there.
+     - Switch: people's history through the bridge. Way back:
+       Mattermost's reads again; nothing in flight.
+     - Test: the reads without Mattermost; an approval read back from
+       history counts only with a fresh approver record, and one without
+       counts nothing; `testrig`: what a session away during a run reads
+       back. Lab: a person posts while the session is stopped; after its
+       start the post and its thread are there, and an ask answered
+       meanwhile counts.
   6. **Asks to humans and the answer** (RT-6.11), the reply and the
      approval by reaction. Needs the roster (piece 2), people's history
      (piece 5) and people's events over NATS with a fresh signal
@@ -4174,16 +4209,25 @@ Nothing of it is built.
      - Moves: to the bridge. It uploads what the agent sends and serves a
        person's file; the file still comes from inside the sandbox
        (ADR-012), the size limit as today. Proposed: the bytes travel as
-       NATS messages between the session and the bridge, in parts below
-       the server's maximum payload, each part numbered and the whole
-       checked by length and hash before the bridge uploads it with the
-       agent's own bridge bot; a person's file comes back the same way.
-       Rejected: the NATS object store, since agents talk to no
-       JetStream API (RISK-09). The tool returns the post's NATS id and
-       the copy's link, as for a reply.
+       NATS messages on `<req>.file.<agent>` (above), in parts below the
+       server's maximum payload. The first part declares the length and
+       the SHA-256 hash; the bridge checks the length against the size
+       limit before it keeps any part, holds one open transfer per agent
+       (a second one replaces it), and drops an unfinished one after 60
+       seconds. Each part is numbered, and the whole is checked by length
+       and hash before the bridge uploads it with the agent's own bridge
+       bot. A failed check, a lost part or a dropped transfer is an error
+       of the tool, and the agent sends again. A person's file comes back
+       the same way, on `deliver.<agent>.req.<request id>`, checked by
+       the session. Rejected: the NATS object store, since agents talk to
+       no JetStream API (RISK-09). The tool returns the post's NATS id
+       and the copy's link, as for a reply.
      - Switch: files over the bridge. Way back: files under the
        registrar's bot again; nothing stays open.
-     - Test: limits and refusals as today; `testrig`: a run with files.
+     - Test: limits and refusals as today; a declared length over the
+       limit refused before any part is kept, a wrong hash, a missing
+       part, a second transfer, a transfer left unfinished; in
+       `services/bridge`, the bounds; `testrig`: a run with files.
        Lab: the agent attaches a file, a person posts one and the agent
        reads it.
   9. **The bot's status: idle and typing, its Mattermost presence, and
@@ -4197,16 +4241,20 @@ Nothing of it is built.
        foresees. The bus line in the channel header (`channel_header`,
        `set_channel_header`, RT-6.6 step 7), which the crown holder
        writes today, goes to the bridge with the crown's mirror: the
-       crown holder sends the line over NATS, and the bridge writes it
-       with the crown holder's own bridge bot in the home its claim
-       names; a session reads the header through the bridge's read for
-       people's history (piece 5).
+       crown holder sends the line on `<req>.header.<agent>` (above), and
+       the bridge writes it with the crown holder's own bridge bot in the
+       home its claim names, only when the sender holds that home's
+       crown by the claims (RT-6.38), else it refuses; it replaces only
+       the bus line and keeps the rest of the header. A session reads the
+       header through the bridge's read for people's history (piece 5).
      - People: see the 👑 on the bridge's bot; the registrar's bot loses
        it.
      - Switch: status mirrored by the bridge. Way back: the registrar's
        bot carries the status and the header again; the bridge clears
        its mirror.
-     - Test: from claim to status; `testrig`: the time from a crown change
+     - Test: from claim to status; a header line from an agent without
+       the crown refused, the rest of the header kept; `testrig`: the
+       time from a crown change
        to its mirror. Lab: a hard stop of the coordinator, the 👑 moves in
        Mattermost.
   10. **Permission prompts by DM to the responsible human** (RT-6.13), and
@@ -4335,7 +4383,8 @@ Nothing of it is built.
   - that acceptance's identity row again over the bridge's path: an agent
     as a human through an ask and a reply, a forged verdict on a
     permission prompt, a replayed approval within the 24 h rule
-    (RT-6.11), a replayed ask;
+    (RT-6.11), a replayed ask, an approval read back from history
+    (piece 5) with and without a fresh approver record;
   - the signed records and the release record (#151 steps 3 and 4)
     served by the bridge and keyed without a Mattermost id; the owner
     attestation (RT-6.24) replaced by the login service's (RT-6.41),
@@ -4359,12 +4408,17 @@ Nothing of it is built.
      today, be called `CB_RECORDS_URL`? Recommended: yes. It names what
      the hosts read there; `CB_BRIDGE_URL` would read as one of the
      bridge's own settings, which all start with `CB_BRIDGE_`
-     ([docs/env-names.md](../env-names.md#which-prefix)). Not asked yet.
-  2. Shall hosts delete `MM_REG_SECRET` two weeks after the release in
-     which the plugin stops reading it? Recommended: yes; the two weeks
-     are those of the shutdown (phase 6), in which the plugin version
-     before is the way back and still registers with the secret. Not
-     asked yet.
+     ([docs/env-names.md](../env-names.md#which-prefix)). The name sits
+     close to `CB_RELEASE_URL`, where the hosts fetch release tags, while
+     this setting also serves the release record; and the new name for
+     the pinned keys of these records (`MM_REGISTRAR_KEYS`) is a question
+     of its own, not part of this one. Not asked yet.
+  2. Shall hosts delete `MM_REG_SECRET`, with `MM_REG_SECRET_GOPASS`,
+     `MM_REG_SECRET_CMD` and the stored value they point to, two weeks
+     after the shutdown (phase 6), when its way back ends? Recommended:
+     yes; until then the plugin version before is the way back, with the
+     registrar on again, and still registers with the secret. Not asked
+     yet.
   3. Once no agent has a bot, shall the login approval reach the human
      only at this machine: the browser the MCP server opens and the
      address and code in its MCP log, with no DM and no ask in the home?
@@ -4376,8 +4430,11 @@ Nothing of it is built.
      NATS credential yet, needs an endpoint where the bridge cannot tell
      who asks, so anyone who reaches it could have a person sent a login
      code of another client of the realm (device-code phishing, RISK-29).
-     The end of registration (piece 14) cannot be built before this is
-     answered. Not asked yet.
+     The price: a session started with nobody at the machine (a remote or
+     headless host, or a new login after the offline token ran out,
+     which the planned maximum lifetime makes regular) waits, and
+     nothing on the bus shows that it waits. The end of registration
+     (piece 14) cannot be built before this is answered. Not asked yet.
 - **Consequences.** For a while two paths per piece exist in the MCP
   server; the Mattermost adapter in the client goes only with the shutdown
   (phase 6). Once a home runs every piece, its people see and answer its
