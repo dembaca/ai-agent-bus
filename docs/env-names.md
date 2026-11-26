@@ -6,15 +6,16 @@ Every environment variable this project defines gets the `CB_` prefix
 (choirbus). A variable that exists only because of Mattermost gets `CB_MM_`.
 The owner decided this on 2026-11-26 ([#169](https://github.com/dembaca/ai-agent-bus/issues/169)).
 
-**Partly built.** This page is the mapping and the rules. Done: the login
-service and `authd` (`services/auth`, the package `internal/envname`) read the
-`CB_` names with the old names as a fallback, as
-[The login service and authd](#the-login-service-and-authd-44) lists them. The
-other components still read the old names. The renames come in one pull
-request per component and ship together as release 0.103.0. Until then the
-old names in the [README configuration table](../README.md#configuration),
-the [arc42 docs](arc42) and the adapter docs stay right for every component
-but the login service.
+**Status.** This page is the mapping and the rules. The renames come in one
+pull request per component and ship together as release 0.103.0. A component
+reads the `CB_` names, with the old names as a fallback, once it has a line
+below; until then it reads the old names, and the old names in the
+[README configuration table](../README.md#configuration), the
+[arc42 docs](arc42) and the adapter docs stay right for it.
+
+- Built: the login service and `authd` ([#175](https://github.com/dembaca/ai-agent-bus/pull/175)),
+  in `services/auth`, package `internal/envname`; the names of
+  [their table](#the-login-service-and-authd-44).
 
 ## The rules
 
@@ -62,11 +63,17 @@ What counts as set:
   `mm_release_signers`, its `${MM_RELEASE_SIGNERS+set}` test), and
   `MM_STATS_CHANNEL=""` switches the statistics off (`stats.py`,
   function `channel`).
-- **An unexpanded placeholder counts as unset.** A value that is exactly
-  `${NAME}` (a plugin manifest's placeholder that was not expanded) is
-  treated as unset, as `env()` in `mcp/src/mattermost_ai_agent_bus/config.py`
-  does today. Every fallback reader uses that one helper, or its twin in the
-  hooks.
+- **An unexpanded placeholder: unset in the MCP server and the hooks, a
+  refusal in the Go services.** A value that is exactly `${NAME}` is a
+  plugin manifest's placeholder that was not expanded. The MCP server and
+  the hooks start from a manifest, so there it counts as unset, as `env()` in
+  `mcp/src/mattermost_ai_agent_bus/config.py` does today; every fallback
+  reader there uses that one helper, or its twin in the hooks. The Go
+  services under `services/` have no plugin manifest, so there such a value
+  can only be a deployment mistake: read as unset, it would silently drop
+  the setting, a pinned CA file for one, and the system roots would apply.
+  They refuse the start with an error that names the variable, never its
+  value.
 - **Three names for one setting.** Two settings have an alias today:
   `MATTERMOST_URL` for `MM_CHAT_URL` and `MATTERMOST_TOKEN` for
   `MM_BOT_TOKEN`. In 0.103.0 each of them has three names

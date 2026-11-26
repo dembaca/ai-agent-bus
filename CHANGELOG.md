@@ -78,11 +78,13 @@ before 0.5.0 are described in the git history.
   release after 0.103.0): an old name is read when its new name is unset,
   with one warning per process naming the new name. Both names set to
   different values refuse the start and name both, never a value; equal
-  values pass with a warning that the old name can go. Empty counts as set,
-  an unexpanded `${NAME}` as unset. From the removal release on an old name
-  without its new name refuses the start. Error messages, `authd dir -h`,
-  `services/auth/README.md` and `nats-server.example.conf` name the new
-  names.
+  values pass with a warning that the old name can go. Empty counts as set.
+  A value that is exactly an unexpanded `${NAME}` refuses the start, naming
+  the variable: the service has no plugin manifest that would expand it, and
+  read as unset it would silently drop a setting such as a pinned CA file.
+  From the removal release on an old name without its new name refuses the
+  start. Error messages, `authd dir -h`, `services/auth/README.md` and
+  `nats-server.example.conf` name the new names.
 - **The central bridge refuses an `http` Mattermost URL to a host that is
   not loopback** (#131). Its bot token goes with every REST call and in the
   WebSocket's authentication challenge, so over `http` it would cross the

@@ -252,6 +252,25 @@ func TestTheConsolesTokenCheckRefusesBothOfTheBus(t *testing.T) {
 	}
 }
 
+// The callout's CA file: an empty new name beside a set old name refuses
+// (empty is set, it never falls back), the new name alone is read, and an
+// unexpanded placeholder refuses instead of dropping the pinned CA.
+func TestTheNATSCAFileSetting(t *testing.T) {
+	_, _, err := LoadSettings(env(map[string]string{"CB_AUTH_NATS_CA_FILE": "", "AUTH_NATS_CA_FILE": "/run/ca.pem"}))
+	if !errors.Is(err, ErrConfig) || !strings.Contains(err.Error(), "CB_AUTH_NATS_CA_FILE") ||
+		!strings.Contains(err.Error(), " AUTH_NATS_CA_FILE") || strings.Contains(err.Error(), "/run/ca.pem") {
+		t.Fatalf("empty new name beside the old one: %v", err)
+	}
+	s, on, err := LoadSettings(env(map[string]string{"CB_AUTH_NATS_CA_FILE": "/run/ca.pem"}))
+	if err != nil || !on || s.NATSCAFile != "/run/ca.pem" {
+		t.Fatalf("new name alone: %q %v %v", s.NATSCAFile, on, err)
+	}
+	_, _, err = LoadSettings(env(map[string]string{"CB_AUTH_NATS_CA_FILE": "${CB_AUTH_NATS_CA_FILE}"}))
+	if !errors.Is(err, ErrConfig) || !strings.Contains(err.Error(), "CB_AUTH_NATS_CA_FILE") {
+		t.Fatalf("placeholder: %v", err)
+	}
+}
+
 // The old AUTH_ names still configure the callout until the removal release;
 // two names of one setting that differ refuse (docs/env-names.md).
 func TestOldNamesStillConfigureTheCallout(t *testing.T) {

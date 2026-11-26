@@ -71,9 +71,6 @@ func TestBothDifferentRefuseWithoutTheValues(t *testing.T) {
 		strings.Contains(msg, "a-secret-path") || strings.Contains(msg, "/run/other") {
 		t.Fatalf("error must name both names and no value: %q", msg)
 	}
-	if e.Value("CB_AUTH_NATS_SEED_FILE") != "" {
-		t.Fatal("Value read a disagreement as set")
-	}
 }
 
 // Empty counts as set: it never falls back, and next to a value it disagrees.
@@ -92,10 +89,64 @@ func TestEmptyCountsAsSet(t *testing.T) {
 	}
 }
 
-func TestUnexpandedPlaceholderCountsAsUnset(t *testing.T) {
-	e, _ := newEnv(map[string]string{"CB_AUTH_LOBBY": "${CB_AUTH_LOBBY}", "AUTH_LOBBY": "lobby"})
-	if v, _, err := e.Get("CB_AUTH_LOBBY"); err != nil || v != "lobby" {
+// The Go services have no plugin manifest: a value that is exactly ${NAME}
+// is a deployment mistake and refuses, naming the variable, under the new
+// name and under the old one, never falling back past it.
+func TestUnexpandedPlaceholderRefuses(t *testing.T) {
+	for _, m := range []map[string]string{
+		{"CB_AUTH_NATS_CA_FILE": "${CB_AUTH_NATS_CA_FILE}", "AUTH_NATS_CA_FILE": "/run/ca"},
+		{"CB_AUTH_NATS_CA_FILE": "${CB_AUTH_NATS_CA_FILE}"},
+		{"AUTH_NATS_CA_FILE": "${AUTH_NATS_CA_FILE}"},
+	} {
+		e, _ := newEnv(m)
+		var bad string
+		for k, v := range m {
+			if strings.HasPrefix(v, "${") {
+				bad = k
+			}
+		}
+		_, _, err := e.Get("CB_AUTH_NATS_CA_FILE")
+		if err == nil || !strings.HasPrefix(err.Error(), bad+" ") || strings.Contains(err.Error(), "/run/ca") {
+			t.Errorf("%v: want a refusal naming %s and no value, got %v", m, bad, err)
+		}
+		if e.Check("CB_AUTH_NATS_CA_FILE") == nil {
+			t.Errorf("%v: Check passed a placeholder", m)
+		}
+	}
+	// Only the exact form is a placeholder; a value that contains one is a value.
+	e, _ := newEnv(map[string]string{"CB_AUTH_LOBBY": "x${CB_AUTH_LOBBY}"})
+	if v, _, err := e.Get("CB_AUTH_LOBBY"); err != nil || v != "x${CB_AUTH_LOBBY}" {
 		t.Fatalf("got %q %v", v, err)
+	}
+}
+
+func panics(f func()) (p bool) {
+	defer func() { p = recover() != nil }()
+	f()
+	return false
+}
+
+// Value never reads a refusal as unset: before a Check covered the name, or
+// for a name its Check refused, it panics.
+func TestValueNeedsAPassingCheck(t *testing.T) {
+	e, _ := newEnv(map[string]string{"CB_AUTH_LOBBY": "a", "AUTH_LOBBY": "b", "CB_AUTH_ACCOUNT": "BUS"})
+	if !panics(func() { e.Value("CB_AUTH_ACCOUNT") }) {
+		t.Fatal("Value before any Check did not panic")
+	}
+	if e.Check("CB_AUTH_ACCOUNT") != nil || e.Value("CB_AUTH_ACCOUNT") != "BUS" {
+		t.Fatal("a checked name does not read")
+	}
+	if !panics(func() { e.Value("CB_AUTH_LOBBY") }) {
+		t.Fatal("Value of a name no Check covered did not panic")
+	}
+	if e.Check("CB_AUTH_LOBBY") == nil {
+		t.Fatal("Check passed a disagreement")
+	}
+	if !panics(func() { e.Value("CB_AUTH_LOBBY") }) {
+		t.Fatal("Value read a disagreement")
+	}
+	if e.Check() != nil || e.Value("CB_AUTH_ACCOUNT") != "BUS" {
+		t.Fatal("a later Check forgot a covered name")
 	}
 }
 

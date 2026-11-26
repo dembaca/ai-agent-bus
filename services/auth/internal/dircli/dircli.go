@@ -121,7 +121,13 @@ func run(args []string, lookup envname.Lookup, stdout, stderr io.Writer, d deps)
 	}
 	env := envname.New(lookup, warnTo(stderr))
 	envErr := env.Check(envNames...)
-	s, pos, help, err := parseArgs(args, env.Value)
+	// After a refused Check, Value panics: parse the flags without the
+	// environment, so -h still works, and report envErr below.
+	get := env.Value
+	if envErr != nil {
+		get = func(string) string { return "" }
+	}
+	s, pos, help, err := parseArgs(args, get)
 	if help {
 		fmt.Fprint(stdout, usageText)
 		return exitOK

@@ -6,8 +6,11 @@
 // and warns once per Env (one Env per process) that the new name replaces it.
 // Two names set to different values are an error that names both, never a
 // value. Equal values pass, with a warning that the old name can go. A name
-// that is in the environment with an empty value is set; a value that is
-// exactly an unexpanded placeholder such as ${CB_AUTH_NATS_URL} is unset.
+// that is in the environment with an empty value is set. A value that is
+// exactly an unexpanded placeholder such as ${CB_AUTH_NATS_CA_FILE} refuses:
+// these services have no plugin manifest that would expand it, so it is a
+// deployment mistake, and read as unset it would silently drop the setting
+// (a pinned CA file, say, and the system roots would apply).
 package envname
 
 import (
@@ -74,8 +77,8 @@ var renamed = map[string][]string{
 	"CB_AUTHD_DIR_CA_FILE":          {"AUTHD_DIR_CA_FILE"},
 }
 
-// placeholderRE: an unexpanded ${NAME}, as env() in
-// mcp/src/mattermost_ai_agent_bus/config.py treats it.
+// placeholderRE: an unexpanded ${NAME}. The MCP server reads it as unset
+// (env() in mcp/src/mattermost_ai_agent_bus/config.py); here it refuses.
 var placeholderRE = regexp.MustCompile(`^\$\{[A-Za-z_][A-Za-z0-9_]*\}$`)
 
 // Lookup is os.LookupEnv's shape: the value, and whether the name is set.
@@ -97,8 +100,9 @@ type Env struct {
 	warn      Warn
 	refuseOld bool // removalRelease; a field so the tests can cover it
 
-	mu     sync.Mutex
-	warned map[string]bool
+	mu      sync.Mutex
+	warned  map[string]bool
+	checked map[string]bool // the names a Check covered; Value panics on others
 }
 
 // New returns an Env over lookup. A nil warn drops the warnings.
@@ -106,7 +110,8 @@ func New(lookup Lookup, warn Warn) *Env {
 	if warn == nil {
 		warn = func(string, ...any) {}
 	}
-	return &Env{lookup: lookup, warn: warn, refuseOld: removalRelease, warned: map[string]bool{}}
+	return &Env{lookup: lookup, warn: warn, refuseOld: removalRelease,
+		warned: map[string]bool{}, checked: map[string]bool{}}
 }
 
 // Service lists the login service's names (CB_AUTH_…), sorted.
@@ -137,24 +142,32 @@ func mustOld(name string) []string {
 	return old
 }
 
-// set reads one name: unset when absent or an unexpanded placeholder.
-func (e *Env) set(name string) (string, bool) {
+// set reads one name: unset when absent; an unexpanded placeholder is an
+// error that names the name, never the value.
+func (e *Env) set(name string) (string, bool, error) {
 	v, ok := e.lookup(name)
-	if !ok || placeholderRE.MatchString(v) {
-		return "", false
+	if !ok {
+		return "", false, nil
 	}
-	return v, true
+	if placeholderRE.MatchString(v) {
+		return "", true, fmt.Errorf("%s holds an unexpanded ${...} placeholder: set it to a value or unset it", name)
+	}
+	return v, true, nil
 }
 
 // Get returns the value of the setting name (a new CB_ name) by the reading
 // rule, and whether any of its names is set. Its error names the names that
-// disagree, never a value.
+// disagree, or the name that holds an unexpanded placeholder, never a value.
 func (e *Env) Get(name string) (string, bool, error) {
 	old := mustOld(name)
 	type hit struct{ name, value string }
 	var hits []hit
 	for _, n := range append([]string{name}, old...) {
-		if v, ok := e.set(n); ok {
+		v, ok, err := e.set(n)
+		if err != nil {
+			return "", true, err
+		}
+		if ok {
 			hits = append(hits, hit{n, v})
 		}
 	}
@@ -190,22 +203,34 @@ func (e *Env) Get(name string) (string, bool, error) {
 }
 
 // Value is Get without the error, for callers that ran Check over the name
-// first: a disagreement then reads as unset.
+// and stopped on its error. It panics, a programming error, when no Check
+// covered name or when name fails the reading rule: read as unset, a
+// disagreement would pass silently.
 func (e *Env) Value(name string) string {
+	e.mu.Lock()
+	covered := e.checked[name]
+	e.mu.Unlock()
+	if !covered {
+		panic("envname: Value(" + name + ") before a Check covered it")
+	}
 	v, _, err := e.Get(name)
 	if err != nil {
-		return ""
+		panic("envname: Value(" + name + ") after its Check refused: " + err.Error())
 	}
 	return v
 }
 
-// Check runs Get over names and returns every disagreement at once.
+// Check runs Get over names and returns every refusal at once. Afterwards
+// Value may read each of names.
 func (e *Env) Check(names ...string) error {
 	var errs []error
 	for _, n := range names {
 		if _, _, err := e.Get(n); err != nil {
 			errs = append(errs, err)
 		}
+		e.mu.Lock()
+		e.checked[n] = true
+		e.mu.Unlock()
 	}
 	return errors.Join(errs...)
 }

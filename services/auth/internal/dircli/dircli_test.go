@@ -417,6 +417,37 @@ func TestHTTPSWithCAFile(t *testing.T) {
 	}
 }
 
+// authd dir's CA file by name: an empty CB_AUTHD_DIR_CA_FILE beside a set
+// AUTHD_DIR_CA_FILE refuses as a usage error naming both, the new name alone
+// is the CA, and an unexpanded placeholder refuses naming the variable.
+func TestTheDirCAFileSetting(t *testing.T) {
+	r := newRig(t)
+	tls := httptest.NewTLSServer(http.HandlerFunc(r.serveAPI))
+	defer tls.Close()
+	caPath := filepath.Join(t.TempDir(), "ca.pem")
+	pemBytes := pem.EncodeToMemory(&pem.Block{Type: "CERTIFICATE", Bytes: tls.Certificate().Raw})
+	if err := os.WriteFile(caPath, pemBytes, 0o600); err != nil {
+		t.Fatal(err)
+	}
+	args := []string{"--api", tls.URL, "ls"}
+	var out, errb bytes.Buffer
+	code := run(args, r.env(map[string]string{"CB_AUTHD_DIR_CA_FILE": "", "AUTHD_DIR_CA_FILE": caPath}), &out, &errb, r.deps())
+	if code != exitUsage || !strings.Contains(errb.String(), "CB_AUTHD_DIR_CA_FILE") ||
+		!strings.Contains(errb.String(), " AUTHD_DIR_CA_FILE") || strings.Contains(errb.String(), caPath) {
+		t.Fatalf("empty new name beside the old one: exit %d %q", code, errb.String())
+	}
+	out.Reset()
+	errb.Reset()
+	if code := run(args, r.env(map[string]string{"CB_AUTHD_DIR_CA_FILE": caPath}), &out, &errb, r.deps()); code != exitOK {
+		t.Fatalf("new name alone: exit %d %s", code, errb.String())
+	}
+	errb.Reset()
+	code = run(args, r.env(map[string]string{"CB_AUTHD_DIR_CA_FILE": "${CB_AUTHD_DIR_CA_FILE}"}), &out, &errb, r.deps())
+	if code != exitUsage || !strings.Contains(errb.String(), "CB_AUTHD_DIR_CA_FILE holds an unexpanded") {
+		t.Fatalf("placeholder: exit %d %q", code, errb.String())
+	}
+}
+
 // Text a server sends reaches the terminal without control characters.
 func TestServerTextIsCleanedBeforePrinting(t *testing.T) {
 	if got := clean("ok\x1b[2J\x1b]0;pwned\x07\r\nfake line\x7f\u0085"); got != "ok[2J]0;pwnedfake line" {
