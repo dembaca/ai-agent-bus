@@ -229,25 +229,31 @@ _TOK_SHOWN = ("in", "read", "w5m", "w1h", "out")
 
 def _tok(lines: list[dict[str, Any]]) -> dict[str, Any] | None:
     """The token sums of a window's parts: ``all`` and each stated type summed,
-    the input's bus overhead and coordination summed; None without any ``tok``
-    (a runtime that reports no usage, an older publisher). A type no part
-    states is None, never 0."""
-    parts = [line["tok"] for line in lines if isinstance(line.get("tok"), dict)]
+    the input's bus overhead and coordination summed. None as a whole without
+    any part that states ``all`` (a runtime that reports no usage, an older
+    publisher, a part with only request counts); inside a row a type no part
+    states is None, but a stated 0 stays 0 (n/a is "not carried", never "zero")."""
+    parts = [line["tok"] for line in lines
+             if isinstance(line.get("tok"), dict) and isinstance(line["tok"].get("all"), dict)]
     if not parts:
         return None
 
-    def _summed(obj: str) -> dict[str, int]:
+    def _summed(obj: str) -> dict[str, int] | None:
+        stated = [part[obj] for part in parts if isinstance(part.get(obj), dict)]
+        if not stated:
+            return None
         out: dict[str, int] = {}
-        for part in parts:
-            for key, value in (part.get(obj) or {}).items():
+        for one in stated:
+            for key, value in one.items():
                 out[key] = out.get(key, 0) + int(value)
         return out
 
-    types = _summed("all")
-    return {"all": sum(types.values()) or None,
+    types = _summed("all") or {}
+    ovh, coord = _summed("ovh"), _summed("coord")
+    return {"all": sum(types.values()),
             **{key: types.get(key) for key in _TOK_SHOWN},
-            "ovh": sum(_summed("ovh").values()) or None,
-            "coord": sum(_summed("coord").values()) or None}
+            "ovh": None if ovh is None else sum(ovh.values()),
+            "coord": None if coord is None else sum(coord.values())}
 
 
 def _count(lines: list[dict[str, Any]], key: str) -> int | None:

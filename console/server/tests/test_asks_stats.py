@@ -400,3 +400,17 @@ def test_agent_rows_without_tok_is_na_never_zero() -> None:
                                   "tok7d": {"all": 1100, "in": 1000, "read": None, "w5m": None,
                                             "w1h": None, "out": 100, "ovh": None, "coord": None},
                                   "posts24h": 1, "wakes24h": None, "tools24h": None}]
+
+
+def test_agent_rows_keeps_a_stated_zero_and_nulls_a_row_without_all() -> None:
+    """/v1/agent-stats, RT-6.43 step 8: a stated 0 stays 0 (the total and the overhead
+    included), a type or object no part states is None, and a window whose parts
+    carry `tok` without `all` gives None for the whole token row."""
+    zero = LINE | {"sid": "eeeeeeeeeeee",
+                   "tok": {"req": 0, "all": {"in": 0, "out": 0}, "ovh": {"in": 0}, "coord": {}}}
+    no_all = LINE | {"sid": "ffffffffffff", "tok": {"req": 3}}
+    book = book_with((A, zero, NOW - 600), (B, no_all, NOW - 600))
+    rows = {row["agent"]: row for row in book.agent_rows()}
+    assert rows[A]["tok24h"] == {"all": 0, "in": 0, "read": None, "w5m": None, "w1h": None,
+                                 "out": 0, "ovh": 0, "coord": 0}
+    assert rows[B]["tok24h"] is None and rows[B]["tok7d"] is None
