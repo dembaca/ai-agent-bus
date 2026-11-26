@@ -135,7 +135,7 @@ class StatsBook:
         fleet = _safe(stats.split_summary, week)
         stacks = [_stack("fleet", fleet)]
         stacks += [_stack(f"version {row['version']}", row.get("split")) for row in rows]
-        for key, name in (("role", stats._role), ("harness", lambda r: str(r.get("rt") or "other"))):
+        for key, name in (("role", stats.role_of), ("harness", lambda r: str(r.get("rt") or "other"))):
             groups: dict[str, list[dict[str, Any]]] = {}
             for line in week:
                 groups.setdefault(name(line), []).append(line)

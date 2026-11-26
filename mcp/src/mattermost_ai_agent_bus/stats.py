@@ -1295,7 +1295,7 @@ def _version_key(v: str) -> list[int]:
     return [int(p) if p.isdigit() else 0 for p in v.split(".")]
 
 
-def _role(r: dict[str, Any]) -> str:
+def role_of(r: dict[str, Any]) -> str:
     """A part's role (RT-6.9 step 3): coordinator when it held the crown more
     than half its time, else worker; unknown before 0.91.0 (no crown_sec). Per
     part, so a session that coordinates one day and works the next counts as
@@ -1319,8 +1319,14 @@ def asks_summary(lines: list[dict[str, Any]]) -> dict[str, Any] | None:
 TRAFFIC_DETAIL = ("posts", "inbound", "inject")
 
 
+# What stats_report keeps of the tokens by category: the sums and shares per category
+# and the coverage; the request counts, the method and the token types stay in
+# `mm-agent-stats.sh report --json` and the console.
+SPLIT_BRIEF = ("estimated", "lines", "of", "harnesses", "raw", "eq", "raw_pct", "eq_pct")
+
+
 def _no_types(split: dict[str, Any] | None) -> dict[str, Any] | None:
-    return {k: v for k, v in split.items() if k != "types"} if split else split
+    return {k: v for k, v in split.items() if k in SPLIT_BRIEF} if split else split
 
 
 def brief(rows: list[dict[str, Any]]) -> list[dict[str, Any]]:
@@ -1365,7 +1371,7 @@ def report(lines: list[dict[str, Any]]) -> list[dict[str, Any]]:
         by_role: dict[str, list[dict[str, Any]]] = defaultdict(list)
         for r in rows:
             by_rt[str(r["rt"]) if r.get("rt") is not None else "other"].append(r)
-            by_role[_role(r)].append(r)
+            by_role[role_of(r)].append(r)
         hours = _round(_sum(rows, lambda r: r.get("min")) / 60 * 10) / 10
         turns = _sum(rows, lambda r: r.get("turns"))
         forced = _sum(rows, lambda r: _vals(r.get("blocks")))

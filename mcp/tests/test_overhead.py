@@ -343,14 +343,19 @@ def test_a_poll_with_messages_splits_envelope_and_bodies(tmp_path):
     assert inputs(r, "ovh") == round(2 * fixed + len("{}") / 4 + (len(body) - 300) / 4)
 
 
-@pytest.mark.parametrize("word,cat", [("IDLE", "ovh"), ("DONE", "coord")])
-def test_an_idle_post_is_overhead_a_done_coordination(tmp_path, word, cat):
-    """RT-6.9 step 2: own posts go by their bus word: HELLO, IDLE, BYE are overhead,
-    the other words and plain replies coordination; the call is sized exactly."""
+@pytest.mark.parametrize("word,cat,as_kind,tool", [
+    ("IDLE", "ovh", False, "reply_in_thread"), ("DONE", "coord", False, "reply_in_thread"),
+    ("idle", "ovh", True, "reply_in_thread"), ("DONE", "coord", True, "reply_in_thread"),
+    ("HELLO", "ovh", True, "post_message"), ("TASK", "coord", True, "post_message")])
+def test_an_idle_post_is_overhead_a_done_coordination(tmp_path, word, cat, as_kind, tool):
+    """RT-6.9 step 2: own posts go by their bus word, as the agent passed it (`kind`) or as
+    the message starts: HELLO, IDLE, BYE are overhead, the other words and plain replies
+    coordination; the call is sized exactly."""
     t = Transcript()
     t.user("finish", origin="human")
-    inp = {"root_id": "r" * 26, "message": f"{word} " + "x" * 395}
-    t.request(("p1", BUS + "reply_in_thread", inp), text=None, out=500)
+    inp = ({"root_id": "r" * 26, "message": "x" * 400, "kind": word} if as_kind
+           else {"root_id": "r" * 26, "message": f"{word} " + "x" * 395})
+    t.request(("p1", BUS + tool, inp), text=None, out=500)
     r = holds(measure(t, tmp_path))
     other = "coord" if cat == "ovh" else "ovh"
     assert r[cat]["out"] == round(len(json.dumps(inp)) / 4) and r[other]["out"] == 0
@@ -444,3 +449,128 @@ def test_an_older_transcript_still_splits(tmp_path):
     r = holds(measure(t, tmp_path))
     assert r["coord"]["in"] == 100 and r["ovh"]["in"] == round((4400 + env) / 4)
     assert r["all"]["w1h"] == 0
+
+
+
+def test_several_tags_in_one_message_split_by_their_own_sender(tmp_path):
+    """RT-6.9 step 2: a message holding several pushed tags: every envelope is overhead,
+    each body by its own head: an agent's coordination, a trusted human's task work, a
+    digest overhead whole."""
+    agent, env1 = tag("TASK " + "a" * 95)
+    human, env2 = tag("please " + "h" * 193, kind="dm", trusted=True, agent=False, post_id="q" * 26)
+    digest = f'<channel {SRC} kind="digest" count="2">' + "d" * 300 + "</channel>"
+    t = Transcript()
+    t.user(agent + "\n" + human + "\n" + digest, origin="channel", meta=True)
+    t.request(read=0, w5m=0, fresh=100_000, out=0, text=None)
+    r = holds(measure(t, tmp_path))
+    assert r["coord"]["in"] == round(100 / 4)
+    assert r["ovh"]["in"] == round((4400 + env1 + env2 + 2 + len(digest)) / 4)
+    assert task(r)["in"] == 100_000 - r["coord"]["in"] - r["ovh"]["in"]
+
+
+def test_a_poll_delivered_as_one_block_per_item(tmp_path):
+    """RT-6.9 step 2: a wait_for_events result in several content blocks, an item each:
+    each block parses on its own; a block that does not parse is overhead, never task."""
+    item = {"kind": "mention", "from_agent": True, "from_trusted_human": False,
+            "post": {"id": "p" * 26, "message": "RESULT " + "c" * 93}}
+    blocks = [{"type": "text", "text": json.dumps(item)}, {"type": "text", "text": json.dumps(item)},
+              {"type": "text", "text": "not json " + "n" * 91}]
+    t = Transcript()
+    t.user("go", origin="human")
+    t.request(("w1", BUS + "wait_for_events", {}), read=0, w5m=0, fresh=0, text=None, out=0)
+    t.other({"type": "user", "isSidechain": False, "timestamp": T0, "message": {
+        "role": "user", "content": [{"type": "tool_result", "tool_use_id": "w1", "content": blocks}]}})
+    t.request(text=None, out=0, read=0, w5m=0, fresh=100_000)
+    r = holds(measure(t, tmp_path))
+    assert r["coord"]["in"] == round(200 / 4)
+    whole = sum(len(b["text"]) for b in blocks)
+    assert r["ovh"]["in"] == round((4400 + len("{}") + whole - 200) / 4)
+
+
+SKILL_DIR = "/home/u/.claude/plugins/cache/ai-agent-bus/ai-agent-bus/0.102.0/skills/ai-agent-bus"
+
+
+def _skill_session(text_first_line, read_path):
+    t = Transcript()
+    t.user("join the bus", origin="human")
+    # Only the last request books tokens, so its input shows the whole context.
+    t.request(("k1", "Skill", {"skill": "ai-agent-bus:ai-agent-bus"}), read=0, w5m=0, fresh=0, text=None, out=0)
+    t.results(("k1", "Launching skill: ai-agent-bus:ai-agent-bus"))
+    if text_first_line is not None:
+        t.user(text_first_line + "\n\n" + "s" * 4000, meta=True)
+    t.request(("f1", "Read", {"file_path": read_path}), read=0, w5m=0, fresh=0, text=None, out=0)
+    t.results(("f1", "c" * 2000))
+    t.request(text=None, out=0, read=0, w5m=0, fresh=100_000)
+    return t
+
+
+def test_the_skill_and_its_side_files_are_overhead(tmp_path):
+    """RT-6.9 step 2: the bus skill's text and a Read of a file in its folder (a side
+    file) are overhead; the Skill call and its result too."""
+    first = f"Base directory for this skill: {SKILL_DIR}"
+    r = holds(measure(_skill_session(first, SKILL_DIR + "/coordinator.md"), tmp_path))
+    calls = (len(json.dumps({"skill": "ai-agent-bus:ai-agent-bus"}))
+             + len("Launching skill: ai-agent-bus:ai-agent-bus"))
+    side = len(json.dumps({"file_path": SKILL_DIR + "/coordinator.md"})) + 2000
+    assert r["ovh"]["in"] == round((4400 + calls + len(first) + 2 + 4000 + side) / 4)
+
+
+def test_another_skill_under_a_bus_path_is_task_work(tmp_path):
+    """RT-6.9 step 2: a skill whose folder only contains `ai-agent-bus` somewhere else in
+    its path is not the bus's: its text and files are task work."""
+    other = "/home/u/git/ai-agent-bus/.claude/skills/review"
+    first = f"Base directory for this skill: {other}"
+    r = holds(measure(_skill_session(first, other + "/notes.md"), tmp_path))
+    calls = (len(json.dumps({"skill": "ai-agent-bus:ai-agent-bus"}))
+             + len("Launching skill: ai-agent-bus:ai-agent-bus"))
+    # No bus skill text came: the fixed skill size stands in for it (below).
+    assert r["ovh"]["in"] == round((4400 + calls + FIXED.skill) / 4)
+
+
+def test_without_the_skill_text_its_fixed_size_stands_in(tmp_path):
+    """RT-6.9 step 2: a transcript that shows the bus Skill call but no skill text (an
+    older one) counts the skill's fixed size as overhead from the next request on."""
+    r = holds(measure(_skill_session(None, "/x/y.py"), tmp_path))
+    calls = (len(json.dumps({"skill": "ai-agent-bus:ai-agent-bus"}))
+             + len("Launching skill: ai-agent-bus:ai-agent-bus"))
+    assert r["ovh"]["in"] == round((4400 + calls + FIXED.skill) / 4)
+
+
+def test_a_synthetic_row_keeps_the_driver(tmp_path):
+    """RT-6.9 step 2: an API error Claude Code writes as an assistant row without tokens
+    drives nothing: the peer's message still drives the request after it."""
+    t = Transcript()
+    text, env = tag("TASK " + "b" * 395)
+    t.user(text, origin="channel", meta=True)
+    t.other({"type": "assistant", "isSidechain": False, "timestamp": T0, "isApiErrorMessage": True,
+             "message": {"id": "syn", "model": "<synthetic>", "role": "assistant",
+                         "usage": {"input_tokens": 0, "output_tokens": 0, "cache_read_input_tokens": 0,
+                                   "cache_creation_input_tokens": 0},
+                         "content": [{"type": "text", "text": "API Error: Connection refused"}]}})
+    t.request(read=0, w5m=0, fresh=100_000, out=100, text="ok")
+    r = holds(measure(t, tmp_path))
+    assert r["coord"]["out"] == round(100 * 400 / (400 + env))
+    assert r["req_coord"] == 1
+
+
+def test_odd_rows_never_cost_the_exact_counts(tmp_path, monkeypatch):
+    """RT-6.9 step 2: rows of an odd shape (skills not a list, a bad usage before the part)
+    leave the split intact; should the split still fail, `tok` keeps its exact counts and
+    leaves the split out (n/a)."""
+    t = Transcript()
+    t.other({"type": "attachment", "attachment": {"type": "invoked_skills", "skills": "x"}})
+    t.other({"type": "assistant", "isSidechain": False, "timestamp": "2026-10-23T10:00:00.000Z",
+             "requestId": "early", "message": {"id": "early", "usage": {"input_tokens": "lots"},
+                                               "content": [{"type": "text", "text": "old"}]}})
+    t.user("fix the bug", origin="human")
+    t.request()
+    since = overhead._ts({"timestamp": "2026-10-24T09:00:00.000Z"})
+    path = t.write(tmp_path / "t.jsonl")
+    holds(overhead.measure(path, since, FIXED))
+
+    def boom(*a):
+        raise ValueError("odd")
+    monkeypatch.setattr(overhead, "_input_split", boom)
+    r = overhead.measure(path, since, FIXED)
+    assert r["all"]["read"] == 100_000 and "bus" in r
+    assert not {"ovh", "coord", "req_ovh", "req_coord", "m"} & set(r)

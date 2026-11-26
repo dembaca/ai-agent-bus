@@ -52,6 +52,12 @@ KEYS = ("in", "read", "w5m", "w1h", "out")
 _FUNCTION = re.compile(r"<function>.*?</function>", re.S)
 _TOOL_USE_ID = re.compile(r"<tool-use-id>([^<]+)</tool-use-id>")
 _TAG_KIND = re.compile(r'\bkind="([^"]*)"')
+# A pushed tag: its head (the attributes) and its body; the body cannot hold another
+# tag (channel.inert breaks one up), so several tags in one message split apart.
+_TAG = re.compile(r"(<channel\b[^>]*>)(.*?)(</channel>)", re.S)
+# The first line of the bus skill's text, naming its directory: the skill's own
+# folder in the plugin (`…/skills/ai-agent-bus`); its side files lie there.
+_SKILL_DIR = re.compile(r"^Base directory for this skill: (\S*/skills/" + "ai-agent-bus" + r")/?\s*$")
 
 # The token split (RT-6.9 step 2): its method number on the line, its categories, and
 # which bus tool's call and result go where. Own posts go by their bus word: HELLO, IDLE
@@ -59,6 +65,10 @@ _TAG_KIND = re.compile(r'\bkind="([^"]*)"')
 # named here (a later one) counts as overhead.
 METHOD = 1
 TASK, OVERHEAD, COORDINATION = 0, 1, 2
+# The bus words that are overhead. stats.OVERHEAD_WORDS is this set plus `other` (the
+# traffic counts of stage 1) and bin/mm-agent-stats.sh lists the same in jq, so the
+# token split and the traffic map own posts alike (tests/hooks/test_stats.py holds the
+# script to stats.CATEGORY_OF).
 OVERHEAD_WORDS = frozenset({"HELLO", "IDLE", "BYE"})
 _COORDINATING = frozenset({"ask_human", "resolve_ask", "coordinator", "get_file", "attach",
                            "get_thread", "list_recent"})
@@ -113,37 +123,45 @@ def _tool_category(name: str, inp: dict[str, Any]) -> int:
     """A bus tool's call and result: its category (RT-6.9 step 2)."""
     tool = name.rsplit("__", 1)[-1]
     if tool in _POSTING:
-        return OVERHEAD if a2a.word(str(inp.get("message", ""))) in OVERHEAD_WORDS else COORDINATION
+        # The word as the agent passed it (`kind`), else the one the message starts with.
+        word = str(inp.get("kind", "")).strip().upper()
+        if word not in a2a.WORDS:
+            word = a2a.word(str(inp.get("message", ""))) or ""
+        return OVERHEAD if word in OVERHEAD_WORDS else COORDINATION
     return COORDINATION if tool in _COORDINATING else OVERHEAD
 
 
 def _tag(text: str) -> list[tuple[int, int]]:
-    """A pushed <channel> tag: the envelope is overhead, the body coordination, or task
-    work for a trusted human's prompt; the bus's own tags are overhead whole."""
-    head_end, close = text.find(">"), text.rfind("</channel>")
-    if head_end < 0 or close <= head_end:
-        return [(OVERHEAD, len(text))]
-    head = text[:head_end]
-    m = _TAG_KIND.search(head)
-    kind = m[1] if m else ""
-    if kind in _OWN_TAGS or (kind != "reaction" and "post_id=" not in head):
-        return [(OVERHEAD, len(text))]
-    body = close - head_end - 1
-    return [(OVERHEAD, len(text) - body), (TASK if TRUSTED in head else COORDINATION, body)]
+    """Pushed <channel> tags, one or several in a message: each envelope is overhead,
+    each body coordination, or task work for a trusted human's prompt, by its own head;
+    the bus's own tags are overhead whole, as is everything outside the tags."""
+    bodies = {TASK: 0, COORDINATION: 0}
+    for m in _TAG.finditer(text):
+        head = m[1]
+        k = _TAG_KIND.search(head)
+        kind = k[1] if k else ""
+        if kind in _OWN_TAGS or (kind != "reaction" and "post_id=" not in head):
+            continue
+        bodies[TASK if TRUSTED in head else COORDINATION] += len(m[2])
+    return [(OVERHEAD, len(text) - bodies[TASK] - bodies[COORDINATION]),
+            (TASK, bodies[TASK]), (COORDINATION, bodies[COORDINATION])]
 
 
 def _events(body: str) -> list[tuple[int, int]]:
-    """A wait_for_events result: empty is overhead; else the message bodies are
-    coordination (task work from a trusted human), the server's own events and the
-    JSON around the bodies overhead."""
+    """A wait_for_events result (or one of its content blocks, an item each): empty is
+    overhead; else the message bodies are coordination (task work from a trusted human),
+    the server's own events and the JSON around the bodies overhead. What does not parse
+    is overhead, never task work."""
     try:
         items: Any = json.loads(body)
         if isinstance(items, dict) and isinstance(items.get("result"), str):
             items = json.loads(items["result"])
     except ValueError:
         return [(OVERHEAD, len(body))]
+    if isinstance(items, dict) and "result" in items:
+        items = items["result"]
     if isinstance(items, dict):
-        items = items.get("result")
+        items = [items]                               # one item per content block
     if not isinstance(items, list):
         return [(OVERHEAD, len(body))]
     parts = {TASK: 0, COORDINATION: 0}
@@ -247,6 +265,10 @@ class _Count:
         self.ovh = dict.fromkeys(KEYS, 0.0)
         self.coord = dict.fromkeys(KEYS, 0.0)
         self.req_ovh = self.req_coord = 0
+        self.broken = False           # the split failed somewhere: left out, the rest kept
+
+    def within(self, ts: float) -> bool:
+        return ts >= self.since and (self.until is None or ts < self.until)
 
     def add(self, r: dict[str, Any] | None) -> None:
         """One request: all of it if the bus caused it, else the bus's share."""
@@ -257,7 +279,11 @@ class _Count:
         self.reqs += 1
         for k in KEYS:
             self.all[k] += u[k]
-        self._split(r, u)
+        if not self.broken:
+            try:
+                self._split(r, u)
+            except Exception:  # noqa: BLE001 — the split is an estimate: without it, tok stays
+                self.broken = True
         if r["plugin"]:
             self.bus_reqs += 1
             for k in KEYS:
@@ -273,6 +299,8 @@ class _Count:
         """RT-6.9 step 2: the input by position (laid over the context when the request
         started), the output by block: tool calls by the tool's category, the rest (text,
         thinking) by the driver, the categories of the new input before the request."""
+        if not any(u.values()):
+            return                    # a synthetic row (an API error): nothing to split
         split = r["split"]
         tools = [c / CHARS_PER_TOKEN for c in r["out_cat"]]
         if sum(tools) > u["out"]:
@@ -300,9 +328,21 @@ def _hook_context(c: str) -> list[tuple[int, int]]:
     return [(OVERHEAD if _ours(c) else TASK, len(c))]
 
 
-def _skill_text(text: str) -> bool:
-    """The text of a skill Claude Code put in after the Skill tool (this bus's)."""
-    return text.startswith("Base directory for this skill:") and SKILL in text.split("\n", 1)[0]
+def _skill_dir(text: str) -> str | None:
+    """The bus skill's directory when `text` is the skill's text Claude Code put in after
+    the Skill tool (or after a compaction), else None."""
+    m = _SKILL_DIR.match(text.split("\n", 1)[0])
+    return m[1] if m else None
+
+
+def _try(count: _Count, fn: Any, *args: Any) -> Any:
+    """One step of the split; should it fail on an odd row, the split is left out of
+    `tok` and the exact counts stay (`count.broken`)."""
+    try:
+        return fn(*args)
+    except Exception:  # noqa: BLE001 — the split is an estimate, the totals are not
+        count.broken = True
+        return []
 
 
 def measure(path: str | Path, since: float, fixed: Fixed,
@@ -322,6 +362,8 @@ def measure(path: str | Path, since: float, fixed: Fixed,
     cats: dict[str, int] = {}         # tool_use id -> its category (the split)
     ctx = _Context()                  # the split's segments since the last compaction
     summary: list[float] | None = None  # the shares before a compaction, for its summary
+    skill_dir = ""                    # the bus skill's folder once its text came: side files
+    skill_due = False                 # the bus Skill call came, its text not yet
     count = _Count(since, until)
     req: dict[str, Any] | None = None
 
@@ -351,7 +393,7 @@ def measure(path: str | Path, since: float, fixed: Fixed,
             elif a.get("type") == "queued_command" and str(a.get("prompt", "")).startswith(CHANNEL):
                 if TRUSTED not in a["prompt"]:
                     resident += len(a["prompt"])
-                for cat, n in _tag(a["prompt"]):
+                for cat, n in _try(count, _tag, a["prompt"]):
                     ctx.add(cat, n)
             elif a.get("type") == "hook_additional_context":
                 for c in a.get("content") or []:
@@ -360,13 +402,16 @@ def measure(path: str | Path, since: float, fixed: Fixed,
                         resident += sum(len(x) for x in c.splitlines() if "Mattermost" in x)
                     elif _ours(c):
                         resident += len(c)
-                    for cat, n in _hook_context(c):
+                    for cat, n in _try(count, _hook_context, c):
                         ctx.add(cat, n)
             elif a.get("type") == "invoked_skills":       # skills put back after a compaction
-                for sk in a.get("skills") or []:
+                skills = a.get("skills")
+                for sk in skills if isinstance(skills, list) else []:
                     if isinstance(sk, dict):
-                        ctx.add(OVERHEAD if SKILL in str(sk.get("name", "")) else TASK,
-                                len(str(sk.get("content", ""))))
+                        body = str(sk.get("content", ""))
+                        found = _skill_dir(body)
+                        skill_dir = found or skill_dir
+                        ctx.add(OVERHEAD if found or sk.get("name") == f"{SKILL}:{SKILL}" else TASK, len(body))
         elif kind == "user":
             content = (e.get("message") or {}).get("content")
             if isinstance(content, list) and any(isinstance(c, dict) and c.get("type") == "tool_result"
@@ -377,7 +422,8 @@ def measure(path: str | Path, since: float, fixed: Fixed,
                     tid = c.get("tool_use_id", "")
                     what = ids.get(tid)
                     pending.append(what in ("bus", "wait"))
-                    body = _text(c.get("content"))
+                    raw = c.get("content")
+                    body = _text(raw)
                     if what in ("bus", "wait", "listener"):
                         resident += len(body)
                     elif what == "search":
@@ -387,8 +433,12 @@ def measure(path: str | Path, since: float, fixed: Fixed,
                         ctx.add(TASK, len(body) - ours)
                         continue
                     if what == "wait":
-                        for cat, n in _events(body):
-                            ctx.add(cat, n)
+                        # One block, or one content block per item: each on its own.
+                        blocks = ([_text([b]) for b in raw] if isinstance(raw, list) and len(raw) > 1
+                                  else [body])
+                        for block in blocks:
+                            for cat, n in _try(count, _events, block):
+                                ctx.add(cat, n)
                     else:
                         ctx.add(cats.get(tid, TASK), len(body))
                 continue
@@ -404,7 +454,7 @@ def measure(path: str | Path, since: float, fixed: Fixed,
                 by_bus, pending = TRUSTED not in text, []
                 if by_bus:
                     resident += len(text)
-                for cat, n in _tag(text):
+                for cat, n in _try(count, _tag, text):
                     ctx.add(cat, n)
             elif origin == "task-notification":
                 m = _TOOL_USE_ID.search(text)
@@ -417,20 +467,32 @@ def measure(path: str | Path, since: float, fixed: Fixed,
                 resident += len(text)
                 ctx.add(OVERHEAD, len(text))
             else:
-                ctx.add(OVERHEAD if _skill_text(text) else TASK, len(text))
+                found = _skill_dir(text)
+                if found:
+                    skill_dir, skill_due = found, False
+                ctx.add(OVERHEAD if found else TASK, len(text))
         elif kind == "assistant":
             msg = e.get("message") or {}
             rid = e.get("requestId") or msg.get("id") or ""
             if req is None or req["id"] != rid:
                 count.add(req)
-                usage = msg.get("usage")
-                req = {"id": rid, "ts": _ts(e), "usage": usage, "out_bus": 0,
+                usage, ts = msg.get("usage"), _ts(e)
+                # A synthetic row (an API error, no tokens) drives nothing: the new input
+                # stays for the request that follows.
+                synthetic = msg.get("model") == "<synthetic>"
+                if skill_due and not synthetic:
+                    # The bus Skill call came, its text did not (an older transcript).
+                    ctx.add(OVERHEAD, fixed.skill)
+                    skill_due = False
+                req = {"id": rid, "ts": ts, "usage": usage, "out_bus": 0,
                        "plugin": by_bus or (bool(pending) and all(pending)),
                        "context": base() + resident, "out_cat": [0, 0, 0],
-                       "split": _input_split(_usage(usage), head(), ctx) if isinstance(usage, dict) else None,
+                       "split": (_try(count, _input_split, _usage(usage), head(), ctx)
+                                 if isinstance(usage, dict) and count.within(ts) else None),
                        "driver": ctx.driver(), "new": list(ctx.new)}
                 pending = []
-                ctx.new = [0.0, 0.0, 0.0]
+                if not synthetic:
+                    ctx.new = [0.0, 0.0, 0.0]
             for c in msg.get("content") or []:
                 if not isinstance(c, dict):
                     continue
@@ -443,17 +505,24 @@ def measure(path: str | Path, since: float, fixed: Fixed,
                 tid = c.get("id", "")
                 if _bus(name):
                     ids[tid] = "wait" if name.endswith("__wait_for_events") else "bus"
-                    cats[tid] = _tool_category(name, inp if isinstance(inp, dict) else {})
+                    cats[tid] = _try(count, _tool_category, name, inp if isinstance(inp, dict) else {}) or OVERHEAD
                 elif name == "Bash" and LISTENER in str(inp.get("command", "")):
                     ids[tid] = "listener"
                     cats[tid] = OVERHEAD
                 else:
+                    # Loading the bus skill and reading its side files is overhead.
+                    cat = TASK
                     if name == "ToolSearch":
                         ids[tid] = "search"
                     elif name == "Skill" and SKILL in str(inp.get("skill", "")):
-                        skill = True
-                    req["out_cat"][TASK] += size
-                    ctx.add(TASK, size, new=False)
+                        skill = skill_due = True
+                        cat = OVERHEAD
+                    elif (name == "Read" and skill_dir
+                          and str(inp.get("file_path", "")).startswith(skill_dir + "/")):
+                        cat = OVERHEAD
+                    cats[tid] = cat
+                    req["out_cat"][cat] += size
+                    ctx.add(cat, size, new=False)
                     continue
                 req["out_cat"][cats[tid]] += size
                 ctx.add(cats[tid], size, new=False)
@@ -462,10 +531,13 @@ def measure(path: str | Path, since: float, fixed: Fixed,
     count.add(req)
     if not count.reqs:
         return None
+    out = {"req": count.reqs, "bus_req": count.bus_reqs, "fixed": round(base() / CHARS_PER_TOKEN),
+           "skill": int(skill), "all": count.all, "bus": {k: round(v) for k, v in count.bus.items()}}
+    if count.broken:
+        return out                    # the split failed on an odd row: left out, n/a
     ovh, coord = {}, {}
     for k in KEYS:  # the invariant: task = all - ovh - coord, never below 0 (RT-6.9 step 2)
         ovh[k] = min(count.all[k], round(count.ovh[k]))
         coord[k] = min(count.all[k] - ovh[k], round(count.coord[k]))
-    return {"req": count.reqs, "bus_req": count.bus_reqs, "fixed": round(base() / CHARS_PER_TOKEN),
-            "skill": int(skill), "all": count.all, "bus": {k: round(v) for k, v in count.bus.items()},
-            "ovh": ovh, "coord": coord, "req_ovh": count.req_ovh, "req_coord": count.req_coord, "m": METHOD}
+    return out | {"ovh": ovh, "coord": coord, "req_ovh": count.req_ovh, "req_coord": count.req_coord,
+                  "m": METHOD}

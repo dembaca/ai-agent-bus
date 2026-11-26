@@ -1118,7 +1118,8 @@ def test_the_token_split_decodes_within_its_bounds_and_drops_unknown_keys():
         "req": 10**12, "bus_req": 10**12, "fixed": 10**12, "skill": 1, "all": big, "bus": big,
         "ovh": big, "coord": big, "req_ovh": 10**12, "req_coord": 10**12, "m": 1}}
     body = stats.nats_body(line)
-    assert body is not None and len(body) < 1000
+    assert body is not None and len(body) <= stats.NATS_BODY_MAX
+    assert len(json.dumps(line["tok"], separators=(",", ":"))) < 600   # RT-6.9: a whole tok at its bounds
 
 
 def test_the_report_splits_the_tokens_by_category():
@@ -1149,5 +1150,6 @@ def test_the_report_splits_the_tokens_by_category():
     assert stats.split_summary([lines[1] | {"tok": SPLIT_TOK | {"m": 2}}]) is None
     # stats_report: the sums, shares and coverage, not the token types.
     brief = stats.brief(stats.report(lines))[-1]
-    assert "types" not in brief["split"] and brief["split"]["eq_pct"] == s["eq_pct"]
+    assert set(brief["split"]) == {"estimated", "lines", "of", "harnesses", "raw", "eq", "raw_pct", "eq_pct"}
+    assert brief["split"]["eq_pct"] == s["eq_pct"]
     assert all("types" not in (r["split"] or {}) for r in brief["roles"])
