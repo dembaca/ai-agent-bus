@@ -15,6 +15,7 @@ import (
 	"errors"
 	"fmt"
 	"log/slog"
+	"regexp"
 	"sync"
 	"time"
 
@@ -94,6 +95,11 @@ type Hello struct {
 	// presence consumer to be made anew (consumers.SincePresence: a new session
 	// that has not read the presence stream yet).
 	Since map[string]uint64 `json:"since,omitempty"`
+	// Session is the session's own part of the agent name (#163): 26 characters
+	// of lower-case base32, sent only while the host key is shared. Absent is
+	// valid; a present one that does not fit refuses the login, since ignoring
+	// it would put two sessions back on one name.
+	Session string `json:"session,omitempty"`
 	// Trusted are the host's MM_TRUSTED_HUMANS names; the attestation
 	// vouches for them (attest.go).
 	Trusted []string `json:"trusted,omitempty"`
@@ -326,6 +332,9 @@ func (s *Service) authorize(ctx context.Context, req *jwt.AuthorizationRequestCl
 	if err := json.Unmarshal([]byte(opts.Token), &hello); err != nil || hello.Token == "" {
 		return "", nil, ErrRequest
 	}
+	if hello.Session != "" && !sessionRE.MatchString(hello.Session) {
+		return "", nil, ErrRequest
+	}
 	host, err := hostKey(opts.Nkey, opts.SignedNonce, req.ClientInformation.Nonce)
 	if err != nil {
 		return "", nil, err
@@ -360,7 +369,7 @@ func (s *Service) authorize(ctx context.Context, req *jwt.AuthorizationRequestCl
 			}
 		}
 	}
-	agent := s.cfg.NamePrefix + name(anchor, host)
+	agent := s.cfg.NamePrefix + name(anchor, host, hello.Session)
 	who = append(who, "owner", id.Owner, "sub", id.Subject, "jti", id.ID, "agent", agent)
 	if anchor != id.Owner {
 		who = append(who, "anchor", anchor)
@@ -514,7 +523,19 @@ var lowerBase32 = base32.NewEncoding("abcdefghijklmnopqrstuvwxyz234567").WithPad
 // (a preimage) take 2^128 tries, but two names of an attacker's own choosing
 // can collide in about 2^64, so the name never proves an owner: the owner is
 // pinned in the presence subject (perms.go).
-func name(owner, hostNkey string) string {
-	h := sha256.Sum256([]byte(owner + "\x00" + hostNkey))
+func name(owner, hostNkey, session string) string {
+	b := owner + "\x00" + hostNkey
+	if session != "" {
+		// The session's own part (#163): two sessions of one owner on one shared
+		// host key are two agents. Self-stated, so it separates honest sessions
+		// only; the theft guard keys on the nkey and the Keycloak session, never
+		// on this.
+		b += "\x00" + session
+	}
+	h := sha256.Sum256([]byte(b))
 	return lowerBase32.EncodeToString(h[:16])
 }
+
+// sessionRE is the session part's form (#163): 26 characters of lower-case
+// base32, the same alphabet and length as the name's digest.
+var sessionRE = regexp.MustCompile(`^[a-z2-7]{26}$`)

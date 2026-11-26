@@ -120,12 +120,17 @@ class MessageError(ValueError):
 
 # --- the agent's name --------------------------------------------------------
 
-def agent_name(owner: str, host_nkey_public: str, prefix: str = "agent-") -> str:
+def agent_name(owner: str, host_nkey_public: str, prefix: str = "agent-", session: str = "") -> str:
     """Same as Go `name()` (services/auth/internal/callout/service.go) plus the
-    prefix: SHA-256 over owner, a NUL byte and the host nkey, the first 16 bytes
-    as lower-case base32 without padding (26 characters). The owner is used as
-    the login service gets it (the token's `preferred_username`), not changed."""
-    digest = hashlib.sha256(owner.encode() + b"\x00" + host_nkey_public.encode()).digest()[:16]
+    prefix: SHA-256 over owner, a NUL byte, the host nkey and, when the host key
+    is shared, a NUL byte and the session nonce, the first 16 bytes as lower-case
+    base32 without padding (26 characters). The owner is used as the login service
+    gets it (the token's `preferred_username`), not changed. Without a session the
+    bytes are exactly the ones before #163, so an old host keeps its name."""
+    raw = owner.encode() + b"\x00" + host_nkey_public.encode()
+    if session:
+        raw += b"\x00" + session.encode()
+    digest = hashlib.sha256(raw).digest()[:16]
     return prefix + base64.b32encode(digest).decode().lower().rstrip("=")
 
 
@@ -836,7 +841,8 @@ def crown_holder(claims: Mapping[str, int], presence: Mapping[str, tuple[float, 
 
 def build_hello(token: str, home: str, guests: tuple[str, ...], lobby: bool,
                 since: Mapping[str, int], *, fresh_presence: bool = False,
-                trusted: tuple[str, ...] = (), trusted_cut: bool = False) -> str:
+                trusted: tuple[str, ...] = (), trusted_cut: bool = False,
+                session: str = "") -> str:
     """The CONNECT `auth_token` the login service reads (callout.Hello). It holds the
     access token: never log it."""
     hello: dict[str, Any] = {"token": token}
@@ -850,6 +856,8 @@ def build_hello(token: str, home: str, guests: tuple[str, ...], lobby: bool,
         hello["trusted"] = list(trusted)
     if trusted_cut:
         hello["trusted_cut"] = True
+    if session:
+        hello["session"] = session  # #163: the session's own part of the name, when the key is shared
     known = {ch: seq for ch, seq in since.items() if seq > 0}
     if fresh_presence:
         known[PRESENCE_FRESH_KEY] = 1  # the login service reads the presence stream afresh (RT-6.35)

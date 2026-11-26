@@ -72,6 +72,10 @@ def test_agent_name_vector() -> None:
     assert agent_name("alice", VECTOR_NKEY, prefix="x-") == "x-" + VECTOR_NAME
     assert len(VECTOR_NAME) == 26
     assert agent_name("Alice", VECTOR_NKEY) != VECTOR_NAME  # the owner is not normalised, as in Go
+    # A session part (#163): two sessions of one owner on one shared key are two
+    # names; the login service's vector is the same.
+    assert agent_name("alice", VECTOR_NKEY, prefix="", session="abcdefghijklmnopqrstuvwxyz") \
+        == "eadecaajdhhzsahypvqfemgypy"
 
 
 # --- unit: message format v1 ----------------------------------------------------------------
@@ -2030,3 +2034,11 @@ def test_the_bus_reads_the_card_at_each_presence() -> None:
     bus.card_source = broken
     body = bus._presence_body("online")
     assert decode_presence(body) == "online" and decode_presence_card(body) == PresenceCard()
+
+
+def test_the_hello_carries_the_session_part_only_when_the_key_is_shared() -> None:
+    """#163: the part is a hello field; absent means today's name."""
+    with_session = json.loads(build_hello("tok", "home", (), False, {}, session="abcdefghijklmnopqrstuvwxyz"))
+    assert with_session["session"] == "abcdefghijklmnopqrstuvwxyz"
+    without = json.loads(build_hello("tok", "home", (), False, {}))
+    assert "session" not in without

@@ -201,7 +201,7 @@ func (l *lab) connectAt(url, owner, tok string, hello Hello, signer nkeys.KeyPai
 	}
 	hello.Token = tok
 	raw, _ := jsonMarshal(hello)
-	a := &agent{name: DefaultNamePrefix + name(owner, pub), owner: owner, errs: make(chan error, 16)}
+	a := &agent{name: DefaultNamePrefix + name(owner, pub, ""), owner: owner, errs: make(chan error, 16)}
 	opts := []nats.Option{
 		nats.Nkey(pub, func(nonce []byte) ([]byte, error) { return signer.Sign(nonce) }),
 		nats.Token(string(raw)),
@@ -390,6 +390,21 @@ func TestRefusedConnections(t *testing.T) {
 				t.Fatalf("no refusal %q in the log:\n%s", tc.reason, l.logs.String())
 			}
 		})
+	}
+}
+
+// #163: the session part is 26 characters of lower-case base32; a present one
+// that does not fit refuses the login (fail closed), never gets ignored.
+func TestAHelloWithABadSessionIsRefused(t *testing.T) {
+	l := newLab(t)
+	for _, bad := range []string{"short", "abcdefghijklmnopqrstuvwxy1", "ABCDEFGHIJKLMNOPQRSTUVWXYZ", "abcdefghijklmnopqrstuvwxyz2"} {
+		if _, err := l.connect("alice", l.realm.Token("alice", nil), Hello{Home: "home", Session: bad}, nil); err == nil {
+			t.Fatalf("a hello with session %q connected", bad)
+		}
+	}
+	good := "abcdefghijklmnopqrstuvwxyz"
+	if _, err := l.connect("alice", l.realm.Token("alice", nil), Hello{Home: "home", Session: good}, nil); err != nil {
+		t.Fatalf("a hello with a good session: %v", err)
 	}
 }
 
