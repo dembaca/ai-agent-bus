@@ -14,6 +14,13 @@ nothing. It delivers
   seed stays here (the login service's auth callout, services/auth/README.md,
   checks the signature over the server's nonce).
 
+The MCP server the plugin starts over stdio logs in itself, with and without
+corral (the one operating model, #154, the ADR-014 amendment of 2026-11-26): its
+store is `keystore.default()` (the system keychain, else a 0600 file; under
+corral that file is in the sandbox's own home). In a keyless corral session
+(RT-6.18) that server is the relay in the sandbox: it holds the login, and the
+host process asks it for access tokens over a login channel (login_relay.py).
+
 After every approval and every refresh the token's issuer and client are
 checked and its `preferred_username` must be the session's responsible human
 (`owners.responsible_human`): whoever opened the approval link and logged in
@@ -22,8 +29,9 @@ dropped here and reported. The refresh token is stored per (issuer, client,
 human) under a file lock, so sessions of one OS user take turns. The host does not check the token's
 signature; the login service does.
 
-The approval link goes only to the responsible human, as a direct message
-(`login_notice`), never into a channel. Secrets (tokens, seed) are never in a
+The approval link goes to the human at this machine (a browser, else the address
+and code on this server's stderr) and to the responsible human as a direct
+message (`login_notice`), never into a channel; never the device code. Secrets (tokens, seed) are never in a
 log line, an exception, the environment or an argument vector; every object
 here hides them in its repr.
 """
@@ -44,7 +52,7 @@ import time
 from collections.abc import AsyncIterator, Awaitable, Callable
 from dataclasses import dataclass, field
 from typing import TYPE_CHECKING, Any, Protocol
-from urllib.parse import urlsplit
+from urllib.parse import SplitResult, urlsplit
 
 import httpx
 import nkeys
@@ -112,7 +120,7 @@ class _Unreachable(LoginError):
 class Settings:
     issuer: str
     client_id: str
-    nkey_store: str = "ephemeral"
+    nkey_store: str = "host"  # decision 10 (#154): the server keeps the host key itself
 
 
 def _loopback(host: str) -> bool:
@@ -142,6 +150,31 @@ def check_url(url: str, what: str) -> str:
     return url
 
 
+def _port(parts: SplitResult) -> int | None:
+    try:
+        return parts.port or {"https": 443, "http": 80}.get(parts.scheme)
+    except ValueError:
+        return None
+
+
+def same_site(issuer: str, url: str) -> bool:
+    """`url` has the issuer's scheme, host and port (so http only when the
+    issuer itself is on loopback)."""
+    try:
+        mine, theirs = urlsplit(issuer), urlsplit(url)
+    except ValueError:
+        return False
+    return (theirs.scheme == mine.scheme and (theirs.hostname or "") == (mine.hostname or "")
+            and _port(mine) is not None and _port(theirs) == _port(mine))
+
+
+def default_store() -> keystore.KeyStore:
+    """The store this process keeps the refresh token in: `keystore.default()`
+    (the system keychain where there is one, else the 0600 file; under corral in
+    the sandbox's own home, #154)."""
+    return keystore.default()
+
+
 def settings_from_env() -> Settings | None:
     """The settings, or None when the login is off. Both variables unset: off,
     silently. One without the other, or a wrong value: off, with the reason in
@@ -153,7 +186,7 @@ def settings_from_env() -> Settings | None:
         if not issuer or not client:
             raise ConfigError("MM_LOGIN_ISSUER and MM_LOGIN_CLIENT_ID must both be set")
         check_url(issuer, "MM_LOGIN_ISSUER")
-        store = env(NKEY_ENV, "ephemeral").strip().lower()
+        store = env(NKEY_ENV, "host").strip().lower()
         if store not in NKEY_STORES:
             raise ConfigError(f"{NKEY_ENV} must be one of: {', '.join(NKEY_STORES)}")
     except ConfigError as exc:
@@ -238,7 +271,7 @@ class Login:
                  wall: Callable[[], float] = time.time,
                  sleep: Callable[[float], Awaitable[None]] = asyncio.sleep) -> None:
         self.settings = settings
-        self._store = store if store is not None else keystore.HostFile()
+        self._store = store if store is not None else keystore.default()
         if nkey_store is None:
             nkey_store = self._store if settings.nkey_store == "host" else keystore.Ephemeral()
         self._nkey_store = nkey_store
@@ -264,7 +297,7 @@ class Login:
 
     # --- the user nkey --------------------------------------------------------
     def nkey(self) -> NKey:
-        """The host's NATS user key: loaded from its store (`MM_LOGIN_NKEY=host`)
+        """The host's NATS user key: loaded from its store (`MM_LOGIN_NKEY=host`, the default since #154)
         or new for this process. The seed stays here."""
         if self._nkey is None:
             seed: str | None = None
@@ -292,6 +325,14 @@ class Login:
             return bytes(kp.sign(nonce))
 
         return NKey(public_key=bytes(kp.public_key).decode("ascii"), sign=sign)
+
+    def export_seed(self) -> str:
+        """The nkey's seed, for the login channel to the host process of a keyless
+        corral session only (login_relay.py), which signs the NATS nonce there.
+        Never logged, never in an exception."""
+        self.nkey()
+        assert self._nkey is not None
+        return bytes(self._nkey.seed).decode("ascii")
 
     # --- the access token -----------------------------------------------------
     async def access_token(self) -> str:
@@ -453,10 +494,8 @@ class Login:
         return self._endpoints
 
     def _same_site(self, url: str, what: str) -> str:
-        """The URL has the issuer's scheme and host (so http only when the
-        issuer itself is on loopback)."""
-        mine, theirs = urlsplit(self.settings.issuer), urlsplit(url)
-        if theirs.scheme != mine.scheme or (theirs.hostname or "") != (mine.hostname or ""):
+        """The URL has the issuer's scheme, host and port (same_site)."""
+        if not same_site(self.settings.issuer, url):
             raise LoginError(f"{what} is not on the issuer's host")
         return url
 
@@ -775,13 +814,27 @@ def _int(value: object, default: int) -> int:
     return value if isinstance(value, int) and not isinstance(value, bool) and value > 0 else default
 
 
-# --- the running login: one per process, started by the host process or the server ---
+# --- the running login: one per process, started by the server or the host process ---
 
-_current: Login | None = None
+class Running(Protocol):
+    """What the adapter needs of the running login: this process's own (`Login`)
+    or, in the host process of a keyless corral session, the sandbox's
+    (`login_relay.RelayedLogin`)."""
+
+    settings: Settings
+
+    async def access_token(self) -> str: ...
+
+    def nkey(self) -> NKey: ...
+
+    async def run(self) -> None: ...
+
+
+_current: Running | None = None
 _task: asyncio.Task[None] | None = None
 
 
-def current() -> Login | None:
+def current() -> Running | None:
     """The running login, for the adapter that needs a token or the nkey; None when off."""
     return _current
 
@@ -789,7 +842,26 @@ def current() -> Login | None:
 def start(get_client: Callable[[], Awaitable[ChatPort | None]]) -> asyncio.Task[None] | None:
     """Start the login in the background when configured; the session never
     waits for it. One per process: a second call returns the running task.
-    None when the login is off."""
+    None when the login is off. The human sees the approval at this machine
+    (a browser, else stderr) and in a DM (#154)."""
+    global _current, _task
+    if _current is not None:
+        return _task
+    settings = settings_from_env()
+    if settings is None:
+        return None
+    from .login_notice import Combined, DMNotifier, Shown
+    notifier = Combined(Shown(settings.issuer), DMNotifier(get_client, owners.responsible_human))
+    _current = Login(settings, store=default_store(), notifier=notifier)
+    _task = asyncio.create_task(_current.run())
+    return _task
+
+
+def start_relayed(get_client: Callable[[], Awaitable[ChatPort | None]]) -> asyncio.Task[None] | None:
+    """The host process of a keyless corral session (RT-6.18): no login of its
+    own and no store on the host; the relay in the sandbox holds the login and
+    hands this process access tokens (login_relay.py, #154). This process still
+    DMs the human the approval the sandbox shows. None when the login is off."""
     global _current, _task
     if _current is not None:
         return _task
@@ -797,8 +869,8 @@ def start(get_client: Callable[[], Awaitable[ChatPort | None]]) -> asyncio.Task[
     if settings is None:
         return None
     from .login_notice import DMNotifier
-    store = keystore.HostFile()
-    _current = Login(settings, store=store, notifier=DMNotifier(get_client, owners.responsible_human))
+    from .login_relay import RelayedLogin
+    _current = RelayedLogin(settings, notifier=DMNotifier(get_client, owners.responsible_human))
     _task = asyncio.create_task(_current.run())
     return _task
 

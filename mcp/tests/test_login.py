@@ -80,7 +80,7 @@ def test_https_or_http_on_loopback_is_accepted(monkeypatch, issuer):
     s = login.settings_from_env()
     assert s is not None
     assert s.issuer == issuer.rstrip("/")
-    assert (s.client_id, s.nkey_store) == ("agent-bus", "ephemeral")
+    assert (s.client_id, s.nkey_store) == ("agent-bus", "host")  # decision 10 (#154): the key is kept
 
 
 def test_nkey_store_setting(monkeypatch, caplog):
@@ -713,14 +713,29 @@ def _login_env(monkeypatch, tmp_path):
     monkeypatch.setenv("MM_LOGIN_ISSUER", ISSUER)
     monkeypatch.setenv("MM_LOGIN_CLIENT_ID", "agent-bus")
     monkeypatch.setenv("XDG_STATE_HOME", str(tmp_path))
+    # keystore.default() as chosen, never the real keychain in a test
+    monkeypatch.setattr(keystore, "_chosen", keystore.HostFile(tmp_path / "login"))
 
 
 def _check_current():
+    """RT-6.34, #154: the stdio server logs in itself, on keystore.default(), and
+    tells the human at this machine (browser, stderr) and by DM."""
     lg = login.current()
-    assert lg is not None
-    assert isinstance(lg._store, keystore.HostFile)       # the refresh token persists on the host
-    assert lg._notifier is not None                       # the human is told, never nobody
-    assert isinstance(lg._notifier, login_notice.DMNotifier)
+    assert isinstance(lg, login.Login)
+    assert lg._store is keystore.default()               # the store keystore chose
+    assert isinstance(lg._notifier, login_notice.Combined)
+    kinds = [type(p) for p in lg._notifier._parts]
+    assert kinds == [login_notice.Shown, login_notice.DMNotifier]
+
+
+def _check_relayed():
+    """RT-6.18, #154: the host process of a keyless session has no login and no
+    store of its own; the relay in the sandbox holds it."""
+    from mattermost_ai_agent_bus import login_relay
+    lg = login.current()
+    assert isinstance(lg, login_relay.RelayedLogin)
+    assert not hasattr(lg, "_store")
+    assert isinstance(lg._notifier, login_notice.DMNotifier)   # the DM still goes from here
 
 
 async def _quiet_services(monkeypatch):
@@ -752,9 +767,11 @@ async def test_hosted_services_start_the_login_without_waiting_and_stop_it(monke
     _login_env(monkeypatch, tmp_path)
     await _quiet_services(monkeypatch)
     spy = _Spy(monkeypatch)
+    from mattermost_ai_agent_bus import login_relay
+    monkeypatch.setattr(login_relay.RelayedLogin, "run", login.Login.run)  # the spy's
     async with hosted.services("k" * 64, object()):   # type: ignore[arg-type]
         await asyncio.wait_for(spy.started.wait(), 2)  # the task runs, the session is already inside
-        _check_current()
+        _check_relayed()
         assert spy.stopped == []
     assert spy.stopped == [True] and login.current() is None
     await asyncio.sleep(0)

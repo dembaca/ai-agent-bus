@@ -31,6 +31,12 @@ goes. SIGUSR1 (postEnd keeping the bot for `claude --continue`, RT-6.18 step
 9) ends it with the bot offline only: no BYE, no stats, no unregister, and the
 state directory stays for the session that takes the bot over (step 10).
 
+The Keycloak login (RT-6.34) is the relay's, not this process's (#154, decision
+10): the handshake answer offers its settings (``"login": {…}``, names only),
+the relay logs in with its store in the sandbox's home and opens a second
+connection with ``"login": true``, over which this process asks for access
+tokens and gets the nkey seed to sign with (login_relay.py).
+
 Without the relay environment the entry point is the plain stdio server.
 """
 
@@ -203,9 +209,9 @@ def _write_all(fd: int, data: bytes) -> None:
 
 def relay(environ: Mapping[str, str], *, stdin_fd: int = 0, stdout_fd: int = 1,
           timeout: float = HANDSHAKE_SEC) -> int:
-    """Pipe stdio to the host process. Never starts a server here: the token
+    """Pipe stdio to the host process. Never starts a server here: the bot token
     stays on the host, and a token-less server would only pretend to be on
-    the bus."""
+    the bus. The Keycloak login, when the host offers one, runs here (#154)."""
     endpoint = environ.get(ENDPOINT_ENV, "").strip()
     key = environ.get(KEY_ENV, "")
     if not key:
@@ -232,6 +238,11 @@ def relay(environ: Mapping[str, str], *, stdin_fd: int = 0, stdout_fd: int = 1,
             why = answer.get("error") if isinstance(answer, dict) else None
             return _fail(f"the bus's MCP server on the host refused the relay: {why or 'no reason'}")
         sock.settimeout(None)
+        if "login" in answer:
+            # The login is this process's (#154): its store in the sandbox's home,
+            # the host process asks it for tokens over a channel of its own.
+            from .login_relay import hold
+            hold((host, port), key, answer["login"])
         return _pipe(sock, stdin_fd, stdout_fd, rest)
 
 
@@ -569,8 +580,8 @@ def outside_workdir(values: Mapping[str, str], workdirs: Sequence[str]) -> str:
     return f"this relay's {', '.join(keys)} lies outside this corral session's workdir: {_ONE_AGENT}"
 
 
-async def _answer(stream: Any, ok: bool, error: str = "") -> None:
-    body: dict[str, Any] = {"ok": True} if ok else {"ok": False, "error": error}
+async def _answer(stream: Any, ok: bool, error: str = "", **extra: Any) -> None:
+    body: dict[str, Any] = {"ok": True, **extra} if ok else {"ok": False, "error": error}
     with suppress(anyio.BrokenResourceError, anyio.ClosedResourceError, OSError):
         await stream.send(json.dumps(body).encode() + b"\n")
 
@@ -646,6 +657,9 @@ class Host:
                 log.warning("relay refused: wrong key")
                 await _answer(stream, False, "wrong key")
                 return
+            if isinstance(hello, dict) and hello.get("login") is True:
+                await self._login_channel(buffered, stream)
+                return
             try:
                 session = check_session(hello.get("session", {}))
             except ValueError as exc:
@@ -674,7 +688,7 @@ class Host:
             self._holder = relay_holder(hello, time.time())
             try:
                 serve = self._load(session)
-                await _answer(stream, True)
+                await _answer(stream, True, **_login_offer())
                 self.served += 1
                 relay_connected()
                 log.info("relay %d connected", self.served)
@@ -683,6 +697,40 @@ class Host:
             finally:
                 self.active = False
                 log.info("relay disconnected; the session goes on until postEnd or the watchdog")
+
+
+    async def _login_channel(self, buffered: BufferedByteReceiveStream, stream: Any) -> None:
+        """The relay's login channel (login_relay.py, #154): the sandbox holds the
+        login, this process asks it for access tokens. One at a time."""
+        from . import login
+        from .login_relay import LINE_MAX, RelayedLogin
+
+        current = login.current()
+        if not isinstance(current, RelayedLogin):
+            await _answer(stream, False, "no login runs in this session")
+            return
+        if current.busy():
+            await _answer(stream, False, "another login channel is connected")
+            return
+        await _answer(stream, True)
+
+        async def read_line() -> bytes:
+            return bytes(await buffered.receive_until(b"\n", LINE_MAX))
+
+        async def send_line(data: bytes) -> None:
+            await stream.send(data)
+
+        await current.serve(read_line, send_line)
+
+
+def _login_offer() -> dict[str, Any]:
+    """The handshake answer's `login`: what the relay logs in with, when this
+    host process runs the relayed login (#154); names only, no secret."""
+    from . import login
+    from .login_relay import RelayedLogin
+
+    current = login.current()
+    return {"login": current.offer()} if isinstance(current, RelayedLogin) else {}
 
 
 # --- host process: lifetime -------------------------------------------------------
@@ -752,7 +800,8 @@ async def services(key: str, client: BusClient) -> AsyncIterator[str]:
     # The host's release check, once a day as a bounded child (RT-6.30).
     checking = asyncio.create_task(release.check_loop())
     # The Keycloak login, when MM_LOGIN_* is set; the session never waits for it (RT-6.34).
-    logging_in = login.start(get_client)
+    # The relay in the sandbox holds it and hands this process tokens (#154, login_relay.py).
+    logging_in = login.start_relayed(get_client)
     # A home that runs over NATS (MM_NATS_HOMES, RT-6.36): its bus starts when the login is ready.
     nats = asyncio.create_task(compose.start_nats(client))
     try:
