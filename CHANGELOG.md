@@ -36,6 +36,32 @@ before 0.5.0 are described in the git history.
 
 ### Added
 
+- **The operator console shows the channels of the operator's own agents
+  and of agents that trust the operator directly** (#128, the console on
+  the bus as its operator, RT-6.43 step 3). At each agent's credential the
+  login service writes a record into the directory's bucket: the owner's
+  anchor, the trusted anchors as its attestation names them and the home
+  and guest channels it granted (never the lobby). An operator's
+  consumers add the channels of every unexpired record that names the
+  operator as owner or trusted, never over several steps. A dropped trust
+  or an ended agent leaves the view at the operator's next renewal after
+  the agent's next credential or the record's expiry. A record that
+  cannot be written or read refuses that credential. The login service
+  purges expired records every 5 minutes in the background, never inside
+  an agent's login. Each operator credential reads every record, which
+  suits tens to low hundreds of agents (the risk that the console shows
+  less than there is, RISK-13). A trust record that cannot be read opens
+  nothing and is logged without its content; the sweep purges it.
+
+  > Upgrade note: the login service's JetStream user needs the consumer rights on
+  > the directory's bucket for its key listings,
+  > `$JS.API.CONSUMER.CREATE.KV_BUS_DIRECTORY.>` and
+  > `$JS.API.CONSUMER.DELETE.KV_BUS_DIRECTORY.*` (the README and
+  > `services/auth/nats-server.example.conf`); without them every operator
+  > credential is refused. 0.101.0 already needs them once its console path
+  > is on (the operator's channel listing of #126), though its entry does not
+  > name them; the next release entry carries them as a `Needs:` line.
+
 - **The bus traffic by category, exact counts for every harness** (the
   first stage of splitting the tokens into task work, bus overhead and
   multi-agent coordination, #139; the overhead measurement, RT-6.9). Each

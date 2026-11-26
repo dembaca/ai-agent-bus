@@ -4386,7 +4386,9 @@ service's part of points 9 and 12 (each agent's publish right on its one
 ask record and on its `STATS` subject, for its own name, the ask record
 only in its hello's home, and the `STATS` stream the service makes and
 checks at its start), its part of points 1 to 6 (the person's
-credential and each login's consumers), the MCP server's and the
+credential and each login's consumers, with the channels of the person's
+own agents and of agents that trust the person directly from the login
+service's trust index, point 5), the MCP server's and the
 console's part of points 8 to 15, and the console's use of the person's
 credential (its side of points 1, 4 and 6, and point 7); the static
 account is gone. Fifteen points, each one decision with a recommendation, its
@@ -4825,7 +4827,8 @@ source of identity and membership.
    the agent's owner, never by a message on the bus or in the chat and never
    by an administrator of the directory. An entry in the directory without a
    host's list behind it does not count. Built on the login service's side
-   (RT-6.41, see the end).
+   (RT-6.41, see the end), and so is the visibility rule for the operator's
+   consumers (RT-6.43 step 3).
    - This needs the owner's visibility rule: an operator sees the public
      channels, the channels of their own agents and the channels of the
      agents that trust them directly. Not over several steps: someone

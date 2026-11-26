@@ -49,13 +49,19 @@ type Attestation struct {
 // encode is the compact JSON of a, with entries dropped from the end of
 // Trusted (and Cut set) until it fits MaxAttestation.
 func (a Attestation) encode() ([]byte, error) {
+	b, _, err := a.fit()
+	return b, err
+}
+
+// fit is encode that also returns the attestation as encoded.
+func (a Attestation) fit() ([]byte, Attestation, error) {
 	if a.Trusted == nil {
 		a.Trusted = []directory.Trusted{}
 	}
 	for {
 		b, err := json.Marshal(a)
 		if err != nil || len(b) <= MaxAttestation || len(a.Trusted) == 0 {
-			return b, err
+			return b, a, err
 		}
 		a.Trusted, a.Cut = a.Trusted[:len(a.Trusted)-1], true
 	}
@@ -90,8 +96,49 @@ func (s *Service) attestHooks() (Attester, Trust) {
 	return s.attester, s.trust
 }
 
-// attest resolves the host's names and publishes the attestation.
-func (s *Service) attest(ctx context.Context, a Attester, t Trust, agent string, owner directory.Trusted, names []string, hostCut bool, iat, exp int64) error {
+// TrustIndex keeps the login service's trust index (directory.TrustIndex,
+// RT-6.43 step 3): per agent, from this issue's own checks only, the owner's
+// anchor, the anchors its attestation names as trusted and the channels
+// granted. An operator's credential reads it (Persons.Visible).
+type TrustIndex interface {
+	Index(ctx context.Context, r directory.AgentTrust) error
+}
+
+// SetTrustIndex sets the trust index. nil (the default) writes none, and an
+// operator then sees no channel through trust.
+func (s *Service) SetTrustIndex(ix TrustIndex) {
+	s.cmu.Lock()
+	defer s.cmu.Unlock()
+	s.trustIndex = ix
+}
+
+func (s *Service) trustIndexHook() TrustIndex {
+	s.cmu.RLock()
+	defer s.cmu.RUnlock()
+	return s.trustIndex
+}
+
+// indexTrust writes the agent's record from its published attestation and
+// the granted channels without the lobby. An error refuses the login: the
+// record before, possibly with a trust the host has dropped, would stay.
+func (s *Service) indexTrust(ctx context.Context, ix TrustIndex, a Attestation, channels []string) error {
+	r := directory.AgentTrust{Agent: a.Agent, Owner: a.Owner.Anchor, Trusted: []string{}, Exp: a.Exp}
+	for _, t := range a.Trusted {
+		if t.Anchor != "" {
+			r.Trusted = append(r.Trusted, t.Anchor)
+		}
+	}
+	for _, ch := range channels {
+		if ch != s.cfg.Lobby {
+			r.Channels = append(r.Channels, ch)
+		}
+	}
+	return ix.Index(ctx, r)
+}
+
+// attest resolves the host's names and publishes the attestation; it
+// returns the attestation as published (Trusted cut to fit).
+func (s *Service) attest(ctx context.Context, a Attester, t Trust, agent string, owner directory.Trusted, names []string, hostCut bool, iat, exp int64) (Attestation, error) {
 	var (
 		list []directory.Trusted
 		cut  bool
@@ -104,13 +151,13 @@ func (s *Service) attest(ctx context.Context, a Attester, t Trust, agent string,
 		list, cut, err = (*directory.Store)(nil).ResolveTrusted(ctx, names, false)
 	}
 	if err != nil {
-		return err
+		return Attestation{}, err
 	}
-	body, err := Attestation{V: 1, Agent: agent, Owner: owner, Trusted: list, Cut: cut || hostCut, Iat: iat, Exp: exp}.encode()
+	body, att, err := Attestation{V: 1, Agent: agent, Owner: owner, Trusted: list, Cut: cut || hostCut, Iat: iat, Exp: exp}.fit()
 	if err != nil {
-		return err
+		return Attestation{}, err
 	}
-	return a.Publish(ctx, s.attestSubject(agent), body)
+	return att, a.Publish(ctx, s.attestSubject(agent), body)
 }
 
 // NATSAttester publishes on the service's JetStream connection in the tenant
