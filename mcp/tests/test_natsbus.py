@@ -2236,3 +2236,9 @@ def test_a_late_registered_server_adopts_its_earlier_part(tmp_path: Path, monkey
     assert session_file.nonce() == earlier
     per_bot = session_file.state_dir() / f"nonce-{uid}.env"
     assert per_bot.read_text(encoding="utf-8").strip() == f"CB_SESSION_NONCE={earlier}"
+    assert not keyed.exists()  # claimed: the next bot finds nothing
+    # A second bot of the same checkout gets its own part, not the first's.
+    other = "v" * 26
+    monkeypatch.setattr(session_file, "read", lambda: {"CB_MM_BOT_USER_ID": other})
+    second = session_file.nonce()
+    assert second != earlier and re.fullmatch(r"[a-z2-7]{26}", second)

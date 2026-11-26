@@ -361,10 +361,18 @@ def nonce() -> str:
         path = state_dir() / f"nonce-{uid}.env"
         if value := _nonce_in(path):
             return value
-        # The first start of a server that registered later: adopt its part.
-        if value := _nonce_in(keyed_path("nonce")):
-            _keep_nonce(path, value)
-            return value
+        # The first start of a server that registered later: claim the part its
+        # earlier start kept. The rename takes the keyed file away, so only one
+        # bot can adopt it; a second one makes its own (two live sessions never
+        # share a name).
+        keyed = keyed_path("nonce")
+        if value := _nonce_in(keyed):
+            try:
+                os.replace(keyed, path)
+                return value
+            except OSError:  # another file system: write a copy, the keyed one stays
+                _keep_nonce(path, value)
+                return value
     else:
         path = keyed_path("nonce")
         if value := _nonce_in(path):
