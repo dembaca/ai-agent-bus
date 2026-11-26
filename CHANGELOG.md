@@ -45,6 +45,18 @@ before 0.5.0 are described in the git history.
   start. Error messages, `authd dir -h`, `services/auth/README.md` and
   `nats-server.example.conf` name the new names.
 
+### Fixed
+
+- **The operator console's logout works in a browser again** (RT-6.43
+  step 9). The pages sent `Referrer-Policy: no-referrer`, under which a
+  browser sends `Origin: null` with the sidebar's same-origin logout POST,
+  and the server refused it as a cross-site logout: every logout from the
+  browser failed with 403. The pages now send `Referrer-Policy:
+  same-origin`, which still sends no referrer to another site; the API
+  answers and the logout's redirect to Keycloak keep `no-referrer`, and
+  `Origin: null` is still refused. A console tab opened before the update
+  keeps the old policy until it is reloaded.
+
 ### Changed
 
 - **The OpenCode plugin and the pi extension read the `CB_` names** (#169,
@@ -63,7 +75,6 @@ before 0.5.0 are described in the git history.
   line winning. An operator who already uses the `CB_` names
   sees no difference, and the old ones keep working until the release that
   removes the fallbacks.
-
 
 ## 0.102.0
 
