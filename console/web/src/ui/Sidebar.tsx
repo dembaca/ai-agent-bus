@@ -1,4 +1,4 @@
-import { Bus, Crown } from "lucide-react"
+import { Bus, Crown, LogOut } from "lucide-react"
 import type { ConnState } from "../api/types"
 import "./Sidebar.css"
 
@@ -7,7 +7,8 @@ export type View = "kanban" | "asks" | "graph" | "reports"
 /** The sidebar with the views: Kanban, Graph and Reports, the number of
  * open asks beside them (ADR-015 point 3), the Asks view beside the stage
  * 1 cut — and, since one state stands for the whole console, the stream's
- * own state and the logged-in operator. The pilot is read-only. */
+ * own state and the logged-in operator with the logout. The pilot is
+ * read-only. */
 export function Sidebar({ view, setView, openAsks, forMe, conn, operator,
                           notice, clearNotice }: {
   view: View
@@ -54,6 +55,13 @@ export function Sidebar({ view, setView, openAsks, forMe, conn, operator,
           <i /> {conn === "syncing" ? "syncing…" : conn}
         </span>
         <span>operator: {operator}</span>
+        {/* RT-6.43 step 9: a POST (no link or <img> can log anyone out);
+            the server ends its session, then Keycloak's */}
+        <form method="post" action="/logout" className="side__logout">
+          <button type="submit" title="log out of the console and of Keycloak">
+            <LogOut size={11} /> log out
+          </button>
+        </form>
         <span className="side__crown"><Crown size={11} /> the crown, a mark on the card</span>
         read-only pilot
       </div>
