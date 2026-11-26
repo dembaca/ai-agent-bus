@@ -9,6 +9,10 @@ before 0.5.0 are described in the git history.
 
 - **The central bridge sweeps the agent bots it made** (#151 step 2, RT-6.44): every 10 minutes it disables a bot it made for an agent that has shown no presence and posted nothing for longer than `CB_BRIDGE_MM_BOT_KEEP` (default `24h`, at least `1h`), and revokes the bot's tokens; at most 20 bots per pass, none while the presence feed is stale. A bot is the bridge's only by its prefix and its mark in the description together, never by the prefix alone, so the registrar's bots stay the host sweep's. Last seen is kept in memory: after a restart every bot counts as seen at the start. An agent that comes back gets its bot enabled again and a fresh token at its next message; only bots the sweep disabled (their description marked ` (swept)`) come back, one an admin disabled stays off. No new right, no new endpoint, nothing persisted; hosts notice nothing.
 
+### Docs
+
+- **Phase 5 of the NATS decision as plan B** (#151): an amendment to the NATS decision (ADR-014) plans the central Mattermost adapter in eleven pieces, each use of the agent's own Mattermost bot in a home over NATS moving to that bot in the bridge (RT-6.44) or onto NATS behind a switch of its own per home, off by default, with its way back, test and lab check; the order, the acceptance before registration ends, four open decisions for the owner, and the bridge as the single path for people in the risk of the bridge vouching for people (RISK-21). Proposed, nothing built.
+
 ## 0.103.0
 
 Needs: settings renamed to the new prefix before 0.104.0, see the changelog.
