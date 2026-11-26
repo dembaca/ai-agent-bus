@@ -421,6 +421,47 @@ def _traffic(counted: list[dict[str, Any]], posts: list[dict[str, Any]],
             "polls": [len(polls), sum(1 for e in polls if e.get("empty"))], "inject": inject}
 
 
+# Which of the bus's fixed texts a harness puts into every request (RT-6.9 step 2): pi registers
+# the bus with direct exposure and sends its tool docs but not the MCP instructions; any other
+# harness both.
+HEAD_PARTS: dict[str, tuple[str, ...]] = {"pi": ("tools",)}
+HEAD_DEFAULT = ("instructions", "tools")
+
+
+def head_chars(fixed: overhead.Fixed, rt: str) -> int:
+    """The characters of the bus's fixed head in one request of harness `rt`."""
+    return sum(int(getattr(fixed, part)) for part in HEAD_PARTS.get(rt, HEAD_DEFAULT))
+
+
+def _usage_tok(usage: list[dict[str, Any]], fixed: overhead.Fixed | None, rt: str) -> dict[str, Any] | None:
+    """`tok` from the `usage` events of a harness whose transcript the server does not read
+    (OpenCode, pi; RT-6.9 step 2): their sums, plus the bus's fixed head, which the plugin
+    cannot see and counted as task work: per request the fixed texts `rt` sends (HEAD_PARTS) at
+    CHARS_PER_TOKEN go to overhead, placed only into the input the plugin's segments did not
+    cover (h_), in cache read, then cache write, then fresh input, never beyond it; the rest is
+    dropped, so the head lands only where the harness sent uncovered input. No `bus`, `bus_req`, `fixed` or `skill`: the measure by cause needs the
+    transcript. A usage event counts in the part it arrived in, never carried."""
+    def total(f: str) -> int:
+        return sum(int(e.get(f) or 0) for e in usage)
+    req = total("req")
+    if not req:
+        return None
+    tok: dict[str, Any] = {"req": req, "req_ovh": total("req_ovh"), "req_coord": total("req_coord"),
+                           "m": overhead.METHOD}
+    for obj, p in (("all", "a"), ("ovh", "o"), ("coord", "c")):
+        tok[obj] = {k: total(f"{p}_{x}") for k, x in USAGE_TYPES.items()} | {"w1h": 0}
+    head = round(req * head_chars(fixed, rt) / overhead.CHARS_PER_TOKEN) if fixed else 0
+    for k, x in USAGE_HEAD.items():
+        room = min(total(f"h_{x}"), tok["all"][k] - tok["ovh"][k] - tok["coord"][k])
+        add = min(head, max(0, room))
+        tok["ovh"][k] += add
+        head -= add
+    for k in overhead.KEYS:  # the invariant (RT-6.9 step 2), also on sums of odd events
+        tok["ovh"][k] = min(tok["ovh"][k], tok["all"][k])
+        tok["coord"][k] = min(tok["coord"][k], tok["all"][k] - tok["ovh"][k])
+    return tok
+
+
 def _summarize(events: list[dict[str, Any]], version: str, fixed: overhead.Fixed | None,
                now: float, final: bool) -> tuple[dict[str, Any], list[dict[str, Any]]]:
     """One STATS line for the part in `events`, and, for a day's part (not
@@ -461,13 +502,15 @@ def _summarize(events: list[dict[str, Any]], version: str, fixed: overhead.Fixed
     compacts = [e for e in counted if e.get("k") == "compact"]
     traffic = _traffic(counted, posts, compacts)
     paths = [e for e in events if e.get("k") == "transcript" and e.get("path")]
-    tok = None
+    tok: dict[str, Any] | None = None
     path = transcript(str(paths[-1]["path"])) if paths else None
     if path and fixed is not None:
         try:
             tok = overhead.measure(path, start, fixed, None if final else now)
         except Exception:  # noqa: BLE001 — a transcript we cannot read costs only this field
             tok = None
+    if tok is None:
+        tok = _usage_tok([e for e in counted if e.get("k") == "usage"], fixed, harness())
     turns, _ = _turns(counted)
     bus_turns = [sec for by_bus, sec in turns if by_bus]
     saved, pending = _saved(events)
@@ -725,6 +768,17 @@ INBOUND_CLASSES = frozenset({"agent", "human", "event"})
 INBOUND_KEYS = INBOUND_CLASSES | {"envelope"}
 INJECT_KINDS = frozenset({"start", "check", "digest", "drain", "signoff", "listen", "idle", "compact",
                           "wake", "other"})
+# The token split a plugin attributed in process (OpenCode, pi; RT-6.9 step 1): one `usage`
+# event per turn, sums over its requests, exactly these fields: a_ all tokens, o_ bus overhead,
+# c_ coordination, per type o_x + c_x <= a_x; `w` is cache write of any duration. h_ the input
+# the plugin's known segments did not cover (the invisible front, counted as task work in a_),
+# per input type h_x <= a_x - o_x - c_x: where the server may place the bus's fixed head.
+USAGE_TYPES = {"in": "in", "read": "read", "w5m": "w", "out": "out"}   # tok type: event suffix
+USAGE_HEAD = {"read": "read", "w5m": "w", "in": "in"}   # the head's order: oldest first
+USAGE_FIELDS = frozenset({"req", "req_ovh", "req_coord",
+                          *(f"{p}_{x}" for p in "aoc" for x in USAGE_TYPES.values()),
+                          *(f"h_{x}" for x in USAGE_HEAD.values())})
+USAGE_MAX = 10**9
 _SUB_KEYS: dict[str, frozenset[str]] = {"wakes": WAKE_REASONS, "blocks": BLOCK_KINDS,
                                         "tools": TOOL_NAMES, "tok": TOK_KEYS, "post_words": POST_WORDS,
                                         "inbound": INBOUND_KEYS, "inject": INJECT_KINDS}
@@ -1186,7 +1240,9 @@ def _settled_of(rows: list[dict[str, Any]]) -> dict[str, Any] | None:
 
 
 def _tok_of(rows: list[dict[str, Any]]) -> dict[str, Any] | None:
-    rows = [r for r in rows if r.get("tok")]
+    # The measure by cause: only lines that carry it (tok.bus). A tok from a plugin's usage
+    # events (OpenCode, pi) has the split only and never counts here as a 0 % share (RT-6.9).
+    rows = [r for r in rows if isinstance(r.get("tok"), dict) and isinstance(r["tok"].get("bus"), dict)]
     if not rows:
         return None
     t: dict[str, Any] = {
@@ -1212,7 +1268,7 @@ def _tok_of(rows: list[dict[str, Any]]) -> dict[str, Any] | None:
 TASK = "task"
 SPLIT_CATEGORIES = (TASK, OVERHEAD, COORDINATION)
 # The one-line note the reports carry beside the split (RT-6.9 step 3).
-SPLIT_NOTE = ("estimated: exact totals per token type from Claude Code's transcript, split by content "
+SPLIT_NOTE = ("estimated: exact totals per token type from the harness (Claude Code, OpenCode, pi), split by content "
               "at 4 characters per token; text and thinking by what drove the request, a convention")
 
 

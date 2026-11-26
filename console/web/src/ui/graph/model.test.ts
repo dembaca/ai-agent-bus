@@ -9,7 +9,7 @@ import { mockApi } from "../../api/mock"
 const HOME = "~ai-agent-bus-dev"
 
 const card = (name: string, over: Partial<AgentCard> = {}): AgentCard => ({
-  name, displayName: name.slice(-6), home: HOME, state: "working", crown: false,
+  name, displayName: name.slice(-6), home: HOME, guests: [], state: "working", crown: false,
   harness: "claude-code", model: "Opus 5.5", task: "a task", role: "member",
   for: "dembaca", autonomous: false, trusts: ["dembaca"], capabilities: [],
   project: "dembaca/ai-agent-bus", branch: null, pr: null, ctx: null,
@@ -77,6 +77,24 @@ const expectPositionsKept = (prev: Node[], next: Node[]) => {
 }
 
 describe("toFlow", () => {
+  it("takes a person id the server already prefixed as it is (#147)", () => {
+    // The graph endpoint sends `person:<anchor>` since #147; an ask names its
+    // human without the prefix. One node either way, never `person:person:`.
+    const g: GraphData = {
+      ...graph,
+      nodes: [...graph.nodes, { id: A, kind: "agent", label: "aaaaaa", state: "working" },
+        { id: "person:sub-alice", kind: "person", label: "alice" }],
+      edges: [{ id: "t1", from: A, to: "person:sub-alice", kind: "trusts" }],
+    }
+    const { nodes, edges } = toFlow({ ...base(), graph: g })
+    const all = ids(nodes)
+    expect(all).toContain("person:sub-alice")
+    expect(all.some((id) => id.startsWith("person:person:"))).toBe(false)
+    const trust = edges.find((e) => (e.data as { kind: string }).kind === "trusts")
+    // edges are drawn left to right, so the person is the source
+    expect([trust?.source, trust?.target]).toEqual(["person:sub-alice", `agent:${A}`])
+  })
+
   it("names nodes by kind and starts them at the origin", () => {
     const { nodes, edges } = toFlow({ ...base(), asks: [ask(ASK_ID, A)] })
     const all = ids(nodes)

@@ -28,6 +28,9 @@
 //                      skill as synthetic context that starts no turn
 //                      (RT-6.7); a compaction between turns (/compact) runs
 //                      as an execution of its own, whose end is no turn end
+//   session.step.*, .text/.reasoning.ended, .tool.*
+//                      the token split (usage.ts, RT-6.9 step 2): POST /v1/stat
+//                      {k: "usage", …} at each turn end, numbers only
 // It holds no token and no secret, writes no file, and fails open: without a
 // server or a bus session every call comes back empty and nothing happens.
 // Only top-level sessions of its own location count: a subagent's session
@@ -45,7 +48,8 @@ import { createHash } from "node:crypto"
 import { existsSync, readFileSync, realpathSync } from "node:fs"
 import { homedir } from "node:os"
 import { basename, dirname, join } from "node:path"
-import { fileURLToPath } from "node:url"
+import { fileURLToPath, pathToFileURL } from "node:url"
+import type { Tracker } from "./usage.ts"
 
 export const SERVER = "ai-agent-bus"
 export const SKILL = "ai-agent-bus"
@@ -240,6 +244,23 @@ export function chars(text: string): number {
   return [...text].length
 }
 
+// The token split (usage.ts) beside this file; a copied file finds it in the checkout
+// (root). Without it there is no `usage` stat, the rest works.
+type Split = typeof import("./usage.ts")
+// What setup() loads the split with (a test swaps it).
+export const usageLoader = { load: (root: string | null) => loadSplit(root) }
+export async function loadSplit(root: string | null): Promise<Split | null> {
+  const specs = ["./usage.ts", ...(root ? [pathToFileURL(join(root, "opencode", "plugin", "usage.ts")).href] : [])]
+  for (const spec of specs) {
+    try {
+      return (await import(spec)) as Split
+    } catch {
+      // not there: the next place
+    }
+  }
+  return null
+}
+
 // The bus checkout: the option, MM_AGENT_BUS_ROOT, or the checkout this file
 // really lies in (opencode/plugin/) (a symlink into .opencode/plugins/ resolves).
 export function busRoot(options: Options, env: Env, here: string): string | null {
@@ -395,6 +416,9 @@ type Turn = {
   compactOnly: boolean // the running execution only compacts (/compact between turns)
 }
 
+// The events the token split reads (usage.ts): a request's usage, the text and tool
+// calls it wrote, tool results, skills loaded, compactions; no deltas.
+const TRACKED = /^session\.(step\.(started|ended|failed)|(text|reasoning)\.ended|tool\.(input\.started|called|success|failed)|skill\.activated|compaction\.(started|ended|failed))$/
 const fresh = (): Turn => ({ busy: false, idleAt: Date.now(), drains: 0, signoffAsked: false, byBus: false, aborted: false,
   inFlight: false, listening: false, heldSince: 0, wakeKey: "", wakeRepeats: 0, wakeAfter: 0, sent: "", turn: false, compactOnly: false })
 
@@ -430,6 +454,27 @@ export async function setup(ctx: Plugin.Context) {
   let last = "" // the top-level session that had a prompt or ended a turn last: the one a wake starts
   let wakeFailedAt = 0
   let closed = false
+  // The token split per top-level session (RT-6.9 step 2): in memory, a reload starts it afresh.
+  let split: Split | null = null
+  const trackers = new Map<string, Tracker>()
+  // Every call into the split goes through here: a throw there never skips the
+  // plugin's own handling (a turn end, a compaction, a send's result).
+  const counting = (f: () => void) => {
+    try {
+      f()
+    } catch {
+      // the split is an estimate: this event is left out
+    }
+  }
+  const track = (id: string): Tracker | null => {
+    if (!split) return null
+    let tr = trackers.get(id)
+    if (!tr) {
+      tr = new split.Tracker(() => busNames)
+      trackers.set(id, tr)
+    }
+    return tr
+  }
 
   // The turn state survives an unload of the location (restart-safe).
   try {
@@ -561,6 +606,7 @@ export async function setup(ctx: Plugin.Context) {
       if (kind !== "context") t.turn = true
       await ctx.session.synthetic({ sessionID: id, text, description: description || "AI agent bus",
         metadata: { [MARK]: kind }, delivery: kind === "context" ? "steer" : "queue", resume: kind !== "context" } as any)
+      counting(() => track(id)?.injected(text)) // the plugin's texts carry no post body: overhead whole
       return true
     } catch {
       return false
@@ -568,12 +614,13 @@ export async function setup(ctx: Plugin.Context) {
   }
 
   // A human's prompt starts a turn (RT-6.20 step 3).
-  const humanTurn = async (id: string) => {
+  const humanTurn = async (id: string, text = "") => {
     if (!(await topLevel(id))) return
     if (!carries(id)) {
       await refuse(id, bound()?.id === id && bound()?.refused ? HOST_REFUSED : NO_BUS)
       return
     }
+    counting(() => track(id)?.user(text))
     const t = turn(id)
     Object.assign(t, { busy: true, turn: true, aborted: false, drains: 0, signoffAsked: false, byBus: false,
                        heldSince: 0, wakeKey: "", wakeRepeats: 0, wakeAfter: 0 })
@@ -618,6 +665,10 @@ export async function setup(ctx: Plugin.Context) {
     if (!(await mine(id))) return
     const t = turn(id)
     if (t.inFlight) return
+    // The token split of the requests since the last turn end, numbers only (RT-6.9 step 2).
+    let usage: Json | null | undefined = null
+    counting(() => (usage = trackers.get(id)?.take()))
+    if (usage) await stat("usage", usage)
     if (t.compactOnly) {
       // A compaction between turns runs as an execution of its own: no turn
       // ended, the presence and the listen window stay as they are.
@@ -814,7 +865,9 @@ export async function setup(ctx: Plugin.Context) {
   const onEvent = async (ev: any) => {
     const d = ev?.data ?? {}
     const id = String(d.sessionID || "")
-    switch (ev?.type) {
+    const type = String(ev?.type || "")
+    if (split && TRACKED.test(type) && (await mine(id))) counting(() => track(id)?.event(type, d))
+    switch (type) {
       case "session.created":
         if (id) {
           tops.set(id, !d.parentID && ours(d.location))
@@ -822,6 +875,7 @@ export async function setup(ctx: Plugin.Context) {
         }
         break
       case "session.deleted":
+        trackers.delete(id)
         if (turns.delete(id)) {
           if (last === id) last = ""
           await save()
@@ -859,6 +913,7 @@ export async function setup(ctx: Plugin.Context) {
   }
 
   const root = busRoot(options, env, fileURLToPath(import.meta.url))
+  split = await usageLoader.load(root)
   await keep(ctx.mcp.transform((editor: any) => {
     for (const [n, cfg] of editor.list()) if (n === SERVER || runsBus(cfg)) busNames.add(n)
     if (!relay) {
@@ -915,7 +970,7 @@ export async function setup(ctx: Plugin.Context) {
     // Under relay variables the first top-level session that prompts binds
     // the bus, before its turn runs (RT-6.20 step 1).
     if (relay && !bound() && (await topLevel(id))) await bind(id)
-    void humanTurn(id)
+    void humanTurn(id, String(ev?.prompt?.text ?? ""))
   }))
 
   void (async () => {

@@ -339,3 +339,26 @@ def test_the_tokens_by_category_are_the_tools(mm, run):
             f"{s['eq_pct']['coordination']}%", f"{s['raw_pct']['task']}%", f"{s['raw_pct']['overhead']}%",
             f"{s['raw_pct']['coordination']}%", "3", "5"] in cells
     assert ["0.101.0", "-", "-", "-", "-", "-", "-", "-", "-", "-"] in cells
+
+
+def test_a_usage_line_counts_in_the_split_not_in_the_bus_share(mm, run):
+    """RT-6.9 step 3: a line whose tok came from the plugin's usage events (OpenCode, pi: the
+    split, no tok.bus) counts in the script's tokens by category as in stats_report, and its
+    bus share by cause leaves it out, never a 0 % there."""
+    from mattermost_ai_agent_bus import stats
+
+    usage = {"req": 3, "req_ovh": 1, "req_coord": 1, "m": 1,
+             "all": {"in": 600, "read": 15_000, "w5m": 300, "w1h": 0, "out": 250},
+             "ovh": {"in": 50, "read": 4000, "w5m": 30, "w1h": 0, "out": 20},
+             "coord": {"in": 180, "read": 2000, "w5m": 60, "w1h": 0, "out": 50}}
+    cause = {"req": 10, "bus_req": 1, "fixed": 100, "all": {"in": 1000, "out": 100},
+             "bus": {"in": 100, "out": 10}}
+    lines = [{"v": "0.103.0", "sid": "a1a1", "min": 60, "rt": "pi", "tok": usage},
+             {"v": "0.103.0", "sid": "b2b2", "min": 60, "rt": "claude-code", "tok": cause}]
+    mm.posts[:0] = [{"id": f"u{i}", "user_id": "x" * 26, "create_at": 1,
+                     "message": "STATS " + json.dumps(line)} for i, line in enumerate(lines)]
+    got = json.loads(run(REPORT, "report", "agents-stats", "--json").stdout)
+    assert got == stats.report(lines)
+    row = got[0]
+    assert (row["split"]["lines"], row["split"]["of"], row["split"]["harnesses"]) == (1, 2, ["pi"])
+    assert (row["tok"]["sessions"], row["tok"]["req"], row["tok"]["bus_share_pct"]) == (1, 10, 10.0)

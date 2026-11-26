@@ -318,7 +318,9 @@ class Console:
             if self._operator(headers) is None:
                 return _unauthorized()
             view = self._view(self._session_token(headers))
-            return httpd.Response.json(view.fleet.graph(), headers=API_HEADERS)
+            # point 7: the operator's own person node is marked from the login's own
+            # record (RT-6.43 step 2), never from anything the browser sends
+            return httpd.Response.json(view.fleet.graph(view.anchor()), headers=API_HEADERS)
         if path == "/logout":
             own = urlsplit(s.public_url)
             want = f"{own.scheme}://{own.netloc}"
