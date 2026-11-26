@@ -7,6 +7,26 @@ before 0.5.0 are described in the git history.
 
 ### Changed
 
+- **The MCP server logs in to Keycloak itself, with and without corral**
+  (the host login's operating model, the owner's decision 10, #154 step 2;
+  RT-6.34, RT-6.18 step 12). At its first start it opens the approval page
+  in the desktop's browser, writes the address and the user code (never the
+  device code) to its stderr, which the harness keeps in its MCP log, and
+  DMs the responsible human. Stderr counts as delivery: a session without a
+  chat no longer refuses the approval; the person check still holds. The
+  refresh token and the nkey seed live in the system keychain (macOS
+  Keychain, libsecret) where one answers, else in the 0600 file; under
+  corral always in the 0600 file in the sandbox's home, where the agent can
+  read them (RISK-26). In a keyless corral session the relay holds the login
+  and hands the host process access tokens and the nkey seed over a login
+  channel, never the refresh token; the host DMs only a user code under a
+  link it builds itself, once per 60 s. Upgrading costs one new approval
+  per host, unless the old store moves: outside corral the server moves the
+  token and key from the host's state directory into its store once; under
+  corral the sandbox's store starts empty, and the host process moves the
+  old entries into its own store for plain servers. `MM_LOGIN_NKEY` stays
+  `ephemeral` by default (#163).
+
 - **The central bridge logs one INFO line per person post, reaction or removal of a reaction it carries onto NATS** (#134, RT-6.42): `inbound: carried` with the home, `what` (`post`, `reaction` or `unreaction`), the Mattermost post id and the subject, no text and no name beyond the anchor.
 
 ### Breaking
