@@ -2242,3 +2242,23 @@ def test_a_late_registered_server_adopts_its_earlier_part(tmp_path: Path, monkey
     monkeypatch.setattr(session_file, "read", lambda: {"CB_MM_BOT_USER_ID": other})
     second = session_file.nonce()
     assert second != earlier and re.fullmatch(r"[a-z2-7]{26}", second)
+
+
+def test_a_racing_bot_never_adopts_the_same_part(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+    """#163, RT-6.36: rename first, then read — a bot whose rename finds the keyed
+    file gone makes its own part instead of copying the winner's."""
+    from mattermost_ai_agent_bus import session_file
+
+    monkeypatch.setenv("XDG_STATE_HOME", str(tmp_path))
+    uid = "w" * 26
+    keyed = session_file.keyed_path("nonce")
+    keyed.parent.mkdir(parents=True, exist_ok=True)
+    keyed.write_text("CB_SESSION_NONCE=abcdefghijklmnopqrstuvwxyz\n", encoding="utf-8")
+    monkeypatch.setattr(session_file, "read", lambda: {"CB_MM_BOT_USER_ID": uid})
+
+    def lost(_a: str, _b: str) -> None:
+        raise FileNotFoundError("another bot claimed it")
+
+    monkeypatch.setattr(session_file.os, "replace", lost)
+    value = session_file.nonce()
+    assert value != "abcdefghijklmnopqrstuvwxyz" and re.fullmatch(r"[a-z2-7]{26}", value)

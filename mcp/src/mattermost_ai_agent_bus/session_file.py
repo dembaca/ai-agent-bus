@@ -366,13 +366,16 @@ def nonce() -> str:
         # bot can adopt it; a second one makes its own (two live sessions never
         # share a name).
         keyed = keyed_path("nonce")
-        if value := _nonce_in(keyed):
-            try:
-                os.replace(keyed, path)
-                return value
-            except OSError:  # another file system: write a copy, the keyed one stays
-                _keep_nonce(path, value)
-                return value
+        try:
+            # Claim it by the rename first, then read: two bots racing get one
+            # winner, and the loser's rename finds nothing and makes its own part.
+            os.replace(keyed, path)
+        except FileNotFoundError:
+            pass
+        except OSError:
+            pass  # an unusable keyed file: a new part is made below
+        if value := _nonce_in(path):
+            return value
     else:
         path = keyed_path("nonce")
         if value := _nonce_in(path):
