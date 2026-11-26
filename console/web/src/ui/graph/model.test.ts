@@ -1,9 +1,9 @@
 // The graph view's model (#145): data in, React Flow nodes and edges out, and
 // live updates that keep the picture still where nothing moved.
-import { describe, expect, it } from "vitest"
+import { afterEach, describe, expect, it, vi } from "vitest"
 import type { Edge, Node } from "@xyflow/react"
 import type { AgentCard, AgentState, Ask, GraphData } from "../../api/types"
-import { layout, reconcile, toFlow, type GraphInput } from "./model"
+import { layout, NODE_SIZE, reconcile, toFlow, type FlowData, type GraphInput } from "./model"
 import { mockApi } from "../../api/mock"
 
 const HOME = "~ai-agent-bus-dev"
@@ -244,5 +244,94 @@ describe("reconcile", () => {
     expect(out.relayout).toBe(false)
     expectPositionsKept(prev.nodes, out.nodes)
     expect(ids(out.nodes)).toEqual(ids(prev.nodes))
+  })
+})
+
+/** No two nodes that share a column overlap (their x ranges meet and their
+ * y ranges, with the layout's sizes, meet). */
+const expectNoOverlap = (nodes: Node[], what = "") => {
+  const size = (n: Node) => NODE_SIZE[(n.data as FlowData).kind]
+  for (let i = 0; i < nodes.length; i++) {
+    for (let j = i + 1; j < nodes.length; j++) {
+      const [a, b] = [nodes[i], nodes[j]]
+      const [sa, sb] = [size(a), size(b)]
+      const xMeet = a.position.x < b.position.x + sb.width && b.position.x < a.position.x + sa.width
+      const yMeet = a.position.y < b.position.y + sb.height && b.position.y < a.position.y + sa.height
+      expect(xMeet && yMeet, `${what} ${a.id} overlaps ${b.id}`).toBe(false)
+    }
+  }
+}
+
+describe("reconcile: a joining node takes a free slot", () => {
+  afterEach(() => { vi.useRealTimers() })
+
+  it("agents a, c, e, then b joins: b is not stacked on a neighbour", () => {
+    const name = (l: string) => `agent-mac-ai-agent-${l.repeat(6)}`
+    const three = { graph, cards: ["a", "c", "e"].map((l) => card(name(l))), asks: [] }
+    const prev = laidOut(three)
+    expectNoOverlap(prev.nodes, "before")
+    const out = step(prev, { ...three, cards: ["a", "b", "c", "e"].map((l) => card(name(l))) })
+    expect(out.relayout).toBe(true)
+    expectPositionsKept(prev.nodes, out.nodes)
+    expectNoOverlap(out.nodes, "after b joined")
+  })
+
+  it("an ask opening between asks takes a free slot too", () => {
+    const prev = laidOut({ ...base(), asks: [ask("a".repeat(26), A), ask("c".repeat(26), C)] })
+    const out = step(prev, { ...base(), asks: ["a", "b", "c"].map((l, i) => ask(l.repeat(26), [A, B, C][i])) })
+    expectPositionsKept(prev.nodes, out.nodes)
+    expectNoOverlap(out.nodes, "after the ask opened")
+  })
+
+  it("the mock's live sequence (the visitor joins and leaves, an ask opens and closes) never overlaps", async () => {
+    vi.useFakeTimers()
+    const api = mockApi()
+    const g = await api.graph()
+    let cards: AgentCard[] = []
+    const stop = api.watchFleet((e) => {
+      if (e.type === "snapshot") cards = e.cards
+      else if (e.type === "card") cards = cards.filter((c) => c.name !== e.card.name).concat(e.card)
+      else cards = cards.filter((c) => c.name !== e.name)
+    })
+    let shown = laidOut({ graph: g, cards, asks: await api.asks(), fleetSeen: true })
+    expectNoOverlap(shown.nodes, "first")
+    let joined = false
+    for (let i = 0; i < 40; i++) {
+      vi.advanceTimersByTime(4000)
+      const before = shown.nodes
+      const out = step(shown, { graph: g, cards, asks: await api.asks(), fleetSeen: true })
+      expectPositionsKept(before, out.nodes)
+      expectNoOverlap(out.nodes, `step ${i}`)
+      if (out.nodes.some((n) => n.id === "agent:agent-mac-ai-agent-e41a07")) joined = true
+      shown = out
+    }
+    stop()
+    expect(joined).toBe(true)
+  })
+})
+
+describe("toFlow: the fleet's first snapshot and gone agents", () => {
+  const withAgent: GraphData = {
+    ...graph,
+    nodes: graph.nodes.concat({ id: A, kind: "agent", label: "aaaaaa", state: "working" }),
+  }
+
+  it("before the first snapshot the graph's agents stand in", () => {
+    const ids = toFlow({ graph: withAgent, cards: [], asks: [] }).nodes.map((n) => n.id)
+    expect(ids).toContain(`agent:${A}`)
+  })
+
+  it("after the first snapshot an empty fleet shows no agent", () => {
+    const ids = toFlow({ graph: withAgent, cards: [], asks: [], fleetSeen: true }).nodes.map((n) => n.id)
+    expect(ids.some((id) => id.startsWith("agent:"))).toBe(false)
+  })
+
+  it("an open ask whose agent is gone stays, joined to its human only", () => {
+    const gone = "agent-mac-ai-agent-gonegone"
+    const { nodes, edges } = toFlow({ ...base(), asks: [ask(ASK_ID, gone)], fleetSeen: true })
+    expect(nodes.map((n) => n.id)).toContain(`ask:${ASK_ID}`)
+    const ends = touching(edges, `ask:${ASK_ID}`).flatMap((e) => [e.source, e.target])
+    expect(ends).toContain("person:dembaca")
+    expect(ends).not.toContain(`agent:${gone}`)
   })
 })

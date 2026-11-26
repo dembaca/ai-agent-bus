@@ -42,7 +42,6 @@
 }
 
 /* edges */
-.graph__edge--member .react-flow__edge-path,
 .react-flow__edge.graph__edge--member .react-flow__edge-path { stroke: color-mix(in srgb, var(--ink) 30%, transparent); }
 .react-flow__edge.graph__edge--guest .react-flow__edge-path {
   stroke: color-mix(in srgb, var(--state-listening) 60%, transparent);
@@ -98,6 +97,7 @@
 .gnode--person .gnode__label { color: var(--accent); }
 
 .gnode--ask { width: 190px; border-color: color-mix(in srgb, var(--for-me) 55%, transparent); }
+.gnode--agent, .gnode--ask { cursor: pointer; }
 .gnode--for-me { border-color: var(--for-me); box-shadow: inset 3px 0 0 var(--for-me); }
 
 .gnode--agent {
@@ -110,6 +110,10 @@
 .gnode--agent[data-state="idle"]      { border-left-color: var(--state-idle); }
 .gnode--agent[data-state="silent"]    { border-left-color: var(--state-silent); }
 .gnode--agent[data-state="offline"]   { border-left-color: var(--state-offline); opacity: .62; }
+/* Format v1's spellings: online like listening, away like idle. */
+.gnode--agent[data-state="online"]    { border-left-color: var(--state-listening); }
+.gnode--agent[data-state="away"]      { border-left-color: var(--state-idle); }
+.gnode--agent[data-state="online"]    .gnode__state { color: var(--state-listening); }
 .gnode--agent[data-state="working"]   .gnode__state { color: var(--state-working); }
 .gnode--agent[data-state="listening"] .gnode__state { color: var(--state-listening); }
 .gnode--agent[data-state="bus"]       .gnode__state { color: var(--state-bus); }

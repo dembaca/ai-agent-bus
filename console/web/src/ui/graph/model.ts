@@ -5,7 +5,15 @@ import type { AgentCard, AgentState, Ask, GraphData, Harness } from "../../api/t
 /** What the graph view is drawn from: the graph endpoint (people, channels,
  * agents, trusts and coordinates), the fleet's live cards and the open asks.
  * No field of its own on the wire (issue #145). */
-export type GraphInput = { graph: GraphData | null; cards: AgentCard[]; asks: Ask[] }
+export type GraphInput = {
+  graph: GraphData | null
+  cards: AgentCard[]
+  asks: Ask[]
+  /** True once the fleet stream's first snapshot came: from then on the
+   * cards alone say which agents there are, also when there are none.
+   * Left out it counts as true once any card is there. */
+  fleetSeen?: boolean
+}
 
 export type FlowKind = "person" | "ask" | "agent" | "channel"
 
@@ -32,9 +40,9 @@ const COLUMN: Record<FlowKind, number> = { person: 0, ask: 1, agent: 2, channel:
 const COLUMN_GAP = 260
 
 /** Node sizes for the layout; the CSS gives the nodes the same width. */
-const SIZE: Record<FlowKind, { width: number; height: number }> = {
+export const NODE_SIZE: Record<FlowKind, { width: number; height: number }> = {
   person: { width: 150, height: 40 },
-  ask: { width: 190, height: 56 },
+  ask: { width: 190, height: 64 },
   agent: { width: 170, height: 56 },
   channel: { width: 170, height: 36 },
 }
@@ -48,11 +56,17 @@ const askId = (id: string): string => `ask:${id}`
 
 const kindOf = (node: Node): FlowKind => (node.data as FlowData).kind
 
+/** The space between two nodes of one column, as dagre's `nodesep`. */
+const NODE_GAP = 18
+
 /** The graph's nodes and edges from the three sources. Every id is derived
  * from a name on the wire, so the same input gives the same ids. Positions
  * are all 0,0: `layout` or `reconcile` places them. */
 export function toFlow(input: GraphInput): { nodes: Node[]; edges: Edge[] } {
   const { graph, cards, asks } = input
+  // Before the first snapshot the graph's agent nodes stand in; after it
+  // the cards are the live truth, an empty fleet included.
+  const live = input.fleetSeen === true || cards.length > 0
   const nodes = new Map<string, Node>()
   const edges = new Map<string, Edge>()
   const add = (id: string, data: FlowData) => {
@@ -88,7 +102,7 @@ export function toFlow(input: GraphInput): { nodes: Node[]; edges: Edge[] } {
 
   // Agents: the fleet's cards are the live truth; before the first snapshot
   // the graph's agent nodes stand in, so the view is not empty meanwhile.
-  if (cards.length > 0) {
+  if (live) {
     for (const c of cards) {
       add(agentId(c.name), {
         kind: "agent", label: c.displayName || c.name, state: c.state, harness: c.harness, crown: c.crown,
@@ -113,8 +127,9 @@ export function toFlow(input: GraphInput): { nodes: Node[]; edges: Edge[] } {
     add(channelId(n.id), { kind: "channel", label: `~${name}`, role: "home" })
   }
 
-  // Open asks, and the human each waits on.
-  const open = asks.filter((a) => a.end === "open" && nodes.has(agentId(a.by)))
+  // Open asks, and the human each waits on. An ask whose agent is gone
+  // still waits on its human: it stays, joined to the human only.
+  const open = asks.filter((a) => a.end === "open")
   for (const a of open) {
     if (a.human) add(personId(a.human), { kind: "person", label: a.human })
     add(askId(a.id), {
@@ -140,7 +155,7 @@ export function toFlow(input: GraphInput): { nodes: Node[]; edges: Edge[] } {
     if (kinds.includes("agent") && kinds.includes("channel")) {
       const [agent, channel] = kinds[0] === "agent" ? [from, to] : [to, from]
       const home = homeOf.get(agent)
-      if (home === channel || (home === undefined && cards.length === 0)) link("member", agent, channel)
+      if (home === channel || (home === undefined && !live)) link("member", agent, channel)
       else {
         link("guest", agent, channel)
         const node = nodes.get(channel)!
@@ -172,7 +187,7 @@ export function layout(nodes: Node[], edges: Edge[]): Node[] {
   const byId = new Map(nodes.map((n) => [n.id, n]))
   for (const n of nodes) {
     const kind = kindOf(n)
-    g.setNode(n.id, { ...SIZE[kind] })
+    g.setNode(n.id, { ...NODE_SIZE[kind] })
     g.setEdge(ROOT, n.id, { minlen: COLUMN[kind] + 1, weight: 1 })
   }
   for (const e of edges) {
@@ -189,9 +204,37 @@ export function layout(nodes: Node[], edges: Edge[]): Node[] {
     const p = g.node(n.id)
     return {
       ...n,
-      position: { x: COLUMN[kind] * COLUMN_GAP, y: Math.round(p.y - SIZE[kind].height / 2) },
+      position: { x: COLUMN[kind] * COLUMN_GAP, y: Math.round(p.y - NODE_SIZE[kind].height / 2) },
     }
   })
+}
+
+type Box = { x: number; y: number; width: number; height: number }
+
+/** Where a node stands and how big it is: React Flow's measure, else the
+ * layout's size. */
+const box = (n: Node): Box => ({
+  x: n.position.x,
+  y: n.position.y,
+  width: n.measured?.width ?? NODE_SIZE[kindOf(n)].width,
+  height: n.measured?.height ?? NODE_SIZE[kindOf(n)].height,
+})
+
+/** The y nearest to `want.y` at which `want` overlaps none of `taken` (with
+ * NODE_GAP around it): dagre's own place if free, else just above or below
+ * a node in the way, else below the lowest. Only nodes whose x range meets
+ * want's take part, so a dragged-away node frees its slot. */
+const freeY = (want: Box, taken: Box[]): number => {
+  const inColumn = taken.filter((t) => t.x < want.x + want.width && want.x < t.x + t.width)
+  const fits = (y: number) => inColumn.every((t) =>
+    y + want.height + NODE_GAP <= t.y || t.y + t.height + NODE_GAP <= y)
+  const candidates = [want.y]
+  for (const t of inColumn) {
+    candidates.push(t.y - want.height - NODE_GAP, t.y + t.height + NODE_GAP)
+  }
+  const free = candidates.filter(fits).sort((a, b) => Math.abs(a - want.y) - Math.abs(b - want.y) || a - b)
+  // Below every node is always free; the candidates include it.
+  return free[0]
 }
 
 const sameIds = (a: { id: string }[], b: { id: string }[]): boolean => {
@@ -223,8 +266,22 @@ export function reconcile(
     }
   }
   const placed = layout(next, nextEdges)
+  // The nodes that stay are held where they were; dagre's places for the new
+  // ones assumed their neighbours moved aside, which they did not. So a new
+  // node takes the free slot of its column nearest to dagre's place.
+  const held = placed.filter((n) => before.has(n.id)).map(keep)
+  const fresh = placed.filter((n) => !before.has(n.id))
+  const taken = held.map(box)
+  for (const n of fresh) {
+    const b = box(n)
+    const y = freeY(b, taken)
+    taken.push({ ...b, y })
+    held.push({ ...n, position: { x: b.x, y } })
+  }
+  const order = new Map(next.map((n, i) => [n.id, i]))
+  held.sort((a, b) => order.get(a.id)! - order.get(b.id)!)
   return {
-    nodes: placed.map(keep),
+    nodes: held,
     edges: nextEdges,
     relayout: true,
   }
