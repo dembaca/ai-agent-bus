@@ -5,6 +5,10 @@ before 0.5.0 are described in the git history.
 
 ## Unreleased
 
+### Changed
+
+- **The central bridge logs one INFO line per person post, reaction or removal of a reaction it carries onto NATS** (#134, RT-6.42): `inbound: carried` with the home, `what` (`post`, `reaction` or `unreaction`), the Mattermost post id and the subject, no text and no name beyond the anchor.
+
 ### Breaking
 
 - **The central bridge refuses an `http` Mattermost URL to a host that is
