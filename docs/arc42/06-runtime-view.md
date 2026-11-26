@@ -1900,6 +1900,35 @@ The rule that an operator reads the guest channels of agents that trust them onl
 8. **The reports.** The lines reach the console through the login's own stats consumer, from 7 days back; each session keeps its own reports. The console decodes each line strictly (point 14: strings only in `v`, `sid`, `rt` and `kind`, each by its pattern, every listed key of the type the list gives it, each number an integer 0 to 10^12, a share shown within 0 to 100; keys from the allow list, others ignored and never shown) and counts each line once by its stream sequence (a consumer made anew replays the 7 days), and computes the bus overhead share of all tokens per version (the overhead segment of the token split in input-token equivalents, marked estimated; before it the bus and coordination share, which counted a request the bus caused whole), the asks over 24 hours and 7 days, the bus traffic by category over 7 days (the overhead measurement, RT-6.9 step 3: bus overhead and coordination in items and characters, the overhead's share of the characters, polls and the empty ones' share, and from how many lines), and the tokens by category over 7 days (the token split of the overhead measurement, RT-6.9 step 2: one horizontal stacked bar per row of task work, bus overhead and coordination with the percent on each segment, rows for the fleet, per version, per role and per harness, input-token equivalents by default and raw tokens on a switch; each bar marked "estimated", the report with a one-line note on the method and the coverage: from how many lines and which harnesses) with `stats.py`, the numbers `stats_report` gives on the same lines; a missing field shows "n/a"; the view says the age of its oldest line. It shows no agent's name and no report by home or owner (point 15).
 9. **Logout.** The operator logs out with the button in the console's sidebar, a form that POSTs `/logout` (a GET answers 405, so no link or image of another site can log anyone out; a POST from another origin, by `Origin` or Fetch Metadata, gets 403). The server drops the session as at its end (step 4) and clears the cookie, then ends the realm's session too, an RP-initiated logout (OpenID Connect): it redirects the browser to Keycloak's `end_session_endpoint` from the discovery document with `client_id`, `post_logout_redirect_uri` (`<CONSOLE_PUBLIC_URL>/`, which must be registered as a valid post logout redirect URI on the console's client) and the login's ID token as `id_token_hint`, kept in the server's memory with the session and sent expired or not: OpenID Connect allows an expired hint, and Keycloak checks its signature, not its expiry. Without a stored ID token (the session already gone, as after a restart) it sends `client_id` alone with the redirect URI, and Keycloak asks the person to confirm the logout. The hint travels in that redirect's URL, so it lands in the browser's history and in the access logs of Keycloak and of the proxies in front of it; the redirect carries `Cache-Control: no-store` and `Referrer-Policy: no-referrer`, so no cache keeps it and no next page gets it as its Referer. When the server cannot send the browser to the realm's logout (no end-session endpoint, or the issuer's endpoints not discovered yet), it answers with a page that starts no login and says that the Keycloak session is still open, since `/login` would come straight back in through it. Keycloak then sends the browser back to the console, which starts a fresh login: the single sign-on is gone, so the realm asks for the password, and on a shared machine the next person is not logged in as the previous operator.
 
+10. **The metrics page** (#158, ADR-015). `GET /metrics` answers in the
+    Prometheus text exposition format (0.0.4), behind the operator's login
+    like every `/v1` route — who may scrape is the operator that is logged
+    in, the same right the Reports/Stats tab needs: no anonymous scrape, no
+    token of its own, and no NATS credential beyond each login's own. Two
+    kinds of numbers on one page: the console's own observations,
+    aggregated over all sessions (requests by bucketed route, method and
+    status — one bounded set of buckets, a variable thread tail is its one
+    bucket; the open fleet streams; the sessions held; the readers'
+    connection states and connects; the credentials' renewals and their
+    failures, step 4; and the records the strict decoders refused, steps 6
+    and 8) — every one of them counted **process-wide at the event**, so
+    no session's end resets a series — and the agent numbers of the scrape
+    session's own reading — the fleet's agents by state and harness, the
+    open asks it sees (step 6) and the tokens by category over 7 days per
+    version and harness (step 8, RT-6.9 step 2), the same numbers
+    `stats.split_summary` gives — served **only while that reading is
+    live**: a waiting or ended reader shows no series at all. A value that
+    is n/a leaves its series out, never a 0. No session id, agent name,
+    owner or home is ever a label (the reading's own stance, steps 6 and
+    8); the harness, the readers' own state words and the state words all
+    come from bounded sets with anything else counted as `other`, and only
+    the newest versions keep their own label, the rest folded into one
+    `other` per harness. Every family carries the `choirbus_` prefix. The
+    **session cookie is never a scrape credential** (it is that
+    operator's whole console): an unattended scrape comes from the
+    approved follow-up, a loopback listener with a scrape token and a
+    read-only service account on the STATS stream.
+
 ### Error Handling
 
 | Step | Failure | System Response |
@@ -1936,6 +1965,7 @@ The rule that an operator reads the guest channels of agents that trust them onl
 | 8 | A line with a string outside `v`, `sid`, `rt` and `kind` or off its pattern, a duplicate key, or over 8 KiB | The whole line is dropped with a warning that carries none of it |
 | 8 | A key outside the allow list | Ignored, never shown |
 | 8 | No lines yet, or none in the window | "n/a", never 0 |
+| 10 | A STATS line or a presence record breaks the rules of its format | Dropped whole, counted on the page (`choirbus_console_stats_lines_refused_total`, `choirbus_console_fleet_records_refused_total`) at the event, never shown; a group whose report arithmetic fails is skipped, no series |
 
 ## 6.44 An agent's own bot in Mattermost
 
@@ -1971,3 +2001,4 @@ The rule that an operator reads the guest channels of agents that trust them onl
 | 6 | A rate limit (429), a 5xx or a timeout on a post or reaction of the agent's bot | The reader retries the message under the same bot; no new token |
 | 6 | The removal of the bot's reaction fails with its client | The admin bot removes it as the bot; if that fails too, the reader retries, the record kept |
 | 6 | A message Mattermost refuses for good (400, 404, 413) | Skipped as for the bridge bot (RT-6.36) |
+

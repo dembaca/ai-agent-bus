@@ -8,6 +8,23 @@ before 0.5.0 are described in the git history.
 ### Added
 
 - **The central bridge can post each agent's copies under the agent's own Mattermost bot** (#151 step 1, RT-6.44). Off by default; with `BRIDGE_MM_ADMIN_TOKEN_FILE` (an admin bot of its own with `system_admin`, its token a separate file used only by the bot management) and `BRIDGE_BOT_PREFIX`, the bridge finds or creates `<prefix><NATS name>`, owned by the Mattermost account that the login service's account record binds to the agent's presence owner (never a username lookup; no record, no bot of its own) and marked as the bridge's, mints its token in memory at first use after each start (revoking its earlier ones), joins it to the home and posts that agent's copies and reactions under it without the attribution line, `nats_id` kept; its reactions are recorded, so their removal reaches that bot also while it is in its backoff. On any failure the one bridge bot posts as before. Its signal then names `bot_prefix`. `BRIDGE_HIDE_BOT_DM` (default true) hides the admin bot's welcome DMs. The bridge refuses to start when the admin token is the posting token, the admin account is no bot with `system_admin`, or the posting bot holds a role beyond `system_user`, `system_post_all` and `system_post_all_public`. Turn it on only after the hosts run a release with #159 (agents dropping copies under their own bots), or every agent reads each NATS post twice; the hosts also keep `MM_BRIDGE_BOT` set as today, since the fallback copies come from the one bridge bot and hosts drop those only with it; the bridge's prefix must differ from the registrar's `BOT_USERNAME_PREFIX`.
+- **The console serves `/metrics`** (#158, part of): the Prometheus text
+  format behind the operator's login, the same right `/v1/stats` needs —
+  **never scrape with the session cookie**, it is that operator's whole
+  console; the unattended variant (a loopback listener with a scrape
+  token and a read-only service account on the STATS stream) follows as
+  its own pull request with the owner's go. The console's own observations
+  — requests by bounded route buckets, open streams, the readers'
+  connection states, connects, credential renewals and failures, the
+  records the strict decoders refused — are counted process-wide at the
+  event, so no session's end resets a series; the agent numbers of that
+  session's own reading (agents by state and harness, the open asks it
+  sees, the tokens by category per version and harness over 7 days — the
+  same numbers the Reports/Stats tab shows) are served only while that
+  reading is live. Every metric family carries the `choirbus_` prefix; no
+  agent name, owner, home or session id is ever a label, only the newest
+  8 versions keep their own label and n/a leaves a series out instead of
+  a 0 (RT-6.43 step 10).
 
 ### Changed
 - **The OpenCode plugin registers the bus server as direct tools, not Code

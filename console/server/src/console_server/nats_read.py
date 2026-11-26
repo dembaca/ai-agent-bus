@@ -190,11 +190,20 @@ class Dedupe:
 
 class View:
     """What one session shows: its own fleet, fed by its own reader (or by
-    nobody, without NATS), and one wake per live fleet stream."""
+    nobody, without NATS), and one wake per live fleet stream.
 
-    def __init__(self, presence_subject: str, stats_subject: str = "stats") -> None:
-        self.fleet = Fleet(presence_subject=presence_subject)
-        self.stats = StatsBook(stats_subject=stats_subject)   # the STATS reports (step 8)
+    ``count`` is #158's process-wide event counter (telemetry.Telemetry,
+    a callable taking the event's name): called where a connect, a renewal
+    or a refused record happens, never read out of the view, so no
+    session's end drops a series."""
+
+    def __init__(self, presence_subject: str, stats_subject: str = "stats",
+                 count: "Callable[[str], None] | None" = None) -> None:
+        self.count = count if count is not None else (lambda _name: None)
+        self.fleet = Fleet(presence_subject=presence_subject,
+                           count=lambda: self.count("fleet_record_refused"))
+        self.stats = StatsBook(stats_subject=stats_subject,
+                               count=lambda: self.count("stats_line_refused"))
         self.wakes: set[asyncio.Event] = set()
         self.reader: PersonReader | None = None
         self.stats_lines = 0          # STATS deliveries read; the book keeps the valid ones
@@ -432,6 +441,7 @@ class PersonReader:
                 await old.close()
             backoff = 1.0
             self.connects += 1
+            self.view.count("bus_connect")
             started = time.monotonic()
             if self._record.is_set():
                 self.state = "reading"
@@ -464,12 +474,14 @@ class PersonReader:
         assert self._tokens is not None
         try:
             self._tokens = await self._renew(self._tokens.refresh)
+            self.view.count("credential_renewal")
             return self._tokens.access
         except asyncio.CancelledError:
             raise
         except Refused as exc:
             raise Ended(f"ended: the renewal was refused ({exc})") from None
         except Exception as exc:  # noqa: BLE001 - the realm or the network, passing
+            self.view.count("credential_renewal_failure")
             self.state = "waiting: the renewal is failing"
             log.warning("console: login %.10s…: renewal failed (%s); retrying in %.0f s",
                         self.login, type(exc).__name__, backoff)

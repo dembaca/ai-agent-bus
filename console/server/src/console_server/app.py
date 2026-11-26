@@ -29,7 +29,7 @@ from pathlib import Path
 from typing import Any
 from urllib.parse import urlsplit
 
-from . import auth, config, httpd
+from . import auth, config, httpd, telemetry
 from .auth import Endpoints
 from .fleet import Fleet
 from .nats_read import PersonReader, View, reachable
@@ -72,7 +72,9 @@ class Console:
         self.settings = settings
         # the stand-in view: login off (tests and the mock) and sessions made
         # without one; nothing feeds it — every login has a view of its own
-        self.standin = View(settings.presence_subject, settings.stats_subject)
+        self.telemetry = telemetry.Telemetry()   # the console's /metrics counters
+        self.standin = View(settings.presence_subject, settings.stats_subject,
+                            count=self.telemetry.note_event)
         self.sessions = auth.Sessions()
         self.keyring = auth.Keyring()
         self.endpoints: auth.Endpoints | None = None
@@ -261,6 +263,17 @@ class Console:
 
     async def handle(self, path: str, query: dict[str, str],
                      headers: dict[str, str]) -> httpd.Response | httpd.SSE:
+        answer = await self._route(path, query, headers)
+        # the console's own observation (#158): every answered request, by its
+        # bucketed route, its method (the logout posts) and its status; an
+        # SSE counts as the 200 its stream answers
+        self.telemetry.note(telemetry.route_bucket(path, self.settings.health_path),
+                            headers.get(":method", "GET"),
+                            getattr(answer, "status", 200))
+        return answer
+
+    async def _route(self, path: str, query: dict[str, str],
+                     headers: dict[str, str]) -> httpd.Response | httpd.SSE:
         s = self.settings
         if (headers.get(":method", "GET") == "POST") != (path == "/logout"):
             # the logout alone changes state and takes POST only, so no
@@ -309,6 +322,23 @@ class Console:
             view = self._view(self._session_token(headers))
             return httpd.Response.json(view.asks() if path == "/v1/asks"
                                        else view.stats.reports(), headers=API_HEADERS)
+        if path == "/metrics":
+            # #158: who may scrape — the operator that is logged in, the same
+            # right /v1/* needs; no anonymous scrape, no token of its own and no
+            # new NATS right (the owner's go settled it the service variant).
+            # The agent numbers are this session's own reading, the same data
+            # /v1/stats shows it (RT-6.43); console metrics are the process's.
+            if self._operator(headers) is None:
+                return _unauthorized()
+            readers = [v.reader for v in self.sessions.views()
+                       if v.reader is not None]
+            return httpd.Response(status=200,
+                                  body=telemetry.render(
+                                      self.telemetry, self.sessions.count(),
+                                      sum(self._streams.values()), readers,
+                                      self._view(self._session_token(headers))).encode(),
+                                  content_type="text/plain; version=0.0.4; charset=utf-8",
+                                  headers=API_HEADERS)
         if path.startswith("/v1/threads/"):
             if self._operator(headers) is None:
                 return _unauthorized()
@@ -453,7 +483,8 @@ class Console:
         """A session with a view of its own; with NATS set, a reader that
         connects as this operator with a key pair made for this login."""
         s = self.settings
-        view = View(s.presence_subject, s.stats_subject)
+        view = View(s.presence_subject, s.stats_subject,
+                    count=self.telemetry.note_event)
         if s.nats_url:
             sub = operator.sub
 
