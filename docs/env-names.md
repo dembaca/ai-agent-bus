@@ -466,6 +466,9 @@ have no `MM` in their names; the rename gives them one, as the rule says:
 | `CONSOLE_TOKEN_ALGS` | `CB_CONSOLE_TOKEN_ALGS` | no | same | |
 | `CONSOLE_WEB_DIR` | `CB_CONSOLE_WEB_DIR` | no | same, `app.py`; `console/server/Dockerfile` | |
 | `VITE_CONSOLE_API` | `VITE_CB_CONSOLE_API` | no | `console/web/src/main.tsx`, `console/web/src/api/http.ts`, `console/web/vite.config.ts`; `console/server/Dockerfile` | build time only; Vite passes only `VITE_` names to the page, so `VITE_` stays in front; no fallback needed, the build sets it |
+| `CONSOLE_METRICS_LISTEN_ADDR` | `CB_CONSOLE_METRICS_LISTEN_ADDR` | no | `console/server/src/console_server/config.py`; login-service docs | the unattended metrics page's listener (#158, RT-6.43 step 10) |
+| `CONSOLE_METRICS_NKEY_SEED_FILE` | `CB_CONSOLE_METRICS_NKEY_SEED_FILE` | no | same; `services/auth/nats-server.example.conf` (a comment) | pairs with `CB_CONSOLE_METRICS_TOKEN_FILE`; a scrambled or group/world-readable seed is refused |
+| `CONSOLE_METRICS_TOKEN_FILE` | `CB_CONSOLE_METRICS_TOKEN_FILE` | no | same | pairs with the seed file; 
 
 ### The OpenCode plugin (6)
 

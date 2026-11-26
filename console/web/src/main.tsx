@@ -7,11 +7,11 @@ import { mockApi } from "./api/mock"
 import type { ConsoleApi } from "./api/types"
 import "./app.css"
 
-// The console's own server: VITE_CONSOLE_API is its base (same-origin
+// The console's own server: VITE_CB_CONSOLE_API is its base (same-origin
 // path, "" or "/api…" — never a cross-origin URL: the login's cookie is
 // same-origin). Behind the built bundle the server itself answers, so
 // the mock runs in development only and stays out of it.
-const base = import.meta.env.VITE_CONSOLE_API as string | undefined
+const base = import.meta.env.VITE_CB_CONSOLE_API as string | undefined
 const api: ConsoleApi = base || import.meta.env.PROD
   ? httpApi(base ?? "/")
   : mockApi()

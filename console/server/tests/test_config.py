@@ -102,3 +102,41 @@ def test_a_static_seed_refuses_the_start_unread(monkeypatch: pytest.MonkeyPatch,
     with pytest.raises(config.ConfigError, match="static NATS account is gone"):
         config.find()
     assert str(seed) not in opened
+
+
+def test_the_cb_reading_rule(monkeypatch, caplog) -> None:
+    """docs/env-names.md, the reading rule (#169's console round): the new
+    `CB_CONSOLE_…` first, else the old `CONSOLE_…` with one deprecation
+    warning per process; both set with different values refuses; equal
+    values pass."""
+    from console_server import config
+
+    def env(**kw):
+        for k in ("CB_CONSOLE_PUBLIC_URL", "CONSOLE_PUBLIC_URL",
+                  "CB_CONSOLE_LOGIN_OFF", "CONSOLE_LOGIN_OFF"):
+            monkeypatch.delenv(k, raising=False)
+        monkeypatch.setenv("CB_CONSOLE_NATS_URL", "nats://127.0.0.1:4222")
+        monkeypatch.delenv("CONSOLE_NATS_URL", raising=False)
+        for k, v in kw.items():
+            monkeypatch.setenv(k, v)
+
+    base = dict(CB_CONSOLE_PUBLIC_URL="http://127.0.0.1:1831",
+                CB_CONSOLE_LOGIN_OFF="1")
+    env(**base)
+    assert config.find().public_url == "http://127.0.0.1:1831"   # the new first
+
+    env(**base, CONSOLE_PUBLIC_URL="http://127.0.0.1:1832")      # a conflict
+    with pytest.raises(config.ConfigError, match="differ"):
+        config.find()
+
+    env(**base, CONSOLE_PUBLIC_URL="http://127.0.0.1:1831")       # equal pass
+    assert config.find().public_url == "http://127.0.0.1:1831"
+
+    env(CONSOLE_PUBLIC_URL="http://127.0.0.1:1831", CB_CONSOLE_LOGIN_OFF="1")
+    caplog.clear()
+    s = config.find()
+    assert s.public_url == "http://127.0.0.1:1831"              # the old warned
+    assert any("deprecated" in r.message and "CB_CONSOLE_PUBLIC_URL" in r.message
+               for r in caplog.records)
+
+

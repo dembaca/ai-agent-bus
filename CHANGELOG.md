@@ -7,6 +7,15 @@ before 0.5.0 are described in the git history.
 
 ### Added
 
+- **The console's settings read their `CB_CONSOLE_…` names** (#169's console
+  round): the new name first, else the old `CONSOLE_…` with one deprecation
+  warning per process; both set with different values refuses the start
+  (`docs/env-names.md`, the reading rule). #168's three metric settings are
+  carried with: `CB_CONSOLE_METRICS_NKEY_SEED_FILE`,
+  `CB_CONSOLE_METRICS_TOKEN_FILE`, `CB_CONSOLE_METRICS_LISTEN_ADDR`. The web
+  builds with `VITE_CB_CONSOLE_API`. The old names go in the release after
+  0.103.0.
+
 - **The central bridge can post each agent's copies under the agent's own Mattermost bot** (#151 step 1, RT-6.44). Off by default; with `BRIDGE_MM_ADMIN_TOKEN_FILE` (an admin bot of its own with `system_admin`, its token a separate file used only by the bot management) and `BRIDGE_BOT_PREFIX`, the bridge finds or creates `<prefix><NATS name>`, owned by the Mattermost account that the login service's account record binds to the agent's presence owner (never a username lookup; no record, no bot of its own) and marked as the bridge's, mints its token in memory at first use after each start (revoking its earlier ones), joins it to the home and posts that agent's copies and reactions under it without the attribution line, `nats_id` kept; its reactions are recorded, so their removal reaches that bot also while it is in its backoff. On any failure the one bridge bot posts as before. Its signal then names `bot_prefix`. `BRIDGE_HIDE_BOT_DM` (default true) hides the admin bot's welcome DMs. The bridge refuses to start when the admin token is the posting token, the admin account is no bot with `system_admin`, or the posting bot holds a role beyond `system_user`, `system_post_all` and `system_post_all_public`. Turn it on only after the hosts run a release with #159 (agents dropping copies under their own bots), or every agent reads each NATS post twice; the hosts also keep `MM_BRIDGE_BOT` set as today, since the fallback copies come from the one bridge bot and hosts drop those only with it; the bridge's prefix must differ from the registrar's `BOT_USERNAME_PREFIX`.
 - **The console's unattended metrics page** (#158, needs #162): with both
   `CONSOLE_METRICS_NKEY_SEED_FILE` (the seed of a read-only nkey of the

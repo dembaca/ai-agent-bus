@@ -302,7 +302,7 @@ steps 1 to 4). Both sides are built: the login service's, and the console's serv
 
 | Part | Value |
 |------|-------|
-| Connect token | The operator's Keycloak access token, bare (no JSON): `azp` the console's client (`AUTH_CONSOLE_CLIENT_ID`), `aud` naming it and not the bus's client, the operators' group (`AUTH_OPERATOR_GROUP`) in `groups` |
+| Connect token | The operator's Keycloak access token, bare (no JSON): `azp` the console's client (`AUTH_CB_CONSOLE_CLIENT_ID`), `aud` naming it and not the bus's client, the operators' group (`AUTH_OPERATOR_GROUP`) in `groups` |
 | Connect nkey | A key pair per login, made by the console's server; it signs the server's nonce |
 | Name | `<AUTH_PERSON_PREFIX><anchor>`, default `person-`, the anchor the directory holds for the token's `sub` with `.` written as `~` |
 | `<login>` | The login's whole public key, in lower case (56 characters): no other login's token can be ground |
