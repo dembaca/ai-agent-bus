@@ -59,8 +59,12 @@ API_HEADERS = (("Cache-Control", "no-store"),
                ("X-Content-Type-Options", "nosniff"),
                ("Referrer-Policy", "no-referrer"),
                ("Content-Security-Policy", "default-src 'none'; frame-ancestors 'none'"))
+# the pages: same-origin, not no-referrer. Under no-referrer a browser sends
+# `Origin: null` with the page's own logout POST, which /logout refuses as
+# cross-site (RT-6.43 step 9); same-origin still sends no referrer to any
+# other site
 STATIC_HEADERS = (("X-Content-Type-Options", "nosniff"),
-                  ("Referrer-Policy", "no-referrer"),
+                  ("Referrer-Policy", "same-origin"),
                   ("Content-Security-Policy",
                    "default-src 'self'; img-src 'self' data:;"
                    " font-src 'self' data:; base-uri 'none';"

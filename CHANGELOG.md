@@ -64,6 +64,18 @@ before 0.5.0 are described in the git history.
   `index.html` and the app's fallback answer `Cache-Control: no-cache`, the
   hashed files under `/assets/` `public, max-age=31536000, immutable`.
 
+### Fixed
+
+- **The operator console's logout works in a browser again** (RT-6.43
+  step 9). The pages sent `Referrer-Policy: no-referrer`, under which a
+  browser sends `Origin: null` with the sidebar's same-origin logout POST,
+  and the server refused it as a cross-site logout: every logout from the
+  browser failed with 403. The pages now send `Referrer-Policy:
+  same-origin`, which still sends no referrer to another site; the API
+  answers and the logout's redirect to Keycloak keep `no-referrer`, and
+  `Origin: null` is still refused. A console tab opened before the update
+  keeps the old policy until it is reloaded.
+
 ## 0.102.0
 
 Needs: login service jetstream user with consumer create and delete rights on the directory bucket.
