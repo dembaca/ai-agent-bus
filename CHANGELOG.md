@@ -3,6 +3,23 @@
 Every version bump in `.claude-plugin/plugin.json` gets an entry here. Versions
 before 0.5.0 are described in the git history.
 
+## Unreleased
+
+### Docs
+- **Setup through the console, proposed**
+  ([#192](https://github.com/dembaca/ai-agent-bus/issues/192)): an amendment to the
+  operator console's decision (ADR-015) in four points. The console serves a
+  configuration without secrets (login issuer and client, NATS address, CA, the central
+  adapter's key, the bridge bot's name, the default home per repository) that the MCP
+  server fetches on first start with the console's URL as its only input, and acts as
+  the marketplace for the one signed release, pinned to tag and commit by the
+  administrator; the MCP server is published as a package for the other harnesses; an
+  admin area in the console for the directory and the pin; trust lists set in the
+  console by the agent's owner, each addition confirmed on the agent's machine. This
+  amends the bus without a chat as its source (ADR-016), point 4. Open for the owner:
+  the integrity of updates and the writing console. New risks RISK-33 to RISK-35.
+  Nothing is built.
+
 ## 0.103.0
 
 Needs: settings renamed to the new prefix before 0.104.0, see the changelog.

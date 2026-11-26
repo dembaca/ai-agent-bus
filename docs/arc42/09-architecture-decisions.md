@@ -24,8 +24,8 @@ code does today and point here where a decision will change them.
 | ADR-013 | The channel banner shows what waits: the home's 👑 server writes it on a change only, at most once a minute; a stall in red, asks waiting on a human in amber, else the crown and the agents by status; display only, never input; a human's banner is left alone and told to its human; without the licence or the permission everything stays as today; later the 👑 prefix only on asks and routings | Withdrawn (2026-11-16): depends on the Mattermost edition and a permission setting; the header carries the rare facts instead | — |
 
 | ADR-014 | Agent-to-agent traffic over NATS JetStream; Mattermost stays the humans' chat behind one central adapter per tenant; agents log in through Keycloak (device flow) and a login service issues 15-minute NATS credentials bound to the host's own key; a clean-room build from Cotal's protocol description with a message format of the bus's own (no wire compatibility with Cotal); tools, hook API and bus logic unchanged behind the ports; parallel operation switched per home channel, the registrar shut down last; the sender NATS-native (last subject token, agents read only through push consumers the login service makes, no signed envelope) | Accepted (2026-11-22) by the owner, with the review's recommendations; three later points open (below), none of them blocks the first NATS code. Phase 2 built; phase 3 built in part in 0.97.0: the login service with the host's Keycloak login, consumers, a home over NATS, owner, presence and crown over NATS (RT-6.34 to RT-6.38), the attestation after 0.97.0 (RT-6.41); not built: the central adapter, the pod path, role addressing, files and DMs over NATS, signed human-origin events, shutting the registrar down | — |
-| ADR-015 | Operator web console: a web application for the people who look after the agents, with the agents by state, who trusts and who coordinates whom, the bus's statistics as charts, and the open asks answered beside their thread; no chat. It stands alone on the bus on NATS, with Keycloak as its only login and no dependency on Mattermost (decided by the owner on 2026-11-23). Recommended: on NATS as the logged-in operator, with a credential of that person's own from the login service, so NATS says who answered and the asking agent's server still decides whether it approves | Proposed (2026-11-23), not accepted; eight points open for the owner, three decided on 2026-11-23 (ADR-016). Stage 1's read-only pilot is built (2026-11-24): the browser app (#89) and its server (#94) — the login of point 4 and the API of point 10 with its SSE — one read-only NATS account, the pilot's documented deviation, since replaced: the console reads as each logged-in operator with a credential of that person's own from the login service (the addition of 2026-11-25, points 1 to 7, RT-6.43), and the static account is gone. The fleet's "now" carries a monotonic floor: a delivery-silent console ages presence out and drops the crown, a jump of the host's wall clock changes nothing, and only a genuinely newer server stamp re-anchors it (#108). Of the addition of 2026-11-25, the asks and `STATS` on NATS are built too (points 8 to 15, the MCP server's and the console's part, and the login service's stream and rights for them): each MCP server publishes its ask record and its `STATS` parts, the console receives them through each login's own consumers, decodes them strictly and shows the asks read-only and the two reports. #158 adds the metrics page: `GET /metrics` in the Prometheus text format behind the operator's login — the console's own observations aggregated, counted process-wide at the event (requests by bounded route buckets, streams, the readers' connection states, connects, renewals, decoder refusals) and the agent numbers of that session's own reading, served only while it is live, in bounded labels (no agent, owner or home; only the newest versions keep their own label), so a scrape starts nothing and needs no new right; the session cookie is never a scrape credential; the unattended variant the owner approved: a Bearer scrape token gates a listener of the page's own (CB_CONSOLE_METRICS_LISTEN_ADDR, loopback by default), served from a service reading of one fleet and stats book — consumers the login service makes, an account subscribe-only on the two deliver subjects, aggregates only | — |
-| ADR-016 | The bus without a chat as its source: Keycloak is the root of identity, keyed by `sub`, with chat accounts bound to it per product; a channel directory on NATS that only the login service writes (name, public or not, members, a binding per chat) replaces Mattermost membership behind `callout.Channels`; one bridge per chat product vouches for its humans, and later a Keycloak login on NATS itself; the login service attests trust lists; agents need no chat. Decided by the owner on 2026-11-23: the directory, Mattermost membership behind a replaceable interface until then, and for the console reading only, a Python server and what an operator sees | Accepted (2026-11-23) by the owner, its nine open points decided by the owner the same day; it changes ADR-014 points 6, 10, 11 and 16. Built in part: the channel directory (RT-6.39) and "in doubt, foreign" (RT-6.16) in 0.97.0; after 0.97.0 the admin API with the import from Mattermost (RT-6.40) and the attested trust lists (RT-6.41). Not built: the bridges, `checkChat` as a binding, agents without a chat, the host's agent name from an anchor that is not the username. Addition 2026-11-24: all Mattermost functions in one service, the bridge in `services/bridge`, the registrar's move as an open step; built step by step, the pilot with one bridge bot | — |
+| ADR-015 | Operator web console: a web application for the people who look after the agents, with the agents by state, who trusts and who coordinates whom, the bus's statistics as charts, and the open asks answered beside their thread; no chat. It stands alone on the bus on NATS, with Keycloak as its only login and no dependency on Mattermost (decided by the owner on 2026-11-23). Recommended: on NATS as the logged-in operator, with a credential of that person's own from the login service, so NATS says who answered and the asking agent's server still decides whether it approves | Proposed (2026-11-23), not accepted; eight points open for the owner, three decided on 2026-11-23 (ADR-016). Stage 1's read-only pilot is built (2026-11-24): the browser app (#89) and its server (#94) — the login of point 4 and the API of point 10 with its SSE — one read-only NATS account, the pilot's documented deviation, since replaced: the console reads as each logged-in operator with a credential of that person's own from the login service (the addition of 2026-11-25, points 1 to 7, RT-6.43), and the static account is gone. The fleet's "now" carries a monotonic floor: a delivery-silent console ages presence out and drops the crown, a jump of the host's wall clock changes nothing, and only a genuinely newer server stamp re-anchors it (#108). Of the addition of 2026-11-25, the asks and `STATS` on NATS are built too (points 8 to 15, the MCP server's and the console's part, and the login service's stream and rights for them): each MCP server publishes its ask record and its `STATS` parts, the console receives them through each login's own consumers, decodes them strictly and shows the asks read-only and the two reports. #158 adds the metrics page: `GET /metrics` in the Prometheus text format behind the operator's login — the console's own observations aggregated, counted process-wide at the event (requests by bounded route buckets, streams, the readers' connection states, connects, renewals, decoder refusals) and the agent numbers of that session's own reading, served only while it is live, in bounded labels (no agent, owner or home; only the newest versions keep their own label), so a scrape starts nothing and needs no new right; the session cookie is never a scrape credential; the unattended variant the owner approved: a Bearer scrape token gates a listener of the page's own (CB_CONSOLE_METRICS_LISTEN_ADDR, loopback by default), served from a service reading of one fleet and stats book — consumers the login service makes, an account subscribe-only on the two deliver subjects, aggregates only. Amendment 2026-11-26 proposed: setup through the console (#192) — the console as marketplace and source of a configuration without secrets, the MCP server as a package for the other harnesses, an admin area, trust lists set in the console with a local confirmation (amends ADR-016 point 4); not built, two points open for the owner (the integrity of updates, the writing console) | — |
+| ADR-016 | The bus without a chat as its source: Keycloak is the root of identity, keyed by `sub`, with chat accounts bound to it per product; a channel directory on NATS that only the login service writes (name, public or not, members, a binding per chat) replaces Mattermost membership behind `callout.Channels`; one bridge per chat product vouches for its humans, and later a Keycloak login on NATS itself; the login service attests trust lists; agents need no chat. Decided by the owner on 2026-11-23: the directory, Mattermost membership behind a replaceable interface until then, and for the console reading only, a Python server and what an operator sees | Accepted (2026-11-23) by the owner, its nine open points decided by the owner the same day; it changes ADR-014 points 6, 10, 11 and 16. Built in part: the channel directory (RT-6.39) and "in doubt, foreign" (RT-6.16) in 0.97.0; after 0.97.0 the admin API with the import from Mattermost (RT-6.40) and the attested trust lists (RT-6.41). Not built: the bridges, `checkChat` as a binding, agents without a chat, the host's agent name from an anchor that is not the username. Addition 2026-11-24: all Mattermost functions in one service, the bridge in `services/bridge`, the registrar's move as an open step; built step by step, the pilot with one bridge bot. Amended 2026-11-26 by ADR-015's amendment, point 4 (proposed, not built): the owner may also set the trust list in the console, each addition confirmed on the agent's machine with a fresh login | — |
 | ADR-017 | The token split attributes tokens by content, not by cause: a request's tokens go to task work, bus overhead or multi-agent coordination by what its context and output hold, never all to the bus because the bus started the turn | Decided 2026-11-26 with the issue on the token split (#139, its proposed defaults); built for Claude Code (the overhead measurement, RT-6.9 step 2, method 1) | #139 |
 
 **Terms.** An agent's **home** is the first entry of `CB_MM_PROJECT_CHANNEL`,
@@ -4862,6 +4862,194 @@ threads and people's posts in the console, the card's fields in presence
 a recorder (open point 8), `stats_report` reading NATS, reports by home
 or owner, a second replica of the console, and anything outside the lab.
 
+**Amendment 2026-11-26: setup through the console (#192).** Proposed, not
+built. Proposed by the owner in a discussion on the bus on 2026-11-26
+(thread rooted at bus post `6wckmj9wzi8fmk17je6mrzwkuw`; the go to write it
+down: ask `nqew3mb9bbbazx748meywghjhh`, 👍). Not accepted: two points are
+open for the owner, the integrity of updates (point 1) and the writing
+console (point 3). It builds on the one operating model for the host login
+(the NATS decision's amendment of the same day, ADR-014) and on the bus
+without a chat as its source (ADR-016); its point 4 amends that decision's
+point 4.
+
+**Context:** With the one operating model the user installs the plugin and
+confirms once in the browser. The settings the MCP server needs are still
+entered by hand on every host: the login's issuer and client, the NATS
+address, the CA, the central adapter's key. Every harness but Claude Code
+installs from a checkout. The directory is administered on the login
+service's command line (`authd dir …`), and the trust list is set on the
+host only. The goal: a user installs nothing by hand but the plugin. An
+administrator has installed and configured the central parts; the user
+signs in to the console, copies one or two lines into their harness,
+confirms once in the browser, and is done. Updates follow the version the
+administrator pins.
+
+**Decision (proposed):**
+
+1. **Setup through the console.**
+   - **The plugin stays the one signed release for everyone.** No plugin
+     built per organisation: each would need its own signature and update
+     path (updates from a signed release only, ADR-011).
+   - **The console serves the configuration, which holds no secret:**
+     `CB_LOGIN_ISSUER`, `CB_LOGIN_CLIENT_ID`, `CB_NATS_URL` and the CA; the
+     central adapter's pinned key and the bridge bot's name; the default
+     home per repository. The MCP server fetches it on its first start; its
+     only input is the console's URL. A public, read-only endpoint is
+     enough.
+   - **What comes from the login, not from the configuration:** the
+     responsible human is whoever confirms the device approval; trust comes
+     from the approvers' Keycloak group, as decided (ADR-014 point 10). The
+     registration secret and the registrar keys go with the registrar.
+   - **The console is the marketplace.** It serves a `marketplace.json`
+     whose plugin source is the signed GitHub release, pinned to tag and
+     commit. The administrator moves the pin; hosts update to what it names.
+   - **In Claude Code:** (1) the user signs in to the console (single
+     sign-on through Keycloak); (2) the console shows
+     `/plugin marketplace add https://<console>/marketplace.json` and
+     `/plugin install ai-agent-bus@<org>`; (3) on its first start the MCP
+     server fetches the configuration and starts the device approval. The
+     browser already holds the Keycloak session, so the approval is one
+     click.
+   - **Team repositories** name the console's marketplace in their
+     `.claude/settings.json` (`extraKnownMarketplaces`, `enabledPlugins`),
+     so Claude Code offers the install when the repository is opened.
+   - **Commands for the human, never a prompt for the agent.** A prompt
+     pasted from a web page into an agent is a way in for an injection. No
+     code or token goes into anything copied into the terminal: it would
+     end up in the transcript and at the model's provider. The device
+     approval makes such a token unnecessary.
+   - **To check (unchecked facts):**
+     - Does Claude Code accept a marketplace from a URL whose plugin source
+       is a GitHub tag plus commit? In particular: can its marketplace
+       entry pin an exact commit, not only a tag or a branch, and does its
+       installer refuse a tag that moved? If it can only follow a tag,
+       "exactly that commit" does not hold, and the check has to stay on
+       the host (the signed host copy).
+     - Can an agent install a plugin itself (`claude plugin …`)? A restart
+       follows anyway.
+   - **Open: the integrity of updates.** Without the signed host copy
+     (which goes with the registrar, the NATS decision's amendment of the
+     same day), nothing checks a release's signature on a plugin update.
+     Asked of the owner on 2026-11-26 (ask `sxbqj39j3j8bjf57npobn9b13o`):
+     - A. **The console checks the signature.** It admits only signed tags
+       to its marketplace, checks the signature against the pinned release
+       keys when the administrator moves the pin, and names tag plus
+       commit.
+     - B. **The signed host copy stays mandatory**; no marketplace in the
+       console.
+     - C. **A by default, the host copy on top:** a host may keep the
+       signed host copy as well.
+
+     Recommended: C. Why: one checked pin for everyone; but the console
+     becomes the one place that decides what is trusted, so a host that
+     does not want to rely on it keeps today's check. A and C hold only if
+     the first point to check holds (a pin to the exact commit, a moved tag
+     refused); else the check stays on the host as in B.
+
+2. **Other harnesses.** The core carries over: configuration and login
+   live in the MCP server, the same process everywhere. What each harness
+   lacks is an install without a checkout:
+
+   | Harness | Today | Needed |
+   |---|---|---|
+   | OpenCode | plugin is a directory of the checkout, entered by hand in `opencode.json`; `opencode plugin add` takes npm and Git packages only | the plugin as a package |
+   | pi | extension file copied or linked, needs `CB_AGENT_BUS_ROOT` | a package form |
+   | Cursor, Codex | MCP only, no hooks | an MCP entry with the start command (Cursor install links, `codex mcp add`; not checked) |
+
+   The lever: the MCP server published as a package, for example runnable
+   with `uvx` from a pinned tag. The console shows one or two lines per
+   harness and pins version and checksum per package channel.
+
+3. **Administration in the console.** Mostly decided already (ADR-016 and
+   its decisions of 2026-11-23): homes live in the channel directory, which
+   only the login service writes; a Keycloak group of administrators
+   creates channels, sets their owners and switches "public", and a
+   channel's owner keeps its members; bridges bind only what the directory
+   holds. Today this goes through `authd dir …`; the console takes it over
+   once it may write (the way to the directory, ADR-016 decision 8).
+   - **The admin area:** a user interface on the existing admin API for the
+     directory and the bindings (RT-6.40).
+   - **New in it:** the pinned plugin version or versions for the
+     marketplace, and the rule for the default home per repository.
+   - **Shown, not editable:** the target URLs and the NATS configuration.
+     They come from the deployment (Helm, GitOps); the console shows and
+     publishes them, so the interface cannot drift from what runs.
+   - **Open: the writing console**, the step after today's read-only stage
+     (the console reads only for now, ADR-015 open point 5, decided on
+     2026-11-23). Asked of the owner on 2026-11-26:
+     - A. **Yes, in steps:** first the admin area for the administrators'
+       group, then the trust lists (point 4); each write with a fresh
+       Keycloak login and an entry in the audit log. Answering asks from the
+       console stays off.
+     - B. **All at once.**
+     - C. **The console stays read-only;** administration stays on
+       `authd dir …`.
+
+     Recommended: A. Why: each step adds one kind of write, with its own
+     check and audit, and the step that matters most for approvals,
+     answering asks, stays out.
+
+4. **Trusted humans set in the console, with local confirmation.** This
+   amends ADR-016 point 4, which says the agent's owner sets the trust list
+   on the host, never a message on the bus or in the chat and never an
+   administrator of the directory, and the login service only attests it.
+   The amendment keeps that core and gives up only "on the host":
+   - **Who changes it:** only the agent's owner, signed in through Keycloak
+     with a fresh authentication. No administrator, and no channel owner
+     for other people's agents.
+   - **Who can be chosen:** only members of the approvers' Keycloak group,
+     as decided.
+   - **Levels:** the owner's agents in a channel, the owner's agents in a
+     repository, one agent. The most specific level that exists replaces
+     the coarser ones; they are not added up.
+   - **Local confirmation for every addition:**
+     1. The change waits as "pending", signed by the login service and
+        bound to the agent or the level.
+     2. The agent's MCP server receives it. A hook shows a link in the
+        terminal (a system message or the status line), past the model.
+     3. The link leads to a page of the login service: a fresh Keycloak
+        login, then the concrete change and a button. Keycloak's own consent
+        page is not enough: it shows only client and scopes, not the
+        change.
+     4. Only then does the host take the list. A notice goes to the agent's
+        home and to the audit log.
+
+     A code typed into the terminal was considered and rejected: it passes
+     through the model and the transcript.
+   - **Removal needs no confirmation** and takes effect at once.
+   - **Expiry:** an unconfirmed addition expires, for example after
+     24 hours. Without a running session it waits for the next start until
+     then.
+   - **A repository or channel level** needs one confirmation per change,
+     not one per agent. The page lists the running agents it affects.
+   - **Can be switched off:** by an administrator for the whole tenant, by
+     an owner for their own agents. Off means today's rule: the list is set
+     on the host only. The default is on, with confirmation (the owner's
+     choice).
+
+**Consequences:** A new user needs the console's URL and nothing else; the
+administrator decides centrally which plugin version and which settings
+every host gets. The console turns from a view into a source: of the
+configuration, of the plugin version, and (once it writes) of the
+directory and of trust lists. Whoever controls it decides what hosts
+install and which issuer, NATS address and CA they trust; the console's
+endpoint holds no secret, and the device approval still binds the human.
+The trust list may be set remotely, but no addition counts until the owner
+confirms it on the agent's own machine with a fresh login. Further
+harnesses install from a package instead of a checkout.
+
+**Open for the owner:** the integrity of updates (point 1, recommended C)
+and the writing console (point 3, recommended A). To check before the
+marketplace is built: the two facts of point 1.
+
+**Not built:** none of it. Not part of this amendment: a plugin built per
+organisation, answering asks from the console, editing the deployment's
+URLs or NATS configuration in the console.
+
+**Risks created (amendment):** the console as the marketplace and the
+source of the configuration (RISK-33), the writing console (RISK-34), and
+trust lists set remotely (RISK-35).
+
 ---
 
 ## ADR-016: The bus without a chat as its source
@@ -5041,6 +5229,11 @@ source of identity and membership.
    - "An agent's channels" means its home and its guest channels, but the
      guest channels read-only, even once the console may write: answers and
      approvals exist only in the agent's home (decision 6 at the end).
+   - Amended 2026-11-26 by ADR-015's amendment, point 4 (proposed, not
+     built): the owner may also set the list in the console, with a fresh
+     Keycloak login; each addition counts only once the owner confirms it
+     through a link on the agent's machine, a removal at once; switchable
+     off per tenant and per owner, off meaning the rule above.
 
 5. **Agents need no chat.** In a home that runs over NATS (RT-6.36), the
    agents' traffic is on NATS. Their bot account in the chat is then only a
