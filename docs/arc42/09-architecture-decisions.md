@@ -4944,7 +4944,9 @@ administrator pins.
        from the administrator's channel: managed settings, or a plugin
        option asked at install; the origin of the marketplace it came from
        only when the administrator's managed settings added that
-       marketplace. Neither fits into the two Claude Code lines today.
+       marketplace. Neither fits into the two Claude Code lines today;
+       if the check finds no way, the administrator's channel carries them
+       and the console's page shows a third line, never a token.
        Never from the repository's `.claude/settings.json`, nor from the
        origin of a marketplace a repository named: a hostile cloned
        repository would name its own console, which serves its own plugin
@@ -4987,9 +4989,8 @@ administrator pins.
      stays, as an option for a host, and that amendment is amended so.
    - **Open: the authenticity of the configuration.** That the endpoint is
      public covers confidentiality, not integrity. Issuer, NATS address and
-     CA, and the central adapter's key that comes after the login, are trust
-     anchors; the adapter's key, once it comes after the login, is
-     protected through the issuer. The host pins nothing but the console's
+     CA are trust anchors; the central adapter's key, which comes after the
+     login, is protected through the issuer. The host pins nothing but the console's
      URL and its web TLS. A taken-over console or
      a wrong URL would name another issuer, so that the device approval
      phishes the owner's Keycloak login, and another bus. Asked of the
@@ -5105,7 +5106,8 @@ administrator pins.
         checks the signed pending record, and only then shows the link in
         the terminal (a system message or the status line), past the
         model. Only hosts whose key had logged in as this owner before the
-        change was made receive the secret, also at their next start.
+        change was made receive the secret, also at their next start; the
+        login service knows them from the credentials it issued.
      3. The link leads to a page of the login service, which refuses
         without the secret: a fresh Keycloak login, then the concrete
         change and a button. Keycloak's own consent page is not enough: it
