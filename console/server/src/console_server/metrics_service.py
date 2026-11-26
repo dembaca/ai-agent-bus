@@ -188,8 +188,8 @@ class MetricsService:
         await nc.subscribe("deliver.metrics.stats", cb=stats)
         await nc.flush()
         self.subscribed.set()
-        try:
         log.info("console: the metrics reading is on (deliver.metrics.*)")
+        try:
             stopped = asyncio.create_task(self._stopped.wait())
             done_wait = asyncio.create_task(done.wait())
             await asyncio.wait([stopped, done_wait], return_when=asyncio.FIRST_COMPLETED)
