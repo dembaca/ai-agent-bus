@@ -24,7 +24,7 @@ COPY console/web/package.json console/web/package-lock.json ./console/web/
 RUN npm --prefix console/web ci --ignore-scripts
 COPY console/fixtures ./console/fixtures
 COPY console/web ./console/web
-RUN VITE_CONSOLE_API=/ npm --prefix console/web run build
+RUN VITE_CB_CONSOLE_API=/ npm --prefix console/web run build
 # declared here, after npm ci and the build, so a new commit reuses their cache
 ARG VERSION=unknown
 ARG REVISION=unknown
@@ -55,7 +55,7 @@ LABEL org.opencontainers.image.version="${VERSION}" \
 COPY --from=server /venv /venv
 COPY --from=web /src/console/web/dist /app/web
 ENV PYTHONPATH=/venv/lib/python3.13/site-packages \
-    CONSOLE_WEB_DIR=/app/web \
+    CB_CONSOLE_WEB_DIR=/app/web \
     PYTHONUNBUFFERED=1
 USER nonroot:nonroot
 EXPOSE 8747

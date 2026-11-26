@@ -44,7 +44,7 @@ image.
     HELLO thread and the threads of its open asks; a breadcrumb leads back.
 
 The app talks to the console server same-origin, as its login needs the
-cookie: `VITE_CONSOLE_API` is the API base path (`""` to serve the API beside
+cookie: `VITE_CB_CONSOLE_API` is the API base path (`""` to serve the API beside
 the built app, or a path like `/api` in front of it) — never a cross-origin URL:
 the session cookie stays same-origin and a 401's answer is the server's own
 `/login` route (see `src/api/http.ts`; without a base, the mock runs). For

@@ -3,7 +3,11 @@
 Every version bump in `.claude-plugin/plugin.json` gets an entry here. Versions
 before 0.5.0 are described in the git history.
 
-## Unreleased
+## 0.103.0
+
+Needs: settings renamed to the new prefix before 0.104.0, see the changelog.
+Needs: login service nats user may publish owner notices, as in the example config.
+Needs: login service updated before the hosts, or a host loses its nats home.
 
 ### Breaking
 
@@ -45,41 +49,20 @@ before 0.5.0 are described in the git history.
   start. Error messages, `authd dir -h`, `services/auth/README.md` and
   `nats-server.example.conf` name the new names.
 
-### Added
-
-- **The console's unattended metrics page** (#158, needs #162): with both
-  `CONSOLE_METRICS_NKEY_SEED_FILE` (the seed of a read-only nkey of the
-  NATS configuration, its two consumers `console-metrics_presence` and
-  `console-metrics_stats` — made by the login service at its start,
-  `CB_AUTH_CONSOLE_METRICS`, default off) and `CONSOLE_METRICS_TOKEN_FILE` (the
-  Bearer scrape token), the unattended page serves without a session, on a
-  listener of its own (`CONSOLE_METRICS_LISTEN_ADDR`, loopback by default — the
-  owner's ask): aggregates only
-  — agents by state and harness, the open asks, the tokens by category — no
-  name, owner or home among the labels. The token and the seed are both or
-  neither; the console keeps its operator-login page beside it. The account's publish is denied outright and it holds no JetStream right
-  (pinned in the example-conf test); an invalid or refused nkey ends the
-  reading with a warning, an unreachable one reconnects with backoff, and
-  the consumers age out after five minutes without the console listening
-  — the login service re-ensures them hourly, so a console that restarts
-  gets the seven days again. The seed file is refused when open to group or world (a Kubernetes secret needs `defaultMode: 0400` and the console's uid)
-- **The console serves `/metrics`** (#158, part of): the Prometheus text
-  format behind the operator's login, the same right `/v1/stats` needs —
-  **never scrape with the session cookie**, it is that operator's whole
-  console; the unattended variant (a loopback listener with a scrape
-  token and a read-only service account on the STATS stream) follows as
-  its own pull request with the owner's go. The console's own observations
-  — requests by bounded route buckets, open streams, the readers'
-  connection states, connects, credential renewals and failures, the
-  records the strict decoders refused — are counted process-wide at the
-  event, so no session's end resets a series; the agent numbers of that
-  session's own reading (agents by state and harness, the open asks it
-  sees, the tokens by category per version and harness over 7 days — the
-  same numbers the Reports/Stats tab shows) are served only while that
-  reading is live. Every metric family carries the `choirbus_` prefix; no
-  agent name, owner, home or session id is ever a label, only the newest
-  8 versions keep their own label and n/a leaves a series out instead of
-  a 0 (RT-6.43 step 10).
+- **The console's settings read their `CB_CONSOLE_…` names** (#169's console
+  round, [docs/env-names.md](docs/env-names.md)): the new name first, else
+  the old `CONSOLE_…` with one deprecation warning per process; both set to
+  different values refuses the start, empty counts as set and the value is
+  returned stripped as before. A value that is exactly an unexpanded
+  `${CB_CONSOLE_…}` refuses the start, naming the variable, as in the Go
+  services: the console has no plugin manifest that would expand it. #158's
+  three metric settings are carried with: `CB_CONSOLE_METRICS_NKEY_SEED_FILE`,
+  `CB_CONSOLE_METRICS_TOKEN_FILE`, `CB_CONSOLE_METRICS_LISTEN_ADDR`. The image
+  sets `CB_CONSOLE_WEB_DIR`, so a deployment that still overrides
+  `CONSOLE_WEB_DIR` to a different value refuses the start until it uses the
+  new name. The web reads `VITE_CB_CONSOLE_API`, else `VITE_CONSOLE_API`
+  (build time; two differing values refuse the build). The old names go in
+  the release after 0.103.0.
 
 - **The central bridge reads its settings under `CB_` names** (#169,
   [docs/env-names.md](docs/env-names.md#the-bridge-19)). Each `BRIDGE_X`
@@ -102,6 +85,100 @@ before 0.5.0 are described in the git history.
   it, and read as unset it would silently drop a setting such as a pinned
   CA file. The release after this one refuses an old name set without its new
   name; rename the deployment's settings before it.
+
+- **The OpenCode plugin and the pi extension read the `CB_` names** (#169,
+  release 0.103.0). Their own settings — the workspace (`CB_WORKSPACE`), the
+  channel flag (`CB_CHANNEL_PUSH`), the checkout (`CB_AGENT_BUS_ROOT`) and, in a
+  corral session, the relay's endpoint and key (`CB_BUS_ENDPOINT`, `CB_BUS_KEY`,
+  `CB_BUS_MCP_ENDPOINT`) — are read by the rule of
+  [docs/env-names.md](docs/env-names.md): the new name first, the old `MM_` one
+  for this release with one deprecation warning per process, an empty value
+  counting as set, and two names with different values a conflict the plugin
+  reports once and then behaves as without a bus (a conflicting checkout falls
+  back to the plugin's own). The server entry they write
+  carries `CB_WORKSPACE` and `CB_CHANNEL_PUSH` beside the old names, so a server
+  of the previous release reads the old ones (a user's own `environment` that
+  names one spelling is copied to the other, so the server never sees a
+  disagreement); the endpoint file's keys are taken by either spelling, the last
+  line winning. An operator who already uses the `CB_` names
+  sees no difference, and the old ones keep working until the release that
+  removes the fallbacks.
+
+- **Each session gets its own agent name on a shared host key** (#163). With
+  `CB_LOGIN_NKEY=host` one NATS key serves every session of an OS user, but the
+  name was owner plus key, so two live sessions were one agent — one set of
+  consumers, one deliver subject, each reading the other's mail. The host now
+  makes a session part once (16 random bytes as 26 lower-case base32
+  characters, kept in its state, so `--resume`/`--continue` and a restarted
+  server keep their name), sends it in the hello, and both the host and the
+  login service fold it into the name; without it the name is byte-identical to
+  before, so an old host or an `ephemeral` key keeps its name. The login service
+  refuses a part that does not fit rather than ignoring it. The part is
+  self-stated and proves nothing; the theft guard still keys on the Keycloak
+  session and the host key.
+  **Order matters:** the login service must be updated first (a new host
+  against an old login service is refused as a `NameMismatch` and loses its
+  NATS home, final); this release's `Needs:` line says so. An existing
+  `host`-key session gets a new name at its first restart: its old
+  consumers expire at the 1-hour threshold, its crown claim is not fresh after
+  90 s, its ask records age out, and the console shows the old name offline
+  until the stream's 24 h edge.
+
+### Added
+
+- **The console's unattended metrics page** (#158, needs #162): with both
+  `CB_CONSOLE_METRICS_NKEY_SEED_FILE` (the seed of a read-only nkey of the
+  NATS configuration, its two consumers `console-metrics_presence` and
+  `console-metrics_stats` — made by the login service at its start,
+  `CB_AUTH_CONSOLE_METRICS`, default off) and `CB_CONSOLE_METRICS_TOKEN_FILE` (the
+  Bearer scrape token), the unattended page serves without a session, on a
+  listener of its own (`CB_CONSOLE_METRICS_LISTEN_ADDR`, loopback by default — the
+  owner's ask): aggregates only
+  — agents by state and harness, the open asks, the tokens by category — no
+  name, owner or home among the labels. The token and the seed are both or
+  neither; the console keeps its operator-login page beside it. The account's publish is denied outright and it holds no JetStream right
+  (pinned in the example-conf test); an invalid or refused nkey ends the
+  reading with a warning, an unreachable one reconnects with backoff, and
+  the consumers age out after five minutes without the console listening
+  — the login service re-ensures them hourly, so a console that restarts
+  gets the seven days again. The seed file is refused when open to group or world (a Kubernetes secret needs `defaultMode: 0400` and the console's uid)
+
+- **A copied login reaches the owner as a direct message** (#154 step 3). The
+  login service publishes every network move and every copy of a session or
+  host key for the owner on `<presence>.notice.<owner anchor>.<verdict>.v1`
+  (one subject per verdict, so a move never erases a copy; one record per id
+  and verdict in 30 minutes, so a refused session's retries tell once), a
+  subject only it may publish; each agent's presence consumer is filtered to
+  its own owner's notices, so no other owner reads them. A copied one becomes one DM
+  from the owner's live server — the agent the record names if it is live, else
+  the owner's live agent with the smallest name, decided from presence alone —
+  saying what only the owner can do: end the session in Keycloak, or rotate the
+  copied host key. A move is published as a report and is not DM'd. A server
+  remembers what it told, per kind and id, so a restart does not repeat it, and
+  the same kind, id and verdict is one DM within the block. Nobody is told when
+  no live server of the owner is left, when the responsible human is unknown or
+  the DM fails — the record waits in the stream's history within its 24 hours,
+  and the console and the log keep it; the server that tells may be the thief's
+  if a copied host key let them run an agent of that owner, and a compromised
+  server can stay silent. The login service's JetStream user needs the right
+  to publish `presence.notice.*.*.v1` (see `services/auth/nats-server.example.conf`);
+  without it the publish fails, is logged, and the verdict stands.
+
+- **A check holds `docs/env-names.md` to the code** (#169, the mapping's guard).
+  `scripts/doc-check.py` reads the page and the tree: CI fails when the code
+  reads an environment name the page does not list, and when the page maps a
+  name that production code and tests do not mention (the registrar's kept names
+  excepted; a "Tests and CI" name may live in tests). A read is a quoted literal
+  in Python, Go and the plugins (a Go tag's `env:"X,required"` included), dot
+  access (`process.env.X`), or a name in the shell and in the configuration
+  files the example ships; names ending in `_` are stems, not settings; test
+  files are skipped, since a fixture's fake name is no setting. The page's
+  "not environment" bullets and its new exclusion table — each name with a
+  reason of its own — are what keep a script's globals and other products'
+  variables out of the failure, and a row the check cannot read or an exclusion
+  without a reason fails too, as do the page's heading counts and conflict
+  markers. A test pins both directions, each reader form, the counts and each
+  failure.
 
 ### Changed
 
@@ -134,27 +211,6 @@ before 0.5.0 are described in the git history.
   `Origin: null` is still refused. A console tab opened before the update
   keeps the old policy until it is reloaded.
 
-### Changed
-
-- **The OpenCode plugin and the pi extension read the `CB_` names** (#169,
-  release 0.103.0). Their own settings — the workspace (`CB_WORKSPACE`), the
-  channel flag (`CB_CHANNEL_PUSH`), the checkout (`CB_AGENT_BUS_ROOT`) and, in a
-  corral session, the relay's endpoint and key (`CB_BUS_ENDPOINT`, `CB_BUS_KEY`,
-  `CB_BUS_MCP_ENDPOINT`) — are read by the rule of
-  [docs/env-names.md](docs/env-names.md): the new name first, the old `MM_` one
-  for this release with one deprecation warning per process, an empty value
-  counting as set, and two names with different values a conflict the plugin
-  reports once and then behaves as without a bus (a conflicting checkout falls
-  back to the plugin's own). The server entry they write
-  carries `CB_WORKSPACE` and `CB_CHANNEL_PUSH` beside the old names, so a server
-  of the previous release reads the old ones (a user's own `environment` that
-  names one spelling is copied to the other, so the server never sees a
-  disagreement); the endpoint file's keys are taken by either spelling, the last
-  line winning. An operator who already uses the `CB_` names
-  sees no difference, and the old ones keep working until the release that
-  removes the fallbacks.
-
-
 ## 0.102.0
 
 Needs: login service jetstream user with consumer create and delete rights on the directory bucket.
@@ -179,23 +235,25 @@ Needs: MM_BRIDGE_BOT kept on every host, and this release on all hosts before th
 
 ### Added
 
-- **A check holds `docs/env-names.md` to the code** (#169, the mapping's guard).
-  `scripts/doc-check.py` reads the page and the tree: CI fails when the code
-  reads an environment name the page does not list, and when the page maps a
-  name that production code and tests do not mention (the registrar's kept names
-  excepted; a "Tests and CI" name may live in tests). A read is a quoted literal
-  in Python, Go and the plugins (a Go tag's `env:"X,required"` included), dot
-  access (`process.env.X`), or a name in the shell and in the configuration
-  files the example ships; names ending in `_` are stems, not settings; test
-  files are skipped, since a fixture's fake name is no setting. The page's
-  "not environment" bullets and its new exclusion table — each name with a
-  reason of its own — are what keep a script's globals and other products'
-  variables out of the failure, and a row the check cannot read or an exclusion
-  without a reason fails too, as do the page's heading counts and conflict
-  markers. A test pins both directions, each reader form, the counts and each
-  failure.
-
 - **The central bridge can post each agent's copies under the agent's own Mattermost bot** (#151 step 1, RT-6.44). Off by default; with `BRIDGE_MM_ADMIN_TOKEN_FILE` (an admin bot of its own with `system_admin`, its token a separate file used only by the bot management) and `BRIDGE_BOT_PREFIX`, the bridge finds or creates `<prefix><NATS name>`, owned by the Mattermost account that the login service's account record binds to the agent's presence owner (never a username lookup; no record, no bot of its own) and marked as the bridge's, mints its token in memory at first use after each start (revoking its earlier ones), joins it to the home and posts that agent's copies and reactions under it without the attribution line, `nats_id` kept; its reactions are recorded, so their removal reaches that bot also while it is in its backoff. On any failure the one bridge bot posts as before. Its signal then names `bot_prefix`. `BRIDGE_HIDE_BOT_DM` (default true) hides the admin bot's welcome DMs. The bridge refuses to start when the admin token is the posting token, the admin account is no bot with `system_admin`, or the posting bot holds a role beyond `system_user`, `system_post_all` and `system_post_all_public`. Turn it on only after the hosts run a release with #159 (agents dropping copies under their own bots), or every agent reads each NATS post twice; the hosts also keep `MM_BRIDGE_BOT` set as today, since the fallback copies come from the one bridge bot and hosts drop those only with it; the bridge's prefix must differ from the registrar's `BOT_USERNAME_PREFIX`.
+- **The console serves `/metrics`** (#158, part of): the Prometheus text
+  format behind the operator's login, the same right `/v1/stats` needs —
+  **never scrape with the session cookie**, it is that operator's whole
+  console; the unattended variant (a loopback listener with a scrape
+  token and a read-only service account on the STATS stream) follows as
+  its own pull request with the owner's go. The console's own observations
+  — requests by bounded route buckets, open streams, the readers'
+  connection states, connects, credential renewals and failures, the
+  records the strict decoders refused — are counted process-wide at the
+  event, so no session's end resets a series; the agent numbers of that
+  session's own reading (agents by state and harness, the open asks it
+  sees, the tokens by category per version and harness over 7 days — the
+  same numbers the Reports/Stats tab shows) are served only while that
+  reading is live. Every metric family carries the `choirbus_` prefix; no
+  agent name, owner, home or session id is ever a label, only the newest
+  8 versions keep their own label and n/a leaves a series out instead of
+  a 0 (RT-6.43 step 10).
+
 - **The console's graph view marks the operator's own node** (#147, the
   follow-up to the API change). The person node the logged-in operator's
   anchor names carries the API's `you` field as an accent badge, in light and
@@ -228,25 +286,6 @@ Needs: MM_BRIDGE_BOT kept on every host, and this release on all hosts before th
   names with `you`; that anchor is read from the login's own record,
   never from anything the browser sends. No new right: all of it comes
   from presence, crown claims, memberships and the login's own record.
-
-- **A copied login reaches the owner as a direct message** (#154 step 3). The
-  login service publishes every network move and every copy of a session or
-  host key for the owner on `<presence>.notice.<owner anchor>.<verdict>.v1`
-  (one subject per verdict, so a move never erases a copy; one record per id
-  and verdict in 30 minutes, so a refused session's retries tell once), a
-  subject only it may publish; each agent's presence consumer is filtered to
-  its own owner's notices, so no other owner reads them. A copied one becomes one DM
-  from the owner's live server — the agent the record names if it is live, else
-  the owner's live agent with the smallest name, decided from presence alone —
-  saying what only the owner can do: end the session in Keycloak, or rotate the
-  copied host key. A move is published as a report and is not DM'd. A server
-  remembers what it told, per kind and id, so a restart does not repeat it, and
-  the same kind, id and verdict is one DM within the block. Nobody is told when
-  no live server of the owner is left, when the responsible human is unknown or
-  the DM fails — the record waits in the stream's history within its 24 hours,
-  and the console and the log keep it; the server that tells may be the thief's
-  if a copied host key let them run an agent of that owner, and a compromised
-  server can stay silent.
 
 - **The login service refuses a session that alternates between networks**
   (#154 step 3, decision 10). After the host signature and the token are
@@ -475,26 +514,6 @@ Needs: MM_BRIDGE_BOT kept on every host, and this release on all hosts before th
   clear text. Mattermost's API does not redirect; a 30x is now the call's
   error.
 
-- **Each session gets its own agent name on a shared host key** (#163). With
-  `CB_LOGIN_NKEY=host` one NATS key serves every session of an OS user, but the
-  name was owner plus key, so two live sessions were one agent — one set of
-  consumers, one deliver subject, each reading the other's mail. The host now
-  makes a session part once (16 random bytes as 26 lower-case base32
-  characters, kept in its state, so `--resume`/`--continue` and a restarted
-  server keep their name), sends it in the hello, and both the host and the
-  login service fold it into the name; without it the name is byte-identical to
-  before, so an old host or an `ephemeral` key keeps its name. The login service
-  refuses a part that does not fit rather than ignoring it. The part is
-  self-stated and proves nothing; the theft guard still keys on the Keycloak
-  session and the host key.
-  **Order matters:** the login service must be updated first (a new host
-  against an old login service is refused as a `NameMismatch` and loses its
-  NATS home, final); a release carrying this needs it in its `Needs:` line. An
-  existing `host`-key session gets a new name at its first restart: its old
-  consumers expire at the 1-hour threshold, its crown claim is not fresh after
-  90 s, its ask records age out, and the console shows the old name offline
-  until the stream's 24 h edge.
-
 ### Docs
 
 - **Every environment variable gets the `CB_` prefix, decided, not built
@@ -507,8 +526,7 @@ Needs: MM_BRIDGE_BOT kept on every host, and this release on all hosts before th
   when the record moves into the bridge. It sets the reading rule for
   release 0.103.0 (the new name first, the old one with a deprecation
   warning, all set names must agree or the start is refused, an empty value
-  counts as set, an unexpanded `${…}` placeholder as unset in the MCP server
-  and the hooks while the Go services refuse it, the fallbacks
+  counts as set, an unexpanded `${…}` placeholder as unset, the fallbacks
   go one release later); after that an old name set alone refuses the start
   for at least one more release instead of being ignored, since several
   settings (release signers, trusted humans, CA pins, the login service's
