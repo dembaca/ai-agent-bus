@@ -23,8 +23,11 @@ below; until then it reads the old names, and the old names in the
 - Built: the MCP server (`mcp/src/mattermost_ai_agent_bus/config.py`), the hooks,
   the shell scripts (`bin/mm-agent-lib.sh`), the host installer and the `Needs:`
   grammar ([#180](https://github.com/dembaca/ai-agent-bus/pull/180)).
-- Still to come: the bridge ([#176](https://github.com/dembaca/ai-agent-bus/pull/176)),
-  the console ([#178](https://github.com/dembaca/ai-agent-bus/pull/178)) and the
+- Built: the central bridge ([#176](https://github.com/dembaca/ai-agent-bus/pull/176)),
+  in `services/bridge`, `internal/config/env.go` (the removal release's
+  refusal is the constant `oldNamesRemoved` there); the names of
+  [its table](#the-bridge-19).
+- Still to come: the console ([#178](https://github.com/dembaca/ai-agent-bus/pull/178)) and the
   OpenCode and pi plugins (they already hand the server they start both
   spellings of `CB_WORKSPACE` and `CB_CHANNEL_PUSH`).
 
@@ -491,6 +494,10 @@ says whether the setting itself is about Mattermost.
 `BRIDGE_BOT_PREFIX` and `BRIDGE_HIDE_BOT_DM` (#166) are about Mattermost but
 have no `MM` in their names; the rename gives them one, as the rule says:
 `CB_BRIDGE_MM_BOT_PREFIX` and `CB_BRIDGE_MM_HIDE_BOT_DM`.
+
+The bridge applies the placeholder rule of the Go services: a value that is
+exactly `${NAME}` refuses the start, naming the variable, in the bridge as
+in the login service; the MCP server's `env()` treats it as unset.
 
 ### The console (17)
 

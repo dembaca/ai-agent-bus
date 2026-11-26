@@ -15,50 +15,67 @@ import (
 
 // Config is the bridge's whole configuration.
 type Config struct {
-	NATSURL     string   // BRIDGE_NATS_URL, tls:// in the lab
-	SeedFile    string   // BRIDGE_NATS_SEED_FILE, the read-only user's nkey seed
-	CAFile      string   // BRIDGE_CA_FILE, optional: the server's CA
-	MMURL       string   // BRIDGE_MM_URL, https; http only to a loopback host or with MMAllowHTTP
-	MMAllowHTTP bool     // BRIDGE_MM_ALLOW_HTTP, default false: http to any host, the token in clear text
+	NATSURL     string   // CB_BRIDGE_NATS_URL, tls:// in the lab
+	SeedFile    string   // CB_BRIDGE_NATS_SEED_FILE, the read-only user's nkey seed
+	CAFile      string   // CB_BRIDGE_CA_FILE, optional: the server's CA
+	MMURL       string   // CB_BRIDGE_MM_URL, https; http only to a loopback host or with MMAllowHTTP
+	MMAllowHTTP bool     // CB_BRIDGE_MM_ALLOW_HTTP, default false: http to any host, the token in clear text
 	MMPlainHTTP bool     // derived: http to a host that is not loopback, allowed by MMAllowHTTP; the token goes in clear text
-	MMToken     string   // BRIDGE_MM_TOKEN_FILE
-	MMTeam      string   // BRIDGE_MM_TEAM
-	Homes       []string // BRIDGE_HOMES, the home channel names to mirror
-	Prefix      string   // BRIDGE_PROPS_PREFIX, the homes' MM_PROPS_PREFIX
-	KVBucket    string   // BRIDGE_KV_BUCKET, default BUS_BRIDGE
-	SeenBucket  string   // BRIDGE_SEEN_BUCKET, default BUS_BRIDGE_SEEN: the keys of people's events carried (RT-6.42)
-	Listen      string   // BRIDGE_LISTEN_ADDR, /healthz
-	NATSStream  string   // BRIDGE_STREAM, default BUS
-	BusPrefix   string   // BRIDGE_BUS_PREFIX, the bus's subject prefix, default bus
-	Deliver     string   // BRIDGE_DELIVER, the operator's push consumer prefix, default deliver.bridge
-	Inbox       string   // BRIDGE_INBOX, the bridge's own reply inbox prefix, default _INBOX_bridge; it must match the right _INBOX_bridge.>
+	MMToken     string   // CB_BRIDGE_MM_TOKEN_FILE
+	MMTeam      string   // CB_BRIDGE_MM_TEAM
+	Homes       []string // CB_BRIDGE_HOMES, the home channel names to mirror
+	Prefix      string   // CB_BRIDGE_PROPS_PREFIX, the homes' MM_PROPS_PREFIX (CB_PROPS_PREFIX from 0.103.0)
+	KVBucket    string   // CB_BRIDGE_KV_BUCKET, default BUS_BRIDGE
+	SeenBucket  string   // CB_BRIDGE_SEEN_BUCKET, default BUS_BRIDGE_SEEN: the keys of people's events carried (RT-6.42)
+	Listen      string   // CB_BRIDGE_LISTEN_ADDR, /healthz
+	NATSStream  string   // CB_BRIDGE_STREAM, default BUS
+	BusPrefix   string   // CB_BRIDGE_BUS_PREFIX, the bus's subject prefix, default bus
+	Deliver     string   // CB_BRIDGE_DELIVER, the operator's push consumer prefix, default deliver.bridge
+	Inbox       string   // CB_BRIDGE_INBOX, the bridge's own reply inbox prefix, default _INBOX_bridge; it must match the right _INBOX_bridge.>
 	// The agents' own bots (RT-6.44): with an admin token the bridge posts each
 	// agent's copies under a bot of its own; unset, under the one bridge bot.
-	AdminToken string // BRIDGE_MM_ADMIN_TOKEN_FILE, optional: the admin bot's token (system_admin), used only by the bot management
-	BotPrefix  string // BRIDGE_BOT_PREFIX, required with AdminToken: the agent bots' username prefix
-	HideBotDM  bool   // BRIDGE_HIDE_BOT_DM, default true: hide the admin bot's welcome DM with each new bot
+	AdminToken string // CB_BRIDGE_MM_ADMIN_TOKEN_FILE, optional: the admin bot's token (system_admin), used only by the bot management
+	BotPrefix  string // CB_BRIDGE_MM_BOT_PREFIX, required with AdminToken: the agent bots' username prefix
+	HideBotDM  bool   // CB_BRIDGE_MM_HIDE_BOT_DM, default true: hide the admin bot's welcome DM with each new bot
 }
 
 // Load reads the environment. A missing required value is an error naming it.
-func Load(get func(string) string) (Config, error) {
+//
+// Each setting is read by its CB_ name, else by its old name (env.Get); both
+// set and different is an error naming both.
+func Load(env *Env) (Config, error) {
+	var bad error
+	get := func(newName, oldName string) string {
+		v, err := env.Get(newName, oldName)
+		if err != nil && bad == nil {
+			bad = err
+		}
+		return v
+	}
+	homes := get("CB_BRIDGE_HOMES", "BRIDGE_HOMES")
+	hideBotDM := strings.TrimSpace(get("CB_BRIDGE_MM_HIDE_BOT_DM", "BRIDGE_HIDE_BOT_DM"))
+	allowHTTP := strings.TrimSpace(get("CB_BRIDGE_MM_ALLOW_HTTP", "BRIDGE_MM_ALLOW_HTTP"))
 	c := Config{
-		NATSURL:    strings.TrimSpace(get("BRIDGE_NATS_URL")),
-		SeedFile:   strings.TrimSpace(get("BRIDGE_NATS_SEED_FILE")),
-		CAFile:     strings.TrimSpace(get("BRIDGE_CA_FILE")),
-		MMURL:      strings.TrimRight(strings.TrimSpace(get("BRIDGE_MM_URL")), "/"),
-		MMToken:    strings.TrimSpace(get("BRIDGE_MM_TOKEN_FILE")),
-		MMTeam:     strings.TrimSpace(get("BRIDGE_MM_TEAM")),
-		Prefix:     strings.TrimSpace(get("BRIDGE_PROPS_PREFIX")),
-		KVBucket:   strings.TrimSpace(get("BRIDGE_KV_BUCKET")),
-		SeenBucket: strings.TrimSpace(get("BRIDGE_SEEN_BUCKET")),
-		Listen:     strings.TrimSpace(get("BRIDGE_LISTEN_ADDR")),
-		NATSStream: strings.TrimSpace(get("BRIDGE_STREAM")),
-		BusPrefix:  strings.TrimSpace(get("BRIDGE_BUS_PREFIX")),
-		Deliver:    strings.TrimSpace(get("BRIDGE_DELIVER")),
-		Inbox:      strings.TrimSpace(get("BRIDGE_INBOX")),
-		AdminToken: strings.TrimSpace(get("BRIDGE_MM_ADMIN_TOKEN_FILE")),
-		BotPrefix:  strings.TrimSpace(get("BRIDGE_BOT_PREFIX")),
+		NATSURL:    strings.TrimSpace(get("CB_BRIDGE_NATS_URL", "BRIDGE_NATS_URL")),
+		SeedFile:   strings.TrimSpace(get("CB_BRIDGE_NATS_SEED_FILE", "BRIDGE_NATS_SEED_FILE")),
+		CAFile:     strings.TrimSpace(get("CB_BRIDGE_CA_FILE", "BRIDGE_CA_FILE")),
+		MMURL:      strings.TrimRight(strings.TrimSpace(get("CB_BRIDGE_MM_URL", "BRIDGE_MM_URL")), "/"),
+		MMToken:    strings.TrimSpace(get("CB_BRIDGE_MM_TOKEN_FILE", "BRIDGE_MM_TOKEN_FILE")),
+		MMTeam:     strings.TrimSpace(get("CB_BRIDGE_MM_TEAM", "BRIDGE_MM_TEAM")),
+		Prefix:     strings.TrimSpace(get("CB_BRIDGE_PROPS_PREFIX", "BRIDGE_PROPS_PREFIX")),
+		KVBucket:   strings.TrimSpace(get("CB_BRIDGE_KV_BUCKET", "BRIDGE_KV_BUCKET")),
+		SeenBucket: strings.TrimSpace(get("CB_BRIDGE_SEEN_BUCKET", "BRIDGE_SEEN_BUCKET")),
+		Listen:     strings.TrimSpace(get("CB_BRIDGE_LISTEN_ADDR", "BRIDGE_LISTEN_ADDR")),
+		NATSStream: strings.TrimSpace(get("CB_BRIDGE_STREAM", "BRIDGE_STREAM")),
+		BusPrefix:  strings.TrimSpace(get("CB_BRIDGE_BUS_PREFIX", "BRIDGE_BUS_PREFIX")),
+		Deliver:    strings.TrimSpace(get("CB_BRIDGE_DELIVER", "BRIDGE_DELIVER")),
+		Inbox:      strings.TrimSpace(get("CB_BRIDGE_INBOX", "BRIDGE_INBOX")),
+		AdminToken: strings.TrimSpace(get("CB_BRIDGE_MM_ADMIN_TOKEN_FILE", "BRIDGE_MM_ADMIN_TOKEN_FILE")),
+		BotPrefix:  strings.TrimSpace(get("CB_BRIDGE_MM_BOT_PREFIX", "BRIDGE_BOT_PREFIX")),
 		HideBotDM:  true,
+	}
+	if bad != nil {
+		return Config{}, bad
 	}
 	if c.KVBucket == "" {
 		c.KVBucket = "BUS_BRIDGE"
@@ -82,60 +99,60 @@ func Load(get func(string) string) (Config, error) {
 		c.Prefix = "x_"
 	}
 	if !propsPrefix.MatchString(c.Prefix) || reservedPrefixes[c.Prefix] {
-		return Config{}, fmt.Errorf("BRIDGE_PROPS_PREFIX %q is no props prefix: lower-case letters and "+
+		return Config{}, fmt.Errorf("CB_BRIDGE_PROPS_PREFIX %q is no props prefix: lower-case letters and "+
 			"digits, starting with a letter, ending with _ (for example x_ or abc_), and none the bus "+
 			"or Mattermost writes (a2a_, agent_, from_, override_, webhook_, channel_, disable_, icon_)", c.Prefix)
 	}
 	// The homes' servers refuse a prefix longer than this (a2a.PREFIX_MAX): the
 	// per-turn instructions name it, so the two sides must agree on one limit.
 	if len(c.Prefix) > prefixMax {
-		return Config{}, fmt.Errorf("BRIDGE_PROPS_PREFIX %q is longer than %d characters, the homes' limit",
+		return Config{}, fmt.Errorf("CB_BRIDGE_PROPS_PREFIX %q is longer than %d characters, the homes' limit",
 			c.Prefix, prefixMax)
 	}
 	if c.Listen == "" {
 		c.Listen = "127.0.0.1:8095"
 	}
-	for _, h := range strings.Split(get("BRIDGE_HOMES"), ",") {
+	for _, h := range strings.Split(homes, ",") {
 		if h = strings.TrimSpace(h); h != "" {
 			c.Homes = append(c.Homes, h)
 		}
 	}
 	switch {
 	case c.NATSURL == "":
-		return Config{}, fmt.Errorf("BRIDGE_NATS_URL is required")
+		return Config{}, fmt.Errorf("CB_BRIDGE_NATS_URL is required")
 	case c.SeedFile == "":
-		return Config{}, fmt.Errorf("BRIDGE_NATS_SEED_FILE is required")
+		return Config{}, fmt.Errorf("CB_BRIDGE_NATS_SEED_FILE is required")
 	case c.MMURL == "":
-		return Config{}, fmt.Errorf("BRIDGE_MM_URL is required")
+		return Config{}, fmt.Errorf("CB_BRIDGE_MM_URL is required")
 	case c.MMToken == "":
-		return Config{}, fmt.Errorf("BRIDGE_MM_TOKEN_FILE is required")
+		return Config{}, fmt.Errorf("CB_BRIDGE_MM_TOKEN_FILE is required")
 	case c.MMTeam == "":
-		return Config{}, fmt.Errorf("BRIDGE_MM_TEAM is required")
+		return Config{}, fmt.Errorf("CB_BRIDGE_MM_TEAM is required")
 	case len(c.Homes) == 0:
-		return Config{}, fmt.Errorf("BRIDGE_HOMES is required: at least one home channel name")
+		return Config{}, fmt.Errorf("CB_BRIDGE_HOMES is required: at least one home channel name")
 
 	}
 	switch {
 	case c.AdminToken != "" && c.BotPrefix == "":
-		return Config{}, fmt.Errorf("BRIDGE_BOT_PREFIX is required with BRIDGE_MM_ADMIN_TOKEN_FILE")
+		return Config{}, fmt.Errorf("CB_BRIDGE_MM_BOT_PREFIX is required with CB_BRIDGE_MM_ADMIN_TOKEN_FILE")
 	case c.AdminToken == "" && c.BotPrefix != "":
-		return Config{}, fmt.Errorf("BRIDGE_BOT_PREFIX is set without BRIDGE_MM_ADMIN_TOKEN_FILE: " +
+		return Config{}, fmt.Errorf("CB_BRIDGE_MM_BOT_PREFIX is set without CB_BRIDGE_MM_ADMIN_TOKEN_FILE: " +
 			"the agents' own bots need the admin token")
 	case c.BotPrefix != "" && !BotPrefix.MatchString(c.BotPrefix):
-		return Config{}, fmt.Errorf("BRIDGE_BOT_PREFIX %q is no username's start: a lower-case letter, "+
+		return Config{}, fmt.Errorf("CB_BRIDGE_MM_BOT_PREFIX %q is no username's start: a lower-case letter, "+
 			"then at most 31 of a-z, 0-9, '.', '_' and '-'", c.BotPrefix)
 	}
-	if v := strings.TrimSpace(get("BRIDGE_HIDE_BOT_DM")); v != "" {
+	if v := hideBotDM; v != "" {
 		hide, err := strconv.ParseBool(v)
 		if err != nil {
-			return Config{}, fmt.Errorf("BRIDGE_HIDE_BOT_DM %q is neither true nor false", v)
+			return Config{}, fmt.Errorf("CB_BRIDGE_MM_HIDE_BOT_DM %q is neither true nor false", v)
 		}
 		c.HideBotDM = hide
 	}
-	if v := strings.TrimSpace(get("BRIDGE_MM_ALLOW_HTTP")); v != "" {
+	if v := allowHTTP; v != "" {
 		allow, err := strconv.ParseBool(v)
 		if err != nil {
-			return Config{}, fmt.Errorf("BRIDGE_MM_ALLOW_HTTP %q is neither true nor false", v)
+			return Config{}, fmt.Errorf("CB_BRIDGE_MM_ALLOW_HTTP %q is neither true nor false", v)
 		}
 		c.MMAllowHTTP = allow
 	}
@@ -145,15 +162,15 @@ func Load(get func(string) string) (Config, error) {
 	// have it (#131).
 	u, err := url.Parse(c.MMURL)
 	if err != nil {
-		return Config{}, fmt.Errorf("BRIDGE_MM_URL does not parse: %w", err)
+		return Config{}, fmt.Errorf("CB_BRIDGE_MM_URL does not parse: %w", err)
 	}
 	if u.Hostname() == "" || (u.Scheme != "https" && u.Scheme != "http") {
-		return Config{}, fmt.Errorf("BRIDGE_MM_URL %s is no http(s) URL", u.Redacted())
+		return Config{}, fmt.Errorf("CB_BRIDGE_MM_URL %s is no http(s) URL", u.Redacted())
 	}
 	c.MMPlainHTTP = u.Scheme == "http" && !netloc.Loopback(u.Hostname())
 	if c.MMPlainHTTP && !c.MMAllowHTTP {
-		return Config{}, fmt.Errorf("BRIDGE_MM_URL %s is http to a host that is not loopback: the bot "+
-			"token would cross the network in clear text; use https, or set BRIDGE_MM_ALLOW_HTTP=true "+
+		return Config{}, fmt.Errorf("CB_BRIDGE_MM_URL %s is http to a host that is not loopback: the bot "+
+			"token would cross the network in clear text; use https, or set CB_BRIDGE_MM_ALLOW_HTTP=true "+
 			"on a network you trust", u.Redacted())
 	}
 	return c, nil
@@ -176,24 +193,25 @@ const prefixMax = 16
 var reservedPrefixes = map[string]bool{"a2a_": true, "agent_": true, "from_": true, "override_": true,
 	"webhook_": true, "channel_": true, "disable_": true, "icon_": true}
 
-// FromEnv is Load(os.Getenv) with the token read from its file.
-func FromEnv() (Config, error) {
-	c, err := Load(os.Getenv)
+// FromEnv is Load over the process's environment, with the token read from
+// its file; warn gets the deprecation warnings of old names.
+func FromEnv(warn Warn) (Config, error) {
+	c, err := Load(OSEnv(warn))
 	if err != nil {
 		return Config{}, err
 	}
 	raw, err := os.ReadFile(c.MMToken)
 	if err != nil {
-		return Config{}, fmt.Errorf("BRIDGE_MM_TOKEN_FILE: %w", err)
+		return Config{}, fmt.Errorf("CB_BRIDGE_MM_TOKEN_FILE: %w", err)
 	}
 	c.MMToken = strings.TrimSpace(string(raw))
 	if c.MMToken == "" {
-		return Config{}, fmt.Errorf("BRIDGE_MM_TOKEN_FILE is empty")
+		return Config{}, fmt.Errorf("CB_BRIDGE_MM_TOKEN_FILE is empty")
 	}
 	if c.AdminToken != "" {
 		raw, err := os.ReadFile(c.AdminToken)
 		if err != nil {
-			return Config{}, fmt.Errorf("BRIDGE_MM_ADMIN_TOKEN_FILE: %w", err)
+			return Config{}, fmt.Errorf("CB_BRIDGE_MM_ADMIN_TOKEN_FILE: %w", err)
 		}
 		c.AdminToken = strings.TrimSpace(string(raw))
 		if err := c.checkTokens(); err != nil {
@@ -208,10 +226,10 @@ func FromEnv() (Config, error) {
 func (c Config) checkTokens() error {
 	switch {
 	case c.AdminToken == "":
-		return fmt.Errorf("BRIDGE_MM_ADMIN_TOKEN_FILE is empty")
+		return fmt.Errorf("CB_BRIDGE_MM_ADMIN_TOKEN_FILE is empty")
 	case c.AdminToken == c.MMToken:
-		return fmt.Errorf("BRIDGE_MM_ADMIN_TOKEN_FILE holds the posting bot's token " +
-			"(BRIDGE_MM_TOKEN_FILE): the admin bot must be an account of its own")
+		return fmt.Errorf("CB_BRIDGE_MM_ADMIN_TOKEN_FILE holds the posting bot's token " +
+			"(CB_BRIDGE_MM_TOKEN_FILE): the admin bot must be an account of its own")
 	}
 	return nil
 }
