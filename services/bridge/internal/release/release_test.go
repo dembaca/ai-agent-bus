@@ -2,35 +2,37 @@ package release
 
 import (
 	"crypto/ed25519"
-	"crypto/sha256"
-	"encoding/base64"
 	"encoding/json"
 	"net/http"
 	"net/http/httptest"
 	"strings"
 	"testing"
 	"time"
+
+	"github.com/dembaca/ai-agent-bus/services/bridge/internal/registrar/core"
 )
 
-func testSigner(t *testing.T) *FileSigner {
+const testKey = "ssh-ed25519 AAAAC3NzaC1lZDI1NTE5AAAAIGP3bXHhZ0mM0b8o0mZ0sh6o6rGm0yQp0i0a0b0c0d0e"
+
+func testAttestor(t *testing.T) (*core.Attestor, ed25519.PublicKey) {
 	t.Helper()
 	seed := make([]byte, ed25519.SeedSize)
 	for i := range seed {
 		seed[i] = byte(i + 1)
 	}
-	key := ed25519.NewKeyFromSeed(seed)
-	sum := sha256.Sum256(key.Public().(ed25519.PublicKey))
-	return &FileSigner{key: key, kid: base64.RawURLEncoding.EncodeToString(sum[:])[:16]}
+	a, err := core.NewAttestor(seed, time.Hour)
+	if err != nil {
+		t.Fatal(err)
+	}
+	return a, ed25519.NewKeyFromSeed(seed).Public().(ed25519.PublicKey)
 }
 
-const testKey = "ssh-ed25519 AAAAC3NzaC1lZDI1NTE5AAAAIGP3bXHhZ0mM0b8o0mZ0sh6o6rGm0yQp0i0a0b0c0d0e"
-
 // RT-6.32, #151 step 4: the registrar's route and record, signed with the
-// bridge's key; a host's release.py reads it unchanged.
+// bridge's key; a host's verifier reads it unchanged.
 func TestTheRecordIsTheRegistrarS(t *testing.T) {
-	signer := testSigner(t)
+	a, pub := testAttestor(t)
 	setAt := time.Date(2026, 11, 26, 9, 0, 0, 0, time.UTC)
-	h, err := New([]string{testKey}, "latest", signer, setAt)
+	h, err := New(testKey+"\n", "latest", a, setAt)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -41,66 +43,35 @@ func TestTheRecordIsTheRegistrarS(t *testing.T) {
 	if w.Code != http.StatusOK {
 		t.Fatalf("status %d: %s", w.Code, w.Body.String())
 	}
+	if w.Header().Get("Cache-Control") != "no-store" {
+		t.Fatalf("a host may cache it: %q", w.Header().Get("Cache-Control"))
+	}
 	var out struct{ Record string }
 	if err := json.Unmarshal(w.Body.Bytes(), &out); err != nil || out.Record == "" {
 		t.Fatalf("body %q: %v", w.Body.String(), err)
 	}
-	parts := strings.Split(out.Record, ".")
-	if len(parts) != 3 {
-		t.Fatalf("not a compact JWS: %q", out.Record)
-	}
-	b64 := base64.RawURLEncoding
-	header, err := b64.DecodeString(parts[0])
+	// The hosts' own verifier: signature, header's typ, and expiry.
+	claims, err := core.VerifyRelease(out.Record, pub, now)
 	if err != nil {
-		t.Fatal(err)
+		t.Fatalf("the record does not verify: %v", err)
 	}
-	var hd map[string]string
-	if err := json.Unmarshal(header, &hd); err != nil {
-		t.Fatal(err)
+	if len(claims.Signers) != 1 || claims.Signers[0] != testKey {
+		t.Fatalf("signers %v", claims.Signers)
 	}
-	if hd["alg"] != "EdDSA" || hd["typ"] != "mm-agent-release+jwt" || hd["kid"] != signer.KeyID() {
-		t.Fatalf("header %v", hd)
-	}
-	// The registrar's kid: the first 16 of base64url(sha256(raw public key)).
-	sum := sha256.Sum256(signer.key.Public().(ed25519.PublicKey))
-	if want := base64.RawURLEncoding.EncodeToString(sum[:])[:16]; hd["kid"] != want {
-		t.Fatalf("kid %q, want the registrar's scheme %q", hd["kid"], want)
-	}
-	payload, err := b64.DecodeString(parts[1])
-	if err != nil {
-		t.Fatal(err)
-	}
-	var claims struct {
-		Signers []string `json:"signers"`
-		Version string   `json:"version"`
-		SetAtMS int64    `json:"set_at_ms"`
-		Iat     int64    `json:"iat"`
-		Exp     int64    `json:"exp"`
-	}
-	if err := json.Unmarshal(payload, &claims); err != nil {
-		t.Fatal(err)
-	}
-	if len(claims.Signers) != 1 || claims.Signers[0] != testKey || claims.Version != "latest" {
+	if claims.Version != "latest" || claims.SetAtMs != setAt.UnixMilli() {
 		t.Fatalf("claims %+v", claims)
 	}
-	if claims.SetAtMS != setAt.UnixMilli() || claims.Exp-claims.Iat != 3600 || claims.Iat != now.Unix() {
+	if claims.Exp-claims.Iat != 3600 || claims.Iat != now.Unix() {
 		t.Fatalf("times %+v", claims)
 	}
-	sig, err := b64.DecodeString(parts[2])
-	if err != nil {
-		t.Fatal(err)
-	}
-	pub := signer.key.Public().(ed25519.PublicKey)
-	if !ed25519.Verify(pub, []byte(parts[0]+"."+parts[1]), sig) {
-		t.Fatal("the record's signature does not verify")
+	if !strings.Contains(out.Record, ".") {
+		t.Fatal("not a compact JWS")
 	}
 }
 
 func TestNoReleaseSetIsTheRegistrarS404(t *testing.T) {
-	h, err := New(nil, "", testSigner(t), time.Now())
-	if err != nil {
-		t.Fatal(err)
-	}
+	a, _ := testAttestor(t)
+	h := &Handler{Attest: a}
 	w := httptest.NewRecorder()
 	h.ServeHTTP(w, httptest.NewRequest(http.MethodGet, "/register/v1/release", nil))
 	if w.Code != http.StatusNotFound || strings.TrimSpace(w.Body.String()) != `{"error":"no release set"}` {
@@ -109,26 +80,27 @@ func TestNoReleaseSetIsTheRegistrarS404(t *testing.T) {
 }
 
 func TestTheSettingsAreValidated(t *testing.T) {
-	s := testSigner(t)
+	a, _ := testAttestor(t)
+	setAt := time.Date(2026, 11, 26, 9, 0, 0, 0, time.UTC)
 	for _, tc := range []struct {
-		signers []string
+		signers string
 		version string
 		ok      bool
 	}{
-		{[]string{testKey}, "", true}, // keys only: no target
-		{[]string{testKey}, "v0.103.0", true},
-		{[]string{testKey}, "0.103", false},
-		{[]string{"ssh-rsa AAAAB3NzaC1yc2E"}, "", false},
-		{[]string{testKey, testKey}, "", false}, // distinct keys
-		{[]string{testKey, "ssh-ed25519 not base64!"}, "", false},
-		{nil, "", true}, // no release set
+		{testKey + "\n", "", true},                   // keys only: no target
+		{testKey + "\n", "v0.103.0", true},           // both
+		{"", "v0.103.0", false},                      // a target without keys
+		{testKey + "\n", "0.103", false},             // not v<x.y.z>
+		{testKey + "\n", "v01.2.3", false},           // leading zero
+		{"ssh-rsa AAAAB3NzaC1yc2E\n", "", false},     // not an ed25519 key
+		{testKey + "\n" + testKey + "\n", "", false}, // listed twice
+		{"", "", false},                              // nothing set
 	} {
-		if _, err := New(tc.signers, tc.version, s, time.Now()); (err == nil) != tc.ok {
-			t.Errorf("%v/%q: err %v, want ok=%v", tc.signers, tc.version, err, tc.ok)
+		if _, err := New(tc.signers, tc.version, a, setAt); (err == nil) != tc.ok {
+			t.Errorf("%q/%q: err %v, want ok=%v", tc.signers, tc.version, err, tc.ok)
 		}
 	}
-	// An empty signer list with a version is valid: a target without new keys.
-	if _, err := New(nil, "v0.103.0", s, time.Now()); err != nil {
-		t.Errorf("a version alone: %v", err)
+	if _, err := New(testKey+"\n", "v0.103.0", a, time.Time{}); err == nil {
+		t.Error("a zero set_at was accepted")
 	}
 }
