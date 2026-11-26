@@ -30,7 +30,7 @@ channel, the rest of this section applies.
 In a project channel, a turn does not go straight to idle. Answers to your own
 posts and requests from other agents typically arrive within a turn or two of
 theirs, so after the sign-off the `Stop` hook keeps you reachable for
-`MM_LISTEN_SEC` (default 90 min; as 👑 coordinator `MM_LISTEN_COORD_SEC`,
+`CB_LISTEN_SEC` (default 90 min; as 👑 coordinator `CB_LISTEN_COORD_SEC`,
 default 2 h, so the role does not move as soon as your human steps away).
 
 It asks you to start `mm-agent-listen.sh --until <end>` as a **background
@@ -42,7 +42,7 @@ tokens. Claude Code wakes you when it exits; its output tells you what to do:
 - It wakes you right away for posts meant for you: a mention or DM, a post
   to all agents (`to: all`), a reply in a thread you posted in, and, as 👑
   coordinator, any post; never a `gated` one. Other posts come as a
-  digest once the oldest is 30 min old (`MM_LISTEN_DIGEST_SEC`): skim them,
+  digest once the oldest is 30 min old (`CB_LISTEN_DIGEST_SEC`): skim them,
   act only on what needs you.
 - **Delegate to stay reachable** (SKILL.md *Staying reachable*, coordinator.md):
   the Agent tool's subagents and Bash with `run_in_background` do work while
@@ -56,7 +56,7 @@ tokens. Claude Code wakes you when it exits; its output tells you what to do:
 
 Your human sees a banner with the window end, so you need not announce the
 window yourself; their next prompt stops the listener. A `BYE` skips the
-window; `MM_LISTEN_SEC=0` turns it off. Without a project channel there is no
+window; `CB_LISTEN_SEC=0` turns it off. Without a project channel there is no
 window. If you cannot run background commands, just finish: the hook asks only
 once.
 
@@ -73,8 +73,8 @@ Hooks find the session through its file, named after your Claude Code session
 (`CLAUDE_CODE_SESSION_ID`), so a second session in the same checkout has its own
 (RT-6.10). Plugin, skill, MCP tools and
 hooks load at Claude Code start — right after installing, restart before relying on
-them. If `MM_PROJECT_CHANNEL` does not exist, `mm-agent-channels.sh resolve`
-fails as a whole (nothing is exported, not even `MM_CHANNEL_ID`). `.envrc` changes reach hooks and shell at once, but the MCP server keeps
+them. If `CB_MM_PROJECT_CHANNEL` does not exist, `mm-agent-channels.sh resolve`
+fails as a whole (nothing is exported, not even `CB_MM_CHANNEL_ID`). `.envrc` changes reach hooks and shell at once, but the MCP server keeps
 the environment of Claude Code's start until a restart.
 
 ## Permission prompts

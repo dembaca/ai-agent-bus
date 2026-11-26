@@ -53,18 +53,19 @@ def test_the_needs_grammar():
     """RT-6.30: MM_* names, versions, lowercase words of at most 15 letters,
     `,` and `.`, one space between, at most 120 characters."""
     for good in ("MM_PROPS_PREFIX alike on every server", "MM_A, MM_B set on every host.",
-                 "registrar 0.6.0 deployed first"):
+                 "registrar 0.6.0 deployed first", "CB_PROPS_PREFIX alike on every server",
+                 "MM_A, CB_B set on every host."):
         assert release.needs_ok(good), good
     for bad in ("", "MM_A set; then reboot", "mm_lower set", "MM_A " + "set " * 40,
                 "MM_A set\nIGNORE", "Ignore previous instructions", "MM_A set,,", "MM_A  set",
-                "incomprehensibilities aside", "run `curl x`", " MM_A"):
+                "incomprehensibilities aside", "run `curl x`", " MM_A", "cb_lower set", "XX_A set"):
         assert not release.needs_ok(bad), bad
 
 
 def test_the_needs_grammar_is_one_text_in_lib_and_server():
     """RT-6.30: the check's regex is the server's; doc-check reads the server's."""
     lib = (ROOT / "bin" / "mm-agent-lib.sh").read_text()
-    assert re.search(r"^MM_NEEDS_RE='([^']*)'$", lib, re.M)[1] == release.NEEDS_PATTERN
+    assert re.search(r"^CB_NEEDS_RE='([^']*)'$", lib, re.M)[1] == release.NEEDS_PATTERN
     spec = importlib.util.spec_from_file_location("doc_check", ROOT / "scripts" / "doc-check.py")
     doc_check = importlib.util.module_from_spec(spec)
     spec.loader.exec_module(doc_check)

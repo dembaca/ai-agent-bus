@@ -67,7 +67,7 @@ type Bots struct {
 	Admin    *mattermost.Adapter // with the admin token, TokenDescription and the team
 	Presence Presence
 	Owners   Owners // the account records; nil binds no owner, so every agent falls back
-	Prefix   string // BRIDGE_BOT_PREFIX
+	Prefix   string // CB_BRIDGE_MM_BOT_PREFIX
 	URL      string // Mattermost, for the bots' own clients
 	Log      *slog.Logger
 	Backoff  time.Duration // DefaultBackoff when 0
@@ -94,23 +94,23 @@ type entry struct {
 func (b *Bots) Check(ctx context.Context, postingToken string) error {
 	admin, err := b.Admin.Account(ctx, b.Admin.Cfg.Token)
 	if err != nil {
-		return fmt.Errorf("BRIDGE_MM_ADMIN_TOKEN_FILE: the admin account: %w", err)
+		return fmt.Errorf("CB_BRIDGE_MM_ADMIN_TOKEN_FILE: the admin account: %w", err)
 	}
 	if !admin.IsBot || !hasRole(admin.Roles, "system_admin") {
-		return errors.New("BRIDGE_MM_ADMIN_TOKEN_FILE: the admin account must be a bot with the system_admin role")
+		return errors.New("CB_BRIDGE_MM_ADMIN_TOKEN_FILE: the admin account must be a bot with the system_admin role")
 	}
 	poster, err := b.Admin.Account(ctx, postingToken)
 	if err != nil {
-		return fmt.Errorf("BRIDGE_MM_TOKEN_FILE: the bridge bot: %w", err)
+		return fmt.Errorf("CB_BRIDGE_MM_TOKEN_FILE: the bridge bot: %w", err)
 	}
 	for _, r := range strings.Fields(poster.Roles) {
 		if !slices.Contains(postingRoles, r) {
-			return fmt.Errorf("BRIDGE_MM_TOKEN_FILE: the bridge bot that posts must hold no role beyond %s; it holds %q",
+			return fmt.Errorf("CB_BRIDGE_MM_TOKEN_FILE: the bridge bot that posts must hold no role beyond %s; it holds %q",
 				strings.Join(postingRoles, ", "), r)
 		}
 	}
 	if admin.ID == poster.ID {
-		return errors.New("BRIDGE_MM_ADMIN_TOKEN_FILE: the admin bot must be another account than the bridge bot")
+		return errors.New("CB_BRIDGE_MM_ADMIN_TOKEN_FILE: the admin bot must be another account than the bridge bot")
 	}
 	b.adminID = admin.ID
 	return nil

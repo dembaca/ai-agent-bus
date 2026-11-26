@@ -3,7 +3,7 @@
 The registrar writes the trusted names a registration carries into the bot's
 description (``trusts @a, @b``), but not necessarily all of them: it caps the
 list and keeps human accounts only. The bus trusts everyone in
-MM_TRUSTED_HUMANS, so the profile can under-report whom the agent trusts. The
+CB_TRUSTED_HUMANS, so the profile can under-report whom the agent trusts. The
 bus assumes nothing about the registrar's cap: it compares what the profile
 actually carries. bin/mm-agent-lib.sh (mm_warn_profile_trusted) does the same
 for host sessions.
@@ -79,7 +79,7 @@ def owner_warning(bot: str, owner: str, responsible: str) -> str:
         return ""
     return (f"@{bot} is owned by @{owner}, not by the responsible human @{responsible}: "
             f"other owners' agents judge it by @{owner}'s trust (ADR-001); check "
-            f"MM_RESPONSIBLE_HUMAN, or register with an enrollment token of @{responsible}")
+            f"CB_RESPONSIBLE_HUMAN, or register with an enrollment token of @{responsible}")
 
 
 def warning(bot: str, sent: list[str], description: str | None) -> str:

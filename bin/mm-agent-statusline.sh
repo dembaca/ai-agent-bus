@@ -7,7 +7,7 @@
 # Claude Code runs one statusLine command and pipes the session JSON into it,
 # so a plugin cannot add a segment of its own: call this from your status line
 # script, or set it as the command. It finds the bot like the hooks do —
-# MM_BOT_USERNAME in a host-managed session, else the session file keyed on
+# CB_MM_BOT_USERNAME in a host-managed session, else the session file keyed on
 # session_id — and reads only the name and id from it, never the token. 👑
 # while this agent holds the coordinator crown. Prints nothing off the bus.
 # Local files only, no API call: the status line runs every second. Except in a
@@ -28,8 +28,13 @@ usage_only=0
 [[ "${1:-}" == "--usage-only" ]] && usage_only=1
 input=""
 [[ -t 0 ]] || input="$(cat 2>/dev/null || true)"
-name="${MM_BOT_USERNAME:-}"
-uid="${MM_BOT_USER_ID:-}"
+# The names (#169), quietly: a warning goes to env-names.log in the state
+# directory; names that differ show no status line.
+# shellcheck source=mm-agent-lib.sh
+CB_ENV_QUIET=1 CB_ENV_DEFER=1 source "$(cd "$(dirname "$0")" && pwd)/mm-agent-lib.sh"
+[[ -z "$CB_ENV_ERR" ]] || exit 0
+name="${CB_MM_BOT_USERNAME:-}"
+uid="${CB_MM_BOT_USER_ID:-}"
 sid="$(jq -r '.session_id // empty' <<<"$input" 2>/dev/null || true)"
 sid="${sid:-${CLAUDE_CODE_SESSION_ID:-}}"
 if [[ -z "$name" ]]; then
@@ -37,8 +42,8 @@ if [[ -z "$name" ]]; then
   key="$(printf '%s' "$sid" | { sha1sum 2>/dev/null || shasum; } | cut -c1-16)"
   f="${STATE}/mcp-sid-${key}.env"
   [[ -f "$f" ]] || exit 0
-  name="$(sed -n 's/^MM_BOT_USERNAME=//p' "$f" | head -1)"
-  uid="$(sed -n 's/^MM_BOT_USER_ID=//p' "$f" | head -1)"
+  name="$(mm_kv "$f" CB_MM_BOT_USERNAME MM_BOT_USERNAME)"
+  uid="$(mm_kv "$f" CB_MM_BOT_USER_ID MM_BOT_USER_ID)"
 fi
 [[ -n "$name" ]] || exit 0
 
@@ -73,7 +78,7 @@ usage_tap() {
     [[ -n "$sid" ]] && export CLAUDE_CODE_SESSION_ID="${CLAUDE_CODE_SESSION_ID:-$sid}"
     # shellcheck source=mm-agent-lib.sh
     source "$(cd "$(dirname "$0")" && pwd)/mm-agent-lib.sh"
-    MM_BUS_MAX_TIME=1 mm_bus POST /v1/usage "$body"
+    CB_BUS_MAX_TIME=1 mm_bus POST /v1/usage "$body"
   ) >/dev/null 2>&1 </dev/null &
   disown 2>/dev/null || true
 }
@@ -86,17 +91,17 @@ fi
 source "$(cd "$(dirname "$0")" && pwd)/mm-agent-symbols.sh"
 crown=""
 if [[ "$uid" =~ ^[a-z0-9]{26}$ ]]; then
-  if [[ -n "${MM_BUS_MCP_ENDPOINT:-}" ]]; then
+  if [[ -n "${CB_BUS_MCP_ENDPOINT:-}" ]]; then
     # shellcheck source=mm-agent-lib.sh
     source "$(cd "$(dirname "$0")" && pwd)/mm-agent-lib.sh"
     until_=""
-    if MM_BUS_MAX_TIME=1 mm_bus GET /v1/me; then
-      until_="$(jq -r '.crown_until // 0' <<<"$MM_BUS_BODY" 2>/dev/null)"
+    if CB_BUS_MAX_TIME=1 mm_bus GET /v1/me; then
+      until_="$(jq -r '.crown_until // 0' <<<"$CB_BUS_BODY" 2>/dev/null)"
     fi
   else
     until_="$(sed -n 's/^CROWN_UNTIL=//p' "${STATE}/coord-${uid}.env" 2>/dev/null | head -1)"
   fi
-  [[ "$until_" =~ ^[0-9]+$ ]] && (( until_ > $(date +%s) )) && crown="$MM_CROWN "
+  [[ "$until_" =~ ^[0-9]+$ ]] && (( until_ > $(date +%s) )) && crown="$CB_CROWN "
 fi
 printf '%s@%s' "$crown" "$name"
 usage_tap

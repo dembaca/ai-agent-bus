@@ -13,7 +13,7 @@ EXPORTS_ONLY=0
 
 usage() {
   echo "usage: $0 [--exports] <short-name> [display-name]" >&2
-  echo "  requires MM_REG_SECRET (or MM_REG_SECRET_FD); uses MM_CHAT_URL / MM_REGISTER_URL" >&2
+  echo "  requires MM_REG_SECRET (or MM_REG_SECRET_FD); uses CB_MM_CHAT_URL / MM_REGISTER_URL" >&2
   exit 2
 }
 
@@ -36,7 +36,7 @@ done
 # the bot there and keeps its token on the host. CORRAL_SANDBOX is corral's,
 # the others its preStart contribution (the host hooks have none of them).
 # Defense in depth only: an agent that clears them gets past it.
-for v in CORRAL_SANDBOX MM_BUS_MCP_ENDPOINT MM_BUS_ENDPOINT; do
+for v in CORRAL_SANDBOX CB_BUS_MCP_ENDPOINT CB_BUS_ENDPOINT; do
   if [[ -n "${!v:-}" ]]; then
     echo "mm-agent-register: self-registration refused: this runs inside a corral sandbox ($v is set)." \
       "There the host's session hook registers the bot and its token stays on the host; the bus tools" \
@@ -55,7 +55,7 @@ REG_URL="$(mm_register_url)"
 # Whom the agent answers to (RT-6.8) goes along with the registration: the
 # registrar, holding the admin token, can put it into the bot's profile, which
 # the bot cannot change. A registrar that does not know the fields ignores them.
-KIND="${MM_AGENT_KIND:-session}"; [[ "$KIND" == autonomous ]] || KIND=session
+KIND="${CB_AGENT_KIND:-session}"; [[ "$KIND" == autonomous ]] || KIND=session
 RESP="$(mm_json_post "$REG_URL" "$MM_REG_SECRET" \
   "$(jq -nc --arg n "$NAME" --arg d "$DISPLAY" --arg r "$(mm_responsible_name)" \
        --arg k "$KIND" --argjson t "$(mm_trusted_names | jq -R . | jq -sc .)" '
@@ -90,13 +90,14 @@ if [[ -z "$BOT_TOKEN" || -z "$USER_NAME" ]]; then
   exit 1
 fi
 
-export MM_CHAT_URL="$URL"
+# Each under its new and its old name (#169).
+mm_env_set CB_MM_CHAT_URL MM_CHAT_URL "$URL"
 export MM_REG_BOT_NAME="$NAME"
-export MM_BOT_USERNAME="$USER_NAME"
+mm_env_set CB_MM_BOT_USERNAME MM_BOT_USERNAME "$USER_NAME"
 # The registrar's username prefix, learned from this registration (arc42 §7.1).
 MM_AGENT_PREFIX="$(MM_AGENT_PREFIX='' mm_agent_prefix)"
 export MM_AGENT_PREFIX
-export MM_BOT_USER_ID="$USER_ID"
+mm_env_set CB_MM_BOT_USER_ID MM_BOT_USER_ID "$USER_ID"
 export MATTERMOST_URL="$URL"
 if [[ -n "$ATTESTATION" ]]; then
   export MM_BOT_ATTESTATION="$ATTESTATION"
@@ -106,6 +107,7 @@ fi
 # Not exported: nothing this script starts needs the token in its environment
 # (curl gets it on stdin), and on the host none may have it (arc42 §7.3). The
 # session file and the export lines below read the variables.
+CB_MM_BOT_TOKEN="$BOT_TOKEN"
 MM_BOT_TOKEN="$BOT_TOKEN"
 MATTERMOST_TOKEN="$BOT_TOKEN"
 

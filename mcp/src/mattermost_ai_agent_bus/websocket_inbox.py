@@ -53,7 +53,7 @@ class ClassifiedEvent:
     not_here: str = ""
     # RT-6.22: the post is in a guest channel (not the home, not the lobby).
     guest: bool = False
-    # RT-6.22 step 3: the post is in the lobby (MM_CHANNEL), which is not the home.
+    # RT-6.22 step 3: the post is in the lobby (CB_MM_CHANNEL), which is not the home.
     lobby: bool = False
     # RT-6.12 step 3: a post_edited that made the post name this bot. Its post
     # is behind the read watermark: it neither holds the mark nor waits by it;
@@ -265,7 +265,7 @@ class WebSocketInbox:
         return True
 
     async def _lobby_drop(self, post: Post, kind: str) -> bool:
-        """RT-6.22 step 3: a post in the lobby (MM_CHANNEL, not the home) that
+        """RT-6.22 step 3: a post in the lobby (CB_MM_CHANNEL, not the home) that
         neither names this agent, nor names everyone (@channel, @all, @here, or
         to all agents), nor answers in a thread it posted in: no event, no
         digest. Its mark moves on. Unsure about the thread: kept."""

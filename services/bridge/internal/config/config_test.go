@@ -13,17 +13,17 @@ import (
 // mismatch discovered later.
 func TestThePropsPrefixHasTheHomesLimit(t *testing.T) {
 	base := map[string]string{
-		"BRIDGE_NATS_URL": "tls://nats.example:4222", "BRIDGE_NATS_SEED_FILE": "/run/seed",
-		"BRIDGE_MM_URL": "https://chat.example", "BRIDGE_MM_TOKEN_FILE": "/run/token",
-		"BRIDGE_MM_TEAM": "ai-agents", "BRIDGE_HOMES": "nats-pilot",
+		"CB_BRIDGE_NATS_URL": "tls://nats.example:4222", "CB_BRIDGE_NATS_SEED_FILE": "/run/seed",
+		"CB_BRIDGE_MM_URL": "https://chat.example", "CB_BRIDGE_MM_TOKEN_FILE": "/run/token",
+		"CB_BRIDGE_MM_TEAM": "ai-agents", "CB_BRIDGE_HOMES": "nats-pilot",
 	}
 	load := func(prefix string) (Config, error) {
 		env := map[string]string{}
 		for k, v := range base {
 			env[k] = v
 		}
-		env["BRIDGE_PROPS_PREFIX"] = prefix
-		return Load(func(k string) string { return env[k] })
+		env["CB_BRIDGE_PROPS_PREFIX"] = prefix
+		return Load(mapEnv(env, nil))
 	}
 	if _, err := load("abcdefghijklmno_"); err != nil { // 16 characters: the limit itself
 		t.Fatalf("a 16-character prefix: %v", err)
@@ -33,16 +33,16 @@ func TestThePropsPrefixHasTheHomesLimit(t *testing.T) {
 	}
 }
 
-// The bot token goes to Mattermost on every call: an http BRIDGE_MM_URL is
-// accepted only for a loopback host or with BRIDGE_MM_ALLOW_HTTP (#131).
+// The bot token goes to Mattermost on every call: an http CB_BRIDGE_MM_URL is
+// accepted only for a loopback host or with CB_BRIDGE_MM_ALLOW_HTTP (#131).
 func TestPlainHTTPNeedsLoopbackOrTheOptIn(t *testing.T) {
 	load := func(mmURL, allow string) (Config, error) {
 		env := map[string]string{
-			"BRIDGE_NATS_URL": "tls://nats.example:4222", "BRIDGE_NATS_SEED_FILE": "/run/seed",
-			"BRIDGE_MM_URL": mmURL, "BRIDGE_MM_TOKEN_FILE": "/run/token",
-			"BRIDGE_MM_TEAM": "ai-agents", "BRIDGE_HOMES": "nats-pilot", "BRIDGE_MM_ALLOW_HTTP": allow,
+			"CB_BRIDGE_NATS_URL": "tls://nats.example:4222", "CB_BRIDGE_NATS_SEED_FILE": "/run/seed",
+			"CB_BRIDGE_MM_URL": mmURL, "CB_BRIDGE_MM_TOKEN_FILE": "/run/token",
+			"CB_BRIDGE_MM_TEAM": "ai-agents", "CB_BRIDGE_HOMES": "nats-pilot", "CB_BRIDGE_MM_ALLOW_HTTP": allow,
 		}
-		return Load(func(k string) string { return env[k] })
+		return Load(mapEnv(env, nil))
 	}
 	for _, tc := range []struct {
 		url, allow string
@@ -63,7 +63,7 @@ func TestPlainHTTPNeedsLoopbackOrTheOptIn(t *testing.T) {
 	} {
 		c, err := load(tc.url, tc.allow)
 		if (err == nil) != tc.ok {
-			t.Errorf("BRIDGE_MM_URL %s, BRIDGE_MM_ALLOW_HTTP %q: got error %v, want ok %v", tc.url, tc.allow, err, tc.ok)
+			t.Errorf("CB_BRIDGE_MM_URL %s, CB_BRIDGE_MM_ALLOW_HTTP %q: got error %v, want ok %v", tc.url, tc.allow, err, tc.ok)
 		}
 		if err == nil && c.MMAllowHTTP != (tc.allow == "true") {
 			t.Errorf("%s %q: MMAllowHTTP %v", tc.url, tc.allow, c.MMAllowHTTP)
@@ -79,14 +79,14 @@ func TestPlainHTTPNeedsLoopbackOrTheOptIn(t *testing.T) {
 func TestTheAgentBotSettings(t *testing.T) {
 	load := func(extra map[string]string) (Config, error) {
 		env := map[string]string{
-			"BRIDGE_NATS_URL": "tls://nats.example:4222", "BRIDGE_NATS_SEED_FILE": "/run/seed",
-			"BRIDGE_MM_URL": "https://chat.example", "BRIDGE_MM_TOKEN_FILE": "/run/token",
-			"BRIDGE_MM_TEAM": "ai-agents", "BRIDGE_HOMES": "nats-pilot",
+			"CB_BRIDGE_NATS_URL": "tls://nats.example:4222", "CB_BRIDGE_NATS_SEED_FILE": "/run/seed",
+			"CB_BRIDGE_MM_URL": "https://chat.example", "CB_BRIDGE_MM_TOKEN_FILE": "/run/token",
+			"CB_BRIDGE_MM_TEAM": "ai-agents", "CB_BRIDGE_HOMES": "nats-pilot",
 		}
 		for k, v := range extra {
 			env[k] = v
 		}
-		return Load(func(k string) string { return env[k] })
+		return Load(mapEnv(env, nil))
 	}
 	c, err := load(nil)
 	if err != nil || c.AdminToken != "" || c.BotPrefix != "" || !c.HideBotDM {
@@ -96,22 +96,22 @@ func TestTheAgentBotSettings(t *testing.T) {
 		env map[string]string
 		ok  bool
 	}{
-		{map[string]string{"BRIDGE_MM_ADMIN_TOKEN_FILE": "/run/admin", "BRIDGE_BOT_PREFIX": "bb-"}, true},
-		{map[string]string{"BRIDGE_MM_ADMIN_TOKEN_FILE": "/run/admin", "BRIDGE_BOT_PREFIX": "a" + strings.Repeat("b", 31)}, true},
-		{map[string]string{"BRIDGE_MM_ADMIN_TOKEN_FILE": "/run/admin"}, false},
-		{map[string]string{"BRIDGE_BOT_PREFIX": "bb-"}, false},
-		{map[string]string{"BRIDGE_MM_ADMIN_TOKEN_FILE": "/run/admin", "BRIDGE_BOT_PREFIX": "Bb-"}, false},
-		{map[string]string{"BRIDGE_MM_ADMIN_TOKEN_FILE": "/run/admin", "BRIDGE_BOT_PREFIX": "-bb"}, false},
-		{map[string]string{"BRIDGE_MM_ADMIN_TOKEN_FILE": "/run/admin", "BRIDGE_BOT_PREFIX": "a" + strings.Repeat("b", 32)}, false},
-		{map[string]string{"BRIDGE_MM_ADMIN_TOKEN_FILE": "/run/admin", "BRIDGE_BOT_PREFIX": "bb@"}, false},
-		{map[string]string{"BRIDGE_HIDE_BOT_DM": "maybe"}, false},
+		{map[string]string{"CB_BRIDGE_MM_ADMIN_TOKEN_FILE": "/run/admin", "CB_BRIDGE_MM_BOT_PREFIX": "bb-"}, true},
+		{map[string]string{"CB_BRIDGE_MM_ADMIN_TOKEN_FILE": "/run/admin", "CB_BRIDGE_MM_BOT_PREFIX": "a" + strings.Repeat("b", 31)}, true},
+		{map[string]string{"CB_BRIDGE_MM_ADMIN_TOKEN_FILE": "/run/admin"}, false},
+		{map[string]string{"CB_BRIDGE_MM_BOT_PREFIX": "bb-"}, false},
+		{map[string]string{"CB_BRIDGE_MM_ADMIN_TOKEN_FILE": "/run/admin", "CB_BRIDGE_MM_BOT_PREFIX": "Bb-"}, false},
+		{map[string]string{"CB_BRIDGE_MM_ADMIN_TOKEN_FILE": "/run/admin", "CB_BRIDGE_MM_BOT_PREFIX": "-bb"}, false},
+		{map[string]string{"CB_BRIDGE_MM_ADMIN_TOKEN_FILE": "/run/admin", "CB_BRIDGE_MM_BOT_PREFIX": "a" + strings.Repeat("b", 32)}, false},
+		{map[string]string{"CB_BRIDGE_MM_ADMIN_TOKEN_FILE": "/run/admin", "CB_BRIDGE_MM_BOT_PREFIX": "bb@"}, false},
+		{map[string]string{"CB_BRIDGE_MM_HIDE_BOT_DM": "maybe"}, false},
 	} {
 		if _, err := load(tc.env); (err == nil) != tc.ok {
 			t.Errorf("%v: %v", tc.env, err)
 		}
 	}
-	if c, _ := load(map[string]string{"BRIDGE_HIDE_BOT_DM": "false"}); c.HideBotDM {
-		t.Fatal("BRIDGE_HIDE_BOT_DM=false kept it on")
+	if c, _ := load(map[string]string{"CB_BRIDGE_MM_HIDE_BOT_DM": "false"}); c.HideBotDM {
+		t.Fatal("CB_BRIDGE_MM_HIDE_BOT_DM=false kept it on")
 	}
 }
 
@@ -131,14 +131,14 @@ func TestTheAdminTokenIsNotThePostingToken(t *testing.T) {
 		ok    bool
 	}{{other, true}, {same, false}, {empty, false}, {filepath.Join(dir, "missing"), false}} {
 		for k, v := range map[string]string{
-			"BRIDGE_NATS_URL": "tls://nats.example:4222", "BRIDGE_NATS_SEED_FILE": "/run/seed",
-			"BRIDGE_MM_URL": "https://chat.example", "BRIDGE_MM_TOKEN_FILE": post,
-			"BRIDGE_MM_TEAM": "ai-agents", "BRIDGE_HOMES": "nats-pilot",
-			"BRIDGE_MM_ADMIN_TOKEN_FILE": tc.admin, "BRIDGE_BOT_PREFIX": "bb-",
+			"CB_BRIDGE_NATS_URL": "tls://nats.example:4222", "CB_BRIDGE_NATS_SEED_FILE": "/run/seed",
+			"CB_BRIDGE_MM_URL": "https://chat.example", "CB_BRIDGE_MM_TOKEN_FILE": post,
+			"CB_BRIDGE_MM_TEAM": "ai-agents", "CB_BRIDGE_HOMES": "nats-pilot",
+			"CB_BRIDGE_MM_ADMIN_TOKEN_FILE": tc.admin, "CB_BRIDGE_MM_BOT_PREFIX": "bb-",
 		} {
 			t.Setenv(k, v)
 		}
-		c, err := FromEnv()
+		c, err := FromEnv(nil)
 		if (err == nil) != tc.ok {
 			t.Errorf("%s: %v", tc.admin, err)
 		}

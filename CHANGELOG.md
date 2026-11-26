@@ -7,6 +7,27 @@ before 0.5.0 are described in the git history.
 
 ### Breaking
 
+- **The MCP server, the hooks, the shell CLI and the installer read `CB_` names**
+  ([#169](https://github.com/dembaca/ai-agent-bus/issues/169)). Their environment
+  variables get the `CB_` prefix, `CB_MM_` for the ones that exist only because of
+  Mattermost: `MM_CHAT_URL` and its alias `MATTERMOST_URL` become `CB_MM_CHAT_URL`,
+  `MM_BOT_TOKEN` and `MATTERMOST_TOKEN` become `CB_MM_BOT_TOKEN`, `MM_CHANNEL`,
+  `MM_PROJECT_CHANNEL`, `MM_TEAM` become `CB_MM_…`, `MM_TRUSTED_HUMANS`,
+  `MM_LISTEN_SEC`, `MM_RELEASE_SIGNERS`, `MM_NATS_HOMES` and the other bus settings
+  become `CB_…`, and the keys of the session files the bus writes follow. The
+  registrar's settings (`MM_REG_SECRET`, `MM_REGISTER_URL`, `MM_REGISTRAR_KEYS`,
+  `MM_REG_BOT_NAME`, `MM_AGENT_PREFIX`, `MM_BOT_ATTESTATION`, …) keep their names until
+  the registrar goes. The full mapping is in [docs/env-names.md](docs/env-names.md).
+  Reading rule: the new name first; when it is unset the old name, with one deprecation
+  warning per process that names the new one (a quiet hook writes it to its log). An
+  empty value counts as set. Old and new name (or the three names of the chat URL and
+  of the bot token) set to different values refuse the start and name both, never a
+  secret's value. Values the bus writes for itself (session and endpoint files, the
+  sandbox's environment) go under both names. The release after this one removes the
+  fallbacks and then refuses to start when an old name is set without its new one, so
+  rename yours now. The `Needs:` grammar accepts `CB_*` names; but since a host before
+  this release drops a line with one, this release's `Needs:` line and the removal
+  release's name no `CB_*` name.
 - **The login service and `authd` read their settings under `CB_` names**
   (#169, [docs/env-names.md](docs/env-names.md)). Every `AUTH_X` becomes
   `CB_AUTH_X` and every `AUTHD_X` becomes `CB_AUTHD_X`; the three Mattermost
@@ -60,6 +81,39 @@ before 0.5.0 are described in the git history.
   8 versions keep their own label and n/a leaves a series out instead of
   a 0 (RT-6.43 step 10).
 
+- **The central bridge reads its settings under `CB_` names** (#169,
+  [docs/env-names.md](docs/env-names.md#the-bridge-19)). Each `BRIDGE_X`
+  becomes `CB_BRIDGE_X` (`CB_BRIDGE_NATS_URL`, `CB_BRIDGE_NATS_SEED_FILE`,
+  `CB_BRIDGE_CA_FILE`, `CB_BRIDGE_MM_URL`, `CB_BRIDGE_MM_ALLOW_HTTP`,
+  `CB_BRIDGE_MM_TOKEN_FILE`, `CB_BRIDGE_MM_TEAM`, `CB_BRIDGE_HOMES`,
+  `CB_BRIDGE_PROPS_PREFIX`, `CB_BRIDGE_KV_BUCKET`, `CB_BRIDGE_SEEN_BUCKET`,
+  `CB_BRIDGE_STREAM`, `CB_BRIDGE_BUS_PREFIX`, `CB_BRIDGE_DELIVER`,
+  `CB_BRIDGE_INBOX`, `CB_BRIDGE_LISTEN_ADDR`,
+  `CB_BRIDGE_MM_ADMIN_TOKEN_FILE`), and the two Mattermost settings of the
+  agents' own bots get an `MM`: `BRIDGE_BOT_PREFIX` becomes
+  `CB_BRIDGE_MM_BOT_PREFIX`, `BRIDGE_HIDE_BOT_DM` becomes
+  `CB_BRIDGE_MM_HIDE_BOT_DM`. The old names still work in this release:
+  with the new name unset the bridge reads the old one and logs one
+  deprecation warning naming the new name; both set to the same value pass
+  with a warning that the old one can go; both set to different values
+  refuse the start, naming both (never a value). An empty value counts as
+  set. A value that is exactly an unexpanded `${NAME}` refuses the start,
+  naming the variable: the bridge has no plugin manifest that would expand
+  it, and read as unset it would silently drop a setting such as a pinned
+  CA file. The release after this one refuses an old name set without its new
+  name; rename the deployment's settings before it.
+
+### Fixed
+
+- **The operator console's logout works in a browser again** (RT-6.43
+  step 9). The pages sent `Referrer-Policy: no-referrer`, under which a
+  browser sends `Origin: null` with the sidebar's same-origin logout POST,
+  and the server refused it as a cross-site logout: every logout from the
+  browser failed with 403. The pages now send `Referrer-Policy:
+  same-origin`, which still sends no referrer to another site; the API
+  answers and the logout's redirect to Keycloak keep `no-referrer`, and
+  `Origin: null` is still refused. A console tab opened before the update
+  keeps the old policy until it is reloaded.
 ## 0.102.0
 
 Needs: login service jetstream user with consumer create and delete rights on the directory bucket.

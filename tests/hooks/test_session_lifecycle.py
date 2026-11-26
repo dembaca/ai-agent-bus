@@ -18,7 +18,7 @@ def test_no_project_channel_no_bot(mm, run):
     """RT-6.1 step 2: without a project channel nothing is registered."""
     r = run(START, MM_REG_SECRET="test-secret", **HOST)
     assert r.code == 0 and r.stdout == ""
-    assert "no MM_PROJECT_CHANNEL" in r.stderr
+    assert "no CB_MM_PROJECT_CHANNEL" in r.stderr
     assert not any(p == "/register/v1/agents" for _, p, _ in mm.writes)
 
 
@@ -73,7 +73,7 @@ def test_no_list_no_trusted_human(mm, run):
     r = run(START, MM_REG_SECRET="test-secret", MM_PROJECT_CHANNEL="proj-x", **HOST)
     out = json.loads(r.stdout)
     assert "MM_TRUSTED_HUMANS" not in out["env"]
-    assert "set MM_TRUSTED_HUMANS" in r.stderr and "trusted none" in out["status"][0]
+    assert "set CB_TRUSTED_HUMANS" in r.stderr and "trusted none" in out["status"][0]
     r = run(START, MM_REG_SECRET="test-secret", MM_OWNER="dembaca",
             MM_PROJECT_CHANNEL="proj-x", **HOST)
     assert json.loads(r.stdout)["env"]["MM_TRUSTED_HUMANS"] == "dembaca"

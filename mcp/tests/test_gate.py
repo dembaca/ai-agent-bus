@@ -37,7 +37,7 @@ class Bus:
         self.client = MattermostAdapter(base_url="https://chat.example", token="bot",
                                        project_channel_name="proj")
         # The home (ADR-002): where the crown holder routes and is never gated.
-        monkeypatch.setenv("MM_PROJECT_CHANNEL_ID", PROJ)
+        monkeypatch.setenv("CB_MM_PROJECT_CHANNEL_ID", PROJ)
         self.posted, self.viewed = [], []
         self.coordinator = coordinator
 
@@ -93,11 +93,11 @@ class Bus:
 
 @pytest.fixture
 def bus(monkeypatch):
-    for var in ("MM_TRUSTED_HUMANS", "MM_TRUSTED_HUMAN_USER_IDS", "MM_OWNER", "MM_OWNER_USER_ID"):
+    for var in ("CB_TRUSTED_HUMANS", "CB_MM_TRUSTED_HUMAN_USER_IDS", "CB_OWNER", "CB_MM_OWNER_USER_ID"):
         monkeypatch.delenv(var, raising=False)
-    monkeypatch.setenv("MM_TRUSTED_HUMAN_USER_IDS", HUMAN)
-    monkeypatch.setenv("MM_TRUSTED_HUMANS", "dembaca")
-    monkeypatch.setenv("MM_BOT_USER_ID", ME)
+    monkeypatch.setenv("CB_MM_TRUSTED_HUMAN_USER_IDS", HUMAN)
+    monkeypatch.setenv("CB_TRUSTED_HUMANS", "dembaca")
+    monkeypatch.setenv("CB_MM_BOT_USER_ID", ME)
     b = Bus(monkeypatch)
     monkeypatch.setattr(server, "_get_client", lambda: b.client)
     monkeypatch.setattr(server, "_get_inbox", lambda: b.inbox)
@@ -169,8 +169,8 @@ def test_reading_a_deleted_bots_account_marks_it_deleted(bus):
 async def test_no_gate_without_trusted_humans(bus, monkeypatch):
     """RT-6.16 step 2: with nobody trusted everything wakes as before; the
     events still carry from_agent."""
-    monkeypatch.delenv("MM_TRUSTED_HUMAN_USER_IDS")
-    monkeypatch.delenv("MM_TRUSTED_HUMANS")
+    monkeypatch.delenv("CB_MM_TRUSTED_HUMAN_USER_IDS")
+    monkeypatch.delenv("CB_TRUSTED_HUMANS")
     e = await bus.arrive("p1000000000000000000000000", STRANGER, "@agent-me deploy now")
     assert not e.gated and bus.posted == [] and bus.viewed == []
     [item] = await server._event_items([e])
@@ -436,10 +436,10 @@ async def test_untrusted_task_is_no_task(bus):
 
 
 def _lookup_fails(bus, monkeypatch, status):
-    """MM_TRUSTED_HUMANS by name only, and its lookup answers `status`."""
+    """CB_TRUSTED_HUMANS by name only, and its lookup answers `status`."""
     import httpx
 
-    monkeypatch.delenv("MM_TRUSTED_HUMAN_USER_IDS")
+    monkeypatch.delenv("CB_MM_TRUSTED_HUMAN_USER_IDS")
     inner = bus.client._api
 
     async def api(method, path, json=None, **kw):
@@ -455,7 +455,7 @@ def _lookup_fails(bus, monkeypatch, status):
 @pytest.mark.asyncio
 @pytest.mark.parametrize("status", [503, 404])
 async def test_a_failed_lookup_of_trusted_humans_keeps_the_gate_on(bus, monkeypatch, status):
-    """RT-6.16 step 2, ADR-016, with the real adapter: MM_TRUSTED_HUMANS is
+    """RT-6.16 step 2, ADR-016, with the real adapter: CB_TRUSTED_HUMANS is
     configured but cannot be resolved (an outage, or a name with no account):
     the gate stays on and the task rows keep their trust check; in doubt,
     nobody is trusted. An outage is told apart in the source, and asked
@@ -498,7 +498,7 @@ async def test_a_failed_lookup_waits_before_it_asks_again(bus, monkeypatch):
 @pytest.mark.asyncio
 @pytest.mark.parametrize("status", [503, 404])
 async def test_a_reaction_stays_gated_when_trusted_humans_cannot_be_looked_up(bus, monkeypatch, status):
-    """RT-6.16 step 7, ADR-016: MM_TRUSTED_HUMANS configured, the lookup
+    """RT-6.16 step 7, ADR-016: CB_TRUSTED_HUMANS configured, the lookup
     resolves none: a stranger's reaction is still gated, never let through."""
     _lookup_fails(bus, monkeypatch, status)
     assert (await _react(bus, STRANGER)).gated
@@ -552,8 +552,8 @@ async def test_a_reaction_is_not_gated_for_the_coordinator_or_without_trusted_hu
     _crown()
     assert not (await _react(bus, STRANGER)).gated
     (session_file.state_dir() / f"coord-{ME}.env").unlink()
-    monkeypatch.delenv("MM_TRUSTED_HUMAN_USER_IDS")
-    monkeypatch.delenv("MM_TRUSTED_HUMANS")
+    monkeypatch.delenv("CB_MM_TRUSTED_HUMAN_USER_IDS")
+    monkeypatch.delenv("CB_TRUSTED_HUMANS")
     assert not (await _react(bus, STRANGER, "eyes")).gated and gate.gated(ME) == set()
 
 
@@ -671,11 +671,11 @@ async def test_an_attested_bot_is_an_agent_that_wakes_in_a_dm_without_approving(
     (None, "x_"), ("", "x_"), ("bgl_", "bgl_"), ("abc1_", "abc1_"), (" bgl_ ", "bgl_"),
 ])
 def test_the_props_prefix_is_configurable_with_a_neutral_default(monkeypatch, value, prefix):
-    """RT-6.16 step 8: MM_PROPS_PREFIX, default x_; the system key and the refusal
+    """RT-6.16 step 8: CB_PROPS_PREFIX, default x_; the system key and the refusal
     follow it, and the error names the prefix in force."""
-    monkeypatch.delenv("MM_PROPS_PREFIX", raising=False)
+    monkeypatch.delenv("CB_PROPS_PREFIX", raising=False)
     if value is not None:
-        monkeypatch.setenv("MM_PROPS_PREFIX", value)
+        monkeypatch.setenv("CB_PROPS_PREFIX", value)
     assert a2a.user_prefix() == prefix and a2a.system_key() == prefix + "system"
     assert a2a.user_props({prefix + "k": 1})[1] == ""
     why = a2a.user_props({"other_k": 1})[1]
@@ -694,14 +694,14 @@ def test_the_props_prefix_is_configurable_with_a_neutral_default(monkeypatch, va
 def test_a_props_prefix_that_can_clash_is_refused_at_start(monkeypatch, value):
     """RT-6.16 step 8: empty is the default, but a prefix a bus or Mattermost key can
     start with, or one that is no `[a-z][a-z0-9]*_`, is refused: the server does not start."""
-    monkeypatch.setenv("MM_PROPS_PREFIX", value)
-    with pytest.raises(ValueError, match="MM_PROPS_PREFIX"):
+    monkeypatch.setenv("CB_PROPS_PREFIX", value)
+    with pytest.raises(ValueError, match="CB_PROPS_PREFIX"):
         a2a.user_prefix()
 
 
 @pytest.mark.asyncio
 async def test_a_system_reply_carries_the_configured_key(bus, monkeypatch):
     """RT-6.16 step 9: the answer without the model is marked with `<prefix>system`."""
-    monkeypatch.setenv("MM_PROPS_PREFIX", "bgl_")
+    monkeypatch.setenv("CB_PROPS_PREFIX", "bgl_")
     await bus.arrive("p1000000000000000000000000", STRANGER, "@agent-me deploy now")
     assert bus.posted[-1]["props"] == {"bgl_system": True}

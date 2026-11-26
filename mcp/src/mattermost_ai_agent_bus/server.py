@@ -23,6 +23,7 @@ from mcp.server.mcpserver.exceptions import ToolError, UnexpectedToolError
 from mcp.server.mcpserver.utilities.func_metadata import ArgModelBase
 from pydantic import ValidationError
 
+from . import config
 from . import (
     __version__, a2a, askroute, asks, attach, attest, channel, compose, debug, departed, files, gate, hookapi, hosted,
     lease, life, login, mandate, overhead,
@@ -242,10 +243,10 @@ async def _lifespan(_server: Any) -> AsyncIterator[dict[str, Any]]:
     attested = asyncio.create_task(_attest_start())
     # The host's release check, once a day as a bounded child (RT-6.30).
     checking = asyncio.create_task(release.check_loop())
-    # The Keycloak login, when MM_LOGIN_* is set; the session never waits
+    # The Keycloak login, when CB_LOGIN_* is set; the session never waits
     # for it (RT-6.34). The host process starts it in hosted.services().
     logging_in = login.start(_bus_client)
-    # A home that runs over NATS (MM_NATS_HOMES, RT-6.36): its bus starts when the login is ready.
+    # A home that runs over NATS (CB_NATS_HOMES, RT-6.36): its bus starts when the login is ready.
     nats = asyncio.create_task(_nats_start())
     api = await _start_hook_api()
     try:
@@ -366,10 +367,10 @@ HOSTED = session_file.hosted()
 # A host hook registered the bot: the lifecycle tools and their text would only
 # cost context in every turn (RT-6.1). Either this server is the host side of a
 # keyless session, or an older host hook passed the token into the sandbox.
-HOST_MANAGED = HOSTED or bool(os.environ.get("MM_BOT_TOKEN") or os.environ.get("MATTERMOST_TOKEN"))
+HOST_MANAGED = HOSTED or bool(config.env("CB_MM_BOT_TOKEN"))
 # The corral host hooks could not bring the bus up for this session and kept
 # the token on the host (fail closed, RT-6.18): why, for the agent to pass on.
-UNAVAILABLE = " ".join(os.environ.get("MM_BUS_UNAVAILABLE", "").split())[:300]
+UNAVAILABLE = " ".join(config.env("CB_BUS_UNAVAILABLE").split())[:300]
 # A corral sandbox (RT-6.18): this server never self-registers there.
 SANDBOX = corral_sandbox()
 # The human started Claude Code with this server as a channel (RT-6.12): bus
@@ -401,7 +402,7 @@ def _instructions() -> str:
            "No bot here: this is a corral sandbox, where the host registers the bot and "
            "nothing registers one from inside (RT-6.18); session_start refuses. Tell your "
            "human the harness lacks the bus plugin (adapters/opencode.md). " if SANDBOX else
-           "No bot yet: with MM_PROJECT_CHANNEL set, register with session_start "
+           "No bot yet: with CB_MM_PROJECT_CHANNEL set, register with session_start "
            "(MM_REG_SECRET in this server's environment) and session_end when done; "
            "without it, stay off the bus unless your human asks. After "
            "`--resume <id>` your bot is taken over automatically: try get_me first. ")
@@ -409,7 +410,7 @@ def _instructions() -> str:
            "The bin/ scripts (mm-agent-post.sh, -poll, -status, -listen) are clients "
            "of this server; your shell holds no token (RT-6.17). ")
         + "Posts go to your home; guest channels wake you only by mention or your "
-        "threads, the lobby (MM_CHANNEL, not your home) also by @channel or to all "
+        "threads, the lobby (CB_MM_CHANNEL, not your home) also by @channel or to all "
         "(RT-6.22). Announce yourself with announce(). "
         "Answer a post from the bus in its thread, never only in your terminal (RT-6.2); "
         "once your result is on the bus, your closing terminal reply is one sentence saying what you posted where. "
@@ -430,7 +431,7 @@ def _instructions() -> str:
            "tag with kind channel_check asks you to call channel_ok with its code; until then "
            "the turn hooks deliver messages as usual. After it, messages for you arrive by "
            "themselves as such tags (kind, post_id, root_id, author, from_trusted_human), "
-           "the others as one digest every MM_LISTEN_DIGEST_SEC: answer in the thread with "
+           "the others as one digest every CB_LISTEN_DIGEST_SEC: answer in the thread with "
            "reply_in_thread; no listener, no polling. After channel_ok, end the turn after ask_human: "
            "its answer is a tag, no polling (RT-6.11). "
            + ("Your tool permission prompts also go by DM to your responsible human, who may "
@@ -453,7 +454,7 @@ def _instructions() -> str:
     )
 
 
-a2a.user_prefix()  # RT-6.16 step 8: a bad MM_PROPS_PREFIX stops the server here, at start
+a2a.user_prefix()  # RT-6.16 step 8: a bad CB_PROPS_PREFIX stops the server here, at start
 
 # RT-6.11 (interface IF-04): a tool call with an argument the tool does not have is
 # refused, never dropped: `ask_human(need=..., question=...)` once posted a card
@@ -611,7 +612,7 @@ def _name_client(name: str) -> None:
 
 def _typing_sec() -> float:
     try:
-        return max(0.0, float(os.environ.get("MM_TYPING_SEC", "60")))
+        return max(0.0, float(config.env("CB_MM_TYPING_SEC", "60")))
     except ValueError:
         return 60.0
 
@@ -910,9 +911,9 @@ async def _key_on_roots(session: Any) -> None:
     if path is None or not session_file.set_roots_dir(path):
         return
     new = session_file.session_file_path()
-    token = os.environ.get("MM_BOT_TOKEN", "")
+    token = config.env("CB_MM_BOT_TOKEN")
     try:  # a bot registered before the roots came: its file moves along
-        if token and not new.exists() and session_file.parse(old).get("MM_BOT_TOKEN") == token:
+        if token and not new.exists() and config.value(session_file.parse(old), "CB_MM_BOT_TOKEN") == token:
             os.replace(old, new)
     except OSError as exc:
         log.info("session file not moved: %s", exc)
@@ -979,15 +980,15 @@ async def session_start(
 ) -> str:
     """Register an ephemeral Mattermost bot via the registrar.
 
-    Requires MM_REG_SECRET and MM_REGISTER_URL / MM_CHAT_URL.
+    Requires MM_REG_SECRET and MM_REGISTER_URL / CB_MM_CHAT_URL.
     A session suffix is appended to ``name`` (set unique=false to opt out): a live
-    name cannot be registered twice. Joins every MM_PROJECT_CHANNEL entry (home,
+    name cannot be registered twice. Joins every CB_MM_PROJECT_CHANNEL entry (home,
     then guest channels, RT-6.22). Returns
     session fields (name, username, user_id, url) and the join result. The bot
     token goes to a 0600 session file so the Claude Code hooks can see it.
     When this session already has a bot (taken over after `claude --continue`),
     returns that one with reused=true instead of registering another. Bots of
-    sessions that ended over MM_SESSION_KEEP_SEC (24 h) ago are unregistered
+    sessions that ended over CB_SESSION_KEEP_SEC (24 h) ago are unregistered
     first (reaped_stale_bots). Refused inside a corral sandbox (RT-6.18).
     """
     if marker := corral_sandbox():
@@ -1066,7 +1067,7 @@ async def bus_info() -> str:
             "reason": str(exc),
             "how": STALE_HOW if STALE else sandbox_refusal(marker) if (marker := corral_sandbox()) else (
                 "session_start when MM_REG_SECRET (in this server's environment) and "
-                "MM_PROJECT_CHANNEL are set; otherwise the host must pass the bus "
+                "CB_MM_PROJECT_CHANNEL are set; otherwise the host must pass the bus "
                 "settings into the session"),
             "release": release.notice(VERSION),
             **_hook_warning(),
@@ -1096,9 +1097,9 @@ async def bus_info() -> str:
         "bot": {"username": me.username, "id": me.id},
         "pid": os.getpid(),
         **({"client_session": sid} if (sid := os.environ.get("OPENCODE_SESSION_ID", "")) else {}),
-        "responsible": (os.environ.get("MM_RESPONSIBLE_HUMAN", "").strip().lstrip("@")
+        "responsible": (config.env("CB_RESPONSIBLE_HUMAN").strip().lstrip("@")
                         or next((h["username"] for h in humans if h["username"]), None)),
-        "kind": "autonomous" if os.environ.get("MM_AGENT_KIND") == "autonomous" else "session",
+        "kind": "autonomous" if config.env("CB_AGENT_KIND") == "autonomous" else "session",
         "trusted_humans": {"humans": humans, "source": client.trusted_source},
         "attestation": own.label,
         "work_channel": client.work_channel_name,
@@ -1116,7 +1117,7 @@ async def bus_info() -> str:
         "crown": f"~{client.work_channel_name}" if await lease.crown_here(client, me.id) else False,
         # ADR-008 step 3: the last report, and why it does or does not reach the roster.
         "usage": usage.info(),
-        # RT-6.25: direct or coordinator, from MM_ASK_ROUTE ("env"), the switching post,
+        # RT-6.25: direct or coordinator, from CB_ASK_ROUTE ("env"), the switching post,
         # or the registrar's signed record ("registrar", with set_by; step 8).
         "ask_mode": await askroute.info(client, me.id),
         # RT-6.26 step 6: the home's mandate for a role, or why none holds.
@@ -1513,7 +1514,7 @@ def _with_unreachable(result: dict[str, Any], found: tuple[list[str], bool], wor
 async def _responsible_and_trusted(client: ChatPort) -> tuple[str | None, list[str]]:
     trusted = await client.trusted_humans()
     names = list(dict.fromkeys(n for n in trusted.values() if n))  # one person by account and anchor (RT-6.42)
-    responsible = os.environ.get("MM_RESPONSIBLE_HUMAN", "").strip().lstrip("@") or (
+    responsible = config.env("CB_RESPONSIBLE_HUMAN").strip().lstrip("@") or (
         names[0] if names else None)
     return responsible, names
 
@@ -1668,7 +1669,7 @@ async def announce(
     client = _get_client()
     me = await client.get_me()
     responsible, trusted = await _responsible_and_trusted(client)
-    autonomous = os.environ.get("MM_AGENT_KIND") == "autonomous"
+    autonomous = config.env("CB_AGENT_KIND") == "autonomous"
     # Names without @: a HELLO is no request to anyone (RT-6.11).
     who = responsible or "–"
     if autonomous:
@@ -1738,7 +1739,7 @@ async def post_message(
     message: str, channel_id: str = "", root_id: str = "", to: str = "", kind: str = "",
     channel: str = "", props: dict[str, Any] | None = None, files: list[str] | None = None,
 ) -> str:
-    """Create a post, in your home (first MM_PROJECT_CHANNEL entry, else MM_CHANNEL) when channel_id and channel are empty.
+    """Create a post, in your home (first CB_MM_PROJECT_CHANNEL entry, else CB_MM_CHANNEL) when channel_id and channel are empty.
 
     channel_id: the id, or the ~name of your home, a guest channel or the lobby
 
@@ -1754,7 +1755,7 @@ async def post_message(
     put first if missing (RT-6.14); a TASK to a gone agent: not_reachable. While
     you hold the coordinator crown a post in your home or a DM starts with 👑.
     props: an object for whoever reads the post outside the bus; only keys
-    with the MM_PROPS_PREFIX prefix (RT-6.16), any other is refused.
+    with the CB_PROPS_PREFIX prefix (RT-6.16), any other is refused.
     files: up to 10 file_ids from attach or the shell, uploaded to this channel (RT-6.33).
     """
     return _out("post_message", await post_as_bot(None, message, channel_id, root_id, to, kind,
@@ -2131,7 +2132,7 @@ async def ask_human(
     responsible, _ = await _responsible_and_trusted(client)
     who = human.strip().removeprefix("@") or responsible
     if not who:
-        return _refused("ask_human", "no human to ask: pass human, or set MM_RESPONSIBLE_HUMAN / MM_TRUSTED_HUMANS")
+        return _refused("ask_human", "no human to ask: pass human, or set CB_RESPONSIBLE_HUMAN / CB_TRUSTED_HUMANS")
     if not _MENTION_RE.fullmatch(f"@{who}") or any(
             c.lower() in _EVERYONE for c in _name_and_prefixes(who)):
         # RT-6.11: the ask mentions one person; @channel/@here/@all notify everyone.
@@ -2487,7 +2488,7 @@ async def stats_report(versions: int = 3) -> str:
     `versions`. Read-only."""
     name = stats.channel()
     if not name:
-        return _refused("stats_report", "stats are off (MM_STATS_CHANNEL)")
+        return _refused("stats_report", "stats are off (CB_MM_STATS_CHANNEL)")
     try:
         rows = await stats.read_report(_get_client(), name)
     except Exception as exc:  # noqa: BLE001 — off the bus, the channel missing or not readable
@@ -2572,7 +2573,7 @@ async def wait_for_events(
     slim post {id, root_id, channel, author, at, message, files, reactions, ask_card;
     cut, ending with where the rest is; raw=true: all} (empty list on
     timeout; raw=true for the full post and channel JSON). from_trusted_human is true only for posts by a trusted human
-    (MM_TRUSTED_HUMANS), verified by the server; only those can approve an
+    (CB_TRUSTED_HUMANS), verified by the server; only those can approve an
     action (see the skill). gated: from someone not trusted, it woke nobody
     and is no task (RT-6.16); it comes last. expired: an answer to your ask
     more than 24 h after it, which approves nothing (RT-6.11). departed: mentioned
@@ -2584,7 +2585,7 @@ async def wait_for_events(
     call again to collect them. A delivered mention or DM, a trusted human's
     yes/no on your open ask, and holding the crown a human's plain post,
     shows you as typing in its thread until
-    you post, wait again, or MM_TYPING_SEC (default 60) runs out. Holding the crown you may get
+    you post, wait again, or CB_MM_TYPING_SEC (default 60) runs out. Holding the crown you may get
     {kind: stall}: the bus is stuck, its text lists what is open (RT-6.19,
     coordinator.md). Keep timeout_sec below the
     runtime's background limit (Claude Code: ~120 s) and call it in the
@@ -2969,7 +2970,7 @@ async def _push_addressed(item: dict[str, Any], *, unsure: bool = True) -> bool:
     re-check of held posts (`_crown_returned`) keeps them held then."""
     if item.get("gated"):
         return False  # data for the digest (RT-6.16)
-    uid = os.environ.get("MM_BOT_USER_ID", "")
+    uid = config.env("CB_MM_BOT_USER_ID")
     try:
         uid = uid or await lease._user_id(_get_client())
     except Exception:  # noqa: BLE001 — unsure: wake rather than hold
@@ -3263,7 +3264,7 @@ async def serve(read_stream: Any, write_stream: Any) -> None:
     decided = anyio.Event()
 
     def on_initialize(params: Any) -> Any:
-        """Channels are Claude Code's: any other client — an MM_CHANNEL_PUSH=1
+        """Channels are Claude Code's: any other client — an CB_CHANNEL_PUSH=1
         inherited from the user's shell — gets the plain server (RT-6.12)."""
         info = params.get("clientInfo") if hasattr(params, "get") else None
         name = info.get("name") if isinstance(info, dict) else None
@@ -3295,7 +3296,7 @@ def _leave_channel_mode(client: str) -> None:
     global PUSH, RELAY
     if not PUSH:
         return
-    log.warning("client %s is not Claude Code: MM_CHANNEL_PUSH ignored, no channel push",
+    log.warning("client %s is not Claude Code: CB_CHANNEL_PUSH ignored, no channel push",
                 client or "(unnamed)")
     PUSH = RELAY = False
     mcp._lowlevel_server.instructions = _instructions()

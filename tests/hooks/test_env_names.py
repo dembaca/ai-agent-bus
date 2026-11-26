@@ -35,7 +35,7 @@ def test_the_page_parses_into_its_lists() -> None:
     assert len(page["registrar"]) == 10     # kept names, their own table
     assert not page["old"] & page["registrar"]
     # the two exclusion lists the guard accepts
-    assert {"MM_ANSWER", "MM_CROWN", "MM_INBOX"} <= page["not_env"]
+    assert {"CB_ANSWER", "CB_CROWN", "CB_INBOX", "CB_MM_API_BODY", "BUS_KEY"} <= page["not_env"]
     assert {"HOME", "PATH", "CLAUDE_PROJECT_DIR", "MM_A", "BRIDGE_TTL_SEC"} <= page["excluded"]
     # the tables' right column, and the per-section membership the test table needs
     assert {"CB_NATS_URL", "CB_MM_BOT_TOKEN", "CB_AUTH_NATS_URL"} <= page["new"]

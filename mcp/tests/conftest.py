@@ -4,6 +4,8 @@ import os
 
 import pytest
 
+from mattermost_ai_agent_bus import config
+
 # Every variable from_env() reads. Tests must not inherit these from the shell:
 # under a host-managed session the real ones are present, which silently changed
 # what from_env() returned and made assertions pass or fail by accident.
@@ -47,10 +49,14 @@ _BUS_ENV = (
     "CORRAL_SANDBOX",
     "CORRAL_AGENT",
 )
+# And every name of every renamed setting, new and old (docs/env-names.md): a
+# host-managed shell carries the real ones under either name.
+_BUS_ENV += tuple(n for new in config.RENAMED for n in config.spellings(new) if n not in _BUS_ENV)
 # Run inside a corral sandbox, the tests would inherit its markers before any
 # fixture runs, when the server module reads them at import: it would refuse
 # self-registration (RT-6.18). CI has none; locally they go, too.
-for _name in ("CORRAL_SANDBOX", "MM_BUS_MCP_ENDPOINT", "MM_BUS_ENDPOINT", "MM_BUS_KEY"):
+for _name in ("CORRAL_SANDBOX", "MM_BUS_MCP_ENDPOINT", "MM_BUS_ENDPOINT", "MM_BUS_KEY",
+              "CB_BUS_MCP_ENDPOINT", "CB_BUS_ENDPOINT", "CB_BUS_KEY"):
     os.environ.pop(_name, None)
 
 
@@ -60,6 +66,8 @@ def _isolate_bus_env(monkeypatch, tmp_path, request):
     for name in _BUS_ENV:
         monkeypatch.delenv(name, raising=False)
     monkeypatch.setenv("XDG_STATE_HOME", str(tmp_path / "state"))
+    # Each test sees the deprecation warning of an old name afresh.
+    monkeypatch.setattr(config, "_warned", set())
     # Only the host process of a keyless session sets it (RT-6.18).
     from mattermost_ai_agent_bus import session_file
 

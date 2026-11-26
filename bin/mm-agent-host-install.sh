@@ -29,18 +29,18 @@
 # (filter, diff, merge drivers, includes) is refused; the installed commit is
 # printed to compare with the one you reviewed. This
 # copies adapters/corral/ and bin/ into a directory per release beside
-# MM_BUS_HOST_DIR (default ~/.local/share/mm-agent-bus/current):
+# CB_BUS_HOST_DIR (default ~/.local/share/mm-agent-bus/current):
 # releases/<version>-dev.<commit>/, marked SOURCE=unsigned. `--release vX.Y.Z`
-# instead fetches that annotated tag from MM_RELEASE_URL (default: the GitHub
+# instead fetches that annotated tag from CB_RELEASE_URL (default: the GitHub
 # repository) into src.git beside releases/, never moving a tag it fetched
 # before, checks its name and the version in its tree and, when
-# MM_RELEASE_SIGNERS is set (opt-in; public keys, one per line), its SSH
+# CB_RELEASE_SIGNERS is set (opt-in; public keys, one per line), its SSH
 # signature, and installs git archive of it into releases/X.Y.Z/, marked
 # SOURCE=signed, or SOURCE=release VERIFIED=no without the variable (ADR-011
 # phase 1b, RT-6.29). `current` is a symlink to one of them, switched in one
 # rename once the release is complete; the one before stays as `previous`, and
 # --rollback swaps the two. The sandbox neither sees nor writes any of it.
-# A --release run with MM_RELEASE_SIGNERS stores the keys in release-signers
+# A --release run with CB_RELEASE_SIGNERS stores the keys in release-signers
 # beside releases/ once they verified the tag; later runs and the release check
 # use that file when the variable is unset (--forget-signers removes it; other
 # keys in the variable are refused unless --replace-signers). A version the
@@ -92,7 +92,7 @@ die() {
   exit 1
 }
 
-FROM="" RELEASE="" ENFORCE=0 CHECK=0 ROLLBACK=0 DOWNGRADE=0 WITHDRAWN_OK=0 FORGET=0 MM_REL_REPLACE=0 HOLD=""
+FROM="" RELEASE="" ENFORCE=0 CHECK=0 ROLLBACK=0 DOWNGRADE=0 WITHDRAWN_OK=0 FORGET=0 CB_REL_REPLACE=0 HOLD=""
 while [[ $# -gt 0 ]]; do
   case "$1" in
     --from) FROM="${2:-}"; shift 2 ;;
@@ -102,7 +102,7 @@ while [[ $# -gt 0 ]]; do
     --downgrade) DOWNGRADE=1; shift ;;
     --withdrawn-ok) WITHDRAWN_OK=1; shift ;;
     --forget-signers) FORGET=1; shift ;;
-    --replace-signers) MM_REL_REPLACE=1; shift ;;
+    --replace-signers) CB_REL_REPLACE=1; shift ;;
     --hold) HOLD=hold; shift ;;
     --unhold) HOLD=unhold; shift ;;
     --auto) AUTO=1; shift ;;
@@ -118,14 +118,14 @@ if [[ -n "$RELEASE" ]]; then
   [[ -z "$FROM" && "$ROLLBACK" -eq 0 && "$CHECK" -eq 0 ]] || die "--release takes no --from, --rollback or --check"
 fi
 [[ "$WITHDRAWN_OK" -eq 0 || -n "$RELEASE" || "$ROLLBACK" -eq 1 ]] || die "--withdrawn-ok goes with --release or --rollback"
-[[ "$FORGET" -eq 0 || ( -z "$FROM$RELEASE" && "$CHECK$ROLLBACK$DOWNGRADE$WITHDRAWN_OK$MM_REL_REPLACE" == 00000 ) ]] ||
+[[ "$FORGET" -eq 0 || ( -z "$FROM$RELEASE" && "$CHECK$ROLLBACK$DOWNGRADE$WITHDRAWN_OK$CB_REL_REPLACE" == 00000 ) ]] ||
   die "--forget-signers takes no other option"
-[[ "$MM_REL_REPLACE" -eq 0 || -n "$RELEASE" ]] || die "--replace-signers goes with --release"
-others="$FROM$RELEASE$CHECK$ROLLBACK$DOWNGRADE$WITHDRAWN_OK$FORGET$MM_REL_REPLACE"
+[[ "$CB_REL_REPLACE" -eq 0 || -n "$RELEASE" ]] || die "--replace-signers goes with --release"
+others="$FROM$RELEASE$CHECK$ROLLBACK$DOWNGRADE$WITHDRAWN_OK$FORGET$CB_REL_REPLACE"
 [[ -z "$HOLD" || ( "$AUTO" -eq 0 && "$others" == 000000 ) ]] || die "--$HOLD takes no other option"
 [[ "$AUTO" -eq 0 || ( -z "$HOLD" && "$others" == 000000 ) ]] || die "--auto takes no other option"
 
-DEST="${MM_BUS_HOST_DIR:-$HOME/.local/share/mm-agent-bus/current}"
+DEST="${CB_BUS_HOST_DIR:-$HOME/.local/share/mm-agent-bus/current}"
 # Relative paths are the operator's; then work from /, never from a checkout.
 [[ -z "$FROM" || "$FROM" == /* ]] || FROM="$PWD/$FROM"
 [[ "$DEST" == /* ]] || DEST="$PWD/$DEST"
@@ -186,22 +186,22 @@ fi
 
 # Forget the release keys pinned on this host (RT-6.29, decision (4) of
 # 2026-11-12): the next --release run and the release check go without them,
-# unless MM_RELEASE_SIGNERS is set.
-# The keys lie beside releases/ (MM_BUS_HOST_DIR's parent), not in the state
+# unless CB_RELEASE_SIGNERS is set.
+# The keys lie beside releases/ (CB_BUS_HOST_DIR's parent), not in the state
 # directory, which XDG_STATE_HOME could move; checked as the reader checks them.
 if [[ "$FORGET" -eq 1 ]]; then
   d="$(cd -P "$(dirname "$DEST")" 2>/dev/null && pwd -P)" || d="$(dirname "$DEST")"
-  f="$d/$MM_SIGNERS_FILE"
+  f="$d/$CB_SIGNERS_FILE"
   if [[ -e "$f" || -L "$f" ]]; then
     ! sandbox_writable "$d" || die "$f lies where a corral sandbox can write; refused, nothing removed"
     [[ -f "$f" && ! -L "$f" ]] || die "$f is a symlink or no regular file; refused, nothing removed (look at it, then remove it by hand)"
     rm -f "$f" || die "could not remove $f"
-    echo "Forgot the release keys pinned in $f: without MM_RELEASE_SIGNERS, --release installs and the release check run unchecked, with a WARNING."
+    echo "Forgot the release keys pinned in $f: without CB_RELEASE_SIGNERS, --release installs and the release check run unchecked, with a WARNING."
   else
     echo "No release keys pinned in $f; nothing changed."
   fi
-  [[ -z "${MM_RELEASE_SIGNERS+set}" ]] ||
-    echo "MM_RELEASE_SIGNERS is set in this shell: runs from it still check the signature, and a --release run pins its keys again."
+  [[ -z "${CB_RELEASE_SIGNERS+set}" ]] ||
+    echo "CB_RELEASE_SIGNERS is set in this shell: runs from it still check the signature, and a --release run pins its keys again."
   exit 0
 fi
 
@@ -210,7 +210,7 @@ fi
 # lines ($2), 0600, in one rename; $3 says what was done. Not when the
 # directory is not this user's own or others can write it.
 write_signers() {
-  local d="$1" f="$1/$MM_SIGNERS_FILE" tmp="$1/.$MM_SIGNERS_FILE.$$" text
+  local d="$1" f="$1/$CB_SIGNERS_FILE" tmp="$1/.$CB_SIGNERS_FILE.$$" text
   text="# Release keys pinned by mm-agent-host-install.sh (RT-6.29, RT-6.32); --forget-signers removes them."$'\n'"$2"
   if ! mm_own_path "$d"; then
     echo "mm-agent-host-install: WARNING: $d is not this user's own or others can write it: the release keys are not pinned" >&2
@@ -218,7 +218,7 @@ write_signers() {
   fi
   { (umask 077 && printf '%s' "$text" >"$tmp") && chmod 600 "$tmp" && mv -f "$tmp" "$f"; } ||
     { rm -f "$tmp"; echo "mm-agent-host-install: WARNING: could not write $f: the release keys are not pinned" >&2; return 1; }
-  echo "$3: later runs and the release check use them when MM_RELEASE_SIGNERS is unset (--forget-signers removes them)."
+  echo "$3: later runs and the release check use them when CB_RELEASE_SIGNERS is unset (--forget-signers removes them)."
 }
 
 # The host state directory for --hold, --unhold and --auto's log: resolved,
@@ -232,21 +232,21 @@ auto_state_dir() {
 }
 
 # --hold and --unhold (RT-6.32): self-updates stop on this host until
-# --unhold. The hold is a file beside releases/ (MM_BUS_HOST_DIR's parent),
+# --unhold. The hold is a file beside releases/ (CB_BUS_HOST_DIR's parent),
 # out of XDG_STATE_HOME's reach like release-signers; anything there of that
 # name holds, so only a person on the host lifts it.
 if [[ -n "$HOLD" ]]; then
   d="$(dirname "$DEST")"
   mkdir -p "$d" 2>/dev/null || die "cannot create $d"
   d="$(cd -P "$d" && pwd -P)"
-  f="$d/$MM_HOLD_FILE"
+  f="$d/$CB_HOLD_FILE"
   ! sandbox_writable "$d" || die "$d can be changed from inside a corral sandbox; refused"
   s="$(auto_state_dir)"
   if [[ "$HOLD" == hold ]]; then
     if mm_release_held "$d"; then
       echo "Self-updates are held on this host already ($f)."
     else
-      tmp="$d/.$MM_HOLD_FILE.$$"
+      tmp="$d/.$CB_HOLD_FILE.$$"
       { (umask 077 && printf 'held by mm-agent-host-install.sh --hold at %s\n' "$(date -u +%Y-%m-%dT%H:%M:%SZ)" >"$tmp") &&
         mv -f "$tmp" "$f"; } || { rm -f "$tmp"; die "could not write $f"; }
       echo "Held: this host no longer updates itself ($f) until mm-agent-host-install.sh --unhold; --release still installs by hand."
@@ -284,7 +284,7 @@ if [[ "$AUTO" -eq 1 ]]; then
   ! sandbox_writable "$pd" || die "$pd can be changed from inside a corral sandbox; nothing done"
   # The stop switch (guard rail 4), before anything is read.
   if mm_release_held "$pd"; then
-    auto_say "held ($pd/$MM_HOLD_FILE): no self-update until --unhold" held
+    auto_say "held ($pd/$CB_HOLD_FILE): no self-update until --unhold" held
     exit 0
   fi
   # The registrar's record, verified by this tree's own Python with the pinned
@@ -299,29 +299,29 @@ if [[ "$AUTO" -eq 1 ]]; then
             auto_say "${MM_RR_WHY:-the release record was not read}; nothing changed" failed; exit 0 ;;
   esac
   # Keys pinned once (guard rail 1): taken from the registrar only when the
-  # host has none, neither release-signers nor MM_RELEASE_SIGNERS; then a
+  # host has none, neither release-signers nor CB_RELEASE_SIGNERS; then a
   # different set is refused, and changing keys is a person's step.
   # `latest` (RT-6.32 step 4) stands for the newest tag the host's release
   # check knows that is not withdrawn: `latest (v<x.y.z>)`, `latest` while
   # none is known.
-  target="$(mm_release_target "$MM_RR_VERSION" "$pd/$MM_WITHDRAWN_FILE")"
+  target="$(mm_release_target "$MM_RR_VERSION" "$pd/$CB_WITHDRAWN_FILE")"
   if ! mm_release_signers "$pd"; then
     mm_auto_state "$AUTO_STATE" REGISTRAR=ok "TARGET=$target" KEYS=bad "AT=$(date +%s)"
-    auto_say "no self-update: $MM_REL_ERR" refused
+    auto_say "no self-update: $CB_REL_ERR" refused
     exit 0
   fi
   keystate="$(mm_release_keystate)"
   mm_auto_state "$AUTO_STATE" REGISTRAR=ok "TARGET=$target" "KEYS=$keystate" "AT=$(date +%s)"
   if [[ "$keystate" == mismatch ]]; then
-    auto_say "refused: the registrar's record (key ${MM_RR_KID:-?}) names release keys other than those pinned in $MM_REL_FROM_TEXT; no self-update. Changing keys is a person's step on the host: --release v<version> --replace-signers with MM_RELEASE_SIGNERS" refused
+    auto_say "refused: the registrar's record (key ${MM_RR_KID:-?}) names release keys other than those pinned in $CB_REL_FROM_TEXT; no self-update. Changing keys is a person's step on the host: --release v<version> --replace-signers with CB_RELEASE_SIGNERS" refused
     exit 0
   fi
   if [[ "$keystate" == none ]]; then
     n="$(grep -c . <<<"$MM_RR_KEYS")"
-    write_signers "$pd" "$MM_RR_KEYS" "Pinned the $n release key(s) the registrar's signed record offers in $pd/$MM_SIGNERS_FILE" ||
+    write_signers "$pd" "$MM_RR_KEYS" "Pinned the $n release key(s) the registrar's signed record offers in $pd/$CB_SIGNERS_FILE" ||
       { auto_say "the release keys the registrar offers could not be pinned; no self-update" failed; exit 0; }
-    mm_auto_log "$AUTO_STATE" "pinned the $n release key(s) the registrar offers (its record signed by key ${MM_RR_KID:-?}) in $pd/$MM_SIGNERS_FILE"
-    mm_release_signers "$pd" || { auto_say "no self-update: $MM_REL_ERR" refused; exit 0; }
+    mm_auto_log "$AUTO_STATE" "pinned the $n release key(s) the registrar offers (its record signed by key ${MM_RR_KID:-?}) in $pd/$CB_SIGNERS_FILE"
+    mm_release_signers "$pd" || { auto_say "no self-update: $CB_REL_ERR" refused; exit 0; }
     mm_auto_state "$AUTO_STATE" KEYS=match
   fi
   if [[ -z "$MM_RR_VERSION" ]]; then
@@ -329,7 +329,7 @@ if [[ "$AUTO" -eq 1 ]]; then
     exit 0
   fi
   # Only forward, only signed (guard rail 2).
-  if [[ "$MM_REL_ENFORCE" -ne 1 ]]; then
+  if [[ "$CB_REL_ENFORCE" -ne 1 ]]; then
     auto_say "no release keys on this host: it never updates by itself (unchecked mode)" refused
     exit 0
   fi
@@ -337,7 +337,7 @@ if [[ "$AUTO" -eq 1 ]]; then
   # The version to go to: the one named, or latest's tag as the last release
   # check left it (none known yet: the check below finds it).
   if [[ "$MM_RR_VERSION" == latest ]]; then
-    want="$(mm_release_latest "$pd/$MM_WITHDRAWN_FILE" || true)" named="$target"
+    want="$(mm_release_latest "$pd/$CB_WITHDRAWN_FILE" || true)" named="$target"
   else
     want="$MM_RR_VERSION" named="v$MM_RR_VERSION"
   fi
@@ -351,7 +351,7 @@ if [[ "$AUTO" -eq 1 ]]; then
   echo "mm-agent-host-install: running the release check before updating" >&2
   bash "$SELF/bin/mm-agent-release-check.sh" --state-dir "$AUTO_STATE" >&2 ||
     echo "mm-agent-host-install: the release check failed; using the withdrawn versions it wrote before, if any" >&2
-  if [[ ! -f "$pd/$MM_WITHDRAWN_FILE" || -L "$pd/$MM_WITHDRAWN_FILE" ]]; then
+  if [[ ! -f "$pd/$CB_WITHDRAWN_FILE" || -L "$pd/$CB_WITHDRAWN_FILE" ]]; then
     auto_say "$named waits: the withdrawn versions are unknown (no release check passed on this host yet)" failed
     exit 0
   fi
@@ -359,9 +359,9 @@ if [[ "$AUTO" -eq 1 ]]; then
   # passed the check or not. The --release path below verifies it; a newest
   # tag that fails there is a refusal, never a step back to an older one.
   if [[ "$MM_RR_VERSION" == latest ]]; then
-    named="$(mm_release_target latest "$pd/$MM_WITHDRAWN_FILE")"
+    named="$(mm_release_target latest "$pd/$CB_WITHDRAWN_FILE")"
     mm_auto_state "$AUTO_STATE" "TARGET=$named"
-    if ! want="$(mm_release_latest "$pd/$MM_WITHDRAWN_FILE")"; then
+    if ! want="$(mm_release_latest "$pd/$CB_WITHDRAWN_FILE")"; then
       auto_say "the registrar names latest, and the release check knows no release tag that is not withdrawn: no self-update" failed
       exit 0
     fi
@@ -370,7 +370,7 @@ if [[ "$AUTO" -eq 1 ]]; then
       exit 0
     fi
   fi
-  if by="$(mm_release_withdrawn "$want" "$pd/$MM_WITHDRAWN_FILE")"; then
+  if by="$(mm_release_withdrawn "$want" "$pd/$CB_WITHDRAWN_FILE")"; then
     auto_say "the registrar names $named, which the CHANGELOG of v$by withdrew: no self-update" refused
     exit 0
   fi
@@ -385,7 +385,7 @@ fi
 # state directory, which XDG_STATE_HOME could move. No network; without the
 # file nothing is refused, and that is said.
 refuse_withdrawn() {
-  local by w="$parent/$MM_WITHDRAWN_FILE"
+  local by w="$parent/$CB_WITHDRAWN_FILE"
   if [[ ! -e "$w" ]]; then
     echo "mm-agent-host-install: withdrawn versions unknown: no release check on this host yet; run --check" >&2
     return 0
@@ -406,10 +406,10 @@ refuse_withdrawn() {
 RELEASE_RE='^[0-9]+\.[0-9]+\.[0-9]+(-dev\.[0-9a-f]{12}|-legacy)?$'
 layout() {
   parent="$(dirname "$DEST")"
-  case "$(basename "$DEST")" in releases | previous) die "MM_BUS_HOST_DIR may not be named releases or previous" ;; esac
+  case "$(basename "$DEST")" in releases | previous) die "CB_BUS_HOST_DIR may not be named releases or previous" ;; esac
   mkdir -p "$parent"
   parent="$(cd -P "$parent" && pwd -P)"
-  ! sandbox_writable "$parent" || die "$DEST can be changed from inside a corral sandbox; pick another MM_BUS_HOST_DIR"
+  ! sandbox_writable "$parent" || die "$DEST can be changed from inside a corral sandbox; pick another CB_BUS_HOST_DIR"
   # One installer at a time: a second one's garbage collection could remove
   # the release the first is preparing. mkdir is atomic (no flock on macOS).
   # The lock holds the installer's pid; one whose installer is gone (killed,
@@ -539,7 +539,7 @@ recorded_releases() {
 }
 
 # Running corral sessions without a record: a host-managed session file
-# (MM_BUS_HOST_PID) whose corral process lives, and no <key>.release. Their
+# (CB_BUS_HOST_PID) whose corral process lives, and no <key>.release. Their
 # hooks run by an older path (current/adapters/corral/…, a host copy from
 # before RT-6.28) or preStart could not record them: a switch changes the file
 # corral runs at their end, and corral then skips their postEnd.
@@ -552,8 +552,8 @@ unrecorded_sessions() {
     k="$(basename "$f" .env)"
     [[ "$k" =~ ^[A-Za-z0-9_][A-Za-z0-9._-]*$ && ! -e "$STATE/$k.release" ]] || continue
     content="$(mm_read_file "$f")" || continue
-    [[ $'\n'"$content" == *$'\n'MM_BUS_HOST_PID=* ]] || continue
-    pid="$(sed -n 's/^MM_SESSION_PID=//p' <<<"$content" | head -n1)"
+    [[ $'\n'"$content" == *$'\n'CB_BUS_HOST_PID=* || $'\n'"$content" == *$'\n'MM_BUS_HOST_PID=* ]] || continue
+    pid="$(mm_kv - CB_SESSION_PID MM_SESSION_PID <<<"$content")"
     [[ "$pid" =~ ^[0-9]+$ ]] && kill -0 "$pid" 2>/dev/null && printf '%s\n' "$k"
   done
   shopt -u nullglob
@@ -650,7 +650,7 @@ OPTIONAL=(mcp/README.md skills/ai-agent-bus opencode pi)
 
 # --- a signed release (RT-6.29) -------------------------------------------------
 # The pinned keys come from the host only, never from the plugin or a session:
-# MM_RELEASE_SIGNERS in the installer's environment (the operator's shell; a
+# CB_RELEASE_SIGNERS in the installer's environment (the operator's shell; a
 # workdir's .envrc can set it there, so allow only one you reviewed), else the
 # file release-signers a keyed run left beside releases/; git runs
 # without system or global config, hook or attributes file, fetches over https
@@ -663,17 +663,17 @@ if [[ -n "$RELEASE" ]]; then
   # Set but empty is a mistake, not opt-out: refused. Shared with the release
   # check (mm-agent-lib.sh, RT-6.30): the keys, the URL, the tools, git's clean
   # environment and the tag's checks.
-  mm_release_signers "$(dirname "$DEST")" || die "$MM_REL_ERR"
-  ENFORCE="$MM_REL_ENFORCE"
-  case "$MM_REL_FROM" in
-    env) echo "mm-agent-host-install: release keys from MM_RELEASE_SIGNERS" >&2 ;;
-    file) echo "mm-agent-host-install: release keys from $MM_REL_FROM_TEXT (pinned by an earlier run; MM_RELEASE_SIGNERS is not set)" >&2 ;;
-    *) echo "mm-agent-host-install: WARNING: MM_RELEASE_SIGNERS is not set and no release keys are pinned on this host ($(dirname "$DEST")/$MM_SIGNERS_FILE): the release's signature is NOT checked; set MM_RELEASE_SIGNERS to the release keys to enforce it (a run with it pins them)" >&2 ;;
+  mm_release_signers "$(dirname "$DEST")" || die "$CB_REL_ERR"
+  ENFORCE="$CB_REL_ENFORCE"
+  case "$CB_REL_FROM" in
+    env) echo "mm-agent-host-install: release keys from CB_RELEASE_SIGNERS" >&2 ;;
+    file) echo "mm-agent-host-install: release keys from $CB_REL_FROM_TEXT (pinned by an earlier run; CB_RELEASE_SIGNERS is not set)" >&2 ;;
+    *) echo "mm-agent-host-install: WARNING: CB_RELEASE_SIGNERS is not set and no release keys are pinned on this host ($(dirname "$DEST")/$CB_SIGNERS_FILE): the release's signature is NOT checked; set CB_RELEASE_SIGNERS to the release keys to enforce it (a run with it pins them)" >&2 ;;
   esac
-  mm_release_url || die "$MM_REL_ERR"
-  URL="$MM_REL_URL"
-  mm_release_tools || die "$MM_REL_ERR"
-  # Keys from MM_RELEASE_SIGNERS that verified the tag become the host's
+  mm_release_url || die "$CB_REL_ERR"
+  URL="$CB_REL_URL"
+  mm_release_tools || die "$CB_REL_ERR"
+  # Keys from CB_RELEASE_SIGNERS that verified the tag become the host's
   # (decision (4) of 2026-11-12): release-signers beside releases/ ($parent,
   # which layout() refused when a sandbox can write it; not the state
   # directory, which XDG_STATE_HOME could move), only `<type> <base64>` lines,
@@ -681,18 +681,18 @@ if [[ -n "$RELEASE" ]]; then
   # and refused other keys without --replace-signers; the same keys change
   # nothing.
   store_signers() {
-    local f="$parent/$MM_SIGNERS_FILE" verb
-    if [[ -n "$MM_REL_PINNED" ]]; then
-      [[ "$(sort -u <<<"$MM_REL_KEYS")" != "$(sort -u <<<"$MM_REL_PINNED")" ]] || return 0
-      verb="Replaced the release keys pinned in $f with those of MM_RELEASE_SIGNERS (--replace-signers)"
+    local f="$parent/$CB_SIGNERS_FILE" verb
+    if [[ -n "$CB_REL_PINNED" ]]; then
+      [[ "$(sort -u <<<"$CB_REL_KEYS")" != "$(sort -u <<<"$CB_REL_PINNED")" ]] || return 0
+      verb="Replaced the release keys pinned in $f with those of CB_RELEASE_SIGNERS (--replace-signers)"
     else
-      verb="Pinned the release keys of MM_RELEASE_SIGNERS in $f"
+      verb="Pinned the release keys of CB_RELEASE_SIGNERS in $f"
     fi
-    write_signers "$parent" "$MM_REL_KEYS" "$verb" || true
+    write_signers "$parent" "$CB_REL_KEYS" "$verb" || true
   }
   # verify-tag's temporary files go into the installer's own lock directory,
   # which only the host sees (set by layout()).
-  rgit() { MM_REL_GIT_DIR="$SRC_GIT" MM_REL_TMP="$LOCK" mm_rgit "$@"; }
+  rgit() { CB_REL_GIT_DIR="$SRC_GIT" CB_REL_TMP="$LOCK" mm_rgit "$@"; }
   # Name, signature, then tree; any refusal before the switch leaves current as it was.
   stage_release() {
     local out old_id tag_id obj f v_py v_init
@@ -711,10 +711,10 @@ if [[ -n "$RELEASE" ]]; then
     tag_id="$(rgit rev-parse -q --verify "refs/tags/$TAG")" || die "$TAG is not in $SRC_GIT after the fetch"
     # Annotated in both modes, so the same tags serve hosts with and without
     # keys; with keys its SSH signature by a pinned key; its own name; a commit.
-    MM_REL_GIT_DIR="$SRC_GIT" MM_REL_TMP="$LOCK" mm_release_tag "$TAG" "$tag_id" ||
-      die "$MM_REL_ERR; refused, $DEST is unchanged"
-    SIGNER="$MM_REL_SIGNER" obj="$MM_REL_COMMIT"
-    [[ "$MM_REL_FROM" != env ]] || store_signers
+    CB_REL_GIT_DIR="$SRC_GIT" CB_REL_TMP="$LOCK" mm_release_tag "$TAG" "$tag_id" ||
+      die "$CB_REL_ERR; refused, $DEST is unchanged"
+    SIGNER="$CB_REL_SIGNER" obj="$CB_REL_COMMIT"
+    [[ "$CB_REL_FROM" != env ]] || store_signers
     head_sha="$obj" TAG_ID="$tag_id"
     for f in "${OPTIONAL[@]}"; do
       if rgit cat-file -e "$head_sha:$f" 2>/dev/null; then paths+=("$f"); fi
@@ -962,11 +962,11 @@ if [[ "$gc" -eq 1 ]]; then collect_garbage; else echo "no release removed: a ste
 
 [[ "$AUTO" -eq 0 ]] || auto_say "updated to $named ($have before), signed release $TAG, signed by $SIGNER" updated
 if [[ -n "$RELEASE" && "$ENFORCE" -eq 1 ]]; then
-  kind="signed release $TAG, signed by $SIGNER, a key pinned in $MM_REL_FROM_TEXT"
+  kind="signed release $TAG, signed by $SIGNER, a key pinned in $CB_REL_FROM_TEXT"
   head_line="$head_sha (tag object $TAG_ID)"
   check="Verified: the tag's signature, its name and the version in its tree."
 elif [[ -n "$RELEASE" ]]; then
-  kind="release $TAG, signature NOT checked: MM_RELEASE_SIGNERS is not set and no keys are pinned on this host"
+  kind="release $TAG, signature NOT checked: CB_RELEASE_SIGNERS is not set and no keys are pinned on this host"
   head_line="$head_sha (tag object $TAG_ID)"
   check="Checked: the tag's name, its object (pinned in releases/) and the version in its tree; not its signature."
 else

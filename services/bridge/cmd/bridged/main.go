@@ -45,7 +45,7 @@ func main() {
 }
 
 func run(log *slog.Logger) error {
-	cfg, err := config.FromEnv()
+	cfg, err := config.FromEnv(log.Warn)
 	if err != nil {
 		return err
 	}
@@ -132,7 +132,7 @@ func run(log *slog.Logger) error {
 	}()
 	ws := mmws.New(cfg.MMURL, cfg.MMToken).WithPlainHTTP(cfg.MMAllowHTTP)
 	if cfg.MMPlainHTTP {
-		log.Warn("bridge: BRIDGE_MM_URL is http to a host that is not loopback (BRIDGE_MM_ALLOW_HTTP);" +
+		log.Warn("bridge: CB_BRIDGE_MM_URL is http to a host that is not loopback (CB_BRIDGE_MM_ALLOW_HTTP);" +
 			" the bot token goes to Mattermost in clear text")
 	}
 	wg.Add(2)
@@ -169,7 +169,7 @@ func run(log *slog.Logger) error {
 	return nil
 }
 
-// agentBots is the agents' own bots (RT-6.44) when BRIDGE_MM_ADMIN_TOKEN_FILE
+// agentBots is the agents' own bots (RT-6.44) when CB_BRIDGE_MM_ADMIN_TOKEN_FILE
 // is set, after the start checks; nil keeps the one bridge bot.
 func agentBots(ctx context.Context, cfg config.Config, snapshot *presence.Snapshot,
 	accounts *inbound.Accounts, log *slog.Logger) (*agentbots.Bots, error) {
@@ -205,7 +205,7 @@ func connect(cfg config.Config) (*nats.Conn, error) {
 		})}
 	seed, err := nats.NkeyOptionFromSeed(cfg.SeedFile)
 	if err != nil {
-		return nil, fmt.Errorf("BRIDGE_NATS_SEED_FILE: %w", err)
+		return nil, fmt.Errorf("CB_BRIDGE_NATS_SEED_FILE: %w", err)
 	}
 	opts = append(opts, seed)
 	if tlsFirst(cfg.NATSURL) {
@@ -217,10 +217,10 @@ func connect(cfg config.Config) (*nats.Conn, error) {
 			pool := x509.NewCertPool()
 			pem, err := os.ReadFile(cfg.CAFile)
 			if err != nil {
-				return nil, fmt.Errorf("BRIDGE_CA_FILE: %w", err)
+				return nil, fmt.Errorf("CB_BRIDGE_CA_FILE: %w", err)
 			}
 			if !pool.AppendCertsFromPEM(pem) {
-				return nil, fmt.Errorf("BRIDGE_CA_FILE %s holds no certificate", cfg.CAFile)
+				return nil, fmt.Errorf("CB_BRIDGE_CA_FILE %s holds no certificate", cfg.CAFile)
 			}
 			tcfg.RootCAs = pool
 		}
