@@ -69,6 +69,20 @@ before 0.5.0 are described in the git history.
 
 ### Breaking
 
+- **The login service and `authd` read their settings under `CB_` names**
+  (#169, [docs/env-names.md](docs/env-names.md)). Every `AUTH_X` becomes
+  `CB_AUTH_X` and every `AUTHD_X` becomes `CB_AUTHD_X`; the three Mattermost
+  settings shorten to `CB_AUTH_MM_URL`, `CB_AUTH_MM_TEAM` and
+  `CB_AUTH_MM_TOKEN_FILE` (from `AUTH_MATTERMOST_URL`, `_TEAM`,
+  `_TOKEN_FILE`). The old names still work until the removal release (the
+  release after 0.103.0): an old name is read when its new name is unset,
+  with one warning per process naming the new name. Both names set to
+  different values refuse the start and name both, never a value; equal
+  values pass with a warning that the old name can go. Empty counts as set,
+  an unexpanded `${NAME}` as unset. From the removal release on an old name
+  without its new name refuses the start. Error messages, `authd dir -h`,
+  `services/auth/README.md` and `nats-server.example.conf` name the new
+  names.
 - **The central bridge refuses an `http` Mattermost URL to a host that is
   not loopback** (#131). Its bot token goes with every REST call and in the
   WebSocket's authentication challenge, so over `http` it would cross the

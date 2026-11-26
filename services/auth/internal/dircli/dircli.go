@@ -23,6 +23,8 @@ import (
 	"time"
 	"unicode"
 	"unicode/utf8"
+
+	"github.com/dembaca/ai-agent-bus/services/auth/internal/envname"
 )
 
 // Exit codes.
@@ -51,15 +53,27 @@ commands:
   account rm <name> --rev N           remove a name's entry (revision N from show)
 
 settings (flag, then environment):
-  --api <url>         AUTHD_DIR_API             admin API base URL (https; http only on a loopback IP)
-  --issuer <url>      AUTH_KEYCLOAK_ISSUER      Keycloak issuer
-  --client-id <id>    AUTH_KEYCLOAK_CLIENT_ID   Keycloak client for the device flow
-  --ca-file <file>    AUTHD_DIR_CA_FILE         extra root CA for the API (optional)
-  --json                                        print the API's JSON instead of text
-  -h, --help                                    this text
+  --api <url>         CB_AUTHD_DIR_API             admin API base URL (https; http only on a loopback IP)
+  --issuer <url>      CB_AUTH_KEYCLOAK_ISSUER      Keycloak issuer
+  --client-id <id>    CB_AUTH_KEYCLOAK_CLIENT_ID   Keycloak client for the device flow
+  --ca-file <file>    CB_AUTHD_DIR_CA_FILE         extra root CA for the API (optional)
+  --json                                           print the API's JSON instead of text
+  -h, --help                                       this text
+  (the old names without CB_ are still read, with a warning, until the next release)
 
 exit codes: 0 ok, 1 failure, 2 usage error
 `
+
+// warnTo writes a deprecation warning of envname as one line to w.
+func warnTo(w io.Writer) envname.Warn {
+	return func(msg string, args ...any) {
+		var kv strings.Builder
+		for i := 0; i+1 < len(args); i += 2 {
+			fmt.Fprintf(&kv, " %v=%v", args[i], args[i+1])
+		}
+		fmt.Fprintf(w, "authd dir: warning: %s:%s\n", msg, kv.String())
+	}
+}
 
 // deps are the parts a test replaces: the clock and the wait.
 type deps struct {
@@ -68,8 +82,10 @@ type deps struct {
 }
 
 // Main runs the command line and returns the exit code.
-func Main(args []string, env func(string) string, stdout, stderr io.Writer) int {
-	return run(args, env, stdout, stderr, deps{now: time.Now, sleep: time.Sleep})
+// lookup is os.LookupEnv or a stand-in; names are read by the reading rule of
+// docs/env-names.md (envname).
+func Main(args []string, lookup envname.Lookup, stdout, stderr io.Writer) int {
+	return run(args, lookup, stdout, stderr, deps{now: time.Now, sleep: time.Sleep})
 }
 
 type settings struct {
@@ -95,15 +111,23 @@ type usageError string
 
 func (u usageError) Error() string { return string(u) }
 
-func run(args []string, env func(string) string, stdout, stderr io.Writer, d deps) int {
+// envNames are the names the directory commands read.
+var envNames = []string{"CB_AUTHD_DIR_API", "CB_AUTH_KEYCLOAK_ISSUER", "CB_AUTH_KEYCLOAK_CLIENT_ID", "CB_AUTHD_DIR_CA_FILE"}
+
+func run(args []string, lookup envname.Lookup, stdout, stderr io.Writer, d deps) int {
 	if len(args) == 0 {
 		fmt.Fprint(stderr, usageText)
 		return exitUsage
 	}
-	s, pos, help, err := parseArgs(args, env)
+	env := envname.New(lookup, warnTo(stderr))
+	envErr := env.Check(envNames...)
+	s, pos, help, err := parseArgs(args, env.Value)
 	if help {
 		fmt.Fprint(stdout, usageText)
 		return exitOK
+	}
+	if err == nil && envErr != nil {
+		err = usageError(envErr.Error())
 	}
 	c := &cli{s: s, out: stdout, err: stderr, d: d}
 	if err == nil {
@@ -131,8 +155,8 @@ func run(args []string, env func(string) string, stdout, stderr io.Writer, d dep
 }
 
 func parseArgs(args []string, env func(string) string) (s settings, pos []string, help bool, err error) {
-	s = settings{api: env("AUTHD_DIR_API"), issuer: env("AUTH_KEYCLOAK_ISSUER"),
-		clientID: env("AUTH_KEYCLOAK_CLIENT_ID"), caFile: env("AUTHD_DIR_CA_FILE")}
+	s = settings{api: env("CB_AUTHD_DIR_API"), issuer: env("CB_AUTH_KEYCLOAK_ISSUER"),
+		clientID: env("CB_AUTH_KEYCLOAK_CLIENT_ID"), caFile: env("CB_AUTHD_DIR_CA_FILE")}
 	strs := map[string]*string{"api": &s.api, "issuer": &s.issuer, "client-id": &s.clientID,
 		"ca-file": &s.caFile, "owner": &s.owner, "rev": &s.revText}
 	bools := map[string]*bool{"json": &s.json, "public": &s.public}
@@ -277,16 +301,16 @@ func parseBase(raw, what string) (*url.URL, error) {
 }
 
 func (c *cli) setup() error {
-	u, err := parseBase(c.s.api, "the API URL (--api, AUTHD_DIR_API)")
+	u, err := parseBase(c.s.api, "the API URL (--api, CB_AUTHD_DIR_API)")
 	if err != nil {
 		return err
 	}
 	c.apiURL = strings.TrimRight(u.String(), "/")
-	if _, err := parseBase(c.s.issuer, "the issuer (--issuer, AUTH_KEYCLOAK_ISSUER)"); err != nil {
+	if _, err := parseBase(c.s.issuer, "the issuer (--issuer, CB_AUTH_KEYCLOAK_ISSUER)"); err != nil {
 		return err
 	}
 	if c.s.clientID == "" {
-		return usageError("the client id is not set (--client-id, AUTH_KEYCLOAK_CLIENT_ID)")
+		return usageError("the client id is not set (--client-id, CB_AUTH_KEYCLOAK_CLIENT_ID)")
 	}
 	tr, err := apiTransport(http.DefaultTransport.(*http.Transport), c.s.caFile)
 	if err != nil {

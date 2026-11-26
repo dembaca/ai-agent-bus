@@ -35,7 +35,7 @@ without polling. Before `session_end`, from the agent's shell (no token there):
 The same smoke test with the bus on NATS instead of a chat: a home named in
 `MM_NATS_HOMES` runs its agents' posts, reads and events over NATS, and the
 login service grants the credentials (ADR-014 point 16). It needs a login
-service that answers the callout (`AUTH_NATS_URL` set, see
+service that answers the callout (`CB_AUTH_NATS_URL` set, see
 [`services/auth/README.md`](../services/auth/README.md)) and an agent whose
 owner has a Keycloak account. Replace every `<…>` with your own values.
 
@@ -75,7 +75,7 @@ and `$KV.BUS_DIRECTORY.>`); without them it does not start. For the bucket's
 key listings it also needs `$JS.API.CONSUMER.CREATE.KV_BUS_DIRECTORY.>` and
 `$JS.API.CONSUMER.DELETE.KV_BUS_DIRECTORY.*`; without them every operator
 credential is refused. Leave
-`AUTH_DIRECTORY_IMPORTED` at `false` until the one-time import has run — set to
+`CB_AUTH_DIRECTORY_IMPORTED` at `false` until the one-time import has run — set to
 `true`, a missing bucket is never made anew (RT-6.39).
 
 ```bash
@@ -130,7 +130,7 @@ Each of these must be refused, and the refusal must be visible:
       says `"event":"channel refused"` for it. A refused channel is left out;
       the credential is still issued for the others. A lookup that **fails**
       refuses the whole issue instead (RT-6.35)
-- [ ] The emergency brake (`AUTH_BRAKE_FILE`) locks out that owner's agents:
+- [ ] The emergency brake (`CB_AUTH_BRAKE_FILE`) locks out that owner's agents:
       the login service's sweep removes their consumers every 10 s, new
       credentials are refused at the next issue, and a connection already open
       lasts until its credential expires — at most 15 minutes (RT-6.35 step 5)

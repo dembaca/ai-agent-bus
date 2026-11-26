@@ -6,11 +6,15 @@ Every environment variable this project defines gets the `CB_` prefix
 (choirbus). A variable that exists only because of Mattermost gets `CB_MM_`.
 The owner decided this on 2026-11-26 ([#169](https://github.com/dembaca/ai-agent-bus/issues/169)).
 
-**Not built yet.** This page is the mapping and the rules. The code still reads
-the old names. The renames come in one pull request per component and ship
-together as release 0.103.0. Until then the old names in the
-[README configuration table](../README.md#configuration), the
-[arc42 docs](arc42) and the adapter docs stay right.
+**Partly built.** This page is the mapping and the rules. Done: the login
+service and `authd` (`services/auth`, the package `internal/envname`) read the
+`CB_` names with the old names as a fallback, as
+[The login service and authd](#the-login-service-and-authd-44) lists them. The
+other components still read the old names. The renames come in one pull
+request per component and ship together as release 0.103.0. Until then the
+old names in the [README configuration table](../README.md#configuration),
+the [arc42 docs](arc42) and the adapter docs stay right for every component
+but the login service.
 
 ## The rules
 
