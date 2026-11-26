@@ -100,7 +100,22 @@ function LiveGraph({ graph, cards, asks, fleetSeen, theme, onNodeClick }: {
   }, [graph, cards, asks, fleetSeen, setNodes, setEdges])
 
   // The viewport is fitted once, on the first layout; updates never move it.
+  // Only a new size of the canvas fits it again: the graph shown again full
+  // width after a detail closes, or beside one (#200), or after it was hidden.
   const { fitView } = useReactFlow()
+  const canvas = useRef<HTMLDivElement>(null)
+  useEffect(() => {
+    const node = canvas.current
+    if (!node || typeof ResizeObserver === "undefined") return
+    let width = node.clientWidth
+    const observer = new ResizeObserver(() => {
+      const now = node.clientWidth
+      if (now > 0 && Math.abs(now - width) > 1 && fitted.current) void fitView({ padding: 0.12 })
+      width = now
+    })
+    observer.observe(node)
+    return () => { observer.disconnect() }
+  }, [fitView, graph !== null])  // the canvas exists once the graph is in
   const ready = useNodesInitialized()
   const fitted = useRef(false)
   useEffect(() => {
@@ -121,7 +136,7 @@ function LiveGraph({ graph, cards, asks, fleetSeen, theme, onNodeClick }: {
         coordinates to a depth of two, a dashed edge is cut there.
         {graph.cutDepth === 2 && <span className="graph__cut"> Depth cut at 2.</span>}
       </p>
-      <div className="graph__canvas" role="group" aria-label="the bus graph: people, asks, agents and channels">
+      <div ref={canvas} className="graph__canvas" role="group" aria-label="the bus graph: people, asks, agents and channels">
         <ReactFlow
           nodes={nodes}
           edges={edges}

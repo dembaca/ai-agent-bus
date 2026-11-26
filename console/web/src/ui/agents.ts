@@ -33,7 +33,7 @@ function ungrouped(state: string): boolean {
  * harness and model, the PR number. */
 function haystack(card: AgentCard): string {
   return [
-    card.name, card.displayName, card.task, card.branch ?? "", card.home,
+    card.name, card.displayName, card.statedName ?? "", card.task, card.branch ?? "", card.home,
     ...card.guests, card.model, harnessLabel(card.harness), card.project,
     card.pr ? `#${card.pr.number}` : "",
   ].join(" ").toLowerCase()
@@ -66,6 +66,26 @@ export function countByGroup(cards: readonly AgentCard[]): Record<Exclude<Status
 /** The pill's class: the known state words, else "other". */
 export function stateClass(state: string): string {
   return (AGENT_STATES as readonly string[]).includes(state) ? state : "other"
+}
+
+/** The name an agent shows (#199): the username its presence states —
+ * marked `shared` when another card states it too, so it is shown but never
+ * as a confirmed name — else the server's name for it (the short bus id).
+ * `id` is the technical name on the bus, for a title or secondary text. */
+export function agentName(card: Pick<AgentCard, "name" | "displayName" | "statedName" | "nameShared">):
+    { text: string; shared: boolean; id: string } {
+  const stated = card.statedName ?? ""
+  return stated
+    ? { text: stated, shared: card.nameShared === true, id: card.name }
+    : { text: card.displayName || card.name, shared: false, id: card.name }
+}
+
+/** The name an ask's agent shows: its card's when the console holds it,
+ * else the ask row's own. */
+export function askerName(ask: Pick<Ask, "by" | "displayName">, cards: readonly AgentCard[]):
+    { text: string; shared: boolean; id: string } {
+  const card = cards.find((c) => c.name === ask.by)
+  return card ? agentName(card) : { text: ask.displayName || ask.by, shared: false, id: ask.by }
 }
 
 /** The harness's label; "harness n/a" when the wire does not carry it. */
