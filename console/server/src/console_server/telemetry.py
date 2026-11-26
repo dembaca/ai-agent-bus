@@ -29,6 +29,8 @@ from typing import TYPE_CHECKING, Any
 
 from mattermost_ai_agent_bus import stats as mcp_stats
 
+from .build import Build
+
 if TYPE_CHECKING:  # for the type-checker only; no runtime import
     from .nats_read import PersonReader, View
 
@@ -74,6 +76,7 @@ class Telemetry:
     that happen to be open, so no logout resets a series to a false spike."""
 
     def __init__(self) -> None:
+        self.build = Build()      # #182: set by the console from the image build
         self.requests: dict[tuple[str, str, int], int] = defaultdict(int)
         self.happens: dict[str, int] = defaultdict(int)    # named events
 
@@ -188,6 +191,11 @@ def render(tel: Telemetry, sessions: int, streams: int,
         # stream's truth whatever a fresh connection's state is
         live = reading(view)
     lines = [
+        "# HELP choirbus_console_build_info The console's release version and"
+        " source commit, from the image build (#182); always 1.",
+        "# TYPE choirbus_console_build_info gauge",
+        f'choirbus_console_build_info{{version="{_escape(tel.build.version or "unknown")}",'
+        f'revision="{_escape(tel.build.revision or "unknown")}"}} 1',
         "# HELP choirbus_console_http_requests_total HTTP requests served,"
         " by bucketed route, method and status. Requests the transport"
         " refuses before any handler (a flood, a too-large head) are not"

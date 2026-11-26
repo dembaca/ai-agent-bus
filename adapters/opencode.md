@@ -54,17 +54,18 @@ directory of the checkout, so add the entry by hand. It needs no `npm install`: 
 import from `@opencode/plugin` is types.
 
 Options: `root` (the checkout, when the file is copied, not linked; or
-`MM_AGENT_BUS_ROOT`), `mcp: false` (add no MCP server), `command` and `environment`
+`CB_AGENT_BUS_ROOT`; the old `MM_AGENT_BUS_ROOT` is still read), `mcp: false` (add no MCP server), `command` and `environment`
 (the server's command and extra variables, e.g. the `sh -c` command above that fetches
 the secret), `waitSec` (how long the server holds the plugin's long poll, 10 to 55, default
 50), `retrySec` (the pause after a failed poll, default 15; `replaced` doubles it).
-`pollSec` and `MM_LISTEN_POLL_SEC` are gone: there is no timer to set.
+`pollSec` and `CB_LISTEN_POLL_SEC` are gone: there is no timer to set.
 
 The plugin adds the MCP server `ai-agent-bus` (`uv run --locked --project
 <checkout>/mcp mattermost-ai-agent-bus-mcp`) unless your configuration already has it or
 another local server running `mattermost-ai-agent-bus-mcp`, and the skill. It writes no
-file. The server it adds gets `MM_WORKSPACE` (the project directory), an empty
-`CLAUDE_CODE_SESSION_ID` and `CLAUDE_PROJECT_DIR`, `MM_CHANNEL_PUSH=0` and (0.93.0 on,
+file. The server it adds gets `CB_WORKSPACE` (the project directory; `MM_WORKSPACE`
+is written beside it for a server of the previous release), an empty
+`CLAUDE_CODE_SESSION_ID` and `CLAUDE_PROJECT_DIR`, `CB_CHANNEL_PUSH=0` (with `MM_CHANNEL_PUSH` beside it) and (0.93.0 on,
 not with your own `command`) `UV_PROJECT_ENVIRONMENT` in your cache
 (`~/.cache/mm-agent-bus/venv-<hash of the checkout>`, as for pi): uv writes nothing into
 the checkout, which may be read-only. It is a cache, safe to delete. And the plugin
@@ -115,7 +116,7 @@ whatever the service was started with (a Claude Code session's variables, an exp
 `MM_REG_SECRET`) reaches every agent's shell. Start the service from a clean shell
 (`opencode service stop`, then `opencode service start` there), or run OpenCode with its
 own private server, which gets the environment you start it with: `opencode --standalone`,
-`opencode run --standalone`. Put the `MM_*` settings where that process gets them, and
+`opencode run --standalone`. Put the `CB_*` and registrar `MM_*` settings where that process gets them, and
 the secret only into the server's command (above).
 
 In scripts, `opencode run` waits for input on a stdin that is not a terminal: give it
@@ -178,7 +179,7 @@ same way (`file:///ABS/PATH/ai-agent-bus/opencode`, granted read-only), but
 an agent can change a checkout it can write: prefer the host copy.
 
 **No options under corral.** `command` with `MM_REG_SECRET` (the gopass example above)
-and `environment` with `MM_CHAT_URL`, `MM_REGISTER_URL`, `MM_TEAM` … are for setups
+and `environment` with `CB_MM_CHAT_URL`, `MM_REGISTER_URL`, `CB_MM_TEAM` … are for setups
 without corral, where the server registers the bot itself. Remove them under corral:
 the host hooks pass the bus settings, and a secret the sandbox can fetch lets an agent
 register a second bot whose token is then in the sandbox. Inside a corral sandbox the
@@ -254,7 +255,7 @@ only `SKILL.md`: it points to the files next to it, such as
 [`runtime-no-hooks.md`](../skills/ai-agent-bus/runtime-no-hooks.md) (`skills` paths in
 `opencode.json`; OpenCode also reads `.opencode/skills/`, `.claude/skills/` and
 `.agents/skills/`) or paste the contract into the agent system prompt: register with
-`session_start` → work in `MM_TEAM`/`MM_CHANNEL` threads → `session_end`.
+`session_start` → work in `CB_MM_TEAM`/`CB_MM_CHANNEL` threads → `session_end`.
 
 ## MCP
 
@@ -275,14 +276,15 @@ By hand (without the plugin's, or with `mcp: false`), in the project's `opencode
         ],
         "codemode": false,
         "environment": {
-          "MM_CHAT_URL": "https://chat.example.com",
+          "CB_MM_CHAT_URL": "https://chat.example.com",
           "MM_REGISTER_URL": "https://chat.example.com/register/v1/agents",
-          "MM_TEAM": "yourteam",
-          "MM_CHANNEL": "agents",
-          "MM_PROJECT_CHANNEL": "proj-foo",
-          "MM_TRUSTED_HUMANS": "you",
-          "MM_WORKSPACE": "/ABS/PATH/your-project",
-          "MM_CHANNEL_PUSH": "0",
+          "CB_MM_TEAM": "yourteam",
+          "CB_MM_CHANNEL": "agents",
+          "CB_MM_PROJECT_CHANNEL": "proj-foo",
+          "CB_TRUSTED_HUMANS": "you",
+          "CB_WORKSPACE": "/ABS/PATH/your-project",
+          "CB_CHANNEL_PUSH": "0",
+
           "CLAUDE_CODE_SESSION_ID": "",
           "CLAUDE_PROJECT_DIR": ""
         }
@@ -301,7 +303,7 @@ By hand (without the plugin's, or with `mcp: false`), in the project's `opencode
   cheaper on the window but hides the tools behind `execute` (the measurement is in
   [#152](https://github.com/dembaca/ai-agent-bus/issues/152#issuecomment-7185986052)).
   The plugin's own server entry carries the same setting.
-- `MM_WORKSPACE` (the project's real directory) and the two empty variables: the plugin
+- `CB_WORKSPACE` (the project's real directory; `MM_WORKSPACE` is still read) and the two empty variables: the plugin
   looks only for the endpoint file keyed on the project directory, and a Claude Code
   shell's session id or project directory, inherited, would key the server's files
   elsewhere.
@@ -318,7 +320,7 @@ By hand (without the plugin's, or with `mcp: false`), in the project's `opencode
 
 ## Shell scripts
 
-OpenCode's shell starts in the project directory. `"$MM_AGENT_BUS_ROOT/bin/mm-agent-post.sh"`,
+OpenCode's shell starts in the project directory. `"$CB_AGENT_BUS_ROOT/bin/mm-agent-post.sh"`,
 `-poll.sh` and `-status.sh` walk up from the shell's directory to the closest
 endpoint file, which is the workspace's server, but not above the nearest git top
 (a nested repository or a worktree is its own workspace). A service started from a
@@ -331,7 +333,7 @@ reachable server they exit 3 and say what to start.
 
 With the plugin, a turn ends with the drain and sign-off checks, and an idle session
 is woken for as long as its session lives, as a Claude Code channel is (no listen window,
-`MM_LISTEN_SEC` does not apply; the server's gates hold: a project channel, an own post in
+`CB_LISTEN_SEC` does not apply; the server's gates hold: a project channel, an own post in
 the work channel that is no `BYE`), by one long poll the plugin keeps open between turns
 ([RT-6.20](../docs/arc42/06-runtime-view.md#620-opencode-turn-cycle-through-its-plugin), ADR-009),
 while OpenCode serves the project (not after `opencode run --standalone` exits); there is

@@ -62,6 +62,8 @@ jobs:
           echo "$sha  $dir/nats.tar.gz" | sha256sum -c -
           tar -xzf "$dir/nats.tar.gz" -C "$dir" --strip-components=1 "nats-server-v${v}-linux-amd64/nats-server"
           "$dir/nats-server" --version
+          echo "CB_NATS_SERVER=$dir/nats-server" >> "$GITHUB_ENV"
+          # The old name too, until the console tests read the new one (#169).
           echo "MM_NATS_SERVER=$dir/nats-server" >> "$GITHUB_ENV"
           echo "MM_TEST_NATS=1" >> "$GITHUB_ENV"
       - name: MCP server
@@ -191,6 +193,8 @@ jobs:
           echo "$sha  $dir/nats.tar.gz" | sha256sum -c -
           tar -xzf "$dir/nats.tar.gz" -C "$dir" --strip-components=1 "nats-server-v${v}-linux-amd64/nats-server"
           "$dir/nats-server" --version
+          echo "CB_NATS_SERVER=$dir/nats-server" >> "$GITHUB_ENV"
+          # The old name too, until the console tests read the new one (#169).
           echo "MM_NATS_SERVER=$dir/nats-server" >> "$GITHUB_ENV"
           echo "MM_TEST_NATS=1" >> "$GITHUB_ENV"
       - name: console server
@@ -203,7 +207,10 @@ jobs:
       # smoke is the reality the loop handles).
       - name: image builds, and the server starts
         run: |
-          docker build -t console-test -f console/server/Dockerfile .
+          version="$(jq -r .version .claude-plugin/plugin.json)"
+          docker build -t console-test -f console/server/Dockerfile \
+            --build-arg VERSION="$version" \
+            --build-arg REVISION="$GITHUB_SHA" .
           docker run -d --name console-test -p 127.0.0.1:8747:8747 \
             -e CB_CONSOLE_PUBLIC_URL=http://127.0.0.1:8747 \
             -e CB_CONSOLE_ISSUER=http://127.0.0.1:19999 \
@@ -228,6 +235,28 @@ jobs:
           code=$(curl -s -o /dev/null -w "%{http_code}" http://127.0.0.1:8747/healthz)
           [ "$code" = "503" ] || status=1
           curl -sS http://127.0.0.1:8747/healthz | grep -q "does not answer" || status=1
+          # #182: the build the image was given, as /v1/me and /metrics state
+          # it and the OCI labels carry it. A second run with the login off
+          # (loopback only, so on the host's network): the stand-in operator
+          docker run -d --name console-build --network host \
+            -e CB_CONSOLE_PUBLIC_URL=http://127.0.0.1:8748 \
+            -e CB_CONSOLE_LOGIN_OFF=1 \
+            -e CB_CONSOLE_ADDR=127.0.0.1:8748 \
+            -e CB_CONSOLE_NATS_URL=nats://127.0.0.1:4222 \
+            console-test
+          for i in $(seq 1 30); do
+            curl -fsS http://127.0.0.1:8748/livez >/dev/null && break
+            sleep 1
+          done
+          curl -fsS http://127.0.0.1:8748/v1/me \
+            | jq -e --arg v "$version" --arg r "$GITHUB_SHA" \
+                '.build == {version: $v, revision: $r}' || status=1
+          curl -fsS http://127.0.0.1:8748/metrics \
+            | grep -qxF "choirbus_console_build_info{version=\"$version\",revision=\"$GITHUB_SHA\"} 1" || status=1
+          labels="$(docker inspect -f '{{index .Config.Labels "org.opencontainers.image.version"}} {{index .Config.Labels "org.opencontainers.image.revision"}}' console-test)"
+          [ "$labels" = "$version $GITHUB_SHA" ] || status=1
+          docker logs console-build 2>&1 | tail -20
+          docker rm -f console-build
           docker logs console-test 2>&1 | tail -40
           docker rm -f console-test
           exit $status
@@ -334,12 +363,19 @@ jobs:
           fi
           { echo "list<<EOF"; echo "$tags"; echo "EOF"; } >> "$GITHUB_OUTPUT"
 
+      - name: the release version (shown by the console, #182)
+        id: version
+        run: echo "version=$(jq -r .version .claude-plugin/plugin.json)" >> "$GITHUB_OUTPUT"
+
       - name: build and push
         id: push
         uses: docker/build-push-action@c3c9e263c25d99ce0380d002d59b67737d91b0dc  # v7.4.0
         with:
           context: .
           file: console/server/Dockerfile
+          build-args: |
+            VERSION=${{ steps.version.outputs.version }}
+            REVISION=${{ github.sha }}
           push: true
           # The full commit SHA is the tag that names a build; :main moves with
           # each merge, but only from the newest commit, and is a convenience

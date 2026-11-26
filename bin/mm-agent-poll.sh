@@ -4,7 +4,7 @@
 #
 #   mm-agent-poll.sh [--channel ID|NAME] [--interval SEC] [--since-ms MS] [--once]
 #
-# Default channel: the home (the first MM_PROJECT_CHANNEL entry, else MM_CHANNEL); a
+# Default channel: the home (the first CB_MM_PROJECT_CHANNEL entry, else CB_MM_CHANNEL); a
 # NAME is looked up in the bot's team. Only the work, project and default
 # channel can be read, never a DM or group channel (the server's 403, exit 1). Default start: one minute ago. Each line
 # is one post as GET /v1/posts gives it: id, user_id, root_id, create_at, type,
@@ -33,7 +33,7 @@ usage() {
 while [[ $# -gt 0 ]]; do
   case "$1" in
     --channel) [[ $# -ge 2 ]] || usage; CHANNEL="$2"; shift 2 ;;
-    --team) echo "$0: --team is gone: the server reads the bot's team (MM_TEAM)" >&2; exit 2 ;;
+    --team) echo "$0: --team is gone: the server reads the bot's team (CB_MM_TEAM)" >&2; exit 2 ;;
     --interval) [[ "${2:-}" =~ ^[1-9][0-9]*$ ]] || usage; INTERVAL="$2"; shift 2 ;;
     --since-ms) [[ "${2:-}" =~ ^[0-9]+$ ]] || usage; SINCE_MS="$2"; shift 2 ;;
     --once) ONCE=1; shift ;;
@@ -51,10 +51,10 @@ fi
 declare -A SEEN=()
 reached=0
 while true; do
-  if MM_BUS_MAX_TIME="${MM_BUS_MAX_TIME:-10}" mm_bus GET "/v1/posts?since=${SINCE_MS}${CHANNEL:+&channel=${CHANNEL}}"; then
+  if CB_BUS_MAX_TIME="${CB_BUS_MAX_TIME:-10}" mm_bus GET "/v1/posts?since=${SINCE_MS}${CHANNEL:+&channel=${CHANNEL}}"; then
     if [[ "$reached" -eq 0 ]]; then
       # The server names the channel: the work channel when none was given.
-      echo "polling channel=$(jq -r '.channel // empty' <<<"$MM_BUS_BODY") since_ms=${SINCE_MS}" >&2
+      echo "polling channel=$(jq -r '.channel // empty' <<<"$CB_BUS_BODY") since_ms=${SINCE_MS}" >&2
     fi
     reached=1
     while IFS= read -r line; do
@@ -67,10 +67,10 @@ while true; do
       if [[ "$ts" =~ ^[0-9]+$ && "$ts" -gt "$SINCE_MS" ]]; then
         SINCE_MS="$ts"
       fi
-    done < <(jq -c '.posts | sort_by(.create_at)[]' <<<"$MM_BUS_BODY")
-  elif [[ "$reached" -eq 0 || "$MM_BUS_STATUS" == 400 || "$MM_BUS_STATUS" == 403 ]]; then
+    done < <(jq -c '.posts | sort_by(.create_at)[]' <<<"$CB_BUS_BODY")
+  elif [[ "$reached" -eq 0 || "$CB_BUS_STATUS" == 400 || "$CB_BUS_STATUS" == 403 ]]; then
     mm_bus_explain
-    [[ "$MM_BUS_STATUS" == 400 || "$MM_BUS_STATUS" == 403 ]] && exit 1
+    [[ "$CB_BUS_STATUS" == 400 || "$CB_BUS_STATUS" == 403 ]] && exit 1
     exit 3
   fi
   [[ "$ONCE" -eq 1 ]] && break

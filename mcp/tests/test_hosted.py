@@ -108,7 +108,7 @@ async def test_handshake_names_only_then_mcp_messages_pass(tmp_path):
 
     async def body(ready):
         session = {"CLAUDE_CODE_SESSION_ID": "s1", "HOME": "/sandbox/home",
-                   "XDG_STATE_HOME": "/sandbox/state", "cwd": "/w", "MM_CHANNEL_PUSH": "0",
+                   "XDG_STATE_HOME": "/sandbox/state", "cwd": "/w", "CB_CHANNEL_PUSH": "0",
                    "PYTHONPATH": "/w"}
         conn, answer = await _hello(ready["port"], session=session)
         assert answer == {"ok": True}
@@ -120,7 +120,7 @@ async def test_handshake_names_only_then_mcp_messages_pass(tmp_path):
         await conn.stream.aclose()
 
     await _with_host(host, tmp_path, body, with_services=False)
-    assert order == [{"CLAUDE_CODE_SESSION_ID": "s1", "cwd": "/w", "MM_CHANNEL_PUSH": "0"}, "serve"]
+    assert order == [{"CLAUDE_CODE_SESSION_ID": "s1", "cwd": "/w", "CB_CHANNEL_PUSH": "0"}, "serve"]
 
 
 @pytest.mark.parametrize("session, error", [
@@ -129,7 +129,7 @@ async def test_handshake_names_only_then_mcp_messages_pass(tmp_path):
     ({"CLAUDE_CODE_SESSION_ID": 7}, "one line"),
     ({"CLAUDE_CODE_SESSION_ID": "x" * 257}, "one line"),
     ({"cwd": "/w\n/x"}, "one line"),
-    ({"MM_CHANNEL_PUSH": "2"}, "0 or 1"),
+    ({"CB_CHANNEL_PUSH": "2"}, "0 or 1"),
     ([], "JSON object"),
 ])
 async def test_handshake_values_are_checked(tmp_path, session, error):
@@ -194,8 +194,8 @@ async def test_refusal_names_the_relay_that_holds_the_slot(tmp_path):
     assert hosted.relay_holder({"pid": 2**31, "ppid": 3}, 0).startswith("says parent 3; since ")
 
 
-FIRST = {"CLAUDE_CODE_SESSION_ID": "s1", "CLAUDE_PROJECT_DIR": "/p", "MM_WORKSPACE": "/p",
-         "cwd": "/p", "MM_CHANNEL_PUSH": "0"}
+FIRST = {"CLAUDE_CODE_SESSION_ID": "s1", "CLAUDE_PROJECT_DIR": "/p", "CB_WORKSPACE": "/p",
+         "cwd": "/p", "CB_CHANNEL_PUSH": "0"}
 
 
 async def _refused_after_first(tmp_path, other: dict, first: dict = FIRST) -> tuple[hosted.Host, list, str]:
@@ -222,7 +222,7 @@ async def _refused_after_first(tmp_path, other: dict, first: dict = FIRST) -> tu
 async def test_a_relay_of_the_same_agent_is_served(tmp_path):
     """RT-6.18 step 6 (#119): a reconnect with the same session id and
     directories is served; another channel flag or a trailing slash refuses nothing."""
-    same = {**FIRST, "MM_WORKSPACE": "/p/", "MM_CHANNEL_PUSH": "1", "cwd": "/elsewhere"}
+    same = {**FIRST, "CB_WORKSPACE": "/p/", "CB_CHANNEL_PUSH": "1", "cwd": "/elsewhere"}
     host, applied, answer = await _refused_after_first(tmp_path, same)
     assert answer == {"ok": True}
     assert host.served == 2 and applied == [FIRST] and host.session == FIRST
@@ -231,9 +231,9 @@ async def test_a_relay_of_the_same_agent_is_served(tmp_path):
 @pytest.mark.parametrize("other, keys", [
     ({**FIRST, "CLAUDE_CODE_SESSION_ID": "s2", "CLAUDE_PROJECT_DIR": "/p/q"},
      "CLAUDE_CODE_SESSION_ID, CLAUDE_PROJECT_DIR"),
-    ({**FIRST, "MM_WORKSPACE": "/q"}, "MM_WORKSPACE"),
-    ({k: v for k, v in FIRST.items() if k != "MM_WORKSPACE"}, "MM_WORKSPACE"),
-    ({**FIRST, "CLAUDE_PROJECT_DIR": "/q", "MM_WORKSPACE": "/q"}, "CLAUDE_PROJECT_DIR, MM_WORKSPACE"),
+    ({**FIRST, "CB_WORKSPACE": "/q"}, "CB_WORKSPACE"),
+    ({k: v for k, v in FIRST.items() if k != "CB_WORKSPACE"}, "CB_WORKSPACE"),
+    ({**FIRST, "CLAUDE_PROJECT_DIR": "/q", "CB_WORKSPACE": "/q"}, "CB_WORKSPACE, CLAUDE_PROJECT_DIR"),
 ])
 async def test_a_relay_of_another_agent_is_refused(tmp_path, other, keys):
     """RT-6.18 step 6 (#119): one bot speaks for one agent. A relay whose session
@@ -257,7 +257,7 @@ async def test_another_agents_relay_is_refused_while_the_first_is_connected(tmp_
     async def body(ready):
         first, answer = await _hello(ready["port"], session=FIRST)
         assert answer["ok"]
-        second, answer = await _hello(ready["port"], session={**FIRST, "MM_WORKSPACE": "/q"})
+        second, answer = await _hello(ready["port"], session={**FIRST, "CB_WORKSPACE": "/q"})
         assert answer["ok"] is False and answer["error"].startswith("this relay's session values differ")
         await first.stream.aclose()
         await second.stream.aclose()
@@ -273,7 +273,7 @@ async def test_a_new_session_id_in_the_same_project_replaces_the_gone_relay(tmp_
     host, applied, answer = await _refused_after_first(tmp_path, {**FIRST, "CLAUDE_CODE_SESSION_ID": "s2"})
     assert answer == {"ok": True} and host.served == 2 and applied == [FIRST]
     # Noted for postEnd, so `claude --resume <new id>` keeps the bot (RT-6.18 step 9).
-    assert (d / hosted.CLAUDE_SID_FILE).read_text() == f"MM_CLAUDE_SID={hosted.sid_key('s2')}\n"
+    assert (d / hosted.CLAUDE_SID_FILE).read_text() == "".join(f"{k}={hosted.sid_key('s2')}\n" for k in ("CB_CLAUDE_SID", "MM_CLAUDE_SID"))
     assert host.session == {**FIRST, "CLAUDE_CODE_SESSION_ID": "s2"}
 
 
@@ -296,15 +296,15 @@ async def test_a_concurrent_relay_with_a_new_session_id_is_refused(tmp_path):
 
 async def test_a_refused_concurrent_relay_changes_nothing_the_host_holds(tmp_path):
     """RT-6.18 step 6 (#119): a relay refused for the busy slot neither adopts
-    its MM_WORKSPACE nor its session id."""
-    old = {"CLAUDE_CODE_SESSION_ID": "s1", "CLAUDE_PROJECT_DIR": "/p", "MM_CHANNEL_PUSH": "0"}
+    its CB_WORKSPACE nor its session id."""
+    old = {"CLAUDE_CODE_SESSION_ID": "s1", "CLAUDE_PROJECT_DIR": "/p", "CB_CHANNEL_PUSH": "0"}
     host = hosted.Host(KEY, serve=_echo, apply=lambda v: None)
 
     async def body(ready):
         first, answer = await _hello(ready["port"], session=old)
         assert answer["ok"]
         second, answer = await _hello(ready["port"], session={**old, "CLAUDE_CODE_SESSION_ID": "s2",
-                                                               "MM_WORKSPACE": "/p"})
+                                                               "CB_WORKSPACE": "/p"})
         assert answer["ok"] is False and answer["error"].startswith("another relay is connected")
         await first.stream.aclose()
         await second.stream.aclose()
@@ -314,7 +314,7 @@ async def test_a_refused_concurrent_relay_changes_nothing_the_host_holds(tmp_pat
 
 
 @pytest.mark.parametrize("first, other", [
-    ({"CLAUDE_CODE_SESSION_ID": "s1", "MM_WORKSPACE": "/p"}, {"CLAUDE_CODE_SESSION_ID": "s2", "MM_WORKSPACE": "/p"}),
+    ({"CLAUDE_CODE_SESSION_ID": "s1", "CB_WORKSPACE": "/p"}, {"CLAUDE_CODE_SESSION_ID": "s2", "CB_WORKSPACE": "/p"}),
     ({"CLAUDE_CODE_SESSION_ID": "s1", "cwd": "/p"}, {"CLAUDE_CODE_SESSION_ID": "s2", "cwd": "/p"}),
 ])
 async def test_a_new_session_id_without_a_project_directory_is_refused(tmp_path, first, other):
@@ -328,9 +328,9 @@ async def test_two_opencode_sessions_in_one_workspace_are_told_apart(tmp_path):
     """RT-6.18 step 6, RT-6.20 step 1 (#119): the OpenCode plugin binds the bus
     to one session per process and hands its id to the server as
     OPENCODE_SESSION_ID. Two OpenCode processes in one workspace send the same
-    MM_WORKSPACE but another session id: the second is refused, naming the key.
+    CB_WORKSPACE but another session id: the second is refused, naming the key.
     The same session again (a reload) is served."""
-    first = {"OPENCODE_SESSION_ID": "ses_a", "MM_WORKSPACE": "/p", "cwd": "/p", "MM_CHANNEL_PUSH": "0"}
+    first = {"OPENCODE_SESSION_ID": "ses_a", "CB_WORKSPACE": "/p", "cwd": "/p", "CB_CHANNEL_PUSH": "0"}
     (tmp_path / "a").mkdir()
     (tmp_path / "b").mkdir()
     host, _, answer = await _refused_after_first(tmp_path / "a", {**first, "OPENCODE_SESSION_ID": "ses_b"}, first)
@@ -349,7 +349,7 @@ def test_the_opencode_session_id_is_a_name_the_relay_sends_and_the_host_applies(
     """RT-6.18 steps 3–4, RT-6.20 step 1 (#119): OPENCODE_SESSION_ID goes from
     the relay's environment into the handshake, is checked like the Claude
     session id, and becomes the host server's name (bus_info's client_session)."""
-    values = hosted.session_values({"OPENCODE_SESSION_ID": "ses_a", "MM_WORKSPACE": "/p"}, cwd="/p")
+    values = hosted.session_values({"OPENCODE_SESSION_ID": "ses_a", "CB_WORKSPACE": "/p"}, cwd="/p")
     assert values["OPENCODE_SESSION_ID"] == "ses_a"
     checked = hosted.check_session(values)
     assert checked["OPENCODE_SESSION_ID"] == "ses_a"
@@ -366,13 +366,13 @@ def test_the_opencode_session_id_is_a_name_the_relay_sends_and_the_host_applies(
 
 async def test_a_workspace_named_after_a_plugin_update_is_taken(tmp_path):
     """RT-6.18 step 6 (#119): a first relay of an older plugin sent no
-    MM_WORKSPACE; a later one that names it is served and its workspace taken,
+    CB_WORKSPACE; a later one that names it is served and its workspace taken,
     so a relay naming another one after it is refused."""
-    old = {"CLAUDE_CODE_SESSION_ID": "s1", "cwd": "/p", "MM_CHANNEL_PUSH": "0"}
-    host, _, answer = await _refused_after_first(tmp_path, {**old, "MM_WORKSPACE": "/p"}, old)
+    old = {"CLAUDE_CODE_SESSION_ID": "s1", "cwd": "/p", "CB_CHANNEL_PUSH": "0"}
+    host, _, answer = await _refused_after_first(tmp_path, {**old, "CB_WORKSPACE": "/p"}, old)
     assert answer == {"ok": True}
-    assert host.session == {**old, "MM_WORKSPACE": "/p"}
-    assert hosted.identity_mismatch(host.session, {**old, "MM_WORKSPACE": "/q"})
+    assert host.session == {**old, "CB_WORKSPACE": "/p"}
+    assert hosted.identity_mismatch(host.session, {**old, "CB_WORKSPACE": "/q"})
     assert hosted.identity_mismatch(host.session, old)  # dropping it again is refused
 
 
@@ -384,22 +384,22 @@ async def test_the_first_relay_is_held_to_the_corral_workdir(tmp_path):
     host = hosted.Host(KEY, serve=_echo, apply=applied.append, workdirs=("/work/a",))
 
     async def body(ready):
-        for wrong in ({"MM_WORKSPACE": "/work/ab"}, {"CLAUDE_PROJECT_DIR": "/work/b", "cwd": "/work/a"},
-                      {"MM_WORKSPACE": "/work/a/../b"}):
+        for wrong in ({"CB_WORKSPACE": "/work/ab"}, {"CLAUDE_PROJECT_DIR": "/work/b", "cwd": "/work/a"},
+                      {"CB_WORKSPACE": "/work/a/../b"}):
             conn, answer = await _hello(ready["port"], session={"CLAUDE_CODE_SESSION_ID": "x", **wrong})
             assert answer["ok"] is False
             assert "lies outside this corral session's workdir" in answer["error"]
             assert "/work" not in answer["error"]
             await conn.stream.aclose()
         right = {"CLAUDE_CODE_SESSION_ID": "s1", "CLAUDE_PROJECT_DIR": "/work/a",
-                 "MM_WORKSPACE": "/work/a/sub/"}
+                 "CB_WORKSPACE": "/work/a/sub/"}
         conn, answer = await _hello(ready["port"], session=right)
         assert answer == {"ok": True}
         await conn.stream.aclose()
 
     await _with_host(host, tmp_path, body, with_services=False)
     assert host.served == 1 and applied[0]["CLAUDE_PROJECT_DIR"] == "/work/a"
-    assert hosted.outside_workdir({"MM_WORKSPACE": "/anywhere"}, ()) == ""
+    assert hosted.outside_workdir({"CB_WORKSPACE": "/anywhere"}, ()) == ""
 
 
 async def test_a_workdir_reached_through_a_symlink_serves_its_real_path(tmp_path):
@@ -415,16 +415,16 @@ async def test_a_workdir_reached_through_a_symlink_serves_its_real_path(tmp_path
     host = hosted.Host(KEY, serve=_echo, apply=lambda v: None, workdirs=roots)
 
     async def body(ready):
-        conn, answer = await _hello(ready["port"], session={"MM_WORKSPACE": os.path.realpath(real / "sub")})
+        conn, answer = await _hello(ready["port"], session={"CB_WORKSPACE": os.path.realpath(real / "sub")})
         assert answer == {"ok": True}
         await conn.stream.aclose()
-        conn, answer = await _hello(ready["port"], session={"MM_WORKSPACE": str(link / "sub" / ".." / ".." / "x")})
+        conn, answer = await _hello(ready["port"], session={"CB_WORKSPACE": str(link / "sub" / ".." / ".." / "x")})
         assert answer["ok"] is False  # normalised by name, not resolved: ../.. leaves the workdir
         await conn.stream.aclose()
 
     await _with_host(host, tmp_path, body, with_services=False)
     assert host.served == 1
-    assert hosted.outside_workdir({"MM_WORKSPACE": str(link / "sub")}, roots) == ""
+    assert hosted.outside_workdir({"CB_WORKSPACE": str(link / "sub")}, roots) == ""
 
 
 def test_identity_uses_the_working_directory_only_without_a_named_one():
@@ -437,29 +437,29 @@ def test_identity_uses_the_working_directory_only_without_a_named_one():
 
 
 def test_the_relays_refusal_for_another_agent_reaches_its_client(monkeypatch, capsys):
-    """RT-6.18 step 6 and error handling (#119): the relay sends MM_WORKSPACE,
+    """RT-6.18 step 6 and error handling (#119): the relay sends CB_WORKSPACE,
     and the host's reason for refusing it reaches the client on stderr, exit 1."""
     seen: list = []
-    why = ("this relay's session values differ from the first relay's (MM_WORKSPACE): "
+    why = ("this relay's session values differ from the first relay's (CB_WORKSPACE): "
            "the host serves one agent with one bot")
     port = _fake_host({"ok": False, "error": why}, seen)
-    t, result, *_ = _relay(port, monkeypatch, MM_WORKSPACE="/w")
+    t, result, *_ = _relay(port, monkeypatch, CB_WORKSPACE="/w")
     t.join(10)
     assert result == [1]
-    assert seen[0]["session"]["MM_WORKSPACE"] == "/w"
+    assert seen[0]["session"]["CB_WORKSPACE"] == "/w"
     assert f"refused the relay: {why}" in capsys.readouterr().err
 
 
 def test_apply_session_sets_names_and_never_changes_directory(tmp_path, monkeypatch):
     """RT-6.18 step 4: names for the server's files; the host's cwd stays."""
     env = {"HOME": "/host/home", "XDG_STATE_HOME": "/host/state", "CLAUDE_PROJECT_DIR": "/old",
-           "MM_BOT_TOKEN": "t"}
+           "CB_MM_BOT_TOKEN": "t"}
     cwd = os.getcwd()
     hosted.apply_session(hosted.check_session(
-        {"CLAUDE_CODE_SESSION_ID": "s1", "cwd": "/w/./x/..", "MM_CHANNEL_PUSH": "0",
+        {"CLAUDE_CODE_SESSION_ID": "s1", "cwd": "/w/./x/..", "CB_CHANNEL_PUSH": "0",
          "HOME": str(tmp_path), "evil": "x"}), environ=env)
-    assert env == {"HOME": "/host/home", "XDG_STATE_HOME": "/host/state", "MM_BOT_TOKEN": "t",
-                   "CLAUDE_CODE_SESSION_ID": "s1", "MM_CHANNEL_PUSH": "0",
+    assert env == {"HOME": "/host/home", "XDG_STATE_HOME": "/host/state", "CB_MM_BOT_TOKEN": "t",
+                   "CLAUDE_CODE_SESSION_ID": "s1", "CB_CHANNEL_PUSH": "0", "MM_CHANNEL_PUSH": "0",
                    "CLAUDE_PROJECT_DIR": "/w"}
     assert os.getcwd() == cwd
 
@@ -544,13 +544,13 @@ def test_start_line_takes_key_and_bus_settings_only():
     """RT-6.18 step 1: key and token on stdin; no registration secret, no
     interpreter or loader settings, nothing multi-line."""
     line = json.dumps({"key": KEY, "env": {
-        "MM_BOT_TOKEN": "tok", "MM_CHAT_URL": "https://mm", "MM_REG_SECRET": "s",
+        "CB_MM_BOT_TOKEN": "tok", "CB_MM_CHAT_URL": "https://mm", "MM_REG_SECRET": "s",
         "MM_REG_SECRET_GOPASS": "g", "PYTHONPATH": "/w", "DYLD_INSERT_LIBRARIES": "/w/x",
         "BASH_ENV": "/w/x", "UV_PROJECT": "/w", "HTTPS_PROXY": "http://p", "MM_X": "a\nb",
-        "MM_BUS_KEY": "other"}}).encode() + b"\n"
+        "CB_BUS_KEY": "other"}}).encode() + b"\n"
     key, env = hosted.read_start(io.BytesIO(line))
     assert key == KEY
-    assert env == {"MM_BOT_TOKEN": "tok", "MM_CHAT_URL": "https://mm", "HTTPS_PROXY": "http://p"}
+    assert env == {"CB_MM_BOT_TOKEN": "tok", "CB_MM_CHAT_URL": "https://mm", "HTTPS_PROXY": "http://p"}
     for bad in (b"", b'{"key": "short"}\n', b'{"key": "' + b"k" * 64 + b'"}', b"[]\n"):
         with pytest.raises(ValueError):
             hosted.read_start(io.BytesIO(bad))
@@ -575,8 +575,8 @@ def _fake_host(answer: dict, seen: list) -> int:
 
 
 def _relay(port: int, monkeypatch, **extra):
-    monkeypatch.setenv("MM_CHANNEL_PUSH", "0")
-    env = {"MM_BUS_MCP_ENDPOINT": f"tcp://127.0.0.1:{port}", "MM_BUS_KEY": KEY,
+    monkeypatch.setenv("CB_CHANNEL_PUSH", "0")
+    env = {"CB_BUS_MCP_ENDPOINT": f"tcp://127.0.0.1:{port}", "CB_BUS_KEY": KEY,
            "CLAUDE_CODE_SESSION_ID": "s1", "CLAUDE_PROJECT_DIR": "/p", "HOME": "/sandbox",
            "XDG_STATE_HOME": "/sandbox/state", **extra}
     in_r, in_w = os.pipe()
@@ -605,7 +605,7 @@ def test_relay_pipes_stdio_after_the_handshake(monkeypatch):
     hello = seen[0]
     assert hello["key"] == KEY
     assert hello["session"] == {"CLAUDE_CODE_SESSION_ID": "s1", "CLAUDE_PROJECT_DIR": "/p",
-                                "MM_CHANNEL_PUSH": "0", "cwd": os.getcwd()}
+                                "CB_CHANNEL_PUSH": "0", "MM_CHANNEL_PUSH": "0", "cwd": os.getcwd()}
     # Its process ids, for the refusal of a second relay to name it (RT-6.18 step 6).
     assert (hello["pid"], hello["ppid"]) == (os.getpid(), os.getppid())
 
@@ -630,8 +630,8 @@ def test_relay_fails_clearly_without_the_host(monkeypatch, capsys):
 
 def test_entry_point_relays_when_the_endpoint_is_set(monkeypatch):
     calls = []
-    monkeypatch.setattr(hosted, "relay", lambda env: calls.append(env["MM_BUS_MCP_ENDPOINT"]) or 3)
-    monkeypatch.setenv("MM_BUS_MCP_ENDPOINT", "tcp://127.0.0.1:1")
+    monkeypatch.setattr(hosted, "relay", lambda env: calls.append(env["CB_BUS_MCP_ENDPOINT"]) or 3)
+    monkeypatch.setenv("CB_BUS_MCP_ENDPOINT", "tcp://127.0.0.1:1")
     with pytest.raises(SystemExit) as exc:
         hosted.main([])
     assert exc.value.code == 3 and calls == ["tcp://127.0.0.1:1"]
@@ -757,7 +757,7 @@ def test_keep_exit_sets_offline_only(monkeypatch):
     real = httpx.Client
     monkeypatch.setattr("mattermost_ai_agent_bus.client.httpx.Client",
                         lambda **kw: real(transport=httpx.MockTransport(handler), **kw))
-    monkeypatch.setenv("MM_BOT_USER_ID", "u" * 26)
+    monkeypatch.setenv("CB_MM_BOT_USER_ID", "u" * 26)
     c = MattermostAdapter(base_url="https://mm.example", token="bot-tok",
                           register_url="https://mm.example/register/v1/agents")
     monkeypatch.setattr(server, "_client", None)
@@ -772,7 +772,7 @@ def test_keep_exit_sets_offline_only(monkeypatch):
 def test_handshake_notes_the_claude_session_for_postend(tmp_path, monkeypatch, caplog):
     """RT-6.18 steps 9–10: the first handshake writes the key of the relay's
     Claude session to claude-sid.env in the state directory (postEnd keeps the
-    bot only then). A bot taken over for another session (MM_BUS_KEPT_SID)
+    bot only then). A bot taken over for another session (CB_BUS_KEPT_SID)
     stays this session's: the mismatch is logged, the file names the relay's."""
     d = session_file.use_hosted_dir(tmp_path / "hosted" / "s")
     monkeypatch.setenv(hosted.KEPT_SID_ENV, hosted.sid_key("cc-old"))
@@ -780,7 +780,7 @@ def test_handshake_notes_the_claude_session_for_postend(tmp_path, monkeypatch, c
     with caplog.at_level("INFO"):
         host._load({"CLAUDE_CODE_SESSION_ID": "cc-new"})
         host._load({"CLAUDE_CODE_SESSION_ID": "cc-other"})  # later relays keep the first's
-    assert (d / hosted.CLAUDE_SID_FILE).read_text() == f"MM_CLAUDE_SID={hosted.sid_key('cc-new')}\n"
+    assert (d / hosted.CLAUDE_SID_FILE).read_text() == "".join(f"{k}={hosted.sid_key('cc-new')}\n" for k in ("CB_CLAUDE_SID", "MM_CLAUDE_SID"))
     assert (d / hosted.CLAUDE_SID_FILE).stat().st_mode & 0o777 == 0o600
     assert "took over a bot kept for Claude session" in caplog.text
     assert hosted.sid_key("cc-new") == hashlib.sha1(b"cc-new").hexdigest()[:16]
@@ -844,7 +844,7 @@ def _server_text(env: dict, hosted_dir: Path | None = None) -> dict:
             "print(json.dumps({'managed': server.HOST_MANAGED, 'text': server.mcp.instructions,"
             " 'tools': tools, 'newer': server._newer_installed()}))\n")
     base = {"PATH": os.environ["PATH"], "HOME": env.pop("HOME", "/nonexistent"),
-            "PYTHONPATH": str(SRC), "MM_CHANNEL_PUSH": "0"}
+            "PYTHONPATH": str(SRC), "CB_CHANNEL_PUSH": "0"}
     out = subprocess.run([sys.executable, "-c", code], env={**base, **env}, capture_output=True,
                          text=True, timeout=60, check=True)
     return json.loads(out.stdout.splitlines()[-1])
@@ -857,31 +857,31 @@ def test_host_managed_without_a_token_in_its_environment(tmp_path):
     assert got["managed"] is True and "token stays on the host" in got["text"]
     assert "session_start" not in got["tools"] and "post_message" in got["tools"]
     assert got["newer"] is None
-    older = _server_text({"MM_BOT_TOKEN": "t"})  # an older host install's session
+    older = _server_text({"CB_MM_BOT_TOKEN": "t"})  # an older host install's session
     assert older["managed"] is True and "token stays on the host" not in older["text"]
 
 
 def test_current_plugin_says_why_when_the_host_kept_the_bus_off(tmp_path):
     """RT-6.18 error handling: preStart failed closed; the plugin in the
     sandbox has no token and no relay, and says so instead of offering to register."""
-    got = _server_text({"MM_BUS_UNAVAILABLE": "the MCP server did not start on the host",
-                        "MM_PROJECT_CHANNEL": "proj-x"})
+    got = _server_text({"CB_BUS_UNAVAILABLE": "the MCP server did not start on the host",
+                        "CB_MM_PROJECT_CHANNEL": "proj-x"})
     assert got["managed"] is False
     assert "The bus is off in this corral session: the MCP server did not start" in got["text"]
     assert "session_start" not in got["text"] and "session_start" not in got["tools"]
 
 
 def test_a_bad_props_prefix_fails_the_host_before_it_is_ready(monkeypatch, tmp_path, capsys):
-    """RT-6.16 step 8, RT-6.18: the host process refuses a malformed MM_PROPS_PREFIX
+    """RT-6.16 step 8, RT-6.18: the host process refuses a malformed CB_PROPS_PREFIX
     at its start, with the reason, so the session start fails and no relay meets a
     server that dies at its first connection."""
-    monkeypatch.setattr(hosted, "read_start", lambda _stdin: ("k", {"MM_PROPS_PREFIX": "BGL_"}))
+    monkeypatch.setattr(hosted, "read_start", lambda _stdin: ("k", {"CB_PROPS_PREFIX": "BGL_"}))
     monkeypatch.setattr(os, "environ", dict(os.environ))
     ready = tmp_path / "ready"
     code = hosted.host_main(["--ready-file", str(ready), "--state-dir", str(tmp_path / "state"),
                              "--foreground"])
     assert code == 1 and not ready.exists()
-    assert "MM_PROPS_PREFIX" in capsys.readouterr().err
+    assert "CB_PROPS_PREFIX" in capsys.readouterr().err
 
 
 class _DMClient:
@@ -916,7 +916,7 @@ async def test_no_relay_warns_once_by_dm_and_a_late_relay_clears_it(tmp_path, mo
     session_file.use_hosted_dir(tmp_path / "hosted" / "s")
     monkeypatch.setattr(hosted, "RELAY_WARN_SEC", 0.2)
     monkeypatch.setattr(hosted, "_no_relay_since", None)
-    monkeypatch.setenv("MM_RESPONSIBLE_HUMAN", "alice")
+    monkeypatch.setenv("CB_RESPONSIBLE_HUMAN", "alice")
     monkeypatch.setenv("CORRAL_AGENT", "opencode")
     client = _DMClient()
     host = hosted.Host(KEY, client=client, serve=_echo)
@@ -958,7 +958,7 @@ async def test_a_plugin_waiting_for_its_session_holds_back_the_alarm(tmp_path, m
     monkeypatch.setattr(hosted, "RELAY_WARN_SEC", 0.3)
     monkeypatch.setattr(hosted, "_no_relay_since", None)
     monkeypatch.setattr(hosted, "_waiting_at", None)
-    monkeypatch.setenv("MM_RESPONSIBLE_HUMAN", "alice")
+    monkeypatch.setenv("CB_RESPONSIBLE_HUMAN", "alice")
     client = _DMClient()
     host = hosted.Host(KEY, client=client, serve=_echo)
 
@@ -980,7 +980,7 @@ async def test_a_relay_within_the_time_raises_no_alarm(tmp_path, monkeypatch):
     session_file.use_hosted_dir(tmp_path / "hosted" / "s")
     monkeypatch.setattr(hosted, "RELAY_WARN_SEC", 0.4)
     monkeypatch.setattr(hosted, "_no_relay_since", None)
-    monkeypatch.setenv("MM_RESPONSIBLE_HUMAN", "alice")
+    monkeypatch.setenv("CB_RESPONSIBLE_HUMAN", "alice")
     client = _DMClient()
     host = hosted.Host(KEY, client=client, serve=_echo)
 
@@ -1004,11 +1004,11 @@ def test_the_harness_names_its_adapter_doc(monkeypatch):
         monkeypatch.setenv("CORRAL_AGENT", agent)
         assert hosted.adapter_doc() == doc
     assert hosted.harness() == ""
-    line = json.dumps({"key": KEY, "env": {"CORRAL_AGENT": "pi", "MM_CHAT_URL": "https://mm"}}) + "\n"
+    line = json.dumps({"key": KEY, "env": {"CORRAL_AGENT": "pi", "CB_MM_CHAT_URL": "https://mm"}}) + "\n"
     assert hosted.read_start(io.BytesIO(line.encode()))[1]["CORRAL_AGENT"] == "pi"
 
 
-@pytest.mark.parametrize("marker", ["CORRAL_SANDBOX", "MM_BUS_MCP_ENDPOINT", "MM_BUS_ENDPOINT"])
+@pytest.mark.parametrize("marker", ["CORRAL_SANDBOX", "CB_BUS_MCP_ENDPOINT", "CB_BUS_ENDPOINT"])
 async def test_no_self_registration_inside_a_corral_sandbox(monkeypatch, marker):
     """RT-6.18, RT-6.10: inside a sandbox corral set up the host registers the
     bot; session_start (the tool and the client) refuses before anything goes
@@ -1038,7 +1038,7 @@ async def test_no_self_registration_inside_a_corral_sandbox(monkeypatch, marker)
 def test_the_sandbox_instructions_offer_no_session_start():
     """RT-6.18: the server started in a corral sandbox without the relay (its
     variables cleared, CORRAL_SANDBOX left) offers no self-registration."""
-    got = _server_text({"CORRAL_SANDBOX": "1", "MM_PROJECT_CHANNEL": "proj-x"})
+    got = _server_text({"CORRAL_SANDBOX": "1", "CB_MM_PROJECT_CHANNEL": "proj-x"})
     assert "nothing registers one from inside (RT-6.18); session_start refuses" in got["text"]
     assert "register with session_start" not in got["text"]
 
@@ -1057,7 +1057,7 @@ def test_a_hosted_server_states_the_card_in_its_presence(monkeypatch):
     monkeypatch.setattr(server, "_hello", {"model": "Opus 5.5", "task": "t", "branch": "main"})
     monkeypatch.setattr(stats, "_client_name", "claude-code")
     monkeypatch.setattr(stats, "_uid", "")
-    monkeypatch.delenv("MM_BOT_USER_ID", raising=False)
+    monkeypatch.delenv("CB_MM_BOT_USER_ID", raising=False)
     hosted._load_server(port)  # type: ignore[arg-type]
     assert port.card_source is server._presence_card
     body = json.loads(natsbus.encode_presence("online", card=port._card()))

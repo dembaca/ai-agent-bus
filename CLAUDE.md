@@ -51,11 +51,11 @@ and pushes it: `git tag -s v<version> -m v<version> <merge commit>`
 `git verify-tag v<version>` (`gpg.ssh.allowedSignersFile` with the pinned keys),
 then `git push origin v<version>`. Never `-f`: a tag is never moved or re-signed
 (hosts refuse a moved tag). Agents never sign and never create or push version
-tags. `MM_RELEASE_URL` as a local path is for a mirror and the tests.
+tags. `CB_RELEASE_URL` as a local path is for a mirror and the tests.
 
 With the key on a YubiKey (FIDO2, `sk-ssh-ed25519`), macOS's own `ssh-keygen`
 cannot sign ("No FIDO SecurityKeyProvider specified"); Homebrew's can
-(`brew install openssh`). `MM_RELEASE_SIGNERS` holds bare keys, `verify-tag`
+(`brew install openssh`). `CB_RELEASE_SIGNERS` holds bare keys, `verify-tag`
 needs the principal in front:
 
 ```bash
@@ -69,9 +69,13 @@ git -c gpg.ssh.program=/opt/homebrew/bin/ssh-keygen \
 ```
 
 What a release needs first goes into its CHANGELOG entry as a line of its own,
-`Needs: MM_PROPS_PREFIX alike on every server`: only `MM_*` names, versions `x.y.z`
-and lowercase words of at most 15 letters, each with an optional `,` or `.`, at most
-120 characters, since every agent's notice shows it (RT-6.30). A release with a known bad predecessor says
+`Needs: CB_PROPS_PREFIX alike on every server`: only `CB_*` and `MM_*` names, versions
+`x.y.z` and lowercase words of at most 15 letters, each with an optional `,` or `.`, at
+most 120 characters, since every agent's notice shows it (RT-6.30). A host before
+0.103.0 drops a line with a `CB_*` name, so the `Needs:` lines of 0.103.0 and of the
+release that removes the old-name fallbacks name no `CB_*` name: old `MM_*` names,
+versions and words only, the new names go into the entry's text
+([docs/env-names.md](docs/env-names.md#the-needs-rule)). A release with a known bad predecessor says
 `Withdrawn: v<x.y.z>[, v<x.y.z>]`. doc-check enforces both forms.
 
 ## Before you push

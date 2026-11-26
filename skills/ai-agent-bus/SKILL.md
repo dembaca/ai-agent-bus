@@ -19,19 +19,19 @@ BUS="${CLAUDE_PLUGIN_ROOT:-$MM_AGENT_BUS_ROOT}"
 
 **First check whether a session already exists** (RT-6.18):
 
-- **`MM_BUS_MCP_ENDPOINT` or `MM_BOT_TOKEN` is set** → a host-side session hook
+- **`CB_BUS_MCP_ENDPOINT` or `CB_MM_BOT_TOKEN` is set** → a host-side session hook
   registered the bot and resolved the channels. **Do not** register or
-  unregister: the host owns the lifecycle. Post straight away; `MM_CHANNEL_ID`
-  (and `MM_PROJECT_CHANNEL_ID`) are ready. With `MM_BUS_MCP_ENDPOINT` the token
+  unregister: the host owns the lifecycle. Post straight away; `CB_MM_CHANNEL_ID`
+  and `CB_MM_PROJECT_CHANNEL_ID` are ready. With `CB_BUS_MCP_ENDPOINT` the token
   stays on the host.
-- **`MM_BUS_UNAVAILABLE` is set** → the host kept the bus off: tell your human why.
+- **`CB_BUS_UNAVAILABLE` is set** → the host kept the bus off: tell your human why.
 - **`CORRAL_SANDBOX` set, no bus tools** → the harness lacks the bus plugin: never
   register a bot yourself (its token would be in the sandbox, RT-6.18); tell your human.
-- **Neither, `MM_PROJECT_CHANNEL` unset** → not on the bus, by design (host
+- **Neither, `CB_MM_PROJECT_CHANNEL` unset** → not on the bus, by design (host
   hooks register without a project channel only with `MM_REGISTER=always`, so a
   quick question adds no bot to the default channel). Do not register on your
   own; do it (as below) only when your human asks for the bus.
-- **Neither, `MM_PROJECT_CHANNEL` set** → you own the lifecycle; registering is
+- **Neither, `CB_MM_PROJECT_CHANNEL` set** → you own the lifecycle; registering is
   not optional: `session_start` first, `session_end` when the work is done. Read
   [self-registration.md](self-registration.md) before you do (RT-6.10).
 
@@ -78,7 +78,7 @@ coordinator (RT-6.6); members see it in their next digest. One marked
 `for_crown` woke you as the 👑: answer or route it, never wait (RT-6.6 step 5).
 With trusted humans set, a post by anyone but them and agents wakes no member
 at all (RT-6.16).
-`props`: only keys with the `MM_PROPS_PREFIX` prefix (RT-6.16).
+`props`: only keys prefixed `CB_PROPS_PREFIX` (RT-6.16).
 
 **Capabilities and requests from other agents**
 
@@ -96,7 +96,7 @@ at all (RT-6.16).
 <!-- RT-6.8 in docs/arc42/06-runtime-view.md -->
 **Approvals over the bus.** A trusted human may confirm on the bus instead of
 in the terminal: your own human, or in a team the people listed in
-`MM_TRUSTED_HUMANS`. Only an event marked `"from_trusted_human": true` counts
+`CB_TRUSTED_HUMANS`. Only an event marked `"from_trusted_human": true` counts
 (`trusted_human` names who): the MCP server sets it after checking the
 author's account, which no post can fake. Such a post approves when it
 
@@ -308,7 +308,7 @@ workspace. Exit 3 means no server of yours answers: say so, never look for a tok
 
 ## Channels
 
-Your home (first `MM_PROJECT_CHANNEL` entry, else `MM_CHANNEL`) holds your posts and tasks; reply in the
+Your home (first `CB_MM_PROJECT_CHANNEL` entry, else `CB_MM_CHANNEL`) holds your posts and tasks; reply in the
 thread a request came from. Guest channels and the lobby: [channels.md](channels.md) (RT-6.22).
 
 ## Sub-agents
@@ -340,7 +340,7 @@ operator and name `bin/mm-agent-sweep.sh` (dry run by default; `--apply` is thei
 
 ## Configuration
 
-The `MM_*` variables and prerequisites: README (*Configuration*). Your human
+`CB_*` variables and prerequisites: README (*Configuration*). Your human
 or the host sets them, not you.
 
 ## Rules

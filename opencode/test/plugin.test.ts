@@ -12,7 +12,7 @@ import { dirname, join } from "node:path"
 import { after, afterEach, before, beforeEach, mock, test } from "node:test"
 import { fileURLToPath } from "node:url"
 
-import plugin, { usageLoader, addMcp, bindings, busFile, busRoot, CLIENT_HEADER, dropMcp, HOST_REFUSED, MARK, NO_BUS, REFUSAL_TOOL, relayVars,
+import plugin, { usageLoader, addMcp, bindings, bothSpellings, busFile, busRoot, CLIENT_HEADER, dropMcp, envFirst, EnvConflict, fileFirst, hookApi, HOST_REFUSED, keyless, MARK, NO_BUS, REFUSAL_TOOL, relayVars,
   chars, renamedText, RETRY_SEC, retryMs, SERVER, setup, SKILL, skillInfo, timing, WAIT_SEC, venvDir, WAKE_BACKOFF_MAX_MS, WAKE_BACKOFF_MS, wakeBackoffMs, waitSec } from "../plugin/mattermost-agent-bus.ts"
 import entry from "../server.ts"
 
@@ -30,6 +30,15 @@ let server: Server
 let endpoint = ""
 
 const settle = (ms = 60) => new Promise((r) => setTimeout(r, ms))
+
+/** console.warn's messages while fn runs (the plugin logs its warnings there). */
+function captureWarn(fn: () => void): string[] {
+  const got: string[] = []
+  const orig = console.warn
+  console.warn = (...a: unknown[]) => { got.push(a.map(String).join(" ")) }
+  try { fn() } finally { console.warn = orig }
+  return got
+}
 const nowSec = () => Math.floor(Date.now() / 1000)
 // The clock is mocked (the wake-up backoff): time passes by tick(). The long
 // poll has no timer: a request held by the fake server is the plugin's wait.
@@ -67,8 +76,10 @@ const wakes = () => calls.filter((c) => c.path.startsWith("/v1/wake"))
 const rest = () => calls.filter((c) => !c.path.startsWith("/v1/wake") && c.path !== "/v1/me" && c.path !== "/v1/waiting")
 
 before(async () => {
-  for (const v of ["CLAUDE_CODE_SESSION_ID", "CLAUDE_PROJECT_DIR", "CURSOR_PROJECT_DIR", "MM_WORKSPACE",
-                   "MM_BUS_ENDPOINT", "MM_BUS_MCP_ENDPOINT", "MM_BUS_KEY", "MM_AGENT_BUS_ROOT", "MM_LISTEN_POLL_SEC"]) delete process.env[v]
+  for (const v of ["CLAUDE_CODE_SESSION_ID", "CLAUDE_PROJECT_DIR", "CURSOR_PROJECT_DIR", "CB_WORKSPACE",
+                   "CB_BUS_ENDPOINT", "CB_BUS_MCP_ENDPOINT", "CB_BUS_KEY", "CB_AGENT_BUS_ROOT",
+                   "MM_WORKSPACE", "MM_BUS_ENDPOINT", "MM_BUS_MCP_ENDPOINT", "MM_BUS_KEY",
+                   "MM_AGENT_BUS_ROOT", "MM_LISTEN_POLL_SEC"]) delete process.env[v]
   mkdirSync(join(ws, ".git"), { recursive: true })
   mkdirSync(join(ws, "sub", "deeper"), { recursive: true })
   server = createServer((req: IncomingMessage, res: ServerResponse) => {
@@ -140,7 +151,7 @@ beforeEach(() => {
   rmSync(dir, { recursive: true, force: true })
   mkdirSync(dir, { recursive: true })
   process.env.XDG_STATE_HOME = join(tmp, "state")
-  writeFileSync(join(dir, `endpoint-${sha16(ws)}.env`), `MM_BUS_ENDPOINT=${endpoint}\nMM_BUS_KEY=${KEY}\nMM_BUS_PID=1\n`)
+  writeFileSync(join(dir, `endpoint-${sha16(ws)}.env`), `CB_BUS_ENDPOINT=${endpoint}\nCB_BUS_KEY=${KEY}\nCB_BUS_PID=1\n`)
   timing.minRetrySec = 0.01 // the tests' pauses are short; the clamp is tested apart
   bindings().clear() // each test is a new OpenCode process (RT-6.20 step 1)
   mock.timers.enable({ apis: ["Date"], now: Date.now() })
@@ -276,7 +287,7 @@ test("RT-6.20: finds only its own server: the file keyed on OpenCode's directory
   assert.equal(busFile(env, join(ws, "sub", "deeper")), null) // no walk-up
   // A Claude Code shell's session and project lead elsewhere: not looked at.
   writeFileSync(join(tmp, "state", "mm-agent-bus", `endpoint-sid-${sha16("abc")}.env`), "x=y\n")
-  const claude = { ...env, CLAUDE_CODE_SESSION_ID: "abc", CLAUDE_PROJECT_DIR: join(ws, "sub"), MM_WORKSPACE: join(ws, "sub") }
+  const claude = { ...env, CLAUDE_CODE_SESSION_ID: "abc", CLAUDE_PROJECT_DIR: join(ws, "sub"), CB_WORKSPACE: join(ws, "sub") }
   assert.equal(busFile(claude, ws), want)
   // The name the server and the shell write (bin/mm-agent-lib.sh) for that workspace.
   const shell = execFileSync("bash", ["-c", `source "${REPO}/bin/mm-agent-lib.sh"; cd "$1" && mm_bus_file`, "x", ws],
@@ -316,7 +327,8 @@ test("RT-6.20: mcp.transform adds the server and skill.transform the skill, neve
   assert.equal(busRoot({}, {}, join(link, "bus.ts")), REPO) // a symlinked plugin finds its checkout
   // Its server's files are keyed on OpenCode's directory, never on a Claude
   // Code session it was started from; no channel push (Claude Code's).
-  const keyed = { CLAUDE_CODE_SESSION_ID: "", CLAUDE_PROJECT_DIR: "", MM_CHANNEL_PUSH: "0", MM_WORKSPACE: ws }
+  const keyed = { CLAUDE_CODE_SESSION_ID: "", CLAUDE_PROJECT_DIR: "", CB_CHANNEL_PUSH: "0", MM_CHANNEL_PUSH: "0",
+                  CB_WORKSPACE: ws, MM_WORKSPACE: ws }
   const fx = await start()
   // Its Python environment in the user's cache, never in the tree, which may
   // be read-only: a checkout under a corral grant, or the host copy (RT-6.28).
@@ -337,9 +349,9 @@ test("RT-6.20: mcp.transform adds the server and skill.transform the skill, neve
     return { m, list: () => [...m.entries()], get: (n: string) => m.get(n), set: (n: string, c: any) => m.set(n, c) }
   }
   const own = editor({ bus: { type: "local", command: ["sh", "-c", "exec uv run mattermost-ai-agent-bus-mcp"] } })
-  assert.equal(addMcp(own, {}, root, ws), true) // by hand, without MM_WORKSPACE: the plugin may warn
+  assert.equal(addMcp(own, {}, root, ws), true) // by hand, without CB_WORKSPACE: the plugin may warn
   assert.deepEqual([...own.m.keys()], ["bus"])
-  own.m.get("bus").environment = { MM_WORKSPACE: ws }
+  own.m.get("bus").environment = { CB_WORKSPACE: ws }
   assert.equal(addMcp(own, {}, root, ws), false)
   const off = editor({})
   assert.equal(addMcp(off, { mcp: false }, root, ws), false)
@@ -688,13 +700,13 @@ test("RT-6.20: a failed turn-end check leaves a listening session listening", as
 
 // Under a corral session's relay variables (RT-6.18) the bus is the host's.
 const withRelay = async (body: () => Promise<void>) => {
-  process.env.MM_BUS_MCP_ENDPOINT = "tcp://127.0.0.1:9"
-  process.env.MM_BUS_ENDPOINT = endpoint
-  process.env.MM_BUS_KEY = KEY
+  process.env.CB_BUS_MCP_ENDPOINT = "tcp://127.0.0.1:9"
+  process.env.CB_BUS_ENDPOINT = endpoint
+  process.env.CB_BUS_KEY = KEY
   try {
     await body()
   } finally {
-    for (const v of ["MM_BUS_MCP_ENDPOINT", "MM_BUS_ENDPOINT", "MM_BUS_KEY"]) delete process.env[v]
+    for (const v of ["CB_BUS_MCP_ENDPOINT", "CB_BUS_ENDPOINT", "CB_BUS_KEY"]) delete process.env[v]
   }
 }
 
@@ -727,7 +739,7 @@ async function startRelay(sessions: Record<string, { parentID?: string; dir?: st
 }
 
 test("RT-6.20 step 1, RT-6.18 step 6: one bus session per OpenCode process, in any server (#119)", async () => {
-  assert.equal(relayVars({ MM_BUS_MCP_ENDPOINT: "tcp://127.0.0.1:9" }), true)
+  assert.equal(relayVars({ CB_BUS_MCP_ENDPOINT: "tcp://127.0.0.1:9" }), true)
   assert.equal(relayVars({}), false)
   const argv = process.argv
   const warn = mock.method(console, "warn", () => {})
@@ -821,11 +833,11 @@ test("RT-6.18 step 6, RT-6.20 step 1: the host serves another OpenCode session: 
 
 test("RT-6.20 step 1, RT-6.18 step 6: the bound id reaches a hand-configured server; one without a tool hook is warned of", async () => {
   // A server configured by hand gets the id too.
-  const m = new Map<string, any>([["bus", { type: "local", command: ["mattermost-ai-agent-bus-mcp"], environment: { MM_WORKSPACE: ws } }]])
+  const m = new Map<string, any>([["bus", { type: "local", command: ["mattermost-ai-agent-bus-mcp"], environment: { CB_WORKSPACE: ws } }]])
   const editor = { list: () => [...m.entries()], get: (n: string) => m.get(n), set: (n: string, c: any) => m.set(n, c),
                    update: (n: string, f: (c: any) => void) => f(m.get(n)) }
   assert.equal(addMcp(editor, {}, null, ws, {}, "ses_B"), false)
-  assert.deepEqual(m.get("bus").environment, { MM_WORKSPACE: ws, OPENCODE_SESSION_ID: "ses_B" })
+  assert.deepEqual(m.get("bus").environment, { CB_WORKSPACE: ws, OPENCODE_SESSION_ID: "ses_B" })
   // A host whose editor cannot remove keeps them, and nothing breaks.
   const old = new Map([["bus", { command: ["mattermost-ai-agent-bus-mcp"] }]])
   assert.deepEqual(dropMcp({ list: () => [...old.entries()], get: (n: string) => old.get(n) }), [])
@@ -888,7 +900,7 @@ test("RT-6.20 step 3: a changed bot for the same session is said in it, old → 
   await second.cleanup()
 })
 
-test("RT-6.20: a hand-configured server without MM_WORKSPACE that cannot be found: one warning", async () => {
+test("RT-6.20: a hand-configured server without CB_WORKSPACE that cannot be found: one warning", async () => {
   const warn = mock.method(console, "warn", () => {})
   try {
     const fx = fakeCtx()
@@ -900,7 +912,7 @@ test("RT-6.20: a hand-configured server without MM_WORKSPACE that cannot be foun
     await fx.emit("session.execution.succeeded", { sessionID: "s1" })
     assert.equal(fx.mcpServers.has(SERVER), false)
     assert.equal(warn.mock.callCount(), 1)
-    assert.match(String(warn.mock.calls[0].arguments[0]), /MM_WORKSPACE/)
+    assert.match(String(warn.mock.calls[0].arguments[0]), /CB_WORKSPACE/)
     await cleanup()
   } finally {
     warn.mock.restore()
@@ -1069,3 +1081,107 @@ test("RT-6.9 step 2: a split that throws changes no turn handling: the turn ends
     usageLoader.load = load
   }
 })
+
+
+
+test("RT-6.20: a keyless sandbox silences every old name, not only the relay's", () => {
+  const box: string[] = []
+  const orig = console.warn
+  console.warn = (...a: unknown[]) => { box.push(a.map(String).join(" ")) }
+  try {
+    // the hook wrote MM_BUS_MCP_ENDPOINT; a non-relay old name is the hook's too
+    assert.equal(envFirst({ CB_BUS_MCP_ENDPOINT: "tcp://h", MM_AGENT_BUS_ROOT: "/o" },
+                          ["CB_AGENT_BUS_ROOT", "MM_AGENT_BUS_ROOT"]), "/o")
+    // empty counts as set, ${NAME} as unset: neither hides the warning
+    assert.equal(keyless({ CB_BUS_MCP_ENDPOINT: "" }), true)
+    assert.equal(keyless({ CB_BUS_MCP_ENDPOINT: "${CB_BUS_MCP_ENDPOINT}" }), false)
+  } finally { console.warn = orig }
+  assert.equal(box.length, 0)
+})
+// --- the CB_ names (#169) --------------------------------------------------
+
+test("RT-6.20: a setting reads CB_ first, then MM_ with one warning", () => {
+  assert.equal(envFirst({ CB_WORKSPACE: "/n" }, ["CB_WORKSPACE", "MM_WORKSPACE"]), "/n")
+  const warned = captureWarn(() => {
+    assert.equal(envFirst({ MM_WORKSPACE: "/o" }, ["CB_WORKSPACE", "MM_WORKSPACE"]), "/o")
+    // once per process and old name, not per call
+    assert.equal(envFirst({ MM_WORKSPACE: "/o2" }, ["CB_WORKSPACE", "MM_WORKSPACE"]), "/o2")
+  })
+  assert.equal(warned.filter((m) => m.includes("MM_WORKSPACE is deprecated")).length, 1)
+})
+
+test("RT-6.20: empty counts as set, a ${NAME} placeholder as unset", () => {
+  // An empty new name never falls back; an empty value next to a non-empty
+  // one is a disagreement (docs/env-names.md, "the reading rule").
+  assert.equal(envFirst({ CB_WORKSPACE: "" }, ["CB_WORKSPACE", "MM_WORKSPACE"]), "")
+  assert.throws(() => envFirst({ CB_WORKSPACE: "", MM_WORKSPACE: "/o" },
+                               ["CB_WORKSPACE", "MM_WORKSPACE"]), EnvConflict)
+  assert.equal(envFirst({ CB_WORKSPACE: "${CB_WORKSPACE}", MM_WORKSPACE: "/o" },
+                        ["CB_WORKSPACE", "MM_WORKSPACE"]), "/o")
+})
+
+test("RT-6.20: two names with different values are a conflict naming both, never a value", () => {
+  assert.throws(() => envFirst({ CB_BUS_KEY: "new-secret", MM_BUS_KEY: "old-secret" },
+                               ["CB_BUS_KEY", "MM_BUS_KEY"]),
+                (e: Error) => e instanceof EnvConflict &&
+                  e.message === "CB_BUS_KEY, MM_BUS_KEY are set to different values; set only CB_BUS_KEY")
+})
+
+test("RT-6.20: a file the bus wrote keeps the last line of either spelling", () => {
+  assert.equal(fileFirst("MM_BUS_KEY=a\nCB_BUS_KEY=b\n", ["CB_BUS_KEY", "MM_BUS_KEY"]), "b")
+  // a downgraded writer appends the old key after the new one
+  assert.equal(fileFirst("CB_BUS_KEY=new\nMM_BUS_KEY=old\n", ["CB_BUS_KEY", "MM_BUS_KEY"]), "old")
+})
+
+
+test("RT-6.20: a conflict is reported once and leaves the plugin without a bus", async () => {
+  const env = { CB_BUS_ENDPOINT: "http://127.0.0.1:1", MM_BUS_ENDPOINT: "http://127.0.0.1:2",
+                CB_BUS_KEY: "k", MM_BUS_KEY: "k" }
+  const warned: string[] = []
+  const orig = console.warn
+  console.warn = (...a: unknown[]) => { warned.push(a.map(String).join(" ")) }
+  try {
+    assert.equal(await hookApi(env, ws)("GET", "/v1/me"), null)
+    assert.equal(await hookApi(env, ws)("GET", "/v1/me"), null)
+  } finally { console.warn = orig }
+  assert.equal(warned.filter((m) => m.includes("CB_BUS_ENDPOINT, MM_BUS_ENDPOINT")).length, 1)
+})
+
+test("RT-6.20: the old relay names work end to end, and a keyless sandbox stays quiet", async () => {
+  answers["/v1/me"] = { username: "oc" }
+  const before = calls.length
+  // the relay's own values (the host hook's) never warn
+  const box: string[] = []
+  const orig = console.warn
+  console.warn = (...a: unknown[]) => { box.push(a.map(String).join(" ")) }
+  try {
+    assert.deepEqual(await hookApi({ MM_BUS_ENDPOINT: endpoint, MM_BUS_KEY: KEY }, ws)("GET", "/v1/me"),
+                     { username: "oc" })
+  } finally { console.warn = orig }
+  assert.ok(calls.length > before)
+  assert.equal(box.length, 0)
+  // a keyless sandbox: the hook wrote the old names, so the same there
+  const sandbox = { CB_BUS_MCP_ENDPOINT: "tcp://127.0.0.1:9", MM_BUS_ENDPOINT: endpoint, MM_BUS_KEY: KEY }
+  assert.equal(keyless(sandbox), true)
+  const quiet: string[] = []
+  console.warn = (...a: unknown[]) => { quiet.push(a.map(String).join(" ")) }
+  try {
+    assert.deepEqual(await hookApi(sandbox, ws)("GET", "/v1/me"), { username: "oc" })
+  } finally { console.warn = orig }
+  assert.equal(quiet.length, 0)
+})
+
+test("RT-6.20: a user's environment that names one spelling is copied to the other", () => {
+  assert.deepEqual(bothSpellings({ MM_WORKSPACE: "/other", CB_CHANNEL_PUSH: "1" }),
+                   { MM_WORKSPACE: "/other", CB_WORKSPACE: "/other",
+                     CB_CHANNEL_PUSH: "1", MM_CHANNEL_PUSH: "1" })
+  // both set to different values stays a disagreement
+  assert.deepEqual(bothSpellings({ CB_WORKSPACE: "/a", MM_WORKSPACE: "/b" }),
+                   { CB_WORKSPACE: "/a", MM_WORKSPACE: "/b" })
+  const m = new Map<string, any>()
+  const ed = { m, list: () => [...m.entries()], get: (n: string) => m.get(n), set: (n: string, c: any) => m.set(n, c) }
+  addMcp(ed, { environment: { MM_WORKSPACE: "/other" } }, REPO, ws)
+  assert.equal(ed.m.get(SERVER).environment.CB_WORKSPACE, "/other")
+  assert.equal(ed.m.get(SERVER).environment.MM_WORKSPACE, "/other")
+})
+

@@ -39,7 +39,7 @@ ln -s /ABS/PATH/ai-agent-bus/pi/mattermost-agent-bus.ts \
 
 or for one project (`.pi/extensions/`, after pi's project trust), as an `extensions`
 path in pi's settings, or for one run with `pi --extension /ABS/PATH/…/pi/mattermost-agent-bus.ts`.
-A copied file (not linked) needs `MM_AGENT_BUS_ROOT=/ABS/PATH/ai-agent-bus`
+A copied file (not linked) needs `CB_AGENT_BUS_ROOT=/ABS/PATH/ai-agent-bus` (`MM_AGENT_BUS_ROOT` is still read)
 in pi's environment. It needs no `npm install`: its only import from pi is types.
 `/reload` loads a changed file (after a `git pull` here).
 
@@ -53,15 +53,15 @@ the rules on sub-agents, approvals, questions to you and replying in the thread
 
 The extension registers the MCP server `ai-agent-bus` for the session (`uv run
 --locked --project <checkout>/mcp mattermost-ai-agent-bus-mcp`) and the skill directory.
-pi starts the server with its own environment plus `MM_WORKSPACE` (the session's
+pi starts the server with its own environment plus `CB_WORKSPACE` (the session's
 directory), an empty `CLAUDE_CODE_SESSION_ID` and `CLAUDE_PROJECT_DIR`, and
-`MM_CHANNEL_PUSH=0`, and `UV_PROJECT_ENVIRONMENT` in your cache
+`CB_CHANNEL_PUSH=0` (`MM_` beside both, for a server of the previous release), and `UV_PROJECT_ENVIRONMENT` in your cache
 (`~/.cache/mm-agent-bus/venv-<hash of the checkout>`): uv never writes into the
 checkout, which may be read-only. Under `corral run pi`, `~` is the corral home, so
 there is one environment per corral home and checkout. It is a cache: delete
 `~/.cache/mm-agent-bus/venv-*` at any time, the next start builds it again. Its tools are declared to the model (`exposure: direct`)
-and may take 180 s. Put the `MM_*` settings (`MM_CHAT_URL`, `MM_REGISTER_URL`, `MM_TEAM`,
-`MM_CHANNEL`, `MM_PROJECT_CHANNEL`, `MM_TRUSTED_HUMANS`, [README](../README.md#configuration))
+and may take 180 s. Put the `CB_*` and registrar `MM_*` settings (`CB_MM_CHAT_URL`, `MM_REGISTER_URL`, `CB_MM_TEAM`,
+`CB_MM_CHANNEL`, `CB_MM_PROJECT_CHANNEL`, `CB_TRUSTED_HUMANS`, [README](../README.md#configuration))
 into the environment pi starts with. Remove a copy of the skill you installed yourself
 (`~/.pi/agent/skills/`, `.agents/skills/`): pi keeps the first skill of a name and warns.
 
@@ -93,7 +93,7 @@ extension's, e.g. for a setup the two variables cannot express:
         "MM_REG_SECRET": "!gopass show -o bus/registrar",
         "CLAUDE_CODE_SESSION_ID": "",
         "CLAUDE_PROJECT_DIR": "",
-        "MM_CHANNEL_PUSH": "0"
+        "CB_CHANNEL_PUSH": "0"
       },
       "exposure": "direct",
       "timeout": 180
@@ -102,7 +102,7 @@ extension's, e.g. for a setup the two variables cannot express:
 }
 ```
 
-- No `cwd` and no `MM_WORKSPACE`: pi starts the server in the session's directory and
+- No `cwd` and no `CB_WORKSPACE`: pi starts the server in the session's directory and
   names it as the MCP root, which the server keys its endpoint file on, where the
   extension looks. The two empty `CLAUDE_*` variables matter: inherited from a Claude Code
   shell, they would key the server's files on that session.
@@ -157,7 +157,7 @@ of the environment, which an agent can clear: the boundary is a sandbox that can
 read the secret). With no relay 5 minutes after the start the host warns, as for
 OpenCode ([adapters/opencode.md](opencode.md#with-corral)).
 
-Start pi in the project's directory: the hooks read `MM_PROJECT_CHANNEL` from its
+Start pi in the project's directory: the hooks read `CB_MM_PROJECT_CHANNEL` from its
 environment (`.envrc`). `corral run pi` from `~` works in a scratch directory without
 that `.envrc`: no project channel, so no bot (unless `MM_REGISTER=always`).
 

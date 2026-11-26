@@ -105,7 +105,7 @@ async def test_me_names_the_bot_its_project_and_crown(api, tmp_path, monkeypatch
     body = (await h.get("/v1/me")).json()
     assert body["project"] is True and body["crown_until"] == until
     client.project_channel_name = ""
-    monkeypatch.setenv("MM_PROJECT_CHANNEL_ID", "p" * 26)
+    monkeypatch.setenv("CB_MM_PROJECT_CHANNEL_ID", "p" * 26)
     assert (await h.get("/v1/me")).json()["project"] is True
 
 
@@ -351,8 +351,10 @@ async def test_the_file_names_endpoint_and_key_and_goes_at_exit(api, monkeypatch
     f = hookapi.file_path()
     assert f.name.startswith("endpoint-sid-") and f.parent == session_file.state_dir()
     assert stat.S_IMODE(os.stat(f).st_mode) == 0o600
-    assert session_file.parse(f) == {"MM_BUS_ENDPOINT": a.endpoint, "MM_BUS_KEY": a.key,
-                                     "MM_BUS_PID": str(os.getpid())}
+    # Both names of each key (docs/env-names.md): an older sweep or plugin reads the old.
+    assert session_file.parse(f) == {"CB_BUS_ENDPOINT": a.endpoint, "CB_BUS_KEY": a.key,
+                                     "CB_BUS_PID": str(os.getpid()), "MM_BUS_ENDPOINT": a.endpoint,
+                                     "MM_BUS_KEY": a.key, "MM_BUS_PID": str(os.getpid())}
     await a.close()
     assert not f.exists()
     b, _ = await api(FakeClient(), write_file=True)
@@ -361,7 +363,7 @@ async def test_the_file_names_endpoint_and_key_and_goes_at_exit(api, monkeypatch
     c, _ = await api(FakeClient(), write_file=True)
     assert not c.conflict
     await b.close()
-    assert session_file.parse(f)["MM_BUS_KEY"] == c.key
+    assert session_file.parse(f)["CB_BUS_KEY"] == c.key
     await c.close()
     assert not f.exists()
 
@@ -408,18 +410,20 @@ async def test_the_file_learns_the_bot_id(api, monkeypatch):
     monkeypatch.setenv("CLAUDE_CODE_SESSION_ID", "sess-uid")
     a, h = await api(FakeClient(), write_file=True)
     f = hookapi.file_path()
-    assert "MM_BOT_USER_ID" not in session_file.parse(f)
+    assert "CB_MM_BOT_USER_ID" not in session_file.parse(f)
     assert (await h.get("/v1/me")).status_code == 200
-    assert session_file.parse(f)["MM_BOT_USER_ID"] == UID
-    assert session_file.parse(f)["MM_BUS_KEY"] == a.key
+    assert session_file.parse(f)["CB_MM_BOT_USER_ID"] == UID
+    assert session_file.parse(f)["CB_BUS_KEY"] == a.key
     assert stat.S_IMODE(os.stat(f).st_mode) == 0o600
-    monkeypatch.setenv("MM_BOT_USER_ID", OTHER)
+    monkeypatch.setenv("CB_MM_BOT_USER_ID", OTHER)
     # a looks gone to b (`claude --continue`), so b takes the session's file over.
     monkeypatch.setattr(hookapi, "_answers", lambda endpoint, key: False)
     b, _ = await api(FakeClient(), write_file=True)
-    assert session_file.parse(f)["MM_BOT_USER_ID"] == OTHER
+    assert session_file.parse(f)["CB_MM_BOT_USER_ID"] == OTHER
     await h.get("/v1/me")   # a's file is b's now: a leaves it alone
-    assert session_file.parse(f) == {"MM_BUS_ENDPOINT": b.endpoint, "MM_BUS_KEY": b.key,
+    assert session_file.parse(f) == {"CB_BUS_ENDPOINT": b.endpoint, "CB_BUS_KEY": b.key,
+                                     "CB_BUS_PID": str(os.getpid()), "CB_MM_BOT_USER_ID": OTHER,
+                                     "MM_BUS_ENDPOINT": b.endpoint, "MM_BUS_KEY": b.key,
                                      "MM_BUS_PID": str(os.getpid()), "MM_BOT_USER_ID": OTHER}
 
 
@@ -609,8 +613,8 @@ async def test_post_by_channel_name_only_in_the_bots_channels(api, monkeypatch):
     home, a guest channel or the lobby by name; a channel of the team the bot
     is not in, or none of that name, is a 400 and nothing is posted or joined."""
     lobby, guest = "l" * 26, "g" * 26
-    monkeypatch.setenv("MM_CHANNEL_ID", lobby)
-    monkeypatch.delenv("MM_PROJECT_CHANNEL_ID", raising=False)
+    monkeypatch.setenv("CB_MM_CHANNEL_ID", lobby)
+    monkeypatch.delenv("CB_MM_PROJECT_CHANNEL_ID", raising=False)
     calls = []
 
     async def post_as_bot(client, **kw):
@@ -655,8 +659,8 @@ async def test_posts_only_of_the_channels_the_bus_watches(api, monkeypatch):
     project or the default channel, by id or name; a DM, a group channel or
     another channel the bot is in is a 403, read from nowhere."""
     proj, default = "p" * 26, "d" * 26
-    monkeypatch.setenv("MM_CHANNEL_ID", default)
-    monkeypatch.delenv("MM_PROJECT_CHANNEL_ID", raising=False)
+    monkeypatch.setenv("CB_MM_CHANNEL_ID", default)
+    monkeypatch.delenv("CB_MM_PROJECT_CHANNEL_ID", raising=False)
     c = FakeClient(posts=[post("p1", "hi")])
     c.project_channel_name, c.channel_name = "proj-x", "agents"
     names = {"proj-x": proj, "agents": default, "elsewhere": "e" * 26}
@@ -690,13 +694,13 @@ async def test_a_harness_with_an_inherited_session_id_leaves_the_file(api, monke
     a, _ = await api(FakeClient(), write_file=True)
     a.note_client("claude-code")
     f = hookapi.file_path()
-    assert session_file.parse(f)["MM_BUS_CLIENT"] == "claude-code"
+    assert session_file.parse(f)["CB_BUS_CLIENT"] == "claude-code"
     # Both serve on this test's one loop: b's probe of a (GET /v1/me within
     # 1 s) cannot be answered here, so it is taken as answered.
     monkeypatch.setattr(hookapi, "_answers", lambda endpoint, key: key == a.key)
     b, _ = await api(FakeClient(), write_file=True)
     b.note_client("codex-mcp-client")
-    assert session_file.parse(f)["MM_BUS_KEY"] == a.key
+    assert session_file.parse(f)["CB_BUS_KEY"] == a.key
     w = b.warning()
     assert "client claude-code" in w and "codex-mcp-client" in w
     assert "env -u CLAUDE_CODE_SESSION_ID" in w and not a.warning()
@@ -705,7 +709,7 @@ async def test_a_harness_with_an_inherited_session_id_leaves_the_file(api, monke
 async def test_rekey_writes_the_new_file_before_the_old_one_goes(api, monkeypatch, tmp_path):
     """RT-6.17 step 2: when the roots name the workspace, the file moves; a
     shell looking meanwhile finds the old file or the new one, never neither."""
-    for var in ("CLAUDE_CODE_SESSION_ID", "CLAUDE_PROJECT_DIR", "MM_WORKSPACE"):
+    for var in ("CLAUDE_CODE_SESSION_ID", "CLAUDE_PROJECT_DIR", "CB_WORKSPACE"):
         monkeypatch.delenv(var, raising=False)
     monkeypatch.setattr(session_file, "_roots_dir", None)
     one, two = tmp_path / "one", tmp_path / "two"
@@ -724,14 +728,14 @@ async def test_rekey_writes_the_new_file_before_the_old_one_goes(api, monkeypatc
     assert session_file.set_roots_dir(str(two.resolve()))
     a.rekey()
     assert order == [("new written, old still there", True)]
-    assert not old.exists() and session_file.parse(hookapi.file_path())["MM_BUS_KEY"] == a.key
+    assert not old.exists() and session_file.parse(hookapi.file_path())["CB_BUS_KEY"] == a.key
 
 
 async def test_no_file_keyed_on_home_or_above(api, monkeypatch, tmp_path):
     """RT-6.17 step 2: a server started in the home directory (or /) keys no
     endpoint file there, where a shell anywhere below would find it; it waits
     for the client's roots and says so (bus_info's warning)."""
-    for var in ("CLAUDE_CODE_SESSION_ID", "CLAUDE_PROJECT_DIR", "MM_WORKSPACE"):
+    for var in ("CLAUDE_CODE_SESSION_ID", "CLAUDE_PROJECT_DIR", "CB_WORKSPACE"):
         monkeypatch.delenv(var, raising=False)
     monkeypatch.setattr(session_file, "_roots_dir", None)
     home, proj = tmp_path / "home", tmp_path / "home" / "proj"
@@ -740,14 +744,14 @@ async def test_no_file_keyed_on_home_or_above(api, monkeypatch, tmp_path):
     monkeypatch.chdir(home)
     a, _ = await api(FakeClient(), write_file=True)
     assert not hookapi.file_path().exists() and not list(session_file.state_dir().glob("endpoint-*"))
-    assert "MM_WORKSPACE" in a.warning() and str(home.resolve()) in a.warning()
+    assert "CB_WORKSPACE" in a.warning() and str(home.resolve()) in a.warning()
     monkeypatch.chdir("/")
     assert session_file.unkeyed() == "/"
     monkeypatch.chdir(home)
     assert session_file.set_roots_dir(str(proj.resolve()))
     a.rekey()
     assert hookapi.file_path().exists() and not a.warning()
-    monkeypatch.setenv("MM_WORKSPACE", str(home))
+    monkeypatch.setenv("CB_WORKSPACE", str(home))
     assert session_file.unkeyed() == ""  # a variable that names it is taken
 
 

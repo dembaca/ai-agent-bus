@@ -7,6 +7,27 @@ before 0.5.0 are described in the git history.
 
 ### Breaking
 
+- **The MCP server, the hooks, the shell CLI and the installer read `CB_` names**
+  ([#169](https://github.com/dembaca/ai-agent-bus/issues/169)). Their environment
+  variables get the `CB_` prefix, `CB_MM_` for the ones that exist only because of
+  Mattermost: `MM_CHAT_URL` and its alias `MATTERMOST_URL` become `CB_MM_CHAT_URL`,
+  `MM_BOT_TOKEN` and `MATTERMOST_TOKEN` become `CB_MM_BOT_TOKEN`, `MM_CHANNEL`,
+  `MM_PROJECT_CHANNEL`, `MM_TEAM` become `CB_MM_…`, `MM_TRUSTED_HUMANS`,
+  `MM_LISTEN_SEC`, `MM_RELEASE_SIGNERS`, `MM_NATS_HOMES` and the other bus settings
+  become `CB_…`, and the keys of the session files the bus writes follow. The
+  registrar's settings (`MM_REG_SECRET`, `MM_REGISTER_URL`, `MM_REGISTRAR_KEYS`,
+  `MM_REG_BOT_NAME`, `MM_AGENT_PREFIX`, `MM_BOT_ATTESTATION`, …) keep their names until
+  the registrar goes. The full mapping is in [docs/env-names.md](docs/env-names.md).
+  Reading rule: the new name first; when it is unset the old name, with one deprecation
+  warning per process that names the new one (a quiet hook writes it to its log). An
+  empty value counts as set. Old and new name (or the three names of the chat URL and
+  of the bot token) set to different values refuse the start and name both, never a
+  secret's value. Values the bus writes for itself (session and endpoint files, the
+  sandbox's environment) go under both names. The release after this one removes the
+  fallbacks and then refuses to start when an old name is set without its new one, so
+  rename yours now. The `Needs:` grammar accepts `CB_*` names; but since a host before
+  this release drops a line with one, this release's `Needs:` line and the removal
+  release's name no `CB_*` name.
 - **The login service and `authd` read their settings under `CB_` names**
   (#169, [docs/env-names.md](docs/env-names.md)). Every `AUTH_X` becomes
   `CB_AUTH_X` and every `AUTHD_X` becomes `CB_AUTHD_X`; the three Mattermost
@@ -23,6 +44,116 @@ before 0.5.0 are described in the git history.
   From the removal release on an old name without its new name refuses the
   start. Error messages, `authd dir -h`, `services/auth/README.md` and
   `nats-server.example.conf` name the new names.
+
+### Added
+
+- **The console's unattended metrics page** (#158, needs #162): with both
+  `CONSOLE_METRICS_NKEY_SEED_FILE` (the seed of a read-only nkey of the
+  NATS configuration, its two consumers `console-metrics_presence` and
+  `console-metrics_stats` — made by the login service at its start,
+  `CB_AUTH_CONSOLE_METRICS`, default off) and `CONSOLE_METRICS_TOKEN_FILE` (the
+  Bearer scrape token), the unattended page serves without a session, on a
+  listener of its own (`CONSOLE_METRICS_LISTEN_ADDR`, loopback by default — the
+  owner's ask): aggregates only
+  — agents by state and harness, the open asks, the tokens by category — no
+  name, owner or home among the labels. The token and the seed are both or
+  neither; the console keeps its operator-login page beside it. The account's publish is denied outright and it holds no JetStream right
+  (pinned in the example-conf test); an invalid or refused nkey ends the
+  reading with a warning, an unreachable one reconnects with backoff, and
+  the consumers age out after five minutes without the console listening
+  — the login service re-ensures them hourly, so a console that restarts
+  gets the seven days again. The seed file is refused when open to group or world (a Kubernetes secret needs `defaultMode: 0400` and the console's uid)
+- **The console serves `/metrics`** (#158, part of): the Prometheus text
+  format behind the operator's login, the same right `/v1/stats` needs —
+  **never scrape with the session cookie**, it is that operator's whole
+  console; the unattended variant (a loopback listener with a scrape
+  token and a read-only service account on the STATS stream) follows as
+  its own pull request with the owner's go. The console's own observations
+  — requests by bounded route buckets, open streams, the readers'
+  connection states, connects, credential renewals and failures, the
+  records the strict decoders refused — are counted process-wide at the
+  event, so no session's end resets a series; the agent numbers of that
+  session's own reading (agents by state and harness, the open asks it
+  sees, the tokens by category per version and harness over 7 days — the
+  same numbers the Reports/Stats tab shows) are served only while that
+  reading is live. Every metric family carries the `choirbus_` prefix; no
+  agent name, owner, home or session id is ever a label, only the newest
+  8 versions keep their own label and n/a leaves a series out instead of
+  a 0 (RT-6.43 step 10).
+
+- **The central bridge reads its settings under `CB_` names** (#169,
+  [docs/env-names.md](docs/env-names.md#the-bridge-19)). Each `BRIDGE_X`
+  becomes `CB_BRIDGE_X` (`CB_BRIDGE_NATS_URL`, `CB_BRIDGE_NATS_SEED_FILE`,
+  `CB_BRIDGE_CA_FILE`, `CB_BRIDGE_MM_URL`, `CB_BRIDGE_MM_ALLOW_HTTP`,
+  `CB_BRIDGE_MM_TOKEN_FILE`, `CB_BRIDGE_MM_TEAM`, `CB_BRIDGE_HOMES`,
+  `CB_BRIDGE_PROPS_PREFIX`, `CB_BRIDGE_KV_BUCKET`, `CB_BRIDGE_SEEN_BUCKET`,
+  `CB_BRIDGE_STREAM`, `CB_BRIDGE_BUS_PREFIX`, `CB_BRIDGE_DELIVER`,
+  `CB_BRIDGE_INBOX`, `CB_BRIDGE_LISTEN_ADDR`,
+  `CB_BRIDGE_MM_ADMIN_TOKEN_FILE`), and the two Mattermost settings of the
+  agents' own bots get an `MM`: `BRIDGE_BOT_PREFIX` becomes
+  `CB_BRIDGE_MM_BOT_PREFIX`, `BRIDGE_HIDE_BOT_DM` becomes
+  `CB_BRIDGE_MM_HIDE_BOT_DM`. The old names still work in this release:
+  with the new name unset the bridge reads the old one and logs one
+  deprecation warning naming the new name; both set to the same value pass
+  with a warning that the old one can go; both set to different values
+  refuse the start, naming both (never a value). An empty value counts as
+  set. A value that is exactly an unexpanded `${NAME}` refuses the start,
+  naming the variable: the bridge has no plugin manifest that would expand
+  it, and read as unset it would silently drop a setting such as a pinned
+  CA file. The release after this one refuses an old name set without its new
+  name; rename the deployment's settings before it.
+
+### Changed
+
+- **The operator console wears the agreed design** (ADR-015 points 3 and 6):
+  the website's Choirbus brand (Inter, the logo's navy, orange asks, blue
+  tasks, green done), a top bar instead of the sidebar, light with a dark
+  mode that follows the system until the top bar's toggle picks one. The
+  agents list is the home and replaces the Kanban: the open asks on top,
+  then one compact row per agent with a search and a status filter. An
+  agent's or an ask's detail is a page of its own; a new Overview counts
+  agents and asks from the live data; the graph takes the same colors in
+  both themes. Same API, data and access rules.
+- **The console names its build** (#182): the footer shows the release
+  version and short commit, written at image build and served in
+  `/v1/me`'s `build`; `/metrics` adds
+  `choirbus_console_build_info{version,revision} 1`; the image carries the
+  OCI labels `org.opencontainers.image.version` and `.revision`.
+  `index.html` and the app's fallback answer `Cache-Control: no-cache`, the
+  hashed files under `/assets/` `public, max-age=31536000, immutable`.
+
+### Fixed
+
+- **The operator console's logout works in a browser again** (RT-6.43
+  step 9). The pages sent `Referrer-Policy: no-referrer`, under which a
+  browser sends `Origin: null` with the sidebar's same-origin logout POST,
+  and the server refused it as a cross-site logout: every logout from the
+  browser failed with 403. The pages now send `Referrer-Policy:
+  same-origin`, which still sends no referrer to another site; the API
+  answers and the logout's redirect to Keycloak keep `no-referrer`, and
+  `Origin: null` is still refused. A console tab opened before the update
+  keeps the old policy until it is reloaded.
+
+### Changed
+
+- **The OpenCode plugin and the pi extension read the `CB_` names** (#169,
+  release 0.103.0). Their own settings — the workspace (`CB_WORKSPACE`), the
+  channel flag (`CB_CHANNEL_PUSH`), the checkout (`CB_AGENT_BUS_ROOT`) and, in a
+  corral session, the relay's endpoint and key (`CB_BUS_ENDPOINT`, `CB_BUS_KEY`,
+  `CB_BUS_MCP_ENDPOINT`) — are read by the rule of
+  [docs/env-names.md](docs/env-names.md): the new name first, the old `MM_` one
+  for this release with one deprecation warning per process, an empty value
+  counting as set, and two names with different values a conflict the plugin
+  reports once and then behaves as without a bus (a conflicting checkout falls
+  back to the plugin's own). The server entry they write
+  carries `CB_WORKSPACE` and `CB_CHANNEL_PUSH` beside the old names, so a server
+  of the previous release reads the old ones (a user's own `environment` that
+  names one spelling is copied to the other, so the server never sees a
+  disagreement); the endpoint file's keys are taken by either spelling, the last
+  line winning. An operator who already uses the `CB_` names
+  sees no difference, and the old ones keep working until the release that
+  removes the fallbacks.
+
 
 - **The console's settings read their `CB_CONSOLE_…` names** (#169's console
   round, [docs/env-names.md](docs/env-names.md)): the new name first, else
@@ -58,40 +189,6 @@ Needs: MM_BRIDGE_BOT kept on every host, and this release on all hosts before th
   post logout redirect URIs").
 
 ### Added
-
-- **The console's unattended metrics page** (#158, needs #162): with both
-  `CONSOLE_METRICS_NKEY_SEED_FILE` (the seed of a read-only nkey of the
-  NATS configuration, its two consumers `console-metrics_presence` and
-  `console-metrics_stats` — made by the login service at its start,
-  `CB_AUTH_CONSOLE_METRICS`, default off) and `CONSOLE_METRICS_TOKEN_FILE` (the
-  Bearer scrape token), the unattended page serves without a session, on a
-  listener of its own (`CONSOLE_METRICS_LISTEN_ADDR`, loopback by default — the
-  owner's ask): aggregates only
-  — agents by state and harness, the open asks, the tokens by category — no
-  name, owner or home among the labels. The token and the seed are both or
-  neither; the console keeps its operator-login page beside it. The account's publish is denied outright and it holds no JetStream right
-  (pinned in the example-conf test); an invalid or refused nkey ends the
-  reading with a warning, an unreachable one reconnects with backoff, and
-  the consumers age out after five minutes without the console listening
-  — the login service re-ensures them hourly, so a console that restarts
-  gets the seven days again. The seed file is refused when group- or world-readable (0600, or `defaultMode: 0400` under Kubernetes).
-- **The console serves `/metrics`** (#158, part of): the Prometheus text
-  format behind the operator's login, the same right `/v1/stats` needs —
-  **never scrape with the session cookie**, it is that operator's whole
-  console; the unattended variant (a loopback listener with a scrape
-  token and a read-only service account on the STATS stream) follows as
-  its own pull request with the owner's go. The console's own observations
-  — requests by bounded route buckets, open streams, the readers'
-  connection states, connects, credential renewals and failures, the
-  records the strict decoders refused — are counted process-wide at the
-  event, so no session's end resets a series; the agent numbers of that
-  session's own reading (agents by state and harness, the open asks it
-  sees, the tokens by category per version and harness over 7 days — the
-  same numbers the Reports/Stats tab shows) are served only while that
-  reading is live. Every metric family carries the `choirbus_` prefix; no
-  agent name, owner, home or session id is ever a label, only the newest
-  8 versions keep their own label and n/a leaves a series out instead of
-  a 0 (RT-6.43 step 10).
 
 - **A check holds `docs/env-names.md` to the code** (#169, the mapping's guard).
   `scripts/doc-check.py` reads the page and the tree: CI fails when the code

@@ -22,6 +22,7 @@ from mattermost_ai_agent_bus.natsbus import (OpenAsk, PresenceCard, agent_name,
                                              encode_ask_record, encode_presence)
 
 from console_server import config, telemetry
+from console_server.build import Build
 from console_server.app import Console
 from console_server.nats_read import View
 from console_server.telemetry import route_bucket
@@ -36,7 +37,8 @@ LOGIN_ON = config.Settings(public_url="http://127.0.0.1:8747",
                            login_off=False, nats_url="")
 
 SERIES = re.compile(r"^([a-zA-Z_:][a-zA-Z0-9_:]*)(\{.*\})? (-?[0-9]+(?:\.[0-9]+)?)$")
-CONSOLE_FAMILIES = ("choirbus_console_http_requests_total",
+CONSOLE_FAMILIES = ("choirbus_console_build_info",
+                    "choirbus_console_http_requests_total",
                     "choirbus_console_sessions_open",
                     "choirbus_console_sse_streams_open",
                     "choirbus_console_bus_readers",
@@ -269,3 +271,18 @@ def test_the_counters_start_at_zero_and_the_version_cap_holds() -> None:
                for k in series if k.startswith("choirbus_bus_tokens_eq")}
     # the newest MAX_VERSIONS keep their label, the two oldest count as other
     assert "other" in versions and len(versions) == telemetry.MAX_VERSIONS + 1
+
+
+def test_build_info_series() -> None:
+    """#182: one series, 1, labelled only with version and revision."""
+    view = View("presence", "stats")
+    tel = telemetry.Telemetry()
+    text = telemetry.render(tel, 0, 0, [], view)
+    _f, series = page(text)
+    assert series['choirbus_console_build_info{version="unknown",revision="unknown"}'] == 1.0
+    tel.build = Build(version="0.102.0", revision="abc1234")
+    text = telemetry.render(tel, 0, 0, [], view)
+    _f, series = page(text)
+    assert series['choirbus_console_build_info{version="0.102.0",revision="abc1234"}'] == 1.0
+    assert [k for k in series if k.startswith("choirbus_console_build_info")] == [
+        'choirbus_console_build_info{version="0.102.0",revision="abc1234"}']

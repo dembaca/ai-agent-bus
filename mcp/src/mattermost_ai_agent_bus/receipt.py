@@ -18,7 +18,7 @@ own trust: a post it would gate starts nothing, RT-6.16) watches it, but only
 when the holder's status shows the receipt marker (lease.RECEIPT_MARK; decided
 2026-11-12: an older plugin's holder is judged as before). It hears the
 holder's reaction on its WebSocket; without one it reads the reactions after
-MM_ACK_WAIT_SEC and once more SECOND_LOOK_SEC later. Still neither 👀 nor ⏳:
+CB_ACK_WAIT_SEC and once more SECOND_LOOK_SEC later. Still neither 👀 nor ⏳:
 the holder's server or its WebSocket is gone, or its session takes nothing up,
 and this agent claims at its slot after the wait (lease.take_over), the oldest
 that stands first, then posts crown_taken.

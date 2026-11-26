@@ -11,6 +11,7 @@ from __future__ import annotations
 
 import asyncio
 import base64
+import dataclasses
 import json
 import time
 
@@ -147,10 +148,14 @@ async def test_static_web_and_no_traversal(console: Console) -> None:
         (root / "assets").mkdir()
         (root / "assets" / "app.js").write_text("console.log(1)")
         object.__setattr__(console.settings, "web_dir", str(root))
-        status, _h, body = await get(console, "/")
+        status, h, body = await get(console, "/")
         assert status == 200 and b"Choirbus" in body
-        status, _h, body = await get(console, "/assets/app.js")
+        # the page's own logout POST must carry its Origin: no-referrer
+        # would make the browser send `Origin: null` (RT-6.43 step 9)
+        assert h.get("referrer-policy") == "same-origin"
+        status, h, body = await get(console, "/assets/app.js")
         assert status == 200 and body == b"console.log(1)"
+        assert h.get("referrer-policy") == "same-origin"
         # ..%2f stays outside the built app: no traversal, the app again
         status, _h, body = await get(console, "/%2e%2e/etc/passwd")
         assert status in (404, 200)
@@ -392,11 +397,20 @@ async def test_a_cross_site_page_cannot_log_the_operator_out() -> None:
         status, headers, _b = await get(c, "/logout", cookie=cookie)
         assert status == 405 and headers.get("allow") == "POST"
         assert c.sessions.get(token) is not None
-        # the console's own origin (or none, a typed address bar) is fine;
-        # a realm without an end-session endpoint: a page that starts no
-        # login (/login would come straight back in through the open SSO)
+        # an opaque origin (a sandboxed frame, a page under no-referrer)
+        # proves nothing: still refused
+        status, _h, _b = await get(c, "/logout", cookie=cookie, origin="null",
+                                   sec_fetch_site="same-origin", method="POST")
+        assert status == 403
+        assert c.sessions.get(token) is not None
+        # the console's own origin (or none, a typed address bar) is fine:
+        # what a browser sends for the top bar's form under the pages'
+        # same-origin policy; a realm without an end-session endpoint: a
+        # page that starts no login (/login would come straight back in
+        # through the open SSO)
         status, headers, body = await get(c, "/logout", cookie=cookie,
-                                          origin="http://127.0.0.1:8747", method="POST")
+                                          origin="http://127.0.0.1:8747",
+                                          sec_fetch_site="same-origin", method="POST")
         assert status == 200 and "location" not in headers
         assert b"Keycloak session is still open" in body
         assert c.sessions.get(token) is None
@@ -621,5 +635,65 @@ async def test_a_logout_before_discovery_ends_the_console_session() -> None:
         assert b"Keycloak session is still open" in body
         assert headers.get("cache-control") == "no-store"
         assert c.sessions.get(token) is None
+    finally:
+        await c.stop()
+
+
+async def test_cache_headers_of_the_static_files(console: Console, tmp_path) -> None:
+    (tmp_path / "index.html").write_text("<html>Choirbus</html>")
+    (tmp_path / "favicon.svg").write_text("<svg/>")
+    (tmp_path / "assets").mkdir()
+    (tmp_path / "assets" / "app.js").write_text("console.log(1)")
+    object.__setattr__(console.settings, "web_dir", str(tmp_path))
+    hashed = "public, max-age=31536000, immutable"
+    for path, want in (("/", "no-cache"), ("/assets/app.js", hashed),
+                       ("/assets/missing.js", "no-cache"),
+                       ("/favicon.svg", "no-cache")):
+        status, headers, _body = await get(console, path)
+        assert status == 200
+        assert headers["cache-control"] == want, path
+
+
+async def test_build_json_is_never_served(console: Console, tmp_path) -> None:
+    """#182: build.json sits beside index.html and is shown only through
+    /v1/me and /metrics, behind the login — never as a file, not by a
+    path that climbs out of assets/."""
+    (tmp_path / "index.html").write_text("<html>Choirbus</html>")
+    (tmp_path / "build.json").write_text('{"version": "9.9.9", "revision": "abcdef1"}')
+    (tmp_path / "assets").mkdir()
+    (tmp_path / "assets" / "app.js").write_text("console.log(1)")
+    object.__setattr__(console.settings, "web_dir", str(tmp_path))
+    for path in ("/build.json", "/assets/../build.json", "/assets/../index.html",
+                 "/assets/%2e%2e/build.json"):
+        status, headers, body = await get(console, path)
+        assert b"9.9.9" not in body and b"abcdef1" not in body, path
+        assert "immutable" not in str(headers.get("cache-control")), path
+        assert status in (200, 404), path
+        if status == 200:
+            assert body == b"<html>Choirbus</html>", path
+
+
+async def test_me_carries_the_build(tmp_path) -> None:
+    for web_dir, want in (("", {"version": None, "revision": None}),
+                          (str(tmp_path), {"version": None, "revision": None})):
+        c = Console(dataclasses.replace(SETTINGS, web_dir=web_dir))
+        await c.start()
+        try:
+            status, _h, body = await get(c, "/v1/me")
+            assert status == 200 and json.loads(body)["build"] == want
+        finally:
+            await c.stop()
+    (tmp_path / "build.json").write_text(
+        json.dumps({"version": "0.102.0", "revision": "abc1234"}))
+    c = Console(dataclasses.replace(SETTINGS, web_dir=str(tmp_path)))
+    await c.start()
+    try:
+        _s, _h, body = await get(c, "/v1/me")
+        assert json.loads(body)["build"] == {"version": "0.102.0",
+                                             "revision": "abc1234"}
+        (tmp_path / "build.json").write_text(
+            json.dumps({"version": "0.102.0", "revision": "not-hex!"}))
+        assert Console(dataclasses.replace(
+            SETTINGS, web_dir=str(tmp_path))).build.revision is None
     finally:
         await c.stop()

@@ -90,7 +90,7 @@ def test_the_bot_token_never_shows_in_curls_argv(mm, run, tmp_path):
     path, log = _curl_shim(tmp_path)
     script = tmp_path / "api.sh"
     script.write_text(f'source "{ROOT}/bin/mm-agent-lib.sh"\n'
-                      'mm_api GET /api/v4/users/me; echo "status=$MM_API_STATUS"\n')
+                      'mm_api GET /api/v4/users/me; echo "status=$CB_MM_API_STATUS"\n')
     r = run(str(script), PATH=path)
     assert "status=200" in r.stdout   # the header got through
     r = run("bin/mm-agent-post.sh", CHANNEL, "hello", PATH=path)

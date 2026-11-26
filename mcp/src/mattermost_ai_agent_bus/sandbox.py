@@ -11,8 +11,9 @@ from .config import env
 # into the sandbox. CORRAL_SANDBOX is corral's own, the others its preStart
 # contribution. Not CORRAL_SESSION_ID: corral's host hooks have it as well.
 # Defense in depth only: an agent that clears them gets past it; the real
-# boundary is a sandbox that cannot read the registration secret.
-SANDBOX_MARKERS = ("CORRAL_SANDBOX", "MM_BUS_MCP_ENDPOINT", "MM_BUS_ENDPOINT")
+# boundary is a sandbox that cannot read the registration secret. Read
+# through config.env, which takes the old MM_ name of each as well.
+SANDBOX_MARKERS = ("CORRAL_SANDBOX", "CB_BUS_MCP_ENDPOINT", "CB_BUS_ENDPOINT")
 
 
 def corral_sandbox() -> str:

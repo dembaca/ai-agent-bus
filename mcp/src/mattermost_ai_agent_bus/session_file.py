@@ -3,7 +3,7 @@
 session_start writes it (0600), session_end removes it; the server's exit
 touches it, and the next server of the same Claude Code session takes the bot
 over from it (RT-6.10). It lives next to the corral session files, so
-``mm-agent-sweep.sh`` sees it too: it records MM_SESSION_PID, which the sweep
+``mm-agent-sweep.sh`` sees it too: it records CB_SESSION_PID, which the sweep
 uses to tell a live session from an abandoned one. No shell reads its token:
 hooks and scripts ask the server's hook API (RT-6.17), whose endpoint file is
 keyed the same way (keyed_path).
@@ -33,13 +33,15 @@ from dataclasses import dataclass
 from pathlib import Path
 from urllib.parse import unquote, urlsplit
 
+from . import config
+
 DEFAULT_AGENT_PREFIX = "agent-"
 
 
 def agent_prefix(values: Mapping[str, str] | None = None) -> str:
     """The registrar's bot username prefix (its BOT_USERNAME_PREFIX, arc42 §7.1).
 
-    MM_AGENT_PREFIX when set; else MM_BOT_USERNAME minus the name it was
+    MM_AGENT_PREFIX when set; else CB_MM_BOT_USERNAME minus the name it was
     registered with (MM_REG_BOT_NAME); else "agent-". ``values`` is the
     environment by default, or a session file's keys. Must match
     mm_agent_prefix in bin/mm-agent-lib.sh.
@@ -47,7 +49,8 @@ def agent_prefix(values: Mapping[str, str] | None = None) -> str:
     v = os.environ if values is None else values
     if v.get("MM_AGENT_PREFIX"):
         return v["MM_AGENT_PREFIX"]
-    user, name = v.get("MM_BOT_USERNAME", ""), v.get("MM_REG_BOT_NAME", "")
+    user = config.lookup("CB_MM_BOT_USERNAME", v, quiet=values is not None) or ""
+    name = v.get("MM_REG_BOT_NAME", "")
     if name and len(user) > len(name) and user.endswith(name):
         return user[: -len(name)]
     return DEFAULT_AGENT_PREFIX
@@ -67,7 +70,7 @@ class SessionInfo:
     def prefix(self) -> str:
         """The registrar's username prefix, learned from this registration."""
         return agent_prefix(
-            {"MM_BOT_USERNAME": self.username, "MM_REG_BOT_NAME": self.name})
+            {"CB_MM_BOT_USERNAME": self.username, "MM_REG_BOT_NAME": self.name})
 
 
 # The state directory the host process chose for its session (RT-6.18): set,
@@ -180,12 +183,13 @@ def host_state_dir() -> Path:
 # The workspace the client named in roots/list, when the environment names none.
 _roots_dir: str | None = None
 # Where the workspace may come from, before roots and cwd (RT-6.17 step 2).
-WORKSPACE_VARS = ("CLAUDE_PROJECT_DIR", "MM_WORKSPACE")
+# Read through config.env, which takes MM_WORKSPACE for CB_WORKSPACE (docs/env-names.md).
+WORKSPACE_VARS = ("CLAUDE_PROJECT_DIR", "CB_WORKSPACE")
 
 
 def workspace() -> tuple[str, str]:
     """The directory a session without a session id is keyed on, and its source:
-    CLAUDE_PROJECT_DIR, MM_WORKSPACE (Cursor: ``${workspaceFolder}``), the
+    CLAUDE_PROJECT_DIR, CB_WORKSPACE (Cursor: ``${workspaceFolder}``), the
     first file:// root the client named (roots), else the server's working
     directory (cwd; OpenCode starts its servers there). Resolved, so a shell
     that walks up from its real directory meets the same name. Must match
@@ -195,7 +199,7 @@ def workspace() -> tuple[str, str]:
         # never resolved, opened or entered on the host (RT-6.18).
         return os.path.normpath(os.environ.get("CLAUDE_PROJECT_DIR") or "/"), "hosted"
     for var in WORKSPACE_VARS:
-        value = os.environ.get(var, "").strip()
+        value = config.env(var).strip()
         if value:
             return os.path.realpath(value), var
     if _roots_dir:
@@ -320,25 +324,29 @@ def session_file_path() -> Path:
 
 def write(info: SessionInfo, team: str, channel: str, project: str = "") -> Path:
     """Write the session file, 0600 in a 0700 directory. Returns its path.
-    project: MM_PROJECT_CHANNEL, the home first, then the guests (RT-6.22)."""
+    project: CB_MM_PROJECT_CHANNEL, the home first, then the guests (RT-6.22)."""
     path = session_file_path()
     path.parent.mkdir(parents=True, exist_ok=True, mode=0o700)
+    # Each renamed key under all its names, the alias keys MATTERMOST_URL and
+    # MATTERMOST_TOKEN included: a hook or server of the version before reads
+    # the old ones (docs/env-names.md). The registrar's keys keep theirs.
+    def both(name: str, value: str) -> list[str]:
+        return [f"{k}={v}" for k, v in config.both(name, value).items()]
+
     lines = [
         "# ephemeral session — do not commit",
-        f"MM_CHAT_URL={info.url}",
-        f"MATTERMOST_URL={info.url}",
+        *both("CB_MM_CHAT_URL", info.url),
         f"MM_REG_BOT_NAME={info.name}",
-        f"MM_BOT_USERNAME={info.username}",
+        *both("CB_MM_BOT_USERNAME", info.username),
         f"MM_AGENT_PREFIX={info.prefix}",
-        f"MM_BOT_USER_ID={info.user_id}",
-        f"MM_BOT_TOKEN={info.bot_token}",
-        f"MATTERMOST_TOKEN={info.bot_token}",
-        f"MM_TEAM={team}",
-        f"MM_CHANNEL={channel}",
-        *([f"MM_PROJECT_CHANNEL={project}"] if project else []),
+        *both("CB_MM_BOT_USER_ID", info.user_id),
+        *both("CB_MM_BOT_TOKEN", info.bot_token),
+        *both("CB_MM_TEAM", team),
+        *both("CB_MM_CHANNEL", channel),
+        *(both("CB_MM_PROJECT_CHANNEL", project) if project else []),
         # The registrar's signed owner claim (RT-6.24): not secret, kept for adopt.
         *([f"MM_BOT_ATTESTATION={info.attestation}"] if info.attestation else []),
-        f"MM_SESSION_PID={os.getppid()}",
+        *both("CB_SESSION_PID", str(os.getppid())),
     ]
     fd = os.open(path, os.O_WRONLY | os.O_CREAT | os.O_TRUNC, 0o600)
     with os.fdopen(fd, "w") as fh:
@@ -347,7 +355,7 @@ def write(info: SessionInfo, team: str, channel: str, project: str = "") -> Path
 
 
 def parse(path: Path) -> dict[str, str]:
-    """KEY=value lines of a session file; {} when unreadable."""
+    """KEY=value lines of a session file, in the order of their last lines; {} when unreadable."""
     try:
         text = path.read_text()
     except OSError:
@@ -356,6 +364,7 @@ def parse(path: Path) -> dict[str, str]:
     for line in text.splitlines():
         if "=" in line and not line.startswith("#"):
             k, v = line.split("=", 1)
+            out.pop(k, None)  # a key sits at its last line: config.value takes the last spelling
             out[k] = v
     return out
 
@@ -376,13 +385,13 @@ def _pid_alive(pid: str) -> bool:
 # mark (epoch s) to its workspace's file and keeps the bot: the next server of
 # that workspace takes it over within the grace period (RT-6.10 step 7). Only
 # an ended server writes it, so a server still running there keeps its bot.
-ENDED = "MM_SERVER_ENDED"
+ENDED = "CB_SERVER_ENDED"
 
 
 def keep_sec() -> float:
-    """The grace period of a kept bot: MM_SESSION_KEEP_SEC, default 24 h."""
+    """The grace period of a kept bot: CB_SESSION_KEEP_SEC, default 24 h."""
     try:
-        return float(os.environ.get("MM_SESSION_KEEP_SEC") or 86400)
+        return float(config.env("CB_SESSION_KEEP_SEC") or 86400)
     except ValueError:
         return 86400.0
 
@@ -395,8 +404,8 @@ def keyed_on_workspace() -> bool:
 
 def ended_at(data: Mapping[str, str]) -> float | None:
     try:
-        return float(data[ENDED])
-    except (KeyError, ValueError):
+        return float(config.value(data, ENDED) or "")
+    except ValueError:
         return None
 
 
@@ -404,10 +413,10 @@ def mark_ended(token: str) -> bool:
     """Keep the bot for the workspace's next server (RT-6.10 step 7): only
     when the file still holds this server's bot."""
     path = session_file_path()
-    if not token or parse(path).get("MM_BOT_TOKEN") != token:
+    if not token or config.value(parse(path), "CB_MM_BOT_TOKEN") != token:
         return False
     try:
-        append_private(path, f"{ENDED}={int(time.time())}\n")
+        append_private(path, "".join(f"{k}={v}\n" for k, v in config.both(ENDED, str(int(time.time()))).items()))
     except OSError:
         return False
     return True
@@ -441,7 +450,7 @@ def read() -> dict[str, str]:
         data = _claim_ended(session_file_path())
     else:
         return {}
-    return data if data.get("MM_BOT_TOKEN") and data.get("MM_REG_BOT_NAME") else {}
+    return data if config.value(data, "CB_MM_BOT_TOKEN") and data.get("MM_REG_BOT_NAME") else {}
 
 
 def touch() -> None:

@@ -17,16 +17,16 @@
 set -uo pipefail
 
 # shellcheck source=../bin/mm-agent-lib.sh
-source "$(cd "$(dirname "$0")/../bin" && pwd)/mm-agent-lib.sh"
+CB_ENV_QUIET=1 CB_ENV_DEFER=1 source "$(cd "$(dirname "$0")/../bin" && pwd)/mm-agent-lib.sh"
 mm_read_hook_input            # drains the payload; only its session id is used
+[[ -z "$CB_ENV_ERR" ]] || exit 0   # names that differ (#169): logged, the hook stays out
 
 # The hook has 10 s (hooks.json); its two calls to the server share 8.
-MM_BUS_DEADLINE=$(( $(date +%s) + 8 ))
-export MM_BUS_DEADLINE
+mm_env_set CB_BUS_DEADLINE MM_BUS_DEADLINE "$(( $(date +%s) + 8 ))"
 mm_bus_me || exit 0           # the bot's id, for the stats line
 mm_bus GET '/v1/handoff?runtime=claude-code' || exit 0
 
-context="$(jq -r '.context // empty | strings' <<<"$MM_BUS_BODY" 2>/dev/null)" || exit 0
+context="$(jq -r '.context // empty | strings' <<<"$CB_BUS_BODY" 2>/dev/null)" || exit 0
 [[ -n "$context" ]] || exit 0
 
 mm_stat compact chars="${#context}"

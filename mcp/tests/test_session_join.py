@@ -9,7 +9,7 @@ from pathlib import Path
 import httpx
 import pytest
 
-from mattermost_ai_agent_bus import ownpost, session_file
+from mattermost_ai_agent_bus import config, ownpost, session_file
 from mattermost_ai_agent_bus.client import MattermostAdapter, SessionInfo, post_of, unique_name
 
 REPO = Path(__file__).resolve().parents[2]
@@ -410,8 +410,10 @@ def _restart(monkeypatch, *, ended_ago=0.0, workspace=None):
     assert c.shutdown_sync() == "kept proj-ab12cd34 for the workspace's next server"
     assert not any(m == "DELETE" for m, _ in seen)
     if ended_ago:
-        text = path.read_text().replace(f"{session_file.ENDED}=", "OLD=")
-        path.write_text(text + f"{session_file.ENDED}={int(time.time() - ended_ago)}\n")
+        text = path.read_text()
+        for key in config.spellings(session_file.ENDED):  # written under both names
+            text = text.replace(f"{key}=", "OLD=") + f"{key}={int(time.time() - ended_ago)}\n"
+        path.write_text(text)
     if workspace is not None:
         monkeypatch.setenv("CLAUDE_PROJECT_DIR", str(workspace))
     return path

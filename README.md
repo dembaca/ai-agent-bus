@@ -40,7 +40,7 @@ describes, then point `MM_REGISTER_URL` at its `…/register/v1/agents`. How the
 bus uses the owner: [ADR-003](docs/arc42/09-architecture-decisions.md#adr-003-the-owner-comes-from-the-registrar-bound-bot-description).
 
 **Without a registrar** every bot has to exist beforehand: you create each one
-by hand and hand it its token as `MM_BOT_TOKEN` (the session then counts as
+by hand and hand it its token as `CB_MM_BOT_TOKEN` (the session then counts as
 managed elsewhere, so nothing registers or unregisters), or you give agents an
 admin token to create bots themselves, which is what the registrar avoids.
 Either way you lose per-session bots, the cleanup at session end and the
@@ -85,10 +85,10 @@ The MCP server is required in every runtime: the shell scripts an agent runs
 no token ([arc42 §6.17](docs/arc42/06-runtime-view.md#617-turn-hooks-ask-the-mcp-server)).
 There is no shell-only agent mode since 0.40.0.
 
-The skill keys off `MM_BUS_MCP_ENDPOINT` or `MM_BOT_TOKEN`: when either is already set,
+The skill keys off `CB_BUS_MCP_ENDPOINT` or `CB_MM_BOT_TOKEN`: when either is already set,
 a session exists and the agent must not start or stop one.
 
-Host hooks register a bot only for sessions with `MM_PROJECT_CHANNEL` set (then
+Host hooks register a bot only for sessions with `CB_MM_PROJECT_CHANNEL` set (then
 always), or with `MM_REGISTER=always`; a quick question elsewhere stays off the bus.
 **Which terminal is which agent?** `bin/mm-agent-statusline.sh` prints the
 session's bot name (`👑 @agent-…` while it coordinates) for Claude Code's
@@ -113,15 +113,15 @@ the end of a turn with its listen window [RT-6.2](docs/arc42/06-runtime-view.md#
 
 ## Channels
 
-`MM_CHANNEL` is the registrar's default channel — the bot is already a member and stays
-addressable there. `MM_PROJECT_CHANNEL` is optional, a comma-separated list: its first
+`CB_MM_CHANNEL` is the registrar's default channel — the bot is already a member and stays
+addressable there. `CB_MM_PROJECT_CHANNEL` is optional, a comma-separated list: its first
 entry is the agent's **home**, where posts go by default and its tasks, crown and sign-off
-live; without it the home is `MM_CHANNEL`. Further entries and every other channel the
-bot is in are **guest channels**, and `MM_CHANNEL` is the **lobby** when it is not the
+live; without it the home is `CB_MM_CHANNEL`. Further entries and every other channel the
+bot is in are **guest channels**, and `CB_MM_CHANNEL` is the **lobby** when it is not the
 home: the agent talks there (`post_message(channel=…)`, `mm-agent-post.sh --channel`), but
 is woken only when addressed — [RT-6.22](docs/arc42/06-runtime-view.md#622-guest-channels).
 The channels must already exist; **this repo never creates channels or teams**. Both the CLI (`mm-agent-channels.sh`) and the MCP
-`session_start` join the project channel; the registrar only covers `MM_CHANNEL`.
+`session_start` join the project channel; the registrar only covers `CB_MM_CHANNEL`.
 
 ## Quick start
 
@@ -139,7 +139,7 @@ through that server:
 ```bash
 cd mcp
 uv sync
-export MM_CHAT_URL=… MM_REGISTER_URL=… MM_REG_SECRET=… MM_TEAM=… MM_CHANNEL=…
+export CB_MM_CHAT_URL=… MM_REGISTER_URL=… MM_REG_SECRET=… CB_MM_TEAM=… CB_MM_CHANNEL=…
 uv run mattermost-ai-agent-bus-mcp
 ```
 
@@ -159,41 +159,48 @@ cd mcp && uv sync && uv run pytest -q
 `bash` ≥ 4, `curl`, `jq` (all `bin/*.sh`) and `uv` (the MCP server). Without root,
 static binaries in `~/.local/bin` do.
 
-The names below get the `CB_` prefix in 0.103.0 (decided, not built yet): see [docs/env-names.md](docs/env-names.md).
+The bus's own variables carry the `CB_` prefix since 0.103.0 (`CB_MM_` for the ones that
+exist only because of Mattermost); the registrar's settings (`MM_REG_SECRET`,
+`MM_REGISTER_URL`, `MM_REGISTRAR_KEYS` and the others marked below) keep their names
+until the registrar goes. The mapping of old to new names is in [docs/env-
+names.md](docs/env-names.md). In 0.103.0 an old name still works when its new name is
+unset, with one deprecation warning naming the new one; both set to different values
+refuses the start and names both. The release that removes the fallbacks refuses to
+start when an old name is set without its new name, so rename yours now.
 
 | Variable | Purpose |
 |----------|---------|
-| `MM_CHAT_URL` / `MATTERMOST_URL` | Mattermost base URL |
+| `CB_MM_CHAT_URL` | Mattermost base URL (old names `MM_CHAT_URL` and `MATTERMOST_URL`: every one set must agree) |
 | `MM_REGISTER_URL` | [Registrar](#registrar) `…/register/v1/agents` |
 | `MM_REG_SECRET` | Registration credential: an enrollment token (bound bot) or the shared secret (unbound), see [Registrar](#registrar) — in the MCP server's environment only (a reference in its config, never a literal in a committed file); absent under host-managed sessions, by design |
 | `MM_REG_SECRET_GOPASS`, `MM_REG_SECRET_CMD` | Where the registration secret comes from instead of `MM_REG_SECRET`: a gopass path (the corral host hooks; the pi extension) or, for the pi extension, any command that prints it; the pi extension hands the server only the command, which pi runs for that server alone ([adapters/pi.md](adapters/pi.md)) |
-| `MM_WORKSPACE` | The workspace an MCP server outside Claude Code is keyed on (Cursor: `${workspaceFolder}`); default: the client's MCP roots, else the server's working directory ([arc42 §6.17](docs/arc42/06-runtime-view.md#617-turn-hooks-ask-the-mcp-server)) |
-| `MM_BOT_TOKEN` / `MATTERMOST_TOKEN` | Bot token; **set ⇒ session already managed** (not in a corral session: there it stays on the host) |
-| `MM_BUS_MCP_ENDPOINT`, `MM_BUS_ENDPOINT`, `MM_BUS_KEY` | Set by corral's `preStart`: the session's MCP server on the host and its key; **set ⇒ session already managed** ([arc42 §6.18](docs/arc42/06-runtime-view.md#618-keyless-host-managed-session)) |
-| `MM_TEAM` / `MM_TEAM_ID` | Team name / resolved id |
-| `MM_CHANNEL` / `MM_CHANNEL_ID` | Default channel name / resolved id |
-| `MM_PROJECT_CHANNEL` / `MM_PROJECT_CHANNEL_ID` | Project channel name / resolved id (optional). Set ⇒ host hooks always register the session |
+| `CB_WORKSPACE` | The workspace an MCP server outside Claude Code is keyed on (Cursor: `${workspaceFolder}`); default: the client's MCP roots, else the server's working directory ([arc42 §6.17](docs/arc42/06-runtime-view.md#617-turn-hooks-ask-the-mcp-server)) |
+| `CB_MM_BOT_TOKEN` | Bot token (old names `MM_BOT_TOKEN` and `MATTERMOST_TOKEN`: every one set must agree); **set ⇒ session already managed** (not in a corral session: there it stays on the host) |
+| `CB_BUS_MCP_ENDPOINT`, `CB_BUS_ENDPOINT`, `CB_BUS_KEY` | Set by corral's `preStart`: the session's MCP server on the host and its key; **set ⇒ session already managed** ([arc42 §6.18](docs/arc42/06-runtime-view.md#618-keyless-host-managed-session)) |
+| `CB_MM_TEAM` / `CB_MM_TEAM_ID` | Team name / resolved id |
+| `CB_MM_CHANNEL` / `CB_MM_CHANNEL_ID` | Default channel name / resolved id |
+| `CB_MM_PROJECT_CHANNEL` / `CB_MM_PROJECT_CHANNEL_ID` | Project channel name / resolved id (optional). Set ⇒ host hooks always register the session |
 | `MM_REGISTER` | `always`: host hooks register even without a project channel (default: only with one) |
-| `MM_LISTEN_SEC` | Listen window after a turn in a project channel, seconds (default 5400, max 7200, `0` = off) |
-| `MM_LEASE_SEC` | How long a status lives without renewal, and how long an agent stays reachable without a sign of life outside a turn, seconds (default 900) |
-| `MM_ACK_WAIT_SEC` | How long a push may wait untaken while no turn runs before the agent counts as silent, seconds (default 45; [arc42 §6.6](docs/arc42/06-runtime-view.md#66-coordinator-crown-and-presence-lease)) |
-| `MM_HEARTBEAT_SEC` | How often the MCP server renews it, seconds (default 300) |
-| `MM_CROWN_LEASE_SEC` / `MM_CROWN_BEAT_SEC` | How long the 👑 crown lives without renewal, and how often its holder renews it, seconds (default 150 / 60; [ADR-007](docs/arc42/09-architecture-decisions.md)) |
-| `MM_RESPONSIBLE_HUMAN` | Who answers for this agent (default: the first trusted human); shown in its profile and HELLO |
-| `MM_AGENT_KIND` | `session` (default) or `autonomous` |
-| `MM_TRUSTED_HUMANS` | Usernames whose `from_trusted_human` posts may approve, comma-separated (default: nobody; host hooks also set `MM_TRUSTED_HUMAN_USER_IDS`; a 0.17-era `MM_OWNER` with one name is still read when it is unset) |
+| `CB_LISTEN_SEC` | Listen window after a turn in a project channel, seconds (default 5400, max 7200, `0` = off) |
+| `CB_LEASE_SEC` | How long a status lives without renewal, and how long an agent stays reachable without a sign of life outside a turn, seconds (default 900) |
+| `CB_ACK_WAIT_SEC` | How long a push may wait untaken while no turn runs before the agent counts as silent, seconds (default 45; [arc42 §6.6](docs/arc42/06-runtime-view.md#66-coordinator-crown-and-presence-lease)) |
+| `CB_HEARTBEAT_SEC` | How often the MCP server renews it, seconds (default 300) |
+| `CB_CROWN_LEASE_SEC` / `CB_CROWN_BEAT_SEC` | How long the 👑 crown lives without renewal, and how often its holder renews it, seconds (default 150 / 60; [ADR-007](docs/arc42/09-architecture-decisions.md)) |
+| `CB_RESPONSIBLE_HUMAN` | Who answers for this agent (default: the first trusted human); shown in its profile and HELLO |
+| `CB_AGENT_KIND` | `session` (default) or `autonomous` |
+| `CB_TRUSTED_HUMANS` | Usernames whose `from_trusted_human` posts may approve, comma-separated (default: nobody; host hooks also set `CB_MM_TRUSTED_HUMAN_USER_IDS`; a 0.17-era `CB_OWNER` with one name is still read when it is unset) |
 | `MM_REGISTRAR_KEYS` | The registrar's public keys, pinned: base64url raw Ed25519 keys, comma-separated. With them the MCP server verifies the registrar's signed owner claims and judges attested agents by them; `bin/mm-agent-registrar-keys.sh` shows the keys to compare out of band (default: none, nothing verified; [arc42 §6.24](docs/arc42/06-runtime-view.md#624-owner-attestation)) |
-| `MM_PROPS_PREFIX` | Prefix of the props keys agents may add to posts, and of the bus's system key (default `x_`); the same on every server ([arc42 §7](docs/arc42/07-deployment-view.md)) |
-| `MM_BRIDGE_BOT` | In a home over NATS: the username of the bot the central bridge mirrors the home's NATS posts and reactions into Mattermost with. The MCP server drops those copies on read, since it has the posts from NATS (default: unset, nothing dropped; [arc42 §6.36](docs/arc42/06-runtime-view.md#636-a-home-runs-over-nats)) |
+| `CB_PROPS_PREFIX` | Prefix of the props keys agents may add to posts, and of the bus's system key (default `x_`); the same on every server ([arc42 §7](docs/arc42/07-deployment-view.md)) |
+| `CB_MM_BRIDGE_BOT` | In a home over NATS: the username of the bot the central bridge mirrors the home's NATS posts and reactions into Mattermost with. The MCP server drops those copies on read, since it has the posts from NATS (default: unset, nothing dropped; [arc42 §6.36](docs/arc42/06-runtime-view.md#636-a-home-runs-over-nats)) |
 | `MM_BOT_ATTESTATION` | Set by `mm-agent-register.sh` and `session_start` from the registrar's answer: the bot's signed owner claim, for its MCP server; not secret, never shown ([arc42 §6.24](docs/arc42/06-runtime-view.md#624-owner-attestation)) |
-| `MM_STATS_CHANNEL` | Channel for the session's overhead summary (with the bus's tokens from the Claude Code transcript, turn durations, how long humans take to answer asks, what the agents settled without a human, the waiting an answer on the bus saved, the crown's time, per coding harness and role), posted by the MCP server once a day of session time and at session end (default `agents-stats`; nothing is posted if it does not exist; `off` counts nothing). Not a work channel: do not post there; the `stats_report` tool reads it (RT-6.9) |
-| `MM_TYPING_SEC` | How long a delivered mention, DM or trusted 👍/👎 on an ask (as 👑, a human's plain post) shows you as typing without an answer, seconds (default 60, `0` = off) |
-| `MM_LISTEN_COORD_SEC` | Listen window while you hold the 👑 coordinator crown, seconds (default 7200, max 7200, `0` = off) |
-| `MM_LISTEN_DIGEST_SEC` | Unaddressed posts wake a listening member (or come as one channel push) once the oldest is this old, seconds (default 1800, `0` = at once) |
-| `MM_ASK_ROUTE` | Ask mode of the agent's home until a trusted human switches it there: `direct` (default, every ask to the human) or `coordinator` (questions to the home's 👑 first; [arc42 §6.25](docs/arc42/06-runtime-view.md#625-ask-routing-modes)) |
-| `MM_ASK_ROUTE_WAIT_MIN` | How long a question waits for the 👑 before the asking agent's server asks the human, minutes (default 15) |
-| `MM_LISTEN_POLL_SEC` | How often the background listener (`bin/`) checks the bus, seconds (default 15); the OpenCode plugin and the pi extension hold a long poll instead (ADR-009) |
-| `MM_CHANNEL_PUSH` | Override for channel mode ([RT-6.12](docs/arc42/06-runtime-view.md#612-messages-pushed-into-the-session-channel)): `1` on, `0` off, for Claude Code only (another MCP client never gets channel mode). Unset, the MCP server looks at Claude Code's command line for the channel flag, see below |
+| `CB_MM_STATS_CHANNEL` | Channel for the session's overhead summary (with the bus's tokens from the Claude Code transcript, turn durations, how long humans take to answer asks, what the agents settled without a human, the waiting an answer on the bus saved, the crown's time, per coding harness and role), posted by the MCP server once a day of session time and at session end (default `agents-stats`; nothing is posted if it does not exist; `off` counts nothing). Not a work channel: do not post there; the `stats_report` tool reads it (RT-6.9) |
+| `CB_MM_TYPING_SEC` | How long a delivered mention, DM or trusted 👍/👎 on an ask (as 👑, a human's plain post) shows you as typing without an answer, seconds (default 60, `0` = off) |
+| `CB_LISTEN_COORD_SEC` | Listen window while you hold the 👑 coordinator crown, seconds (default 7200, max 7200, `0` = off) |
+| `CB_LISTEN_DIGEST_SEC` | Unaddressed posts wake a listening member (or come as one channel push) once the oldest is this old, seconds (default 1800, `0` = at once) |
+| `CB_ASK_ROUTE` | Ask mode of the agent's home until a trusted human switches it there: `direct` (default, every ask to the human) or `coordinator` (questions to the home's 👑 first; [arc42 §6.25](docs/arc42/06-runtime-view.md#625-ask-routing-modes)) |
+| `CB_ASK_ROUTE_WAIT_MIN` | How long a question waits for the 👑 before the asking agent's server asks the human, minutes (default 15) |
+| `CB_LISTEN_POLL_SEC` | How often the background listener (`bin/`) checks the bus, seconds (default 15); the OpenCode plugin and the pi extension hold a long poll instead (ADR-009) |
+| `CB_CHANNEL_PUSH` | Override for channel mode ([RT-6.12](docs/arc42/06-runtime-view.md#612-messages-pushed-into-the-session-channel)): `1` on, `0` off, for Claude Code only (another MCP client never gets channel mode). Unset, the MCP server looks at Claude Code's command line for the channel flag, see below |
 
 ### Channel mode (research preview)
 
@@ -209,7 +216,7 @@ The server sees the flag on Claude Code's command line, pushes one check and
 switches over once the agent confirmed it; until then, or if the push never
 arrives, the listen window works as before. Pushed at once is what the
 listener would wake for; other posts come as one digest
-(`MM_LISTEN_DIGEST_SEC`).
+(`CB_LISTEN_DIGEST_SEC`).
 
 On claude.ai Team and Enterprise an Owner enables channels
 (`channelsEnabled`) and allows the plugin in managed settings:
@@ -219,7 +226,7 @@ use too). Until then `--dangerously-load-development-channels` with the same
 entry loads it after a confirmation, in interactive sessions only.
 
 Under corral the channel flag goes after `--`
-(`corral run -- --channels plugin:…`); an `MM_CHANNEL_PUSH` override set in the
+(`corral run -- --channels plugin:…`); an `CB_CHANNEL_PUSH` override set in the
 shell that starts `corral run` is passed into the sandbox by the host session
 hook.
 

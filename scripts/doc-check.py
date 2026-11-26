@@ -250,7 +250,7 @@ def check_release_lines(text: str | None = None) -> None:
             if not entry:
                 error(CHANGELOG, n, "a Needs: line outside a version's entry")
             elif not line.startswith("Needs: ") or not needs_ok(line[7:]):
-                error(CHANGELOG, n, "Needs: takes MM_* variables, versions x.y.z and lowercase "
+                error(CHANGELOG, n, "Needs: takes CB_* and MM_* variables, versions x.y.z and lowercase "
                       f"words of at most 15 letters (each with , or .), at most {NEEDS_MAX} characters")
         elif line.startswith("Withdrawn:"):
             m = WITHDRAWN_RE.match(line)

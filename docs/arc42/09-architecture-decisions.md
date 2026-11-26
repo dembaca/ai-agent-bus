@@ -10,7 +10,7 @@ code does today and point here where a decision will change them.
 | ADR | Decision | Status | Work packages / issue |
 |-----|----------|--------|--------------------------|
 | ADR-001 | Authority comes from trust, not from a role or a channel | Decided 2026-10-29, built (WP2, 0.60.0; WP6, 0.64.0) | WP2, WP6 |
-| ADR-002 | One home per agent; guests only talk; a crown per (agent, home); `MM_CHANNEL` is the lobby | Decided 2026-10-29, built (WP1, 0.59.0; WP4, 0.62.0; WP5, 0.63.0; WP6, 0.64.0) | WP1, WP4, WP5, WP6 |
+| ADR-002 | One home per agent; guests only talk; a crown per (agent, home); `CB_MM_CHANNEL` is the lobby | Decided 2026-10-29, built (WP1, 0.59.0; WP4, 0.62.0; WP5, 0.63.0; WP6, 0.64.0) | WP1, WP4, WP5, WP6 |
 | ADR-003 | An agent's owner comes from its registrar-bound bot description, or from the registrar's signed claim where its keys are pinned | Decided 2026-10-29, built (WP2, 0.60.0; WP3, 0.61.0; WP6, 0.64.0); the signed claim (#83) built on the bus side in 0.66.0 (RT-6.24) | WP2, WP3, WP6, #83 |
 | ADR-004 | Ask delegates: a human hands their asks to a delegate; routing and authority are separate, authority is bounded by impact | Proposed (2026-11-01), not built; depends on #83 | #83 |
 | ADR-005 | Ask routing modes: workers ask their coordinator first; the coordinator answers questions, never grants approvals; a mode per home, switched by a trusted human | Accepted (2026-11-01); phase 1 built (0.67.0): `direct` and `coordinator`, switched by a command in the home; phase 2 built (0.68.0): the registrar's signed `/agent-ask-mode` record, the only source once its keys are pinned; phases 3–4 open (`delegated` with ADR-004, standing approvals) | #83 |
@@ -19,7 +19,7 @@ code does today and point here where a decision will change them.
 | ADR-008 | Context and limits of the agents in the chat: the status line's numbers reach the server, the bot's status, the roster and one fyi line per threshold; a blocked agent is marked, answered for and not reachable | Proposed (2026-11-04); phase 1 built (0.71.6): the tap, A and C; phase 3 partly built (0.76.0): the context threshold; the window thresholds and the blocked state, B and the other runtimes open | – |
 | ADR-009 | Push for plugin runtimes: a long-poll wake endpoint, OpenCode without a listen window, a pi adapter | Decided, built (proposed 2026-11-04): phase 1 (0.71.8: the long poll of `GET /v1/wake`), phase 2 (0.71.10: the OpenCode plugin without a listen window) and phase 3 (0.79.0: the pi extension, RT-6.27) | – |
 | ADR-010 | MCP debug: a trusted human switches, per home, which categories of its own MCP server's decisions show (`/agent-debug`, additive, an hour by default, a signed record); the agent's own post carries them as a grey `debug` attachment, the agent gets them in its channel tag and `wait_for_events`; never in a guest channel or the lobby, in a DM only what the other side may see | Decided, built: phase 1 in the registrar (0.8.0), phase 2 on the bus (0.85.0, 2026-11-12, RT-6.31) | – |
-| ADR-011 | Updates from a signed release only: the host copy is installed from a release tag signed by a pinned release key into a directory per version, switched in one step and rolled back the same way; the bus tells which release is available and what it needs, a human approves every update, a breaking one never runs by itself | Accepted, phase 1a built (0.81.0): `releases/`, `current` and `previous` as symlinks switched in one rename, `--rollback`, `--downgrade`, the release recorded per session, a hook dispatcher corral approves once (RT-6.28); phase 1b built (0.82.0): `--release v<x.y.z>` installs an annotated tag with its name, tree version and tag object checked, and its SSH signature when the host pins the keys in `MM_RELEASE_SIGNERS` (opt-in; the owner's key and an offline backup) (RT-6.29); phase 2 built (0.83.0): the release check on the host (the installer's `--check`, the MCP server once a day (hourly while the newest found is older than the running host copy) as a bounded child, a plugin's server through the host copy's script), the notice in `bus_info`, the start hook and the turn-end banner, the version in the roster, the `Needs:`/`Withdrawn:` lines with a doc-check (RT-6.30); 0.84.0, decisions (4) and (5) of 2026-11-12: keys pinned once per host in `release-signers` beside `releases/`, `--replace-signers`, `--forget-signers`, a withdrawn version refused unless `--withdrawn-ok` (RT-6.29, RT-6.30); phase 3 built (0.86.0: the registrar distributes the release keys once and names the version, and corral's host copy updates itself to it between sessions, RT-6.32), `latest` built (0.87.0) | – |
+| ADR-011 | Updates from a signed release only: the host copy is installed from a release tag signed by a pinned release key into a directory per version, switched in one step and rolled back the same way; the bus tells which release is available and what it needs, a human approves every update, a breaking one never runs by itself | Accepted, phase 1a built (0.81.0): `releases/`, `current` and `previous` as symlinks switched in one rename, `--rollback`, `--downgrade`, the release recorded per session, a hook dispatcher corral approves once (RT-6.28); phase 1b built (0.82.0): `--release v<x.y.z>` installs an annotated tag with its name, tree version and tag object checked, and its SSH signature when the host pins the keys in `CB_RELEASE_SIGNERS` (opt-in; the owner's key and an offline backup) (RT-6.29); phase 2 built (0.83.0): the release check on the host (the installer's `--check`, the MCP server once a day (hourly while the newest found is older than the running host copy) as a bounded child, a plugin's server through the host copy's script), the notice in `bus_info`, the start hook and the turn-end banner, the version in the roster, the `Needs:`/`Withdrawn:` lines with a doc-check (RT-6.30); 0.84.0, decisions (4) and (5) of 2026-11-12: keys pinned once per host in `release-signers` beside `releases/`, `--replace-signers`, `--forget-signers`, a withdrawn version refused unless `--withdrawn-ok` (RT-6.29, RT-6.30); phase 3 built (0.86.0: the registrar distributes the release keys once and names the version, and corral's host copy updates itself to it between sessions, RT-6.32), `latest` built (0.87.0) | – |
 | ADR-012 | Files an agent attaches: the server never opens a path the agent names; the bytes come from inside the sandbox (the shell's `POST /v1/files`, or a small text in the `attach` tool), checked by their bytes, uploaded for a post that takes only this server's fresh uploads | Decided 2026-11-14, built (0.90.0, RT-6.33) | — |
 | ADR-013 | The channel banner shows what waits: the home's 👑 server writes it on a change only, at most once a minute; a stall in red, asks waiting on a human in amber, else the crown and the agents by status; display only, never input; a human's banner is left alone and told to its human; without the licence or the permission everything stays as today; later the 👑 prefix only on asks and routings | Withdrawn (2026-11-16): depends on the Mattermost edition and a permission setting; the header carries the rare facts instead | — |
 
@@ -28,10 +28,10 @@ code does today and point here where a decision will change them.
 | ADR-016 | The bus without a chat as its source: Keycloak is the root of identity, keyed by `sub`, with chat accounts bound to it per product; a channel directory on NATS that only the login service writes (name, public or not, members, a binding per chat) replaces Mattermost membership behind `callout.Channels`; one bridge per chat product vouches for its humans, and later a Keycloak login on NATS itself; the login service attests trust lists; agents need no chat. Decided by the owner on 2026-11-23: the directory, Mattermost membership behind a replaceable interface until then, and for the console reading only, a Python server and what an operator sees | Accepted (2026-11-23) by the owner, its nine open points decided by the owner the same day; it changes ADR-014 points 6, 10, 11 and 16. Built in part: the channel directory (RT-6.39) and "in doubt, foreign" (RT-6.16) in 0.97.0; after 0.97.0 the admin API with the import from Mattermost (RT-6.40) and the attested trust lists (RT-6.41). Not built: the bridges, `checkChat` as a binding, agents without a chat, the host's agent name from an anchor that is not the username. Addition 2026-11-24: all Mattermost functions in one service, the bridge in `services/bridge`, the registrar's move as an open step; built step by step, the pilot with one bridge bot | — |
 | ADR-017 | The token split attributes tokens by content, not by cause: a request's tokens go to task work, bus overhead or multi-agent coordination by what its context and output hold, never all to the bus because the bus started the turn | Decided 2026-11-26 with the issue on the token split (#139, its proposed defaults); built for Claude Code (the overhead measurement, RT-6.9 step 2, method 1) | #139 |
 
-**Terms.** An agent's **home** is the first entry of `MM_PROJECT_CHANNEL`,
-else `MM_CHANNEL`: exactly one per agent. Its **guest channels** are the
-further entries of `MM_PROJECT_CHANNEL` and every other channel its bot is a
-Mattermost member of: zero or more. The **lobby** is `MM_CHANNEL`, the
+**Terms.** An agent's **home** is the first entry of `CB_MM_PROJECT_CHANNEL`,
+else `CB_MM_CHANNEL`: exactly one per agent. Its **guest channels** are the
+further entries of `CB_MM_PROJECT_CHANNEL` and every other channel its bot is a
+Mattermost member of: zero or more. The **lobby** is `CB_MM_CHANNEL`, the
 registrar's default channel, whatever its name. The **owner** is the
 responsible human the registrar writes into the bot description as `for @…`.
 A **bus agent** is a bot account whose username has the registrar's prefix
@@ -59,7 +59,7 @@ an agent route; nothing says whether a routed request carries authority.
 **Decision:**
 
 - **Peer agent:** a bus agent B is a peer of mine when
-  `{owner(B)} ∪ trusts(B) ⊆ MM_TRUSTED_HUMANS(me)`: I follow an agent only
+  `{owner(B)} ∪ trusts(B) ⊆ CB_TRUSTED_HUMANS(me)`: I follow an agent only
   if I would follow everyone it obeys. Its mention and its `TASK` work as
   today's "agent". The rule is one-way: if Bob trusts Alice, Bob's agents take
   tasks from Alice's agents, whether or not Alice trusts Bob.
@@ -112,7 +112,7 @@ server; without one nothing is gated, as today (Section 7.2).
 header per home, the 👑 only in the home, coordinator wakes and the gate
 exemption only in the home (so a plain lobby post wakes only the lobby's own
 crown), and the ambassador listing (RT-6.6). Built in 0.62.0 (WP4): guest
-channels (RT-6.22): the list in `MM_PROJECT_CHANNEL`, every membership a
+channels (RT-6.22): the list in `CB_MM_PROJECT_CHANNEL`, every membership a
 guest, the guest wake rules, no digest from guests, `props.a2a.home`, the
 `BYE` listing open guest threads, the gate's answer naming the guest
 channel's own coordinator, `post_message(channel=…)`. Built in 0.63.0 (WP5):
@@ -132,12 +132,12 @@ project channel has no way to, short of a second session.
 
 **Decision:**
 
-- **One home:** the first `MM_PROJECT_CHANNEL` entry, else `MM_CHANNEL`. All
+- **One home:** the first `CB_MM_PROJECT_CHANNEL` entry, else `CB_MM_CHANNEL`. All
   coordination state lives there: the crown and its election, the header,
   `HELLO`, `BYE`, handback, tasks and `ASSIGNMENTS`, the stall watch, the
   `ask_human` card. A task lives in the worker's home: a guest that has work
   for me posts the `TASK` in my home or mentions me.
-- **Guests only talk:** guest channels are `MM_PROJECT_CHANNEL` entries 2..n
+- **Guests only talk:** guest channels are `CB_MM_PROJECT_CHANNEL` entries 2..n
   and every channel the bot is a Mattermost member of besides its home, the
   lobby and the stats channel. There an agent wakes only for a mention, a
   reply in its own thread or a DM; not for `@channel` or `to="all"`. No digest,
@@ -154,14 +154,14 @@ project channel has no way to, short of a second session.
 - **Ambassador listing:** the roster and `bus_info` of channel A list a guest
   that holds the crown of its own home B as `👑 of ~B`, not as a crown, so A's
   coordinator knows whom to mention for work that belongs in team B.
-- **The lobby:** `MM_CHANNEL`, whatever its name, stays for reachability,
+- **The lobby:** `CB_MM_CHANNEL`, whatever its name, stays for reachability,
   discovery and broadcasts (the registrar adds every bot). A plain post there
   wakes nobody unless the lobby is someone's home and they hold its crown.
   For an agent whose home it is not, it acts as a guest channel, plus
   broadcasts by trusted humans and peers. In a channel that is nobody's home
   nobody wakes for a plain post.
 - **Configuration:** no new variable and no switch; the list in
-  `MM_PROJECT_CHANNEL` and Mattermost membership. One entry behaves exactly
+  `CB_MM_PROJECT_CHANNEL` and Mattermost membership. One entry behaves exactly
   as today.
 
 **Alternatives:** Keep one channel per session (two sessions for two
@@ -308,7 +308,7 @@ pinned in `MM_REGISTRAR_KEYS`), built on the bus side in 0.66.0 (RT-6.24).
 
 **Context:** Every `ask_human` mentions and waits for one human, by default
 the session's responsible human. Only a post or reaction marked
-`from_trusted_human` (`MM_TRUSTED_HUMANS`, server-verified) approves
+`from_trusted_human` (`CB_TRUSTED_HUMANS`, server-verified) approves
 (ADR-001, RT-6.11). When that human is away, agents block. Wanted: a human sets
 up an **ask delegate**, temporary (until a time) or permanent, to another human
 or to an agent, possibly conditional on priority or impact.
@@ -372,7 +372,7 @@ as an interim step for routing only. (b) A formatted post by the delegator:
 rejected, every server would have to find it across channels.
 
 **Consequences:** Plus: agents stay unblocked while the owner is away. Minus:
-a new trust path next to `MM_TRUSTED_HUMANS` and more complexity (a registrar
+a new trust path next to `CB_TRUSTED_HUMANS` and more complexity (a registrar
 route, a cache, an impact derivation). Holds in every harness, corral or not,
 since all of them use the registrar.
 
@@ -435,7 +435,7 @@ it does not reduce how many asks arrive.
    |------|-------------------|
    | `direct` | Today. Every ask goes to the responsible human. |
    | `coordinator` | Workers ask their 👑. It answers questions itself and escalates the rest to the human, sorted by impact and by what it blocks, one ask at a time (the one-open-ask-per-human rule stays). |
-   | `delegated` | `coordinator` plus ADR-004. Approvals may go to another human, bounded by impact. Questions may go to a meta coordinator, e.g. a coordinator in the lobby (`MM_CHANNEL`) for cross-project coordination. It never approves. |
+   | `delegated` | `coordinator` plus ADR-004. Approvals may go to another human, bounded by impact. Questions may go to a meta coordinator, e.g. a coordinator in the lobby (`CB_MM_CHANNEL`) for cross-project coordination. It never approves. |
 
    The mode applies to the asks of the agents whose home it is. A guest
    channel has no mode of its own; an agent's asks follow its home.
@@ -448,7 +448,7 @@ it does not reduce how many asks arrive.
 
    **Preferred: (b).** The mode is one fact per home that every agent in it
    must read the same way. `from_trusted_human` is judged per session against
-   that session's own `MM_TRUSTED_HUMANS`: two agents in one home could
+   that session's own `CB_TRUSTED_HUMANS`: two agents in one home could
    disagree on whether a post switched the mode. Finding the post across
    channels is also the reason ADR-004 rejected a formatted post. A signed
    record has one author, one verification and one revoke, and `delegated`
@@ -508,7 +508,7 @@ coordinator's own asks go to the human (or the delegate), not to itself.
 
 - Stall: settled in phase 1 (RT-6.25 steps 5–7): the stall digest nudges the
   coordinator first, the asking agent's server asks the human once after
-  `MM_ASK_ROUTE_WAIT_MIN`, and no reachable 👑 means the human at once.
+  `CB_ASK_ROUTE_WAIT_MIN`, and no reachable 👑 means the human at once.
 - Visibility: how the human sees what the coordinator answered. Proposal: its
   answers to questions go into the digest next to delegate decisions
   (ADR-004 step 7), each with the ask and the answer.
@@ -576,7 +576,7 @@ Naming a bot in that word does not last: bot names change with every session.
    (`GET /api/v4/channels/<id>/pinned`, through the chat port) at its first
    look and then on the reminders' heartbeat (RT-6.19) once 120 s have passed,
    the cadence of the signed mode (RT-6.25 step 8): with the default
-   `MM_HEARTBEAT_SEC` about every 5 min. Cost: one small read per server per
+   `CB_HEARTBEAT_SEC` about every 5 min. Cost: one small read per server per
    heartbeat, and no search across channels, the reason ADR-004 rejected a
    formatted post. The newest qualifying pinned post wins; a home with none
    has no mandate. The pin is only how servers and people find the post: it
@@ -589,7 +589,7 @@ Naming a bot in that word does not last: bot names change with every session.
    #141).
 4. **Who may issue it: the receiving session's own trusted humans.** A server
    counts a pinned post as a mandate only when its author's account id is one
-   of its own `MM_TRUSTED_HUMANS`, the check `set_by_id` gets in ADR-005
+   of its own `CB_TRUSTED_HUMANS`, the check `set_by_id` gets in ADR-005
    phase 2. Never a webhook's post (`props.from_webhook`), a bot or an agent,
    also not one listed as trusted (as RT-6.25 step 2); top-level only. Without
    trusted humans no mandate counts. Each session judges for itself: two
@@ -786,7 +786,7 @@ coordinator to take off them. (c) A mandate naming a bot: bot names change
 with every session (RT-6.1), so every restart needs a new pin, and it survives
 no handover. (d) A per-agent `delegated` mode (ADR-005 phase 3): it routes
 asks, not tasks, so workers would still confirm orders, now with a delegate;
-it also waits on ADR-004. (e) The coordinator's bot in `MM_TRUSTED_HUMANS`:
+it also waits on ADR-004. (e) The coordinator's bot in `CB_TRUSTED_HUMANS`:
 an agent listed as trusted never counts as one (RT-6.25 step 2), and it would
 approve. (f) A mandate in the channel header: any member can edit it
 (ADR-005 alternative (c)); showing it there is fine: since 0.92.0 the
@@ -849,7 +849,7 @@ keeps its crown, unrenewed and without the receipt marker, for one crown
 lease before it drops it (step 1 of the amendment).
 
 **Context:** A crown whose holder died is claimed by nobody until the holder's
-status lease runs out: `MM_LEASE_SEC`, 900 s (RT-6.6 step 6; error rows 2 and
+status lease runs out: `CB_LEASE_SEC`, 900 s (RT-6.6 step 6; error rows 2 and
 4). In ~bgl-infra a home stood without a coordinator for that time after
 several sessions restarted at once, and a plain post of a human woke nobody
 (RT-6.6 step 5, error row 5). Two things keep the time long. The lease is
@@ -863,9 +863,9 @@ where it can.
 **Decision:**
 
 1. **A crown beat.** Only the holder of a crown renews it faster:
-   `MM_CROWN_BEAT_SEC` (default 60, at least 15) writes its status again, and
-   the status of a holder expires after `MM_CROWN_LEASE_SEC` (default 150,
-   never below twice the beat; 2.5 beats), not after `MM_LEASE_SEC`. A status
+   `CB_CROWN_BEAT_SEC` (default 60, at least 15) writes its status again, and
+   the status of a holder expires after `CB_CROWN_LEASE_SEC` (default 150,
+   never below twice the beat; 2.5 beats), not after `CB_LEASE_SEC`. A status
    carrying the 👑 that has expired is no crown: the agent is not reachable
    (RT-6.6 step 1) and step 2 picks a successor. When the holder loses or
    releases the crown, its status goes back to the long lease. The other agents'
@@ -888,7 +888,7 @@ where it can.
    step 3: a human's plain post in the home, a mention of it there, a question
    routed to it, RT-6.25) the holder's **server** puts a 👀 reaction on the
    post as soon as it has it, before the push reaches the model: no LLM turn,
-   and a human sees that someone received it. `MM_ACK_WAIT_SEC` (default 45,
+   and a human sees that someone received it. `CB_ACK_WAIT_SEC` (default 45,
    30 to 60 recommended; any positive number is taken) later, each other server that would count the post as such a
    wake (its own trust and gate, RT-6.16: a post it gates starts nothing)
    looks at the post's reactions, with one more look 10 s later. The other
@@ -908,7 +908,7 @@ where it can.
    crown at its next tick, which replaces "the younger one yields" (RT-6.6
    error row 1) for this case, and does not claim again for one crown lease,
    as after the silent drop (decision (4) of 2026-11-12; proposed first: two
-   `MM_LEASE_SEC`, as after a `release`, RT-6.6 step 4). It gets the crown
+   `CB_LEASE_SEC`, as after a `release`, RT-6.6 step 4). It gets the crown
    back only the way any agent does: the pending-`take` handover of RT-6.6
    step 4 (for example to a stronger model), or step 2 once the new holder's
    crown has run out in turn. A holder that is only flaky does not make the
@@ -916,14 +916,14 @@ where it can.
    the live crown to end or be released.
 5. **A question to a dead 👑 goes to the human at once.** The asking agent's
    server (RT-6.25 step 6) treats a question posted as `❓ @<👑>` like a post
-   of step 3: with no 👀 after `MM_ACK_WAIT_SEC` it asks the human now, instead
-   of after `MM_ASK_ROUTE_WAIT_MIN`. A 👀 means the server has it, not that the
+   of step 3: with no 👀 after `CB_ACK_WAIT_SEC` it asks the human now, instead
+   of after `CB_ASK_ROUTE_WAIT_MIN`. A 👀 means the server has it, not that the
    agent will answer soon, so a received question still waits the old time.
 6. **No new switch.** Like the unstuck features (the bus is the one place that
    does this), there is no environment variable to turn it off; the times are
    tuning only.
 
-**Alternatives:** (a) A shorter `MM_LEASE_SEC` for everyone: every agent
+**Alternatives:** (a) A shorter `CB_LEASE_SEC` for everyone: every agent
 writes more often and a sleeping laptop loses its presence in minutes; the
 long lease is right for presence, only the crown needs to be short. (b) WebSocket
 status events (`status_change`, `user_updated`) for an immediate expiry: not
@@ -939,7 +939,7 @@ health file: only works on one machine, and corral sessions do not share a
 state directory.
 
 **Consequences:** Plus: a dead 👑 is found in about 2.5 beats plus a slot
-(about 160 s, down from up to 15 min), a dead WebSocket in `MM_ACK_WAIT_SEC`
+(about 160 s, down from up to 15 min), a dead WebSocket in `CB_ACK_WAIT_SEC`
 plus a slot (about 55 s) for a post that needs the 👑, a human sees that the
 bus received their post, and a question to a dead 👑 reaches the human in a
 minute instead of 15. All in the servers, no tokens. Minus: about one status
@@ -971,7 +971,7 @@ the others, a post without one starts the claim after the wait, and a post the
 watcher gates starts none; `crown_taken` makes the old holder yield and not
 claim for one crown lease (decision (4) of 2026-11-12); a later `take` with `ACK` still works (RT-6.6 step 4); a
 question to the 👑 without a 👀 goes to the human after the wait and one with it
-after `MM_ASK_ROUTE_WAIT_MIN`. RT-6.6 error rows that change: 1 (the younger yields: not after a
+after `CB_ASK_ROUTE_WAIT_MIN`. RT-6.6 error rows that change: 1 (the younger yields: not after a
 `crown_taken`), 2 (a dead oldest agent: now a slot, not a lease), 4 (an old
 coordinator that never releases: its crown ends with the crown lease), and
 one new (a successor that is dead: the next slot claims). Scenario ids stay
@@ -1047,7 +1047,7 @@ whether it is a peer (RT-6.25 step 3), and its answer settles the question
 1. **Reachable only with a sign of life of the agent.** An agent counts as
    reachable (RT-6.6 step 1), and may keep or claim a crown, only while its
    server has seen a sign of life of the **agent** within the last
-   `MM_LEASE_SEC` (900 s, the lease window). The server sees every sign
+   `CB_LEASE_SEC` (900 s, the lease window). The server sees every sign
    anyway, or asks for it with one local round trip:
    - **Events.** A turn begins or ends (the prompt hook's `working`, the
      Stop hook's `idle` or `listening`: `POST /v1/presence`; the OpenCode
@@ -1067,7 +1067,7 @@ whether it is a peer (RT-6.25 step 3), and its answer settles the question
      prove beyond that the channel is confirmed (`channel-<uid>.env`), that
      no push waits untaken, and that the client answers the ping. In a
      listen window: the listener polls the hook API (every
-     `MM_LISTEN_POLL_SEC`) and no wake waits untaken. 💤 idle is not
+     `CB_LISTEN_POLL_SEC`) and no wake waits untaken. 💤 idle is not
      reachable anyway.
    - **What does not count:** the server's own heartbeat; in a corral
      session the host process's (case 1), which runs whether or not a relay
@@ -1081,17 +1081,17 @@ whether it is a peer (RT-6.25 step 3), and its answer settles the question
    pushes untaken.
 
    **Without a sign** the agent is `silent`: at once when a push or a wake
-   stays untaken for `MM_ACK_WAIT_SEC` (45 s) while no turn runs, else when
+   stays untaken for `CB_ACK_WAIT_SEC` (45 s) while no turn runs, else when
    the window ends. Its server writes the status state `silent`
    (`silent · no sign since 14:05Z · ~<home>`), one write when the state
    flips, and the agent is not reachable, like a blocked one (ADR-008 step
    4): no candidate of the election and no slot (step 2). A holder's server
-   keeps the 👑 one crown lease (`MM_CROWN_LEASE_SEC`) after the agent
+   keeps the 👑 one crown lease (`CB_CROWN_LEASE_SEC`) after the agent
    turned silent, unrenewed, with the silence in its text and no receipt
    marker, and a sign in that time ends it; then it drops the crown, stops
    the beat and does not claim for one crown lease (RT-6.6 step 4)
    (amended 2026-11-24, #64; before, it dropped the crown with the `silent`
-   write, as a `release` does, with no claim for two `MM_LEASE_SEC`, and a
+   write, as a `release` does, with no claim for two `CB_LEASE_SEC`, and a
    busy coordinator lost its crown to a silence that was only the server
    not hearing of the turn); the next agent claims
    at its slot (step 2) and posts `crown_taken` (step 4), its line naming
@@ -1119,10 +1119,10 @@ whether it is a peer (RT-6.25 step 3), and its answer settles the question
    puts ⏳ on the post at once (received, it waits for the turn) and adds
    the 👀 at the take-up. The other servers (step 3) count a 👀, or a ⏳ from
    a holder that is not `silent`, as the acknowledgement; a post with
-   neither after `MM_ACK_WAIT_SEC` starts the claim as before. So a busy
+   neither after `CB_ACK_WAIT_SEC` starts the claim as before. So a busy
    holder keeps its crown and a human sees that the post waits for a turn,
    while a holder whose session takes nothing up (case 1) is found in
-   `MM_ACK_WAIT_SEC` plus a slot. Step 5 reads the same: a question to the
+   `CB_ACK_WAIT_SEC` plus a slot. Step 5 reads the same: a question to the
    👑 with neither a 👀 nor a ⏳ after the wait goes to the human at once.
    Cost: as step 3, plus one call for the ⏳ on a waking post during a turn.
 3. **Stale copies stay off the bus.** At start a server compares its own
@@ -1153,7 +1153,7 @@ whether it is a peer (RT-6.25 step 3), and its answer settles the question
    an open question. In a corral session the host process (RT-6.18) reads
    no `installed_plugins.json`, which the sandbox can write: `preStart`
    compares the host copy's environment with the host copy and fails closed
-   on a mismatch (`MM_BUS_UNAVAILABLE`: rerun the installer, Section 7.1).
+   on a mismatch (`CB_BUS_UNAVAILABLE`: rerun the installer, Section 7.1).
 4. **The crown only for peers.** Changes RT-6.6 step 2 and steps 2 and 3
    above, and replaces ADR-002's "a foreign agent may win the election":
    - **Each server elects among its peers.** As candidates for "the oldest
@@ -1222,7 +1222,7 @@ plain posts through an agent its peers do not follow; not chosen, the human
 approved step 4.
 
 **Consequences (amendment):** Plus: a session that processes nothing loses
-the crown in `MM_ACK_WAIT_SEC` plus a slot when a post needs the 👑, else
+the crown in `CB_ACK_WAIT_SEC` plus a slot when a post needs the 👑, else
 within three to four minutes of its first untaken push, and after the window
 plus the crown lease and a slot at most (about 18 min); the roster stops
 counting it; the 👀 tells a human that the agent has the post, a ⏳ that it
@@ -1262,7 +1262,7 @@ for a turn a push starts (the status showed 🛠 for such turns), so the take-up
 rests on it. Silent shows the 💤 with the text `silent · no sign since
 HH:MMZ`, not a new emoji: every plugin, older ones too, reads the 💤 as not
 reachable, so a silent agent is no candidate anywhere. A silent holder yields
-one crown lease, not a release's two `MM_LEASE_SEC` (decision step 1 said "as a
+one crown lease, not a release's two `CB_LEASE_SEC` (decision step 1 said "as a
 `release` does"): a silence may be wrong for seconds (a prompt hook past its
 deadline, a push held while the human types), and the slots of step 2 come
 first anyway. The successor's
@@ -1291,7 +1291,7 @@ RT-6.6 step 2 again), the claimer posts its line again while the old crown
 shows and its line is missing, and only an author that stands for the old
 holder's server can oust it (ADR-001). (4) **The old holder's yield.** After a
 takeover by `crown_taken` the old holder makes no claim for one crown lease
-(`MM_CROWN_LEASE_SEC`), as after the silent drop, not for two `MM_LEASE_SEC`
+(`CB_CROWN_LEASE_SEC`), as after the silent drop, not for two `CB_LEASE_SEC`
 as step 4 proposed: with 30 min a small home whose new holder fails in turn
 stays without a crown, while the slots of RT-6.6 step 2 keep the order anyway.
 
@@ -1302,14 +1302,14 @@ turn's start, a tool call; one pushed during a turn at that turn's end) or
 with the return of `wait_for_events`, the only delivery without a channel. A
 member watches a waking post only for a holder with the marker and only when
 its own trust counts the post; the holder's reaction heard on the WebSocket
-ends the watch, else it reads the reactions after `MM_ACK_WAIT_SEC` and 10 s
+ends the watch, else it reads the reactions after `CB_ACK_WAIT_SEC` and 10 s
 later, then claims at its slot among the agents that stand, the holder left
 out (`lease.take_over`), and posts `crown_taken` (kind `crown_taken`, intent
 fyi, quiet like the context line, `holder` the old holder's id). The old
 holder yields only to a `crown_taken` whose author wears a live crown in the
 home and stands for its server, and then does not claim for one crown lease
 (decision (4)). A question to the 👑
-(step 5) goes to the human after `MM_ACK_WAIT_SEC` when a marked 👑 set
+(step 5) goes to the human after `CB_ACK_WAIT_SEC` when a marked 👑 set
 neither receipt or a silent one no 👀. No new scenario: the 👀 is RT-6.12 step
 7 (the open question's recommendation), the claim RT-6.6 step 10.
 
@@ -1411,9 +1411,9 @@ handover by step 4; record it as a RISK when built if it shows up in use.
 - **Orphans that run on** (case 2): step 1 makes them unreachable and step 3
   keeps new ones off the bus, but a process without a client keeps its bot.
   Recommendation: a server whose client sent nothing and answered no ping
-  for `MM_SESSION_KEEP_SEC` ends as if the client had closed (RT-6.10 step
+  for `CB_SESSION_KEEP_SEC` ends as if the client had closed (RT-6.10 step
   4). Still open after phase C (0.71.11): no server ends for that today;
-  `MM_SESSION_KEEP_SEC` only ages kept bots.
+  `CB_SESSION_KEEP_SEC` only ages kept bots.
 - **A cut trust list in the peer test** (`+N`, ADR-001): a claimer cannot see
   whether its circle lies within. Recommendation: count it as not a peer, so
   this agent does not claim and another one does.
@@ -1423,7 +1423,7 @@ handover by step 4; record it as a RISK when built if it shows up in use.
   and mandates from a foreign holder. Such a home gets a 👑 by that
   handover, or by its circles trusting each other's humans.
 - **Names and numbers.** The proposal: the state `silent`, the ⏳, the window
-  `MM_LEASE_SEC` (900 s), the ping's 5 s. Recommendation: build with these
+  `CB_LEASE_SEC` (900 s), the ping's 5 s. Recommendation: build with these
   and read the counts for a month (RT-6.9), as for the numbers above.
 
 ## ADR-008: Context and limits of the agents in the chat
@@ -1794,7 +1794,7 @@ runtimes without a status line.
 *Phase 3 · a pi adapter.* One extension, in this repository next to the
 OpenCode plugin. It registers the MCP server in `session_start` like the
 OpenCode plugin does (RT-6.20 step 1: `mattermost-ai-agent-bus-mcp`, with the
-workspace as `cwd` and `MM_WORKSPACE` and without the Claude Code session
+workspace as `cwd` and `CB_WORKSPACE` and without the Claude Code session
 variables), runs the turn cycle through pi's events (presence at `agent_start`;
 the drain and sign-off checks of RT-6.2 when the agent is `agent_settled`, as
 the final idle signal, not at `agent_end`; the handoff of RT-6.7 after
@@ -1806,7 +1806,7 @@ tool call, the others being the plugin's guard). It feeds ADR-008 with
 readable (measurement below). How a corral session starts pi and keeps the bot
 token on the host (RT-6.18) belongs to this phase, and so does parity without
 corral: the extension finds the server like the OpenCode plugin does (the
-endpoint file for `MM_WORKSPACE`, or `MM_BUS_ENDPOINT` and `MM_BUS_KEY`), the
+endpoint file for `CB_WORKSPACE`, or `CB_BUS_ENDPOINT` and `CB_BUS_KEY`), the
 bus tools reach pi only through MCP, and nothing else is a way onto the bus.
 
 *The line.* No environment variable turns any of this off. Claude Code, Codex
@@ -1913,7 +1913,7 @@ already holds: `channel.wakes`, `gate.wake_reason` and the gate,
 `asks.py`, the refusals and rewrites of a tool call, and every post's props,
 which Mattermost delivers with the post. None of it reaches the chat. The
 props are invisible too: the Mattermost webapp renders neither the bus's
-props (`a2a`) nor a bridge's under the configured prefix (`MM_PROPS_PREFIX`,
+props (`a2a`) nor a bridge's under the configured prefix (`CB_PROPS_PREFIX`,
 RT-6.16 step 8); it renders `attachments`, which is how the ask cards show.
 A person sees the rest only through the API or `mmctl`. The servers never
 talk to each other; each knows its own view only.
@@ -2105,7 +2105,7 @@ signature is a git SSH signature on the annotated version tag `v<x.y.z>`
 (`git tag -s` with `gpg.format=ssh`). Only the owner signs, after the merge,
 on the merge commit (CLAUDE.md, "Releasing"); agents never sign. The keys are
 the owner's SSH Ed25519 key and an offline backup key; each host pins both
-public keys in `MM_RELEASE_SIGNERS`. As built (RT-6.29): the installer writes
+public keys in `CB_RELEASE_SIGNERS`. As built (RT-6.29): the installer writes
 them into an allowed-signers file of its own under one fixed principal,
 `mm-release`, with `namespaces="git"`; the tag is fetched into `src.git`
 without `+`, so git refuses a tag that moved; git runs with `LC_ALL=C`, no
@@ -2116,7 +2116,7 @@ name matches `plugin.json` (informational; it holds no secret and verifies no
 signature, which is the host's job).
 
 *Decision (3) of 2026-11-12 (dembaca): the signature check is opt-in.* With
-`MM_RELEASE_SIGNERS` set the installer enforces the signature as above; unset,
+`CB_RELEASE_SIGNERS` set the installer enforces the signature as above; unset,
 `--release` installs without it, with a one-line WARNING on stderr, and keeps
 every other check: the version form, the URL, the fetch without `+`, an annotated
 tag whose object carries the asked name, the version in the tree, and the tag
@@ -2129,10 +2129,10 @@ keys": the owner still signs every tag, so a host can switch to enforcing at any
 time without new tags.
 
 *Decision (4) of 2026-11-12 (dembaca): the pinned keys are a host property.*
-`MM_RELEASE_SIGNERS` lives in the operator's shell, which neither corral's hook
+`CB_RELEASE_SIGNERS` lives in the operator's shell, which neither corral's hook
 environment nor the MCP server's daily check sees; so a `--release` run with
 keys that verified the tag keeps them in `release-signers` beside `releases/`
-and `src.git` (`MM_BUS_HOST_DIR`'s parent): only `ssh-ed25519` /
+and `src.git` (`CB_BUS_HOST_DIR`'s parent): only `ssh-ed25519` /
 `sk-ssh-ed25519@openssh.com` type and base64 per line, 0600, in one rename. The
 location next to releases/ was chosen by the coordinator after review: not
 redirectable through `XDG_STATE_HOME`, which comes from the operator's
@@ -2140,7 +2140,7 @@ environment and so from any `.envrc` direnv loads there (a pin in the state
 directory, so redirected, would be found missing and the run downgraded to
 unchecked); the installer's layout and the check already refuse that directory
 when a sandbox can write it. The source of the keys is then
-`MM_RELEASE_SIGNERS` when it is set (set but empty stays refused: fail closed),
+`CB_RELEASE_SIGNERS` when it is set (set but empty stays refused: fail closed),
 else that file when it exists, else none (unchecked, with the WARNING of
 decision (3)). The installer and the release check (and so the server's child
 under corral) read it with the care given to `release.env` and more: a regular
@@ -2180,7 +2180,7 @@ keys *once*; the code's signature stays the owner's release key, checked on
 every host as in phase 1b. Five guard rails bound it:
 
 1. *Keys pinned once.* A host takes the keys only when it has no pin
-   (neither `release-signers` nor `MM_RELEASE_SIGNERS`), after verifying the
+   (neither `release-signers` nor `CB_RELEASE_SIGNERS`), after verifying the
    record with the pinned registrar keys; without those nothing is taken.
    Afterwards a different key set from the registrar is refused, logged and
    shown (the notice, `bus_info`); changing keys stays a person's step on the
@@ -2204,7 +2204,7 @@ every host as in phase 1b. Five guard rails bound it:
 the record may name `latest`: the operator sets `RELEASE_VERSION=latest`
 (registrar 0.10.0), and the claim `version` is that lowercase word, nothing
 else in the record changes. It stands for the newest release tag the host's
-release check knows (its list of the newest tags at `MM_RELEASE_URL`) that is
+release check knows (its list of the newest tags at `CB_RELEASE_URL`) that is
 not withdrawn; from there a host takes the path of a fixed version, and the
 five guard rails stay as they are: only forward, only a tag signed by a pinned
 key (a newest tag that fails that check is a refusal, never a step back to an
@@ -2253,8 +2253,8 @@ in the CHANGELOG), and a release can need configuration first: 0.74.0 needed
 *1 · The source is a signed release, never a clone.* A release is an
 annotated git tag `v<major>.<minor>.<patch>` on the canonical repository,
 signed by a **release key**: an SSH signing key the maintainer keeps offline.
-Each host pins the public keys allowed to sign (`MM_RELEASE_SIGNERS`) and the
-repository's URL (`MM_RELEASE_URL`), both from the host's environment like
+Each host pins the public keys allowed to sign (`CB_RELEASE_SIGNERS`) and the
+repository's URL (`CB_RELEASE_URL`), both from the host's environment like
 `MM_REGISTRAR_KEYS` (Section 7.1), never from the plugin, a workdir or a
 session; the operator compares the keys out of band. The installer gets a new
 mode, `mm-agent-host-install.sh --release <version>`:
@@ -2269,7 +2269,7 @@ mode, `mm-agent-host-install.sh --release <version>`:
 - It resolves the tag to one object id once and goes on with that id only:
   verified with `git verify-tag` under its own config (no system or global
   config, as today; `-c gpg.format=ssh -c gpg.ssh.allowedSignersFile=<a
-  host-only file written from MM_RELEASE_SIGNERS>`). An SSH signature has
+  host-only file written from CB_RELEASE_SIGNERS>`). An SSH signature has
   no GPG status line: it counts only when `verify-tag` exits 0 and reports
   the one principal the installer wrote (as built). The tag object's own
   name must be the one asked for, and the version in the archived tree
@@ -2324,8 +2324,8 @@ verify is logged once and never shown. `bus_info`, the start banner and the
 roster then show this host's version (and `unsigned` after `--from`, `plugin` for the plugin), the
 newest verified release, whether it is a patch or a minor, `Breaking` when its
 entry has that section, and what it needs first. That last part comes from a
-fixed line in the release's CHANGELOG entry, `Needs: MM_PROPS_PREFIX on every
-server`: variable names (`^MM_[A-Z0-9_]+$`) and a few fixed words, bounded in
+fixed line in the release's CHANGELOG entry, `Needs: CB_PROPS_PREFIX on every
+server`: variable names (`^(CB|MM)_[A-Z0-9_]+$`) and a few fixed words, bounded in
 length (as built: *Phase 2 as built* below), never free prose, since it reaches every agent's context. When the
 newest verified release is older than this host's, the notice says so (a
 repository frozen or rewound).
@@ -2364,7 +2364,7 @@ every rollout (RISK-04). The rules: what one server writes for another (props
 `a2a` with its `v`, status texts, records) changes only additively within a
 minor version, and a reader ignores what it does not know; a change that
 breaks that is `### Breaking` and says in its `Needs:` line what must match
-across the bus (as `MM_PROPS_PREFIX` did). The roster shows each agent's
+across the bus (as `CB_PROPS_PREFIX` did). The roster shows each agent's
 version, so the coordinator sees a mixed bus and which hosts run `unsigned`
 code. A state file format changes only additively within a minor, so a
 rollback reads what the newer version wrote; otherwise the CHANGELOG says that
@@ -2387,7 +2387,7 @@ secret; the attestation key decides whom an agent answers to. One leak would
 then cost both. Its operator is not the code's maintainer either and could not
 review what it signed. The registrar may help distribute: it can list the
 release keys next to its own at `…/register/v1/keys`, one out-of-band channel
-for `MM_RELEASE_SIGNERS`; and it may later publish which release a team has
+for `CB_RELEASE_SIGNERS`; and it may later publish which release a team has
 approved (open question), never below a host's current version and never
 instead of the code's own signature. *Changed by phase 3 (2026-11-13), only so
 far:* the registrar still signs no release. Its key signs one record for its
@@ -2469,14 +2469,14 @@ installer's helpers (`mm-agent-lib.sh`: the keys, the URL, git's clean environme
 the tag's checks); it tries the three newest tags, fetched with `--depth=1` into
 `src.git`, and writes `release.env` in the host state directory (the host process of
 a keyless session: the one preStart chose). The server's child gets `PATH`, `HOME`,
-`LC_ALL=C` and `MM_RELEASE_URL`, `MM_RELEASE_SIGNERS`, `MM_BUS_HOST_DIR`,
+`LC_ALL=C` and `CB_RELEASE_URL`, `CB_RELEASE_SIGNERS`, `CB_BUS_HOST_DIR`,
 `CORRAL_WORKDIR` only, runs from `/` in its own process group and is stopped after
 120 s; a failed try is repeated at the next hourly look, at most three a day (the catch-up hour of 0.90.2 keeps that limit). A
 server whose tree a sandbox can write (the plugin cache) never runs the script from
 it: only the host copy's, when that is out of every sandbox's reach, else none. What
 is needed is read from every entry after the running version up to the newest, not
 the newest entry alone. The `Needs:` grammar (decided 2026-11-12 by the coordinator,
-no word list): `MM_*` names, versions `x.y.z` and lowercase words of at most 15
+no word list; `CB_*` allowed since 0.103.0): `CB_*` and `MM_*` names, versions `x.y.z` and lowercase words of at most 15
 letters, each with an optional `,` or `.`, at most 120 characters (`NEEDS_PATTERN` in
 `release.py`, the same regex in `mm-agent-lib.sh`, read by `scripts/doc-check.py`).
 The roster's version is the last segment of the status text, cut before the label
@@ -2529,7 +2529,7 @@ refuse it (`--rollback` included) unless `--withdrawn-ok` (decision (5),
 0.84.0). Section 11 carries it as RISK-20.
 Phase 3 adds: the registrar's attestation key now also chooses which signed
 release hosts run and offers the keys at first contact, so its leak pins an
-attacker's keys on a host that has none yet (pin `MM_RELEASE_SIGNERS` before
+attacker's keys on a host that has none yet (pin `CB_RELEASE_SIGNERS` before
 the first contact to close that) and moves pinned hosts forward to any newer
 signed release, never a withdrawn one and never past `--hold`. A bad but signed
 release reaches every host at its next session end before anyone looks: the
@@ -2719,7 +2719,7 @@ server:
      own crown changes it knows at once. Another agent's ask opening or being
      answered, and the status counts, reach it with the task window and the
      roster it reads at its heartbeat (RT-6.19 step 2, RT-6.6 step 3): within
-     `MM_HEARTBEAT_SEC`, not from the WebSocket. No new periodic read.
+     `CB_HEARTBEAT_SEC`, not from the WebSocket. No new periodic read.
    - Writes are coalesced: at least **60 s** between two writes of one home
      (a constant, `BANNER_GAP_SEC`; no env setting). A change inside the gap
      is written at its end, with the state of then. Only the latest state
@@ -3013,7 +3013,7 @@ recommendations; three later points open (below), none of them blocks the
 first NATS code. Phase 2 (the ports) built; phase 3 built in
 part, in 0.97.0: the login service (`services/auth`) with the host's
 Keycloak login (RT-6.34), the consumers it makes (RT-6.35), a home over NATS
-switched by `MM_NATS_HOMES` (RT-6.36), owner and presence (RT-6.37) and the
+switched by `CB_NATS_HOMES` (RT-6.36), owner and presence (RT-6.37) and the
 crown (RT-6.38) over NATS; after 0.97.0 the login service's attestation of
 owner and trust list (RT-6.41). Not built: the central adapter and the
 shutdown of the registrar, the pod path (point 8), role addressing, files
@@ -3293,7 +3293,7 @@ separately.
     second test tenant.
     - Decided by the owner on 2026-11-22: an approval counts only from a
       human who is both in the Keycloak approvers' group and in the
-      session's trusted-human list (`MM_TRUSTED_HUMANS`, ADR-001): the group
+      session's trusted-human list (`CB_TRUSTED_HUMANS`, ADR-001): the group
       is the upper bound, the list selects within it. So the approvers
       stand in a Keycloak group, not only in a setting on a host. Starting
       agents stays open to everyone.
@@ -3540,7 +3540,7 @@ separately.
       being the stream sequence of the post it reacts to, `emoji` one line of
       at most 64 characters; `props`, a flat object of the bus's own fields,
       every key starting with the bus's props prefix `<prefix>`
-      (`MM_PROPS_PREFIX`, default `x_`, one setting of the whole bus,
+      (`CB_PROPS_PREFIX`, default `x_`, one setting of the whole bus,
       RT-6.16 step 8), so no body can carry what only the server may say,
       such as `from_trusted_human` or `mandated`. A thread and a
       reaction are thus fields of the format, so the agents' tools stay as
@@ -3704,7 +3704,7 @@ decided against it (Context).
    the switch per home channel (the parallel operation, point 14).
    Built in part (0.97.0): the wire layer, the login service, the NATS
    adapter with inbox, presence, roster from Mattermost and the crown, and
-   the switch per home (`MM_NATS_HOMES`; RT-6.34 to RT-6.38); not built:
+   the switch per home (`CB_NATS_HOMES`; RT-6.34 to RT-6.38); not built:
    role addressing and the composed adapter's bridging (point 14).
 4. **Acceptance of the parallel operation**, with numbers, to the owner:
 
@@ -4049,34 +4049,48 @@ The console is the operators' view of the bus itself.
      A["Agents' MCP servers"] <--> N
    ```
 
-3. **Layout.** A sidebar on the left selects the view: Kanban, Graph,
-   Reports, with the number of open asks beside them. The main pane fills
-   the rest. A click on an item (an agent's card, a node, an ask) splits
-   the main pane horizontally: the view stays on top, the detail opens
-   below it. The detail shows the item's data and, where it has one, its
-   thread as the bus has it: the HELLO thread, a task's thread, an ask's
-   thread. An ask is answered there. A short-answer dialog on an ask's
-   badge is optional and never the only way: it opens the same ask, and the
-   thread stays one click away.
+3. **Layout.** Changed with the design the owner agreed on 2026-11-25
+   (it replaced a sidebar with a Kanban as the home and a split detail
+   pane). A top bar carries the Choirbus logo and wordmark, the views —
+   Agents (the home), Asks with the number of open asks (orange when one is
+   the operator's), Graph, Overview, Reports — the fleet stream's state, a
+   light/dark toggle and the logged-in operator with the logout. The look is
+   the website's brand: Inter only, the logo's navy as the accent, the
+   site's word colors (orange asks, blue tasks, green done), compact rows,
+   soft shadows, 2 px corners; dark follows the system until the operator
+   picks one with the toggle, which this browser keeps. A footer names the
+   console's release version and source commit, both from the image build
+   (#182). A click on an item (an agent's row, a node, an ask) opens its
+   detail as a page of its own, with a breadcrumb back to the view. The
+   detail shows the item's data and, where it has one, its thread as the
+   bus has it: the HELLO thread, a task's thread, an ask's thread. An ask
+   is answered there. A short-answer dialog on an ask's badge is optional
+   and never the only way: it opens the same ask, and the thread stays one
+   click away. The Overview counts from the same live data: agents
+   reachable and by status, the open asks and those for the operator, and
+   the way to the bus map (the Graph).
 
    ```mermaid
    stateDiagram-v2
-     [*] --> Full: open a view
-     Full --> Split: click an item
-     Split --> Split: click another item
-     Split --> Full: close the detail
-     Split --> Answering: send an answer
-     Answering --> Split: its copy came back from the bus, or none came (shown)
+     [*] --> View: open a view
+     View --> Detail: click an item
+     Detail --> Detail: click another item
+     Detail --> View: back, or pick a view
+     Detail --> Answering: send an answer
+     Answering --> Detail: its copy came back from the bus, or none came (shown)
    ```
 
    ```text
-   +---------+---------------------------------------------------+
-   | Kanban  | online          away            offline           |
-   | Graph   | [card] [card]   [card]          [card]            |
-   | Reports | [card]                                            |
-   |         +---------------------------------------------------+
-   | Asks 3  | agent: card, numbers | thread of the ask | answer |
-   +---------+---------------------------------------------------+
+   +-------------------------------------------------------------------+
+   | logo Choirbus  Agents  Asks 3  Graph  Overview  Reports  theme  op |
+   +-------------------------------------------------------------------+
+   | Agents                             [search] [All|Working|...|Off] |
+   | [open ask: title, by, age]  [open ask: title, by, age]            |
+   | agent  status  task  branch  home  context  asks  last post       |
+   | agent  status  task  branch  home  context  asks  last post       |
+   +-------------------------------------------------------------------+
+   | read-only pilot                     version x.y.z · commit abc1234 |
+   +-------------------------------------------------------------------+
    ```
 
    The bus confirms no publish (ADR-014 point 16): an answer is on the bus
@@ -4100,8 +4114,11 @@ The console is the operators' view of the bus itself.
      loopback only; `SameSite=Lax`, sent same-origin only — every call is
      a GET without side effects but the logout, so CSRF has nothing to act
      on, and the console answers no cross-origin request (no CORS); the
-     logout is a POST with an `Origin` and Fetch Metadata check, and the
-     answer button of a later stage, a POST too, gets the same. The session
+     logout is a POST with an `Origin` and Fetch Metadata check (an
+     `Origin: null` refused too; the pages send `Referrer-Policy:
+     same-origin` so the browser names their origin there, fixed in the
+     pilot of 2026-11-26), and the answer button of a later stage, a POST
+     too, gets the same. The session
      lives in the server's memory: a restart logs every operator out,
      which is the state the pilot wants.
    - **The logout ends Keycloak's session too (2026-11-25, #108 point 3):**
@@ -4151,7 +4168,7 @@ The console is the operators' view of the bus itself.
      ask: `resolve_ask` and ✅ are the agent's.
    - **Whether an answer counts** is decided by the asking agent's MCP
      server, as today: the sender is a person by the login service's word,
-     stands on the session's trusted list (`MM_TRUSTED_HUMANS`, ADR-001),
+     stands on the session's trusted list (`CB_TRUSTED_HUMANS`, ADR-001),
      is in the approvers' group (ADR-014 point 10), and answers within 24 h
      of the ask (RT-6.8, RT-6.11). The console says beforehand what it
      expects: "counts as your approval" when the roster names the operator
@@ -4181,31 +4198,39 @@ The console is the operators' view of the bus itself.
    | Statistics | `STATS` lines in the stats channel, a Mattermost channel and no home (RT-6.9) | Not there | The lines on NATS, in a channel or subject of their own, kept at least as long as the longest report looks back |
    | What people wrote | Posts in Mattermost | Not there | Nothing: human-origin events reach NATS with the central adapter (ADR-014 phase 5); until then a thread in the console lacks them |
 
-   The Kanban's columns are the states the bus carries: with presence of
-   format v1 `online`, `away` and offline (a `bye`, or no fresh presence);
-   the state words in `lease.py`'s order once presence carries them. The
-   crown is a mark on the card, not a column. `WAITING`, `BLOCKED` and
+   The agents list's status words are the states the bus carries: with
+   presence of format v1 `online`, `away` and offline (a `bye`, or no fresh
+   presence); the state words in `lease.py`'s order once presence carries
+   them. The crown is a mark on the row, not a status. `WAITING`, `BLOCKED` and
    `BYE` are words of posts (RT-6.14 step 2), not states of an agent: the
    card shows the agent's task with its state, and "waits on a human" when
    it has an open ask. The harness logo follows the card's harness: Claude
    Code, OpenCode, Cursor, Codex, pi, else "other".
 
-6. **Kanban.** One card per agent, in the column of its state.
-   - **On the card:** name, task, role, `for` (with "autonomous"),
-     `trusts`, project, branch or PR, the first capabilities, harness logo
-     and model; the crown; `ctx`, the limits or the cost; the version; the
-     number of its open asks, those for the operator marked.
-   - **In the detail only:** the full card, the task rows it holds, the
-     session's age (its HELLO's time), the time since its last post (both
-     the NATS server's time), its HELLO thread and the threads of its open
-     asks.
+6. **Agents list** (a Kanban until the design of 2026-11-25). One compact
+   row per agent, in the order of the state words; above the table the open
+   asks, the operator's first. A search narrows the rows by any word of
+   name, task, branch, home, guest channels, harness, model or PR; a status
+   filter by group: working (`working`, `bus`), listening (`listening`,
+   `online`), idle (`idle`, `away`, `silent`), offline. A state the console
+   does not know is never guessed into a group: it shows under "All" and
+   under an "Other" filter, which appears while such an agent is there.
+   - **On the row:** name with the crown, harness and model; the state, and
+     "waits on you" when one of its open asks is the operator's; task;
+     branch or PR; home and the number of its guest channels; `ctx`; the
+     number of its open asks; the time since its last post.
+   - **In the detail only:** the full card (role, `for` with
+     "autonomous", `trusts`, project, capabilities, the limits or the
+     cost, the version among it), the task rows it holds, the session's
+     age (its HELLO's time), the time since its last post (both the NATS
+     server's time), its HELLO thread and the threads of its open asks.
    - **Not on the bus, so not shown until the bus carries it:** effort,
      sub-agents (they never use the bus), the running turn's duration
      (turns are noted only in the session's own counter file, RT-6.9 step
      1), the time in the current state (the presence stream keeps one
      message per subject, so no history; point 9).
-   - **Swimlanes** by home are optional and off at the start. A proposal to
-     tune with real numbers: lanes up to about eight homes, beyond that a
+   - **Grouping by home** is optional and off at the start. A proposal to
+     tune with real numbers: groups up to about eight homes, beyond that a
      filter by home.
 
 7. **Graph.** Nodes: people (the owners and trusted humans the roster
@@ -4332,7 +4357,7 @@ The console is the operators' view of the bus itself.
 
 11. **Stages.** None starts before the needs marked "before stage 1" in
     point 12 are met.
-    - **1, the smallest useful cut:** login, the Kanban with live states,
+    - **1, the smallest useful cut:** login, the agents with live states,
       the asks with "for me", the detail with thread and answer, and two
       reports (open asks, the bus's share per version; since the traffic
       counts the bus and coordination share and the bus traffic by
@@ -4441,7 +4466,7 @@ The console is the operators' view of the bus itself.
       set stays coarse.
     - **A process, not an agent.** An agent's name on NATS comes from its
       owner's anchor (ADR-016) and its host's key; with the key kept in memory, the default
-      (`MM_LOGIN_NKEY=ephemeral`, RT-6.34), every process is a new name,
+      (`CB_LOGIN_NKEY=ephemeral`, RT-6.34), every process is a new name,
       and the graph and any history break at every restart.
     - **The graph reads posts.** Task edges come from the posts the stream
       still has, and the transitive ones are an interpretation.
@@ -4877,7 +4902,7 @@ see the notes in them):
 | Login service, `token.Directory` (`services/auth/internal/token/directory.go`, checked in `checkChat` in `verify.go`) | An agent's owner is `preferred_username` from the Keycloak token, and the service assumes that exactly this name is the chat account: it looks it up in Mattermost and refuses when the account does not exist, is a bot, a guest or deactivated, or an OpenID account carries another `sub`. An account without OpenID is bound by its name alone (`token.NameBinding`, `binding.go`) |
 | Login service, `callout.Channels.Memberships` (`services/auth/internal/callout/service.go`, then fulfilled by `mattermost.Client`) | A host asks for channels; it is granted those in which the owner is a Mattermost member. Who may read a channel is thus decided by the chat's member list. Since RT-6.39 `directory.Channels` (`services/auth/internal/directory/channels.go`) fulfils the interface, with Mattermost only as the fallback until `meta.imported` |
 | Subjects on NATS | The channel token in `<bus>.ch.<channel>.<name>` is the channel's Mattermost name; a renamed or deleted channel changes what a subject means |
-| MCP server | `MM_TRUSTED_HUMANS` and an agent's owner are Mattermost usernames; over NATS a sender's trust list was empty. Since RT-6.41 the MCP server judges senders over NATS by the anchors the login service attests (RT-6.37 step 4) |
+| MCP server | `CB_TRUSTED_HUMANS` and an agent's owner are Mattermost usernames; over NATS a sender's trust list was empty. Since RT-6.41 the MCP server judges senders over NATS by the anchors the login service attests (RT-6.37 step 4) |
 | MCP server, inbound | What a human writes reaches an agent only through Mattermost; that it comes from a trusted human is said by the Mattermost server and later by the central adapter alone (ADR-014 point 10) |
 
 As long as that is so, the bus cannot run without Mattermost, not even for
@@ -4899,7 +4924,7 @@ source of identity and membership.
    account), and the binding is held in the directory (point 2). Owners and
    trust lists point to the Keycloak identity, not to a chat name.
    - **Transition:** today's names stay valid, through the binding. An
-     entry in `MM_TRUSTED_HUMANS` or an owner name is resolved to the
+     entry in `CB_TRUSTED_HUMANS` or an owner name is resolved to the
      identity through the Mattermost binding; a name without a binding
      names nobody and is reported, never guessed.
    - **Condition for the build: in doubt, foreign.** Before the build the
@@ -4991,7 +5016,7 @@ source of identity and membership.
      RT-6.11). The event's source changes nothing about that.
 
 4. **The login service attests trust lists.** When this was decided the
-   list stood as `MM_TRUSTED_HUMANS` on the host, and over NATS it was
+   list stood as `CB_TRUSTED_HUMANS` on the host, and over NATS it was
    empty for everyone else. New: the host names it when it connects, the
    login service resolves the names to identities (point 1), records them in
    the directory and passes them on as its word. The login service and the
@@ -5417,7 +5442,7 @@ registrar's functions can move in later without a second component.
        Alternative: accept the gap and log it. A lost approval then shows
        only as an ask that stays open.
    12. **The MCP server switches a channel to NATS on the bridge's own
-       signal, not on `MM_BRIDGE_BOT`.** Recommended: the bridge publishes
+       signal, not on `CB_MM_BRIDGE_BOT`.** Recommended: the bridge publishes
        `{"v":1, "home", "people":true, "iat", "exp"}` on
        `<presence>.bridge.<home>.v1` every minute, valid 3 minutes, but only
        while its WebSocket is connected and its catch-up (point 11) is done;
@@ -5429,9 +5454,9 @@ registrar's functions can move in later without a second component.
        on, so what came while the bridge was gone is not lost. At a switch
        both sides may deliver the same event once, and the server drops the
        second by its key, cleared by an event of the opposite kind (point 11). No new setting. Why: lab hosts set
-       `MM_BRIDGE_BOT` already for the first step, so with it as the switch
+       `CB_MM_BRIDGE_BOT` already for the first step, so with it as the switch
        an upgraded host before an upgraded bridge leaves people unheard,
-       silently. Alternative: `MM_BRIDGE_BOT` as the switch with a release
+       silently. Alternative: `CB_MM_BRIDGE_BOT` as the switch with a release
        order (point 13).
    13. **No upgrade order.** Recommended, following point 12: hosts and
        bridge upgrade in any order, since a host switches only when the
