@@ -37,7 +37,7 @@ export function Reports({ api, onFail }: { api: ConsoleApi; onFail: Fail }) {
       {reports.map((report) => (
         <section key={report.id} className="report">
           <header>
-            <h3>{report.title}</h3>
+            <h2>{report.title}</h2>
             <span className="report__window">{report.window}</span>
           </header>
           {report.warn && <p className="report__warn">warn: {report.warn}</p>}

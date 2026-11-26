@@ -18,9 +18,11 @@
   display: flex;
   justify-content: space-between;
   align-items: baseline;
+  gap: 10px;
 }
+.report h2 { min-width: 0; }
 
-.report h3 {
+.report h2 {
   margin: 0;
   font-size: 13px;
   font-weight: 600;
@@ -28,7 +30,7 @@
   letter-spacing: .05em;
   color: var(--muted);
 }
-.report__window { color: var(--muted); font-size: 11px; }
+.report__window { color: var(--muted); font-size: 11px; white-space: nowrap; flex: none; }
 
 .report__warn {
   margin: 0;
