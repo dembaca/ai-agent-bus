@@ -203,3 +203,53 @@ func TestNoPrefixIsTheInbox(t *testing.T) {
 		}
 	}
 }
+
+// RT-6.45: no agent may publish (or subscribe) on the STATS history's
+// subjects, whatever channels its credential carries: only the login
+// service's JetStream user writes the archive.
+func TestNoAgentMayPublishTheStatsArchive(t *testing.T) {
+	s := Config{Account: "BUS"}.WithDefaults().Subjects
+	if s.Archive != DefaultArchive || DefaultArchive != "stats-archive" {
+		t.Fatalf("archive default %q", s.Archive)
+	}
+	for _, chans := range [][]string{nil, {"home"}, {"home", "ga", "gb"}} {
+		p := s.permissions("agent-x", "alice", "home", chans)
+		for _, subject := range []string{"stats-archive.agent-x", "stats-archive.agent-y", "stats-archive.x.y"} {
+			for _, f := range p.Pub.Allow {
+				if match(f, subject) {
+					t.Errorf("channels %v: publish %s allows %s", chans, f, subject)
+				}
+			}
+			for _, f := range p.Sub.Allow {
+				if match(f, subject) {
+					t.Errorf("channels %v: subscribe %s allows %s", chans, f, subject)
+				}
+			}
+		}
+	}
+}
+
+// The STATS history's prefix (CB_AUTH_STATS_ARCHIVE_PREFIX, RT-6.45) is a
+// plain token of its own: not the deliver or inbox prefix, none of the other
+// three.
+func TestTheStatsArchivePrefixIsChecked(t *testing.T) {
+	ok := Config{Account: "BUS"}.WithDefaults()
+	if err := ok.check(); err != nil {
+		t.Fatal(err)
+	}
+	for name, edit := range map[string]func(*Config){
+		"dot":             func(c *Config) { c.Subjects.Archive = "a.b" },
+		"wildcard":        func(c *Config) { c.Subjects.Archive = ">" },
+		"deliver":         func(c *Config) { c.Subjects.Archive = DeliverPrefix },
+		"subject prefix":  func(c *Config) { c.Subjects.Archive = c.Subjects.Prefix },
+		"presence prefix": func(c *Config) { c.Subjects.Archive = c.Subjects.Presence },
+		"stats prefix":    func(c *Config) { c.Subjects.Archive = c.Subjects.Stats },
+		"inbox":           func(c *Config) { c.Subjects.Archive = "_INBOX" },
+	} {
+		c := ok
+		edit(&c)
+		if err := c.check(); err == nil || !strings.Contains(err.Error(), "archive prefix") && !strings.Contains(err.Error(), "inbox prefix") {
+			t.Errorf("%s: %v", name, err)
+		}
+	}
+}

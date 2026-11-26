@@ -932,6 +932,24 @@ func TestTheDocumentedMinimalRightsSuffice(t *testing.T) {
 	if err := mgr.EnsureStreams(ctx5(t)); err != nil {
 		t.Fatalf("EnsureStreams on existing streams: %v", err)
 	}
+	// The STATS history (RT-6.45): made, found again, its fill read, a line
+	// imported and the whole archive read back, with the documented rights.
+	for range 2 {
+		arch, err := mgr.EnsureArchive(ctx5(t), "", 0)
+		if err != nil {
+			t.Fatalf("EnsureArchive: %v", err)
+		}
+		if _, err := arch.Fill(ctx5(t)); err != nil {
+			t.Fatalf("archive fill: %v", err)
+		}
+		if err := arch.Put(ctx5(t), "agent-x", []byte(`{"sid":"0123456789ab","part":1}`), map[string]string{"Cb-Source": "mattermost-import"}); err != nil {
+			t.Fatalf("archive put: %v", err)
+		}
+		n := 0
+		if err := arch.ReadAll(ctx5(t), func() { n = 0 }, func([]byte) error { n++; return nil }); err != nil || n == 0 {
+			t.Fatalf("archive read: %d lines, %v", n, err)
+		}
+	}
 	ctx, cancel := context.WithCancel(context.Background())
 	t.Cleanup(cancel)
 	if err := mgr.WatchByes(ctx); err != nil {

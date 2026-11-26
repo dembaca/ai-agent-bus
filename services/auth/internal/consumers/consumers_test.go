@@ -122,6 +122,17 @@ func TestTheCreationRequestsPassTheCheck(t *testing.T) {
 			t.Errorf("%s: %v", stream, err)
 		}
 	}
+	// The archive (RT-6.45) passes its own check, and not the generic one.
+	var got map[string]any
+	if err := json.Unmarshal([]byte(ArchiveStreamJSON("stats-archive", "stats", 0)), &got); err != nil {
+		t.Fatal(err)
+	}
+	if err := checkArchive("stats-archive", "stats", got); err != nil {
+		t.Errorf("%s: %v", ArchiveStream, err)
+	}
+	if err := checkStream(StatsStream, "stats-archive.>", got); err == nil {
+		t.Errorf("the archive's request passes the generic check")
+	}
 }
 
 func cfg(edit func(*nats.ConsumerConfig)) nats.ConsumerConfig {

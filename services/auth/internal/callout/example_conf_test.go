@@ -386,6 +386,10 @@ func TestTheExampleServerConfiguration(t *testing.T) {
 				"$JS.API.CONSUMER.CREATE."+kv+".>", "$JS.API.CONSUMER.DELETE."+kv+".*",
 				"$JS.API.STREAM.MSG.GET.PRESENCE", "presence.attest.*.v1", "presence.notice.*.*.v1",
 				"presence.account.mattermost.*.v1")
+			// the STATS history (RT-6.45): its stream, its reading consumer, the import
+			pub = append(pub, "$JS.API.STREAM.CREATE."+consumers.ArchiveStream, "$JS.API.STREAM.INFO."+consumers.ArchiveStream,
+				"$JS.API.CONSUMER.*."+consumers.ArchiveStream, "$JS.API.CONSUMER.*."+consumers.ArchiveStream+".>",
+				consumers.DefaultArchivePrefix+".>")
 			p := u.Permissions
 			if p == nil || p.Publish == nil || p.Subscribe == nil {
 				t.Fatalf("the JetStream user has no permissions: %+v", p)
@@ -445,6 +449,18 @@ func TestTheExampleServerConfiguration(t *testing.T) {
 	}
 	if _, err := nc.Request("$JS.API.STREAM.INFO."+consumers.StatsStream, nil, 2*time.Second); err != nil {
 		t.Fatalf("STATS: %v", err)
+	}
+	// The STATS history (RT-6.45) is made, written and read with the
+	// example's rights.
+	arch, err := mgr.EnsureArchive(ctx5(t), "", 0)
+	if err != nil {
+		t.Fatalf("EnsureArchive: %v", err)
+	}
+	if err := arch.Put(ctx5(t), "agent-x", []byte(`{"sid":"0123456789ab","part":1}`), nil); err != nil {
+		t.Fatalf("archive put: %v", err)
+	}
+	if err := arch.ReadAll(ctx5(t), func() {}, func([]byte) error { return nil }); err != nil {
+		t.Fatalf("archive read: %v", err)
 	}
 	// The channel directory (ADR-016): the same user makes its bucket, opens
 	// it again, writes and reads it with exactly these rights.

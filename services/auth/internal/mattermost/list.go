@@ -6,6 +6,7 @@ import (
 	"net/url"
 	"strconv"
 	"strings"
+	"time"
 )
 
 const (
@@ -105,6 +106,74 @@ func (c *Client) ChannelMemberIDs(ctx context.Context, channelID string) ([]stri
 		ids = append(ids, m.UserID)
 	}
 	return ids, nil
+}
+
+// Post is a channel's post as the STATS import reads it (RT-6.45).
+type Post struct {
+	ID      string
+	Created time.Time // create_at, milliseconds on the server
+	UserID  string
+	Message string
+}
+
+const (
+	// postsPage keeps a page of posts well below the answer limit: a STATS
+	// line is at most 8 KiB.
+	postsPage = 60
+	maxPosts  = 100000
+)
+
+// ChannelPosts reads the posts of the team's channel by name, created at or
+// after since (the zero time: all), newest page first, each post once.
+// System posts are left out.
+func (c *Client) ChannelPosts(ctx context.Context, channelName string, since time.Time) ([]Post, error) {
+	id, err := c.channelID(ctx, channelName)
+	if err != nil {
+		return nil, fmt.Errorf("channel %q: %w", channelName, err)
+	}
+	type post struct {
+		ID       string `json:"id"`
+		CreateAt int64  `json:"create_at"`
+		DeleteAt int64  `json:"delete_at"`
+		UserID   string `json:"user_id"`
+		Type     string `json:"type"`
+		Message  string `json:"message"`
+	}
+	var out []Post
+	seen := map[string]bool{}
+	for page := 0; ; page++ {
+		var got struct {
+			Order []string        `json:"order"`
+			Posts map[string]post `json:"posts"`
+		}
+		path := "/api/v4/channels/" + url.PathEscape(id) + "/posts?page=" + strconv.Itoa(page) + "&per_page=" + strconv.Itoa(postsPage)
+		if err := c.get(ctx, path, &got); err != nil {
+			return nil, fmt.Errorf("posts of %q: %w", channelName, err)
+		}
+		older := false
+		for _, pid := range got.Order {
+			p, ok := got.Posts[pid]
+			if !ok || seen[pid] {
+				continue
+			}
+			seen[pid] = true
+			at := time.UnixMilli(p.CreateAt).UTC()
+			if at.Before(since) {
+				older = true
+				continue
+			}
+			if p.Type != "" || p.DeleteAt != 0 {
+				continue
+			}
+			out = append(out, Post{ID: p.ID, Created: at, UserID: p.UserID, Message: p.Message})
+		}
+		if len(seen) > maxPosts {
+			return nil, fmt.Errorf("%w: more than %d posts", ErrTooMany, maxPosts)
+		}
+		if len(got.Order) < postsPage || older {
+			return out, nil
+		}
+	}
 }
 
 // Users reads accounts by id (in batches of pageSize).

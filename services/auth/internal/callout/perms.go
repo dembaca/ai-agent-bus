@@ -44,6 +44,11 @@ type Subjects struct {
 	Prefix   string // subject prefix, a setting (ADR-014, point 2)
 	Presence string // presence and crown subject prefix, a setting like Prefix
 	Stats    string // STATS line subject prefix (CB_AUTH_STATS_PREFIX), a setting like Prefix
+	// Archive is the STATS history's subject prefix (CB_AUTH_STATS_ARCHIVE_PREFIX,
+	// RT-6.45). No credential gets any right on it: only the login service's
+	// JetStream user writes the archive. It is here to be checked against the
+	// three prefixes above.
+	Archive string
 }
 
 // token is a NATS subject token the bus uses: no wildcards, no dots, no

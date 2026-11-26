@@ -15,6 +15,7 @@ const (
 	DefaultPrefix     = "bus"
 	DefaultPresence   = "presence"
 	DefaultStats      = consumers.DefaultStatsPrefix
+	DefaultArchive    = consumers.DefaultArchivePrefix
 	// DeliverPrefix starts the subjects push consumers deliver to; fixed,
 	// and neither of the two prefixes may take it.
 	DeliverPrefix = "deliver"
@@ -54,6 +55,9 @@ func (c Config) WithDefaults() Config {
 	if c.Subjects.Stats == "" {
 		c.Subjects.Stats = DefaultStats
 	}
+	if c.Subjects.Archive == "" {
+		c.Subjects.Archive = DefaultArchive
+	}
 	if c.Timeout == 0 {
 		c.Timeout = DefaultTimeout
 	}
@@ -80,7 +84,7 @@ func (c Config) check() error {
 			return fmt.Errorf("callout: %s %q is the deliver prefix: an agent could publish onto deliver subjects", what, v)
 		}
 	}
-	for what, v := range map[string]string{"subject prefix": c.Subjects.Prefix, "presence prefix": c.Subjects.Presence, "stats prefix": c.Subjects.Stats} {
+	for what, v := range map[string]string{"subject prefix": c.Subjects.Prefix, "presence prefix": c.Subjects.Presence, "stats prefix": c.Subjects.Stats, "stats archive prefix": c.Subjects.Archive} {
 		if v == inboxPrefix {
 			return fmt.Errorf("callout: %s %q is the inbox prefix: an agent could publish onto replies", what, v)
 		}
@@ -89,6 +93,9 @@ func (c Config) check() error {
 		return fmt.Errorf("callout: presence prefix %q must differ from the subject prefix (they would overlap)", c.Subjects.Presence)
 	}
 	if err := c.Subjects.checkStats(); err != nil {
+		return err
+	}
+	if err := c.Subjects.checkArchive(); err != nil {
 		return err
 	}
 	if c.Timeout <= 0 || c.Timeout > 10*time.Second {
@@ -108,6 +115,22 @@ func (s Subjects) checkStats() error {
 		return fmt.Errorf("callout: stats prefix %q is the deliver prefix: an agent could publish onto deliver subjects", s.Stats)
 	case s.Stats == s.Prefix || s.Stats == s.Presence:
 		return fmt.Errorf("callout: stats prefix %q must differ from the subject and the presence prefix (they would overlap)", s.Stats)
+	}
+	return nil
+}
+
+// checkArchive checks the STATS history's prefix (RT-6.45) like the STATS
+// prefix: a plain token, not the deliver prefix, and none of the other three:
+// an agent's STATS right would otherwise reach the archive, or the archive's
+// source copy its own lines.
+func (s Subjects) checkArchive() error {
+	switch {
+	case s.Archive == "" || !plain(s.Archive):
+		return fmt.Errorf("callout: stats archive prefix %q: letters, digits, - and _ only", s.Archive)
+	case s.Archive == DeliverPrefix:
+		return fmt.Errorf("callout: stats archive prefix %q is the deliver prefix", s.Archive)
+	case s.Archive == s.Prefix || s.Archive == s.Presence || s.Archive == s.Stats:
+		return fmt.Errorf("callout: stats archive prefix %q must differ from the subject, the presence and the stats prefix", s.Archive)
 	}
 	return nil
 }

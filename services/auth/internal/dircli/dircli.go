@@ -45,6 +45,7 @@ commands:
   members add <channel> <sub>...      add members
   members rm <channel> <sub>...       remove members
   import                              copy the Mattermost channels once
+  stats-import                        copy the stats channel's STATS lines into the STATS history (repeatable)
   pending                             list the pending name claims
   confirm <name>                      confirm a pending name claim
   drop <name>                         delete a pending name claim
@@ -227,7 +228,7 @@ func (c *cli) check(pos []string) error {
 		return nil
 	}
 	switch pos[0] {
-	case "ls", "import", "pending":
+	case "ls", "import", "stats-import", "pending":
 		return need(0, true)
 	case "show", "confirm", "drop", "create":
 		return need(1, true)
@@ -718,6 +719,12 @@ func (c *cli) command(pos []string) error {
 			return err
 		}
 		return c.printImport(r)
+	case "stats-import":
+		r, err := c.call("POST", "/v1/stats/import", nil, nil)
+		if err != nil {
+			return err
+		}
+		return c.printStatsImport(r)
 	case "pending":
 		ps, r, err := c.pending()
 		if err != nil {
@@ -917,6 +924,34 @@ func (c *cli) printImport(r reply) error {
 	}
 	if rep.Next != "" {
 		fmt.Fprintf(c.out, "next: %s\n", clean(rep.Next))
+	}
+	return nil
+}
+
+// printStatsImport prints the STATS import's report (RT-6.45).
+func (c *cli) printStatsImport(r reply) error {
+	if c.s.json {
+		return c.raw(r.body)
+	}
+	var rep struct {
+		Read             int    `json:"read"`
+		Imported         int    `json:"imported"`
+		NotStats         int    `json:"not_stats"`
+		SkippedDuplicate int    `json:"skipped_duplicate"`
+		SkippedInvalid   int    `json:"skipped_invalid"`
+		SkippedTooBig    int    `json:"skipped_too_big"`
+		SkippedName      int    `json:"skipped_name"`
+		Oldest           string `json:"oldest"`
+		Newest           string `json:"newest"`
+	}
+	if err := json.Unmarshal(r.body, &rep); err != nil {
+		return errors.New("the API's answer is not a stats import report")
+	}
+	fmt.Fprintf(c.out, "posts read %d, lines imported %d, posts without a STATS line %d\n", rep.Read, rep.Imported, rep.NotStats)
+	fmt.Fprintf(c.out, "skipped: already in the archive %d, not a valid line %d, too big %d, no agent name %d\n",
+		rep.SkippedDuplicate, rep.SkippedInvalid, rep.SkippedTooBig, rep.SkippedName)
+	if rep.Oldest != "" {
+		fmt.Fprintf(c.out, "imported lines from %s to %s\n", clean(rep.Oldest), clean(rep.Newest))
 	}
 	return nil
 }

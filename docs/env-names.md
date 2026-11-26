@@ -305,7 +305,7 @@ each component's pull request renames its own reads.
 | `MM_RESPONSIBLE_HUMAN` | `CB_RESPONSIBLE_HUMAN` | no | `attest.py`, `login.py`, `owners.py`, `profile.py`, `server.py`; `adapters/corral/10-mm-session-start.sh`, `bin/mm-agent-lib.sh` | |
 | `MM_SESSION_KEEP_SEC` | `CB_SESSION_KEEP_SEC` | no | `client.py`, `server.py`, `session_file.py`; `adapters/corral/10-mm-session-start.sh`, `bin/mm-agent-lib.sh`, `bin/mm-agent-sweep.sh` | |
 | `MM_STALL_SEC` | `CB_STALL_SEC` | no | `stall.py` | |
-| `MM_STATS_CHANNEL` | `CB_MM_STATS_CHANNEL` | yes | `server.py`, `stats.py`; `adapters/corral/10-mm-session-start.sh`, `bin/mm-agent-lib.sh`, `bin/mm-agent-stats.sh` | the Mattermost channel; over NATS the login service's stats prefix counts |
+| `MM_STATS_CHANNEL` | `CB_MM_STATS_CHANNEL` | yes | `server.py`, `stats.py`; `adapters/corral/10-mm-session-start.sh`, `bin/mm-agent-lib.sh`, `bin/mm-agent-stats.sh`; `services/auth` (`internal/app/callout.go`) | the Mattermost channel; over NATS the login service's stats prefix counts; the login service's STATS import reads this channel (RT-6.45) |
 | `MM_TEAM` | `CB_MM_TEAM` | yes | `client.py`, `session_file.py`; `adapters/corral/10-mm-session-start.sh`, `bin/mm-agent-channels.sh`, `bin/mm-agent-lib.sh`, `bin/mm-agent-poll.sh`, `testrig/src/bus_testrig/bus.py` | |
 | `MM_TRUSTED_HUMAN_USER_IDS` | `CB_MM_TRUSTED_HUMAN_USER_IDS` | yes | `client.py`, `owners.py`, `permission.py`; `adapters/corral/10-mm-session-start.sh` | Mattermost user ids |
 | `MM_TRUSTED_HUMANS` | `CB_TRUSTED_HUMANS` | no | `attest.py`, `client.py`, `compose.py`, `login.py`, `natsbus.py`, `owners.py`, `permission.py`, `profile.py`, `server.py`; `adapters/corral/10-mm-session-start.sh`, `bin/mm-agent-lib.sh`, `services/auth/internal/callout/service.go`, `services/auth/internal/directory/directory.go` | human names; the NATS side reads them too |
@@ -409,13 +409,16 @@ name with `MM_` for `CB_`):
   `MM_RR_KEYS`, `MM_RR_KID`, `MM_RR_STATUS`, `MM_RR_VERSION`, `MM_RR_WHY`
   (the registrar's release record).
 
-### The login service and authd (45)
+### The login service and authd (47)
 
 All in `services/auth/`. Its binary `authd` runs the service; its directory
 commands read the two `AUTHD_` names and two of the service's names (noted).
 Besides the files a row lists, every name here appears in the service's
 rename table `internal/envname/envname.go`, which maps each new name to its
-old one.
+old one. Two rows differ: `CB_AUTH_STATS_ARCHIVE_PREFIX` is new and has no
+old name (both columns give the new one), and `CB_MM_STATS_CHANNEL` is the
+MCP server's setting, listed with it above, which the login service reads by
+the same rule for its STATS import (RT-6.45).
 
 | Old name | New name | Mattermost | Where it appears | Note |
 |---|---|---|---|---|
@@ -458,12 +461,14 @@ old one.
 | `AUTH_PRESENCE_PREFIX` | `CB_AUTH_PRESENCE_PREFIX` | no | `internal/app/callout.go` | |
 | `AUTH_REQUEST_TIMEOUT` | `CB_AUTH_REQUEST_TIMEOUT` | no | `internal/app/callout.go` | |
 | `AUTH_SHUTDOWN_TIMEOUT` | `CB_AUTH_SHUTDOWN_TIMEOUT` | no | `internal/config/config.go` | |
+| `CB_AUTH_STATS_ARCHIVE_PREFIX` | `CB_AUTH_STATS_ARCHIVE_PREFIX` | no | `internal/app/callout.go`, `internal/callout/config.go`, `internal/consumers/streams.go` | new with #196: no old spelling; the STATS history's subject prefix, default `stats-archive` (RT-6.45) |
 | `AUTH_STATS_PREFIX` | `CB_AUTH_STATS_PREFIX` | no | `internal/app/callout.go`, `internal/callout/perms.go`, `internal/consumers/streams.go`; a comment in `natsbus.py` | |
 | `AUTH_SUBJECT_PREFIX` | `CB_AUTH_SUBJECT_PREFIX` | no | `internal/app/callout.go` | |
 | `AUTH_TOKEN_LEEWAY` | `CB_AUTH_TOKEN_LEEWAY` | no | `internal/app/callout.go` | |
 | `AUTH_XKEY_SEED_FILE` | `CB_AUTH_XKEY_SEED_FILE` | no | `internal/app/callout.go` | |
 | `AUTHD_DIR_API` | `CB_AUTHD_DIR_API` | no | `internal/dircli/dircli.go` | `authd` only |
 | `AUTHD_DIR_CA_FILE` | `CB_AUTHD_DIR_CA_FILE` | no | `internal/dircli/dircli.go` | `authd` only |
+| `MM_STATS_CHANNEL` | `CB_MM_STATS_CHANNEL` | yes | `internal/app/callout.go` | the MCP server's setting (above), read the same way: the channel the STATS import reads (RT-6.45); off, none, 0, false or empty turn the import off |
 
 `services/auth/nats-server.example.conf` names several of them in comments;
 it changes with the service.

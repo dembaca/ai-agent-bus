@@ -88,7 +88,8 @@ accounts {
       publish: [ "$JS.API.STREAM.CREATE.BUS", "$JS.API.STREAM.INFO.BUS", "$JS.API.CONSUMER.*.BUS", "$JS.API.CONSUMER.*.BUS.>",
         "$JS.API.STREAM.CREATE.PRESENCE", "$JS.API.STREAM.INFO.PRESENCE", "$JS.API.CONSUMER.*.PRESENCE", "$JS.API.CONSUMER.*.PRESENCE.>", "$JS.API.STREAM.CREATE.STATS", "$JS.API.STREAM.INFO.STATS", "$JS.API.CONSUMER.*.STATS", "$JS.API.CONSUMER.*.STATS.>", "presence.person.*.v1", "$JS.API.STREAM.MSG.GET.PRESENCE", "presence.attest.*.v1", "presence.notice.*.*.v1", "presence.account.mattermost.*.v1",
         "$JS.API.INFO", "$JS.API.STREAM.CREATE.KV_BUS_DIRECTORY", "$JS.API.STREAM.INFO.KV_BUS_DIRECTORY", "$JS.API.DIRECT.GET.KV_BUS_DIRECTORY.>", "$KV.BUS_DIRECTORY.>",
-        "$JS.API.CONSUMER.CREATE.KV_BUS_DIRECTORY.>", "$JS.API.CONSUMER.DELETE.KV_BUS_DIRECTORY.*" ]
+        "$JS.API.CONSUMER.CREATE.KV_BUS_DIRECTORY.>", "$JS.API.CONSUMER.DELETE.KV_BUS_DIRECTORY.*",
+        "$JS.API.STREAM.CREATE.STATS_ARCHIVE", "$JS.API.STREAM.INFO.STATS_ARCHIVE", "$JS.API.CONSUMER.*.STATS_ARCHIVE", "$JS.API.CONSUMER.*.STATS_ARCHIVE.>", "stats-archive.>" ]
       subscribe: [ "_INBOX.>" ] } },
     # The same without the right to publish attestations: a refused publish
     # must refuse the login (RT-6.41).

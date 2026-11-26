@@ -160,6 +160,8 @@ func (r *rig) serveAPI(w http.ResponseWriter, req *http.Request) {
 	case p == "/v1/directory/import":
 		_, _ = io.WriteString(w, `{"channels_created":["a","b"],"channels_updated":[],"channels_skipped":[{"name":"x","reason":"bad name"}],`+
 			`"identities":3,"members_added":4,"pending_added":1,"accounts_skipped":[{"username":"bob","reason":"password account"}],"next":"set CB_AUTH_DIRECTORY_IMPORTED=true and restart"}`)
+	case p == "/v1/stats/import": // RT-6.45
+		_, _ = io.WriteString(w, `{"read":9,"imported":3,"not_stats":1,"skipped_duplicate":2,"skipped_invalid":1,"skipped_too_big":1,"skipped_name":1,"oldest":"2026-09-01T12:00:00Z","newest":"2026-11-20T08:00:00Z"}`)
 	case p == "/v1/directory/pending":
 		_, _ = io.WriteString(w, r.pend)
 	case req.Method == "DELETE" && strings.HasPrefix(p, "/v1/directory/pending/"):
@@ -293,6 +295,7 @@ func TestCommands(t *testing.T) {
 		{"members add", []string{"members", "add", "dev team", "s1", "s2"}, "PATCH", "/v1/directory/channels/dev%20team/members", `"5"`, "", `{"add":["s1","s2"],"remove":[]}`},
 		{"members rm", []string{"members", "rm", "dev team", "m1"}, "PATCH", "/v1/directory/channels/dev%20team/members", `"5"`, "", `{"add":[],"remove":["m1"]}`},
 		{"import", []string{"import"}, "POST", "/v1/directory/import", "", "", ""},
+		{"stats-import", []string{"stats-import"}, "POST", "/v1/stats/import", "", "", ""},
 		{"pending", []string{"pending"}, "GET", "/v1/directory/pending", "", "", ""},
 		{"confirm", []string{"confirm", "alice"}, "POST", "/v1/directory/pending/alice/confirm", `"7"`, "", ""},
 	}
@@ -310,6 +313,13 @@ func TestCommands(t *testing.T) {
 			}
 			if tc.name == "import" {
 				for _, s := range []string{"created 2", "skipped channel x: bad name", "skipped account bob: password account", "next: set CB_AUTH_DIRECTORY_IMPORTED=true"} {
+					if !strings.Contains(out, s) {
+						t.Fatalf("report lacks %q: %q", s, out)
+					}
+				}
+			}
+			if tc.name == "stats-import" {
+				for _, s := range []string{"posts read 9, lines imported 3, posts without a STATS line 1", "already in the archive 2, not a valid line 1, too big 1, no agent name 1", "from 2026-09-01T12:00:00Z to 2026-11-20T08:00:00Z"} {
 					if !strings.Contains(out, s) {
 						t.Fatalf("report lacks %q: %q", s, out)
 					}
@@ -358,12 +368,12 @@ func TestConflictAndErrors(t *testing.T) {
 
 func TestUsageErrors(t *testing.T) {
 	r := newRig(t)
-	for _, args := range [][]string{{}, {"nope"}, {"show"}, {"public", "x", "maybe"}, {"members", "add", "x"}, {"ls", "--public"}, {"--bogus", "ls"}} {
+	for _, args := range [][]string{{}, {"nope"}, {"show"}, {"public", "x", "maybe"}, {"members", "add", "x"}, {"ls", "--public"}, {"--bogus", "ls"}, {"stats-import", "x"}} {
 		if code, _, _ := r.do(args...); code != 2 {
 			t.Fatalf("%v: exit %d", args, code)
 		}
 	}
-	if code, out, _ := r.do("-h"); code != 0 || !strings.Contains(out, "usage: authd dir") {
+	if code, out, _ := r.do("-h"); code != 0 || !strings.Contains(out, "usage: authd dir") || !strings.Contains(out, "stats-import ") {
 		t.Fatalf("-h: exit %d %q", code, out)
 	}
 	var out, errb bytes.Buffer

@@ -77,6 +77,10 @@ type Settings struct {
 	// DirectoryAdminGroup is the token group that makes a directory admin
 	// (CB_AUTH_DIRECTORY_ADMIN_GROUP); required with AdminListenAddr.
 	DirectoryAdminGroup string
+	// StatsChannel is the stats channel the STATS import reads (RT-6.45,
+	// CB_MM_STATS_CHANNEL as the MCP server reads it: default agents-stats,
+	// off, none, 0, false or empty: no import).
+	StatsChannel string
 }
 
 // LoadSettings reads the callout's settings, by their CB_AUTH_ names with the
@@ -131,7 +135,8 @@ func LoadSettings(env *envname.Env) (Settings, bool, error) {
 		Account:    get("CB_AUTH_ACCOUNT"),
 		Lobby:      get("CB_AUTH_LOBBY"),
 		NamePrefix: get("CB_AUTH_NAME_PREFIX"),
-		Subjects:   callout.Subjects{Prefix: get("CB_AUTH_SUBJECT_PREFIX"), Presence: get("CB_AUTH_PRESENCE_PREFIX"), Stats: get("CB_AUTH_STATS_PREFIX")},
+		Subjects: callout.Subjects{Prefix: get("CB_AUTH_SUBJECT_PREFIX"), Presence: get("CB_AUTH_PRESENCE_PREFIX"), Stats: get("CB_AUTH_STATS_PREFIX"),
+			Archive: get("CB_AUTH_STATS_ARCHIVE_PREFIX")},
 	}
 	s.Token = token.Config{
 		Issuer:        get("CB_AUTH_KEYCLOAK_ISSUER"),
@@ -157,6 +162,7 @@ func LoadSettings(env *envname.Env) (Settings, bool, error) {
 	s.AdminTLSCertFile = get("CB_AUTH_ADMIN_TLS_CERT_FILE")
 	s.AdminTLSKeyFile = get("CB_AUTH_ADMIN_TLS_KEY_FILE")
 	s.DirectoryAdminGroup = get("CB_AUTH_DIRECTORY_ADMIN_GROUP")
+	s.StatsChannel = statsChannel(env)
 	if err := adminSettings(s); err != nil {
 		return Settings{}, true, err
 	}
@@ -351,6 +357,13 @@ func RunCallout(ctx context.Context, s Settings, log *slog.Logger) error {
 	if err := mgr.EnsureStreams(startCtx); err != nil {
 		return fmt.Errorf("streams: %w", err)
 	}
+	// The STATS history (RT-6.45): the archive stream, which copies every
+	// STATS line by itself, and a look at its fill now and every hour.
+	archive, err := mgr.EnsureArchive(startCtx, s.Callout.Subjects.Archive, 0)
+	if err != nil {
+		return fmt.Errorf("streams: %w", err)
+	}
+	archive.WatchFill(ctx, time.Hour)
 	// The console's unattended metrics page (#158): its two consumers are
 	// made at this start and kept, idempotent, like every consumer of the
 	// bus — the console's service account itself has no JetStream right.
@@ -409,7 +422,11 @@ func RunCallout(ctx context.Context, s Settings, log *slog.Logger) error {
 		if binding == "" {
 			binding = "open"
 		}
-		h, err := admin.New(admin.Config{AdminGroup: s.DirectoryAdminGroup, NameBinding: binding, Log: log}, v, dir, mm)
+		acfg := admin.Config{AdminGroup: s.DirectoryAdminGroup, NameBinding: binding, Log: log}
+		if s.StatsChannel != "" { // the STATS import (RT-6.45)
+			acfg.Stats = &admin.StatsImport{Channel: s.StatsChannel, Source: mm, Store: archive}
+		}
+		h, err := admin.New(acfg, v, dir, mm)
 		if err != nil {
 			return fmt.Errorf("%w: %v", ErrConfig, err)
 		}
@@ -418,7 +435,7 @@ func RunCallout(ctx context.Context, s Settings, log *slog.Logger) error {
 		}
 	}
 	svc.SetConsumers(mgr)
-	log.Info("consumer management on", "bus", s.Callout.Subjects.Prefix, "presence", s.Callout.Subjects.Presence, "stats", s.Callout.Subjects.Stats)
+	log.Info("consumer management on", "bus", s.Callout.Subjects.Prefix, "presence", s.Callout.Subjects.Presence, "stats", s.Callout.Subjects.Stats, "stats archive", archive.Prefix())
 	log.Info("auth callout serving", "account", s.Callout.Account, "binding", s.Binding)
 	if adminErr != nil {
 		go func() {
@@ -582,4 +599,23 @@ func metricsTick(ctx context.Context, mgr *consumers.Manager, log *slog.Logger,
 			}
 		}
 	}()
+}
+
+// defaultStatsChannel is the MCP server's default stats channel.
+const defaultStatsChannel = "agents-stats"
+
+// statsChannel reads CB_MM_STATS_CHANNEL the way the MCP server does
+// (stats.channel()): unset gives agents-stats, a leading ~ goes, and off,
+// none, 0, false or empty switch the STATS import off ("").
+func statsChannel(env *envname.Env) string {
+	v, set, _ := env.Get("CB_MM_STATS_CHANNEL") // checked in LoadSettings
+	if !set {
+		v = defaultStatsChannel
+	}
+	v = strings.TrimLeft(strings.TrimSpace(v), "~")
+	switch strings.ToLower(v) {
+	case "", "off", "none", "0", "false":
+		return ""
+	}
+	return v
 }
