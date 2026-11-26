@@ -23,7 +23,7 @@ from __future__ import annotations
 import logging
 import time
 from dataclasses import dataclass, field
-from typing import Any
+from typing import Any, Callable
 
 from mattermost_ai_agent_bus import natsbus
 from mattermost_ai_agent_bus.natsbus import (
@@ -64,7 +64,8 @@ class Fleet:
     _asks: dict[str, tuple[int, float, str, AskRecord]] = field(default_factory=dict)
     # agent -> Attestation (the login service's record, RT-6.41)
     _attests: dict[str, tuple[int, float, Attestation]] = field(default_factory=dict)
-    refusals: int = 0   # records the strict decoders refused, dropped whole (#158)
+    refusals: int = 0   # records the strict decoders refused, dropped whole
+    count: Callable[[], None] | None = None   # the process-wide counter (#158)
     _presence_cseq: int = 0
     _server_now: float = 0.0
     # the clocks beside each server stamp: (server time, monotonic time)
@@ -175,6 +176,8 @@ class Fleet:
                 except Exception:
                     # dropped whole (RT-6.43 step 6), the warning carries none of it
                     self.refusals += 1
+                    if self.count is not None:
+                        self.count()
                     log.warning("console: an ask record of %s dropped: not format v1 or past its bounds", t[3])
                     return False
                 seq0, at0, _h, _r = self._asks.get(t[3], (0, 0.0, "", record))
@@ -194,6 +197,8 @@ class Fleet:
             # One unreadable message never ends the view (as NatsBus logs it);
             # a record outside the rules is dropped whole, counted, not shown.
             self.refusals += 1
+            if self.count is not None:
+                self.count()
             return False
         return False
 

@@ -33,11 +33,17 @@ if TYPE_CHECKING:  # for the type-checker only; no runtime import
 
 WEEK_SEC = 7 * 86400
 
-# The bounded label sets (every label value comes from one of these):
-# the presence claim's state words and the columns the view adds.
-STATES = ("online", "away", "idle", "listening", "working", "bus", "offline", "off",
-          "waiting")
+# The bounded label sets (every label value comes from one of these): the
+# agents' presence state words (the columns the view adds among them), and
+# the session readers' own connection states (the word before a ": ..." tail).
+STATES = ("online", "away", "idle", "listening", "working", "bus", "offline")
+READER_STATES = ("connecting", "reading", "waiting", "ended", "off")
 UNKNOWN = "other"
+
+# The newest versions the tokens-by-category page keeps as their own label;
+# older ones count as "other" (a hostile publisher must not be able to mint
+# series without bound on the version pattern alone).
+MAX_VERSIONS = 8
 
 # The routes requests are counted by: the api's own paths, the flows and
 # the fixed assets; anything with a variable tail is its bucket, anything
@@ -62,19 +68,33 @@ def route_bucket(path: str, health: str = "") -> str:
 
 
 class Telemetry:
-    """The console's own request counters, written on the event loop."""
+    """The console's own counters, written on the event loop. All of them are
+    **process-wide** — counted at the event, never summed over the sessions
+    that happen to be open, so no logout resets a series to a false spike."""
 
     def __init__(self) -> None:
-        # (route, method, status) → count; the keys come from the bounded sets
         self.requests: dict[tuple[str, str, int], int] = defaultdict(int)
+        self.happens: dict[str, int] = defaultdict(int)    # named events
 
     def note(self, route: str, method: str, status: int) -> None:
         """One served request, by its bucket, method and status."""
         self.requests[(route, method, status)] += 1
 
+    # What a session's reading counted at its event (never read out of a
+    # view: a session's end must not drop a series). The keys are the
+    # named events of the metrics page.
+    EVENTS = ("bus_connect", "credential_renewal", "credential_renewal_failure",
+              "stats_line_refused", "fleet_record_refused")
+
+    def note_event(self, name: str) -> None:
+        """One named event (see EVENTS), counted as it happens."""
+        assert name in self.EVENTS
+        self.happens[name] += 1
+
     def render(self) -> list[str]:
         """The counter series, one line each, in order."""
-        return [f'console_http_requests_total{{route="{r}",method="{m}",status="{s}"}} {n}'
+        return [f'choirbus_console_http_requests_total{{route="{r}",method="{m}",'
+                f'status="{s}"}} {n}'
                 for (r, m, s), n in sorted(self.requests.items())]
 
 
@@ -97,18 +117,30 @@ def _agents(fleet: Any) -> list[str]:
     by: dict[tuple[str, str], int] = defaultdict(int)
     for card in fleet.cards():
         by[(_word(card.get("state"), STATES), _word(card.get("harness"), mcp_stats.RUNTIMES))] += 1
-    return [f'bus_agents{{state="{_escape(s)}",harness="{_escape(h)}"}} {n}'
+    return [f'choirbus_bus_agents{{state="{_escape(s)}",harness="{_escape(h)}"}} {n}'
             for (s, h), n in sorted(by.items())]
 
 
 def _tokens(book: Any) -> list[str]:
     """The tokens by category of the last 7 days, per version and harness —
-    the tab's stacked bars, one series each, an estimate (RT-6.9 step 2)."""
+    the tab's stacked bars, one series each, an estimate (RT-6.9 step 2).
+    Only the newest MAX_VERSIONS versions keep their own label; an older one —
+    or a hostile mint of many — counts as other, so the version pattern alone
+    can mint no series (a bounded page whatever a publisher sends)."""
     groups: dict[tuple[str, str], list[dict[str, Any]]] = defaultdict(list)
-    for _at, _seq, line in book.within(WEEK_SEC):
-        groups[(str(line.get("v") or UNKNOWN), str(line.get("rt") or UNKNOWN))].append(line)
+    newest_line: dict[str, float] = defaultdict(float)
+    for at, _seq, line in book.within(WEEK_SEC):
+        version = str(line.get("v") or UNKNOWN)
+        groups[(version, str(line.get("rt") or UNKNOWN))].append(line)
+        newest_line[version] = max(newest_line[version], float(at))
+    newest = set(sorted(newest_line, key=lambda v: newest_line[v], reverse=True)[:MAX_VERSIONS])
+    folded: dict[tuple[str, str], list[dict[str, Any]]] = defaultdict(list)
+    for (version, harness), group in groups.items():
+        # one "other" bucket per harness: the capped versions merge, so a
+        # series never repeats (one series per name and labels)
+        folded[(version if version in newest else UNKNOWN, harness)].extend(group)
     out: list[str] = []
-    for (version, harness), group in sorted(groups.items()):
+    for (version, harness), group in sorted(folded.items()):
         if harness != UNKNOWN and harness not in mcp_stats.RUNTIMES:
             harness = UNKNOWN
         try:
@@ -120,9 +152,19 @@ def _tokens(book: Any) -> list[str]:
         for category in mcp_stats.SPLIT_CATEGORIES:
             value = (split.get("eq") or {}).get(category)
             if value is not None:
-                out.append(f'bus_tokens_eq{{category="{category}",version="{_escape(version)}",'
+                out.append(f'choirbus_bus_tokens_eq{{category="{category}",'
+                           f'version="{_escape(version)}",'
                            f'harness="{_escape(harness)}"}} {value}')
     return out
+
+
+def reading(view: "View") -> bool:
+    """Whether the view's own reading is live: its reader connected, no
+    waiting state before it. Nothing else serves agent series — a waiting
+    or ended reader shows none at all rather than numbers that stand still
+    (n/a omitted, never 0)."""
+    r = view.reader
+    return r is not None and r.state == "reading"
 
 
 def render(tel: Telemetry, sessions: int, streams: int,
@@ -131,63 +173,74 @@ def render(tel: Telemetry, sessions: int, streams: int,
     numbers of the scrape session's own reading — the fleet and the STATS
     book its consumers deliver, the same data the Reports/Stats tab shows
     that operator. Counters can only grow under a scraper that polls."""
-    connects = sum(r.connects for r in readers)
-    renewals = sum(getattr(r, "renewals", 0) for r in readers)
-    failures = sum(getattr(r, "renewal_failures", 0) for r in readers)
     by_state: dict[str, int] = defaultdict(int)
     for reader in readers:
-        by_state[_word(reader.state, STATES)] += 1
-    refused_stats = int(getattr(view.stats, "refusals", 0) or 0)
-    refused_records = int(getattr(view.fleet, "refusals", 0) or 0)
+        by_state[_word(reader.state, READER_STATES)] += 1
+    happens = tel.happens
 
     lines = [
-        "# HELP console_http_requests_total HTTP requests by bucketed route, method and status.",
-        "# TYPE console_http_requests_total counter",
+        "# HELP choirbus_console_http_requests_total HTTP requests served,"
+        " by bucketed route, method and status. Requests the transport"
+        " refuses before any handler (a flood, a too-large head) are not"
+        " counted.",
+        "# TYPE choirbus_console_http_requests_total counter",
         *tel.render(),
-        "# HELP console_sessions_open Operator sessions held.",
-        "# TYPE console_sessions_open gauge",
-        f"console_sessions_open {sessions}",
-        "# HELP console_sse_streams_open Open fleet streams (server-sent events).",
-        "# TYPE console_sse_streams_open gauge",
-        f"console_sse_streams_open {streams}",
-        "# HELP console_bus_readers The session readers' NATS connection state.",
-        "# TYPE console_bus_readers gauge",
-        *[f'console_bus_readers{{state="{_escape(s)}"}} {n}' for s, n in sorted(by_state.items())],
-        "# HELP console_bus_connects_total NATS connections the session readers established.",
-        "# TYPE console_bus_connects_total counter",
-        f"console_bus_connects_total {connects}",
-        "# HELP console_credential_renewals_total Operator credentials renewed (RT-6.43).",
-        "# TYPE console_credential_renewals_total counter",
-        f"console_credential_renewals_total {renewals}",
-        "# HELP console_credential_renewal_failures_total Operator credential renewals"
-        " that failed and are retried (RT-6.43).",
-        "# TYPE console_credential_renewal_failures_total counter",
-        f"console_credential_renewal_failures_total {failures}",
-        "# HELP console_stats_lines_refused_total STATS lines the strict decoder"
-        " refused (dropped whole, RT-6.43 step 8).",
-        "# TYPE console_stats_lines_refused_total counter",
-        f"console_stats_lines_refused_total {refused_stats}",
-        "# HELP console_fleet_records_refused_total Presence records the strict decoder"
-        " refused (dropped whole, RT-6.43 step 6).",
-        "# TYPE console_fleet_records_refused_total counter",
-        f"console_fleet_records_refused_total {refused_records}",
+        "# HELP choirbus_console_sessions_open Operator sessions held.",
+        "# TYPE choirbus_console_sessions_open gauge",
+        f"choirbus_console_sessions_open {sessions}",
+        "# HELP choirbus_console_sse_streams_open Open fleet streams"
+        " (server-sent events).",
+        "# TYPE choirbus_console_sse_streams_open gauge",
+        f"choirbus_console_sse_streams_open {streams}",
+        "# HELP choirbus_console_bus_readers The session readers' NATS connection"
+        " states: connecting, reading, waiting (the reason on its tail) or end.",
+        "# TYPE choirbus_console_bus_readers gauge",
+        *[f'choirbus_console_bus_readers{{state="{_escape(s)}"}} {n}'
+          for s, n in sorted(by_state.items())],
+        "# HELP choirbus_console_bus_connects_total NATS connections the session"
+        " readers established (RT-6.43), counted process-wide at the event.",
+        "# TYPE choirbus_console_bus_connects_total counter",
+        f'choirbus_console_bus_connects_total {happens["bus_connect"]}',
+        "# HELP choirbus_console_credential_renewals_total Operator credentials"
+        " renewed (RT-6.43), counted process-wide at the event.",
+        "# TYPE choirbus_console_credential_renewals_total counter",
+        f'choirbus_console_credential_renewals_total {happens["credential_renewal"]}',
+        "# HELP choirbus_console_credential_renewal_failures_total Operator"
+        " credential renewals that failed and are retried (RT-6.43),"
+        " counted process-wide at the event.",
+        "# TYPE choirbus_console_credential_renewal_failures_total counter",
+        f'choirbus_console_credential_renewal_failures_total'
+        f' {happens["credential_renewal_failure"]}',
+        "# HELP choirbus_console_stats_lines_refused_total STATS lines the strict"
+        " decoder refused (dropped whole, RT-6.43 step 8), counted where they drop.",
+        "# TYPE choirbus_console_stats_lines_refused_total counter",
+        f'choirbus_console_stats_lines_refused_total {happens["stats_line_refused"]}',
+        "# HELP choirbus_console_fleet_records_refused_total Presence or ask records"
+        " the strict decoder refused (dropped whole, RT-6.43 step 6), counted where"
+        " they drop.",
+        "# TYPE choirbus_console_fleet_records_refused_total counter",
+        f'choirbus_console_fleet_records_refused_total {happens["fleet_record_refused"]}',
         "",
-        "# HELP bus_agents The agents this session's consumers deliver, by state and"
-        " harness, shown never answered. No name, owner or home label: RT-6.43 keeps"
-        " those out; an unknown word counts as other.",
-        "# TYPE bus_agents gauge",
+        "# HELP choirbus_bus_agents The agents this session's consumers deliver, by"
+        " state and harness, shown never answered. No name, owner or home label:"
+        " RT-6.43 keeps those out; an unknown word counts as other; a reading that"
+        " is not live shows no series at all.",
+        "# TYPE choirbus_bus_agents gauge",
         # n/a: an empty fleet shows no series, never a 0
-        *_agents(view.fleet),
-        "# HELP bus_asks_open The open asks this session's consumers deliver,"
-        " none before the login's own record (n/a omitted, never 0).",
-        "# TYPE bus_asks_open gauge",
-        f"bus_asks_open {len(view.asks())}",
-        "# HELP bus_tokens_eq Tokens by category in input-token equivalents over the"
-        " last 7 days, per version and harness — the same stacked bars the"
-        " Reports/Stats tab shows, an estimate (RT-6.9 step 2), n/a omitted never 0."
+        *(_agents(view.fleet) if reading(view) else []),
+        "# HELP choirbus_bus_asks_open The open asks this session's consumers"
+        " deliver. None before the login's own record, and none while the"
+        " reading is not live: n/a is omitted, never 0.",
+        "# TYPE choirbus_bus_asks_open gauge",
+        *([f"choirbus_bus_asks_open {len(view.asks())}"] if reading(view) else []),
+        "# HELP choirbus_bus_tokens_eq Tokens by category in input-token equivalents"
+        " over the last 7 days, per version and harness — the same stacked bars the"
+        " Reports/Stats tab shows, an estimate (RT-6.9 step 2). Only while the"
+        " reading is live and n/a omitted never 0; the newest"
+        f" {MAX_VERSIONS} versions keep their own label, older ones count as other."
         " No agent, owner or home label: RT-6.43 keeps those out.",
-        "# TYPE bus_tokens_eq gauge",
-        *_tokens(view.stats),
+        "# TYPE choirbus_bus_tokens_eq gauge",
+        *(_tokens(view.stats) if reading(view) else []),
         "",  # the exposition format ends with a newline
     ]
     return "\n".join(lines)

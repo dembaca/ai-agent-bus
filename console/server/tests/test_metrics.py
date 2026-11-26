@@ -13,6 +13,7 @@ from __future__ import annotations
 
 import asyncio
 import re
+from types import SimpleNamespace
 
 import pytest
 
@@ -35,14 +36,17 @@ LOGIN_ON = config.Settings(public_url="http://127.0.0.1:8747",
                            login_off=False, nats_url="")
 
 SERIES = re.compile(r"^([a-zA-Z_:][a-zA-Z0-9_:]*)(\{.*\})? (-?[0-9]+(?:\.[0-9]+)?)$")
-CONSOLE_FAMILIES = ("console_http_requests_total", "console_sessions_open",
-                    "console_sse_streams_open", "console_bus_readers",
-                    "console_bus_connects_total",
-                    "console_credential_renewals_total",
-                    "console_credential_renewal_failures_total",
-                    "console_stats_lines_refused_total",
-                    "console_fleet_records_refused_total")
-AGENT_FAMILIES = ("bus_agents", "bus_asks_open", "bus_tokens_eq")
+CONSOLE_FAMILIES = ("choirbus_console_http_requests_total",
+                    "choirbus_console_sessions_open",
+                    "choirbus_console_sse_streams_open",
+                    "choirbus_console_bus_readers",
+                    "choirbus_console_bus_connects_total",
+                    "choirbus_console_credential_renewals_total",
+                    "choirbus_console_credential_renewal_failures_total",
+                    "choirbus_console_stats_lines_refused_total",
+                    "choirbus_console_fleet_records_refused_total")
+AGENT_FAMILIES = ("choirbus_bus_agents", "choirbus_bus_asks_open",
+                  "choirbus_bus_tokens_eq")
 
 # a STATS line with the token split of method 1 (RT-6.9 step 2), as the
 # house tests build it
@@ -127,14 +131,12 @@ async def test_the_page_is_the_exposition_format(console: Console) -> None:
     assert headers["content-type"] == "text/plain; version=0.0.4; charset=utf-8"
     families, series = page(body.decode())
     assert families == set(CONSOLE_FAMILIES) | set(AGENT_FAMILIES)
-    # an empty stand-in reading: the fleet-less series stay 0 or absent —
-    # bus_agents and bus_tokens_eq name no series at all, never a 0 that
-    # would read as "no agents" on a page whose reader never got one
-    assert series["bus_asks_open"] == 0.0
-    assert series["console_sessions_open"] == 0.0
-    assert series["console_sse_streams_open"] == 0.0
-    assert not any(k.startswith("bus_agents") for k in series)
-    assert not any(k.startswith("bus_tokens_eq") for k in series)
+    # a stand-in view reads nothing (no login, no reader): every agent series
+    # is absent, never a 0 that would read as "no agents", and the console's
+    # own families say 0
+    assert not any(k.startswith("choirbus_bus_") for k in series)
+    assert series["choirbus_console_sessions_open"] == 0.0
+    assert series["choirbus_console_sse_streams_open"] == 0.0
 
 
 async def test_requests_are_counted_by_bucketed_route(console: Console) -> None:
@@ -149,17 +151,17 @@ async def test_requests_are_counted_by_bucketed_route(console: Console) -> None:
     _families, series = page(body.decode())
     # the readiness path counts under its own bucket, whatever the settings
     # name it; a PR that renames it reuses the same series
-    assert series['console_http_requests_total{route="health",method="GET",status="200"}'] == 2.0
-    assert series['console_http_requests_total{route="/v1/threads",method="GET",status="200"}'] == 1.0
-    assert series['console_http_requests_total{route="/logout",method="POST",status="303"}'] == 1.0
+    assert series['choirbus_console_http_requests_total{route="health",method="GET",status="200"}'] == 2.0
+    assert series['choirbus_console_http_requests_total{route="/v1/threads",method="GET",status="200"}'] == 1.0
+    assert series['choirbus_console_http_requests_total{route="/logout",method="POST",status="303"}'] == 1.0
     # the page renders before its own request is noted (handle routes first,
     # counts after), so one scrape never shows itself — the next shows it
-    assert not any(k.startswith('console_http_requests_total{route="/metrics"') for k in series)
+    assert not any(k.startswith('choirbus_console_http_requests_total{route="/metrics"') for k in series)
     await get(console, "/anything/else")
     _status, _headers, body = await get(console, "/metrics")
     _families, series = page(body.decode())
-    assert series['console_http_requests_total{route="other",method="GET",status="404"}'] == 1.0
-    assert series['console_http_requests_total{route="/metrics",method="GET",status="200"}'] == 1.0
+    assert series['choirbus_console_http_requests_total{route="other",method="GET",status="404"}'] == 1.0
+    assert series['choirbus_console_http_requests_total{route="/metrics",method="GET",status="200"}'] == 1.0
 
 
 def test_the_route_buckets_are_bounded() -> None:
@@ -169,12 +171,13 @@ def test_the_route_buckets_are_bounded() -> None:
     assert route_bucket("/anything/else") == "other"
 
 
-def _reading() -> View:
+def _reading(count=None) -> View:
     """One session's own reading: A online on opencode with a card, B fresh
     away without one (harness n/a), one open ask of A's, two STATS lines with
     the split (claude-code and opencode) — and one line each the strict
-    decoders refused."""
-    view = View("presence", "stats")
+    decoders refused. `count` is the process counter (#158)."""
+    view = View("presence", "stats", count=count)
+    view.reader = SimpleNamespace(state="reading", anchor=None)  # a live reading
     record = encode_ask_record([OpenAsk("m" * 26, "approval", "dembaca", "?",
                                         int(NOW) - 30)], int(NOW))
     rows = [
@@ -206,15 +209,17 @@ def test_the_agent_numbers_are_the_own_reading_and_no_name_is_a_label() -> None:
     """#158's agent metrics: the tab's numbers from the session's own
     consumers — agents by state and harness (an unknown harness counts as
     other), the open asks, and the tokens by category as stats.split_summary
-    computes them for the same 7-day group; no agent name in the page."""
-    view = _reading()
-    text = telemetry.render(telemetry.Telemetry(), 1, 0, [], view)
+    computes them for the same 7-day group; no agent name in the page. The
+    refusals are counted process-wide at the event, not read out of the view."""
+    tel = telemetry.Telemetry()
+    view = _reading(count=tel.note_event)
+    text = telemetry.render(tel, 1, 0, [], view)
     families, series = page(text)
     assert families == set(CONSOLE_FAMILIES) | set(AGENT_FAMILIES)
     assert A not in text and "agent-b" not in text
-    assert series["bus_asks_open"] == 1.0
-    assert series['bus_agents{state="online",harness="opencode"}'] == 1.0
-    assert series['bus_agents{state="away",harness="other"}'] == 1.0
+    assert series["choirbus_bus_asks_open"] == 1.0
+    assert series['choirbus_bus_agents{state="online",harness="opencode"}'] == 1.0
+    assert series['choirbus_bus_agents{state="away",harness="other"}'] == 1.0
     want: dict[str, float] = {}
     groups: dict[tuple[str, str], list[dict[str, object]]] = {}
     for _at, _seq, line in view.stats.within(7 * 86400):
@@ -222,19 +227,45 @@ def test_the_agent_numbers_are_the_own_reading_and_no_name_is_a_label() -> None:
     for (version, harness), group in sorted(groups.items()):
         split = stats.split_summary(group)
         for category in stats.SPLIT_CATEGORIES:
-            want[f'bus_tokens_eq{{category="{category}",version="{version}",'
+            want[f'choirbus_bus_tokens_eq{{category="{category}",version="{version}",'
                  f'harness="{harness}"}}'] = float(split["eq"][category])
-    assert {k: v for k, v in series.items() if k.startswith("bus_tokens_eq")} == want
-    # the refusals: one STATS line, one record, both counted where they dropped
-    assert series["console_stats_lines_refused_total"] == 1.0
-    assert series["console_fleet_records_refused_total"] == 1.0
+    assert {k: v for k, v in series.items() if k.startswith("choirbus_bus_tokens_eq")} == want
+    # the refusals: one STATS line, one record, both counted process-wide at
+    # the event — their series stand even if this view ends
+    assert series["choirbus_console_stats_lines_refused_total"] == 1.0
+    assert series["choirbus_console_fleet_records_refused_total"] == 1.0
+
+    # a not-live reading shows no agent series at all, while the process
+    # counters keep their values (no session's end resets a series)
+    view.reader = SimpleNamespace(state="waiting: the renewal is failing",
+                                  anchor=None)
+    _families, series2 = page(telemetry.render(tel, 0, 0, [], view))
+    assert not any(k.startswith("choirbus_bus_") for k in series2)
+    assert series2["choirbus_console_stats_lines_refused_total"] == 1.0
 
 
-def test_the_refusals_start_at_zero() -> None:
+def test_the_counters_start_at_zero_and_the_version_cap_holds() -> None:
     """Every counter exists from the start (0), an empty reading shows the
-    zero and no agent series at all."""
+    zero and no agent series at all; and the newest versions keep their own
+    label, older ones count as other (#158's cardinality bound)."""
     view = View("presence", "stats")
     _families, series = page(telemetry.render(telemetry.Telemetry(), 0, 0, [], view))
-    assert series["console_stats_lines_refused_total"] == 0.0
-    assert series["console_fleet_records_refused_total"] == 0.0
-    assert series["console_bus_connects_total"] == 0.0
+    assert series["choirbus_console_stats_lines_refused_total"] == 0.0
+    assert series["choirbus_console_fleet_records_refused_total"] == 0.0
+    assert series["choirbus_console_bus_connects_total"] == 0.0
+
+    tel = telemetry.Telemetry()
+    live = _reading(count=tel.note_event)
+    for i in range(telemetry.MAX_VERSIONS + 2):
+        line = LINE | {"sid": f"{i % 10}" * 12, "v": f"0.101.{i}",
+                      "tok": LINE["tok"] | SPLIT}
+        at = NOW - (telemetry.MAX_VERSIONS + 2 - i) * 3600
+        body = stats.nats_body(line)
+        assert body is not None
+        assert live.stats.on_delivery(f"stats.{A}", body, ack("STATS", "c", i + 100, at),
+                                      "STATS", "c")
+    _families, series = page(telemetry.render(tel, 1, 0, [], live))
+    versions = {k.split('version="')[1].split('"')[0]
+               for k in series if k.startswith("choirbus_bus_tokens_eq")}
+    # the newest MAX_VERSIONS keep their label, the two oldest count as other
+    assert "other" in versions and len(versions) == telemetry.MAX_VERSIONS + 1

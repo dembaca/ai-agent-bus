@@ -8,7 +8,13 @@ JetStream consumers the login service makes for each logged-in operator, serves 
 `/v1/stats`, `/v1/threads/<id>`, and `GET /metrics` in the Prometheus text
 format (#158, RT-6.43 step 10: behind the operator's login like the rest,
 the console's own observations and that session's agent numbers, labels
-bounded — no agent, owner or home) — and with it the built browser app
+bounded — no agent, owner or home) — and with it the built browser app.
+**Do not put the session cookie into a scrape config**: it is that
+operator's whole console for as long as the session lives, not a monitoring
+credential. An unattended scrape comes from the approved follow-up (a
+loopback listener with a scrape token of its own, plus a read-only service
+account on the STATS stream — the owner's go, #158), not from a copied
+cookie.
 ([`console/web`](../web)). The browser logs in over Keycloak
 (authorization code with PKCE, a client of its own, members of an
 operators group); the access token is **verified against the realm's

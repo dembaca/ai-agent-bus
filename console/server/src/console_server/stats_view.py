@@ -20,7 +20,7 @@ import logging
 import time
 from collections import deque
 from dataclasses import dataclass, field
-from typing import Any
+from typing import Any, Callable
 
 from mattermost_ai_agent_bus import stats
 from mattermost_ai_agent_bus.natsbus import AGENT_RE, parse_ack
@@ -45,7 +45,8 @@ class StatsBook:
     _seqs: set[int] = field(default_factory=set)
     _server_now: float = 0.0
     _seen_at: tuple[float, float] | None = None  # (server time, monotonic) of the newest stamp
-    refusals: int = 0        # lines the strict decoder refused (#158, /metrics)
+    refusals: int = 0        # lines the strict decoder refused (dropped whole)
+    count: Callable[[], None] | None = None   # the process-wide counter (#158)
 
     @property
     def server_now(self) -> float:
@@ -70,6 +71,8 @@ class StatsBook:
             line = stats.decode_line(data)
         except stats.LineError:
             self.refusals += 1
+            if self.count is not None:
+                self.count()
             log.warning("console: a STATS line dropped: not within the rules of the line on NATS")
             return False
         if ack.time > self._server_now:

@@ -72,9 +72,10 @@ class Console:
         self.settings = settings
         # the stand-in view: login off (tests and the mock) and sessions made
         # without one; nothing feeds it — every login has a view of its own
-        self.standin = View(settings.presence_subject, settings.stats_subject)
-        self.sessions = auth.Sessions()
         self.telemetry = telemetry.Telemetry()   # the console's /metrics counters
+        self.standin = View(settings.presence_subject, settings.stats_subject,
+                            count=self.telemetry.note_event)
+        self.sessions = auth.Sessions()
         self.keyring = auth.Keyring()
         self.endpoints: auth.Endpoints | None = None
         self._pending: dict[str, tuple[str, float, str]] = {}  # state→(verifier, until, flow)
@@ -331,11 +332,13 @@ class Console:
                 return _unauthorized()
             readers = [v.reader for v in self.sessions.views()
                        if v.reader is not None]
-            return httpd.Response.text(
-                telemetry.render(self.telemetry, self.sessions.count(),
-                                 sum(self._streams.values()), readers,
-                                 self._view(self._session_token(headers))),
-                content_type="text/plain; version=0.0.4; charset=utf-8")
+            return httpd.Response(status=200,
+                                  body=telemetry.render(
+                                      self.telemetry, self.sessions.count(),
+                                      sum(self._streams.values()), readers,
+                                      self._view(self._session_token(headers))).encode(),
+                                  content_type="text/plain; version=0.0.4; charset=utf-8",
+                                  headers=API_HEADERS)
         if path.startswith("/v1/threads/"):
             if self._operator(headers) is None:
                 return _unauthorized()
@@ -480,7 +483,8 @@ class Console:
         """A session with a view of its own; with NATS set, a reader that
         connects as this operator with a key pair made for this login."""
         s = self.settings
-        view = View(s.presence_subject, s.stats_subject)
+        view = View(s.presence_subject, s.stats_subject,
+                    count=self.telemetry.note_event)
         if s.nats_url:
             sub = operator.sub
 

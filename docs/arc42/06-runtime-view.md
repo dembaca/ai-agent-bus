@@ -1885,14 +1885,23 @@ The rule that an operator reads the guest channels of agents that trust them onl
     bucket; the open fleet streams; the sessions held; the readers'
     connection states and connects; the credentials' renewals and their
     failures, step 4; and the records the strict decoders refused, steps 6
-    and 8), and the agent numbers of the scrape session's own reading —
-    the fleet's agents by state and harness, the open asks it sees (step
-    6) and the tokens by category over 7 days per version and harness
-    (step 8, RT-6.9 step 2), the same numbers `stats.split_summary`
-    gives. A value that is n/a leaves its series out, never a 0. No
-    session id, agent name, owner or home is ever a label (the reading's
-    own stance, steps 6 and 8); the harness and state words come from the
-    decoder-bounded sets with anything else counted as `other`.
+    and 8) — every one of them counted **process-wide at the event**, so
+    no session's end resets a series — and the agent numbers of the scrape
+    session's own reading — the fleet's agents by state and harness, the
+    open asks it sees (step 6) and the tokens by category over 7 days per
+    version and harness (step 8, RT-6.9 step 2), the same numbers
+    `stats.split_summary` gives — served **only while that reading is
+    live**: a waiting or ended reader shows no series at all. A value that
+    is n/a leaves its series out, never a 0. No session id, agent name,
+    owner or home is ever a label (the reading's own stance, steps 6 and
+    8); the harness, the readers' own state words and the state words all
+    come from bounded sets with anything else counted as `other`, and only
+    the newest versions keep their own label, the rest folded into one
+    `other` per harness. Every family carries the `choirbus_` prefix. The
+    **session cookie is never a scrape credential** (it is that
+    operator's whole console): an unattended scrape comes from the
+    approved follow-up, a loopback listener with a scrape token and a
+    read-only service account on the STATS stream.
 
 ### Error Handling
 
@@ -1930,5 +1939,5 @@ The rule that an operator reads the guest channels of agents that trust them onl
 | 8 | A line with a string outside `v`, `sid`, `rt` and `kind` or off its pattern, a duplicate key, or over 8 KiB | The whole line is dropped with a warning that carries none of it |
 | 8 | A key outside the allow list | Ignored, never shown |
 | 8 | No lines yet, or none in the window | "n/a", never 0 |
-| 10 | A STATS line or a presence record breaks the rules of its format, or the report arithmetic over a group fails | Dropped whole, counted on the page (`console_stats_lines_refused_total`, `console_fleet_records_refused_total`), never shown |
+| 10 | A STATS line or a presence record breaks the rules of its format | Dropped whole, counted on the page (`choirbus_console_stats_lines_refused_total`, `choirbus_console_fleet_records_refused_total`) at the event, never shown; a group whose report arithmetic fails is skipped, no series |
 
