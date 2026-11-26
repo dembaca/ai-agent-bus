@@ -233,6 +233,12 @@ type rig struct {
 
 func newRig(t *testing.T, seen Seen) *rig {
 	t.Helper()
+	return newRigWith(t, seen, nil)
+}
+
+// newRigWith sets the bridge up with set before it runs.
+func newRigWith(t *testing.T, seen Seen, set func(*Bridge)) *rig {
+	t.Helper()
 	l := newLab(t)
 	r := &rig{lab: l, mm: newFakeMM(t), events: make(chan mmws.Event)}
 	if seen == nil {
@@ -241,6 +247,9 @@ func newRig(t *testing.T, seen Seen) *rig {
 	r.b = &Bridge{Homes: []string{"home"}, Team: "team", BusPrefix: "bus", Log: quiet(),
 		MM: mm.New(r.mm.srv.URL, "tok"), NATS: Confirmed{NC: l.nc}, Store: l.kv, Seen: seen, Anchors: l.acc,
 		Events: r.events, Up: r.up.Load, SignalEvery: 50 * time.Millisecond, Retry: 50 * time.Millisecond}
+	if set != nil {
+		set(r.b)
+	}
 	ctx, cancel := context.WithCancel(context.Background())
 	done := make(chan struct{})
 	go func() { _ = r.b.Run(ctx); close(done) }()
@@ -559,6 +568,23 @@ func (f *flakySeen) SetReactions(ctx context.Context, p string, k map[string]str
 		return errFull
 	}
 	return f.inner.SetReactions(ctx, p, k)
+}
+
+// RT-6.44 (RT-6.42 step 7): the signal names bot_prefix only while the
+// agents' own bots are on; hosts before that release refuse the field.
+func TestTheSignalNamesTheBotPrefixOnlyWhileOn(t *testing.T) {
+	for _, prefix := range []string{"", "bb-"} {
+		r := newRigWith(t, nil, func(b *Bridge) { b.BotPrefix = prefix })
+		r.connect(1)
+		var sig map[string]any
+		if err := json.Unmarshal(waitSignal(t, r.sig).Data, &sig); err != nil {
+			t.Fatal(err)
+		}
+		got, has := sig["bot_prefix"]
+		if has != (prefix != "") || (has && got != prefix) {
+			t.Fatalf("prefix %q: signal %v", prefix, sig)
+		}
+	}
 }
 
 func waitSignal(t *testing.T, ch chan *nats.Msg) *nats.Msg {
@@ -1011,5 +1037,36 @@ func TestARefusedPublishLogsNoCarriedLine(t *testing.T) {
 	time.Sleep(150 * time.Millisecond)
 	if strings.Contains(buf.String(), "inbound: carried") {
 		t.Fatalf("a refused publish is logged as carried: %s", buf.String())
+	}
+}
+
+// RT-6.44: Owner reads the records the other way round, anchor to account:
+// nothing before they are read, nothing for an anchor no record binds or two
+// records bind, and a record's change moves it.
+func TestOwnerIsTheOneAccountWhoseRecordBindsTheAnchor(t *testing.T) {
+	const a1, a2 = "aaaaaaaaaaaaaaaaaaaaaaaaaa", "bbbbbbbbbbbbbbbbbbbbbbbbbb"
+	rec := func(uid, anchor string) []byte {
+		return []byte(`{"v":1,"account":"` + uid + `","anchor":` + anchor + `,"name":"x",` +
+			`"approver":false,"token_iat":1,"iat":1,"exp":9999999999}`)
+	}
+	acc := newAccounts()
+	acc.one("presence.account.mattermost."+a1+".v1", rec(a1, `"alice"`))
+	if acc.Owner("alice") != "" {
+		t.Fatal("an owner before the records are read")
+	}
+	acc.caught()
+	if got := acc.Owner("alice"); got != a1 {
+		t.Fatalf("owner %q", got)
+	}
+	if acc.Owner("bob") != "" || acc.Owner("") != "" {
+		t.Fatal("an owner without a record")
+	}
+	acc.one("presence.account.mattermost."+a2+".v1", rec(a2, `"alice"`))
+	if acc.Owner("alice") != "" {
+		t.Fatal("an owner although two records bind the anchor")
+	}
+	acc.one("presence.account.mattermost."+a1+".v1", rec(a1, `null`))
+	if got := acc.Owner("alice"); got != a2 {
+		t.Fatalf("after the change: %q", got)
 	}
 }

@@ -89,6 +89,35 @@ func TestReactionsAreCountedPerMessageAndEmoji(t *testing.T) {
 	}
 }
 
+// RT-6.44: an own bot's reaction is recorded per sender and emoji, beside
+// the counts, until its removal clears it.
+func TestOwnReactionsAreRecordedPerSenderAndEmoji(t *testing.T) {
+	kv, _ := open(t)
+	ctx := context.Background()
+	if err := kv.SetOwnReaction(ctx, "home", 1, "thumbsup", "agent-a", true); err != nil {
+		t.Fatal(err)
+	}
+	for _, c := range []struct {
+		emoji, sender string
+		want          bool
+	}{{"thumbsup", "agent-a", true}, {"eyes", "agent-a", false}, {"thumbsup", "agent-b", false}} {
+		if had, err := kv.OwnReaction(ctx, "home", 1, c.emoji, c.sender); err != nil || had != c.want {
+			t.Fatalf("%+v: %v %v", c, had, err)
+		}
+	}
+	if n, _ := kv.Reaction(ctx, "home", 1, "thumbsup", "agent-b", true); n != 1 {
+		t.Fatalf("the counts saw the own bot's reaction: %d", n)
+	}
+	for range 2 { // clearing twice is no error
+		if err := kv.SetOwnReaction(ctx, "home", 1, "thumbsup", "agent-a", false); err != nil {
+			t.Fatal(err)
+		}
+	}
+	if had, err := kv.OwnReaction(ctx, "home", 1, "thumbsup", "agent-a"); err != nil || had {
+		t.Fatalf("still recorded: %v %v", had, err)
+	}
+}
+
 // A bucket with direct get on would answer a request with a key's value onto
 // the request's reply subject, which the server does not check against publish
 // permissions; the bridge refuses such a bucket instead of using it.
