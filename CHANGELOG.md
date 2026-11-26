@@ -18,7 +18,10 @@ before 0.5.0 are described in the git history.
   The plugin's `addMcp` sets `codemode: false` on its server entry, and a
   server configured by hand in `adapters/opencode.md` shows it too. Nothing
   else changes: the tools, their names and their arguments stay as they were,
-  and a host that configured the server itself can set the same flag.
+  and a host that configured the server itself can set the same flag. The
+  accounting limit #150 documents for Code Mode (bus calls inside `execute`
+  count as task work, the head overstates the overhead) applies only to such a
+  hand-configured entry now, not to the plugin's own server.
 
 - **The central bridge logs one INFO line per person post, reaction or removal of a reaction it carries onto NATS** (#134, RT-6.42): `inbound: carried` with the home, `what` (`post`, `reaction` or `unreaction`), the Mattermost post id and the subject, no text and no name beyond the anchor.
 

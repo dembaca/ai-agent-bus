@@ -99,7 +99,9 @@ type as `h_in`, `h_read`, `h_w`; the server places the bus's fixed text there.
 Not counted: the compaction's own model request (OpenCode books it apart from the
 session's steps), and a bus tool the model calls from inside Code Mode's `execute`
 rather than as a tool of its own (it is not seen as the bus's; its call and result
-count as task work). A turn without a request with usage posts nothing. A `usage`
+count as task work). The plugin's own server entry carries `codemode: false` (issue
+#152), so this applies only to an entry configured by hand that stays in Code Mode.
+A turn without a request with usage posts nothing. A `usage`
 POST that fails (server gone, timeout) is not repeated: that turn's numbers are lost.
 The split is kept in memory: after a reload of the plugin it starts afresh, and what
 it has not seen counts as task work.
