@@ -60,6 +60,7 @@ class MetricsService:
         self._connect = connect or self._dial
         self._task: asyncio.Task[None] | None = None
         self._stopped = asyncio.Event()
+        self.subscribed = asyncio.Event()   # set once the subjects are live
         self.last_delivery: float = 0.0   # monotonic, for the page's liveness
 
     def start(self) -> None:
@@ -184,6 +185,7 @@ class MetricsService:
         await nc.subscribe("deliver.metrics.presence", cb=presence)
         await nc.subscribe("deliver.metrics.stats", cb=stats)
         await nc.flush()
+        self.subscribed.set()
         log.info("console: the metrics reading is on (deliver.metrics.*)")
         stopped = asyncio.create_task(self._stopped.wait())
         done_wait = asyncio.create_task(done.wait())
