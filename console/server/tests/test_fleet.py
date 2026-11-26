@@ -427,8 +427,9 @@ AGENT_B = "agent-" + "b" * 26
 
 
 def attestation_of(agent: str, anchor: str, name: str, exp: float = 1e12) -> tuple[str, bytes]:
-    """The login service's attestation with its owner in subject form (RT-6.41): the
-    record carries the token, the name beside it is the human's."""
+    """The login service's attestation of an owner (RT-6.41): the anchor in name form,
+    as the directory holds it ("." kept, e.g. `sub-alice` or `alice.one`), the human's
+    name beside it. The login's *own* record carries the subject form instead."""
     body = {"v": 1, "agent": agent, "owner": {"anchor": anchor, "name": name},
             "trusted": [], "cut": False, "iat": 1, "exp": int(exp)}
     return f"presence.attest.{agent}.v1", json.dumps(body).encode()
@@ -520,3 +521,19 @@ def test_an_ask_records_channel_is_a_home_only_beside_a_membership() -> None:
     assert f.on_delivery(f"presence.ask.zeta.{AGENT_A}", record,
                          ack("PRESENCE", "console", 5, 5, 1500.0), "PRESENCE", "console")
     assert (f.home_of(AGENT_A), f.guests_of(AGENT_A)) == ("zeta", ["dev"])
+
+
+def test_a_claim_of_a_channel_it_left_is_no_home() -> None:
+    """Fable's delta review: claims never age out (the pruning takes members, asks and
+    attestations), so a claim in a channel the agent has since left must not name a home
+    — else the card shows a home with no coordinates edge."""
+    from mattermost_ai_agent_bus.natsbus import encode_claim
+
+    f = Fleet()
+    feed(f,
+         (*presence(AGENT_A, "dembaca"), ack("PRESENCE", "console", 1, 1, 1000.0)),
+         (f"presence.crown.gone.{AGENT_A}", encode_claim(), ack("PRESENCE", "console", 2, 2, 1001.0)),
+         (f"presence.member.dev.{AGENT_A}", encode_claim(), ack("PRESENCE", "console", 3, 3, 1002.0)))
+    assert (f.home_of(AGENT_A), f.guests_of(AGENT_A)) == ("dev", [])
+    graph = f.graph()
+    assert {e["to"] for e in graph["edges"] if e["kind"] == "coordinates"} == {"dev"}

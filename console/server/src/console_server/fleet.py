@@ -269,7 +269,11 @@ class Fleet:
         row = self._asks.get(agent)
         if row is not None and row[2] and self.is_member(row[2], agent):
             return row[2]
-        claimed = sorted(ch for ch in self._claims if agent in self._claims[ch])
+        # A claim the agent is no member of any more is no home either: claims are
+        # kept for the stream's day and the pruning takes only members, asks and
+        # attestations (Fable's delta review).
+        claimed = sorted(ch for ch in self._claims
+                         if agent in self._claims[ch] and self.is_member(ch, agent))
         if claimed:
             return claimed[0]
         channels = self.channels_of(agent)
@@ -367,7 +371,11 @@ class Fleet:
 
         `anchor`: the operator's, from the login's own record (RT-6.43 step 2), never a
         value the browser sends. The person node it names is marked `you` (ADR-015
-        point 7), matched by anchor, so two people of one name stay apart."""
+        point 7), matched by anchor, so two people of one name stay apart.
+
+        Node ids are unique per kind — a person's anchor token, a channel's name, an
+        agent's name — never across kinds: an owner named like a channel is two nodes,
+        a reader keys them by `(kind, id)`."""
         nodes = []
         edges = []
         # anchor token -> the name it is shown under: the anchor is the identity

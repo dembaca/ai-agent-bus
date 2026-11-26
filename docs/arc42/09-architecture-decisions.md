@@ -4100,10 +4100,15 @@ The console is the operators' view of the bus itself.
      `guest` edge — a guest is a channel an agent may visit, never claim
      (RT-6.16). The home is what the bus itself states: the channel of the
      agent's ask record's subject (`<presence>.ask.<home>.<name>`,
-     RT-6.43 step 5) first, else the channel it claims the crown of (only
-     a home may be claimed, RT-6.38), else the first channel its
-     memberships name; the card's `home` and `guests` come from the same
-     statement, and no home is guessed from an agent's name (#147).
+     RT-6.43 step 5) first, else a channel it claimed the crown of (only
+     a home may be claimed, RT-6.38; any claim of its own, not only the
+     current holder's), else the first channel its memberships name. A
+     statement names a home only beside a membership: a record or a claim
+     can outlive a channel the agent lost. The card's `home` and `guests`
+     come from the same statement, and no home is guessed from an agent's
+     name (#147). Node ids are unique per kind — a person's anchor token,
+     a channel's name, an agent's name — never across kinds, so a reader
+     keys them by `(kind, id)`.
    - **People** are nodes by their anchor token, the name only the label:
      two anchors that carry one name stay two nodes (RT-6.41), and a node
      without an attestation is the presence subject's owner token
