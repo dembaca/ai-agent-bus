@@ -27,6 +27,18 @@ before 0.5.0 are described in the git history.
   a 0 (RT-6.43 step 10).
 
 ### Changed
+
+- **The login service's own NATS user gets least-privilege rights** (#172,
+  security hardening). In `services/auth/nats-server.example.conf` the user
+  that answers the auth callout (account `AUTH`) had no `publish` and no
+  `subscribe` rule, so it could do either on any subject of that account. It
+  now subscribes to `$SYS.REQ.USER.AUTH` only and publishes nothing
+  (`deny: ">"`) but one answer per request on the reply subject the server
+  set (`allow_responses: true`). The example's test now fails for any user,
+  in any account, without both rules, and logs an agent in through the
+  callout with these rights. The lab should compare its NATS configuration
+  with the example: a user there without both rules is the same hole
+  (bgl-infra's ask).
 - **The OpenCode plugin registers the bus server as direct tools, not Code
   Mode** (#152). The model sees the bus tools and their docs as written, as in
   Claude Code and pi, and the token split counts bus calls exactly (#150). It

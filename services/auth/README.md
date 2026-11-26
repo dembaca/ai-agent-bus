@@ -210,6 +210,16 @@ Exactly one instance runs: the account record's lock per `sub` and the consumers
 The NATS server sends every client that is not one of its `auth_users` to
 `$SYS.REQ.USER.AUTH`; the service answers with a user JWT or a refusal.
 
+**The service's own NATS user** (`AUTH_NATS_SEED_FILE`, in the callout's
+account `AUTH`) has the callout's rights and nothing more
+([nats-server.example.conf](nats-server.example.conf), pinned by
+`example_conf_test.go`): subscribe `$SYS.REQ.USER.AUTH` (queue group `authd`),
+publish nothing (`deny: ">"`) but one answer to each request it got, on the
+reply subject the server set (`allow_responses: true`; the server's own inbox,
+`$SYS._INBOX.<server>.<random>`). A NATS user without a `publish` or
+`subscribe` rule may do that on any subject of its account, so every user of
+the example has both, and the test fails for one that lacks either.
+
 **What the host sends.** `auth_token` in its CONNECT is JSON:
 `{"token": "<Keycloak access token>", "home": "<channel>", "guests": ["<channel>"], "lobby": true}`.
 It connects with its own user nkey (nkey authentication: it signs the
