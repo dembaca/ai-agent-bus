@@ -31,7 +31,7 @@ doc_check = _doc_check()
 
 def test_the_page_parses_into_its_lists() -> None:
     page = doc_check.env_page()
-    assert len(page["old"]) == 158          # the mapping tables' left column
+    assert len(page["old"]) == 162          # the mapping tables' left column
     assert len(page["registrar"]) == 10     # kept names, their own table
     assert not page["old"] & page["registrar"]
     # the two exclusion lists the guard accepts

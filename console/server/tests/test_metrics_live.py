@@ -98,7 +98,6 @@ async def test_live_deliveries_feed_both_books(live_nats, tmp_path) -> None:
     replies, the two consumer names — and land in the service view's fleet
     and stats book."""
     from mattermost_ai_agent_bus import stats as mcp_stats
-    from mattermost_ai_agent_bus.natsbus import encode_presence, agent_name
     from nats.js.api import ConsumerConfig
 
     port, proc, publisher_seed = live_nats
@@ -172,7 +171,6 @@ async def test_the_reading_survives_a_server_restart(live_nats, tmp_path) -> Non
     ends _serve, and the loop connects to the restarted server again — a
     second subscription proves it. With the old one-argument callback this
     froze (nats-py's TypeError inside its _close, `lost` never set)."""
-    from mattermost_ai_agent_bus.natsbus import encode_presence, agent_name
     from nats.js.api import ConsumerConfig
 
     port, proc, publisher_seed = live_nats
