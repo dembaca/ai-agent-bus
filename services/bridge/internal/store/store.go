@@ -250,6 +250,38 @@ func (s *KV) Reaction(ctx context.Context, home string, seq uint64, emoji, sende
 	return 0, jetstream.ErrKeyExists
 }
 
+// OwnReaction says whether sender's own bot holds its reaction of a home's
+// message and emoji (RT-6.44): the removal goes to that bot, whatever state
+// the bot is in by then.
+func (s *KV) OwnReaction(ctx context.Context, home string, seq uint64, emoji, sender string) (bool, error) {
+	_, err := s.kv.Get(ctx, ownKey(home, seq, emoji, sender))
+	switch {
+	case errors.Is(err, jetstream.ErrKeyNotFound):
+		return false, nil
+	case err != nil:
+		return false, err
+	}
+	return true, nil
+}
+
+// SetOwnReaction records or clears sender's own bot's reaction.
+func (s *KV) SetOwnReaction(ctx context.Context, home string, seq uint64, emoji, sender string, on bool) error {
+	key := ownKey(home, seq, emoji, sender)
+	if on {
+		_, err := s.kv.Put(ctx, key, []byte("1"))
+		return err
+	}
+	if err := s.kv.Delete(ctx, key); err != nil && !errors.Is(err, jetstream.ErrKeyNotFound) {
+		return err
+	}
+	return nil
+}
+
+func ownKey(home string, seq uint64, emoji, sender string) string {
+	return "o." + home + "." + strconv.FormatUint(seq, 10) + "." + hex.EncodeToString([]byte(emoji)) +
+		"." + hex.EncodeToString([]byte(sender))
+}
+
 func isWrongSequence(err error) bool {
 	var jsErr *jetstream.APIError
 	if errors.As(err, &jsErr) {

@@ -7,8 +7,9 @@ before 0.5.0 are described in the git history.
 
 ### Added
 
+- **The central bridge can post each agent's copies under the agent's own Mattermost bot** (#151 step 1, RT-6.44). Off by default; with `BRIDGE_MM_ADMIN_TOKEN_FILE` (an admin bot of its own with `system_admin`, its token a separate file used only by the bot management) and `BRIDGE_BOT_PREFIX`, the bridge finds or creates `<prefix><NATS name>`, owned by the Mattermost account that the login service's account record binds to the agent's presence owner (never a username lookup; no record, no bot of its own) and marked as the bridge's, mints its token in memory at first use after each start (revoking its earlier ones), joins it to the home and posts that agent's copies and reactions under it without the attribution line, `nats_id` kept; its reactions are recorded, so their removal reaches that bot also while it is in its backoff. On any failure the one bridge bot posts as before. Its signal then names `bot_prefix`. `BRIDGE_HIDE_BOT_DM` (default true) hides the admin bot's welcome DMs. The bridge refuses to start when the admin token is the posting token, the admin account is no bot with `system_admin`, or the posting bot holds a role beyond `system_user`, `system_post_all` and `system_post_all_public`. Turn it on only after the hosts run a release with #159 (agents dropping copies under their own bots), or every agent reads each NATS post twice; the hosts also keep `MM_BRIDGE_BOT` set as today, since the fallback copies come from the one bridge bot and hosts drop those only with it; the bridge's prefix must differ from the registrar's `BOT_USERNAME_PREFIX`.
 - **The console's unattended metrics page** (#158, needs #162): with both
-  `CONSOLE_METRICS_NKEY_SEED_FILE` (the seed of a subscribe-only nkey of the
+  `CONSOLE_METRICS_NKEY_SEED_FILE` (the seed of a read-only nkey of the
   NATS configuration, its two consumers `console-metrics_presence` and
   `console-metrics_stats` — made by the login service at its start,
   `AUTH_CONSOLE_METRICS`, default off) and `CONSOLE_METRICS_TOKEN_FILE` (the
@@ -17,10 +18,12 @@ before 0.5.0 are described in the git history.
   owner's ask): aggregates only
   — agents by state and harness, the open asks, the tokens by category — no
   name, owner or home among the labels. The token and the seed are both or
-  neither; the console keeps its operator-login page beside it. The account
-  publishes nothing and holds no JetStream right; an invalid or refused nkey
-  ends the reading with a warning.
-
+  neither; the console keeps its operator-login page beside it. The account's publish is denied outright and it holds no JetStream right
+  (pinned in the example-conf test); an invalid or refused nkey ends the
+  reading with a warning, an unreachable one reconnects with backoff, and
+  the consumers age out after five minutes without the console listening
+  — the login service re-ensures them hourly, so a console that restarts
+  gets the seven days again.
 - **The console serves `/metrics`** (#158, part of): the Prometheus text
   format behind the operator's login, the same right `/v1/stats` needs —
   **never scrape with the session cookie**, it is that operator's whole
@@ -143,6 +146,28 @@ before 0.5.0 are described in the git history.
   never from anything the browser sends. No new right: all of it comes
   from presence, crown claims, memberships and the login's own record.
 
+- **The login service refuses a session that alternates between networks**
+  (#154 step 3, decision 10). After the host signature and the token are
+  checked, the auth callout watches where each token's Keycloak session (`sid`)
+  and each host key are used from. A network is a prefix (IPv4 /24, IPv6 /64);
+  one change is a person moving and is only reported, and the log names the id
+  and the prefix. Two returns to an earlier network within 30 minutes — adjacent
+  (A, B, A, B) or not (A, B, A, C, A) — are the sign of a copy: that session
+  is refused for 30 minutes, a retry included, while a host key doing so is only
+  reported — a copied key is the owner's to rotate, and refusing it would lock
+  the owner out. No Keycloak admin right is involved: the service ends no
+  session, so a stolen token stays valid at Keycloak until it runs out or the
+  owner ends the session (the owner's decision, #154). The limits: two users on
+  one prefix (a shared NAT or proxy, or a thief in the same /24 or /64) are
+  invisible; IPv4 and IPv6 are two networks, so a dual-stack client that flips
+  between them can be refused; a laptop that switches networks more than once
+  within 30 minutes can be refused, and a new login (a new session id) clears
+  it; a copy that changes network fewer than three times within 30 minutes,
+  keeps one connection open, or rotates among three networks (A, B, C, A, B,
+  C), is only reported; a thief with the token can keep
+  the owner's session blocked by alternating every 30 minutes, whoever issues
+  first wins; and the guard lives in the process, so a restart forgets the
+  blocks and each replica of `authd` keeps its own.
 - **The operator console shows the channels of the operator's own agents
   and of agents that trust the operator directly** (#128, the console on
   the bus as its operator, RT-6.43 step 3). At each agent's credential the
@@ -289,6 +314,26 @@ before 0.5.0 are described in the git history.
 
 ### Docs
 
+- **Every environment variable gets the `CB_` prefix, decided, not built
+  yet** (#169, step 1). [docs/env-names.md](docs/env-names.md) maps 158
+  names the project defines to new ones: `CB_MM_…` for what exists only
+  because of Mattermost, `CB_…` for the rest, `CB_AUTH_…`, `CB_AUTHD_…`,
+  `CB_BRIDGE_…` and `CB_CONSOLE_…` for the services. The registrar's 10
+  settings keep their names and go with the registrar (#151), among them
+  `MM_REGISTRAR_KEYS`, whose release-record check gets its own `CB_` name
+  when the record moves into the bridge. It sets the reading rule for
+  release 0.103.0 (the new name first, the old one with a deprecation
+  warning, all set names must agree or the start is refused, an empty value
+  counts as set, an unexpanded `${…}` placeholder as unset, the fallbacks
+  go one release later); after that an old name set alone refuses the start
+  for at least one more release instead of being ignored, since several
+  settings (release signers, trusted humans, CA pins, the login service's
+  brake and groups) would fail open. Every allow, pass, deny and unset list
+  of names carries both spellings during the fallback release, and the bus
+  writes its own session-file keys and relay values under both. It also
+  covers the change of the `Needs:` grammar (no `CB_` names in the
+  `Needs:` line of 0.103.0 or of the removal release) and the other places
+  that change with the renames.
 - **The one operating model for the host login, documented, not built yet**
   (the owner's decision 10, #154, step 1 of 5). The NATS decision (ADR-014) gets an amendment of
   2026-11-26: the rule "credentials stay on the host, never in a sandbox"
