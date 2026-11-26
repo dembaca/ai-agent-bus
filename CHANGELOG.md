@@ -5,6 +5,21 @@ before 0.5.0 are described in the git history.
 
 ## Unreleased
 
+### Added
+
+- **The console serves `/metrics`** (#158): the Prometheus text format
+  behind the operator's login, the same right `/v1/stats` needs — no
+  anonymous scrape, no token of its own, no new NATS right (a service
+  listener for an unattended scraper stays the owner's ask, the issue
+  names the choice). The console's own observations (requests by bounded
+  route buckets, open streams, connection states and connects, credential
+  renewals and failures, the records the strict decoders refused) beside
+  the agent numbers of that session's own reading: agents by state and
+  harness, the open asks it sees, and the tokens by category per version
+  and harness over 7 days — the same numbers the Reports/Stats tab shows.
+  No agent name, owner, home or session id is ever a label; n/a leaves a
+  series out instead of a 0 (RT-6.43 step 10).
+
 ### Changed
 
 - **The central bridge logs one INFO line per person post, reaction or removal of a reaction it carries onto NATS** (#134, RT-6.42): `inbound: carried` with the home, `what` (`post`, `reaction` or `unreaction`), the Mattermost post id and the subject, no text and no name beyond the anchor.

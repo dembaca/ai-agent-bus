@@ -262,6 +262,8 @@ class PersonReader:
         self._record = asyncio.Event()
         self.state = "connecting"
         self.connects = 0
+        self.renewals = 0            # credential renewals that succeeded (#158)
+        self.renewal_failures = 0    # renewals that failed, retried until they do
         self._nc: Conn | None = None
         self._task: asyncio.Task[None] | None = None
         self._stopped = False
@@ -459,12 +461,14 @@ class PersonReader:
         assert self._tokens is not None
         try:
             self._tokens = await self._renew(self._tokens.refresh)
+            self.renewals += 1
             return self._tokens.access
         except asyncio.CancelledError:
             raise
         except Refused as exc:
             raise Ended(f"ended: the renewal was refused ({exc})") from None
         except Exception as exc:  # noqa: BLE001 - the realm or the network, passing
+            self.renewal_failures += 1
             self.state = "waiting: the renewal is failing"
             log.warning("console: login %.10s…: renewal failed (%s); retrying in %.0f s",
                         self.login, type(exc).__name__, backoff)

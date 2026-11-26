@@ -64,6 +64,7 @@ class Fleet:
     _asks: dict[str, tuple[int, float, str, AskRecord]] = field(default_factory=dict)
     # agent -> Attestation (the login service's record, RT-6.41)
     _attests: dict[str, tuple[int, float, Attestation]] = field(default_factory=dict)
+    refusals: int = 0   # records the strict decoders refused, dropped whole (#158)
     _presence_cseq: int = 0
     _server_now: float = 0.0
     # the clocks beside each server stamp: (server time, monotonic time)
@@ -173,6 +174,7 @@ class Fleet:
                     record = decode_ask_record(data)
                 except Exception:
                     # dropped whole (RT-6.43 step 6), the warning carries none of it
+                    self.refusals += 1
                     log.warning("console: an ask record of %s dropped: not format v1 or past its bounds", t[3])
                     return False
                 seq0, at0, _h, _r = self._asks.get(t[3], (0, 0.0, "", record))
@@ -189,7 +191,9 @@ class Fleet:
                     return True
                 return False
         except Exception:
-            # One unreadable message never ends the view (as NatsBus logs it).
+            # One unreadable message never ends the view (as NatsBus logs it);
+            # a record outside the rules is dropped whole, counted, not shown.
+            self.refusals += 1
             return False
         return False
 

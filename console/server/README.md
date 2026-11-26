@@ -5,7 +5,10 @@ the NATS homes' presence, crown claims and memberships through the
 JetStream consumers the login service makes for each logged-in operator, serves the API of
 [ADR-015 point 10](../../docs/arc42/09-architecture-decisions.md) —
 `GET /v1/fleet` as server-sent events, `/v1/me`, `/v1/asks`, `/v1/graph`,
-`/v1/stats`, `/v1/threads/<id>` — and with it the built browser app
+`/v1/stats`, `/v1/threads/<id>`, and `GET /metrics` in the Prometheus text
+format (#158, RT-6.43 step 10: behind the operator's login like the rest,
+the console's own observations and that session's agent numbers, labels
+bounded — no agent, owner or home) — and with it the built browser app
 ([`console/web`](../web)). The browser logs in over Keycloak
 (authorization code with PKCE, a client of its own, members of an
 operators group); the access token is **verified against the realm's

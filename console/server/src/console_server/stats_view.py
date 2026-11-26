@@ -45,6 +45,7 @@ class StatsBook:
     _seqs: set[int] = field(default_factory=set)
     _server_now: float = 0.0
     _seen_at: tuple[float, float] | None = None  # (server time, monotonic) of the newest stamp
+    refusals: int = 0        # lines the strict decoder refused (#158, /metrics)
 
     @property
     def server_now(self) -> float:
@@ -68,6 +69,7 @@ class StatsBook:
         try:
             line = stats.decode_line(data)
         except stats.LineError:
+            self.refusals += 1
             log.warning("console: a STATS line dropped: not within the rules of the line on NATS")
             return False
         if ack.time > self._server_now:
@@ -83,6 +85,13 @@ class StatsBook:
     def _within(self, sec: float) -> list[dict[str, Any]]:
         edge = self.server_now - sec
         return [line for at, _seq, line in self._lines if at >= edge]
+
+    def within(self, sec: float) -> list[tuple[float, int, dict[str, Any]]]:
+        """The decoded lines of the last `sec` seconds, oldest first — the
+        (server time, stream sequence, line) rows the reports (and #158's
+        /metrics) compute over; raw, never shown to a browser."""
+        edge = self.server_now - sec
+        return [row for row in self._lines if row[0] >= edge]
 
     def reports(self) -> list[dict[str, Any]]:
         """`/v1/stats`: the share per version over 7 days, the asks over 24 h and 7 days, the
