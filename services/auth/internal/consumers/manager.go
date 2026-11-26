@@ -250,6 +250,18 @@ func streamErr(name string, err error) error {
 	return fmt.Errorf("stream %s: %w", name, err)
 }
 
+// ownerToken is an anchor as one subject token: "." becomes "~", as the login
+// service writes it (callout.ownerToken); an anchor that is no lower-case
+// username gives "-", as there too, so the filter and the publish agree.
+func ownerToken(anchor string) string {
+	if !ownerRE.MatchString(anchor) {
+		return "-"
+	}
+	return strings.ReplaceAll(anchor, ".", "~")
+}
+
+var ownerRE = regexp.MustCompile(`^[a-z0-9][a-z0-9._-]{0,63}$`)
+
 // spec is one consumer an agent should have.
 type spec struct {
 	stream, name, deliver string
@@ -260,13 +272,19 @@ type spec struct {
 	filters               []string
 }
 
-func (m *Manager) desired(agent string, channels []string) []spec {
+func (m *Manager) desired(agent, anchor string, channels []string) []spec {
 	var out []spec
 	// every agent: owner token and name; everyone's attestation (the login
 	// service's vouching for an agent's owner and trust list)
 	// and the account records of the people (RT-6.42: who a Mattermost
 	// account is, and whether it approves)
-	filters := []string{m.cfg.Presence + ".*.*", m.cfg.Presence + ".attest.*.v1", m.cfg.Presence + ".account.mattermost.*.v1"}
+	filters := []string{m.cfg.Presence + ".*.*", m.cfg.Presence + ".attest.*.v1",
+		m.cfg.Presence + ".account.mattermost.*.v1",
+		// The login service's notices about this owner's sessions and host keys
+		// (RT-6.34), one subject per verdict so a move never erases a copy: they
+		// are the owner's, and the subject's anchor is the proof.
+		m.cfg.Presence + ".notice." + ownerToken(anchor) + ".copied.v1",
+		m.cfg.Presence + ".notice." + ownerToken(anchor) + ".moved.v1"}
 	for _, ch := range channels {
 		out = append(out, spec{stream: BusStream, name: agent + "_ch_" + ch, channel: ch,
 			deliver: DeliverPrefix + "." + agent + ".ch." + ch, filters: []string{m.cfg.Bus + ".ch." + ch + ".*"}},
@@ -372,7 +390,7 @@ func (m *Manager) lock(agent string) func() {
 // sequence to start from (the agent's last seen); it counts only for a channel
 // in channels (or the key SinceDM, for the direct-message consumer), and never reaches back further than MaxHistory. It returns
 // when everything is done or ctx ends.
-func (m *Manager) Reconcile(ctx context.Context, agent, owner string, channels []string, since map[string]uint64) error {
+func (m *Manager) Reconcile(ctx context.Context, agent, owner, anchor string, channels []string, since map[string]uint64) error {
 	if !agentRE.MatchString(agent) {
 		return fmt.Errorf("consumers: invalid agent name")
 	}
@@ -404,7 +422,7 @@ func (m *Manager) Reconcile(ctx context.Context, agent, owner string, channels [
 	}
 
 	defer m.lock(agent)()
-	want := m.desired(agent, chans)
+	want := m.desired(agent, anchor, chans)
 	wanted := map[string]bool{}
 	for _, w := range want {
 		wanted[w.stream+"/"+w.name] = true

@@ -22,7 +22,7 @@ import (
 // console's client takes this path; every other connect token the agents'
 // path, which refuses a console token, as this one refuses the bus's.
 //
-// The credential: named <AUTH_PERSON_PREFIX><anchor> (the anchor the
+// The credential: named <CB_AUTH_PERSON_PREFIX><anchor> (the anchor the
 // directory holds for the token's `sub`, "." written as "~"), 15 minutes,
 // no publish at all, subscribe only on deliver.person.<login>.>, where
 // <login> is the login's whole public key, lower-cased. No JetStream API, no
@@ -45,17 +45,17 @@ const maxPersonSubs = 8
 
 // Console is the console's path in the configuration.
 type Console struct {
-	// ClientID is the console's Keycloak client (AUTH_CONSOLE_CLIENT_ID): a
+	// ClientID is the console's Keycloak client (CB_AUTH_CONSOLE_CLIENT_ID): a
 	// token's `azp` must be it and its `aud` must name it. Empty: the path
 	// is off and no person's credential is issued.
 	ClientID string
 	// OperatorGroup must be in the token's group claim at every issue
-	// (AUTH_OPERATOR_GROUP), compared exactly as the group mapper writes it.
+	// (CB_AUTH_OPERATOR_GROUP), compared exactly as the group mapper writes it.
 	OperatorGroup string
-	// PersonPrefix starts a person's name (AUTH_PERSON_PREFIX).
+	// PersonPrefix starts a person's name (CB_AUTH_PERSON_PREFIX).
 	PersonPrefix string
 	// MaxLogins bounds the logins one person holds consumers for at once
-	// (AUTH_PERSON_MAX_LOGINS); a new login above it is refused.
+	// (CB_AUTH_PERSON_MAX_LOGINS); a new login above it is refused.
 	MaxLogins int
 }
 
@@ -164,7 +164,7 @@ func personPermissions(login string) jwt.Permissions {
 // console shows it and compares an ask's `human` with.
 type PersonRecord struct {
 	V int `json:"v"`
-	// Name is the person's NATS name, <AUTH_PERSON_PREFIX><anchor>.
+	// Name is the person's NATS name, <CB_AUTH_PERSON_PREFIX><anchor>.
 	Name string `json:"name"`
 	// Anchor is the anchor in its subject form ("." as "~").
 	Anchor string `json:"anchor"`

@@ -54,9 +54,9 @@ func startAuthd(t *testing.T) (*exec.Cmd, *bytes.Buffer, string) {
 
 	cmd := exec.Command(bin)
 	cmd.Env = append(os.Environ(),
-		"AUTH_LISTEN_ADDR="+addr,
-		"AUTH_LOG_LEVEL=debug",
-		"AUTH_SHUTDOWN_TIMEOUT=5s",
+		"CB_AUTH_LISTEN_ADDR="+addr,
+		"CB_AUTH_LOG_LEVEL=debug",
+		"CB_AUTH_SHUTDOWN_TIMEOUT=5s",
 	)
 	// A buffer, not a pipe: a pipe read after Wait deadlocks or loses the
 	// output, and every JSON assertion then passes on an empty string.
@@ -235,7 +235,7 @@ func TestExitOneOnATakenPort(t *testing.T) {
 	defer func() { _ = taken.Close() }()
 
 	cmd := exec.Command(bin)
-	cmd.Env = append(os.Environ(), "AUTH_LISTEN_ADDR="+taken.Addr().String())
+	cmd.Env = append(os.Environ(), "CB_AUTH_LISTEN_ADDR="+taken.Addr().String())
 	out, err := cmd.CombinedOutput()
 
 	var exitErr *exec.ExitError
