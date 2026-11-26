@@ -110,6 +110,54 @@ def test_the_start_is_refused_on_a_disagreement(monkeypatch, capsys):
     assert "alice" not in err and "mallory" not in err
 
 
+@pytest.mark.parametrize("marker", ["CB_BUS_MCP_ENDPOINT", "MM_BUS_MCP_ENDPOINT"])
+def test_a_keyless_sandbox_reads_old_names_quietly(monkeypatch, caplog, marker):
+    """The host hook wrote the settings there, an older one under the MM_ names
+    only: no deprecation warning. Names that differ still refuse."""
+    monkeypatch.setenv(marker, "tcp://127.0.0.1:1")
+    monkeypatch.setenv("MM_LEASE_SEC", "600")
+    assert config.env("CB_LEASE_SEC") == "600"
+    assert _warnings(caplog) == []
+    monkeypatch.setenv("CB_OWNER", "alice")
+    monkeypatch.setenv("MM_OWNER", "mallory")
+    with pytest.raises(config.EnvConflict):
+        config.lookup("CB_OWNER")
+
+
+def test_the_host_process_refuses_a_disagreement(monkeypatch, tmp_path, capsys):
+    """--host: the start line's settings are checked like the environment."""
+    monkeypatch.setattr(hosted, "read_start", lambda _stdin: (
+        "k", {"CB_TRUSTED_HUMANS": "alice", "MM_TRUSTED_HUMANS": "mallory"}))
+    monkeypatch.setattr(os, "environ", dict(os.environ))
+    ready = tmp_path / "ready"
+    code = hosted.host_main(["--ready-file", str(ready), "--state-dir", str(tmp_path / "state"), "--foreground"])
+    assert code == 1 and not ready.exists()
+    err = capsys.readouterr().err
+    assert "CB_TRUSTED_HUMANS, MM_TRUSTED_HUMANS are set to different values; set only CB_TRUSTED_HUMANS" in err
+    assert "alice" not in err and "mallory" not in err
+
+
+def test_no_module_reads_a_renamed_setting_past_config():
+    """Every name of a renamed setting, new or old, is read through config (lookup,
+    env, value): a direct os.environ or os.getenv read would skip the old name, the
+    conflict check or the deprecation."""
+    import re
+    from pathlib import Path
+
+    names = {n for new in config.RENAMED for n in config.spellings(new)}
+    q = r"""["']([A-Z][A-Z0-9_]*)["']"""
+    reads = re.compile(rf"(?:os\.environ|os\.getenv|\benviron)\s*(?:\.get\(|\[|\()\s*{q}"
+                       rf"|{q}\s+(?:not\s+)?in\s+(?:os\.)?environ\b")
+    src = Path(config.__file__).parent
+    found = []
+    for path in sorted(src.rglob("*.py")):
+        if path.name == "config.py":
+            continue
+        for no, line in enumerate(path.read_text().splitlines(), 1):
+            found += [f"{path.name}:{no} {n}" for m in reads.finditer(line) for n in m.groups() if n in names]
+    assert found == []
+
+
 def test_the_registrar_names_are_not_renamed():
     for name in ("MM_REG_SECRET", "MM_REG_SECRET_GOPASS", "MM_REGISTER_URL", "MM_REG_BOT_NAME",
                  "MM_AGENT_PREFIX", "MM_BOT_ATTESTATION", "MM_REGISTRAR_KEYS"):
@@ -149,11 +197,11 @@ def test_empty_release_signers_reach_the_check_as_set(monkeypatch, name):
 def test_the_lists_carry_both_spellings():
     for new in ("CB_RELEASE_URL", "CB_RELEASE_SIGNERS", "CB_BUS_HOST_DIR", "CB_MM_CHAT_URL"):
         assert {new, config.RENAMED[new][0]} <= set(release.CHILD_ENV)
-    for new in ("CB_MM_TRUSTED_HUMAN_USER_IDS", "CB_TRUSTED_HUMANS", "CB_MM_OWNER_USER_ID", "CB_OWNER"):
-        assert {new, config.RENAMED[new][0]} <= set(owners.TRUSTED_VARS)
-    for new in ("CB_BUS_MCP_ENDPOINT", "CB_BUS_ENDPOINT"):
-        assert {new, config.RENAMED[new][0]} <= set(sandbox.SANDBOX_MARKERS)
-    assert {"CB_WORKSPACE", "MM_WORKSPACE"} <= set(session_file.WORKSPACE_VARS)
+    # Lists read through config.env name the new name only; env reads the old one too.
+    assert set(owners.TRUSTED_VARS) == {"CB_MM_TRUSTED_HUMAN_USER_IDS", "CB_TRUSTED_HUMANS",
+                                        "CB_MM_OWNER_USER_ID", "CB_OWNER"}
+    assert set(sandbox.SANDBOX_MARKERS) == {"CORRAL_SANDBOX", "CB_BUS_MCP_ENDPOINT", "CB_BUS_ENDPOINT"}
+    assert "CB_WORKSPACE" in session_file.WORKSPACE_VARS and "MM_WORKSPACE" not in session_file.WORKSPACE_VARS
     assert set(hosted._TOKEN_ENV) == {"CB_MM_BOT_TOKEN", "MM_BOT_TOKEN", "MATTERMOST_TOKEN"}
     for new in ("CB_AGENT_SESSION_FILE", "CB_BUS_KEY", "CB_BUS_MCP_ENDPOINT", "CB_BUS_ENDPOINT",
                 "CB_BUS_UNAVAILABLE"):
@@ -173,10 +221,12 @@ def test_the_start_line_takes_cb_names_and_denies_both_spellings():
     assert sorted(env) == ["CB_MM_BOT_TOKEN", "CB_MM_CHAT_URL", "CB_TRUSTED_HUMANS", "MM_CHAT_URL"]
 
 
-@pytest.mark.parametrize("marker", ["CB_BUS_MCP_ENDPOINT", "CB_BUS_ENDPOINT"])
-def test_a_new_sandbox_marker_is_seen(monkeypatch, marker):
+@pytest.mark.parametrize(("marker", "seen"), [
+    ("CB_BUS_MCP_ENDPOINT", "CB_BUS_MCP_ENDPOINT"), ("CB_BUS_ENDPOINT", "CB_BUS_ENDPOINT"),
+    ("MM_BUS_MCP_ENDPOINT", "CB_BUS_MCP_ENDPOINT"), ("MM_BUS_ENDPOINT", "CB_BUS_ENDPOINT")])
+def test_a_sandbox_marker_is_seen_under_either_name(monkeypatch, marker, seen):
     monkeypatch.setenv(marker, "tcp://127.0.0.1:1")
-    assert sandbox.corral_sandbox() == marker
+    assert sandbox.corral_sandbox() == seen
 
 
 # --- values the bus writes for itself ---------------------------------------------------
@@ -221,10 +271,25 @@ def test_an_end_mark_is_written_under_both_names_and_read_under_either(monkeypat
 def test_the_endpoint_file_is_read_under_either_name():
     data = {"MM_BUS_ENDPOINT": "http://127.0.0.1:1", "MM_BUS_KEY": "k", "MM_BUS_PID": "1"}
     assert config.value(data, "CB_BUS_KEY") == "k" and config.value(data, "CB_BUS_PID") == "1"
+    # Keys that differ never refuse in a file the bus wrote: the later one wins.
     data |= {"CB_BUS_KEY": "k2"}
-    with pytest.raises(config.EnvConflict):
-        config.value(data, "CB_BUS_KEY")
+    assert config.value(data, "CB_BUS_KEY") == config.value(data, "MM_BUS_KEY") == "k2"
     assert hookapi.FILE_PREFIX  # the writer is covered in test_hook_api
+
+
+def test_a_file_the_bus_wrote_is_read_last_line_first(tmp_path):
+    """A downgrade: the newer version wrote both keys, the older one appends its
+    old key later. The last line of either spelling wins, for both twins, as
+    mm_kv in bin/mm-agent-lib.sh reads it (tests/hooks/test_env_names.py)."""
+    p = tmp_path / "s.env"
+    p.write_text("CB_SESSION_PID=10\nMM_SESSION_PID=10\nMM_SESSION_PID=20\n")
+    data = session_file.parse(p)
+    assert config.value(data, "CB_SESSION_PID") == config.value(data, "MM_SESSION_PID") == "20"
+    p.write_text("MM_BUS_PID=1\nCB_BUS_PID=2\nMM_SESSION_PID=3\n")
+    data = session_file.parse(p)
+    assert config.value(data, "CB_BUS_PID") == "2" and config.value(data, "CB_SESSION_PID") == "3"
+    p.write_text("CB_SERVER_ENDED=1700000000\nMM_SERVER_ENDED=1700000005\n")
+    assert session_file.ended_at(session_file.parse(p)) == 1700000005.0
 
 
 def test_the_relay_sends_both_names_and_the_host_folds_them(monkeypatch):

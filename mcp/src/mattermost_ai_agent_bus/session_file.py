@@ -183,7 +183,8 @@ def host_state_dir() -> Path:
 # The workspace the client named in roots/list, when the environment names none.
 _roots_dir: str | None = None
 # Where the workspace may come from, before roots and cwd (RT-6.17 step 2).
-WORKSPACE_VARS = ("CLAUDE_PROJECT_DIR", "CB_WORKSPACE", "MM_WORKSPACE")
+# Read through config.env, which takes MM_WORKSPACE for CB_WORKSPACE (docs/env-names.md).
+WORKSPACE_VARS = ("CLAUDE_PROJECT_DIR", "CB_WORKSPACE")
 
 
 def workspace() -> tuple[str, str]:
@@ -354,7 +355,7 @@ def write(info: SessionInfo, team: str, channel: str, project: str = "") -> Path
 
 
 def parse(path: Path) -> dict[str, str]:
-    """KEY=value lines of a session file; {} when unreadable."""
+    """KEY=value lines of a session file, in the order of their last lines; {} when unreadable."""
     try:
         text = path.read_text()
     except OSError:
@@ -363,6 +364,7 @@ def parse(path: Path) -> dict[str, str]:
     for line in text.splitlines():
         if "=" in line and not line.startswith("#"):
             k, v = line.split("=", 1)
+            out.pop(k, None)  # a key sits at its last line: config.value takes the last spelling
             out[k] = v
     return out
 
@@ -402,8 +404,8 @@ def keyed_on_workspace() -> bool:
 
 def ended_at(data: Mapping[str, str]) -> float | None:
     try:
-        return float(config.lookup(ENDED, data, quiet=True) or "")
-    except (ValueError, config.EnvConflict):
+        return float(config.value(data, ENDED) or "")
+    except ValueError:
         return None
 
 

@@ -174,7 +174,8 @@ test("RT-6.27 step 1: the MCP server and the skill at session_start, nothing whe
   await f.emit("session_start", { reason: "startup" })
   assert.deepEqual(f.registered, [{ name: SERVER, config: {
     command: "uv", args: ["run", "--locked", "--project", join(REPO, "mcp"), "mattermost-ai-agent-bus-mcp"],
-    env: { CLAUDE_CODE_SESSION_ID: "", CLAUDE_PROJECT_DIR: "", MM_CHANNEL_PUSH: "0", MM_WORKSPACE: ws,
+    env: { CLAUDE_CODE_SESSION_ID: "", CLAUDE_PROJECT_DIR: "", CB_CHANNEL_PUSH: "0", MM_CHANNEL_PUSH: "0",
+           CB_WORKSPACE: ws, MM_WORKSPACE: ws,
            UV_PROJECT_ENVIRONMENT: join(homedir(), ".cache", "mm-agent-bus", `venv-${sha16(realpathSync(REPO))}`) },
     cwd: ws, exposure: "direct", timeout: MCP_TIMEOUT_SEC,
     description: f.registered[0].config.description } }])

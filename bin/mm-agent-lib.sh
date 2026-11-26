@@ -8,11 +8,12 @@ source "${BASH_SOURCE[0]%/*}/mm-agent-symbols.sh"
 
 # --- environment names: CB_ first, the old MM_ name still read (#169) ----------
 # The reading rule of docs/env-names.md, the twin of env_first() in
-# mcp/.../config.py. mm_env NEW OLD [OLD2]: the first of the names that is set
+# mcp/.../config.py (lookup). mm_env NEW OLD [OLD2]: the first of the names that is set
 # gives the value; empty counts as set (${VAR+set}), a value that is exactly
 # ${NAME} (a manifest's unexpanded placeholder) counts as unset and is dropped.
 # A value from an old name logs one deprecation warning per old name and
-# process (none for a value in CB_ENV_INTERNAL), and is copied to NEW and to the first old name, exported when the
+# process (none for a value in CB_ENV_INTERNAL, none in a keyless sandbox:
+# mm_env_keyless), and is copied to NEW and to the first old name, exported when the
 # name it came from was, so children of either version read it. Names that are
 # set to different values refuse: CB_ENV_ERR names them (never a value) and the
 # return is 2. Warnings go to stderr, or with CB_ENV_QUIET=1 (a hook that must
@@ -35,6 +36,16 @@ mm_env_warn() {
     printf 'mm-bus: %s\n' "$1" >&2
   fi
 }
+# A keyless sandbox: the host hook started the session's MCP server and wrote
+# the settings here, an older hook under the MM_ names only. An old name there
+# is the hook's doing, no operator's: no deprecation warning (config.keyless_sandbox).
+mm_env_keyless() {
+  local n
+  for n in CB_BUS_MCP_ENDPOINT MM_BUS_MCP_ENDPOINT; do
+    [[ -n "${!n+set}" && ! "${!n}" =~ ^\$\{[A-Za-z_][A-Za-z0-9_]*\}$ ]] && return 0
+  done
+  return 1
+}
 mm_env() {
   local new="$1" first="${2:-}" n v val="" from="" differ="" x=0
   for n in "$@"; do
@@ -44,23 +55,22 @@ mm_env() {
     if [[ -z "$from" ]]; then
       from="$n" val="$v"
     elif [[ "$v" != "$val" ]]; then
-      differ+=" and ${n}"
+      differ+=", ${n}"
     fi
   done
   [[ -n "$from" ]] || return 0
   if [[ -n "$differ" ]]; then
-    CB_ENV_ERR+="${CB_ENV_ERR:+; }${from}${differ} are set to different values: set only ${new}"
+    CB_ENV_ERR+="${CB_ENV_ERR:+; }${from}${differ} are set to different values; set only ${new}"
     return 2
   fi
   if [[ "$from" == "$new" ]]; then
     [[ -z "$first" || -n "${!first+set}" ]] && return 0
   fi
-  for n in "$@"; do
-    [[ "$from" != "$new" && "$n" != "$new" && -n "${!n+set}" && "$CB_ENV_WARNED" != *" $n "* &&
-       "$CB_ENV_INTERNAL" != *" $new "* ]] || continue
-    CB_ENV_WARNED+="$n "
-    mm_env_warn "${n} is deprecated: set ${new} instead (${n} is still read in this release)"
-  done
+  if [[ "$from" != "$new" && "$CB_ENV_WARNED" != *" $from "* && "$CB_ENV_INTERNAL" != *" $new "* ]] &&
+     ! mm_env_keyless; then
+    CB_ENV_WARNED+="$from "
+    mm_env_warn "${from} is deprecated; set ${new} instead (the old name goes in a later release)"
+  fi
   [[ "$(declare -p "$from" 2>/dev/null)" =~ ^declare\ -[a-zA-Z]*x ]] && x=1
   printf -v "$new" '%s' "$val"
   [[ -z "$first" ]] || printf -v "$first" '%s' "$val"
@@ -88,7 +98,7 @@ CB_ENV_NAMES=(
   "CB_AGENT_SESSION_FILE MM_AGENT_SESSION_FILE" "CB_BUS_DEADLINE MM_BUS_DEADLINE"
   "CB_BUS_HOST_DIR MM_BUS_HOST_DIR" "CB_BUS_MAX_TIME MM_BUS_MAX_TIME" "CB_BUS_UPLOAD MM_BUS_UPLOAD"
   "CB_LISTEN_POLL_SEC MM_LISTEN_POLL_SEC" "CB_MM_TEAM_ID MM_TEAM_ID" "CB_REL_GIT_DIR MM_REL_GIT_DIR"
-  "CB_REL_TMP MM_REL_TMP"
+  "CB_REL_TMP MM_REL_TMP" "CB_BUS_HOOK_DISPATCH MM_BUS_HOOK_DISPATCH"
 )
 # mm_env_all: mm_env for each of them; 2 when any refuses (CB_ENV_ERR says which).
 mm_env_all() {
@@ -510,11 +520,13 @@ mm_agent_prefix() {
   fi
 }
 
-# mm_kv FILE KEY...: the value of the first KEY the file has, its first line
-# KEY=value; nothing when it has none, or is no regular file. FILE - is stdin.
-# A file the bus wrote, read under the new key first, then the old (#169).
+# mm_kv FILE KEY...: the value of the last line KEY=value of any of the KEYs
+# (the spellings of one key); nothing when it has none, or is no regular file.
+# FILE - is stdin. A file the bus wrote: the last line wins whichever spelling
+# it has, so a downgraded writer's later old key counts, and keys that differ
+# never refuse (#169; config.value in mcp/.../config.py reads alike).
 mm_kv() {
-  local f="$1" text k line
+  local f="$1" text k line got=""
   shift
   if [[ "$f" == - ]]; then
     text="$(cat)"
@@ -522,49 +534,40 @@ mm_kv() {
     [[ -f "$f" ]] || return 0
     text="$(<"$f")" || return 0
   fi
-  for k in "$@"; do
-    while IFS= read -r line; do
-      [[ "$line" == "$k="* ]] && { printf '%s' "${line#*=}"; return 0; }
-    done <<<"$text"
-  done
-  return 0
+  while IFS= read -r line; do
+    for k in "$@"; do
+      [[ "$line" == "$k="* ]] && { got="${line#*=}"; break; }
+    done
+  done <<<"$text"
+  printf '%s' "$got"
 }
 
 # Load whitelisted KEY=VALUE lines from a session file into the environment.
-# A key is read under its new name or its old one, the new one first, and
-# exported under both (#169): the file may come from either version.
+# A key is read under its new name or its old one, the last line of either
+# spelling winning as in mm_kv, and exported under both (#169): the file may
+# come from either version.
 mm_load_env_file() {
-  local f="$1" line key val new old seen=" " pass
+  local f="$1" line key val new old
   [[ -f "$f" ]] || return 1
-  for pass in new old; do
-    while IFS= read -r line || [[ -n "$line" ]]; do
-      [[ "$line" =~ ^# || -z "$line" ]] && continue
-      key="${line%%=*}" val="${line#*=}" old=""
-      case "$key" in
-        CB_MM_CHAT_URL|CB_MM_BOT_USERNAME|CB_MM_BOT_USER_ID|CB_MM_BOT_TOKEN|CB_MM_TEAM|CB_MM_CHANNEL|CB_MM_PROJECT_CHANNEL)
-          [[ "$pass" == new ]] || continue
-          new="$key" old="MM_${key#CB_MM_}" ;;
-        MM_CHAT_URL|MATTERMOST_URL) new=CB_MM_CHAT_URL old=MM_CHAT_URL ;;
-        MM_BOT_TOKEN|MATTERMOST_TOKEN) new=CB_MM_BOT_TOKEN old=MM_BOT_TOKEN ;;
-        MM_BOT_USERNAME|MM_BOT_USER_ID|MM_TEAM|MM_CHANNEL|MM_PROJECT_CHANNEL) new="CB_${key}" old="$key" ;;
-        MM_REG_BOT_NAME|MM_AGENT_PREFIX|MM_BOT_ATTESTATION)
-          [[ "$pass" == new ]] || continue
-          export "$key=$val"; continue ;;
-        *) continue ;;
-      esac
-      if [[ "$pass" == new ]]; then
-        [[ "$key" == CB_* ]] || continue
-      else
-        [[ "$seen" != *" $new "* ]] || continue
-      fi
-      seen+="$new "
-      mm_env_set "$new" "$old" "$val"
-      case "$new" in
-        CB_MM_CHAT_URL) export MATTERMOST_URL="$val" ;;
-        CB_MM_BOT_TOKEN) export MATTERMOST_TOKEN="$val" ;;
-      esac
-    done <"$f"
-  done
+  while IFS= read -r line || [[ -n "$line" ]]; do
+    [[ "$line" =~ ^# || -z "$line" ]] && continue
+    key="${line%%=*}" val="${line#*=}"
+    case "$key" in
+      CB_MM_CHAT_URL|CB_MM_BOT_USERNAME|CB_MM_BOT_USER_ID|CB_MM_BOT_TOKEN|CB_MM_TEAM|CB_MM_CHANNEL|CB_MM_PROJECT_CHANNEL)
+        new="$key" old="MM_${key#CB_MM_}" ;;
+      MM_CHAT_URL|MATTERMOST_URL) new=CB_MM_CHAT_URL old=MM_CHAT_URL ;;
+      MM_BOT_TOKEN|MATTERMOST_TOKEN) new=CB_MM_BOT_TOKEN old=MM_BOT_TOKEN ;;
+      MM_BOT_USERNAME|MM_BOT_USER_ID|MM_TEAM|MM_CHANNEL|MM_PROJECT_CHANNEL) new="CB_${key}" old="$key" ;;
+      MM_REG_BOT_NAME|MM_AGENT_PREFIX|MM_BOT_ATTESTATION)
+        export "$key=$val"; continue ;;
+      *) continue ;;
+    esac
+    mm_env_set "$new" "$old" "$val"
+    case "$new" in
+      CB_MM_CHAT_URL) export MATTERMOST_URL="$val" ;;
+      CB_MM_BOT_TOKEN) export MATTERMOST_TOKEN="$val" ;;
+    esac
+  done <"$f"
 }
 
 mm_load_session_file() {

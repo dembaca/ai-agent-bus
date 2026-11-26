@@ -602,7 +602,8 @@ export function mcpConfig(root: string, workspace: string, env: Env = {}) {
   return {
     command: "uv",
     args: ["run", "--locked", "--project", join(root, "mcp"), "mattermost-ai-agent-bus-mcp"],
-    env: { CLAUDE_CODE_SESSION_ID: "", CLAUDE_PROJECT_DIR: "", MM_CHANNEL_PUSH: "0", MM_WORKSPACE: workspace,
+    env: { CLAUDE_CODE_SESSION_ID: "", CLAUDE_PROJECT_DIR: "", CB_CHANNEL_PUSH: "0", MM_CHANNEL_PUSH: "0",
+           CB_WORKSPACE: workspace, MM_WORKSPACE: workspace,
            UV_PROJECT_ENVIRONMENT: venvDir(env, root), ...(secret ? { MM_REG_SECRET: secret } : {}) },
     cwd: workspace,
     exposure: "direct" as const,

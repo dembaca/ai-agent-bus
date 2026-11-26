@@ -61,9 +61,8 @@ _LAST_MAX = 1024
 # The variables that configure trusted humans, by name or by id: any of them
 # set turns the owner split and the gate on (gate.active), whether or not a
 # lookup resolves them now.
-# Both spellings of each (docs/env-names.md, "Lists of names").
-TRUSTED_VARS = ("CB_MM_TRUSTED_HUMAN_USER_IDS", "MM_TRUSTED_HUMAN_USER_IDS", "CB_TRUSTED_HUMANS", "MM_TRUSTED_HUMANS",
-                "CB_MM_OWNER_USER_ID", "MM_OWNER_USER_ID", "CB_OWNER", "MM_OWNER")
+# Read through config.env, which takes each old name for its new one (docs/env-names.md).
+TRUSTED_VARS = ("CB_MM_TRUSTED_HUMAN_USER_IDS", "CB_TRUSTED_HUMANS", "CB_MM_OWNER_USER_ID", "CB_OWNER")
 
 class _Nobody(frozenset[str]):
     """Trusted humans that are configured but none known: empty, yet true.

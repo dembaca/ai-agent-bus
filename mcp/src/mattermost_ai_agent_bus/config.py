@@ -7,7 +7,10 @@ issue #169). Every renamed setting is read through this module: the new name
 first, else the old name(s) with one deprecation warning per process and old
 name; two of its names set to different values refuse the start
 (``EnvConflict``), naming the names and never a value. Empty counts as set;
-an unexpanded placeholder counts as unset. The registrar's names
+an unexpanded placeholder counts as unset. No warning for a value the bus
+writes for itself (INTERNAL) or inside a keyless sandbox (keyless_sandbox). A
+file the bus wrote is read by ``value``: the last line of either spelling
+wins, never a refusal. The registrar's names
 (``MM_REG_*``, ``MM_REGISTER_URL``, ``MM_REGISTRAR_KEYS``, ``MM_AGENT_PREFIX``,
 ``MM_BOT_ATTESTATION``) are not renamed and read as they are.
 """
@@ -137,14 +140,22 @@ def _given(environ: Mapping[str, str], name: str) -> str | None:
     return value
 
 
+def keyless_sandbox(environ: Mapping[str, str] | None = None) -> bool:
+    """The host hook started this session's MCP server and wrote the settings
+    here (CB_BUS_MCP_ENDPOINT, or MM_BUS_MCP_ENDPOINT from an older hook): an
+    old name there is the hook's doing, no operator's, and earns no warning."""
+    env = os.environ if environ is None else environ
+    return any(_given(env, n) is not None for n in ("CB_BUS_MCP_ENDPOINT", "MM_BUS_MCP_ENDPOINT"))
+
+
 def lookup(name: str, environ: Mapping[str, str] | None = None, *, quiet: bool = False) -> str | None:
     """The setting's value, or None when none of its names is set.
 
     Empty counts as set: an empty new name never falls back to an old one. A
     value that is exactly an unexpanded ``${VAR}`` counts as unset. Raises
     EnvConflict when two of its names that are set differ. ``quiet``: the
-    mapping is one of the bus's own files, not an operator's environment, so
-    reading an old name there logs nothing.
+    mapping is not an operator's environment, so reading an old name there
+    logs nothing; nor does it in a keyless sandbox (keyless_sandbox).
     """
     env = os.environ if environ is None else environ
     names = spellings(name)
@@ -155,7 +166,8 @@ def lookup(name: str, environ: Mapping[str, str] | None = None, *, quiet: bool =
         listed = ", ".join(n for n, _ in found)
         raise EnvConflict(f"{listed} are set to different values; set only {names[0]}")
     first, value = found[0]
-    if first != names[0] and not quiet and names[0] not in INTERNAL and first not in _warned:
+    if (first != names[0] and not quiet and names[0] not in INTERNAL and first not in _warned
+            and not keyless_sandbox(env)):
         _warned.add(first)
         log.warning("%s is deprecated; set %s instead (the old name goes in a later release)",
                     first, names[0])
@@ -175,8 +187,18 @@ def env(name: str, default: str = "", environ: Mapping[str, str] | None = None) 
 
 
 def value(data: Mapping[str, str], name: str, default: str = "") -> str:
-    """A key of one of the bus's own files (session, endpoint): new key first, quietly."""
-    got = lookup(name, data, quiet=True)
+    """A key of one of the bus's own files (session, endpoint), quietly.
+
+    The last line of either spelling wins and keys that differ never refuse:
+    a file is the bus's own record, and a downgraded writer appends under the
+    old key after the new one. ``data`` keeps the file's order, each key at its
+    last line (session_file.parse); bin/mm-agent-lib.sh's mm_kv reads alike.
+    """
+    names = spellings(name)
+    got = None
+    for k, v in data.items():
+        if k in names:
+            got = v
     return got if got else default
 
 

@@ -333,7 +333,7 @@ mm_reap_kept "$STATE_DIR"
 # installer removes no release a session records. corral skips a postEnd hook
 # whose file changed during the session: exec at current/… changes with every
 # switch, the dispatcher does not.
-if [[ -z "${CB_BUS_HOOK_DISPATCH:-${MM_BUS_HOOK_DISPATCH:-}}" && "$(basename "$(dirname "$ROOT")")" == releases ]]; then
+if [[ -z "${CB_BUS_HOOK_DISPATCH:-}" && "$(basename "$(dirname "$ROOT")")" == releases ]]; then
   log "corral runs the host hooks from current/; point its exec at ~/.local/share/mm-agent-bus/current.hooks/mm-session-start.sh and mm-session-stop.sh, else a switch of current during a session makes corral skip its postEnd (RT-6.28)"
 fi
 unset CB_BUS_HOOK_DISPATCH MM_BUS_HOOK_DISPATCH
@@ -604,7 +604,10 @@ ENV_JSON="$(jq -nc \
    # Each value under its old name too (#169): CB_MM_X was MM_X, CB_X was MM_X.
    | . + (to_entries | map(select(.key | startswith("CB_"))
           | .key |= (if startswith("CB_MM_") then "MM_" + .[6:] else "MM_" + .[3:] end))
-          | from_entries)')"
+          | from_entries)
+   # And the chat URL under its third name: a MATTERMOST_URL of the operator that an
+   # env grant passes in is overwritten, never left to disagree with it.
+   | . + (if has("CB_MM_CHAT_URL") then {MATTERMOST_URL: .CB_MM_CHAT_URL} else {} end)')"
 
 # --- the session's MCP server on the host (RT-6.18) ----------------------------
 # Keyless: the bot token never enters the sandbox. The session's MCP server runs
