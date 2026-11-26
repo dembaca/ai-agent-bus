@@ -73,7 +73,10 @@ func run(log *slog.Logger) error {
 	// `shown_as` needs the presence of the names and the home's roster; without
 	// presences the bridge runs as before, naming the NATS name.
 	snapshot := presence.New()
-	bots, err := agentBots(ctx, cfg, snapshot, log)
+	// The account records map a person's account to the anchor (RT-6.42) and,
+	// the other way round, an agent bot's owner to the account (RT-6.44).
+	accounts := &inbound.Accounts{Log: log, Deliver: cfg.Deliver + ".accounts", Stream: "PRESENCE"}
+	bots, err := agentBots(ctx, cfg, snapshot, accounts, log)
 	if err != nil {
 		return err
 	}
@@ -118,7 +121,6 @@ func run(log *slog.Logger) error {
 	// inbound path. A lost socket or a stopped home does not stop the bridge:
 	// the signal runs out and sessions read people on Mattermost (step 9); a
 	// subscription to the account records that cannot be made does.
-	accounts := &inbound.Accounts{Log: log, Deliver: cfg.Deliver + ".accounts", Stream: "PRESENCE"}
 	wg.Add(1)
 	go func() {
 		defer wg.Done()
@@ -170,7 +172,7 @@ func run(log *slog.Logger) error {
 // agentBots is the agents' own bots (RT-6.44) when BRIDGE_MM_ADMIN_TOKEN_FILE
 // is set, after the start checks; nil keeps the one bridge bot.
 func agentBots(ctx context.Context, cfg config.Config, snapshot *presence.Snapshot,
-	log *slog.Logger) (*agentbots.Bots, error) {
+	accounts *inbound.Accounts, log *slog.Logger) (*agentbots.Bots, error) {
 	if cfg.AdminToken == "" {
 		return nil, nil
 	}
@@ -180,7 +182,7 @@ func agentBots(ctx context.Context, cfg config.Config, snapshot *presence.Snapsh
 	if err != nil {
 		return nil, err
 	}
-	bots := &agentbots.Bots{Admin: adm, Presence: snapshot, Prefix: cfg.BotPrefix, URL: cfg.MMURL, Log: log}
+	bots := &agentbots.Bots{Admin: adm, Presence: snapshot, Owners: accounts, Prefix: cfg.BotPrefix, URL: cfg.MMURL, Log: log}
 	if err := bots.Check(ctx, cfg.MMToken); err != nil {
 		return nil, err
 	}

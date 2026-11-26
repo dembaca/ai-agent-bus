@@ -8,6 +8,7 @@ import (
 	"log/slog"
 	"net/http"
 	"net/http/httptest"
+	"strconv"
 	"strings"
 	"sync"
 	"testing"
@@ -31,11 +32,15 @@ type fakeMM struct {
 	revoked []string
 	posts   []map[string]any
 	seq     int
+	// reactions by "user/post/emoji"; removedBy the callers of each removal
+	reactions map[string]bool
+	removedBy []string
 }
 
 func newFake(t *testing.T) *fakeMM {
 	f := &fakeMM{users: map[string]map[string]any{}, bots: map[string]map[string]any{},
-		tokens: map[string][]map[string]any{}, byToken: map[string]string{}, members: map[string][]string{}}
+		tokens: map[string][]map[string]any{}, byToken: map[string]string{}, members: map[string][]string{},
+		reactions: map[string]bool{}}
 	f.users["admin"] = map[string]any{"id": "admin", "username": "bus-admin", "is_bot": true, "roles": "system_user system_admin"}
 	f.users["poster"] = map[string]any{"id": "poster", "username": "bridge", "is_bot": true, "roles": "system_user"}
 	f.users["alice"] = map[string]any{"id": "alice", "username": "alice.x", "roles": "system_user"}
@@ -62,6 +67,28 @@ func (f *fakeMM) serve(w http.ResponseWriter, r *http.Request) {
 	switch {
 	case key == "GET users/me":
 		out(f.users[caller])
+	case r.Method == "GET" && len(p) == 2 && p[0] == "users":
+		if u, ok := f.users[p[1]]; ok {
+			out(u)
+			return
+		}
+		w.WriteHeader(http.StatusNotFound)
+	case key == "POST reactions":
+		f.reactions[caller+"/"+body["post_id"].(string)+"/"+body["emoji_name"].(string)] = true
+		out(map[string]any{})
+	case r.Method == "DELETE" && len(p) == 6 && p[0] == "users" && p[2] == "posts" && p[4] == "reactions":
+		if p[1] != caller && !strings.Contains(f.users[caller]["roles"].(string), "system_admin") {
+			w.WriteHeader(http.StatusForbidden)
+			return
+		}
+		k := p[1] + "/" + p[3] + "/" + p[5]
+		if !f.reactions[k] {
+			w.WriteHeader(http.StatusNotFound)
+			return
+		}
+		delete(f.reactions, k)
+		f.removedBy = append(f.removedBy, caller)
+		out(map[string]any{})
 	case r.Method == "GET" && len(p) == 3 && p[0] == "users" && p[1] == "username":
 		for _, u := range f.users {
 			if u["username"] == p[2] {
@@ -98,9 +125,16 @@ func (f *fakeMM) serve(w http.ResponseWriter, r *http.Request) {
 			}
 		}
 	case len(p) == 3 && p[0] == "users" && p[2] == "tokens" && r.Method == "GET":
-		var list []map[string]any
-		for _, t := range f.tokens[p[1]] {
-			list = append(list, map[string]any{"id": t["id"], "description": t["description"], "is_active": t["is_active"]})
+		page, _ := strconv.Atoi(r.URL.Query().Get("page"))
+		per, _ := strconv.Atoi(r.URL.Query().Get("per_page"))
+		if per == 0 {
+			per = 60
+		}
+		list := []map[string]any{}
+		for i, t := range f.tokens[p[1]] {
+			if i >= page*per && i < (page+1)*per {
+				list = append(list, map[string]any{"id": t["id"], "description": t["description"], "is_active": t["is_active"]})
+			}
 		}
 		out(list)
 	case len(p) == 3 && p[0] == "users" && p[2] == "tokens" && r.Method == "POST":
@@ -134,14 +168,28 @@ func (f *fakeMM) serve(w http.ResponseWriter, r *http.Request) {
 
 func quiet() *slog.Logger { return slog.New(slog.NewTextHandler(io.Discard, nil)) }
 
+// owners stands for the login service's account records: anchor to user id.
+type owners map[string]string
+
+func (o owners) Owner(anchor string) string { return o[anchor] }
+
+// aliceRecord binds alice's anchor to her account; her username is alice.x
+// in Mattermost too, but nothing reads that.
+func aliceRecord() owners { return owners{"alice.x": "alice"} }
+
 func newBots(t *testing.T, f *fakeMM, snap *presence.Snapshot) *Bots {
+	t.Helper()
+	return newBotsOf(t, f, snap, aliceRecord())
+}
+
+func newBotsOf(t *testing.T, f *fakeMM, snap *presence.Snapshot, o Owners) *Bots {
 	t.Helper()
 	adm, err := mattermost.New(mattermost.Config{URL: f.srv.URL, Token: "admin-token", Team: "team",
 		HideBotDM: true, TokenDescription: TokenDescription}, quiet())
 	if err != nil {
 		t.Fatal(err)
 	}
-	b := &Bots{Admin: adm, Presence: snap, Prefix: "bb-", URL: f.srv.URL, Log: quiet()}
+	b := &Bots{Admin: adm, Presence: snap, Owners: o, Prefix: "bb-", URL: f.srv.URL, Log: quiet()}
 	if err := b.Check(context.Background(), "post-token"); err != nil {
 		t.Fatal(err)
 	}
@@ -239,6 +287,8 @@ func TestAForeignBotOfTheSameNameGivesTheFallback(t *testing.T) {
 		bot  map[string]any // nil: a person's account
 	}{
 		{"unmarked", map[string]any{"description": "someone's bot", "owner_id": "alice"}},
+		{"another agent's mark", map[string]any{"description": Marker + "agent-ab", "owner_id": "alice"}},
+		{"the mark with more after it", map[string]any{"description": Marker + "agent-a and more", "owner_id": "alice"}},
 		{"another owner", map[string]any{"description": Marker + "agent-a", "owner_id": "bob"}},
 		{"a person", nil},
 	} {
@@ -328,6 +378,11 @@ func TestTheStartChecks(t *testing.T) {
 		{"the admin is no bot", "system_user system_admin", "system_user", false, false},
 		{"the admin has no system_admin", "system_user", "system_user", true, false},
 		{"the posting bot has system_admin", "system_user system_admin", "system_user system_admin", true, false},
+		{"the posting bot may post everywhere", "system_user system_admin", "system_user system_post_all", true, true},
+		{"the posting bot has system_manager", "system_user system_admin", "system_user system_manager", true, false},
+		{"the posting bot has system_user_manager", "system_user system_admin", "system_user system_user_manager", true, false},
+		{"the posting bot has system_read_only_admin", "system_user system_admin", "system_user system_read_only_admin", true, false},
+		{"the posting bot has a custom role", "system_user system_admin", "system_user custom_role", true, false},
 	} {
 		f := newFake(t)
 		f.users["admin"]["roles"], f.users["admin"]["is_bot"] = tc.admin, tc.adminBot
@@ -340,5 +395,121 @@ func TestTheStartChecks(t *testing.T) {
 		if (err == nil) != tc.ok {
 			t.Errorf("%s: %v", tc.name, err)
 		}
+	}
+}
+
+// RT-6.44: the owner is the account the login service's record binds to the
+// presence owner's anchor, never whoever holds that anchor as a username.
+func TestTheOwnerComesFromTheAccountRecordNotTheUsername(t *testing.T) {
+	f := newFake(t)
+	ctx := context.Background()
+	f.users["mallory"] = map[string]any{"id": "mallory", "username": "ali", "roles": "system_user"}
+	snap := presence.New()
+	snap.Observed("agent-a", "ali", "", presence.Online, time.Now())
+	b := newBotsOf(t, f, snap, owners{"ali": "alice"})
+	if b.Bot(ctx, "agent-a", "home") == nil {
+		t.Fatal("no bot")
+	}
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	if owner := f.bots["bot1"]["owner_id"]; owner != "alice" {
+		t.Fatalf("owned by %v", owner)
+	}
+}
+
+// RT-6.44: no record for the anchor gives the bridge bot, never a lookup by
+// username; the bot is made once the record is there.
+func TestNoAccountRecordGivesTheFallback(t *testing.T) {
+	f := newFake(t)
+	ctx := context.Background()
+	o := owners{}
+	b := newBotsOf(t, f, aliceAgent(), o)
+	if b.Bot(ctx, "agent-a", "home") != nil || f.created != 0 {
+		t.Fatal("a bot without an account record")
+	}
+	o["alice.x"] = "alice"
+	if b.Bot(ctx, "agent-a", "home") == nil {
+		t.Fatal("no bot once the record is there")
+	}
+	if (&Bots{Admin: b.Admin, Presence: aliceAgent(), Prefix: "bb-", Log: quiet()}).Bot(ctx, "agent-a", "home") != nil {
+		t.Fatal("a bot without the account records")
+	}
+}
+
+// RT-6.44: when the record moves the anchor to another account, the bot
+// bound to the earlier one is not used any more, now or after a restart.
+func TestARecordChangeStopsTheBot(t *testing.T) {
+	f := newFake(t)
+	ctx := context.Background()
+	o := aliceRecord()
+	b := newBotsOf(t, f, aliceAgent(), o)
+	if b.Bot(ctx, "agent-a", "home") == nil {
+		t.Fatal("no bot")
+	}
+	o["alice.x"] = "bob"
+	if b.Bot(ctx, "agent-a", "home") != nil {
+		t.Fatal("the bot of the earlier owner was used")
+	}
+	if newBotsOf(t, f, aliceAgent(), owners{"alice.x": "bob"}).Bot(ctx, "agent-a", "home") != nil {
+		t.Fatal("the bot of the earlier owner was used after a restart")
+	}
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	if f.created != 1 || f.bots["bot1"]["owner_id"] != "alice" {
+		t.Fatalf("created %d, owner %v", f.created, f.bots["bot1"]["owner_id"])
+	}
+}
+
+// RT-6.44: a restart revokes all the bridge's earlier tokens of the bot,
+// beyond the first page of the list.
+func TestEveryPageOfEarlierTokensIsRevoked(t *testing.T) {
+	f := newFake(t)
+	ctx := context.Background()
+	newBots(t, f, aliceAgent()).Bot(ctx, "agent-a", "home")
+	f.mu.Lock()
+	for i := range 450 {
+		f.tokens["bot1"] = append(f.tokens["bot1"], map[string]any{"id": fmt.Sprintf("old%d", i),
+			"token": fmt.Sprintf("old%d", i), "description": TokenDescription, "is_active": true})
+	}
+	f.mu.Unlock()
+	newBots(t, f, aliceAgent()).Bot(ctx, "agent-a", "home")
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	if len(f.revoked) != 451 {
+		t.Fatalf("revoked %d", len(f.revoked))
+	}
+}
+
+// RT-6.44: the removal of a bot's reaction goes through its own client while
+// it has one; within the backoff, and after a restart without an owner, the
+// admin bot removes it as the bot. One gone already is no error.
+func TestABotsReactionIsRemovedWhateverStateTheBotIsIn(t *testing.T) {
+	f := newFake(t)
+	ctx := context.Background()
+	b := newBots(t, f, aliceAgent())
+	s := b.Bot(ctx, "agent-a", "home")
+	for _, post := range []string{"p1", "p2", "p3"} {
+		if err := s.React(ctx, post, "eyes"); err != nil {
+			t.Fatal(err)
+		}
+	}
+	if err := b.Unreact(ctx, "agent-a", "p1", "eyes"); err != nil {
+		t.Fatal(err)
+	}
+	b.Forget("agent-a") // within the backoff now
+	if err := b.Unreact(ctx, "agent-a", "p2", "eyes"); err != nil {
+		t.Fatal(err)
+	}
+	restarted := newBotsOf(t, f, aliceAgent(), owners{})
+	if err := restarted.Unreact(ctx, "agent-a", "p3", "eyes"); err != nil {
+		t.Fatal(err)
+	}
+	if err := restarted.Unreact(ctx, "agent-a", "p3", "eyes"); err != nil {
+		t.Fatalf("gone already: %v", err)
+	}
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	if len(f.reactions) != 0 || strings.Join(f.removedBy, " ") != "bot1 admin admin" {
+		t.Fatalf("left %v, removed by %v", f.reactions, f.removedBy)
 	}
 }

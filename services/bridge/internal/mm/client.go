@@ -34,6 +34,10 @@ type StatusError struct {
 func (e *StatusError) Error() string { return e.Err.Error() }
 func (e *StatusError) Unwrap() error { return e.Err }
 
+// HTTPStatus is the answer's status: the mirror tells a revoked token (401,
+// 403) from a transient failure by it without importing this package.
+func (e *StatusError) HTTPStatus() int { return e.Status }
+
 // refuse maps a message-specific refusal, else nil.
 func refuse(err error) error {
 	var se *StatusError

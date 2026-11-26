@@ -432,12 +432,31 @@ func (m *Adapter) BotOf(ctx context.Context, id string) (*Bot, error) {
 	return &b, nil
 }
 
+// tokenPage is how many tokens RevokeIssued reads per page; maxTokenPages
+// bounds the pages, so a server that never ends its list cannot loop it.
+const (
+	tokenPage     = 200
+	maxTokenPages = 100
+)
+
 // RevokeIssued revokes the agent's active tokens this adapter minted (their
-// description is Cfg.TokenDescription); other tokens stay.
+// description is Cfg.TokenDescription); other tokens stay. It reads every
+// page first and revokes then, so no revocation shifts a page under it.
 func (m *Adapter) RevokeIssued(ctx context.Context, a core.Agent) error {
 	var tokens []AccessToken
-	if err := m.do(ctx, http.MethodGet, "/api/v4/users/"+url.PathEscape(a.ID)+"/tokens?per_page=200", nil, m.Cfg.Token, &tokens); err != nil {
-		return err
+	for page := 0; ; page++ {
+		if page == maxTokenPages {
+			return fmt.Errorf("more than %d tokens", maxTokenPages*tokenPage)
+		}
+		var batch []AccessToken
+		path := fmt.Sprintf("/api/v4/users/%s/tokens?page=%d&per_page=%d", url.PathEscape(a.ID), page, tokenPage)
+		if err := m.do(ctx, http.MethodGet, path, nil, m.Cfg.Token, &batch); err != nil {
+			return err
+		}
+		tokens = append(tokens, batch...)
+		if len(batch) < tokenPage {
+			break
+		}
 	}
 	var errs []error
 	for _, t := range tokens {
@@ -446,6 +465,18 @@ func (m *Adapter) RevokeIssued(ctx context.Context, a core.Agent) error {
 		}
 	}
 	return errors.Join(errs...)
+}
+
+// RemoveReaction removes user userID's reaction emoji from a post with the
+// admin token (a system admin may remove another's reaction); one that is
+// gone already, or whose post is, is no error.
+func (m *Adapter) RemoveReaction(ctx context.Context, userID, postID, emoji string) error {
+	err := m.do(ctx, http.MethodDelete, "/api/v4/users/"+url.PathEscape(userID)+"/posts/"+
+		url.PathEscape(postID)+"/reactions/"+url.PathEscape(emoji), nil, m.Cfg.Token, nil)
+	if isNotFound(err) {
+		return nil
+	}
+	return err
 }
 
 // HideBotDirectChannel hides the admin↔bot DM from the registrar account's sidebar.

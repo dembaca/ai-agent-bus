@@ -1039,3 +1039,34 @@ func TestARefusedPublishLogsNoCarriedLine(t *testing.T) {
 		t.Fatalf("a refused publish is logged as carried: %s", buf.String())
 	}
 }
+
+// RT-6.44: Owner reads the records the other way round, anchor to account:
+// nothing before they are read, nothing for an anchor no record binds or two
+// records bind, and a record's change moves it.
+func TestOwnerIsTheOneAccountWhoseRecordBindsTheAnchor(t *testing.T) {
+	const a1, a2 = "aaaaaaaaaaaaaaaaaaaaaaaaaa", "bbbbbbbbbbbbbbbbbbbbbbbbbb"
+	rec := func(uid, anchor string) []byte {
+		return []byte(`{"v":1,"account":"` + uid + `","anchor":` + anchor + `,"name":"x",` +
+			`"approver":false,"token_iat":1,"iat":1,"exp":9999999999}`)
+	}
+	acc := newAccounts()
+	acc.one("presence.account.mattermost."+a1+".v1", rec(a1, `"alice"`))
+	if acc.Owner("alice") != "" {
+		t.Fatal("an owner before the records are read")
+	}
+	acc.caught()
+	if got := acc.Owner("alice"); got != a1 {
+		t.Fatalf("owner %q", got)
+	}
+	if acc.Owner("bob") != "" || acc.Owner("") != "" {
+		t.Fatal("an owner without a record")
+	}
+	acc.one("presence.account.mattermost."+a2+".v1", rec(a2, `"alice"`))
+	if acc.Owner("alice") != "" {
+		t.Fatal("an owner although two records bind the anchor")
+	}
+	acc.one("presence.account.mattermost."+a1+".v1", rec(a1, `null`))
+	if got := acc.Owner("alice"); got != a2 {
+		t.Fatalf("after the change: %q", got)
+	}
+}
