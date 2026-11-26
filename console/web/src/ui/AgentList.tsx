@@ -145,7 +145,7 @@ function AgentRow({ card, onOpen }: { card: AgentCard; onOpen: (card: AgentCard)
         </span>
         <span className="agents__model agents__clip" title={model}>{model}</span>
       </td>
-      <td className="nowrap agents__status">
+      <td className="nowrap agents__status" title={`${card.state}${(card.asksForOperator ?? 0) > 0 ? " · waits on you" : ""}`}>
         <span className={`pill pill--${state}`}>{card.state}</span>
         {(card.asksForOperator ?? 0) > 0 && (
           <span className="pill pill--ask pill--plain agents__waits">waits on you</span>

@@ -123,7 +123,8 @@
 .agents__col--agent { width: 190px; }
 .agents__col--status { width: 190px; }
 .agents__col--branch { width: 140px; }
-.agents__col--home { width: 160px; }
+.agents__col--home { width: 164px; }   /* ~ai-agent-bus-dev (123 px Task)
+                                        beside the +N guest count, #187 */
 .agents__col--ctx { width: 104px; }
 .agents__col--asks { width: 60px; }
 .agents__col--last { width: 84px; }
@@ -180,6 +181,7 @@
 .agents__status { overflow: hidden; }
 /* the state pill and "waits on you" on one middle line */
 .agents__status .pill { vertical-align: middle; }
-.agents__home { display: flex; gap: 4px; min-width: 0; }
+.agents__home { display: flex; gap: 3px; min-width: 0; }  /* #187: the
+                                        clipped name keeps its ellipsis beside +N */
 .agents__home .agents__clip { min-width: 0; }
 .agents__guests { flex: none; }
