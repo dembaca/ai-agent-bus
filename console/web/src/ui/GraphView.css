@@ -1,34 +1,128 @@
+/* The graph view on React Flow (issue #145). React Flow's own variables are
+   set from the console's tokens, which already switch for light and dark;
+   the nodes take the status colors of the Kanban and 2 px corners. */
+
 .graph { display: grid; gap: 12px; }
 
-.graph__svg {
-  width: 100%;
-  height: auto;
+.graph__cut { color: var(--for-me); }
+
+.graph__canvas {
+  height: min(70vh, 640px);
+  min-height: 360px;
   background: var(--surface);
   border: 1px solid var(--line);
-  border-radius: var(--radius);
+  border-radius: 2px;
+  overflow: hidden;
 }
 
-.graph__edge { stroke: var(--line); stroke-width: 1.5; }
-.graph__edge--trusts { stroke: color-mix(in srgb, var(--accent) 55%, transparent); }
-.graph__edge--coordinates { stroke: color-mix(in srgb, var(--state-listening) 45%, transparent); }
-.graph__edge--cut { stroke-dasharray: 4 4; }
-
-.graph__node circle,
-.graph__node rect {
-  fill: var(--surface-2);
-  stroke: var(--muted);
-  stroke-width: 1.5;
+.graph__canvas .react-flow {
+  --xy-background-color: var(--surface);
+  --xy-background-pattern-color: var(--line);
+  --xy-edge-stroke: var(--muted);
+  --xy-edge-stroke-width: 1.5;
+  --xy-node-border-radius: 2px;
+  --xy-controls-button-background-color: var(--surface-2);
+  --xy-controls-button-background-color-hover: var(--hair);
+  --xy-controls-button-color: var(--ink);
+  --xy-controls-button-color-hover: var(--ink);
+  --xy-controls-button-border-color: var(--line);
+  --xy-controls-box-shadow: none;
+  --xy-handle-background-color: var(--muted);
+  --xy-handle-border-color: var(--surface);
+  font-family: var(--font);
 }
 
-.graph__node--person circle { stroke: var(--accent); }
-.graph__node--channel rect { stroke: var(--state-listening); fill: transparent; }
-.graph__node--agent rect { stroke: var(--line); }
+/* Handles are anchors only: nothing connects by hand. */
+.graph__canvas .react-flow__handle {
+  width: 5px;
+  height: 5px;
+  min-width: 0;
+  min-height: 0;
+  opacity: .6;
+}
 
-.graph__node text { fill: var(--ink); font-size: 12px; text-anchor: middle; }
-.graph__node .graph__state { fill: var(--muted); font-size: 10px; }
-.graph__hint { fill: var(--muted); font-size: 10px; }
+/* edges */
+.react-flow__edge.graph__edge--member .react-flow__edge-path { stroke: color-mix(in srgb, var(--ink) 30%, transparent); }
+.react-flow__edge.graph__edge--guest .react-flow__edge-path {
+  stroke: color-mix(in srgb, var(--state-listening) 60%, transparent);
+  stroke-dasharray: 2 4;
+}
+.react-flow__edge.graph__edge--ask .react-flow__edge-path { stroke: var(--for-me); }
+.react-flow__edge.graph__edge--asked .react-flow__edge-path { stroke: color-mix(in srgb, var(--for-me) 45%, transparent); }
+.react-flow__edge.graph__edge--trusts .react-flow__edge-path { stroke: color-mix(in srgb, var(--accent) 45%, transparent); }
+.react-flow__edge.graph__edge--coordinates .react-flow__edge-path { stroke: color-mix(in srgb, var(--state-listening) 55%, transparent); }
+.react-flow__edge.graph__edge--cut .react-flow__edge-path { stroke-dasharray: 4 4; }
 
-.graph__crown {
-  fill: var(--for-me);
-  stroke: none;
+/* nodes */
+.gnode {
+  display: grid;
+  gap: 2px;
+  padding: 6px 10px;
+  background: var(--surface-2);
+  color: var(--ink);
+  border: 1px solid var(--line);
+  border-radius: 2px;
+  font: 12px/1.3 var(--font);
+  transition: border-color .25s ease, opacity .25s ease;
+}
+
+.gnode__label {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  font-weight: 600;
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
+
+.gnode__label--clip {
+  display: -webkit-box;
+  -webkit-line-clamp: 2;
+  -webkit-box-orient: vertical;
+  white-space: normal;
+  font-weight: 500;
+}
+
+.gnode__meta {
+  display: flex;
+  gap: 8px;
+  color: var(--muted);
+  font-size: 11px;
+}
+
+.gnode__crown { flex: none; fill: var(--for-me); }
+
+.gnode--person { width: 150px; border-color: var(--accent); }
+.gnode--person .gnode__label { color: var(--accent); }
+
+.gnode--ask { width: 190px; border-color: color-mix(in srgb, var(--for-me) 55%, transparent); }
+.gnode--agent, .gnode--ask { cursor: pointer; }
+.gnode--for-me { border-color: var(--for-me); box-shadow: inset 3px 0 0 var(--for-me); }
+
+.gnode--agent {
+  width: 170px;
+  border-left: 3px solid var(--state-offline);
+}
+.gnode--agent[data-state="working"]   { border-left-color: var(--state-working); }
+.gnode--agent[data-state="listening"] { border-left-color: var(--state-listening); }
+.gnode--agent[data-state="bus"]       { border-left-color: var(--state-bus); }
+.gnode--agent[data-state="idle"]      { border-left-color: var(--state-idle); }
+.gnode--agent[data-state="silent"]    { border-left-color: var(--state-silent); }
+.gnode--agent[data-state="offline"]   { border-left-color: var(--state-offline); opacity: .62; }
+/* Format v1's spellings: online like listening, away like idle. */
+.gnode--agent[data-state="online"]    { border-left-color: var(--state-listening); }
+.gnode--agent[data-state="away"]      { border-left-color: var(--state-idle); }
+.gnode--agent[data-state="online"]    .gnode__state { color: var(--state-listening); }
+.gnode--agent[data-state="working"]   .gnode__state { color: var(--state-working); }
+.gnode--agent[data-state="listening"] .gnode__state { color: var(--state-listening); }
+.gnode--agent[data-state="bus"]       .gnode__state { color: var(--state-bus); }
+
+.gnode--channel { width: 170px; background: transparent; border-color: var(--state-listening); }
+.gnode--guest { border-style: dashed; border-color: color-mix(in srgb, var(--state-listening) 60%, transparent); }
+
+@media (prefers-reduced-motion: reduce) {
+  .gnode { transition: none; }
+  .graph__canvas .react-flow__edge.animated .react-flow__edge-path { animation: none; stroke-dasharray: none; }
+  .graph__canvas .react-flow__viewport { transition: none; }
 }

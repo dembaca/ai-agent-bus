@@ -5,6 +5,10 @@ before 0.5.0 are described in the git history.
 
 ## Unreleased
 
+### Changed
+
+- **The central bridge logs one INFO line per person post, reaction or removal of a reaction it carries onto NATS** (#134, RT-6.42): `inbound: carried` with the home, `what` (`post`, `reaction` or `unreaction`), the Mattermost post id and the subject, no text and no name beyond the anchor.
+
 ### Breaking
 
 - **The central bridge refuses an `http` Mattermost URL to a host that is
@@ -47,6 +51,20 @@ before 0.5.0 are described in the git history.
   uncovered input. Such a line counts in the tokens by category; the older
   bus share by cause counts only lines with `tok.bus`, so it never
   reads as 0 %. No token is added to any context.
+- **The operator console's API carries each agent's guest channels and
+  marks the operator's own person node** (#147). A fleet card names its
+  `home` and, beside it, its `guests`: the channels its memberships name
+  that are not its home (every granted channel gets one, RT-6.37). The
+  home is what the bus itself states — the channel of the agent's ask
+  record's subject first (RT-6.43 step 5), else the channel it claims the
+  crown of (only a home may be claimed, RT-6.38), else the first channel
+  its memberships name — never guessed from an agent's name. `/v1/graph`
+  draws the home as a `coordinates` edge and each guest channel as a
+  `guest` edge, and marks the person node the logged-in operator's anchor
+  names with `you`; that anchor is read from the login's own record,
+  never from anything the browser sends. No new right: all of it comes
+  from presence, crown claims, memberships and the login's own record.
+
 - **The operator console shows the channels of the operator's own agents
   and of agents that trust the operator directly** (#128, the console on
   the bus as its operator, RT-6.43 step 3). At each agent's credential the
@@ -135,8 +153,27 @@ before 0.5.0 are described in the git history.
   is not the bus's own overhead alone (RT-6.9 step 3, the console on the
   bus, RT-6.43 step 8).
 
+### Changed
+
+- **The console's graph view runs on React Flow** (#145): people, open
+  asks, agents and their home and guest channels in fixed columns laid
+  out by dagre. A state change recolours its agent in place; an agent or
+  an ask that comes or goes adds or removes its node without moving the
+  others or the view (ADR-015 points 7 and 14). The browser app has unit
+  tests now (`npm test` in `console/web`, also in CI).
+
 ### Fixed
 
+- **A NATS home starts for an identity first seen after the directory
+  import** (#86, the channel directory's anchors, RT-6.39). The login service
+  gave such an identity its Keycloak `sub` as anchor, so the agent name and
+  the presence owner token it issued differed from the ones the host computes
+  from the username, and the home stopped with `NameMismatch`. A new identity
+  now takes its username as anchor when it is free, as before the import; a
+  name another identity holds still gives the `sub` (the host then still
+  stops, never with a wrong name). Anchors already given do not move. The
+  remaining cases, an account renamed in Keycloak and a new one whose name
+  was held, stay a known limit (RISK-19).
 - **The central bridge's WebSocket reader reconnects promptly and bounds
   its handshake** (#131, people's posts onto NATS, RT-6.42). After a
   connection that held 30 s it reconnects after 1 s, not after the wait

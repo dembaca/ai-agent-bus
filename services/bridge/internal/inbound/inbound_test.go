@@ -13,6 +13,7 @@ import (
 	"log/slog"
 	"net/http"
 	"net/http/httptest"
+	"regexp"
 	"strings"
 	"sync"
 	"sync/atomic"
@@ -943,3 +944,72 @@ func TestNoSignalWhileTheRecordsAreReadAgain(t *testing.T) {
 type notCaughtUp struct{ *Accounts }
 
 func (notCaughtUp) CaughtUp() bool { return false }
+
+// RT-6.42 step 4: each event carried is one INFO line with the home, what it
+// was, the Mattermost post id and the subject, and nothing of the text or the
+// person's name.
+func TestACarriedEventIsLoggedWithoutItsText(t *testing.T) {
+	var buf syncBuf
+	r := newRig(t, nil)
+	r.b.Log = slog.New(slog.NewTextHandler(&buf, nil))
+	r.record(t, aliceID, `{"v":1,"account":"`+aliceID+`","anchor":"alice.example","name":"alice",`+
+		`"approver":true,"token_iat":1,"iat":1,"exp":2}`, "alice.example")
+	r.connect(1)
+	r.send(alicePost(pid(1), now()))
+	r.next(t)
+	r.send(&mmws.Reaction{PostID: pid(1), UserID: aliceID, ChannelID: cid, EmojiName: "thumbsup", CreateAt: now(), Added: true})
+	r.next(t)
+	r.send(&mmws.Reaction{PostID: pid(1), UserID: aliceID, ChannelID: cid, EmojiName: "thumbsup", CreateAt: now(), Added: false})
+	r.next(t)
+	r.send(alicePost(pid(1), now())) // a repeat is carried no more
+	r.none(t)
+	var lines []string
+	for _, l := range strings.Split(strings.TrimSpace(buf.String()), "\n") {
+		if strings.Contains(l, "inbound: carried") {
+			lines = append(lines, l)
+		}
+	}
+	if len(lines) != 3 {
+		t.Fatalf("%d carried lines in %s", len(lines), buf.String())
+	}
+	for i, what := range []string{"post", "reaction", "unreaction"} {
+		for _, want := range []string{"level=INFO", "home=home", "what=" + what, "post=" + pid(1),
+			"subject=bus.hu.home.alice~example"} {
+			if !strings.Contains(lines[i], want) {
+				t.Errorf("%q misses %q", lines[i], want)
+			}
+		}
+	}
+	for _, leak := range []string{"go ahead", "thumbsup", `alice\b`, "x_task"} {
+		if regexp.MustCompile(leak).MatchString(strings.ReplaceAll(strings.Join(lines, "\n"), "alice~example", "")) {
+			t.Errorf("a carried line leaks %q: %s", leak, lines)
+		}
+	}
+}
+
+// syncBuf is a log sink the bridge's goroutine and the test share.
+type syncBuf struct {
+	mu sync.Mutex
+	b  strings.Builder
+}
+
+func (s *syncBuf) Write(p []byte) (int, error) { s.mu.Lock(); defer s.mu.Unlock(); return s.b.Write(p) }
+func (s *syncBuf) String() string              { s.mu.Lock(); defer s.mu.Unlock(); return s.b.String() }
+
+// RT-6.42 step 4: a publish NATS refuses is no carried event and logs no
+// "carried" line.
+func TestARefusedPublishLogsNoCarriedLine(t *testing.T) {
+	var buf syncBuf
+	r := newRig(t, nil)
+	r.b.Log = slog.New(slog.NewTextHandler(&buf, nil))
+	r.b.NATS = &refuser{}
+	r.record(t, aliceID, `{"v":1,"account":"`+aliceID+`","anchor":"alice.example","name":"alice",`+
+		`"approver":true,"token_iat":1,"iat":1,"exp":2}`, "alice.example")
+	r.connect(1)
+	r.send(alicePost(pid(1), now()))
+	r.none(t)
+	time.Sleep(150 * time.Millisecond)
+	if strings.Contains(buf.String(), "inbound: carried") {
+		t.Fatalf("a refused publish is logged as carried: %s", buf.String())
+	}
+}

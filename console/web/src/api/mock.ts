@@ -2,7 +2,8 @@
 // serve (ADR-015 point 10), on data shaped like today's bus, so the app can
 // be built and shown before the server exists. It changes on its own —
 // presence beats and turn ends are seconds apart at this scale — so the
-// Kanban moves without a backend.
+// Kanban and the graph view move without a backend: states change, an agent
+// joins and leaves, an ask opens and closes.
 //
 // The operator of this console is "dembaca" (Ask.forMe / mayAnswer are
 // relative to that name).
@@ -17,7 +18,7 @@ const minute = 60_000
 const cards = (): CardWire[] => [
 
   {
-    name: "agent-mac-ai-agent-164534", home: "~ai-agent-bus-dev", state: "working",
+    name: "agent-mac-ai-agent-164534", home: "~ai-agent-bus-dev", guests: ["~chat-next"], state: "working",
     crown: true, harness: "claude-code", model: "Opus 5.5",
     task: "coordinate the merge window, the bridge and the console plan",
     role: "coordinator", for: "dembaca", autonomous: false, trusts: ["dembaca"],
@@ -27,7 +28,7 @@ const cards = (): CardWire[] => [
     tasks: [],
   },
   {
-    name: "agent-mac-ai-agent-bb8f09", home: "~ai-agent-bus-dev", state: "working",
+    name: "agent-mac-ai-agent-bb8f09", home: "~ai-agent-bus-dev", guests: ["~bgl-infra"], state: "working",
     crown: false, harness: "opencode", model: "GLM 5.3",
     task: "the console's browser app against a mock of the API",
     role: "member", for: "dembaca", autonomous: false, trusts: ["dembaca"],
@@ -39,7 +40,7 @@ const cards = (): CardWire[] => [
     tasks: [],
   },
   {
-    name: "agent-mac-ai-agent-d2f798", home: "~ai-agent-bus-dev", state: "bus",
+    name: "agent-mac-ai-agent-d2f798", home: "~ai-agent-bus-dev", guests: [], state: "bus",
     crown: false, harness: "opencode", model: "DeepSeek V4.1 Flash",
     task: "the interim bridge: mirror NATS posts into Mattermost (ADR-014 point 14)",
     role: "member", for: "dembaca", autonomous: false, trusts: ["dembaca"],
@@ -49,7 +50,7 @@ const cards = (): CardWire[] => [
     tasks: [],
   },
   {
-    name: "agent-mac-ai-agent-6d2afc", home: "~ai-agent-bus-dev", state: "working",
+    name: "agent-mac-ai-agent-6d2afc", home: "~ai-agent-bus-dev", guests: [], state: "working",
     crown: false, harness: "opencode", model: "GLM 5.3",
     task: "an end-to-end run of a NATS home against a local nats-server",
     role: "member", for: "dembaca", autonomous: false, trusts: ["dembaca"],
@@ -59,7 +60,7 @@ const cards = (): CardWire[] => [
     tasks: [],
   },
   {
-    name: "agent-mac-ai-agent-b7ccf7", home: "~ai-agent-bus-dev", state: "listening",
+    name: "agent-mac-ai-agent-b7ccf7", home: "~ai-agent-bus-dev", guests: ["~bgl-infra"], state: "listening",
     crown: false, harness: "claude-code", model: "Opus 5.5",
     task: "arc42 docs: accuracy fixes in three PRs, with Fable subagents",
     role: "member", for: "dembaca", autonomous: false, trusts: ["dembaca"],
@@ -69,7 +70,7 @@ const cards = (): CardWire[] => [
     tasks: [],
   },
   {
-    name: "agent-mac-ai-agent-831e38", home: "~ai-agent-bus-dev", state: "idle",
+    name: "agent-mac-ai-agent-831e38", home: "~ai-agent-bus-dev", guests: [], state: "idle",
     crown: false, harness: "opencode", model: "Cloud Reason",
     task: "no task yet, waiting for one",
     role: "member", for: "dembaca", autonomous: false, trusts: ["dembaca"],
@@ -79,7 +80,7 @@ const cards = (): CardWire[] => [
     tasks: [],
   },
   {
-    name: "agent-mac-ai-agent-716d72", home: "~ai-agent-bus-dev", state: "offline",
+    name: "agent-mac-ai-agent-716d72", home: "~ai-agent-bus-dev", guests: [], state: "offline",
     crown: false, harness: "claude-code", model: "Opus 5.5",
     task: "gone: lease ran out mid-afternoon",
     role: "member", for: "dembaca", autonomous: false, trusts: ["dembaca"],
@@ -89,7 +90,7 @@ const cards = (): CardWire[] => [
     tasks: [],
   },
   {
-    name: "agent-mac-chat-next-3b92c9", home: "~chat-next", state: "silent",
+    name: "agent-mac-chat-next-3b92c9", home: "~chat-next", guests: ["~bgl-infra"], state: "silent",
     crown: true, harness: "claude-code", model: "Opus 5.5",
     task: "operator console draft decisions, mandated coordinator",
     role: "coordinator", for: "dembaca", autonomous: false, trusts: ["dembaca"],
@@ -300,7 +301,7 @@ function stack(label: string, eq: number[], raw: number[]): ReportStack {
 
 const graph = (): GraphData => ({
   nodes: [
-    { id: "dembaca", kind: "person", label: "dembaca" },
+    { id: "dembaca", kind: "person", label: "dembaca", you: true },
     { id: "~ai-agent-bus-dev", kind: "channel", label: "~ai-agent-bus-dev" },
     { id: "~chat-next", kind: "channel", label: "~chat-next" },
     { id: "~bgl-infra", kind: "channel", label: "~bgl-infra" },
@@ -330,6 +331,9 @@ const graph = (): GraphData => ({
     { id: "m4", from: "agent-mac-ai-agent-6d2afc", to: "~ai-agent-bus-dev", kind: "coordinates" },
     { id: "m5", from: "agent-mac-ai-agent-b7ccf7", to: "~ai-agent-bus-dev", kind: "coordinates" },
     { id: "m6", from: "agent-mac-chat-next-3b92c9", to: "~chat-next", kind: "coordinates" },
+    // a guest channel: a channel the agent only visits (RT-6.16)
+    { id: "g1", from: "agent-mac-ai-agent-bb8f09", to: "~bgl-infra", kind: "guest" },
+    { id: "g2", from: "agent-mac-ai-agent-164534", to: "~chat-next", kind: "guest" },
     // the cut: followed further only to a depth of two, with a mark where it is cut
     { id: "c1", from: "agent-mac-ai-agent-164534", to: "agent-mac-ai-agent-bb8f09", kind: "coordinates", cut: true },
   ],
@@ -345,10 +349,46 @@ const cycle: Record<string, AgentState[]> = {
 }
 const step = {i: 0}
 
+// The graph view's live changes (#145): an agent joins and later leaves, an
+// ask opens and later closes. Ticks of 4 s: the visitor is on the bus for
+// ticks 4 to 11 of every 16; the live ask opens at tick 10 and alternates
+// open and answered every 10 ticks after (the Asks view polls every 30 s,
+// so it sees both).
+const VISITOR_FROM = 4
+const VISITOR_UNTIL = 12
+const VISITOR_PERIOD = 16
+const ASK_PERIOD = 10
+export const visitorPresent = (i: number): boolean =>
+  i % VISITOR_PERIOD >= VISITOR_FROM && i % VISITOR_PERIOD < VISITOR_UNTIL
+export const liveAskEnd = (i: number): Ask["end"] | null =>
+  i < ASK_PERIOD ? null : Math.floor(i / ASK_PERIOD) % 2 === 1 ? "open" : "answered"
+
+const visitor = (): CardWire => ({
+  name: "agent-mac-ai-agent-e41a07", home: "~ai-agent-bus-dev", guests: [], state: "working",
+  crown: false, harness: "cursor", model: "Composer 2",
+  task: "a short look at the console's graph view, then gone again",
+  role: "member", for: "dembaca", autonomous: false, trusts: ["dembaca"],
+  capabilities: ["git"], project: "dembaca/ai-agent-bus",
+  branch: null, pr: null, ctx: 12, limits: null, version: "0.97.0",
+  openAsks: 0, asksForOperator: 0, helloAt: now(), lastPostAt: now(),
+  tasks: [],
+})
+
+/** The asking agent of the live ask; its card counts the ask while open. */
+const LIVE_ASKER = "agent-mac-ai-agent-6d2afc"
+const liveAsk = (end: Ask["end"]): AskWire => ({
+  id: "k5w8r2n7c4x1q9m3t6v0bzjdya", by: LIVE_ASKER, home: "ai-agent-bus-dev",
+  kind: "approval", human: "dembaca",
+  need: "Run the end-to-end NATS test against the shared nats-server too?",
+  at: now() - minute, end, forMe: true, mayAnswer: true, agentGone: false,
+  threadId: "k5w8r2n7c4x1q9m3t6v0bzjdya",
+})
+
 /** The mock as a ConsoleApi. `onEvent` gets a snapshot first, then the
  * changes; the returned function stops it. */
 export function mockApi(): ConsoleApi {
   let cardsNow: AgentCard[] = withTasks(cards())
+  let askEnd: Ask["end"] | null = null
   return {
     me(): Promise<Operator> {
       // The mock's stand-in operator; the server answers from its session.
@@ -375,6 +415,28 @@ export function mockApi(): ConsoleApi {
         })
         const card = cardsNow.find((c) => c.name === name)
         if (card) emit({ type: "card", card })
+
+        // An agent joins, and later leaves (a drop, as the server sends it).
+        const present = cardsNow.some((c) => c.name === visitor().name)
+        if (visitorPresent(step.i) && !present) {
+          const [joined] = withTasks([visitor()])
+          cardsNow = cardsNow.concat(joined)
+          emit({ type: "card", card: joined })
+        } else if (!visitorPresent(step.i) && present) {
+          cardsNow = cardsNow.filter((c) => c.name !== visitor().name)
+          emit({ type: "drop", name: visitor().name })
+        }
+
+        // An ask opens, and later closes; its agent's card counts it.
+        const end = liveAskEnd(step.i)
+        if (end !== askEnd) {
+          askEnd = end
+          const open = end === "open" ? 1 : 0
+          cardsNow = cardsNow.map((c) => c.name !== LIVE_ASKER ? c
+            : { ...c, openAsks: open, asksForOperator: open })
+          const asker = cardsNow.find((c) => c.name === LIVE_ASKER)
+          if (asker) emit({ type: "card", card: asker })
+        }
       }, 4000)
       return () => { stopped = true; clearInterval(timer) }
     },
@@ -383,7 +445,8 @@ export function mockApi(): ConsoleApi {
       // one ask expired from the start. The server sends `for_me`/
       // `may_answer` (http.ts maps); the mock speaks the app's shapes, with
       // the short display name derived where the server sends it.
-      return asks().map((a): Ask => ({ ...a, displayName: short(a.by) }))
+      const all = askEnd ? [liveAsk(askEnd), ...asks()] : asks()
+      return all.map((a): Ask => ({ ...a, displayName: short(a.by) }))
     },
     async graph(): Promise<GraphData> {
       return graph()
