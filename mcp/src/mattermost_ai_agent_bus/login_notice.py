@@ -1,17 +1,32 @@
-"""What the login tells the responsible human (RT-6.34, ADR-014 point 9).
+"""What the login tells the responsible human (RT-6.34, ADR-014 point 9, #154).
 
-The approval link goes only as a direct message to the responsible human,
-never into a channel: whoever opens it and logs in becomes the owner. The home
-channel gets an ask that says only that an approval waits in the DM. It is
-registered like an `ask_human` ask, so the reminders and the open asks of the
-bus see it, and is settled when the approval ends.
+The approval reaches the human two ways, never a channel: whoever opens the
+link and logs in becomes the owner.
+
+* At this machine (`Shown`): the MCP server opens the verification link in the
+  desktop's browser (only an https link on the issuer's scheme, host and port,
+  without a shell, never a console browser that would take its stdio) and
+  writes the address and the code to its stderr, which the harness keeps in
+  its MCP log. Never the device code.
+* As a direct message to the responsible human (`DMNotifier`). The home
+  channel gets an ask that says only that an approval waits in the DM. It is
+  registered like an `ask_human` ask, so the reminders and the open asks of
+  the bus see it, and is settled when the approval ends.
+
+`Combined` runs both: the approval goes on when at least one reached the human.
 """
 
 from __future__ import annotations
 
+import asyncio
 import logging
+import os
+import shutil
+import subprocess
+import sys
 from collections.abc import Awaitable, Callable
-from typing import TYPE_CHECKING
+from typing import TYPE_CHECKING, Protocol, TextIO
+from urllib.parse import urlsplit
 
 from . import a2a, asks, stats
 
@@ -20,6 +35,144 @@ if TYPE_CHECKING:
     from .port import ChatPort
 
 log = logging.getLogger(__name__)
+
+STDERR_TEXT = (
+    "ai-agent-bus: login approval for this agent: {opened}open {link} and log in as yourself; "
+    "the page shows the code {code}, approve only if it matches. Whoever approves becomes this "
+    "agent's owner. Valid for {minutes} min."
+)
+OPENED = "a browser was opened for it; otherwise "
+STDERR_REFUSED = ("ai-agent-bus: login refused: the person who approved is not the responsible "
+                  "human; the login was dropped.")
+BROWSER_TIMEOUT_SEC = 10.0
+
+
+def open_browser(url: str) -> bool:
+    """Open `url` in the desktop's browser: an argument vector, no shell. False
+    where there is no desktop browser; never a console one (lynx, w3m), which
+    would take this stdio server's terminal."""
+    if sys.platform == "win32":
+        try:
+            os.startfile(url)  # an https link the caller checked
+        except OSError:
+            return False
+        return True
+    if sys.platform == "darwin":
+        argv = ["/usr/bin/open", url]
+    else:
+        exe = shutil.which("xdg-open")
+        if not exe or not (os.environ.get("DISPLAY") or os.environ.get("WAYLAND_DISPLAY")):
+            return False
+        argv = [exe, url]
+    try:
+        done = subprocess.run(argv, stdin=subprocess.DEVNULL, stdout=subprocess.DEVNULL,
+                              stderr=subprocess.DEVNULL, timeout=BROWSER_TIMEOUT_SEC, check=False)
+    except (OSError, subprocess.SubprocessError):
+        return False
+    return done.returncode == 0
+
+
+class _Notifier(Protocol):
+    async def start(self) -> None: ...
+
+    async def waiting(self, grant: DeviceGrant) -> None: ...
+
+    async def settled(self, outcome: str) -> None: ...
+
+    async def refused(self) -> None: ...
+
+
+class Shown:
+    """The approval at this machine: a browser, and the address and the code on
+    stderr. Never the device code, which no DeviceGrant carries."""
+
+    def __init__(self, issuer: str, *, opener: Callable[[str], bool] = open_browser,
+                 err: TextIO | None = None) -> None:
+        self._issuer = issuer
+        self._opener = opener
+        self._err = err
+
+    def _browsable(self, link: str) -> bool:
+        from .login import same_site
+        try:
+            parts = urlsplit(link)
+        except ValueError:
+            return False
+        return (parts.scheme == "https" and not parts.username and not parts.password
+                and same_site(self._issuer, link))
+
+    def _say(self, text: str) -> None:
+        print(text, file=self._err if self._err is not None else sys.stderr, flush=True)
+
+    async def start(self) -> None:
+        return None
+
+    async def waiting(self, grant: DeviceGrant) -> None:
+        from .login import NotifyError
+        link = grant.verification_uri_complete or grant.verification_uri
+        opened = False
+        if self._browsable(link):
+            try:
+                opened = bool(await asyncio.to_thread(self._opener, link))
+            except Exception as exc:  # noqa: BLE001 - no browser: the address on stderr
+                log.info("login: no browser opened (%s)", type(exc).__name__)
+        try:
+            self._say(STDERR_TEXT.format(opened=OPENED if opened else "", link=link,
+                                         code=grant.user_code, minutes=max(1, grant.expires_in // 60)))
+        except (OSError, ValueError):
+            if not opened:
+                raise NotifyError("neither a browser nor stderr showed the approval") from None
+
+    async def settled(self, outcome: str) -> None:
+        return None
+
+    async def refused(self) -> None:
+        try:
+            self._say(STDERR_REFUSED)
+        except (OSError, ValueError):
+            pass
+
+
+class Combined:
+    """Several ways to the human: the approval goes on when at least one
+    reached them; each failure is logged by its type only."""
+
+    def __init__(self, *parts: _Notifier) -> None:
+        self._parts = parts
+
+    async def start(self) -> None:
+        for part in self._parts:
+            try:
+                await part.start()
+            except Exception as exc:  # noqa: BLE001
+                log.warning("login: an earlier ask was not settled (%s)", type(exc).__name__)
+
+    async def waiting(self, grant: DeviceGrant) -> None:
+        from .login import NotifyError
+        reached = 0
+        for part in self._parts:
+            try:
+                await part.waiting(grant)
+                reached += 1
+            except Exception as exc:  # noqa: BLE001 - another way may reach the human
+                log.warning("login: the approval did not go out by %s (%s)",
+                            type(part).__name__, type(exc).__name__)
+        if not reached:
+            raise NotifyError("the approval link reached no one")
+
+    async def settled(self, outcome: str) -> None:
+        for part in self._parts:
+            try:
+                await part.settled(outcome)
+            except Exception as exc:  # noqa: BLE001
+                log.warning("login: the ask was not settled (%s)", type(exc).__name__)
+
+    async def refused(self) -> None:
+        for part in self._parts:
+            try:
+                await part.refused()
+            except Exception as exc:  # noqa: BLE001
+                log.warning("login: the human was not told (%s)", type(exc).__name__)
 
 DM_TEXT = (
     "Login approval for your agent {bot}: open {link} and log in. The page shows the code {code}; "
@@ -53,6 +206,8 @@ class DMNotifier:
         return client, human, await client.direct_channel_with(uid)
 
     async def waiting(self, grant: DeviceGrant) -> None:
+        if self._ask:  # an earlier approval's ask is settled, never left open
+            await self.settled("replaced")
         client, human, dm = await self._target()
         me = await client.get_me()
         link = grant.verification_uri_complete or grant.verification_uri

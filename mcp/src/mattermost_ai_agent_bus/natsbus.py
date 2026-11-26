@@ -18,7 +18,9 @@ The permission model, from the host's side:
   last stream sequence seen per channel.
 
 Nothing here logs, stores or puts into an exception the access token or the seed:
-the seed never leaves `login.Login.nkey()`, which only gives a `sign` function.
+the seed stays in the login, whose `nkey()` gives only a `sign` function. In the host
+process of a keyless corral session that login is `login_relay.RelayedLogin`, which
+got the seed from the relay in the sandbox that keeps it (#154).
 """
 
 from __future__ import annotations
@@ -98,6 +100,12 @@ _STATUSES = ("online", "away", "bye")
 
 class NatsBusError(Exception):
     """A bus operation failed. The text never holds a token or a seed."""
+
+
+class RedirectRefused(NatsBusError):
+    """The WebSocket server answered the upgrade with a redirect: refused, because the
+    CONNECT carries the access token (Fable's review of #51). Its text is ours and fixed,
+    so the log may name it (RT-6.36, #85)."""
 
 
 class NameMismatch(NatsBusError):
@@ -618,6 +626,9 @@ _PEOPLE_KEYS = {
 }
 _ACCOUNT_KEYS = {"v", "account", "anchor", "name", "approver", "token_iat", "iat", "exp"}
 _BRIDGE_KEYS = {"v", "home", "people", "iat", "exp"}
+# The bridge's bot prefix (RT-6.36 step 4): set while it posts each agent's copies under the
+# agent's own bot, `<bot_prefix><NATS agent name>`; a Mattermost username's first part.
+BOT_PREFIX_RE = re.compile(r"[a-z][a-z0-9._-]{0,31}")
 
 
 @dataclass(frozen=True)
@@ -719,14 +730,23 @@ def decode_account(data: bytes, account: str) -> AccountRecord:
 
 def decode_bridge_signal(data: bytes, channel: str) -> float:
     """Strict: the bridge's v1 signal for `channel`, `people` true; returns its `exp`."""
+    return decode_bridge_signal_full(data, channel)[0]
+
+
+def decode_bridge_signal_full(data: bytes, channel: str) -> tuple[float, str]:
+    """Strict: the bridge's v1 signal for `channel`, `people` true; returns its `exp` and
+    its optional `bot_prefix` ("" without one; one that is no username's start raises)."""
     obj = _obj(data)
-    _exact(obj, _BRIDGE_KEYS)
+    _exact(obj, _BRIDGE_KEYS, ("bot_prefix",))
     if obj["home"] != channel:
         raise MessageError("signal of another channel")
     if obj["people"] is not True:
         raise MessageError("people is not true")
     _int(obj, "iat")
-    return float(_int(obj, "exp"))
+    prefix = obj.get("bot_prefix", "")
+    if "bot_prefix" in obj and (not isinstance(prefix, str) or not BOT_PREFIX_RE.fullmatch(prefix)):
+        raise MessageError("bot_prefix is no username's start")
+    return float(_int(obj, "exp")), prefix
 
 
 # --- JetStream metadata and gaps -----------------------------------------------------
@@ -860,6 +880,9 @@ def connect_reason(exc: BaseException) -> str:
     e: BaseException | None = exc
     while e is not None and id(e) not in seen:
         seen.add(id(e))
+        if isinstance(e, RedirectRefused):
+            # Our own text, fixed above: the operator sees why, not a bare timeout (#85).
+            return str(e)
         if isinstance(e, ssl.SSLCertVerificationError):
             # Both set by OpenSSL, absent on one raised by hand: this runs in the retry loops.
             code = getattr(e, "verify_code", None)
@@ -954,8 +977,8 @@ def _websocket_transport() -> Any:
             trace = aiohttp.TraceConfig()
 
             async def refuse(session: Any, context: Any, params: Any) -> None:
-                raise NatsBusError("the WebSocket server redirected the connection: refused, so "
-                                   "the access token never reaches another address")
+                raise RedirectRefused("the WebSocket server redirected the connection: refused, "
+                                      "so the access token never reaches another address")
 
             trace.on_request_redirect.append(refuse)
             self._client = aiohttp.ClientSession(trace_configs=[trace])
@@ -1131,6 +1154,9 @@ class NatsBus:
         self._accounts: dict[str, tuple[int, float, AccountRecord | None]] = {}
         # channel -> (stream sequence, server time, exp) of the bridge's signal; exp 0: none
         self._bridge_signal: dict[str, tuple[int, float, float]] = {}
+        # channel -> the bot prefix its newest signal that had one named (RT-6.36 step 4); kept
+        # when a later signal has none or the signal runs out: the copies made stay in the channel
+        self._bridge_prefix: dict[str, str] = {}
         self._last_anchor: dict[str, str] = {}  # account -> the anchor of its last record that decoded
 
     def __repr__(self) -> str:
@@ -1802,6 +1828,12 @@ class NatsBus:
         got = self._bridge_signal.get(channel)
         return got is not None and got[2] > self._server_now
 
+    def bridge_prefix(self, channel: str) -> str:
+        """The bot prefix of the bridge's signal for the channel (RT-6.36 step 4): the bridge
+        posts each agent's copies there under `<prefix><agent name>`; "" while no signal
+        named one. Not bound to the signal's freshness: the copies stay in the channel."""
+        return self._bridge_prefix.get(channel, "")
+
     def anchor_of_account(self, account: str) -> str:
         """The person a Mattermost account is bound to by the login service's record, as the
         sender token the bridge publishes it under: the anchor, UNBOUND for none (no record,
@@ -2049,7 +2081,10 @@ class NatsBus:
                 seq0, at0, _exp = self._bridge_signal.get(t[2], (0, 0.0, 0.0))
                 if (ack.time, ack.stream_seq) > (at0, seq0):
                     try:
-                        exp = min(decode_bridge_signal(msg.data, t[2]), ack.time + SIGNAL_MAX_SEC)
+                        exp, prefix = decode_bridge_signal_full(msg.data, t[2])
+                        exp = min(exp, ack.time + SIGNAL_MAX_SEC)
+                        if prefix:
+                            self._bridge_prefix[t[2]] = prefix
                     except MessageError:
                         exp = 0.0
                         log.warning("nats bus: a bridge signal that does not decode (seq %d): people on "

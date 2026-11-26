@@ -14,6 +14,13 @@ nothing. It delivers
   seed stays here (the login service's auth callout, services/auth/README.md,
   checks the signature over the server's nonce).
 
+The MCP server the plugin starts over stdio logs in itself, with and without
+corral (the one operating model, #154, the ADR-014 amendment of 2026-11-26): its
+store is `keystore.default()` (the system keychain, else a 0600 file; under
+corral that file is in the sandbox's own home). In a keyless corral session
+(RT-6.18) that server is the relay in the sandbox: it holds the login, and the
+host process asks it for access tokens over a login channel (login_relay.py).
+
 After every approval and every refresh the token's issuer and client are
 checked and its `preferred_username` must be the session's responsible human
 (`owners.responsible_human`): whoever opened the approval link and logged in
@@ -22,8 +29,9 @@ dropped here and reported. The refresh token is stored per (issuer, client,
 human) under a file lock, so sessions of one OS user take turns. The host does not check the token's
 signature; the login service does.
 
-The approval link goes only to the responsible human, as a direct message
-(`login_notice`), never into a channel. Secrets (tokens, seed) are never in a
+The approval link goes to the human at this machine (a browser, else the address
+and code on this server's stderr) and to the responsible human as a direct
+message (`login_notice`), never into a channel; never the device code. Secrets (tokens, seed) are never in a
 log line, an exception, the environment or an argument vector; every object
 here hides them in its repr.
 """
@@ -40,22 +48,25 @@ import logging
 import math
 import os
 import re
+import threading
 import time
 from collections.abc import AsyncIterator, Awaitable, Callable
 from dataclasses import dataclass, field
-from typing import TYPE_CHECKING, Any, Protocol
-from urllib.parse import urlsplit
+from typing import TYPE_CHECKING, Any, Protocol, TypeVar
+from urllib.parse import SplitResult, urlsplit
 
 import httpx
 import nkeys
 
-from . import keystore, owners
+from . import keystore, owners, session_file
 from .config import env
+from .sandbox import corral_sandbox
 
 if TYPE_CHECKING:
     from .port import ChatPort
 
 log = logging.getLogger(__name__)
+_T = TypeVar("_T")
 
 SCOPE = "offline_access"  # no ID token (ADR-014); the role of the same name is checked on every token
 ROLE = "offline_access"
@@ -140,6 +151,65 @@ def check_url(url: str, what: str) -> str:
     if parts.username or parts.password or parts.fragment:
         raise ConfigError(f"{what} must not carry credentials or a fragment")
     return url
+
+
+def _port(parts: SplitResult) -> int | None:
+    try:
+        return parts.port or {"https": 443, "http": 80}.get(parts.scheme)
+    except ValueError:
+        return None
+
+
+def same_site(issuer: str, url: str) -> bool:
+    """`url` has the issuer's scheme, host and port (so http only when the
+    issuer itself is on loopback)."""
+    try:
+        mine, theirs = urlsplit(issuer), urlsplit(url)
+    except ValueError:
+        return False
+    return (theirs.scheme == mine.scheme and (theirs.hostname or "") == (mine.hostname or "")
+            and _port(mine) is not None and _port(theirs) == _port(mine))
+
+
+class Deferred:
+    """A store chosen on its first use, so that the choice (a keychain probe runs a
+    subprocess) happens in the thread the first call runs in, never on the event loop."""
+
+    def __init__(self, pick: Callable[[], keystore.KeyStore]) -> None:
+        self._pick = pick
+        self._store: keystore.KeyStore | None = None
+        self._guard = threading.Lock()
+
+    def __repr__(self) -> str:
+        return f"Deferred({self._store!r})"
+
+    def resolve(self) -> keystore.KeyStore:
+        with self._guard:
+            if self._store is None:
+                self._store = self._pick()
+            return self._store
+
+    def load(self, name: str) -> str | None:
+        return self.resolve().load(name)
+
+    def save(self, name: str, value: str) -> None:
+        self.resolve().save(name, value)
+
+    def delete(self, name: str) -> None:
+        self.resolve().delete(name)
+
+    def try_lock(self, name: str) -> object | None:
+        return self.resolve().try_lock(name)
+
+    def unlock(self, handle: object) -> None:
+        self.resolve().unlock(handle)
+
+
+def default_store() -> keystore.KeyStore:
+    """The store this process keeps the refresh token in: `keystore.default()`
+    (the system keychain where there is one, else the 0600 file; under corral in
+    the sandbox's own home, #154), chosen on first use off the event loop."""
+    return Deferred(keystore.default)
 
 
 def settings_from_env() -> Settings | None:
@@ -236,9 +306,12 @@ class Login:
                  http: httpx.AsyncClient | None = None,
                  now: Callable[[], float] = time.monotonic,
                  wall: Callable[[], float] = time.time,
-                 sleep: Callable[[float], Awaitable[None]] = asyncio.sleep) -> None:
+                 sleep: Callable[[float], Awaitable[None]] = asyncio.sleep,
+                 migrate: bool = False) -> None:
         self.settings = settings
-        self._store = store if store is not None else keystore.HostFile()
+        # keystore.default() is chosen on first use, which is off the event loop (_io).
+        self._store: keystore.KeyStore = store if store is not None else Deferred(keystore.default)
+        self._migrate = migrate
         if nkey_store is None:
             nkey_store = self._store if settings.nkey_store == "host" else keystore.Ephemeral()
         self._nkey_store = nkey_store
@@ -257,6 +330,7 @@ class Login:
         self._mark_seen = 0.0  # the stored deadline this object has taken in, 0 for none
         self._mark_until = 0.0  # ... and the effective (capped) deadline that gave
         self._nkey: nkeys.KeyPair | None = None
+        self._nkey_guard = threading.Lock()
 
     def __repr__(self) -> str:
         return (f"Login(issuer={self.settings.issuer!r}, client_id={self.settings.client_id!r}, "
@@ -266,32 +340,41 @@ class Login:
     def nkey(self) -> NKey:
         """The host's NATS user key: loaded from its store (`MM_LOGIN_NKEY=host`)
         or new for this process. The seed stays here."""
-        if self._nkey is None:
-            seed: str | None = None
-            try:
-                seed = self._nkey_store.load(keystore.NKEY_SEED)
-            except keystore.KeyStoreError as exc:
-                log.warning("stored nkey not used: %s", exc)
-            kp = None
-            if seed:
+        with self._nkey_guard:  # one key, whichever thread asks first (export_seed, _io)
+            if self._nkey is None:
+                seed: str | None = None
                 try:
-                    kp = nkeys.from_seed(seed.encode("ascii"))
-                except (nkeys.NkeysError, UnicodeEncodeError, ValueError):
-                    log.warning("stored nkey seed is not valid: a new one is made")
-            if kp is None:
-                new_seed = nkeys.encode_seed(os.urandom(32), nkeys.PREFIX_BYTE_USER)
-                kp = nkeys.from_seed(new_seed)
-                try:
-                    self._nkey_store.save(keystore.NKEY_SEED, bytes(new_seed).decode("ascii"))
+                    seed = self._nkey_store.load(keystore.NKEY_SEED)
                 except (keystore.KeyStoreError, OSError) as exc:
-                    log.warning("nkey seed not stored: %s", type(exc).__name__)
-            self._nkey = kp
+                    log.warning("stored nkey not used: %s", type(exc).__name__ if isinstance(exc, OSError) else exc)
+                kp = None
+                if seed:
+                    try:
+                        kp = nkeys.from_seed(seed.encode("ascii"))
+                    except (nkeys.NkeysError, UnicodeEncodeError, ValueError):
+                        log.warning("stored nkey seed is not valid: a new one is made")
+                if kp is None:
+                    new_seed = nkeys.encode_seed(os.urandom(32), nkeys.PREFIX_BYTE_USER)
+                    kp = nkeys.from_seed(new_seed)
+                    try:
+                        self._nkey_store.save(keystore.NKEY_SEED, bytes(new_seed).decode("ascii"))
+                    except (keystore.KeyStoreError, OSError) as exc:
+                        log.warning("nkey seed not stored: %s", type(exc).__name__)
+                self._nkey = kp
         kp = self._nkey
 
         def sign(nonce: bytes) -> bytes:
             return bytes(kp.sign(nonce))
 
         return NKey(public_key=bytes(kp.public_key).decode("ascii"), sign=sign)
+
+    def export_seed(self) -> str:
+        """The nkey's seed, for the login channel to the host process of a keyless
+        corral session only (login_relay.py), which signs the NATS nonce there.
+        Never logged, never in an exception."""
+        self.nkey()
+        assert self._nkey is not None
+        return bytes(self._nkey.seed).decode("ascii")
 
     # --- the access token -----------------------------------------------------
     async def access_token(self) -> str:
@@ -303,6 +386,10 @@ class Login:
                 return self._tokens.access
             self._tokens = _Tokens()
             human = self._human().strip()
+            if self._migrate:  # first, so a stored seed moves rather than being replaced
+                self._migrate = False
+                await self._io(self._migrate_old, human)
+            await self._io(self.nkey)  # loaded off the event loop: a keychain call blocks
             if not human:
                 raise LoginError("no responsible human to approve a login "
                                  "(set MM_RESPONSIBLE_HUMAN or MM_TRUSTED_HUMANS)")
@@ -313,18 +400,18 @@ class Login:
                 # decision to start an approval, not once per object (measured in the
                 # lab: three Keycloak links in two minutes for what the human saw as one
                 # agent).
-                self._load_cooldown(human)
+                await self._io(self._load_cooldown, human)
                 # Loaded only now: another process may have refreshed meanwhile,
                 # and its stored token is the one to use, never the old one.
-                refresh = self._stored_refresh(human)
+                refresh = await self._io(self._stored_refresh, human)
                 if refresh:
                     try:
                         await self._refresh(refresh, human)
-                        self._clear_cooldown(human)
+                        await self._io(self._clear_cooldown, human)
                         return self._tokens.access
                     except _InvalidGrant:
                         log.info("login: the refresh token is no longer valid, asking for a new approval")
-                        self._drop_refresh(human)
+                        await self._io(self._drop_refresh, human)
                 wait = self._cooldown_until - self._now()
                 if wait > 0:
                     # The first error, where this process saw it: "failed" alone hides
@@ -339,11 +426,11 @@ class Login:
                     # send a new DM and leave a new session open in Keycloak.
                     if self._cooldown_until <= self._now():
                         if isinstance(exc, NoRole):
-                            self._cool_down("lacked the realm role", human)
+                            await self._io(self._cool_down, "lacked the realm role", human)
                         else:
-                            self._cool_down("failed", human, cause=str(exc))
+                            await self._io(self._cool_down, "failed", human, str(exc))
                     raise
-                self._clear_cooldown(human)
+                await self._io(self._clear_cooldown, human)
                 return self._tokens.access
 
     def _fresh(self) -> bool:
@@ -357,7 +444,7 @@ class Login:
         without blocking the event loop. Without a lock, the login goes on."""
         handle: object | None = None
         try:
-            while (handle := self._store.try_lock(entry)) is None:
+            while (handle := await self._io(self._store.try_lock, entry)) is None:
                 await asyncio.sleep(LOCK_POLL_SEC)
         except (keystore.KeyStoreError, OSError) as exc:
             log.warning("login: the store's lock is not taken (%s)", type(exc).__name__)
@@ -366,14 +453,37 @@ class Login:
         finally:
             if handle is not None:
                 try:
-                    self._store.unlock(handle)
+                    await self._io(self._store.unlock, handle)
                 except OSError:
                     pass
 
-    def forget(self) -> None:
-        """Drop every token, in memory and in the store."""
+    @staticmethod
+    async def _io(fn: Callable[..., _T], *args: Any) -> _T:
+        """A store call off the event loop: a keychain answers through a
+        subprocess, and the MCP handshake must not wait for it."""
+        return await asyncio.to_thread(fn, *args)
+
+    def _migrate_old(self, human: str) -> None:
+        """Once, under each entry's lock (migrate_from's), outside corral only: the token, its cooldown and the
+        nkey seed an earlier version kept in the host's state directory move to this
+        store (keystore.migrate_from). Under corral that directory is not reachable."""
+        old = keystore.HostFile(session_file.host_state_dir() / "login")
+        names = [keystore.NKEY_SEED]
+        if human:
+            names[:0] = [self._entry(human),
+                         keystore.cooldown_entry(self.settings.issuer, self.settings.client_id, human)]
+        try:
+            # The store itself, never the Deferred wrapper: migrate_from leaves a store
+            # at the old place alone only when it sees what it is (else it wipes it).
+            new = self._store.resolve() if isinstance(self._store, Deferred) else self._store
+            keystore.migrate_from(old, new, names)
+        except (keystore.KeyStoreError, OSError) as exc:
+            log.warning("login: the earlier store was not taken over (%s)", type(exc).__name__)
+
+    async def forget(self) -> None:
+        """Drop every token, in memory and in the store (off the event loop)."""
         self._tokens = _Tokens()
-        self._drop_refresh(self._human().strip())
+        await self._io(self._drop_refresh, self._human().strip())
 
     def _entry(self, human: str) -> str:
         return keystore.refresh_entry(self.settings.issuer, self.settings.client_id, human)
@@ -388,6 +498,9 @@ class Login:
             data = json.loads(raw)
         except keystore.KeyStoreError as exc:
             log.warning("stored refresh token not used: %s", exc)
+            return None
+        except OSError as exc:  # the store's choice or a keychain call failed
+            log.warning("stored refresh token not used: %s", type(exc).__name__)
             return None
         except ValueError:
             log.warning("stored refresh token not used: not readable")
@@ -453,10 +566,8 @@ class Login:
         return self._endpoints
 
     def _same_site(self, url: str, what: str) -> str:
-        """The URL has the issuer's scheme and host (so http only when the
-        issuer itself is on loopback)."""
-        mine, theirs = urlsplit(self.settings.issuer), urlsplit(url)
-        if theirs.scheme != mine.scheme or (theirs.hostname or "") != (mine.hostname or ""):
+        """The URL has the issuer's scheme, host and port (same_site)."""
+        if not same_site(self.settings.issuer, url):
             raise LoginError(f"{what} is not on the issuer's host")
         return url
 
@@ -494,15 +605,15 @@ class Login:
             outcome = await self._poll(endpoints["token_endpoint"], device_code, interval, deadline, human)
         except ApprovalDenied:
             outcome = "denied"
-            self._cool_down("was declined", human)
+            await self._io(self._cool_down, "was declined", human)
             raise
         except ApprovalExpired:
             outcome = "expired"
-            self._cool_down("expired", human)
+            await self._io(self._cool_down, "expired", human)
             raise
         except WrongHuman:
             outcome = "refused"
-            self._cool_down("was refused", human)
+            await self._io(self._cool_down, "was refused", human)
             raise
         finally:
             await self._settle(outcome)
@@ -656,7 +767,7 @@ class Login:
         if not human or not isinstance(who, str) or who.casefold() != human.casefold():
             await self._revoke(refresh)
             self._tokens = _Tokens()
-            self._drop_refresh(human)
+            await self._io(self._drop_refresh, human)
             log.error("login refused: the approving person is not the responsible human; tokens dropped")
             if self._notifier is not None:
                 try:
@@ -678,7 +789,7 @@ class Login:
             # Never stored, so never used: revoked, or its session stays open in Keycloak.
             await self._revoke(refresh)
             raise
-        self._store_refresh(refresh, human)
+        await self._io(self._store_refresh, refresh, human)
         self._tokens = _Tokens(access=access, expires_at=sent[0] + lifetime,
                                wall_until=sent[1] + lifetime)
 
@@ -775,13 +886,27 @@ def _int(value: object, default: int) -> int:
     return value if isinstance(value, int) and not isinstance(value, bool) and value > 0 else default
 
 
-# --- the running login: one per process, started by the host process or the server ---
+# --- the running login: one per process, started by the server or the host process ---
 
-_current: Login | None = None
+class Running(Protocol):
+    """What the adapter needs of the running login: this process's own (`Login`)
+    or, in the host process of a keyless corral session, the sandbox's
+    (`login_relay.RelayedLogin`)."""
+
+    settings: Settings
+
+    async def access_token(self) -> str: ...
+
+    def nkey(self) -> NKey: ...
+
+    async def run(self) -> None: ...
+
+
+_current: Running | None = None
 _task: asyncio.Task[None] | None = None
 
 
-def current() -> Login | None:
+def current() -> Running | None:
     """The running login, for the adapter that needs a token or the nkey; None when off."""
     return _current
 
@@ -789,7 +914,28 @@ def current() -> Login | None:
 def start(get_client: Callable[[], Awaitable[ChatPort | None]]) -> asyncio.Task[None] | None:
     """Start the login in the background when configured; the session never
     waits for it. One per process: a second call returns the running task.
-    None when the login is off."""
+    None when the login is off. The human sees the approval at this machine
+    (a browser, else stderr) and in a DM (#154)."""
+    global _current, _task
+    if _current is not None:
+        return _task
+    settings = settings_from_env()
+    if settings is None:
+        return None
+    from .login_notice import Combined, DMNotifier, Shown
+    notifier = Combined(Shown(settings.issuer), DMNotifier(get_client, owners.responsible_human))
+    # Outside corral an earlier version's token and key move over once (#154);
+    # under corral the host's state directory is not reachable.
+    _current = Login(settings, store=default_store(), notifier=notifier, migrate=not corral_sandbox())
+    _task = asyncio.create_task(_current.run())
+    return _task
+
+
+def start_relayed(get_client: Callable[[], Awaitable[ChatPort | None]]) -> asyncio.Task[None] | None:
+    """The host process of a keyless corral session (RT-6.18): no login of its
+    own and no store on the host; the relay in the sandbox holds the login and
+    hands this process access tokens (login_relay.py, #154). This process still
+    DMs the human the approval the sandbox shows. None when the login is off."""
     global _current, _task
     if _current is not None:
         return _task
@@ -797,8 +943,8 @@ def start(get_client: Callable[[], Awaitable[ChatPort | None]]) -> asyncio.Task[
     if settings is None:
         return None
     from .login_notice import DMNotifier
-    store = keystore.HostFile()
-    _current = Login(settings, store=store, notifier=DMNotifier(get_client, owners.responsible_human))
+    from .login_relay import RelayedLogin
+    _current = RelayedLogin(settings, notifier=DMNotifier(get_client, owners.responsible_human))
     _task = asyncio.create_task(_current.run())
     return _task
 
