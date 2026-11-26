@@ -11,7 +11,7 @@ before 0.5.0 are described in the git history.
 
 ### Docs
 
-- **Phase 5 of the NATS decision as plan B** (#151): an amendment to the NATS decision (ADR-014) plans the central Mattermost adapter in eleven pieces, each use of the agent's own Mattermost bot in a home over NATS moving to that bot in the bridge (RT-6.44) or onto NATS behind a switch of its own per home, off by default, with its way back, test and lab check; the order, the acceptance before registration ends, four open decisions for the owner, and the bridge as the single path for people in the risk of the bridge vouching for people (RISK-21). Proposed, nothing built.
+- **Phase 5 of the NATS decision as plan B** (#151): an amendment to the NATS decision (ADR-014) plans the central Mattermost adapter in thirteen pieces, each use of the agent's own Mattermost bot in a home over NATS moving to that bot in the bridge (RT-6.44) or onto NATS behind a switch of its own per home, off by default, with its way back, test and lab check; the switch per channel is a flag in the channel directory, decided by the owner. Also the order, the acceptance before registration ends, four open decisions for the owner (among them how the login approval reaches the human once no agent has a bot), the risk of the bridge vouching for people (RISK-21) corrected, and a new risk: the bridge as the single path between people and agents (RISK-36). Proposed, nothing built.
 
 ## 0.103.0
 
