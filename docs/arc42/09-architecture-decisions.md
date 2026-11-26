@@ -3847,7 +3847,9 @@ credentials and their renewal (point 7) that rest on it.
   1. Detection in the login service. If one Keycloak session or one host
      key shows up at an issue from two networks at the same time, the
      service refuses further issues for that session or host key and tells
-     the owning human on the bus. It holds no Keycloak admin right: the
+     the owning human on the bus: a notice on `<presence>.notice.<anchor>.v1`,
+     a subject only the login service may publish, which the owner's live
+     MCP servers pass on as a DM (not built yet: #161 and its follow-up). It holds no Keycloak admin right: the
      owner decided on 2026-11-26 that a stolen service account token weighs
      far more than one person's session. So the stolen refresh token stays
      valid at Keycloak until it runs out or the owner logs out. Network
