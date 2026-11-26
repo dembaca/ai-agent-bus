@@ -26,11 +26,18 @@ export function Reports({ api, onFail }: { api: ConsoleApi; onFail: Fail }) {
   }, [api, onFail])
 
   return (
+    <>
+    <div className="page-head">
+      <div className="page-head__title">
+        <h1>Reports</h1>
+        <span className="page-head__sub">counts and seconds from the agents' STATS lines; n/a where a line has no value</span>
+      </div>
+    </div>
     <div className="reports">
       {reports.map((report) => (
         <section key={report.id} className="report">
           <header>
-            <h3>{report.title}</h3>
+            <h2>{report.title}</h2>
             <span className="report__window">{report.window}</span>
           </header>
           {report.warn && <p className="report__warn">warn: {report.warn}</p>}
@@ -63,6 +70,7 @@ export function Reports({ api, onFail }: { api: ConsoleApi; onFail: Fail }) {
         </section>
       ))}
     </div>
+    </>
   )
 }
 
@@ -105,7 +113,7 @@ function Stacks({ stacks }: { stacks: ReportStack[] }) {
                   <span key={seg.category} className={`report__seg report__seg--${seg.category}`}
                     style={{ width: `${pct}%` }}
                     title={`${CATEGORY_LABEL[seg.category]}: ${seg.value} (${seg.percent ?? "n/a"} %)`}>
-                    {pct >= 8 ? `${pct} %` : ""}
+                    {pct > 0 && <span className="report__seg-label">{pct} %</span>}
                   </span>
                 )
               })}

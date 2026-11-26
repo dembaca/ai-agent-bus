@@ -67,6 +67,25 @@ before 0.5.0 are described in the git history.
   CA file. The release after this one refuses an old name set without its new
   name; rename the deployment's settings before it.
 
+### Changed
+
+- **The operator console wears the agreed design** (ADR-015 points 3 and 6):
+  the website's Choirbus brand (Inter, the logo's navy, orange asks, blue
+  tasks, green done), a top bar instead of the sidebar, light with a dark
+  mode that follows the system until the top bar's toggle picks one. The
+  agents list is the home and replaces the Kanban: the open asks on top,
+  then one compact row per agent with a search and a status filter. An
+  agent's or an ask's detail is a page of its own; a new Overview counts
+  agents and asks from the live data; the graph takes the same colors in
+  both themes. Same API, data and access rules.
+- **The console names its build** (#182): the footer shows the release
+  version and short commit, written at image build and served in
+  `/v1/me`'s `build`; `/metrics` adds
+  `choirbus_console_build_info{version,revision} 1`; the image carries the
+  OCI labels `org.opencontainers.image.version` and `.revision`.
+  `index.html` and the app's fallback answer `Cache-Control: no-cache`, the
+  hashed files under `/assets/` `public, max-age=31536000, immutable`.
+
 ### Fixed
 
 - **The operator console's logout works in a browser again** (RT-6.43

@@ -1,123 +1,116 @@
-.detail {
-  width: 380px;
-  flex: 0 0 380px;
-  border-left: 1px solid var(--hair);
-  background: var(--surface);
-  overflow: auto;
+/* An agent's detail page: breadcrumb, head, the task and threads on the
+   left, the ask and the session's facts on the right. */
+
+.detail { display: flex; flex-direction: column; gap: 14px; }
+
+.detail__crumbs { display: flex; gap: 6px; align-items: center; color: var(--muted); }
+.detail__crumbs .linkish { color: var(--muted); }
+.detail__crumb-here { color: var(--ink); }
+
+.detail__head { display: flex; flex-direction: column; gap: 6px; }
+.detail__title { display: flex; flex-wrap: wrap; align-items: center; gap: 10px; min-width: 0; }
+.detail__title h1 {
+  margin: 0;
+  font-size: 22px;
+  font-weight: 600;
+  letter-spacing: -.01em;
+  overflow-wrap: anywhere;
+}
+.detail__crown { gap: 5px; }
+.detail__sub { color: var(--muted); }
+
+.detail__grid { display: flex; flex-wrap: wrap; gap: 14px; align-items: start; }
+.detail__main { flex: 999 1 560px; min-width: 0; display: flex; flex-direction: column; gap: 14px; }
+.detail__side { flex: 1 1 300px; min-width: 0; display: flex; flex-direction: column; gap: 14px; }
+
+.ink { color: var(--ink); }
+
+.detail__task { padding: 14px 16px; display: flex; flex-direction: column; gap: 10px; }
+.detail__task-head { display: flex; justify-content: space-between; align-items: baseline; gap: 10px; }
+.detail__task-head h2 { margin: 0; }
+.detail__task-text { font-size: 16px; font-weight: 600; letter-spacing: -.01em; overflow-wrap: anywhere; }
+.detail__task-meta { display: flex; flex-wrap: wrap; align-items: center; gap: 6px 18px; color: var(--muted); }
+.detail__ctx { display: inline-flex; align-items: center; gap: 8px; }
+
+.detail__rows { width: 100%; border-collapse: collapse; }
+.detail__rows th {
+  text-align: left;
+  padding: 7px 10px;
+  color: var(--muted);
+  font-size: 11px;
+  font-weight: 500;
+  text-transform: uppercase;
+  letter-spacing: .05em;
+}
+.detail__rows td { padding: 6px 10px; border-top: 1px solid var(--line); vertical-align: top; }
+.detail__rows th:first-child, .detail__rows td:first-child { padding-left: 16px; }
+.detail__rows th:last-child, .detail__rows td:last-child { padding-right: 16px; }
+
+/* the ask: the orange tint, read-only */
+.detail__ask {
+  background: var(--ask-bg);
+  border-radius: var(--radius);
+  box-shadow: var(--shadow);
+  padding: 12px 14px;
   display: flex;
   flex-direction: column;
+  gap: 6px;
 }
-
-.detail__bar {
-  display: flex;
-  justify-content: space-between;
-  align-items: center;
-  padding: 10px 14px;
-  border-bottom: 1px solid var(--hair);
-  position: sticky;
-  top: 0;
-  background: var(--surface);
-  z-index: 1;
-}
-
-.detail__title { font-weight: 600; overflow-wrap: anywhere; }
-
-.detail__close {
-  border: 0;
-  background: none;
-  cursor: pointer;
-  color: var(--muted);
-  padding: 4px;
-  border-radius: 6px;
-}
-
-.detail__close:hover { color: var(--ink); background: var(--surface-2); }
-
-.detail__body { padding: 12px 14px 26px; display: grid; gap: 16px; }
-
-.detail__table { border-collapse: collapse; width: 100%; }
-.detail__table th {
-  text-align: left;
-  color: var(--muted);
-  font-weight: 500;
-  padding: 3px 10px 3px 0;
-  vertical-align: top;
-  white-space: nowrap;
-}
-.detail__table td { padding: 3px 0; overflow-wrap: anywhere; }
-
-.detail__tasks h3,
-.thread h3 {
-  margin: 0 0 8px;
-  font-size: 12px;
-  text-transform: uppercase;
-  letter-spacing: .04em;
-  color: var(--muted);
-}
-
-.detail__task-table,
-.asks__table {
-  border-collapse: collapse;
-  width: 100%;
-  font-size: 12px;
-}
-
-.detail__task-table th, .detail__task-table td,
-.asks__table th, .asks__table td {
-  text-align: left;
-  padding: 5px 8px;
-  border-bottom: 1px solid var(--hair);
-  vertical-align: top;
-}
-
-.detail__task-table thead th, .asks__table thead th {
-  color: var(--muted);
-  font-weight: 500;
-  font-size: 11px;
-}
-
-.detail__ask { padding: 12px 14px; border-bottom: 1px solid var(--hair); display: grid; gap: 10px; }
-
+.detail__ask-title { color: var(--ask-text); }
 .detail__ask-need { font-weight: 600; overflow-wrap: anywhere; }
+.detail__ask-marks { display: flex; flex-wrap: wrap; gap: 4px; }
+.detail__ask-marks:empty { display: none; }
+.detail__ask-note { color: var(--muted); font-size: 12px; }
 
-.detail__ask-answers { display: flex; flex-wrap: wrap; gap: 5px; }
+.detail__asks { padding: 12px 14px; display: flex; flex-direction: column; gap: 8px; }
+/* one of them is the operator's: the ask tint, as the artboard's "Waiting on you" */
+.detail__asks--for-you { background: var(--ask-bg); }
+.detail__asks--for-you h2 { color: var(--ask-text); }
+.detail__asks ul { list-style: none; margin: 0; padding: 0; display: flex; flex-direction: column; gap: 6px; }
+.detail__asks li { display: flex; justify-content: space-between; gap: 10px; }
 
-.detail__ask-note { color: var(--muted); font-size: 11px; }
+.detail__facts { padding: 12px 14px; }
+.detail__facts h2 { margin-bottom: 8px; }
+.detail__facts dl { margin: 0; display: flex; flex-direction: column; gap: 5px; }
+.detail__fact { display: flex; justify-content: space-between; gap: 14px; }
+.detail__fact dt { color: var(--muted); flex: none; }
+.detail__fact dd { margin: 0; text-align: right; overflow-wrap: anywhere; min-width: 0; }
+.detail__fact dd.mono { font-size: 12px; }
 
-/* the thread, as the bus has it */
-.thread { display: grid; gap: 8px; }
-
+/* a thread: time, the bus word as a chip, author and text */
+.thread__posts { list-style: none; margin: 0; padding: 0; }
 .thread__post {
-  border: 1px solid var(--line);
+  display: grid;
+  grid-template-columns: 48px 84px minmax(0, 1fr);
+  gap: 10px;
+  align-items: baseline;
+  padding: 7px 16px;
+  border-top: 1px solid var(--line);
+}
+.thread__post:first-child { border-top: 0; }
+.thread__time { color: var(--muted); font-size: 12px; }
+.thread__word {
+  justify-self: start;
+  padding: 0 6px;
   border-radius: var(--radius);
-  background: var(--surface-2);
-  overflow: hidden;
+  font-size: 11px;
+  font-weight: 600;
+  letter-spacing: .04em;
+  color: var(--idle);
+  background: var(--idle-bg);
 }
+/* an empty chip keeps its column, so the text stays in the third */
+.thread__word:empty { visibility: hidden; }
+.thread__word--ask { color: var(--ask-text); background: var(--ask-bg); }
+.thread__word--task { color: var(--task); background: var(--task-bg); }
+.thread__word--done { color: var(--done); background: var(--done-bg); }
+.thread__text { grid-column: 3; min-width: 0; display: flex; flex-direction: column; }
+.thread__author { color: var(--muted); font-size: 12px; }
+.thread__message { white-space: pre-wrap; overflow-wrap: anywhere; }
 
-.thread__post header {
-  display: flex;
-  justify-content: space-between;
-  color: var(--muted);
-  font-size: 10.5px;
-  padding: 5px 9px;
-  border-bottom: 1px solid var(--hair);
+@media (max-width: 640px) {
+  .thread__post { grid-template-columns: 44px minmax(0, 1fr); }
+  .thread__word { grid-column: 2; }
+  .thread__word:empty { display: none; }
+  .thread__text { grid-column: 2; }
 }
-
-.thread__post pre {
-  margin: 0;
-  padding: 8px 9px;
-  white-space: pre-wrap;
-  overflow-wrap: anywhere;
-  font: 11px/1.5 var(--mono);
-  max-height: 260px;
-  overflow: auto;
-}
-
-.detail__crown {
-  display: inline-flex;
-  vertical-align: -2px;
-  margin-left: 5px;
-  color: var(--for-me);
-}
-
-.detail__role { display: inline-flex; align-items: center; gap: 4px; }
