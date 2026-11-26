@@ -33,7 +33,7 @@ from . import auth, config, httpd, telemetry
 from .metrics_service import MetricsService
 from .auth import Endpoints
 from .fleet import Fleet
-from .nats_read import PersonReader, View, reachable
+from .nats_read import PersonReader, View, reachable, tls_context
 
 log = logging.getLogger("console")
 
@@ -129,9 +129,22 @@ class Console:
         await self._http.start()
         if self.metrics is not None:
             # the unattended page's listener of its own: loopback by
-            # default, the token page alone on it (#158)
+            # default, the token page alone on it (#158). The token is read
+            # here once, at the start — never lazily on a request path.
+            try:
+                self._scrape_token_value = Path(
+                    self.settings.metrics_token_file).read_text().strip()
+            except OSError:
+                self._scrape_token_value = ""
+                log.warning("console: the metrics scrape token is not"
+                            " readable; the token path stays closed")
+            host = self.settings.metrics_listen_host
+            if host not in ("127.0.0.1", "::1", "localhost") and tls_context(self.settings) is None:
+                log.warning("console: the metrics listener is on %s without"
+                            " TLS; a non-loopback listener belongs behind"
+                            " TLS", host)
             self._metrics_http = httpd.Httpd(handler=self.handle_metrics,
-                                             host=self.settings.metrics_listen_host,
+                                             host=host,
                                              port=self.settings.metrics_listen_port)
             await self._metrics_http.start()
             self.metrics.start()
@@ -156,15 +169,9 @@ class Console:
         while it is off, unreadable or empty (nobody scrapes with a secret
         the operator never set)."""
         if not hasattr(self, "_scrape_token_value"):
-            from pathlib import Path
-            value = ""
-            if self.settings.metrics_token_file:
-                try:
-                    value = Path(self.settings.metrics_token_file).read_text().strip()
-                except OSError:
-                    log.warning("console: the metrics scrape token is not"
-                                " readable; the token path stays closed")
-            self._scrape_token_value = value
+            # start() reads it; without it the path stays closed: no secret
+            # is read on a request path
+            self._scrape_token_value = ""
         return self._scrape_token_value
 
     async def handle_metrics(self, path: str, query: dict[str, str],
@@ -178,9 +185,12 @@ class Console:
             self.telemetry.note(telemetry.route_bucket(path), headers.get(":method", "GET"), 404)
             return httpd.Response(status=404, body=b"not found",
                                   content_type="text/plain")
-        self.telemetry.note(telemetry.route_bucket(path), "GET", 401)
-        if not secrets.compare_digest(headers.get("authorization", ""),
-                                      "Bearer " + self._scrape_token):
+        # the token in bytes (a non-ASCII Authorization cannot raise), the
+        # status counted once per answer, at it
+        auth = headers.get("authorization", "").encode("utf-8", "replace")
+        want = ("Bearer " + self._scrape_token).encode("utf-8", "replace")
+        if not secrets.compare_digest(auth, want):
+            self.telemetry.note(telemetry.route_bucket(path), "GET", 401)
             return httpd.Response(status=401, body=b"unauthorized",
                                   content_type="text/plain")
         self.telemetry.note(telemetry.route_bucket(path), "GET", 200)
@@ -188,7 +198,8 @@ class Console:
                               body=telemetry.render(
                                   self.telemetry, self.sessions.count(),
                                   sum(self._streams.values()),
-                                  [], self.service).encode(),
+                                  [], self.service,
+                                  live=self.metrics.last_delivery > 0).encode(),
                               content_type="text/plain; version=0.0.4; charset=utf-8",
                               headers=API_HEADERS)
 
