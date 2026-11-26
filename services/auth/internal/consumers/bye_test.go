@@ -43,7 +43,7 @@ func TestAByeWithoutTheServersTimeRemovesNothing(t *testing.T) {
 	if err := m.EnsureStreams(ctx); err != nil {
 		t.Fatal(err)
 	}
-	if err := m.Reconcile(ctx, "agent-a", "alice", []string{"home"}, nil); err != nil {
+	if err := m.Reconcile(ctx, "agent-a", "alice", "alice", []string{"home"}, nil); err != nil {
 		t.Fatal(err)
 	}
 	m.bye(ctx, &nats.Msg{Subject: "presence.alice.agent-a", Data: []byte(`{"status":"bye"}`)})
