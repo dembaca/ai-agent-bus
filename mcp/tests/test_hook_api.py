@@ -765,3 +765,45 @@ async def test_the_last_post_fallback_skips_the_context_line(api):
     _, h = await api(client)
     assert (await h.get("/v1/last-post")).json() == {"at": 2000, "message": "IDLE · done",
                                                      "signed_off": True}
+
+
+async def test_the_terminal_login_line_is_one_per_login(api, monkeypatch):
+    """#198: the approval waiting right now goes to the harness's TUI through the hook
+    API — link and code only, an empty object when nothing waits, and once per login."""
+    from mattermost_ai_agent_bus import login as login_mod
+
+    _, h = await api(FakeClient())
+    assert (await h.get("/v1/login")).json() == {}  # no login: nothing waits, not a 503
+
+    grant = login_mod.DeviceGrant(verification_uri="https://kc.example/device",
+                                  verification_uri_complete="https://kc.example/device?user_code=ABCD-EFGH",
+                                  user_code="ABCD-EFGH", expires_in=600)
+
+    class Running:
+        def __init__(self) -> None:
+            self.waits = grant
+            self.is_shown = False
+
+        async def access_token(self) -> str:
+            return ""
+
+        def nkey(self):  # noqa: ANN201 - the protocol's shape
+            raise AssertionError("not used")
+
+        async def run(self) -> None:
+            pass
+
+        def pending(self):
+            return None if self.is_shown else self.waits
+
+        def shown(self) -> None:
+            self.is_shown = True
+
+    running = Running()
+    monkeypatch.setattr(login_mod, "current", lambda: running)
+    got = (await h.get("/v1/login")).json()
+    assert got == {"link": "https://kc.example/device?user_code=ABCD-EFGH", "user_code": "ABCD-EFGH",
+                   "expires_in": 600}
+    assert "token" not in json.dumps(got).lower() and "secret" not in json.dumps(got).lower()
+    assert (await h.post("/v1/login/shown", json={})).status_code == 200
+    assert (await h.get("/v1/login")).json() == {}  # the line went out once

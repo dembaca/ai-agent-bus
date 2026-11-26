@@ -328,6 +328,11 @@ class Login:
         self._wall = wall
         self._sleep = sleep
         self._tokens = _Tokens()
+        # The approval the human must give right now, for the harness to show in
+        # its own TUI (#198): link and code only, never a token; None outside the
+        # wait. `_shown` keeps the line to once per login.
+        self._pending: DeviceGrant | None = None
+        self._shown = False
         self._endpoints: dict[str, str] | None = None
         self._lock = asyncio.Lock()
         self._cooldown_until = 0.0
@@ -598,6 +603,7 @@ class Login:
             verification_uri=uri, verification_uri_complete=complete,
             user_code=str(body.get("user_code", "")),
             expires_in=_int(body.get("expires_in"), 600))
+        self._pending, self._shown = grant, False
         interval = max(1, _int(body.get("interval"), DEFAULT_INTERVAL_SEC))
         deadline = self._now() + grant.expires_in
         outcome = "failed"
@@ -622,7 +628,17 @@ class Login:
             await self._io(self._cool_down, "was refused", human)
             raise
         finally:
+            self._pending = None
             await self._settle(outcome)
+
+    def pending(self) -> DeviceGrant | None:
+        """The approval waiting right now, for the harness to show in its terminal
+        (#198): link and code only, and None once it was shown or the wait ended."""
+        return None if self._shown else self._pending
+
+    def shown(self) -> None:
+        """The line went out (a hook's notice or a plugin's): never a second one."""
+        self._shown = True
 
     def _cool_down(self, why: str, human: str = "", cause: str = "") -> None:
         """`cause` is the error's own text, kept in this object only: the mark on the
@@ -906,6 +922,10 @@ class Running(Protocol):
     def nkey(self) -> NKey: ...
 
     async def run(self) -> None: ...
+
+    def pending(self) -> DeviceGrant | None: ...
+
+    def shown(self) -> None: ...
 
 
 _current: Running | None = None

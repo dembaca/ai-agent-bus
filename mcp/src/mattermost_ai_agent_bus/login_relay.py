@@ -112,6 +112,9 @@ class RelayedLogin:
         self._next = 0
         self._kp: nkeys.KeyPair | None = None
         self._tasks: set[asyncio.Task[None]] = set()
+        # The sandbox shows the link through its own hook API (#198); the relay has
+        # no grant of its own to hand out.
+        self._shown = False
         self._approval_open = False
         self._approval_id = 0
         self._approval_until = 0.0
@@ -127,6 +130,14 @@ class RelayedLogin:
 
     def offer(self) -> dict[str, str]:
         return offer(self.settings, self._human().strip())
+
+    def pending(self) -> DeviceGrant | None:
+        """The relay holds no grant of its own: the host's link reaches the TUI over
+        the relay's channel (#198)."""
+        return None
+
+    def shown(self) -> None:
+        self._shown = True
 
     async def run(self) -> None:
         """Settle an ask an earlier session left open; the login itself runs in the
