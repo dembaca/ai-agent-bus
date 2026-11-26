@@ -362,11 +362,15 @@ class NatsPort:
 
     def __init__(self, inner: BusClient, settings: NatsSettings, homes: Iterable[str], *,
                  memory: int = DEFAULT_MEMORY, echo_wait: float = ECHO_WAIT_SEC,
-                 bus_options: Mapping[str, Any] | None = None, bridge_bot: str = "") -> None:
+                 bus_options: Mapping[str, Any] | None = None, bridge_bot: str = "",
+                 session: str = "") -> None:
         self.inner = inner
         # CB_MM_BRIDGE_BOT: the bot the bridge mirrors NATS with (RT-6.36 step 4); "" drops only the
         # copies under the agents' own bots (the bot prefix of the bridge's signal, _bot_prefix).
         self._bridge_bot = bridge_bot.strip().lstrip("@").lower()
+        # The session's own part of the name (#163): set only when the host key is
+        # shared, so two sessions of one owner are two agents.
+        self._session = session
         self._bridge_id: str | None = None  # its Mattermost id, read once (_bridge)
         self._bridge_none_at = 0.0  # monotonic time it was found to be no bot account
         self._highest: dict[str, int] = {}  # channel -> the highest stream sequence received
@@ -456,7 +460,8 @@ class NatsPort:
                 if owner is None:
                     owner = await _owner_of(login)
                 bus = NatsBus(self._s, login, owner, self._on_event, on_fatal=self._on_fatal,
-                              on_person=self._on_person, on_notice=self._on_notice, **self._bus_options)
+                              on_person=self._on_person, on_notice=self._on_notice,
+                              session=self._session, **self._bus_options)
                 self._bus = bus
                 bus.on_person_gap = self._person_gap
                 bus.card_source = self._card

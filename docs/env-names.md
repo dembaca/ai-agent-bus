@@ -354,7 +354,7 @@ most names of the table above; those are renamed there.
 | `MM_REL_GIT_DIR` | `CB_REL_GIT_DIR` | no | `bin/mm-agent-host-install.sh`, `bin/mm-agent-lib.sh`, `bin/mm-agent-release-check.sh` | internal; exported by `bin/mm-agent-release-check.sh` |
 | `MM_REL_TMP` | `CB_REL_TMP` | no | `bin/mm-agent-host-install.sh`, `bin/mm-agent-lib.sh`, `bin/mm-agent-release-check.sh` | internal; exported by `bin/mm-agent-release-check.sh` |
 
-#### Keys in the session files (9)
+#### Keys in the session files (10)
 
 These are keys in the files the bus writes into the host's state directory
 (`KEY=value` lines), not variables a person sets. A kept session file lives
@@ -371,6 +371,7 @@ either (see [Values the bus writes for itself](#values-the-bus-writes-for-itself
 | `MM_KEPT_CLAUDE_SID` | `CB_KEPT_CLAUDE_SID` | no | `adapters/corral/10-mm-session-start.sh`, `bin/mm-agent-lib.sh` | |
 | `MM_KEPT_WORKDIR` | `CB_KEPT_WORKDIR` | no | `bin/mm-agent-lib.sh` | |
 | `MM_SERVER_ENDED` | `CB_SERVER_ENDED` | no | `session_file.py`; `adapters/corral/10-mm-session-start.sh`, `adapters/corral/90-mm-session-stop.sh`, `bin/mm-agent-lib.sh`, `bin/mm-agent-sweep.sh` | |
+| `CB_SESSION_NONCE` | `CB_SESSION_NONCE` | no | `session_file.py` | new in 0.103.0: no old spelling, in `nonce-<uid>.env` (#163) |
 | `MM_SESSION_PID` | `CB_SESSION_PID` | no | `client.py`, `session_file.py`; `adapters/corral/10-mm-session-start.sh`, `adapters/corral/90-mm-session-stop.sh`, `bin/mm-agent-host-install.sh`, `bin/mm-agent-sweep.sh` | |
 
 The session files also carry variables from the first table

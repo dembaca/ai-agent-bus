@@ -87,7 +87,7 @@ is_live() {
 }
 
 # Per-bot state, not a session: the uid in its name, never a token.
-STATE_RE='^(asks|coord|gate|last|listen|presence|turn|update)-[a-z0-9]{26}\.env$|^stats-[a-z0-9]{26}\.jsonl$|^(permission|crown)-[a-z0-9]{26}\.log$'
+STATE_RE='^(asks|coord|gate|last|listen|nonce|presence|turn|update)-[a-z0-9]{26}\.env$|^stats-[a-z0-9]{26}\.jsonl$|^(permission|crown)-[a-z0-9]{26}\.log$'
 # The MCP server's hook API endpoint (RT-6.17, endpoint-[sid-]<key>.env): no
 # session and no token. A server removes its own at exit; one left by a crash
 # names a port nobody listens on, and the hooks stay quiet. Section 4 removes

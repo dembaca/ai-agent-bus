@@ -197,7 +197,14 @@ def _with_nats(adapter: BusClient) -> BusClient:
     except ValueError:
         memory = DEFAULT_MEMORY
     # CB_MM_BRIDGE_BOT: the bridge's copies of the home's NATS posts are dropped on read (RT-6.36 step 4).
-    port = NatsPort(adapter, settings, {home}, memory=memory, bridge_bot=env("CB_MM_BRIDGE_BOT"))
+    # #163: with one shared host key, each session's name carries its own part.
+    session = ""
+    if login.shared_key():
+        from . import session_file
+
+        session = session_file.nonce()
+    port = NatsPort(adapter, settings, {home}, memory=memory, bridge_bot=env("CB_MM_BRIDGE_BOT"),
+                    session=session)
     lease.use_nats(home, port)  # the crown of the home is the NATS bus's (RT-6.38)
     return cast("BusClient", port)
 
