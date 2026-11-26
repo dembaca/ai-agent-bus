@@ -39,7 +39,7 @@ export const HARNESS_LABEL: Record<Harness, string> = {
 }
 
 /** How the fleet stream stands — one state for the whole console, shown in
- * the sidebar; every view's failed load lands here too. */
+ * the top bar; every view's failed load shows in the notice under it. */
 export type ConnState = "connecting" | "live" | "reconnecting" | "syncing" | "error"
 
 /** The operator the console is logged in as (`GET /v1/me`; the server runs
