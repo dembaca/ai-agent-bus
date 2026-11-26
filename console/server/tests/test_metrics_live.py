@@ -135,7 +135,7 @@ async def test_live_deliveries_feed_both_books(live_nats, tmp_path) -> None:
         # the second claim after the subscription (a last-per-subject
         # consumer delivers each subject's newest on subscribe)
         await js.publish(f"presence.dembaca.{name}", encode_presence("online", "", ""))
-        await js.publish(f"stats.{name}", mcp_stats.nats_body(LINE))
+        await js.publish(f"stats.{name}", mcp_stats.nats_body(LINE | {"tok": LINE["tok"] | SPLIT}))
         for _ in range(100):
             if view.fleet.cards() and view.stats_lines >= 1:
                 break
@@ -161,7 +161,10 @@ async def test_live_deliveries_feed_both_books(live_nats, tmp_path) -> None:
             await task
         except (asyncio.CancelledError, TimeoutError):
             pass
-        await pnc.drain()
+        try:
+            await pnc.drain()
+        except Exception:  # noqa: BLE001 - the server may already be gone
+            pass
 
 
 async def test_the_reading_survives_a_server_restart(live_nats, tmp_path) -> None:
