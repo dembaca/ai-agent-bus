@@ -24,7 +24,8 @@ describe("the pages", () => {
     const { cards, asks } = await fleet()
     expect(cards.length).toBeGreaterThan(0)
     const html = renderToStaticMarkup(
-      <AgentList cards={cards} asks={asks} onOpenAgent={noop} onOpenAsk={noop} onAllAsks={noop} />)
+      <AgentList cards={cards} asks={asks} filter="all" onFilter={noop} query="" onQuery={noop}
+        onOpenAgent={noop} onOpenAsk={noop} onAllAsks={noop} />)
     expect(html).toContain('aria-label="Open asks"')
     expect(html.match(/class="agents__row/g)?.length).toBe(cards.length)
     expect(html).toContain('aria-pressed="true"')  // the "All" filter

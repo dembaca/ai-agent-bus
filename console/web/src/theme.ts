@@ -55,6 +55,13 @@ function localStore(): Storage | null {
   }
 }
 
+/** Sets the stored pick on <html> before the first render, so a dark pick
+ * never flashes light (main.tsx calls it; the CSP allows no inline script). */
+export function applyStoredTheme(): void {
+  const stored = storedTheme(localStore())
+  if (stored && typeof document !== "undefined") document.documentElement.dataset.theme = stored
+}
+
 const DARK_QUERY = "(prefers-color-scheme: dark)"
 
 function systemDark(): boolean {

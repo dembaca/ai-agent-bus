@@ -60,7 +60,8 @@ export interface BuildInfo {
   revision: string | null
 }
 
-/** The Kanban card (ADR-015 point 6): what sits on the card itself. */
+/** An agent's card (ADR-015 point 6): what the agents list and the detail
+ * page show of it. */
 export interface AgentCard {
   /** The agent's name on the bus: the stable key (on NATS `agent-` and a
    * 26-character hash, the subject's last token). */

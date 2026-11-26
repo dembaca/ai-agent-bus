@@ -1,4 +1,3 @@
-import { useState } from "react"
 import type { AgentCard, Ask } from "../api/types"
 import { since } from "../clock"
 import {
@@ -15,15 +14,20 @@ const ASKS_ON_TOP = 4
  * one compact row per agent — the table replaces the Kanban. Search and a
  * status filter narrow the rows; a row opens the agent's detail. Read-only
  * (ADR-015 stage 1): an ask is answered in its thread in the chat. */
-export function AgentList({ cards, asks, onOpenAgent, onOpenAsk, onAllAsks }: {
+export function AgentList({ cards, asks, filter, onFilter: setFilter, query, onQuery: setQuery,
+                            onOpenAgent, onOpenAsk, onAllAsks }: {
   cards: AgentCard[]
   asks: Ask[]
+  /** The status filter and the search: the app keeps them, so they
+   * survive a detail page and the way back. */
+  filter: StatusFilter
+  onFilter: (filter: StatusFilter) => void
+  query: string
+  onQuery: (query: string) => void
   onOpenAgent: (card: AgentCard) => void
   onOpenAsk: (ask: Ask) => void
   onAllAsks: () => void
 }) {
-  const [filter, setFilter] = useState<StatusFilter>("all")
-  const [query, setQuery] = useState("")
   const rows = filterCards(cards, filter, query)
   const counts = countByGroup(cards)
   const open = openAsksFirst(asks)

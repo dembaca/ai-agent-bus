@@ -65,6 +65,6 @@ npm run build      # vite build → dist/
 
 CI builds it like `site/`: `npm ci && npm run typecheck && npm test && npm run build`
 (the `console` job in the workflow). The image build writes `dist/build.json`
-(`scripts/build-info.mjs`: the version from `.claude-plugin/plugin.json`
-unless given, the commit) for the server to serve; see
+(`scripts/build-info.mjs`: the build arguments `VERSION` and `REVISION`)
+for the server to serve; see
 [`../server/README.md`](../server/README.md).

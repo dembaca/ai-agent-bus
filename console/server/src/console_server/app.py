@@ -192,7 +192,10 @@ class Console:
         rel = path.lstrip("/").split("?")[0]
         if rel == "favicon.svg" or rel.startswith("assets/"):
             want = (root / rel).resolve()
-            if want.is_file() and root in want.parents:
+            # an assets/ path stays inside assets/: `assets/../build.json`
+            # must not reach the rest of the built app (#182)
+            inside = root / "assets" if rel.startswith("assets/") else root
+            if want.is_file() and inside in want.parents:
                 return want
         return None
 

@@ -56,7 +56,7 @@
 .seg__btn:hover { color: var(--ink); }
 .seg__btn--on { background: var(--btn); color: var(--on-btn); font-weight: 500; }
 .seg__btn--on:hover { color: var(--on-btn); }
-.seg__count { font-size: 11px; opacity: .85; }
+.seg__count { font-size: 11px; }
 
 /* the open asks above the table */
 .asks-top {

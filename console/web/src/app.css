@@ -6,8 +6,9 @@
    file per component beside it.
 
    Text contrast (WCAG AA, 4.5:1) was checked for every text token on the
-   surfaces it sits on, in both themes: muted on bg 5.2 (light) / 6.8 (dark),
-   each status word on its own tint 4.7 or more. */
+   surfaces it sits on, in both themes — on the page, a card and a hovered
+   row, each tint over each of them: 4.5:1 or more everywhere (muted on bg
+   5.2 light / 6.8 dark; green on its tint over the page 4.9). */
 
 @font-face {
   font-family: "Inter";
@@ -44,8 +45,8 @@
   --on-ask: #1d1206;
   --task: #0b62c4;
   --task-bg: rgba(11, 98, 196, .09);
-  --done: #1f7a3d;
-  --done-bg: rgba(31, 122, 61, .09);
+  --done: #1a6e36;
+  --done-bg: rgba(26, 110, 54, .09);
   --gone: #b3301e;
   --gone-bg: rgba(196, 50, 31, .08);
   --idle: rgba(0, 0, 0, .6);

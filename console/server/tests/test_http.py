@@ -641,6 +641,25 @@ async def test_cache_headers_of_the_static_files(console: Console, tmp_path) -> 
         assert headers["cache-control"] == want, path
 
 
+async def test_build_json_is_never_served(console: Console, tmp_path) -> None:
+    """#182: build.json sits beside index.html and is shown only through
+    /v1/me and /metrics, behind the login — never as a file, not by a
+    path that climbs out of assets/."""
+    (tmp_path / "index.html").write_text("<html>Choirbus</html>")
+    (tmp_path / "build.json").write_text('{"version": "9.9.9", "revision": "abcdef1"}')
+    (tmp_path / "assets").mkdir()
+    (tmp_path / "assets" / "app.js").write_text("console.log(1)")
+    object.__setattr__(console.settings, "web_dir", str(tmp_path))
+    for path in ("/build.json", "/assets/../build.json", "/assets/../index.html",
+                 "/assets/%2e%2e/build.json"):
+        status, headers, body = await get(console, path)
+        assert b"9.9.9" not in body and b"abcdef1" not in body, path
+        assert "immutable" not in str(headers.get("cache-control")), path
+        assert status in (200, 404), path
+        if status == 200:
+            assert body == b"<html>Choirbus</html>", path
+
+
 async def test_me_carries_the_build(tmp_path) -> None:
     for web_dir, want in (("", {"version": None, "revision": None}),
                           (str(tmp_path), {"version": None, "revision": None})):

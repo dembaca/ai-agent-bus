@@ -207,8 +207,9 @@ jobs:
       # smoke is the reality the loop handles).
       - name: image builds, and the server starts
         run: |
+          version="$(jq -r .version .claude-plugin/plugin.json)"
           docker build -t console-test -f console/server/Dockerfile \
-            --build-arg VERSION="$(jq -r .version .claude-plugin/plugin.json)" \
+            --build-arg VERSION="$version" \
             --build-arg REVISION="$GITHUB_SHA" .
           docker run -d --name console-test -p 127.0.0.1:8747:8747 \
             -e CONSOLE_PUBLIC_URL=http://127.0.0.1:8747 \
@@ -234,6 +235,28 @@ jobs:
           code=$(curl -s -o /dev/null -w "%{http_code}" http://127.0.0.1:8747/healthz)
           [ "$code" = "503" ] || status=1
           curl -sS http://127.0.0.1:8747/healthz | grep -q "does not answer" || status=1
+          # #182: the build the image was given, as /v1/me and /metrics state
+          # it and the OCI labels carry it. A second run with the login off
+          # (loopback only, so on the host's network): the stand-in operator
+          docker run -d --name console-build --network host \
+            -e CONSOLE_PUBLIC_URL=http://127.0.0.1:8748 \
+            -e CONSOLE_LOGIN_OFF=1 \
+            -e CONSOLE_ADDR=127.0.0.1:8748 \
+            -e CONSOLE_NATS_URL=nats://127.0.0.1:4222 \
+            console-test
+          for i in $(seq 1 30); do
+            curl -fsS http://127.0.0.1:8748/livez >/dev/null && break
+            sleep 1
+          done
+          curl -fsS http://127.0.0.1:8748/v1/me \
+            | jq -e --arg v "$version" --arg r "$GITHUB_SHA" \
+                '.build == {version: $v, revision: $r}' || status=1
+          curl -fsS http://127.0.0.1:8748/metrics \
+            | grep -qxF "choirbus_console_build_info{version=\"$version\",revision=\"$GITHUB_SHA\"} 1" || status=1
+          labels="$(docker inspect -f '{{index .Config.Labels "org.opencontainers.image.version"}} {{index .Config.Labels "org.opencontainers.image.revision"}}' console-test)"
+          [ "$labels" = "$version $GITHUB_SHA" ] || status=1
+          docker logs console-build 2>&1 | tail -20
+          docker rm -f console-build
           docker logs console-test 2>&1 | tail -40
           docker rm -f console-test
           exit $status

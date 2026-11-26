@@ -33,6 +33,14 @@
   cursor: pointer;
 }
 
+.topbar__brand .logo { display: block; border-radius: 4px; }
+/* The logo's navy tile melts into the dark bar: a cream hairline keeps its
+   edge, as on the site (site/src/page.css) */
+@media (prefers-color-scheme: dark) {
+  :root:not([data-theme="light"]) .topbar__brand .logo { box-shadow: 0 0 0 1px rgba(253, 246, 234, .45); }
+}
+:root[data-theme="dark"] .topbar__brand .logo { box-shadow: 0 0 0 1px rgba(253, 246, 234, .45); }
+
 .topbar__nav {
   display: flex;
   align-items: stretch;
@@ -164,5 +172,5 @@
   .topbar__inner { padding: 0 16px; }
   .topbar__link { min-height: 40px; }
   .topbar__end { margin-left: 0; width: 100%; padding-bottom: 8px; flex-wrap: wrap; }
-  .topbar__name { display: none; }
+  .topbar__name { max-width: 10ch; }
 }

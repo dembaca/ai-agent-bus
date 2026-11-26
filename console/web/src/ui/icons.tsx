@@ -1,17 +1,14 @@
-// The console's own drawn marks: the Choirbus logo (site/public/choirbus-logo.svg,
-// its main shapes at top-bar size), the crown, sun and moon. Drawn paths, no
-// emoji; each is decorative (aria-hidden) unless it carries its own label.
+import logoUrl from "../assets/choirbus-logo.svg"
 
+// The console's marks: the Choirbus logo — the website's own file
+// (site/public/choirbus-logo.svg, copied to src/assets/), never redrawn —
+// and the crown, sun and moon as drawn paths, no emoji. Each is decorative
+// (aria-hidden or an empty alt) unless it carries its own label.
+
+/** The logo beside the wordmark. Its navy tile melts into the dark page
+ * (1.07:1): TopBar.css gives it a cream hairline there, as the site does. */
 export function Logo({ size = 22 }: { size?: number }) {
-  return (
-    <svg width={size} height={size} viewBox="40 40 1176 1176" aria-hidden="true" focusable="false">
-      <rect x="63" y="62.5" width="1129" height="1129" rx="225" fill="#140b47" />
-      <circle cx="620" cy="626" r="456" fill="#fdf6ea" />
-      <path fill="#140b47" d="M205 808 C225 700 250 595 310 520 C380 440 470 410 548 415 C625 420 685 455 722 487 L745 750 C640 790 535 900 520 1076 L520 1100 L200 1100 L190 808 Z" />
-      <path fill="#ec4a3a" d="M722 487 L852 442 C880 433 890 450 872 466 L700 640 L855 720 C876 732 868 750 850 750 L745 752 C680 742 630 702 628 642 C628 572 670 515 722 487 Z" />
-      <path fill="#ec4a3a" d="M889.7 582.3 L1001.7 529.3 L986.3 496.7 L874.3 549.7 Z M885.1 653.3 L985.1 681.3 L994.9 646.7 L894.9 618.7 Z" />
-    </svg>
-  )
+  return <img className="logo" src={logoUrl} alt="" width={size} height={size} />
 }
 
 /** The coordinator's mark (the crown of its channel). */

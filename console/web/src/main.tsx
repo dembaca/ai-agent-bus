@@ -5,7 +5,10 @@ import "./api/wire"  // the fixture's contract guards run at load
 import { httpApi } from "./api/http"
 import { mockApi } from "./api/mock"
 import type { ConsoleApi } from "./api/types"
+import { applyStoredTheme } from "./theme"
 import "./app.css"
+
+applyStoredTheme()  // before the first render: no flash of the other theme
 
 // The console's own server: VITE_CONSOLE_API is its base (same-origin
 // path, "" or "/api…" — never a cross-origin URL: the login's cookie is

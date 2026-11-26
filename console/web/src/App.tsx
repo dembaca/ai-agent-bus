@@ -10,7 +10,8 @@ import { Detail } from "./ui/Detail"
 import { GraphView } from "./ui/GraphView"
 import { Overview } from "./ui/Overview"
 import { Reports } from "./ui/Reports"
-import { isOpen } from "./ui/agents"
+import { isOpen, type StatusFilter } from "./ui/agents"
+import { asPlace, pushPlace, replacePlace, type Place } from "./nav"
 import { useTheme } from "./theme"
 
 /** The whole console (the agreed design, 2026-11-25): a top bar with the
@@ -156,20 +157,44 @@ export function App({ api }: { api: ConsoleApi }) {
     if (askTimer.current !== null) clearTimeout(askTimer.current)
   }, [])
 
-  const openAgent = useCallback((card: AgentCard) => {
-    setAgent(card)
-    setAsk(null)
-  }, [])
-  const openAsk = useCallback((row: Ask) => {
+  // The places in the browser's history (nav.ts): every move pushes one, the
+  // browser's Back and Forward come back through popstate. The live fleet and
+  // asks are read through refs, so a place finds the current card or ask.
+  const cardsNow = useRef(cards)
+  cardsNow.current = cards
+  const asksNow = useRef(asks)
+  asksNow.current = asks
+  const viewNow = useRef(view)
+  viewNow.current = view
+  const go = useCallback((place: Place, push: boolean) => {
+    const row = place.ask ? asksNow.current.find((a) => a.id === place.ask) ?? null : null
+    const by = place.agent ?? row?.by
+    setViewState(place.view)
     setAsk(row)
-    setAgent(cards.find((c) => c.name === row.by) ?? null)
-  }, [cards])
-  const closeDetail = useCallback(() => { setAgent(null); setAsk(null) }, [])
+    setAgent(by ? cardsNow.current.find((c) => c.name === by) ?? null : null)
+    if (push) pushPlace(place)
+  }, [])
+  useEffect(() => {
+    replacePlace({ view: "agents" })
+    const back = (event: PopStateEvent) => { go(asPlace(event.state) ?? { view: "agents" }, false) }
+    window.addEventListener("popstate", back)
+    return () => { window.removeEventListener("popstate", back) }
+  }, [go])
+
+  const openAgent = useCallback((card: AgentCard) => {
+    go({ view: viewNow.current, agent: card.name }, true)
+  }, [go])
+  const openAsk = useCallback((row: Ask) => {
+    go({ view: viewNow.current, ask: row.id, agent: row.by }, true)
+  }, [go])
+  // The breadcrumb: back to the view the detail was opened from.
+  const closeDetail = useCallback(() => { go({ view: viewNow.current }, true) }, [go])
   // A view picked in the top bar closes a detail page that is open.
-  const setView = useCallback((next: View) => {
-    setViewState(next)
-    closeDetail()
-  }, [closeDetail])
+  const setView = useCallback((next: View) => { go({ view: next }, true) }, [go])
+  // The list's search and status filter live here, so a detail page and the
+  // way back keep them.
+  const [listFilter, setListFilter] = useState<StatusFilter>("all")
+  const [listQuery, setListQuery] = useState("")
   const { theme, toggle } = useTheme()
 
   const open = asks.filter(isOpen).length
@@ -196,6 +221,7 @@ export function App({ api }: { api: ConsoleApi }) {
             from={VIEW_LABEL[view]} onBack={closeDetail} onFail={fail} />
         )}
         {!detail && view === "agents" && <AgentList cards={cards} asks={asks}
+          filter={listFilter} onFilter={setListFilter} query={listQuery} onQuery={setListQuery}
           onOpenAgent={openAgent} onOpenAsk={openAsk} onAllAsks={() => setView("asks")} />}
         {!detail && view === "asks" && <Asks asks={asks} onOpen={openAsk} />}
         {!detail && view === "graph" && <GraphView api={api} cards={cards} asks={asks} fleetSeen={fleetSeen}

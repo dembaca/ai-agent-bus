@@ -194,10 +194,19 @@ function AskBlock({ ask }: { ask: Ask }) {
   )
 }
 
-/** The bus word a post starts with (HELLO, ACK, RESULT…), if it has one. */
+/** The bus's words (protocol.md): only these become a chip. */
+export const BUS_WORDS: ReadonlySet<string> = new Set([
+  "ACK", "NO", "PROGRESS", "RESULT", "DONE", "WAITING", "IDLE", "BYE", "TASK",
+  "ASSIGNMENTS", "HELLO", "BLOCKED", "DELEGATE", "HANDOVER",
+])
+
+/** The bus word a post starts with, if it is one of the bus's words; any
+ * other capital word stays part of the text. */
 export function busWord(message: string): { word: string | null; rest: string } {
-  const m = /^([A-Z][A-Z_-]{1,15})\b[:\s]*/.exec(message)
-  return m ? { word: m[1], rest: message.slice(m[0].length) } : { word: null, rest: message }
+  const m = /^([A-Z]+)\b[:\s]*/.exec(message)
+  return m && BUS_WORDS.has(m[1])
+    ? { word: m[1], rest: message.slice(m[0].length) }
+    : { word: null, rest: message }
 }
 
 /** A thread as the bus has it (GET /v1/threads/<id>): the page the server
@@ -253,8 +262,8 @@ function Thread({ title, api, onFail, threadId }: {
 
 /** The site's word colors: asks orange, tasks blue, done green. */
 function wordTone(word: string): string {
-  if (["WAITING", "BLOCKED", "ASK", "QUESTION"].includes(word)) return "ask"
-  if (["TASK", "PROGRESS", "ACK"].includes(word)) return "task"
+  if (["WAITING", "BLOCKED"].includes(word)) return "ask"
+  if (["TASK", "PROGRESS", "ACK", "DELEGATE", "HANDOVER", "ASSIGNMENTS"].includes(word)) return "task"
   if (["DONE", "RESULT"].includes(word)) return "done"
   return "plain"
 }

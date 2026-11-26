@@ -194,9 +194,11 @@ never reads the file.
 
 The image build writes `build.json` (`{"version", "revision"}`) beside
 `index.html`, with `console/web/scripts/build-info.mjs` (#182): the version
-is the build argument `VERSION`, else the one in `.claude-plugin/plugin.json`;
-the revision is the build argument `REVISION`, the source commit. The file is
-never served as a static file. The server shows it as the `build` field of
+is the build argument `VERSION` (CI takes it from `.claude-plugin/plugin.json`),
+the revision the build argument `REVISION`, the source commit. A build
+without them says `unknown` in the labels and the metric and n/a in the
+footer. The file is never served as a static file, not even by a path that
+climbs out of `/assets/`. The server shows it as the `build` field of
 `/v1/me`, as the series `choirbus_console_build_info{version,revision}` (1;
 `unknown` where a value is missing; no other label) and the image carries it
 as the OCI labels `org.opencontainers.image.version` and `.revision`. A run
