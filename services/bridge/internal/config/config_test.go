@@ -5,6 +5,7 @@ import (
 	"path/filepath"
 	"strings"
 	"testing"
+	"time"
 )
 
 // The homes' servers refuse a props prefix longer than 16 characters
@@ -112,6 +113,39 @@ func TestTheAgentBotSettings(t *testing.T) {
 	}
 	if c, _ := load(map[string]string{"CB_BRIDGE_MM_HIDE_BOT_DM": "false"}); c.HideBotDM {
 		t.Fatal("CB_BRIDGE_MM_HIDE_BOT_DM=false kept it on")
+	}
+}
+
+// RT-6.44 step 8: the sweep's keep time is a duration of at least 1h,
+// 24h when unset, and set only with the agent bots; anything else refuses
+// the start, naming the setting.
+func TestRT644ABadKeepTimeRefusesTheStart(t *testing.T) {
+	load := func(keep string, bots bool) (Config, error) {
+		env := map[string]string{
+			"CB_BRIDGE_NATS_URL": "tls://nats.example:4222", "CB_BRIDGE_NATS_SEED_FILE": "/run/seed",
+			"CB_BRIDGE_MM_URL": "https://chat.example", "CB_BRIDGE_MM_TOKEN_FILE": "/run/token",
+			"CB_BRIDGE_MM_TEAM": "ai-agents", "CB_BRIDGE_HOMES": "nats-pilot",
+		}
+		if bots {
+			env["CB_BRIDGE_MM_ADMIN_TOKEN_FILE"], env["CB_BRIDGE_MM_BOT_PREFIX"] = "/run/admin", "bb-"
+		}
+		if keep != "" {
+			env["CB_BRIDGE_MM_BOT_KEEP"] = keep
+		}
+		return Load(mapEnv(env, nil))
+	}
+	for keep, want := range map[string]time.Duration{"": 24 * time.Hour, "1h": time.Hour, "36h": 36 * time.Hour} {
+		if c, err := load(keep, true); err != nil || c.BotKeep != want {
+			t.Errorf("%q: %s %v", keep, c.BotKeep, err)
+		}
+	}
+	for _, keep := range []string{"59m", "a day", "-2h", "0", "${KEEP}"} {
+		if _, err := load(keep, true); err == nil || !strings.Contains(err.Error(), "CB_BRIDGE_MM_BOT_KEEP") {
+			t.Errorf("%q: %v", keep, err)
+		}
+	}
+	if _, err := load("48h", false); err == nil || !strings.Contains(err.Error(), "CB_BRIDGE_MM_BOT_KEEP") {
+		t.Errorf("without the agent bots: %v", err)
 	}
 }
 

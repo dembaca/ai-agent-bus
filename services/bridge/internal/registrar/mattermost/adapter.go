@@ -101,6 +101,7 @@ type Bot struct {
 	DisplayName string `json:"display_name"`
 	Description string `json:"description"`
 	OwnerID     string `json:"owner_id"`
+	DeleteAt    int64  `json:"delete_at"` // not 0: the bot is disabled
 }
 
 // AccessToken is a user access token.
@@ -432,6 +433,63 @@ func (m *Adapter) BotOf(ctx context.Context, id string) (*Bot, error) {
 	return &b, nil
 }
 
+// BotOfAny reads the bot account with user id id, disabled or not (its
+// DeleteAt says which); nil when there is none (a person's account).
+func (m *Adapter) BotOfAny(ctx context.Context, id string) (*Bot, error) {
+	var b Bot
+	if err := m.do(ctx, http.MethodGet, "/api/v4/bots/"+url.PathEscape(id)+"?include_deleted=true", nil, m.Cfg.Token, &b); err != nil {
+		if isNotFound(err) {
+			return nil, nil
+		}
+		return nil, err
+	}
+	return &b, nil
+}
+
+// botPage is how many bots ListBots reads per page; maxBotPages bounds the
+// pages, as maxTokenPages does the tokens'.
+const (
+	botPage     = 200
+	maxBotPages = 100
+)
+
+// ListBots reads every enabled bot of the server, page by page (the
+// bridge's sweep, RT-6.44 step 8).
+func (m *Adapter) ListBots(ctx context.Context) ([]Bot, error) {
+	var bots []Bot
+	for page := 0; ; page++ {
+		if page == maxBotPages {
+			return nil, fmt.Errorf("more than %d bots", maxBotPages*botPage)
+		}
+		var batch []Bot
+		path := fmt.Sprintf("/api/v4/bots?page=%d&per_page=%d", page, botPage)
+		if err := m.do(ctx, http.MethodGet, path, nil, m.Cfg.Token, &batch); err != nil {
+			return nil, err
+		}
+		bots = append(bots, batch...)
+		if len(batch) < botPage {
+			return bots, nil
+		}
+	}
+}
+
+// DisableBot disables the bot with user id id; Mattermost deactivates its
+// account with it.
+func (m *Adapter) DisableBot(ctx context.Context, id string) error {
+	return m.do(ctx, http.MethodPost, "/api/v4/bots/"+url.PathEscape(id)+"/disable", nil, m.Cfg.Token, nil)
+}
+
+// UpdateBotDescription sets the bot's description (PUT /api/v4/bots/<id>,
+// a patch): the sweep marks a bot it disables with it (RT-6.44 step 8).
+func (m *Adapter) UpdateBotDescription(ctx context.Context, id, description string) error {
+	return m.do(ctx, http.MethodPut, "/api/v4/bots/"+url.PathEscape(id), map[string]string{"description": description}, m.Cfg.Token, nil)
+}
+
+// EnableBot enables the disabled bot with user id id again.
+func (m *Adapter) EnableBot(ctx context.Context, id string) error {
+	return m.do(ctx, http.MethodPost, "/api/v4/bots/"+url.PathEscape(id)+"/enable", nil, m.Cfg.Token, nil)
+}
+
 // tokenPage is how many tokens RevokeIssued reads per page; maxTokenPages
 // bounds the pages, so a server that never ends its list cannot loop it.
 const (
@@ -443,6 +501,17 @@ const (
 // description is Cfg.TokenDescription); other tokens stay. It reads every
 // page first and revokes then, so no revocation shifts a page under it.
 func (m *Adapter) RevokeIssued(ctx context.Context, a core.Agent) error {
+	return m.revoke(ctx, a, false)
+}
+
+// RevokeAll revokes every active token of the agent, whoever minted it (the
+// bridge's sweep, RT-6.44 step 8), reading every page first as RevokeIssued
+// does.
+func (m *Adapter) RevokeAll(ctx context.Context, a core.Agent) error {
+	return m.revoke(ctx, a, true)
+}
+
+func (m *Adapter) revoke(ctx context.Context, a core.Agent, all bool) error {
 	var tokens []AccessToken
 	for page := 0; ; page++ {
 		if page == maxTokenPages {
@@ -460,7 +529,7 @@ func (m *Adapter) RevokeIssued(ctx context.Context, a core.Agent) error {
 	}
 	var errs []error
 	for _, t := range tokens {
-		if t.IsActive && t.Description == m.Cfg.TokenDescription {
+		if t.IsActive && (all || t.Description == m.Cfg.TokenDescription) {
 			errs = append(errs, m.do(ctx, http.MethodPost, "/api/v4/users/tokens/revoke", map[string]string{"token_id": t.ID}, m.Cfg.Token, nil))
 		}
 	}

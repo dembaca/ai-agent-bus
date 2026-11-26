@@ -8,6 +8,7 @@ import (
 	"log/slog"
 	"net/http"
 	"net/http/httptest"
+	"sort"
 	"strconv"
 	"strings"
 	"sync"
@@ -33,8 +34,12 @@ type fakeMM struct {
 	posts   []map[string]any
 	seq     int
 	// reactions by "user/post/emoji"; removedBy the callers of each removal
-	reactions map[string]bool
-	removedBy []string
+	reactions   map[string]bool
+	removedBy   []string
+	listed      int      // bot listings (the sweep)
+	toggled     []string // "disable <id>", "enable <id>"
+	failDisable string   // a bot id whose disable and enable fail
+	failPatch   string   // a bot id whose description cannot be changed
 }
 
 func newFake(t *testing.T) *fakeMM {
@@ -105,11 +110,57 @@ func (f *fakeMM) serve(w http.ResponseWriter, r *http.Request) {
 		f.bots[id] = map[string]any{"user_id": id, "username": body["username"], "description": body["description"], "owner_id": caller}
 		out(f.bots[id])
 	case r.Method == "GET" && len(p) == 2 && p[0] == "bots":
-		if b, ok := f.bots[p[1]]; ok {
+		if b, ok := f.bots[p[1]]; ok && (b["delete_at"] == nil || r.URL.Query().Get("include_deleted") == "true") {
 			out(b)
 			return
 		}
 		w.WriteHeader(http.StatusNotFound)
+	case r.Method == "PUT" && len(p) == 2 && p[0] == "bots":
+		b, ok := f.bots[p[1]]
+		if !ok || p[1] == f.failPatch {
+			w.WriteHeader(http.StatusNotFound)
+			return
+		}
+		b["description"] = body["description"]
+		out(b)
+	case key == "GET bots":
+		// the enabled bots, by user id, one page (the sweep, RT-6.44 step 8)
+		f.listed++
+		ids := make([]string, 0, len(f.bots))
+		for id, b := range f.bots {
+			if b["delete_at"] == nil {
+				ids = append(ids, id)
+			}
+		}
+		sort.Strings(ids)
+		page, _ := strconv.Atoi(r.URL.Query().Get("page"))
+		per, _ := strconv.Atoi(r.URL.Query().Get("per_page"))
+		list := []map[string]any{}
+		for i, id := range ids {
+			if i >= page*per && i < (page+1)*per {
+				list = append(list, f.bots[id])
+			}
+		}
+		out(list)
+	case r.Method == "POST" && len(p) == 3 && p[0] == "bots" && (p[2] == "disable" || p[2] == "enable"):
+		b, ok := f.bots[p[1]]
+		if !ok || p[1] == f.failDisable {
+			w.WriteHeader(http.StatusNotFound)
+			return
+		}
+		if p[2] == "disable" {
+			b["delete_at"], f.users[p[1]]["delete_at"] = int64(1), int64(1)
+			for tok, id := range f.byToken {
+				if id == p[1] {
+					delete(f.byToken, tok)
+				}
+			}
+		} else {
+			delete(b, "delete_at")
+			delete(f.users[p[1]], "delete_at")
+		}
+		f.toggled = append(f.toggled, p[2]+" "+p[1])
+		out(b)
 	case r.Method == "POST" && len(p) == 4 && p[0] == "bots" && p[2] == "assign":
 		f.bots[p[1]]["owner_id"] = p[3]
 		out(f.bots[p[1]])
