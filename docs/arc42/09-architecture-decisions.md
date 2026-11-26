@@ -4097,14 +4097,35 @@ The console is the operators' view of the bus itself.
      task) to a depth of two, with a mark where it is cut: the transitive
      edge is the console's reading, not a fact of the bus.
    - **Member of and asks** (shown since #145, the kinds of the design
-     the owner picked): agent → its home, agent → each guest channel the
-     graph's edges name (the cards carry only the home), and open ask →
-     its agent, with the human asked → the ask.
+     the owner picked): agent → its home, agent → each guest channel (the
+     card's `guests`, #147), and open ask → its agent, with the human
+     asked → the ask. An agent → channel edge is `coordinates` for its
+     home and `guest` for a guest channel — a guest is a channel an agent
+     may visit, never claim (RT-6.16). The home is what the bus itself
+     states: the channel of the agent's ask record's subject
+     (`<presence>.ask.<home>.<name>`, RT-6.43 step 5) first, else a
+     channel it claimed the crown of (only a home may be claimed,
+     RT-6.38; any claim of its own, not only the current holder's), else
+     the first channel its memberships name. A statement names a home
+     only beside a membership: a record or a claim can outlive a channel
+     the agent lost. The card's `home` and `guests` come from the same
+     statement, and no home is guessed from an agent's name (#147).
    - **Live** (#145): the cards and the open asks the app already holds
      change the graph in place. A changed state recolours its node; an
      agent or an ask that comes or goes adds or removes a node, and only
      then does the layout run again, with the nodes that stay where they
      were and the view not moved.
+   - **People** are nodes by `person:<anchor token>`, a channel's and an
+     agent's id their name — ids are unique across kinds, so an owner
+     named like a channel is two nodes with two ids. The name is only
+     the label: two anchors that carry one name stay two nodes (RT-6.41),
+     and a node without an attestation is the presence subject's owner
+     token (RT-6.37 step 1).
+   - **You:** the person node the logged-in operator's own anchor names is
+     marked `you`, read from the login's own record and never from a
+     value the browser sends (RT-6.43 step 2) — the record's anchor is in
+     subject form, an attestation's in name form, and the token is what
+     both share.
 
    State, crown and ask marks sit on the nodes as on the cards; a click
    opens the same detail.
@@ -4205,7 +4226,7 @@ The console is the operators' view of the bus itself.
     |--------|------|------|
     | A person's credential: the console's client accepted, the name, the rights, the consumers (points 2 and 4) | Login service; a human's review (ADR-014 point 15) | Before stage 1 |
     | Presence, crown and roster over NATS, with the owner and the trusted list as the login service attests them | NATS adapter, login service; built except the roster (RT-6.37, RT-6.38, RT-6.41) | Before stage 1 |
-    | The card on NATS: decided by the owner on 2026-11-25 as the presence; built for the name to show, harness, model, task, branch and the number of open asks (RT-6.37 step 6), not for the home and the card's other fields | NATS adapter | Built for stage 1 |
+    | The card on NATS: decided by the owner on 2026-11-25 as the presence; built for the name to show, harness, model, task, branch and the number of open asks (RT-6.37 step 6); the home and the guest channels are read from the subjects the bus already publishes (the ask record's channel, a crown claim, the memberships, #147), the card's other fields are not built | NATS adapter | Built for stage 1 |
     | The console's server admitted to NATS: the lab's network rule admits only NATS's own namespace today (ADR-014, the lab today) | The lab; the owner's approval | Before stage 1 |
     | The state word, the numbers and the version in presence | MCP server, message format | Stage 1; until then three columns |
     | The ask and its end on NATS | NATS adapter | Stage 1 |
