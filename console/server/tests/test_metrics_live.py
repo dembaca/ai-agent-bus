@@ -155,8 +155,7 @@ async def test_live_deliveries_feed_both_books(live_nats, tmp_path) -> None:
         assert values.get("task", 0) + values.get("overhead", 0) + values.get("coordination", 0) > 0
 
     finally:
-    finally:
-        svc.stop()
+        await svc.stop()
         task.cancel()
         try:
             await task
