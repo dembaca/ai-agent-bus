@@ -22,8 +22,11 @@ from __future__ import annotations
 
 import errno
 import fcntl
+import base64
 import hashlib
+import logging
 import os
+import re
 import stat
 import sys
 import tempfile
@@ -316,6 +319,29 @@ def keyed_path(prefix: str) -> Path:
         return state_dir() / f"{prefix}-sid-{hashlib.sha1(sid.encode()).hexdigest()[:16]}.env"
     key = hashlib.sha1(project_dir().encode()).hexdigest()[:16]
     return state_dir() / f"{prefix}-{key}.env"
+
+
+NONCE_RE = re.compile(r"^[a-z2-7]{26}$")
+
+
+def nonce() -> str:
+    """The session's own part of the agent name (#163): 16 random bytes as 26
+    lower-case base32 characters, made once and kept in the state directory
+    (`nonce-…`), so a resumed session (`--resume`, `--continue`) and a restarted
+    server keep their name; a new session gets a new one."""
+    path = keyed_path("nonce")
+    try:
+        old = path.read_text(encoding="utf-8", errors="replace").strip()
+        if NONCE_RE.fullmatch(old):
+            return old
+    except OSError:
+        pass
+    value = base64.b32encode(os.urandom(16)).decode().lower().rstrip("=")
+    try:
+        write_private(path, value + "\n")
+    except OSError as exc:  # not kept: a restart gets a new name, the log says so
+        logging.getLogger(__name__).info("session: the nonce was not kept (%s)", type(exc).__name__)
+    return value
 
 
 def session_file_path() -> Path:

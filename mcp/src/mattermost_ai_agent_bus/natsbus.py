@@ -71,6 +71,7 @@ DELIVER = "deliver"  # consumers.DeliverPrefix / callout.DeliverPrefix
 
 CHANNEL_RE = re.compile(r"^[a-z0-9][a-z0-9_-]{0,63}$")  # Go checkToken
 AGENT_RE = re.compile(r"^[A-Za-z0-9][A-Za-z0-9_-]{0,127}$")  # Go consumers.agentRE
+SESSION_RE = re.compile(r"^[a-z2-7]{26}$")  # #163: the session part
 PREFIX_RE = re.compile(r"^[A-Za-z0-9_-]+$")
 # An owner counts only in this form (RT-6.37): a Mattermost username's characters in lower
 # case, the same string the bus compares with CB_TRUSTED_HUMANS and the owners of Mattermost
@@ -1131,7 +1132,7 @@ class NatsBus:
                  connect_timeout: float = 5.0, renew_sec: float = RENEW_SEC,
                  send_wait_sec: float = SEND_WAIT_SEC, member_renew_sec: float = MEMBER_RENEW_SEC,
                  on_fatal: FatalCallback | None = None, on_person: PersonCallback | None = None,
-                 on_notice: NoticeCallback | None = None) -> None:
+                 on_notice: NoticeCallback | None = None, session: str = "") -> None:
         for what, v in (("bus", settings.bus), ("presence", settings.presence), ("stats", settings.stats)):
             if not PREFIX_RE.fullmatch(v) or v == DELIVER:
                 raise ValueError(f"invalid {what} prefix")
@@ -1146,6 +1147,9 @@ class NatsBus:
         self._on_event = on_event
         self._on_fatal = on_fatal
         self._on_person = on_person
+        if session and not SESSION_RE.fullmatch(session):
+            raise ValueError("the session part is not 26 lower-case base32 characters")
+        self._session = session  # #163: the session's own part of the name, when the key is shared
         self._on_notice = on_notice
         # Notices already told (replay, redelivery): (anchor, kind, sid, iat) -> monotonic.
         self._notice_seen: dict[tuple[str, str, str, float], float] = {}
@@ -1227,7 +1231,8 @@ class NatsBus:
     @property
     def name(self) -> str:
         if self._name is None:
-            self._name = agent_name(self._owner, self._login.nkey().public_key, self._s.name_prefix)
+            self._name = agent_name(self._owner, self._login.nkey().public_key, self._s.name_prefix,
+                                    session=self._session)
         return self._name
 
     @property
@@ -1330,7 +1335,8 @@ class NatsBus:
         token = await self._login.access_token()
         key = self._login.nkey()
         hello = build_hello(token, self._s.home, self._s.guests, self._s.lobby, self.since(),
-                            fresh_presence=not self._presence_read, trusted=self._s.trusted, trusted_cut=self._s.trusted_cut)
+                            fresh_presence=not self._presence_read, trusted=self._s.trusted,
+                            trusted_cut=self._s.trusted_cut, session=self._session)
         del token
         nc = NatsClient()
         # nats-py has no argument for the public key with a signature callback; this is the

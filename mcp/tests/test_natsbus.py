@@ -8,6 +8,7 @@ import base64
 import json
 import logging
 import os
+import re
 import shutil
 import socket
 import ssl
@@ -2177,3 +2178,44 @@ def test_the_told_marks_are_capped(tmp_path: Path, monkeypatch: pytest.MonkeyPat
     assert len(marks) == nats_port.NOTICE_KEY_MAX
     assert "session:s0" not in marks  # the oldest evicted
     assert f"session:s{nats_port.NOTICE_KEY_MAX + 9}" in marks
+
+
+def test_a_session_part_is_validated_by_the_bus() -> None:
+    """#163: a part that is not 26 lower-case base32 characters is refused at start."""
+    with pytest.raises(ValueError):
+        NatsBus(_settings(), FakeLogin(), "alice", lambda _e: None, session="TOO-SHORT")
+    NatsBus(_settings(), FakeLogin(), "alice", lambda _e: None, session="abcdefghijklmnopqrstuvwxyz")
+
+
+def test_the_session_nonce_is_made_once_and_kept(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+    """#163: a resumed session and a restarted server keep the name."""
+    from mattermost_ai_agent_bus import session_file
+
+    monkeypatch.setenv("XDG_STATE_HOME", str(tmp_path))
+    first = session_file.nonce()
+    assert re.fullmatch(r"[a-z2-7]{26}", first)
+    assert session_file.nonce() == first
+    path = session_file.keyed_path("nonce")
+    path.write_text("broken\n", encoding="utf-8")
+    second = session_file.nonce()
+    assert second != "broken" and re.fullmatch(r"[a-z2-7]{26}", second)
+
+
+def test_the_key_is_shared_only_under_host(monkeypatch: pytest.MonkeyPatch) -> None:
+    """#163: only a shared host key needs the session part; the MCP component's
+    CB_ name with the old one as the fallback (RT-6.44)."""
+    from mattermost_ai_agent_bus import login
+    from mattermost_ai_agent_bus.config import EnvConflict
+
+    monkeypatch.delenv("CB_LOGIN_NKEY", raising=False)
+    monkeypatch.delenv("MM_LOGIN_NKEY", raising=False)
+    assert not login.shared_key()
+    monkeypatch.setenv("MM_LOGIN_NKEY", "host")  # the old name, still read
+    assert login.shared_key()
+    monkeypatch.setenv("CB_LOGIN_NKEY", "host")  # the same value under both: fine
+    assert login.shared_key()
+    monkeypatch.setenv("CB_LOGIN_NKEY", "ephemeral")  # different: the start is refused
+    with pytest.raises(EnvConflict):
+        login.shared_key()
+    monkeypatch.delenv("MM_LOGIN_NKEY")
+    assert not login.shared_key()  # the new name alone
