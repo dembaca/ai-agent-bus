@@ -3783,8 +3783,13 @@ failure, among them Mattermost's rate limits for the mirroring bots
    may create bots (deployment view, the registrar's requirements). The
    owner decides it as a question of its own, because whoever holds that
    account can create any bot: the account, its rights and the place of its
-   credentials are not written down in this repository. To be decided
-   before the central adapter is built.
+   credentials are not written down in this repository. **Decided by the
+   owner on 2026-11-26** (ask `s6hymrijwtf4ic4ida1brb4s7o`): a new admin bot
+   of its own, with the `system_admin` role, used only by the bridge's bot
+   management, its token a separate file (`BRIDGE_MM_ADMIN_TOKEN_FILE`, a
+   Kubernetes secret); not the bridge bot that posts, which stays without
+   admin rights, and not the registrar's account. Built as the agents' own
+   bots (RT-6.44, deployment view); the risk of the token is RISK-31.
 
 Open for the build team, reported to the owner: the NATS consumers'
 behaviour after a long rest (inactivity threshold); NATS's resource needs
@@ -5497,7 +5502,13 @@ registrar's functions can move in later without a second component.
    has moved, then it is retired into the bridge. Its tenant settings
    (`BOT_USERNAME_PREFIX` and the rest) move into the bridge's configuration
    and its Go code into `services/bridge`. Open: the order of the move gets
-   its own ask after the pilot.
+   its own ask after the pilot. **Built in part** (issue #151 step 1): the
+   Go code is in `services/bridge/internal/registrar`, and the bridge makes
+   one bot per agent of a home over NATS and posts that agent's copies under
+   it (RT-6.44), with the admin bot of the NATS decision's open point 3
+   (ADR-014); off until the operator sets its token. Not built: the
+   registrar's routes and slash commands, the sweep of bots at an agent's
+   bye.
 4. **Asks and slash commands** move into the bridge as they move to NATS.
    Open.
 

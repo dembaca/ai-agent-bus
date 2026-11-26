@@ -85,6 +85,9 @@ type Bridge struct {
 	Events    <-chan mmws.Event
 	Up        func() uint64 // mmws.Reader.Up: the connection that is up now
 	Now       func() time.Time
+	// BotPrefix is the agents' bot prefix, set only while the mirror posts
+	// under the agents' own bots (RT-6.44): the signal names it then.
+	BotPrefix string
 
 	Reach, Margin, SignalEvery, SignalValid, Retry time.Duration
 
@@ -242,7 +245,9 @@ func (b *Bridge) signal(ctx context.Context, h *home) {
 		People bool   `json:"people"`
 		Iat    int64  `json:"iat"`
 		Exp    int64  `json:"exp"`
-	}{1, h.name, true, now.Unix(), now.Add(b.SignalValid).Unix()})
+		// only while on: a host before that release refuses the field
+		BotPrefix string `json:"bot_prefix,omitempty"`
+	}{1, h.name, true, now.Unix(), now.Add(b.SignalValid).Unix(), b.BotPrefix})
 	if err == nil {
 		err = b.NATS.Publish("presence.bridge."+h.name+".v1", body)
 	}
