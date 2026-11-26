@@ -15,6 +15,7 @@ import pytest
 from console_server import config
 from console_server.app import Console
 from console_server.metrics_service import MetricsService
+from mattermost_ai_agent_bus.natsbus import agent_name
 from console_server.nats_read import View
 
 from test_metrics import CONSOLE_FAMILIES, AGENT_FAMILIES, ack, page  # the house helpers
