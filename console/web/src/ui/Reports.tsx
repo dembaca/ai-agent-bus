@@ -1,5 +1,5 @@
 import { useEffect, useState } from "react"
-import type { ConsoleApi, Report } from "../api/types"
+import type { ConsoleApi, Report, ReportStack, TokenCategory } from "../api/types"
 import { seconds } from "../clock"
 import "./Reports.css"
 
@@ -34,6 +34,7 @@ export function Reports({ api, onFail }: { api: ConsoleApi; onFail: Fail }) {
             <span className="report__window">{report.window}</span>
           </header>
           {report.warn && <p className="report__warn">warn: {report.warn}</p>}
+          {report.note && <p className="report__note">{report.note}</p>}
           <table className="report__table">
             <tbody>
               {report.fields.map((field) => (
@@ -58,8 +59,60 @@ export function Reports({ api, onFail }: { api: ConsoleApi; onFail: Fail }) {
               ))}
             </div>
           )}
+          {report.stacks && <Stacks stacks={report.stacks} />}
         </section>
       ))}
+    </div>
+  )
+}
+
+const CATEGORY_LABEL: Record<TokenCategory, string> = {
+  task: "task work",
+  overhead: "bus overhead",
+  coordination: "coordination",
+}
+
+/** The tokens by category (RT-6.9 step 3): one stacked bar per row, the
+ * percent on each segment; input-token equivalents by default, raw tokens
+ * on request. Every bar of an estimate carries the "estimated" mark. */
+function Stacks({ stacks }: { stacks: ReportStack[] }) {
+  const [raw, setRaw] = useState(false)
+  return (
+    <div className="report__stacks">
+      <div className="report__stack-head">
+        <span className="report__legend">
+          {(Object.keys(CATEGORY_LABEL) as TokenCategory[]).map((c) => (
+            <span key={c} className={`report__key report__seg--${c}`}>{CATEGORY_LABEL[c]}</span>
+          ))}
+        </span>
+        <button type="button" className="report__toggle" onClick={() => setRaw(!raw)}>
+          {raw ? "raw tokens" : "input-token equivalents"}
+        </button>
+      </div>
+      {stacks.length === 0 && <p className="report__note">n/a</p>}
+      {stacks.map((stack) => {
+        const segments = raw ? stack.raw : stack.segments
+        return (
+          <div key={stack.label} className="report__stack">
+            <span className="report__bar-label">
+              {stack.label}
+              {stack.estimated && <span className="report__estimated">estimated</span>}
+            </span>
+            <span className="report__stack-track">
+              {segments.map((seg) => {
+                const pct = Math.min(100, Math.max(0, seg.percent ?? 0))
+                return (
+                  <span key={seg.category} className={`report__seg report__seg--${seg.category}`}
+                    style={{ width: `${pct}%` }}
+                    title={`${CATEGORY_LABEL[seg.category]}: ${seg.value} (${seg.percent ?? "n/a"} %)`}>
+                    {pct >= 8 ? `${pct} %` : ""}
+                  </span>
+                )
+              })}
+            </span>
+          </div>
+        )
+      })}
     </div>
   )
 }

@@ -379,7 +379,9 @@ at most 8 KiB, for example:
  "turn_sec": 5400, "turn_max_sec": 900, "wakes": {"push": 12},
  "tools": {"post_message": [9, 1800], "wait_for_events": [4, 0]}, "posts": [9, 4100],
  "asks": 2, "asks_answered": 2, "ask_wait_sec": 1260, "crown_sec": 0,
- "tok": {"req": 120, "bus_req": 18, "fixed": 21000, "all": {"in": 1200, "out": 900}}}
+ "tok": {"req": 120, "bus_req": 18, "fixed": 21000, "all": {"in": 1200, "out": 900},
+         "ovh": {"in": 150, "out": 80}, "coord": {"in": 300, "out": 160},
+         "req_ovh": 6, "req_coord": 9, "m": 1}}
 ```
 
 | String | Pattern |
@@ -393,7 +395,7 @@ No other value is a string. Each listed key has one type: `part` an
 integer, `final` a boolean, `posts`, `compact` and `polls` a pair of numbers,
 `wakes` and `blocks` objects of numbers, `tools`, `post_words`, `inbound`
 and `inject` objects of pairs, `tok`
-its numbers and the objects `all` and `bus` of numbers, every other listed
+its numbers and the objects `all`, `bus`, `ovh` and `coord` of numbers, every other listed
 key one number; each number an integer from 0 to 10^12, and a share is shown within 0 to 100. A key outside the list may
 hold a number, a boolean, a list of numbers or an object of such values,
 and is ignored. A string anywhere else, a
@@ -401,12 +403,15 @@ string off its pattern, a listed key of another type or out of range, a
 duplicate key or a line over 8 KiB drops the whole line. A reader counts
 each line once by its stream sequence. The publisher sends at most 8000 bytes. Keys come from one
 fixed allow list in `stats.py` (`LINE_KEYS` with their labels,
-`TOOL_NAMES`, `WAKE_REASONS`, `BLOCK_KINDS`, `TOK_KEYS`, `TOK_TYPES`,
+`TOOL_NAMES`, `WAKE_REASONS`, `BLOCK_KINDS`, `TOK_KEYS`, `TOK_OBJECTS`, `TOK_TYPES`,
 `POST_WORDS`, `INBOUND_KEYS`, `INJECT_KINDS`), shared by
 publisher and reader: the top-level fields RT-6.9 names; in `tools` the
 bus's own MCP tool names; in `wakes` and `blocks` the reasons and kinds
-the turn hooks write; in `tok` `req`, `bus_req`, `fixed`, `skill`, `all`
-and `bus`; in `tok.all` and `tok.bus` `in`, `read`, `w5m`, `w1h` and `out`;
+the turn hooks write; in `tok` `req`, `bus_req`, `fixed`, `skill`, `all`,
+`bus`, `ovh`, `coord`, `req_ovh`, `req_coord` and `m` (the token split by
+category, an estimate of method `m`; task work is `all` minus `ovh` and
+`coord`, never sent); in `tok.all`, `tok.bus`, `tok.ovh` and `tok.coord`
+`in`, `read`, `w5m`, `w1h` and `out`;
 in `post_words` the bus words and `ask`, `plain`, `other`; in `inbound`
 `agent`, `human`, `event` and `envelope`; in `inject` `start`, `check`,
 `digest`, `drain`, `signoff`, `listen`, `idle`, `compact`, `wake` and `other`.
