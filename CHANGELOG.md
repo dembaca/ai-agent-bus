@@ -40,6 +40,31 @@ before 0.5.0 are described in the git history.
 
 ### Added
 
+- **The token split for OpenCode and pi** (#139 stage 2b, RT-6.9 steps
+  1 to 3, ADR-017). The OpenCode plugin and the pi extension attribute
+  each turn's model requests in process, by the rules the server applies
+  to Claude Code's transcript, and post the sums as one `usage` stat
+  event per turn (`POST /v1/stat` with `k: usage`: exactly 18 integer
+  fields, numbers only, among them the input their segments did not cover). The server folds them into the line's `tok`
+  (method 1) and adds the bus's fixed instructions and tool docs, which
+  the plugins cannot see, as overhead per request, placed only into that
+  uncovered input. Such a line counts in the tokens by category; the older
+  bus share by cause counts only lines with `tok.bus`, so it never
+  reads as 0 %. No token is added to any context.
+- **The operator console's API carries each agent's guest channels and
+  marks the operator's own person node** (#147). A fleet card names its
+  `home` and, beside it, its `guests`: the channels its memberships name
+  that are not its home (every granted channel gets one, RT-6.37). The
+  home is what the bus itself states — the channel of the agent's ask
+  record's subject first (RT-6.43 step 5), else the channel it claims the
+  crown of (only a home may be claimed, RT-6.38), else the first channel
+  its memberships name — never guessed from an agent's name. `/v1/graph`
+  draws the home as a `coordinates` edge and each guest channel as a
+  `guest` edge, and marks the person node the logged-in operator's anchor
+  names with `you`; that anchor is read from the login's own record,
+  never from anything the browser sends. No new right: all of it comes
+  from presence, crown claims, memberships and the login's own record.
+
 - **The operator console shows the channels of the operator's own agents
   and of agents that trust the operator directly** (#128, the console on
   the bus as its operator, RT-6.43 step 3). At each agent's credential the
@@ -128,6 +153,15 @@ before 0.5.0 are described in the git history.
   is not the bus's own overhead alone (RT-6.9 step 3, the console on the
   bus, RT-6.43 step 8).
 
+### Changed
+
+- **The console's graph view runs on React Flow** (#145): people, open
+  asks, agents and their home and guest channels in fixed columns laid
+  out by dagre. A state change recolours its agent in place; an agent or
+  an ask that comes or goes adds or removes its node without moving the
+  others or the view (ADR-015 points 7 and 14). The browser app has unit
+  tests now (`npm test` in `console/web`, also in CI).
+
 ### Fixed
 
 - **A NATS home starts for an identity first seen after the directory
@@ -140,6 +174,13 @@ before 0.5.0 are described in the git history.
   stops, never with a wrong name). Anchors already given do not move. The
   remaining cases, an account renamed in Keycloak and a new one whose name
   was held, stay a known limit (RISK-19).
+- **Two follow-ups from the WebSocket security review** (#85, RT-6.36). The
+  login service's refusal test now asserts an authorization error and that the
+  same identity connects on the standard listener of the same rig, so a
+  listener that fails for another reason can no longer pass it. A WebSocket
+  server that answers the upgrade with a redirect is still refused before any
+  byte goes there, and the bus's log names that reason instead of leaving an
+  operator with a bare timeout.
 - **The central bridge's WebSocket reader reconnects promptly and bounds
   its handshake** (#131, people's posts onto NATS, RT-6.42). After a
   connection that held 30 s it reconnects after 1 s, not after the wait
