@@ -1,7 +1,7 @@
 // The real console server behind the same ConsoleApi as the mock. The
 // server does the Keycloak authorization-code flow with PKCE; the browser
 // holds a same-origin HttpOnly session cookie, which fetch (same-origin)
-// and EventSource carry with every call. `VITE_CONSOLE_API` names the
+// and EventSource carry with every call. `VITE_CB_CONSOLE_API` names the
 // server; without it the app runs the mock (see main.tsx).
 //
 // --- The wire contract, in one place -------------------------------------

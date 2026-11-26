@@ -129,13 +129,13 @@ def test_the_settings_pair_the_token_with_the_seed(tmp_path, monkeypatch) -> Non
     nothing, so the start refuses it and names both settings."""
     tok = tmp_path / "token"
     tok.write_text("t")
-    monkeypatch.setenv("CONSOLE_PUBLIC_URL", "http://127.0.0.1:8747")
-    monkeypatch.setenv("CONSOLE_LOGIN_OFF", "1")
-    monkeypatch.setenv("CONSOLE_METRICS_TOKEN_FILE", str(tok))
-    monkeypatch.delenv("CONSOLE_METRICS_NKEY_SEED_FILE", raising=False)
+    monkeypatch.setenv("CB_CONSOLE_PUBLIC_URL", "http://127.0.0.1:8747")
+    monkeypatch.setenv("CB_CONSOLE_LOGIN_OFF", "1")
+    monkeypatch.setenv("CB_CONSOLE_METRICS_TOKEN_FILE", str(tok))
+    monkeypatch.delenv("CB_CONSOLE_METRICS_NKEY_SEED_FILE", raising=False)
     with pytest.raises(config.ConfigError) as err:
         config.find()
-    assert "CONSOLE_METRICS_NKEY_SEED_FILE" in str(err.value)
+    assert "CB_CONSOLE_METRICS_NKEY_SEED_FILE" in str(err.value)
 
 
 class FakeConn:
