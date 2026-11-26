@@ -6,7 +6,9 @@ Every environment variable this project defines gets the `CB_` prefix
 (choirbus). A variable that exists only because of Mattermost gets `CB_MM_`.
 The owner decided this on 2026-11-26 ([#169](https://github.com/dembaca/ai-agent-bus/issues/169)).
 
-**Not built yet.** This page is the mapping and the rules. The code still reads
+**Held to the code.** `scripts/doc-check.py` reads this page and the tree: failing
+CI is a name the code reads that the page does not list, and a mapping whose old
+name no code mentions (the registrar's kept names excepted). **Not built yet.** This page is the mapping and the rules. The code still reads
 the old names. The renames come in one pull request per component and ship
 together as release 0.103.0. Until then the old names in the
 [README configuration table](../README.md#configuration), the

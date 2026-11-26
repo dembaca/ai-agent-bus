@@ -15,6 +15,8 @@ docs against each other. This checks what it cannot see:
   changelog  the plugin version has an entry in CHANGELOG.md, and its
              `Needs:` and `Withdrawn:` lines keep their grammar (RT-6.30)
   versions   the MCP package (pyproject.toml, __version__) has the plugin version
+  env-names  every environment name the code reads is in docs/env-names.md, and
+             every old name that page maps is mentioned in the code
 
 Exit 0 when clean, 1 on any error. Stdlib only.
 """
@@ -260,6 +262,147 @@ def check_release_lines(text: str | None = None) -> None:
                 error(CHANGELOG, n, f"Withdrawn: in {entry} names a release not older than {entry}")
 
 
+# --- environment names ------------------------------------------------------
+
+ENV_PAGE = ROOT / "docs" / "env-names.md"
+# The names the project defines and the prefix it moves to (docs/env-names.md).
+ENV_PREFIX = r"(?:MM|CB|AUTH|AUTHD|BRIDGE|CONSOLE|MATTERMOST)"
+ENV_NAME = re.compile(rf"\b{ENV_PREFIX}_[A-Z0-9_]+\b")
+ENV_SUFFIXES = (".py", ".go", ".ts", ".tsx", ".sh")
+ENV_SKIP = ("docs/", "site/", "CHANGELOG.md")
+
+
+def env_page() -> dict[str, set[str]]:
+    """What docs/env-names.md lists, by kind.
+
+    ``old`` and ``new``: the mapping tables' two columns. ``registrar``: the
+    names the page keeps unchanged because they go with the registrar.
+    ``not_env``: the shell globals the page calls "not environment".
+    ``excluded``: the names the page says are not the project's to rename.
+    """
+    text = ENV_PAGE.read_text()
+    lines = text.splitlines()
+    old: set[str] = set()
+    new: set[str] = set()
+    for line in lines:
+        m = re.match(r"\|\s*`([A-Z][A-Z0-9_]*)`\s*\|\s*`([A-Z][A-Z0-9_]*)`\s*\|\s*"
+                     r"(?:yes|no)\s*\|", line)
+        if m:
+            old.add(m.group(1))
+            new.add(m.group(2))
+
+    def section(start: str, *ends: str) -> str:
+        i = text.find(start)
+        if i < 0:
+            return ""
+        j = len(text)
+        for end in ends:
+            k = text.find(end, i + len(start))
+            if k >= 0:
+                j = min(j, k)
+        return text[i:j]
+
+    registrar = set(re.findall(r"\|\s*`([A-Z][A-Z0-9_]+)`\s*\|",
+                               section("### Goes with the registrar (", "### The tables")))
+    not_env_section = section("#### Shell variables that are not environment", "### Excluded names")
+    # The section's own bullets name the two prefixes ("to `CB_MM_…`", "to `CB_…`"),
+    # which are no names of their own.
+    not_env = {n for n in ENV_NAME.findall(not_env_section) if n not in ("CB", "CB_MM")}
+    excluded = set(re.findall(r"`([A-Z][A-Z0-9_]+)`",
+                              section("### Excluded names", "### The `Needs:` rule", "## ")))
+    return {"old": old, "new": new, "registrar": registrar, "not_env": not_env,
+            "excluded": excluded}
+
+
+def env_code_names(files: list[str]) -> dict[str, str]:
+    """The environment names the code reads, each with the file that reads it.
+
+    A read is where a name reaches the environment: a Python ``env``/``environ``
+    call or a module constant holding one, Go's ``Getenv``/``LookupEnv``/``env:"…"``,
+    a plugin's ``process.env``, a shell's ``$NAME``/``${NAME…}``. A name the code
+    only mentions in a comment counts as mentioned, not as read; the page's
+    "not environment" and "excluded" lists are where such names live.
+    """
+    read: dict[str, str] = {}
+
+    def see(name: str, path: str) -> None:
+        read.setdefault(name, path)
+
+    for path in files:
+        if path.startswith(ENV_SKIP) or not path.endswith(ENV_SUFFIXES):
+            continue
+        try:
+            text = (ROOT / path).read_text(errors="ignore")
+        except OSError:
+            continue
+        if path.endswith(".py"):
+            for line in text.splitlines():
+                if ("environ" in line or "getenv" in line or re.search(r"\b_?env\(", line)
+                        or re.search(r"\benv_str\(", line)):
+                    for m in re.finditer(rf'["\']({ENV_PREFIX}_[A-Z0-9_]+)["\']', line):
+                        see(m.group(1), path)
+                # A module constant that holds one (login.py's NKEY_ENV) is read later.
+                m = re.match(rf"^[A-Z][A-Z0-9_]*\s*=\s*[\"']({ENV_PREFIX}_[A-Z0-9_]+)[\"']", line)
+                if m:
+                    see(m.group(1), path)
+        elif path.endswith(".go"):
+            for m in re.finditer(rf'(?:Getenv|LookupEnv|env)\(\s*"({ENV_PREFIX}_[A-Z0-9_]+)"',
+                                 text):
+                see(m.group(1), path)
+            for m in re.finditer(rf'env:"({ENV_PREFIX}_[A-Z0-9_]+)"', text):
+                see(m.group(1), path)
+        elif path.endswith((".ts", ".tsx")):
+            for m in re.finditer(rf'process\.env\.({ENV_PREFIX}_[A-Z0-9_]+)'
+                                 rf'|process\.env\["({ENV_PREFIX}_[A-Z0-9_]+)"\]', text):
+                see(m.group(1) or m.group(2), path)
+        else:  # shell: the scripts are the only place a bare $NAME is a setting
+            for m in re.finditer(rf'\$\{{?({ENV_PREFIX}_[A-Z0-9_]+)', text):
+                see(m.group(1), path)
+    return read
+
+
+def env_code_text(files: list[str]) -> str:
+    """Every code file's text, for the other direction: a name the page maps must
+    be mentioned somewhere, whatever prefix it has (`BUS_TESTRIG_*`, `VITE_*`)."""
+    out = []
+    for path in files:
+        if path.startswith(ENV_SKIP) or not path.endswith(ENV_SUFFIXES):
+            continue
+        try:
+            out.append((ROOT / path).read_text(errors="ignore"))
+        except OSError:
+            continue
+    return "\n".join(out)
+
+
+def env_name_errors(page: dict[str, set[str]], read: dict[str, str],
+                    code_text: str) -> list[tuple[str, str]]:
+    """Both directions between the page and the code, as ``(where, what)``.
+
+    A name the code reads and the page does not list loses its ``CB_`` mapping
+    when the rename comes; a mapping whose old name no code mentions is stale
+    (a setting that was removed, or a typo in the table).
+    """
+    documented = set().union(page["old"], page["new"], page["registrar"],
+                             page["not_env"], page["excluded"])
+    out = [(path, f"reads {name}, which docs/env-names.md does not list")
+           for name, path in sorted(read.items()) if name not in documented]
+    out += [("docs/env-names.md", f"maps {name}, which no code mentions")
+            for name in sorted(page["old"]) if name not in code_text]
+    return out
+
+
+def check_env_names() -> None:
+    page = env_page()
+    if len(page["old"]) < 100:
+        error(ENV_PAGE, None, f"parsed {len(page['old'])} names: the tables did not read")
+        return
+    files = repo_files()
+    read = env_code_names(files)
+    for where, what in env_name_errors(page, read, env_code_text(files)):
+        error(where, None, what)
+
+
 # --- versions -------------------------------------------------------------------
 
 def check_versions() -> None:
@@ -286,6 +429,7 @@ def main() -> int:
     check_changelog()
     check_release_lines()
     check_versions()
+    check_env_names()
 
     gh = os.environ.get("GITHUB_ACTIONS") == "true"
     for path, line, msg in errors:
