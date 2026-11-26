@@ -64,6 +64,11 @@ def _isolate_bus_env(monkeypatch, tmp_path, request):
     from mattermost_ai_agent_bus import session_file
 
     monkeypatch.setattr(session_file, "_hosted_dir", None)
+    # The login's store (keystore.default(), #154): a file in the test's own
+    # directory, never the real keychain; test_keystore resets it to test the choice.
+    from mattermost_ai_agent_bus import keystore as _keystore
+
+    monkeypatch.setattr(_keystore, "_chosen", _keystore.HostFile(tmp_path / "login-store"))
     # The NATS link tag a started port registers for the status (RT-6.37).
     from mattermost_ai_agent_bus import lease as _lease
 
