@@ -184,16 +184,20 @@ its answer is advice, approvals still go to the human
 registrar's keys pinned the mode comes only from the registrar's signed record
 instead: a human types `/agent-ask-mode coordinator` (or `direct`) in the home, and
 each server reads `GET <registrar>/register/v1/modes/<channel id>`
-([arc42 §6.25 step 8](arc42/06-runtime-view.md#625-ask-routing-modes)).
+([arc42 §6.25 step 8](arc42/06-runtime-view.md#625-ask-routing-modes)). Since
+#151 step 3 the bridge can serve that record on the same path, signed with its
+own key, which hosts pin in `MM_REGISTRAR_KEYS` beside the registrar's.
 
 A trusted human's pinned post `mandate: 👑 of ~<home>` in a home marks the
 tasks that crown's holder posts there `mandated`; they approve nothing. With the
 registrar's keys pinned the post counts nothing: the mandate is set with
-`/agent-mandate set ~<home>` and read from the registrar's signed record
+`/agent-mandate set ~<home>` and read from the registrar's (or, since #151
+step 3, the bridge's) signed record
 ([arc42 §6.26](arc42/06-runtime-view.md#626-mandate-for-a-role)).
 
 While a trusted human has switched debug categories on for a home with
-`/agent-debug` (the registrar's signed record, keys pinned), an agent's post
+`/agent-debug` (the registrar's or, since #151 step 3, the bridge's signed
+record, keys pinned), an agent's post
 there carries a grey attachment titled `debug` after any other: its own
 server's view of the event it answers. It grants nothing
 ([arc42 §6.31](arc42/06-runtime-view.md#631-mcp-debug)).

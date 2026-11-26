@@ -302,9 +302,21 @@ func TestTheExampleServerConfiguration(t *testing.T) {
 				"bus.hu.home.*", "presence.bridge.home.v1",
 				"$JS.API.CONSUMER.CREATE.PRESENCE.bridge_accounts.presence.account.mattermost.*.v1",
 				"$KV.BUS_BRIDGE_SEEN.>",
-				"$JS.API.STREAM.INFO.KV_BUS_BRIDGE_SEEN", "$JS.API.STREAM.MSG.GET.KV_BUS_BRIDGE_SEEN"} {
+				"$JS.API.STREAM.INFO.KV_BUS_BRIDGE_SEEN", "$JS.API.STREAM.MSG.GET.KV_BUS_BRIDGE_SEEN",
+				// the bridge's own slash command records (issue #151 step 3),
+				// which only it writes: no stream create, no direct get.
+				"$JS.API.STREAM.INFO.KV_BUS_BRIDGE_RECORDS",
+				"$JS.API.STREAM.MSG.GET.KV_BUS_BRIDGE_RECORDS", "$KV.BUS_BRIDGE_RECORDS.>"} {
 				if !strings.Contains(pub, want) {
 					t.Errorf("the bridge's rights lack %s: %+v", want, u.Permissions.Publish.Allow)
+				}
+			}
+			// The records bucket's three rights, each exactly once: read, write,
+			// and no stream create or direct get (issue #151 step 3).
+			for _, want := range []string{"$JS.API.STREAM.INFO.KV_BUS_BRIDGE_RECORDS",
+				"$JS.API.STREAM.MSG.GET.KV_BUS_BRIDGE_RECORDS", "$KV.BUS_BRIDGE_RECORDS.>"} {
+				if n := strings.Count(pub, want); n != 1 {
+					t.Errorf("the bridge's records right %s appears %d times: %+v", want, n, u.Permissions.Publish.Allow)
 				}
 			}
 			// no direct get (its answer carries a key's value onto a reply
@@ -480,10 +492,26 @@ func TestTheExampleServerConfiguration(t *testing.T) {
 	host := newHost()
 	hostPub, _ := host.PublicKey()
 	hello, _ := jsonMarshal(Hello{Token: realm.Token("alice", nil), Home: "home"})
+	agentDenied := make(chan error, 4)
 	agentNC, err := nats.Connect(srv.ClientURL(), nats.RootCAs(certFile), nats.TLSHandshakeFirst(),
-		nats.Nkey(hostPub, host.Sign), nats.Token(string(hello)), nats.MaxReconnects(0))
+		nats.Nkey(hostPub, host.Sign), nats.Token(string(hello)), nats.MaxReconnects(0),
+		nats.ErrorHandler(func(_ *nats.Conn, _ *nats.Subscription, err error) { agentDenied <- err }))
 	if err != nil {
 		t.Fatalf("an agent cannot log in through the callout: %v (log: %s)", err, logs.String())
+	}
+	// The bridge's slash command records are the bridge's: an agent's credential
+	// holds no KV right (issue #151 step 3).
+	if err := agentNC.Publish("$KV.BUS_BRIDGE_RECORDS.modes", []byte("{}")); err != nil {
+		t.Fatal(err)
+	}
+	_ = agentNC.Flush()
+	select {
+	case err := <-agentDenied:
+		if want := `Permissions Violation for Publish to "$KV.BUS_BRIDGE_RECORDS.modes"`; !strings.Contains(err.Error(), want) {
+			t.Errorf("agent publish: %v, want a permissions violation", err)
+		}
+	case <-time.After(2 * time.Second):
+		t.Error("an agent may write the bridge's records")
 	}
 	agentNC.Close()
 	if !strings.Contains(logs.String(), `"event":"issued"`) {

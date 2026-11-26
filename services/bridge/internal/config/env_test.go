@@ -79,6 +79,17 @@ func TestTheReadingRule(t *testing.T) {
 	}
 }
 
+// A setting that was never renamed gets its own name twice: one read, and no
+// deprecation warning about itself.
+func TestANameWithoutAnOldOneIsReadOnce(t *testing.T) {
+	var w warnings
+	looks := 0
+	e := NewEnv(func(k string) (string, bool) { looks++; return "v", k == "CB_BRIDGE_X" }, w.warn)
+	if v, err := e.Get("CB_BRIDGE_X", "CB_BRIDGE_X"); err != nil || v != "v" || looks != 1 || len(w) != 0 {
+		t.Fatalf("got %q, %v, %d lookups, warnings %q", v, err, looks, w)
+	}
+}
+
 // One deprecation warning per old name and process (one Env), however often
 // the name is read.
 func TestTheDeprecationWarningComesOnce(t *testing.T) {
@@ -118,7 +129,8 @@ func TestTheOldNamesStillWork(t *testing.T) {
 		MMURL: "http://chat.example", MMAllowHTTP: true, MMPlainHTTP: true, MMToken: "/run/token",
 		MMTeam: "ai-agents", Homes: []string{"a", "b"}, Prefix: "abc_", KVBucket: "KV", SeenBucket: "SEEN",
 		Listen: ":1", NATSStream: "S", BusPrefix: "b2", Deliver: "d.b", Inbox: "_INBOX_b",
-		AdminToken: "/run/admin", BotPrefix: "bb-", HideBotDM: false, BotKeep: 24 * time.Hour}
+		AdminToken: "/run/admin", BotPrefix: "bb-", HideBotDM: false,
+		RecordsBucket: "BUS_BRIDGE_RECORDS", BotKeep: 24 * time.Hour}
 	if !reflect.DeepEqual(c, want) {
 		t.Fatalf("got %+v\nwant %+v", c, want)
 	}
@@ -255,7 +267,7 @@ func TestTheRenamesAreTheDocsTable(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	_, section, ok := strings.Cut(string(doc), "\n### The bridge (20)\n")
+	_, section, ok := strings.Cut(string(doc), "\n### The bridge (32)\n")
 	if !ok {
 		t.Fatal("docs/env-names.md has no section \"The bridge (20)\"")
 	}
@@ -265,8 +277,8 @@ func TestTheRenamesAreTheDocsTable(t *testing.T) {
 	for _, m := range row.FindAllStringSubmatch(section, -1) {
 		want[m[1]] = m[2]
 	}
-	if len(want) != 20 {
-		t.Fatalf("the doc's bridge table has %d rows, want 20: %v", len(want), want)
+	if len(want) != 32 {
+		t.Fatalf("the doc's bridge table has %d rows, want 32: %v", len(want), want)
 	}
 	var looked []string
 	if _, err := Load(NewEnv(func(n string) (string, bool) { looked = append(looked, n); return "", false }, nil)); err == nil {
