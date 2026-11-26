@@ -25,7 +25,8 @@ def settings(tmp_path, *, token="tok-123456", seed=True) -> config.Settings:
     tok.write_text(token)
     return config.Settings(public_url="http://127.0.0.1:8747", login_off=True,
                           nats_url="", metrics_token_file=str(tok),
-                          metrics_nkey_file=str(tmp_path / "seed"))
+                          metrics_nkey_file=str(tmp_path / "seed"),
+                          metrics_listen_port=0)
 
 
 async def get_console(console: Console, path: str, bearer: str | None = None
@@ -46,28 +47,48 @@ async def get_console(console: Console, path: str, bearer: str | None = None
 
 
 async def test_the_scrape_token_gates_the_service_page(tmp_path) -> None:
-    """The unattended path: without a session (the login is on), a missing
-    or wrong Bearer answers 401 like the operator's page; the right token
-    serves the service's own page - its families' zero state (the reading
-    is off in this test) and the console's own observations."""
-    tok = tmp_path / "token"
-    tok.write_text("tok-123456")
+    """The unattended page's listener of its own (#158): the token page
+    lives there alone - a missing or wrong Bearer answers 401 with no
+    operator fallback (this listener has no sessions), the right token
+    serves the service reading's zero state; every other path 404s. The
+    main listener's /metrics needs the operator's session as before."""
     base = settings(tmp_path)
-    s2 = config.Settings(**{**base.__dict__, "login_off": False})   # no stand-in
-    console = Console(s2)
+    console = Console(config.Settings(**{**base.__dict__, "login_off": False}))
     await console.start()
     try:
-        status, _h, _b = await get_console(console, "/metrics")
-        assert (status, _b) == (401, b'{"error": "operator login required"}')
-        status, _h, _b = await get_console(console, "/metrics", bearer="wrong")
+        port = console._metrics_http.bound_port
+        assert console._http.bound_port != port
+
+        async def bare(bearer: str | None = None, path: str = "/metrics"
+                      ) -> tuple[int, bytes]:
+            reader, writer = await asyncio.open_connection("127.0.0.1", port)
+            head = f"GET {path} HTTP/1.1\r\nHost: x\r\n"
+            if bearer is not None:
+                head += f"Authorization: Bearer {bearer}\r\n"
+            writer.write((head + "\r\n").encode())
+            answer = await asyncio.wait_for(reader.readuntil(b"\r\n\r\n"), 5.0)
+            lines = answer.decode("latin-1").split("\r\n")
+            headers = {k.strip().lower(): v.strip() for k, _, v in
+                       (l.partition(":") for l in lines[1:-1])}
+            body = await reader.readexactly(int(headers.get("content-length", "0")))
+            writer.close()
+            return int(lines[0].split()[1]), body
+
+        status, body = await bare()
+        assert (status, body) == (401, b"unauthorized")
+        status, _b = await bare(bearer="wrong")
         assert status == 401
-        status, headers, body = await get_console(console, "/metrics", bearer="tok-123456")
+        status, _b = await bare(path="/anything")
+        assert status == 404
+        status, body = await bare(bearer="tok-123456")
         assert status == 200
-        assert headers["content-type"] == "text/plain; version=0.0.4; charset=utf-8"
         families, series = page(body.decode())
         assert families == set(CONSOLE_FAMILIES) | set(AGENT_FAMILIES)
         assert not any(k.startswith("choirbus_bus_") for k in series)
         assert series["choirbus_console_bus_connects_total"] == 0.0
+        # the main listener: the operator's page, a Bearer goes nowhere
+        status, _h, _b = await get_console(console, "/metrics", bearer="tok-123456")
+        assert (status, _b) == (401, b'{"error": "operator login required"}')
     finally:
         await console.stop()
 
