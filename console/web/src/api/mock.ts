@@ -236,7 +236,7 @@ const asksReport = (id: string, window: "24 h" | "7 d", n: number): Report => ({
   ],
 })
 
-const SPLIT_NOTE = "estimated: exact totals per token type from Claude Code's transcript, split by content "
+const SPLIT_NOTE = "estimated: exact totals per token type from the harness (Claude Code, OpenCode, pi), split by content "
   + "at 4 characters per token; text and thinking by what drove the request, a convention"
 
 // The server's reports (RT-6.43 step 8): no names, counts and seconds only.

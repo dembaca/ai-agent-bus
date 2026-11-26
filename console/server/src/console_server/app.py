@@ -388,7 +388,7 @@ class Console:
         if path == "/metrics":
             # #158: who may scrape — the operator that is logged in, the same
             # right /v1/* needs; no anonymous scrape, no token of its own and no
-            # new NATS right (the pull request argues the service variant).
+            # new NATS right (the owner's go settled it the service variant).
             # The agent numbers are this session's own reading, the same data
             # /v1/stats shows it (RT-6.43); console metrics are the process's.
             # The unattended variant serves on its own listener only

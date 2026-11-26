@@ -10,7 +10,7 @@ import time
 import httpx
 import pytest
 
-from mattermost_ai_agent_bus import channel, hookapi, lease, life, ownpost, session_file, unread
+from mattermost_ai_agent_bus import channel, hookapi, lease, life, ownpost, session_file, stats, unread
 from mattermost_ai_agent_bus.client import post_of
 from mattermost_ai_agent_bus.model import NotFound, UnreadChannel
 
@@ -136,6 +136,39 @@ async def test_pending_counts_and_details_when_asked(api, monkeypatch):
     calls.clear()
     assert (await h.get("/v1/pending?detail=1")).json() == {"count": 0}
     assert calls == ["channels"]
+
+
+async def test_the_served_instructions_are_handed_out(api):
+    """RT-6.27 step 1, #153: pi's exposure direct drops an MCP server's own instructions, so
+    the extension asks for them here — the text this server serves its model, not a copy."""
+    from mattermost_ai_agent_bus import server
+
+    _, h = await api(FakeClient())
+    got = (await h.get("/v1/instructions")).json()
+    assert got == {"instructions": server.mcp.instructions}
+    assert got["instructions"], "the test's server serves no instructions"
+
+
+async def test_the_route_serves_the_text_in_force(api, monkeypatch):
+    """#155: the *served* text, not one built anew. Under corral the host rewrites it for a
+    channel session (RT-6.12), and pi must get that variant, not the one of its import."""
+    from mattermost_ai_agent_bus import server
+
+    # The rewrite the server does for a channel session (server.py: `mcp._lowlevel_server.instructions`).
+    monkeypatch.setattr(server.mcp._lowlevel_server, "instructions", "AI agent bus · channel mode")
+    _, h = await api(FakeClient())
+    assert (await h.get("/v1/instructions")).json() == {"instructions": "AI agent bus · channel mode"}
+
+
+async def test_the_instructions_need_no_bus_session(api):
+    """#155: pi asks at its first run, which can come before a bot is registered (outside
+    corral the server starts after session_start): the route answers without a chat client,
+    where everything else keeps its 503."""
+    from mattermost_ai_agent_bus import server
+
+    _, h = await api(None)
+    assert (await h.get("/v1/me")).status_code == 503
+    assert (await h.get("/v1/instructions")).json() == {"instructions": server.mcp.instructions}
 
 
 async def test_last_post_from_the_file_else_the_channel(api):
@@ -499,6 +532,38 @@ async def test_stat_counts_into_the_servers_own_file(api):
     for bad in ({"k": "evil"}, {"k": "turn", "Bad": 1}, {"k": "turn", "a": [1]},
                 {"k": "turn", "a": 1, "b": 2, "c": 3, "d": 4, "e": 5}, {"k": "wake", "a": "x" * 5000}):
         assert (await h.post("/v1/stat", json=bad)).status_code == 400
+
+
+async def test_stat_usage_takes_exactly_the_plugins_token_split(api):
+    """RT-6.9 step 1: `usage` (OpenCode, pi) is exempt from the field cap only by its exact
+    18 integer fields, each 0 to 10**9, overhead and coordination within their type's total,
+    the uncovered input (h_) within the task work left of its type."""
+    _, h = await api(FakeClient())
+    good = {"k": "usage", "req": 2, "req_ovh": 1, "req_coord": 0,
+            "a_in": 100, "a_read": 9000, "a_w": 300, "a_out": 50,
+            "o_in": 10, "o_read": 900, "o_w": 0, "o_out": 5,
+            "c_in": 90, "c_read": 100, "c_w": 300, "c_out": 45,
+            "h_in": 0, "h_read": 8000, "h_w": 0}
+    assert len(stats.USAGE_FIELDS) == 18
+    assert (await h.post("/v1/stat", json=good)).json() == {"ok": True}
+    rows = [json.loads(line) for line in
+            (session_file.state_dir() / f"stats-{UID}.jsonl").read_text().splitlines()]
+    assert {k: v for k, v in rows[-1].items() if k != "t"} == good
+    missing = {k: v for k, v in good.items() if k != "c_out"}
+    no_head = {k: v for k, v in good.items() if k != "h_w"}
+    for bad in (missing, no_head, good | {"h_out": 0}, good | {"h_read": 8001}, good | {"h_in": 1},
+                good | {"h_w": -1}, good | {"x": 1}, good | {"name": "drain"}, good | {"a_in": -1},
+                good | {"a_out": 10**9 + 1}, good | {"req": 1.5}, good | {"req": True}, good | {"a_read": "9"},
+                good | {"o_in": 11},                       # 11 + 90 > 100
+                good | {"c_w": 301}):
+        assert (await h.post("/v1/stat", json=bad)).status_code == 400
+    assert (await h.post("/v1/stat", json=good | dict.fromkeys(stats.USAGE_FIELDS, 10**9))).status_code == 400
+    top = dict.fromkeys(stats.USAGE_FIELDS - {"o_in", "o_read", "o_w", "o_out", "c_in", "c_read", "c_w", "c_out"},
+                        10**9)
+    assert (await h.post("/v1/stat", json={"k": "usage", **top, **dict.fromkeys(
+        ("o_in", "o_read", "o_w", "o_out", "c_in", "c_read", "c_w", "c_out"), 0)})).status_code == 200
+    # Another kind never gets the exemption.
+    assert (await h.post("/v1/stat", json=good | {"k": "turn"})).status_code == 400
 
 
 async def test_me_says_whether_the_channel_is_confirmed(api):

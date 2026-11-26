@@ -29,7 +29,7 @@ instead, served next to the WebSocket inbox in the server's event loop:
     POST /v1/usage          {ctx?, ctx_size?, five_hour?: {used?, resets_at?},
                             seven_day?: {…}} → {ok} (the status line's numbers, RT-6.10
                             step 3, ADR-008: valid fields kept, the rest ignored)
-    POST /v1/stat           {k: turn|turn_end|block|compact|wake|transcript|inject, …} → {ok}
+    POST /v1/stat           {k: turn|turn_end|block|compact|wake|transcript|inject|usage, …} → {ok}
                             (one overhead counter, RT-6.9: the hooks of a keyless
                             session cannot reach the server's state dir, RT-6.18)
     POST /v1/files          ?name=N[&channel=ID|NAME | &root=ID | &to=AGENT], the raw bytes
@@ -58,6 +58,9 @@ instead, served next to the WebSocket inbox in the server's event loop:
                             latest posts and the bus skill after a compaction,
                             the skill verbatim unless the runtime's cap would cut
                             it (RT-6.7, RT-6.20)
+    GET  /v1/instructions   {instructions}: the MCP instructions this server serves its
+                            model, for a harness that cannot receive an MCP server's
+                            instructions itself (pi's exposure direct, RT-6.27, #153)
 
 HTTP/1.1 on 127.0.0.1 only, an ephemeral port, one random key per server: every
 request carries ``Authorization: Bearer <key>``, compared in constant time, or
@@ -447,6 +450,10 @@ class HookAPI:
         payload: Any = {"data": raw} if route is files_route else json.loads(raw) if raw else {}
         if not isinstance(payload, dict):
             return 400, {"error": "body must be a JSON object"}
+        if route is instructions:
+            # Needs no chat client: a session asks for the text before its server is up or a bot
+            # is registered, and gets it whatever the bus session's state (#153, #155).
+            return await instructions(None, query, payload)  # type: ignore[arg-type]
         try:
             client = await self._get_client()
         except Exception:  # noqa: BLE001 — no bus configured
@@ -885,7 +892,7 @@ async def usage_route(client: ChatPort, query: Mapping[str, str],
 
 
 # The counters the hooks and the listener note (bin/mm-agent-lib.sh mm_stat).
-STAT_KINDS = frozenset({"turn", "turn_end", "block", "compact", "wake", "transcript", "inject"})
+STAT_KINDS = frozenset({"turn", "turn_end", "block", "compact", "wake", "transcript", "inject", "usage"})
 MAX_STAT_FIELDS = 4
 MAX_STAT_VALUE = 4096
 MAX_INJECT_CHARS = 10**7  # an inject's length: no text put into a context comes near it
@@ -914,7 +921,19 @@ async def stat(client: ChatPort, query: Mapping[str, str], body: Mapping[str, An
     if kind not in STAT_KINDS:
         raise BadRequest(f"k: one of {', '.join(sorted(STAT_KINDS))}")
     values = {k: v for k, v in body.items() if k not in ("k", "t")}
-    if len(values) > MAX_STAT_FIELDS:
+    if kind == "usage":
+        # A plugin's token split of one turn (RT-6.9 step 1): exactly its integer fields, each
+        # 0 to USAGE_MAX, overhead and coordination within the total of their type, the
+        # uncovered input (h_) within the task work that is left.
+        if (set(values) != stats.USAGE_FIELDS
+                or not all(type(v) is int and 0 <= v <= stats.USAGE_MAX for v in values.values())
+                or any(values[f"o_{x}"] + values[f"c_{x}"] > values[f"a_{x}"]
+                       for x in stats.USAGE_TYPES.values())
+                or any(values[f"h_{x}"] > values[f"a_{x}"] - values[f"o_{x}"] - values[f"c_{x}"]
+                       for x in stats.USAGE_HEAD.values())):
+            raise BadRequest(f"usage: exactly {', '.join(sorted(stats.USAGE_FIELDS))}, integers "
+                             f"0 to {stats.USAGE_MAX}, o_x + c_x at most a_x, h_x at most the rest")
+    elif len(values) > MAX_STAT_FIELDS:
         raise BadRequest(f"at most {MAX_STAT_FIELDS} fields")
     for k, v in values.items():
         if not _FIELD.fullmatch(k) or not (
@@ -1188,6 +1207,16 @@ async def handoff(client: ChatPort, query: Mapping[str, str],
     return 200, {"context": turnend.handoff(got["posts"], uid, skill=skill, runtime=runtime)}
 
 
+async def instructions(client: ChatPort, query: Mapping[str, str], body: Mapping[str, Any]) -> Reply:
+    """The MCP instructions this server serves its model (RT-6.27, #153): a harness whose MCP
+    client drops an MCP server's `instructions` (pi, exposure direct) asks for them here and
+    puts them into the session as a system prompt section. The text the server would serve,
+    never a copy."""
+    from . import server  # the module holds the served text; imported here, not at load, against a cycle
+
+    return 200, {"instructions": server.mcp.instructions or ""}
+
+
 async def waiting(client: ChatPort, query: Mapping[str, str], body: Mapping[str, Any]) -> Reply:
     """A harness plugin waits for its first session (RT-6.18 step 11, RT-6.20
     step 1): the host holds back its no-relay warning."""
@@ -1214,6 +1243,7 @@ _ROUTES: dict[tuple[str, str], Route] = {
     ("GET", "/v1/turn-end"): turn_end,
     ("GET", "/v1/wake"): wake,
     ("GET", "/v1/handoff"): handoff,
+    ("GET", "/v1/instructions"): instructions,
     ("POST", "/v1/waiting"): waiting,
 }
 # Routes that make several Mattermost calls: at most MAX_HEAVY_RUNS at once.

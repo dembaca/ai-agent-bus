@@ -13,8 +13,9 @@ the last 7 days, in input-token equivalents, per version and harness —
 an estimate, as the note of every line says (RT-6.9 step 2).
 
 Who may scrape: the operator that is logged in, the same right ``/v1/*``
-needs — no anonymous scrape, no token of its own and no new NATS right
-(#158's open question, the ask in the pull request). A series a value is
+needs — the unattended variant of the owner's go (a listener of its own, a
+scrape token, a read-only service account) is this page's sibling, not part
+of it. A series a value is
 unknown for (``n/a``) is left out entirely, never a 0; the help texts of
 the agent metrics say what backs them. Labels stay small by design: no
 session id, agent name, owner or home ever becomes a label (RT-6.43's
@@ -37,7 +38,7 @@ WEEK_SEC = 7 * 86400
 # agents' presence state words (the columns the view adds among them), and
 # the session readers' own connection states (the word before a ": ..." tail).
 STATES = ("online", "away", "idle", "listening", "working", "bus", "offline")
-READER_STATES = ("connecting", "reading", "waiting", "ended", "off")
+READER_STATES = ("connecting", "reading", "waiting", "ended")
 UNKNOWN = "other"
 
 # The newest versions the tokens-by-category page keeps as their own label;
@@ -128,12 +129,14 @@ def _tokens(book: Any) -> list[str]:
     or a hostile mint of many — counts as other, so the version pattern alone
     can mint no series (a bounded page whatever a publisher sends)."""
     groups: dict[tuple[str, str], list[dict[str, Any]]] = defaultdict(list)
-    newest_line: dict[str, float] = defaultdict(float)
-    for at, _seq, line in book.within(WEEK_SEC):
+    lines_of: dict[str, int] = defaultdict(int)
+    for _at, _seq, line in book.within(WEEK_SEC):
         version = str(line.get("v") or UNKNOWN)
         groups[(version, str(line.get("rt") or UNKNOWN))].append(line)
-        newest_line[version] = max(newest_line[version], float(at))
-    newest = set(sorted(newest_line, key=lambda v: newest_line[v], reverse=True)[:MAX_VERSIONS])
+        lines_of[version] += 1
+    # ranked by line count, not freshness: a publisher minting versions must
+    # write as many lines as a real release amasses in a week to displace it
+    newest = set(sorted(lines_of, key=lambda v: lines_of[v], reverse=True)[:MAX_VERSIONS])
     folded: dict[tuple[str, str], list[dict[str, Any]]] = defaultdict(list)
     for (version, harness), group in groups.items():
         # one "other" bucket per harness: the capped versions merge, so a
@@ -185,7 +188,8 @@ def render(tel: Telemetry, sessions: int, streams: int,
         " counted.",
         "# TYPE choirbus_console_http_requests_total counter",
         *tel.render(),
-        "# HELP choirbus_console_sessions_open Operator sessions held.",
+        "# HELP choirbus_console_sessions_open Operator sessions held; an expired"
+        " one stays counted until its next sweep.",
         "# TYPE choirbus_console_sessions_open gauge",
         f"choirbus_console_sessions_open {sessions}",
         "# HELP choirbus_console_sse_streams_open Open fleet streams"
@@ -193,7 +197,7 @@ def render(tel: Telemetry, sessions: int, streams: int,
         "# TYPE choirbus_console_sse_streams_open gauge",
         f"choirbus_console_sse_streams_open {streams}",
         "# HELP choirbus_console_bus_readers The session readers' NATS connection"
-        " states: connecting, reading, waiting (the reason on its tail) or end.",
+        " states: connecting, reading, waiting (the reason on its tail) or ended.",
         "# TYPE choirbus_console_bus_readers gauge",
         *[f'choirbus_console_bus_readers{{state="{_escape(s)}"}} {n}'
           for s, n in sorted(by_state.items())],
@@ -216,13 +220,13 @@ def render(tel: Telemetry, sessions: int, streams: int,
         "# TYPE choirbus_console_stats_lines_refused_total counter",
         f'choirbus_console_stats_lines_refused_total {happens["stats_line_refused"]}',
         "# HELP choirbus_console_fleet_records_refused_total Presence or ask records"
-        " the strict decoder refused (dropped whole, RT-6.43 step 6), counted where"
-        " they drop.",
+        " dropped whole (a decoding failure, or an error while processing one"
+        " delivery, RT-6.43 step 6), counted where they drop.",
         "# TYPE choirbus_console_fleet_records_refused_total counter",
         f'choirbus_console_fleet_records_refused_total {happens["fleet_record_refused"]}',
         "",
         "# HELP choirbus_bus_agents The agents this session's consumers deliver, by"
-        " state and harness, shown never answered. No name, owner or home label:"
+        " state and harness — shown, never answered. No name, owner or home label:"
         " RT-6.43 keeps those out; an unknown word counts as other; a reading that"
         " is not live shows no series at all.",
         "# TYPE choirbus_bus_agents gauge",

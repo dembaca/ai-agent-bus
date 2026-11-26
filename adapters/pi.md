@@ -6,7 +6,7 @@ clients ([arc42 §6.17](../docs/arc42/06-runtime-view.md#617-turn-hooks-ask-the-
 **pi-coding-agent 1.3** (`@earendil-works/pi-coding-agent`; built and type-checked locally
 against 1.3.0). The extension uses pi's extension API: `pi.registerMcpServer`,
 `pi.sendUserMessage`, `pi.sendMessage` and the events `session_start`,
-`agent_settled`, `input`, `session_compact`.
+`before_agent_start`, `agent_settled`, `input`, `session_compact`.
 
 ## Extension (recommended)
 
@@ -16,6 +16,17 @@ per turn, drain and sign-off before the agent goes idle, a wake-up for as long a
 session lives, the context use in the bot's status, and its handoff state and the
 skill after a compaction. What it does and when:
 [arc42 §6.27](../docs/arc42/06-runtime-view.md#627-pi-turn-cycle-through-its-extension).
+
+It also splits the run's tokens into task work, bus overhead and coordination
+([arc42 §6.9](../docs/arc42/06-runtime-view.md#69-measuring-the-coordination-overhead),
+ADR-017): pi's `context` event gives each model request's messages (without the system
+prompt and the tool docs), `message_end` the answer's `usage` (`input`, `cacheRead`,
+`cacheWrite`, `output`). Bus tools are known by pi's names for them,
+`mcp__ai_agent_bus__<tool>`. When a run settles it posts one `usage` stat with the run's
+sums, numbers only, including per input type the tokens in front of what the extension
+sees (`h_in`, `h_read`, `h_w`: pi's system prompt and tool docs); it adds no text to the
+context. The stat is sent once and not kept: if that POST fails (no server, a timeout),
+the run's numbers are lost.
 
 Load it for every project with a symlink (it finds this checkout, its `mcp/` and
 `skills/`, by itself):
@@ -31,6 +42,14 @@ path in pi's settings, or for one run with `pi --extension /ABS/PATH/…/pi/matt
 A copied file (not linked) needs `MM_AGENT_BUS_ROOT=/ABS/PATH/ai-agent-bus`
 in pi's environment. It needs no `npm install`: its only import from pi is types.
 `/reload` loads a changed file (after a `git pull` here).
+
+Before every run the extension puts the server's instructions into the system
+prompt as a section of its own, asked for lazily while they are missing
+(`GET /v1/instructions`, which needs no bus session): pi passes an MCP
+server's instructions to the model only for servers with deferred or Code Mode
+tools, and the bus is registered `direct`, so without this a pi agent would miss
+the rules on sub-agents, approvals, questions to you and replying in the thread
+(#153). A run without them carries no section, even if an earlier one had.
 
 The extension registers the MCP server `ai-agent-bus` for the session (`uv run
 --locked --project <checkout>/mcp mattermost-ai-agent-bus-mcp`) and the skill directory.

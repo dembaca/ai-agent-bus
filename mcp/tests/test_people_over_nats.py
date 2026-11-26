@@ -29,6 +29,7 @@ from mattermost_ai_agent_bus.natsbus import (
     PersonMessage,
     decode_account,
     decode_bridge_signal,
+    decode_bridge_signal_full,
     decode_person,
 )
 from mattermost_ai_agent_bus.websocket_inbox import WebSocketInbox
@@ -88,6 +89,28 @@ def test_a_persons_body_is_decoded_strictly(body: bytes) -> None:
 def _account(**kw: Any) -> bytes:
     return _body(**({"account": ACCOUNT, "anchor": "dembaca", "name": "dembaca", "approver": True,
                      "token_iat": 1, "iat": 2, "exp": 3} | kw))
+
+
+async def test_the_bridges_signal_names_its_bot_prefix() -> None:
+    """RT-6.36 step 4: the signal may name the bridge's bot prefix (the agents' own bots); a
+    signal without one keeps the prefix last named, one that is no username's start is refused."""
+    sig = _body(home="home", people=True, iat=1, exp=9, bot_prefix="mm-")
+    assert decode_bridge_signal_full(sig, "home") == (9.0, "mm-")
+    assert decode_bridge_signal_full(_body(home="home", people=True, iat=1, exp=9), "home") == (9.0, "")
+    for bad in ("", "Mm-", "-mm", 7, "a" * 33, "mm/"):
+        with pytest.raises(MessageError):
+            decode_bridge_signal_full(_body(home="home", people=True, iat=1, exp=9, bot_prefix=bad), "home")
+    bus, _ = _unit_bus()
+    bus._connected, bus._nc = True, object()  # type: ignore[assignment]  # a live connection
+
+    async def presence(seq: int, data: bytes) -> None:
+        await bus._on_presence_msg(FakeMsg("presence.bridge.home.v1", _presence_reply(bus, seq, seq, T0 + seq), data))
+
+    assert bus.bridge_prefix("home") == ""
+    await presence(1, _body(home="home", people=True, iat=int(T0), exp=int(T0) + 180, bot_prefix="mm-"))
+    assert bus.bridge_prefix("home") == "mm-" and bus.people_switched("home") and bus.bridge_prefix("other") == ""
+    await presence(2, _body(home="home", people=True, iat=int(T0), exp=int(T0) + 180))
+    assert bus.bridge_prefix("home") == "mm-"  # the copies made stay in the channel
 
 
 def test_an_account_record_and_the_bridges_signal_are_decoded_strictly() -> None:
