@@ -144,9 +144,10 @@ before 0.5.0 are described in the git history.
   server's `instructions` to the model only for servers with deferred or Code
   Mode tools, and the bus is registered `direct`, so a pi agent missed the rules
   on sub-agents, approvals, questions to humans and replying in the thread. The
-  extension now asks the server for the text (`GET /v1/instructions`, the one it
-  serves its model) at its session start and puts it into the system prompt as a
-  section before every run; a session whose server served none adds no section.
+  extension now asks the server for the text before each run while it is missing
+  (`GET /v1/instructions`, the one it serves its model, which needs no bus
+  session), and puts it into the system prompt as a section of its own; a run
+  that still gets none drops a section left from before.
 - **The central bridge's WebSocket reader reconnects promptly and bounds
   its handshake** (#131, people's posts onto NATS, RT-6.42). After a
   connection that held 30 s it reconnects after 1 s, not after the wait
