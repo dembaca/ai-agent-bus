@@ -1,6 +1,7 @@
 package config
 
 import (
+	"fmt"
 	"os"
 	"reflect"
 	"regexp"
@@ -13,10 +14,18 @@ func mapEnv(env map[string]string, warn Warn) *Env {
 	return NewEnv(func(k string) (string, bool) { v, ok := env[k]; return v, ok }, warn)
 }
 
-// warnings records what an Env warns.
+// warnings records what an Env warns, the message and its args as one line.
 type warnings []string
 
-func (w *warnings) warn(msg string, _ ...any) { *w = append(*w, msg) }
+func (w *warnings) warn(msg string, args ...any) {
+	*w = append(*w, strings.TrimSpace(fmt.Sprintln(append([]any{msg}, args...)...)))
+}
+
+// namesBoth reports whether s names newName and, apart from it, oldName,
+// which is a part of newName (BRIDGE_X in CB_BRIDGE_X).
+func namesBoth(s, newName, oldName string) bool {
+	return strings.Contains(s, newName) && strings.Contains(strings.ReplaceAll(s, newName, ""), oldName)
+}
 
 // The reading rule of docs/env-names.md: the new name first, else the old
 // one with one deprecation warning naming the new name; both set and
@@ -34,6 +43,8 @@ func TestTheReadingRule(t *testing.T) {
 		{"neither", map[string]string{}, "", false, 0},
 		{"both equal", map[string]string{"CB_BRIDGE_X": "a", "BRIDGE_X": "a"}, "a", false, 1},
 		{"both different", map[string]string{"CB_BRIDGE_X": "s3cr3t-new", "BRIDGE_X": "s3cr3t-old"}, "", true, 0},
+		{"old only, secret-looking", map[string]string{"BRIDGE_X": "s3cr3t-old"}, "s3cr3t-old", false, 1},
+		{"both equal, secret-looking", map[string]string{"CB_BRIDGE_X": "s3cr3t", "BRIDGE_X": "s3cr3t"}, "s3cr3t", false, 1},
 		{"new empty is set, old unset", map[string]string{"CB_BRIDGE_X": ""}, "", false, 0},
 		{"new empty is set, never falls back", map[string]string{"CB_BRIDGE_X": "", "BRIDGE_X": "a"}, "", true, 0},
 		{"old empty is set", map[string]string{"BRIDGE_X": ""}, "", false, 1},
@@ -45,7 +56,7 @@ func TestTheReadingRule(t *testing.T) {
 			t.Errorf("%s: got %q, %v; want %q, error %v", tc.name, v, err, tc.want, tc.err)
 		}
 		if err != nil {
-			if !strings.Contains(err.Error(), "CB_BRIDGE_X") || !strings.Contains(err.Error(), "BRIDGE_X") {
+			if !namesBoth(err.Error(), "CB_BRIDGE_X", "BRIDGE_X") {
 				t.Errorf("%s: the error does not name both names: %v", tc.name, err)
 			}
 			if strings.Contains(err.Error(), "s3cr3t") {
@@ -56,8 +67,12 @@ func TestTheReadingRule(t *testing.T) {
 			t.Errorf("%s: %d warnings, want %d: %q", tc.name, len(w), tc.warns, w)
 		}
 		for _, m := range w {
-			if !strings.Contains(m, "CB_BRIDGE_X") {
-				t.Errorf("%s: the warning does not name the new name: %q", tc.name, m)
+			if !namesBoth(m, "CB_BRIDGE_X", "BRIDGE_X") {
+				t.Errorf("%s: the warning does not name both names: %q", tc.name, m)
+			}
+			// Message and args together, never a value: a value may be a secret.
+			if strings.Contains(m, "s3cr3t") {
+				t.Errorf("%s: the warning names a value: %q", tc.name, m)
 			}
 		}
 	}
@@ -132,7 +147,7 @@ func TestLoadRefusesNamesThatDisagree(t *testing.T) {
 		for kk, vv := range env {
 			bad[kk] = vv
 		}
-		if _, err := Load(mapEnv(bad, nil)); err == nil || !strings.Contains(err.Error(), k) {
+		if _, err := Load(mapEnv(bad, nil)); err == nil || !namesBoth(err.Error(), "CB_"+k, k) {
 			t.Errorf("%s: %v", k, err)
 		}
 	}
@@ -178,7 +193,7 @@ func TestTheRemovalReleaseRefusesAnOldNameAlone(t *testing.T) {
 	e.refuseOld = true
 	v, err := e.Get("CB_BRIDGE_MM_BOT_PREFIX", "BRIDGE_BOT_PREFIX")
 	if err == nil || v != "" || !strings.HasPrefix(err.Error(), "BRIDGE_BOT_PREFIX ") ||
-		!strings.Contains(err.Error(), "CB_BRIDGE_MM_BOT_PREFIX") || strings.Contains(err.Error(), "bb-") {
+		!namesBoth(err.Error(), "CB_BRIDGE_MM_BOT_PREFIX", "BRIDGE_BOT_PREFIX") || strings.Contains(err.Error(), "bb-") {
 		t.Fatalf("want a refusal naming both names and no value, got %q, %v", v, err)
 	}
 	for _, env := range []map[string]string{
@@ -209,8 +224,8 @@ func TestTheCAFileSetting(t *testing.T) {
 	env := loadable()
 	env["CB_BRIDGE_CA_FILE"], env["BRIDGE_CA_FILE"] = "", "/run/ca.pem"
 	_, err := Load(mapEnv(env, nil))
-	if err == nil || !strings.Contains(err.Error(), "CB_BRIDGE_CA_FILE") ||
-		!strings.Contains(err.Error(), " BRIDGE_CA_FILE") || strings.Contains(err.Error(), "/run/ca.pem") {
+	if err == nil || !namesBoth(err.Error(), "CB_BRIDGE_CA_FILE", "BRIDGE_CA_FILE") ||
+		strings.Contains(err.Error(), "/run/ca.pem") {
 		t.Fatalf("empty new name beside the old one: %v", err)
 	}
 	env = loadable()

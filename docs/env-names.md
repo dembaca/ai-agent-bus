@@ -457,9 +457,9 @@ says whether the setting itself is about Mattermost.
 have no `MM` in their names; the rename gives them one, as the rule says:
 `CB_BRIDGE_MM_BOT_PREFIX` and `CB_BRIDGE_MM_HIDE_BOT_DM`.
 
-The bridge applies the placeholder rule of the Go services, as the login
-service does: a value that is exactly `${NAME}` refuses the start, naming
-the variable.
+The bridge applies the placeholder rule of the Go services: a value that is
+exactly `${NAME}` refuses the start, naming the variable, in the bridge as
+in the login service; the MCP server's `env()` treats it as unset.
 
 ### The console (17)
 

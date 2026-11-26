@@ -75,11 +75,12 @@ func (e *Env) Get(newName, oldName string) (string, error) {
 }
 
 // placeholder is an unexpanded ${NAME}. The MCP server, started from a
-// plugin manifest, reads it as unset; the bridge has no manifest, so there
-// it is a deployment mistake, and read as unset it would silently drop the
-// setting (a pinned CA file, say, and the system roots would apply). It
-// refuses the start, as in the login service (docs/env-names.md, the
-// reading rule).
+// plugin manifest, treats it as unset (env() in its config.py). The Go
+// services, the bridge and the login service, have no manifest, so there it
+// is a deployment mistake, and read as unset it would silently drop the
+// setting (a pinned CA file, say, and the system roots would apply): both
+// refuse the start, naming the variable (docs/env-names.md, the reading
+// rule).
 var placeholder = regexp.MustCompile(`^\$\{[A-Za-z_][A-Za-z0-9_]*\}$`)
 
 // read is one name: unset when absent; an unexpanded placeholder is an error
