@@ -33,7 +33,9 @@ below; until then it reads the old names, and the old names in the
   `CB_WORKSPACE` and `CB_CHANNEL_PUSH`. A conflict there is reported once and the
   plugin behaves as without a bus, so the turn hooks stop; the server it started
   is not reached, and a server of its own refuses the start.
-- Still to come: the console ([#178](https://github.com/dembaca/ai-agent-bus/pull/178)).
+- Built: the console ([#188](https://github.com/dembaca/ai-agent-bus/pull/188)),
+  `given()` in `console/server/src/console_server/config.py`; the names of
+  [its table](#the-console-20).
 
 ## The rules
 
@@ -86,14 +88,15 @@ What counts as set:
   `MM_STATS_CHANNEL=""` switches the statistics off (`stats.py`,
   function `channel`).
 - **An unexpanded placeholder: unset in the MCP server and the hooks, a
-  refusal in the Go services.** A value that is exactly `${NAME}` is a
-  plugin manifest's placeholder that was not expanded. The MCP server and
+  refusal in the Go services and the console.** A value that is exactly
+  `${NAME}` is a plugin manifest's placeholder that was not expanded. The MCP server and
   the hooks start from a manifest, so there it counts as unset, as `env()` in
   `mcp/src/mattermost_ai_agent_bus/config.py` does today; every fallback
-  reader there uses that one helper, or its twin in the hooks. The Go
-  services under `services/` have no plugin manifest, so there such a value
-  can only be a deployment mistake: read as unset, it would silently drop
-  the setting, a pinned CA file for one, and the system roots would apply.
+  reader there uses that one helper, or its twin in the hooks. A service
+  without a plugin manifest — the Go services under `services/` and the
+  console — therefore has only a deployment mistake there: read as unset, it
+  would silently drop the setting, a pinned CA file for one, and the system
+  roots would apply.
   They refuse the start with an error that names the variable, never its
   value.
 - **Three names for one setting.** Two settings have an alias today:
@@ -521,7 +524,7 @@ have no `MM` in their names; the rename gives them one, as the rule says:
 | `CONSOLE_STATS_SUBJECT` | `CB_CONSOLE_STATS_SUBJECT` | no | same | |
 | `CONSOLE_TOKEN_ALGS` | `CB_CONSOLE_TOKEN_ALGS` | no | same | |
 | `CONSOLE_WEB_DIR` | `CB_CONSOLE_WEB_DIR` | no | same, `app.py`; `console/server/Dockerfile` | |
-| `VITE_CONSOLE_API` | `VITE_CB_CONSOLE_API` | no | `console/web/src/main.tsx`, `console/web/src/api/http.ts`, `console/web/vite.config.ts`; `console/server/Dockerfile` | build time only; Vite passes only `VITE_` names to the page, so `VITE_` stays in front; the new name first, else the old one (no warning: a build has no process to warn in) |
+| `VITE_CONSOLE_API` | `VITE_CB_CONSOLE_API` | no | `console/web/src/main.tsx`, `console/web/src/api/http.ts`, `console/web/vite.config.ts`; `console/server/Dockerfile` | build time only; Vite passes only `VITE_` names to the page, so `VITE_` stays in front; the new name first, else the old one (no warning: a build has no process to warn in); two differing values refuse the build |
 ### The OpenCode plugin (6)
 
 Read in `opencode/plugin/mattermost-agent-bus.ts`, or handed by it to the MCP

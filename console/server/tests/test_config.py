@@ -133,6 +133,13 @@ def test_the_cb_reading_rule(monkeypatch, caplog) -> None:
     env(**base, CONSOLE_PUBLIC_URL="http://127.0.0.1:1831")       # equal pass
     assert config.find().public_url == "http://127.0.0.1:1831"
 
+    # compared as given, though the returned value is stripped: a space is a
+    # difference the operator can see in the refusal
+    env(CB_CONSOLE_PUBLIC_URL="http://127.0.0.1:1831",
+        CONSOLE_PUBLIC_URL="http://127.0.0.1:1831 ", CB_CONSOLE_LOGIN_OFF="1")
+    with pytest.raises(config.ConfigError, match="differ"):
+        config.find()
+
     env(CONSOLE_PUBLIC_URL="http://127.0.0.1:1831", CB_CONSOLE_LOGIN_OFF="1")
     caplog.clear()
     s = config.find()
@@ -173,11 +180,19 @@ def test_the_cb_reading_rule_edges(monkeypatch, caplog) -> None:
     with pytest.raises(config.ConfigError, match="differ"):
         config.find()
 
-    # a placeholder is unset: the fallback takes the old name
+    # an unexpanded placeholder refuses, under the new name too: a console
+    # has no plugin manifest that would expand it, so read as unset it would
+    # silently drop the setting (the Go services' rule)
     monkeypatch.setenv("CB_CONSOLE_PUBLIC_URL", "${CB_CONSOLE_PUBLIC_URL}")
     monkeypatch.setenv("CONSOLE_PUBLIC_URL", "http://127.0.0.1:1831")
-    caplog.clear()
-    assert config.find().public_url == "http://127.0.0.1:1831"
+    with pytest.raises(config.ConfigError, match=r"CB_CONSOLE_PUBLIC_URL.*placeholder"):
+        config.find()
+
+    # and under the old name alone: an existing deployment is refused too
+    monkeypatch.delenv("CB_CONSOLE_PUBLIC_URL")
+    monkeypatch.setenv("CONSOLE_PUBLIC_URL", "${CONSOLE_PUBLIC_URL}")
+    with pytest.raises(config.ConfigError, match=r"CONSOLE_PUBLIC_URL.*placeholder"):
+        config.find()
 
     # exactly one warning per process: find() twice, one record
     monkeypatch.delenv("CONSOLE_PUBLIC_URL", raising=False)
@@ -195,3 +210,71 @@ def test_the_cb_reading_rule_edges(monkeypatch, caplog) -> None:
         config.find()
     assert "CB_CONSOLE_PUBLIC_URL" in str(exc.value)
     assert "1832" not in str(exc.value) and "1831" not in str(exc.value)
+
+
+def test_the_values_are_stripped(monkeypatch) -> None:
+    """main's ``given()`` stripped its answer; the reading rule keeps that
+    for the value it returns (the comparison stays unstripped, above). A
+    value of blanks is empty, so it never refuses a seed as set."""
+    from console_server import config
+
+    config._WARNED.clear()
+    for k in ("CB_CONSOLE_PUBLIC_URL", "CONSOLE_PUBLIC_URL",
+              "CB_CONSOLE_LOGIN_OFF", "CONSOLE_LOGIN_OFF",
+              "CB_CONSOLE_ADDR", "CONSOLE_ADDR",
+              "CB_CONSOLE_OPERATOR_GROUP", "CONSOLE_OPERATOR_GROUP",
+              "CB_CONSOLE_NATS_SEED_FILE", "CONSOLE_NATS_SEED_FILE"):
+        monkeypatch.delenv(k, raising=False)
+    monkeypatch.setenv("CB_CONSOLE_NATS_URL", "nats://127.0.0.1:4222")
+    monkeypatch.setenv("CB_CONSOLE_PUBLIC_URL", " http://127.0.0.1:1831 ")
+    monkeypatch.setenv("CB_CONSOLE_LOGIN_OFF", "1 ")
+    monkeypatch.setenv("CB_CONSOLE_ADDR", "127.0.0.1:8747 ")
+    monkeypatch.setenv("CB_CONSOLE_OPERATOR_GROUP", "operators ")
+    monkeypatch.setenv("CB_CONSOLE_NATS_SEED_FILE", " ")
+    s = config.find()
+    assert s.public_url == "http://127.0.0.1:1831"
+    assert s.login_off is True
+    assert (s.listen_host, s.listen_port) == ("127.0.0.1", 8747)
+    assert s.operator_group == "operators"
+
+    # the old name is stripped the same way
+    for k in ("CB_CONSOLE_PUBLIC_URL", "CB_CONSOLE_LOGIN_OFF", "CB_CONSOLE_ADDR"):
+        monkeypatch.delenv(k)
+    monkeypatch.delenv("CB_CONSOLE_OPERATOR_GROUP")
+    monkeypatch.setenv("CONSOLE_PUBLIC_URL", " http://127.0.0.1:1832 ")
+    monkeypatch.setenv("CONSOLE_LOGIN_OFF", "1 ")
+    monkeypatch.setenv("CONSOLE_OPERATOR_GROUP", "operators ")
+    config._WARNED.clear()
+    s = config.find()
+    assert s.public_url == "http://127.0.0.1:1832"
+    assert s.login_off is True
+    assert s.operator_group == "operators"
+
+
+def test_a_placeholder_refuses_every_setting(monkeypatch, tmp_path) -> None:
+    """The placeholder rule over the metric and seed settings: the page is
+    not silently off, and a placeholder seed does not skip the gone-account
+    refusal."""
+    from console_server import config
+
+    config._WARNED.clear()
+    for k in ("CB_CONSOLE_METRICS_TOKEN_FILE", "CB_CONSOLE_METRICS_NKEY_SEED_FILE",
+              "CB_CONSOLE_NATS_SEED_FILE", "CONSOLE_METRICS_TOKEN_FILE",
+              "CONSOLE_METRICS_NKEY_SEED_FILE", "CONSOLE_NATS_SEED_FILE"):
+        monkeypatch.delenv(k, raising=False)
+    seed = tmp_path / "seed"
+    seed.write_text("s")
+    monkeypatch.setenv("CB_CONSOLE_NATS_URL", "nats://127.0.0.1:4222")
+    monkeypatch.setenv("CB_CONSOLE_PUBLIC_URL", "http://127.0.0.1:1831")
+    monkeypatch.setenv("CB_CONSOLE_LOGIN_OFF", "1")
+    monkeypatch.setenv("CB_CONSOLE_METRICS_NKEY_SEED_FILE", str(seed))
+    monkeypatch.setenv("CB_CONSOLE_METRICS_TOKEN_FILE",
+                       "${CB_CONSOLE_METRICS_TOKEN_FILE}")
+    with pytest.raises(config.ConfigError, match=r"CB_CONSOLE_METRICS_TOKEN_FILE.*placeholder"):
+        config.find()
+
+    monkeypatch.delenv("CB_CONSOLE_METRICS_TOKEN_FILE")
+    monkeypatch.delenv("CB_CONSOLE_METRICS_NKEY_SEED_FILE")
+    monkeypatch.setenv("CB_CONSOLE_NATS_SEED_FILE", "${CB_CONSOLE_NATS_SEED_FILE}")
+    with pytest.raises(config.ConfigError, match=r"CB_CONSOLE_NATS_SEED_FILE.*placeholder"):
+        config.find()

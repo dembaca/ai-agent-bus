@@ -27,7 +27,8 @@ def _url(value: str, name: str) -> str:
 
 @dataclass(frozen=True)
 class Settings:
-    """Everything from ``CONSOLE_*`` (the login service keeps its ``AUTH_*``)."""
+    """Everything from ``CB_CONSOLE_*`` (the login service keeps its
+    ``CB_AUTH_*``)."""
 
     # where the browser reaches the console (its own redirect URI)
     public_url: str
@@ -74,20 +75,23 @@ def find() -> Settings:
     """From the environment; absent optional settings become their
     defaults, required ones raise ``ConfigError`` with their names."""
     def given(name: str) -> str:
-        """The reading rule of docs/env-names.md (0.103.0), the placeholder
-        rule included: the new `CB_CONSOLE_…` first — an unexpanded
-        `${CB_CONSOLE_…}` (a manifest's untouched entry) counts as unset,
-        as the mcp `env()` helper reads it; else the old `CONSOLE_…` with one
-        deprecation warning per process that names the new one; both set
-        with different values refuses (never a secret's value). Empty
-        counts as set, the values compared as they are given (unstripped),
-        the returned value stays the caller's to strip."""
+        """The reading rule of docs/env-names.md (0.103.0): the new
+        `CB_CONSOLE_…` first; else the old `CONSOLE_…` with one deprecation
+        warning per process that names the new one; both set with different
+        values refuses (never a secret's value). Empty counts as set and the
+        values are compared as they are given (unstripped), while the value
+        returned is stripped, as this service always read it. A value that is
+        exactly an unexpanded `${CB_CONSOLE_…}` refuses: the console has no
+        plugin manifest that would expand it, and read as unset it would
+        silently drop the setting (a pinned CA file, say) — the rule the Go
+        services follow, not the MCP server's."""
         def _value(var: str) -> str | None:
             if var not in os.environ:
                 return None
             value = os.environ[var]
             if _PLACEHOLDER_RE.match(value):
-                return None          # an untouched manifest entry: unset
+                raise ConfigError(f"{var} holds an unexpanded ${{...}}"
+                                  " placeholder: set it to a value or unset it")
             return value
 
         new_name = "CB_CONSOLE_" + name[len("CONSOLE_"):]
@@ -97,13 +101,13 @@ def find() -> Settings:
             if old_value is not None and new_value != old_value:
                 raise ConfigError(f"{new_name} and {name} are both set and"
                                   " differ (values are never shown)")
-            return new_value
+            return new_value.strip()
         if old_value is not None:
             if name not in _WARNED:
                 _WARNED.add(name)             # once per process
                 log.warning("console: the setting %s is deprecated,"
                             " use %s", name, new_name)
-            return old_value
+            return old_value.strip()
         return ""
 
     listen = given("CONSOLE_ADDR")
@@ -171,13 +175,13 @@ def _required(given: Callable[[str], str], name: str, new_name: str = "") -> str
     value = given(name)
     if not value:
         raise ConfigError(f"{new_name or name} is required")
-    return _url(value, name)
+    return _url(value, new_name or name)
 
 
 def _check(s: Settings) -> None:
     if not s.login_off and (not s.issuer or not s.client_id):
         raise ConfigError("CB_CONSOLE_ISSUER and CB_CONSOLE_CLIENT_ID are required"
-                          " (or CONSOLE_LOGIN_OFF=1 for tests)")
+                          " (or CB_CONSOLE_LOGIN_OFF=1 for tests)")
     if not s.login_off and not s.operator_group:
         # fail closed (the reviews' blocker): an unset group would admit
         # every user of the realm
@@ -185,10 +189,10 @@ def _check(s: Settings) -> None:
                           " members may log in")
     if s.login_off and s.listen_host not in ("127.0.0.1", "::1", "localhost"):
         raise ConfigError("CB_CONSOLE_LOGIN_OFF=1 refuses a non-loopback"
-                          " CONSOLE_ADDR: it would serve without a login")
+                          " CB_CONSOLE_ADDR: it would serve without a login")
     if not s.login_off:
-        _url(s.issuer, "CONSOLE_ISSUER")
-    _url(s.public_url, "CONSOLE_PUBLIC_URL")
+        _url(s.issuer, "CB_CONSOLE_ISSUER")
+    _url(s.public_url, "CB_CONSOLE_PUBLIC_URL")
     if not s.nats_url:
         raise ConfigError("CB_CONSOLE_NATS_URL is required")
     parts = urlsplit(s.nats_url)

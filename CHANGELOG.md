@@ -45,6 +45,21 @@ before 0.5.0 are described in the git history.
   start. Error messages, `authd dir -h`, `services/auth/README.md` and
   `nats-server.example.conf` name the new names.
 
+- **The console's settings read their `CB_CONSOLE_…` names** (#169's console
+  round, [docs/env-names.md](docs/env-names.md)): the new name first, else
+  the old `CONSOLE_…` with one deprecation warning per process; both set to
+  different values refuses the start, empty counts as set and the value is
+  returned stripped as before. A value that is exactly an unexpanded
+  `${CB_CONSOLE_…}` refuses the start, naming the variable, as in the Go
+  services: the console has no plugin manifest that would expand it. #158's
+  three metric settings are carried with: `CB_CONSOLE_METRICS_NKEY_SEED_FILE`,
+  `CB_CONSOLE_METRICS_TOKEN_FILE`, `CB_CONSOLE_METRICS_LISTEN_ADDR`. The image
+  sets `CB_CONSOLE_WEB_DIR`, so a deployment that still overrides
+  `CONSOLE_WEB_DIR` to a different value refuses the start until it uses the
+  new name. The web reads `VITE_CB_CONSOLE_API`, else `VITE_CONSOLE_API`
+  (build time; two differing values refuse the build). The old names go in
+  the release after 0.103.0.
+
 ### Added
 
 - **The console's unattended metrics page** (#158, needs #162): with both
@@ -153,17 +168,6 @@ before 0.5.0 are described in the git history.
   line winning. An operator who already uses the `CB_` names
   sees no difference, and the old ones keep working until the release that
   removes the fallbacks.
-
-
-- **The console's settings read their `CB_CONSOLE_…` names** (#169's console
-  round, [docs/env-names.md](docs/env-names.md)): the new name first, else
-  the old `CONSOLE_…` with one deprecation warning per process; both set to
-  different values refuses the start, empty counts as set and an unexpanded
-  `${CB_CONSOLE_…}` counts as unset (the placeholder rule). #158's three
-  metric settings are carried with: `CB_CONSOLE_METRICS_NKEY_SEED_FILE`,
-  `CB_CONSOLE_METRICS_TOKEN_FILE`, `CB_CONSOLE_METRICS_LISTEN_ADDR`. The web
-  builds with `VITE_CB_CONSOLE_API`, else `VITE_CONSOLE_API` (build time).
-  The old names go in the release after 0.103.0.
 
 ## 0.102.0
 
