@@ -51,6 +51,11 @@ class Settings:
     # the built browser app (console/web/dist)
     web_dir: str = ""
     health_path: str = "/healthz"
+    # The unattended metrics page (#158, both or neither): the seed of the
+    # service's subscribe-only nkey (a file only the console reads) and the
+    # scrape token (Bearer) that gates it, beside the operator's login.
+    metrics_nkey_file: str = ""
+    metrics_token_file: str = ""
     extra: tuple[tuple[str, str], ...] = field(default_factory=tuple)
 
 
@@ -89,7 +94,14 @@ def find() -> Settings:
         stats_subject=given("CONSOLE_STATS_SUBJECT") or "stats",
         stats_stream=given("CONSOLE_STATS_STREAM") or "STATS",
         web_dir=given("CONSOLE_WEB_DIR"),
+        metrics_nkey_file=given("CONSOLE_METRICS_NKEY_SEED_FILE"),
+        metrics_token_file=given("CONSOLE_METRICS_TOKEN_FILE"),
     )
+    if bool(settings.metrics_nkey_file) != bool(settings.metrics_token_file):
+        # a half-configured feature reads nothing and lets nobody scrape:
+        # it refuses to start, exactly like every other pairing here
+        raise ConfigError("CONSOLE_METRICS_NKEY_SEED_FILE and"
+                          " CONSOLE_METRICS_TOKEN_FILE: both or neither")
     if given("CONSOLE_NATS_SEED_FILE"):
         # the static account is gone (RT-6.43): a leftover setting points at a
         # secret that must go too, so the start refuses; the file is never read

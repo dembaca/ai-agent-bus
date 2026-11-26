@@ -30,6 +30,7 @@ from typing import Any
 from urllib.parse import urlsplit
 
 from . import auth, config, httpd, telemetry
+from .metrics_service import MetricsService
 from .auth import Endpoints
 from .fleet import Fleet
 from .nats_read import PersonReader, View, reachable
@@ -75,6 +76,12 @@ class Console:
         self.telemetry = telemetry.Telemetry()   # the console's /metrics counters
         self.standin = View(settings.presence_subject, settings.stats_subject,
                             count=self.telemetry.note_event)
+        # the unattended metrics page (#158): the console's own reading on
+        # the service nkey, and the scrape token that gates it; both or
+        # neither, the settings check pairs them
+        self.service = View(settings.presence_subject, settings.stats_subject,
+                             count=self.telemetry.note_event)
+        self.metrics = MetricsService(settings, self.service) if settings.metrics_nkey_file else None
         self.sessions = auth.Sessions()
         self.keyring = auth.Keyring()
         self.endpoints: auth.Endpoints | None = None
@@ -119,6 +126,8 @@ class Console:
                                  host=self.settings.listen_host,
                                  port=self.settings.listen_port)
         await self._http.start()
+        if self.metrics is not None:
+            self.metrics.start()
 
     async def _discover_loop(self, finder: Callable[[str], Awaitable[Endpoints]]) -> None:
         while True:
@@ -134,9 +143,28 @@ class Console:
                 log.warning("console: %s; /login answers 503; retrying", exc)
                 await asyncio.sleep(5.0)
 
+    @property
+    def _scrape_token(self) -> str:
+        """#158: the unattended page's scrape token, read once at start; ''
+        while it is off, unreadable or empty (nobody scrapes with a secret
+        the operator never set)."""
+        if not hasattr(self, "_scrape_token_value"):
+            from pathlib import Path
+            value = ""
+            if self.settings.metrics_token_file:
+                try:
+                    value = Path(self.settings.metrics_token_file).read_text().strip()
+                except OSError:
+                    log.warning("console: the metrics scrape token is not"
+                                " readable; the token path stays closed")
+            self._scrape_token_value = value
+        return self._scrape_token_value
+
     async def stop(self) -> None:
         if self._http is not None:
             await self._http.stop()
+        if self.metrics is not None:
+            await self.metrics.stop()
         for view in self.sessions.views():
             if isinstance(view, View) and view.reader is not None:
                 await view.reader.aclose()  # key and tokens dropped
@@ -328,6 +356,22 @@ class Console:
             # new NATS right (the pull request argues the service variant).
             # The agent numbers are this session's own reading, the same data
             # /v1/stats shows it (RT-6.43); console metrics are the process's.
+            # #158's unattended variant: the scrape token (Bearer, a
+            # constant-time compare on a file-read value) gates the
+            # console's own reading — the service view, no session, no
+            # operator's data; the operator's login keeps its own page and
+            # needs no token. The token and the seed come together or not
+            # at all (the settings check pairs them).
+            if ((self._scrape_token or "") and
+                    secrets.compare_digest(headers.get("authorization", ""),
+                                           "Bearer " + self._scrape_token)):
+                return httpd.Response(status=200,
+                                      body=telemetry.render(
+                                          self.telemetry, self.sessions.count(),
+                                          sum(self._streams.values()),
+                                          [], self.service).encode(),
+                                      content_type="text/plain; version=0.0.4; charset=utf-8",
+                                      headers=API_HEADERS)
             if self._operator(headers) is None:
                 return _unauthorized()
             readers = [v.reader for v in self.sessions.views()

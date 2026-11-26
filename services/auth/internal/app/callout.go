@@ -197,6 +197,13 @@ func LoadSettings(getenv func(string) string) (Settings, bool, error) {
 		}
 		s.Callout.Console.MaxLogins = n
 	}
+	if v := get("AUTH_CONSOLE_METRICS"); v != "" {
+		on, err := strconv.ParseBool(v)
+		if err != nil {
+			return Settings{}, true, fmt.Errorf("%w: AUTH_CONSOLE_METRICS %q is neither true nor false", ErrConfig, v)
+		}
+		s.Callout.Console.Metrics = on
+	}
 	if c := s.Callout.Console.ClientID; c != "" && (c == s.Token.ClientID || c == s.Token.Audience) {
 		return Settings{}, true, fmt.Errorf("%w: AUTH_CONSOLE_CLIENT_ID must differ from the bus's client and audience", ErrConfig)
 	}
@@ -335,6 +342,12 @@ func RunCallout(ctx context.Context, s Settings, log *slog.Logger) error {
 	}
 	if err := mgr.EnsureStreams(startCtx); err != nil {
 		return fmt.Errorf("streams: %w", err)
+	}
+	// The console's unattended metrics page (#158): its two consumers are
+	// made at this start and kept, idempotent, like every consumer of the
+	// bus — the console's service account itself has no JetStream right.
+	if err := mgr.EnsureMetrics(startCtx); err != nil {
+		return fmt.Errorf("metrics consumers: %w", err)
 	}
 	if err := mgr.WatchByes(ctx); err != nil {
 		return err
