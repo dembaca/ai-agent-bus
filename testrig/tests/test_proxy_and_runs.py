@@ -81,9 +81,16 @@ async def test_reorder_swaps_without_losing_or_repeating():
 
 
 async def test_reorder_releases_a_trailing_frame_by_its_timer():
-    """With no successor, the held frame goes out on the timer: delayed, not lost."""
-    got, _ = await _relay("reorder", count=3, after=1, pace=0.05, reorder_max_wait=0.05)
-    assert got == ["0", "1", "2"]
+    """With no successor, the held frame goes out on the timer: delayed, not lost.
+
+    Frame 0 passes (`after=1`) and frame 1, the last one, is held. No frame
+    follows it, so nothing but its timer can release it while the server is
+    still connected (#84: with a third frame paced as long as the timer, which
+    of the two released the held frame depended on scheduling)."""
+    got, proxy = await _relay("reorder", count=2, after=1, pace=0, reorder_max_wait=0.05)
+    assert got == ["0", "1"]
+    # held once (altered), sent once: the timer released it, nothing doubled
+    assert (proxy.received, proxy.forwarded, proxy.altered) == (2, 2, 1)
 
 
 async def test_stall_delays_everything_and_loses_nothing():
@@ -110,6 +117,36 @@ async def test_stall_counts_a_forwarded_posted_frame():
     assert sent == [frame]
     assert (relay.forwarded, relay.altered) == (1, 1)
     assert (relay.posted_seen, relay.posted_forwarded, relay.posted_altered) == (1, 1, 1)
+
+
+async def test_reorder_timer_releases_the_held_frame_and_rearms():
+    """`FaultRelay.deliver` alone, without sockets (#84): a held frame goes out
+    on its timer, and a frame after that release is held again and released by
+    a timer of its own. Holding a frame never yields, so the timer cannot fire
+    before the asserts right after `deliver`."""
+    sent: list[object] = []
+
+    async def send(frame: object) -> None:
+        sent.append(frame)
+
+    relay = FaultRelay(ProxyFault(kind="reorder", after=1, reorder_max_wait=0.05))
+    state = ConnState()
+    await relay.deliver("0", state, send=send)
+    await relay.deliver("1", state, send=send)
+    assert sent == ["0"]
+    assert state.held == "1"
+    await asyncio.sleep(0.2)
+    assert sent == ["0", "1"]
+    assert state.held is None and state.release is None
+    assert relay.forwarded == 2
+
+    await relay.deliver("2", state, send=send)  # held again: the timer re-arms
+    assert sent == ["0", "1"]
+    assert state.held == "2" and state.release is not None
+    await asyncio.sleep(0.2)
+    assert sent == ["0", "1", "2"]
+    assert state.held is None
+    assert (relay.forwarded, relay.altered) == (3, 2)
 
 
 async def test_blackhole_keeps_the_socket_and_delivers_nothing():
