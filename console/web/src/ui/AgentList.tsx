@@ -130,6 +130,7 @@ export function AgentList({ cards, asks, filter, onFilter: setFilter, query, onQ
 
 function AgentRow({ card, onOpen }: { card: AgentCard; onOpen: (card: AgentCard) => void }) {
   const state = stateClass(card.state)
+  const waits = (card.asksForOperator ?? 0) > 0  // the cell's title and the badge both show it
   const model = `${harnessLabel(card.harness)} · ${card.model || "model n/a"}`
   const branch = card.branch || EMPTY
   return (
@@ -145,9 +146,9 @@ function AgentRow({ card, onOpen }: { card: AgentCard; onOpen: (card: AgentCard)
         </span>
         <span className="agents__model agents__clip" title={model}>{model}</span>
       </td>
-      <td className="nowrap agents__status">
+      <td className="nowrap agents__status" title={`${card.state}${waits ? " · waits on you" : ""}`}>
         <span className={`pill pill--${state}`}>{card.state}</span>
-        {(card.asksForOperator ?? 0) > 0 && (
+        {waits && (
           <span className="pill pill--ask pill--plain agents__waits">waits on you</span>
         )}
       </td>
