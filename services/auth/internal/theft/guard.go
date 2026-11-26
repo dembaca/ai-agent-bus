@@ -135,9 +135,16 @@ func (g *Guard) observe(id, network string, block bool) Verdict {
 	if len(e.trail) > maxTrail {
 		e.trail = e.trail[len(e.trail)-maxTrail:]
 	}
-	// A, B is one change; A, B, A a single return, still a move; A, B, A, B
-	// is the alternation a copy produces.
-	if len(e.trail)-1 < 3 {
+	// What marks a copy is a return, not a change: A, B, C, D (a roaming mobile
+	// network) is no alternation, A, B, A, B (each network back once) is. One
+	// return alone is a person moving and coming back.
+	returns := 0
+	for i := 2; i < len(e.trail); i++ {
+		if e.trail[i].network == e.trail[i-2].network {
+			returns++
+		}
+	}
+	if returns < 2 {
 		g.report(id, Moved, network)
 		return Moved
 	}

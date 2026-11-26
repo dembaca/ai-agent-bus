@@ -13,7 +13,8 @@ import { fileURLToPath } from "node:url"
 import ocBus from "../../opencode/plugin/mattermost-agent-bus.ts"
 import { busFile as ocBusFile } from "../../opencode/plugin/mattermost-agent-bus.ts"
 import mattermostAgentBus, { busFile, busRoot, create, hookApi, MCP_TIMEOUT_SEC, mcpConfig, secretCommand, SERVER, SKILL,
-  chars, timing, venvDir, waitSec, wakeBackoffMs } from "../mattermost-agent-bus.ts"
+  chars, timing, venvDir, waitSec, wakeBackoffMs, contextSegments, COORDINATION, Meter, OVERHEAD, requestSplit, Segments,
+  TASK, toolCategory, waitResult, busTool, pyJson } from "../mattermost-agent-bus.ts"
 
 const HERE = dirname(fileURLToPath(import.meta.url))
 const REPO = dirname(dirname(HERE))
@@ -49,7 +50,10 @@ const answerWake = (body: any) => {
   h!.res.writeHead(200, { "Content-Type": "application/json" }).end(JSON.stringify(body))
 }
 const nowSec = () => Math.floor(Date.now() / 1000)
-const rest = () => calls.filter((c) => !c.path.startsWith("/v1/wake")).map((c) => c.method + " " + c.path)
+// The calls of a test besides the session's own: the long poll and the instructions a run
+// asks for while they are missing (RT-6.27 step 1, #153).
+const rest = () => calls.filter((c) => !c.path.startsWith("/v1/wake") && c.path !== "/v1/instructions")
+  .map((c) => c.method + " " + c.path)
 const wakes = () => calls.filter((c) => c.path.startsWith("/v1/wake"))
 const bodies = (path: string) => calls.filter((c) => c.path === path).map((c) => c.body)
 
@@ -110,7 +114,7 @@ beforeEach(() => {
   dropped = 0
   answers = { "/v1/presence": { ok: true }, "/v1/stat": { ok: true }, "/v1/usage": { ok: true },
               "/v1/turn-end": () => ({ action: "idle", listen_since: nowSec(), listen_until: nowSec() + 5400 }),
-              "/v1/wake": HOLD, "/v1/handoff": { context: "" } }
+              "/v1/wake": HOLD, "/v1/handoff": { context: "" }, "/v1/instructions": { instructions: "" } }
   timing.minRetrySec = 0.01
 })
 
@@ -162,9 +166,9 @@ const started = async (env?: Record<string, string | undefined>) => {
 test("RT-6.27 step 1: the MCP server and the skill at session_start, nothing when loaded", async () => {
   const f = fakePi()
   assert.deepEqual(f.registered, [])
-  assert.deepEqual(Object.keys(f.handlers).sort(), ["agent_settled", "agent_start", "input", "resources_discover",
-    "session_before_compact", "session_compact", "session_compact_failed", "session_shutdown", "session_start",
-    "turn_end"])
+  assert.deepEqual(Object.keys(f.handlers).sort(), ["agent_settled", "agent_start", "before_agent_start", "context",
+    "input", "message_end", "resources_discover", "session_before_compact", "session_compact",
+    "session_compact_failed", "session_shutdown", "session_start", "turn_end"])
   await settle(30)
   assert.equal(calls.length, 0, "no request before the session starts")
   await f.emit("session_start", { reason: "startup" })
@@ -176,6 +180,41 @@ test("RT-6.27 step 1: the MCP server and the skill at session_start, nothing whe
     description: f.registered[0].config.description } }])
   assert.deepEqual(await f.emit("resources_discover", { cwd: ws, reason: "startup" }),
                    { skillPaths: [join(REPO, "skills", SKILL)] })
+})
+
+test("RT-6.27 step 1: the server's instructions reach the model as a system prompt section (#153)", async () => {
+  answers["/v1/instructions"] = { instructions: "AI agent bus 0.101.0, chat: Mattermost. Answer in the thread." }
+  const f = await started()
+  const options: any = { sections: {} }
+  await f.emit("before_agent_start", { messageType: "user", prompt: "hi", systemPromptOptions: options })
+  assert.equal(options.sections[SERVER], "AI agent bus 0.101.0, chat: Mattermost. Answer in the thread.")
+})
+
+test("RT-6.27 step 1: without the server's instructions the system prompt is left alone (#153)", async () => {
+  const f = await started()
+  const options: any = { sections: { other: "x" } }
+  await f.emit("before_agent_start", { messageType: "user", prompt: "hi", systemPromptOptions: options })
+  assert.deepEqual(options.sections, { other: "x" })
+})
+
+test("RT-6.27 step 1: the instructions arrive when the server comes up after session_start (#153, #155)", async () => {
+  answers["/v1/instructions"] = undefined // 503: no bus session yet, as outside corral before the server is up
+  const f = await started()
+  const first: any = { sections: {} }
+  await f.emit("before_agent_start", { messageType: "user", prompt: "hi", systemPromptOptions: first })
+  assert.deepEqual(first.sections, {}, "nothing invented before the server answers")
+  answers["/v1/instructions"] = { instructions: "the rules" }
+  const second: any = { sections: {} }
+  await f.emit("before_agent_start", { messageType: "user", prompt: "again", systemPromptOptions: second })
+  assert.equal(second.sections[SERVER], "the rules", "asked again at the next run")
+})
+
+test("RT-6.27 step 1: an empty text drops a section left from before (#155)", async () => {
+  answers["/v1/instructions"] = { instructions: "" }
+  const f = await started()
+  const options: any = { sections: { [SERVER]: "stale", other: "x" } }
+  await f.emit("before_agent_start", { messageType: "user", prompt: "hi", systemPromptOptions: options })
+  assert.deepEqual(options.sections, { other: "x" })
 })
 
 test("RT-6.27 step 1: without a checkout no server and no skill; the rest goes on", async () => {
@@ -542,4 +581,252 @@ test("RT-6.27 step 2: the keep-in-step helpers are the OpenCode plugin's, to the
 
 test("RT-6.9 step 1: an inject's length counts Unicode code points, as the server and the hooks do", () => {
   assert.equal(chars("a\u{1F600}\u2014"), 3)  // a, a grinning face, an em dash: 4 UTF-16 units, 3 code points
+})
+
+// RT-6.9 step 2 (ADR-017, method 1): the token split in process, from pi's
+// `context` and `message_end` events, one `usage` stat per settled run.
+// The name pi gives a bus tool: mcp__<server>__<tool>, "-" turned into "_" (pi-mcp createMcpToolName).
+const BUS = "mcp__ai_agent_bus__"
+const tok = (u: Record<string, number>) => ({ input: 0, output: 0, cacheRead: 0, cacheWrite: 0, totalTokens: 0,
+  cost: { input: 0, output: 0, cacheRead: 0, cacheWrite: 0, total: 0 }, ...u })
+const asst = (content: any[], u: Record<string, number>) =>
+  ({ role: "assistant", content, usage: tok(u), stopReason: "stop", timestamp: 0 })
+const user = (text: string) => ({ role: "user", content: [{ type: "text", text }], timestamp: 0 })
+const call = (id: string, name: string, args: any) => ({ type: "toolCall", id, name, arguments: args })
+const result = (id: string, name: string, text: string) =>
+  ({ role: "toolResult", toolCallId: id, toolName: name, content: [{ type: "text", text }], isError: false, timestamp: 0 })
+const usageStats = () => bodies("/v1/stat").filter((b) => b.k === "usage")
+const request = async (f: any, messages: any[], reply: any) => {
+  await f.emit("context", { messages })
+  await f.emit("message_end", { message: reply })
+}
+const settled = async (f: any) => {
+  await f.emit("agent_start")
+  await f.emit("agent_settled", { aborted: false })
+  await until(() => bodies("/v1/presence").length >= 2, "the run settled")
+  await settle()
+}
+// h: the uncovered front per input type (in, read, w; amendment A6).
+const expect = (req: number[], a: number[], o: number[], c: number[], h = [0, 0, 0]) => {
+  const out: Record<string, any> = { k: "usage", req: req[0], req_ovh: req[1], req_coord: req[2] }
+  ;["in", "read", "w", "out"].forEach((x, i) => Object.assign(out, { [`a_${x}`]: a[i], [`o_${x}`]: o[i], [`c_${x}`]: c[i] }))
+  ;["in", "read", "w"].forEach((x, i) => (out[`h_${x}`] = h[i]))
+  return out
+}
+
+test("RT-6.9 step 2: a bus tool by its word, kind or first word; other bus tools; not the bus's", () => {
+  const cases: Array<[string, any, number]> = [
+    [BUS + "post_message", { kind: "idle", message: "x" }, OVERHEAD],
+    [BUS + "reply_in_thread", { kind: "DONE", message: "IDLE x" }, COORDINATION],
+    [BUS + "post_message", { message: "HELLO there" }, OVERHEAD],
+    [BUS + "post_message", { message: "**BYE** all" }, OVERHEAD],
+    [BUS + "post_message", { kind: "bogus", message: "IDLE x" }, OVERHEAD],
+    [BUS + "post_message", { message: "PR #12 merged" }, COORDINATION],
+    [BUS + "post_message", { message: "no word" }, COORDINATION],
+    ["mcp__mattermost-agent-bus__ask_human", {}, COORDINATION],
+    [BUS + "coordinator", {}, COORDINATION],
+    [BUS + "wait_for_events", {}, OVERHEAD],
+    [BUS + "stats_report", {}, OVERHEAD],
+    ["mcp__other__post_message", { kind: "DONE" }, TASK],
+    ["mcp__ai-agent-bus__post_message", { kind: "DONE" }, COORDINATION],
+    ["mcp__mattermost_agent_bus__wait_for_events", {}, OVERHEAD],
+    ["mcp__my_ai_agent_bus_fork__post_message", { kind: "DONE" }, TASK],
+    ["mcp__x__ai_agent_bus__post_message", { kind: "DONE" }, TASK],
+    ["ai_agent_bus__post_message", { kind: "DONE" }, TASK],
+    ["read", { path: "x" }, TASK],
+    // Reading the bus skill (amendment A3), absolute or relative; not another skill.
+    ["read", { path: "/home/a/ai-agent-bus/skills/ai-agent-bus/SKILL.md" }, OVERHEAD],
+    ["read", { path: "skills/ai-agent-bus/coordinator.md" }, OVERHEAD],
+    ["read", { path: "/home/a/skills/ai-agent-bus-extra/SKILL.md" }, TASK],
+    ["read", { path: "/home/a/skills/other/SKILL.md" }, TASK],
+  ]
+  for (const [name, args, cat] of cases) assert.equal(toolCategory(name, args), cat, `${name} ${JSON.stringify(args)}`)
+})
+
+for (const [word, msg, cat] of [["IDLE", "IDLE wait", OVERHEAD], ["DONE", "DONE ship", COORDINATION]] as const) {
+  test(`RT-6.9 step 2: a bus tool round (${word}): call, result and the request it drives`, async () => {
+    const f = await started()
+    const args = { kind: word, message: msg }
+    // Sized as Python's json.dumps writes it, with ", " and ": " (overhead.py).
+    assert.equal(pyJson(args), `{"kind": "${word}", "message": "${msg}"}`)
+    assert.equal(pyJson(args).length, 40)
+    const t = user("x".repeat(400))
+    const a1 = asst([call("c1", BUS + "post_message", args)], { input: 100, output: 30 })
+    const r1 = result("c1", BUS + "post_message", "r".repeat(160))
+    // pi's system prompt and tool docs: the 20 tokens of input in front of the 600 known characters.
+    const a2 = asst([{ type: "text", text: "y".repeat(48) }], { cacheRead: 110, cacheWrite: 20, input: 40, output: 12 })
+    await request(f, [t], a1)
+    await request(f, [t, a1, r1], a2)
+    await settled(f)
+    // Request 1: all input task work; the call's 40 characters (10 tokens) the bus's, the rest by the prompt.
+    // Request 2 by position: read 110 = head 20 + 360 task characters; write 20 = 40 task + 40 of the
+    // call; input 40 = the result's 160. Its 12 output tokens follow the result (the driver).
+    const bus = [40, 0, 10, 22]
+    assert.deepEqual(usageStats(), [expect(cat === OVERHEAD ? [2, 1, 0] : [2, 0, 1], [140, 110, 20, 42],
+      cat === OVERHEAD ? bus : [0, 0, 0, 0], cat === OVERHEAD ? [0, 0, 0, 0] : bus, [0, 20, 0])])
+    // The next run starts from zero.
+    await settled(f)
+    assert.equal(usageStats().length, 1)
+  })
+}
+
+test("RT-6.9 step 2: the extension's own texts are overhead (a wake carries no post's body in pi)", async () => {
+  const f = await started()
+  const text = "w".repeat(80)
+  answerWake({ wake: true, reason: "addressed", count: 1, text })
+  await until(() => f.sent.length === 1, "a wake-up is sent")
+  // 50 tokens of input: 30 of pi's own front, 20 of the wake text.
+  const a1 = asst([{ type: "text", text: "okay" }], { input: 50, output: 8 })
+  await request(f, [user(text)], a1)
+  // The same length from the human: task work. Cache read 50: pi's 29 tokens in front (41 known
+  // of 70), then the wake text and the answer it drove (21).
+  await request(f, [user(text), a1, user("h".repeat(80))], asst([], { cacheRead: 50, input: 20, output: 4 }))
+  await settled(f)
+  assert.deepEqual(usageStats(), [expect([2, 1, 0], [70, 50, 0, 12], [20, 21, 0, 8], [0, 0, 0, 0], [30, 29, 0])])
+})
+
+test("RT-6.9 step 2: a compaction starts the segments afresh; its summary has the shares before it", async () => {
+  const f = await started()
+  // Before: half task, half the extension's handoff (overhead).
+  const handoff = { role: "custom", customType: SERVER, content: "h".repeat(200), display: false, timestamp: 0 }
+  await request(f, [user("t".repeat(200)), handoff], asst([], { input: 100, output: 0 }))
+  await f.emit("session_compact", { reason: "threshold", willRetry: false, fromExtension: false })
+  // After: pi's summary (400 characters: 200 of them overhead) and a kept message (400, task).
+  const summary = { role: "compactionSummary", summary: "s".repeat(400), tokensBefore: 1000, timestamp: 0 }
+  await request(f, [summary, user("u".repeat(400))], asst([], { input: 200, output: 0 }))
+  await settled(f)
+  assert.deepEqual(usageStats(), [expect([2, 0, 0], [300, 0, 0, 0], [100, 0, 0, 0], [0, 0, 0, 0])])
+  // Without a share before it (a resumed session): the summary is task work.
+  const seg = contextSegments([summary], () => undefined)
+  assert.deepEqual(seg.shares(), [1, 0, 0])
+})
+
+test("RT-6.9 step 2: the input by position, the segments scaled down when longer than the input", () => {
+  const seg = new Segments()
+  seg.add(OVERHEAD, 400)
+  seg.add(TASK, 400)
+  // 800 characters (200 tokens) for 100 tokens: cache read covers the older half, the overhead.
+  const split = requestSplit(tok({ cacheRead: 50, input: 50 }), seg, asst([], {}))
+  assert.deepEqual(split.map((x) => [x.read, x.in]), [[0, 50], [50, 0], [0, 0], [0, 0]])
+})
+
+test("RT-6.9 step 2: the output: tool calls by their tool, the rest by the new input (the driver)", () => {
+  const a0 = asst([call("c0", BUS + "get_thread", {})], { input: 10, output: 1 })
+  const seg = contextSegments([user("a".repeat(40)), a0, result("c0", BUS + "get_thread", "g".repeat(100)),
+                               user("t".repeat(300))], () => undefined)
+  assert.deepEqual(seg.driver(), [0.75, 0, 0.25])
+  // 20 output tokens: the ask's call {"question": ""} 16 characters (4 tokens), the 16 others 3:1 task:coordination.
+  const a1 = asst([{ type: "thinking", thinking: "hm" }, call("c1", BUS + "ask_human", { question: "" })], { output: 20 })
+  const split = requestSplit(a1.usage, seg, a1)
+  assert.deepEqual(split.slice(0, 3).map((x) => x.out), [12, 0, 8])
+  // A request whose new input was coordination only, one of overhead only.
+  const m = new Meter()
+  m.add(a1, contextSegments([user("a"), a0, result("c0", BUS + "get_thread", "g")], () => undefined))
+  m.add(a1, contextSegments([user("a"), a0, result("c0", BUS + "wait_for_events", "g")].map((x: any) =>
+    x.role === "assistant" ? asst([call("c0", BUS + "wait_for_events", {})], { input: 1 }) : x), () => undefined))
+  m.add(a1, contextSegments([user("a")], () => undefined))
+  assert.deepEqual([m.req, m.reqCoord, m.reqOvh], [3, 1, 1])
+})
+
+test("RT-6.9 step 2: o + c <= a for every type, integers in range, whatever the input", () => {
+  let seed = 7
+  const rnd = (n: number) => ((seed = (seed * 1103515245 + 12345) % 2 ** 31) % n)
+  const names = [BUS + "post_message", BUS + "ask_human", BUS + "wait_for_events", "bash"]
+  for (let run = 0; run < 200; run++) {
+    const m = new Meter()
+    const msgs: any[] = []
+    for (let i = 0; i < 1 + rnd(6); i++) {
+      msgs.push(user("u".repeat(rnd(500))))
+      const id = `c${i}`
+      const reply = asst([{ type: "text", text: "t".repeat(rnd(300)) },
+                          call(id, names[rnd(4)], { message: ["IDLE x", "DONE y", "z"][rnd(3)] + "q".repeat(rnd(200)) })],
+                         { input: rnd(300), cacheRead: rnd(400), cacheWrite: rnd(100), output: rnd(60) })
+      m.add(reply, contextSegments(msgs, () => undefined, [0.2, 0.5, 0.3]))
+      msgs.push(reply, result(id, "x", "r".repeat(rnd(400))))
+    }
+    const f = m.fields()!
+    assert.equal(Object.keys(f).length, 18)
+    for (const v of Object.values(f)) assert.ok(Number.isInteger(v) && v >= 0 && v <= 1e9)
+    for (const x of ["in", "read", "w", "out"]) {
+      assert.ok(f[`o_${x}`] + f[`c_${x}`] + (f[`h_${x}`] ?? 0) <= f[`a_${x}`], `${x} ${JSON.stringify(f)}`)
+    }
+    assert.ok(f.req_ovh + f.req_coord <= f.req)
+  }
+})
+
+test("RT-6.9 step 2: no usage stat without a request or without usage; the model's context unchanged", async () => {
+  const f = await started()
+  await settled(f)
+  const msgs = [user("hi"), result("c", BUS + "post_message", "r")]
+  const before = structuredClone(msgs)
+  assert.equal(await f.emit("context", { messages: msgs }), undefined, "the handler returns nothing")
+  assert.deepEqual(msgs, before, "and changes nothing")
+  // An error answer: no tokens, no request.
+  await f.emit("message_end", { message: { ...asst([], {}), stopReason: "error" } })
+  await f.emit("message_end", { message: user("not an answer") })
+  await settled(f)
+  assert.deepEqual(usageStats(), [])
+  assert.equal(new Meter().fields(), null)
+})
+
+test("RT-6.9 step 2: a wait_for_events result by its items (amendment A1)", () => {
+  const agent = { kind: "message", post: { id: "p1", message: "DONE shipped \u{1F600}" }, from_agent: true }
+  const human = { kind: "message", post: { id: "p2", message: "please go on" }, from_trusted_human: true }
+  const reaction = { kind: "reaction", post: { message: "the ask" } }
+  const own = { kind: "stall", post: { message: "not a post" } }
+  const size = (x: any) => chars(JSON.stringify(x))
+  // Empty: overhead whole.
+  assert.deepEqual(waitResult("[]"), [2, 0, 0])
+  // An agent's post: its body coordination (code points), the JSON around it overhead.
+  assert.deepEqual(waitResult(JSON.stringify([agent])), [size([agent]) - 14, 0, 14])
+  // A trusted human's post: task work.
+  assert.deepEqual(waitResult(JSON.stringify({ result: [human] })), [size({ result: [human] }) - 12, 12, 0])
+  // A reaction (no post id) carries its post's text; the server's own items are overhead.
+  assert.deepEqual(waitResult(JSON.stringify([reaction, own])), [size([reaction, own]) - 7, 0, 7])
+  // A result wrapped as a string, and one item per content block.
+  assert.deepEqual(waitResult(JSON.stringify({ result: JSON.stringify([agent]) }))[2], 14)
+  assert.deepEqual(waitResult(JSON.stringify(agent))[2], 14)
+  // What does not parse is overhead, never task work.
+  assert.deepEqual(waitResult("timeout: no events"), [18, 0, 0])
+  assert.deepEqual(waitResult('"text"'), [6, 0, 0])
+  // In the context: a result in two blocks, each on its own.
+  const name = BUS + "wait_for_events"
+  const seg = contextSegments([asst([call("w", name, { timeout_sec: 1 })], { input: 1 }),
+    { ...result("w", name, ""), content: [{ type: "text", text: JSON.stringify(agent) },
+                                            { type: "text", text: JSON.stringify(human) }] }], () => undefined)
+  assert.deepEqual(seg.fresh, [12, size(agent) - 14 + size(human) - 12, 14])  // task, overhead, coordination
+})
+
+test("RT-6.9 step 2: exact bus tool names, Python's JSON sizes, code points without an array", () => {
+  assert.equal(busTool("mcp__ai_agent_bus__reply_in_thread"), "reply_in_thread")
+  assert.equal(busTool("mcp__mattermost-agent-bus__get_me"), "get_me")
+  assert.equal(busTool("mcp__ai_agent_bus_x__get_me"), null)
+  assert.equal(busTool("post_message"), null)
+  assert.equal(pyJson({ a: [1, true, null], b: { c: "\u00e9\n" } }), '{"a": [1, true, null], "b": {"c": "\u00e9\\n"}}')
+  assert.equal(chars("\u{1F600}\u{1F600}x"), 3)
+  assert.equal(chars("\ud800x\udc00"), 3, "a lone surrogate is one code point, as in Python")
+  assert.equal(chars(""), 0)
+})
+
+test("RT-6.9 step 2: the uncovered front per input type, oldest first (amendment A6)", () => {
+  const seg = new Segments()
+  seg.add(OVERHEAD, 100) // 25 tokens known
+  const front = (u: Record<string, number>) => requestSplit(tok(u), seg, asst([], {}))[3]
+  // 45 tokens of input: 20 in front of the known 25, all in the cache read.
+  assert.deepEqual(front({ cacheRead: 30, cacheWrite: 10, input: 5 }), { in: 0, read: 20, w: 0, out: 0 })
+  // A front longer than the cache read runs on into the cache write.
+  assert.deepEqual(front({ cacheRead: 10, cacheWrite: 15, input: 20 }), { in: 0, read: 10, w: 10, out: 0 })
+  // Segments longer than the input: no front.
+  assert.deepEqual(front({ input: 20 }), { in: 0, read: 0, w: 0, out: 0 })
+  // No segments known: all input is front.
+  assert.deepEqual(requestSplit(tok({ cacheRead: 7, input: 3 }), new Segments(), asst([], {}))[3],
+                   { in: 3, read: 7, w: 0, out: 0 })
+  // Summed per run; h within what is not the bus's.
+  const m = new Meter()
+  m.add(asst([], { cacheRead: 30, cacheWrite: 10, input: 5 }), seg)
+  m.add(asst([], { cacheRead: 10, cacheWrite: 15, input: 20 }), seg)
+  const f = m.fields()!
+  assert.deepEqual([f.h_in, f.h_read, f.h_w], [0, 30, 10])
+  assert.equal(f.h_out, undefined)
+  for (const x of ["in", "read", "w"]) assert.ok(f[`h_${x}`] + f[`o_${x}`] + f[`c_${x}`] <= f[`a_${x}`])
 })

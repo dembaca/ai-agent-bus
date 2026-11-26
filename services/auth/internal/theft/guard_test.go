@@ -107,33 +107,73 @@ func TestAHostKeyIsReportedNeverRefused(t *testing.T) {
 	}
 }
 
+// Four different networks in a row are no alternation: a roaming mobile
+// connection changes prefix without returning to one it left.
+func TestRoamingNetworksAreNoCopy(t *testing.T) {
+	g := &Guard{}
+	for i, net := range []string{"203.0.113.0/24", "198.51.100.0/24", "192.0.2.0/24", "100.64.0.0/24"} {
+		at(g, base, time.Duration(i)*time.Minute)
+		if v := g.Session("s1", net); v == Copied {
+			t.Fatalf("issue %d from %s: %v, want moved or same", i, net, v)
+		}
+	}
+}
+
 // A copy used only after the real session stopped is not caught: once the old
-// changes are out of the window, the next issue is a move at most.
+// changes are out of the window, the traces restart and even alternating is no
+// theft (the window, not the schedule, is what forgets).
 func TestSequentialUseIsNotCaught(t *testing.T) {
 	g := &Guard{}
 	at(g, base, 0)
 	g.Session("s1", "203.0.113.0/24")
-	at(g, base, 20*time.Minute)
+	at(g, base, 10*time.Minute)
+	g.Session("s1", "198.51.100.0/24") // one change
+	at(g, base, 50*time.Minute)        // both traces are out of the window
+	if v := g.Session("s1", "203.0.113.0/24"); v != Same {
+		t.Fatalf("after the window: %v, want same (a fresh trace)", v)
+	}
+	at(g, base, 51*time.Minute)
 	if v := g.Session("s1", "198.51.100.0/24"); v != Moved {
-		t.Fatalf("after the old network's window: %v, want moved", v)
+		t.Fatalf("a change after the window: %v, want moved", v)
 	}
 }
 
-// The window edge: a change exactly at the window still counts, one before it
-// does not.
+// The window edge decides whether an old trace still counts: A, B, A, B with A
+// just outside the window is no alternation, with A inside it would be.
 func TestTheWindowEdge(t *testing.T) {
 	g := &Guard{}
 	at(g, base, 0)
-	g.Session("s1", "203.0.113.0/24")
-	at(g, base, 30*time.Minute)
-	if v := g.Session("s1", "198.51.100.0/24"); v != Moved {
-		t.Fatalf("a change exactly at the window: %v, want moved", v)
+	g.Session("s1", "203.0.113.0/24") // A, out of the window by t=32
+	at(g, base, 29*time.Minute)
+	g.Session("s1", "198.51.100.0/24") // B
+	at(g, base, 31*time.Minute)
+	if v := g.Session("s1", "203.0.113.0/24"); v != Moved {
+		t.Fatalf("a return after A aged out: %v, want moved", v)
 	}
-	at(g, base, 30*time.Minute+time.Second)
-	// The first trace is now just outside the window, so this second change is
-	// the second one, not the third.
-	if v := g.Session("s1", "192.0.2.0/24"); v != Moved {
-		t.Fatalf("a change after the first trace's window: %v, want moved", v)
+	at(g, base, 32*time.Minute)
+	// A@0 is out (edge 2 min): the trail is B, A, B - one return, still a move.
+	// With A kept it would be A, B, A, B and refuse.
+	if v := g.Session("s1", "198.51.100.0/24"); v != Moved {
+		t.Fatalf("a second return with the first trace aged out: %v, want moved", v)
+	}
+}
+
+// The block ends exactly at its end: one second before it still refuses, at it
+// the session starts afresh.
+func TestTheBlockEndsExactly(t *testing.T) {
+	g := &Guard{Block: 30 * time.Minute}
+	for i, net := range []string{"203.0.113.0/24", "198.51.100.0/24", "203.0.113.0/24", "198.51.100.0/24"} {
+		at(g, base, time.Duration(i)*time.Minute)
+		g.Session("s1", net)
+	}
+	// The fourth issue (t=3) blocked until t=33.
+	at(g, base, 33*time.Minute-time.Second)
+	if v := g.Session("s1", "198.51.100.0/24"); v != Copied {
+		t.Fatalf("one second before the block's end: %v, want copied", v)
+	}
+	at(g, base, 33*time.Minute)
+	if v := g.Session("s1", "198.51.100.0/24"); v == Copied {
+		t.Fatalf("at the block's end: %v, want it to pass", v)
 	}
 }
 
