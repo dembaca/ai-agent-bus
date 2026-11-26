@@ -25,23 +25,23 @@ if [[ "$CMD" != baseline ]]; then
 fi
 
 # No bus, no inbox.
-[[ -n "${MM_BOT_TOKEN:-${MATTERMOST_TOKEN:-}}" && -n "${MM_CHAT_URL:-${MATTERMOST_URL:-}}" ]] || exit 0
+[[ -n "${CB_MM_BOT_TOKEN:-}" && -n "${CB_MM_CHAT_URL:-}" ]] || exit 0
 command -v jq >/dev/null 2>&1 || exit 0
 
-TEAM_ID="${MM_TEAM_ID:-}"
+TEAM_ID="${CB_MM_TEAM_ID:-}"
 if [[ -z "$TEAM_ID" ]]; then
-  mm_api GET "/api/v4/teams/name/$(mm_team)" && [[ "$MM_API_STATUS" == "200" ]] || exit 0
-  TEAM_ID="$(jq -r '.id' <<<"$MM_API_BODY")"
+  mm_api GET "/api/v4/teams/name/$(mm_team)" && [[ "$CB_MM_API_STATUS" == "200" ]] || exit 0
+  TEAM_ID="$(jq -r '.id' <<<"$CB_MM_API_BODY")"
 fi
-mm_api GET "/api/v4/users/me/teams/${TEAM_ID}/channels/members" && [[ "$MM_API_STATUS" == "200" ]] || exit 0
-MEMBERS="$MM_API_BODY"
+mm_api GET "/api/v4/users/me/teams/${TEAM_ID}/channels/members" && [[ "$CB_MM_API_STATUS" == "200" ]] || exit 0
+MEMBERS="$CB_MM_API_BODY"
 
 n=0
 while read -r cid; do
   [[ -n "$cid" ]] || continue
   mm_api POST "/api/v4/channels/members/me/view" \
     "$(jq -nc --arg c "$cid" '{channel_id:$c}')" >/dev/null || true
-  [[ "$MM_API_STATUS" == "200" ]] && n=$((n + 1))
+  [[ "$CB_MM_API_STATUS" == "200" ]] && n=$((n + 1))
 done < <(jq -r '.[].channel_id' <<<"$MEMBERS")
 echo "inbox baseline set: ${n} channel(s) marked read" >&2
 exit 0

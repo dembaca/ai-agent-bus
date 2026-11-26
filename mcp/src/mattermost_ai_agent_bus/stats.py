@@ -14,7 +14,7 @@ bin/mm-agent-stats.sh does.
 
 Hooks, listener and MCP server append one JSON line per event to
 stats-<uid>.jsonl; every PART_SEC of session time (tick) and at session end
-(summary, final) the MCP server posts one summary line to MM_STATS_CHANNEL.
+(summary, final) the MCP server posts one summary line to CB_MM_STATS_CHANNEL.
 A day's part carries what is still open (a turn, an ask, an answer whose
 saving is not known yet, the crown) into the next one, so nothing counts
 twice. No model is involved anywhere, and no content is recorded: no names,
@@ -37,7 +37,7 @@ from collections.abc import Awaitable, Callable, Iterable
 from pathlib import Path
 from typing import TYPE_CHECKING, Any
 
-from . import a2a, overhead, session_file
+from . import a2a, config, overhead, session_file
 
 if TYPE_CHECKING:
     from .port import ChatPort
@@ -55,8 +55,10 @@ _source: Callable[[], tuple[str, overhead.Fixed | None]] | None = None
 
 
 def channel() -> str:
-    """MM_STATS_CHANNEL, default agents-stats; "" when switched off."""
-    name = os.environ.get("MM_STATS_CHANNEL", DEFAULT_CHANNEL).strip().lstrip("~")
+    """CB_MM_STATS_CHANNEL, default agents-stats; "" when switched off."""
+    # Empty switches the statistics off: set-but-empty is not unset (docs/env-names.md).
+    got = config.lookup("CB_MM_STATS_CHANNEL")
+    name = (DEFAULT_CHANNEL if got is None else got).strip().lstrip("~")
     return "" if name.lower() in ("", "off", "none", "0", "false") else name
 
 
@@ -93,7 +95,7 @@ def harness(name: str | None = None) -> str:
 
 
 def _me() -> str:
-    return os.environ.get("MM_BOT_USER_ID") or _uid
+    return config.env("CB_MM_BOT_USER_ID") or _uid
 
 
 def bot_id() -> str:
@@ -524,7 +526,7 @@ def _summarize(events: list[dict[str, Any]], version: str, fixed: overhead.Fixed
         "part": part["n"],
         **({"final": True} if final else {}),
         "rt": harness(),
-        "kind": "autonomous" if os.environ.get("MM_AGENT_KIND") == "autonomous" else "session",
+        "kind": "autonomous" if config.env("CB_AGENT_KIND") == "autonomous" else "session",
         "min": max(0, round((now - start) / 60)),
         "turns": kinds["turn"],
         # Only a runtime with turn hooks (Claude Code) sends turn events; for

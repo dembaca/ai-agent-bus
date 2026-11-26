@@ -9,18 +9,18 @@ or initial environment. The process keeps its files in a state directory the
 host chose for the session, listens on 127.0.0.1 and serves
 
 - the MCP stream to one relay connection at a time: the plugin's MCP entry point
-  in the sandbox finds MM_BUS_MCP_ENDPOINT and MM_BUS_KEY and only relays its
+  in the sandbox finds CB_BUS_MCP_ENDPOINT and CB_BUS_KEY and only relays its
   stdin and stdout, byte for byte, so channel notifications (RT-6.12) and the
   permission relay (RT-6.13) pass unchanged;
 - the hook API (hookapi.py, RT-6.17) with the same key on a port of its own
-  (MM_BUS_ENDPOINT), for the turn hooks and the listener, from the start of
+  (CB_BUS_ENDPOINT), for the turn hooks and the listener, from the start of
   the session to its end, as do the lease heartbeat (RT-6.6).
 
 A relay opens with one handshake line, ``{"key": …, "session": {…}, "pid": …,
 "ppid": …}``; its process ids only name the relay that holds the one slot in
 the refusal of a second (RT-6.18 step 6). The
 session values are names only (NAMING): the Claude Code or OpenCode session id, project
-directory, MM_WORKSPACE and working directory, the channel flag, CLAUDECODE. They are
+directory, CB_WORKSPACE and working directory, the channel flag, CLAUDECODE. They are
 checked for type and length and never opened, resolved or entered on the host;
 HOME, XDG_STATE_HOME and anything else the relay sends are ignored. The host
 answers ``{"ok": true}`` or ``{"ok": false, "error": …}``. A closed relay
@@ -65,7 +65,7 @@ import anyio
 from anyio.abc import SocketAttribute, TaskStatus
 from anyio.streams.buffered import BufferedByteReceiveStream
 
-from . import a2a, session_file, stats
+from . import a2a, config, session_file, stats
 
 if TYPE_CHECKING:
     from .compose import BusClient
@@ -73,8 +73,8 @@ if TYPE_CHECKING:
 
 log =logging.getLogger(__name__)
 
-ENDPOINT_ENV = "MM_BUS_MCP_ENDPOINT"
-KEY_ENV = "MM_BUS_KEY"
+ENDPOINT_ENV = "CB_BUS_MCP_ENDPOINT"
+KEY_ENV = "CB_BUS_KEY"
 LOOPBACK = "127.0.0.1"
 MIN_KEY = 32
 HANDSHAKE_MAX = 64 * 1024
@@ -106,37 +106,45 @@ _no_relay_since: float | None = None
 _waiting_at: float | None = None
 
 # What a relay may tell the host: names only, with their longest length.
-NAMING = {"CLAUDE_CODE_SESSION_ID": 256, "OPENCODE_SESSION_ID": 256, "CLAUDE_PROJECT_DIR": 4096, "MM_WORKSPACE": 4096,
-          "cwd": 4096, "MM_CHANNEL_PUSH": 1, "CLAUDECODE": 16}
-_NAMING_PATHS = ("CLAUDE_PROJECT_DIR", "MM_WORKSPACE", "cwd")
+# Both spellings of the renamed ones (docs/env-names.md): a relay of the
+# version before sends the old; check_session folds each pair into the new name.
+NAMING = {"CLAUDE_CODE_SESSION_ID": 256, "OPENCODE_SESSION_ID": 256, "CLAUDE_PROJECT_DIR": 4096, "CB_WORKSPACE": 4096,
+          "MM_WORKSPACE": 4096, "cwd": 4096, "CB_CHANNEL_PUSH": 1, "MM_CHANNEL_PUSH": 1, "CLAUDECODE": 16}
+_NAMING_PATHS = ("CLAUDE_PROJECT_DIR", "CB_WORKSPACE", "MM_WORKSPACE", "cwd")
+_NAMING_PAIRS = (("CB_WORKSPACE", "MM_WORKSPACE"), ("CB_CHANNEL_PUSH", "MM_CHANNEL_PUSH"))
 # The session values that say which agent a relay speaks for (RT-6.18 step 6):
 # a relay that differs from the first one in these is refused. The working
 # directory counts only when neither directory is named. OPENCODE_SESSION_ID:
 # the OpenCode session the plugin bound the bus to (RT-6.20 step 1), so two
-# OpenCode processes in one workspace are told apart.
-_IDENTITY = ("CLAUDE_CODE_SESSION_ID", "OPENCODE_SESSION_ID", "CLAUDE_PROJECT_DIR", "MM_WORKSPACE")
+# OpenCode processes in one workspace are told apart. CB_WORKSPACE stands for
+# the pair with MM_WORKSPACE (check_session folds them, refusing two values).
+_IDENTITY = ("CLAUDE_CODE_SESSION_ID", "OPENCODE_SESSION_ID", "CLAUDE_PROJECT_DIR", "CB_WORKSPACE")
 _IDS = ("CLAUDE_CODE_SESSION_ID", "OPENCODE_SESSION_ID")
 
 # What preStart may hand the host process on stdin besides the key: the bus
-# settings (MM_*, MATTERMOST_*), the corral session's names and the network
+# settings (CB_*, MM_*, MATTERMOST_*), the corral session's names and the network
 # settings that may carry credentials (proxies). Never the registration secret.
-_HOST_ENV = re.compile(r"(MM|MATTERMOST)_[A-Z0-9_]{1,64}")
+_HOST_ENV = re.compile(r"(CB|MM|MATTERMOST)_[A-Z0-9_]{1,64}")
 _HOST_ENV_EXTRA = frozenset({
     "CORRAL_WORKDIR", "CORRAL_SESSION_ID", "CORRAL_AGENT", "TZ", "SSL_CERT_FILE", "SSL_CERT_DIR",
     "HTTPS_PROXY", "HTTP_PROXY", "NO_PROXY", "ALL_PROXY",
     "https_proxy", "http_proxy", "no_proxy", "all_proxy",
 })
+# Both spellings of each renamed name (docs/env-names.md, "Lists of names"):
+# a deny list that knows one lets the other through.
 _HOST_ENV_DENY = frozenset({
-    "MM_REG_SECRET", "MM_REG_SECRET_GOPASS", "MM_AGENT_SESSION_FILE", "MM_REG_BOT_NAME",
-    KEY_ENV, ENDPOINT_ENV, "MM_BUS_ENDPOINT", "MM_BUS_UNAVAILABLE",
+    "MM_REG_SECRET", "MM_REG_SECRET_GOPASS", "MM_REG_BOT_NAME",
+    "CB_AGENT_SESSION_FILE", "MM_AGENT_SESSION_FILE", "CB_BUS_KEY", "MM_BUS_KEY",
+    "CB_BUS_MCP_ENDPOINT", "MM_BUS_MCP_ENDPOINT", "CB_BUS_ENDPOINT", "MM_BUS_ENDPOINT",
+    "CB_BUS_UNAVAILABLE", "MM_BUS_UNAVAILABLE",
 })
-_TOKEN_ENV = ("MM_BOT_TOKEN", "MATTERMOST_TOKEN")
+_TOKEN_ENV = ("CB_MM_BOT_TOKEN", "MM_BOT_TOKEN", "MATTERMOST_TOKEN")
 MAX_VALUE = 8192
 # The Claude session this process serves, as a hash, in its state directory:
 # postEnd keeps the bot only for a session that may be resumed (RT-6.18 step 9).
 CLAUDE_SID_FILE = "claude-sid.env"
 # The Claude session a taken-over bot was kept for, from preStart (step 10).
-KEPT_SID_ENV = "MM_BUS_KEPT_SID"
+KEPT_SID_ENV = "CB_BUS_KEPT_SID"
 KEEP_PREFIX = "keep: "
 
 Serve = Callable[[Any, Any], Awaitable[None]]
@@ -147,11 +155,15 @@ def main(argv: list[str] | None = None) -> None:
     args = sys.argv[1:] if argv is None else list(argv)
     if args[:1] == ["--host"]:
         sys.exit(host_main(args[1:]))
-    if os.environ.get(ENDPOINT_ENV, "").strip():
+    try:  # two names of one setting that disagree refuse the start (docs/env-names.md)
+        config.check()
+    except config.EnvConflict as exc:
+        sys.exit(_fail(str(exc)))
+    if config.env(ENDPOINT_ENV).strip():
         sys.exit(relay(os.environ))
     try:
         from .server import main as serve_stdio
-    except ValueError as exc:  # a bad MM_PROPS_PREFIX (RT-6.16 step 8): one line, not a traceback
+    except ValueError as exc:  # a bad CB_PROPS_PREFIX (RT-6.16 step 8): one line, not a traceback
         sys.exit(_fail(str(exc)))
 
     serve_stdio()
@@ -180,10 +192,13 @@ def session_values(environ: Mapping[str, str], cwd: str | None = None) -> dict[s
     from . import channel
 
     out = {k: environ[k] for k in ("CLAUDE_CODE_SESSION_ID", "OPENCODE_SESSION_ID", "CLAUDE_PROJECT_DIR",
-                                   "MM_WORKSPACE", "CLAUDECODE")
+                                   "CLAUDECODE")
            if environ.get(k)}
+    # Under both names, so a host process of the version before gets them too.
+    if workspace := config.env("CB_WORKSPACE", environ=environ):
+        out.update(config.both("CB_WORKSPACE", workspace))
     # Claude Code is among the relay's ancestors, not the host's (RT-6.12).
-    out["MM_CHANNEL_PUSH"] = "1" if channel.enabled() else "0"
+    out.update(config.both("CB_CHANNEL_PUSH", "1" if channel.enabled() else "0"))
     out["cwd"] = cwd or os.getcwd()
     return out
 
@@ -212,8 +227,8 @@ def relay(environ: Mapping[str, str], *, stdin_fd: int = 0, stdout_fd: int = 1,
     """Pipe stdio to the host process. Never starts a server here: the bot token
     stays on the host, and a token-less server would only pretend to be on
     the bus. The Keycloak login, when the host offers one, runs here (#154)."""
-    endpoint = environ.get(ENDPOINT_ENV, "").strip()
-    key = environ.get(KEY_ENV, "")
+    endpoint = config.env(ENDPOINT_ENV, environ=environ).strip()
+    key = config.env(KEY_ENV, environ=environ)
     if not key:
         return _fail(f"{ENDPOINT_ENV} is set but {KEY_ENV} is not; restart the corral session")
     try:
@@ -394,9 +409,14 @@ def check_session(values: Any) -> dict[str, str]:
             raise ValueError(f"session.{name}: one line of at most {limit} characters")
         if name in _NAMING_PATHS and not os.path.isabs(v):
             raise ValueError(f"session.{name}: an absolute path")
-        if name == "MM_CHANNEL_PUSH" and v not in ("0", "1"):
-            raise ValueError("session.MM_CHANNEL_PUSH: 0 or 1")
+        if name in ("CB_CHANNEL_PUSH", "MM_CHANNEL_PUSH") and v not in ("0", "1"):
+            raise ValueError(f"session.{name}: 0 or 1")
         out[name] = v
+    for new, old in _NAMING_PAIRS:  # one value under the new name; two differing are refused
+        if new in out and old in out and out[new] != out[old]:
+            raise ValueError(f"session.{new} and session.{old} differ")
+        if old in out:
+            out[new] = out.pop(old)
     return out
 
 
@@ -410,9 +430,11 @@ def apply_session(values: Mapping[str, str], *,
     for name in ("CLAUDE_CODE_SESSION_ID", "CLAUDE_SESSION_ID", "OPENCODE_SESSION_ID", "CLAUDE_PROJECT_DIR",
                  "CLAUDECODE"):
         env.pop(name, None)
-    for name in ("CLAUDE_CODE_SESSION_ID", "OPENCODE_SESSION_ID", "CLAUDECODE", "MM_CHANNEL_PUSH"):
+    for name in ("CLAUDE_CODE_SESSION_ID", "OPENCODE_SESSION_ID", "CLAUDECODE"):
         if values.get(name):
             env[name] = values[name]
+    if values.get("CB_CHANNEL_PUSH"):
+        config.put("CB_CHANNEL_PUSH", values["CB_CHANNEL_PUSH"], env)
     project = values.get("CLAUDE_PROJECT_DIR") or values.get("cwd")
     if project:
         env["CLAUDE_PROJECT_DIR"] = os.path.normpath(project)
@@ -428,21 +450,21 @@ def note_claude_session(values: Mapping[str, str], *,
     """At the first handshake (RT-6.18 steps 9–10): the hash of the relay's
     Claude session id goes to CLAUDE_SID_FILE in the state directory, the only
     sign for postEnd that the bot may be kept. A bot taken over for another
-    session (MM_BUS_KEPT_SID) stays this session's: the mismatch is logged and
+    session (CB_BUS_KEPT_SID) stays this session's: the mismatch is logged and
     the file names the relay's session, so the bot is kept under it at the end."""
     env = os.environ if environ is None else environ
     sid = values.get("CLAUDE_CODE_SESSION_ID", "")
     if not session_file.hosted() or not sid:
         return
     key = sid_key(sid)
-    kept = env.get(KEPT_SID_ENV, "")
+    kept = config.env(KEPT_SID_ENV, environ=env)
     if kept and kept != key:
         log.warning("took over a bot kept for Claude session %s, but this one is %s: "
                     "it stays this session's bot", kept, key)
     elif kept:
         log.info("took over the bot kept for this Claude session (%s)", key)
     try:
-        session_file.write_private(session_file.state_dir() / CLAUDE_SID_FILE, f"MM_CLAUDE_SID={key}\n")
+        session_file.write_private(session_file.state_dir() / CLAUDE_SID_FILE, f"CB_CLAUDE_SID={key}\nMM_CLAUDE_SID={key}\n")
     except OSError as exc:
         log.warning("could not note the Claude session: %s", exc)
 
@@ -526,7 +548,7 @@ def identity(values: Mapping[str, str]) -> dict[str, str]:
     step 6): the session id and the named directories, the working directory
     only when no directory is named. Directories as names, normalised."""
     out = {k: values[k] for k in _IDENTITY if values.get(k)}
-    if "CLAUDE_PROJECT_DIR" not in out and "MM_WORKSPACE" not in out and values.get("cwd"):
+    if "CLAUDE_PROJECT_DIR" not in out and "CB_WORKSPACE" not in out and values.get("cwd"):
         out["cwd"] = values["cwd"]
     return {k: v if k in _IDS else os.path.normpath(v) for k, v in out.items()}
 
@@ -542,10 +564,10 @@ def identity_mismatch(first: Mapping[str, str], other: Mapping[str, str]) -> str
     never their values: the session id is the sandbox's, not for the log.
 
     A new session id in the same, named project directory is the same agent
-    (``/clear``, an MCP reconnect). An MM_WORKSPACE the first relay did not
+    (``/clear``, an MCP reconnect). An CB_WORKSPACE the first relay did not
     send is taken (a plugin updated mid-session); the caller adopts it."""
-    if not first.get("MM_WORKSPACE"):
-        other = {k: v for k, v in other.items() if k != "MM_WORKSPACE"}
+    if not first.get("CB_WORKSPACE"):
+        other = {k: v for k, v in other.items() if k != "CB_WORKSPACE"}
     a, b = identity(first), identity(other)
     keys = {k for k in a.keys() | b.keys() if a.get(k) != b.get(k)}
     if a.get("CLAUDE_PROJECT_DIR") and a.get("CLAUDE_PROJECT_DIR") == b.get("CLAUDE_PROJECT_DIR"):
@@ -573,7 +595,7 @@ def outside_workdir(values: Mapping[str, str], workdirs: Sequence[str]) -> str:
     if not workdirs:
         return ""
     roots = [Path(os.path.normpath(w)).parts for w in workdirs]
-    keys = [k for k in ("CLAUDE_PROJECT_DIR", "MM_WORKSPACE")
+    keys = [k for k in ("CLAUDE_PROJECT_DIR", "CB_WORKSPACE")
             if values.get(k) and not any(Path(os.path.normpath(values[k])).parts[:len(r)] == r for r in roots)]
     if not keys:
         return ""
@@ -622,7 +644,7 @@ class Host:
     def _replace(self, session: Mapping[str, str]) -> None:
         """A later relay of the same agent (RT-6.18 step 6): a new Claude
         session id (``/clear``, a reconnect) is noted for postEnd, so
-        ``claude --resume <new id>`` keeps the bot; an MM_WORKSPACE the first
+        ``claude --resume <new id>`` keeps the bot; an CB_WORKSPACE the first
         relay did not send (a plugin update) is taken. Names are not applied again."""
         assert self.session is not None
         sid = session.get("CLAUDE_CODE_SESSION_ID", "")
@@ -631,9 +653,9 @@ class Host:
                      "(/clear or a reconnect); served as the same agent")
             self.session = {**self.session, "CLAUDE_CODE_SESSION_ID": sid}
             note_claude_session(self.session)
-        if session.get("MM_WORKSPACE") and not self.session.get("MM_WORKSPACE"):
-            log.info("relay: names MM_WORKSPACE, the first did not (a plugin update); taken")
-            self.session = {**self.session, "MM_WORKSPACE": session["MM_WORKSPACE"]}
+        if session.get("CB_WORKSPACE") and not self.session.get("CB_WORKSPACE"):
+            log.info("relay: names CB_WORKSPACE, the first did not (a plugin update); taken")
+            self.session = {**self.session, "CB_WORKSPACE": session["CB_WORKSPACE"]}
 
     async def handle(self, stream: Any) -> None:
         if self._pending >= MAX_PENDING:
@@ -804,10 +826,10 @@ async def services(key: str, client: BusClient) -> AsyncIterator[str]:
     attested = asyncio.create_task(attest.start(client))
     # The host's release check, once a day as a bounded child (RT-6.30).
     checking = asyncio.create_task(release.check_loop())
-    # The Keycloak login, when MM_LOGIN_* is set; the session never waits for it (RT-6.34).
+    # The Keycloak login, when CB_LOGIN_* is set; the session never waits for it (RT-6.34).
     # The relay in the sandbox holds it and hands this process tokens (#154, login_relay.py).
     logging_in = login.start_relayed(get_client)
-    # A home that runs over NATS (MM_NATS_HOMES, RT-6.36): its bus starts when the login is ready.
+    # A home that runs over NATS (CB_NATS_HOMES, RT-6.36): its bus starts when the login is ready.
     nats = asyncio.create_task(compose.start_nats(client))
     try:
         yield api.endpoint
@@ -934,7 +956,7 @@ def read_start(stream: Any) -> tuple[str, dict[str, str]]:
     """The first line on stdin: ``{"key": …, "env": {…}}`` from preStart.
 
     The key must be MIN_KEY characters at least. Of ``env`` only bus settings
-    (MM_*, MATTERMOST_*), the corral names and network settings are taken,
+    (CB_*, MM_*, MATTERMOST_*), the corral names and network settings are taken,
     never the registration secret; values are strings on one line.
     """
     line = stream.readline(HANDSHAKE_MAX + 1)
@@ -1038,7 +1060,11 @@ def host_main(argv: list[str]) -> int:
         if path is not None and not path.is_absolute():
             return _fail(f"not an absolute path: {path}")
     os.environ.update(env)
-    os.environ.pop(KEY_ENV, None)
+    config.drop(KEY_ENV)
+    try:  # two names of one setting that disagree refuse the start (docs/env-names.md)
+        config.check()
+    except config.EnvConflict as exc:
+        return _fail(str(exc))
     try:
         a2a.user_prefix()  # RT-6.16 step 8: before the host reports ready, not at the first relay
     except ValueError as exc:

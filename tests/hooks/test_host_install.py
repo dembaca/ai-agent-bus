@@ -589,7 +589,7 @@ def _refused(r) -> str:
     """preStart's no-bus contribution: why, and nothing else for the sandbox."""
     assert r.code == 0, r.stderr
     out = json.loads(r.stdout)
-    assert set(out["env"]) == {"MM_BUS_UNAVAILABLE"}
+    assert set(out["env"]) == {"CB_BUS_UNAVAILABLE", "MM_BUS_UNAVAILABLE"}
     why = out["env"]["MM_BUS_UNAVAILABLE"]
     assert "which a sandbox can change" in why and "mm-agent-host-install.sh" in why
     assert INSTALLED in why and "bus is off" in out["agentNotes"][0]

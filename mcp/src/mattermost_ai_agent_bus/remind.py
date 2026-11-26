@@ -2,9 +2,9 @@
 
 A human who forgot an ask is reminded by the MCP server of the agent that
 asked, from its heartbeat (lease.heartbeat): no model, no tokens. The first
-reminder comes MM_ASK_REMIND_SEC (default 1200 s) after the ask, the next
+reminder comes CB_ASK_REMIND_SEC (default 1200 s) after the ask, the next
 after half that, doubling (10, 20, 40 … min), each gap capped at
-MM_REMIND_MAX_SEC (default 8 h). A reminder is a short reply in the ask's
+CB_REMIND_MAX_SEC (default 8 h). A reminder is a short reply in the ask's
 thread with the human's @-mention and the ask's title: part of the ask, the
 one place a human is mentioned (RT-6.11). It stops once the ask is answered
 (a yes/no reaction by the human or a trusted human, a reply by the human in
@@ -33,6 +33,7 @@ from pathlib import Path
 from typing import TYPE_CHECKING
 
 from . import a2a, askroute, asks, lease, session_file, stats, tasks
+from . import config
 from .model import Answer, Mark
 
 if TYPE_CHECKING:
@@ -46,18 +47,18 @@ advance: Callable[[ChatPort, str, set[str]], Awaitable[None]] | None = None
 
 
 def _sec(name: str, default: int) -> int:
-    s = os.environ.get(name, "")
+    s = config.env(name)
     return max(60, int(s)) if s.isdigit() else default
 
 
 def ask_remind_sec() -> int:
-    """How long after an ask the first reminder comes (MM_ASK_REMIND_SEC)."""
-    return _sec("MM_ASK_REMIND_SEC", 1200)
+    """How long after an ask the first reminder comes (CB_ASK_REMIND_SEC)."""
+    return _sec("CB_ASK_REMIND_SEC", 1200)
 
 
 def remind_max_sec() -> int:
-    """The longest gap between two reminders or stall wakes (MM_REMIND_MAX_SEC)."""
-    return _sec("MM_REMIND_MAX_SEC", 28800)
+    """The longest gap between two reminders or stall wakes (CB_REMIND_MAX_SEC)."""
+    return _sec("CB_REMIND_MAX_SEC", 28800)
 
 
 def due(asked: float, sent: int, last: float) -> float:

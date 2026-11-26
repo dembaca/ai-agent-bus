@@ -15,23 +15,24 @@ signs, which it sees anyway, and judges it `silent` without them:
   a wake of `/v1/wake`) waits untaken until a turn begins or the agent calls
   a tool. One that comes during a turn is the turn's: Claude Code queues it
   for the next turn, which the Stop hook's end leads to.
-- **Silent** while no turn runs: a push or wake untaken for MM_ACK_WAIT_SEC
+- **Silent** while no turn runs: a push or wake untaken for CB_ACK_WAIT_SEC
   (default 45 s), or, outside a session started as a channel and idle there,
-  no sign for MM_LEASE_SEC (the window, 900 s). A turn that runs counts as
+  no sign for CB_LEASE_SEC (the window, 900 s). A turn that runs counts as
   alive until it ends: the server's ping between events is not built (phase
   D without it, decided 2026-11-10).
 
 State lives in memory: a new server starts alive, its start being the
 client's handshake. lease.py writes the status from it; a silent crown holder
-keeps its crown one crown lease (MM_CROWN_LEASE_SEC) from the moment it turned
+keeps its crown one crown lease (CB_CROWN_LEASE_SEC) from the moment it turned
 silent, then drops it (decided 2026-11-24, #64).
 """
 
 from __future__ import annotations
 
-import os
 import time
 from collections.abc import Callable
+
+from . import config
 
 _sign = time.time()  # the last sign of the agent
 _turn = False  # a turn runs (the prompt hook's working, until the Stop hook's end)
@@ -43,15 +44,15 @@ _taken: list[Callable[[bool], None]] = []
 
 
 def ack_wait_sec() -> int:
-    """How long a push may wait untaken while no turn runs (MM_ACK_WAIT_SEC,
+    """How long a push may wait untaken while no turn runs (CB_ACK_WAIT_SEC,
     default 45 s)."""
-    s = os.environ.get("MM_ACK_WAIT_SEC", "")
+    s = config.env("CB_ACK_WAIT_SEC")
     return int(s) if s.isdigit() and int(s) > 0 else 45
 
 
 def window_sec() -> int:
-    """The window a sign lasts outside a turn: MM_LEASE_SEC (default 900 s)."""
-    s = os.environ.get("MM_LEASE_SEC", "")
+    """The window a sign lasts outside a turn: CB_LEASE_SEC (default 900 s)."""
+    s = config.env("CB_LEASE_SEC")
     return int(s) if s.isdigit() and int(s) > 0 else 900
 
 

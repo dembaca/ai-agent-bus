@@ -242,7 +242,7 @@ async def unreachable(client: ChatPort, message: str, me: str, channel_id: str) 
     """The agents an outgoing task names (@, not me) that the roster of
     `channel_id` does not show as reachable, each `<name> (<why>)` (RT-6.14
     step 10). Reachable is a live lease, online, not idle: not that the agent
-    listens right now (a lease outlives its session by up to MM_LEASE_SEC).
+    listens right now (a lease outlives its session by up to CB_LEASE_SEC).
     One read of the channel's agents for all names; [] when none is named or
     when they cannot be read (fail open: the post is out anyway)."""
     names = mentioned(message, me)
