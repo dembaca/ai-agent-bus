@@ -121,7 +121,7 @@
 }
 /* the columns' widths (table-layout: fixed): the task takes the rest */
 .agents__col--agent { width: 190px; }
-.agents__col--status { width: 170px; }
+.agents__col--status { width: 190px; }
 .agents__col--branch { width: 140px; }
 .agents__col--home { width: 160px; }
 .agents__col--ctx { width: 104px; }
@@ -178,6 +178,8 @@
 }
 .agents__note { font-size: 12px; }
 .agents__status { overflow: hidden; }
+/* the state pill and "waits on you" on one middle line */
+.agents__status .pill { vertical-align: middle; }
 .agents__home { display: flex; gap: 4px; min-width: 0; }
 .agents__home .agents__clip { min-width: 0; }
 .agents__guests { flex: none; }
