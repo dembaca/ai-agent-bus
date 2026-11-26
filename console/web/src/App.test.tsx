@@ -53,15 +53,48 @@ describe("a post's bus word", () => {
     expect(busWord("`NATS` · down")).toEqual({ word: null, rest: "`NATS` · down" })
     expect(busWord("`HELLO without its closing tick")).toEqual({ word: null, rest: "`HELLO without its closing tick" })
   })
+
+  it("never takes a hyphen as the separator", () => {
+    for (const text of ["NO-GO for the merge", "TASK-123 fix", "RESULT -5"]) {
+      expect(busWord(text)).toEqual({ word: null, rest: text })
+    }
+    expect(busWord("`NO` · go")).toEqual({ word: "NO", rest: "go" })
+    expect(busWord("NO – reason")).toEqual({ word: "NO", rest: "reason" })
+  })
 })
 
 describe("a post's text", () => {
   it("drops the markdown and keeps the words", () => {
     expect(plainText("**Fresh session** on `main`, see [PR 185](https://x/185)"))
-      .toBe("Fresh session on main, see PR 185")
+      .toBe("Fresh session on main, see PR 185 (https://x/185)")
     expect(plainText("## Plan\n> quoted *note* and ~~old~~ new"))
       .toBe("Plan\nquoted note and old new")
     expect(plainText("agent_one and 2 * 3 stay")).toBe("agent_one and 2 * 3 stay")
+  })
+
+  it("keeps every character that is not real markdown", () => {
+    for (const text of [
+      "__init__.py and __main__",
+      "*.py and *.ts files",
+      "arr[0](x)",
+      ">= 3 agents",
+      "# of agents: 3",
+      "a_b_c and snake_case_name",
+    ]) expect(plainText(text)).toBe(text)
+    expect(plainText("def f(*args, **kwargs) and **more**")).toBe("def f(*args, **kwargs) and more")
+  })
+
+  it("keeps a code span's and a fence's content as is", () => {
+    expect(plainText("`a ** b ** c`")).toBe("a ** b ** c")
+    expect(plainText("run `**x**` then **y**")).toBe("run **x** then y")
+    expect(plainText("```py\ndef f(*a, **k): [0](x)\n```")).toBe("def f(*a, **k): [0](x)\n")
+  })
+
+  it("is fast on a run of brackets", () => {
+    const started = performance.now()
+    expect(plainText("[".repeat(16_000))).toBe("[".repeat(16_000))
+    expect(plainText("[x](".repeat(4_000))).toBe("[x](".repeat(4_000))
+    expect(performance.now() - started).toBeLessThan(500)
   })
 
   it("stays text: markup in a post is never HTML", () => {

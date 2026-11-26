@@ -1,4 +1,4 @@
-import { useEffect, useState, type ReactNode } from "react"
+import { useEffect, useMemo, useState, type ReactNode } from "react"
 import type { AgentCard, Ask, ConsoleApi, Post, ThreadPage } from "../api/types"
 import { clock, since } from "../clock"
 import { harnessLabel, isOpen, stateClass } from "./agents"
@@ -205,28 +205,73 @@ export const BUS_WORDS: ReadonlySet<string> = new Set([
 ])
 
 /** The bus word a post starts with, bare or in backticks as the agents
- * write it (`` `HELLO` · …``), if it is one of the bus's words; any other
- * capital word stays part of the text. */
+ * write it (`` `HELLO` · …``), if it is one of the bus's words, and set off
+ * by a space, a colon, a middle dot or a dash — never a hyphen: `NO-GO`,
+ * `TASK-123` and `RESULT -5` stay text. Any other capital word stays text. */
 export function busWord(message: string): { word: string | null; rest: string } {
-  const m = /^(`?)([A-Z]+)\1(?=[\s:·—–-]|$)[\s:·—–-]*/.exec(message)
+  const m = /^(`?)([A-Z]+)\1(?=$|[\s:·—–])(?![ \t]*-)[\s:·—–]*/.exec(message)
   return m && BUS_WORDS.has(m[2])
     ? { word: m[2], rest: message.slice(m[0].length) }
     : { word: null, rest: message }
 }
 
-/** A post's markdown as plain text: bold, italics, strikethrough and code
- * to their text, a link or image to its text, heading and quote marks
- * dropped. The result is rendered as text by React — never as HTML. */
+// Where emphasis may open and close: after the start, a space or an opening
+// bracket or quote; before a space, punctuation or the end. Inside a word
+// (`f(*args, **kwargs)`, `*.py`) nothing is emphasis. Underscores never are:
+// `__init__.py` and `__main__` are names, far more often than bold.
+const OPEN = String.raw`(^|[\s(\[{"'])`
+const CLOSE = String.raw`(?=$|[\s.,;:!?)\]}"'])`
+const BOLD = new RegExp(String.raw`${OPEN}\*\*(?=[^\s*])((?:(?!\*\*)[^\n])+?)(?<=[^\s*])\*\*${CLOSE}`, "gm")
+const ITALIC = new RegExp(String.raw`${OPEN}\*(?=[^\s*])([^*\n]+?)(?<=[^\s*])\*${CLOSE}`, "gm")
+const STRIKE = new RegExp(String.raw`${OPEN}~~(?=\S)((?:(?!~~)[^\n])+?)(?<=\S)~~${CLOSE}`, "gm")
+// A link's text is bounded, so a run of brackets costs little; one glued to a
+// word (`arr[0](x)`) is code, not a link.
+const LINK = /(^|[^\w\]!])!?\[([^\]\n]{0,300})\]\(([^()\s]{1,2000})\)/g
+// Code: a fence's content and an inline span's stay verbatim.
+const CODE = /```[^\n]*\n([\s\S]*?)```|`([^`\n]+)`/g
+
+function plainProse(text: string): string {
+  return text
+    .replace(LINK, (_all, before: string, label: string, url: string) =>
+      `${before}${label ? `${label} (${url})` : url}`)
+    .replace(BOLD, "$1$2")
+    .replace(ITALIC, "$1$2")
+    .replace(STRIKE, "$1$2")
+    .replace(/^#{2,6} +/gm, "")   // a heading; a lone "# of agents" stays
+    .replace(/^> /gm, "")          // a quote; ">= 3" stays
+}
+
+/** A post's markdown as plain text: code spans and fences keep their
+ * content verbatim, bold, italics and strikethrough become their text, a
+ * link `text (url)`, heading and quote marks go — and every other character
+ * stays. The result is rendered as text by React, never as HTML. */
 export function plainText(markdown: string): string {
-  return markdown
-    .replace(/!?\[([^\]]*)\]\([^)]*\)/g, "$1")
-    .replace(/(\*\*|__)(.+?)\1/g, "$2")
-    .replace(/~~(.+?)~~/g, "$1")
-    .replace(/(^|[\s(])\*([^*\s][^*\n]*?)\*(?=[\s).,;:!?]|$)/gm, "$1$2")
-    .replace(/```[^\n]*\n?/g, "")
-    .replace(/`([^`\n]+)`/g, "$1")
-    .replace(/^#{1,6}\s+/gm, "")
-    .replace(/^>\s?/gm, "")
+  let out = ""
+  let last = 0
+  for (const m of markdown.matchAll(CODE)) {
+    out += plainProse(markdown.slice(last, m.index)) + (m[1] ?? m[2] ?? "")
+    last = (m.index ?? 0) + m[0].length
+  }
+  return out + plainProse(markdown.slice(last))
+}
+
+/** One post: time, its bus word as a chip, author and plain text —
+ * worked out once per message. */
+function PostRow({ post }: { post: Post }) {
+  const { word, text } = useMemo(() => {
+    const { word, rest } = busWord(post.message)
+    return { word, text: plainText(rest) }
+  }, [post.message])
+  return (
+    <li className="thread__post">
+      <span className="thread__time">{clock(post.at)}</span>
+      <span className={"thread__word" + (word ? ` thread__word--${wordTone(word)}` : "")}>{word ?? ""}</span>
+      <span className="thread__text">
+        <span className="thread__author mono">{post.author}</span>
+        <span className="thread__message">{text}</span>
+      </span>
+    </li>
+  )
 }
 
 /** A thread as the bus has it (GET /v1/threads/<id>): the page the server
@@ -262,19 +307,7 @@ function Thread({ title, api, onFail, threadId }: {
     <section className="panel thread" aria-label={title}>
       <div className="panel__head"><h2>{title}</h2><span className="muted">{posts.length} posts</span></div>
       <ol className="thread__posts">
-        {posts.map((post) => {
-          const { word, rest } = busWord(post.message)
-          return (
-            <li key={post.id} className="thread__post">
-              <span className="thread__time">{clock(post.at)}</span>
-              <span className={"thread__word" + (word ? ` thread__word--${wordTone(word)}` : "")}>{word ?? ""}</span>
-              <span className="thread__text">
-                <span className="thread__author mono">{post.author}</span>
-                <span className="thread__message">{plainText(rest)}</span>
-              </span>
-            </li>
-          )
-        })}
+        {posts.map((post) => <PostRow key={post.id} post={post} />)}
       </ol>
     </section>
   )
