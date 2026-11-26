@@ -164,7 +164,7 @@ func TestAnAgentPublishesItsOwnAskRecordAndStatsOnly(t *testing.T) {
 	}
 }
 
-// The STATS prefix (AUTH_STATS_PREFIX, RT-6.43) is a plain token of its own: not
+// The STATS prefix (CB_AUTH_STATS_PREFIX, RT-6.43) is a plain token of its own: not
 // the deliver prefix and neither of the other two.
 func TestTheStatsPrefixIsChecked(t *testing.T) {
 	ok := Config{Account: "BUS"}.WithDefaults()

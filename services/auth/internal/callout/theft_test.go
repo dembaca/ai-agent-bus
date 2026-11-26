@@ -1,9 +1,11 @@
 package callout
 
 import (
-	"errors"
+	"context"
+	"encoding/json"
 	"sync"
 	"testing"
+	"time"
 
 	gojwt "github.com/golang-jwt/jwt/v5"
 
@@ -65,8 +67,8 @@ func TestBothTheHostKeyAndTheSessionAreWatched(t *testing.T) {
 	w := &stubWatch{host: theft.Same, session: theft.Same}
 	s := &Service{}
 	s.SetWatcher(w)
-	if err := s.watchTheft("UAHOST", "sess-1", "203.0.113.7:51234"); err != nil {
-		t.Fatalf("%v", err)
+	if res := s.watchTheft("UAHOST", "sess-1", "203.0.113.7:51234"); res.host != theft.Same || res.session != theft.Same {
+		t.Fatalf("%+v", res)
 	}
 	hosts, sids, nets := w.seen()
 	if len(hosts) != 1 || hosts[0] != "UAHOST" {
@@ -81,29 +83,26 @@ func TestBothTheHostKeyAndTheSessionAreWatched(t *testing.T) {
 	// A token without a session id: nothing to compare, no empty id.
 	w = &stubWatch{}
 	s.SetWatcher(w)
-	if err := s.watchTheft("UAHOST", "", "203.0.113.7:1"); err != nil {
-		t.Fatalf("%v", err)
-	}
+	s.watchTheft("UAHOST", "", "203.0.113.7:1")
 	hosts, sids, _ = w.seen()
 	if len(hosts) != 1 || len(sids) != 0 {
 		t.Fatalf("watched hosts %v, sessions %v", hosts, sids)
 	}
 }
 
-func TestAnAlternatingSessionRefusesTheIssue(t *testing.T) {
+func TestACopiedSessionIsRefused(t *testing.T) {
 	s := &Service{}
 	s.SetWatcher(&stubWatch{host: theft.Moved, session: theft.Copied})
-	err := s.watchTheft("UAHOST", "sess-1", "203.0.113.7:1")
-	if !errors.Is(err, ErrCopiedUse) {
-		t.Fatalf("a copied session: %v, want ErrCopiedUse", err)
+	if res := s.watchTheft("UAHOST", "sess-1", "203.0.113.7:1"); res.session != theft.Copied {
+		t.Fatalf("a copied session: %+v, want the session copied", res)
 	}
 }
 
 func TestAMoveDoesNotRefuse(t *testing.T) {
 	s := &Service{}
 	s.SetWatcher(&stubWatch{host: theft.Moved, session: theft.Moved})
-	if err := s.watchTheft("UAHOST", "sess-1", "203.0.113.7:1"); err != nil {
-		t.Fatalf("a network change: %v, want no error", err)
+	if res := s.watchTheft("UAHOST", "sess-1", "203.0.113.7:1"); res.session == theft.Copied {
+		t.Fatalf("a network change: %+v, want no refusal", res)
 	}
 }
 
@@ -113,15 +112,76 @@ func TestAMoveDoesNotRefuse(t *testing.T) {
 func TestACopiedHostKeyDoesNotRefuse(t *testing.T) {
 	s := &Service{}
 	s.SetWatcher(&stubWatch{host: theft.Copied, session: theft.Same})
-	if err := s.watchTheft("UAHOST", "sess-1", "203.0.113.7:1"); err != nil {
-		t.Fatalf("a copied host key: %v, want no error", err)
+	if res := s.watchTheft("UAHOST", "sess-1", "203.0.113.7:1"); res.host != theft.Copied || res.session == theft.Copied {
+		t.Fatalf("a copied host key: %+v, want it reported only", res)
 	}
 }
 
 func TestWithoutAWatcherNothingIsRefused(t *testing.T) {
 	s := &Service{}
-	if err := s.watchTheft("UAHOST", "sess-1", "203.0.113.7:1"); err != nil {
-		t.Fatalf("no watcher: %v", err)
+	if res := s.watchTheft("UAHOST", "sess-1", "203.0.113.7:1"); res.session == theft.Copied || res.host == theft.Copied {
+		t.Fatalf("no watcher: %+v", res)
+	}
+}
+
+type stubNoticer struct {
+	mu       sync.Mutex
+	subjects []string
+	bodies   [][]byte
+}
+
+func (n *stubNoticer) Notice(_ context.Context, subject string, body []byte) error {
+	n.mu.Lock()
+	defer n.mu.Unlock()
+	n.subjects = append(n.subjects, subject)
+	n.bodies = append(n.bodies, body)
+	return nil
+}
+
+// RT-6.34, #154 step 3: a move and a copy are published for the owner on a
+// subject only the login service may publish, with no token and no address
+// beyond the prefix; a same verdict publishes nothing.
+func TestANoticeGoesToTheOwner(t *testing.T) {
+	n := &stubNoticer{}
+	s := &Service{cfg: Config{}.WithDefaults()}
+	s.SetWatcher(&stubWatch{host: theft.Moved, session: theft.Copied})
+	s.SetNoticer(n)
+	now := time.Date(2026, 11, 26, 9, 0, 0, 0, time.UTC)
+	w := s.watchTheft("UAHOST", "sess-1", "203.0.113.7:51234")
+	s.publishNotices(context.Background(), w, "bob.example", "agent-abc", "UAHOST", "sess-1", now)
+
+	if len(n.subjects) != 2 {
+		t.Fatalf("published %d notices, want 2 (the host key's move, the session's copy)", len(n.subjects))
+	}
+	if n.subjects[0] != "presence.notice.bob~example.moved.v1" || n.subjects[1] != "presence.notice.bob~example.copied.v1" {
+		t.Fatalf("subjects %v", n.subjects)
+	}
+	var host, session Notice
+	if err := json.Unmarshal(n.bodies[0], &host); err != nil {
+		t.Fatalf("%v", err)
+	}
+	if err := json.Unmarshal(n.bodies[1], &session); err != nil {
+		t.Fatalf("%v", err)
+	}
+	if host.Kind != "host_key" || host.Verdict != "moved" || host.SID != "UAHOST" {
+		t.Fatalf("host key notice %+v", host)
+	}
+	if session.Kind != "session" || session.Verdict != "copied" || session.SID != "sess-1" ||
+		session.Network != "203.0.113.0/24" || session.Agent != "agent-abc" {
+		t.Fatalf("session notice %+v", session)
+	}
+	if session.V != 1 || session.Exp <= session.Iat || session.Exp-session.Iat != int64(NoticeLifetime/time.Second) {
+		t.Fatalf("session notice lifetime %+v", session)
+	}
+
+	// A same verdict publishes nothing.
+	n2 := &stubNoticer{}
+	s.SetNoticer(n2)
+	s.SetWatcher(&stubWatch{host: theft.Same, session: theft.Same})
+	w = s.watchTheft("UAHOST", "sess-1", "203.0.113.7:1")
+	s.publishNotices(context.Background(), w, "bob", "agent-abc", "UAHOST", "sess-1", now)
+	if len(n2.subjects) != 0 {
+		t.Fatalf("a same verdict published %v", n2.subjects)
 	}
 }
 
@@ -151,5 +211,27 @@ func TestAnUnauthenticatedIssueNeverTouchesTheWatcher(t *testing.T) {
 	}
 	if len(sids) != 1 || sids[0] != "sess-lab" {
 		t.Fatalf("the sessions the guard saw: %v, want sess-lab", sids)
+	}
+}
+
+// RT-6.34: a refused session's retries publish nothing new within the block.
+func TestARetryDoesNotTellAgain(t *testing.T) {
+	n := &stubNoticer{}
+	s := &Service{cfg: Config{}.WithDefaults()}
+	s.SetWatcher(&stubWatch{host: theft.Same, session: theft.Copied})
+	s.SetNoticer(n)
+	now := time.Date(2026, 11, 26, 9, 0, 0, 0, time.UTC)
+	for i := 0; i < 5; i++ {
+		w := s.watchTheft("UAHOST", "sess-1", "203.0.113.7:1")
+		s.publishNotices(context.Background(), w, "bob", "agent-abc", "UAHOST", "sess-1", now.Add(time.Duration(i)*time.Minute))
+	}
+	if len(n.subjects) != 1 {
+		t.Fatalf("five retries published %d notices, want 1", len(n.subjects))
+	}
+	// After the cooldown a new copy tells again.
+	w := s.watchTheft("UAHOST", "sess-1", "203.0.113.7:1")
+	s.publishNotices(context.Background(), w, "bob", "agent-abc", "UAHOST", "sess-1", now.Add(NoticeCooldown))
+	if len(n.subjects) != 2 {
+		t.Fatalf("after the cooldown: %d notices, want 2", len(n.subjects))
 	}
 }

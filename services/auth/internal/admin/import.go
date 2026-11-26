@@ -75,7 +75,7 @@ func Import(ctx context.Context, store *directory.Store, source Source, binding 
 
 func importAt(ctx context.Context, store *directory.Store, source Source, binding string, _ token.Identity, now time.Time) (Report, error) {
 	rep := Report{ChannelsCreated: []string{}, ChannelsUpdated: []string{}, ChannelsSkipped: []SkippedChannel{},
-		AccountsSkipped: []SkippedAccount{}, Next: "set AUTH_DIRECTORY_IMPORTED=true and restart"}
+		AccountsSkipped: []SkippedAccount{}, Next: "set CB_AUTH_DIRECTORY_IMPORTED=true and restart"}
 	done, err := store.Imported(ctx)
 	if err != nil {
 		return Report{}, err

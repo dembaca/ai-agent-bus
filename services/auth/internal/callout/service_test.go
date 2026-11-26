@@ -78,13 +78,15 @@ listen: "127.0.0.1:-1"
 websocket { listen: "127.0.0.1:-1", no_tls: true }
 jetstream { store_dir: "`+t.TempDir()+`" }
 accounts {
-  AUTH { users: [ { nkey: "`+svcPub+`" } ] }
+  # The callout's user with the rights of nats-server.example.conf.
+  AUTH { users: [ { nkey: "`+svcPub+`", permissions: {
+    publish: { deny: ">" }, subscribe: [ "$SYS.REQ.USER.AUTH" ], allow_responses: true } } ] }
   BUS { jetstream: enabled, users: [ { user: admin, password: pwd },
     # The login service's own JetStream user with the minimal rights that
     # services/auth/README.md and RT-6.35 document.
     { user: jsmin, password: pwd, permissions: {
       publish: [ "$JS.API.STREAM.CREATE.BUS", "$JS.API.STREAM.INFO.BUS", "$JS.API.CONSUMER.*.BUS", "$JS.API.CONSUMER.*.BUS.>",
-        "$JS.API.STREAM.CREATE.PRESENCE", "$JS.API.STREAM.INFO.PRESENCE", "$JS.API.CONSUMER.*.PRESENCE", "$JS.API.CONSUMER.*.PRESENCE.>", "$JS.API.STREAM.CREATE.STATS", "$JS.API.STREAM.INFO.STATS", "$JS.API.CONSUMER.*.STATS", "$JS.API.CONSUMER.*.STATS.>", "presence.person.*.v1", "$JS.API.STREAM.MSG.GET.PRESENCE", "presence.attest.*.v1", "presence.account.mattermost.*.v1",
+        "$JS.API.STREAM.CREATE.PRESENCE", "$JS.API.STREAM.INFO.PRESENCE", "$JS.API.CONSUMER.*.PRESENCE", "$JS.API.CONSUMER.*.PRESENCE.>", "$JS.API.STREAM.CREATE.STATS", "$JS.API.STREAM.INFO.STATS", "$JS.API.CONSUMER.*.STATS", "$JS.API.CONSUMER.*.STATS.>", "presence.person.*.v1", "$JS.API.STREAM.MSG.GET.PRESENCE", "presence.attest.*.v1", "presence.notice.*.*.v1", "presence.account.mattermost.*.v1",
         "$JS.API.INFO", "$JS.API.STREAM.CREATE.KV_BUS_DIRECTORY", "$JS.API.STREAM.INFO.KV_BUS_DIRECTORY", "$JS.API.DIRECT.GET.KV_BUS_DIRECTORY.>", "$KV.BUS_DIRECTORY.>",
         "$JS.API.CONSUMER.CREATE.KV_BUS_DIRECTORY.>", "$JS.API.CONSUMER.DELETE.KV_BUS_DIRECTORY.*" ]
       subscribe: [ "_INBOX.>" ] } },

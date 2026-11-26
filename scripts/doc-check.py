@@ -15,6 +15,8 @@ docs against each other. This checks what it cannot see:
   changelog  the plugin version has an entry in CHANGELOG.md, and its
              `Needs:` and `Withdrawn:` lines keep their grammar (RT-6.30)
   versions   the MCP package (pyproject.toml, __version__) has the plugin version
+  env-names  every environment name the code reads is in docs/env-names.md, and
+             every old name that page maps is mentioned in the code
 
 Exit 0 when clean, 1 on any error. Stdlib only.
 """
@@ -260,6 +262,236 @@ def check_release_lines(text: str | None = None) -> None:
                 error(CHANGELOG, n, f"Withdrawn: in {entry} names a release not older than {entry}")
 
 
+# --- environment names ------------------------------------------------------
+
+ENV_PAGE = ROOT / "docs" / "env-names.md"
+# The prefixes the project defines and the one it moves to (docs/env-names.md).
+ENV_PREFIX = r"(?:MM|CB|AUTH|AUTHD|BRIDGE|CONSOLE|MATTERMOST|VITE|BUS)"
+ENV_NAME = re.compile(rf"\b({ENV_PREFIX}_[A-Z0-9_]+)")
+# A string literal's value: "MM_X", 'AUTH_Y', and a Go struct tag's value
+# (`env:"AUTH_X,required"` — the name ends before the comma). A backtick is no
+# string quote in Python or Go, so a name backticked inside a docstring there is
+# prose, not a read.
+ENV_STRING = re.compile(rf"""["']({ENV_PREFIX}_[A-Z0-9_]+)(?=[,`"'])""")
+ENV_TEMPLATE = re.compile(rf"""[`"']({ENV_PREFIX}_[A-Z0-9_]+)(?=[,`"'])""")
+# Dot access carries no quotes: process.env.MM_X, import.meta.env.CONSOLE_X.
+ENV_DOT = re.compile(rf"(?:process|import\.meta)\.env\.({ENV_PREFIX}_[A-Z0-9_]+)")
+# Code that is scanned, by how a name appears there: quoted literals in the
+# languages, any occurrence in the shell and in configuration files.
+ENV_QUOTED_SUFFIXES = (".py", ".go", ".ts", ".tsx", ".mjs", ".js")
+ENV_ANY_SUFFIXES = (".sh", ".sh.example", ".yml", ".yaml", ".json", ".conf", ".service",
+                    ".toml", ".env.example")
+ENV_ANY_NAMES = ("Dockerfile",)  # exact file names, and the shell without a suffix
+ENV_SKIP = ("docs/", "site/", "CHANGELOG.md")
+# Tests may name a setting that no longer exists (a removed fallback, a
+# fixture); the page-to-code direction must not be satisfied by them.
+ENV_TEST = re.compile(r"(^|/)(tests?/|test_|.*_test\.(go|py)$|.*\.(test|spec)\.(ts|tsx|js|mjs)$)")
+# The check's own two files quote names as examples; they must not count as reads.
+ENV_SELF = ("scripts/doc-check.py", "tests/hooks/test_env_names.py")
+
+
+def env_section(text: str, start: str) -> str:
+    """The page's text from `start` to the next heading of the same or a higher
+    level — the page puts tables under headings, and prose under them too."""
+    i = text.find(start)
+    if i < 0:
+        return ""
+    for m in re.finditer(r"^#{1,6} ", text[i + len(start):], re.MULTILINE):
+        return text[i:i + len(start) + m.start()]
+    return text[i:]
+
+
+def env_page() -> dict[str, set[str]]:
+    """What docs/env-names.md lists, by kind.
+
+    ``old``/``new``: the mapping tables' two columns. ``registrar``: the names
+    the page keeps because they go with the registrar. ``not_env``: the shell
+    globals the page says are no environment. ``excluded``: the table of names
+    that are not the project's to rename, each with its reason.
+    """
+    text = ENV_PAGE.read_text()
+    if re.search(r"^(<<<<<<<|=======|>>>>>>>)", text, re.MULTILINE):
+        raise ValueError("the page holds unresolved merge conflict markers")
+    old: set[str] = set()
+    new: set[str] = set()
+    sections: dict[str, set[str]] = {}
+    problems: list[str] = []
+    title = ""
+    counted = False
+    for line in text.splitlines():
+        h = re.match(r"^#{3,4} (.+?)(?: \((\d+)\))?$", line)
+        if h:
+            title, counted = h.group(1), h.group(2) is not None
+            continue
+        if not (counted and title != "Goes with the registrar" and line.startswith("|")):
+            continue
+        m = re.match(r"\|\s*`([A-Z][A-Z0-9_]*)`\s*\|\s*`([A-Z][A-Z0-9_]*)`\s*\|\s*"
+                     r"(yes|no)\s*\|", line)
+        if not m:
+            if "`" in line:  # a name row the guard cannot read
+                problems.append(f"{title}: a row is not old name, new name, yes/no: {line[:60]}")
+            continue
+        old.add(m.group(1))
+        new.add(m.group(2))
+        sections.setdefault(title, set()).add(m.group(1))
+    registrar = set(re.findall(r"\|\s*`([A-Z][A-Z0-9_]+)`\s*\|",
+                               env_section(text, "### Goes with the registrar")))
+    # Only the bullets count: the section's prose must not silence a name.
+    bullets, inside = [], False
+    for line in env_section(text, "#### Shell variables that are not environment").splitlines():
+        if line.startswith("- "):
+            inside = True
+        elif line and not line.startswith((" ", "\t")):
+            inside = False
+        if inside:
+            bullets.append(line)
+    not_env = set(ENV_NAME.findall("\n".join(bullets)))
+    not_env -= {"CB", "CB_MM"}  # the section names the two prefixes themselves
+    # The exclusion table: a name and its reason, both required.
+    excluded: set[str] = set()
+    for line in env_section(text, "### Excluded names").splitlines():
+        m = re.match(r"\|\s*`([A-Za-z][A-Za-z0-9_]+)`\s*\|\s*(.*?)\s*\|\s*$", line)
+        if not m:
+            continue
+        name, why = m.group(1), m.group(2).strip()
+        if not why or why.startswith("---"):
+            problems.append(f"the exclusion of {name} has no reason")
+            continue
+        excluded.add(name)
+    return {"old": old, "new": new, "registrar": registrar, "not_env": not_env,
+            "excluded": excluded, "sections": sections, "problems": problems}
+
+
+def env_counts() -> list[tuple[str, int, int]]:
+    """Each table's heading and the rows it really holds, for the page's own
+    count in the heading: ``(heading, stated, parsed)``."""
+    text = ENV_PAGE.read_text()
+    out = []
+    for m in re.finditer(r"^(#{3,4}) (.+?) \((\d+)\)$", text, re.MULTILINE):
+        level, title, stated = m.group(1), m.group(2), int(m.group(3))
+        body = env_section(text, f"{level} {title} ({stated})")
+        rows = len(re.findall(r"^\|\s*`", body, re.MULTILINE))
+        out.append((title, stated, rows))
+    return out
+
+
+def env_is_test(path: str) -> bool:
+    return bool(ENV_TEST.search(path))
+
+
+def env_scan_kind(path: str) -> str:
+    """``quoted``, ``any`` or ``""`` (not scanned), by the file's suffix/name."""
+    name = path.rsplit("/", 1)[-1]
+    if "." not in name and (path.startswith(("bin/", "hooks/", "adapters/"))
+                            or name in ENV_ANY_NAMES):
+        return "any"  # the shell without a suffix, and the image files
+    if name.endswith(ENV_QUOTED_SUFFIXES):
+        return "quoted"
+    if name.endswith(ENV_ANY_SUFFIXES) or name.startswith(ENV_ANY_NAMES):
+        return "any"
+    return ""
+
+
+def env_code_names(files: list[str]) -> dict[str, str]:
+    """The environment names the code reads, each with the file that reads it.
+
+    A name counts as read where it can reach the environment: a quoted literal
+    in the languages (`get("AUTH_X")`, `env.Get("CB_BRIDGE_X", "BRIDGE_X")`,
+    `process.env["CONSOLE_X"]`, a Go tag's `env:"X,required"`), any occurrence in
+    the shell (`$NAME`, `${NAME…}`, `export NAME=`, `unset NAME`, `read -r NAME`,
+    `printenv NAME`, `jq`'s `env.NAME`) and in the configuration files the
+    example ships (Dockerfiles, workflow YAML, `hooks.json`). A name that only
+    the page's exclusion table keeps quiet is not read.
+    """
+    read: dict[str, str] = {}
+    for path in files:
+        if path.startswith(ENV_SKIP) or env_is_test(path):
+            continue
+        kind = env_scan_kind(path)
+        if not kind:
+            continue
+        try:
+            text = (ROOT / path).read_text(errors="ignore")
+        except OSError:
+            continue
+        if kind == "quoted":
+            literals = ENV_TEMPLATE if path.endswith((".ts", ".tsx", ".mjs", ".js")) else ENV_STRING
+            found = list(literals.finditer(text)) + list(ENV_DOT.finditer(text))
+        else:
+            found = list(ENV_NAME.finditer(text))
+        for m in found:
+            name = m.group(1)
+            if name.endswith("_") or path in ENV_SELF:
+                continue  # a stem in a pattern, or the check's own examples
+            read.setdefault(name, path)
+    return read
+
+
+def env_code_text(files: list[str]) -> tuple[str, str]:
+    """The code files' text for the page-to-code direction: (production, all).
+
+    A removed fallback must not be kept alive by a test that still names it, so
+    the mapping tables are held against production code only; the "Tests and CI"
+    table's names live in tests, so those are held against every code file.
+    """
+    prod: list[str] = []
+    every: list[str] = []
+    for path in files:
+        if path.startswith(ENV_SKIP) or not env_scan_kind(path):
+            continue
+        try:
+            text = (ROOT / path).read_text(errors="ignore")
+        except OSError:
+            continue
+        every.append(text)
+        if not env_is_test(path):
+            prod.append(text)
+    return "\n".join(prod), "\n".join(every)
+
+
+def env_name_errors(page: dict[str, set[str]], read: dict[str, str],
+                    code_text: tuple[str, str]) -> list[tuple[str, str]]:
+    """Both directions between the page and the code, as ``(where, what)``.
+
+    A name the code reads and the page does not list loses its `CB_` mapping
+    when the rename comes; a mapping whose old name appears nowhere in the code
+    (tests aside) is stale — a removed setting, or a typo in the table. Whole
+    tokens only: `AUTH_LOBBY` must not be satisfied by `CB_AUTH_LOBBY`.
+    """
+    documented = set().union(page["old"], page["new"], page["registrar"],
+                             page["not_env"], page["excluded"])
+    out = [(path, f"reads {name}, which docs/env-names.md does not list")
+           for name, path in sorted(read.items()) if name not in documented]
+    prod, every = code_text
+    tests = page["sections"].get("Tests and CI", set())
+    for name in sorted(page["old"]):
+        where = every if name in tests else prod
+        if not re.search(rf"\b{re.escape(name)}\b", where):
+            out.append((str(ENV_PAGE.relative_to(ROOT)), f"maps {name}, which no code mentions"))
+    return out
+
+
+def check_env_names() -> None:
+    try:
+        page = env_page()
+    except ValueError as exc:
+        error(ENV_PAGE, None, str(exc))
+        return
+    if len(page["old"]) < 100 or len(page["registrar"]) != 10:
+        error(ENV_PAGE, None, f"parsed {len(page['old'])} mapped and "
+                              f"{len(page['registrar'])} registrar names: the tables did not read")
+        return
+    for title, stated, parsed in env_counts():
+        if stated != parsed:
+            error(ENV_PAGE, None, f"{title}: the heading says {stated} names, the table holds {parsed}")
+    for what in page.get("problems", []):
+        error(ENV_PAGE, None, what)
+    files = repo_files()
+    read = env_code_names(files)
+    for where, what in env_name_errors(page, read, env_code_text(files)):
+        error(where, None, what)
+
+
 # --- versions -------------------------------------------------------------------
 
 def check_versions() -> None:
@@ -286,6 +518,7 @@ def main() -> int:
     check_changelog()
     check_release_lines()
     check_versions()
+    check_env_names()
 
     gh = os.environ.get("GITHUB_ACTIONS") == "true"
     for path, line, msg in errors:

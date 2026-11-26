@@ -25,6 +25,7 @@ import (
 	"github.com/dembaca/ai-agent-bus/services/auth/internal/callout"
 	"github.com/dembaca/ai-agent-bus/services/auth/internal/consumers"
 	"github.com/dembaca/ai-agent-bus/services/auth/internal/directory"
+	"github.com/dembaca/ai-agent-bus/services/auth/internal/envname"
 	"github.com/dembaca/ai-agent-bus/services/auth/internal/mattermost"
 	"github.com/dembaca/ai-agent-bus/services/auth/internal/theft"
 	"github.com/dembaca/ai-agent-bus/services/auth/internal/token"
@@ -43,7 +44,7 @@ type Settings struct {
 	NATSSeedFile   string // the service's own NATS user (an auth_user)
 	IssuerSeedFile string // the account key that signs responses and user JWTs
 	XKeySeedFile   string // decrypts requests; required unless PlainRequests
-	PlainRequests  bool   // AUTH_PLAIN_REQUESTS=allow: the server sends requests unencrypted
+	PlainRequests  bool   // CB_AUTH_PLAIN_REQUESTS=allow: the server sends requests unencrypted
 	NATSCAFile     string // CA for the server's TLS certificate; empty: the system's
 	NATSCertFile   string // client certificate, with NATSKeyFile, if the server asks for one
 	NATSKeyFile    string
@@ -64,112 +65,118 @@ type Settings struct {
 	// in the tenant account; empty: directory.DefaultBucket.
 	DirectoryBucket string
 	// DirectoryImported: the operator ran the one-time import
-	// (AUTH_DIRECTORY_IMPORTED=true). The directory then must hold its mark:
+	// (CB_AUTH_DIRECTORY_IMPORTED=true). The directory then must hold its mark:
 	// a missing bucket or mark refuses, never falls back to Mattermost.
 	DirectoryImported bool
 	// AdminListenAddr is where the directory's admin API listens
-	// (AUTH_ADMIN_LISTEN_ADDR); empty: no admin API. Without a certificate
+	// (CB_AUTH_ADMIN_LISTEN_ADDR); empty: no admin API. Without a certificate
 	// it must be a loopback address.
 	AdminListenAddr  string
 	AdminTLSCertFile string
 	AdminTLSKeyFile  string
 	// DirectoryAdminGroup is the token group that makes a directory admin
-	// (AUTH_DIRECTORY_ADMIN_GROUP); required with AdminListenAddr.
+	// (CB_AUTH_DIRECTORY_ADMIN_GROUP); required with AdminListenAddr.
 	DirectoryAdminGroup string
 }
 
-// LoadSettings reads the callout's settings. It reports false when
-// AUTH_NATS_URL is not set: the service then runs without the callout.
-func LoadSettings(getenv func(string) string) (Settings, bool, error) {
-	get := func(k string) string { return strings.TrimSpace(getenv(k)) }
-	s := Settings{NATSURL: get("AUTH_NATS_URL")}
+// LoadSettings reads the callout's settings, by their CB_AUTH_ names with the
+// old AUTH_ names as a fallback (envname, docs/env-names.md). It reports false
+// when CB_AUTH_NATS_URL is not set: the service then runs without the callout.
+// Two names of one setting with different values refuse, with or without it.
+func LoadSettings(env *envname.Env) (Settings, bool, error) {
+	if err := env.Check(envname.Service()...); err != nil {
+		return Settings{}, true, fmt.Errorf("%w: %v", ErrConfig, err)
+	}
+	// Check above refused every disagreement, so Value reads each name right.
+	get := func(k string) string { return strings.TrimSpace(env.Value(k)) }
+	s := Settings{NATSURL: get("CB_AUTH_NATS_URL")}
 	if s.NATSURL == "" {
 		return Settings{}, false, nil
 	}
-	s.NATSSeedFile = get("AUTH_NATS_SEED_FILE")
-	s.IssuerSeedFile = get("AUTH_ISSUER_SEED_FILE")
-	s.XKeySeedFile = get("AUTH_XKEY_SEED_FILE")
-	s.NATSCAFile = get("AUTH_NATS_CA_FILE")
-	s.NATSCertFile = get("AUTH_NATS_CERT_FILE")
-	s.NATSKeyFile = get("AUTH_NATS_KEY_FILE")
-	switch v := get("AUTH_PLAIN_REQUESTS"); v {
+	s.NATSSeedFile = get("CB_AUTH_NATS_SEED_FILE")
+	s.IssuerSeedFile = get("CB_AUTH_ISSUER_SEED_FILE")
+	s.XKeySeedFile = get("CB_AUTH_XKEY_SEED_FILE")
+	s.NATSCAFile = get("CB_AUTH_NATS_CA_FILE")
+	s.NATSCertFile = get("CB_AUTH_NATS_CERT_FILE")
+	s.NATSKeyFile = get("CB_AUTH_NATS_KEY_FILE")
+	switch v := get("CB_AUTH_PLAIN_REQUESTS"); v {
 	case "":
 	case "allow":
 		s.PlainRequests = true
 	default:
-		return Settings{}, true, fmt.Errorf("%w: AUTH_PLAIN_REQUESTS: only \"allow\", got %q", ErrConfig, v)
+		return Settings{}, true, fmt.Errorf("%w: CB_AUTH_PLAIN_REQUESTS: only \"allow\", got %q", ErrConfig, v)
 	}
 	if (s.XKeySeedFile == "") == !s.PlainRequests {
-		return Settings{}, true, fmt.Errorf("%w: AUTH_XKEY_SEED_FILE must be set (or, to accept unencrypted requests, AUTH_PLAIN_REQUESTS=allow instead)", ErrConfig)
+		return Settings{}, true, fmt.Errorf("%w: CB_AUTH_XKEY_SEED_FILE must be set (or, to accept unencrypted requests, CB_AUTH_PLAIN_REQUESTS=allow instead)", ErrConfig)
 	}
 	if err := natsURLSecure(s.NATSURL); err != nil {
-		return Settings{}, true, fmt.Errorf("%w: AUTH_NATS_URL: %v", ErrConfig, err)
+		return Settings{}, true, fmt.Errorf("%w: CB_AUTH_NATS_URL: %v", ErrConfig, err)
 	}
 	if (s.NATSCertFile == "") != (s.NATSKeyFile == "") {
-		return Settings{}, true, fmt.Errorf("%w: AUTH_NATS_CERT_FILE and AUTH_NATS_KEY_FILE go together", ErrConfig)
+		return Settings{}, true, fmt.Errorf("%w: CB_AUTH_NATS_CERT_FILE and CB_AUTH_NATS_KEY_FILE go together", ErrConfig)
 	}
-	s.BrakeFile = get("AUTH_BRAKE_FILE")
-	s.JSSeedFile = get("AUTH_JS_SEED_FILE")
-	s.JSURL = get("AUTH_JS_URL")
+	s.BrakeFile = get("CB_AUTH_BRAKE_FILE")
+	s.JSSeedFile = get("CB_AUTH_JS_SEED_FILE")
+	s.JSURL = get("CB_AUTH_JS_URL")
 	if s.JSSeedFile == "" {
-		return Settings{}, true, fmt.Errorf("%w: AUTH_JS_SEED_FILE must be set with AUTH_NATS_URL: without consumer management credentials would carry deliver subjects nobody reconciles or brakes", ErrConfig)
+		return Settings{}, true, fmt.Errorf("%w: CB_AUTH_JS_SEED_FILE must be set with CB_AUTH_NATS_URL: without consumer management credentials would carry deliver subjects nobody reconciles or brakes", ErrConfig)
 	}
 	if s.JSURL == "" {
 		s.JSURL = s.NATSURL
 	}
 	if err := natsURLSecure(s.JSURL); err != nil {
-		return Settings{}, true, fmt.Errorf("%w: AUTH_JS_URL: %v", ErrConfig, err)
+		return Settings{}, true, fmt.Errorf("%w: CB_AUTH_JS_URL: %v", ErrConfig, err)
 	}
 	s.Callout = callout.Config{
-		Account:    get("AUTH_ACCOUNT"),
-		Lobby:      get("AUTH_LOBBY"),
-		NamePrefix: get("AUTH_NAME_PREFIX"),
-		Subjects:   callout.Subjects{Prefix: get("AUTH_SUBJECT_PREFIX"), Presence: get("AUTH_PRESENCE_PREFIX"), Stats: get("AUTH_STATS_PREFIX")},
+		Account:    get("CB_AUTH_ACCOUNT"),
+		Lobby:      get("CB_AUTH_LOBBY"),
+		NamePrefix: get("CB_AUTH_NAME_PREFIX"),
+		Subjects:   callout.Subjects{Prefix: get("CB_AUTH_SUBJECT_PREFIX"), Presence: get("CB_AUTH_PRESENCE_PREFIX"), Stats: get("CB_AUTH_STATS_PREFIX")},
 	}
 	s.Token = token.Config{
-		Issuer:        get("AUTH_KEYCLOAK_ISSUER"),
-		JWKSURL:       get("AUTH_KEYCLOAK_JWKS_URL"),
-		ClientID:      get("AUTH_KEYCLOAK_CLIENT_ID"),
-		Audience:      get("AUTH_KEYCLOAK_AUDIENCE"),
-		ApproverGroup: get("AUTH_APPROVER_GROUP"),
-		ApproverClaim: get("AUTH_APPROVER_CLAIM"),
+		Issuer:        get("CB_AUTH_KEYCLOAK_ISSUER"),
+		JWKSURL:       get("CB_AUTH_KEYCLOAK_JWKS_URL"),
+		ClientID:      get("CB_AUTH_KEYCLOAK_CLIENT_ID"),
+		Audience:      get("CB_AUTH_KEYCLOAK_AUDIENCE"),
+		ApproverGroup: get("CB_AUTH_APPROVER_GROUP"),
+		ApproverClaim: get("CB_AUTH_APPROVER_CLAIM"),
 	}
-	s.Binding = get("AUTH_NAME_BINDING")
-	s.MattermostURL = get("AUTH_MATTERMOST_URL")
-	s.MattermostTeam = get("AUTH_MATTERMOST_TEAM")
-	s.MattermostFile = get("AUTH_MATTERMOST_TOKEN_FILE")
-	s.DirectoryBucket = get("AUTH_DIRECTORY_BUCKET")
-	switch v := get("AUTH_DIRECTORY_IMPORTED"); v {
+	s.Binding = get("CB_AUTH_NAME_BINDING")
+	s.MattermostURL = get("CB_AUTH_MM_URL")
+	s.MattermostTeam = get("CB_AUTH_MM_TEAM")
+	s.MattermostFile = get("CB_AUTH_MM_TOKEN_FILE")
+	s.DirectoryBucket = get("CB_AUTH_DIRECTORY_BUCKET")
+	switch v := get("CB_AUTH_DIRECTORY_IMPORTED"); v {
 	case "", "false":
 	case "true":
 		s.DirectoryImported = true
 	default:
-		return Settings{}, true, fmt.Errorf("%w: AUTH_DIRECTORY_IMPORTED: true or false, got %q", ErrConfig, v)
+		return Settings{}, true, fmt.Errorf("%w: CB_AUTH_DIRECTORY_IMPORTED: true or false, got %q", ErrConfig, v)
 	}
-	s.AdminListenAddr = get("AUTH_ADMIN_LISTEN_ADDR")
-	s.AdminTLSCertFile = get("AUTH_ADMIN_TLS_CERT_FILE")
-	s.AdminTLSKeyFile = get("AUTH_ADMIN_TLS_KEY_FILE")
-	s.DirectoryAdminGroup = get("AUTH_DIRECTORY_ADMIN_GROUP")
+	s.AdminListenAddr = get("CB_AUTH_ADMIN_LISTEN_ADDR")
+	s.AdminTLSCertFile = get("CB_AUTH_ADMIN_TLS_CERT_FILE")
+	s.AdminTLSKeyFile = get("CB_AUTH_ADMIN_TLS_KEY_FILE")
+	s.DirectoryAdminGroup = get("CB_AUTH_DIRECTORY_ADMIN_GROUP")
 	if err := adminSettings(s); err != nil {
 		return Settings{}, true, err
 	}
 	if s.DirectoryBucket != "" && !bucketRE.MatchString(s.DirectoryBucket) {
-		return Settings{}, true, fmt.Errorf("%w: AUTH_DIRECTORY_BUCKET: letters, digits, - and _ only, got %q", ErrConfig, s.DirectoryBucket)
+		return Settings{}, true, fmt.Errorf("%w: CB_AUTH_DIRECTORY_BUCKET: letters, digits, - and _ only, got %q", ErrConfig, s.DirectoryBucket)
 	}
 
 	for k, v := range map[string]string{
-		"AUTH_NATS_SEED_FILE": s.NATSSeedFile, "AUTH_ISSUER_SEED_FILE": s.IssuerSeedFile,
-		"AUTH_ACCOUNT": s.Callout.Account, "AUTH_KEYCLOAK_ISSUER": s.Token.Issuer,
-		"AUTH_KEYCLOAK_JWKS_URL": s.Token.JWKSURL, "AUTH_KEYCLOAK_CLIENT_ID": s.Token.ClientID,
-		"AUTH_MATTERMOST_URL": s.MattermostURL, "AUTH_MATTERMOST_TEAM": s.MattermostTeam,
-		"AUTH_MATTERMOST_TOKEN_FILE": s.MattermostFile,
+		"CB_AUTH_NATS_SEED_FILE": s.NATSSeedFile, "CB_AUTH_ISSUER_SEED_FILE": s.IssuerSeedFile,
+		"CB_AUTH_ACCOUNT": s.Callout.Account, "CB_AUTH_KEYCLOAK_ISSUER": s.Token.Issuer,
+		"CB_AUTH_KEYCLOAK_JWKS_URL": s.Token.JWKSURL, "CB_AUTH_KEYCLOAK_CLIENT_ID": s.Token.ClientID,
+		"CB_AUTH_MM_URL": s.MattermostURL, "CB_AUTH_MM_TEAM": s.MattermostTeam,
+		"CB_AUTH_MM_TOKEN_FILE": s.MattermostFile,
 	} {
 		if v == "" {
-			return Settings{}, true, fmt.Errorf("%w: %s must be set with AUTH_NATS_URL", ErrConfig, k)
+			return Settings{}, true, fmt.Errorf("%w: %s must be set with CB_AUTH_NATS_URL", ErrConfig, k)
 		}
 	}
 	for k, dst := range map[string]*time.Duration{
-		"AUTH_REQUEST_TIMEOUT": &s.Callout.Timeout, "AUTH_TOKEN_LEEWAY": &s.Token.Leeway,
+		"CB_AUTH_REQUEST_TIMEOUT": &s.Callout.Timeout, "CB_AUTH_TOKEN_LEEWAY": &s.Token.Leeway,
 	} {
 		if v := get(k); v != "" {
 			d, err := time.ParseDuration(v)
@@ -185,16 +192,16 @@ func LoadSettings(getenv func(string) string) (Settings, bool, error) {
 	case "openid-only":
 		s.Token.Binding = token.OpenIDOnly{}
 	default:
-		return Settings{}, true, fmt.Errorf("%w: AUTH_NAME_BINDING: open or openid-only, got %q", ErrConfig, s.Binding)
+		return Settings{}, true, fmt.Errorf("%w: CB_AUTH_NAME_BINDING: open or openid-only, got %q", ErrConfig, s.Binding)
 	}
 	// The operator console's path (RT-6.43): a person's credential for a
 	// token of the console's own client, never of the bus's.
-	s.Callout.Console = callout.Console{ClientID: get("AUTH_CONSOLE_CLIENT_ID"),
-		OperatorGroup: get("AUTH_OPERATOR_GROUP"), PersonPrefix: get("AUTH_PERSON_PREFIX")}
-	if v := get("AUTH_PERSON_MAX_LOGINS"); v != "" {
+	s.Callout.Console = callout.Console{ClientID: get("CB_AUTH_CONSOLE_CLIENT_ID"),
+		OperatorGroup: get("CB_AUTH_OPERATOR_GROUP"), PersonPrefix: get("CB_AUTH_PERSON_PREFIX")}
+	if v := get("CB_AUTH_PERSON_MAX_LOGINS"); v != "" {
 		n, err := strconv.Atoi(v)
 		if err != nil || n < 1 || n > 64 {
-			return Settings{}, true, fmt.Errorf("%w: AUTH_PERSON_MAX_LOGINS: a number from 1 to 64, got %q", ErrConfig, v)
+			return Settings{}, true, fmt.Errorf("%w: CB_AUTH_PERSON_MAX_LOGINS: a number from 1 to 64, got %q", ErrConfig, v)
 		}
 		s.Callout.Console.MaxLogins = n
 	}
@@ -206,7 +213,7 @@ func LoadSettings(getenv func(string) string) (Settings, bool, error) {
 		s.Callout.Console.Metrics = on
 	}
 	if c := s.Callout.Console.ClientID; c != "" && (c == s.Token.ClientID || c == s.Token.Audience) {
-		return Settings{}, true, fmt.Errorf("%w: AUTH_CONSOLE_CLIENT_ID must differ from the bus's client and audience", ErrConfig)
+		return Settings{}, true, fmt.Errorf("%w: CB_AUTH_CONSOLE_CLIENT_ID must differ from the bus's client and audience", ErrConfig)
 	}
 	s.Callout = s.Callout.WithDefaults()
 	return s, true, nil
@@ -215,21 +222,21 @@ func LoadSettings(getenv func(string) string) (Settings, bool, error) {
 // adminSettings checks the admin API's settings.
 func adminSettings(s Settings) error {
 	if (s.AdminTLSCertFile == "") != (s.AdminTLSKeyFile == "") {
-		return fmt.Errorf("%w: AUTH_ADMIN_TLS_CERT_FILE and AUTH_ADMIN_TLS_KEY_FILE go together", ErrConfig)
+		return fmt.Errorf("%w: CB_AUTH_ADMIN_TLS_CERT_FILE and CB_AUTH_ADMIN_TLS_KEY_FILE go together", ErrConfig)
 	}
 	if s.AdminListenAddr == "" {
 		return nil
 	}
 	if s.DirectoryAdminGroup == "" {
-		return fmt.Errorf("%w: AUTH_DIRECTORY_ADMIN_GROUP must be set with AUTH_ADMIN_LISTEN_ADDR", ErrConfig)
+		return fmt.Errorf("%w: CB_AUTH_DIRECTORY_ADMIN_GROUP must be set with CB_AUTH_ADMIN_LISTEN_ADDR", ErrConfig)
 	}
 	host, _, err := net.SplitHostPort(s.AdminListenAddr)
 	if err != nil {
-		return fmt.Errorf("%w: AUTH_ADMIN_LISTEN_ADDR: host:port expected", ErrConfig)
+		return fmt.Errorf("%w: CB_AUTH_ADMIN_LISTEN_ADDR: host:port expected", ErrConfig)
 	}
 	if s.AdminTLSCertFile == "" {
 		if ip := net.ParseIP(host); ip == nil || !ip.IsLoopback() {
-			return fmt.Errorf("%w: AUTH_ADMIN_LISTEN_ADDR: a loopback IP address (127.0.0.0/8, ::1; not a name) unless AUTH_ADMIN_TLS_CERT_FILE and _KEY_FILE are set", ErrConfig)
+			return fmt.Errorf("%w: CB_AUTH_ADMIN_LISTEN_ADDR: a loopback IP address (127.0.0.0/8, ::1; not a name) unless CB_AUTH_ADMIN_TLS_CERT_FILE and _KEY_FILE are set", ErrConfig)
 		}
 	}
 	return nil
@@ -272,27 +279,27 @@ func serveAdmin(ctx context.Context, s Settings, h http.Handler, log *slog.Logge
 // serves wrap ErrConfig when the configuration is at fault.
 func RunCallout(ctx context.Context, s Settings, log *slog.Logger) error {
 	if s.JSSeedFile == "" {
-		return fmt.Errorf("%w: AUTH_JS_SEED_FILE must be set", ErrConfig)
+		return fmt.Errorf("%w: CB_AUTH_JS_SEED_FILE must be set", ErrConfig)
 	}
-	issuer, err := seed(s.IssuerSeedFile, "AUTH_ISSUER_SEED_FILE")
+	issuer, err := seed(s.IssuerSeedFile, "CB_AUTH_ISSUER_SEED_FILE")
 	if err != nil {
 		return err
 	}
 	var xkey nkeys.KeyPair
 	if s.XKeySeedFile != "" {
-		if xkey, err = seed(s.XKeySeedFile, "AUTH_XKEY_SEED_FILE"); err != nil {
+		if xkey, err = seed(s.XKeySeedFile, "CB_AUTH_XKEY_SEED_FILE"); err != nil {
 			return err
 		}
 	}
-	user, err := seed(s.NATSSeedFile, "AUTH_NATS_SEED_FILE")
+	user, err := seed(s.NATSSeedFile, "CB_AUTH_NATS_SEED_FILE")
 	if err != nil {
 		return err
 	}
-	jsUser, err := seed(s.JSSeedFile, "AUTH_JS_SEED_FILE")
+	jsUser, err := seed(s.JSSeedFile, "CB_AUTH_JS_SEED_FILE")
 	if err != nil {
 		return err
 	}
-	mmToken, err := secret(s.MattermostFile, "AUTH_MATTERMOST_TOKEN_FILE")
+	mmToken, err := secret(s.MattermostFile, "CB_AUTH_MM_TOKEN_FILE")
 	if err != nil {
 		return err
 	}
@@ -380,6 +387,8 @@ func RunCallout(ctx context.Context, s Settings, log *slog.Logger) error {
 	// A session alternating between networks is refused, a host key reported (#154 step 3).
 	svc.SetWatcher(&theft.Guard{Log: log})
 	svc.SetAttester(callout.NATSAttester{NC: jsnc, Stream: consumers.PresenceStream})
+	// A copied session or host key is noticed for the owner (#154 step 3).
+	svc.SetNoticer(callout.NATSNoticer{NC: jsnc})
 	if pv != nil {
 		svc.SetPersons(pv, directory.Persons{Store: dir, Log: log})
 		log.Info("the console's path on", "client", s.Callout.Console.ClientID, "operators", s.Callout.Console.OperatorGroup)

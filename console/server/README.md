@@ -144,8 +144,8 @@ every value without lines is `null` (`n/a`).
 ## NATS for the console
 
 Nothing of the console's own. The login service needs its console path
-on (`AUTH_CONSOLE_CLIENT_ID` naming the console's Keycloak client,
-`AUTH_OPERATOR_GROUP`, its JetStream user's consumer rights on `STATS`;
+on (`CB_AUTH_CONSOLE_CLIENT_ID`, formerly `AUTH_CONSOLE_CLIENT_ID`, naming
+the console's Keycloak client, `CB_AUTH_OPERATOR_GROUP`, its JetStream user's consumer rights on `STATS`;
 `services/auth/README.md`). The pilot's console user in the NATS server's
 configuration, its seed secret and `CONSOLE_NATS_SEED_FILE` are removed:
 the server refuses to start while `CONSOLE_NATS_SEED_FILE` is set, and
@@ -163,7 +163,7 @@ never reads the file.
 | `CONSOLE_NATS_URL` | `tls://` anywhere, `nats://` loopback only (as `natsbus`) |
 | `CONSOLE_NATS_CA_FILE` | the CA for `tls://` |
 | `CONSOLE_PRESENCE_SUBJECT`, `CONSOLE_PRESENCE_STREAM` | defaults `presence`, `PRESENCE` |
-| `CONSOLE_STATS_SUBJECT`, `CONSOLE_STATS_STREAM` | the STATS lines' prefix (the login service's `AUTH_STATS_PREFIX`) and stream, defaults `stats`, `STATS` |
+| `CONSOLE_STATS_SUBJECT`, `CONSOLE_STATS_STREAM` | the STATS lines' prefix (the login service's `CB_AUTH_STATS_PREFIX`) and stream, defaults `stats`, `STATS` |
 | `CONSOLE_NATS_SEED_FILE` | **gone**: set, it refuses the start (the static account's secret goes with it) |
 | `CONSOLE_WEB_DIR` | the built browser app (`console/web/dist`) |
 | `CONSOLE_SESSION_SEC` | session lifetime, default 8 h |
