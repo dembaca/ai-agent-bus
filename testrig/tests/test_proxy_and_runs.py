@@ -81,9 +81,16 @@ async def test_reorder_swaps_without_losing_or_repeating():
 
 
 async def test_reorder_releases_a_trailing_frame_by_its_timer():
-    """With no successor, the held frame goes out on the timer: delayed, not lost."""
-    got, _ = await _relay("reorder", count=3, after=1, pace=0.05, reorder_max_wait=0.05)
-    assert got == ["0", "1", "2"]
+    """With no successor, the held frame goes out on the timer: delayed, not lost.
+
+    Frame 0 passes (`after=1`) and frame 1, the last one, is held. No frame
+    follows it, so nothing but its timer can release it while the server is
+    still connected (#84: with a third frame paced as long as the timer, which
+    of the two released the held frame depended on scheduling)."""
+    got, proxy = await _relay("reorder", count=2, after=1, pace=0, reorder_max_wait=0.05)
+    assert got == ["0", "1"]
+    # held once (altered), sent once: the timer released it, nothing doubled
+    assert (proxy.received, proxy.forwarded, proxy.altered) == (2, 2, 1)
 
 
 async def test_stall_delays_everything_and_loses_nothing():
