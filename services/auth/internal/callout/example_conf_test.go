@@ -160,6 +160,23 @@ func TestTheExampleServerConfiguration(t *testing.T) {
 			if u.Account == nil || u.Account.Name != "BUS" {
 				t.Errorf("the metrics user is not in BUS: %+v", u.Account)
 			}
+			// The subscribe-only narrowing, pinned (a NATS permissions
+			// block without publish means allow-all publish): the seed's
+			// holder may publish nothing, subscribe exactly the two
+			// deliver subjects (#158, the probe in #168's review).
+			if u.Permissions == nil || len(u.Permissions.Publish.Allow) != 0 {
+				t.Error("the metrics user may publish")
+			}
+			deny := false
+			for _, d := range u.Permissions.Publish.Deny {
+				deny = deny || d == ">"
+			}
+			if !deny {
+				t.Error("the metrics user's deny-all publish is missing")
+			}
+			if want := []string{"deliver.metrics.presence", "deliver.metrics.stats"}; len(u.Permissions.Subscribe.Allow) != 2 || u.Permissions.Subscribe.Allow[0] != want[0] || u.Permissions.Subscribe.Allow[1] != want[1] {
+				t.Errorf("the metrics user's subscribe subjects: %v", u.Permissions.Subscribe.Allow)
+			}
 		case bridgePub:
 			if u.Account == nil || u.Account.Name != "BUS" {
 				t.Errorf("the bridge's user is not in BUS: %+v", u.Account)
