@@ -4109,7 +4109,8 @@ The console is the operators' view of the bus itself.
 
    | Report | Fields (RT-6.9) | Window | Chart | Warn when | Stage |
    |--------|-----------------|--------|-------|-----------|-------|
-   | The bus's share of all tokens | `tok.bus`, `tok.all` | per version, 7 d | line per version | higher than the version before without a reason in `CHANGELOG.md` (quality goal 6) | 1 |
+   | The bus and coordination share of all tokens (named "the bus's share" until the traffic split, RT-6.9 step 3) | `tok.bus`, `tok.all` | per version, 7 d | line per version | higher than the version before without a reason in `CHANGELOG.md` (quality goal 6) | 1 |
+   | Bus traffic by category: bus overhead and coordination in items and characters, the share of empty polls, the coverage (added with the traffic counts, RT-6.9 step 3) | `post_words`, `inbound`, `polls`, `inject` | 7 d | numbers | — | 1 |
    | Requests the bus caused per hour, fixed tokens per request | `tok.bus_req`, `tok.req`, `tok.fixed`, `min` | 7 d | small multiples per version | — | 2 |
    | Turns: share the bus started, mean and longest | `turns`, `bus_turns`, `turns_timed`, `turn_sec`, `turn_max_sec` | 24 h, 7 d | bars per harness | — | 2 |
    | Asks: per hour, share answered, mean and longest wait, waiting share | `asks`, `asks_answered`, `ask_wait_sec`, `ask_wait_max_sec`, `asks_open`, `ask_open_sec`, `min` | 24 h, 7 d | numbers, bars per day | — | 1 |
@@ -4173,7 +4174,9 @@ The console is the operators' view of the bus itself.
     point 12 are met.
     - **1, the smallest useful cut:** login, the Kanban with live states,
       the asks with "for me", the detail with thread and answer, and two
-      reports (open asks, the bus's share per version). As long as a
+      reports (open asks, the bus's share per version; since the traffic
+      counts the bus and coordination share and the bus traffic by
+      category, point 15). As long as a
       person's answer is not decided or not reviewed (open points 2 and 5):
       the same, reading only. An ask is then answered where it is answered
       today, in the humans' chat, and the console shows it open until the
@@ -4631,9 +4634,13 @@ agent publishes passes for a person's word.
     still write wrong numbers about itself, as in the chat today, but no
     text, no name and no link. Alternative: keys by a pattern alone.
     Rejected: a 64-character key is room for a message.
-15. **What the console shows of it.** Recommended: stage 1's two reports
-    (point 8): the bus's share of all tokens per version over 7 days, and
-    the asks over 24 hours and 7 days, computed with `stats.py`, the same
+15. **What the console shows of it.** Recommended: stage 1's reports
+    (point 8): the bus and coordination share of all tokens per version
+    over 7 days (named "the bus's share" until the traffic split: it
+    counts a request the bus caused whole, a peer's task included), the
+    asks over 24 hours and 7 days, and the bus traffic by category over 7
+    days (exact counts grouped into bus overhead and multi-agent
+    coordination, RT-6.9 step 3), computed with `stats.py`, the same
     numbers `stats_report` gives on the same lines (a test); a missing
     field as "n/a"; the age of the oldest line it holds. Every operator
     sees every line: the lines carry no content. The console neither shows
@@ -4641,7 +4648,10 @@ agent publishes passes for a person's word.
     point 7 stays open). Why: the reports stage 1 promised, and nothing
     that turns overhead counters into a record per person. Alternative:
     reports per agent. Rejected: not asked for, and it would be such a
-    record.
+    record. The owner's wish for a view per agent in the issue on the
+    token split (#139) does not change this as long as that issue's open
+    question is not decided: the traffic report too is by fleet only, and
+    its counts carry no peer, so no one sees who talks to whom.
 
 Not part of this addition: answering an ask from the console (point 8),
 threads and people's posts in the console, the card's fields in presence

@@ -13,7 +13,7 @@ import { after, afterEach, before, beforeEach, mock, test } from "node:test"
 import { fileURLToPath } from "node:url"
 
 import plugin, { addMcp, bindings, busFile, busRoot, CLIENT_HEADER, dropMcp, HOST_REFUSED, MARK, NO_BUS, REFUSAL_TOOL, relayVars,
-  renamedText, RETRY_SEC, retryMs, SERVER, setup, SKILL, skillInfo, timing, WAIT_SEC, venvDir, WAKE_BACKOFF_MAX_MS, WAKE_BACKOFF_MS, wakeBackoffMs, waitSec } from "../plugin/mattermost-agent-bus.ts"
+  chars, renamedText, RETRY_SEC, retryMs, SERVER, setup, SKILL, skillInfo, timing, WAIT_SEC, venvDir, WAKE_BACKOFF_MAX_MS, WAKE_BACKOFF_MS, wakeBackoffMs, waitSec } from "../plugin/mattermost-agent-bus.ts"
 import entry from "../server.ts"
 
 const HERE = dirname(fileURLToPath(import.meta.url))
@@ -382,6 +382,8 @@ test("RT-6.20: a turn: working, drain at the end as synthetic input, then listen
   await fx.ended()
   assert.match(rest()[0].path, /^\/v1\/turn-end\?drains=0&signoff_asked=0&by_bus=0&push=1&unanswered=1$/)
   assert.deepEqual(rest()[1].body, { k: "block", kind: "drain" })
+  // RT-6.9 step 1: the demand's text by kind and length only, never the text.
+  assert.deepEqual(rest()[2].body, { k: "inject", name: "drain", chars: "You have 1 unread …".length })
   assert.deepEqual(fx.sent, [{ sessionID: "s1", text: "You have 1 unread …", description: "\u{1F4E8} Collecting 1",
     metadata: { [MARK]: "drain" }, delivery: "queue", resume: true }])
   // The drain round is the same turn: no prompt hook for synthetic input, no new turn counted.
@@ -482,11 +484,13 @@ test("RT-6.20: an idle session holds one long poll, no timer; a wake starts one 
   assert.equal(fx.sent.length, 0)
   calls = []
   answerWake({ wake: true, reason: "dm", count: 1, text: "Mattermost: 1 unread mention(s) …" })
-  await until(() => fx.sent.length === 1 && rest().length >= 3, "the wake input, its count, its turn and its presence")
+  await until(() => fx.sent.length === 1 && rest().length >= 4, "the wake input, its counts, its turn and its presence")
   assert.deepEqual(fx.sent[0].metadata, { [MARK]: "wake" })
   assert.equal(fx.sent[0].resume, true)
   // It counts as the bus's turn and sets the presence working.
-  assert.deepEqual(rest().map((c) => c.body), [{ k: "wake", reason: "dm" }, { k: "turn", by: "bus" },
+  // RT-6.9 step 1: the wake-up's text by kind and length only, never the text.
+  assert.deepEqual(rest().map((c) => c.body), [{ k: "wake", reason: "dm" },
+    { k: "inject", name: "other", chars: "Mattermost: 1 unread mention(s) …".length }, { k: "turn", by: "bus" },
     { state: "working", label: "ws" }])
   // Busy now: no second request while the turn runs.
   calls = []
@@ -919,7 +923,7 @@ test("RT-6.20: subagent sessions, other locations, refused input and no server c
   answers["/v1/turn-end"] = { action: "drain", reason: "r", banner: "b" }
   calls = []
   await fx.ended("s2")
-  assert.deepEqual(paths().slice(1), ["POST /v1/stat", "POST /v1/stat", "POST /v1/presence"])
+  assert.deepEqual(paths().slice(1), ["POST /v1/stat", "POST /v1/stat", "POST /v1/stat", "POST /v1/presence"])
   rmSync(join(tmp, "state", "mm-agent-bus"), { recursive: true, force: true }) // no server
   calls = []
   await fx.prompt("s1")
@@ -986,4 +990,8 @@ test("RT-6.20: state kept by a plugin from before ADR-009 (a window going on) ke
   const fx = await start({}, {}, store)
   await until(() => held.length === 1, "asked again")
   await fx.cleanup()
+})
+
+test("RT-6.9 step 1: an inject's length counts Unicode code points, as the server and the hooks do", () => {
+  assert.equal(chars("a\u{1F600}\u2014"), 3)  // a, a grinning face, an em dash: 4 UTF-16 units, 3 code points
 })

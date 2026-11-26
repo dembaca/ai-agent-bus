@@ -109,8 +109,9 @@ operator's anchor from the login's own record with the asked human's
 anchor, never a login name (point 4 of the console decision's addition of
 2026-11-25); until that record came they are `null` (`n/a`) and mark
 nothing. Read-only: no answer, no thread text. `/v1/stats` answers the
-two stage-1 reports (the bus's share of all tokens per version over 7
-days; the asks over 24 h and 7 days), computed with `stats.py` from lines
+stage-1 reports (the bus and coordination share of all tokens per version
+over 7 days; the asks over 24 h and 7 days; the bus traffic by category
+over 7 days, exact counts of bus overhead and coordination), computed with `stats.py` from lines
 decoded by `stats.decode_line`, each line once by its stream sequence;
 every value without lines is `null` (`n/a`).
 
