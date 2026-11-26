@@ -147,10 +147,14 @@ async def test_static_web_and_no_traversal(console: Console) -> None:
         (root / "assets").mkdir()
         (root / "assets" / "app.js").write_text("console.log(1)")
         object.__setattr__(console.settings, "web_dir", str(root))
-        status, _h, body = await get(console, "/")
+        status, h, body = await get(console, "/")
         assert status == 200 and b"Choirbus" in body
-        status, _h, body = await get(console, "/assets/app.js")
+        # the page's own logout POST must carry its Origin: no-referrer
+        # would make the browser send `Origin: null` (RT-6.43 step 9)
+        assert h.get("referrer-policy") == "same-origin"
+        status, h, body = await get(console, "/assets/app.js")
         assert status == 200 and body == b"console.log(1)"
+        assert h.get("referrer-policy") == "same-origin"
         # ..%2f stays outside the built app: no traversal, the app again
         status, _h, body = await get(console, "/%2e%2e/etc/passwd")
         assert status in (404, 200)
@@ -392,11 +396,20 @@ async def test_a_cross_site_page_cannot_log_the_operator_out() -> None:
         status, headers, _b = await get(c, "/logout", cookie=cookie)
         assert status == 405 and headers.get("allow") == "POST"
         assert c.sessions.get(token) is not None
-        # the console's own origin (or none, a typed address bar) is fine;
-        # a realm without an end-session endpoint: a page that starts no
-        # login (/login would come straight back in through the open SSO)
+        # an opaque origin (a sandboxed frame, a page under no-referrer)
+        # proves nothing: still refused
+        status, _h, _b = await get(c, "/logout", cookie=cookie, origin="null",
+                                   sec_fetch_site="same-origin", method="POST")
+        assert status == 403
+        assert c.sessions.get(token) is not None
+        # the console's own origin (or none, a typed address bar) is fine:
+        # what a browser sends for the sidebar's form under the pages'
+        # same-origin policy; a realm without an end-session endpoint: a
+        # page that starts no login (/login would come straight back in
+        # through the open SSO)
         status, headers, body = await get(c, "/logout", cookie=cookie,
-                                          origin="http://127.0.0.1:8747", method="POST")
+                                          origin="http://127.0.0.1:8747",
+                                          sec_fetch_site="same-origin", method="POST")
         assert status == 200 and "location" not in headers
         assert b"Keycloak session is still open" in body
         assert c.sessions.get(token) is None
