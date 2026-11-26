@@ -33,7 +33,7 @@ from . import auth, config, httpd, telemetry
 from .metrics_service import MetricsService
 from .auth import Endpoints
 from .fleet import Fleet
-from .nats_read import PersonReader, View, reachable, tls_context
+from .nats_read import PersonReader, View, reachable
 
 log = logging.getLogger("console")
 

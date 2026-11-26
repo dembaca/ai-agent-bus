@@ -83,8 +83,10 @@ class MetricsService:
         def on_lost(_nc: Any) -> None:
             # nats-py hands the callback the connection: a NATS restart or
             # a lost one ends _serve (the loop connects again); without
-            # this it would wait forever
-            lost.set()
+            # this it would wait forever. A dial without a lost callback
+            # cannot watch: no event to set.
+            if lost is not None:
+                lost.set()
 
         kw: dict[str, Any] = {"nkeys_seed_str": seed, "allow_reconnect": False,
                               "connect_timeout": int(CONNECT_TIMEOUT_SEC)}

@@ -108,8 +108,8 @@ async def test_live_deliveries_feed_both_books(live_nats, tmp_path) -> None:
         await pnc.connect([f"nats://127.0.0.1:{port}"],
                           nkeys_seed_str=publisher, connect_timeout=5)
 
-        NKEY = "UDXU4RCSJNZOIQHZNWXHXORDPRTGNJAHAHFRGZNEEJCPQTT2M7NFCNF4"
-        name = agent_name("dembaca", NKEY)
+        # the subjects carry the deliveries; the books' checks parse
+        # the ack reply's stream pair (the JetStream form), not the subject
         # the two consumer-shaped deliveries, JetStream's ack as the reply
         # subject (what a push consumer's delivery carries)
         await pnc.publish("deliver.metrics.presence", encode_presence("online", "", ""),
