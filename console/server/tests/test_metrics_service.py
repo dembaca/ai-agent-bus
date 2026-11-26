@@ -204,11 +204,13 @@ async def test_a_refused_connect_ends_the_reading(tmp_path, caplog) -> None:
 
     seed = tmp_path / "seed"                 # a readable seed: it dials
     seed.write_text("SUAKEYINTESTSONLYNOTAREALONE00")
+    import os as _os
+    _os.chmod(seed, 0o600)   # the reading refuses group/world-readable seeds
     svc = MetricsService(_settings_unit(tmp_path, seed=str(seed)),
                          View("presence", "stats"), connect=refused)
     svc.start()
     await asyncio.wait_for(svc._task, 5.0)   # type: ignore[arg-type]
-    assert "was refused" in caplog.text
+    assert "the metrics service account was" in caplog.text
 
 
 async def test_a_bad_seed_file_never_connects(tmp_path) -> None:
@@ -216,6 +218,8 @@ async def test_a_bad_seed_file_never_connects(tmp_path) -> None:
     stays what it was (n/a on the page, never a 0)."""
     seed = tmp_path / "seed"
     seed.write_text("not a key")
+    import os as _os
+    _os.chmod(seed, 0o600)
     s = _settings_unit(tmp_path, seed=str(seed))
 
     async def never(seed: str) -> object:

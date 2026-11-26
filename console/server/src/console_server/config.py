@@ -2,12 +2,16 @@
 from __future__ import annotations
 
 import logging
+import re
 import os
 from collections.abc import Callable
 from dataclasses import dataclass, field
 from urllib.parse import urlsplit
 
 log = logging.getLogger("console")
+
+_PLACEHOLDER_RE = re.compile(r"^\$\{[A-Za-z_][A-Za-z0-9_]*\}$")
+_WARNED: set[str] = set()
 
 
 class ConfigError(Exception):
@@ -37,7 +41,7 @@ class Settings:
 
     # where to listen (default: loopback; the lab fronts it with TLS)
     listen_host: str = "127.0.0.1"
-    listen_port: int = 8747
+    listen_port: int = 0
 
     # the read-only NATS side: one connection per logged-in operator, with a
     # credential the login service issues for that person (RT-6.43); no
@@ -69,24 +73,34 @@ class Settings:
 def find() -> Settings:
     """From the environment; absent optional settings become their
     defaults, required ones raise ``ConfigError`` with their names."""
-    _warned: set[str] = set()
-
     def given(name: str) -> str:
-        """The reading rule of docs/env-names.md (0.103.0): the new
-        `CB_CONSOLE_…` first; else the old `CONSOLE_…` with one deprecation
-        warning per process that names the new one; both set with different
-        values refuses (never a secret's value). Empty counts as set."""
+        """The reading rule of docs/env-names.md (0.103.0), the placeholder
+        rule included: the new `CB_CONSOLE_…` first — an unexpanded
+        `${CB_CONSOLE_…}` (a manifest's untouched entry) counts as unset,
+        as the mcp `env()` helper reads it; else the old `CONSOLE_…` with one
+        deprecation warning per process that names the new one; both set
+        with different values refuses (never a secret's value). Empty
+        counts as set, the values compared as they are given (unstripped),
+        the returned value stays the caller's to strip."""
+        def _value(var: str) -> str | None:
+            if var not in os.environ:
+                return None
+            value = os.environ[var]
+            if _PLACEHOLDER_RE.match(value):
+                return None          # an untouched manifest entry: unset
+            return value
+
         new_name = "CB_CONSOLE_" + name[len("CONSOLE_"):]
-        new_value = os.environ.get(new_name, "").strip()
-        old_value = os.environ.get(name, "").strip()
-        if new_name in os.environ:
-            if name in os.environ and new_value != old_value:
+        new_value = _value(new_name)
+        old_value = _value(name)
+        if new_value is not None:
+            if old_value is not None and new_value != old_value:
                 raise ConfigError(f"{new_name} and {name} are both set and"
                                   " differ (values are never shown)")
             return new_value
-        if name in os.environ:
-            if name not in _warned:
-                _warned.add(name)
+        if old_value is not None:
+            if name not in _WARNED:
+                _WARNED.add(name)             # once per process
                 log.warning("console: the setting %s is deprecated,"
                             " use %s", name, new_name)
             return old_value

@@ -144,7 +144,7 @@ every value without lines is `null` (`n/a`).
 ## NATS for the console
 
 Nothing of the console's own. The login service needs its console path
-on (`AUTH_CB_CONSOLE_CLIENT_ID` naming the console's Keycloak client,
+on (`AUTH_CONSOLE_CLIENT_ID` naming the console's Keycloak client,
 `AUTH_OPERATOR_GROUP`, its JetStream user's consumer rights on `STATS`;
 `services/auth/README.md`). The pilot's console user in the NATS server's
 configuration, its seed secret and `CB_CONSOLE_NATS_SEED_FILE` are removed:

@@ -4575,7 +4575,7 @@ agent publishes passes for a person's word.
    would decide who sees what.
 2. **Two clients, two paths, never both.** Recommended: the callout issues a
    person's credential only for a token whose `azp` is the console's client
-   (`AUTH_CB_CONSOLE_CLIENT_ID`, new) and whose `aud` names it, and an agent's
+   (`AUTH_CONSOLE_CLIENT_ID`, new) and whose `aud` names it, and an agent's
    only for the bus's client, as today; a token that names both, or
    neither, is refused. The console's client in Keycloak is public with the
    standard flow (authorization code with PKCE) alone: the device
