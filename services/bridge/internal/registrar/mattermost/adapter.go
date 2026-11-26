@@ -67,9 +67,9 @@ func (c Config) checkURL() error {
 			return nil
 		}
 		return fmt.Errorf("mattermost: %s: http to a host that is not loopback would send the admin "+
-			"token in clear text; use https, or allow http (BRIDGE_MM_ALLOW_HTTP=true)", u.Redacted())
+			"token in clear text; use https, or allow http (BRIDGE_MM_ALLOW_HTTP=true)", u.Scheme+"://"+u.Host)
 	default:
-		return fmt.Errorf("mattermost: %s: neither http nor https", u.Redacted())
+		return fmt.Errorf("mattermost: %s: neither http nor https", u.Scheme+"://"+u.Host)
 	}
 }
 
