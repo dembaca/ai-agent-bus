@@ -64,10 +64,15 @@ func (h *Handler) now() time.Time {
 }
 
 // ServeHTTP writes the record, or the registrar's exact 404.
-func (h *Handler) ServeHTTP(w http.ResponseWriter, _ *http.Request) {
-	// The hosts verify the record, never cache it.
+func (h *Handler) ServeHTTP(w http.ResponseWriter, r *http.Request) {
+	// The hosts verify the record, never cache it; only a read asks for it.
 	w.Header().Set("Cache-Control", "no-store")
 	w.Header().Set("Content-Type", "application/json")
+	if r.Method != http.MethodGet && r.Method != http.MethodHead {
+		w.Header().Set("Allow", "GET, HEAD")
+		w.WriteHeader(http.StatusMethodNotAllowed)
+		return
+	}
 	if h.Attest == nil {
 		w.WriteHeader(http.StatusServiceUnavailable)
 		_, _ = io.WriteString(w, `{"error":"no signing key"}`)

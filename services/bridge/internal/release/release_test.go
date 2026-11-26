@@ -79,6 +79,27 @@ func TestNoReleaseSetIsTheRegistrarS404(t *testing.T) {
 	}
 }
 
+// #194 review: a read asks for the record; anything else is refused.
+func TestOnlyAReadGetsTheRecord(t *testing.T) {
+	a, _ := testAttestor(t)
+	h, err := New(testKey+"\n", "latest", a, time.Date(2026, 11, 26, 9, 0, 0, 0, time.UTC))
+	if err != nil {
+		t.Fatal(err)
+	}
+	for _, method := range []string{http.MethodPost, http.MethodPut, http.MethodDelete} {
+		w := httptest.NewRecorder()
+		h.ServeHTTP(w, httptest.NewRequest(method, "/register/v1/release", nil))
+		if w.Code != http.StatusMethodNotAllowed || w.Header().Get("Allow") != "GET, HEAD" {
+			t.Fatalf("%s: %d %q", method, w.Code, w.Header().Get("Allow"))
+		}
+	}
+	w := httptest.NewRecorder()
+	h.ServeHTTP(w, httptest.NewRequest(http.MethodHead, "/register/v1/release", nil))
+	if w.Code != http.StatusOK {
+		t.Fatalf("HEAD: %d", w.Code)
+	}
+}
+
 func TestTheSettingsAreValidated(t *testing.T) {
 	a, _ := testAttestor(t)
 	setAt := time.Date(2026, 11, 26, 9, 0, 0, 0, time.UTC)
