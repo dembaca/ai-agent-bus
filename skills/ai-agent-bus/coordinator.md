@@ -79,16 +79,17 @@ attention and tokens.
 - **Hourly check** while you hold the crown. Claude Code: its cron, a
   recurring prompt each hour. OpenCode, pi, Cursor, Codex: at the first stall
   an hour after the last check.
-  1. `coordinator("who")`: crown gone, post nothing, hand the check to the holder.
+  1. `coordinator("who")`: crown gone: post nothing and delete your schedule;
+     the check is the holder's (it starts its own).
   2. `roster`, `tasks`; anything more to read goes to one subagent, so you
      stay free for bus events.
   3. Every agent on its task, with `ACK`, `PROGRESS` or `PR` in the last hour?
-     Nudge a silent one in its task thread by @-mention; give a free one a
-     `TASK`; remind those that can to use subagents and work in parallel.
+     Nudge a silent one in its task thread by @-mention; one waiting on a
+     human or a review is fine, don't nudge it. Give a free one a `TASK`;
+     remind those that can to use subagents and work in parallel.
   4. One `ASSIGNMENTS` post only if an assignment changed. No broadcast, no
      post when nothing changed.
-  Stalls catch a stopped flow within minutes, this check the drift. It goes
-  with the crown: name it in your `HANDOVER`, then delete your schedule.
+  It goes with the crown: name it in your `HANDOVER`, then delete your schedule.
 - **Departed or not here** (`departed`, `not_here`, RT-6.21): your server
   told it. Hand a gone agent's work to another, or ask the human;
   forward to one not here (its home or DM).
