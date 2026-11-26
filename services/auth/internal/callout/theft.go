@@ -2,6 +2,7 @@ package callout
 
 import (
 	"errors"
+	"fmt"
 	"net"
 	"strings"
 
@@ -59,13 +60,22 @@ func (s *Service) watchTheft(nkey, sid, addr string) error {
 	return nil
 }
 
-// source is the client's address without its port: the network an issue comes
-// from, as the NATS server reports it (IPv6 in brackets). An address without a
-// port is taken as it is.
+// source is the network an issue comes from, as a prefix (IPv4 /24, IPv6 /64):
+// two addresses of one network are one network, so dual-stack, returning IPv6
+// privacy addresses and one host's several paths are not mistaken for a theft.
+// A shared NAT or proxy hides everything behind one address (the limit).
 func source(host string) string {
 	host = strings.TrimSpace(host)
 	if h, _, err := net.SplitHostPort(host); err == nil {
-		return strings.Trim(h, "[]")
+		host = h
 	}
-	return strings.Trim(host, "[]")
+	host = strings.Trim(host, "[]")
+	ip := net.ParseIP(host)
+	if ip == nil {
+		return host
+	}
+	if v4 := ip.To4(); v4 != nil {
+		return fmt.Sprintf("%d.%d.%d.0/24", v4[0], v4[1], v4[2])
+	}
+	return ip.Mask(net.CIDRMask(64, 128)).String() + "/64"
 }

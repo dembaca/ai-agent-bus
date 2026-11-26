@@ -60,8 +60,9 @@ type Identity struct {
 	// ID is the token's `jti`, for the audit log; empty when it has none.
 	ID string
 	// SID is the token's `sid`, the Keycloak session it belongs to (RT-6.34, #154
-	// step 3): the login service tracks its sources and can end it; empty when the
-	// token has none.
+	// step 3): the login service watches where it is used from and refuses a
+	// concurrent use; it ends no session (no Keycloak admin right). Empty when the
+	// token names none.
 	SID string
 	// Approver is true when the token lists the approvers' group. It is the
 	// upper bound only: the session's trusted list selects within it.

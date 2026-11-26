@@ -41,14 +41,17 @@ before 0.5.0 are described in the git history.
 ### Added
 
 - **The login service refuses an issue when one session or host key is used from
-  two networks at once** (#154 step 3, decision 10). The auth callout watches
-  each host key and each token's Keycloak session (`sid`): the same one at an
-  issue from a network that is already in use while another was used since is
-  refused, and the refusal carries the owner and the session in the login
-  service's log; a network change one after another is reported only. No
-  Keycloak admin right is involved: the service ends no session, so a stolen
-  token stays valid at Keycloak until it runs out or the owner ends the session
-  (the owner's decision, #154).
+  two networks at once** (#154 step 3, decision 10). After the host signature
+  and the token are checked, the auth callout watches each host key and each
+  token's Keycloak session (`sid`): two networks in use at the same time refuse
+  that id for 30 minutes — a retry from either side included — and the login
+  service's log names the id and the network prefix. One network is a prefix
+  (IPv4 /24, IPv6 /64), so dual-stack and returning addresses are no false
+  alarm; a single network change, once the old one is no longer in use, is
+  reported only. No Keycloak admin right is involved: the service ends no
+  session, so a stolen token stays valid at Keycloak until it runs out or the
+  owner ends the session (the owner's decision, #154). A shared NAT or proxy
+  hides everyone behind one prefix.
 - **The operator console shows the channels of the operator's own agents
   and of agents that trust the operator directly** (#128, the console on
   the bus as its operator, RT-6.43 step 3). At each agent's credential the

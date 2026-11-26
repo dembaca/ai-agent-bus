@@ -8,18 +8,27 @@ import (
 
 // Guard watches where a Keycloak session and a host key are used from
 // (decision 10, step 3 of #154): one of them appearing at an issue from two
-// networks *at the same time* is a theft; a network change one after another
-// is reported, not a theft. Same-network theft, and a copy used only after the
-// real session stopped, are not caught (the search's limits).
+// networks *while both are in use* is a theft and refuses further issues for a
+// while; a network change one after another is reported, not refused. What it
+// cannot see is named where it is: a thief on the same network, a shared NAT or
+// proxy (one address for everybody), and a copy used only after the real
+// session stopped.
 //
-// It is the detector alone: what follows a theft — ending the Keycloak session
-// through the admin API, telling the owner — is the caller's, so this package
-// needs no credential and stays testable.
+// It is the detector alone: what follows a theft — telling the owner — is the
+// caller's, so this package holds no credential and stays testable.
 type Guard struct {
-	// Window is how long a network counts as recently used. A network that comes
-	// back within it after another one was used means both are in use: the
-	// concurrent case. Older traces are forgotten, so a move is a move.
+	// Overlap is how long a network stays in use after its last issue. Two
+	// networks used within it of each other are in use at once: the concurrent
+	// case. A network back after the overlap is a move.
+	Overlap time.Duration
+	// Block is how long a concurrent id is refused after the verdict. A new
+	// login (a new Keycloak session) starts with a new session id, but the host
+	// key stays blocked for this long.
+	Block time.Duration
+	// Window is how long a network trace is kept: at least Overlap and Block.
 	Window time.Duration
+	// MaxNetworks caps the networks remembered per id (the newest kept).
+	MaxNetworks int
 	// Log gets a theft or a move; nil is slog.Default().
 	Log *slog.Logger
 	// Now is the clock; nil is time.Now.
@@ -30,9 +39,11 @@ type Guard struct {
 }
 
 type entry struct {
-	// Networks seen within the window, with their last use.
+	// Networks (a prefix, not one address) with their last use.
 	networks map[string]time.Time
 	last     string
+	// Blocked until: every issue is refused while the clock is before it.
+	blockedUntil time.Time
 }
 
 // Verdict is what an observation says about the id it belongs to.
@@ -41,12 +52,11 @@ type Verdict int
 const (
 	// Same: the same network as the last issue of that id.
 	Same Verdict = iota
-	// Moved: a network not seen within the window while another one was used
-	// before — a person changing networks, reported, never a theft.
+	// Moved: a new network while no other one is still in use — a person
+	// changing networks, reported, never refused.
 	Moved
-	// Concurrent: two networks in use at once — the same session or host key
-	// seen from a network that was already in use, while another one was used
-	// since. A theft.
+	// Concurrent: two networks in use at once, or an id still blocked after
+	// such a verdict — the issue is refused.
 	Concurrent
 )
 
@@ -60,21 +70,22 @@ func (v Verdict) String() string {
 	return "same"
 }
 
+const (
+	defaultOverlap     = 10 * time.Minute
+	defaultBlock       = 30 * time.Minute
+	defaultWindow      = 30 * time.Minute
+	defaultMaxNetworks = 8
+)
+
 // Observe notes that id was used from network now and returns the verdict. id
 // names the thing watched, e.g. "sid:"+session or "nkey:"+host key; network is
-// the client's source as the login service sees it (a host, not a port).
+// a prefix (callout.source): one address per network, so dual-stack, IPv6
+// privacy addresses and a returning host are not mistaken for a theft.
 func (g *Guard) Observe(id, network string) Verdict {
 	if id == "" || network == "" {
-		return Same // nothing to compare: never a theft on a missing value
+		return Same // nothing to compare: never a refusal on a missing value
 	}
-	now := time.Now()
-	if g.Now != nil {
-		now = g.Now()
-	}
-	window := g.Window
-	if window <= 0 {
-		window = 30 * time.Minute
-	}
+	now, overlap, block, window := g.clock()
 	g.mu.Lock()
 	defer g.mu.Unlock()
 	if g.seen == nil {
@@ -86,31 +97,78 @@ func (g *Guard) Observe(id, network string) Verdict {
 		g.seen[id] = &entry{networks: map[string]time.Time{network: now}, last: network}
 		return Same
 	}
+	if now.Before(e.blockedUntil) {
+		// Still blocked: a retry from the same network must not pass either.
+		return Concurrent
+	}
 	if e.last == network {
 		e.networks[network] = now
 		return Same
 	}
-	_, wasUsed := e.networks[network]
 	verdict := Moved
-	if wasUsed {
-		verdict = Concurrent
+	for n, at := range e.networks {
+		if n != network && now.Sub(at) < overlap {
+			verdict = Concurrent
+			break
+		}
 	}
 	e.networks[network] = now
 	e.last = network
+	g.cap(e, g.maxNetworks())
+	if verdict == Concurrent {
+		e.blockedUntil = now.Add(block)
+	}
 	g.report(id, verdict, network)
 	return verdict
 }
 
-// Forget drops an id's traces, e.g. when its session ended.
-func (g *Guard) Forget(id string) {
-	g.mu.Lock()
-	defer g.mu.Unlock()
-	delete(g.seen, id)
+func (g *Guard) clock() (now time.Time, overlap, block, window time.Duration) {
+	now = time.Now()
+	if g.Now != nil {
+		now = g.Now()
+	}
+	overlap, block, window = g.Overlap, g.Block, g.Window
+	if overlap <= 0 {
+		overlap = defaultOverlap
+	}
+	if block <= 0 {
+		block = defaultBlock
+	}
+	if window <= 0 {
+		window = defaultWindow
+	}
+	if window < overlap {
+		window = overlap
+	}
+	if window < block {
+		window = block
+	}
+	return now, overlap, block, window
 }
 
-// sweep forgets networks not used within the window, and ids whose every
-// network is that old: a moved session's old network stops counting, so a
-// return to it later is a move, not a theft.
+func (g *Guard) maxNetworks() int {
+	if g.MaxNetworks <= 0 {
+		return defaultMaxNetworks
+	}
+	return g.MaxNetworks
+}
+
+// cap keeps the newest MaxNetworks networks of an entry.
+func (g *Guard) cap(e *entry, n int) {
+	for len(e.networks) > n {
+		oldest, at := "", time.Time{}
+		for k, v := range e.networks {
+			if oldest == "" || v.Before(at) {
+				oldest, at = k, v
+			}
+		}
+		delete(e.networks, oldest)
+	}
+}
+
+// sweep forgets networks outside the window and ids with nothing left to say:
+// a moved session's old network stops counting, and a block that ended leaves
+// nothing behind.
 func (g *Guard) sweep(now time.Time, window time.Duration) {
 	edge := now.Add(-window)
 	for id, e := range g.seen {
@@ -119,17 +177,8 @@ func (g *Guard) sweep(now time.Time, window time.Duration) {
 				delete(e.networks, n)
 			}
 		}
-		if len(e.networks) == 0 {
+		if len(e.networks) == 0 && !now.Before(e.blockedUntil) {
 			delete(g.seen, id)
-			continue
-		}
-		if _, ok := e.networks[e.last]; !ok {
-			// The last network aged out while another is still recent: the next
-			// issue is compared with what remains, which is the honest picture.
-			for n := range e.networks {
-				e.last = n
-				break
-			}
 		}
 	}
 }
@@ -141,7 +190,7 @@ func (g *Guard) report(id string, v Verdict, network string) {
 	}
 	switch v {
 	case Concurrent:
-		// No address and no token: the id and the network are what an operator acts on.
+		// The id and the network prefix only: no host address, no token, no text.
 		log.Warn("login: one id used from two networks at once", "id", id, "network", network)
 	case Moved:
 		log.Info("login: a new network for the same id", "id", id, "network", network)
