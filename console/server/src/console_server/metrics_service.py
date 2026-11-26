@@ -81,11 +81,12 @@ class MetricsService:
     # -- the wiring ------------------------------------------------------------
 
     async def _dial(self, seed: str, lost: asyncio.Event | None = None) -> Any:
-        def on_lost(_nc: Any) -> None:
-            # nats-py hands the callback the connection: a NATS restart or
-            # a lost one ends _serve (the loop connects again); without
-            # this it would wait forever. A dial without the lost event
-            # watches nothing.
+        async def on_lost(_nc: Any) -> None:
+            # a coroutine, as nats-py demands (callbacks must be coroutine
+            # functions, round-2 finding N1's second half): the callback
+            # hands the reading its end (a NATS restart or a lost one ends
+            # _serve, the loop connects again), and a dial without the lost
+            # event watches nothing
             if lost is not None:
                 lost.set()
 
