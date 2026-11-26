@@ -36,6 +36,10 @@ if TYPE_CHECKING:  # the seam the tests replace: one call per subscribe
 log = logging.getLogger("console")
 
 CONNECT_TIMEOUT_SEC = 5.0
+# the consumers' names as the login service makes them (EnsureMetrics there):
+# parse_ack compares exactly, so the deliveries carry these two names
+METRICS_PRESENCE_CONSUMER = "console-metrics_presence"
+METRICS_STATS_CONSUMER = "console-metrics_stats"
 BACKOFF_SEC = 2.0
 BACKOFF_MAX_SEC = 30.0
 SEED_MAX = 4096        # an nkey seed is one line; anything bigger is no seed
@@ -66,13 +70,22 @@ class MetricsService:
     async def stop(self) -> None:
         self._stopped.set()
         if self._task is not None:
-            await asyncio.wait_for(asyncio.shield(self._task), 3.0)
+            try:
+                await asyncio.wait_for(asyncio.shield(self._task), 3.0)
+            except (TimeoutError, asyncio.TimeoutError):
+                # the reading may sit in a connect timeout: the console's
+                # shutdown goes on; the daemon task dies with the process
+                pass
 
     # -- the wiring ------------------------------------------------------------
 
-    async def _dial(self, seed: str) -> Any:
+    async def _dial(self, seed: str, lost: Any = None) -> Any:
         kw: dict[str, Any] = {"nkeys": seed, "allow_reconnect": False, "connect_timeout":
                               int(CONNECT_TIMEOUT_SEC)}
+        if lost is not None:
+            # a NATS restart or a lost connection ends _serve (the loop
+            # connects again): without it, _serve would wait forever
+            kw["disconnected_cb"] = lost
         tls = tls_context(self.settings)
         if tls is not None:
             kw = {"tls": tls, "tls_handshake_first": True, **kw}
@@ -88,14 +101,16 @@ class MetricsService:
                         " the agent numbers stay absent until it is",
                         type(exc).__name__)
             return
-        if not seed or len(seed) > SEED_MAX or seed.split() != [seed]:
+        if (not seed or len(seed) > SEED_MAX or seed.split() != [seed]
+                or not seed.startswith("SU")):
             log.warning("console: the metrics nkey seed is not one key;"
                         " the agent numbers stay absent")
             return
         backoff = BACKOFF_SEC
         while not self._stopped.is_set():
             try:
-                nc = await self._connect(seed)
+                lost = asyncio.Event()
+                nc = await self._connect(seed, lost)
             except asyncio.CancelledError:
                 raise
             except Exception as exc:  # noqa: BLE001 - a refused, absent or slow NATS
@@ -113,7 +128,7 @@ class MetricsService:
                 continue
             backoff = BACKOFF_SEC
             try:
-                await self._serve(nc)
+                await self._serve(nc, lost)
             except asyncio.CancelledError:
                 return
             except Exception as exc:  # noqa: BLE001 - the loop supersedes any waiter
@@ -132,15 +147,16 @@ class MetricsService:
         except TimeoutError:
             pass
 
-    async def _serve(self, nc: Any) -> None:
-        """Subscribe to the two deliver subjects until the connection ends."""
-        done = asyncio.Event()
+    async def _serve(self, nc: Any, lost: asyncio.Event) -> None:
+        """Subscribe to the two deliver subjects until the connection ends
+        (the event: set by the disconnected callback, awaited here)."""
+        done = lost
 
         async def presence(msg: Any) -> None:
             self.last_delivery = time.monotonic()
             if self.view.fleet.on_delivery(msg.subject, msg.data, msg.reply,
                                             self.settings.presence_stream,
-                                            "console-metrics"):
+                                            METRICS_PRESENCE_CONSUMER):
                 self.view.fire()
 
         async def stats(msg: Any) -> None:
@@ -148,9 +164,6 @@ class MetricsService:
             self.view.stats_lines += 1
             self.view.stats.on_delivery(msg.subject, msg.data, msg.reply,
                                         self.settings.stats_stream, "console-metrics")
-
-        async def lost() -> None:
-            done.set()
 
         await nc.subscribe("deliver.metrics.presence", cb=presence)
         await nc.subscribe("deliver.metrics.stats", cb=stats)
