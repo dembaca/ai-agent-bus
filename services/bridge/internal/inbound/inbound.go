@@ -493,7 +493,7 @@ func (b *Bridge) post(ctx context.Context, h *home, p post, caught bool, lower i
 		b.Log.Warn("inbound: a post that does not encode, dropped", "home", h.name, "post", p.id, "error", err)
 		return nil
 	}
-	if err := b.publish(h, p.user, raw); err != nil {
+	if err := b.publish(h, p.user, raw, "post", p.id); err != nil {
 		return err
 	}
 	if err := b.Seen.MarkPost(ctx, p.id); err != nil {
@@ -551,7 +551,7 @@ func (b *Bridge) reaction(ctx context.Context, h *home, postID, userID, emoji st
 	if err != nil {
 		return err
 	}
-	if err := b.publish(h, userID, raw); err != nil {
+	if err := b.publish(h, userID, raw, kind, postID); err != nil {
 		return err
 	}
 	kinds[key] = kind
@@ -564,12 +564,16 @@ func (b *Bridge) reaction(ctx context.Context, h *home, postID, userID, emoji st
 	return b.advance(ctx, h, at)
 }
 
-// publish sends on <bus>.hu.<home>.<anchor>, "-" for an unbound account.
-func (b *Bridge) publish(h *home, userID string, body []byte) error {
+// publish sends on <bus>.hu.<home>.<anchor>, "-" for an unbound account, and
+// logs one INFO line once NATS has taken it: the home, what it was (post,
+// reaction or unreaction), the Mattermost post id and the subject, never the
+// text or a name beyond the anchor in the subject (RT-6.42 step 4).
+func (b *Bridge) publish(h *home, userID string, body []byte, what, mmPost string) error {
 	subject := b.BusPrefix + ".hu." + h.name + "." + SenderToken(b.Anchors.Anchor(userID))
 	if err := b.NATS.Publish(subject, body); err != nil {
 		return fmt.Errorf("publish %s: %w", subject, err)
 	}
+	b.Log.Info("inbound: carried", "home", h.name, "what", what, "post", mmPost, "subject", subject)
 	return nil
 }
 
