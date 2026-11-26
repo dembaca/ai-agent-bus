@@ -390,8 +390,9 @@ at most 8 KiB, for example:
 | `kind` | `session` or `autonomous` |
 
 No other value is a string. Each listed key has one type: `part` an
-integer, `final` a boolean, `posts` and `compact` a pair of numbers,
-`wakes` and `blocks` objects of numbers, `tools` an object of pairs, `tok`
+integer, `final` a boolean, `posts`, `compact` and `polls` a pair of numbers,
+`wakes` and `blocks` objects of numbers, `tools`, `post_words`, `inbound`
+and `inject` objects of pairs, `tok`
 its numbers and the objects `all` and `bus` of numbers, every other listed
 key one number; each number an integer from 0 to 10^12, and a share is shown within 0 to 100. A key outside the list may
 hold a number, a boolean, a list of numbers or an object of such values,
@@ -400,11 +401,15 @@ string off its pattern, a listed key of another type or out of range, a
 duplicate key or a line over 8 KiB drops the whole line. A reader counts
 each line once by its stream sequence. The publisher sends at most 8000 bytes. Keys come from one
 fixed allow list in `stats.py` (`LINE_KEYS` with their labels,
-`TOOL_NAMES`, `WAKE_REASONS`, `BLOCK_KINDS`, `TOK_KEYS`, `TOK_TYPES`), shared by
+`TOOL_NAMES`, `WAKE_REASONS`, `BLOCK_KINDS`, `TOK_KEYS`, `TOK_TYPES`,
+`POST_WORDS`, `INBOUND_KEYS`, `INJECT_KINDS`), shared by
 publisher and reader: the top-level fields RT-6.9 names; in `tools` the
 bus's own MCP tool names; in `wakes` and `blocks` the reasons and kinds
 the turn hooks write; in `tok` `req`, `bus_req`, `fixed`, `skill`, `all`
-and `bus`; in `tok.all` and `tok.bus` `in`, `read`, `w5m`, `w1h` and `out`.
+and `bus`; in `tok.all` and `tok.bus` `in`, `read`, `w5m`, `w1h` and `out`;
+in `post_words` the bus words and `ask`, `plain`, `other`; in `inbound`
+`agent`, `human`, `event` and `envelope`; in `inject` `start`, `check`,
+`digest`, `drain`, `signoff`, `listen`, `idle`, `compact`, `wake` and `other`.
 The publisher leaves out any key outside the list, the reader ignores one,
 and no key is ever shown as text, only mapped to the label the list gives
 it.

@@ -15,6 +15,45 @@ before 0.5.0 are described in the git history.
   `BRIDGE_MM_ALLOW_HTTP=true` (default off, a warning at start). The
   bridge's WebSocket reader refuses such a URL on its own too.
 
+### Added
+
+- **The bus traffic by category, exact counts for every harness** (the
+  first stage of splitting the tokens into task work, bus overhead and
+  multi-agent coordination, #139; the overhead measurement, RT-6.9). Each
+  `STATS` part carries four new objects of integer pairs under fixed keys:
+  `post_words` (own posts by bus word, plus `ask`, `plain`, `other`),
+  `inbound` (posts and events handed to the agent by author class `agent`,
+  `human`, `event`, and the envelope's characters), `polls` (calls of
+  `wait_for_events` and the empty ones) and `inject` (texts the hooks, the
+  listener, the OpenCode plugin, the pi extension and the pusher put into
+  the context, by kind; `wake`, a text carrying one woken post's body,
+  counts as coordination). Hooks and plugins send the new `POST /v1/stat`
+  kind `inject` with a kind and a length (at most 10^7) only, never the
+  text. The server's own posts (reminders, acknowledgements, permission
+  notes, answers on departed agents, login notices) now count too, as
+  `other`. The reader
+  maps them to bus overhead and coordination (`stats.CATEGORY_OF`, so a
+  changed mapping applies to old lines too): `mm-agent-stats.sh report`,
+  `stats_report` and the console gain the report "bus traffic by
+  category", with a coverage line; lines of older publishers show n/a,
+  never 0; `stats_report` returns only the category sums, shares and
+  coverage of it, the per-key sums stay in the script's `--json` and the
+  console. A digest counts as overhead, so the overhead share is an upper
+  bound until the token split by content. Zero added model tokens: no
+  instruction, tool doc or schema, skill text, hook or listener text,
+  client line, plugin sentence, pushed tag or hint changes, and no tool
+  result field is added; a test pins all of these by hash. Only
+  `stats_report`, when asked, returns a few more numbers.
+
+### Changed
+
+- **The console's report "the bus's share of all tokens, per version" is
+  now "bus and coordination share of all tokens, per version"**, and the
+  script's column "bus share" "bus and coordination share": the measure
+  counts every request the bus caused whole, a peer's task included, so it
+  is not the bus's own overhead alone (RT-6.9 step 3, the console on the
+  bus, RT-6.43 step 8).
+
 ### Fixed
 
 - **The central bridge's WebSocket reader reconnects promptly and bounds

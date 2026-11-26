@@ -235,10 +235,10 @@ const asksReport = (id: string, window: "24 h" | "7 d", n: number): Report => ({
   ],
 })
 
-// The server's two stage-1 reports (RT-6.43 step 8): no names, counts and seconds only.
+// The server's reports (RT-6.43 step 8): no names, counts and seconds only.
 const stats = (): Report[] => [
   {
-    id: "share-per-version", title: "the bus's share of all tokens, per version", window: "7 d",
+    id: "share-per-version", title: "bus and coordination share of all tokens, per version", window: "7 d",
     fields: [
       { label: "version 0.100.0", value: 7.4, unit: "%" },
       { label: "version 0.99.0", value: null, unit: "%" },
@@ -248,6 +248,22 @@ const stats = (): Report[] => [
   },
   asksReport("asks-24h", "24 h", 4),
   asksReport("asks-7d", "7 d", 19),
+  {
+    // RT-6.9 step 3: exact counts, grouped into bus overhead and coordination.
+    id: "traffic-by-category", title: "bus traffic by category", window: "7 d",
+    fields: [
+      { label: "bus overhead, items", value: 212, unit: "count" },
+      { label: "bus overhead, characters", value: 96_400, unit: "count" },
+      { label: "coordination, items", value: 148, unit: "count" },
+      { label: "coordination, characters", value: 71_250, unit: "count" },
+      { label: "bus overhead share of characters", value: 58, unit: "%" },
+      { label: "polls", value: 64, unit: "count" },
+      { label: "empty polls share", value: 41, unit: "%" },
+      { label: "lines with these counts", value: 30, unit: "count" },
+      { label: "lines", value: 42, unit: "count" },
+      { label: "age of the oldest line", value: 5 * 86400, unit: "s" },
+    ],
+  },
 ]
 
 const graph = (): GraphData => ({

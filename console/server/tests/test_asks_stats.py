@@ -172,7 +172,7 @@ def test_the_two_reports_are_stats_reports_numbers() -> None:
     older = LINE | {"sid": "aaaaaaaaaaaa", "v": "0.100.0", "asks": 5, "asks_answered": 5,
                     "ask_wait_sec": 50, "ask_wait_max_sec": 20}
     book = book_with((A, older, NOW - 3 * 86400), (B, LINE, NOW - 600))
-    share, day, week = book.reports()
+    share, day, week, _traffic = book.reports()
     assert (share["window"], day["window"], week["window"]) == ("7 d", "24 h", "7 d")
     lines = [stats.decode_line(stats.nats_body(older) or b""), stats.decode_line(stats.nats_body(LINE) or b"")]
     by_version = {row["version"]: row["tok"]["bus_share_pct"] for row in stats.report(lines)}
@@ -189,6 +189,30 @@ def test_the_two_reports_are_stats_reports_numbers() -> None:
     assert all(v is None for r in empty for v in fields(r).values())
     # no agent's name anywhere in the reports
     assert A not in json.dumps(book.reports()) and B not in json.dumps(book.reports())
+
+
+def test_the_traffic_report_is_stats_reports_numbers() -> None:
+    """RT-6.9 step 3, RT-6.43 step 8: the bus traffic by category over 7 days equals what
+    stats_report gives on the same strictly decoded lines; a line without the counts (an
+    older publisher) counts in the coverage, never as 0; without any such line: n/a."""
+    traffic = {"post_words": {"HELLO": [1, 40], "DONE": [2, 200], "plain": [1, 30], "evil": [9, 9]},
+               "inbound": {"agent": [2, 500], "event": [1, 20], "envelope": [3, 600]},
+               "polls": [4, 3], "inject": {"drain": [1, 150]}}
+    new = LINE | {"sid": "bbbbbbbbbbbb", "v": "0.102.0", **traffic}
+    book = book_with((A, LINE, NOW - 3 * 86400), (B, new, NOW - 600))
+    report = next(r for r in book.reports() if r["id"] == "traffic-by-category")
+    lines = [stats.decode_line(stats.nats_body(LINE) or b""), stats.decode_line(stats.nats_body(new) or b"")]
+    want = stats.traffic_summary(lines) or {}
+    assert sum(row["traffic"] is not None for row in stats.report(lines)) == 1
+    got = fields(report)
+    assert report["window"] == "7 d" and report["title"] == "bus traffic by category"
+    assert (got["bus overhead, items"], got["bus overhead, characters"]) == tuple(want["overhead"]) == (1 + 1 + 1 + 3, 40 + 20 + 600 + 150)
+    assert (got["coordination, items"], got["coordination, characters"]) == tuple(want["coordination"]) == (5, 730)
+    assert got["bus overhead share of characters"] == want["overhead_chars_pct"]
+    assert (got["polls"], got["empty polls share"]) == (4, 75)
+    assert (got["lines with these counts"], got["lines"]) == (1, 2)
+    old = next(r for r in book_with((A, LINE, NOW)).reports() if r["id"] == "traffic-by-category")
+    assert fields(old)["lines"] == 1 and fields(old)["bus overhead, items"] is None
 
 
 def test_a_line_with_text_is_dropped_and_old_lines_leave(caplog) -> None:

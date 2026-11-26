@@ -631,6 +631,10 @@ mm_lease_sec() {
 # the counter goes to its hook API instead (POST /v1/stat, at most 1 s).
 # Never fails, never prints: a counter must not disturb a session.
 mm_stats_off() { [[ "${MM_STATS_CHANNEL:-agents-stats}" =~ ^(off|none|0|false)$ ]]; }
+# A text's length in Unicode code points, as Python's len and the plugins count it
+# (RT-6.9: an inject's `chars`), whatever the locale: bash's ${#s} counts bytes
+# under C/POSIX. jq, which mm_stat needs anyway; without it nothing is counted.
+mm_chars() { jq -nr --arg s "$1" '$s | length' 2>/dev/null || echo 0; }
 mm_stat() {
   local kind="$1" f kv
   shift || true
