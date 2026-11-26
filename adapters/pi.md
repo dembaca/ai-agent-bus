@@ -17,6 +17,13 @@ session lives, the context use in the bot's status, and its handoff state and th
 skill after a compaction. What it does and when:
 [arc42 §6.27](../docs/arc42/06-runtime-view.md#627-pi-turn-cycle-through-its-extension).
 
+It also splits the run's tokens into task work, bus overhead and coordination
+([arc42 §6.9](../docs/arc42/06-runtime-view.md#69-measuring-the-coordination-overhead),
+ADR-017): pi's `context` event gives each model request's messages (without the system
+prompt and the tool docs), `message_end` the answer's `usage` (`input`, `cacheRead`,
+`cacheWrite`, `output`). When a run settles it posts one `usage` stat with the run's
+sums, numbers only; it adds no text to the context.
+
 Load it for every project with a symlink (it finds this checkout, its `mcp/` and
 `skills/`, by itself):
 

@@ -1153,3 +1153,71 @@ def test_the_report_splits_the_tokens_by_category():
     assert set(brief["split"]) == {"estimated", "lines", "of", "harnesses", "raw", "eq", "raw_pct", "eq_pct"}
     assert brief["split"]["eq_pct"] == s["eq_pct"]
     assert all("types" not in (r["split"] or {}) for r in brief["roles"])
+
+
+# --- RT-6.9 steps 1 to 3: the token split of OpenCode and pi (#139 stage 2b) -------------------
+
+def _usage(**v):
+    e = dict.fromkeys(stats.USAGE_FIELDS, 0) | v
+    stats.record("usage", **e)
+
+
+def test_usage_events_fold_into_tok_with_the_bus_head():
+    """RT-6.9 step 2: without a transcript the server reads, the plugin's usage events of the
+    part make `tok`: their sums, cache write as 5 min, plus the bus's fixed head as overhead
+    in cache read per request; no measure by cause (`bus`, `bus_req`, `fixed`, `skill`)."""
+    _usage(req=2, req_ovh=1, a_in=500, a_read=10_000, a_w=300, a_out=200,
+           o_in=50, o_read=1000, o_w=30, o_out=20, c_in=100, c_read=2000, c_w=60, c_out=40)
+    _usage(req=1, req_coord=1, a_in=100, a_read=5000, a_out=50, c_in=80, c_out=10)
+    s = stats.summary("0.103.0", overhead.Fixed(2000, 2000, 22000))   # head 1000 tokens per request
+    assert s["tok"] == {
+        "req": 3, "req_ovh": 1, "req_coord": 1, "m": overhead.METHOD,
+        "all": {"in": 600, "read": 15_000, "w5m": 300, "w1h": 0, "out": 250},
+        "ovh": {"in": 50, "read": 1000 + 3000, "w5m": 30, "w1h": 0, "out": 20},
+        "coord": {"in": 180, "read": 2000, "w5m": 60, "w1h": 0, "out": 50}}
+    assert stats.decode_line(stats.nats_body(s) or b"")["tok"] == s["tok"]
+
+
+def test_the_head_is_held_to_the_totals():
+    """RT-6.9 step 2: the head goes to cache read as far as task work leaves room there, the
+    rest to fresh input, then nothing: overhead and coordination never exceed a type's total.
+    Without the fixed sizes no head; a part without requests has no tok."""
+    _usage(req=1, a_in=300, a_read=1000, a_out=10, o_read=200, c_read=700, c_in=100)
+    tok = stats.summary("0.103.0", overhead.Fixed(4000, 4000, 0))["tok"]    # head 2000 tokens
+    assert (tok["ovh"]["read"], tok["ovh"]["in"]) == (300, 200)              # 100 + 200 room, then none
+    assert all(tok["ovh"][k] + tok["coord"][k] <= tok["all"][k] for k in overhead.KEYS)
+    stats._path().unlink()
+    _usage(req=1, a_read=1000, o_read=10)
+    assert stats.summary("0.103.0")["tok"]["ovh"]["read"] == 10
+    stats._path().unlink()
+    _usage(req=0)
+    assert "tok" not in stats.summary("0.103.0", overhead.Fixed(4000, 4000, 0))
+
+
+def test_a_usage_event_counts_in_the_part_it_arrived_in():
+    """RT-6.9 step 2: usage events are not carried over a cut; the next part has its own."""
+    now = int(time.time())
+    _write_events({"k": "turn", "t": now - stats.PART_SEC - 100, "by": "human"},
+                  {"k": "turn_end", "t": now - stats.PART_SEC - 50})
+    _usage(req=1, a_in=10)
+    one = stats.cut("0.103.0", overhead.Fixed(0, 0, 0), now=now)
+    assert one["tok"]["all"]["in"] == 10
+    assert not any(e.get("k") == "usage" for e in _events())
+    _usage(req=2, a_in=7)
+    assert stats.summary("0.103.0", overhead.Fixed(0, 0, 0))["tok"]["req"] == 2
+
+
+def test_a_usage_line_counts_in_the_split_not_in_the_bus_share():
+    """RT-6.9 step 3: a line whose tok came from usage events (no `tok.bus`) counts in the
+    tokens by category (method 1) and stays out of the bus share by cause, never a 0 % there."""
+    usage_tok = {"req": 3, "req_ovh": 1, "req_coord": 1, "m": 1,
+                 "all": {"in": 600, "read": 15_000, "w5m": 300, "w1h": 0, "out": 250},
+                 "ovh": {"in": 50, "read": 4000, "w5m": 30, "w1h": 0, "out": 20},
+                 "coord": {"in": 180, "read": 2000, "w5m": 60, "w1h": 0, "out": 50}}
+    lines = [{"v": "0.103.0", "sid": "a" * 12, "rt": "opencode", "min": 60, "tok": usage_tok},
+             {"v": "0.103.0", "sid": "b" * 12, "rt": "claude-code", "min": 60, "tok": SPLIT_TOK}]
+    row = stats.report(lines)[0]
+    assert row["split"]["lines"] == 2 and row["split"]["harnesses"] == ["claude-code", "opencode"]
+    assert row["tok"]["sessions"] == 1 and row["tok"]["req"] == SPLIT_TOK["req"]
+    only = stats.report(lines[:1])[0]
+    assert only["tok"] is None and only["split"]["types"]["overhead"]["read"] == 4000

@@ -995,3 +995,35 @@ test("RT-6.20: state kept by a plugin from before ADR-009 (a window going on) ke
 test("RT-6.9 step 1: an inject's length counts Unicode code points, as the server and the hooks do", () => {
   assert.equal(chars("a\u{1F600}\u2014"), 3)  // a, a grinning face, an em dash: 4 UTF-16 units, 3 code points
 })
+
+// The token split's own tests (plugin/usage.ts): run with this file, as CI runs it.
+import "./usage.test.ts"
+
+test("RT-6.9 step 2: the session's requests go out as one `usage` stat at the turn end, numbers only", async () => {
+  const fx = await start({}, { child: { parentID: "s1" } })
+  await fx.prompt("s1", "u".repeat(400))
+  // One event after the other: emit() is done when the plugin asks for the next.
+  const step = async (id: string, tokens: any) => {
+    await fx.emit("session.step.started", { sessionID: id })
+    await fx.emit("session.tool.input.started", { sessionID: id, id: "t1", name: `${SERVER}_post_message` })
+    await fx.emit("session.tool.called", { sessionID: id, id: "t1", input: { kind: "IDLE", message: "IDLE" } })
+    await fx.emit("session.step.ended", { sessionID: id, finish: "tool-calls", tokens })
+  }
+  await step("s1", { input: 100, output: 10, reasoning: 0, cache: { read: 0, write: 0 } })
+  // A subagent's requests are not the session's.
+  await step("child", { input: 999, output: 99, reasoning: 0, cache: { read: 0, write: 0 } })
+  calls = []
+  await fx.ended()
+  const usage = rest().filter((c) => c.body?.k === "usage")
+  assert.equal(usage.length, 1)
+  // Before the turn-end check; `{"kind": "IDLE", "message": "IDLE"}` is 35 characters, 9 tokens of overhead.
+  assert.equal(rest()[0].body?.k, "usage")
+  assert.deepEqual(usage[0].body, { k: "usage", req: 1, req_ovh: 0, req_coord: 0, a_in: 100, a_read: 0, a_w: 0, a_out: 10,
+    o_in: 0, o_read: 0, o_w: 0, o_out: 9, c_in: 0, c_read: 0, c_w: 0, c_out: 0 })
+  // A turn without a request posts none.
+  await fx.prompt("s1", "again")
+  calls = []
+  await fx.ended()
+  assert.equal(rest().filter((c) => c.body?.k === "usage").length, 0)
+  await fx.cleanup()
+})

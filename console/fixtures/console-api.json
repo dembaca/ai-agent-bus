@@ -110,7 +110,7 @@
     "id": "tokens-by-category",
     "title": "tokens by category",
     "window": "7 d",
-    "note": "estimated: exact totals per token type from Claude Code's transcript, split by content at 4 characters per token; text and thinking by what drove the request, a convention; from 1 of 1 lines (claude-code)",
+    "note": "estimated: exact totals per token type from the harness (Claude Code, OpenCode, pi), split by content at 4 characters per token; text and thinking by what drove the request, a convention; from 1 of 1 lines (claude-code)",
     "fields": [
       {
         "label": "lines with the split",

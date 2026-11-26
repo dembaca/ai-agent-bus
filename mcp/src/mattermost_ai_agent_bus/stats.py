@@ -421,6 +421,34 @@ def _traffic(counted: list[dict[str, Any]], posts: list[dict[str, Any]],
             "polls": [len(polls), sum(1 for e in polls if e.get("empty"))], "inject": inject}
 
 
+def _usage_tok(usage: list[dict[str, Any]], fixed: overhead.Fixed | None) -> dict[str, Any] | None:
+    """`tok` from the `usage` events of a harness whose transcript the server does not read
+    (OpenCode, pi; RT-6.9 step 2): their sums, plus the bus's fixed head, which the plugin
+    cannot see and counted as task work: per request the MCP instructions and tool docs at
+    CHARS_PER_TOKEN go to overhead in cache read (the oldest, cached part), what does not fit
+    there into fresh input, then nothing, so overhead and coordination never exceed the total
+    of a type. No `bus`, `bus_req`, `fixed` or `skill`: the measure by cause needs the
+    transcript. A usage event counts in the part it arrived in, never carried."""
+    def total(f: str) -> int:
+        return sum(int(e.get(f) or 0) for e in usage)
+    req = total("req")
+    if not req:
+        return None
+    tok: dict[str, Any] = {"req": req, "req_ovh": total("req_ovh"), "req_coord": total("req_coord"),
+                           "m": overhead.METHOD}
+    for obj, p in (("all", "a"), ("ovh", "o"), ("coord", "c")):
+        tok[obj] = {k: total(f"{p}_{x}") for k, x in USAGE_TYPES.items()} | {"w1h": 0}
+    head = round(req * (fixed.instructions + fixed.tools) / overhead.CHARS_PER_TOKEN) if fixed else 0
+    for k in ("read", "in"):
+        add = min(head, max(0, tok["all"][k] - tok["ovh"][k] - tok["coord"][k]))
+        tok["ovh"][k] += add
+        head -= add
+    for k in overhead.KEYS:  # the invariant (RT-6.9 step 2), also on sums of odd events
+        tok["ovh"][k] = min(tok["ovh"][k], tok["all"][k])
+        tok["coord"][k] = min(tok["coord"][k], tok["all"][k] - tok["ovh"][k])
+    return tok
+
+
 def _summarize(events: list[dict[str, Any]], version: str, fixed: overhead.Fixed | None,
                now: float, final: bool) -> tuple[dict[str, Any], list[dict[str, Any]]]:
     """One STATS line for the part in `events`, and, for a day's part (not
@@ -461,13 +489,15 @@ def _summarize(events: list[dict[str, Any]], version: str, fixed: overhead.Fixed
     compacts = [e for e in counted if e.get("k") == "compact"]
     traffic = _traffic(counted, posts, compacts)
     paths = [e for e in events if e.get("k") == "transcript" and e.get("path")]
-    tok = None
+    tok: dict[str, Any] | None = None
     path = transcript(str(paths[-1]["path"])) if paths else None
     if path and fixed is not None:
         try:
             tok = overhead.measure(path, start, fixed, None if final else now)
         except Exception:  # noqa: BLE001 — a transcript we cannot read costs only this field
             tok = None
+    if tok is None:
+        tok = _usage_tok([e for e in counted if e.get("k") == "usage"], fixed)
     turns, _ = _turns(counted)
     bus_turns = [sec for by_bus, sec in turns if by_bus]
     saved, pending = _saved(events)
@@ -725,6 +755,13 @@ INBOUND_CLASSES = frozenset({"agent", "human", "event"})
 INBOUND_KEYS = INBOUND_CLASSES | {"envelope"}
 INJECT_KINDS = frozenset({"start", "check", "digest", "drain", "signoff", "listen", "idle", "compact",
                           "wake", "other"})
+# The token split a plugin attributed in process (OpenCode, pi; RT-6.9 step 1): one `usage`
+# event per turn, sums over its requests, exactly these fields: a_ all tokens, o_ bus overhead,
+# c_ coordination, per type o_x + c_x <= a_x; `w` is cache write of any duration.
+USAGE_TYPES = {"in": "in", "read": "read", "w5m": "w", "out": "out"}   # tok type: event suffix
+USAGE_FIELDS = frozenset({"req", "req_ovh", "req_coord",
+                          *(f"{p}_{x}" for p in "aoc" for x in USAGE_TYPES.values())})
+USAGE_MAX = 10**9
 _SUB_KEYS: dict[str, frozenset[str]] = {"wakes": WAKE_REASONS, "blocks": BLOCK_KINDS,
                                         "tools": TOOL_NAMES, "tok": TOK_KEYS, "post_words": POST_WORDS,
                                         "inbound": INBOUND_KEYS, "inject": INJECT_KINDS}
@@ -1186,7 +1223,9 @@ def _settled_of(rows: list[dict[str, Any]]) -> dict[str, Any] | None:
 
 
 def _tok_of(rows: list[dict[str, Any]]) -> dict[str, Any] | None:
-    rows = [r for r in rows if r.get("tok")]
+    # The measure by cause: only lines that carry it (tok.bus). A tok from a plugin's usage
+    # events (OpenCode, pi) has the split only and never counts here as a 0 % share (RT-6.9).
+    rows = [r for r in rows if isinstance(r.get("tok"), dict) and isinstance(r["tok"].get("bus"), dict)]
     if not rows:
         return None
     t: dict[str, Any] = {
@@ -1212,7 +1251,7 @@ def _tok_of(rows: list[dict[str, Any]]) -> dict[str, Any] | None:
 TASK = "task"
 SPLIT_CATEGORIES = (TASK, OVERHEAD, COORDINATION)
 # The one-line note the reports carry beside the split (RT-6.9 step 3).
-SPLIT_NOTE = ("estimated: exact totals per token type from Claude Code's transcript, split by content "
+SPLIT_NOTE = ("estimated: exact totals per token type from the harness (Claude Code, OpenCode, pi), split by content "
               "at 4 characters per token; text and thinking by what drove the request, a convention")
 
 

@@ -29,7 +29,7 @@ instead, served next to the WebSocket inbox in the server's event loop:
     POST /v1/usage          {ctx?, ctx_size?, five_hour?: {used?, resets_at?},
                             seven_day?: {…}} → {ok} (the status line's numbers, RT-6.10
                             step 3, ADR-008: valid fields kept, the rest ignored)
-    POST /v1/stat           {k: turn|turn_end|block|compact|wake|transcript|inject, …} → {ok}
+    POST /v1/stat           {k: turn|turn_end|block|compact|wake|transcript|inject|usage, …} → {ok}
                             (one overhead counter, RT-6.9: the hooks of a keyless
                             session cannot reach the server's state dir, RT-6.18)
     POST /v1/files          ?name=N[&channel=ID|NAME | &root=ID | &to=AGENT], the raw bytes
@@ -885,7 +885,7 @@ async def usage_route(client: ChatPort, query: Mapping[str, str],
 
 
 # The counters the hooks and the listener note (bin/mm-agent-lib.sh mm_stat).
-STAT_KINDS = frozenset({"turn", "turn_end", "block", "compact", "wake", "transcript", "inject"})
+STAT_KINDS = frozenset({"turn", "turn_end", "block", "compact", "wake", "transcript", "inject", "usage"})
 MAX_STAT_FIELDS = 4
 MAX_STAT_VALUE = 4096
 MAX_INJECT_CHARS = 10**7  # an inject's length: no text put into a context comes near it
@@ -914,7 +914,16 @@ async def stat(client: ChatPort, query: Mapping[str, str], body: Mapping[str, An
     if kind not in STAT_KINDS:
         raise BadRequest(f"k: one of {', '.join(sorted(STAT_KINDS))}")
     values = {k: v for k, v in body.items() if k not in ("k", "t")}
-    if len(values) > MAX_STAT_FIELDS:
+    if kind == "usage":
+        # A plugin's token split of one turn (RT-6.9 step 1): exactly its integer fields, each
+        # 0 to USAGE_MAX, overhead and coordination within the total of their type.
+        if (set(values) != stats.USAGE_FIELDS
+                or not all(type(v) is int and 0 <= v <= stats.USAGE_MAX for v in values.values())
+                or any(values[f"o_{x}"] + values[f"c_{x}"] > values[f"a_{x}"]
+                       for x in stats.USAGE_TYPES.values())):
+            raise BadRequest(f"usage: exactly {', '.join(sorted(stats.USAGE_FIELDS))}, integers "
+                             f"0 to {stats.USAGE_MAX}, o_x + c_x at most a_x")
+    elif len(values) > MAX_STAT_FIELDS:
         raise BadRequest(f"at most {MAX_STAT_FIELDS} fields")
     for k, v in values.items():
         if not _FIELD.fullmatch(k) or not (

@@ -25,6 +25,11 @@
 //                       for the status (ADR-008), not awaited
 //   session_compact     GET /v1/handoff → the own posts and the bus skill as
 //                       context that starts no run, not shown (RT-6.7)
+//   context, message_end
+//                       the token split (RT-6.9 step 2): each request's
+//                       messages as segments by category, its usage laid over
+//                       them; POST /v1/stat {k: usage} at agent_settled, numbers
+//                       only, changing nothing the model sees
 //   one long poll       GET /v1/wake?wait=50 (ADR-009) from session_start to
 //                       session_shutdown: a wake → pi.sendUserMessage, at once
 //                       when idle, deliverAs "followUp" while a human's run
@@ -71,6 +76,8 @@ const OURS_MS = 60_000
 // A compaction whose end never came (another extension cancelled it): poll
 // again after this.
 const COMPACT_MAX_MS = 10 * 60_000
+// The texts of ours the token split recognizes in the context: the latest.
+const OURS_KEPT = 256
 // pi's per-request timeout for the bus tools (s; its default is 60):
 // wait_for_events waits 60 s by default and may be asked for more.
 export const MCP_TIMEOUT_SEC = 180
@@ -223,6 +230,298 @@ export function chars(text: string): number {
   return [...text].length
 }
 
+// ---- The token split (RT-6.9 step 2, ADR-017 method 1; issue #139 stage 2b) ----
+// The rules of mcp/src/…/overhead.py over what pi shows an extension: the
+// `context` event (the messages of each model request, without the system
+// prompt and the tool docs) and the assistant message at `message_end` (its
+// usage). In process and silent: nothing here adds text to the context, and
+// only numbers go to the server (`usage`, once per settled run).
+export const TASK = 0
+export const OVERHEAD = 1
+export const COORDINATION = 2
+export const CHARS_PER_TOKEN = 4
+export type Shares = [number, number, number]
+const CATS = [TASK, OVERHEAD, COORDINATION]
+const BUS_KEYS = ["ai-agent-bus", "mattermost-agent-bus"]
+// a2a.WORDS; HELLO, IDLE and BYE are overhead (overhead.OVERHEAD_WORDS).
+const BUS_WORDS = new Set(["TASK", "DELEGATE", "ACK", "PROGRESS", "BLOCKED", "WAITING", "RESULT", "DONE", "NO",
+  "CANCEL", "HELLO", "IDLE", "BYE", "HANDOVER", "ASSIGNMENTS"])
+const OVERHEAD_WORDS = new Set(["HELLO", "IDLE", "BYE"])
+const POSTING = new Set(["post_message", "reply_in_thread"])
+const COORDINATING = new Set(["ask_human", "resolve_ask", "coordinator", "get_file", "attach", "get_thread",
+  "list_recent"])
+// a2a.word: the convention word a message starts with ("PR #12" is a RESULT).
+const PR_FIRST = /^[^\p{L}\p{N}_@#]*PR\s*#\d+/iu
+const FIRST = /^[^\p{L}\p{N}_@#]*([A-Z]{2,11})(?![A-Za-z])/u
+
+export function busWord(message: string): string | null {
+  if (PR_FIRST.test(message)) return "RESULT"
+  const m = FIRST.exec(message)
+  return m && BUS_WORDS.has(m[1]) ? m[1] : null
+}
+
+const isBus = (name: string) => BUS_KEYS.some((k) => name.includes(k))
+// pi's read tool on the bus skill's folder (relative or absolute).
+const SKILL_PATH = new RegExp(`(^|[/\\\\])skills[/\\\\]${SKILL}[/\\\\]`)
+export const isWait = (name: string) => isBus(name) && name.endsWith("__wait_for_events")
+
+// A tool call and its result: a bus tool's category, reading the bus skill
+// overhead, anything else task work.
+export function toolCategory(name: string, args: unknown): number {
+  if (!isBus(name)) {
+    const path = (args as Json | null)?.path
+    return name === "read" && typeof path === "string" && SKILL_PATH.test(path) ? OVERHEAD : TASK
+  }
+  const tool = name.split("__").at(-1) ?? ""
+  const a = (args && typeof args === "object" ? args : {}) as Json
+  if (POSTING.has(tool)) {
+    // The word as the agent passed it (`kind`), else the one the message starts with.
+    let word = String(a.kind ?? "").trim().toUpperCase()
+    if (!BUS_WORDS.has(word)) word = busWord(String(a.message ?? "")) ?? ""
+    return OVERHEAD_WORDS.has(word) ? OVERHEAD : COORDINATION
+  }
+  return COORDINATING.has(tool) ? COORDINATION : OVERHEAD
+}
+
+const textOf = (content: unknown): string =>
+  typeof content === "string" ? content
+    : Array.isArray(content) ? content.map((c) => (c?.type === "text" ? String(c.text ?? "") : "")).join("")
+      : ""
+const callChars = (c: any) => chars(JSON.stringify(c?.arguments ?? {}))
+
+// overhead._events: a wait_for_events result (or one of its content blocks,
+// an item each) as [overhead, task, coordination] characters. Each delivered
+// post's body is coordination, a trusted human's task work; the server's own
+// items, the JSON around the bodies, an empty result and what does not parse
+// are overhead.
+export function waitResult(body: string): Shares {
+  const whole: Shares = [chars(body), 0, 0]
+  let items: any
+  try {
+    items = JSON.parse(body)
+    if (items && typeof items === "object" && !Array.isArray(items) && typeof items.result === "string") {
+      items = JSON.parse(items.result)
+    }
+  } catch {
+    return whole
+  }
+  if (items && typeof items === "object" && !Array.isArray(items) && "result" in items) items = items.result
+  if (items && typeof items === "object" && !Array.isArray(items)) items = [items]
+  if (!Array.isArray(items)) return whole
+  let task = 0
+  let coord = 0
+  for (const item of items) {
+    const post = item && typeof item === "object" ? item.post : null
+    if (!post || typeof post !== "object" || Array.isArray(post) || (!post.id && item.kind !== "reaction")) continue
+    const n = chars(String(post.message ?? ""))
+    if (item.from_trusted_human === true) task += n
+    else coord += n
+  }
+  return [Math.max(0, whole[0] - task - coord), task, coord]
+}
+
+// The context's segments in order (category, characters), as running sums.
+export class Segments {
+  ends = [0]
+  cats = [TASK]
+  sums: Shares[] = [[0, 0, 0]]
+  fresh: Shares = [0, 0, 0] // the input since the last request, by category
+
+  add(cat: number, n: number, isNew = true) {
+    if (!(n > 0)) return
+    const s = [...this.sums.at(-1)!] as Shares
+    s[cat] += n
+    this.ends.push(this.ends.at(-1)! + n)
+    this.cats.push(cat)
+    this.sums.push(s)
+    if (isNew) this.fresh[cat] += n
+  }
+  addSplit(n: number, shares: Shares, isNew = true) {
+    for (const cat of CATS) this.add(cat, n * shares[cat], isNew)
+  }
+  get total(): number {
+    return this.ends.at(-1)!
+  }
+  // The characters of each category in the first q characters.
+  before(q: number): Shares {
+    if (q >= this.total) return [...this.sums.at(-1)!] as Shares
+    let lo = 1
+    let hi = this.ends.length - 1
+    while (lo < hi) {
+      const mid = (lo + hi) >> 1
+      if (this.ends[mid] < q) lo = mid + 1
+      else hi = mid
+    }
+    const out = [...this.sums[lo - 1]] as Shares
+    out[this.cats[lo]] += q - this.ends[lo - 1]
+    return out
+  }
+  shares(): Shares {
+    const t = this.total
+    return t ? this.sums.at(-1)!.map((x) => x / t) as Shares : [1, 0, 0]
+  }
+  driver(): Shares {
+    const t = this.fresh[0] + this.fresh[1] + this.fresh[2]
+    return t ? this.fresh.map((x) => x / t) as Shares : [1, 0, 0]
+  }
+}
+
+const anyUsage = (u: any) => !!u && [u.input, u.output, u.cacheRead, u.cacheWrite].some((x) => Number(x) > 0)
+
+// One request's context (the `context` event's messages) as segments: the
+// texts the extension put in (`ours`, by text; its handoff is a custom message
+// of SERVER) are overhead, bus tool calls and their results by the tool's
+// category (a wait_for_events result by its items, waitResult), a compaction
+// summary by the shares the context had before it, everything else task work.
+export function contextSegments(messages: readonly any[], ours: (text: string) => number | undefined,
+                                summary: Shares | null = null): Segments {
+  const seg = new Segments()
+  const tools = new Map<string, number>()
+  for (const m of messages ?? []) {
+    switch (m?.role) {
+      case "user": {
+        const text = textOf(m.content)
+        seg.add(ours(text) ?? TASK, chars(text))
+        break
+      }
+      case "custom":
+        seg.add(m.customType === SERVER ? OVERHEAD : TASK, chars(textOf(m.content)))
+        break
+      case "toolResult":
+        if (isWait(String(m.toolName ?? ""))) {
+          // One block, or one text block per item: each on its own.
+          const blocks = Array.isArray(m.content) && m.content.length > 1 ? m.content.map((b: any) => textOf([b]))
+            : [textOf(m.content)]
+          for (const block of blocks) {
+            const [o, t, c] = waitResult(block)
+            seg.add(OVERHEAD, o)
+            seg.add(TASK, t)
+            seg.add(COORDINATION, c)
+          }
+        } else {
+          seg.add(tools.get(m.toolCallId) ?? TASK, chars(textOf(m.content)))
+        }
+        break
+      case "compactionSummary":
+        seg.addSplit(chars(String(m.summary ?? "")), summary ?? [1, 0, 0])
+        break
+      case "branchSummary":
+        seg.add(TASK, chars(String(m.summary ?? "")))
+        break
+      case "bashExecution":
+        seg.add(TASK, chars(String(m.command ?? "")) + chars(String(m.output ?? "")))
+        break
+      case "assistant": {
+        // Its text and thinking by the categories of its request's new input
+        // (the driver); a request that cost nothing (an error) drove nothing.
+        const driver = seg.driver()
+        if (anyUsage(m.usage)) seg.fresh = [0, 0, 0]
+        for (const c of Array.isArray(m.content) ? m.content : []) {
+          if (c?.type === "toolCall") {
+            const cat = toolCategory(String(c.name ?? ""), c.arguments)
+            tools.set(c.id, cat)
+            seg.add(cat, callChars(c), false)
+          } else {
+            seg.addSplit(chars(String(c?.text ?? c?.thinking ?? "")), driver, false)
+          }
+        }
+        break
+      }
+      default:
+        seg.add(TASK, chars(textOf(m?.content)))
+    }
+  }
+  return seg
+}
+
+const TYPES = ["in", "read", "w", "out"] as const
+export type Tokens = Record<(typeof TYPES)[number], number>
+const zero = (): Tokens => ({ in: 0, read: 0, w: 0, out: 0 })
+const tokens = (u: any): Tokens => ({ in: Number(u?.input) || 0, read: Number(u?.cacheRead) || 0,
+                                      w: Number(u?.cacheWrite) || 0, out: Number(u?.output) || 0 })
+
+// RT-6.9 step 2: one request's tokens by category. The input by position over
+// the known segments (cache read the oldest, then cache write, then fresh
+// input; 4 characters a token, scaled down when the segments are longer): the
+// front they do not cover is pi's system prompt and tool docs, task work here
+// (the server adds the bus's share of it). The output: the tool calls by their
+// tool's category, the rest (text, thinking) by the driver.
+export function requestSplit(usage: any, seg: Segments, message: any): [Tokens, Tokens, Tokens] {
+  const u = tokens(usage)
+  const out: [Tokens, Tokens, Tokens] = [zero(), zero(), zero()]
+  const known = seg.total / CHARS_PER_TOKEN
+  const total = u.read + u.w + u.in
+  const scale = known ? Math.min(1, total / known) : 0
+  const base = total - scale * known
+  const at = (p: number): Shares => {
+    if (p <= base || scale <= 0) return [Math.min(p, base), 0, 0]
+    const c = seg.before((p - base) / scale * CHARS_PER_TOKEN)
+    return [base + scale * c[TASK] / CHARS_PER_TOKEN, scale * c[OVERHEAD] / CHARS_PER_TOKEN,
+            scale * c[COORDINATION] / CHARS_PER_TOKEN]
+  }
+  let lo: Shares = [0, 0, 0]
+  let edge = 0
+  for (const k of ["read", "w", "in"] as const) {
+    edge += u[k]
+    const hi = at(edge)
+    for (const c of CATS) out[c][k] = Math.max(0, hi[c] - lo[c])
+    lo = hi
+  }
+  const calls: Shares = [0, 0, 0]
+  for (const c of Array.isArray(message?.content) ? message.content : []) {
+    if (c?.type === "toolCall") calls[toolCategory(String(c.name ?? ""), c.arguments)] += callChars(c) / CHARS_PER_TOKEN
+  }
+  const sum = calls[0] + calls[1] + calls[2]
+  const fit = sum > u.out ? u.out / sum : 1
+  const driver = seg.driver()
+  for (const c of CATS) out[c].out = calls[c] * fit + (u.out - sum * fit) * driver[c]
+  return out
+}
+
+const USAGE_MAX = 1e9
+// The requests of a run summed; fields() is the `usage` stat: 15 integers,
+// o_x + c_x <= a_x for each type x, or null without a request.
+export class Meter {
+  req = 0
+  reqOvh = 0
+  reqCoord = 0
+  all = zero()
+  ovh = zero()
+  coord = zero()
+
+  // One assistant message, with the segments of its request's context.
+  add(message: any, seg: Segments | null) {
+    if (message?.role !== "assistant" || !anyUsage(message.usage)) return
+    const s = seg ?? new Segments()
+    const split = requestSplit(message.usage, s, message)
+    const u = tokens(message.usage)
+    this.req += 1
+    for (const k of TYPES) {
+      this.all[k] += u[k]
+      this.ovh[k] += split[OVERHEAD][k]
+      this.coord[k] += split[COORDINATION][k]
+    }
+    // A request whose new input held no task work: coordination when any of
+    // it was, else overhead.
+    const f = s.fresh
+    if (!f[TASK] && f[COORDINATION]) this.reqCoord += 1
+    else if (!f[TASK] && f[OVERHEAD]) this.reqOvh += 1
+  }
+
+  fields(): Json | null {
+    if (!this.req) return null
+    const n = (x: number) => Math.min(USAGE_MAX, Math.max(0, Math.round(x)))
+    const out: Json = { req: n(this.req), req_ovh: n(this.reqOvh), req_coord: n(this.reqCoord) }
+    for (const k of TYPES) {
+      const a = n(this.all[k])
+      const o = Math.min(n(this.ovh[k]), a)
+      Object.assign(out, { [`a_${k}`]: a, [`o_${k}`]: o, [`c_${k}`]: Math.min(n(this.coord[k]), a - o) })
+    }
+    return out
+  }
+}
+// ---- end of the token split ----
+
 // The bus checkout: MM_AGENT_BUS_ROOT, or the checkout this file really lies
 // in (pi/; a symlink into ~/.pi/agent/extensions/ resolves).
 export function busRoot(env: Env, here: string): string | null {
@@ -306,6 +605,21 @@ export function create(pi: ExtensionAPI, deps: Deps = {}) {
   const stat = (k: string, fields: Json = {}) => bus("POST", "/v1/stat", { k, ...fields })
   // A text the extension puts into the context, by kind and length only, never the text (RT-6.9 step 1).
   const inject = (name: string, text: string) => stat("inject", { name: injectKind(name), chars: chars(text) })
+  // The token split (RT-6.9 step 2): the run's requests, the segments of the
+  // request under way, the texts this extension put in (overhead: none of
+  // them carries a post's body), the shares before the last compaction.
+  const split = { meter: new Meter(), seg: null as Segments | null, ours: new Map<string, number>(),
+                  summary: null as Shares | null, last: null as Shares | null }
+  const ours = (text: string) => {
+    split.ours.delete(text)
+    split.ours.set(text, OVERHEAD)
+    if (split.ours.size > OURS_KEPT) split.ours.delete(split.ours.keys().next().value!)
+  }
+  const usageStat = async () => {
+    const fields = split.meter.fields()
+    split.meter = new Meter()
+    if (fields) await stat("usage", fields)
+  }
   // One call at a time: an abort's `idle` never overtakes the run's `working`.
   const presence: (state: "working" | "idle" | "bus") => Promise<void> =
     presenceQueue((state) => bus("POST", "/v1/presence", { state, label }))
@@ -322,6 +636,7 @@ export function create(pi: ExtensionAPI, deps: Deps = {}) {
   // error, not here: OURS_MS bounds the wait for its run.
   const deliver = (text: string) => {
     t.ours = Date.now()
+    ours(text)
     if (!ctx || ctx.isIdle()) pi.sendUserMessage(text)
     else pi.sendUserMessage(text, { deliverAs: "followUp" })
   }
@@ -487,6 +802,7 @@ export function create(pi: ExtensionAPI, deps: Deps = {}) {
         notify(`${SERVER}: MCP server not registered: ${e instanceof Error ? e.message : String(e)}`)
       }
     }
+    Object.assign(split, { meter: new Meter(), seg: null, summary: null, last: null })
     ac?.abort()
     ac = new AbortController()
     closed = false
@@ -523,9 +839,30 @@ export function create(pi: ExtensionAPI, deps: Deps = {}) {
     void usage().catch(() => {})
   })
 
+  // The token split: each request's context, then its answer's usage. Reads
+  // only: the handler returns nothing, so pi sends the messages unchanged.
+  pi.on("context", (event) => {
+    try {
+      split.seg = contextSegments(event.messages, (text) => split.ours.get(text), split.summary)
+      split.last = split.seg.shares()
+    } catch {
+      split.seg = null // the split is an estimate: without it, the request counts as task work
+    }
+  })
+  pi.on("message_end", (event) => {
+    if ((event.message as any)?.role !== "assistant") return
+    try {
+      split.meter.add(event.message, split.seg)
+    } catch {
+      // as above
+    }
+    split.seg = null
+  })
+
   // Not awaited: pi waits for its settle handlers, and the human must not.
   pi.on("agent_settled", (event, c) => {
     ctx = c
+    void usageStat().catch(() => {})
     void turnEnded(Boolean(event.aborted)).catch(() => {})
   })
 
@@ -545,6 +882,7 @@ export function create(pi: ExtensionAPI, deps: Deps = {}) {
   pi.on("session_compact", async (_event, c) => {
     ctx = c
     t.compacting = 0
+    split.summary = split.last // the summary stands for the context it replaced
     nudge()
     const r = await bus("GET", "/v1/handoff")
     const text = String(r?.context || "")

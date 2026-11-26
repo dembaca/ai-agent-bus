@@ -26,7 +26,7 @@ code does today and point here where a decision will change them.
 | ADR-014 | Agent-to-agent traffic over NATS JetStream; Mattermost stays the humans' chat behind one central adapter per tenant; agents log in through Keycloak (device flow) and a login service issues 15-minute NATS credentials bound to the host's own key; a clean-room build from Cotal's protocol description with a message format of the bus's own (no wire compatibility with Cotal); tools, hook API and bus logic unchanged behind the ports; parallel operation switched per home channel, the registrar shut down last; the sender NATS-native (last subject token, agents read only through push consumers the login service makes, no signed envelope) | Accepted (2026-11-22) by the owner, with the review's recommendations; three later points open (below), none of them blocks the first NATS code. Phase 2 built; phase 3 built in part in 0.97.0: the login service with the host's Keycloak login, consumers, a home over NATS, owner, presence and crown over NATS (RT-6.34 to RT-6.38), the attestation after 0.97.0 (RT-6.41); not built: the central adapter, the pod path, role addressing, files and DMs over NATS, signed human-origin events, shutting the registrar down | — |
 | ADR-015 | Operator web console: a web application for the people who look after the agents, with the agents by state, who trusts and who coordinates whom, the bus's statistics as charts, and the open asks answered beside their thread; no chat. It stands alone on the bus on NATS, with Keycloak as its only login and no dependency on Mattermost (decided by the owner on 2026-11-23). Recommended: on NATS as the logged-in operator, with a credential of that person's own from the login service, so NATS says who answered and the asking agent's server still decides whether it approves | Proposed (2026-11-23), not accepted; eight points open for the owner, three decided on 2026-11-23 (ADR-016). Stage 1's read-only pilot is built (2026-11-24): the browser app (#89) and its server (#94) — the login of point 4 and the API of point 10 with its SSE — one read-only NATS account, the pilot's documented deviation, since replaced: the console reads as each logged-in operator with a credential of that person's own from the login service (the addition of 2026-11-25, points 1 to 7, RT-6.43), and the static account is gone. The fleet's "now" carries a monotonic floor: a delivery-silent console ages presence out and drops the crown, a jump of the host's wall clock changes nothing, and only a genuinely newer server stamp re-anchors it (#108). Of the addition of 2026-11-25, the asks and `STATS` on NATS are built too (points 8 to 15, the MCP server's and the console's part, and the login service's stream and rights for them): each MCP server publishes its ask record and its `STATS` parts, the console receives them through each login's own consumers, decodes them strictly and shows the asks read-only and the two reports | — |
 | ADR-016 | The bus without a chat as its source: Keycloak is the root of identity, keyed by `sub`, with chat accounts bound to it per product; a channel directory on NATS that only the login service writes (name, public or not, members, a binding per chat) replaces Mattermost membership behind `callout.Channels`; one bridge per chat product vouches for its humans, and later a Keycloak login on NATS itself; the login service attests trust lists; agents need no chat. Decided by the owner on 2026-11-23: the directory, Mattermost membership behind a replaceable interface until then, and for the console reading only, a Python server and what an operator sees | Accepted (2026-11-23) by the owner, its nine open points decided by the owner the same day; it changes ADR-014 points 6, 10, 11 and 16. Built in part: the channel directory (RT-6.39) and "in doubt, foreign" (RT-6.16) in 0.97.0; after 0.97.0 the admin API with the import from Mattermost (RT-6.40) and the attested trust lists (RT-6.41). Not built: the bridges, `checkChat` as a binding, agents without a chat, the host's agent name from an anchor that is not the username. Addition 2026-11-24: all Mattermost functions in one service, the bridge in `services/bridge`, the registrar's move as an open step; built step by step, the pilot with one bridge bot | — |
-| ADR-017 | The token split attributes tokens by content, not by cause: a request's tokens go to task work, bus overhead or multi-agent coordination by what its context and output hold, never all to the bus because the bus started the turn | Decided 2026-11-26 with the issue on the token split (#139, its proposed defaults); built for Claude Code (the overhead measurement, RT-6.9 step 2, method 1) | #139 |
+| ADR-017 | The token split attributes tokens by content, not by cause: a request's tokens go to task work, bus overhead or multi-agent coordination by what its context and output hold, never all to the bus because the bus started the turn | Decided 2026-11-26 with the issue on the token split (#139, its proposed defaults); built for Claude Code (the overhead measurement, RT-6.9 step 2, method 1), for OpenCode and pi by their plugins' usage events | #139 |
 
 
 **Terms.** An agent's **home** is the first entry of `MM_PROJECT_CHANNEL`,
@@ -5361,8 +5361,8 @@ Mattermost could be switched off.
 **Status:** Decided 2026-11-26 with the issue on splitting the tokens into
 task work, bus overhead and multi-agent coordination (#139), by its
 proposed defaults; built for Claude Code in the overhead measurement
-(RT-6.9 step 2, method 1). OpenCode and pi follow once their plugins send
-usage.
+(RT-6.9 step 2, method 1); for OpenCode and pi by their plugins in
+process, sent as `usage` events (RT-6.9 steps 1 and 2, the same method).
 
 **Context:** The overhead measurement (RT-6.9) counts a request the bus
 started whole as the bus's: a turn a peer's message, the listener or the
@@ -5391,4 +5391,13 @@ approximate cache boundaries, the driver rule) and every report marks it
 cause, stays on the line for a transition, so the share per version stays
 comparable across versions. The split runs in code on the transcript the
 server reads anyway: no token enters a context.
+
+**Addition (OpenCode and pi):** These harnesses leave no transcript the
+server reads, so their plugins apply the same rules in process and post the
+sums per turn, numbers only. They cannot see the system prompt and tool
+docs: that head counts as task work there, and the server, which knows the
+bus's fixed text, moves it per request to overhead in cache read, held to
+the totals. Such a line carries the split without `tok.bus`; the share by
+cause counts only lines that have it, so a missing measure never reads as
+0 %. The harnesses report one cache write: it counts as 5 min.
 
