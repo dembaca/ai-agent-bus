@@ -89,7 +89,7 @@ func TestRunRefusesInvalidConfiguration(t *testing.T) {
 // Both names of one setting set to different values: the start exits 2, the
 // message names both names and shows neither value.
 func TestRunRefusesDisagreeingNames(t *testing.T) {
-	lookup := envname.Map(map[string]string{"CB_AUTH_LISTEN_ADDR": ":8101", "AUTH_LISTEN_ADDR": ":8202"})
+	lookup := envname.Map(map[string]string{"CB_AUTH_LISTEN_ADDR": ":value-new", "AUTH_LISTEN_ADDR": ":value-old"})
 
 	var code int
 	out := captureStdout(t, func() { code = run(lookup) })
@@ -102,7 +102,7 @@ func TestRunRefusesDisagreeingNames(t *testing.T) {
 			t.Errorf("output does not name %q: %q", n, out)
 		}
 	}
-	for _, v := range []string{"8101", "8202"} {
+	for _, v := range []string{"value-new", "value-old"} {
 		if strings.Contains(out, v) {
 			t.Errorf("output shows the value %s: %q", v, out)
 		}

@@ -45,7 +45,9 @@ environment can serve several services.
 deprecated: until the removal release (the release after 0.103.0) the service
 reads an old name when its new name is unset and logs one warning per process.
 Both names set to different values refuse the start and name both; equal values
-pass, with a warning that the old name can go. Empty counts as set. From the
+pass, with a warning that the old name can go. Empty counts as set; a value
+that is exactly an unexpanded `${NAME}` placeholder refuses the start, naming
+the variable (no manifest fills it in here). From the
 removal release on, an old name set without its new name refuses the start.
 
 | Variable | Default | Meaning |

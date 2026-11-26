@@ -324,7 +324,8 @@ before 0.5.0 are described in the git history.
   when the record moves into the bridge. It sets the reading rule for
   release 0.103.0 (the new name first, the old one with a deprecation
   warning, all set names must agree or the start is refused, an empty value
-  counts as set, an unexpanded `${…}` placeholder as unset, the fallbacks
+  counts as set, an unexpanded `${…}` placeholder as unset in the MCP server
+  and the hooks while the Go services refuse it, the fallbacks
   go one release later); after that an old name set alone refuses the start
   for at least one more release instead of being ignored, since several
   settings (release signers, trusted humans, CA pins, the login service's
