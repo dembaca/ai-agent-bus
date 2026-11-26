@@ -276,14 +276,25 @@ before 0.5.0 are described in the git history.
 ### Docs
 
 - **Every environment variable gets the `CB_` prefix, decided, not built
-  yet** (#169, step 1). [docs/env-names.md](docs/env-names.md) maps each
-  name the project defines to its new one: `CB_MM_…` for what exists only
+  yet** (#169, step 1). [docs/env-names.md](docs/env-names.md) maps 158
+  names the project defines to new ones: `CB_MM_…` for what exists only
   because of Mattermost, `CB_…` for the rest, `CB_AUTH_…`, `CB_AUTHD_…`,
-  `CB_BRIDGE_…` and `CB_CONSOLE_…` for the services. It sets the reading
-  rule for release 0.103.0 (the new name first, the old one with a
-  deprecation warning, both set and different refuses the start, the
-  fallbacks go one release later), the change of the `Needs:` grammar and
-  the other places that change with the renames.
+  `CB_BRIDGE_…` and `CB_CONSOLE_…` for the services. The registrar's 10
+  settings keep their names and go with the registrar (#151), among them
+  `MM_REGISTRAR_KEYS`, whose release-record check gets its own `CB_` name
+  when the record moves into the bridge. It sets the reading rule for
+  release 0.103.0 (the new name first, the old one with a deprecation
+  warning, all set names must agree or the start is refused, an empty value
+  counts as set, an unexpanded `${…}` placeholder as unset, the fallbacks
+  go one release later); after that an old name set alone refuses the start
+  for at least one more release instead of being ignored, since several
+  settings (release signers, trusted humans, CA pins, the login service's
+  brake and groups) would fail open. Every allow, pass, deny and unset list
+  of names carries both spellings during the fallback release, and the bus
+  writes its own session-file keys and relay values under both. It also
+  covers the change of the `Needs:` grammar (no `CB_` names in the
+  `Needs:` line of 0.103.0 or of the removal release) and the other places
+  that change with the renames.
 - **The one operating model for the host login, documented, not built yet**
   (the owner's decision 10, #154, step 1 of 5). The NATS decision (ADR-014) gets an amendment of
   2026-11-26: the rule "credentials stay on the host, never in a sandbox"
