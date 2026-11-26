@@ -130,15 +130,24 @@ export function App({ api }: { api: ConsoleApi }) {
   // An ask opens or closes between those reads: when an agent comes, goes or
   // states a different number of open asks, the asks are read again, 250 ms
   // later, so a burst of card changes costs one read.
+  // The timer lives in a ref: a card event that changes nothing must not
+  // cancel a read already scheduled.
   const askMark = useRef<string | null>(null)
+  const askTimer = useRef<ReturnType<typeof setTimeout> | null>(null)
   useEffect(() => {
     const mark = cards.map((c) => `${c.name}:${c.openAsks ?? "?"}`).sort().join(",")
     const changed = askMark.current !== null && askMark.current !== mark
     askMark.current = mark
     if (!changed) return
-    const timer = setTimeout(() => { void loadAsks() }, 250)
-    return () => { clearTimeout(timer) }
+    if (askTimer.current !== null) clearTimeout(askTimer.current)
+    askTimer.current = setTimeout(() => {
+      askTimer.current = null
+      void loadAsks()
+    }, 250)
   }, [cards, loadAsks])
+  useEffect(() => () => {
+    if (askTimer.current !== null) clearTimeout(askTimer.current)
+  }, [])
 
   const openAgent = useCallback((card: AgentCard) => {
     setAgent(card)
