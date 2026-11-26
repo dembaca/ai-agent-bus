@@ -47,6 +47,7 @@ from nats.aio.client import Client as NatsClient
 
 from . import a2a
 from .login import NKey
+from .session_file import NONCE_RE
 
 log = logging.getLogger(__name__)
 
@@ -71,6 +72,7 @@ DELIVER = "deliver"  # consumers.DeliverPrefix / callout.DeliverPrefix
 
 CHANNEL_RE = re.compile(r"^[a-z0-9][a-z0-9_-]{0,63}$")  # Go checkToken
 AGENT_RE = re.compile(r"^[A-Za-z0-9][A-Za-z0-9_-]{0,127}$")  # Go consumers.agentRE
+SESSION_RE = NONCE_RE  # #163: the one pattern of the session part (session_file)
 PREFIX_RE = re.compile(r"^[A-Za-z0-9_-]+$")
 # An owner counts only in this form (RT-6.37): a Mattermost username's characters in lower
 # case, the same string the bus compares with CB_TRUSTED_HUMANS and the owners of Mattermost
@@ -125,12 +127,17 @@ class MessageError(ValueError):
 
 # --- the agent's name --------------------------------------------------------
 
-def agent_name(owner: str, host_nkey_public: str, prefix: str = "agent-") -> str:
+def agent_name(owner: str, host_nkey_public: str, prefix: str = "agent-", session: str = "") -> str:
     """Same as Go `name()` (services/auth/internal/callout/service.go) plus the
-    prefix: SHA-256 over owner, a NUL byte and the host nkey, the first 16 bytes
-    as lower-case base32 without padding (26 characters). The owner is used as
-    the login service gets it (the token's `preferred_username`), not changed."""
-    digest = hashlib.sha256(owner.encode() + b"\x00" + host_nkey_public.encode()).digest()[:16]
+    prefix: SHA-256 over owner, a NUL byte, the host nkey and, when the host key
+    is shared, a NUL byte and the session nonce, the first 16 bytes as lower-case
+    base32 without padding (26 characters). The owner is used as the login service
+    gets it (the token's `preferred_username`), not changed. Without a session the
+    bytes are exactly the ones before #163, so an old host keeps its name."""
+    raw = owner.encode() + b"\x00" + host_nkey_public.encode()
+    if session:
+        raw += b"\x00" + session.encode()
+    digest = hashlib.sha256(raw).digest()[:16]
     return prefix + base64.b32encode(digest).decode().lower().rstrip("=")
 
 
@@ -868,7 +875,8 @@ def crown_holder(claims: Mapping[str, int], presence: Mapping[str, tuple[float, 
 
 def build_hello(token: str, home: str, guests: tuple[str, ...], lobby: bool,
                 since: Mapping[str, int], *, fresh_presence: bool = False,
-                trusted: tuple[str, ...] = (), trusted_cut: bool = False) -> str:
+                trusted: tuple[str, ...] = (), trusted_cut: bool = False,
+                session: str = "") -> str:
     """The CONNECT `auth_token` the login service reads (callout.Hello). It holds the
     access token: never log it."""
     hello: dict[str, Any] = {"token": token}
@@ -882,6 +890,8 @@ def build_hello(token: str, home: str, guests: tuple[str, ...], lobby: bool,
         hello["trusted"] = list(trusted)
     if trusted_cut:
         hello["trusted_cut"] = True
+    if session:
+        hello["session"] = session  # #163: the session's own part of the name, when the key is shared
     known = {ch: seq for ch, seq in since.items() if seq > 0}
     if fresh_presence:
         known[PRESENCE_FRESH_KEY] = 1  # the login service reads the presence stream afresh (RT-6.35)
@@ -1123,7 +1133,7 @@ class NatsBus:
                  connect_timeout: float = 5.0, renew_sec: float = RENEW_SEC,
                  send_wait_sec: float = SEND_WAIT_SEC, member_renew_sec: float = MEMBER_RENEW_SEC,
                  on_fatal: FatalCallback | None = None, on_person: PersonCallback | None = None,
-                 on_notice: NoticeCallback | None = None) -> None:
+                 on_notice: NoticeCallback | None = None, session: str = "") -> None:
         for what, v in (("bus", settings.bus), ("presence", settings.presence), ("stats", settings.stats)):
             if not PREFIX_RE.fullmatch(v) or v == DELIVER:
                 raise ValueError(f"invalid {what} prefix")
@@ -1138,6 +1148,9 @@ class NatsBus:
         self._on_event = on_event
         self._on_fatal = on_fatal
         self._on_person = on_person
+        if session and not SESSION_RE.fullmatch(session):
+            raise ValueError("the session part is not 26 lower-case base32 characters")
+        self._session = session  # #163: the session's own part of the name, when the key is shared
         self._on_notice = on_notice
         # Notices already told (replay, redelivery): (anchor, kind, sid, iat) -> monotonic.
         self._notice_seen: dict[tuple[str, str, str, float], float] = {}
@@ -1219,7 +1232,8 @@ class NatsBus:
     @property
     def name(self) -> str:
         if self._name is None:
-            self._name = agent_name(self._owner, self._login.nkey().public_key, self._s.name_prefix)
+            self._name = agent_name(self._owner, self._login.nkey().public_key, self._s.name_prefix,
+                                    session=self._session)
         return self._name
 
     @property
@@ -1322,7 +1336,8 @@ class NatsBus:
         token = await self._login.access_token()
         key = self._login.nkey()
         hello = build_hello(token, self._s.home, self._s.guests, self._s.lobby, self.since(),
-                            fresh_presence=not self._presence_read, trusted=self._s.trusted, trusted_cut=self._s.trusted_cut)
+                            fresh_presence=not self._presence_read, trusted=self._s.trusted,
+                            trusted_cut=self._s.trusted_cut, session=self._session)
         del token
         nc = NatsClient()
         # nats-py has no argument for the public key with a signature callback; this is the

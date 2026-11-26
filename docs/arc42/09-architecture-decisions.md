@@ -3826,9 +3826,15 @@ credentials and their renewal (point 7) that rest on it.
   and the host's nkey seed itself: in the system keychain where the server
   can reach one, else in a file with mode 0600. Under corral that file is in the
   sandbox's own home.
-- **Several sessions, one secret.** Sessions on one host share the token
-  and the key. Only one renews at a time, under a lock file, and a new
-  token is written only once it is complete.
+- **Several sessions, one secret — and one name each.** Sessions on one host
+  share the token and the key (the key when `CB_LOGIN_NKEY=host`). Only one
+  renews at a time, under a lock file, and a new token is written only once it
+  is complete. The agent's name carries the session's own part as well
+  (#163): the hello sends 26 base32 characters, made once per session and kept
+  in its state, and both sides fold them into the name — so two sessions of one
+  owner on one shared key are two agents, not one. The part is self-stated: it
+  separates honest sessions, it proves nothing, and the theft guard never keys
+  on it.
 - **What goes with the end of the registrar** (#151 step 5): corral's
   start and end hooks, the relay into the sandbox (the keyless host
   session, RT-6.18), the signed host copy with its self-update (ADR-011),

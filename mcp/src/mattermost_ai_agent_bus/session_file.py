@@ -20,10 +20,13 @@ and never saw the messages for its own (RT-6.10).
 
 from __future__ import annotations
 
+import base64
 import errno
 import fcntl
 import hashlib
+import logging
 import os
+import re
 import stat
 import sys
 import tempfile
@@ -316,6 +319,70 @@ def keyed_path(prefix: str) -> Path:
         return state_dir() / f"{prefix}-sid-{hashlib.sha1(sid.encode()).hexdigest()[:16]}.env"
     key = hashlib.sha1(project_dir().encode()).hexdigest()[:16]
     return state_dir() / f"{prefix}-{key}.env"
+
+
+NONCE_RE = re.compile(r"^[a-z2-7]{26}$")
+
+
+def _nonce_in(path: Path) -> str:
+    """The kept part in a state file, "" for none (a damaged file warns)."""
+    try:
+        text = path.read_text(encoding="utf-8", errors="replace")
+    except OSError:
+        return ""
+    for line in text.splitlines():
+        k, _, v = line.partition("=")
+        if k == "CB_SESSION_NONCE" and NONCE_RE.fullmatch(v):
+            return v
+    if text.strip():
+        logging.getLogger(__name__).warning("session: the nonce file is damaged: a new part is "
+                                            "made, so this session gets a new name")
+    return ""
+
+
+def _keep_nonce(path: Path, value: str) -> None:
+    try:
+        write_private(path, f"CB_SESSION_NONCE={value}\n")
+    except OSError as exc:  # not kept: a restart gets a new name, the log says so
+        logging.getLogger(__name__).warning("session: the nonce was not kept (%s): a restart "
+                                            "gets a new name", type(exc).__name__)
+
+
+def nonce() -> str:
+    """The session's own part of the agent name (#163, RT-6.36): 16 random bytes as
+    26 lower-case base32 characters, made once and kept per bot
+    (`nonce-<uid>.env`), so a resumed session (`--resume`, `--continue`) and a
+    restarted server keep their name while two live sessions — which have two
+    bots — never share one. A server that registered late takes the part its
+    earlier start kept under the session's key, so its name does not change once
+    more."""
+    uid = config.value(read(), "CB_MM_BOT_USER_ID")
+    if uid:
+        path = state_dir() / f"nonce-{uid}.env"
+        if value := _nonce_in(path):
+            return value
+        # The first start of a server that registered later: claim the part its
+        # earlier start kept. The rename takes the keyed file away, so only one
+        # bot can adopt it; a second one makes its own (two live sessions never
+        # share a name).
+        keyed = keyed_path("nonce")
+        try:
+            # Claim it by the rename first, then read: two bots racing get one
+            # winner, and the loser's rename finds nothing and makes its own part.
+            os.replace(keyed, path)
+        except FileNotFoundError:
+            pass
+        except OSError:
+            pass  # an unusable keyed file: a new part is made below
+        if value := _nonce_in(path):
+            return value
+    else:
+        path = keyed_path("nonce")
+        if value := _nonce_in(path):
+            return value
+    value = base64.b32encode(os.urandom(16)).decode().lower().rstrip("=")
+    _keep_nonce(path, value)
+    return value
 
 
 def session_file_path() -> Path:
