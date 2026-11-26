@@ -121,6 +121,26 @@ Needs: login service nats user may publish owner notices, as in the example conf
   `Origin: null` is still refused. A console tab opened before the update
   keeps the old policy until it is reloaded.
 
+### Changed
+
+- **The OpenCode plugin and the pi extension read the `CB_` names** (#169,
+  release 0.103.0). Their own settings — the workspace (`CB_WORKSPACE`), the
+  channel flag (`CB_CHANNEL_PUSH`), the checkout (`CB_AGENT_BUS_ROOT`) and, in a
+  corral session, the relay's endpoint and key (`CB_BUS_ENDPOINT`, `CB_BUS_KEY`,
+  `CB_BUS_MCP_ENDPOINT`) — are read by the rule of
+  [docs/env-names.md](docs/env-names.md): the new name first, the old `MM_` one
+  for this release with one deprecation warning per process, an empty value
+  counting as set, and two names with different values a conflict the plugin
+  reports once and then behaves as without a bus (a conflicting checkout falls
+  back to the plugin's own). The server entry they write
+  carries `CB_WORKSPACE` and `CB_CHANNEL_PUSH` beside the old names, so a server
+  of the previous release reads the old ones (a user's own `environment` that
+  names one spelling is copied to the other, so the server never sees a
+  disagreement); the endpoint file's keys are taken by either spelling, the last
+  line winning. An operator who already uses the `CB_` names
+  sees no difference, and the old ones keep working until the release that
+  removes the fallbacks.
+
 ## 0.102.0
 
 Needs: login service jetstream user with consumer create and delete rights on the directory bucket.
