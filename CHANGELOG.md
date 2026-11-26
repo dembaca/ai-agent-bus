@@ -5,6 +5,26 @@ before 0.5.0 are described in the git history.
 
 ## Unreleased
 
+### Added
+
+- **The console serves `/metrics`** (#158, part of): the Prometheus text
+  format behind the operator's login, the same right `/v1/stats` needs —
+  **never scrape with the session cookie**, it is that operator's whole
+  console; the unattended variant (a loopback listener with a scrape
+  token and a read-only service account on the STATS stream) follows as
+  its own pull request with the owner's go. The console's own observations
+  — requests by bounded route buckets, open streams, the readers'
+  connection states, connects, credential renewals and failures, the
+  records the strict decoders refused — are counted process-wide at the
+  event, so no session's end resets a series; the agent numbers of that
+  session's own reading (agents by state and harness, the open asks it
+  sees, the tokens by category per version and harness over 7 days — the
+  same numbers the Reports/Stats tab shows) are served only while that
+  reading is live. Every metric family carries the `choirbus_` prefix; no
+  agent name, owner, home or session id is ever a label, only the newest
+  8 versions keep their own label and n/a leaves a series out instead of
+  a 0 (RT-6.43 step 10).
+
 ### Changed
 - **The OpenCode plugin registers the bus server as direct tools, not Code
   Mode** (#152). The model sees the bus tools and their docs as written, as in

@@ -407,6 +407,11 @@ class Sessions:
                 self._hints.pop(d, None)
                 self._close(row)
 
+    def count(self) -> int:
+        """The sessions held right now."""
+
+        return len(self._sessions)
+
     def views(self) -> list[Any]:
         return [row[2] for row in self._sessions.values() if row[2] is not None]
 
