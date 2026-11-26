@@ -85,6 +85,32 @@ func (a *Accounts) Anchor(userID string) string {
 	return a.anchors[userID]
 }
 
+// Owner is the Mattermost user id whose record binds anchor, the other way
+// round from Anchor (RT-6.44: an agent bot's owner). "" until the records are
+// read, for an anchor no record binds, and for one that more than one record
+// binds: never a guess.
+func (a *Accounts) Owner(anchor string) string {
+	if anchor == "" {
+		return ""
+	}
+	a.mu.Lock()
+	defer a.mu.Unlock()
+	if !a.caughtUp {
+		return ""
+	}
+	owner := ""
+	for uid, bound := range a.anchors {
+		if bound != anchor {
+			continue
+		}
+		if owner != "" {
+			return ""
+		}
+		owner = uid
+	}
+	return owner
+}
+
 // CaughtUp says the consumer has handed out every record it holds.
 func (a *Accounts) CaughtUp() bool {
 	a.mu.Lock()

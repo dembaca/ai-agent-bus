@@ -32,6 +32,11 @@ type Config struct {
 	BusPrefix   string   // BRIDGE_BUS_PREFIX, the bus's subject prefix, default bus
 	Deliver     string   // BRIDGE_DELIVER, the operator's push consumer prefix, default deliver.bridge
 	Inbox       string   // BRIDGE_INBOX, the bridge's own reply inbox prefix, default _INBOX_bridge; it must match the right _INBOX_bridge.>
+	// The agents' own bots (RT-6.44): with an admin token the bridge posts each
+	// agent's copies under a bot of its own; unset, under the one bridge bot.
+	AdminToken string // BRIDGE_MM_ADMIN_TOKEN_FILE, optional: the admin bot's token (system_admin), used only by the bot management
+	BotPrefix  string // BRIDGE_BOT_PREFIX, required with AdminToken: the agent bots' username prefix
+	HideBotDM  bool   // BRIDGE_HIDE_BOT_DM, default true: hide the admin bot's welcome DM with each new bot
 }
 
 // Load reads the environment. A missing required value is an error naming it.
@@ -51,6 +56,9 @@ func Load(get func(string) string) (Config, error) {
 		BusPrefix:  strings.TrimSpace(get("BRIDGE_BUS_PREFIX")),
 		Deliver:    strings.TrimSpace(get("BRIDGE_DELIVER")),
 		Inbox:      strings.TrimSpace(get("BRIDGE_INBOX")),
+		AdminToken: strings.TrimSpace(get("BRIDGE_MM_ADMIN_TOKEN_FILE")),
+		BotPrefix:  strings.TrimSpace(get("BRIDGE_BOT_PREFIX")),
+		HideBotDM:  true,
 	}
 	if c.KVBucket == "" {
 		c.KVBucket = "BUS_BRIDGE"
@@ -107,6 +115,23 @@ func Load(get func(string) string) (Config, error) {
 		return Config{}, fmt.Errorf("BRIDGE_HOMES is required: at least one home channel name")
 
 	}
+	switch {
+	case c.AdminToken != "" && c.BotPrefix == "":
+		return Config{}, fmt.Errorf("BRIDGE_BOT_PREFIX is required with BRIDGE_MM_ADMIN_TOKEN_FILE")
+	case c.AdminToken == "" && c.BotPrefix != "":
+		return Config{}, fmt.Errorf("BRIDGE_BOT_PREFIX is set without BRIDGE_MM_ADMIN_TOKEN_FILE: " +
+			"the agents' own bots need the admin token")
+	case c.BotPrefix != "" && !BotPrefix.MatchString(c.BotPrefix):
+		return Config{}, fmt.Errorf("BRIDGE_BOT_PREFIX %q is no username's start: a lower-case letter, "+
+			"then at most 31 of a-z, 0-9, '.', '_' and '-'", c.BotPrefix)
+	}
+	if v := strings.TrimSpace(get("BRIDGE_HIDE_BOT_DM")); v != "" {
+		hide, err := strconv.ParseBool(v)
+		if err != nil {
+			return Config{}, fmt.Errorf("BRIDGE_HIDE_BOT_DM %q is neither true nor false", v)
+		}
+		c.HideBotDM = hide
+	}
 	if v := strings.TrimSpace(get("BRIDGE_MM_ALLOW_HTTP")); v != "" {
 		allow, err := strconv.ParseBool(v)
 		if err != nil {
@@ -137,6 +162,10 @@ func Load(get func(string) string) (Config, error) {
 // propsPrefix is the bus's own rule (a2a.user_prefix): one segment, ending in _.
 var propsPrefix = regexp.MustCompile(`^[a-z][a-z0-9]*_$`)
 
+// BotPrefix is the agents' bot prefix as the hosts decode it from the bridge's
+// signal (nats_port.BOT_PREFIX_RE, RT-6.36 step 4): a username's first part.
+var BotPrefix = regexp.MustCompile(`^[a-z][a-z0-9._-]{0,31}$`)
+
 // prefixMax is the homes' limit (a2a.PREFIX_MAX): the prefix is in their
 // per-turn instructions, so it stays short.
 const prefixMax = 16
@@ -159,7 +188,30 @@ func FromEnv() (Config, error) {
 	}
 	c.MMToken = strings.TrimSpace(string(raw))
 	if c.MMToken == "" {
-		return Config{}, fmt.Errorf("BRIDGE_MM_TOKEN_FILE %s is empty", c.MMToken)
+		return Config{}, fmt.Errorf("BRIDGE_MM_TOKEN_FILE is empty")
+	}
+	if c.AdminToken != "" {
+		raw, err := os.ReadFile(c.AdminToken)
+		if err != nil {
+			return Config{}, fmt.Errorf("BRIDGE_MM_ADMIN_TOKEN_FILE: %w", err)
+		}
+		c.AdminToken = strings.TrimSpace(string(raw))
+		if err := c.checkTokens(); err != nil {
+			return Config{}, err
+		}
 	}
 	return c, nil
+}
+
+// checkTokens refuses an empty admin token, and one that is the posting
+// token: the bot that posts must not hold system_admin (RT-6.44).
+func (c Config) checkTokens() error {
+	switch {
+	case c.AdminToken == "":
+		return fmt.Errorf("BRIDGE_MM_ADMIN_TOKEN_FILE is empty")
+	case c.AdminToken == c.MMToken:
+		return fmt.Errorf("BRIDGE_MM_ADMIN_TOKEN_FILE holds the posting bot's token " +
+			"(BRIDGE_MM_TOKEN_FILE): the admin bot must be an account of its own")
+	}
+	return nil
 }
