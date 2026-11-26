@@ -45,8 +45,14 @@ func OSEnv(warn Warn) *Env { return NewEnv(os.LookupEnv, warn) }
 
 // Get is the value of the setting newName, formerly oldName; "" when neither
 // is set. The error names both names, or the one that holds an unexpanded
-// placeholder, never a value: a value may be a secret.
+// placeholder, never a value: a value may be a secret. An oldName of ""
+// is a setting new after the rename, with no old spelling: only newName is
+// read (docs/env-names.md lists it with the same name in both columns).
 func (e *Env) Get(newName, oldName string) (string, error) {
+	if oldName == "" {
+		v, _, err := e.read(newName)
+		return v, err
+	}
 	nv, nset, err := e.read(newName)
 	if err != nil {
 		return "", err

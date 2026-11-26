@@ -468,13 +468,14 @@ old one.
 `services/auth/nats-server.example.conf` names several of them in comments;
 it changes with the service.
 
-### The bridge (19)
+### The bridge (20)
 
-All in `services/bridge/`, read in `internal/config/config.go`. The last three
-come with the bridge's agent bots
+All in `services/bridge/`, read in `internal/config/config.go`. The last
+three renames come with the bridge's agent bots
 ([#166](https://github.com/dembaca/ai-agent-bus/pull/166), not merged when
-this was written). The bridge as a whole exists for Mattermost; the column
-says whether the setting itself is about Mattermost.
+this was written); the last row, the sweep's keep time (#151 step 2), is new
+after the rename and has no old spelling. The bridge as a whole exists for
+Mattermost; the column says whether the setting itself is about Mattermost.
 
 | Old name | New name | Mattermost | Where it appears | Note |
 |---|---|---|---|---|
@@ -497,6 +498,7 @@ says whether the setting itself is about Mattermost.
 | `BRIDGE_MM_ADMIN_TOKEN_FILE` | `CB_BRIDGE_MM_ADMIN_TOKEN_FILE` | yes | `internal/config/config.go` | new with #166 |
 | `BRIDGE_BOT_PREFIX` | `CB_BRIDGE_MM_BOT_PREFIX` | yes | `internal/config/config.go` | new with #166; the Mattermost bots' username prefix |
 | `BRIDGE_HIDE_BOT_DM` | `CB_BRIDGE_MM_HIDE_BOT_DM` | yes | `internal/config/config.go` | new with #166; a Mattermost direct message |
+| `CB_BRIDGE_MM_BOT_KEEP` | `CB_BRIDGE_MM_BOT_KEEP` | yes | `internal/config/config.go` | new with #151 step 2: no old spelling; the sweep's keep time for the agents' bots |
 
 `BRIDGE_BOT_PREFIX` and `BRIDGE_HIDE_BOT_DM` (#166) are about Mattermost but
 have no `MM` in their names; the rename gives them one, as the rule says:

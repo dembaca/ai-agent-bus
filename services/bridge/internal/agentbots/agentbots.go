@@ -9,7 +9,8 @@
 // owner, and marked as the bridge's in its description. Its token is minted
 // at its first use after each start and kept in memory only; the bot's
 // earlier tokens of the bridge are revoked then. Whatever fails, the caller
-// gets nil and posts with the one bridge bot, as before.
+// gets nil and posts with the one bridge bot, as before. The sweep
+// (sweep.go) disables the bots of agents idle longer than the keep time.
 package agentbots
 
 import (
@@ -296,13 +297,15 @@ func (b *Bots) setUp(ctx context.Context, name, ownerID string) (core.Agent, err
 		b.Log.Info("agentbots: created", "agent", name, "bot", a.Username)
 		return a, nil
 	}
-	bot, err := b.Admin.BotOf(ctx, found.ID)
+	// disabled too: the sweep (sweep.go) disables the bots of idle agents,
+	// and one that comes back gets its bot enabled again below
+	bot, err := b.Admin.BotOfAny(ctx, found.ID)
 	if err != nil {
 		return core.Agent{}, err
 	}
 	switch {
 	case bot == nil:
-		return core.Agent{}, fmt.Errorf("%s is no active bot", user)
+		return core.Agent{}, fmt.Errorf("%s is no bot", user)
 	case bot.Description != Marker+name:
 		return core.Agent{}, fmt.Errorf("%s is not the bridge's bot", user)
 	case bot.OwnerID == b.adminID && b.adminID != "":
@@ -312,6 +315,12 @@ func (b *Bots) setUp(ctx context.Context, name, ownerID string) (core.Agent, err
 		}
 	case bot.OwnerID != owner.ID:
 		return core.Agent{}, fmt.Errorf("%s has another owner than the agent's account record names", user)
+	}
+	if bot.DeleteAt != 0 {
+		if err := b.Admin.EnableBot(ctx, found.ID); err != nil {
+			return core.Agent{}, fmt.Errorf("enable: %w", err)
+		}
+		b.Log.Info("agentbots: enabled again", "agent", name, "bot", user)
 	}
 	return *found, nil
 }
