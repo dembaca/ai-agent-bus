@@ -133,12 +133,13 @@ type Service struct {
 	subMu    sync.Mutex          // guards subLocks
 	subLocks map[string]*subLock // one lock per identity while its account record is written
 
-	cmu       sync.RWMutex
-	consumers Consumers   // nil: none are made
-	anchors   Anchors     // nil: the anchor is the owner's name, as before ADR-016
-	attester  Attester    // nil: no attestation is published
-	trust     Trust       // nil: a trusted name is its own anchor
-	persons   personHooks // the console's path (person.go); unset: none issued
+	cmu        sync.RWMutex
+	consumers  Consumers   // nil: none are made
+	anchors    Anchors     // nil: the anchor is the owner's name, as before ADR-016
+	attester   Attester    // nil: no attestation is published
+	trust      Trust       // nil: a trusted name is its own anchor
+	trustIndex TrustIndex  // nil: no trust index is written (RT-6.43 step 3)
+	persons    personHooks // the console's path (person.go); unset: none issued
 }
 
 // SetAnchors sets where anchors come from. nil (the default) takes the
@@ -392,9 +393,16 @@ func (s *Service) authorize(ctx context.Context, req *jwt.AuthorizationRequestCl
 		}
 	}
 	if at, tr := s.attestHooks(); at != nil {
-		if err := s.attest(ctx, at, tr, agent, directory.Trusted{Anchor: anchor, Name: id.Owner},
-			hello.Trusted, hello.TrustedCut, uc.IssuedAt, uc.Expires); err != nil {
+		att, err := s.attest(ctx, at, tr, agent, directory.Trusted{Anchor: anchor, Name: id.Owner},
+			hello.Trusted, hello.TrustedCut, uc.IssuedAt, uc.Expires)
+		if err != nil {
 			return "", who, fmt.Errorf("attestation: %w", err)
+		}
+		// The trust index an operator's credential reads (RT-6.43 step 3).
+		if ix := s.trustIndexHook(); ix != nil {
+			if err := s.indexTrust(ctx, ix, att, channels); err != nil {
+				return "", who, fmt.Errorf("%w: trust index: %v", token.ErrDirectory, err)
+			}
 		}
 		// The record of the chat account behind the login (RT-6.42 step 3).
 		guard, _ := s.anchorHook().(TokenGuard)

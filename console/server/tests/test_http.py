@@ -10,12 +10,20 @@ stands the operator in (loopback only, tests and the mock).
 from __future__ import annotations
 
 import asyncio
+import base64
 import json
+import time
 
 import pytest
 
 from console_server import auth, config
 from console_server.app import COOKIE, Console
+
+# an ID token as the realm sends it, already expired: the console reads
+# nothing in it and hands it back to the realm as the logout's hint all
+# the same (RT-6.43 step 9)
+ID_TOKEN = "e30." + base64.urlsafe_b64encode(json.dumps(
+    {"exp": int(time.time()) - 60}).encode()).rstrip(b"=").decode() + ".sig"
 
 SETTINGS = config.Settings(public_url="http://127.0.0.1:8747",
                           login_off=True, nats_url="")
@@ -28,9 +36,12 @@ async def client(console: Console) -> tuple[asyncio.StreamReader, asyncio.Stream
 
 async def get(console: Console, path: str, cookie: str | None = None,
               origin: str | None = None,
-              sec_fetch_site: str | None = None) -> tuple[int, dict[str, object], bytes]:
+              sec_fetch_site: str | None = None,
+              method: str = "GET") -> tuple[int, dict[str, object], bytes]:
     reader, writer = await client(console)
-    head = f"GET {path} HTTP/1.1\r\nHost: x\r\n"
+    head = f"{method} {path} HTTP/1.1\r\nHost: x\r\n"
+    if method == "POST":
+        head += "Content-Length: 0\r\n"
     if cookie:
         head += f"Cookie: {cookie}\r\n"
     if origin:
@@ -95,7 +106,8 @@ async def test_asks_and_stats_answer_empty_until_nats_carries_them(
     assert status == 200 and json.loads(body) == []
     status, _headers, body = await get(console, "/v1/stats")
     reports = json.loads(body)
-    assert status == 200 and [r["id"] for r in reports] == ["share-per-version", "asks-24h", "asks-7d"]
+    assert status == 200 and [r["id"] for r in reports] == ["share-per-version", "asks-24h", "asks-7d",
+                                                                 "traffic-by-category", "tokens-by-category"]
     assert all(f["value"] is None for r in reports for f in r["fields"])
 
 
@@ -220,7 +232,8 @@ async def test_the_login_flow_sets_the_cookie(tmp_path) -> None:
     c.endpoints = auth.Endpoints(issuer=settings.issuer,
                                  authorization="http://127.0.0.1:8747/kc/auth",
                                  token="http://127.0.0.1:8747/kc/token",
-                                 jwks="http://127.0.0.1:8747/kc/certs")
+                                 jwks="http://127.0.0.1:8747/kc/certs",
+                                 end_session="http://127.0.0.1:8747/kc/logout")
 
     async def fake_discover(issuer: str) -> auth.Endpoints:
         assert issuer == settings.issuer
@@ -253,7 +266,7 @@ async def test_the_login_flow_sets_the_cookie(tmp_path) -> None:
         import unittest.mock as mock
 
         async def fake_exchange(*args, **kwargs):
-            return auth.Tokens(access="a-token", refresh="r-token")
+            return auth.Tokens(access="a-token", refresh="r-token", id_token=ID_TOKEN)
 
         async def fake_verify(*args, **kwargs):
             return verified
@@ -279,10 +292,29 @@ async def test_the_login_flow_sets_the_cookie(tmp_path) -> None:
 
         # logout ends the session on the server: the cookie, even copied,
         # is worthless afterwards
-        status, _h, _b = await get(c, "/logout", cookie=cookie.split(";")[0])
+        status, headers, _b = await get(c, "/logout", cookie=cookie.split(";")[0],
+                                        method="POST")
         assert status == 303
         status, _h, _b = await get(c, "/v1/me", cookie=cookie.split(";")[0])
         assert status == 401
+        # RT-6.43 step 9: and then the realm's session, with the login's ID
+        # token as the hint and the console's own address to come back to
+        where = str(headers["location"])
+        assert where.startswith("http://127.0.0.1:8747/kc/logout?client_id=console")
+        query = parse_qs(urlsplit(where).query)
+        assert query["post_logout_redirect_uri"] == ["http://127.0.0.1:8747/"]
+        assert query["id_token_hint"] == [ID_TOKEN]
+        # the hint is in the URL: no cache keeps it, no Referer carries it on
+        assert headers.get("cache-control") == "no-store"
+        assert headers.get("referrer-policy") == "no-referrer"
+        # a second logout (the session already gone, as after a restart):
+        # still the realm's logout, without a hint
+        status, headers, _b = await get(c, "/logout", cookie=cookie.split(";")[0],
+                                        method="POST")
+        assert status == 303
+        where = str(headers["location"])
+        assert where.startswith("http://127.0.0.1:8747/kc/logout?")
+        assert "id_token_hint" not in where
     finally:
         await c.stop()
 
@@ -348,19 +380,52 @@ async def test_a_cross_site_page_cannot_log_the_operator_out() -> None:
                                                groups=("operators",)), 3600)
         cookie = f"choirbus_session={token}"
         status, _h, _b = await get(c, "/logout", cookie=cookie,
-                                   origin="http://evil.example")
+                                   origin="http://evil.example", method="POST")
         assert status == 403
         assert c.sessions.get(token) is not None  # the session stands
-        # a cross-site <img> sends no Origin at all — Fetch Metadata says it
+        # a cross-site form without Origin (an old browser): Fetch Metadata
         status, _h, _b = await get(c, "/logout", cookie=cookie,
-                                   sec_fetch_site="cross-site")
+                                   sec_fetch_site="cross-site", method="POST")
         assert status == 403
         assert c.sessions.get(token) is not None
-        # the console's own origin (or none, a typed address bar) is fine
-        status, _h, _b = await get(c, "/logout", cookie=cookie,
-                                   origin="http://127.0.0.1:8747")
-        assert status == 303
+        # a link or an <img> is a GET: the logout takes POST only (RT-6.43 step 9)
+        status, headers, _b = await get(c, "/logout", cookie=cookie)
+        assert status == 405 and headers.get("allow") == "POST"
+        assert c.sessions.get(token) is not None
+        # the console's own origin (or none, a typed address bar) is fine;
+        # a realm without an end-session endpoint: a page that starts no
+        # login (/login would come straight back in through the open SSO)
+        status, headers, body = await get(c, "/logout", cookie=cookie,
+                                          origin="http://127.0.0.1:8747", method="POST")
+        assert status == 200 and "location" not in headers
+        assert b"Keycloak session is still open" in body
         assert c.sessions.get(token) is None
+    finally:
+        await c.stop()
+
+
+async def test_post_is_the_logouts_alone() -> None:
+    """Only the logout takes POST; every other route stays GET, and a POST
+    body beyond the small bound is refused before any handler runs."""
+    c = Console(SETTINGS)
+    await c.start()
+    try:
+        status, headers, _b = await get(c, "/v1/me", method="POST")
+        assert status == 405 and headers.get("allow") == "GET"
+        async def status_of(head: bytes) -> bytes:
+            reader, writer = await client(c)
+            writer.write(head + b"\r\n")
+            line = await asyncio.wait_for(reader.readline(), 5.0)
+            writer.close()
+            return line.split()[1]
+        start = b"POST /logout HTTP/1.1\r\nHost: x\r\n"
+        assert await status_of(start + b"Content-Length: 999999\r\n") == b"413"
+        assert await status_of(start + b"Content-Length: ten\r\n") == b"400"
+        assert await status_of(start + b"Transfer-Encoding: chunked\r\n") == b"411"
+        assert await status_of(b"PUT /logout HTTP/1.1\r\nHost: x\r\n") == b"400"
+        # login off (the mock): the logout goes back to the app
+        status, headers, _b = await get(c, "/logout", method="POST")
+        assert status == 303 and headers.get("location") == "/"
     finally:
         await c.stop()
 
@@ -527,5 +592,34 @@ async def test_an_aged_card_reaches_the_stream_on_the_beat() -> None:
         assert cards[0]["card"]["name"] == "agent-a"
         assert cards[0]["card"]["state"] == "offline"
         writer.close()
+    finally:
+        await c.stop()
+
+
+async def test_a_logout_before_discovery_ends_the_console_session() -> None:
+    """RT-6.43 step 9: the issuer's endpoints not in yet (Keycloak down at
+    the start): the console's session ends, and a page that starts no login
+    says the Keycloak session is still open."""
+    settings = config.Settings(public_url="http://127.0.0.1:8747",
+                               issuer="http://127.0.0.1:8747/kc",
+                               client_id="console", operator_group="operators",
+                               nats_url="")
+    c = Console(settings)
+
+    async def never(issuer: str) -> auth.Endpoints:
+        await asyncio.Event().wait()
+        raise AssertionError("unreachable")
+    await c.start(discover=never)
+    try:
+        assert c.endpoints is None
+        token = c.sessions.issue(auth.Operator(username="dembaca", display="d",
+                                               groups=("operators",)), 3600,
+                                 id_token=ID_TOKEN)
+        status, headers, body = await get(c, "/logout", cookie=f"{COOKIE}={token}",
+                                          method="POST")
+        assert status == 200 and "location" not in headers
+        assert b"Keycloak session is still open" in body
+        assert headers.get("cache-control") == "no-store"
+        assert c.sessions.get(token) is None
     finally:
         await c.stop()

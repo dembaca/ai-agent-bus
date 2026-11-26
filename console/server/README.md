@@ -72,6 +72,19 @@ tokens the same way. A login from a browser that holds a session ends
 that session first, and one person keeps at most four sessions (by
 `sub`): a fifth closes the oldest, below the login service's own cap.
 
+The logout (the sidebar's button, `POST /logout`; a GET answers 405)
+ends Keycloak's session too (RT-6.43 step 9): after dropping its own
+session the server redirects to the realm's `end_session_endpoint` with
+`client_id`, `post_logout_redirect_uri=<CONSOLE_PUBLIC_URL>/` and the
+login's stored ID token as `id_token_hint`, expired or not (kept in
+memory with the session; Keycloak checks the hint's signature, not its
+expiry). Without one (after a restart) Keycloak asks the person to
+confirm the logout. The hint travels in the redirect URL (the browser's
+history, Keycloak's and its proxy's access logs); the redirect is
+`no-store` and `no-referrer`. Without an end-session endpoint, or before
+the issuer's endpoints are discovered, the logout ends the console's
+session and answers a page that says the Keycloak session is still open.
+
 
 Presence today carries `online`/`away` (format v1) — the Kanban's two
 extra columns.
@@ -96,8 +109,12 @@ operator's anchor from the login's own record with the asked human's
 anchor, never a login name (point 4 of the console decision's addition of
 2026-11-25); until that record came they are `null` (`n/a`) and mark
 nothing. Read-only: no answer, no thread text. `/v1/stats` answers the
-two stage-1 reports (the bus's share of all tokens per version over 7
-days; the asks over 24 h and 7 days), computed with `stats.py` from lines
+reports (the bus overhead share of all tokens per version over 7 days,
+estimated; the asks over 24 h and 7 days; the bus traffic by category
+over 7 days, exact counts of bus overhead and coordination; the tokens by
+category over 7 days, an estimate marked so, as stacked bars in `stacks`
+for the fleet, per version, per role and per harness, in input-token
+equivalents and raw tokens), computed with `stats.py` from lines
 decoded by `stats.decode_line`, each line once by its stream sequence;
 every value without lines is `null` (`n/a`).
 
@@ -135,6 +152,9 @@ never reads the file.
   (the console is its own client, not the bus's device-flow client,
   ADR-014 point 6);
 - one valid redirect URI: `<CONSOLE_PUBLIC_URL>/callback`, exact;
+- one valid post logout redirect URI: `<CONSOLE_PUBLIC_URL>/`, exact
+  (the logout's way back, RT-6.43 step 9; without it Keycloak refuses
+  the logout's redirect);
 - the **standard flow alone** (device authorization grant, direct access
   grants, implicit flow and service accounts off), refresh tokens on as
   Keycloak's default, and **no `offline_access`**: the server renews

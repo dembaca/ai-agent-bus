@@ -29,7 +29,7 @@ import time
 from dataclasses import dataclass
 from typing import TYPE_CHECKING, Any
 
-from . import a2a, gate, lease, session_file
+from . import a2a, gate, lease, session_file, stats
 from .ids import _ID
 from .model import Post
 from .nats_port import is_nats_user
@@ -310,6 +310,7 @@ async def tell(client: ChatPort, post: Post, uid: str,
         here = await lease.crown_here(client, uid, post.channel_id, root)
         text = lease.with_crown(reply_text(found, client.permalink_base, client.work_channel_name), uid,
                                 here=here)
+        stats.record("post", chars=len(text), w="other")  # RT-6.9: the server's own post
         await client.post(text, channel_id=post.channel_id or None, root_id=root,
                           props={a2a.system_key(): True})
     except Exception as exc:  # noqa: BLE001 — the wake-up stands all the same

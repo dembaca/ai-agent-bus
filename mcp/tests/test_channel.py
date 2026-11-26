@@ -508,6 +508,8 @@ async def test_other_posts_come_as_one_digest(monkeypatch):
     System posts ("… joined the channel") are dropped: their author is the
     human who added the bot, so a pusher that wakes for that human would wake."""
     pusher = _pusher(digest_sec=0.3)
+    recorded = []
+    monkeypatch.setattr(channel.stats, "record", lambda kind, **values: recorded.append((kind, values)))
     joined = _post("agent-y joined the channel.", trusted=True)
     joined["post"]["type"] = "system_join_channel"
     batches = [[_post("IDLE a"), joined], [_post("IDLE b", root="r1")], [MENTION]]
@@ -533,6 +535,10 @@ async def test_other_posts_come_as_one_digest(monkeypatch):
     assert MENTION.pop(channel.PUSHED) is True and channel.PUSHED not in joined
     # While posts are held the wait ends when the digest is due, not at the cap.
     assert timeouts[0] == 5 and all(t <= 0.3 for t in timeouts[1:4])
+    # RT-6.9 step 2: the check and the digest as texts put into the context, length only.
+    check = pusher.connection.sent[0]
+    assert recorded == [("inject", {"name": "check", "chars": len(check["content"])}),
+                        ("inject", {"name": "digest", "chars": len(sent[1]["content"])})]
 
 
 @pytest.mark.anyio
