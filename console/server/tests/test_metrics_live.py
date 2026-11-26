@@ -62,18 +62,19 @@ authorization {{
   ]
 }}
 """)
+    port_file = tmp_path / "port"
     proc = subprocess.Popen(
-        [os.environ["MM_NATS_SERVER"], "-c", str(conf)],
+        [os.environ["MM_NATS_SERVER"], "-c", str(conf), "-P", str(port_file)],
         stdout=subprocess.PIPE, stderr=subprocess.PIPE, cwd=str(tmp_path))
     port = None
     t0 = time.monotonic()
     while time.monotonic() - t0 < 10:
-        line = proc.stderr.readline() if proc.stderr else b""
-        if b"listening for client connections" in line:
-            port = int(line.decode().rpartition("127.0.0.1:")[2].split()[0])
+        if port_file.exists():
+            port = int(port_file.read_text().strip())
             break
         if proc.poll() is not None:
             pytest.fail("nats-server died at start")
+        time.sleep(0.05)
     if port is None:
         proc.kill()
         pytest.fail("no port from the nats-server")
@@ -87,7 +88,7 @@ async def test_live_deliveries_feed_both_books(live_nats, tmp_path) -> None:
     push consumer's ack metadata carried in the reply subject) reach the
     service view's fleet (a card) and its stats book (one parsed line)."""
     from mattermost_ai_agent_bus import stats as mcp_stats
-    from mattermost_ai_agent_bus.natsbus import encode_presence, agent_name
+    from mattermost_ai_agent_bus.natsbus import encode_presence
 
     port, proc, publisher_seed = live_nats
     s = config.Settings(**{**_settings_unit(tmp_path).__dict__,
