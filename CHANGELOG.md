@@ -14,6 +14,115 @@ before 0.5.0 are described in the git history.
   `127.0.0.1`, `::1` or `localhost`; a lab on a network it trusts may set
   `BRIDGE_MM_ALLOW_HTTP=true` (default off, a warning at start). The
   bridge's WebSocket reader refuses such a URL on its own too.
+- **The operator console's `GET /logout` answers 405** (#108 point 3,
+  RT-6.43 step 9). The logout is a POST now, from the sidebar's button; a
+  bookmark or link to `/logout` no longer logs out. The release's entry
+  needs the line `Needs: keycloak post logout redirect uri for the console
+  client.` (the console's client lists `<CONSOLE_PUBLIC_URL>/` under "Valid
+  post logout redirect URIs").
+
+### Changed
+
+- **The operator console's logout ends the Keycloak session too** (#108
+  point 3, RT-6.43 step 9). Before, it ended only the console's cookie,
+  and `/login` came straight back in through the realm's single sign-on,
+  without a password: on a shared machine the next person was logged in as
+  the previous operator. Now a button in the sidebar POSTs `/logout`; the
+  server drops its session and redirects to Keycloak's end-session endpoint
+  with the login's stored ID token as the hint, expired or not (Keycloak
+  asks to confirm only without one, after a restart). The
+  console's Keycloak client needs `<CONSOLE_PUBLIC_URL>/` under "Valid post
+  logout redirect URIs" before rollout.
+
+### Added
+
+- **The operator console shows the channels of the operator's own agents
+  and of agents that trust the operator directly** (#128, the console on
+  the bus as its operator, RT-6.43 step 3). At each agent's credential the
+  login service writes a record into the directory's bucket: the owner's
+  anchor, the trusted anchors as its attestation names them and the home
+  and guest channels it granted (never the lobby). An operator's
+  consumers add the channels of every unexpired record that names the
+  operator as owner or trusted, never over several steps. A dropped trust
+  or an ended agent leaves the view at the operator's next renewal after
+  the agent's next credential or the record's expiry. A record that
+  cannot be written or read refuses that credential. The login service
+  purges expired records every 5 minutes in the background, never inside
+  an agent's login. Each operator credential reads every record, which
+  suits tens to low hundreds of agents (the risk that the console shows
+  less than there is, RISK-13). A trust record that cannot be read opens
+  nothing and is logged without its content; the sweep purges it.
+
+  > Upgrade note: the login service's JetStream user needs the consumer rights on
+  > the directory's bucket for its key listings,
+  > `$JS.API.CONSUMER.CREATE.KV_BUS_DIRECTORY.>` and
+  > `$JS.API.CONSUMER.DELETE.KV_BUS_DIRECTORY.*` (the README and
+  > `services/auth/nats-server.example.conf`); without them every operator
+  > credential is refused. 0.101.0 already needs them once its console path
+  > is on (the operator's channel listing of #126), though its entry does not
+  > name them; the next release entry carries them as a `Needs:` line.
+
+- **The bus traffic by category, exact counts for every harness** (the
+  first stage of splitting the tokens into task work, bus overhead and
+  multi-agent coordination, #139; the overhead measurement, RT-6.9). Each
+  `STATS` part carries four new objects of integer pairs under fixed keys:
+  `post_words` (own posts by bus word, plus `ask`, `plain`, `other`),
+  `inbound` (posts and events handed to the agent by author class `agent`,
+  `human`, `event`, and the envelope's characters), `polls` (calls of
+  `wait_for_events` and the empty ones) and `inject` (texts the hooks, the
+  listener, the OpenCode plugin, the pi extension and the pusher put into
+  the context, by kind; `wake`, a text carrying one woken post's body,
+  counts as coordination). Hooks and plugins send the new `POST /v1/stat`
+  kind `inject` with a kind and a length (at most 10^7) only, never the
+  text. The server's own posts (reminders, acknowledgements, permission
+  notes, answers on departed agents, login notices) now count too, as
+  `other`. The reader
+  maps them to bus overhead and coordination (`stats.CATEGORY_OF`, so a
+  changed mapping applies to old lines too): `mm-agent-stats.sh report`,
+  `stats_report` and the console gain the report "bus traffic by
+  category", with a coverage line; lines of older publishers show n/a,
+  never 0; `stats_report` returns only the category sums, shares and
+  coverage of it, the per-key sums stay in the script's `--json` and the
+  console. A digest counts as overhead, so the overhead share is an upper
+  bound until the token split by content. Zero added model tokens: no
+  instruction, tool doc or schema, skill text, hook or listener text,
+  client line, plugin sentence, pushed tag or hint changes, and no tool
+  result field is added; a test pins all of these by hash. Only
+  `stats_report`, when asked, returns a few more numbers.
+
+- **Tokens by category for Claude Code, an estimate marked as such** (the
+  second stage of splitting the tokens into task work, bus overhead and
+  multi-agent coordination, #139; the overhead measurement, RT-6.9; the
+  decision on attribution by content, ADR-017). The same pass over the
+  transcript keeps the context's segments by category, lays each request's
+  exact token types over them by position (cache read from the front, then
+  cache write 1 h, 5 min, fresh input), sizes tool calls in the output
+  exactly and splits text and thinking by what drove the request (a
+  convention). `tok` gains `ovh` and `coord` (each `{in, read, w5m, w1h,
+  out}`), `req_ovh`, `req_coord` and the method number `m` (1); task work
+  is the rest, never sent, so the three add up to the exact totals.
+  `mm-agent-stats.sh report`, `stats_report` (sums, shares and coverage
+  only) and the console gain the report "tokens by category": in the
+  console one stacked bar per row (fleet, version, role, harness),
+  input-token equivalents by default and raw tokens on a switch, each bar
+  marked "estimated" with a one-line note on the method and the coverage.
+  A trusted human's prompt over the bus counts as task work here, a digest
+  as overhead. Zero added model tokens: the hash test of the text the
+  model reads is unchanged.
+
+### Changed
+
+- **The console's report on the token share per version shows the bus
+  overhead share of all tokens**, the overhead segment of the token split
+  in input-token equivalents, marked estimated (n/a for versions without
+  the split); the bus and coordination share stays in the script's token
+  table, from `tok.bus`, for comparison across versions (RT-6.43 step 8).
+- **The console's report "the bus's share of all tokens, per version" is
+  now "bus and coordination share of all tokens, per version"**, and the
+  script's column "bus share" "bus and coordination share": the measure
+  counts every request the bus caused whole, a peer's task included, so it
+  is not the bus's own overhead alone (RT-6.9 step 3, the console on the
+  bus, RT-6.43 step 8).
 
 ### Fixed
 
@@ -39,6 +148,19 @@ before 0.5.0 are described in the git history.
   host, so a 30x from `https` to `http` would have sent the bot token in
   clear text. Mattermost's API does not redirect; a 30x is now the call's
   error.
+
+### Docs
+
+- **The deployment and building block views say what runs in the lab**
+  (#108). The central bridge carries people's posts and reactions onto
+  NATS in the lab since 2026-11-25 (step 2, RT-6.42), and the deployment
+  view's introduction names the bridge and the operator console beside
+  the login service as the lab's containers.
+- **A coordinator listening as a channel and the silence rule** (#108,
+  the coordinator scenario, RT-6.6): such a session counts as alive while
+  its MCP server renews the status lease and its 👀 on receipt comes within
+  the 45 s; one whose host stopped delivering, so no 👀 comes, is silent
+  like any other.
 
 ## 0.101.0
 

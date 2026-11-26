@@ -15,8 +15,16 @@
 # skill, read per load. Characters, not tokens: roughly 4 per token.
 # Claude Code sessions since 0.32.0 add a token table from their transcripts:
 # requests per hour, those the bus caused, the fixed text per request, sessions
-# that loaded the skill (since 0.55.0), the bus's tokens per hour and its share
-# of all, in input-token equivalents.
+# that loaded the skill (since 0.55.0), the bus's tokens per hour and the bus
+# and coordination share of all (a request the bus caused counts whole, a
+# peer's task included), in input-token equivalents. Lines from servers that
+# count the bus traffic add a table of it by category: bus overhead (sign-on
+# and sign-off posts, the server's own posts and events, envelopes, empty
+# polls, hook texts) and coordination (task words, asks, replies, messages
+# from agents and humans), exact counts in items and characters. Claude Code
+# lines with the token split add tokens by category, an estimate: task work, bus
+# overhead and coordination as shares of the exact totals, in input-token
+# equivalents and raw tokens.
 # A session reads the same as JSON with the MCP tool stats_report, no token.
 # Since 0.36.0, per version and coding harness (the MCP client: claude-code,
 # cursor, opencode, codex, …), a Turns table (turns per human prompt, mean and
@@ -172,6 +180,58 @@ report="$(jq -c '
       all_per_h: per_h(.all; .hours),
       bus_share_pct: (if .all > 0 then (.bus * 1000 / .all | round / 10) else null end)
     } end;
+  # The bus traffic by category (lines from servers that count it, stats.py
+  # _traffic_of): own posts by word, messages handed in by author class,
+  # polls, hook texts, each [n, chars]
+  # summed per key; HELLO, IDLE, BYE, the server'"'"'s own posts and events, the
+  # envelope (characters only), empty polls (items only, at most a line'"'"'s polls)
+  # and every hook text but a woken post'"'"'s (wake) are bus overhead, the rest
+  # coordination. null when no line has the counts.
+  def sumpairs($k): [.[] | (.[$k] // {}) | to_entries[]] | group_by(.key)
+    | map({key: .[0].key, value: [(map(.value[0]) | add), (map(.value[1]) | add)]}) | from_entries;
+  def traffic_of: length as $of
+    | map(select(.post_words != null or .inbound != null or .polls != null or .inject != null))
+    | if length == 0 then null else
+      sumpairs("post_words") as $p | sumpairs("inbound") as $i | sumpairs("inject") as $j
+      | sum((.polls // [0, 0])[0]) as $calls | sum((.polls // [0, 0]) | [.[1], .[0]] | min) as $empty
+      | ($p | to_entries | map(select(.key | IN("HELLO", "IDLE", "BYE", "other")) | .value)
+         + [$i.event // empty]
+         + ($j | to_entries | map(select(.key | IN("start", "check", "digest", "drain", "signoff",
+                                                   "listen", "idle", "compact", "other")) | .value))) as $o
+      | ($p | to_entries | map(select(.key | IN("TASK", "DELEGATE", "ACK", "PROGRESS", "BLOCKED",
+                                                 "WAITING", "RESULT", "DONE", "NO", "CANCEL", "HANDOVER",
+                                                 "ASSIGNMENTS", "ask", "plain")) | .value)
+         + [$i.agent // empty, $i.human // empty, $j.wake // empty]) as $c
+      | [($o | map(.[0]) | add // 0) + $empty, ($o | map(.[1]) | add // 0) + ($i.envelope // [0, 0])[1]] as $ovh
+      | [($c | map(.[0]) | add // 0), ($c | map(.[1]) | add // 0)] as $coord
+      | {lines: length, of: $of, posts: $p, inbound: $i, inject: $j, polls: $calls,
+         empty_polls: $empty, empty_polls_pct: pct($empty; $calls), overhead: $ovh,
+         coordination: $coord, overhead_chars_pct: pct($ovh[1]; $ovh[1] + $coord[1])} end;
+  # The tokens by category (stats.py _split_of), an estimate: lines of method 1
+  # (tok.m) only; per token type, overhead held to the total, coordination to the
+  # rest, task work the remainder; raw tokens and input-token equivalents, with
+  # each category'"'"'s share. null when no line has the split.
+  def split_of: length as $of | ["in", "read", "w5m", "w1h", "out"] as $keys
+    | map(select((.tok | type) == "object" and .tok.m == 1))
+    | if length == 0 then null else
+      [.[] | .tok as $t | $keys | map(. as $k
+        | (($t.all // {})[$k] // 0) as $a
+        | ([([(($t.ovh // {})[$k] // 0), 0] | max), $a] | min) as $o
+        | ([([(($t.coord // {})[$k] // 0), 0] | max), $a - $o] | min) as $c
+        | {key: $k, value: [$a - $o - $c, $o, $c]}) | from_entries] as $per
+      | ({task: 0, overhead: 1, coordination: 2}
+         | map_values(. as $i | [$keys[] as $k | {key: $k, value: ($per | map(.[$k][$i]) | add)}]
+                                | from_entries)) as $types
+      | ($types | map_values(.["in"] + .read + .w5m + .w1h + .out)) as $raw
+      | ($types | map_values(eq(.))) as $eq
+      | ($raw.task + $raw.overhead + $raw.coordination) as $rall
+      | ($eq.task + $eq.overhead + $eq.coordination) as $eall
+      | {estimated: true, method: 1, lines: length, of: $of,
+         harnesses: (map(.rt // "other" | tostring) | unique),
+         req: sum(.tok.req), req_ovh: sum(.tok.req_ovh), req_coord: sum(.tok.req_coord),
+         raw: $raw, eq: ($eq | map_values(round)),
+         raw_pct: ($raw | map_values(pct(.; $rall))), eq_pct: ($eq | map_values(pct(.; $eall))),
+         types: $types} end;
   # A part is the coordinator'"'"'s when it held the crown more than half its time,
   # else a worker'"'"'s; unknown before 0.91.0 (no crown_sec).
   def role: if .crown_sec == null then "unknown"
@@ -196,6 +256,8 @@ report="$(jq -c '
     static: (map(.static) | max),
     skill: (map(.skill) | max),
     tok: $tok,
+    traffic: traffic_of,
+    split: split_of,
     settled: settled_of,
     saved: saved_of,
     harness: (group_by(.rt // "other") | map({
@@ -203,7 +265,7 @@ report="$(jq -c '
     })),
     roles: (group_by(role) | map({
       role: (.[0] | role), parts: length, sessions: sessions, hours: hours,
-      tok: tok_of, turns: turns_of, asks: asks_of, settled: settled_of
+      tok: tok_of, split: split_of, turns: turns_of, asks: asks_of, settled: settled_of
     }))
   } | . + {
     plugin_turns_per_h: (if .hours > 0 then (.plugin_turns / .hours * 10 | round / 10) else null end),
@@ -245,11 +307,46 @@ fi
 if [[ "$(jq '[.[] | select(.tok)] | length' <<<"$report")" -gt 0 ]]; then
   echo
   {
-    printf 'version\tsessions\thours\trequests/h\tbus requests/h\tfixed tok/request\tskill loaded\tbus tok/h\tall tok/h\tbus share\n'
+    printf 'version\tsessions\thours\trequests/h\tbus requests/h\tfixed tok/request\tskill loaded\tbus tok/h\tall tok/h\tbus and coordination share\n'
     jq -r '.[] | select(.tok) | .version as $v | .tok | [$v, .sessions, (.hours * 10 | round / 10),
                   (.req_per_h // "-"), (.bus_req_per_h // "-"), .fixed,
                   "\(.skill_loaded)/\(.sessions)", (.bus_per_h // "-"),
                   (.all_per_h // "-"), ((.bus_share_pct // "-") | tostring + "%")] | @tsv' <<<"$report"
+  } | column -t -s $'\t'
+fi
+# Bus traffic by category (lines from servers that count it), exact counts per
+# version: own posts, messages handed in, empty polls and hook texts as bus overhead (what exists
+# only because of the bus) or coordination (what any medium between agents
+# would carry), items and characters; the share of the characters that is
+# overhead, the share of empty polls, and from how many of the version's lines.
+if [[ "$(jq '[.[] | select(.traffic)] | length' <<<"$report")" -gt 0 ]]; then
+  echo
+  {
+    printf 'version\tlines\toverhead items\toverhead chars\tcoordination items\tcoordination chars\toverhead share\tempty polls\n'
+    jq -r 'def pct(x): if x == null then "-" else "\(x)%" end;
+      .[] | .version as $v | .traffic as $t
+      | if $t == null then [$v, "-", "-", "-", "-", "-", "-", "-"]
+        else [$v, "\($t.lines)/\($t.of)", $t.overhead[0], $t.overhead[1], $t.coordination[0],
+              $t.coordination[1], pct($t.overhead_chars_pct), pct($t.empty_polls_pct)] end | @tsv' <<<"$report"
+  } | column -t -s $'\t'
+fi
+# Tokens by category (Claude Code lines with the split), an estimate per version:
+# the shares of task work, bus overhead and coordination in input-token
+# equivalents and in raw tokens, the requests whose new input was the bus'"'"'s only,
+# and from how many of the version'"'"'s lines. The totals are exact; the split
+# is by content at 4 characters per token, text and thinking output by what
+# drove the request (a convention).
+if [[ "$(jq '[.[] | select(.split)] | length' <<<"$report")" -gt 0 ]]; then
+  echo
+  echo "tokens by category (estimated)"
+  {
+    printf 'version\tlines\ttask\toverhead\tcoordination\ttask raw\toverhead raw\tcoordination raw\toverhead requests\tcoordination requests\n'
+    jq -r 'def pct(x): if x == null then "-" else "\(x)%" end;
+      .[] | .version as $v | .split as $s
+      | if $s == null then [$v, "-", "-", "-", "-", "-", "-", "-", "-", "-"]
+        else [$v, "\($s.lines)/\($s.of)", pct($s.eq_pct.task), pct($s.eq_pct.overhead),
+              pct($s.eq_pct.coordination), pct($s.raw_pct.task), pct($s.raw_pct.overhead),
+              pct($s.raw_pct.coordination), $s.req_ovh, $s.req_coord] end | @tsv' <<<"$report"
   } | column -t -s $'\t'
 fi
 # Turns and asks (since 0.36.0), one row per version and harness. A turn runs

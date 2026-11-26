@@ -1656,7 +1656,7 @@ async def _crown_taken(client: ChatPort, cid: str, uid: str, holder_id: str, why
         message = with_crown(f"taken over by `{me}`: {why}", uid, here=crown_held(uid))
         props = a2a.props(kind=a2a.CROWN_TAKEN) or {}
         props["a2a"] = {**props.get("a2a", {}), "holder": holder_id}
-        stats.record("post", chars=len(message))
+        stats.record("post", chars=len(message), w="other")
         await client.post(message, channel_id=cid, props=props)
     except asyncio.CancelledError:
         raise
@@ -1877,7 +1877,7 @@ async def ctx_line(client: ChatPort) -> None:
             return
         message = with_crown(f"ctx {round(ctx)}% · compaction soon", uid,
                              here=await crown_here(client, uid, channel_id))
-        stats.record("post", chars=len(message))
+        stats.record("post", chars=len(message), w="other")
         await client.post(message, channel_id=channel_id, root_id=hello,
                           props=a2a.props(kind=a2a.USAGE))
     except asyncio.CancelledError:

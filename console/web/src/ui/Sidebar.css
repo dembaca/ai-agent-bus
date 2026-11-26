@@ -147,3 +147,22 @@
     z-index: 3;
   }
 }
+
+.side__logout {
+  margin: 0;
+}
+
+.side__logout button {
+  display: inline-flex;
+  align-items: center;
+  gap: 4px;
+  border: 0;
+  padding: 0;
+  background: none;
+  color: inherit;
+  font: inherit;
+  cursor: pointer;
+  text-decoration: underline;
+}
+
+.side__logout button:hover { color: var(--danger); }

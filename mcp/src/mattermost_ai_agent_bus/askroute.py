@@ -57,7 +57,7 @@ from collections.abc import Awaitable, Callable
 from pathlib import Path
 from typing import TYPE_CHECKING
 
-from . import a2a, asks, attest, lease, life, owners, receipt, session_file
+from . import a2a, asks, attest, lease, life, owners, receipt, session_file, stats
 from .model import Mark, Post
 
 if TYPE_CHECKING:
@@ -279,8 +279,9 @@ async def _reply_once(client: ChatPort, post_id: str, text: str, uid: str,
     posts = (await client.thread(post_id)).posts if thread_posts is None else thread_posts
     if any(p.kind == a2a.ASK_MODE for p in posts):
         return
-    await client.post(lease.with_crown(text, uid, here=await lease.crown_here(client, uid, root_id=post_id)),
-                      root_id=post_id, props=a2a.props(kind=a2a.ASK_MODE))
+    text = lease.with_crown(text, uid, here=await lease.crown_here(client, uid, root_id=post_id))
+    stats.record("post", chars=len(text), w="other")  # RT-6.9: the 👑's acknowledgement, the server's own
+    await client.post(text, root_id=post_id, props=a2a.props(kind=a2a.ASK_MODE))
 
 
 async def _acknowledge(client: ChatPort, post_id: str, mode: str, uid: str, who: str = "") -> None:
@@ -311,9 +312,9 @@ async def _confirm(client: ChatPort, uid: str, home: str) -> None:
                    and head in p.message for p in posts):
             who = _SIGNED.format(who=got.get("SET_BY") or "a trusted human")
             text = _ACK[mode].format(who=who, wait=wait_sec() // 60)
-            await client.post(lease.with_crown(text, uid, here=await lease.crown_here(client, uid, home)),
-                              channel_id=home,
-                              props=a2a.props(kind=a2a.ASK_MODE))
+            text = lease.with_crown(text, uid, here=await lease.crown_here(client, uid, home))
+            stats.record("post", chars=len(text), w="other")  # RT-6.9: the server's own post
+            await client.post(text, channel_id=home, props=a2a.props(kind=a2a.ASK_MODE))
     elif got.get("POST"):
         await _acknowledge(client, got["POST"], mode, uid, got.get("SET_BY", ""))
     _write(uid, {**got, "CONFIRMED": "1"})

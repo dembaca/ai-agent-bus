@@ -8,7 +8,7 @@
 // relative to that name).
 import type {
   AgentCard, AgentState, Ask, ConnState, ConsoleApi, FleetEvent, GraphData,
-  Operator, Post, Report, TaskRow, ThreadPage,
+  Operator, Post, Report, ReportStack, TaskRow, ThreadPage,
 } from "./types"
 
 const now = () => Date.now()
@@ -235,10 +235,14 @@ const asksReport = (id: string, window: "24 h" | "7 d", n: number): Report => ({
   ],
 })
 
-// The server's two stage-1 reports (RT-6.43 step 8): no names, counts and seconds only.
+const SPLIT_NOTE = "estimated: exact totals per token type from Claude Code's transcript, split by content "
+  + "at 4 characters per token; text and thinking by what drove the request, a convention"
+
+// The server's reports (RT-6.43 step 8): no names, counts and seconds only.
 const stats = (): Report[] => [
   {
-    id: "share-per-version", title: "the bus's share of all tokens, per version", window: "7 d",
+    id: "share-per-version", title: "bus overhead share of all tokens, per version", window: "7 d",
+    note: SPLIT_NOTE,
     fields: [
       { label: "version 0.100.0", value: 7.4, unit: "%" },
       { label: "version 0.99.0", value: null, unit: "%" },
@@ -248,7 +252,51 @@ const stats = (): Report[] => [
   },
   asksReport("asks-24h", "24 h", 4),
   asksReport("asks-7d", "7 d", 19),
+  {
+    // RT-6.9 step 3: exact counts, grouped into bus overhead and coordination.
+    id: "traffic-by-category", title: "bus traffic by category", window: "7 d",
+    fields: [
+      { label: "bus overhead, items", value: 212, unit: "count" },
+      { label: "bus overhead, characters", value: 96_400, unit: "count" },
+      { label: "coordination, items", value: 148, unit: "count" },
+      { label: "coordination, characters", value: 71_250, unit: "count" },
+      { label: "bus overhead share of characters", value: 58, unit: "%" },
+      { label: "polls", value: 64, unit: "count" },
+      { label: "empty polls share", value: 41, unit: "%" },
+      { label: "lines with these counts", value: 30, unit: "count" },
+      { label: "lines", value: 42, unit: "count" },
+      { label: "age of the oldest line", value: 5 * 86400, unit: "s" },
+    ],
+  },
+  {
+    // RT-6.9 step 3: an estimate, marked so; equivalents by default, raw on request.
+    id: "tokens-by-category", title: "tokens by category", window: "7 d",
+    note: `${SPLIT_NOTE}; from 24 of 42 lines (claude-code)`,
+    fields: [
+      { label: "lines with the split", value: 24, unit: "count" },
+      { label: "lines", value: 42, unit: "count" },
+      { label: "requests driven by the bus alone", value: 310, unit: "count" },
+      { label: "requests driven by coordination", value: 145, unit: "count" },
+      { label: "age of the oldest line", value: 5 * 86400, unit: "s" },
+    ],
+    stacks: [
+      stack("fleet", [83, 6, 11], [88, 7, 5]),
+      stack("version 0.102.0", [81, 7, 12], [87, 8, 5]),
+      stack("role coordinator", [58, 9, 33], [70, 11, 19]),
+      stack("role worker", [89, 5, 6], [92, 6, 2]),
+      stack("harness claude-code", [83, 6, 11], [88, 7, 5]),
+    ],
+  },
 ]
+
+function stack(label: string, eq: number[], raw: number[]): ReportStack {
+  const cats = ["task", "overhead", "coordination"] as const
+  return {
+    label, estimated: true,
+    segments: cats.map((category, i) => ({ category, value: eq[i] * 41_000, percent: eq[i] })),
+    raw: cats.map((category, i) => ({ category, value: raw[i] * 380_000, percent: raw[i] })),
+  }
+}
 
 const graph = (): GraphData => ({
   nodes: [

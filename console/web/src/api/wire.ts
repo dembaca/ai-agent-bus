@@ -10,7 +10,10 @@
 // plain strings, so the structural assertion is a `satisfies` on the widened
 // shape and the literal words are guarded at load. The guards and the fixture
 // itself run in development only: the production bundle carries neither.
-import { AGENT_STATES, HARNESS_LABEL, type AgentCard, type Post, type Report, type ThreadPage } from "./types"
+import {
+  AGENT_STATES, HARNESS_LABEL, type AgentCard, type Post, type Report, type ReportSegment, type ReportStack,
+  type ThreadPage,
+} from "./types"
 import type { WireAsk } from "./http"
 import fixture from "../../../fixtures/console-api.json"
 // The fixture's envelope, widened where the JSON import widens it
@@ -25,10 +28,15 @@ let shapes: {
   card: Omit<AgentCard, "state" | "harness" | "role"> & { state: string; harness: string | null; role: string },
   page: ThreadPage, events: FixtureEvShape,
   ask: Omit<WireAsk, "end" | "kind"> & { end: string; kind: string }
-  report: Omit<Report, "window" | "fields"> & { window: string; fields: ReportFieldShape[] }
+  report: ReportShape
 } | null = null
 
 type ReportFieldShape = Omit<Report["fields"][number], "unit"> & { unit: string }
+type ReportSegmentShape = Omit<ReportSegment, "category"> & { category: string }
+type ReportStackShape = Omit<ReportStack, "segments" | "raw">
+  & { segments: ReportSegmentShape[]; raw: ReportSegmentShape[] }
+type ReportShape = Omit<Report, "window" | "fields" | "stacks">
+  & { window: string; fields: ReportFieldShape[]; stacks?: ReportStackShape[] }
 
 if (!import.meta.env.PROD) {
   type CardShape = Omit<AgentCard, "state" | "harness" | "role">
@@ -38,8 +46,7 @@ if (!import.meta.env.PROD) {
   const page = { rootId: fixture.page.rootId, posts: [firstPost], next: fixture.page.next } satisfies ThreadPage
   const events = fixture.events satisfies FixtureEvShape
   const ask = fixture.ask satisfies Omit<WireAsk, "end" | "kind"> & { end: string; kind: string }
-  const report = fixture.report satisfies Omit<Report, "window" | "fields">
-    & { window: string; fields: ReportFieldShape[] }
+  const report: ReportShape = fixture.report satisfies ReportShape
   if (ask.kind !== "approval" && ask.kind !== "question") {
     throw new Error(`wire fixture: unknown ask kind ${ask.kind}`)
   }
@@ -49,6 +56,13 @@ if (!import.meta.env.PROD) {
   for (const field of report.fields) {
     if (!["count", "s", "%"].includes(field.unit)) {
       throw new Error(`wire fixture: unknown report unit ${field.unit}`)
+    }
+  }
+  for (const stack of report.stacks ?? []) {
+    for (const seg of [...stack.segments, ...stack.raw]) {
+      if (!["task", "overhead", "coordination"].includes(seg.category)) {
+        throw new Error(`wire fixture: unknown token category ${seg.category}`)
+      }
     }
   }
   if (!(AGENT_STATES as readonly string[]).includes(card.state)) {

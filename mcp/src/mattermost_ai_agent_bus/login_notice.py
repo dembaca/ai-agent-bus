@@ -13,7 +13,7 @@ import logging
 from collections.abc import Awaitable, Callable
 from typing import TYPE_CHECKING
 
-from . import a2a, asks
+from . import a2a, asks, stats
 
 if TYPE_CHECKING:
     from .login import DeviceGrant
@@ -56,12 +56,16 @@ class DMNotifier:
         client, human, dm = await self._target()
         me = await client.get_me()
         link = grant.verification_uri_complete or grant.verification_uri
-        await client.post(DM_TEXT.format(bot=me.username, link=link, code=grant.user_code,
-                                         minutes=max(1, grant.expires_in // 60)), channel_id=dm)
+        text = DM_TEXT.format(bot=me.username, link=link, code=grant.user_code,
+                              minutes=max(1, grant.expires_in // 60))
+        stats.record("post", chars=len(text), w="other")  # RT-6.9: the host's own post, not the agent's
+        await client.post(text, channel_id=dm)
         # The home: the ask says nothing but that the approval waits in the DM.
         # The DM is out: a failing ask must not end the approval.
         try:
-            post = await client.post(ASK_TEXT.format(human=human), props=a2a.props(kind=a2a.ASK))
+            text = ASK_TEXT.format(human=human)
+            stats.record("post", chars=len(text), w="other")  # RT-6.34: the host's ask, not the agent's
+            post = await client.post(text, props=a2a.props(kind=a2a.ASK))
             asks.add(me.id, post.id, human, post.id, title=ASK_TITLE)
             self._ask = post.id
         except Exception as exc:  # noqa: BLE001
@@ -96,4 +100,6 @@ class DMNotifier:
     async def refused(self) -> None:
         client, _, dm = await self._target()
         me = await client.get_me()
-        await client.post(REFUSED_TEXT.format(bot=me.username), channel_id=dm)
+        text = REFUSED_TEXT.format(bot=me.username)
+        stats.record("post", chars=len(text), w="other")  # RT-6.9: the host's own post
+        await client.post(text, channel_id=dm)

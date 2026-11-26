@@ -47,7 +47,7 @@ from mcp.shared.exceptions import MCPError
 from mcp.shared.jsonrpc_dispatcher import JSONRPCDispatcher
 from mcp_types import INVALID_REQUEST
 
-from . import a2a, files, life, permission, session_file, slim, tasks
+from . import a2a, files, life, permission, session_file, slim, stats, tasks
 
 log = logging.getLogger(__name__)
 
@@ -475,7 +475,9 @@ class Pusher:
                 await asyncio.wait_for(self.confirmed.wait(), next(gaps, check_every))
                 break
             except asyncio.TimeoutError:
-                await self.send(check(self.code), wakes=False)
+                tag = check(self.code)
+                if await self.send(tag, wakes=False):
+                    stats.record("inject", name="check", chars=len(tag["content"]))  # RT-6.9 step 2
         while True:
             batch: list[dict[str, Any]] = []
             try:
@@ -513,7 +515,10 @@ class Pusher:
                 continue
             if self.held and time.time() - self.held_since >= self.digest_sec:
                 held, self.held = self.held, []
-                if not await self.send(digest(held, self.held_since)):
+                tag = digest(held, self.held_since)
+                if await self.send(tag):
+                    stats.record("inject", name="digest", chars=len(tag["content"]))  # RT-6.9 step 2
+                else:
                     self.held = held + self.held  # not out: the digest waits
                     await asyncio.sleep(retry_sec)  # held_since is old: no tight loop
 

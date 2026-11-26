@@ -6,8 +6,11 @@ context (tool results, the handoff after compaction), the agent's own posts,
 the fixed text every turn carries (instructions, tool docs) and the skill's
 size, in the context only once loaded, how long turns last, how long humans
 take to answer the agent's asks, the waiting an answer on the bus saved, and
-how long the session held the crown. report() sums the STATS lines up per
-version, as bin/mm-agent-stats.sh does.
+how long the session held the crown, and the bus traffic by kind (own posts by
+bus word, messages handed in by author class, empty polls, hook texts put into
+the context), which the reports group into bus overhead and multi-agent
+coordination. report() sums the STATS lines up per version, as
+bin/mm-agent-stats.sh does.
 
 Hooks, listener and MCP server append one JSON line per event to
 stats-<uid>.jsonl; every PART_SEC of session time (tick) and at session end
@@ -34,7 +37,7 @@ from collections.abc import Awaitable, Callable, Iterable
 from pathlib import Path
 from typing import TYPE_CHECKING, Any
 
-from . import overhead, session_file
+from . import a2a, overhead, session_file
 
 if TYPE_CHECKING:
     from .port import ChatPort
@@ -383,6 +386,41 @@ def _settled(counted: list[dict[str, Any]], events: list[dict[str, Any]]) -> dic
     }
 
 
+def _add(into: dict[str, list[int]], key: str, chars: Any) -> None:
+    pair = into.setdefault(key, [0, 0])
+    pair[0] += 1
+    pair[1] += int(chars or 0)
+
+
+def _traffic(counted: list[dict[str, Any]], posts: list[dict[str, Any]],
+             compacts: list[dict[str, Any]]) -> dict[str, Any]:
+    """The part's bus traffic by kind (RT-6.9 step 2): own posts by bus word (`post_words`),
+    posts and events handed to the agent by author class and their envelope (`inbound`),
+    wait_for_events calls and the empty ones (`polls`), and the texts the hooks, the plugins,
+    the listener and the pusher put into the context by kind (`inject`; a compaction handoff
+    is one). Each a pair [n, characters] under a key of a fixed list; an unknown word or kind
+    counts as `other`. Which category each belongs to is the reader's (CATEGORY_OF)."""
+    words: dict[str, list[int]] = {}
+    for p in posts:
+        w = p.get("w")
+        _add(words, w if w in POST_WORDS else "other", p.get("chars"))
+    inbound: dict[str, list[int]] = {}
+    for e in counted:
+        if e.get("k") == "in" and e.get("c") in INBOUND_CLASSES:
+            _add(inbound, e["c"], e.get("chars"))
+            _add(inbound, "envelope", e.get("env"))
+    polls = [e for e in counted if e.get("k") == "poll"]
+    inject: dict[str, list[int]] = {}
+    for e in counted:
+        if e.get("k") == "inject":
+            name = e.get("name")
+            _add(inject, name if name in INJECT_KINDS else "other", e.get("chars"))
+    for c in compacts:
+        _add(inject, "compact", c.get("chars"))
+    return {"post_words": words, "inbound": inbound,
+            "polls": [len(polls), sum(1 for e in polls if e.get("empty"))], "inject": inject}
+
+
 def _summarize(events: list[dict[str, Any]], version: str, fixed: overhead.Fixed | None,
                now: float, final: bool) -> tuple[dict[str, Any], list[dict[str, Any]]]:
     """One STATS line for the part in `events`, and, for a day's part (not
@@ -421,6 +459,7 @@ def _summarize(events: list[dict[str, Any]], version: str, fixed: overhead.Fixed
             tools[e.get("name", "?")][1] += int(e.get("chars", 0))
     posts = [e for e in counted if e.get("k") == "post"]
     compacts = [e for e in counted if e.get("k") == "compact"]
+    traffic = _traffic(counted, posts, compacts)
     paths = [e for e in events if e.get("k") == "transcript" and e.get("path")]
     tok = None
     path = transcript(str(paths[-1]["path"])) if paths else None
@@ -461,6 +500,8 @@ def _summarize(events: list[dict[str, Any]], version: str, fixed: overhead.Fixed
         "tools": dict(tools),
         "posts": [len(posts), sum(int(p.get("chars", 0)) for p in posts)],
         "compact": [len(compacts), sum(int(c.get("chars", 0)) for c in compacts)],
+        # The bus traffic by kind (RT-6.9 step 2), numbers under fixed keys only.
+        **traffic,
         # Per turn: instructions and tool docs. Per load: the skill, in the
         # context only when the agent loaded it; tok.skill says whether (RT-6.9).
         **({"static": fixed.instructions + fixed.tools, "skill": fixed.skill} if fixed else {}),
@@ -657,7 +698,8 @@ LINE_KEYS: dict[str, str] = {
     "asks_crown_answered": "questions the coordinator answered", "asks_human": "asks to humans",
     "tasks_agent_only": "tasks closed by agents", "tasks_with_human": "tasks closed with a human",
     "human_posts_trusted": "posts by trusted humans", "human_posts_other": "posts by other humans",
-    "human_answers": "answers by humans", "tok": "tokens",
+    "human_answers": "answers by humans", "tok": "tokens", "post_words": "own posts by word",
+    "inbound": "messages handed in", "polls": "polls", "inject": "hook texts",
 }
 # The bus's own MCP tools (the names server._out counts), and "?" for none.
 TOOL_NAMES = frozenset({
@@ -667,10 +709,44 @@ TOOL_NAMES = frozenset({
 # The reasons and kinds the turn hooks, the listener and the plugins write.
 WAKE_REASONS = frozenset({"addressed", "digest", "dm", "reaction", "stall", "over", "replaced", "?"})
 BLOCK_KINDS = frozenset({"drain", "signoff", "answer", "listen", "other", "?"})
-TOK_KEYS = frozenset({"req", "bus_req", "fixed", "skill", "all", "bus"})
+# The token split (RT-6.9 step 2, Claude Code): `ovh` and `coord` by token type, the
+# requests whose new input was the bus's only (`req_ovh`, `req_coord`), the method `m`.
+TOK_KEYS = frozenset({"req", "bus_req", "fixed", "skill", "all", "bus", "ovh", "coord", "req_ovh",
+                      "req_coord", "m"})
+TOK_OBJECTS = ("all", "bus", "ovh", "coord")
 TOK_TYPES = frozenset(overhead.KEYS)  # in, read, w5m, w1h, out
+# The bus traffic by kind (RT-6.9 step 2): own posts by bus word, `ask` (ask_human, its link
+# and resolve_ask's note), `plain` (a post without a word) and `other` (what the server posts
+# on its own: reminders, the crown's takeover line, a permission prompt, a usage line);
+# messages handed to the agent by the server-verified author class (`event`: the server's
+# own) and the envelope around them; the texts put into the context by kind.
+POST_WORDS = frozenset({*a2a.WORDS, "ask", "plain", "other"})
+INBOUND_CLASSES = frozenset({"agent", "human", "event"})
+INBOUND_KEYS = INBOUND_CLASSES | {"envelope"}
+INJECT_KINDS = frozenset({"start", "check", "digest", "drain", "signoff", "listen", "idle", "compact",
+                          "wake", "other"})
 _SUB_KEYS: dict[str, frozenset[str]] = {"wakes": WAKE_REASONS, "blocks": BLOCK_KINDS,
-                                        "tools": TOOL_NAMES, "tok": TOK_KEYS}
+                                        "tools": TOOL_NAMES, "tok": TOK_KEYS, "post_words": POST_WORDS,
+                                        "inbound": INBOUND_KEYS, "inject": INJECT_KINDS}
+# The reader's mapping of the traffic to the categories (RT-6.9 step 3), here and not on the
+# line, so a changed mapping applies to old lines too. Bus overhead is what exists only
+# because of the bus: sign-on and sign-off posts (HELLO, IDLE, BYE), the server's own posts
+# and events, the envelope, empty polls, hook texts. Coordination is what any medium between
+# agents would carry: task words, asks, plain replies, the bodies of messages from agents and
+# humans, and `wake`, a hook or plugin text that carries one woken post's body. A digest
+# carries peers' posts too but stays overhead (only its head of about 120 characters is
+# wording of the bus), so the overhead share is an upper bound until the token split of a
+# later stage separates message text. Task work, the rest of a session, needs the token
+# split (`tok.ovh`, `tok.coord`; _split_of).
+OVERHEAD = "overhead"
+COORDINATION = "coordination"
+OVERHEAD_WORDS = overhead.OVERHEAD_WORDS | {"other"}
+CATEGORY_OF: dict[str, dict[str, str]] = {
+    "post_words": {w: OVERHEAD if w in OVERHEAD_WORDS else COORDINATION for w in POST_WORDS},
+    "inbound": {"agent": COORDINATION, "human": COORDINATION, "event": OVERHEAD, "envelope": OVERHEAD},
+    "inject": {k: COORDINATION if k == "wake" else OVERHEAD for k in INJECT_KINDS},
+}
+TRAFFIC_KEYS = ("post_words", "inbound", "polls", "inject")
 
 
 class LineError(ValueError):
@@ -711,7 +787,7 @@ def _tok(v: object) -> bool:
     if not isinstance(v, dict):
         return False
     for k, x in v.items():
-        if k in ("all", "bus"):
+        if k in TOK_OBJECTS:
             if not _nums(x):
                 return False
         elif k in TOK_KEYS:
@@ -724,9 +800,10 @@ def _tok(v: object) -> bool:
 
 def _typed(key: str, v: object) -> bool:
     """The type the allow list gives `key` (protocol.md): the four strings by their pattern,
-    `final` a boolean, `part` an integer, `posts` and `compact` a pair of numbers, `wakes`
-    and `blocks` objects of numbers, `tools` an object of pairs, `tok` its fixed shape, every
-    other listed key one number; each number 0 to NUM_MAX."""
+    `final` a boolean, `part` an integer, `posts`, `compact` and `polls` a pair of numbers,
+    `wakes` and `blocks` objects of numbers, `tools`, `post_words`, `inbound` and `inject`
+    objects of pairs, `tok` its fixed shape, every other listed key one number; each number
+    0 to NUM_MAX."""
     check = STRING_FIELDS.get(key)
     if check is not None:
         return isinstance(v, str) and check(v)
@@ -734,11 +811,11 @@ def _typed(key: str, v: object) -> bool:
         return isinstance(v, bool)
     if key == "part":
         return isinstance(v, int) and _num(v)
-    if key in ("posts", "compact"):
+    if key in ("posts", "compact", "polls"):
         return _pair(v)
     if key in ("wakes", "blocks"):
         return _nums(v)
-    if key == "tools":
+    if key in ("tools", "post_words", "inbound", "inject"):
         return isinstance(v, dict) and all(_pair(x) for x in v.values())
     if key == "tok":
         return _tok(v)
@@ -758,13 +835,14 @@ def _value(v: object, depth: int = 0) -> bool:
 
 def _allowed(key: str, value: Any) -> Any:
     """The value with every key outside the allow list left out (one level of keys below
-    `wakes`, `blocks`, `tools` and `tok`, and the token types below `tok.all` and `tok.bus`)."""
+    `wakes`, `blocks`, `tools`, `tok`, `post_words`, `inbound` and `inject`, and the token
+    types below `tok.all`, `tok.bus`, `tok.ovh` and `tok.coord`)."""
     sub = _SUB_KEYS.get(key)
     if sub is None or not isinstance(value, dict):
         return value
     out = {k: v for k, v in value.items() if k in sub}
     if key == "tok":
-        for k in ("all", "bus"):
+        for k in TOK_OBJECTS:
             if isinstance(out.get(k), dict):
                 out[k] = {t: n for t, n in out[k].items() if t in TOK_TYPES}
     return out
@@ -1131,11 +1209,93 @@ def _tok_of(rows: list[dict[str, Any]]) -> dict[str, Any] | None:
     }
 
 
+TASK = "task"
+SPLIT_CATEGORIES = (TASK, OVERHEAD, COORDINATION)
+# The one-line note the reports carry beside the split (RT-6.9 step 3).
+SPLIT_NOTE = ("estimated: exact totals per token type from Claude Code's transcript, split by content "
+              "at 4 characters per token; text and thinking by what drove the request, a convention")
+
+
+def _split_of(rows: list[dict[str, Any]]) -> dict[str, Any] | None:
+    """The tokens by category (RT-6.9 step 3), an estimate: per token type, the line's
+    overhead held to its total, coordination to the rest, task work the remainder, summed
+    over the lines of the method this reader knows (tok.m == 1); raw tokens and input-token
+    equivalents (_eq) with each category's share. `lines` of `of` lines carry it, from the
+    harnesses named; None when none does: n/a, never 0."""
+    total = len(rows)
+    rows = [r for r in rows if isinstance(r.get("tok"), dict) and r["tok"].get("m") == overhead.METHOD]
+    if not rows:
+        return None
+    types = {c: dict.fromkeys(overhead.KEYS, 0) for c in SPLIT_CATEGORIES}
+    for r in rows:
+        tok = r["tok"]
+        for k in overhead.KEYS:
+            a = (tok.get("all") or {}).get(k) or 0
+            o = min(max((tok.get("ovh") or {}).get(k) or 0, 0), a)
+            c = min(max((tok.get("coord") or {}).get(k) or 0, 0), a - o)
+            types[OVERHEAD][k] += o
+            types[COORDINATION][k] += c
+            types[TASK][k] += a - o - c
+    raw = {c: sum(types[c].values()) for c in SPLIT_CATEGORIES}
+    eq = {c: _eq(types[c]) for c in SPLIT_CATEGORIES}
+    raw_all, eq_all = sum(raw.values()), sum(eq.values())
+    return {
+        "estimated": True, "method": overhead.METHOD, "lines": len(rows), "of": total,
+        "harnesses": sorted({str(r["rt"]) if r.get("rt") is not None else "other" for r in rows}),
+        "req": _sum(rows, lambda r: r["tok"].get("req")),
+        "req_ovh": _sum(rows, lambda r: r["tok"].get("req_ovh")),
+        "req_coord": _sum(rows, lambda r: r["tok"].get("req_coord")),
+        "raw": raw, "eq": {c: _round(v) for c, v in eq.items()},
+        "raw_pct": {c: _pct(v, raw_all) for c, v in raw.items()},
+        "eq_pct": {c: _pct(v, eq_all) for c, v in eq.items()},
+        "types": types,
+    }
+
+
+def _pairs(rows: list[dict[str, Any]], key: str) -> dict[str, list[int]]:
+    out: dict[str, list[int]] = {}
+    for r in rows:
+        for k, v in (r.get(key) or {}).items():
+            pair = out.setdefault(k, [0, 0])
+            pair[0] += v[0]
+            pair[1] += v[1]
+    return out
+
+
+def _traffic_of(rows: list[dict[str, Any]]) -> dict[str, Any] | None:
+    """The bus traffic by category (RT-6.9 step 3), exact counts: own posts by word, messages
+    handed in by author class, polls and the empty ones, hook texts by kind, each summed as
+    [n, characters], and grouped by CATEGORY_OF into bus overhead and coordination (an empty
+    poll counts as an overhead item without characters, the envelope as characters only).
+    `lines` of `of` lines carry the counts; None when none does: n/a, never 0."""
+    total = len(rows)
+    rows = [r for r in rows if any(r.get(k) is not None for k in TRAFFIC_KEYS)]
+    if not rows:
+        return None
+    posts, inbound, inject = _pairs(rows, "post_words"), _pairs(rows, "inbound"), _pairs(rows, "inject")
+    calls = _sum(rows, lambda r: (r.get("polls") or [0, 0])[0])
+    # A line's own word: never more empty polls than polls.
+    empty = _sum(rows, lambda r: min((r.get("polls") or [0, 0])[1], (r.get("polls") or [0, 0])[0]))
+    cat = {OVERHEAD: [empty, 0], COORDINATION: [0, 0]}
+    for key, sums in (("post_words", posts), ("inbound", inbound), ("inject", inject)):
+        for k, (n, c) in sums.items():
+            into = CATEGORY_OF[key].get(k)
+            if into is not None:
+                cat[into][0] += 0 if k == "envelope" else n
+                cat[into][1] += c
+    ovh, coord = cat[OVERHEAD], cat[COORDINATION]
+    return {
+        "lines": len(rows), "of": total, "posts": posts, "inbound": inbound, "inject": inject,
+        "polls": calls, "empty_polls": empty, "empty_polls_pct": _pct(empty, calls),
+        "overhead": ovh, "coordination": coord, "overhead_chars_pct": _pct(ovh[1], ovh[1] + coord[1]),
+    }
+
+
 def _version_key(v: str) -> list[int]:
     return [int(p) if p.isdigit() else 0 for p in v.split(".")]
 
 
-def _role(r: dict[str, Any]) -> str:
+def role_of(r: dict[str, Any]) -> str:
     """A part's role (RT-6.9 step 3): coordinator when it held the crown more
     than half its time, else worker; unknown before 0.91.0 (no crown_sec). Per
     part, so a session that coordinates one day and works the next counts as
@@ -1156,6 +1316,47 @@ def asks_summary(lines: list[dict[str, Any]]) -> dict[str, Any] | None:
     return _asks_of(_marked(lines))
 
 
+TRAFFIC_DETAIL = ("posts", "inbound", "inject")
+
+
+# What stats_report keeps of the tokens by category: the sums and shares per category
+# and the coverage; the request counts, the method and the token types stay in
+# `mm-agent-stats.sh report --json` and the console.
+SPLIT_BRIEF = ("estimated", "lines", "of", "harnesses", "raw", "eq", "raw_pct", "eq_pct")
+
+
+def _no_types(split: dict[str, Any] | None) -> dict[str, Any] | None:
+    return {k: v for k, v in split.items() if k in SPLIT_BRIEF} if split else split
+
+
+def brief(rows: list[dict[str, Any]]) -> list[dict[str, Any]]:
+    """report()'s rows as the stats_report tool returns them (RT-6.9 step 3): the traffic
+    by category and the tokens by category with their sums, shares and coverage only; the
+    sums per key and per token type stay in `mm-agent-stats.sh report --json` and the
+    console, so asking an agent for the report puts no more into its context than it needs."""
+    out = []
+    for row in rows:
+        t = row.get("traffic")
+        if t:
+            row = row | {"traffic": {k: v for k, v in t.items() if k not in TRAFFIC_DETAIL}}
+        row = row | {"split": _no_types(row.get("split")),
+                     "roles": [r | {"split": _no_types(r.get("split"))} for r in row.get("roles") or []]}
+        out.append(row)
+    return out
+
+
+def split_summary(lines: list[dict[str, Any]]) -> dict[str, Any] | None:
+    """The tokens by category of all the lines together, as report() sums them per version
+    (RT-6.9 step 3): the operator console's report (RT-6.43 step 8)."""
+    return _split_of(_marked(lines))
+
+
+def traffic_summary(lines: list[dict[str, Any]]) -> dict[str, Any] | None:
+    """The bus traffic by category of all the lines together, as report() sums it per
+    version (RT-6.9 step 3): the operator console's report (RT-6.43 step 8)."""
+    return _traffic_of(_marked(lines))
+
+
 def report(lines: list[dict[str, Any]]) -> list[dict[str, Any]]:
     """The STATS lines summed up per version, oldest first (RT-6.9 step 3).
     A session's parts (one sid) count as one session."""
@@ -1170,7 +1371,7 @@ def report(lines: list[dict[str, Any]]) -> list[dict[str, Any]]:
         by_role: dict[str, list[dict[str, Any]]] = defaultdict(list)
         for r in rows:
             by_rt[str(r["rt"]) if r.get("rt") is not None else "other"].append(r)
-            by_role[_role(r)].append(r)
+            by_role[role_of(r)].append(r)
         hours = _round(_sum(rows, lambda r: r.get("min")) / 60 * 10) / 10
         turns = _sum(rows, lambda r: r.get("turns"))
         forced = _sum(rows, lambda r: _vals(r.get("blocks")))
@@ -1188,6 +1389,8 @@ def report(lines: list[dict[str, Any]]) -> list[dict[str, Any]]:
             "static": _max(r.get("static") for r in rows),
             "skill": _max(r.get("skill") for r in rows),
             "tok": _tok_of(rows),
+            "traffic": _traffic_of(rows),
+            "split": _split_of(rows),
             "settled": _settled_of(rows),
             "saved": _saved_of(rows),
             "harness": [{"harness": rt, "sessions": _sessions(rs), "turns": _turns_of(rs),
@@ -1195,8 +1398,8 @@ def report(lines: list[dict[str, Any]]) -> list[dict[str, Any]]:
                         for rt, rs in sorted(by_rt.items())],
             "roles": [{"role": role, "parts": len(rs), "sessions": _sessions(rs),
                        "hours": _round(_sum(rs, lambda r: r.get("min")) / 60 * 10) / 10,
-                       "tok": _tok_of(rs), "turns": _turns_of(rs), "asks": _asks_of(rs),
-                       "settled": _settled_of(rs)}
+                       "tok": _tok_of(rs), "split": _split_of(rs), "turns": _turns_of(rs),
+                       "asks": _asks_of(rs), "settled": _settled_of(rs)}
                       for role, rs in sorted(by_role.items())],
             "plugin_turns_per_h": _tenth(plugin, hours),
             "all_turns": everything,
