@@ -212,12 +212,12 @@ jobs:
             --build-arg VERSION="$version" \
             --build-arg REVISION="$GITHUB_SHA" .
           docker run -d --name console-test -p 127.0.0.1:8747:8747 \
-            -e CONSOLE_PUBLIC_URL=http://127.0.0.1:8747 \
-            -e CONSOLE_ISSUER=http://127.0.0.1:19999 \
-            -e CONSOLE_CLIENT_ID=smoke \
-            -e CONSOLE_OPERATOR_GROUP=operators \
-            -e CONSOLE_ADDR=0.0.0.0:8747 \
-            -e CONSOLE_NATS_URL=nats://127.0.0.1:4222 \
+            -e CB_CONSOLE_PUBLIC_URL=http://127.0.0.1:8747 \
+            -e CB_CONSOLE_ISSUER=http://127.0.0.1:19999 \
+            -e CB_CONSOLE_CLIENT_ID=smoke \
+            -e CB_CONSOLE_OPERATOR_GROUP=operators \
+            -e CB_CONSOLE_ADDR=0.0.0.0:8747 \
+            -e CB_CONSOLE_NATS_URL=nats://127.0.0.1:4222 \
             console-test
           # /livez is liveness and answers 200 as soon as the server
           # listens; /healthz (readiness) stays 503 in this smoke by
@@ -239,10 +239,10 @@ jobs:
           # it and the OCI labels carry it. A second run with the login off
           # (loopback only, so on the host's network): the stand-in operator
           docker run -d --name console-build --network host \
-            -e CONSOLE_PUBLIC_URL=http://127.0.0.1:8748 \
-            -e CONSOLE_LOGIN_OFF=1 \
-            -e CONSOLE_ADDR=127.0.0.1:8748 \
-            -e CONSOLE_NATS_URL=nats://127.0.0.1:4222 \
+            -e CB_CONSOLE_PUBLIC_URL=http://127.0.0.1:8748 \
+            -e CB_CONSOLE_LOGIN_OFF=1 \
+            -e CB_CONSOLE_ADDR=127.0.0.1:8748 \
+            -e CB_CONSOLE_NATS_URL=nats://127.0.0.1:4222 \
             console-test
           for i in $(seq 1 30); do
             curl -fsS http://127.0.0.1:8748/livez >/dev/null && break

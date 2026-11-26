@@ -49,6 +49,21 @@ Needs: login service updated before the hosts, or a host loses its nats home.
   start. Error messages, `authd dir -h`, `services/auth/README.md` and
   `nats-server.example.conf` name the new names.
 
+- **The console's settings read their `CB_CONSOLE_…` names** (#169's console
+  round, [docs/env-names.md](docs/env-names.md)): the new name first, else
+  the old `CONSOLE_…` with one deprecation warning per process; both set to
+  different values refuses the start, empty counts as set and the value is
+  returned stripped as before. A value that is exactly an unexpanded
+  `${CB_CONSOLE_…}` refuses the start, naming the variable, as in the Go
+  services: the console has no plugin manifest that would expand it. #158's
+  three metric settings are carried with: `CB_CONSOLE_METRICS_NKEY_SEED_FILE`,
+  `CB_CONSOLE_METRICS_TOKEN_FILE`, `CB_CONSOLE_METRICS_LISTEN_ADDR`. The image
+  sets `CB_CONSOLE_WEB_DIR`, so a deployment that still overrides
+  `CONSOLE_WEB_DIR` to a different value refuses the start until it uses the
+  new name. The web reads `VITE_CB_CONSOLE_API`, else `VITE_CONSOLE_API`
+  (build time; two differing values refuse the build). The old names go in
+  the release after 0.103.0.
+
 - **The central bridge reads its settings under `CB_` names** (#169,
   [docs/env-names.md](docs/env-names.md#the-bridge-19)). Each `BRIDGE_X`
   becomes `CB_BRIDGE_X` (`CB_BRIDGE_NATS_URL`, `CB_BRIDGE_NATS_SEED_FILE`,
@@ -498,6 +513,7 @@ Needs: MM_BRIDGE_BOT kept on every host, and this release on all hosts before th
   host, so a 30x from `https` to `http` would have sent the bot token in
   clear text. Mattermost's API does not redirect; a 30x is now the call's
   error.
+
 ### Docs
 
 - **Every environment variable gets the `CB_` prefix, decided, not built
@@ -510,8 +526,7 @@ Needs: MM_BRIDGE_BOT kept on every host, and this release on all hosts before th
   when the record moves into the bridge. It sets the reading rule for
   release 0.103.0 (the new name first, the old one with a deprecation
   warning, all set names must agree or the start is refused, an empty value
-  counts as set, an unexpanded `${…}` placeholder as unset in the MCP server
-  and the hooks while the Go services refuse it, the fallbacks
+  counts as set, an unexpanded `${…}` placeholder as unset, the fallbacks
   go one release later); after that an old name set alone refuses the start
   for at least one more release instead of being ignored, since several
   settings (release signers, trusted humans, CA pins, the login service's
