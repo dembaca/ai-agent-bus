@@ -75,7 +75,7 @@ def test_agent_name_vector() -> None:
     assert agent_name("alice", VECTOR_NKEY, prefix="x-") == "x-" + VECTOR_NAME
     assert len(VECTOR_NAME) == 26
     assert agent_name("Alice", VECTOR_NKEY) != VECTOR_NAME  # the owner is not normalised, as in Go
-    # A session part (#163): two sessions of one owner on one shared key are two
+    # A session part (#163, RT-6.36): two sessions of one owner on one shared key are two
     # names; the login service's vector is the same.
     assert agent_name("alice", VECTOR_NKEY, prefix="", session="abcdefghijklmnopqrstuvwxyz") \
         == "eadecaajdhhzsahypvqfemgypy"
@@ -2040,7 +2040,7 @@ def test_the_bus_reads_the_card_at_each_presence() -> None:
 
 
 def test_the_hello_carries_the_session_part_only_when_the_key_is_shared() -> None:
-    """#163: the part is a hello field; absent means today's name."""
+    """#163, RT-6.36: the part is a hello field; absent means today's name."""
     with_session = json.loads(build_hello("tok", "home", (), False, {}, session="abcdefghijklmnopqrstuvwxyz"))
     assert with_session["session"] == "abcdefghijklmnopqrstuvwxyz"
     without = json.loads(build_hello("tok", "home", (), False, {}))
@@ -2181,7 +2181,7 @@ def test_the_told_marks_are_capped(tmp_path: Path, monkeypatch: pytest.MonkeyPat
 
 
 def test_a_session_part_is_validated_by_the_bus() -> None:
-    """#163: a part that is not 26 lower-case base32 characters is refused at start."""
+    """#163, RT-6.36: a part that is not 26 lower-case base32 characters is refused at start."""
     with pytest.raises(ValueError):
         NatsBus(_settings(), FakeLogin(), "alice", lambda _e: None, session="TOO-SHORT")
     NatsBus(_settings(), FakeLogin(), "alice", lambda _e: None, session="abcdefghijklmnopqrstuvwxyz")

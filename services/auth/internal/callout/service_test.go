@@ -393,7 +393,7 @@ func TestRefusedConnections(t *testing.T) {
 	}
 }
 
-// #163: the session part is 26 characters of lower-case base32; a present one
+// #163, RT-6.36: the session part is 26 characters of lower-case base32; a present one
 // that does not fit refuses the login (fail closed), never gets ignored.
 func TestAHelloWithABadSessionIsRefused(t *testing.T) {
 	l := newLab(t)
