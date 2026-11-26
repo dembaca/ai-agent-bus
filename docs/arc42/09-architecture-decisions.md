@@ -3550,7 +3550,8 @@ separately.
       (ADR-016, RT-6.39), the host the token's `preferred_username`
       (`NatsBus.name` in `natsbus.py`, `_owner_of` in `nats_port.py`); the
       two agree only while the anchor equals the username, so an identity
-      whose anchor is its `sub` stops with `NameMismatch`. Not built yet.
+      whose anchor is its `sub` (its name was held) or its old name (renamed
+      in Keycloak) stops with `NameMismatch`. Not built yet (RISK-19).
 
     **Conditions** the model holds under (each one is part of the test):
     1. **Message ids are stream-wide.** An agent that guesses another's
@@ -4735,9 +4736,10 @@ source of identity and membership.
      name from the token's `preferred_username` (`NatsBus.name` in
      `natsbus.py`, `_owner_of` in `nats_port.py`), so the two agree only
      while the anchor equals the username, which holds for every identity
-     known before the import; an identity whose anchor is its `sub` gets a
-     credential whose name differs, and the host stops with `NameMismatch`
-     (RISK-19).
+     known before the import and, since #86, for a new one after it whose
+     username is free; an identity whose anchor is its `sub` (its name was
+     held) or its old name (renamed) gets a credential whose name differs,
+     and the host stops with `NameMismatch` (RISK-19).
    - The login service's check of the chat account (`checkChat`) thereby
      turns from a gate into a binding: a human without a Mattermost account
      may start agents; if the binding is missing, only this chat does not
@@ -4871,8 +4873,8 @@ for a channel not bound to it is dropped.
 directory and the chat drifting apart, and visibility through trust
 (RISK-15 to RISK-17 in Section 11); and the agent's name on NATS: the
 login service names it after the directory's anchor, the host computes it
-from `preferred_username`, so an identity whose anchor differs stops with
-`NameMismatch` (fails closed; RISK-19).
+from `preferred_username`, so an identity whose anchor differs (renamed, or
+its name held by another) stops with `NameMismatch` (fails closed; RISK-19).
 
 **Decided by the owner on 2026-11-23**, one decision on each of the nine
 points the proposal left open; the numbers are those of the former open
@@ -4942,7 +4944,11 @@ to whom a guest opens their channel read-only (decision 6). Settled before
 the first code on the directory (coordinator, 2026-11-23): the fixed token
 in the presence subject and the seed for the name (decisions 7 and 9) are
 one field per identity, `anchor`: for today's identities today's name, for
-new ones `sub`, never changed. Two fields could only drift apart. A key
+new ones `sub`, never changed. Changed with #86: a new identity after the
+import also takes its username when it is free, and only falls back to its
+`sub` when another identity holds that name; the host computes its agent's
+name from the username, and a name as anchor grants nothing (membership,
+the account index and claims go by `sub`). Two fields could only drift apart. A key
 `anchor.<value>` with the `sub` as its value keeps a value from being given
 out twice.
 
