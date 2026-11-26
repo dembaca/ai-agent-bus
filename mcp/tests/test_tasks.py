@@ -496,7 +496,7 @@ def test_instructions_budget(monkeypatch, variant, mode):
 # the more_pending item of wait_for_events. Counting what the bus costs must not cost
 # tokens itself: a change here is a deliberate one, with this hash updated in the same PR
 # and a reason in its body. The plugin version and a digest's clock time are left out.
-_MODEL_TEXT_SHA256 = "b31a3a313bf2f233d3f53123d2a187701efbc930de16e689c1251a729b79cc34"
+_MODEL_TEXT_SHA256 = "5f5536b0fe0eddca0d11a4fd8f9914e3e234bbaa6e7a1d168844edecec57f468"
 _ROOT = Path(__file__).resolve().parents[2]
 # A one-line string literal of TypeScript, or a comment (skipped, so a quote in a comment is none).
 _TS_TOKEN = re.compile(r'//[^\n]*|/\*.*?\*/|"(?:[^"\\\n]|\\.)*"|\'(?:[^\'\\\n]|\\.)*\'|`(?:[^`\\\n]|\\.)*`', re.S)
