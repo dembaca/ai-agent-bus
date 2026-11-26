@@ -12,7 +12,7 @@ import { dirname, join } from "node:path"
 import { after, afterEach, before, beforeEach, mock, test } from "node:test"
 import { fileURLToPath } from "node:url"
 
-import plugin, { addMcp, bindings, busFile, busRoot, CLIENT_HEADER, dropMcp, HOST_REFUSED, MARK, NO_BUS, REFUSAL_TOOL, relayVars,
+import plugin, { usageLoader, addMcp, bindings, busFile, busRoot, CLIENT_HEADER, dropMcp, HOST_REFUSED, MARK, NO_BUS, REFUSAL_TOOL, relayVars,
   chars, renamedText, RETRY_SEC, retryMs, SERVER, setup, SKILL, skillInfo, timing, WAIT_SEC, venvDir, WAKE_BACKOFF_MAX_MS, WAKE_BACKOFF_MS, wakeBackoffMs, waitSec } from "../plugin/mattermost-agent-bus.ts"
 import entry from "../server.ts"
 
@@ -322,7 +322,9 @@ test("RT-6.20: mcp.transform adds the server and skill.transform the skill, neve
   // be read-only: a checkout under a corral grant, or the host copy (RT-6.28).
   assert.deepEqual(fx.mcpServers.get(SERVER), { type: "local", cwd: ws,
     environment: { ...keyed, UV_PROJECT_ENVIRONMENT: venvDir(process.env, REPO) },
-    command: ["uv", "run", "--locked", "--project", join(REPO, "mcp"), "mattermost-ai-agent-bus-mcp"] })
+    command: ["uv", "run", "--locked", "--project", join(REPO, "mcp"), "mattermost-ai-agent-bus-mcp"],
+    // the bus tools are direct tools, not Code Mode (issue #152)
+    codemode: false })
   const skill = fx.skills.get(SKILL)
   assert.equal(skill.name, SKILL)
   assert.equal(skill.path, join(REPO, "skills", SKILL, "SKILL.md"))
@@ -344,7 +346,8 @@ test("RT-6.20: mcp.transform adds the server and skill.transform the skill, neve
   assert.equal(off.m.size, 0)
   const cmd = editor({})
   addMcp(cmd, { command: ["my-bus"], environment: { MM_TEAM: "t" } }, null, ws)
-  assert.deepEqual(cmd.m.get(SERVER), { type: "local", command: ["my-bus"], cwd: ws, environment: { ...keyed, MM_TEAM: "t" } })
+  assert.deepEqual(cmd.m.get(SERVER), { type: "local", command: ["my-bus"], cwd: ws,
+    environment: { ...keyed, MM_TEAM: "t" }, codemode: false })
   assert.equal(skillInfo(null), null)
   // The user's own skill of that id stays.
   const mine = fakeCtx({ root: REPO })
@@ -994,4 +997,75 @@ test("RT-6.20: state kept by a plugin from before ADR-009 (a window going on) ke
 
 test("RT-6.9 step 1: an inject's length counts Unicode code points, as the server and the hooks do", () => {
   assert.equal(chars("a\u{1F600}\u2014"), 3)  // a, a grinning face, an em dash: 4 UTF-16 units, 3 code points
+})
+
+// The token split's own tests (plugin/usage.ts): run with this file, as CI runs it.
+import "./usage.test.ts"
+
+test("RT-6.9 step 2: the session's requests go out as one `usage` stat at the turn end, numbers only", async () => {
+  const fx = await start({}, { child: { parentID: "s1" } })
+  await fx.prompt("s1", "u".repeat(400))
+  // One event after the other: emit() is done when the plugin asks for the next.
+  const step = async (id: string, tokens: any) => {
+    await fx.emit("session.step.started", { sessionID: id })
+    await fx.emit("session.tool.input.started", { sessionID: id, id: "t1", name: `${SERVER}_post_message` })
+    await fx.emit("session.tool.called", { sessionID: id, id: "t1", input: { kind: "IDLE", message: "IDLE" } })
+    await fx.emit("session.step.ended", { sessionID: id, finish: "tool-calls", tokens })
+  }
+  await step("s1", { input: 100, output: 10, reasoning: 0, cache: { read: 0, write: 0 } })
+  // A subagent's requests are not the session's.
+  await step("child", { input: 999, output: 99, reasoning: 0, cache: { read: 0, write: 0 } })
+  calls = []
+  await fx.ended()
+  const usage = rest().filter((c) => c.body?.k === "usage")
+  assert.equal(usage.length, 1)
+  // Before the turn-end check; `{"kind": "IDLE", "message": "IDLE"}` is 35 characters, 9 tokens of overhead.
+  assert.equal(rest()[0].body?.k, "usage")
+  assert.deepEqual(usage[0].body, { k: "usage", req: 1, req_ovh: 0, req_coord: 0, a_in: 100, a_read: 0, a_w: 0, a_out: 10,
+    o_in: 0, o_read: 0, o_w: 0, o_out: 9, c_in: 0, c_read: 0, c_w: 0, c_out: 0, h_in: 0, h_read: 0, h_w: 0 })
+  // A turn without a request posts none.
+  await fx.prompt("s1", "again")
+  calls = []
+  await fx.ended()
+  assert.equal(rest().filter((c) => c.body?.k === "usage").length, 0)
+  await fx.cleanup()
+})
+
+test("RT-6.9 step 2: a split that throws changes no turn handling: the turn ends, send's result stands, the compaction hands off", async () => {
+  class Throwing {
+    user() { throw new Error("user") }
+    injected() { throw new Error("injected") }
+    event() { throw new Error("event") }
+    take(): any { throw new Error("take") }
+  }
+  const load = usageLoader.load
+  usageLoader.load = async () => ({ Tracker: Throwing }) as any
+  try {
+    const fx = await start()
+    answers["/v1/handoff"] = { context: "Your conversation was just compacted. …" }
+    await fx.prompt("s1", "work")
+    await fx.emit("session.step.started", { sessionID: "s1" })
+    await fx.emit("session.step.ended", { sessionID: "s1", tokens: { input: 1, output: 1, reasoning: 0, cache: { read: 0, write: 0 } } })
+    // A drain at the end: sent once (send returned true), not retried, no usage stat.
+    answers["/v1/turn-end"] = { action: "drain", reason: "You have 1 unread …", banner: "x" }
+    calls = []
+    await fx.ended()
+    assert.equal(fx.sent.length, 1)
+    assert.deepEqual(rest().map((c) => c.body?.k ?? c.path.split("?")[0]), ["/v1/turn-end", "block", "inject"])
+    // The compaction's handoff still goes out, its flag still set (a /compact ends no turn).
+    answers["/v1/turn-end"] = idleIn()
+    await fx.ran()
+    await fx.ended()
+    await fx.ran()
+    await fx.emit("session.compaction.started", { sessionID: "s1", reason: "manual" })
+    await fx.emit("session.compaction.ended", { sessionID: "s1", reason: "manual", text: "summary" })
+    calls = []
+    await fx.ended()
+    assert.deepEqual(paths(), [])
+    assert.equal(fx.sent.length, 2)
+    assert.equal(fx.sent[1].metadata[MARK], "context")
+    await fx.cleanup()
+  } finally {
+    usageLoader.load = load
+  }
 })

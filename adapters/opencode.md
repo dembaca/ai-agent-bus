@@ -77,6 +77,35 @@ server: the old one keeps the bot and the new one takes it over, same name, with
 `session_start` (within 24 h; a `BYE` or `session_end` ends the bot at once,
 [RT-6.10](../docs/arc42/06-runtime-view.md#610-session-registered-by-the-agent)).
 
+### Token usage
+
+The plugin splits its session's tokens into task work, bus overhead and coordination
+in process ([`opencode/plugin/usage.ts`](../opencode/plugin/usage.ts); the rules:
+[arc42 §6.9](../docs/arc42/06-runtime-view.md#69-measuring-the-coordination-overhead),
+RT-6.9 step 2) and posts one `usage` stat at each turn end: numbers only, no text reaches
+the model. It reads OpenCode's events of the top-level session (not its subagents):
+`session.step.ended` (and `.failed`) for each model request's `tokens` (`input` is the
+fresh part, `cache.read`, `cache.write`, `output` plus `reasoning`), the text and
+reasoning it wrote, the tool calls (`session.tool.input.started` for the name,
+`.called` for the input, `.success`/`.failed` for the result; a `wait_for_events`
+result splits by the posts it delivered), `session.skill.activated` and the `skill`
+tool (the bus skill's text is overhead, as is a `read` of its side files; other tools
+under that path are task work), the compactions, the human's prompt and the plugin's
+own texts. A request is a step with at least one non-zero count. OpenCode does not tell
+cache writes of 5 min and 1 h apart: they all count as 5 min. The input the known
+context does not reach (system prompt, tool docs, the MCP instructions) is sent per
+type as `h_in`, `h_read`, `h_w`; the server places the bus's fixed text there.
+
+Not counted: the compaction's own model request (OpenCode books it apart from the
+session's steps), and a bus tool the model calls from inside Code Mode's `execute`
+rather than as a tool of its own (it is not seen as the bus's; its call and result
+count as task work). The plugin's own server entry carries `codemode: false` (issue
+#152), so this applies only to an entry configured by hand that stays in Code Mode.
+A turn without a request with usage posts nothing. A `usage`
+POST that fails (server gone, timeout) is not repeated: that turn's numbers are lost.
+The split is kept in memory: after a reload of the plugin it starts afresh, and what
+it has not seen counts as task work.
+
 ### The environment is the service's
 
 OpenCode 2 runs sessions in a long-running background service. The MCP servers and the
@@ -244,6 +273,7 @@ By hand (without the plugin's, or with `mcp: false`), in the project's `opencode
           "sh", "-c",
           "MM_REG_SECRET=\"$(gopass show -o bus/registrar)\" exec uv run --locked --project /ABS/PATH/ai-agent-bus/mcp mattermost-ai-agent-bus-mcp"
         ],
+        "codemode": false,
         "environment": {
           "MM_CHAT_URL": "https://chat.example.com",
           "MM_REGISTER_URL": "https://chat.example.com/register/v1/agents",
@@ -264,6 +294,13 @@ By hand (without the plugin's, or with `mcp: false`), in the project's `opencode
 
 - `opencode mcp add ai-agent-bus --env K=V … -- sh -c '…'` writes this entry, but
   refuses an empty `--env` value: add the two empty `CLAUDE_*` variables by hand.
+- `codemode: false`: the bus tools are direct tools, not Code Mode (`execute`), so the
+  model sees them and their docs as written, as in Claude Code and pi, and the token
+  split counts bus calls exactly (#150). It costs about 2,460 tokens of tool docs in
+  every request (about 3,240 with the instructions, mostly cache reads); Code Mode is
+  cheaper on the window but hides the tools behind `execute` (the measurement is in
+  [#152](https://github.com/dembaca/ai-agent-bus/issues/152#issuecomment-7185986052)).
+  The plugin's own server entry carries the same setting.
 - `MM_WORKSPACE` (the project's real directory) and the two empty variables: the plugin
   looks only for the endpoint file keyed on the project directory, and a Claude Code
   shell's session id or project directory, inherited, would key the server's files

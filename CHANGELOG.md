@@ -10,7 +10,44 @@ before 0.5.0 are described in the git history.
 - **The central bridge can post each agent's copies under the agent's own Mattermost bot** (#151 step 1, RT-6.44). Off by default; with `BRIDGE_MM_ADMIN_TOKEN_FILE` (an admin bot of its own with `system_admin`, its token a separate file used only by the bot management) and `BRIDGE_BOT_PREFIX`, the bridge finds or creates `<prefix><NATS name>`, owned by the Mattermost account that the login service's account record binds to the agent's presence owner (never a username lookup; no record, no bot of its own) and marked as the bridge's, mints its token in memory at first use after each start (revoking its earlier ones), joins it to the home and posts that agent's copies and reactions under it without the attribution line, `nats_id` kept; its reactions are recorded, so their removal reaches that bot also while it is in its backoff. On any failure the one bridge bot posts as before. Its signal then names `bot_prefix`. `BRIDGE_HIDE_BOT_DM` (default true) hides the admin bot's welcome DMs. The bridge refuses to start when the admin token is the posting token, the admin account is no bot with `system_admin`, or the posting bot holds a role beyond `system_user`, `system_post_all` and `system_post_all_public`. Turn it on only after the hosts run a release with #159 (agents dropping copies under their own bots), or every agent reads each NATS post twice; the hosts also keep `MM_BRIDGE_BOT` set as today, since the fallback copies come from the one bridge bot and hosts drop those only with it; the bridge's prefix must differ from the registrar's `BOT_USERNAME_PREFIX`.
 
 ### Changed
+- **The OpenCode plugin registers the bus server as direct tools, not Code
+  Mode** (#152). The model sees the bus tools and their docs as written, as in
+  Claude Code and pi, and the token split counts bus calls exactly (#150). It
+  costs about 2,460 tokens of tool docs in every request, about 3,240 with the
+  instructions, mostly cache reads; Code Mode is cheaper on the window — the
+  instructions alone, a tool's docs once per context as a search result, and
+  about 50 tokens of wrapper per call — but hides the tools behind `execute`,
+  and the split then counts bus calls as task work (the measurement is in
+  [#152](https://github.com/dembaca/ai-agent-bus/issues/152#issuecomment-7185986052)).
+  The plugin's `addMcp` sets `codemode: false` on its server entry, and a
+  server configured by hand in `adapters/opencode.md` shows it too. Nothing
+  else changes: the tools, their names and their arguments stay as they were,
+  and a host that configured the server itself can set the same flag. The
+  accounting limit #150 documents for Code Mode (bus calls inside `execute`
+  count as task work, the head overstates the overhead) applies only to such a
+  hand-configured entry now, not to the plugin's own server.
 
+- **The MCP server logs in to Keycloak itself, with and without corral**
+  (the host login's operating model, the owner's decision 10, #154 step 2;
+  RT-6.34, RT-6.18 step 12). At its first start it opens the approval page
+  in the desktop's browser, writes the address and the user code (never the
+  device code) to its stderr, which the harness keeps in its MCP log, and
+  DMs the responsible human. Stderr counts as delivery: a session without a
+  chat no longer refuses the approval; the person check still holds. The
+  refresh token and the nkey seed live in the system keychain (macOS
+  Keychain, libsecret) where one answers, else in the 0600 file; under
+  corral always in the 0600 file in the sandbox's home, where the agent can
+  read them (RISK-26). In a keyless corral session the relay holds the login
+  and hands the host process access tokens and the nkey seed over a login
+  channel, never the refresh token; the host DMs only a user code under a
+  link it builds itself, once per 60 s. Upgrading costs one new approval
+  per host, unless the old store moves: outside corral the server moves the
+  token and key from the host's state directory into its store once; under
+  corral the sandbox's store starts empty, and the host process moves the
+  old entries into its own store for plain servers. `MM_LOGIN_NKEY` stays
+  `ephemeral` by default (#163).
+
+- **An agent's MCP server also drops the bridge's copies posted under the agent's own Mattermost bot** (#151, RT-6.36 step 4). A post in the NATS home that carries `nats_id` counts as a copy when its author is the one bridge bot (`MM_BRIDGE_BOT`, as before) or the bot account named the bridge's bot prefix plus the NATS sender of the post that `nats_id` names; reactions of such a bot likewise. The prefix comes from the bridge's signal on `presence.bridge.<home>.v1` (a new optional `bot_prefix` field), no host setting. Only bot accounts count, and such a copy hides only its own sender's post. Hosts need this release before the bridge turns agent bots on, or every agent reads each NATS post twice; until the signal names a prefix nothing changes.
 - **The central bridge logs one INFO line per person post, reaction or removal of a reaction it carries onto NATS** (#134, RT-6.42): `inbound: carried` with the home, `what` (`post`, `reaction` or `unreaction`), the Mattermost post id and the subject, no text and no name beyond the anchor.
 
 ### Breaking
@@ -43,6 +80,38 @@ before 0.5.0 are described in the git history.
   logout redirect URIs" before rollout.
 
 ### Added
+- **The console's graph view marks the operator's own node** (#147, the
+  follow-up to the API change). The person node the logged-in operator's
+  anchor names carries the API's `you` field as an accent badge, in light and
+  dark, with an accessible label saying it is the logged-in operator; a person
+  the graph knows only from an ask's `human` carries none, since an ask names a
+  human but not an anchor. No new data: the field comes from the login's own
+  record through `/v1/graph`.
+
+- **The token split for OpenCode and pi** (#139 stage 2b, RT-6.9 steps
+  1 to 3, ADR-017). The OpenCode plugin and the pi extension attribute
+  each turn's model requests in process, by the rules the server applies
+  to Claude Code's transcript, and post the sums as one `usage` stat
+  event per turn (`POST /v1/stat` with `k: usage`: exactly 18 integer
+  fields, numbers only, among them the input their segments did not cover). The server folds them into the line's `tok`
+  (method 1) and adds the bus's fixed instructions and tool docs, which
+  the plugins cannot see, as overhead per request, placed only into that
+  uncovered input. Such a line counts in the tokens by category; the older
+  bus share by cause counts only lines with `tok.bus`, so it never
+  reads as 0 %. No token is added to any context.
+- **The operator console's API carries each agent's guest channels and
+  marks the operator's own person node** (#147). A fleet card names its
+  `home` and, beside it, its `guests`: the channels its memberships name
+  that are not its home (every granted channel gets one, RT-6.37). The
+  home is what the bus itself states — the channel of the agent's ask
+  record's subject first (RT-6.43 step 5), else the channel it claims the
+  crown of (only a home may be claimed, RT-6.38), else the first channel
+  its memberships name — never guessed from an agent's name. `/v1/graph`
+  draws the home as a `coordinates` edge and each guest channel as a
+  `guest` edge, and marks the person node the logged-in operator's anchor
+  names with `you`; that anchor is read from the login's own record,
+  never from anything the browser sends. No new right: all of it comes
+  from presence, crown claims, memberships and the login's own record.
 
 - **The operator console shows the channels of the operator's own agents
   and of agents that trust the operator directly** (#128, the console on
@@ -132,6 +201,15 @@ before 0.5.0 are described in the git history.
   is not the bus's own overhead alone (RT-6.9 step 3, the console on the
   bus, RT-6.43 step 8).
 
+### Changed
+
+- **The console's graph view runs on React Flow** (#145): people, open
+  asks, agents and their home and guest channels in fixed columns laid
+  out by dagre. A state change recolours its agent in place; an agent or
+  an ask that comes or goes adds or removes its node without moving the
+  others or the view (ADR-015 points 7 and 14). The browser app has unit
+  tests now (`npm test` in `console/web`, also in CI).
+
 ### Fixed
 
 - **The registrar's Mattermost adapter in the central bridge keeps its admin
@@ -151,6 +229,21 @@ before 0.5.0 are described in the git history.
   stops, never with a wrong name). Anchors already given do not move. The
   remaining cases, an account renamed in Keycloak and a new one whose name
   was held, stay a known limit (RISK-19).
+- **Two follow-ups from the WebSocket security review** (#85, RT-6.36). The
+  login service's refusal test now asserts an authorization error and that the
+  same identity connects on the standard listener of the same rig, so a
+  listener that fails for another reason can no longer pass it. A WebSocket
+  server that answers the upgrade with a redirect is still refused before any
+  byte goes there, and the bus's log names that reason instead of leaving an
+  operator with a bare timeout.
+- **A pi session gets the bus's instructions** (#153, RT-6.27). pi hands an MCP
+  server's `instructions` to the model only for servers with deferred or Code
+  Mode tools, and the bus is registered `direct`, so a pi agent missed the rules
+  on sub-agents, approvals, questions to humans and replying in the thread. The
+  extension now asks the server for the text before each run while it is missing
+  (`GET /v1/instructions`, the one it serves its model, which needs no bus
+  session), and puts it into the system prompt as a section of its own; a run
+  that still gets none drops a section left from before.
 - **The central bridge's WebSocket reader reconnects promptly and bounds
   its handshake** (#131, people's posts onto NATS, RT-6.42). After a
   connection that held 30 s it reconnects after 1 s, not after the wait
@@ -166,6 +259,22 @@ before 0.5.0 are described in the git history.
 
 ### Docs
 
+- **The one operating model for the host login, documented, not built yet**
+  (the owner's decision 10, #154, step 1 of 5). The NATS decision (ADR-014) gets an amendment of
+  2026-11-26: the rule "credentials stay on the host, never in a sandbox"
+  goes; one operating model with and without corral, in which the MCP
+  server logs in itself and keeps the refresh token and the host key in
+  the system keychain or a 0600 file, under corral in the sandbox's own
+  home. The price is named: an agent can read them, and the token, its
+  human's offline token shared by all sessions on the host, yields new
+  agents of that owner with any key, but approves nothing. The keyless host
+  session (RT-6.18) and the host login (RT-6.34) say what is decided and
+  what still runs. New risks: the readable token with its planned
+  protections and what they miss, detection in the login service, an offline maximum and
+  DPoP (RISK-26), and two findings the login service review of 2026-11-22 rated high, raised again,
+  the token's binding and storage (RISK-27) and an emergency brake that
+  acts only at the next issue (RISK-28). The site's security answers say
+  what is true today and what is decided.
 - **The deployment and building block views say what runs in the lab**
   (#108). The central bridge carries people's posts and reactions onto
   NATS in the lab since 2026-11-25 (step 2, RT-6.42), and the deployment

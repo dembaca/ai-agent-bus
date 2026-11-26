@@ -60,6 +60,9 @@ export interface AgentCard {
    * coordinator("who") shows), else the short bus name. */
   displayName: string
   home: string
+  /** The channels it visits beside its home (RT-6.16): the graph draws them
+   * apart from the home edge. Empty when it has none. */
+  guests: string[]
   state: AgentState
   /** The crown is a mark on the card, not a column (ADR-015 point 6). */
   crown: boolean
@@ -184,13 +187,18 @@ export type GraphNode = {
   /** For an agent: its harness logo on the node. */
   harness?: Harness
   state?: AgentState
+  /** For a person: the logged-in operator's own node (ADR-015 point 7),
+   * marked from the login's own record's anchor — never from the browser. */
+  you?: boolean
 }
 
 export interface GraphEdge {
   id: string
   from: string
   to: string
-  kind: "trusts" | "coordinates"
+  /** `coordinates`: an agent's home channel; `guest`: a channel it only
+   * visits (RT-6.16). */
+  kind: "trusts" | "coordinates" | "guest"
   /** Shown where the depth of two cuts an edge away. */
   cut?: boolean
 }
