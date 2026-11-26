@@ -230,6 +230,44 @@ func TestAnchorsAreFixedAndNeverShared(t *testing.T) {
 	}
 }
 
+// RT-6.39 step 2, #86: two new identities that log in at once after the
+// import with the same username: exactly one gets the name, the other its sub.
+func TestTwoNewcomersRaceForOneName(t *testing.T) {
+	s, _ := open(t)
+	if err := s.MarkImported(ctx(t), time.Now()); err != nil {
+		t.Fatal(err)
+	}
+	a := Anchors{Store: s}
+	subs := []string{subNew, subOther}
+	got := make([]string, len(subs))
+	errs := make([]error, len(subs))
+	var wg sync.WaitGroup
+	for i, sub := range subs {
+		wg.Add(1)
+		go func() {
+			defer wg.Done()
+			got[i], errs[i] = a.Anchor(ctx(t), sub, "dana")
+		}()
+	}
+	wg.Wait()
+	named := 0
+	for i, sub := range subs {
+		if errs[i] != nil {
+			t.Fatalf("%s: %v", sub, errs[i])
+		}
+		switch got[i] {
+		case "dana":
+			named++
+		case strings.ToLower(sub):
+		default:
+			t.Fatalf("%s got %q", sub, got[i])
+		}
+	}
+	if named != 1 {
+		t.Fatalf("the name went to %d identities: %v", named, got)
+	}
+}
+
 // A username equal to another identity's sub cannot take that identity's
 // place: one index key per value, and the identity whose value is held gets
 // it with a suffix. No value is ever given twice.

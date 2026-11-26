@@ -4736,7 +4736,8 @@ source of identity and membership.
      name from the token's `preferred_username` (`NatsBus.name` in
      `natsbus.py`, `_owner_of` in `nats_port.py`), so the two agree only
      while the anchor equals the username, which holds for every identity
-     known before the import and, since #86, for a new one after it whose
+     known before the import and, since the anchor fix for new identities
+     (#86), for a new one after it whose
      username is free; an identity whose anchor is its `sub` (its name was
      held) or its old name (renamed) gets a credential whose name differs,
      and the host stops with `NameMismatch` (RISK-19).
@@ -4944,7 +4945,7 @@ to whom a guest opens their channel read-only (decision 6). Settled before
 the first code on the directory (coordinator, 2026-11-23): the fixed token
 in the presence subject and the seed for the name (decisions 7 and 9) are
 one field per identity, `anchor`: for today's identities today's name, for
-new ones `sub`, never changed. Changed with #86: a new identity after the
+new ones `sub`, never changed. Changed by the anchor fix for new identities (#86): a new identity after the
 import also takes its username when it is free, and only falls back to its
 `sub` when another identity holds that name; the host computes its agent's
 name from the username, and a name as anchor grants nothing (membership,
