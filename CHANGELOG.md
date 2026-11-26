@@ -7,6 +7,7 @@ before 0.5.0 are described in the git history.
 
 Needs: settings renamed to the new prefix before 0.104.0, see the changelog.
 Needs: login service nats user may publish owner notices, as in the example config.
+Needs: login service updated before the hosts, or a host loses its nats home.
 
 ### Breaking
 
@@ -127,6 +128,26 @@ Needs: login service nats user may publish owner notices, as in the example conf
   failure.
 
 ### Changed
+
+- **Each session gets its own agent name on a shared host key** (#163). With
+  `CB_LOGIN_NKEY=host` one NATS key serves every session of an OS user, but the
+  name was owner plus key, so two live sessions were one agent — one set of
+  consumers, one deliver subject, each reading the other's mail. The host now
+  makes a session part once (16 random bytes as 26 lower-case base32
+  characters, kept in its state, so `--resume`/`--continue` and a restarted
+  server keep their name), sends it in the hello, and both the host and the
+  login service fold it into the name; without it the name is byte-identical to
+  before, so an old host or an `ephemeral` key keeps its name. The login service
+  refuses a part that does not fit rather than ignoring it. The part is
+  self-stated and proves nothing; the theft guard still keys on the Keycloak
+  session and the host key.
+  **Order matters:** the login service must be updated first (a new host
+  against an old login service is refused as a `NameMismatch` and loses its
+  NATS home, final); a release carrying this needs it in its `Needs:` line. An
+  existing `host`-key session gets a new name at its first restart: its old
+  consumers expire at the 1-hour threshold, its crown claim is not fresh after
+  90 s, its ask records age out, and the console shows the old name offline
+  until the stream's 24 h edge.
 
 - **The operator console wears the agreed design** (ADR-015 points 3 and 6):
   the website's Choirbus brand (Inter, the logo's navy, orange asks, blue
@@ -477,27 +498,6 @@ Needs: MM_BRIDGE_BOT kept on every host, and this release on all hosts before th
   host, so a 30x from `https` to `http` would have sent the bot token in
   clear text. Mattermost's API does not redirect; a 30x is now the call's
   error.
-
-- **Each session gets its own agent name on a shared host key** (#163). With
-  `CB_LOGIN_NKEY=host` one NATS key serves every session of an OS user, but the
-  name was owner plus key, so two live sessions were one agent — one set of
-  consumers, one deliver subject, each reading the other's mail. The host now
-  makes a session part once (16 random bytes as 26 lower-case base32
-  characters, kept in its state, so `--resume`/`--continue` and a restarted
-  server keep their name), sends it in the hello, and both the host and the
-  login service fold it into the name; without it the name is byte-identical to
-  before, so an old host or an `ephemeral` key keeps its name. The login service
-  refuses a part that does not fit rather than ignoring it. The part is
-  self-stated and proves nothing; the theft guard still keys on the Keycloak
-  session and the host key.
-  **Order matters:** the login service must be updated first (a new host
-  against an old login service is refused as a `NameMismatch` and loses its
-  NATS home, final); a release carrying this needs it in its `Needs:` line. An
-  existing `host`-key session gets a new name at its first restart: its old
-  consumers expire at the 1-hour threshold, its crown claim is not fresh after
-  90 s, its ask records age out, and the console shows the old name offline
-  until the stream's 24 h edge.
-
 ### Docs
 
 - **Every environment variable gets the `CB_` prefix, decided, not built
