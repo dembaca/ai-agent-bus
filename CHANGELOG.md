@@ -23,7 +23,7 @@ before 0.5.0 are described in the git history.
   reading with a warning, an unreachable one reconnects with backoff, and
   the consumers age out after five minutes without the console listening
   — the login service re-ensures them hourly, so a console that restarts
-  gets the seven days again.
+  gets the seven days again. The seed file is refused when group- or world-readable (0600, or `defaultMode: 0400` under Kubernetes).
 - **The console serves `/metrics`** (#158, part of): the Prometheus text
   format behind the operator's login, the same right `/v1/stats` needs —
   **never scrape with the session cookie**, it is that operator's whole
