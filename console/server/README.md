@@ -99,10 +99,11 @@ membership is no home; nothing is guessed from an agent's name (#147).
 `/v1/graph` draws the home as a `coordinates` edge and each guest channel
 as a `guest` edge, and marks the person node the logged-in operator's own
 anchor names with `you` — that anchor read from the login's own record,
-never from anything the browser sends. People are nodes by their anchor
-token and only labelled by the name (an attestation's anchor is in name
-form, the login record's in subject form), so two anchors of one name
-stay two nodes.
+never from anything the browser sends. People are nodes by
+`person:<anchor token>` — a channel's and an agent's id are their name —
+and only labelled by the name (an attestation's anchor is in name form,
+the login record's in subject form), so two anchors of one name stay two
+nodes.
 
 The asks and the reports (the console on the bus as its operator,
 RT-6.43, steps 6 to 8): every MCP server with a NATS link publishes one

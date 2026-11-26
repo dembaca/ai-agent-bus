@@ -86,7 +86,8 @@ def test_the_graph_marks_the_operators_own_node_and_guest_channels(fleet_scenari
     never takes either from the browser (RT-6.43 step 2)."""
     graph = fleet_scenario.graph(anchor="dembaca")
     people = [n for n in graph["nodes"] if n["kind"] == "person"]
-    assert people == [{"id": "dembaca", "kind": "person", "label": "dembaca", "you": True}]
+    assert people == [{"id": "person:dembaca", "kind": "person", "label": "dembaca",
+                       "you": True}]
     homes = {e["to"] for e in graph["edges"] if e["kind"] == "coordinates"}
     guests = {e["to"] for e in graph["edges"] if e["kind"] == "guest"}
     assert (homes, guests) == ({"dev"}, {"bgl-infra"})

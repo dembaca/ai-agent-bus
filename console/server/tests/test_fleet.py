@@ -113,7 +113,7 @@ def test_crown_minimum_by_itself() -> None:
     assert card["home"] == "dev"
     graph = f.graph()
     kinds = {n["id"]: n["kind"] for n in graph["nodes"]}
-    assert kinds == {"dembaca": "person", "dev": "channel", "b": "agent"}
+    assert kinds == {"person:dembaca": "person", "dev": "channel", "b": "agent"}
     edges = {(e["from"], e["to"], e["kind"]) for e in graph["edges"]}
     assert ("b", "dev", "coordinates") in edges
 
@@ -285,7 +285,7 @@ def test_the_attestation_expires_by_the_floored_clock() -> None:
               ack("PRESENCE", "console", 2, 2, 1001.0)))
     live_edges = {e["to"] for e in g2.graph()["edges"]
                   if e["from"] == "c" and e["kind"] == "trusts"}
-    assert "somebody-else" in live_edges
+    assert "person:somebody-else" in live_edges
 
 
 def test_cards_show_the_bot_name_the_presence_states_not_the_bus_id() -> None:
@@ -448,7 +448,8 @@ def test_the_operators_node_is_marked_by_its_anchor_in_subject_form() -> None:
          (*attestation_of(AGENT_A, "first.last", "first.last"), ack("PRESENCE", "console", 2, 2, 1001.0)),
          (f"presence.member.dev.{AGENT_A}", encode_claim(), ack("PRESENCE", "console", 3, 3, 1002.0)))
     marked = [n for n in f.graph("first~last")["nodes"] if n.get("you")]
-    assert marked == [{"id": "first~last", "kind": "person", "label": "first.last", "you": True}]
+    assert marked == [{"id": "person:first~last", "kind": "person", "label": "first.last",
+                       "you": True}]
     # no anchor, the no-owner token and another anchor mark nothing
     assert owner_token("first~last") == "-"  # the subject form is not to be re-tokenised
     for anchor in (None, "", "-", "first.last"):
@@ -472,10 +473,10 @@ def test_two_people_of_one_name_stay_two_nodes() -> None:
     graph = f.graph("sub-alice")
     people = [n for n in graph["nodes"] if n["kind"] == "person"]
     assert [(n["id"], n["label"], n.get("you")) for n in people] == [
-        ("sub-alice", "alice", True), ("sub-bob", "alice", None)]
+        ("person:sub-alice", "alice", True), ("person:sub-bob", "alice", None)]
     assert len([n for n in people if n.get("you")]) == 1
     targets = {e["to"] for e in graph["edges"] if e["kind"] == "trusts"}
-    assert targets == {"sub-alice", "sub-bob"}
+    assert targets == {"person:sub-alice", "person:sub-bob"}
 
 
 def test_the_home_is_a_claim_of_its_own_not_only_the_holders() -> None:

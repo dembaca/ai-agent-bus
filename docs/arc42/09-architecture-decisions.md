@@ -4106,9 +4106,9 @@ The console is the operators' view of the bus itself.
      statement names a home only beside a membership: a record or a claim
      can outlive a channel the agent lost. The card's `home` and `guests`
      come from the same statement, and no home is guessed from an agent's
-     name (#147). Node ids are unique per kind — a person's anchor token,
-     a channel's name, an agent's name — never across kinds, so a reader
-     keys them by `(kind, id)`.
+     name (#147). A person's node id is `person:<anchor token>`, a
+     channel's and an agent's their name: ids are unique across kinds, so
+     an owner named like a channel is two nodes with two ids.
    - **People** are nodes by their anchor token, the name only the label:
      two anchors that carry one name stay two nodes (RT-6.41), and a node
      without an attestation is the presence subject's owner token

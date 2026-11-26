@@ -373,9 +373,9 @@ class Fleet:
         value the browser sends. The person node it names is marked `you` (ADR-015
         point 7), matched by anchor, so two people of one name stay apart.
 
-        Node ids are unique per kind — a person's anchor token, a channel's name, an
-        agent's name — never across kinds: an owner named like a channel is two nodes,
-        a reader keys them by `(kind, id)`."""
+        Node ids are unique across kinds: a person's is `person:<anchor token>`, a
+        channel's its name, an agent's its name — an owner named like a channel is
+        two nodes with two ids."""
         nodes = []
         edges = []
         # anchor token -> the name it is shown under: the anchor is the identity
@@ -395,11 +395,13 @@ class Fleet:
                 token = owner_token(name)
             if token != natsbus.NO_OWNER:
                 people.setdefault(token, name)
-                edges.append({"id": f"e-{agent}-owner", "from": agent, "to": token,
-                              "kind": "trusts"})
+                edges.append({"id": f"e-{agent}-owner", "from": agent,
+                              "to": f"person:{token}", "kind": "trusts"})
         me = anchor or ""
         for token, name in people.items():
-            person: dict[str, Any] = {"id": token, "kind": "person", "label": name}
+            # `person:` keeps a person's id apart from a channel's or an agent's of the
+            # same name; the card's `home` stays the plain channel name
+            person: dict[str, Any] = {"id": f"person:{token}", "kind": "person", "label": name}
             if me and token == me:
                 person["you"] = True
             nodes.append(person)
