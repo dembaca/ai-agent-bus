@@ -119,6 +119,36 @@ async def test_stall_counts_a_forwarded_posted_frame():
     assert (relay.posted_seen, relay.posted_forwarded, relay.posted_altered) == (1, 1, 1)
 
 
+async def test_reorder_timer_releases_the_held_frame_and_rearms():
+    """`FaultRelay.deliver` alone, without sockets (#84): a held frame goes out
+    on its timer, and a frame after that release is held again and released by
+    a timer of its own. Holding a frame never yields, so the timer cannot fire
+    before the asserts right after `deliver`."""
+    sent: list[object] = []
+
+    async def send(frame: object) -> None:
+        sent.append(frame)
+
+    relay = FaultRelay(ProxyFault(kind="reorder", after=1, reorder_max_wait=0.05))
+    state = ConnState()
+    await relay.deliver("0", state, send=send)
+    await relay.deliver("1", state, send=send)
+    assert sent == ["0"]
+    assert state.held == "1"
+    await asyncio.sleep(0.2)
+    assert sent == ["0", "1"]
+    assert state.held is None and state.release is None
+    assert relay.forwarded == 2
+
+    await relay.deliver("2", state, send=send)  # held again: the timer re-arms
+    assert sent == ["0", "1"]
+    assert state.held == "2" and state.release is not None
+    await asyncio.sleep(0.2)
+    assert sent == ["0", "1", "2"]
+    assert state.held is None
+    assert (relay.forwarded, relay.altered) == (3, 2)
+
+
 async def test_blackhole_keeps_the_socket_and_delivers_nothing():
     got, proxy = await _relay("blackhole", count=5, after=0)
     assert got == []
