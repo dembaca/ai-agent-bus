@@ -2219,3 +2219,20 @@ def test_the_key_is_shared_only_under_host(monkeypatch: pytest.MonkeyPatch) -> N
         login.shared_key()
     monkeypatch.delenv("MM_LOGIN_NKEY")
     assert not login.shared_key()  # the new name alone
+
+
+def test_a_late_registered_server_adopts_its_earlier_part(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+    """#163, RT-6.36: a server that registered after its first start takes the part
+    its earlier start kept, so its name does not change once more."""
+    from mattermost_ai_agent_bus import session_file
+
+    monkeypatch.setenv("XDG_STATE_HOME", str(tmp_path))
+    uid = "u" * 26
+    earlier = "abcdefghijklmnopqrstuvwxyz"
+    keyed = session_file.keyed_path("nonce")
+    keyed.parent.mkdir(parents=True, exist_ok=True)
+    keyed.write_text(f"CB_SESSION_NONCE={earlier}\n", encoding="utf-8")
+    monkeypatch.setattr(session_file, "read", lambda: {"CB_MM_BOT_USER_ID": uid})
+    assert session_file.nonce() == earlier
+    per_bot = session_file.state_dir() / f"nonce-{uid}.env"
+    assert per_bot.read_text(encoding="utf-8").strip() == f"CB_SESSION_NONCE={earlier}"
