@@ -206,6 +206,8 @@ class DMNotifier:
         return client, human, await client.direct_channel_with(uid)
 
     async def waiting(self, grant: DeviceGrant) -> None:
+        if self._ask:  # an earlier approval's ask is settled, never left open
+            await self.settled("replaced")
         client, human, dm = await self._target()
         me = await client.get_me()
         link = grant.verification_uri_complete or grant.verification_uri

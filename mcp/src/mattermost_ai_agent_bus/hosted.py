@@ -709,10 +709,15 @@ class Host:
         if not isinstance(current, RelayedLogin):
             await _answer(stream, False, "no login runs in this session")
             return
-        if current.busy():
+        claim = current.claim()  # before any await: a second handshake meets it taken
+        if claim is None:
             await _answer(stream, False, "another login channel is connected")
             return
-        await _answer(stream, True)
+        try:
+            await _answer(stream, True)
+        except BaseException:
+            current.release(claim)
+            raise
 
         async def read_line() -> bytes:
             return bytes(await buffered.receive_until(b"\n", LINE_MAX))
@@ -720,7 +725,7 @@ class Host:
         async def send_line(data: bytes) -> None:
             await stream.send(data)
 
-        await current.serve(read_line, send_line)
+        await current.serve(claim, read_line, send_line)
 
 
 def _login_offer() -> dict[str, Any]:

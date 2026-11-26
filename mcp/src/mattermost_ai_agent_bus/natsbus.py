@@ -18,7 +18,9 @@ The permission model, from the host's side:
   last stream sequence seen per channel.
 
 Nothing here logs, stores or puts into an exception the access token or the seed:
-the seed never leaves `login.Login.nkey()`, which only gives a `sign` function.
+the seed stays in the login, whose `nkey()` gives only a `sign` function. In the host
+process of a keyless corral session that login is `login_relay.RelayedLogin`, which
+got the seed from the relay in the sandbox that keeps it (#154).
 """
 
 from __future__ import annotations

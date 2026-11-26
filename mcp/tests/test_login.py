@@ -80,7 +80,7 @@ def test_https_or_http_on_loopback_is_accepted(monkeypatch, issuer):
     s = login.settings_from_env()
     assert s is not None
     assert s.issuer == issuer.rstrip("/")
-    assert (s.client_id, s.nkey_store) == ("agent-bus", "host")  # decision 10 (#154): the key is kept
+    assert (s.client_id, s.nkey_store) == ("agent-bus", "ephemeral")
 
 
 def test_nkey_store_setting(monkeypatch, caplog):
@@ -722,7 +722,9 @@ def _check_current():
     tells the human at this machine (browser, stderr) and by DM."""
     lg = login.current()
     assert isinstance(lg, login.Login)
-    assert lg._store is keystore.default()               # the store keystore chose
+    assert isinstance(lg._store, login.Deferred)          # chosen off the event loop, on first use
+    assert lg._store.resolve() is keystore.default()     # the store keystore chose
+    assert lg._migrate                                   # outside corral: the old store moves once
     assert isinstance(lg._notifier, login_notice.Combined)
     kinds = [type(p) for p in lg._notifier._parts]
     assert kinds == [login_notice.Shown, login_notice.DMNotifier]

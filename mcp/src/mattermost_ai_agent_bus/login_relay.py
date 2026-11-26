@@ -21,9 +21,11 @@ the NATS adapter needs (`RelayedLogin`):
   since only it holds the bot token. The relay itself opens a browser and
   writes the address and the code to its stderr.
 
-The host trusts nothing of the relay beyond the session key: a link to DM must
-be the issuer's own, a code plain letters and digits, a token the responsible
-human's. Nothing here logs a token, a seed or the device code.
+The host trusts nothing of the relay beyond the session key, which the agent can
+read: of an approval it takes only the user code (a strict pattern) and builds
+the link to DM from its own issuer, one open approval at a time and at most one
+per cooldown; a token must be the responsible human's; an error keeps only its
+kind (denied, wrong_human, config), so the NATS port stops on it. Nothing here logs a token, a seed or the device code.
 """
 
 from __future__ import annotations
@@ -34,13 +36,14 @@ import json
 import logging
 import re
 import threading
+import time
 from collections.abc import Awaitable, Callable, Mapping
 from typing import Any
 
 import nkeys
 
 from . import login, owners
-from .login import DeviceGrant, LoginError, NKey, NotifyError, Settings
+from .login import ApprovalDenied, ConfigError, DeviceGrant, LoginError, NKey, NotifyError, Settings, WrongHuman
 
 log = logging.getLogger(__name__)
 
@@ -48,8 +51,14 @@ LINE_MAX = 64 * 1024
 CONNECT_SEC = 5.0
 RETRY_SEC = 2.0
 RETRY_MAX_SEC = 30.0
+CHANNEL_WAIT_SEC = 60.0  # no login channel this long after the start: warned, and a token request fails
 OUTCOMES = ("approved", "denied", "expired", "refused", "failed")
-_CODE = re.compile(r"[A-Za-z0-9-]{1,32}")
+# A device flow's user code (Keycloak: ABCD-EFGH): letters and digits in at most two groups.
+USER_CODE = re.compile(r"[A-Z0-9]{4,10}(-[A-Z0-9]{4,10})?")
+# The errors that waiting does not cure keep their kind across the channel, so the
+# NATS port stops instead of asking again (nats_port._final).
+ERROR_KINDS: dict[str, type[LoginError]] = {
+    "denied": ApprovalDenied, "wrong_human": WrongHuman, "config": ConfigError}
 
 
 def offer(settings: Settings, human: str) -> dict[str, str]:
@@ -85,16 +94,24 @@ class RelayedLogin:
     """The login the sandbox holds, seen from the host process (login.start_relayed)."""
 
     def __init__(self, settings: Settings, *, notifier: Any = None,
-                 human: Callable[[], str] = owners.responsible_human) -> None:
+                 human: Callable[[], str] = owners.responsible_human,
+                 now: Callable[[], float] = time.monotonic,
+                 channel_wait_sec: float = CHANNEL_WAIT_SEC) -> None:
         self.settings = settings
         self._notifier = notifier
         self._human = human
+        self._now = now
+        self._wait = channel_wait_sec
+        self._claim: object | None = None
         self._send: Callable[[dict[str, Any]], Awaitable[None]] | None = None
         self._ready = asyncio.Event()
         self._waiters: dict[int, asyncio.Future[dict[str, Any]]] = {}
         self._next = 0
         self._kp: nkeys.KeyPair | None = None
         self._tasks: set[asyncio.Task[None]] = set()
+        self._approval_open = False
+        self._last_waiting: float | None = None
+        self._last_refused: float | None = None
 
     def __repr__(self) -> str:
         return (f"RelayedLogin(issuer={self.settings.issuer!r}, "
@@ -104,17 +121,29 @@ class RelayedLogin:
         return offer(self.settings, self._human().strip())
 
     async def run(self) -> None:
-        """Settle an ask an earlier session left open; the login itself runs in the sandbox."""
+        """Settle an ask an earlier session left open; the login itself runs in the
+        sandbox. Warns when no login channel comes (an older relay there)."""
         if self._notifier is not None:
             try:
                 await self._notifier.start()
             except Exception as exc:  # noqa: BLE001
                 log.warning("login: an earlier ask was not settled (%s)", type(exc).__name__)
+        try:
+            await asyncio.wait_for(self._ready.wait(), self._wait)
+        except TimeoutError:
+            log.warning("login: no login channel from the relay in the sandbox after %d s (an older "
+                        "plugin there, or its login did not start): no access token for the NATS home",
+                        int(self._wait))
 
     async def access_token(self) -> str:
-        """An access token from the sandbox's login; waits for its channel."""
+        """An access token from the sandbox's login; waits for its channel at most
+        `channel_wait_sec` at a time, then raises, so the NATS port logs why."""
         while True:
-            await self._ready.wait()
+            try:
+                await asyncio.wait_for(self._ready.wait(), self._wait)
+            except TimeoutError:
+                raise LoginError("no login channel from the relay in the sandbox (an older plugin "
+                                 "there, or its login did not start)") from None
             send = self._send
             if send is None:
                 await asyncio.sleep(0)
@@ -131,14 +160,15 @@ class RelayedLogin:
             finally:
                 self._waiters.pop(rid, None)
             if "error" in reply:
-                raise LoginError(" ".join(str(reply["error"]).split())[:200])
+                text = " ".join(str(reply["error"]).split())[:200]
+                raise ERROR_KINDS.get(str(reply.get("kind", "")), LoginError)(text)
             token = reply.get("token")
             if not isinstance(token, str) or not token:
                 raise LoginError("the sandbox's login sent no token")
             who = login.payload_of(token).get("preferred_username")
             human = self._human().strip()
             if not human or not isinstance(who, str) or who.casefold() != human.casefold():
-                raise LoginError("the sandbox's login is not the responsible human's")
+                raise WrongHuman("the sandbox's login is not the responsible human's")
             return token
 
     def nkey(self) -> NKey:
@@ -151,10 +181,25 @@ class RelayedLogin:
 
         return NKey(public_key=bytes(kp.public_key).decode("ascii"), sign=sign)
 
-    async def serve(self, read_line: Callable[[], Awaitable[bytes]],
+    def claim(self) -> object | None:
+        """The one login channel's slot, taken before its handshake is answered;
+        None while another holds it."""
+        if self._claim is not None:
+            return None
+        self._claim = object()
+        return self._claim
+
+    def release(self, claim: object) -> None:
+        if self._claim is claim:
+            self._claim = None
+
+    def busy(self) -> bool:
+        return self._claim is not None
+
+    async def serve(self, claim: object, read_line: Callable[[], Awaitable[bytes]],
                     send_line: Callable[[bytes], Awaitable[None]]) -> None:
-        """One login channel, after the handshake was answered; returns when it closes.
-        A second one while this runs is refused by the caller (`busy`)."""
+        """One login channel, after its slot was claimed and the handshake answered;
+        returns when it closes."""
         lock = asyncio.Lock()
 
         async def send(body: dict[str, Any]) -> None:
@@ -174,15 +219,14 @@ class RelayedLogin:
                 if isinstance(msg, dict):
                     await self._on(msg)
         finally:
-            self._send = None
-            self._ready.clear()
-            for fut in self._waiters.values():
-                if not fut.done():
-                    fut.set_exception(_Closed())
+            if self._send is send:
+                self._send = None
+                self._ready.clear()
+                for fut in self._waiters.values():
+                    if not fut.done():
+                        fut.set_exception(_Closed())
+            self.release(claim)
             log.info("login: the sandbox's login channel closed")
-
-    def busy(self) -> bool:
-        return self._send is not None
 
     async def _on(self, msg: dict[str, Any]) -> None:
         rid = msg.get("id")
@@ -205,31 +249,37 @@ class RelayedLogin:
         if event == "waiting":
             grant = self._grant(msg)
             if grant is not None:
+                self._approval_open = True
+                self._last_waiting = self._now()
                 self._spawn(self._notifier.waiting(grant), "the DM with the approval was not sent")
-        elif event == "settled" and msg.get("outcome") in OUTCOMES:
+        elif event == "settled" and msg.get("outcome") in OUTCOMES and self._approval_open:
+            self._approval_open = False
             self._spawn(self._notifier.settled(str(msg["outcome"])), "the ask was not settled")
         elif event == "refused":
+            if self._last_refused is not None and self._now() - self._last_refused < login.COOLDOWN_SEC:
+                log.info("login: another refusal within the cooldown; no DM")
+                return
+            self._last_refused = self._now()
             self._spawn(self._notifier.refused(), "the human was not told")
 
     def _grant(self, msg: dict[str, Any]) -> DeviceGrant | None:
-        """The approval the sandbox shows, only when its link is the issuer's own."""
-        uri, complete, code = (msg.get(k) for k in ("uri", "complete", "code"))
-        expires = msg.get("expires_in")
-        if not isinstance(uri, str) or not isinstance(complete, str) or not isinstance(code, str):
+        """The approval to DM: only the user code comes from the sandbox (a strict
+        pattern); the link is built here from the configured issuer, so no text
+        of the sandbox's reaches the DM. One open approval at a time, at most one
+        per cooldown."""
+        code, expires = msg.get("code"), msg.get("expires_in")
+        if not isinstance(code, str) or not USER_CODE.fullmatch(code):
+            log.warning("login: the sandbox's user code is not one; no DM")
             return None
-        for link in filter(None, (uri, complete)):
-            try:
-                login.check_url(link, "the approval link")
-            except LoginError:
-                log.warning("login: the sandbox's approval link is not usable; no DM")
-                return None
-            if not login.same_site(self.settings.issuer, link):
-                log.warning("login: the sandbox's approval link is not on the issuer's host; no DM")
-                return None
-        if not uri or not _CODE.fullmatch(code):
+        if self._approval_open:
+            log.warning("login: an approval is already open; no second DM")
             return None
+        if self._last_waiting is not None and self._now() - self._last_waiting < login.COOLDOWN_SEC:
+            log.warning("login: another approval within the cooldown; no DM")
+            return None
+        uri = f"{self.settings.issuer}/device"
         minutes = expires if type(expires) is int and 0 < expires <= 3600 else 600
-        return DeviceGrant(verification_uri=uri, verification_uri_complete=complete,
+        return DeviceGrant(verification_uri=uri, verification_uri_complete=f"{uri}?user_code={code}",
                            user_code=code, expires_in=minutes)
 
     def _spawn(self, coro: Awaitable[None], what: str) -> None:
@@ -326,7 +376,8 @@ class Holder:
         try:
             body: dict[str, Any] = {"id": rid, "token": await self.login.access_token()}
         except LoginError as exc:
-            body = {"id": rid, "error": str(exc)}
+            kind = next((k for k, cls in ERROR_KINDS.items() if isinstance(exc, cls)), "login")
+            body = {"id": rid, "error": str(exc), "kind": kind}
         except Exception as exc:  # noqa: BLE001
             body = {"id": rid, "error": f"the login failed ({type(exc).__name__})"}
         with contextlib.suppress(OSError):

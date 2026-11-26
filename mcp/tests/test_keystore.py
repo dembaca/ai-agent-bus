@@ -216,7 +216,10 @@ class FakeCli:
         key = (self._opt(args, "-s"), self._opt(args, "-a"))
         missing = keystore.Ran(44, b"", b"security: The specified item could not be found in the keychain.\n")
         if args[0] == "find-generic-password":
-            return keystore.Ran(0, self.items[key] + b"\n", b"") if key in self.items else missing
+            if key not in self.items:
+                return missing
+            # without -w `security` prints attributes only
+            return keystore.Ran(0, self.items[key] + b"\n" if "-w" in args else b"attributes", b"")
         if args[0] == "delete-generic-password":
             return keystore.Ran(0, b"", b"") if self.items.pop(key, None) is not None else missing
         raise AssertionError(args)
@@ -283,11 +286,40 @@ def test_mac_keychain_write_that_did_not_take_is_an_error(tmp_path):
         s.save("refresh_a", SECRET)
 
 
-def test_mac_keychain_refuses_a_value_too_long_for_one_command_line(tmp_path):
+def test_mac_keychain_keeps_a_value_too_long_for_one_command_line_in_the_0600_file(tmp_path, caplog):
     cli = FakeCli()
-    with pytest.raises(keystore.KeyStoreError) as err:
-        keystore.MacKeychain(tmp_path / "login", runner=cli).save("refresh_a", SECRET * 200)
-    assert SECRET not in str(err.value) and cli.calls == []
+    d = tmp_path / "login"
+    s = keystore.MacKeychain(d, runner=cli)
+    s.save("refresh_a", "short")
+    long_value = SECRET * 200
+    with caplog.at_level("WARNING"):
+        s.save("refresh_a", long_value)
+    assert "refresh_a is too long for the keychain, kept in the 0600 file" in caplog.text
+    assert SECRET not in caplog.text
+    assert (keystore.SERVICE, "refresh_a") not in cli.items  # the stale short item is gone
+    assert stat.S_IMODE((d / "overflow" / "refresh_a").stat().st_mode) == 0o600
+    assert s.load("refresh_a") == long_value
+    cli.assert_never_on_argv(SECRET)
+    s.save("refresh_a", "short again")  # back in the keychain, the file goes
+    assert not (d / "overflow" / "refresh_a").exists() and s.load("refresh_a") == "short again"
+    s.save("refresh_a", long_value)
+    s.delete("refresh_a")
+    assert s.load("refresh_a") is None
+
+
+@pytest.mark.parametrize("kind", [keystore.MacKeychain, keystore.SecretTool, keystore.HostFile])
+def test_every_store_refuses_an_empty_value(kind, tmp_path):
+    cli = FakeCli()
+    s = kind(tmp_path / "login") if kind is keystore.HostFile else kind(tmp_path / "login", runner=cli)
+    with pytest.raises(keystore.KeyStoreError, match="refresh_a: an empty value is not stored"):
+        s.save("refresh_a", "")
+    assert cli.calls == []
+
+
+@pytest.mark.parametrize("service", ["", "Mm", "a b", "a;rm", "x" * 70, "-s"])
+def test_keychain_service_name_is_checked(service, tmp_path):
+    with pytest.raises(keystore.KeyStoreError, match="invalid keychain service name"):
+        keystore.MacKeychain(tmp_path, runner=FakeCli(), service=service)
 
 
 @pytest.mark.parametrize("kind", [keystore.MacKeychain, keystore.SecretTool])
@@ -333,7 +365,7 @@ def test_run_kills_a_hanging_tool_and_names_only_the_tool():
     with pytest.raises(keystore.KeyStoreError, match="timed out") as err:
         keystore.run([sys.executable, "-c", "import time; time.sleep(30)", SECRET], None, 0.3)
     assert SECRET not in str(err.value)
-    assert err.value.__cause__ is None and err.value.__suppress_context__
+    assert err.value.__cause__ is None and err.value.__context__ is None  # no partial output along
 
 
 def test_run_of_a_missing_tool_is_a_store_error(tmp_path):
@@ -384,14 +416,53 @@ def _tools(**found):
     return lambda name: found.get(name.replace("-", "_"))
 
 
-def test_choose_takes_the_mac_keychain_that_answers_and_leaves_no_probe_entry(state):
+MAC = {"platform": "darwin", "find_tool": _tools(security="/usr/bin/security")}
+
+
+def test_find_tool_takes_fixed_paths_never_path(monkeypatch, tmp_path):
+    fake = tmp_path / "secret-tool"
+    fake.write_text("#!/bin/sh\n")
+    fake.chmod(0o755)
+    monkeypatch.setenv("PATH", str(tmp_path))
+    seen = []
+    monkeypatch.setattr(keystore.os, "access", lambda p, m: seen.append(p) or False)
+    assert keystore._find_tool("secret-tool") is None and keystore._find_tool("security") is None
+    assert seen == ["/usr/bin/secret-tool", "/usr/local/bin/secret-tool", "/usr/bin/security"]
+
+
+def test_choose_reads_first_and_takes_a_keychain_that_holds_the_seed(state):
     cli = FakeCli()
-    s = keystore.choose({}, platform="darwin", runner=cli,
-                        find_tool=_tools(security="/usr/bin/security"))
+    cli.items[(keystore.SERVICE, keystore.NKEY_SEED)] = _encoded("SUAMKEYSEED").encode()
+    s = keystore.choose({}, runner=cli, **MAC)
     assert isinstance(s, keystore.MacKeychain) and s.timeout == keystore.OP_TIMEOUT
-    assert cli.items == {}
+    assert [c[0] for c in cli.calls] == [["/usr/bin/security", "find-generic-password", "-s",
+                                          keystore.SERVICE, "-a", "nkey_seed"]]  # no -w, no write
     assert all(t == keystore.PROBE_TIMEOUT for _, _, t in cli.calls)
-    assert s._locks.directory == state / "mm-agent-bus" / "login"
+    assert (state / "mm-agent-bus" / "login" / "store_backend").read_text() == "keychain"
+
+
+def test_choose_writes_a_probe_of_its_own_name_only_when_there_is_nothing_to_read(state):
+    cli = FakeCli()
+    s = keystore.choose({}, runner=cli, **MAC)
+    assert isinstance(s, keystore.MacKeychain)
+    assert cli.calls[0][0][1:] == ["find-generic-password", "-s", keystore.SERVICE, "-a", "nkey_seed"]
+    assert cli.items == {}  # the probe entry is gone
+    probes = {argv[argv.index("-a") + 1] for argv, _, _ in cli.calls if "-a" in argv}
+    probes |= {stdin.decode().split()[5] for argv, stdin, _ in cli.calls if argv[-1] == "-i"}
+    probes.discard("nkey_seed")
+    (probe,) = probes
+    assert keystore._NAME_RE.fullmatch(probe) and probe.startswith("probe_") and len(probe) == 22
+
+
+def test_two_first_starts_never_share_a_probe_name(state, tmp_path, monkeypatch):
+    monkeypatch.setenv("XDG_STATE_HOME", str(tmp_path / "a"))
+    c1, c2 = FakeCli(), FakeCli()
+    keystore.choose({}, runner=c1, **MAC)
+    monkeypatch.setenv("XDG_STATE_HOME", str(tmp_path / "b"))
+    keystore.choose({}, runner=c2, **MAC)
+    n1 = {a[a.index("-a") + 1] for a, _, _ in c1.calls if "-a" in a} - {"nkey_seed"}
+    n2 = {a[a.index("-a") + 1] for a, _, _ in c2.calls if "-a" in a} - {"nkey_seed"}
+    assert n1 and n2 and not n1 & n2
 
 
 def test_choose_takes_secret_tool_on_linux(state):
@@ -404,8 +475,7 @@ def test_choose_takes_secret_tool_on_linux(state):
 def test_choose_without_a_keychain_takes_the_file(state, platform, tools):
     def never(*a):
         raise AssertionError("no keychain tool may run")
-    s = keystore.choose({}, platform=platform, runner=never,
-                        find_tool=_tools(**tools))
+    s = keystore.choose({}, platform=platform, runner=never, find_tool=_tools(**tools))
     assert isinstance(s, keystore.HostFile)
     assert s.directory == state / "mm-agent-bus" / "login"
 
@@ -414,8 +484,7 @@ def test_choose_falls_back_to_the_file_when_the_keychain_is_denied(state, caplog
     def denied(argv, stdin, timeout):
         return keystore.Ran(1, b"", b"Mach lookup denied")
     with caplog.at_level("INFO"):
-        s = keystore.choose({}, platform="darwin", runner=denied,
-                            find_tool=_tools(security="/usr/bin/security"))
+        s = keystore.choose({}, runner=denied, **MAC)
     assert isinstance(s, keystore.HostFile)
     assert "using the 0600 file" in caplog.text
 
@@ -433,23 +502,118 @@ def test_choose_falls_back_within_the_probe_timeout_when_the_keychain_hangs(stat
     assert time.monotonic() - t0 < 5
 
 
-def test_choose_under_corral_keeps_the_file_in_the_sandbox_home(state, tmp_path):
+def test_the_first_choice_sticks_so_sessions_never_split(state):
+    def denied(argv, stdin, timeout):
+        return keystore.Ran(1)
+    assert isinstance(keystore.choose({}, runner=denied, **MAC), keystore.HostFile)
+    # the keychain answers at the next start: the host stays with the file
+
+    def never(*a):
+        raise AssertionError("a recorded choice probes nothing")
+    assert isinstance(keystore.choose({}, runner=never, **MAC), keystore.HostFile)
+    marker = state / "mm-agent-bus" / "login" / "store_backend"
+    assert marker.read_text() == "file" and stat.S_IMODE(marker.stat().st_mode) == 0o600
+
+
+def test_a_keychain_once_chosen_stays_chosen_even_when_it_is_slow_at_a_start(state):
+    assert isinstance(keystore.choose({}, runner=FakeCli(), **MAC), keystore.MacKeychain)
+
+    def never(*a):
+        raise AssertionError("a recorded choice probes nothing")
+    s = keystore.choose({}, runner=never, **MAC)
+    assert isinstance(s, keystore.MacKeychain) and s.timeout == keystore.OP_TIMEOUT
+    # without the tool any more: the file, with a warning, the marker kept
+    assert isinstance(keystore.choose({}, runner=never, platform="darwin", find_tool=_tools()),
+                      keystore.HostFile)
+    assert (state / "mm-agent-bus" / "login" / "store_backend").read_text() == "keychain"
+
+
+def test_choose_under_corral_takes_the_file_in_the_sandbox_home_never_a_keychain(state, tmp_path):
     home = tmp_path / "sandbox-home"
     env = {"CORRAL_SANDBOX": "1", "HOME": str(home)}
-    s = keystore.choose(env, platform="linux", find_tool=_tools())
+
+    def never(*a):
+        raise AssertionError("no keychain under corral")
+    s = keystore.choose(env, runner=never, **MAC)
     assert isinstance(s, keystore.HostFile)
     assert s.directory == home / ".local" / "state" / "mm-agent-bus" / "login"
     s.save("refresh_a", SECRET)
     assert stat.S_IMODE((s.directory / "refresh_a").stat().st_mode) == 0o600
     assert not state.exists()  # the host state dir (XDG_STATE_HOME) stays untouched
-    # a keychain under corral locks in the sandbox home as well
-    k = keystore.choose(env, platform="darwin", runner=FakeCli(), find_tool=_tools(security="/usr/bin/security"))
-    assert isinstance(k, keystore.MacKeychain) and k._locks.directory == s.directory
 
 
-def test_default_probes_once_per_process(tmp_path, monkeypatch):
+def test_two_corral_sandboxes_never_share_an_entry_or_a_keychain_item(state, tmp_path):
+    cli = FakeCli()  # one keychain of the whole host: no sandbox may reach it
+    a = keystore.choose({"CORRAL_SANDBOX": "1", "HOME": str(tmp_path / "a")}, runner=cli, **MAC)
+    b = keystore.choose({"CORRAL_SANDBOX": "1", "HOME": str(tmp_path / "b")}, runner=cli, **MAC)
+    a.save("refresh_a", SECRET)
+    assert b.load("refresh_a") is None
+    assert cli.calls == [] and cli.items == {}
+    ha, hb = a.try_lock("refresh_a"), b.try_lock("refresh_a")  # each its own lock file
+    assert ha is not None and hb is not None
+    a.unlock(ha)
+    b.unlock(hb)
+
+
+def test_without_corral_the_keychain_locks_in_the_one_host_state_dir(state):
+    k = keystore.choose({}, runner=FakeCli(), **MAC)
+    assert isinstance(k, keystore.MacKeychain)
+    assert k._locks.directory == state / "mm-agent-bus" / "login"
+    other = keystore.HostFile(state / "mm-agent-bus" / "login")
+    h = k.try_lock("refresh_a")
+    assert h is not None and other.try_lock("refresh_a") is None
+    k.unlock(h)
+
+
+def test_default_chooses_once_per_process(tmp_path, monkeypatch):
     calls = []
     monkeypatch.setattr(keystore, "_chosen", None)
     monkeypatch.setattr(keystore, "choose", lambda: calls.append(1) or keystore.HostFile(tmp_path))
     first = keystore.default()
     assert keystore.default() is first and calls == [1]
+
+
+# migration of an earlier store
+
+
+def test_migrate_copies_what_the_new_store_lacks_and_clears_the_old(tmp_path):
+    old = keystore.HostFile(tmp_path / "old")
+    new = keystore.MacKeychain(tmp_path / "old", runner=FakeCli())  # locks beside the old files
+    old.save("refresh_a", SECRET)
+    old.save("cool_a", "1 why")
+    old.save(keystore.NKEY_SEED, "OLDSEED")
+    new.save(keystore.NKEY_SEED, "NEWSEED")
+    moved = keystore.migrate_from(old, new, ["refresh_a", "cool_a", keystore.NKEY_SEED, "refresh_b"])
+    assert moved == ["refresh_a", "cool_a", keystore.NKEY_SEED]
+    assert new.load("refresh_a") == SECRET and new.load("cool_a") == "1 why"
+    assert new.load(keystore.NKEY_SEED) == "NEWSEED"  # the new store's own value wins
+    assert all(old.load(n) is None for n in ("refresh_a", "cool_a", keystore.NKEY_SEED))
+    assert keystore.migrate_from(old, new, ["refresh_a"]) == []  # once
+
+
+def test_migrate_skips_an_entry_whose_lock_another_holder_has(tmp_path):
+    old, new = keystore.HostFile(tmp_path / "old"), keystore.HostFile(tmp_path / "new")
+    old.save("refresh_a", SECRET)
+    h = keystore.HostFile(tmp_path / "new").try_lock("refresh_a")
+    assert keystore.migrate_from(old, new, ["refresh_a"]) == []
+    assert old.load("refresh_a") == SECRET and new.load("refresh_a") is None
+    keystore.HostFile(tmp_path / "new").unlock(h)
+    assert keystore.migrate_from(old, new, ["refresh_a"]) == ["refresh_a"]
+
+
+def test_migrate_keeps_the_old_entry_when_the_copy_fails(tmp_path):
+    old = keystore.HostFile(tmp_path / "old")
+    old.save("refresh_a", SECRET)
+    broken = keystore.SecretTool(tmp_path / "new", runner=lambda a, i, t: keystore.Ran(5, b"", b"x"))
+    with pytest.raises(keystore.KeyStoreError) as err:
+        keystore.migrate_from(old, broken, ["refresh_a"])
+    assert SECRET not in str(err.value)
+    assert old.load("refresh_a") == SECRET
+    assert broken.try_lock("refresh_a") is not None  # the lock was given back
+
+
+def test_migrate_between_stores_at_the_same_place_does_nothing(tmp_path):
+    a, b = keystore.HostFile(tmp_path / "login"), keystore.HostFile(tmp_path / "login")
+    a.save("refresh_a", SECRET)
+    assert keystore.migrate_from(a, b, ["refresh_a"]) == []
+    assert a.load("refresh_a") == SECRET

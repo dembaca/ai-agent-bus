@@ -9,6 +9,7 @@ import asyncio
 import io
 import json
 import logging
+import time
 
 import anyio
 import httpx
@@ -166,8 +167,9 @@ def test_the_relays_login_uses_the_default_store_and_the_offer_carries_no_secret
     offer = login_relay.offer(settings, "alice")
     assert offer == {"issuer": ISSUER, "client_id": "agent-bus", "nkey": "host", "human": "alice"}
     holder = login_relay.Holder(("127.0.0.1", 1), "k" * 64, *login_relay.settings_of(offer))
-    assert holder.login._store is keystore.default()     # keychain or the sandbox-home file
-    assert holder.login._nkey_store is keystore.default()  # the host key is kept too (decision 10)
+    assert holder.login._store.resolve() is keystore.default()  # keychain or the sandbox-home file
+    assert holder.login._nkey_store is holder.login._store      # MM_LOGIN_NKEY=host keeps the key there
+    assert not holder.login._migrate                            # the host's old store is out of reach
 
 
 @pytest.mark.parametrize("value", [
@@ -222,9 +224,9 @@ async def test_the_relay_holds_the_login_and_the_host_gets_tokens_and_the_key(mo
         assert stored(store) == "refresh-secret-1"
         wire = b"".join(sent).decode()
         assert "refresh-secret" not in wire and DEVICE not in wire
-        # the relay shows the approval itself; the host DMs the human the same link
+        # the relay shows the approval itself; the host DMs a link it built for the same code
         assert LINK in err.getvalue()
-        assert dm.events[:1] == ["waiting"] and dm.grants[0].verification_uri_complete == LINK
+        assert dm.events[:1] == ["waiting"] and dm.grants[0].verification_uri_complete == f"{ISSUER}/device?user_code=ABCD-EFGH"
         assert "settled:approved" in dm.events
         # the host signs with the sandbox's key
         key = relayed.nkey()
@@ -245,28 +247,201 @@ async def test_the_relay_holds_the_login_and_the_host_gets_tokens_and_the_key(mo
         await listener.aclose()
 
 
-async def test_the_host_dms_only_a_link_on_the_issuers_site_and_checks_the_person(monkeypatch):
+def _relayed(dm=None, clock=None, **kw):
+    now = (lambda: clock[0]) if clock else time.monotonic
+    return login_relay.RelayedLogin(login.Settings(ISSUER, "agent-bus"), notifier=dm,
+                                    human=lambda: "alice", now=now, **kw)
+
+
+@pytest.mark.parametrize("event", [
+    {"uri": "https://kc.example.test/realms/bus/x\n\n[click](https://evil.example)", "code": "ABCD-EFGH"},
+    {"code": "ABCD-EFGH\n[click](https://evil.example)"},
+    {"code": "AB CD"}, {"code": "abcd-efgh"}, {"code": ""}, {"code": 1234}])
+async def test_the_host_dms_only_its_own_link_with_a_strict_user_code(event):
+    """RT-6.34, #154: the agent holds the session key and can open a login channel;
+    nothing it writes but a plain user code reaches the human's DM."""
     dm = Note()
-    relayed = login_relay.RelayedLogin(login.Settings(ISSUER, "agent-bus"), notifier=dm,
-                                       human=lambda: "alice")
-    await relayed._on({"event": "waiting", "uri": "https://evil.example.test/x", "complete": "",
-                       "code": "ABCD", "expires_in": 600})
-    await relayed._on({"event": "waiting", "uri": f"{ISSUER}/device", "complete": "", "code": "AB CD"})
+    relayed = _relayed(dm)
+    await relayed._on({"event": "waiting", "complete": event.get("uri", ""), **event})
     await asyncio.sleep(0)
-    assert dm.events == []
+    if "\n" in str(event["code"]) or event["code"] != "ABCD-EFGH":
+        assert dm.grants == []
+    else:  # a link of the sandbox's is ignored: the host builds its own
+        (grant,) = dm.grants
+        assert grant.verification_uri == f"{ISSUER}/device"
+        assert grant.verification_uri_complete == f"{ISSUER}/device?user_code=ABCD-EFGH"
+
+
+async def test_one_open_approval_at_a_time_and_one_per_cooldown_and_refusals_rate_limited():
+    dm, clock = Note(), [1000.0]
+    relayed = _relayed(dm, clock)
+    waiting = {"event": "waiting", "code": "ABCD-EFGH", "expires_in": 600}
+    for _ in range(5):
+        await relayed._on(dict(waiting))
+    await asyncio.sleep(0)
+    assert dm.events == ["waiting"]                    # one DM, one ask, not five
+    await relayed._on({"event": "settled", "outcome": "expired"})
+    await relayed._on({"event": "settled", "outcome": "expired"})   # nothing open: ignored
+    await relayed._on(dict(waiting))                   # within the cooldown: no DM
+    clock[0] += login.COOLDOWN_SEC
+    await relayed._on(dict(waiting))
+    for _ in range(3):
+        await relayed._on({"event": "refused"})
+    clock[0] += login.COOLDOWN_SEC
+    await relayed._on({"event": "refused"})
+    await asyncio.sleep(0)
+    assert dm.events == ["waiting", "settled:expired", "waiting", "refused", "refused"]
+
+
+async def test_a_new_approval_settles_the_earlier_ask_in_the_home(tmp_path, monkeypatch):
+    from fakes import FakeChat
+
+    from mattermost_ai_agent_bus import asks
+    monkeypatch.setenv("XDG_STATE_HOME", str(tmp_path))
+    chat = FakeChat(people={"u1": "alice"}, post_id="ask1")
+    note = login_notice.DMNotifier(lambda: asyncio.sleep(0, chat), lambda: "alice")
+    grant = login.DeviceGrant(f"{ISSUER}/device", "", "ABCD-EFGH", 600)
+    await note.waiting(grant)
+    assert asks.is_open(chat.me.id, "ask1")
+    chat.post_id = "ask2"
+    await note.waiting(grant)
+    assert not asks.is_open(chat.me.id, "ask1") and asks.is_open(chat.me.id, "ask2")
+
+
+async def _channel(relayed, reply):
     lines: asyncio.Queue[bytes] = asyncio.Queue()
 
     async def send_line(data: bytes) -> None:
         msg = json.loads(data)
-        await lines.put(json.dumps({"id": msg["id"], "token": jwt("mallory")}).encode())
+        await lines.put(json.dumps({"id": msg["id"], **reply}).encode())
 
-    serving = asyncio.create_task(relayed.serve(lines.get, send_line))
+    claim = relayed.claim()
+    return asyncio.create_task(relayed.serve(claim, lines.get, send_line))
+
+
+@pytest.mark.parametrize("reply, error", [
+    ({"token": jwt("mallory")}, login.WrongHuman),
+    ({"error": "the approval was declined", "kind": "denied"}, login.ApprovalDenied),
+    ({"error": "the approving person is not the responsible human", "kind": "wrong_human"}, login.WrongHuman),
+    ({"error": "MM_LOGIN_ISSUER must be https", "kind": "config"}, login.ConfigError),
+    ({"error": "Keycloak not reachable", "kind": "login"}, login.LoginError),
+])
+async def test_the_host_keeps_the_kind_of_a_final_error_so_the_port_stops(reply, error):
+    from mattermost_ai_agent_bus import nats_port
+    relayed = _relayed()
+    serving = await _channel(relayed, reply)
     try:
-        with pytest.raises(login.LoginError, match="not the responsible human"):
+        with pytest.raises(error) as exc:
             await asyncio.wait_for(relayed.access_token(), 2)
+        assert type(exc.value) is error
+        assert nats_port._final(exc.value) is (error is not login.LoginError)
     finally:
         serving.cancel()
         await asyncio.gather(serving, return_exceptions=True)
+
+
+async def test_the_relay_sends_the_kind_of_its_login_error():
+    sent: list[dict] = []
+
+    class Writer:
+        def write(self, data):
+            sent.append(json.loads(data))
+
+        async def drain(self):
+            pass
+
+    holder = login_relay.Holder(("127.0.0.1", 1), "k", login.Settings(ISSUER, "agent-bus"), "alice",
+                                store=keystore.Ephemeral())
+
+    async def denied():
+        raise login.ApprovalDenied("the approval was declined")
+
+    holder.login.access_token = denied  # type: ignore[method-assign]
+    await holder._answer(Writer(), 7)  # type: ignore[arg-type]
+    assert sent == [{"id": 7, "error": "the approval was declined", "kind": "denied"}]
+
+
+async def test_without_a_login_channel_the_host_warns_and_a_token_request_fails(caplog):
+    relayed = _relayed(Note(), channel_wait_sec=0.05)
+    with caplog.at_level(logging.WARNING):
+        await relayed.run()
+    assert "no login channel from the relay" in caplog.text
+    with pytest.raises(login.LoginError, match="no login channel"):
+        await relayed.access_token()
+
+
+async def test_two_login_channels_at_once_get_one_slot(monkeypatch):
+    relayed = _relayed(Note())
+    port, serving, listener = await _host(monkeypatch, relayed)
+    try:
+        async def handshake():
+            r, w = await asyncio.open_connection("127.0.0.1", port)
+            w.write(json.dumps({"key": "k" * 64, "login": True}).encode() + b"\n")
+            return json.loads(await r.readline())["ok"], w
+
+        results = await asyncio.gather(handshake(), handshake(), handshake())
+        assert sorted(ok for ok, _ in results) == [False, False, True]
+        for ok, w in results:
+            if ok:
+                w.close()
+        for _ in range(50):
+            if not relayed.busy():
+                break
+            await asyncio.sleep(0.02)
+        assert not relayed.busy()                          # the closed one freed its slot
+        ok, w = await handshake()
+        assert ok
+        w.close()
+    finally:
+        serving.cancel()
+        await asyncio.gather(serving, return_exceptions=True)
+        await listener.aclose()
+
+
+async def test_outside_corral_the_old_host_store_moves_once_before_the_lock(tmp_path, monkeypatch):
+    calls = []
+
+    def migrate(old, new, names):
+        calls.append((old.directory, new, list(names)))
+        return []
+
+    monkeypatch.setattr(keystore, "migrate_from", migrate)
+    store = keystore.Ephemeral()
+    lg = mk(store, transport=httpx.MockTransport(Script()), notifier=Note(), migrate=True)
+    await lg.access_token()
+    lg._tokens = login._Tokens()
+    await lg.access_token()
+    ((old, new, names),) = calls                       # once per process
+    assert old == tmp_path / "state" / "mm-agent-bus" / "login" and new is store
+    assert names == [keystore.refresh_entry(ISSUER, "agent-bus", "alice"),
+                     keystore.cooldown_entry(ISSUER, "agent-bus", "alice"), keystore.NKEY_SEED]
+
+
+async def test_the_migration_carries_the_old_token_over(tmp_path):
+    old = keystore.HostFile(tmp_path / "state" / "mm-agent-bus" / "login")
+    put(old, "refresh-secret-old")
+    store = keystore.HostFile(tmp_path / "new")
+    script = Script()
+    await mk(store, transport=httpx.MockTransport(script), notifier=Note(), migrate=True).access_token()
+    assert script.refreshed == ["refresh-secret-old"] and script.device_requests == 0
+    assert stored(old) is None and stored(store) == "refresh-secret-1"
+
+
+async def test_the_store_is_chosen_off_the_event_loop(monkeypatch):
+    import threading
+    where = []
+
+    def choose():
+        where.append(threading.current_thread() is threading.main_thread())
+        return keystore.Ephemeral()
+
+    monkeypatch.setattr(keystore, "default", choose)
+    lg = login.Login(login.Settings(ISSUER, "agent-bus"), store=login.default_store(), human=lambda: "alice",
+                     http=httpx.AsyncClient(transport=httpx.MockTransport(Script())), notifier=Note(),
+                     sleep=lambda s: asyncio.sleep(0))
+    assert where == []                                 # nothing chosen at construction
+    await lg.access_token()
+    assert where == [False]
 
 
 async def test_the_relays_handshake_answer_offers_the_login_only_with_a_relayed_login(monkeypatch):
@@ -274,4 +449,4 @@ async def test_the_relays_handshake_answer_offers_the_login_only_with_a_relayed_
     relayed = login_relay.RelayedLogin(login.Settings(ISSUER, "agent-bus"), human=lambda: "alice")
     monkeypatch.setattr(login, "_current", relayed)
     assert hosted._login_offer() == {"login": {"issuer": ISSUER, "client_id": "agent-bus",
-                                               "nkey": "host", "human": "alice"}}
+                                               "nkey": "ephemeral", "human": "alice"}}

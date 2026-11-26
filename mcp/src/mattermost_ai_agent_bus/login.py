@@ -48,22 +48,25 @@ import logging
 import math
 import os
 import re
+import threading
 import time
 from collections.abc import AsyncIterator, Awaitable, Callable
 from dataclasses import dataclass, field
-from typing import TYPE_CHECKING, Any, Protocol
+from typing import TYPE_CHECKING, Any, Protocol, TypeVar
 from urllib.parse import SplitResult, urlsplit
 
 import httpx
 import nkeys
 
-from . import keystore, owners
+from . import keystore, owners, session_file
 from .config import env
+from .sandbox import corral_sandbox
 
 if TYPE_CHECKING:
     from .port import ChatPort
 
 log = logging.getLogger(__name__)
+_T = TypeVar("_T")
 
 SCOPE = "offline_access"  # no ID token (ADR-014); the role of the same name is checked on every token
 ROLE = "offline_access"
@@ -120,7 +123,7 @@ class _Unreachable(LoginError):
 class Settings:
     issuer: str
     client_id: str
-    nkey_store: str = "host"  # decision 10 (#154): the server keeps the host key itself
+    nkey_store: str = "ephemeral"
 
 
 def _loopback(host: str) -> bool:
@@ -168,11 +171,45 @@ def same_site(issuer: str, url: str) -> bool:
             and _port(mine) is not None and _port(theirs) == _port(mine))
 
 
+class Deferred:
+    """A store chosen on its first use, so that the choice (a keychain probe runs a
+    subprocess) happens in the thread the first call runs in, never on the event loop."""
+
+    def __init__(self, pick: Callable[[], keystore.KeyStore]) -> None:
+        self._pick = pick
+        self._store: keystore.KeyStore | None = None
+        self._guard = threading.Lock()
+
+    def __repr__(self) -> str:
+        return f"Deferred({self._store!r})"
+
+    def resolve(self) -> keystore.KeyStore:
+        with self._guard:
+            if self._store is None:
+                self._store = self._pick()
+            return self._store
+
+    def load(self, name: str) -> str | None:
+        return self.resolve().load(name)
+
+    def save(self, name: str, value: str) -> None:
+        self.resolve().save(name, value)
+
+    def delete(self, name: str) -> None:
+        self.resolve().delete(name)
+
+    def try_lock(self, name: str) -> object | None:
+        return self.resolve().try_lock(name)
+
+    def unlock(self, handle: object) -> None:
+        self.resolve().unlock(handle)
+
+
 def default_store() -> keystore.KeyStore:
     """The store this process keeps the refresh token in: `keystore.default()`
     (the system keychain where there is one, else the 0600 file; under corral in
-    the sandbox's own home, #154)."""
-    return keystore.default()
+    the sandbox's own home, #154), chosen on first use off the event loop."""
+    return Deferred(keystore.default)
 
 
 def settings_from_env() -> Settings | None:
@@ -186,7 +223,7 @@ def settings_from_env() -> Settings | None:
         if not issuer or not client:
             raise ConfigError("MM_LOGIN_ISSUER and MM_LOGIN_CLIENT_ID must both be set")
         check_url(issuer, "MM_LOGIN_ISSUER")
-        store = env(NKEY_ENV, "host").strip().lower()
+        store = env(NKEY_ENV, "ephemeral").strip().lower()
         if store not in NKEY_STORES:
             raise ConfigError(f"{NKEY_ENV} must be one of: {', '.join(NKEY_STORES)}")
     except ConfigError as exc:
@@ -269,9 +306,12 @@ class Login:
                  http: httpx.AsyncClient | None = None,
                  now: Callable[[], float] = time.monotonic,
                  wall: Callable[[], float] = time.time,
-                 sleep: Callable[[float], Awaitable[None]] = asyncio.sleep) -> None:
+                 sleep: Callable[[float], Awaitable[None]] = asyncio.sleep,
+                 migrate: bool = False) -> None:
         self.settings = settings
-        self._store = store if store is not None else keystore.default()
+        # keystore.default() is chosen on first use, which is off the event loop (_io).
+        self._store: keystore.KeyStore = store if store is not None else Deferred(keystore.default)
+        self._migrate = migrate
         if nkey_store is None:
             nkey_store = self._store if settings.nkey_store == "host" else keystore.Ephemeral()
         self._nkey_store = nkey_store
@@ -297,7 +337,7 @@ class Login:
 
     # --- the user nkey --------------------------------------------------------
     def nkey(self) -> NKey:
-        """The host's NATS user key: loaded from its store (`MM_LOGIN_NKEY=host`, the default since #154)
+        """The host's NATS user key: loaded from its store (`MM_LOGIN_NKEY=host`)
         or new for this process. The seed stays here."""
         if self._nkey is None:
             seed: str | None = None
@@ -342,30 +382,34 @@ class Login:
         async with self._lock:
             if self._fresh():
                 return self._tokens.access
+            await self._io(self.nkey)  # loaded off the event loop: a keychain call blocks
             self._tokens = _Tokens()
             human = self._human().strip()
             if not human:
                 raise LoginError("no responsible human to approve a login "
                                  "(set MM_RESPONSIBLE_HUMAN or MM_TRUSTED_HUMANS)")
             entry = keystore.refresh_entry(self.settings.issuer, self.settings.client_id, human)
+            if self._migrate:  # migrate_from takes each entry's lock itself
+                self._migrate = False
+                await self._io(self._migrate_old, human)
             async with self._file_lock(entry):
                 # The mark on the host, whoever left it: a cooldown another process set
                 # while this one was running counts too, so it is read before every
                 # decision to start an approval, not once per object (measured in the
                 # lab: three Keycloak links in two minutes for what the human saw as one
                 # agent).
-                self._load_cooldown(human)
+                await self._io(self._load_cooldown, human)
                 # Loaded only now: another process may have refreshed meanwhile,
                 # and its stored token is the one to use, never the old one.
-                refresh = self._stored_refresh(human)
+                refresh = await self._io(self._stored_refresh, human)
                 if refresh:
                     try:
                         await self._refresh(refresh, human)
-                        self._clear_cooldown(human)
+                        await self._io(self._clear_cooldown, human)
                         return self._tokens.access
                     except _InvalidGrant:
                         log.info("login: the refresh token is no longer valid, asking for a new approval")
-                        self._drop_refresh(human)
+                        await self._io(self._drop_refresh, human)
                 wait = self._cooldown_until - self._now()
                 if wait > 0:
                     # The first error, where this process saw it: "failed" alone hides
@@ -380,11 +424,11 @@ class Login:
                     # send a new DM and leave a new session open in Keycloak.
                     if self._cooldown_until <= self._now():
                         if isinstance(exc, NoRole):
-                            self._cool_down("lacked the realm role", human)
+                            await self._io(self._cool_down, "lacked the realm role", human)
                         else:
-                            self._cool_down("failed", human, cause=str(exc))
+                            await self._io(self._cool_down, "failed", human, str(exc))
                     raise
-                self._clear_cooldown(human)
+                await self._io(self._clear_cooldown, human)
                 return self._tokens.access
 
     def _fresh(self) -> bool:
@@ -398,7 +442,7 @@ class Login:
         without blocking the event loop. Without a lock, the login goes on."""
         handle: object | None = None
         try:
-            while (handle := self._store.try_lock(entry)) is None:
+            while (handle := await self._io(self._store.try_lock, entry)) is None:
                 await asyncio.sleep(LOCK_POLL_SEC)
         except (keystore.KeyStoreError, OSError) as exc:
             log.warning("login: the store's lock is not taken (%s)", type(exc).__name__)
@@ -407,9 +451,27 @@ class Login:
         finally:
             if handle is not None:
                 try:
-                    self._store.unlock(handle)
+                    await self._io(self._store.unlock, handle)
                 except OSError:
                     pass
+
+    @staticmethod
+    async def _io(fn: Callable[..., _T], *args: Any) -> _T:
+        """A store call off the event loop: a keychain answers through a
+        subprocess, and the MCP handshake must not wait for it."""
+        return await asyncio.to_thread(fn, *args)
+
+    def _migrate_old(self, human: str) -> None:
+        """Once, under each entry's lock (migrate_from's), outside corral only: the token, its cooldown and the
+        nkey seed an earlier version kept in the host's state directory move to this
+        store (keystore.migrate_from). Under corral that directory is not reachable."""
+        old = keystore.HostFile(session_file.host_state_dir() / "login")
+        names = [self._entry(human), keystore.cooldown_entry(self.settings.issuer, self.settings.client_id, human),
+                 keystore.NKEY_SEED]
+        try:
+            keystore.migrate_from(old, self._store, names)
+        except (keystore.KeyStoreError, OSError) as exc:
+            log.warning("login: the earlier store was not taken over (%s)", type(exc).__name__)
 
     def forget(self) -> None:
         """Drop every token, in memory and in the store."""
@@ -533,15 +595,15 @@ class Login:
             outcome = await self._poll(endpoints["token_endpoint"], device_code, interval, deadline, human)
         except ApprovalDenied:
             outcome = "denied"
-            self._cool_down("was declined", human)
+            await self._io(self._cool_down, "was declined", human)
             raise
         except ApprovalExpired:
             outcome = "expired"
-            self._cool_down("expired", human)
+            await self._io(self._cool_down, "expired", human)
             raise
         except WrongHuman:
             outcome = "refused"
-            self._cool_down("was refused", human)
+            await self._io(self._cool_down, "was refused", human)
             raise
         finally:
             await self._settle(outcome)
@@ -695,7 +757,7 @@ class Login:
         if not human or not isinstance(who, str) or who.casefold() != human.casefold():
             await self._revoke(refresh)
             self._tokens = _Tokens()
-            self._drop_refresh(human)
+            await self._io(self._drop_refresh, human)
             log.error("login refused: the approving person is not the responsible human; tokens dropped")
             if self._notifier is not None:
                 try:
@@ -717,7 +779,7 @@ class Login:
             # Never stored, so never used: revoked, or its session stays open in Keycloak.
             await self._revoke(refresh)
             raise
-        self._store_refresh(refresh, human)
+        await self._io(self._store_refresh, refresh, human)
         self._tokens = _Tokens(access=access, expires_at=sent[0] + lifetime,
                                wall_until=sent[1] + lifetime)
 
@@ -852,7 +914,9 @@ def start(get_client: Callable[[], Awaitable[ChatPort | None]]) -> asyncio.Task[
         return None
     from .login_notice import Combined, DMNotifier, Shown
     notifier = Combined(Shown(settings.issuer), DMNotifier(get_client, owners.responsible_human))
-    _current = Login(settings, store=default_store(), notifier=notifier)
+    # Outside corral an earlier version's token and key move over once (#154);
+    # under corral the host's state directory is not reachable.
+    _current = Login(settings, store=default_store(), notifier=notifier, migrate=not corral_sandbox())
     _task = asyncio.create_task(_current.run())
     return _task
 

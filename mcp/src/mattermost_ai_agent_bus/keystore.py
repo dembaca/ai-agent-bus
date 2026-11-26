@@ -8,12 +8,14 @@ by group or world is refused, never read. `MacKeychain` and `SecretTool` keep
 them in the system keychain (macOS Keychain, libsecret), one generic password per
 entry under the service `SERVICE`, account = the entry name.
 
-`default()` picks the store the login uses (#154, decision 10): the system
-keychain where one answers a harmless probe within `PROBE_TIMEOUT`, else the
-0600 file; under corral that file lies in the sandbox's own home, else in the
-host's state directory. Every store locks with flock on lock files in its 0700
-directory, a keychain having no locks, so sessions on one host renew one at a
-time.
+`default()` picks the store the login uses (#154, decision 10). Under corral
+always the 0600 file in the sandbox's own home. Else the choice of the host's
+first start, kept in a marker beside the file store: the system keychain where
+one answers a read (or, with nothing to read, a write) probe within
+`PROBE_TIMEOUT`, else the 0600 file in the host's state directory. Every store
+locks with flock on lock files in its 0700 directory, a keychain having no
+locks, so sessions on one host renew one at a time. `migrate_from` moves the
+entries of an earlier store into the chosen one.
 
 Nothing here logs or raises a value: errors name the store entry, never its
 content, and a value never travels in an argument vector, the environment or a
@@ -30,16 +32,16 @@ import logging
 import os
 import re
 import secrets
-import shutil
 import stat
 import subprocess
 import sys
 import tempfile
 import threading
-from collections.abc import Callable, Mapping, Sequence
+from collections.abc import Callable, Iterable, Iterator, Mapping, Sequence
+from contextlib import contextmanager
 from dataclasses import dataclass, field
 from pathlib import Path
-from typing import Protocol
+from typing import Any, Protocol
 
 from . import session_file
 
@@ -52,7 +54,6 @@ SERVICE = "mm-agent-bus-login"
 # a sandbox that denies the Mach lookup) is killed and counts as an error.
 OP_TIMEOUT = 10.0
 PROBE_TIMEOUT = 3.0
-PROBE_ENTRY = "probe"
 _NAME_RE = re.compile(r"^[a-z_]{1,40}$")
 
 
@@ -188,6 +189,8 @@ class HostFile:
 
     def save(self, name: str, value: str) -> None:
         path = self._path(name)
+        if not value:
+            raise KeyStoreError(f"{name}: an empty value is not stored")
         self._check_dir(create=True)
         fd, tmp = tempfile.mkstemp(dir=self.directory, prefix=f".{name}.")
         try:
@@ -260,17 +263,25 @@ Runner = Callable[[Sequence[str], "bytes | None", float], Ran]
 
 def run(argv: Sequence[str], stdin: bytes | None, timeout: float) -> Ran:
     """Run a keychain tool: `stdin` is its whole input (never the MCP server's
-    own stdin), killed after `timeout`. The error names the tool only."""
+    own stdin), killed after `timeout`. The error names the tool only and is
+    raised outside the handler, so the timeout's partial output is in no
+    exception's context."""
     tool = os.path.basename(argv[0])
+    failure = ""
     try:
         p = subprocess.run(list(argv), input=stdin,
                            stdin=subprocess.DEVNULL if stdin is None else None,
                            capture_output=True, timeout=timeout, check=False)
     except subprocess.TimeoutExpired:
-        raise KeyStoreError(f"{tool}: timed out") from None
+        failure = "timed out"
     except OSError:
-        raise KeyStoreError(f"{tool}: cannot run") from None
+        failure = "cannot run"
+    if failure:
+        raise KeyStoreError(f"{tool}: {failure}")
     return Ran(p.returncode, p.stdout, p.stderr)
+
+
+_SERVICE_RE = re.compile(r"^[a-z][a-z0-9-]{0,62}$")
 
 
 class _Keychain:
@@ -280,6 +291,8 @@ class _Keychain:
 
     def __init__(self, lock_dir: Path, tool: str | None = None, *, runner: Runner = run,
                  service: str = SERVICE, timeout: float = OP_TIMEOUT) -> None:
+        if not _SERVICE_RE.fullmatch(service):
+            raise KeyStoreError("invalid keychain service name")
         self._locks = HostFile(lock_dir)
         self.tool = tool or self.DEFAULT_TOOL
         self.service = service
@@ -294,6 +307,15 @@ class _Keychain:
         if not _NAME_RE.fullmatch(name):
             raise KeyStoreError("invalid store entry name")
         return name
+
+    @staticmethod
+    def _check_value(name: str, value: str) -> None:
+        if not value:
+            raise KeyStoreError(f"{name}: an empty value is not stored")
+
+    def exists(self, name: str) -> bool:
+        """Whether the keychain has entry `name`, without printing its value."""
+        raise NotImplementedError
 
     def load(self, name: str) -> str | None:
         raise NotImplementedError
@@ -326,14 +348,34 @@ class MacKeychain(_Keychain):
     its argv, and is read back: `security -i` does not report a failed
     command in its exit status. The value is stored base64-encoded, so any
     text survives the command line and the tool's printing of it.
+
+    A value too long for one such line goes to a 0600 file in `overflow/` of
+    the lock directory instead (a warning names the entry), and its keychain
+    item is removed; a read looks there first. Refresh tokens and seeds fit.
     """
 
     DEFAULT_TOOL = "/usr/bin/security"
 
+    def __init__(self, lock_dir: Path, tool: str | None = None, **kw: Any) -> None:
+        super().__init__(lock_dir, tool, **kw)
+        self._overflow = HostFile(lock_dir / "overflow")
+
+    def _find(self, name: str, *extra: str) -> Ran:
+        return self._run([self.tool, "find-generic-password", "-s", self.service,
+                          "-a", self._check(name), *extra], None, self.timeout)
+
+    def exists(self, name: str) -> bool:
+        r = self._find(name)  # no -w: attributes only, never the value
+        if r.code in (0, _MAC_NOT_FOUND):
+            return r.code == 0
+        raise KeyStoreError(f"{name}: keychain read failed (exit {r.code})")
+
     def load(self, name: str) -> str | None:
         self._check(name)
-        r = self._run([self.tool, "find-generic-password", "-s", self.service, "-a", name, "-w"],
-                      None, self.timeout)
+        long_value = self._overflow.load(name)
+        if long_value is not None:
+            return long_value
+        r = self._find(name, "-w")
         if r.code == _MAC_NOT_FOUND:
             return None
         if r.code != 0:
@@ -343,40 +385,59 @@ class MacKeychain(_Keychain):
         except (binascii.Error, UnicodeDecodeError):
             raise KeyStoreError(f"{name}: not a value of this store") from None
 
+    def _delete_item(self, name: str) -> None:
+        r = self._run([self.tool, "delete-generic-password", "-s", self.service, "-a", name],
+                      None, self.timeout)
+        if r.code not in (0, _MAC_NOT_FOUND):
+            raise KeyStoreError(f"{name}: keychain delete failed (exit {r.code})")
+
     def save(self, name: str, value: str) -> None:
         self._check(name)
+        self._check_value(name, value)
         data = base64.b64encode(value.encode("utf-8")).decode("ascii")
         line = (f"add-generic-password -U -s {self.service} -a {name} -l {self.service} "
                 f"-w {data}\n")
         if len(line) > _MAC_MAX_LINE:
-            raise KeyStoreError(f"{name}: too long for the keychain")
+            log.warning("key store: %s is too long for the keychain, kept in the 0600 file", name)
+            self._overflow.save(name, value)
+            self._delete_item(name)
+            return
         r = self._run([self.tool, "-i"], line.encode("ascii"), self.timeout)
+        self._overflow.delete(name)
         if r.code != 0 or self.load(name) != value:
             raise KeyStoreError(f"{name}: keychain write failed")
 
     def delete(self, name: str) -> None:
         self._check(name)
-        r = self._run([self.tool, "delete-generic-password", "-s", self.service, "-a", name],
-                      None, self.timeout)
-        if r.code not in (0, _MAC_NOT_FOUND):
-            raise KeyStoreError(f"{name}: keychain delete failed (exit {r.code})")
+        self._overflow.delete(name)
+        self._delete_item(name)
 
 
 class SecretTool(_Keychain):
     """libsecret (GNOME Keyring, KWallet's Secret Service) through `secret-tool`,
     the value on its stdin. A missing item is exit 1 with nothing on stderr."""
 
-    DEFAULT_TOOL = "secret-tool"
+    DEFAULT_TOOL = "/usr/bin/secret-tool"
 
     def _attrs(self, name: str) -> list[str]:
         return ["service", self.service, "account", self._check(name)]
 
-    def load(self, name: str) -> str | None:
+    def _lookup(self, name: str) -> Ran | None:
         r = self._run([self.tool, "lookup", *self._attrs(name)], None, self.timeout)
         if r.code == 1 and not r.err.strip():
             return None
         if r.code != 0:
             raise KeyStoreError(f"{name}: secret service read failed (exit {r.code})")
+        return r
+
+    def exists(self, name: str) -> bool:
+        # secret-tool has no lookup without the value: it reaches this pipe and is dropped
+        return self._lookup(name) is not None
+
+    def load(self, name: str) -> str | None:
+        r = self._lookup(name)
+        if r is None:
+            return None
         try:
             return r.out.decode("utf-8").strip() or None
         except UnicodeDecodeError:
@@ -384,6 +445,7 @@ class SecretTool(_Keychain):
 
     def save(self, name: str, value: str) -> None:
         attrs = self._attrs(name)
+        self._check_value(name, value)
         r = self._run([self.tool, "store", "--label", f"{self.service} {name}", *attrs],
                       value.encode("utf-8"), self.timeout)
         if r.code != 0:
@@ -397,54 +459,107 @@ class SecretTool(_Keychain):
 
 # --- which store ------------------------------------------------------------
 
+# The marker in store_directory() that keeps the choice of the first start, so
+# a keychain that is locked or slow at one start does not split the sessions
+# of a host between the file and the keychain.
+BACKEND_ENTRY = "store_backend"
+_KEYCHAIN, _FILE = "keychain", "file"
+_SECRET_TOOL_PATHS = ("/usr/bin/secret-tool", "/usr/local/bin/secret-tool")
+
+
+def under_corral(environ: Mapping[str, str] | None = None) -> bool:
+    env = os.environ if environ is None else environ
+    return bool(env.get("CORRAL_SANDBOX", "").strip())
+
 
 def store_directory(environ: Mapping[str, str] | None = None) -> Path:
     """The 0700 directory of the file store and of every store's locks: under
     corral (`CORRAL_SANDBOX`) in the sandbox's own home, whose $HOME is the
-    sandbox's private one; else `login/` in the host's state directory
-    (`session_file.host_state_dir`, from the process environment)."""
+    sandbox's private one; else `login/` in the host's one per-user state
+    directory (`session_file.host_state_dir`, from the process environment)."""
     env = os.environ if environ is None else environ
-    if env.get("CORRAL_SANDBOX", "").strip():
+    if under_corral(env):
         home = env.get("HOME") or str(Path.home())
         return Path(home) / ".local" / "state" / "mm-agent-bus" / "login"
     return session_file.host_state_dir() / "login"
 
 
 def _find_tool(name: str) -> str | None:
-    if name == "security":
-        path = "/usr/bin/security"  # the system's own, never one from PATH
-        return path if os.access(path, os.X_OK) else None
-    return shutil.which(name)
+    """The system's own tool from fixed paths, never one from PATH."""
+    paths = ("/usr/bin/security",) if name == "security" else _SECRET_TOOL_PATHS
+    return next((p for p in paths if os.access(p, os.X_OK)), None)
 
 
-def _probe(store: _Keychain) -> bool:
-    """Write, read and remove a throwaway entry with a random, worthless value."""
-    marker = secrets.token_hex(8)
+def _usable(store: _Keychain) -> bool:
+    """Read first: an existing nkey seed item (attributes only) says the
+    keychain works. Without one, write, read and remove a worthless value
+    under a name of this process's own, so two starts never race on it."""
     try:
-        store.save(PROBE_ENTRY, marker)
-        ok = store.load(PROBE_ENTRY) == marker
-        store.delete(PROBE_ENTRY)
+        if store.exists(NKEY_SEED):
+            return True
+        name = "probe_" + "".join(secrets.choice("abcdefghijklmnopqrstuvwxyz") for _ in range(16))
+        marker = secrets.token_hex(8)
+        store.save(name, marker)
+        ok = store.load(name) == marker
+        store.delete(name)
     except KeyStoreError as exc:
         log.info("key store: %s not usable (%s), using the 0600 file", store.tool, exc)
         return False
     return ok
 
 
+@contextmanager
+def _choice_lock(directory: Path) -> Iterator[None]:
+    """One start at a time chooses (blocking: the other's probe is bounded by
+    its timeouts); without flock on this file system, unlocked."""
+    HostFile(directory)._check_dir(create=True)
+    fd = os.open(directory / f".{BACKEND_ENTRY}.lock", os.O_RDWR | os.O_CREAT | os.O_NOFOLLOW, 0o600)
+    try:
+        try:
+            fcntl.flock(fd, fcntl.LOCK_EX)
+        except OSError:
+            pass
+        yield
+    finally:
+        os.close(fd)
+
+
 def choose(environ: Mapping[str, str] | None = None, *, platform: str = sys.platform,
            runner: Runner = run, find_tool: Callable[[str], str | None] = _find_tool,
            probe_timeout: float = PROBE_TIMEOUT) -> KeyStore:
-    """The system keychain if it answers the probe within `probe_timeout`,
-    else the 0600 file in `store_directory()`."""
+    """Under corral the 0600 file in the sandbox's home, never a keychain
+    (#154 decision 10). Else what the marker in `store_directory()` recorded;
+    at the first start the system keychain if it answers within
+    `probe_timeout`, else the 0600 file, and the marker records it."""
     directory = store_directory(environ)
+    files = HostFile(directory)
+    if under_corral(environ):
+        return files
     candidate: _Keychain | None = None
     if platform == "darwin" and (tool := find_tool("security")):
         candidate = MacKeychain(directory, tool, runner=runner, timeout=probe_timeout)
     elif platform.startswith("linux") and (tool := find_tool("secret-tool")):
         candidate = SecretTool(directory, tool, runner=runner, timeout=probe_timeout)
-    if candidate is not None and _probe(candidate):
-        candidate.timeout = OP_TIMEOUT
-        return candidate
-    return HostFile(directory)
+    with _choice_lock(directory):
+        try:
+            recorded = files.load(BACKEND_ENTRY)
+        except KeyStoreError as exc:
+            log.warning("key store: choice marker refused (%s), choosing again", exc)
+            recorded = None
+        if recorded == _FILE:
+            return files
+        if recorded == _KEYCHAIN:
+            if candidate is None:
+                log.warning("key store: the keychain chosen earlier is gone, using the 0600 file")
+                return files
+            candidate.timeout = OP_TIMEOUT
+            return candidate
+        chosen: KeyStore = files
+        if candidate is not None and _usable(candidate):
+            candidate.timeout = OP_TIMEOUT
+            chosen = candidate
+        files.save(BACKEND_ENTRY, _KEYCHAIN if chosen is candidate else _FILE)
+        return chosen
 
 
 _chosen: KeyStore | None = None
@@ -453,9 +568,48 @@ _chosen_lock = threading.Lock()
 
 def default() -> KeyStore:
     """The store the login keeps its refresh token, cooldown and nkey seed in:
-    chosen on the first call (one probe per process), the same store after."""
+    chosen on the first call of a process, the same store after."""
     global _chosen
     with _chosen_lock:
         if _chosen is None:
             _chosen = choose()
         return _chosen
+
+
+def _same_place(a: KeyStore, b: KeyStore) -> bool:
+    if a is b:
+        return True
+    if isinstance(a, HostFile) and isinstance(b, HostFile):
+        return a.directory.resolve() == b.directory.resolve()
+    return (isinstance(a, _Keychain) and type(a) is type(b)
+            and a.service == b.service)
+
+
+def migrate_from(old: KeyStore, new: KeyStore, names: Iterable[str]) -> list[str]:
+    """Move entries once from `old` to `new`: an entry `new` lacks is copied,
+    and every entry `new` then holds is removed from `old`. Each name under
+    `new`'s lock; one whose lock another holder has is left for a later call.
+    The names moved or cleared; stores at the same place are left alone."""
+    if _same_place(old, new):
+        return []
+    moved: list[str] = []
+    for name in names:
+        try:
+            handle = new.try_lock(name)
+        except OSError:  # no locking on this file system: go on without
+            handle = True
+        if handle is None:
+            continue
+        try:
+            value = old.load(name)
+            if value is None:
+                continue
+            if new.load(name) is None:
+                new.save(name, value)
+            if new.load(name) is not None:
+                old.delete(name)
+                moved.append(name)
+        finally:
+            if handle is not True:
+                new.unlock(handle)
+    return moved
