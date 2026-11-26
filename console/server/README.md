@@ -94,11 +94,15 @@ memberships name that are not its home (every granted channel gets one,
 RT-6.37). The home is what the bus itself states — the channel of the
 agent's ask record's subject first (RT-6.43 step 5), else the channel it
 claims the crown of (only a home may be claimed, RT-6.38), else the first
-channel its memberships name; nothing is guessed from an agent's name
-(#147). `/v1/graph` draws the home as a `coordinates` edge and each guest
-channel as a `guest` edge, and marks the person node the logged-in
-operator's own anchor names with `you` — that anchor read from the
-login's own record, never from anything the browser sends.
+channel its memberships name; a statement that does not sit beside a
+membership is no home; nothing is guessed from an agent's name (#147).
+`/v1/graph` draws the home as a `coordinates` edge and each guest channel
+as a `guest` edge, and marks the person node the logged-in operator's own
+anchor names with `you` — that anchor read from the login's own record,
+never from anything the browser sends. People are nodes by their anchor
+token and only labelled by the name (an attestation's anchor is in name
+form, the login record's in subject form), so two anchors of one name
+stay two nodes.
 
 The asks and the reports (the console on the bus as its operator,
 RT-6.43, steps 6 to 8): every MCP server with a NATS link publishes one

@@ -4104,10 +4104,15 @@ The console is the operators' view of the bus itself.
      a home may be claimed, RT-6.38), else the first channel its
      memberships name; the card's `home` and `guests` come from the same
      statement, and no home is guessed from an agent's name (#147).
+   - **People** are nodes by their anchor token, the name only the label:
+     two anchors that carry one name stay two nodes (RT-6.41), and a node
+     without an attestation is the presence subject's owner token
+     (RT-6.37 step 1).
    - **You:** the person node the logged-in operator's own anchor names is
      marked `you`, read from the login's own record and never from a
-     value the browser sends (RT-6.43 step 2). People are matched by
-     anchor, so two people of one name stay apart.
+     value the browser sends (RT-6.43 step 2) — the record's anchor is in
+     subject form, an attestation's in name form, and the token is what
+     both share.
    - **Off at the start:** asks (agent → the human asked, open asks only).
 
    State, crown and ask marks sit on the nodes as on the cards; a click

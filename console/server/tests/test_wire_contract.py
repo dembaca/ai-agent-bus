@@ -102,13 +102,17 @@ def test_a_guest_channel_is_no_home(fleet_scenario) -> None:
     assert (fleet_scenario.home_of(agent), fleet_scenario.guests_of(agent)) == (
         "dev", ["bgl-infra"])
     assert fleet_scenario.home_of("nobody") == "" and fleet_scenario.guests_of("nobody") == []
-    # an ask record's subject names the home: it wins over the alphabetical first channel
-    from mattermost_ai_agent_bus.natsbus import OpenAsk, encode_ask_record
+    # an ask record's subject names the home: beside a membership it wins over the
+    # alphabet (a channel the agent is no member of is no home, test_fleet.py)
+    from mattermost_ai_agent_bus.natsbus import OpenAsk, encode_ask_record, encode_claim
+    assert fleet_scenario.on_delivery(f"presence.member.home.{agent}", encode_claim(),
+                                      ack(8, 8, 1763980800.0), "PRESENCE", "console")
     record = encode_ask_record([OpenAsk(mm="a" * 26, kind="question", human="-",
                                         title="x", asked=1763980700)], 1763980800)
     assert fleet_scenario.on_delivery(f"presence.ask.home.{agent}", record,
                                       ack(7, 7, 1763980800.0), "PRESENCE", "console")
-    assert fleet_scenario.home_of(agent) == "home"
+    assert (fleet_scenario.home_of(agent), fleet_scenario.guests_of(agent)) == (
+        "home", ["bgl-infra", "dev"])
 
 
 def test_the_events_the_fixture_states(fleet_scenario) -> None:

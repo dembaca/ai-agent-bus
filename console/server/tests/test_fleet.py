@@ -418,3 +418,105 @@ def test_an_older_mcp_server_leaves_the_card_unknown() -> None:
     assert c is not None
     assert (c["harness"], c["model"], c["task"], c["branch"], c["openAsks"]) == \
         (None, "", "", None, None)
+
+
+# --- the graph's person nodes and the card's home (#147, 716d72's review) -------------
+
+AGENT_A = "agent-" + "a" * 26
+AGENT_B = "agent-" + "b" * 26
+
+
+def attestation_of(agent: str, anchor: str, name: str, exp: float = 1e12) -> tuple[str, bytes]:
+    """The login service's attestation with its owner in subject form (RT-6.41): the
+    record carries the token, the name beside it is the human's."""
+    body = {"v": 1, "agent": agent, "owner": {"anchor": anchor, "name": name},
+            "trusted": [], "cut": False, "iat": 1, "exp": int(exp)}
+    return f"presence.attest.{agent}.v1", json.dumps(body).encode()
+
+
+def test_the_operators_node_is_marked_by_its_anchor_in_subject_form() -> None:
+    """716d72's finding 1: the login record's anchor is already subject-formed ("." as
+    "~"), so it is compared as it is — a dotted anchor marks its node, and no owner-less
+    token is ever collected to match one."""
+    from mattermost_ai_agent_bus.natsbus import encode_claim, owner_token
+
+    f = Fleet()
+    feed(f,
+         (*presence(AGENT_A, "first~last"), ack("PRESENCE", "console", 1, 1, 1000.0)),
+         # the attestation carries the name form, the login's own record the subject form
+         (*attestation_of(AGENT_A, "first.last", "first.last"), ack("PRESENCE", "console", 2, 2, 1001.0)),
+         (f"presence.member.dev.{AGENT_A}", encode_claim(), ack("PRESENCE", "console", 3, 3, 1002.0)))
+    marked = [n for n in f.graph("first~last")["nodes"] if n.get("you")]
+    assert marked == [{"id": "first~last", "kind": "person", "label": "first.last", "you": True}]
+    # no anchor, the no-owner token and another anchor mark nothing
+    assert owner_token("first~last") == "-"  # the subject form is not to be re-tokenised
+    for anchor in (None, "", "-", "first.last"):
+        assert not any(n.get("you") for n in f.graph(anchor)["nodes"])
+
+
+def test_two_people_of_one_name_stay_two_nodes() -> None:
+    """716d72's finding 2: the node id and the trusts edge are the anchor token, the name
+    only labels — two owners of one name are two nodes, and only the operator's is `you`."""
+    from mattermost_ai_agent_bus.natsbus import encode_claim
+
+    f = Fleet()
+    feed(f,
+         (*presence(AGENT_A, "sub-alice"), ack("PRESENCE", "console", 1, 1, 1000.0)),
+         (*presence(AGENT_B, "sub-bob"), ack("PRESENCE", "console", 2, 2, 1001.0)),
+         # the directory's anchors differ, the name both carry is "alice"
+         (*attestation_of(AGENT_A, "sub-alice", "alice"), ack("PRESENCE", "console", 3, 3, 1002.0)),
+         (*attestation_of(AGENT_B, "sub-bob", "alice"), ack("PRESENCE", "console", 4, 4, 1003.0)),
+         (f"presence.member.dev.{AGENT_A}", encode_claim(), ack("PRESENCE", "console", 5, 5, 1004.0)),
+         (f"presence.member.dev.{AGENT_B}", encode_claim(), ack("PRESENCE", "console", 6, 6, 1005.0)))
+    graph = f.graph("sub-alice")
+    people = [n for n in graph["nodes"] if n["kind"] == "person"]
+    assert [(n["id"], n["label"], n.get("you")) for n in people] == [
+        ("sub-alice", "alice", True), ("sub-bob", "alice", None)]
+    assert len([n for n in people if n.get("you")]) == 1
+    targets = {e["to"] for e in graph["edges"] if e["kind"] == "trusts"}
+    assert targets == {"sub-alice", "sub-bob"}
+
+
+def test_the_home_is_a_claim_of_its_own_not_only_the_holders() -> None:
+    """716d72's finding 3: the login service grants a crown claim in the home alone
+    (RT-6.38), so any claim of the agent's own names the home — a non-holder's included;
+    only without one does the alphabetical first membership answer."""
+    from mattermost_ai_agent_bus.natsbus import encode_claim
+
+    f = Fleet()
+    feed(f,
+         (*presence(AGENT_A, "dembaca"), ack("PRESENCE", "console", 1, 1, 1000.0)),
+         (*presence(AGENT_B, "dembaca"), ack("PRESENCE", "console", 2, 2, 1001.0)),
+         (f"presence.member.alpha.{AGENT_A}", encode_claim(), ack("PRESENCE", "console", 3, 3, 1002.0)),
+         (f"presence.member.zeta.{AGENT_A}", encode_claim(), ack("PRESENCE", "console", 4, 4, 1003.0)),
+         (f"presence.member.alpha.{AGENT_B}", encode_claim(), ack("PRESENCE", "console", 5, 5, 1004.0)),
+         (f"presence.member.zeta.{AGENT_B}", encode_claim(), ack("PRESENCE", "console", 6, 6, 1005.0)),
+         # AGENT_B claims zeta first, so it holds it: AGENT_A's claim is older
+         (f"presence.crown.zeta.{AGENT_B}", encode_claim(), ack("PRESENCE", "console", 7, 7, 1006.0)),
+         (f"presence.crown.zeta.{AGENT_A}", encode_claim(), ack("PRESENCE", "console", 8, 8, 1007.0)))
+    assert f.holder_of("zeta") == AGENT_B
+    assert (f.home_of(AGENT_A), f.guests_of(AGENT_A)) == ("zeta", ["alpha"])
+
+
+def test_an_ask_records_channel_is_a_home_only_beside_a_membership() -> None:
+    """716d72's finding 4: a record can outlive a lost channel; a home it names that the
+    agent is no member of is no home, and every membership is then a guest of the real one."""
+    from mattermost_ai_agent_bus.natsbus import OpenAsk, encode_ask_record, encode_claim
+
+    f = Fleet()
+    feed(f,
+         (*presence(AGENT_A, "dembaca"), ack("PRESENCE", "console", 1, 1, 1000.0)),
+         (f"presence.member.dev.{AGENT_A}", encode_claim(), ack("PRESENCE", "console", 2, 2, 1001.0)))
+    record = encode_ask_record([OpenAsk(mm="a" * 26, kind="question", human="-",
+                                        title="x", asked=1000)], 1000)
+    assert f.on_delivery(f"presence.ask.gone.{AGENT_A}", record,
+                         ack("PRESENCE", "console", 3, 3, 1002.0), "PRESENCE", "console")
+    assert f.home_of(AGENT_A) == "dev"
+    assert f.guests_of(AGENT_A) == []
+    # beside a membership it wins over the alphabet
+    feed(f, (f"presence.member.zeta.{AGENT_A}", encode_claim(), ack("PRESENCE", "console", 4, 4, 1003.0)))
+    record = encode_ask_record([OpenAsk(mm="a" * 26, kind="question", human="-",
+                                        title="x", asked=1000)], 1500)
+    assert f.on_delivery(f"presence.ask.zeta.{AGENT_A}", record,
+                         ack("PRESENCE", "console", 5, 5, 1500.0), "PRESENCE", "console")
+    assert (f.home_of(AGENT_A), f.guests_of(AGENT_A)) == ("zeta", ["dev"])

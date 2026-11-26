@@ -260,13 +260,16 @@ class Fleet:
     def home_of(self, agent: str) -> str:
         """Its home channel, as the bus itself states it: the channel of its
         ask record's subject, `<presence>.ask.<home>.<name>` (RT-6.43 step 5),
-        sent by this agent's own bus; else the channel it claims the crown of
-        (only a home may be claimed, RT-6.38); else the first channel it is a
-        member of. "" without any of them — never guessed from a name."""
+        sent by this agent's own bus; else a channel it claimed the crown of,
+        any claim of its own and not only the current holder's (the login
+        service grants a claim in the home alone, RT-6.38); else the first
+        channel it is a member of. "" without any of them — never guessed from
+        a name. A statement that does not sit beside a membership is no home
+        (a record can outlive a lost channel): the next step answers then."""
         row = self._asks.get(agent)
-        if row is not None and row[2]:
+        if row is not None and row[2] and self.is_member(row[2], agent):
             return row[2]
-        claimed = sorted(ch for ch in self._claims if self.holder_of(ch) == agent)
+        claimed = sorted(ch for ch in self._claims if agent in self._claims[ch])
         if claimed:
             return claimed[0]
         channels = self.channels_of(agent)
@@ -367,24 +370,29 @@ class Fleet:
         point 7), matched by anchor, so two people of one name stay apart."""
         nodes = []
         edges = []
-        people: dict[str, set[str]] = {}
+        # anchor token -> the name it is shown under: the anchor is the identity
+        # (RT-6.41), the name only labels the node, so two people of one name stay
+        # two nodes. An owner without an attestation is the presence subject's
+        # owner token, its name read back (RT-6.37 step 1).
+        people: dict[str, str] = {}
         for agent in self.agents():
             att = self._attests.get(agent)
             record = att[2] if att and att[2].exp > self.server_now else None
-            owner = record.owner_name if record else self._owners.get(agent, "")
-            if owner:
-                # The anchor is the identity; the name only labels the node.
-                anchors = people.setdefault(owner, set())
-                if record:
-                    anchors.add(owner_token(record.owner_anchor))
-                else:
-                    anchors.add(owner_token(self._owners.get(agent, "")))
-                edges.append({"id": f"e-{agent}-owner", "from": agent, "to": owner,
+            if record:
+                # an attestation's anchor is in name form ("." kept), the login's own
+                # record's in subject form ("." as "~"): the token is what both share
+                token, name = owner_token(record.owner_anchor), record.owner_name
+            else:
+                name = self._owners.get(agent, "")
+                token = owner_token(name)
+            if token != natsbus.NO_OWNER:
+                people.setdefault(token, name)
+                edges.append({"id": f"e-{agent}-owner", "from": agent, "to": token,
                               "kind": "trusts"})
-        me = owner_token(anchor) if anchor else ""
-        for who, anchors in people.items():
-            person: dict[str, Any] = {"id": who, "kind": "person", "label": who}
-            if me and me in anchors:
+        me = anchor or ""
+        for token, name in people.items():
+            person: dict[str, Any] = {"id": token, "kind": "person", "label": name}
+            if me and token == me:
                 person["you"] = True
             nodes.append(person)
         for channel in self.channels():
