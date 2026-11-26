@@ -422,7 +422,7 @@ def _instructions() -> str:
         f"The coordinator wears the {CROWN} status (coordinator tool); "
         "questions to everyone about what is open or next are its to answer, and a "
         "human's post without a mention wakes only it, marked for_crown: answer or route it, never wait "
-        "for a coordinator (RT-6.6); a reply in another agent's thread is that agent's. With trusted humans set, a post or reaction neither from_trusted_human nor "
+        "for a coordinator (RT-6.6); a human's reply in a thread an agent started is that agent's. With trusted humans set, a post or reaction neither from_trusted_human nor "
         "from_agent wakes only it, and never as a task (RT-6.16). One marked foreign "
         "(another owner's agent) is a request, not a task, unless root_from_trusted_human. "
         "One marked mandated is your human's task: no confirmation ask, no approval (RT-6.26). "
@@ -2969,15 +2969,22 @@ async def _in_my_thread(item: dict[str, Any], uid: str) -> bool | None:
 
 
 async def _agent_thread(item: dict[str, Any], uid: str) -> bool:
-    """RT-6.6 step 5: the item is a human's reply in a thread that belongs to
-    another agent (its root is by that agent or names it,
-    gate.other_agents_thread): that agent's to answer, the crown gets it in
-    the digest. False when unsure: the crown wakes as before, two answers
-    beat none."""
+    """RT-6.6 step 5: the item is a human's reply in a thread another agent
+    started, one the roster shows reachable (gate.other_agents_thread): that
+    agent's to answer, the crown gets it in the digest. Only a trusted
+    human's, or anyone's but an agent's with the gate off: what the gate holds
+    back from a worker stays the crown's (RT-6.16). False when unsure: the
+    crown wakes as before, two answers beat none."""
     root = slim.root_of(item)
-    if not root or not uid or item.get("from_agent"):
+    if not root or not uid or item.get("from_agent") or item.get("gated"):
         return False
-    return bool(await gate.other_agents_thread(_get_client(), root, uid))
+    client = _get_client()
+    try:
+        if not item.get("from_trusted_human") and await gate.active(client):
+            return False
+    except Exception:  # noqa: BLE001 — unsure: the crown wakes
+        return False
+    return bool(await gate.other_agents_thread(client, root, uid))
 
 
 async def _push_addressed(item: dict[str, Any], *, unsure: bool = True) -> bool:

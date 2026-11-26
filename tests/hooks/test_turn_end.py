@@ -605,13 +605,20 @@ def test_coordinator_wakes_for_a_post_naming_no_agent(mm, run):
         assert ("for you" in listen(run).stdout) is woken, absent
 
 
-def test_coordinator_leaves_a_reply_in_an_agents_thread_to_it(mm, run):
+def test_coordinator_leaves_a_reply_in_an_agents_thread_to_it(mm, run, monkeypatch):
     """RT-6.6 step 5 (#207): holding the 👑, a person's plain reply in a thread
-    another agent started, or whose root names another agent, is that agent's
-    (agent_thread from the hook API): it wakes the 👑 neither as coordinator
-    nor where it posted in that thread. One under a person's root that names
-    no agent still wakes it, and so does a reply that names it."""
+    a reachable agent of the home started is that agent's (agent_thread from
+    the hook API): it wakes the 👑 neither as coordinator nor where it posted
+    in that thread. A reply under a person's root, also one naming an agent,
+    and one that names the 👑 still wake it. With trusted humans set
+    (RT-6.16) only a trusted human's reply is the agent's; an untrusted one,
+    which the gate holds back from that agent, stays the 👑's. An agent that
+    has gone from the roster leaves the reply to the 👑."""
+    from mattermost_ai_agent_bus import gate
+
     fyi_authors(mm)  # OTHER is an agent, PERSON a person
+    mm.agent(OTHER, "agent-other", 1000, emoji="hammer_and_wrench")
+    next(u for u in mm.users if u["id"] == OTHER)["is_bot"] = True
     d = run.state_dir
     d.mkdir(parents=True, exist_ok=True)
     (d / f"coord-{ME}.env").write_text(f"CROWN_UNTIL={int(time.time()) + 600}\n")
@@ -625,11 +632,21 @@ def test_coordinator_leaves_a_reply_in_an_agents_thread_to_it(mm, run):
         # The 👑 answered in the agent's ask thread: a participant, not its owner.
         {"id": "f" * 26, "user_id": ME, "root_id": ask, "create_at": old + 1, "message": "see the ADR", "type": ""},
     ]
-    for root, message, woken in [(ask, "postgres", False), (named, "after lunch", False),
-                                 (plain, "and the docs?", True), (ask, "@agent-test thoughts?", True)]:
+    untrusted = {"CB_MM_TRUSTED_HUMAN_USER_IDS": "h" * 26}
+    for root, message, env, woken in [
+            (ask, "postgres", {}, False), (named, "after lunch", {}, True),
+            (plain, "and the docs?", {}, True), (ask, "@agent-test thoughts?", {}, True),
+            (ask, "postgres", {"CB_MM_TRUSTED_HUMAN_USER_IDS": PERSON}, False),
+            (ask, "postgres", untrusted, True)]:
+        monkeypatch.setattr(gate, "_reach", None)  # the roster read afresh
         mm.posts = list(reversed(roots))
         other_post(mm, message, root_id=root, user_id=PERSON)
-        assert ("for you" in listen(run).stdout) is woken, (root, message)
+        assert ("for you" in listen(run, **env).stdout) is woken, (root, message, env)
+    mm.presence[OTHER] = "offline"  # gone from the roster: not reachable
+    monkeypatch.setattr(gate, "_reach", None)
+    mm.posts = list(reversed(roots))
+    other_post(mm, "postgres", root_id=ask, user_id=PERSON)
+    assert "for you" in listen(run).stdout
 
 
 def test_listener_digest_for_the_rest(mm, run):

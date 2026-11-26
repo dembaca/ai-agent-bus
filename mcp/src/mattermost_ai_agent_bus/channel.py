@@ -212,12 +212,12 @@ def wake_reason(item: Mapping[str, Any], *, coordinator: bool, in_my_thread: boo
     ADR-002); routes None, or an item without its channel: anywhere. A post
     to another agent is that agent's: the coordinator gets it in the digest,
     also when that agent's gate held it back (RT-6.16). So is a human's reply
-    in a thread that belongs to another agent (agent_thread: its root is by
-    that agent or names it, gate.other_agents_thread): it wakes that agent as
-    its thread, the coordinator not even where it posted in that thread,
-    unless the reply names it; the server passes agent_thread only for a
-    human's post whose root it could read (unsure: False, it wakes as
-    before). The check reads the whole text, before any cut (slim.cut_item). A post the inbox gated wakes
+    in a thread a reachable agent of the home started (agent_thread,
+    gate.other_agents_thread): it wakes that agent as its thread, the
+    coordinator not even where it posted in that thread, unless the reply
+    names it; the server passes agent_thread only for a trusted human's
+    reply (anyone's but an agent's with the gate off, RT-6.16) whose root it
+    could read (unsure: False, it wakes as before). The check reads the whole text, before any cut (slim.cut_item). A post the inbox gated wakes
     nobody here (RT-6.16); a mention of a departed agent or one not here wakes
     the one that answers it (RT-6.21). An agent's fyi post
     (RT-6.14) wakes only whom it names and the author of its thread's root,

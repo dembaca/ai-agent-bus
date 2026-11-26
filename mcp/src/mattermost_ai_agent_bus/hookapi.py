@@ -809,6 +809,29 @@ async def _channel(client: ChatPort, chan: str) -> str:
     return cid
 
 
+async def _agent_threads(client: ChatPort, raw: list[Post], uid: str) -> set[str]:
+    """RT-6.6 step 5, as the push decides it (server._agent_thread): the
+    replies naming no agent that a trusted human wrote, or with the gate off
+    anyone but an agent (RT-6.16), in a thread a reachable agent of the home
+    other than `uid` started (gate.other_agents_thread). Unsure: none, the
+    crown wakes as before."""
+    replies = [p for p in raw if p.root_id and p.user_id and p.user_id != uid and not p.type
+               and not tasks.mentions(p.message)]
+    if not replies:
+        return set()
+    try:
+        if await gate.active(client):
+            trusted = await client.trusted_humans()
+            replies = [p for p in replies if p.user_id in trusted and not p.from_webhook]
+        else:
+            agents = await client.agents({p.user_id for p in replies})
+            replies = [p for p in replies if p.user_id not in agents]
+    except Exception as exc:  # noqa: BLE001 — unsure who wrote them: no mark
+        log.info("hook API: reply authors unknown: %s", type(exc).__name__)
+        return set()
+    return {p.id for p in replies if await gate.other_agents_thread(client, p.root_id, uid)}
+
+
 async def posts(client: ChatPort, query: Mapping[str, str], body: Mapping[str, Any]) -> Reply:
     """The work channel's posts (or ?channel=), newest first: the last
     ?limit=N, or those since ?since=MS (created or edited). Each says whether
@@ -817,8 +840,7 @@ async def posts(client: ChatPort, query: Mapping[str, str], body: Mapping[str, A
     or one gone or not here that this server answers (RT-6.21), and names its
     files (RT-6.23). While this agent holds the crown, agent_thread marks a
     human's reply in a thread another agent owns (RT-6.6 step 5,
-    gate.other_agents_thread): that agent's, not the crown's; a root that
-    cannot be read leaves it unmarked. mm-agent-poll.sh reads them too."""
+    _agent_threads). mm-agent-poll.sh reads them too."""
     since, limit = query.get("since", ""), query.get("limit", "60")
     if not (since or limit).isdigit():
         raise BadRequest("since: epoch ms, limit: a count")
@@ -828,17 +850,13 @@ async def posts(client: ChatPort, query: Mapping[str, str], body: Mapping[str, A
         raw = await client.channel_posts(cid, since_ms=int(since))
     else:
         raw = await client.channel_posts(cid, per_page=max(1, min(int(limit), MAX_POSTS)))
-    crown = lease.crown_held(uid)
-    replies = [p for p in raw if crown and p.root_id and p.user_id != uid and not p.type
-               and not tasks.mentions(p.message)]
-    authors = {p.user_id for p in raw if p.user_id and p.intent == a2a.FYI} | {p.user_id for p in replies}
+    authors = {p.user_id for p in raw if p.user_id and p.intent == a2a.FYI}
     try:
-        agents = await client.agents(authors - {""}) if authors else set()
+        agents = await client.agents(authors) if authors else set()
     except Exception as exc:  # noqa: BLE001 — nobody counts as an agent then
         log.info("hook API: fyi authors unknown: %s", type(exc).__name__)
-        agents, replies = set(), []  # unsure who wrote them: no agent_thread mark
-    agent_threads = {p.id for p in replies if p.user_id not in agents
-                     and await gate.other_agents_thread(client, p.root_id, uid)}
+        agents = set()
+    agent_threads = await _agent_threads(client, raw, uid) if lease.crown_held(uid) else set()
     gated, absent = gate.gated(uid), gate.absent(uid)
     # Which channel this is, for mm-agent-poll.sh to say: as asked, else the work channel's name.
     return 200, {"channel": query.get("channel", "") or client.work_channel_name,
