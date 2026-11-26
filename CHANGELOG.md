@@ -3,7 +3,9 @@
 Every version bump in `.claude-plugin/plugin.json` gets an entry here. Versions
 before 0.5.0 are described in the git history.
 
-## Unreleased
+## 0.103.0
+
+Needs: settings renamed to the new prefix before 0.104.0, see the changelog.
 
 ### Breaking
 
