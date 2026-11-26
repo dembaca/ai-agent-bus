@@ -2,7 +2,7 @@
 
 The host's release check, bin/mm-agent-release-check.sh, lists the newest
 release tags, checks them as the installer does (RT-6.29: with the pinned keys
-when the host sets MM_RELEASE_SIGNERS) and writes what the CHANGELOG of the
+when the host sets CB_RELEASE_SIGNERS) and writes what the CHANGELOG of the
 newest one that passed says into release.env in the host state directory. This
 module only reads that file, and checks every field again: the server parses
 nothing from the network itself. What reaches the agent is a version, the step
@@ -30,7 +30,7 @@ from dataclasses import dataclass, field
 from pathlib import Path
 from typing import Any
 
-from . import session_file
+from . import config, session_file
 
 log = logging.getLogger(__name__)
 
@@ -58,8 +58,12 @@ STATE_MAX = 65536
 # reading the registrar's release record takes (RT-6.32): its pinned keys, its
 # URL, TLS and proxy settings. Never a token, the registration secret or
 # anything else of the session.
-CHILD_ENV = ("MM_RELEASE_URL", "MM_RELEASE_SIGNERS", "MM_BUS_HOST_DIR", "CORRAL_WORKDIR",
-             "MM_REGISTRAR_KEYS", "MM_REGISTER_URL", "MM_CHAT_URL", "SSL_CERT_FILE", "SSL_CERT_DIR",
+# Both spellings of each renamed name (docs/env-names.md, "Lists of names"):
+# without the new ones a host that set only CB_RELEASE_SIGNERS would check
+# without its signers.
+CHILD_ENV = ("CB_RELEASE_URL", "MM_RELEASE_URL", "CB_RELEASE_SIGNERS", "MM_RELEASE_SIGNERS",
+             "CB_BUS_HOST_DIR", "MM_BUS_HOST_DIR", "CORRAL_WORKDIR",
+             "MM_REGISTRAR_KEYS", "MM_REGISTER_URL", "CB_MM_CHAT_URL", "MM_CHAT_URL", "SSL_CERT_FILE", "SSL_CERT_DIR",
              "HTTPS_PROXY", "https_proxy", "NO_PROXY", "no_proxy")
 
 _VER = re.compile(r"^(\d+)\.(\d+)\.(\d+)$")
@@ -71,12 +75,13 @@ _TAG = re.compile(r"^v\d+\.\d+\.\d+$")
 _EPOCH = re.compile(r"^[1-9][0-9]{0,9}$")
 _LATEST = re.compile(r"^latest(?: \(v(\d+\.\d+\.\d+)\))?$")
 
-# The Needs: grammar (ADR-011 point 3, CLAUDE.md "Releasing"): `MM_*` names,
-# versions x.y.z and lowercase words of at most 15 letters, each with an
+# The Needs: grammar (ADR-011 point 3, CLAUDE.md "Releasing"): `CB_*` and
+# `MM_*` names (the old ones while their fallbacks and the registrar's names
+# last, docs/env-names.md "The Needs: rule"), versions x.y.z and lowercase words of at most 15 letters, each with an
 # optional `,` or `.`, one space between, at most NEEDS_MAX characters. The
-# same text as MM_NEEDS_RE in bin/mm-agent-lib.sh; scripts/doc-check.py reads
+# same text as CB_NEEDS_RE in bin/mm-agent-lib.sh; scripts/doc-check.py reads
 # both from here.
-NEEDS_PATTERN = r"^(MM_[A-Z0-9_]+|[0-9]+\.[0-9]+\.[0-9]+|[a-z]{1,15})[,.]?( (MM_[A-Z0-9_]+|[0-9]+\.[0-9]+\.[0-9]+|[a-z]{1,15})[,.]?)*$"
+NEEDS_PATTERN = r"^((CB|MM)_[A-Z0-9_]+|[0-9]+\.[0-9]+\.[0-9]+|[a-z]{1,15})[,.]?( ((CB|MM)_[A-Z0-9_]+|[0-9]+\.[0-9]+\.[0-9]+|[a-z]{1,15})[,.]?)*$"
 NEEDS_MAX = 120
 _NEEDS = re.compile(NEEDS_PATTERN)
 NOTE = ("a human installs a release on the host (mm-agent-host-install.sh --release), or the "
@@ -463,15 +468,15 @@ def _note_once(msg: str) -> None:
 
 
 def check_script() -> tuple[Path, str] | None:
-    """Which check script to run, and the MM_BUS_HOST_DIR to give it ('' keeps
+    """Which check script to run, and the CB_BUS_HOST_DIR to give it ('' keeps
     the environment's). This tree's own when no sandbox can write it (a host
     copy's release, a reviewed checkout); for a tree a sandbox can write (the
     plugin cache under ~/.claude) never that one, but the host copy's
-    (MM_BUS_HOST_DIR, default ~/.local/share/mm-agent-bus/current) when it is
+    (CB_BUS_HOST_DIR, default ~/.local/share/mm-agent-bus/current) when it is
     there and out of every sandbox's reach; else none, said once in the log."""
     if not sandbox_can_write(str(ROOT)):
         return ROOT / SCRIPT, ""
-    host = os.environ.get("MM_BUS_HOST_DIR") or str(HOST_DIR)
+    host = config.env("CB_BUS_HOST_DIR") or str(HOST_DIR)
     real = os.path.realpath(host)
     if os.path.isabs(host) and not sandbox_can_write(real) and (Path(real) / SCRIPT).is_file():
         return Path(real) / SCRIPT, host
@@ -482,16 +487,16 @@ def check_script() -> tuple[Path, str] | None:
 
 def child_env(host_dir: str = "") -> dict[str, str]:
     """The child's whole environment: PATH (the script keeps only entries no
-    sandbox writes), HOME, LC_ALL=C and CHILD_ENV; MM_BUS_HOST_DIR the host
+    sandbox writes), HOME, LC_ALL=C and CHILD_ENV; CB_BUS_HOST_DIR the host
     copy whose script runs, or for a host copy's release without it the layout
     it lies in (RT-6.28)."""
     env = {"PATH": os.environ.get("PATH") or "/usr/bin:/bin:/usr/sbin:/sbin",
            "HOME": str(Path.home()), "LC_ALL": "C"}
     env.update({k: os.environ[k] for k in CHILD_ENV if k in os.environ})
     if host_dir:
-        env["MM_BUS_HOST_DIR"] = host_dir
-    elif "MM_BUS_HOST_DIR" not in env and ROOT.parent.name == "releases":
-        env["MM_BUS_HOST_DIR"] = str(ROOT.parent.parent / "current")
+        config.put("CB_BUS_HOST_DIR", host_dir, env)
+    elif config.lookup("CB_BUS_HOST_DIR", env, quiet=True) is None and ROOT.parent.name == "releases":
+        config.put("CB_BUS_HOST_DIR", str(ROOT.parent.parent / "current"), env)
     return env
 
 

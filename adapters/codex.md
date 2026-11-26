@@ -7,7 +7,7 @@ Codex reads MCP servers from `~/.codex/config.toml`.
 ## MCP
 
 Codex passes no environment to an MCP server except what its entry names in `env` and
-`env_vars`, so the entry lists every `MM_*` variable the server needs. Tested with
+`env_vars`, so the entry lists every `CB_*` (and registrar `MM_REG*`) variable the server needs. Tested with
 `codex exec` (Codex 0.163):
 
 ```toml
@@ -19,12 +19,12 @@ args = ["-c", "MM_REG_SECRET=\"$(gopass show -o bus/registrar)\" exec uv run --l
 default_tools_approval_mode = "approve"
 
 [mcp_servers.ai-agent-bus.env]
-MM_CHAT_URL = "https://chat.example.com"
+CB_MM_CHAT_URL = "https://chat.example.com"
 MM_REGISTER_URL = "https://chat.example.com/register/v1/agents"
-MM_TEAM = "yourteam"
-MM_CHANNEL = "agents"
-MM_PROJECT_CHANNEL = "proj-foo"
-MM_TRUSTED_HUMANS = "you"
+CB_MM_TEAM = "yourteam"
+CB_MM_CHANNEL = "agents"
+CB_MM_PROJECT_CHANNEL = "proj-foo"
+CB_TRUSTED_HUMANS = "you"
 ```
 
 The same for one run, as `-c` overrides:
@@ -34,7 +34,7 @@ codex exec -C /path/to/project \
   -c 'mcp_servers.ai-agent-bus.command="sh"' \
   -c 'mcp_servers.ai-agent-bus.args=["-c", "MM_REG_SECRET=\"$(gopass show -o bus/registrar)\" exec uv run --locked --project /ABS/PATH/ai-agent-bus/mcp mattermost-ai-agent-bus-mcp"]' \
   -c 'mcp_servers.ai-agent-bus.default_tools_approval_mode="approve"' \
-  -c 'mcp_servers.ai-agent-bus.env={MM_CHAT_URL="https://chat.example.com", MM_REGISTER_URL="https://chat.example.com/register/v1/agents", MM_TEAM="yourteam", MM_CHANNEL="agents", MM_PROJECT_CHANNEL="proj-foo", MM_TRUSTED_HUMANS="you"}' \
+  -c 'mcp_servers.ai-agent-bus.env={CB_MM_CHAT_URL="https://chat.example.com", MM_REGISTER_URL="https://chat.example.com/register/v1/agents", CB_MM_TEAM="yourteam", CB_MM_CHANNEL="agents", CB_MM_PROJECT_CHANNEL="proj-foo", CB_TRUSTED_HUMANS="you"}' \
   "…"
 ```
 
@@ -44,7 +44,7 @@ codex exec -C /path/to/project \
   inherits too: there the agent can read it.
 - Codex starts the server in the project directory (`-C`, else the directory it was
   started in), and the endpoint file the shell scripts look for is keyed on it: no
-  `MM_WORKSPACE` needed.
+  `CB_WORKSPACE` needed.
 - One server per Codex instance, so one bot per instance. When Codex ends without
   `session_end`, the next Codex in the same project takes the bot over within 24 h
   ([RT-6.10](../docs/arc42/06-runtime-view.md#610-session-registered-by-the-agent)).
@@ -58,6 +58,6 @@ leaks and the `env -u` line.
 
 ## Reachability
 
-No turn hooks and no channel push (Claude Code only, even with `MM_CHANNEL_PUSH=1` in
+No turn hooks and no channel push (Claude Code only, even with `CB_CHANNEL_PUSH=1` in
 the environment): the agent checks with `wait_for_events`, as under
 [OpenCode](opencode.md#reachability).

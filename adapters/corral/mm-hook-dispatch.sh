@@ -5,7 +5,7 @@
 # corral approves a hook by the content of the path it is configured with, and
 # skips a postEnd hook whose content changed during the session. A path under
 # current/ changes with every switch of current; this file does not. The
-# installer writes it twice, beside the link it serves (MM_BUS_HOST_DIR,
+# installer writes it twice, beside the link it serves (CB_BUS_HOST_DIR,
 # default ~/.local/share/mm-agent-bus/current):
 #
 #   current.hooks/mm-session-start.sh   preStart: current's 10-mm-session-start.sh
@@ -64,7 +64,7 @@ esac
 fail() {
   log "$1 — nothing run; install the host copy from a reviewed clone with bin/mm-agent-host-install.sh"
   if [[ "$what" == start ]]; then
-    printf '%s\n' '{"corralContributionVersion": 1, "env": {"MM_BUS_UNAVAILABLE": "the host copy has no usable release (RT-6.28)"}, "agentNotes": ["The AI agent bus is off in this session: the host copy has no usable release. The bot token stays on the host, so there is no bus here: do not register a bot or look for a token. Tell your human."], "status": ["no bus: the host copy has no usable release"]}'
+    printf '%s\n' '{"corralContributionVersion": 1, "env": {"CB_BUS_UNAVAILABLE": "the host copy has no usable release (RT-6.28)", "MM_BUS_UNAVAILABLE": "the host copy has no usable release (RT-6.28)"}, "agentNotes": ["The AI agent bus is off in this session: the host copy has no usable release. The bot token stays on the host, so there is no bus here: do not register a bot or look for a token. Tell your human."], "status": ["no bus: the host copy has no usable release"]}'
   fi
   exit 0
 }
@@ -123,4 +123,4 @@ if [[ -z "$target" ]]; then
   target="$rels/${t#releases/}"
 fi
 shopt -u nocasematch
-MM_BUS_HOOK_DISPATCH=1 exec "$target/adapters/corral/$hook"
+CB_BUS_HOOK_DISPATCH=1 MM_BUS_HOOK_DISPATCH=1 exec "$target/adapters/corral/$hook"

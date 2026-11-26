@@ -2,7 +2,7 @@
 // flow and receive short-lived NATS credentials from it (ADR-014,
 // docs/arc42/09-architecture-decisions.md).
 //
-// It reads its configuration, serves a health probe and, with AUTH_NATS_URL
+// It reads its configuration, serves a health probe and, with CB_AUTH_NATS_URL
 // set, answers the NATS server's auth callout; it stops on SIGINT or SIGTERM.
 package main
 
@@ -18,6 +18,7 @@ import (
 	"github.com/dembaca/ai-agent-bus/services/auth/internal/app"
 	"github.com/dembaca/ai-agent-bus/services/auth/internal/config"
 	"github.com/dembaca/ai-agent-bus/services/auth/internal/dircli"
+	"github.com/dembaca/ai-agent-bus/services/auth/internal/envname"
 	"github.com/dembaca/ai-agent-bus/services/auth/internal/httpserver"
 )
 
@@ -30,34 +31,36 @@ const (
 )
 
 func main() {
-	if code, ok := dispatch(os.Args, os.Getenv, os.Stdout, os.Stderr); ok {
+	if code, ok := dispatch(os.Args, os.LookupEnv, os.Stdout, os.Stderr); ok {
 		os.Exit(code)
 	}
-	os.Exit(run(os.Getenv))
+	os.Exit(run(os.LookupEnv))
 }
 
 // dispatch runs the directory command line when args (os.Args) ask for it
 // (`authd dir …`); ok is false for the service.
-func dispatch(args []string, getenv func(string) string, stdout, stderr io.Writer) (code int, ok bool) {
+func dispatch(args []string, lookup envname.Lookup, stdout, stderr io.Writer) (code int, ok bool) {
 	if len(args) > 1 && args[1] == "dir" {
-		return dircli.Main(args[2:], getenv, stdout, stderr), true
+		return dircli.Main(args[2:], lookup, stdout, stderr), true
 	}
 	return 0, false
 }
 
 // run is main with the environment injected, so the configuration path is
 // testable without touching the process environment.
-func run(getenv func(string) string) int {
+func run(lookup envname.Lookup) int {
 	// JSON from the first line on, a refused configuration included: one
 	// format for everything this program writes.
 	logger := slog.New(slog.NewJSONHandler(os.Stdout, nil))
 
-	cfg, err := config.Load(getenv)
+	// One reader for the process: each old name is warned about once.
+	env := envname.New(lookup, logger.Warn)
+	cfg, err := config.Load(env)
 	if err != nil {
 		logger.Error("configuration", "err", err.Error())
 		return exitConfigError
 	}
-	callout, withCallout, err := app.LoadSettings(getenv)
+	callout, withCallout, err := app.LoadSettings(env)
 	if err != nil {
 		logger.Error("configuration", "err", err.Error())
 		return exitConfigError
@@ -104,7 +107,7 @@ func run(getenv func(string) string) int {
 			}
 		}()
 	} else {
-		logger.Warn("no auth callout: AUTH_NATS_URL is not set")
+		logger.Warn("no auth callout: CB_AUTH_NATS_URL is not set")
 		calloutErr <- nil
 	}
 

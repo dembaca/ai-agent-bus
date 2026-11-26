@@ -1,7 +1,7 @@
 """The crown belongs to its home (ADR-002, RT-6.6 step 5, RT-6.26 step 9; #258).
 
 An agent whose home is A but whose environment carries B's id as
-MM_PROJECT_CHANNEL_ID has one home, A: the id counts only while it is the
+CB_MM_PROJECT_CHANNEL_ID has one home, A: the id counts only while it is the
 project channel's. The crown file records the home it was claimed in
 (CROWN_HOME); a crown recorded for another channel is none here. Never a 👑
 prefix or props.a2a.crown outside the home, no ask-mode acknowledgement or
@@ -41,7 +41,7 @@ def _crowned(post: dict) -> bool:
         ((post.get("props") or {}).get("a2a") or {}).get("crown"))
 
 
-# --- one home: MM_PROJECT_CHANNEL_ID only when it is the project channel's -------------------
+# --- one home: CB_MM_PROJECT_CHANNEL_ID only when it is the project channel's -------------------
 
 def _adapter(monkeypatch, name_of_id: str, project: str = "chat-next") -> MattermostAdapter:
     c = MattermostAdapter(base_url="https://mm.example", token="t", project_channel_name=project)
@@ -65,22 +65,22 @@ def _adapter(monkeypatch, name_of_id: str, project: str = "chat-next") -> Matter
 
 
 async def test_a_mismatched_project_channel_id_resolves_to_the_home(monkeypatch, caplog):
-    """RT-6.6, ADR-002 (#258): MM_PROJECT_CHANNEL_ID of ~ai-agent-bus-dev with the
+    """RT-6.6, ADR-002 (#258): CB_MM_PROJECT_CHANNEL_ID of ~ai-agent-bus-dev with the
     home ~chat-next: the home is resolved by its name, the mismatch logged once,
     and the bus does not watch B as its home."""
-    monkeypatch.setenv("MM_PROJECT_CHANNEL_ID", B)
+    monkeypatch.setenv("CB_MM_PROJECT_CHANNEL_ID", B)
     c = _adapter(monkeypatch, "ai-agent-bus-dev")
     with caplog.at_level(logging.WARNING):
         assert await c.work_channel_id() == A
         assert await c.work_channel_id() == A
-    assert len([r for r in caplog.records if "MM_PROJECT_CHANNEL_ID" in r.getMessage()]) == 1
+    assert len([r for r in caplog.records if "CB_MM_PROJECT_CHANNEL_ID" in r.getMessage()]) == 1
     ids = await watched_channel_ids(c)
     assert A in ids and B not in ids
 
 
 async def test_a_matching_project_channel_id_is_the_home(monkeypatch):
     """RT-6.6, ADR-002, regular case: the id is the project channel's, kept."""
-    monkeypatch.setenv("MM_PROJECT_CHANNEL_ID", B)
+    monkeypatch.setenv("CB_MM_PROJECT_CHANNEL_ID", B)
     assert await _adapter(monkeypatch, "chat-next").work_channel_id() == B
 
 
@@ -88,7 +88,7 @@ async def test_a_refused_project_channel_id_is_passed_over_once_and_not_read_aga
     """RT-6.6, ADR-002: an id the chat refuses (gone, not allowed) is no home:
     the name decides, and the refusal is kept, no read per call."""
     from mattermost_ai_agent_bus.model import NotFound
-    monkeypatch.setenv("MM_PROJECT_CHANNEL_ID", B)
+    monkeypatch.setenv("CB_MM_PROJECT_CHANNEL_ID", B)
     c = _adapter(monkeypatch, "unused")
 
     async def refused(cid):
@@ -104,7 +104,7 @@ async def test_a_refused_project_channel_id_is_passed_over_once_and_not_read_aga
 async def test_a_passing_read_failure_keeps_the_project_channel_id(monkeypatch):
     """RT-6.6 fail-open, as the shell CLI: a read that fails for a passing
     reason keeps the id, and the next call reads again."""
-    monkeypatch.setenv("MM_PROJECT_CHANNEL_ID", B)
+    monkeypatch.setenv("CB_MM_PROJECT_CHANNEL_ID", B)
     c = _adapter(monkeypatch, "unused")
 
     async def flaky(cid):
@@ -119,7 +119,7 @@ async def test_a_passing_read_failure_keeps_the_project_channel_id(monkeypatch):
 
 async def test_an_id_without_a_project_channel_name_is_taken_unread(monkeypatch):
     """RT-6.6 parity: only the id given, nothing to compare it with: no read."""
-    monkeypatch.setenv("MM_PROJECT_CHANNEL_ID", B)
+    monkeypatch.setenv("CB_MM_PROJECT_CHANNEL_ID", B)
     c = _adapter(monkeypatch, "anything", project="")
     assert await c.work_channel_id() == B and c.reads == []
 
@@ -128,9 +128,9 @@ async def test_an_id_without_a_project_channel_name_is_taken_unread(monkeypatch)
 
 @pytest.fixture
 def home(tmp_path, monkeypatch):
-    monkeypatch.setenv("MM_BOT_USER_ID", BOT)
+    monkeypatch.setenv("CB_MM_BOT_USER_ID", BOT)
     monkeypatch.setenv("CORRAL_WORKDIR", "/work/proj")
-    for var in ("MM_AGENT_PREFIX", "MM_BOT_USERNAME", "MM_REG_BOT_NAME", "MM_LEASE_SEC"):
+    for var in ("MM_AGENT_PREFIX", "CB_MM_BOT_USERNAME", "MM_REG_BOT_NAME", "CB_LEASE_SEC"):
         monkeypatch.delenv(var, raising=False)
     lease._TYPES.clear()
     c = Home(username="agent-me")
@@ -218,7 +218,7 @@ async def test_bus_info_names_the_home_whose_crown_it_is(monkeypatch):
     """RT-6.6, ADR-002: `crown` is `~<home>` in the home, false for a crown
     recorded for another channel, false without one."""
     class _Info(_Client):
-        trusted_source = "MM_TRUSTED_HUMANS"
+        trusted_source = "CB_TRUSTED_HUMANS"
         channel_name = "agents"
         work_channel_name = "agents"
 

@@ -9,7 +9,7 @@ whatever secret store you use — never inline it.
 ## MCP and shell clients
 
 Configure the MCP server for your runtime ([`adapters/`](../adapters)) with
-`MM_CHAT_URL`, `MM_REGISTER_URL`, `MM_TEAM`, `MM_CHANNEL` and `MM_REG_SECRET` (a
+`CB_MM_CHAT_URL`, `MM_REGISTER_URL`, `CB_MM_TEAM`, `CB_MM_CHANNEL` and `MM_REG_SECRET` (a
 reference in its config, never a literal). Drive `session_start` → `post_message` →
 `wait_for_events` → `session_end` from your runtime. `wait_for_events` should
 surface a mention (`@agent-smoke-… ping` from a human account) via WebSocket
@@ -23,7 +23,7 @@ without polling. Before `session_end`, from the agent's shell (no token there):
 ## Checklist
 
 - [ ] Bot appears in the team after `session_start`
-- [ ] Post lands in `MM_CHANNEL`
+- [ ] Post lands in `CB_MM_CHANNEL`
 - [ ] Mention and DM both classify as inbox events
 - [ ] Thread reply uses the root post id
 - [ ] `mm-agent-post.sh` / `-poll.sh` reach the server from the agent's shell (exit 3 without it)
@@ -33,9 +33,9 @@ without polling. Before `session_end`, from the agent's shell (no token there):
 ## Over NATS
 
 The same smoke test with the bus on NATS instead of a chat: a home named in
-`MM_NATS_HOMES` runs its agents' posts, reads and events over NATS, and the
+`CB_NATS_HOMES` runs its agents' posts, reads and events over NATS, and the
 login service grants the credentials (ADR-014 point 16). It needs a login
-service that answers the callout (`AUTH_NATS_URL` set, see
+service that answers the callout (`CB_AUTH_NATS_URL` set, see
 [`services/auth/README.md`](../services/auth/README.md)) and an agent whose
 owner has a Keycloak account. Replace every `<…>` with your own values.
 
@@ -46,8 +46,8 @@ bus.
 ### 1. The host's device login
 
 ```bash
-export MM_LOGIN_ISSUER=https://<keycloak-host>/realms/<realm>
-export MM_LOGIN_CLIENT_ID=<client-id>   # the Keycloak client of this bus, public
+export CB_LOGIN_ISSUER=https://<keycloak-host>/realms/<realm>
+export CB_LOGIN_CLIENT_ID=<client-id>   # the Keycloak client of this bus, public
 ```
 
 The session's MCP server (in a keyless corral session the relay in the sandbox) starts the device flow: it opens a browser
@@ -75,16 +75,16 @@ and `$KV.BUS_DIRECTORY.>`); without them it does not start. For the bucket's
 key listings it also needs `$JS.API.CONSUMER.CREATE.KV_BUS_DIRECTORY.>` and
 `$JS.API.CONSUMER.DELETE.KV_BUS_DIRECTORY.*`; without them every operator
 credential is refused. Leave
-`AUTH_DIRECTORY_IMPORTED` at `false` until the one-time import has run — set to
+`CB_AUTH_DIRECTORY_IMPORTED` at `false` until the one-time import has run — set to
 `true`, a missing bucket is never made anew (RT-6.39).
 
 ```bash
-export MM_NATS_URL=tls://<nats-host>:<port>
+export CB_NATS_URL=tls://<nats-host>:<port>
 # the client also accepts the server's WebSocket listener, wss://<nats-host>:<port>/,
 # but the login service's credentials allow standard connections only: a home
 # cannot run over WebSocket yet (RT-6.36).
-export MM_NATS_HOMES=<pilot-home>
-# MM_NATS_CA_FILE: set it only if the server's certificate does not chain to a
+export CB_NATS_HOMES=<pilot-home>
+# CB_NATS_CA_FILE: set it only if the server's certificate does not chain to a
 # CA the system trusts. In the lab it is not needed — that certificate is from
 # Let's Encrypt, which is a fact of the lab, not a rule of RT-6.36.
 ```
@@ -106,7 +106,7 @@ service of this version runs, set it to `true`.
 - [ ] The login service's log has `"event":"issued"` for this agent — one JSON
       line per issue (`"event":"refused"` with a `reason` when it does not)
 - [ ] `bus_info` answers, its `home` is the pilot home named in
-      `MM_NATS_HOMES`, and it carries **no warning**. It has no separate NATS
+      `CB_NATS_HOMES`, and it carries **no warning**. It has no separate NATS
       field, but it does say so when the NATS side is gone: `the NATS side is
       not reachable (…): no crown and no Mattermost election there` (RT-6.38). A
       run with that line is not a NATS run
@@ -130,11 +130,11 @@ Each of these must be refused, and the refusal must be visible:
       says `"event":"channel refused"` for it. A refused channel is left out;
       the credential is still issued for the others. A lookup that **fails**
       refuses the whole issue instead (RT-6.35)
-- [ ] The emergency brake (`AUTH_BRAKE_FILE`) locks out that owner's agents:
+- [ ] The emergency brake (`CB_AUTH_BRAKE_FILE`) locks out that owner's agents:
       the login service's sweep removes their consumers every 10 s, new
       credentials are refused at the next issue, and a connection already open
       lasts until its credential expires — at most 15 minutes (RT-6.35 step 5)
-- [ ] A home not named in `MM_NATS_HOMES` still runs over Mattermost — the
+- [ ] A home not named in `CB_NATS_HOMES` still runs over Mattermost — the
       switch is per home, not global
 
 If any of the negative checks passes instead of being refused, stop: the

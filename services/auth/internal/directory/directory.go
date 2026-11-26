@@ -69,7 +69,7 @@ var (
 	// owner token: a symbol, too long).
 	ErrAnchorShape = errors.New("directory: the sub cannot be an anchor")
 	// ErrImportMissing: the configuration says the import has run
-	// (AUTH_DIRECTORY_IMPORTED), but the directory has no mark of it: a lost
+	// (CB_AUTH_DIRECTORY_IMPORTED), but the directory has no mark of it: a lost
 	// or replaced bucket, never a reason to fall back to the chat.
 	ErrImportMissing = errors.New("directory: the import's mark is missing")
 	// ErrUnsafeBucket: an existing bucket's stream differs from a safe one.
@@ -190,7 +190,7 @@ func Config(bucket string) jetstream.KeyValueConfig {
 // Open returns the store over the bucket. js must be the login service's
 // own JetStream connection: the only one with a right on the bucket.
 // Without `imported` it makes the bucket with Config when it is missing; with
-// it (AUTH_DIRECTORY_IMPORTED: the operator ran the import) a missing bucket
+// it (CB_AUTH_DIRECTORY_IMPORTED: the operator ran the import) a missing bucket
 // is an error, never made anew, and a missing mark refuses every answer
 // (ErrImportMissing). An existing bucket is checked: no mirror, source or
 // republish (which could hand its records to a subject an agent reads), file
@@ -200,7 +200,7 @@ func Open(ctx context.Context, js jetstream.JetStream, bucket string, imported b
 	kv, err := js.KeyValue(ctx, cfg.Bucket)
 	switch {
 	case errors.Is(err, jetstream.ErrBucketNotFound) && imported:
-		return nil, fmt.Errorf("directory bucket %s: missing although the import has run (AUTH_DIRECTORY_IMPORTED): %w",
+		return nil, fmt.Errorf("directory bucket %s: missing although the import has run (CB_AUTH_DIRECTORY_IMPORTED): %w",
 			cfg.Bucket, ErrImportMissing)
 	case errors.Is(err, jetstream.ErrBucketNotFound):
 		kv, err = js.CreateKeyValue(ctx, cfg)

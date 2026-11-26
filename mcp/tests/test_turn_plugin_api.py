@@ -133,10 +133,10 @@ async def test_wake_says_what_the_listener_would(api, unread_rows, monkeypatch):
     # A plain post nobody names: not at once, a digest once it is old.
     client.posts = [post("p", "anyone?", at=now - 1000), mine]
     assert (await h.get(f"/v1/wake?since={since}&until={until}")).json()["wake"] is False
-    monkeypatch.setenv("MM_LISTEN_DIGEST_SEC", "0")
+    monkeypatch.setenv("CB_LISTEN_DIGEST_SEC", "0")
     got = (await h.get(f"/v1/wake?since={since}&until={until}")).json()
     assert got["reason"] == "digest" and "1 post(s) in the work channel since" in got["text"]
-    monkeypatch.setenv("MM_LISTEN_DIGEST_SEC", "1800")
+    monkeypatch.setenv("CB_LISTEN_DIGEST_SEC", "1800")
     # Named, or for all agents: at once; gated: never at once.
     client.posts = [post("n", "@agent-me. please look", at=now - 1000), mine]
     assert (await h.get(f"/v1/wake?since={since}&until={until}")).json()["reason"] == "addressed"
@@ -172,7 +172,7 @@ async def test_a_stall_event_drains_and_wakes_like_a_message(api, unread_rows, m
 async def test_wake_only_in_the_listen_window_and_its_gates(api, unread_rows, monkeypatch):
     """RT-6.20 (RT-6.2 step 3): the turn end opens the Stop hook's listen
     window — a project channel, an own post in the work channel, not BYE,
-    MM_LISTEN_SEC (the 👑 MM_LISTEN_COORD_SEC) — and /v1/wake wakes only inside it."""
+    CB_LISTEN_SEC (the 👑 CB_LISTEN_COORD_SEC) — and /v1/wake wakes only inside it."""
     now = int(time.time())
     client = FakeClient(posts=[post("b", "IDLE · done: x", user=UID, at=(now - 100) * 1000)])
     h = await api(client)
@@ -199,9 +199,9 @@ async def test_wake_only_in_the_listen_window_and_its_gates(api, unread_rows, mo
     got = (await h.get("/v1/turn-end?push=1&drains=3")).json()
     assert got["listen_until"] - got["listen_since"] == turnend.LISTEN_COORD_SEC
     monkeypatch.setattr(lease, "crown_until", lambda uid: 0)
-    monkeypatch.setenv("MM_LISTEN_SEC", "0")
+    monkeypatch.setenv("CB_LISTEN_SEC", "0")
     assert (await h.get("/v1/turn-end?push=1&drains=3")).json() == {"action": "idle"}
-    monkeypatch.setenv("MM_LISTEN_SEC", "99999")
+    monkeypatch.setenv("CB_LISTEN_SEC", "99999")
     got = (await h.get("/v1/turn-end?push=1&drains=3")).json()
     assert got["listen_until"] - got["listen_since"] == turnend.MAX_LISTEN_SEC
     # BYE ends the session's part: no window, no wake; never posted: neither.
@@ -233,21 +233,21 @@ async def test_wake_reads_the_own_threads_once_until_the_agent_posts(api, unread
 
 def test_empty_session_variables_count_as_unset(monkeypatch, tmp_path):
     """RT-6.20: the OpenCode plugin blanks CLAUDE_CODE_SESSION_ID and
-    CLAUDE_PROJECT_DIR a Claude Code shell passed on, and names MM_WORKSPACE:
+    CLAUDE_PROJECT_DIR a Claude Code shell passed on, and names CB_WORKSPACE:
     the server keys its endpoint file on that workspace, where the plugin looks."""
     ws = tmp_path / "ws"
     ws.mkdir()
     monkeypatch.setenv("CLAUDE_CODE_SESSION_ID", "")
     monkeypatch.setenv("CLAUDE_PROJECT_DIR", " ")
-    monkeypatch.setenv("MM_WORKSPACE", str(ws))
+    monkeypatch.setenv("CB_WORKSPACE", str(ws))
     key = hashlib.sha1(os.path.realpath(ws).encode()).hexdigest()[:16]
     assert session_file.session_id() == ""
-    assert session_file.workspace() == (os.path.realpath(ws), "MM_WORKSPACE")
+    assert session_file.workspace() == (os.path.realpath(ws), "CB_WORKSPACE")
     assert session_file.keyed_path("endpoint") == session_file.state_dir() / f"endpoint-{key}.env"
 
 
 def test_pi_keys_on_the_workspace_the_extension_looks_at(monkeypatch, tmp_path):
-    """RT-6.27 step 1: the server the pi extension registers names MM_WORKSPACE
+    """RT-6.27 step 1: the server the pi extension registers names CB_WORKSPACE
     (the session's real directory); one in pi's mcp.json without it keys on the
     root pi names, the same directory (a symlink resolved), where the extension
     looks. pi's MCP client names itself "pi" (RT-6.9)."""
@@ -263,9 +263,9 @@ def test_pi_keys_on_the_workspace_the_extension_looks_at(monkeypatch, tmp_path):
     monkeypatch.setattr(session_file, "_roots_dir", None)
     monkeypatch.setenv("CLAUDE_CODE_SESSION_ID", "")
     monkeypatch.setenv("CLAUDE_PROJECT_DIR", "")
-    monkeypatch.setenv("MM_WORKSPACE", str(link))
+    monkeypatch.setenv("CB_WORKSPACE", str(link))
     assert session_file.keyed_path("endpoint") == expected
-    monkeypatch.delenv("MM_WORKSPACE")
+    monkeypatch.delenv("CB_WORKSPACE")
     monkeypatch.chdir(tmp_path)
     root = session_file.root_path(Path(link).as_uri())
     assert root == os.path.realpath(ws)

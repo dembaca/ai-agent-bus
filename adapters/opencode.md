@@ -58,7 +58,7 @@ Options: `root` (the checkout, when the file is copied, not linked; or
 (the server's command and extra variables, e.g. the `sh -c` command above that fetches
 the secret), `waitSec` (how long the server holds the plugin's long poll, 10 to 55, default
 50), `retrySec` (the pause after a failed poll, default 15; `replaced` doubles it).
-`pollSec` and `MM_LISTEN_POLL_SEC` are gone: there is no timer to set.
+`pollSec` and `CB_LISTEN_POLL_SEC` are gone: there is no timer to set.
 
 The plugin adds the MCP server `ai-agent-bus` (`uv run --locked --project
 <checkout>/mcp mattermost-ai-agent-bus-mcp`) unless your configuration already has it or
@@ -116,7 +116,7 @@ whatever the service was started with (a Claude Code session's variables, an exp
 `MM_REG_SECRET`) reaches every agent's shell. Start the service from a clean shell
 (`opencode service stop`, then `opencode service start` there), or run OpenCode with its
 own private server, which gets the environment you start it with: `opencode --standalone`,
-`opencode run --standalone`. Put the `MM_*` settings where that process gets them, and
+`opencode run --standalone`. Put the `CB_*` and registrar `MM_*` settings where that process gets them, and
 the secret only into the server's command (above).
 
 In scripts, `opencode run` waits for input on a stdin that is not a terminal: give it
@@ -179,7 +179,7 @@ same way (`file:///ABS/PATH/ai-agent-bus/opencode`, granted read-only), but
 an agent can change a checkout it can write: prefer the host copy.
 
 **No options under corral.** `command` with `MM_REG_SECRET` (the gopass example above)
-and `environment` with `MM_CHAT_URL`, `MM_REGISTER_URL`, `MM_TEAM` … are for setups
+and `environment` with `CB_MM_CHAT_URL`, `MM_REGISTER_URL`, `CB_MM_TEAM` … are for setups
 without corral, where the server registers the bot itself. Remove them under corral:
 the host hooks pass the bus settings, and a secret the sandbox can fetch lets an agent
 register a second bot whose token is then in the sandbox. Inside a corral sandbox the
@@ -255,7 +255,7 @@ only `SKILL.md`: it points to the files next to it, such as
 [`runtime-no-hooks.md`](../skills/ai-agent-bus/runtime-no-hooks.md) (`skills` paths in
 `opencode.json`; OpenCode also reads `.opencode/skills/`, `.claude/skills/` and
 `.agents/skills/`) or paste the contract into the agent system prompt: register with
-`session_start` → work in `MM_TEAM`/`MM_CHANNEL` threads → `session_end`.
+`session_start` → work in `CB_MM_TEAM`/`CB_MM_CHANNEL` threads → `session_end`.
 
 ## MCP
 
@@ -276,14 +276,15 @@ By hand (without the plugin's, or with `mcp: false`), in the project's `opencode
         ],
         "codemode": false,
         "environment": {
-          "MM_CHAT_URL": "https://chat.example.com",
+          "CB_MM_CHAT_URL": "https://chat.example.com",
           "MM_REGISTER_URL": "https://chat.example.com/register/v1/agents",
-          "MM_TEAM": "yourteam",
-          "MM_CHANNEL": "agents",
-          "MM_PROJECT_CHANNEL": "proj-foo",
-          "MM_TRUSTED_HUMANS": "you",
+          "CB_MM_TEAM": "yourteam",
+          "CB_MM_CHANNEL": "agents",
+          "CB_MM_PROJECT_CHANNEL": "proj-foo",
+          "CB_TRUSTED_HUMANS": "you",
           "CB_WORKSPACE": "/ABS/PATH/your-project",
           "CB_CHANNEL_PUSH": "0",
+
           "CLAUDE_CODE_SESSION_ID": "",
           "CLAUDE_PROJECT_DIR": ""
         }
@@ -332,7 +333,7 @@ reachable server they exit 3 and say what to start.
 
 With the plugin, a turn ends with the drain and sign-off checks, and an idle session
 is woken for as long as its session lives, as a Claude Code channel is (no listen window,
-`MM_LISTEN_SEC` does not apply; the server's gates hold: a project channel, an own post in
+`CB_LISTEN_SEC` does not apply; the server's gates hold: a project channel, an own post in
 the work channel that is no `BYE`), by one long poll the plugin keeps open between turns
 ([RT-6.20](../docs/arc42/06-runtime-view.md#620-opencode-turn-cycle-through-its-plugin), ADR-009),
 while OpenCode serves the project (not after `opencode run --standalone` exits); there is

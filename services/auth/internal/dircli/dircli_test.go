@@ -17,6 +17,8 @@ import (
 	"testing"
 	"time"
 	"unicode/utf8"
+
+	"github.com/dembaca/ai-agent-bus/services/auth/internal/envname"
 )
 
 const secretToken = "tok-SECRET-0123456789"
@@ -157,7 +159,7 @@ func (r *rig) serveAPI(w http.ResponseWriter, req *http.Request) {
 		_, _ = io.WriteString(w, chJSON)
 	case p == "/v1/directory/import":
 		_, _ = io.WriteString(w, `{"channels_created":["a","b"],"channels_updated":[],"channels_skipped":[{"name":"x","reason":"bad name"}],`+
-			`"identities":3,"members_added":4,"pending_added":1,"accounts_skipped":[{"username":"bob","reason":"password account"}],"next":"set AUTH_DIRECTORY_IMPORTED=true and restart"}`)
+			`"identities":3,"members_added":4,"pending_added":1,"accounts_skipped":[{"username":"bob","reason":"password account"}],"next":"set CB_AUTH_DIRECTORY_IMPORTED=true and restart"}`)
 	case p == "/v1/directory/pending":
 		_, _ = io.WriteString(w, r.pend)
 	case req.Method == "DELETE" && strings.HasPrefix(p, "/v1/directory/pending/"):
@@ -177,12 +179,12 @@ func (r *rig) deps() deps {
 	}
 }
 
-func (r *rig) env(extra map[string]string) func(string) string {
-	m := map[string]string{"AUTHD_DIR_API": r.api.URL, "AUTH_KEYCLOAK_ISSUER": r.kc.URL, "AUTH_KEYCLOAK_CLIENT_ID": "authd-cli"}
+func (r *rig) env(extra map[string]string) envname.Lookup {
+	m := map[string]string{"CB_AUTHD_DIR_API": r.api.URL, "CB_AUTH_KEYCLOAK_ISSUER": r.kc.URL, "CB_AUTH_KEYCLOAK_CLIENT_ID": "authd-cli"}
 	for k, v := range extra {
 		m[k] = v
 	}
-	return func(k string) string { return m[k] }
+	return envname.Map(m)
 }
 
 // do runs the command line and checks the secrets stay out of the output and
@@ -307,7 +309,7 @@ func TestCommands(t *testing.T) {
 				t.Fatalf("got  %+v\nwant %+v", got, want)
 			}
 			if tc.name == "import" {
-				for _, s := range []string{"created 2", "skipped channel x: bad name", "skipped account bob: password account", "next: set AUTH_DIRECTORY_IMPORTED=true"} {
+				for _, s := range []string{"created 2", "skipped channel x: bad name", "skipped account bob: password account", "next: set CB_AUTH_DIRECTORY_IMPORTED=true"} {
 					if !strings.Contains(out, s) {
 						t.Fatalf("report lacks %q: %q", s, out)
 					}
@@ -365,7 +367,7 @@ func TestUsageErrors(t *testing.T) {
 		t.Fatalf("-h: exit %d %q", code, out)
 	}
 	var out, errb bytes.Buffer
-	if code := run([]string{"ls"}, func(string) string { return "" }, &out, &errb, r.deps()); code != 2 {
+	if code := run([]string{"ls"}, envname.Map(nil), &out, &errb, r.deps()); code != 2 {
 		t.Fatalf("no settings: exit %d", code)
 	}
 }
@@ -373,7 +375,7 @@ func TestUsageErrors(t *testing.T) {
 func TestFlagsOverrideEnv(t *testing.T) {
 	r := newRig(t)
 	var out, errb bytes.Buffer
-	env := r.env(map[string]string{"AUTHD_DIR_API": "http://127.0.0.1:1"})
+	env := r.env(map[string]string{"CB_AUTHD_DIR_API": "http://127.0.0.1:1"})
 	code := run([]string{"--api", r.api.URL, "--issuer=" + r.kc.URL, "--client-id", "authd-cli", "ls"}, env, &out, &errb, r.deps())
 	if code != 0 {
 		t.Fatalf("exit %d: %s", code, errb.String())
@@ -412,6 +414,37 @@ func TestHTTPSWithCAFile(t *testing.T) {
 	errb.Reset()
 	if code := run([]string{"--api", tls.URL, "ls"}, r.env(nil), &out, &errb, r.deps()); code != 1 {
 		t.Fatalf("without CA: exit %d", code)
+	}
+}
+
+// authd dir's CA file by name: an empty CB_AUTHD_DIR_CA_FILE beside a set
+// AUTHD_DIR_CA_FILE refuses as a usage error naming both, the new name alone
+// is the CA, and an unexpanded placeholder refuses naming the variable.
+func TestTheDirCAFileSetting(t *testing.T) {
+	r := newRig(t)
+	tls := httptest.NewTLSServer(http.HandlerFunc(r.serveAPI))
+	defer tls.Close()
+	caPath := filepath.Join(t.TempDir(), "ca.pem")
+	pemBytes := pem.EncodeToMemory(&pem.Block{Type: "CERTIFICATE", Bytes: tls.Certificate().Raw})
+	if err := os.WriteFile(caPath, pemBytes, 0o600); err != nil {
+		t.Fatal(err)
+	}
+	args := []string{"--api", tls.URL, "ls"}
+	var out, errb bytes.Buffer
+	code := run(args, r.env(map[string]string{"CB_AUTHD_DIR_CA_FILE": "", "AUTHD_DIR_CA_FILE": caPath}), &out, &errb, r.deps())
+	if code != exitUsage || !strings.Contains(errb.String(), "CB_AUTHD_DIR_CA_FILE") ||
+		!strings.Contains(errb.String(), " AUTHD_DIR_CA_FILE") || strings.Contains(errb.String(), caPath) {
+		t.Fatalf("empty new name beside the old one: exit %d %q", code, errb.String())
+	}
+	out.Reset()
+	errb.Reset()
+	if code := run(args, r.env(map[string]string{"CB_AUTHD_DIR_CA_FILE": caPath}), &out, &errb, r.deps()); code != exitOK {
+		t.Fatalf("new name alone: exit %d %s", code, errb.String())
+	}
+	errb.Reset()
+	code = run(args, r.env(map[string]string{"CB_AUTHD_DIR_CA_FILE": "${CB_AUTHD_DIR_CA_FILE}"}), &out, &errb, r.deps())
+	if code != exitUsage || !strings.Contains(errb.String(), "CB_AUTHD_DIR_CA_FILE holds an unexpanded") {
+		t.Fatalf("placeholder: exit %d %q", code, errb.String())
 	}
 }
 
@@ -852,5 +885,24 @@ func TestAccountServerTextIsCleaned(t *testing.T) {
 	noDirt(t, "account show", out)
 	if strings.Contains(out, "‮") {
 		t.Fatalf("bidi control printed: %q", out)
+	}
+}
+
+// The old AUTHD_ and AUTH_ names still work until the removal release, with
+// one warning each on stderr that names the new name (docs/env-names.md).
+func TestOldNamesStillWork(t *testing.T) {
+	r := newRig(t)
+	old := map[string]string{"AUTHD_DIR_API": r.api.URL, "AUTH_KEYCLOAK_ISSUER": r.kc.URL, "AUTH_KEYCLOAK_CLIENT_ID": "authd-cli"}
+	var out, errb bytes.Buffer
+	if code := run([]string{"ls"}, envname.Map(old), &out, &errb, r.deps()); code != 0 {
+		t.Fatalf("exit %d: %s", code, errb.String())
+	}
+	if n := strings.Count(errb.String(), "warning"); n != 3 || !strings.Contains(errb.String(), "CB_AUTHD_DIR_API") {
+		t.Fatalf("want three warnings naming the new names, got %q", errb.String())
+	}
+	errb.Reset()
+	both := map[string]string{"CB_AUTHD_DIR_API": r.api.URL, "AUTHD_DIR_API": "https://elsewhere.example"}
+	if code := run([]string{"ls"}, envname.Map(both), &out, &errb, r.deps()); code != 2 || !strings.Contains(errb.String(), "CB_AUTHD_DIR_API and AUTHD_DIR_API") {
+		t.Fatalf("two different values: exit %d %q", code, errb.String())
 	}
 }

@@ -11,7 +11,7 @@
 # argument is a channel id followed by a message: its MESSAGE and ROOT_ID are
 # never read as options. MESSAGE "-" reads it from stdin, in the new form
 # only (in the 0.36 form it is the text "-"). Without --channel the post goes to the home
-# (the first MM_PROJECT_CHANNEL entry, else MM_CHANNEL); --channel NAME names the home, a
+# (the first CB_MM_PROJECT_CHANNEL entry, else CB_MM_CHANNEL); --channel NAME names the home, a
 # guest channel or the lobby (RT-6.22), any other channel is refused and nothing is
 # joined; with --root it is a reply in that thread (in the root's channel). The server posts it with the code of
 # post_message / reply_in_thread: humans' @-mentions become plain names,
@@ -91,11 +91,11 @@ if (( ${#FILES[@]} )); then
   fi
   for f in "${FILES[@]}"; do
     q="name=$(jq -rn --arg v "${f##*/}" '$v|@uri')${where:+&$where}"
-    if ! MM_BUS_UPLOAD="$f" MM_BUS_MAX_TIME="${MM_BUS_MAX_TIME:-120}" mm_bus POST "/v1/files?$q"; then
+    if ! CB_BUS_UPLOAD="$f" CB_BUS_MAX_TIME="${CB_BUS_MAX_TIME:-120}" mm_bus POST "/v1/files?$q"; then
       mm_bus_explain
-      case "$MM_BUS_STATUS" in 400|403|413|422) exit 1 ;; *) exit 3 ;; esac
+      case "$CB_BUS_STATUS" in 400|403|413|422) exit 1 ;; *) exit 3 ;; esac
     fi
-    ids+=("$(jq -r '.file_id' <<<"$MM_BUS_BODY")")
+    ids+=("$(jq -r '.file_id' <<<"$CB_BUS_BODY")")
   done
 fi
 
@@ -106,13 +106,13 @@ body="$(jq -nc --arg m "$MESSAGE" --arg c "$CHANNEL_ID" --arg n "$CHANNEL_NAME" 
 route=/v1/post
 [[ -n "$ROOT_ID" ]] && route=/v1/reply
 # Posting looks names up and may build a table: more than a hook's 3 s.
-if ! MM_BUS_MAX_TIME="${MM_BUS_MAX_TIME:-30}" mm_bus POST "$route" "$body"; then
-  [[ "$MM_BUS_STATUS" == 400 ]] && { mm_bus_explain; exit 1; }  # also: not a channel of the bot
+if ! CB_BUS_MAX_TIME="${CB_BUS_MAX_TIME:-30}" mm_bus POST "$route" "$body"; then
+  [[ "$CB_BUS_STATUS" == 400 ]] && { mm_bus_explain; exit 1; }  # also: not a channel of the bot
   mm_bus_explain
   exit 3
 fi
-if [[ "$(jq -r '.posted' <<<"$MM_BUS_BODY")" == false ]]; then
-  jq . <<<"$MM_BUS_BODY" >&2
+if [[ "$(jq -r '.posted' <<<"$CB_BUS_BODY")" == false ]]; then
+  jq . <<<"$CB_BUS_BODY" >&2
   exit 1
 fi
-jq . <<<"$MM_BUS_BODY"
+jq . <<<"$CB_BUS_BODY"

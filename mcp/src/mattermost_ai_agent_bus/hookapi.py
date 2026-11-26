@@ -67,7 +67,7 @@ request carries ``Authorization: Bearer <key>``, compared in constant time, or
 gets 401 (a malformed request: 400, before the key is looked at). 503 means
 no bus session (no token yet), 502 that Mattermost failed. At most
 MAX_CONNECTIONS connections at once and MAX_HEAVY_RUNS Mattermost-heavy requests.
-The hooks find endpoint and key in MM_BUS_ENDPOINT / MM_BUS_KEY, else in the
+The hooks find endpoint and key in CB_BUS_ENDPOINT / CB_BUS_KEY, else in the
 discovery file ``endpoint-sid-<key>.env`` (0600) in the state dir, keyed like the
 session file (session_file.keyed_path: the Claude Code session, else the
 workspace), with the bot's id once known; it is removed when the server ends.
@@ -100,6 +100,7 @@ from pathlib import Path
 from typing import TYPE_CHECKING, Any
 from urllib.parse import parse_qs, urlsplit
 
+from . import config
 from . import (
     a2a, asks, attach, channel, files, gate, hosted, lease, life, model, ownpost, release, session_file, stall, stats,
     tasks, turnend, unanswered, unread, usage,
@@ -265,7 +266,7 @@ class HookAPI:
         if self._file is None:
             return
         try:
-            if session_file.parse(self._file).get("MM_BUS_KEY") == self.key:
+            if config.value(session_file.parse(self._file), "CB_BUS_KEY") == self.key:
                 self._write_file(self._uid or None)
         except OSError as exc:
             log.info("hook API: endpoint file not updated: %s", exc)
@@ -276,7 +277,7 @@ class HookAPI:
             return (f"no endpoint file: the workspace would be {self.unkeyed}, which is / or "
                     "the home directory (or above it), so the hooks and shell scripts here "
                     "find no server until the MCP client names its workspace (roots). Set "
-                    "MM_WORKSPACE in the server's env or start it in the project (RT-6.17)")
+                    "CB_WORKSPACE in the server's env or start it in the project (RT-6.17)")
         if not self.conflict:
             return ""
         other = self.conflict.get("client", "")
@@ -298,17 +299,18 @@ class HookAPI:
         server of the same session (`claude --continue`) takes the file over:
         the old one is gone by then."""
         data = session_file.parse(path)
-        pid = data.get("MM_BUS_PID", "")
-        if not data or data.get("MM_BUS_KEY") == self.key or not _pid_alive(pid):
+        pid = config.value(data, "CB_BUS_PID")
+        key = config.value(data, "CB_BUS_KEY")
+        if not data or key == self.key or not _pid_alive(pid):
             return None
-        if not _answers(data.get("MM_BUS_ENDPOINT", ""), data.get("MM_BUS_KEY", "")):
+        if not _answers(config.value(data, "CB_BUS_ENDPOINT"), key):
             return None  # a crash or a stuck orphan left it behind; its pid may be reused
-        return {"file": str(path), "pid": int(pid), "client": data.get("MM_BUS_CLIENT", "")}
+        return {"file": str(path), "pid": int(pid), "client": config.value(data, "CB_BUS_CLIENT")}
 
     def _write_file(self, uid: str | None = None) -> None:
         # The bot's id too (not secret): the prompt hook stops the listener and
         # clears the turn state by it, server or not (RT-6.17 error handling).
-        uid = os.environ.get("MM_BOT_USER_ID", "") if uid is None else uid
+        uid = config.env("CB_MM_BOT_USER_ID") if uid is None else uid
         self._uid = uid if _UID.fullmatch(uid) else ""
         path = file_path()
         self.unkeyed = session_file.unkeyed()
@@ -325,10 +327,13 @@ class HookAPI:
         tmp.unlink(missing_ok=True)
         fd = os.open(tmp, os.O_WRONLY | os.O_CREAT | os.O_EXCL, 0o600)
         with os.fdopen(fd, "w") as fh:
-            fh.write(f"MM_BUS_ENDPOINT={self.endpoint}\nMM_BUS_KEY={self.key}\n"
-                     f"MM_BUS_PID={os.getpid()}\n"
-                     + (f"MM_BOT_USER_ID={self._uid}\n" if self._uid else "")
-                     + (f"MM_BUS_CLIENT={self.client}\n" if self.client else ""))
+            # Every key under both names (docs/env-names.md): an older sweep,
+            # plugin or hook of an update in progress reads the old one.
+            values = {"CB_BUS_ENDPOINT": self.endpoint, "CB_BUS_KEY": self.key, "CB_BUS_PID": str(os.getpid()),
+                      **({"CB_MM_BOT_USER_ID": self._uid} if self._uid else {}),
+                      **({"CB_BUS_CLIENT": self.client} if self.client else {})}
+            fh.write("".join(f"{k}={v}\n" for name, value in values.items()
+                             for k, v in config.both(name, value).items()))
         # `_file` names the path before the file can exist: the exit work
         # (RT-6.10) removes the endpoint file by that name, and a SIGTERM
         # between the replace and the assignment leaves it behind. A real gap,
@@ -349,7 +354,7 @@ class HookAPI:
         if self._file is None or uid == self._uid or not _UID.fullmatch(uid):
             return
         try:
-            if session_file.parse(self._file).get("MM_BUS_KEY") != self.key:
+            if config.value(session_file.parse(self._file), "CB_BUS_KEY") != self.key:
                 return
             self._write_file(uid)
         except OSError as exc:
@@ -371,7 +376,7 @@ class HookAPI:
 
     def _unlink_own(self, path: Path) -> None:
         try:
-            if session_file.parse(path).get("MM_BUS_KEY") == self.key:
+            if config.value(session_file.parse(path), "CB_BUS_KEY") == self.key:
                 path.unlink()
         except OSError:
             pass
@@ -624,7 +629,7 @@ async def _uid(client: ChatPort) -> str:
 
 
 def _project(client: ChatPort) -> bool:
-    return bool(os.environ.get("MM_PROJECT_CHANNEL_ID") or client.project_channel_name)
+    return bool(config.env("CB_MM_PROJECT_CHANNEL_ID") or client.project_channel_name)
 
 
 async def me(client: ChatPort, query: Mapping[str, str], body: Mapping[str, Any]) -> Reply:

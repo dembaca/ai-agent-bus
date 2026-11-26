@@ -38,7 +38,8 @@ if os.path.realpath(tempfile.gettempdir()).lower().startswith("/private/tmp/corr
 sys.path.insert(0, str(ROOT / "mcp" / "src"))
 # A corral sandbox's markers would make the in-process server refuse
 # self-registration (RT-6.18), read when it is imported below.
-for _name in ("CORRAL_SANDBOX", "MM_BUS_MCP_ENDPOINT", "MM_BUS_ENDPOINT", "MM_BUS_KEY"):
+for _name in ("CORRAL_SANDBOX", "MM_BUS_MCP_ENDPOINT", "MM_BUS_ENDPOINT", "MM_BUS_KEY",
+              "CB_BUS_MCP_ENDPOINT", "CB_BUS_ENDPOINT", "CB_BUS_KEY"):
     os.environ.pop(_name, None)
 
 from mattermost_ai_agent_bus import compose, hookapi, release, server  # noqa: E402,F401
@@ -357,9 +358,9 @@ def run(mm, tmp_path):
                 base.pop(k, None)
         argv = ["bash", str(ROOT / script), *args]
         if fd_token:
-            base["MM_TEST_FD_TOKEN"] = base.pop("MM_BOT_TOKEN", "")
-            argv = ["bash", "-c", 'exec 3<<<"$MM_TEST_FD_TOKEN"; unset MM_TEST_FD_TOKEN; '
-                    'MM_BOT_TOKEN_FD=3 exec bash "$@"', "_", *argv[1:]]
+            base["CB_MM_TEST_FD_TOKEN"] = base.pop("CB_MM_BOT_TOKEN", "") or base.pop("MM_BOT_TOKEN", "")
+            argv = ["bash", "-c", 'exec 3<<<"$CB_MM_TEST_FD_TOKEN"; unset CB_MM_TEST_FD_TOKEN; '
+                    'CB_MM_BOT_TOKEN_FD=3 exec bash "$@"', "_", *argv[1:]]
         with contextlib.ExitStack() as stack:
             if script.startswith(API_USERS) and not fd_token:
                 if bus:
@@ -367,7 +368,7 @@ def run(mm, tmp_path):
                     if bus == "env":
                         base |= found
                 # The token is the MCP server's alone: hooks and listener never see it.
-                base = {k: v for k, v in base.items() if k not in ("MM_BOT_TOKEN", "MATTERMOST_TOKEN")}
+                base = {k: v for k, v in base.items() if k not in ("CB_MM_BOT_TOKEN", "MM_BOT_TOKEN", "MATTERMOST_TOKEN")}
             p = subprocess.run(argv, input=stdin, env=base,
                                capture_output=True, text=True, timeout=60, cwd=cwd)
         return Result(p.returncode, p.stdout, p.stderr)

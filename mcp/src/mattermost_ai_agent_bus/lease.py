@@ -9,12 +9,12 @@ YIELD_UNTIL after a release); the status line (bin/mm-agent-statusline.sh)
 reads CROWN_UNTIL. The crown is its home's (ADR-002, RT-6.6 step 5): held
 only while CROWN_HOME is this server's home (crown_held).
 
-Every status is a lease of MM_LEASE_SEC (default 900 s). heartbeat() renews it
-every MM_HEARTBEAT_SEC (default 300 s) while the session lives, faster while a
+Every status is a lease of CB_LEASE_SEC (default 900 s). heartbeat() renews it
+every CB_HEARTBEAT_SEC (default 300 s) while the session lives, faster while a
 take is pending, and claims or yields the crown on the way (tick). A session
 that dies stops renewing, so its status, and a crown, run out on their own.
 The crown is short (ADR-007 phase 1, RT-6.6 steps 2 and 6): its holder renews
-it every MM_CROWN_BEAT_SEC (default 60 s) and it ends after MM_CROWN_LEASE_SEC
+it every CB_CROWN_BEAT_SEC (default 60 s) and it ends after CB_CROWN_LEASE_SEC
 (default 150 s); the others look again when it would end, each after its slot
 (SLOT_SEC times its place among those that stand), and the first that finds
 it gone claims it.
@@ -39,6 +39,7 @@ from pathlib import Path
 from typing import TYPE_CHECKING, Any, Protocol
 
 from . import a2a, channel, crownlog, life, owners, ownpost, release, session_file, stats, usage
+from . import config
 from .model import ChannelUser, Mark, Post, Refused, RosterEntry, StatusMark
 
 if TYPE_CHECKING:
@@ -127,28 +128,28 @@ def _state_word(emoji: str) -> str:
 
 def heartbeat_sec() -> float:
     try:
-        return max(30.0, float(os.environ.get("MM_HEARTBEAT_SEC", "300")))
+        return max(30.0, float(config.env("CB_HEARTBEAT_SEC", "300")))
     except ValueError:
         return 300.0
 
 
 def lease_sec() -> int:
-    """How long a status lives without renewal (MM_LEASE_SEC, default 900 s),
+    """How long a status lives without renewal (CB_LEASE_SEC, default 900 s),
     also the window of the agent's sign of life (life.window_sec)."""
     return life.window_sec()
 
 
 def crown_beat_sec() -> int:
     """How often the holder renews its crown (ADR-007 step 1:
-    MM_CROWN_BEAT_SEC, default 60 s, at least 15)."""
-    s = os.environ.get("MM_CROWN_BEAT_SEC", "")
+    CB_CROWN_BEAT_SEC, default 60 s, at least 15)."""
+    s = config.env("CB_CROWN_BEAT_SEC")
     return max(15, int(s)) if s.isdigit() else 60
 
 
 def crown_lease_sec() -> int:
     """How long a crown lives without its beat (ADR-007 step 1:
-    MM_CROWN_LEASE_SEC, default 150 s, never below two beats)."""
-    s = os.environ.get("MM_CROWN_LEASE_SEC", "")
+    CB_CROWN_LEASE_SEC, default 150 s, never below two beats)."""
+    s = config.env("CB_CROWN_LEASE_SEC")
     return max(2 * crown_beat_sec(), int(s) if s.isdigit() else 150)
 
 
@@ -276,7 +277,7 @@ class NatsSource(Protocol):
 
     @property
     def bridge_bot(self) -> str:
-        """MM_BRIDGE_BOT, the bot the bridge mirrors the home into Mattermost with
+        """CB_MM_BRIDGE_BOT, the bot the bridge mirrors the home into Mattermost with
         (RT-6.36 step 6); "" when none is set."""
         ...
 
@@ -301,7 +302,7 @@ _nats_warned: set[str] = set()
 
 
 def use_nats(home: str, source: NatsSource | None, why: str = "") -> None:
-    """Register this session's NATS home (a channel named in MM_NATS_HOMES) and its NATS
+    """Register this session's NATS home (a channel named in CB_NATS_HOMES) and its NATS
     side; `source` None where none was built (no login, no URL): the home then has no crown
     and no Mattermost election, logged once. use_nats("", None) clears it."""
     global _nats_home, _nats_source, _nats_why
@@ -319,7 +320,7 @@ def is_nats_home(name: str) -> bool:
 def _warn_down(why: str) -> None:
     if why not in _nats_warned:
         _nats_warned.add(why)
-        log.warning("the home ~%s runs its crown over NATS (MM_NATS_HOMES), but the NATS side is not "
+        log.warning("the home ~%s runs its crown over NATS (CB_NATS_HOMES), but the NATS side is not "
                     "reachable (%s): no crown and no Mattermost election there (RT-6.38)", _nats_home, why)
 
 
@@ -345,7 +346,7 @@ def crown_hint(name: str) -> str:
 
 def nats_visibility() -> str:
     """What bus_info says about a home over NATS (RT-6.36 step 6, #66): with a bridge
-    (MM_BRIDGE_BOT) people see its agents' posts in Mattermost as the bridge bot's copies,
+    (CB_MM_BRIDGE_BOT) people see its agents' posts in Mattermost as the bridge bot's copies,
     which the server drops for the agent; without one they are not in Mattermost, so people
     do not see them there; '' for a home on Mattermost."""
     if not _nats_home or _nats_source is None:  # none built: the home stays on Mattermost
@@ -523,7 +524,7 @@ async def coordinates_in(client: ChatPort, user_id: str, channel_id: str) -> boo
 async def _user_id(client: ChatPort) -> str:
     if client.session:
         return client.session.user_id
-    return os.environ.get("MM_BOT_USER_ID") or (await client.get_me()).id
+    return config.env("CB_MM_BOT_USER_ID") or (await client.get_me()).id
 
 
 # --- the status -------------------------------------------------------------------
@@ -1234,7 +1235,7 @@ _nats_hold = False
 # Set by receipt.py: forget the posts owed a receipt (those of an earlier hold).
 hold_began: Callable[[], None] = lambda: None  # noqa: E731
 
-# Set by receipt.py: a post that needs this holder has had neither 👀 nor ⏳ for MM_ACK_WAIT_SEC
+# Set by receipt.py: a post that needs this holder has had neither 👀 nor ⏳ for CB_ACK_WAIT_SEC
 # (the detection of the peer takeover, carried out by the holder itself in a NATS home).
 unreceipted: Callable[[ChatPort, str], Awaitable[bool]] = lambda client, uid: _never()  # noqa: E731
 
@@ -1273,7 +1274,7 @@ async def _nats_holder_checks(client: ChatPort, source: NatsSource, uid: str, na
                               links: Mapping[str, str]) -> None:
     """What the holder checks of itself, at its tick and at each crown beat (RT-6.38 step 5):
     a holder that is not reachable (silent, idle) while another linked reachable member
-    stands, or whose post that needs it has no 👀/⏳ for MM_ACK_WAIT_SEC, claims again, once
+    stands, or whose post that needs it has no 👀/⏳ for CB_ACK_WAIT_SEC, claims again, once
     per hold: it moves behind and the next one holds."""
     global _nats_yielded
     if _nats_yielded:
@@ -1297,7 +1298,7 @@ async def _nats_holder_checks(client: ChatPort, source: NatsSource, uid: str, na
 
 
 async def nats_beat(client: ChatPort) -> None:
-    """The holder's checks on each crown beat (MM_CROWN_BEAT_SEC), not only at the tick: the
+    """The holder's checks on each crown beat (CB_CROWN_BEAT_SEC), not only at the tick: the
     self-yield comes within the wait plus one crown beat (RT-6.38 step 5). Never raises."""
     if not client.token or not is_nats_home(client.work_channel_name):
         return

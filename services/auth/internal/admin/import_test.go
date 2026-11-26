@@ -119,7 +119,7 @@ func TestImportCreatesOnceThroughHTTP(t *testing.T) {
 	}
 	if !slices.Equal(rep.ChannelsCreated, []string{"town", "vault"}) || len(rep.ChannelsSkipped) != 2 ||
 		rep.ChannelsSkipped[0].Name != "Bad Name" || rep.ChannelsSkipped[1].Reason != "not a team channel" || rep.Identities != 2 || rep.PendingAdded != 1 ||
-		rep.Next != "set AUTH_DIRECTORY_IMPORTED=true and restart" {
+		rep.Next != "set CB_AUTH_DIRECTORY_IMPORTED=true and restart" {
 		t.Fatalf("report: %+v", rep)
 	}
 	reasons := map[string]string{}

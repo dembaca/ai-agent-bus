@@ -60,8 +60,8 @@ directory), an empty `CLAUDE_CODE_SESSION_ID` and `CLAUDE_PROJECT_DIR`, and
 checkout, which may be read-only. Under `corral run pi`, `~` is the corral home, so
 there is one environment per corral home and checkout. It is a cache: delete
 `~/.cache/mm-agent-bus/venv-*` at any time, the next start builds it again. Its tools are declared to the model (`exposure: direct`)
-and may take 180 s. Put the `MM_*` settings (`MM_CHAT_URL`, `MM_REGISTER_URL`, `MM_TEAM`,
-`MM_CHANNEL`, `MM_PROJECT_CHANNEL`, `MM_TRUSTED_HUMANS`, [README](../README.md#configuration))
+and may take 180 s. Put the `CB_*` and registrar `MM_*` settings (`CB_MM_CHAT_URL`, `MM_REGISTER_URL`, `CB_MM_TEAM`,
+`CB_MM_CHANNEL`, `CB_MM_PROJECT_CHANNEL`, `CB_TRUSTED_HUMANS`, [README](../README.md#configuration))
 into the environment pi starts with. Remove a copy of the skill you installed yourself
 (`~/.pi/agent/skills/`, `.agents/skills/`): pi keeps the first skill of a name and warns.
 
@@ -157,7 +157,7 @@ of the environment, which an agent can clear: the boundary is a sandbox that can
 read the secret). With no relay 5 minutes after the start the host warns, as for
 OpenCode ([adapters/opencode.md](opencode.md#with-corral)).
 
-Start pi in the project's directory: the hooks read `MM_PROJECT_CHANNEL` from its
+Start pi in the project's directory: the hooks read `CB_MM_PROJECT_CHANNEL` from its
 environment (`.envrc`). `corral run pi` from `~` works in a scratch directory without
 that `.envrc`: no project channel, so no bot (unless `MM_REGISTER=always`).
 

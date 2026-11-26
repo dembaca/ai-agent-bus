@@ -60,13 +60,13 @@ class ChatPort(Protocol):
 
     @property
     def channel_name(self) -> str:
-        """MM_CHANNEL's name: the lobby while a project channel is the home,
+        """CB_MM_CHANNEL's name: the lobby while a project channel is the home,
         else the home itself (ADR-002)."""
         ...
 
     @property
     def project_channel_name(self) -> str:
-        """The project channel's name (MM_PROJECT_CHANNEL's first entry); '' without one."""
+        """The project channel's name (CB_MM_PROJECT_CHANNEL's first entry); '' without one."""
         ...
 
     @property
@@ -81,7 +81,7 @@ class ChatPort(Protocol):
         ...
 
     async def work_channel_id(self) -> str:
-        """The home's id (ADR-002): the project channel, else MM_CHANNEL."""
+        """The home's id (ADR-002): the project channel, else CB_MM_CHANNEL."""
         ...
 
     async def join_channel(self, channel_name: str) -> str:
@@ -99,7 +99,7 @@ class ChatPort(Protocol):
         ...
 
     async def lobby_channel_id(self) -> str:
-        """The lobby's id (ADR-002): MM_CHANNEL's, by the id the host passed or by name."""
+        """The lobby's id (ADR-002): CB_MM_CHANNEL's, by the id the host passed or by name."""
         ...
 
     def forget_guests(self) -> None:

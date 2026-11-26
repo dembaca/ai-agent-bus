@@ -108,9 +108,9 @@ def _work_channel_id(mm, **env: str) -> tuple[str, str]:
     """mm_work_channel_id against the fake server: (stdout, stderr)."""
     p = subprocess.run(
         ["bash", "-c", 'source "$1"; mm_work_channel_id', "_", str(ROOT / "bin" / "mm-agent-lib.sh")],
-        env={"PATH": os.environ["PATH"], "LC_ALL": "C", "LANG": "C", "MM_CHAT_URL": mm.url,
-             "MM_BOT_TOKEN": "bot-token-for-tests", "MM_TEAM_ID": TEAM, "MM_CHANNEL": "agents",
-             "MM_PROJECT_CHANNEL": "proj-x"} | env,
+        env={"PATH": os.environ["PATH"], "LC_ALL": "C", "LANG": "C", "CB_MM_CHAT_URL": mm.url,
+             "CB_MM_BOT_TOKEN": "bot-token-for-tests", "CB_MM_TEAM_ID": TEAM, "CB_MM_CHANNEL": "agents",
+             "CB_MM_PROJECT_CHANNEL": "proj-x"} | env,
         capture_output=True, text=True, timeout=30)
     assert p.returncode == 0, p.stderr
     # Callers read it with $(…), which drops the trailing newline the name path prints.
@@ -122,7 +122,7 @@ def test_a_project_channel_id_of_another_channel_is_passed_over(mm):
     another name than the home's resolves the home by its name; the home's own
     id, or one whose channel cannot be read (fail-open), is kept."""
     mm.channel_names = {CHANNEL: "ai-agent-bus-dev", PROJECT: "proj-x"}
-    out, err = _work_channel_id(mm, MM_PROJECT_CHANNEL_ID=CHANNEL)
+    out, err = _work_channel_id(mm, CB_MM_PROJECT_CHANNEL_ID=CHANNEL)
     assert out == PROJECT and "is ~ai-agent-bus-dev, not ~proj-x" in err
-    assert _work_channel_id(mm, MM_PROJECT_CHANNEL_ID=PROJECT) == (PROJECT, "")
-    assert _work_channel_id(mm, MM_PROJECT_CHANNEL_ID=GUEST)[0] == GUEST  # not readable: kept
+    assert _work_channel_id(mm, CB_MM_PROJECT_CHANNEL_ID=PROJECT) == (PROJECT, "")
+    assert _work_channel_id(mm, CB_MM_PROJECT_CHANNEL_ID=GUEST)[0] == GUEST  # not readable: kept

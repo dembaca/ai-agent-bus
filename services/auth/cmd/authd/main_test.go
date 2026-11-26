@@ -5,6 +5,8 @@ import (
 	"os"
 	"strings"
 	"testing"
+
+	"github.com/dembaca/ai-agent-bus/services/auth/internal/envname"
 )
 
 // captureStdout runs f with stdout redirected and returns what it wrote.
@@ -45,24 +47,19 @@ func TestRunRefusesInvalidConfiguration(t *testing.T) {
 	cases := []struct {
 		name, key, value string
 	}{
-		{"unknown log level", "AUTH_LOG_LEVEL", "verbose"},
-		{"listen address without a port", "AUTH_LISTEN_ADDR", "no-port"},
-		{"port not a number", "AUTH_LISTEN_ADDR", "host:abc"},
-		{"port out of range", "AUTH_LISTEN_ADDR", ":99999"},
-		{"unparsable shutdown timeout", "AUTH_SHUTDOWN_TIMEOUT", "soon"},
+		{"unknown log level", "CB_AUTH_LOG_LEVEL", "verbose"},
+		{"listen address without a port", "CB_AUTH_LISTEN_ADDR", "no-port"},
+		{"port not a number", "CB_AUTH_LISTEN_ADDR", "host:abc"},
+		{"port out of range", "CB_AUTH_LISTEN_ADDR", ":99999"},
+		{"unparsable shutdown timeout", "CB_AUTH_SHUTDOWN_TIMEOUT", "soon"},
 	}
 
 	for _, tc := range cases {
 		t.Run(tc.name, func(t *testing.T) {
-			getenv := func(k string) string {
-				if k == tc.key {
-					return tc.value
-				}
-				return ""
-			}
+			lookup := envname.Map(map[string]string{tc.key: tc.value})
 
 			var code int
-			out := captureStdout(t, func() { code = run(getenv) })
+			out := captureStdout(t, func() { code = run(lookup) })
 
 			if code != exitConfigError {
 				t.Errorf("run = %d, want %d for %s=%q", code, exitConfigError, tc.key, tc.value)
@@ -89,13 +86,36 @@ func TestRunRefusesInvalidConfiguration(t *testing.T) {
 	}
 }
 
+// Both names of one setting set to different values: the start exits 2, the
+// message names both names and shows neither value.
+func TestRunRefusesDisagreeingNames(t *testing.T) {
+	lookup := envname.Map(map[string]string{"CB_AUTH_LISTEN_ADDR": ":value-new", "AUTH_LISTEN_ADDR": ":value-old"})
+
+	var code int
+	out := captureStdout(t, func() { code = run(lookup) })
+
+	if code != exitConfigError {
+		t.Fatalf("run = %d, want %d", code, exitConfigError)
+	}
+	for _, n := range []string{"CB_AUTH_LISTEN_ADDR", " AUTH_LISTEN_ADDR", "AUTH_LISTEN_ADDR "} {
+		if !strings.Contains(out, n) {
+			t.Errorf("output does not name %q: %q", n, out)
+		}
+	}
+	for _, v := range []string{"value-new", "value-old"} {
+		if strings.Contains(out, v) {
+			t.Errorf("output shows the value %s: %q", v, out)
+		}
+	}
+}
+
 func TestDispatchDirWithoutArgsPrintsUsage(t *testing.T) {
 	var out, errb strings.Builder
-	code, ok := dispatch([]string{"authd", "dir"}, func(string) string { return "" }, &out, &errb)
+	code, ok := dispatch([]string{"authd", "dir"}, envname.Map(nil), &out, &errb)
 	if !ok || code != 2 || !strings.Contains(errb.String(), "usage: authd dir") {
 		t.Fatalf("ok=%v code=%d stderr=%q", ok, code, errb.String())
 	}
-	if _, ok := dispatch([]string{"authd"}, func(string) string { return "" }, &out, &errb); ok {
+	if _, ok := dispatch([]string{"authd"}, envname.Map(nil), &out, &errb); ok {
 		t.Fatal("the service was not started by plain authd")
 	}
 }

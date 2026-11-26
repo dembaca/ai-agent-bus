@@ -312,7 +312,7 @@ func TestAnOrphanedAnchorIsFoundAgainAfterTheImport(t *testing.T) {
 	}
 }
 
-// The import's mark is expected (AUTH_DIRECTORY_IMPORTED): a lost bucket is
+// The import's mark is expected (CB_AUTH_DIRECTORY_IMPORTED): a lost bucket is
 // never made anew, and a missing mark refuses; never a fall back to the chat.
 func TestALostBucketAfterTheImportRefusesEverything(t *testing.T) {
 	s, nc := open(t)

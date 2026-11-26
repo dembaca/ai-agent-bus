@@ -21,7 +21,7 @@
 # does not trust, already answered, RT-6.16) is not for it; the server counts
 # it nowhere.
 # Other posts wake it only for a digest, once the oldest of them is
-# MM_LISTEN_DIGEST_SEC (default 1800 s) old: every wake-up is a full model turn,
+# CB_LISTEN_DIGEST_SEC (default 1800 s) old: every wake-up is a full model turn,
 # and a busy channel would otherwise wake every member for every post.
 # Its last line tells the woken agent what to do. It only looks; collecting a
 # message (and moving the read watermark) stays with the MCP tool wait_for_events.
@@ -30,7 +30,7 @@
 # (window opened), ASKED_AT (Stop hook asked), STARTED, PID, ENDED (event |
 # over). A new prompt from the human kills the listener (turn-status.sh).
 #
-# Asks the MCP server's hook API (RT-6.17) every MM_LISTEN_POLL_SEC (default
+# Asks the MCP server's hook API (RT-6.17) every CB_LISTEN_POLL_SEC (default
 # 15 s), never Mattermost: it holds no token. Fails open: no server, no bus
 # session → exits at once; a server that goes away mid-window (or comes back
 # with a new port) is asked again on the next round.
@@ -52,35 +52,35 @@ done
 
 command -v jq >/dev/null 2>&1 || { echo "jq missing: cannot listen. Finish."; exit 0; }
 if ! mm_bus_me; then
-  if [[ "$MM_BUS_STATUS" == 502 ]]; then
+  if [[ "$CB_BUS_STATUS" == 502 ]]; then
     echo "Bus unreachable: cannot listen. Finish."
-  elif [[ "$MM_BUS_STATUS" == 503 ]]; then
+  elif [[ "$CB_BUS_STATUS" == 503 ]]; then
     echo "No bus session (no bot registered): nothing to listen to. Finish."
   else
     mm_bus_explain 2>&1 | sed 's/$/ Finish./'
   fi
   exit 0
 fi
-ME="$MM_BOT_USER_ID"
+ME="$CB_MM_BOT_USER_ID"
 LF="$(mm_bot_state_file listen "$ME")" || exit 0
 
-POLL="${MM_LISTEN_POLL_SEC:-15}"
+POLL="${CB_LISTEN_POLL_SEC:-15}"
 [[ "$POLL" =~ ^[0-9]+$ && "$POLL" -gt 0 ]] || POLL=15
-DIGEST="${MM_LISTEN_DIGEST_SEC:-1800}"
+DIGEST="${CB_LISTEN_DIGEST_SEC:-1800}"
 [[ "$DIGEST" =~ ^[0-9]+$ ]] || DIGEST=1800
 
 # Who am I to a post: the username (for @mentions in the text), the threads
 # this agent posted in and those it started, read once — the agent is idle
 # while this runs.
-MY_NAME="${MM_BOT_USERNAME:-}"
+MY_NAME="${CB_MM_BOT_USERNAME:-}"
 MY_THREADS="[]"
 MY_ROOTS="[]"
 if mm_bus GET '/v1/posts?limit=200'; then
   MY_THREADS="$(jq -c --arg me "$ME" '[.posts[] | select(.user_id == $me)
                   | if .root_id == "" then .id else .root_id end] | unique' \
-    <<<"$MM_BUS_BODY" 2>/dev/null || echo "[]")"
+    <<<"$CB_BUS_BODY" 2>/dev/null || echo "[]")"
   MY_ROOTS="$(jq -c --arg me "$ME" '[.posts[] | select(.user_id == $me and .root_id == "") | .id]' \
-    <<<"$MM_BUS_BODY" 2>/dev/null || echo "[]")"
+    <<<"$CB_BUS_BODY" 2>/dev/null || echo "[]")"
 fi
 
 get() { [[ -f "$LF" ]] && sed -n "s/^$1=//p" "$LF" | head -1; }
@@ -111,7 +111,7 @@ since_ms=$((STARTED * 1000))
 while (( $(date +%s) < UNTIL )); do
   pending=0
   if mm_bus GET /v1/pending; then
-    pending="$(jq -r '.count // 0' <<<"$MM_BUS_BODY" 2>/dev/null || echo 0)"
+    pending="$(jq -r '.count // 0' <<<"$CB_BUS_BODY" 2>/dev/null || echo 0)"
   fi
   [[ "$pending" =~ ^[0-9]+$ ]] || pending=0
   if (( pending > 0 )); then
@@ -124,7 +124,7 @@ while (( $(date +%s) < UNTIL )); do
   # looks at the asks themselves and counts reactions not yet handed over.
   fresh=0
   if mm_bus GET /v1/ask-reactions; then
-    fresh="$(jq -r '.fresh // 0' <<<"$MM_BUS_BODY" 2>/dev/null || echo 0)"
+    fresh="$(jq -r '.fresh // 0' <<<"$CB_BUS_BODY" 2>/dev/null || echo 0)"
   fi
   [[ "$fresh" =~ ^[0-9]+$ ]] || fresh=0
   if (( fresh > 0 )); then
@@ -134,7 +134,7 @@ while (( $(date +%s) < UNTIL )); do
     exit 0
   fi
   coordinator=false
-  if mm_bus_me && (( MM_CROWN_UNTIL > $(date +%s) )); then
+  if mm_bus_me && (( CB_CROWN_UNTIL > $(date +%s) )); then
     coordinator=true
   fi
   if mm_bus GET "/v1/posts?since=${since_ms}"; then
@@ -158,7 +158,7 @@ while (( $(date +%s) < UNTIL )); do
       | map(. + {addressed: ((.gated | not) and (.named or (.seen and (.mine or (.fyi | not)))))})
       | map(select(.addressed)) as $a | map(select(.addressed | not)) as $o
       | "\($a | length) \($o | length) \($o | map(.create_at) | min // 0) \($o | map(select(.fyi)) | length)"' \
-      <<<"$MM_BUS_BODY" 2>/dev/null || echo "0 0 0 0")
+      <<<"$CB_BUS_BODY" 2>/dev/null || echo "0 0 0 0")
     if [[ "${addressed:-0}" =~ ^[0-9]+$ ]] && (( addressed > 0 )); then
       ENDED_AS=event
       mm_stat wake reason=addressed

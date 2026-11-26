@@ -426,6 +426,7 @@ export function addMcp(editor: any, options: Options, root: string | null, direc
     // them (#169); the server reads CB_ first.
     const environment = { CLAUDE_CODE_SESSION_ID: "", CLAUDE_PROJECT_DIR: "",
                           CB_CHANNEL_PUSH: "0", MM_CHANNEL_PUSH: "0",
+
                           CB_WORKSPACE: dir, MM_WORKSPACE: dir,
                           ...venv, ...(options.environment ?? {}), ...(session ? { OPENCODE_SESSION_ID: session } : {}) }
     // Direct tools, not Code Mode (issue #152): the model sees the bus tools and

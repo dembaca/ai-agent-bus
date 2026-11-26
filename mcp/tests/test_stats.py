@@ -20,15 +20,15 @@ UID = "u" * 26
 @pytest.fixture(autouse=True)
 def state(tmp_path, monkeypatch):
     monkeypatch.setenv("XDG_STATE_HOME", str(tmp_path))
-    monkeypatch.setenv("MM_BOT_USER_ID", UID)
-    monkeypatch.delenv("MM_STATS_CHANNEL", raising=False)
+    monkeypatch.setenv("CB_MM_BOT_USER_ID", UID)
+    monkeypatch.delenv("CB_MM_STATS_CHANNEL", raising=False)
     monkeypatch.setattr(stats, "_unposted", [])
     return tmp_path
 
 
 def test_default_channel_and_off(monkeypatch, state):
     assert stats.channel() == "agents-stats"
-    monkeypatch.setenv("MM_STATS_CHANNEL", "off")
+    monkeypatch.setenv("CB_MM_STATS_CHANNEL", "off")
     stats.record("turn")
     assert stats.channel() == "" and stats.summary("0.21.0") is None
 
@@ -61,9 +61,9 @@ def test_stats_report_reads_the_channel_with_the_bots_session(monkeypatch):
     assert out["channel"] == "agents-stats"
     assert [(r["version"], r["hours"], r["static"], r["skill"]) for r in out["versions"]] == [
         ("0.52.0", 1.0, 4800, 22078), ("0.53.0", 0.5, 4800, 22078)]
-    monkeypatch.setenv("MM_STATS_CHANNEL", "elsewhere")
+    monkeypatch.setenv("CB_MM_STATS_CHANNEL", "elsewhere")
     assert "cannot read ~elsewhere" in asyncio.run(server.stats_report())
-    monkeypatch.setenv("MM_STATS_CHANNEL", "off")
+    monkeypatch.setenv("CB_MM_STATS_CHANNEL", "off")
     assert "stats are off" in asyncio.run(server.stats_report())
 
 
@@ -72,7 +72,9 @@ def test_stats_report_reads_the_channel_with_the_bots_session(monkeypatch):
 # NATS home (13,250 characters: 3,431 instructions and 9,819 tool docs).
 # Without them the text is 12,434. It is a ratchet on the measured text, not an
 # outside limit: an addition raises it consciously, with its reason here.
-STATIC_BOUND = 13_300
+# 0.103.0: 13,281 before, 13,302 after the CB_ rename (#169): the new names in
+# the instructions (+6) and the tool docs (+15) are longer by their prefix.
+STATIC_BOUND = 13_350
 
 
 def static_text_in(env_overrides: dict[str, str]) -> int:
@@ -100,16 +102,16 @@ def test_the_static_text_holds_in_every_configuration():
     session's configuration adds — the channel push, the permission relay's
     trusted humans, a NATS home (#104: each was measured on its own, and the
     combination was 350 over the old 12,900)."""
-    # MM_CHANNEL_PUSH=0 without push: unset, channel.enabled() reads the parent
+    # CB_CHANNEL_PUSH=0 without push: unset, channel.enabled() reads the parent
     # command line, and a suite started from a channel session would measure
     # push where it means base (#104 review).
     configs = {
-        "base": {"MM_CHANNEL_PUSH": "0"},
-        "channel push": {"MM_CHANNEL_PUSH": "1"},
-        "push, trusted humans": {"MM_CHANNEL_PUSH": "1", "MM_TRUSTED_HUMANS": "alice,bob"},
-        "a NATS home": {"MM_CHANNEL_PUSH": "0", "MM_NATS_HOMES": "nats-pilot"},
+        "base": {"CB_CHANNEL_PUSH": "0"},
+        "channel push": {"CB_CHANNEL_PUSH": "1"},
+        "push, trusted humans": {"CB_CHANNEL_PUSH": "1", "CB_TRUSTED_HUMANS": "alice,bob"},
+        "a NATS home": {"CB_CHANNEL_PUSH": "0", "CB_NATS_HOMES": "nats-pilot"},
         "push, trusted humans, a NATS home": {
-            "MM_CHANNEL_PUSH": "1", "MM_TRUSTED_HUMANS": "alice,bob", "MM_NATS_HOMES": "nats-pilot"},
+            "CB_CHANNEL_PUSH": "1", "CB_TRUSTED_HUMANS": "alice,bob", "CB_NATS_HOMES": "nats-pilot"},
     }
     measured = {label: static_text_in(env) for label, env in configs.items()}
     for label, static in measured.items():
@@ -193,7 +195,7 @@ def test_post_goes_to_the_stats_channel(monkeypatch, state):
             assert body["channel_id"] == "c9000000000000000000000000" and body["message"].startswith('STATS {"v":"0.21.0"')
         return httpx.Response(201, json={})
 
-    monkeypatch.setenv("MM_STATS_CHANNEL", "~agents-stats")
+    monkeypatch.setenv("CB_MM_STATS_CHANNEL", "~agents-stats")
     _mock_http(monkeypatch, handler)
     assert stats.post_sync(client, data) == "posted"
     assert ("POST", "/api/v4/channels/c9000000000000000000000000/members") in seen
@@ -431,7 +433,7 @@ async def test_a_day_old_part_is_posted_by_the_heartbeat(monkeypatch):
 
     class Client:
         token = "bot"
-        session = None  # the bot's id from MM_BOT_USER_ID
+        session = None  # the bot's id from CB_MM_BOT_USER_ID
 
         async def join_channel(self, name):
             posted.append(name)
@@ -702,7 +704,7 @@ async def test_a_done_on_an_agents_task_counts_whether_a_human_was_in_the_thread
     }
 
     class Client:
-        session = None  # the bot's id from MM_BOT_USER_ID
+        session = None  # the bot's id from CB_MM_BOT_USER_ID
 
         async def thread(self, root_id):
             if root_id == "gone":

@@ -16,13 +16,13 @@
 # server (its hook API, RT-6.17): it hands the state over, and the server keeps
 # the crown and renews the lease. There is no token in an agent's shell, so
 # without a reachable server of this session it changes nothing and says what
-# to do (exit 3); a server that serves another bot than MM_BOT_USER_ID names is
+# to do (exit 3); a server that serves another bot than CB_MM_BOT_USER_ID names is
 # never asked (exit 1). offline is the server's to set when the session ends.
 #
-# The host session hooks (corral, the token on fd 3: MM_BOT_TOKEN_FD) call it
+# The host session hooks (corral, the token on fd 3: CB_MM_BOT_TOKEN_FD) call it
 # before the server runs and after it ended: they hand over to the server when
 # it serves their bot, else write the status themselves with an expiry of
-# MM_LEASE_SEC (default 900 s) that nobody renews; a crown whose lease in
+# CB_LEASE_SEC (default 900 s) that nobody renews; a crown whose lease in
 # coord-<uid>.env still runs keeps its text until then, never longer. offline
 # is always written there: the session is over, and its lease files go. That
 # path fails open and silent: a status must never disturb a session.
@@ -55,9 +55,9 @@ else
 fi
 
 # This session's MCP server (mm_bus_file): only when it serves the bot
-# MM_BOT_USER_ID names, if one is named.
-OWN="${MM_BOT_USER_ID:-}"
-if [[ "${MM_CREDS_FROM_FD:-0}" != 1 ]]; then
+# CB_MM_BOT_USER_ID names, if one is named.
+OWN="${CB_MM_BOT_USER_ID:-}"
+if [[ "${CB_CREDS_FROM_FD:-0}" != 1 ]]; then
   if [[ "$STATE" == offline ]]; then
     echo "mm-agent-status.sh: offline is set by the MCP server when the session ends (session_end)" >&2
     exit 2
@@ -66,29 +66,29 @@ if [[ "${MM_CREDS_FROM_FD:-0}" != 1 ]]; then
     mm_bus_explain
     exit 3
   fi
-  if [[ -n "$OWN" && "$OWN" != "$MM_BOT_USER_ID" ]]; then
-    echo "mm-agent-status.sh: the MCP server found (${MM_BUS_FROM}) serves another bot than MM_BOT_USER_ID: not asked" >&2
+  if [[ -n "$OWN" && "$OWN" != "$CB_MM_BOT_USER_ID" ]]; then
+    echo "mm-agent-status.sh: the MCP server found (${CB_BUS_FROM}) serves another bot than CB_MM_BOT_USER_ID: not asked" >&2
     exit 1
   fi
   mm_bus POST /v1/presence "$body" || { mm_bus_explain; exit 1; }
   exit 0
 fi
 
-if [[ "$STATE" != offline ]] && mm_bus_me && [[ -n "$OWN" && "$OWN" == "$MM_BOT_USER_ID" ]]; then
+if [[ "$STATE" != offline ]] && mm_bus_me && [[ -n "$OWN" && "$OWN" == "$CB_MM_BOT_USER_ID" ]]; then
   # The server holds status and crown: a failed hand-over leaves both alone.
   mm_bus POST /v1/presence "$body" || true
   exit 0
 fi
-MM_BOT_USER_ID="$OWN"
+CB_MM_BOT_USER_ID="$OWN"
 
-[[ -n "${MM_BOT_TOKEN:-${MATTERMOST_TOKEN:-}}" ]] || exit 0
-[[ -n "${MM_CHAT_URL:-${MATTERMOST_URL:-}}" ]] || exit 0
+[[ -n "${CB_MM_BOT_TOKEN:-}" ]] || exit 0
+[[ -n "${CB_MM_CHAT_URL:-}" ]] || exit 0
 
-UID_="${MM_BOT_USER_ID:-}"
+UID_="${CB_MM_BOT_USER_ID:-}"
 if [[ -z "$UID_" ]]; then
   mm_api GET "/api/v4/users/me" || exit 0
-  [[ "$MM_API_STATUS" == "200" ]] || exit 0
-  UID_="$(jq -r '.id' <<<"$MM_API_BODY")"
+  [[ "$CB_MM_API_STATUS" == "200" ]] || exit 0
+  UID_="$(jq -r '.id' <<<"$CB_MM_API_BODY")"
 fi
 
 PRES="$(mm_bot_state_file presence "$UID_" 2>/dev/null)" || PRES=""
