@@ -1,87 +1,136 @@
-import { useEffect, useState } from "react"
-import type { ConsoleApi, GraphData } from "../api/types"
+import { useCallback, useEffect, useRef, useState } from "react"
+import {
+  Background, Controls, ReactFlow, ReactFlowProvider,
+  useEdgesState, useNodesInitialized, useNodesState, useReactFlow,
+} from "@xyflow/react"
+import type { Edge, Node } from "@xyflow/react"
+import "@xyflow/react/dist/style.css"
+import type { AgentCard, Ask, ConsoleApi, GraphData } from "../api/types"
+import { reconcile, toFlow } from "./graph/model"
+import { nodeTypes } from "./graph/nodes"
 import "./GraphView.css"
 
 type Fail = (what: string, error: unknown) => void
 
-/** The graph (ADR-015 point 7): nodes people, channels (homes), agents;
- * the edges shown at start are trusts and coordinates, followed further
- * only to a depth of two, with a mark where it is cut. Hand-rolled SVG:
- * the libraries stay an open ADR point, and the pilot graph is small. */
-export function GraphView({ api, onFail }: { api: ConsoleApi; onFail: Fail }) {
-  const [data, setData] = useState<GraphData | null>(null)
+/** The graph endpoint is read again this long after the set of agents
+ * changed, so their trusts and guest channels show; a burst costs one read. */
+const GRAPH_AGAIN_MS = 500
+
+type Props = {
+  api: ConsoleApi
+  cards: AgentCard[]
+  asks: Ask[]
+  fleetSeen: boolean
+  onOpenAgent: (card: AgentCard) => void
+  onOpenAsk: (ask: Ask) => void
+  onFail: Fail
+}
+
+/** The graph (ADR-015 point 7, issue #145) on React Flow: you, the open
+ * asks, the agents, their home and guest channels, left to right. The
+ * fleet's cards and the open asks come from the app, which keeps them live:
+ * a status recolors an agent in place, an agent or ask that comes or goes
+ * adds or drops its node. The graph endpoint is read on start and again
+ * when the set of agents changes. A new layout runs only when a node or an
+ * edge comes or goes, and the nodes already shown keep their place. A click
+ * on an agent or an ask opens the same detail as elsewhere (point 7). */
+export function GraphView({ api, cards, asks, fleetSeen, onOpenAgent, onOpenAsk, onFail }: Props) {
+  const [graph, setGraph] = useState<GraphData | null>(null)
+  const agents = cards.map((c) => c.name).sort().join(",")
+  const graphRead = useRef(0)
+  const loaded = useRef(false)
   useEffect(() => {
-    let gone = false
-    api.graph()
-      .then((g) => { if (!gone) setData(g) })
-      .catch((error: unknown) => { if (!gone) onFail("graph", error) })
-    return () => { gone = true }
-  }, [api, onFail])
-  if (!data) return <div className="graph"><p className="hint">loading…</p></div>
+    // Each read is numbered: only the newest answer is shown.
+    const mine = ++graphRead.current
+    const read = () => {
+      api.graph()
+        .then((g) => {
+          if (mine !== graphRead.current) return
+          loaded.current = true
+          setGraph(g)
+        })
+        .catch((error: unknown) => { if (mine === graphRead.current) onFail("graph", error) })
+    }
+    // The first read at once, a read again after a short wait.
+    const timer = setTimeout(read, loaded.current ? GRAPH_AGAIN_MS : 0)
+    return () => { clearTimeout(timer); graphRead.current += 1 }
+  }, [api, onFail, agents])
+
+  const onNodeClick = useCallback((_: unknown, node: Node) => {
+    const [kind, ...rest] = node.id.split(":")
+    const key = rest.join(":")
+    if (kind === "agent") {
+      const card = cards.find((c) => c.name === key)
+      if (card) onOpenAgent(card)
+    } else if (kind === "ask") {
+      const row = asks.find((a) => a.id === key)
+      if (row) onOpenAsk(row)
+    }
+  }, [cards, asks, onOpenAgent, onOpenAsk])
+
   return (
-    <div className="graph">
-      <p className="hint">
-        trusts and coordinates, to a depth of two; a dashed edge is cut there.
-      </p>
-      <Graph data={data} />
-    </div>
+    <ReactFlowProvider>
+      <LiveGraph graph={graph} cards={cards} asks={asks} fleetSeen={fleetSeen} onNodeClick={onNodeClick} />
+    </ReactFlowProvider>
   )
 }
 
-/** Layered left-to-right: people, then channels, then agents — a plain,
- * readable shape while the console is a pilot. A crown-holding node is
- * marked by a small crown drawn beside it (point 9: no emoji literal). */
-function Graph({ data }: { data: GraphData }) {
-  const width = 900
-  const height = 460
-  const by = (kind: GraphData["nodes"][number]["kind"]) =>
-    data.nodes.filter((n) => n.kind === kind)
-  const people = by("person")
-  const channels = by("channel")
-  const agents = by("agent")
+function LiveGraph({ graph, cards, asks, fleetSeen, onNodeClick }: {
+  graph: GraphData | null
+  cards: AgentCard[]
+  asks: Ask[]
+  fleetSeen: boolean
+  onNodeClick: (event: unknown, node: Node) => void
+}) {
+  const [nodes, setNodes, onNodesChange] = useNodesState<Node>([])
+  const [edges, setEdges] = useEdgesState<Edge>([])
+  const shown = useRef<{ nodes: Node[]; edges: Edge[] }>({ nodes: [], edges: [] })
+  shown.current = { nodes, edges }
 
-  const column = (list: GraphData["nodes"], x: number) =>
-    Object.fromEntries(list.map((node, i) => [node.id, {
-      x, y: (height / (list.length + 1)) * (i + 1),
-    }]))
+  useEffect(() => {
+    if (!graph) return
+    const next = toFlow({ graph, cards, asks, fleetSeen })
+    const r = reconcile(shown.current.nodes, shown.current.edges, next.nodes, next.edges)
+    setNodes(r.nodes)
+    setEdges(r.edges)
+  }, [graph, cards, asks, fleetSeen, setNodes, setEdges])
 
-  const pos: Record<string, { x: number; y: number }> = {
-    ...column(people, 120),
-    ...column(channels, 440),
-    ...column(agents, 760),
-  }
+  // The viewport is fitted once, on the first layout; updates never move it.
+  const { fitView } = useReactFlow()
+  const ready = useNodesInitialized()
+  const fitted = useRef(false)
+  useEffect(() => {
+    if (ready && !fitted.current && nodes.length > 0) {
+      fitted.current = true
+      void fitView({ padding: 0.12 })
+    }
+  }, [ready, nodes.length, fitView])
 
+  if (!graph) return <div className="graph"><p className="hint">loading…</p></div>
   return (
-    <svg className="graph__svg" viewBox={`0 0 ${width} ${height}`} role="img"
-      aria-label="the bus graph: people, channels and agents">
-      {data.edges.map((edge) => {
-        const a = pos[edge.from]
-        const b = pos[edge.to]
-        if (!a || !b) return null
-        return <line key={edge.id}
-          x1={a.x} y1={a.y} x2={b.x} y2={b.y}
-          className={`graph__edge graph__edge--${edge.kind}${edge.cut ? " graph__edge--cut" : ""}`}
-          aria-label={`${edge.kind}: ${edge.from} to ${edge.to}`} />
-      })}
-      {data.nodes.map((node) => {
-        const p = pos[node.id]
-        if (!p) return null
-        return (
-          <g key={node.id} className={`graph__node graph__node--${node.kind}`}>
-            {node.kind === "person" && <circle cx={p.x} cy={p.y} r="18" />}
-            {node.kind === "channel" && <rect x={p.x - 22} y={p.y - 14} width="44" height="28" rx="6" />}
-            {node.kind === "agent" && <rect x={p.x - 26} y={p.y - 16} width="52" height="32" rx="16" />}
-            <text x={p.x} y={p.y - 24}>{node.label}</text>
-            {node.crown && <path className="graph__crown" transform={`translate(${p.x - 13} ${p.y - 46})`}
-              d="M0 8 L2 2 L6 6 L10 0 L14 6 L18 2 L20 8 Z" />}
-            {node.state && <text className="graph__state" x={p.x} y={p.y + 34}>{node.state}</text>}
-          </g>
-        )
-      })}
-      {data.cutDepth === 2 &&
-        <text className="graph__hint" x={width - 12} y={height - 12} textAnchor="end">
-          depth cut at 2
-        </text>}
-    </svg>
+    <div className="graph">
+      <p className="hint">
+        you, open asks, agents, their homes and guest channels; trusts and
+        coordinates to a depth of two, a dashed edge is cut there.
+        {graph.cutDepth === 2 && <span className="graph__cut"> Depth cut at 2.</span>}
+      </p>
+      <div className="graph__canvas" role="group" aria-label="the bus graph: people, asks, agents and channels">
+        <ReactFlow
+          nodes={nodes}
+          edges={edges}
+          onNodesChange={onNodesChange}
+          onNodeClick={onNodeClick}
+          nodeTypes={nodeTypes}
+          nodesConnectable={false}
+          edgesFocusable={false}
+          elementsSelectable={false}
+          colorMode="system"
+          minZoom={0.2}
+        >
+          <Background gap={24} size={1} />
+          <Controls showInteractive={false} />
+        </ReactFlow>
+      </div>
+    </div>
   )
 }

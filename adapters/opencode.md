@@ -77,6 +77,33 @@ server: the old one keeps the bot and the new one takes it over, same name, with
 `session_start` (within 24 h; a `BYE` or `session_end` ends the bot at once,
 [RT-6.10](../docs/arc42/06-runtime-view.md#610-session-registered-by-the-agent)).
 
+### Token usage
+
+The plugin splits its session's tokens into task work, bus overhead and coordination
+in process ([`opencode/plugin/usage.ts`](../opencode/plugin/usage.ts); the rules:
+[arc42 §6.9](../docs/arc42/06-runtime-view.md#69-measuring-the-coordination-overhead),
+RT-6.9 step 2) and posts one `usage` stat at each turn end: numbers only, no text reaches
+the model. It reads OpenCode's events of the top-level session (not its subagents):
+`session.step.ended` (and `.failed`) for each model request's `tokens` (`input` is the
+fresh part, `cache.read`, `cache.write`, `output` plus `reasoning`), the text and
+reasoning it wrote, the tool calls (`session.tool.input.started` for the name,
+`.called` for the input, `.success`/`.failed` for the result; a `wait_for_events`
+result splits by the posts it delivered), `session.skill.activated` and the `skill`
+tool (the bus skill's text is overhead, as is a `read` of its side files; other tools
+under that path are task work), the compactions, the human's prompt and the plugin's
+own texts. A request is a step with at least one non-zero count. OpenCode does not tell
+cache writes of 5 min and 1 h apart: they all count as 5 min. The input the known
+context does not reach (system prompt, tool docs, the MCP instructions) is sent per
+type as `h_in`, `h_read`, `h_w`; the server places the bus's fixed text there.
+
+Not counted: the compaction's own model request (OpenCode books it apart from the
+session's steps), and a bus tool the model calls from inside Code Mode's `execute`
+rather than as a tool of its own (it is not seen as the bus's; its call and result
+count as task work). A turn without a request with usage posts nothing. A `usage`
+POST that fails (server gone, timeout) is not repeated: that turn's numbers are lost.
+The split is kept in memory: after a reload of the plugin it starts afresh, and what
+it has not seen counts as task work.
+
 ### The environment is the service's
 
 OpenCode 2 runs sessions in a long-running background service. The MCP servers and the
