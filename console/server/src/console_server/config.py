@@ -80,6 +80,17 @@ def find() -> Settings:
             raise ConfigError("CONSOLE_ADDR: host:port")
         port = int(p)
 
+    # the unattended page's listener of its own (#158): loopback by
+    # default; the owner's ask, not the operators' network unless named
+    mhost, mport = "127.0.0.1", 8748
+    if listen_addr := given("CONSOLE_METRICS_LISTEN_ADDR"):
+        if ":" not in listen_addr:
+            raise ConfigError("CONSOLE_METRICS_LISTEN_ADDR: host:port")
+        mh, _, mp = listen_addr.rpartition(":")
+        mhost = mh or mhost
+        if not mp.isdigit() or not (0 < int(mp) < 65536):
+            raise ConfigError("CONSOLE_METRICS_LISTEN_ADDR: host:port")
+        mport = int(mp)
     settings = Settings(
         public_url=_required(given, "CONSOLE_PUBLIC_URL"),
         issuer=given("CONSOLE_ISSUER"),
@@ -108,15 +119,6 @@ def find() -> Settings:
         # it refuses to start, exactly like every other pairing here
         raise ConfigError("CONSOLE_METRICS_NKEY_SEED_FILE and"
                           " CONSOLE_METRICS_TOKEN_FILE: both or neither")
-    mhost, mport = "127.0.0.1", 8748       # the unattended page's own listener
-    if listen_addr := given("CONSOLE_METRICS_LISTEN_ADDR"):
-        if ":" not in listen_addr:
-            raise ConfigError("CONSOLE_METRICS_LISTEN_ADDR: host:port")
-        mh, _, mp = listen_addr.rpartition(":")
-        mhost = mh or mhost
-        if not mp.isdigit() or not (0 < int(mp) < 65536):
-            raise ConfigError("CONSOLE_METRICS_LISTEN_ADDR: host:port")
-        mport = int(mp)
     if given("CONSOLE_NATS_SEED_FILE"):
         # the static account is gone (RT-6.43): a leftover setting points at a
         # secret that must go too, so the start refuses; the file is never read
