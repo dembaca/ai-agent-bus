@@ -113,7 +113,7 @@ function Stacks({ stacks }: { stacks: ReportStack[] }) {
                   <span key={seg.category} className={`report__seg report__seg--${seg.category}`}
                     style={{ width: `${pct}%` }}
                     title={`${CATEGORY_LABEL[seg.category]}: ${seg.value} (${seg.percent ?? "n/a"} %)`}>
-                    {pct >= 8 ? `${pct} %` : ""}
+                    {pct > 0 && <span className="report__seg-label">{pct} %</span>}
                   </span>
                 )
               })}

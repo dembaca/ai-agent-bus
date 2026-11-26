@@ -4,8 +4,12 @@ import {
   STATUS_FILTERS, countByGroup, filterCards, harnessLabel, openAsksFirst, stateClass,
   type StatusFilter,
 } from "./agents"
-import { AskIcon, CrownIcon, SearchIcon } from "./icons"
+import { CircleHelp } from "lucide-react"
+import { CrownIcon, SearchIcon } from "./icons"
 import "./AgentList.css"
+
+/** An empty value in the list: a dash, quieter than "n/a" in a dense table. */
+export const EMPTY = "–"
 
 /** How many open asks sit above the table; the rest are one click away. */
 const ASKS_ON_TOP = 4
@@ -132,26 +136,30 @@ function AgentRow({ card, onOpen }: { card: AgentCard; onOpen: (card: AgentCard)
           <span className="pill pill--ask pill--plain agents__waits">waits on you</span>
         )}
       </td>
-      <td className="agents__task">{card.task || <span className="muted">n/a</span>}</td>
+      <td className="agents__task">
+        {card.task
+          ? <span className="agents__task-text" title={card.task}>{card.task}</span>
+          : <span className="muted">{EMPTY}</span>}
+      </td>
       <td className="mono small muted nowrap">
         {card.pr && <span className="chip chip--pr">#{card.pr.number}</span>}{" "}
-        {card.branch === null ? "n/a" : card.branch || "–"}
+        {card.branch || EMPTY}
       </td>
       <td className="mono small nowrap" title={card.guests.length ? `guest in ${card.guests.join(", ")}` : undefined}>
         {card.home}{card.guests.length > 0 && <span className="muted"> +{card.guests.length}</span>}
       </td>
       <td><Context ctx={card.ctx} /></td>
       <td className="num">
-        {card.openAsks === null ? <span className="muted">n/a</span> : card.openAsks}
+        {card.openAsks === null ? <span className="muted">{EMPTY}</span> : card.openAsks}
       </td>
-      <td className="num muted nowrap">{card.lastPostAt ? since(card.lastPostAt) : "n/a"}</td>
+      <td className="num muted nowrap">{card.lastPostAt ? since(card.lastPostAt) : EMPTY}</td>
     </tr>
   )
 }
 
 /** The context bar: the share used; unknown is n/a, never 0. */
 export function Context({ ctx }: { ctx: number | null }) {
-  if (ctx === null) return <span className="ctx__text">n/a</span>
+  if (ctx === null) return <span className="ctx__text" title="context not stated">{EMPTY}</span>
   const pct = Math.max(0, Math.min(100, ctx))
   return (
     <span className="ctx" title={`context ${ctx} %`}>
@@ -169,7 +177,7 @@ export function AskTile({ ask, onOpen }: { ask: Ask; onOpen: (ask: Ask) => void 
   return (
     <button type="button" className={"ask-tile" + (ask.forMe ? " ask-tile--for-me" : "")}
       onClick={() => onOpen(ask)}>
-      <span className="ask-tile__icon"><AskIcon /></span>
+      <span className="ask-tile__icon"><CircleHelp size={15} strokeWidth={2.2} aria-hidden="true" /></span>
       <span className="ask-tile__body">
         <strong className="ask-tile__need">{ask.need}</strong>
         <span className="ask-tile__by">

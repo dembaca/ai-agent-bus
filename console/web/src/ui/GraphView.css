@@ -94,7 +94,11 @@
   font-size: 11px;
 }
 
-.gnode__crown { flex: none; fill: var(--accent); }
+.gnode__crown { flex: none; display: inline-flex; color: var(--accent); }
+
+/* React Flow's attribution: muted on the card, AA at its 10 px */
+.graph__canvas .react-flow__attribution { background: var(--surface); }
+.graph__canvas .react-flow__attribution a { color: var(--muted); }
 
 .gnode--person { width: 150px; border-color: var(--accent); }
 .gnode--person .gnode__label { color: var(--accent); }

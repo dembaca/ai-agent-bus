@@ -50,12 +50,3 @@ export function SearchIcon() {
     </svg>
   )
 }
-
-export function AskIcon() {
-  return (
-    <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor"
-      strokeWidth="2.2" aria-hidden="true">
-      <path d="M9.1 9a3 3 0 0 1 5.8 1c0 2-3 3-3 3M12 17h.01" />
-    </svg>
-  )
-}

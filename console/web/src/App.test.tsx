@@ -3,7 +3,7 @@ import { describe, expect, it } from "vitest"
 import { App } from "./App"
 import { mockApi } from "./api/mock"
 import { asPlace } from "./nav"
-import { busWord } from "./ui/Detail"
+import { busWord, plainText } from "./ui/Detail"
 import { TopBar } from "./ui/TopBar"
 
 describe("the shell", () => {
@@ -11,7 +11,7 @@ describe("the shell", () => {
     const html = renderToStaticMarkup(<App api={mockApi()} />)
     expect(html).toContain('class="topbar"')
     expect(html).toContain('aria-label="Views"')
-    expect(html).toContain('aria-current="page">Agents')
+    expect(html).toMatch(/aria-current="page"><span class="topbar__label"><span>Agents<\/span>/)
     expect(html).toContain("<h1>Agents</h1>")
     expect(html).toContain('class="footer"')
     expect(html).toContain("version n/a · commit n/a")  // no build before /v1/me answers
@@ -45,5 +45,26 @@ describe("a post's bus word", () => {
     expect(busWord("HANDOVER to agent-b")).toEqual({ word: "HANDOVER", rest: "to agent-b" })
     expect(busWord("NATS is down")).toEqual({ word: null, rest: "NATS is down" })
     expect(busWord("PR #182 merged")).toEqual({ word: null, rest: "PR #182 merged" })
+  })
+
+  it("is read in backticks too, as the agents write it", () => {
+    expect(busWord("`HELLO` · agent-b online")).toEqual({ word: "HELLO", rest: "agent-b online" })
+    expect(busWord("`RESULT`: done")).toEqual({ word: "RESULT", rest: "done" })
+    expect(busWord("`NATS` · down")).toEqual({ word: null, rest: "`NATS` · down" })
+    expect(busWord("`HELLO without its closing tick")).toEqual({ word: null, rest: "`HELLO without its closing tick" })
+  })
+})
+
+describe("a post's text", () => {
+  it("drops the markdown and keeps the words", () => {
+    expect(plainText("**Fresh session** on `main`, see [PR 185](https://x/185)"))
+      .toBe("Fresh session on main, see PR 185")
+    expect(plainText("## Plan\n> quoted *note* and ~~old~~ new"))
+      .toBe("Plan\nquoted note and old new")
+    expect(plainText("agent_one and 2 * 3 stay")).toBe("agent_one and 2 * 3 stay")
+  })
+
+  it("stays text: markup in a post is never HTML", () => {
+    expect(plainText("<img src=x onerror=alert(1)>")).toBe("<img src=x onerror=alert(1)>")
   })
 })

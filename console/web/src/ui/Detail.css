@@ -63,6 +63,9 @@
 .detail__ask-note { color: var(--muted); font-size: 12px; }
 
 .detail__asks { padding: 12px 14px; display: flex; flex-direction: column; gap: 8px; }
+/* one of them is the operator's: the ask tint, as the artboard's "Waiting on you" */
+.detail__asks--for-you { background: var(--ask-bg); }
+.detail__asks--for-you h2 { color: var(--ask-text); }
 .detail__asks ul { list-style: none; margin: 0; padding: 0; display: flex; flex-direction: column; gap: 6px; }
 .detail__asks li { display: flex; justify-content: space-between; gap: 10px; }
 
@@ -96,16 +99,18 @@
   color: var(--idle);
   background: var(--idle-bg);
 }
-.thread__word:empty { display: none; }
+/* an empty chip keeps its column, so the text stays in the third */
+.thread__word:empty { visibility: hidden; }
 .thread__word--ask { color: var(--ask-text); background: var(--ask-bg); }
 .thread__word--task { color: var(--task); background: var(--task-bg); }
 .thread__word--done { color: var(--done); background: var(--done-bg); }
-.thread__text { min-width: 0; display: flex; flex-direction: column; }
+.thread__text { grid-column: 3; min-width: 0; display: flex; flex-direction: column; }
 .thread__author { color: var(--muted); font-size: 12px; }
 .thread__message { white-space: pre-wrap; overflow-wrap: anywhere; }
 
 @media (max-width: 640px) {
   .thread__post { grid-template-columns: 44px minmax(0, 1fr); }
   .thread__word { grid-column: 2; }
+  .thread__word:empty { display: none; }
   .thread__text { grid-column: 2; }
 }

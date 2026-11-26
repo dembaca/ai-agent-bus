@@ -61,6 +61,9 @@
   cursor: pointer;
 }
 .topbar__link:hover { color: var(--ink); }
+.topbar__label { display: inline-grid; }
+.topbar__label > span { grid-area: 1 / 1; }
+.topbar__label-bold { font-weight: 600; visibility: hidden; }
 .topbar__link--active {
   color: var(--accent);
   font-weight: 600;

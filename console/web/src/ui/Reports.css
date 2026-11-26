@@ -22,7 +22,7 @@
 
 .report h3 {
   margin: 0;
-  font-size: 12px;
+  font-size: 13px;
   font-weight: 600;
   text-transform: uppercase;
   letter-spacing: .05em;
@@ -83,6 +83,7 @@
 
 .report__stack-head {
   display: flex;
+  flex-wrap: wrap;
   justify-content: space-between;
   align-items: center;
   gap: 8px;
@@ -90,6 +91,7 @@
 }
 
 .report__legend { display: flex; gap: 10px; flex-wrap: wrap; }
+.report__key { white-space: nowrap; }
 .report__key::before {
   content: "";
   display: inline-block;
@@ -144,6 +146,11 @@
   text-align: center;
   white-space: nowrap;
   overflow: hidden;
+  container-type: inline-size;
+}
+/* a segment narrower than its label shows none (the title still says it) */
+@container (max-width: 30px) {
+  .report__seg-label { display: none; }
 }
 
 .report__seg--task { --seg: var(--state-working); }

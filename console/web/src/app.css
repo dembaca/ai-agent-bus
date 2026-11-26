@@ -209,7 +209,7 @@ button, input, select { font: inherit; color: inherit; }
 }
 .panel h2, .section-title {
   margin: 0;
-  font-size: 12px;
+  font-size: 13px;
   font-weight: 600;
   text-transform: uppercase;
   letter-spacing: .05em;

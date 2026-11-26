@@ -1,3 +1,6 @@
+// The tokens and shared rules first: every component's stylesheet loads
+// after them and wins a tie of specificity.
+import "./app.css"
 import { StrictMode } from "react"
 import { createRoot } from "react-dom/client"
 import { App } from "./App"
@@ -6,7 +9,6 @@ import { httpApi } from "./api/http"
 import { mockApi } from "./api/mock"
 import type { ConsoleApi } from "./api/types"
 import { applyStoredTheme } from "./theme"
-import "./app.css"
 
 applyStoredTheme()  // before the first render: no flash of the other theme
 

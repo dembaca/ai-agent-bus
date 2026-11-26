@@ -48,7 +48,11 @@ export function TopBar({ view, setView, openAsks, forMe, conn, operator, theme, 
               aria-current={view === id ? "page" : undefined}
               onClick={() => setView(id)}
             >
-              {VIEW_LABEL[id]}
+              <span className="topbar__label">
+                <span>{VIEW_LABEL[id]}</span>
+                {/* the bold width, reserved: picking a view moves nothing */}
+                <span className="topbar__label-bold" aria-hidden="true">{VIEW_LABEL[id]}</span>
+              </span>
               {id === "asks" && (
                 <span className={"topbar__badge" + (forMe > 0 ? " topbar__badge--for-me" : "")}
                   title={forMe > 0 ? `${openAsks} open, ${forMe} for you` : `${openAsks} open`}>

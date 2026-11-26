@@ -89,7 +89,6 @@
   cursor: pointer;
   min-width: 0;
 }
-.ask-tile--for-me { box-shadow: var(--shadow), inset 3px 0 0 var(--ask-fill); }
 .ask-tile__icon {
   width: 26px;
   height: 26px;
@@ -148,7 +147,9 @@
 .agents__name { display: flex; align-items: center; gap: 6px; font-weight: 500; }
 .agents__name .linkish { font-weight: 500; }
 .agents__model { display: block; color: var(--muted); font-size: 12px; }
-.agents__task { min-width: 180px; }
+/* one line, the full task on hover: a compact row is about 44 px */
+.agents__table td.agents__task { width: 34%; max-width: 0; }
+.agents__task-text { display: block; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
 .agents__waits { margin-left: 4px; }
 
 .agents__empty {

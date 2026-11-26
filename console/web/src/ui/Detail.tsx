@@ -25,6 +25,9 @@ export function Detail({ api, card, ask, asks, from, onBack, onFail }: {
 }) {
   const title = card?.displayName ?? ask?.displayName ?? ""
   const itsAsks = card ? asks.filter((a) => a.by === card.name && isOpen(a)) : []
+  // its other open asks, beside the one opened; tinted when one is yours
+  const others = itsAsks.filter((a) => a.id !== ask?.id)
+  const othersForYou = others.some((a) => a.forMe === true)
   return (
     <div className="detail">
       <nav aria-label="Breadcrumb" className="detail__crumbs">
@@ -108,11 +111,12 @@ export function Detail({ api, card, ask, asks, from, onBack, onFail }: {
 
         <aside className="detail__side">
           {ask && <AskBlock ask={ask} />}
-          {card && itsAsks.filter((a) => a.id !== ask?.id).length > 0 && (
-            <section className="panel detail__asks" aria-label="Its open asks">
-              <h2 className="section-title">Its open asks</h2>
+          {card && others.length > 0 && (
+            <section className={"panel detail__asks" + (othersForYou ? " detail__asks--for-you" : "")}
+              aria-label={othersForYou ? "Waiting on you" : "Its open asks"}>
+              <h2 className="section-title">{othersForYou ? "Waiting on you" : "Its open asks"}</h2>
               <ul>
-                {itsAsks.filter((a) => a.id !== ask?.id).map((a) => (
+                {others.map((a) => (
                   <li key={a.id}>
                     <span>{a.need}</span>
                     <span className="muted nowrap">
@@ -200,13 +204,29 @@ export const BUS_WORDS: ReadonlySet<string> = new Set([
   "ASSIGNMENTS", "HELLO", "BLOCKED", "DELEGATE", "HANDOVER",
 ])
 
-/** The bus word a post starts with, if it is one of the bus's words; any
- * other capital word stays part of the text. */
+/** The bus word a post starts with, bare or in backticks as the agents
+ * write it (`` `HELLO` · …``), if it is one of the bus's words; any other
+ * capital word stays part of the text. */
 export function busWord(message: string): { word: string | null; rest: string } {
-  const m = /^([A-Z]+)\b[:\s]*/.exec(message)
-  return m && BUS_WORDS.has(m[1])
-    ? { word: m[1], rest: message.slice(m[0].length) }
+  const m = /^(`?)([A-Z]+)\1(?=[\s:·—–-]|$)[\s:·—–-]*/.exec(message)
+  return m && BUS_WORDS.has(m[2])
+    ? { word: m[2], rest: message.slice(m[0].length) }
     : { word: null, rest: message }
+}
+
+/** A post's markdown as plain text: bold, italics, strikethrough and code
+ * to their text, a link or image to its text, heading and quote marks
+ * dropped. The result is rendered as text by React — never as HTML. */
+export function plainText(markdown: string): string {
+  return markdown
+    .replace(/!?\[([^\]]*)\]\([^)]*\)/g, "$1")
+    .replace(/(\*\*|__)(.+?)\1/g, "$2")
+    .replace(/~~(.+?)~~/g, "$1")
+    .replace(/(^|[\s(])\*([^*\s][^*\n]*?)\*(?=[\s).,;:!?]|$)/gm, "$1$2")
+    .replace(/```[^\n]*\n?/g, "")
+    .replace(/`([^`\n]+)`/g, "$1")
+    .replace(/^#{1,6}\s+/gm, "")
+    .replace(/^>\s?/gm, "")
 }
 
 /** A thread as the bus has it (GET /v1/threads/<id>): the page the server
@@ -250,7 +270,7 @@ function Thread({ title, api, onFail, threadId }: {
               <span className={"thread__word" + (word ? ` thread__word--${wordTone(word)}` : "")}>{word ?? ""}</span>
               <span className="thread__text">
                 <span className="thread__author mono">{post.author}</span>
-                <span className="thread__message">{rest}</span>
+                <span className="thread__message">{plainText(rest)}</span>
               </span>
             </li>
           )
