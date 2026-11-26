@@ -83,6 +83,18 @@ export function AgentList({ cards, asks, filter, onFilter: setFilter, query, onQ
 
       <section className="panel agents" aria-label="Agents">
         <table className="agents__table">
+          {/* fixed widths: no column pushes the table past its card; the
+              task takes the rest, every long text ends in an ellipsis */}
+          <colgroup>
+            <col className="agents__col--agent" />
+            <col className="agents__col--status" />
+            <col className="agents__col--task" />
+            <col className="agents__col--branch" />
+            <col className="agents__col--home" />
+            <col className="agents__col--ctx" />
+            <col className="agents__col--asks" />
+            <col className="agents__col--last" />
+          </colgroup>
           <thead>
             <tr>
               <th scope="col">Agent</th>
@@ -117,20 +129,22 @@ export function AgentList({ cards, asks, filter, onFilter: setFilter, query, onQ
 
 function AgentRow({ card, onOpen }: { card: AgentCard; onOpen: (card: AgentCard) => void }) {
   const state = stateClass(card.state)
+  const model = `${harnessLabel(card.harness)} · ${card.model || "model n/a"}`
+  const branch = card.branch || EMPTY
   return (
     <tr className={"agents__row" + (state === "offline" ? " agents__row--offline" : "")}
       onClick={() => onOpen(card)}>
       <td className="agents__who">
         <span className="agents__name">
-          <button type="button" className="linkish mono" title={card.name}
+          <button type="button" className="linkish mono agents__clip" title={card.name}
             onClick={(e) => { e.stopPropagation(); onOpen(card) }}>
             {card.displayName}
           </button>
           {card.crown && <span className="crown"><CrownIcon label="coordinator" /></span>}
         </span>
-        <span className="agents__model">{harnessLabel(card.harness)} · {card.model || "model n/a"}</span>
+        <span className="agents__model agents__clip" title={model}>{model}</span>
       </td>
-      <td className="nowrap">
+      <td className="nowrap agents__status">
         <span className={`pill pill--${state}`}>{card.state}</span>
         {(card.asksForOperator ?? 0) > 0 && (
           <span className="pill pill--ask pill--plain agents__waits">waits on you</span>
@@ -141,12 +155,17 @@ function AgentRow({ card, onOpen }: { card: AgentCard; onOpen: (card: AgentCard)
           ? <span className="agents__task-text" title={card.task}>{card.task}</span>
           : <span className="muted">{EMPTY}</span>}
       </td>
-      <td className="mono small muted nowrap">
-        {card.pr && <span className="chip chip--pr">#{card.pr.number}</span>}{" "}
-        {card.branch || EMPTY}
+      <td className="mono small muted">
+        <span className="agents__clip" title={card.pr ? `#${card.pr.number} · ${branch}` : branch}>
+          {card.pr && <span className="chip chip--pr">#{card.pr.number}</span>}{" "}
+          {branch}
+        </span>
       </td>
-      <td className="mono small nowrap" title={card.guests.length ? `guest in ${card.guests.join(", ")}` : undefined}>
-        {card.home}{card.guests.length > 0 && <span className="muted"> +{card.guests.length}</span>}
+      <td className="mono small">
+        <span className="agents__clip"
+          title={card.guests.length ? `${card.home}, guest in ${card.guests.join(", ")}` : card.home}>
+          {card.home}{card.guests.length > 0 && <span className="muted"> +{card.guests.length}</span>}
+        </span>
       </td>
       <td><Context ctx={card.ctx} /></td>
       <td className="num">

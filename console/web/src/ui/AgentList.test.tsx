@@ -29,8 +29,23 @@ describe("the pages", () => {
         onOpenAgent={noop} onOpenAsk={noop} onAllAsks={noop} />)
     const row = html.slice(html.indexOf("<tbody>"))
     expect(row).not.toContain("n/a")
-    expect(row.split(EMPTY).length - 1).toBe(4)  // branch, context, asks, last post
+    const shown = row.replace(/ title="[^"]*"/g, "")  // the text, not the titles
+    expect(shown.split(EMPTY).length - 1).toBe(4)  // branch, context, asks, last post
     expect(row).toContain('title="a long task that the row cuts to one line"')
+  })
+
+  it("fixes the column widths and puts every clipped text in a title", async () => {
+    const { cards } = await fleet()
+    const card: AgentCard = { ...cards[0], harness: "opencode", model: "glm-5.3-long-model-name",
+      branch: "feat/a-very-long-branch-name-that-clips", task: "the task" }
+    const html = renderToStaticMarkup(
+      <AgentList cards={[card]} asks={[]} filter="all" onFilter={noop} query="" onQuery={noop}
+        onOpenAgent={noop} onOpenAsk={noop} onAllAsks={noop} />)
+    expect(html).toMatch(/<colgroup>(<col class="agents__col--[a-z]+"\/>){8}<\/colgroup>/)
+    expect(html).toContain('title="the task"')
+    expect(html).toContain('title="feat/a-very-long-branch-name-that-clips"')
+    expect(html).toContain('title="OpenCode · glm-5.3-long-model-name"')
+    expect(html).toContain(`title="${card.home}`)
   })
 
   it("lists the open asks on top and one row per agent", async () => {

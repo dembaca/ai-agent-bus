@@ -115,8 +115,26 @@
 .agents { overflow-x: auto; }
 .agents__table {
   width: 100%;
-  min-width: 900px;
+  min-width: 1040px;   /* below it the table scrolls inside its card */
+  table-layout: fixed;
   border-collapse: collapse;
+}
+/* the columns' widths (table-layout: fixed): the task takes the rest */
+.agents__col--agent { width: 190px; }
+.agents__col--status { width: 196px; }
+.agents__col--branch { width: 140px; }
+.agents__col--home { width: 130px; }
+.agents__col--ctx { width: 100px; }
+.agents__col--asks { width: 60px; }
+.agents__col--last { width: 84px; }
+
+/* one line, an ellipsis, the whole text in the title */
+.agents__clip {
+  display: block;
+  max-width: 100%;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
 }
 .agents__table th {
   text-align: left;
@@ -143,13 +161,13 @@
    rows would fail the contrast check) */
 .agents__row--offline td { color: var(--muted); }
 
-.agents__who { white-space: nowrap; }
-.agents__name { display: flex; align-items: center; gap: 6px; font-weight: 500; }
+.agents__who { white-space: nowrap; overflow: hidden; }
+.agents__name { display: flex; align-items: center; gap: 6px; font-weight: 500; min-width: 0; }
+.agents__name .agents__clip { min-width: 0; }
 .agents__name .linkish { font-weight: 500; }
 .agents__model { display: block; color: var(--muted); font-size: 12px; }
 /* one line, the full task on hover: a compact row is about 44 px */
-.agents__table td.agents__task { min-width: 240px; }
-.agents__task-text { display: block; max-width: 48ch; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.agents__task-text { display: block; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
 .agents__waits { margin-left: 4px; }
 
 .agents__empty {
@@ -159,3 +177,4 @@
   border-top: 1px solid var(--line);
 }
 .agents__note { font-size: 12px; }
+.agents__status { overflow: hidden; }
