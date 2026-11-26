@@ -44,11 +44,11 @@ type Config struct {
 	BotKeep time.Duration
 }
 
-// The keep time's default and minimum (RT-6.44 step 8); agentbots holds the
-// same values.
+// The keep time's default and minimum (RT-6.44 step 8), the one source the
+// sweep in agentbots reads too.
 const (
-	defaultBotKeep = 24 * time.Hour
-	minBotKeep     = time.Hour
+	DefaultBotKeep = 24 * time.Hour
+	MinBotKeep     = time.Hour
 )
 
 // Load reads the environment. A missing required value is an error naming it.
@@ -156,15 +156,15 @@ func Load(env *Env) (Config, error) {
 		return Config{}, fmt.Errorf("CB_BRIDGE_MM_BOT_PREFIX %q is no username's start: a lower-case letter, "+
 			"then at most 31 of a-z, 0-9, '.', '_' and '-'", c.BotPrefix)
 	}
-	c.BotKeep = defaultBotKeep
+	c.BotKeep = DefaultBotKeep
 	if v := botKeep; v != "" {
 		if c.AdminToken == "" {
 			return Config{}, fmt.Errorf("CB_BRIDGE_MM_BOT_KEEP is set without CB_BRIDGE_MM_ADMIN_TOKEN_FILE: " +
 				"only the agents' own bots are swept")
 		}
 		keep, err := time.ParseDuration(v)
-		if err != nil || keep < minBotKeep {
-			return Config{}, fmt.Errorf("CB_BRIDGE_MM_BOT_KEEP %q is no duration of at least %s (for example 24h)", v, minBotKeep)
+		if err != nil || keep < MinBotKeep {
+			return Config{}, fmt.Errorf("CB_BRIDGE_MM_BOT_KEEP %q is no duration of at least %s (for example 24h)", v, MinBotKeep)
 		}
 		c.BotKeep = keep
 	}

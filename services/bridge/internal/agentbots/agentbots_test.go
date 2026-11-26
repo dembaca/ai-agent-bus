@@ -39,6 +39,7 @@ type fakeMM struct {
 	listed      int      // bot listings (the sweep)
 	toggled     []string // "disable <id>", "enable <id>"
 	failDisable string   // a bot id whose disable and enable fail
+	failPatch   string   // a bot id whose description cannot be changed
 }
 
 func newFake(t *testing.T) *fakeMM {
@@ -114,6 +115,14 @@ func (f *fakeMM) serve(w http.ResponseWriter, r *http.Request) {
 			return
 		}
 		w.WriteHeader(http.StatusNotFound)
+	case r.Method == "PUT" && len(p) == 2 && p[0] == "bots":
+		b, ok := f.bots[p[1]]
+		if !ok || p[1] == f.failPatch {
+			w.WriteHeader(http.StatusNotFound)
+			return
+		}
+		b["description"] = body["description"]
+		out(b)
 	case key == "GET bots":
 		// the enabled bots, by user id, one page (the sweep, RT-6.44 step 8)
 		f.listed++

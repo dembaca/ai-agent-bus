@@ -479,6 +479,12 @@ func (m *Adapter) DisableBot(ctx context.Context, id string) error {
 	return m.do(ctx, http.MethodPost, "/api/v4/bots/"+url.PathEscape(id)+"/disable", nil, m.Cfg.Token, nil)
 }
 
+// UpdateBotDescription sets the bot's description (PUT /api/v4/bots/<id>,
+// a patch): the sweep marks a bot it disables with it (RT-6.44 step 8).
+func (m *Adapter) UpdateBotDescription(ctx context.Context, id, description string) error {
+	return m.do(ctx, http.MethodPut, "/api/v4/bots/"+url.PathEscape(id), map[string]string{"description": description}, m.Cfg.Token, nil)
+}
+
 // EnableBot enables the disabled bot with user id id again.
 func (m *Adapter) EnableBot(ctx context.Context, id string) error {
 	return m.do(ctx, http.MethodPost, "/api/v4/bots/"+url.PathEscape(id)+"/enable", nil, m.Cfg.Token, nil)

@@ -22,6 +22,7 @@ import (
 	"slices"
 	"strings"
 	"sync"
+	"sync/atomic"
 	"time"
 
 	"github.com/dembaca/ai-agent-bus/services/bridge/internal/mirror"
@@ -35,6 +36,16 @@ import (
 // description is Marker plus the agent's name. A bot without it is not the
 // bridge's for that agent and is never posted with.
 const Marker = "bus bridge copies of "
+
+// SweptSuffix follows Marker plus the agent's name in the description of a
+// bot the sweep disabled (RT-6.44 step 8): only such a bot is enabled again
+// when its agent comes back. A disabled bot with the plain mark was
+// disabled by an admin and stays off.
+const SweptSuffix = " (swept)"
+
+// errAdminDisabled is a disabled bot with the plain mark: an admin's, not
+// the sweep's.
+var errAdminDisabled = errors.New("the bot is disabled by an admin")
 
 // TokenDescription marks the access tokens the bridge mints, so a restart
 // revokes its own earlier tokens and no other.
@@ -50,9 +61,11 @@ const DefaultBackoff = 5 * time.Minute
 // role) refuses the start.
 var postingRoles = []string{"system_user", "system_post_all", "system_post_all_public"}
 
-// Presence is the presence snapshot: the owner of an agent's name.
+// Presence is the presence snapshot: the owner of an agent's name, and the
+// newest presence seen at all (the sweep's check that the feed is alive).
 type Presence interface {
 	Get(name string) (presence.Info, bool)
+	Newest() time.Time
 }
 
 // Owners is the login service's account records read the other way round
@@ -87,6 +100,10 @@ type entry struct {
 	joined  map[string]bool
 	failed  time.Time
 	noOwner bool // logged once that no record names the owner
+	off     bool // logged once that an admin disabled the bot
+	// posted is the time of the agent's latest message (Bot), Unix
+	// nanoseconds: a sign for the sweep beside the presence (RT-6.44 step 8)
+	posted atomic.Int64
 }
 
 // Check is the start check (RT-6.44): the admin token is a bot's with
@@ -151,6 +168,7 @@ func (b *Bots) owner(name string) string {
 // caller then posts with the bridge bot (RT-6.44).
 func (b *Bots) Bot(ctx context.Context, name, home string) mirror.Sink {
 	e := b.entry(name)
+	e.posted.Store(b.now().UnixNano())
 	e.mu.Lock()
 	defer e.mu.Unlock()
 	owner := b.owner(name)
@@ -176,9 +194,19 @@ func (b *Bots) Bot(ctx context.Context, name, home string) mirror.Sink {
 	}
 	if e.client == nil {
 		a, err := b.setUp(ctx, name, owner)
+		if errors.Is(err, errAdminDisabled) {
+			// logged once per name; the backoff spares Mattermost a call per message
+			e.failed = b.now()
+			if !e.off {
+				e.off = true
+				b.Log.Warn("agentbots: bot disabled by an admin, posting as the bridge bot", "agent", name)
+			}
+			return nil
+		}
 		if err != nil {
 			return b.fail(e, name, err)
 		}
+		e.off = false
 		tok, err := b.mint(ctx, a)
 		if err != nil {
 			return b.fail(e, name, err)
@@ -297,17 +325,21 @@ func (b *Bots) setUp(ctx context.Context, name, ownerID string) (core.Agent, err
 		b.Log.Info("agentbots: created", "agent", name, "bot", a.Username)
 		return a, nil
 	}
-	// disabled too: the sweep (sweep.go) disables the bots of idle agents,
-	// and one that comes back gets its bot enabled again below
+	// disabled too: the sweep (sweep.go) disables the bots of idle agents
+	// with the swept mark, and one that comes back gets its bot enabled again
+	// below; a disabled bot with the plain mark was an admin's doing
 	bot, err := b.Admin.BotOfAny(ctx, found.ID)
 	if err != nil {
 		return core.Agent{}, err
 	}
+	mark, swept := Marker+name, Marker+name+SweptSuffix
 	switch {
 	case bot == nil:
 		return core.Agent{}, fmt.Errorf("%s is no bot", user)
-	case bot.Description != Marker+name:
+	case bot.Description != mark && bot.Description != swept:
 		return core.Agent{}, fmt.Errorf("%s is not the bridge's bot", user)
+	case bot.DeleteAt != 0 && bot.Description == mark:
+		return core.Agent{}, errAdminDisabled
 	case bot.OwnerID == b.adminID && b.adminID != "":
 		// created by the bridge, but its owner was never bound
 		if err := b.Admin.BindOwner(ctx, *found, *owner); err != nil {
@@ -321,6 +353,13 @@ func (b *Bots) setUp(ctx context.Context, name, ownerID string) (core.Agent, err
 			return core.Agent{}, fmt.Errorf("enable: %w", err)
 		}
 		b.Log.Info("agentbots: enabled again", "agent", name, "bot", user)
+	}
+	// the swept mark goes back to the plain one; an enabled bot that still
+	// has it is one whose sweep or return was cut off between two calls
+	if bot.Description == swept {
+		if err := b.Admin.UpdateBotDescription(ctx, found.ID, mark); err != nil {
+			return core.Agent{}, fmt.Errorf("restore the mark: %w", err)
+		}
 	}
 	return *found, nil
 }
