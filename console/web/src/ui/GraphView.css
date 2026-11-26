@@ -55,6 +55,7 @@
 
 /* nodes */
 .gnode {
+  position: relative;  /* the operator's "you" badge sits on the border */
   display: grid;
   gap: 2px;
   padding: 6px 10px;
@@ -95,6 +96,23 @@
 
 .gnode--person { width: 150px; border-color: var(--accent); }
 .gnode--person .gnode__label { color: var(--accent); }
+
+/* The operator's own node (#148): the accent fill reads in both schemes, since
+   the badge's text is the page's background (--bg) on the accent. */
+.gnode--you { border-width: 2px; box-shadow: 0 0 0 1px var(--accent); }
+.gnode__you {
+  position: absolute;
+  top: -9px;
+  right: 8px;
+  padding: 1px 6px;
+  background: var(--accent);
+  color: var(--bg);
+  border-radius: 999px;
+  font-size: 10px;
+  font-weight: 700;
+  letter-spacing: .02em;
+  text-transform: lowercase;
+}
 
 .gnode--ask { width: 190px; border-color: color-mix(in srgb, var(--for-me) 55%, transparent); }
 .gnode--agent, .gnode--ask { cursor: pointer; }

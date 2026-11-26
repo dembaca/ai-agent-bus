@@ -328,6 +328,28 @@ describe("reconcile: a joining node takes a free slot", () => {
   })
 })
 
+describe("toFlow: the operator's own node (#148)", () => {
+  it("carries `you` from the graph endpoint's person node", () => {
+    const g: GraphData = {
+      ...graph,
+      nodes: [...graph.nodes.filter((n) => n.kind !== "person"),
+        { id: "person:dembaca", kind: "person", label: "dembaca", you: true },
+        { id: "person:sub-alice", kind: "person", label: "alice" }],
+    }
+    const { nodes } = toFlow({ ...base(), graph: g, cards: [card(A)], asks: [] })
+    const people = nodes.filter((n) => (n.data as FlowData).kind === "person")
+    expect(people.map((n) => [n.id, (n.data as FlowData).you === true])).toEqual([
+      ["person:dembaca", true], ["person:sub-alice", false]])
+  })
+
+  it("marks no person from an ask: a human's name is no anchor", () => {
+    const g: GraphData = { ...graph, nodes: graph.nodes.filter((n) => n.kind !== "person") }
+    const { nodes } = toFlow({ ...base(), graph: g, asks: [ask(ASK_ID, A)] })
+    const person = nodes.find((n) => n.id === "person:dembaca")
+    expect((person?.data as FlowData).you).toBeUndefined()
+  })
+})
+
 describe("toFlow: the fleet's first snapshot and gone agents", () => {
   const withAgent: GraphData = {
     ...graph,

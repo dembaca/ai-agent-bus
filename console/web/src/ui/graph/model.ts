@@ -21,6 +21,9 @@ export type FlowKind = "person" | "ask" | "agent" | "channel"
 export type FlowData = {
   kind: FlowKind
   label: string
+  /** person: the logged-in operator's own node, from the graph endpoint's
+   * `you` (ADR-015 point 7, #148), never guessed from a name. */
+  you?: boolean
   /** agent */
   state?: AgentState
   harness?: Harness | null
@@ -94,7 +97,7 @@ export function toFlow(input: GraphInput): { nodes: Node[]; edges: Edge[] } {
   for (const n of graph?.nodes ?? []) {
     if (n.kind === "person") {
       raw.set(n.id, personId(n.id))
-      add(personId(n.id), { kind: "person", label: n.label })
+      add(personId(n.id), { kind: "person", label: n.label, ...(n.you ? { you: true } : {}) })
     } else if (n.kind === "channel") {
       raw.set(n.id, channelId(n.id))
     } else {

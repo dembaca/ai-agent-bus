@@ -39,6 +39,13 @@ before 0.5.0 are described in the git history.
   logout redirect URIs" before rollout.
 
 ### Added
+- **The console's graph view marks the operator's own node** (#147, the
+  follow-up to the API change). The person node the logged-in operator's
+  anchor names carries the API's `you` field as an accent badge, in light and
+  dark, with an accessible label saying it is the logged-in operator; a person
+  the graph knows only from an ask's `human` carries none, since an ask names a
+  human but not an anchor. No new data: the field comes from the login's own
+  record through `/v1/graph`.
 
 - **The operator console's API carries each agent's guest channels and
   marks the operator's own person node** (#147). A fleet card names its
