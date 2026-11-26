@@ -775,6 +775,10 @@ async def test_only_a_push_that_went_out_is_a_hand_over(monkeypatch):
     assert _heard() == []
     await server._push_delivered(item(True))
     assert [(h["human"], h["trusted"], h.get("pushed")) for h in _heard()] == [(1, 1, 1)]
+    # RT-6.9 step 2: only the pushed one is handed in, its tag's text and attributes counted.
+    tag = channel.notification(item(True))
+    assert [(e["c"], e["chars"], e["env"]) for e in _events() if e["k"] == "in"] == [
+        ("human", len(tag["content"]), len(json.dumps(tag["meta"], ensure_ascii=False)))]
 
 
 def test_the_settled_report_counts_old_lines_as_unknown():
@@ -858,3 +862,294 @@ def test_the_answer_to_a_question_to_the_coordinator_is_marked(monkeypatch):
         ("q1", 1, 5000), ("a2", None, 6000)]
     s = stats.summary("0.91.1")
     assert (s["asks"], s["asks_answered"], s["ask_wait_sec"], s["human_answers"]) == (1, 1, 30, 2)
+
+
+# --- the bus traffic by kind and category (RT-6.9 steps 2 and 3, #139 stage 1) ---------------
+
+def test_the_server_counts_posts_by_word_messages_by_class_polls_and_hook_texts():
+    """RT-6.9 step 2: own posts by bus word (none: plain; the server's own: other; an old
+    event without one: other), messages handed in by author class with their envelope,
+    polls and the empty ones, hook texts by kind (an unknown kind: other; a compaction
+    handoff is one): pairs of numbers under fixed keys, no text."""
+    _write_events(
+        {"k": "post", "t": 1, "chars": 40, "w": "HELLO"}, {"k": "post", "t": 2, "chars": 300, "w": "TASK"},
+        {"k": "post", "t": 3, "chars": 20, "w": "plain"}, {"k": "post", "t": 4, "chars": 7},
+        {"k": "post", "t": 5, "chars": 9, "w": "evil"},
+        {"k": "in", "t": 6, "c": "agent", "chars": 100, "env": 150},
+        {"k": "in", "t": 7, "c": "human", "chars": 10, "env": 120},
+        {"k": "in", "t": 8, "c": "nobody", "chars": 5, "env": 5},
+        {"k": "poll", "t": 9, "empty": 1}, {"k": "poll", "t": 10, "empty": 0},
+        {"k": "inject", "t": 11, "name": "drain", "chars": 200},
+        {"k": "inject", "t": 12, "name": "made-up", "chars": 3},
+        {"k": "compact", "t": 13, "chars": 2500},
+    )
+    s = stats.summary("0.102.0")
+    assert s["post_words"] == {"HELLO": [1, 40], "TASK": [1, 300], "plain": [1, 20], "other": [2, 16]}
+    assert s["inbound"] == {"agent": [1, 100], "human": [1, 10], "envelope": [2, 270]}
+    assert s["polls"] == [2, 1]
+    assert s["inject"] == {"drain": [1, 200], "other": [1, 3], "compact": [1, 2500]}
+    assert stats.decode_line(stats.nats_body(s) or b"")["inject"] == s["inject"]
+
+
+def test_a_session_without_traffic_still_says_so():
+    """RT-6.9 step 2: a new line always carries the four keys, so zero is told from n/a."""
+    stats.record("turn")
+    s = stats.summary("0.102.0")
+    assert (s["post_words"], s["inbound"], s["polls"], s["inject"]) == ({}, {}, [0, 0], {})
+
+
+async def test_wait_for_events_counts_the_poll_and_what_it_handed_in(monkeypatch):
+    """RT-6.9 step 2: an empty poll; a poll with an agent's post and the server's own event:
+    body characters by class, the rest of the item as the envelope."""
+    from mattermost_ai_agent_bus import receipt
+
+    class Inbox:
+        pending = 0
+
+        def __init__(self, batches):
+            self.batches = batches
+
+        async def wait_for_events(self, timeout_sec, max_events):
+            return self.batches.pop(0)
+
+    agent = _ev("mention", user_id="a", message="TASK do it")
+    own = _ev("stall", message="stalled")
+    items = {id(agent): {"kind": "mention", "from_trusted_human": False, "from_agent": True,
+                         "post": {"message": "TASK do it", "id": "p"}},
+             id(own): {"kind": "stall", "from_trusted_human": False, "from_agent": False,
+                       "post": {"message": "stalled"}}}
+
+    async def event_items(events, raw=False):
+        return [dict(items[id(e)]) for e in events]
+
+    async def nothing(*a, **kw):
+        return None
+
+    inbox = Inbox([[], [agent, own]])
+    monkeypatch.setattr(server, "_get_inbox", lambda: inbox)
+    monkeypatch.setattr(server, "_event_items", event_items)
+    monkeypatch.setattr(receipt, "delivered", lambda ids: None)
+    for name in ("_note_delivered", "_note_unanswered", "_typing_for_task", "_crown_events",
+                 "_compact_bystander"):
+        monkeypatch.setattr(server, name, nothing)
+    monkeypatch.setattr(server, "_confirmed", None)
+    await server.wait_for_events(timeout_sec=0)
+    await server.wait_for_events(timeout_sec=0)
+    rows = [e for e in _events() if e["k"] in ("poll", "in")]
+    assert [(e["k"], e.get("empty", e.get("c"))) for e in rows] == [
+        ("poll", 1), ("poll", 0), ("in", "agent"), ("in", "event")]
+    assert (rows[2]["chars"], rows[3]["chars"]) == (len("TASK do it"), len("stalled"))
+    assert rows[2]["env"] == len(server._dump(items[id(agent)])) - len("TASK do it")
+
+
+def test_own_posts_record_their_word():
+    """RT-6.9 step 2: post_message and reply_in_thread key a post by its bus word, else plain."""
+    assert server._post_word("`DONE` merged") == "DONE"
+    assert server._post_word("**IDLE** nothing open") == "IDLE"
+    assert server._post_word("thanks, looking") == "plain"
+    assert stats.POST_WORDS == {*__import__("mattermost_ai_agent_bus.a2a").a2a.WORDS, "ask", "plain", "other"}
+
+
+def test_the_new_keys_decode_within_their_bounds_and_drop_unknown_ones():
+    """RT-6.9, RT-6.43 step 7: the four objects pass the strict decoder as pairs of numbers
+    0 to NUM_MAX; a key outside the fixed lists is left out, never shown; a value of
+    another shape drops the whole line."""
+    line = {"v": "0.102.0", "post_words": {"TASK": [1, 30], "secret-name": [1, 1]},
+            "inbound": {"agent": [1, 2], "envelope": [1, 50], "peer-x": [1, 1]},
+            "polls": [3, 1], "inject": {"drain": [1, 9], "text": [1, 1]}}
+    got = stats.decode_line(json.dumps(line).encode())
+    assert got["post_words"] == {"TASK": [1, 30]} and got["inbound"] == {"agent": [1, 2], "envelope": [1, 50]}
+    assert got["polls"] == [3, 1] and got["inject"] == {"drain": [1, 9]}
+    for bad in ({"polls": [1]}, {"polls": [1, -1]}, {"post_words": {"TASK": 3}},
+                {"inbound": {"agent": [1, "x"]}}, {"inject": {"drain": [1, 10**13]}},
+                {"post_words": {"TASK": [True, 1]}}):
+        with pytest.raises(stats.LineError):
+            stats.decode_line(json.dumps({"v": "0.102.0", **bad}).encode())
+
+
+def test_the_largest_line_with_the_traffic_stays_within_the_limit():
+    """RT-6.43 step 7: every key of every list at NUM_MAX still fits NATS_BODY_MAX."""
+    big = [10**12, 10**12]
+    line = {"v": "0.102.0", "sid": "3f9a1c2b7d4e", "rt": "claude-code", "kind": "session",
+            "tools": {n: big for n in stats.TOOL_NAMES}, "post_words": dict.fromkeys(stats.POST_WORDS, big),
+            "inbound": dict.fromkeys(stats.INBOUND_KEYS, big), "polls": big,
+            "inject": dict.fromkeys(stats.INJECT_KINDS, big),
+            "wakes": dict.fromkeys(stats.WAKE_REASONS, 10**12), "blocks": dict.fromkeys(stats.BLOCK_KINDS, 10**12)}
+    body = stats.nats_body(line | {k: 10**12 for k, label in stats.LINE_KEYS.items()
+                                   if k not in line and k not in ("final", "part", "posts", "compact", "tok")})
+    assert body is not None and len(body) <= stats.NATS_BODY_MAX
+
+
+def test_the_report_groups_the_traffic_into_overhead_and_coordination():
+    """RT-6.9 step 3: the reader's mapping (CATEGORY_OF) on the summed counts; lines without
+    the counts (older publishers) count in the coverage and leave a version n/a, never 0."""
+    new = {"post_words": {"HELLO": [1, 40], "BYE": [1, 20], "RESULT": [2, 400], "ask": [1, 300], "other": [1, 5]},
+           "inbound": {"agent": [2, 600], "human": [1, 30], "event": [1, 40], "envelope": [4, 800]},
+           "polls": [4, 1], "inject": {"check": [1, 200], "digest": [1, 700]}}
+    lines = [{"v": "0.101.0", "min": 10}, {"v": "0.102.0", "sid": "a" * 12, "min": 10, **new},
+             {"v": "0.102.0", "sid": "b" * 12, "min": 10, **new}, {"v": "0.102.0", "min": 5}]
+    rows = {r["version"]: r for r in stats.report(lines)}
+    assert rows["0.101.0"]["traffic"] is None
+    t = rows["0.102.0"]["traffic"]
+    assert (t["lines"], t["of"]) == (2, 3)
+    assert t["posts"]["RESULT"] == [4, 800] and t["polls"] == 8 and t["empty_polls"] == 2
+    # Overhead: HELLO, BYE, other (3 items, 65), event (1, 40), envelope (800, no items),
+    # hook texts (2, 900), the empty poll (1 item); twice.
+    assert t["overhead"] == [2 * (3 + 1 + 2 + 1), 2 * (65 + 40 + 800 + 900)]
+    assert t["coordination"] == [2 * (2 + 1 + 2 + 1), 2 * (400 + 300 + 600 + 30)]
+    assert t["empty_polls_pct"] == 25 and t["overhead_chars_pct"] == round(1805 * 100 / (1805 + 1330))
+    assert stats.traffic_summary(lines) == t | {"of": 4}
+    assert stats.traffic_summary([{"v": "0.101.0"}]) is None
+    # Every key of the fixed lists has a category; the mapping lives on the reader's side.
+    assert set(stats.CATEGORY_OF["post_words"]) == stats.POST_WORDS
+    assert set(stats.CATEGORY_OF["inbound"]) == stats.INBOUND_KEYS
+    assert set(stats.CATEGORY_OF["inject"]) == stats.INJECT_KINDS
+
+
+def test_every_post_of_the_server_is_counted():
+    """RT-6.9 step 1: every chat post an MCP server module makes notes `post` with its word
+    (or `other`) just before it: none of the server's own posts is missing from `posts`
+    and `post_words`. Leaves out the chat adapters themselves, the STATS lines (to a
+    channel no agent reads) and the login's HTTP calls."""
+    import re
+    from pathlib import Path
+
+    src = Path(stats.__file__).parent
+    skip = {"client.py", "port.py", "nats_port.py", "natsbus.py", "compose.py", "login.py", "stats.py",
+            "mattermost_ws.py"}
+    missing = []
+    for f in sorted(src.glob("*.py")):
+        if f.name in skip:
+            continue
+        lines = f.read_text().splitlines()
+        for i, line in enumerate(lines):
+            if re.search(r"\b(?:self\.)?client\.post\(", line) and "def " not in line:
+                if not any('stats.record("post"' in x for x in lines[max(0, i - 10):i + 1]):
+                    missing.append(f"{f.name}:{i + 1}")
+    assert missing == []
+
+
+async def test_the_servers_own_posts_count_as_other(monkeypatch):
+    """RT-6.9 step 1: the answer on departed or absent agents is the server's own post."""
+    from types import SimpleNamespace
+
+    from mattermost_ai_agent_bus import departed, lease
+
+    posted = []
+
+    class Client:
+        permalink_base, work_channel_name = "https://x", "agents"
+
+        async def post(self, text, **kw):
+            posted.append(text)
+
+    async def here(*a, **kw):
+        return False
+
+    monkeypatch.setattr(lease, "crown_here", here)
+    monkeypatch.setattr(departed, "reply_text", lambda *a: "agent-x left the bus")
+    await departed.tell(Client(), SimpleNamespace(thread="r", channel_id="c"), UID, [])
+    assert posted and [(e["w"], e["chars"]) for e in _events() if e["k"] == "post"] == [("other", len(posted[0]))]
+
+
+def test_stats_report_returns_the_category_sums_only():
+    """RT-6.9 step 3: asked for the report, an agent gets the traffic's sums, shares and
+    coverage; the sums per key stay in the script's --json and the console."""
+    line = {"v": "0.102.0", "post_words": {"TASK": [1, 30]}, "inbound": {"agent": [1, 9]},
+            "polls": [2, 5], "inject": {"wake": [1, 40], "digest": [1, 100]}}
+    full = stats.report([line])
+    t = stats.brief(full)[0]["traffic"]
+    assert set(t) == {"lines", "of", "polls", "empty_polls", "empty_polls_pct", "overhead", "coordination",
+                      "overhead_chars_pct"}
+    # A woken post's text is coordination; a line's empty polls never exceed its polls.
+    assert t["coordination"] == [3, 79] and t["overhead"] == [1 + 2, 100]
+    assert (t["empty_polls"], t["empty_polls_pct"]) == (2, 100)
+    assert "posts" in full[0]["traffic"]
+
+
+async def test_a_counter_that_fails_never_fails_wait_for_events(monkeypatch):
+    """RT-6.9: the poll's counting is bookkeeping: should it raise, the events still go out."""
+    class Inbox:
+        pending = 0
+
+        async def wait_for_events(self, timeout_sec, max_events):
+            return []
+
+    def boom(*a, **kw):
+        raise OSError("disk full")
+
+    async def nothing(*a, **kw):
+        return None
+
+    async def no_items(events, raw=False):
+        return []
+
+    monkeypatch.setattr(server, "_get_inbox", lambda: Inbox())
+    monkeypatch.setattr(server, "_event_items", no_items)
+    for name in ("_note_delivered", "_note_unanswered", "_typing_for_task", "_crown_events",
+                 "_compact_bystander"):
+        monkeypatch.setattr(server, name, nothing)
+    monkeypatch.setattr(server, "_confirmed", None)
+    monkeypatch.setattr(stats, "record", lambda kind, **v: boom() if kind == "poll" else None)
+    assert json.loads(await server.wait_for_events(timeout_sec=0)) == []
+
+
+SPLIT_TOK = {"req": 50, "bus_req": 9, "fixed": 1000,
+             "all": {"in": 1000, "read": 80_000, "w5m": 2000, "w1h": 1000, "out": 3000},
+             "bus": {"in": 400, "read": 9000, "w5m": 800, "w1h": 0, "out": 900},
+             "ovh": {"in": 100, "read": 8000, "w5m": 200, "w1h": 0, "out": 400},
+             "coord": {"in": 300, "read": 1000, "w5m": 600, "w1h": 0, "out": 500},
+             "req_ovh": 4, "req_coord": 6, "m": 1}
+
+
+def test_the_token_split_decodes_within_its_bounds_and_drops_unknown_keys():
+    """RT-6.9 step 2, RT-6.43 step 7: tok.ovh and tok.coord pass the strict decoder as
+    objects of numbers 0 to NUM_MAX, req_ovh, req_coord and m as numbers; a token type or
+    a key outside the lists is left out, never shown; another shape drops the line."""
+    tok = SPLIT_TOK | {"ovh": SPLIT_TOK["ovh"] | {"peer": 7}, "per_agent": {"x": 1}}
+    got = stats.decode_line(json.dumps({"v": "0.103.0", "tok": tok}).encode())["tok"]
+    assert got == SPLIT_TOK
+    for bad in ({"ovh": {"in": -1}}, {"coord": {"out": 10**13}}, {"coord": 5}, {"m": 1.5},
+                {"req_ovh": True}, {"ovh": {"in": [1, 2]}}):
+        with pytest.raises(stats.LineError):
+            stats.decode_line(json.dumps({"v": "0.103.0", "tok": SPLIT_TOK | bad}).encode())
+    big = {k: 10**12 for k in overhead.KEYS}
+    line = {"v": "0.103.0", "sid": "3f9a1c2b7d4e", "rt": "claude-code", "tok": {
+        "req": 10**12, "bus_req": 10**12, "fixed": 10**12, "skill": 1, "all": big, "bus": big,
+        "ovh": big, "coord": big, "req_ovh": 10**12, "req_coord": 10**12, "m": 1}}
+    body = stats.nats_body(line)
+    assert body is not None and len(body) <= stats.NATS_BODY_MAX
+    assert len(json.dumps(line["tok"], separators=(",", ":"))) < 600   # RT-6.9: a whole tok at its bounds
+
+
+def test_the_report_splits_the_tokens_by_category():
+    """RT-6.9 step 3: the tokens by category, an estimate: task work the remainder per
+    token type, shares in raw tokens and input-token equivalents; lines without the split
+    (older publishers, other harnesses) count in the coverage and leave a version n/a,
+    never 0; forged values stay within 0 to 100 %."""
+    lines = [{"v": "0.102.0", "rt": "claude-code", "tok": {"req": 5, "all": {"in": 10}}},
+             {"v": "0.103.0", "sid": "a" * 12, "rt": "claude-code", "min": 60, "crown_sec": 3600,
+              "tok": SPLIT_TOK},
+             {"v": "0.103.0", "sid": "b" * 12, "rt": "opencode", "min": 60},
+             {"v": "0.103.0", "sid": "c" * 12, "rt": "claude-code", "min": 60, "crown_sec": 0,
+              "tok": {"all": {"in": 10}, "ovh": {"in": 50}, "coord": {"in": 50}, "m": 1}}]
+    rows = {r["version"]: r for r in stats.report(lines)}
+    assert rows["0.102.0"]["split"] is None
+    s = rows["0.103.0"]["split"]
+    assert (s["lines"], s["of"], s["harnesses"], s["estimated"]) == (2, 3, ["claude-code"], True)
+    assert s["types"]["overhead"]["in"] == 110 and s["types"]["coordination"]["in"] == 300
+    assert s["types"]["task"] == {"in": 600, "read": 71_000, "w5m": 1200, "w1h": 1000, "out": 2100}
+    assert s["raw"] == {"task": 75_900, "overhead": 8710, "coordination": 2400}
+    assert s["eq"]["overhead"] == round(110 + 800 + 250 + 2000)
+    assert all(0 <= p <= 100 for p in (*s["eq_pct"].values(), *s["raw_pct"].values()))
+    assert (s["req_ovh"], s["req_coord"]) == (4, 6)
+    roles = {r["role"]: r["split"] for r in rows["0.103.0"]["roles"]}
+    assert roles["coordinator"]["lines"] == 1 and roles["unknown"] is None
+    assert stats.split_summary(lines) == s | {"of": 4}
+    # Another method's lines are kept apart: not summed, counted in the coverage only.
+    assert stats.split_summary([lines[1] | {"tok": SPLIT_TOK | {"m": 2}}]) is None
+    # stats_report: the sums, shares and coverage, not the token types.
+    brief = stats.brief(stats.report(lines))[-1]
+    assert set(brief["split"]) == {"estimated", "lines", "of", "harnesses", "raw", "eq", "raw_pct", "eq_pct"}
+    assert brief["split"]["eq_pct"] == s["eq_pct"]
+    assert all("types" not in (r["split"] or {}) for r in brief["roles"])

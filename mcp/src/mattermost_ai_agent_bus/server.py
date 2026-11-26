@@ -940,6 +940,24 @@ def _done_typing() -> None:
         _inbox.stop_typing()
 
 
+def _post_word(message: str) -> str:
+    """An own post's key in the stats' `post_words` (RT-6.9 step 2): its bus word, else plain."""
+    return a2a.word(message) or "plain"
+
+
+def _note_inbound(cls: str, body: int, envelope: int) -> None:
+    """RT-6.9 step 2: a post or event handed to the agent (pushed or returned), by the
+    server-verified author class (agent, human, or the server's own event), the characters
+    of its body and of the envelope around it. Numbers only."""
+    stats.record("in", c=cls, chars=body, env=max(0, envelope))
+
+
+def _inbound_class(event: Any, item: Mapping[str, Any]) -> str:
+    if event.kind in OWN_EVENTS:
+        return "event"
+    return "agent" if item.get("from_agent") else "human"
+
+
 def _out(tool: str, obj: Any) -> str:
     """A tool's result, counted: bus data that stays in the agent's context (RT-6.9)."""
     text = _dump(obj)
@@ -1675,7 +1693,7 @@ async def announce(
     _done_typing()
     stats.set_user(me.id)
     text = a2a.styled("\n".join(lines))  # `HELLO`, a blank line, the two lines
-    stats.record("post", chars=len(text))
+    stats.record("post", chars=len(text), w="HELLO")
     post = await client.post(lease.with_crown(_unbroadcast(text)[0], me.id,
                                               here=await lease.crown_here(client, me.id)),
                              props=a2a.props("HELLO", card=card))
@@ -1817,7 +1835,7 @@ async def post_as_bot(client: ChatPort | None, message: str, channel_id: str = "
     ups, bad = await _take_files(client, files, channel_id, root_id)
     if bad:
         return _refusal(bad)
-    stats.record("post", chars=len(message))
+    stats.record("post", chars=len(message), w=_post_word(message))
     try:
         post = await client.post(
             lease.with_crown(message, uid, here=here),
@@ -1900,7 +1918,7 @@ async def reply_as_bot(client: ChatPort | None, root_id: str, message: str,
     ups, bad = await _take_files(client, files, channel_id, root_id)
     if bad:
         return _refusal(bad)
-    stats.record("post", chars=len(message))
+    stats.record("post", chars=len(message), w=_post_word(message))
     try:
         post = await client.post(
             lease.with_crown(message, uid, here=here),
@@ -2312,7 +2330,7 @@ async def _post_ask(client: ChatPort, me: Any, *, to: str, head: str, need: str,
         # RT-6.11: the alternatives as data too, so a reader need not parse the
         # Answer line (a text that is itself "yes" or holds a " · " broke that)
         props["ask_answers"] = list(answers)
-    stats.record("post", chars=len(text))
+    stats.record("post", chars=len(text), w=a2a.ASK)
     # RT-6.31 step 5: the debug card after the ask's own, about the thread it came from.
     shown = await _with_debug(client, me.id, props, channel_id="", root_id="", thread=root_id,
                               call=debug.call_line("ask_human", (), need=need, context=context,
@@ -2333,7 +2351,7 @@ async def _post_ask(client: ChatPort, me: Any, *, to: str, head: str, need: str,
         # links.send shows `ask <id>` as the ask's headline, linked (RT-6.15 step 2).
         link = lease.with_crown(f"{a2a.symbol(Mark.ASK)} ask {post.id}", me.id,
                                 here=await lease.crown_here(client, me.id, root_id=root_id))
-        stats.record("post", chars=len(link))
+        stats.record("post", chars=len(link), w=a2a.ASK)
         try:
             # A pointer, not an ask: its kind keeps it out of the open asks (RT-6.19).
             linked = await client.post(link, root_id=root_id,
@@ -2405,7 +2423,7 @@ async def resolve_ask(post_id: str, note: str = "") -> str:
             log.info("queued ask to %s not posted: %s", target, exc)
     if note:
         note, _ = await _unmention(client, note)
-        stats.record("post", chars=len(note))
+        stats.record("post", chars=len(note), w=a2a.ASK)
         with unanswered.server_line():  # resolving answered the thread, the note adds nothing
             await client.post(lease.with_crown(note, me.id,
                                                here=await lease.crown_here(client, me.id, root_id=post_id)),
@@ -2475,7 +2493,7 @@ async def stats_report(versions: int = 3) -> str:
     except Exception as exc:  # noqa: BLE001 — off the bus, the channel missing or not readable
         why = str(exc).split(" for url ")[0] or type(exc).__name__
         return _refused("stats_report", f"cannot read ~{name}: {why}"[:300])
-    return _out("stats_report", {"channel": name, "versions": rows[-max(1, versions):]})
+    return _out("stats_report", {"channel": name, "versions": stats.brief(rows[-max(1, versions):])})
 
 
 @tool()
@@ -2595,6 +2613,14 @@ async def wait_for_events(
         await _compact_bystander(payload)
         for item in payload:
             slim.cut_item(item)  # RT-6.12 step 3: the rest via get_thread
+    # RT-6.9 step 2: the poll, empty or not, and what it handed over, by author class.
+    try:
+        stats.record("poll", empty=int(not events))
+        for e, item in zip(events, payload, strict=False):
+            body = len(channel.notification(item)["content"])  # the message, as a pushed tag holds it
+            _note_inbound(_inbound_class(e, item), body, len(_dump(item)) - body)
+    except Exception as exc:  # noqa: BLE001 — a counter never fails the call
+        log.warning("poll not counted: %s", type(exc).__name__)
     more = getattr(inbox, "pending", 0)
     if events and more:
         # More than max_events were queued; mentions and DMs came first.
@@ -3093,10 +3119,16 @@ async def _push_delivered(item: dict[str, Any]) -> None:
             else:
                 await _typing_for_task(batch.events, batch.items)
         await _note_delivered([item.event], [item])
-        if item.get(channel.PUSHED):  # held for the digest, quiet, dropped: not handed over (RT-6.9)
+        # PUSHED: it went out into the session and reached the agent; an item held for the
+        # digest, a quiet one or one dropped was not handed over (RT-6.9) and nobody asked it yet.
+        if item.get(channel.PUSHED):
             _note_heard([item.event], [item], pushed=True)
-        if item.get(channel.PUSHED):  # held for the digest or dropped: nobody asked it yet
+        if item.get(channel.PUSHED):  # it may now wait for an answer (RT-6.2 step 2)
             await _note_unanswered([item.event], [item])
+        if item.get(channel.PUSHED):  # RT-6.9 step 2: the tag's text and its attributes
+            tag = channel.notification(item)
+            _note_inbound(_inbound_class(item.event, item), len(tag["content"]),
+                          len(json.dumps(tag["meta"], ensure_ascii=False)))
         stats.record("push", name=item["kind"], chars=len(json.dumps(item, ensure_ascii=False)))
     except Exception as exc:  # noqa: BLE001 — the item is delivered; its bookkeeping is cosmetic
         log.warning("push bookkeeping of %s failed: %s", item.get("kind"), exc)
@@ -3132,7 +3164,7 @@ async def _permission_request(params: dict[str, Any]) -> None:
                             "responsible human not trusted" if responsible else "no responsible human")
             return
         text = permission.prompt(params)
-        stats.record("post", chars=len(text))
+        stats.record("post", chars=len(text), w="other")
         post = await client.post(text, channel_id=await client.direct_channel_with(to),
                                  props=a2a.props(kind=a2a.PERMISSION))
         await _posted(client, post)
@@ -3171,10 +3203,11 @@ async def _push_intercept(item: dict[str, Any]) -> bool:
                 if item.get("kind") != "dm":
                     return False  # in a channel it may be another agent's prompt
                 permission.note("unknown id", rid, reason=f"{behavior} for an id that is not open")
+                text = (f"No open permission prompt `{rid}`: answered in the terminal, or more "
+                        "than 24 h old.")
+                stats.record("post", chars=len(text), w="other")  # RT-6.9: the server's own post
                 with unanswered.server_line():  # RT-6.2 step 2: the server's line, no answer
-                    await _posted(client, await client.post(
-                        f"No open permission prompt `{rid}`: answered in the terminal, or more "
-                        "than 24 h old.", root_id=post.get("id")))
+                    await _posted(client, await client.post(text, root_id=post.get("id")))
                 return True
         pending = _relay.take(rid)
         if pending is None:  # expired since the check above
@@ -3184,10 +3217,10 @@ async def _push_intercept(item: dict[str, Any]) -> bool:
         permission.note("verdict sent", rid, pending.tool,
                         f"{behavior} by {who}" + ("" if _pusher.connection is not None else ", no connection"))
         word = f"{a2a.symbol(Mark.ALLOWED)} allowed" if behavior == "allow" else f"{a2a.symbol(Mark.DENIED)} denied"
+        text = f"{word} by {who} · `{rid}` sent to Claude Code; it applies unless the terminal answered first."
+        stats.record("post", chars=len(text), w="other")  # RT-6.9: the server's own post
         with unanswered.server_line():  # RT-6.2 step 2: the server's line, no answer
-            await _posted(client, await client.post(
-                f"{word} by {who} · `{rid}` sent to Claude Code; it applies unless the terminal "
-                "answered first.", root_id=pending.post_id))
+            await _posted(client, await client.post(text, root_id=pending.post_id))
         asks.resolve((await client.get_me()).id, pending.post_id)
         _done_typing()
         return True
@@ -3205,10 +3238,10 @@ async def permissions_obsolete(client: ChatPort) -> None:
         permission.note("closed at turn end", rid, pending.tool, "answered in the terminal")
         try:
             uid = uid or (await client.get_me()).id
+            text = f"{a2a.symbol(Mark.DESKTOP)} Answered in the terminal · `{rid}`: this prompt is closed."
+            stats.record("post", chars=len(text), w="other")  # RT-6.9: the server's own post
             with unanswered.server_line():  # RT-6.2 step 2: the server's line, no answer
-                await _posted(client, await client.post(
-                    f"{a2a.symbol(Mark.DESKTOP)} Answered in the terminal · `{rid}`: this prompt is closed.",
-                    root_id=pending.post_id))
+                await _posted(client, await client.post(text, root_id=pending.post_id))
             asks.resolve(uid, pending.post_id)
         except Exception as exc:  # noqa: BLE001 — a note, never fail the turn's end
             log.info("permission prompt %s: no terminal note: %s", rid, exc)

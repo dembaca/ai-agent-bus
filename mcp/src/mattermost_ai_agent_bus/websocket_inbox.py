@@ -18,7 +18,7 @@ from types import MappingProxyType
 from typing import Any
 
 from . import (a2a, askroute, asks, compose, departed, gate, lease, mandate, ownpost, receipt,
-               unread, watermark)
+               stats, unread, watermark)
 from .compose import BusClient
 from .events import ChatEvent, EventSource, MembershipEvent, PostEvent, ReactionEvent
 from .homes import guest_ids, lobby_ids, watched_channel_ids
@@ -694,6 +694,7 @@ class WebSocketInbox:
         if root:
             try:
                 text = await gate.reply_text(self.client, who, dm=dm, guest=guest)
+                stats.record("post", chars=len(text), w="other")  # RT-6.9: the server's own post
                 self.handled(await self.client.post(
                     text, channel_id=cid or None, root_id=root, props={a2a.system_key(): True}))
             except Exception as exc:  # noqa: BLE001 — the post is gated all the same

@@ -485,11 +485,17 @@ async def test_stat_counts_into_the_servers_own_file(api):
     _, h = await api(FakeClient())
     assert (await h.post("/v1/stat", json={"k": "turn", "by": "bus"})).json() == {"ok": True}
     assert (await h.post("/v1/stat", json={"k": "transcript", "path": "/x/t.jsonl", "t": 5})).status_code == 200
+    assert (await h.post("/v1/stat", json={"k": "inject", "name": "drain", "chars": 120})).status_code == 200
     rows = [json.loads(line) for line in
             (session_file.state_dir() / f"stats-{UID}.jsonl").read_text().splitlines()]
-    assert [(e["k"], e.get("by") or e.get("path")) for e in rows] == [
-        ("turn", "bus"), ("transcript", "/x/t.jsonl")]
+    assert [(e["k"], e.get("by") or e.get("path") or e.get("name")) for e in rows] == [
+        ("turn", "bus"), ("transcript", "/x/t.jsonl"), ("inject", "drain")]
     assert rows[1]["t"] != 5  # the server's own time
+    # RT-6.9 step 1: a text put into the context, by kind and length only.
+    for bad in ({"k": "inject", "name": "drain", "chars": 1, "text": "x"}, {"k": "inject", "name": "mine", "chars": 1},
+                {"k": "inject", "name": "drain", "chars": "12"}, {"k": "inject", "name": "drain", "chars": -1},
+                {"k": "inject", "name": "drain"}, {"k": "inject", "name": "drain", "chars": 10**7 + 1}):
+        assert (await h.post("/v1/stat", json=bad)).status_code == 400
     for bad in ({"k": "evil"}, {"k": "turn", "Bad": 1}, {"k": "turn", "a": [1]},
                 {"k": "turn", "a": 1, "b": 2, "c": 3, "d": 4, "e": 5}, {"k": "wake", "a": "x" * 5000}):
         assert (await h.post("/v1/stat", json=bad)).status_code == 400

@@ -107,44 +107,189 @@
     "next": null
   },
   "report": {
-    "id": "asks-24h",
-    "title": "asks to humans",
-    "window": "24 h",
+    "id": "tokens-by-category",
+    "title": "tokens by category",
+    "window": "7 d",
+    "note": "estimated: exact totals per token type from Claude Code's transcript, split by content at 4 characters per token; text and thinking by what drove the request, a convention; from 1 of 1 lines (claude-code)",
     "fields": [
       {
-        "label": "asks",
+        "label": "lines with the split",
         "unit": "count",
-        "value": 2
+        "value": 1
       },
       {
-        "label": "answered",
+        "label": "lines",
         "unit": "count",
-        "value": 2
+        "value": 1
       },
       {
-        "label": "answered share",
-        "unit": "%",
-        "value": 100
-      },
-      {
-        "label": "mean wait for an answer",
-        "unit": "s",
-        "value": 630
-      },
-      {
-        "label": "longest wait for an answer",
-        "unit": "s",
-        "value": 0
-      },
-      {
-        "label": "still open at the part's end",
+        "label": "requests driven by the bus alone",
         "unit": "count",
-        "value": 0
+        "value": 6
+      },
+      {
+        "label": "requests driven by coordination",
+        "unit": "count",
+        "value": 9
       },
       {
         "label": "age of the oldest line",
         "unit": "s",
         "value": 0
+      }
+    ],
+    "stacks": [
+      {
+        "label": "fleet",
+        "estimated": true,
+        "segments": [
+          {
+            "category": "task",
+            "value": 10550,
+            "percent": 72
+          },
+          {
+            "category": "overhead",
+            "value": 2650,
+            "percent": 18
+          },
+          {
+            "category": "coordination",
+            "value": 1500,
+            "percent": 10
+          }
+        ],
+        "raw": [
+          {
+            "category": "task",
+            "value": 66410,
+            "percent": 72
+          },
+          {
+            "category": "overhead",
+            "value": 21230,
+            "percent": 23
+          },
+          {
+            "category": "coordination",
+            "value": 4460,
+            "percent": 5
+          }
+        ]
+      },
+      {
+        "label": "version 0.101.0",
+        "estimated": true,
+        "segments": [
+          {
+            "category": "task",
+            "value": 10550,
+            "percent": 72
+          },
+          {
+            "category": "overhead",
+            "value": 2650,
+            "percent": 18
+          },
+          {
+            "category": "coordination",
+            "value": 1500,
+            "percent": 10
+          }
+        ],
+        "raw": [
+          {
+            "category": "task",
+            "value": 66410,
+            "percent": 72
+          },
+          {
+            "category": "overhead",
+            "value": 21230,
+            "percent": 23
+          },
+          {
+            "category": "coordination",
+            "value": 4460,
+            "percent": 5
+          }
+        ]
+      },
+      {
+        "label": "role worker",
+        "estimated": true,
+        "segments": [
+          {
+            "category": "task",
+            "value": 10550,
+            "percent": 72
+          },
+          {
+            "category": "overhead",
+            "value": 2650,
+            "percent": 18
+          },
+          {
+            "category": "coordination",
+            "value": 1500,
+            "percent": 10
+          }
+        ],
+        "raw": [
+          {
+            "category": "task",
+            "value": 66410,
+            "percent": 72
+          },
+          {
+            "category": "overhead",
+            "value": 21230,
+            "percent": 23
+          },
+          {
+            "category": "coordination",
+            "value": 4460,
+            "percent": 5
+          }
+        ]
+      },
+      {
+        "label": "harness claude-code",
+        "estimated": true,
+        "segments": [
+          {
+            "category": "task",
+            "value": 10550,
+            "percent": 72
+          },
+          {
+            "category": "overhead",
+            "value": 2650,
+            "percent": 18
+          },
+          {
+            "category": "coordination",
+            "value": 1500,
+            "percent": 10
+          }
+        ],
+        "raw": [
+          {
+            "category": "task",
+            "value": 66410,
+            "percent": 72
+          },
+          {
+            "category": "overhead",
+            "value": 21230,
+            "percent": 23
+          },
+          {
+            "category": "coordination",
+            "value": 4460,
+            "percent": 5
+          }
+        ]
       }
     ]
   }

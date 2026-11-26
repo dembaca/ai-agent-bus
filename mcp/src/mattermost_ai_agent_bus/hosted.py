@@ -59,7 +59,7 @@ import anyio
 from anyio.abc import SocketAttribute, TaskStatus
 from anyio.streams.buffered import BufferedByteReceiveStream
 
-from . import a2a, session_file
+from . import a2a, session_file, stats
 
 if TYPE_CHECKING:
     from .compose import BusClient
@@ -347,6 +347,7 @@ async def _relay_dm(client: ChatPort, started: float) -> None:
             return
         me = await client.get_me()
         text = relay_dm_text(me.username, harness(), started)
+        stats.record("post", chars=len(text), w="other")  # RT-6.9: the server's own post
         await client.post(text, channel_id=await client.direct_channel_with(uid))
         log.info("no relay: told %s by DM", who)
     except Exception as exc:  # noqa: BLE001 — the warning in bus_info and /v1/me stays

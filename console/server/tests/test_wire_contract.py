@@ -128,7 +128,10 @@ def test_the_report_the_fixture_states() -> None:
 
     line = {"v": "0.101.0", "sid": "3f9a1c2b7d4e", "part": 2, "rt": "claude-code",
             "kind": "session", "min": 1440, "turns": 31, "asks": 2, "asks_answered": 2,
-            "ask_wait_sec": 1260, "crown_sec": 0}
+            "ask_wait_sec": 1260, "crown_sec": 0,
+            "tok": {"req": 120, "bus_req": 18, "fixed": 21000, "all": {"in": 1200, "read": 90000, "out": 900},
+                    "ovh": {"in": 150, "read": 21000, "out": 80}, "coord": {"in": 300, "read": 4000, "out": 160},
+                    "req_ovh": 6, "req_coord": 9, "m": 1}}
     book = StatsBook()
     body = stats.nats_body(line)
     assert body is not None
