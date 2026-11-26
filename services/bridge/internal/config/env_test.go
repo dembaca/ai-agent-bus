@@ -1,7 +1,9 @@
 package config
 
 import (
+	"os"
 	"reflect"
+	"regexp"
 	"strings"
 	"testing"
 )
@@ -136,18 +138,123 @@ func TestLoadRefusesNamesThatDisagree(t *testing.T) {
 	}
 }
 
-func TestAnUnexpandedPlaceholderCountsAsUnset(t *testing.T) {
-	env := NewEnv(func(n string) (string, bool) {
-		switch n {
-		case "CB_BRIDGE_MM_URL":
-			return "${CB_BRIDGE_MM_URL}", true
-		case "BRIDGE_MM_URL":
-			return "https://chat.example", true
+// The bridge has no plugin manifest: a value that is exactly ${NAME} is a
+// deployment mistake and refuses, naming the variable, under the new name
+// and under the old one, never falling back past it.
+func TestAnUnexpandedPlaceholderRefuses(t *testing.T) {
+	for _, tc := range []struct {
+		env map[string]string
+		bad string
+	}{
+		{map[string]string{"CB_BRIDGE_CA_FILE": "${CB_BRIDGE_CA_FILE}", "BRIDGE_CA_FILE": "/run/ca"}, "CB_BRIDGE_CA_FILE"},
+		{map[string]string{"CB_BRIDGE_CA_FILE": "${CB_BRIDGE_CA_FILE}"}, "CB_BRIDGE_CA_FILE"},
+		{map[string]string{"BRIDGE_CA_FILE": "${BRIDGE_CA_FILE}"}, "BRIDGE_CA_FILE"},
+		{map[string]string{"CB_BRIDGE_CA_FILE": "/run/ca", "BRIDGE_CA_FILE": "${CB_BRIDGE_CA_FILE}"}, "BRIDGE_CA_FILE"},
+	} {
+		_, err := mapEnv(tc.env, nil).Get("CB_BRIDGE_CA_FILE", "BRIDGE_CA_FILE")
+		if err == nil || !strings.HasPrefix(err.Error(), tc.bad+" ") || strings.Contains(err.Error(), "/run/ca") {
+			t.Errorf("%v: want a refusal naming %s and no value, got %v", tc.env, tc.bad, err)
 		}
-		return "", false
-	}, nil)
-	v, err := env.Get("CB_BRIDGE_MM_URL", "BRIDGE_MM_URL")
-	if err != nil || v != "https://chat.example" {
-		t.Fatalf("got %q, %v; want the old name's value", v, err)
+	}
+	// Only the exact form is a placeholder; a value that contains one is a value.
+	if v, err := mapEnv(map[string]string{"CB_BRIDGE_X": "x${Y}"}, nil).Get("CB_BRIDGE_X", "BRIDGE_X"); err != nil || v != "x${Y}" {
+		t.Fatalf("got %q, %v", v, err)
+	}
+	// Load stops on it too.
+	if _, err := Load(mapEnv(map[string]string{"CB_BRIDGE_CA_FILE": "${CB_BRIDGE_CA_FILE}"}, nil)); err == nil ||
+		!strings.Contains(err.Error(), "CB_BRIDGE_CA_FILE") {
+		t.Fatalf("Load: %v", err)
+	}
+}
+
+// The removal release flips oldNamesRemoved, which NewEnv copies into
+// refuseOld: an old name alone then refuses, naming both names; the new name
+// alone, or both equal, still pass.
+func TestTheRemovalReleaseRefusesAnOldNameAlone(t *testing.T) {
+	if e := NewEnv(nil, nil); e.refuseOld != oldNamesRemoved {
+		t.Fatal("NewEnv does not copy oldNamesRemoved")
+	}
+	e := mapEnv(map[string]string{"BRIDGE_BOT_PREFIX": "bb-"}, nil)
+	e.refuseOld = true
+	v, err := e.Get("CB_BRIDGE_MM_BOT_PREFIX", "BRIDGE_BOT_PREFIX")
+	if err == nil || v != "" || !strings.HasPrefix(err.Error(), "BRIDGE_BOT_PREFIX ") ||
+		!strings.Contains(err.Error(), "CB_BRIDGE_MM_BOT_PREFIX") || strings.Contains(err.Error(), "bb-") {
+		t.Fatalf("want a refusal naming both names and no value, got %q, %v", v, err)
+	}
+	for _, env := range []map[string]string{
+		{"CB_BRIDGE_MM_BOT_PREFIX": "bb-"},
+		{"CB_BRIDGE_MM_BOT_PREFIX": "bb-", "BRIDGE_BOT_PREFIX": "bb-"},
+	} {
+		e := mapEnv(env, nil)
+		e.refuseOld = true
+		if v, err := e.Get("CB_BRIDGE_MM_BOT_PREFIX", "BRIDGE_BOT_PREFIX"); err != nil || v != "bb-" {
+			t.Errorf("%v: got %q, %v", env, v, err)
+		}
+	}
+}
+
+// loadable is the least environment Load accepts, under the new names.
+func loadable() map[string]string {
+	return map[string]string{
+		"CB_BRIDGE_NATS_URL": "tls://nats.example:4222", "CB_BRIDGE_NATS_SEED_FILE": "/run/seed",
+		"CB_BRIDGE_MM_URL": "https://chat.example", "CB_BRIDGE_MM_TOKEN_FILE": "/run/token",
+		"CB_BRIDGE_MM_TEAM": "ai-agents", "CB_BRIDGE_HOMES": "nats-pilot",
+	}
+}
+
+// The bridge's CA file: an empty CB_BRIDGE_CA_FILE beside a set
+// BRIDGE_CA_FILE refuses (empty is set, it never falls back to the old
+// name), and the new name alone is the CA.
+func TestTheCAFileSetting(t *testing.T) {
+	env := loadable()
+	env["CB_BRIDGE_CA_FILE"], env["BRIDGE_CA_FILE"] = "", "/run/ca.pem"
+	_, err := Load(mapEnv(env, nil))
+	if err == nil || !strings.Contains(err.Error(), "CB_BRIDGE_CA_FILE") ||
+		!strings.Contains(err.Error(), " BRIDGE_CA_FILE") || strings.Contains(err.Error(), "/run/ca.pem") {
+		t.Fatalf("empty new name beside the old one: %v", err)
+	}
+	env = loadable()
+	env["CB_BRIDGE_CA_FILE"] = "/run/ca.pem"
+	var w warnings
+	c, err := Load(mapEnv(env, w.warn))
+	if err != nil || c.CAFile != "/run/ca.pem" || len(w) != 0 {
+		t.Fatalf("new name alone: %q, %v, warnings %q", c.CAFile, err, w)
+	}
+}
+
+// The 19 renames Load reads are exactly the rows of the bridge's table in
+// docs/env-names.md, old name to new name. Load reads each setting's new
+// name, then its old one; the recorded lookups pair up.
+func TestTheRenamesAreTheDocsTable(t *testing.T) {
+	doc, err := os.ReadFile("../../../../docs/env-names.md")
+	if err != nil {
+		t.Fatal(err)
+	}
+	_, section, ok := strings.Cut(string(doc), "\n### The bridge (19)\n")
+	if !ok {
+		t.Fatal("docs/env-names.md has no section \"The bridge (19)\"")
+	}
+	section, _, _ = strings.Cut(section, "\n### ")
+	row := regexp.MustCompile("(?m)^\\| `([A-Z0-9_]+)` \\| `(CB_[A-Z0-9_]+)` \\|")
+	want := map[string]string{}
+	for _, m := range row.FindAllStringSubmatch(section, -1) {
+		want[m[1]] = m[2]
+	}
+	if len(want) != 19 {
+		t.Fatalf("the doc's bridge table has %d rows, want 19: %v", len(want), want)
+	}
+	var looked []string
+	if _, err := Load(NewEnv(func(n string) (string, bool) { looked = append(looked, n); return "", false }, nil)); err == nil {
+		t.Fatal("Load accepted an empty environment")
+	}
+	if len(looked)%2 != 0 {
+		t.Fatalf("an odd number of lookups: %q", looked)
+	}
+	got := map[string]string{}
+	for i := 0; i < len(looked); i += 2 {
+		got[looked[i+1]] = looked[i]
+	}
+	if !reflect.DeepEqual(got, want) {
+		t.Fatalf("Load reads %v\nthe doc says %v", got, want)
 	}
 }

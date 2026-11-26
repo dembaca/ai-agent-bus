@@ -17,7 +17,8 @@ type Warn func(msg string, args ...any)
 // the fallbacks go: refuse, never ignore"). In 0.103.0 it is false: an old
 // name alone is read with a deprecation warning. The release after it sets
 // it to true: an old name alone then refuses the start, naming both names,
-// instead of being ignored. Nothing else changes with it.
+// instead of being ignored. Nothing else changes with it. NewEnv copies it
+// into Env.refuseOld, so the tests can cover the refusal.
 const oldNamesRemoved = false
 
 // Env reads the bridge's settings by the reading rule of docs/env-names.md:
@@ -25,9 +26,10 @@ const oldNamesRemoved = false
 // and a refusal when both are set and differ. One Env is one process's
 // reader: it warns once per old name.
 type Env struct {
-	lookup Lookup
-	warn   Warn
-	warned map[string]bool
+	lookup    Lookup
+	warn      Warn
+	refuseOld bool // oldNamesRemoved; a field so the tests can cover it
+	warned    map[string]bool
 }
 
 // NewEnv is a reader over lookup that warns through warn (nil: no warnings).
@@ -35,17 +37,24 @@ func NewEnv(lookup Lookup, warn Warn) *Env {
 	if warn == nil {
 		warn = func(string, ...any) {}
 	}
-	return &Env{lookup: lookup, warn: warn, warned: map[string]bool{}}
+	return &Env{lookup: lookup, warn: warn, refuseOld: oldNamesRemoved, warned: map[string]bool{}}
 }
 
 // OSEnv is the process's environment.
 func OSEnv(warn Warn) *Env { return NewEnv(os.LookupEnv, warn) }
 
 // Get is the value of the setting newName, formerly oldName; "" when neither
-// is set. The error names both names, never a value: a value may be a secret.
+// is set. The error names both names, or the one that holds an unexpanded
+// placeholder, never a value: a value may be a secret.
 func (e *Env) Get(newName, oldName string) (string, error) {
-	nv, nset := e.read(newName)
-	ov, oset := e.read(oldName)
+	nv, nset, err := e.read(newName)
+	if err != nil {
+		return "", err
+	}
+	ov, oset, err := e.read(oldName)
+	if err != nil {
+		return "", err
+	}
 	switch {
 	case !oset:
 		return nv, nil
@@ -56,7 +65,7 @@ func (e *Env) Get(newName, oldName string) (string, error) {
 		e.once(oldName, "config: "+oldName+" is set with the same value as "+newName+
 			"; the old name can go", "old", oldName, "new", newName)
 		return nv, nil
-	case oldNamesRemoved:
+	case e.refuseOld:
 		return "", fmt.Errorf("%s is no longer read: rename it to %s", oldName, newName)
 	default:
 		e.once(oldName, "config: "+oldName+" is deprecated, read as "+newName+
@@ -65,17 +74,25 @@ func (e *Env) Get(newName, oldName string) (string, error) {
 	}
 }
 
-// placeholder is an unexpanded ${NAME}: unset, as in the login service and
-// the MCP server (docs/env-names.md, the reading rule).
+// placeholder is an unexpanded ${NAME}. The MCP server, started from a
+// plugin manifest, reads it as unset; the bridge has no manifest, so there
+// it is a deployment mistake, and read as unset it would silently drop the
+// setting (a pinned CA file, say, and the system roots would apply). It
+// refuses the start, as in the login service (docs/env-names.md, the
+// reading rule).
 var placeholder = regexp.MustCompile(`^\$\{[A-Za-z_][A-Za-z0-9_]*\}$`)
 
-// read is one name: unset when absent or an unexpanded placeholder.
-func (e *Env) read(name string) (string, bool) {
+// read is one name: unset when absent; an unexpanded placeholder is an error
+// that names the name, never the value.
+func (e *Env) read(name string) (string, bool, error) {
 	v, ok := e.lookup(name)
-	if !ok || placeholder.MatchString(v) {
-		return "", false
+	if !ok {
+		return "", false, nil
 	}
-	return v, true
+	if placeholder.MatchString(v) {
+		return "", true, fmt.Errorf("%s holds an unexpanded ${...} placeholder: set it to a value or unset it", name)
+	}
+	return v, true, nil
 }
 
 func (e *Env) once(oldName, msg string, args ...any) {

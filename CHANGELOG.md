@@ -85,7 +85,10 @@ before 0.5.0 are described in the git history.
   deprecation warning naming the new name; both set to the same value pass
   with a warning that the old one can go; both set to different values
   refuse the start, naming both (never a value). An empty value counts as
-  set. The release after this one refuses an old name set without its new
+  set. A value that is exactly an unexpanded `${NAME}` refuses the start,
+  naming the variable: the bridge has no plugin manifest that would expand
+  it, and read as unset it would silently drop a setting such as a pinned
+  CA file. The release after this one refuses an old name set without its new
   name; rename the deployment's settings before it.
 
 - **The central bridge refuses an `http` Mattermost URL to a host that is
