@@ -205,6 +205,13 @@ func LoadSettings(env *envname.Env) (Settings, bool, error) {
 		}
 		s.Callout.Console.MaxLogins = n
 	}
+	if v := get("CB_AUTH_CONSOLE_METRICS"); v != "" {
+		on, err := strconv.ParseBool(v)
+		if err != nil {
+			return Settings{}, true, fmt.Errorf("%w: CB_AUTH_CONSOLE_METRICS %q is neither true nor false", ErrConfig, v)
+		}
+		s.Callout.Console.Metrics = on
+	}
 	if c := s.Callout.Console.ClientID; c != "" && (c == s.Token.ClientID || c == s.Token.Audience) {
 		return Settings{}, true, fmt.Errorf("%w: CB_AUTH_CONSOLE_CLIENT_ID must differ from the bus's client and audience", ErrConfig)
 	}
@@ -343,6 +350,17 @@ func RunCallout(ctx context.Context, s Settings, log *slog.Logger) error {
 	}
 	if err := mgr.EnsureStreams(startCtx); err != nil {
 		return fmt.Errorf("streams: %w", err)
+	}
+	// The console's unattended metrics page (#158): its two consumers are
+	// made at this start and kept, idempotent, like every consumer of the
+	// bus — the console's service account itself has no JetStream right.
+	// Off unless CB_AUTH_CONSOLE_METRICS=true: nobody's consumers exist
+	// while the page is off.
+	if s.Callout.Console.Metrics {
+		if err := mgr.EnsureMetrics(startCtx); err != nil {
+			return fmt.Errorf("metrics consumers: %w", err)
+		}
+		metricsTick(ctx, mgr, log, time.Hour, 5*time.Minute)
 	}
 	if err := mgr.WatchByes(ctx); err != nil {
 		return err
@@ -541,4 +559,27 @@ func personTokenConfig(s Settings, bus token.Config) token.Config {
 		pc.OtherClients = append(pc.OtherClients, bus.Audience)
 	}
 	return pc
+}
+
+// metricsTick re-ensures the console's metrics consumers hourly: their
+// InactiveThreshold (5 min) ages them out while the console is down, and
+// the tick makes them again with their full 7-day replay (#168's round:
+// a kept consumer never replays, so a console restart would lose the
+// history otherwise).
+func metricsTick(ctx context.Context, mgr *consumers.Manager, log *slog.Logger,
+	every, threshold time.Duration) {
+	go func() {
+		for {
+			select {
+			case <-ctx.Done():
+				return
+			case <-time.After(every):
+				cctx, cancel := context.WithTimeout(context.WithoutCancel(ctx), 10*time.Second)
+				if err := mgr.EnsureMetrics(cctx); err != nil {
+					log.Warn("metrics consumers: re-ensure failed", "err", err)
+				}
+				cancel()
+			}
+		}
+	}()
 }

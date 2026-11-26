@@ -406,7 +406,7 @@ name with `MM_` for `CB_`):
   `MM_RR_KEYS`, `MM_RR_KID`, `MM_RR_STATUS`, `MM_RR_VERSION`, `MM_RR_WHY`
   (the registrar's release record).
 
-### The login service and authd (44)
+### The login service and authd (45)
 
 All in `services/auth/`. Its binary `authd` runs the service; its directory
 commands read the two `AUTHD_` names and two of the service's names (noted).
@@ -424,6 +424,7 @@ old one.
 | `AUTH_APPROVER_GROUP` | `CB_AUTH_APPROVER_GROUP` | no | `internal/app/callout.go` | |
 | `AUTH_BRAKE_FILE` | `CB_AUTH_BRAKE_FILE` | no | `internal/app/callout.go` | |
 | `AUTH_CONSOLE_CLIENT_ID` | `CB_AUTH_CONSOLE_CLIENT_ID` | no | `internal/app/callout.go`, `internal/callout/person.go` | |
+| `AUTH_CONSOLE_METRICS` | `CB_AUTH_CONSOLE_METRICS` | no | `internal/app/callout.go`, `internal/callout/person.go`; the console's docs | the unattended metrics page's consumers (#158, RT-6.43 step 10): `true` or `false` |
 | `AUTH_DIRECTORY_ADMIN_GROUP` | `CB_AUTH_DIRECTORY_ADMIN_GROUP` | no | `internal/app/callout.go` | |
 | `AUTH_DIRECTORY_BUCKET` | `CB_AUTH_DIRECTORY_BUCKET` | no | `internal/app/callout.go` | |
 | `AUTH_DIRECTORY_IMPORTED` | `CB_AUTH_DIRECTORY_IMPORTED` | no | `internal/app/callout.go`, `internal/admin/import.go`, `internal/directory/directory.go` | guards the directory on NATS after the import |
@@ -498,12 +499,7 @@ says whether the setting itself is about Mattermost.
 have no `MM` in their names; the rename gives them one, as the rule says:
 `CB_BRIDGE_MM_BOT_PREFIX` and `CB_BRIDGE_MM_HIDE_BOT_DM`.
 
-The bridge applies the placeholder rule of the Go services: a value that is
-exactly `${NAME}` refuses the start, naming the variable, in the bridge as
-in the login service; the MCP server's `env()` treats it as unset.
-
-### The console (17)
-
+### The console (20)
 | Old name | New name | Mattermost | Where it appears | Note |
 |---|---|---|---|---|
 | `CONSOLE_ADDR` | `CB_CONSOLE_ADDR` | no | `console/server/src/console_server/config.py` | |
@@ -515,6 +511,9 @@ in the login service; the MCP server's `env()` treats it as unset.
 | `CONSOLE_NATS_URL` | `CB_CONSOLE_NATS_URL` | no | same | |
 | `CONSOLE_OPERATOR_GROUP` | `CB_CONSOLE_OPERATOR_GROUP` | no | same | |
 | `CONSOLE_PRESENCE_STREAM` | `CB_CONSOLE_PRESENCE_STREAM` | no | same | |
+| `CONSOLE_METRICS_LISTEN_ADDR` | `CB_CONSOLE_METRICS_LISTEN_ADDR` | no | `console/server/src/console_server/config.py` | the unattended metrics page's listener (#158, RT-6.43 step 10) |
+| `CONSOLE_METRICS_NKEY_SEED_FILE` | `CB_CONSOLE_METRICS_NKEY_SEED_FILE` | no | same; `services/auth/nats-server.example.conf` (a comment) | pairs with `CB_CONSOLE_METRICS_TOKEN_FILE`; refused when open to group or world (`defaultMode: 0400` and the console's uid under Kubernetes) |
+| `CONSOLE_METRICS_TOKEN_FILE` | `CB_CONSOLE_METRICS_TOKEN_FILE` | no | same | pairs with the seed file; both or neither |
 | `CONSOLE_PRESENCE_SUBJECT` | `CB_CONSOLE_PRESENCE_SUBJECT` | no | same | |
 | `CONSOLE_PUBLIC_URL` | `CB_CONSOLE_PUBLIC_URL` | no | same | |
 | `CONSOLE_SESSION_SEC` | `CB_CONSOLE_SESSION_SEC` | no | same | |
@@ -523,7 +522,6 @@ in the login service; the MCP server's `env()` treats it as unset.
 | `CONSOLE_TOKEN_ALGS` | `CB_CONSOLE_TOKEN_ALGS` | no | same | |
 | `CONSOLE_WEB_DIR` | `CB_CONSOLE_WEB_DIR` | no | same, `app.py`; `console/server/Dockerfile` | |
 | `VITE_CONSOLE_API` | `VITE_CB_CONSOLE_API` | no | `console/web/src/main.tsx`, `console/web/src/api/http.ts`, `console/web/vite.config.ts`; `console/server/Dockerfile` | build time only; Vite passes only `VITE_` names to the page, so `VITE_` stays in front; no fallback needed, the build sets it |
-
 ### The OpenCode plugin (6)
 
 Read in `opencode/plugin/mattermost-agent-bus.ts`, or handed by it to the MCP
@@ -603,6 +601,7 @@ list, so a name here is one the guard accepts in the code without a mapping.
 | Name | Why it is not renamed |
 |---|---|
 | `HOME` | another product’s variable we read |
+| `CONSOLE_METRICS_PUBLIC_NKEY` | the NATS example config's `<…>` placeholder: the nkey is set at the server, never in the env (#168) |
 | `PATH` | another product’s variable we read |
 | `TMPDIR` | another product’s variable we read |
 | `TZ` | another product’s variable we read |

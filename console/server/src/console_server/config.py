@@ -51,6 +51,15 @@ class Settings:
     # the built browser app (console/web/dist)
     web_dir: str = ""
     health_path: str = "/healthz"
+    # The unattended metrics page (#158, both or neither): the seed of the
+    # service's subscribe-only nkey (a file only the console reads) and the
+    # scrape token (Bearer) that gates it, beside the operator's login.
+    metrics_nkey_file: str = ""
+    metrics_token_file: str = ""
+    # the unattended page's listener of its own (#158): loopback by default,
+    # never the operators' network unless the operator names it
+    metrics_listen_host: str = "127.0.0.1"
+    metrics_listen_port: int = 8748
     extra: tuple[tuple[str, str], ...] = field(default_factory=tuple)
 
 
@@ -71,6 +80,17 @@ def find() -> Settings:
             raise ConfigError("CONSOLE_ADDR: host:port")
         port = int(p)
 
+    # the unattended page's listener of its own (#158): loopback by
+    # default; the owner's ask, not the operators' network unless named
+    mhost, mport = "127.0.0.1", 8748
+    if listen_addr := given("CONSOLE_METRICS_LISTEN_ADDR"):
+        if ":" not in listen_addr:
+            raise ConfigError("CONSOLE_METRICS_LISTEN_ADDR: host:port")
+        mh, _, mp = listen_addr.rpartition(":")
+        mhost = mh or mhost
+        if not mp.isdigit() or not (0 < int(mp) < 65536):
+            raise ConfigError("CONSOLE_METRICS_LISTEN_ADDR: host:port")
+        mport = int(mp)
     settings = Settings(
         public_url=_required(given, "CONSOLE_PUBLIC_URL"),
         issuer=given("CONSOLE_ISSUER"),
@@ -89,7 +109,16 @@ def find() -> Settings:
         stats_subject=given("CONSOLE_STATS_SUBJECT") or "stats",
         stats_stream=given("CONSOLE_STATS_STREAM") or "STATS",
         web_dir=given("CONSOLE_WEB_DIR"),
+        metrics_nkey_file=given("CONSOLE_METRICS_NKEY_SEED_FILE"),
+        metrics_token_file=given("CONSOLE_METRICS_TOKEN_FILE"),
+        metrics_listen_host=mhost,
+        metrics_listen_port=mport,
     )
+    if bool(settings.metrics_nkey_file) != bool(settings.metrics_token_file):
+        # a half-configured feature reads nothing and lets nobody scrape:
+        # it refuses to start, exactly like every other pairing here
+        raise ConfigError("CONSOLE_METRICS_NKEY_SEED_FILE and"
+                          " CONSOLE_METRICS_TOKEN_FILE: both or neither")
     if given("CONSOLE_NATS_SEED_FILE"):
         # the static account is gone (RT-6.43): a leftover setting points at a
         # secret that must go too, so the start refuses; the file is never read

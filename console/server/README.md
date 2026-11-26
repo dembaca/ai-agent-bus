@@ -9,9 +9,7 @@ JetStream consumers the login service makes for each logged-in operator, serves 
 format (#158, RT-6.43 step 10: behind the operator's login like the rest,
 the console's own observations and that session's agent numbers, labels
 bounded — no agent, owner or home) — and with it the built browser app.
-**Do not put the session cookie into a scrape config**: it is that
-operator's whole console for as long as the session lives, not a monitoring
-credential. An unattended scrape comes from the approved follow-up (a
+**The unattended variant**: set both `CONSOLE_METRICS_NKEY_SEED_FILE` (the seed of the console's subscribe-only nkey, its two consumers the login service makes) and `CONSOLE_METRICS_TOKEN_FILE` (the Bearer scrape token) — both or neither, the start refuses half a pair — and Prometheus scrapes **a listener of the unattended page's own** (`CONSOLE_METRICS_LISTEN_ADDR`, host:port, default 127.0.0.1:8748, loopback as the owner's ask said): the token's page there serves the service's own reading, aggregates only, every other path 404; the operator's page stays on the main listener, behind the login. An unattended scrape comes from the approved follow-up (a
 loopback listener with a scrape token of its own, plus a read-only service
 account on the STATS stream — the owner's go, #158), not from a copied
 cookie.
