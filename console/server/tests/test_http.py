@@ -11,6 +11,7 @@ from __future__ import annotations
 
 import asyncio
 import base64
+import dataclasses
 import json
 import time
 
@@ -621,5 +622,46 @@ async def test_a_logout_before_discovery_ends_the_console_session() -> None:
         assert b"Keycloak session is still open" in body
         assert headers.get("cache-control") == "no-store"
         assert c.sessions.get(token) is None
+    finally:
+        await c.stop()
+
+
+async def test_cache_headers_of_the_static_files(console: Console, tmp_path) -> None:
+    (tmp_path / "index.html").write_text("<html>Choirbus</html>")
+    (tmp_path / "favicon.svg").write_text("<svg/>")
+    (tmp_path / "assets").mkdir()
+    (tmp_path / "assets" / "app.js").write_text("console.log(1)")
+    object.__setattr__(console.settings, "web_dir", str(tmp_path))
+    hashed = "public, max-age=31536000, immutable"
+    for path, want in (("/", "no-cache"), ("/assets/app.js", hashed),
+                       ("/assets/missing.js", "no-cache"),
+                       ("/favicon.svg", "no-cache")):
+        status, headers, _body = await get(console, path)
+        assert status == 200
+        assert headers["cache-control"] == want, path
+
+
+async def test_me_carries_the_build(tmp_path) -> None:
+    for web_dir, want in (("", {"version": None, "revision": None}),
+                          (str(tmp_path), {"version": None, "revision": None})):
+        c = Console(dataclasses.replace(SETTINGS, web_dir=web_dir))
+        await c.start()
+        try:
+            status, _h, body = await get(c, "/v1/me")
+            assert status == 200 and json.loads(body)["build"] == want
+        finally:
+            await c.stop()
+    (tmp_path / "build.json").write_text(
+        json.dumps({"version": "0.102.0", "revision": "abc1234"}))
+    c = Console(dataclasses.replace(SETTINGS, web_dir=str(tmp_path)))
+    await c.start()
+    try:
+        _s, _h, body = await get(c, "/v1/me")
+        assert json.loads(body)["build"] == {"version": "0.102.0",
+                                             "revision": "abc1234"}
+        (tmp_path / "build.json").write_text(
+            json.dumps({"version": "0.102.0", "revision": "not-hex!"}))
+        assert Console(dataclasses.replace(
+            SETTINGS, web_dir=str(tmp_path))).build.revision is None
     finally:
         await c.stop()

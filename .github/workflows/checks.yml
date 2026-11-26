@@ -203,7 +203,9 @@ jobs:
       # smoke is the reality the loop handles).
       - name: image builds, and the server starts
         run: |
-          docker build -t console-test -f console/server/Dockerfile .
+          docker build -t console-test -f console/server/Dockerfile \
+            --build-arg VERSION="$(jq -r .version .claude-plugin/plugin.json)" \
+            --build-arg REVISION="$GITHUB_SHA" .
           docker run -d --name console-test -p 127.0.0.1:8747:8747 \
             -e CONSOLE_PUBLIC_URL=http://127.0.0.1:8747 \
             -e CONSOLE_ISSUER=http://127.0.0.1:19999 \
@@ -334,12 +336,19 @@ jobs:
           fi
           { echo "list<<EOF"; echo "$tags"; echo "EOF"; } >> "$GITHUB_OUTPUT"
 
+      - name: the release version (shown by the console, #182)
+        id: version
+        run: echo "version=$(jq -r .version .claude-plugin/plugin.json)" >> "$GITHUB_OUTPUT"
+
       - name: build and push
         id: push
         uses: docker/build-push-action@c3c9e263c25d99ce0380d002d59b67737d91b0dc  # v7.4.0
         with:
           context: .
           file: console/server/Dockerfile
+          build-args: |
+            VERSION=${{ steps.version.outputs.version }}
+            REVISION=${{ github.sha }}
           push: true
           # The full commit SHA is the tag that names a build; :main moves with
           # each merge, but only from the newest commit, and is a convenience

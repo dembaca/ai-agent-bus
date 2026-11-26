@@ -1,0 +1,80 @@
+import { AGENT_STATES, HARNESS_LABEL, type AgentCard, type Ask } from "../api/types"
+
+// The agents list's filter and the status groups the Overview counts by.
+// The groups are made of the state words the bus carries (ADR-015 point 6):
+// presence's format v1 says online/away until it carries the state words, so
+// online counts as listening and away as idle. A state the console does not
+// know is in "All" only — never guessed into a group.
+
+export type StatusFilter = "all" | "working" | "listening" | "idle" | "offline"
+
+export const STATUS_GROUPS: Record<Exclude<StatusFilter, "all">, readonly string[]> = {
+  working: ["working", "bus"],
+  listening: ["listening", "online"],
+  idle: ["idle", "away", "silent"],
+  offline: ["offline"],
+}
+
+export const STATUS_FILTERS: readonly { id: StatusFilter; label: string }[] = [
+  { id: "all", label: "All" },
+  { id: "working", label: "Working" },
+  { id: "listening", label: "Listening" },
+  { id: "idle", label: "Idle" },
+  { id: "offline", label: "Offline" },
+]
+
+/** The text a search looks through: names, task, branch, home, guests,
+ * harness and model, the PR number. */
+function haystack(card: AgentCard): string {
+  return [
+    card.name, card.displayName, card.task, card.branch ?? "", card.home,
+    ...card.guests, card.model, harnessLabel(card.harness), card.project,
+    card.pr ? `#${card.pr.number}` : "",
+  ].join(" ").toLowerCase()
+}
+
+/** The cards the list shows: in the chosen status group, and holding every
+ * word of the search (any order, any case). */
+export function filterCards(cards: readonly AgentCard[], filter: StatusFilter,
+                            query: string): AgentCard[] {
+  const words = query.trim().toLowerCase().split(/\s+/).filter(Boolean)
+  const group = filter === "all" ? null : STATUS_GROUPS[filter]
+  return cards.filter((card) =>
+    (group === null || group.includes(card.state)) &&
+    words.every((w) => haystack(card).includes(w)))
+}
+
+/** How many cards each group holds, for the filter's buttons and the
+ * Overview; `other` counts the states no group knows. */
+export function countByGroup(cards: readonly AgentCard[]): Record<Exclude<StatusFilter, "all"> | "other", number> {
+  const out = { working: 0, listening: 0, idle: 0, offline: 0, other: 0 }
+  for (const card of cards) {
+    const hit = (Object.keys(STATUS_GROUPS) as Array<keyof typeof STATUS_GROUPS>)
+      .find((g) => STATUS_GROUPS[g].includes(card.state))
+    out[hit ?? "other"] += 1
+  }
+  return out
+}
+
+/** The pill's class: the known state words, else "other". */
+export function stateClass(state: string): string {
+  return (AGENT_STATES as readonly string[]).includes(state) ? state : "other"
+}
+
+/** The harness's label; "harness n/a" when the wire does not carry it. */
+export function harnessLabel(harness: AgentCard["harness"]): string {
+  return harness === null ? "harness n/a" : HARNESS_LABEL[harness]
+}
+
+/** An ask still waiting: open, or past 24 h (a hint, the asking server decides). */
+export function isOpen(ask: Ask): boolean {
+  return ask.end === "open" || ask.end === "expired"
+}
+
+/** The open asks, the operator's first, then the oldest. */
+export function openAsksFirst(asks: readonly Ask[]): Ask[] {
+  return asks.filter(isOpen).sort((a, b) =>
+    Number(b.forMe === true) - Number(a.forMe === true) ||
+    Number(b.mayAnswer === true) - Number(a.mayAnswer === true) ||
+    a.at - b.at)
+}

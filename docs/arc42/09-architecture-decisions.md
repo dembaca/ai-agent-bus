@@ -4049,34 +4049,48 @@ The console is the operators' view of the bus itself.
      A["Agents' MCP servers"] <--> N
    ```
 
-3. **Layout.** A sidebar on the left selects the view: Kanban, Graph,
-   Reports, with the number of open asks beside them. The main pane fills
-   the rest. A click on an item (an agent's card, a node, an ask) splits
-   the main pane horizontally: the view stays on top, the detail opens
-   below it. The detail shows the item's data and, where it has one, its
-   thread as the bus has it: the HELLO thread, a task's thread, an ask's
-   thread. An ask is answered there. A short-answer dialog on an ask's
-   badge is optional and never the only way: it opens the same ask, and the
-   thread stays one click away.
+3. **Layout.** Changed with the design the owner agreed on 2026-11-25
+   (it replaced a sidebar with a Kanban as the home and a split detail
+   pane). A top bar carries the Choirbus logo and wordmark, the views —
+   Agents (the home), Asks with the number of open asks (orange when one is
+   the operator's), Graph, Overview, Reports — the fleet stream's state, a
+   light/dark toggle and the logged-in operator with the logout. The look is
+   the website's brand: Inter only, the logo's navy as the accent, the
+   site's word colors (orange asks, blue tasks, green done), compact rows,
+   soft shadows, 2 px corners; dark follows the system until the operator
+   picks one with the toggle, which this browser keeps. A footer names the
+   console's release version and source commit, both from the image build
+   (#182). A click on an item (an agent's row, a node, an ask) opens its
+   detail as a page of its own, with a breadcrumb back to the view. The
+   detail shows the item's data and, where it has one, its thread as the
+   bus has it: the HELLO thread, a task's thread, an ask's thread. An ask
+   is answered there. A short-answer dialog on an ask's badge is optional
+   and never the only way: it opens the same ask, and the thread stays one
+   click away. The Overview counts from the same live data: agents
+   reachable and by status, the open asks and those for the operator, and
+   the way to the bus map (the Graph).
 
    ```mermaid
    stateDiagram-v2
-     [*] --> Full: open a view
-     Full --> Split: click an item
-     Split --> Split: click another item
-     Split --> Full: close the detail
-     Split --> Answering: send an answer
-     Answering --> Split: its copy came back from the bus, or none came (shown)
+     [*] --> View: open a view
+     View --> Detail: click an item
+     Detail --> Detail: click another item
+     Detail --> View: back, or pick a view
+     Detail --> Answering: send an answer
+     Answering --> Detail: its copy came back from the bus, or none came (shown)
    ```
 
    ```text
-   +---------+---------------------------------------------------+
-   | Kanban  | online          away            offline           |
-   | Graph   | [card] [card]   [card]          [card]            |
-   | Reports | [card]                                            |
-   |         +---------------------------------------------------+
-   | Asks 3  | agent: card, numbers | thread of the ask | answer |
-   +---------+---------------------------------------------------+
+   +-------------------------------------------------------------------+
+   | logo Choirbus  Agents  Asks 3  Graph  Overview  Reports  theme  op |
+   +-------------------------------------------------------------------+
+   | Agents                             [search] [All|Working|...|Off] |
+   | [open ask: title, by, age]  [open ask: title, by, age]            |
+   | agent  status  task  branch  home  context  asks  last post       |
+   | agent  status  task  branch  home  context  asks  last post       |
+   +-------------------------------------------------------------------+
+   | read-only pilot                     version x.y.z · commit abc1234 |
+   +-------------------------------------------------------------------+
    ```
 
    The bus confirms no publish (ADR-014 point 16): an answer is on the bus
@@ -4181,31 +4195,38 @@ The console is the operators' view of the bus itself.
    | Statistics | `STATS` lines in the stats channel, a Mattermost channel and no home (RT-6.9) | Not there | The lines on NATS, in a channel or subject of their own, kept at least as long as the longest report looks back |
    | What people wrote | Posts in Mattermost | Not there | Nothing: human-origin events reach NATS with the central adapter (ADR-014 phase 5); until then a thread in the console lacks them |
 
-   The Kanban's columns are the states the bus carries: with presence of
-   format v1 `online`, `away` and offline (a `bye`, or no fresh presence);
-   the state words in `lease.py`'s order once presence carries them. The
-   crown is a mark on the card, not a column. `WAITING`, `BLOCKED` and
+   The agents list's status words are the states the bus carries: with
+   presence of format v1 `online`, `away` and offline (a `bye`, or no fresh
+   presence); the state words in `lease.py`'s order once presence carries
+   them. The crown is a mark on the row, not a status. `WAITING`, `BLOCKED` and
    `BYE` are words of posts (RT-6.14 step 2), not states of an agent: the
    card shows the agent's task with its state, and "waits on a human" when
    it has an open ask. The harness logo follows the card's harness: Claude
    Code, OpenCode, Cursor, Codex, pi, else "other".
 
-6. **Kanban.** One card per agent, in the column of its state.
-   - **On the card:** name, task, role, `for` (with "autonomous"),
-     `trusts`, project, branch or PR, the first capabilities, harness logo
-     and model; the crown; `ctx`, the limits or the cost; the version; the
-     number of its open asks, those for the operator marked.
-   - **In the detail only:** the full card, the task rows it holds, the
-     session's age (its HELLO's time), the time since its last post (both
-     the NATS server's time), its HELLO thread and the threads of its open
-     asks.
+6. **Agents list** (a Kanban until the design of 2026-11-25). One compact
+   row per agent, in the order of the state words; above the table the open
+   asks, the operator's first. A search narrows the rows by any word of
+   name, task, branch, home, guest channels, harness, model or PR; a status
+   filter by group: working (`working`, `bus`), listening (`listening`,
+   `online`), idle (`idle`, `away`, `silent`), offline. A state the console
+   does not know shows under "All" only, never guessed into a group.
+   - **On the row:** name with the crown, harness and model; the state, and
+     "waits on you" when one of its open asks is the operator's; task;
+     branch or PR; home and the number of its guest channels; `ctx`; the
+     number of its open asks; the time since its last post.
+   - **In the detail only:** the full card (role, `for` with
+     "autonomous", `trusts`, project, capabilities, the limits or the
+     cost, the version among it), the task rows it holds, the session's
+     age (its HELLO's time), the time since its last post (both the NATS
+     server's time), its HELLO thread and the threads of its open asks.
    - **Not on the bus, so not shown until the bus carries it:** effort,
      sub-agents (they never use the bus), the running turn's duration
      (turns are noted only in the session's own counter file, RT-6.9 step
      1), the time in the current state (the presence stream keeps one
      message per subject, so no history; point 9).
-   - **Swimlanes** by home are optional and off at the start. A proposal to
-     tune with real numbers: lanes up to about eight homes, beyond that a
+   - **Grouping by home** is optional and off at the start. A proposal to
+     tune with real numbers: groups up to about eight homes, beyond that a
      filter by home.
 
 7. **Graph.** Nodes: people (the owners and trusted humans the roster
@@ -4332,7 +4353,7 @@ The console is the operators' view of the bus itself.
 
 11. **Stages.** None starts before the needs marked "before stage 1" in
     point 12 are met.
-    - **1, the smallest useful cut:** login, the Kanban with live states,
+    - **1, the smallest useful cut:** login, the agents with live states,
       the asks with "for me", the detail with thread and answer, and two
       reports (open asks, the bus's share per version; since the traffic
       counts the bus and coordination share and the bus traffic by

@@ -2,24 +2,31 @@ import { useCallback, useEffect, useRef, useState } from "react"
 import type { AgentCard, Ask, ConnState, ConsoleApi, FleetEvent, Operator } from "./api/types"
 import { AGENT_STATES } from "./api/types"
 import { Unavailable } from "./api/http"
-import { Sidebar, type View } from "./ui/Sidebar"
-import { Kanban } from "./ui/Kanban"
+import { TopBar, VIEW_LABEL, type View } from "./ui/TopBar"
+import { Footer } from "./ui/Footer"
+import { AgentList } from "./ui/AgentList"
 import { Asks } from "./ui/Asks"
 import { Detail } from "./ui/Detail"
 import { GraphView } from "./ui/GraphView"
+import { Overview } from "./ui/Overview"
 import { Reports } from "./ui/Reports"
+import { isOpen } from "./ui/agents"
+import { useTheme } from "./theme"
 
-/** The whole console: one live fleet, the asks, the chosen view, and the
- * detail pane on the right. Read-only (ADR-015 stage 1): nothing here
+/** The whole console (the agreed design, 2026-11-25): a top bar with the
+ * views — the agents list is the home — one live fleet, the asks, the chosen
+ * view, an agent's or an ask's detail as a page of its own, and the footer
+ * with the console's build (#182). Read-only (ADR-015 stage 1): nothing here
  * posts, an ask gets no answer button — answers stay in the humans' chat
  * until the owner opens answering.
  *
  * One connection state for the whole app (Fable's point 6): the fleet
- * stream's own state, and every view's failed load, lands in the sidebar.
+ * stream's own state shows in the top bar, every view's failed load in the
+ * notice under it.
  *
  * A 503 is no error at first: after a restart the server is not ready until
  * it has read the fleet's replay, and the proxy in front answers 503 for it.
- * The sidebar says "syncing…" and the app tries again every few seconds;
+ * The top bar says "syncing…" and the app tries again every few seconds;
  * only a 503 that lasts longer than SYNC_GIVE_UP_MS is shown as an error. */
 const SYNC_RETRY_MS = 3_000
 const SYNC_GIVE_UP_MS = 120_000
@@ -30,7 +37,7 @@ export function App({ api }: { api: ConsoleApi }) {
   /** The fleet stream's first snapshot came: the cards are the whole fleet. */
   const [fleetSeen, setFleetSeen] = useState(false)
   const [me, setMe] = useState<Operator | null>(null)
-  const [view, setView] = useState<View>("kanban")
+  const [view, setViewState] = useState<View>("agents")
   const [agent, setAgent] = useState<AgentCard | null>(null)
   const [ask, setAsk] = useState<Ask | null>(null)
   const [conn, setConn] = useState<ConnState>("connecting")
@@ -42,7 +49,7 @@ export function App({ api }: { api: ConsoleApi }) {
   useEffect(() => () => { if (retryTimer.current) clearTimeout(retryTimer.current) }, [])
 
   /** True when the error was the server's "not ready yet" (a 503): the
-   * sidebar shows "syncing…" and one retry is scheduled — until the 503
+   * top bar shows "syncing…" and one retry is scheduled — until the 503
    * has lasted SYNC_GIVE_UP_MS, then it is an error like any other. */
   const syncing = useCallback((error: unknown): boolean => {
     if (!(error instanceof Unavailable)) return false
@@ -158,34 +165,52 @@ export function App({ api }: { api: ConsoleApi }) {
     setAgent(cards.find((c) => c.name === row.by) ?? null)
   }, [cards])
   const closeDetail = useCallback(() => { setAgent(null); setAsk(null) }, [])
+  // A view picked in the top bar closes a detail page that is open.
+  const setView = useCallback((next: View) => {
+    setViewState(next)
+    closeDetail()
+  }, [closeDetail])
+  const { theme, toggle } = useTheme()
 
-  const open = asks.filter((a) => a.end === "open" || a.end === "expired").length
-  const forMe = asks.filter((a) => a.forMe && (a.end === "open" || a.end === "expired")).length
+  const open = asks.filter(isOpen).length
+  const forMe = asks.filter((a) => a.forMe && isOpen(a)).length
+  const detail = agent !== null || ask !== null
 
   return (
     <div className="app">
-      <Sidebar
+      <TopBar
         view={view} setView={setView}
         openAsks={open} forMe={forMe}
         conn={conn} operator={me?.username ?? "…"}
-        notice={notice} clearNotice={() => setNotice(null)}
+        theme={theme} onToggleTheme={toggle}
       />
       <main className="stage">
-        {view === "kanban" && <Kanban cards={cards} selected={agent} onSelect={openAgent} />}
-        {view === "asks" && <Asks asks={asks} onOpen={openAsk} />}
-        {view === "graph" && <GraphView api={api} cards={cards} asks={asks} fleetSeen={fleetSeen}
-          onOpenAgent={openAgent} onOpenAsk={openAsk} onFail={fail} />}
-        {view === "reports" && <Reports api={api} onFail={fail} />}
+        {notice && (
+          <div className="notice" role="alert">
+            <span>{notice}</span>
+            <button type="button" aria-label="dismiss" onClick={() => setNotice(null)}>×</button>
+          </div>
+        )}
+        {detail && (
+          <Detail api={api} card={agent} ask={ask} asks={asks}
+            from={VIEW_LABEL[view]} onBack={closeDetail} onFail={fail} />
+        )}
+        {!detail && view === "agents" && <AgentList cards={cards} asks={asks}
+          onOpenAgent={openAgent} onOpenAsk={openAsk} onAllAsks={() => setView("asks")} />}
+        {!detail && view === "asks" && <Asks asks={asks} onOpen={openAsk} />}
+        {!detail && view === "graph" && <GraphView api={api} cards={cards} asks={asks} fleetSeen={fleetSeen}
+          theme={theme} onOpenAgent={openAgent} onOpenAsk={openAsk} onFail={fail} />}
+        {!detail && view === "overview" && <Overview cards={cards} asks={asks}
+          onOpenAsk={openAsk} onView={setView} />}
+        {!detail && view === "reports" && <Reports api={api} onFail={fail} />}
       </main>
-      {(agent || ask) && (
-        <Detail api={api} card={agent} ask={ask} asks={asks} onClose={closeDetail} onFail={fail} />
-      )}
+      <Footer build={me?.build ?? null} />
     </div>
   )
 }
 
-/** Column order = the state words, in the order the docs list them, the
- * presence v1 words among them; unknown states sort after (the catch-all). */
+/** The list's order = the state words, in the order the docs list them, the
+ * presence v1 words among them; unknown states sort after. */
 function inColumnOrder(all: AgentCard[]): AgentCard[] {
   const rank = new Map(AGENT_STATES.map((s, i) => [s, i]))
   return [...all].sort((a, b) =>

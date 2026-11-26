@@ -49,6 +49,15 @@ export interface Operator {
   username: string
   displayName: string
   groups: string[]
+  /** The console's own build, for the footer (#182). */
+  build: BuildInfo
+}
+
+/** The console's release version and source commit, written at image build
+ * (#182); null when the server has none (a development run). */
+export interface BuildInfo {
+  version: string | null
+  revision: string | null
 }
 
 /** The Kanban card (ADR-015 point 6): what sits on the card itself. */

@@ -29,7 +29,7 @@ from pathlib import Path
 from typing import Any
 from urllib.parse import urlsplit
 
-from . import auth, config, httpd, telemetry
+from . import auth, build, config, httpd, telemetry
 from .auth import Endpoints
 from .fleet import Fleet
 from .nats_read import PersonReader, View, reachable
@@ -65,6 +65,10 @@ STATIC_HEADERS = (("X-Content-Type-Options", "nosniff"),
                    "default-src 'self'; img-src 'self' data:;"
                    " font-src 'self' data:; base-uri 'none';"
                    " frame-ancestors 'none'"))
+# #182: Vite's hashed files never change under their name; the rest
+# (index.html, the fallback, the favicon) is revalidated on each load
+CACHE_HASHED = (("Cache-Control", "public, max-age=31536000, immutable"),)
+CACHE_REVALIDATE = (("Cache-Control", "no-cache"),)
 
 
 class Console:
@@ -73,6 +77,8 @@ class Console:
         # the stand-in view: login off (tests and the mock) and sessions made
         # without one; nothing feeds it — every login has a view of its own
         self.telemetry = telemetry.Telemetry()   # the console's /metrics counters
+        self.build = build.read(settings.web_dir)   # #182: from the image build
+        self.telemetry.build = self.build
         self.standin = View(settings.presence_subject, settings.stats_subject,
                             count=self.telemetry.note_event)
         self.sessions = auth.Sessions()
@@ -203,8 +209,10 @@ class Console:
             return httpd.Response.text("no built web app", 404)
         body = file.read_bytes()
         kind = STATIC_TYPES.get(file.suffix, "application/octet-stream")
+        cache = (CACHE_HASHED if (root / "assets") in file.parents
+                 else CACHE_REVALIDATE)
         return httpd.Response(status=200, body=body, content_type=kind,
-                               headers=STATIC_HEADERS)
+                               headers=STATIC_HEADERS + cache)
 
     # --- the fleet stream ----------------------------------------------------------------
 
@@ -311,7 +319,8 @@ class Console:
                  "groups": list(operator.groups),
                  # the session's own reading (RT-6.43): "reading", "waiting: …",
                  # "refused: …", "ended…" — the reason a fleet stays empty
-                 "bus": view.bus()}, headers=API_HEADERS)
+                 "bus": view.bus(), "build": self.build.as_json()},
+                headers=API_HEADERS)
         if path == "/v1/fleet":
             return self._stream(self._session_token(headers))
         if path in ("/v1/asks", "/v1/stats"):

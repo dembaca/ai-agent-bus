@@ -26,6 +26,13 @@ export function Reports({ api, onFail }: { api: ConsoleApi; onFail: Fail }) {
   }, [api, onFail])
 
   return (
+    <>
+    <div className="page-head">
+      <div className="page-head__title">
+        <h1>Reports</h1>
+        <span className="page-head__sub">counts and seconds from the agents' STATS lines; n/a where a line has no value</span>
+      </div>
+    </div>
     <div className="reports">
       {reports.map((report) => (
         <section key={report.id} className="report">
@@ -63,6 +70,7 @@ export function Reports({ api, onFail }: { api: ConsoleApi; onFail: Fail }) {
         </section>
       ))}
     </div>
+    </>
   )
 }
 

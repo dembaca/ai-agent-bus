@@ -1,24 +1,28 @@
-.asks { display: grid; gap: 12px; }
+/* The asks: one compact table, the operator's first. */
 
-.asks__note {
+.asks { overflow-x: auto; }
+
+.asks__table { width: 100%; min-width: 760px; border-collapse: collapse; }
+.asks__table th {
+  text-align: left;
+  padding: 8px 10px;
   color: var(--muted);
-  border: 1px solid var(--line);
-  border-radius: var(--radius);
-  padding: 8px 12px;
-  background: var(--surface);
+  font-size: 11px;
+  font-weight: 500;
+  text-transform: uppercase;
+  letter-spacing: .05em;
+  white-space: nowrap;
 }
-
-.asks__table { font-size: 12.5px; background: var(--surface); border-radius: var(--radius); }
-
-.asks__table thead th {
-  position: sticky;
-  top: 0;
-  background: var(--surface);
-  border-bottom: 1px solid var(--line);
-}
+.asks__table th.num { text-align: right; }
+.asks__table td { padding: 6px 10px; border-top: 1px solid var(--line); vertical-align: middle; }
+.asks__table th:first-child, .asks__table td:first-child { padding-left: 14px; }
+.asks__table th:last-child, .asks__table td:last-child { padding-right: 14px; }
 
 .asks__row { cursor: pointer; }
 .asks__row:hover td { background: var(--surface-2); }
 
-.asks__need { max-width: 520px; overflow-wrap: anywhere; }
+.asks__need { max-width: 520px; overflow-wrap: anywhere; font-weight: 500; }
+.asks__state { white-space: nowrap; }
+.asks__state .chip + .chip { margin-left: 4px; }
 
+.asks__empty { margin: 0; padding: 20px 14px; color: var(--muted); border-top: 1px solid var(--line); }
