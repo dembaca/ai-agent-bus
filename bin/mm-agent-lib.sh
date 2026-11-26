@@ -6,10 +6,106 @@
 # Pure bash: the hardened callers run it with no command from the workdir (dirname, cd).
 source "${BASH_SOURCE[0]%/*}/mm-agent-symbols.sh"
 
+# --- environment names: CB_ first, the old MM_ name still read (#169) ----------
+# The reading rule of docs/env-names.md, the twin of env_first() in
+# mcp/.../config.py. mm_env NEW OLD [OLD2]: the first of the names that is set
+# gives the value; empty counts as set (${VAR+set}), a value that is exactly
+# ${NAME} (a manifest's unexpanded placeholder) counts as unset and is dropped.
+# A value from an old name logs one deprecation warning per old name and
+# process (none for a value in CB_ENV_INTERNAL), and is copied to NEW and to the first old name, exported when the
+# name it came from was, so children of either version read it. Names that are
+# set to different values refuse: CB_ENV_ERR names them (never a value) and the
+# return is 2. Warnings go to stderr, or with CB_ENV_QUIET=1 (a hook that must
+# stay quiet) to env-names.log in the state directory.
+CB_ENV_ERR="" CB_ENV_WARNED=" "
+# Values the bus writes for itself (config.INTERNAL in mcp/.../config.py, the
+# same set; a test compares them): no person sets them, so reading their old
+# name logs no deprecation warning.
+CB_ENV_INTERNAL=" CB_BUS_ENDPOINT CB_BUS_KEPT_SID CB_BUS_KEY CB_BUS_MCP_ENDPOINT CB_BUS_UNAVAILABLE
+ CB_CHANNEL_PUSH CB_MM_BOT_TOKEN_FD CB_BUS_DEADLINE CB_BUS_UPLOAD CB_REL_GIT_DIR
+ CB_REL_TMP CB_BUS_CLIENT CB_BUS_HOST_PID CB_BUS_HOST_START CB_BUS_PID CB_CLAUDE_SID
+ CB_KEPT_CLAUDE_SID CB_KEPT_WORKDIR CB_SERVER_ENDED CB_SESSION_PID CB_BUS_HOOK_DISPATCH "
+CB_ENV_INTERNAL="${CB_ENV_INTERNAL//$'\n'/ }"
+mm_env_warn() {
+  local f
+  if [[ "${CB_ENV_QUIET:-}" == 1 ]]; then
+    f="${XDG_STATE_HOME:-$HOME/.local/state}/mm-agent-bus"
+    { mkdir -p "$f" && printf '%s %s: %s\n' "$(date -u +%FT%TZ)" "${0##*/}" "$1" >>"$f/env-names.log"; } 2>/dev/null || true
+  else
+    printf 'mm-bus: %s\n' "$1" >&2
+  fi
+}
+mm_env() {
+  local new="$1" first="${2:-}" n v val="" from="" differ="" x=0
+  for n in "$@"; do
+    [[ -n "${!n+set}" ]] || continue
+    v="${!n}"
+    if [[ "$v" =~ ^\$\{[A-Za-z_][A-Za-z0-9_]*\}$ ]]; then unset "$n"; continue; fi
+    if [[ -z "$from" ]]; then
+      from="$n" val="$v"
+    elif [[ "$v" != "$val" ]]; then
+      differ+=" and ${n}"
+    fi
+  done
+  [[ -n "$from" ]] || return 0
+  if [[ -n "$differ" ]]; then
+    CB_ENV_ERR+="${CB_ENV_ERR:+; }${from}${differ} are set to different values: set only ${new}"
+    return 2
+  fi
+  if [[ "$from" == "$new" ]]; then
+    [[ -z "$first" || -n "${!first+set}" ]] && return 0
+  fi
+  for n in "$@"; do
+    [[ "$from" != "$new" && "$n" != "$new" && -n "${!n+set}" && "$CB_ENV_WARNED" != *" $n "* &&
+       "$CB_ENV_INTERNAL" != *" $new "* ]] || continue
+    CB_ENV_WARNED+="$n "
+    mm_env_warn "${n} is deprecated: set ${new} instead (${n} is still read in this release)"
+  done
+  [[ "$(declare -p "$from" 2>/dev/null)" =~ ^declare\ -[a-zA-Z]*x ]] && x=1
+  printf -v "$new" '%s' "$val"
+  [[ -z "$first" ]] || printf -v "$first" '%s' "$val"
+  if [[ "$x" -eq 1 ]]; then export "${new?}"; [[ -z "$first" ]] || export "${first?}"; fi
+  return 0
+}
+
+# mm_env_set NEW OLD VALUE: a value the bus sets for its children, exported
+# under both names (#169), so a child of either version reads it.
+mm_env_set() { printf -v "$1" '%s' "$3"; printf -v "$2" '%s' "$3"; export "${1?}" "${2?}"; }
+
+# Every name the scripts and hooks read, new name first (docs/env-names.md).
+CB_ENV_NAMES=(
+  "CB_MM_CHAT_URL MM_CHAT_URL MATTERMOST_URL" "CB_MM_BOT_TOKEN MM_BOT_TOKEN MATTERMOST_TOKEN"
+  "CB_AGENT_KIND MM_AGENT_KIND" "CB_MM_BOT_USER_ID MM_BOT_USER_ID" "CB_MM_BOT_USERNAME MM_BOT_USERNAME"
+  "CB_BUS_ENDPOINT MM_BUS_ENDPOINT" "CB_BUS_KEPT_SID MM_BUS_KEPT_SID" "CB_BUS_KEY MM_BUS_KEY"
+  "CB_BUS_MCP_ENDPOINT MM_BUS_MCP_ENDPOINT" "CB_BUS_UNAVAILABLE MM_BUS_UNAVAILABLE"
+  "CB_MM_CHANNEL MM_CHANNEL" "CB_MM_CHANNEL_ID MM_CHANNEL_ID" "CB_CHANNEL_PUSH MM_CHANNEL_PUSH"
+  "CB_LEASE_SEC MM_LEASE_SEC" "CB_LISTEN_COORD_SEC MM_LISTEN_COORD_SEC" "CB_LISTEN_DIGEST_SEC MM_LISTEN_DIGEST_SEC"
+  "CB_LISTEN_SEC MM_LISTEN_SEC" "CB_OWNER MM_OWNER" "CB_MM_PROJECT_CHANNEL MM_PROJECT_CHANNEL"
+  "CB_MM_PROJECT_CHANNEL_ID MM_PROJECT_CHANNEL_ID" "CB_RESPONSIBLE_HUMAN MM_RESPONSIBLE_HUMAN"
+  "CB_SESSION_KEEP_SEC MM_SESSION_KEEP_SEC" "CB_MM_STATS_CHANNEL MM_STATS_CHANNEL" "CB_MM_TEAM MM_TEAM"
+  "CB_MM_TRUSTED_HUMAN_USER_IDS MM_TRUSTED_HUMAN_USER_IDS" "CB_TRUSTED_HUMANS MM_TRUSTED_HUMANS"
+  "CB_WORKSPACE MM_WORKSPACE" "CB_RELEASE_SIGNERS MM_RELEASE_SIGNERS" "CB_RELEASE_URL MM_RELEASE_URL"
+  "CB_AGENT_SESSION_FILE MM_AGENT_SESSION_FILE" "CB_BUS_DEADLINE MM_BUS_DEADLINE"
+  "CB_BUS_HOST_DIR MM_BUS_HOST_DIR" "CB_BUS_MAX_TIME MM_BUS_MAX_TIME" "CB_BUS_UPLOAD MM_BUS_UPLOAD"
+  "CB_LISTEN_POLL_SEC MM_LISTEN_POLL_SEC" "CB_MM_TEAM_ID MM_TEAM_ID" "CB_REL_GIT_DIR MM_REL_GIT_DIR"
+  "CB_REL_TMP MM_REL_TMP"
+)
+# mm_env_all: mm_env for each of them; 2 when any refuses (CB_ENV_ERR says which).
+mm_env_all() {
+  local p rc=0
+  for p in "${CB_ENV_NAMES[@]}"; do
+    # shellcheck disable=SC2086 # the names of one setting, split on purpose
+    mm_env $p || rc=2
+  done
+  # A quiet hook decides itself what to do, but the log says why.
+  [[ "$rc" -eq 0 || "${CB_ENV_QUIET:-}" != 1 ]] || mm_env_warn "refused: ${CB_ENV_ERR}"
+  return "$rc"
+}
+
 mm_chat_url() {
-  local url="${MM_CHAT_URL:-${MATTERMOST_URL:-}}"
+  local url="${CB_MM_CHAT_URL:-}"
   if [[ -z "$url" ]]; then
-    echo "MM_CHAT_URL or MATTERMOST_URL is required" >&2
+    echo "CB_MM_CHAT_URL is required" >&2
     return 2
   fi
   printf '%s' "${url%/}"
@@ -23,9 +119,9 @@ mm_register_url() {
 }
 
 mm_bot_token() {
-  local tok="${MM_BOT_TOKEN:-${MATTERMOST_TOKEN:-}}"
+  local tok="${CB_MM_BOT_TOKEN:-}"
   if [[ -z "$tok" ]]; then
-    echo "MM_BOT_TOKEN or MATTERMOST_TOKEN is required" >&2
+    echo "CB_MM_BOT_TOKEN is required" >&2
     return 2
   fi
   printf '%s' "$tok"
@@ -34,7 +130,7 @@ mm_bot_token() {
 # Credentials on an inherited fd (arc42 §7.3). The corral host hooks never put
 # the bot token or the registration secret into any process environment or
 # argv: on macOS a sandbox can read every same-user process's initial
-# environment (KERN_PROCARGS2). They start a helper with MM_BOT_TOKEN_FD=3 or
+# environment (KERN_PROCARGS2). They start a helper with CB_MM_BOT_TOKEN_FD=3 or
 # MM_REG_SECRET_FD=3 and the value on that fd (mm_with_token, mm_with_secret);
 # sourcing this file reads it into a shell variable that is not exported, so
 # nothing this script starts sees it. Without the *_FD variables (an operator's
@@ -42,29 +138,40 @@ mm_bot_token() {
 # neither: its scripts ask the session's MCP server (mm_bus, RT-6.17).
 mm_creds_from_fds() {
   local v fdv fd from_fd=0
-  for v in MM_BOT_TOKEN MM_REG_SECRET; do
+  for v in CB_MM_BOT_TOKEN MM_REG_SECRET; do
     fdv="${v}_FD"
     fd="${!fdv:-}"
+    # An older caller hands the token on MM_BOT_TOKEN_FD (#169).
+    [[ "$v" != CB_MM_BOT_TOKEN || -n "${CB_MM_BOT_TOKEN_FD+set}" ]] || fd="${MM_BOT_TOKEN_FD:-}"
+    [[ "$v" != CB_MM_BOT_TOKEN ]] || unset MM_BOT_TOKEN_FD
     [[ -n "$fd" ]] || continue
     unset "$fdv"
     from_fd=1
     [[ "$fd" =~ ^[3-9]$ ]] || continue
+    # The fd's token replaces one the environment brought, under every name.
+    [[ "$v" != CB_MM_BOT_TOKEN ]] || unset MM_BOT_TOKEN MATTERMOST_TOKEN
     IFS= read -r "${v?}" <&"$fd" || true
     eval "exec ${fd}<&-"
   done
   if [[ "$from_fd" -eq 1 ]]; then
-    export -n MM_BOT_TOKEN MATTERMOST_TOKEN MM_REG_SECRET
-    MM_CREDS_FROM_FD=1
+    export -n CB_MM_BOT_TOKEN MM_BOT_TOKEN MATTERMOST_TOKEN MM_REG_SECRET
+    CB_CREDS_FROM_FD=1
   fi
   return 0
 }
 mm_creds_from_fds
+# The names, once: a script exits on names that differ; a hook that set
+# CB_ENV_DEFER=1 before sourcing this file decides itself (CB_ENV_ERR).
+if ! mm_env_all && [[ "${CB_ENV_DEFER:-}" != 1 ]]; then
+  mm_env_warn "refused: ${CB_ENV_ERR}"
+  exit 2
+fi
 
 # Run a command with the bot token / the registration secret on fd 3 only: the
 # value goes through a pipe from the shell's builtin printf, never through an
 # environment or an argv (arc42 §7.3). The caller must not export it.
 #   mm_with_token "$BIN/mm-agent-status.sh" offline
-mm_with_token() { MM_BOT_TOKEN_FD=3 "$@" 3< <(printf '%s\n' "${MM_BOT_TOKEN:-${MATTERMOST_TOKEN:-}}"); }
+mm_with_token() { CB_MM_BOT_TOKEN_FD=3 MM_BOT_TOKEN_FD=3 "$@" 3< <(printf '%s\n' "${CB_MM_BOT_TOKEN:-}"); }
 mm_with_secret() { MM_REG_SECRET_FD=3 "$@" 3< <(printf '%s\n' "${MM_REG_SECRET:-}"); }
 
 # Unregister bot NAME as the corral host hooks do: with its own token first,
@@ -78,7 +185,7 @@ mm_with_secret() { MM_REG_SECRET_FD=3 "$@" 3< <(printf '%s\n' "${MM_REG_SECRET:-
 mm_unregister_bot() {
   local name="$1" tok="no token" sec="no secret"
   MM_UNREG_WHY="" MM_UNREG_TOKEN_HTTP=""
-  if [[ -n "${MM_BOT_TOKEN:-${MATTERMOST_TOKEN:-}}" ]]; then
+  if [[ -n "${CB_MM_BOT_TOKEN:-}" ]]; then
     mm_unregister_with mm_with_token "$name" && return 0
     tok="$MM_UNREG_WHY" MM_UNREG_TOKEN_HTTP="$MM_UNREG_HTTP"
   fi
@@ -105,8 +212,8 @@ mm_unregister_or_gone() {
 # subshell, so MM_API_* stay as they were.
 mm_token_gone() {
   [[ "$1" == 401 || "$1" == 404 ]] || return 1
-  [[ -n "${MM_BOT_TOKEN:-${MATTERMOST_TOKEN:-}}" ]] || return 1
-  [[ "$( (mm_api GET "/api/v4/users/me" >/dev/null 2>&1 || exit 0; printf '%s' "$MM_API_STATUS") )" == 401 ]]
+  [[ -n "${CB_MM_BOT_TOKEN:-}" ]] || return 1
+  [[ "$( (mm_api GET "/api/v4/users/me" >/dev/null 2>&1 || exit 0; printf '%s' "$CB_MM_API_STATUS") )" == 401 ]]
 }
 # One unregister through the helper; on failure MM_UNREG_WHY (as above) and
 # MM_UNREG_HTTP, the status the helper reports ("" for none).
@@ -115,7 +222,7 @@ mm_unregister_with() {
   MM_UNREG_WHY="" MM_UNREG_HTTP=""
   out="$("$1" "${BASH_SOURCE[0]%/*}/mm-agent-unregister.sh" "$2" 2>&1 >/dev/null)" && return 0
   if [[ "$out" =~ ^unregister\ failed\ http=([0-9]{3}) ]]; then MM_UNREG_HTTP="${BASH_REMATCH[1]}"; fi
-  for v in "${MM_BOT_TOKEN:-}" "${MATTERMOST_TOKEN:-}" "${MM_REG_SECRET:-}"; do
+  for v in "${CB_MM_BOT_TOKEN:-}" "${MM_REG_SECRET:-}"; do
     [[ -z "$v" ]] || out="${out//"$v"/[hidden]}"
   done
   out="$(printf '%s' "$out" | tr '\n\t' '  ' | tr -cd '[:print:]' | cut -c1-160)" || out=""
@@ -178,7 +285,7 @@ mm_state_dir() {
   printf '%s' "${XDG_STATE_HOME:-$HOME/.local/state}/mm-agent-bus"
 }
 
-# The session file of THIS session: MM_AGENT_SESSION_FILE when set, else one
+# The session file of THIS session: CB_AGENT_SESSION_FILE when set, else one
 # named after the bot. There is deliberately no shared default — a single
 # host-wide file let one session overwrite another's, and a later `stop` then
 # removed whichever bot happened to be in it. Without either variable there is
@@ -188,10 +295,10 @@ mm_state_dir() {
 # writable $HOME, and CORRAL_SESSION_ID is only visible to host hooks — the bot
 # name is the one key every side knows.
 mm_session_file() {
-  local f="${MM_AGENT_SESSION_FILE:-}"
+  local f="${CB_AGENT_SESSION_FILE:-}"
   if [[ -z "$f" ]]; then
     if [[ -z "${MM_REG_BOT_NAME:-}" ]]; then
-      echo "no session: set MM_AGENT_SESSION_FILE or MM_REG_BOT_NAME" >&2
+      echo "no session: set CB_AGENT_SESSION_FILE or MM_REG_BOT_NAME" >&2
       return 1
     fi
     f="$(mm_state_dir)/session-${MM_REG_BOT_NAME}.env"
@@ -203,20 +310,20 @@ mm_session_file() {
 }
 
 mm_team() {
-  printf '%s' "${MM_TEAM:-agents}"
+  printf '%s' "${CB_MM_TEAM:-agents}"
 }
 
 mm_channel() {
-  printf '%s' "${MM_CHANNEL:-agents}"
+  printf '%s' "${CB_MM_CHANNEL:-agents}"
 }
 
-# MM_PROJECT_CHANNEL as a list (ADR-002, RT-6.22), one name per line: the
+# CB_MM_PROJECT_CHANNEL as a list (ADR-002, RT-6.22), one name per line: the
 # comma-separated entries without blanks or a leading ~, empty and repeated
 # ones dropped, as client.channel_list reads them. The first is the home, the
 # others are guest channels. Splits on ASCII only, so any locale (CI's C too)
 # reads the same names.
 mm_project_channels() {
-  local raw="${MM_PROJECT_CHANNEL:-}" entry seen=","
+  local raw="${CB_MM_PROJECT_CHANNEL:-}" entry seen=","
   local -a parts=()
   [[ -n "$raw" ]] || return 0
   IFS=, read -r -a parts <<<"$raw"
@@ -229,7 +336,7 @@ mm_project_channels() {
   done
 }
 
-# The agent's home (ADR-002): the first MM_PROJECT_CHANNEL entry, else MM_CHANNEL.
+# The agent's home (ADR-002): the first CB_MM_PROJECT_CHANNEL entry, else CB_MM_CHANNEL.
 mm_home_channel() {
   local first
   first="$(mm_project_channels | head -n 1)"
@@ -237,16 +344,16 @@ mm_home_channel() {
 }
 
 # Should a session hook register a bot for this session on its own?
-# Always when MM_PROJECT_CHANNEL is set: a session working in a project channel
+# Always when CB_MM_PROJECT_CHANNEL is set: a session working in a project channel
 # takes part in the coordination, so registering is not optional there.
 # Without one only when MM_REGISTER=always — a quick question to the agent would
 # otherwise just add a bot, a HELLO and a sign-off to the default channel.
 # Prints the reason when it says no. Explicit registration (the MCP server's
 # session_start) is not affected.
 mm_registration_wanted() {
-  [[ -n "${MM_PROJECT_CHANNEL:-}" ]] && return 0
+  [[ -n "${CB_MM_PROJECT_CHANNEL:-}" ]] && return 0
   [[ "${MM_REGISTER:-}" == "always" ]] && return 0
-  echo "no MM_PROJECT_CHANNEL set (MM_REGISTER=always registers anyway)"
+  echo "no CB_MM_PROJECT_CHANNEL set (MM_REGISTER=always registers anyway)"
   return 1
 }
 
@@ -300,11 +407,11 @@ mm_json_post() {
 }
 
 # Mattermost API v4 call with the bot token.
-# Sets MM_API_STATUS and MM_API_BODY instead of failing, so a caller can tell
+# Sets CB_MM_API_STATUS and CB_MM_API_BODY instead of failing, so a caller can tell
 # "404 = does not exist" from a real error. Returns non-zero only when the
 # request could not be made at all.
 #   mm_api GET /api/v4/teams/name/bgl
-#   [[ "$MM_API_STATUS" == 200 ]] || ...
+#   [[ "$CB_MM_API_STATUS" == 200 ]] || ...
 mm_api() {
   local method="$1" path="$2" payload="${3:-}"
   local chat tok resp
@@ -317,16 +424,16 @@ mm_api() {
     args+=(-H "Content-Type: application/json" -d "$payload")
   fi
   resp="$(mm_curl_auth "$tok" "${args[@]}" "${chat}${path}" || true)"
-  MM_API_STATUS="${resp##*$'\n'}"
-  MM_API_BODY="${resp%$'\n'*}"
-  [[ "$MM_API_STATUS" =~ ^[0-9]{3}$ ]] || return 1
+  CB_MM_API_STATUS="${resp##*$'\n'}"
+  CB_MM_API_BODY="${resp%$'\n'*}"
+  [[ "$CB_MM_API_STATUS" =~ ^[0-9]{3}$ ]] || return 1
 }
 
 # Print the id of the work channel: the argument (an id or a channel name in
-# MM_TEAM) when given, else the home (the first MM_PROJECT_CHANNEL entry,
+# CB_MM_TEAM) when given, else the home (the first CB_MM_PROJECT_CHANNEL entry,
 # RT-6.22), else the default channel.
 # Prefers resolved ids from the environment and asks the API only for names.
-# One home (ADR-002, #258): MM_PROJECT_CHANNEL_ID counts only while it is the
+# One home (ADR-002, #258): CB_MM_PROJECT_CHANNEL_ID counts only while it is the
 # home's. With a home name set it is checked by one read; an id whose channel
 # has another name is passed over for the name (said on stderr). Fail-open: a
 # read that does not go through keeps the id.
@@ -336,21 +443,21 @@ mm_work_channel_id() {
   if [[ -n "$arg" ]]; then
     # Mattermost ids are 26 lowercase alphanumerics; anything else is a name.
     if [[ "$arg" =~ ^[a-z0-9]{26}$ ]]; then id="$arg"; else name="$arg"; fi
-  elif [[ -n "${MM_PROJECT_CHANNEL_ID:-}" ]]; then
-    id="$MM_PROJECT_CHANNEL_ID"
+  elif [[ -n "${CB_MM_PROJECT_CHANNEL_ID:-}" ]]; then
+    id="$CB_MM_PROJECT_CHANNEL_ID"
     home="$(mm_project_channels | head -n 1 | tr '[:upper:]' '[:lower:]')"
     if [[ -n "$home" && "$id" =~ ^[a-z0-9]{26}$ ]] \
-        && mm_api GET "/api/v4/channels/${id}" 2>/dev/null && [[ "$MM_API_STATUS" == 200 ]]; then
-      seen="$(jq -r '.name // empty' <<<"$MM_API_BODY" 2>/dev/null || true)"
+        && mm_api GET "/api/v4/channels/${id}" 2>/dev/null && [[ "$CB_MM_API_STATUS" == 200 ]]; then
+      seen="$(jq -r '.name // empty' <<<"$CB_MM_API_BODY" 2>/dev/null || true)"
       if [[ -n "$seen" && "$seen" != "$home" ]]; then
-        echo "MM_PROJECT_CHANNEL_ID is ~${seen}, not ~${home}: the home is resolved by its name" >&2
+        echo "CB_MM_PROJECT_CHANNEL_ID is ~${seen}, not ~${home}: the home is resolved by its name" >&2
         id="" name="$home"
       fi
     fi
   elif [[ -n "$(mm_project_channels)" ]]; then
     name="$(mm_home_channel)"
-  elif [[ -n "${MM_CHANNEL_ID:-}" ]]; then
-    id="$MM_CHANNEL_ID"
+  elif [[ -n "${CB_MM_CHANNEL_ID:-}" ]]; then
+    id="$CB_MM_CHANNEL_ID"
   else
     name="$(mm_channel)"
   fi
@@ -359,21 +466,21 @@ mm_work_channel_id() {
     return 0
   fi
 
-  team_id="${MM_TEAM_ID:-}"
+  team_id="${CB_MM_TEAM_ID:-}"
   if [[ -z "$team_id" ]]; then
     mm_api GET "/api/v4/teams/name/$(mm_team)" || return 1
-    if [[ "$MM_API_STATUS" != "200" ]]; then
-      echo "could not resolve team '$(mm_team)': HTTP ${MM_API_STATUS}" >&2
+    if [[ "$CB_MM_API_STATUS" != "200" ]]; then
+      echo "could not resolve team '$(mm_team)': HTTP ${CB_MM_API_STATUS}" >&2
       return 1
     fi
-    team_id="$(jq -r '.id' <<<"$MM_API_BODY")"
+    team_id="$(jq -r '.id' <<<"$CB_MM_API_BODY")"
   fi
   mm_api GET "/api/v4/teams/${team_id}/channels/name/${name}" || return 1
-  if [[ "$MM_API_STATUS" != "200" ]]; then
-    echo "could not resolve channel '${name}': HTTP ${MM_API_STATUS}" >&2
+  if [[ "$CB_MM_API_STATUS" != "200" ]]; then
+    echo "could not resolve channel '${name}': HTTP ${CB_MM_API_STATUS}" >&2
     return 1
   fi
-  jq -r '.id' <<<"$MM_API_BODY"
+  jq -r '.id' <<<"$CB_MM_API_BODY"
 }
 
 mm_validate_short_name() {
@@ -389,11 +496,11 @@ mm_validate_short_name() {
 }
 
 # The registrar's bot username prefix (its BOT_USERNAME_PREFIX, arc42 §7.1):
-# MM_AGENT_PREFIX when set, else MM_BOT_USERNAME minus the name it was registered
+# MM_AGENT_PREFIX when set, else CB_MM_BOT_USERNAME minus the name it was registered
 # with (MM_REG_BOT_NAME), else "agent-". Must match agent_prefix() in
 # mcp/.../session_file.py.
 mm_agent_prefix() {
-  local user="${MM_BOT_USERNAME:-}" name="${MM_REG_BOT_NAME:-}"
+  local user="${CB_MM_BOT_USERNAME:-}" name="${MM_REG_BOT_NAME:-}"
   if [[ -n "${MM_AGENT_PREFIX:-}" ]]; then
     printf '%s' "$MM_AGENT_PREFIX"
   elif [[ -n "$name" && "$user" == *"$name" && ${#user} -gt ${#name} ]]; then
@@ -403,21 +510,61 @@ mm_agent_prefix() {
   fi
 }
 
+# mm_kv FILE KEY...: the value of the first KEY the file has, its first line
+# KEY=value; nothing when it has none, or is no regular file. FILE - is stdin.
+# A file the bus wrote, read under the new key first, then the old (#169).
+mm_kv() {
+  local f="$1" text k line
+  shift
+  if [[ "$f" == - ]]; then
+    text="$(cat)"
+  else
+    [[ -f "$f" ]] || return 0
+    text="$(<"$f")" || return 0
+  fi
+  for k in "$@"; do
+    while IFS= read -r line; do
+      [[ "$line" == "$k="* ]] && { printf '%s' "${line#*=}"; return 0; }
+    done <<<"$text"
+  done
+  return 0
+}
+
 # Load whitelisted KEY=VALUE lines from a session file into the environment.
+# A key is read under its new name or its old one, the new one first, and
+# exported under both (#169): the file may come from either version.
 mm_load_env_file() {
-  local f="$1"
+  local f="$1" line key val new old seen=" " pass
   [[ -f "$f" ]] || return 1
-  while IFS= read -r line || [[ -n "$line" ]]; do
-    [[ "$line" =~ ^# ]] && continue
-    [[ -z "$line" ]] && continue
-    local key="${line%%=*}"
-    local val="${line#*=}"
-    case "$key" in
-      MM_CHAT_URL|MM_REG_BOT_NAME|MM_BOT_USERNAME|MM_AGENT_PREFIX|MM_BOT_USER_ID|MM_BOT_ATTESTATION|MM_BOT_TOKEN|MATTERMOST_URL|MATTERMOST_TOKEN|MM_TEAM|MM_CHANNEL|MM_PROJECT_CHANNEL)
-        export "$key=$val"
-        ;;
-    esac
-  done <"$f"
+  for pass in new old; do
+    while IFS= read -r line || [[ -n "$line" ]]; do
+      [[ "$line" =~ ^# || -z "$line" ]] && continue
+      key="${line%%=*}" val="${line#*=}" old=""
+      case "$key" in
+        CB_MM_CHAT_URL|CB_MM_BOT_USERNAME|CB_MM_BOT_USER_ID|CB_MM_BOT_TOKEN|CB_MM_TEAM|CB_MM_CHANNEL|CB_MM_PROJECT_CHANNEL)
+          [[ "$pass" == new ]] || continue
+          new="$key" old="MM_${key#CB_MM_}" ;;
+        MM_CHAT_URL|MATTERMOST_URL) new=CB_MM_CHAT_URL old=MM_CHAT_URL ;;
+        MM_BOT_TOKEN|MATTERMOST_TOKEN) new=CB_MM_BOT_TOKEN old=MM_BOT_TOKEN ;;
+        MM_BOT_USERNAME|MM_BOT_USER_ID|MM_TEAM|MM_CHANNEL|MM_PROJECT_CHANNEL) new="CB_${key}" old="$key" ;;
+        MM_REG_BOT_NAME|MM_AGENT_PREFIX|MM_BOT_ATTESTATION)
+          [[ "$pass" == new ]] || continue
+          export "$key=$val"; continue ;;
+        *) continue ;;
+      esac
+      if [[ "$pass" == new ]]; then
+        [[ "$key" == CB_* ]] || continue
+      else
+        [[ "$seen" != *" $new "* ]] || continue
+      fi
+      seen+="$new "
+      mm_env_set "$new" "$old" "$val"
+      case "$new" in
+        CB_MM_CHAT_URL) export MATTERMOST_URL="$val" ;;
+        CB_MM_BOT_TOKEN) export MATTERMOST_TOKEN="$val" ;;
+      esac
+    done <"$f"
+  done
 }
 
 mm_load_session_file() {
@@ -432,7 +579,7 @@ mm_load_session_file() {
 #      the agent starts have it): endpoint-sid-<sha1(id)>.env, no fallback — a
 #      workspace-keyed file may belong to another session (RT-6.10).
 #   2. Else the workspace from CLAUDE_PROJECT_DIR, CURSOR_PROJECT_DIR or
-#      MM_WORKSPACE, the first one set, resolved: endpoint-<sha1(dir)>.env of
+#      CB_WORKSPACE, the first one set, resolved: endpoint-<sha1(dir)>.env of
 #      exactly that directory, no walk.
 #   3. Else walk up from the real path of $PWD (OpenCode's and Cursor's shells
 #      start in the workspace, the agent may cd deeper) and take the closest,
@@ -454,7 +601,7 @@ mm_bus_file() {
     printf '%s' "$f"
     return 0
   fi
-  for v in CLAUDE_PROJECT_DIR CURSOR_PROJECT_DIR MM_WORKSPACE; do
+  for v in CLAUDE_PROJECT_DIR CURSOR_PROJECT_DIR CB_WORKSPACE; do
     [[ -n "${!v:-}" ]] || continue
     dir="$(cd "${!v}" 2>/dev/null && pwd -P)" || return 1
     key="$(printf '%s' "$dir" | { sha1sum 2>/dev/null || shasum; } | cut -c1-16)"
@@ -476,14 +623,14 @@ mm_bus_file() {
   done
 }
 
-# For hooks: read the hook's JSON input once into MM_HOOK_INPUT and take the
+# For hooks: read the hook's JSON input once into CB_HOOK_INPUT and take the
 # session id from it when the environment has none, so the endpoint lookup
 # (mm_bus_file) keys on this session even then.
 mm_read_hook_input() {
-  MM_HOOK_INPUT="$(cat 2>/dev/null || true)"
+  CB_HOOK_INPUT="$(cat 2>/dev/null || true)"
   if [[ -z "${CLAUDE_CODE_SESSION_ID:-}" ]] && command -v jq >/dev/null 2>&1; then
     local sid
-    sid="$(jq -r '.session_id // empty' <<<"$MM_HOOK_INPUT" 2>/dev/null || true)"
+    sid="$(jq -r '.session_id // empty' <<<"$CB_HOOK_INPUT" 2>/dev/null || true)"
     [[ -n "$sid" ]] && export CLAUDE_CODE_SESSION_ID="$sid"
   fi
   return 0
@@ -492,64 +639,69 @@ mm_read_hook_input() {
 # The MCP server's hook API (RT-6.17, mcp/.../hookapi.py): the turn hooks and
 # the scripts an agent runs (listen, post, poll, status) ask it instead of
 # Mattermost and hold no token.
-#   mm_bus GET /v1/me                       → MM_BUS_STATUS, MM_BUS_BODY
+#   mm_bus GET /v1/me                       → CB_BUS_STATUS, CB_BUS_BODY
 #   mm_bus POST /v1/presence '{"state":"idle"}'
-#   MM_BUS_UPLOAD=chart.png mm_bus POST '/v1/files?name=chart.png'   # the file as the body
-# Endpoint and key come from MM_BUS_ENDPOINT / MM_BUS_KEY (a corral session),
+#   CB_BUS_UPLOAD=chart.png mm_bus POST '/v1/files?name=chart.png'   # the file as the body
+# Endpoint and key come from CB_BUS_ENDPOINT / CB_BUS_KEY (a corral session),
 # else from the file the server writes (mm_bus_file), read on every call: a
-# restarted server has a new port and key. MM_BUS_FROM says which (env, the
+# restarted server has a new port and key. CB_BUS_FROM says which (env, the
 # file, or empty: none found). The key goes to curl on stdin, never in its
 # argv. Succeeds only on HTTP 200; no endpoint, no server or a timeout fail,
-# and a hook fails open. Each call takes at most MM_BUS_MAX_TIME (whole
-# seconds, default 3), and none runs past MM_BUS_DEADLINE (epoch seconds)
+# and a hook fails open. Each call takes at most CB_BUS_MAX_TIME (whole
+# seconds, default 3), and none runs past CB_BUS_DEADLINE (epoch seconds)
 # when a hook set one for its whole run.
 mm_bus() {
-  local method="$1" path="$2" payload="${3:-}" ep="${MM_BUS_ENDPOINT:-}" key="${MM_BUS_KEY:-}" f k v resp
-  MM_BUS_STATUS="" MM_BUS_BODY="" MM_BUS_FROM=env
+  local method="$1" path="$2" payload="${3:-}" ep="${CB_BUS_ENDPOINT:-}" key="${CB_BUS_KEY:-}" f k v resp oep="" okey=""
+  CB_BUS_STATUS="" CB_BUS_BODY="" CB_BUS_FROM=env
   if [[ -z "$ep" || -z "$key" ]]; then
-    MM_BUS_FROM=""
+    CB_BUS_FROM=""
     f="$(mm_bus_file)" || return 1
-    MM_BUS_FROM="$f"
+    CB_BUS_FROM="$f"
     while IFS='=' read -r k v; do
-      case "$k" in MM_BUS_ENDPOINT) ep="$v" ;; MM_BUS_KEY) key="$v" ;; esac
+      # The new keys first, the old ones from a server before 0.103.0 (#169).
+      case "$k" in
+        CB_BUS_ENDPOINT) ep="$v" ;; CB_BUS_KEY) key="$v" ;;
+        MM_BUS_ENDPOINT) oep="$v" ;; MM_BUS_KEY) okey="$v" ;;
+      esac
     done <"$f"
+    ep="${ep:-$oep}" key="${key:-$okey}"
     [[ -n "$ep" && -n "$key" ]] || return 1
   fi
-  local max="${MM_BUS_MAX_TIME:-3}" left
+  local max="${CB_BUS_MAX_TIME:-3}" left
   [[ "$max" =~ ^[1-9][0-9]*$ ]] || max=3
-  if [[ "${MM_BUS_DEADLINE:-}" =~ ^[0-9]+$ ]]; then
-    left=$((MM_BUS_DEADLINE - $(date +%s)))
+  if [[ "${CB_BUS_DEADLINE:-}" =~ ^[0-9]+$ ]]; then
+    left=$((CB_BUS_DEADLINE - $(date +%s)))
     (( left > 0 )) || return 1
     (( left < max )) && max="$left"
   fi
   local args=(-sS --max-time "$max" -w $'\n%{http_code}' -X "$method")
-  if [[ -n "${MM_BUS_UPLOAD:-}" ]]; then
+  if [[ -n "${CB_BUS_UPLOAD:-}" ]]; then
     # A file's bytes as the body (POST /v1/files, RT-6.33): curl reads it here,
     # in the sandbox, with the agent's own rights; the server opens no path.
-    args+=(-H "Content-Type: application/octet-stream" -H "Expect:" --data-binary "@${MM_BUS_UPLOAD}")
+    args+=(-H "Content-Type: application/octet-stream" -H "Expect:" --data-binary "@${CB_BUS_UPLOAD}")
   elif [[ -n "$payload" ]]; then
     args+=(-H "Content-Type: application/json" --data-raw "$payload")
   fi
   resp="$(mm_curl_auth "$key" "${args[@]}" "${ep%/}${path}" 2>/dev/null)" || return 1
-  MM_BUS_STATUS="${resp##*$'\n'}"
-  MM_BUS_BODY="${resp%$'\n'*}"
-  [[ "$MM_BUS_STATUS" == 200 ]]
+  CB_BUS_STATUS="${resp##*$'\n'}"
+  CB_BUS_BODY="${resp%$'\n'*}"
+  [[ "$CB_BUS_STATUS" == 200 ]]
 }
 
 # Why the last mm_bus call failed, for a person or agent reading stderr. The
 # scripts an agent runs by hand have no other way onto the bus: no token.
 mm_bus_explain() {
-  local how="start the MCP server of this session: Claude Code, Cursor and OpenCode start it from their MCP config (adapters/, arc42 §7.2); the shell finds it by the session id, CLAUDE_PROJECT_DIR / CURSOR_PROJECT_DIR / MM_WORKSPACE, else from the workspace directory (RT-6.17)"
-  if [[ -z "${MM_BUS_FROM:-}" ]]; then
+  local how="start the MCP server of this session: Claude Code, Cursor and OpenCode start it from their MCP config (adapters/, arc42 §7.2); the shell finds it by the session id, CLAUDE_PROJECT_DIR / CURSOR_PROJECT_DIR / CB_WORKSPACE, else from the workspace directory (RT-6.17)"
+  if [[ -z "${CB_BUS_FROM:-}" ]]; then
     echo "mm-bus: no MCP server of this session found — ${how}" >&2
-  elif [[ -z "${MM_BUS_STATUS:-}" || "${MM_BUS_STATUS}" == 000 ]]; then
-    echo "mm-bus: the MCP server of this session does not answer (${MM_BUS_FROM}) — ${how}" >&2
-  elif [[ "$MM_BUS_STATUS" == 401 ]]; then
-    echo "mm-bus: the MCP server refused the key (${MM_BUS_FROM}): a stale file or another server — restart the MCP server of this session" >&2
-  elif [[ "$MM_BUS_STATUS" == 503 ]]; then
+  elif [[ -z "${CB_BUS_STATUS:-}" || "${CB_BUS_STATUS}" == 000 ]]; then
+    echo "mm-bus: the MCP server of this session does not answer (${CB_BUS_FROM}) — ${how}" >&2
+  elif [[ "$CB_BUS_STATUS" == 401 ]]; then
+    echo "mm-bus: the MCP server refused the key (${CB_BUS_FROM}): a stale file or another server — restart the MCP server of this session" >&2
+  elif [[ "$CB_BUS_STATUS" == 503 ]]; then
     echo "mm-bus: no bot yet: register with the MCP tool session_start first" >&2
   else
-    echo "mm-bus: the MCP server answered HTTP ${MM_BUS_STATUS}: $(jq -r '.error // empty' <<<"${MM_BUS_BODY:-}" 2>/dev/null)" >&2
+    echo "mm-bus: the MCP server answered HTTP ${CB_BUS_STATUS}: $(jq -r '.error // empty' <<<"${CB_BUS_BODY:-}" 2>/dev/null)" >&2
   fi
 }
 
@@ -557,42 +709,43 @@ mm_bus_explain() {
 # sandbox has its endpoints and no token. The server's state files are not
 # here; what the hooks need of them comes through the hook API.
 mm_bus_keyless() {
-  [[ -n "${MM_BUS_MCP_ENDPOINT:-}" ]]
+  [[ -n "${CB_BUS_MCP_ENDPOINT:-}" ]]
 }
 
-# This session's bot id without asking anyone: MM_BOT_USER_ID from the
+# This session's bot id without asking anyone: CB_MM_BOT_USER_ID from the
 # environment, else the one the MCP server put into its endpoint file. For the
 # local steps that must not wait on the server (the prompt hook stopping the
 # listener and clearing the turn state, RT-6.17 error handling). Exports it.
 mm_bus_uid() {
-  local uid="${MM_BOT_USER_ID:-}" f
+  local uid="${CB_MM_BOT_USER_ID:-}" f
   if ! [[ "$uid" =~ ^[a-z0-9]{26}$ ]]; then
     f="$(mm_bus_file)" || return 1
-    uid="$(sed -n 's/^MM_BOT_USER_ID=//p' "$f" 2>/dev/null | head -1)"
+    uid="$(mm_kv "$f" CB_MM_BOT_USER_ID MM_BOT_USER_ID)"
     [[ "$uid" =~ ^[a-z0-9]{26}$ ]] || return 1
   fi
-  export MM_BOT_USER_ID="$uid"
+  mm_env_set CB_MM_BOT_USER_ID MM_BOT_USER_ID "$uid"
 }
 
-# Who this session's bot is, from the hook API: exports MM_BOT_USER_ID and
-# MM_BOT_USERNAME (the per-bot state files key on them), sets MM_BUS_PROJECT
-# (1 in a project channel), MM_CROWN_UNTIL (epoch, 0 without the crown) and
-# MM_BUS_CHANNEL (1 once the agent confirmed the channel check, RT-6.12). Fails
+# Who this session's bot is, from the hook API: exports CB_MM_BOT_USER_ID and
+# CB_MM_BOT_USERNAME (the per-bot state files key on them), sets CB_BUS_PROJECT
+# (1 in a project channel), CB_CROWN_UNTIL (epoch, 0 without the crown) and
+# CB_BUS_CHANNEL (1 once the agent confirmed the channel check, RT-6.12). Fails
 # without jq or a bus session: the hook then exits 0 and stays quiet (RT-6.4).
-# shellcheck disable=SC2034  # MM_BUS_PROJECT, MM_CROWN_UNTIL are read by the callers
+# shellcheck disable=SC2034  # CB_BUS_PROJECT, CB_CROWN_UNTIL are read by the callers
 mm_bus_me() {
   local uid name project crown channel
   command -v jq >/dev/null 2>&1 || return 1
   mm_bus GET /v1/me || return 1
   { read -r uid; read -r name; read -r project; read -r crown; read -r channel; } < <(jq -r '
     (.user_id // ""), (.username // ""), (if .project then 1 else 0 end), (.crown_until // 0),
-    (if .channel then 1 else 0 end)' <<<"$MM_BUS_BODY" 2>/dev/null)
+    (if .channel then 1 else 0 end)' <<<"$CB_BUS_BODY" 2>/dev/null)
   [[ "${uid:-}" =~ ^[a-z0-9]{26}$ ]] || return 1
-  export MM_BOT_USER_ID="$uid" MM_BOT_USERNAME="${name:-}"
-  MM_BUS_PROJECT="${project:-0}"
-  MM_BUS_CHANNEL="${channel:-0}"
-  MM_CROWN_UNTIL="${crown:-0}"
-  [[ "$MM_CROWN_UNTIL" =~ ^[0-9]+$ ]] || MM_CROWN_UNTIL=0
+  mm_env_set CB_MM_BOT_USER_ID MM_BOT_USER_ID "$uid"
+  mm_env_set CB_MM_BOT_USERNAME MM_BOT_USERNAME "${name:-}"
+  CB_BUS_PROJECT="${project:-0}"
+  CB_BUS_CHANNEL="${channel:-0}"
+  CB_CROWN_UNTIL="${crown:-0}"
+  [[ "$CB_CROWN_UNTIL" =~ ^[0-9]+$ ]] || CB_CROWN_UNTIL=0
   return 0
 }
 
@@ -601,7 +754,7 @@ mm_bus_me() {
 # hook removes it: every new turn starts from scratch. Fails when the bot's id is
 # not known — the Stop hook then falls back to its stateless behaviour.
 mm_turn_state_file() {
-  local uid="${MM_BOT_USER_ID:-}"
+  local uid="${CB_MM_BOT_USER_ID:-}"
   [[ "$uid" =~ ^[a-z0-9]{26}$ ]] || return 1
   printf '%s' "$(mm_state_dir)/turn-${uid}.env"
 }
@@ -611,14 +764,14 @@ mm_turn_state_file() {
 # label reported) and coord-<uid>.env (crown lease, pending take, yield after a
 # release).
 mm_bot_state_file() {
-  local kind="$1" uid="${2:-${MM_BOT_USER_ID:-}}"
+  local kind="$1" uid="${2:-${CB_MM_BOT_USER_ID:-}}"
   [[ "$uid" =~ ^[a-z0-9]{26}$ ]] || return 1
   printf '%s' "$(mm_state_dir)/${kind}-${uid}.env"
 }
 
-# How long a custom status lives without renewal (MM_LEASE_SEC, default 900 s).
+# How long a custom status lives without renewal (CB_LEASE_SEC, default 900 s).
 mm_lease_sec() {
-  local s="${MM_LEASE_SEC:-900}"
+  local s="${CB_LEASE_SEC:-900}"
   [[ "$s" =~ ^[0-9]+$ && "$s" -gt 0 ]] || s=900
   printf '%s' "$s"
 }
@@ -626,11 +779,11 @@ mm_lease_sec() {
 # Overhead counters (RT-6.9): one JSON line per event in stats-<uid>.jsonl,
 #   mm_stat KIND [key=value …]     e.g. mm_stat wake reason=digest
 # Counted by hooks, listener and MCP server, posted once at session end to
-# MM_STATS_CHANNEL (default agents-stats); MM_STATS_CHANNEL=off counts nothing.
+# CB_MM_STATS_CHANNEL (default agents-stats); CB_MM_STATS_CHANNEL=off counts nothing.
 # In a keyless corral session the server's state dir is on the host (RT-6.18):
 # the counter goes to its hook API instead (POST /v1/stat, at most 1 s).
 # Never fails, never prints: a counter must not disturb a session.
-mm_stats_off() { [[ "${MM_STATS_CHANNEL:-agents-stats}" =~ ^(off|none|0|false)$ ]]; }
+mm_stats_off() { [[ "${CB_MM_STATS_CHANNEL:-agents-stats}" =~ ^(off|none|0|false)$ ]]; }
 # A text's length in Unicode code points, as Python's len and the plugins count it
 # (RT-6.9: an inject's `chars`), whatever the locale: bash's ${#s} counts bytes
 # under C/POSIX. jq, which mm_stat needs anyway; without it nothing is counted.
@@ -639,14 +792,14 @@ mm_stat() {
   local kind="$1" f kv
   shift || true
   mm_stats_off && return 0
-  [[ "${MM_BOT_USER_ID:-}" =~ ^[a-z0-9]{26}$ ]] || return 0
-  f="$(mm_state_dir)/stats-${MM_BOT_USER_ID}.jsonl"
+  [[ "${CB_MM_BOT_USER_ID:-}" =~ ^[a-z0-9]{26}$ ]] || return 0
+  f="$(mm_state_dir)/stats-${CB_MM_BOT_USER_ID}.jsonl"
   command -v jq >/dev/null 2>&1 || return 0
   kv="$(printf '%s\n' "$@" | jq -cRn --arg k "$kind" --argjson t "$(date +%s)" '
     [inputs | select(contains("=")) | capture("^(?<k>[^=]+)=(?<v>.*)$")
      | {(.k): (.v | tonumber? // .)}] | add // {} | {k: $k, t: $t} + .' 2>/dev/null)" || return 0
   if mm_bus_keyless; then
-    MM_BUS_MAX_TIME=1 mm_bus POST /v1/stat "$kv" >/dev/null 2>&1 || true
+    CB_BUS_MAX_TIME=1 mm_bus POST /v1/stat "$kv" >/dev/null 2>&1 || true
     return 0
   fi
   mkdir -p "$(dirname "$f")" 2>/dev/null || return 0
@@ -654,12 +807,12 @@ mm_stat() {
   return 0
 }
 
-# Trusted humans as configured (RT-6.8): MM_TRUSTED_HUMANS, comma-separated,
-# "@" and spaces dropped; MM_OWNER (one name) until 0.17-era configs are gone.
+# Trusted humans as configured (RT-6.8): CB_TRUSTED_HUMANS, comma-separated,
+# "@" and spaces dropped; CB_OWNER (one name) until 0.17-era configs are gone.
 # Prints one username per line.
 mm_trusted_names() {
   local n
-  IFS=',' read -ra _names <<<"${MM_TRUSTED_HUMANS:-${MM_OWNER:-}}"
+  IFS=',' read -ra _names <<<"${CB_TRUSTED_HUMANS:-${CB_OWNER:-}}"
   for n in "${_names[@]}"; do
     n="${n//[[:space:]]/}"; n="${n#@}"
     [[ -n "$n" ]] && printf '%s\n' "$n"
@@ -678,12 +831,12 @@ mm_trusted_names() {
 mm_warn_profile_trusted() {
   local uid="$1" bot="$2" n desc="" got=0 listed missing=""
   shift 2
-  if mm_api GET "/api/v4/users/${uid}" && [[ "$MM_API_STATUS" == "200" ]] &&
-    jq -e 'has("bot_description")' >/dev/null 2>&1 <<<"$MM_API_BODY"; then
-    desc="$(jq -r '.bot_description // ""' <<<"$MM_API_BODY")" got=1
-  elif mm_api GET "/api/v4/bots/${uid}" && [[ "$MM_API_STATUS" == "200" ]] &&
-    jq -e 'has("description")' >/dev/null 2>&1 <<<"$MM_API_BODY"; then
-    desc="$(jq -r '.description // ""' <<<"$MM_API_BODY")" got=1
+  if mm_api GET "/api/v4/users/${uid}" && [[ "$CB_MM_API_STATUS" == "200" ]] &&
+    jq -e 'has("bot_description")' >/dev/null 2>&1 <<<"$CB_MM_API_BODY"; then
+    desc="$(jq -r '.bot_description // ""' <<<"$CB_MM_API_BODY")" got=1
+  elif mm_api GET "/api/v4/bots/${uid}" && [[ "$CB_MM_API_STATUS" == "200" ]] &&
+    jq -e 'has("description")' >/dev/null 2>&1 <<<"$CB_MM_API_BODY"; then
+    desc="$(jq -r '.description // ""' <<<"$CB_MM_API_BODY")" got=1
   fi
   [[ "$got" -eq 1 ]] || return 0
   case " · ${desc} · " in
@@ -700,9 +853,9 @@ mm_warn_profile_trusted() {
   return 0
 }
 
-# Who answers for the agent: MM_RESPONSIBLE_HUMAN, else the first trusted human.
+# Who answers for the agent: CB_RESPONSIBLE_HUMAN, else the first trusted human.
 mm_responsible_name() {
-  local r="${MM_RESPONSIBLE_HUMAN:-}"
+  local r="${CB_RESPONSIBLE_HUMAN:-}"
   r="${r//[[:space:]]/}"; r="${r#@}"
   [[ -n "$r" ]] || r="$(mm_trusted_names | head -1)"
   printf '%s' "$r"
@@ -767,7 +920,7 @@ mm_tree_version() {
 # What kind of host copy a release tree is (ADR-011, RT-6.29): "signed release
 # v<x.y.z>" when the installer marked it SOURCE=signed after verifying its tag,
 # "release v<x.y.z> (signature not checked)" for SOURCE=release (installed
-# without MM_RELEASE_SIGNERS), else "unsigned" (from a clone, or from before
+# without CB_RELEASE_SIGNERS), else "unsigned" (from a clone, or from before
 # 0.81.0). For notices only.
 mm_release_kind() {
   local s tag
@@ -787,40 +940,40 @@ mm_release_kind() {
 # --- release tags (ADR-011, RT-6.29, RT-6.30) -----------------------------------
 # Shared by the installer (--release) and the release check: the pinned keys,
 # the repository, the tools, git's clean environment and the checks of a tag.
-# On a failure each sets MM_REL_ERR (a message that echoes no argument) and
+# On a failure each sets CB_REL_ERR (a message that echoes no argument) and
 # returns 1.
 
-# The pinned keys (decisions (3) and (4) of 2026-11-12) → MM_REL_ENFORCE (1
-# with keys: the check is opt-in), MM_REL_ALLOWED, an allowed-signers file's
+# The pinned keys (decisions (3) and (4) of 2026-11-12) → CB_REL_ENFORCE (1
+# with keys: the check is opt-in), CB_REL_ALLOWED, an allowed-signers file's
 # text (Ed25519 keys under one fixed principal, mm-release, namespaces="git"),
-# MM_REL_KEYS (one `<type> <base64>` per line, the keys in use), MM_REL_PINNED
-# (the same of release-signers, "" without it), MM_REL_FROM (env, file or
-# none) and MM_REL_FROM_TEXT (MM_RELEASE_SIGNERS or the file's path).
-# $1 is the host copy's layout directory (MM_BUS_HOST_DIR's parent, beside
+# CB_REL_KEYS (one `<type> <base64>` per line, the keys in use), CB_REL_PINNED
+# (the same of release-signers, "" without it), CB_REL_FROM (env, file or
+# none) and CB_REL_FROM_TEXT (CB_RELEASE_SIGNERS or the file's path).
+# $1 is the host copy's layout directory (CB_BUS_HOST_DIR's parent, beside
 # releases/ and src.git), never the state directory: XDG_STATE_HOME comes from
 # the operator's environment, which a workdir's .envrc can redirect. The
-# source: MM_RELEASE_SIGNERS when it is set, else $1/release-signers, which
+# source: CB_RELEASE_SIGNERS when it is set, else $1/release-signers, which
 # only a --release run with keys writes, else none. Set but holding no key is a
 # mistake, not opt-out. The file, when it exists, is checked in every mode: a
 # symlink, no regular file, in a directory a sandbox can write or that is not
 # the user's own or others can write, not the user's own or writable by
 # others, too large, without a key or with anything but keys is refused, never
-# skipped. MM_RELEASE_SIGNERS with keys other than the pinned ones (rotation
-# included) is refused unless MM_REL_REPLACE=1 (--replace-signers).
+# skipped. CB_RELEASE_SIGNERS with keys other than the pinned ones (rotation
+# included) is refused unless CB_REL_REPLACE=1 (--replace-signers).
 # shellcheck disable=SC2034 # read by the installer and the release check
-MM_SIGNERS_FILE=release-signers MM_SIGNERS_MAX=16384 MM_WITHDRAWN_FILE=release-withdrawn.env
-# Key lines of $2 → MM_REL_PARSED (`<type> <base64>` per line); $1 names the source.
+CB_SIGNERS_FILE=release-signers CB_SIGNERS_MAX=16384 CB_WITHDRAWN_FILE=release-withdrawn.env
+# Key lines of $2 → CB_REL_PARSED (`<type> <base64>` per line); $1 names the source.
 mm_release_parse_keys() {
   local line
-  MM_REL_PARSED=""
+  CB_REL_PARSED=""
   while IFS= read -r line; do
     line="${line#"${line%%[![:space:]]*}"}"
     [[ -n "$line" && "$line" != \#* ]] || continue
     if [[ ! "$line" =~ ^(ssh-ed25519|sk-ssh-ed25519@openssh\.com)[[:space:]]+([A-Za-z0-9+/]+={0,2})([[:space:]].*)?$ ]]; then
-      MM_REL_ERR="$1 has a line that is no Ed25519 public key (ssh-ed25519 AAAA…); refused"
+      CB_REL_ERR="$1 has a line that is no Ed25519 public key (ssh-ed25519 AAAA…); refused"
       return 1
     fi
-    MM_REL_PARSED+="${BASH_REMATCH[1]} ${BASH_REMATCH[2]}"$'\n'
+    CB_REL_PARSED+="${BASH_REMATCH[1]} ${BASH_REMATCH[2]}"$'\n'
   done <<<"$2"
 }
 # Whether $1 (a resolved path) is this user's own and writable by no one else.
@@ -830,53 +983,53 @@ mm_own_path() {
 # shellcheck disable=SC2034 # MM_REL_* are read by the caller
 mm_release_signers() {
   local dir="${1:-}" f real text="" k
-  MM_REL_ENFORCE=0 MM_REL_ALLOWED="" MM_REL_KEYS="" MM_REL_PINNED="" MM_REL_ERR="" MM_REL_FROM=none MM_REL_FROM_TEXT=""
-  f="${dir%/}/$MM_SIGNERS_FILE"
+  CB_REL_ENFORCE=0 CB_REL_ALLOWED="" CB_REL_KEYS="" CB_REL_PINNED="" CB_REL_ERR="" CB_REL_FROM=none CB_REL_FROM_TEXT=""
+  f="${dir%/}/$CB_SIGNERS_FILE"
   if [[ -n "$dir" && ( -e "$f" || -L "$f" ) ]]; then
     real="$(cd -P "$dir" 2>/dev/null && pwd -P)" || real=""
     if [[ -L "$f" ]]; then
-      MM_REL_ERR="$f is a symlink; refused (look at it, then remove it)"
+      CB_REL_ERR="$f is a symlink; refused (look at it, then remove it)"
     elif [[ ! -f "$f" ]]; then
-      MM_REL_ERR="$f is no regular file; refused"
+      CB_REL_ERR="$f is no regular file; refused"
     elif [[ -z "$real" ]] || mm_sandbox_can_write "$dir" || mm_sandbox_can_write "$real"; then
-      MM_REL_ERR="$f lies where a corral sandbox can write; refused"
+      CB_REL_ERR="$f lies where a corral sandbox can write; refused"
     elif ! mm_own_path "$real"; then
-      MM_REL_ERR="$real, the directory of $MM_SIGNERS_FILE, is not this user's own or others can write it; refused"
+      CB_REL_ERR="$real, the directory of $CB_SIGNERS_FILE, is not this user's own or others can write it; refused"
     elif ! mm_own_path "$f"; then
-      MM_REL_ERR="$f is not this user's own or others can write it; refused"
-    elif (( $(wc -c <"$f") > MM_SIGNERS_MAX )) || ! text="$(mm_read_file "$f" "$MM_SIGNERS_MAX")"; then
-      MM_REL_ERR="$f is larger than $MM_SIGNERS_MAX bytes or cannot be read; refused"
+      CB_REL_ERR="$f is not this user's own or others can write it; refused"
+    elif (( $(wc -c <"$f") > CB_SIGNERS_MAX )) || ! text="$(mm_read_file "$f" "$CB_SIGNERS_MAX")"; then
+      CB_REL_ERR="$f is larger than $CB_SIGNERS_MAX bytes or cannot be read; refused"
     fi
-    [[ -z "$MM_REL_ERR" ]] || return 1
+    [[ -z "$CB_REL_ERR" ]] || return 1
     mm_release_parse_keys "$f" "$text" || return 1
-    MM_REL_PINNED="$MM_REL_PARSED"
-    if [[ -z "$MM_REL_PINNED" ]]; then
-      MM_REL_ERR="$f holds no public key; refused (remove it with mm-agent-host-install.sh --forget-signers)"
+    CB_REL_PINNED="$CB_REL_PARSED"
+    if [[ -z "$CB_REL_PINNED" ]]; then
+      CB_REL_ERR="$f holds no public key; refused (remove it with mm-agent-host-install.sh --forget-signers)"
       return 1
     fi
   fi
-  if [[ -n "${MM_RELEASE_SIGNERS+set}" ]]; then
-    MM_REL_FROM=env MM_REL_FROM_TEXT=MM_RELEASE_SIGNERS
-    mm_release_parse_keys MM_RELEASE_SIGNERS "${MM_RELEASE_SIGNERS//;/$'\n'}" || return 1
-    MM_REL_KEYS="$MM_REL_PARSED"
-    if [[ -z "$MM_REL_KEYS" ]]; then
-      MM_REL_ERR="MM_RELEASE_SIGNERS is set but holds no public key (unset it to install without a signature check); nothing changed"
+  if [[ -n "${CB_RELEASE_SIGNERS+set}" ]]; then
+    CB_REL_FROM=env CB_REL_FROM_TEXT=CB_RELEASE_SIGNERS
+    mm_release_parse_keys CB_RELEASE_SIGNERS "${CB_RELEASE_SIGNERS//;/$'\n'}" || return 1
+    CB_REL_KEYS="$CB_REL_PARSED"
+    if [[ -z "$CB_REL_KEYS" ]]; then
+      CB_REL_ERR="CB_RELEASE_SIGNERS is set but holds no public key (unset it to install without a signature check); nothing changed"
       return 1
     fi
-    if [[ -n "$MM_REL_PINNED" && "${MM_REL_REPLACE:-0}" -ne 1 &&
-          "$(sort -u <<<"$MM_REL_KEYS")" != "$(sort -u <<<"$MM_REL_PINNED")" ]]; then
-      MM_REL_ERR="the keys pinned in $f differ from MM_RELEASE_SIGNERS: mm-agent-host-install.sh --forget-signers first, or --release with --replace-signers; nothing changed"
+    if [[ -n "$CB_REL_PINNED" && "${CB_REL_REPLACE:-0}" -ne 1 &&
+          "$(sort -u <<<"$CB_REL_KEYS")" != "$(sort -u <<<"$CB_REL_PINNED")" ]]; then
+      CB_REL_ERR="the keys pinned in $f differ from CB_RELEASE_SIGNERS: mm-agent-host-install.sh --forget-signers first, or --release with --replace-signers; nothing changed"
       return 1
     fi
-  elif [[ -n "$MM_REL_PINNED" ]]; then
-    MM_REL_FROM=file MM_REL_FROM_TEXT="$f" MM_REL_KEYS="$MM_REL_PINNED"
+  elif [[ -n "$CB_REL_PINNED" ]]; then
+    CB_REL_FROM=file CB_REL_FROM_TEXT="$f" CB_REL_KEYS="$CB_REL_PINNED"
   else
     return 0
   fi
-  MM_REL_ENFORCE=1
+  CB_REL_ENFORCE=1
   while IFS= read -r k; do
-    [[ -z "$k" ]] || MM_REL_ALLOWED+="mm-release namespaces=\"git\" $k"$'\n'
-  done <<<"$MM_REL_KEYS"
+    [[ -z "$k" ]] || CB_REL_ALLOWED+="mm-release namespaces=\"git\" $k"$'\n'
+  done <<<"$CB_REL_KEYS"
 }
 
 # mm_release_withdrawn <x.y.z> <file>: prints the version whose CHANGELOG
@@ -936,107 +1089,107 @@ mm_release_target() {
   else printf 'latest\n'; fi
 }
 
-# MM_RELEASE_URL (default the GitHub repository) → MM_REL_URL: a plain https
+# CB_RELEASE_URL (default the GitHub repository) → CB_REL_URL: a plain https
 # URL (no user, query or space), or an absolute local path (a mirror, the
 # tests) out of every sandbox's reach.
 mm_release_url() {
   local u
-  MM_REL_URL="${MM_RELEASE_URL:-https://github.com/dembaca/ai-agent-bus.git}" MM_REL_ERR=""
-  case "$MM_REL_URL" in
+  CB_REL_URL="${CB_RELEASE_URL:-https://github.com/dembaca/ai-agent-bus.git}" CB_REL_ERR=""
+  case "$CB_REL_URL" in
     https://*)
-      [[ "$MM_REL_URL" =~ ^https://[A-Za-z0-9.-]+(:[0-9]+)?(/[A-Za-z0-9._~%+-]+)+/?$ ]] && return 0
-      MM_REL_ERR="MM_RELEASE_URL is no plain https URL (no user, query or space); refused" ;;
+      [[ "$CB_REL_URL" =~ ^https://[A-Za-z0-9.-]+(:[0-9]+)?(/[A-Za-z0-9._~%+-]+)+/?$ ]] && return 0
+      CB_REL_ERR="CB_RELEASE_URL is no plain https URL (no user, query or space); refused" ;;
     /* | file:///*)
-      if ! u="$(cd -P "${MM_REL_URL#file://}" 2>/dev/null && pwd -P)"; then
-        MM_REL_ERR="MM_RELEASE_URL: no such directory: ${MM_REL_URL#file://}"
+      if ! u="$(cd -P "${CB_REL_URL#file://}" 2>/dev/null && pwd -P)"; then
+        CB_REL_ERR="CB_RELEASE_URL: no such directory: ${CB_REL_URL#file://}"
       elif mm_sandbox_can_write "$u"; then
-        MM_REL_ERR="MM_RELEASE_URL $u can be changed from inside a corral sandbox; refused"
+        CB_REL_ERR="CB_RELEASE_URL $u can be changed from inside a corral sandbox; refused"
       else
-        MM_REL_URL="$u"
+        CB_REL_URL="$u"
         return 0
       fi ;;
-    *) MM_REL_ERR="MM_RELEASE_URL must be an https:// URL or an absolute path; refused" ;;
+    *) CB_REL_ERR="CB_RELEASE_URL must be an https:// URL or an absolute path; refused" ;;
   esac
   return 1
 }
 
-# With keys (MM_REL_ENFORCE=1): git 2.34 or newer and an ssh-keygen with
+# With keys (CB_REL_ENFORCE=1): git 2.34 or newer and an ssh-keygen with
 # -Y find-principals (OpenSSH 8.2 or newer) verify an SSH signature.
 mm_release_tools() {
   local gv
-  MM_REL_ERR=""
-  [[ "${MM_REL_ENFORCE:-0}" -eq 1 ]] || return 0
+  CB_REL_ERR=""
+  [[ "${CB_REL_ENFORCE:-0}" -eq 1 ]] || return 0
   if ! command -v ssh-keygen >/dev/null 2>&1; then
-    MM_REL_ERR="ssh-keygen is required to verify the release's signature"
+    CB_REL_ERR="ssh-keygen is required to verify the release's signature"
     return 1
   fi
   case "$(LC_ALL=C ssh-keygen -Y find-principals -f /dev/null -s /dev/null 2>&1 || true)" in
     *[Uu]nsupported* | *"illegal option"* | *"unknown option"* | *"invalid option"*)
-      MM_REL_ERR="this ssh-keygen cannot verify SSH signatures (-Y find-principals, OpenSSH 8.2 or newer); nothing changed"
+      CB_REL_ERR="this ssh-keygen cannot verify SSH signatures (-Y find-principals, OpenSSH 8.2 or newer); nothing changed"
       return 1 ;;
   esac
   gv="$(git --version | sed -n 's/^git version \([0-9]*\.[0-9]*\).*/\1/p')"
   if [[ -z "$gv" ]] || mm_version_newer "$gv.0" "2.34.0"; then
-    MM_REL_ERR="git 2.34 or newer is required to verify SSH signatures"
+    CB_REL_ERR="git 2.34 or newer is required to verify SSH signatures"
     return 1
   fi
 }
 
-# git on the bare repository MM_REL_GIT_DIR (src.git beside releases/), its
-# temporary files in MM_REL_TMP, a directory only the host sees: no system or
+# git on the bare repository CB_REL_GIT_DIR (src.git beside releases/), its
+# temporary files in CB_REL_TMP, a directory only the host sees: no system or
 # global config, attributes file, fsmonitor, hook, credential helper or
 # replace refs, LC_ALL=C (its messages are matched), only the https and file
 # protocols, no HTTP redirect, a transfer slower than 1 byte/s for 60 s given up
 # (RT-6.32: the end hook waits for it), every received object checked (RT-6.29 step 2).
 mm_rgit() {
-  LC_ALL=C TMPDIR="$MM_REL_TMP" GIT_CONFIG_NOSYSTEM=1 GIT_CONFIG_GLOBAL=/dev/null GIT_TERMINAL_PROMPT=0 \
+  LC_ALL=C TMPDIR="$CB_REL_TMP" GIT_CONFIG_NOSYSTEM=1 GIT_CONFIG_GLOBAL=/dev/null GIT_TERMINAL_PROMPT=0 \
     GIT_NO_REPLACE_OBJECTS=1 \
     git --no-optional-locks -c core.attributesFile=/dev/null -c core.fsmonitor=false \
     -c core.hooksPath=/dev/null -c gc.auto=0 -c maintenance.auto=false \
     -c protocol.allow=never -c protocol.https.allow=always -c protocol.file.allow=always \
     -c http.followRedirects=false -c http.lowSpeedLimit=1 -c http.lowSpeedTime=60 \
-    -c credential.helper= -c transfer.fsckObjects=true --git-dir="$MM_REL_GIT_DIR" "$@"
+    -c credential.helper= -c transfer.fsckObjects=true --git-dir="$CB_REL_GIT_DIR" "$@"
 }
 
 # mm_release_tag <tag> <tag object id>: RT-6.29 steps 4–5 on a fetched tag. An
-# annotated tag in both modes; with keys (MM_REL_ENFORCE=1, MM_REL_ALLOWED) an
+# annotated tag in both modes; with keys (CB_REL_ENFORCE=1, CB_REL_ALLOWED) an
 # SSH signature, no PGP or X.509 one, that `git verify-tag` accepts for the one
 # principal mm-release; its own name the one asked for; it tags a commit. Sets
-# MM_REL_SIGNER (the key's SHA256 fingerprint, with keys) and MM_REL_COMMIT.
+# CB_REL_SIGNER (the key's SHA256 fingerprint, with keys) and CB_REL_COMMIT.
 # shellcheck disable=SC2034 # MM_REL_* are read by the caller
 mm_release_tag() {
   local tag="$1" id="$2" tobj vout vrc=0 hdr tname ttype obj
-  MM_REL_SIGNER="" MM_REL_COMMIT="" MM_REL_ERR=""
+  CB_REL_SIGNER="" CB_REL_COMMIT="" CB_REL_ERR=""
   if [[ "$(mm_rgit cat-file -t "$id" 2>/dev/null)" != tag ]]; then
-    MM_REL_ERR="$tag is a lightweight tag (no tag object, so no signature): not a release"
+    CB_REL_ERR="$tag is a lightweight tag (no tag object, so no signature): not a release"
     return 1
   fi
-  tobj="$(mm_rgit cat-file tag "$id")" || { MM_REL_ERR="$tag cannot be read"; return 1; }
-  if [[ "$MM_REL_ENFORCE" -eq 1 ]]; then
+  tobj="$(mm_rgit cat-file tag "$id")" || { CB_REL_ERR="$tag cannot be read"; return 1; }
+  if [[ "$CB_REL_ENFORCE" -eq 1 ]]; then
     case "$tobj" in
       *"-----BEGIN PGP SIGNATURE-----"* | *"-----BEGIN SIGNED MESSAGE-----"*)
-        MM_REL_ERR="$tag carries a signature that is not an SSH signature (PGP or X.509)"
+        CB_REL_ERR="$tag carries a signature that is not an SSH signature (PGP or X.509)"
         return 1 ;;
       *"-----BEGIN SSH SIGNATURE-----"*) ;;
-      *) MM_REL_ERR="$tag carries no signature: not a signed release"; return 1 ;;
+      *) CB_REL_ERR="$tag carries no signature: not a signed release"; return 1 ;;
     esac
-    printf '%s' "$MM_REL_ALLOWED" >"$MM_REL_TMP/allowed_signers"
-    vout="$(mm_rgit -c gpg.format=ssh -c gpg.ssh.allowedSignersFile="$MM_REL_TMP/allowed_signers" \
+    printf '%s' "$CB_REL_ALLOWED" >"$CB_REL_TMP/allowed_signers"
+    vout="$(mm_rgit -c gpg.format=ssh -c gpg.ssh.allowedSignersFile="$CB_REL_TMP/allowed_signers" \
               -c gpg.ssh.program=ssh-keygen verify-tag "$id" 2>&1)" || vrc=$?
     if [[ "$vout" == *"no signature found"* ]]; then
-      MM_REL_ERR="$tag carries no signature: not a signed release"
+      CB_REL_ERR="$tag carries no signature: not a signed release"
       return 1
     fi
     # SSH signatures: verify-tag's exit code with allowedSignersFile set, and
     # the one principal written above, nothing else.
-    MM_REL_SIGNER="$(sed -n 's/^Good "git" signature for mm-release with [A-Z0-9-]* key \(SHA256:[A-Za-z0-9+/]*\)$/\1/p' <<<"$vout" | head -n1)"
-    if [[ "$vrc" -ne 0 || -z "$MM_REL_SIGNER" ]]; then
-      MM_REL_SIGNER=""
+    CB_REL_SIGNER="$(sed -n 's/^Good "git" signature for mm-release with [A-Z0-9-]* key \(SHA256:[A-Za-z0-9+/]*\)$/\1/p' <<<"$vout" | head -n1)"
+    if [[ "$vrc" -ne 0 || -z "$CB_REL_SIGNER" ]]; then
+      CB_REL_SIGNER=""
       if [[ "$vout" == *"No principal matched"* ]]; then
-        MM_REL_ERR="$tag is signed by a key not pinned in ${MM_REL_FROM_TEXT:-MM_RELEASE_SIGNERS} ($(grep -o 'SHA256:[A-Za-z0-9+/]*' <<<"$vout" | head -n1 || true))"
+        CB_REL_ERR="$tag is signed by a key not pinned in ${CB_REL_FROM_TEXT:-CB_RELEASE_SIGNERS} ($(grep -o 'SHA256:[A-Za-z0-9+/]*' <<<"$vout" | head -n1 || true))"
         return 1
       fi
-      MM_REL_ERR="$tag does not verify against ${MM_REL_FROM_TEXT:-MM_RELEASE_SIGNERS}:"$'\n'"$(tail -n 3 <<<"$vout" | tr -cd '[:print:]\n')"
+      CB_REL_ERR="$tag does not verify against ${CB_REL_FROM_TEXT:-CB_RELEASE_SIGNERS}:"$'\n'"$(tail -n 3 <<<"$vout" | tr -cd '[:print:]\n')"
       return 1
     fi
   fi
@@ -1045,25 +1198,25 @@ mm_release_tag() {
   ttype="$(sed -n 's/^type //p' <<<"$hdr" | head -n1)"
   obj="$(sed -n 's/^object //p' <<<"$hdr" | head -n1)"
   if [[ "$tname" != "$tag" ]]; then
-    MM_REL_ERR="the tag $tag is a tag object named $(tr -cd '[:alnum:]._-' <<<"$tname" | cut -c1-40): a ref pointed at another release"
+    CB_REL_ERR="the tag $tag is a tag object named $(tr -cd '[:alnum:]._-' <<<"$tname" | cut -c1-40): a ref pointed at another release"
     return 1
   fi
   if [[ "$ttype" != commit || ! "$obj" =~ ^[0-9a-f]{40}([0-9a-f]{24})?$ ]]; then
-    MM_REL_ERR="$tag does not tag a commit"
+    CB_REL_ERR="$tag does not tag a commit"
     return 1
   fi
-  MM_REL_COMMIT="$obj"
+  CB_REL_COMMIT="$obj"
 }
 
 # The Needs: line of a CHANGELOG entry (ADR-011 point 3, RT-6.30) says what a
 # release needs first, and it reaches every agent's context: only variable
-# names (MM_*), versions (x.y.z) and lowercase words of at most 15 letters,
+# names (CB_* or MM_*), versions (x.y.z) and lowercase words of at most 15 letters,
 # each with an optional `,` or `.`, one space between, at most 120 characters.
 # The same text as NEEDS_PATTERN in mcp/src/…/release.py, which
 # scripts/doc-check.py reads; a test compares the two.
-MM_NEEDS_RE='^(MM_[A-Z0-9_]+|[0-9]+\.[0-9]+\.[0-9]+|[a-z]{1,15})[,.]?( (MM_[A-Z0-9_]+|[0-9]+\.[0-9]+\.[0-9]+|[a-z]{1,15})[,.]?)*$'
+CB_NEEDS_RE='^((CB|MM)_[A-Z0-9_]+|[0-9]+\.[0-9]+\.[0-9]+|[a-z]{1,15})[,.]?( ((CB|MM)_[A-Z0-9_]+|[0-9]+\.[0-9]+\.[0-9]+|[a-z]{1,15})[,.]?)*$'
 mm_release_needs_ok() {
-  [[ -n "$1" && ${#1} -le 120 && "$1" =~ $MM_NEEDS_RE ]]
+  [[ -n "$1" && ${#1} -le 120 && "$1" =~ $CB_NEEDS_RE ]]
 }
 
 # mm_release_notice <version> [state dir]: one line about the newest release
@@ -1150,12 +1303,12 @@ mm_release_newest() {
 # when last read, the keys' state, the last decision) and release-auto.log
 # (one line per decision).
 # shellcheck disable=SC2034 # read by the installer and the release check
-MM_HOLD_FILE=release-hold MM_AUTO_FILE=release-auto.env MM_AUTO_LOG=release-auto.log
+CB_HOLD_FILE=release-hold CB_AUTO_FILE=release-auto.env CB_AUTO_LOG=release-auto.log
 
 # Whether self-updates are held on the host copy in layout directory $1:
 # anything named release-hold there counts, a symlink too (fail safe).
 mm_release_held() {
-  [[ -e "$1/$MM_HOLD_FILE" || -L "$1/$MM_HOLD_FILE" ]]
+  [[ -e "$1/$CB_HOLD_FILE" || -L "$1/$CB_HOLD_FILE" ]]
 }
 
 # mm_bounded <seconds> <command…>: run the command, its stdout and stderr as
@@ -1218,7 +1371,7 @@ mm_registrar_release() {
     return 0
   fi
   e=(HOME="$HOME" PATH=/usr/bin:/bin:/usr/sbin:/sbin LC_ALL=C MM_REGISTRAR_KEYS="$MM_REGISTRAR_KEYS")
-  for k in MM_REGISTER_URL MM_CHAT_URL SSL_CERT_FILE SSL_CERT_DIR HTTPS_PROXY https_proxy NO_PROXY no_proxy; do
+  for k in MM_REGISTER_URL CB_MM_CHAT_URL MM_CHAT_URL SSL_CERT_FILE SSL_CERT_DIR HTTPS_PROXY https_proxy NO_PROXY no_proxy; do
     if [[ -n "${!k:-}" ]]; then e+=("$k=${!k}"); fi
   done
   out="$(cd / && mm_bounded 30 env -i "${e[@]}" "$py" -I -m mattermost_ai_agent_bus.selfupdate \
@@ -1239,11 +1392,11 @@ mm_registrar_release() {
     ok) ;;
     *) MM_RR_STATUS="$st" MM_RR_VERSION=""; return 0 ;;
   esac
-  if [[ "$bad" -eq 1 ]] || ! mm_release_parse_keys "the registrar's release record" "$keys" || [[ -z "$MM_REL_PARSED" ]]; then
+  if [[ "$bad" -eq 1 ]] || ! mm_release_parse_keys "the registrar's release record" "$keys" || [[ -z "$CB_REL_PARSED" ]]; then
     MM_RR_STATUS=failed MM_RR_VERSION="" MM_RR_WHY="the registrar's release record has a line out of its form; refused"
     return 0
   fi
-  MM_RR_STATUS=ok MM_RR_KEYS="$MM_REL_PARSED"
+  MM_RR_STATUS=ok MM_RR_KEYS="$CB_REL_PARSED"
 }
 
 # After mm_release_signers and an `ok` mm_registrar_release: how the keys the
@@ -1263,9 +1416,9 @@ mm_release_key_ids() {
   fi
 }
 mm_release_keystate() {
-  if [[ "${MM_REL_FROM:-none}" == none ]]; then
+  if [[ "${CB_REL_FROM:-none}" == none ]]; then
     printf 'none\n'
-  elif [[ "$(mm_release_key_ids "$MM_RR_KEYS")" == "$(mm_release_key_ids "$MM_REL_KEYS")" ]]; then
+  elif [[ "$(mm_release_key_ids "$MM_RR_KEYS")" == "$(mm_release_key_ids "$CB_REL_KEYS")" ]]; then
     printf 'match\n'
   else
     printf 'mismatch\n'
@@ -1278,7 +1431,7 @@ mm_release_keystate() {
 mm_auto_state() {
   local dir="$1" f line k kv keep="" new="" tmp
   shift
-  f="$dir/$MM_AUTO_FILE"
+  f="$dir/$CB_AUTO_FILE"
   [[ -d "$dir" && ! -L "$dir" && ! -L "$f" ]] || return 0
   for kv in "$@"; do new+="$kv"$'\n'; done
   if [[ -f "$f" ]]; then
@@ -1288,7 +1441,7 @@ mm_auto_state() {
       keep+="$line"$'\n'
     done < <(mm_read_file "$f" 4096 || true)
   fi
-  tmp="$dir/.$MM_AUTO_FILE.$$"
+  tmp="$dir/.$CB_AUTO_FILE.$$"
   { (umask 077 && printf '%s%s' "$keep" "$new" >"$tmp") && mv -f "$tmp" "$f"; } 2>/dev/null || rm -f "$tmp"
 }
 
@@ -1296,10 +1449,10 @@ mm_auto_state() {
 # release-auto.log, the newest 200 kept.
 mm_auto_log() {
   local dir="$1" f tmp text
-  f="$dir/$MM_AUTO_LOG"
+  f="$dir/$CB_AUTO_LOG"
   [[ -d "$dir" && ! -L "$dir" && ! -L "$f" ]] || return 0
   text="$(head -n1 <<<"$2" | tr -cd '[:print:]' | cut -c1-400)"
-  tmp="$dir/.$MM_AUTO_LOG.$$"
+  tmp="$dir/.$CB_AUTO_LOG.$$"
   { { tail -n 199 "$f" 2>/dev/null || true; printf '%s %s\n' "$(date -u +%Y-%m-%dT%H:%M:%SZ)" "$text"; } >"$tmp" &&
     chmod 600 "$tmp" && mv -f "$tmp" "$f"; } 2>/dev/null || rm -f "$tmp"
 }
@@ -1311,7 +1464,7 @@ mm_release_auto_notice() {
   local have="$1" dir="$2" layout="$3" text k v target="" shown="" keys="" out=""
   local latest_re='^latest \(v([0-9]+\.[0-9]+\.[0-9]+)\)$'
   [[ "$have" =~ ^[0-9]+\.[0-9]+\.[0-9]+$ ]] || return 1
-  if [[ -f "$dir/$MM_AUTO_FILE" && ! -L "$dir/$MM_AUTO_FILE" ]] && text="$(mm_read_file "$dir/$MM_AUTO_FILE" 4096)"; then
+  if [[ -f "$dir/$CB_AUTO_FILE" && ! -L "$dir/$CB_AUTO_FILE" ]] && text="$(mm_read_file "$dir/$CB_AUTO_FILE" 4096)"; then
     while IFS='=' read -r k v; do
       case "$k" in
         TARGET)
@@ -1350,16 +1503,16 @@ mm_epoch_hhmm() {
 # Claude Code was started with the MCP server as a channel (RT-6.12): the
 # server pushes bus messages into the session, so no listener is needed. The
 # server finds that out itself; it counts once the agent confirmed the server's
-# check (channel-<uid>.env). MM_CHANNEL_PUSH=0 turns it off. In a keyless
-# session that file is on the host: /v1/me says (MM_BUS_CHANNEL, RT-6.18).
+# check (channel-<uid>.env). CB_CHANNEL_PUSH=0 turns it off. In a keyless
+# session that file is on the host: /v1/me says (CB_BUS_CHANNEL, RT-6.18).
 mm_channel_push() {
-  case "$(printf '%s' "${MM_CHANNEL_PUSH:-}" | tr '[:upper:]' '[:lower:]')" in
+  case "$(printf '%s' "${CB_CHANNEL_PUSH:-}" | tr '[:upper:]' '[:lower:]')" in
     0 | false | no | off) return 1 ;;
   esac
   local f
   if mm_bus_keyless; then
-    [[ -n "${MM_BUS_CHANNEL:-}" ]] || mm_bus_me || return 1
-    [[ "${MM_BUS_CHANNEL:-0}" == 1 ]]
+    [[ -n "${CB_BUS_CHANNEL:-}" ]] || mm_bus_me || return 1
+    [[ "${CB_BUS_CHANNEL:-0}" == 1 ]]
     return
   fi
   f="$(mm_bot_state_file channel "${1:-}")" && [[ -f "$f" ]]
@@ -1369,19 +1522,23 @@ mm_channel_push() {
 # lines are plain assignments: the caller keeps the token in a variable that
 # no process it starts inherits (arc42 §7.3). For the shell CLI they export.
 mm_emit_session_exports() {
-  local x=export
-  [[ "${MM_CREDS_FROM_FD:-0}" != 1 ]] || x=""
-  cat <<EOF
-export MM_CHAT_URL=$(printf '%q' "${MM_CHAT_URL:-}")
-export MM_REG_BOT_NAME=$(printf '%q' "${MM_REG_BOT_NAME:-}")
-export MM_BOT_USERNAME=$(printf '%q' "${MM_BOT_USERNAME:-}")
-export MM_AGENT_PREFIX=$(printf '%q' "$(mm_agent_prefix)")
-export MM_BOT_USER_ID=$(printf '%q' "${MM_BOT_USER_ID:-}")
-${x:+$x }MM_BOT_TOKEN=$(printf '%q' "${MM_BOT_TOKEN:-}")
-export MATTERMOST_URL=$(printf '%q' "${MATTERMOST_URL:-${MM_CHAT_URL:-}}")
-${x:+$x }MATTERMOST_TOKEN=$(printf '%q' "${MATTERMOST_TOKEN:-${MM_BOT_TOKEN:-}}")
-export MM_AGENT_SESSION_FILE=$(printf '%q' "$(mm_session_file)")
-EOF
+  local x=export n v
+  [[ "${CB_CREDS_FROM_FD:-0}" != 1 ]] || x=""
+  # Each value under its new and its old names (#169).
+  for n in CB_MM_CHAT_URL MM_CHAT_URL MATTERMOST_URL; do
+    printf 'export %s=%q\n' "$n" "${CB_MM_CHAT_URL:-}"
+  done
+  printf 'export MM_REG_BOT_NAME=%q\n' "${MM_REG_BOT_NAME:-}"
+  for n in USERNAME USER_ID; do
+    v="CB_MM_BOT_${n}"
+    printf 'export CB_MM_BOT_%s=%q\nexport MM_BOT_%s=%q\n' "$n" "${!v:-}" "$n" "${!v:-}"
+  done
+  printf 'export MM_AGENT_PREFIX=%q\n' "$(mm_agent_prefix)"
+  for n in CB_MM_BOT_TOKEN MM_BOT_TOKEN MATTERMOST_TOKEN; do
+    printf '%s%s=%q\n' "${x:+$x }" "$n" "${CB_MM_BOT_TOKEN:-}"
+  done
+  v="$(mm_session_file)"
+  printf 'export CB_AGENT_SESSION_FILE=%q\nexport MM_AGENT_SESSION_FILE=%q\n' "$v" "$v"
   # The registrar's signed owner claim (RT-6.24), only when it sent one.
   [[ -z "${MM_BOT_ATTESTATION:-}" ]] || printf 'export MM_BOT_ATTESTATION=%q\n' "$MM_BOT_ATTESTATION"
 }
@@ -1399,32 +1556,39 @@ mm_write_session_file() {
   mkdir -p "$(dirname "$f")"
   cat >"$f" <<EOF
 # ephemeral session — do not commit
-MM_CHAT_URL=${MM_CHAT_URL:-}
+CB_MM_CHAT_URL=${CB_MM_CHAT_URL:-}
+MM_CHAT_URL=${CB_MM_CHAT_URL:-}
 MM_REG_BOT_NAME=${MM_REG_BOT_NAME:-}
-MM_BOT_USERNAME=${MM_BOT_USERNAME:-}
+CB_MM_BOT_USERNAME=${CB_MM_BOT_USERNAME:-}
+MM_BOT_USERNAME=${CB_MM_BOT_USERNAME:-}
 MM_AGENT_PREFIX=$(mm_agent_prefix)
-MM_BOT_USER_ID=${MM_BOT_USER_ID:-}
+CB_MM_BOT_USER_ID=${CB_MM_BOT_USER_ID:-}
+MM_BOT_USER_ID=${CB_MM_BOT_USER_ID:-}
 ${MM_BOT_ATTESTATION:+MM_BOT_ATTESTATION=${MM_BOT_ATTESTATION}}
-MM_BOT_TOKEN=${MM_BOT_TOKEN:-}
-MATTERMOST_URL=${MATTERMOST_URL:-${MM_CHAT_URL:-}}
-MATTERMOST_TOKEN=${MATTERMOST_TOKEN:-${MM_BOT_TOKEN:-}}
-MM_TEAM=${MM_TEAM:-}
-MM_CHANNEL=${MM_CHANNEL:-}
-${MM_PROJECT_CHANNEL:+MM_PROJECT_CHANNEL=${MM_PROJECT_CHANNEL}}
+CB_MM_BOT_TOKEN=${CB_MM_BOT_TOKEN:-}
+MM_BOT_TOKEN=${CB_MM_BOT_TOKEN:-}
+MATTERMOST_URL=${CB_MM_CHAT_URL:-}
+MATTERMOST_TOKEN=${CB_MM_BOT_TOKEN:-}
+CB_MM_TEAM=${CB_MM_TEAM:-}
+MM_TEAM=${CB_MM_TEAM:-}
+CB_MM_CHANNEL=${CB_MM_CHANNEL:-}
+MM_CHANNEL=${CB_MM_CHANNEL:-}
+${CB_MM_PROJECT_CHANNEL:+CB_MM_PROJECT_CHANNEL=${CB_MM_PROJECT_CHANNEL}}
+${CB_MM_PROJECT_CHANNEL:+MM_PROJECT_CHANNEL=${CB_MM_PROJECT_CHANNEL}}
 EOF
 }
 
 # --- corral sessions kept for `claude --continue` (RT-6.18 steps 9–10) ---------
 # postEnd keeps the bot of a Claude session that may be resumed: its session
-# file stays in the host state dir, marked MM_SERVER_ENDED=<epoch s>,
-# MM_KEPT_WORKDIR=<key of the real workdir> and MM_KEPT_CLAUDE_SID=<key of the
+# file stays in the host state dir, marked CB_SERVER_ENDED=<epoch s>,
+# CB_KEPT_WORKDIR=<key of the real workdir> and CB_KEPT_CLAUDE_SID=<key of the
 # Claude session id>, and its state directory hosted/<session>/ stays with it.
 # Only keys (sha1, 16 hex digits): the workdir and the session id are never
 # used as paths on the host.
 
-# The grace period of a kept bot: MM_SESSION_KEEP_SEC, default 24 h.
+# The grace period of a kept bot: CB_SESSION_KEEP_SEC, default 24 h.
 mm_keep_sec() {
-  local k="${MM_SESSION_KEEP_SEC:-86400}"
+  local k="${CB_SESSION_KEEP_SEC:-86400}"
   [[ "$k" =~ ^[0-9]+$ ]] || k=86400
   printf '%s' "$k"
 }
@@ -1445,8 +1609,8 @@ mm_workdir_key() {
 mm_kept_ended() {
   local ended
   [[ -f "$1" && ! -L "$1" ]] || return 1
-  ended="$(sed -n 's/^MM_SERVER_ENDED=//p' "$1" | head -n1)"
-  [[ "$ended" =~ ^[0-9]+$ ]] && grep -Eq '^MM_KEPT_WORKDIR=[0-9a-f]{16}$' "$1" || return 1
+  ended="$(mm_kv "$1" CB_SERVER_ENDED MM_SERVER_ENDED)"
+  [[ "$ended" =~ ^[0-9]+$ ]] && grep -Eq '^(CB|MM)_KEPT_WORKDIR=[0-9a-f]{16}$' "$1" || return 1
   printf '%s' "$ended"
 }
 
@@ -1495,9 +1659,9 @@ mm_kept_candidate() {
   local dir="$1" wkey="$2" mode="$3" skey="${4:-}" f ended best="" best_at=-1
   for f in "$dir"/*.env; do
     ended="$(mm_kept_ended "$f")" || continue
-    [[ "$(sed -n 's/^MM_KEPT_WORKDIR=//p' "$f" | head -n1)" == "$wkey" ]] || continue
+    [[ "$(mm_kv "$f" CB_KEPT_WORKDIR MM_KEPT_WORKDIR)" == "$wkey" ]] || continue
     if [[ "$mode" == resume ]]; then
-      [[ -n "$skey" && "$(sed -n 's/^MM_KEPT_CLAUDE_SID=//p' "$f" | head -n1)" == "$skey" ]] || continue
+      [[ -n "$skey" && "$(mm_kv "$f" CB_KEPT_CLAUDE_SID MM_KEPT_CLAUDE_SID)" == "$skey" ]] || continue
     fi
     if (( ended > best_at )); then best="$f" best_at="$ended"; fi
   done
@@ -1516,9 +1680,9 @@ mm_unregister_session_file() {
   local f="$1" name="$2" err rc=0 d
   # shellcheck disable=SC2030,SC2031
   err="$( (
-      export MM_AGENT_SESSION_FILE="$f"
+      mm_env_set CB_AGENT_SESSION_FILE MM_AGENT_SESSION_FILE "$f"
       mm_load_session_file >/dev/null 2>&1 || exit 1
-      export -n MM_BOT_TOKEN MATTERMOST_TOKEN
+      export -n CB_MM_BOT_TOKEN MM_BOT_TOKEN MATTERMOST_TOKEN
       mm_unregister_with mm_with_token "$name" && exit 0
       if mm_token_gone "$MM_UNREG_HTTP"; then exit 2; fi
       printf '%s' "$MM_UNREG_WHY"
@@ -1545,8 +1709,8 @@ mm_restore_claims() {
     ! kill -0 "$pid" 2>/dev/null || continue
     # It got as far as this session's file: the bot is in use, the claim is
     # only a copy and must never be reaped as kept.
-    uid="$(sed -n 's/^MM_BOT_USER_ID=//p' "$f" | head -n1)"
-    if [[ "$uid" =~ ^[a-z0-9]{26}$ ]] && grep -qx "MM_BOT_USER_ID=${uid}" "$dir"/*.env 2>/dev/null; then
+    uid="$(mm_kv "$f" CB_MM_BOT_USER_ID MM_BOT_USER_ID)"
+    if [[ "$uid" =~ ^[a-z0-9]{26}$ ]] && grep -Eqx "(CB_MM|MM)_BOT_USER_ID=${uid}" "$dir"/*.env 2>/dev/null; then
       rm -f "$f"
       continue
     fi

@@ -18,7 +18,7 @@ set -euo pipefail
 # read the initial environment of every process of this user. One that arrived
 # in ours stays visible in this process, but no child gets it: the token comes
 # from the registration, the secret goes to helpers on an fd only.
-unset MM_BOT_TOKEN MATTERMOST_TOKEN CDPATH
+unset CB_MM_BOT_TOKEN MM_BOT_TOKEN MATTERMOST_TOKEN CDPATH
 export -n MM_REG_SECRET 2>/dev/null || true
 
 # --- what a sandbox can write (arc42 §7.1, §7.3) -------------------------------
@@ -59,23 +59,23 @@ REGISTERED=0
 HOST_STARTED=0  # 1 once the host process was launched (unregister_again)
 # Fail closed: no bus for this session. The bot goes again (its session file
 # stays only when that fails, for postEnd or the sweep to retry); the sandbox
-# learns why (MM_BUS_UNAVAILABLE, the note) and gets nothing else.
+# learns why (CB_BUS_UNAVAILABLE, the note) and gets nothing else.
 no_bus() {
   local why="$1"
   log "no bus for this session, the token stays on the host: ${why}"
   if [[ "$REGISTERED" -eq 1 ]]; then
     mm_with_token "$BIN/mm-agent-status.sh" offline >/dev/null 2>&1 || true
     if unregister_again; then
-      rm -f "$MM_AGENT_SESSION_FILE"
+      rm -f "$CB_AGENT_SESSION_FILE"
     else
       log "WARNING: could not unregister ${NAME} again: ${MM_UNREG_WHY}; postEnd retries"
     fi
   fi
   rm -f "${HOST_READY:-}"
-  MM_BUS_UNAVAILABLE="$why" jq -nc \
+  CB_BUS_UNAVAILABLE="$why" jq -nc \
     --arg note "The AI agent bus is off in this session: ${why}. The bot token stays on the host, so there is no bus here: do not register a bot or look for a token. Tell your human." \
     --arg status "no bus: ${why}" \
-    '{corralContributionVersion: 1, env: {MM_BUS_UNAVAILABLE: env.MM_BUS_UNAVAILABLE},
+    '{corralContributionVersion: 1, env: {CB_BUS_UNAVAILABLE: env.CB_BUS_UNAVAILABLE, MM_BUS_UNAVAILABLE: env.CB_BUS_UNAVAILABLE},
       agentNotes: [$note], status: [$status]}'
   exit 0
 }
@@ -126,7 +126,10 @@ if [[ -n "$unsafe" ]]; then
 fi
 
 # shellcheck source=../../bin/mm-agent-lib.sh
-source "$BIN/mm-agent-lib.sh"
+CB_ENV_DEFER=1 source "$BIN/mm-agent-lib.sh"
+# Old and new names of one setting that differ (#169): no bus, and the reason
+# names both (never a value).
+[[ -z "$CB_ENV_ERR" ]] || no_bus "$CB_ENV_ERR"
 
 # Unregister the bot this run registered: with its own token first, which the
 # registrar always accepts for it, then with the registration secret; on
@@ -180,8 +183,8 @@ else
   exit 0
 fi
 
-if [[ -z "${MM_CHAT_URL:-${MATTERMOST_URL:-}}" ]]; then
-  log "MM_CHAT_URL is not set — no bot for this session"
+if [[ -z "${CB_MM_CHAT_URL:-}" ]]; then
+  log "CB_MM_CHAT_URL is not set — no bot for this session"
   exit 0
 fi
 
@@ -269,8 +272,7 @@ if [[ "$(basename "$(dirname "$ROOT")")" == releases ]] &&
 fi
 SESSION_KEY="${CORRAL_SESSION_ID:-$$}"
 [[ "$SESSION_KEY" =~ ^[A-Za-z0-9_][A-Za-z0-9._-]*$ ]] || SESSION_KEY="$$"
-MM_AGENT_SESSION_FILE="${STATE_DIR}/${SESSION_KEY}.env"
-export MM_AGENT_SESSION_FILE
+mm_env_set CB_AGENT_SESSION_FILE MM_AGENT_SESSION_FILE "${STATE_DIR}/${SESSION_KEY}.env"
 # The host process's own state directory, chosen here: never one the sandbox
 # names (RT-6.18 step 1).
 HOSTED_DIR="${STATE_DIR}/hosted/${SESSION_KEY}"
@@ -290,12 +292,12 @@ sweep_host_processes() {
   local f base hpid hstart cpid d
   shopt -s nullglob
   for f in "$STATE_DIR"/*.env; do
-    [[ "$f" != "$MM_AGENT_SESSION_FILE" ]] || continue
-    hpid="$(sed -n 's/^MM_BUS_HOST_PID=//p' "$f" | head -n1)"
+    [[ "$f" != "$CB_AGENT_SESSION_FILE" ]] || continue
+    hpid="$(mm_kv "$f" CB_BUS_HOST_PID MM_BUS_HOST_PID)"
     [[ "$hpid" =~ ^[0-9]+$ ]] || continue
-    cpid="$(sed -n 's/^MM_SESSION_PID=//p' "$f" | head -n1)"
+    cpid="$(mm_kv "$f" CB_SESSION_PID MM_SESSION_PID)"
     if [[ "$cpid" =~ ^[0-9]+$ ]] && kill -0 "$cpid" 2>/dev/null; then continue; fi
-    hstart="$(sed -n 's/^MM_BUS_HOST_START=//p' "$f" | head -n1)"
+    hstart="$(mm_kv "$f" CB_BUS_HOST_START MM_BUS_HOST_START)"
     if [[ -n "$hstart" ]] && kill -0 "$hpid" 2>/dev/null && [[ "$(proc_start "$hpid")" == "$hstart" ]]; then
       kill -TERM "$hpid" 2>/dev/null && log "stopped the MCP server of ended session $(basename "$f" .env) (pid ${hpid})"
     fi
@@ -321,7 +323,7 @@ sweep_host_processes() {
 }
 
 sweep_host_processes
-# Kept bots past MM_SESSION_KEEP_SEC go, with their own token (RT-6.18 step 10).
+# Kept bots past CB_SESSION_KEEP_SEC go, with their own token (RT-6.18 step 10).
 mm_reap_kept "$STATE_DIR"
 
 # --- the release this session runs (RT-6.28) ---------------------------------
@@ -331,10 +333,10 @@ mm_reap_kept "$STATE_DIR"
 # installer removes no release a session records. corral skips a postEnd hook
 # whose file changed during the session: exec at current/… changes with every
 # switch, the dispatcher does not.
-if [[ -z "${MM_BUS_HOOK_DISPATCH:-}" && "$(basename "$(dirname "$ROOT")")" == releases ]]; then
+if [[ -z "${CB_BUS_HOOK_DISPATCH:-${MM_BUS_HOOK_DISPATCH:-}}" && "$(basename "$(dirname "$ROOT")")" == releases ]]; then
   log "corral runs the host hooks from current/; point its exec at ~/.local/share/mm-agent-bus/current.hooks/mm-session-start.sh and mm-session-stop.sh, else a switch of current during a session makes corral skip its postEnd (RT-6.28)"
 fi
-unset MM_BUS_HOOK_DISPATCH
+unset CB_BUS_HOOK_DISPATCH MM_BUS_HOOK_DISPATCH
 if ! { rel_tmp="$(umask 077 && mktemp "${STATE_DIR}/.${SESSION_KEY}.release.XXXXXX")" &&
        printf '%s\n' "$ROOT" >"$rel_tmp" && mv -f "$rel_tmp" "${STATE_DIR}/${SESSION_KEY}.release"; }; then
   log "WARNING: could not record this session's release; postEnd ends it with the current one; the installer then knows this session only by its session file and may remove its release"
@@ -373,31 +375,32 @@ take_over() {
     log "another start took the kept bot over first — registering a new one"
     return 1
   fi
-  [[ "$how" != continue ]] || KEPT_SID="$(sed -n 's/^MM_KEPT_CLAUDE_SID=//p' "$claim" | head -n1)"
+  [[ "$how" != continue ]] || KEPT_SID="$(mm_kv "$claim" CB_KEPT_CLAUDE_SID MM_KEPT_CLAUDE_SID)"
   # The bot's identity only: channels and settings are this start's own.
-  MM_BOT_TOKEN="" MM_BOT_ATTESTATION="" MM_REG_BOT_NAME="" MM_BOT_USERNAME="" MM_BOT_USER_ID="" kept_prefix=""
-  while IFS= read -r line || [[ -n "$line" ]]; do
-    key="${line%%=*}" val="${line#*=}"
-    case "$key" in
-      MM_BOT_TOKEN|MM_BOT_ATTESTATION|MM_REG_BOT_NAME|MM_BOT_USERNAME|MM_BOT_USER_ID) printf -v "$key" '%s' "$val" ;;
-      MM_AGENT_PREFIX) kept_prefix="$val" ;;
-    esac
-  done <"$claim"
-  export -n MM_BOT_TOKEN MATTERMOST_TOKEN
-  if [[ -z "$MM_BOT_TOKEN" || -z "$MM_REG_BOT_NAME" || ! "$MM_BOT_USER_ID" =~ ^[a-z0-9]{26}$ ]]; then
+  # Each key under its new name or its old one, the new one first (#169).
+  CB_MM_BOT_TOKEN="$(mm_kv "$claim" CB_MM_BOT_TOKEN MM_BOT_TOKEN MATTERMOST_TOKEN)"
+  MM_BOT_ATTESTATION="$(mm_kv "$claim" MM_BOT_ATTESTATION)"
+  MM_REG_BOT_NAME="$(mm_kv "$claim" MM_REG_BOT_NAME)"
+  CB_MM_BOT_USERNAME="$(mm_kv "$claim" CB_MM_BOT_USERNAME MM_BOT_USERNAME)"
+  CB_MM_BOT_USER_ID="$(mm_kv "$claim" CB_MM_BOT_USER_ID MM_BOT_USER_ID)"
+  kept_prefix="$(mm_kv "$claim" MM_AGENT_PREFIX)"
+  MM_BOT_TOKEN="$CB_MM_BOT_TOKEN"
+  unset MATTERMOST_TOKEN
+  export -n CB_MM_BOT_TOKEN MM_BOT_TOKEN
+  if [[ -z "$CB_MM_BOT_TOKEN" || -z "$MM_REG_BOT_NAME" || ! "$CB_MM_BOT_USER_ID" =~ ^[a-z0-9]{26}$ ]]; then
     log "the kept bot's file is incomplete — registering a new bot"
     mv "$claim" "$cand" 2>/dev/null || true
-    MM_BOT_TOKEN="" KEPT_SID=""
+    CB_MM_BOT_TOKEN="" KEPT_SID=""
     return 1
   fi
   # Its token still accepted? A 401 means the bot is gone; unreachable now
   # means most likely still good (as RT-6.10 step 5).
-  if mm_api GET "/api/v4/users/me" && [[ "$MM_API_STATUS" == 401 ]]; then
+  if mm_api GET "/api/v4/users/me" && [[ "$CB_MM_API_STATUS" == 401 ]]; then
     log "the kept bot ${MM_REG_BOT_NAME} is gone (its token is rejected) — registering a new one"
     rm -f "$claim"
     from="${STATE_DIR}/hosted/${old}"
     if [[ -d "$from" && ! -L "$from" ]]; then rm -rf "$from"; fi
-    MM_BOT_TOKEN="" KEPT_SID=""
+    CB_MM_BOT_TOKEN="" KEPT_SID=""
     return 1
   fi
   # Its state directory (asks, read watermark, crown lease, threads,
@@ -411,23 +414,25 @@ take_over() {
   # This session's file, 0600, without the marks and the old session's
   # process; then the claim goes.
   if ! tmp="$(umask 077 && mktemp "${STATE_DIR}/.${SESSION_KEY}.env.XXXXXX")" ||
-     ! grep -Ev '^(MM_BUS_HOST_[A-Z_]*|MM_SESSION_PID|MM_SERVER_ENDED|MM_KEPT_[A-Z_]*)=' "$claim" >"$tmp" ||
-     ! mv -f "$tmp" "$MM_AGENT_SESSION_FILE"; then
+     ! grep -Ev '^(CB|MM)_(BUS_HOST_[A-Z_]*|SESSION_PID|SERVER_ENDED|KEPT_[A-Z_]*)=' "$claim" >"$tmp" ||
+     ! mv -f "$tmp" "$CB_AGENT_SESSION_FILE"; then
     [[ -z "${tmp:-}" ]] || rm -f "$tmp"
     log "could not write the session file — leaving the kept bot as it was, registering a new one"
     mv "$claim" "$cand" 2>/dev/null || true
-    MM_BOT_TOKEN="" KEPT_SID=""
+    CB_MM_BOT_TOKEN="" KEPT_SID=""
     return 1
   fi
   rm -f "$claim"
   [[ -z "$kept_prefix" ]] || MM_AGENT_PREFIX="$kept_prefix"
-  export MM_REG_BOT_NAME MM_BOT_USERNAME MM_BOT_USER_ID MM_AGENT_PREFIX
+  mm_env_set CB_MM_BOT_USERNAME MM_BOT_USERNAME "$CB_MM_BOT_USERNAME"
+  mm_env_set CB_MM_BOT_USER_ID MM_BOT_USER_ID "$CB_MM_BOT_USER_ID"
+  export MM_REG_BOT_NAME MM_AGENT_PREFIX
   # The registrar's signed claim is no secret (RT-6.24): it goes to the host
   # process with the bus settings, as after a registration.
   if [[ -n "$MM_BOT_ATTESTATION" ]]; then export MM_BOT_ATTESTATION; else unset MM_BOT_ATTESTATION; fi
   NAME="$MM_REG_BOT_NAME"
-  TAKEN="$MM_BOT_USERNAME"
-  log "taking over ${MM_BOT_USERNAME}, kept for claude ${how%% *}"
+  TAKEN="$CB_MM_BOT_USERNAME"
+  log "taking over ${CB_MM_BOT_USERNAME}, kept for claude ${how%% *}"
 }
 
 # --- register ----------------------------------------------------------------
@@ -447,9 +452,9 @@ else
     exit 0
   fi
   eval "$exports"
-  export -n MM_BOT_TOKEN MATTERMOST_TOKEN
+  export -n CB_MM_BOT_TOKEN MM_BOT_TOKEN MATTERMOST_TOKEN
 
-  if [[ -z "${MM_BOT_TOKEN:-}" ]]; then
+  if [[ -z "${CB_MM_BOT_TOKEN:-}" ]]; then
     log "registrar returned no token — continuing without a bot"
     exit 0
   fi
@@ -461,7 +466,7 @@ fi
 cleanup_and_fail() {
   log "$1"
   if unregister_again; then
-    rm -f "$MM_AGENT_SESSION_FILE"
+    rm -f "$CB_AGENT_SESSION_FILE"
   else
     log "WARNING: could not unregister ${NAME} again: ${MM_UNREG_WHY}; postEnd retries"
   fi
@@ -476,7 +481,7 @@ eval "$chan_exports"
 # Record the supervising corral process. mm-agent-sweep.sh uses it to tell a
 # live session from an abandoned one: a session file exists for the whole run,
 # so without this a sweep unregisters the bot of the session it runs alongside.
-printf 'MM_SESSION_PID=%s\n' "$PPID" >>"$MM_AGENT_SESSION_FILE"
+printf 'CB_SESSION_PID=%s\nMM_SESSION_PID=%s\n' "$PPID" "$PPID" >>"$CB_AGENT_SESSION_FILE"
 
 # Start from an empty inbox in Mattermost's UI. A fresh bot is not born with
 # one: Mattermost posts a welcome DM *as the bot* to whoever created it, and the
@@ -492,33 +497,33 @@ mm_with_token "$BIN/mm-agent-status.sh" idle "$PROJECT_RAW" || true
 
 # --- trusted humans ----------------------------------------------------------
 # The humans this session answers to on the bus (RT-6.8): their posts may carry
-# approvals. MM_TRUSTED_HUMANS lists usernames on the host (comma-separated).
+# approvals. CB_TRUSTED_HUMANS lists usernames on the host (comma-separated).
 # Without it nobody is trusted: MM_REG_SECRET is the registrar's shared secret,
 # not anyone's personal token, so there is no one to infer.
 TRUSTED="" TRUSTED_IDS=""
 while read -r n; do
   [[ -n "$n" ]] || continue
-  if mm_api GET "/api/v4/users/username/${n}" && [[ "$MM_API_STATUS" == "200" ]] &&
-    [[ "$(jq -r '.is_bot // false' <<<"$MM_API_BODY")" == false ]]; then
+  if mm_api GET "/api/v4/users/username/${n}" && [[ "$CB_MM_API_STATUS" == "200" ]] &&
+    [[ "$(jq -r '.is_bot // false' <<<"$CB_MM_API_BODY")" == false ]]; then
     TRUSTED+="${TRUSTED:+,}${n}"
-    TRUSTED_IDS+="${TRUSTED_IDS:+,}$(jq -r '.id' <<<"$MM_API_BODY")"
+    TRUSTED_IDS+="${TRUSTED_IDS:+,}$(jq -r '.id' <<<"$CB_MM_API_BODY")"
   else
     log "trusted human '${n}' not found (or a bot) — left out"
   fi
 done < <(mm_trusted_names)
-[[ -n "$TRUSTED" ]] || log "no trusted humans — approvals over the bus stay off (set MM_TRUSTED_HUMANS)"
+[[ -n "$TRUSTED" ]] || log "no trusted humans — approvals over the bus stay off (set CB_TRUSTED_HUMANS)"
 
 # --- responsible human ---------------------------------------------------------
-# Who answers for this agent: MM_RESPONSIBLE_HUMAN, else the first trusted human.
-# MM_AGENT_KIND=autonomous marks an agent nobody runs interactively. Both went
+# Who answers for this agent: CB_RESPONSIBLE_HUMAN, else the first trusted human.
+# CB_AGENT_KIND=autonomous marks an agent nobody runs interactively. Both went
 # to the registrar with the registration (bin/mm-agent-register.sh), which can
 # write them into the bot's profile.
 RESPONSIBLE="$(mm_responsible_name)"
-KIND="${MM_AGENT_KIND:-session}"
+KIND="${CB_AGENT_KIND:-session}"
 [[ "$KIND" == autonomous ]] || KIND=session
 
 # --- contribution ------------------------------------------------------------
-trusted_shown="none (set MM_TRUSTED_HUMANS)"
+trusted_shown="none (set CB_TRUSTED_HUMANS)"
 [[ -n "$TRUSTED" ]] && trusted_shown="@${TRUSTED//,/, @}"
 # MM_REG_BOT_NAME is deliberately withheld. Not a secret — it is the username
 # without the registrar's prefix, and the registrar deletes a bot only with
@@ -527,9 +532,9 @@ trusted_shown="none (set MM_TRUSTED_HUMANS)"
 # session file, so `mm-agent-unregister.sh` there cannot tear down a session the
 # host owns. The prefix
 # goes along instead (MM_AGENT_PREFIX, arc42 §7.1): the sandbox cannot derive it.
-note="You are @${MM_BOT_USERNAME} on the AI agent bus."
+note="You are @${CB_MM_BOT_USERNAME} on the AI agent bus."
 [[ -z "$TAKEN" ]] || note+=" The host kept this bot from the session you resumed: same name, threads and DMs."
-# Home, guests, lobby (ADR-002, RT-6.22): the first MM_PROJECT_CHANNEL entry is
+# Home, guests, lobby (ADR-002, RT-6.22): the first CB_MM_PROJECT_CHANNEL entry is
 # the home, the others are guest channels.
 HOME_CH="$(mm_home_channel)"
 GUESTS_SHOWN=""
@@ -541,12 +546,12 @@ while IFS= read -r guest; do
   GUESTS_SHOWN+="${GUESTS_SHOWN:+, }#${guest}"
   GUESTS_NOTE+="${GUESTS_NOTE:+, }~${guest}"
 done < <(mm_project_channels)
-if [[ -n "${MM_PROJECT_CHANNEL:-}" ]]; then
+if [[ -n "${CB_MM_PROJECT_CHANNEL:-}" ]]; then
   note+=" Home ~${HOME_CH}: work, tasks, HELLO and BYE live there."
   [[ -n "$GUESTS_NOTE" ]] && note+=" Guest channels ${GUESTS_NOTE}: only a mention or a reply in your thread wakes you there."
-  note+=" Lobby ~${MM_CHANNEL}: you are also addressable there."
+  note+=" Lobby ~${CB_MM_CHANNEL}: you are also addressable there."
 else
-  note+=" Home channel: ~${MM_CHANNEL}."
+  note+=" Home channel: ~${CB_MM_CHANNEL}."
 fi
 note+=" The session is managed by the host — do not register or unregister."
 # Names without @ (RT-6.11): a note written as "@name" teaches the agent to
@@ -560,49 +565,53 @@ note+=" The bot token stays on the host: the bus's MCP tools are your way onto i
 # Everything the sandbox gets, and nothing secret: no token, no registration
 # secret. The token goes to the host process below, on stdin.
 ENV_JSON="$(jq -nc \
-  --arg chat "$MM_CHAT_URL" \
+  --arg chat "$CB_MM_CHAT_URL" \
   --arg reg "${MM_REGISTER_URL:-}" \
-  --arg user "$MM_BOT_USERNAME" \
+  --arg user "$CB_MM_BOT_USERNAME" \
   --arg prefix "$(mm_agent_prefix)" \
-  --arg uid "$MM_BOT_USER_ID" \
-  --arg team "${MM_TEAM:-}" \
-  --arg teamid "${MM_TEAM_ID:-}" \
-  --arg chan "${MM_CHANNEL:-}" \
-  --arg chanid "${MM_CHANNEL_ID:-}" \
-  --arg proj "${MM_PROJECT_CHANNEL:-}" \
-  --arg projid "${MM_PROJECT_CHANNEL_ID:-}" \
+  --arg uid "$CB_MM_BOT_USER_ID" \
+  --arg team "${CB_MM_TEAM:-}" \
+  --arg teamid "${CB_MM_TEAM_ID:-}" \
+  --arg chan "${CB_MM_CHANNEL:-}" \
+  --arg chanid "${CB_MM_CHANNEL_ID:-}" \
+  --arg proj "${CB_MM_PROJECT_CHANNEL:-}" \
+  --arg projid "${CB_MM_PROJECT_CHANNEL_ID:-}" \
   --arg trusted "$TRUSTED" \
   --arg responsible "$RESPONSIBLE" \
-  --arg stats "${MM_STATS_CHANNEL:-}" \
-  --arg push "${MM_CHANNEL_PUSH:-}" \
+  --arg stats "${CB_MM_STATS_CHANNEL:-}" \
+  --arg push "${CB_CHANNEL_PUSH:-}" \
   --arg kind "$KIND" \
   --arg trustedids "$TRUSTED_IDS" \
   '{
-     MM_CHAT_URL: $chat,
-     MM_BOT_USERNAME: $user,
+     CB_MM_CHAT_URL: $chat,
+     CB_MM_BOT_USERNAME: $user,
      MM_AGENT_PREFIX: $prefix,
-     MM_BOT_USER_ID: $uid,
-     MM_TEAM: $team,
-     MM_TEAM_ID: $teamid,
-     MM_CHANNEL: $chan,
-     MM_CHANNEL_ID: $chanid,
+     CB_MM_BOT_USER_ID: $uid,
+     CB_MM_TEAM: $team,
+     CB_MM_TEAM_ID: $teamid,
+     CB_MM_CHANNEL: $chan,
+     CB_MM_CHANNEL_ID: $chanid,
    }
    + (if $reg  != "" then {MM_REGISTER_URL: $reg} else {} end)
-   + {MM_AGENT_KIND: $kind}
-   + (if $stats != "" then {MM_STATS_CHANNEL: $stats} else {} end)
-   + (if $push != "" then {MM_CHANNEL_PUSH: $push} else {} end)
-   + (if $responsible != "" then {MM_RESPONSIBLE_HUMAN: $responsible} else {} end)
-   + (if $trusted != "" then {MM_TRUSTED_HUMANS: $trusted,
-                             MM_TRUSTED_HUMAN_USER_IDS: $trustedids} else {} end)
-   + (if $proj != "" then {MM_PROJECT_CHANNEL: $proj,
-                           MM_PROJECT_CHANNEL_ID: $projid} else {} end)')"
+   + {CB_AGENT_KIND: $kind}
+   + (if $stats != "" then {CB_MM_STATS_CHANNEL: $stats} else {} end)
+   + (if $push != "" then {CB_CHANNEL_PUSH: $push} else {} end)
+   + (if $responsible != "" then {CB_RESPONSIBLE_HUMAN: $responsible} else {} end)
+   + (if $trusted != "" then {CB_TRUSTED_HUMANS: $trusted,
+                             CB_MM_TRUSTED_HUMAN_USER_IDS: $trustedids} else {} end)
+   + (if $proj != "" then {CB_MM_PROJECT_CHANNEL: $proj,
+                           CB_MM_PROJECT_CHANNEL_ID: $projid} else {} end)
+   # Each value under its old name too (#169): CB_MM_X was MM_X, CB_X was MM_X.
+   | . + (to_entries | map(select(.key | startswith("CB_"))
+          | .key |= (if startswith("CB_MM_") then "MM_" + .[6:] else "MM_" + .[3:] end))
+          | from_entries)')"
 
 # --- the session's MCP server on the host (RT-6.18) ----------------------------
 # Keyless: the bot token never enters the sandbox. The session's MCP server runs
 # here as a host process until postEnd: the plugin's MCP entry point in the
-# sandbox relays stdio to it (MM_BUS_MCP_ENDPOINT), and the turn hooks and the
-# listener call its hook API (MM_BUS_ENDPOINT), both with a per-session key
-# (MM_BUS_KEY). Fail closed: if it does not come up, the session gets no bus at
+# sandbox relays stdio to it (CB_BUS_MCP_ENDPOINT), and the turn hooks and the
+# listener call its hook API (CB_BUS_ENDPOINT), both with a per-session key
+# (CB_BUS_KEY). Fail closed: if it does not come up, the session gets no bus at
 # all, never the token — the bot is unregistered again and the banner says why.
 HOST_READY="${STATE_DIR}/${SESSION_KEY}.host.json"
 HOST_LOG="${STATE_DIR}/${SESSION_KEY}.host.log"
@@ -623,16 +632,19 @@ for v in USER LOGNAME LANG LC_ALL LC_CTYPE TMPDIR; do
 done
 HOST_PID="" HOST_PORT="" HOST_HOOK="" HOST_STARTED=1
 # A taken-over bot's host process also learns the Claude session it was kept
-# for (MM_BUS_KEPT_SID, a key), to log a resume of another one (step 10).
+# for (CB_BUS_KEPT_SID, a key), to log a resume of another one (step 10).
 if jq -nc --rawfile key /dev/fd/4 --rawfile tok /dev/fd/5 --argjson base "$ENV_JSON" --arg kept "$KEPT_SID" '
      {key: $key,
       env: ((env | with_entries(select(.key | test(
-              "^(MM|MATTERMOST)_[A-Z0-9_]+$|^(CORRAL_WORKDIR|CORRAL_SESSION_ID|CORRAL_AGENT|TZ|SSL_CERT_FILE|SSL_CERT_DIR)$|^(HTTPS?|NO|ALL)_PROXY$|^(https?|no|all)_proxy$")))
-             | del(.MM_REG_SECRET, .MM_REG_SECRET_GOPASS, .MM_AGENT_SESSION_FILE,
-                   .MM_REG_BOT_NAME, .MM_BUS_KEY, .MATTERMOST_TOKEN, .MM_BUS_KEPT_SID))
-            + $base + {MM_BOT_TOKEN: $tok}
-            + (if $kept != "" then {MM_BUS_KEPT_SID: $kept} else {} end))}' \
-       4< <(printf '%s' "$BUS_KEY") 5< <(printf '%s' "$MM_BOT_TOKEN") |
+              "^(CB|MM|MATTERMOST)_[A-Z0-9_]+$|^(CORRAL_WORKDIR|CORRAL_SESSION_ID|CORRAL_AGENT|TZ|SSL_CERT_FILE|SSL_CERT_DIR)$|^(HTTPS?|NO|ALL)_PROXY$|^(https?|no|all)_proxy$")))
+             | del(.MM_REG_SECRET, .MM_REG_SECRET_GOPASS, .MM_REG_BOT_NAME,
+                   .CB_AGENT_SESSION_FILE, .MM_AGENT_SESSION_FILE, .CB_BUS_KEY, .MM_BUS_KEY,
+                   .CB_MM_BOT_TOKEN, .MM_BOT_TOKEN, .MATTERMOST_TOKEN, .CB_BUS_KEPT_SID, .MM_BUS_KEPT_SID,
+                   .CB_BUS_MCP_ENDPOINT, .MM_BUS_MCP_ENDPOINT, .CB_BUS_ENDPOINT, .MM_BUS_ENDPOINT,
+                   .CB_BUS_UNAVAILABLE, .MM_BUS_UNAVAILABLE))
+            + $base + {CB_MM_BOT_TOKEN: $tok, MM_BOT_TOKEN: $tok}
+            + (if $kept != "" then {CB_BUS_KEPT_SID: $kept, MM_BUS_KEPT_SID: $kept} else {} end))}' \
+       4< <(printf '%s' "$BUS_KEY") 5< <(printf '%s' "$CB_MM_BOT_TOKEN") |
     (cd "$ROOT/mcp" && exec env -i "${host_env[@]}" "$HOST_PY" -I -m mattermost_ai_agent_bus --host \
       --ready-file "$HOST_READY" --state-dir "$HOSTED_DIR" --log-file "$HOST_LOG" --watch-pid "$PPID") \
     >>"$HOST_LOG" 2>&1 &&
@@ -640,8 +652,9 @@ if jq -nc --rawfile key /dev/fd/4 --rawfile tok /dev/fd/5 --argjson base "$ENV_J
   HOST_PORT="$(jq -r '.port // empty' "$HOST_READY" 2>/dev/null)" &&
   HOST_HOOK="$(jq -r '.hook // empty' "$HOST_READY" 2>/dev/null)" &&
   [[ "$HOST_PID" =~ ^[0-9]+$ && "$HOST_PORT" =~ ^[0-9]+$ && "$HOST_HOOK" =~ ^http://127\.0\.0\.1:[0-9]+$ ]]; then
-  printf 'MM_BUS_HOST_PID=%s\nMM_BUS_HOST_START=%s\n' "$HOST_PID" "$(proc_start "$HOST_PID")" \
-    >>"$MM_AGENT_SESSION_FILE"
+  hstart="$(proc_start "$HOST_PID")" || hstart=""
+  printf 'CB_BUS_HOST_PID=%s\nMM_BUS_HOST_PID=%s\nCB_BUS_HOST_START=%s\nMM_BUS_HOST_START=%s\n' \
+    "$HOST_PID" "$HOST_PID" "$hstart" "$hstart" >>"$CB_AGENT_SESSION_FILE"
 else
   if [[ "$HOST_PID" =~ ^[0-9]+$ ]]; then kill -TERM "$HOST_PID" 2>/dev/null || true; fi
   no_bus "the MCP server did not start on the host (log: ${HOST_LOG}) — check the log, then restart the session"
@@ -653,12 +666,13 @@ jq -nc \
   --arg mcp "tcp://127.0.0.1:${HOST_PORT}" \
   --arg hook "$HOST_HOOK" \
   --arg note "$note" \
-  --arg status "${TAKEN:+took over }${TAKEN:-registered ${MM_BOT_USERNAME}}, home #${HOME_CH}${GUESTS_SHOWN:+, guests ${GUESTS_SHOWN}}${MM_PROJECT_CHANNEL:+, lobby #${MM_CHANNEL:-}}, ${RESPONSIBLE:+for @${RESPONSIBLE}, }trusted ${trusted_shown}; token stays on the host" \
+  --arg status "${TAKEN:+took over }${TAKEN:-registered ${CB_MM_BOT_USERNAME}}, home #${HOME_CH}${GUESTS_SHOWN:+, guests ${GUESTS_SHOWN}}${CB_MM_PROJECT_CHANNEL:+, lobby #${CB_MM_CHANNEL:-}}, ${RESPONSIBLE:+for @${RESPONSIBLE}, }trusted ${trusted_shown}; token stays on the host" \
   '{
      corralContributionVersion: 1,
-     env: ($env + {MM_BUS_ENDPOINT: $hook, MM_BUS_MCP_ENDPOINT: $mcp, MM_BUS_KEY: $key}),
+     env: ($env + {CB_BUS_ENDPOINT: $hook, CB_BUS_MCP_ENDPOINT: $mcp, CB_BUS_KEY: $key,
+                   MM_BUS_ENDPOINT: $hook, MM_BUS_MCP_ENDPOINT: $mcp, MM_BUS_KEY: $key}),
      agentNotes: [$note],
      status: [$status]
    }' 4< <(printf '%s' "$BUS_KEY")
 
-log "session bot ${MM_BOT_USERNAME} ready, its MCP server on the host (pid ${HOST_PID}); host copy $(mm_tree_version "$ROOT"), $(mm_release_kind "$ROOT")"
+log "session bot ${CB_MM_BOT_USERNAME} ready, its MCP server on the host (pid ${HOST_PID}); host copy $(mm_tree_version "$ROOT"), $(mm_release_kind "$ROOT")"

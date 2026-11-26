@@ -61,7 +61,9 @@ _LAST_MAX = 1024
 # The variables that configure trusted humans, by name or by id: any of them
 # set turns the owner split and the gate on (gate.active), whether or not a
 # lookup resolves them now.
-TRUSTED_VARS = ("MM_TRUSTED_HUMAN_USER_IDS", "MM_TRUSTED_HUMANS", "MM_OWNER_USER_ID", "MM_OWNER")
+# Both spellings of each (docs/env-names.md, "Lists of names").
+TRUSTED_VARS = ("CB_MM_TRUSTED_HUMAN_USER_IDS", "MM_TRUSTED_HUMAN_USER_IDS", "CB_TRUSTED_HUMANS", "MM_TRUSTED_HUMANS",
+                "CB_MM_OWNER_USER_ID", "MM_OWNER_USER_ID", "CB_OWNER", "MM_OWNER")
 
 class _Nobody(frozenset[str]):
     """Trusted humans that are configured but none known: empty, yet true.
@@ -304,7 +306,7 @@ async def names_in_doubt(client: ChatPort) -> tuple[AbstractSet[str], str]:
     try:
         me = (await client.get_me()).id
     except Exception:  # noqa: BLE001 — in doubt: the configured id
-        me = env("MM_BOT_USER_ID").strip()
+        me = env("CB_MM_BOT_USER_ID").strip()
     return names, me
 
 
@@ -370,11 +372,11 @@ async def foreign(client: ChatPort, agent_ids: Iterable[str]) -> dict[str, str]:
 
 def _trusted_names() -> list[str]:
     return [n.strip().lstrip("@") for n in
-            (env("MM_TRUSTED_HUMANS") or env("MM_OWNER")).split(",") if n.strip()]
+            (env("CB_TRUSTED_HUMANS") or env("CB_OWNER")).split(",") if n.strip()]
 
 
 def responsible_human() -> str:
-    """The session's responsible human: MM_RESPONSIBLE_HUMAN, else the first
+    """The session's responsible human: CB_RESPONSIBLE_HUMAN, else the first
     trusted name; '' without either."""
     trusted = _trusted_names()
-    return env("MM_RESPONSIBLE_HUMAN").strip().lstrip("@") or (trusted[0] if trusted else "")
+    return env("CB_RESPONSIBLE_HUMAN").strip().lstrip("@") or (trusted[0] if trusted else "")

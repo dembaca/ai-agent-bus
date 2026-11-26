@@ -1,7 +1,7 @@
 """A home that runs over NATS (RT-6.36, ADR-014 points 3 and 16).
 
 `NatsPort` wraps the Mattermost adapter (the BusClient) and a `natsbus.NatsBus`.
-For the channels of a home named in MM_NATS_HOMES the agents' posts, threads and
+For the channels of a home named in CB_NATS_HOMES the agents' posts, threads and
 reactions go over NATS; everything about people stays on Mattermost (their posts
 and reactions arrive over the Mattermost WebSocket unless the bridge signals the channel,
 see "People over NATS" below, trust, headers, pinned posts,
@@ -22,8 +22,8 @@ the id, and raises when none comes.
 
 What goes over NATS, in a NATS home's channel: every post, but the ask for a human
 (kind ask) and a post with files, which are for people and go to Mattermost. The
-bus's own props (`a2a`) travel as flat keys `<MM_PROPS_PREFIX>a2a_<key>`, the
-agent's own `<MM_PROPS_PREFIX>…` props as they are; the agent card and anything
+bus's own props (`a2a`) travel as flat keys `<CB_PROPS_PREFIX>a2a_<key>`, the
+agent's own `<CB_PROPS_PREFIX>…` props as they are; the agent card and anything
 else are not sent with a post. The card's harness, model, task, branch and open asks
 ride the agent's presence instead (`card_source`, RT-6.37), for the operator console;
 the open asks go as one record on `<presence>.ask.<home>.<name>` (`ask_source`) and each
@@ -42,7 +42,7 @@ sender); an unreaction removes the reaction of its own sender only.
 
 The bridge's copies (RT-6.36 step 4). The central bridge (services/bridge) mirrors every
 NATS post and reaction of the home into its Mattermost channel with one bot, which
-MM_BRIDGE_BOT names, or under each agent's own bot `<bot prefix><NATS agent name>`, the
+CB_MM_BRIDGE_BOT names, or under each agent's own bot `<bot prefix><NATS agent name>`, the
 prefix named by the bridge's signal for the home (`bridge_prefix`, RT-6.42 step 7). This
 session has those posts from NATS already, so in its NATS home it drops the copies from
 Mattermost: from the events (MergedEvents) and from the merged reads (channel_posts,
@@ -105,7 +105,6 @@ import contextlib
 import dataclasses
 import json
 import logging
-import os
 import secrets
 import time
 import weakref
@@ -116,7 +115,7 @@ from functools import partial
 from types import MappingProxyType
 from typing import TYPE_CHECKING, Any, Protocol
 
-from . import a2a, lease, natsbus, owners
+from . import a2a, config, lease, natsbus, owners
 from .events import ChatEvent, EventSource, EventStream, PostEvent, ReactionEvent
 from .ids import _ID, NATS_POST
 from .model import NotFound, Post, Reaction, Thread, UnreadChannel
@@ -139,7 +138,7 @@ _NOTE = "a2a_"  # after the props prefix: the bus's own note, flat
 _NONCE = "nats_nonce"  # after the props prefix: tells a post its own copy
 _ROOT = "nats_root"  # after the props prefix: the NATS post a Mattermost post answers
 _NATS_ID = "nats_id"  # after the props prefix: the NATS post the bridge's copy mirrors (RT-6.36 step 4)
-BRIDGE_TTL_SEC = 300.0  # how long "MM_BRIDGE_BOT is no bot account" holds before it is read again
+BRIDGE_TTL_SEC = 300.0  # how long "CB_MM_BRIDGE_BOT is no bot account" holds before it is read again
 COPY_READ_CAP = 1000  # Mattermost's most posts in one read after a time: a read this long may be cut
 COPY_SETTLE_SEC = 5.0  # a copy younger than this is not passed by the count (a replica may lag)
 PERSON = "hu:"  # the author id of a person over NATS: PERSON + anchor (RT-6.42)
@@ -304,7 +303,7 @@ class NatsPort:
                  memory: int = DEFAULT_MEMORY, echo_wait: float = ECHO_WAIT_SEC,
                  bus_options: Mapping[str, Any] | None = None, bridge_bot: str = "") -> None:
         self.inner = inner
-        # MM_BRIDGE_BOT: the bot the bridge mirrors NATS with (RT-6.36 step 4); "" drops only the
+        # CB_MM_BRIDGE_BOT: the bot the bridge mirrors NATS with (RT-6.36 step 4); "" drops only the
         # copies under the agents' own bots (the bot prefix of the bridge's signal, _bot_prefix).
         self._bridge_bot = bridge_bot.strip().lstrip("@").lower()
         self._bridge_id: str | None = None  # its Mattermost id, read once (_bridge)
@@ -403,7 +402,7 @@ class NatsPort:
                 try:
                     bus.link_bot(await self._bot_id(), await self._bot_name())
                 except ValueError:
-                    # A bot id that is no Mattermost user id (a bad MM_BOT_USER_ID): the NATS
+                    # A bot id that is no Mattermost user id (a bad CB_MM_BOT_USER_ID): the NATS
                     # home still starts, only without a link between bot and NATS name.
                     log.warning("nats: the bot id is not a Mattermost user id: starting without a link")
                 await bus.start()
@@ -447,17 +446,17 @@ class NatsPort:
         inner: Any = self.inner
         if inner.session:
             return str(inner.session.user_id)
-        return os.environ.get("MM_BOT_USER_ID") or (await inner.get_me()).id
+        return config.env("CB_MM_BOT_USER_ID") or (await inner.get_me()).id
 
     async def _bot_name(self) -> str:
         """The bot's username, for the presence (the name the operator console shows,
-        ADR-015); MM_BOT_USERNAME, or '' when it cannot be read: the home starts all the same."""
+        ADR-015); CB_MM_BOT_USERNAME, or '' when it cannot be read: the home starts all the same."""
         inner: Any = self.inner
         try:
             return str((await inner.get_me()).username)
         except Exception as exc:  # noqa: BLE001 — a label, never a reason to stop
             log.info("nats: the bot's username was not read (%s)", type(exc).__name__)
-            return os.environ.get("MM_BOT_USERNAME", "")
+            return config.env("CB_MM_BOT_USERNAME")
 
     async def _announce_membership(self, bus: BusLike) -> None:
         """Tell the bus to announce this session's membership of every channel it asked
@@ -565,7 +564,7 @@ class NatsPort:
     # --- the bridge's copies (RT-6.36 step 4) -----------------------------------------------------
     @property
     def bridge_bot(self) -> str:
-        """MM_BRIDGE_BOT, the bridge bot's username; "" when none is set."""
+        """CB_MM_BRIDGE_BOT, the bridge bot's username; "" when none is set."""
         return self._bridge_bot
 
     async def _bridge(self) -> str:
@@ -582,13 +581,13 @@ class NatsPort:
         try:
             found = await self.inner.bots_named({self._bridge_bot})
         except Exception as exc:  # noqa: BLE001 — nothing dropped meanwhile
-            log.warning("MM_BRIDGE_BOT %s could not be read (%s): its copies are kept for now",
+            log.warning("CB_MM_BRIDGE_BOT %s could not be read (%s): its copies are kept for now",
                         self._bridge_bot, type(exc).__name__)
             return ""
         user = found.get(self._bridge_bot)
         if user is None or not user.id:
             if self._bridge_id is None:  # once, not at every read again
-                log.warning("MM_BRIDGE_BOT %s is no bot account: nothing is dropped as the bridge's copy "
+                log.warning("CB_MM_BRIDGE_BOT %s is no bot account: nothing is dropped as the bridge's copy "
                             "(read again every %d s)", self._bridge_bot, BRIDGE_TTL_SEC)
             self._bridge_none_at = time.monotonic()
         self._bridge_id = user.id if user is not None else ""

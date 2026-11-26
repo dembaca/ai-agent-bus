@@ -17,7 +17,7 @@ INFO = SessionInfo(url="https://mm.example", name="cur-1", username="agent-cur-1
 
 @pytest.fixture(autouse=True)
 def _clean(monkeypatch, tmp_path):
-    for var in ("CLAUDE_CODE_SESSION_ID", "CLAUDE_PROJECT_DIR", "MM_WORKSPACE"):
+    for var in ("CLAUDE_CODE_SESSION_ID", "CLAUDE_PROJECT_DIR", "CB_WORKSPACE"):
         monkeypatch.delenv(var, raising=False)
     monkeypatch.setattr(session_file, "_roots_dir", None)
     for d in ("ws", "other", "cwd"):
@@ -30,8 +30,8 @@ def test_the_workspace_comes_from_the_environment_then_roots_then_cwd(tmp_path, 
     assert session_file.workspace() == (str(real / "cwd"), "cwd")
     assert session_file.set_roots_dir(str(real / "other"))
     assert session_file.workspace() == (str(real / "other"), "roots")
-    monkeypatch.setenv("MM_WORKSPACE", str(tmp_path / "ws"))
-    assert session_file.workspace() == (str(real / "ws"), "MM_WORKSPACE")
+    monkeypatch.setenv("CB_WORKSPACE", str(tmp_path / "ws"))
+    assert session_file.workspace() == (str(real / "ws"), "CB_WORKSPACE")
     assert not session_file.set_roots_dir(str(real / "cwd"))  # the environment names it
     monkeypatch.setenv("CLAUDE_PROJECT_DIR", str(tmp_path / "other"))
     assert session_file.workspace()[1] == "CLAUDE_PROJECT_DIR"
@@ -52,7 +52,7 @@ def test_only_a_local_directory_is_a_root(tmp_path):
 
 async def test_the_clients_roots_move_the_files(tmp_path, monkeypatch):
     """A bot registered before the roots came keeps its file: it moves along."""
-    monkeypatch.setenv("MM_BOT_TOKEN", "tok-secret")
+    monkeypatch.setenv("CB_MM_BOT_TOKEN", "tok-secret")
     old = session_file.write(INFO, "agents", "agents")
     moved = []
     monkeypatch.setattr(server, "_hook_api", SimpleNamespace(rekey=lambda: moved.append(1)))

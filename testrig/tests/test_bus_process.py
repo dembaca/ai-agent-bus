@@ -43,7 +43,7 @@ def _can_import() -> bool:
     return True
 
 
-# `BUS_TESTRIG_REQUIRE_BUS=1` (CI) turns the skip into a failure: with the
+# `CB_TESTRIG_REQUIRE_BUS=1` (CI) turns the skip into a failure: with the
 # switch on, the conftest refuses before this marker can skip, so a host without
 # the bus fails with one sentence instead of a green report. A silent skip is
 # what let eight bus tests stay green while the workflow ran them before
@@ -531,7 +531,7 @@ async def test_the_server_environment_carries_no_proxy(monkeypatch):
     left = [name for name in env if name.upper() in
             ("HTTP_PROXY", "HTTPS_PROXY", "ALL_PROXY")]
     assert left == [], left
-    assert env["MM_CHAT_URL"] == "http://127.0.0.1:1"
+    assert env["CB_MM_CHAT_URL"] == "http://127.0.0.1:1"
 
 
 @skip_no_bus

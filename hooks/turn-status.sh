@@ -15,11 +15,11 @@
 set -uo pipefail
 
 # shellcheck source=../bin/mm-agent-lib.sh
-source "$(cd "$(dirname "$0")/../bin" && pwd)/mm-agent-lib.sh"
+CB_ENV_QUIET=1 CB_ENV_DEFER=1 source "$(cd "$(dirname "$0")/../bin" && pwd)/mm-agent-lib.sh"
 mm_read_hook_input            # drains the payload: its session id, and whether the bus woke the turn
+[[ -z "$CB_ENV_ERR" ]] || exit 0   # names that differ (#169): logged, the hook stays out
 # The hook has 5 s (hooks.json); every call to the server fits in 4.
-MM_BUS_DEADLINE=$(( $(date +%s) + 4 ))
-export MM_BUS_DEADLINE
+mm_env_set CB_BUS_DEADLINE MM_BUS_DEADLINE "$(( $(date +%s) + 4 ))"
 mm_bus_uid || mm_bus_me || exit 0   # the bot's id keys the turn and listen state
 
 # The turn begins: tell the server first, before anything else may use up the
@@ -39,7 +39,7 @@ state="$(mm_turn_state_file 2>/dev/null)" && rm -f "$state"
 # A turn the channel push started (RT-6.12) answers the bus; like an answer
 # from inside a listen window it needs no sign-off of its own. The plugin was
 # once named mattermost-ai-agent-bus: a tag under either name counts.
-prompt="$(jq -r '.prompt // ""' <<<"$MM_HOOK_INPUT" 2>/dev/null)" || prompt=""
+prompt="$(jq -r '.prompt // ""' <<<"$CB_HOOK_INPUT" 2>/dev/null)" || prompt=""
 if [[ -n "${state:-}" ]] && mm_channel_push &&
   [[ "$prompt" == '<channel source="plugin:ai-agent-bus:'* ||
      "$prompt" == '<channel source="plugin:mattermost-ai-agent-bus:'* ]]; then
@@ -72,7 +72,7 @@ fi
 mm_stat turn by="$by"
 # Where Claude Code books each request's tokens: the MCP server measures the
 # bus's share from it at session end (RT-6.9).
-transcript="$(jq -r '.transcript_path // ""' <<<"${MM_HOOK_INPUT:-}" 2>/dev/null)" || transcript=""
+transcript="$(jq -r '.transcript_path // ""' <<<"${CB_HOOK_INPUT:-}" 2>/dev/null)" || transcript=""
 [[ -z "$transcript" ]] || mm_stat transcript "path=$transcript"
 
 exit 0

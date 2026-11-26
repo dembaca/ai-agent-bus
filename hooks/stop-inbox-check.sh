@@ -9,8 +9,8 @@
 #                something changed on the bus since the agent's last IDLE/BYE
 #                (it posted, or an addressed event reached it): post one. Both
 #                due: one block, the answer first.
-#   3. listen  — in a project channel, stay reachable for MM_LISTEN_SEC
-#                (default 5400; the 👑 coordinator MM_LISTEN_COORD_SEC, default
+#   3. listen  — in a project channel, stay reachable for CB_LISTEN_SEC
+#                (default 5400; the 👑 coordinator CB_LISTEN_COORD_SEC, default
 #                7200): the agent starts bin/mm-agent-listen.sh in the
 #                background and ends its turn; the runtime wakes it when a
 #                message arrives. Waiting costs no model calls.
@@ -27,8 +27,9 @@
 set -uo pipefail
 
 # shellcheck source=../bin/mm-agent-lib.sh
-source "$(cd "$(dirname "$0")/../bin" && pwd)/mm-agent-lib.sh"
+CB_ENV_QUIET=1 CB_ENV_DEFER=1 source "$(cd "$(dirname "$0")/../bin" && pwd)/mm-agent-lib.sh"
 mm_read_hook_input
+[[ -z "$CB_ENV_ERR" ]] || exit 0   # names that differ (#169): logged, the hook stays out
 
 BIN="$(cd "$(dirname "$0")/../bin" && pwd)"
 
@@ -45,19 +46,18 @@ MAX_DRAIN=3
 # Waiting costs no model calls (bin/mm-agent-listen.sh), so the window is long.
 # Claude Code stops a background command after 2 h at most, which caps it.
 MAX_BG_SEC=7200
-LISTEN_SEC="${MM_LISTEN_SEC:-5400}"
+LISTEN_SEC="${CB_LISTEN_SEC:-5400}"
 [[ "$LISTEN_SEC" =~ ^[0-9]+$ ]] || LISTEN_SEC=5400
-LISTEN_COORD_SEC="${MM_LISTEN_COORD_SEC:-7200}"
+LISTEN_COORD_SEC="${CB_LISTEN_COORD_SEC:-7200}"
 [[ "$LISTEN_COORD_SEC" =~ ^[0-9]+$ ]] || LISTEN_COORD_SEC=7200
 (( LISTEN_SEC > MAX_BG_SEC )) && LISTEN_SEC=$MAX_BG_SEC
 (( LISTEN_COORD_SEC > MAX_BG_SEC )) && LISTEN_COORD_SEC=$MAX_BG_SEC
 
 # The hook has 10 s (hooks.json): all its calls to the server (me, pending,
-# last post, presence) share 8 of them, each at most MM_BUS_MAX_TIME. A call
+# last post, presence) share 8 of them, each at most CB_BUS_MAX_TIME. A call
 # past the deadline fails like an unreachable server: the check counts as
 # nothing to do (RT-6.17).
-MM_BUS_DEADLINE=$(( $(date +%s) + 8 ))
-export MM_BUS_DEADLINE
+mm_env_set CB_BUS_DEADLINE MM_BUS_DEADLINE "$(( $(date +%s) + 8 ))"
 
 # Who the bot is, its project channel and crown: from the MCP server. Without
 # it there is no bus session to answer for.
@@ -144,7 +144,7 @@ update_note() {
     notified="$newer"
     # mm_read_hook_input took the id from the hook's JSON; without it, the picker.
     notes="$(printf '%s plugin %s is installed, this session runs %s — to switch: quit, then claude --resume %s (not --continue: several sessions share the directory)' \
-      "$MM_UPDATE" "$newer" "$(mm_tree_version "$BIN/..")" "${CLAUDE_CODE_SESSION_ID:-<session-id>}")"
+      "$CB_UPDATE" "$newer" "$(mm_tree_version "$BIN/..")" "${CLAUDE_CODE_SESSION_ID:-<session-id>}")"
   fi
   newest="$RELEASE_NEWEST" rline="$RELEASE_LINE"
   if [[ "$newest" =~ ^[0-9]+\.[0-9]+\.[0-9]+$ && -n "$rline" && "$rel_notified" != "$newest" ]]; then
@@ -153,9 +153,9 @@ update_note() {
     # newest older than the session's server is never one to install (RT-6.30
     # step 6): `older` comes from the server, which decided the line.
     if [[ "$rline" == *"updates itself to v"* || "$RELEASE_OLDER" == true ]]; then
-      notes="${notes:+$notes$'\n'}$MM_UPDATE $rline"
+      notes="${notes:+$notes$'\n'}$CB_UPDATE $rline"
     else
-      notes="${notes:+$notes$'\n'}$MM_UPDATE $rline — a human installs it on the host: mm-agent-host-install.sh --release v$newest"
+      notes="${notes:+$notes$'\n'}$CB_UPDATE $rline — a human installs it on the host: mm-agent-host-install.sh --release v$newest"
     fi
   fi
   [[ -n "$notes" ]] || return 1
@@ -192,22 +192,22 @@ UNANSWERED="" UNANSWERED_N=0 UNANSWERED_IDS="[]"
 my_last_post() {
   mm_bus GET '/v1/last-post?unanswered=1' || return 1
   UNANSWERED="$(jq -r '[(.unanswered // [])[] | (if .channel == "DM" then "DM" else "~\(.channel)" end)
-                       + " post \(.root_id) by \(.author)"] | join("; ")' <<<"$MM_BUS_BODY" 2>/dev/null \
+                       + " post \(.root_id) by \(.author)"] | join("; ")' <<<"$CB_BUS_BODY" 2>/dev/null \
     | head -n1 | cut -c1-1000)" || UNANSWERED=""
-  UNANSWERED_N="$(jq -r '(.unanswered // []) | length' <<<"$MM_BUS_BODY" 2>/dev/null)" || UNANSWERED_N=0
+  UNANSWERED_N="$(jq -r '(.unanswered // []) | length' <<<"$CB_BUS_BODY" 2>/dev/null)" || UNANSWERED_N=0
   [[ "$UNANSWERED_N" =~ ^[0-9]+$ ]] || UNANSWERED_N=0
-  UNANSWERED_IDS="$(jq -c '[(.unanswered // [])[].post_id | strings]' <<<"$MM_BUS_BODY" 2>/dev/null)" ||
+  UNANSWERED_IDS="$(jq -c '[(.unanswered // [])[].post_id | strings]' <<<"$CB_BUS_BODY" 2>/dev/null)" ||
     UNANSWERED_IDS="[]"
-  RELEASE_NEWEST="$(jq -r '.release.newest // ""' <<<"$MM_BUS_BODY" 2>/dev/null)" || RELEASE_NEWEST=""
-  RELEASE_LINE="$(jq -r '.release.line // ""' <<<"$MM_BUS_BODY" 2>/dev/null | head -n1 | cut -c1-400)" || RELEASE_LINE=""
-  RELEASE_OLDER="$(jq -r '.release.older // false' <<<"$MM_BUS_BODY" 2>/dev/null)" || RELEASE_OLDER=""
-  LAST_AT="$(jq -r '.at // 0' <<<"$MM_BUS_BODY" 2>/dev/null)" || return 1
-  LAST_MSG="$(jq -r '.message // ""' <<<"$MM_BUS_BODY" 2>/dev/null)" || return 1
-  LAST_HEAD="${LAST_MSG#"$MM_CROWN"}"
+  RELEASE_NEWEST="$(jq -r '.release.newest // ""' <<<"$CB_BUS_BODY" 2>/dev/null)" || RELEASE_NEWEST=""
+  RELEASE_LINE="$(jq -r '.release.line // ""' <<<"$CB_BUS_BODY" 2>/dev/null | head -n1 | cut -c1-400)" || RELEASE_LINE=""
+  RELEASE_OLDER="$(jq -r '.release.older // false' <<<"$CB_BUS_BODY" 2>/dev/null)" || RELEASE_OLDER=""
+  LAST_AT="$(jq -r '.at // 0' <<<"$CB_BUS_BODY" 2>/dev/null)" || return 1
+  LAST_MSG="$(jq -r '.message // ""' <<<"$CB_BUS_BODY" 2>/dev/null)" || return 1
+  LAST_HEAD="${LAST_MSG#"$CB_CROWN"}"
   LAST_HEAD="${LAST_HEAD#"${LAST_HEAD%%[![:space:]]*}"}"
   LAST_HEAD="${LAST_HEAD#\`}"
   SIGNED_OFF="$(jq -r 'if has("signed_off") then (if .signed_off == true then 1 else 0 end)
-                       else "" end' <<<"$MM_BUS_BODY" 2>/dev/null)" || SIGNED_OFF=0
+                       else "" end' <<<"$CB_BUS_BODY" 2>/dev/null)" || SIGNED_OFF=0
   if [[ -z "$SIGNED_OFF" ]]; then
     # A server before 0.65.1 (the plugin updated, the session not restarted)
     # sends no signed_off: the old rule, the latest own post is an IDLE or BYE.
@@ -222,13 +222,13 @@ my_last_post() {
 # (unread.py there); per channel, with the fyi posts, for the reason.
 pending=0
 if [[ "$DRAINS" -lt "$MAX_DRAIN" ]] && mm_bus GET '/v1/pending?detail=1'; then
-  pending="$(jq -r '.count // 0' <<<"$MM_BUS_BODY" 2>/dev/null || echo 0)"
+  pending="$(jq -r '.count // 0' <<<"$CB_BUS_BODY" 2>/dev/null || echo 0)"
 fi
 [[ "$pending" =~ ^[0-9]+$ ]] || pending=0
 if [[ "$pending" -gt 0 && "$DRAINS" -lt "$MAX_DRAIN" ]]; then
   DRAINS=$((DRAINS + 1))
   detail="$(jq -r '(.channels // [])[:5][] | "\(.id)\t\(.type)\tpending=\(.pending)"
-                   + (if (.fyi // 0) > 0 then "\tfyi=\(.fyi)" else "" end)' <<<"$MM_BUS_BODY" 2>/dev/null)"
+                   + (if (.fyi // 0) > 0 then "\tfyi=\(.fyi)" else "" end)' <<<"$CB_BUS_BODY" 2>/dev/null)"
   # Ranked by intent (RT-6.14): an agent's fyi post needs no answer.
   fyi="$(awk -F'fyi=' 'NF > 1 { n += $2 } END { print n + 0 }' <<<"$detail")"
   reason="You have ${pending} unread message(s) on the AI agent bus"
@@ -242,7 +242,7 @@ if [[ "$pending" -gt 0 && "$DRAINS" -lt "$MAX_DRAIN" ]]; then
     reason+=$'\n\nPending per channel:\n'"$detail"
   fi
   reason+=$'\n\nIf wait_for_events returns nothing, the count is stale — say so and finish.'
-  block "$reason" "$MM_INBOX Collecting ${pending} unread Mattermost message(s)" drain
+  block "$reason" "$CB_INBOX Collecting ${pending} unread Mattermost message(s)" drain
 fi
 
 have_post=0
@@ -278,7 +278,7 @@ if [[ -n "$UNANSWERED" && "$UNANSWERED_N" -gt 0 ]]; then
   answer_reason="A post that reached you over the bus has no answer in its thread: ${UNANSWERED}. Answer it there"
   answer_reason+=" with reply_in_thread (root_id as given); the bus does not see your terminal. If it needs"
   answer_reason+=" no answer, just finish: this check will not block you again for it."
-  answer_banner="$MM_ANSWER Answering on Mattermost: ${UNANSWERED_N} post(s) without a reply in their thread"
+  answer_banner="$CB_ANSWER Answering on Mattermost: ${UNANSWERED_N} post(s) without a reply in their thread"
 fi
 if [[ "$SIGNOFF_ASKED" -eq 0 && "$LISTEN_UNTIL" -eq 0 && "$have_post" -eq 1 && -n "$LAST_MSG" ]] &&
   ! [[ "$BY_BUS" -eq 1 && "$CHANNEL" -eq 1 ]] &&
@@ -295,7 +295,7 @@ if [[ "$SIGNOFF_ASKED" -eq 0 && "$LISTEN_UNTIL" -eq 0 && "$have_post" -eq 1 && -
   reason+=" If you coordinate and will be gone for long, hand over first."
   reason+=" You are asked because you posted or were sent something on the bus since your last IDLE; this check will not block you again this turn."
   reason+=" Then end the turn with one sentence in your terminal saying what you posted."
-  banner="$MM_SIGNOFF Signing off on Mattermost before going idle"
+  banner="$CB_SIGNOFF Signing off on Mattermost before going idle"
   if [[ -n "$answer_reason" ]]; then
     reminded || true  # the sign-off blocks once a turn anyway
     reason="$answer_reason"$'\n\n'"Then: $reason"
@@ -311,18 +311,18 @@ fi
 # The coordinator listens longer (RT-6.6): while it listens it stays reachable
 # and keeps the crown, so the role does not move the moment its human steps
 # away.
-if (( MM_CROWN_UNTIL > $(date +%s) )); then
+if (( CB_CROWN_UNTIL > $(date +%s) )); then
   LISTEN_SEC="$LISTEN_COORD_SEC"
 fi
 # A request or a reply to the agent's own post typically arrives within a turn
 # or two of the others, so in a project channel stay reachable for a while
 # before going fully idle. Needs a project channel and a reachable bus —
-# listening on a dead one would hold nothing; MM_LISTEN_SEC=0 turns it off. A
+# listening on a dead one would hold nothing; CB_LISTEN_SEC=0 turns it off. A
 # BYE ends the session's part in the coordination, so it skips the window.
 # Started as a channel (RT-6.12) and confirmed by the agent,
 # the MCP server pushes messages into the session itself: nothing to listen for.
 if [[ -n "$LF" && "$LISTEN_SEC" -gt 0 && "$have_post" -eq 1 ]] && ! mm_channel_push &&
-  [[ "$MM_BUS_PROJECT" == 1 ]] &&
+  [[ "$CB_BUS_PROJECT" == 1 ]] &&
   ! [[ "$LAST_HEAD" =~ ^BYE([^A-Za-z]|$) ]]; then
   now="$(date +%s)"
   # A listener is already waiting in the background: let the turn end and keep
@@ -359,7 +359,7 @@ if [[ -n "$LF" && "$LISTEN_SEC" -gt 0 && "$have_post" -eq 1 ]] && ! mm_channel_p
     reason+=" as a background command (Bash with run_in_background and timeout ${bg_ms}), then finish your turn without another word."
     reason+=" It waits without using the model and wakes you when a message arrives; its output says what to do."
     reason+=" If you cannot run background commands, just finish; this check will not ask again."
-    banner="$MM_LISTENING Listening on Mattermost until $(mm_epoch_hhmm "$LISTEN_UNTIL") in the background ($(( (remaining + 59) / 60 )) min) · your next prompt ends it"
+    banner="$CB_LISTENING Listening on Mattermost until $(mm_epoch_hhmm "$LISTEN_UNTIL") in the background ($(( (remaining + 59) / 60 )) min) · your next prompt ends it"
     if note="$(update_note)"; then banner+=$'\n'"$note"; fi
     block "$reason" "$banner" listen
   fi

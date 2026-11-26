@@ -73,7 +73,7 @@ CHANNEL_RE = re.compile(r"^[a-z0-9][a-z0-9_-]{0,63}$")  # Go checkToken
 AGENT_RE = re.compile(r"^[A-Za-z0-9][A-Za-z0-9_-]{0,127}$")  # Go consumers.agentRE
 PREFIX_RE = re.compile(r"^[A-Za-z0-9_-]+$")
 # An owner counts only in this form (RT-6.37): a Mattermost username's characters in lower
-# case, the same string the bus compares with MM_TRUSTED_HUMANS and the owners of Mattermost
+# case, the same string the bus compares with CB_TRUSTED_HUMANS and the owners of Mattermost
 # bots. Nothing is normalised: an owner in any other form is no owner.
 OWNER_RE = re.compile(r"[a-z0-9][a-z0-9._-]{0,63}")
 NO_OWNER = "-"  # the owner token of an owner not in OWNER_RE's form
@@ -172,7 +172,7 @@ def _check(m: Message, props_prefix: str = a2a.DEFAULT_PREFIX) -> None:
         if not isinstance(k, str) or not isinstance(v, str | int | float | bool):
             raise MessageError("props hold only strings and simple values")
         if not k.startswith(props_prefix):
-            raise MessageError("props keys start with the bus's props prefix (MM_PROPS_PREFIX)")
+            raise MessageError("props keys start with the bus's props prefix (CB_PROPS_PREFIX)")
         if not _wellformed(k) or (isinstance(v, str) and not _wellformed(v)):
             raise MessageError("props are not valid Unicode")
     if m.kind == "post":
@@ -891,7 +891,7 @@ def connect_reason(exc: BaseException) -> str:
                 return f"TLS: the certificate does not name this host ({msg})"
             if code in _UNKNOWN_ISSUER:
                 return (f"TLS: the server's certificate is not trusted ({msg}): "
-                        "if that CA is your NATS server's, set MM_NATS_CA_FILE to it")
+                        "if that CA is your NATS server's, set CB_NATS_CA_FILE to it")
             return f"TLS: the server's certificate is refused ({msg})"
         if isinstance(e, ssl.SSLError):
             reason = getattr(e, "reason", None)  # set by OpenSSL, absent on one raised by hand
@@ -1002,7 +1002,7 @@ class NatsSettings:
     presence: str = "presence"
     stats: str = "stats"  # the login service's AUTH_STATS_PREFIX: STATS lines on <stats>.<name> (RT-6.43)
     name_prefix: str = "agent-"
-    props_prefix: str = a2a.DEFAULT_PREFIX  # MM_PROPS_PREFIX, one setting of the whole bus (RT-6.16)
+    props_prefix: str = a2a.DEFAULT_PREFIX  # CB_PROPS_PREFIX, one setting of the whole bus (RT-6.16)
     tls_ca_file: str | None = None  # CA bundle that verifies a tls:// server (default: the system's)
     trusted: tuple[str, ...] = ()  # this session's trusted humans' names, for the hello (normalised)
     trusted_cut: bool = False  # normalising dropped or truncated names (set by __post_init__)

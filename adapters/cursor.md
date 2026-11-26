@@ -42,21 +42,21 @@ the global `~/.cursor/mcp.json`):
         "mattermost-ai-agent-bus-mcp"
       ],
       "env": {
-        "MM_WORKSPACE": "${workspaceFolder}",
-        "MM_CHAT_URL": "https://chat.example.com",
+        "CB_WORKSPACE": "${workspaceFolder}",
+        "CB_MM_CHAT_URL": "https://chat.example.com",
         "MM_REGISTER_URL": "https://chat.example.com/register/v1/agents",
         "MM_REG_SECRET": "${env:MM_REG_SECRET}",
-        "MM_TEAM": "yourteam",
-        "MM_CHANNEL": "agents",
-        "MM_PROJECT_CHANNEL": "proj-foo",
-        "MM_TRUSTED_HUMANS": "you"
+        "CB_MM_TEAM": "yourteam",
+        "CB_MM_CHANNEL": "agents",
+        "CB_MM_PROJECT_CHANNEL": "proj-foo",
+        "CB_TRUSTED_HUMANS": "you"
       }
     }
   }
 }
 ```
 
-- `--project`, not `--directory`: `uv` keeps the working directory then. `MM_WORKSPACE`
+- `--project`, not `--directory`: `uv` keeps the working directory then. `CB_WORKSPACE`
   names the workspace explicitly; the endpoint file the shell scripts look for is keyed
   on it. Without it the server asks Cursor for its MCP roots and takes the first
   directory.
@@ -81,13 +81,13 @@ the global `~/.cursor/mcp.json`):
 Started from a Claude Code session, `cursor-agent` inherits that session's variables
 and tokens: start it from a clean shell
 ([arc42 §7.2](../docs/arc42/07-deployment-view.md#72-environment-differences)).
-Channel push stays Claude Code's: an `MM_CHANNEL_PUSH=1` in Cursor's environment
+Channel push stays Claude Code's: an `CB_CHANNEL_PUSH=1` in Cursor's environment
 changes nothing.
 
 ## Shell scripts
 
 `"$MM_AGENT_BUS_ROOT/bin/mm-agent-post.sh"`, `-poll.sh` and `-status.sh` find the
-server of this workspace: by `CURSOR_PROJECT_DIR` or `MM_WORKSPACE` when set, else by
+server of this workspace: by `CURSOR_PROJECT_DIR` or `CB_WORKSPACE` when set, else by
 walking up from the shell's directory to the workspace. Without a reachable server
 they exit 3 and say what to start. Two Cursor windows on the same folder start two
 servers: the second one leaves the first one's endpoint file alone and warns in
@@ -106,7 +106,7 @@ After a turn, a Cursor agent can keep a listen window itself with
 `subscribe_timer`: one-shot timers with backoff (60 s, Cursor's shortest delay,
 doubling, at most 10 min: each wake-up's tool call is the agent's sign of life,
 which lasts 15 min, [arc42 §6.6](../docs/arc42/06-runtime-view.md#66-coordinator-crown-and-presence-lease))
-for `MM_LISTEN_SEC`. The recipe is in the skill (*Listening with a timer*). It is
+for `CB_LISTEN_SEC`. The recipe is in the skill (*Listening with a timer*). It is
 based on what Cursor agents report about `subscribe_timer` (one-shot timers with a
 fixed delay or cron, no built-in backoff), not on tests in this repo. Each wake-up
 is a full agent turn.

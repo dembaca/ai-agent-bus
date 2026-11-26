@@ -36,7 +36,7 @@ name, so the host session hooks hand the prefix in as `MM_AGENT_PREFIX`; the ses
 files carry it for the MCP server and the shell CLI. With neither, `agent-`. It is
 derived, not a setting.
 
-**Props prefix (RT-6.16 step 8, since 0.74.0).** `MM_PROPS_PREFIX` names the keys an agent
+**Props prefix (RT-6.16 step 8, since 0.74.0).** `CB_PROPS_PREFIX` names the keys an agent
 may add to its posts' props and the bus's own system key (`<prefix>system`): lower-case
 letters and digits starting with a letter, ending in `_`; default `x_`. At most 16
 characters: the MCP instructions name it on every turn, and the bridge's
@@ -47,14 +47,22 @@ key of the bus or of Mattermost starts with (`a2a_`, `agent_`, `from_`, `overrid
 the MCP server at its start with the reason (in a corral session the host process refuses
 before it reports ready, so the hook's preStart fails with it). It is one setting of the whole bus: every
 server must have the same value, or one server does not recognise another's system replies
-and refuses the props the other writes. Like `MM_TRUSTED_HUMANS` and `MM_REGISTRAR_KEYS`
+and refuses the props the other writes. Like `CB_TRUSTED_HUMANS` and `MM_REGISTRAR_KEYS`
 it is set in a corral session in the host's environment (the host process gets it in its
 start line, RT-6.18), elsewhere in the MCP server's environment. A program that reads the
 props (a bridge) is configured with the same prefix.
 
+**Variable names (since 0.103.0).** The MCP server, the hooks, the shell CLI and the
+installer read their settings under `CB_` names (`CB_MM_` for the Mattermost-only ones);
+the registrar's keep `MM_`. The mapping and the rules are in
+[docs/env-names.md](../env-names.md): the new name first, else the old one with one
+deprecation warning; both set to different values refuse the start; the release that
+removes the fallbacks refuses an old name set without its new one. Values the bus writes
+for itself (session and endpoint files, the sandbox's environment) go under both names.
+
 **Registrar keys (RT-6.24).** `MM_REGISTRAR_KEYS` pins the registrar's public
 keys: base64url raw Ed25519 keys, comma-separated, each one's kid derived from it.
-It is a setting like `MM_TRUSTED_HUMANS`: in a corral session in the host's
+It is a setting like `CB_TRUSTED_HUMANS`: in a corral session in the host's
 environment (the host process gets it in its start line, RT-6.18), elsewhere in
 the MCP server's environment. `bin/mm-agent-registrar-keys.sh` shows what the
 registrar lists at `…/register/v1/keys`, with the kids checked; the operator
@@ -87,7 +95,7 @@ from there would run agent-changeable code on the host with the registration sec
 `bin/mm-agent-host-install.sh`, run on the host, copies `adapters/corral/` and `bin/`
 from a git clone the developer reviewed (the one it runs from, or `--from`) into a
 release directory of its own, `releases/<version>-dev.<commit>/` beside
-`~/.local/share/mm-agent-bus/current` (`MM_BUS_HOST_DIR`), which no sandbox can write. It
+`~/.local/share/mm-agent-bus/current` (`CB_BUS_HOST_DIR`), which no sandbox can write. It
 copies the MCP server (`mcp/`), the skill and the harness plugins (`opencode/`, `pi/`,
 since 0.93.0: a sandboxed OpenCode or pi loads them from there under a read-only grant,
 not from a checkout an agent can change, RT-6.20, RT-6.27) as well and prepares the server's
@@ -110,13 +118,13 @@ runs no hook. A host copy from before this layout (a directory `current`) moves 
 `releases/<version>-legacy` and becomes `previous`.
 
 **From a release tag** (ADR-011 phase 1b, RT-6.29). `--release v<x.y.z>` takes no
-clone: it fetches that annotated tag from `MM_RELEASE_URL` (default the GitHub
+clone: it fetches that annotated tag from `CB_RELEASE_URL` (default the GitHub
 repository, `https://` or a local path, which is for a mirror and the tests) into the
 bare `src.git` beside `releases/`, without `+`, so a tag fetched before never moves;
 checks that the tag object carries the asked name and that the three version files in
 its tree say that version; and installs `git archive` of the tagged commit as
 `releases/<x.y.z>/`. The signature check is opt-in (decided 2026-11-12): with
-`MM_RELEASE_SIGNERS` set, the pinned Ed25519 public keys of the owner's release key and
+`CB_RELEASE_SIGNERS` set, the pinned Ed25519 public keys of the owner's release key and
 its offline backup, it verifies the tag with `git verify-tag` (`gpg.format=ssh`)
 against an allowed-signers file it writes from them and marks the release
 `SOURCE=signed` with the tag, its object, the commit and the signer's fingerprint.
@@ -147,7 +155,7 @@ keys an unsigned tag or a signature by another key, install nothing and leave
 `releases/` holds. A release's record is never marked down: one verified before stays
 `signed` in a run without keys. The signature covers what is installed, not the
 installer: it runs on the host, so it must be the host copy's
-(`<MM_BUS_HOST_DIR>/bin/mm-agent-host-install.sh`) or a reviewed clone's, not the
+(`<CB_BUS_HOST_DIR>/bin/mm-agent-host-install.sh`) or a reviewed clone's, not the
 plugin cache's or a workdir's. In every mode it refuses to run from a tree a sandbox
 can write, but only after it sourced `mm-agent-lib.sh` from there: that catches a
 mistake, and running the right installer is the control. The installer's output,
@@ -156,22 +164,22 @@ mistake, and running the right installer is the control. The installer's output,
 
 **Which release is out** (ADR-011 phase 2, RT-6.30). `bin/mm-agent-release-check.sh`,
 run by the installer's `--check` and by the MCP server about once a day as a child
-(clean environment: `PATH`, `HOME`, `LC_ALL=C`, `MM_RELEASE_URL`, `MM_RELEASE_SIGNERS`,
-`MM_BUS_HOST_DIR`, `CORRAL_WORKDIR`; 120 s, then its process group is stopped; a
-failed try again at the next hourly look, at most three a day), lists the newest `v<x.y.z>` tags at `MM_RELEASE_URL`, fetches them into the same
+(clean environment: `PATH`, `HOME`, `LC_ALL=C`, `CB_RELEASE_URL`, `CB_RELEASE_SIGNERS`,
+`CB_BUS_HOST_DIR`, `CORRAL_WORKDIR`; 120 s, then its process group is stopped; a
+failed try again at the next hourly look, at most three a day), lists the newest `v<x.y.z>` tags at `CB_RELEASE_URL`, fetches them into the same
 `src.git` (`--depth=1`, without `+`), checks them as `--release` does, and writes what
 the CHANGELOG of the newest one that passes says into `release.env` in the host state
 directory (`$XDG_STATE_HOME/mm-agent-bus`; the host process of a keyless session uses
 the one preStart chose). It installs nothing, runs nothing from the tag, and refuses
 to run inside corral or from a tree, state directory or `src.git` a sandbox can write.
 A server whose own tree a sandbox can write (the plugin cache under `~/.claude`) never
-runs its script from there: it runs the host copy's (`MM_BUS_HOST_DIR`, default
+runs its script from there: it runs the host copy's (`CB_BUS_HOST_DIR`, default
 `~/.local/share/mm-agent-bus/current`) when that is out of every sandbox's reach, and
 otherwise none; it still reads the notice the host's check wrote. The installer and
 the check do not fetch into `src.git` at the same time: each refuses or skips while
 the other's lock is fresh.
-Under corral the host process gets `MM_RELEASE_*` and `MM_BUS_HOST_DIR` from preStart's
-environment like every `MM_*` setting: set them where corral's hooks see them, or its
+Under corral the host process gets `CB_RELEASE_*` and `CB_BUS_HOST_DIR` from preStart's
+environment like every `CB_*` setting: set them where corral's hooks see them, or its
 check runs with the defaults (no keys: `signature not checked`). The start hook, the
 turn-end banner, `--check` and `bus_info` show the notice; a human installs the release.
 
@@ -181,14 +189,14 @@ registrar's key (`GET …/register/v1/release`), which also offers the release k
 corral's stop hook, after the bot is gone, runs the recorded release's installer with
 `--auto`: it reads that record with the host copy's own Python (verified with
 `MM_REGISTRAR_KEYS`, which must therefore be in corral's hook environment with
-`MM_CHAT_URL` or `MM_REGISTER_URL`), pins the offered keys in `release-signers` only
+`CB_MM_CHAT_URL` or `MM_REGISTER_URL`), pins the offered keys in `release-signers` only
 when the host has none, refuses other keys afterwards, and installs a newer, not
 withdrawn, signed version as `--release` does, only when no other session of the host
 copy runs. Files: `release-hold` beside `releases/` (`--hold`, `--unhold`: the stop
 switch, out of `XDG_STATE_HOME`'s reach), and in the state directory
 `release-auto.env` (what the notice says), `release-auto.log` (one line per decision)
 and `release-auto.out` (the last run's output). The release check's child also gets
-`MM_REGISTRAR_KEYS`, `MM_REGISTER_URL`, `MM_CHAT_URL` and the TLS and proxy variables,
+`MM_REGISTRAR_KEYS`, `MM_REGISTER_URL`, `CB_MM_CHAT_URL` and the TLS and proxy variables,
 to read the record for the notice. Harnesses without corral have no end hook and
 update by hand as before.
 
@@ -225,7 +233,7 @@ entries outside those places (no `.`, empty or relative entry) and work from `/`
 no command is found in the workdir; the installer and `mm-agent-sweep.sh` do the same.
 The version notice reads the installed plugins' files, which sandboxes write, only as
 regular files, bounded in size and time, so a FIFO there cannot stall a session's start.
-Otherwise the start hook contributes only `MM_BUS_UNAVAILABLE` with how to install
+Otherwise the start hook contributes only `CB_BUS_UNAVAILABLE` with how to install
 (fail closed, no bot), and the stop hook runs nothing but a note on stderr. Pointing
 `exec` at the marketplace clone, which earlier versions allowed by choice, is no
 longer supported: it ran sandbox-writable code on the host with the registration
@@ -249,12 +257,12 @@ The MCP server is required in every runtime (0.40.0); the shell-only agent mode,
 | What `MM_REG_SECRET` holds (ADR-003) | The host's human's enrollment token (`/agent-token create`): a bound bot. Or the shared secret: an unbound bot, foreign to others and without owner split | The session human's enrollment token, or the shared secret, as on the left | The same | The same |
 | Bot token in agent environment | No: the MCP server runs on the host, the sandbox has its endpoints and key (RT-6.18) | No; the 0600 session file holds it (RT-6.10) | No; the session file holds it | No; the session file holds it |
 | MCP server runs | On the host, one process per session; a relay in the sandbox | In the session, one per session | One per workspace (window) | OpenCode 2.x: one per location (project directory), started by the OpenCode process that serves it, with its environment; Codex: one per instance |
-| Shell scripts find the server by (RT-6.17) | `MM_BUS_ENDPOINT` / `MM_BUS_KEY` | `CLAUDE_CODE_SESSION_ID` | `CURSOR_PROJECT_DIR` / `MM_WORKSPACE`, else walking up from `$PWD` to the nearest git top | Walking up from `$PWD` to the nearest git top |
+| Shell scripts find the server by (RT-6.17) | `CB_BUS_ENDPOINT` / `CB_BUS_KEY` | `CLAUDE_CODE_SESSION_ID` | `CURSOR_PROJECT_DIR` / `CB_WORKSPACE`, else walking up from `$PWD` to the nearest git top | Walking up from `$PWD` to the nearest git top |
 | Automatic registration | Only with project channel, or `MM_REGISTER=always` | Agent registers only with project channel or when asked | Same | Same |
 | Turn hooks (presence, drain, listen) | Yes | Yes | No | OpenCode 2.x with its plugin: presence, drain, sign-off, listen window with wake-ups (RT-6.20); OpenCode 1.x, Codex: no |
 | Messages pushed into the session (RT-6.12) | When started as a channel | When started as a channel | No: `wait_for_events` | No: `wait_for_events`; OpenCode's plugin starts a turn that tells the agent to call it (RT-6.20) |
-| Teardown safety net | `postEnd` stops the host MCP server (its exit handler unregisters), then unregisters again; when Claude Code ended by itself it keeps the bot instead, offline, for `claude --continue` / `--resume <id>` in the same workdir, until `MM_SESSION_KEEP_SEC` (24 h) has passed (SIGUSR1, `keep_sync`, RT-6.18 step 9); the server's watchdog when corral dies | MCP exit handler (keeps the bot for `--continue`, reaped after 24 h); it runs when stdin closes, on SIGTERM/SIGHUP, or when the server's parent dies (RT-6.10) | MCP exit handler, the same | MCP exit handler, the same: a server orphaned by its harness (Codex) ends within seconds |
-| Homes over NATS (RT-6.34, RT-6.36) | `MM_NATS_HOMES`, `MM_NATS_URL` and `MM_LOGIN_ISSUER` / `MM_LOGIN_CLIENT_ID` in the host's environment; the host process logs in and keeps the keys | The same in the MCP server's environment; the server logs in | The same | The same (pi too) |
+| Teardown safety net | `postEnd` stops the host MCP server (its exit handler unregisters), then unregisters again; when Claude Code ended by itself it keeps the bot instead, offline, for `claude --continue` / `--resume <id>` in the same workdir, until `CB_SESSION_KEEP_SEC` (24 h) has passed (SIGUSR1, `keep_sync`, RT-6.18 step 9); the server's watchdog when corral dies | MCP exit handler (keeps the bot for `--continue`, reaped after 24 h); it runs when stdin closes, on SIGTERM/SIGHUP, or when the server's parent dies (RT-6.10) | MCP exit handler, the same | MCP exit handler, the same: a server orphaned by its harness (Codex) ends within seconds |
+| Homes over NATS (RT-6.34, RT-6.36) | `CB_NATS_HOMES`, `CB_NATS_URL` and `CB_LOGIN_ISSUER` / `CB_LOGIN_CLIENT_ID` in the host's environment; the host process logs in and keeps the keys | The same in the MCP server's environment; the server logs in | The same | The same (pi too) |
 | Reachability | Agent checks + `Stop` hook (drain, listen window with a background listener, no model calls) | Same | Agent checks before each new activity and before the turn ends; listen window with one-shot timers and backoff (each wake-up a turn) | Agent checks; OpenCode with its plugin also drain and sign-off at the end of a turn and wake-ups in the listen window, as long as OpenCode serves the location (RT-6.20) |
 
 **pi** with its extension (RT-6.27, [adapters/pi.md](../../adapters/pi.md)) is like OpenCode with its plugin, with these differences: one MCP server per pi session, which pi starts with its own environment (the registration secret is then in the agent's shell too, unless a same-named server in pi's `mcp.json` fetches it with a `!command` for the server alone); under `corral run pi` the host session hooks register the bot and the server is the relay to the host process, as for Claude Code (the token stays on the host); the turn cycle runs on pi's events, and a wake-up while a human's run goes follows that run (`deliverAs: followUp`) instead of waiting for its end; the context use reaches the status (ADR-008), which OpenCode's plugin does not report.
@@ -268,7 +276,7 @@ env -u CLAUDE_CODE_SESSION_ID -u CLAUDE_CODE_OAUTH_TOKEN -u CLAUDE_CODE_MESSAGIN
     -u CLAUDE_PID -u CLAUDECODE -u CLAUDE_PROJECT_DIR codex exec …
 ```
 
-The MCP server guards its own side: a client that does not name itself `claude-code` in the handshake gets no channel mode, even with `MM_CHANNEL_PUSH=1` (RT-6.12), and its server drops an inherited `CLAUDE_CODE_SESSION_ID` and `CLAUDE_PROJECT_DIR`, keys its files on the workspace and takes over no bot of that Claude session (RT-6.10, RT-6.17).
+The MCP server guards its own side: a client that does not name itself `claude-code` in the handshake gets no channel mode, even with `CB_CHANNEL_PUSH=1` (RT-6.12), and its server drops an inherited `CLAUDE_CODE_SESSION_ID` and `CLAUDE_PROJECT_DIR`, keys its files on the workspace and takes over no bot of that Claude session (RT-6.10, RT-6.17).
 
 ---
 
@@ -278,15 +286,15 @@ The bus treats a trusted human's Mattermost account like the session's terminal 
 
 | Assumption | Holds when | Where it breaks |
 |------------|------------|-----------------|
-| A trusted account is as safe as the terminal | The instance is under your control, `MM_TRUSTED_HUMANS` is set on purpose (nobody is trusted by default), and every listed account has 2FA | A shared or taken-over account approves any action of every session that trusts it, tool calls included (RT-6.13) |
+| A trusted account is as safe as the terminal | The instance is under your control, `CB_TRUSTED_HUMANS` is set on purpose (nobody is trusted by default), and every listed account has 2FA | A shared or taken-over account approves any action of every session that trusts it, tool calls included (RT-6.13) |
 | What reaches Mattermost may be stored there | The instance's retention, search, exports, admin access and backups are acceptable for every post, DMs included | The permission relay DMs tool input to the responsible human (RT-6.13): a shell command in full, paths and short arguments, which the terminal shows only to the developer; file content only as its size. A secret in a command that Claude Code does not recognise and mask reaches the server |
 | The profile says whom an agent answers to | The bot registered with an enrollment token its owner minted (`/agent-token`, registrar 0.2.0, ADR-003): the registrar makes that human the bot's native owner and writes `for @<owner> · trusts @…`. Since 0.60.0 every MCP server reads it to tell a peer from a foreign agent (ADR-001, RT-6.16 step 1); since 0.61.0 it reads the native owner (`owner_id` of `/api/v4/bots/<id>`) as well where the operator grants bot accounts `read_others_bots` ([registrar setup](https://github.com/dembaca/mattermost-agent-registrar#setup-for-enrollment-tokens), step 6) | A bot registered with the shared secret is `unbound` (`claims @…`, never `for @`): foreign to every other agent, and its own session has no owner split (`bus_info` and `session_start` warn). A registrar before 0.2.0 writes whatever owner the caller names, unchecked (RISK-02). A leaked enrollment token registers bots bound to its owner within its scope until it expires or is revoked. The registrar may write only part of a long trusted list into the profile (RT-6.8 warns); a list marked `+N` makes a foreign agent. An owner that cannot be read either way counts as a peer's (fail open). Without `read_others_bots` the native owner is not read (403) and the description alone decides, as in 0.60.0 |
 | An agent's shell acts as its bot only through its own MCP server | Every runtime since 0.40.0: no token in any agent's shell; the scripts find their server by session id or workspace (RT-6.17) and get the closed set of its routes, posting included | Outside corral there is no sandbox: every process of the user can read the state directory, the endpoint file with its key and the 0600 session file with the token, as before 0.40.0. Keeping both out of the environment stops slips and leaks through logs and child processes, not a determined agent. A registration secret in the harness's own environment (a `${env:…}` reference) is in the agent's shell too (Section 7.2) |
-| A session's hook API key acts as its bot, within the API's routes | Whoever holds `MM_BUS_KEY` (the endpoint file, or a corral sandbox's environment) is the session as far as the routes go (RT-6.17 step 3) | With the key one can post, reply in any thread and DM any agent as the bot (`/v1/post`, `/v1/reply`: the tools' rules, not the relay's slot), upload files for those posts into the channels it may post in (`/v1/files`: only the bytes sent, checked by type, at most 10 MiB; the server opens no path, ADR-012, RT-6.33), set its status, report its context numbers for the status text (`POST /v1/usage`, numbers only, RT-6.17), read its counters and the posts of the channels the bus watches — work, project and default channel and the guest channels (RT-6.22), never a DM, a group or the stats channel (`/v1/posts`, `403`). Never the token, the registration secret or a route beyond these. Under corral another sandbox of the same user can read a session's key from its process arguments and environment (`KERN_PROCARGS2` on macOS): a documented residual, accepted for sandboxes of one developer |
+| A session's hook API key acts as its bot, within the API's routes | Whoever holds `CB_BUS_KEY` (the endpoint file, or a corral sandbox's environment) is the session as far as the routes go (RT-6.17 step 3) | With the key one can post, reply in any thread and DM any agent as the bot (`/v1/post`, `/v1/reply`: the tools' rules, not the relay's slot), upload files for those posts into the channels it may post in (`/v1/files`: only the bytes sent, checked by type, at most 10 MiB; the server opens no path, ADR-012, RT-6.33), set its status, report its context numbers for the status text (`POST /v1/usage`, numbers only, RT-6.17), read its counters and the posts of the channels the bus watches — work, project and default channel and the guest channels (RT-6.22), never a DM, a group or the stats channel (`/v1/posts`, `403`). Never the token, the registration secret or a route beyond these. Under corral another sandbox of the same user can read a session's key from its process arguments and environment (`KERN_PROCARGS2` on macOS): a documented residual, accepted for sandboxes of one developer |
 | The sandbox can act as its bot only through the session's MCP server | corral session (RT-6.18): the agent has the relay's and the hook API's endpoints and key in its environment | It can call both itself with that key and gets exactly what its runtime gets: the MCP tools of its session (the relay only while Claude Code's is not connected) and the hook API's routes (RT-6.17, the row above) — never the token, so nothing beyond them. The handshake's values only name the session's files; the server's files stay in the directory the host chose |
-| No credential is in any process environment on the host | The host hooks keep the bot token and the registration secret in shell variables they do not export; `mm-agent-sweep.sh` likewise for a session file's token and the operator's token and secret; every helper (`mm-agent-register.sh`, `-channels`, `-status`, `-unread`, `-unregister`) gets its credential on fd 3 (`MM_BOT_TOKEN_FD`, `MM_REG_SECRET_FD`), curl on stdin, jq from a pipe (`--rawfile`, never a here-string, which bash up to 5.0 writes to a temporary file), the host process on stdin; no message prints a success answer (it holds the bot token); only an error answer's reason is printed (RT-6.1 step 3), sanitised and never when it contains the secret; the secret comes from gopass | On macOS a process in a corral sandbox can read the initial argv and environment of every process of the same user that runs a non-platform binary (`sysctl KERN_PROCARGS2`; `ps` is denied, the sysctl is not). A secret in the login environment (`MM_REG_SECRET`) is therefore visible in the hooks' own processes (the start hook warns). A session's `MM_BUS_KEY` is in its sandbox's environment and so readable by other sandboxes, which can then drive that session's relay and hook API — the closed set of RT-6.17/RT-6.18 actions — as its bot, never get the token. The root fix belongs in corral's sandbox profile |
-| No agent in a corral sandbox registers a bot of its own | The sandbox cannot read the registration secret: no `command` that fetches it in a harness config, no secret store it can reach. Inside the sandbox `session_start` and `mm-agent-register.sh` also refuse while `CORRAL_SANDBOX`, `MM_BUS_MCP_ENDPOINT` or `MM_BUS_ENDPOINT` is set (since 0.93.0, RT-6.10, RT-6.18) | That refusal reads the environment, which the agent controls: one that clears the variables and can read the secret registers a bot whose token is in the sandbox. A harness without the bus plugin invites it (no bus tools); the host warns of a missing relay (RT-6.18 step 11). Likewise the plugins come from the host copy, out of the agent's reach, but the relay's Python dependencies in the sandbox cache (`~/.cache/mm-agent-bus/venv-*`) are the agent's to change, like any file in its home, and hold no token: code planted there runs in a later session's relay with only the sandbox's standing (`MM_BUS_KEY`, the loopback endpoints). Alternative to check: the relay from the host copy's read-only environment (`UV_PROJECT_ENVIRONMENT=<release>/mcp/.venv`, `uv run --no-sync`), if its interpreter is readable in the sandbox (RT-6.28 step 2) |
-| A session's token ends with the session | `postEnd` runs, or the host process's watchdog sees corral gone (every 5 s); except a bot kept for a resume (RT-6.18 step 9): its token stays in its 0600 session file on the host until the resume, or for up to `MM_SESSION_KEEP_SEC` (24 h) until `mm-agent-sweep.sh` or the next start removes it | corral SIGKILLed and the watchdog not running, or a reboot: an orphan holds the token until the next `preStart` stops it, or the bot stays until `mm-agent-sweep.sh` removes it |
+| No credential is in any process environment on the host | The host hooks keep the bot token and the registration secret in shell variables they do not export; `mm-agent-sweep.sh` likewise for a session file's token and the operator's token and secret; every helper (`mm-agent-register.sh`, `-channels`, `-status`, `-unread`, `-unregister`) gets its credential on fd 3 (`CB_MM_BOT_TOKEN_FD`, `MM_REG_SECRET_FD`), curl on stdin, jq from a pipe (`--rawfile`, never a here-string, which bash up to 5.0 writes to a temporary file), the host process on stdin; no message prints a success answer (it holds the bot token); only an error answer's reason is printed (RT-6.1 step 3), sanitised and never when it contains the secret; the secret comes from gopass | On macOS a process in a corral sandbox can read the initial argv and environment of every process of the same user that runs a non-platform binary (`sysctl KERN_PROCARGS2`; `ps` is denied, the sysctl is not). A secret in the login environment (`MM_REG_SECRET`) is therefore visible in the hooks' own processes (the start hook warns). A session's `CB_BUS_KEY` is in its sandbox's environment and so readable by other sandboxes, which can then drive that session's relay and hook API — the closed set of RT-6.17/RT-6.18 actions — as its bot, never get the token. The root fix belongs in corral's sandbox profile |
+| No agent in a corral sandbox registers a bot of its own | The sandbox cannot read the registration secret: no `command` that fetches it in a harness config, no secret store it can reach. Inside the sandbox `session_start` and `mm-agent-register.sh` also refuse while `CORRAL_SANDBOX`, `CB_BUS_MCP_ENDPOINT` or `CB_BUS_ENDPOINT` is set (since 0.93.0, RT-6.10, RT-6.18) | That refusal reads the environment, which the agent controls: one that clears the variables and can read the secret registers a bot whose token is in the sandbox. A harness without the bus plugin invites it (no bus tools); the host warns of a missing relay (RT-6.18 step 11). Likewise the plugins come from the host copy, out of the agent's reach, but the relay's Python dependencies in the sandbox cache (`~/.cache/mm-agent-bus/venv-*`) are the agent's to change, like any file in its home, and hold no token: code planted there runs in a later session's relay with only the sandbox's standing (`CB_BUS_KEY`, the loopback endpoints). Alternative to check: the relay from the host copy's read-only environment (`UV_PROJECT_ENVIRONMENT=<release>/mcp/.venv`, `uv run --no-sync`), if its interpreter is readable in the sandbox (RT-6.28 step 2) |
+| A session's token ends with the session | `postEnd` runs, or the host process's watchdog sees corral gone (every 5 s); except a bot kept for a resume (RT-6.18 step 9): its token stays in its 0600 session file on the host until the resume, or for up to `CB_SESSION_KEEP_SEC` (24 h) until `mm-agent-sweep.sh` or the next start removes it | corral SIGKILLed and the watchdog not running, or a reboot: an orphan holds the token until the next `preStart` stops it, or the bot stays until `mm-agent-sweep.sh` removes it |
 | The central bridge's bot token crosses the network encrypted | `BRIDGE_MM_URL` is `https`, or `http` to a loopback host; the bridge refuses any other `http` URL at start, its WebSocket reader refuses it too, and its REST client follows no redirect (a same-host redirect to `http` would get the token again); the registrar's Mattermost adapter, imported into the bridge but not yet active, follows the same rule for its admin token | `BRIDGE_MM_ALLOW_HTTP=true` sends the token in clear text with every REST call and in the WebSocket's authentication challenge: whoever reads the network path acts as the bridge bot. For a lab on a network you trust only |
 | The sandbox reaches the host process on loopback | corral's network mode is `net: open`, its only one today | A corral that cuts the sandbox off from `127.0.0.1` leaves the relay and the hooks without the server: the session has no bus (fail closed), never a token |
 | Only the registrar creates bots with its prefix (ADR-003, relied on since 0.60.0) | Users may not create bot accounts in Mattermost, or the prefix is reserved for the registrar | A bot with the prefix made by someone else counts as a bus agent and can carry any description, owner included |
