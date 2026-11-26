@@ -9,6 +9,7 @@ import (
 	"regexp"
 	"strconv"
 	"strings"
+	"time"
 
 	"github.com/dembaca/ai-agent-bus/services/bridge/internal/netloc"
 )
@@ -37,7 +38,18 @@ type Config struct {
 	AdminToken string // CB_BRIDGE_MM_ADMIN_TOKEN_FILE, optional: the admin bot's token (system_admin), used only by the bot management
 	BotPrefix  string // CB_BRIDGE_MM_BOT_PREFIX, required with AdminToken: the agent bots' username prefix
 	HideBotDM  bool   // CB_BRIDGE_MM_HIDE_BOT_DM, default true: hide the admin bot's welcome DM with each new bot
+	// BotKeep is CB_BRIDGE_MM_BOT_KEEP, default 24h, at least 1h: the sweep
+	// disables a bot the bridge made once its agent showed no presence for
+	// longer (RT-6.44 step 8). Only with AdminToken.
+	BotKeep time.Duration
 }
+
+// The keep time's default and minimum (RT-6.44 step 8), the one source the
+// sweep in agentbots reads too.
+const (
+	DefaultBotKeep = 24 * time.Hour
+	MinBotKeep     = time.Hour
+)
 
 // Load reads the environment. A missing required value is an error naming it.
 //
@@ -55,6 +67,8 @@ func Load(env *Env) (Config, error) {
 	homes := get("CB_BRIDGE_HOMES", "BRIDGE_HOMES")
 	hideBotDM := strings.TrimSpace(get("CB_BRIDGE_MM_HIDE_BOT_DM", "BRIDGE_HIDE_BOT_DM"))
 	allowHTTP := strings.TrimSpace(get("CB_BRIDGE_MM_ALLOW_HTTP", "BRIDGE_MM_ALLOW_HTTP"))
+	// new in #151 step 2: no old spelling
+	botKeep := strings.TrimSpace(get("CB_BRIDGE_MM_BOT_KEEP", ""))
 	c := Config{
 		NATSURL:    strings.TrimSpace(get("CB_BRIDGE_NATS_URL", "BRIDGE_NATS_URL")),
 		SeedFile:   strings.TrimSpace(get("CB_BRIDGE_NATS_SEED_FILE", "BRIDGE_NATS_SEED_FILE")),
@@ -141,6 +155,18 @@ func Load(env *Env) (Config, error) {
 	case c.BotPrefix != "" && !BotPrefix.MatchString(c.BotPrefix):
 		return Config{}, fmt.Errorf("CB_BRIDGE_MM_BOT_PREFIX %q is no username's start: a lower-case letter, "+
 			"then at most 31 of a-z, 0-9, '.', '_' and '-'", c.BotPrefix)
+	}
+	c.BotKeep = DefaultBotKeep
+	if v := botKeep; v != "" {
+		if c.AdminToken == "" {
+			return Config{}, fmt.Errorf("CB_BRIDGE_MM_BOT_KEEP is set without CB_BRIDGE_MM_ADMIN_TOKEN_FILE: " +
+				"only the agents' own bots are swept")
+		}
+		keep, err := time.ParseDuration(v)
+		if err != nil || keep < MinBotKeep {
+			return Config{}, fmt.Errorf("CB_BRIDGE_MM_BOT_KEEP %q is no duration of at least %s (for example 24h)", v, MinBotKeep)
+		}
+		c.BotKeep = keep
 	}
 	if v := hideBotDM; v != "" {
 		hide, err := strconv.ParseBool(v)
