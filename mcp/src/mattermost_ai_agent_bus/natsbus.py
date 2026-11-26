@@ -1133,7 +1133,15 @@ class NatsBus:
                  connect_timeout: float = 5.0, renew_sec: float = RENEW_SEC,
                  send_wait_sec: float = SEND_WAIT_SEC, member_renew_sec: float = MEMBER_RENEW_SEC,
                  on_fatal: FatalCallback | None = None, on_person: PersonCallback | None = None,
-                 on_notice: NoticeCallback | None = None, session: str = "") -> None:
+                 on_notice: NoticeCallback | None = None, session: str = "",
+                 since: Mapping[str, int] | None = None,
+                 on_since: Callable[[str, int], None] | None = None) -> None:
+        """`since` (#213, RT-6.35 step 3) is the per-channel cursor a killed session left:
+        channel (or `@dm`) -> the last stream sequence it HANDED to the server. It goes into
+        the first CONNECT beside `@presence`, so the login service restarts that consumer one
+        message later and the one in flight is delivered again rather than lost. `on_since`
+        is called with (key, stream_seq) after each handed message, and when a recreated BUS
+        stream moves the cursor down; the host persists it, this class keeps no file."""
         for what, v in (("bus", settings.bus), ("presence", settings.presence), ("stats", settings.stats)):
             if not PREFIX_RE.fullmatch(v) or v == DELIVER:
                 raise ValueError(f"invalid {what} prefix")
@@ -1180,7 +1188,15 @@ class NatsBus:
         self._last_echo_reconnect = -1e18
         self._echo_backoff = 0.0  # the wait after an echo reconnect that brought no echo back; 0: none yet
         self._stale: set[str] = set()  # channels with a gap, dropped until the reconnect
-        self._last_seq: dict[str, int] = {}  # channel (or "@dm") -> last stream sequence delivered
+        # channel (or "@dm") -> last stream sequence delivered: only ever this process's, since
+        # #213 it is seeded from the file a past one left and written back after each hand-off
+        self._last_seq: dict[str, int] = {}
+        for key, seq in (since or {}).items():
+            # Only a channel name or the DMs can be a `since` key: anything else (a person's
+            # `hu.<channel>`, `@presence`, junk) is never sent, and never written back.
+            if (key == DM_SINCE or CHANNEL_RE.fullmatch(key)) and isinstance(seq, int) and seq > 0:
+                self._last_seq[key] = seq
+        self._on_since = on_since
         self._server_now = 0.0  # the newest server timestamp seen: the host's "now"
         self._server_now_mono = 0.0  # the monotonic clock when it was seen (for _iat)
         self._last_prune = 0.0
@@ -1262,6 +1278,26 @@ class NatsBus:
         if self._last_seq.get(DM_SINCE):
             out[DM_SINCE] = self._last_seq[DM_SINCE]
         return out
+
+    def _note_since(self, where: str, seq: int) -> None:
+        """The message at `seq` was handed to the server: the host may keep the cursor after it
+        (#213). Called only once the awaitable callback returned, never at the cursor's advance,
+        so a session killed while decoding or handing a message asks for that one again."""
+        if self._on_since is None:
+            return
+        try:
+            self._on_since(where, seq)
+        except Exception as exc:  # noqa: BLE001 — a state file never stops the bus
+            log.warning("nats bus: the cursor of %s was not kept (%s)", where, type(exc).__name__)
+
+    def _stream_reset(self, where: str, consumer_seq: int, stream_seq: int) -> None:
+        """A BUS stream made anew restarts its sequences, as a presence consumer made anew does
+        (RT-6.38 step 1): its first delivery (number 1) at or below the remembered cursor says
+        the cursor is from before the reset. Forget it and move the file down, so a restart does
+        not ask for a sequence the new stream never reaches."""
+        if consumer_seq == 1 and stream_seq <= self._last_seq.get(where, 0):
+            self._last_seq.pop(where, None)
+            self._note_since(where, stream_seq)
 
     # --- lifecycle ---------------------------------------------------------------
     async def start(self) -> None:
@@ -1995,6 +2031,7 @@ class NatsBus:
             self._gap(where)
         if where in self._stale:
             return
+        self._stream_reset(where, ack.consumer_seq, ack.stream_seq)  # before the repeat check: seq 1 may follow
         if ack.stream_seq <= self._last_seq.get(where, 0):
             return  # a repeat after a restart from `since`
         self._last_seq[where] = ack.stream_seq
@@ -2008,8 +2045,18 @@ class NatsBus:
             res = self._on_event(event)
             if inspect.isawaitable(res):
                 await res
+        except asyncio.CancelledError:
+            # #213: killed while handing it, so the message is not handed: no cursor. The next
+            # start asks for this sequence again (at least once for this one, never lost).
+            raise
         except Exception as exc:
+            # Not handed: the cursor stays behind, so a restart asks for this one again
+            # (the in-process dedup still has it; a fresh start replays it, at least once).
             log.warning("nats bus: event callback failed: %s", type(exc).__name__)
+            return
+        # #213: the cursor moves only now, after the hand-off: a kill while the callback runs
+        # leaves the file at the message before, and the login service delivers this one again.
+        self._note_since(where, ack.stream_seq)
 
     def _person_handler(self, channel: str) -> Callable[[Any], Awaitable[None]]:
         async def handle(msg: Any) -> None:
@@ -2042,7 +2089,13 @@ class NatsBus:
             if self.on_person_gap is not None:
                 self.on_person_gap(channel)
         if ack.stream_seq <= self._last_seq.get(key, 0):
-            return  # a repeat
+            # A BUS stream made anew restarts its sequences: the consumer's first delivery (1)
+            # is not a repeat then. A person's key (`hu.<channel>`) is no `since` key, so the
+            # host keeps no file for it; a restart starts their consumer with new messages.
+            if ack.consumer_seq == 1:
+                self._last_seq.pop(key, None)
+            else:
+                return  # a repeat
         self._last_seq[key] = ack.stream_seq
         try:
             message = decode_person(data)

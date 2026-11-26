@@ -290,7 +290,7 @@ class FakeLogin:
         return NKey(public_key=bytes(kp.public_key).decode(), sign=lambda n: bytes(kp.sign(n)))
 
 
-_BUS_KW = ("gap_reconnect_sec", "renew_sec", "on_fatal", "heartbeat_sec", "send_wait_sec")
+_BUS_KW = ("gap_reconnect_sec", "renew_sec", "on_fatal", "heartbeat_sec", "send_wait_sec", "since", "on_since")
 
 
 def _unit_bus(**kw: Any) -> tuple[NatsBus, list[Event]]:
@@ -1810,6 +1810,138 @@ async def test_a_channel_named_dm_does_not_collide_with_direct_messages() -> Non
     assert events[-1].where == "dm" and events[-1].stream_seq == 11
     if bus._gap_task:
         bus._gap_task.cancel()
+
+
+# --- #213: the cursor across a kill ----------------------------------------------------------
+
+async def test_a_since_from_the_state_file_is_sent_at_the_first_connect() -> None:
+    """RT-6.35 step 3, #213: a killed server's cursor per channel and for the DMs comes back in the first
+    CONNECT beside the presence read; nothing else from the file does."""
+    bus, _ = _unit_bus(since={"home": 12, "@dm": 7, "@presence": 5, "hu.home": 9, "Bad Key": 3, "home2": 0})
+    assert bus.since() == {"home": 12, "@dm": 7}
+    hello = json.loads(build_hello("T", "home", (), False, bus.since(), fresh_presence=True))
+    assert hello["since"] == {"@presence": 1, "home": 12, "@dm": 7}
+    await _presence(bus, "agent-a", 1, T0)  # a presence delivery keeps no `since` cursor
+    assert bus.since() == {"home": 12, "@dm": 7}
+
+
+async def test_the_cursor_is_written_after_the_callback_and_a_kill_replays_that_one() -> None:
+    """#213: the file moves only once the message was handed. Killed while the callback runs,
+    it still names the message before, so a rebuilt bus is handed the in-flight one again."""
+    state = {"home": 12, "@dm": 7}
+    held = asyncio.Event()
+    got: list[int] = []
+
+    async def hold(event: Event) -> None:
+        got.append(event.stream_seq)
+        await held.wait()
+
+    bus = NatsBus(_settings(), FakeLogin(), "alice", hold, since=state,
+                  on_since=lambda key, seq: state.__setitem__(key, seq))
+    ok = encode(Message("post", "x"))
+    task = asyncio.create_task(bus._on_deliver("home", "bus.ch.home.agent-x", _reply(bus, "home", 13, 2), ok))
+    await until(lambda: got == [13])
+    assert state == {"home": 12, "@dm": 7}  # in flight: nothing written yet
+    task.cancel()  # the kill: no cursor, no cleanup
+    with pytest.raises(asyncio.CancelledError):
+        await task
+    assert state == {"home": 12, "@dm": 7}
+    # The next process reads the same file and is handed the message again, once.
+    again: list[Event] = []
+    bus2 = NatsBus(_settings(), FakeLogin(), "alice", again.append, since=dict(state),
+                   on_since=lambda key, seq: state.__setitem__(key, seq))
+    assert bus2.since() == {"home": 12, "@dm": 7}
+    await bus2._on_deliver("home", "bus.ch.home.agent-x", _reply(bus2, "home", 13, 1), ok)
+    assert [e.stream_seq for e in again] == [13] and state["home"] == 13
+    await bus2._on_deliver("home", "bus.ch.home.agent-x", _reply(bus2, "home", 14, 2), ok)
+    assert state["home"] == 14
+
+
+async def test_a_recreated_bus_stream_moves_the_cursor_down() -> None:
+    """#213: when the BUS stream is made anew its sequences restart; the consumer's first
+    delivery at or below the cursor is no repeat, and the file moves down to it."""
+    state = {"home": 500}
+    bus, events = _unit_bus(since=dict(state), on_since=lambda key, seq: state.__setitem__(key, seq))
+    ok = encode(Message("post", "x"))
+    await bus._on_deliver("home", "bus.ch.home.agent-x", _reply(bus, "home", 1, 1), ok)
+    assert [(e.where, e.stream_seq) for e in events] == [("home", 1)]
+    assert state["home"] == 1 and bus.since() == {"home": 1}
+    await bus._on_deliver("home", "bus.ch.home.agent-x", _reply(bus, "home", 2, 2), ok)
+    assert state["home"] == 2 and [e.stream_seq for e in events] == [1, 2]
+    # a first delivery beyond the cursor is no reset: the stream grew, it was not made anew
+    await bus._on_deliver("home", "bus.ch.home.agent-x", _reply(bus, "home", 501, 1), ok)
+    assert state["home"] == 501 and [e.stream_seq for e in events] == [1, 2, 501]
+
+
+async def test_a_killed_server_asks_for_the_cursor_it_kept(rig: Rig,
+                                                          monkeypatch: pytest.MonkeyPatch) -> None:
+    """#213: the cursor is kept in the state file after each handed message, so a server killed
+    without its bye is handed the message that came at the kill again - once, never lost."""
+    from mattermost_ai_agent_bus.nats_port import _since_file, _since_read, _since_write
+
+    hellos: list[dict[str, Any]] = []
+    real = natsbus.build_hello
+
+    def spy(*a: Any, **k: Any) -> str:
+        h = real(*a, **k)
+        hellos.append(json.loads(h))
+        return h
+
+    monkeypatch.setattr(natsbus, "build_hello", spy)
+    alice, _ = await rig.agent("alice")
+    uid = "b" * 26  # the bot the file is named by (BOT_RE)
+
+    def keeper() -> tuple[dict[str, int], Any]:
+        state = _since_read(uid)
+
+        def keep(key: str, seq: int) -> None:
+            state[key] = seq
+            _since_write(_since_file(uid), state)
+        return state, keep
+
+    got: list[str] = []
+    state1, keep1 = keeper()
+
+    async def first(event: Event) -> None:
+        got.append(event.message.text)
+
+    bob1 = NatsBus(NatsSettings(servers=(rig.url,), home="home"), rig.logins["bob"], "bob", first,
+                   heartbeat_sec=0.2, since=state1, on_since=keep1)
+    await _login_service(rig.admin, bob1.name, ["home"], bob1.since())
+    await bob1.start()
+    await alice.post("home", "one")
+    await until(lambda: "home" in _since_read(uid))
+    assert got == ["one"]
+    cursor = _since_read(uid)["home"]
+    # SIGKILL: no stop(), no bye: its tasks end and the socket closes, nothing is cleaned up.
+    for task in bob1._tasks:
+        task.cancel()
+    if bob1._renew_task is not None:
+        bob1._renew_task.cancel()
+    await asyncio.gather(*bob1._tasks, return_exceptions=True)
+    assert bob1._nc is not None
+    bob1._nc._transport.close()
+    await alice.post("home", "inflight")  # came while it was dead: no socket handed it
+    await asyncio.sleep(0.3)
+
+    events: list[Event] = []
+    state2, keep2 = keeper()
+    bob2 = NatsBus(NatsSettings(servers=(rig.url,), home="home"), rig.logins["bob"], "bob",
+                   events.append, heartbeat_sec=0.2, since=state2, on_since=keep2)
+    await _login_service(rig.admin, bob2.name, ["home"], bob2.since())
+    await bob2.start()
+    try:
+        # The first CONNECT names both the fresh presence read and the kept cursor (#213).
+        assert hellos[-1]["since"] == {"@presence": 1, "home": cursor}
+        await until(lambda: [e.message.text for e in events if e.where == "home"] == ["inflight"])
+        await alice.post("home", "after")
+        await until(lambda: [e.message.text for e in events if e.where == "home"]
+                    == ["inflight", "after"])
+        await asyncio.sleep(0.3)
+        assert [e.message.text for e in events if e.where == "home"] == ["inflight", "after"]
+        assert _since_read(uid)["home"] > cursor
+    finally:
+        await bob2.stop()
 
 
 async def test_dm_reconnect_with_since_gets_exactly_the_dms_after_it(rig: Rig) -> None:

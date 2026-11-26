@@ -51,6 +51,22 @@ before 0.5.0 are described in the git history.
   graph fits itself again when its width changes. Back and Forward, the
   list's search and filter keep working.
 
+### Fixed
+
+- **A killed session no longer loses the message it was handing** (#213). The
+  NATS host keeps each channel's cursor — the last stream sequence it handed to
+  the server, and `@dm`'s — in `since-<bot uid>.env` of its state directory
+  (0600, atomic), written once the event callback returned, and its first
+  CONNECT after a kill names those keys beside `@presence`: the login service
+  restarts the durable consumer at `last+1`, so the message in flight at the
+  kill is delivered again instead of being skipped by the consumer's position.
+  That one message is therefore at least once, and the host's stream-sequence
+  check drops the repeat, so it is read once. A recreated `BUS` stream restarts
+  its sequences; a first delivery at or below the kept cursor moves the file
+  down for that channel. No login-service change. After a graceful bye, and
+  past the stream's retention or the consumer's inactivity threshold, nothing
+  changes.
+
 ### Docs
 
 - **The coordinator's hourly check** (`coordinator.md`, the coordinator scenario

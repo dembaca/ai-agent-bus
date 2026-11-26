@@ -120,7 +120,7 @@ from . import a2a, config, lease, natsbus, owners
 from .events import ChatEvent, EventSource, EventStream, PostEvent, ReactionEvent
 from .ids import _ID, NATS_POST
 from .model import NotFound, Post, Reaction, Thread, UnreadChannel
-from .natsbus import DM_SINCE, Attestation, Event, NameMismatch, NatsBus, NatsBusError, NatsSettings
+from .natsbus import BOT_RE, CHANNEL_RE, DM_SINCE, Attestation, Event, NameMismatch, NatsBus, NatsBusError, NatsSettings
 from .port import AttestedCircle
 
 if TYPE_CHECKING:
@@ -304,6 +304,46 @@ def _notice_file(uid: str) -> Path:
     return state_dir() / f"notice-{uid}.env"
 
 
+SINCE_KEY_MAX = 200  # channels (and @dm) whose cursor the since file keeps
+
+
+def _since_file(uid: str) -> Path:
+    from .session_file import state_dir
+
+    return state_dir() / f"since-{uid}.env"
+
+
+def _since_read(uid: str) -> dict[str, int]:
+    """The cursor a killed server left (#213): `<key>=<seq>`, a channel name (CHANNEL_RE)
+    or `@dm`. Junk lines are ignored, and a file that grew past SINCE_KEY_MAX keys keeps
+    the highest sequences."""
+    try:
+        text = _since_file(uid).read_text(encoding="utf-8", errors="replace")
+    except OSError:
+        return {}
+    out: dict[str, int] = {}
+    for line in text.splitlines():
+        key, _, raw = line.rpartition("=")
+        if not (key == DM_SINCE or CHANNEL_RE.fullmatch(key)):
+            continue
+        try:
+            seq = int(raw)
+        except ValueError:
+            continue
+        if seq > 0:
+            out[key] = seq
+    if len(out) > SINCE_KEY_MAX:
+        out = dict(sorted(sorted(out.items(), key=lambda kv: kv[1], reverse=True)[:SINCE_KEY_MAX]))
+    return out
+
+
+def _since_write(path: Path, since: Mapping[str, int]) -> None:
+    """Rewrite the cursor file whole, 0600 and atomic (`write_private`)."""
+    from .session_file import write_private
+
+    write_private(path, "".join(f"{k}={v}\n" for k, v in sorted(since.items())))
+
+
 NOTICE_KEY_MAX = 64  # notices remembered as told, per server
 NOTICE_SAME_SEC = 30 * 60.0  # the block: the same kind, id and verdict is one DM
 
@@ -459,15 +499,44 @@ class NatsPort:
                 await self.resolve()
                 if owner is None:
                     owner = await _owner_of(login)
+                # #213: the cursor a killed session left, per channel (and the DMs). The login
+                # service restarts each consumer after it, so the one message in flight at the
+                # kill is delivered again (at least once for that one, never lost). The file is
+                # named by the bot, and a bot id that is none (a bad CB_MM_BOT_USER_ID) has none.
+                bot = await self._bot_id()
+                is_bot = bool(BOT_RE.fullmatch(bot))
+                since = _since_read(bot) if is_bot else {}
+                since_path = _since_file(bot) if is_bot else None
+                since_failed = False
+
+                def keep_since(key: str, seq: int, path: Path | None = since_path,
+                               held: dict[str, int] = since) -> None:
+                    nonlocal since_failed
+                    if path is None or not (key == DM_SINCE or CHANNEL_RE.fullmatch(key)):
+                        return  # `@presence` and the people's `hu.<channel>` are no `since` key
+                    if held.get(key) == seq:
+                        return
+                    held[key] = seq
+                    try:
+                        _since_write(path, held)
+                    except OSError as exc:
+                        # A stale file only repeats a message at a restart, never loses one: log
+                        # it once and let the bus run on.
+                        if not since_failed:
+                            since_failed = True
+                            log.warning("nats: the since cursor was not kept (%s): a restart may "
+                                        "repeat a post", type(exc).__name__)
+
                 bus = NatsBus(self._s, login, owner, self._on_event, on_fatal=self._on_fatal,
                               on_person=self._on_person, on_notice=self._on_notice,
-                              session=self._session, **self._bus_options)
+                              session=self._session, since=since, on_since=keep_since,
+                              **self._bus_options)
                 self._bus = bus
                 bus.on_person_gap = self._person_gap
                 bus.card_source = self._card
                 bus.ask_source = self._asks
                 try:
-                    bus.link_bot(await self._bot_id(), await self._bot_name())
+                    bus.link_bot(bot, await self._bot_name())
                 except ValueError:
                     # A bot id that is no Mattermost user id (a bad CB_MM_BOT_USER_ID): the NATS
                     # home still starts, only without a link between bot and NATS name.

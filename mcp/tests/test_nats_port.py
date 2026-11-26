@@ -2064,6 +2064,41 @@ async def test_a_bad_bot_id_does_not_stop_the_nats_home(monkeypatch: pytest.Monk
 
 
 
+async def test_the_since_cursor_is_kept_per_channel_and_sent_at_the_first_connect(
+        monkeypatch: pytest.MonkeyPatch) -> None:
+    """RT-6.36 step 4, #213: the cursor of each channel and of the DMs survives a killed session in
+    since-<bot>.env, 0600, and its first CONNECT names it; `@presence` and the people's
+    `hu.<channel>` never get there."""
+    from mattermost_ai_agent_bus import lease, nats_port
+
+    made: list[dict[str, Any]] = []
+
+    def build(*a: Any, **kw: Any) -> FakeNats:
+        made.append(kw)
+        return FakeNats(port, name=NAME_A)
+
+    monkeypatch.setattr(nats_port, "NatsBus", build)
+    monkeypatch.setattr(lease, "_nats_link", None)
+    path = nats_port._since_file(BOT)
+    path.parent.mkdir(parents=True, exist_ok=True)
+    path.write_text("home=12\n@dm=7\njunk\n@presence=5\nhu.home=4\nno key=3\nzero=0\n")
+    port, inner, _ = make(bus=False)
+    await port.start(FakeLogin(), owner="alice")
+    try:
+        assert made[0]["since"] == {"home": 12, "@dm": 7}  # only channel names and @dm
+        keep = made[0]["on_since"]
+        keep("home", 13)
+        assert path.read_text() == "@dm=7\nhome=13\n"
+        assert path.stat().st_mode & 0o777 == 0o600
+        assert nats_port._since_read(BOT) == {"home": 13, "@dm": 7}
+        keep("@presence", 9)
+        keep("hu.home", 9)
+        assert nats_port._since_read(BOT) == {"home": 13, "@dm": 7}
+    finally:
+        await port.stop()
+        lease.use_nats_link(None)
+
+
 async def test_the_bot_name_falls_back_to_the_environment_then_to_nothing(
         monkeypatch: pytest.MonkeyPatch) -> None:
     """ADR-015: the username for the presence comes from get_me; when that fails

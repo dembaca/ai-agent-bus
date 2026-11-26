@@ -3643,6 +3643,10 @@ decided against it (Context).
 - Minus: no acknowledgement on publish, delivery at most once, history only
   at login, a side channel on whether a foreign channel had posts, and an
   update of the NATS server only after the proof is green again (point 16).
+  (Since #213 the host keeps its per-channel cursor in its state directory and
+  names it in `since` at the first connection, so the one message it was
+  handing when it was killed is delivered again and dropped as a repeat by the
+  host: at least once for that one message, still at most once for every other.)
 - Plus: no agent holds a Mattermost token; the humans' channel shows what
   the home's visibility setting asks for.
 - Plus: the tools, the hook API and the bus logic stay as they are; the
