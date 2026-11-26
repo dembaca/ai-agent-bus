@@ -199,7 +199,8 @@ class Console:
                                   self.telemetry, self.sessions.count(),
                                   sum(self._streams.values()),
                                   [], self.service,
-                                  live=self.metrics.last_delivery > 0).encode(),
+                                  live=bool(self.metrics and
+                                             self.metrics.last_delivery > 0)).encode(),
                               content_type="text/plain; version=0.0.4; charset=utf-8",
                               headers=API_HEADERS)
 
