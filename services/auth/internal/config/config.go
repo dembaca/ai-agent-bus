@@ -14,6 +14,8 @@ import (
 	"strconv"
 	"strings"
 	"time"
+
+	"github.com/dembaca/ai-agent-bus/services/auth/internal/envname"
 )
 
 // Defaults, also the values documented in services/auth/README.md.
@@ -33,14 +35,21 @@ type Config struct {
 	ShutdownTimeout time.Duration
 }
 
-// Load reads the configuration from environment variables.
+// Load reads the configuration from environment variables, by their CB_AUTH_
+// names with the old AUTH_ names as a fallback (envname, docs/env-names.md).
 //
 // It returns the first invalid value as an error that names the variable, so a
-// half-configured service never starts.
-func Load(getenv func(string) string) (Config, error) {
-	if getenv == nil {
-		getenv = os.Getenv
+// half-configured service never starts. Two names of one setting with
+// different values are such an error too; nil env reads the process
+// environment.
+func Load(env *envname.Env) (Config, error) {
+	if env == nil {
+		env = envname.New(os.LookupEnv, slog.Default().Warn)
 	}
+	if err := env.Check(envname.Service()...); err != nil {
+		return Config{}, err
+	}
+	getenv := env.Value
 
 	cfg := Config{
 		ListenAddr:      DefaultListenAddr,
@@ -48,28 +57,28 @@ func Load(getenv func(string) string) (Config, error) {
 		ShutdownTimeout: DefaultShutdownTimeout,
 	}
 
-	if v := strings.TrimSpace(getenv("AUTH_LISTEN_ADDR")); v != "" {
+	if v := strings.TrimSpace(getenv("CB_AUTH_LISTEN_ADDR")); v != "" {
 		if err := validateListenAddr(v); err != nil {
-			return Config{}, fmt.Errorf("AUTH_LISTEN_ADDR: %w", err)
+			return Config{}, fmt.Errorf("CB_AUTH_LISTEN_ADDR: %w", err)
 		}
 		cfg.ListenAddr = v
 	}
 
-	if v := strings.TrimSpace(getenv("AUTH_LOG_LEVEL")); v != "" {
+	if v := strings.TrimSpace(getenv("CB_AUTH_LOG_LEVEL")); v != "" {
 		level, err := parseLogLevel(v)
 		if err != nil {
-			return Config{}, fmt.Errorf("AUTH_LOG_LEVEL: %w", err)
+			return Config{}, fmt.Errorf("CB_AUTH_LOG_LEVEL: %w", err)
 		}
 		cfg.LogLevel = level
 	}
 
-	if v := strings.TrimSpace(getenv("AUTH_SHUTDOWN_TIMEOUT")); v != "" {
+	if v := strings.TrimSpace(getenv("CB_AUTH_SHUTDOWN_TIMEOUT")); v != "" {
 		d, err := time.ParseDuration(v)
 		if err != nil {
-			return Config{}, fmt.Errorf("AUTH_SHUTDOWN_TIMEOUT: %w", err)
+			return Config{}, fmt.Errorf("CB_AUTH_SHUTDOWN_TIMEOUT: %w", err)
 		}
 		if d <= 0 {
-			return Config{}, fmt.Errorf("AUTH_SHUTDOWN_TIMEOUT: must be positive, got %s", v)
+			return Config{}, fmt.Errorf("CB_AUTH_SHUTDOWN_TIMEOUT: must be positive, got %s", v)
 		}
 		cfg.ShutdownTimeout = d
 	}

@@ -5,7 +5,7 @@ Keycloak's device flow, and this service issues them short-lived NATS
 credentials (ADR-014, `docs/arc42/09-architecture-decisions.md`).
 
 It reads its configuration from the environment, answers a health probe and,
-with `AUTH_NATS_URL` set, answers the NATS server's auth callout: it checks
+with `CB_AUTH_NATS_URL` set, answers the NATS server's auth callout: it checks
 the Keycloak token a host presents, issues the agent a user JWT for 15 minutes
 and names it. Not in it yet: the path over a pod's service-account token
 (TokenReview), and the durable consumers the agents read from.
@@ -38,13 +38,25 @@ Read from the environment only. Nothing secret belongs in the repository, and
 no default carries a credential. Unknown variables are ignored, so one
 environment can serve several services.
 
+**Names (0.103.0).** Every name carries the `CB_` prefix
+([docs/env-names.md](../../docs/env-names.md)). The old names without it
+(`AUTH_…`, `AUTHD_…`, and `AUTH_MATTERMOST_URL`, `AUTH_MATTERMOST_TEAM`,
+`AUTH_MATTERMOST_TOKEN_FILE` for the three `CB_AUTH_MM_…` names) are
+deprecated: until the removal release (the release after 0.103.0) the service
+reads an old name when its new name is unset and logs one warning per process.
+Both names set to different values refuse the start and name both; equal values
+pass, with a warning that the old name can go. Empty counts as set; a value
+that is exactly an unexpanded `${NAME}` placeholder refuses the start, naming
+the variable (no manifest fills it in here). From the
+removal release on, an old name set without its new name refuses the start.
+
 | Variable | Default | Meaning |
 | --- | --- | --- |
-| `AUTH_LISTEN_ADDR` | `:8080` | `host:port` the server listens on; the port must be 1–65535 |
-| `AUTH_LOG_LEVEL` | `info` | `debug`, `info`, `warn` or `error` |
-| `AUTH_SHUTDOWN_TIMEOUT` | `10s` | how long a stop may take before it is cut off |
+| `CB_AUTH_LISTEN_ADDR` | `:8080` | `host:port` the server listens on; the port must be 1–65535 |
+| `CB_AUTH_LOG_LEVEL` | `info` | `debug`, `info`, `warn` or `error` |
+| `CB_AUTH_SHUTDOWN_TIMEOUT` | `10s` | how long a stop may take before it is cut off |
 
-With `AUTH_NATS_URL` set the service answers the auth callout, and these
+With `CB_AUTH_NATS_URL` set the service answers the auth callout, and these
 apply. Secrets are always files, never values in the environment; example
 values are placeholders.
 
@@ -60,7 +72,7 @@ a host gets in. To move a server whose older clients still connect in the
 classic order, set a duration instead (`handshake_first: "300ms"`): the server
 waits that long for a TLS handshake, then lets a classic client in. Set it
 to `true` once every client speaks TLS first. A loopback `nats://` stays
-plain. `AUTH_NATS_URL` and `AUTH_JS_URL` are `tls://` throughout or not at
+plain. `CB_AUTH_NATS_URL` and `CB_AUTH_JS_URL` are `tls://` throughout or not at
 all: a list that mixes `tls://` with another scheme is refused at the start,
 since it would reach a `handshake_first` server in the classic order. The
 hosts also reach a server over its WebSocket listener (`wss://`), the service
@@ -73,29 +85,29 @@ cannot be used end to end until both change.
 
 | Variable | Default | Meaning |
 | --- | --- | --- |
-| `AUTH_NATS_URL` | — | the NATS server, `tls://` (plain `nats://` only on a loopback host; websockets are refused, see above); unset: no callout, health only |
-| `AUTH_NATS_SEED_FILE` | — | file with the nkey seed of the service's own NATS user, one of the server's `auth_users` |
-| `AUTH_ISSUER_SEED_FILE` | — | file with the account key seed that signs the responses and user JWTs; its public key is the server's `auth_callout.issuer` |
-| `AUTH_XKEY_SEED_FILE` | — | file with the curve key seed that decrypts requests and encrypts answers; its public key is the server's `auth_callout.xkey`. Plain requests are refused |
-| `AUTH_PLAIN_REQUESTS` | unset | `allow` instead of an xkey: the server sends requests unencrypted. An explicit opt-out, for a test server only |
-| `AUTH_NATS_CA_FILE`, `AUTH_NATS_CERT_FILE`, `AUTH_NATS_KEY_FILE` | unset | the CA for the server's TLS certificate (unset: the system's), and a client certificate with its key if the server asks for one |
-| `AUTH_ACCOUNT` | — | the tenant's account the agents land in |
-| `AUTH_LOBBY` | unset | the lobby's channel name |
-| `AUTH_SUBJECT_PREFIX`, `AUTH_PRESENCE_PREFIX`, `AUTH_STATS_PREFIX`, `AUTH_NAME_PREFIX` | `bus`, `presence`, `stats`, `agent-` | subject prefix of channels and direct messages, of presence and crown claims, of the agents' `STATS` lines (stream `STATS`, RT-6.43; all three must differ, and none may be `deliver` or `_INBOX`), the start of agent names |
-| `AUTH_JS_SEED_FILE`, `AUTH_JS_URL` | —, `AUTH_NATS_URL` | file with the user nkey seed of the service's own user in the tenant account, the only one with JetStream API rights, and its server; required with `AUTH_NATS_URL`: the service makes the streams and every agent's consumers (RT-6.35) and does not start without them. That user needs only (`TestTheDocumentedMinimalRightsSuffice`): publish `$JS.API.STREAM.CREATE.<S>`, `$JS.API.STREAM.INFO.<S>`, `$JS.API.CONSUMER.*.<S>` and `$JS.API.CONSUMER.*.<S>.>` for `<S>` = `BUS`, `PRESENCE`; `$JS.API.STREAM.CREATE.STATS` and `$JS.API.STREAM.INFO.STATS` for the `STATS` lines (RT-6.43), and `$JS.API.CONSUMER.*.STATS` and `$JS.API.CONSUMER.*.STATS.>` for the operators' consumers on them, and `<presence>.person.*.v1` for each console login's own record (RT-6.43); for the channel directory (RT-6.39), which also holds the trust index an operator's consumers are filtered by (RT-6.43), `$JS.API.INFO`, `$JS.API.STREAM.CREATE.KV_BUS_DIRECTORY`, `$JS.API.STREAM.INFO.KV_BUS_DIRECTORY`, `$JS.API.DIRECT.GET.KV_BUS_DIRECTORY.>`, `$KV.BUS_DIRECTORY.>`, and for its key listings `$JS.API.CONSUMER.CREATE.KV_BUS_DIRECTORY.>` and `$JS.API.CONSUMER.DELETE.KV_BUS_DIRECTORY.*` (with another `AUTH_DIRECTORY_BUCKET`, its name in place of `BUS_DIRECTORY`); for the attestations (RT-6.41) `$JS.API.STREAM.MSG.GET.PRESENCE` and `<presence>.attest.*.v1`; for the account records of people (RT-6.42) `<presence>.account.mattermost.*.v1`; subscribe `_INBOX.>` |
-| `AUTH_REQUEST_TIMEOUT` | `1.5s` | bound of one request (token check, chat lookups, answer), at most 10 s; keep it below the server's callout timeout |
-| `AUTH_BRAKE_FILE` | unset | the emergency brake (below) |
-| `AUTH_KEYCLOAK_ISSUER`, `AUTH_KEYCLOAK_JWKS_URL`, `AUTH_KEYCLOAK_CLIENT_ID` | — | the realm and the bus's client |
-| `AUTH_KEYCLOAK_AUDIENCE`, `AUTH_APPROVER_GROUP`, `AUTH_APPROVER_CLAIM`, `AUTH_TOKEN_LEEWAY` | client id, unset, `groups`, `30s` | see the token check |
-| `AUTH_CONSOLE_CLIENT_ID`, `AUTH_OPERATOR_GROUP`, `AUTH_PERSON_PREFIX`, `AUTH_PERSON_MAX_LOGINS` | unset, —, `person-`, `8` | the operator console's path (RT-6.43): the console's own Keycloak client (unset: no person's credential is issued; it must differ from the bus's client and audience), the group a token must list at every issue (required with the client, a full path such as `/ops`: the group mapper's full path on), and the start of a person's name (letters, digits, `-` and `_`, ending in `-`; it and `AUTH_NAME_PREFIX` may not start each other), and how many logins one person holds consumers for at once (1 to 64) |
-| `AUTH_NAME_BINDING` | `open` | `open` or `openid-only` (see the name binding) |
-| `AUTH_MATTERMOST_URL`, `AUTH_MATTERMOST_TEAM` | — | the chat (https; http only on a loopback host) and the team of the bus's channels |
-| `AUTH_DIRECTORY_BUCKET` | `BUS_DIRECTORY` | the channel directory's key-value bucket in the tenant account (ADR-016, RT-6.39): letters, digits, `-` and `_`. Until the one-time import from Mattermost has written `meta.imported`, membership still comes from Mattermost and every identity's anchor is its name of today, so agents keep their names |
-| `AUTH_ADMIN_LISTEN_ADDR` | — | where the directory's admin API listens (RT-6.40), `host:port`; empty: no admin API. Requires `AUTH_DIRECTORY_ADMIN_GROUP`; without a certificate a loopback IP literal only (`127.0.0.1`, `::1`; `localhost` is not taken) |
-| `AUTH_ADMIN_TLS_CERT_FILE`, `AUTH_ADMIN_TLS_KEY_FILE` | — | the admin API's certificate and key, together |
-| `AUTH_DIRECTORY_ADMIN_GROUP` | — | the Keycloak group (as the group mapper writes it, with or without the leading `/`) whose members administer the directory; nothing in the directory makes anyone an admin |
-| `AUTH_DIRECTORY_IMPORTED` | `false` | set `true` once the one-time import has run: from then on a missing bucket is never made anew and a bucket without the import's mark refuses every login, instead of falling back to Mattermost (RT-6.39) |
-| `AUTH_MATTERMOST_TOKEN_FILE` | — | file with a Mattermost access token that may see how accounts log in (a system admin's); without that right every login is refused. The right is asked again every minute and after every 401 or 403 |
+| `CB_AUTH_NATS_URL` | — | the NATS server, `tls://` (plain `nats://` only on a loopback host; websockets are refused, see above); unset: no callout, health only |
+| `CB_AUTH_NATS_SEED_FILE` | — | file with the nkey seed of the service's own NATS user, one of the server's `auth_users` |
+| `CB_AUTH_ISSUER_SEED_FILE` | — | file with the account key seed that signs the responses and user JWTs; its public key is the server's `auth_callout.issuer` |
+| `CB_AUTH_XKEY_SEED_FILE` | — | file with the curve key seed that decrypts requests and encrypts answers; its public key is the server's `auth_callout.xkey`. Plain requests are refused |
+| `CB_AUTH_PLAIN_REQUESTS` | unset | `allow` instead of an xkey: the server sends requests unencrypted. An explicit opt-out, for a test server only |
+| `CB_AUTH_NATS_CA_FILE`, `CB_AUTH_NATS_CERT_FILE`, `CB_AUTH_NATS_KEY_FILE` | unset | the CA for the server's TLS certificate (unset: the system's), and a client certificate with its key if the server asks for one |
+| `CB_AUTH_ACCOUNT` | — | the tenant's account the agents land in |
+| `CB_AUTH_LOBBY` | unset | the lobby's channel name |
+| `CB_AUTH_SUBJECT_PREFIX`, `CB_AUTH_PRESENCE_PREFIX`, `CB_AUTH_STATS_PREFIX`, `CB_AUTH_NAME_PREFIX` | `bus`, `presence`, `stats`, `agent-` | subject prefix of channels and direct messages, of presence and crown claims, of the agents' `STATS` lines (stream `STATS`, RT-6.43; all three must differ, and none may be `deliver` or `_INBOX`), the start of agent names |
+| `CB_AUTH_JS_SEED_FILE`, `CB_AUTH_JS_URL` | —, `CB_AUTH_NATS_URL` | file with the user nkey seed of the service's own user in the tenant account, the only one with JetStream API rights, and its server; required with `CB_AUTH_NATS_URL`: the service makes the streams and every agent's consumers (RT-6.35) and does not start without them. That user needs only (`TestTheDocumentedMinimalRightsSuffice`): publish `$JS.API.STREAM.CREATE.<S>`, `$JS.API.STREAM.INFO.<S>`, `$JS.API.CONSUMER.*.<S>` and `$JS.API.CONSUMER.*.<S>.>` for `<S>` = `BUS`, `PRESENCE`; `$JS.API.STREAM.CREATE.STATS` and `$JS.API.STREAM.INFO.STATS` for the `STATS` lines (RT-6.43), and `$JS.API.CONSUMER.*.STATS` and `$JS.API.CONSUMER.*.STATS.>` for the operators' consumers on them, and `<presence>.person.*.v1` for each console login's own record (RT-6.43); for the channel directory (RT-6.39), which also holds the trust index an operator's consumers are filtered by (RT-6.43), `$JS.API.INFO`, `$JS.API.STREAM.CREATE.KV_BUS_DIRECTORY`, `$JS.API.STREAM.INFO.KV_BUS_DIRECTORY`, `$JS.API.DIRECT.GET.KV_BUS_DIRECTORY.>`, `$KV.BUS_DIRECTORY.>`, and for its key listings `$JS.API.CONSUMER.CREATE.KV_BUS_DIRECTORY.>` and `$JS.API.CONSUMER.DELETE.KV_BUS_DIRECTORY.*` (with another `CB_AUTH_DIRECTORY_BUCKET`, its name in place of `BUS_DIRECTORY`); for the attestations (RT-6.41) `$JS.API.STREAM.MSG.GET.PRESENCE` and `<presence>.attest.*.v1`; for the account records of people (RT-6.42) `<presence>.account.mattermost.*.v1`; subscribe `_INBOX.>` |
+| `CB_AUTH_REQUEST_TIMEOUT` | `1.5s` | bound of one request (token check, chat lookups, answer), at most 10 s; keep it below the server's callout timeout |
+| `CB_AUTH_BRAKE_FILE` | unset | the emergency brake (below) |
+| `CB_AUTH_KEYCLOAK_ISSUER`, `CB_AUTH_KEYCLOAK_JWKS_URL`, `CB_AUTH_KEYCLOAK_CLIENT_ID` | — | the realm and the bus's client |
+| `CB_AUTH_KEYCLOAK_AUDIENCE`, `CB_AUTH_APPROVER_GROUP`, `CB_AUTH_APPROVER_CLAIM`, `CB_AUTH_TOKEN_LEEWAY` | client id, unset, `groups`, `30s` | see the token check |
+| `CB_AUTH_CONSOLE_CLIENT_ID`, `CB_AUTH_OPERATOR_GROUP`, `CB_AUTH_PERSON_PREFIX`, `CB_AUTH_PERSON_MAX_LOGINS` | unset, —, `person-`, `8` | the operator console's path (RT-6.43): the console's own Keycloak client (unset: no person's credential is issued; it must differ from the bus's client and audience), the group a token must list at every issue (required with the client, a full path such as `/ops`: the group mapper's full path on), and the start of a person's name (letters, digits, `-` and `_`, ending in `-`; it and `CB_AUTH_NAME_PREFIX` may not start each other), and how many logins one person holds consumers for at once (1 to 64) |
+| `CB_AUTH_NAME_BINDING` | `open` | `open` or `openid-only` (see the name binding) |
+| `CB_AUTH_MM_URL`, `CB_AUTH_MM_TEAM` | — | the chat (https; http only on a loopback host) and the team of the bus's channels |
+| `CB_AUTH_DIRECTORY_BUCKET` | `BUS_DIRECTORY` | the channel directory's key-value bucket in the tenant account (ADR-016, RT-6.39): letters, digits, `-` and `_`. Until the one-time import from Mattermost has written `meta.imported`, membership still comes from Mattermost and every identity's anchor is its name of today, so agents keep their names |
+| `CB_AUTH_ADMIN_LISTEN_ADDR` | — | where the directory's admin API listens (RT-6.40), `host:port`; empty: no admin API. Requires `CB_AUTH_DIRECTORY_ADMIN_GROUP`; without a certificate a loopback IP literal only (`127.0.0.1`, `::1`; `localhost` is not taken) |
+| `CB_AUTH_ADMIN_TLS_CERT_FILE`, `CB_AUTH_ADMIN_TLS_KEY_FILE` | — | the admin API's certificate and key, together |
+| `CB_AUTH_DIRECTORY_ADMIN_GROUP` | — | the Keycloak group (as the group mapper writes it, with or without the leading `/`) whose members administer the directory; nothing in the directory makes anyone an admin |
+| `CB_AUTH_DIRECTORY_IMPORTED` | `false` | set `true` once the one-time import has run: from then on a missing bucket is never made anew and a bucket without the import's mark refuses every login, instead of falling back to Mattermost (RT-6.39) |
+| `CB_AUTH_MM_TOKEN_FILE` | — | file with a Mattermost access token that may see how accounts log in (a system admin's); without that right every login is refused. The right is asked again every minute and after every 401 or 403 |
 
 An invalid value stops the program at start with a message naming the variable.
 A service that starts with half its configuration is worse than one that refuses.
@@ -210,7 +222,7 @@ Exactly one instance runs: the account record's lock per `sub` and the consumers
 The NATS server sends every client that is not one of its `auth_users` to
 `$SYS.REQ.USER.AUTH`; the service answers with a user JWT or a refusal.
 
-**The service's own NATS user** (`AUTH_NATS_SEED_FILE`, in the callout's
+**The service's own NATS user** (`CB_AUTH_NATS_SEED_FILE`, in the callout's
 account `AUTH`) has the callout's rights and nothing more
 ([nats-server.example.conf](nats-server.example.conf), pinned by
 `example_conf_test.go`): subscribe `$SYS.REQ.USER.AUTH` (queue group `authd`),
@@ -225,7 +237,7 @@ the example has both, and the test fails for one that lacks either.
 It connects with its own user nkey (nkey authentication: it signs the
 server's nonce). It needs no inbox: agents have no `_INBOX` right.
 
-**What the service checks,** in this order, within `AUTH_REQUEST_TIMEOUT` and
+**What the service checks,** in this order, within `CB_AUTH_REQUEST_TIMEOUT` and
 never past the server's request's own `exp`: the request decrypts with the
 xkey, is signed by a server key that is the `server_id` it names, is meant for
 `nats-authorization-request` and has not expired (otherwise it is not
@@ -279,7 +291,7 @@ signed by the account key, valid 15 minutes from the check:
   at most 500 per subject, the oldest discarded; a stream that keeps more per
   subject or longer, takes other than 8 KiB per message or is not on file is
   refused at the start).
-  `AUTH_SUBJECT_PREFIX`, `AUTH_PRESENCE_PREFIX` and `AUTH_STATS_PREFIX` set the three prefixes.
+  `CB_AUTH_SUBJECT_PREFIX`, `CB_AUTH_PRESENCE_PREFIX` and `CB_AUTH_STATS_PREFIX` set the three prefixes.
   **The proof** is `internal/callout/native_sender_test.go`: an embedded
   nats-server (the version in `go.mod`, 2.15.3) with this callout, attacked
   on every subject and header, with controls that show the forgery succeeds
@@ -293,7 +305,7 @@ ADR-014 point 7): every issue checks the Keycloak token and the person again,
 and nothing issued can be used without the host's nkey seed. A Keycloak
 session that ends therefore takes effect within 15 minutes at the latest.
 
-**Emergency brake.** `AUTH_BRAKE_FILE` names a file with one owner per line,
+**Emergency brake.** `CB_AUTH_BRAKE_FILE` names a file with one owner per line,
 or `*` for everyone; `#` starts a comment; names compare in lower case, and a
 line that is no valid username is logged and holds nobody. It is read again
 when it changes, without a restart, and takes effect at the next issue, so
@@ -337,7 +349,7 @@ server knows one issuer at a time.
   docs/arc42 Section 11). Binding the token to the nkey (a claim the host
   adds at the device approval, or DPoP) would close it; that needs Keycloak's
   side and is not built.
-- **Tenants:** one service instance issues into one account (`AUTH_ACCOUNT`).
+- **Tenants:** one service instance issues into one account (`CB_AUTH_ACCOUNT`).
   Accounts share no subjects; the test checks that another account's post does
   not reach an agent. Rights inside a JetStream stream shared by tenants are
   not built: each tenant has its own account and stream.
@@ -396,10 +408,10 @@ process's memory: never on disk, never printed, never in the environment.
 
 | Setting | Flag | Environment |
 |---|---|---|
-| the admin API's base URL (https; http only on a loopback IP) | `--api` | `AUTHD_DIR_API` |
-| the Keycloak issuer | `--issuer` | `AUTH_KEYCLOAK_ISSUER` |
-| the bus's public client | `--client-id` | `AUTH_KEYCLOAK_CLIENT_ID` |
-| an extra CA for the API's certificate | `--ca-file` | `AUTHD_DIR_CA_FILE` |
+| the admin API's base URL (https; http only on a loopback IP) | `--api` | `CB_AUTHD_DIR_API` |
+| the Keycloak issuer | `--issuer` | `CB_AUTH_KEYCLOAK_ISSUER` |
+| the bus's public client | `--client-id` | `CB_AUTH_KEYCLOAK_CLIENT_ID` |
+| an extra CA for the API's certificate | `--ca-file` | `CB_AUTHD_DIR_CA_FILE` |
 
 | Command | What it does |
 |---|---|
