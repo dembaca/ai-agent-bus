@@ -205,10 +205,10 @@ func LoadSettings(env *envname.Env) (Settings, bool, error) {
 		}
 		s.Callout.Console.MaxLogins = n
 	}
-	if v := get("AUTH_CONSOLE_METRICS"); v != "" {
+	if v := get("CB_AUTH_CONSOLE_METRICS"); v != "" {
 		on, err := strconv.ParseBool(v)
 		if err != nil {
-			return Settings{}, true, fmt.Errorf("%w: AUTH_CONSOLE_METRICS %q is neither true nor false", ErrConfig, v)
+			return Settings{}, true, fmt.Errorf("%w: CB_AUTH_CONSOLE_METRICS %q is neither true nor false", ErrConfig, v)
 		}
 		s.Callout.Console.Metrics = on
 	}
@@ -354,7 +354,7 @@ func RunCallout(ctx context.Context, s Settings, log *slog.Logger) error {
 	// The console's unattended metrics page (#158): its two consumers are
 	// made at this start and kept, idempotent, like every consumer of the
 	// bus — the console's service account itself has no JetStream right.
-	// Off unless AUTH_CONSOLE_METRICS is set: nobody's consumers exist
+	// Off unless CB_AUTH_CONSOLE_METRICS=true: nobody's consumers exist
 	// while the page is off.
 	if s.Callout.Console.Metrics {
 		if err := mgr.EnsureMetrics(startCtx); err != nil {
