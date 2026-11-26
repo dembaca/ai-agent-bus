@@ -15,6 +15,15 @@ before 0.5.0 are described in the git history.
   `BRIDGE_MM_ALLOW_HTTP=true` (default off, a warning at start). The
   bridge's WebSocket reader refuses such a URL on its own too.
 
+### Changed
+
+- **The console's graph view runs on React Flow** (#145): people, open
+  asks, agents and their home and guest channels in fixed columns laid
+  out by dagre. A state change recolours its agent in place; an agent or
+  an ask that comes or goes adds or removes its node without moving the
+  others or the view (ADR-015 points 7 and 14). The browser app has unit
+  tests now (`npm test` in `console/web`, also in CI).
+
 ### Fixed
 
 - **The central bridge's WebSocket reader reconnects promptly and bounds

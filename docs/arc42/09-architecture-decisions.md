@@ -4081,8 +4081,15 @@ The console is the operators' view of the bus itself.
      (ADR-014 point 13). Followed further (A coordinates B, B gave C a
      task) to a depth of two, with a mark where it is cut: the transitive
      edge is the console's reading, not a fact of the bus.
-   - **Off at the start:** member of (agent → the channels it posts or
-     claims in), and asks (agent → the human asked, open asks only).
+   - **Member of and asks** (shown since #145, the kinds of the design
+     the owner picked): agent → its home, agent → each guest channel the
+     graph's edges name (the cards carry only the home), and open ask →
+     its agent, with the human asked → the ask.
+   - **Live** (#145): the cards and the open asks the app already holds
+     change the graph in place. A changed state recolours its node; an
+     agent or an ask that comes or goes adds or removes a node, and only
+     then does the layout run again, with the nodes that stay where they
+     were and the view not moved.
 
    State, crown and ask marks sit on the nodes as on the cards; a click
    opens the same detail.
@@ -4222,8 +4229,13 @@ The console is the operators' view of the bus itself.
     - **Browser:** React with TypeScript, built with Vite, as `site/`
       already is: the toolchain and its CI job exist in this repository.
       Charts and the graph's layout from open-source libraries rather than
-      drawn by hand (candidates, not evaluated: Apache ECharts,
-      Cytoscape.js).
+      drawn by hand. The graph is React Flow (`@xyflow/react`, MIT; the
+      owner's pick after a comparison of eight, #145), laid out by dagre
+      in fixed columns (you, asks, agents, channels): small, synchronous
+      and deterministic, which suits tens of nodes laid out again only
+      when the set of nodes or edges changes; elkjs is a large
+      asynchronous dependency for no gain at this size, and a force
+      layout keeps moving the nodes a live update must leave in place.
     - **Server:** Python, if `natsbus.py` runs with a person's credential
       (point 13; open point 6). The transport, the message format and the
       rules for who is reachable, which ask is open and how `STATS` lines

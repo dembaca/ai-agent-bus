@@ -118,6 +118,14 @@ export function App({ api }: { api: ConsoleApi }) {
     const timer = setInterval(loadAsks, 30_000)
     return () => { clearInterval(timer) }
   }, [loadAsks])
+  // An ask opens or closes between those reads: when an agent comes, goes or
+  // states a different number of open asks, the asks are read at once.
+  const askMark = useRef<string | null>(null)
+  useEffect(() => {
+    const mark = cards.map((c) => `${c.name}:${c.openAsks ?? "?"}`).sort().join(",")
+    if (askMark.current !== null && askMark.current !== mark) void loadAsks()
+    askMark.current = mark
+  }, [cards, loadAsks])
 
   const openAgent = useCallback((card: AgentCard) => {
     setAgent(card)
@@ -143,7 +151,7 @@ export function App({ api }: { api: ConsoleApi }) {
       <main className="stage">
         {view === "kanban" && <Kanban cards={cards} selected={agent} onSelect={openAgent} />}
         {view === "asks" && <Asks asks={asks} onOpen={openAsk} />}
-        {view === "graph" && <GraphView api={api} onFail={fail} />}
+        {view === "graph" && <GraphView api={api} cards={cards} asks={asks} onFail={fail} />}
         {view === "reports" && <Reports api={api} onFail={fail} />}
       </main>
       {(agent || ask) && (

@@ -2,7 +2,8 @@
 // serve (ADR-015 point 10), on data shaped like today's bus, so the app can
 // be built and shown before the server exists. It changes on its own —
 // presence beats and turn ends are seconds apart at this scale — so the
-// Kanban moves without a backend.
+// Kanban and the graph view move without a backend: states change, an agent
+// joins and leaves, an ask opens and closes.
 //
 // The operator of this console is "dembaca" (Ask.forMe / mayAnswer are
 // relative to that name).
@@ -297,10 +298,46 @@ const cycle: Record<string, AgentState[]> = {
 }
 const step = {i: 0}
 
+// The graph view's live changes (#145): an agent joins and later leaves, an
+// ask opens and later closes. Ticks of 4 s: the visitor is on the bus for
+// ticks 4 to 11 of every 16; the live ask opens at tick 10 and alternates
+// open and answered every 10 ticks after (the Asks view polls every 30 s,
+// so it sees both).
+const VISITOR_FROM = 4
+const VISITOR_UNTIL = 12
+const VISITOR_PERIOD = 16
+const ASK_PERIOD = 10
+export const visitorPresent = (i: number): boolean =>
+  i % VISITOR_PERIOD >= VISITOR_FROM && i % VISITOR_PERIOD < VISITOR_UNTIL
+export const liveAskEnd = (i: number): Ask["end"] | null =>
+  i < ASK_PERIOD ? null : Math.floor(i / ASK_PERIOD) % 2 === 1 ? "open" : "answered"
+
+const visitor = (): CardWire => ({
+  name: "agent-mac-ai-agent-e41a07", home: "~ai-agent-bus-dev", state: "working",
+  crown: false, harness: "cursor", model: "Composer 2",
+  task: "a short look at the console's graph view, then gone again",
+  role: "member", for: "dembaca", autonomous: false, trusts: ["dembaca"],
+  capabilities: ["git"], project: "dembaca/ai-agent-bus",
+  branch: null, pr: null, ctx: 12, limits: null, version: "0.97.0",
+  openAsks: 0, asksForOperator: 0, helloAt: now(), lastPostAt: now(),
+  tasks: [],
+})
+
+/** The asking agent of the live ask; its card counts the ask while open. */
+const LIVE_ASKER = "agent-mac-ai-agent-6d2afc"
+const liveAsk = (end: Ask["end"]): AskWire => ({
+  id: "k5w8r2n7c4x1q9m3t6v0bzjdya", by: LIVE_ASKER, home: "ai-agent-bus-dev",
+  kind: "approval", human: "dembaca",
+  need: "Run the end-to-end NATS test against the shared nats-server too?",
+  at: now() - minute, end, forMe: true, mayAnswer: true, agentGone: false,
+  threadId: "k5w8r2n7c4x1q9m3t6v0bzjdya",
+})
+
 /** The mock as a ConsoleApi. `onEvent` gets a snapshot first, then the
  * changes; the returned function stops it. */
 export function mockApi(): ConsoleApi {
   let cardsNow: AgentCard[] = withTasks(cards())
+  let askEnd: Ask["end"] | null = null
   return {
     me(): Promise<Operator> {
       // The mock's stand-in operator; the server answers from its session.
@@ -327,6 +364,28 @@ export function mockApi(): ConsoleApi {
         })
         const card = cardsNow.find((c) => c.name === name)
         if (card) emit({ type: "card", card })
+
+        // An agent joins, and later leaves (a drop, as the server sends it).
+        const present = cardsNow.some((c) => c.name === visitor().name)
+        if (visitorPresent(step.i) && !present) {
+          const [joined] = withTasks([visitor()])
+          cardsNow = cardsNow.concat(joined)
+          emit({ type: "card", card: joined })
+        } else if (!visitorPresent(step.i) && present) {
+          cardsNow = cardsNow.filter((c) => c.name !== visitor().name)
+          emit({ type: "drop", name: visitor().name })
+        }
+
+        // An ask opens, and later closes; its agent's card counts it.
+        const end = liveAskEnd(step.i)
+        if (end !== askEnd) {
+          askEnd = end
+          const open = end === "open" ? 1 : 0
+          cardsNow = cardsNow.map((c) => c.name !== LIVE_ASKER ? c
+            : { ...c, openAsks: open, asksForOperator: open })
+          const asker = cardsNow.find((c) => c.name === LIVE_ASKER)
+          if (asker) emit({ type: "card", card: asker })
+        }
       }, 4000)
       return () => { stopped = true; clearInterval(timer) }
     },
@@ -335,7 +394,8 @@ export function mockApi(): ConsoleApi {
       // one ask expired from the start. The server sends `for_me`/
       // `may_answer` (http.ts maps); the mock speaks the app's shapes, with
       // the short display name derived where the server sends it.
-      return asks().map((a): Ask => ({ ...a, displayName: short(a.by) }))
+      const all = askEnd ? [liveAsk(askEnd), ...asks()] : asks()
+      return all.map((a): Ask => ({ ...a, displayName: short(a.by) }))
     },
     async graph(): Promise<GraphData> {
       return graph()
