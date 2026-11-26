@@ -180,6 +180,13 @@ before 0.5.0 are described in the git history.
 
 ### Fixed
 
+- **The registrar's Mattermost adapter in the central bridge keeps its admin
+  token off plain `http`** (#135). It follows the rule the bridge's own
+  client and WebSocket reader got in #131: an `http` URL only to a loopback
+  host or with its `AllowHTTP` setting (the bridge's
+  `BRIDGE_MM_ALLOW_HTTP`), refused when the adapter is made and at each
+  call, and no redirect followed, so a 30x is an error. The adapter is not
+  yet active in `bridged`.
 - **A NATS home starts for an identity first seen after the directory
   import** (#86, the channel directory's anchors, RT-6.39). The login service
   gave such an identity its Keycloak `sub` as anchor, so the agent name and
@@ -212,6 +219,22 @@ before 0.5.0 are described in the git history.
 
 ### Docs
 
+- **The one operating model for the host login, documented, not built yet**
+  (the owner's decision 10, #154, step 1 of 5). The NATS decision (ADR-014) gets an amendment of
+  2026-11-26: the rule "credentials stay on the host, never in a sandbox"
+  goes; one operating model with and without corral, in which the MCP
+  server logs in itself and keeps the refresh token and the host key in
+  the system keychain or a 0600 file, under corral in the sandbox's own
+  home. The price is named: an agent can read them, and the token, its
+  human's offline token shared by all sessions on the host, yields new
+  agents of that owner with any key, but approves nothing. The keyless host
+  session (RT-6.18) and the host login (RT-6.34) say what is decided and
+  what still runs. New risks: the readable token with its planned
+  protections and what they miss, detection in the login service, an offline maximum and
+  DPoP (RISK-26), and two findings the login service review of 2026-11-22 rated high, raised again,
+  the token's binding and storage (RISK-27) and an emergency brake that
+  acts only at the next issue (RISK-28). The site's security answers say
+  what is true today and what is decided.
 - **The deployment and building block views say what runs in the lab**
   (#108). The central bridge carries people's posts and reactions onto
   NATS in the lab since 2026-11-25 (step 2, RT-6.42), and the deployment
