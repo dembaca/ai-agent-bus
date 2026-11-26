@@ -126,6 +126,13 @@ before 0.5.0 are described in the git history.
 
 ### Fixed
 
+- **Two follow-ups from the WebSocket security review** (#85, RT-6.36). The
+  login service's refusal test now asserts an authorization error and that the
+  same identity connects on the standard listener of the same rig, so a
+  listener that fails for another reason can no longer pass it. A WebSocket
+  server that answers the upgrade with a redirect is still refused before any
+  byte goes there, and the bus's log names that reason instead of leaving an
+  operator with a bare timeout.
 - **The central bridge's WebSocket reader reconnects promptly and bounds
   its handshake** (#131, people's posts onto NATS, RT-6.42). After a
   connection that held 30 s it reconnects after 1 s, not after the wait
