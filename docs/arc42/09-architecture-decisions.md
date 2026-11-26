@@ -3957,6 +3957,22 @@ Nothing of it is built.
   so no host setting has to match across hosts. Rejected: widening
   `CB_NATS_HOMES` to every NATS channel (a host setting), and everything
   at once per tenant.
+- **Decided: nothing runs outside the sandbox at the end.** Decided by
+  the owner on 2026-11-26 (ask `dhbu7xao4tbhtm8ixybr14m8fr`, option B):
+  the host-side hooks exist for three jobs, registering the bot so its
+  token stays out of the sandbox, the relay so the login's refresh token
+  stays out of it, and the signed host copy so code that runs outside the
+  sandbox cannot be written from inside. The plan takes all three away:
+  no bot, the refresh token may sit with the agent (the theft guard,
+  #154, protects it, as decision 10 meant), and with nothing running
+  outside there is no boundary left to guard. So the relay and the
+  signed host copy go with the last piece; until then they keep doing
+  their jobs. Everything an agent may do is enforced by the login
+  service and NATS, so an agent that changes its own plugin code harms
+  only itself. That a release is genuine stays the console's check of
+  the release signature when its pin moves (#192). The host key then
+  lives in the sandbox too; the theft guard is what notices a copy.
+  Rejected: keeping both, and keeping only the host copy.
 - **Two bots of one agent.** "The agent's own bot" names two accounts
   during the move: the registrar's bot, made per session, whose token
   the MCP server holds; and the bridge's bot `<prefix><NATS name>`
@@ -4194,12 +4210,11 @@ Nothing of it is built.
       - Moves: the plugin no longer registers a session whose every
         channel, the home, the guest channels, the lobby and the stats
         channel, runs over NATS with every piece on. A session with any
-        channel on Mattermost registers as before. Proposed, subject to
-        the owner's ask on the relay and the host copy (open decision 1):
-        the start hook decides per session and stays, with the relay,
-        until the shutdown (phase 6), so what the amendment on the host
-        login lets go "with the end of the registrar" goes with that
-        shutdown, not with a single session's end of registration.
+        channel on Mattermost registers as before. The start hook
+        decides per session; it, the relay and the signed host copy go
+        once no session needs them, with this piece switched on for
+        every home (the owner's decision above), at the latest with the
+        shutdown (phase 6).
       - The session's own identity: the bot's Mattermost id and name
         (`_bot_id`, `_bot_name`, `ownpost.py`, `unanswered.py`) give way
         to the NATS name, which keys the kept state since the roster
@@ -4254,20 +4269,12 @@ Nothing of it is built.
     owner's choice of plan B directly, bus post
     `ukt76r9rijgyfewcy8rs9ii4mc`).
 - **Open for the owner**, each its own ask, one at a time:
-  1. Whether the keyless relay and the signed host copy stay after the
-     end of registration. The amendment on the host login lets them go
-     with it; but the release record moves to the bridge before (#151
-     step 4), and the owner's choice on the console's marketplace (#192:
-     the console checks the signature, a host may keep the signed host
-     copy) keeps the host copy as an option. Asked of the owner on
-     2026-11-26 (ask `dhbu7xao4tbhtm8ixybr14m8fr`); recommended: keep
-     both.
-  2. The name of the bridge's address for the signed records and the
+  1. The name of the bridge's address for the signed records and the
      release record: `MM_REGISTER_URL` today, a `CB_` name then. Not asked
      yet.
-  3. Whether hosts keep `MM_REG_SECRET` after the plugin stops reading
+  2. Whether hosts keep `MM_REG_SECRET` after the plugin stops reading
      it, and how long; proposed: two weeks. Not asked yet.
-  4. How the login approval reaches the human once no agent has a bot:
+  3. How the login approval reaches the human once no agent has a bot:
      today the MCP server sends it by DM under the agent's bot
      (`login_notice.py`, RT-6.34) before the session has NATS
      credentials. Not asked yet.
@@ -4277,8 +4284,8 @@ Nothing of it is built.
   agents only through the bridge (RISK-21, RISK-36): a home over NATS never
   falls back to Mattermost for a send (RT-6.36), so a bridge outage leaves
   its people without the agents until the bridge is back. After the end of
-  registration the sandbox still holds the refresh token and the host key
-  (RISK-26).
+  registration the refresh token and the host key live in the sandbox
+  (RISK-26), by the owner's decision; nothing of the bus runs outside it.
 - **Not part of this plan:** the slash commands with their signed records
   and the release record (#151 steps 3 and 4), which run beside it and
   which the acceptance needs; the shutdown itself (phase 6); several
