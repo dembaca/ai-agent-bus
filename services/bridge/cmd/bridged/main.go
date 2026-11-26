@@ -23,6 +23,7 @@ import (
 
 	"github.com/nats-io/nats.go"
 
+	"github.com/dembaca/ai-agent-bus/services/bridge/internal/agentbots"
 	"github.com/dembaca/ai-agent-bus/services/bridge/internal/config"
 	"github.com/dembaca/ai-agent-bus/services/bridge/internal/inbound"
 	"github.com/dembaca/ai-agent-bus/services/bridge/internal/links"
@@ -31,6 +32,7 @@ import (
 	"github.com/dembaca/ai-agent-bus/services/bridge/internal/mmws"
 	"github.com/dembaca/ai-agent-bus/services/bridge/internal/presence"
 	"github.com/dembaca/ai-agent-bus/services/bridge/internal/reader"
+	"github.com/dembaca/ai-agent-bus/services/bridge/internal/registrar/mattermost"
 	"github.com/dembaca/ai-agent-bus/services/bridge/internal/store"
 )
 
@@ -71,6 +73,10 @@ func run(log *slog.Logger) error {
 	// `shown_as` needs the presence of the names and the home's roster; without
 	// presences the bridge runs as before, naming the NATS name.
 	snapshot := presence.New()
+	bots, err := agentBots(ctx, cfg, snapshot, log)
+	if err != nil {
+		return err
+	}
 	h := &health{}
 	var wg sync.WaitGroup
 	pr := &presence.Reader{Log: log, Deliver: cfg.Deliver + ".presence", Into: snapshot}
@@ -88,10 +94,12 @@ func run(log *slog.Logger) error {
 		cid := channelOnce(cfg.MMTeam, home, client)
 		lk := &links.Resolver{Presence: snapshot, Roster: roster{client: client, cid: cid},
 			Window: 90 * time.Second, TTL: 30 * time.Second}
+		mr := &mirror.Mirror{Home: home, Prefix: cfg.Prefix, Log: log, Sink: client, Store: kv, Links: lk}
+		if bots != nil {
+			mr.Bots = bots
+		}
 		r := &reader.Reader{Home: home, Deliver: cfg.Deliver + "." + home, Stream: cfg.NATSStream,
-			Log: log, Store: kv, Prefix: cfg.BusPrefix, PropsPrefix: cfg.Prefix,
-			Mirror: &mirror.Mirror{Home: home, Prefix: cfg.Prefix, Log: log, Sink: client, Store: kv,
-				Links: lk}}
+			Log: log, Store: kv, Prefix: cfg.BusPrefix, PropsPrefix: cfg.Prefix, Mirror: mr}
 		r.Stuck = h.stuckOn
 		wg.Add(1)
 		go func() {
@@ -132,6 +140,9 @@ func run(log *slog.Logger) error {
 	}()
 	in := &inbound.Bridge{Homes: cfg.Homes, Team: cfg.MMTeam, BusPrefix: cfg.BusPrefix, Log: log,
 		MM: client, NATS: inbound.Confirmed{NC: nc}, Store: kv, Seen: seen, Anchors: accounts, Events: ws.Events(), Up: ws.Up}
+	if bots != nil {
+		in.BotPrefix = cfg.BotPrefix
+	}
 	go func() {
 		defer wg.Done()
 		_ = in.Run(ctx)
@@ -154,6 +165,27 @@ func run(log *slog.Logger) error {
 		return errors.New("a home stopped; the bridge exits so the supervisor restarts it")
 	}
 	return nil
+}
+
+// agentBots is the agents' own bots (RT-6.44) when BRIDGE_MM_ADMIN_TOKEN_FILE
+// is set, after the start checks; nil keeps the one bridge bot.
+func agentBots(ctx context.Context, cfg config.Config, snapshot *presence.Snapshot,
+	log *slog.Logger) (*agentbots.Bots, error) {
+	if cfg.AdminToken == "" {
+		return nil, nil
+	}
+	adm, err := mattermost.New(mattermost.Config{URL: cfg.MMURL, AllowHTTP: cfg.MMAllowHTTP,
+		Token: cfg.AdminToken, Team: cfg.MMTeam, HideBotDM: cfg.HideBotDM,
+		TokenDescription: agentbots.TokenDescription}, log)
+	if err != nil {
+		return nil, err
+	}
+	bots := &agentbots.Bots{Admin: adm, Presence: snapshot, Prefix: cfg.BotPrefix, URL: cfg.MMURL, Log: log}
+	if err := bots.Check(ctx, cfg.MMToken); err != nil {
+		return nil, err
+	}
+	log.Info("bridge: the agents' copies go under their own bots", "prefix", cfg.BotPrefix)
+	return bots, nil
 }
 
 // connect is the bridge's own NATS user: it reads the bus and publishes only

@@ -99,12 +99,16 @@ type Bot struct {
 	UserID      string `json:"user_id"`
 	Username    string `json:"username"`
 	DisplayName string `json:"display_name"`
+	Description string `json:"description"`
+	OwnerID     string `json:"owner_id"`
 }
 
 // AccessToken is a user access token.
 type AccessToken struct {
-	Token string `json:"token"`
-	ID    string `json:"id"`
+	Token       string `json:"token"`
+	ID          string `json:"id"`
+	Description string `json:"description"`
+	IsActive    bool   `json:"is_active"`
 }
 
 // Preference is a Mattermost user preference.
@@ -405,6 +409,43 @@ func (m *Adapter) RevokeAgent(ctx context.Context, a core.Agent) error {
 		}
 	}
 	return m.do(ctx, http.MethodPost, "/api/v4/bots/"+url.PathEscape(a.ID)+"/disable", nil, m.Cfg.Token, nil)
+}
+
+// Account reads the account a token belongs to, with its roles: the
+// bridge's start checks of its admin and posting bots (RT-6.44).
+func (m *Adapter) Account(ctx context.Context, token string) (User, error) {
+	var u User
+	err := m.do(ctx, http.MethodGet, "/api/v4/users/me", nil, token, &u)
+	return u, err
+}
+
+// BotOf reads the bot account with user id id; nil when there is none
+// (a person's account, or a disabled bot).
+func (m *Adapter) BotOf(ctx context.Context, id string) (*Bot, error) {
+	var b Bot
+	if err := m.do(ctx, http.MethodGet, "/api/v4/bots/"+url.PathEscape(id), nil, m.Cfg.Token, &b); err != nil {
+		if isNotFound(err) {
+			return nil, nil
+		}
+		return nil, err
+	}
+	return &b, nil
+}
+
+// RevokeIssued revokes the agent's active tokens this adapter minted (their
+// description is Cfg.TokenDescription); other tokens stay.
+func (m *Adapter) RevokeIssued(ctx context.Context, a core.Agent) error {
+	var tokens []AccessToken
+	if err := m.do(ctx, http.MethodGet, "/api/v4/users/"+url.PathEscape(a.ID)+"/tokens?per_page=200", nil, m.Cfg.Token, &tokens); err != nil {
+		return err
+	}
+	var errs []error
+	for _, t := range tokens {
+		if t.IsActive && t.Description == m.Cfg.TokenDescription {
+			errs = append(errs, m.do(ctx, http.MethodPost, "/api/v4/users/tokens/revoke", map[string]string{"token_id": t.ID}, m.Cfg.Token, nil))
+		}
+	}
+	return errors.Join(errs...)
 }
 
 // HideBotDirectChannel hides the admin↔bot DM from the registrar account's sidebar.

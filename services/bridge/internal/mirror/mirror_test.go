@@ -214,3 +214,55 @@ func TestReactionsMapToTheMirroredPost(t *testing.T) {
 		t.Fatalf("unknown ref: %+v %+v", sink.reacted, sink.posts)
 	}
 }
+
+// fakeBots gives agent-a its own bot; everyone else posts with the bridge bot.
+type fakeBots struct {
+	own    map[string]*fakeSink
+	forgot []string
+}
+
+func (f *fakeBots) Bot(_ context.Context, name, _ string) Sink {
+	if s, ok := f.own[name]; ok {
+		return s
+	}
+	return nil
+}
+func (f *fakeBots) Forget(name string) { f.forgot = append(f.forgot, name) }
+
+// RT-6.44: with agent bots on, a sender's post goes under its own bot,
+// without the attribution line and with nats_id and shown_as; a sender
+// without one posts with the bridge bot as before. Its reactions go under its
+// own bot, one each.
+func TestTheMirrorPostsUnderTheSendersOwnBot(t *testing.T) {
+	m, bridge, _ := newMirror(t)
+	own := &fakeSink{}
+	m.Bots = &fakeBots{own: map[string]*fakeSink{"agent-a": own}}
+	ctx := context.Background()
+	if err := m.Handle(ctx, channel, "agent-a", 2, message.Msg{Kind: message.Post, Text: "hi @channel"}); err != nil {
+		t.Fatal(err)
+	}
+	if err := m.Handle(ctx, channel, "agent-b", 3, message.Msg{Kind: message.Post, Text: "hello"}); err != nil {
+		t.Fatal(err)
+	}
+	if len(own.posts) != 1 || len(bridge.posts) != 1 {
+		t.Fatalf("own %+v, bridge %+v", own.posts, bridge.posts)
+	}
+	if own.posts[0].text != "hi @\u200bchannel" {
+		t.Fatalf("own text %q", own.posts[0].text)
+	}
+	if own.posts[0].props["a2a.nats_id"] != "n1:home:2" || own.posts[0].props["a2a.shown_as"] != "agent-a" {
+		t.Fatalf("own props %+v", own.posts[0].props)
+	}
+	if bridge.posts[0].text != SenderMark+"**agent-b**\n\nhello" || bridge.posts[0].props["a2a.nats_id"] != "n1:home:3" {
+		t.Fatalf("fallback %+v", bridge.posts[0])
+	}
+	ref := uint64(3)
+	for i, k := range []message.Kind{message.Reaction, message.Unreaction} {
+		if err := m.Handle(ctx, channel, "agent-a", uint64(4+i), message.Msg{Kind: k, Ref: &ref, Emoji: "eyes"}); err != nil {
+			t.Fatal(err)
+		}
+	}
+	if len(own.reacted) != 1 || own.reacted[0] != "mm1/eyes" || len(own.unreacted) != 1 || len(bridge.reacted) != 0 {
+		t.Fatalf("own %v/%v, bridge %v", own.reacted, own.unreacted, bridge.reacted)
+	}
+}

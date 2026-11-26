@@ -1,0 +1,344 @@
+package agentbots
+
+import (
+	"context"
+	"encoding/json"
+	"fmt"
+	"io"
+	"log/slog"
+	"net/http"
+	"net/http/httptest"
+	"strings"
+	"sync"
+	"testing"
+	"time"
+
+	"github.com/dembaca/ai-agent-bus/services/bridge/internal/presence"
+	"github.com/dembaca/ai-agent-bus/services/bridge/internal/registrar/mattermost"
+)
+
+// fakeMM is the part of Mattermost's API the bot management and a bot's
+// own client use (RT-6.44).
+type fakeMM struct {
+	mu      sync.Mutex
+	srv     *httptest.Server
+	users   map[string]map[string]any // by id: id, username, is_bot, roles
+	bots    map[string]map[string]any // by user id: description, owner_id
+	tokens  map[string][]map[string]any
+	byToken map[string]string // token -> user id
+	members map[string][]string
+	created int
+	revoked []string
+	posts   []map[string]any
+	seq     int
+}
+
+func newFake(t *testing.T) *fakeMM {
+	f := &fakeMM{users: map[string]map[string]any{}, bots: map[string]map[string]any{},
+		tokens: map[string][]map[string]any{}, byToken: map[string]string{}, members: map[string][]string{}}
+	f.users["admin"] = map[string]any{"id": "admin", "username": "bus-admin", "is_bot": true, "roles": "system_user system_admin"}
+	f.users["poster"] = map[string]any{"id": "poster", "username": "bridge", "is_bot": true, "roles": "system_user"}
+	f.users["alice"] = map[string]any{"id": "alice", "username": "alice.x", "roles": "system_user"}
+	f.users["bob"] = map[string]any{"id": "bob", "username": "bob", "roles": "system_user"}
+	f.byToken["admin-token"], f.byToken["post-token"] = "admin", "poster"
+	f.srv = httptest.NewServer(http.HandlerFunc(f.serve))
+	t.Cleanup(f.srv.Close)
+	return f
+}
+
+func (f *fakeMM) serve(w http.ResponseWriter, r *http.Request) {
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	caller := f.byToken[strings.TrimPrefix(r.Header.Get("Authorization"), "Bearer ")]
+	if caller == "" {
+		w.WriteHeader(http.StatusUnauthorized)
+		return
+	}
+	var body map[string]any
+	_ = json.NewDecoder(r.Body).Decode(&body)
+	p := strings.Split(strings.TrimPrefix(r.URL.Path, "/api/v4/"), "/")
+	out := func(v any) { _ = json.NewEncoder(w).Encode(v) }
+	key := r.Method + " " + strings.Join(p, "/")
+	switch {
+	case key == "GET users/me":
+		out(f.users[caller])
+	case r.Method == "GET" && len(p) == 3 && p[0] == "users" && p[1] == "username":
+		for _, u := range f.users {
+			if u["username"] == p[2] {
+				out(u)
+				return
+			}
+		}
+		w.WriteHeader(http.StatusNotFound)
+	case key == "POST bots":
+		f.seq++
+		id := fmt.Sprintf("bot%d", f.seq)
+		f.created++
+		f.users[id] = map[string]any{"id": id, "username": body["username"], "is_bot": true, "roles": "system_user"}
+		f.bots[id] = map[string]any{"user_id": id, "username": body["username"], "description": body["description"], "owner_id": caller}
+		out(f.bots[id])
+	case r.Method == "GET" && len(p) == 2 && p[0] == "bots":
+		if b, ok := f.bots[p[1]]; ok {
+			out(b)
+			return
+		}
+		w.WriteHeader(http.StatusNotFound)
+	case r.Method == "POST" && len(p) == 4 && p[0] == "bots" && p[2] == "assign":
+		f.bots[p[1]]["owner_id"] = p[3]
+		out(f.bots[p[1]])
+	case key == "POST users/tokens/revoke":
+		id := body["token_id"].(string)
+		f.revoked = append(f.revoked, id)
+		for _, ts := range f.tokens {
+			for _, t := range ts {
+				if t["id"] == id {
+					t["is_active"] = false
+					delete(f.byToken, t["token"].(string))
+				}
+			}
+		}
+	case len(p) == 3 && p[0] == "users" && p[2] == "tokens" && r.Method == "GET":
+		var list []map[string]any
+		for _, t := range f.tokens[p[1]] {
+			list = append(list, map[string]any{"id": t["id"], "description": t["description"], "is_active": t["is_active"]})
+		}
+		out(list)
+	case len(p) == 3 && p[0] == "users" && p[2] == "tokens" && r.Method == "POST":
+		f.seq++
+		tok := map[string]any{"id": fmt.Sprintf("tid%d", f.seq), "token": fmt.Sprintf("tok%d", f.seq),
+			"description": body["description"], "is_active": true}
+		f.tokens[p[1]] = append(f.tokens[p[1]], tok)
+		f.byToken[tok["token"].(string)] = p[1]
+		out(tok)
+	case key == "GET teams/name/team":
+		out(map[string]any{"id": "tid"})
+	case key == "POST teams/tid/members":
+		out(map[string]any{})
+	case r.Method == "GET" && len(p) == 5 && p[2] == "channels" && p[3] == "name":
+		out(map[string]any{"id": "c-" + p[4], "type": "O"})
+	case r.Method == "POST" && len(p) == 3 && p[0] == "channels" && p[2] == "members":
+		f.members[p[1]] = append(f.members[p[1]], body["user_id"].(string))
+		out(map[string]any{})
+	case key == "PUT users/me/preferences", key == "POST channels/members/me/view":
+		out(map[string]any{})
+	case key == "POST channels/direct":
+		out(map[string]any{"id": "dm", "type": "D"})
+	case key == "POST posts":
+		body["user_id"] = caller
+		f.posts = append(f.posts, body)
+		out(map[string]any{"id": fmt.Sprintf("p%d", len(f.posts))})
+	default:
+		w.WriteHeader(http.StatusNotImplemented)
+	}
+}
+
+func quiet() *slog.Logger { return slog.New(slog.NewTextHandler(io.Discard, nil)) }
+
+func newBots(t *testing.T, f *fakeMM, snap *presence.Snapshot) *Bots {
+	t.Helper()
+	adm, err := mattermost.New(mattermost.Config{URL: f.srv.URL, Token: "admin-token", Team: "team",
+		HideBotDM: true, TokenDescription: TokenDescription}, quiet())
+	if err != nil {
+		t.Fatal(err)
+	}
+	b := &Bots{Admin: adm, Presence: snap, Prefix: "bb-", URL: f.srv.URL, Log: quiet()}
+	if err := b.Check(context.Background(), "post-token"); err != nil {
+		t.Fatal(err)
+	}
+	return b
+}
+
+func aliceAgent() *presence.Snapshot {
+	s := presence.New()
+	s.Observed("agent-a", "alice~x", "", presence.Online, time.Now())
+	return s
+}
+
+// RT-6.44: the bot is created once, owned by the presence owner, joined to
+// the home, and posts with a token of its own; after a restart the bridge
+// finds it, mints a new token and revokes the earlier one.
+func TestABotIsCreatedOnceAndFoundAfterARestart(t *testing.T) {
+	f := newFake(t)
+	ctx := context.Background()
+	b := newBots(t, f, aliceAgent())
+	s := b.Bot(ctx, "agent-a", "home")
+	if s == nil {
+		t.Fatal("no bot")
+	}
+	if b.Bot(ctx, "agent-a", "home") != s {
+		t.Fatal("a second use set the bot up again")
+	}
+	if _, err := s.Create(ctx, "c-home", "hi", "", map[string]any{"x_nats_id": "n1:home:1"}); err != nil {
+		t.Fatal(err)
+	}
+	f.mu.Lock()
+	bot := f.bots["bot1"]
+	if f.created != 1 || bot["username"] != "bb-agent-a" || bot["owner_id"] != "alice" ||
+		!strings.HasPrefix(bot["description"].(string), Marker) {
+		t.Fatalf("created %d: %v", f.created, bot)
+	}
+	if f.posts[0]["user_id"] != "bot1" {
+		t.Fatalf("posted as %v", f.posts[0]["user_id"])
+	}
+	first := f.tokens["bot1"][0]["id"]
+	f.mu.Unlock()
+
+	restarted := newBots(t, f, aliceAgent())
+	if restarted.Bot(ctx, "agent-a", "home") == nil {
+		t.Fatal("the bot was not found after a restart")
+	}
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	if f.created != 1 {
+		t.Fatalf("created again: %d", f.created)
+	}
+	if len(f.revoked) != 1 || f.revoked[0] != first || len(f.tokens["bot1"]) != 2 {
+		t.Fatalf("revoked %v, tokens %v", f.revoked, f.tokens["bot1"])
+	}
+}
+
+// RT-6.44: a token of the bot that the bridge did not mint is kept.
+func TestOnlyTheBridgesEarlierTokensAreRevoked(t *testing.T) {
+	f := newFake(t)
+	ctx := context.Background()
+	newBots(t, f, aliceAgent()).Bot(ctx, "agent-a", "home")
+	f.mu.Lock()
+	f.tokens["bot1"] = append(f.tokens["bot1"], map[string]any{"id": "other", "token": "x", "description": "someone's", "is_active": true})
+	f.mu.Unlock()
+	newBots(t, f, aliceAgent()).Bot(ctx, "agent-a", "home")
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	if len(f.revoked) != 1 || f.revoked[0] == "other" {
+		t.Fatalf("revoked %v", f.revoked)
+	}
+}
+
+// RT-6.44: the bot joins each home once, on its first use there.
+func TestTheBotJoinsEachHomeOnce(t *testing.T) {
+	f := newFake(t)
+	ctx := context.Background()
+	b := newBots(t, f, aliceAgent())
+	for _, h := range []string{"home", "home", "other"} {
+		if b.Bot(ctx, "agent-a", h) == nil {
+			t.Fatal("no bot")
+		}
+	}
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	if len(f.members["c-home"]) != 1 || len(f.members["c-other"]) != 1 || len(f.tokens["bot1"]) != 1 {
+		t.Fatalf("members %v, tokens %v", f.members, f.tokens["bot1"])
+	}
+}
+
+// RT-6.44: a bot of that name the bridge did not make, or that another
+// person owns, is never posted with: the bridge bot posts instead.
+func TestAForeignBotOfTheSameNameGivesTheFallback(t *testing.T) {
+	ctx := context.Background()
+	for _, tc := range []struct {
+		name string
+		bot  map[string]any // nil: a person's account
+	}{
+		{"unmarked", map[string]any{"description": "someone's bot", "owner_id": "alice"}},
+		{"another owner", map[string]any{"description": Marker + "agent-a", "owner_id": "bob"}},
+		{"a person", nil},
+	} {
+		f := newFake(t)
+		f.users["x"] = map[string]any{"id": "x", "username": "bb-agent-a", "is_bot": tc.bot != nil}
+		if tc.bot != nil {
+			f.bots["x"] = tc.bot
+		}
+		b := newBots(t, f, aliceAgent())
+		if b.Bot(ctx, "agent-a", "home") != nil {
+			t.Errorf("%s: posted with it", tc.name)
+		}
+		if f.created != 0 || len(f.tokens["x"]) != 0 {
+			t.Errorf("%s: created %d, tokens %v", tc.name, f.created, f.tokens["x"])
+		}
+	}
+}
+
+// RT-6.44: without a presence there is no owner to bind: the bridge bot
+// posts, and the bot is made once the presence is there.
+func TestUnknownPresenceGivesTheFallback(t *testing.T) {
+	f := newFake(t)
+	ctx := context.Background()
+	snap := presence.New()
+	snap.Observed("agent-n", "-", "", presence.Online, time.Now())
+	b := newBots(t, f, snap)
+	if b.Bot(ctx, "agent-a", "home") != nil || b.Bot(ctx, "agent-n", "home") != nil || f.created != 0 {
+		t.Fatal("a bot without a known owner")
+	}
+	snap.Observed("agent-a", "alice~x", "", presence.Online, time.Now())
+	if b.Bot(ctx, "agent-a", "home") == nil {
+		t.Fatal("no bot once the presence is known")
+	}
+}
+
+// RT-6.44: a failure falls back and is not tried again within the backoff;
+// Forget does the same after Mattermost failed a post.
+func TestAFailureBacksOffPerName(t *testing.T) {
+	f := newFake(t)
+	ctx := context.Background()
+	now := time.Unix(1000, 0)
+	b := newBots(t, f, aliceAgent())
+	b.Now = func() time.Time { return now }
+	delete(f.users, "alice") // the owner cannot be resolved
+	if b.Bot(ctx, "agent-a", "home") != nil {
+		t.Fatal("a bot without its owner")
+	}
+	f.users["alice"] = map[string]any{"id": "alice", "username": "alice.x"}
+	if b.Bot(ctx, "agent-a", "home") != nil {
+		t.Fatal("tried again within the backoff")
+	}
+	now = now.Add(DefaultBackoff)
+	if b.Bot(ctx, "agent-a", "home") == nil {
+		t.Fatal("not tried again after the backoff")
+	}
+	b.Forget("agent-a")
+	if b.Bot(ctx, "agent-a", "home") != nil {
+		t.Fatal("a forgotten bot was used within the backoff")
+	}
+}
+
+// RT-6.44: many posts of a new agent at once make one bot.
+func TestOneCreationPerNameAtATime(t *testing.T) {
+	f := newFake(t)
+	b := newBots(t, f, aliceAgent())
+	var wg sync.WaitGroup
+	for i := 0; i < 8; i++ {
+		wg.Add(1)
+		go func() { defer wg.Done(); b.Bot(context.Background(), "agent-a", "home") }()
+	}
+	wg.Wait()
+	if f.created != 1 || len(f.tokens["bot1"]) != 1 {
+		t.Fatalf("created %d, tokens %v", f.created, f.tokens["bot1"])
+	}
+}
+
+// RT-6.44: the start refuses an admin account that is no bot with
+// system_admin, and a posting bot with system_admin.
+func TestTheStartChecks(t *testing.T) {
+	for _, tc := range []struct {
+		name         string
+		admin, poser string // roles
+		adminBot     bool
+		ok           bool
+	}{
+		{"as configured", "system_user system_admin", "system_user", true, true},
+		{"the admin is no bot", "system_user system_admin", "system_user", false, false},
+		{"the admin has no system_admin", "system_user", "system_user", true, false},
+		{"the posting bot has system_admin", "system_user system_admin", "system_user system_admin", true, false},
+	} {
+		f := newFake(t)
+		f.users["admin"]["roles"], f.users["admin"]["is_bot"] = tc.admin, tc.adminBot
+		f.users["poster"]["roles"] = tc.poser
+		adm, err := mattermost.New(mattermost.Config{URL: f.srv.URL, Token: "admin-token", Team: "team"}, quiet())
+		if err != nil {
+			t.Fatal(err)
+		}
+		err = (&Bots{Admin: adm}).Check(context.Background(), "post-token")
+		if (err == nil) != tc.ok {
+			t.Errorf("%s: %v", tc.name, err)
+		}
+	}
+}

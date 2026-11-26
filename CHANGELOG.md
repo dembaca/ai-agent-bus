@@ -5,6 +5,10 @@ before 0.5.0 are described in the git history.
 
 ## Unreleased
 
+### Added
+
+- **The central bridge can post each agent's copies under the agent's own Mattermost bot** (#151 step 1, RT-6.44). Off by default; with `BRIDGE_MM_ADMIN_TOKEN_FILE` (an admin bot of its own with `system_admin`, its token a separate file used only by the bot management) and `BRIDGE_BOT_PREFIX`, the bridge finds or creates `<prefix><NATS name>`, owned by the agent's presence owner and marked as the bridge's, mints its token in memory at first use after each start (revoking its earlier ones), joins it to the home and posts that agent's copies and reactions under it without the attribution line, `nats_id` kept; on any failure the one bridge bot posts as before. Its signal then names `bot_prefix`. `BRIDGE_HIDE_BOT_DM` (default true) hides the admin bot's welcome DMs. The bridge refuses to start when the admin token is the posting token, the admin account is no bot with `system_admin`, or the posting bot has `system_admin`. Turn it on only after the hosts run a release with #159 (agents dropping copies under their own bots), or every agent reads each NATS post twice; the bridge's prefix must differ from the registrar's `BOT_USERNAME_PREFIX`.
+
 ### Changed
 
 - **The central bridge logs one INFO line per person post, reaction or removal of a reaction it carries onto NATS** (#134, RT-6.42): `inbound: carried` with the home, `what` (`post`, `reaction` or `unreaction`), the Mattermost post id and the subject, no text and no name beyond the anchor.

@@ -60,6 +60,13 @@ func New(baseURL, token string) *Client {
 		http: &http.Client{Timeout: 20 * time.Second, CheckRedirect: netloc.NoRedirect}}
 }
 
+// As sets the bot's user id when the caller knows it (an agent's own bot,
+// RT-6.44), so Me makes no call and the client is safe to share.
+func (c *Client) As(userID string) *Client {
+	c.me = userID
+	return c
+}
+
 // Me resolves the bot's own user id, which a reaction needs.
 func (c *Client) Me(ctx context.Context) (string, error) {
 	if c.me != "" {

@@ -233,6 +233,12 @@ type rig struct {
 
 func newRig(t *testing.T, seen Seen) *rig {
 	t.Helper()
+	return newRigWith(t, seen, nil)
+}
+
+// newRigWith sets the bridge up with set before it runs.
+func newRigWith(t *testing.T, seen Seen, set func(*Bridge)) *rig {
+	t.Helper()
 	l := newLab(t)
 	r := &rig{lab: l, mm: newFakeMM(t), events: make(chan mmws.Event)}
 	if seen == nil {
@@ -241,6 +247,9 @@ func newRig(t *testing.T, seen Seen) *rig {
 	r.b = &Bridge{Homes: []string{"home"}, Team: "team", BusPrefix: "bus", Log: quiet(),
 		MM: mm.New(r.mm.srv.URL, "tok"), NATS: Confirmed{NC: l.nc}, Store: l.kv, Seen: seen, Anchors: l.acc,
 		Events: r.events, Up: r.up.Load, SignalEvery: 50 * time.Millisecond, Retry: 50 * time.Millisecond}
+	if set != nil {
+		set(r.b)
+	}
 	ctx, cancel := context.WithCancel(context.Background())
 	done := make(chan struct{})
 	go func() { _ = r.b.Run(ctx); close(done) }()
@@ -559,6 +568,23 @@ func (f *flakySeen) SetReactions(ctx context.Context, p string, k map[string]str
 		return errFull
 	}
 	return f.inner.SetReactions(ctx, p, k)
+}
+
+// RT-6.44 (RT-6.42 step 7): the signal names bot_prefix only while the
+// agents' own bots are on; hosts before that release refuse the field.
+func TestTheSignalNamesTheBotPrefixOnlyWhileOn(t *testing.T) {
+	for _, prefix := range []string{"", "bb-"} {
+		r := newRigWith(t, nil, func(b *Bridge) { b.BotPrefix = prefix })
+		r.connect(1)
+		var sig map[string]any
+		if err := json.Unmarshal(waitSignal(t, r.sig).Data, &sig); err != nil {
+			t.Fatal(err)
+		}
+		got, has := sig["bot_prefix"]
+		if has != (prefix != "") || (has && got != prefix) {
+			t.Fatalf("prefix %q: signal %v", prefix, sig)
+		}
+	}
 }
 
 func waitSignal(t *testing.T, ch chan *nats.Msg) *nats.Msg {

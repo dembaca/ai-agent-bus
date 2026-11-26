@@ -1,6 +1,7 @@
 // Package mirror turns NATS bus messages of a home into Mattermost posts with
-// the bridge's own bot, one way (RT-6.36, ADR-016 point 4): the NATS side
-// stays the source of truth, the mirror is for people.
+// the bridge's own bot, or each agent's own bot where that is on (RT-6.44),
+// one way (RT-6.36, ADR-016 point 4): the NATS side stays the source of
+// truth, the mirror is for people.
 //
 // Every mirrored post carries the NATS id in its props, so an agent's MCP
 // server drops it on read instead of reading it twice. A message already in
@@ -87,6 +88,15 @@ type LinksNone struct{}
 // ShownAs implements Links.
 func (LinksNone) ShownAs(context.Context, string) (string, error) { return "", nil }
 
+// Bots gives an agent its own Mattermost bot to post and react with
+// (RT-6.44, internal/agentbots); nil means the one bridge bot.
+type Bots interface {
+	Bot(ctx context.Context, name, home string) Sink
+	// Forget drops a bot's client after Mattermost failed it, so the next
+	// use finds the bot and mints its token again.
+	Forget(name string)
+}
+
 // Mirror mirrors messages of one home.
 type Mirror struct {
 	Home   string // the home's channel name, for the NATS subject and the id
@@ -95,6 +105,7 @@ type Mirror struct {
 	Sink   Sink
 	Store  Store
 	Links  Links
+	Bots   Bots // optional: the agents' own bots; nil posts everything with Sink
 }
 
 // Handle mirrors one message; sender is the subject's last token, seq the
@@ -137,7 +148,14 @@ func (m *Mirror) Handle(ctx context.Context, channelID func(context.Context) (st
 				props[m.Prefix+"nats_root"] = fmt.Sprintf("n1:%s:%d", m.Home, *msg.Root)
 			}
 		}
-		pid, err := m.Sink.Create(ctx, cid, Attribution(shown, msg.Text), root, props)
+		var pid string
+		if own := m.own(ctx, sender); own != nil {
+			// The agent's own bot shows who wrote it: no attribution line.
+			pid, err = own.Create(ctx, cid, Cut(DefuseMentions(msg.Text)), root, props)
+			m.failed(sender, err)
+		} else {
+			pid, err = m.Sink.Create(ctx, cid, Attribution(shown, msg.Text), root, props)
+		}
 		if err != nil {
 			return err
 		}
@@ -153,6 +171,12 @@ func (m *Mirror) Handle(ctx context.Context, channelID func(context.Context) (st
 			return m.save(ctx, seq, Post{})
 		}
 		add := msg.Kind == message.Reaction
+		if own := m.own(ctx, sender); own != nil {
+			if err := m.ownReaction(ctx, own, sender, *msg.Ref, target.ID, msg.Emoji, add); err != nil {
+				return err
+			}
+			return m.save(ctx, seq, target)
+		}
 		n, err := m.Store.Reaction(ctx, m.Home, *msg.Ref, msg.Emoji, sender, add)
 		if err != nil {
 			return err
@@ -178,6 +202,47 @@ func (m *Mirror) Handle(ctx context.Context, channelID func(context.Context) (st
 		return errors.New("bridge: unknown message kind")
 	}
 	return m.save(ctx, seq, p)
+}
+
+// own is the sender's own bot, nil for the bridge bot (RT-6.44).
+func (m *Mirror) own(ctx context.Context, sender string) Sink {
+	if m.Bots == nil {
+		return nil
+	}
+	return m.Bots.Bot(ctx, sender, m.Home)
+}
+
+// failed drops the sender's bot client when Mattermost failed it for more
+// than this one message; the reader retries the message.
+func (m *Mirror) failed(sender string, err error) {
+	var refused *Refused
+	if err != nil && !errors.As(err, &refused) {
+		m.Bots.Forget(sender)
+	}
+}
+
+// ownReaction reacts under the sender's own bot, one reaction per sender. A
+// removal also takes the sender out of the bridge bot's count, in case it
+// reacted before its bot was there; the bridge bot's reaction goes when that
+// count reaches 0.
+func (m *Mirror) ownReaction(ctx context.Context, own Sink, sender string, ref uint64, post, emoji string, add bool) error {
+	var err error
+	if add {
+		err = own.React(ctx, post, emoji)
+	} else {
+		err = own.Unreact(ctx, post, emoji)
+	}
+	m.failed(sender, err)
+	if err != nil || add {
+		return err
+	}
+	n, err := m.Store.Reaction(ctx, m.Home, ref, emoji, sender, false)
+	if err == nil && n == 0 {
+		if uerr := m.Sink.Unreact(ctx, post, emoji); uerr != nil {
+			m.Log.Info("bridge: the bridge bot's reaction stays", "post", post, "emoji", emoji, "error", uerr)
+		}
+	}
+	return err
 }
 
 // save writes the map and the position although the reader may be stopping:
