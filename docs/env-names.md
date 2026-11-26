@@ -541,33 +541,62 @@ this rename. Until then `MM_REGISTRAR_KEYS` keeps working under its name.
 
 ### Excluded names
 
-Not renamed, because they are not our environment variables:
+Not renamed, because they are not our environment variables. Each name with
+its reason; `scripts/doc-check.py` reads this table as the guard's exclusion
+list, so a name here is one the guard accepts in the code without a mapping.
 
-- **Other products' variables** we read: `HOME`, `PATH`, `TMPDIR`, `TZ`,
-  `XDG_STATE_HOME`, `DISPLAY`, `WAYLAND_DISPLAY`, `SSL_CERT_FILE`,
-  `SSL_CERT_DIR`, `HTTPS_PROXY`, `NO_PROXY`, `CLAUDECODE`,
-  `CLAUDE_CODE_SESSION_ID`, `CLAUDE_PLUGIN_ROOT`, `CLAUDE_PROJECT_DIR`,
-  `CLAUDE_SESSION_ID`, `CORRAL_AGENT`, `CORRAL_AGENT_EXIT`, `CORRAL_SANDBOX`,
-  `CORRAL_SESSION_ID`, `CORRAL_WORKDIR`, `OPENCODE_SESSION_ID`,
-  `GITHUB_ACTIONS`, `GITHUB_ENV`.
-- **Constants and names of things, not variables:** `BUS_BRIDGE`,
-  `BUS_BRIDGE_SEEN`, `BUS_DIRECTORY` (NATS bucket names, which also contain
-  `BRIDGE_SEEN`), `BRIDGE_KEYS` (a Python constant `_BRIDGE_KEYS`),
-  `BRIDGE_TTL_SEC` (a constant in `nats_port.py`), `BRIDGE_USER_PUBLIC_NKEY`
-  (a placeholder in `nats-server.example.conf`), `CONSOLE_FAMILIES` and
-  `CONSOLE_NATS` (test constants), and the other `AGENT_*`, `BUS_*`,
-  `NATS_*`, `STATS_*` constants in the code.
-- **Value of a setting:** the props prefix itself (`x_`), the default of
-  `MM_PROPS_PREFIX`. Changing the default is not part of this rename.
-- **Name stems in patterns and comments:** `MM_API`, `MM_BUS_HOST`,
-  `MM_KEPT`, `MM_REL`, `MM_RR` (each the start of names listed above).
-- **Test placeholders:** `MM_A`, `MM_B`, `MM_BAR`, `MM_FOO`, `MM_X`,
-  `MM_OLD`, `MM_OTHER`, `MM_ID`.
-- **`MM_BOT_NAME`:** only in `tests/hooks/test_sweep.py`, as the key of an
-  old session file format; no code reads it.
-- **Script locals** in upper case (`STATE_DIR`, `ROOT`, `LISTEN_UNTIL` and
-  so on): set and read inside one script.
+| Name | Why it is not renamed |
+|---|---|
+| `HOME` | another product’s variable we read |
+| `PATH` | another product’s variable we read |
+| `TMPDIR` | another product’s variable we read |
+| `TZ` | another product’s variable we read |
+| `XDG_STATE_HOME` | another product’s variable we read |
+| `DISPLAY` | another product’s variable we read |
+| `WAYLAND_DISPLAY` | another product’s variable we read |
+| `SSL_CERT_FILE` | another product’s variable we read |
+| `SSL_CERT_DIR` | another product’s variable we read |
+| `HTTPS_PROXY` | another product’s variable we read |
+| `NO_PROXY` | another product’s variable we read |
+| `CLAUDECODE` | another product’s variable we read |
+| `CLAUDE_CODE_SESSION_ID` | another product’s variable we read |
+| `CLAUDE_PLUGIN_ROOT` | another product’s variable we read |
+| `CLAUDE_PROJECT_DIR` | another product’s variable we read |
+| `CLAUDE_SESSION_ID` | another product’s variable we read |
+| `CORRAL_AGENT` | another product’s variable we read |
+| `CORRAL_AGENT_EXIT` | another product’s variable we read |
+| `CORRAL_SANDBOX` | another product’s variable we read |
+| `CORRAL_SESSION_ID` | another product’s variable we read |
+| `CORRAL_WORKDIR` | another product’s variable we read |
+| `OPENCODE_SESSION_ID` | another product’s variable we read |
+| `GITHUB_ACTIONS` | another product’s variable we read |
+| `GITHUB_ENV` | another product’s variable we read |
+| `BUS_BRIDGE` | a NATS bucket name, a constant |
+| `BUS_BRIDGE_SEEN` | a NATS bucket name, a constant |
+| `BUS_DIRECTORY` | a NATS bucket name, a constant |
+| `BRIDGE_KEYS` | the Python constant `_BRIDGE_KEYS` |
+| `BRIDGE_TTL_SEC` | a constant in `nats_port.py` |
+| `BRIDGE_USER_PUBLIC_NKEY` | a placeholder in `nats-server.example.conf` |
+| `CONSOLE_FAMILIES` | a test constant |
+| `CONSOLE_NATS` | a test constant |
+| `MM_A` | a test placeholder |
+| `MM_B` | a test placeholder |
+| `MM_BAR` | a test placeholder |
+| `MM_FOO` | a test placeholder |
+| `MM_X` | a test placeholder |
+| `MM_OLD` | a test placeholder |
+| `MM_OTHER` | a test placeholder |
+| `MM_ID` | a test placeholder |
+| `MM_BOT_NAME` | only in `tests/hooks/test_sweep.py`, the key of an old session file format; no code reads it |
+| `MM_API` | a name stem in patterns and comments (`MM_API_BODY` and the like) |
+| `MM_BUS_HOST` | a name stem in patterns and comments |
+| `MM_KEPT` | a name stem in patterns and comments |
+| `MM_REL` | a name stem in patterns and comments |
+| `MM_RR` | a name stem in patterns and comments |
 
+Script locals in upper case (`STATE_DIR`, `ROOT`, `LISTEN_UNTIL` and so on) are
+set and read inside one script; they are covered by
+[the shell variables that are not environment](#shell-variables-that-are-not-environment).
 ## The `Needs:` rule
 
 A CHANGELOG entry may say what its release needs first, in a `Needs:` line.
