@@ -4095,8 +4095,20 @@ The console is the operators' view of the bus itself.
      (ADR-014 point 13). Followed further (A coordinates B, B gave C a
      task) to a depth of two, with a mark where it is cut: the transitive
      edge is the console's reading, not a fact of the bus.
-   - **Off at the start:** member of (agent → the channels it posts or
-     claims in), and asks (agent → the human asked, open asks only).
+   - **Member of** (agent → each channel its memberships name, RT-6.37):
+     the home channel as `coordinates`, every channel beside it as a
+     `guest` edge — a guest is a channel an agent may visit, never claim
+     (RT-6.16). The home is what the bus itself states: the channel of the
+     agent's ask record's subject (`<presence>.ask.<home>.<name>`,
+     RT-6.43 step 5) first, else the channel it claims the crown of (only
+     a home may be claimed, RT-6.38), else the first channel its
+     memberships name; the card's `home` and `guests` come from the same
+     statement, and no home is guessed from an agent's name (#147).
+   - **You:** the person node the logged-in operator's own anchor names is
+     marked `you`, read from the login's own record and never from a
+     value the browser sends (RT-6.43 step 2). People are matched by
+     anchor, so two people of one name stay apart.
+   - **Off at the start:** asks (agent → the human asked, open asks only).
 
    State, crown and ask marks sit on the nodes as on the cards; a click
    opens the same detail.
@@ -4197,7 +4209,7 @@ The console is the operators' view of the bus itself.
     |--------|------|------|
     | A person's credential: the console's client accepted, the name, the rights, the consumers (points 2 and 4) | Login service; a human's review (ADR-014 point 15) | Before stage 1 |
     | Presence, crown and roster over NATS, with the owner and the trusted list as the login service attests them | NATS adapter, login service; built except the roster (RT-6.37, RT-6.38, RT-6.41) | Before stage 1 |
-    | The card on NATS: decided by the owner on 2026-11-25 as the presence; built for the name to show, harness, model, task, branch and the number of open asks (RT-6.37 step 6), not for the home and the card's other fields | NATS adapter | Built for stage 1 |
+    | The card on NATS: decided by the owner on 2026-11-25 as the presence; built for the name to show, harness, model, task, branch and the number of open asks (RT-6.37 step 6); the home and the guest channels are read from the subjects the bus already publishes (the ask record's channel, a crown claim, the memberships, #147), the card's other fields are not built | NATS adapter | Built for stage 1 |
     | The console's server admitted to NATS: the lab's network rule admits only NATS's own namespace today (ADR-014, the lab today) | The lab; the owner's approval | Before stage 1 |
     | The state word, the numbers and the version in presence | MCP server, message format | Stage 1; until then three columns |
     | The ask and its end on NATS | NATS adapter | Stage 1 |

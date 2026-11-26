@@ -208,12 +208,17 @@ class View:
         if self.reader is not None:
             self.reader.stop()
 
+    def anchor(self) -> str | None:
+        """The operator's anchor from the login's own record (RT-6.43 step 2), the only
+        source of it: never the login name and never a value the browser sends. None until
+        that record arrived."""
+        return self.reader.anchor if self.reader is not None else None
+
     def asks(self) -> list[dict[str, Any]]:
         """The open asks this session's consumers delivered (RT-6.43 step 6): "for me" and
         "may answer" compare the operator's anchor from the login's own record, never the
         login name; n/a until that record came."""
-        anchor = self.reader.anchor if self.reader is not None else None
-        return self.fleet.asks(anchor)
+        return self.fleet.asks(self.anchor())
 
     def bus(self) -> dict[str, Any]:
         """What the browser sees of this session's reading (``/v1/me``)."""

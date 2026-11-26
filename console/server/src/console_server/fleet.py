@@ -252,6 +252,32 @@ class Fleet:
         the login service's own mark, so no publishing judge)."""
         return sorted(self._members)
 
+    def channels_of(self, agent: str) -> list[str]:
+        """The channels its memberships name, sorted (every granted channel
+        gets one, home and guest alike, RT-6.37)."""
+        return sorted(ch for ch in self._members if agent in self._members[ch])
+
+    def home_of(self, agent: str) -> str:
+        """Its home channel, as the bus itself states it: the channel of its
+        ask record's subject, `<presence>.ask.<home>.<name>` (RT-6.43 step 5),
+        sent by this agent's own bus; else the channel it claims the crown of
+        (only a home may be claimed, RT-6.38); else the first channel it is a
+        member of. "" without any of them — never guessed from a name."""
+        row = self._asks.get(agent)
+        if row is not None and row[2]:
+            return row[2]
+        claimed = sorted(ch for ch in self._claims if self.holder_of(ch) == agent)
+        if claimed:
+            return claimed[0]
+        channels = self.channels_of(agent)
+        return channels[0] if channels else ""
+
+    def guests_of(self, agent: str) -> list[str]:
+        """The channels it is a member of beside its home: a guest is a
+        channel an agent may visit, never claim (RT-6.16, ADR-016 point 4)."""
+        home = self.home_of(agent)
+        return [ch for ch in self.channels_of(agent) if ch != home]
+
     def agents(self) -> list[str]:
         """Every agent of the tenant, sorted: one seen in presence."""
         return sorted(set(self._presence) | set(self._members_channels_agents()))
@@ -289,13 +315,14 @@ class Fleet:
         for agent in self.agents():
             att = self._attests.get(agent)
             record = att[2] if att and att[2].exp > self.server_now else None
-            channels = sorted(ch for ch in self._members if agent in self._members[ch])
             presence = self._presence.get(agent, (0.0, "offline"))
             stated = self._cards.get(agent, PresenceCard())
             out.append({
                 "name": agent,
                 "displayName": self.shown_name(agent),
-                "home": crowns.get(agent) or (channels[0] if channels else ""),
+                "home": self.home_of(agent),
+                # the channels beside the home (RT-6.16): the graph draws them apart
+                "guests": self.guests_of(agent),
                 "state": self.state_of(agent),
                 "crown": agent in crowns,
                 # the HELLO card's data the presence states (RT-6.37); n/a when an
@@ -330,28 +357,42 @@ class Fleet:
                 return card
         return None
 
-    def graph(self) -> dict[str, Any]:
-        """Nodes: people, channels, agents; edges: the owner (as attested)
-        and each channel's crown and members — trusts and coordinates,
-        cut at no depth yet (the pilot shows one tenant, whole)."""
+    def graph(self, anchor: str | None = None) -> dict[str, Any]:
+        """Nodes: people, channels, agents; edges: the owner (as attested), each agent's
+        home channel and its guest channels — trusts, coordinates and guest, cut at no
+        depth yet (the pilot shows one tenant, whole).
+
+        `anchor`: the operator's, from the login's own record (RT-6.43 step 2), never a
+        value the browser sends. The person node it names is marked `you` (ADR-015
+        point 7), matched by anchor, so two people of one name stay apart."""
         nodes = []
         edges = []
-        people: dict[str, None] = {}
+        people: dict[str, set[str]] = {}
         for agent in self.agents():
             att = self._attests.get(agent)
             record = att[2] if att and att[2].exp > self.server_now else None
             owner = record.owner_name if record else self._owners.get(agent, "")
             if owner:
-                people.setdefault(owner, None)
+                # The anchor is the identity; the name only labels the node.
+                anchors = people.setdefault(owner, set())
+                if record:
+                    anchors.add(owner_token(record.owner_anchor))
+                else:
+                    anchors.add(owner_token(self._owners.get(agent, "")))
                 edges.append({"id": f"e-{agent}-owner", "from": agent, "to": owner,
                               "kind": "trusts"})
-        for who in people:
-            nodes.append({"id": who, "kind": "person", "label": who})
+        me = owner_token(anchor) if anchor else ""
+        for who, anchors in people.items():
+            person: dict[str, Any] = {"id": who, "kind": "person", "label": who}
+            if me and me in anchors:
+                person["you"] = True
+            nodes.append(person)
         for channel in self.channels():
             nodes.append({"id": channel, "kind": "channel", "label": channel})
-            for agent in self._members.get(channel, {}):
+            for agent in sorted(self._members.get(channel, {})):
                 edges.append({"id": f"e-{agent}-{channel}", "from": agent, "to": channel,
-                              "kind": "coordinates"})
+                              "kind": ("coordinates" if self.home_of(agent) == channel
+                                       else "guest")})
         for agent in self.agents():
             crown = any(self.holder_of(ch) == agent for ch in self._claims)
             node: dict[str, Any] = {"id": agent, "kind": "agent",
