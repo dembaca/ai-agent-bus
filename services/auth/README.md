@@ -120,8 +120,8 @@ the first start. Everything else — a person's and an agent's nkey — is made 
 the login service at runtime; nobody handles those.
 
 **Tool.** `nsc` from the `nats-io/nats-tools` Homebrew tap
-(`brew install nats-io/nats-tools/nsc`) or `nk` from `go install
-github.com/nats-io/nkeys/nk@latest`. The examples below use `nsc`.
+(`brew install nats-io/nats-tools/nsc`), or `nk` from `go install
+github.com/nats-io/nkeys/nk@latest`.
 
 **Which keys are static:**
 
@@ -129,33 +129,46 @@ github.com/nats-io/nkeys/nk@latest`. The examples below use `nsc`.
   account key that signs the user JWTs and the answers (`CB_AUTH_ISSUER_SEED_FILE`),
   the curve key of the handshake (`CB_AUTH_XKEY_SEED_FILE`) and its JetStream
   user (`CB_AUTH_JS_SEED_FILE`);
-- the central bridge's user (`<BRIDGE_USER_PUBLIC_NKEY>` in the example server
-  configuration) and the console's `console-metrics` user
-  (`<CONSOLE_METRICS_PUBLIC_NKEY>`, `CB_CONSOLE_METRICS_NKEY_SEED_FILE`);
+- the central bridge's user (`CB_BRIDGE_NATS_SEED_FILE`, `<BRIDGE_USER_PUBLIC_NKEY>`
+  in the example server configuration) and the console's `console-metrics` user
+  (`CB_CONSOLE_METRICS_NKEY_SEED_FILE`, `<CONSOLE_METRICS_PUBLIC_NKEY>`);
 - an operator's user, if the lab gives NATS itself one for administration — it
   is the lab's, not this repository's.
 
 **The rule: the seed goes straight into the secret store and is never printed.**
-Only the public key is copied out, into the server configuration and the other
-users' records.
+`nsc generate nkey` prints the seed first and the public key second; write only
+the first line to the file and copy only the second into the server
+configuration and the other users' records. A seed that reached a terminal, a
+chat line, a log or a commit is burned: generate a new one. The service reads
+the seed file at start, never a variable that holds it.
 
 ```bash
-umask 077                                   # the file is 0600 from the moment it exists
-nsc generate nkey --user > /run/secrets/callout-user.seed
-grep '^U' /run/secrets/callout-user.seed    # the public key, for auth_users
+# macOS: any directory only you can read, e.g. ~/.config/choirbus/secrets.
+SEED_DIR=/run/secrets
+umask 077    # the files are 0600 from the moment they exist
+
+nsc generate nkey --user    | awk -v f="$SEED_DIR/callout-user.seed" 'NR==1{print > f} NR==2'
+nsc generate nkey --account | awk -v f="$SEED_DIR/issuer.seed"       'NR==1{print > f} NR==2'
+nsc generate nkey --curve   | awk -v f="$SEED_DIR/xkey.seed"         'NR==1{print > f} NR==2'
 ```
 
-The same with a secret store, and with the other kinds:
+With `nk` instead, the seed is all it prints, and `-pubout` derives the public
+key from the file without printing the seed:
 
 ```bash
-nsc generate nkey --account > /run/secrets/issuer.seed    # A…, auth_callout.issuer
-nsc generate nkey --curve   > /run/secrets/xkey.seed      # X…, auth_callout.xkey
-vault kv put secret/bus/callout-user seed="$(cat /run/secrets/callout-user.seed)"
+umask 077
+nk -gen user > "$SEED_DIR/callout-user.seed" && nk -inkey "$SEED_DIR/callout-user.seed" -pubout
 ```
 
-A seed that reached a terminal, a chat, a log line or a commit is burned:
-generate a new one. The service reads the seed file at start, never a variable
-holding it.
+Into a secret store, without the seed in argv (where `ps` would show it), and
+the plain file gone afterwards:
+
+```bash
+vault kv put secret/bus/callout-user seed=@"$SEED_DIR/callout-user.seed"
+vault kv put secret/bus/issuer       seed=@"$SEED_DIR/issuer.seed"
+vault kv put secret/bus/xkey         seed=@"$SEED_DIR/xkey.seed"
+rm "$SEED_DIR"/{callout-user,issuer,xkey}.seed
+```
 
 ## Endpoints
 
