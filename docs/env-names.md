@@ -465,7 +465,10 @@ says whether the setting itself is about Mattermost.
 have no `MM` in their names; the rename gives them one, as the rule says:
 `CB_BRIDGE_MM_BOT_PREFIX` and `CB_BRIDGE_MM_HIDE_BOT_DM`.
 
-### The console (17)
+### The console (20)
+| `CONSOLE_METRICS_LISTEN_ADDR` | `CB_CONSOLE_METRICS_LISTEN_ADDR` | no | `console/server/src/console_server/config.py` | the unattended metrics page's listener (#158, RT-6.43 step 10) |
+| `CONSOLE_METRICS_NKEY_SEED_FILE` | `CB_CONSOLE_METRICS_NKEY_SEED_FILE` | no | same; `services/auth/nats-server.example.conf` (a comment) | pairs with `CB_CONSOLE_METRICS_TOKEN_FILE`; refused unless 0600 (`defaultMode: 0400` and the uid under Kubernetes) |
+| `CONSOLE_METRICS_TOKEN_FILE` | `CB_CONSOLE_METRICS_TOKEN_FILE` | no | same | pairs with the seed file; both or neither |
 
 | Old name | New name | Mattermost | Where it appears | Note |
 |---|---|---|---|---|
@@ -566,6 +569,7 @@ list, so a name here is one the guard accepts in the code without a mapping.
 | Name | Why it is not renamed |
 |---|---|
 | `HOME` | another product’s variable we read |
+| `CONSOLE_METRICS_PUBLIC_NKEY` | the NATS example config's `<…>` placeholder: the nkey is set at the server, never in the env (#168) |
 | `PATH` | another product’s variable we read |
 | `TMPDIR` | another product’s variable we read |
 | `TZ` | another product’s variable we read |
