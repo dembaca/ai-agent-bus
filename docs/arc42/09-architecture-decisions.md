@@ -3846,9 +3846,12 @@ credentials and their renewal (point 7) that rest on it.
 - **Protection against stolen tokens**, instead of realm-wide rotation:
   1. Detection in the login service. If one Keycloak session or one host
      key shows up at an issue from two networks at the same time, the
-     service revokes the Keycloak session through the admin API and tells
-     the owning human on the bus. Network changes one after another revoke
-     nothing, but are reported. It misses a thief on the same network or
+     service refuses further issues for that session or host key and tells
+     the owning human on the bus. It holds no Keycloak admin right: the
+     owner decided on 2026-11-26 that a stolen service account token weighs
+     far more than one person's session. So the stolen refresh token stays
+     valid at Keycloak until it runs out or the owner logs out. Network
+     changes one after another refuse nothing, but are reported. It misses a thief on the same network or
      the same host, and any use one after another: a copy used only while
      the real session is not issuing, or after it ends.
   2. A maximum lifetime for the offline token of the client `agent-bus`.
