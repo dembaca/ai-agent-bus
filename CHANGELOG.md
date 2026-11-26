@@ -155,6 +155,20 @@ before 0.5.0 are described in the git history.
 
 ### Docs
 
+- **The owner's decision 10 on the host login, documented, not built yet**
+  (#154, step 1 of 5). The NATS decision (ADR-014) gets an amendment of
+  2026-11-26: the rule "credentials stay on the host, never in a sandbox"
+  goes; one operating model with and without corral, in which the MCP
+  server logs in itself and keeps the refresh token and the host key in
+  the system keychain or a 0600 file, under corral in the sandbox's own
+  home. The price is named: an agent can read them. The keyless host
+  session (RT-6.18) and the host login (RT-6.34) say what is decided and
+  what still runs. New risks: the readable token with its planned
+  protections, detection in the login service, an offline maximum and
+  DPoP (RISK-26), and two open points of the login service raised again,
+  the token's binding and storage (RISK-27) and an emergency brake that
+  acts only at the next issue (RISK-28). The site's security answers say
+  what is true today and what is decided.
 - **The deployment and building block views say what runs in the lab**
   (#108). The central bridge carries people's posts and reactions onto
   NATS in the lab since 2026-11-25 (step 2, RT-6.42), and the deployment

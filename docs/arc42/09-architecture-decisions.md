@@ -23,7 +23,7 @@ code does today and point here where a decision will change them.
 | ADR-012 | Files an agent attaches: the server never opens a path the agent names; the bytes come from inside the sandbox (the shell's `POST /v1/files`, or a small text in the `attach` tool), checked by their bytes, uploaded for a post that takes only this server's fresh uploads | Decided 2026-11-14, built (0.90.0, RT-6.33) | — |
 | ADR-013 | The channel banner shows what waits: the home's 👑 server writes it on a change only, at most once a minute; a stall in red, asks waiting on a human in amber, else the crown and the agents by status; display only, never input; a human's banner is left alone and told to its human; without the licence or the permission everything stays as today; later the 👑 prefix only on asks and routings | Withdrawn (2026-11-16): depends on the Mattermost edition and a permission setting; the header carries the rare facts instead | — |
 
-| ADR-014 | Agent-to-agent traffic over NATS JetStream; Mattermost stays the humans' chat behind one central adapter per tenant; agents log in through Keycloak (device flow) and a login service issues 15-minute NATS credentials bound to the host's own key; a clean-room build from Cotal's protocol description with a message format of the bus's own (no wire compatibility with Cotal); tools, hook API and bus logic unchanged behind the ports; parallel operation switched per home channel, the registrar shut down last; the sender NATS-native (last subject token, agents read only through push consumers the login service makes, no signed envelope) | Accepted (2026-11-22) by the owner, with the review's recommendations; three later points open (below), none of them blocks the first NATS code. Phase 2 built; phase 3 built in part in 0.97.0: the login service with the host's Keycloak login, consumers, a home over NATS, owner, presence and crown over NATS (RT-6.34 to RT-6.38), the attestation after 0.97.0 (RT-6.41); not built: the central adapter, the pod path, role addressing, files and DMs over NATS, signed human-origin events, shutting the registrar down | — |
+| ADR-014 | Agent-to-agent traffic over NATS JetStream; Mattermost stays the humans' chat behind one central adapter per tenant; agents log in through Keycloak (device flow) and a login service issues 15-minute NATS credentials bound to the host's own key; a clean-room build from Cotal's protocol description with a message format of the bus's own (no wire compatibility with Cotal); tools, hook API and bus logic unchanged behind the ports; parallel operation switched per home channel, the registrar shut down last; the sender NATS-native (last subject token, agents read only through push consumers the login service makes, no signed envelope) | Accepted (2026-11-22) by the owner, with the review's recommendations; three later points open (below), none of them blocks the first NATS code. Phase 2 built; phase 3 built in part in 0.97.0: the login service with the host's Keycloak login, consumers, a home over NATS, owner, presence and crown over NATS (RT-6.34 to RT-6.38), the attestation after 0.97.0 (RT-6.41); not built: the central adapter, the pod path, role addressing, files and DMs over NATS, signed human-origin events, shutting the registrar down. Amended on 2026-11-26 by the owner's decision 10 (#154): credentials no longer stay on the host; the MCP server holds the refresh token and the host key itself, under corral in the sandbox's home, with detection, an offline maximum and DPoP against theft; decided, not built yet | — |
 | ADR-015 | Operator web console: a web application for the people who look after the agents, with the agents by state, who trusts and who coordinates whom, the bus's statistics as charts, and the open asks answered beside their thread; no chat. It stands alone on the bus on NATS, with Keycloak as its only login and no dependency on Mattermost (decided by the owner on 2026-11-23). Recommended: on NATS as the logged-in operator, with a credential of that person's own from the login service, so NATS says who answered and the asking agent's server still decides whether it approves | Proposed (2026-11-23), not accepted; eight points open for the owner, three decided on 2026-11-23 (ADR-016). Stage 1's read-only pilot is built (2026-11-24): the browser app (#89) and its server (#94) — the login of point 4 and the API of point 10 with its SSE — one read-only NATS account, the pilot's documented deviation, since replaced: the console reads as each logged-in operator with a credential of that person's own from the login service (the addition of 2026-11-25, points 1 to 7, RT-6.43), and the static account is gone. The fleet's "now" carries a monotonic floor: a delivery-silent console ages presence out and drops the crown, a jump of the host's wall clock changes nothing, and only a genuinely newer server stamp re-anchors it (#108). Of the addition of 2026-11-25, the asks and `STATS` on NATS are built too (points 8 to 15, the MCP server's and the console's part, and the login service's stream and rights for them): each MCP server publishes its ask record and its `STATS` parts, the console receives them through each login's own consumers, decodes them strictly and shows the asks read-only and the two reports | — |
 | ADR-016 | The bus without a chat as its source: Keycloak is the root of identity, keyed by `sub`, with chat accounts bound to it per product; a channel directory on NATS that only the login service writes (name, public or not, members, a binding per chat) replaces Mattermost membership behind `callout.Channels`; one bridge per chat product vouches for its humans, and later a Keycloak login on NATS itself; the login service attests trust lists; agents need no chat. Decided by the owner on 2026-11-23: the directory, Mattermost membership behind a replaceable interface until then, and for the console reading only, a Python server and what an operator sees | Accepted (2026-11-23) by the owner, its nine open points decided by the owner the same day; it changes ADR-014 points 6, 10, 11 and 16. Built in part: the channel directory (RT-6.39) and "in doubt, foreign" (RT-6.16) in 0.97.0; after 0.97.0 the admin API with the import from Mattermost (RT-6.40) and the attested trust lists (RT-6.41). Not built: the bridges, `checkChat` as a binding, agents without a chat, the host's agent name from an anchor that is not the username. Addition 2026-11-24: all Mattermost functions in one service, the bridge in `services/bridge`, the registrar's move as an open step; built step by step, the pilot with one bridge bot | — |
 | ADR-017 | The token split attributes tokens by content, not by cause: a request's tokens go to task work, bus overhead or multi-agent coordination by what its context and output hold, never all to the bus because the bus started the turn | Decided 2026-11-26 with the issue on the token split (#139, its proposed defaults); built for Claude Code (the overhead measurement, RT-6.9 step 2, method 1) | #139 |
@@ -3019,7 +3019,9 @@ crown (RT-6.38) over NATS; after 0.97.0 the login service's attestation of
 owner and trust list (RT-6.41). Not built: the central adapter and the
 shutdown of the registrar, the pod path (point 8), role addressing, files
 and DMs over NATS, the visibility setting, the signed human-origin events
-and `MM_BUS_SIGNER_KEYS`. The
+and `MM_BUS_SIGNER_KEYS`. Amended on 2026-11-26 by the owner's decision 10
+(#154, the amendment at the end of this decision): credentials no longer
+stay on the host; decided, not built yet. The
 owner's order to
 move to NATS asks for this decision to be recorded before any NATS code is
 merged. Decided by the owner: one central adapter per tenant (point 1), the
@@ -3246,6 +3248,13 @@ separately.
      RT-6.18), in the host process and never in a sandbox, and it is
      narrower than a bot token: bound to the bus's client and audience,
      granted for offline use alone.
+   - Changed by decision 10 (#154, the amendment of 2026-11-26 below),
+     decided, not built yet: two reasons above rest on the token's place,
+     "it stays small because the token never leaves the host" and "never
+     in a sandbox". Under corral they no longer hold: the MCP server keeps
+     the refresh token and the nkey seed in the sandbox's own home, where
+     the agent can read them. Rotation with reuse detection stays off; the
+     amendment names what protects a stolen token instead.
 8. **Long-running agents in the cluster** (not built). A pod presents a projected
    service-account token whose audience is the login service; the login
    service verifies it with a TokenReview and looks the pair (namespace,
@@ -3264,6 +3273,10 @@ separately.
    the consent screen names the bus's client and the agent, so a human
    confirms only a code their own session showed. Without corral the same
    function and the same trust as the token today.
+   - Changed by decision 10 (#154, the amendment of 2026-11-26 below),
+     decided, not built yet: this point goes. Under corral too the MCP
+     server inside the sandbox logs in and keeps the credentials. Until
+     that is built, the point above describes what runs.
 10. **Trust keeps its rules.** The bus still tells its own agent, an agent
     of another human and a trusted human apart (ADR-001, ADR-003): an agent
     of another human is foreign even within the same tenant, its posts are
@@ -3781,6 +3794,73 @@ Not part of this decision: a chat front end of its own for humans, adapters
 for further chats, an approval bound to the action through a broker, and the
 operation outside the lab (three NATS nodes, a doubled login service,
 stream backups, deleting personal data in streams).
+
+**Amendment 2026-11-26 (decision 10, #154): one operating model for the
+host login.** Decided by the owner on 2026-11-26. Not built yet: this
+amendment is the first of five steps, the docs. It removes the point on
+where credentials live (point 9) and the two reasons in the point on
+credentials and their renewal (point 7) that rest on it.
+
+- **What changes.** The rule "credentials stay on the host, never in a
+  sandbox" goes. One operating model of the plugin replaces it, the same
+  with and without corral; corral stays recommended. For the user: install
+  or update the plugin from the marketplace, confirm once in the browser,
+  done.
+- **One process does it all.** The plugin starts the MCP server over
+  stdio, and that server asks for the device approval itself on its first
+  start. If no browser opens, it shows the address and the code. Hooks,
+  channel messages and logout go through the same process.
+- **Where the secrets live.** The server keeps the Keycloak refresh token
+  and the host's nkey seed itself: in the system keychain where there is
+  one, else in a file with mode 0600. Under corral that file is in the
+  sandbox's own home.
+- **Several sessions, one secret.** Sessions on one host share the token
+  and the key. Only one renews at a time, under a lock file, and a new
+  token is written only once it is complete.
+- **What goes with the end of the registrar** (#151 step 5): corral's
+  start and end hooks, the relay into the sandbox (the keyless host
+  session, RT-6.18), the signed host copy with its self-update (ADR-011),
+  the block on self-registration in the sandbox, and the shared
+  registration secret.
+- **The price, accepted by the owner:** under corral too, an agent can
+  read the refresh token and the host key. Whoever copies both can get
+  NATS credentials as that agent until the refresh token is revoked or
+  expires (RISK-26).
+- **Protection against stolen tokens**, instead of realm-wide rotation:
+  1. Detection in the login service. If one Keycloak session or one host
+     key shows up at an issue from two networks at the same time, the
+     service revokes the Keycloak session through the admin API and tells
+     the owning human on the bus. Network changes one after another revoke
+     nothing, but are reported.
+  2. A maximum lifetime for the offline token of the client `agent-bus`.
+     It works only with "Offline Session Max Limited" in the realm, so its
+     effect on other clients is checked in the lab first.
+  3. DPoP for `agent-bus`. The key goes in hardware where there is one
+     (Secure Enclave, TPM, YubiKey), else in a file; the proof runs
+     silently. A lab test comes first: whether DPoP works with the device
+     flow. The host reports whether its key is in hardware, and the login
+     service may give such hosts a longer maximum.
+  4. No realm-wide rotation. Keycloak 26.8.1 offers rotation with reuse
+     detection only per realm, and it would disturb a command-line client
+     in the same realm. A realm of the bus's own stays the way out.
+- **What is built today.** The host login runs in the MCP server (the host
+  login scenario, RT-6.34), under corral in the host process (RT-6.18).
+  Its key store keeps one 0600 file per entry in a 0700 directory outside
+  every sandbox, with a lock per entry; it has no keychain backend and no
+  place in the sandbox's home. None of the protections 1 to 3 is built.
+- **Work, in order:** (1) these docs; (2) the MCP server logs in itself,
+  with a keychain backend and the 0600 file in the sandbox's home under
+  corral, keeping the shared renewal under its lock file and the rule to
+  write only a complete token; (3) the login service's detection and
+  revocation with a notice to the owner; (4) in the lab, the offline
+  token's maximum and the DPoP test; (5) the removal, after the registrar
+  ends.
+
+**Risks created (amendment):** the refresh token and host key readable by
+an agent under corral (RISK-26). It makes two open points of the login
+service more pressing: how the token is kept and bound to the host
+(RISK-27), and an emergency brake that stops only at the next issue
+(RISK-28).
 
 ---
 
