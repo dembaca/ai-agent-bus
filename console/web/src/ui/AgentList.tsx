@@ -56,7 +56,8 @@ export function AgentList({ cards, asks, filter, onFilter: setFilter, query, onQ
               onChange={(e) => setQuery(e.target.value)} />
           </label>
           <div className="seg" role="group" aria-label="Filter by status">
-            {STATUS_FILTERS.map((f) => (
+            {/* "Other" only while an agent's state fits no group, or it is picked */}
+            {STATUS_FILTERS.filter((f) => f.id !== "other" || counts.other > 0 || filter === "other").map((f) => (
               <button key={f.id} type="button" aria-pressed={filter === f.id}
                 className={"seg__btn" + (filter === f.id ? " seg__btn--on" : "")}
                 onClick={() => setFilter(f.id)}>
@@ -162,9 +163,11 @@ function AgentRow({ card, onOpen }: { card: AgentCard; onOpen: (card: AgentCard)
         </span>
       </td>
       <td className="mono small">
-        <span className="agents__clip"
+        <span className="agents__home"
           title={card.guests.length ? `${card.home}, guest in ${card.guests.join(", ")}` : card.home}>
-          {card.home}{card.guests.length > 0 && <span className="muted"> +{card.guests.length}</span>}
+          <span className="agents__clip">{card.home}</span>
+          {/* the guest count stays outside the clip: the name gives way, not the count */}
+          {card.guests.length > 0 && <span className="muted agents__guests">+{card.guests.length}</span>}
         </span>
       </td>
       <td><Context ctx={card.ctx} /></td>

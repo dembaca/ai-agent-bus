@@ -20,6 +20,26 @@ async function fleet(): Promise<{ cards: AgentCard[]; asks: Ask[] }> {
 const noop = () => {}
 
 describe("the pages", () => {
+  it("shows the Other filter with its count only while a state fits no group", async () => {
+    const { cards } = await fleet()
+    const list = (all: AgentCard[]) => renderToStaticMarkup(
+      <AgentList cards={all} asks={[]} filter="all" onFilter={noop} query="" onQuery={noop}
+        onOpenAgent={noop} onOpenAsk={noop} onAllAsks={noop} />)
+    const known = cards.map((c) => ({ ...c, state: "working" as const }))
+    expect(list(known)).not.toContain(">Other<")
+    const odd = [...known, { ...known[0], name: "agent-odd", state: "dreaming" as AgentCard["state"] }]
+    expect(list(odd)).toMatch(/>Other<span class="seg__count">1<\/span>/)
+  })
+
+  it("keeps the guest count outside the home's clip", async () => {
+    const { cards } = await fleet()
+    const html = renderToStaticMarkup(
+      <AgentList cards={[{ ...cards[0], home: "~a-long-home", guests: ["~x", "~y"] }]} asks={[]}
+        filter="all" onFilter={noop} query="" onQuery={noop}
+        onOpenAgent={noop} onOpenAsk={noop} onAllAsks={noop} />)
+    expect(html).toContain('<span class="agents__clip">~a-long-home</span><span class="muted agents__guests">+2</span>')
+  })
+
   it("shows an empty value as a dash, not n/a, and the task on one line", async () => {
     const { cards } = await fleet()
     const bare: AgentCard = { ...cards[0], branch: null, ctx: null, openAsks: null, lastPostAt: null,

@@ -4213,7 +4213,8 @@ The console is the operators' view of the bus itself.
    name, task, branch, home, guest channels, harness, model or PR; a status
    filter by group: working (`working`, `bus`), listening (`listening`,
    `online`), idle (`idle`, `away`, `silent`), offline. A state the console
-   does not know shows under "All" only, never guessed into a group.
+   does not know is never guessed into a group: it shows under "All" and
+   under an "Other" filter, which appears while such an agent is there.
    - **On the row:** name with the crown, harness and model; the state, and
      "waits on you" when one of its open asks is the operator's; task;
      branch or PR; home and the number of its guest channels; `ctx`; the

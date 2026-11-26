@@ -45,6 +45,11 @@ describe("the agents list's filter", () => {
     expect(countByGroup(FLEET)).toEqual({ working: 2, listening: 2, idle: 2, offline: 1, other: 1 })
   })
 
+  it("lists the states no group knows under Other", () => {
+    expect(names(filterCards(FLEET, "other", ""))).toEqual(["agent-h"])
+    expect(names(filterCards(FLEET.slice(0, 7), "other", ""))).toEqual([])
+  })
+
   it("searches task, branch, harness, guests and PR, every word, any case", () => {
     expect(names(filterCards(FLEET, "all", "CONSOLE"))).toEqual(["agent-a"])
     expect(names(filterCards(FLEET, "all", "feat/console design"))).toEqual(["agent-a"])

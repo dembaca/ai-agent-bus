@@ -4,11 +4,11 @@ import { AGENT_STATES, HARNESS_LABEL, type AgentCard, type Ask } from "../api/ty
 // The groups are made of the state words the bus carries (ADR-015 point 6):
 // presence's format v1 says online/away until it carries the state words, so
 // online counts as listening and away as idle. A state the console does not
-// know is in "All" only — never guessed into a group.
+// know is never guessed into a group: it shows under "All" and "Other".
 
-export type StatusFilter = "all" | "working" | "listening" | "idle" | "offline"
+export type StatusFilter = "all" | "working" | "listening" | "idle" | "offline" | "other"
 
-export const STATUS_GROUPS: Record<Exclude<StatusFilter, "all">, readonly string[]> = {
+export const STATUS_GROUPS: Record<Exclude<StatusFilter, "all" | "other">, readonly string[]> = {
   working: ["working", "bus"],
   listening: ["listening", "online"],
   idle: ["idle", "away", "silent"],
@@ -21,7 +21,13 @@ export const STATUS_FILTERS: readonly { id: StatusFilter; label: string }[] = [
   { id: "listening", label: "Listening" },
   { id: "idle", label: "Idle" },
   { id: "offline", label: "Offline" },
+  { id: "other", label: "Other" },
 ]
+
+/** A state no group holds. */
+function ungrouped(state: string): boolean {
+  return !Object.values(STATUS_GROUPS).some((g) => g.includes(state))
+}
 
 /** The text a search looks through: names, task, branch, home, guests,
  * harness and model, the PR number. */
@@ -38,15 +44,16 @@ function haystack(card: AgentCard): string {
 export function filterCards(cards: readonly AgentCard[], filter: StatusFilter,
                             query: string): AgentCard[] {
   const words = query.trim().toLowerCase().split(/\s+/).filter(Boolean)
-  const group = filter === "all" ? null : STATUS_GROUPS[filter]
+  const inGroup = (state: string): boolean =>
+    filter === "all" ? true : filter === "other" ? ungrouped(state) : STATUS_GROUPS[filter].includes(state)
   return cards.filter((card) =>
-    (group === null || group.includes(card.state)) &&
+    inGroup(card.state) &&
     words.every((w) => haystack(card).includes(w)))
 }
 
 /** How many cards each group holds, for the filter's buttons and the
  * Overview; `other` counts the states no group knows. */
-export function countByGroup(cards: readonly AgentCard[]): Record<Exclude<StatusFilter, "all"> | "other", number> {
+export function countByGroup(cards: readonly AgentCard[]): Record<Exclude<StatusFilter, "all">, number> {
   const out = { working: 0, listening: 0, idle: 0, offline: 0, other: 0 }
   for (const card of cards) {
     const hit = (Object.keys(STATUS_GROUPS) as Array<keyof typeof STATUS_GROUPS>)
