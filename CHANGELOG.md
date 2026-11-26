@@ -164,7 +164,6 @@ before 0.5.0 are described in the git history.
   `CB_CONSOLE_METRICS_TOKEN_FILE`, `CB_CONSOLE_METRICS_LISTEN_ADDR`. The web
   builds with `VITE_CB_CONSOLE_API`, else `VITE_CONSOLE_API` (build time).
   The old names go in the release after 0.103.0.
-  Needs: console env names updated on the lab hosts.
 
 ## 0.102.0
 
