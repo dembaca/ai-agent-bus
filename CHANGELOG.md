@@ -24,6 +24,17 @@ before 0.5.0 are described in the git history.
   start. Error messages, `authd dir -h`, `services/auth/README.md` and
   `nats-server.example.conf` name the new names.
 
+- **The console's settings read their `CB_CONSOLE_…` names** (#169's console
+  round, [docs/env-names.md](docs/env-names.md)): the new name first, else
+  the old `CONSOLE_…` with one deprecation warning per process; both set to
+  different values refuses the start, empty counts as set and an unexpanded
+  `${CB_CONSOLE_…}` counts as unset (the placeholder rule). #158's three
+  metric settings are carried with: `CB_CONSOLE_METRICS_NKEY_SEED_FILE`,
+  `CB_CONSOLE_METRICS_TOKEN_FILE`, `CB_CONSOLE_METRICS_LISTEN_ADDR`. The web
+  builds with `VITE_CB_CONSOLE_API`, else `VITE_CONSOLE_API` (build time).
+  The old names go in the release after 0.103.0.
+  Needs: console env names updated on the lab hosts.
+
 ## 0.102.0
 
 Needs: login service jetstream user with consumer create and delete rights on the directory bucket.

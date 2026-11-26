@@ -5,8 +5,8 @@ person, no anchor, no login: fed by the two push consumers the login service
 makes for the console's subscribe-only nkey (`CB_AUTH_CONSOLE_METRICS` there),
 delivered on `deliver.metrics.presence` and `deliver.metrics.stats`. The
 seed sits in a file only the console reads
-(`CONSOLE_METRICS_NKEY_SEED_FILE`); the page it guards sits behind the
-scrape token (`CONSOLE_METRICS_TOKEN_FILE`), not behind an operator's
+(`CB_CONSOLE_METRICS_NKEY_SEED_FILE`); the page it guards sits behind the
+scrape token (`CB_CONSOLE_METRICS_TOKEN_FILE`), not behind an operator's
 session — an unattended Prometheus may scrape it.
 
 The reading exists only while the console process runs. It reconnects with

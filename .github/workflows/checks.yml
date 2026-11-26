@@ -205,12 +205,12 @@ jobs:
         run: |
           docker build -t console-test -f console/server/Dockerfile .
           docker run -d --name console-test -p 127.0.0.1:8747:8747 \
-            -e CONSOLE_PUBLIC_URL=http://127.0.0.1:8747 \
-            -e CONSOLE_ISSUER=http://127.0.0.1:19999 \
-            -e CONSOLE_CLIENT_ID=smoke \
-            -e CONSOLE_OPERATOR_GROUP=operators \
-            -e CONSOLE_ADDR=0.0.0.0:8747 \
-            -e CONSOLE_NATS_URL=nats://127.0.0.1:4222 \
+            -e CB_CONSOLE_PUBLIC_URL=http://127.0.0.1:8747 \
+            -e CB_CONSOLE_ISSUER=http://127.0.0.1:19999 \
+            -e CB_CONSOLE_CLIENT_ID=smoke \
+            -e CB_CONSOLE_OPERATOR_GROUP=operators \
+            -e CB_CONSOLE_ADDR=0.0.0.0:8747 \
+            -e CB_CONSOLE_NATS_URL=nats://127.0.0.1:4222 \
             console-test
           # /livez is liveness and answers 200 as soon as the server
           # listens; /healthz (readiness) stays 503 in this smoke by

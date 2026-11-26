@@ -268,7 +268,7 @@ class Console:
     def _static(self, path: str) -> httpd.Response:
         if not self.settings.web_dir:
             return httpd.Response.text("Choirbus console: no built web app set"
-                                       " (CONSOLE_WEB_DIR)", 404)
+                                       " (CB_CONSOLE_WEB_DIR)", 404)
         root = Path(self.settings.web_dir).resolve()
         if path in ("/", ""):
             file = root / "index.html"

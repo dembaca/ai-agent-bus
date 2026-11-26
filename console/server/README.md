@@ -9,7 +9,7 @@ JetStream consumers the login service makes for each logged-in operator, serves 
 format (#158, RT-6.43 step 10: behind the operator's login like the rest,
 the console's own observations and that session's agent numbers, labels
 bounded — no agent, owner or home) — and with it the built browser app.
-**The unattended variant**: set both `CONSOLE_METRICS_NKEY_SEED_FILE` (the seed of the console's subscribe-only nkey, its two consumers the login service makes) and `CONSOLE_METRICS_TOKEN_FILE` (the Bearer scrape token) — both or neither, the start refuses half a pair — and Prometheus scrapes **a listener of the unattended page's own** (`CONSOLE_METRICS_LISTEN_ADDR`, host:port, default 127.0.0.1:8748, loopback as the owner's ask said): the token's page there serves the service's own reading, aggregates only, every other path 404; the operator's page stays on the main listener, behind the login. An unattended scrape comes from the approved follow-up (a
+**The unattended variant**: set both `CB_CONSOLE_METRICS_NKEY_SEED_FILE` (the seed of the console's subscribe-only nkey, its two consumers the login service makes) and `CB_CONSOLE_METRICS_TOKEN_FILE` (the Bearer scrape token) — both or neither, the start refuses half a pair — and Prometheus scrapes **a listener of the unattended page's own** (`CB_CONSOLE_METRICS_LISTEN_ADDR`, host:port, default 127.0.0.1:8748, loopback as the owner's ask said): the token's page there serves the service's own reading, aggregates only, every other path 404; the operator's page stays on the main listener, behind the login. An unattended scrape comes from the approved follow-up (a
 loopback listener with a scrape token of its own, plus a read-only service
 account on the STATS stream — the owner's go, #158), not from a copied
 cookie.
@@ -29,7 +29,7 @@ no NATS secret of its own, and before a login it reads nothing.
 ## What it reads
 
 At each login the server makes a key pair for that login (in memory only)
-and connects to `CONSOLE_NATS_URL` with the operator's Keycloak access
+and connects to `CB_CONSOLE_NATS_URL` with the operator's Keycloak access
 token, bare, as the connect token; the key signs the server's nonce
 ([protocol.md, an operator's connection](../../docs/protocol.md#over-nats-an-operators-connection)).
 The login service's auth callout checks the token (the console's client,
@@ -74,7 +74,7 @@ with fresh tokens until the current credential's `exp`; only then does
 the session's reading end, key and tokens wiped, while the session stays
 and `/v1/me` says why in `bus.state` (`reading`, `waiting: …`, `refused: …`, `ended: …`, with
 `bus.name` and `bus.anchor` once the record came). Logout and the end of
-the session (`CONSOLE_SESSION_SEC`) close the connection and drop key and
+the session (`CB_CONSOLE_SESSION_SEC`) close the connection and drop key and
 tokens the same way. A login from a browser that holds a session ends
 that session first, and one person keeps at most four sessions (by
 `sub`): a fifth closes the oldest, below the login service's own cap.
@@ -82,7 +82,7 @@ that session first, and one person keeps at most four sessions (by
 The logout (the sidebar's button, `POST /logout`; a GET answers 405)
 ends Keycloak's session too (RT-6.43 step 9): after dropping its own
 session the server redirects to the realm's `end_session_endpoint` with
-`client_id`, `post_logout_redirect_uri=<CONSOLE_PUBLIC_URL>/` and the
+`client_id`, `post_logout_redirect_uri=<CB_CONSOLE_PUBLIC_URL>/` and the
 login's stored ID token as `id_token_hint`, expired or not (kept in
 memory with the session; Keycloak checks the hint's signature, not its
 expiry). Without one (after a restart) Keycloak asks the person to
@@ -147,35 +147,35 @@ Nothing of the console's own. The login service needs its console path
 on (`CB_AUTH_CONSOLE_CLIENT_ID`, formerly `AUTH_CONSOLE_CLIENT_ID`, naming
 the console's Keycloak client, `CB_AUTH_OPERATOR_GROUP`, its JetStream user's consumer rights on `STATS`;
 `services/auth/README.md`). The pilot's console user in the NATS server's
-configuration, its seed secret and `CONSOLE_NATS_SEED_FILE` are removed:
-the server refuses to start while `CONSOLE_NATS_SEED_FILE` is set, and
+configuration, its seed secret and `CB_CONSOLE_NATS_SEED_FILE` are removed:
+the server refuses to start while `CB_CONSOLE_NATS_SEED_FILE` is set, and
 never reads the file.
 
-## Settings (all `CONSOLE_*`, checked on start; fail closed)
+## Settings (all `CB_CONSOLE_*`, checked on start; fail closed)
 
 | Variable | What |
 |---|---|
-| `CONSOLE_PUBLIC_URL` | where the browser reaches the console (redirect URI); https off loopback |
-| `CONSOLE_ISSUER`, `CONSOLE_CLIENT_ID` | Keycloak: the issuer and the console's own client |
-| `CONSOLE_OPERATOR_GROUP` | the realm group whose members may log in (required: without it the console refuses to start) |
-| `CONSOLE_ADDR` | listen, default `127.0.0.1:8747`; in a container set `0.0.0.0:8747` (a kubelet cannot probe a loopback listener) — outside one it stays loopback |
-| `CONSOLE_TOKEN_ALGS` | the access token's allowed algs, default `RS256` (asymmetric only, never `HS*`/`none`) |
-| `CONSOLE_NATS_URL` | `tls://` anywhere, `nats://` loopback only (as `natsbus`) |
-| `CONSOLE_NATS_CA_FILE` | the CA for `tls://` |
-| `CONSOLE_PRESENCE_SUBJECT`, `CONSOLE_PRESENCE_STREAM` | defaults `presence`, `PRESENCE` |
-| `CONSOLE_STATS_SUBJECT`, `CONSOLE_STATS_STREAM` | the STATS lines' prefix (the login service's `CB_AUTH_STATS_PREFIX`) and stream, defaults `stats`, `STATS` |
-| `CONSOLE_NATS_SEED_FILE` | **gone**: set, it refuses the start (the static account's secret goes with it) |
-| `CONSOLE_WEB_DIR` | the built browser app (`console/web/dist`) |
-| `CONSOLE_SESSION_SEC` | session lifetime, default 8 h |
-| `CONSOLE_LOGIN_OFF` | **tests and the mock only** (loopback): no login, the operator is a stand-in |
+| `CB_CONSOLE_PUBLIC_URL` | where the browser reaches the console (redirect URI); https off loopback |
+| `CB_CONSOLE_ISSUER`, `CB_CONSOLE_CLIENT_ID` | Keycloak: the issuer and the console's own client |
+| `CB_CONSOLE_OPERATOR_GROUP` | the realm group whose members may log in (required: without it the console refuses to start) |
+| `CB_CONSOLE_ADDR` | listen, default `127.0.0.1:8747`; in a container set `0.0.0.0:8747` (a kubelet cannot probe a loopback listener) — outside one it stays loopback |
+| `CB_CONSOLE_TOKEN_ALGS` | the access token's allowed algs, default `RS256` (asymmetric only, never `HS*`/`none`) |
+| `CB_CONSOLE_NATS_URL` | `tls://` anywhere, `nats://` loopback only (as `natsbus`) |
+| `CB_CONSOLE_NATS_CA_FILE` | the CA for `tls://` |
+| `CB_CONSOLE_PRESENCE_SUBJECT`, `CB_CONSOLE_PRESENCE_STREAM` | defaults `presence`, `PRESENCE` |
+| `CB_CONSOLE_STATS_SUBJECT`, `CB_CONSOLE_STATS_STREAM` | the STATS lines' prefix (the login service's `CB_AUTH_STATS_PREFIX`) and stream, defaults `stats`, `STATS` |
+| `CB_CONSOLE_NATS_SEED_FILE` | **gone**: set, it refuses the start (the static account's secret goes with it) |
+| `CB_CONSOLE_WEB_DIR` | the built browser app (`console/web/dist`) |
+| `CB_CONSOLE_SESSION_SEC` | session lifetime, default 8 h |
+| `CB_CONSOLE_LOGIN_OFF` | **tests and the mock only** (loopback): no login, the operator is a stand-in |
 
 ## The Keycloak client of the console's own (the lab's part)
 
 - a **public** client with the authorization-code flow and PKCE enabled
   (the console is its own client, not the bus's device-flow client,
   ADR-014 point 6);
-- one valid redirect URI: `<CONSOLE_PUBLIC_URL>/callback`, exact;
-- one valid post logout redirect URI: `<CONSOLE_PUBLIC_URL>/`, exact
+- one valid redirect URI: `<CB_CONSOLE_PUBLIC_URL>/callback`, exact;
+- one valid post logout redirect URI: `<CB_CONSOLE_PUBLIC_URL>/`, exact
   (the logout's way back, RT-6.43 step 9; without it Keycloak refuses
   the logout's redirect);
 - the **standard flow alone** (device authorization grant, direct access
@@ -197,14 +197,14 @@ never reads the file.
 - The Keycloak client needs **PKCE (S256)** and, in the **access token**:
   an **audience mapper** for the client id (`aud`, `azp`) and a **group
   mapper** onto `groups` (full path on, so the claim carries
-  `/operators`; `CONSOLE_OPERATOR_GROUP` names what the check matches
+  `/operators`; `CB_CONSOLE_OPERATOR_GROUP` names what the check matches
   exactly). **`preferred_username` is required** — it is the operator's
   name on every view — and `name` (the display name) is welcome.
 - A `tls://` NATS URL needs the lab server's `handshake_first: true`
   (the console connects TLS first, as every host does).
 - **`/healthz` is the readiness probe**; **`/livez` the liveness probe**.
   `/healthz` answers 200 when the settings held at the start and the NATS
-  server answers on `CONSOLE_NATS_URL` (a verified TLS handshake for
+  server answers on `CB_CONSOLE_NATS_URL` (a verified TLS handshake for
   `tls://`, a TCP connect for loopback `nats://`; asked at most every
   5 s), else 503 "the NATS server does not answer". It waits for no
   fleet: there is no reader before a login, and each login's connection

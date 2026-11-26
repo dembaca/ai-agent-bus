@@ -17,7 +17,7 @@ COPY console/web/package.json console/web/package-lock.json ./console/web/
 RUN npm --prefix console/web ci --ignore-scripts
 COPY console/fixtures ./console/fixtures
 COPY console/web ./console/web
-RUN VITE_CONSOLE_API=/ npm --prefix console/web run build
+RUN VITE_CB_CONSOLE_API=/ npm --prefix console/web run build
 
 FROM python:3.13-slim@sha256:1b5c0692836eae9b028cc352d7146872f36939aa1fb0de24d3ef6df307b956c9 AS server
 WORKDIR /src
@@ -40,7 +40,7 @@ FROM gcr.io/distroless/python3-debian13:nonroot@sha256:e36c26ad81ef8c9da7605d717
 COPY --from=server /venv /venv
 COPY --from=web /src/console/web/dist /app/web
 ENV PYTHONPATH=/venv/lib/python3.13/site-packages \
-    CONSOLE_WEB_DIR=/app/web \
+    CB_CONSOLE_WEB_DIR=/app/web \
     PYTHONUNBUFFERED=1
 USER nonroot:nonroot
 EXPOSE 8747

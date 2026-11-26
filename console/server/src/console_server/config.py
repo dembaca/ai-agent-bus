@@ -1,10 +1,17 @@
 """Settings, from the environment, checked on start (fail closed)."""
 from __future__ import annotations
 
+import logging
+import re
 import os
 from collections.abc import Callable
 from dataclasses import dataclass, field
 from urllib.parse import urlsplit
+
+log = logging.getLogger("console")
+
+_PLACEHOLDER_RE = re.compile(r"^\$\{[A-Za-z_][A-Za-z0-9_]*\}$")
+_WARNED: set[str] = set()
 
 
 class ConfigError(Exception):
@@ -67,17 +74,47 @@ def find() -> Settings:
     """From the environment; absent optional settings become their
     defaults, required ones raise ``ConfigError`` with their names."""
     def given(name: str) -> str:
-        return os.environ.get(name, "").strip()
+        """The reading rule of docs/env-names.md (0.103.0), the placeholder
+        rule included: the new `CB_CONSOLE_…` first — an unexpanded
+        `${CB_CONSOLE_…}` (a manifest's untouched entry) counts as unset,
+        as the mcp `env()` helper reads it; else the old `CONSOLE_…` with one
+        deprecation warning per process that names the new one; both set
+        with different values refuses (never a secret's value). Empty
+        counts as set, the values compared as they are given (unstripped),
+        the returned value stays the caller's to strip."""
+        def _value(var: str) -> str | None:
+            if var not in os.environ:
+                return None
+            value = os.environ[var]
+            if _PLACEHOLDER_RE.match(value):
+                return None          # an untouched manifest entry: unset
+            return value
+
+        new_name = "CB_CONSOLE_" + name[len("CONSOLE_"):]
+        new_value = _value(new_name)
+        old_value = _value(name)
+        if new_value is not None:
+            if old_value is not None and new_value != old_value:
+                raise ConfigError(f"{new_name} and {name} are both set and"
+                                  " differ (values are never shown)")
+            return new_value
+        if old_value is not None:
+            if name not in _WARNED:
+                _WARNED.add(name)             # once per process
+                log.warning("console: the setting %s is deprecated,"
+                            " use %s", name, new_name)
+            return old_value
+        return ""
 
     listen = given("CONSOLE_ADDR")
     host, port = "127.0.0.1", 8747
     if listen:
         if ":" not in listen:
-            raise ConfigError("CONSOLE_ADDR: host:port")
+            raise ConfigError("CB_CONSOLE_ADDR: host:port")
         h, _, p = listen.rpartition(":")
         host = h or host
         if not p.isdigit() or not (0 < int(p) < 65536):
-            raise ConfigError("CONSOLE_ADDR: host:port")
+            raise ConfigError("CB_CONSOLE_ADDR: host:port")
         port = int(p)
 
     # the unattended page's listener of its own (#158): loopback by
@@ -85,14 +122,14 @@ def find() -> Settings:
     mhost, mport = "127.0.0.1", 8748
     if listen_addr := given("CONSOLE_METRICS_LISTEN_ADDR"):
         if ":" not in listen_addr:
-            raise ConfigError("CONSOLE_METRICS_LISTEN_ADDR: host:port")
+            raise ConfigError("CB_CONSOLE_METRICS_LISTEN_ADDR: host:port")
         mh, _, mp = listen_addr.rpartition(":")
         mhost = mh or mhost
         if not mp.isdigit() or not (0 < int(mp) < 65536):
-            raise ConfigError("CONSOLE_METRICS_LISTEN_ADDR: host:port")
+            raise ConfigError("CB_CONSOLE_METRICS_LISTEN_ADDR: host:port")
         mport = int(mp)
     settings = Settings(
-        public_url=_required(given, "CONSOLE_PUBLIC_URL"),
+        public_url=_required(given, "CONSOLE_PUBLIC_URL", "CB_CONSOLE_PUBLIC_URL"),
         issuer=given("CONSOLE_ISSUER"),
         client_id=given("CONSOLE_CLIENT_ID"),
         operator_group=given("CONSOLE_OPERATOR_GROUP"),
@@ -117,12 +154,12 @@ def find() -> Settings:
     if bool(settings.metrics_nkey_file) != bool(settings.metrics_token_file):
         # a half-configured feature reads nothing and lets nobody scrape:
         # it refuses to start, exactly like every other pairing here
-        raise ConfigError("CONSOLE_METRICS_NKEY_SEED_FILE and"
-                          " CONSOLE_METRICS_TOKEN_FILE: both or neither")
+        raise ConfigError("CB_CONSOLE_METRICS_NKEY_SEED_FILE and"
+                          " CB_CONSOLE_METRICS_TOKEN_FILE: both or neither")
     if given("CONSOLE_NATS_SEED_FILE"):
         # the static account is gone (RT-6.43): a leftover setting points at a
         # secret that must go too, so the start refuses; the file is never read
-        raise ConfigError("CONSOLE_NATS_SEED_FILE: the console's static NATS"
+        raise ConfigError("CB_CONSOLE_NATS_SEED_FILE: the console's static NATS"
                           " account is gone, every operator reads with a"
                           " credential of their own; remove the setting, the"
                           " secret and the account's user")
@@ -130,44 +167,44 @@ def find() -> Settings:
     return _https(settings)
 
 
-def _required(given: Callable[[str], str], name: str) -> str:
+def _required(given: Callable[[str], str], name: str, new_name: str = "") -> str:
     value = given(name)
     if not value:
-        raise ConfigError(f"{name} is required")
+        raise ConfigError(f"{new_name or name} is required")
     return _url(value, name)
 
 
 def _check(s: Settings) -> None:
     if not s.login_off and (not s.issuer or not s.client_id):
-        raise ConfigError("CONSOLE_ISSUER and CONSOLE_CLIENT_ID are required"
+        raise ConfigError("CB_CONSOLE_ISSUER and CB_CONSOLE_CLIENT_ID are required"
                           " (or CONSOLE_LOGIN_OFF=1 for tests)")
     if not s.login_off and not s.operator_group:
         # fail closed (the reviews' blocker): an unset group would admit
         # every user of the realm
-        raise ConfigError("CONSOLE_OPERATOR_GROUP is required: only its"
+        raise ConfigError("CB_CONSOLE_OPERATOR_GROUP is required: only its"
                           " members may log in")
     if s.login_off and s.listen_host not in ("127.0.0.1", "::1", "localhost"):
-        raise ConfigError("CONSOLE_LOGIN_OFF=1 refuses a non-loopback"
+        raise ConfigError("CB_CONSOLE_LOGIN_OFF=1 refuses a non-loopback"
                           " CONSOLE_ADDR: it would serve without a login")
     if not s.login_off:
         _url(s.issuer, "CONSOLE_ISSUER")
     _url(s.public_url, "CONSOLE_PUBLIC_URL")
     if not s.nats_url:
-        raise ConfigError("CONSOLE_NATS_URL is required")
+        raise ConfigError("CB_CONSOLE_NATS_URL is required")
     parts = urlsplit(s.nats_url)
     if parts.scheme not in ("tls", "nats"):
-        raise ConfigError("CONSOLE_NATS_URL: tls:// or nats:// URL")
+        raise ConfigError("CB_CONSOLE_NATS_URL: tls:// or nats:// URL")
     if parts.scheme == "nats" and parts.hostname not in ("127.0.0.1", "::1", "localhost"):
-        raise ConfigError("CONSOLE_NATS_URL: nats:// only to a loopback host"
+        raise ConfigError("CB_CONSOLE_NATS_URL: nats:// only to a loopback host"
                           " (a token to anywhere else would go in the clear); use tls://")
     for name in (s.presence_subject, s.presence_stream):
         if not name or any(c in name for c in ". *>"):
-            raise ConfigError("CONSOLE_PRESENCE_SUBJECT/STREAM: one plain token")
+            raise ConfigError("CB_CONSOLE_PRESENCE_SUBJECT/STREAM: one plain token")
     for name in (s.stats_subject, s.stats_stream):
         if not name or any(c in name for c in ". *>"):
-            raise ConfigError("CONSOLE_STATS_SUBJECT/STREAM: one plain token")
+            raise ConfigError("CB_CONSOLE_STATS_SUBJECT/STREAM: one plain token")
     if s.stats_subject in (s.presence_subject, "deliver"):
-        raise ConfigError("CONSOLE_STATS_SUBJECT: not the presence prefix, not deliver")
+        raise ConfigError("CB_CONSOLE_STATS_SUBJECT: not the presence prefix, not deliver")
 
 
 def _https(s: Settings) -> Settings:
@@ -176,7 +213,7 @@ def _https(s: Settings) -> Settings:
     if urlsplit(s.public_url).scheme == "http" and host in ("127.0.0.1", "::1", "localhost"):
         return s
     if not urlsplit(s.public_url).scheme == "https":
-        raise ConfigError("CONSOLE_PUBLIC_URL: https, or http on loopback")
+        raise ConfigError("CB_CONSOLE_PUBLIC_URL: https, or http on loopback")
     return s
 
 
