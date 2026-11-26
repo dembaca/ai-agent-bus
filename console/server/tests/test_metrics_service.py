@@ -86,6 +86,19 @@ async def test_the_scrape_token_gates_the_service_page(tmp_path) -> None:
         assert families == set(CONSOLE_FAMILIES) | set(AGENT_FAMILIES)
         assert not any(k.startswith("choirbus_bus_") for k in series)
         assert series["choirbus_console_bus_connects_total"] == 0.0
+        # fed right through the service view with its reading live once,
+        # the series appear — review finding 2's fix
+        from mattermost_ai_agent_bus.natsbus import encode_presence
+        console.metrics.last_delivery = 1.0    # its reading delivered
+        console.service.fleet._see(1764061800.0)
+        name2 = agent_name("dembaca", "UDXU4RCSJNZOIQHZNWXHXORDPRTGNJAHAHFRGZNEEJCPQTT2M7NFCNF4")
+        assert console.service.fleet.on_delivery(
+            f"presence.dembaca.{name2}", encode_presence("online", "", ""),
+            ack("PRESENCE", "console-metrics_presence", 2, 1764061800.0),
+            "PRESENCE", "console-metrics_presence")
+        status, body = await bare(bearer="tok-123456")
+        _families, series = page(body.decode())
+        assert series['choirbus_bus_agents{state="online",harness="other"}'] == 1.0
         # the main listener: the operator's page, a Bearer goes nowhere
         status, _h, _b = await get_console(console, "/metrics", bearer="tok-123456")
         assert (status, _b) == (401, b'{"error": "operator login required"}')
