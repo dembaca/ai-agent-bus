@@ -17,7 +17,9 @@ before 0.5.0 are described in the git history.
   A human's plain reply in a thread an agent started (its ask, task or
   status) woke the coordinator as well, so two agents answered. A trusted
   human's reply there (anyone's but an agent's with the gate off) now wakes
-  only that agent, while the roster shows it as reachable in the home; the
+  only that agent, while the roster shows it as a reachable peer in the home
+  (read at most once a minute; a foreign agent's thread stays the
+  coordinator's); the
   coordinator gets the reply in its digest, also in a thread it posted in,
   shows no typing for it and owes it no answer. A human's reply under an
   agent's status post (`IDLE` and the like) thus wakes that agent and reaches

@@ -83,7 +83,7 @@ async def author_classes(client: ChatPort, posts: Sequence[Post]) -> list[str]:
 
 # RT-6.6 step 5: a thread root's author, read once per root ('' for a webhook
 # post); the oldest go first beyond ROOTS_KEPT. Whether that author is a
-# reachable agent of the home is read from the roster each time, at most every
+# reachable peer of the home is read from the roster each time, at most every
 # COORD_TTL_SEC (_reach), never kept with the root.
 _roots: dict[str, str] = {}
 ROOTS_KEPT = 2000
@@ -91,22 +91,25 @@ _reach: tuple[float, frozenset[str]] | None = None
 
 
 async def _reachable_here(client: ChatPort) -> frozenset[str]:
-    """The ids of the home's reachable agents (lease.roster, the same rows
+    """The ids of the home's reachable peers (lease.roster, the same rows
     RT-6.21 reads for departed and not here), without the ambassadors of
-    other homes; empty when the roster cannot be read."""
+    other homes and without foreign agents (owners.foreign, in doubt
+    foreign: ADR-001, the crown defers only to a peer); empty when the roster
+    cannot be read, and so for COORD_TTL_SEC."""
     global _reach
     now = time.monotonic()
     if _reach is None or now - _reach[0] > COORD_TTL_SEC:
-        rows = await lease.roster(client)
-        _reach = (now, frozenset(r.user_id for r in rows if r.user_id and not r.crown_of))
+        ids = {r.user_id for r in await lease.roster(client) if r.user_id and not r.crown_of}
+        _reach = (now, frozenset(ids - set(await owners.foreign(client, ids))))
     return _reach[1]
 
 
 async def other_agents_thread(client: ChatPort, root_id: str, uid: str) -> bool | None:
     """Whether the thread `root_id` is another agent's (RT-6.6 step 5): its
-    root was posted by an agent of this home, not `uid`, that the roster shows
-    as reachable now. A root by a human, a webhook, this agent, or an agent
-    departed, not here or not reachable is not (the crown wakes as before).
+    root was posted by a peer of this home, not `uid`, that the roster shows
+    as reachable now. A root by a human, a webhook, this agent, a foreign
+    agent, or one departed, not here or not reachable is not (the crown
+    wakes as before).
     None: the root cannot be read (unsure: the caller wakes as before)."""
     author = _roots.get(root_id)
     if author is None:

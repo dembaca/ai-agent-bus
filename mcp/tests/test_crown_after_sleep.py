@@ -231,6 +231,7 @@ REPLY = "s" * 26
 
 MALLORY = "v" * 26  # a person not on the trusted list
 GONE = "g" * 26     # an agent no longer on the roster
+FOREIGN = "w" * 26  # another owner's agent in the home (ADR-001)
 
 
 def _peer(home: Home) -> None:
@@ -282,6 +283,24 @@ async def test_a_humans_reply_in_another_agents_thread_is_not_the_crowns(home, m
     assert await _judge_reply(home, HUMAN, "what is open?") == (True, True)
     assert await _judge_reply(home, BOT, "ASK · which db?") == (False, True)  # its own: addressed
     assert await _judge_reply(home, GONE, "ASK · which db?") == (True, True)  # not reachable
+
+
+async def test_the_crown_defers_only_to_a_peer(home, monkeypatch):
+    """RT-6.6 step 5 (#207), ADR-001: a trusted human's reply in a thread a
+    reachable peer started is that peer's; in one a reachable foreign agent
+    (another owner's) started it wakes the 👑 as before."""
+    monkeypatch.setattr(gate, "_roots", {})
+    monkeypatch.setattr(gate, "_reach", None)
+    _peer(home)
+    await lease.command(home, "tick")
+    assert lease.crown_held(BOT)
+    # It joins after the election (one with it present would crown nobody here).
+    home._agents.add(FOREIGN)
+    home.descriptions[FOREIGN] = "for @mallory · trusts @mallory · via agent-registrar"
+    home.agent(FOREIGN, "agent-guest", 4000)
+    assert {r.user_id for r in await lease.roster(home)} >= {AGENT, FOREIGN}  # both reachable
+    assert await _judge_reply(home, AGENT, "ASK · which db?") == (False, False)
+    assert await _judge_reply(home, FOREIGN, "ASK · which db?") == (True, True)
 
 
 async def test_what_the_gate_holds_back_stays_the_crowns(home, monkeypatch):
