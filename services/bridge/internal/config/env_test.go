@@ -196,14 +196,21 @@ func TestTheRemovalReleaseRefusesAnOldNameAlone(t *testing.T) {
 		!namesBoth(err.Error(), "CB_BRIDGE_MM_BOT_PREFIX", "BRIDGE_BOT_PREFIX") || strings.Contains(err.Error(), "bb-") {
 		t.Fatalf("want a refusal naming both names and no value, got %q, %v", v, err)
 	}
-	for _, env := range []map[string]string{
-		{"CB_BRIDGE_MM_BOT_PREFIX": "bb-"},
-		{"CB_BRIDGE_MM_BOT_PREFIX": "bb-", "BRIDGE_BOT_PREFIX": "bb-"},
+	for _, tc := range []struct {
+		env   map[string]string
+		warns int
+	}{
+		{map[string]string{"CB_BRIDGE_MM_BOT_PREFIX": "bb-"}, 0},
+		{map[string]string{"CB_BRIDGE_MM_BOT_PREFIX": "bb-", "BRIDGE_BOT_PREFIX": "bb-"}, 1},
 	} {
-		e := mapEnv(env, nil)
+		var w warnings
+		e := mapEnv(tc.env, w.warn)
 		e.refuseOld = true
 		if v, err := e.Get("CB_BRIDGE_MM_BOT_PREFIX", "BRIDGE_BOT_PREFIX"); err != nil || v != "bb-" {
-			t.Errorf("%v: got %q, %v", env, v, err)
+			t.Errorf("%v: got %q, %v", tc.env, v, err)
+		}
+		if len(w) != tc.warns {
+			t.Errorf("%v: %d warnings, want %d (both equal still warns that the old name can go): %q", tc.env, len(w), tc.warns, w)
 		}
 	}
 }
