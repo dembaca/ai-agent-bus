@@ -119,9 +119,9 @@ async def _remember(port: ChatPort, bot_id: str, channel_id: str, post: Post) ->
 
 
 def client_from_env() -> BusClient:
-    """The chat adapter the environment names (MM_CHAT_URL, MM_BOT_TOKEN,
+    """The chat adapter the environment names (CB_MM_CHAT_URL, CB_MM_BOT_TOKEN,
     MM_REGISTER_URL, …): Mattermost's, wrapped so that its posts are kept as
-    the bus's own (#255). A home named in MM_NATS_HOMES runs its agents' posts,
+    the bus's own (#255). A home named in CB_NATS_HOMES runs its agents' posts,
     threads and reactions over NATS (nats_port.py, RT-6.36): the adapter is then
     wrapped in a NatsPort first, inside the wrapper. Raises RuntimeError without
     a chat URL."""
@@ -132,35 +132,35 @@ def client_from_env() -> BusClient:
 
 
 def nats_homes_from_env(environ: Mapping[str, str] | None = None) -> frozenset[str]:
-    """MM_NATS_HOMES: the home channels switched to NATS, comma or space separated
+    """CB_NATS_HOMES: the home channels switched to NATS, comma or space separated
     (a leading ~ is dropped), lower case; empty when unset."""
-    raw = (environ.get("MM_NATS_HOMES", "") if environ is not None else env("MM_NATS_HOMES"))
+    raw = env("CB_NATS_HOMES", environ=environ)
     return frozenset(n.lstrip("~").lower() for n in re.split(r"[,\s]+", raw) if n.lstrip("~"))
 
 
 def nats_settings_from_env(home: str, lobby: str = "",
                            environ: Mapping[str, str] | None = None) -> NatsSettings | None:
-    """The NATS settings of a session whose home channel is `home` (the lobby, MM_CHANNEL,
-    is `lobby`): MM_NATS_URL (one or more URLs, comma or space separated, all one scheme:
-    tls:// or wss://, or nats:///ws:// to a loopback host), MM_NATS_CA_FILE (optional),
-    MM_PROPS_PREFIX. None
+    """The NATS settings of a session whose home channel is `home` (the lobby, CB_MM_CHANNEL,
+    is `lobby`): CB_NATS_URL (one or more URLs, comma or space separated, all one scheme:
+    tls:// or wss://, or nats:///ws:// to a loopback host), CB_NATS_CA_FILE (optional),
+    CB_PROPS_PREFIX. None
     without a URL; raises ValueError for a URL or prefix that is not allowed."""
     from .natsbus import NatsSettings
 
     def get(name: str) -> str:
-        return (environ.get(name, "") if environ is not None else env(name)).strip()
+        return env(name, environ=environ).strip()
 
-    urls = tuple(u for u in re.split(r"[,\s]+", get("MM_NATS_URL")) if u)
+    urls = tuple(u for u in re.split(r"[,\s]+", get("CB_NATS_URL")) if u)
     if not urls:
         return None
     return NatsSettings(servers=urls, home=home, lobby_channel=lobby or "lobby",
-                        props_prefix=a2a.user_prefix(environ), tls_ca_file=get("MM_NATS_CA_FILE") or None,
-                        trusted=tuple((get("MM_TRUSTED_HUMANS") or get("MM_OWNER")).split(",")))
+                        props_prefix=a2a.user_prefix(environ), tls_ca_file=get("CB_NATS_CA_FILE") or None,
+                        trusted=tuple((get("CB_TRUSTED_HUMANS") or get("CB_OWNER")).split(",")))
 
 
 def _with_nats(adapter: BusClient) -> BusClient:
-    """The adapter, or a NatsPort around it when MM_NATS_HOMES names this session's
-    home. Without the login (MM_LOGIN_*) or a usable MM_NATS_URL the home stays
+    """The adapter, or a NatsPort around it when CB_NATS_HOMES names this session's
+    home. Without the login (CB_LOGIN_*) or a usable CB_NATS_URL the home stays
     entirely on Mattermost, with the reason in the log: never half."""
     homes = nats_homes_from_env()
     if not homes:
@@ -168,7 +168,7 @@ def _with_nats(adapter: BusClient) -> BusClient:
         return adapter
     home = adapter.work_channel_name.lower()
     if home not in homes:
-        log.info("MM_NATS_HOMES names no home of this session (%s): Mattermost", home)
+        log.info("CB_NATS_HOMES names no home of this session (%s): Mattermost", home)
         lease.use_nats("", None)
         return adapter
     from . import login
@@ -176,28 +176,28 @@ def _with_nats(adapter: BusClient) -> BusClient:
 
     # The home is named: without a NATS side it has no crown and no election (RT-6.38 step 6).
     if login.settings_from_env() is None:
-        log.error("MM_NATS_HOMES names ~%s, but the login (MM_LOGIN_ISSUER, MM_LOGIN_CLIENT_ID) "
+        log.error("CB_NATS_HOMES names ~%s, but the login (CB_LOGIN_ISSUER, CB_LOGIN_CLIENT_ID) "
                   "is not set up: the home stays on Mattermost, with no crown and no election (RT-6.38)", home)
-        lease.use_nats(home, None, "the login (MM_LOGIN_ISSUER, MM_LOGIN_CLIENT_ID) is not set up")
+        lease.use_nats(home, None, "the login (CB_LOGIN_ISSUER, CB_LOGIN_CLIENT_ID) is not set up")
         return adapter
     try:
         settings = nats_settings_from_env(home, adapter.channel_name.lower())
     except ValueError as exc:
-        log.error("MM_NATS_HOMES names ~%s, but the NATS settings are not usable (%s): "
+        log.error("CB_NATS_HOMES names ~%s, but the NATS settings are not usable (%s): "
                   "the home stays on Mattermost, with no crown and no election (RT-6.38)", home, exc)
         lease.use_nats(home, None, f"the NATS settings are not usable ({exc})")
         return adapter
     if settings is None:
-        log.error("MM_NATS_HOMES names ~%s, but MM_NATS_URL is not set: the home stays on Mattermost, "
+        log.error("CB_NATS_HOMES names ~%s, but CB_NATS_URL is not set: the home stays on Mattermost, "
                   "with no crown and no election (RT-6.38)", home)
-        lease.use_nats(home, None, "MM_NATS_URL is not set")
+        lease.use_nats(home, None, "CB_NATS_URL is not set")
         return adapter
     try:
-        memory = int(env("MM_NATS_MEMORY") or DEFAULT_MEMORY)
+        memory = int(env("CB_NATS_MEMORY") or DEFAULT_MEMORY)
     except ValueError:
         memory = DEFAULT_MEMORY
-    # MM_BRIDGE_BOT: the bridge's copies of the home's NATS posts are dropped on read (RT-6.36 step 4).
-    port = NatsPort(adapter, settings, {home}, memory=memory, bridge_bot=env("MM_BRIDGE_BOT"))
+    # CB_MM_BRIDGE_BOT: the bridge's copies of the home's NATS posts are dropped on read (RT-6.36 step 4).
+    port = NatsPort(adapter, settings, {home}, memory=memory, bridge_bot=env("CB_MM_BRIDGE_BOT"))
     lease.use_nats(home, port)  # the crown of the home is the NATS bus's (RT-6.38)
     return cast("BusClient", port)
 

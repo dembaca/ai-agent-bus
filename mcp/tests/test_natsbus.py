@@ -1,5 +1,5 @@
 """The NATS transport (natsbus.py, ADR-014 point 16): unit tests, and tests against a real
-nats-server 2.15.3 (MM_NATS_SERVER=<path>, or on PATH). The server tests are skipped unless
+nats-server 2.15.3 (CB_NATS_SERVER=<path>, or on PATH). The server tests are skipped unless
 MM_TEST_NATS=1; with it, a missing binary is a failure, not a skip (CI sets it).
 """
 
@@ -159,7 +159,7 @@ def test_the_owner_token_of_a_presence_subject() -> None:
 @pytest.mark.parametrize("owner", ["Alice", "ALICE", "alice ", " alice", "al\nice", "alice\n", "äl", ""])
 def test_an_owner_counts_only_in_the_one_form_the_bus_compares(owner: str) -> None:
     """RT-6.37: one namespace. The owner is compared with Mattermost usernames
-    (MM_TRUSTED_HUMANS, the owners of Mattermost bots), which are lower case; nothing is
+    (CB_TRUSTED_HUMANS, the owners of Mattermost bots), which are lower case; nothing is
     normalised, so an owner in any other form gets the token "-" and is no owner: two
     owners never become one."""
     assert owner_token(owner) == "-"
@@ -1020,7 +1020,7 @@ def _free_port() -> int:
 
 
 def _server_binary() -> str | None:
-    return os.environ.get("MM_NATS_SERVER") or shutil.which("nats-server")
+    return os.environ.get("CB_NATS_SERVER") or shutil.which("nats-server")
 
 
 @pytest.fixture
@@ -1029,7 +1029,7 @@ async def rig(tmp_path: Path) -> AsyncIterator[Rig]:
         pytest.skip("MM_TEST_NATS=1 runs the tests against a real nats-server")
     binary = _server_binary()
     if not binary or not Path(binary).exists():
-        pytest.fail("nats-server 2.15.3 not found: set MM_NATS_SERVER=<path> or put it on PATH")
+        pytest.fail("nats-server 2.15.3 not found: set CB_NATS_SERVER=<path> or put it on PATH")
     # carol's credential is what an older login service granted: presence.<name> (RT-6.37)
     logins = {"alice": FakeLogin(), "bob": FakeLogin(), "carol": FakeLogin()}
     names = {w: agent_name(w, lg.nkey().public_key) for w, lg in logins.items()}
@@ -1076,12 +1076,12 @@ async def rig(tmp_path: Path) -> AsyncIterator[Rig]:
 @pytest.fixture
 async def wss_rig(tmp_path: Path) -> AsyncIterator[tuple[Rig, Path]]:
     """The same home over wss://: a websocket listener with a self-signed certificate, which
-    the client trusts through MM_NATS_CA_FILE (the test's `tls_ca_file`)."""
+    the client trusts through CB_NATS_CA_FILE (the test's `tls_ca_file`)."""
     if os.environ.get("MM_TEST_NATS") != "1":
         pytest.skip("MM_TEST_NATS=1 runs the tests against a real nats-server")
     binary = _server_binary()
     if not binary or not Path(binary).exists():
-        pytest.fail("nats-server 2.15.3 not found: set MM_NATS_SERVER=<path> or put it on PATH")
+        pytest.fail("nats-server 2.15.3 not found: set CB_NATS_SERVER=<path> or put it on PATH")
     cert, key = _self_signed(tmp_path)
     logins = {"alice": FakeLogin(), "eve": FakeLogin()}
     names = {w: agent_name(w, lg.nkey().public_key) for w, lg in logins.items()}
@@ -1183,13 +1183,13 @@ async def test_post_and_reply_over_a_websocket(rig: Rig) -> None:
 
 async def test_wss_verifies_the_websocket_tls(wss_rig: tuple[Rig, Path],
                                               caplog: pytest.LogCaptureFixture) -> None:
-    """wss://: the WebSocket's TLS is verified with MM_NATS_CA_FILE like tls://; without the CA
+    """wss://: the WebSocket's TLS is verified with CB_NATS_CA_FILE like tls://; without the CA
     the connection is refused, and no token goes over it."""
     rig, ca = wss_rig
     alice, a_ev = await rig.agent("alice", url=rig.ws_url, tls_ca_file=str(ca))
     await alice.post("home", "hello over wss")
     await until(lambda: len(a_ev) == 1, what="alice's own post came back over wss")
-    # the bus itself verifies: an agent without MM_NATS_CA_FILE never connects, and the bus's
+    # the bus itself verifies: an agent without CB_NATS_CA_FILE never connects, and the bus's
     # own log names the certificate. An unverified context would connect right here, which is
     # what a mutation of the TLS setup turns red (716d72's blocker on #83).
     caplog.set_level(logging.WARNING, logger="mattermost_ai_agent_bus.natsbus")
@@ -1464,7 +1464,7 @@ async def test_the_bus_renews_before_the_credential_expires(rig: Rig) -> None:
 
 
 def test_the_props_prefix_is_the_buss_setting() -> None:
-    """Props keys carry MM_PROPS_PREFIX (RT-6.16 step 8), not a fixed x_: with
+    """Props keys carry CB_PROPS_PREFIX (RT-6.16 step 8), not a fixed x_: with
     another prefix the bus can post its own keys, and x_ keys are refused."""
     m = Message("post", "hi", props={"bgl_k": "v"})
     assert decode(encode(m, "bgl_"), "bgl_") == m
@@ -1482,7 +1482,7 @@ def test_the_props_prefix_is_the_buss_setting() -> None:
 
 
 def test_an_empty_props_prefix_falls_back_instead_of_permitting_every_key() -> None:
-    """An empty MM_PROPS_PREFIX means "unset" to the bus's own check, which
+    """An empty CB_PROPS_PREFIX means "unset" to the bus's own check, which
     returns the default. The setting must store that value: holding the empty
     string would make `k.startswith("")` accept every key, `from_trusted_human`
     included, and a forged prop would pass the encoder."""
@@ -1647,7 +1647,7 @@ def test_a_certificate_for_another_name_gets_no_ca_hint(code: int) -> None:
 
 @pytest.mark.parametrize("code", [2, 18, 19, 20, 21])
 def test_an_unknown_issuer_gets_the_ca_hint(code: int) -> None:
-    assert "set MM_NATS_CA_FILE" in natsbus.connect_reason(_cert_error(code, "unknown issuer"))
+    assert "set CB_NATS_CA_FILE" in natsbus.connect_reason(_cert_error(code, "unknown issuer"))
 
 
 def test_a_certificate_error_without_its_verify_fields_does_not_raise() -> None:
@@ -1726,7 +1726,7 @@ async def test_tls_url_refuses_a_trusted_certificate_for_another_name(tmp_path: 
         assert b"CONNECT" not in srv.received and b"tok-" not in srv.received
         # A certificate for another name may be a man in the middle: no hint to trust its CA.
         why = natsbus.connect_reason(err.value)
-        assert why.startswith("TLS: the certificate does not name this host") and "MM_NATS_CA_FILE" not in why
+        assert why.startswith("TLS: the certificate does not name this host") and "CB_NATS_CA_FILE" not in why
 
 
 def test_tls_and_plain_servers_are_not_mixed() -> None:

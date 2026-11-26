@@ -11,13 +11,12 @@ words in every harness. Pure functions over what the hook API routes read
 
 from __future__ import annotations
 
-import os
 import re
 import time
 from collections.abc import Iterable, Mapping
 from typing import Any
 
-from . import a2a, files
+from . import a2a, config, files
 from .model import Mark
 
 # Drain rounds per turn before a counter wait_for_events cannot clear counts
@@ -67,10 +66,10 @@ def needs_signoff(last_message: str, *, asked: bool, by_bus: bool, push: bool,
 
 
 def listen_sec(*, coordinator: bool) -> int:
-    """MM_LISTEN_SEC, or MM_LISTEN_COORD_SEC while the agent holds the 👑
+    """CB_LISTEN_SEC, or CB_LISTEN_COORD_SEC while the agent holds the 👑
     (RT-6.6); at most MAX_LISTEN_SEC, 0 turns the window off."""
-    name, default = ("MM_LISTEN_COORD_SEC", LISTEN_COORD_SEC) if coordinator else ("MM_LISTEN_SEC", LISTEN_SEC)
-    raw = os.environ.get(name, "").strip()
+    name, default = ("CB_LISTEN_COORD_SEC", LISTEN_COORD_SEC) if coordinator else ("CB_LISTEN_SEC", LISTEN_SEC)
+    raw = config.env(name).strip()
     return min(int(raw) if raw.isdigit() else default, MAX_LISTEN_SEC)
 
 

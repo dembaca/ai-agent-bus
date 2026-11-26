@@ -67,10 +67,10 @@ def test_a_keyed_run_pins_its_keys_for_later_runs(run, tmp_path, keys):
                 pub(keys["owner"]) + " owner@laptop\n" + pub(keys["backup"]))
     assert r.code == 0, r.stderr
     f = pinned(tmp_path)
-    assert f"Pinned the release keys of MM_RELEASE_SIGNERS in {f}" in r.stdout
+    assert f"Pinned the release keys of CB_RELEASE_SIGNERS in {f}" in r.stdout
     assert f.stat().st_mode & 0o777 == 0o600
     assert keys_in(f) == [body(keys["owner"]), body(keys["backup"])]
-    assert "release keys from MM_RELEASE_SIGNERS" in r.stderr
+    assert "release keys from CB_RELEASE_SIGNERS" in r.stderr
     assert not (run.state_dir / "release-signers").exists()
 
     nxt = bump(VERSION)
@@ -91,7 +91,7 @@ def test_a_keyed_run_pins_its_keys_for_later_runs(run, tmp_path, keys):
     # Other keys, or the pinned ones plus a new one: refused, the file kept.
     for other in (pub(keys["stranger"]), pub(keys["owner"]) + "\n" + pub(keys["backup"]) + "\n" + pub(keys["stranger"])):
         unchanged(install(run, tmp_path, dest, f"v{third}", other), dest, before, names,
-                  "differ from MM_RELEASE_SIGNERS: mm-agent-host-install.sh --forget-signers first, or --release with --replace-signers")
+                  "differ from CB_RELEASE_SIGNERS: mm-agent-host-install.sh --forget-signers first, or --release with --replace-signers")
         assert keys_in(f) == [body(keys["owner"]), body(keys["backup"])]
     # The same keys in another order and with comments: silent.
     same = install(run, tmp_path, dest, f"v{nxt}", pub(keys["backup"]) + " x\n" + pub(keys["owner"]))
@@ -99,7 +99,7 @@ def test_a_keyed_run_pins_its_keys_for_later_runs(run, tmp_path, keys):
 
     r = install(run, tmp_path, dest, f"v{third}", pub(keys["stranger"]), "--replace-signers")
     assert r.code == 0, r.stderr
-    assert f"Replaced the release keys pinned in {f} with those of MM_RELEASE_SIGNERS (--replace-signers)" in r.stdout
+    assert f"Replaced the release keys pinned in {f} with those of CB_RELEASE_SIGNERS (--replace-signers)" in r.stdout
     assert keys_in(f) == [body(keys["stranger"])]
     again = install(run, tmp_path, dest, f"v{third}", pub(keys["stranger"]))
     assert again.code == 0 and "Pinned" not in again.stdout and "Replaced" not in again.stdout
@@ -131,7 +131,7 @@ def test_forget_signers_removes_the_pinned_keys(run, tmp_path, keys):
     g(origin, "tag", "-a", "-m", "unsigned", f"v{VERSION}")
     r = install(run, tmp_path, dest, f"v{VERSION}", None)
     assert r.code == 0, r.stderr
-    assert "WARNING: MM_RELEASE_SIGNERS is not set and no release keys are pinned" in r.stderr
+    assert "WARNING: CB_RELEASE_SIGNERS is not set and no release keys are pinned" in r.stderr
     assert "signature NOT checked" in r.stdout
 
 
@@ -168,7 +168,7 @@ def test_a_bad_pinned_file_is_refused_never_skipped(run, tmp_path, keys, host):
     unchanged(install(run, tmp_path, host, "v90.0.0", None), host, before, names, "holds no public key")
     pin(tmp_path, keys["owner"])
     unchanged(install(run, tmp_path, host, "v90.0.0", ""), host, before, names,
-              "MM_RELEASE_SIGNERS is set but holds no public key")
+              "CB_RELEASE_SIGNERS is set but holds no public key")
     # The layout directory where a sandbox writes (a session's workdir).
     unchanged(install(run, tmp_path, host, "v90.0.0", None, CORRAL_WORKDIR=str(layout_dir(tmp_path))),
               host, before, names, "lies where a corral sandbox can write")

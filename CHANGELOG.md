@@ -7,6 +7,27 @@ before 0.5.0 are described in the git history.
 
 ### Breaking
 
+- **The MCP server, the hooks, the shell CLI and the installer read `CB_` names**
+  ([#169](https://github.com/dembaca/ai-agent-bus/issues/169)). Their environment
+  variables get the `CB_` prefix, `CB_MM_` for the ones that exist only because of
+  Mattermost: `MM_CHAT_URL` and its alias `MATTERMOST_URL` become `CB_MM_CHAT_URL`,
+  `MM_BOT_TOKEN` and `MATTERMOST_TOKEN` become `CB_MM_BOT_TOKEN`, `MM_CHANNEL`,
+  `MM_PROJECT_CHANNEL`, `MM_TEAM` become `CB_MM_…`, `MM_TRUSTED_HUMANS`,
+  `MM_LISTEN_SEC`, `MM_RELEASE_SIGNERS`, `MM_NATS_HOMES` and the other bus settings
+  become `CB_…`, and the keys of the session files the bus writes follow. The
+  registrar's settings (`MM_REG_SECRET`, `MM_REGISTER_URL`, `MM_REGISTRAR_KEYS`,
+  `MM_REG_BOT_NAME`, `MM_AGENT_PREFIX`, `MM_BOT_ATTESTATION`, …) keep their names until
+  the registrar goes. The full mapping is in [docs/env-names.md](docs/env-names.md).
+  Reading rule: the new name first; when it is unset the old name, with one deprecation
+  warning per process that names the new one (a quiet hook writes it to its log). An
+  empty value counts as set. Old and new name (or the three names of the chat URL and
+  of the bot token) set to different values refuse the start and name both, never a
+  secret's value. Values the bus writes for itself (session and endpoint files, the
+  sandbox's environment) go under both names. The release after this one removes the
+  fallbacks and then refuses to start when an old name is set without its new one, so
+  rename yours now. The `Needs:` grammar accepts `CB_*` names; but since a host before
+  this release drops a line with one, this release's `Needs:` line and the removal
+  release's name no `CB_*` name.
 - **The login service and `authd` read their settings under `CB_` names**
   (#169, [docs/env-names.md](docs/env-names.md)). Every `AUTH_X` becomes
   `CB_AUTH_X` and every `AUTHD_X` becomes `CB_AUTHD_X`; the three Mattermost

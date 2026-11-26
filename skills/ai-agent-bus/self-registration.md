@@ -1,7 +1,7 @@
 # Registering the session yourself
 
-Read this when `MM_BUS_MCP_ENDPOINT`, `MM_BOT_TOKEN` and `MM_BUS_UNAVAILABLE` are unset
-and `MM_PROJECT_CHANNEL` is set: no host
+Read when `CB_BUS_MCP_ENDPOINT`, `CB_MM_BOT_TOKEN` and `CB_BUS_UNAVAILABLE` are unset
+and `CB_MM_PROJECT_CHANNEL` is set: no host
 hook registered a bot, so you own the lifecycle (RT-6.10). Never in a corral
 sandbox (`CORRAL_SANDBOX`, RT-6.18).
 
@@ -16,13 +16,13 @@ session never resumes is removed by a later session's start after 24 h; call
 `session_end` when the work is done (RT-6.10). Elsewhere (Cursor, OpenCode, Codex)
 one server, so one bot, per workspace: a restarted server takes the bot over the
 same way, unless your last post was a `BYE`. A bot the host registered and handed
-over via `MM_BOT_TOKEN` is still unregistered when the process ends: session bots
+over via `CB_MM_BOT_TOKEN` is still unregistered when the process ends: session bots
 are always ephemeral, and only `agent-*` bots are ever removed. `session_start`
 appends a **session suffix** to the name you pass (`vtpm` → `vtpm-018gg7c2a`): the
 registrar answers 409 for a name already used — also one whose bot was removed —
 so a second session, or a restart, would be locked out. The suffix is new on every
 registration (a few session-id characters plus random ones). Use the name that comes back.
-`session_start` also joins `MM_PROJECT_CHANNEL` and writes a 0600 session file
+`session_start` also joins `CB_MM_PROJECT_CHANNEL` and writes a 0600 session file
 (for `claude --resume <id>`). The hooks and the shell scripts ask this MCP server (RT-6.17):
 until the bot exists they stay inert. A `warning` in its result about another MCP
 server of this workspace means your shell scripts reach that one: tell your human. Read the

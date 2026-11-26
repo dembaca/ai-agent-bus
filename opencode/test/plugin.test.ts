@@ -316,7 +316,8 @@ test("RT-6.20: mcp.transform adds the server and skill.transform the skill, neve
   assert.equal(busRoot({}, {}, join(link, "bus.ts")), REPO) // a symlinked plugin finds its checkout
   // Its server's files are keyed on OpenCode's directory, never on a Claude
   // Code session it was started from; no channel push (Claude Code's).
-  const keyed = { CLAUDE_CODE_SESSION_ID: "", CLAUDE_PROJECT_DIR: "", MM_CHANNEL_PUSH: "0", MM_WORKSPACE: ws }
+  const keyed = { CLAUDE_CODE_SESSION_ID: "", CLAUDE_PROJECT_DIR: "", CB_CHANNEL_PUSH: "0", MM_CHANNEL_PUSH: "0",
+                  CB_WORKSPACE: ws, MM_WORKSPACE: ws }
   const fx = await start()
   // Its Python environment in the user's cache, never in the tree, which may
   // be read-only: a checkout under a corral grant, or the host copy (RT-6.28).

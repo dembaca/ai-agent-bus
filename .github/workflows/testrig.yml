@@ -48,12 +48,12 @@ jobs:
       - name: sync the bus
         run: uv sync --locked --directory ../mcp
 
-      # `BUS_TESTRIG_REQUIRE_BUS=1` turns that skip into a failure: a silent
+      # `CB_TESTRIG_REQUIRE_BUS=1` turns that skip into a failure: a silent
       # skip is what hid the ordering above, so CI asks for the bus explicitly.
       - name: tests
         run: uv run --locked --group dev pytest -q
         env:
-          BUS_TESTRIG_REQUIRE_BUS: "1"
+          CB_TESTRIG_REQUIRE_BUS: "1"
 
       # The harness must run where the Lab does, and must be runnable where it
       # does not: the echo run proves the second half on every build.

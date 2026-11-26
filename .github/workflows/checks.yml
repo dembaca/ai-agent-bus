@@ -62,6 +62,8 @@ jobs:
           echo "$sha  $dir/nats.tar.gz" | sha256sum -c -
           tar -xzf "$dir/nats.tar.gz" -C "$dir" --strip-components=1 "nats-server-v${v}-linux-amd64/nats-server"
           "$dir/nats-server" --version
+          echo "CB_NATS_SERVER=$dir/nats-server" >> "$GITHUB_ENV"
+          # The old name too, until the console tests read the new one (#169).
           echo "MM_NATS_SERVER=$dir/nats-server" >> "$GITHUB_ENV"
           echo "MM_TEST_NATS=1" >> "$GITHUB_ENV"
       - name: MCP server
@@ -191,6 +193,8 @@ jobs:
           echo "$sha  $dir/nats.tar.gz" | sha256sum -c -
           tar -xzf "$dir/nats.tar.gz" -C "$dir" --strip-components=1 "nats-server-v${v}-linux-amd64/nats-server"
           "$dir/nats-server" --version
+          echo "CB_NATS_SERVER=$dir/nats-server" >> "$GITHUB_ENV"
+          # The old name too, until the console tests read the new one (#169).
           echo "MM_NATS_SERVER=$dir/nats-server" >> "$GITHUB_ENV"
           echo "MM_TEST_NATS=1" >> "$GITHUB_ENV"
       - name: console server

@@ -28,7 +28,6 @@ from __future__ import annotations
 
 import json
 import logging
-import os
 import re
 import time
 from collections.abc import Mapping
@@ -36,7 +35,7 @@ from dataclasses import dataclass
 from pathlib import Path
 from typing import Any
 
-from . import a2a, asks, session_file, stats
+from . import a2a, asks, config, owners, session_file, stats
 from .model import Answer, Mark
 
 log = logging.getLogger(__name__)
@@ -106,8 +105,7 @@ def note(step: str, request_id: object, tool: object = "", reason: str = "") -> 
 
 def relayed() -> bool:
     """Someone can answer: the same variables trusted_humans() reads (RT-6.8)."""
-    return any(os.environ.get(v, "").strip() for v in (
-        "MM_TRUSTED_HUMAN_USER_IDS", "MM_TRUSTED_HUMANS", "MM_OWNER_USER_ID", "MM_OWNER"))
+    return any(config.env(v).strip() for v in owners.TRUSTED_VARS)
 
 
 def parse(message: str) -> tuple[str, str] | None:

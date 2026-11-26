@@ -23,7 +23,7 @@ log = logging.getLogger(__name__)
 async def watched_channel_ids(client: ChatPort) -> set[str]:
     """The channels the bus watches (RT-6.2 step 1): the work channel (the
     home), the project channel and the default channel (the lobby), by the
-    ids the host passed (MM_CHANNEL_ID; MM_PROJECT_CHANNEL_ID only as
+    ids the host passed (CB_MM_CHANNEL_ID; CB_MM_PROJECT_CHANNEL_ID only as
     work_channel_id takes it: while it is the project channel's, #258) and by name,
     and the guest channels (RT-6.22: the bot's other team channels, where
     only a mention or a reply in its own thread wakes it). Never a DM or
@@ -31,7 +31,7 @@ async def watched_channel_ids(client: ChatPort) -> set[str]:
     posts (websocket_inbox), the hook API counts and reads them (hookapi), so
     what the Stop hook counts is what wait_for_events can hand over. A
     channel that does not resolve is left out, the others still count."""
-    ids = {v for v in (env("MM_CHANNEL_ID"),) if _ID.fullmatch(v)}
+    ids = {v for v in (env("CB_MM_CHANNEL_ID"),) if _ID.fullmatch(v)}
     names = dict.fromkeys(n for n in (client.channel_name, client.project_channel_name) if n)
     for name in names:
         try:
@@ -46,7 +46,7 @@ async def watched_channel_ids(client: ChatPort) -> set[str]:
 
 
 async def lobby_ids(client: ChatPort) -> set[str]:
-    """The lobby (ADR-002, RT-6.22 step 3): MM_CHANNEL's id while it is not the
+    """The lobby (ADR-002, RT-6.22 step 3): CB_MM_CHANNEL's id while it is not the
     home. None when it is the home (no project channel) or cannot be resolved:
     then its posts follow the home's rules, as before 0.63.0."""
     try:

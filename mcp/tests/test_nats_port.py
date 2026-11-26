@@ -1,10 +1,10 @@
 """A home runs over NATS (RT-6.36, nats_port.py, ADR-014 points 3 and 16): the agents'
-posts, threads and reactions of a home named in MM_NATS_HOMES go over NATS, everything about
+posts, threads and reactions of a home named in CB_NATS_HOMES go over NATS, everything about
 people stays on Mattermost.
 
 Unit tests on a fake adapter and a fake bus (routing, ids, memory, root and ref rules,
 unreactions, trust, the settings, the failure that never falls back), and, with MM_TEST_NATS=1
-and MM_NATS_SERVER, tests against a real nats-server through the rig of test_natsbus.py.
+and CB_NATS_SERVER, tests against a real nats-server through the rig of test_natsbus.py.
 """
 
 import asyncio
@@ -183,30 +183,30 @@ async def arrive(port: NatsPort, where: str, sender: str, seq: int, message: Mes
 # --- the settings and the composition root --------------------------------------------------------
 
 def test_the_settings_come_from_the_environment(tmp_path: Any) -> None:
-    env = {"MM_NATS_URL": "tls://a.example:4222, tls://b.example:4222", "MM_PROPS_PREFIX": "bgl_",
-           "MM_NATS_CA_FILE": str(tmp_path / "ca.pem")}
+    env = {"CB_NATS_URL": "tls://a.example:4222, tls://b.example:4222", "CB_PROPS_PREFIX": "bgl_",
+           "CB_NATS_CA_FILE": str(tmp_path / "ca.pem")}
     s = compose.nats_settings_from_env("home", "town-square", env)
     assert s is not None
-    assert s.props_prefix == "bgl_"  # MM_PROPS_PREFIX arrives in the built settings
+    assert s.props_prefix == "bgl_"  # CB_PROPS_PREFIX arrives in the built settings
     assert s.servers == ("tls://a.example:4222", "tls://b.example:4222")
     assert (s.home, s.lobby_channel, s.tls_ca_file) == ("home", "town-square", str(tmp_path / "ca.pem"))
-    plain = compose.nats_settings_from_env("home", environ={"MM_NATS_URL": "nats://127.0.0.1:4222"})
+    plain = compose.nats_settings_from_env("home", environ={"CB_NATS_URL": "nats://127.0.0.1:4222"})
     assert plain is not None and plain.props_prefix == "x_" and plain.tls_ca_file is None
     assert compose.nats_settings_from_env("home", environ={}) is None
     with pytest.raises(ValueError):
-        compose.nats_settings_from_env("home", environ={"MM_NATS_URL": "nats://nats.example:4222"})
+        compose.nats_settings_from_env("home", environ={"CB_NATS_URL": "nats://nats.example:4222"})
 
 
 def test_the_homes_are_a_list_of_names() -> None:
-    assert compose.nats_homes_from_env({"MM_NATS_HOMES": "Home, ~proj  other"}) == {"home", "proj", "other"}
+    assert compose.nats_homes_from_env({"CB_NATS_HOMES": "Home, ~proj  other"}) == {"home", "proj", "other"}
     assert compose.nats_homes_from_env({}) == frozenset()
-    assert compose.nats_homes_from_env({"MM_NATS_HOMES": " , "}) == frozenset()
+    assert compose.nats_homes_from_env({"CB_NATS_HOMES": " , "}) == frozenset()
 
 
 @pytest.fixture
 def chat_env(monkeypatch: pytest.MonkeyPatch) -> None:
-    monkeypatch.setenv("MM_CHAT_URL", "https://chat.example")
-    monkeypatch.setenv("MM_CHANNEL", "agents")
+    monkeypatch.setenv("CB_MM_CHAT_URL", "https://chat.example")
+    monkeypatch.setenv("CB_MM_CHANNEL", "agents")
 
 
 def test_without_nats_homes_the_client_is_what_it_was(chat_env: None, monkeypatch: pytest.MonkeyPatch) -> None:
@@ -215,9 +215,9 @@ def test_without_nats_homes_the_client_is_what_it_was(chat_env: None, monkeypatc
     client = compose.client_from_env()
     assert type(client) is compose.Remembered and type(client.port) is MattermostAdapter
     assert compose.nats_port_of(client) is None
-    monkeypatch.setenv("MM_NATS_URL", "tls://nats.example:4222")  # a URL alone changes nothing
+    monkeypatch.setenv("CB_NATS_URL", "tls://nats.example:4222")  # a URL alone changes nothing
     assert type(compose.client_from_env().port) is MattermostAdapter
-    monkeypatch.setenv("MM_NATS_HOMES", "another-home")  # not a home of this session
+    monkeypatch.setenv("CB_NATS_HOMES", "another-home")  # not a home of this session
     assert type(compose.client_from_env().port) is MattermostAdapter
 
 
@@ -225,20 +225,20 @@ def test_a_nats_home_without_login_or_url_stays_on_mattermost(
         chat_env: None, monkeypatch: pytest.MonkeyPatch, caplog: pytest.LogCaptureFixture) -> None:
     from mattermost_ai_agent_bus.client import MattermostAdapter
 
-    monkeypatch.setenv("MM_NATS_HOMES", "agents")
-    monkeypatch.setenv("MM_NATS_URL", "tls://nats.example:4222")
+    monkeypatch.setenv("CB_NATS_HOMES", "agents")
+    monkeypatch.setenv("CB_NATS_URL", "tls://nats.example:4222")
     with caplog.at_level(logging.ERROR):
         client = compose.client_from_env()  # no MM_LOGIN_*
     assert type(client.port) is MattermostAdapter
     assert "login" in caplog.text and "stays on Mattermost" in caplog.text
-    monkeypatch.setenv("MM_LOGIN_ISSUER", "https://kc.example/realms/x")
-    monkeypatch.setenv("MM_LOGIN_CLIENT_ID", "bus")
-    monkeypatch.delenv("MM_NATS_URL")
+    monkeypatch.setenv("CB_LOGIN_ISSUER", "https://kc.example/realms/x")
+    monkeypatch.setenv("CB_LOGIN_CLIENT_ID", "bus")
+    monkeypatch.delenv("CB_NATS_URL")
     caplog.clear()
     with caplog.at_level(logging.ERROR):
         assert type(compose.client_from_env().port) is MattermostAdapter
-    assert "MM_NATS_URL" in caplog.text
-    monkeypatch.setenv("MM_NATS_URL", "nats://nats.example:4222")  # plain, not loopback
+    assert "CB_NATS_URL" in caplog.text
+    monkeypatch.setenv("CB_NATS_URL", "nats://nats.example:4222")  # plain, not loopback
     caplog.clear()
     with caplog.at_level(logging.ERROR):
         assert type(compose.client_from_env().port) is MattermostAdapter
@@ -249,11 +249,11 @@ def test_a_nats_home_with_login_and_url_wraps_the_adapter_inside_remembered(
         chat_env: None, monkeypatch: pytest.MonkeyPatch) -> None:
     from mattermost_ai_agent_bus.client import MattermostAdapter
 
-    monkeypatch.setenv("MM_NATS_HOMES", "agents")
-    monkeypatch.setenv("MM_NATS_URL", "tls://nats.example:4222")
-    monkeypatch.setenv("MM_LOGIN_ISSUER", "https://kc.example/realms/x")
-    monkeypatch.setenv("MM_LOGIN_CLIENT_ID", "bus")
-    monkeypatch.setenv("MM_PROPS_PREFIX", "bgl_")
+    monkeypatch.setenv("CB_NATS_HOMES", "agents")
+    monkeypatch.setenv("CB_NATS_URL", "tls://nats.example:4222")
+    monkeypatch.setenv("CB_LOGIN_ISSUER", "https://kc.example/realms/x")
+    monkeypatch.setenv("CB_LOGIN_CLIENT_ID", "bus")
+    monkeypatch.setenv("CB_PROPS_PREFIX", "bgl_")
     client = compose.client_from_env()
     assert type(client) is compose.Remembered  # own posts are still remembered
     port = client.port
@@ -1482,7 +1482,7 @@ BRIDGE = "b" * 26
 
 
 def bridged(**kw: Any) -> tuple[NatsPort, FakeBus]:
-    """A NATS home whose session names the bridge bot (MM_BRIDGE_BOT), a bot account."""
+    """A NATS home whose session names the bridge bot (CB_MM_BRIDGE_BOT), a bot account."""
     port, inner, _ = make(bridge_bot="@Bridge-Bot", **kw)
     inner.bots["bridge-bot"] = ChannelUser(id=BRIDGE, username="bridge-bot")
     return port, inner
@@ -1526,7 +1526,7 @@ async def test_the_bridges_copies_are_dropped_from_the_reads_of_the_nats_home() 
 
 
 async def test_without_a_bridge_bot_nothing_is_dropped() -> None:
-    """RT-6.36 step 4: MM_BRIDGE_BOT unset, as today: every Mattermost post is read."""
+    """RT-6.36 step 4: CB_MM_BRIDGE_BOT unset, as today: every Mattermost post is read."""
     port, inner, _ = make()
     inner.bots["bridge-bot"] = ChannelUser(id=BRIDGE, username="bridge-bot")
     _copies(inner)
@@ -1541,7 +1541,7 @@ async def test_a_bridge_bot_that_is_no_bot_account_drops_nothing(caplog: pytest.
     with caplog.at_level(logging.WARNING):
         assert len(await port.list_recent(channel_id=WORK)) == 4
         assert len(await port.list_recent(channel_id=WORK)) == 4
-    assert caplog.text.count("MM_BRIDGE_BOT bridge-bot is no bot account") == 1
+    assert caplog.text.count("CB_MM_BRIDGE_BOT bridge-bot is no bot account") == 1
 
 
 async def test_a_failed_read_of_the_bridge_bot_keeps_the_copies_and_is_tried_again() -> None:
@@ -1818,7 +1818,7 @@ async def test_another_agents_bot_hides_no_post() -> None:
 
 async def test_without_a_bot_prefix_only_the_bridge_bot_drops() -> None:
     """RT-6.36 step 4: no signal named a bot prefix: as before, the agent's bot's copy is read,
-    and the one bridge bot's copy (MM_BRIDGE_BOT) is still dropped."""
+    and the one bridge bot's copy (CB_MM_BRIDGE_BOT) is still dropped."""
     port, inner, _ = agent_bots(bridge_bot="bridge-bot", prefix="")
     inner.bots["bridge-bot"] = ChannelUser(id=BRIDGE, username="bridge-bot")
     await arrive(port, "home", ALICE, 10, Message("post", "hello"))
@@ -1839,7 +1839,7 @@ async def test_without_a_bot_prefix_only_the_bridge_bot_drops() -> None:
 
 
 def test_the_bridge_bot_is_named_as_a_username() -> None:
-    """RT-6.36 step 4: MM_BRIDGE_BOT takes a username, with or without @, in any case."""
+    """RT-6.36 step 4: CB_MM_BRIDGE_BOT takes a username, with or without @, in any case."""
     port = NatsPort(FakeBus(FakeRegistrar()), _settings(), ("home",), bridge_bot="@Bridge-Bot")  # type: ignore[arg-type]
     assert port.bridge_bot == "bridge-bot"
 
@@ -2067,7 +2067,7 @@ async def test_a_bad_bot_id_does_not_stop_the_nats_home(monkeypatch: pytest.Monk
 async def test_the_bot_name_falls_back_to_the_environment_then_to_nothing(
         monkeypatch: pytest.MonkeyPatch) -> None:
     """ADR-015: the username for the presence comes from get_me; when that fails
-    MM_BOT_USERNAME, else '' (the home starts all the same)."""
+    CB_MM_BOT_USERNAME, else '' (the home starts all the same)."""
     port, inner, _ = make(bus=False)
     assert await port._bot_name() == inner.me.username
 
@@ -2075,7 +2075,7 @@ async def test_the_bot_name_falls_back_to_the_environment_then_to_nothing(
         raise RuntimeError("Mattermost is away")
 
     monkeypatch.setattr(inner, "get_me", broken)
-    monkeypatch.setenv("MM_BOT_USERNAME", "agent-mac-ai-agent-716d72")
+    monkeypatch.setenv("CB_MM_BOT_USERNAME", "agent-mac-ai-agent-716d72")
     assert await port._bot_name() == "agent-mac-ai-agent-716d72"
-    monkeypatch.delenv("MM_BOT_USERNAME")
+    monkeypatch.delenv("CB_MM_BOT_USERNAME")
     assert await port._bot_name() == ""
