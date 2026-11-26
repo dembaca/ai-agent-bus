@@ -24,6 +24,42 @@ before 0.5.0 are described in the git history.
   start. Error messages, `authd dir -h`, `services/auth/README.md` and
   `nats-server.example.conf` name the new names.
 
+### Added
+
+- **The console's unattended metrics page** (#158, needs #162): with both
+  `CONSOLE_METRICS_NKEY_SEED_FILE` (the seed of a read-only nkey of the
+  NATS configuration, its two consumers `console-metrics_presence` and
+  `console-metrics_stats` — made by the login service at its start,
+  `CB_AUTH_CONSOLE_METRICS`, default off) and `CONSOLE_METRICS_TOKEN_FILE` (the
+  Bearer scrape token), the unattended page serves without a session, on a
+  listener of its own (`CONSOLE_METRICS_LISTEN_ADDR`, loopback by default — the
+  owner's ask): aggregates only
+  — agents by state and harness, the open asks, the tokens by category — no
+  name, owner or home among the labels. The token and the seed are both or
+  neither; the console keeps its operator-login page beside it. The account's publish is denied outright and it holds no JetStream right
+  (pinned in the example-conf test); an invalid or refused nkey ends the
+  reading with a warning, an unreachable one reconnects with backoff, and
+  the consumers age out after five minutes without the console listening
+  — the login service re-ensures them hourly, so a console that restarts
+  gets the seven days again. The seed file is refused when open to group or world (a Kubernetes secret needs `defaultMode: 0400` and the console's uid)
+- **The console serves `/metrics`** (#158, part of): the Prometheus text
+  format behind the operator's login, the same right `/v1/stats` needs —
+  **never scrape with the session cookie**, it is that operator's whole
+  console; the unattended variant (a loopback listener with a scrape
+  token and a read-only service account on the STATS stream) follows as
+  its own pull request with the owner's go. The console's own observations
+  — requests by bounded route buckets, open streams, the readers'
+  connection states, connects, credential renewals and failures, the
+  records the strict decoders refused — are counted process-wide at the
+  event, so no session's end resets a series; the agent numbers of that
+  session's own reading (agents by state and harness, the open asks it
+  sees, the tokens by category per version and harness over 7 days — the
+  same numbers the Reports/Stats tab shows) are served only while that
+  reading is live. Every metric family carries the `choirbus_` prefix; no
+  agent name, owner, home or session id is ever a label, only the newest
+  8 versions keep their own label and n/a leaves a series out instead of
+  a 0 (RT-6.43 step 10).
+
 ## 0.102.0
 
 Needs: login service jetstream user with consumer create and delete rights on the directory bucket.
@@ -47,40 +83,6 @@ Needs: MM_BRIDGE_BOT kept on every host, and this release on all hosts before th
   post logout redirect URIs").
 
 ### Added
-
-- **The console's unattended metrics page** (#158, needs #162): with both
-  `CONSOLE_METRICS_NKEY_SEED_FILE` (the seed of a read-only nkey of the
-  NATS configuration, its two consumers `console-metrics_presence` and
-  `console-metrics_stats` — made by the login service at its start,
-  `CB_AUTH_CONSOLE_METRICS`, default off) and `CONSOLE_METRICS_TOKEN_FILE` (the
-  Bearer scrape token), the unattended page serves without a session, on a
-  listener of its own (`CONSOLE_METRICS_LISTEN_ADDR`, loopback by default — the
-  owner's ask): aggregates only
-  — agents by state and harness, the open asks, the tokens by category — no
-  name, owner or home among the labels. The token and the seed are both or
-  neither; the console keeps its operator-login page beside it. The account's publish is denied outright and it holds no JetStream right
-  (pinned in the example-conf test); an invalid or refused nkey ends the
-  reading with a warning, an unreachable one reconnects with backoff, and
-  the consumers age out after five minutes without the console listening
-  — the login service re-ensures them hourly, so a console that restarts
-  gets the seven days again. The seed file is refused when group- or world-readable (0600, or `defaultMode: 0400` under Kubernetes).
-- **The console serves `/metrics`** (#158, part of): the Prometheus text
-  format behind the operator's login, the same right `/v1/stats` needs —
-  **never scrape with the session cookie**, it is that operator's whole
-  console; the unattended variant (a loopback listener with a scrape
-  token and a read-only service account on the STATS stream) follows as
-  its own pull request with the owner's go. The console's own observations
-  — requests by bounded route buckets, open streams, the readers'
-  connection states, connects, credential renewals and failures, the
-  records the strict decoders refused — are counted process-wide at the
-  event, so no session's end resets a series; the agent numbers of that
-  session's own reading (agents by state and harness, the open asks it
-  sees, the tokens by category per version and harness over 7 days — the
-  same numbers the Reports/Stats tab shows) are served only while that
-  reading is live. Every metric family carries the `choirbus_` prefix; no
-  agent name, owner, home or session id is ever a label, only the newest
-  8 versions keep their own label and n/a leaves a series out instead of
-  a 0 (RT-6.43 step 10).
 
 - **A check holds `docs/env-names.md` to the code** (#169, the mapping's guard).
   `scripts/doc-check.py` reads the page and the tree: CI fails when the code

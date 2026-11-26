@@ -465,7 +465,7 @@ says whether the setting itself is about Mattermost.
 have no `MM` in their names; the rename gives them one, as the rule says:
 `CB_BRIDGE_MM_BOT_PREFIX` and `CB_BRIDGE_MM_HIDE_BOT_DM`.
 
-### The console (21)
+### The console (20)
 
 | Old name | New name | Mattermost | Where it appears | Note |
 |---|---|---|---|---|
@@ -481,7 +481,6 @@ have no `MM` in their names; the rename gives them one, as the rule says:
 | `CONSOLE_METRICS_LISTEN_ADDR` | `CB_CONSOLE_METRICS_LISTEN_ADDR` | no | `console/server/src/console_server/config.py` | the unattended metrics page's listener (#158, RT-6.43 step 10) |
 | `CONSOLE_METRICS_NKEY_SEED_FILE` | `CB_CONSOLE_METRICS_NKEY_SEED_FILE` | no | same; `services/auth/nats-server.example.conf` (a comment) | pairs with `CB_CONSOLE_METRICS_TOKEN_FILE`; refused when open to group or world (`defaultMode: 0400` and the console's uid under Kubernetes) |
 | `CONSOLE_METRICS_TOKEN_FILE` | `CB_CONSOLE_METRICS_TOKEN_FILE` | no | same | pairs with the seed file; both or neither |
-| `CONSOLE_PRESENCE_STREAM` | `CB_CONSOLE_PRESENCE_STREAM` | no | same | |
 | `CONSOLE_PRESENCE_SUBJECT` | `CB_CONSOLE_PRESENCE_SUBJECT` | no | same | |
 | `CONSOLE_PUBLIC_URL` | `CB_CONSOLE_PUBLIC_URL` | no | same | |
 | `CONSOLE_SESSION_SEC` | `CB_CONSOLE_SESSION_SEC` | no | same | |
