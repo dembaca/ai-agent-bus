@@ -175,6 +175,8 @@ class BusLike(Protocol):
 
     async def unreact(self, channel: str, ref: int, emoji: str) -> None: ...
 
+    def notice_teller(self, agent: str) -> str: ...
+
     def owner_of(self, agent: str) -> str: ...
 
     def anchor_of(self, agent: str) -> str: ...
@@ -395,7 +397,7 @@ class NatsPort:
                 if owner is None:
                     owner = await _owner_of(login)
                 bus = NatsBus(self._s, login, owner, self._on_event, on_fatal=self._on_fatal,
-                              on_person=self._on_person, **self._bus_options)
+                              on_person=self._on_person, on_notice=self._on_notice, **self._bus_options)
                 self._bus = bus
                 bus.on_person_gap = self._person_gap
                 bus.card_source = self._card
@@ -458,6 +460,42 @@ class NatsPort:
         except Exception as exc:  # noqa: BLE001 — a label, never a reason to stop
             log.info("nats: the bot's username was not read (%s)", type(exc).__name__)
             return os.environ.get("MM_BOT_USERNAME", "")
+
+    async def _on_notice(self, notice: natsbus.Notice) -> None:
+        """A theft notice from the login service (RT-6.34): DM it to the responsible human.
+
+        Every live server of the owner reads the record and tells its human, so the owner
+        hears it at once; the DM names the agent the record names, else this bot. It is the
+        server's own post, counted as overhead (RT-6.9), never into a channel."""
+        from . import login_notice, stats
+        from .owners import responsible_human
+
+        bus = self._bus
+        if bus is None:
+            return
+        teller = bus.notice_teller(notice.agent)
+        if teller != bus.name:
+            # One DM: the named agent's server, else the smallest live name (RT-6.34).
+            log.info("login notice: %s tells it", teller)
+            return
+        who = responsible_human()
+        try:
+            if not who:
+                log.info("login notice: no responsible human to tell")
+                return
+            trusted = await self.trusted_humans()
+            uid = next((i for i, n in trusted.items() if n and n.lower() == who.lower()), None)
+            uid = uid or await self.human_id(who)
+            if not uid:
+                log.info("login notice: %s is not found in the chat", who)
+                return
+            agent = notice.agent or await self._bot_name() or "the agent"
+            text = login_notice.notice_text(agent, notice.kind)
+            stats.record("post", chars=len(text), w="other")
+            await self.post(text, channel_id=await self.direct_channel_with(uid))
+            log.warning("login notice: told %s by DM (%s, %s)", who, notice.kind, notice.network)
+        except Exception as exc:  # noqa: BLE001 — the next notice tries again
+            log.warning("login notice: the DM to %s failed: %s", who, exc)
 
     async def _announce_membership(self, bus: BusLike) -> None:
         """Tell the bus to announce this session's membership of every channel it asked
