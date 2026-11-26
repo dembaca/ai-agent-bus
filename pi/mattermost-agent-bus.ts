@@ -93,14 +93,25 @@ export const USAGE_EVERY_MS = 60_000
 export type Deps = { env?: Env; here?: string; waitSec?: number; retrySec?: number }
 
 type Env = Record<string, string | undefined>
-// --- the CB_ names (docs/env-names.md, #169) -------------------------------
-// The reading rule of the bus's page: the new name first, else the old one,
-// with one deprecation warning per process; empty counts as set, an unexpanded
-// ${NAME} counts as unset, and two names with different values are a conflict
-// reported once (the extension then behaves as without a bus). A file the bus
-// wrote keeps the last line of either spelling, nothing refuses.
+
+type Json = Record<string, any>
+
+// keep-in-step: from here to the end marker, the same text in
+// opencode/plugin/mattermost-agent-bus.ts and pi/mattermost-agent-bus.ts
+// (pi/test/ compares them; RT-6.20 step 2, RT-6.27 step 2).
+
+// The CB_ names (docs/env-names.md, #169): the reading rule of the bus's page.
+// The new name first; the old one when only it is set, with one deprecation
+// warning per process (none for the relay's internal values, none in a keyless
+// sandbox, whose host hook wrote the old names); an unexpanded ${NAME} counts as
+// unset; an empty value counts as set, so an empty new name never falls back;
+// two names with different values are an EnvConflict naming both, never a value,
+// reported once per process (the plugin then behaves as without a bus). A file
+// the bus wrote keeps the last line of either spelling, nothing refuses.
 const PLACEHOLDER = /^\$\{[A-Za-z_][A-Za-z0-9_]*\}$/
 const warned = new Set<string>()
+const conflictsWarned = new Set<string>()
+
 export class EnvConflict extends Error {}
 
 export function envFirst(env: Env, names: readonly string[], warn = true): string {
@@ -121,6 +132,23 @@ export function envFirst(env: Env, names: readonly string[], warn = true): strin
   return value as string
 }
 
+// The relay's values, which the host hook sets: never a deprecation warning.
+export function relayEnv(env: Env, names: readonly string[]): string {
+  return envFirst(env, names, false)
+}
+
+// A keyless sandbox: the host hook started the session's server and wrote the
+// settings here, an older hook under the old names only (#169).
+export function keyless(env: Env): boolean {
+  return Boolean(env.CB_BUS_MCP_ENDPOINT || env.MM_BUS_MCP_ENDPOINT)
+}
+
+export function reportConflict(e: EnvConflict): void {
+  if (conflictsWarned.has(e.message)) return
+  conflictsWarned.add(e.message)
+  console.warn(`[${SERVER}] ${e.message}`)
+}
+
 // A setting of one of the bus's own files: the last line of either spelling
 // wins (bin/mm-agent-lib.sh's mm_kv and config.value read alike).
 export function fileFirst(text: string, names: readonly string[]): string {
@@ -131,12 +159,6 @@ export function fileFirst(text: string, names: readonly string[]): string {
   }
   return got
 }
-
-type Json = Record<string, any>
-
-// keep-in-step: from here to the end marker, the same text in
-// opencode/plugin/mattermost-agent-bus.ts and pi/mattermost-agent-bus.ts
-// (pi/test/ compares them; RT-6.20 step 2, RT-6.27 step 2).
 function sha16(text: string): string {
   return createHash("sha1").update(text).digest("hex").slice(0, 16)
 }
@@ -150,7 +172,7 @@ function real(dir: string): string | null {
 }
 
 // The endpoint file of the workspace's MCP server (an OpenCode location, a pi
-// session's directory), whose MM_WORKSPACE names that real directory (RT-6.17
+// session's directory), whose CB_WORKSPACE names that real directory (RT-6.17
 // step 2; the name as mm_bus_file in bin/mm-agent-lib.sh writes it). No session id, no other
 // variable, no walk-up: inherited from a Claude Code shell, or a parent
 // directory's file, they may name another session's server.
@@ -159,15 +181,6 @@ export function busFile(env: Env, directory: string, prefix = "endpoint"): strin
   const dir = real(directory)
   const f = dir && join(state, `${prefix}-${sha16(dir)}.env`)
   return f && existsSync(f) ? f : null
-}
-
-function parseEnvFile(text: string): Record<string, string> {
-  const out: Record<string, string> = {}
-  for (const line of text.split("\n")) {
-    const i = line.indexOf("=")
-    if (i > 0) out[line.slice(0, i)] = line.slice(i + 1)
-  }
-  return out
 }
 
 // One call to the hook API; null for no server, no bus session or any failure.
@@ -182,11 +195,11 @@ export function hookApi(env: Env, directory: string, missing: () => void = () =>
     let endpoint = ""
     let key = ""
     try {
-      endpoint = envFirst(env, ["CB_BUS_ENDPOINT", "MM_BUS_ENDPOINT"])
-      key = envFirst(env, ["CB_BUS_KEY", "MM_BUS_KEY"])
+      endpoint = relayEnv(env, ["CB_BUS_ENDPOINT", "MM_BUS_ENDPOINT"])
+      key = relayEnv(env, ["CB_BUS_KEY", "MM_BUS_KEY"])
     } catch (e) {
       if (!(e instanceof EnvConflict)) throw e
-      console.warn(`[${SERVER}] ${e.message}`)
+      reportConflict(e)
       return null
     }
     if (!endpoint || !key) {
@@ -620,7 +633,7 @@ export function busRoot(env: Env, here: string): string | null {
     configured = envFirst(env, ["CB_AGENT_BUS_ROOT", "MM_AGENT_BUS_ROOT"])
   } catch (e) {
     if (!(e instanceof EnvConflict)) throw e
-    console.warn(`[${SERVER}] ${e.message}`)
+    reportConflict(e)
   }
   for (const dir of [configured, dirname(dirname(real(here) || here))]) {
     if (dir && existsSync(join(dir, "mcp", "pyproject.toml"))) return dir
@@ -635,14 +648,15 @@ const shq = (s: string) => `'${s.replace(/'/g, `'\\''`)}'`
 // secret never enters pi's environment or the agent's shell. From
 // MM_REG_SECRET_GOPASS (the gopass path, as the corral hooks read it), else
 // MM_REG_SECRET_CMD (any command that prints it). Only the command goes into
-// the config, never the secret. None under corral (MM_BUS_MCP_ENDPOINT): the
+// the config, never the secret. None under corral (CB_BUS_MCP_ENDPOINT, the old
+// MM_ name still read): the
 // host hooks registered the bot, the server is a relay (RT-6.18).
 export function secretCommand(env: Env): string | null {
   try {
-    if (envFirst(env, ["CB_BUS_MCP_ENDPOINT", "MM_BUS_MCP_ENDPOINT"])) return null
+    if (relayEnv(env, ["CB_BUS_MCP_ENDPOINT", "MM_BUS_MCP_ENDPOINT"])) return null
   } catch (e) {
     if (!(e instanceof EnvConflict)) throw e
-    console.warn(`[${SERVER}] ${e.message}`)
+    reportConflict(e)
     return null  // a relay is there: the secret stays out of the config
   }
   const path = env.MM_REG_SECRET_GOPASS?.trim()

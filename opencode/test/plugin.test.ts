@@ -12,7 +12,7 @@ import { dirname, join } from "node:path"
 import { after, afterEach, before, beforeEach, mock, test } from "node:test"
 import { fileURLToPath } from "node:url"
 
-import plugin, { usageLoader, addMcp, bindings, busFile, busRoot, CLIENT_HEADER, dropMcp, envFirst, EnvConflict, fileFirst, HOST_REFUSED, MARK, NO_BUS, REFUSAL_TOOL, relayVars,
+import plugin, { usageLoader, addMcp, bindings, bothSpellings, busFile, busRoot, CLIENT_HEADER, dropMcp, envFirst, EnvConflict, fileFirst, hookApi, HOST_REFUSED, keyless, MARK, NO_BUS, REFUSAL_TOOL, relayVars,
   chars, renamedText, RETRY_SEC, retryMs, SERVER, setup, SKILL, skillInfo, timing, WAIT_SEC, venvDir, WAKE_BACKOFF_MAX_MS, WAKE_BACKOFF_MS, wakeBackoffMs, waitSec } from "../plugin/mattermost-agent-bus.ts"
 import entry from "../server.ts"
 
@@ -1117,3 +1117,56 @@ test("RT-6.20: a file the bus wrote keeps the last line of either spelling", () 
   // a downgraded writer appends the old key after the new one
   assert.equal(fileFirst("CB_BUS_KEY=new\nMM_BUS_KEY=old\n", ["CB_BUS_KEY", "MM_BUS_KEY"]), "old")
 })
+
+
+test("RT-6.20: a conflict is reported once and leaves the plugin without a bus", async () => {
+  const env = { CB_BUS_ENDPOINT: "http://127.0.0.1:1", MM_BUS_ENDPOINT: "http://127.0.0.1:2",
+                CB_BUS_KEY: "k", MM_BUS_KEY: "k" }
+  const warned: string[] = []
+  const orig = console.warn
+  console.warn = (...a: unknown[]) => { warned.push(a.map(String).join(" ")) }
+  try {
+    assert.equal(await hookApi(env, ws)("GET", "/v1/me"), null)
+    assert.equal(await hookApi(env, ws)("GET", "/v1/me"), null)
+  } finally { console.warn = orig }
+  assert.equal(warned.filter((m) => m.includes("CB_BUS_ENDPOINT, MM_BUS_ENDPOINT")).length, 1)
+})
+
+test("RT-6.20: the old relay names work end to end, and a keyless sandbox stays quiet", async () => {
+  answers["/v1/me"] = { username: "oc" }
+  const before = calls.length
+  // the relay's own values (the host hook's) never warn
+  const box: string[] = []
+  const orig = console.warn
+  console.warn = (...a: unknown[]) => { box.push(a.map(String).join(" ")) }
+  try {
+    assert.deepEqual(await hookApi({ MM_BUS_ENDPOINT: endpoint, MM_BUS_KEY: KEY }, ws)("GET", "/v1/me"),
+                     { username: "oc" })
+  } finally { console.warn = orig }
+  assert.ok(calls.length > before)
+  assert.equal(box.length, 0)
+  // a keyless sandbox: the hook wrote the old names, so the same there
+  const sandbox = { CB_BUS_MCP_ENDPOINT: "tcp://127.0.0.1:9", MM_BUS_ENDPOINT: endpoint, MM_BUS_KEY: KEY }
+  assert.equal(keyless(sandbox), true)
+  const quiet: string[] = []
+  console.warn = (...a: unknown[]) => { quiet.push(a.map(String).join(" ")) }
+  try {
+    assert.deepEqual(await hookApi(sandbox, ws)("GET", "/v1/me"), { username: "oc" })
+  } finally { console.warn = orig }
+  assert.equal(quiet.length, 0)
+})
+
+test("RT-6.20: a user's environment that names one spelling is copied to the other", () => {
+  assert.deepEqual(bothSpellings({ MM_WORKSPACE: "/other", CB_CHANNEL_PUSH: "1" }),
+                   { MM_WORKSPACE: "/other", CB_WORKSPACE: "/other",
+                     CB_CHANNEL_PUSH: "1", MM_CHANNEL_PUSH: "1" })
+  // both set to different values stays a disagreement
+  assert.deepEqual(bothSpellings({ CB_WORKSPACE: "/a", MM_WORKSPACE: "/b" }),
+                   { CB_WORKSPACE: "/a", MM_WORKSPACE: "/b" })
+  const m = new Map<string, any>()
+  const ed = { m, list: () => [...m.entries()], get: (n: string) => m.get(n), set: (n: string, c: any) => m.set(n, c) }
+  addMcp(ed, { environment: { MM_WORKSPACE: "/other" } }, REPO, ws)
+  assert.equal(ed.m.get(SERVER).environment.CB_WORKSPACE, "/other")
+  assert.equal(ed.m.get(SERVER).environment.MM_WORKSPACE, "/other")
+})
+

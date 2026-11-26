@@ -12,7 +12,7 @@ import { fileURLToPath } from "node:url"
 
 import ocBus from "../../opencode/plugin/mattermost-agent-bus.ts"
 import { busFile as ocBusFile } from "../../opencode/plugin/mattermost-agent-bus.ts"
-import mattermostAgentBus, { busFile, busRoot, create, envFirst, EnvConflict, fileFirst, hookApi, MCP_TIMEOUT_SEC, mcpConfig, secretCommand, SERVER, SKILL,
+import mattermostAgentBus, { busFile, busRoot, create, envFirst, EnvConflict, fileFirst, hookApi, keyless, MCP_TIMEOUT_SEC, mcpConfig, secretCommand, SERVER, SKILL,
   chars, timing, venvDir, waitSec, wakeBackoffMs, contextSegments, COORDINATION, Meter, OVERHEAD, requestSplit, Segments,
   TASK, toolCategory, waitResult, busTool, pyJson } from "../mattermost-agent-bus.ts"
 
@@ -861,4 +861,44 @@ test("RT-6.27: empty counts as set, a ${NAME} placeholder as unset, a conflict n
 test("RT-6.27: a file the bus wrote keeps the last line of either spelling", () => {
   assert.equal(fileFirst("MM_BUS_KEY=a\nCB_BUS_KEY=b\n", ["CB_BUS_KEY", "MM_BUS_KEY"]), "b")
   assert.equal(fileFirst("CB_BUS_KEY=new\nMM_BUS_KEY=old\n", ["CB_BUS_KEY", "MM_BUS_KEY"]), "old")
+})
+
+
+test("RT-6.27: a conflict on the checkout or the relay is reported once, and the fallback holds", () => {
+  const warned: string[] = []
+  const orig = console.warn
+  console.warn = (...a: unknown[]) => { warned.push(a.map(String).join(" ")) }
+  try {
+    // a conflicting checkout: its own checkout wins, the message once
+    const env = { CB_AGENT_BUS_ROOT: "/nowhere", MM_AGENT_BUS_ROOT: REPO }
+    assert.equal(busRoot(env, join(REPO, "pi", "x.ts")), REPO)
+    assert.equal(busRoot(env, join(REPO, "pi", "x.ts")), REPO)
+    // a conflicting relay: no secret goes into the config, once
+    const relay = { CB_BUS_MCP_ENDPOINT: "tcp://a", MM_BUS_MCP_ENDPOINT: "tcp://b",
+                    MM_REG_SECRET_GOPASS: "a" }
+    assert.equal(secretCommand(relay), null)
+    assert.equal(secretCommand(relay), null)
+  } finally { console.warn = orig }
+  assert.equal(warned.filter((m) => m.includes("CB_AGENT_BUS_ROOT, MM_AGENT_BUS_ROOT")).length, 1)
+  assert.equal(warned.filter((m) => m.includes("CB_BUS_MCP_ENDPOINT, MM_BUS_MCP_ENDPOINT")).length, 1)
+})
+
+test("RT-6.27: the old relay names work end to end, and a keyless sandbox stays quiet", async () => {
+  answers["/v1/handoff"] = { context: "c" }
+  const box: string[] = []
+  const orig = console.warn
+  console.warn = (...a: unknown[]) => { box.push(a.map(String).join(" ")) }
+  try {
+    assert.deepEqual(await hookApi({ MM_BUS_ENDPOINT: endpoint, MM_BUS_KEY: KEY }, ws)("GET", "/v1/handoff"),
+                     { context: "c" })
+  } finally { console.warn = orig }
+  assert.equal(box.length, 0)
+  const sandbox = { CB_BUS_MCP_ENDPOINT: "tcp://127.0.0.1:9", MM_BUS_ENDPOINT: endpoint, MM_BUS_KEY: KEY }
+  assert.equal(keyless(sandbox), true)
+  const quiet: string[] = []
+  console.warn = (...a: unknown[]) => { quiet.push(a.map(String).join(" ")) }
+  try {
+    assert.deepEqual(await hookApi(sandbox, ws)("GET", "/v1/handoff"), { context: "c" })
+  } finally { console.warn = orig }
+  assert.equal(quiet.length, 0)
 })
