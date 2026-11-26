@@ -117,6 +117,7 @@ class RelayedLogin:
         self._approval_until = 0.0
         self._last_waiting: float | None = None
         self._last_refused: float | None = None
+        self._warned: dict[str, float] = {}  # a warning's last time: the sandbox may repeat it
         # The newest approval that came within the cooldown: DMed when it ends.
         self._deferred: tuple[DeviceGrant, float] | None = None
 
@@ -283,12 +284,21 @@ class RelayedLogin:
         of the sandbox's reaches the DM."""
         code, expires = msg.get("code"), msg.get("expires_in")
         if not isinstance(code, str) or not USER_CODE.fullmatch(code):
-            log.warning("login: the sandbox's user code is not one; no DM")
+            self._warn("code", "login: the sandbox's user code is not one; no DM")
             return None
         uri = f"{self.settings.issuer}/device"
         minutes = expires if type(expires) is int and 0 < expires <= 3600 else 600
         return DeviceGrant(verification_uri=uri, verification_uri_complete=f"{uri}?user_code={code}",
                            user_code=code, expires_in=minutes)
+
+    def _warn(self, kind: str, text: str) -> None:
+        """A warning the sandbox can trigger at will: once per cooldown, else debug."""
+        now, last = self._now(), self._warned.get(kind)
+        if last is not None and now - last < login.COOLDOWN_SEC:
+            log.debug(text)
+            return
+        self._warned[kind] = now
+        log.warning(text)
 
     def _offer_approval(self, grant: DeviceGrant) -> None:
         """One open approval at a time (an open one ends at its expiry), and at most
@@ -297,7 +307,7 @@ class RelayedLogin:
         if self._approval_open and now >= self._approval_until:
             self._close_approval("expired")
         if self._approval_open:
-            log.warning("login: an approval is already open; no second DM")
+            self._warn("open", "login: an approval is already open; no second DM")
             return
         wait = 0.0 if self._last_waiting is None else self._last_waiting + login.COOLDOWN_SEC - now
         if wait > 0:
@@ -349,32 +359,23 @@ class RelayedLogin:
 def clear_old_host_store(settings: Settings, human: str) -> list[str]:
     """The host process of a keyless session, once: an earlier version kept the
     refresh token, its cooldown and the nkey seed in the host's state directory;
-    the relay's login holds them now, so they go, each under its lock. Not when
-    this host's own store (keystore.default(), which the plain servers on this
-    host use) is that very directory. The names removed."""
+    the relay's login holds them now. They move to this host's own store
+    (keystore.default(), which the plain servers on this host use, so they keep
+    the token and key), each under its lock (keystore.migrate_from), and the old
+    file is emptied. Nothing when that store is the very directory. The names
+    moved or cleared."""
     old = keystore.HostFile(session_file.host_state_dir() / "login")
     chosen = keystore.default()
     if isinstance(chosen, keystore.HostFile) and chosen.directory.resolve() == old.directory.resolve():
         return []
-    gone: list[str] = []
     names = [keystore.NKEY_SEED]
     if human:
         names[:0] = [keystore.refresh_entry(settings.issuer, settings.client_id, human),
                      keystore.cooldown_entry(settings.issuer, settings.client_id, human)]
-    for name in names:
-        if old.load(name) is None:
-            continue
-        handle = old.try_lock(name)
-        if handle is None:
-            continue  # in use: left for the next session
-        try:
-            old.delete(name)
-            gone.append(name)
-        finally:
-            old.unlock(handle)
-    if gone:
-        log.info("login: %d entries of the earlier host store removed", len(gone))
-    return gone
+    moved = keystore.migrate_from(old, chosen, names)
+    if moved:
+        log.info("login: %d entries of the earlier host store moved to this host's store", len(moved))
+    return moved
 
 
 # --- the relay in the sandbox ---------------------------------------------------------

@@ -555,7 +555,7 @@ async def test_an_open_approval_ends_at_its_expiry():
     assert dm.events == ["waiting", "settled:expired", "waiting"]
 
 
-def test_the_host_clears_the_old_host_store_once_but_never_its_own(tmp_path, monkeypatch):
+def test_the_host_moves_the_old_host_store_to_its_own_but_never_onto_itself(tmp_path, monkeypatch):
     settings = login.Settings(ISSUER, "agent-bus", "host")
     old = keystore.HostFile(tmp_path / "state" / "mm-agent-bus" / "login")
     put(old, "refresh-secret-old")
@@ -563,9 +563,32 @@ def test_the_host_clears_the_old_host_store_once_but_never_its_own(tmp_path, mon
     monkeypatch.setattr(keystore, "_chosen", old)          # the host's own store is that place
     assert login_relay.clear_old_host_store(settings, "alice") == []
     assert stored(old) == "refresh-secret-old"
-    monkeypatch.setattr(keystore, "_chosen", keystore.Ephemeral())   # a keychain, say
-    held = old.try_lock(keystore.NKEY_SEED)                # one entry in use: left alone
-    gone = login_relay.clear_old_host_store(settings, "alice")
-    old.unlock(held)
-    assert gone == [keystore.refresh_entry(ISSUER, "agent-bus", "alice")]
-    assert stored(old) is None and old.load(keystore.NKEY_SEED) == "SUold"
+    mine = keystore.HostFile(tmp_path / "keychain-stand-in")
+    monkeypatch.setattr(keystore, "_chosen", mine)
+    held = mine.try_lock(keystore.NKEY_SEED)               # one entry in use: left for later
+    moved = login_relay.clear_old_host_store(settings, "alice")
+    mine.unlock(held)
+    assert keystore.refresh_entry(ISSUER, "agent-bus", "alice") in moved
+    assert stored(old) is None and stored(mine) == "refresh-secret-old"   # kept, not lost
+    assert old.load(keystore.NKEY_SEED) == "SUold" and mine.load(keystore.NKEY_SEED) is None
+    assert keystore.NKEY_SEED in login_relay.clear_old_host_store(settings, "alice")
+    assert old.load(keystore.NKEY_SEED) is None and mine.load(keystore.NKEY_SEED) == "SUold"
+
+
+async def test_warnings_the_sandbox_can_repeat_are_rate_limited(caplog):
+    dm, clock = Note(), [1000.0]
+    relayed = _relayed(dm, clock)
+    with caplog.at_level(logging.WARNING):
+        for _ in range(5):
+            await relayed._on({"event": "waiting", "code": "bad code"})
+        await relayed._on({"event": "waiting", "code": "ABCD-EFGH", "expires_in": 600})
+        for _ in range(5):
+            await relayed._on({"event": "waiting", "code": "WXYZ-QRST", "expires_in": 600})
+    warned = [r.getMessage() for r in caplog.records if r.levelno >= logging.WARNING]
+    assert warned.count("login: the sandbox's user code is not one; no DM") == 1
+    assert warned.count("login: an approval is already open; no second DM") == 1
+    clock[0] += login.COOLDOWN_SEC
+    caplog.clear()
+    with caplog.at_level(logging.WARNING):
+        await relayed._on({"event": "waiting", "code": "bad code"})
+    assert "user code is not one" in caplog.text           # again after the cooldown
