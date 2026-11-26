@@ -20,9 +20,9 @@ and never saw the messages for its own (RT-6.10).
 
 from __future__ import annotations
 
+import base64
 import errno
 import fcntl
-import base64
 import hashlib
 import logging
 import os
@@ -326,21 +326,35 @@ NONCE_RE = re.compile(r"^[a-z2-7]{26}$")
 
 def nonce() -> str:
     """The session's own part of the agent name (#163): 16 random bytes as 26
-    lower-case base32 characters, made once and kept in the state directory
-    (`nonce-…`), so a resumed session (`--resume`, `--continue`) and a restarted
-    server keep their name; a new session gets a new one."""
-    path = keyed_path("nonce")
+    lower-case base32 characters, made once and kept per bot (`nonce-<uid>.env`),
+    so a resumed session (`--resume`, `--continue`) and a restarted server keep
+    their name while two live sessions — which have two bots — never share one.
+    The file is the bot's, so the sweep and its cleanup come free."""
+    uid = read().get("MM_BOT_USER_ID", "")
+    if uid:
+        path = state_dir() / f"nonce-{uid}.env"
+    else:
+        # Not registered (tests, a hand-made home): the session's key is the best
+        # key there is, and two live servers of it are one session by the bot rule.
+        path = keyed_path("nonce")
+    text = ""
     try:
-        old = path.read_text(encoding="utf-8", errors="replace").strip()
-        if NONCE_RE.fullmatch(old):
-            return old
+        text = path.read_text(encoding="utf-8", errors="replace")
     except OSError:
         pass
+    for line in text.splitlines():
+        k, _, v = line.partition("=")
+        if k in ("CB_SESSION_NONCE", "MM_SESSION_NONCE") and NONCE_RE.fullmatch(v):
+            return v
+    if text.strip():
+        logging.getLogger(__name__).warning("session: the nonce file is damaged: a new part is "
+                                            "made, so this session gets a new name")
     value = base64.b32encode(os.urandom(16)).decode().lower().rstrip("=")
     try:
-        write_private(path, value + "\n")
+        write_private(path, f"CB_SESSION_NONCE={value}\n")
     except OSError as exc:  # not kept: a restart gets a new name, the log says so
-        logging.getLogger(__name__).info("session: the nonce was not kept (%s)", type(exc).__name__)
+        logging.getLogger(__name__).warning("session: the nonce was not kept (%s): a restart "
+                                            "gets a new name", type(exc).__name__)
     return value
 
 

@@ -47,6 +47,7 @@ from nats.aio.client import Client as NatsClient
 
 from . import a2a
 from .login import NKey
+from .session_file import NONCE_RE
 
 log = logging.getLogger(__name__)
 
@@ -71,7 +72,7 @@ DELIVER = "deliver"  # consumers.DeliverPrefix / callout.DeliverPrefix
 
 CHANNEL_RE = re.compile(r"^[a-z0-9][a-z0-9_-]{0,63}$")  # Go checkToken
 AGENT_RE = re.compile(r"^[A-Za-z0-9][A-Za-z0-9_-]{0,127}$")  # Go consumers.agentRE
-SESSION_RE = re.compile(r"^[a-z2-7]{26}$")  # #163: the session part
+SESSION_RE = NONCE_RE  # #163: the one pattern of the session part (session_file)
 PREFIX_RE = re.compile(r"^[A-Za-z0-9_-]+$")
 # An owner counts only in this form (RT-6.37): a Mattermost username's characters in lower
 # case, the same string the bus compares with CB_TRUSTED_HUMANS and the owners of Mattermost

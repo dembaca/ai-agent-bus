@@ -429,6 +429,13 @@ Needs: MM_BRIDGE_BOT kept on every host, and this release on all hosts before th
   refuses a part that does not fit rather than ignoring it. The part is
   self-stated and proves nothing; the theft guard still keys on the Keycloak
   session and the host key.
+  **Order matters:** the login service must be updated first (a new host
+  against an old login service is refused as a `NameMismatch` and loses its
+  NATS home, final); a release carrying this needs it in its `Needs:` line. An
+  existing `host`-key session gets a new name at its first restart: its old
+  consumers expire at the 1-hour threshold, its crown claim is not fresh after
+  90 s, its ask records age out, and the console shows the old name offline
+  until the stream's 24 h edge.
 
 ### Docs
 

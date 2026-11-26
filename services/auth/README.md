@@ -256,9 +256,15 @@ would look whole. Up to 32 requests are answered at once.
 signed by the account key, valid 15 minutes from the check:
 
 - **Name:** `agent-` and 26 characters of base32 (128 bits of SHA-256 over
-  owner and host nkey). The host never chooses it; it stays the same for every
+  owner and host nkey; and, when the hello carries a `session` part, over owner,
+  key and that part). The host never chooses it; it stays the same for every
   reconnect of one host process, and finding another owner's agent's name
   would take 2^128 tries.
+  **The hello's `session`** (optional, #163): 26 lower-case base32 characters
+  (`^[a-z2-7]{26}$`), the session's own part. With one shared host key
+  (`CB_LOGIN_NKEY=host`) the host sends it so two sessions of one owner are two
+  names; without it the name is the owner and the key alone. A value that does
+  not fit refuses the login; it is self-stated and proves nothing.
   The service keeps no state: name, owner and key follow from the request.
   A store for the name binding on first login will be the first state.
 - **Tags:** `owner:<owner>`, `host-nkey:<nkey>`, and `approver` for a member
