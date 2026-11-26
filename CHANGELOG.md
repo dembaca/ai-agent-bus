@@ -6,19 +6,24 @@ before 0.5.0 are described in the git history.
 ## Unreleased
 
 ### Docs
+
 - **Setup through the console, proposed**
   ([#192](https://github.com/dembaca/ai-agent-bus/issues/192)): an amendment to the
   operator console's decision (ADR-015) in four points. The console serves a
-  configuration without secrets (login issuer and client, NATS address, CA, the central
-  adapter's key, the bridge bot's name, the default home per repository) that the MCP
-  server fetches on first start with the console's URL as its only input, and acts as
-  the marketplace for the one signed release, pinned to tag and commit by the
-  administrator; the MCP server is published as a package for the other harnesses; an
-  admin area in the console for the directory and the pin; trust lists set in the
-  console by the agent's owner, each addition confirmed on the agent's machine. This
-  amends the bus without a chat as its source (ADR-016), point 4. Open for the owner:
-  the integrity of updates and the writing console. New risks RISK-33 to RISK-35.
-  Nothing is built.
+  configuration without secrets, whose public part holds only the login issuer and
+  client, the NATS address and the CA, and which the MCP server fetches on first start
+  with the console's URL as its only input; the default home per repository, the bridge
+  bot's name and the central adapter's key come after the login from the login service.
+  The console acts as the marketplace for the one signed release, pinned to tag and
+  commit by the administrator; the MCP server is published as a package for the other
+  harnesses; an admin area in the console for the directory and the pin; trust lists set
+  in the console by the agent's owner, every change that adds a person to an agent's
+  effective list confirmed on one of the affected agents' machines through a link with a
+  one-time secret. This amends the bus without a chat as its source (ADR-016), point 4.
+  Open for the owner: the integrity of updates, the authenticity of the configuration
+  and the writing console. New risks: the console as marketplace and source of the
+  configuration (RISK-33), the writing console (RISK-34) and trust lists set remotely
+  (RISK-35). Nothing is built.
 
 ## 0.103.0
 
