@@ -17,11 +17,12 @@
 # `unit` is printed verbatim. Frames, not "posts": what a run sends through a
 # message channel is a frame (point 15 of the review).
 
-# The run plan, word for word from `messplan-phase4.md` (phase 4, delivery and
-# coordinator rows) as it was posted in the task thread. A value that the plan
-# does not define stays `"open"` here: a number invented in this file would end
-# up in a report as if the plan had asked for it, and the tolerance decides
-# dembaca, not the harness.
+# The run plan, from ADR-014 phase 1 (the fault harness: kill the MCP server,
+# cut the network, hard-stop the coordinator, resume a session, restart NATS) and
+# phase 4 (the delivery and the roles-and-coordinator rows of its acceptance),
+# docs/arc42/09-architecture-decisions.md. A value that ADR-014 does not define
+# stays `"open"` here: a number invented in this file would end up in a report as
+# if the plan had asked for it, and the tolerance decides dembaca, not the harness.
 [plan]
 messages_per_run = 100          # delivery row: 100 messages per run, under fault
 runs_per_fault = 10             # proposal of the plan, "at least 10 runs per fault"
@@ -31,7 +32,7 @@ takeover_target_sec = 30        # coordinator row: the new bus's target, not tod
 tolerance = "open"              # gap 1: the plan defines no "no worse than today"
 wait_start = "open"             # gap 1: where a wait begins
 wait_end = "open"               # gap 1: where it ends
-gap = "gap 1 of messplan-phase4.md; the tolerance is dembaca's decision"
+gap = "ADR-014 phase 4 defines no tolerance for no worse than today; the tolerance is dembaca's decision"
 # Both adapters time at the same points — send time at the tool, receive time at
 # the receiver's ingress — as a *proposal* of the plan, not a decision.
 measurement_points = "proposal: send time at the tool, receive time at the receiver's ingress"
@@ -39,7 +40,7 @@ measurement_points = "proposal: send time at the tool, receive time at the recei
 [[measurand]]
 id = "loss"
 name = "Loss"
-source = "Delivery, ADR-014 phase 4"
+source = "Delivery, ADR-014 phase 4 (bus-run, on Mattermost and with --transport nats)"
 unit = "frames"
 status = "measured"
 what = "Frames a run sent that never reached the receiving side."
@@ -55,7 +56,7 @@ what = "Median time from send to arrival at the receiver."
 [[measurand]]
 id = "latency_p95"
 name = "Latency, 95th percentile"
-source = "Delivery, ADR-014 phase 4"
+source = "Delivery, ADR-014 phase 4 (bus-run, on Mattermost and with --transport nats)"
 unit = "ms"
 status = "measured"
 what = "95th percentile time from send to arrival at the receiver."
@@ -71,11 +72,13 @@ what = "Frames that arrived more than once at the receiver."
 [[measurand]]
 id = "takeover_p95"
 name = "Coordinator take-over, 95th percentile"
-source = "Roles and coordinator, ADR-014 phase 4 (30 s is a new target, not today's)"
+source = "Roles and coordinator, ADR-014 phase 4 (50 hard stops; 30 s is a new target, not today's)"
 unit = "s"
-status = "not_yet_measurable"
-why = "The harness drives one bus and its own posts; a coordinator take-over needs two roles and a hard stop of one, which no run here does."
-what = "95th percentile time from a hard stop of the coordinator to the crown being held again."
+status = "measured"
+# Measured, but only by `coord-run`: a delivery run stages no hard stop and reports
+# null with this reason.
+why = "Measured by coord-run only (hard stops of the crown holder); a delivery run stages no hard stop."
+what = "95th percentile time from a hard stop (SIGKILL) of the coordinator to a survivor's crown log saying it holds the crown."
 
 [[measurand]]
 id = "handled_twice_or_missing"
@@ -83,7 +86,7 @@ name = "Events handled twice or not at all"
 source = "Roles and coordinator, ADR-014 phase 4"
 unit = "events"
 status = "not_yet_measurable"
-why = "A take-over is needed to produce these events, and the rig stages no role switch (see takeover_p95)."
+why = "coord-run stages the take-over but no events for the coordinator to handle across it; that needs the human posts of human_posts_not_handled_once."
 what = "Coordinator events handled twice or not at all after a take-over."
 
 [[measurand]]

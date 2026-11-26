@@ -87,6 +87,9 @@ class Run:
     #: report's JSON (it stays what it was) but on the run, because the exit
     #: code is decided from it (review point 2).
     unknown: list[tuple[str, str]] = field(default_factory=list, repr=False)
+    #: seconds from a coordinator's hard stop to a survivor holding the crown,
+    #: one per stop that had a take-over (`coord.coord_run`); empty elsewhere
+    takeovers: list[float] = field(default_factory=list)
 
     def send(self, seq: int) -> Sent:
         item = Sent(seq=seq, at=time.monotonic())
@@ -100,6 +103,12 @@ class Run:
         else:
             hit.copies += 1
 
+    def latencies(self) -> list[float]:
+        """Send-to-arrival times in ms, ordered, of the frames that arrived."""
+        by_seq = {s.seq: s for s in self.sent}
+        return sorted((r.at - by_seq[seq].at) * 1000.0
+                      for seq, r in self.received.items() if seq in by_seq)
+
     def _values(self) -> dict[str, float | None]:
         """The formulas, by measurand `id` (review point 8: never by name).
 
@@ -107,8 +116,7 @@ class Run:
         a zero would read as "nothing was lost" when nothing was measured.
         """
         by_seq = {s.seq: s for s in self.sent}
-        open_latencies = sorted((r.at - by_seq[seq].at) * 1000.0
-                                for seq, r in self.received.items() if seq in by_seq)
+        open_latencies = self.latencies()
         # A sent frame that never arrived is lost, whatever ended the
         # connection: the acceptance compares exactly this number. The report
         # also names `connection_closed`, so a cut is not mistaken for a
@@ -121,6 +129,7 @@ class Run:
             "latency_p50": statistics.median(open_latencies) if open_latencies else None,
             "latency_p95": _pct(open_latencies, 95) if open_latencies else None,
             "duplicates": dupes,
+            "takeover_p95": _pct(sorted(self.takeovers), 95) if self.takeovers else None,
         }
 
     def measure(self, path: Any = None) -> dict[str, dict[str, Any]]:
@@ -144,6 +153,9 @@ class Run:
                 "unit": m.unit,
                 "status": m.status,
             }
+            if value is None and m.why:
+                # Measured, but not by this kind of run: the file says which does.
+                out[m.id]["why"] = m.why
         return out
 
     def report(self) -> dict[str, Any]:
@@ -165,6 +177,41 @@ class Run:
             "relay": self.relay,
             "measured": self.measure(),
         }
+
+
+SUMMARY_COLUMNS = ("target", "fault", "sent", "loss", "dup", "p50 ms", "p95 ms", "max ms",
+                   "takeover p95 s", "takeover max s")
+
+
+def summary_rows(runs: list[Run]) -> list[tuple[str, ...]]:
+    """One row per run: the delivery numbers (p50, p95, max, loss, duplicates) and, for
+    a coordinator run, the take-over's p95 and max. A number the run did not measure
+    is "-", never 0."""
+    def num(value: float | None, digits: int = 1) -> str:
+        return "-" if value is None else f"{value:.{digits}f}"
+
+    rows: list[tuple[str, ...]] = []
+    for run in runs:
+        values = run._values()
+        lat = run.latencies()
+        delivery = not run.takeovers and run.fault != "coordinator-hard-stop"
+        rows.append((
+            run.target, run.fault, str(run.sent_frames or len(run.sent)),
+            str(values["loss"]) if delivery else "-",
+            str(values["duplicates"]) if delivery else "-",
+            num(values["latency_p50"]), num(values["latency_p95"]),
+            num(lat[-1] if lat else None),
+            num(values["takeover_p95"]), num(max(run.takeovers) if run.takeovers else None),
+        ))
+    return rows
+
+
+def summary(runs: list[Run]) -> str:
+    """`--summary`: the table of `summary_rows`, columns aligned."""
+    rows = [SUMMARY_COLUMNS, *summary_rows(runs)]
+    widths = [max(len(row[i]) for row in rows) for i in range(len(SUMMARY_COLUMNS))]
+    return "\n".join("  ".join(cell.ljust(widths[i]) if i < 2 else cell.rjust(widths[i])
+                               for i, cell in enumerate(row)).rstrip() for row in rows)
 
 
 def silence(run: Run) -> tuple[bool, str]:

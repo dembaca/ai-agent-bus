@@ -15,6 +15,11 @@ dependencies = [
   # The proxy forwards HTTP through the one port the bus dials; httpx is the
   # bus's own client, so a request crosses the same stack here (review point 2).
   "httpx>=0.27",
+  # The NATS transport (natsrig.py): the admin that stands in for the login service
+  # makes streams and consumers, and the keys of the static users. The same pins as
+  # mcp/pyproject.toml, so the rig speaks the bus's own client.
+  "nats-py==2.16.0",
+  "nkeys>=0.2",
 ]
 
 [project.scripts]

@@ -23,7 +23,7 @@ code does today and point here where a decision will change them.
 | ADR-012 | Files an agent attaches: the server never opens a path the agent names; the bytes come from inside the sandbox (the shell's `POST /v1/files`, or a small text in the `attach` tool), checked by their bytes, uploaded for a post that takes only this server's fresh uploads | Decided 2026-11-14, built (0.90.0, RT-6.33) | — |
 | ADR-013 | The channel banner shows what waits: the home's 👑 server writes it on a change only, at most once a minute; a stall in red, asks waiting on a human in amber, else the crown and the agents by status; display only, never input; a human's banner is left alone and told to its human; without the licence or the permission everything stays as today; later the 👑 prefix only on asks and routings | Withdrawn (2026-11-16): depends on the Mattermost edition and a permission setting; the header carries the rare facts instead | — |
 
-| ADR-014 | Agent-to-agent traffic over NATS JetStream; Mattermost stays the humans' chat behind one central adapter per tenant; agents log in through Keycloak (device flow) and a login service issues 15-minute NATS credentials bound to the host's own key; a clean-room build from Cotal's protocol description with a message format of the bus's own (no wire compatibility with Cotal); tools, hook API and bus logic unchanged behind the ports; parallel operation switched per home channel, the registrar shut down last; the sender NATS-native (last subject token, agents read only through push consumers the login service makes, no signed envelope) | Accepted (2026-11-22) by the owner, with the review's recommendations; three later points open (below), none of them blocks the first NATS code. Phase 2 built; phase 3 built in part in 0.97.0: the login service with the host's Keycloak login, consumers, a home over NATS, owner, presence and crown over NATS (RT-6.34 to RT-6.38), the attestation after 0.97.0 (RT-6.41); not built: the central adapter, the pod path, role addressing, files and DMs over NATS, signed human-origin events, shutting the registrar down | — |
+| ADR-014 | Agent-to-agent traffic over NATS JetStream; Mattermost stays the humans' chat behind one central adapter per tenant; agents log in through Keycloak (device flow) and a login service issues 15-minute NATS credentials bound to the host's own key; a clean-room build from Cotal's protocol description with a message format of the bus's own (no wire compatibility with Cotal); tools, hook API and bus logic unchanged behind the ports; parallel operation switched per home channel, the registrar shut down last; the sender NATS-native (last subject token, agents read only through push consumers the login service makes, no signed envelope) | Accepted (2026-11-22) by the owner, with the review's recommendations; three later points open (below), none of them blocks the first NATS code. Phase 2 built; phase 3 built in part in 0.97.0: the login service with the host's Keycloak login, consumers, a home over NATS, owner, presence and crown over NATS (RT-6.34 to RT-6.38), the attestation after 0.97.0 (RT-6.41); phase 1 built in part: the fault-run rig `testrig/` runs against the bus over NATS (first finding: a hard-stopped coordinator's crown passes after 89 to 120 s, target 30 s); not built: the central adapter, the pod path, role addressing, files and DMs over NATS, signed human-origin events, shutting the registrar down | — |
 | ADR-015 | Operator web console: a web application for the people who look after the agents, with the agents by state, who trusts and who coordinates whom, the bus's statistics as charts, and the open asks answered beside their thread; no chat. It stands alone on the bus on NATS, with Keycloak as its only login and no dependency on Mattermost (decided by the owner on 2026-11-23). Recommended: on NATS as the logged-in operator, with a credential of that person's own from the login service, so NATS says who answered and the asking agent's server still decides whether it approves | Proposed (2026-11-23), not accepted; eight points open for the owner, three decided on 2026-11-23 (ADR-016). Stage 1's read-only pilot is built (2026-11-24): the browser app (#89) and its server (#94) — the login of point 4 and the API of point 10 with its SSE — one read-only NATS account, the pilot's documented deviation, since replaced: the console reads as each logged-in operator with a credential of that person's own from the login service (the addition of 2026-11-25, points 1 to 7, RT-6.43), and the static account is gone. The fleet's "now" carries a monotonic floor: a delivery-silent console ages presence out and drops the crown, a jump of the host's wall clock changes nothing, and only a genuinely newer server stamp re-anchors it (#108). Of the addition of 2026-11-25, the asks and `STATS` on NATS are built too (points 8 to 15, the MCP server's and the console's part, and the login service's stream and rights for them): each MCP server publishes its ask record and its `STATS` parts, the console receives them through each login's own consumers, decodes them strictly and shows the asks read-only and the two reports. #158 adds the metrics page: `GET /metrics` in the Prometheus text format behind the operator's login — the console's own observations aggregated, counted process-wide at the event (requests by bounded route buckets, streams, the readers' connection states, connects, renewals, decoder refusals) and the agent numbers of that session's own reading, served only while it is live, in bounded labels (no agent, owner or home; only the newest versions keep their own label), so a scrape starts nothing and needs no new right; the session cookie is never a scrape credential; the unattended variant the owner approved: a Bearer scrape token gates a listener of the page's own (CB_CONSOLE_METRICS_LISTEN_ADDR, loopback by default), served from a service reading of one fleet and stats book — consumers the login service makes, an account subscribe-only on the two deliver subjects, aggregates only | — |
 | ADR-016 | The bus without a chat as its source: Keycloak is the root of identity, keyed by `sub`, with chat accounts bound to it per product; a channel directory on NATS that only the login service writes (name, public or not, members, a binding per chat) replaces Mattermost membership behind `callout.Channels`; one bridge per chat product vouches for its humans, and later a Keycloak login on NATS itself; the login service attests trust lists; agents need no chat. Decided by the owner on 2026-11-23: the directory, Mattermost membership behind a replaceable interface until then, and for the console reading only, a Python server and what an operator sees | Accepted (2026-11-23) by the owner, its nine open points decided by the owner the same day; it changes ADR-014 points 6, 10, 11 and 16. Built in part: the channel directory (RT-6.39) and "in doubt, foreign" (RT-6.16) in 0.97.0; after 0.97.0 the admin API with the import from Mattermost (RT-6.40) and the attested trust lists (RT-6.41). Not built: the bridges, `checkChat` as a binding, agents without a chat, the host's agent name from an anchor that is not the username. Addition 2026-11-24: all Mattermost functions in one service, the bridge in `services/bridge`, the registrar's move as an open step; built step by step, the pilot with one bridge bot | — |
 | ADR-017 | The token split attributes tokens by content, not by cause: a request's tokens go to task work, bus overhead or multi-agent coordination by what its context and output hold, never all to the bus because the bus started the turn | Decided 2026-11-26 with the issue on the token split (#139, its proposed defaults); built for Claude Code (the overhead measurement, RT-6.9 step 2, method 1) | #139 |
@@ -3015,7 +3015,9 @@ part, in 0.97.0: the login service (`services/auth`) with the host's
 Keycloak login (RT-6.34), the consumers it makes (RT-6.35), a home over NATS
 switched by `CB_NATS_HOMES` (RT-6.36), owner and presence (RT-6.37) and the
 crown (RT-6.38) over NATS; after 0.97.0 the login service's attestation of
-owner and trust list (RT-6.41). Not built: the central adapter and the
+owner and trust list (RT-6.41). Phase 1 built in part, after 0.103.0: the
+fault-run rig (`testrig/`) runs against the bus over NATS and hard-stops the
+coordinator (below, phase 1). Not built: the central adapter and the
 shutdown of the registrar, the pod path (point 8), role addressing, files
 and DMs over NATS, the visibility setting, the signed human-origin events
 and `MM_BUS_SIGNER_KEYS`. Amended on 2026-11-26 by the owner's one operating
@@ -3689,6 +3691,28 @@ decided against it (Context).
    handled twice or not at all. Needs a machine outside a sandbox and a test
    channel with test bots in the lab Mattermost. Runs beside the build and
    does not hold it up.
+   Built in part (after 0.103.0, #151 step 4c): the fault-run rig
+   `testrig/` (`testrig/README.md`) runs two real MCP servers against a
+   Mattermost stand-in, and with `bus-run --transport nats` with their home
+   over NATS against a local nats-server whose static users carry the
+   login service's rights. Faults on NATS: the server restarted (SIGKILL,
+   same store) or hung (SIGSTOP), the receiving server killed and resumed,
+   the line cut, blackholed, stalled or frozen by a byte proxy.
+   `coord-run` hard-stops the crown holder and reads the take-over from the
+   successor's crown log (RT-6.6 step 11). It runs on one machine, not in
+   the Lab, and CI runs it (small on every PR, 100 messages per fault and
+   50 hard stops nightly). **First finding** (2026-11-26, small runs of 10
+   messages and a few stops): no loss under restart, hang, cut, blackhole,
+   stall and half-open (a send during the window fails and is not counted
+   as sent); a receiving session killed while a message is on its way to
+   it loses that message on resume, since its CONNECT names no position of
+   the home to restart from; and the take-over after a hard stop took
+   89, 90 and 120 s (p95 120 s): a holder killed without `bye` keeps the crown until its
+   presence is `PRESENCE_FRESH_SEC` (90 s) old, so the phase-4 target of
+   30 s is not met by today's NATS crown. Not built: the take-over on
+   Mattermost (the stand-in carries no election), the 100 human posts
+   under fault, the runs in the Lab with Claude Code, pi or OpenCode and a
+   foreign agent.
 2. **Entry points on the ports.** `server.py`, `hookapi.py`, `hosted.py`,
    `websocket_inbox.py` and `session_file.py` talk only to `ChatPort`;
    registration lies behind `RegistrationPort`; `compose.py` builds the
@@ -3754,8 +3778,9 @@ for the token checks (`aud`, `azp`, owner claim, the nkey binding, expiry;
 `services/auth/internal/token/verify_test.go`) and for the rights, the
 consumers and the native sender (`services/auth/internal/callout/`:
 `perms_test.go`, `consumers_test.go`, `native_sender_test.go`,
-`review_test.go`). Planned: the fault harness built for the baseline
-(phase 1), run against both buses; the NATS adapter against the same port
+`review_test.go`). Built in part: the fault harness (phase 1), `testrig/`,
+runs against both buses (its tests in `testrig/tests/`). Planned: the
+human posts under fault and the Lab runs of phase 1; the NATS adapter against the same port
 tests as the Mattermost one, the protocol description's conformance list
 and test vectors, the forgery and replay cases and both tenant separations
 of the acceptance, a comparison of the 17 tools' schemas before and after,

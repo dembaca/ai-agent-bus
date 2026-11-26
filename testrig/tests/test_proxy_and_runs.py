@@ -402,12 +402,14 @@ async def test_echo_run_needs_no_lab_and_reports_every_measurand():
     assert report["measured"]["loss"]["value"] == 0
     assert report["measured"]["duplicates"]["value"] == 0
     assert report["measured"]["latency_p50"]["value"] is not None
-    # Not measurable here, and said so rather than guessed as zero:
+    # Not measured by this run, and said so rather than guessed as zero: only
+    # `coord-run` stages a hard stop.
     assert report["measured"]["takeover_p95"] == {
         "name": "Coordinator take-over, 95th percentile", "value": None, "unit": "s",
-        "status": measurands.NOT_YET,
-        "why": "The harness drives one bus and its own posts; a coordinator take-over "
-               "needs two roles and a hard stop of one, which no run here does."}
+        "status": measurands.MEASURED,
+        "why": "Measured by coord-run only (hard stops of the crown holder); a delivery "
+               "run stages no hard stop."}
+    assert report["measured"]["device_approvals"]["status"] == measurands.NOT_YET
 
 
 async def test_a_stall_is_not_a_loss():
