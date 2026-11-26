@@ -14,13 +14,16 @@ import (
 	"net/http"
 	"net/url"
 	"strings"
+	"time"
 
+	"github.com/dembaca/ai-agent-bus/services/bridge/internal/netloc"
 	"github.com/dembaca/ai-agent-bus/services/bridge/internal/registrar/core"
 )
 
 // Config is the adapter's part of the registrar configuration.
 type Config struct {
-	URL              string   // where the registrar reaches Mattermost
+	URL              string   // where the registrar reaches Mattermost: https; http only to a loopback host or with AllowHTTP
+	AllowHTTP        bool     // http to any host, the admin token in clear text (the bridge's BRIDGE_MM_ALLOW_HTTP); default false
 	Token            string   // admin personal access token
 	Team             string   // team bots join; channels are names in it
 	HideBotDM        bool     // hide the admin↔bot welcome DM
@@ -36,6 +39,51 @@ type Adapter struct {
 }
 
 var _ core.ProviderPort = (*Adapter)(nil)
+
+// New returns an adapter for cfg, or an error when cfg.URL would carry the
+// admin token in clear text (checkURL). Its client follows no redirect.
+func New(cfg Config, log *slog.Logger) (*Adapter, error) {
+	if err := cfg.checkURL(); err != nil {
+		return nil, err
+	}
+	return &Adapter{Cfg: cfg, Log: log,
+		Client: &http.Client{Timeout: 20 * time.Second, CheckRedirect: netloc.NoRedirect}}, nil
+}
+
+// checkURL refuses a URL the admin token must not go to: anything but
+// https, or http to a loopback host, unless AllowHTTP — the rule the
+// bridge's own client and WebSocket reader follow (#131, #135). The error
+// names the URL redacted, never the token.
+func (c Config) checkURL() error {
+	u, err := url.Parse(c.URL)
+	if err != nil {
+		return errors.New("mattermost: the URL does not parse")
+	}
+	switch u.Scheme {
+	case "https":
+		return nil
+	case "http":
+		if c.AllowHTTP || netloc.Loopback(u.Hostname()) {
+			return nil
+		}
+		return fmt.Errorf("mattermost: %s: http to a host that is not loopback would send the admin "+
+			"token in clear text; use https, or allow http (BRIDGE_MM_ALLOW_HTTP=true)", u.Scheme+"://"+u.Host)
+	default:
+		return fmt.Errorf("mattermost: %s: neither http nor https", u.Scheme+"://"+u.Host)
+	}
+}
+
+// client is the adapter's HTTP client with redirects off, whatever client
+// the caller set: a redirect would get the token again (#135). A 30x then
+// comes back as the response, which do reports as an error.
+func (m *Adapter) client() *http.Client {
+	c := http.Client{Timeout: 20 * time.Second}
+	if m.Client != nil {
+		c = *m.Client
+	}
+	c.CheckRedirect = netloc.NoRedirect
+	return &c
+}
 
 // User is the part of a Mattermost user the registrar reads.
 type User struct {
@@ -404,6 +452,9 @@ func isNotFound(err error) bool {
 }
 
 func (m *Adapter) do(ctx context.Context, method, path string, body any, token string, out any) error {
+	if err := m.Cfg.checkURL(); err != nil {
+		return err
+	}
 	var rdr io.Reader
 	if body != nil {
 		b, err := json.Marshal(body)
@@ -420,7 +471,7 @@ func (m *Adapter) do(ctx context.Context, method, path string, body any, token s
 	if body != nil {
 		req.Header.Set("Content-Type", "application/json")
 	}
-	res, err := m.Client.Do(req)
+	res, err := m.client().Do(req)
 	if err != nil {
 		return err
 	}

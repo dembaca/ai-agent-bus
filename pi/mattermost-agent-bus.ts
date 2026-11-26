@@ -7,6 +7,10 @@
 // and words everything; this file turns pi's events into calls to the server's
 // hook API (RT-6.17) and the server's answers into session input:
 //   session_start       the MCP server (pi.registerMcpServer) and the long poll
+//   before_agent_start  the server's instructions (GET /v1/instructions, asked
+//                       lazily while missing, #153: pi drops an MCP server's own
+//                       `instructions` with exposure direct) as a system prompt
+//                       section
 //   resources_discover  the skill
 //   input               a human's prompt (any source but "extension") starts a
 //                       turn: the counter, drain rounds and backoff afresh
@@ -637,6 +641,8 @@ export function create(pi: ExtensionAPI, deps: Deps = {}) {
   let ctx: ExtensionContext | null = null
   let bus: ReturnType<typeof hookApi> = async () => null
   let label = ""
+  // The MCP instructions the server serves its model (RT-6.27, #153); "" while none came.
+  let instructions = ""
   let ac: AbortController | null = null
   let closed = true
 
@@ -833,6 +839,9 @@ export function create(pi: ExtensionAPI, deps: Deps = {}) {
     const dir = real(c.cwd) || c.cwd
     label = basename(dir).slice(0, 64) // the presence label's limit (RT-6.17)
     bus = hookApi(env, dir)
+    // A new session reads the served text again: a reload may meet another mode (RT-6.12),
+    // and before_agent_start asks lazily, so a server that is not up yet still counts.
+    instructions = ""
     if (root) {
       try {
         pi.registerMcpServer(SERVER, mcpConfig(root, dir, env))
@@ -848,6 +857,20 @@ export function create(pi: ExtensionAPI, deps: Deps = {}) {
   })
 
   pi.on("resources_discover", () => (root ? { skillPaths: [join(root, "skills", SKILL)] } : undefined))
+
+  // The instructions as a system prompt section, tagged with the server's name (RT-6.27,
+  // #153): every run of the session carries them, as an MCP client that passes an MCP
+  // server's instructions would. Asked lazily while they are missing — outside corral the
+  // server starts after session_start — and a run that still has none drops the section, so
+  // a reload into another mode cannot leave a stale one.
+  pi.on("before_agent_start", async (event) => {
+    if (!instructions) {
+      const asked = await bus("GET", "/v1/instructions")
+      instructions = typeof asked?.instructions === "string" ? asked.instructions : ""
+    }
+    if (instructions) event.systemPromptOptions.sections[SERVER] = instructions
+    else delete event.systemPromptOptions.sections[SERVER]
+  })
 
   // A human's prompt (RT-6.27 step 3): pi's own input from an extension, ours
   // included, is not one.

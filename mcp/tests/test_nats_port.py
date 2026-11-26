@@ -64,6 +64,7 @@ class FakeNats:
         self.echo_age = 0.0  # monotonic seconds since the own presence came back (RT-6.38 step 2)
         # People over NATS (RT-6.42): the bridge's signals, the login service's account records.
         self.switched: set[str] = set()
+        self.prefixes: dict[str, str] = {}  # channel -> the bot prefix its signal named (RT-6.36 step 4)
         self.accounts: dict[str, str] = {}  # Mattermost account -> anchor
         self.approvers: set[str] = set()  # anchors with a fresh approver record
 
@@ -118,6 +119,9 @@ class FakeNats:
 
     def people_switched(self, channel: str) -> bool:
         return channel in self.switched
+
+    def bridge_prefix(self, channel: str) -> str:
+        return self.prefixes.get(channel, "")
 
     def anchor_of_account(self, account: str) -> str:
         return self.accounts.get(account, "-")
@@ -1733,6 +1737,105 @@ async def test_a_bridge_bot_found_later_is_read_again_after_the_ttl(monkeypatch:
     assert len(await port.list_recent(channel_id=WORK)) == 2  # within the TTL
     monkeypatch.setattr(nats_port, "BRIDGE_TTL_SEC", 0.0)
     assert [p.id for p in await port.list_recent(channel_id=WORK)] == ["n1:home:10"]
+
+
+ALICE_BOT = "k" * 26  # the bridge's bot for agent-alice: mm-agent-alice
+BOB_BOT = "m" * 26  # the bridge's bot for agent-bob: mm-agent-bob
+
+
+def agent_bots(bridge_bot: str = "", prefix: str = "mm-") -> tuple[NatsPort, FakeBus, FakeNats]:
+    """A NATS home whose bridge's signal names the bot prefix `mm-` (RT-6.36 step 4): the
+    bridge posts each agent's copies under `mm-<agent name>`, both bot accounts."""
+    port, inner, fake = make(bridge_bot=bridge_bot)
+    assert fake is not None
+    if prefix:
+        fake.prefixes["home"] = prefix
+    inner.bots["mm-agent-alice"] = ChannelUser(id=ALICE_BOT, username="mm-agent-alice")
+    inner.bots["mm-agent-bob"] = ChannelUser(id=BOB_BOT, username="mm-agent-bob")
+    return port, inner, fake
+
+
+def _by(inner: FakeBus, pid: str, user: str, seq: int, text: str) -> Post:
+    inner.arrive({"id": pid, "user_id": user, "message": text, "props": {"x_nats_id": f"n1:home:{seq}"}})
+    return next(p for p in inner.posts if p.id == pid)
+
+
+def _ev(post: Post) -> PostEvent:
+    return PostEvent(post=post, channel_type="O", edited=False)
+
+
+async def test_a_copy_under_the_agents_own_bot_is_dropped() -> None:
+    """RT-6.36 step 4: a bot post whose username is the bridge's bot prefix plus the NATS sender
+    of the post its <prefix>nats_id names is a copy: the reads and the events drop it."""
+    port, inner, _ = agent_bots()
+    await arrive(port, "home", ALICE, 10, Message("post", "hello"))
+    inner.clock = _ms()
+    copy = _by(inner, "c" * 26, ALICE_BOT, 10, "hello")
+    assert [p.id for p in await port.list_recent(channel_id=WORK)] == ["n1:home:10"]
+    assert [p.id for p in await port.posts_after(0, channel_id=WORK)] == ["n1:home:10"]
+    assert await port.mirrored(copy) and await port.skip(_ev(copy))
+    # its reaction: Alice reacted on NATS, the bridge copied it under her bot
+    await arrive(port, "home", ALICE, 11, Message("reaction", ref=10, emoji="eyes"))
+    react = ReactionEvent(Reaction(user_id=ALICE_BOT, post_id=copy.id, emoji_name="eyes"), WORK)
+    assert await port.skip(react)
+    # the agent's own post's copy under its own bot
+    await arrive(port, "home", ME, 12, Message("post", "mine"))
+    inner.bots["mm-agent-me-on-nats"] = ChannelUser(id="q" * 26, username="mm-agent-me-on-nats")
+    assert await port.mirrored(_by(inner, "e" * 26, "q" * 26, 12, "mine"))
+
+
+async def test_a_person_with_the_agent_bots_username_is_no_copy() -> None:
+    """RT-6.36 step 4: only a bot account counts; a person's account named like the agent's
+    bot, with a forged <prefix>nats_id, is read (bots_named leaves people out)."""
+    port, inner, _ = agent_bots()
+    del inner.bots["mm-agent-alice"]
+    inner.people[HUMAN] = "mm-agent-alice"
+    await arrive(port, "home", ALICE, 10, Message("post", "hello"))
+    inner.clock = _ms()
+    forged = _by(inner, "h" * 26, HUMAN, 10, "a person")
+    assert not await port.mirrored(forged) and not await port.skip(_ev(forged))
+    assert [p.message for p in await port.list_recent(channel_id=WORK)] == ["hello", "a person"]
+    assert not await port.skip(ReactionEvent(Reaction(user_id=HUMAN, post_id="n" * 26, emoji_name="eyes"), WORK))
+
+
+async def test_another_agents_bot_hides_no_post() -> None:
+    """RT-6.36 step 4: a bot named the prefix plus another sender than the NATS post's own is
+    no copy (Bob's bot cannot hide a post by naming Alice's); nor is one of a NATS post the
+    session does not have (its sender is not known: kept)."""
+    port, inner, _ = agent_bots()
+    await arrive(port, "home", ALICE, 10, Message("post", "hello"))
+    inner.clock = _ms()
+    wrong = _by(inner, "b" * 26, BOB_BOT, 10, "not bob's")
+    unknown = _by(inner, "u" * 26, ALICE_BOT, 99, "not had")
+    for post in (wrong, unknown):
+        assert not await port.mirrored(post) and not await port.skip(_ev(post))
+    assert [p.message for p in await port.list_recent(channel_id=WORK)] == ["hello", "not bob's", "not had"]
+    # Bob never posted or reacted in the home: his bot's reaction is kept
+    assert not await port.skip(ReactionEvent(Reaction(user_id=BOB_BOT, post_id=wrong.id, emoji_name="eyes"), WORK))
+    # another channel than the NATS home: the copy is the only one there
+    assert not await port.mirrored(dataclasses.replace(_by(inner, "d" * 26, ALICE_BOT, 10, "x"), channel_id=OTHER))
+
+
+async def test_without_a_bot_prefix_only_the_bridge_bot_drops() -> None:
+    """RT-6.36 step 4: no signal named a bot prefix: as before, the agent's bot's copy is read,
+    and the one bridge bot's copy (MM_BRIDGE_BOT) is still dropped."""
+    port, inner, _ = agent_bots(bridge_bot="bridge-bot", prefix="")
+    inner.bots["bridge-bot"] = ChannelUser(id=BRIDGE, username="bridge-bot")
+    await arrive(port, "home", ALICE, 10, Message("post", "hello"))
+    inner.clock = _ms()
+    agent = _by(inner, "c" * 26, ALICE_BOT, 10, "agent bot")
+    bridge = _by(inner, "e" * 26, BRIDGE, 10, "bridge bot")
+    assert not await port.mirrored(agent) and await port.mirrored(bridge)
+    assert [p.message for p in await port.list_recent(channel_id=WORK)] == ["hello", "agent bot"]
+    assert not await port.skip(ReactionEvent(Reaction(user_id=ALICE_BOT, post_id=agent.id, emoji_name="eyes"), WORK))
+    # with both, both rules drop
+    port2, inner2, _ = agent_bots(bridge_bot="bridge-bot")
+    inner2.bots["bridge-bot"] = ChannelUser(id=BRIDGE, username="bridge-bot")
+    await arrive(port2, "home", ALICE, 10, Message("post", "hello"))
+    inner2.clock = _ms()
+    _by(inner2, "c" * 26, ALICE_BOT, 10, "agent bot")
+    _by(inner2, "e" * 26, BRIDGE, 10, "bridge bot")
+    assert [p.message for p in await port2.list_recent(channel_id=WORK)] == ["hello"]
 
 
 def test_the_bridge_bot_is_named_as_a_username() -> None:

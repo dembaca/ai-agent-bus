@@ -138,6 +138,39 @@ async def test_pending_counts_and_details_when_asked(api, monkeypatch):
     assert calls == ["channels"]
 
 
+async def test_the_served_instructions_are_handed_out(api):
+    """RT-6.27 step 1, #153: pi's exposure direct drops an MCP server's own instructions, so
+    the extension asks for them here — the text this server serves its model, not a copy."""
+    from mattermost_ai_agent_bus import server
+
+    _, h = await api(FakeClient())
+    got = (await h.get("/v1/instructions")).json()
+    assert got == {"instructions": server.mcp.instructions}
+    assert got["instructions"], "the test's server serves no instructions"
+
+
+async def test_the_route_serves_the_text_in_force(api, monkeypatch):
+    """#155: the *served* text, not one built anew. Under corral the host rewrites it for a
+    channel session (RT-6.12), and pi must get that variant, not the one of its import."""
+    from mattermost_ai_agent_bus import server
+
+    # The rewrite the server does for a channel session (server.py: `mcp._lowlevel_server.instructions`).
+    monkeypatch.setattr(server.mcp._lowlevel_server, "instructions", "AI agent bus · channel mode")
+    _, h = await api(FakeClient())
+    assert (await h.get("/v1/instructions")).json() == {"instructions": "AI agent bus · channel mode"}
+
+
+async def test_the_instructions_need_no_bus_session(api):
+    """#155: pi asks at its first run, which can come before a bot is registered (outside
+    corral the server starts after session_start): the route answers without a chat client,
+    where everything else keeps its 503."""
+    from mattermost_ai_agent_bus import server
+
+    _, h = await api(None)
+    assert (await h.get("/v1/me")).status_code == 503
+    assert (await h.get("/v1/instructions")).json() == {"instructions": server.mcp.instructions}
+
+
 async def test_last_post_from_the_file_else_the_channel(api):
     """RT-6.17, RT-6.2 step 2: last-<uid>.env first, without a request; else
     the channel's last 100 posts, without the crown; at 0 when none is own."""
