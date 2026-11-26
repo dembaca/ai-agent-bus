@@ -359,7 +359,7 @@ func RunCallout(ctx context.Context, s Settings, log *slog.Logger) error {
 	svc.SetTrust(directory.Trust{Store: dir})
 	trustIndex := &directory.TrustIndex{Store: dir, Log: log}
 	svc.SetTrustIndex(trustIndex)
-	// The same session or host key from two networks at once is refused (#154 step 3).
+	// A session alternating between networks is refused, a host key reported (#154 step 3).
 	svc.SetWatcher(&theft.Guard{Log: log})
 	svc.SetAttester(callout.NATSAttester{NC: jsnc, Stream: consumers.PresenceStream})
 	if pv != nil {

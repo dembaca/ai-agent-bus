@@ -10,27 +10,39 @@ import (
 	"github.com/dembaca/ai-agent-bus/services/auth/internal/theft"
 )
 
-// RT-6.34, #154 step 3: the issue is watched under the host key and the
-// token's Keycloak session, from the client's network.
+// RT-6.34, #154 step 3: the issue is watched under the host key (reported) and
+// the token's Keycloak session (refused when it alternates), from the client's
+// network.
 type stubWatch struct {
-	mu      sync.Mutex
-	verdict theft.Verdict
-	ids     []string
-	nets    []string
+	mu       sync.Mutex
+	host     theft.Verdict
+	session  theft.Verdict
+	hostIDs  []string
+	sessIDs  []string
+	networks []string
 }
 
-func (s *stubWatch) Observe(id, network string) theft.Verdict {
+func (s *stubWatch) HostKey(nkey, network string) theft.Verdict {
 	s.mu.Lock()
 	defer s.mu.Unlock()
-	s.ids = append(s.ids, id)
-	s.nets = append(s.nets, network)
-	return s.verdict
+	s.hostIDs = append(s.hostIDs, nkey)
+	s.networks = append(s.networks, network)
+	return s.host
 }
 
-func (s *stubWatch) seen() (ids, nets []string) {
+func (s *stubWatch) Session(sid, network string) theft.Verdict {
 	s.mu.Lock()
 	defer s.mu.Unlock()
-	return append([]string(nil), s.ids...), append([]string(nil), s.nets...)
+	s.sessIDs = append(s.sessIDs, sid)
+	s.networks = append(s.networks, network)
+	return s.session
+}
+
+func (s *stubWatch) seen() (host, session []string, networks []string) {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	return append([]string(nil), s.hostIDs...), append([]string(nil), s.sessIDs...),
+		append([]string(nil), s.networks...)
 }
 
 func TestTheSourceAddressIsItsNetwork(t *testing.T) {
@@ -50,46 +62,59 @@ func TestTheSourceAddressIsItsNetwork(t *testing.T) {
 }
 
 func TestBothTheHostKeyAndTheSessionAreWatched(t *testing.T) {
-	w := &stubWatch{verdict: theft.Same}
+	w := &stubWatch{host: theft.Same, session: theft.Same}
 	s := &Service{}
 	s.SetWatcher(w)
 	if err := s.watchTheft("UAHOST", "sess-1", "203.0.113.7:51234"); err != nil {
 		t.Fatalf("%v", err)
 	}
-	ids, nets := w.seen()
-	if len(ids) != 2 || ids[0] != "nkey:UAHOST" || ids[1] != "sid:sess-1" {
-		t.Fatalf("watched %v", ids)
+	hosts, sids, nets := w.seen()
+	if len(hosts) != 1 || hosts[0] != "UAHOST" {
+		t.Fatalf("host keys watched %v", hosts)
+	}
+	if len(sids) != 1 || sids[0] != "sess-1" {
+		t.Fatalf("sessions watched %v", sids)
 	}
 	if nets[0] != "203.0.113.0/24" || nets[1] != "203.0.113.0/24" {
 		t.Fatalf("networks %v", nets)
 	}
-	// A token without a session id: the host key alone, no empty id.
-	w.mu.Lock()
-	w.ids, w.nets = nil, nil
-	w.mu.Unlock()
+	// A token without a session id: nothing to compare, no empty id.
+	w = &stubWatch{}
+	s.SetWatcher(w)
 	if err := s.watchTheft("UAHOST", "", "203.0.113.7:1"); err != nil {
 		t.Fatalf("%v", err)
 	}
-	ids, _ = w.seen()
-	if len(ids) != 1 || ids[0] != "nkey:UAHOST" {
-		t.Fatalf("watched %v", ids)
+	hosts, sids, _ = w.seen()
+	if len(hosts) != 1 || len(sids) != 0 {
+		t.Fatalf("watched hosts %v, sessions %v", hosts, sids)
 	}
 }
 
-func TestTwoNetworksAtOnceRefuseTheIssue(t *testing.T) {
+func TestAnAlternatingSessionRefusesTheIssue(t *testing.T) {
 	s := &Service{}
-	s.SetWatcher(&stubWatch{verdict: theft.Concurrent})
+	s.SetWatcher(&stubWatch{host: theft.Moved, session: theft.Copied})
 	err := s.watchTheft("UAHOST", "sess-1", "203.0.113.7:1")
-	if !errors.Is(err, ErrConcurrentUse) {
-		t.Fatalf("a concurrent use: %v, want ErrConcurrentUse", err)
+	if !errors.Is(err, ErrCopiedUse) {
+		t.Fatalf("a copied session: %v, want ErrCopiedUse", err)
 	}
 }
 
 func TestAMoveDoesNotRefuse(t *testing.T) {
 	s := &Service{}
-	s.SetWatcher(&stubWatch{verdict: theft.Moved})
+	s.SetWatcher(&stubWatch{host: theft.Moved, session: theft.Moved})
 	if err := s.watchTheft("UAHOST", "sess-1", "203.0.113.7:1"); err != nil {
 		t.Fatalf("a network change: %v, want no error", err)
+	}
+}
+
+// A copied host key is reported, never refused: the owner rotates it, and a
+// refusal would lock the owner out. A new session on that key is not refused
+// either.
+func TestACopiedHostKeyDoesNotRefuse(t *testing.T) {
+	s := &Service{}
+	s.SetWatcher(&stubWatch{host: theft.Copied, session: theft.Same})
+	if err := s.watchTheft("UAHOST", "sess-1", "203.0.113.7:1"); err != nil {
+		t.Fatalf("a copied host key: %v, want no error", err)
 	}
 }
 
@@ -105,7 +130,7 @@ func TestWithoutAWatcherNothingIsRefused(t *testing.T) {
 // and the callout's own wiring is what is exercised.
 func TestAnUnauthenticatedIssueNeverTouchesTheWatcher(t *testing.T) {
 	l := newLab(t)
-	w := &stubWatch{verdict: theft.Same}
+	w := &stubWatch{}
 	l.svc.SetWatcher(w)
 	// A token the realm will not accept (another audience): the issue is refused
 	// before the watch, so a refused request cannot be counted as a network use.
@@ -113,13 +138,18 @@ func TestAnUnauthenticatedIssueNeverTouchesTheWatcher(t *testing.T) {
 	if _, err := l.connectAt(l.url, "alice", bad, Hello{Home: "home"}, nil, 0); err == nil {
 		t.Fatal("a token with another audience connected")
 	}
-	if ids, _ := w.seen(); len(ids) != 0 {
-		t.Fatalf("the guard saw a refused issue: %v", ids)
+	if hosts, sids, _ := w.seen(); len(hosts) != 0 || len(sids) != 0 {
+		t.Fatalf("the guard saw a refused issue: %v %v", hosts, sids)
 	}
-	if _, err := l.connect("alice", l.realm.Token("alice", nil), Hello{Home: "home"}, nil); err != nil {
+	withSID := l.realm.Token("alice", func(c gojwt.MapClaims) { c["sid"] = "sess-lab" })
+	if _, err := l.connect("alice", withSID, Hello{Home: "home"}, nil); err != nil {
 		t.Fatalf("the good issue: %v", err)
 	}
-	if ids, _ := w.seen(); len(ids) == 0 {
-		t.Fatal("the guard saw nothing of a good issue")
+	hosts, sids, _ := w.seen()
+	if len(hosts) == 0 {
+		t.Fatal("the guard saw no host key of a good issue")
+	}
+	if len(sids) != 1 || sids[0] != "sess-lab" {
+		t.Fatalf("the sessions the guard saw: %v, want sess-lab", sids)
 	}
 }

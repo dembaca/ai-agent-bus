@@ -9,23 +9,26 @@ import (
 	"github.com/dembaca/ai-agent-bus/services/auth/internal/theft"
 )
 
-// The theft check (decision 10, step 3 of #154): one Keycloak session or one
-// host key used from two networks at the same time is refused; a network
-// change one after another is only reported. The guard needs no credential, so
-// no Keycloak admin right is involved; what the refusal costs the owner is
-// named in RT-6.34 (the stolen token stays valid at Keycloak until it runs out
-// or the owner ends the session, which the owner decides).
+// The theft check (decision 10, step 3 of #154): a session alternating between
+// networks, or a host key doing so, is a copy. The session is refused for a
+// while — a retry included — and the host key is reported only, since a copied
+// key is the owner's to rotate and refusing it would lock the owner out. The
+// guard needs no credential, so no Keycloak admin right is involved; the stolen
+// token stays valid at Keycloak until it runs out or the owner ends the
+// session (RT-6.34, the owner's decision).
 var (
-	// ErrConcurrentUse refuses an issue for a session or host key seen from two
-	// networks at once.
-	ErrConcurrentUse = errors.New("login: this session or host key was used from two networks at once; " +
-		"refused (the owner's session may be stolen)")
+	// ErrCopiedUse refuses an issue for a session seen alternating between
+	// networks.
+	ErrCopiedUse = errors.New("login: this session was used from alternating networks; " +
+		"refused (the session may be copied)")
 )
 
-// Watcher is the theft detector (theft.Guard): per id, whether the issue comes
-// from the same network, a new one, or two at once.
+// Watcher is the theft detector (theft.Guard): per session and host key,
+// whether the issue comes from the same network, a new one, or alternates with
+// another. A session may be refused, a host key only reported.
 type Watcher interface {
-	Observe(id, network string) theft.Verdict
+	Session(sid, network string) theft.Verdict
+	HostKey(nkey, network string) theft.Verdict
 }
 
 // SetWatcher sets the theft detector. nil (the default) watches nothing.
@@ -42,28 +45,30 @@ func (s *Service) watchHook() Watcher {
 }
 
 // watchTheft notes the issue of a host key and its session from the client's
-// address and refuses it when either is in use from two networks at once.
+// network, reports the host key and refuses a session that alternates between
+// networks.
 func (s *Service) watchTheft(nkey, sid, addr string) error {
 	wt := s.watchHook()
 	if wt == nil {
 		return nil
 	}
 	network := source(addr)
-	for _, id := range []string{"nkey:" + nkey, "sid:" + sid} {
-		if strings.HasSuffix(id, ":") {
-			continue // no session id in the token: the host key alone is watched
-		}
-		if wt.Observe(id, network) == theft.Concurrent {
-			return ErrConcurrentUse
-		}
+	if nkey != "" {
+		// Reported, never refused: the verdict is in the log, and the owner is
+		// told to rotate the key.
+		wt.HostKey(nkey, network)
+	}
+	if sid != "" && wt.Session(sid, network) == theft.Copied {
+		return ErrCopiedUse
 	}
 	return nil
 }
 
 // source is the network an issue comes from, as a prefix (IPv4 /24, IPv6 /64):
 // two addresses of one network are one network, so dual-stack, returning IPv6
-// privacy addresses and one host's several paths are not mistaken for a theft.
-// A shared NAT or proxy hides everything behind one address (the limit).
+// privacy addresses and one host's several paths are not mistaken for a copy.
+// Two users on one prefix — a shared NAT or proxy, or a thief in the same /24 or
+// /64 — are invisible (the limit).
 func source(host string) string {
 	host = strings.TrimSpace(host)
 	if h, _, err := net.SplitHostPort(host); err == nil {

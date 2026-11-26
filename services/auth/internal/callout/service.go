@@ -338,7 +338,8 @@ func (s *Service) authorize(ctx context.Context, req *jwt.AuthorizationRequestCl
 	if err != nil {
 		return "", who, err
 	}
-	// The same session or host key from two networks at once: refused (#154 step 3).
+	// A session alternating between networks is a copy: refused (#154 step 3);
+	// a host key doing so is only reported.
 	if err := s.watchTheft(host, id.SID, req.ClientInformation.Host); err != nil {
 		return "", append(who, "owner", id.Owner, "sub", id.Subject, "session", id.SID), err
 	}
