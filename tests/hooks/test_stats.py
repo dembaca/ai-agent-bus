@@ -38,7 +38,7 @@ def test_a_turn_ends_at_the_stop_that_lets_go(mm, run):
     run(PROMPT)
     mm.unread_dm(1)
     assert all(run(STOP).blocked for _ in range(3))     # three drain rounds: no end
-    assert [e["k"] for e in events(run)] == ["turn", "block", "block", "block"]
+    assert [e["k"] for e in events(run)] == ["turn", *["block", "inject"] * 3]
     assert run(STOP).passed                              # the count is stale: let go
     kinds = [e["k"] for e in events(run)]
     assert kinds.count("turn") == 1 and kinds[-1] == "turn_end"
@@ -227,6 +227,115 @@ def test_the_tool_reports_what_the_script_reports(mm, run):
     assert ["0.91.0", "worker", "2", "2", "2.5", "10%", "7%", "1.3", "0.4", "1%"] in cells
 
 
+def test_the_hooks_count_their_texts_by_kind_and_length_only(mm, run):
+    """RT-6.9 step 1: every text the Stop hook and the listener put into the context is an
+    `inject` event with its kind and length, numbers only, never the text. The length is
+    in Unicode code points, as the server and the plugins count it, also under the C
+    locale, where bash's ${#…} would count bytes (the drain reason holds an em dash)."""
+    run(PROMPT)
+    mm.unread_dm(1)
+    blocked = run(STOP, LC_ALL="C", LANG="C")             # drain round
+    reason = json.loads(blocked.stdout)["reason"]
+    assert any(ord(c) > 127 for c in reason)
+    run(LISTEN, "--until", str(int(time.time()) + 5), MM_LISTEN_POLL_SEC="1", LC_ALL="C", **IN_PROJECT)
+    injected = [e for e in events(run) if e["k"] == "inject"]
+    assert [e["name"] for e in injected] == ["drain", "other"]
+    assert injected[0]["chars"] == len(reason)
+    assert all(set(e) == {"k", "t", "name", "chars"} and isinstance(e["chars"], int) for e in injected)
+
+
+def test_the_traffic_by_category_is_the_tools(mm, run):
+    """RT-6.9 step 3: the bus traffic by category, the same JSON from the script as from
+    stats_report; a line without the counts (older than the counts) leaves the version
+    n/a and counts in the coverage, never as 0."""
+    from mattermost_ai_agent_bus import stats
+
+    new = {"post_words": {"HELLO": [1, 40], "IDLE": [2, 60], "TASK": [1, 300], "DONE": [1, 90],
+                          "plain": [2, 120], "ask": [1, 500], "other": [1, 30]},
+           "inbound": {"agent": [3, 900], "human": [1, 50], "event": [2, 80], "envelope": [6, 1200]},
+           "polls": [5, 3], "inject": {"drain": [1, 150], "compact": [1, 2000], "digest": [1, 400]}}
+    lines = [{"v": "0.101.0", "min": 60, "turns": 3},
+             {"v": "0.102.0", "sid": "5e55", "min": 60, "turns": 3, **new},
+             {"v": "0.102.0", "sid": "a1b2", "min": 30, "turns": 1}]
+    mm.posts[:0] = [{"id": f"s{i}", "user_id": "x" * 26, "create_at": 1,
+                     "message": "STATS " + json.dumps(line)} for i, line in enumerate(lines)]
+    r = run(REPORT, "report", "agents-stats", "--json")
+    assert r.code == 0, r.stderr
+    got = json.loads(r.stdout)
+    assert got == stats.report(lines)
+    old, t = got[0]["traffic"], got[1]["traffic"]
+    assert old is None and (t["lines"], t["of"]) == (1, 2)
+    # Overhead: HELLO, IDLE, other posts (4 items, 130), server events (2, 80), the envelope
+    # (1200 characters), hook texts (3, 2550), empty polls (3 items).
+    assert t["overhead"] == [4 + 2 + 3 + 3, 130 + 80 + 1200 + 2550]
+    assert t["coordination"] == [1 + 1 + 2 + 1 + 3 + 1, 300 + 90 + 120 + 500 + 900 + 50]
+    assert (t["empty_polls_pct"], t["overhead_chars_pct"]) == (60, 67)
+    cells = [line.split() for line in run(REPORT, "report", "agents-stats").stdout.splitlines()]
+    assert ["0.102.0", "1/2", "12", "3960", "9", "1960", "67%", "60%"] in cells
+    assert ["0.101.0", "-", "-", "-", "-", "-", "-", "-"] in cells
+
+
+def test_every_key_maps_the_same_in_the_script_as_in_the_tool(mm, run):
+    """RT-6.9 step 3: each key of the fixed lists (every bus word of POST_WORDS, every
+    author class, every hook text kind) lands in the same category in the script's jq as
+    in stats.CATEGORY_OF: one version per key, so a key the two map apart shows."""
+    from mattermost_ai_agent_bus import stats
+
+    keys = ([("post_words", k) for k in sorted(stats.POST_WORDS)]
+            + [("inbound", k) for k in sorted(stats.INBOUND_KEYS)]
+            + [("inject", k) for k in sorted(stats.INJECT_KINDS)])
+    lines = [{"v": f"0.0.{i}", "min": 1, field: {key: [1, 10]}} for i, (field, key) in enumerate(keys)]
+    mm.posts[:0] = [{"id": f"s{i}", "user_id": "x" * 26, "create_at": 1,
+                     "message": "STATS " + json.dumps(line)} for i, line in enumerate(lines)]
+    r = run(REPORT, "report", "agents-stats", "--json")
+    assert r.code == 0, r.stderr
+    got = {row["version"]: row["traffic"] for row in json.loads(r.stdout)}
+    for i, (field, key) in enumerate(keys):
+        t = got[f"0.0.{i}"]
+        into = stats.CATEGORY_OF[field][key]
+        chars = {stats.OVERHEAD: t["overhead"][1], stats.COORDINATION: t["coordination"][1]}
+        assert chars[into] == 10 and sum(chars.values()) == 10, (field, key)
+    assert json.loads(r.stdout) == stats.report(lines)
+
+
 def test_off_counts_nothing(mm, run):
     run(PROMPT, MM_STATS_CHANNEL="off")
     assert events(run) == []
+
+
+def test_the_tokens_by_category_are_the_tools(mm, run):
+    """RT-6.9 step 3: the tokens by category (an estimate), the same JSON from the script
+    as from stats_report, per version and role: overhead held to the total, coordination
+    to the rest, task work the remainder; a line without the split or of another method
+    leaves the version n/a and counts in the coverage, never as 0."""
+    from mattermost_ai_agent_bus import stats
+
+    tok = {"req": 40, "all": {"in": 1000, "read": 90_000, "w5m": 3000, "w1h": 0, "out": 2000},
+           "ovh": {"in": 100, "read": 20_000, "w5m": 500, "out": 300},
+           "coord": {"in": 400, "read": 5000, "w5m": 900, "out": 600}, "req_ovh": 3, "req_coord": 5, "m": 1}
+    forged = {"all": {"in": 10, "out": 10}, "ovh": {"in": 30, "out": 4}, "coord": {"in": 5, "out": 9},
+              "m": 1}
+    lines = [{"v": "0.101.0", "min": 60, "rt": "claude-code", "tok": {"req": 3, "all": {"in": 5}}},
+             {"v": "0.102.0", "sid": "5e55", "min": 60, "rt": "claude-code", "crown_sec": 3000, "tok": tok},
+             {"v": "0.102.0", "sid": "a1b2", "min": 30, "rt": "claude-code", "crown_sec": 0, "tok": forged},
+             {"v": "0.102.0", "sid": "c3d4", "min": 30, "rt": "opencode", "tok": tok | {"m": 2}},
+             {"v": "0.102.0", "sid": "e5f6", "min": 30, "rt": "cursor"}]
+    mm.posts[:0] = [{"id": f"s{i}", "user_id": "x" * 26, "create_at": 1,
+                     "message": "STATS " + json.dumps(line)} for i, line in enumerate(lines)]
+    r = run(REPORT, "report", "agents-stats", "--json")
+    assert r.code == 0, r.stderr
+    got = json.loads(r.stdout)
+    assert got == stats.report(lines)
+    old, s = got[0]["split"], got[1]["split"]
+    assert old is None and (s["lines"], s["of"], s["harnesses"]) == (2, 4, ["claude-code"])
+    assert s["estimated"] is True and s["method"] == 1 and (s["req_ovh"], s["req_coord"]) == (3, 5)
+    # The forged line: overhead held to its total (10), coordination to the rest (0).
+    assert s["types"]["overhead"]["in"] == 100 + 10 and s["types"]["coordination"]["in"] == 400
+    assert s["types"]["task"]["out"] == 2000 - 300 - 600 + 10 - 4 - 6
+    assert sum(s["raw"].values()) == 96_000 + 20
+    assert all(0 <= p <= 100 for p in (*s["eq_pct"].values(), *s["raw_pct"].values()))
+    cells = [line.split() for line in run(REPORT, "report", "agents-stats").stdout.splitlines()]
+    assert ["0.102.0", "2/4", f"{s['eq_pct']['task']}%", f"{s['eq_pct']['overhead']}%",
+            f"{s['eq_pct']['coordination']}%", f"{s['raw_pct']['task']}%", f"{s['raw_pct']['overhead']}%",
+            f"{s['raw_pct']['coordination']}%", "3", "5"] in cells
+    assert ["0.101.0", "-", "-", "-", "-", "-", "-", "-", "-", "-"] in cells

@@ -40,7 +40,7 @@ from dataclasses import dataclass
 from datetime import datetime, timezone
 from typing import TYPE_CHECKING, Any
 
-from . import a2a, attest, gate, lease, owners
+from . import a2a, attest, gate, lease, owners, stats
 from .ids import _ID, NATS_POST
 from .model import Mark, NoMandateEndpoint, Post
 
@@ -487,8 +487,9 @@ async def observe(client: ChatPort, post: Post, uid: str) -> bool:
             if not any(p.kind == a2a.MANDATE for p in posts):
                 command = f"set ~{name}" + (f" until {until}" if until else "")
                 here = await lease.crown_here(client, uid, post.channel_id)
-                await client.post(lease.with_crown(_HINT.format(command=command), uid, here=here),
-                                  root_id=post.id, props=a2a.props(kind=a2a.MANDATE))
+                text = lease.with_crown(_HINT.format(command=command), uid, here=here)
+                stats.record("post", chars=len(text), w="other")  # RT-6.9: the server's own post
+                await client.post(text, root_id=post.id, props=a2a.props(kind=a2a.MANDATE))
         return True
     except Exception as exc:  # noqa: BLE001 — fail open
         log.info("mandate post %s not read: %s", post.id or None, exc)

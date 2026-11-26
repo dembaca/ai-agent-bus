@@ -69,7 +69,10 @@ in the tenant account must hold the `KV_BUS_DIRECTORY` stream rights from
 [`services/auth/nats-server.example.conf`](../services/auth/nats-server.example.conf)
 (publish `$JS.API.STREAM.CREATE.KV_BUS_DIRECTORY`,
 `$JS.API.STREAM.INFO.KV_BUS_DIRECTORY`, `$JS.API.DIRECT.GET.KV_BUS_DIRECTORY.>`
-and `$KV.BUS_DIRECTORY.>`); without them it does not start. Leave
+and `$KV.BUS_DIRECTORY.>`); without them it does not start. For the bucket's
+key listings it also needs `$JS.API.CONSUMER.CREATE.KV_BUS_DIRECTORY.>` and
+`$JS.API.CONSUMER.DELETE.KV_BUS_DIRECTORY.*`; without them every operator
+credential is refused. Leave
 `AUTH_DIRECTORY_IMPORTED` at `false` until the one-time import has run — set to
 `true`, a missing bucket is never made anew (RT-6.39).
 

@@ -56,19 +56,17 @@ type Anchors struct {
 
 // Anchor records the login of `sub` as `display` and returns its anchor:
 // for an identity the directory knows, the one it holds; for a new one,
-// today's name `display` while the import has not run (every identity is a
-// today's one then: agent names and presence tokens stay exactly as they
-// were), its `sub` after it.
+// today's name `display` when it is free, before and after the import, else
+// its `sub` (RT-6.39 step 2, #86). The host computes the agent's name and its
+// presence token from `preferred_username`, so an anchor equal to it is what
+// lets a new identity's home start over NATS. A name as anchor grants
+// nothing: membership, the account index and the import's claims go by `sub`.
+// The import's mark is still read, so a lost bucket refuses the login.
 func (a Anchors) Anchor(ctx context.Context, sub, display string) (string, error) {
-	imported, err := a.Store.Imported(ctx)
-	if err != nil {
+	if _, err := a.Store.Imported(ctx); err != nil {
 		return "", err
 	}
-	today := display
-	if imported {
-		today = ""
-	}
-	id, err := a.Store.Login(ctx, sub, display, today)
+	id, err := a.Store.Login(ctx, sub, display, display)
 	if err != nil {
 		return "", err
 	}

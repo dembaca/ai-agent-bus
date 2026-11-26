@@ -4,7 +4,8 @@ reviews, harder edges: one deadline for the whole request head (a slow
 line is a slow request, not ten slow ones), a bounded drain, streams that
 end when the session behind them ends, and per-stream events.
 
-Handlers return ``(path, query, headers) -> Response | SSE``; an SSE
+Handlers return ``(path, query, headers) -> Response | SSE``, the method
+(GET, or POST for the logout) in the pseudo-header ``:method``; an SSE
 holds the connection open and writes an event whenever the fleet changes,
 a keep-alive beat every ``SSE_KEEPALIVE_SEC``, and closes when the
 session is gone (the ``alive`` callback) or the browser walked away.
@@ -23,12 +24,22 @@ HEAD_DEADLINE = 10.0     # the whole request head, one deadline
 DRAIN_SEC = 5.0          # one write may not block the server longer
 MAX_CONNECTIONS = 64     # before the login; a stream cap comes per session
 SSE_KEEPALIVE_SEC = 15.0
+MAX_POST_BODY = 4096     # the logout's form is empty; nothing more is read
 
 REASONS = {200: "OK", 206: "Partial Content", 303: "See Other",
            400: "Bad Request", 401: "Unauthorized", 403: "Forbidden",
-           404: "Not Found", 405: "Method Not Allowed", 413: "Payload Too Large",
+           404: "Not Found", 405: "Method Not Allowed", 411: "Length Required",
+           413: "Payload Too Large",
            429: "Too Many Requests", 500: "Internal Server Error",
            502: "Bad Gateway", 503: "Service Unavailable"}
+
+
+class Refusal(ValueError):
+    """A request refused before any handler, with its own status."""
+
+    def __init__(self, status: int, why: str) -> None:
+        super().__init__(why)
+        self.status = status
 
 
 @dataclass
@@ -141,8 +152,8 @@ class Httpd:
                 if len(line) > MAX_LINE:
                     raise ValueError("request line too long")
                 parts = line.decode("latin-1").split()
-                if len(parts) < 3 or not parts[0].startswith("GET"):
-                    raise ValueError("only GET")
+                if len(parts) < 3 or parts[0] not in ("GET", "POST"):
+                    raise ValueError("only GET and POST")
                 headers: dict[str, str] = {}
                 async with asyncio.timeout(HEAD_DEADLINE):
                     while True:
@@ -153,8 +164,25 @@ class Httpd:
                             raise ValueError("head too big")
                         name, _, value = h.decode("latin-1").partition(":")
                         headers[name.strip().lower()] = value.strip()
-            except (asyncio.TimeoutError, ValueError, ConnectionError):
-                writer.write(Response(status=400).head())
+                    if parts[0] == "POST":
+                        # a POST carries no body the console reads (the
+                        # logout's form is empty): a small one is drained;
+                        # a chunked one has no length to bound it by
+                        if "transfer-encoding" in headers:
+                            raise Refusal(411, "POST without a Content-Length")
+                        length = headers.get("content-length", "0")
+                        if not length.isdigit():
+                            raise ValueError("Content-Length is no number")
+                        if int(length) > MAX_POST_BODY:
+                            raise Refusal(413, "POST body too big")
+                        if int(length):
+                            await reader.readexactly(int(length))
+                # the method as a pseudo-header: no line of the head can
+                # name it (a leading ":" leaves an empty name)
+                headers[":method"] = parts[0]
+            except (asyncio.TimeoutError, ValueError, ConnectionError,
+                    asyncio.IncompleteReadError) as exc:
+                writer.write(Response(status=getattr(exc, "status", 400)).head())
                 return
             query = dict(parse_qsl(urlsplit(parts[1]).query))
             route = urlsplit(parts[1]).path

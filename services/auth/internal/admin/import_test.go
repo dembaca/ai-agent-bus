@@ -144,6 +144,15 @@ func TestImportCreatesOnceThroughHTTP(t *testing.T) {
 	if id, _, ok, _ := e.store.Identity(ctx(t), "sub-carol"); !ok || id.Anchor != "carol" {
 		t.Fatalf("identity: %+v", id)
 	}
+	// RT-6.39 step 2, #86: an identity the import wrote keeps its anchor at a
+	// login after a rename, and a newcomer with its old name gets its own sub.
+	a := directory.Anchors{Store: e.store}
+	if got, err := a.Anchor(ctx(t), "sub-carol", "carol.renamed"); err != nil || got != "carol" {
+		t.Fatalf("the imported identity's anchor moved: %q %v", got, err)
+	}
+	if got, err := a.Anchor(ctx(t), "sub-newcarol", "carol"); err != nil || got != "sub-newcarol" {
+		t.Fatalf("a newcomer took an imported identity's name: %q %v", got, err)
+	}
 	code, body, _ = e.do(t, "POST", "/v1/directory/import", e.admin, "")
 	want(t, "second import", code, 409, body)
 }

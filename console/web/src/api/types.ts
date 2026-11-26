@@ -216,14 +216,38 @@ export interface ReportBar {
   value: number
 }
 
+/** The three categories of the token split (RT-6.9 step 3). */
+export type TokenCategory = "task" | "overhead" | "coordination"
+
+/** One segment of a stacked bar: its value and its share of the bar,
+ * within 0 to 100 (null when the bar has no tokens at all). */
+export interface ReportSegment {
+  category: TokenCategory
+  value: number
+  percent: number | null
+}
+
+/** One stacked bar (the tokens by category): the three categories in
+ * input-token equivalents (`segments`) and in raw tokens (`raw`).
+ * `estimated`: the split is an estimate, the bar says so. */
+export interface ReportStack {
+  label: string
+  estimated: boolean
+  segments: ReportSegment[]
+  raw: ReportSegment[]
+}
+
 export interface Report {
   id: string
   title: string
   window: "live" | "24 h" | "7 d" | "90 d"
   /** Which export: when a value should draw attention. */
   warn?: string
+  /** One line on how the numbers come about (an estimate's method). */
+  note?: string
   fields: ReportField[]
   bars?: ReportBar[]
+  stacks?: ReportStack[]
 }
 
 /** The whole API the app needs (ADR-015 point 10). */
