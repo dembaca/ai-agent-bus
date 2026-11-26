@@ -116,7 +116,7 @@ func (s *Sweeper) Pass(ctx context.Context) int {
 	swept := 0
 	for _, bot := range bots {
 		name, ok := strings.CutPrefix(bot.Username, b.Prefix)
-		if !ok || name == "" || bot.Description != Marker+name || bot.DeleteAt != 0 {
+		if !ok || name == "" || !marked(bot.Description, name) || bot.DeleteAt != 0 {
 			continue // not the bridge's bot for an agent, or disabled already
 		}
 		if b.now().Sub(s.lastSeen(name)) <= keep {
@@ -151,7 +151,7 @@ func (s *Sweeper) sweep(ctx context.Context, name string, a core.Agent, keep tim
 		b.Log.Warn("agentbots: the sweep cannot read the bot", "bot", a.Username, "error", err)
 		return false
 	}
-	if cur == nil || cur.Username != b.Prefix+name || cur.Description != mark || cur.DeleteAt != 0 {
+	if cur == nil || cur.Username != b.Prefix+name || !marked(cur.Description, name) || cur.DeleteAt != 0 {
 		return false // changed since the listing: not the bridge's enabled bot for name any more
 	}
 	if err := b.Admin.RevokeAll(ctx, a); err != nil {
@@ -160,9 +160,13 @@ func (s *Sweeper) sweep(ctx context.Context, name string, a core.Agent, keep tim
 	}
 	// the tokens are gone: so is the client, whatever follows
 	e.agent, e.client, e.joined = a, nil, map[string]bool{}
-	if err := b.Admin.UpdateBotDescription(ctx, a.ID, mark+SweptSuffix); err != nil {
-		b.Log.Warn("agentbots: the sweep cannot mark the bot swept", "bot", a.Username, "error", err)
-		return false
+	// an enabled bot with the swept mark already is one whose earlier sweep
+	// was cut off between two calls: it keeps the mark
+	if cur.Description == mark {
+		if err := b.Admin.UpdateBotDescription(ctx, a.ID, mark+SweptSuffix); err != nil {
+			b.Log.Warn("agentbots: the sweep cannot mark the bot swept", "bot", a.Username, "error", err)
+			return false
+		}
 	}
 	if err := b.Admin.DisableBot(ctx, a.ID); err != nil {
 		b.Log.Warn("agentbots: the sweep cannot disable the bot", "bot", a.Username, "error", err)
@@ -176,4 +180,10 @@ func (s *Sweeper) sweep(ctx context.Context, name string, a core.Agent, keep tim
 	e.failed = time.Time{}
 	b.Log.Info("agentbots: swept", "bot", a.Username, "idle", idle.Round(time.Minute).String())
 	return true
+}
+
+// marked says whether an enabled bot's description is the bridge's mark for
+// name: the plain one, or the swept one an interrupted sweep left.
+func marked(description, name string) bool {
+	return description == Marker+name || description == Marker+name+SweptSuffix
 }

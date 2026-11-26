@@ -459,3 +459,36 @@ func TestRT644SweepAndBotAtOnce(t *testing.T) {
 		t.Fatalf("%d active tokens for one client", f.activeTokens(id))
 	}
 }
+
+// RT-6.44 step 8: an enabled bot that still has the swept mark (a sweep cut
+// off between the mark and the disable) is swept at the next pass, its mark
+// kept, not set again.
+func TestRT644AnInterruptedSweepIsFinished(t *testing.T) {
+	f := newFake(t)
+	f.addBot("b1", "bb-agent-1", Marker+"agent-1"+SweptSuffix)
+	b, snap, c := emptyWorld(t, f, 2*time.Hour)
+	f.failPatch = "b1" // a description update would fail the sweep
+	s := &Sweeper{Bots: b, Keep: time.Hour, Start: t0}
+	if n := pass(s, snap, c); n != 1 || !f.disabled("b1") || f.activeTokens("b1") != 0 {
+		t.Fatalf("swept %d, disabled %v, tokens %d", n, f.disabled("b1"), f.activeTokens("b1"))
+	}
+	if f.description("b1") != Marker+"agent-1"+SweptSuffix {
+		t.Fatalf("description %v", f.description("b1"))
+	}
+}
+
+// RT-6.44 step 3: an enabled bot that still has the swept mark (a return cut
+// off between the enable and the restored mark) is used, and its plain mark
+// restored, without an enable.
+func TestRT644AnInterruptedReturnIsRepaired(t *testing.T) {
+	f := newFake(t)
+	f.addBot("b1", "bb-agent-a", Marker+"agent-a"+SweptSuffix)
+	f.set("b1", "owner_id", "alice")
+	b := newBots(t, f, aliceAgent())
+	if b.Bot(context.Background(), "agent-a", "home") == nil {
+		t.Fatal("the bridge bot posts for the agent")
+	}
+	if f.description("b1") != Marker+"agent-a" || len(f.toggled) != 0 || f.created != 0 {
+		t.Fatalf("description %v, toggled %v, created %d", f.description("b1"), f.toggled, f.created)
+	}
+}
