@@ -11,7 +11,7 @@ import time
 import pytest
 from fakes import BOT, WORK, FakeChat
 
-from mattermost_ai_agent_bus import channel, lease, mattermost_ws, server
+from mattermost_ai_agent_bus import channel, gate, lease, mattermost_ws, server
 from mattermost_ai_agent_bus.client import post_of
 from mattermost_ai_agent_bus.model import ChannelUser, UnreadChannel
 from mattermost_ai_agent_bus.websocket_inbox import ClassifiedEvent, WebSocketInbox
@@ -222,3 +222,64 @@ async def test_wait_for_events_marks_what_only_the_crown_wakes(home):
     assert lease.crown_held(BOT)
     await server._crown_events(events, items)
     assert items[0]["for_crown"] is True and "for_crown" not in items[1]
+
+
+AGENT = "a" * 26   # another agent of the home, the starter of an ask thread
+ROOT = "r" * 26
+REPLY = "s" * 26
+
+
+async def _judge_reply(home: Home, root_user: str, root_text: str, *, posted: bool = False) -> tuple[bool, bool]:
+    """A trusted human's plain reply under a root by root_user: (wait_for_events
+    marks it for_crown, the push wakes the agent). posted: this agent replied
+    in the thread before."""
+    server._my_threads.clear()
+    server._my_roots.clear()
+    gate._roots.clear()
+    root = {"id": ROOT, "user_id": root_user, "channel_id": WORK, "message": root_text, "create_at": 1}
+    mine = [{"id": "m" * 26, "user_id": BOT, "channel_id": WORK, "root_id": ROOT,
+             "message": "see the ADR", "create_at": 2}] if posted else []
+    reply = post_of({"id": REPLY, "user_id": HUMAN, "channel_id": WORK, "root_id": ROOT,
+                     "message": "postgres, please", "create_at": 3})
+    home.posts = [post_of(root), *(post_of(p) for p in mine), reply]
+    events = [ClassifiedEvent(kind="watched_channel", post=reply)]
+    items = await server._event_items(events)
+    await server._crown_events(events, items)
+    marked = bool(items[0].get("for_crown"))
+    return marked, await server._push_addressed(dict(items[0]))
+
+
+async def test_a_humans_reply_in_another_agents_thread_is_not_the_crowns(home, monkeypatch):
+    """RT-6.6 step 5 (#207): holding the crown, a human's plain reply in a
+    thread another agent started, or whose root names another agent, is that
+    agent's: wait_for_events marks no for_crown and the push does not wake the
+    👑, also where it posted in that thread. Under a human's root that names
+    no agent, or names the 👑 too, it is the crown's as before; under its own
+    root it is its own thread."""
+    monkeypatch.setattr(gate, "_roots", {})
+    home._agents.add(AGENT)
+    await lease.command(home, "tick")
+    assert lease.crown_held(BOT)
+    assert await _judge_reply(home, AGENT, "ASK · which db?") == (False, False)
+    assert await _judge_reply(home, AGENT, "ASK · which db?", posted=True) == (False, False)
+    assert await _judge_reply(home, HUMAN, "@agent-other please rebase") == (False, False)
+    assert await _judge_reply(home, HUMAN, "what is open?") == (True, True)
+    assert await _judge_reply(home, HUMAN, "@agent-me and @agent-other: what is open?") == (True, True)
+    assert await _judge_reply(home, BOT, "ASK · which db?") == (False, True)  # its own: addressed
+
+
+async def test_an_unreadable_root_leaves_the_reply_to_the_crown(home, monkeypatch):
+    """RT-6.6 step 5 (#207): when the root's author cannot be read, the reply
+    wakes the 👑 as before: two answers beat none."""
+    monkeypatch.setattr(gate, "_roots", {})
+    await lease.command(home, "tick")
+    home.posts = [post_of({"id": ROOT, "user_id": AGENT, "channel_id": WORK, "message": "ASK · which db?"})]
+
+    async def broken(_ids):
+        raise RuntimeError("users not readable")
+
+    monkeypatch.setattr(home, "agents", broken)
+    item = _item("postgres, please")
+    item["post"]["root_id"] = ROOT
+    assert await server._push_addressed(item)
+    assert item["for_crown"] is True

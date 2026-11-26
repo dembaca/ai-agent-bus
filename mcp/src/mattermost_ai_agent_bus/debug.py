@@ -215,7 +215,8 @@ async def info(client: ChatPort) -> dict[str, Any]:
 
 # --- the lines of an event (step 3) -------------------------------------------------
 
-def _wake(item: Mapping[str, Any], *, mine: bool | None, crown: bool) -> str:
+def _wake(item: Mapping[str, Any], *, mine: bool | None, crown: bool,
+          agent_thread: bool = False) -> str:
     if item.get("gated"):
         return f"gated, wakes nobody here: {item['gated']}"
     kind, text = item.get("kind"), slim.text_of(item)
@@ -234,6 +235,8 @@ def _wake(item: Mapping[str, Any], *, mine: bool | None, crown: bool) -> str:
         why = "to all agents"
     elif channel.broadcast(text):
         why = "a broadcast (@channel, @here or @all)"
+    elif crown and agent_thread and not tasks.mentions(text):
+        why = "a human's reply in another agent's thread: that agent's, here in the digest"
     elif mine:
         why = "a reply in its own thread" + (": fyi, wakes only the thread's starter" if fyi else "")
     elif crown and not tasks.mentions(text):
@@ -308,11 +311,11 @@ def _asks(item: Mapping[str, Any], uid: str, root: str, now: float) -> str:
 
 async def remember(client: ChatPort, item: Mapping[str, Any], post: Post, *, state: State,
                    uid: str, mine: bool | None, crown: bool,
-                   props_in: Mapping[str, Any]) -> Trace:
+                   props_in: Mapping[str, Any], agent_thread: bool = False) -> Trace:
     """The event `item` (built from `post`) as debug sees it, kept as delivered
     in its channel (the attachment of a post answering it reads it)."""
     now = time.time()
-    lines = {"wake": _wake(item, mine=mine, crown=crown),
+    lines = {"wake": _wake(item, mine=mine, crown=crown, agent_thread=agent_thread),
              "identity": await _identity(client, item, post.user_id),
              "asks": _asks(item, uid, post.root_id, now)}
     sig = await _sig(client, state, item, post.user_id, uid)

@@ -29,7 +29,7 @@ from collections.abc import Collection, Mapping, Sequence
 from pathlib import Path
 from typing import TYPE_CHECKING
 
-from . import a2a, channel, lease, owners, session_file
+from . import a2a, channel, lease, owners, session_file, tasks
 from .model import Mark, Post
 
 log = logging.getLogger(__name__)
@@ -79,6 +79,47 @@ async def author_classes(client: ChatPort, posts: Sequence[Post]) -> list[str]:
     agents = await client.agents({p.user_id for p in posts} - {""})
     foreign = await owners.foreign(client, agents)
     return [author_class(p, trusted, agents, foreign) for p in posts]
+
+
+# RT-6.6 step 5: a thread root's facts, read once per root: its author's id,
+# whether that author is a bus agent, the agents its text names. The oldest go
+# first beyond ROOTS_KEPT.
+_roots: dict[str, tuple[str, bool, tuple[str, ...]]] = {}
+ROOTS_KEPT = 2000
+
+
+async def other_agents_thread(client: ChatPort, root_id: str, uid: str) -> bool | None:
+    """Whether the thread `root_id` belongs to an agent other than `uid`
+    (RT-6.6 step 5): its root was posted by a bus agent or names one, and
+    neither its author nor a name in it is this agent. A human's root that
+    names no agent belongs to nobody (the crown's to route). None: the root
+    or the accounts cannot be read (unsure: the caller wakes as before)."""
+    facts = _roots.get(root_id)
+    if facts is None:
+        try:
+            thread = await client.thread(root_id)
+            root = next((p for p in thread.posts if p.id == root_id), None)
+            if root is None:
+                return None
+            by_agent = not root.from_webhook and bool(await client.agents({root.user_id} - {""}))
+        except Exception as exc:  # noqa: BLE001 — unsure
+            log.info("thread root %s not read: %s", root_id, type(exc).__name__)
+            return None
+        facts = (root.user_id, by_agent, tuple(tasks.mentions(root.message)))
+        _roots[root_id] = facts
+        while len(_roots) > ROOTS_KEPT:
+            del _roots[next(iter(_roots))]
+    author, by_agent, named = facts
+    if author == uid:
+        return False
+    if not named:
+        return by_agent
+    try:
+        me = (await client.get_me()).username.lower()
+    except Exception as exc:  # noqa: BLE001 — unsure
+        log.info("own name not read: %s", type(exc).__name__)
+        return None
+    return me not in named
 
 
 def wake_reason(kind: str, post: Post, in_my_thread: bool) -> str:

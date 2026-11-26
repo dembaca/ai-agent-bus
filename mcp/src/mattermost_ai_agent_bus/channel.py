@@ -194,14 +194,16 @@ CROWN = "crown"
 
 
 def wakes(item: Mapping[str, Any], *, coordinator: bool, in_my_thread: bool,
-          my_root: bool = False, routes: Collection[str] | None = None) -> bool:
+          my_root: bool = False, routes: Collection[str] | None = None,
+          agent_thread: bool = False) -> bool:
     """Whether the post wakes the agent at once (wake_reason)."""
     return bool(wake_reason(item, coordinator=coordinator, in_my_thread=in_my_thread,
-                            my_root=my_root, routes=routes))
+                            my_root=my_root, routes=routes, agent_thread=agent_thread))
 
 
 def wake_reason(item: Mapping[str, Any], *, coordinator: bool, in_my_thread: bool,
-                my_root: bool = False, routes: Collection[str] | None = None) -> str:
+                my_root: bool = False, routes: Collection[str] | None = None,
+                agent_thread: bool = False) -> str:
     """Why the post wakes the agent: ADDRESSED, CROWN, or "" (it does not).
     The listener's rules (RT-6.2): what is for this agent is pushed at once,
     a stall the server noticed, too (RT-6.19).
@@ -209,8 +211,13 @@ def wake_reason(item: Mapping[str, Any], *, coordinator: bool, in_my_thread: boo
     which it routes, and only in a channel of `routes` (its home: lease.routes,
     ADR-002); routes None, or an item without its channel: anywhere. A post
     to another agent is that agent's: the coordinator gets it in the digest,
-    also when that agent's gate held it back (RT-6.16). The check reads the
-    whole text, before any cut (slim.cut_item). A post the inbox gated wakes
+    also when that agent's gate held it back (RT-6.16). So is a human's reply
+    in a thread that belongs to another agent (agent_thread: its root is by
+    that agent or names it, gate.other_agents_thread): it wakes that agent as
+    its thread, the coordinator not even where it posted in that thread,
+    unless the reply names it; the server passes agent_thread only for a
+    human's post whose root it could read (unsure: False, it wakes as
+    before). The check reads the whole text, before any cut (slim.cut_item). A post the inbox gated wakes
     nobody here (RT-6.16); a mention of a departed agent or one not here wakes
     the one that answers it (RT-6.21). An agent's fyi post
     (RT-6.14) wakes only whom it names and the author of its thread's root,
@@ -239,6 +246,8 @@ def wake_reason(item: Mapping[str, Any], *, coordinator: bool, in_my_thread: boo
         coordinator = False  # a guest here: this channel has its own crown
     if coordinator and tasks.mentions(str((item.get("post") or {}).get("message", ""))):
         coordinator = False  # RT-6.6 step 5: for the agent it names, not to route
+    if coordinator and agent_thread and not my_root:
+        return ""  # RT-6.6 step 5: a human's reply in another agent's thread is that agent's
     if not (coordinator or in_my_thread) or (not my_root and item.get("intent") == a2a.FYI):
         return ""
     return ADDRESSED if in_my_thread else CROWN

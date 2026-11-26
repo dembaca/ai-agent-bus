@@ -25,7 +25,9 @@ itself: SKILL.md (*Coordinator*).
   `crown: 👑 of ~<home>` is a guest that coordinates that home: mention it
   for work that belongs there.
 - **Route a human's plain post.** Only you wake for a post naming no agent
-  (`for_crown`, RT-6.6 step 5); one to an agent reaches you in the digest.
+  (`for_crown`, RT-6.6 step 5); one to an agent reaches you in the digest,
+  so does a human's reply in another agent's thread (its ask, task or
+  status), even where you posted: that agent answers, unless it names you.
   When it means an agent (by name, project or task), reply in its thread with
   `@<agent>` and the request in one line; do not just say it is not for you.
   Answer what is meant for everyone.

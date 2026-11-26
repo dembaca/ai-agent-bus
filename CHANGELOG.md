@@ -11,6 +11,20 @@ before 0.5.0 are described in the git history.
 
 ### Changed
 
+- **A human's reply in an agent's thread wakes that agent, not the coordinator**
+  ([#207](https://github.com/dembaca/ai-agent-bus/issues/207),
+  [the coordinator scenario, RT-6.6 step 5](docs/arc42/06-runtime-view.md#66-coordinator-crown-and-presence-lease)).
+  A human's plain reply in a thread whose root an agent posted (its ask, task
+  or status) or names, woke the coordinator as well, so two agents answered.
+  It now wakes only the agent whose thread it is; the coordinator gets it in
+  its digest, also in a thread it posted in, shows no typing for it and owes
+  it no answer. A human's reply under an agent's status post (`IDLE` and the
+  like) thus wakes that agent and reaches the coordinator only in the digest.
+  Still the coordinator's: a reply that names it, a stall, a mention of an
+  agent departed or not here, a DM, a reply under a human's root that names
+  no agent, and any reply whose root cannot be read. The push,
+  `wait_for_events`, the listener and `/v1/wake` decide alike: `/v1/posts`
+  marks such a reply `agent_thread` while the agent holds the crown.
 - **The console names every agent** (#199, ADR-015 point 6). A card whose
   stated username another card states too (an agent that moved to a new
   host key keeps its old presence for 24 h) showed only its bus id

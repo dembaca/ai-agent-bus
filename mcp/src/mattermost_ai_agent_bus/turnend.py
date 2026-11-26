@@ -159,6 +159,8 @@ def wake(posts: Iterable[Mapping[str, Any]], recent: Iterable[Mapping[str, Any]]
     its server answers (RT-6.21), one in a thread it posted in, or holding the
     👑 one that names no agent (RT-6.6 step 5), wakes it at once unless it is an agent's
     fyi post in a thread the agent did not start (RT-6.14) or gated (RT-6.16);
+    holding the 👑, a human's reply in another agent's thread (agent_thread)
+    wakes it in no way but a name (RT-6.6 step 5);
     the rest wakes it for a digest once the oldest is `digest_sec` old."""
     own = [p for p in recent if p.get("user_id") == me]
     threads = {p.get("root_id") or p.get("id") for p in own}
@@ -169,7 +171,9 @@ def wake(posts: Iterable[Mapping[str, Any]], recent: Iterable[Mapping[str, Any]]
                 or int(p.get("create_at") or 0) < since_ms):
             continue  # a quiet post: another agent's context line (RT-6.6 step 9)
         root = p.get("root_id") or ""
-        seen = (coordinator and not p.get("names_agent")) or (bool(root) and root in threads)
+        others_thread = coordinator and bool(p.get("agent_thread"))  # RT-6.6 step 5
+        seen = not others_thread and ((coordinator and not p.get("names_agent"))
+                                      or (bool(root) and root in threads))
         mine = bool(root) and root in roots
         if not p.get("gated") and (named(p, username) or p.get("absent")
                                    or (seen and (mine or not p.get("fyi")))):

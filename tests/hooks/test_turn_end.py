@@ -605,6 +605,33 @@ def test_coordinator_wakes_for_a_post_naming_no_agent(mm, run):
         assert ("for you" in listen(run).stdout) is woken, absent
 
 
+def test_coordinator_leaves_a_reply_in_an_agents_thread_to_it(mm, run):
+    """RT-6.6 step 5 (#207): holding the 👑, a person's plain reply in a thread
+    another agent started, or whose root names another agent, is that agent's
+    (agent_thread from the hook API): it wakes the 👑 neither as coordinator
+    nor where it posted in that thread. One under a person's root that names
+    no agent still wakes it, and so does a reply that names it."""
+    fyi_authors(mm)  # OTHER is an agent, PERSON a person
+    d = run.state_dir
+    d.mkdir(parents=True, exist_ok=True)
+    (d / f"coord-{ME}.env").write_text(f"CROWN_UNTIL={int(time.time()) + 600}\n")
+    old = int((time.time() - 60) * 1000)
+    ask, plain, named = "a" * 26, "c" * 26, "e" * 26
+    roots = [
+        {"id": ask, "user_id": OTHER, "root_id": "", "create_at": old, "message": "ASK · which db?", "type": ""},
+        {"id": plain, "user_id": PERSON, "root_id": "", "create_at": old, "message": "what is open?", "type": ""},
+        {"id": named, "user_id": PERSON, "root_id": "", "create_at": old,
+         "message": "@agent-other please rebase", "type": ""},
+        # The 👑 answered in the agent's ask thread: a participant, not its owner.
+        {"id": "f" * 26, "user_id": ME, "root_id": ask, "create_at": old + 1, "message": "see the ADR", "type": ""},
+    ]
+    for root, message, woken in [(ask, "postgres", False), (named, "after lunch", False),
+                                 (plain, "and the docs?", True), (ask, "@agent-test thoughts?", True)]:
+        mm.posts = list(reversed(roots))
+        other_post(mm, message, root_id=root, user_id=PERSON)
+        assert ("for you" in listen(run).stdout) is woken, (root, message)
+
+
 def test_listener_digest_for_the_rest(mm, run):
     """RT-6.2 step 4: unaddressed posts wake it once the oldest is MM_LISTEN_DIGEST_SEC old."""
     other_post(mm, "status of the build", age_s=0)

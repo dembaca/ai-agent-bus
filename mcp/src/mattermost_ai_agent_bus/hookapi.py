@@ -17,7 +17,8 @@ instead, served next to the WebSocket inbox in the server's event loop:
     POST /v1/reminded       {post_ids: [...]} → {ok, marked}: the caller blocked a turn end
                             for these posts, so none blocks again (RT-6.2 step 2)
     GET  /v1/posts          {channel, posts: [{id, user_id, root_id, create_at, type,
-                            message, to, intent, fyi, quiet, gated, names_agent, absent[, files]}]},
+                            message, to, intent, fyi, quiet, gated, names_agent, agent_thread,
+                            absent[, files]}]},
                             work channel
                             (or ?channel=ID|NAME of the project or default
                             channel, else 403), newest first (?limit=N, at
@@ -95,7 +96,7 @@ import re
 import secrets
 import sys
 import time
-from collections.abc import Awaitable, Callable, Mapping
+from collections.abc import Awaitable, Callable, Collection, Mapping
 from pathlib import Path
 from typing import TYPE_CHECKING, Any
 from urllib.parse import parse_qs, urlsplit
@@ -708,7 +709,8 @@ async def _last(client: ChatPort, query: Mapping[str, str],
     return 0, "", False
 
 
-def _slim(post: Post, agents: set[str], gated: set[str], absent: set[str]) -> dict[str, Any]:
+def _slim(post: Post, agents: set[str], gated: set[str], absent: set[str],
+          agent_threads: Collection[str] = ()) -> dict[str, Any]:
     intent = post.intent or ""
     out: dict[str, Any] = {
         "id": post.id,
@@ -725,6 +727,8 @@ def _slim(post: Post, agents: set[str], gated: set[str], absent: set[str]) -> di
         "quiet": post.kind in a2a.QUIET and post.user_id in agents,
         "gated": post.id in gated,
         "names_agent": bool(tasks.mentions(post.message)),
+        # RT-6.6 step 5: a human's reply in another agent's thread, that agent's, not the 👑's.
+        "agent_thread": post.id in agent_threads,
         "absent": post.id in absent,
     }
     if post.files:
@@ -811,7 +815,10 @@ async def posts(client: ChatPort, query: Mapping[str, str], body: Mapping[str, A
     it is for all agents, an agent's fyi post (RT-6.14), gated by the
     server (RT-6.16), names an agent (no task for the coordinator, RT-6.6 step 5)
     or one gone or not here that this server answers (RT-6.21), and names its
-    files (RT-6.23). mm-agent-poll.sh reads them too."""
+    files (RT-6.23). While this agent holds the crown, agent_thread marks a
+    human's reply in a thread another agent owns (RT-6.6 step 5,
+    gate.other_agents_thread): that agent's, not the crown's; a root that
+    cannot be read leaves it unmarked. mm-agent-poll.sh reads them too."""
     since, limit = query.get("since", ""), query.get("limit", "60")
     if not (since or limit).isdigit():
         raise BadRequest("since: epoch ms, limit: a count")
@@ -821,16 +828,21 @@ async def posts(client: ChatPort, query: Mapping[str, str], body: Mapping[str, A
         raw = await client.channel_posts(cid, since_ms=int(since))
     else:
         raw = await client.channel_posts(cid, per_page=max(1, min(int(limit), MAX_POSTS)))
-    authors = {p.user_id for p in raw if p.user_id and p.intent == a2a.FYI}
+    crown = lease.crown_held(uid)
+    replies = [p for p in raw if crown and p.root_id and p.user_id != uid and not p.type
+               and not tasks.mentions(p.message)]
+    authors = {p.user_id for p in raw if p.user_id and p.intent == a2a.FYI} | {p.user_id for p in replies}
     try:
-        agents = await client.agents(authors) if authors else set()
+        agents = await client.agents(authors - {""}) if authors else set()
     except Exception as exc:  # noqa: BLE001 — nobody counts as an agent then
         log.info("hook API: fyi authors unknown: %s", type(exc).__name__)
-        agents = set()
+        agents, replies = set(), []  # unsure who wrote them: no agent_thread mark
+    agent_threads = {p.id for p in replies if p.user_id not in agents
+                     and await gate.other_agents_thread(client, p.root_id, uid)}
     gated, absent = gate.gated(uid), gate.absent(uid)
     # Which channel this is, for mm-agent-poll.sh to say: as asked, else the work channel's name.
     return 200, {"channel": query.get("channel", "") or client.work_channel_name,
-                 "posts": [_slim(p, agents, gated, absent) for p in raw]}
+                 "posts": [_slim(p, agents, gated, absent, agent_threads) for p in raw]}
 
 
 async def ask_reactions(client: ChatPort, query: Mapping[str, str],
