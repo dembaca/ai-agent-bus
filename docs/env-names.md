@@ -344,7 +344,7 @@ results, file names, the release check's state and the emoji constants of
 request renames them by the same rule, without a fallback:
 
 - to `CB_MM_…`: `MM_API_BODY`, `MM_API_STATUS`;
-- to `CB_…`: `MM_ANSWER`, `MM_AUTO_FILE`, `MM_AUTO_LOG`, `MM_BUS_BODY`,
+- to `CB_…`: `BUS_KEY` (a shell local, the bus's key passed from fd), `MM_ANSWER`, `MM_AUTO_FILE`, `MM_AUTO_LOG`, `MM_BUS_BODY`,
   `MM_BUS_CHANNEL`, `MM_BUS_FROM`, `MM_BUS_PROJECT`, `MM_BUS_STATUS`,
   `MM_CREDS_FROM_FD`, `MM_CROWN`, `MM_CROWN_UNTIL`, `MM_HOLD_FILE`,
   `MM_HOOK_INPUT`, `MM_INBOX`, `MM_LISTENING`, `MM_NEEDS_RE`,

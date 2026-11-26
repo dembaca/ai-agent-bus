@@ -266,22 +266,26 @@ def check_release_lines(text: str | None = None) -> None:
 
 ENV_PAGE = ROOT / "docs" / "env-names.md"
 # The prefixes the project defines and the one it moves to (docs/env-names.md).
-ENV_PREFIX = r"(?:MM|CB|AUTH|AUTHD|BRIDGE|CONSOLE|MATTERMOST)"
+ENV_PREFIX = r"(?:MM|CB|AUTH|AUTHD|BRIDGE|CONSOLE|MATTERMOST|VITE|BUS)"
 ENV_NAME = re.compile(rf"\b({ENV_PREFIX}_[A-Z0-9_]+)")
-# A quoted literal: "MM_X", 'AUTH_Y', `CB_Z`, and a Go struct tag's value
-# (`env:"AUTH_X,required"` — the name ends before the comma).
-ENV_QUOTED = re.compile(rf"""["'`]({ENV_PREFIX}_[A-Z0-9_]+)(?=[,`"'])""")
+# A string literal's value: "MM_X", 'AUTH_Y', and a Go struct tag's value
+# (`env:"AUTH_X,required"` — the name ends before the comma). A backtick is no
+# string quote in Python or Go, so a name backticked inside a docstring there is
+# prose, not a read.
+ENV_STRING = re.compile(rf"""["']({ENV_PREFIX}_[A-Z0-9_]+)(?=[,`"'])""")
+ENV_TEMPLATE = re.compile(rf"""[`"']({ENV_PREFIX}_[A-Z0-9_]+)(?=[,`"'])""")
 # Dot access carries no quotes: process.env.MM_X, import.meta.env.CONSOLE_X.
 ENV_DOT = re.compile(rf"(?:process|import\.meta)\.env\.({ENV_PREFIX}_[A-Z0-9_]+)")
 # Code that is scanned, by how a name appears there: quoted literals in the
 # languages, any occurrence in the shell and in configuration files.
 ENV_QUOTED_SUFFIXES = (".py", ".go", ".ts", ".tsx", ".mjs", ".js")
-ENV_ANY_SUFFIXES = (".sh", ".sh.example", ".yml", ".yaml", ".json", ".conf", ".service")
+ENV_ANY_SUFFIXES = (".sh", ".sh.example", ".yml", ".yaml", ".json", ".conf", ".service",
+                    ".toml", ".env.example")
 ENV_ANY_NAMES = ("Dockerfile",)  # exact file names, and the shell without a suffix
 ENV_SKIP = ("docs/", "site/", "CHANGELOG.md")
 # Tests may name a setting that no longer exists (a removed fallback, a
 # fixture); the page-to-code direction must not be satisfied by them.
-ENV_TEST = re.compile(r"(^|/)(tests?/|test_|.*_test\.(go|py)$)")
+ENV_TEST = re.compile(r"(^|/)(tests?/|test_|.*_test\.(go|py)$|.*\.(test|spec)\.(ts|tsx|js|mjs)$)")
 # The check's own two files quote names as examples; they must not count as reads.
 ENV_SELF = ("scripts/doc-check.py", "tests/hooks/test_env_names.py")
 
@@ -311,26 +315,51 @@ def env_page() -> dict[str, set[str]]:
     old: set[str] = set()
     new: set[str] = set()
     sections: dict[str, set[str]] = {}
+    problems: list[str] = []
     title = ""
+    counted = False
     for line in text.splitlines():
-        h = re.match(r"^#{3,4} (.+?)(?: \(\d+\))?$", line)
+        h = re.match(r"^#{3,4} (.+?)(?: \((\d+)\))?$", line)
         if h:
-            title = h.group(1)
+            title, counted = h.group(1), h.group(2) is not None
+            continue
+        if not (counted and title != "Goes with the registrar" and line.startswith("|")):
             continue
         m = re.match(r"\|\s*`([A-Z][A-Z0-9_]*)`\s*\|\s*`([A-Z][A-Z0-9_]*)`\s*\|\s*"
-                     r"(?:yes|no)\s*\|", line)
-        if m:
-            old.add(m.group(1))
-            new.add(m.group(2))
-            sections.setdefault(title, set()).add(m.group(1))
+                     r"(yes|no)\s*\|", line)
+        if not m:
+            if "`" in line:  # a name row the guard cannot read
+                problems.append(f"{title}: a row is not old name, new name, yes/no: {line[:60]}")
+            continue
+        old.add(m.group(1))
+        new.add(m.group(2))
+        sections.setdefault(title, set()).add(m.group(1))
     registrar = set(re.findall(r"\|\s*`([A-Z][A-Z0-9_]+)`\s*\|",
                                env_section(text, "### Goes with the registrar")))
-    not_env = set(ENV_NAME.findall(env_section(text, "#### Shell variables that are not environment")))
+    # Only the bullets count: the section's prose must not silence a name.
+    bullets, inside = [], False
+    for line in env_section(text, "#### Shell variables that are not environment").splitlines():
+        if line.startswith("- "):
+            inside = True
+        elif line and not line.startswith((" ", "\t")):
+            inside = False
+        if inside:
+            bullets.append(line)
+    not_env = set(ENV_NAME.findall("\n".join(bullets)))
     not_env -= {"CB", "CB_MM"}  # the section names the two prefixes themselves
-    excluded = set(re.findall(r"\|\s*`([A-Za-z][A-Za-z0-9_]+)`\s*\|",
-                              env_section(text, "### Excluded names")))
+    # The exclusion table: a name and its reason, both required.
+    excluded: set[str] = set()
+    for line in env_section(text, "### Excluded names").splitlines():
+        m = re.match(r"\|\s*`([A-Za-z][A-Za-z0-9_]+)`\s*\|\s*(.*?)\s*\|\s*$", line)
+        if not m:
+            continue
+        name, why = m.group(1), m.group(2).strip()
+        if not why or why.startswith("---"):
+            problems.append(f"the exclusion of {name} has no reason")
+            continue
+        excluded.add(name)
     return {"old": old, "new": new, "registrar": registrar, "not_env": not_env,
-            "excluded": excluded, "sections": sections}
+            "excluded": excluded, "sections": sections, "problems": problems}
 
 
 def env_counts() -> list[tuple[str, int, int]]:
@@ -376,7 +405,7 @@ def env_code_names(files: list[str]) -> dict[str, str]:
     """
     read: dict[str, str] = {}
     for path in files:
-        if path.startswith(ENV_SKIP):
+        if path.startswith(ENV_SKIP) or env_is_test(path):
             continue
         kind = env_scan_kind(path)
         if not kind:
@@ -385,8 +414,11 @@ def env_code_names(files: list[str]) -> dict[str, str]:
             text = (ROOT / path).read_text(errors="ignore")
         except OSError:
             continue
-        found = (list(ENV_QUOTED.finditer(text)) + list(ENV_DOT.finditer(text))
-                 if kind == "quoted" else list(ENV_NAME.finditer(text)))
+        if kind == "quoted":
+            literals = ENV_TEMPLATE if path.endswith((".ts", ".tsx", ".mjs", ".js")) else ENV_STRING
+            found = list(literals.finditer(text)) + list(ENV_DOT.finditer(text))
+        else:
+            found = list(ENV_NAME.finditer(text))
         for m in found:
             name = m.group(1)
             if name.endswith("_") or path in ENV_SELF:
@@ -452,6 +484,8 @@ def check_env_names() -> None:
     for title, stated, parsed in env_counts():
         if stated != parsed:
             error(ENV_PAGE, None, f"{title}: the heading says {stated} names, the table holds {parsed}")
+    for what in page.get("problems", []):
+        error(ENV_PAGE, None, what)
     files = repo_files()
     read = env_code_names(files)
     for where, what in env_name_errors(page, read, env_code_text(files)):

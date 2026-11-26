@@ -81,6 +81,7 @@ def test_every_reader_form_is_seen(tmp_path: Path, monkeypatch: pytest.MonkeyPat
             "CONSOLE_DOCKER_ONE"} <= set(names)
     assert "MM_NOT_CODE" not in names
     assert names[py_one] == "a.py" and names[sh_two] == "d.sh"
+    assert "CONSOLE_DOCKER_ONE" in names  # an ARG in a Dockerfile
 
 
 def test_a_stem_and_the_guards_own_files_are_no_reads(tmp_path: Path,
@@ -140,3 +141,60 @@ def test_a_page_with_conflict_markers_is_refused(tmp_path: Path,
     monkeypatch.setattr(doc_check, "ENV_PAGE", bad)
     with pytest.raises(ValueError, match="conflict markers"):
         doc_check.env_page()
+
+
+def test_import_meta_env_is_seen(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+    name = "VITE_" + "CONSOLE_PROBE"
+    (tmp_path / "vite.config.ts").write_text(f"const u = import.meta.env.{name}\n")
+    monkeypatch.setattr(doc_check, "ROOT", tmp_path)
+    assert name in doc_check.env_code_names(["vite.config.ts"])
+
+
+def test_a_tests_fixture_is_no_read(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+    """Fixtures name fake settings (`CB_AUTH_TYPO`); a rename PR must not have to
+    park them as exclusion rows (#177 review)."""
+    (tmp_path / "a.test.ts").write_text('const x = "CB_TEST_FAKE"\n')
+    (tmp_path / "test_probe.py").write_text('X = getenv("CB_AUTH_TYPO", "")\n')
+    (tmp_path / "real.py").write_text('X = getenv("CB_REAL_SETTING", "")\n')
+    monkeypatch.setattr(doc_check, "ROOT", tmp_path)
+    names = doc_check.env_code_names(["a.test.ts", "test_probe.py", "real.py"])
+    assert names == {"CB_REAL_SETTING": "real.py"}
+
+
+def _page(tmp_path: Path, monkeypatch: pytest.MonkeyPatch, body: str) -> list[str]:
+    page = tmp_path / "env-names.md"
+    page.write_text(body)
+    monkeypatch.setattr(doc_check, "ENV_PAGE", page)
+    return doc_check.env_page()["problems"]
+
+
+def test_a_row_the_guard_cannot_read_is_reported(tmp_path: Path,
+                                                monkeypatch: pytest.MonkeyPatch) -> None:
+    problems = _page(tmp_path, monkeypatch, """### The MCP server and the plugin (2)
+
+| Old name | New name | Mattermost | Where it is read | Note |
+|---|---|---|---|---|
+| `MM_GOOD` | `CB_GOOD` | no | x | |
+| `MM_BAD` | `CB_BAD` | maybe | x | |
+""")
+    assert any("MM_BAD" in p or "a row is not" in p for p in problems)
+
+
+def test_a_reasonless_exclusion_is_reported(tmp_path: Path,
+                                            monkeypatch: pytest.MonkeyPatch) -> None:
+    problems = _page(tmp_path, monkeypatch, """### Excluded names
+
+| Name | Why it is not renamed |
+|---|---|
+| `HOME` | another product's |
+| `MM_NOWHY` |  |
+""")
+    assert any("MM_NOWHY" in p and "no reason" in p for p in problems)
+
+
+def test_a_heading_count_is_checked(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+    page = tmp_path / "env-names.md"
+    page.write_text("### The MCP server and the plugin (3)\n\n"
+                    "| `MM_ONE` | `CB_ONE` | no | x | |\n")
+    monkeypatch.setattr(doc_check, "ENV_PAGE", page)
+    assert doc_check.env_counts() == [("The MCP server and the plugin", 3, 1)]
