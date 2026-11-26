@@ -100,6 +100,12 @@ class NatsBusError(Exception):
     """A bus operation failed. The text never holds a token or a seed."""
 
 
+class RedirectRefused(NatsBusError):
+    """The WebSocket server answered the upgrade with a redirect: refused, because the
+    CONNECT carries the access token (Fable's review of #51). Its text is ours and fixed,
+    so the log may name it (RT-6.36, #85)."""
+
+
 class NameMismatch(NatsBusError):
     """The server refused the host's subscription to its own deliver subjects:
     the name the login service wrote into the credential is not the one the
@@ -860,6 +866,9 @@ def connect_reason(exc: BaseException) -> str:
     e: BaseException | None = exc
     while e is not None and id(e) not in seen:
         seen.add(id(e))
+        if isinstance(e, RedirectRefused):
+            # Our own text, fixed above: the operator sees why, not a bare timeout (#85).
+            return str(e)
         if isinstance(e, ssl.SSLCertVerificationError):
             # Both set by OpenSSL, absent on one raised by hand: this runs in the retry loops.
             code = getattr(e, "verify_code", None)
@@ -954,8 +963,8 @@ def _websocket_transport() -> Any:
             trace = aiohttp.TraceConfig()
 
             async def refuse(session: Any, context: Any, params: Any) -> None:
-                raise NatsBusError("the WebSocket server redirected the connection: refused, so "
-                                   "the access token never reaches another address")
+                raise RedirectRefused("the WebSocket server redirected the connection: refused, "
+                                      "so the access token never reaches another address")
 
             trace.on_request_redirect.append(refuse)
             self._client = aiohttp.ClientSession(trace_configs=[trace])

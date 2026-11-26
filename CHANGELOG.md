@@ -47,6 +47,17 @@ before 0.5.0 are described in the git history.
   human but not an anchor. No new data: the field comes from the login's own
   record through `/v1/graph`.
 
+- **The token split for OpenCode and pi** (#139 stage 2b, RT-6.9 steps
+  1 to 3, ADR-017). The OpenCode plugin and the pi extension attribute
+  each turn's model requests in process, by the rules the server applies
+  to Claude Code's transcript, and post the sums as one `usage` stat
+  event per turn (`POST /v1/stat` with `k: usage`: exactly 18 integer
+  fields, numbers only, among them the input their segments did not cover). The server folds them into the line's `tok`
+  (method 1) and adds the bus's fixed instructions and tool docs, which
+  the plugins cannot see, as overhead per request, placed only into that
+  uncovered input. Such a line counts in the tokens by category; the older
+  bus share by cause counts only lines with `tok.bus`, so it never
+  reads as 0 %. No token is added to any context.
 - **The operator console's API carries each agent's guest channels and
   marks the operator's own person node** (#147). A fleet card names its
   `home` and, beside it, its `guests`: the channels its memberships name
@@ -170,6 +181,13 @@ before 0.5.0 are described in the git history.
   stops, never with a wrong name). Anchors already given do not move. The
   remaining cases, an account renamed in Keycloak and a new one whose name
   was held, stay a known limit (RISK-19).
+- **Two follow-ups from the WebSocket security review** (#85, RT-6.36). The
+  login service's refusal test now asserts an authorization error and that the
+  same identity connects on the standard listener of the same rig, so a
+  listener that fails for another reason can no longer pass it. A WebSocket
+  server that answers the upgrade with a redirect is still refused before any
+  byte goes there, and the bus's log names that reason instead of leaving an
+  operator with a bare timeout.
 - **The central bridge's WebSocket reader reconnects promptly and bounds
   its handshake** (#131, people's posts onto NATS, RT-6.42). After a
   connection that held 30 s it reconnects after 1 s, not after the wait
