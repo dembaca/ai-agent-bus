@@ -2090,7 +2090,7 @@ on: the end, and `status` and `bus_info` show it.
 
 ## ADR-011: Updates from a signed release only
 
-**Status:** Accepted, phase 1a built (0.81.0, RT-6.28): the layout, the switch and the rollback of the host copy; phase 1b built (0.82.0, RT-6.29): `--release v<x.y.z>`, the tag verified against pinned keys when the host sets them (opt-in, decision (3) below); phase 2 built (0.83.0, RT-6.30): the release check and the notice, as point 3 and the open questions' recommendations (*Phase 2 as built* below); decisions (4) and (5) of 2026-11-12 built (0.84.0, RT-6.29, RT-6.30): the pinned keys as a host property, a withdrawn version refused; phase 3 built (0.86.0, RT-6.32, the owner's decisions of 2026-11-13 below): the registrar distributes the release keys once and names the version, and corral's host copy updates itself to it between sessions, bounded by five guard rails, while the code's signature stays the owner's. `latest` built (0.87.0, the decision of 2026-11-13 below): the record may name the newest release tag that is not withdrawn instead of a version. Proposed 2026-11-09. Asked for by a trusted human on
+**Status:** Accepted, phase 1a built (0.81.0, RT-6.28): the layout, the switch and the rollback of the host copy; phase 1b built (0.82.0, RT-6.29): `--release v<x.y.z>`, the tag verified against pinned keys when the host sets them (opt-in, decision (3) below); phase 2 built (0.83.0, RT-6.30): the release check and the notice, as point 3 and the open questions' recommendations (*Phase 2 as built* below); decisions (4) and (5) of 2026-11-12 built (0.84.0, RT-6.29, RT-6.30): the pinned keys as a host property, a withdrawn version refused; phase 3 built (0.86.0, RT-6.32, the owner's decisions of 2026-11-13 below): the registrar distributes the release keys once and names the version, and corral's host copy updates itself to it between sessions, bounded by five guard rails, while the code's signature stays the owner's. `latest` built (0.87.0, the decision of 2026-11-13 below): the record may name the newest release tag that is not withdrawn instead of a version. Planned to end with phase 5 of the NATS decision as plan B (ADR-014, the amendment of 2026-11-26, #151, proposed, not built): once every home runs every piece, the signed host copy, its installer, its release check and its self-update go with the end of registration, and the release notice follows the release record the bridge serves; until then this decision holds as built. Proposed 2026-11-09. Asked for by a trusted human on
 2026-11-09 ("probably not quite simple with plugin incl. MCP server and
 sandbox hooks"). Options, a recommendation and open questions; command words,
 file names and variables below are proposals. Builds on Section 7.1 (the
@@ -3022,7 +3022,8 @@ and `MM_BUS_SIGNER_KEYS`. Amended on 2026-11-26 by the owner's one operating
 model for the host login (decision 10, #154, the amendment at the end of
 this decision): credentials no longer
 stay on the host; the server's own login and store are built (step 2,
-unreleased), the protections against a stolen token not yet. Amended
+0.102.0), of the protections against a stolen token its detection
+(step 3, 0.102.0), the offline token's maximum and DPoP not yet. Amended
 later the same day by phase 5 as plan B (#151, proposed, not built): the
 agents' uses of their own Mattermost bot move piece by piece to the bridge
 or onto NATS, the registration ends last. The
@@ -3823,7 +3824,8 @@ stream backups, deleting personal data in streams).
 **Amendment 2026-11-26: one operating model for the host login (the
 owner's decision 10, #154).** Decided by the owner on 2026-11-26. Its first
 step, the docs, and its second, the MCP server's own login and store, are
-built (the second unreleased); the protections against a stolen token are not. It removes the point on
+built (0.102.0); of the protections against a stolen token the detection is
+built (0.102.0), the offline token's maximum and DPoP are not. It removes the point on
 where credentials live (point 9) and the two reasons in the point on
 credentials and their renewal (point 7) that rest on it.
 
@@ -3847,8 +3849,8 @@ credentials and their renewal (point 7) that rest on it.
   (#163): the hello sends 26 base32 characters, made once per session and kept
   in its state, and both sides fold them into the name — so two sessions of one
   owner on one shared key are two agents, not one. The part is self-stated: it
-  separates honest sessions, it proves nothing, and the theft guard never keys
-  on it.
+  separates honest sessions, it proves nothing, and the protection against
+  stolen tokens never keys on it.
 - **What goes with the end of the registrar** (#151 step 5): corral's
   start and end hooks, the relay into the sandbox (the keyless host
   session, RT-6.18), the signed host copy with its self-update (ADR-011),
@@ -3913,7 +3915,8 @@ credentials and their renewal (point 7) that rest on it.
   answers, else the 0600 file; under corral always the 0600 file in the
   sandbox's home. An earlier store in the host's state directory is moved
   into it once. Sessions share token and key under one lock per entry.
-  None of the protections 1 to 3 is built.
+  Of the protections, the detection (1) is built (0.102.0), the
+  maximum lifetime (2) and DPoP (3) are not.
 - **Work, in order:** (1) these docs; (2) the MCP server logs in itself,
   with a keychain backend and the 0600 file in the sandbox's home under
   corral, keeping the shared renewal under its lock file and the rule to
@@ -3959,20 +3962,34 @@ Nothing of it is built.
   at once per tenant.
 - **Decided: nothing runs outside the sandbox at the end.** Decided by
   the owner on 2026-11-26 (ask `dhbu7xao4tbhtm8ixybr14m8fr`, option B):
-  the host-side hooks exist for three jobs, registering the bot so its
-  token stays out of the sandbox, the relay so the login's refresh token
-  stays out of it, and the signed host copy so code that runs outside the
-  sandbox cannot be written from inside. The plan takes all three away:
-  no bot, the refresh token may sit with the agent (the theft guard,
-  #154, protects it, as decision 10 meant), and with nothing running
-  outside there is no boundary left to guard. So the relay and the
-  signed host copy go with the last piece; until then they keep doing
-  their jobs. Everything an agent may do is enforced by the login
-  service and NATS, so an agent that changes its own plugin code harms
-  only itself. That a release is genuine stays the console's check of
-  the release signature when its pin moves (#192). The host key then
-  lives in the sandbox too; the theft guard is what notices a copy.
-  Rejected: keeping both, and keeping only the host copy.
+  what runs outside the sandbox today is the host process of the keyless
+  session (RT-6.18), which holds the bot token so it stays out of the
+  sandbox, started by corral's host hooks from the signed host copy
+  (ADR-011), so code that runs outside the sandbox cannot be written from
+  inside. The refresh token and the host key are no longer outside: since
+  the one operating model for the host login (decision 10, #154) the
+  relay in the sandbox logs in itself and keeps both in the sandbox's home
+  (RT-6.18, RT-6.34 step 8, RISK-26), and the host process gets only
+  access tokens and the nkey seed from it. The plan takes the bot token
+  away, and with it the host process's job; with nothing running outside
+  there is no boundary left to guard. So the relay, the host process and
+  the signed host copy go with the last piece; until then they keep
+  doing their jobs. What an agent may do on the bus is enforced by the
+  login service and NATS, so an agent that changes the plugin code it
+  runs reaches no other owner and no other host. It does reach every
+  session that runs from the same writable plugin tree: under corral the
+  sessions that share a sandbox home share its plugin cache and its
+  store, without corral all of one user's sessions on the host (RISK-37).
+  Against a stolen refresh token the protection against stolen tokens of
+  decision 10 stays what it is: its detection in the login service is
+  built (0.102.0) and catches a token or host key used from another
+  network, not one used on the same network or host (RISK-26); the
+  offline token's maximum lifetime and DPoP are decided, not built. That
+  a release is genuine stays the operator console's check of the release
+  signature when the administrator moves the version it pins (#192, an
+  open issue, not yet written as a decision). Both are rows of the
+  acceptance below. Rejected: keeping both, and keeping only the host
+  copy.
 - **Two bots of one agent.** "The agent's own bot" names two accounts
   during the move: the registrar's bot, made per session, whose token
   the MCP server holds; and the bridge's bot `<prefix><NATS name>`
@@ -4003,11 +4020,15 @@ Nothing of it is built.
   - The bridge acts for an agent only with that agent's own bot token,
     never the admin token for what an agent asks, takes the agent from
     the subject's last token, and acts only in channels the directory
-    names for that agent: a reply's root, a file and a history read are
-    checked to lie there. A DM partner, for permission prompts, may only
-    be the agent's responsible human, the owner's account from the
-    account records (RT-6.44 step 2), so a steered agent cannot DM anyone
-    through the bridge (RISK-29).
+    names for that agent: a reply's root, a reaction's target post, a
+    file and a history read are checked to lie there. A DM the bridge
+    opens for an agent, for permission prompts, may only go to the
+    agent's responsible human, the owner's account from the account
+    records (RT-6.44 step 2). Proposed: in a DM another person opened
+    with the agent's bridge bot, the agent may answer that person and
+    react there, never open a DM to anyone else; so a steered agent
+    cannot reach a person through the bridge who did not write to it
+    first (RISK-29).
   - Each piece updates its scenario in Section 6 and gets unit tests in
     `mcp/tests/` and, for the bridge's side, Go tests in
     `services/bridge`. Where a piece carries messages, the fault-run rig
@@ -4056,26 +4077,42 @@ Nothing of it is built.
        transport has and the login service already grants
        (`callout/perms.go`); no copy in Mattermost. Between agents of
        different homes the recipient's home's flag counts: the sender
-       uses NATS only when it is on, and reads it from the directory,
-       since its own credential holds only its own channels.
+       uses NATS only when it is on. Since a session gets flags only
+       with its credential, which holds only its own channels, proposed:
+       the recipient's server states its home's flag in its presence,
+       from its own credential, and the sender reads it there, so no
+       session reads the directory and none needs a new right. A
+       recipient that states it wrongly misroutes only DMs to itself,
+       and it reads both paths during a change anyway.
      - Switch: agent DMs over NATS. Way back: new DMs go between the
        registrar's bots again; a DM sent over NATS stays in the
        recipient's consumer and is read there.
      - Test: send and receive; the rights in `callout/perms_test.go`;
        `testrig`: delivery runs of DMs under fault. Lab: two agents of
        the test home exchange DMs, nothing in Mattermost.
-  4. **Every check of a trusted human by its Mattermost account.**
+  4. **Every check of a trusted human by its Mattermost account, and
+     the owner attestation in the bot's description.**
      - Today: the start hook looks the trusted humans up by the
        Mattermost API (`adapters/corral/10-mm-session-start.sh`), the MCP
        server keeps their Mattermost ids (`NatsPort.trusted_humans`), and
-       the mandate compares Mattermost user ids (`mandate.py`).
+       the mandate compares Mattermost user ids (`mandate.py`). A peer's
+       owner and trusted list, and the session's own, come from the
+       owner attestation the registrar wrote into the bot's description
+       (RT-6.24; `bot_description`, `agent_attestation`,
+       `attestation_record` in `owners.py` and `server.py`).
      - Moves: to the login service: the trusted anchors of its
-       attestation (RT-6.41), compared by anchor everywhere.
-     - Switch: trusted humans from the attestation. Way back: the
-       Mattermost ids again; nothing in flight.
+       attestation (RT-6.41), compared by anchor everywhere; a peer's
+       owner from its NATS name, which presence proves (RT-6.37), and its
+       trusted list from the login service's attestation, never from a
+       bot's description.
+     - Switch: trusted humans and owners from the attestation. Way back:
+       the Mattermost ids and the bot's description again; nothing in
+       flight.
      - Test: a hook test in `tests/hooks/` (no user lookup); a mandate
-       and an approval decided by anchor. Lab: a trusted person's
-       approval and mandate still count, anyone else's do not.
+       and an approval decided by anchor; a peer classed own or foreign
+       with no description read. Lab: a trusted person's approval and
+       mandate still count, anyone else's do not; another owner's agent
+       is foreign.
   5. **People's history**: what a person wrote while the session was
      away, a person's thread, unread counts.
      - Today: `nats_port.py` merges Mattermost's posts into
@@ -4084,10 +4121,15 @@ Nothing of it is built.
        last people event on when the bridge's signal runs out
        (`check_people`, `_catch_up`); unread counts rest on Mattermost's
        mark as viewed (`view_channel`).
-     - Moves: onto NATS, a replay of the people subjects with `since`, or
-       a read through the bridge; which, is decided with the piece. Mark
-       as viewed becomes the durable consumer, the read mark the registrar
-       successors' table already names (point 13).
+     - Moves: proposed, to a read through the bridge: the session sends
+       a request over NATS naming the channel or thread and `since`, and
+       the bridge answers from Mattermost with the agent's own bridge
+       bot, under the rule above that it reads only in the agent's
+       channels. Rejected: a replay of the people subjects with `since`
+       alone, since the stream keeps them only for its keep time and
+       holds no thread older than that. Mark as viewed becomes the
+       durable consumer, the read mark the registrar successors' table
+       already names (point 13).
      - Switch: people's history from NATS. Way back: Mattermost's reads
        again; nothing in flight.
      - Test: the reads without Mattermost; `testrig`: what a session
@@ -4131,23 +4173,34 @@ Nothing of it is built.
   8. **Files**: posting with files and `get_file` (RT-6.23, RT-6.33).
      - Moves: to the bridge. It uploads what the agent sends and serves a
        person's file; the file still comes from inside the sandbox
-       (ADR-012), the size limit as today; how the bytes travel is decided
-       with the piece. The tool returns the post's NATS id and the copy's
-       link, as for a reply.
+       (ADR-012), the size limit as today. Proposed: the bytes travel as
+       NATS messages between the session and the bridge, in parts below
+       the server's maximum payload, each part numbered and the whole
+       checked by length and hash before the bridge uploads it with the
+       agent's own bridge bot; a person's file comes back the same way.
+       Rejected: the NATS object store, since agents talk to no
+       JetStream API (RISK-09). The tool returns the post's NATS id and
+       the copy's link, as for a reply.
      - Switch: files over the bridge. Way back: files under the
        registrar's bot again; nothing stays open.
      - Test: limits and refusals as today; `testrig`: a run with files.
        Lab: the agent attaches a file, a person posts one and the agent
        reads it.
-  9. **The bot's status: idle and typing, and the crown's mirror** (RT-6.5,
-     RT-6.6), and the channel header. Needs the roster (piece 2), since
-     the link today lives in the bot's status.
-     - Moves: to the bridge. It sets the bridge's bot's status from
-       presence and the crown claims (RT-6.38), as the point on bot
-       accounts per agent (point 11) foresees. The bus line in the
-       channel header (`channel_header`, `set_channel_header`, RT-6.6 step
-       7), which the crown holder writes today, goes to the bridge with
-       the crown's mirror, or stays as it is, readable by people.
+  9. **The bot's status: idle and typing, its Mattermost presence, and
+     the crown's mirror** (RT-6.5, RT-6.6), and the channel header. Needs
+     the roster (piece 2), since the link today lives in the bot's
+     status, and people's history (piece 5) for reading the header.
+     - Moves: to the bridge. It sets the bridge's bot's custom status and
+       its Mattermost presence (online, away or do not disturb, today
+       `set_presence` in `lease.py`) from presence and the crown claims
+       (RT-6.38), as the point on bot accounts per agent (point 11)
+       foresees. The bus line in the channel header (`channel_header`,
+       `set_channel_header`, RT-6.6 step 7), which the crown holder
+       writes today, goes to the bridge with the crown's mirror: the
+       crown holder sends the line over NATS, and the bridge writes it
+       with the crown holder's own bridge bot in the home its claim
+       names; a session reads the header through the bridge's read for
+       people's history (piece 5).
      - People: see the 👑 on the bridge's bot; the registrar's bot loses
        it.
      - Switch: status mirrored by the bridge. Way back: the registrar's
@@ -4163,7 +4216,9 @@ Nothing of it is built.
         bot; the answer comes back as a person's event on a DM subject
         that only that agent reads, which RT-6.42 does not carry yet and
         the login service must grant (`callout/perms_test.go`).
-      - People: answer the bridge's bot's DM.
+      - People: answer the bridge's bot's DM. Another person's DM to the
+        bridge's bot reaches the agent as that person's event, and the
+        agent may answer and react in that DM only, under the rule above.
       - Switch: permission prompts over the bridge. Way back: new prompts
         from the registrar's bot; an open prompt answered at the bridge
         still reaches the session, else it times out as today.
@@ -4211,10 +4266,24 @@ Nothing of it is built.
         channel, the home, the guest channels, the lobby and the stats
         channel, runs over NATS with every piece on. A session with any
         channel on Mattermost registers as before. The start hook
-        decides per session; it, the relay and the signed host copy go
-        once no session needs them, with this piece switched on for
-        every home (the owner's decision above), at the latest with the
-        shutdown (phase 6).
+        decides per session. Once every home runs every piece, no
+        session needs the host side any more, and it goes (the owner's
+        decision above), at the latest with the shutdown (phase 6):
+        corral's start and end hooks (`10-mm-session-start.sh`,
+        `90-mm-session-stop.sh`) and their dispatcher
+        (`adapters/corral/mm-hook-dispatch.sh`), the relay and the host
+        process of the keyless session (RT-6.18), the signed host copy
+        with its installer (`bin/mm-agent-host-install.sh`, RT-6.28,
+        RT-6.29), its release check (`bin/mm-agent-release-check.sh`,
+        RT-6.30) and its self-update between sessions (RT-6.32), and the
+        block on self-registration in the sandbox (RT-6.10 step 1).
+      - The release notice (RT-6.30) loses its check, which runs only
+        from the host copy. Proposed, decided with this piece: the MCP
+        server tells its human the version the release record names,
+        which the bridge serves signed with its own key (#151 step 4),
+        and which follows the version the console pins after its
+        signature check (#192); the plugin itself updates through the
+        harness's marketplace, as without corral today.
       - The session's own identity: the bot's Mattermost id and name
         (`_bot_id`, `_bot_name`, `ownpost.py`, `unanswered.py`) give way
         to the NATS name, which keys the kept state since the roster
@@ -4235,9 +4304,14 @@ Nothing of it is built.
         `nats_id` prop. A DM has no such copy: a permission prompt's DM
         to a swept bot is answered only once the bot is back, and a
         prompt that times out meanwhile is asked again, as today.
-      - Switch: none of its own; it follows from the others. Way back: the
-        plugin version before, the registrar on again (the two weeks of
-        the shutdown, phase 6); the state it keyed by the bot id is still
+      - Switch: none of its own; it follows from the others' flags. While
+        the host side is still installed, a session whose channels have
+        any piece switched off registers again at its next start. Way
+        back once the host side is gone: the plugin version before, the
+        signed host copy installed again on each host
+        (`mm-agent-host-install.sh --release`, RT-6.29) with corral's
+        hooks, and the registrar on again (the two weeks of the
+        shutdown, phase 6); the state it keyed by the bot id is still
         there.
       - Test: hook tests: no registration and no Mattermost token for such
         a session, registration for a mixed one. Lab: the acceptance
@@ -4264,28 +4338,57 @@ Nothing of it is built.
     (RT-6.11), a replayed ask;
   - the signed records and the release record (#151 steps 3 and 4)
     served by the bridge and keyed without a Mattermost id; the owner
-    attestation (RT-6.24) replaced by the login service's (RT-6.41);
+    attestation (RT-6.24) replaced by the login service's (RT-6.41),
+    with trusted humans and owners from the attestation (piece 4) on in
+    every home;
+  - the protection against stolen tokens of decision 10 as far as it
+    reaches then: its detection (built, 0.102.0) on in the login service
+    the hosts use, and the offline token's maximum lifetime and DPoP
+    built, or the owner's word that the last piece goes without them;
+  - the console's check of the release signature when the administrator
+    moves the pinned version (#192) built, and the release notice
+    reading the release record (piece 14);
+  - the login approval's way to the human once no agent has a bot
+    (the third open decision below) decided and built;
   - then the owner's approval for the last piece (proposed, from the
     owner's choice of plan B directly, bus post
     `ukt76r9rijgyfewcy8rs9ii4mc`).
 - **Open for the owner**, each its own ask, one at a time:
-  1. The name of the bridge's address for the signed records and the
-     release record: `MM_REGISTER_URL` today, a `CB_` name then. Not asked
-     yet.
-  2. Whether hosts keep `MM_REG_SECRET` after the plugin stops reading
-     it, and how long; proposed: two weeks. Not asked yet.
-  3. How the login approval reaches the human once no agent has a bot:
-     today the MCP server sends it by DM under the agent's bot
-     (`login_notice.py`, RT-6.34) before the session has NATS
-     credentials. Not asked yet.
+  1. Shall the hosts' setting for the bridge's address, from which they
+     read the signed records and the release record, `MM_REGISTER_URL`
+     today, be called `CB_RECORDS_URL`? Recommended: yes. It names what
+     the hosts read there; `CB_BRIDGE_URL` would read as one of the
+     bridge's own settings, which all start with `CB_BRIDGE_`
+     ([docs/env-names.md](../env-names.md#which-prefix)). Not asked yet.
+  2. Shall hosts delete `MM_REG_SECRET` two weeks after the release in
+     which the plugin stops reading it? Recommended: yes; the two weeks
+     are those of the shutdown (phase 6), in which the plugin version
+     before is the way back and still registers with the secret. Not
+     asked yet.
+  3. Once no agent has a bot, shall the login approval reach the human
+     only at this machine: the browser the MCP server opens and the
+     address and code in its MCP log, with no DM and no ask in the home?
+     Recommended: yes. Today the MCP server, before it has NATS
+     credentials, sends the approval by DM under the agent's bot, posts
+     an ask in the home that points to the DM, and settles asks of
+     earlier approvals at its start (`login_notice.py`, RT-6.34). The
+     alternative, the bridge sending these for a session that has no
+     NATS credential yet, needs an endpoint where the bridge cannot tell
+     who asks, so anyone who reaches it could have a person sent a login
+     code of another client of the realm (device-code phishing, RISK-29).
+     The end of registration (piece 14) cannot be built before this is
+     answered. Not asked yet.
 - **Consequences.** For a while two paths per piece exist in the MCP
   server; the Mattermost adapter in the client goes only with the shutdown
   (phase 6). Once a home runs every piece, its people see and answer its
   agents only through the bridge (RISK-21, RISK-36): a home over NATS never
   falls back to Mattermost for a send (RT-6.36), so a bridge outage leaves
-  its people without the agents until the bridge is back. After the end of
-  registration the refresh token and the host key live in the sandbox
-  (RISK-26), by the owner's decision; nothing of the bus runs outside it.
+  its people without the agents until the bridge is back. The refresh
+  token and the host key already live in the sandbox's home under corral
+  (RISK-26, decision 10); after the end of registration the bot token and
+  the host process are gone too, so nothing of the bus runs outside the
+  sandbox, by the owner's decision, and a steered agent reaches the
+  sessions that share its plugin tree (RISK-37).
 - **Not part of this plan:** the slash commands with their signed records
   and the release record (#151 steps 3 and 4), which run beside it and
   which the acceptance needs; the shutdown itself (phase 6); several
