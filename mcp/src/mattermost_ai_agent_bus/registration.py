@@ -27,7 +27,7 @@ class RegistrationPort(Protocol):
     @property
     def session(self) -> SessionInfo | None:
         """The bot this server registered or took over; None when it was
-        given one (MM_BOT_TOKEN) or has none."""
+        given one (CB_MM_BOT_TOKEN) or has none."""
         ...
 
     @property

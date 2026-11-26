@@ -40,7 +40,7 @@ from urllib.parse import urlsplit
 
 import httpx
 
-from . import attest
+from . import attest, config
 
 NONE_ERROR = "no release set"
 RECORD_MAX = 8192
@@ -55,10 +55,10 @@ class Failed(Exception):
 def release_url(environ: Mapping[str, str]) -> str | None:
     """Where the registrar publishes its release record, found like
     client.modes_url: MM_REGISTER_URL `/agents` → `/release`, else
-    MM_CHAT_URL + `/register/v1/release`. None without either, or for a URL
+    CB_MM_CHAT_URL + `/register/v1/release`. None without either, or for a URL
     that is no plain http(s) one."""
     reg = environ.get("MM_REGISTER_URL", "").rstrip("/")
-    chat = (environ.get("MM_CHAT_URL") or environ.get("MATTERMOST_URL") or "").rstrip("/")
+    chat = config.env("CB_MM_CHAT_URL", environ=environ).rstrip("/")
     root = reg.removesuffix("/agents") if reg else (f"{chat}/register/v1" if chat else "")
     if not re.fullmatch(r"https?://[A-Za-z0-9.:\[\]-]+(/[A-Za-z0-9._~%+-]+)*", root):
         return None
@@ -132,7 +132,7 @@ def read(environ: Mapping[str, str] | None = None, now: float | None = None,
         return "nokeys", None, "no registrar keys pinned (MM_REGISTRAR_KEYS): nothing taken from the registrar"
     url = release_url(environ)
     if url is None:
-        return "failed", None, "no registrar URL (MM_REGISTER_URL or MM_CHAT_URL)"
+        return "failed", None, "no registrar URL (MM_REGISTER_URL or CB_MM_CHAT_URL)"
     try:
         token = fetch(url, environ=environ)
     except Failed as exc:

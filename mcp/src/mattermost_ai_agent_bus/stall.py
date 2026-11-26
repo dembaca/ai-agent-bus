@@ -9,14 +9,14 @@ A **stall** is something open — a task in open / active / blocked / review
 WAITING: that wait is on purpose), an ask_human ask without its answer, or a
 post in the work channel that @-mentions a reachable agent and has no reply
 by that agent in its thread after it (not an agent's fyi post, not older than
-a day) — and for MM_STALL_SEC (default 600 s) no post there by an agent or a
+a day) — and for CB_STALL_SEC (default 600 s) no post there by an agent or a
 trusted human (the ask reminders of remind.py are none), no answer on an
 ask (a yes, no or choice emoji by the human asked or a trusted one, as
 ends its shield: the task the ask shielded gets that long before it is
 due) and no agent with the
 status `working`; the crown holder's own posts and status are none either (its
 nudges would start a new quiet period), they only push the next wake to
-MM_STALL_SEC after them. Without any activity in the window the quiet period
+CB_STALL_SEC after them. Without any activity in the window the quiet period
 starts with the oldest open item. An ask within its 24 h whose asking agent is
 still on the roster (the crown holder's own too) is listed but is no reason to
 wake it: that agent's remind.py nudges the human, the coordinator would find
@@ -31,14 +31,14 @@ any event: pushed as a channel tag (RT-6.12), from wait_for_events, and the
 hooks' pending count (/v1/pending) includes it for the Stop hook's drain and
 the listener.
 
-Wakes in one quiet period back off: MM_STALL_SEC after the last activity,
+Wakes in one quiet period back off: CB_STALL_SEC after the last activity,
 then twice that after the wake, doubling, each gap capped at
-MM_REMIND_MAX_SEC (8 h); any activity starts over. The server looks at every
+CB_REMIND_MAX_SEC (8 h); any activity starts over. The server looks at every
 heartbeat while it holds the crown (one read of the work channel, as
 coordinator("tasks") makes), sooner when a wake is due. stall-<uid>.env in
 the state dir keeps QUIET (epoch ms of the activity it counts from), WAKES,
 NEXT (epoch of the next possible wake) and FROM (taking the crown, or a
-restart with it, allows no wake for MM_STALL_SEC: the previous holder's
+restart with it, allows no wake for CB_STALL_SEC: the previous holder's
 backoff is not on the bus), so a restart does not wake early. DMs
 between other agents are theirs: the coordinator sees the work channel only.
 """
@@ -79,8 +79,8 @@ _held = False  # whether this server held the crown at its last watch
 
 
 def stall_sec() -> int:
-    """Quiet time before a stall (MM_STALL_SEC, default 600 s, at least 60)."""
-    return remind._sec("MM_STALL_SEC", 600)
+    """Quiet time before a stall (CB_STALL_SEC, default 600 s, at least 60)."""
+    return remind._sec("CB_STALL_SEC", 600)
 
 
 def backoff(wakes: int) -> float:
@@ -310,7 +310,7 @@ def _forget(uid: str, keep: Collection[str]) -> None:
 def crowned(uid: str, now: float | None = None) -> None:
     """The server just took the crown (or restarted with it): the previous
     holder's backoff is not on the bus, so the first wake comes not before
-    MM_STALL_SEC from now (FROM)."""
+    CB_STALL_SEC from now (FROM)."""
     st = _read(uid)
     _save(uid, int(st["QUIET"]), int(st["WAKES"]), st["NEXT"], (now or time.time()) + stall_sec())
 
@@ -351,7 +351,7 @@ async def _look(client: ChatPort, uid: str, now: float, chan: str = "", name: st
     trusted = await client.trusted_humans()
     unapproved = await client.unapproved(posts)  # RT-6.42: a not_approver answer answers nothing
     # RT-6.19 step 2 (0.71.33): a human's answer on an ask is activity like
-    # their post: the task it shielded gets MM_STALL_SEC before it is due.
+    # their post: the task it shielded gets CB_STALL_SEC before it is due.
     quiet = max(quiet, answered_since(posts, names, trusted, now_ms, unapproved))
     if any(r.status == "working" and r.username != names.get(uid) for r in roster):
         quiet = now_ms

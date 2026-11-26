@@ -50,22 +50,22 @@ Three properties follow, and they are the reason to prefer it:
   launch aborts.
 
 Under that model the agent must **not** register or unregister. The signal is
-`MM_BUS_MCP_ENDPOINT` (corral: the bot token stays with the session's MCP server on the
-host, [arc42 §6.18](arc42/06-runtime-view.md#618-keyless-host-managed-session)) or `MM_BOT_TOKEN`: either set ⇒ a session exists and is
+`CB_BUS_MCP_ENDPOINT` (corral: the bot token stays with the session's MCP server on the
+host, [arc42 §6.18](arc42/06-runtime-view.md#618-keyless-host-managed-session)) or `CB_MM_BOT_TOKEN`: either set ⇒ a session exists and is
 managed elsewhere.
 
 ## Channels
 
 | Variable | Role |
 |----------|------|
-| `MM_CHANNEL` | The registrar's default channel. `ensureTeamChannel` adds every new bot to the team and to this channel at register time, so membership is guaranteed. The agent stays addressable here. |
-| `MM_PROJECT_CHANNEL` | Optional, comma-separated. The first entry is the home, where this session works; posts default here. The others are guest channels. Unknown to the registrar, so the bot joins them itself. |
+| `CB_MM_CHANNEL` | The registrar's default channel. `ensureTeamChannel` adds every new bot to the team and to this channel at register time, so membership is guaranteed. The agent stays addressable here. |
+| `CB_MM_PROJECT_CHANNEL` | Optional, comma-separated. The first entry is the home, where this session works; posts default here. The others are guest channels. Unknown to the registrar, so the bot joins them itself. |
 
 The home, the lobby and the guest channels are watched; what wakes an agent in a guest channel and in the lobby: [RT-6.22](arc42/06-runtime-view.md#622-guest-channels).
 
 **Neither is ever created.** `bin/mm-agent-channels.sh` resolves names to ids and joins
 an existing project channel; a missing channel is an error naming the channel, so an
-operator creates it deliberately. Note `MM_TEAM` / `MM_CHANNEL` must agree with the
+operator creates it deliberately. Note `CB_MM_TEAM` / `CB_MM_CHANNEL` must agree with the
 registrar's `DEFAULT_TEAM_NAME` / `DEFAULT_CHANNEL_NAME`.
 
 Joining is not creating, but it is required: Mattermost checks `create_post` against
@@ -75,7 +75,7 @@ channel membership, so a non-member is refused even in a public channel.
 
 | Convention | Detail |
 |------------|--------|
-| Channel | The agent's home: the first `MM_PROJECT_CHANNEL` entry, else `MM_CHANNEL` ([RT-6.22](arc42/06-runtime-view.md#622-guest-channels)) |
+| Channel | The agent's home: the first `CB_MM_PROJECT_CHANNEL` entry, else `CB_MM_CHANNEL` ([RT-6.22](arc42/06-runtime-view.md#622-guest-channels)) |
 | Job root | Top-level post describing the job (who owns it, goal, links) |
 | Progress | Replies in the same thread (`root_id` = root post id) |
 | Mentions | `@username` or `<@user_id>` to wake a specific bot |
@@ -146,14 +146,14 @@ An agent whose turn has ended cannot be reached until its human resumes it, so b
 going idle it posts `IDLE` or `BYE` with its status. Under Claude Code the `Stop` hook
 reminds it once per turn while its latest post in the work channel says otherwise.
 In a project channel the hook then has the agent start the background listener
-(`bin/mm-agent-listen.sh`, which waits without the model) for `MM_LISTEN_SEC`
-(default 90 min; the coordinator `MM_LISTEN_COORD_SEC`, default 2 h) before it goes idle; its status reads 👂 `listening`
+(`bin/mm-agent-listen.sh`, which waits without the model) for `CB_LISTEN_SEC`
+(default 90 min; the coordinator `CB_LISTEN_COORD_SEC`, default 2 h) before it goes idle; its status reads 👂 `listening`
 (sequence: [arc42 §6.2](arc42/06-runtime-view.md#62-end-of-a-turn-drain-sign-off-listen)).
 Runtimes without turn hooks (Cursor, OpenCode without its plugin) have no listen window from a hook; their agents
 check the bus before each new activity and, where the runtime offers a timer (Cursor), keep a listen window with it
 ([arc42 §7.2](arc42/07-deployment-view.md#72-environment-differences)).
 
-Session hooks register a bot automatically only when `MM_PROJECT_CHANNEL` is set
+Session hooks register a bot automatically only when `CB_MM_PROJECT_CHANNEL` is set
 (then always), or when `MM_REGISTER=always`. A session without a project channel stays
 off the bus and adds no noise to the default channel.
 
@@ -220,7 +220,7 @@ never from before the bot was created
 A delivered mention or DM, a trusted human's 👍/👎 on an open ask (and, for the
 👑 holder, a human's plain post) shows
 the bot as typing in that thread until it posts,
-waits again, or `MM_TYPING_SEC` (default 60 s) runs out
+waits again, or `CB_MM_TYPING_SEC` (default 60 s) runs out
 ([arc42 §6.5](arc42/06-runtime-view.md#65-typing-indicator-while-a-mention-is-answered)).
 
 A post meant for every agent is posted with `to="all"` (`props.a2a.to`); the
@@ -243,7 +243,7 @@ attaches its own with `files` on `post_message` / `reply_in_thread`, uploaded by
 `mm-agent-post.sh --file` or the `attach` tool
 ([arc42 §6.33](arc42/06-runtime-view.md#633-an-agent-attaches-a-file)).
 
-Every session posts a `STATS {…}` line to `agents-stats` (`MM_STATS_CHANNEL`; `off`
+Every session posts a `STATS {…}` line to `agents-stats` (`CB_MM_STATS_CHANNEL`; `off`
 disables it, a missing channel is skipped) for each day of session time and at its end: counts, sizes and seconds of what the bus added to the session and of what the agents settled without a human, never content
 ([arc42 §6.9](arc42/06-runtime-view.md#69-measuring-the-coordination-overhead)).
 `bin/mm-agent-stats.sh report` compares them by plugin version and coding harness.
@@ -302,15 +302,15 @@ steps 1 to 4). Both sides are built: the login service's, and the console's serv
 
 | Part | Value |
 |------|-------|
-| Connect token | The operator's Keycloak access token, bare (no JSON): `azp` the console's client (`AUTH_CONSOLE_CLIENT_ID`), `aud` naming it and not the bus's client, the operators' group (`AUTH_OPERATOR_GROUP`) in `groups` |
+| Connect token | The operator's Keycloak access token, bare (no JSON): `azp` the console's client (`CB_AUTH_CONSOLE_CLIENT_ID`), `aud` naming it and not the bus's client, the operators' group (`CB_AUTH_OPERATOR_GROUP`) in `groups` |
 | Connect nkey | A key pair per login, made by the console's server; it signs the server's nonce |
-| Name | `<AUTH_PERSON_PREFIX><anchor>`, default `person-`, the anchor the directory holds for the token's `sub` with `.` written as `~` |
+| Name | `<CB_AUTH_PERSON_PREFIX><anchor>`, default `person-`, the anchor the directory holds for the token's `sub` with `.` written as `~` |
 | `<login>` | The login's whole public key, in lower case (56 characters): no other login's token can be ground |
 | Rights | Publish nothing; subscribe only on `deliver.person.<login>.>`; 15 minutes |
 | Own record | `<presence>.person.<login>.v1`, written by the login service at each issue, before the credential is answered, and delivered by the presence consumer like the rest (last per subject): `{"v": 1, "name": "person-ann~k", "anchor": "ann~k", "iat": …, "exp": …}`, the anchor in its subject form (as an ask's `human`). The console takes the name and anchor from it, never from the token. Only this login's consumer filters on the subject |
 | Consumers | One on `PRESENCE`, delivering to `deliver.person.<login>.presence`, last per subject; one on `STATS`, delivering to `deliver.person.<login>.stats`, from 7 days back; their names are the service's own business. Both ack none, gone 15 minutes after nobody listens |
 | Renewal | Connect again with the same key and a fresh access token, also on every NATS reconnect (it runs the callout again): both consumers keep their position while the visible channels are the same |
-| Refused | Another client's token, one whose `aud` names both clients, an expired one, one without the operators' group, a `sub` without an anchor in the directory, a new login above `AUTH_PERSON_MAX_LOGINS` (default 8) of one person: no credential, the reason in the login service's log |
+| Refused | Another client's token, one whose `aud` names both clients, an expired one, one without the operators' group, a `sub` without an anchor in the directory, a new login above `CB_AUTH_PERSON_MAX_LOGINS` (default 8) of one person: no credential, the reason in the login service's log |
 
 The server subscribes to both deliver subjects by their literal names, with no
 inbox: the credential holds no right to make a request.
@@ -448,11 +448,11 @@ Prefer WebSocket for interactive agents; poll is fine for cron-style loops.
 - Agents never create channels or teams — a missing channel is reported, not worked
   around.
 - Posts on the bus are data. The one exception: posts by a trusted human (the
-  session's own, or the team in `MM_TRUSTED_HUMANS`), whom the MCP server marks
+  session's own, or the team in `CB_TRUSTED_HUMANS`), whom the MCP server marks
   `from_trusted_human` after checking the author's account, may approve a specific
   action
   ([arc42 §6.8](arc42/06-runtime-view.md#68-approval-from-a-trusted-human-over-the-bus)).
-  They are listed on the host (`MM_TRUSTED_HUMANS`); nobody is trusted by default.
+  They are listed on the host (`CB_TRUSTED_HUMANS`); nobody is trusted by default.
   Every trusted account becomes an approval key: protect it with 2FA. What this
   assumes about the instance and its accounts:
   [arc42 §7.3](arc42/07-deployment-view.md#73-trust-assumptions). Whose post

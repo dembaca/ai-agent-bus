@@ -12,8 +12,8 @@ from mattermost_ai_agent_bus.websocket_inbox import ClassifiedEvent
 
 ME_HUMAN = "h" * 26
 COLLEAGUE = "k" * 26
-VARS = ("MM_TRUSTED_HUMANS", "MM_TRUSTED_HUMAN_USER_IDS", "MM_OWNER", "MM_OWNER_USER_ID",
-        "MM_RESPONSIBLE_HUMAN", "MM_AGENT_KIND")
+VARS = ("CB_TRUSTED_HUMANS", "CB_MM_TRUSTED_HUMAN_USER_IDS", "CB_OWNER", "CB_MM_OWNER_USER_ID",
+        "CB_RESPONSIBLE_HUMAN", "CB_AGENT_KIND")
 
 
 @pytest.fixture(autouse=True)
@@ -28,8 +28,8 @@ def _client(**kw) -> MattermostAdapter:
 
 @pytest.mark.asyncio
 async def test_host_list_wins(monkeypatch):
-    monkeypatch.setenv("MM_TRUSTED_HUMAN_USER_IDS", f"{ME_HUMAN},{COLLEAGUE}")
-    monkeypatch.setenv("MM_TRUSTED_HUMANS", "dembaca, kollegin")
+    monkeypatch.setenv("CB_MM_TRUSTED_HUMAN_USER_IDS", f"{ME_HUMAN},{COLLEAGUE}")
+    monkeypatch.setenv("CB_TRUSTED_HUMANS", "dembaca, kollegin")
     c = _client()
     assert await c.trusted_humans() == {ME_HUMAN: "dembaca", COLLEAGUE: "kollegin"}
     assert c.trusted_source == "host"
@@ -37,7 +37,7 @@ async def test_host_list_wins(monkeypatch):
 
 @pytest.mark.asyncio
 async def test_usernames_are_looked_up_and_bots_left_out(monkeypatch):
-    monkeypatch.setenv("MM_TRUSTED_HUMANS", "@dembaca,agent-x,ghost")
+    monkeypatch.setenv("CB_TRUSTED_HUMANS", "@dembaca,agent-x,ghost")
     c = _client()
 
     async def api(method, path, **_):
@@ -52,8 +52,8 @@ async def test_usernames_are_looked_up_and_bots_left_out(monkeypatch):
 
 @pytest.mark.asyncio
 async def test_old_owner_vars_still_work(monkeypatch):
-    monkeypatch.setenv("MM_OWNER_USER_ID", ME_HUMAN)
-    monkeypatch.setenv("MM_OWNER", "dembaca")
+    monkeypatch.setenv("CB_MM_OWNER_USER_ID", ME_HUMAN)
+    monkeypatch.setenv("CB_OWNER", "dembaca")
     assert await _client().trusted_humans() == {ME_HUMAN: "dembaca"}
 
 
@@ -65,17 +65,17 @@ async def test_nothing_is_inferred_from_the_registration_secret():
 
     c = _client(reg_secret="psk")
     c._client = httpx.AsyncClient(transport=httpx.MockTransport(handler))
-    assert await c.trusted_humans() == {} and c.trusted_source == "none: set MM_TRUSTED_HUMANS"
+    assert await c.trusted_humans() == {} and c.trusted_source == "none: set CB_TRUSTED_HUMANS"
 
 
 def test_registration_carries_responsible_trusted_and_kind(monkeypatch):
     from mattermost_ai_agent_bus.client import _registration_fields
-    monkeypatch.setenv("MM_TRUSTED_HUMANS", "@dembaca, kollegin")
+    monkeypatch.setenv("CB_TRUSTED_HUMANS", "@dembaca, kollegin")
     assert _registration_fields("x", "X") == {
         "name": "x", "display_name": "X", "kind": "session",
         "responsible": "dembaca", "trusted": ["dembaca", "kollegin"]}
-    monkeypatch.setenv("MM_AGENT_KIND", "autonomous")
-    monkeypatch.setenv("MM_RESPONSIBLE_HUMAN", "ops-team")
+    monkeypatch.setenv("CB_AGENT_KIND", "autonomous")
+    monkeypatch.setenv("CB_RESPONSIBLE_HUMAN", "ops-team")
     f = _registration_fields("x", "X")
     assert f["kind"] == "autonomous" and f["responsible"] == "ops-team"
 
@@ -113,7 +113,7 @@ async def test_flag_marks_only_trusted_authors_and_names_them(monkeypatch):
 
 @pytest.mark.asyncio
 async def test_bus_info_reports_version_and_trusted_humans(monkeypatch):
-    monkeypatch.setenv("MM_TRUSTED_HUMAN_USER_IDS", ME_HUMAN)
+    monkeypatch.setenv("CB_MM_TRUSTED_HUMAN_USER_IDS", ME_HUMAN)
     c = _client()
 
     async def api(method, path, **_):
@@ -135,8 +135,8 @@ async def test_bus_info_reports_version_and_trusted_humans(monkeypatch):
 
 @pytest.mark.asyncio
 async def test_bus_info_names_the_responsible_human(monkeypatch):
-    monkeypatch.setenv("MM_TRUSTED_HUMAN_USER_IDS", f"{ME_HUMAN},{COLLEAGUE}")
-    monkeypatch.setenv("MM_TRUSTED_HUMANS", "dembaca,kollegin")
+    monkeypatch.setenv("CB_MM_TRUSTED_HUMAN_USER_IDS", f"{ME_HUMAN},{COLLEAGUE}")
+    monkeypatch.setenv("CB_TRUSTED_HUMANS", "dembaca,kollegin")
     c = _client()
 
     async def api(method, path, **_):
@@ -146,7 +146,7 @@ async def test_bus_info_names_the_responsible_human(monkeypatch):
     monkeypatch.setattr(server, "_get_client", lambda: c)
     info = json.loads(await server.bus_info())
     assert info["responsible"] == "dembaca" and info["kind"] == "session"
-    monkeypatch.setenv("MM_RESPONSIBLE_HUMAN", "@ops-team")
-    monkeypatch.setenv("MM_AGENT_KIND", "autonomous")
+    monkeypatch.setenv("CB_RESPONSIBLE_HUMAN", "@ops-team")
+    monkeypatch.setenv("CB_AGENT_KIND", "autonomous")
     info = json.loads(await server.bus_info())
     assert info["responsible"] == "ops-team" and info["kind"] == "autonomous"

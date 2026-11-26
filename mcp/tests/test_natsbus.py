@@ -1,5 +1,5 @@
 """The NATS transport (natsbus.py, ADR-014 point 16): unit tests, and tests against a real
-nats-server 2.15.3 (MM_NATS_SERVER=<path>, or on PATH). The server tests are skipped unless
+nats-server 2.15.3 (CB_NATS_SERVER=<path>, or on PATH). The server tests are skipped unless
 MM_TEST_NATS=1; with it, a missing binary is a failure, not a skip (CI sets it).
 """
 
@@ -33,6 +33,7 @@ from mattermost_ai_agent_bus.natsbus import (
     CARD_TASK_MAX,
     MessageError,
     NatsBus,
+    Notice,
     NameMismatch,
     NatsSettings,
     PresenceCard,
@@ -43,6 +44,7 @@ from mattermost_ai_agent_bus.natsbus import (
     card_harness,
     card_text,
     crown_candidates,
+    decode_notice,
     crown_holder,
     decode,
     decode_attestation,
@@ -161,7 +163,7 @@ def test_the_owner_token_of_a_presence_subject() -> None:
 @pytest.mark.parametrize("owner", ["Alice", "ALICE", "alice ", " alice", "al\nice", "alice\n", "äl", ""])
 def test_an_owner_counts_only_in_the_one_form_the_bus_compares(owner: str) -> None:
     """RT-6.37: one namespace. The owner is compared with Mattermost usernames
-    (MM_TRUSTED_HUMANS, the owners of Mattermost bots), which are lower case; nothing is
+    (CB_TRUSTED_HUMANS, the owners of Mattermost bots), which are lower case; nothing is
     normalised, so an owner in any other form gets the token "-" and is no owner: two
     owners never become one."""
     assert owner_token(owner) == "-"
@@ -703,9 +705,9 @@ T0 = 1_800_000_000.0
 
 
 async def _presence(bus: NatsBus, who: str, seq: int, t: float, status: str = "online", bot: str = "",
-                    pending: int = 0) -> None:
+                    pending: int = 0, owner: str = "-") -> None:
     reply = _presence_reply(bus, seq, seq, t)[:-1] + str(pending)
-    await bus._on_presence_msg(FakeMsg(f"presence.-.{who}", reply, encode_presence(status, bot)))
+    await bus._on_presence_msg(FakeMsg(f"presence.{owner}.{who}", reply, encode_presence(status, bot)))
 
 
 async def _claim(bus: NatsBus, who: str, ch: str, seq: int, t: float) -> None:
@@ -1022,7 +1024,7 @@ def _free_port() -> int:
 
 
 def _server_binary() -> str | None:
-    return os.environ.get("MM_NATS_SERVER") or shutil.which("nats-server")
+    return os.environ.get("CB_NATS_SERVER") or shutil.which("nats-server")
 
 
 @pytest.fixture
@@ -1031,7 +1033,7 @@ async def rig(tmp_path: Path) -> AsyncIterator[Rig]:
         pytest.skip("MM_TEST_NATS=1 runs the tests against a real nats-server")
     binary = _server_binary()
     if not binary or not Path(binary).exists():
-        pytest.fail("nats-server 2.15.3 not found: set MM_NATS_SERVER=<path> or put it on PATH")
+        pytest.fail("nats-server 2.15.3 not found: set CB_NATS_SERVER=<path> or put it on PATH")
     # carol's credential is what an older login service granted: presence.<name> (RT-6.37)
     logins = {"alice": FakeLogin(), "bob": FakeLogin(), "carol": FakeLogin()}
     names = {w: agent_name(w, lg.nkey().public_key) for w, lg in logins.items()}
@@ -1078,12 +1080,12 @@ async def rig(tmp_path: Path) -> AsyncIterator[Rig]:
 @pytest.fixture
 async def wss_rig(tmp_path: Path) -> AsyncIterator[tuple[Rig, Path]]:
     """The same home over wss://: a websocket listener with a self-signed certificate, which
-    the client trusts through MM_NATS_CA_FILE (the test's `tls_ca_file`)."""
+    the client trusts through CB_NATS_CA_FILE (the test's `tls_ca_file`)."""
     if os.environ.get("MM_TEST_NATS") != "1":
         pytest.skip("MM_TEST_NATS=1 runs the tests against a real nats-server")
     binary = _server_binary()
     if not binary or not Path(binary).exists():
-        pytest.fail("nats-server 2.15.3 not found: set MM_NATS_SERVER=<path> or put it on PATH")
+        pytest.fail("nats-server 2.15.3 not found: set CB_NATS_SERVER=<path> or put it on PATH")
     cert, key = _self_signed(tmp_path)
     logins = {"alice": FakeLogin(), "eve": FakeLogin()}
     names = {w: agent_name(w, lg.nkey().public_key) for w, lg in logins.items()}
@@ -1185,13 +1187,13 @@ async def test_post_and_reply_over_a_websocket(rig: Rig) -> None:
 
 async def test_wss_verifies_the_websocket_tls(wss_rig: tuple[Rig, Path],
                                               caplog: pytest.LogCaptureFixture) -> None:
-    """wss://: the WebSocket's TLS is verified with MM_NATS_CA_FILE like tls://; without the CA
+    """wss://: the WebSocket's TLS is verified with CB_NATS_CA_FILE like tls://; without the CA
     the connection is refused, and no token goes over it."""
     rig, ca = wss_rig
     alice, a_ev = await rig.agent("alice", url=rig.ws_url, tls_ca_file=str(ca))
     await alice.post("home", "hello over wss")
     await until(lambda: len(a_ev) == 1, what="alice's own post came back over wss")
-    # the bus itself verifies: an agent without MM_NATS_CA_FILE never connects, and the bus's
+    # the bus itself verifies: an agent without CB_NATS_CA_FILE never connects, and the bus's
     # own log names the certificate. An unverified context would connect right here, which is
     # what a mutation of the TLS setup turns red (716d72's blocker on #83).
     caplog.set_level(logging.WARNING, logger="mattermost_ai_agent_bus.natsbus")
@@ -1466,7 +1468,7 @@ async def test_the_bus_renews_before_the_credential_expires(rig: Rig) -> None:
 
 
 def test_the_props_prefix_is_the_buss_setting() -> None:
-    """Props keys carry MM_PROPS_PREFIX (RT-6.16 step 8), not a fixed x_: with
+    """Props keys carry CB_PROPS_PREFIX (RT-6.16 step 8), not a fixed x_: with
     another prefix the bus can post its own keys, and x_ keys are refused."""
     m = Message("post", "hi", props={"bgl_k": "v"})
     assert decode(encode(m, "bgl_"), "bgl_") == m
@@ -1484,7 +1486,7 @@ def test_the_props_prefix_is_the_buss_setting() -> None:
 
 
 def test_an_empty_props_prefix_falls_back_instead_of_permitting_every_key() -> None:
-    """An empty MM_PROPS_PREFIX means "unset" to the bus's own check, which
+    """An empty CB_PROPS_PREFIX means "unset" to the bus's own check, which
     returns the default. The setting must store that value: holding the empty
     string would make `k.startswith("")` accept every key, `from_trusted_human`
     included, and a forged prop would pass the encoder."""
@@ -1649,7 +1651,7 @@ def test_a_certificate_for_another_name_gets_no_ca_hint(code: int) -> None:
 
 @pytest.mark.parametrize("code", [2, 18, 19, 20, 21])
 def test_an_unknown_issuer_gets_the_ca_hint(code: int) -> None:
-    assert "set MM_NATS_CA_FILE" in natsbus.connect_reason(_cert_error(code, "unknown issuer"))
+    assert "set CB_NATS_CA_FILE" in natsbus.connect_reason(_cert_error(code, "unknown issuer"))
 
 
 def test_a_certificate_error_without_its_verify_fields_does_not_raise() -> None:
@@ -1728,7 +1730,7 @@ async def test_tls_url_refuses_a_trusted_certificate_for_another_name(tmp_path: 
         assert b"CONNECT" not in srv.received and b"tok-" not in srv.received
         # A certificate for another name may be a man in the middle: no hint to trust its CA.
         why = natsbus.connect_reason(err.value)
-        assert why.startswith("TLS: the certificate does not name this host") and "MM_NATS_CA_FILE" not in why
+        assert why.startswith("TLS: the certificate does not name this host") and "CB_NATS_CA_FILE" not in why
 
 
 def test_tls_and_plain_servers_are_not_mixed() -> None:
@@ -2042,3 +2044,136 @@ def test_the_hello_carries_the_session_part_only_when_the_key_is_shared() -> Non
     assert with_session["session"] == "abcdefghijklmnopqrstuvwxyz"
     without = json.loads(build_hello("tok", "home", (), False, {}))
     assert "session" not in without
+# --- the login service's theft notice (RT-6.34) ---------------------------------
+
+def encode_notice(**over: Any) -> bytes:
+    rec: dict[str, Any] = {"v": 1, "kind": "session", "verdict": "copied",
+                           "sid": "a1b2c3d4-0000-4000-8000-000000000000",
+                           "network": "203.0.113.0/24", "agent": "agent-b",
+                           "iat": int(T0), "exp": int(T0 + 3600)}
+    rec.update(over)
+    return json.dumps(rec).encode()
+
+
+def test_a_notice_decodes_strictly() -> None:
+    n = decode_notice(encode_notice())
+    assert n.kind == "session" and n.network == "203.0.113.0/24" and n.agent == "agent-b"
+    assert decode_notice(encode_notice(agent="")).agent == ""
+    for bad in (encode_notice(v=2), encode_notice(kind="other"), encode_notice(verdict="other"),
+                encode_notice(sid=""), encode_notice(sid="a b"),
+                encode_notice(network="not a network"), encode_notice(agent="not an agent"),
+                encode_notice(exp=int(T0))):
+        with pytest.raises(MessageError):
+            decode_notice(bad)
+
+
+def test_a_dotted_owner_is_a_subject_token() -> None:
+    # "alice.example" is written "alice~example"; the notice reader accepts it.
+    assert natsbus.owner_of_token("alice~example") == "alice.example"
+    assert natsbus.owner_of_token("-") == ""  # no owner proven
+
+
+async def test_a_notice_reaches_the_callback_once_and_an_expired_one_never() -> None:
+    seen: list[Notice] = []
+    bus = NatsBus(_settings(), FakeLogin(), "alice", lambda _e: None, on_notice=seen.append)
+    await bus._on_presence_msg(FakeMsg("presence.notice.bob.copied.v1", _presence_reply(bus, 1, 1, T0),
+                                       encode_notice()))
+    # A replay of the same record (a consumer made anew) is not told twice.
+    await bus._on_presence_msg(FakeMsg("presence.notice.bob.copied.v1", _presence_reply(bus, 2, 2, T0 + 60),
+                                       encode_notice()))
+    assert [n.kind for n in seen] == ["session"]
+    # One that expired before it was delivered is dropped.
+    await bus._on_presence_msg(FakeMsg("presence.notice.bob.copied.v1", _presence_reply(bus, 3, 3, T0 + 7200),
+                                       encode_notice(sid="other-session")))
+    assert len(seen) == 1
+
+
+async def test_a_dotted_owner_reaches_the_caller() -> None:
+    """RT-6.34: the subject token writes "." as "~", and the reader accepts it."""
+    seen: list[Notice] = []
+    bus = NatsBus(_settings(), FakeLogin(), "alice", lambda _e: None, on_notice=seen.append)
+    await bus._on_presence_msg(FakeMsg("presence.notice.alice~example.copied.v1",
+                                       _presence_reply(bus, 1, 1, T0), encode_notice()))
+    assert [n.verdict for n in seen] == ["copied"]
+
+
+async def test_a_verdict_that_is_not_the_subject_s_is_dropped() -> None:
+    seen: list[Notice] = []
+    bus = NatsBus(_settings(), FakeLogin(), "alice", lambda _e: None, on_notice=seen.append)
+    await bus._on_presence_msg(FakeMsg("presence.notice.alice.moved.v1",
+                                       _presence_reply(bus, 1, 1, T0), encode_notice(verdict="copied")))
+    assert seen == []
+
+
+def test_the_notice_text_names_what_only_the_owner_can_do() -> None:
+    from mattermost_ai_agent_bus.login_notice import notice_text
+    session = notice_text("agent-b", "session")
+    assert "agent-b" in session and "Keycloak" in session and "refuses" in session
+    host = notice_text("agent-b", "host_key")
+    assert "host key" in host and "rotate" in host and "not refused" in host
+
+
+async def test_one_server_tells_a_notice() -> None:
+    """RT-6.34: the named agent's server tells it when that agent is live, else the live agent
+    with the smallest name, this one included - the same answer on every server."""
+    bus = NatsBus(_settings(), FakeLogin(), "alice", lambda _e: None)
+    await _presence(bus, bus.name, 1, T0, owner="alice")
+    await _presence(bus, "agent-0aaa", 2, T0, owner="alice")
+    await _presence(bus, "agent-zzz", 3, T0, owner="alice")
+    assert bus.notice_teller("agent-zzz") == "agent-zzz"  # live: its own server
+    assert bus.notice_teller("agent-missing") == "agent-0aaa"  # not live: the smallest live name
+    await _presence(bus, bus.name, 4, T0 + 100, owner="alice")  # only this one stays live
+    await _presence(bus, "agent-0aaa", 5, T0 + 100, status="bye", owner="alice")
+    await _presence(bus, "agent-zzz", 6, T0 + 100, status="bye", owner="alice")
+    assert bus.notice_teller("agent-0aaa") == bus.name
+    assert bus.notice_teller("") == bus.name
+    # Another owner's agent, even with the smallest name, is no teller.
+    await _presence(bus, "agent-000", 7, T0 + 101, owner="bob")
+    assert bus.notice_teller("agent-missing") == bus.name
+
+
+def test_a_told_notice_survives_a_restart(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+    """RT-6.34: the consumer replays the last record per subject, so a restarted
+    server needs to know what it already told - per kind and id, so one copy does
+    not hide another."""
+    from mattermost_ai_agent_bus import nats_port
+
+    monkeypatch.setenv("XDG_STATE_HOME", str(tmp_path))
+    now = int(time.time())
+    assert nats_port._notice_told("bot-1", "session:s1") == 0.0
+    nats_port._notice_mark("bot-1", "session:s1", now - 5)
+    assert nats_port._notice_told("bot-1", "session:s1") == now - 5
+    assert nats_port._notice_told("bot-1", "session:s2") == 0.0  # another id
+    nats_port._notice_mark("bot-1", "host_key:UA-1", now - 4)
+    assert nats_port._notice_told("bot-1", "session:s1") == now - 5  # kept, not replaced
+    assert nats_port._notice_told("bot-2", "session:s1") == 0.0  # per bot
+    # A future iat is capped at now: a skewed mark must not silence later records.
+    nats_port._notice_mark("bot-1", "session:s3", time.time() + 10_000)
+    assert nats_port._notice_told("bot-1", "session:s3") <= time.time() + 1
+
+
+def test_the_same_copy_is_one_dm() -> None:
+    """RT-6.34: (kind, id, verdict) is one DM within the block, and not after it."""
+    from mattermost_ai_agent_bus import nats_port
+
+    seen: dict[tuple[str, str, str], float] = {}
+    key = ("session", "s1", "copied")
+    assert not nats_port._notice_repeat(seen, key, 100.0)
+    seen[key] = 100.0
+    assert nats_port._notice_repeat(seen, key, 100.0 + 29 * 60)
+    assert not nats_port._notice_repeat(seen, key, 100.0 + 30 * 60)
+    assert not nats_port._notice_repeat(seen, ("session", "s2", "copied"), 101.0)
+
+
+def test_the_told_marks_are_capped(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+    """A long-lived server must not grow its told marks without bound."""
+    from mattermost_ai_agent_bus import nats_port
+
+    monkeypatch.setenv("XDG_STATE_HOME", str(tmp_path))
+    now = int(time.time())
+    for i in range(nats_port.NOTICE_KEY_MAX + 10):
+        nats_port._notice_mark("bot-1", f"session:s{i}", now - 1000 + i)
+    marks = nats_port._notice_read("bot-1")
+    assert len(marks) == nats_port.NOTICE_KEY_MAX
+    assert "session:s0" not in marks  # the oldest evicted
+    assert f"session:s{nats_port.NOTICE_KEY_MAX + 9}" in marks

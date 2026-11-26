@@ -284,7 +284,7 @@ func TestALoginMakesTheConsumers(t *testing.T) {
 		{"BUS", "_dm", "dm", []string{"bus.dm." + bob.name + ".*"}},
 		{"BUS", "_hu_home", "hu.home", []string{"bus.hu.home.*"}},
 		{"BUS", "_hu_secret", "hu.secret", []string{"bus.hu.secret.*"}},
-		{"PRESENCE", "_presence", "presence", []string{"presence.*.*", "presence.attest.*.v1", "presence.account.mattermost.*.v1", "presence.crown.home.*", "presence.member.home.*", "presence.bridge.home.v1", "presence.crown.secret.*", "presence.member.secret.*", "presence.bridge.secret.v1"}},
+		{"PRESENCE", "_presence", "presence", []string{"presence.*.*", "presence.attest.*.v1", "presence.account.mattermost.*.v1", "presence.notice.bob.copied.v1", "presence.notice.bob.moved.v1", "presence.crown.home.*", "presence.member.home.*", "presence.bridge.home.v1", "presence.crown.secret.*", "presence.member.secret.*", "presence.bridge.secret.v1"}},
 	} {
 		ci := c.info(w.stream, bob.name+w.name)
 		if ci == nil {
@@ -499,7 +499,7 @@ func TestSinceNeverReachesBackFurtherThan14Days(t *testing.T) {
 	c.publish("bus.ch.home.agent-other", "second")
 	reconcile := func(agent string, since uint64) *nats.ConsumerInfo {
 		t.Helper()
-		if err := c.mgr.Reconcile(ctx5(t), agent, "alice", []string{"home"}, map[string]uint64{"home": since}); err != nil {
+		if err := c.mgr.Reconcile(ctx5(t), agent, "alice", "alice", []string{"home"}, map[string]uint64{"home": since}); err != nil {
 			t.Fatal(err)
 		}
 		return c.info("BUS", agent+"_ch_home")
@@ -667,7 +667,7 @@ func TestRemoveOwner(t *testing.T) {
 
 type failingConsumers struct{}
 
-func (failingConsumers) Reconcile(context.Context, string, string, []string, map[string]uint64) error {
+func (failingConsumers) Reconcile(context.Context, string, string, string, []string, map[string]uint64) error {
 	return errors.New("jetstream is down")
 }
 
@@ -814,7 +814,7 @@ func TestAgentsWhoseNamesShareAPrefixDoNotShareConsumers(t *testing.T) {
 	c := newConsumerLab(t, nil)
 	ctx := ctx5(t)
 	for _, a := range []string{"x", "x_y"} {
-		if err := c.mgr.Reconcile(ctx, a, "alice", []string{"home"}, nil); err != nil {
+		if err := c.mgr.Reconcile(ctx, a, "alice", "alice", []string{"home"}, nil); err != nil {
 			t.Fatal(err)
 		}
 	}
@@ -829,7 +829,7 @@ func TestAgentsWhoseNamesShareAPrefixDoNotShareConsumers(t *testing.T) {
 		return n
 	}
 	// x's reconcile with no channels must not remove x_y's.
-	if err := c.mgr.Reconcile(ctx, "x", "alice", nil, nil); err != nil {
+	if err := c.mgr.Reconcile(ctx, "x", "alice", "alice", nil, nil); err != nil {
 		t.Fatal(err)
 	}
 	if c.info("BUS", "x_y_ch_home") == nil || c.info("BUS", "x_ch_home") != nil {
@@ -865,11 +865,11 @@ func TestAByeWithManyOtherConsumersRemovesOnlyTheLeaversAndListsNothing(t *testi
 	c := newConsumerLab(t, nil)
 	ctx := ctx5(t)
 	for i := range 30 {
-		if err := c.mgr.Reconcile(ctx, fmt.Sprintf("other%d", i), "alice", []string{"home"}, nil); err != nil {
+		if err := c.mgr.Reconcile(ctx, fmt.Sprintf("other%d", i), "alice", "alice", []string{"home"}, nil); err != nil {
 			t.Fatal(err)
 		}
 	}
-	if err := c.mgr.Reconcile(ctx, "leaver", "alice", []string{"home", "a", "b"}, nil); err != nil {
+	if err := c.mgr.Reconcile(ctx, "leaver", "alice", "alice", []string{"home", "a", "b"}, nil); err != nil {
 		t.Fatal(err)
 	}
 	var lists, names atomic.Int32
@@ -881,7 +881,7 @@ func TestAByeWithManyOtherConsumersRemovesOnlyTheLeaversAndListsNothing(t *testi
 		t.Cleanup(func() { _ = sub.Unsubscribe() })
 	}
 	_ = c.nc.Flush()
-	if err := c.mgr.Reconcile(ctx, "leaver", "alice", []string{"home", "a"}, nil); err != nil { // b dropped
+	if err := c.mgr.Reconcile(ctx, "leaver", "alice", "alice", []string{"home", "a"}, nil); err != nil { // b dropped
 		t.Fatal(err)
 	}
 	if c.info("BUS", "leaver_ch_b") != nil {
@@ -1025,18 +1025,18 @@ func TestAFailedRecordLeavesNoUnrecordedConsumer(t *testing.T) {
 		}
 	})
 	agent, owner := "agent-rec", "alice"
-	if err := c.mgr.Reconcile(ctx5(t), agent, owner, []string{"home"}, nil); err != nil {
+	if err := c.mgr.Reconcile(ctx5(t), agent, owner, owner, []string{"home"}, nil); err != nil {
 		t.Fatal(err)
 	}
 	fail.Store(true)
-	if err := c.mgr.Reconcile(ctx5(t), agent, owner, []string{"home", "gb"}, nil); err == nil {
+	if err := c.mgr.Reconcile(ctx5(t), agent, owner, owner, []string{"home", "gb"}, nil); err == nil {
 		t.Fatal("the failing record did not fail the reconcile")
 	}
 	if c.info("BUS", agent+"_ch_gb") == nil {
 		t.Fatal("the new channel's consumer was not made before the record failed")
 	}
 	fail.Store(false)
-	if err := c.mgr.Reconcile(ctx5(t), agent, owner, []string{"home"}, nil); err != nil {
+	if err := c.mgr.Reconcile(ctx5(t), agent, owner, owner, []string{"home"}, nil); err != nil {
 		t.Fatal(err)
 	}
 	if c.info("BUS", agent+"_ch_gb") != nil {
@@ -1057,18 +1057,18 @@ func TestAFailedRemovalIsRetriedByTheNextReconcile(t *testing.T) {
 		}
 	})
 	agent, owner := "agent-rm", "alice"
-	if err := c.mgr.Reconcile(ctx5(t), agent, owner, []string{"home", "ga"}, nil); err != nil {
+	if err := c.mgr.Reconcile(ctx5(t), agent, owner, owner, []string{"home", "ga"}, nil); err != nil {
 		t.Fatal(err)
 	}
 	fail.Store(true)
-	if err := c.mgr.Reconcile(ctx5(t), agent, owner, []string{"home"}, nil); err == nil {
+	if err := c.mgr.Reconcile(ctx5(t), agent, owner, owner, []string{"home"}, nil); err == nil {
 		t.Fatal("the failing removal did not fail the reconcile")
 	}
 	if c.info("BUS", agent+"_ch_ga") == nil {
 		t.Fatal("the consumer is gone although its removal failed")
 	}
 	fail.Store(false)
-	if err := c.mgr.Reconcile(ctx5(t), agent, owner, []string{"home"}, nil); err != nil {
+	if err := c.mgr.Reconcile(ctx5(t), agent, owner, owner, []string{"home"}, nil); err != nil {
 		t.Fatal(err)
 	}
 	if c.info("BUS", agent+"_ch_ga") != nil {

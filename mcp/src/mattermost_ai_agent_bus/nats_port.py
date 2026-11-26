@@ -1,7 +1,7 @@
 """A home that runs over NATS (RT-6.36, ADR-014 points 3 and 16).
 
 `NatsPort` wraps the Mattermost adapter (the BusClient) and a `natsbus.NatsBus`.
-For the channels of a home named in MM_NATS_HOMES the agents' posts, threads and
+For the channels of a home named in CB_NATS_HOMES the agents' posts, threads and
 reactions go over NATS; everything about people stays on Mattermost (their posts
 and reactions arrive over the Mattermost WebSocket unless the bridge signals the channel,
 see "People over NATS" below, trust, headers, pinned posts,
@@ -22,8 +22,8 @@ the id, and raises when none comes.
 
 What goes over NATS, in a NATS home's channel: every post, but the ask for a human
 (kind ask) and a post with files, which are for people and go to Mattermost. The
-bus's own props (`a2a`) travel as flat keys `<MM_PROPS_PREFIX>a2a_<key>`, the
-agent's own `<MM_PROPS_PREFIX>…` props as they are; the agent card and anything
+bus's own props (`a2a`) travel as flat keys `<CB_PROPS_PREFIX>a2a_<key>`, the
+agent's own `<CB_PROPS_PREFIX>…` props as they are; the agent card and anything
 else are not sent with a post. The card's harness, model, task, branch and open asks
 ride the agent's presence instead (`card_source`, RT-6.37), for the operator console;
 the open asks go as one record on `<presence>.ask.<home>.<name>` (`ask_source`) and each
@@ -42,7 +42,7 @@ sender); an unreaction removes the reaction of its own sender only.
 
 The bridge's copies (RT-6.36 step 4). The central bridge (services/bridge) mirrors every
 NATS post and reaction of the home into its Mattermost channel with one bot, which
-MM_BRIDGE_BOT names, or under each agent's own bot `<bot prefix><NATS agent name>`, the
+CB_MM_BRIDGE_BOT names, or under each agent's own bot `<bot prefix><NATS agent name>`, the
 prefix named by the bridge's signal for the home (`bridge_prefix`, RT-6.42 step 7). This
 session has those posts from NATS already, so in its NATS home it drops the copies from
 Mattermost: from the events (MergedEvents) and from the merged reads (channel_posts,
@@ -105,7 +105,7 @@ import contextlib
 import dataclasses
 import json
 import logging
-import os
+from pathlib import Path
 import secrets
 import time
 import weakref
@@ -116,7 +116,7 @@ from functools import partial
 from types import MappingProxyType
 from typing import TYPE_CHECKING, Any, Protocol
 
-from . import a2a, lease, natsbus, owners
+from . import a2a, config, lease, natsbus, owners
 from .events import ChatEvent, EventSource, EventStream, PostEvent, ReactionEvent
 from .ids import _ID, NATS_POST
 from .model import NotFound, Post, Reaction, Thread, UnreadChannel
@@ -139,7 +139,7 @@ _NOTE = "a2a_"  # after the props prefix: the bus's own note, flat
 _NONCE = "nats_nonce"  # after the props prefix: tells a post its own copy
 _ROOT = "nats_root"  # after the props prefix: the NATS post a Mattermost post answers
 _NATS_ID = "nats_id"  # after the props prefix: the NATS post the bridge's copy mirrors (RT-6.36 step 4)
-BRIDGE_TTL_SEC = 300.0  # how long "MM_BRIDGE_BOT is no bot account" holds before it is read again
+BRIDGE_TTL_SEC = 300.0  # how long "CB_MM_BRIDGE_BOT is no bot account" holds before it is read again
 COPY_READ_CAP = 1000  # Mattermost's most posts in one read after a time: a read this long may be cut
 COPY_SETTLE_SEC = 5.0  # a copy younger than this is not passed by the count (a replica may lag)
 PERSON = "hu:"  # the author id of a person over NATS: PERSON + anchor (RT-6.42)
@@ -174,6 +174,8 @@ class BusLike(Protocol):
     async def react(self, channel: str, ref: int, emoji: str) -> None: ...
 
     async def unreact(self, channel: str, ref: int, emoji: str) -> None: ...
+
+    def notice_teller(self, agent: str) -> str: ...
 
     def owner_of(self, agent: str) -> str: ...
 
@@ -296,6 +298,64 @@ def read_props(wire: Mapping[str, natsbus.Prop], prefix: str) -> dict[str, Any]:
     return out
 
 
+def _notice_file(uid: str) -> Path:
+    from .session_file import state_dir
+
+    return state_dir() / f"notice-{uid}.env"
+
+
+NOTICE_KEY_MAX = 64  # notices remembered as told, per server
+NOTICE_SAME_SEC = 30 * 60.0  # the block: the same kind, id and verdict is one DM
+
+
+def _notice_repeat(seen: dict[tuple[str, str, str], float], key: tuple[str, str, str], now: float,
+                   window: float = NOTICE_SAME_SEC) -> bool:
+    """Whether this kind, id and verdict was told within the window (then no DM)."""
+    at = seen.get(key)
+    return at is not None and now - at < window
+
+
+def _notice_read(uid: str) -> dict[str, float]:
+    """The notices this server told before a restart: "<kind>:<id>" -> iat."""
+    try:
+        text = _notice_file(uid).read_text(encoding="utf-8", errors="replace")
+    except OSError:
+        return {}
+    out: dict[str, float] = {}
+    for line in text.splitlines():
+        k, _, v = line.rpartition("=")
+        try:
+            out[k] = float(v)
+        except ValueError:
+            continue
+    return out
+
+
+def _notice_told(uid: str, key: str) -> float:
+    """The iat this server told for that kind and id (0 for none), never in the
+    future: a skewed value must not silence every later notice."""
+    return min(_notice_read(uid).get(key, 0.0), time.time())
+
+
+def _notice_mark(uid: str, key: str, iat: float) -> None:
+    """Remember that this kind and id was told, so a restarted server does not tell
+    it again. Per kind and id: one copy must not hide another."""
+    from .session_file import write_private
+
+    marks = _notice_read(uid)
+    marks[key] = min(iat, time.time())
+    if len(marks) > NOTICE_KEY_MAX:
+        for k in sorted(marks, key=marks.__getitem__)[: len(marks) - NOTICE_KEY_MAX]:
+            del marks[k]
+    try:
+        write_private(_notice_file(uid), "".join(f"{k}={int(v)}\n" for k, v in sorted(marks.items())))
+    except OSError as exc:
+        # The DM is out; a restart may repeat it, which the log says.
+        log.warning("login notice: the told mark was not written: %s", type(exc).__name__)
+
+
+
+
 class NatsPort:
     """The chat port of a session with a home over NATS (module docstring). Members
     not defined here are the Mattermost adapter's (`__getattr__`)."""
@@ -304,7 +364,7 @@ class NatsPort:
                  memory: int = DEFAULT_MEMORY, echo_wait: float = ECHO_WAIT_SEC,
                  bus_options: Mapping[str, Any] | None = None, bridge_bot: str = "") -> None:
         self.inner = inner
-        # MM_BRIDGE_BOT: the bot the bridge mirrors NATS with (RT-6.36 step 4); "" drops only the
+        # CB_MM_BRIDGE_BOT: the bot the bridge mirrors NATS with (RT-6.36 step 4); "" drops only the
         # copies under the agents' own bots (the bot prefix of the bridge's signal, _bot_prefix).
         self._bridge_bot = bridge_bot.strip().lstrip("@").lower()
         self._bridge_id: str | None = None  # its Mattermost id, read once (_bridge)
@@ -330,6 +390,7 @@ class NatsPort:
         self._dropped = 0  # events a full subscriber's queue lost
         self._capped = 0  # reactions dropped at MAX_REACTIONS
         self._names: AbstractSet[str] | None = None  # this session's trusted humans, read by prime (RT-6.38)
+        self._notice_recent: dict[tuple[str, str, str], float] = {}  # (kind, id, verdict) -> monotonic
         self._ambiguous: set[str] = set()  # link tags that fit more than one fresh name (RT-6.37)
         # People over NATS (RT-6.42)
         self._keys = _Keys()
@@ -357,7 +418,7 @@ class NatsPort:
             raise AttributeError(name)
         return getattr(self.inner, name)
 
-    # --- lifecycle ---------------------------------------------------------------
+# --- lifecycle ---------------------------------------------------------------
     @property
     def homes(self) -> tuple[str, ...]:
         return self._homes
@@ -395,7 +456,7 @@ class NatsPort:
                 if owner is None:
                     owner = await _owner_of(login)
                 bus = NatsBus(self._s, login, owner, self._on_event, on_fatal=self._on_fatal,
-                              on_person=self._on_person, **self._bus_options)
+                              on_person=self._on_person, on_notice=self._on_notice, **self._bus_options)
                 self._bus = bus
                 bus.on_person_gap = self._person_gap
                 bus.card_source = self._card
@@ -403,7 +464,7 @@ class NatsPort:
                 try:
                     bus.link_bot(await self._bot_id(), await self._bot_name())
                 except ValueError:
-                    # A bot id that is no Mattermost user id (a bad MM_BOT_USER_ID): the NATS
+                    # A bot id that is no Mattermost user id (a bad CB_MM_BOT_USER_ID): the NATS
                     # home still starts, only without a link between bot and NATS name.
                     log.warning("nats: the bot id is not a Mattermost user id: starting without a link")
                 await bus.start()
@@ -447,17 +508,77 @@ class NatsPort:
         inner: Any = self.inner
         if inner.session:
             return str(inner.session.user_id)
-        return os.environ.get("MM_BOT_USER_ID") or (await inner.get_me()).id
+        return config.env("CB_MM_BOT_USER_ID") or (await inner.get_me()).id
 
     async def _bot_name(self) -> str:
         """The bot's username, for the presence (the name the operator console shows,
-        ADR-015); MM_BOT_USERNAME, or '' when it cannot be read: the home starts all the same."""
+        ADR-015); CB_MM_BOT_USERNAME, or '' when it cannot be read: the home starts all the same."""
         inner: Any = self.inner
         try:
             return str((await inner.get_me()).username)
         except Exception as exc:  # noqa: BLE001 — a label, never a reason to stop
             log.info("nats: the bot's username was not read (%s)", type(exc).__name__)
-            return os.environ.get("MM_BOT_USERNAME", "")
+            return config.env("CB_MM_BOT_USERNAME")
+
+    async def _on_notice(self, notice: natsbus.Notice) -> None:
+        """A theft notice from the login service (RT-6.34): DM it to the responsible human.
+
+        Every live server of the owner reads the record, and exactly one tells - the named
+        agent's if it is live, else the owner's live agent with the smallest name - so the
+        owner hears it once; the DM names the agent the record names, else this bot. It is
+        the server's own post, counted as overhead (RT-6.9), never into a channel."""
+        from . import login_notice, stats
+        from .owners import responsible_human
+
+        if notice.verdict != "copied":
+            # A move is a report (the console and the log); only a copy is a DM.
+            log.info("login notice: a move on %s (%s), reported only", notice.kind, notice.network)
+            return
+        bus = self._bus
+        if bus is None:
+            return
+        teller = bus.notice_teller(notice.agent)
+        if teller != bus.name:
+            # One DM: the named agent's server, else the smallest live name (RT-6.34).
+            log.info("login notice: %s tells it", teller)
+            return
+        who = responsible_human()
+        try:
+            me = await self._bot_id()
+            key = f"{notice.kind}:{notice.sid}"
+            if notice.iat <= _notice_told(me, key):
+                # Told before a restart: the consumer replays the last record.
+                log.info("login notice: already told (iat %d)", int(notice.iat))
+                return
+            # A second copy of the same kind and id within the block is the same
+            # theft: one DM, not one per record.
+            seen = (notice.kind, notice.sid, notice.verdict)
+            now = time.monotonic()
+            if _notice_repeat(self._notice_recent, seen, now):
+                log.info("login notice: %s %s already told within %d s", notice.kind, notice.verdict,
+                         int(NOTICE_SAME_SEC))
+                return
+            if not who:
+                log.info("login notice: no responsible human to tell")
+                return
+            trusted = await self.trusted_humans()
+            uid = next((i for i, n in trusted.items() if n and n.lower() == who.lower()), None)
+            uid = uid or await self.human_id(who)
+            if not uid:
+                log.info("login notice: %s is not found in the chat", who)
+                return
+            agent = notice.agent or await self._bot_name() or "the agent"
+            text = login_notice.notice_text(agent, notice.kind)
+            stats.record("post", chars=len(text), w="other")
+            await self.post(text, channel_id=await self.direct_channel_with(uid))
+            _notice_mark(me, key, notice.iat)
+            self._notice_recent[seen] = now
+            while len(self._notice_recent) > NOTICE_KEY_MAX:
+                self._notice_recent.pop(next(iter(self._notice_recent)))
+            log.warning("login notice: told %s by DM (%s, %s)", who, notice.kind, notice.network)
+        except Exception as exc:  # noqa: BLE001 — the next notice tries again
+            log.warning("login notice: the DM to %s failed: %s", who, exc)
+
 
     async def _announce_membership(self, bus: BusLike) -> None:
         """Tell the bus to announce this session's membership of every channel it asked
@@ -565,7 +686,7 @@ class NatsPort:
     # --- the bridge's copies (RT-6.36 step 4) -----------------------------------------------------
     @property
     def bridge_bot(self) -> str:
-        """MM_BRIDGE_BOT, the bridge bot's username; "" when none is set."""
+        """CB_MM_BRIDGE_BOT, the bridge bot's username; "" when none is set."""
         return self._bridge_bot
 
     async def _bridge(self) -> str:
@@ -582,13 +703,13 @@ class NatsPort:
         try:
             found = await self.inner.bots_named({self._bridge_bot})
         except Exception as exc:  # noqa: BLE001 — nothing dropped meanwhile
-            log.warning("MM_BRIDGE_BOT %s could not be read (%s): its copies are kept for now",
+            log.warning("CB_MM_BRIDGE_BOT %s could not be read (%s): its copies are kept for now",
                         self._bridge_bot, type(exc).__name__)
             return ""
         user = found.get(self._bridge_bot)
         if user is None or not user.id:
             if self._bridge_id is None:  # once, not at every read again
-                log.warning("MM_BRIDGE_BOT %s is no bot account: nothing is dropped as the bridge's copy "
+                log.warning("CB_MM_BRIDGE_BOT %s is no bot account: nothing is dropped as the bridge's copy "
                             "(read again every %d s)", self._bridge_bot, BRIDGE_TTL_SEC)
             self._bridge_none_at = time.monotonic()
         self._bridge_id = user.id if user is not None else ""

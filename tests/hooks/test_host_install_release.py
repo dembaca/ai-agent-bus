@@ -186,7 +186,7 @@ def test_release_refuses_unsigned_lightweight_and_unpinned_tags(run, tmp_path, k
     set_version(origin, "90.0.2")
     sign(origin, "v90.0.2", keys["stranger"])
     r = install(run, tmp_path, host, "v90.0.2", pinned)
-    unchanged(r, host, before, names, "not pinned in MM_RELEASE_SIGNERS")
+    unchanged(r, host, before, names, "not pinned in CB_RELEASE_SIGNERS")
     assert fpr(keys["stranger"]) in r.stderr
 
 
@@ -333,7 +333,7 @@ def test_release_without_signers_installs_unchecked_with_a_warning(run, tmp_path
     dest = tmp_path / "host" / "current"
     r = install(run, tmp_path, dest, f"v{VERSION}", None)
     assert r.code == 0, r.stderr
-    assert "WARNING: MM_RELEASE_SIGNERS is not set" in r.stderr and "NOT checked" in r.stderr
+    assert "WARNING: CB_RELEASE_SIGNERS is not set" in r.stderr and "NOT checked" in r.stderr
     assert os.readlink(dest) == f"releases/{VERSION}"
     source = (dest / "SOURCE").read_text()
     assert source.startswith("SOURCE=release\nVERIFIED=no\n")

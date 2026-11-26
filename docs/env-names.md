@@ -6,11 +6,30 @@ Every environment variable this project defines gets the `CB_` prefix
 (choirbus). A variable that exists only because of Mattermost gets `CB_MM_`.
 The owner decided this on 2026-11-26 ([#169](https://github.com/dembaca/ai-agent-bus/issues/169)).
 
-**Not built yet.** This page is the mapping and the rules. The code still reads
-the old names. The renames come in one pull request per component and ship
-together as release 0.103.0. Until then the old names in the
+**Held to the code.** `scripts/doc-check.py` reads this page and the tree: failing
+CI is a name the code reads that the page does not list, and a mapping whose old
+name no code mentions (the registrar's kept names excepted).
+
+**Status.** This page is the mapping and the rules. The renames come in one
+pull request per component and ship together as release 0.103.0. A component
+reads the `CB_` names, with the old names as a fallback, once it has a line
+below; until then it reads the old names, and the old names in the
 [README configuration table](../README.md#configuration), the
-[arc42 docs](arc42) and the adapter docs stay right.
+[arc42 docs](arc42) and the adapter docs stay right for it.
+
+- Built: the login service and `authd` ([#175](https://github.com/dembaca/ai-agent-bus/pull/175)),
+  in `services/auth`, package `internal/envname`; the names of
+  [their table](#the-login-service-and-authd-44).
+- Built: the MCP server (`mcp/src/mattermost_ai_agent_bus/config.py`), the hooks,
+  the shell scripts (`bin/mm-agent-lib.sh`), the host installer and the `Needs:`
+  grammar ([#180](https://github.com/dembaca/ai-agent-bus/pull/180)).
+- Built: the central bridge ([#176](https://github.com/dembaca/ai-agent-bus/pull/176)),
+  in `services/bridge`, `internal/config/env.go` (the removal release's
+  refusal is the constant `oldNamesRemoved` there); the names of
+  [its table](#the-bridge-19).
+- Still to come: the console ([#178](https://github.com/dembaca/ai-agent-bus/pull/178)) and the
+  OpenCode and pi plugins (they already hand the server they start both
+  spellings of `CB_WORKSPACE` and `CB_CHANNEL_PUSH`).
 
 ## The rules
 
@@ -45,7 +64,11 @@ Each component reads its variables like this from 0.103.0 on:
    [After the fallbacks go](#after-the-fallbacks-go-refuse-never-ignore).
 
 A shell script that cannot log a warning (a hook that must stay quiet) writes
-it to its log file instead.
+it to its log file instead. Two cases log no warning, since no person set the
+old name there: a value the bus writes for itself (marked *internal* below),
+and every name inside a keyless sandbox, that is with `CB_BUS_MCP_ENDPOINT`
+or `MM_BUS_MCP_ENDPOINT` set: the host's session hook wrote the settings
+there, an older one under the old names only. Rule 3 holds in both.
 
 What counts as set:
 
@@ -58,11 +81,17 @@ What counts as set:
   `mm_release_signers`, its `${MM_RELEASE_SIGNERS+set}` test), and
   `MM_STATS_CHANNEL=""` switches the statistics off (`stats.py`,
   function `channel`).
-- **An unexpanded placeholder counts as unset.** A value that is exactly
-  `${NAME}` (a plugin manifest's placeholder that was not expanded) is
-  treated as unset, as `env()` in `mcp/src/mattermost_ai_agent_bus/config.py`
-  does today. Every fallback reader uses that one helper, or its twin in the
-  hooks.
+- **An unexpanded placeholder: unset in the MCP server and the hooks, a
+  refusal in the Go services.** A value that is exactly `${NAME}` is a
+  plugin manifest's placeholder that was not expanded. The MCP server and
+  the hooks start from a manifest, so there it counts as unset, as `env()` in
+  `mcp/src/mattermost_ai_agent_bus/config.py` does today; every fallback
+  reader there uses that one helper, or its twin in the hooks. The Go
+  services under `services/` have no plugin manifest, so there such a value
+  can only be a deployment mistake: read as unset, it would silently drop
+  the setting, a pinned CA file for one, and the system roots would apply.
+  They refuse the start with an error that names the variable, never its
+  value.
 - **Three names for one setting.** Two settings have an alias today:
   `MATTERMOST_URL` for `MM_CHAT_URL` and `MATTERMOST_TOKEN` for
   `MM_BOT_TOKEN`. In 0.103.0 each of them has three names
@@ -121,28 +150,34 @@ the old names leave the allow and pass lists, but stay in the deny and
 unset lists for as long as the refusal above lasts: a deny entry too many
 costs nothing.
 
-The lists today (line numbers at the time of writing):
+A list that is only read through the reading rule (`config.env` in the MCP
+server) is the exception: the reading rule finds the old name, so the list
+names the new name only. Those are `TRUSTED_VARS`, `SANDBOX_MARKERS` and
+`WORKSPACE_VARS` below.
+
+The lists today, by the symbol or line that holds them:
 
 | List | Where | What it does |
 |---|---|---|
-| `_HOST_ENV` | `mcp/src/mattermost_ai_agent_bus/hosted.py:123` | pattern of the names preStart may hand the host process; must match `CB_` names too |
-| `_HOST_ENV_DENY` | `hosted.py:129-132` | never handed to the host: the registration secret and its gopass path, the session file, the bot name, `MM_BUS_KEY`, `MM_BUS_MCP_ENDPOINT`, `MM_BUS_ENDPOINT`, `MM_BUS_UNAVAILABLE`; gets `CB_AGENT_SESSION_FILE`, `CB_BUS_KEY`, `CB_BUS_MCP_ENDPOINT`, `CB_BUS_ENDPOINT`, `CB_BUS_UNAVAILABLE` |
-| `_TOKEN_ENV` | `hosted.py:133` | removed from the host process's environment once read; gets `CB_MM_BOT_TOKEN` |
-| `NAMING`, `_NAMING_PATHS`, `_IDENTITY` | `hosted.py:109-117` | what a relay may tell the host, and which of it says whose relay it is |
-| the start line's filter | `adapters/corral/10-mm-session-start.sh:628-632` | the hook's own copy of `_HOST_ENV` and of the deny list (`jq` `test` and `del`), including `MATTERMOST_TOKEN` and `MM_BUS_KEPT_SID`; gets the same new names and `CB_MM_BOT_TOKEN`, `CB_BUS_KEPT_SID` |
-| `ENV_JSON` | `10-mm-session-start.sh:562-597` | what the sandbox gets: written under both names (see below) |
-| `unset MM_BOT_TOKEN MATTERMOST_TOKEN` | `10-mm-session-start.sh:21`, `adapters/corral/90-mm-session-stop.sh:17` | no token inherited by the hooks; gets `CB_MM_BOT_TOKEN` |
-| other `unset` lines | `10-mm-session-start.sh:337` (`MM_BUS_HOOK_DISPATCH`) | gets `CB_BUS_HOOK_DISPATCH` |
-| `self_update` pass list | `90-mm-session-stop.sh:110-114` | what the update under `env -i` gets: `MM_BUS_HOST_DIR`, `MM_RELEASE_URL`, `MM_RELEASE_SIGNERS`, `MM_REGISTRAR_KEYS`, `MM_REGISTER_URL`, `MM_CHAT_URL`; without the new names a host that set only `CB_RELEASE_SIGNERS` would update without its signers |
-| `mm_registrar_release` pass list | `bin/mm-agent-lib.sh:1219-1222` | `MM_REGISTRAR_KEYS`, `MM_REGISTER_URL`, `MM_CHAT_URL` for the release record check; gets `CB_MM_CHAT_URL` |
-| `CHILD_ENV` | `mcp/src/mattermost_ai_agent_bus/release.py:61-63` | the same for the server's update check; gets `CB_RELEASE_URL`, `CB_RELEASE_SIGNERS`, `CB_BUS_HOST_DIR`, `CB_MM_CHAT_URL` |
-| `mm_load_env_file` | `bin/mm-agent-lib.sh:416` | the session file keys a script takes into its environment |
-| the kept bot's keys | `10-mm-session-start.sh:378-383` | the session file keys a continued session takes over |
-| `TRUSTED_VARS` | `mcp/src/mattermost_ai_agent_bus/owners.py:64` | the trust settings |
-| `SANDBOX_MARKERS` | `mcp/src/mattermost_ai_agent_bus/sandbox.py:15` | the names that say "inside a sandbox" |
-| `WORKSPACE_VARS` | `mcp/src/mattermost_ai_agent_bus/session_file.py:183` | where the workspace comes from |
-| the test rig's filter | `testrig/src/bus_testrig/bus.py:99`, `:150` | drops every inherited `MM_`/`MATTERMOST_` name; gets `CB_` |
-| the plugins' server environment | `opencode/plugin/mattermost-agent-bus.ts:358`, `pi/mattermost-agent-bus.ts:605-606` | what the plugins hand the MCP server they start |
+| `_HOST_ENV` | `mcp/src/mattermost_ai_agent_bus/hosted.py` | pattern of the names preStart may hand the host process; matches `CB_` names too |
+| `_HOST_ENV_DENY` | `hosted.py` | never handed to the host: the registration secret and its gopass path, the session file, the bot name, `MM_BUS_KEY`, `MM_BUS_MCP_ENDPOINT`, `MM_BUS_ENDPOINT`, `MM_BUS_UNAVAILABLE`, and `CB_AGENT_SESSION_FILE`, `CB_BUS_KEY`, `CB_BUS_MCP_ENDPOINT`, `CB_BUS_ENDPOINT`, `CB_BUS_UNAVAILABLE` |
+| `_TOKEN_ENV` | `hosted.py` | removed from the host process's environment once read: `CB_MM_BOT_TOKEN`, `MM_BOT_TOKEN`, `MATTERMOST_TOKEN` |
+| `NAMING`, `_NAMING_PATHS`, `_IDENTITY` | `hosted.py` | what a relay may tell the host, and which of it says whose relay it is |
+| the start line's filter | `adapters/corral/10-mm-session-start.sh`, the `jq` `test` and `del` that build the host's start line | the hook's own copy of `_HOST_ENV` and of the deny list, including `MATTERMOST_TOKEN`, `MM_BUS_KEPT_SID`, `CB_MM_BOT_TOKEN` and `CB_BUS_KEPT_SID` |
+| `ENV_JSON` | `10-mm-session-start.sh` | what the sandbox gets: written under both names (see below), the chat URL also as `MATTERMOST_URL` |
+| `unset CB_MM_BOT_TOKEN MM_BOT_TOKEN MATTERMOST_TOKEN` | the top of `10-mm-session-start.sh` and of `adapters/corral/90-mm-session-stop.sh` | no token inherited by the hooks |
+| other `unset` lines | `10-mm-session-start.sh` (`CB_BUS_HOOK_DISPATCH`, `MM_BUS_HOOK_DISPATCH`) | the dispatcher's mark goes once read |
+| `self_update` pass list | `90-mm-session-stop.sh`, function `self_update` | what the update under `env -i` gets: both spellings of `CB_BUS_HOST_DIR`, `CB_RELEASE_URL`, `CB_RELEASE_SIGNERS`, `CB_MM_CHAT_URL`, and `MM_REGISTRAR_KEYS`, `MM_REGISTER_URL`; without the new names a host that set only `CB_RELEASE_SIGNERS` would update without its signers |
+| `mm_registrar_release` pass list | `bin/mm-agent-lib.sh`, function `mm_registrar_release` | `MM_REGISTRAR_KEYS`, `MM_REGISTER_URL`, `CB_MM_CHAT_URL`, `MM_CHAT_URL` for the release record check |
+| `CHILD_ENV` | `mcp/src/mattermost_ai_agent_bus/release.py` | the same for the server's update check: both spellings of `CB_RELEASE_URL`, `CB_RELEASE_SIGNERS`, `CB_BUS_HOST_DIR`, `CB_MM_CHAT_URL` |
+| `CB_ENV_NAMES` | `bin/mm-agent-lib.sh` | every setting the scripts and hooks read, each new name with its old ones; a test holds it to `RENAMED` in `config.py` |
+| `mm_load_env_file` | `bin/mm-agent-lib.sh` | the session file keys a script takes into its environment |
+| the kept bot's keys | `10-mm-session-start.sh`, where it takes over a kept session file (`mm_kv "$claim" …`) | the session file keys a continued session takes over |
+| `TRUSTED_VARS` | `mcp/src/mattermost_ai_agent_bus/owners.py` | the trust settings; read through the reading rule, new names only |
+| `SANDBOX_MARKERS` | `mcp/src/mattermost_ai_agent_bus/sandbox.py` | the names that say "inside a sandbox"; read through the reading rule, new names only |
+| `WORKSPACE_VARS` | `mcp/src/mattermost_ai_agent_bus/session_file.py` | where the workspace comes from; read through the reading rule, new names only |
+| the test rig's filter | `testrig/src/bus_testrig/bus.py`, function `_clean_env` | drops every inherited `CB_`, `MM_` and `MATTERMOST_` name |
+| the plugins' server environment | `opencode/plugin/mattermost-agent-bus.ts`, function `addMcp`; `pi/mattermost-agent-bus.ts`, function `mcpConfig` | what the plugins hand the MCP server they start: both spellings of `CB_WORKSPACE` and `CB_CHANNEL_PUSH` |
 
 The registrar's names (`MM_REG_SECRET`, `MM_REG_SECRET_GOPASS`,
 `MM_REG_BOT_NAME` and the others of
@@ -155,7 +190,12 @@ Values the bus sets for its own children or writes into its own files
 (marked *internal* in the tables, and the keys in
 [the session files](#keys-in-the-session-files-9)) are written under **both**
 names in 0.103.0, so a reader of the old version still finds them, and every
-reader accepts either name, the new one first. A host process, a relay, a
+reader accepts either name. In the environment the new name comes first
+(the reading rule). In a file the bus wrote, the last line of either
+spelling wins and keys that differ never refuse: a downgraded writer
+appends its old key after the new one, and the later line is the true one
+(`config.value` in the MCP server, `mm_kv` and `mm_load_env_file` in
+`bin/mm-agent-lib.sh`; `session_file.parse` keeps each key at its last line). A host process, a relay, a
 hook and a sweep of different versions meet during an update, and a kept
 session file lives up to a day. This holds for:
 
@@ -193,8 +233,9 @@ The tables below map 158 old names (each name counted once) to new names;
 10 more keep their names and go with the registrar. The check for this page
 found:
 
-- No new name is in use in the repository today: there is no `CB_` name
-  anywhere yet.
+- No new name was in use in the repository before the rename: no `CB_`
+  name existed. The built components' new names are the ones in these
+  tables.
 - No two old names map to one new name, with two deliberate exceptions.
   `MATTERMOST_URL` is today an alias of `MM_CHAT_URL`, and `MATTERMOST_TOKEN`
   an alias of `MM_BOT_TOKEN`. Each pair is one setting already, so each maps
@@ -339,18 +380,24 @@ names.
 These names look like settings but are globals inside the scripts: function
 results, file names, the release check's state and the emoji constants of
 `bin/mm-agent-symbols.sh`. Nobody sets them from outside. The hooks pull
-request renames them by the same rule, without a fallback:
+request renamed them by the same rule, without a fallback (each was the same
+name with `MM_` for `CB_`):
 
-- to `CB_MM_…`: `MM_API_BODY`, `MM_API_STATUS`;
-- to `CB_…`: `MM_ANSWER`, `MM_AUTO_FILE`, `MM_AUTO_LOG`, `MM_BUS_BODY`,
-  `MM_BUS_CHANNEL`, `MM_BUS_FROM`, `MM_BUS_PROJECT`, `MM_BUS_STATUS`,
-  `MM_CREDS_FROM_FD`, `MM_CROWN`, `MM_CROWN_UNTIL`, `MM_HOLD_FILE`,
-  `MM_HOOK_INPUT`, `MM_INBOX`, `MM_LISTENING`, `MM_NEEDS_RE`,
-  `MM_REL_ALLOWED`, `MM_REL_COMMIT`, `MM_REL_ENFORCE`, `MM_REL_ERR`,
-  `MM_REL_FROM`, `MM_REL_FROM_TEXT`, `MM_REL_KEYS`, `MM_REL_PARSED`,
-  `MM_REL_PINNED`, `MM_REL_REPLACE`, `MM_REL_SIGNER`, `MM_REL_URL`,
-  `MM_SIGNERS_FILE`, `MM_SIGNERS_MAX`, `MM_SIGNOFF`, `MM_UPDATE`,
-  `MM_WITHDRAWN_FILE`;
+- under `CB_MM_…`: `CB_MM_API_BODY`, `CB_MM_API_STATUS`;
+- under `CB_…`: `CB_ANSWER`, `CB_AUTO_FILE`, `CB_AUTO_LOG`, `CB_BUS_BODY`,
+  `CB_BUS_CHANNEL`, `CB_BUS_FROM`, `CB_BUS_PROJECT`, `CB_BUS_STATUS`,
+  `CB_CREDS_FROM_FD`, `CB_CROWN`, `CB_CROWN_UNTIL`, `CB_HOLD_FILE`,
+  `CB_HOOK_INPUT`, `CB_INBOX`, `CB_LISTENING`, `CB_NEEDS_RE`,
+  `CB_REL_ALLOWED`, `CB_REL_COMMIT`, `CB_REL_ENFORCE`, `CB_REL_ERR`,
+  `CB_REL_FROM`, `CB_REL_FROM_TEXT`, `CB_REL_KEYS`, `CB_REL_PARSED`,
+  `CB_REL_PINNED`, `CB_REL_REPLACE`, `CB_REL_SIGNER`, `CB_REL_URL`,
+  `CB_SIGNERS_FILE`, `CB_SIGNERS_MAX`, `CB_SIGNOFF`, `CB_UPDATE`,
+  `CB_WITHDRAWN_FILE`;
+- kept: `BUS_KEY` (a shell local in the session-start hook, the bus's key passed
+  from fd; it reaches the server as `CB_BUS_KEY`);
+- new with the rename, the reading rule's own state in `bin/mm-agent-lib.sh`:
+  `CB_ENV_DEFER`, `CB_ENV_ERR`, `CB_ENV_INTERNAL`, `CB_ENV_NAMES`,
+  `CB_ENV_QUIET`, `CB_ENV_WARNED`;
 - not renamed, they go with the registrar: `MM_UNREG_HTTP`,
   `MM_UNREG_TOKEN_HTTP`, `MM_UNREG_WHY` (unregistering a bot) and
   `MM_RR_KEYS`, `MM_RR_KID`, `MM_RR_STATUS`, `MM_RR_VERSION`, `MM_RR_WHY`
@@ -360,6 +407,9 @@ request renames them by the same rule, without a fallback:
 
 All in `services/auth/`. Its binary `authd` runs the service; its directory
 commands read the two `AUTHD_` names and two of the service's names (noted).
+Besides the files a row lists, every name here appears in the service's
+rename table `internal/envname/envname.go`, which maps each new name to its
+old one.
 
 | Old name | New name | Mattermost | Where it appears | Note |
 |---|---|---|---|---|
@@ -444,6 +494,10 @@ says whether the setting itself is about Mattermost.
 `BRIDGE_BOT_PREFIX` and `BRIDGE_HIDE_BOT_DM` (#166) are about Mattermost but
 have no `MM` in their names; the rename gives them one, as the rule says:
 `CB_BRIDGE_MM_BOT_PREFIX` and `CB_BRIDGE_MM_HIDE_BOT_DM`.
+
+The bridge applies the placeholder rule of the Go services: a value that is
+exactly `${NAME}` refuses the start, naming the variable, in the bridge as
+in the login service; the MCP server's `env()` treats it as unset.
 
 ### The console (17)
 
@@ -539,33 +593,62 @@ this rename. Until then `MM_REGISTRAR_KEYS` keeps working under its name.
 
 ### Excluded names
 
-Not renamed, because they are not our environment variables:
+Not renamed, because they are not our environment variables. Each name with
+its reason; `scripts/doc-check.py` reads this table as the guard's exclusion
+list, so a name here is one the guard accepts in the code without a mapping.
 
-- **Other products' variables** we read: `HOME`, `PATH`, `TMPDIR`, `TZ`,
-  `XDG_STATE_HOME`, `DISPLAY`, `WAYLAND_DISPLAY`, `SSL_CERT_FILE`,
-  `SSL_CERT_DIR`, `HTTPS_PROXY`, `NO_PROXY`, `CLAUDECODE`,
-  `CLAUDE_CODE_SESSION_ID`, `CLAUDE_PLUGIN_ROOT`, `CLAUDE_PROJECT_DIR`,
-  `CLAUDE_SESSION_ID`, `CORRAL_AGENT`, `CORRAL_AGENT_EXIT`, `CORRAL_SANDBOX`,
-  `CORRAL_SESSION_ID`, `CORRAL_WORKDIR`, `OPENCODE_SESSION_ID`,
-  `GITHUB_ACTIONS`, `GITHUB_ENV`.
-- **Constants and names of things, not variables:** `BUS_BRIDGE`,
-  `BUS_BRIDGE_SEEN`, `BUS_DIRECTORY` (NATS bucket names, which also contain
-  `BRIDGE_SEEN`), `BRIDGE_KEYS` (a Python constant `_BRIDGE_KEYS`),
-  `BRIDGE_TTL_SEC` (a constant in `nats_port.py`), `BRIDGE_USER_PUBLIC_NKEY`
-  (a placeholder in `nats-server.example.conf`), `CONSOLE_FAMILIES` and
-  `CONSOLE_NATS` (test constants), and the other `AGENT_*`, `BUS_*`,
-  `NATS_*`, `STATS_*` constants in the code.
-- **Value of a setting:** the props prefix itself (`x_`), the default of
-  `MM_PROPS_PREFIX`. Changing the default is not part of this rename.
-- **Name stems in patterns and comments:** `MM_API`, `MM_BUS_HOST`,
-  `MM_KEPT`, `MM_REL`, `MM_RR` (each the start of names listed above).
-- **Test placeholders:** `MM_A`, `MM_B`, `MM_BAR`, `MM_FOO`, `MM_X`,
-  `MM_OLD`, `MM_OTHER`, `MM_ID`.
-- **`MM_BOT_NAME`:** only in `tests/hooks/test_sweep.py`, as the key of an
-  old session file format; no code reads it.
-- **Script locals** in upper case (`STATE_DIR`, `ROOT`, `LISTEN_UNTIL` and
-  so on): set and read inside one script.
+| Name | Why it is not renamed |
+|---|---|
+| `HOME` | another product’s variable we read |
+| `PATH` | another product’s variable we read |
+| `TMPDIR` | another product’s variable we read |
+| `TZ` | another product’s variable we read |
+| `XDG_STATE_HOME` | another product’s variable we read |
+| `DISPLAY` | another product’s variable we read |
+| `WAYLAND_DISPLAY` | another product’s variable we read |
+| `SSL_CERT_FILE` | another product’s variable we read |
+| `SSL_CERT_DIR` | another product’s variable we read |
+| `HTTPS_PROXY` | another product’s variable we read |
+| `NO_PROXY` | another product’s variable we read |
+| `CLAUDECODE` | another product’s variable we read |
+| `CLAUDE_CODE_SESSION_ID` | another product’s variable we read |
+| `CLAUDE_PLUGIN_ROOT` | another product’s variable we read |
+| `CLAUDE_PROJECT_DIR` | another product’s variable we read |
+| `CLAUDE_SESSION_ID` | another product’s variable we read |
+| `CORRAL_AGENT` | another product’s variable we read |
+| `CORRAL_AGENT_EXIT` | another product’s variable we read |
+| `CORRAL_SANDBOX` | another product’s variable we read |
+| `CORRAL_SESSION_ID` | another product’s variable we read |
+| `CORRAL_WORKDIR` | another product’s variable we read |
+| `OPENCODE_SESSION_ID` | another product’s variable we read |
+| `GITHUB_ACTIONS` | another product’s variable we read |
+| `GITHUB_ENV` | another product’s variable we read |
+| `BUS_BRIDGE` | a NATS bucket name, a constant |
+| `BUS_BRIDGE_SEEN` | a NATS bucket name, a constant |
+| `BUS_DIRECTORY` | a NATS bucket name, a constant |
+| `BRIDGE_KEYS` | the Python constant `_BRIDGE_KEYS` |
+| `BRIDGE_TTL_SEC` | a constant in `nats_port.py` |
+| `BRIDGE_USER_PUBLIC_NKEY` | a placeholder in `nats-server.example.conf` |
+| `CONSOLE_FAMILIES` | a test constant |
+| `CONSOLE_NATS` | a test constant |
+| `MM_A` | a test placeholder |
+| `MM_B` | a test placeholder |
+| `MM_BAR` | a test placeholder |
+| `MM_FOO` | a test placeholder |
+| `MM_X` | a test placeholder |
+| `MM_OLD` | a test placeholder |
+| `MM_OTHER` | a test placeholder |
+| `MM_ID` | a test placeholder |
+| `MM_BOT_NAME` | only in `tests/hooks/test_sweep.py`, the key of an old session file format; no code reads it |
+| `MM_API` | a name stem in patterns and comments (`MM_API_BODY` and the like) |
+| `MM_BUS_HOST` | a name stem in patterns and comments |
+| `MM_KEPT` | a name stem in patterns and comments |
+| `MM_REL` | a name stem in patterns and comments |
+| `MM_RR` | a name stem in patterns and comments |
 
+Script locals in upper case (`STATE_DIR`, `ROOT`, `LISTEN_UNTIL` and so on) are
+set and read inside one script; they are covered by
+[the shell variables that are not environment](#shell-variables-that-are-not-environment).
 ## The `Needs:` rule
 
 A CHANGELOG entry may say what its release needs first, in a `Needs:` line.
@@ -597,8 +680,8 @@ for example `Needs: host copy at 0.103.0 or newer, new names set.` The
 `CB_` names themselves go into the CHANGELOG entry's text, which every
 version shows.
 
-This pull request changes none of these files. The first component pull
-request, the MCP server and hooks, changes all four together.
+The pull request of the MCP server and the hooks changed all four together:
+the grammar takes `CB_*` and `MM_*` names.
 
 ## Other places that change with the rename
 
@@ -629,4 +712,6 @@ Each component's pull request also updates:
   under `### Breaking`, each with a `Needs:` line as above (no `CB_` names
   in either).
 - **doc-check:** a rule that refuses a new environment variable without the
-  `CB_` prefix, as the issue proposes.
+  `CB_` prefix, as the issue proposes: not built yet. The check that every
+  name the code reads is on this page, and every old name it maps is still in
+  the code, is built (`scripts/doc-check.py`, [#177](https://github.com/dembaca/ai-agent-bus/pull/177)).

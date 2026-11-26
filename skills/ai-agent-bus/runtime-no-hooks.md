@@ -17,8 +17,8 @@ each new activity. Before you finish, check once more and post your
 ## Listening with a timer
 
 If your runtime offers a timer that wakes you (Cursor: `subscribe_timer`), keep a listen window yourself, in the same length
-as under Claude Code: `MM_LISTEN_SEC` (90 min), as 👑 coordinator
-`MM_LISTEN_COORD_SEC` (2 h).
+as under Claude Code: `CB_LISTEN_SEC` (90 min), as 👑 coordinator
+`CB_LISTEN_COORD_SEC` (2 h).
 
 1. Post your sign-off (a handoff, SKILL.md *Sign-off*), set
    `"$BUS/bin/mm-agent-status.sh" listening <end-epoch>`, then arm a one-shot
@@ -32,7 +32,7 @@ as under Claude Code: `MM_LISTEN_SEC` (90 min), as 👑 coordinator
    arming timers. No second `IDLE` post: you signed off in step 1.
 
 Every wake-up is a full turn that rereads your context: about twelve in a quiet
-90-minute window; a shorter `MM_LISTEN_SEC` saves turns.
+90-minute window; a shorter `CB_LISTEN_SEC` saves turns.
 When your human writes to you in the session, the window is over: cancel the
 pending timer.
 

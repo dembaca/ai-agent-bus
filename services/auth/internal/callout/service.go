@@ -24,6 +24,7 @@ import (
 	"github.com/nats-io/nkeys"
 
 	"github.com/dembaca/ai-agent-bus/services/auth/internal/directory"
+	"github.com/dembaca/ai-agent-bus/services/auth/internal/theft"
 	"github.com/dembaca/ai-agent-bus/services/auth/internal/token"
 )
 
@@ -114,7 +115,7 @@ type Hello struct {
 // look whole. It also removes the consumers of channels no longer in the
 // credential.
 type Consumers interface {
-	Reconcile(ctx context.Context, agent, owner string, channels []string, since map[string]uint64) error
+	Reconcile(ctx context.Context, agent, owner, anchor string, channels []string, since map[string]uint64) error
 }
 
 // Reasons a connection is refused, besides those of the token check. The
@@ -140,13 +141,16 @@ type Service struct {
 	subLocks map[string]*subLock // one lock per identity while its account record is written
 
 	cmu        sync.RWMutex
-	consumers  Consumers   // nil: none are made
-	anchors    Anchors     // nil: the anchor is the owner's name, as before ADR-016
-	attester   Attester    // nil: no attestation is published
-	trust      Trust       // nil: a trusted name is its own anchor
-	trustIndex TrustIndex  // nil: no trust index is written (RT-6.43 step 3)
-	watcher    Watcher     // nil: no theft detection (#154 step 3)
-	persons    personHooks // the console's path (person.go); unset: none issued
+	consumers  Consumers            // nil: none are made
+	anchors    Anchors              // nil: the anchor is the owner's name, as before ADR-016
+	attester   Attester             // nil: no attestation is published
+	trust      Trust                // nil: a trusted name is its own anchor
+	trustIndex TrustIndex           // nil: no trust index is written (RT-6.43 step 3)
+	watcher    Watcher              // nil: no theft detection (#154 step 3)
+	noticer    Noticer              // nil: no owner's notice is published (#154 step 3)
+	nmu        sync.Mutex           // guards notices
+	notices    map[string]time.Time // notice key -> when it was published
+	persons    personHooks          // the console's path (person.go); unset: none issued
 }
 
 // SetAnchors sets where anchors come from. nil (the default) takes the
@@ -347,32 +351,38 @@ func (s *Service) authorize(ctx context.Context, req *jwt.AuthorizationRequestCl
 	if err != nil {
 		return "", who, err
 	}
-	// A session alternating between networks is a copy: refused (#154 step 3);
-	// a host key doing so is only reported.
-	if err := s.watchTheft(host, id.SID, req.ClientInformation.Host); err != nil {
-		return "", append(who, "owner", id.Owner, "sub", id.Subject, "session", id.SID), err
-	}
 	// The brake holds names (the owner's username), before anything is written.
 	if err := s.brake.Check(id.Owner); err != nil {
 		return "", append(who, "owner", id.Owner, "sub", id.Subject), err
 	}
 	anchor := id.Owner
-	if a := s.anchorHook(); a != nil {
-		if anchor, err = a.Anchor(ctx, id.Subject, id.Owner); err != nil {
+	ah := s.anchorHook()
+	if ah != nil {
+		if anchor, err = ah.Anchor(ctx, id.Subject, id.Owner); err != nil {
 			return "", append(who, "owner", id.Owner, "sub", id.Subject),
 				fmt.Errorf("%w: anchor: %v", token.ErrDirectory, err)
-		}
-		if ai, ok := a.(AccountIndex); ok && id.ChatOpenID {
-			if err := ai.Account(ctx, id.Subject, id.Owner); err != nil {
-				return "", append(who, "owner", id.Owner, "sub", id.Subject),
-					fmt.Errorf("%w: account index: %v", token.ErrDirectory, err)
-			}
 		}
 	}
 	agent := s.cfg.NamePrefix + name(anchor, host, hello.Session)
 	who = append(who, "owner", id.Owner, "sub", id.Subject, "jti", id.ID, "agent", agent)
 	if anchor != id.Owner {
 		who = append(who, "anchor", anchor)
+	}
+	// The theft check needs the anchor (the notice's subject) and the agent
+	// (its name): a copied session is refused, a copied host key reported, both
+	// noticed for the owner (#154 step 3).
+	w := s.watchTheft(host, id.SID, req.ClientInformation.Host)
+	s.publishNotices(ctx, w, anchor, agent, host, id.SID, now)
+	if w.session == theft.Copied {
+		return "", append(who, "session", id.SID), ErrCopiedUse
+	}
+	// Only a credential that is issued writes the chat account's record
+	// (RT-6.42): a refused one leaves the directory as it is.
+	if ai, ok := ah.(AccountIndex); ok && id.ChatOpenID {
+		if err := ai.Account(ctx, id.Subject, id.Owner); err != nil {
+			return "", append(who, "owner", id.Owner, "sub", id.Subject),
+				fmt.Errorf("%w: account index: %v", token.ErrDirectory, err)
+		}
 	}
 	channels, err := s.grant(ctx, id.Owner, id.Subject, hello)
 	if err != nil {
@@ -403,7 +413,7 @@ func (s *Service) authorize(ctx context.Context, req *jwt.AuthorizationRequestCl
 		return "", who, err
 	}
 	if c := s.consumerHook(); c != nil {
-		if err := c.Reconcile(ctx, agent, id.Owner, channels, hello.Since); err != nil {
+		if err := c.Reconcile(ctx, agent, id.Owner, anchor, channels, hello.Since); err != nil {
 			return "", who, fmt.Errorf("consumers could not be made: %w", err)
 		}
 	}

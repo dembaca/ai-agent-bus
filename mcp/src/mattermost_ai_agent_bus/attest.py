@@ -45,6 +45,7 @@ from cryptography.exceptions import InvalidSignature
 from cryptography.hazmat.primitives.asymmetric.ed25519 import Ed25519PublicKey
 
 from . import a2a
+from . import config
 
 if TYPE_CHECKING:
     from .port import ChatPort
@@ -84,8 +85,6 @@ SKEW_SEC = 60
 # Longer is no attestation (the host process takes values up to 8192, hosted.py).
 MAX_LEN = 8192
 _SEGMENT = re.compile(r"[A-Za-z0-9_-]+")
-# A plugin manifest's unexpanded ${VAR} is no value (config.env).
-_PLACEHOLDER = re.compile(r"^\$\{[A-Za-z_][A-Za-z0-9_]*\}$")
 _HANDLE = re.compile(r"[A-Za-z0-9._-]{1,64}")
 _ID = re.compile(r"[a-z0-9]{26}")  # a Mattermost id
 
@@ -563,14 +562,13 @@ def own_config(environ: Mapping[str, str] | None = None) -> tuple[str, list[str]
     env = os.environ if environ is None else environ
 
     def get(name: str) -> str:
-        value = env.get(name, "")
-        return "" if _PLACEHOLDER.match(value) else value
+        return config.env(name, environ=env)
 
     trusted = [n.strip().lstrip("@") for n in
-               (get("MM_TRUSTED_HUMANS") or get("MM_OWNER")).split(",") if n.strip()]
-    responsible = get("MM_RESPONSIBLE_HUMAN").strip().lstrip("@") or (
+               (get("CB_TRUSTED_HUMANS") or get("CB_OWNER")).split(",") if n.strip()]
+    responsible = get("CB_RESPONSIBLE_HUMAN").strip().lstrip("@") or (
         trusted[0] if trusted else "")
-    kind = "autonomous" if get("MM_AGENT_KIND") == "autonomous" else "session"
+    kind = "autonomous" if get("CB_AGENT_KIND") == "autonomous" else "session"
     return responsible, trusted, kind
 
 
@@ -590,7 +588,7 @@ def _compare(bot: str, claim: Claim, environ: Mapping[str, str] | None) -> list[
         out.append(f"the attestation of @{bot} names {'@' + claim.responsible if claim.responsible else 'no one'} "
                    f"as responsible, this session {'@' + responsible if responsible else 'no one'}: "
                    f"other agents judge @{bot} by the attestation (ADR-001); this session keeps "
-                   f"MM_RESPONSIBLE_HUMAN")
+                   f"CB_RESPONSIBLE_HUMAN")
     mine = {n.lower() for n in trusted}
     extra = sorted(set(claim.trusted) - mine)
     missing = [n for n in trusted if n.lower() not in claim.trusted]

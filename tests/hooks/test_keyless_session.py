@@ -252,7 +252,7 @@ def test_fail_closed_when_the_host_process_cannot_start(mm, run, tmp_path):
             **HOST)
     assert r.code == 0, r.stderr
     out = json.loads(r.stdout)
-    assert set(out["env"]) == {"MM_BUS_UNAVAILABLE"}
+    assert set(out["env"]) == {"CB_BUS_UNAVAILABLE", "MM_BUS_UNAVAILABLE"}
     assert TOKEN not in r.stdout and "MM_BUS_KEY" not in r.stdout
     assert "did not start on the host" in out["env"]["MM_BUS_UNAVAILABLE"]
     assert "bus is off" in out["agentNotes"][0] and "no bus" in out["status"][0]
@@ -278,7 +278,7 @@ def test_fail_closed_without_a_python_environment(mm, run, tmp_path):
     tree = _tree(tmp_path, None)
     r = run(str(tree / START), CORRAL_SESSION_ID="sess-novenv", **HOST)
     out = json.loads(r.stdout)
-    assert set(out["env"]) == {"MM_BUS_UNAVAILABLE"} and TOKEN not in r.stdout
+    assert set(out["env"]) == {"CB_BUS_UNAVAILABLE", "MM_BUS_UNAVAILABLE"} and TOKEN not in r.stdout
     assert "mm-agent-host-install.sh" in out["env"]["MM_BUS_UNAVAILABLE"]
     assert not any(p == "/register/v1/agents" for _, p, _ in mm.writes)
 
@@ -381,7 +381,7 @@ def test_prestart_dispatches_to_current_and_fails_closed_without_a_release(mm, r
         (host / "current").symlink_to(bad)
         r = run(start, CORRAL_SESSION_ID="sess-d", **HOST)
         assert r.code == 0, r.stderr
-        assert set(json.loads(r.stdout)["env"]) == {"MM_BUS_UNAVAILABLE"}, bad
+        assert set(json.loads(r.stdout)["env"]) == {"CB_BUS_UNAVAILABLE", "MM_BUS_UNAVAILABLE"}, bad
     assert marker.read_text().count("\n") == 1
 
 
@@ -642,7 +642,7 @@ def test_postend_keeps_the_bot_and_continue_takes_it_over(mm, run, tmp_path):
     assert "registered agent-" in out["status"][0]
     _handshake(out, "cc-1")
     hosted = run.state_dir / "hosted" / "sess-a"
-    assert (hosted / "claude-sid.env").read_text() == f"MM_CLAUDE_SID={_key('cc-1')}\n"
+    assert (hosted / "claude-sid.env").read_text() == f"CB_CLAUDE_SID={_key('cc-1')}\nMM_CLAUDE_SID={_key('cc-1')}\n"
 
     name = _field(run.state_dir / "sess-a.env", "MM_REG_BOT_NAME")
     r = run(STOP, CORRAL_SESSION_ID="sess-a", PATH=_fake_ps(tmp_path), **corral, **END)
@@ -817,7 +817,7 @@ def test_a_state_dir_a_sandbox_can_write_is_refused(mm, run, tmp_path):
     r = run(START, CORRAL_SESSION_ID="sess-w", CORRAL_WORKDIR=str(work),
             XDG_STATE_HOME=str(work / "state"), **HOST)
     out = json.loads(r.stdout)
-    assert set(out["env"]) == {"MM_BUS_UNAVAILABLE"}
+    assert set(out["env"]) == {"CB_BUS_UNAVAILABLE", "MM_BUS_UNAVAILABLE"}
     assert "state directory" in out["env"]["MM_BUS_UNAVAILABLE"]
     assert _registrations(mm) == 0
     r = run(STOP, CORRAL_SESSION_ID="sess-w", CORRAL_WORKDIR=str(work),
@@ -839,7 +839,7 @@ def test_a_stale_host_environment_is_no_bus(mm, run, tmp_path):
     r = run(str(tree / START), CORRAL_SESSION_ID="sess-stale", **HOST)
     assert r.code == 0, r.stderr
     out = json.loads(r.stdout)
-    assert set(out["env"]) == {"MM_BUS_UNAVAILABLE"} and TOKEN not in r.stdout
+    assert set(out["env"]) == {"CB_BUS_UNAVAILABLE", "MM_BUS_UNAVAILABLE"} and TOKEN not in r.stdout
     why = out["env"]["MM_BUS_UNAVAILABLE"]
     assert why.startswith("stale: the Python environment of the host copy") and "is 0.42.2" in why
     assert "mm-agent-host-install.sh" in why

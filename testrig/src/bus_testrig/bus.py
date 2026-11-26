@@ -82,7 +82,7 @@ class McpError(RuntimeError):
 def _clean_env(base_url: str, token: str, state_dir: str) -> dict[str, str]:
     """The server's environment: the rig's URL and nothing that reaches home.
 
-    Every inherited `MM_*`/`MATTERMOST_*` goes — this machine runs a real bus,
+    Every inherited `CB_*`/`MM_*`/`MATTERMOST_*` goes — this machine runs a real bus,
     and a server started for a run must not touch it — as do the corral and
     Claude Code markers, which would make the server read a state directory and
     a token that are not this run's. `XDG_STATE_HOME` is a throwaway directory,
@@ -96,15 +96,15 @@ def _clean_env(base_url: str, token: str, state_dir: str) -> dict[str, str]:
     server's client is not this rig's to change.
     """
     env = {name: value for name, value in os.environ.items()
-           if not name.startswith(("MM_", "MATTERMOST_", "CORRAL_", "CLAUDE"))
+           if not name.startswith(("CB_", "MM_", "MATTERMOST_", "CORRAL_", "CLAUDE"))
            and name != "XDG_STATE_HOME"
            and name.upper() not in ("HTTP_PROXY", "HTTPS_PROXY", "ALL_PROXY")}
     env.update({
-        "MM_CHAT_URL": base_url,
-        "MM_BOT_TOKEN": token,
-        "MM_TEAM": "agents",
-        "MM_CHANNEL": "agents",
-        "MM_CHANNEL_PUSH": "0",
+        "CB_MM_CHAT_URL": base_url,
+        "CB_MM_BOT_TOKEN": token,
+        "CB_MM_TEAM": "agents",
+        "CB_MM_CHANNEL": "agents",
+        "CB_CHANNEL_PUSH": "0",
         "PYTHONPATH": str(MCP / "src"),
         "XDG_STATE_HOME": state_dir,
     })
@@ -141,13 +141,13 @@ def interpreter() -> list[str]:
     # An explicit interpreter wins and is the only candidate: a host whose
     # layout the probe does not know names its own, and a run can be pointed at
     # one that cannot import the bus to see what it does then.
-    pinned = os.environ.get("BUS_TESTRIG_PYTHON")
+    pinned = os.environ.get("CB_TESTRIG_PYTHON")
     candidates = [[pinned or sys.executable]]
     venv = MCP / ".venv" / ("Scripts/python.exe" if os.name == "nt" else "bin/python")
     if not pinned and venv.exists():
         candidates.append([str(venv)])
     probe_env = {name: value for name, value in os.environ.items()
-                 if not name.startswith(("MM_", "MATTERMOST_", "CORRAL_", "CLAUDE"))}
+                 if not name.startswith(("CB_", "MM_", "MATTERMOST_", "CORRAL_", "CLAUDE"))}
     probe_env["PYTHONPATH"] = str(MCP / "src")
     for argv in candidates:
         try:

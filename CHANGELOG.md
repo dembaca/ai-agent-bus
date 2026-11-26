@@ -3,6 +3,82 @@
 Every version bump in `.claude-plugin/plugin.json` gets an entry here. Versions
 before 0.5.0 are described in the git history.
 
+## Unreleased
+
+### Breaking
+
+- **The MCP server, the hooks, the shell CLI and the installer read `CB_` names**
+  ([#169](https://github.com/dembaca/ai-agent-bus/issues/169)). Their environment
+  variables get the `CB_` prefix, `CB_MM_` for the ones that exist only because of
+  Mattermost: `MM_CHAT_URL` and its alias `MATTERMOST_URL` become `CB_MM_CHAT_URL`,
+  `MM_BOT_TOKEN` and `MATTERMOST_TOKEN` become `CB_MM_BOT_TOKEN`, `MM_CHANNEL`,
+  `MM_PROJECT_CHANNEL`, `MM_TEAM` become `CB_MM_…`, `MM_TRUSTED_HUMANS`,
+  `MM_LISTEN_SEC`, `MM_RELEASE_SIGNERS`, `MM_NATS_HOMES` and the other bus settings
+  become `CB_…`, and the keys of the session files the bus writes follow. The
+  registrar's settings (`MM_REG_SECRET`, `MM_REGISTER_URL`, `MM_REGISTRAR_KEYS`,
+  `MM_REG_BOT_NAME`, `MM_AGENT_PREFIX`, `MM_BOT_ATTESTATION`, …) keep their names until
+  the registrar goes. The full mapping is in [docs/env-names.md](docs/env-names.md).
+  Reading rule: the new name first; when it is unset the old name, with one deprecation
+  warning per process that names the new one (a quiet hook writes it to its log). An
+  empty value counts as set. Old and new name (or the three names of the chat URL and
+  of the bot token) set to different values refuse the start and name both, never a
+  secret's value. Values the bus writes for itself (session and endpoint files, the
+  sandbox's environment) go under both names. The release after this one removes the
+  fallbacks and then refuses to start when an old name is set without its new one, so
+  rename yours now. The `Needs:` grammar accepts `CB_*` names; but since a host before
+  this release drops a line with one, this release's `Needs:` line and the removal
+  release's name no `CB_*` name.
+- **The login service and `authd` read their settings under `CB_` names**
+  (#169, [docs/env-names.md](docs/env-names.md)). Every `AUTH_X` becomes
+  `CB_AUTH_X` and every `AUTHD_X` becomes `CB_AUTHD_X`; the three Mattermost
+  settings shorten to `CB_AUTH_MM_URL`, `CB_AUTH_MM_TEAM` and
+  `CB_AUTH_MM_TOKEN_FILE` (from `AUTH_MATTERMOST_URL`, `_TEAM`,
+  `_TOKEN_FILE`). The old names still work until the removal release (the
+  release after 0.103.0): an old name is read when its new name is unset,
+  with one warning per process naming the new name. Both names set to
+  different values refuse the start and name both, never a value; equal
+  values pass with a warning that the old name can go. Empty counts as set.
+  A value that is exactly an unexpanded `${NAME}` refuses the start, naming
+  the variable: the service has no plugin manifest that would expand it, and
+  read as unset it would silently drop a setting such as a pinned CA file.
+  From the removal release on an old name without its new name refuses the
+  start. Error messages, `authd dir -h`, `services/auth/README.md` and
+  `nats-server.example.conf` name the new names.
+
+- **The central bridge reads its settings under `CB_` names** (#169,
+  [docs/env-names.md](docs/env-names.md#the-bridge-19)). Each `BRIDGE_X`
+  becomes `CB_BRIDGE_X` (`CB_BRIDGE_NATS_URL`, `CB_BRIDGE_NATS_SEED_FILE`,
+  `CB_BRIDGE_CA_FILE`, `CB_BRIDGE_MM_URL`, `CB_BRIDGE_MM_ALLOW_HTTP`,
+  `CB_BRIDGE_MM_TOKEN_FILE`, `CB_BRIDGE_MM_TEAM`, `CB_BRIDGE_HOMES`,
+  `CB_BRIDGE_PROPS_PREFIX`, `CB_BRIDGE_KV_BUCKET`, `CB_BRIDGE_SEEN_BUCKET`,
+  `CB_BRIDGE_STREAM`, `CB_BRIDGE_BUS_PREFIX`, `CB_BRIDGE_DELIVER`,
+  `CB_BRIDGE_INBOX`, `CB_BRIDGE_LISTEN_ADDR`,
+  `CB_BRIDGE_MM_ADMIN_TOKEN_FILE`), and the two Mattermost settings of the
+  agents' own bots get an `MM`: `BRIDGE_BOT_PREFIX` becomes
+  `CB_BRIDGE_MM_BOT_PREFIX`, `BRIDGE_HIDE_BOT_DM` becomes
+  `CB_BRIDGE_MM_HIDE_BOT_DM`. The old names still work in this release:
+  with the new name unset the bridge reads the old one and logs one
+  deprecation warning naming the new name; both set to the same value pass
+  with a warning that the old one can go; both set to different values
+  refuse the start, naming both (never a value). An empty value counts as
+  set. A value that is exactly an unexpanded `${NAME}` refuses the start,
+  naming the variable: the bridge has no plugin manifest that would expand
+  it, and read as unset it would silently drop a setting such as a pinned
+  CA file. The release after this one refuses an old name set without its new
+  name; rename the deployment's settings before it.
+
+### Fixed
+
+- **The operator console's logout works in a browser again** (RT-6.43
+  step 9). The pages sent `Referrer-Policy: no-referrer`, under which a
+  browser sends `Origin: null` with the sidebar's same-origin logout POST,
+  and the server refused it as a cross-site logout: every logout from the
+  browser failed with 403. The pages now send `Referrer-Policy:
+  same-origin`, which still sends no referrer to another site; the API
+  answers and the logout's redirect to Keycloak keep `no-referrer`, and
+  `Origin: null` is still refused. A console tab opened before the update
+  keeps the old policy until it is reloaded.
+
 ## 0.102.0
 
 Needs: login service jetstream user with consumer create and delete rights on the directory bucket.
@@ -26,6 +102,22 @@ Needs: MM_BRIDGE_BOT kept on every host, and this release on all hosts before th
   post logout redirect URIs").
 
 ### Added
+
+- **A check holds `docs/env-names.md` to the code** (#169, the mapping's guard).
+  `scripts/doc-check.py` reads the page and the tree: CI fails when the code
+  reads an environment name the page does not list, and when the page maps a
+  name that production code and tests do not mention (the registrar's kept names
+  excepted; a "Tests and CI" name may live in tests). A read is a quoted literal
+  in Python, Go and the plugins (a Go tag's `env:"X,required"` included), dot
+  access (`process.env.X`), or a name in the shell and in the configuration
+  files the example ships; names ending in `_` are stems, not settings; test
+  files are skipped, since a fixture's fake name is no setting. The page's
+  "not environment" bullets and its new exclusion table — each name with a
+  reason of its own — are what keep a script's globals and other products'
+  variables out of the failure, and a row the check cannot read or an exclusion
+  without a reason fails too, as do the page's heading counts and conflict
+  markers. A test pins both directions, each reader form, the counts and each
+  failure.
 
 - **The central bridge can post each agent's copies under the agent's own Mattermost bot** (#151 step 1, RT-6.44). Off by default; with `BRIDGE_MM_ADMIN_TOKEN_FILE` (an admin bot of its own with `system_admin`, its token a separate file used only by the bot management) and `BRIDGE_BOT_PREFIX`, the bridge finds or creates `<prefix><NATS name>`, owned by the Mattermost account that the login service's account record binds to the agent's presence owner (never a username lookup; no record, no bot of its own) and marked as the bridge's, mints its token in memory at first use after each start (revoking its earlier ones), joins it to the home and posts that agent's copies and reactions under it without the attribution line, `nats_id` kept; its reactions are recorded, so their removal reaches that bot also while it is in its backoff. On any failure the one bridge bot posts as before. Its signal then names `bot_prefix`. `BRIDGE_HIDE_BOT_DM` (default true) hides the admin bot's welcome DMs. The bridge refuses to start when the admin token is the posting token, the admin account is no bot with `system_admin`, or the posting bot holds a role beyond `system_user`, `system_post_all` and `system_post_all_public`. Turn it on only after the hosts run a release with #159 (agents dropping copies under their own bots), or every agent reads each NATS post twice; the hosts also keep `MM_BRIDGE_BOT` set as today, since the fallback copies come from the one bridge bot and hosts drop those only with it; the bridge's prefix must differ from the registrar's `BOT_USERNAME_PREFIX`.
 - **The console serves `/metrics`** (#158, part of): the Prometheus text
@@ -78,6 +170,25 @@ Needs: MM_BRIDGE_BOT kept on every host, and this release on all hosts before th
   names with `you`; that anchor is read from the login's own record,
   never from anything the browser sends. No new right: all of it comes
   from presence, crown claims, memberships and the login's own record.
+
+- **A copied login reaches the owner as a direct message** (#154 step 3). The
+  login service publishes every network move and every copy of a session or
+  host key for the owner on `<presence>.notice.<owner anchor>.<verdict>.v1`
+  (one subject per verdict, so a move never erases a copy; one record per id
+  and verdict in 30 minutes, so a refused session's retries tell once), a
+  subject only it may publish; each agent's presence consumer is filtered to
+  its own owner's notices, so no other owner reads them. A copied one becomes one DM
+  from the owner's live server — the agent the record names if it is live, else
+  the owner's live agent with the smallest name, decided from presence alone —
+  saying what only the owner can do: end the session in Keycloak, or rotate the
+  copied host key. A move is published as a report and is not DM'd. A server
+  remembers what it told, per kind and id, so a restart does not repeat it, and
+  the same kind, id and verdict is one DM within the block. Nobody is told when
+  no live server of the owner is left, when the responsible human is unknown or
+  the DM fails — the record waits in the stream's history within its 24 hours,
+  and the console and the log keep it; the server that tells may be the thief's
+  if a copied host key let them run an agent of that owner, and a compromised
+  server can stay silent.
 
 - **The login service refuses a session that alternates between networks**
   (#154 step 3, decision 10). After the host signature and the token are
@@ -318,7 +429,8 @@ Needs: MM_BRIDGE_BOT kept on every host, and this release on all hosts before th
   when the record moves into the bridge. It sets the reading rule for
   release 0.103.0 (the new name first, the old one with a deprecation
   warning, all set names must agree or the start is refused, an empty value
-  counts as set, an unexpanded `${…}` placeholder as unset, the fallbacks
+  counts as set, an unexpanded `${…}` placeholder as unset in the MCP server
+  and the hooks while the Go services refuse it, the fallbacks
   go one release later); after that an old name set alone refuses the start
   for at least one more release instead of being ignored, since several
   settings (release signers, trusted humans, CA pins, the login service's

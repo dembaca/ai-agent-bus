@@ -19,12 +19,12 @@ people, hand-written) are read from their text with the same rules.
 from __future__ import annotations
 
 import json
-import os
 import re
 from collections.abc import Mapping
 from typing import TYPE_CHECKING, Any
 
 from . import symbols as _symbols
+from . import config
 from .model import Head
 
 if TYPE_CHECKING:
@@ -250,9 +250,9 @@ def props(message: str = "", to: str = "", kind: str = "",
 # the bus (a bridge) reads from them. The bus's own keys (a2a, agent_card, ...) never
 # start with it (a prefix that one of them, or a Mattermost key, starts with is
 # refused at start), so no caller can overwrite them; `<prefix>system` is the bus's
-# alone. The prefix is one setting of the whole bus: MM_PROPS_PREFIX, the same on
+# alone. The prefix is one setting of the whole bus: CB_PROPS_PREFIX, the same on
 # every server, default `x_`.
-PREFIX_ENV = "MM_PROPS_PREFIX"
+PREFIX_ENV = "CB_PROPS_PREFIX"
 DEFAULT_PREFIX = "x_"
 _PREFIX = re.compile(r"[a-z][a-z0-9]*_")
 # The per-turn instructions name the prefix ("props keys start with <prefix>"),
@@ -269,10 +269,10 @@ _RESERVED_SEGMENTS = frozenset({
 
 
 def user_prefix(environ: Mapping[str, str] | None = None) -> str:
-    """The props prefix: MM_PROPS_PREFIX, else `x_`. Raises ValueError for one
+    """The props prefix: CB_PROPS_PREFIX, else `x_`. Raises ValueError for one
     that is not `[a-z][a-z0-9]*_` or that a key of the bus or of Mattermost
     starts with (the server checks it when it starts)."""
-    raw = ((environ if environ is not None else os.environ).get(PREFIX_ENV) or "").strip()
+    raw = config.env(PREFIX_ENV, environ=environ).strip()
     prefix = raw or DEFAULT_PREFIX
     if not _PREFIX.fullmatch(prefix):
         raise ValueError(f"{PREFIX_ENV}={raw!r} is no props prefix: lower-case letters and digits, "

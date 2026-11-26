@@ -7,12 +7,12 @@
 #
 # Runs on the HOST only (the installer's --check, and the MCP server once a day
 # as a bounded child, RT-6.30), never inside corral. Installs nothing and runs
-# nothing from a tag. It lists the v<x.y.z> tags at MM_RELEASE_URL, fetches the
+# nothing from a tag. It lists the v<x.y.z> tags at CB_RELEASE_URL, fetches the
 # newest (at most three, newest first, until one passes) into src.git beside
-# releases/ (MM_BUS_HOST_DIR's parent) with --depth=1 and without `+`, so a tag
+# releases/ (CB_BUS_HOST_DIR's parent) with --depth=1 and without `+`, so a tag
 # fetched before never moves, and checks each as the installer does (RT-6.29):
 # an annotated tag, its own name, a commit, the version in its plugin.json, and
-# with keys its SSH signature by a pinned key: MM_RELEASE_SIGNERS when set,
+# with keys its SSH signature by a pinned key: CB_RELEASE_SIGNERS when set,
 # else the release-signers file the installer pinned beside releases/
 # (mm_release_signers; the output says which). From the
 # CHANGELOG.md of the first that passes it reads the entries up to its version:
@@ -62,8 +62,8 @@ STATE="$(cd -P "$STATE" && pwd -P)"
 [[ ! -L "$STATE/release.env" ]] || die "$STATE/release.env is a symlink; refused"
 
 # src.git beside releases/, as the installer has it (RT-6.29 step 3).
-DEST="${MM_BUS_HOST_DIR:-$HOME/.local/share/mm-agent-bus/current}"
-[[ "$DEST" == /* ]] || die "MM_BUS_HOST_DIR must be an absolute path"
+DEST="${CB_BUS_HOST_DIR:-$HOME/.local/share/mm-agent-bus/current}"
+[[ "$DEST" == /* ]] || die "CB_BUS_HOST_DIR must be an absolute path"
 parent="$(dirname "$DEST")"
 mkdir -p "$parent" 2>/dev/null || die "cannot create $parent"
 parent="$(cd -P "$parent" && pwd -P)"
@@ -71,12 +71,12 @@ parent="$(cd -P "$parent" && pwd -P)"
 SRC_GIT="$parent/src.git"
 [[ ! -L "$SRC_GIT" ]] || die "$SRC_GIT is a symlink; refused"
 
-# The keys: MM_RELEASE_SIGNERS, else release-signers beside releases/, where
+# The keys: CB_RELEASE_SIGNERS, else release-signers beside releases/, where
 # the installer pinned them (RT-6.30 step 1); a bad file fails the check,
 # never skips the signature.
-mm_release_signers "$parent" || die "$MM_REL_ERR; release.env unchanged"
-mm_release_url || die "$MM_REL_ERR"
-mm_release_tools || die "$MM_REL_ERR"
+mm_release_signers "$parent" || die "$CB_REL_ERR; release.env unchanged"
+mm_release_url || die "$CB_REL_ERR"
+mm_release_tools || die "$CB_REL_ERR"
 
 # One check at a time; a lock a killed check left goes after ten minutes.
 LOCK="$STATE/release-check.lock"
@@ -115,7 +115,7 @@ fi
 if [[ "$(basename "$(dirname "$SELF")")" == releases ]]; then
   mm_registrar_release "$SELF/mcp/.venv/bin/python"
   case "$MM_RR_STATUS" in
-    ok) target="$(mm_release_target "$MM_RR_VERSION" "$parent/$MM_WITHDRAWN_FILE")"
+    ok) target="$(mm_release_target "$MM_RR_VERSION" "$parent/$CB_WITHDRAWN_FILE")"
         mm_auto_state "$STATE" REGISTRAR=ok "TARGET=$target" "KEYS=$(mm_release_keystate)" "AT=$now"
         if [[ "$MM_RR_VERSION" == latest ]]; then named="$target"; else named="${MM_RR_VERSION:+v}${MM_RR_VERSION:-no version}"; fi
         say "the registrar names $named (its record verified; release keys: $(mm_release_keystate))" ;;
@@ -131,18 +131,19 @@ if mm_install_lock_live "$parent/.install.lock"; then
   say "the installer runs; not checked"
   exit 0
 fi
-export MM_REL_GIT_DIR="$SRC_GIT" MM_REL_TMP="$LOCK"
+mm_env_set CB_REL_GIT_DIR MM_REL_GIT_DIR "$SRC_GIT"
+mm_env_set CB_REL_TMP MM_REL_TMP "$LOCK"
 [[ -d "$SRC_GIT" ]] ||
   GIT_CONFIG_NOSYSTEM=1 GIT_CONFIG_GLOBAL=/dev/null git init -q --bare --template= "$SRC_GIT" ||
   die "could not create $SRC_GIT"
 
 # The tags, by name only; nothing of them is shown before it passed.
-if ! out="$(mm_rgit ls-remote --tags --refs "$MM_REL_URL" 'refs/tags/v*' 2>&1)"; then
-  die "could not list the tags at $MM_REL_URL; release.env unchanged:"$'\n'"$(tail -n 3 <<<"$out" | tr -cd '[:print:]\n')"
+if ! out="$(mm_rgit ls-remote --tags --refs "$CB_REL_URL" 'refs/tags/v*' 2>&1)"; then
+  die "could not list the tags at $CB_REL_URL; release.env unchanged:"$'\n'"$(tail -n 3 <<<"$out" | tr -cd '[:print:]\n')"
 fi
 candidates="$(sed -n 's|^[0-9a-f]*[[:space:]]*refs/tags/v\([0-9]*\.[0-9]*\.[0-9]*\)$|\1|p' <<<"$out" |
               grep -E '^[0-9]+\.[0-9]+\.[0-9]+$' | sort -t. -k1,1nr -k2,2nr -k3,3nr | head -n "$MAX_TRIES" || true)"
-[[ -n "$candidates" ]] || die "no release tag at $MM_REL_URL; release.env unchanged"
+[[ -n "$candidates" ]] || die "no release tag at $CB_REL_URL; release.env unchanged"
 
 # A tag that does not pass is logged once per tag object, never shown.
 rejected() {
@@ -159,7 +160,7 @@ while IFS= read -r ver; do
   # --depth=1: the tag, its commit and tree, no history. No +: a tag this host
   # fetched before (here or by the installer) never moves.
   if ! out="$(mm_rgit fetch --depth=1 --no-tags --no-recurse-submodules --no-write-fetch-head \
-          "$MM_REL_URL" "refs/tags/$tag:refs/tags/$tag" 2>&1)"; then
+          "$CB_REL_URL" "refs/tags/$tag:refs/tags/$tag" 2>&1)"; then
     if [[ "$out" == *"would clobber existing tag"* ]]; then
       rejected "$ver" "$(mm_rgit rev-parse -q --verify "refs/tags/$tag" || true)" "the tag moved since this host fetched it"
       continue
@@ -171,16 +172,16 @@ while IFS= read -r ver; do
   fi
   id="$(mm_rgit rev-parse -q --verify "refs/tags/$tag")" || { rejected "$ver" "" "not fetched"; continue; }
   if ! mm_release_tag "$tag" "$id"; then
-    rejected "$ver" "$id" "$(head -n1 <<<"$MM_REL_ERR")"
+    rejected "$ver" "$id" "$(head -n1 <<<"$CB_REL_ERR")"
     continue
   fi
-  pv="$(mm_rgit cat-file -p "$MM_REL_COMMIT:.claude-plugin/plugin.json" 2>/dev/null | head -c 65536 |
+  pv="$(mm_rgit cat-file -p "$CB_REL_COMMIT:.claude-plugin/plugin.json" 2>/dev/null | head -c 65536 |
         sed -n 's/^[[:space:]]*"version":[[:space:]]*"\([^"]*\)".*/\1/p' | head -n1 || true)"
   if [[ "$pv" != "$ver" ]]; then
     rejected "$ver" "$id" "its tree says another version"
     continue
   fi
-  newest="$ver" tag_id="$id" commit="$MM_REL_COMMIT"
+  newest="$ver" tag_id="$id" commit="$CB_REL_COMMIT"
   break
 done <<<"$candidates"
 [[ -n "$newest" ]] || die "none of the newest tags passes this host's check; release.env unchanged${fetch_err:+ (last: ${fetch_err%%$'\n'*})}"
@@ -229,13 +230,13 @@ done < <(mm_rgit cat-file -p "$commit:CHANGELOG.md" | head -c "$CHANGELOG_MAX" |
 flush
 [[ "$dropped" -eq 0 ]] || say "v$newest: $dropped Needs:/Withdrawn: line(s) outside their grammar dropped"
 
-if [[ "$MM_REL_ENFORCE" -eq 1 ]]; then verified=yes; else verified=no; fi
+if [[ "$CB_REL_ENFORCE" -eq 1 ]]; then verified=yes; else verified=no; fi
 tmp="$STATE/.release.env.$$"
 {
   printf '# The host'"'"'s release check (RT-6.30): written by mm-agent-release-check.sh only.\n'
   printf 'FORMAT=1\nCHECKED_AT=%s\nNEWEST=%s\nTAG_OBJECT=%s\nCOMMIT=%s\nVERIFIED=%s\n' \
     "$now" "$newest" "$tag_id" "$commit" "$verified"
-  [[ -z "$MM_REL_SIGNER" ]] || printf 'SIGNER=%s\n' "$MM_REL_SIGNER"
+  [[ -z "$CB_REL_SIGNER" ]] || printf 'SIGNER=%s\n' "$CB_REL_SIGNER"
   printf '%s%s%s' "$entries" "$needs" "$withdrawn"
 } >"$tmp" && chmod 600 "$tmp" && mv -f "$tmp" "$STATE/release.env" ||
   { rm -f "$tmp"; die "could not write $STATE/release.env"; }
@@ -243,21 +244,21 @@ tmp="$STATE/.release.env.$$"
 # where XDG_STATE_HOME cannot move them. With them the tags listed above
 # (TAG, newest first, passed or not): `latest` in the registrar's record is the
 # newest of them not withdrawn (mm_release_latest, RT-6.32 step 4).
-wtmp="$parent/.$MM_WITHDRAWN_FILE.$$"
-if [[ -L "$parent/$MM_WITHDRAWN_FILE" ]] ||
+wtmp="$parent/.$CB_WITHDRAWN_FILE.$$"
+if [[ -L "$parent/$CB_WITHDRAWN_FILE" ]] ||
    ! { printf 'NEWEST=%s\n%s%s' "$newest" "$withdrawn" "$(sed 's/^/TAG=/' <<<"$candidates")"$'\n' >"$wtmp" &&
-       chmod 600 "$wtmp" && mv -f "$wtmp" "$parent/$MM_WITHDRAWN_FILE"; }; then
+       chmod 600 "$wtmp" && mv -f "$wtmp" "$parent/$CB_WITHDRAWN_FILE"; }; then
   rm -f "$wtmp"
-  say "could not write $parent/$MM_WITHDRAWN_FILE; the installer does not know the withdrawn versions"
+  say "could not write $parent/$CB_WITHDRAWN_FILE; the installer does not know the withdrawn versions"
 fi
 # The registrar names `latest`: its tag as of this check, for the notice.
 if [[ "${MM_RR_STATUS:-}" == ok && "${MM_RR_VERSION:-}" == latest ]]; then
-  mm_auto_state "$STATE" "TARGET=$(mm_release_target latest "$parent/$MM_WITHDRAWN_FILE")"
+  mm_auto_state "$STATE" "TARGET=$(mm_release_target latest "$parent/$CB_WITHDRAWN_FILE")"
 fi
 # The last check that succeeded: --if-due counts from it.
 printf '%s\n' "$now" >"$STATE/release-check.at"
 if [[ "$verified" == yes ]]; then
-  echo "newest release v$newest, its signature checked (signed by $MM_REL_SIGNER; keys from $MM_REL_FROM_TEXT)"
+  echo "newest release v$newest, its signature checked (signed by $CB_REL_SIGNER; keys from $CB_REL_FROM_TEXT)"
 else
-  echo "newest release v$newest, its signature not checked (MM_RELEASE_SIGNERS is not set and no keys are pinned in $parent/$MM_SIGNERS_FILE)"
+  echo "newest release v$newest, its signature not checked (CB_RELEASE_SIGNERS is not set and no keys are pinned in $parent/$CB_SIGNERS_FILE)"
 fi
