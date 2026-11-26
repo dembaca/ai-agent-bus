@@ -94,18 +94,21 @@ func TestTheExampleServerConfiguration(t *testing.T) {
 	jsPub, _ := jsUser.PublicKey()
 	bridgeUser, _ := nkeys.CreateUser()
 	bridgePub, _ := bridgeUser.PublicKey()
+	metricsUser, _ := nkeys.CreateUser()
+	metricsPub, _ := metricsUser.PublicKey()
 	certFile, keyFile := selfSigned(t)
 	for placeholder, value := range map[string]string{
-		"<ISSUER_ACCOUNT_PUBLIC_KEY>": issuerPub,
-		"<XKEY_PUBLIC_KEY>":           xkeyPub,
-		"<SERVICE_USER_PUBLIC_NKEY>":  svcPub,
-		"<JS_USER_PUBLIC_NKEY>":       jsPub,
-		"<BRIDGE_USER_PUBLIC_NKEY>":   bridgePub,
-		"<HOME>":                      "home",
-		"<PATH_TO_SERVER_CERT>":       certFile,
-		"<PATH_TO_SERVER_KEY>":        keyFile,
-		"<PATH_TO_CLIENT_CA>":         certFile,
-		"<JETSTREAM_STORE_DIR>":       t.TempDir(),
+		"<ISSUER_ACCOUNT_PUBLIC_KEY>":   issuerPub,
+		"<XKEY_PUBLIC_KEY>":             xkeyPub,
+		"<SERVICE_USER_PUBLIC_NKEY>":    svcPub,
+		"<JS_USER_PUBLIC_NKEY>":         jsPub,
+		"<BRIDGE_USER_PUBLIC_NKEY>":     bridgePub,
+		"<CONSOLE_METRICS_PUBLIC_NKEY>": metricsPub,
+		"<HOME>":                        "home",
+		"<PATH_TO_SERVER_CERT>":         certFile,
+		"<PATH_TO_SERVER_KEY>":          keyFile,
+		"<PATH_TO_CLIENT_CA>":           certFile,
+		"<JETSTREAM_STORE_DIR>":         t.TempDir(),
 	} {
 		if !strings.Contains(text, placeholder) {
 			t.Errorf("the example has no %s", placeholder)
@@ -131,8 +134,8 @@ func TestTheExampleServerConfiguration(t *testing.T) {
 	if co.Issuer != issuerPub || co.Account != "AUTH" || co.XKey != xkeyPub {
 		t.Errorf("auth_callout: %+v", co)
 	}
-	if want := []string{svcPub, jsPub, bridgePub}; !slices.Equal(co.AuthUsers, want) {
-		t.Errorf("auth_users %v, want the login service's two users and the bridge's", co.AuthUsers)
+	if want := []string{svcPub, jsPub, bridgePub, metricsPub}; !slices.Equal(co.AuthUsers, want) {
+		t.Errorf("auth_users %v, want the login service's two users, the bridge's and the metrics service's", co.AuthUsers)
 	}
 	if opts.TLSConfig == nil {
 		t.Error("no tls")
@@ -144,14 +147,18 @@ func TestTheExampleServerConfiguration(t *testing.T) {
 	if len(opts.Users) != 0 {
 		t.Errorf("%d users with a password", len(opts.Users))
 	}
-	if len(opts.Nkeys) != 3 {
-		t.Fatalf("%d nkey users, want the login service's two and the bridge's", len(opts.Nkeys))
+	if len(opts.Nkeys) != 4 {
+		t.Fatalf("%d nkey users, want the login service's two, the bridge's and the metrics service's", len(opts.Nkeys))
 	}
 	for _, u := range opts.Nkeys {
 		switch u.Nkey {
 		case svcPub:
 			if u.Account == nil || u.Account.Name != "AUTH" {
 				t.Errorf("the callout's user is not in AUTH: %+v", u.Account)
+			}
+		case metricsPub:
+			if u.Account == nil || u.Account.Name != "BUS" {
+				t.Errorf("the metrics user is not in BUS: %+v", u.Account)
 			}
 		case bridgePub:
 			if u.Account == nil || u.Account.Name != "BUS" {

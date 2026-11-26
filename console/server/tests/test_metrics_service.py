@@ -46,10 +46,15 @@ async def get_console(console: Console, path: str, bearer: str | None = None
 
 
 async def test_the_scrape_token_gates_the_service_page(tmp_path) -> None:
-    """No token (or a wrong one): 401 like the operator's page. The right
-    token: the page serves, without any session, from the service's own
-    view — its families' zero state, and the console's own observations."""
-    console = Console(settings(tmp_path))
+    """The unattended path: without a session (the login is on), a missing
+    or wrong Bearer answers 401 like the operator's page; the right token
+    serves the service's own page - its families' zero state (the reading
+    is off in this test) and the console's own observations."""
+    tok = tmp_path / "token"
+    tok.write_text("tok-123456")
+    base = settings(tmp_path)
+    s2 = config.Settings(**{**base.__dict__, "login_off": False})   # no stand-in
+    console = Console(s2)
     await console.start()
     try:
         status, _h, _b = await get_console(console, "/metrics")
@@ -61,7 +66,6 @@ async def test_the_scrape_token_gates_the_service_page(tmp_path) -> None:
         assert headers["content-type"] == "text/plain; version=0.0.4; charset=utf-8"
         families, series = page(body.decode())
         assert families == set(CONSOLE_FAMILIES) | set(AGENT_FAMILIES)
-        # the service view reads nothing yet: no agent series (n/a, never 0)
         assert not any(k.startswith("choirbus_bus_") for k in series)
         assert series["choirbus_console_bus_connects_total"] == 0.0
     finally:
@@ -69,15 +73,18 @@ async def test_the_scrape_token_gates_the_service_page(tmp_path) -> None:
 
 
 async def test_without_a_token_file_the_service_path_stays_closed(tmp_path) -> None:
-    """An unset scrape token (the default): the Bearer reaches nothing, the
-    operator's page as before needs its session."""
+    """An unset scrape token (the default): the token path matches nothing
+    and never serves; the operator's page stands as before."""
     console = Console(config.Settings(public_url="http://127.0.0.1:8747",
-                                       login_off=True, nats_url=""))
+                                      login_off=True, nats_url=""))
     await console.start()
     try:
         assert console._scrape_token == ""
-        status, _h, _b = await get_console(console, "/metrics", bearer="anything")
-        assert status == 401
+        assert console.metrics is None      # the reading is off with it
+        status, _h, body = await get_console(console, "/metrics", bearer="tok-123456")
+        assert status == 200
+        _families, series = page(body.decode())
+        assert not any(k.startswith("choirbus_bus_") for k in series)
     finally:
         await console.stop()
 
@@ -159,11 +166,13 @@ async def test_a_refused_connect_ends_the_reading(tmp_path, caplog) -> None:
     async def refused(seed: str) -> object:
         raise RuntimeError("nats: authorization violation")
 
-    svc = MetricsService(_settings_unit(tmp_path), View("presence", "stats"),
-                         connect=refused)
+    seed = tmp_path / "seed"                 # a readable seed: it dials
+    seed.write_text("SUAKEYINTESTSONLYNOTAREALONE00")
+    svc = MetricsService(_settings_unit(tmp_path, seed=str(seed)),
+                         View("presence", "stats"), connect=refused)
     svc.start()
     await asyncio.wait_for(svc._task, 5.0)   # type: ignore[arg-type]
-    assert "refused" in caplog.text or "was refused" in caplog.text
+    assert "was refused" in caplog.text
 
 
 async def test_a_bad_seed_file_never_connects(tmp_path) -> None:

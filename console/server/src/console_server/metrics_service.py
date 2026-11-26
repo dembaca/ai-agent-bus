@@ -88,7 +88,7 @@ class MetricsService:
                         " the agent numbers stay absent until it is",
                         type(exc).__name__)
             return
-        if not seed or len(seed) > SEED_MAX or "\n" in seed:
+        if not seed or len(seed) > SEED_MAX or seed.split() != [seed]:
             log.warning("console: the metrics nkey seed is not one key;"
                         " the agent numbers stay absent")
             return
