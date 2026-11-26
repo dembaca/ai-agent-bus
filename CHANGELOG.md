@@ -89,7 +89,8 @@ before 0.5.0 are described in the git history.
   [docs/env-names.md](docs/env-names.md): the new name first, the old `MM_` one
   for this release with one deprecation warning per process, an empty value
   counting as set, and two names with different values a conflict the plugin
-  reports once and then behaves as without a bus. The server entry they write
+  reports once and then behaves as without a bus (a conflicting checkout falls
+  back to the plugin's own). The server entry they write
   carries `CB_WORKSPACE` and `CB_CHANNEL_PUSH` beside the old names, so a server
   of the previous release reads the old ones (a user's own `environment` that
   names one spelling is copied to the other, so the server never sees a

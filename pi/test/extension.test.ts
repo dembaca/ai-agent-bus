@@ -833,6 +833,21 @@ test("RT-6.9 step 2: the uncovered front per input type, oldest first (amendment
 })
 
 
+
+test("RT-6.20: a keyless sandbox silences every old name, not only the relay's", () => {
+  const box: string[] = []
+  const orig = console.warn
+  console.warn = (...a: unknown[]) => { box.push(a.map(String).join(" ")) }
+  try {
+    // the hook wrote MM_BUS_MCP_ENDPOINT; a non-relay old name is the hook's too
+    assert.equal(envFirst({ CB_BUS_MCP_ENDPOINT: "tcp://h", MM_AGENT_BUS_ROOT: "/o" },
+                          ["CB_AGENT_BUS_ROOT", "MM_AGENT_BUS_ROOT"]), "/o")
+    // empty counts as set, ${NAME} as unset: neither hides the warning
+    assert.equal(keyless({ CB_BUS_MCP_ENDPOINT: "" }), true)
+    assert.equal(keyless({ CB_BUS_MCP_ENDPOINT: "${CB_BUS_MCP_ENDPOINT}" }), false)
+  } finally { console.warn = orig }
+  assert.equal(box.length, 0)
+})
 // --- the CB_ names (#169) --------------------------------------------------
 
 test("RT-6.27: a setting reads CB_ first, then MM_ with one warning", () => {

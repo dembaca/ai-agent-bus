@@ -124,7 +124,7 @@ export function envFirst(env: Env, names: readonly string[], warn = true): strin
                           `set only ${names[0]}`)
   }
   const [from, value] = found[0]
-  if (warn && from !== names[0] && !warned.has(from)) {
+  if (warn && from !== names[0] && !keyless(env) && !warned.has(from)) {
     warned.add(from)
     console.warn(`[${SERVER}] ${from} is deprecated; set ${names[0]} instead ` +
                  `(the old name goes in a later release)`)
@@ -138,9 +138,13 @@ export function relayEnv(env: Env, names: readonly string[]): string {
 }
 
 // A keyless sandbox: the host hook started the session's server and wrote the
-// settings here, an older hook under the old names only (#169).
+// settings here, an older hook under the old names only (#169). As
+// config.keyless_sandbox: an empty value counts as set, ${NAME} as unset.
 export function keyless(env: Env): boolean {
-  return Boolean(env.CB_BUS_MCP_ENDPOINT || env.MM_BUS_MCP_ENDPOINT)
+  return ["CB_BUS_MCP_ENDPOINT", "MM_BUS_MCP_ENDPOINT"].some((n) => {
+    const v = env[n]
+    return v !== undefined && !PLACEHOLDER.test(v)
+  })
 }
 
 export function reportConflict(e: EnvConflict): void {
