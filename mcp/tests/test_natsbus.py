@@ -2076,3 +2076,19 @@ def test_the_notice_text_names_what_only_the_owner_can_do() -> None:
     assert "agent-b" in session and "Keycloak" in session and "refuses" in session
     host = notice_text("agent-b", "host_key")
     assert "host key" in host and "rotate" in host and "not refused" in host
+
+
+async def test_one_server_tells_a_notice() -> None:
+    """RT-6.34: the named agent's server tells it when that agent is live, else the live agent
+    with the smallest name, this one included - the same answer on every server."""
+    bus = NatsBus(_settings(), FakeLogin(), "alice", lambda _e: None)
+    await _presence(bus, bus.name, 1, T0)
+    await _presence(bus, "agent-0aaa", 2, T0)
+    await _presence(bus, "agent-zzz", 3, T0)
+    assert bus.notice_teller("agent-zzz") == "agent-zzz"  # live: its own server
+    assert bus.notice_teller("agent-missing") == "agent-0aaa"  # not live: the smallest live name
+    await _presence(bus, bus.name, 4, T0 + 100)  # only this one stays live
+    await _presence(bus, "agent-0aaa", 5, T0 + 100, status="bye")
+    await _presence(bus, "agent-zzz", 6, T0 + 100, status="bye")
+    assert bus.notice_teller("agent-0aaa") == bus.name
+    assert bus.notice_teller("") == bus.name

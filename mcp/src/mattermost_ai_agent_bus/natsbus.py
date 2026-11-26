@@ -1829,6 +1829,14 @@ class NatsBus:
             return "offline"
         return seen[1]
 
+    def notice_teller(self, agent: str) -> str:
+        """Which live agent of this owner tells a notice (RT-6.34): the named agent if it is
+        live, else the live agent with the smallest name, this one included. Every server
+        answers from presence alone, so one DM goes out, not one per server."""
+        live = {a for a in self._presence if self.presence_of(a) != "offline"}
+        live.add(self.name)
+        return agent if agent in live else min(live)
+
     def presence_snapshot(self) -> dict[str, tuple[float, str]]:
         """agent -> (server time, status) of the last presence message of each."""
         return dict(self._presence)

@@ -189,8 +189,8 @@ REFUSED_TEXT = (
 
 NOTICE_SESSION = (
     "Login of your agent {agent}: its Keycloak session was used from two networks in turn, so the "
-    "bus refuses it now. If that was not you, end that session in Keycloak (Sessions, log out), "
-    "then start a new login."
+    "bus refuses it now. If that was not you, end the session in Keycloak (account page, Sessions, "
+    "log out), then start a new login."
 )
 NOTICE_HOST_KEY = (
     "Login of your agent {agent}: its host key was used from two networks in turn, so a copy may be "

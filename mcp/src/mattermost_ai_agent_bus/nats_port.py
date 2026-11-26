@@ -175,6 +175,8 @@ class BusLike(Protocol):
 
     async def unreact(self, channel: str, ref: int, emoji: str) -> None: ...
 
+    def notice_teller(self, agent: str) -> str: ...
+
     def owner_of(self, agent: str) -> str: ...
 
     def anchor_of(self, agent: str) -> str: ...
@@ -468,6 +470,14 @@ class NatsPort:
         from . import login_notice, stats
         from .owners import responsible_human
 
+        bus = self._bus
+        if bus is None:
+            return
+        teller = bus.notice_teller(notice.agent)
+        if teller != bus.name:
+            # One DM: the named agent's server, else the smallest live name (RT-6.34).
+            log.info("login notice: %s tells it", teller)
+            return
         who = responsible_human()
         try:
             if not who:
