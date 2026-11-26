@@ -305,29 +305,44 @@ def _notice_file(uid: str) -> Path:
     return state_dir() / f"notice-{uid}.env"
 
 
-def _notice_told(uid: str) -> float:
-    """The newest notice iat this server told, kept across restarts (the consumer
-    replays the last record per subject); 0 for none."""
+NOTICE_KEY_MAX = 64  # notices remembered as told, per server
+NOTICE_SAME_SEC = 30 * 60.0  # the block: the same kind, id and verdict is one DM
+
+
+def _notice_read(uid: str) -> dict[str, float]:
+    """The notices this server told before a restart: "<kind>:<id>" -> iat."""
     try:
         text = _notice_file(uid).read_text(encoding="utf-8", errors="replace")
     except OSError:
-        return 0.0
+        return {}
+    out: dict[str, float] = {}
     for line in text.splitlines():
-        k, _, v = line.partition("=")
-        if k == "IAT":
-            try:
-                return float(v)
-            except ValueError:
-                return 0.0
-    return 0.0
+        k, _, v = line.rpartition("=")
+        try:
+            out[k] = float(v)
+        except ValueError:
+            continue
+    return out
 
 
-def _notice_mark(uid: str, iat: float) -> None:
-    """Remember that the notice was told, so a restarted server does not tell it again."""
+def _notice_told(uid: str, key: str) -> float:
+    """The iat this server told for that kind and id (0 for none), never in the
+    future: a skewed value must not silence every later notice."""
+    return min(_notice_read(uid).get(key, 0.0), time.time())
+
+
+def _notice_mark(uid: str, key: str, iat: float) -> None:
+    """Remember that this kind and id was told, so a restarted server does not tell
+    it again. Per kind and id: one copy must not hide another."""
     from .session_file import write_private
 
+    marks = _notice_read(uid)
+    marks[key] = min(iat, time.time())
+    if len(marks) > NOTICE_KEY_MAX:
+        for k in sorted(marks, key=marks.__getitem__)[: len(marks) - NOTICE_KEY_MAX]:
+            del marks[k]
     try:
-        write_private(_notice_file(uid), f"IAT={int(iat)}\n")
+        write_private(_notice_file(uid), "".join(f"{k}={int(v)}\n" for k, v in sorted(marks.items())))
     except OSError as exc:
         # The DM is out; a restart may repeat it, which the log says.
         log.warning("login notice: the told mark was not written: %s", type(exc).__name__)
@@ -369,6 +384,7 @@ class NatsPort:
         self._dropped = 0  # events a full subscriber's queue lost
         self._capped = 0  # reactions dropped at MAX_REACTIONS
         self._names: AbstractSet[str] | None = None  # this session's trusted humans, read by prime (RT-6.38)
+        self._notice_recent: dict[tuple[str, str, str], float] = {}  # (kind, id, verdict) -> monotonic
         self._ambiguous: set[str] = set()  # link tags that fit more than one fresh name (RT-6.37)
         # People over NATS (RT-6.42)
         self._keys = _Keys()
@@ -523,9 +539,18 @@ class NatsPort:
         who = responsible_human()
         try:
             me = await self._bot_id()
-            if notice.iat <= _notice_told(me):
+            key = f"{notice.kind}:{notice.sid}"
+            if notice.iat <= _notice_told(me, key):
                 # Told before a restart: the consumer replays the last record.
                 log.info("login notice: already told (iat %d)", int(notice.iat))
+                return
+            # A second copy of the same kind and id within the block is the same
+            # theft: one DM, not one per record.
+            seen = (notice.kind, notice.sid, notice.verdict)
+            now = time.monotonic()
+            last = self._notice_recent.get(seen)
+            if last is not None and now - last < NOTICE_SAME_SEC:
+                log.info("login notice: %s %s already told %.0f s ago", notice.kind, notice.verdict, now - last)
                 return
             if not who:
                 log.info("login notice: no responsible human to tell")
@@ -540,7 +565,10 @@ class NatsPort:
             text = login_notice.notice_text(agent, notice.kind)
             stats.record("post", chars=len(text), w="other")
             await self.post(text, channel_id=await self.direct_channel_with(uid))
-            _notice_mark(me, notice.iat)
+            _notice_mark(me, key, notice.iat)
+            self._notice_recent[seen] = now
+            while len(self._notice_recent) > NOTICE_KEY_MAX:
+                self._notice_recent.pop(next(iter(self._notice_recent)))
             log.warning("login notice: told %s by DM (%s, %s)", who, notice.kind, notice.network)
         except Exception as exc:  # noqa: BLE001 — the next notice tries again
             log.warning("login notice: the DM to %s failed: %s", who, exc)

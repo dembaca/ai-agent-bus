@@ -356,4 +356,21 @@ func TestThePresenceConsumerDeliversItsOwnersNotice(t *testing.T) {
 	if !ok {
 		t.Fatalf("nothing delivers a dotted owner's notice: %v", filters)
 	}
+	// An anchor that is no lower-case username gives "-", as the publisher's
+	// ownerToken does, so the filter still matches what the service publishes.
+	filters = nil
+	for _, w := range m.desired("agent-a", "Alice", []string{"home"}) {
+		if w.presence {
+			filters = w.filters
+		}
+	}
+	ok = false
+	for _, f := range filters {
+		if match(f, "presence.notice.-.copied.v1") {
+			ok = true
+		}
+	}
+	if !ok {
+		t.Fatalf("nothing delivers the dash-owner's notice: %v", filters)
+	}
 }

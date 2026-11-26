@@ -2078,6 +2078,23 @@ async def test_a_notice_reaches_the_callback_once_and_an_expired_one_never() -> 
     assert len(seen) == 1
 
 
+async def test_a_dotted_owner_reaches_the_caller() -> None:
+    """RT-6.34: the subject token writes "." as "~", and the reader accepts it."""
+    seen: list[Notice] = []
+    bus = NatsBus(_settings(), FakeLogin(), "alice", lambda _e: None, on_notice=seen.append)
+    await bus._on_presence_msg(FakeMsg("presence.notice.alice~example.copied.v1",
+                                       _presence_reply(bus, 1, 1, T0), encode_notice()))
+    assert [n.verdict for n in seen] == ["copied"]
+
+
+async def test_a_verdict_that_is_not_the_subject_s_is_dropped() -> None:
+    seen: list[Notice] = []
+    bus = NatsBus(_settings(), FakeLogin(), "alice", lambda _e: None, on_notice=seen.append)
+    await bus._on_presence_msg(FakeMsg("presence.notice.alice.moved.v1",
+                                       _presence_reply(bus, 1, 1, T0), encode_notice(verdict="copied")))
+    assert seen == []
+
+
 def test_the_notice_text_names_what_only_the_owner_can_do() -> None:
     from mattermost_ai_agent_bus.login_notice import notice_text
     session = notice_text("agent-b", "session")
@@ -2107,11 +2124,19 @@ async def test_one_server_tells_a_notice() -> None:
 
 def test_a_told_notice_survives_a_restart(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
     """RT-6.34: the consumer replays the last record per subject, so a restarted
-    server needs to know what it already told."""
+    server needs to know what it already told - per kind and id, so one copy does
+    not hide another."""
     from mattermost_ai_agent_bus import nats_port
 
     monkeypatch.setenv("XDG_STATE_HOME", str(tmp_path))
-    assert nats_port._notice_told("bot-1") == 0.0
-    nats_port._notice_mark("bot-1", T0 + 5)
-    assert nats_port._notice_told("bot-1") == T0 + 5
-    assert nats_port._notice_told("bot-2") == 0.0  # per bot, not shared
+    now = int(time.time())
+    assert nats_port._notice_told("bot-1", "session:s1") == 0.0
+    nats_port._notice_mark("bot-1", "session:s1", now - 5)
+    assert nats_port._notice_told("bot-1", "session:s1") == now - 5
+    assert nats_port._notice_told("bot-1", "session:s2") == 0.0  # another id
+    nats_port._notice_mark("bot-1", "host_key:UA-1", now - 4)
+    assert nats_port._notice_told("bot-1", "session:s1") == now - 5  # kept, not replaced
+    assert nats_port._notice_told("bot-2", "session:s1") == 0.0  # per bot
+    # A future iat is capped at now: a skewed mark must not silence later records.
+    nats_port._notice_mark("bot-1", "session:s3", time.time() + 10_000)
+    assert nats_port._notice_told("bot-1", "session:s3") <= time.time() + 1
