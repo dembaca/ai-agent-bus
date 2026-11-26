@@ -20,8 +20,9 @@ before 0.5.0 are described in the git history.
   in the console by the agent's owner, every change that adds a person to an agent's
   effective list confirmed on one of the affected agents' machines through a link with a
   one-time secret. This amends the bus without a chat as its source (ADR-016), point 4.
-  Open for the owner: the integrity of updates, the authenticity of the configuration
-  and the writing console. New risks: the console as marketplace and source of the
+  Decided by the owner: the console checks a release's signature when the pin moves, and
+  a host may keep the signed host copy on top. Open for the owner: the authenticity of
+  the configuration and the writing console. New risks: the console as marketplace and source of the
   configuration (RISK-33), the writing console (RISK-34) and trust lists set remotely
   (RISK-35). Nothing is built.
 
