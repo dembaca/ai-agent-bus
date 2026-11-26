@@ -175,7 +175,7 @@ func (r *Reader) WithIdle(idle time.Duration) *Reader {
 // token then crosses the network in clear text (the auth challenge over
 // ws://), so it is off by default: an http URL to any other host is
 // refused, and only a lab on a network it trusts turns it on
-// (BRIDGE_MM_ALLOW_HTTP). A loopback host — a test, a local lab — needs
+// (CB_BRIDGE_MM_ALLOW_HTTP). A loopback host — a test, a local lab — needs
 // no opt-in: its traffic never leaves the machine.
 func (r *Reader) WithPlainHTTP(allow bool) *Reader {
 	r.http = allow

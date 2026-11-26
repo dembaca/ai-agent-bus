@@ -23,7 +23,7 @@ import (
 // Config is the adapter's part of the registrar configuration.
 type Config struct {
 	URL              string   // where the registrar reaches Mattermost: https; http only to a loopback host or with AllowHTTP
-	AllowHTTP        bool     // http to any host, the admin token in clear text (the bridge's BRIDGE_MM_ALLOW_HTTP); default false
+	AllowHTTP        bool     // http to any host, the admin token in clear text (the bridge's CB_BRIDGE_MM_ALLOW_HTTP); default false
 	Token            string   // admin personal access token
 	Team             string   // team bots join; channels are names in it
 	HideBotDM        bool     // hide the admin↔bot welcome DM
@@ -67,7 +67,7 @@ func (c Config) checkURL() error {
 			return nil
 		}
 		return fmt.Errorf("mattermost: %s: http to a host that is not loopback would send the admin "+
-			"token in clear text; use https, or allow http (BRIDGE_MM_ALLOW_HTTP=true)", u.Scheme+"://"+u.Host)
+			"token in clear text; use https, or allow http (CB_BRIDGE_MM_ALLOW_HTTP=true)", u.Scheme+"://"+u.Host)
 	default:
 		return fmt.Errorf("mattermost: %s: neither http nor https", u.Scheme+"://"+u.Host)
 	}
