@@ -24,6 +24,7 @@ from console_server.metrics_service import MetricsService
 from console_server.nats_read import View
 
 from test_metrics_service import _settings_unit  # the unit settings
+from mattermost_ai_agent_bus.natsbus import agent_name, encode_presence
 from test_asks_stats import LINE, SPLIT    # the house STATS line and its split
 
 
@@ -205,9 +206,13 @@ async def test_the_reading_survives_a_server_restart(live_nats, tmp_path) -> Non
             await asyncio.sleep(0.05)
         assert not svc.subscribed.is_set(), "subscribed never cleared after the loss"
 
-        # a fresh server on the same port (the fixture's config, a new PID)
+        # a fresh server on the SAME port (the fixture's config bound a random
+        # one; the copy pins it so the reading finds it again)
+        conf2 = tmp_path / "nats-restart.conf"
+        conf2.write_text((tmp_path / "nats.conf").read_text().replace(
+            "listen: 127.0.0.1:-1", f"listen: 127.0.0.1:{port}"))
         proc2 = subprocess.Popen(
-            [os.environ["MM_NATS_SERVER"], "-c", str(tmp_path / "nats.conf")],
+            [os.environ["MM_NATS_SERVER"], "-c", str(conf2)],
             stdout=subprocess.PIPE, stderr=subprocess.PIPE, cwd=str(tmp_path))
         try:
             svc.subscribed.clear()          # a clean wait, not the stale set
