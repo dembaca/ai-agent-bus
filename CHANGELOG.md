@@ -177,6 +177,18 @@ Needs: MM_BRIDGE_BOT kept on every host, and this release on all hosts before th
 
 ### Changed
 
+- **The login service's own NATS user gets least-privilege rights** (#172,
+  security hardening). In `services/auth/nats-server.example.conf` the user
+  that answers the auth callout (account `AUTH`) had no `publish` and no
+  `subscribe` rule, so it could do either on any subject of that account. It
+  now subscribes to `$SYS.REQ.USER.AUTH` only and publishes nothing
+  (`deny: ">"`) but one answer per request on the reply subject the server
+  set (`allow_responses: true`). The example's test now fails for any user,
+  in any account, without both rules, and logs an agent in through the
+  callout with these rights. The lab should compare its NATS configuration
+  with the example: a user there without both rules is the same hole
+  (bgl-infra's ask).
+
 - **The OpenCode plugin registers the bus server as direct tools, not Code
   Mode** (#152). The model sees the bus tools and their docs as written, as in
   Claude Code and pi, and the token split counts bus calls exactly (#150). It
@@ -295,6 +307,27 @@ Needs: MM_BRIDGE_BOT kept on every host, and this release on all hosts before th
   error.
 
 ### Docs
+
+- **Every environment variable gets the `CB_` prefix, decided, not built
+  yet** (#169, step 1). [docs/env-names.md](docs/env-names.md) maps 158
+  names the project defines to new ones: `CB_MM_…` for what exists only
+  because of Mattermost, `CB_…` for the rest, `CB_AUTH_…`, `CB_AUTHD_…`,
+  `CB_BRIDGE_…` and `CB_CONSOLE_…` for the services. The registrar's 10
+  settings keep their names and go with the registrar (#151), among them
+  `MM_REGISTRAR_KEYS`, whose release-record check gets its own `CB_` name
+  when the record moves into the bridge. It sets the reading rule for
+  release 0.103.0 (the new name first, the old one with a deprecation
+  warning, all set names must agree or the start is refused, an empty value
+  counts as set, an unexpanded `${…}` placeholder as unset, the fallbacks
+  go one release later); after that an old name set alone refuses the start
+  for at least one more release instead of being ignored, since several
+  settings (release signers, trusted humans, CA pins, the login service's
+  brake and groups) would fail open. Every allow, pass, deny and unset list
+  of names carries both spellings during the fallback release, and the bus
+  writes its own session-file keys and relay values under both. It also
+  covers the change of the `Needs:` grammar (no `CB_` names in the
+  `Needs:` line of 0.103.0 or of the removal release) and the other places
+  that change with the renames.
 
 - **The one operating model for the host login, documented** (the owner's
   decision 10, #154, step 1 of 5; steps 2 and 3 are built in this release,
