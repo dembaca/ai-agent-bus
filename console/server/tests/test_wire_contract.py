@@ -54,6 +54,10 @@ def fleet_scenario():
         # membership of the channel dev
         (f"presence.member.dev.{agent}", encode_claim(),
          ack(2, 2, 1763980770.0)),
+        # a guest channel's membership beside the home: the login service writes one
+        # for every granted channel (RT-6.37, RT-6.16)
+        (f"presence.member.bgl-infra.{agent}", encode_claim(),
+         ack(6, 6, 1763980795.0)),
         # a crown claim on dev
         (f"presence.crown.dev.{agent}", encode_claim(),
          ack(3, 3, 1763980780.0)),
@@ -76,6 +80,42 @@ def test_the_card_the_fixture_states(fleet_scenario) -> None:
     assert cards == [FIXTURE["card"]]
 
 
+def test_the_graph_marks_the_operators_own_node_and_guest_channels(fleet_scenario) -> None:
+    """ADR-015 point 7, #147: the person node the login's own record's anchor names is
+    marked `you`, and a membership beside the agent's home is a `guest` edge — the graph
+    never takes either from the browser (RT-6.43 step 2)."""
+    graph = fleet_scenario.graph(anchor="dembaca")
+    people = [n for n in graph["nodes"] if n["kind"] == "person"]
+    assert people == [{"id": "person:dembaca", "kind": "person", "label": "dembaca",
+                       "you": True}]
+    homes = {e["to"] for e in graph["edges"] if e["kind"] == "coordinates"}
+    guests = {e["to"] for e in graph["edges"] if e["kind"] == "guest"}
+    assert (homes, guests) == ({"dev"}, {"bgl-infra"})
+    for anchor in (None, "", "someone-else"):
+        assert not any(n.get("you") for n in fleet_scenario.graph(anchor)["nodes"])
+
+
+def test_a_guest_channel_is_no_home(fleet_scenario) -> None:
+    """#147: the home is what the bus itself states — the ask record's subject first
+    (RT-6.43 step 5), then a crown claim (only a home may be claimed, RT-6.38) — and
+    every other membership is a guest channel, never guessed as one of the home's."""
+    agent = FIXTURE["card"]["name"]
+    assert (fleet_scenario.home_of(agent), fleet_scenario.guests_of(agent)) == (
+        "dev", ["bgl-infra"])
+    assert fleet_scenario.home_of("nobody") == "" and fleet_scenario.guests_of("nobody") == []
+    # an ask record's subject names the home: beside a membership it wins over the
+    # alphabet (a channel the agent is no member of is no home, test_fleet.py)
+    from mattermost_ai_agent_bus.natsbus import OpenAsk, encode_ask_record, encode_claim
+    assert fleet_scenario.on_delivery(f"presence.member.home.{agent}", encode_claim(),
+                                      ack(8, 8, 1763980800.0), "PRESENCE", "console")
+    record = encode_ask_record([OpenAsk(mm="a" * 26, kind="question", human="-",
+                                        title="x", asked=1763980700)], 1763980800)
+    assert fleet_scenario.on_delivery(f"presence.ask.home.{agent}", record,
+                                      ack(7, 7, 1763980800.0), "PRESENCE", "console")
+    assert (fleet_scenario.home_of(agent), fleet_scenario.guests_of(agent)) == (
+        "home", ["bgl-infra", "dev"])
+
+
 def test_the_events_the_fixture_states(fleet_scenario) -> None:
     console = Console(config.Settings(public_url="http://127.0.0.1:8747",
                                      login_off=True, nats_url="nats://127.0.0.1:4"))
@@ -89,6 +129,8 @@ def test_the_events_the_fixture_states(fleet_scenario) -> None:
     # the fixture's three event shapes are the whole alphabet
     shapes = {FIXTURE["events"][name]["type"] for name in FIXTURE["events"]}
     assert shapes == {"snapshot", "card", "drop"}
+    # the change event's card is the same shape: the two copies cannot drift
+    assert FIXTURE["events"]["card"]["card"] == FIXTURE["card"]
 
 
 def test_the_app_side_shapes_split_by_seam() -> None:

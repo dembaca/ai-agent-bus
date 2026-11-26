@@ -4,6 +4,7 @@ import (
 	"bytes"
 	"context"
 	"encoding/json"
+	"errors"
 	"log/slog"
 	"os"
 	"path/filepath"
@@ -233,14 +234,33 @@ func (a *agent) denied(t *testing.T) bool {
 
 // The credentials the callout issues allow standard connections only
 // (AllowedConnectionTypes = STANDARD): a host cannot reach a websocket listener
-// with one, so a home over WebSocket waits for that (RT-6.36, #51).
+// with one, so a home over WebSocket waits for that (RT-6.36, #51, #85).
 func TestACredentialDoesNotAllowAWebsocketConnection(t *testing.T) {
 	l := newLab(t)
 	if l.wsURL == "" {
 		t.Fatal("the lab's server has no websocket listener")
 	}
-	if _, err := l.connectAt(l.wsURL, "alice", l.realm.Token("alice", nil), Hello{Home: "home"}, nil, 0); err == nil {
+	tok := l.realm.Token("alice", nil)
+	_, err := l.connectAt(l.wsURL, "alice", tok, Hello{Home: "home"}, nil, 0)
+	if err == nil {
 		t.Fatal("a STANDARD credential reached a websocket listener")
+	}
+	// The listener type is the refusal, not a broken credential (RT-6.36, #85): assert the
+	// authorization error, and that the same identity connects on the standard listener of
+	// the same rig. A listener failing for another reason would fail here now.
+	if !errors.Is(err, nats.ErrAuthorization) {
+		t.Fatalf("the websocket listener refused with %v, want nats.ErrAuthorization", err)
+	}
+	a, err := l.connect("alice", tok, Hello{Home: "home"}, nil)
+	if err != nil {
+		t.Fatalf("the same identity on the standard listener: %v", err)
+	}
+	// Its own grant holds there: a publish on the agent's channel subject is not denied.
+	if err := a.nc.Publish("bus.ch.home."+a.name, []byte(`{"v":1}`)); err != nil {
+		t.Fatal(err)
+	}
+	if a.denied(t) {
+		t.Fatal("the standard listener denied the credential's own publish")
 	}
 }
 
