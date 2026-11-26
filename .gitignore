@@ -42,3 +42,7 @@ scratchpad/
 # Screenshots dropped in the repo root
 /*.png
 .envrc
+
+# Go build outputs (a local `go build` in a service's module)
+services/bridge/bridged
+services/bridge/bridge-keygen

@@ -82,9 +82,13 @@ func readPrivate(path string) ([]byte, error) {
 		return nil, fmt.Errorf("%s is %04o: the bridge's key and token files must be 0600, "+
 			"readable by its own user only", path, m)
 	}
-	if st, ok := info.Sys().(*syscall.Stat_t); ok && int(st.Uid) != os.Getuid() {
-		return nil, fmt.Errorf("%s is owned by uid %d, not by the bridge's own uid %d: the "+
-			"bridge reads only key and token files of its own user", path, st.Uid, os.Getuid())
+	if st, ok := info.Sys().(*syscall.Stat_t); ok {
+		// Root owns a mounted secret; the bridge's own uid owns a copy an init
+		// container made. Anyone else is a swapped or borrowed file.
+		if uid := int(st.Uid); uid != os.Getuid() && uid != 0 {
+			return nil, fmt.Errorf("%s is owned by uid %d: the bridge reads only key and token "+
+				"files of its own uid (%d) or root", path, st.Uid, os.Getuid())
+		}
 	}
 	b, err := io.ReadAll(f)
 	if err != nil {
