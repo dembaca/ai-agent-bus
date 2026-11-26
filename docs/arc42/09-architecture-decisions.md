@@ -3551,7 +3551,8 @@ separately.
       (ADR-016, RT-6.39), the host the token's `preferred_username`
       (`NatsBus.name` in `natsbus.py`, `_owner_of` in `nats_port.py`); the
       two agree only while the anchor equals the username, so an identity
-      whose anchor is its `sub` stops with `NameMismatch`. Not built yet.
+      whose anchor is its `sub` (its name was held) or its old name (renamed
+      in Keycloak) stops with `NameMismatch`. Not built yet (RISK-19).
 
     **Conditions** the model holds under (each one is part of the test):
     1. **Message ids are stream-wide.** An agent that guesses another's
@@ -4095,30 +4096,36 @@ The console is the operators' view of the bus itself.
      (ADR-014 point 13). Followed further (A coordinates B, B gave C a
      task) to a depth of two, with a mark where it is cut: the transitive
      edge is the console's reading, not a fact of the bus.
-   - **Member of** (agent → each channel its memberships name, RT-6.37):
-     the home channel as `coordinates`, every channel beside it as a
-     `guest` edge — a guest is a channel an agent may visit, never claim
-     (RT-6.16). The home is what the bus itself states: the channel of the
-     agent's ask record's subject (`<presence>.ask.<home>.<name>`,
-     RT-6.43 step 5) first, else a channel it claimed the crown of (only
-     a home may be claimed, RT-6.38; any claim of its own, not only the
-     current holder's), else the first channel its memberships name. A
-     statement names a home only beside a membership: a record or a claim
-     can outlive a channel the agent lost. The card's `home` and `guests`
-     come from the same statement, and no home is guessed from an agent's
-     name (#147). A person's node id is `person:<anchor token>`, a
-     channel's and an agent's their name: ids are unique across kinds, so
-     an owner named like a channel is two nodes with two ids.
-   - **People** are nodes by their anchor token, the name only the label:
-     two anchors that carry one name stay two nodes (RT-6.41), and a node
-     without an attestation is the presence subject's owner token
-     (RT-6.37 step 1).
+   - **Member of and asks** (shown since #145, the kinds of the design
+     the owner picked): agent → its home, agent → each guest channel (the
+     card's `guests`, #147), and open ask → its agent, with the human
+     asked → the ask. An agent → channel edge is `coordinates` for its
+     home and `guest` for a guest channel — a guest is a channel an agent
+     may visit, never claim (RT-6.16). The home is what the bus itself
+     states: the channel of the agent's ask record's subject
+     (`<presence>.ask.<home>.<name>`, RT-6.43 step 5) first, else a
+     channel it claimed the crown of (only a home may be claimed,
+     RT-6.38; any claim of its own, not only the current holder's), else
+     the first channel its memberships name. A statement names a home
+     only beside a membership: a record or a claim can outlive a channel
+     the agent lost. The card's `home` and `guests` come from the same
+     statement, and no home is guessed from an agent's name (#147).
+   - **Live** (#145): the cards and the open asks the app already holds
+     change the graph in place. A changed state recolours its node; an
+     agent or an ask that comes or goes adds or removes a node, and only
+     then does the layout run again, with the nodes that stay where they
+     were and the view not moved.
+   - **People** are nodes by `person:<anchor token>`, a channel's and an
+     agent's id their name — ids are unique across kinds, so an owner
+     named like a channel is two nodes with two ids. The name is only
+     the label: two anchors that carry one name stay two nodes (RT-6.41),
+     and a node without an attestation is the presence subject's owner
+     token (RT-6.37 step 1).
    - **You:** the person node the logged-in operator's own anchor names is
      marked `you`, read from the login's own record and never from a
      value the browser sends (RT-6.43 step 2) — the record's anchor is in
      subject form, an attestation's in name form, and the token is what
      both share.
-   - **Off at the start:** asks (agent → the human asked, open asks only).
 
    State, crown and ask marks sit on the nodes as on the cards; a click
    opens the same detail.
@@ -4262,8 +4269,13 @@ The console is the operators' view of the bus itself.
     - **Browser:** React with TypeScript, built with Vite, as `site/`
       already is: the toolchain and its CI job exist in this repository.
       Charts and the graph's layout from open-source libraries rather than
-      drawn by hand (candidates, not evaluated: Apache ECharts,
-      Cytoscape.js).
+      drawn by hand. The graph is React Flow (`@xyflow/react`, MIT; the
+      owner's pick after a comparison of eight, #145), laid out by dagre
+      in fixed columns (you, asks, agents, channels): small, synchronous
+      and deterministic, which suits tens of nodes laid out again only
+      when the set of nodes or edges changes; elkjs is a large
+      asynchronous dependency for no gain at this size, and a force
+      layout keeps moving the nodes a live update must leave in place.
     - **Server:** Python, if `natsbus.py` runs with a person's credential
       (point 13; open point 6). The transport, the message format and the
       rules for who is reachable, which ask is open and how `STATS` lines
@@ -4789,9 +4801,11 @@ source of identity and membership.
      name from the token's `preferred_username` (`NatsBus.name` in
      `natsbus.py`, `_owner_of` in `nats_port.py`), so the two agree only
      while the anchor equals the username, which holds for every identity
-     known before the import; an identity whose anchor is its `sub` gets a
-     credential whose name differs, and the host stops with `NameMismatch`
-     (RISK-19).
+     known before the import and, since the anchor fix for new identities
+     (#86), for a new one after it whose
+     username is free; an identity whose anchor is its `sub` (its name was
+     held) or its old name (renamed) gets a credential whose name differs,
+     and the host stops with `NameMismatch` (RISK-19).
    - The login service's check of the chat account (`checkChat`) thereby
      turns from a gate into a binding: a human without a Mattermost account
      may start agents; if the binding is missing, only this chat does not
@@ -4926,8 +4940,8 @@ for a channel not bound to it is dropped.
 directory and the chat drifting apart, and visibility through trust
 (RISK-15 to RISK-17 in Section 11); and the agent's name on NATS: the
 login service names it after the directory's anchor, the host computes it
-from `preferred_username`, so an identity whose anchor differs stops with
-`NameMismatch` (fails closed; RISK-19).
+from `preferred_username`, so an identity whose anchor differs (renamed, or
+its name held by another) stops with `NameMismatch` (fails closed; RISK-19).
 
 **Decided by the owner on 2026-11-23**, one decision on each of the nine
 points the proposal left open; the numbers are those of the former open
@@ -4997,7 +5011,11 @@ to whom a guest opens their channel read-only (decision 6). Settled before
 the first code on the directory (coordinator, 2026-11-23): the fixed token
 in the presence subject and the seed for the name (decisions 7 and 9) are
 one field per identity, `anchor`: for today's identities today's name, for
-new ones `sub`, never changed. Two fields could only drift apart. A key
+new ones `sub`, never changed. Changed by the anchor fix for new identities (#86): a new identity after the
+import also takes its username when it is free, and only falls back to its
+`sub` when another identity holds that name; the host computes its agent's
+name from the username, and a name as anchor grants nothing (membership,
+the account index and claims go by `sub`). Two fields could only drift apart. A key
 `anchor.<value>` with the `sub` as its value keeps a value from being given
 out twice.
 
