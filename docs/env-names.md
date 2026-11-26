@@ -100,6 +100,11 @@ reason for the rule and its tests name each of them:
   `AUTH_KEYCLOAK_AUDIENCE`, `AUTH_NAME_BINDING`, `CONSOLE_OPERATOR_GROUP`:
   the login service's and the console's checks of who may do what.
 
+The rule covers every renamed name, not only these. A few more change
+behaviour silently when ignored without weakening a protection, for example
+`MM_LOGIN_NKEY`: a host falls back to an ephemeral key, and its sessions lose
+their names across a restart (#163). The refusal catches those too.
+
 `MM_REGISTRAR_KEYS` (the pinned registrar keys) is not on the list: it keeps
 its name and goes with the registrar (see
 [Goes with the registrar](#goes-with-the-registrar-10)).
