@@ -701,9 +701,9 @@ T0 = 1_800_000_000.0
 
 
 async def _presence(bus: NatsBus, who: str, seq: int, t: float, status: str = "online", bot: str = "",
-                    pending: int = 0) -> None:
+                    pending: int = 0, owner: str = "-") -> None:
     reply = _presence_reply(bus, seq, seq, t)[:-1] + str(pending)
-    await bus._on_presence_msg(FakeMsg(f"presence.-.{who}", reply, encode_presence(status, bot)))
+    await bus._on_presence_msg(FakeMsg(f"presence.{owner}.{who}", reply, encode_presence(status, bot)))
 
 
 async def _claim(bus: NatsBus, who: str, ch: str, seq: int, t: float) -> None:
@@ -2057,17 +2057,23 @@ def test_a_notice_decodes_strictly() -> None:
             decode_notice(bad)
 
 
+def test_a_dotted_owner_is_a_subject_token() -> None:
+    # "alice.example" is written "alice~example"; the notice reader accepts it.
+    assert natsbus.owner_of_token("alice~example") == "alice.example"
+    assert natsbus.owner_of_token("-") == ""  # no owner proven
+
+
 async def test_a_notice_reaches_the_callback_once_and_an_expired_one_never() -> None:
     seen: list[Notice] = []
     bus = NatsBus(_settings(), FakeLogin(), "alice", lambda _e: None, on_notice=seen.append)
-    await bus._on_presence_msg(FakeMsg("presence.notice.bob.v1", _presence_reply(bus, 1, 1, T0),
+    await bus._on_presence_msg(FakeMsg("presence.notice.bob.copied.v1", _presence_reply(bus, 1, 1, T0),
                                        encode_notice()))
     # A replay of the same record (a consumer made anew) is not told twice.
-    await bus._on_presence_msg(FakeMsg("presence.notice.bob.v1", _presence_reply(bus, 2, 2, T0 + 60),
+    await bus._on_presence_msg(FakeMsg("presence.notice.bob.copied.v1", _presence_reply(bus, 2, 2, T0 + 60),
                                        encode_notice()))
     assert [n.kind for n in seen] == ["session"]
     # One that expired before it was delivered is dropped.
-    await bus._on_presence_msg(FakeMsg("presence.notice.bob.v1", _presence_reply(bus, 3, 3, T0 + 7200),
+    await bus._on_presence_msg(FakeMsg("presence.notice.bob.copied.v1", _presence_reply(bus, 3, 3, T0 + 7200),
                                        encode_notice(sid="other-session")))
     assert len(seen) == 1
 
@@ -2084,13 +2090,28 @@ async def test_one_server_tells_a_notice() -> None:
     """RT-6.34: the named agent's server tells it when that agent is live, else the live agent
     with the smallest name, this one included - the same answer on every server."""
     bus = NatsBus(_settings(), FakeLogin(), "alice", lambda _e: None)
-    await _presence(bus, bus.name, 1, T0)
-    await _presence(bus, "agent-0aaa", 2, T0)
-    await _presence(bus, "agent-zzz", 3, T0)
+    await _presence(bus, bus.name, 1, T0, owner="alice")
+    await _presence(bus, "agent-0aaa", 2, T0, owner="alice")
+    await _presence(bus, "agent-zzz", 3, T0, owner="alice")
     assert bus.notice_teller("agent-zzz") == "agent-zzz"  # live: its own server
     assert bus.notice_teller("agent-missing") == "agent-0aaa"  # not live: the smallest live name
-    await _presence(bus, bus.name, 4, T0 + 100)  # only this one stays live
-    await _presence(bus, "agent-0aaa", 5, T0 + 100, status="bye")
-    await _presence(bus, "agent-zzz", 6, T0 + 100, status="bye")
+    await _presence(bus, bus.name, 4, T0 + 100, owner="alice")  # only this one stays live
+    await _presence(bus, "agent-0aaa", 5, T0 + 100, status="bye", owner="alice")
+    await _presence(bus, "agent-zzz", 6, T0 + 100, status="bye", owner="alice")
     assert bus.notice_teller("agent-0aaa") == bus.name
     assert bus.notice_teller("") == bus.name
+    # Another owner's agent, even with the smallest name, is no teller.
+    await _presence(bus, "agent-000", 7, T0 + 101, owner="bob")
+    assert bus.notice_teller("agent-missing") == bus.name
+
+
+def test_a_told_notice_survives_a_restart(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+    """RT-6.34: the consumer replays the last record per subject, so a restarted
+    server needs to know what it already told."""
+    from mattermost_ai_agent_bus import nats_port
+
+    monkeypatch.setenv("XDG_STATE_HOME", str(tmp_path))
+    assert nats_port._notice_told("bot-1") == 0.0
+    nats_port._notice_mark("bot-1", T0 + 5)
+    assert nats_port._notice_told("bot-1") == T0 + 5
+    assert nats_port._notice_told("bot-2") == 0.0  # per bot, not shared

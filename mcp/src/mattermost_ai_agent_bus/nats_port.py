@@ -106,6 +106,7 @@ import dataclasses
 import json
 import logging
 import os
+from pathlib import Path
 import secrets
 import time
 import weakref
@@ -298,6 +299,42 @@ def read_props(wire: Mapping[str, natsbus.Prop], prefix: str) -> dict[str, Any]:
     return out
 
 
+def _notice_file(uid: str) -> Path:
+    from .session_file import state_dir
+
+    return state_dir() / f"notice-{uid}.env"
+
+
+def _notice_told(uid: str) -> float:
+    """The newest notice iat this server told, kept across restarts (the consumer
+    replays the last record per subject); 0 for none."""
+    try:
+        text = _notice_file(uid).read_text(encoding="utf-8", errors="replace")
+    except OSError:
+        return 0.0
+    for line in text.splitlines():
+        k, _, v = line.partition("=")
+        if k == "IAT":
+            try:
+                return float(v)
+            except ValueError:
+                return 0.0
+    return 0.0
+
+
+def _notice_mark(uid: str, iat: float) -> None:
+    """Remember that the notice was told, so a restarted server does not tell it again."""
+    from .session_file import write_private
+
+    try:
+        write_private(_notice_file(uid), f"IAT={int(iat)}\n")
+    except OSError as exc:
+        # The DM is out; a restart may repeat it, which the log says.
+        log.warning("login notice: the told mark was not written: %s", type(exc).__name__)
+
+
+
+
 class NatsPort:
     """The chat port of a session with a home over NATS (module docstring). Members
     not defined here are the Mattermost adapter's (`__getattr__`)."""
@@ -359,7 +396,7 @@ class NatsPort:
             raise AttributeError(name)
         return getattr(self.inner, name)
 
-    # --- lifecycle ---------------------------------------------------------------
+# --- lifecycle ---------------------------------------------------------------
     @property
     def homes(self) -> tuple[str, ...]:
         return self._homes
@@ -464,9 +501,10 @@ class NatsPort:
     async def _on_notice(self, notice: natsbus.Notice) -> None:
         """A theft notice from the login service (RT-6.34): DM it to the responsible human.
 
-        Every live server of the owner reads the record and tells its human, so the owner
-        hears it at once; the DM names the agent the record names, else this bot. It is the
-        server's own post, counted as overhead (RT-6.9), never into a channel."""
+        Every live server of the owner reads the record, and exactly one tells - the named
+        agent's if it is live, else the owner's live agent with the smallest name - so the
+        owner hears it once; the DM names the agent the record names, else this bot. It is
+        the server's own post, counted as overhead (RT-6.9), never into a channel."""
         from . import login_notice, stats
         from .owners import responsible_human
 
@@ -484,6 +522,11 @@ class NatsPort:
             return
         who = responsible_human()
         try:
+            me = await self._bot_id()
+            if notice.iat <= _notice_told(me):
+                # Told before a restart: the consumer replays the last record.
+                log.info("login notice: already told (iat %d)", int(notice.iat))
+                return
             if not who:
                 log.info("login notice: no responsible human to tell")
                 return
@@ -497,9 +540,11 @@ class NatsPort:
             text = login_notice.notice_text(agent, notice.kind)
             stats.record("post", chars=len(text), w="other")
             await self.post(text, channel_id=await self.direct_channel_with(uid))
+            _notice_mark(me, notice.iat)
             log.warning("login notice: told %s by DM (%s, %s)", who, notice.kind, notice.network)
         except Exception as exc:  # noqa: BLE001 — the next notice tries again
             log.warning("login notice: the DM to %s failed: %s", who, exc)
+
 
     async def _announce_membership(self, bus: BusLike) -> None:
         """Tell the bus to announce this session's membership of every channel it asked

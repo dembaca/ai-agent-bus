@@ -1838,8 +1838,11 @@ class NatsBus:
     def notice_teller(self, agent: str) -> str:
         """Which live agent of this owner tells a notice (RT-6.34): the named agent if it is
         live, else the live agent with the smallest name, this one included. Every server
-        answers from presence alone, so one DM goes out, not one per server."""
-        live = {a for a in self._presence if self.presence_of(a) != "offline"}
+        answers from presence alone, so one DM goes out, not one per server - and only the
+        owner's own agents count, never another owner's."""
+        owner = self._owners.get(self.name) or self._owner
+        live = {a for a in self._presence
+                if self.presence_of(a) != "offline" and self._owners.get(a, "") == owner}
         live.add(self.name)
         return agent if agent in live else min(live)
 
@@ -2041,13 +2044,15 @@ class NatsBus:
         except Exception as exc:
             log.warning("nats bus: person callback failed: %s", type(exc).__name__)
 
-    async def _on_notice_msg(self, anchor: str, msg: Any, ack: Any) -> None:
+    async def _on_notice_msg(self, anchor: str, verdict: str, msg: Any, ack: Any) -> None:
         """A theft notice (RT-6.34): dropped once expired, told once per record."""
         notice = decode_notice(msg.data)
+        if notice.verdict != verdict:
+            raise MessageError("the notice's verdict is not the subject's")
         if notice.exp < ack.time:
             log.info("nats bus: a login notice that expired (seq %d) is dropped", ack.stream_seq)
             return
-        key = (anchor, notice.kind, notice.sid, notice.iat)
+        key = (owner_of_token(anchor), notice.kind, notice.sid, notice.iat)
         if key in self._notice_seen:
             return
         self._notice_seen[key] = time.monotonic()
@@ -2139,8 +2144,9 @@ class NatsBus:
                 seq0, at0 = members.get(t[3], (0, 0.0))
                 if (ack.time, ack.stream_seq) > (at0, seq0):
                     members[t[3]] = (ack.stream_seq, ack.time)
-            elif len(t) == 4 and t[0] == p and t[1] == "notice" and t[3] == "v1" and OWNER_RE.fullmatch(t[2]):
-                await self._on_notice_msg(t[2], msg, ack)
+            elif len(t) == 5 and t[0] == p and t[1] == "notice" and t[3] in NOTICE_VERDICTS \
+                    and t[4] == "v1" and owner_of_token(t[2]):
+                await self._on_notice_msg(t[2], t[3], msg, ack)
             elif len(t) == 5 and t[0] == p and t[1:3] == ["account", "mattermost"] and t[4] == "v1" \
                     and BOT_RE.fullmatch(t[3]):
                 # RT-6.42 step 3: the newest message counts; one that does not decode erases

@@ -330,10 +330,10 @@ func TestThePresenceConsumerDeliversItsOwnersNotice(t *testing.T) {
 	}
 	ok := false
 	for _, f := range filters {
-		if match(f, "presence.notice.alice.v1") {
+		if match(f, "presence.notice.alice.copied.v1") || match(f, "presence.notice.alice.moved.v1") {
 			ok = true
 		}
-		if match(f, "presence.notice.bob.v1") {
+		if match(f, "presence.notice.bob.copied.v1") {
 			t.Errorf("filter %s delivers another owner's notice", f)
 		}
 	}
@@ -349,7 +349,7 @@ func TestThePresenceConsumerDeliversItsOwnersNotice(t *testing.T) {
 	}
 	ok = false
 	for _, f := range filters {
-		if match(f, "presence.notice.alice~example.v1") {
+		if match(f, "presence.notice.alice~example.copied.v1") {
 			ok = true
 		}
 	}

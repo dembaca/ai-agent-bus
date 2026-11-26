@@ -153,7 +153,7 @@ func TestANoticeGoesToTheOwner(t *testing.T) {
 	if len(n.subjects) != 2 {
 		t.Fatalf("published %d notices, want 2 (the host key's move, the session's copy)", len(n.subjects))
 	}
-	if n.subjects[0] != "presence.notice.bob~example.v1" || n.subjects[1] != n.subjects[0] {
+	if n.subjects[0] != "presence.notice.bob~example.moved.v1" || n.subjects[1] != "presence.notice.bob~example.copied.v1" {
 		t.Fatalf("subjects %v", n.subjects)
 	}
 	var host, session Notice
@@ -211,5 +211,27 @@ func TestAnUnauthenticatedIssueNeverTouchesTheWatcher(t *testing.T) {
 	}
 	if len(sids) != 1 || sids[0] != "sess-lab" {
 		t.Fatalf("the sessions the guard saw: %v, want sess-lab", sids)
+	}
+}
+
+// RT-6.34: a refused session's retries publish nothing new within the block.
+func TestARetryDoesNotTellAgain(t *testing.T) {
+	n := &stubNoticer{}
+	s := &Service{cfg: Config{}.WithDefaults()}
+	s.SetWatcher(&stubWatch{host: theft.Same, session: theft.Copied})
+	s.SetNoticer(n)
+	now := time.Date(2026, 11, 26, 9, 0, 0, 0, time.UTC)
+	for i := 0; i < 5; i++ {
+		w := s.watchTheft("UAHOST", "sess-1", "203.0.113.7:1")
+		s.publishNotices(context.Background(), w, "bob", "agent-abc", "UAHOST", "sess-1", now.Add(time.Duration(i)*time.Minute))
+	}
+	if len(n.subjects) != 1 {
+		t.Fatalf("five retries published %d notices, want 1", len(n.subjects))
+	}
+	// After the cooldown a new copy tells again.
+	w := s.watchTheft("UAHOST", "sess-1", "203.0.113.7:1")
+	s.publishNotices(context.Background(), w, "bob", "agent-abc", "UAHOST", "sess-1", now.Add(NoticeCooldown))
+	if len(n.subjects) != 2 {
+		t.Fatalf("after the cooldown: %d notices, want 2", len(n.subjects))
 	}
 }

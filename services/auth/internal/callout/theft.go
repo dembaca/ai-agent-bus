@@ -107,9 +107,10 @@ func (s *Service) noticeHook() Noticer {
 }
 
 // noticeSubject is where the owner's notice is published (RT-6.34): the owner
-// as one subject token, on the login service's presence prefix.
-func (s *Service) noticeSubject(anchor string) string {
-	return s.cfg.Subjects.Presence + ".notice." + ownerToken(anchor) + ".v1"
+// as one subject token and the verdict, on the login service's presence prefix.
+// One subject per verdict, so a move never erases a waiting copy.
+func (s *Service) noticeSubject(anchor, verdict string) string {
+	return s.cfg.Subjects.Presence + ".notice." + ownerToken(anchor) + "." + verdict + ".v1"
 }
 
 // watch is what the guard said about one issue.
@@ -145,7 +146,6 @@ func (s *Service) publishNotices(ctx context.Context, w watch, anchor, agent, nk
 	if n == nil {
 		return
 	}
-	subject := s.noticeSubject(anchor)
 	for _, one := range []struct {
 		kind, id string
 		v        theft.Verdict
@@ -156,16 +156,52 @@ func (s *Service) publishNotices(ctx context.Context, w watch, anchor, agent, nk
 		if one.id == "" || (one.v != theft.Moved && one.v != theft.Copied) {
 			continue
 		}
-		body, err := json.Marshal(Notice{V: 1, Kind: one.kind, Verdict: one.v.String(), SID: one.id,
+		verdict := one.v.String()
+		// One notice per id and verdict in a block's time: a refused session's
+		// every retry says "copied" again, and the owner must not get a DM per
+		// retry (RT-6.34). A copy after a move is its own notice.
+		if !s.noticeDue(one.kind+"|"+one.id+"|"+verdict, now) {
+			continue
+		}
+		body, err := json.Marshal(Notice{V: 1, Kind: one.kind, Verdict: verdict, SID: one.id,
 			Network: w.network, Agent: agent, Iat: now.Unix(), Exp: now.Add(NoticeLifetime).Unix()})
 		if err != nil {
 			continue
 		}
 		c, cancel := context.WithTimeout(ctx, 2*time.Second)
-		err = n.Notice(c, subject, body)
+		err = n.Notice(c, s.noticeSubject(anchor, verdict), body)
 		cancel()
 		if err != nil {
 			s.log.Warn("auth callout", "event", "notice not published", "kind", one.kind, "err", err)
+			continue
+		}
+		s.noticePublished(one.kind+"|"+one.id+"|"+verdict, now)
+	}
+}
+
+// NoticeCooldown is how long one id and verdict goes unnoticed after a record:
+// the guard's block, so a refused session's retries tell the owner once.
+const NoticeCooldown = 30 * time.Minute
+
+// noticeDue says whether the key was not published within NoticeCooldown.
+func (s *Service) noticeDue(key string, now time.Time) bool {
+	s.nmu.Lock()
+	defer s.nmu.Unlock()
+	at, ok := s.notices[key]
+	return !ok || now.Sub(at) >= NoticeCooldown
+}
+
+func (s *Service) noticePublished(key string, now time.Time) {
+	s.nmu.Lock()
+	defer s.nmu.Unlock()
+	if s.notices == nil {
+		s.notices = map[string]time.Time{}
+	}
+	s.notices[key] = now
+	// Keep the map small: drop what is older than a day.
+	for k, at := range s.notices {
+		if now.Sub(at) > 24*time.Hour {
+			delete(s.notices, k)
 		}
 	}
 }

@@ -135,14 +135,16 @@ type Service struct {
 	subLocks map[string]*subLock // one lock per identity while its account record is written
 
 	cmu        sync.RWMutex
-	consumers  Consumers   // nil: none are made
-	anchors    Anchors     // nil: the anchor is the owner's name, as before ADR-016
-	attester   Attester    // nil: no attestation is published
-	trust      Trust       // nil: a trusted name is its own anchor
-	trustIndex TrustIndex  // nil: no trust index is written (RT-6.43 step 3)
-	watcher    Watcher     // nil: no theft detection (#154 step 3)
-	noticer    Noticer     // nil: no owner's notice is published (#154 step 3)
-	persons    personHooks // the console's path (person.go); unset: none issued
+	consumers  Consumers            // nil: none are made
+	anchors    Anchors              // nil: the anchor is the owner's name, as before ADR-016
+	attester   Attester             // nil: no attestation is published
+	trust      Trust                // nil: a trusted name is its own anchor
+	trustIndex TrustIndex           // nil: no trust index is written (RT-6.43 step 3)
+	watcher    Watcher              // nil: no theft detection (#154 step 3)
+	noticer    Noticer              // nil: no owner's notice is published (#154 step 3)
+	nmu        sync.Mutex           // guards notices
+	notices    map[string]time.Time // notice key -> when it was published
+	persons    personHooks          // the console's path (person.go); unset: none issued
 }
 
 // SetAnchors sets where anchors come from. nil (the default) takes the
@@ -345,16 +347,11 @@ func (s *Service) authorize(ctx context.Context, req *jwt.AuthorizationRequestCl
 		return "", append(who, "owner", id.Owner, "sub", id.Subject), err
 	}
 	anchor := id.Owner
-	if a := s.anchorHook(); a != nil {
-		if anchor, err = a.Anchor(ctx, id.Subject, id.Owner); err != nil {
+	ah := s.anchorHook()
+	if ah != nil {
+		if anchor, err = ah.Anchor(ctx, id.Subject, id.Owner); err != nil {
 			return "", append(who, "owner", id.Owner, "sub", id.Subject),
 				fmt.Errorf("%w: anchor: %v", token.ErrDirectory, err)
-		}
-		if ai, ok := a.(AccountIndex); ok && id.ChatOpenID {
-			if err := ai.Account(ctx, id.Subject, id.Owner); err != nil {
-				return "", append(who, "owner", id.Owner, "sub", id.Subject),
-					fmt.Errorf("%w: account index: %v", token.ErrDirectory, err)
-			}
 		}
 	}
 	agent := s.cfg.NamePrefix + name(anchor, host)
@@ -369,6 +366,14 @@ func (s *Service) authorize(ctx context.Context, req *jwt.AuthorizationRequestCl
 	s.publishNotices(ctx, w, anchor, agent, host, id.SID, now)
 	if w.session == theft.Copied {
 		return "", append(who, "session", id.SID), ErrCopiedUse
+	}
+	// Only a credential that is issued writes the chat account's record
+	// (RT-6.42): a refused one leaves the directory as it is.
+	if ai, ok := ah.(AccountIndex); ok && id.ChatOpenID {
+		if err := ai.Account(ctx, id.Subject, id.Owner); err != nil {
+			return "", append(who, "owner", id.Owner, "sub", id.Subject),
+				fmt.Errorf("%w: account index: %v", token.ErrDirectory, err)
+		}
 	}
 	channels, err := s.grant(ctx, id.Owner, id.Subject, hello)
 	if err != nil {

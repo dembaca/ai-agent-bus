@@ -3857,11 +3857,13 @@ credentials and their renewal (point 7) that rest on it.
      that returns twice to an earlier network within 30 minutes is a copy:
      the session is refused for 30 minutes (a retry included), the host key
      is reported only. Each move and copy goes to the owning human on the
-     bus as a notice on `<presence>.notice.<anchor>.v1`, a subject only the
-     login service may publish, filtered into each of the owner's agents'
-     presence consumers; the owner's live MCP servers pass a copied notice
-     on as one DM (the named agent's server if it is live, else the owner's
-     live agent with the smallest name, from presence alone). It holds no
+     bus as a notice on `<presence>.notice.<anchor>.<verdict>.v1` (one
+     subject per verdict; one record per id and verdict in 30 minutes), a
+     subject only the login service may publish, filtered into each of the
+     owner's agents' presence consumers; the owner's live MCP servers pass a
+     copied notice on as one DM (the named agent's server if it is live, else
+     the owner's live agent with the smallest name, from presence alone),
+     once per record across restarts. It holds no
      Keycloak admin right: the owner decided on 2026-11-26 that a stolen
      service account token weighs far more than one person's session. So
      the stolen refresh token stays valid at Keycloak until it runs out or

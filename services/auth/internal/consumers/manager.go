@@ -250,11 +250,17 @@ func streamErr(name string, err error) error {
 	return fmt.Errorf("stream %s: %w", name, err)
 }
 
-// ownerToken is an anchor as one subject token: "." becomes "~", as the
-// login service writes it (callout.ownerToken).
+// ownerToken is an anchor as one subject token: "." becomes "~", as the login
+// service writes it (callout.ownerToken); an anchor that is no lower-case
+// username gives "-", as there too, so the filter and the publish agree.
 func ownerToken(anchor string) string {
+	if !ownerRE.MatchString(anchor) {
+		return "-"
+	}
 	return strings.ReplaceAll(anchor, ".", "~")
 }
+
+var ownerRE = regexp.MustCompile(`^[a-z0-9][a-z0-9._-]{0,63}$`)
 
 // spec is one consumer an agent should have.
 type spec struct {
@@ -274,9 +280,11 @@ func (m *Manager) desired(agent, anchor string, channels []string) []spec {
 	// account is, and whether it approves)
 	filters := []string{m.cfg.Presence + ".*.*", m.cfg.Presence + ".attest.*.v1",
 		m.cfg.Presence + ".account.mattermost.*.v1",
-		// The login service's notice about this owner's sessions and host keys
-		// (RT-6.34): it is the owner's, and the subject's anchor is the proof.
-		m.cfg.Presence + ".notice." + ownerToken(anchor) + ".v1"}
+		// The login service's notices about this owner's sessions and host keys
+		// (RT-6.34), one subject per verdict so a move never erases a copy: they
+		// are the owner's, and the subject's anchor is the proof.
+		m.cfg.Presence + ".notice." + ownerToken(anchor) + ".copied.v1",
+		m.cfg.Presence + ".notice." + ownerToken(anchor) + ".moved.v1"}
 	for _, ch := range channels {
 		out = append(out, spec{stream: BusStream, name: agent + "_ch_" + ch, channel: ch,
 			deliver: DeliverPrefix + "." + agent + ".ch." + ch, filters: []string{m.cfg.Bus + ".ch." + ch + ".*"}},
