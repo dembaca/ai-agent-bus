@@ -30,6 +30,19 @@ before 0.5.0 are described in the git history.
   clear text. Mattermost's API does not redirect; a 30x is now the call's
   error.
 
+### Docs
+
+- **The deployment and building block views say what runs in the lab**
+  (#108). The central bridge carries people's posts and reactions onto
+  NATS in the lab since 2026-11-25 (step 2, RT-6.42), and the deployment
+  view's introduction names the bridge and the operator console beside
+  the login service as the lab's containers.
+- **A coordinator listening as a channel and the silence rule** (#108,
+  the coordinator scenario, RT-6.6): such a session counts as alive while
+  its MCP server renews the status lease and its 👀 on receipt comes within
+  the 45 s; one whose host stopped delivering, so no 👀 comes, is silent
+  like any other.
+
 ## 0.101.0
 
 Needs: jetstream user first with create, info, consumer rights on stats, publish on person records, then the login service.
