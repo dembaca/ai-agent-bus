@@ -5,6 +5,7 @@ package config
 import (
 	"fmt"
 	"net"
+	"net/netip"
 	"net/url"
 	"os"
 	"regexp"
@@ -55,7 +56,9 @@ type Config struct {
 	// DebugCommandTokens is CB_BRIDGE_DEBUG_COMMAND_TOKEN_FILE; none: no debug command.
 	DebugCommandTokens []string
 	RecordsBucket      string // CB_BRIDGE_RECORDS_BUCKET, default BUS_BRIDGE_RECORDS
-	TrustedProxyHops   int    // CB_BRIDGE_TRUSTED_PROXY_HOPS, default 0: the header is ignored
+	// TrustedProxies is CB_BRIDGE_TRUSTED_PROXIES: the IPs or CIDRs whose
+	// X-Forwarded-For counts; empty: the header is ignored.
+	TrustedProxies []string
 
 	// BotKeep is CB_BRIDGE_MM_BOT_KEEP, default 24h, at least 1h: the sweep
 	// disables a bot the bridge made once its agent showed no presence for
@@ -95,7 +98,7 @@ func Load(env *Env) (Config, error) {
 	mandateTokenFile := strings.TrimSpace(get("CB_BRIDGE_MANDATE_COMMAND_TOKEN_FILE", ""))
 	debugTokenFile := strings.TrimSpace(get("CB_BRIDGE_DEBUG_COMMAND_TOKEN_FILE", ""))
 	recordsBucket := strings.TrimSpace(get("CB_BRIDGE_RECORDS_BUCKET", ""))
-	proxyHops := strings.TrimSpace(get("CB_BRIDGE_TRUSTED_PROXY_HOPS", ""))
+	trustedProxies := strings.TrimSpace(get("CB_BRIDGE_TRUSTED_PROXIES", ""))
 	// new in #151 step 2: no old spelling
 	botKeep := strings.TrimSpace(get("CB_BRIDGE_MM_BOT_KEEP", ""))
 	c := Config{
@@ -171,12 +174,21 @@ func Load(env *Env) (Config, error) {
 		}
 		c.CommandsAllowHTTP = allow
 	}
-	if v := proxyHops; v != "" {
-		n, err := strconv.Atoi(v)
-		if err != nil || n < 0 {
-			return Config{}, fmt.Errorf("CB_BRIDGE_TRUSTED_PROXY_HOPS %q is no number of proxies", v)
+	if trustedProxies != "" {
+		for _, raw := range strings.Split(trustedProxies, ",") {
+			raw = strings.TrimSpace(raw)
+			if raw == "" {
+				continue
+			}
+			if _, err := netip.ParseAddr(raw); err == nil {
+				c.TrustedProxies = append(c.TrustedProxies, raw)
+				continue
+			}
+			if _, err := netip.ParsePrefix(raw); err != nil {
+				return Config{}, fmt.Errorf("CB_BRIDGE_TRUSTED_PROXIES %q is no IP or CIDR", raw)
+			}
+			c.TrustedProxies = append(c.TrustedProxies, raw)
 		}
-		c.TrustedProxyHops = n
 	}
 	for _, h := range strings.Split(homes, ",") {
 		if h = strings.TrimSpace(h); h != "" {

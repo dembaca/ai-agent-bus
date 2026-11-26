@@ -67,7 +67,8 @@ func newFakeMM(t *testing.T) *httptest.Server {
 		guestUser: {200, fmt.Sprintf(`{"id":%q,"username":"guest","roles":"system_guest"}`, guestUser)},
 	}
 	channels := map[string]string{modeChan: "O", homeChan: "O", modeDM: "D"}
-	members := map[string]bool{modeChan + "/" + human: true, homeChan + "/" + human: true, modeDM + "/" + human: true}
+	members := map[string]bool{modeChan + "/" + human: true, homeChan + "/" + human: true, modeDM + "/" + human: true,
+		homeChan + "/" + otherUser: true}
 	names := map[string]string{"home": homeChan}
 	mux := http.NewServeMux()
 	mux.HandleFunc("GET /api/v4/users/{id}", func(w http.ResponseWriter, r *http.Request) {
@@ -448,35 +449,37 @@ func TestABodyOverTheLimitIs413(t *testing.T) {
 	if rr.Code != http.StatusRequestEntityTooLarge {
 		t.Fatalf("%d %s", rr.Code, rr.Body.String())
 	}
-	if s.rate.hits["192.0.2.1"] != nil {
+	if len(s.userRate.hits) != 0 || len(s.channelRate.hits) != 0 {
 		t.Fatal("the refused body spent a rate hit")
 	}
 }
 
-// clientIP counts X-Forwarded-For from the right by the trusted hops, as the
-// registrar does.
-func TestTheClientIPCountsTrustedHopsFromTheRight(t *testing.T) {
+// The read buckets count the peer, and read X-Forwarded-For only when that peer
+// is a configured trusted proxy; the first address from the right that is not a
+// proxy counts, a junk entry or a chain of only proxies falls back to the peer.
+func TestTheReadClientIPUsesTrustedProxiesOnly(t *testing.T) {
+	proxies, err := parseProxies([]string{"10.0.0.0/8", "2001:db8::1"})
+	if err != nil {
+		t.Fatal(err)
+	}
 	cases := []struct {
 		name string
-		hops int
+		peer string
 		xff  []string
 		want string
 	}{
-		{"forged first entry, one hop", 1, []string{"6.6.6.6, 203.0.113.9"}, "203.0.113.9"},
-		{"one hop, single entry", 1, []string{"203.0.113.9"}, "203.0.113.9"},
-		{"two hops", 2, []string{"6.6.6.6, 203.0.113.9, 10.0.0.2"}, "203.0.113.9"},
-		{"too few entries", 2, []string{"203.0.113.9"}, "192.0.2.1"},
-		{"no header", 1, nil, "192.0.2.1"},
-		{"zero hops ignores the header", 0, []string{"203.0.113.9"}, "192.0.2.1"},
-		{"trailing empty entry", 1, []string{"203.0.113.9,"}, "192.0.2.1"},
-		{"entry that is not an IP", 1, []string{"203.0.113.9, evil"}, "192.0.2.1"},
-		{"entry with a port", 1, []string{"203.0.113.9:80"}, "192.0.2.1"},
-		{"repeated header lines are joined", 1, []string{"6.6.6.6", "203.0.113.9"}, "203.0.113.9"},
+		{"a trusted proxy names the client", "10.1.2.3:4711", []string{"6.6.6.6, 203.0.113.9"}, "203.0.113.9"},
+		{"further trusted proxies are skipped", "10.1.2.3:4711", []string{"203.0.113.9, 10.9.9.9"}, "203.0.113.9"},
+		{"an untrusted peer's header is ignored", "192.0.2.1:4711", []string{"203.0.113.9"}, "192.0.2.1"},
+		{"a junk entry falls back to the peer", "10.1.2.3:4711", []string{"203.0.113.9, evil"}, "10.1.2.3"},
+		{"a chain of only proxies falls back", "10.1.2.3:4711", []string{"10.4.4.4"}, "10.1.2.3"},
+		{"no header", "10.1.2.3:4711", nil, "10.1.2.3"},
+		{"an IPv6 proxy as configured", "[2001:db8::1]:4711", []string{"2001:db8::9"}, "2001:db8::9"},
 	}
 	for _, c := range cases {
-		s := &Server{trustedProxyHops: c.hops}
+		s := &Server{trustedProxies: proxies}
 		r := httptest.NewRequest(http.MethodGet, "/", nil)
-		r.RemoteAddr = "192.0.2.1:4711"
+		r.RemoteAddr = c.peer
 		for _, h := range c.xff {
 			r.Header.Add("X-Forwarded-For", h)
 		}
@@ -484,11 +487,48 @@ func TestTheClientIPCountsTrustedHopsFromTheRight(t *testing.T) {
 			t.Errorf("%s: got %q, want %q", c.name, got, c.want)
 		}
 	}
-	s := &Server{}
-	r := httptest.NewRequest(http.MethodGet, "/", nil)
-	r.RemoteAddr = "[2001:db8::1]:4711"
-	if got := s.clientIP(r); got != "2001:db8::1" {
-		t.Errorf("ipv6 peer: got %q", got)
+}
+
+// The command buckets are one per Mattermost user and one per channel, filled
+// after the token check: a busy person does not drain a channel, and a busy
+// channel does not drain a person.
+func TestTheCommandBucketsArePerUserAndPerChannel(t *testing.T) {
+	now := testNow
+	s := newTestServer(t, nil, &now, []string{"mode-a"}, nil, nil)
+	cmd := s.Commands()
+	for i := 0; i < 30; i++ {
+		if rr := slash(t, cmd, "/register/v1/mode", "mode-a", human, homeChan, "status"); rr.Code != http.StatusOK {
+			t.Fatalf("command %d: %d %s", i+1, rr.Code, rr.Body.String())
+		}
+	}
+	if rr := slash(t, cmd, "/register/v1/mode", "mode-a", otherUser, homeChan, "status"); rr.Code != http.StatusTooManyRequests {
+		t.Fatalf("a second person in the full channel: %d", rr.Code)
+	}
+	if rr := slash(t, cmd, "/register/v1/mode", "mode-a", human, modeChan, "status"); rr.Code != http.StatusTooManyRequests {
+		t.Fatalf("the full person in another channel: %d", rr.Code)
+	}
+}
+
+// A person at its own limit is refused in a fresh channel, while another person
+// there is not: the person's bucket, not the channel's, is what filled.
+func TestTheCommandBucketIsPerUserAcrossChannels(t *testing.T) {
+	now := testNow
+	s := newTestServer(t, nil, &now, []string{"mode-a"}, nil, nil)
+	cmd := s.Commands()
+	for i := 0; i < 30; i++ {
+		ch := modeChan
+		if i%2 == 1 {
+			ch = modeDM
+		}
+		if rr := slash(t, cmd, "/register/v1/mode", "mode-a", human, ch, "status"); rr.Code != http.StatusOK {
+			t.Fatalf("command %d: %d %s", i+1, rr.Code, rr.Body.String())
+		}
+	}
+	if rr := slash(t, cmd, "/register/v1/mode", "mode-a", human, homeChan, "status"); rr.Code != http.StatusTooManyRequests {
+		t.Fatalf("the full person in a fresh channel: %d", rr.Code)
+	}
+	if rr := slash(t, cmd, "/register/v1/mode", "mode-a", otherUser, homeChan, "status"); rr.Code != http.StatusOK {
+		t.Fatalf("another person in a fresh channel: %d %s", rr.Code, rr.Body.String())
 	}
 }
 

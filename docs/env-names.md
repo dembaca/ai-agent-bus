@@ -508,7 +508,7 @@ Mattermost; the column says whether the setting itself is about Mattermost.
 | `CB_BRIDGE_MODE_COMMAND_TOKEN_FILE` | `CB_BRIDGE_MODE_COMMAND_TOKEN_FILE` | yes | same | the mode command's tokens, 0600 |
 | `CB_BRIDGE_RECORDS_BUCKET` | `CB_BRIDGE_RECORDS_BUCKET` | no | `internal/config/config.go` | default `BUS_BRIDGE_RECORDS` |
 | `CB_BRIDGE_SIGNING_KEY_FILE` | `CB_BRIDGE_SIGNING_KEY_FILE` | no | `internal/config/config.go`, `cmd/bridged/main.go` | base64 or base64url of a 32-byte seed, 0600 |
-| `CB_BRIDGE_TRUSTED_PROXY_HOPS` | `CB_BRIDGE_TRUSTED_PROXY_HOPS` | no | `internal/config/config.go` | default 0: the header is ignored |
+| `CB_BRIDGE_TRUSTED_PROXIES` | `CB_BRIDGE_TRUSTED_PROXIES` | no | `internal/config/config.go`, `internal/commands` | IPs or CIDRs, comma-separated; only their `X-Forwarded-For` counts for the read buckets, empty: the peer's address |
 
 `BRIDGE_BOT_PREFIX` and `BRIDGE_HIDE_BOT_DM` (#166) are about Mattermost but
 have no `MM` in their names; the rename gives them one, as the rule says:

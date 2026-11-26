@@ -36,7 +36,7 @@ func TestTheCommandsSettings(t *testing.T) {
 
 	c, err := load(nil)
 	if err != nil || c.CommandsListen != "" || len(c.ModeCommandTokens) != 0 ||
-		c.CommandsPlainHTTP || c.RecordsBucket != "BUS_BRIDGE_RECORDS" || c.TrustedProxyHops != 0 {
+		c.CommandsPlainHTTP || c.RecordsBucket != "BUS_BRIDGE_RECORDS" || len(c.TrustedProxies) != 0 {
 		t.Fatalf("off: %+v %v", c, err)
 	}
 
@@ -112,23 +112,24 @@ func TestTheCommandsSettings(t *testing.T) {
 	}
 }
 
-// CB_BRIDGE_TRUSTED_PROXY_HOPS is a count of proxies: zero (the default), a
-// positive number, never negative or junk.
-func TestTheTrustedProxyHopsSetting(t *testing.T) {
+// CB_BRIDGE_TRUSTED_PROXIES names the addresses whose X-Forwarded-For counts:
+// one IP, a CIDR, a list; junk or a bad prefix is an error naming it.
+func TestTheTrustedProxiesSetting(t *testing.T) {
 	load := func(v string) (Config, error) {
 		env := loadable()
 		if v != "" {
-			env["CB_BRIDGE_TRUSTED_PROXY_HOPS"] = v
+			env["CB_BRIDGE_TRUSTED_PROXIES"] = v
 		}
 		return Load(mapEnv(env, nil))
 	}
-	for v, want := range map[string]int{"": 0, "0": 0, "1": 1, "3": 3} {
-		if c, err := load(v); err != nil || c.TrustedProxyHops != want {
-			t.Errorf("%q: %d, %v", v, c.TrustedProxyHops, err)
+	for v, want := range map[string]int{"": 0, "10.0.0.2": 1, "10.0.0.0/8": 1,
+		"10.0.0.0/8, 2001:db8::/32": 2, "10.0.0.0/8, , 192.0.2.1": 2} {
+		if c, err := load(v); err != nil || len(c.TrustedProxies) != want {
+			t.Errorf("%q: %v, %v", v, c.TrustedProxies, err)
 		}
 	}
-	for _, v := range []string{"-1", "many"} {
-		if _, err := load(v); err == nil || !strings.Contains(err.Error(), "CB_BRIDGE_TRUSTED_PROXY_HOPS") {
+	for _, v := range []string{"many", "10.0.0.0/33", "10.0.0.2:80"} {
+		if _, err := load(v); err == nil || !strings.Contains(err.Error(), "CB_BRIDGE_TRUSTED_PROXIES") {
 			t.Errorf("%q: %v", v, err)
 		}
 	}

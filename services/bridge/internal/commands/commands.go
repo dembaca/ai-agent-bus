@@ -4,7 +4,8 @@
 // the bridge's NATS bucket instead of the registrar's files.
 //
 // The HTTP behavior is the registrar's: the same routes, the same bodies, the
-// same per-IP buckets (30 command posts and 120 reads a minute), the same 64 KiB
+// same buckets (30 command posts a minute, per user and per channel; 120
+// reads a minute per read route), the same 64 KiB
 // body limit, and 413 for a body over it.
 package commands
 
@@ -18,6 +19,7 @@ import (
 	"log/slog"
 	"net"
 	"net/http"
+	"net/netip"
 	"strings"
 	"sync"
 	"time"
@@ -30,7 +32,9 @@ const (
 	// maxBody is the largest command POST the registrar accepts; a slash
 	// command's form is far smaller.
 	maxBody = 64 << 10
-	// commandRatePerMin is the general bucket of the command posts.
+	// commandRatePerMin is the bucket of the command posts, one per Mattermost
+	// user and one per channel: behind the lab's ingress or Mattermost's one
+	// address a peer bucket would be one shared budget for everyone.
 	commandRatePerMin = 30
 	// readRatePerMin is each read route's own bucket, so agents polling their
 	// channel's record never starve a command.
@@ -56,9 +60,10 @@ type Config struct {
 	ModeTokens    []string
 	MandateTokens []string
 	DebugTokens   []string
-	// TrustedProxyHops is how many proxies append to X-Forwarded-For.
-	TrustedProxyHops int
-	Log              *slog.Logger
+	// TrustedProxies are the addresses (IPs or CIDRs) whose X-Forwarded-For is
+	// read: only a request from one of them names a client there.
+	TrustedProxies []string
+	Log            *slog.Logger
 	// Now is time.Now in production; the tests fix it.
 	Now func() time.Time
 }
@@ -68,15 +73,16 @@ type Config struct {
 type Server struct {
 	svc *core.Service
 	log *slog.Logger
-	// trustedProxyHops is how many proxies in front of the bridge append to
-	// X-Forwarded-For; 0 ignores the header, nothing is trusted unconfigured.
-	trustedProxyHops int
+	// trustedProxies are the configured proxies; the header counts only from
+	// one of them.
+	trustedProxies []netip.Prefix
 	// One adapter per command, verifying that command's own tokens; nil when
 	// its token list is empty.
 	modePort    core.ProviderPort
 	mandatePort core.ProviderPort
 	debugPort   core.ProviderPort
-	rate        *limiter
+	userRate    *limiter
+	channelRate *limiter
 	modeRate    *limiter
 	mandateRate *limiter
 	debugRate   *limiter
@@ -120,13 +126,18 @@ func New(cfg Config) (*Server, error) {
 		log: log,
 		svc: &core.Service{Provider: port, Log: log, Attestor: cfg.Attestor,
 			Modes: modes, Mandates: mandates, Debug: debug, Now: now},
-		trustedProxyHops: cfg.TrustedProxyHops,
-		rate:             newLimiter(commandRatePerMin),
-		modeRate:         newLimiter(readRatePerMin),
-		mandateRate:      newLimiter(readRatePerMin),
-		debugRate:        newLimiter(readRatePerMin),
+		userRate:    newLimiter(commandRatePerMin),
+		channelRate: newLimiter(commandRatePerMin),
+		modeRate:    newLimiter(readRatePerMin),
+		mandateRate: newLimiter(readRatePerMin),
+		debugRate:   newLimiter(readRatePerMin),
 	}
-	for _, l := range []*limiter{s.rate, s.modeRate, s.mandateRate, s.debugRate} {
+	proxies, err := parseProxies(cfg.TrustedProxies)
+	if err != nil {
+		return nil, err
+	}
+	s.trustedProxies = proxies
+	for _, l := range []*limiter{s.userRate, s.channelRate, s.modeRate, s.mandateRate, s.debugRate} {
 		l.now = now
 	}
 	if s.modePort, err = commandPort(mmcfg, cfg.ModeTokens, log); err != nil {
@@ -216,10 +227,6 @@ func (s *Server) command(port core.ProviderPort, run func(context.Context, core.
 			http.Error(w, "request body too large", http.StatusRequestEntityTooLarge)
 			return
 		}
-		if !s.rate.allow(s.clientIP(r)) {
-			http.Error(w, "rate limit", http.StatusTooManyRequests)
-			return
-		}
 		inv, err := port.VerifyInvocation(r)
 		if err != nil {
 			if body.tooBig {
@@ -233,6 +240,17 @@ func (s *Server) command(port core.ProviderPort, run func(context.Context, core.
 				return
 			}
 			s.fail(w, err)
+			return
+		}
+		// The caller and its channel are known only now, after the token check:
+		// one budget per person and one per channel, so a busy channel or a
+		// busy person cannot drain the other's.
+		if !s.userRate.allow("u:" + inv.Human.ID) {
+			http.Error(w, "rate limit", http.StatusTooManyRequests)
+			return
+		}
+		if !s.channelRate.allow("c:" + inv.ChannelID) {
+			http.Error(w, "rate limit", http.StatusTooManyRequests)
 			return
 		}
 		port.ReplyPrivate(w, inv, run(r.Context(), inv))
@@ -334,31 +352,75 @@ func (s *Server) record(w http.ResponseWriter, r *http.Request, rate *limiter,
 	}
 }
 
-// clientIP is the address the rate buckets count. Each trusted proxy appends the
-// peer it saw to X-Forwarded-For, so only entries from the right are the proxies'
-// own; the left ones are whatever the client sent. With too few entries, or none,
-// or with TrustedProxyHops 0, the connection's own address counts.
+// clientIP is the address the read buckets count: the connection's peer, or,
+// when that peer is a configured trusted proxy, the client it names in
+// X-Forwarded-For. The header is walked from the right, past further trusted
+// proxies, and the first address that is not one counts; an entry that is not
+// an IP, or a chain of nothing but proxies, falls back to the peer (never to a
+// header a stranger wrote).
 func (s *Server) clientIP(r *http.Request) string {
-	if n := s.trustedProxyHops; n > 0 {
-		var entries []string
-		for _, h := range r.Header.Values("X-Forwarded-For") {
-			entries = append(entries, strings.Split(h, ",")...)
-		}
-		if len(entries) >= n {
-			// Only an IP is a bucket key: junk (a port, text) falls back to the
-			// peer.
-			if ip := net.ParseIP(strings.TrimSpace(entries[len(entries)-n])); ip != nil {
-				return ip.String()
-			}
-		}
-	}
+	peer := r.RemoteAddr
 	if host, _, err := net.SplitHostPort(r.RemoteAddr); err == nil && host != "" {
-		return host
+		peer = host
 	}
-	return r.RemoteAddr
+	ip, err := netip.ParseAddr(peer)
+	if err != nil || !s.trusted(ip) {
+		return peer
+	}
+	var entries []string
+	for _, h := range r.Header.Values("X-Forwarded-For") {
+		entries = append(entries, strings.Split(h, ",")...)
+	}
+	for i := len(entries) - 1; i >= 0; i-- {
+		entry, err := netip.ParseAddr(strings.TrimSpace(entries[i]))
+		if err != nil {
+			return peer
+		}
+		if s.trusted(entry) {
+			continue
+		}
+		return entry.String()
+	}
+	return peer
 }
 
-// limiter is a per-IP sliding window of one minute.
+// trusted says whether addr is one of the configured proxies.
+func (s *Server) trusted(addr netip.Addr) bool {
+	for _, p := range s.trustedProxies {
+		if p.Contains(addr) {
+			return true
+		}
+	}
+	return false
+}
+
+// parseProxies reads the configured proxy addresses: an IP is a /32 or /128,
+// anything else must be a CIDR. An empty list trusts nothing.
+func parseProxies(list []string) ([]netip.Prefix, error) {
+	var out []netip.Prefix
+	for _, raw := range list {
+		raw = strings.TrimSpace(raw)
+		if raw == "" {
+			continue
+		}
+		if ip, err := netip.ParseAddr(raw); err == nil {
+			bits := 128
+			if ip.Is4() {
+				bits = 32
+			}
+			out = append(out, netip.PrefixFrom(ip, bits))
+			continue
+		}
+		p, err := netip.ParsePrefix(raw)
+		if err != nil {
+			return nil, fmt.Errorf("commands: %q is no IP or CIDR of a trusted proxy", raw)
+		}
+		out = append(out, p.Masked())
+	}
+	return out, nil
+}
+
+// limiter is a sliding window of one minute over a key.
 type limiter struct {
 	perMin int
 	// now is time.Now; a test fixes it.

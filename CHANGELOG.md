@@ -15,8 +15,10 @@ before 0.5.0 are described in the git history.
   step 3): `/agent-ask-mode`, `/agent-mandate` and `/agent-debug` move from the
   registrar to the central bridge — the registrar's handlers, the three stores
   and its routes (`POST /register/v1/mode|mandate|debug`, reads at
-  `/register/v1/modes|mandates|debug/<channel id>`), its per-IP buckets (30
-  command posts and 120 reads a minute) and its exact 404 bodies. The records
+  `/register/v1/modes|mandates|debug/<channel id>`), its rate limits (30 command posts a
+  minute, one budget per Mattermost user and one per channel; 120 reads a
+  minute per read route, counted by the peer, or by the client behind a
+  configured proxy) and its exact 404 bodies. The records
   now live in the `BUS_BRIDGE_RECORDS` bucket instead of files and are signed
   with the bridge's own Ed25519 key, whose `kid` follows the registrar's; the
   MCP server checks them as before, so the only host change is the new pin in

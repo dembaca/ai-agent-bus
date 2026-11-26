@@ -184,7 +184,7 @@ func run(log *slog.Logger) error {
 			MMURL: cfg.MMURL, MMTeam: cfg.MMTeam, AdminToken: cfg.AdminToken, AllowHTTP: cfg.MMAllowHTTP,
 			Attestor: att, Persister: records, ModeTokens: cfg.ModeCommandTokens,
 			MandateTokens: cfg.MandateCommandTokens, DebugTokens: cfg.DebugCommandTokens,
-			TrustedProxyHops: cfg.TrustedProxyHops, Log: log,
+			TrustedProxies: cfg.TrustedProxies, Log: log,
 		})
 		if err != nil {
 			return err
