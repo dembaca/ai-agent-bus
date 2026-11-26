@@ -79,13 +79,18 @@ class MetricsService:
 
     # -- the wiring ------------------------------------------------------------
 
-    async def _dial(self, seed: str, lost: Any = None) -> Any:
-        kw: dict[str, Any] = {"nkeys": seed, "allow_reconnect": False, "connect_timeout":
-                              int(CONNECT_TIMEOUT_SEC)}
+    async def _dial(self, seed: str, lost: asyncio.Event | None = None) -> Any:
+        def on_lost(_nc: Any) -> None:
+            # nats-py hands the callback the connection: a NATS restart or
+            # a lost one ends _serve (the loop connects again); without
+            # this it would wait forever
+            lost.set()
+
+        kw: dict[str, Any] = {"nkeys_seed_str": seed, "allow_reconnect": False,
+                              "connect_timeout": int(CONNECT_TIMEOUT_SEC)}
         if lost is not None:
-            # a NATS restart or a lost connection ends _serve (the loop
-            # connects again): without it, _serve would wait forever
-            kw["disconnected_cb"] = lost
+            kw["disconnected_cb"] = on_lost
+            kw["closed_cb"] = on_lost
         tls = tls_context(self.settings)
         if tls is not None:
             kw = {"tls": tls, "tls_handshake_first": True, **kw}
@@ -100,6 +105,15 @@ class MetricsService:
             log.warning("console: the metrics nkey seed is not readable (%s);"
                         " the agent numbers stay absent until it is",
                         type(exc).__name__)
+            return
+        try:
+            mode = Path(self.settings.metrics_nkey_file).stat().st_mode
+        except OSError:
+            return   # unreadable: warned above
+        if mode & 0o077:
+            log.warning("console: the metrics nkey seed file is readable"
+                        " by group or world (%o); the agent numbers stay"
+                        " absent -- chmod it", mode & 0o777)
             return
         if (not seed or len(seed) > SEED_MAX or seed.split() != [seed]
                 or not seed.startswith("SU")):
@@ -163,13 +177,14 @@ class MetricsService:
             self.last_delivery = time.monotonic()
             self.view.stats_lines += 1
             self.view.stats.on_delivery(msg.subject, msg.data, msg.reply,
-                                        self.settings.stats_stream, "console-metrics")
+                                        self.settings.stats_stream, METRICS_STATS_CONSUMER)
 
         await nc.subscribe("deliver.metrics.presence", cb=presence)
         await nc.subscribe("deliver.metrics.stats", cb=stats)
         await nc.flush()
         log.info("console: the metrics reading is on (deliver.metrics.*)")
-        try:
-            await done.wait()
-        finally:
-            pass
+        stopped = asyncio.create_task(self._stopped.wait())
+        done_wait = asyncio.create_task(done.wait())
+        await asyncio.wait([stopped, done_wait], return_when=asyncio.FIRST_COMPLETED)
+        for task in (stopped, done_wait):
+            task.cancel()
