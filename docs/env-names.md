@@ -502,6 +502,25 @@ says whether the setting itself is about Mattermost.
 have no `MM` in their names; the rename gives them one, as the rule says:
 `CB_BRIDGE_MM_BOT_PREFIX` and `CB_BRIDGE_MM_HIDE_BOT_DM`.
 
+### The bridge's slash commands (10)
+
+New with the bridge's own slash commands (issue #151 step 3), read in
+`internal/config/config.go` and `cmd/bridged/main.go`. They have no old name:
+both columns name the same setting, so the fallback reads nothing.
+
+| Old name | New name | Mattermost | Where it appears | Note |
+|---|---|---|---|---|
+| `CB_BRIDGE_COMMANDS_ALLOW_HTTP` | `CB_BRIDGE_COMMANDS_ALLOW_HTTP` | no | `internal/config/config.go` | plain http to a listener that is not loopback; default false |
+| `CB_BRIDGE_COMMANDS_LISTEN_ADDR` | `CB_BRIDGE_COMMANDS_LISTEN_ADDR` | no | `internal/config/config.go`, `cmd/bridged/main.go` | empty: the whole feature is off |
+| `CB_BRIDGE_COMMANDS_TLS_CERT_FILE` | `CB_BRIDGE_COMMANDS_TLS_CERT_FILE` | no | `internal/config/config.go`, `cmd/bridged/main.go` | with the key file, or neither |
+| `CB_BRIDGE_COMMANDS_TLS_KEY_FILE` | `CB_BRIDGE_COMMANDS_TLS_KEY_FILE` | no | same | with the cert file, or neither |
+| `CB_BRIDGE_DEBUG_COMMAND_TOKEN_FILE` | `CB_BRIDGE_DEBUG_COMMAND_TOKEN_FILE` | yes | `internal/config/config.go` | the debug command's tokens, 0600 |
+| `CB_BRIDGE_MANDATE_COMMAND_TOKEN_FILE` | `CB_BRIDGE_MANDATE_COMMAND_TOKEN_FILE` | yes | same | the mandate command's tokens, 0600 |
+| `CB_BRIDGE_MODE_COMMAND_TOKEN_FILE` | `CB_BRIDGE_MODE_COMMAND_TOKEN_FILE` | yes | same | the mode command's tokens, 0600 |
+| `CB_BRIDGE_RECORDS_BUCKET` | `CB_BRIDGE_RECORDS_BUCKET` | no | `internal/config/config.go` | default `BUS_BRIDGE_RECORDS` |
+| `CB_BRIDGE_SIGNING_KEY_FILE` | `CB_BRIDGE_SIGNING_KEY_FILE` | no | `internal/config/config.go`, `cmd/bridged/main.go` | base64 or base64url of a 32-byte seed, 0600 |
+| `CB_BRIDGE_TRUSTED_PROXY_HOPS` | `CB_BRIDGE_TRUSTED_PROXY_HOPS` | no | `internal/config/config.go` | default 0: the header is ignored |
+
 ### The console (20)
 | Old name | New name | Mattermost | Where it appears | Note |
 |---|---|---|---|---|
@@ -630,6 +649,7 @@ list, so a name here is one the guard accepts in the code without a mapping.
 | `GITHUB_ENV` | another product’s variable we read |
 | `BUS_BRIDGE` | a NATS bucket name, a constant |
 | `BUS_BRIDGE_SEEN` | a NATS bucket name, a constant |
+| `BUS_BRIDGE_RECORDS` | a NATS bucket name, a constant |
 | `BUS_DIRECTORY` | a NATS bucket name, a constant |
 | `BRIDGE_KEYS` | the Python constant `_BRIDGE_KEYS` |
 | `BRIDGE_TTL_SEC` | a constant in `nats_port.py` |

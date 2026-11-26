@@ -78,6 +78,17 @@ func TestTheReadingRule(t *testing.T) {
 	}
 }
 
+// A setting that was never renamed gets its own name twice: one read, and no
+// deprecation warning about itself.
+func TestANameWithoutAnOldOneIsReadOnce(t *testing.T) {
+	var w warnings
+	looks := 0
+	e := NewEnv(func(k string) (string, bool) { looks++; return "v", k == "CB_BRIDGE_X" }, w.warn)
+	if v, err := e.Get("CB_BRIDGE_X", "CB_BRIDGE_X"); err != nil || v != "v" || looks != 1 || len(w) != 0 {
+		t.Fatalf("got %q, %v, %d lookups, warnings %q", v, err, looks, w)
+	}
+}
+
 // One deprecation warning per old name and process (one Env), however often
 // the name is read.
 func TestTheDeprecationWarningComesOnce(t *testing.T) {
@@ -117,7 +128,8 @@ func TestTheOldNamesStillWork(t *testing.T) {
 		MMURL: "http://chat.example", MMAllowHTTP: true, MMPlainHTTP: true, MMToken: "/run/token",
 		MMTeam: "ai-agents", Homes: []string{"a", "b"}, Prefix: "abc_", KVBucket: "KV", SeenBucket: "SEEN",
 		Listen: ":1", NATSStream: "S", BusPrefix: "b2", Deliver: "d.b", Inbox: "_INBOX_b",
-		AdminToken: "/run/admin", BotPrefix: "bb-", HideBotDM: false}
+		AdminToken: "/run/admin", BotPrefix: "bb-", HideBotDM: false,
+		RecordsBucket: "BUS_BRIDGE_RECORDS"}
 	if !reflect.DeepEqual(c, want) {
 		t.Fatalf("got %+v\nwant %+v", c, want)
 	}
@@ -269,12 +281,21 @@ func TestTheRenamesAreTheDocsTable(t *testing.T) {
 	if _, err := Load(NewEnv(func(n string) (string, bool) { looked = append(looked, n); return "", false }, nil)); err == nil {
 		t.Fatal("Load accepted an empty environment")
 	}
-	if len(looked)%2 != 0 {
-		t.Fatalf("an odd number of lookups: %q", looked)
+	byNew := map[string]string{}
+	for old, newName := range want {
+		byNew[newName] = old
 	}
 	got := map[string]string{}
-	for i := 0; i < len(looked); i += 2 {
-		got[looked[i+1]] = looked[i]
+	for i := 0; i+1 < len(looked); i++ {
+		// Each renamed setting's new name is followed by its old name; a
+		// setting that was never renamed is one lookup of a name not in the
+		// doc's table and is skipped here.
+		old, ok := byNew[looked[i]]
+		if !ok || looked[i+1] != old {
+			continue
+		}
+		got[old] = looked[i]
+		i++
 	}
 	if !reflect.DeepEqual(got, want) {
 		t.Fatalf("Load reads %v\nthe doc says %v", got, want)

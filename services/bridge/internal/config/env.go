@@ -47,6 +47,12 @@ func OSEnv(warn Warn) *Env { return NewEnv(os.LookupEnv, warn) }
 // is set. The error names both names, or the one that holds an unexpanded
 // placeholder, never a value: a value may be a secret.
 func (e *Env) Get(newName, oldName string) (string, error) {
+	if newName == oldName {
+		// A setting that was never renamed: one name, one read, and no
+		// deprecation warning about itself.
+		v, _, err := e.read(newName)
+		return v, err
+	}
 	nv, nset, err := e.read(newName)
 	if err != nil {
 		return "", err

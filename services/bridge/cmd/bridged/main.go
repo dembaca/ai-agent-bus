@@ -24,6 +24,7 @@ import (
 	"github.com/nats-io/nats.go"
 
 	"github.com/dembaca/ai-agent-bus/services/bridge/internal/agentbots"
+	"github.com/dembaca/ai-agent-bus/services/bridge/internal/commands"
 	"github.com/dembaca/ai-agent-bus/services/bridge/internal/config"
 	"github.com/dembaca/ai-agent-bus/services/bridge/internal/inbound"
 	"github.com/dembaca/ai-agent-bus/services/bridge/internal/links"
@@ -33,6 +34,7 @@ import (
 	"github.com/dembaca/ai-agent-bus/services/bridge/internal/presence"
 	"github.com/dembaca/ai-agent-bus/services/bridge/internal/reader"
 	"github.com/dembaca/ai-agent-bus/services/bridge/internal/registrar/mattermost"
+	"github.com/dembaca/ai-agent-bus/services/bridge/internal/signing"
 	"github.com/dembaca/ai-agent-bus/services/bridge/internal/store"
 )
 
@@ -152,16 +154,76 @@ func run(log *slog.Logger) error {
 
 	mux := http.NewServeMux()
 	mux.Handle("GET /healthz", h)
+
+	// The slash commands and their signed records (issue #151 step 3): a
+	// listener of their own, the bridge's own key and the operator's records
+	// bucket. Off while CB_BRIDGE_COMMANDS_LISTEN_ADDR is empty; the release
+	// record is not served here.
+	var cmds *commands.Server
+	if cfg.CommandsListen != "" {
+		records, err := store.OpenRecords(ctx, nc, cfg.RecordsBucket)
+		if err != nil {
+			return err
+		}
+		att, err := signing.Open(cfg.SigningKeyFile)
+		if err != nil {
+			return err
+		}
+		cmds, err = commands.New(commands.Config{
+			MMURL: cfg.MMURL, MMTeam: cfg.MMTeam, AdminToken: cfg.AdminToken, AllowHTTP: cfg.MMAllowHTTP,
+			Attestor: att, Persister: records, ModeTokens: cfg.ModeCommandTokens,
+			MandateTokens: cfg.MandateCommandTokens, DebugTokens: cfg.DebugCommandTokens,
+			TrustedProxyHops: cfg.TrustedProxyHops, Log: log,
+		})
+		if err != nil {
+			return err
+		}
+		cmds.PruneDebug(ctx)
+		cmds.Reads(mux)
+		log.Info("bridge: slash commands on", "addr", cfg.CommandsListen, "kid", att.Kid(),
+			"mode", len(cfg.ModeCommandTokens) > 0, "mandate", len(cfg.MandateCommandTokens) > 0,
+			"debug", len(cfg.DebugCommandTokens) > 0)
+		if cfg.CommandsPlainHTTP {
+			log.Warn("bridge: CB_BRIDGE_COMMANDS_LISTEN_ADDR is not loopback and has no TLS " +
+				"(CB_BRIDGE_COMMANDS_ALLOW_HTTP); the command tokens and the records go in clear text")
+		}
+	}
 	srv := &http.Server{Addr: cfg.Listen, Handler: mux, ReadHeaderTimeout: 5 * time.Second}
 	go func() {
 		if err := srv.ListenAndServe(); err != nil && !errors.Is(err, http.ErrServerClosed) {
 			log.Error("bridge: healthz", "error", err)
 		}
 	}()
+	var cmdSrv *http.Server
+	if cmds != nil {
+		cmdSrv = &http.Server{Addr: cfg.CommandsListen, Handler: cmds.Commands(), ReadHeaderTimeout: 5 * time.Second}
+		tlsOn := cfg.CommandsTLSCertFile != ""
+		if tlsOn {
+			tcfg, err := commands.TLSConfig(cfg.CommandsTLSCertFile, cfg.CommandsTLSKeyFile)
+			if err != nil {
+				return err
+			}
+			cmdSrv.TLSConfig = tcfg
+		}
+		go func() {
+			var err error
+			if tlsOn {
+				err = cmdSrv.ListenAndServeTLS("", "")
+			} else {
+				err = cmdSrv.ListenAndServe()
+			}
+			if err != nil && !errors.Is(err, http.ErrServerClosed) {
+				log.Error("bridge: the slash commands stopped", "error", err)
+			}
+		}()
+	}
 	log.Info("bridge: up", "homes", cfg.Homes, "listen", cfg.Listen)
 
 	<-ctx.Done()
 	_ = srv.Shutdown(context.Background())
+	if cmdSrv != nil {
+		_ = cmdSrv.Shutdown(context.Background())
+	}
 	wg.Wait()
 	if h.failed.Load() {
 		return errors.New("a home stopped; the bridge exits so the supervisor restarts it")
