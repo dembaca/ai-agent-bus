@@ -106,6 +106,7 @@ import dataclasses
 import json
 import logging
 import os
+from pathlib import Path
 import secrets
 import time
 import weakref
@@ -174,6 +175,8 @@ class BusLike(Protocol):
     async def react(self, channel: str, ref: int, emoji: str) -> None: ...
 
     async def unreact(self, channel: str, ref: int, emoji: str) -> None: ...
+
+    def notice_teller(self, agent: str) -> str: ...
 
     def owner_of(self, agent: str) -> str: ...
 
@@ -296,6 +299,64 @@ def read_props(wire: Mapping[str, natsbus.Prop], prefix: str) -> dict[str, Any]:
     return out
 
 
+def _notice_file(uid: str) -> Path:
+    from .session_file import state_dir
+
+    return state_dir() / f"notice-{uid}.env"
+
+
+NOTICE_KEY_MAX = 64  # notices remembered as told, per server
+NOTICE_SAME_SEC = 30 * 60.0  # the block: the same kind, id and verdict is one DM
+
+
+def _notice_repeat(seen: dict[tuple[str, str, str], float], key: tuple[str, str, str], now: float,
+                   window: float = NOTICE_SAME_SEC) -> bool:
+    """Whether this kind, id and verdict was told within the window (then no DM)."""
+    at = seen.get(key)
+    return at is not None and now - at < window
+
+
+def _notice_read(uid: str) -> dict[str, float]:
+    """The notices this server told before a restart: "<kind>:<id>" -> iat."""
+    try:
+        text = _notice_file(uid).read_text(encoding="utf-8", errors="replace")
+    except OSError:
+        return {}
+    out: dict[str, float] = {}
+    for line in text.splitlines():
+        k, _, v = line.rpartition("=")
+        try:
+            out[k] = float(v)
+        except ValueError:
+            continue
+    return out
+
+
+def _notice_told(uid: str, key: str) -> float:
+    """The iat this server told for that kind and id (0 for none), never in the
+    future: a skewed value must not silence every later notice."""
+    return min(_notice_read(uid).get(key, 0.0), time.time())
+
+
+def _notice_mark(uid: str, key: str, iat: float) -> None:
+    """Remember that this kind and id was told, so a restarted server does not tell
+    it again. Per kind and id: one copy must not hide another."""
+    from .session_file import write_private
+
+    marks = _notice_read(uid)
+    marks[key] = min(iat, time.time())
+    if len(marks) > NOTICE_KEY_MAX:
+        for k in sorted(marks, key=marks.__getitem__)[: len(marks) - NOTICE_KEY_MAX]:
+            del marks[k]
+    try:
+        write_private(_notice_file(uid), "".join(f"{k}={int(v)}\n" for k, v in sorted(marks.items())))
+    except OSError as exc:
+        # The DM is out; a restart may repeat it, which the log says.
+        log.warning("login notice: the told mark was not written: %s", type(exc).__name__)
+
+
+
+
 class NatsPort:
     """The chat port of a session with a home over NATS (module docstring). Members
     not defined here are the Mattermost adapter's (`__getattr__`)."""
@@ -330,6 +391,7 @@ class NatsPort:
         self._dropped = 0  # events a full subscriber's queue lost
         self._capped = 0  # reactions dropped at MAX_REACTIONS
         self._names: AbstractSet[str] | None = None  # this session's trusted humans, read by prime (RT-6.38)
+        self._notice_recent: dict[tuple[str, str, str], float] = {}  # (kind, id, verdict) -> monotonic
         self._ambiguous: set[str] = set()  # link tags that fit more than one fresh name (RT-6.37)
         # People over NATS (RT-6.42)
         self._keys = _Keys()
@@ -357,7 +419,7 @@ class NatsPort:
             raise AttributeError(name)
         return getattr(self.inner, name)
 
-    # --- lifecycle ---------------------------------------------------------------
+# --- lifecycle ---------------------------------------------------------------
     @property
     def homes(self) -> tuple[str, ...]:
         return self._homes
@@ -395,7 +457,7 @@ class NatsPort:
                 if owner is None:
                     owner = await _owner_of(login)
                 bus = NatsBus(self._s, login, owner, self._on_event, on_fatal=self._on_fatal,
-                              on_person=self._on_person, **self._bus_options)
+                              on_person=self._on_person, on_notice=self._on_notice, **self._bus_options)
                 self._bus = bus
                 bus.on_person_gap = self._person_gap
                 bus.card_source = self._card
@@ -458,6 +520,66 @@ class NatsPort:
         except Exception as exc:  # noqa: BLE001 — a label, never a reason to stop
             log.info("nats: the bot's username was not read (%s)", type(exc).__name__)
             return os.environ.get("MM_BOT_USERNAME", "")
+
+    async def _on_notice(self, notice: natsbus.Notice) -> None:
+        """A theft notice from the login service (RT-6.34): DM it to the responsible human.
+
+        Every live server of the owner reads the record, and exactly one tells - the named
+        agent's if it is live, else the owner's live agent with the smallest name - so the
+        owner hears it once; the DM names the agent the record names, else this bot. It is
+        the server's own post, counted as overhead (RT-6.9), never into a channel."""
+        from . import login_notice, stats
+        from .owners import responsible_human
+
+        if notice.verdict != "copied":
+            # A move is a report (the console and the log); only a copy is a DM.
+            log.info("login notice: a move on %s (%s), reported only", notice.kind, notice.network)
+            return
+        bus = self._bus
+        if bus is None:
+            return
+        teller = bus.notice_teller(notice.agent)
+        if teller != bus.name:
+            # One DM: the named agent's server, else the smallest live name (RT-6.34).
+            log.info("login notice: %s tells it", teller)
+            return
+        who = responsible_human()
+        try:
+            me = await self._bot_id()
+            key = f"{notice.kind}:{notice.sid}"
+            if notice.iat <= _notice_told(me, key):
+                # Told before a restart: the consumer replays the last record.
+                log.info("login notice: already told (iat %d)", int(notice.iat))
+                return
+            # A second copy of the same kind and id within the block is the same
+            # theft: one DM, not one per record.
+            seen = (notice.kind, notice.sid, notice.verdict)
+            now = time.monotonic()
+            if _notice_repeat(self._notice_recent, seen, now):
+                log.info("login notice: %s %s already told within %d s", notice.kind, notice.verdict,
+                         int(NOTICE_SAME_SEC))
+                return
+            if not who:
+                log.info("login notice: no responsible human to tell")
+                return
+            trusted = await self.trusted_humans()
+            uid = next((i for i, n in trusted.items() if n and n.lower() == who.lower()), None)
+            uid = uid or await self.human_id(who)
+            if not uid:
+                log.info("login notice: %s is not found in the chat", who)
+                return
+            agent = notice.agent or await self._bot_name() or "the agent"
+            text = login_notice.notice_text(agent, notice.kind)
+            stats.record("post", chars=len(text), w="other")
+            await self.post(text, channel_id=await self.direct_channel_with(uid))
+            _notice_mark(me, key, notice.iat)
+            self._notice_recent[seen] = now
+            while len(self._notice_recent) > NOTICE_KEY_MAX:
+                self._notice_recent.pop(next(iter(self._notice_recent)))
+            log.warning("login notice: told %s by DM (%s, %s)", who, notice.kind, notice.network)
+        except Exception as exc:  # noqa: BLE001 — the next notice tries again
+            log.warning("login notice: the DM to %s failed: %s", who, exc)
+
 
     async def _announce_membership(self, bus: BusLike) -> None:
         """Tell the bus to announce this session's membership of every channel it asked

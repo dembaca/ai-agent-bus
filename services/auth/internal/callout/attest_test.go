@@ -293,6 +293,16 @@ func TestOnlyTheServiceWritesTheAttestation(t *testing.T) {
 			t.Errorf("publish %s: denied %v, want %v", subj, got, want)
 		}
 	}
+	// No agent may publish a notice either (RT-6.34): it is the login
+	// service's alone, whatever the owner.
+	for _, subj := range []string{"presence.notice.alice.v1", "presence.notice.-.v1", "presence.notice.bob.v1"} {
+		if err := alice.nc.Publish(subj, []byte(`{"v":1,"kind":"session"}`)); err != nil {
+			t.Fatal(err)
+		}
+		if !alice.denied(t) {
+			t.Errorf("an agent published a notice on %s", subj)
+		}
+	}
 	// A normal agent cannot either.
 	for _, subj := range []string{"presence.attest." + bob.name + ".v1", "presence.attest." + alice.name + ".v1", "presence.attest.agent-other.v1"} {
 		if err := alice.nc.Publish(subj, []byte(`{"v":1,"forged":true}`)); err != nil {
