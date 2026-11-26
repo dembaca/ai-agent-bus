@@ -1,24 +1,25 @@
 """Cross-language: a record the Go bridge signed, verified by the hosts' verifier.
 
 #151 step 4: the bridge signs the release record with its own key; the hosts
-verify it with `attest.verify_release` and their pinned keys. The fixture below
-was produced by `internal/registrar/core.Attestor` (the bridge's code) with a
-fixed key and fixed times, so a drift on either side fails here.
+verify it with `attest.pinned` and their own verifier. `testdata/release_record.txt`
+is the record `internal/release`'s Go test also asserts (same seed, same times),
+so a change on either side fails here.
 """
 
-from cryptography.hazmat.primitives.asymmetric.ed25519 import Ed25519PublicKey
+from pathlib import Path
 
 from mattermost_ai_agent_bus import attest
 
-FIXTURE = "eyJhbGciOiJFZERTQSIsInR5cCI6Im1tLWFnZW50LXJlbGVhc2Urand0Iiwia2lkIjoiWmJZR2M5YnRpRXZ3SEN3aSJ9.eyJzaWduZXJzIjpbInNzaC1lZDI1NTE5IEFBQUFDM056YUMxbFpESTFOVEU1QUFBQUlIbTFWaTZQNWxUNVFIaXhFdWlwaTZlUUg0VTY1cFcrMStEamtRdXRCSlprIl0sInZlcnNpb24iOiJsYXRlc3QiLCJzZXRfYXRfbXMiOjE4MDAwMDAwMDAwMDAsImlhdCI6MTgwMDAwMDAwMCwiZXhwIjoxODAwMDAzNjAwfQ.gbEsXcchpynO-lciXP6lm1oL30C55Zgex9NfHALjXBTIdu-iu9cgFQfEWZ_vaXS_OMNnl1M4J7TmgeMeIluxCA"
+FIXTURE = (Path(__file__).parent / "testdata" / "release_record.txt").read_text().strip()
 KID = "ZbYGc9btiEvwHCwi"
-PUB = bytes.fromhex("79b5562e8fe654f94078b112e8a98ba7901f853ae695bed7e0e3910bad049664")
+PUB_B64 = "ebVWLo_mVPlAeLES6KmLp5AfhTrmlb7X4OORC60ElmQ"
 SIGNER = "ssh-ed25519 AAAAC3NzaC1lZDI1NTE5AAAAIHm1Vi6P5lT5QHixEuipi6eQH4U65pW+1+DjkQutBJZk"
 
 
 def test_a_go_signed_release_record_verifies() -> None:
-    key = Ed25519PublicKey.from_public_bytes(PUB)
-    rec, why = attest.verify_release(FIXTURE, {KID: key}, now=1_800_000_500)
+    keys = attest.pinned(PUB_B64)  # the pin derives the kid, as a host's does
+    assert list(keys) == [KID]
+    rec, why = attest.verify_release(FIXTURE, keys, now=1_800_000_500)
     assert rec is not None, why
     assert rec.signers == (SIGNER,)
     assert rec.version == "latest"
@@ -28,6 +29,6 @@ def test_a_go_signed_release_record_verifies() -> None:
 
 
 def test_the_same_record_with_another_pin_is_refused() -> None:
-    other = Ed25519PublicKey.from_public_bytes(bytes(32))
-    rec, why = attest.verify_release(FIXTURE, {"other": other}, now=1_800_000_500)
+    other = attest.pinned("AAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA")
+    rec, why = attest.verify_release(FIXTURE, other, now=1_800_000_500)
     assert rec is None and why

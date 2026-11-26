@@ -2,9 +2,11 @@ package release
 
 import (
 	"crypto/ed25519"
+	"encoding/base64"
 	"encoding/json"
 	"net/http"
 	"net/http/httptest"
+	"os"
 	"strings"
 	"testing"
 	"time"
@@ -123,5 +125,38 @@ func TestTheSettingsAreValidated(t *testing.T) {
 	}
 	if _, err := New(testKey+"\n", "v0.103.0", a, time.Time{}); err == nil {
 		t.Error("a zero set_at was accepted")
+	}
+}
+
+// The fixture the hosts' Python verifier checks is also pinned here: a change to
+// what this code signs fails on both sides, so neither drifts.
+func TestTheFixtureIsThisCodeS(t *testing.T) {
+	seed := make([]byte, ed25519.SeedSize)
+	for i := range seed {
+		seed[i] = byte(i + 1)
+	}
+	a, err := core.NewAttestor(seed, time.Hour)
+	if err != nil {
+		t.Fatal(err)
+	}
+	pub := ed25519.NewKeyFromSeed(seed).Public().(ed25519.PublicKey)
+	typ := []byte("ssh-ed25519")
+	blob := append([]byte{0, 0, 0, byte(len(typ))}, typ...)
+	blob = append(blob, 0, 0, 0, byte(len(pub)))
+	blob = append(blob, pub...)
+	signer := "ssh-ed25519 " + base64.StdEncoding.EncodeToString(blob)
+	want, err := a.SignReleaseExact(core.ReleaseClaims{
+		Signers: []string{signer}, Version: core.ReleaseLatest,
+		SetAtMs: 1_800_000_000_000, Iat: 1_800_000_000, Exp: 1_800_003_600,
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	b, err := os.ReadFile("../../../../mcp/tests/testdata/release_record.txt")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if got := strings.TrimSpace(string(b)); got != want {
+		t.Fatalf("mcp/tests/testdata/release_record.txt is not what this code signs; regenerate it from the same seed and times")
 	}
 }
