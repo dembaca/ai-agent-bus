@@ -81,12 +81,13 @@ class MetricsService:
     # -- the wiring ------------------------------------------------------------
 
     async def _dial(self, seed: str, lost: asyncio.Event | None = None) -> Any:
-        async def on_lost(_nc: Any) -> None:
-            # a coroutine, as nats-py demands (callbacks must be coroutine
-            # functions, round-2 finding N1's second half): the callback
-            # hands the reading its end (a NATS restart or a lost one ends
-            # _serve, the loop connects again), and a dial without the lost
-            # event watches nothing
+        async def on_lost() -> None:
+            # nats-py's callback: a coroutine, called with NO argument
+            # (nats/aio/client.py:158, `Callback = Callable[[], Awaitable[None]]`
+            # — round 3's blocker: taking one froze the reading on every
+            # NATS restart). A NATS restart or a lost connection ends
+            # _serve (the loop connects again); a dial without the lost
+            # event watches nothing.
             if lost is not None:
                 lost.set()
 
@@ -187,9 +188,13 @@ class MetricsService:
         await nc.subscribe("deliver.metrics.stats", cb=stats)
         await nc.flush()
         self.subscribed.set()
+        try:
         log.info("console: the metrics reading is on (deliver.metrics.*)")
-        stopped = asyncio.create_task(self._stopped.wait())
-        done_wait = asyncio.create_task(done.wait())
-        await asyncio.wait([stopped, done_wait], return_when=asyncio.FIRST_COMPLETED)
-        for task in (stopped, done_wait):
-            task.cancel()
+            stopped = asyncio.create_task(self._stopped.wait())
+            done_wait = asyncio.create_task(done.wait())
+            await asyncio.wait([stopped, done_wait], return_when=asyncio.FIRST_COMPLETED)
+            for task in (stopped, done_wait):
+                task.cancel()
+        finally:
+            # a readiness probe must not say ready after a loss (M1)
+            self.subscribed.clear()
