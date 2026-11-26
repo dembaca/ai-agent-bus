@@ -2,6 +2,7 @@ package release
 
 import (
 	"crypto/ed25519"
+	"crypto/sha256"
 	"encoding/base64"
 	"encoding/json"
 	"net/http"
@@ -18,8 +19,8 @@ func testSigner(t *testing.T) *FileSigner {
 		seed[i] = byte(i + 1)
 	}
 	key := ed25519.NewKeyFromSeed(seed)
-	pub := key.Public().(ed25519.PublicKey)
-	return &FileSigner{key: key, kid: base64.RawURLEncoding.EncodeToString(pub[:8])}
+	sum := sha256.Sum256(key.Public().(ed25519.PublicKey))
+	return &FileSigner{key: key, kid: base64.RawURLEncoding.EncodeToString(sum[:])[:16]}
 }
 
 const testKey = "ssh-ed25519 AAAAC3NzaC1lZDI1NTE5AAAAIGP3bXHhZ0mM0b8o0mZ0sh6o6rGm0yQp0i0a0b0c0d0e"
@@ -59,6 +60,11 @@ func TestTheRecordIsTheRegistrarS(t *testing.T) {
 	}
 	if hd["alg"] != "EdDSA" || hd["typ"] != "mm-agent-release+jwt" || hd["kid"] != signer.KeyID() {
 		t.Fatalf("header %v", hd)
+	}
+	// The registrar's kid: the first 16 of base64url(sha256(raw public key)).
+	sum := sha256.Sum256(signer.key.Public().(ed25519.PublicKey))
+	if want := base64.RawURLEncoding.EncodeToString(sum[:])[:16]; hd["kid"] != want {
+		t.Fatalf("kid %q, want the registrar's scheme %q", hd["kid"], want)
 	}
 	payload, err := b64.DecodeString(parts[1])
 	if err != nil {

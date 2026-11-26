@@ -12,6 +12,7 @@ package release
 
 import (
 	"crypto/ed25519"
+	"crypto/sha256"
 	"encoding/base64"
 	"encoding/json"
 	"errors"
@@ -171,7 +172,10 @@ func NewFileSigner(path string) (*FileSigner, error) {
 		return nil, errNoKey
 	}
 	pub := key.Public().(ed25519.PublicKey)
-	return &FileSigner{key: key, kid: base64.RawURLEncoding.EncodeToString(pub[:8])}, nil
+	// The registrar's kid scheme (RT-6.32): the first 16 characters of
+	// base64url(sha256(raw public key)), so a host's pinned set finds it.
+	sum := sha256.Sum256(pub)
+	return &FileSigner{key: key, kid: base64.RawURLEncoding.EncodeToString(sum[:])[:16]}, nil
 }
 
 // Sign implements Signer.
