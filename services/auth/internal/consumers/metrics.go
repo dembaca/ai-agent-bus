@@ -4,6 +4,7 @@ import (
 	"context"
 	"fmt"
 	"slices"
+	"time"
 
 	"github.com/nats-io/nats.go"
 )
@@ -48,12 +49,17 @@ const MetricsHistory = PersonStatsHistory
 // existing consumer of the same shape is left with its position.
 func (m *Manager) EnsureMetrics(ctx context.Context) error {
 	p := m.cfg.Presence
+	// MetricsInactiveThreshold: without a listener this long the pair ages
+	// out, so a console that restarts (or one down that long) gets the full
+	// 7-day replay from the next ensure — a kept consumer never replays.
+	const MetricsInactiveThreshold = 5 * time.Minute
 	pres := &nats.ConsumerConfig{
 		Durable: MetricsPresenceName, DeliverSubject: MetricsDeliver("presence"),
 		AckPolicy: nats.AckNonePolicy, DeliverPolicy: nats.DeliverLastPerSubjectPolicy,
-		FilterSubjects: []string{p + ".*.*", p + ".ask.*.*"},
-		Metadata:       map[string]string{metaService: "console-metrics"},
-		MemoryStorage:  true,
+		FilterSubjects:    []string{p + ".*.*", p + ".ask.*.*"},
+		InactiveThreshold: MetricsInactiveThreshold,
+		Metadata:          map[string]string{metaService: "console-metrics"},
+		MemoryStorage:     true,
 	}
 	if err := m.ensureMetricsConsumer(ctx, PresenceStream, pres); err != nil {
 		return err
@@ -62,8 +68,9 @@ func (m *Manager) EnsureMetrics(ctx context.Context) error {
 	stats := &nats.ConsumerConfig{
 		Durable: MetricsStatsName, DeliverSubject: MetricsDeliver("stats"),
 		AckPolicy: nats.AckNonePolicy, DeliverPolicy: nats.DeliverByStartTimePolicy, OptStartTime: &start,
-		Metadata:      map[string]string{metaService: "console-metrics"},
-		MemoryStorage: true,
+		InactiveThreshold: MetricsInactiveThreshold,
+		Metadata:          map[string]string{metaService: "console-metrics"},
+		MemoryStorage:     true,
 	}
 	return m.ensureMetricsConsumer(ctx, StatsStream, stats)
 }
@@ -105,6 +112,6 @@ func sameMetricsConsumer(have, want nats.ConsumerConfig) bool {
 	return slices.Equal(filtersOf(have), filtersOf(want)) &&
 		have.DeliverSubject == want.DeliverSubject && have.AckPolicy == nats.AckNonePolicy &&
 		!have.FlowControl && have.Heartbeat == 0 && have.DeliverGroup == "" &&
-		have.InactiveThreshold == 0 && want.InactiveThreshold == 0 &&
+		have.InactiveThreshold == want.InactiveThreshold &&
 		have.DeliverPolicy == want.DeliverPolicy && have.MemoryStorage == want.MemoryStorage
 }
