@@ -336,7 +336,11 @@ export function addMcp(editor: any, options: Options, root: string | null, direc
     const venv = !options.command && root ? { UV_PROJECT_ENVIRONMENT: venvDir(env, root) } : {}
     const environment = { CLAUDE_CODE_SESSION_ID: "", CLAUDE_PROJECT_DIR: "", MM_CHANNEL_PUSH: "0", MM_WORKSPACE: dir,
                           ...venv, ...(options.environment ?? {}), ...(session ? { OPENCODE_SESSION_ID: session } : {}) }
-    if (command) editor.set(SERVER, { type: "local", command, environment, cwd: dir })
+    // Direct tools, not Code Mode (issue #152): the bus tools are called a
+    // handful of times a turn, and Code Mode's execute wrapper reads the tool
+    // docs into every call. `false` is the server's whole setting, no per-tool
+    // one.
+    if (command) editor.set(SERVER, { type: "local", command, environment, cwd: dir, codemode: false })
   }
   return Boolean(own && !own.environment?.MM_WORKSPACE)
 }

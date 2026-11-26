@@ -244,6 +244,7 @@ By hand (without the plugin's, or with `mcp: false`), in the project's `opencode
           "sh", "-c",
           "MM_REG_SECRET=\"$(gopass show -o bus/registrar)\" exec uv run --locked --project /ABS/PATH/ai-agent-bus/mcp mattermost-ai-agent-bus-mcp"
         ],
+        "codemode": false,
         "environment": {
           "MM_CHAT_URL": "https://chat.example.com",
           "MM_REGISTER_URL": "https://chat.example.com/register/v1/agents",
@@ -264,6 +265,10 @@ By hand (without the plugin's, or with `mcp: false`), in the project's `opencode
 
 - `opencode mcp add ai-agent-bus --env K=V … -- sh -c '…'` writes this entry, but
   refuses an empty `--env` value: add the two empty `CLAUDE_*` variables by hand.
+- `codemode: false`: the bus tools are direct tools, not Code Mode (`execute`). Code Mode
+  would have the model write a script per call and read the bus tool docs into it every
+  time; the tools are called a handful of times a turn, so the direct list is cheaper
+  (issue #152). The plugin's own server entry carries the same setting.
 - `MM_WORKSPACE` (the project's real directory) and the two empty variables: the plugin
   looks only for the endpoint file keyed on the project directory, and a Claude Code
   shell's session id or project directory, inherited, would key the server's files

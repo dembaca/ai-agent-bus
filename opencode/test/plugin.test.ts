@@ -322,7 +322,9 @@ test("RT-6.20: mcp.transform adds the server and skill.transform the skill, neve
   // be read-only: a checkout under a corral grant, or the host copy (RT-6.28).
   assert.deepEqual(fx.mcpServers.get(SERVER), { type: "local", cwd: ws,
     environment: { ...keyed, UV_PROJECT_ENVIRONMENT: venvDir(process.env, REPO) },
-    command: ["uv", "run", "--locked", "--project", join(REPO, "mcp"), "mattermost-ai-agent-bus-mcp"] })
+    command: ["uv", "run", "--locked", "--project", join(REPO, "mcp"), "mattermost-ai-agent-bus-mcp"],
+    // the bus tools are direct tools, not Code Mode (issue #152)
+    codemode: false })
   const skill = fx.skills.get(SKILL)
   assert.equal(skill.name, SKILL)
   assert.equal(skill.path, join(REPO, "skills", SKILL, "SKILL.md"))
@@ -344,7 +346,8 @@ test("RT-6.20: mcp.transform adds the server and skill.transform the skill, neve
   assert.equal(off.m.size, 0)
   const cmd = editor({})
   addMcp(cmd, { command: ["my-bus"], environment: { MM_TEAM: "t" } }, null, ws)
-  assert.deepEqual(cmd.m.get(SERVER), { type: "local", command: ["my-bus"], cwd: ws, environment: { ...keyed, MM_TEAM: "t" } })
+  assert.deepEqual(cmd.m.get(SERVER), { type: "local", command: ["my-bus"], cwd: ws,
+    environment: { ...keyed, MM_TEAM: "t" }, codemode: false })
   assert.equal(skillInfo(null), null)
   // The user's own skill of that id stays.
   const mine = fakeCtx({ root: REPO })

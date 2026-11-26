@@ -6,6 +6,14 @@ before 0.5.0 are described in the git history.
 ## Unreleased
 
 ### Changed
+- **The OpenCode plugin registers the bus server as direct tools, not Code
+  Mode** (#152). The bus tools are called a handful of times a turn, and Code
+  Mode made the model write a script per call and read the bus tool docs into
+  it every time, on top of the tool list it already carries; the plugin's
+  `addMcp` sets `codemode: false` on its server entry, and a server configured
+  by hand in `adapters/opencode.md` shows it too. Nothing else changes: the
+  tools, their names and their arguments stay as they were, and a host that
+  configured the server itself can set the same flag.
 
 - **The central bridge logs one INFO line per person post, reaction or removal of a reaction it carries onto NATS** (#134, RT-6.42): `inbound: carried` with the home, `what` (`post`, `reaction` or `unreaction`), the Mattermost post id and the subject, no text and no name beyond the anchor.
 
