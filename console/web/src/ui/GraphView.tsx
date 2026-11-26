@@ -8,6 +8,7 @@ import "@xyflow/react/dist/style.css"
 import type { AgentCard, Ask, ConsoleApi, GraphData } from "../api/types"
 import { reconcile, toFlow } from "./graph/model"
 import { nodeTypes } from "./graph/nodes"
+import type { Theme } from "../theme"
 import "./GraphView.css"
 
 type Fail = (what: string, error: unknown) => void
@@ -21,6 +22,8 @@ type Props = {
   cards: AgentCard[]
   asks: Ask[]
   fleetSeen: boolean
+  /** The theme in use: React Flow draws its controls in it. */
+  theme: Theme
   onOpenAgent: (card: AgentCard) => void
   onOpenAsk: (ask: Ask) => void
   onFail: Fail
@@ -34,7 +37,7 @@ type Props = {
  * when the set of agents changes. A new layout runs only when a node or an
  * edge comes or goes, and the nodes already shown keep their place. A click
  * on an agent or an ask opens the same detail as elsewhere (point 7). */
-export function GraphView({ api, cards, asks, fleetSeen, onOpenAgent, onOpenAsk, onFail }: Props) {
+export function GraphView({ api, cards, asks, fleetSeen, theme, onOpenAgent, onOpenAsk, onFail }: Props) {
   const [graph, setGraph] = useState<GraphData | null>(null)
   const agents = cards.map((c) => c.name).sort().join(",")
   const graphRead = useRef(0)
@@ -70,16 +73,17 @@ export function GraphView({ api, cards, asks, fleetSeen, onOpenAgent, onOpenAsk,
 
   return (
     <ReactFlowProvider>
-      <LiveGraph graph={graph} cards={cards} asks={asks} fleetSeen={fleetSeen} onNodeClick={onNodeClick} />
+      <LiveGraph graph={graph} cards={cards} asks={asks} fleetSeen={fleetSeen} theme={theme} onNodeClick={onNodeClick} />
     </ReactFlowProvider>
   )
 }
 
-function LiveGraph({ graph, cards, asks, fleetSeen, onNodeClick }: {
+function LiveGraph({ graph, cards, asks, fleetSeen, theme, onNodeClick }: {
   graph: GraphData | null
   cards: AgentCard[]
   asks: Ask[]
   fleetSeen: boolean
+  theme: Theme
   onNodeClick: (event: unknown, node: Node) => void
 }) {
   const [nodes, setNodes, onNodesChange] = useNodesState<Node>([])
@@ -109,6 +113,9 @@ function LiveGraph({ graph, cards, asks, fleetSeen, onNodeClick }: {
   if (!graph) return <div className="graph"><p className="hint">loading…</p></div>
   return (
     <div className="graph">
+      <div className="page-head">
+        <div className="page-head__title"><h1>Graph</h1></div>
+      </div>
       <p className="hint">
         you, open asks, agents, their homes and guest channels; trusts and
         coordinates to a depth of two, a dashed edge is cut there.
@@ -124,7 +131,7 @@ function LiveGraph({ graph, cards, asks, fleetSeen, onNodeClick }: {
           nodesConnectable={false}
           edgesFocusable={false}
           elementsSelectable={false}
-          colorMode="system"
+          colorMode={theme}
           minZoom={0.2}
         >
           <Background gap={24} size={1} />

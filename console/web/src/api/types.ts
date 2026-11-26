@@ -39,7 +39,7 @@ export const HARNESS_LABEL: Record<Harness, string> = {
 }
 
 /** How the fleet stream stands — one state for the whole console, shown in
- * the sidebar; every view's failed load lands here too. */
+ * the top bar; every view's failed load shows in the notice under it. */
 export type ConnState = "connecting" | "live" | "reconnecting" | "syncing" | "error"
 
 /** The operator the console is logged in as (`GET /v1/me`; the server runs
@@ -49,9 +49,19 @@ export interface Operator {
   username: string
   displayName: string
   groups: string[]
+  /** The console's own build, for the footer (#182). */
+  build: BuildInfo
 }
 
-/** The Kanban card (ADR-015 point 6): what sits on the card itself. */
+/** The console's release version and source commit, written at image build
+ * (#182); null when the server has none (a development run). */
+export interface BuildInfo {
+  version: string | null
+  revision: string | null
+}
+
+/** An agent's card (ADR-015 point 6): what the agents list and the detail
+ * page show of it. */
 export interface AgentCard {
   /** The agent's name on the bus: the stable key (on NATS `agent-` and a
    * 26-character hash, the subject's last token). */

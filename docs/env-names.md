@@ -27,9 +27,13 @@ below; until then it reads the old names, and the old names in the
   in `services/bridge`, `internal/config/env.go` (the removal release's
   refusal is the constant `oldNamesRemoved` there); the names of
   [its table](#the-bridge-19).
-- Still to come: the console ([#178](https://github.com/dembaca/ai-agent-bus/pull/178)) and the
-  OpenCode and pi plugins (they already hand the server they start both
-  spellings of `CB_WORKSPACE` and `CB_CHANNEL_PUSH`).
+- Built: the OpenCode and pi plugins ([#181](https://github.com/dembaca/ai-agent-bus/pull/181)),
+  `envFirst`/`fileFirst` in both files; they read the new names with the old ones
+  as a fallback and hand the server they start both spellings of
+  `CB_WORKSPACE` and `CB_CHANNEL_PUSH`. A conflict there is reported once and the
+  plugin behaves as without a bus, so the turn hooks stop; the server it started
+  is not reached, and a server of its own refuses the start.
+- Still to come: the console ([#178](https://github.com/dembaca/ai-agent-bus/pull/178)).
 
 ## The rules
 
@@ -204,8 +208,8 @@ session file lives up to a day. This holds for:
 - the endpoint files `endpoint-*.env`, written in `hookapi.py:328-331`
   (`MM_BUS_ENDPOINT`, `MM_BUS_KEY`, `MM_BUS_PID`, `MM_BOT_USER_ID`,
   `MM_BUS_CLIENT`): an old `bin/mm-agent-sweep.sh:271` must still find
-  `MM_BUS_PID`, the OpenCode and pi plugins read `MM_BUS_ENDPOINT` and
-  `MM_BUS_KEY` from them;
+  `MM_BUS_PID`, the OpenCode and pi plugins take `CB_BUS_ENDPOINT`/`CB_BUS_KEY`
+  or their old spellings from them, the last line of either winning;
 - `claude-sid.env` (`MM_CLAUDE_SID`, `hosted.py:445`);
 - the relay's message to the host, `session_values()` in `hosted.py:178-186`:
   it sends `MM_WORKSPACE` and `CB_WORKSPACE`, `MM_CHANNEL_PUSH` and
@@ -218,8 +222,7 @@ session file lives up to a day. This holds for:
   `MM_BUS_MCP_ENDPOINT`, `MM_BUS_UNAVAILABLE`, `MM_BUS_KEPT_SID`,
   `MM_BUS_DEADLINE`, `MM_BUS_UPLOAD`, `MM_REL_GIT_DIR`, `MM_REL_TMP`), and
   the server entry the OpenCode plugin writes into OpenCode's configuration
-  (its `environment`, checked for `MM_WORKSPACE` at
-  `opencode/plugin/mattermost-agent-bus.ts:368`).
+  (its `environment`, which carries `CB_WORKSPACE` and `MM_WORKSPACE`).
 
 Writing both names doubles every secret that travels this way, so the
 [lists of names](#lists-of-names) must hold both before the writers do. In

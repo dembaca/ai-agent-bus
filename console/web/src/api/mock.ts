@@ -394,6 +394,8 @@ export function mockApi(): ConsoleApi {
       // The mock's stand-in operator; the server answers from its session.
       return Promise.resolve({
         username: "dembaca", displayName: "dembaca", groups: ["operators"],
+        // no image build behind the mock: the footer says n/a
+        build: { version: null, revision: null },
       })
     },
     watchFleet(onEvent: (event: FleetEvent) => void,

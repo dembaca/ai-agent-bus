@@ -1,3 +1,6 @@
+// The tokens and shared rules first: every component's stylesheet loads
+// after them and wins a tie of specificity.
+import "./app.css"
 import { StrictMode } from "react"
 import { createRoot } from "react-dom/client"
 import { App } from "./App"
@@ -5,7 +8,9 @@ import "./api/wire"  // the fixture's contract guards run at load
 import { httpApi } from "./api/http"
 import { mockApi } from "./api/mock"
 import type { ConsoleApi } from "./api/types"
-import "./app.css"
+import { applyStoredTheme } from "./theme"
+
+applyStoredTheme()  // before the first render: no flash of the other theme
 
 // The console's own server: VITE_CONSOLE_API is its base (same-origin
 // path, "" or "/api…" — never a cross-origin URL: the login's cookie is

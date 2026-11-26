@@ -103,6 +103,25 @@ before 0.5.0 are described in the git history.
   CA file. The release after this one refuses an old name set without its new
   name; rename the deployment's settings before it.
 
+### Changed
+
+- **The operator console wears the agreed design** (ADR-015 points 3 and 6):
+  the website's Choirbus brand (Inter, the logo's navy, orange asks, blue
+  tasks, green done), a top bar instead of the sidebar, light with a dark
+  mode that follows the system until the top bar's toggle picks one. The
+  agents list is the home and replaces the Kanban: the open asks on top,
+  then one compact row per agent with a search and a status filter. An
+  agent's or an ask's detail is a page of its own; a new Overview counts
+  agents and asks from the live data; the graph takes the same colors in
+  both themes. Same API, data and access rules.
+- **The console names its build** (#182): the footer shows the release
+  version and short commit, written at image build and served in
+  `/v1/me`'s `build`; `/metrics` adds
+  `choirbus_console_build_info{version,revision} 1`; the image carries the
+  OCI labels `org.opencontainers.image.version` and `.revision`.
+  `index.html` and the app's fallback answer `Cache-Control: no-cache`, the
+  hashed files under `/assets/` `public, max-age=31536000, immutable`.
+
 ### Fixed
 
 - **The operator console's logout works in a browser again** (RT-6.43
@@ -114,6 +133,28 @@ before 0.5.0 are described in the git history.
   answers and the logout's redirect to Keycloak keep `no-referrer`, and
   `Origin: null` is still refused. A console tab opened before the update
   keeps the old policy until it is reloaded.
+
+### Changed
+
+- **The OpenCode plugin and the pi extension read the `CB_` names** (#169,
+  release 0.103.0). Their own settings — the workspace (`CB_WORKSPACE`), the
+  channel flag (`CB_CHANNEL_PUSH`), the checkout (`CB_AGENT_BUS_ROOT`) and, in a
+  corral session, the relay's endpoint and key (`CB_BUS_ENDPOINT`, `CB_BUS_KEY`,
+  `CB_BUS_MCP_ENDPOINT`) — are read by the rule of
+  [docs/env-names.md](docs/env-names.md): the new name first, the old `MM_` one
+  for this release with one deprecation warning per process, an empty value
+  counting as set, and two names with different values a conflict the plugin
+  reports once and then behaves as without a bus (a conflicting checkout falls
+  back to the plugin's own). The server entry they write
+  carries `CB_WORKSPACE` and `CB_CHANNEL_PUSH` beside the old names, so a server
+  of the previous release reads the old ones (a user's own `environment` that
+  names one spelling is copied to the other, so the server never sees a
+  disagreement); the endpoint file's keys are taken by either spelling, the last
+  line winning. An operator who already uses the `CB_` names
+  sees no difference, and the old ones keep working until the release that
+  removes the fallbacks.
+
+
 ## 0.102.0
 
 Needs: login service jetstream user with consumer create and delete rights on the directory bucket.
