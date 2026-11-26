@@ -7,13 +7,18 @@ before 0.5.0 are described in the git history.
 
 ### Changed
 - **The OpenCode plugin registers the bus server as direct tools, not Code
-  Mode** (#152). The bus tools are called a handful of times a turn, and Code
-  Mode made the model write a script per call and read the bus tool docs into
-  it every time, on top of the tool list it already carries; the plugin's
-  `addMcp` sets `codemode: false` on its server entry, and a server configured
-  by hand in `adapters/opencode.md` shows it too. Nothing else changes: the
-  tools, their names and their arguments stay as they were, and a host that
-  configured the server itself can set the same flag.
+  Mode** (#152). The model sees the bus tools and their docs as written, as in
+  Claude Code and pi, and the token split counts bus calls exactly (#150). It
+  costs about 2,460 tokens of tool docs in every request, about 3,240 with the
+  instructions, mostly cache reads; Code Mode is cheaper on the window — the
+  instructions alone, a tool's docs once per context as a search result, and
+  about 50 tokens of wrapper per call — but hides the tools behind `execute`,
+  and the split then counts bus calls as task work (the measurement is in
+  [#152](https://github.com/dembaca/ai-agent-bus/issues/152#issuecomment-7185986052)).
+  The plugin's `addMcp` sets `codemode: false` on its server entry, and a
+  server configured by hand in `adapters/opencode.md` shows it too. Nothing
+  else changes: the tools, their names and their arguments stay as they were,
+  and a host that configured the server itself can set the same flag.
 
 - **The central bridge logs one INFO line per person post, reaction or removal of a reaction it carries onto NATS** (#134, RT-6.42): `inbound: carried` with the home, `what` (`post`, `reaction` or `unreaction`), the Mattermost post id and the subject, no text and no name beyond the anchor.
 

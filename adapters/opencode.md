@@ -265,10 +265,13 @@ By hand (without the plugin's, or with `mcp: false`), in the project's `opencode
 
 - `opencode mcp add ai-agent-bus --env K=V … -- sh -c '…'` writes this entry, but
   refuses an empty `--env` value: add the two empty `CLAUDE_*` variables by hand.
-- `codemode: false`: the bus tools are direct tools, not Code Mode (`execute`). Code Mode
-  would have the model write a script per call and read the bus tool docs into it every
-  time; the tools are called a handful of times a turn, so the direct list is cheaper
-  (issue #152). The plugin's own server entry carries the same setting.
+- `codemode: false`: the bus tools are direct tools, not Code Mode (`execute`), so the
+  model sees them and their docs as written, as in Claude Code and pi, and the token
+  split counts bus calls exactly (#150). It costs about 2,460 tokens of tool docs in
+  every request (about 3,240 with the instructions, mostly cache reads); Code Mode is
+  cheaper on the window but hides the tools behind `execute` (the measurement is in
+  [#152](https://github.com/dembaca/ai-agent-bus/issues/152#issuecomment-7185986052)).
+  The plugin's own server entry carries the same setting.
 - `MM_WORKSPACE` (the project's real directory) and the two empty variables: the plugin
   looks only for the endpoint file keyed on the project directory, and a Claude Code
   shell's session id or project directory, inherited, would key the server's files
