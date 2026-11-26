@@ -69,6 +69,25 @@ before 0.5.0 are described in the git history.
 
 ### Breaking
 
+- **The central bridge reads its settings under `CB_` names** (#169,
+  [docs/env-names.md](docs/env-names.md#the-bridge-19)). Each `BRIDGE_X`
+  becomes `CB_BRIDGE_X` (`CB_BRIDGE_NATS_URL`, `CB_BRIDGE_NATS_SEED_FILE`,
+  `CB_BRIDGE_CA_FILE`, `CB_BRIDGE_MM_URL`, `CB_BRIDGE_MM_ALLOW_HTTP`,
+  `CB_BRIDGE_MM_TOKEN_FILE`, `CB_BRIDGE_MM_TEAM`, `CB_BRIDGE_HOMES`,
+  `CB_BRIDGE_PROPS_PREFIX`, `CB_BRIDGE_KV_BUCKET`, `CB_BRIDGE_SEEN_BUCKET`,
+  `CB_BRIDGE_STREAM`, `CB_BRIDGE_BUS_PREFIX`, `CB_BRIDGE_DELIVER`,
+  `CB_BRIDGE_INBOX`, `CB_BRIDGE_LISTEN_ADDR`,
+  `CB_BRIDGE_MM_ADMIN_TOKEN_FILE`), and the two Mattermost settings of the
+  agents' own bots get an `MM`: `BRIDGE_BOT_PREFIX` becomes
+  `CB_BRIDGE_MM_BOT_PREFIX`, `BRIDGE_HIDE_BOT_DM` becomes
+  `CB_BRIDGE_MM_HIDE_BOT_DM`. The old names still work in this release:
+  with the new name unset the bridge reads the old one and logs one
+  deprecation warning naming the new name; both set to the same value pass
+  with a warning that the old one can go; both set to different values
+  refuse the start, naming both (never a value). An empty value counts as
+  set. The release after this one refuses an old name set without its new
+  name; rename the deployment's settings before it.
+
 - **The central bridge refuses an `http` Mattermost URL to a host that is
   not loopback** (#131). Its bot token goes with every REST call and in the
   WebSocket's authentication challenge, so over `http` it would cross the

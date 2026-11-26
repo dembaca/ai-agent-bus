@@ -12,6 +12,12 @@ together as release 0.103.0. Until then the old names in the
 [README configuration table](../README.md#configuration), the
 [arc42 docs](arc42) and the adapter docs stay right.
 
+**Built for the central bridge** (`services/bridge`): it reads the new names
+of [its table](#the-bridge-19) by the reading rule below
+(`internal/config/env.go`), and its docs name the new names. The removal
+release's refusal is one constant there, `oldNamesRemoved`. The other
+components still read the old names.
+
 ## The rules
 
 ### Which prefix
@@ -444,6 +450,11 @@ says whether the setting itself is about Mattermost.
 `BRIDGE_BOT_PREFIX` and `BRIDGE_HIDE_BOT_DM` (#166) are about Mattermost but
 have no `MM` in their names; the rename gives them one, as the rule says:
 `CB_BRIDGE_MM_BOT_PREFIX` and `CB_BRIDGE_MM_HIDE_BOT_DM`.
+
+The bridge reads its settings from its container's environment, which no
+plugin manifest writes: a value that is exactly `${NAME}` is a value there,
+not an unexpanded placeholder, so the placeholder rule of the reading rule
+does not apply to it.
 
 ### The console (17)
 
