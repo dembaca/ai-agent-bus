@@ -158,6 +158,35 @@ func TestTheWindowEdge(t *testing.T) {
 	}
 }
 
+// A trace exactly on the window's edge still counts: A at 0 make A, B, A, B at
+// t=30 a copy, and only `Before` (not `!After`) keeps it.
+func TestATraceExactlyOnTheEdgeStillCounts(t *testing.T) {
+	g := &Guard{}
+	at(g, base, 0)
+	g.Session("s1", "203.0.113.0/24")
+	at(g, base, 10*time.Minute)
+	g.Session("s1", "198.51.100.0/24")
+	at(g, base, 20*time.Minute)
+	g.Session("s1", "203.0.113.0/24")
+	at(g, base, 30*time.Minute)
+	if v := g.Session("s1", "198.51.100.0/24"); v != Copied {
+		t.Fatalf("with A exactly at the window's edge: %v, want copied", v)
+	}
+}
+
+// A rotation among three networks returns to none of them at distance two: it is
+// the limit the docs name, and it must stay a move, never a refusal.
+func TestAThreeNetworkRotationIsNotCaught(t *testing.T) {
+	g := &Guard{}
+	nets := []string{"203.0.113.0/24", "198.51.100.0/24", "192.0.2.0/24"}
+	for i := 0; i < 6; i++ {
+		at(g, base, time.Duration(i)*time.Minute)
+		if v := g.Session("s1", nets[i%3]); v == Copied {
+			t.Fatalf("rotation issue %d: %v, want moved or same", i, v)
+		}
+	}
+}
+
 // The block ends exactly at its end: one second before it still refuses, at it
 // the session starts afresh.
 func TestTheBlockEndsExactly(t *testing.T) {

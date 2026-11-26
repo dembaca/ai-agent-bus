@@ -135,9 +135,9 @@ before 0.5.0 are described in the git history.
   checked, the auth callout watches where each token's Keycloak session (`sid`)
   and each host key are used from. A network is a prefix (IPv4 /24, IPv6 /64);
   one change is a person moving and is only reported, and the log names the id
-  and the prefix. Alternating — back to a network it already left, twice,
-  within 30 minutes (A, B, A, B) — is the sign of a copy: that session is
-  refused for 30 minutes, a retry included, while a host key doing so is only
+  and the prefix. Two returns to an earlier network within 30 minutes — adjacent
+  (A, B, A, B) or not (A, B, A, C, A) — are the sign of a copy: that session
+  is refused for 30 minutes, a retry included, while a host key doing so is only
   reported — a copied key is the owner's to rotate, and refusing it would lock
   the owner out. No Keycloak admin right is involved: the service ends no
   session, so a stolen token stays valid at Keycloak until it runs out or the
@@ -146,8 +146,9 @@ before 0.5.0 are described in the git history.
   invisible; IPv4 and IPv6 are two networks, so a dual-stack client that flips
   between them can be refused; a laptop that switches networks more than once
   within 30 minutes can be refused, and a new login (a new session id) clears
-  it; a copy that changes network fewer than three times within 30 minutes, or
-  keeps one connection open, is only reported; a thief with the token can keep
+  it; a copy that changes network fewer than three times within 30 minutes,
+  keeps one connection open, or rotates among three networks (A, B, C, A, B,
+  C), is only reported; a thief with the token can keep
   the owner's session blocked by alternating every 30 minutes, whoever issues
   first wins; and the guard lives in the process, so a restart forgets the
   blocks and each replica of `authd` keeps its own.
