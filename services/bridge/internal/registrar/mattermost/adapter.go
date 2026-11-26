@@ -138,7 +138,8 @@ func (u *User) guest() bool {
 // execute slash commands through the API, so this check matters.
 func (m *Adapter) VerifyInvocation(r *http.Request) (core.Invocation, error) {
 	if err := r.ParseForm(); err != nil {
-		return core.Invocation{}, fmt.Errorf("%w: form: %v", core.ErrBadRequest, err)
+		// The token check follows: a form error is answered plainly, never echoed
+		return core.Invocation{}, core.ErrBadRequest
 	}
 	tok := r.PostForm.Get("token")
 	if tok == "" {

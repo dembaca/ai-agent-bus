@@ -1,0 +1,16 @@
+{
+  "name": "KV_BUS_BRIDGE_RECORDS",
+  "description": "The central bridge's signed slash command records (ask mode, mandate, debug; issue #151 step 3), one key of whole-state JSON each. The operator makes it; only the bridge reads and writes its keys",
+  "subjects": ["$KV.BUS_BRIDGE_RECORDS.>"],
+  "retention": "limits",
+  "max_consumers": -1,
+  "max_msgs": -1,
+  "max_msgs_per_subject": 1,
+  "max_msg_size": 1048576,
+  "max_bytes": 16777216,
+  "discard": "old",
+  "storage": "file",
+  "num_replicas": 1,
+  "allow_rollup_hdrs": true,
+  "allow_direct": false
+}

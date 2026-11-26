@@ -99,10 +99,14 @@ type debugState struct {
 
 // DebugStore keeps the debug setting per channel in memory and, with a path,
 // in its own JSON file, written atomically (temp file + rename, mode 0600)
-// after every change. One registrar process owns the file.
+// after every change. With a Persister instead, the same state is one value
+// under a name. One process owns the file or the value.
 type DebugStore struct {
 	mu   sync.Mutex
 	path string
+	// p and name take the state through a Persister; path is then empty.
+	p    Persister
+	name string
 	st   debugState
 }
 
@@ -129,6 +133,26 @@ func OpenDebugStore(path string) (*DebugStore, error) {
 	return s, nil
 }
 
+// OpenDebugStoreWith loads the state stored under name through p, or starts
+// empty when it holds nothing; every change is saved through p.
+func OpenDebugStoreWith(p Persister, name string) (*DebugStore, error) {
+	s := &DebugStore{p: p, name: name, st: debugState{Version: 1, Debug: map[string]ChannelDebug{}}}
+	data, err := p.Load(name)
+	if err != nil {
+		return nil, fmt.Errorf("debug store %s: %w", name, err)
+	}
+	if data == nil {
+		return s, nil
+	}
+	if err := json.Unmarshal(data, &s.st); err != nil {
+		return nil, fmt.Errorf("debug store %s: %w", name, err)
+	}
+	if s.st.Debug == nil {
+		s.st.Debug = map[string]ChannelDebug{}
+	}
+	return s, nil
+}
+
 // Get returns the stored setting of a channel, ended or not; ok is false when
 // none is stored.
 func (s *DebugStore) Get(channelID string) (ChannelDebug, bool) {
@@ -144,7 +168,7 @@ func (s *DebugStore) Set(d ChannelDebug) error {
 	defer s.mu.Unlock()
 	old, had := s.st.Debug[d.ChannelID]
 	s.st.Debug[d.ChannelID] = d
-	if err := s.saveLocked(); err != nil {
+	if err := s.persist(); err != nil {
 		if had {
 			s.st.Debug[d.ChannelID] = old
 		} else {
@@ -164,7 +188,7 @@ func (s *DebugStore) Delete(channelID string) error {
 		return nil
 	}
 	delete(s.st.Debug, channelID)
-	if err := s.saveLocked(); err != nil {
+	if err := s.persist(); err != nil {
 		s.st.Debug[channelID] = old
 		return err
 	}
@@ -189,7 +213,7 @@ func (s *DebugStore) Update(channelID string, fn func(cur ChannelDebug, had bool
 	default:
 		return cur, had, nil
 	}
-	if err := s.saveLocked(); err != nil {
+	if err := s.persist(); err != nil {
 		if had {
 			s.st.Debug[channelID] = cur
 		} else {
@@ -214,7 +238,7 @@ func (s *DebugStore) Prune(now time.Time) (int, error) {
 	if len(gone) == 0 {
 		return 0, nil
 	}
-	if err := s.saveLocked(); err != nil {
+	if err := s.persist(); err != nil {
 		for _, d := range gone {
 			s.st.Debug[d.ChannelID] = d
 		}
@@ -223,13 +247,16 @@ func (s *DebugStore) Prune(now time.Time) (int, error) {
 	return len(gone), nil
 }
 
-func (s *DebugStore) saveLocked() error {
-	if s.path == "" {
+func (s *DebugStore) persist() error {
+	if s.p == nil && s.path == "" {
 		return nil
 	}
 	data, err := json.MarshalIndent(s.st, "", "  ")
 	if err != nil {
 		return err
+	}
+	if s.p != nil {
+		return s.p.Save(s.name, data)
 	}
 	return writeFileAtomic(s.path, ".debug-*", data)
 }

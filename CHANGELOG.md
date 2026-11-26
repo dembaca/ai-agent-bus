@@ -32,6 +32,30 @@ before 0.5.0 are described in the git history.
   The push, `wait_for_events`, the listener and `/v1/wake` decide alike:
   `/v1/posts` marks such a reply `agent_thread` while the agent holds the
   crown.
+
+- **The bridge serves the slash commands and their signed records** (#151
+  step 3): `/agent-ask-mode`, `/agent-mandate` and `/agent-debug` move from the
+  registrar to the central bridge — the registrar's handlers, the three stores
+  and its routes (`POST /register/v1/mode|mandate|debug`, reads at
+  `/register/v1/modes|mandates|debug/<channel id>`), its rate limits (30 command posts a
+  minute, one budget per Mattermost user and one per channel; 120 reads a
+  minute per read route, counted by the peer, or by the client behind a
+  configured proxy) and its exact 404 bodies. The records
+  now live in the `BUS_BRIDGE_RECORDS` bucket instead of files and are signed
+  with the bridge's own Ed25519 key, whose `kid` follows the registrar's; the
+  MCP server checks them as before, so the only host change is the new pin in
+  `MM_REGISTRAR_KEYS`. The commands get a listener of their own (TLS off
+  loopback, `CB_BRIDGE_COMMANDS_…`), each command its own verification token,
+  and the bridge refuses a key or token file open to group or world. It also
+  serves the release record's route (`GET /register/v1/release`, the handler
+  from step 4): with `CB_BRIDGE_RELEASE_SIGNERS_FILE` and
+  `CB_BRIDGE_RELEASE_VERSION` the signed record, else the registrar's exact
+  404, so a host's release check reads it unchanged. The records are one whole-state
+  value per key with a revision-checked write: the bridge runs **one replica**
+  with a `Recreate` rollout, and a second writer is refused rather than merged.
+  The release that carries this pins the bridge's key on every host beside the
+  registrar's:
+  Needs: bridge signing key pinned on the hosts beside the registrar key.
 - **The console names every agent** (#199, ADR-015 point 6). A card whose
   stated username another card states too (an agent that moved to a new
   host key keeps its old presence for 24 h) showed only its bus id

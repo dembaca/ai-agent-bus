@@ -408,6 +408,9 @@ func (s *Service) authorize(ctx context.Context, req *jwt.AuthorizationRequestCl
 	if errs := vr.Errors(); len(errs) > 0 {
 		return "", who, fmt.Errorf("user JWT invalid: %w", errs[0])
 	}
+	// Encode stamps uc.IssuedAt anew from its own clock read, which can lie a
+	// second after now; Expires stays now+Lifetime. What is attested and recorded
+	// therefore takes the check time now, so exp-iat is exactly Lifetime.
 	userJWT, err := uc.Encode(s.issuer)
 	if err != nil {
 		return "", who, err
@@ -419,7 +422,7 @@ func (s *Service) authorize(ctx context.Context, req *jwt.AuthorizationRequestCl
 	}
 	if at, tr := s.attestHooks(); at != nil {
 		att, err := s.attest(ctx, at, tr, agent, directory.Trusted{Anchor: anchor, Name: id.Owner},
-			hello.Trusted, hello.TrustedCut, uc.IssuedAt, uc.Expires)
+			hello.Trusted, hello.TrustedCut, now.Unix(), uc.Expires)
 		if err != nil {
 			return "", who, fmt.Errorf("attestation: %w", err)
 		}
@@ -431,7 +434,7 @@ func (s *Service) authorize(ctx context.Context, req *jwt.AuthorizationRequestCl
 		}
 		// The record of the chat account behind the login (RT-6.42 step 3).
 		guard, _ := s.anchorHook().(TokenGuard)
-		skipped, err := s.accountRecord(ctx, at, guard, id.Subject, id.ChatID, id.Owner, id.Approver, anchor, id.IssuedAt, uc.IssuedAt, uc.Expires)
+		skipped, err := s.accountRecord(ctx, at, guard, id.Subject, id.ChatID, id.Owner, id.Approver, anchor, id.IssuedAt, now.Unix(), uc.Expires)
 		if err != nil {
 			return "", who, fmt.Errorf("account record: %w", err)
 		}

@@ -214,6 +214,26 @@ func TestALoginWritesTheAccountRecord(t *testing.T) {
 	}
 }
 
+// RT-6.42 step 3: the record's Iat is the check time and Exp is Lifetime after
+// it, whatever the clock reads again while the credential is encoded (the JWT
+// library stamps its own iat then). A clock one second behind the real one
+// makes that second read differ every time, so the test needs no luck with a
+// second boundary and no sleep (issue 179).
+func TestTheAccountRecordLifetimeDoesNotDependOnASecondBoundary(t *testing.T) {
+	l, f, _ := accountLab(t)
+	l.svc.now = func() time.Time { return time.Now().Add(-time.Second) }
+	if _, err := l.connect("alice", l.realm.Token("alice", nil), Hello{Home: "home"}, nil); err != nil {
+		t.Fatal(err)
+	}
+	rs := f.records()
+	if len(rs) != 1 {
+		t.Fatalf("%d records", len(rs))
+	}
+	if r := rs[0]; r.Exp-r.Iat != int64(Lifetime/time.Second) {
+		t.Errorf("record %+v: exp-iat %d, want %d", r, r.Exp-r.Iat, int64(Lifetime/time.Second))
+	}
+}
+
 func TestTheRecordSaysNoApproverWhenTheTokenHasNoGroup(t *testing.T) {
 	l, f, _ := accountLab(t)
 	if _, err := l.connect("alice", l.realm.Token("alice", func(c gojwt.MapClaims) { delete(c, "groups") }), Hello{Home: "home"}, nil); err != nil {
