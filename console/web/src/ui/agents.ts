@@ -33,7 +33,7 @@ function ungrouped(state: string): boolean {
  * harness and model, the PR number. */
 function haystack(card: AgentCard): string {
   return [
-    card.name, card.displayName, card.task, card.branch ?? "", card.home,
+    card.name, card.displayName, card.statedName ?? "", card.task, card.branch ?? "", card.home,
     ...card.guests, card.model, harnessLabel(card.harness), card.project,
     card.pr ? `#${card.pr.number}` : "",
   ].join(" ").toLowerCase()

@@ -11,7 +11,7 @@ import { GraphView } from "./ui/GraphView"
 import { Overview } from "./ui/Overview"
 import { Reports } from "./ui/Reports"
 import { isOpen, type StatusFilter } from "./ui/agents"
-import { asPlace, pushPlace, replacePlace, type Place } from "./nav"
+import { Split, asPlace, pushPlace, replacePlace, resolvePlace, selectedAfter, type Place } from "./nav"
 import { useTheme } from "./theme"
 
 /** The whole console (the agreed design, 2026-11-25): a top bar with the
@@ -71,13 +71,13 @@ export function App({ api }: { api: ConsoleApi }) {
     if (event.type === "snapshot") {
       setCards(inColumnOrder(event.cards))
       setFleetSeen(true)
-      setAgent((sel) => (sel ? event.cards.find((c) => c.name === sel.name) ?? sel : sel))
     } else if (event.type === "card") {
       setCards((all) => inColumnOrder(all.filter((c) => c.name !== event.card.name).concat(event.card)))
-      setAgent((sel) => (sel && sel.name === event.card.name ? event.card : sel))
     } else if (event.type === "drop") {
       setCards((all) => all.filter((c) => c.name !== event.name))
     }
+    // an open detail follows its agent; one that left closes (nav.ts)
+    setAgent((sel) => selectedAfter(event, sel))
   }, [])
   const onState = useCallback((state: ConnState) => {
     if (state !== "error") {
@@ -167,11 +167,10 @@ export function App({ api }: { api: ConsoleApi }) {
   const viewNow = useRef(view)
   viewNow.current = view
   const go = useCallback((place: Place, push: boolean) => {
-    const row = place.ask ? asksNow.current.find((a) => a.id === place.ask) ?? null : null
-    const by = place.agent ?? row?.by
-    setViewState(place.view)
-    setAsk(row)
-    setAgent(by ? cardsNow.current.find((c) => c.name === by) ?? null : null)
+    const shown = resolvePlace(place, cardsNow.current, asksNow.current)
+    setViewState(shown.view)
+    setAsk(shown.ask)
+    setAgent(shown.agent)
     if (push) pushPlace(place)
   }, [])
   useEffect(() => {
@@ -219,8 +218,10 @@ export function App({ api }: { api: ConsoleApi }) {
         {/* #200: a detail opens beside the view, which stays mounted and
             visible (half and half); below 1000 px the view hides and the
             detail is the whole page (app.css) */}
-        <div className={detail ? "split" : "solo"}>
-          <div className="view">
+        <Split detail={detail && (
+          <Detail api={api} card={agent} ask={ask} asks={asks}
+            from={VIEW_LABEL[view]} onBack={closeDetail} onFail={fail} />
+        )}>
             {view === "agents" && <AgentList cards={cards} asks={asks} compact={detail}
               selected={agent?.name ?? null}
               filter={listFilter} onFilter={setListFilter} query={listQuery} onQuery={setListQuery}
@@ -231,14 +232,7 @@ export function App({ api }: { api: ConsoleApi }) {
             {view === "overview" && <Overview cards={cards} asks={asks}
               onOpenAsk={openAsk} onView={setView} />}
             {view === "reports" && <Reports api={api} onFail={fail} />}
-          </div>
-          {detail && (
-            <div className="split__detail">
-              <Detail api={api} card={agent} ask={ask} asks={asks}
-                from={VIEW_LABEL[view]} onBack={closeDetail} onFail={fail} />
-            </div>
-          )}
-        </div>
+        </Split>
       </main>
       <Footer build={me?.build ?? null} />
     </div>

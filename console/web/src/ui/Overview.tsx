@@ -1,6 +1,7 @@
 import type { AgentCard, Ask } from "../api/types"
 import { since } from "../clock"
 import { askerName, countByGroup, openAsksFirst } from "./agents"
+import { AgentLabel } from "./AgentList"
 import "./Overview.css"
 
 const GROUPS = [
@@ -99,7 +100,7 @@ export function Overview({ cards, asks, onOpenAsk, onView }: {
                 <span className="needs__age">{since(ask.at)}</span>
               </span>
               <span className="needs__by">
-                <span className="mono" title={ask.by}>{askerName(ask, cards).text}</span>
+                <AgentLabel name={askerName(ask, cards)} />
                 {ask.forMe ? " · for you" : " · you may answer"}
               </span>
             </button>

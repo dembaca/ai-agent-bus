@@ -362,6 +362,22 @@ def test_a_shared_name_is_stated_and_marked_never_confirmed() -> None:
     assert f.card("agent-c")["nameShared"] is False
 
 
+def test_stating_another_agents_bus_name_counts_as_shared() -> None:
+    """Fable's point on #199: a username that is another card's name on the
+    bus, full or short, is no confirmed name either."""
+    f = Fleet()
+    feed(f, name_presence("agent-mac-ai-agent-a1b2c3", "online", "", 1, 100.0))
+    feed(f, name_presence("agent-b", "online", "agent-mac-ai-agent-a1b2c3", 2, 101.0))
+    feed(f, name_presence("agent-c", "online", "a1b2c3", 3, 102.0))
+    for agent in ("agent-b", "agent-c"):
+        card = f.card(agent)
+        assert card["nameShared"] is True
+        assert card["displayName"] == agent
+    feed(f, name_presence("agent-d", "online", "agent-own-name", 4, 103.0))
+    assert f.card("agent-d")["nameShared"] is False
+    assert f.card("agent-d")["displayName"] == "agent-own-name"
+
+
 def test_an_impostor_after_a_bye_takes_no_name() -> None:
     """Fable's point: once A says bye, B stating A's username shows it on
     neither card, not on B's alone."""

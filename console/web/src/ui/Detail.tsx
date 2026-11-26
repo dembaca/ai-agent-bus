@@ -2,7 +2,7 @@ import { useEffect, useMemo, useState, type ReactNode } from "react"
 import type { AgentCard, Ask, ConsoleApi, Post, ThreadPage } from "../api/types"
 import { clock, since } from "../clock"
 import { agentName, askerName, harnessLabel, isOpen, stateClass } from "./agents"
-import { Context, SharedMark, nameTitle } from "./AgentList"
+import { AgentLabel, Context, SharedMark, nameTitle } from "./AgentList"
 import { CrownIcon } from "./icons"
 import "./Detail.css"
 
@@ -113,7 +113,7 @@ export function Detail({ api, card, ask, asks, from, onBack, onFail }: {
         </div>
 
         <aside className="detail__side">
-          {ask && <AskBlock ask={ask} by={card && card.name === ask.by ? agentName(card).text : ask.displayName} />}
+          {ask && <AskBlock ask={ask} by={card && card.name === ask.by ? agentName(card) : askerName(ask, [])} />}
           {card && others.length > 0 && (
             <section className={"panel detail__asks" + (othersForYou ? " detail__asks--for-you" : "")}
               aria-label={othersForYou ? "Waiting on you" : "Its open asks"}>
@@ -173,7 +173,7 @@ function Facts({ card }: { card: AgentCard }) {
 
 /** One ask on the page: its title, kind, who asked whom. Read-only:
  * nothing here answers it — that stays in its thread in the chat. */
-function AskBlock({ ask, by }: { ask: Ask; by: string }) {
+function AskBlock({ ask, by }: { ask: Ask; by: { text: string; shared: boolean; id: string } }) {
   return (
     <section className="detail__ask" aria-label="The ask">
       <h2 className="section-title detail__ask-title">
@@ -181,7 +181,7 @@ function AskBlock({ ask, by }: { ask: Ask; by: string }) {
       </h2>
       <strong className="detail__ask-need">{ask.need}</strong>
       <span className="muted">
-        {ask.kind} by <span className="mono" title={ask.by}>{by}</span>
+        {ask.kind} by <AgentLabel name={by} />
         {ask.human && <> to {ask.human}</>} · asked {since(ask.at)} ago
       </span>
       <span className="detail__ask-marks">

@@ -210,6 +210,24 @@ export function nameTitle(card: Pick<AgentCard, "name" | "displayName" | "stated
     : n.id
 }
 
+/** An agent's name with its "shared name" mark, the bus id in the title:
+ * every place that names an agent beside a decision (asks, the Overview,
+ * the detail's ask) uses it, so an impostor's ask never reads as another
+ * agent's (#199). */
+export function AgentLabel({ name, className = "mono" }: {
+  name: { text: string; shared: boolean; id: string }
+  className?: string
+}) {
+  return (
+    <>
+      <span className={className} title={name.shared
+        ? `${name.id} · another agent states this name too: not confirmed`
+        : name.id}>{name.text}</span>
+      {name.shared && <> <SharedMark /></>}
+    </>
+  )
+}
+
 /** The mark beside a name another agent states too (#199). */
 export function SharedMark() {
   return (
@@ -244,7 +262,7 @@ export function AskTile({ ask, cards, onOpen }: { ask: Ask; cards: readonly Agen
       <span className="ask-tile__body">
         <strong className="ask-tile__need">{ask.need}</strong>
         <span className="ask-tile__by">
-          asked by <span className="mono" title={by.id}>{by.text}</span> · {since(ask.at)} ago
+          asked by <AgentLabel name={by} /> · {since(ask.at)} ago
           {ask.human && <> · to {ask.human}</>}
         </span>
       </span>

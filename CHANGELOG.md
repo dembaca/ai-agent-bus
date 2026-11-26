@@ -15,15 +15,18 @@ before 0.5.0 are described in the git history.
   stated username another card states too (an agent that moved to a new
   host key keeps its old presence for 24 h) showed only its bus id
   (`agent-` and a hash); it now shows the stated name with a "shared name"
-  mark, still never as a confirmed name. The fleet's cards carry
-  `statedName` and `nameShared`; asks and the graph name their agents the
-  same way, the bus id in the title.
+  mark, still never as a confirmed name; a username that is another card's
+  bus name counts as shared too. The fleet's cards carry `statedName` and
+  `nameShared`; the asks, the Overview, the detail and the graph name their
+  agents the same way, the mark included, the bus id in the title.
 - **The console opens on the Overview and shows a detail beside the view**
   (#200, ADR-015 point 3): the Overview is the first tab and the default;
   its tiles share one gap and a row's height. An agent's or an ask's
   detail opens beside the view, half and half, the open agent marked in
-  the list; below 1000 px the detail is the whole page. Back and Forward,
-  the list's search and filter keep working.
+  the list; below 1000 px the detail is the whole page (up to 1230 px the
+  list gets three fifths). A detail whose agent leaves the fleet closes; the
+  graph fits itself again when its width changes. Back and Forward, the
+  list's search and filter keep working.
 
 ### Docs
 

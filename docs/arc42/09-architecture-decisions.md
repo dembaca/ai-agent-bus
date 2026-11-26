@@ -4227,7 +4227,9 @@ The console is the operators' view of the bus itself.
    does not know is never guessed into a group: it shows under "All" and
    under an "Other" filter, which appears while such an agent is there.
    - **The name** (#199): the username the agent's presence states; one
-     another card states too shows with a "shared name" mark, never as a
+     another card states too, or one that is another card's name on the
+     bus, shows with a "shared name" mark wherever the agent is named (the
+     list, the detail, the asks, the Overview, the graph), never as a
      confirmed name; the name on the bus (`agent-` and a hash) only in the
      title and the detail's facts, or where no name is stated at all (an
      older MCP server, a session without a Mattermost bot).

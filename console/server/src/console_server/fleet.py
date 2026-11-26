@@ -309,10 +309,18 @@ class Fleet:
         bus name then. An agent may still state a name falsely that no other
         card holds: the owner beside it is the attested one."""
         label = self._names.get(agent, "")
-        if label and not any(other != agent and named == label
-                             for other, named in self._names.items()):
+        if label and not self._contested(agent, label):
             return label
         return short_name(agent)
+
+    def _contested(self, agent: str, label: str) -> bool:
+        """Another known card states `label` too, or `label` is another card's
+        name on the bus, full or short (#199: stating another agent's bus name
+        takes it over no more than stating its username)."""
+        if any(other != agent and named == label for other, named in self._names.items()):
+            return True
+        return any(other != agent and label in (other, short_name(other))
+                   for other in self.agents())
 
     def stated_name(self, agent: str) -> str:
         """The bot's username the agent's presence states, '' for none — shown
@@ -321,11 +329,11 @@ class Fleet:
         return self._names.get(agent, "")
 
     def name_shared(self, agent: str) -> bool:
-        """True when another known card states the same username: neither
-        card's name is confirmed (`shown_name` gives the bus name then)."""
+        """True when another known card states the same username, or the
+        username is another card's bus name: the name is not confirmed
+        (`shown_name` gives the bus name then)."""
         label = self._names.get(agent, "")
-        return bool(label) and any(other != agent and named == label
-                                   for other, named in self._names.items())
+        return bool(label) and self._contested(agent, label)
 
     # --- the wire (ADR-015 point 10, the app's contract) -------------------------------
 

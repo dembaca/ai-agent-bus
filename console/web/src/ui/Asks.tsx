@@ -1,5 +1,6 @@
 import type { AgentCard, Ask } from "../api/types"
 import { askerName } from "./agents"
+import { AgentLabel } from "./AgentList"
 import { since } from "../clock"
 import "./Asks.css"
 
@@ -57,7 +58,7 @@ export function Asks({ asks, cards = [], onOpen }: {
                   <button type="button" className="linkish"
                     onClick={(e) => { e.stopPropagation(); onOpen(ask) }}>{ask.need}</button>
                 </td>
-                <td className="mono small" title={`${ask.by} · ${ask.home}`}>{askerName(ask, cards).text}</td>
+                <td className="small"><AgentLabel name={askerName(ask, cards)} /></td>
                 <td>{ask.human ?? "–"}</td>
                 <td>{ask.kind}</td>
                 <td className="num muted">{since(ask.at)}</td>

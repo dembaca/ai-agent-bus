@@ -100,7 +100,8 @@ Presence today carries `online`/`away` (format v1) — the agents list counts
 them as listening and idle.
 
 A card's `displayName` is the bot's username the agent's presence states,
-confirmed only while no other card states it too, else the short bus name.
+confirmed only while no other card states it too and it is no other card's
+bus name (full or short), else the short bus name.
 Beside it, `statedName` carries the stated username even when it is shared,
 and `nameShared` says so (#199): the web shows the name with a "shared
 name" mark instead of the bare bus id (`agent-` and a hash), never as a
