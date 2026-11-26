@@ -24,7 +24,7 @@ from console_server.metrics_service import MetricsService
 from console_server.nats_read import View
 
 from test_metrics_service import _settings_unit  # the unit settings
-from test_asks_stats import LINE           # the house STATS line
+from test_asks_stats import LINE, SPLIT    # the house STATS line and its split
 
 
 pytestmark = pytest.mark.skipif(
