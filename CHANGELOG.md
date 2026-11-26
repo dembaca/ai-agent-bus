@@ -126,6 +126,16 @@ before 0.5.0 are described in the git history.
 
 ### Fixed
 
+- **A NATS home starts for an identity first seen after the directory
+  import** (#86, the channel directory's anchors, RT-6.39). The login service
+  gave such an identity its Keycloak `sub` as anchor, so the agent name and
+  the presence owner token it issued differed from the ones the host computes
+  from the username, and the home stopped with `NameMismatch`. A new identity
+  now takes its username as anchor when it is free, as before the import; a
+  name another identity holds still gives the `sub` (the host then still
+  stops, never with a wrong name). Anchors already given do not move. The
+  remaining cases, an account renamed in Keycloak and a new one whose name
+  was held, stay a known limit (RISK-19).
 - **Two follow-ups from the WebSocket security review** (#85, RT-6.36). The
   login service's refusal test now asserts an authorization error and that the
   same identity connects on the standard listener of the same rig, so a
