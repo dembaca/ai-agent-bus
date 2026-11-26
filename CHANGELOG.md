@@ -31,8 +31,10 @@ before 0.5.0 are described in the git history.
   (pinned in the example-conf test); an invalid or refused nkey ends the
   reading with a warning, an unreachable one reconnects with backoff, and
   the consumers age out after five minutes without the console listening
-  — the login service re-ensures them hourly, so a console that restarts
-  gets the seven days again.
+  — the login service re-ensures them hourly, so a console that was down
+  that long gets the seven days again. A console that restarts inside the
+  window keeps the consumers' position and its in-memory books start
+  empty: a named limit.
 - **The console serves `/metrics`** (#158, part of): the Prometheus text
   format behind the operator's login, the same right `/v1/stats` needs —
   **never scrape with the session cookie**, it is that operator's whole

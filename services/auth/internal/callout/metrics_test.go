@@ -37,14 +37,17 @@ func TestEnsureMetricsMakesThePair(t *testing.T) {
 	if got := pres.Config.AckPolicy; got != nats.AckNonePolicy {
 		t.Errorf("presence acks: %v", got)
 	}
-	if got := pres.Config.InactiveThreshold; got != 0 {
-		t.Errorf("presence ages out on its own: %v", got)
+	if got := pres.Config.InactiveThreshold; got != 5*time.Minute {
+		t.Errorf("presence threshold: %v, want 5m (the console's downtime ages the pair out)", got)
 	}
 	want := []string{"presence.*.*", "presence.ask.*.*"}
 	if got := pres.Config.FilterSubjects; strings.Join(got, ",") != strings.Join(want, ",") {
 		t.Errorf("presence filters: %v, want %v", got, want)
 	}
 	stats := info(t, c, "STATS", consumers.MetricsStatsName)
+	if got := stats.Config.InactiveThreshold; got != 5*time.Minute {
+		t.Errorf("stats threshold: %v, want 5m", got)
+	}
 	if got := stats.Config.DeliverSubject; got != consumers.MetricsDeliver("stats") {
 		t.Errorf("stats delivers to %q", got)
 	}

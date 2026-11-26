@@ -139,10 +139,12 @@ class Console:
                 log.warning("console: the metrics scrape token is not"
                             " readable; the token path stays closed")
             host = self.settings.metrics_listen_host
-            if host not in ("127.0.0.1", "::1", "localhost") and tls_context(self.settings) is None:
-                log.warning("console: the metrics listener is on %s without"
-                            " TLS; a non-loopback listener belongs behind"
-                            " TLS", host)
+            # ::1 counts as loopback; the warning is about TCP, not TLS choices
+            if host not in ("127.0.0.1", "::1", "localhost"):
+                log.warning("console: the metrics listener is on %s, not"
+                            " loopback: the token page travels the network;"
+                            " put the listener behind TLS (a reverse proxy)"
+                            " and keep the token file private", host)
             self._metrics_http = httpd.Httpd(handler=self.handle_metrics,
                                              host=host,
                                              port=self.settings.metrics_listen_port)

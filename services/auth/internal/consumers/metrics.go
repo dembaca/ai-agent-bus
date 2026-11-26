@@ -50,8 +50,10 @@ const MetricsHistory = PersonStatsHistory
 func (m *Manager) EnsureMetrics(ctx context.Context) error {
 	p := m.cfg.Presence
 	// MetricsInactiveThreshold: without a listener this long the pair ages
-	// out, so a console that restarts (or one down that long) gets the full
-	// 7-day replay from the next ensure — a kept consumer never replays.
+	// out (the login service re-ensures hourly). A console down longer
+	// gets the full replay from the next ensure; one that restarts inside
+	// the window keeps the consumers' position and its in-memory books
+	// start empty — a named limit (the docs say it), not a claim.
 	const MetricsInactiveThreshold = 5 * time.Minute
 	pres := &nats.ConsumerConfig{
 		Durable: MetricsPresenceName, DeliverSubject: MetricsDeliver("presence"),

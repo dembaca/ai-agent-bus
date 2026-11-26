@@ -347,13 +347,13 @@ func RunCallout(ctx context.Context, s Settings, log *slog.Logger) error {
 	// The console's unattended metrics page (#158): its two consumers are
 	// made at this start and kept, idempotent, like every consumer of the
 	// bus — the console's service account itself has no JetStream right.
-	// Off unless AUTH_CONSOLE_METRICS is set: nobody's consumers exist
+	// Off unless AUTH_CONSOLE_METRICS=true: nobody's consumers exist
 	// while the page is off.
 	if s.Callout.Console.Metrics {
 		if err := mgr.EnsureMetrics(startCtx); err != nil {
 			return fmt.Errorf("metrics consumers: %w", err)
 		}
-		metricsTick(ctx, mgr, log, time.Hour, 5*time.Minute)
+		metricsTick(ctx, mgr, log) // hourly: keeps and makes, never deletes
 	}
 	if err := mgr.WatchByes(ctx); err != nil {
 		return err
@@ -557,14 +557,13 @@ func personTokenConfig(s Settings, bus token.Config) token.Config {
 // the tick makes them again with their full 7-day replay (#168's round:
 // a kept consumer never replays, so a console restart would lose the
 // history otherwise).
-func metricsTick(ctx context.Context, mgr *consumers.Manager, log *slog.Logger,
-	every, threshold time.Duration) {
+func metricsTick(ctx context.Context, mgr *consumers.Manager, log *slog.Logger) {
 	go func() {
 		for {
 			select {
 			case <-ctx.Done():
 				return
-			case <-time.After(every):
+			case <-time.After(time.Hour):
 				cctx, cancel := context.WithTimeout(context.WithoutCancel(ctx), 10*time.Second)
 				if err := mgr.EnsureMetrics(cctx); err != nil {
 					log.Warn("metrics consumers: re-ensure failed", "err", err)
