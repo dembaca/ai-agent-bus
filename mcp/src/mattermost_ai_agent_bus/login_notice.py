@@ -187,6 +187,23 @@ REFUSED_TEXT = (
 )
 
 
+NOTICE_SESSION = (
+    "Login of your agent {agent}: its Keycloak session was used from two networks in turn, so the "
+    "bus refuses it now. If that was not you, end that session in Keycloak (Sessions, log out), "
+    "then start a new login."
+)
+NOTICE_HOST_KEY = (
+    "Login of your agent {agent}: its host key was used from two networks in turn, so a copy may be "
+    "in use. The key is not refused (that would lock you out): rotate the host key on that machine "
+    "and start the agent again."
+)
+
+
+def notice_text(agent: str, kind: str) -> str:
+    """The theft notice to the responsible human (RT-6.34): what was used and what only they can do."""
+    return (NOTICE_HOST_KEY if kind == "host_key" else NOTICE_SESSION).format(agent=agent)
+
+
 class DMNotifier:
     def __init__(self, get_client: Callable[[], Awaitable[ChatPort | None]],
                  human: Callable[[], str]) -> None:

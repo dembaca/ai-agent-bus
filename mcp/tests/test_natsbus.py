@@ -33,6 +33,7 @@ from mattermost_ai_agent_bus.natsbus import (
     CARD_TASK_MAX,
     MessageError,
     NatsBus,
+    Notice,
     NameMismatch,
     NatsSettings,
     PresenceCard,
@@ -43,6 +44,7 @@ from mattermost_ai_agent_bus.natsbus import (
     card_harness,
     card_text,
     crown_candidates,
+    decode_notice,
     crown_holder,
     decode,
     decode_attestation,
@@ -2030,3 +2032,47 @@ def test_the_bus_reads_the_card_at_each_presence() -> None:
     bus.card_source = broken
     body = bus._presence_body("online")
     assert decode_presence(body) == "online" and decode_presence_card(body) == PresenceCard()
+
+
+# --- the login service's theft notice (RT-6.34) ---------------------------------
+
+def encode_notice(**over: Any) -> bytes:
+    rec: dict[str, Any] = {"v": 1, "kind": "session", "sid": "a1b2c3d4-0000-4000-8000-000000000000",
+                           "network": "203.0.113.0/24", "agent": "agent-b",
+                           "iat": int(T0), "exp": int(T0 + 3600)}
+    rec.update(over)
+    return json.dumps(rec).encode()
+
+
+def test_a_notice_decodes_strictly() -> None:
+    n = decode_notice(encode_notice())
+    assert n.kind == "session" and n.network == "203.0.113.0/24" and n.agent == "agent-b"
+    assert decode_notice(encode_notice(agent="")).agent == ""
+    for bad in (encode_notice(v=2), encode_notice(kind="other"), encode_notice(sid=""),
+                encode_notice(sid="a b"), encode_notice(network="not a network"),
+                encode_notice(agent="not an agent"), encode_notice(exp=int(T0))):
+        with pytest.raises(MessageError):
+            decode_notice(bad)
+
+
+async def test_a_notice_reaches_the_callback_once_and_an_expired_one_never() -> None:
+    seen: list[Notice] = []
+    bus = NatsBus(_settings(), FakeLogin(), "alice", lambda _e: None, on_notice=seen.append)
+    await bus._on_presence_msg(FakeMsg("presence.notice.bob.v1", _presence_reply(bus, 1, 1, T0),
+                                       encode_notice()))
+    # A replay of the same record (a consumer made anew) is not told twice.
+    await bus._on_presence_msg(FakeMsg("presence.notice.bob.v1", _presence_reply(bus, 2, 2, T0 + 60),
+                                       encode_notice()))
+    assert [n.kind for n in seen] == ["session"]
+    # One that expired before it was delivered is dropped.
+    await bus._on_presence_msg(FakeMsg("presence.notice.bob.v1", _presence_reply(bus, 3, 3, T0 + 7200),
+                                       encode_notice(sid="other-session")))
+    assert len(seen) == 1
+
+
+def test_the_notice_text_names_what_only_the_owner_can_do() -> None:
+    from mattermost_ai_agent_bus.login_notice import notice_text
+    session = notice_text("agent-b", "session")
+    assert "agent-b" in session and "Keycloak" in session and "refuses" in session
+    host = notice_text("agent-b", "host_key")
+    assert "host key" in host and "rotate" in host and "not refused" in host
