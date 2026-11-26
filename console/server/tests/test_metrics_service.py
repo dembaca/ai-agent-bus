@@ -163,7 +163,7 @@ async def test_the_deliver_subjects_feed_the_service_view() -> None:
     view = View("presence", "stats")
     svc = MetricsService(_settings_unit(), view, connect=None)
     conn = FakeConn()
-    task = asyncio.create_task(svc._serve(conn))
+    task = asyncio.create_task(svc._serve(conn, asyncio.Event()))
     await asyncio.sleep(0)      # let the subscriptions happen
     assert set(conn.cbs) == {"deliver.metrics.presence", "deliver.metrics.stats"}
 
@@ -172,7 +172,8 @@ async def test_the_deliver_subjects_feed_the_service_view() -> None:
     now = 1764061800.0
     msg = SimpleNamespace(subject=f"presence.dembaca.{name}",
                           data=encode_presence("online", "", ""), reply=ack(
-                              "PRESENCE", "console-metrics", 1, now))
+                              "PRESENCE", "console-metrics_presence", 1, now))
+    view.fleet._see(now)   # the fleet's clock floor: the claims need it
     await conn.cbs["deliver.metrics.presence"](msg)          # type: ignore[operator]
     assert view.fleet.cards()[0]["state"] == "online"
 
@@ -181,7 +182,7 @@ async def test_the_deliver_subjects_feed_the_service_view() -> None:
     body = stats.nats_body(line)
     assert body is not None
     smsg = SimpleNamespace(subject=f"stats.{name}", data=body, reply=ack(
-        "STATS", "console-metrics", 1, now))
+        "STATS", "console-metrics_stats", 1, now))
     await conn.cbs["deliver.metrics.stats"](smsg)            # type: ignore[operator]
     assert view.stats_lines == 1
     assert svc.last_delivery > 0.0
@@ -197,7 +198,7 @@ async def test_a_refused_connect_ends_the_reading(tmp_path, caplog) -> None:
     """A refusal (the account gone, the nkey revoked) is terminal: the
     reading ends with its warning, the loop does not retry it all day."""
 
-    async def refused(seed: str) -> object:
+    async def refused(seed: str, lost: object = None) -> object:
         raise RuntimeError("nats: authorization violation")
 
     seed = tmp_path / "seed"                 # a readable seed: it dials
