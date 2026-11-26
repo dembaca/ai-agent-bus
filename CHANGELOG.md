@@ -3,6 +3,18 @@
 Every version bump in `.claude-plugin/plugin.json` gets an entry here. Versions
 before 0.5.0 are described in the git history.
 
+## Unreleased
+
+### Docs
+
+- **The coordinator's hourly check** (`coordinator.md`, the coordinator scenario
+  RT-6.6 step 12): while it holds the crown, the coordinator reads roster and tasks
+  once an hour, nudges silent agents, gives free ones a `TASK` and posts
+  `ASSIGNMENTS` only on a change. Claude Code schedules it with its cron; runtimes
+  without a scheduler run it at the first stall notice after an hour. It goes with
+  the crown on a handover. Stall notices: one addressee per item, and finished tasks
+  closed with `DONE`, so the notice lists only live items.
+
 ## 0.103.0
 
 Needs: settings renamed to the new prefix before 0.104.0, see the changelog.
