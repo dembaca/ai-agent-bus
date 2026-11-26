@@ -1,13 +1,14 @@
-"""The two stage-1 reports from the agents' STATS lines on NATS (RT-6.43 steps 7 and 8;
-ADR-015, addition of 2026-11-25, points 12 to 15).
+"""The reports from the agents' STATS lines on NATS (RT-6.43 steps 7 and 8; ADR-015,
+addition of 2026-11-25, points 12 to 15).
 
 Each MCP server publishes each part of its STATS line on ``<stats>.<name>`` (stream
 ``STATS``). Every line is decoded strictly with ``stats.decode_line`` — strings only in
 ``v``, ``sid``, ``rt`` and ``kind``, each by its pattern; keys from the allow list of
 ``stats.py``, others ignored and never shown — and a line that breaks a rule is dropped
 whole with a warning that carries none of it. The reports are computed with ``stats.py``,
-the numbers ``stats_report`` gives on the same lines: the bus's share of all tokens per
-version over 7 days, and the asks over 24 hours and 7 days. A missing value is ``None``
+the numbers ``stats_report`` gives on the same lines: the bus and coordination share of all
+tokens per version over 7 days, the asks over 24 hours and 7 days, and the bus traffic by
+category over 7 days (RT-6.9 step 3: exact counts, grouped by ``stats.CATEGORY_OF``). A missing value is ``None``
 ("n/a", never 0); each report says the age of the oldest line it holds. No agent's name,
 no report by home or owner: the subject's name only says whose line it is.
 """
@@ -82,7 +83,8 @@ class StatsBook:
         return [line for at, _seq, line in self._lines if at >= edge]
 
     def reports(self) -> list[dict[str, Any]]:
-        """`/v1/stats`: the share per version over 7 days, the asks over 24 h and 7 days."""
+        """`/v1/stats`: the share per version over 7 days, the asks over 24 h and 7 days, the
+        bus traffic by category over 7 days."""
         edge = self.server_now - WEEK_SEC
         held = [at for at, _seq, _line in self._lines if at >= edge]
         oldest = {"label": "age of the oldest line", "unit": "s",
@@ -91,7 +93,9 @@ class StatsBook:
         share = [{"label": f"version {row['version']}", "unit": "%",
                   "value": _pct((row["tok"] or {}).get("bus_share_pct"))}
                  for row in _safe(stats.report, week) or []]
-        out = [{"id": "share-per-version", "title": "the bus's share of all tokens, per version",
+        # The share counts every request the bus caused whole: bus overhead and the
+        # coordination it carries together, not overhead alone (RT-6.9 step 3).
+        out = [{"id": "share-per-version", "title": "bus and coordination share of all tokens, per version",
                 "window": "7 d", "fields": [*share, {"label": "lines", "unit": "count",
                                                     "value": len(week) or None}, oldest]}]
         for rid, window, sec in (("asks-24h", "24 h", DAY_SEC), ("asks-7d", "7 d", WEEK_SEC)):
@@ -104,6 +108,19 @@ class StatsBook:
                 {"label": "longest wait for an answer", "unit": "s", "value": a.get("max_wait_sec")},
                 {"label": "still open at the part's end", "unit": "count", "value": a.get("open")},
                 oldest]})
+        t = _safe(stats.traffic_summary, week) or {}
+        ovh, coord = t.get("overhead") or [None, None], t.get("coordination") or [None, None]
+        out.append({"id": "traffic-by-category", "title": "bus traffic by category", "window": "7 d", "fields": [
+            {"label": "bus overhead, items", "unit": "count", "value": ovh[0]},
+            {"label": "bus overhead, characters", "unit": "count", "value": ovh[1]},
+            {"label": "coordination, items", "unit": "count", "value": coord[0]},
+            {"label": "coordination, characters", "unit": "count", "value": coord[1]},
+            {"label": "bus overhead share of characters", "unit": "%", "value": _pct(t.get("overhead_chars_pct"))},
+            {"label": "polls", "unit": "count", "value": t.get("polls")},
+            {"label": "empty polls share", "unit": "%", "value": _pct(t.get("empty_polls_pct"))},
+            {"label": "lines with these counts", "unit": "count", "value": t.get("lines")},
+            {"label": "lines", "unit": "count", "value": len(week) or None},
+            oldest]})
         return out
 
 
