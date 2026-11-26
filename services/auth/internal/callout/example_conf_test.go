@@ -68,10 +68,6 @@ func selfSigned(t *testing.T) (certFile, keyFile string) {
 	return certFile, keyFile
 }
 
-// The example configuration in services/auth carries no key, and with its
-// placeholders filled a server starts from it: the callout is set as the
-// README says, and the JetStream user has exactly the documented minimal
-// rights and can make the streams with them.
 // exampleKeys are the keys and the certificate exampleConfig fills in.
 type exampleKeys struct {
 	issuer, xkey, svcUser, jsUser                          nkeys.KeyPair
@@ -133,29 +129,67 @@ func exampleConfig(t *testing.T) (*server.Options, exampleKeys) {
 }
 
 // restricts says whether a publish or subscribe rule limits its user: an
-// allow list, or a deny of every subject (">"). Without one the user may
-// publish or subscribe to any subject of its account (#172); a deny list of
-// single subjects still allows all the rest. An empty publish allow list
-// counts (the server then allows no subject, allow_responses aside), an
-// empty subscribe allow list does not (the server then builds none).
+// allow list without ">", or a deny of every subject (">"). Without one the
+// user may publish or subscribe to any subject of its account (#172); an
+// allow list holding ">" allows everything, and a deny list of single
+// subjects still allows all the rest. An empty publish allow list counts (the
+// server then allows no subject, allow_responses aside), an empty subscribe
+// allow list does not (the server then builds none).
 func restricts(p *server.SubjectPermission, publish bool) bool {
 	if p == nil {
 		return false
 	}
-	if len(p.Allow) > 0 || (publish && p.Allow != nil) {
+	if !slices.Contains(p.Allow, ">") && (len(p.Allow) > 0 || (publish && p.Allow != nil)) {
 		return true
 	}
 	return slices.Contains(p.Deny, ">")
 }
 
-// Every user of the example, in every account, names what it may publish
-// and what it may subscribe to (#172): a user without both may do the other
-// on any subject of its account. A user added later fails here, not only the
+func TestRestricts(t *testing.T) {
+	for _, c := range []struct {
+		name    string
+		p       *server.SubjectPermission
+		publish bool
+		want    bool
+	}{
+		{"no rule", nil, true, false},
+		{"an allow list", &server.SubjectPermission{Allow: []string{"a.>"}}, true, true},
+		{"an allow list with >", &server.SubjectPermission{Allow: []string{"a.>", ">"}}, true, false},
+		{"an allow list with > on subscribe", &server.SubjectPermission{Allow: []string{">"}}, false, false},
+		{"> allowed but denied", &server.SubjectPermission{Allow: []string{">"}, Deny: []string{">"}}, true, true},
+		{"an empty publish allow list", &server.SubjectPermission{Allow: []string{}}, true, true},
+		{"an empty subscribe allow list", &server.SubjectPermission{Allow: []string{}}, false, false},
+		{"a deny of everything", &server.SubjectPermission{Deny: []string{">"}}, true, true},
+		{"a deny of single subjects", &server.SubjectPermission{Deny: []string{"a.b"}}, false, false},
+	} {
+		if got := restricts(c.p, c.publish); got != c.want {
+			t.Errorf("%s (publish %v): %v, want %v", c.name, c.publish, got, c.want)
+		}
+	}
+}
+
+// Every user of the example names what it may publish and what it may
+// subscribe to (#172): a user without both may do the other on any subject of
+// its account. It covers the nkey users and the users with a password of
+// every account (opts.Nkeys, opts.Users) and the leaf node users
+// (opts.LeafNode.Users). The single user or token of an authorization,
+// leafnodes, websocket or mqtt block has no rules of its own to check, so
+// the example may set none. A user added later fails here, not only the
 // users the test below pins one by one.
 func TestEveryExampleUserHasPublishAndSubscribeRules(t *testing.T) {
 	opts, _ := exampleConfig(t)
 	if len(opts.Nkeys)+len(opts.Users) == 0 {
 		t.Fatal("the example has no users")
+	}
+	for block, set := range map[string]bool{
+		"authorization": opts.Username != "" || opts.Authorization != "",
+		"leafnodes":     opts.LeafNode.Username != "" || opts.LeafNode.Nkey != "",
+		"websocket":     opts.Websocket.Username != "" || opts.Websocket.Token != "",
+		"mqtt":          opts.MQTT.Username != "" || opts.MQTT.Token != "",
+	} {
+		if set {
+			t.Errorf("the %s block sets a single user or token, which has no publish and subscribe rules", block)
+		}
 	}
 	check := func(who string, acc *server.Account, p *server.Permissions) {
 		where := "no account"
@@ -179,8 +213,15 @@ func TestEveryExampleUserHasPublishAndSubscribeRules(t *testing.T) {
 	for _, u := range opts.Users {
 		check("user "+u.Username, u.Account, u.Permissions)
 	}
+	for _, u := range opts.LeafNode.Users {
+		check("leaf node user "+u.Username, u.Account, u.Permissions)
+	}
 }
 
+// The example configuration in services/auth carries no key, and with its
+// placeholders filled a server starts from it: the callout is set as the
+// README says, and the JetStream user has exactly the documented minimal
+// rights and can make the streams with them.
 func TestTheExampleServerConfiguration(t *testing.T) {
 	raw, err := os.ReadFile(exampleConf)
 	if err != nil {
@@ -428,15 +469,16 @@ func TestTheExampleServerConfiguration(t *testing.T) {
 		t.Fatalf("the callout's answer was refused: %v", err)
 	default:
 	}
-	// Anything but an answer is refused, a server inbox and the request
-	// subject included.
-	for _, subject := range []string{"bus.ch.home.someone", "$SYS._INBOX.abc.def", Subject} {
+	// Anything but an answer is refused, a server inbox that no request named
+	// included. (The request subject is no case: the server refuses it to
+	// every auth user whatever the configuration says.)
+	for _, subject := range []string{"bus.ch.home.someone", "$SYS._INBOX.abc.def"} {
 		if err := svcNC.Publish(subject, nil); err != nil {
 			t.Fatal(err)
 		}
 		select {
 		case err := <-refused:
-			if !strings.Contains(err.Error(), "Permissions Violation") {
+			if want := `Permissions Violation for Publish to "` + subject + `"`; !strings.Contains(err.Error(), want) {
 				t.Errorf("publish %s: %v, want a permissions violation", subject, err)
 			}
 		case <-time.After(2 * time.Second):
