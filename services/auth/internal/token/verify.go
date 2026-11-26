@@ -59,6 +59,11 @@ type Identity struct {
 	Subject string
 	// ID is the token's `jti`, for the audit log; empty when it has none.
 	ID string
+	// SID is the token's `sid`, the Keycloak session it belongs to (RT-6.34, #154
+	// step 3): the login service watches where it is used from and refuses a
+	// concurrent use; it ends no session (no Keycloak admin right). Empty when the
+	// token names none.
+	SID string
 	// Approver is true when the token lists the approvers' group. It is the
 	// upper bound only: the session's trusted list selects within it.
 	Approver bool
@@ -147,6 +152,7 @@ func (v *Verifier) Verify(ctx context.Context, raw string) (Identity, error) {
 		Groups:   v.groups(claims),
 		Expires:  exp.Time,
 		ID:       jti(claims),
+		SID:      sid(claims),
 
 		ChatOpenID: openID,
 		ChatID:     chatID,
@@ -267,6 +273,12 @@ func empty(v any) bool {
 		return len(x) == 0
 	}
 	return false
+}
+
+// sid is the token's Keycloak session id, "" when it names none.
+func sid(claims jwt.MapClaims) string {
+	s, _ := claims["sid"].(string)
+	return s
 }
 
 func jti(claims jwt.MapClaims) string {
