@@ -70,8 +70,8 @@ func selfSigned(t *testing.T) (certFile, keyFile string) {
 
 // exampleKeys are the keys and the certificate exampleConfig fills in.
 type exampleKeys struct {
-	issuer, xkey, svcUser, jsUser                          nkeys.KeyPair
-	issuerPub, xkeyPub, svcPub, jsPub, bridgePub, certFile string
+	issuer, xkey, svcUser, jsUser, bridgeUser, metricsUser                      nkeys.KeyPair
+	issuerPub, xkeyPub, svcPub, jsPub, bridgePub, metricsPub, certFile, keyFile string
 }
 
 // exampleConfig fills the example's placeholders with keys made here and
@@ -92,22 +92,25 @@ func exampleConfig(t *testing.T) (*server.Options, exampleKeys) {
 	k.svcPub, _ = k.svcUser.PublicKey()
 	k.jsUser, _ = nkeys.CreateUser()
 	k.jsPub, _ = k.jsUser.PublicKey()
-	bridgeUser, _ := nkeys.CreateUser()
-	k.bridgePub, _ = bridgeUser.PublicKey()
-	certFile, keyFile := selfSigned(t)
-	k.certFile = certFile
-	issuerPub, xkeyPub, svcPub, jsPub, bridgePub := k.issuerPub, k.xkeyPub, k.svcPub, k.jsPub, k.bridgePub
+	k.bridgeUser, _ = nkeys.CreateUser()
+	k.bridgePub, _ = k.bridgeUser.PublicKey()
+	k.metricsUser, _ = nkeys.CreateUser()
+	k.metricsPub, _ = k.metricsUser.PublicKey()
+	k.certFile, k.keyFile = selfSigned(t)
+	issuerPub, xkeyPub, svcPub, jsPub, bridgePub, metricsPub := k.issuerPub, k.xkeyPub, k.svcPub, k.jsPub, k.bridgePub, k.metricsPub
+	certFile, keyFile := k.certFile, k.keyFile
 	for placeholder, value := range map[string]string{
-		"<ISSUER_ACCOUNT_PUBLIC_KEY>": issuerPub,
-		"<XKEY_PUBLIC_KEY>":           xkeyPub,
-		"<SERVICE_USER_PUBLIC_NKEY>":  svcPub,
-		"<JS_USER_PUBLIC_NKEY>":       jsPub,
-		"<BRIDGE_USER_PUBLIC_NKEY>":   bridgePub,
-		"<HOME>":                      "home",
-		"<PATH_TO_SERVER_CERT>":       certFile,
-		"<PATH_TO_SERVER_KEY>":        keyFile,
-		"<PATH_TO_CLIENT_CA>":         certFile,
-		"<JETSTREAM_STORE_DIR>":       t.TempDir(),
+		"<ISSUER_ACCOUNT_PUBLIC_KEY>":   issuerPub,
+		"<XKEY_PUBLIC_KEY>":             xkeyPub,
+		"<SERVICE_USER_PUBLIC_NKEY>":    svcPub,
+		"<JS_USER_PUBLIC_NKEY>":         jsPub,
+		"<BRIDGE_USER_PUBLIC_NKEY>":     bridgePub,
+		"<CONSOLE_METRICS_PUBLIC_NKEY>": metricsPub,
+		"<HOME>":                        "home",
+		"<PATH_TO_SERVER_CERT>":         certFile,
+		"<PATH_TO_SERVER_KEY>":          keyFile,
+		"<PATH_TO_CLIENT_CA>":           certFile,
+		"<JETSTREAM_STORE_DIR>":         t.TempDir(),
 	} {
 		if !strings.Contains(text, placeholder) {
 			t.Errorf("the example has no %s", placeholder)
@@ -236,7 +239,7 @@ func TestTheExampleServerConfiguration(t *testing.T) {
 		t.Fatal("the example sets a password, token or seed")
 	}
 	opts, k := exampleConfig(t)
-	issuerPub, xkeyPub, svcPub, jsPub, bridgePub := k.issuerPub, k.xkeyPub, k.svcPub, k.jsPub, k.bridgePub
+	issuerPub, xkeyPub, svcPub, jsPub, bridgePub, metricsPub := k.issuerPub, k.xkeyPub, k.svcPub, k.jsPub, k.bridgePub, k.metricsPub
 	jsUser, certFile := k.jsUser, k.certFile
 
 	co := opts.AuthCallout
@@ -246,8 +249,8 @@ func TestTheExampleServerConfiguration(t *testing.T) {
 	if co.Issuer != issuerPub || co.Account != "AUTH" || co.XKey != xkeyPub {
 		t.Errorf("auth_callout: %+v", co)
 	}
-	if want := []string{svcPub, jsPub, bridgePub}; !slices.Equal(co.AuthUsers, want) {
-		t.Errorf("auth_users %v, want the login service's two users and the bridge's", co.AuthUsers)
+	if want := []string{svcPub, jsPub, bridgePub, metricsPub}; !slices.Equal(co.AuthUsers, want) {
+		t.Errorf("auth_users %v, want the login service's two users, the bridge's and the metrics service's", co.AuthUsers)
 	}
 	if opts.TLSConfig == nil {
 		t.Error("no tls")
@@ -259,8 +262,8 @@ func TestTheExampleServerConfiguration(t *testing.T) {
 	if len(opts.Users) != 0 {
 		t.Errorf("%d users with a password", len(opts.Users))
 	}
-	if len(opts.Nkeys) != 3 {
-		t.Fatalf("%d nkey users, want the login service's two and the bridge's", len(opts.Nkeys))
+	if len(opts.Nkeys) != 4 {
+		t.Fatalf("%d nkey users, want the login service's two, the bridge's and the metrics service's", len(opts.Nkeys))
 	}
 	for _, u := range opts.Nkeys {
 		switch u.Nkey {
@@ -327,6 +330,27 @@ func TestTheExampleServerConfiguration(t *testing.T) {
 				strings.Contains(sub, "_INBOX.>") ||
 				strings.Contains(sub, "bus.>") || strings.Contains(sub, "presence.>") {
 				t.Errorf("the bridge subscribes to %q", sub)
+			}
+		case metricsPub:
+			if u.Account == nil || u.Account.Name != "BUS" {
+				t.Errorf("the metrics user is not in BUS: %+v", u.Account)
+			}
+			// The subscribe-only narrowing, pinned (a NATS permissions
+			// block without publish means allow-all publish): the seed's
+			// holder may publish nothing, subscribe exactly the two
+			// deliver subjects (#158, the probe in #168's review).
+			if u.Permissions == nil || len(u.Permissions.Publish.Allow) != 0 {
+				t.Error("the metrics user may publish")
+			}
+			deny := false
+			for _, d := range u.Permissions.Publish.Deny {
+				deny = deny || d == ">"
+			}
+			if !deny {
+				t.Error("the metrics user's deny-all publish is missing")
+			}
+			if want := []string{"deliver.metrics.presence", "deliver.metrics.stats"}; len(u.Permissions.Subscribe.Allow) != 2 || u.Permissions.Subscribe.Allow[0] != want[0] || u.Permissions.Subscribe.Allow[1] != want[1] {
+				t.Errorf("the metrics user's subscribe subjects: %v", u.Permissions.Subscribe.Allow)
 			}
 		case jsPub:
 			if u.Account == nil || u.Account.Name != "BUS" {

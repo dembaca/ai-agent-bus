@@ -1935,6 +1935,7 @@ The rule that an operator reads the guest channels of agents that trust them onl
     `unknown` where a run has none; `/v1/me` carries the same two in its
     `build` field, and the console's footer shows them.
 
+    **The unattended page** (the owner's go, #158): with `CONSOLE_METRICS_NKEY_SEED_FILE` and `CONSOLE_METRICS_TOKEN_FILE` (both or neither, the start refuses a pair torn in half) the console runs a service reading of its own — one fleet and one stats book, no person, no anchor, no login — fed by two push consumers the **login service makes** at its start (`CB_AUTH_CONSOLE_METRICS` there, default off: `console-metrics_presence`, filtering `presence.*.*` and `presence.ask.*.*`, delivered to `deliver.metrics.presence`, and `console-metrics_stats`, 7 days back, on `deliver.metrics.stats`). The account that consumes them is a static nkey of the NATS configuration, a fourth in `auth_users`, **subscribe-only** on the two deliver subjects: no publish, no JetStream right, no directory, no person's record — the narrowing of the owner's go. A Bearer scrape token (the token file, compared constant-time) gates **a listener of the unattended page's own**, `CONSOLE_METRICS_LISTEN_ADDR` (host:port, default 127.0.0.1:8748 — the owner's ask said loopback): the token's page serves the service reading there alone, every other path on it 404, and without or with a wrong token 401, plain, no operator session to fall back on. The main listener's /metrics stays the operator's session page; the 
 ### Error Handling
 
 | Step | Failure | System Response |

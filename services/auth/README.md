@@ -108,7 +108,6 @@ cannot be used end to end until both change.
 | `CB_AUTH_DIRECTORY_ADMIN_GROUP` | — | the Keycloak group (as the group mapper writes it, with or without the leading `/`) whose members administer the directory; nothing in the directory makes anyone an admin |
 | `CB_AUTH_DIRECTORY_IMPORTED` | `false` | set `true` once the one-time import has run: from then on a missing bucket is never made anew and a bucket without the import's mark refuses every login, instead of falling back to Mattermost (RT-6.39) |
 | `CB_AUTH_MM_TOKEN_FILE` | — | file with a Mattermost access token that may see how accounts log in (a system admin's); without that right every login is refused. The right is asked again every minute and after every 401 or 403 |
-
 An invalid value stops the program at start with a message naming the variable.
 A service that starts with half its configuration is worse than one that refuses.
 A taken port is a start failure too, but exit code 1 rather than the

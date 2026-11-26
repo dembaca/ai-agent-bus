@@ -72,6 +72,23 @@ Needs: login service nats user may publish owner notices, as in the example conf
 
 ### Added
 
+- **The console's unattended metrics page** (#158, needs #162): with both
+  `CONSOLE_METRICS_NKEY_SEED_FILE` (the seed of a read-only nkey of the
+  NATS configuration, its two consumers `console-metrics_presence` and
+  `console-metrics_stats` — made by the login service at its start,
+  `CB_AUTH_CONSOLE_METRICS`, default off) and `CONSOLE_METRICS_TOKEN_FILE` (the
+  Bearer scrape token), the unattended page serves without a session, on a
+  listener of its own (`CONSOLE_METRICS_LISTEN_ADDR`, loopback by default — the
+  owner's ask): aggregates only
+  — agents by state and harness, the open asks, the tokens by category — no
+  name, owner or home among the labels. The token and the seed are both or
+  neither; the console keeps its operator-login page beside it. The account's publish is denied outright and it holds no JetStream right
+  (pinned in the example-conf test); an invalid or refused nkey ends the
+  reading with a warning, an unreachable one reconnects with backoff, and
+  the consumers age out after five minutes without the console listening
+  — the login service re-ensures them hourly, so a console that restarts
+  gets the seven days again. The seed file is refused when open to group or world (a Kubernetes secret needs `defaultMode: 0400` and the console's uid)
+
 - **A copied login reaches the owner as a direct message** (#154 step 3). The
   login service publishes every network move and every copy of a session or
   host key for the owner on `<presence>.notice.<owner anchor>.<verdict>.v1`
