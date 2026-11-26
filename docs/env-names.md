@@ -96,9 +96,8 @@ What counts as set:
   without a plugin manifest — the Go services under `services/` and the
   console — therefore has only a deployment mistake there: read as unset, it
   would silently drop the setting, a pinned CA file for one, and the system
-  roots would apply.
-  They refuse the start with an error that names the variable, never its
-  value.
+  roots would apply. Such a service refuses the start with an error that
+  names the variable, never its value.
 - **Three names for one setting.** Two settings have an alias today:
   `MATTERMOST_URL` for `MM_CHAT_URL` and `MATTERMOST_TOKEN` for
   `MM_BOT_TOKEN`. In 0.103.0 each of them has three names
