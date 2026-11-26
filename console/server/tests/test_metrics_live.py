@@ -54,7 +54,7 @@ def live_nats(tmp_path):
     pseed_file.write_bytes(pseed + b"\n")
     conf = tmp_path / "nats.conf"
     conf.write_text(f"""
-listen: 127.0.0.1:42235
+listen: 127.0.0.1:-1
 jetstream {{ store_dir: "{tmp_path}/js" }}
 authorization {{
   users: [
@@ -212,7 +212,7 @@ async def test_the_reading_survives_a_server_restart(live_nats, tmp_path) -> Non
         try:
             svc.subscribed.clear()          # a clean wait, not the stale set
             await asyncio.wait_for(svc.subscribed.wait(), 30)
-            assert svc.last_delivery > 0.0 or view.fleet.cards() or True
+            assert svc.subscribed.is_set()
         finally:
             proc2.terminate()
             proc2.wait(timeout=5)

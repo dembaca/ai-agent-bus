@@ -192,9 +192,11 @@ class MetricsService:
         try:
             stopped = asyncio.create_task(self._stopped.wait())
             done_wait = asyncio.create_task(done.wait())
-            await asyncio.wait([stopped, done_wait], return_when=asyncio.FIRST_COMPLETED)
-            for task in (stopped, done_wait):
-                task.cancel()
+            try:
+                await asyncio.wait([stopped, done_wait], return_when=asyncio.FIRST_COMPLETED)
+            finally:
+                for task in (stopped, done_wait):
+                    task.cancel()
         finally:
             # a readiness probe must not say ready after a loss (M1)
             self.subscribed.clear()
