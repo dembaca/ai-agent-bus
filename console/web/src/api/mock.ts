@@ -101,7 +101,7 @@ const cards = (): CardWire[] => [
   },
 ]
 
-type CardWire = Omit<AgentCard, "displayName" | "helloPostId">
+type CardWire = Omit<AgentCard, "displayName" | "statedName" | "nameShared" | "helloPostId">
 type AskWire = Omit<Ask, "displayName">
 
 const asks = (): AskWire[] => [
@@ -146,6 +146,9 @@ const withTasks = (all: CardWire[]): AgentCard[] =>
   all.map((card) => ({
     ...card,
     displayName: short(card.name),
+    // the mock's names are the bots' usernames, each stated once
+    statedName: card.name,
+    nameShared: false,
     helloPostId: `hello-${card.name}`,
     tasks: tasksOf(card.name),
   }))

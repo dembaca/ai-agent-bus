@@ -38,7 +38,7 @@ export function App({ api }: { api: ConsoleApi }) {
   /** The fleet stream's first snapshot came: the cards are the whole fleet. */
   const [fleetSeen, setFleetSeen] = useState(false)
   const [me, setMe] = useState<Operator | null>(null)
-  const [view, setViewState] = useState<View>("agents")
+  const [view, setViewState] = useState<View>("overview")
   const [agent, setAgent] = useState<AgentCard | null>(null)
   const [ask, setAsk] = useState<Ask | null>(null)
   const [conn, setConn] = useState<ConnState>("connecting")
@@ -175,8 +175,8 @@ export function App({ api }: { api: ConsoleApi }) {
     if (push) pushPlace(place)
   }, [])
   useEffect(() => {
-    replacePlace({ view: "agents" })
-    const back = (event: PopStateEvent) => { go(asPlace(event.state) ?? { view: "agents" }, false) }
+    replacePlace({ view: "overview" })
+    const back = (event: PopStateEvent) => { go(asPlace(event.state) ?? { view: "overview" }, false) }
     window.addEventListener("popstate", back)
     return () => { window.removeEventListener("popstate", back) }
   }, [go])
@@ -209,26 +209,36 @@ export function App({ api }: { api: ConsoleApi }) {
         conn={conn} operator={me?.username ?? "…"}
         theme={theme} onToggleTheme={toggle}
       />
-      <main className="stage">
+      <main className={"stage" + (detail ? " stage--split" : "")}>
         {notice && (
           <div className="notice" role="alert">
             <span>{notice}</span>
             <button type="button" aria-label="dismiss" onClick={() => setNotice(null)}>×</button>
           </div>
         )}
-        {detail && (
-          <Detail api={api} card={agent} ask={ask} asks={asks}
-            from={VIEW_LABEL[view]} onBack={closeDetail} onFail={fail} />
-        )}
-        {!detail && view === "agents" && <AgentList cards={cards} asks={asks}
-          filter={listFilter} onFilter={setListFilter} query={listQuery} onQuery={setListQuery}
-          onOpenAgent={openAgent} onOpenAsk={openAsk} onAllAsks={() => setView("asks")} />}
-        {!detail && view === "asks" && <Asks asks={asks} onOpen={openAsk} />}
-        {!detail && view === "graph" && <GraphView api={api} cards={cards} asks={asks} fleetSeen={fleetSeen}
-          theme={theme} onOpenAgent={openAgent} onOpenAsk={openAsk} onFail={fail} />}
-        {!detail && view === "overview" && <Overview cards={cards} asks={asks}
-          onOpenAsk={openAsk} onView={setView} />}
-        {!detail && view === "reports" && <Reports api={api} onFail={fail} />}
+        {/* #200: a detail opens beside the view, which stays mounted and
+            visible (half and half); below 1000 px the view hides and the
+            detail is the whole page (app.css) */}
+        <div className={detail ? "split" : "solo"}>
+          <div className="view">
+            {view === "agents" && <AgentList cards={cards} asks={asks} compact={detail}
+              selected={agent?.name ?? null}
+              filter={listFilter} onFilter={setListFilter} query={listQuery} onQuery={setListQuery}
+              onOpenAgent={openAgent} onOpenAsk={openAsk} onAllAsks={() => setView("asks")} />}
+            {view === "asks" && <Asks asks={asks} cards={cards} onOpen={openAsk} />}
+            {view === "graph" && <GraphView api={api} cards={cards} asks={asks} fleetSeen={fleetSeen}
+              theme={theme} onOpenAgent={openAgent} onOpenAsk={openAsk} onFail={fail} />}
+            {view === "overview" && <Overview cards={cards} asks={asks}
+              onOpenAsk={openAsk} onView={setView} />}
+            {view === "reports" && <Reports api={api} onFail={fail} />}
+          </div>
+          {detail && (
+            <div className="split__detail">
+              <Detail api={api} card={agent} ask={ask} asks={asks}
+                from={VIEW_LABEL[view]} onBack={closeDetail} onFail={fail} />
+            </div>
+          )}
+        </div>
       </main>
       <Footer build={me?.build ?? null} />
     </div>

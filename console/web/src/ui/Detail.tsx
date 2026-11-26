@@ -1,8 +1,8 @@
 import { useEffect, useMemo, useState, type ReactNode } from "react"
 import type { AgentCard, Ask, ConsoleApi, Post, ThreadPage } from "../api/types"
 import { clock, since } from "../clock"
-import { harnessLabel, isOpen, stateClass } from "./agents"
-import { Context } from "./AgentList"
+import { agentName, askerName, harnessLabel, isOpen, stateClass } from "./agents"
+import { Context, SharedMark, nameTitle } from "./AgentList"
 import { CrownIcon } from "./icons"
 import "./Detail.css"
 
@@ -23,7 +23,9 @@ export function Detail({ api, card, ask, asks, from, onBack, onFail }: {
   onBack: () => void
   onFail: Fail
 }) {
-  const title = card?.displayName ?? ask?.displayName ?? ""
+  // #199: the agent's name; its id on the bus in the title and the facts
+  const named = card ? agentName(card) : ask ? askerName(ask, []) : null
+  const title = named?.text ?? ""
   const itsAsks = card ? asks.filter((a) => a.by === card.name && isOpen(a)) : []
   // its other open asks, beside the one opened; tinted when one is yours
   const others = itsAsks.filter((a) => a.id !== ask?.id)
@@ -38,7 +40,8 @@ export function Detail({ api, card, ask, asks, from, onBack, onFail }: {
 
       <div className="detail__head">
         <div className="detail__title">
-          <h1 className="mono">{title}</h1>
+          <h1 className="mono" title={card ? nameTitle(card) : named?.id}>{title}</h1>
+          {named?.shared && <SharedMark />}
           {card && <span className={`pill pill--${stateClass(card.state)}`}>{card.state}</span>}
           {card?.crown && (
             <span className="pill pill--bus pill--plain detail__crown">
@@ -110,7 +113,7 @@ export function Detail({ api, card, ask, asks, from, onBack, onFail }: {
         </div>
 
         <aside className="detail__side">
-          {ask && <AskBlock ask={ask} />}
+          {ask && <AskBlock ask={ask} by={card && card.name === ask.by ? agentName(card).text : ask.displayName} />}
           {card && others.length > 0 && (
             <section className={"panel detail__asks" + (othersForYou ? " detail__asks--for-you" : "")}
               aria-label={othersForYou ? "Waiting on you" : "Its open asks"}>
@@ -170,7 +173,7 @@ function Facts({ card }: { card: AgentCard }) {
 
 /** One ask on the page: its title, kind, who asked whom. Read-only:
  * nothing here answers it — that stays in its thread in the chat. */
-function AskBlock({ ask }: { ask: Ask }) {
+function AskBlock({ ask, by }: { ask: Ask; by: string }) {
   return (
     <section className="detail__ask" aria-label="The ask">
       <h2 className="section-title detail__ask-title">
@@ -178,7 +181,7 @@ function AskBlock({ ask }: { ask: Ask }) {
       </h2>
       <strong className="detail__ask-need">{ask.need}</strong>
       <span className="muted">
-        {ask.kind} by <span className="mono">{ask.displayName}</span>
+        {ask.kind} by <span className="mono" title={ask.by}>{by}</span>
         {ask.human && <> to {ask.human}</>} · asked {since(ask.at)} ago
       </span>
       <span className="detail__ask-marks">

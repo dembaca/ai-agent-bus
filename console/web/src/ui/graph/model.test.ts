@@ -9,7 +9,7 @@ import { mockApi } from "../../api/mock"
 const HOME = "~ai-agent-bus-dev"
 
 const card = (name: string, over: Partial<AgentCard> = {}): AgentCard => ({
-  name, displayName: name.slice(-6), home: HOME, guests: [], state: "working", crown: false,
+  name, displayName: name.slice(-6), statedName: "", nameShared: false, home: HOME, guests: [], state: "working", crown: false,
   harness: "claude-code", model: "Opus 5.5", task: "a task", role: "member",
   for: "dembaca", autonomous: false, trusts: ["dembaca"], capabilities: [],
   project: "dembaca/ai-agent-bus", branch: null, pr: null, ctx: null,

@@ -175,6 +175,34 @@ button, input, select { font: inherit; color: inherit; }
   min-width: 0;
 }
 
+/* the view, alone or beside a detail (#200): its width drives the
+   Overview's columns (a container query) */
+.solo, .view, .split__detail { display: flex; flex-direction: column; gap: 14px; min-width: 0; }
+.view { container: view / inline-size; }
+
+/* a detail beside the view, half and half; the detail stays in sight while
+   the list scrolls. Below 1000 px the view hides: the detail is the page */
+.stage--split { max-width: 1680px; }
+.split {
+  display: grid;
+  grid-template-columns: minmax(0, 1fr) minmax(0, 1fr);
+  gap: 14px;
+  align-items: start;
+}
+.split__detail {
+  position: sticky;
+  top: 66px;
+  max-height: calc(100vh - 80px);
+  overflow: auto;
+  padding: 2px 6px 8px;
+  margin: -2px -6px 0;
+}
+@media (max-width: 999px) {
+  .split { grid-template-columns: minmax(0, 1fr); }
+  .split > .view { display: none; }
+  .split__detail { position: static; max-height: none; overflow: visible; padding: 0; margin: 0; }
+}
+
 .hint {
   color: var(--muted);
   margin: 0;
@@ -260,6 +288,8 @@ button, input, select { font: inherit; color: inherit; }
 .chip--expired { border-color: var(--gone); color: var(--gone); }
 .chip--open { border-color: var(--done); color: var(--done); }
 .chip--pr { color: var(--task); border-color: color-mix(in srgb, var(--task) 40%, transparent); }
+/* #199: a name another agent states too: shown, never as confirmed */
+.chip--shared { border-style: dashed; color: var(--ask-text); border-color: var(--ask-fill); }
 
 /* the context bar: a thin track, the share filled */
 .ctx { display: inline-flex; align-items: center; gap: 7px; white-space: nowrap; }

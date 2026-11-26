@@ -20,6 +20,29 @@ async function fleet(): Promise<{ cards: AgentCard[]; asks: Ask[] }> {
 const noop = () => {}
 
 describe("the pages", () => {
+  it("shows the stated name, a shared one with its mark, the bus id in the title (#199)", async () => {
+    const { cards } = await fleet()
+    const shared: AgentCard = { ...cards[0], name: "agent-oudzj4bhpl62iahctur5s5sf44",
+      displayName: "agent-oudzj4bhpl62iahctur5s5sf44", statedName: "agent-same", nameShared: true }
+    const html = renderToStaticMarkup(
+      <AgentList cards={[shared]} asks={[]} filter="all" onFilter={noop} query="" onQuery={noop}
+        onOpenAgent={noop} onOpenAsk={noop} onAllAsks={noop} />)
+    expect(html).toContain(">agent-same</button>")
+    expect(html).toContain("shared name")
+    expect(html).toContain('title="agent-oudzj4bhpl62iahctur5s5sf44 · another agent states this name too: not confirmed"')
+  })
+
+  it("keeps four columns beside an open detail and marks the open agent (#200)", async () => {
+    const { cards } = await fleet()
+    const html = renderToStaticMarkup(
+      <AgentList cards={cards} asks={[]} compact selected={cards[1].name} filter="all" onFilter={noop}
+        query="" onQuery={noop} onOpenAgent={noop} onOpenAsk={noop} onAllAsks={noop} />)
+    expect(html).toMatch(/<colgroup>(<col class="agents__col--[a-z]+"\/>){4}<\/colgroup>/)
+    expect(html).not.toContain(">Branch<")
+    expect(html.match(/agents__row--selected/g)?.length).toBe(1)
+    expect(html).toContain('aria-current="true"')
+  })
+
   it("shows the Other filter with its count only while a state fits no group", async () => {
     const { cards } = await fleet()
     const list = (all: AgentCard[]) => renderToStaticMarkup(

@@ -1,4 +1,5 @@
-import type { Ask } from "../api/types"
+import type { AgentCard, Ask } from "../api/types"
+import { askerName } from "./agents"
 import { since } from "../clock"
 import "./Asks.css"
 
@@ -7,8 +8,10 @@ import "./Asks.css"
  * an agent without fresh presence as "agent gone" (RT-6.43 step 6).
  * Read-only: an ask is answered in its thread in the chat; the console shows
  * it until the agent ends it. The title is plain text, never markup. */
-export function Asks({ asks, onOpen }: {
+export function Asks({ asks, cards = [], onOpen }: {
   asks: Ask[]
+  /** The fleet: an ask shows its agent's name as the list does (#199). */
+  cards?: readonly AgentCard[]
   onOpen: (ask: Ask) => void
 }) {
   const rows = [...asks].sort((a, b) =>
@@ -54,7 +57,7 @@ export function Asks({ asks, onOpen }: {
                   <button type="button" className="linkish"
                     onClick={(e) => { e.stopPropagation(); onOpen(ask) }}>{ask.need}</button>
                 </td>
-                <td className="mono small" title={`${ask.by} · ${ask.home}`}>{ask.displayName}</td>
+                <td className="mono small" title={`${ask.by} · ${ask.home}`}>{askerName(ask, cards).text}</td>
                 <td>{ask.human ?? "–"}</td>
                 <td>{ask.kind}</td>
                 <td className="num muted">{since(ask.at)}</td>

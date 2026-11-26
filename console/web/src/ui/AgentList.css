@@ -158,6 +158,10 @@
 
 .agents__row { cursor: pointer; }
 .agents__row:hover td { background: var(--surface-2); }
+/* the agent whose detail is open beside the list (#200) */
+.agents__row--selected td { background: var(--accent-soft); }
+.agents__row--selected td:first-child { box-shadow: inset 3px 0 0 var(--accent); }
+.agents__table--compact { min-width: 560px; }
 /* an agent without fresh presence: its text muted, its pill red (faded
    rows would fail the contrast check) */
 .agents__row--offline td { color: var(--muted); }

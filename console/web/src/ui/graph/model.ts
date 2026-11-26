@@ -1,6 +1,7 @@
 import dagre from "@dagrejs/dagre"
 import type { Edge, Node } from "@xyflow/react"
 import type { AgentCard, AgentState, Ask, GraphData, Harness } from "../../api/types"
+import { agentName, askerName } from "../agents"
 
 /** What the graph view is drawn from: the graph endpoint (people, channels,
  * agents, trusts and coordinates), the fleet's live cards and the open asks.
@@ -119,7 +120,7 @@ export function toFlow(input: GraphInput): { nodes: Node[]; edges: Edge[] } {
   if (live) {
     for (const c of cards) {
       add(agentId(c.name), {
-        kind: "agent", label: c.displayName || c.name, state: c.state, harness: c.harness, crown: c.crown,
+        kind: "agent", label: agentName(c).text, state: c.state, harness: c.harness, crown: c.crown,
       })
     }
   } else {
@@ -147,7 +148,7 @@ export function toFlow(input: GraphInput): { nodes: Node[]; edges: Edge[] } {
   for (const a of open) {
     if (a.human) add(personId(a.human), { kind: "person", label: a.human })
     add(askId(a.id), {
-      kind: "ask", label: a.need, askKind: a.kind, forMe: a.forMe, by: a.displayName || a.by,
+      kind: "ask", label: a.need, askKind: a.kind, forMe: a.forMe, by: askerName(a, cards).text,
     })
   }
 

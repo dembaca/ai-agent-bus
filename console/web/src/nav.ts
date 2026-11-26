@@ -8,7 +8,7 @@ import type { View } from "./ui/TopBar"
 
 export type Place = { view: View; agent?: string; ask?: string }
 
-const VIEWS: readonly string[] = ["agents", "asks", "graph", "overview", "reports"]
+const VIEWS: readonly string[] = ["overview", "agents", "asks", "graph", "reports"]
 
 /** A place from history.state, or null for anything else (another app's
  * state, a page loaded fresh). */
