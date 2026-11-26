@@ -70,7 +70,7 @@ describe("the pages", () => {
 
   it("names both pills in the status cell's title, the plain state when none waits", async () => {
     const { cards } = await fleet()
-    const base: AgentCard = { ...cards[0], state: "working" }
+    const base: AgentCard = { ...cards[0], state: "working", asksForOperator: 0 }
     const waitsCard: AgentCard = { ...base, asksForOperator: 1 }
     const waitsHtml = renderToStaticMarkup(
       <AgentList cards={[waitsCard]} asks={[]} filter="all" onFilter={noop} query="" onQuery={noop}
