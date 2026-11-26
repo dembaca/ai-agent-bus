@@ -4100,8 +4100,11 @@ The console is the operators' view of the bus itself.
      loopback only; `SameSite=Lax`, sent same-origin only — every call is
      a GET without side effects but the logout, so CSRF has nothing to act
      on, and the console answers no cross-origin request (no CORS); the
-     logout is a POST with an `Origin` and Fetch Metadata check, and the
-     answer button of a later stage, a POST too, gets the same. The session
+     logout is a POST with an `Origin` and Fetch Metadata check (an
+     `Origin: null` refused too; the pages send `Referrer-Policy:
+     same-origin` so the browser names their origin there, fixed in the
+     pilot of 2026-11-26), and the answer button of a later stage, a POST
+     too, gets the same. The session
      lives in the server's memory: a restart logs every operator out,
      which is the state the pilot wants.
    - **The logout ends Keycloak's session too (2026-11-25, #108 point 3):**
