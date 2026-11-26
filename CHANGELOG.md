@@ -28,6 +28,22 @@ before 0.5.0 are described in the git history.
   rename yours now. The `Needs:` grammar accepts `CB_*` names; but since a host before
   this release drops a line with one, this release's `Needs:` line and the removal
   release's name no `CB_*` name.
+- **The login service and `authd` read their settings under `CB_` names**
+  (#169, [docs/env-names.md](docs/env-names.md)). Every `AUTH_X` becomes
+  `CB_AUTH_X` and every `AUTHD_X` becomes `CB_AUTHD_X`; the three Mattermost
+  settings shorten to `CB_AUTH_MM_URL`, `CB_AUTH_MM_TEAM` and
+  `CB_AUTH_MM_TOKEN_FILE` (from `AUTH_MATTERMOST_URL`, `_TEAM`,
+  `_TOKEN_FILE`). The old names still work until the removal release (the
+  release after 0.103.0): an old name is read when its new name is unset,
+  with one warning per process naming the new name. Both names set to
+  different values refuse the start and name both, never a value; equal
+  values pass with a warning that the old name can go. Empty counts as set.
+  A value that is exactly an unexpanded `${NAME}` refuses the start, naming
+  the variable: the service has no plugin manifest that would expand it, and
+  read as unset it would silently drop a setting such as a pinned CA file.
+  From the removal release on an old name without its new name refuses the
+  start. Error messages, `authd dir -h`, `services/auth/README.md` and
+  `nats-server.example.conf` name the new names.
 
 ## 0.102.0
 
@@ -379,7 +395,8 @@ Needs: MM_BRIDGE_BOT kept on every host, and this release on all hosts before th
   when the record moves into the bridge. It sets the reading rule for
   release 0.103.0 (the new name first, the old one with a deprecation
   warning, all set names must agree or the start is refused, an empty value
-  counts as set, an unexpanded `${…}` placeholder as unset, the fallbacks
+  counts as set, an unexpanded `${…}` placeholder as unset in the MCP server
+  and the hooks while the Go services refuse it, the fallbacks
   go one release later); after that an old name set alone refuses the start
   for at least one more release instead of being ignored, since several
   settings (release signers, trusted humans, CA pins, the login service's

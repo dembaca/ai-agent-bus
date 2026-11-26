@@ -25,7 +25,7 @@ const (
 )
 
 // DefaultStatsPrefix is the STATS lines' subject prefix when none is set
-// (AUTH_STATS_PREFIX).
+// (CB_AUTH_STATS_PREFIX).
 const DefaultStatsPrefix = "stats"
 
 // Limits and defaults of the streams.

@@ -8,19 +8,25 @@ The owner decided this on 2026-11-26 ([#169](https://github.com/dembaca/ai-agent
 
 **Held to the code.** `scripts/doc-check.py` reads this page and the tree: failing
 CI is a name the code reads that the page does not list, and a mapping whose old
-name no code mentions (the registrar's kept names excepted). **Status.** This page is the mapping and the rules. The renames come in one
-pull request per component and ship together as release 0.103.0. Built: the
-MCP server (`mcp/src/mattermost_ai_agent_bus/config.py`), the hooks and the
-shell scripts (`bin/mm-agent-lib.sh`), the host installer and the `Needs:`
-grammar. Still to come: the login service and its tool `authd`
-([#175](https://github.com/dembaca/ai-agent-bus/issues/175)), the bridge
-([#176](https://github.com/dembaca/ai-agent-bus/issues/176)), the console
-([#178](https://github.com/dembaca/ai-agent-bus/issues/178)) and the
-OpenCode and pi plugins (they already hand the server they start both
-spellings of `CB_WORKSPACE` and `CB_CHANNEL_PUSH`). Until its pull request
-is in, a component reads the old names, and the old names in the
+name no code mentions (the registrar's kept names excepted).
+
+**Status.** This page is the mapping and the rules. The renames come in one
+pull request per component and ship together as release 0.103.0. A component
+reads the `CB_` names, with the old names as a fallback, once it has a line
+below; until then it reads the old names, and the old names in the
 [README configuration table](../README.md#configuration), the
 [arc42 docs](arc42) and the adapter docs stay right for it.
+
+- Built: the login service and `authd` ([#175](https://github.com/dembaca/ai-agent-bus/pull/175)),
+  in `services/auth`, package `internal/envname`; the names of
+  [their table](#the-login-service-and-authd-44).
+- Built: the MCP server (`mcp/src/mattermost_ai_agent_bus/config.py`), the hooks,
+  the shell scripts (`bin/mm-agent-lib.sh`), the host installer and the `Needs:`
+  grammar ([#180](https://github.com/dembaca/ai-agent-bus/pull/180)).
+- Still to come: the bridge ([#176](https://github.com/dembaca/ai-agent-bus/pull/176)),
+  the console ([#178](https://github.com/dembaca/ai-agent-bus/pull/178)) and the
+  OpenCode and pi plugins (they already hand the server they start both
+  spellings of `CB_WORKSPACE` and `CB_CHANNEL_PUSH`).
 
 ## The rules
 
@@ -72,11 +78,17 @@ What counts as set:
   `mm_release_signers`, its `${MM_RELEASE_SIGNERS+set}` test), and
   `MM_STATS_CHANNEL=""` switches the statistics off (`stats.py`,
   function `channel`).
-- **An unexpanded placeholder counts as unset.** A value that is exactly
-  `${NAME}` (a plugin manifest's placeholder that was not expanded) is
-  treated as unset, as `env()` in `mcp/src/mattermost_ai_agent_bus/config.py`
-  does today. Every fallback reader uses that one helper, or its twin in the
-  hooks.
+- **An unexpanded placeholder: unset in the MCP server and the hooks, a
+  refusal in the Go services.** A value that is exactly `${NAME}` is a
+  plugin manifest's placeholder that was not expanded. The MCP server and
+  the hooks start from a manifest, so there it counts as unset, as `env()` in
+  `mcp/src/mattermost_ai_agent_bus/config.py` does today; every fallback
+  reader there uses that one helper, or its twin in the hooks. The Go
+  services under `services/` have no plugin manifest, so there such a value
+  can only be a deployment mistake: read as unset, it would silently drop
+  the setting, a pinned CA file for one, and the system roots would apply.
+  They refuse the start with an error that names the variable, never its
+  value.
 - **Three names for one setting.** Two settings have an alias today:
   `MATTERMOST_URL` for `MM_CHAT_URL` and `MATTERMOST_TOKEN` for
   `MM_BOT_TOKEN`. In 0.103.0 each of them has three names
@@ -218,8 +230,9 @@ The tables below map 158 old names (each name counted once) to new names;
 10 more keep their names and go with the registrar. The check for this page
 found:
 
-- No new name is in use in the repository today: there is no `CB_` name
-  anywhere yet.
+- No new name was in use in the repository before the rename: no `CB_`
+  name existed. The built components' new names are the ones in these
+  tables.
 - No two old names map to one new name, with two deliberate exceptions.
   `MATTERMOST_URL` is today an alias of `MM_CHAT_URL`, and `MATTERMOST_TOKEN`
   an alias of `MM_BOT_TOKEN`. Each pair is one setting already, so each maps
@@ -391,6 +404,9 @@ name with `MM_` for `CB_`):
 
 All in `services/auth/`. Its binary `authd` runs the service; its directory
 commands read the two `AUTHD_` names and two of the service's names (noted).
+Besides the files a row lists, every name here appears in the service's
+rename table `internal/envname/envname.go`, which maps each new name to its
+old one.
 
 | Old name | New name | Mattermost | Where it appears | Note |
 |---|---|---|---|---|
