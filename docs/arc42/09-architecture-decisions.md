@@ -3705,8 +3705,13 @@ decided against it (Context).
    messages and a few stops): no loss under restart, hang, cut, blackhole,
    stall and half-open (a send during the window fails and is not counted
    as sent); a receiving session killed while a message is on its way to
-   it loses that message on resume, since its CONNECT names no position of
-   the home to restart from; and the take-over after a hard stop took
+   it loses that one message on resume: the consumer keeps its position and
+   the messages published while it was dead arrive (100 messages with a 10 s
+   window: loss 1), but the in-flight one was already pushed onto the dead
+   socket, and with `ack_policy: none` and no persisted client watermark
+   nothing asks for it again
+   ([#213](https://github.com/dembaca/ai-agent-bus/issues/213)); and the
+   take-over after a hard stop took
    89, 90 and 120 s (p95 120 s): a holder killed without `bye` keeps the crown until its
    presence is `PRESENCE_FRESH_SEC` (90 s) old, so the phase-4 target of
    30 s is not met by today's NATS crown. Not built: the take-over on
