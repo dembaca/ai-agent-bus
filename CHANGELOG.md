@@ -55,6 +55,20 @@ before 0.5.0 are described in the git history.
 
 ### Added
 
+- **The operator console's API carries each agent's guest channels and
+  marks the operator's own person node** (#147). A fleet card names its
+  `home` and, beside it, its `guests`: the channels its memberships name
+  that are not its home (every granted channel gets one, RT-6.37). The
+  home is what the bus itself states — the channel of the agent's ask
+  record's subject first (RT-6.43 step 5), else the channel it claims the
+  crown of (only a home may be claimed, RT-6.38), else the first channel
+  its memberships name — never guessed from an agent's name. `/v1/graph`
+  draws the home as a `coordinates` edge and each guest channel as a
+  `guest` edge, and marks the person node the logged-in operator's anchor
+  names with `you`; that anchor is read from the login's own record,
+  never from anything the browser sends. No new right: all of it comes
+  from presence, crown claims, memberships and the login's own record.
+
 - **The operator console shows the channels of the operator's own agents
   and of agents that trust the operator directly** (#128, the console on
   the bus as its operator, RT-6.43 step 3). At each agent's credential the

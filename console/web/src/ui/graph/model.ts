@@ -51,7 +51,9 @@ export const NODE_SIZE: Record<FlowKind, { width: number; height: number }> = {
 const channelName = (name: string): string => name.replace(/^~/, "")
 const channelId = (name: string): string => `channel:${channelName(name)}`
 const agentId = (name: string): string => `agent:${name}`
-const personId = (name: string): string => `person:${name}`
+/** The graph endpoint sends `person:<anchor>` already (#147); an ask names its human,
+ * which carries no prefix. One id either way, so the two never stand apart. */
+const personId = (name: string): string => (name.startsWith("person:") ? name : `person:${name}`)
 const askId = (id: string): string => `ask:${id}`
 
 const kindOf = (node: Node): FlowKind => (node.data as FlowData).kind
