@@ -4877,53 +4877,77 @@ or owner, a second replica of the console, and anything outside the lab.
 
 **Addition, 2026-11-27: the STATS history** (issue #196; decided by the
 coordinator with the owner's "ok" on the bus: a separate stream, 365 days,
-discard old, 64 MiB with a warning at 80 % full; built in the login
-service, RT-6.45). The statistics the stats channel holds must stay
+discard old, 64 MiB with a warning at 80 % full; after the review of
+the first build the imported lines went into a stream of their own,
+discarding new, and the cap per name to 500; built in the login service,
+RT-6.45). The statistics the stats channel holds must stay
 readable after Mattermost goes, and `STATS` keeps 30 days.
 
-- **A stream of its own, `STATS_ARCHIVE`, filled by JetStream from
-    `STATS`.** The login service makes it at its start, after the other
-    three: subjects `<archive>.>` (`CB_AUTH_STATS_ARCHIVE_PREFIX`, default
+- **The copies: `STATS_ARCHIVE`, filled by JetStream from `STATS`.** The
+    login service makes it at its start, after the other three: subjects
+    `<archive>.>` (`CB_AUTH_STATS_ARCHIVE_PREFIX`, default
     `stats-archive`), one source, `STATS`, with the subject transform
     `<stats>.*` onto `<archive>.{{wildcard(1)}}`, so every line lands on
-    the agent's subject of the history without a writer of the service's
-    own. A source, not a mirror: a mirror takes no publish, and the import
-    (below) publishes into it. Why a stream of its own: only the login
-    service writes it, and its own limits keep a flood of `STATS` from
-    pushing out the imported history any faster than its per-subject cap
-    allows. Alternative (proposed by the owner and other agents): one
-    longer `STATS`, a year and discard new. Rejected: discard new turns a
-    full stream into a refusal of every agent's new lines, an agent sees
-    no refusal (`no_ack`), and the imported lines would share the agents'
-    limits and subjects; the separate stream keeps `STATS` as it is.
-- **Its limits.** 365 days, 64 MiB, at most 5000 lines per agent's
-    subject, 8 KiB per line, file storage, discard old, deletes and
-    purges denied, every `allow_*` off, the same 100 ms duplicate window.
-    Discard old, so the newest lines always get in; the oldest go first,
-    the imported ones among them. The service warns in its log each time
-    the fill passes 80 %, and an operator who wants more edits the stream
-    by hand: the service checks an existing stream's configuration and
-    never updates it, as for the other three. Unlike them it acknowledges:
-    only the service publishes on it. Why a year: the reports beyond 7
-    days and `stats_report` per version, once they read it. Open for the
-    owner: discard old against new, the cap of 5000 per subject, and
-    whether `STATS` can then shrink to 8 to 14 days.
+    the agent's subject of the archive without a writer of the service's
+    own; nobody publishes on it. A source, not a mirror: a mirror keeps
+    the source's subjects, a source can move them under a prefix of its
+    own. Why a stream of its own: `STATS` stays as it is, and a flood of it
+    reaches only the copies, never the imported lines. Alternative
+    (proposed by the owner and other agents): one longer `STATS`, a year
+    and discard new. Rejected: discard new turns a full stream into a
+    refusal of every agent's new lines, an agent sees no refusal
+    (`no_ack`), and the imported lines would share the agents' limits and
+    subjects.
+- **The imported lines: `STATS_IMPORT`, apart from the copies.** Subjects
+    `stats-import.<bot>`, a fixed prefix no other may take, no source; only
+    the login service publishes on it. Why apart (the review of the first
+    build, which put both into the archive): an agent's own headers and its
+    name would otherwise be enough to make its line look imported and
+    backdated, and a Mattermost bot of an agent's NATS name would land on
+    that agent's subject; apart, the archive holds exactly what agents
+    published on `STATS` and the import stream only what the import wrote,
+    and neither needs a header to be trusted. A reader of both, the console
+    with a time range beyond 7 days or `stats_report`, is still to come.
+- **Their limits.** Each 365 days, 64 MiB, at most 500 lines per name as
+    in `STATS` (500 lines of at most 8 KiB are 4 MiB, so one name cannot
+    fill a stream), 16 KiB per message (twice `STATS`'s: a copy gains a
+    source header of about 60 bytes and an imported line its marking
+    headers, and a line `STATS` took must never stop the copy), file
+    storage, deletes and purges denied, every `allow_*` off, the same 100
+    ms duplicate window. The archive discards old, so the newest copies
+    always get in, and has `no_ack` like the other three. The import
+    stream discards new, so a full stream refuses the import instead of
+    pushing out what it holds, and acknowledges, so the import sees a
+    refused line and a duplicate; within a name its oldest lines go. The
+    service warns in its log each time a stream passes 80 % full and when
+    the copy of `STATS` fails or stays behind; an operator who wants more
+    edits the stream by hand: the service checks an existing stream's
+    configuration and never updates it, as for the other three. Why a
+    year: the reports beyond 7 days and `stats_report` per version, once
+    they read it. Open for the owner: discard old on the copies and new on
+    the imports, `no_ack` off on the import stream, the cap of 500 per
+    name; `STATS` stays at 30 days for now (it could shrink to 8 to 14
+    days).
 - **The import of the stats channel, repeatable.** An admin runs
     `authd dir stats-import` (`POST /v1/stats/import`) as often as wanted
-    until the stats channel goes: each `STATS` line of the channel is
-    stored byte for byte under its bot's name, unless the history holds its
-    (`sid`, `part`) already, copied from `STATS` or imported before. Each
+    until the stats channel goes: each `STATS` line of the channel at
+    least 2 minutes old is stored byte for byte under its bot's name,
+    unless the archive holds its (`sid`, `part`) (the same line under the
+    agent's NATS name; the two names differ, so only the line's own key
+    can match) or the import stream holds its (name, `sid`, `part`); of
+    each name only the newest 500, so every run stores the same set. Each
     imported line carries `Cb-Source: mattermost-import` and its original
     time in `Cb-Orig-Time`, so a reader can show it as imported and sort by
-    that time; the history's own time of a line is its store time, also
-    for the copies. The import applies no allow list; the strict decoder of
+    that time; a stream's own time of a line is its store time, also for
+    the copies. The import applies no allow list; the strict decoder of
     whoever reads it does (point 14). Its lines are the bots' word, attested
     by nothing (RISK-22). Alternative: once, with a mark, like the
     directory's import. Rejected: the stats channel keeps getting lines
     until Mattermost goes, and the duplicate check makes a second run safe.
-- **Not yet.** The console's time range beyond 7 days read from the
-    history, `stats_report` reading it, a fill the console can show (for
-    `STATS` too), and a way to update an existing stream's limits.
+- **Not yet.** A reader of the two streams: the console's time range
+    beyond 7 days and `stats_report` reading them; a fill the console can
+    show (for `STATS` too); and a way to update an existing stream's
+    limits.
 
 ---
 

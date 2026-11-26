@@ -358,12 +358,18 @@ func RunCallout(ctx context.Context, s Settings, log *slog.Logger) error {
 		return fmt.Errorf("streams: %w", err)
 	}
 	// The STATS history (RT-6.45): the archive stream, which copies every
-	// STATS line by itself, and a look at its fill now and every hour.
+	// STATS line by itself, and the import stream, which only the import
+	// writes; a look at their fill (and at the copy) now and every hour.
 	archive, err := mgr.EnsureArchive(startCtx, s.Callout.Subjects.Archive, 0)
 	if err != nil {
 		return fmt.Errorf("streams: %w", err)
 	}
+	imports, err := mgr.EnsureImport(startCtx, 0)
+	if err != nil {
+		return fmt.Errorf("streams: %w", err)
+	}
 	archive.WatchFill(ctx, time.Hour)
+	imports.WatchFill(ctx, time.Hour)
 	// The console's unattended metrics page (#158): its two consumers are
 	// made at this start and kept, idempotent, like every consumer of the
 	// bus — the console's service account itself has no JetStream right.
@@ -424,7 +430,7 @@ func RunCallout(ctx context.Context, s Settings, log *slog.Logger) error {
 		}
 		acfg := admin.Config{AdminGroup: s.DirectoryAdminGroup, NameBinding: binding, Log: log}
 		if s.StatsChannel != "" { // the STATS import (RT-6.45)
-			acfg.Stats = &admin.StatsImport{Channel: s.StatsChannel, Source: mm, Store: archive}
+			acfg.Stats = &admin.StatsImport{Channel: s.StatsChannel, Source: mm, Archive: archive, Store: imports}
 		}
 		h, err := admin.New(acfg, v, dir, mm)
 		if err != nil {

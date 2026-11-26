@@ -268,7 +268,7 @@ func (c *Client) channelID(ctx context.Context, name string) (string, error) {
 var errNotFound = errors.New("not found")
 
 func (c *Client) get(ctx context.Context, path string, into any) error {
-	return c.do(ctx, http.MethodGet, path, nil, into)
+	return c.do(ctx, http.MethodGet, path, nil, into, maxAnswerBytes)
 }
 
 func (c *Client) post(ctx context.Context, path string, body, into any) error {
@@ -276,10 +276,11 @@ func (c *Client) post(ctx context.Context, path string, body, into any) error {
 	if err != nil {
 		return err
 	}
-	return c.do(ctx, http.MethodPost, path, b, into)
+	return c.do(ctx, http.MethodPost, path, b, into, maxAnswerBytes)
 }
 
-func (c *Client) do(ctx context.Context, method, path string, body []byte, into any) error {
+// do sends one request and decodes at most limit bytes of its answer.
+func (c *Client) do(ctx context.Context, method, path string, body []byte, into any, limit int64) error {
 	var rd io.Reader
 	if body != nil {
 		rd = bytes.NewReader(body)
@@ -299,7 +300,7 @@ func (c *Client) do(ctx context.Context, method, path string, body []byte, into 
 	defer resp.Body.Close()
 	switch resp.StatusCode {
 	case http.StatusOK:
-		return json.NewDecoder(io.LimitReader(resp.Body, maxAnswerBytes)).Decode(into)
+		return json.NewDecoder(io.LimitReader(resp.Body, limit)).Decode(into)
 	case http.StatusNotFound:
 		return errNotFound
 	case http.StatusUnauthorized, http.StatusForbidden:

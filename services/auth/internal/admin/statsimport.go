@@ -12,17 +12,19 @@ import (
 	"strings"
 	"time"
 
+	"github.com/dembaca/ai-agent-bus/services/auth/internal/consumers"
 	"github.com/dembaca/ai-agent-bus/services/auth/internal/mattermost"
 	"github.com/dembaca/ai-agent-bus/services/auth/internal/token"
 )
 
-// The STATS import (RT-6.45): the lines the stats channel holds, copied once
-// into the STATS history (the STATS_ARCHIVE stream), each under its bot's
-// name, marked as imported and with its original time. It can run again: a
-// line whose (sid, part) the archive already holds is skipped, so a second
-// run imports nothing, and a run that stopped is completed by the next. The
-// line is stored byte for byte as the channel holds it; the console's strict
-// decoder (its allow list) applies when it is read, not here.
+// The STATS import (RT-6.45): the lines the stats channel holds, copied into
+// a stream of their own, STATS_IMPORT, each under its bot's name, marked as
+// imported and with its original time. The archive (STATS_ARCHIVE) holds the
+// copies of STATS only, so no agent's line can pass for an imported one, and
+// no bot's line lands among an agent's. It can run again: a line already
+// there is skipped, so a second run imports nothing, and a run that stopped
+// is completed by the next. The line is stored byte for byte as the channel
+// holds it; the strict decoder of whoever reads it applies the allow list.
 
 // StatsSource is what the import reads from Mattermost (mattermost.Client).
 type StatsSource interface {
@@ -30,23 +32,34 @@ type StatsSource interface {
 	Users(ctx context.Context, ids []string) ([]mattermost.User, error)
 }
 
-// ArchiveStore is the STATS history (consumers.Archive).
-type ArchiveStore interface {
-	// ReadAll calls fn with every line the archive holds, once its copy of
-	// STATS has caught up; begin runs before each pass over it.
-	ReadAll(ctx context.Context, begin func(), fn func(body []byte) error) error
-	// Put stores one line on the agent's archive subject and waits for the
-	// archive's acknowledgement.
-	Put(ctx context.Context, agent string, body []byte, hdr map[string]string) error
+// HistoryReader reads one stream of the STATS history (consumers.History).
+type HistoryReader interface {
+	// ReadAll calls fn with the name and the body of every line the stream
+	// holds (for the archive once its copy of STATS has caught up); begin
+	// runs before each pass over it.
+	ReadAll(ctx context.Context, begin func(), fn func(name string, body []byte) error) error
+}
+
+// ImportStore is the import stream (consumers.History of STATS_IMPORT).
+type ImportStore interface {
+	HistoryReader
+	// Put stores one line on the name's subject and waits for the stream's
+	// acknowledgement; consumers.ErrDuplicate when the stream took it as a
+	// duplicate.
+	Put(ctx context.Context, name string, body []byte, hdr map[string]string) error
 }
 
 // StatsImport configures the import; a nil one in Config turns it off.
 type StatsImport struct {
 	Channel string // the stats channel (CB_MM_STATS_CHANNEL)
 	Source  StatsSource
-	Store   ArchiveStore
+	Archive HistoryReader // STATS_ARCHIVE: the copies of STATS
+	Store   ImportStore   // STATS_IMPORT
 	// CatchUp bounds the wait for the archive's copy of STATS (default 30 s).
 	CatchUp time.Duration
+	// MinAge: a post younger than this is left for the next run, since its
+	// line may still be on its way to STATS and the archive (default 2 min).
+	MinAge time.Duration
 }
 
 // Headers of an imported line.
@@ -59,8 +72,11 @@ const (
 const (
 	statsPrefix = "STATS "
 	// StatsLineMax is the largest line the import takes, in bytes of its
-	// JSON: below the archive's 8 KiB per message, with room for headers.
+	// JSON, as the MCP server's NATS publish (stats.py NATS_BODY_MAX).
 	StatsLineMax = 8000
+	// statsPerName is how many lines the import keeps per name, the import
+	// stream's cap: the newest ones, so a second run stores the same set.
+	statsPerName = consumers.HistoryMaxMsgsPerSubject
 )
 
 var (
@@ -78,6 +94,8 @@ type StatsReport struct {
 	SkippedInvalid   int    `json:"skipped_invalid"`
 	SkippedTooBig    int    `json:"skipped_too_big"`
 	SkippedName      int    `json:"skipped_name"`
+	SkippedRecent    int    `json:"skipped_recent"`
+	SkippedOverCap   int    `json:"skipped_over_cap"`
 	Oldest           string `json:"oldest,omitempty"` // original time of the oldest imported line
 	Newest           string `json:"newest,omitempty"`
 }
@@ -85,6 +103,11 @@ type StatsReport struct {
 type statsKey struct {
 	sid  string
 	part int64
+}
+
+type namedKey struct {
+	name string
+	statsKey
 }
 
 // statsLine reads a STATS line's JSON: an object with sid (12 lower-case hex
@@ -112,8 +135,16 @@ func statsLine(body []byte) (statsKey, bool) {
 	return k, true
 }
 
-// importStats runs the import (RT-6.45).
-func importStats(ctx context.Context, si *StatsImport) (StatsReport, error) {
+// candidate is a valid line of the channel.
+type candidate struct {
+	namedKey
+	id   string
+	at   time.Time
+	body []byte
+}
+
+// importStats runs the import (RT-6.45) at the time now.
+func importStats(ctx context.Context, si *StatsImport, now time.Time) (StatsReport, error) {
 	var rep StatsReport
 	// The channel first, the archive after: a line posted meanwhile is on
 	// STATS too, and the archive's copy of it is then seen below.
@@ -122,42 +153,41 @@ func importStats(ctx context.Context, si *StatsImport) (StatsReport, error) {
 		return rep, fmt.Errorf("the stats channel: %w", err)
 	}
 	rep.Read = len(posts)
-	sort.SliceStable(posts, func(i, j int) bool {
-		if !posts[i].Created.Equal(posts[j].Created) {
-			return posts[i].Created.Before(posts[j].Created)
-		}
-		return posts[i].ID < posts[j].ID
-	})
 	ids := map[string]bool{}
 	for _, p := range posts {
 		if strings.HasPrefix(p.Message, statsPrefix) {
 			ids[p.UserID] = true
 		}
 	}
-	names := map[string]mattermost.User{}
+	users := map[string]mattermost.User{}
 	if len(ids) > 0 {
 		list := make([]string, 0, len(ids))
 		for id := range ids {
 			list = append(list, id)
 		}
 		sort.Strings(list)
-		users, err := si.Source.Users(ctx, list)
+		got, err := si.Source.Users(ctx, list)
 		if err != nil {
 			return rep, fmt.Errorf("the stats channel's authors: %w", err)
 		}
-		for _, u := range users {
-			names[u.ID] = u
+		for _, u := range got {
+			users[u.ID] = u
 		}
 	}
-	wait := si.CatchUp
+	wait, minAge := si.CatchUp, si.MinAge
 	if wait <= 0 {
 		wait = 30 * time.Second
 	}
-	held := map[statsKey]bool{}
+	if minAge <= 0 {
+		minAge = 2 * time.Minute
+	}
+	// What the archive holds, by (sid, part) alone: the same line has the
+	// agent's NATS name there and its bot's Mattermost name here.
+	copied := map[statsKey]bool{}
 	wctx, cancel := context.WithTimeout(ctx, wait)
-	err = si.Store.ReadAll(wctx, func() { clear(held) }, func(body []byte) error {
+	err = si.Archive.ReadAll(wctx, func() { clear(copied) }, func(_ string, body []byte) error {
 		if k, ok := statsLine(body); ok {
-			held[k] = true
+			copied[k] = true
 		}
 		return nil
 	})
@@ -165,10 +195,25 @@ func importStats(ctx context.Context, si *StatsImport) (StatsReport, error) {
 	if err != nil {
 		return rep, fmt.Errorf("the archive: %w", err)
 	}
-	var oldest, newest time.Time
+	// What the import stream holds, by (name, sid, part).
+	imported := map[namedKey]bool{}
+	err = si.Store.ReadAll(ctx, func() { clear(imported) }, func(name string, body []byte) error {
+		if k, ok := statsLine(body); ok {
+			imported[namedKey{name, k}] = true
+		}
+		return nil
+	})
+	if err != nil {
+		return rep, fmt.Errorf("the import stream: %w", err)
+	}
+	byName := map[string][]candidate{}
 	for _, p := range posts {
 		if !strings.HasPrefix(p.Message, statsPrefix) {
 			rep.NotStats++
+			continue
+		}
+		if p.Created.After(now.Add(-minAge)) {
+			rep.SkippedRecent++
 			continue
 		}
 		body := []byte(p.Message[len(statsPrefix):])
@@ -181,38 +226,70 @@ func importStats(ctx context.Context, si *StatsImport) (StatsReport, error) {
 			rep.SkippedInvalid++
 			continue
 		}
-		u, known := names[p.UserID]
-		name := u.Username
-		if !known || !u.IsBot || !agentNameRE.MatchString(name) {
+		u, known := users[p.UserID]
+		if !known || !u.IsBot || !agentNameRE.MatchString(u.Username) {
 			rep.SkippedName++
 			continue
 		}
-		if held[k] {
+		if copied[k] {
 			rep.SkippedDuplicate++
 			continue
 		}
-		at := p.Created.UTC()
+		byName[u.Username] = append(byName[u.Username], candidate{namedKey{u.Username, k}, p.ID, p.Created.UTC(), body})
+	}
+	// The newest lines per name up to the cap, so the import stream (which
+	// drops a name's oldest above it) holds the same set after every run.
+	var todo []candidate
+	for _, cs := range byName {
+		sort.SliceStable(cs, func(i, j int) bool { return newer(cs[i], cs[j]) })
+		if len(cs) > statsPerName {
+			rep.SkippedOverCap += len(cs) - statsPerName
+			cs = cs[:statsPerName]
+		}
+		todo = append(todo, cs...)
+	}
+	sort.SliceStable(todo, func(i, j int) bool { return newer(todo[j], todo[i]) }) // oldest first
+	var oldest, newest time.Time
+	for _, c := range todo {
+		if imported[c.namedKey] {
+			rep.SkippedDuplicate++
+			continue
+		}
 		hdr := map[string]string{
 			HeaderSource:   SourceMattermost,
-			HeaderOrigTime: at.Format(time.RFC3339Nano),
-			"Nats-Msg-Id":  fmt.Sprintf("stats-import:%s:%d", k.sid, k.part),
+			HeaderOrigTime: c.at.Format(time.RFC3339Nano),
+			"Nats-Msg-Id":  fmt.Sprintf("stats-import:%s:%s:%d", c.name, c.sid, c.part),
 		}
-		if err := si.Store.Put(ctx, name, body, hdr); err != nil {
-			return rep, fmt.Errorf("the archive took %d lines, then: %w", rep.Imported, err)
+		err := si.Store.Put(ctx, c.name, c.body, hdr)
+		switch {
+		case errors.Is(err, consumers.ErrDuplicate):
+			rep.SkippedDuplicate++
+			imported[c.namedKey] = true
+			continue
+		case err != nil:
+			return rep, fmt.Errorf("the import stream took %d lines, then: %w", rep.Imported, err)
 		}
-		held[k] = true
+		imported[c.namedKey] = true
 		rep.Imported++
-		if oldest.IsZero() || at.Before(oldest) {
-			oldest = at
+		if oldest.IsZero() || c.at.Before(oldest) {
+			oldest = c.at
 		}
-		if at.After(newest) {
-			newest = at
+		if c.at.After(newest) {
+			newest = c.at
 		}
 	}
 	if rep.Imported > 0 {
 		rep.Oldest, rep.Newest = oldest.Format(time.RFC3339), newest.Format(time.RFC3339)
 	}
 	return rep, nil
+}
+
+// newer orders by original time, newest first, then by post id.
+func newer(a, b candidate) bool {
+	if !a.at.Equal(b.at) {
+		return a.at.After(b.at)
+	}
+	return a.id > b.id
 }
 
 // errStatsRunning: another import runs.
@@ -229,7 +306,7 @@ func (h *handler) runStatsImport(w http.ResponseWriter, r *http.Request, id toke
 		return
 	}
 	defer h.statsMu.Unlock()
-	rep, err := importStats(r.Context(), si)
+	rep, err := importStats(r.Context(), si, h.cfg.Now())
 	if err != nil {
 		h.cfg.Log.Error("stats import stopped; it can be run again", "reason", err.Error(), "sub", id.Subject,
 			"imported", rep.Imported)

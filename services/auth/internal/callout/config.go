@@ -122,7 +122,8 @@ func (s Subjects) checkStats() error {
 // checkArchive checks the STATS history's prefix (RT-6.45) like the STATS
 // prefix: a plain token, not the deliver prefix, and none of the other three:
 // an agent's STATS right would otherwise reach the archive, or the archive's
-// source copy its own lines.
+// source copy its own lines. The import stream's fixed prefix
+// (consumers.ImportPrefix) is taken by no prefix at all.
 func (s Subjects) checkArchive() error {
 	switch {
 	case s.Archive == "" || !plain(s.Archive):
@@ -131,6 +132,11 @@ func (s Subjects) checkArchive() error {
 		return fmt.Errorf("callout: stats archive prefix %q is the deliver prefix", s.Archive)
 	case s.Archive == s.Prefix || s.Archive == s.Presence || s.Archive == s.Stats:
 		return fmt.Errorf("callout: stats archive prefix %q must differ from the subject, the presence and the stats prefix", s.Archive)
+	}
+	for what, v := range map[string]string{"subject prefix": s.Prefix, "presence prefix": s.Presence, "stats prefix": s.Stats, "stats archive prefix": s.Archive} {
+		if v == consumers.ImportPrefix {
+			return fmt.Errorf("callout: %s %q is the stats import's prefix", what, v)
+		}
 	}
 	return nil
 }

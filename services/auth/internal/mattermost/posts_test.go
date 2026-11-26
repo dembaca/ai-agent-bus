@@ -7,6 +7,7 @@ import (
 	"net/http"
 	"net/http/httptest"
 	"strconv"
+	"strings"
 	"testing"
 	"time"
 )
@@ -112,5 +113,45 @@ func TestChannelPostsPages(t *testing.T) {
 	}
 	if _, err := c.ChannelPosts(ctx, "missing", time.Time{}); err == nil {
 		t.Fatal("a missing channel gave no error")
+	}
+}
+
+// A full page of the largest posts Mattermost allows (16383 characters, here
+// of four bytes each) fits the answer limit of the posts' reading (RT-6.45).
+func TestAPageOfTheLargestPostsFits(t *testing.T) {
+	big := strings.Repeat("\U0001F600", 16383)
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		send := func(v any) { _ = json.NewEncoder(w).Encode(v) }
+		switch r.URL.Path {
+		case "/api/v4/users/me":
+			send(map[string]any{"roles": "system_admin"})
+		case "/api/v4/teams/name/lab/channels/name/agents-stats":
+			send(map[string]any{"id": "cs"})
+		case "/api/v4/channels/cs/posts":
+			out := map[string]any{"order": []string{}, "posts": map[string]any{}}
+			if r.URL.Query().Get("page") == "0" {
+				var order []string
+				posts := map[string]any{}
+				for i := range postsPage {
+					id := fmt.Sprint("p", i)
+					order = append(order, id)
+					posts[id] = map[string]any{"id": id, "create_at": 1000 + i, "user_id": "u1", "message": big,
+						"props": map[string]any{"attachments": []any{map[string]any{"text": strings.Repeat("x", 4000)}}}}
+				}
+				out["order"], out["posts"] = order, posts
+			}
+			send(out)
+		default:
+			http.NotFound(w, r)
+		}
+	}))
+	t.Cleanup(srv.Close)
+	c, err := New(context.Background(), srv.URL, "lab", "tok")
+	if err != nil {
+		t.Fatal(err)
+	}
+	ps, err := c.ChannelPosts(context.Background(), "agents-stats", time.Time{})
+	if err != nil || len(ps) != postsPage {
+		t.Fatalf("%d posts, %v", len(ps), err)
 	}
 }

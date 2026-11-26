@@ -3,6 +3,7 @@ package mattermost
 import (
 	"context"
 	"fmt"
+	"net/http"
 	"net/url"
 	"strconv"
 	"strings"
@@ -117,10 +118,12 @@ type Post struct {
 }
 
 const (
-	// postsPage keeps a page of posts well below the answer limit: a STATS
-	// line is at most 8 KiB.
-	postsPage = 60
-	maxPosts  = 100000
+	// postsPage and postsAnswerMax: a post's message is at most 16383
+	// characters (64 KiB in UTF-8), so a page of 30 is at most about 2 MiB of
+	// messages; the answer limit leaves room for the posts' metadata.
+	postsPage      = 30
+	postsAnswerMax = 8 << 20
+	maxPosts       = 100000
 )
 
 // ChannelPosts reads the posts of the team's channel by name, created at or
@@ -147,7 +150,7 @@ func (c *Client) ChannelPosts(ctx context.Context, channelName string, since tim
 			Posts map[string]post `json:"posts"`
 		}
 		path := "/api/v4/channels/" + url.PathEscape(id) + "/posts?page=" + strconv.Itoa(page) + "&per_page=" + strconv.Itoa(postsPage)
-		if err := c.get(ctx, path, &got); err != nil {
+		if err := c.do(ctx, http.MethodGet, path, nil, &got, postsAnswerMax); err != nil {
 			return nil, fmt.Errorf("posts of %q: %w", channelName, err)
 		}
 		older := false

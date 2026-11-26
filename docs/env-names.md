@@ -461,7 +461,7 @@ the same rule for its STATS import (RT-6.45).
 | `AUTH_PRESENCE_PREFIX` | `CB_AUTH_PRESENCE_PREFIX` | no | `internal/app/callout.go` | |
 | `AUTH_REQUEST_TIMEOUT` | `CB_AUTH_REQUEST_TIMEOUT` | no | `internal/app/callout.go` | |
 | `AUTH_SHUTDOWN_TIMEOUT` | `CB_AUTH_SHUTDOWN_TIMEOUT` | no | `internal/config/config.go` | |
-| `CB_AUTH_STATS_ARCHIVE_PREFIX` | `CB_AUTH_STATS_ARCHIVE_PREFIX` | no | `internal/app/callout.go`, `internal/callout/config.go`, `internal/consumers/streams.go` | new with #196: no old spelling; the STATS history's subject prefix, default `stats-archive` (RT-6.45) |
+| `CB_AUTH_STATS_ARCHIVE_PREFIX` | `CB_AUTH_STATS_ARCHIVE_PREFIX` | no | `internal/app/callout.go`, `internal/callout/config.go`, `internal/consumers/streams.go` | new with #196: no old spelling; the subject prefix of the STATS history's archive, default `stats-archive` (RT-6.45) |
 | `AUTH_STATS_PREFIX` | `CB_AUTH_STATS_PREFIX` | no | `internal/app/callout.go`, `internal/callout/perms.go`, `internal/consumers/streams.go`; a comment in `natsbus.py` | |
 | `AUTH_SUBJECT_PREFIX` | `CB_AUTH_SUBJECT_PREFIX` | no | `internal/app/callout.go` | |
 | `AUTH_TOKEN_LEEWAY` | `CB_AUTH_TOKEN_LEEWAY` | no | `internal/app/callout.go` | |

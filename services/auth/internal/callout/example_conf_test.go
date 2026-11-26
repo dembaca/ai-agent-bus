@@ -386,10 +386,13 @@ func TestTheExampleServerConfiguration(t *testing.T) {
 				"$JS.API.CONSUMER.CREATE."+kv+".>", "$JS.API.CONSUMER.DELETE."+kv+".*",
 				"$JS.API.STREAM.MSG.GET.PRESENCE", "presence.attest.*.v1", "presence.notice.*.*.v1",
 				"presence.account.mattermost.*.v1")
-			// the STATS history (RT-6.45): its stream, its reading consumer, the import
-			pub = append(pub, "$JS.API.STREAM.CREATE."+consumers.ArchiveStream, "$JS.API.STREAM.INFO."+consumers.ArchiveStream,
-				"$JS.API.CONSUMER.*."+consumers.ArchiveStream, "$JS.API.CONSUMER.*."+consumers.ArchiveStream+".>",
-				consumers.DefaultArchivePrefix+".>")
+			// the STATS history (RT-6.45): both streams, a reading consumer on
+			// each (made and removed), and the import's lines
+			for _, s := range []string{consumers.ArchiveStream, consumers.ImportStream} {
+				pub = append(pub, "$JS.API.STREAM.CREATE."+s, "$JS.API.STREAM.INFO."+s,
+					"$JS.API.CONSUMER.CREATE."+s, "$JS.API.CONSUMER.DELETE."+s+".*")
+			}
+			pub = append(pub, consumers.ImportPrefix+".>")
 			p := u.Permissions
 			if p == nil || p.Publish == nil || p.Subscribe == nil {
 				t.Fatalf("the JetStream user has no permissions: %+v", p)
@@ -456,11 +459,17 @@ func TestTheExampleServerConfiguration(t *testing.T) {
 	if err != nil {
 		t.Fatalf("EnsureArchive: %v", err)
 	}
-	if err := arch.Put(ctx5(t), "agent-x", []byte(`{"sid":"0123456789ab","part":1}`), nil); err != nil {
-		t.Fatalf("archive put: %v", err)
+	imp, err := mgr.EnsureImport(ctx5(t), 0)
+	if err != nil {
+		t.Fatalf("EnsureImport: %v", err)
 	}
-	if err := arch.ReadAll(ctx5(t), func() {}, func([]byte) error { return nil }); err != nil {
-		t.Fatalf("archive read: %v", err)
+	if err := imp.Put(ctx5(t), "agent-x", []byte(`{"sid":"0123456789ab","part":1}`), nil); err != nil {
+		t.Fatalf("import put: %v", err)
+	}
+	for _, h := range []*consumers.History{arch, imp} {
+		if err := h.ReadAll(ctx5(t), func() {}, func(string, []byte) error { return nil }); err != nil {
+			t.Fatalf("%s read: %v", h.Stream(), err)
+		}
 	}
 	// The channel directory (ADR-016): the same user makes its bucket, opens
 	// it again, writes and reads it with exactly these rights.

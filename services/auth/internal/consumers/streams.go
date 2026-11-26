@@ -31,14 +31,22 @@ const (
 const DefaultStatsPrefix = "stats"
 
 // ArchiveStream keeps the STATS history for a year (RT-6.45): a copy of every
-// STATS line, sourced from STATS onto <archive>.<agent>, and the lines the
-// import read from the stats channel. Only the login service writes it; no
-// agent has a right on its subjects.
+// STATS line, sourced from STATS onto <archive>.<agent>, and nothing else. No
+// one publishes on it; no agent has a right on its subjects.
 const ArchiveStream = "STATS_ARCHIVE"
 
 // DefaultArchivePrefix is the archive's subject prefix when none is set
 // (CB_AUTH_STATS_ARCHIVE_PREFIX).
 const DefaultArchivePrefix = "stats-archive"
+
+// ImportStream keeps the lines the import read from the stats channel
+// (RT-6.45) on <ImportPrefix>.<bot>, apart from the copies of STATS: only the
+// login service publishes on it, and no agent has a right on its subjects.
+const ImportStream = "STATS_IMPORT"
+
+// ImportPrefix is the import stream's subject prefix, fixed: no other
+// prefix may take it.
+const ImportPrefix = "stats-import"
 
 // Limits and defaults of the streams.
 const (
@@ -54,25 +62,33 @@ const (
 	// name that floods pushes out only its own oldest lines.
 	StatsMaxMsgsPerSubject = 500
 
-	// ArchiveMaxAge is how long the archive keeps a line (RT-6.45).
+	// ArchiveMaxAge is how long the archive and the import stream keep a
+	// line (RT-6.45).
 	ArchiveMaxAge = 365 * 24 * time.Hour
-	// ArchiveMaxMsgsPerSubject is how many lines one agent's archive subject
-	// keeps: a name that floods STATS (copied into the archive) pushes out
-	// only its own oldest lines there too.
-	ArchiveMaxMsgsPerSubject = 5000
-	// ArchiveWarnPercent is the archive's fill the service warns about.
+	// HistoryMaxMsgsPerSubject is how many lines one name keeps in the
+	// archive and in the import stream, as in STATS: a name that floods
+	// pushes out only its own oldest lines, and 500 lines of at most 8 KiB
+	// are 4 MiB of the 64 MiB.
+	HistoryMaxMsgsPerSubject = 500
+	// ArchiveWarnPercent is the fill the service warns about.
 	ArchiveWarnPercent = 80
 
 	DefaultBusMaxBytes      int64 = 1 << 30
 	DefaultPresenceMaxBytes int64 = 16 << 20
 	DefaultStatsMaxBytes    int64 = 64 << 20
 	DefaultArchiveMaxBytes  int64 = 64 << 20
+	DefaultImportMaxBytes   int64 = 64 << 20
 )
 
 const (
 	busMaxMsgSize      = 65536
 	presenceMaxMsgSize = 4096
 	statsMaxMsgSize    = 8192
+	// historyMaxMsgSize is the archive's and the import stream's limit per
+	// message: twice STATS's, since a copy gains JetStream's source header
+	// (about 60 bytes) and an imported line its marking headers, and a
+	// line STATS took must never stop the copy for everyone.
+	historyMaxMsgSize = 16384
 )
 
 // BusStreamJSON is the creation request of the BUS stream for the subject
@@ -109,22 +125,40 @@ func StatsStreamJSON(prefix string, maxBytes int64) string {
 
 // ArchiveStreamJSON is the creation request of the STATS_ARCHIVE stream
 // (RT-6.45): its own subjects <archive>.>, one source, STATS, whose lines
-// <stats>.<agent> land on <archive>.<agent>; 365 days, at most 5000 lines per
-// agent's subject, 8 KiB per line, the oldest discarded. Unlike the other
-// three it acknowledges (no_ack false): only the login service publishes on
-// it (the import), and the import must see a refused line. maxBytes <= 0
-// takes DefaultArchiveMaxBytes.
+// <stats>.<agent> land on <archive>.<agent>; 365 days, at most 500 lines per
+// agent's subject, 16 KiB per message (a copy carries a source header), the
+// oldest discarded, no_ack as the others: no one publishes on it. maxBytes <=
+// 0 takes DefaultArchiveMaxBytes.
 func ArchiveStreamJSON(archive, stats string, maxBytes int64) string {
 	if maxBytes <= 0 {
 		maxBytes = DefaultArchiveMaxBytes
 	}
 	return fmt.Sprintf(`{"name":%q,"subjects":[%q],"retention":"limits","storage":"file","discard":"old",
-"max_age":%d,"max_msgs_per_subject":%d,"max_bytes":%d,"max_msg_size":%d,"num_replicas":1,"no_ack":false,"duplicate_window":%d,
+"max_age":%d,"max_msgs_per_subject":%d,"max_bytes":%d,"max_msg_size":%d,"num_replicas":1,"no_ack":true,"duplicate_window":%d,
 "sources":[{"name":%q,"subject_transforms":[{"src":%q,"dest":%q}]}],
 "allow_direct":false,"mirror_direct":false,"deny_delete":true,"deny_purge":true,"allow_rollup_hdrs":false,
 "allow_msg_ttl":false,"allow_msg_counter":false,"allow_atomic":false,"allow_msg_schedules":false,"allow_batched":false}`,
-		ArchiveStream, archive+".>", int64(ArchiveMaxAge), ArchiveMaxMsgsPerSubject, maxBytes, statsMaxMsgSize,
+		ArchiveStream, archive+".>", int64(ArchiveMaxAge), HistoryMaxMsgsPerSubject, maxBytes, historyMaxMsgSize,
 		DuplicateWindow.Nanoseconds(), StatsStream, archiveSrc(stats), archiveDest(archive))
+}
+
+// ImportStreamJSON is the creation request of the STATS_IMPORT stream
+// (RT-6.45): subjects <ImportPrefix>.>, no source, 365 days, at most 500
+// lines per name (the oldest of that name go), 16 KiB per message; a full
+// stream refuses new lines (discard new), so the import can never push out
+// what it stored and never grow past its limit. It acknowledges (no_ack
+// false): only the login service publishes on it, and the import must see a
+// refused line. maxBytes <= 0 takes DefaultImportMaxBytes.
+func ImportStreamJSON(maxBytes int64) string {
+	if maxBytes <= 0 {
+		maxBytes = DefaultImportMaxBytes
+	}
+	return fmt.Sprintf(`{"name":%q,"subjects":[%q],"retention":"limits","storage":"file","discard":"new","discard_new_per_subject":false,
+"max_age":%d,"max_msgs_per_subject":%d,"max_bytes":%d,"max_msg_size":%d,"num_replicas":1,"no_ack":false,"duplicate_window":%d,
+"allow_direct":false,"mirror_direct":false,"deny_delete":true,"deny_purge":true,"allow_rollup_hdrs":false,
+"allow_msg_ttl":false,"allow_msg_counter":false,"allow_atomic":false,"allow_msg_schedules":false,"allow_batched":false}`,
+		ImportStream, ImportPrefix+".>", int64(ArchiveMaxAge), HistoryMaxMsgsPerSubject, maxBytes, historyMaxMsgSize,
+		DuplicateWindow.Nanoseconds())
 }
 
 // archiveSrc and archiveDest are the archive's one subject transform: an
@@ -155,23 +189,34 @@ func checkStream(name, subject string, got map[string]any) error {
 }
 
 // checkArchive is checkStream for the STATS_ARCHIVE stream (RT-6.45): the same
-// pins, except that it may acknowledge (only the login service publishes on
-// it, so an acknowledgement tells no agent anything) and must have exactly
-// one source, STATS, with exactly the transform <stats>.* onto
-// <archive>.{{wildcard(1)}}; at most 365 days, exactly 8 KiB per line, at most
-// 5000 lines per subject, file storage.
+// pins, and exactly one source, STATS, with exactly the transform <stats>.*
+// onto <archive>.{{wildcard(1)}}; at most 365 days, exactly 16 KiB per
+// message, at most 500 lines per subject, file storage.
 func checkArchive(archive, stats string, got map[string]any) error {
 	return checkConfig(ArchiveStream, archive+".>", stats, got)
 }
 
-// checkConfig is both checks: stats is the STATS prefix the archive's source
-// must name; the other streams may have no source at all.
+// checkImport is checkStream for the STATS_IMPORT stream (RT-6.45): the same
+// pins, except that it acknowledges (only the login service publishes on it,
+// so an acknowledgement tells no agent anything) and refuses new lines when
+// full (discard new, but not per subject: a name's oldest lines go); no
+// source, at most 365 days, exactly 16 KiB per message, at most 500 lines per
+// subject, file storage.
+func checkImport(got map[string]any) error {
+	return checkConfig(ImportStream, ImportPrefix+".>", "", got)
+}
+
+// checkConfig is all the checks: stats is the STATS prefix the archive's
+// source must name; the other streams may have no source at all.
 func checkConfig(name, subject, stats string, got map[string]any) error {
 	var bad []string
 	flag := func(k string) bool { v, _ := got[k].(bool); return v }
 	num := func(k string) float64 { v, _ := got[k].(float64); return v }
-	archive := name == ArchiveStream
-	if !archive && !flag("no_ack") {
+	archive, imports := name == ArchiveStream, name == ImportStream
+	if imports && flag("no_ack") {
+		bad = append(bad, "no_ack is on")
+	}
+	if !imports && !flag("no_ack") {
 		bad = append(bad, "no_ack is off")
 	}
 	if !flag("deny_delete") {
@@ -212,7 +257,7 @@ func checkConfig(name, subject, stats string, got map[string]any) error {
 		limit = PresenceMaxAge
 	case StatsStream:
 		limit = StatsMaxAge
-	case ArchiveStream:
+	case ArchiveStream, ImportStream:
 		limit = ArchiveMaxAge
 	}
 	if maxAge <= 0 || maxAge > limit {
@@ -223,22 +268,28 @@ func checkConfig(name, subject, stats string, got map[string]any) error {
 	if dw := time.Duration(num("duplicate_window")); dw <= 0 || dw > DuplicateWindow {
 		bad = append(bad, fmt.Sprintf("duplicate_window is not within 0 and %s", DuplicateWindow))
 	}
-	if got["discard"] != "old" {
+	switch {
+	case imports && got["discard"] != "new":
+		bad = append(bad, "discard is not new")
+	case !imports && got["discard"] != "old":
 		bad = append(bad, "discard is not old")
+	}
+	if flag("discard_new_per_subject") {
+		bad = append(bad, "discard_new_per_subject is on")
 	}
 	if name == PresenceStream && num("max_msgs_per_subject") != 1 {
 		bad = append(bad, "max_msgs_per_subject is not 1")
 	}
-	if name == StatsStream || archive { // RT-6.43, RT-6.45: pinned as created
-		perSubject := StatsMaxMsgsPerSubject
-		if archive {
-			perSubject = ArchiveMaxMsgsPerSubject
+	if name == StatsStream || archive || imports { // RT-6.43, RT-6.45: pinned as created
+		perSubject, size := StatsMaxMsgsPerSubject, statsMaxMsgSize
+		if archive || imports {
+			perSubject, size = HistoryMaxMsgsPerSubject, historyMaxMsgSize
 		}
 		if n := num("max_msgs_per_subject"); n <= 0 || n > float64(perSubject) {
 			bad = append(bad, fmt.Sprintf("max_msgs_per_subject is not within 1 and %d", perSubject))
 		}
-		if num("max_msg_size") != statsMaxMsgSize {
-			bad = append(bad, fmt.Sprintf("max_msg_size is not %d", statsMaxMsgSize))
+		if num("max_msg_size") != float64(size) {
+			bad = append(bad, fmt.Sprintf("max_msg_size is not %d", size))
 		}
 		if got["storage"] != "file" {
 			bad = append(bad, "storage is not file")

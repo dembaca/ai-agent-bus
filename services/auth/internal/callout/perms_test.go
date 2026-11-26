@@ -205,7 +205,7 @@ func TestNoPrefixIsTheInbox(t *testing.T) {
 }
 
 // RT-6.45: no agent may publish (or subscribe) on the STATS history's
-// subjects, whatever channels its credential carries: only the login
+// subjects, the archive's or the import stream's, whatever channels its credential carries: only the login
 // service's JetStream user writes the archive.
 func TestNoAgentMayPublishTheStatsArchive(t *testing.T) {
 	s := Config{Account: "BUS"}.WithDefaults().Subjects
@@ -214,7 +214,7 @@ func TestNoAgentMayPublishTheStatsArchive(t *testing.T) {
 	}
 	for _, chans := range [][]string{nil, {"home"}, {"home", "ga", "gb"}} {
 		p := s.permissions("agent-x", "alice", "home", chans)
-		for _, subject := range []string{"stats-archive.agent-x", "stats-archive.agent-y", "stats-archive.x.y"} {
+		for _, subject := range []string{"stats-archive.agent-x", "stats-archive.agent-y", "stats-archive.x.y", "stats-import.agent-x", "stats-import.x"} {
 			for _, f := range p.Pub.Allow {
 				if match(f, subject) {
 					t.Errorf("channels %v: publish %s allows %s", chans, f, subject)
@@ -245,10 +245,12 @@ func TestTheStatsArchivePrefixIsChecked(t *testing.T) {
 		"presence prefix": func(c *Config) { c.Subjects.Archive = c.Subjects.Presence },
 		"stats prefix":    func(c *Config) { c.Subjects.Archive = c.Subjects.Stats },
 		"inbox":           func(c *Config) { c.Subjects.Archive = "_INBOX" },
+		"import":          func(c *Config) { c.Subjects.Archive = "stats-import" },
+		"stats on import": func(c *Config) { c.Subjects.Stats = "stats-import" },
 	} {
 		c := ok
 		edit(&c)
-		if err := c.check(); err == nil || !strings.Contains(err.Error(), "archive prefix") && !strings.Contains(err.Error(), "inbox prefix") {
+		if err := c.check(); err == nil || !strings.Contains(err.Error(), "archive prefix") && !strings.Contains(err.Error(), "inbox prefix") && !strings.Contains(err.Error(), "import's prefix") {
 			t.Errorf("%s: %v", name, err)
 		}
 	}

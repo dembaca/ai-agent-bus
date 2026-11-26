@@ -45,7 +45,7 @@ commands:
   members add <channel> <sub>...      add members
   members rm <channel> <sub>...       remove members
   import                              copy the Mattermost channels once
-  stats-import                        copy the stats channel's STATS lines into the STATS history (repeatable)
+  stats-import                        copy the stats channel's STATS lines into the STATS history's import stream (repeatable)
   pending                             list the pending name claims
   confirm <name>                      confirm a pending name claim
   drop <name>                         delete a pending name claim
@@ -941,6 +941,8 @@ func (c *cli) printStatsImport(r reply) error {
 		SkippedInvalid   int    `json:"skipped_invalid"`
 		SkippedTooBig    int    `json:"skipped_too_big"`
 		SkippedName      int    `json:"skipped_name"`
+		SkippedRecent    int    `json:"skipped_recent"`
+		SkippedOverCap   int    `json:"skipped_over_cap"`
 		Oldest           string `json:"oldest"`
 		Newest           string `json:"newest"`
 	}
@@ -948,8 +950,8 @@ func (c *cli) printStatsImport(r reply) error {
 		return errors.New("the API's answer is not a stats import report")
 	}
 	fmt.Fprintf(c.out, "posts read %d, lines imported %d, posts without a STATS line %d\n", rep.Read, rep.Imported, rep.NotStats)
-	fmt.Fprintf(c.out, "skipped: already in the archive %d, not a valid line %d, too big %d, no agent name %d\n",
-		rep.SkippedDuplicate, rep.SkippedInvalid, rep.SkippedTooBig, rep.SkippedName)
+	fmt.Fprintf(c.out, "skipped: already there %d, not a valid line %d, too big %d, no agent name %d, too recent %d, over the cap per name %d\n",
+		rep.SkippedDuplicate, rep.SkippedInvalid, rep.SkippedTooBig, rep.SkippedName, rep.SkippedRecent, rep.SkippedOverCap)
 	if rep.Oldest != "" {
 		fmt.Fprintf(c.out, "imported lines from %s to %s\n", clean(rep.Oldest), clean(rep.Newest))
 	}
