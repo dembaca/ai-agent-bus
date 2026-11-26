@@ -8,6 +8,7 @@ import base64
 import json
 import logging
 import os
+import re
 import shutil
 import socket
 import ssl
@@ -74,6 +75,10 @@ def test_agent_name_vector() -> None:
     assert agent_name("alice", VECTOR_NKEY, prefix="x-") == "x-" + VECTOR_NAME
     assert len(VECTOR_NAME) == 26
     assert agent_name("Alice", VECTOR_NKEY) != VECTOR_NAME  # the owner is not normalised, as in Go
+    # A session part (#163, RT-6.36): two sessions of one owner on one shared key are two
+    # names; the login service's vector is the same.
+    assert agent_name("alice", VECTOR_NKEY, prefix="", session="abcdefghijklmnopqrstuvwxyz") \
+        == "eadecaajdhhzsahypvqfemgypy"
 
 
 # --- unit: message format v1 ----------------------------------------------------------------
@@ -2034,6 +2039,12 @@ def test_the_bus_reads_the_card_at_each_presence() -> None:
     assert decode_presence(body) == "online" and decode_presence_card(body) == PresenceCard()
 
 
+def test_the_hello_carries_the_session_part_only_when_the_key_is_shared() -> None:
+    """#163, RT-6.36: the part is a hello field; absent means today's name."""
+    with_session = json.loads(build_hello("tok", "home", (), False, {}, session="abcdefghijklmnopqrstuvwxyz"))
+    assert with_session["session"] == "abcdefghijklmnopqrstuvwxyz"
+    without = json.loads(build_hello("tok", "home", (), False, {}))
+    assert "session" not in without
 # --- the login service's theft notice (RT-6.34) ---------------------------------
 
 def encode_notice(**over: Any) -> bytes:
@@ -2167,3 +2178,87 @@ def test_the_told_marks_are_capped(tmp_path: Path, monkeypatch: pytest.MonkeyPat
     assert len(marks) == nats_port.NOTICE_KEY_MAX
     assert "session:s0" not in marks  # the oldest evicted
     assert f"session:s{nats_port.NOTICE_KEY_MAX + 9}" in marks
+
+
+def test_a_session_part_is_validated_by_the_bus() -> None:
+    """#163, RT-6.36: a part that is not 26 lower-case base32 characters is refused at start."""
+    with pytest.raises(ValueError):
+        NatsBus(_settings(), FakeLogin(), "alice", lambda _e: None, session="TOO-SHORT")
+    NatsBus(_settings(), FakeLogin(), "alice", lambda _e: None, session="abcdefghijklmnopqrstuvwxyz")
+
+
+def test_the_session_nonce_is_made_once_and_kept(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+    """#163: a resumed session and a restarted server keep the name."""
+    from mattermost_ai_agent_bus import session_file
+
+    monkeypatch.setenv("XDG_STATE_HOME", str(tmp_path))
+    first = session_file.nonce()
+    assert re.fullmatch(r"[a-z2-7]{26}", first)
+    assert session_file.nonce() == first
+    path = session_file.keyed_path("nonce")
+    path.write_text("broken\n", encoding="utf-8")
+    second = session_file.nonce()
+    assert second != "broken" and re.fullmatch(r"[a-z2-7]{26}", second)
+
+
+def test_the_key_is_shared_only_under_host(monkeypatch: pytest.MonkeyPatch) -> None:
+    """#163: only a shared host key needs the session part; the MCP component's
+    CB_ name with the old one as the fallback (RT-6.44)."""
+    from mattermost_ai_agent_bus import login
+    from mattermost_ai_agent_bus.config import EnvConflict
+
+    monkeypatch.delenv("CB_LOGIN_NKEY", raising=False)
+    monkeypatch.delenv("MM_LOGIN_NKEY", raising=False)
+    assert not login.shared_key()
+    monkeypatch.setenv("MM_LOGIN_NKEY", "host")  # the old name, still read
+    assert login.shared_key()
+    monkeypatch.setenv("CB_LOGIN_NKEY", "host")  # the same value under both: fine
+    assert login.shared_key()
+    monkeypatch.setenv("CB_LOGIN_NKEY", "ephemeral")  # different: the start is refused
+    with pytest.raises(EnvConflict):
+        login.shared_key()
+    monkeypatch.delenv("MM_LOGIN_NKEY")
+    assert not login.shared_key()  # the new name alone
+
+
+def test_a_late_registered_server_adopts_its_earlier_part(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+    """#163, RT-6.36: a server that registered after its first start takes the part
+    its earlier start kept, so its name does not change once more."""
+    from mattermost_ai_agent_bus import session_file
+
+    monkeypatch.setenv("XDG_STATE_HOME", str(tmp_path))
+    uid = "u" * 26
+    earlier = "abcdefghijklmnopqrstuvwxyz"
+    keyed = session_file.keyed_path("nonce")
+    keyed.parent.mkdir(parents=True, exist_ok=True)
+    keyed.write_text(f"CB_SESSION_NONCE={earlier}\n", encoding="utf-8")
+    monkeypatch.setattr(session_file, "read", lambda: {"CB_MM_BOT_USER_ID": uid})
+    assert session_file.nonce() == earlier
+    per_bot = session_file.state_dir() / f"nonce-{uid}.env"
+    assert per_bot.read_text(encoding="utf-8").strip() == f"CB_SESSION_NONCE={earlier}"
+    assert not keyed.exists()  # claimed: the next bot finds nothing
+    # A second bot of the same checkout gets its own part, not the first's.
+    other = "v" * 26
+    monkeypatch.setattr(session_file, "read", lambda: {"CB_MM_BOT_USER_ID": other})
+    second = session_file.nonce()
+    assert second != earlier and re.fullmatch(r"[a-z2-7]{26}", second)
+
+
+def test_a_racing_bot_never_adopts_the_same_part(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+    """#163, RT-6.36: rename first, then read — a bot whose rename finds the keyed
+    file gone makes its own part instead of copying the winner's."""
+    from mattermost_ai_agent_bus import session_file
+
+    monkeypatch.setenv("XDG_STATE_HOME", str(tmp_path))
+    uid = "w" * 26
+    keyed = session_file.keyed_path("nonce")
+    keyed.parent.mkdir(parents=True, exist_ok=True)
+    keyed.write_text("CB_SESSION_NONCE=abcdefghijklmnopqrstuvwxyz\n", encoding="utf-8")
+    monkeypatch.setattr(session_file, "read", lambda: {"CB_MM_BOT_USER_ID": uid})
+
+    def lost(_a: str, _b: str) -> None:
+        raise FileNotFoundError("another bot claimed it")
+
+    monkeypatch.setattr(session_file.os, "replace", lost)
+    value = session_file.nonce()
+    assert value != "abcdefghijklmnopqrstuvwxyz" and re.fullmatch(r"[a-z2-7]{26}", value)

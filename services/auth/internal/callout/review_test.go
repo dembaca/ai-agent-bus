@@ -354,8 +354,8 @@ func TestCheckToken(t *testing.T) {
 }
 
 func TestNamesAre128Bits(t *testing.T) {
-	n := name("alice", "UABC")
-	if len(n) != 26 || checkToken(n) != nil || n == name("bob", "UABC") || n != name("alice", "UABC") {
+	n := name("alice", "UABC", "")
+	if len(n) != 26 || checkToken(n) != nil || n == name("bob", "UABC", "") || n != name("alice", "UABC", "") {
 		t.Fatalf("name %q", n)
 	}
 }

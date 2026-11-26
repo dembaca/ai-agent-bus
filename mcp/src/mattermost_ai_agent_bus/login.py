@@ -84,6 +84,12 @@ MAX_CAUSE_CHARS = 120  # the error text a cooldown reports, on one line
 COOLDOWN_WHY = ("was declined", "expired", "was refused", "lacked the realm role", "failed")
 LOCK_POLL_SEC = 0.2
 NKEY_ENV = "CB_LOGIN_NKEY"
+
+
+def shared_key() -> bool:
+    """True when every session of this host uses one NATS key (`CB_LOGIN_NKEY=host`,
+    decision 10): the agent's name then carries the session's own part (#163)."""
+    return env(NKEY_ENV, "ephemeral").strip().lower() == "host"
 NKEY_STORES = ("ephemeral", "host")
 
 

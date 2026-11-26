@@ -70,7 +70,7 @@ func (c *cl) login(owner string, host nkeys.KeyPair, hello Hello) (*agent, error
 	pub, _ := host.PublicKey()
 	hello.Token = c.realm.Token(owner, nil)
 	raw, _ := json.Marshal(hello)
-	a := &agent{name: DefaultNamePrefix + name(owner, pub), owner: owner, errs: make(chan error, 16)}
+	a := &agent{name: DefaultNamePrefix + name(owner, pub, ""), owner: owner, errs: make(chan error, 16)}
 	nc, err := nats.Connect(c.url, nats.Nkey(pub, host.Sign), nats.Token(string(raw)),
 		nats.ErrorHandler(func(_ *nats.Conn, _ *nats.Subscription, err error) { a.errs <- err }), nats.MaxReconnects(0))
 	if err != nil {
