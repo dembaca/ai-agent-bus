@@ -97,16 +97,18 @@
 .gnode--person { width: 150px; border-color: var(--accent); }
 .gnode--person .gnode__label { color: var(--accent); }
 
-/* The operator's own node (#148): the accent fill reads in both schemes, since
-   the badge's text is the page's background (--bg) on the accent. */
+/* The operator's own node (#148): the badge's text is #111 on the accent, as the
+   harness logos use it — about 6.8:1 in the light and the dark scheme (the page
+   background would be 2.57:1 in light). */
 .gnode--you { border-width: 2px; box-shadow: 0 0 0 1px var(--accent); }
 .gnode__you {
   position: absolute;
   top: -9px;
   right: 8px;
   padding: 1px 6px;
+  border: 1px solid transparent;  /* the pill's shape in forced colors */
   background: var(--accent);
-  color: var(--bg);
+  color: #111;
   border-radius: 999px;
   font-size: 10px;
   font-weight: 700;
@@ -143,4 +145,8 @@
   .gnode { transition: none; }
   .graph__canvas .react-flow__edge.animated .react-flow__edge-path { animation: none; stroke-dasharray: none; }
   .graph__canvas .react-flow__viewport { transition: none; }
+}
+
+@media (forced-colors: active) {
+  .gnode__you { border-color: CanvasText; }
 }

@@ -74,8 +74,16 @@ export function toFlow(input: GraphInput): { nodes: Node[]; edges: Edge[] } {
   const live = input.fleetSeen === true || cards.length > 0
   const nodes = new Map<string, Node>()
   const edges = new Map<string, Edge>()
+  // Every person node gets React Flow's own label, so tabbing to it says the
+  // name (and whether it is the operator's): an aria-label on the inner div
+  // without a role is ignored.
   const add = (id: string, data: FlowData) => {
-    if (!nodes.has(id)) nodes.set(id, { id, type: data.kind, position: { x: 0, y: 0 }, data, connectable: false })
+    if (!nodes.has(id)) nodes.set(id, {
+      id, type: data.kind, position: { x: 0, y: 0 }, data, connectable: false,
+      ...(data.kind === "person"
+        ? { ariaLabel: data.you ? `${data.label}: you, the logged-in operator` : data.label }
+        : {}),
+    })
   }
   const link = (kind: FlowEdgeKind, from: string, to: string, extra: Partial<Edge> = {}) => {
     if (from === to || !nodes.has(from) || !nodes.has(to)) return
@@ -97,7 +105,8 @@ export function toFlow(input: GraphInput): { nodes: Node[]; edges: Edge[] } {
   for (const n of graph?.nodes ?? []) {
     if (n.kind === "person") {
       raw.set(n.id, personId(n.id))
-      add(personId(n.id), { kind: "person", label: n.label, ...(n.you ? { you: true } : {}) })
+      // `=== true`: `/v1/graph` is not decoded, so "false" or 1 must not mark anyone
+      add(personId(n.id), { kind: "person", label: n.label, ...(n.you === true ? { you: true } : {}) })
     } else if (n.kind === "channel") {
       raw.set(n.id, channelId(n.id))
     } else {

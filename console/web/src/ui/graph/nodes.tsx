@@ -29,8 +29,7 @@ function PersonNode(props: NodeProps) {
   const d = dataOf(props)
   return (
     <div className={`gnode gnode--person${d.you ? " gnode--you" : ""}`}
-         title={d.you ? `${d.label} (you)` : d.label}
-         aria-label={d.you ? `${d.label}: you, the logged-in operator` : undefined}>
+         title={d.you ? `${d.label} (you)` : d.label}>
       <Ends />
       <span className="gnode__label">{d.label}</span>
       {d.you && <span className="gnode__you">you</span>}

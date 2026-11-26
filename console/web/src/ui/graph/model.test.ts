@@ -342,6 +342,62 @@ describe("toFlow: the operator's own node (#148)", () => {
       ["person:dembaca", true], ["person:sub-alice", false]])
   })
 
+  it("labels every person node for React Flow, the operator's with the mark", () => {
+    const g: GraphData = {
+      ...graph,
+      nodes: [...graph.nodes.filter((n) => n.kind !== "person"),
+        { id: "person:dembaca", kind: "person", label: "dembaca", you: true },
+        { id: "person:sub-alice", kind: "person", label: "alice" }],
+    }
+    const { nodes } = toFlow({ ...base(), graph: g, cards: [card(A)], asks: [] })
+    const label = (id: string) => nodes.find((n) => n.id === id)?.ariaLabel
+    expect(label("person:dembaca")).toBe("dembaca: you, the logged-in operator")
+    expect(label("person:sub-alice")).toBe("alice")
+    expect(nodes.find((n) => n.id === `agent:${A}`)?.ariaLabel).toBeUndefined()
+  })
+
+  it("takes only a literal true, and only on a person node", () => {
+    // `/v1/graph` is not decoded: anything but `true` marks nobody
+    const g = {
+      ...graph,
+      nodes: [...graph.nodes.filter((n) => n.kind !== "person"),
+        { id: "person:dembaca", kind: "person", label: "dembaca", you: "true" },
+        { id: "person:sub-bob", kind: "person", label: "bob", you: 1 },
+        { id: A, kind: "agent", label: "aaaaaa", you: true }],
+    } as unknown as GraphData
+    const { nodes } = toFlow({ ...base(), graph: g, cards: [card(A)], asks: [] })
+    expect(nodes.some((n) => (n.data as FlowData).you === true)).toBe(false)
+  })
+
+  it("marks every node the endpoint marks: uniqueness is the server's job", () => {
+    const g: GraphData = {
+      ...graph,
+      nodes: [...graph.nodes.filter((n) => n.kind !== "person"),
+        { id: "person:dembaca", kind: "person", label: "dembaca", you: true },
+        { id: "person:sub-alice", kind: "person", label: "alice", you: true }],
+    }
+    const { nodes } = toFlow({ ...base(), graph: g, cards: [card(A)], asks: [] })
+    expect(nodes.filter((n) => (n.data as FlowData).you === true).map((n) => n.id))
+      .toEqual(["person:dembaca", "person:sub-alice"].sort())
+  })
+
+  it("moves and drops the mark without relaying out", () => {
+    const withYou = (anchor?: string): GraphData => ({
+      ...graph,
+      nodes: [...graph.nodes.filter((n) => n.kind !== "person"),
+        ...(anchor ? [{ id: `person:${anchor}`, kind: "person" as const, label: anchor, you: true }] : []),
+        { id: "person:sub-alice", kind: "person", label: "alice" }],
+    })
+    const prev = laidOut({ ...base(), graph: withYou("dembaca") })
+    const moved = step(prev, { ...base(), graph: withYou("sub-alice") })
+    expectPositionsKept(prev.nodes, moved.nodes)
+    const marked = moved.nodes.filter((n) => (n.data as FlowData).you === true)
+    expect(marked.map((n) => n.id)).toEqual(["person:sub-alice"])
+    const gone = step({ nodes: moved.nodes, edges: moved.edges }, { ...base(), graph: withYou() })
+    expect(gone.nodes.some((n) => (n.data as FlowData).you === true)).toBe(false)
+    expectPositionsKept(moved.nodes, gone.nodes)
+  })
+
   it("marks no person from an ask: a human's name is no anchor", () => {
     const g: GraphData = { ...graph, nodes: graph.nodes.filter((n) => n.kind !== "person") }
     const { nodes } = toFlow({ ...base(), graph: g, asks: [ask(ASK_ID, A)] })
