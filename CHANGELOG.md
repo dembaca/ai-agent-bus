@@ -130,6 +130,17 @@ before 0.5.0 are described in the git history.
   never from anything the browser sends. No new right: all of it comes
   from presence, crown claims, memberships and the login's own record.
 
+- **A copied login reaches the owner as a direct message** (#154 step 3). The
+  login service publishes every network move and every copy of a session or
+  host key for the owner on `<presence>.notice.<owner anchor>.v1`, a subject
+  only it may publish; each agent's presence consumer is filtered to its own
+  owner's notices, so no other owner reads them. A copied one becomes one DM
+  from the owner's live server — the agent the record names if it is live, else
+  the owner's live agent with the smallest name, decided from presence alone —
+  saying what only the owner can do: end the session in Keycloak, or rotate the
+  copied host key. A move is published as a report and is not DM'd. Without a
+  live server the notice waits in the stream's history, within its 24 hours.
+
 - **The login service refuses a session that alternates between networks**
   (#154 step 3, decision 10). After the host signature and the token are
   checked, the auth callout watches where each token's Keycloak session (`sid`)

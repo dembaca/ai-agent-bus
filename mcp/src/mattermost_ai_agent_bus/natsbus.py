@@ -79,6 +79,7 @@ OWNER_RE = re.compile(r"[a-z0-9][a-z0-9._-]{0,63}")
 NO_OWNER = "-"  # the owner token of an owner not in OWNER_RE's form
 USERNAME_RE = re.compile(r"[a-z][a-z0-9._-]{0,63}")  # a human's name as the login service reads it
 NOTICE_KINDS = ("session", "host_key")  # RT-6.34: what the login service watched
+NOTICE_VERDICTS = ("moved", "copied")  # a report, or a copy (the DM)
 NOTICE_ID_RE = re.compile(r"[A-Za-z0-9._:-]{1,200}")  # a Keycloak session id or a host key
 NETWORK_RE = re.compile(r"[A-Za-z0-9._:/-]{1,64}")  # a prefix (203.0.113.0/24), never a host address
 NOTICE_SEEN_MAX = 64  # notices told or dropped, remembered against a replay
@@ -475,6 +476,9 @@ def decode_notice(data: bytes) -> Notice:
     kind = obj.get("kind")
     if kind not in NOTICE_KINDS:
         raise MessageError("kind is not session or host_key")
+    verdict = obj.get("verdict")
+    if verdict not in NOTICE_VERDICTS:
+        raise MessageError("verdict is not moved or copied")
     sid = obj.get("sid")
     if not isinstance(sid, str) or not NOTICE_ID_RE.fullmatch(sid):
         raise MessageError("sid is not a session id or host key")
@@ -487,7 +491,8 @@ def decode_notice(data: bytes) -> Notice:
     iat, exp = _int(obj, "iat"), _int(obj, "exp")
     if exp <= iat:
         raise MessageError("exp is not after iat")
-    return Notice(kind=kind, sid=sid, network=network, agent=agent, iat=float(iat), exp=float(exp))
+    return Notice(kind=kind, verdict=verdict, sid=sid, network=network, agent=agent,
+                  iat=float(iat), exp=float(exp))
 
 
 def normalise_trusted(names: Iterable[str]) -> tuple[tuple[str, ...], bool]:
@@ -1097,6 +1102,7 @@ class Notice:
     login service may publish there (RT-6.41) - so nothing in the body decides."""
 
     kind: str
+    verdict: str
     sid: str
     network: str
     agent: str

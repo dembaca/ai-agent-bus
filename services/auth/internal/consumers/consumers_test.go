@@ -262,7 +262,7 @@ func match(filter, subject string) bool {
 // another agent's in a channel it shares: the console reads them, agents do not.
 func TestNoAgentConsumerDeliversAnAskRecord(t *testing.T) {
 	m := &Manager{cfg: Config{Bus: "bus", Presence: "presence", Stats: "stats"}}
-	for _, w := range m.desired("agent-a", []string{"home", "ga"}) {
+	for _, w := range m.desired("agent-a", "alice", []string{"home", "ga"}) {
 		for _, f := range w.filters {
 			for _, s := range []string{"presence.ask.home.agent-b", "presence.ask.ga.agent-a", "stats.agent-b"} {
 				if match(f, s) {
@@ -313,4 +313,47 @@ func TestMissingStatsRightsAreNamed(t *testing.T) {
 		t.Fatalf("EnsureStreams: %v", err)
 	}
 	t.Log(err)
+}
+
+// RT-6.34: an agent's presence consumer delivers its own owner's notice and no
+// other owner's.
+func TestThePresenceConsumerDeliversItsOwnersNotice(t *testing.T) {
+	m := &Manager{cfg: Config{Bus: "bus", Presence: "presence", Stats: "stats"}}
+	var filters []string
+	for _, w := range m.desired("agent-a", "alice", []string{"home"}) {
+		if w.presence {
+			filters = w.filters
+		}
+	}
+	if len(filters) == 0 {
+		t.Fatal("no presence consumer")
+	}
+	ok := false
+	for _, f := range filters {
+		if match(f, "presence.notice.alice.v1") {
+			ok = true
+		}
+		if match(f, "presence.notice.bob.v1") {
+			t.Errorf("filter %s delivers another owner's notice", f)
+		}
+	}
+	if !ok {
+		t.Fatalf("nothing delivers the owner's notice: %v", filters)
+	}
+	// The subject token form: a dotted anchor is written with "~".
+	filters = nil
+	for _, w := range m.desired("agent-a", "alice.example", []string{"home"}) {
+		if w.presence {
+			filters = w.filters
+		}
+	}
+	ok = false
+	for _, f := range filters {
+		if match(f, "presence.notice.alice~example.v1") {
+			ok = true
+		}
+	}
+	if !ok {
+		t.Fatalf("nothing delivers a dotted owner's notice: %v", filters)
+	}
 }

@@ -217,7 +217,8 @@ func TestTheExampleServerConfiguration(t *testing.T) {
 				"$JS.API.DIRECT.GET."+kv+".>", "$KV."+directory.DefaultBucket+".>",
 				// the directory's key listings: an ordered consumer, made and removed
 				"$JS.API.CONSUMER.CREATE."+kv+".>", "$JS.API.CONSUMER.DELETE."+kv+".*",
-				"$JS.API.STREAM.MSG.GET.PRESENCE", "presence.attest.*.v1", "presence.account.mattermost.*.v1")
+				"$JS.API.STREAM.MSG.GET.PRESENCE", "presence.attest.*.v1", "presence.notice.*.v1",
+				"presence.account.mattermost.*.v1")
 			p := u.Permissions
 			if p == nil || p.Publish == nil || p.Subscribe == nil {
 				t.Fatalf("the JetStream user has no permissions: %+v", p)

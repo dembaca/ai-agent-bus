@@ -470,6 +470,10 @@ class NatsPort:
         from . import login_notice, stats
         from .owners import responsible_human
 
+        if notice.verdict != "copied":
+            # A move is a report (the console and the log); only a copy is a DM.
+            log.info("login notice: a move on %s (%s), reported only", notice.kind, notice.network)
+            return
         bus = self._bus
         if bus is None:
             return

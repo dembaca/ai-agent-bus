@@ -2037,7 +2037,8 @@ def test_the_bus_reads_the_card_at_each_presence() -> None:
 # --- the login service's theft notice (RT-6.34) ---------------------------------
 
 def encode_notice(**over: Any) -> bytes:
-    rec: dict[str, Any] = {"v": 1, "kind": "session", "sid": "a1b2c3d4-0000-4000-8000-000000000000",
+    rec: dict[str, Any] = {"v": 1, "kind": "session", "verdict": "copied",
+                           "sid": "a1b2c3d4-0000-4000-8000-000000000000",
                            "network": "203.0.113.0/24", "agent": "agent-b",
                            "iat": int(T0), "exp": int(T0 + 3600)}
     rec.update(over)
@@ -2048,9 +2049,10 @@ def test_a_notice_decodes_strictly() -> None:
     n = decode_notice(encode_notice())
     assert n.kind == "session" and n.network == "203.0.113.0/24" and n.agent == "agent-b"
     assert decode_notice(encode_notice(agent="")).agent == ""
-    for bad in (encode_notice(v=2), encode_notice(kind="other"), encode_notice(sid=""),
-                encode_notice(sid="a b"), encode_notice(network="not a network"),
-                encode_notice(agent="not an agent"), encode_notice(exp=int(T0))):
+    for bad in (encode_notice(v=2), encode_notice(kind="other"), encode_notice(verdict="other"),
+                encode_notice(sid=""), encode_notice(sid="a b"),
+                encode_notice(network="not a network"), encode_notice(agent="not an agent"),
+                encode_notice(exp=int(T0))):
         with pytest.raises(MessageError):
             decode_notice(bad)
 

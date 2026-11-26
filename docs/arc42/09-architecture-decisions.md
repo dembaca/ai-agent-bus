@@ -3853,18 +3853,22 @@ credentials and their renewal (point 7) that rest on it.
   directory's admin API acts there with the owner's rights, since it takes
   the same access tokens (RT-6.40).
 - **Protection against stolen tokens**, instead of realm-wide rotation:
-  1. Detection in the login service. If one Keycloak session or one host
-     key shows up at an issue from two networks at the same time, the
-     service refuses further issues for that session or host key and tells
-     the owning human on the bus: a notice on `<presence>.notice.<anchor>.v1`,
-     a subject only the login service may publish, which the owner's live
-     MCP servers pass on as a DM (not built yet: #161 and its follow-up). It holds no Keycloak admin right: the
-     owner decided on 2026-11-26 that a stolen service account token weighs
-     far more than one person's session. So the stolen refresh token stays
-     valid at Keycloak until it runs out or the owner logs out. Network
-     changes one after another refuse nothing, but are reported. It misses a thief on the same network or
-     the same host, and any use one after another: a copy used only while
-     the real session is not issuing, or after it ends.
+  1. Detection in the login service (built). A Keycloak session or host key
+     that returns twice to an earlier network within 30 minutes is a copy:
+     the session is refused for 30 minutes (a retry included), the host key
+     is reported only. Each move and copy goes to the owning human on the
+     bus as a notice on `<presence>.notice.<anchor>.v1`, a subject only the
+     login service may publish, filtered into each of the owner's agents'
+     presence consumers; the owner's live MCP servers pass a copied notice
+     on as one DM (the named agent's server if it is live, else the owner's
+     live agent with the smallest name, from presence alone). It holds no
+     Keycloak admin right: the owner decided on 2026-11-26 that a stolen
+     service account token weighs far more than one person's session. So
+     the stolen refresh token stays valid at Keycloak until it runs out or
+     the owner logs out. Network changes one after another refuse nothing,
+     but are reported. It misses a thief on the same prefix or behind one
+     NAT/proxy, a rotation among three networks, a use one after another, and
+     it can be abused to keep the owner out by alternating.
   2. A maximum lifetime for the offline token of the client `agent-bus`.
      It works only with "Offline Session Max Limited" in the realm, so its
      effect on other clients is checked in the lab first. Until then the

@@ -23,6 +23,7 @@ import (
 	"github.com/nats-io/nkeys"
 
 	"github.com/dembaca/ai-agent-bus/services/auth/internal/directory"
+	"github.com/dembaca/ai-agent-bus/services/auth/internal/theft"
 	"github.com/dembaca/ai-agent-bus/services/auth/internal/token"
 )
 
@@ -108,7 +109,7 @@ type Hello struct {
 // look whole. It also removes the consumers of channels no longer in the
 // credential.
 type Consumers interface {
-	Reconcile(ctx context.Context, agent, owner string, channels []string, since map[string]uint64) error
+	Reconcile(ctx context.Context, agent, owner, anchor string, channels []string, since map[string]uint64) error
 }
 
 // Reasons a connection is refused, besides those of the token check. The
@@ -140,6 +141,7 @@ type Service struct {
 	trust      Trust       // nil: a trusted name is its own anchor
 	trustIndex TrustIndex  // nil: no trust index is written (RT-6.43 step 3)
 	watcher    Watcher     // nil: no theft detection (#154 step 3)
+	noticer    Noticer     // nil: no owner's notice is published (#154 step 3)
 	persons    personHooks // the console's path (person.go); unset: none issued
 }
 
@@ -338,11 +340,6 @@ func (s *Service) authorize(ctx context.Context, req *jwt.AuthorizationRequestCl
 	if err != nil {
 		return "", who, err
 	}
-	// A session alternating between networks is a copy: refused (#154 step 3);
-	// a host key doing so is only reported.
-	if err := s.watchTheft(host, id.SID, req.ClientInformation.Host); err != nil {
-		return "", append(who, "owner", id.Owner, "sub", id.Subject, "session", id.SID), err
-	}
 	// The brake holds names (the owner's username), before anything is written.
 	if err := s.brake.Check(id.Owner); err != nil {
 		return "", append(who, "owner", id.Owner, "sub", id.Subject), err
@@ -364,6 +361,14 @@ func (s *Service) authorize(ctx context.Context, req *jwt.AuthorizationRequestCl
 	who = append(who, "owner", id.Owner, "sub", id.Subject, "jti", id.ID, "agent", agent)
 	if anchor != id.Owner {
 		who = append(who, "anchor", anchor)
+	}
+	// The theft check needs the anchor (the notice's subject) and the agent
+	// (its name): a copied session is refused, a copied host key reported, both
+	// noticed for the owner (#154 step 3).
+	w := s.watchTheft(host, id.SID, req.ClientInformation.Host)
+	s.publishNotices(ctx, w, anchor, agent, host, id.SID, now)
+	if w.session == theft.Copied {
+		return "", append(who, "session", id.SID), ErrCopiedUse
 	}
 	channels, err := s.grant(ctx, id.Owner, id.Subject, hello)
 	if err != nil {
@@ -394,7 +399,7 @@ func (s *Service) authorize(ctx context.Context, req *jwt.AuthorizationRequestCl
 		return "", who, err
 	}
 	if c := s.consumerHook(); c != nil {
-		if err := c.Reconcile(ctx, agent, id.Owner, channels, hello.Since); err != nil {
+		if err := c.Reconcile(ctx, agent, id.Owner, anchor, channels, hello.Since); err != nil {
 			return "", who, fmt.Errorf("consumers could not be made: %w", err)
 		}
 	}
