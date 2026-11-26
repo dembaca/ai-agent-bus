@@ -78,6 +78,11 @@ PREFIX_RE = re.compile(r"^[A-Za-z0-9_-]+$")
 OWNER_RE = re.compile(r"[a-z0-9][a-z0-9._-]{0,63}")
 NO_OWNER = "-"  # the owner token of an owner not in OWNER_RE's form
 USERNAME_RE = re.compile(r"[a-z][a-z0-9._-]{0,63}")  # a human's name as the login service reads it
+NOTICE_KINDS = ("session", "host_key")  # RT-6.34: what the login service watched
+NOTICE_VERDICTS = ("moved", "copied")  # a report, or a copy (the DM)
+NOTICE_ID_RE = re.compile(r"[A-Za-z0-9._:-]{1,200}")  # a Keycloak session id or a host key
+NETWORK_RE = re.compile(r"[A-Za-z0-9._:/-]{1,64}")  # a prefix (203.0.113.0/24), never a host address
+NOTICE_SEEN_MAX = 64  # notices told or dropped, remembered against a replay
 MAX_TRUSTED = 32  # the hello's `trusted` and an attestation's trusted list: at most this many
 
 
@@ -461,6 +466,33 @@ def decode_attestation(data: bytes, agent: str) -> Attestation:
     return Attestation(owner_anchor=owner[0], owner_name=owner[1],
                        trusted=tuple(_person(t, "a trusted entry") for t in trusted),
                        cut=cut, exp=float(_int(obj, "exp")))
+
+
+def decode_notice(data: bytes) -> Notice:
+    """Strict: anything that is not a well-formed v1 notice raises MessageError."""
+    obj = _obj(data)
+    if _int(obj, "v") != 1:
+        raise MessageError("v is not 1")
+    kind = obj.get("kind")
+    if kind not in NOTICE_KINDS:
+        raise MessageError("kind is not session or host_key")
+    verdict = obj.get("verdict")
+    if verdict not in NOTICE_VERDICTS:
+        raise MessageError("verdict is not moved or copied")
+    sid = obj.get("sid")
+    if not isinstance(sid, str) or not NOTICE_ID_RE.fullmatch(sid):
+        raise MessageError("sid is not a session id or host key")
+    network = obj.get("network")
+    if not isinstance(network, str) or not NETWORK_RE.fullmatch(network):
+        raise MessageError("network is not a network prefix")
+    agent = obj.get("agent", "")
+    if not isinstance(agent, str) or (agent and not AGENT_RE.fullmatch(agent)):
+        raise MessageError("agent is not an agent name")
+    iat, exp = _int(obj, "iat"), _int(obj, "exp")
+    if exp <= iat:
+        raise MessageError("exp is not after iat")
+    return Notice(kind=kind, verdict=verdict, sid=sid, network=network, agent=agent,
+                  iat=float(iat), exp=float(exp))
 
 
 def normalise_trusted(names: Iterable[str]) -> tuple[tuple[str, ...], bool]:
@@ -1061,8 +1093,26 @@ class LoginLike(Protocol):
     def nkey(self) -> NKey: ...
 
 
+@dataclass(frozen=True)
+class Notice:
+    """The login service's notice that one id was used from alternating networks
+    (`<presence>.notice.<owner anchor>.<verdict>.v1`, RT-6.34): what was watched (`session` or
+    `host_key`), its id, the network prefix and the agent's name ("" when the token
+    named none), with its lifetime in server time. The subject is the proof - only the
+    login service may publish there (RT-6.41) - so nothing in the body decides."""
+
+    kind: str
+    verdict: str
+    sid: str
+    network: str
+    agent: str
+    iat: float
+    exp: float
+
+
 EventCallback = Callable[[Event], Awaitable[None] | None]
 PersonCallback = Callable[[PersonEvent], Awaitable[None] | None]
+NoticeCallback = Callable[[Notice], Awaitable[None] | None]
 FatalCallback = Callable[[NatsBusError], Awaitable[None] | None]
 DM_SINCE = "@dm"  # the key of `since` for direct messages (no channel name can look like it)
 
@@ -1072,7 +1122,8 @@ class NatsBus:
                  *, heartbeat_sec: float = HEARTBEAT_SEC, gap_reconnect_sec: float = GAP_RECONNECT_SEC,
                  connect_timeout: float = 5.0, renew_sec: float = RENEW_SEC,
                  send_wait_sec: float = SEND_WAIT_SEC, member_renew_sec: float = MEMBER_RENEW_SEC,
-                 on_fatal: FatalCallback | None = None, on_person: PersonCallback | None = None) -> None:
+                 on_fatal: FatalCallback | None = None, on_person: PersonCallback | None = None,
+                 on_notice: NoticeCallback | None = None) -> None:
         for what, v in (("bus", settings.bus), ("presence", settings.presence), ("stats", settings.stats)):
             if not PREFIX_RE.fullmatch(v) or v == DELIVER:
                 raise ValueError(f"invalid {what} prefix")
@@ -1087,6 +1138,9 @@ class NatsBus:
         self._on_event = on_event
         self._on_fatal = on_fatal
         self._on_person = on_person
+        self._on_notice = on_notice
+        # Notices already told (replay, redelivery): (anchor, kind, sid, iat) -> monotonic.
+        self._notice_seen: dict[tuple[str, str, str, float], float] = {}
         self.on_person_gap: Callable[[str], None] | None = None  # a gap on a person's consumer (RT-6.42)
         self._heartbeat_sec = heartbeat_sec
         self._gap_sec = gap_reconnect_sec
@@ -1781,6 +1835,17 @@ class NatsBus:
             return "offline"
         return seen[1]
 
+    def notice_teller(self, agent: str) -> str:
+        """Which live agent of this owner tells a notice (RT-6.34): the named agent if it is
+        live, else the live agent with the smallest name, this one included. Every server
+        answers from presence alone, so one DM goes out, not one per server - and only the
+        owner's own agents count, never another owner's."""
+        owner = self._owners.get(self.name) or self._owner
+        live = {a for a in self._presence
+                if self.presence_of(a) != "offline" and self._owners.get(a, "") == owner}
+        live.add(self.name)
+        return agent if agent in live else min(live)
+
     def presence_snapshot(self) -> dict[str, tuple[float, str]]:
         """agent -> (server time, status) of the last presence message of each."""
         return dict(self._presence)
@@ -1979,6 +2044,29 @@ class NatsBus:
         except Exception as exc:
             log.warning("nats bus: person callback failed: %s", type(exc).__name__)
 
+    async def _on_notice_msg(self, anchor: str, verdict: str, msg: Any, ack: Any) -> None:
+        """A theft notice (RT-6.34): dropped once expired, told once per record."""
+        notice = decode_notice(msg.data)
+        if notice.verdict != verdict:
+            raise MessageError("the notice's verdict is not the subject's")
+        if notice.exp < ack.time:
+            log.info("nats bus: a login notice that expired (seq %d) is dropped", ack.stream_seq)
+            return
+        key = (owner_of_token(anchor), notice.kind, notice.sid, notice.iat)
+        if key in self._notice_seen:
+            return
+        self._notice_seen[key] = time.monotonic()
+        while len(self._notice_seen) > NOTICE_SEEN_MAX:
+            self._notice_seen.pop(next(iter(self._notice_seen)))
+        if self._on_notice is None:
+            return
+        try:
+            res = self._on_notice(notice)
+            if inspect.isawaitable(res):
+                await res
+        except Exception as exc:  # noqa: BLE001 — a failed DM is logged, the bus goes on
+            log.warning("nats bus: the notice callback failed: %s", type(exc).__name__)
+
     def _gap(self, where: str) -> None:
         """A gap on `where`: it is dropped (stale) until a reconnect restarts it from
         `since`. At most one reconnect per gap interval: within it, the reconnect is
@@ -2056,6 +2144,9 @@ class NatsBus:
                 seq0, at0 = members.get(t[3], (0, 0.0))
                 if (ack.time, ack.stream_seq) > (at0, seq0):
                     members[t[3]] = (ack.stream_seq, ack.time)
+            elif len(t) == 5 and t[0] == p and t[1] == "notice" and t[3] in NOTICE_VERDICTS \
+                    and t[4] == "v1" and owner_of_token(t[2]):
+                await self._on_notice_msg(t[2], t[3], msg, ack)
             elif len(t) == 5 and t[0] == p and t[1:3] == ["account", "mattermost"] and t[4] == "v1" \
                     and BOT_RE.fullmatch(t[3]):
                 # RT-6.42 step 3: the newest message counts; one that does not decode erases
