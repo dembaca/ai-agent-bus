@@ -4232,7 +4232,10 @@ The console is the operators' view of the bus itself.
      marked `you`, read from the login's own record and never from a
      value the browser sends (RT-6.43 step 2) — the record's anchor is in
      subject form, an attestation's in name form, and the token is what
-     both share.
+     both share. The app draws the mark from that field alone: an accent
+     badge on the node, in light and dark, labelled for screen readers as
+     the logged-in operator; a person that comes only from an ask carries
+     no mark, since an ask names a human but not an anchor (#147).
 
    State, crown and ask marks sit on the nodes as on the cards; a click
    opens the same detail.
