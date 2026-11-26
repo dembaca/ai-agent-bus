@@ -16,8 +16,11 @@ import (
 // RT-6.39: the channel directory (ADR-016) changes no agent's name and no presence
 // token before the import: every identity's anchor is its name of today, so a
 // login is byte for byte what it was without the directory. After the import
-// an identity known before keeps it; only a new one gets its `sub`. And no
-// agent reads or writes the bucket.
+// an identity known before keeps it; a new one takes its free username (#86),
+// so the name the host computes from `preferred_username` (natsbus.agent_name)
+// is the one issued, its owner token too; a held name gives the `sub`, and the
+// host's own name is refused, never a wrong one. And no agent reads or writes
+// the bucket.
 func TestTheDirectoryKeepsNamesAndPresenceTokens(t *testing.T) {
 	l := newLab(t)
 	nc, _ := l.admin()
@@ -56,7 +59,8 @@ func TestTheDirectoryKeepsNamesAndPresenceTokens(t *testing.T) {
 		t.Fatalf("alice's identity %+v %v %v", id, ok, err)
 	}
 
-	// The import has run: alice keeps her anchor, a new identity gets its sub.
+	// The import has run: alice keeps her anchor, a new identity takes its
+	// free username.
 	if err := dir.MarkImported(ctx5(t), time.Now()); err != nil {
 		t.Fatal(err)
 	}
@@ -68,11 +72,38 @@ func TestTheDirectoryKeepsNamesAndPresenceTokens(t *testing.T) {
 	const carolSub = "0b6f3c1e-1111-4222-8333-444455556666" // Keycloak subs are UUIDs
 	l.chat.Users["carol"] = token.User{Username: "carol", AuthKnown: true, AuthService: token.OpenIDService, AuthData: carolSub}
 	l.chat.Channels["carol"] = []string{"home"}
-	carol, err := l.connect(carolSub, l.realm.Token("carol", func(c gojwt.MapClaims) { c["sub"] = carolSub }), Hello{Home: "home"}, nil)
+	// The lab computes the name from "carol", as the host does (RT-6.39 step 2).
+	carol, err := l.connect("carol", l.realm.Token("carol", func(c gojwt.MapClaims) { c["sub"] = carolSub }), Hello{Home: "home"}, nil)
 	if err != nil {
 		t.Fatalf("carol after the import: %v", err)
 	}
-	presenceOK(carol, "carol")
+	presenceOK(carol, carolSub)
+	if _, err := carol.nc.SubscribeSync("deliver." + carol.name + ".>"); err != nil || carol.denied(t) {
+		t.Fatalf("carol may not read her own deliver subjects as %s", carol.name)
+	}
+	if id, _, ok, err := dir.Identity(ctx5(t), carolSub); err != nil || !ok || id.Anchor != "carol" {
+		t.Fatalf("carol's identity %+v %v %v", id, ok, err)
+	}
+
+	// A new identity whose username another identity holds (alice, renamed in
+	// Keycloak, and a new alice): its anchor is its sub, so the name its host
+	// computes from "alice" is refused (NameMismatch on the host), never a
+	// credential under alice's name.
+	const newAliceSub = "5c4b3a29-1111-4222-8333-444455556666"
+	l.chat.Users["alice"] = token.User{Username: "alice", AuthKnown: true, AuthService: token.OpenIDService, AuthData: newAliceSub}
+	other, err := l.connect("alice", l.realm.Token("alice", func(c gojwt.MapClaims) { c["sub"] = newAliceSub }), Hello{Home: "home"}, nil)
+	if err != nil {
+		t.Fatalf("the new alice after the import: %v", err)
+	}
+	if _, err := other.nc.SubscribeSync("deliver." + other.name + ".>"); err != nil || !other.denied(t) {
+		t.Fatal("the new alice got alice's agent name")
+	}
+	if err := other.nc.Publish(other.presence(), []byte("{}")); err != nil || !other.denied(t) {
+		t.Fatal("the new alice may publish presence under alice")
+	}
+	if id, _, ok, err := dir.Identity(ctx5(t), newAliceSub); err != nil || !ok || id.Anchor != newAliceSub {
+		t.Fatalf("the new alice's identity %+v %v %v", id, ok, err)
+	}
 
 	// No agent reads or writes the bucket: no $KV, no $JS right (ADR-014 point 16).
 	for _, subj := range []string{
