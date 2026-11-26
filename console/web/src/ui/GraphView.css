@@ -95,6 +95,15 @@
 }
 
 .gnode__crown { flex: none; display: inline-flex; color: var(--accent); }
+/* #199: a name another agent states too */
+.gnode__shared {
+  justify-self: start;
+  padding: 0 4px;
+  border: 1px dashed var(--ask-fill);
+  border-radius: 2px;
+  color: var(--ask-text);
+  font-size: 10px;
+}
 
 /* React Flow's attribution: muted on the card, AA at its 10 px */
 .graph__canvas .react-flow__attribution { background: var(--surface); }

@@ -69,6 +69,12 @@ export interface AgentCard {
   /** What the card shows: the bot's username the agent states (the name
    * coordinator("who") shows), else the short bus name. */
   displayName: string
+  /** The username the agent's presence states, even when another card
+   * states it too (#199); "" when it states none. */
+  statedName: string
+  /** Another card states the same username: the name is not confirmed and
+   * shows with a mark. */
+  nameShared: boolean
   home: string
   /** The channels it visits beside its home (RT-6.16): the graph draws them
    * apart from the home edge. Empty when it has none. */

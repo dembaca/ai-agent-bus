@@ -1,10 +1,10 @@
 import { describe, expect, it } from "vitest"
 import type { AgentCard, AgentState, Ask } from "../api/types"
-import { countByGroup, filterCards, openAsksFirst } from "./agents"
+import { agentName, askerName, countByGroup, filterCards, openAsksFirst } from "./agents"
 
 function card(name: string, state: AgentState | string, extra: Partial<AgentCard> = {}): AgentCard {
   return {
-    name, displayName: name, home: "~bus-dev", guests: [], state: state as AgentState,
+    name, displayName: name, statedName: "", nameShared: false, home: "~bus-dev", guests: [], state: state as AgentState,
     crown: false, harness: "claude-code", model: "opus", task: "", role: "member",
     for: "dembaca", autonomous: false, trusts: [], capabilities: [], project: "ai-agent-bus",
     branch: "main", pr: null, ctx: null, limits: null, version: "0.103.0",
@@ -62,6 +62,31 @@ describe("the agents list's filter", () => {
   it("combines the search with the status group", () => {
     expect(names(filterCards(FLEET, "idle", "opencode"))).toEqual([])
     expect(names(filterCards(FLEET, "working", "glm"))).toEqual(["agent-b"])
+  })
+})
+
+describe("an agent's name (#199)", () => {
+  const nats = "agent-oudzj4bhpl62iahctur5s5sf44"
+
+  it("is the name its presence states, the bus id only for the title", () => {
+    const c = card(nats, "working", { displayName: "agent-himalia-772844", statedName: "agent-himalia-772844" })
+    expect(agentName(c)).toEqual({ text: "agent-himalia-772844", shared: false, id: nats })
+  })
+
+  it("shows a name another card states too, marked as shared", () => {
+    // the server never confirms it: displayName stays the bus id
+    const c = card(nats, "working", { displayName: nats, statedName: "agent-same", nameShared: true })
+    expect(agentName(c)).toEqual({ text: "agent-same", shared: true, id: nats })
+  })
+
+  it("falls back to the server's name when none is stated", () => {
+    expect(agentName(card(nats, "working", { displayName: nats })).text).toBe(nats)
+  })
+
+  it("names an ask's agent as its card does, else as the ask row says", () => {
+    const fleet = [card(nats, "working", { displayName: nats, statedName: "agent-same", nameShared: true })]
+    expect(askerName({ by: nats, displayName: nats }, fleet).text).toBe("agent-same")
+    expect(askerName({ by: "agent-gone", displayName: "gone" }, fleet)).toEqual({ text: "gone", shared: false, id: "agent-gone" })
   })
 })
 

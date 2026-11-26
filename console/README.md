@@ -4,7 +4,8 @@ The operator console ([ADR-015](../../docs/arc42/09-architecture-decisions.md)),
 stage 1, **reading only**:
 
 - [`web/`](web/) — the browser app ("Choirbus"), a React + TypeScript + Vite
-  pilot in the website's brand (top bar, the agents list as the home, light
+  pilot in the website's brand (top bar, the Overview first, a detail
+  beside the view, agents by the name they state, light
   and dark), built against a mock of the API in development; its footer
   shows the console's version and commit from the image build (#182).
 - [`server/`](server/) — the console server: it reads the NATS homes' presence,
