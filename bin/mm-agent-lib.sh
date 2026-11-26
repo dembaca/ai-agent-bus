@@ -1713,7 +1713,7 @@ mm_restore_claims() {
     # It got as far as this session's file: the bot is in use, the claim is
     # only a copy and must never be reaped as kept.
     uid="$(mm_kv "$f" CB_MM_BOT_USER_ID MM_BOT_USER_ID)"
-    if [[ "$uid" =~ ^[a-z0-9]{26}$ ]] && grep -Eqx "(CB_MM|MM)_BOT_USER_ID=${uid}" "$dir"/*.env 2>/dev/null; then
+    if [[ "$uid" =~ ^[a-z0-9]{26}$ ]] && grep -Eqx "(CB_)?MM_BOT_USER_ID=${uid}" "$dir"/*.env 2>/dev/null; then
       rm -f "$f"
       continue
     fi

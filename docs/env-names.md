@@ -364,18 +364,24 @@ names.
 These names look like settings but are globals inside the scripts: function
 results, file names, the release check's state and the emoji constants of
 `bin/mm-agent-symbols.sh`. Nobody sets them from outside. The hooks pull
-request renames them by the same rule, without a fallback:
+request renamed them by the same rule, without a fallback (each was the same
+name with `MM_` for `CB_`):
 
-- to `CB_MM_…`: `MM_API_BODY`, `MM_API_STATUS`;
-- to `CB_…`: `BUS_KEY` (a shell local, the bus's key passed from fd), `MM_ANSWER`, `MM_AUTO_FILE`, `MM_AUTO_LOG`, `MM_BUS_BODY`,
-  `MM_BUS_CHANNEL`, `MM_BUS_FROM`, `MM_BUS_PROJECT`, `MM_BUS_STATUS`,
-  `MM_CREDS_FROM_FD`, `MM_CROWN`, `MM_CROWN_UNTIL`, `MM_HOLD_FILE`,
-  `MM_HOOK_INPUT`, `MM_INBOX`, `MM_LISTENING`, `MM_NEEDS_RE`,
-  `MM_REL_ALLOWED`, `MM_REL_COMMIT`, `MM_REL_ENFORCE`, `MM_REL_ERR`,
-  `MM_REL_FROM`, `MM_REL_FROM_TEXT`, `MM_REL_KEYS`, `MM_REL_PARSED`,
-  `MM_REL_PINNED`, `MM_REL_REPLACE`, `MM_REL_SIGNER`, `MM_REL_URL`,
-  `MM_SIGNERS_FILE`, `MM_SIGNERS_MAX`, `MM_SIGNOFF`, `MM_UPDATE`,
-  `MM_WITHDRAWN_FILE`;
+- under `CB_MM_…`: `CB_MM_API_BODY`, `CB_MM_API_STATUS`;
+- under `CB_…`: `CB_ANSWER`, `CB_AUTO_FILE`, `CB_AUTO_LOG`, `CB_BUS_BODY`,
+  `CB_BUS_CHANNEL`, `CB_BUS_FROM`, `CB_BUS_PROJECT`, `CB_BUS_STATUS`,
+  `CB_CREDS_FROM_FD`, `CB_CROWN`, `CB_CROWN_UNTIL`, `CB_HOLD_FILE`,
+  `CB_HOOK_INPUT`, `CB_INBOX`, `CB_LISTENING`, `CB_NEEDS_RE`,
+  `CB_REL_ALLOWED`, `CB_REL_COMMIT`, `CB_REL_ENFORCE`, `CB_REL_ERR`,
+  `CB_REL_FROM`, `CB_REL_FROM_TEXT`, `CB_REL_KEYS`, `CB_REL_PARSED`,
+  `CB_REL_PINNED`, `CB_REL_REPLACE`, `CB_REL_SIGNER`, `CB_REL_URL`,
+  `CB_SIGNERS_FILE`, `CB_SIGNERS_MAX`, `CB_SIGNOFF`, `CB_UPDATE`,
+  `CB_WITHDRAWN_FILE`;
+- kept: `BUS_KEY` (a shell local in the session-start hook, the bus's key passed
+  from fd; it reaches the server as `CB_BUS_KEY`);
+- new with the rename, the reading rule's own state in `bin/mm-agent-lib.sh`:
+  `CB_ENV_DEFER`, `CB_ENV_ERR`, `CB_ENV_INTERNAL`, `CB_ENV_NAMES`,
+  `CB_ENV_QUIET`, `CB_ENV_WARNED`;
 - not renamed, they go with the registrar: `MM_UNREG_HTTP`,
   `MM_UNREG_TOKEN_HTTP`, `MM_UNREG_WHY` (unregistering a bot) and
   `MM_RR_KEYS`, `MM_RR_KID`, `MM_RR_STATUS`, `MM_RR_VERSION`, `MM_RR_WHY`

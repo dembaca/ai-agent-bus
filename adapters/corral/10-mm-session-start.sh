@@ -601,7 +601,7 @@ ENV_JSON="$(jq -nc \
                              CB_MM_TRUSTED_HUMAN_USER_IDS: $trustedids} else {} end)
    + (if $proj != "" then {CB_MM_PROJECT_CHANNEL: $proj,
                            CB_MM_PROJECT_CHANNEL_ID: $projid} else {} end)
-   # Each value under its old name too (#169): CB_MM_X was MM_X, CB_X was MM_X.
+   # Each value under its old name too (#169): a CB_MM_ or CB_ name also as MM_.
    | . + (to_entries | map(select(.key | startswith("CB_"))
           | .key |= (if startswith("CB_MM_") then "MM_" + .[6:] else "MM_" + .[3:] end))
           | from_entries)
