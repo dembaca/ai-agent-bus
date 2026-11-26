@@ -3712,7 +3712,7 @@ decided against it (Context).
    client watermark nothing asks for it again
    ([#213](https://github.com/dembaca/ai-agent-bus/issues/213)); and the
    take-over after a hard stop took
-   89, 90 and 120 s (p95 120 s; the default `CB_HEARTBEAT_SEC=30` adds the second
+   89, 90 and 120 s (p95 120 s; the rig's `CB_HEARTBEAT_SEC=30` (the bus minimum; the default is 300) adds the second
    beat): a holder killed without `bye` keeps the crown until its
    presence is `PRESENCE_FRESH_SEC` (90 s) old, so the phase-4 target of
    30 s is not met by today's NATS crown. Not built: the take-over on

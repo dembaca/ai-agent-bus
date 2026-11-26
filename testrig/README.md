@@ -249,7 +249,7 @@ follows (`--stops`, default 3). The take-over is that log's time minus the kill
 (whole seconds). The report also carries `presence_stale_s`: when the dead
 holder's presence turned stale, a lower bound. A hard-stopped holder sends no
 `bye`, so the crown passes only once its presence is `PRESENCE_FRESH_SEC` (90 s)
-old: three stops on 2026-11-26 measured 89, 90 and 120 s (the default `CB_HEARTBEAT_SEC=30` adds the second beat), against the phase-4
+old: three stops on 2026-11-26 measured 89, 90 and 120 s (the rig's `CB_HEARTBEAT_SEC=30` — the bus minimum, the default is 300 — adds the second beat), against the phase-4
 target of 30 s.
 `--transport mattermost` is accepted, but the stand-in does not carry the
 Mattermost election to a crown, so that take-over is not yet measured.

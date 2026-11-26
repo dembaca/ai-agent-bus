@@ -561,7 +561,9 @@ async def nats_bus_run(count: int = 10, fault: str | None = None, *, fault_sec: 
                     run.closed = run.closed or f"post_message failed: {type(exc).__name__}: {exc}"[:300]
                 if not isinstance(post, dict) or not post.get("id"):
                     run.sent.pop()
-                    seq_of_text.pop(text, None)
+                    # Its text stays known: a send that failed may still arrive, and
+                    # the report counts it as `failed_but_arrived` rather than losing
+                    # the evidence (review round 2).
                     failed_sends += 1
                 else:
                     run.sent_frames += 1

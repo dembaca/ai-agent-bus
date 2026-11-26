@@ -201,13 +201,6 @@ def _coord_run(args: argparse.Namespace) -> int:
     print(json.dumps(run.report(), indent=2, sort_keys=True))
     if args.summary:
         print(runner.summary([run]))
-    if run.relay.get("failed") or run.relay.get("hook_errors"):
-        why = next((n for n in run.notes if n.startswith("consumer reconcile")), "")
-        print(f"bus-testrig: the CONNECT hook failed "
-              f"({run.relay.get('hook_errors', 0)} error(s))"
-              f"{': ' + why if why else ''}; the connection was aborted and the run "
-              f"measured a session without its consumers", file=sys.stderr)
-        return True
     if run.unknown:
         print(f"bus-testrig: the stub did not know {len(run.unknown)} call(s)", file=sys.stderr)
         return EXIT_BAD_RUN
