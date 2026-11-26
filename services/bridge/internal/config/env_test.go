@@ -267,7 +267,7 @@ func TestTheRenamesAreTheDocsTable(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	_, section, ok := strings.Cut(string(doc), "\n### The bridge (30)\n")
+	_, section, ok := strings.Cut(string(doc), "\n### The bridge (32)\n")
 	if !ok {
 		t.Fatal("docs/env-names.md has no section \"The bridge (20)\"")
 	}
@@ -277,8 +277,8 @@ func TestTheRenamesAreTheDocsTable(t *testing.T) {
 	for _, m := range row.FindAllStringSubmatch(section, -1) {
 		want[m[1]] = m[2]
 	}
-	if len(want) != 30 {
-		t.Fatalf("the doc's bridge table has %d rows, want 30: %v", len(want), want)
+	if len(want) != 32 {
+		t.Fatalf("the doc's bridge table has %d rows, want 32: %v", len(want), want)
 	}
 	var looked []string
 	if _, err := Load(NewEnv(func(n string) (string, bool) { looked = append(looked, n); return "", false }, nil)); err == nil {

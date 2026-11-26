@@ -24,9 +24,22 @@ before 0.5.0 are described in the git history.
   MCP server checks them as before, so the only host change is the new pin in
   `MM_REGISTRAR_KEYS`. The commands get a listener of their own (TLS off
   loopback, `CB_BRIDGE_COMMANDS_…`), each command its own verification token,
-  and the bridge refuses a key or token file open to group or world. The
-  release record follows in step 4. The release that carries this pins the
+  and the bridge refuses a key or token file open to group or world. It also
+  serves the release record's route (`GET /register/v1/release`, the handler
+  from step 4): with `CB_BRIDGE_RELEASE_SIGNERS_FILE` and
+  `CB_BRIDGE_RELEASE_VERSION` the signed record, else the registrar's exact
+  404, so a host's release check reads it unchanged. The release that carries this pins the
   bridge's key on every host beside the registrar's; its `Needs:` line says so.
+
+### Docs
+
+- **The coordinator's hourly check** (`coordinator.md`, the coordinator scenario
+  RT-6.6 step 12): while it holds the crown, the coordinator reads roster and tasks
+  once an hour, nudges silent agents, gives free ones a `TASK` and posts
+  `ASSIGNMENTS` only on a change. Claude Code schedules it with its cron; runtimes
+  without a scheduler run it at the first stall notice after an hour. It goes with
+  the crown on a handover. Stall notices: one addressee per item, and finished tasks
+  closed with `DONE`, so the notice lists only live items.
 
 ## 0.103.0
 

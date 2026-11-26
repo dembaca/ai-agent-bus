@@ -33,7 +33,9 @@ import (
 	"github.com/dembaca/ai-agent-bus/services/bridge/internal/mmws"
 	"github.com/dembaca/ai-agent-bus/services/bridge/internal/presence"
 	"github.com/dembaca/ai-agent-bus/services/bridge/internal/reader"
+	"github.com/dembaca/ai-agent-bus/services/bridge/internal/registrar/core"
 	"github.com/dembaca/ai-agent-bus/services/bridge/internal/registrar/mattermost"
+	"github.com/dembaca/ai-agent-bus/services/bridge/internal/release"
 	"github.com/dembaca/ai-agent-bus/services/bridge/internal/signing"
 	"github.com/dembaca/ai-agent-bus/services/bridge/internal/store"
 )
@@ -166,17 +168,21 @@ func run(log *slog.Logger) error {
 	mux := http.NewServeMux()
 	mux.Handle("GET /healthz", h)
 
-	// The slash commands and their signed records (issue #151 step 3): a
-	// listener of their own, the bridge's own key and the operator's records
-	// bucket. Off while CB_BRIDGE_COMMANDS_LISTEN_ADDR is empty; the release
-	// record is not served here.
+	// The slash commands and their signed records (issue #151 step 3) and the
+	// release record (step 4): the bridge's own key, the operator's records
+	// bucket, and a listener of their own for the commands. Off while
+	// CB_BRIDGE_COMMANDS_LISTEN_ADDR is empty and no release is configured.
+	started := time.Now()
+	var att *core.Attestor
+	if cfg.CommandsListen != "" || cfg.ReleaseSignersFile != "" || cfg.ReleaseVersion != "" {
+		var err error
+		if att, err = signing.Open(cfg.SigningKeyFile); err != nil {
+			return err
+		}
+	}
 	var cmds *commands.Server
 	if cfg.CommandsListen != "" {
 		records, err := store.OpenRecords(ctx, nc, cfg.RecordsBucket)
-		if err != nil {
-			return err
-		}
-		att, err := signing.Open(cfg.SigningKeyFile)
 		if err != nil {
 			return err
 		}
@@ -198,6 +204,31 @@ func run(log *slog.Logger) error {
 			log.Warn("bridge: CB_BRIDGE_COMMANDS_LISTEN_ADDR is not loopback and has no TLS " +
 				"(CB_BRIDGE_COMMANDS_ALLOW_HTTP); the command tokens and the records go in clear text")
 		}
+	}
+	if att != nil {
+		// The release record (RT-6.32, #151 step 4): the registrar's route and
+		// record with the bridge's key; unset, the registrar's exact 404, which
+		// a host treats as normal, never a refused start.
+		var rel http.Handler
+		if cfg.ReleaseSignersFile == "" && cfg.ReleaseVersion == "" {
+			rel = &release.Handler{Attest: att, SetAt: started}
+		} else {
+			var text string
+			if cfg.ReleaseSignersFile != "" {
+				var err error
+				if text, err = release.SignersText(cfg.ReleaseSignersFile); err != nil {
+					return fmt.Errorf("CB_BRIDGE_RELEASE_SIGNERS_FILE: %w", err)
+				}
+			}
+			h, err := release.New(text, cfg.ReleaseVersion, att, started)
+			if err != nil {
+				return err
+			}
+			rel = h
+		}
+		mux.Handle("GET /register/v1/release", rel)
+		log.Info("bridge: the release record is served", "version", cfg.ReleaseVersion,
+			"signers", cfg.ReleaseSignersFile != "", "kid", att.Kid())
 	}
 	srv := &http.Server{Addr: cfg.Listen, Handler: mux, ReadHeaderTimeout: 5 * time.Second}
 	go func() {

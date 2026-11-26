@@ -60,6 +60,13 @@ type Config struct {
 	// X-Forwarded-For counts; empty: the header is ignored.
 	TrustedProxies []string
 
+	// The release record (RT-6.32, #151 step 4): a signers file in
+	// authorized_keys form and an optional version. Unset, the route answers
+	// the registrar's exact "no release set" 404; with the file, the bridge
+	// serves the record signed with the same key.
+	ReleaseSignersFile string // CB_BRIDGE_RELEASE_SIGNERS_FILE
+	ReleaseVersion     string // CB_BRIDGE_RELEASE_VERSION: v<x.y.z>, latest, or empty (keys only)
+
 	// BotKeep is CB_BRIDGE_MM_BOT_KEEP, default 24h, at least 1h: the sweep
 	// disables a bot the bridge made once its agent showed no presence for
 	// longer (RT-6.44 step 8). Only with AdminToken.
@@ -99,6 +106,8 @@ func Load(env *Env) (Config, error) {
 	debugTokenFile := strings.TrimSpace(get("CB_BRIDGE_DEBUG_COMMAND_TOKEN_FILE", ""))
 	recordsBucket := strings.TrimSpace(get("CB_BRIDGE_RECORDS_BUCKET", ""))
 	trustedProxies := strings.TrimSpace(get("CB_BRIDGE_TRUSTED_PROXIES", ""))
+	releaseSigners := strings.TrimSpace(get("CB_BRIDGE_RELEASE_SIGNERS_FILE", ""))
+	releaseVersion := strings.TrimSpace(get("CB_BRIDGE_RELEASE_VERSION", ""))
 	// new in #151 step 2: no old spelling
 	botKeep := strings.TrimSpace(get("CB_BRIDGE_MM_BOT_KEEP", ""))
 	c := Config{
@@ -125,6 +134,8 @@ func Load(env *Env) (Config, error) {
 		CommandsTLSKeyFile:  commandsKey,
 		SigningKeyFile:      signingKey,
 		RecordsBucket:       recordsBucket,
+		ReleaseSignersFile:  releaseSigners,
+		ReleaseVersion:      releaseVersion,
 	}
 	if bad != nil {
 		return Config{}, bad
@@ -267,6 +278,10 @@ func Load(env *Env) (Config, error) {
 		if err := c.checkCommands(modeTokenFile, mandateTokenFile, debugTokenFile); err != nil {
 			return Config{}, err
 		}
+	}
+	if (c.ReleaseSignersFile != "" || c.ReleaseVersion != "") && c.SigningKeyFile == "" {
+		return Config{}, fmt.Errorf("CB_BRIDGE_RELEASE_SIGNERS_FILE and CB_BRIDGE_RELEASE_VERSION need " +
+			"CB_BRIDGE_SIGNING_KEY_FILE: the release record is signed with the bridge's own key")
 	}
 	return c, nil
 }

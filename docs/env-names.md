@@ -468,13 +468,14 @@ old one.
 `services/auth/nats-server.example.conf` names several of them in comments;
 it changes with the service.
 
-### The bridge (30)
+### The bridge (32)
 
 All in `services/bridge/`, read in `internal/config/config.go`. The last
 three renames come with the bridge's agent bots
 ([#166](https://github.com/dembaca/ai-agent-bus/pull/166), not merged when
-this was written); the sweep's keep time (#151 step 2) and the slash commands'
-ten (#151 step 3) are new after the rename and have no old spelling. The bridge as a whole exists for
+this was written); the sweep's keep time (#151 step 2), the slash commands'
+ten (#151 step 3) and the release record's two (#151 step 4) are new after the
+rename and have no old spelling. The bridge as a whole exists for
 Mattermost; the column says whether the setting itself is about Mattermost.
 
 | Old name | New name | Mattermost | Where it appears | Note |
@@ -509,6 +510,8 @@ Mattermost; the column says whether the setting itself is about Mattermost.
 | `CB_BRIDGE_RECORDS_BUCKET` | `CB_BRIDGE_RECORDS_BUCKET` | no | `internal/config/config.go` | default `BUS_BRIDGE_RECORDS` |
 | `CB_BRIDGE_SIGNING_KEY_FILE` | `CB_BRIDGE_SIGNING_KEY_FILE` | no | `internal/config/config.go`, `cmd/bridged/main.go` | base64 or base64url of a 32-byte seed, 0600 |
 | `CB_BRIDGE_TRUSTED_PROXIES` | `CB_BRIDGE_TRUSTED_PROXIES` | no | `internal/config/config.go`, `internal/commands` | IPs or CIDRs, comma-separated; only their `X-Forwarded-For` counts for the read buckets, empty: the peer's address |
+| `CB_BRIDGE_RELEASE_SIGNERS_FILE` | `CB_BRIDGE_RELEASE_SIGNERS_FILE` | no | `internal/config/config.go`, `cmd/bridged/main.go` | the release record's signers in authorized_keys form; unset: the registrar's exact 404 |
+| `CB_BRIDGE_RELEASE_VERSION` | `CB_BRIDGE_RELEASE_VERSION` | no | same | `v<x.y.z>`, `latest`, or empty (keys only) |
 
 `BRIDGE_BOT_PREFIX` and `BRIDGE_HIDE_BOT_DM` (#166) are about Mattermost but
 have no `MM` in their names; the rename gives them one, as the rule says:
