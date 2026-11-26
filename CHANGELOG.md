@@ -12,7 +12,9 @@ before 0.5.0 are described in the git history.
   NATS configuration, its two consumers `console-metrics_presence` and
   `console-metrics_stats` — made by the login service at its start,
   `AUTH_CONSOLE_METRICS`, default off) and `CONSOLE_METRICS_TOKEN_FILE` (the
-  Bearer scrape token), `/metrics` serves without a session: aggregates only
+  Bearer scrape token), the unattended page serves without a session, on a
+  listener of its own (`CONSOLE_METRICS_LISTEN_ADDR`, loopback by default — the
+  owner's ask): aggregates only
   — agents by state and harness, the open asks, the tokens by category — no
   name, owner or home among the labels. The token and the seed are both or
   neither; the console keeps its operator-login page beside it. The account
