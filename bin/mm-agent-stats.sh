@@ -164,7 +164,8 @@ report="$(jq -c '
       human_answers_per_day: tenth(.human_answers; .days)
     } | .days |= (. * 10 | round / 10) end;
   def per_h(x; h): if h > 0 then (x / h | round) else null end;
-  def tok_of: map(select(.tok)) | if length == 0 then null else {
+  # The measure by cause: lines with tok.bus only (a tok from plugin usage events has the split only).
+  def tok_of: map(select(.tok.bus != null)) | if length == 0 then null else {
       sessions: sessions,
       hours: (sum(.min) / 60),
       req: sum(.tok.req),

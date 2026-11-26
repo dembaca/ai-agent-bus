@@ -317,7 +317,14 @@ server knows one issuer at a time.
   approval. Whoever steals an access token (300 s in the lab) can connect
   with a nkey of their own and gets an agent for up to 15 minutes. The token
   never leaves the host process (ADR-014, point 9), so stealing it means
-  breaking into that process. Binding the token to the nkey (a claim the host
+  breaking into that process. That changes with the one operating model
+  for the host login (the owner's decision 10, #154, the NATS decision's
+  amendment of 2026-11-26), decided and not built yet: under corral the
+  MCP server keeps the refresh token and the nkey seed in the sandbox's
+  home, where an agent can read them. The refresh token is the owner's
+  offline token, so with a nkey of the thief's own it yields new agents of
+  that owner until it is revoked or idles out (RISK-26 and RISK-27 in
+  docs/arc42 Section 11). Binding the token to the nkey (a claim the host
   adds at the device approval, or DPoP) would close it; that needs Keycloak's
   side and is not built.
 - **Tenants:** one service instance issues into one account (`AUTH_ACCOUNT`).

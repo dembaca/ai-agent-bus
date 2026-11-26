@@ -1129,10 +1129,12 @@ async def until(pred: Callable[[], bool], timeout: float = 5.0, what: str = "") 
         await asyncio.sleep(0.02)
 
 
-async def test_a_ws_redirect_is_refused_and_nothing_reaches_the_target() -> None:
+async def test_a_ws_redirect_is_refused_and_named_in_the_log(
+        caplog: pytest.LogCaptureFixture) -> None:
     """aiohttp follows a 3xx of the WebSocket upgrade, and the CONNECT (with the access token)
-    would go to the redirect's target: the client refuses it before a byte goes there (Fable's
-    review of #51)."""
+    would go to the redirect's target: the client refuses it before a byte goes there, and the
+    bus's log says why instead of ending in a bare timeout (Fable's review of #51, RT-6.36, #85)."""
+    caplog.set_level(logging.WARNING, logger="mattermost_ai_agent_bus.natsbus")
     target_bytes = bytearray()
 
     async def target(reader: asyncio.StreamReader, writer: asyncio.StreamWriter) -> None:
@@ -1151,16 +1153,15 @@ async def test_a_ws_redirect_is_refused_and_nothing_reaches_the_target() -> None
 
     redir_srv = await asyncio.start_server(redirect, "127.0.0.1", 0)
     redir_port = redir_srv.sockets[0].getsockname()[1]
+    bus = NatsBus(NatsSettings(servers=(f"ws://127.0.0.1:{redir_port}",), home="home"),
+                  FakeLogin(), "alice", lambda e: None, connect_timeout=2)
     try:
-        bus = NatsBus(NatsSettings(servers=(f"ws://127.0.0.1:{redir_port}",), home="home"),
-                      FakeLogin(), "alice", lambda e: None, connect_timeout=2)
-        # the refusal surfaces as the transport error, or as our bounded connect timeout:
-        # nats-py retries a failed server until the caller stops it
-        with pytest.raises((natsbus.NatsBusError, asyncio.TimeoutError)):
-            await bus._open()
-        await asyncio.sleep(0.2)
+        await bus.start()  # the first connect fails, the supervisor retries
+        await until(lambda: "redirected" in caplog.text, what="the log names the redirect")
+        assert "the access token never reaches another address" in caplog.text
         assert target_bytes == b"", "the redirect target received the CONNECT"
     finally:
+        await bus.stop()
         for srv in (redir_srv, target_srv):
             srv.close()
             await srv.wait_closed()

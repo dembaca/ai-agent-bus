@@ -337,3 +337,25 @@ def test_a_share_is_held_to_0_to_100(monkeypatch) -> None:
     monkeypatch.setattr(stats, "asks_summary", lambda lines: {"answered_pct": -7})
     reports = book.reports()
     assert fields(reports[0])["version 0.101.0"] == 100 and fields(reports[1])["answered share"] == 0
+
+
+def test_a_line_with_the_plugins_split_counts_in_the_tokens_by_category() -> None:
+    """RT-6.9 step 3, RT-6.43 step 8: an OpenCode or pi line whose tok came from the plugin's
+    usage events (the split, no tok.bus) counts in the tokens by category and the overhead
+    share per version like a Claude Code line; the bus share by cause leaves it out."""
+    usage = LINE | {"sid": "dddddddddddd", "v": "0.103.0", "rt": "opencode", "crown_sec": 0,
+                    "tok": {"req": 3, "req_ovh": 1, "req_coord": 1, "m": 1,
+                            "all": {"in": 1000, "out": 100}, "ovh": {"in": 300, "out": 30},
+                            "coord": {"in": 200, "out": 20}}}
+    book = book_with((A, usage, NOW - 600))
+    lines = [stats.decode_line(stats.nats_body(usage) or b"")]
+    assert "bus" not in lines[0]["tok"]
+    row = stats.report(lines)[0]
+    assert row["tok"] is None and row["split"]["harnesses"] == ["opencode"]
+    share = next(r for r in book.reports() if r["id"] == "share-per-version")
+    assert fields(share)["version 0.103.0"] == row["split"]["eq_pct"]["overhead"] == 30
+    report = next(r for r in book.reports() if r["id"] == "tokens-by-category")
+    bars = {s["label"]: s for s in report["stacks"]}
+    assert "harness opencode" in bars and fields(report)["lines with the split"] == 1
+    assert {seg["category"]: seg["value"] for seg in bars["fleet"]["raw"]} == {
+        "task": 550, "overhead": 330, "coordination": 220}
