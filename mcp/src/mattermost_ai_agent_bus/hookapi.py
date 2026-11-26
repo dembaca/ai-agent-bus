@@ -450,6 +450,10 @@ class HookAPI:
         payload: Any = {"data": raw} if route is files_route else json.loads(raw) if raw else {}
         if not isinstance(payload, dict):
             return 400, {"error": "body must be a JSON object"}
+        if route is instructions:
+            # Needs no chat client: a session asks for the text before its server is up or a bot
+            # is registered, and gets it whatever the bus session's state (#153, #155).
+            return await instructions(None, query, payload)  # type: ignore[arg-type]
         try:
             client = await self._get_client()
         except Exception:  # noqa: BLE001 — no bus configured

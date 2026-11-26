@@ -32,12 +32,13 @@ A copied file (not linked) needs `MM_AGENT_BUS_ROOT=/ABS/PATH/ai-agent-bus`
 in pi's environment. It needs no `npm install`: its only import from pi is types.
 `/reload` loads a changed file (after a `git pull` here).
 
-At `session_start` the extension also asks the server for its instructions
-(`GET /v1/instructions`) and puts them into the system prompt as a section of its
-own before every run: pi passes an MCP server's instructions to the model only
-for servers with deferred or Code Mode tools, and the bus is registered `direct`,
-so without this a pi agent would miss the rules on sub-agents, approvals,
-questions to you and replying in the thread (#153).
+Before every run the extension puts the server's instructions into the system
+prompt as a section of its own, asked for lazily while they are missing
+(`GET /v1/instructions`, which needs no bus session): pi passes an MCP
+server's instructions to the model only for servers with deferred or Code Mode
+tools, and the bus is registered `direct`, so without this a pi agent would miss
+the rules on sub-agents, approvals, questions to you and replying in the thread
+(#153). A run without them carries no section, even if an earlier one had.
 
 The extension registers the MCP server `ai-agent-bus` for the session (`uv run
 --locked --project <checkout>/mcp mattermost-ai-agent-bus-mcp`) and the skill directory.

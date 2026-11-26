@@ -49,8 +49,8 @@ const answerWake = (body: any) => {
   h!.res.writeHead(200, { "Content-Type": "application/json" }).end(JSON.stringify(body))
 }
 const nowSec = () => Math.floor(Date.now() / 1000)
-// The calls of a test besides the session's own two: the long poll and the instructions
-// the session start asks for (RT-6.27 step 1, #153).
+// The calls of a test besides the session's own: the long poll and the instructions a run
+// asks for while they are missing (RT-6.27 step 1, #153).
 const rest = () => calls.filter((c) => !c.path.startsWith("/v1/wake") && c.path !== "/v1/instructions")
   .map((c) => c.method + " " + c.path)
 const wakes = () => calls.filter((c) => c.path.startsWith("/v1/wake"))
@@ -192,6 +192,26 @@ test("RT-6.27 step 1: the server's instructions reach the model as a system prom
 test("RT-6.27 step 1: without the server's instructions the system prompt is left alone (#153)", async () => {
   const f = await started()
   const options: any = { sections: { other: "x" } }
+  await f.emit("before_agent_start", { messageType: "user", prompt: "hi", systemPromptOptions: options })
+  assert.deepEqual(options.sections, { other: "x" })
+})
+
+test("RT-6.27 step 1: the instructions arrive when the server comes up after session_start (#153, #155)", async () => {
+  answers["/v1/instructions"] = undefined // 503: no bus session yet, as outside corral before the server is up
+  const f = await started()
+  const first: any = { sections: {} }
+  await f.emit("before_agent_start", { messageType: "user", prompt: "hi", systemPromptOptions: first })
+  assert.deepEqual(first.sections, {}, "nothing invented before the server answers")
+  answers["/v1/instructions"] = { instructions: "the rules" }
+  const second: any = { sections: {} }
+  await f.emit("before_agent_start", { messageType: "user", prompt: "again", systemPromptOptions: second })
+  assert.equal(second.sections[SERVER], "the rules", "asked again at the next run")
+})
+
+test("RT-6.27 step 1: an empty text drops a section left from before (#155)", async () => {
+  answers["/v1/instructions"] = { instructions: "" }
+  const f = await started()
+  const options: any = { sections: { [SERVER]: "stale", other: "x" } }
   await f.emit("before_agent_start", { messageType: "user", prompt: "hi", systemPromptOptions: options })
   assert.deepEqual(options.sections, { other: "x" })
 })
