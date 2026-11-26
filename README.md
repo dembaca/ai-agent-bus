@@ -159,6 +159,8 @@ cd mcp && uv sync && uv run pytest -q
 `bash` ≥ 4, `curl`, `jq` (all `bin/*.sh`) and `uv` (the MCP server). Without root,
 static binaries in `~/.local/bin` do.
 
+The names below get the `CB_` prefix in 0.103.0 (decided, not built yet): see [docs/env-names.md](docs/env-names.md).
+
 | Variable | Purpose |
 |----------|---------|
 | `MM_CHAT_URL` / `MATTERMOST_URL` | Mattermost base URL |

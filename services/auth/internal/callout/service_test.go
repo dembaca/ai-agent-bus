@@ -78,7 +78,9 @@ listen: "127.0.0.1:-1"
 websocket { listen: "127.0.0.1:-1", no_tls: true }
 jetstream { store_dir: "`+t.TempDir()+`" }
 accounts {
-  AUTH { users: [ { nkey: "`+svcPub+`" } ] }
+  # The callout's user with the rights of nats-server.example.conf.
+  AUTH { users: [ { nkey: "`+svcPub+`", permissions: {
+    publish: { deny: ">" }, subscribe: [ "$SYS.REQ.USER.AUTH" ], allow_responses: true } } ] }
   BUS { jetstream: enabled, users: [ { user: admin, password: pwd },
     # The login service's own JetStream user with the minimal rights that
     # services/auth/README.md and RT-6.35 document.

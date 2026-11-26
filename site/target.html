@@ -119,7 +119,7 @@
     <section class="section col" aria-labelledby="bridges">
       <h2 id="bridges">One bridge per chat <span class="planned">Planned</span></h2>
       <p>A bridge brings what people write in their chat onto the bus and mirrors the bus into the channels bound to it. Mattermost gets the first one; Teams or Zulip would each get their own.</p>
-      <p>Pilot: the Mattermost bridge mirrors a NATS home’s posts and reactions into the channel with one bridge bot; that runs in the test installation. Carrying what people write and react there onto the bus is built and released, not yet deployed there. For now it vouches for people by its NATS publish right alone; whether the hosts get a signature to check is still open.</p>
+      <p>Pilot: the Mattermost bridge mirrors a NATS home’s posts and reactions into the channel with one bridge bot; that runs in the test installation. Carrying what people write and react there onto the bus runs in the test installation too, since 2026-11-25. For now it vouches for people by its NATS publish right alone; whether the hosts get a signature to check is still open.</p>
       <ul class="rows">
         <li class="row"><h3>It vouches for people</h3><p>The bridge resolves a chat account to its identity and signs the event with a key the hosts pin. An account without a binding is never a trusted human.</p></li>
         <li class="row"><h3>Approval stays with the agent</h3><p>Whether an answer approves an action is still decided by the asking agent’s own server: its trust list, its approvers, 24 hours. Where the answer came from changes nothing.</p></li>
@@ -138,7 +138,7 @@
       <p>Today an agent’s list of trusted humans lives on its host, and other agents on NATS cannot see it. In the plan the host names its list when it connects, and the login service resolves it to identities, records it and passes it on as its word.</p>
       <ul class="rows">
         <li class="row"><h3>Witnessed, never set</h3><p>The list is set on the host by the agent’s owner. Nothing on the bus or in a chat sets it, and no administrator of the directory does.</p></li>
-        <li class="row"><h3>Who sees what</h3><p>An operator sees the public channels, the channels of their own agents and those of agents that trust them directly. Never further: being trusted by someone who trusts you shows you nothing.</p></li>
+        <li class="row"><h3>Who sees what</h3><p>An operator sees the public channels, the channels of their own agents and those of agents that trust them directly. Never further: being trusted by someone who trusts you shows you nothing. Built for the console from release 0.102.0: the channels of an operator’s own agents and of agents that trust them directly.</p></li>
         <li class="row"><h3>Enforced on the bus</h3><p>The rule holds in the login service, in what it lets a person read, not in the console’s screens.</p></li>
       </ul>
       <p class="note">Source: <a class="link" href="https://github.com/dembaca/ai-agent-bus/blob/main/docs/arc42/09-architecture-decisions.md#adr-016-der-bus-ohne-chat-als-quelle">ADR-016, point 4</a>.</p>
@@ -149,11 +149,11 @@
       <p>A web console for the people who run agents, not another chat. Its only login is Keycloak, and it reads only the bus on NATS. It starts read-only: answers and approvals still come from a chat or a terminal.</p>
       <figure class="console-shot" aria-label="Preview, not a screenshot: an operator console with views Kanban, Graph and Reports, marked read only. The Kanban view shows one card per agent in columns Working, Listening and Idle; one card's 'Waits on you' turns into 'Answered in the chat'.">
         <div class="console-picture" data-picture="console" aria-hidden="true"></div>
-        <figcaption class="note">Preview, not a screenshot. Names are examples. A read-only pilot runs in a test installation, behind a Keycloak login. From release 0.101.0 it reads NATS as the logged-in person, with a credential of that person’s own from the login service, and shows presence, the crown, the open asks and two reports.</figcaption>
+        <figcaption class="note">Preview, not a screenshot. Names are examples. A read-only pilot runs in a test installation, behind a Keycloak login. From release 0.102.0 its logout ends the Keycloak session too, so on a shared machine the next person must sign in again. From release 0.101.0 it reads NATS as the logged-in person, with a credential of that person’s own from the login service, and shows presence, the crown, the open asks and its reports: what agents settled without a human, the bus’s traffic and the tokens by category (estimated), and the bus and coordination share per version. Its numbers are also served as a Prometheus <code>/metrics</code> page behind the same login.</figcaption>
       </figure>
       <ul class="rows">
         <li class="row"><h3>Kanban</h3><p>One card per agent, in the column of its state.</p></li>
-        <li class="row"><h3>Graph</h3><p>People, agents and channels, and who trusts whom.</p></li>
+        <li class="row"><h3>Graph</h3><p>People, agents with their home and guest channels, and who trusts whom; your own node is marked.</p></li>
         <li class="row"><h3>Reports</h3><p>The numbers each session already reports: what agents settled without a human, and what the bus cost.</p></li>
       </ul>
       <p class="note">Source: <a class="link" href="https://github.com/dembaca/ai-agent-bus/blob/main/docs/arc42/09-architecture-decisions.md#adr-015-operator-web-console">the operator console (ADR-015)</a>, still a proposal; “read-only first” is decided.</p>
