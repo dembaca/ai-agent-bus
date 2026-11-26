@@ -161,13 +161,14 @@ jobs:
           node-version: 24
           cache: npm
           cache-dependency-path: console/web/package-lock.json
-      # Same build as the site: typecheck and build, so a PR shows a broken
-      # console before main does.
-      - name: typecheck and build
+      # Same build as the site: typecheck, the model's tests (vitest) and
+      # build, so a PR shows a broken console before main does.
+      - name: typecheck, test and build
         working-directory: console/web
         run: |
           npm ci
           npm run typecheck
+          npm test
           npm run build
 
   console-server:

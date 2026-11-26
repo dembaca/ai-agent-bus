@@ -128,6 +128,15 @@ before 0.5.0 are described in the git history.
   is not the bus's own overhead alone (RT-6.9 step 3, the console on the
   bus, RT-6.43 step 8).
 
+### Changed
+
+- **The console's graph view runs on React Flow** (#145): people, open
+  asks, agents and their home and guest channels in fixed columns laid
+  out by dagre. A state change recolours its agent in place; an agent or
+  an ask that comes or goes adds or removes its node without moving the
+  others or the view (ADR-015 points 7 and 14). The browser app has unit
+  tests now (`npm test` in `console/web`, also in CI).
+
 ### Fixed
 
 - **A NATS home starts for an identity first seen after the directory

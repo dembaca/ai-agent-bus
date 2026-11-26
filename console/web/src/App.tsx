@@ -27,6 +27,8 @@ const SYNC_GIVE_UP_MS = 120_000
 export function App({ api }: { api: ConsoleApi }) {
   const [cards, setCards] = useState<AgentCard[]>([])
   const [asks, setAsks] = useState<Ask[]>([])
+  /** The fleet stream's first snapshot came: the cards are the whole fleet. */
+  const [fleetSeen, setFleetSeen] = useState(false)
   const [me, setMe] = useState<Operator | null>(null)
   const [view, setView] = useState<View>("kanban")
   const [agent, setAgent] = useState<AgentCard | null>(null)
@@ -60,6 +62,7 @@ export function App({ api }: { api: ConsoleApi }) {
   const onEvent = useCallback((event: FleetEvent) => {
     if (event.type === "snapshot") {
       setCards(inColumnOrder(event.cards))
+      setFleetSeen(true)
       setAgent((sel) => (sel ? event.cards.find((c) => c.name === sel.name) ?? sel : sel))
     } else if (event.type === "card") {
       setCards((all) => inColumnOrder(all.filter((c) => c.name !== event.card.name).concat(event.card)))
@@ -105,12 +108,18 @@ export function App({ api }: { api: ConsoleApi }) {
     if (syncing(error)) return
     setNotice(`${what}: ${error instanceof Error ? error.message : String(error)}`)
   }, [syncing])
+  // Each read is numbered: an older answer that comes late never overwrites
+  // a newer one.
+  const asksRead = useRef(0)
   const loadAsks = useCallback(async () => {
+    const mine = ++asksRead.current
     try {
-      setAsks(await api.asks())
+      const rows = await api.asks()
+      if (mine !== asksRead.current) return
+      setAsks(rows)
       syncingSince.current = null  // a load that answered: no longer syncing
     } catch (error: unknown) {
-      fail("asks", error)
+      if (mine === asksRead.current) fail("asks", error)
     }
   }, [api, fail])
   useEffect(() => {
@@ -118,6 +127,27 @@ export function App({ api }: { api: ConsoleApi }) {
     const timer = setInterval(loadAsks, 30_000)
     return () => { clearInterval(timer) }
   }, [loadAsks])
+  // An ask opens or closes between those reads: when an agent comes, goes or
+  // states a different number of open asks, the asks are read again, 250 ms
+  // later, so a burst of card changes costs one read.
+  // The timer lives in a ref: a card event that changes nothing must not
+  // cancel a read already scheduled.
+  const askMark = useRef<string | null>(null)
+  const askTimer = useRef<ReturnType<typeof setTimeout> | null>(null)
+  useEffect(() => {
+    const mark = cards.map((c) => `${c.name}:${c.openAsks ?? "?"}`).sort().join(",")
+    const changed = askMark.current !== null && askMark.current !== mark
+    askMark.current = mark
+    if (!changed) return
+    if (askTimer.current !== null) clearTimeout(askTimer.current)
+    askTimer.current = setTimeout(() => {
+      askTimer.current = null
+      void loadAsks()
+    }, 250)
+  }, [cards, loadAsks])
+  useEffect(() => () => {
+    if (askTimer.current !== null) clearTimeout(askTimer.current)
+  }, [])
 
   const openAgent = useCallback((card: AgentCard) => {
     setAgent(card)
@@ -143,7 +173,8 @@ export function App({ api }: { api: ConsoleApi }) {
       <main className="stage">
         {view === "kanban" && <Kanban cards={cards} selected={agent} onSelect={openAgent} />}
         {view === "asks" && <Asks asks={asks} onOpen={openAsk} />}
-        {view === "graph" && <GraphView api={api} onFail={fail} />}
+        {view === "graph" && <GraphView api={api} cards={cards} asks={asks} fleetSeen={fleetSeen}
+          onOpenAgent={openAgent} onOpenAsk={openAsk} onFail={fail} />}
         {view === "reports" && <Reports api={api} onFail={fail} />}
       </main>
       {(agent || ask) && (
