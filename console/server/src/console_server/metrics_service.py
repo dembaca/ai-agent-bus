@@ -2,7 +2,7 @@
 
 One reading of the whole console process — a fleet and a stats book, no
 person, no anchor, no login: fed by the two push consumers the login service
-makes for the console's subscribe-only nkey (`AUTH_CONSOLE_METRICS` there),
+makes for the console's subscribe-only nkey (`CB_AUTH_CONSOLE_METRICS` there),
 delivered on `deliver.metrics.presence` and `deliver.metrics.stats`. The
 seed sits in a file only the console reads
 (`CONSOLE_METRICS_NKEY_SEED_FILE`); the page it guards sits behind the

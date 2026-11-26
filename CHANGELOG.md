@@ -48,28 +48,11 @@ Needs: MM_BRIDGE_BOT kept on every host, and this release on all hosts before th
 
 ### Added
 
-- **A check holds `docs/env-names.md` to the code** (#169, the mapping's guard).
-  `scripts/doc-check.py` reads the page and the tree: CI fails when the code
-  reads an environment name the page does not list, and when the page maps a
-  name that production code and tests do not mention (the registrar's kept names
-  excepted; a "Tests and CI" name may live in tests). A read is a quoted literal
-  in Python, Go and the plugins (a Go tag's `env:"X,required"` included), dot
-  access (`process.env.X`), or a name in the shell and in the configuration
-  files the example ships; names ending in `_` are stems, not settings; test
-  files are skipped, since a fixture's fake name is no setting. The page's
-  "not environment" bullets and its new exclusion table — each name with a
-  reason of its own — are what keep a script's globals and other products'
-  variables out of the failure, and a row the check cannot read or an exclusion
-  without a reason fails too, as do the page's heading counts and conflict
-  markers. A test pins both directions, each reader form, the counts and each
-  failure.
-
-- **The central bridge can post each agent's copies under the agent's own Mattermost bot** (#151 step 1, RT-6.44). Off by default; with `BRIDGE_MM_ADMIN_TOKEN_FILE` (an admin bot of its own with `system_admin`, its token a separate file used only by the bot management) and `BRIDGE_BOT_PREFIX`, the bridge finds or creates `<prefix><NATS name>`, owned by the Mattermost account that the login service's account record binds to the agent's presence owner (never a username lookup; no record, no bot of its own) and marked as the bridge's, mints its token in memory at first use after each start (revoking its earlier ones), joins it to the home and posts that agent's copies and reactions under it without the attribution line, `nats_id` kept; its reactions are recorded, so their removal reaches that bot also while it is in its backoff. On any failure the one bridge bot posts as before. Its signal then names `bot_prefix`. `BRIDGE_HIDE_BOT_DM` (default true) hides the admin bot's welcome DMs. The bridge refuses to start when the admin token is the posting token, the admin account is no bot with `system_admin`, or the posting bot holds a role beyond `system_user`, `system_post_all` and `system_post_all_public`. Turn it on only after the hosts run a release with #159 (agents dropping copies under their own bots), or every agent reads each NATS post twice; the hosts also keep `MM_BRIDGE_BOT` set as today, since the fallback copies come from the one bridge bot and hosts drop those only with it; the bridge's prefix must differ from the registrar's `BOT_USERNAME_PREFIX`.
 - **The console's unattended metrics page** (#158, needs #162): with both
   `CONSOLE_METRICS_NKEY_SEED_FILE` (the seed of a read-only nkey of the
   NATS configuration, its two consumers `console-metrics_presence` and
   `console-metrics_stats` — made by the login service at its start,
-  `AUTH_CONSOLE_METRICS`, default off) and `CONSOLE_METRICS_TOKEN_FILE` (the
+  `CB_AUTH_CONSOLE_METRICS`, default off) and `CONSOLE_METRICS_TOKEN_FILE` (the
   Bearer scrape token), the unattended page serves without a session, on a
   listener of its own (`CONSOLE_METRICS_LISTEN_ADDR`, loopback by default — the
   owner's ask): aggregates only
@@ -99,6 +82,23 @@ Needs: MM_BRIDGE_BOT kept on every host, and this release on all hosts before th
   8 versions keep their own label and n/a leaves a series out instead of
   a 0 (RT-6.43 step 10).
 
+- **A check holds `docs/env-names.md` to the code** (#169, the mapping's guard).
+  `scripts/doc-check.py` reads the page and the tree: CI fails when the code
+  reads an environment name the page does not list, and when the page maps a
+  name that production code and tests do not mention (the registrar's kept names
+  excepted; a "Tests and CI" name may live in tests). A read is a quoted literal
+  in Python, Go and the plugins (a Go tag's `env:"X,required"` included), dot
+  access (`process.env.X`), or a name in the shell and in the configuration
+  files the example ships; names ending in `_` are stems, not settings; test
+  files are skipped, since a fixture's fake name is no setting. The page's
+  "not environment" bullets and its new exclusion table — each name with a
+  reason of its own — are what keep a script's globals and other products'
+  variables out of the failure, and a row the check cannot read or an exclusion
+  without a reason fails too, as do the page's heading counts and conflict
+  markers. A test pins both directions, each reader form, the counts and each
+  failure.
+
+- **The central bridge can post each agent's copies under the agent's own Mattermost bot** (#151 step 1, RT-6.44). Off by default; with `BRIDGE_MM_ADMIN_TOKEN_FILE` (an admin bot of its own with `system_admin`, its token a separate file used only by the bot management) and `BRIDGE_BOT_PREFIX`, the bridge finds or creates `<prefix><NATS name>`, owned by the Mattermost account that the login service's account record binds to the agent's presence owner (never a username lookup; no record, no bot of its own) and marked as the bridge's, mints its token in memory at first use after each start (revoking its earlier ones), joins it to the home and posts that agent's copies and reactions under it without the attribution line, `nats_id` kept; its reactions are recorded, so their removal reaches that bot also while it is in its backoff. On any failure the one bridge bot posts as before. Its signal then names `bot_prefix`. `BRIDGE_HIDE_BOT_DM` (default true) hides the admin bot's welcome DMs. The bridge refuses to start when the admin token is the posting token, the admin account is no bot with `system_admin`, or the posting bot holds a role beyond `system_user`, `system_post_all` and `system_post_all_public`. Turn it on only after the hosts run a release with #159 (agents dropping copies under their own bots), or every agent reads each NATS post twice; the hosts also keep `MM_BRIDGE_BOT` set as today, since the fallback copies come from the one bridge bot and hosts drop those only with it; the bridge's prefix must differ from the registrar's `BOT_USERNAME_PREFIX`.
 - **The console's graph view marks the operator's own node** (#147, the
   follow-up to the API change). The person node the logged-in operator's
   anchor names carries the API's `you` field as an accent badge, in light and
