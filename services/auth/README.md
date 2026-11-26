@@ -315,11 +315,11 @@ server knows one issuer at a time.
 - **A stolen access token:** the host's nkey proves only that the connecting
   process holds some key, not that it is the host that made the device
   approval. Whoever steals an access token (300 s in the lab) can connect
-  with a nkey of their own and gets an agent for up to 15 minutes. The token
-  never leaves the host process (ADR-014, point 9), so stealing it means
-  breaking into that process. That changes with the one operating model
+  with a nkey of their own and gets an agent for up to 15 minutes. Before that
+  model the token never left the host process (ADR-014, point 9), so stealing it meant
+  breaking into that process. That changed with the one operating model
   for the host login (the owner's decision 10, #154, the NATS decision's
-  amendment of 2026-11-26), decided and not built yet: under corral the
+  amendment of 2026-11-26), built (unreleased): under corral the
   MCP server keeps the refresh token and the nkey seed in the sandbox's
   home, where an agent can read them. The refresh token is the owner's
   offline token, so with a nkey of the thief's own it yields new agents of

@@ -139,6 +139,7 @@ type Service struct {
 	attester   Attester    // nil: no attestation is published
 	trust      Trust       // nil: a trusted name is its own anchor
 	trustIndex TrustIndex  // nil: no trust index is written (RT-6.43 step 3)
+	watcher    Watcher     // nil: no theft detection (#154 step 3)
 	persons    personHooks // the console's path (person.go); unset: none issued
 }
 
@@ -336,6 +337,11 @@ func (s *Service) authorize(ctx context.Context, req *jwt.AuthorizationRequestCl
 	id, err := s.verifier.Verify(ctx, hello.Token)
 	if err != nil {
 		return "", who, err
+	}
+	// A session alternating between networks is a copy: refused (#154 step 3);
+	// a host key doing so is only reported.
+	if err := s.watchTheft(host, id.SID, req.ClientInformation.Host); err != nil {
+		return "", append(who, "owner", id.Owner, "sub", id.Subject, "session", id.SID), err
 	}
 	// The brake holds names (the owner's username), before anything is written.
 	if err := s.brake.Check(id.Owner); err != nil {

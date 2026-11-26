@@ -34,6 +34,10 @@ type StatusError struct {
 func (e *StatusError) Error() string { return e.Err.Error() }
 func (e *StatusError) Unwrap() error { return e.Err }
 
+// HTTPStatus is the answer's status: the mirror tells a revoked token (401,
+// 403) from a transient failure by it without importing this package.
+func (e *StatusError) HTTPStatus() int { return e.Status }
+
 // refuse maps a message-specific refusal, else nil.
 func refuse(err error) error {
 	var se *StatusError
@@ -58,6 +62,13 @@ type Client struct {
 func New(baseURL, token string) *Client {
 	return &Client{base: strings.TrimRight(baseURL, "/"), token: token,
 		http: &http.Client{Timeout: 20 * time.Second, CheckRedirect: netloc.NoRedirect}}
+}
+
+// As sets the bot's user id when the caller knows it (an agent's own bot,
+// RT-6.44), so Me makes no call and the client is safe to share.
+func (c *Client) As(userID string) *Client {
+	c.me = userID
+	return c
 }
 
 // Me resolves the bot's own user id, which a reaction needs.

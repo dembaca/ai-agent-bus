@@ -50,11 +50,12 @@ export MM_LOGIN_ISSUER=https://<keycloak-host>/realms/<realm>
 export MM_LOGIN_CLIENT_ID=<client-id>   # the Keycloak client of this bus, public
 ```
 
-The session's MCP server (under corral the host process) starts the device flow; a human confirms in the browser at
-Keycloak, and the refresh token stays on the host (RT-6.34; today, decided to
-change, #154). Nothing reaches
+The session's MCP server (in a keyless corral session the relay in the sandbox) starts the device flow: it opens a browser
+or writes the address and the code to its stderr, and DMs the owner; a human confirms in the browser at
+Keycloak. The refresh token stays in the server's store, under corral in the sandbox's home (RT-6.34, #154). Nothing reaches
 the bus before that confirmation.
 
+- [ ] A browser opens on the approval page, or the server's stderr (its MCP log) shows the address and the code, never the device code
 - [ ] The login link arrives as a DM to the owner. It is not a secret: the
       person check at Keycloak is the barrier, not the link (RT-6.34)
 - [ ] The token carries `aud` and `groups`

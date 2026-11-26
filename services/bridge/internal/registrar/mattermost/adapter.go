@@ -99,12 +99,16 @@ type Bot struct {
 	UserID      string `json:"user_id"`
 	Username    string `json:"username"`
 	DisplayName string `json:"display_name"`
+	Description string `json:"description"`
+	OwnerID     string `json:"owner_id"`
 }
 
 // AccessToken is a user access token.
 type AccessToken struct {
-	Token string `json:"token"`
-	ID    string `json:"id"`
+	Token       string `json:"token"`
+	ID          string `json:"id"`
+	Description string `json:"description"`
+	IsActive    bool   `json:"is_active"`
 }
 
 // Preference is a Mattermost user preference.
@@ -405,6 +409,74 @@ func (m *Adapter) RevokeAgent(ctx context.Context, a core.Agent) error {
 		}
 	}
 	return m.do(ctx, http.MethodPost, "/api/v4/bots/"+url.PathEscape(a.ID)+"/disable", nil, m.Cfg.Token, nil)
+}
+
+// Account reads the account a token belongs to, with its roles: the
+// bridge's start checks of its admin and posting bots (RT-6.44).
+func (m *Adapter) Account(ctx context.Context, token string) (User, error) {
+	var u User
+	err := m.do(ctx, http.MethodGet, "/api/v4/users/me", nil, token, &u)
+	return u, err
+}
+
+// BotOf reads the bot account with user id id; nil when there is none
+// (a person's account, or a disabled bot).
+func (m *Adapter) BotOf(ctx context.Context, id string) (*Bot, error) {
+	var b Bot
+	if err := m.do(ctx, http.MethodGet, "/api/v4/bots/"+url.PathEscape(id), nil, m.Cfg.Token, &b); err != nil {
+		if isNotFound(err) {
+			return nil, nil
+		}
+		return nil, err
+	}
+	return &b, nil
+}
+
+// tokenPage is how many tokens RevokeIssued reads per page; maxTokenPages
+// bounds the pages, so a server that never ends its list cannot loop it.
+const (
+	tokenPage     = 200
+	maxTokenPages = 100
+)
+
+// RevokeIssued revokes the agent's active tokens this adapter minted (their
+// description is Cfg.TokenDescription); other tokens stay. It reads every
+// page first and revokes then, so no revocation shifts a page under it.
+func (m *Adapter) RevokeIssued(ctx context.Context, a core.Agent) error {
+	var tokens []AccessToken
+	for page := 0; ; page++ {
+		if page == maxTokenPages {
+			return fmt.Errorf("more than %d tokens", maxTokenPages*tokenPage)
+		}
+		var batch []AccessToken
+		path := fmt.Sprintf("/api/v4/users/%s/tokens?page=%d&per_page=%d", url.PathEscape(a.ID), page, tokenPage)
+		if err := m.do(ctx, http.MethodGet, path, nil, m.Cfg.Token, &batch); err != nil {
+			return err
+		}
+		tokens = append(tokens, batch...)
+		if len(batch) < tokenPage {
+			break
+		}
+	}
+	var errs []error
+	for _, t := range tokens {
+		if t.IsActive && t.Description == m.Cfg.TokenDescription {
+			errs = append(errs, m.do(ctx, http.MethodPost, "/api/v4/users/tokens/revoke", map[string]string{"token_id": t.ID}, m.Cfg.Token, nil))
+		}
+	}
+	return errors.Join(errs...)
+}
+
+// RemoveReaction removes user userID's reaction emoji from a post with the
+// admin token (a system admin may remove another's reaction); one that is
+// gone already, or whose post is, is no error.
+func (m *Adapter) RemoveReaction(ctx context.Context, userID, postID, emoji string) error {
+	err := m.do(ctx, http.MethodDelete, "/api/v4/users/"+url.PathEscape(userID)+"/posts/"+
+		url.PathEscape(postID)+"/reactions/"+url.PathEscape(emoji), nil, m.Cfg.Token, nil)
+	if isNotFound(err) {
+		return nil
+	}
+	return err
 }
 
 // HideBotDirectChannel hides the admin↔bot DM from the registrar account's sidebar.

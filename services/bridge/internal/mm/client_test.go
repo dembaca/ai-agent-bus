@@ -4,11 +4,14 @@ import (
 	"context"
 	"encoding/json"
 	"errors"
+	"fmt"
 	"io"
 	"net/http"
 	"net/http/httptest"
 	"strings"
 	"testing"
+
+	"github.com/dembaca/ai-agent-bus/services/bridge/internal/mirror"
 )
 
 // fake is Mattermost's REST side for one test: the handler answers what
@@ -208,5 +211,19 @@ func TestRedirectIsNotFollowed(t *testing.T) {
 	}
 	if followed {
 		t.Error("the client followed the redirect")
+	}
+}
+
+// RT-6.44: the mirror drops an agent bot's client only on a refused token,
+// told by the status a StatusError carries, wrapped or not.
+func TestTheMirrorReadsTheStatusOfAFailure(t *testing.T) {
+	for status, want := range map[int]bool{401: true, 403: true, 429: false, 500: false, 503: false} {
+		err := fmt.Errorf("post: %w", &StatusError{Status: status, Err: errors.New("x")})
+		if mirror.Revoked(err) != want {
+			t.Errorf("%d: revoked %v", status, !want)
+		}
+	}
+	if mirror.Revoked(context.DeadlineExceeded) {
+		t.Error("a timeout counted as a refused token")
 	}
 }
