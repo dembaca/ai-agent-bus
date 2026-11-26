@@ -275,6 +275,15 @@ before 0.5.0 are described in the git history.
 
 ### Docs
 
+- **Every environment variable gets the `CB_` prefix, decided, not built
+  yet** (#169, step 1). [docs/env-names.md](docs/env-names.md) maps each
+  name the project defines to its new one: `CB_MM_…` for what exists only
+  because of Mattermost, `CB_…` for the rest, `CB_AUTH_…`, `CB_AUTHD_…`,
+  `CB_BRIDGE_…` and `CB_CONSOLE_…` for the services. It sets the reading
+  rule for release 0.103.0 (the new name first, the old one with a
+  deprecation warning, both set and different refuses the start, the
+  fallbacks go one release later), the change of the `Needs:` grammar and
+  the other places that change with the renames.
 - **The one operating model for the host login, documented, not built yet**
   (the owner's decision 10, #154, step 1 of 5). The NATS decision (ADR-014) gets an amendment of
   2026-11-26: the rule "credentials stay on the host, never in a sandbox"
