@@ -451,10 +451,8 @@ says whether the setting itself is about Mattermost.
 have no `MM` in their names; the rename gives them one, as the rule says:
 `CB_BRIDGE_MM_BOT_PREFIX` and `CB_BRIDGE_MM_HIDE_BOT_DM`.
 
-The bridge reads its settings from its container's environment, which no
-plugin manifest writes: a value that is exactly `${NAME}` is a value there,
-not an unexpanded placeholder, so the placeholder rule of the reading rule
-does not apply to it.
+The bridge applies the placeholder rule as the login service does: a value
+that is exactly `${NAME}` counts as unset.
 
 ### The console (17)
 

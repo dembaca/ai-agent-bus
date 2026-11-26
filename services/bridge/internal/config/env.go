@@ -3,6 +3,7 @@ package config
 import (
 	"fmt"
 	"os"
+	"regexp"
 )
 
 // Lookup is os.LookupEnv's shape: the value, and whether the name is set at
@@ -43,8 +44,8 @@ func OSEnv(warn Warn) *Env { return NewEnv(os.LookupEnv, warn) }
 // Get is the value of the setting newName, formerly oldName; "" when neither
 // is set. The error names both names, never a value: a value may be a secret.
 func (e *Env) Get(newName, oldName string) (string, error) {
-	nv, nset := e.lookup(newName)
-	ov, oset := e.lookup(oldName)
+	nv, nset := e.read(newName)
+	ov, oset := e.read(oldName)
 	switch {
 	case !oset:
 		return nv, nil
@@ -62,6 +63,19 @@ func (e *Env) Get(newName, oldName string) (string, error) {
 			"; rename it, the old name goes in the release after 0.103.0", "old", oldName, "new", newName)
 		return ov, nil
 	}
+}
+
+// placeholder is an unexpanded ${NAME}: unset, as in the login service and
+// the MCP server (docs/env-names.md, the reading rule).
+var placeholder = regexp.MustCompile(`^\$\{[A-Za-z_][A-Za-z0-9_]*\}$`)
+
+// read is one name: unset when absent or an unexpanded placeholder.
+func (e *Env) read(name string) (string, bool) {
+	v, ok := e.lookup(name)
+	if !ok || placeholder.MatchString(v) {
+		return "", false
+	}
+	return v, true
 }
 
 func (e *Env) once(oldName, msg string, args ...any) {

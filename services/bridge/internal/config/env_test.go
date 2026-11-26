@@ -135,3 +135,19 @@ func TestLoadRefusesNamesThatDisagree(t *testing.T) {
 		}
 	}
 }
+
+func TestAnUnexpandedPlaceholderCountsAsUnset(t *testing.T) {
+	env := NewEnv(func(n string) (string, bool) {
+		switch n {
+		case "CB_BRIDGE_MM_URL":
+			return "${CB_BRIDGE_MM_URL}", true
+		case "BRIDGE_MM_URL":
+			return "https://chat.example", true
+		}
+		return "", false
+	}, nil)
+	v, err := env.Get("CB_BRIDGE_MM_URL", "BRIDGE_MM_URL")
+	if err != nil || v != "https://chat.example" {
+		t.Fatalf("got %q, %v; want the old name's value", v, err)
+	}
+}
