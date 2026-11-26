@@ -538,3 +538,26 @@ def test_a_claim_of_a_channel_it_left_is_no_home() -> None:
     assert (f.home_of(AGENT_A), f.guests_of(AGENT_A)) == ("dev", [])
     graph = f.graph()
     assert {e["to"] for e in graph["edges"] if e["kind"] == "coordinates"} == {"dev"}
+
+
+def test_an_owner_named_like_a_channel_gets_its_own_node() -> None:
+    """716d72's delta review: the person's id carries `person:`, the channel's its name,
+    so an owner `dev` beside a channel `dev` is two nodes with two ids and the trusts
+    edge points at the person's."""
+    from mattermost_ai_agent_bus.natsbus import encode_claim
+
+    f = Fleet()
+    feed(f,
+         (*presence(AGENT_A, "dev"), ack("PRESENCE", "console", 1, 1, 1000.0)),
+         (*attestation_of(AGENT_A, "dev", "dev"), ack("PRESENCE", "console", 2, 2, 1001.0)),
+         (f"presence.member.dev.{AGENT_A}", encode_claim(), ack("PRESENCE", "console", 3, 3, 1002.0)))
+    graph = f.graph("dev")
+    nodes = {n["id"]: n for n in graph["nodes"]}
+    assert (nodes["person:dev"]["kind"], nodes["person:dev"]["label"]) == ("person", "dev")
+    assert nodes["person:dev"].get("you") is True
+    assert (nodes["dev"]["kind"], nodes["dev"]["label"]) == ("channel", "dev")
+    assert len(graph["nodes"]) == len(nodes)  # two nodes, and no id stands twice
+    assert (AGENT_A, "person:dev", "trusts") in {
+        (e["from"], e["to"], e["kind"]) for e in graph["edges"]}
+    assert (AGENT_A, "dev", "coordinates") in {
+        (e["from"], e["to"], e["kind"]) for e in graph["edges"]}
