@@ -99,7 +99,9 @@ type as `h_in`, `h_read`, `h_w`; the server places the bus's fixed text there.
 Not counted: the compaction's own model request (OpenCode books it apart from the
 session's steps), and a bus tool the model calls from inside Code Mode's `execute`
 rather than as a tool of its own (it is not seen as the bus's; its call and result
-count as task work). A turn without a request with usage posts nothing. A `usage`
+count as task work). The plugin's own server entry carries `codemode: false` (issue
+#152), so this applies only to an entry configured by hand that stays in Code Mode.
+A turn without a request with usage posts nothing. A `usage`
 POST that fails (server gone, timeout) is not repeated: that turn's numbers are lost.
 The split is kept in memory: after a reload of the plugin it starts afresh, and what
 it has not seen counts as task work.
@@ -271,6 +273,7 @@ By hand (without the plugin's, or with `mcp: false`), in the project's `opencode
           "sh", "-c",
           "MM_REG_SECRET=\"$(gopass show -o bus/registrar)\" exec uv run --locked --project /ABS/PATH/ai-agent-bus/mcp mattermost-ai-agent-bus-mcp"
         ],
+        "codemode": false,
         "environment": {
           "MM_CHAT_URL": "https://chat.example.com",
           "MM_REGISTER_URL": "https://chat.example.com/register/v1/agents",
@@ -291,6 +294,13 @@ By hand (without the plugin's, or with `mcp: false`), in the project's `opencode
 
 - `opencode mcp add ai-agent-bus --env K=V … -- sh -c '…'` writes this entry, but
   refuses an empty `--env` value: add the two empty `CLAUDE_*` variables by hand.
+- `codemode: false`: the bus tools are direct tools, not Code Mode (`execute`), so the
+  model sees them and their docs as written, as in Claude Code and pi, and the token
+  split counts bus calls exactly (#150). It costs about 2,460 tokens of tool docs in
+  every request (about 3,240 with the instructions, mostly cache reads); Code Mode is
+  cheaper on the window but hides the tools behind `execute` (the measurement is in
+  [#152](https://github.com/dembaca/ai-agent-bus/issues/152#issuecomment-7185986052)).
+  The plugin's own server entry carries the same setting.
 - `MM_WORKSPACE` (the project's real directory) and the two empty variables: the plugin
   looks only for the endpoint file keyed on the project directory, and a Claude Code
   shell's session id or project directory, inherited, would key the server's files

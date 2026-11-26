@@ -6,7 +6,24 @@ before 0.5.0 are described in the git history.
 ## Unreleased
 
 ### Changed
+- **The OpenCode plugin registers the bus server as direct tools, not Code
+  Mode** (#152). The model sees the bus tools and their docs as written, as in
+  Claude Code and pi, and the token split counts bus calls exactly (#150). It
+  costs about 2,460 tokens of tool docs in every request, about 3,240 with the
+  instructions, mostly cache reads; Code Mode is cheaper on the window — the
+  instructions alone, a tool's docs once per context as a search result, and
+  about 50 tokens of wrapper per call — but hides the tools behind `execute`,
+  and the split then counts bus calls as task work (the measurement is in
+  [#152](https://github.com/dembaca/ai-agent-bus/issues/152#issuecomment-7185986052)).
+  The plugin's `addMcp` sets `codemode: false` on its server entry, and a
+  server configured by hand in `adapters/opencode.md` shows it too. Nothing
+  else changes: the tools, their names and their arguments stay as they were,
+  and a host that configured the server itself can set the same flag. The
+  accounting limit #150 documents for Code Mode (bus calls inside `execute`
+  count as task work, the head overstates the overhead) applies only to such a
+  hand-configured entry now, not to the plugin's own server.
 
+- **An agent's MCP server also drops the bridge's copies posted under the agent's own Mattermost bot** (#151, RT-6.36 step 4). A post in the NATS home that carries `nats_id` counts as a copy when its author is the one bridge bot (`MM_BRIDGE_BOT`, as before) or the bot account named the bridge's bot prefix plus the NATS sender of the post that `nats_id` names; reactions of such a bot likewise. The prefix comes from the bridge's signal on `presence.bridge.<home>.v1` (a new optional `bot_prefix` field), no host setting. Only bot accounts count, and such a copy hides only its own sender's post. Hosts need this release before the bridge turns agent bots on, or every agent reads each NATS post twice; until the signal names a prefix nothing changes.
 - **The central bridge logs one INFO line per person post, reaction or removal of a reaction it carries onto NATS** (#134, RT-6.42): `inbound: carried` with the home, `what` (`post`, `reaction` or `unreaction`), the Mattermost post id and the subject, no text and no name beyond the anchor.
 
 ### Breaking
@@ -171,6 +188,13 @@ before 0.5.0 are described in the git history.
 
 ### Fixed
 
+- **The registrar's Mattermost adapter in the central bridge keeps its admin
+  token off plain `http`** (#135). It follows the rule the bridge's own
+  client and WebSocket reader got in #131: an `http` URL only to a loopback
+  host or with its `AllowHTTP` setting (the bridge's
+  `BRIDGE_MM_ALLOW_HTTP`), refused when the adapter is made and at each
+  call, and no redirect followed, so a 30x is an error. The adapter is not
+  yet active in `bridged`.
 - **A NATS home starts for an identity first seen after the directory
   import** (#86, the channel directory's anchors, RT-6.39). The login service
   gave such an identity its Keycloak `sub` as anchor, so the agent name and
@@ -203,6 +227,22 @@ before 0.5.0 are described in the git history.
 
 ### Docs
 
+- **The one operating model for the host login, documented, not built yet**
+  (the owner's decision 10, #154, step 1 of 5). The NATS decision (ADR-014) gets an amendment of
+  2026-11-26: the rule "credentials stay on the host, never in a sandbox"
+  goes; one operating model with and without corral, in which the MCP
+  server logs in itself and keeps the refresh token and the host key in
+  the system keychain or a 0600 file, under corral in the sandbox's own
+  home. The price is named: an agent can read them, and the token, its
+  human's offline token shared by all sessions on the host, yields new
+  agents of that owner with any key, but approves nothing. The keyless host
+  session (RT-6.18) and the host login (RT-6.34) say what is decided and
+  what still runs. New risks: the readable token with its planned
+  protections and what they miss, detection in the login service, an offline maximum and
+  DPoP (RISK-26), and two findings the login service review of 2026-11-22 rated high, raised again,
+  the token's binding and storage (RISK-27) and an emergency brake that
+  acts only at the next issue (RISK-28). The site's security answers say
+  what is true today and what is decided.
 - **The deployment and building block views say what runs in the lab**
   (#108). The central bridge carries people's posts and reactions onto
   NATS in the lab since 2026-11-25 (step 2, RT-6.42), and the deployment
