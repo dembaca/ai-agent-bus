@@ -130,6 +130,13 @@ before 0.5.0 are described in the git history.
 
 ### Fixed
 
+- **The registrar's Mattermost adapter in the central bridge keeps its admin
+  token off plain `http`** (#135). It follows the rule the bridge's own
+  client and WebSocket reader got in #131: an `http` URL only to a loopback
+  host or with its `AllowHTTP` setting (the bridge's
+  `BRIDGE_MM_ALLOW_HTTP`), refused when the adapter is made and at each
+  call, and no redirect followed, so a 30x is an error. The adapter is not
+  yet active in `bridged`.
 - **A NATS home starts for an identity first seen after the directory
   import** (#86, the channel directory's anchors, RT-6.39). The login service
   gave such an identity its Keycloak `sub` as anchor, so the agent name and
