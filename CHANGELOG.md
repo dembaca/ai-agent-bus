@@ -3,7 +3,11 @@
 Every version bump in `.claude-plugin/plugin.json` gets an entry here. Versions
 before 0.5.0 are described in the git history.
 
-## Unreleased
+## 0.102.0
+
+Needs: login service jetstream user with consumer create and delete rights on the directory bucket.
+Needs: keycloak post logout redirect uri for the console client.
+Needs: MM_BRIDGE_BOT kept on every host, and this release on all hosts before the bridge turns agent bots on.
 
 ### Changed
 - **The OpenCode plugin registers the bus server as direct tools, not Code
@@ -106,7 +110,7 @@ before 0.5.0 are described in the git history.
   > `services/auth/nats-server.example.conf`); without them every operator
   > credential is refused. 0.101.0 already needs them once its console path
   > is on (the operator's channel listing of #126), though its entry does not
-  > name them; the next release entry carries them as a `Needs:` line.
+  > name them; this release's first `Needs:` line carries them.
 
 - **The bus traffic by category, exact counts for every harness** (the
   first stage of splitting the tokens into task work, bus overhead and
