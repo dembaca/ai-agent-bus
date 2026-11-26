@@ -68,6 +68,22 @@ describe("the pages", () => {
     expect(html).toContain(`title="${card.home}`)
   })
 
+  it("names both pills in the status cell's title, the plain state when none waits", async () => {
+    const { cards } = await fleet()
+    const base: AgentCard = { ...cards[0], state: "working" }
+    const waitsCard: AgentCard = { ...base, asksForOperator: 1 }
+    const waitsHtml = renderToStaticMarkup(
+      <AgentList cards={[waitsCard]} asks={[]} filter="all" onFilter={noop} query="" onQuery={noop}
+        onOpenAgent={noop} onOpenAsk={noop} onAllAsks={noop} />)
+    expect(waitsHtml).toContain('title="working · waits on you"')
+    expect(waitsHtml).toContain('>waits on you</span>')
+    const plainHtml = renderToStaticMarkup(
+      <AgentList cards={[base]} asks={[]} filter="all" onFilter={noop} query="" onQuery={noop}
+        onOpenAgent={noop} onOpenAsk={noop} onAllAsks={noop} />)
+    expect(plainHtml).toContain('title="working"')
+    expect(plainHtml).not.toContain('>waits on you</span>')
+  })
+
   it("lists the open asks on top and one row per agent", async () => {
     const { cards, asks } = await fleet()
     expect(cards.length).toBeGreaterThan(0)
