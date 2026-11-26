@@ -14,7 +14,7 @@ import {
   AGENT_STATES, HARNESS_LABEL, type AgentCard, type Post, type Report, type ReportSegment, type ReportStack,
   type ThreadPage,
 } from "./types"
-import type { WireAsk } from "./http"
+import type { WireAsk, WireMe } from "./http"
 import fixture from "../../../fixtures/console-api.json"
 // The fixture's envelope, widened where the JSON import widens it
 type FixtureEvShape = {
@@ -46,6 +46,7 @@ if (!import.meta.env.PROD) {
   const page = { rootId: fixture.page.rootId, posts: [firstPost], next: fixture.page.next } satisfies ThreadPage
   const events = fixture.events satisfies FixtureEvShape
   const ask = fixture.ask satisfies Omit<WireAsk, "end" | "kind"> & { end: string; kind: string }
+  const me = fixture.me satisfies WireMe
   const report: ReportShape = fixture.report satisfies ReportShape
   if (ask.kind !== "approval" && ask.kind !== "question") {
     throw new Error(`wire fixture: unknown ask kind ${ask.kind}`)
@@ -80,6 +81,9 @@ if (!import.meta.env.PROD) {
     if (want !== what) {
       throw new Error(`wire fixture: the ${what} event says ${want}`)
     }
+  }
+  if (me.build === undefined) {
+    throw new Error("wire fixture: /v1/me states no build (#182)")
   }
   if (ask.end !== "open") {
     throw new Error(`wire fixture: the example ask is not open (${ask.end})`)

@@ -6,10 +6,10 @@
 }
 
 .report {
-  border: 1px solid var(--line);
   border-radius: var(--radius);
   background: var(--surface);
-  padding: 12px 14px;
+  box-shadow: var(--shadow);
+  padding: 12px 16px;
   display: grid;
   gap: 10px;
 }
@@ -18,10 +18,19 @@
   display: flex;
   justify-content: space-between;
   align-items: baseline;
+  gap: 10px;
 }
+.report h2 { min-width: 0; }
 
-.report h3 { margin: 0; font-size: 13px; }
-.report__window { color: var(--muted); font-size: 11px; }
+.report h2 {
+  margin: 0;
+  font-size: 13px;
+  font-weight: 600;
+  text-transform: uppercase;
+  letter-spacing: .05em;
+  color: var(--muted);
+}
+.report__window { color: var(--muted); font-size: 11px; white-space: nowrap; flex: none; }
 
 .report__warn {
   margin: 0;
@@ -52,7 +61,7 @@
 
 .report__bar-track {
   height: 6px;
-  border-radius: 3px;
+  border-radius: var(--radius);
   background: var(--hair);
   overflow: hidden;
 }
@@ -61,7 +70,7 @@
   display: block;
   height: 100%;
   background: var(--accent);
-  border-radius: 3px;
+  border-radius: var(--radius);
 }
 
 .report__bar-value {
@@ -76,6 +85,7 @@
 
 .report__stack-head {
   display: flex;
+  flex-wrap: wrap;
   justify-content: space-between;
   align-items: center;
   gap: 8px;
@@ -83,6 +93,7 @@
 }
 
 .report__legend { display: flex; gap: 10px; flex-wrap: wrap; }
+.report__key { white-space: nowrap; }
 .report__key::before {
   content: "";
   display: inline-block;
@@ -122,7 +133,7 @@
 .report__stack-track {
   display: flex;
   height: 16px;
-  border-radius: 3px;
+  border-radius: var(--radius);
   background: var(--hair);
   overflow: hidden;
 }
@@ -137,6 +148,11 @@
   text-align: center;
   white-space: nowrap;
   overflow: hidden;
+  container-type: inline-size;
+}
+/* a segment narrower than its label shows none (the title still says it) */
+@container (max-width: 30px) {
+  .report__seg-label { display: none; }
 }
 
 .report__seg--task { --seg: var(--state-working); }

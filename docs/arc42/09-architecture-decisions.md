@@ -23,10 +23,10 @@ code does today and point here where a decision will change them.
 | ADR-012 | Files an agent attaches: the server never opens a path the agent names; the bytes come from inside the sandbox (the shell's `POST /v1/files`, or a small text in the `attach` tool), checked by their bytes, uploaded for a post that takes only this server's fresh uploads | Decided 2026-11-14, built (0.90.0, RT-6.33) | — |
 | ADR-013 | The channel banner shows what waits: the home's 👑 server writes it on a change only, at most once a minute; a stall in red, asks waiting on a human in amber, else the crown and the agents by status; display only, never input; a human's banner is left alone and told to its human; without the licence or the permission everything stays as today; later the 👑 prefix only on asks and routings | Withdrawn (2026-11-16): depends on the Mattermost edition and a permission setting; the header carries the rare facts instead | — |
 
-| ADR-014 | Agent-to-agent traffic over NATS JetStream; Mattermost stays the humans' chat behind one central adapter per tenant; agents log in through Keycloak (device flow) and a login service issues 15-minute NATS credentials bound to the host's own key; a clean-room build from Cotal's protocol description with a message format of the bus's own (no wire compatibility with Cotal); tools, hook API and bus logic unchanged behind the ports; parallel operation switched per home channel, the registrar shut down last; the sender NATS-native (last subject token, agents read only through push consumers the login service makes, no signed envelope) | Accepted (2026-11-22) by the owner, with the review's recommendations; three later points open (below), none of them blocks the first NATS code. Phase 2 built; phase 3 built in part in 0.97.0: the login service with the host's Keycloak login, consumers, a home over NATS, owner, presence and crown over NATS (RT-6.34 to RT-6.38), the attestation after 0.97.0 (RT-6.41); not built: the central adapter, the pod path, role addressing, files and DMs over NATS, signed human-origin events, shutting the registrar down. Amended on 2026-11-26 by the owner's one operating model for the host login (decision 10, #154): credentials no longer stay on the host; the MCP server holds the refresh token and the host key itself, under corral in the sandbox's home (built, unreleased), with detection, an offline maximum and DPoP against theft (not built yet) | — |
-| ADR-015 | Operator web console: a web application for the people who look after the agents, with the agents by state, who trusts and who coordinates whom, the bus's statistics as charts, and the open asks answered beside their thread; no chat. It stands alone on the bus on NATS, with Keycloak as its only login and no dependency on Mattermost (decided by the owner on 2026-11-23). Recommended: on NATS as the logged-in operator, with a credential of that person's own from the login service, so NATS says who answered and the asking agent's server still decides whether it approves | Proposed (2026-11-23), not accepted; eight points open for the owner, three decided on 2026-11-23 (ADR-016). Stage 1's read-only pilot is built (2026-11-24): the browser app (#89) and its server (#94) — the login of point 4 and the API of point 10 with its SSE — one read-only NATS account, the pilot's documented deviation, since replaced: the console reads as each logged-in operator with a credential of that person's own from the login service (the addition of 2026-11-25, points 1 to 7, RT-6.43), and the static account is gone. The fleet's "now" carries a monotonic floor: a delivery-silent console ages presence out and drops the crown, a jump of the host's wall clock changes nothing, and only a genuinely newer server stamp re-anchors it (#108). Of the addition of 2026-11-25, the asks and `STATS` on NATS are built too (points 8 to 15, the MCP server's and the console's part, and the login service's stream and rights for them): each MCP server publishes its ask record and its `STATS` parts, the console receives them through each login's own consumers, decodes them strictly and shows the asks read-only and the two reports. #158 adds the metrics page: `GET /metrics` in the Prometheus text format behind the operator's login — the console's own observations aggregated, counted process-wide at the event (requests by bounded route buckets, streams, the readers' connection states, connects, renewals, decoder refusals) and the agent numbers of that session's own reading, served only while it is live, in bounded labels (no agent, owner or home; only the newest versions keep their own label), so a scrape starts nothing and needs no new right; the session cookie is never a scrape credential, and the approved unattended variant — a loopback listener with a scrape token and a read-only service account on the STATS stream — follows as its own pull request | — || ADR-016 | The bus without a chat as its source: Keycloak is the root of identity, keyed by `sub`, with chat accounts bound to it per product; a channel directory on NATS that only the login service writes (name, public or not, members, a binding per chat) replaces Mattermost membership behind `callout.Channels`; one bridge per chat product vouches for its humans, and later a Keycloak login on NATS itself; the login service attests trust lists; agents need no chat. Decided by the owner on 2026-11-23: the directory, Mattermost membership behind a replaceable interface until then, and for the console reading only, a Python server and what an operator sees | Accepted (2026-11-23) by the owner, its nine open points decided by the owner the same day; it changes ADR-014 points 6, 10, 11 and 16. Built in part: the channel directory (RT-6.39) and "in doubt, foreign" (RT-6.16) in 0.97.0; after 0.97.0 the admin API with the import from Mattermost (RT-6.40) and the attested trust lists (RT-6.41). Not built: the bridges, `checkChat` as a binding, agents without a chat, the host's agent name from an anchor that is not the username. Addition 2026-11-24: all Mattermost functions in one service, the bridge in `services/bridge`, the registrar's move as an open step; built step by step, the pilot with one bridge bot | — |
-| ADR-017 | The token split attributes tokens by content, not by cause: a request's tokens go to task work, bus overhead or multi-agent coordination by what its context and output hold, never all to the bus because the bus started the turn | Decided 2026-11-26 with the issue on the token split (#139, its proposed defaults); built for Claude Code (the overhead measurement, RT-6.9 step 2, method 1), for OpenCode and pi by their plugins' usage events | #139 |
-
+| ADR-014 | Agent-to-agent traffic over NATS JetStream; Mattermost stays the humans' chat behind one central adapter per tenant; agents log in through Keycloak (device flow) and a login service issues 15-minute NATS credentials bound to the host's own key; a clean-room build from Cotal's protocol description with a message format of the bus's own (no wire compatibility with Cotal); tools, hook API and bus logic unchanged behind the ports; parallel operation switched per home channel, the registrar shut down last; the sender NATS-native (last subject token, agents read only through push consumers the login service makes, no signed envelope) | Accepted (2026-11-22) by the owner, with the review's recommendations; three later points open (below), none of them blocks the first NATS code. Phase 2 built; phase 3 built in part in 0.97.0: the login service with the host's Keycloak login, consumers, a home over NATS, owner, presence and crown over NATS (RT-6.34 to RT-6.38), the attestation after 0.97.0 (RT-6.41); not built: the central adapter, the pod path, role addressing, files and DMs over NATS, signed human-origin events, shutting the registrar down | — |
+| ADR-015 | Operator web console: a web application for the people who look after the agents, with the agents by state, who trusts and who coordinates whom, the bus's statistics as charts, and the open asks answered beside their thread; no chat. It stands alone on the bus on NATS, with Keycloak as its only login and no dependency on Mattermost (decided by the owner on 2026-11-23). Recommended: on NATS as the logged-in operator, with a credential of that person's own from the login service, so NATS says who answered and the asking agent's server still decides whether it approves | Proposed (2026-11-23), not accepted; eight points open for the owner, three decided on 2026-11-23 (ADR-016). Stage 1's read-only pilot is built (2026-11-24): the browser app (#89) and its server (#94) — the login of point 4 and the API of point 10 with its SSE — one read-only NATS account, the pilot's documented deviation, since replaced: the console reads as each logged-in operator with a credential of that person's own from the login service (the addition of 2026-11-25, points 1 to 7, RT-6.43), and the static account is gone. The fleet's "now" carries a monotonic floor: a delivery-silent console ages presence out and drops the crown, a jump of the host's wall clock changes nothing, and only a genuinely newer server stamp re-anchors it (#108). Of the addition of 2026-11-25, the asks and `STATS` on NATS are built too (points 8 to 15, the MCP server's and the console's part, and the login service's stream and rights for them): each MCP server publishes its ask record and its `STATS` parts, the console receives them through each login's own consumers, decodes them strictly and shows the asks read-only and the two reports. #158 adds the metrics page: `GET /metrics` in the Prometheus text format behind the operator's login — the console's own observations aggregated, counted process-wide at the event (requests by bounded route buckets, streams, the readers' connection states, connects, renewals, decoder refusals) and the agent numbers of that session's own reading, served only while it is live, in bounded labels (no agent, owner or home; only the newest versions keep their own label), so a scrape starts nothing and needs no new right; the session cookie is never a scrape credential; the unattended variant the owner approved: a Bearer scrape token gates a listener of the page's own (CONSOLE_METRICS_LISTEN_ADDR, loopback by default), served from a service reading of one fleet and stats book — consumers the login service makes, an account subscribe-only on the two deliver subjects, aggregates only | — |
+| ADR-016 | The bus without a chat as its source: Keycloak is the root of identity, keyed by `sub`, with chat accounts bound to it per product; a channel directory on NATS that only the login service writes (name, public or not, members, a binding per chat) replaces Mattermost membership behind `callout.Channels`; one bridge per chat product vouches for its humans, and later a Keycloak login on NATS itself; the login service attests trust lists; agents need no chat. Decided by the owner on 2026-11-23: the directory, Mattermost membership behind a replaceable interface until then, and for the console reading only, a Python server and what an operator sees | Accepted (2026-11-23) by the owner, its nine open points decided by the owner the same day; it changes ADR-014 points 6, 10, 11 and 16. Built in part: the channel directory (RT-6.39) and "in doubt, foreign" (RT-6.16) in 0.97.0; after 0.97.0 the admin API with the import from Mattermost (RT-6.40) and the attested trust lists (RT-6.41). Not built: the bridges, `checkChat` as a binding, agents without a chat, the host's agent name from an anchor that is not the username. Addition 2026-11-24: all Mattermost functions in one service, the bridge in `services/bridge`, the registrar's move as an open step; built step by step, the pilot with one bridge bot | — |
+| ADR-017 | The token split attributes tokens by content, not by cause: a request's tokens go to task work, bus overhead or multi-agent coordination by what its context and output hold, never all to the bus because the bus started the turn | Decided 2026-11-26 with the issue on the token split (#139, its proposed defaults); built for Claude Code (the overhead measurement, RT-6.9 step 2, method 1) | #139 |
 
 **Terms.** An agent's **home** is the first entry of `CB_MM_PROJECT_CHANNEL`,
 else `CB_MM_CHANNEL`: exactly one per agent. Its **guest channels** are the
@@ -4055,34 +4055,48 @@ The console is the operators' view of the bus itself.
      A["Agents' MCP servers"] <--> N
    ```
 
-3. **Layout.** A sidebar on the left selects the view: Kanban, Graph,
-   Reports, with the number of open asks beside them. The main pane fills
-   the rest. A click on an item (an agent's card, a node, an ask) splits
-   the main pane horizontally: the view stays on top, the detail opens
-   below it. The detail shows the item's data and, where it has one, its
-   thread as the bus has it: the HELLO thread, a task's thread, an ask's
-   thread. An ask is answered there. A short-answer dialog on an ask's
-   badge is optional and never the only way: it opens the same ask, and the
-   thread stays one click away.
+3. **Layout.** Changed with the design the owner agreed on 2026-11-25
+   (it replaced a sidebar with a Kanban as the home and a split detail
+   pane). A top bar carries the Choirbus logo and wordmark, the views —
+   Agents (the home), Asks with the number of open asks (orange when one is
+   the operator's), Graph, Overview, Reports — the fleet stream's state, a
+   light/dark toggle and the logged-in operator with the logout. The look is
+   the website's brand: Inter only, the logo's navy as the accent, the
+   site's word colors (orange asks, blue tasks, green done), compact rows,
+   soft shadows, 2 px corners; dark follows the system until the operator
+   picks one with the toggle, which this browser keeps. A footer names the
+   console's release version and source commit, both from the image build
+   (#182). A click on an item (an agent's row, a node, an ask) opens its
+   detail as a page of its own, with a breadcrumb back to the view. The
+   detail shows the item's data and, where it has one, its thread as the
+   bus has it: the HELLO thread, a task's thread, an ask's thread. An ask
+   is answered there. A short-answer dialog on an ask's badge is optional
+   and never the only way: it opens the same ask, and the thread stays one
+   click away. The Overview counts from the same live data: agents
+   reachable and by status, the open asks and those for the operator, and
+   the way to the bus map (the Graph).
 
    ```mermaid
    stateDiagram-v2
-     [*] --> Full: open a view
-     Full --> Split: click an item
-     Split --> Split: click another item
-     Split --> Full: close the detail
-     Split --> Answering: send an answer
-     Answering --> Split: its copy came back from the bus, or none came (shown)
+     [*] --> View: open a view
+     View --> Detail: click an item
+     Detail --> Detail: click another item
+     Detail --> View: back, or pick a view
+     Detail --> Answering: send an answer
+     Answering --> Detail: its copy came back from the bus, or none came (shown)
    ```
 
    ```text
-   +---------+---------------------------------------------------+
-   | Kanban  | online          away            offline           |
-   | Graph   | [card] [card]   [card]          [card]            |
-   | Reports | [card]                                            |
-   |         +---------------------------------------------------+
-   | Asks 3  | agent: card, numbers | thread of the ask | answer |
-   +---------+---------------------------------------------------+
+   +-------------------------------------------------------------------+
+   | logo Choirbus  Agents  Asks 3  Graph  Overview  Reports  theme  op |
+   +-------------------------------------------------------------------+
+   | Agents                             [search] [All|Working|...|Off] |
+   | [open ask: title, by, age]  [open ask: title, by, age]            |
+   | agent  status  task  branch  home  context  asks  last post       |
+   | agent  status  task  branch  home  context  asks  last post       |
+   +-------------------------------------------------------------------+
+   | read-only pilot                     version x.y.z · commit abc1234 |
+   +-------------------------------------------------------------------+
    ```
 
    The bus confirms no publish (ADR-014 point 16): an answer is on the bus
@@ -4190,31 +4204,39 @@ The console is the operators' view of the bus itself.
    | Statistics | `STATS` lines in the stats channel, a Mattermost channel and no home (RT-6.9) | Not there | The lines on NATS, in a channel or subject of their own, kept at least as long as the longest report looks back |
    | What people wrote | Posts in Mattermost | Not there | Nothing: human-origin events reach NATS with the central adapter (ADR-014 phase 5); until then a thread in the console lacks them |
 
-   The Kanban's columns are the states the bus carries: with presence of
-   format v1 `online`, `away` and offline (a `bye`, or no fresh presence);
-   the state words in `lease.py`'s order once presence carries them. The
-   crown is a mark on the card, not a column. `WAITING`, `BLOCKED` and
+   The agents list's status words are the states the bus carries: with
+   presence of format v1 `online`, `away` and offline (a `bye`, or no fresh
+   presence); the state words in `lease.py`'s order once presence carries
+   them. The crown is a mark on the row, not a status. `WAITING`, `BLOCKED` and
    `BYE` are words of posts (RT-6.14 step 2), not states of an agent: the
    card shows the agent's task with its state, and "waits on a human" when
    it has an open ask. The harness logo follows the card's harness: Claude
    Code, OpenCode, Cursor, Codex, pi, else "other".
 
-6. **Kanban.** One card per agent, in the column of its state.
-   - **On the card:** name, task, role, `for` (with "autonomous"),
-     `trusts`, project, branch or PR, the first capabilities, harness logo
-     and model; the crown; `ctx`, the limits or the cost; the version; the
-     number of its open asks, those for the operator marked.
-   - **In the detail only:** the full card, the task rows it holds, the
-     session's age (its HELLO's time), the time since its last post (both
-     the NATS server's time), its HELLO thread and the threads of its open
-     asks.
+6. **Agents list** (a Kanban until the design of 2026-11-25). One compact
+   row per agent, in the order of the state words; above the table the open
+   asks, the operator's first. A search narrows the rows by any word of
+   name, task, branch, home, guest channels, harness, model or PR; a status
+   filter by group: working (`working`, `bus`), listening (`listening`,
+   `online`), idle (`idle`, `away`, `silent`), offline. A state the console
+   does not know is never guessed into a group: it shows under "All" and
+   under an "Other" filter, which appears while such an agent is there.
+   - **On the row:** name with the crown, harness and model; the state, and
+     "waits on you" when one of its open asks is the operator's; task;
+     branch or PR; home and the number of its guest channels; `ctx`; the
+     number of its open asks; the time since its last post.
+   - **In the detail only:** the full card (role, `for` with
+     "autonomous", `trusts`, project, capabilities, the limits or the
+     cost, the version among it), the task rows it holds, the session's
+     age (its HELLO's time), the time since its last post (both the NATS
+     server's time), its HELLO thread and the threads of its open asks.
    - **Not on the bus, so not shown until the bus carries it:** effort,
      sub-agents (they never use the bus), the running turn's duration
      (turns are noted only in the session's own counter file, RT-6.9 step
      1), the time in the current state (the presence stream keeps one
      message per subject, so no history; point 9).
-   - **Swimlanes** by home are optional and off at the start. A proposal to
-     tune with real numbers: lanes up to about eight homes, beyond that a
+   - **Grouping by home** is optional and off at the start. A proposal to
+     tune with real numbers: groups up to about eight homes, beyond that a
      filter by home.
 
 7. **Graph.** Nodes: people (the owners and trusted humans the roster
@@ -4341,7 +4363,7 @@ The console is the operators' view of the bus itself.
 
 11. **Stages.** None starts before the needs marked "before stage 1" in
     point 12 are met.
-    - **1, the smallest useful cut:** login, the Kanban with live states,
+    - **1, the smallest useful cut:** login, the agents with live states,
       the asks with "for me", the detail with thread and answer, and two
       reports (open asks, the bus's share per version; since the traffic
       counts the bus and coordination share and the bus traffic by

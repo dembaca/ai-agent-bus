@@ -1,113 +1,295 @@
-/* ai-agent-bus: operator console (ADR-015). Same plain-CSS approach as
-   site/: tokens here, one css file per component beside it. */
+/* ai-agent-bus: operator console (ADR-015), in the Choirbus brand of site/
+   (site/src/page.css): Inter only, the logo's navy as the accent, the site's
+   word colors (orange asks, blue tasks, green done). Light by default; dark
+   follows prefers-color-scheme until the top bar's toggle sets data-theme on
+   <html>. Compact, 2 px corners, soft shadows. Plain CSS: tokens here, one
+   file per component beside it.
 
-:root {
-  color-scheme: light dark;
+   Text contrast (WCAG AA, 4.5:1) was checked for every text token on the
+   surfaces it sits on, in both themes — on the page, a card and a hovered
+   row, each tint over each of them: 4.5:1 or more everywhere (muted on bg
+   5.2 light / 6.8 dark; green on its tint over the page 4.9). */
 
-  --bg: #111214;
-  --surface: #191b1e;
-  --surface-2: #1f2226;
-  --ink: #f2f3f5;
-  --text: rgba(242, 243, 245, .78);
-  --muted: rgba(242, 243, 245, .5);
-  --hair: #26292d;
-  --line: rgba(242, 243, 245, .1);
-  --accent: #3e9fff;
-  --for-me: #f09637;
-  --danger: #ff5d55;
-  --ok: #1f7a3d;
-  --focus: rgba(62, 159, 255, .55);
-
-  --state-working: #3e9fff;
-  --state-listening: #9d7bff;
-  --state-bus: #14b8a6;
-  --state-idle: #8d8d93;
-  --state-silent: #6f6f76;
-  --state-offline: #4a4a52;
-
-  --radius: 10px;
-  --font: ui-sans-serif, system-ui, "SF Pro Text", "Segoe UI", Inter, sans-serif;
-  --mono: ui-monospace, "SF Mono", "Cascadia Mono", Menlo, monospace;
+@font-face {
+  font-family: "Inter";
+  src: url("./fonts/inter-latin-wght-normal.woff2") format("woff2");
+  font-weight: 100 900;
+  font-style: normal;
+  font-display: swap;
 }
 
-@media (prefers-color-scheme: light) {
-  :root {
-    --bg: #f7f7f5;
-    --surface: #ffffff;
-    --surface-2: #f1f1ef;
-    --ink: #111;
-    --text: rgba(0, 0, 0, .72);
-    --muted: rgba(0, 0, 0, .5);
-    --hair: #eeefec;
-    --line: rgba(0, 0, 0, .1);
+:root {
+  color-scheme: light;
+
+  --bg: #f6f6f4;
+  --surface: #ffffff;
+  --surface-2: #fafaf9;
+  --hair: rgba(0, 0, 0, .04);
+  --line: rgba(0, 0, 0, .08);
+  --ink: #111111;
+  --text: rgba(0, 0, 0, .72);
+  --muted: rgba(0, 0, 0, .58);
+  --shadow: 0 1px 2px rgba(0, 0, 0, .05), 0 4px 14px rgba(0, 0, 0, .06);
+
+  /* the logo's navy, and the buttons that carry it */
+  --accent: #140b47;
+  --accent-soft: rgba(20, 11, 71, .07);
+  --btn: #140b47;
+  --on-btn: #fdf6ea;
+  --focus: rgba(11, 98, 196, .6);
+
+  /* the site's words: asks orange, tasks blue, done green; red for gone */
+  --ask-fill: #f09637;
+  --ask-text: #9a5207;
+  --ask-bg: rgba(240, 150, 55, .12);
+  --on-ask: #1d1206;
+  --task: #0b62c4;
+  --task-bg: rgba(11, 98, 196, .09);
+  --done: #1a6e36;
+  --done-bg: rgba(26, 110, 54, .09);
+  --gone: #b3301e;
+  --gone-bg: rgba(196, 50, 31, .08);
+  --idle: rgba(0, 0, 0, .6);
+  --idle-bg: rgba(0, 0, 0, .05);
+
+  /* the status colors, by the state words the bus carries */
+  --state-working: var(--task);
+  --state-listening: var(--done);
+  --state-bus: var(--accent);
+  --state-idle: var(--idle);
+  --state-silent: var(--idle);
+  --state-offline: var(--gone);
+  --for-me: var(--ask-text);
+  --danger: var(--gone);
+
+  --radius: 2px;
+  --font: "Inter", ui-sans-serif, system-ui, -apple-system, "Segoe UI", sans-serif;
+  --mono: ui-monospace, "SF Mono", SFMono-Regular, Menlo, Consolas, monospace;
+}
+
+@media (prefers-color-scheme: dark) {
+  :root:not([data-theme="light"]) {
+    color-scheme: dark;
+    --bg: #161615;
+    --surface: #1d1d1c;
+    --surface-2: #232322;
+    --hair: rgba(255, 255, 255, .05);
+    --line: rgba(255, 255, 255, .1);
+    --ink: #f3f3f1;
+    --text: rgba(255, 255, 255, .74);
+    --muted: rgba(255, 255, 255, .6);
+    --shadow: 0 1px 2px rgba(0, 0, 0, .5), 0 6px 18px rgba(0, 0, 0, .35);
+    --accent: #b4adf2;
+    --accent-soft: rgba(180, 173, 242, .14);
+    --btn: #fdf6ea;
+    --on-btn: #140b47;
+    --focus: rgba(124, 188, 255, .75);
+    --ask-text: #f09637;
+    --ask-bg: rgba(240, 150, 55, .13);
+    --task: #7cbcff;
+    --task-bg: rgba(124, 188, 255, .14);
+    --done: #6fd08f;
+    --done-bg: rgba(111, 208, 143, .14);
+    --gone: #ff7a6b;
+    --gone-bg: rgba(255, 122, 107, .12);
+    --idle: rgba(255, 255, 255, .66);
+    --idle-bg: rgba(255, 255, 255, .07);
   }
+}
+
+:root[data-theme="dark"] {
+  color-scheme: dark;
+  --bg: #161615;
+  --surface: #1d1d1c;
+  --surface-2: #232322;
+  --hair: rgba(255, 255, 255, .05);
+  --line: rgba(255, 255, 255, .1);
+  --ink: #f3f3f1;
+  --text: rgba(255, 255, 255, .74);
+  --muted: rgba(255, 255, 255, .6);
+  --shadow: 0 1px 2px rgba(0, 0, 0, .5), 0 6px 18px rgba(0, 0, 0, .35);
+  --accent: #b4adf2;
+  --accent-soft: rgba(180, 173, 242, .14);
+  --btn: #fdf6ea;
+  --on-btn: #140b47;
+  --focus: rgba(124, 188, 255, .75);
+  --ask-text: #f09637;
+  --ask-bg: rgba(240, 150, 55, .13);
+  --task: #7cbcff;
+  --task-bg: rgba(124, 188, 255, .14);
+  --done: #6fd08f;
+  --done-bg: rgba(111, 208, 143, .14);
+  --gone: #ff7a6b;
+  --gone-bg: rgba(255, 122, 107, .12);
+  --idle: rgba(255, 255, 255, .66);
+  --idle-bg: rgba(255, 255, 255, .07);
 }
 
 * { box-sizing: border-box; }
 
-html, body, #root { height: 100%; }
+html, body, #root { min-height: 100%; }
 
 body {
   margin: 0;
   background: var(--bg);
   color: var(--ink);
   font: 13px/1.45 var(--font);
+  font-variant-numeric: tabular-nums;
   -webkit-font-smoothing: antialiased;
 }
 
-button { font: inherit; color: inherit; }
+button, input, select { font: inherit; color: inherit; }
 
 :focus-visible { outline: 2px solid var(--focus); outline-offset: 1px; }
 
+.mono { font-family: var(--mono); }
+.sr-only {
+  position: absolute;
+  width: 1px;
+  height: 1px;
+  overflow: hidden;
+  clip: rect(0 0 0 0);
+  white-space: nowrap;
+}
+
+.muted { color: var(--muted); }
+.small { font-size: 12px; }
+.nowrap { white-space: nowrap; }
+.num { text-align: right; white-space: nowrap; }
+
+/* the page: top bar, the view, the footer */
 .app {
   display: grid;
-  grid-template-columns: 208px 1fr auto;
-  height: 100%;
+  grid-template-rows: auto 1fr auto;
+  min-height: 100vh;
 }
 
 .stage {
-  overflow: auto;
-  padding: 14px 18px;
+  width: 100%;
+  max-width: 1320px;
+  margin: 0 auto;
+  padding: 18px 24px 32px;
+  display: flex;
+  flex-direction: column;
+  gap: 14px;
+  min-width: 0;
 }
 
 .hint {
   color: var(--muted);
-  margin: 0 0 12px;
+  margin: 0;
 }
 
-/* shared chip */
+/* a page's head: the title, one line of counts, the controls on the right */
+.page-head {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: end;
+  justify-content: space-between;
+  gap: 12px;
+}
+.page-head__title { display: flex; flex-direction: column; gap: 2px; min-width: 0; }
+.page-head h1 { margin: 0; font-size: 22px; font-weight: 600; letter-spacing: -.015em; }
+.page-head__sub { color: var(--muted); }
+
+/* a card on the page: white on the grey ground, a soft shadow, no border */
+.panel {
+  background: var(--surface);
+  border-radius: var(--radius);
+  box-shadow: var(--shadow);
+  min-width: 0;
+}
+.panel__head {
+  display: flex;
+  justify-content: space-between;
+  align-items: baseline;
+  gap: 10px;
+  padding: 10px 16px;
+  border-bottom: 1px solid var(--line);
+}
+.panel h2, .section-title {
+  margin: 0;
+  font-size: 13px;
+  font-weight: 600;
+  text-transform: uppercase;
+  letter-spacing: .05em;
+  color: var(--muted);
+}
+
+/* the state words as pills: rich color, one tint each */
+.pill {
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+  padding: 1px 7px;
+  border-radius: var(--radius);
+  font-size: 12px;
+  font-weight: 500;
+  white-space: nowrap;
+  color: var(--idle);
+  background: var(--idle-bg);
+}
+.pill::before {
+  content: "";
+  width: 6px;
+  height: 6px;
+  border-radius: 50%;
+  background: currentColor;
+}
+.pill--working { color: var(--task); background: var(--task-bg); }
+.pill--listening, .pill--online { color: var(--done); background: var(--done-bg); }
+.pill--bus { color: var(--accent); background: var(--accent-soft); }
+.pill--offline { color: var(--gone); background: var(--gone-bg); }
+.pill--ask { color: var(--ask-text); background: var(--ask-bg); }
+.pill--plain::before { display: none; }
+
+/* shared chip: a small mark beside a value */
 .chip {
   display: inline-block;
   border: 1px solid var(--line);
-  border-radius: 999px;
-  padding: 0 7px;
+  border-radius: var(--radius);
+  padding: 0 6px;
   font-size: 11px;
   line-height: 17px;
   color: var(--text);
   background: var(--surface-2);
   white-space: nowrap;
 }
+.chip--for-me { border-color: var(--ask-fill); color: var(--ask-text); background: var(--ask-bg); font-weight: 600; }
+.chip--may-answer { border-color: color-mix(in srgb, var(--ask-fill) 45%, transparent); color: var(--ask-text); }
+.chip--expired { border-color: var(--gone); color: var(--gone); }
+.chip--open { border-color: var(--done); color: var(--done); }
+.chip--pr { color: var(--task); border-color: color-mix(in srgb, var(--task) 40%, transparent); }
 
-.chip--for-me {
-  border-color: var(--for-me);
-  color: var(--for-me);
+/* the context bar: a thin track, the share filled */
+.ctx { display: inline-flex; align-items: center; gap: 7px; white-space: nowrap; }
+.ctx__track { width: 56px; height: 4px; background: var(--line); display: block; }
+.ctx__fill { display: block; height: 4px; background: var(--accent); }
+.ctx__fill--high { background: var(--ask-fill); }
+.ctx__text { color: var(--muted); font-size: 12px; }
+
+/* a button that reads as a link (a name in a table, a breadcrumb) */
+.linkish {
+  border: 0;
+  padding: 0;
+  background: none;
+  color: inherit;
+  cursor: pointer;
+  text-align: left;
+}
+.linkish:hover { text-decoration: underline; }
+
+.crown { display: inline-flex; color: var(--accent); }
+
+@media (max-width: 640px) {
+  .stage { padding: 14px 16px 28px; }
 }
 
-.chip--may-answer {
-  border-color: color-mix(in srgb, var(--for-me) 45%, transparent);
-}
-
-.chip--expired {
-  border-color: var(--danger);
-  color: var(--danger);
-}
-
-.chip--open {
-  border-color: var(--ok);
-  color: var(--ok);
-}
-
-.chip--pr {
-  color: var(--accent);
-  border-color: color-mix(in srgb, var(--accent) 40%, transparent);
+@media (prefers-reduced-motion: reduce) {
+  *, *::before, *::after {
+    animation-duration: .01ms !important;
+    animation-iteration-count: 1 !important;
+    transition-duration: .01ms !important;
+    scroll-behavior: auto !important;
+  }
 }

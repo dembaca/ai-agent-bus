@@ -1,0 +1,21 @@
+.footer {
+  border-top: 1px solid var(--line);
+  color: var(--muted);
+  font-size: 12px;
+}
+
+.footer__inner {
+  max-width: 1320px;
+  margin: 0 auto;
+  padding: 10px 24px;
+  display: flex;
+  flex-wrap: wrap;
+  justify-content: space-between;
+  gap: 4px 16px;
+}
+
+.footer__build { font-family: var(--mono); }
+
+@media (max-width: 640px) {
+  .footer__inner { padding: 10px 16px; }
+}

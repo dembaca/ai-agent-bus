@@ -57,6 +57,12 @@ type Console struct {
 	// MaxLogins bounds the logins one person holds consumers for at once
 	// (CB_AUTH_PERSON_MAX_LOGINS); a new login above it is refused.
 	MaxLogins int
+	// Metrics turns the console's unattended metrics page on
+	// (CB_AUTH_CONSOLE_METRICS, default off): the service's two consumers are
+	// made at the start and kept (consumers.EnsureMetrics, #158). Nothing
+	// else: the account that reads them is a static nkey of the NATS
+	// configuration, subscribe-only.
+	Metrics bool
 }
 
 func (c Console) withDefaults() Console {

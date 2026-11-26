@@ -191,15 +191,16 @@ func TestCheckReportsEveryDisagreement(t *testing.T) {
 }
 
 // The rename table is the login service's table of docs/env-names.md, row
-// for row: 44 new names, each with the one old name the doc gives it.
+// for row: 45 new names, each with the one old name the doc gives it (#168
+// carried CB_AUTH_CONSOLE_METRICS in).
 func TestTheRenamesAreTheDocsTable(t *testing.T) {
 	doc, err := os.ReadFile("../../../../docs/env-names.md")
 	if err != nil {
 		t.Fatal(err)
 	}
-	_, section, ok := strings.Cut(string(doc), "\n### The login service and authd (44)\n")
+	_, section, ok := strings.Cut(string(doc), "\n### The login service and authd (45)\n")
 	if !ok {
-		t.Fatal("docs/env-names.md has no section \"The login service and authd (44)\"")
+		t.Fatal("docs/env-names.md has no section \"The login service and authd (45)\"")
 	}
 	section, _, _ = strings.Cut(section, "\n### ")
 	row := regexp.MustCompile("(?m)^\\| `([A-Z0-9_]+)` \\| `(CB_[A-Z0-9_]+)` \\|")
@@ -207,11 +208,11 @@ func TestTheRenamesAreTheDocsTable(t *testing.T) {
 	for _, m := range row.FindAllStringSubmatch(section, -1) {
 		want[m[2]] = []string{m[1]}
 	}
-	if len(want) != 44 {
-		t.Fatalf("the doc's login table has %d rows, want 44: %v", len(want), want)
+	if len(want) != 45 {
+		t.Fatalf("the doc's login table has %d rows, want 45: %v", len(want), want)
 	}
-	if n := len(Service()) + len(Authd()); n != 44 {
-		t.Fatalf("Service and Authd list %d names, want 44", n)
+	if n := len(Service()) + len(Authd()); n != 45 {
+		t.Fatalf("Service and Authd list %d names, want 45", n)
 	}
 	if !reflect.DeepEqual(renamed, want) {
 		t.Fatalf("the rename table is %v\nthe doc says %v", renamed, want)

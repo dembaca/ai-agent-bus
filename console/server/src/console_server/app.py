@@ -29,10 +29,11 @@ from pathlib import Path
 from typing import Any
 from urllib.parse import urlsplit
 
-from . import auth, config, httpd, telemetry
+from . import auth, build, config, httpd, telemetry
+from .metrics_service import MetricsService
 from .auth import Endpoints
 from .fleet import Fleet
-from .nats_read import PersonReader, View, reachable
+from .nats_read import PersonReader, View, reachable, tls_context
 
 log = logging.getLogger("console")
 
@@ -69,6 +70,10 @@ STATIC_HEADERS = (("X-Content-Type-Options", "nosniff"),
                    "default-src 'self'; img-src 'self' data:;"
                    " font-src 'self' data:; base-uri 'none';"
                    " frame-ancestors 'none'"))
+# #182: Vite's hashed files never change under their name; the rest
+# (index.html, the fallback, the favicon) is revalidated on each load
+CACHE_HASHED = (("Cache-Control", "public, max-age=31536000, immutable"),)
+CACHE_REVALIDATE = (("Cache-Control", "no-cache"),)
 
 
 class Console:
@@ -77,8 +82,17 @@ class Console:
         # the stand-in view: login off (tests and the mock) and sessions made
         # without one; nothing feeds it — every login has a view of its own
         self.telemetry = telemetry.Telemetry()   # the console's /metrics counters
+        self.build = build.read(settings.web_dir)   # #182: from the image build
+        self.telemetry.build = self.build
         self.standin = View(settings.presence_subject, settings.stats_subject,
                             count=self.telemetry.note_event)
+        # the unattended metrics page (#158): the console's own reading on
+        # the service nkey, and the scrape token that gates it; both or
+        # neither, the settings check pairs them
+        self.service = View(settings.presence_subject, settings.stats_subject,
+                             count=self.telemetry.note_event)
+        self.metrics = MetricsService(settings, self.service) if settings.metrics_nkey_file else None
+        self._metrics_http: httpd.Httpd | None = None
         self.sessions = auth.Sessions()
         self.keyring = auth.Keyring()
         self.endpoints: auth.Endpoints | None = None
@@ -123,6 +137,27 @@ class Console:
                                  host=self.settings.listen_host,
                                  port=self.settings.listen_port)
         await self._http.start()
+        if self.metrics is not None:
+            # the unattended page's listener of its own: loopback by
+            # default, the token page alone on it (#158). The token is read
+            # here once, at the start — never lazily on a request path.
+            try:
+                self._scrape_token_value = Path(
+                    self.settings.metrics_token_file).read_text().strip()
+            except OSError:
+                self._scrape_token_value = ""
+                log.warning("console: the metrics scrape token is not"
+                            " readable; the token path stays closed")
+            host = self.settings.metrics_listen_host
+            if host not in ("127.0.0.1", "::1", "localhost") and tls_context(self.settings) is None:
+                log.warning("console: the metrics listener is on %s without"
+                            " TLS; a non-loopback listener belongs behind"
+                            " TLS", host)
+            self._metrics_http = httpd.Httpd(handler=self.handle_metrics,
+                                             host=host,
+                                             port=self.settings.metrics_listen_port)
+            await self._metrics_http.start()
+            self.metrics.start()
 
     async def _discover_loop(self, finder: Callable[[str], Awaitable[Endpoints]]) -> None:
         while True:
@@ -138,9 +173,55 @@ class Console:
                 log.warning("console: %s; /login answers 503; retrying", exc)
                 await asyncio.sleep(5.0)
 
+    @property
+    def _scrape_token(self) -> str:
+        """#158: the unattended page's scrape token, read once at start; ''
+        while it is off, unreadable or empty (nobody scrapes with a secret
+        the operator never set)."""
+        if not hasattr(self, "_scrape_token_value"):
+            # start() reads it; without it the path stays closed: no secret
+            # is read on a request path
+            self._scrape_token_value = ""
+        return self._scrape_token_value
+
+    async def handle_metrics(self, path: str, query: dict[str, str],
+                             headers: dict[str, str]) -> httpd.Response:
+        """The unattended page's listener (#158): only ``GET /metrics`` with
+        the scrape token answers — the service reading, aggregates only.
+        Without or with a wrong token: 401, plain, no operator session here;
+        any other path: 404. The operator's own page stays on the main
+        listener, behind the login."""
+        if path != "/metrics" or headers.get(":method", "GET") != "GET":
+            self.telemetry.note(telemetry.route_bucket(path), headers.get(":method", "GET"), 404)
+            return httpd.Response(status=404, body=b"not found",
+                                  content_type="text/plain")
+        # the token in bytes (a non-ASCII Authorization cannot raise), the
+        # status counted once per answer, at it
+        auth = headers.get("authorization", "").encode("utf-8", "replace")
+        want = ("Bearer " + self._scrape_token).encode("utf-8", "replace")
+        if not secrets.compare_digest(auth, want):
+            self.telemetry.note(telemetry.route_bucket(path), "GET", 401)
+            return httpd.Response(status=401, body=b"unauthorized",
+                                  content_type="text/plain")
+        self.telemetry.note(telemetry.route_bucket(path), "GET", 200)
+        return httpd.Response(status=200,
+                              body=telemetry.render(
+                                  self.telemetry, self.sessions.count(),
+                                  sum(self._streams.values()),
+                                  [], self.service,
+                                  live=bool(self.metrics and
+                                             self.metrics.last_delivery > 0)).encode(),
+                              content_type="text/plain; version=0.0.4; charset=utf-8",
+                              headers=API_HEADERS)
+
     async def stop(self) -> None:
         if self._http is not None:
             await self._http.stop()
+        if self.metrics is not None:
+            await self.metrics.stop()
+        if self._metrics_http is not None:
+            await self._metrics_http.stop()
+            self._metrics_http = None
         for view in self.sessions.views():
             if isinstance(view, View) and view.reader is not None:
                 await view.reader.aclose()  # key and tokens dropped
@@ -190,7 +271,10 @@ class Console:
         rel = path.lstrip("/").split("?")[0]
         if rel == "favicon.svg" or rel.startswith("assets/"):
             want = (root / rel).resolve()
-            if want.is_file() and root in want.parents:
+            # an assets/ path stays inside assets/: `assets/../build.json`
+            # must not reach the rest of the built app (#182)
+            inside = root / "assets" if rel.startswith("assets/") else root
+            if want.is_file() and inside in want.parents:
                 return want
         return None
 
@@ -207,8 +291,10 @@ class Console:
             return httpd.Response.text("no built web app", 404)
         body = file.read_bytes()
         kind = STATIC_TYPES.get(file.suffix, "application/octet-stream")
+        cache = (CACHE_HASHED if (root / "assets") in file.parents
+                 else CACHE_REVALIDATE)
         return httpd.Response(status=200, body=body, content_type=kind,
-                               headers=STATIC_HEADERS)
+                               headers=STATIC_HEADERS + cache)
 
     # --- the fleet stream ----------------------------------------------------------------
 
@@ -315,7 +401,8 @@ class Console:
                  "groups": list(operator.groups),
                  # the session's own reading (RT-6.43): "reading", "waiting: …",
                  # "refused: …", "ended…" — the reason a fleet stays empty
-                 "bus": view.bus()}, headers=API_HEADERS)
+                 "bus": view.bus(), "build": self.build.as_json()},
+                headers=API_HEADERS)
         if path == "/v1/fleet":
             return self._stream(self._session_token(headers))
         if path in ("/v1/asks", "/v1/stats"):
@@ -332,6 +419,9 @@ class Console:
             # new NATS right (the owner's go settled it the service variant).
             # The agent numbers are this session's own reading, the same data
             # /v1/stats shows it (RT-6.43); console metrics are the process's.
+            # The unattended variant serves on its own listener only
+            # (handle_metrics): a token-gated page has no place on the
+            # operators' network, the owner's ask said loopback.
             if self._operator(headers) is None:
                 return _unauthorized()
             readers = [v.reader for v in self.sessions.views()

@@ -2,6 +2,7 @@ import { Handle, Position } from "@xyflow/react"
 import type { NodeProps, NodeTypes } from "@xyflow/react"
 import { HARNESS_LABEL } from "../../api/types"
 import type { FlowData } from "./model"
+import { CrownIcon } from "../icons"
 
 /** The two fixed ends of a node: edges come in on the left, go out on the
  * right. Read-only: nothing connects by hand. */
@@ -14,13 +15,9 @@ function Ends() {
   )
 }
 
-/** The crown on the coordinator's node: a drawn path, no emoji literal. */
+/** The crown on the coordinator's node: the same mark as the list's. */
 function Crown() {
-  return (
-    <svg className="gnode__crown" viewBox="0 0 20 8" width="20" height="8" role="img" aria-label="coordinator">
-      <path d="M0 8 L2 2 L6 6 L10 0 L14 6 L18 2 L20 8 Z" />
-    </svg>
-  )
+  return <span className="gnode__crown"><CrownIcon size={12} label="coordinator" /></span>
 }
 
 const dataOf = (props: NodeProps) => props.data as FlowData

@@ -29,6 +29,8 @@ from typing import TYPE_CHECKING, Any
 
 from mattermost_ai_agent_bus import stats as mcp_stats
 
+from .build import Build
+
 if TYPE_CHECKING:  # for the type-checker only; no runtime import
     from .nats_read import PersonReader, View
 
@@ -74,6 +76,7 @@ class Telemetry:
     that happen to be open, so no logout resets a series to a false spike."""
 
     def __init__(self) -> None:
+        self.build = Build()      # #182: set by the console from the image build
         self.requests: dict[tuple[str, str, int], int] = defaultdict(int)
         self.happens: dict[str, int] = defaultdict(int)    # named events
 
@@ -171,7 +174,8 @@ def reading(view: "View") -> bool:
 
 
 def render(tel: Telemetry, sessions: int, streams: int,
-           readers: "list[PersonReader]", view: "View") -> str:
+           readers: "list[PersonReader]", view: "View",
+           live: bool | None = None) -> str:
     """The whole page: the console's own observations first, then the agent
     numbers of the scrape session's own reading — the fleet and the STATS
     book its consumers deliver, the same data the Reports/Stats tab shows
@@ -181,7 +185,17 @@ def render(tel: Telemetry, sessions: int, streams: int,
         by_state[_word(reader.state, READER_STATES)] += 1
     happens = tel.happens
 
+    if live is None:
+        # a session's own reading is its liveness; the service page passes
+        # its reading's own (a delivered event once): its book holds the
+        # stream's truth whatever a fresh connection's state is
+        live = reading(view)
     lines = [
+        "# HELP choirbus_console_build_info The console's release version and"
+        " source commit, from the image build (#182); always 1.",
+        "# TYPE choirbus_console_build_info gauge",
+        f'choirbus_console_build_info{{version="{_escape(tel.build.version or "unknown")}",'
+        f'revision="{_escape(tel.build.revision or "unknown")}"}} 1',
         "# HELP choirbus_console_http_requests_total HTTP requests served,"
         " by bucketed route, method and status. Requests the transport"
         " refuses before any handler (a flood, a too-large head) are not"
@@ -231,12 +245,12 @@ def render(tel: Telemetry, sessions: int, streams: int,
         " is not live shows no series at all.",
         "# TYPE choirbus_bus_agents gauge",
         # n/a: an empty fleet shows no series, never a 0
-        *(_agents(view.fleet) if reading(view) else []),
+        *(_agents(view.fleet) if live else []),
         "# HELP choirbus_bus_asks_open The open asks this session's consumers"
         " deliver. None before the login's own record, and none while the"
         " reading is not live: n/a is omitted, never 0.",
         "# TYPE choirbus_bus_asks_open gauge",
-        *([f"choirbus_bus_asks_open {len(view.asks())}"] if reading(view) else []),
+        *([f"choirbus_bus_asks_open {len(view.asks())}"] if live else []),
         "# HELP choirbus_bus_tokens_eq Tokens by category in input-token equivalents"
         " over the last 7 days, per version and harness — the same stacked bars the"
         " Reports/Stats tab shows, an estimate (RT-6.9 step 2). Only while the"
@@ -244,7 +258,7 @@ def render(tel: Telemetry, sessions: int, streams: int,
         f" {MAX_VERSIONS} versions keep their own label, older ones count as other."
         " No agent, owner or home label: RT-6.43 keeps those out.",
         "# TYPE choirbus_bus_tokens_eq gauge",
-        *(_tokens(view.stats) if reading(view) else []),
+        *(_tokens(view.stats) if live else []),
         "",  # the exposition format ends with a newline
     ]
     return "\n".join(lines)

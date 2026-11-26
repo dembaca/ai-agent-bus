@@ -9,9 +9,7 @@ JetStream consumers the login service makes for each logged-in operator, serves 
 format (#158, RT-6.43 step 10: behind the operator's login like the rest,
 the console's own observations and that session's agent numbers, labels
 bounded — no agent, owner or home) — and with it the built browser app.
-**Do not put the session cookie into a scrape config**: it is that
-operator's whole console for as long as the session lives, not a monitoring
-credential. An unattended scrape comes from the approved follow-up (a
+**The unattended variant**: set both `CONSOLE_METRICS_NKEY_SEED_FILE` (the seed of the console's subscribe-only nkey, its two consumers the login service makes) and `CONSOLE_METRICS_TOKEN_FILE` (the Bearer scrape token) — both or neither, the start refuses half a pair — and Prometheus scrapes **a listener of the unattended page's own** (`CONSOLE_METRICS_LISTEN_ADDR`, host:port, default 127.0.0.1:8748, loopback as the owner's ask said): the token's page there serves the service's own reading, aggregates only, every other path 404; the operator's page stays on the main listener, behind the login. An unattended scrape comes from the approved follow-up (a
 loopback listener with a scrape token of its own, plus a read-only service
 account on the STATS stream — the owner's go, #158), not from a copied
 cookie.
@@ -81,7 +79,7 @@ tokens the same way. A login from a browser that holds a session ends
 that session first, and one person keeps at most four sessions (by
 `sub`): a fifth closes the oldest, below the login service's own cap.
 
-The logout (the sidebar's button, `POST /logout`; a GET answers 405)
+The logout (the top bar's button, `POST /logout`; a GET answers 405)
 ends Keycloak's session too (RT-6.43 step 9): after dropping its own
 session the server redirects to the realm's `end_session_endpoint` with
 `client_id`, `post_logout_redirect_uri=<CONSOLE_PUBLIC_URL>/` and the
@@ -98,8 +96,8 @@ the issuer's endpoints are discovered, the logout ends the console's
 session and answers a page that says the Keycloak session is still open.
 
 
-Presence today carries `online`/`away` (format v1) — the Kanban's two
-extra columns.
+Presence today carries `online`/`away` (format v1) — the agents list counts
+them as listening and idle.
 
 Each card names its `home` and, beside it, its `guests`: the channels its
 memberships name that are not its home (every granted channel gets one,
@@ -192,6 +190,24 @@ never reads the file.
 - a **group mapper** onto the `groups` claim: the match is exact — name
   the group `operators` and set the mapper's full path off, or name it
   `/operators` and set the full path on.
+
+## The build version
+
+The image build writes `build.json` (`{"version", "revision"}`) beside
+`index.html`, with `console/web/scripts/build-info.mjs` (#182): the version
+is the build argument `VERSION` (CI takes it from `.claude-plugin/plugin.json`),
+the revision the build argument `REVISION`, the source commit. A build
+without them says `unknown` in the labels and the metric and n/a in the
+footer. The file is never served as a static file, not even by a path that
+climbs out of `/assets/`. The server shows it as the `build` field of
+`/v1/me`, as the series `choirbus_console_build_info{version,revision}` (1;
+`unknown` where a value is missing; no other label) and the image carries it
+as the OCI labels `org.opencontainers.image.version` and `.revision`. A run
+from source has no `build.json`: both values are null.
+
+Cache headers: files under `/assets/` (Vite's hashed names) are
+`public, max-age=31536000, immutable`; `index.html`, the fallback to it for
+any other path and `favicon.svg` are `no-cache` (revalidated on each load).
 
 ## Deployment notes
 

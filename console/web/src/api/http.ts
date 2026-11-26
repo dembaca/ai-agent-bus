@@ -38,6 +38,15 @@ export interface WireAsk {
   thread_id: string
 }
 
+/** `GET /v1/me`: the operator in the ADR's spelling, and the console's
+ * build (#182) — absent from an older server. */
+export interface WireMe {
+  username: string
+  display_name: string
+  groups: string[]
+  build?: { version: string | null; revision: string | null }
+}
+
 interface WireThread {
   posts: Post[]
   /** The next page's cursor; null or absent on the last page. */
@@ -94,8 +103,12 @@ export function httpApi(base: string): ConsoleApi {
   const strip = base.endsWith("/") ? base.slice(0, -1) : base
   return {
     async me() {
-      const me = await json<{ username: string; display_name: string; groups: string[] }>(strip, "/v1/me")
-      return { username: me.username, displayName: me.display_name, groups: me.groups }
+      const me = await json<WireMe>(strip, "/v1/me")
+      return {
+        username: me.username, displayName: me.display_name, groups: me.groups,
+        // an older server sends no build: the footer says n/a
+        build: { version: me.build?.version ?? null, revision: me.build?.revision ?? null },
+      }
     },
     watchFleet(onEvent: (event: FleetEvent) => void,
                onState?: (state: ConnState) => void): () => void {

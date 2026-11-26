@@ -45,6 +45,42 @@ before 0.5.0 are described in the git history.
   start. Error messages, `authd dir -h`, `services/auth/README.md` and
   `nats-server.example.conf` name the new names.
 
+### Added
+
+- **The console's unattended metrics page** (#158, needs #162): with both
+  `CONSOLE_METRICS_NKEY_SEED_FILE` (the seed of a read-only nkey of the
+  NATS configuration, its two consumers `console-metrics_presence` and
+  `console-metrics_stats` — made by the login service at its start,
+  `CB_AUTH_CONSOLE_METRICS`, default off) and `CONSOLE_METRICS_TOKEN_FILE` (the
+  Bearer scrape token), the unattended page serves without a session, on a
+  listener of its own (`CONSOLE_METRICS_LISTEN_ADDR`, loopback by default — the
+  owner's ask): aggregates only
+  — agents by state and harness, the open asks, the tokens by category — no
+  name, owner or home among the labels. The token and the seed are both or
+  neither; the console keeps its operator-login page beside it. The account's publish is denied outright and it holds no JetStream right
+  (pinned in the example-conf test); an invalid or refused nkey ends the
+  reading with a warning, an unreachable one reconnects with backoff, and
+  the consumers age out after five minutes without the console listening
+  — the login service re-ensures them hourly, so a console that restarts
+  gets the seven days again. The seed file is refused when open to group or world (a Kubernetes secret needs `defaultMode: 0400` and the console's uid)
+- **The console serves `/metrics`** (#158, part of): the Prometheus text
+  format behind the operator's login, the same right `/v1/stats` needs —
+  **never scrape with the session cookie**, it is that operator's whole
+  console; the unattended variant (a loopback listener with a scrape
+  token and a read-only service account on the STATS stream) follows as
+  its own pull request with the owner's go. The console's own observations
+  — requests by bounded route buckets, open streams, the readers'
+  connection states, connects, credential renewals and failures, the
+  records the strict decoders refused — are counted process-wide at the
+  event, so no session's end resets a series; the agent numbers of that
+  session's own reading (agents by state and harness, the open asks it
+  sees, the tokens by category per version and harness over 7 days — the
+  same numbers the Reports/Stats tab shows) are served only while that
+  reading is live. Every metric family carries the `choirbus_` prefix; no
+  agent name, owner, home or session id is ever a label, only the newest
+  8 versions keep their own label and n/a leaves a series out instead of
+  a 0 (RT-6.43 step 10).
+
 - **The central bridge reads its settings under `CB_` names** (#169,
   [docs/env-names.md](docs/env-names.md#the-bridge-19)). Each `BRIDGE_X`
   becomes `CB_BRIDGE_X` (`CB_BRIDGE_NATS_URL`, `CB_BRIDGE_NATS_SEED_FILE`,
@@ -67,6 +103,25 @@ before 0.5.0 are described in the git history.
   CA file. The release after this one refuses an old name set without its new
   name; rename the deployment's settings before it.
 
+### Changed
+
+- **The operator console wears the agreed design** (ADR-015 points 3 and 6):
+  the website's Choirbus brand (Inter, the logo's navy, orange asks, blue
+  tasks, green done), a top bar instead of the sidebar, light with a dark
+  mode that follows the system until the top bar's toggle picks one. The
+  agents list is the home and replaces the Kanban: the open asks on top,
+  then one compact row per agent with a search and a status filter. An
+  agent's or an ask's detail is a page of its own; a new Overview counts
+  agents and asks from the live data; the graph takes the same colors in
+  both themes. Same API, data and access rules.
+- **The console names its build** (#182): the footer shows the release
+  version and short commit, written at image build and served in
+  `/v1/me`'s `build`; `/metrics` adds
+  `choirbus_console_build_info{version,revision} 1`; the image carries the
+  OCI labels `org.opencontainers.image.version` and `.revision`.
+  `index.html` and the app's fallback answer `Cache-Control: no-cache`, the
+  hashed files under `/assets/` `public, max-age=31536000, immutable`.
+
 ### Fixed
 
 - **The operator console's logout works in a browser again** (RT-6.43
@@ -78,6 +133,27 @@ before 0.5.0 are described in the git history.
   answers and the logout's redirect to Keycloak keep `no-referrer`, and
   `Origin: null` is still refused. A console tab opened before the update
   keeps the old policy until it is reloaded.
+
+### Changed
+
+- **The OpenCode plugin and the pi extension read the `CB_` names** (#169,
+  release 0.103.0). Their own settings — the workspace (`CB_WORKSPACE`), the
+  channel flag (`CB_CHANNEL_PUSH`), the checkout (`CB_AGENT_BUS_ROOT`) and, in a
+  corral session, the relay's endpoint and key (`CB_BUS_ENDPOINT`, `CB_BUS_KEY`,
+  `CB_BUS_MCP_ENDPOINT`) — are read by the rule of
+  [docs/env-names.md](docs/env-names.md): the new name first, the old `MM_` one
+  for this release with one deprecation warning per process, an empty value
+  counting as set, and two names with different values a conflict the plugin
+  reports once and then behaves as without a bus (a conflicting checkout falls
+  back to the plugin's own). The server entry they write
+  carries `CB_WORKSPACE` and `CB_CHANNEL_PUSH` beside the old names, so a server
+  of the previous release reads the old ones (a user's own `environment` that
+  names one spelling is copied to the other, so the server never sees a
+  disagreement); the endpoint file's keys are taken by either spelling, the last
+  line winning. An operator who already uses the `CB_` names
+  sees no difference, and the old ones keep working until the release that
+  removes the fallbacks.
+
 
 ## 0.102.0
 
@@ -120,24 +196,6 @@ Needs: MM_BRIDGE_BOT kept on every host, and this release on all hosts before th
   failure.
 
 - **The central bridge can post each agent's copies under the agent's own Mattermost bot** (#151 step 1, RT-6.44). Off by default; with `BRIDGE_MM_ADMIN_TOKEN_FILE` (an admin bot of its own with `system_admin`, its token a separate file used only by the bot management) and `BRIDGE_BOT_PREFIX`, the bridge finds or creates `<prefix><NATS name>`, owned by the Mattermost account that the login service's account record binds to the agent's presence owner (never a username lookup; no record, no bot of its own) and marked as the bridge's, mints its token in memory at first use after each start (revoking its earlier ones), joins it to the home and posts that agent's copies and reactions under it without the attribution line, `nats_id` kept; its reactions are recorded, so their removal reaches that bot also while it is in its backoff. On any failure the one bridge bot posts as before. Its signal then names `bot_prefix`. `BRIDGE_HIDE_BOT_DM` (default true) hides the admin bot's welcome DMs. The bridge refuses to start when the admin token is the posting token, the admin account is no bot with `system_admin`, or the posting bot holds a role beyond `system_user`, `system_post_all` and `system_post_all_public`. Turn it on only after the hosts run a release with #159 (agents dropping copies under their own bots), or every agent reads each NATS post twice; the hosts also keep `MM_BRIDGE_BOT` set as today, since the fallback copies come from the one bridge bot and hosts drop those only with it; the bridge's prefix must differ from the registrar's `BOT_USERNAME_PREFIX`.
-- **The console serves `/metrics`** (#158, part of): the Prometheus text
-  format behind the operator's login, the same right `/v1/stats` needs —
-  **never scrape with the session cookie**, it is that operator's whole
-  console; the unattended variant (a loopback listener with a scrape
-  token and a read-only service account on the STATS stream) follows as
-  its own pull request with the owner's go. The console's own observations
-  — requests by bounded route buckets, open streams, the readers'
-  connection states, connects, credential renewals and failures, the
-  records the strict decoders refused — are counted process-wide at the
-  event, so no session's end resets a series; the agent numbers of that
-  session's own reading (agents by state and harness, the open asks it
-  sees, the tokens by category per version and harness over 7 days — the
-  same numbers the Reports/Stats tab shows) are served only while that
-  reading is live. Every metric family carries the `choirbus_` prefix; no
-  agent name, owner, home or session id is ever a label, only the newest
-  8 versions keep their own label and n/a leaves a series out instead of
-  a 0 (RT-6.43 step 10).
-
 - **The console's graph view marks the operator's own node** (#147, the
   follow-up to the API change). The person node the logged-in operator's
   anchor names carries the API's `you` field as an accent badge, in light and

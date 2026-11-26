@@ -1,0 +1,185 @@
+/* The agents list: open asks on top, then the compact table. */
+
+.agents__for-me { color: var(--ask-text); font-weight: 600; }
+
+.agents__controls {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: 8px;
+}
+
+.agents__search {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  height: 30px;
+  padding: 0 9px;
+  background: var(--surface);
+  border: 1px solid var(--line);
+  border-radius: var(--radius);
+  color: var(--muted);
+}
+.agents__search:focus-within { outline: 2px solid var(--focus); outline-offset: 1px; }
+.agents__search input {
+  border: 0;
+  outline: 0;
+  background: transparent;
+  color: var(--ink);
+  width: 220px;
+  max-width: 50vw;
+}
+.agents__search input::placeholder { color: var(--muted); }
+
+/* a segmented control: the status filter, the theme of a group of buttons */
+.seg {
+  display: flex;
+  flex-wrap: wrap;
+  background: var(--surface);
+  border: 1px solid var(--line);
+  border-radius: var(--radius);
+  padding: 2px;
+  gap: 2px;
+}
+.seg__btn {
+  display: inline-flex;
+  align-items: center;
+  gap: 5px;
+  height: 24px;
+  padding: 0 9px;
+  border: 0;
+  border-radius: var(--radius);
+  background: transparent;
+  color: var(--muted);
+  cursor: pointer;
+}
+.seg__btn:hover { color: var(--ink); }
+.seg__btn--on { background: var(--btn); color: var(--on-btn); font-weight: 500; }
+.seg__btn--on:hover { color: var(--on-btn); }
+.seg__count { font-size: 11px; }
+
+/* the open asks above the table */
+.asks-top {
+  display: grid;
+  grid-template-columns: repeat(auto-fit, minmax(320px, 1fr));
+  gap: 10px;
+}
+.asks-top__more {
+  justify-self: start;
+  align-self: center;
+  border: 0;
+  background: none;
+  color: var(--accent);
+  font-weight: 500;
+  cursor: pointer;
+}
+.asks-top__more:hover { text-decoration: underline; }
+
+.ask-tile {
+  display: flex;
+  align-items: center;
+  gap: 12px;
+  padding: 10px 12px;
+  border: 0;
+  border-radius: var(--radius);
+  background: var(--ask-bg);
+  box-shadow: var(--shadow);
+  color: var(--ink);
+  text-align: left;
+  cursor: pointer;
+  min-width: 0;
+}
+.ask-tile__icon {
+  width: 26px;
+  height: 26px;
+  flex: none;
+  display: grid;
+  place-items: center;
+  background: var(--ask-fill);
+  color: var(--on-ask);
+  border-radius: var(--radius);
+}
+.ask-tile__body { flex: 1; min-width: 0; display: flex; flex-direction: column; }
+.ask-tile__need {
+  font-weight: 600;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  display: -webkit-box;
+  -webkit-line-clamp: 2;
+  -webkit-box-orient: vertical;
+}
+.ask-tile__by { color: var(--muted); }
+.ask-tile__marks { display: flex; flex-direction: column; align-items: end; gap: 3px; }
+
+/* the table */
+.agents { overflow-x: auto; }
+.agents__table {
+  width: 100%;
+  min-width: 1040px;   /* below it the table scrolls inside its card */
+  table-layout: fixed;
+  border-collapse: collapse;
+}
+/* the columns' widths (table-layout: fixed): the task takes the rest */
+.agents__col--agent { width: 190px; }
+.agents__col--status { width: 190px; }
+.agents__col--branch { width: 140px; }
+.agents__col--home { width: 160px; }
+.agents__col--ctx { width: 104px; }
+.agents__col--asks { width: 60px; }
+.agents__col--last { width: 84px; }
+
+/* one line, an ellipsis, the whole text in the title */
+.agents__clip {
+  display: block;
+  max-width: 100%;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+.agents__table th {
+  text-align: left;
+  padding: 8px 10px;
+  color: var(--muted);
+  font-size: 11px;
+  font-weight: 500;
+  text-transform: uppercase;
+  letter-spacing: .05em;
+  white-space: nowrap;
+}
+.agents__table th.num { text-align: right; }
+.agents__table th:first-child, .agents__table td:first-child { padding-left: 14px; }
+.agents__table th:last-child, .agents__table td:last-child { padding-right: 14px; }
+.agents__table td {
+  padding: 6px 10px;
+  border-top: 1px solid var(--line);
+  vertical-align: middle;
+}
+
+.agents__row { cursor: pointer; }
+.agents__row:hover td { background: var(--surface-2); }
+/* an agent without fresh presence: its text muted, its pill red (faded
+   rows would fail the contrast check) */
+.agents__row--offline td { color: var(--muted); }
+
+.agents__who { white-space: nowrap; overflow: hidden; }
+.agents__name { display: flex; align-items: center; gap: 6px; font-weight: 500; min-width: 0; }
+.agents__name .agents__clip { min-width: 0; }
+.agents__name .linkish { font-weight: 500; }
+.agents__model { display: block; color: var(--muted); font-size: 12px; }
+/* one line, the full task on hover: a compact row is about 44 px */
+.agents__task-text { display: block; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.agents__waits { margin-left: 4px; }
+
+.agents__empty {
+  margin: 0;
+  padding: 20px 14px;
+  color: var(--muted);
+  border-top: 1px solid var(--line);
+}
+.agents__note { font-size: 12px; }
+.agents__status { overflow: hidden; }
+/* the state pill and "waits on you" on one middle line */
+.agents__status .pill { vertical-align: middle; }
+.agents__home { display: flex; gap: 4px; min-width: 0; }
+.agents__home .agents__clip { min-width: 0; }
+.agents__guests { flex: none; }
