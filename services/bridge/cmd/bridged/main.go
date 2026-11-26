@@ -150,6 +150,17 @@ func run(log *slog.Logger) error {
 		_ = in.Run(ctx)
 	}()
 
+	// The sweep of the agents' idle bots (RT-6.44 step 8): in memory, every
+	// bot counts as seen at this start.
+	if bots != nil {
+		sw := &agentbots.Sweeper{Bots: bots, Keep: cfg.BotKeep, Start: time.Now()}
+		wg.Add(1)
+		go func() {
+			defer wg.Done()
+			sw.Run(ctx, agentbots.SweepInterval)
+		}()
+	}
+
 	mux := http.NewServeMux()
 	mux.Handle("GET /healthz", h)
 	srv := &http.Server{Addr: cfg.Listen, Handler: mux, ReadHeaderTimeout: 5 * time.Second}
@@ -186,7 +197,7 @@ func agentBots(ctx context.Context, cfg config.Config, snapshot *presence.Snapsh
 	if err := bots.Check(ctx, cfg.MMToken); err != nil {
 		return nil, err
 	}
-	log.Info("bridge: the agents' copies go under their own bots", "prefix", cfg.BotPrefix)
+	log.Info("bridge: the agents' copies go under their own bots", "prefix", cfg.BotPrefix, "keep", cfg.BotKeep.String())
 	return bots, nil
 }
 

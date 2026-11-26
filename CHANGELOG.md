@@ -5,6 +5,10 @@ before 0.5.0 are described in the git history.
 
 ## Unreleased
 
+### Added
+
+- **The central bridge sweeps the agent bots it made** (#151 step 2, RT-6.44): every 10 minutes it disables a bot it made for an agent that has shown no presence and posted nothing for longer than `CB_BRIDGE_MM_BOT_KEEP` (default `24h`, at least `1h`), and revokes the bot's tokens; at most 20 bots per pass, none while the presence feed is stale. A bot is the bridge's only by its prefix and its mark in the description together, never by the prefix alone, so the registrar's bots stay the host sweep's. Last seen is kept in memory: after a restart every bot counts as seen at the start. An agent that comes back gets its bot enabled again and a fresh token at its next message; only bots the sweep disabled (their description marked ` (swept)`) come back, one an admin disabled stays off. No new right, no new endpoint, nothing persisted; hosts notice nothing.
+
 ### Docs
 
 - **The coordinator's hourly check** (`coordinator.md`, the coordinator scenario
