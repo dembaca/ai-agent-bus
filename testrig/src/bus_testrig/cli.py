@@ -201,6 +201,13 @@ def _coord_run(args: argparse.Namespace) -> int:
     print(json.dumps(run.report(), indent=2, sort_keys=True))
     if args.summary:
         print(runner.summary([run]))
+    if run.relay.get("failed") or run.relay.get("hook_errors"):
+        why = next((n for n in run.notes if n.startswith("consumer reconcile")), "")
+        print(f"bus-testrig: the CONNECT hook failed "
+              f"({run.relay.get('hook_errors', 0)} error(s))"
+              f"{': ' + why if why else ''}; the connection was aborted and the run "
+              f"measured a session without its consumers", file=sys.stderr)
+        return True
     if run.unknown:
         print(f"bus-testrig: the stub did not know {len(run.unknown)} call(s)", file=sys.stderr)
         return EXIT_BAD_RUN
@@ -215,10 +222,13 @@ def _untrustworthy(run: runner.Run, *, expect_loss: bool = False) -> bool:
     """Whether a run's numbers describe a broken rig, not the bus (review
     point 2).
 
-    Five cases, each the run's own evidence:
+    Six cases, each the run's own evidence:
 
     * a call the stand-in could not answer — the bus asked something this rig
       does not model, so a number from the run is about the stand-in;
+    * a CONNECT whose consumer reconcile failed — the connection was aborted
+      and every later one refused, so the session ran without its consumers
+      (and one line says why, never only the count);
     * a path the run never observed at all — the receiver's inbox never opened,
       so `loss` means "everything" and compares with nothing (this is the
       `--fault drop --after 0` run the review measured at 5 of 5 lost, exit 0);
@@ -240,6 +250,13 @@ def _untrustworthy(run: runner.Run, *, expect_loss: bool = False) -> bool:
     nothing, and a fault that lost everything is a dead path wearing a fault's
     name.
     """
+    if run.relay.get("failed") or run.relay.get("hook_errors"):
+        why = next((n for n in run.notes if n.startswith("consumer reconcile")), "")
+        print(f"bus-testrig: the CONNECT hook failed "
+              f"({run.relay.get('hook_errors', 0)} error(s))"
+              f"{': ' + why if why else ''}; the connection was aborted and the run "
+              f"measured a session without its consumers", file=sys.stderr)
+        return True
     if run.unknown:
         print(f"bus-testrig: the stub did not know {len(run.unknown)} call(s): "
               f"{run.unknown[:5]}", file=sys.stderr)

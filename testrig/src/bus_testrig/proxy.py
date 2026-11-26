@@ -632,6 +632,10 @@ class ByteProxy:
         #: login service's part (its auth callout reconciles the consumers first)
         self.on_connect = on_connect
         self.hook_errors = 0
+        #: set when the CONNECT hook (the login service's reconcile) failed: the
+        #: connection is aborted and every later one refused, so the run fails
+        #: instead of measuring a client without its consumers
+        self.failed = ""
         self.stall_sec = stall_sec
         self.kind: str | None = None  # the fault whose window is open, if any
         self.connections = 0
@@ -652,7 +656,8 @@ class ByteProxy:
         return {"connections": self.connections, "bytes_up": self.bytes_up,
                 "bytes_down": self.bytes_down, "discarded": self.discarded,
                 "aborted": self.aborted, "refused": self.refused,
-                "hook_errors": self.hook_errors}
+                "hook_errors": self.hook_errors,
+                "failed": 1 if self.failed else 0}
 
     async def __aenter__(self) -> ByteProxy:
         self._server = await asyncio.start_server(self._handle, "127.0.0.1", 0)
@@ -700,6 +705,12 @@ class ByteProxy:
 
     async def _handle(self, reader: asyncio.StreamReader, writer: asyncio.StreamWriter) -> None:
         self.connections += 1
+        if self.failed:
+            # The hook failed once: no CONNECT reaches the server without its
+            # consumers, and the run must not go on as if it had.
+            self.refused += 1
+            _abort_of(writer)()
+            return
         try:
             up_reader, up_writer = await asyncio.open_connection(*self.upstream)
         except OSError:
@@ -745,8 +756,11 @@ class ByteProxy:
                     if line.startswith(b"CONNECT ") and self.on_connect is not None:
                         try:
                             await self.on_connect(line[len(b"CONNECT "):])
-                        except Exception:  # noqa: BLE001 — counted; the server decides
+                        except Exception as exc:  # noqa: BLE001 — the rig fails the run
                             self.hook_errors += 1
+                            self.failed = f"consumer reconcile failed: {type(exc).__name__}: {exc}"[:300]
+                            pipe.abort()
+                            return
                     greeted, chunk, pending = True, pending, b""
                 if down:
                     self.bytes_down += len(chunk)

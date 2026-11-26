@@ -347,6 +347,19 @@ class Admin:
             raise RuntimeError(f"{subject}: {out['error']}")
         return out
 
+    async def consumer_info(self, name: str) -> dict[str, Any]:
+        """The BUS consumer as the server holds it (`kill-client`'s evidence):
+        the delivered/consumer sequence and the pending count at this moment.
+        A failure is reported in place, never raised into the run."""
+        try:
+            out = await self.api(f"$JS.API.CONSUMER.INFO.BUS.{name}")
+        except (RuntimeError, OSError, TimeoutError) as exc:
+            return {"error": str(exc)[:120]}
+        return {"delivered_stream_seq": out.get("delivered", {}).get("stream_seq"),
+                "delivered_consumer_seq": out.get("delivered", {}).get("consumer_seq"),
+                "ack_floor_stream_seq": out.get("ack_floor", {}).get("stream_seq"),
+                "num_pending": out.get("num_pending")}
+
     async def streams(self) -> None:
         for name, cfg in (("BUS", BUS_STREAM), ("PRESENCE", PRESENCE_STREAM), ("STATS", STATS_STREAM)):
             await self.api(f"$JS.API.STREAM.CREATE.{name}", cfg)
@@ -460,6 +473,9 @@ async def nats_bus_run(count: int = 10, fault: str | None = None, *, fault_sec: 
         await stack.enter_async_context(sender)
         rx = _Receiver(nats_session(stub.url, receiver_id, relay.url, state_dir=receiver_state))
         await rx.proc.start()
+        # The receiver's BUS consumer: its delivered position and pending count
+        # are what a lost sequence is read beside (issue #213).
+        consumer = f"{receiver_id.name}_ch_{HOME}"
 
         async def stop_receiver() -> None:
             await rx.proc.stop()
@@ -519,9 +535,12 @@ async def nats_bus_run(count: int = 10, fault: str | None = None, *, fault_sec: 
                 elif fault == "kill-client":
                     rx.ready.clear()
                     await rx.proc.hard_stop()
+                    run.consumer_at_kill = await admin.consumer_info(consumer)
                     await asyncio.sleep(fault_sec)
                     rx.proc = nats_session(stub.url, receiver_id, relay.url, state_dir=receiver_state)
                     await rx.proc.start()
+                    await asyncio.sleep(0.5)  # its first CONNECT reconciles the consumer
+                    run.consumer_at_resume = await admin.consumer_info(consumer)
                     # The resumed session's inbox opens on its first wait, which is the
                     # reader's own: a wait made here would hand over the posts that
                     # waited for the session and nobody would count them.
@@ -563,6 +582,8 @@ async def nats_bus_run(count: int = 10, fault: str | None = None, *, fault_sec: 
                         await task
             run.ended = time.monotonic()
             run.relay = relay.counters() | {"server_restarts": server.restarts}
+            if relay.failed:
+                run.notes.append(relay.failed)
             if failed_sends:
                 run.notes.append(f"{failed_sends} post_message call(s) failed under the fault "
                                  "and are not counted as sent")

@@ -83,7 +83,7 @@ docs = [
 
 [[rule]]
 name = "fault-run rig: transports, faults, measurands"
-paths = ["testrig/*"]
+paths = ["testrig/src/*", "testrig/scripts/*"]
 # The rig measures ADR-014's phase 1 and 4 rows, so its decision record says what it
 # runs and what it found. Its own tests and its README are not the decision's
 # business (the README describes the rig and changes with it).

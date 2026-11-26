@@ -17,7 +17,7 @@ import pytest
 import websockets
 
 from bus_testrig import measurands, proc
-from bus_testrig.proxy import ConnState, FaultRelay, FrameProxy, ProxyFault
+from bus_testrig.proxy import ByteProxy, ConnState, FaultRelay, FrameProxy, ProxyFault
 from bus_testrig.runner import Run, _pct, echo_run
 
 
@@ -476,3 +476,53 @@ def test_no_namespace_cut_is_claimed():
     status = proc.network_cut_supported()
     assert "--fault cut" in status
     assert "not implemented" in status
+
+
+async def test_a_failed_connect_hook_aborts_the_connection_and_fails_the_proxy():
+    """A CONNECT whose hook (the login service's reconcile) raises never reaches
+    the server: the proxy aborts it, refuses every later one and says so, so a
+    run cannot measure a session without its consumers."""
+    seen: list[bytes] = []
+
+    async def upstream(reader: asyncio.StreamReader, writer: asyncio.StreamWriter) -> None:
+        try:
+            while True:
+                seen.append(await reader.readuntil(b"\r\n"))
+        except (asyncio.IncompleteReadError, ConnectionError):
+            pass
+        finally:
+            writer.close()
+
+    server = await asyncio.start_server(upstream, "127.0.0.1", 0)
+    port = server.sockets[0].getsockname()[1]
+
+    async def hook(_line: bytes) -> None:
+        raise RuntimeError("consumers: boom")
+
+    try:
+        async with ByteProxy("127.0.0.1", port, on_connect=hook) as proxy:
+            reader, writer = await asyncio.open_connection("127.0.0.1", proxy.port)
+            writer.write(b'CONNECT {"nkey":"x"}\r\nPING\r\n')
+            await writer.drain()
+            try:
+                data = await asyncio.wait_for(reader.read(), 2)
+            except ConnectionResetError:
+                data = b""
+            assert data == b""  # aborted, no CONNECT
+            writer.close()
+            # A second connection is refused before the server, with no hook run.
+            reader2, writer2 = await asyncio.open_connection("127.0.0.1", proxy.port)
+            writer2.write(b'CONNECT {"nkey":"y"}\r\n')
+            await writer2.drain()
+            try:
+                data2 = await asyncio.wait_for(reader2.read(), 2)
+            except ConnectionResetError:
+                data2 = b""
+            assert data2 == b""
+            writer2.close()
+    finally:
+        server.close()
+    assert not seen, "a CONNECT reached the server without its consumers"
+    assert proxy.hook_errors == 1
+    assert proxy.failed.startswith("consumer reconcile failed")
+    assert proxy.counters()["failed"] == 1

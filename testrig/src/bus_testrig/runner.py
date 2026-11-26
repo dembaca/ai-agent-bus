@@ -90,6 +90,11 @@ class Run:
     #: seconds from a coordinator's hard stop to a survivor holding the crown,
     #: one per stop that had a take-over (`coord.coord_run`); empty elsewhere
     takeovers: list[float] = field(default_factory=list)
+    #: the receiver's BUS consumer at kill and at resume (`kill-client`): its
+    #: delivered/consumer sequence and pending count, so a lost sequence is read
+    #: beside what the server had already pushed (issue #213)
+    consumer_at_kill: dict[str, Any] = field(default_factory=dict)
+    consumer_at_resume: dict[str, Any] = field(default_factory=dict)
 
     def send(self, seq: int) -> Sent:
         item = Sent(seq=seq, at=time.monotonic())
@@ -175,6 +180,12 @@ class Run:
             "stderr_tail": self.tail,
             "notes": self.notes,
             "relay": self.relay,
+            "lost_seqs": sorted(seq for seq in {s.seq for s in self.sent}
+                                if seq not in self.received),
+            "failed_but_arrived": sum(1 for seq in self.received
+                                      if seq not in {s.seq for s in self.sent}),
+            "consumer_at_kill": self.consumer_at_kill or None,
+            "consumer_at_resume": self.consumer_at_resume or None,
             "measured": self.measure(),
         }
 
