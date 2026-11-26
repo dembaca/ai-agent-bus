@@ -453,7 +453,7 @@ async def test_no_reader_before_a_login_and_one_per_login(console: Console) -> N
     status, _h, body = await get(console, "/v1/me", cookie=cookie)
     assert json.loads(body)["bus"]["state"] == "reading"
     # logout: the reader stops, key and tokens go
-    status, _h, _b = await get(console, "/logout", cookie=cookie)
+    status, _h, _b = await get(console, "/logout", cookie=cookie, method="POST")
     await until(lambda: not view.reader.running)
     assert not view.reader.holds_secrets and dialer.conns[0].is_closed
     assert console.sessions.views() == []

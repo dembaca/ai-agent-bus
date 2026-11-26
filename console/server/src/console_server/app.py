@@ -36,6 +36,8 @@ from .nats_read import PersonReader, View, reachable
 
 log = logging.getLogger("console")
 
+LOGGED_OUT_LOCALLY = ("Logged out of the console. The Keycloak session is still"
+                      " open: close the browser to end it.")
 COOKIE = "choirbus_session"        # the session (8 h default)
 FLOW_COOKIE = "choirbus_flow"      # binds a login to the browser (10 min)
 STATE_TTL = 600.0                  # a login state lives ten minutes
@@ -121,6 +123,10 @@ class Console:
             try:
                 self.endpoints = await finder(self.settings.issuer)
                 log.info("console: the issuer's endpoints are in")
+                if not self.endpoints.end_session:
+                    log.warning("console: the issuer names no end-session endpoint;"
+                                " a logout leaves the Keycloak session open"
+                                " (RT-6.43 step 9)")
                 return
             except (auth.AuthError, httpx.HTTPError, OSError, TimeoutError) as exc:
                 log.warning("console: %s; /login answers 503; retrying", exc)
@@ -256,6 +262,13 @@ class Console:
     async def handle(self, path: str, query: dict[str, str],
                      headers: dict[str, str]) -> httpd.Response | httpd.SSE:
         s = self.settings
+        if (headers.get(":method", "GET") == "POST") != (path == "/logout"):
+            # the logout alone changes state and takes POST only, so no
+            # cross-site link or <img> can end a session (RT-6.43 step 9)
+            return httpd.Response(status=405, body=b"method not allowed",
+                                  content_type="text/plain",
+                                  headers=(("Allow", "POST" if path == "/logout"
+                                            else "GET"),))
         if path == s.health_path:
             # readiness: the settings held at the start, and the NATS server
             # answers (a TLS handshake for tls://). There is no reader before
@@ -317,12 +330,38 @@ class Console:
             fetch_site = headers.get("sec-fetch-site", "")
             if fetch_site and fetch_site not in ("same-origin", "same-site", "none"):
                 return httpd.Response.text("cross-site logout", 403)
-            response = httpd.Response.see(s.login_off and "/" or "/login")
-            response.headers = response.headers + (
-                ("Set-Cookie", f"{COOKIE}=; Path=/; Max-Age=0"),)
             token = self._session_token(headers)
-            if token:
-                self.sessions.drop(token)  # the server ends it, not only the cookie
+            # the server ends it, not only the cookie
+            hint = self.sessions.drop(token) if token else ""
+            # RT-6.43 step 9: then the realm's own session (RP-initiated
+            # logout), so /login does not slip back in through Keycloak's
+            # single sign-on; the stored ID token is the hint, expired or not;
+            # with no live session (a restart) the realm asks to confirm
+            if s.login_off:
+                response = httpd.Response.see("/")
+            else:
+                target = ""
+                if self.endpoints is None:
+                    log.warning("console logout: the issuer's endpoints are not"
+                                " in yet; the Keycloak session stays open")
+                else:
+                    target = auth.logout_url(self.endpoints, s.client_id,
+                                             f"{self.base()}/", hint)
+                    if not target:
+                        log.warning("console logout: the issuer names no"
+                                    " end-session endpoint; the Keycloak"
+                                    " session stays open")
+                # without the realm's logout, a page that starts no login:
+                # /login would come straight back in through the open session
+                response = (httpd.Response.see(target) if target
+                            else httpd.Response.text(LOGGED_OUT_LOCALLY))
+            # the hint travels in the Location URL: kept out of caches and
+            # of the next page's Referer (it still reaches the browser's
+            # history and the access logs of Keycloak and its proxy)
+            response.headers = response.headers + (
+                ("Set-Cookie", f"{COOKIE}=; Path=/; Max-Age=0"),
+                ("Cache-Control", "no-store"),
+                ("Referrer-Policy", "no-referrer"))
             return response
         # the browser app
         operator = self._operator(headers)
@@ -423,7 +462,8 @@ class Console:
                                        until=time.time() + s.session_sec,
                                        on_end=lambda: self.sessions.end(view))
         token = self.sessions.issue(operator, s.session_sec, view,
-                                    per_person=SESSIONS_PER_OPERATOR)
+                                    per_person=SESSIONS_PER_OPERATOR,
+                                    id_token=tokens.id_token)
         if view.reader is not None:
             view.reader.start()
         return token
