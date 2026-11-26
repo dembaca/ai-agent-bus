@@ -167,7 +167,7 @@ before 0.5.0 are described in the git history.
   session (RT-6.18) and the host login (RT-6.34) say what is decided and
   what still runs. New risks: the readable token with its planned
   protections and what they miss, detection in the login service, an offline maximum and
-  DPoP (RISK-26), and two open points of the login service raised again,
+  DPoP (RISK-26), and two findings the login service review of 2026-11-22 rated high, raised again,
   the token's binding and storage (RISK-27) and an emergency brake that
   acts only at the next issue (RISK-28). The site's security answers say
   what is true today and what is decided.
