@@ -297,8 +297,8 @@ Needs: MM_BRIDGE_BOT kept on every host, and this release on all hosts before th
 ### Docs
 
 - **The one operating model for the host login, documented** (the owner's
-  decision 10, #154, step 1 of 5; step 2 is built in this release, see
-  Changed; steps 3 to 5 follow). The NATS decision (ADR-014) gets an amendment of
+  decision 10, #154, step 1 of 5; steps 2 and 3 are built in this release,
+  see Changed and Added; steps 4 and 5 follow). The NATS decision (ADR-014) gets an amendment of
   2026-11-26: the rule "credentials stay on the host, never in a sandbox"
   goes; one operating model with and without corral, in which the MCP
   server logs in itself and keeps the refresh token and the host key in
