@@ -84,16 +84,18 @@ export function toolCategory(tool: string, input: Record<string, unknown>): Cat 
   return COORDINATING.has(tool) ? COORDINATION : OVERHEAD
 }
 
-// The bus skill: loading it (the skill tool) or reading its side files is overhead.
+// The bus skill: loading it (OpenCode's `skill` tool, input `{id}`) or reading one of
+// its side files (the `read` tool, input `{path}`) is overhead; other tools under that
+// path (write, edit, grep) are task work.
 export const SKILL = "ai-agent-bus"
 const SKILL_DIR = `/skills/${SKILL}/`
 export function skillRead(name: string, input: Record<string, unknown>): boolean {
-  const tool = name.toLowerCase()
-  if (tool === "skill") return [input.name, input.skill, input.id].some((x) => {
+  if (name === "skill") return [input.id, input.name].some((x) => {
     const s = String(x ?? "")
     return s === SKILL || s.endsWith(`:${SKILL}`)
   })
-  return [input.filePath, input.file_path, input.path].some((x) => String(x ?? "").replaceAll("\\", "/").includes(SKILL_DIR))
+  if (name === "read") return [input.path, input.filePath].some((x) => String(x ?? "").replaceAll("\\", "/").includes(SKILL_DIR))
+  return false
 }
 
 // A wait_for_events result (or one content block of it, an item each), as overhead._events:
@@ -200,7 +202,9 @@ export function usageOf(tokens: any): Usage | null {
 }
 
 // The input by position over the first `known` characters of the context (its state
-// when the request went out); the uncovered front part is task work.
+// when the request went out); the uncovered front part is task work. A fourth record
+// holds that front part per type (the invisible head: system prompt, tool docs), where the
+// server places the bus's fixed text (A6).
 export function inputSplit(u: Usage, ctx: Context, known: number): Array<Record<"in" | "read" | "w", number>> {
   const total = u.read + u.w + u.in
   const knownTok = known / CHARS_PER_TOKEN
@@ -211,10 +215,11 @@ export function inputSplit(u: Usage, ctx: Context, known: number): Array<Record<
     const c = ctx.before(Math.min(known, ((p - base) / scale) * CHARS_PER_TOKEN))
     return [base + (scale * c[0]) / CHARS_PER_TOKEN, (scale * c[1]) / CHARS_PER_TOKEN, (scale * c[2]) / CHARS_PER_TOKEN]
   }
-  const out = [{ in: 0, read: 0, w: 0 }, { in: 0, read: 0, w: 0 }, { in: 0, read: 0, w: 0 }]
+  const out = [{ in: 0, read: 0, w: 0 }, { in: 0, read: 0, w: 0 }, { in: 0, read: 0, w: 0 }, { in: 0, read: 0, w: 0 }]
   let lo: Triple = [0, 0, 0]
   let edge = 0
   for (const k of INPUT_ORDER) {
+    out[3][k] = Math.max(0, Math.min(edge + u[k], base) - Math.min(edge, base))
     edge += u[k]
     const hi = at(edge)
     for (const cat of [TASK, OVERHEAD, COORDINATION]) out[cat][k] = Math.max(0, hi[cat] - lo[cat])
@@ -223,12 +228,13 @@ export function inputSplit(u: Usage, ctx: Context, known: number): Array<Record<
   return out
 }
 
-// The `usage` stat (POST /v1/stat): 15 integers, nothing else.
+// The `usage` stat (POST /v1/stat): 18 integers, nothing else.
 export type UsageStat = {
   req: number; req_ovh: number; req_coord: number
   a_in: number; a_read: number; a_w: number; a_out: number
   o_in: number; o_read: number; o_w: number; o_out: number
   c_in: number; c_read: number; c_w: number; c_out: number
+  h_in: number; h_read: number; h_w: number
 }
 const MAX = 10 ** 9
 
@@ -243,7 +249,7 @@ export class Tracker {
   private step: Step | null = null
   private calls = new Map<string, Call>()
   private compacting = false
-  private sums = { req: 0, ovh: 0, coord: 0, a: zero(), o: zero(), c: zero() }
+  private sums = { req: 0, ovh: 0, coord: 0, a: zero(), o: zero(), c: zero(), h: zero() }
 
   constructor(servers: () => Iterable<string> = () => BUS_SERVERS) {
     this.servers = servers
@@ -365,6 +371,7 @@ export class Tracker {
     sums.req += 1
     for (const k of KEYS) sums.a[k] += u[k]
     const split = inputSplit(u, this.ctx, step.known)
+    for (const k of INPUT_ORDER) sums.h[k] += split[3][k]
     const tools = step.outCat.map((c) => c / CHARS_PER_TOKEN) as Triple
     const t = tools[0] + tools[1] + tools[2]
     if (t > u.out) for (const i of [0, 1, 2]) tools[i] = (tools[i] * u.out) / t
@@ -383,7 +390,7 @@ export class Tracker {
   // The turn's sums as the `usage` stat, and a fresh start; null without a request.
   take(): UsageStat | null {
     const s = this.sums
-    this.sums = { req: 0, ovh: 0, coord: 0, a: zero(), o: zero(), c: zero() }
+    this.sums = { req: 0, ovh: 0, coord: 0, a: zero(), o: zero(), c: zero(), h: zero() }
     if (!s.req) return null
     const lim = (x: number) => Math.max(0, Math.min(MAX, Math.round(x)))
     const out: Record<string, number> = { req: lim(s.req), req_ovh: lim(s.ovh), req_coord: lim(s.coord) }
@@ -393,7 +400,10 @@ export class Tracker {
       const o = Math.min(a, lim(s.o[k]))
       out[`a_${k}`] = a
       out[`o_${k}`] = o
-      out[`c_${k}`] = Math.min(a - o, lim(s.c[k]))
+      const c = Math.min(a - o, lim(s.c[k]))
+      out[`c_${k}`] = c
+      // The uncovered front, task work within a_x: h_x <= a_x - o_x - c_x (A6).
+      if (k !== "out") out[`h_${k}`] = Math.min(a - o - c, lim(s.h[k]))
     }
     return out as UsageStat
   }

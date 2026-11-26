@@ -412,7 +412,9 @@ the turn hooks write; in `tok` `req`, `bus_req`, `fixed`, `skill`, `all`,
 category, an estimate of method `m`; task work is `all` minus `ovh` and
 `coord`, never sent; a `tok` from OpenCode's or pi's `usage` events, RT-6.9
 step 2, has no `bus`, `bus_req`, `fixed` or `skill`, and readers of the
-share by cause count only lines with `tok.bus`); in `tok.all`, `tok.bus`,
+share by cause count only lines with `tok.bus`; the event's uncovered input
+`h_in`, `h_read`, `h_w` stays in the server, only where the bus's fixed head
+went shows, in `tok.ovh`); in `tok.all`, `tok.bus`,
 `tok.ovh` and `tok.coord` `in`, `read`, `w5m`, `w1h` and `out`;
 in `post_words` the bus words and `ask`, `plain`, `other`; in `inbound`
 `agent`, `human`, `event` and `envelope`; in `inject` `start`, `check`,

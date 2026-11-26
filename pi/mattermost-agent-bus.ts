@@ -226,8 +226,20 @@ export function injectKind(name: string): string {
 
 // A text's length in Unicode code points, as the server (Python's len) and the hooks
 // (jq's length) count it; String.length would count UTF-16 units (RT-6.9).
+// Counted without building an array: it runs over each request's whole context.
 export function chars(text: string): number {
-  return [...text].length
+  let n = text.length
+  for (let i = 0; i < text.length - 1; i++) {
+    const hi = text.charCodeAt(i)
+    if (hi >= 0xd800 && hi <= 0xdbff) {
+      const lo = text.charCodeAt(i + 1)
+      if (lo >= 0xdc00 && lo <= 0xdfff) {
+        n -= 1 // a surrogate pair: one code point
+        i += 1
+      }
+    }
+  }
+  return n
 }
 
 // ---- The token split (RT-6.9 step 2, ADR-017 method 1; issue #139 stage 2b) ----
@@ -260,10 +272,17 @@ export function busWord(message: string): string | null {
   return m && BUS_WORDS.has(m[1]) ? m[1] : null
 }
 
-const isBus = (name: string) => BUS_KEYS.some((k) => name.includes(k))
+// pi names an MCP tool `mcp__<server>__<tool>`, everything but [A-Za-z0-9_]
+// turned into `_` (pi-mcp createMcpToolName): the bus tool, or null.
+const BUS_NAMES = new Set(BUS_KEYS.flatMap((k) => [k, k.replace(/[^A-Za-z0-9_]/g, "_")]))
+export function busTool(name: string): string | null {
+  const m = /^mcp__(.+?)__(.+)$/.exec(name)
+  return m && BUS_NAMES.has(m[1]) ? m[2] : null
+}
+const isBus = (name: string) => busTool(name) !== null
 // pi's read tool on the bus skill's folder (relative or absolute).
 const SKILL_PATH = new RegExp(`(^|[/\\\\])skills[/\\\\]${SKILL}[/\\\\]`)
-export const isWait = (name: string) => isBus(name) && name.endsWith("__wait_for_events")
+export const isWait = (name: string) => busTool(name) === "wait_for_events"
 
 // A tool call and its result: a bus tool's category, reading the bus skill
 // overhead, anything else task work.
@@ -272,7 +291,7 @@ export function toolCategory(name: string, args: unknown): number {
     const path = (args as Json | null)?.path
     return name === "read" && typeof path === "string" && SKILL_PATH.test(path) ? OVERHEAD : TASK
   }
-  const tool = name.split("__").at(-1) ?? ""
+  const tool = busTool(name) ?? ""
   const a = (args && typeof args === "object" ? args : {}) as Json
   if (POSTING.has(tool)) {
     // The word as the agent passed it (`kind`), else the one the message starts with.
@@ -287,7 +306,18 @@ const textOf = (content: unknown): string =>
   typeof content === "string" ? content
     : Array.isArray(content) ? content.map((c) => (c?.type === "text" ? String(c.text ?? "") : "")).join("")
       : ""
-const callChars = (c: any) => chars(JSON.stringify(c?.arguments ?? {}))
+// JSON as Python's json.dumps(ensure_ascii=False) writes it (", " and ": "):
+// the size overhead.py gives a tool call's input.
+export function pyJson(v: unknown): string {
+  if (v === null || v === undefined) return "null"
+  if (Array.isArray(v)) return "[" + v.map(pyJson).join(", ") + "]"
+  if (typeof v === "object") {
+    return "{" + Object.entries(v as Json).map(([k, x]) => JSON.stringify(k) + ": " + pyJson(x)).join(", ") + "}"
+  }
+  if (typeof v === "boolean") return v ? "true" : "false"
+  return JSON.stringify(v) ?? "null"
+}
+const callChars = (c: any) => chars(pyJson(c?.arguments ?? {}))
 
 // overhead._events: a wait_for_events result (or one of its content blocks,
 // an item each) as [overhead, task, coordination] characters. Each delivered
@@ -445,10 +475,12 @@ const tokens = (u: any): Tokens => ({ in: Number(u?.input) || 0, read: Number(u?
 // input; 4 characters a token, scaled down when the segments are longer): the
 // front they do not cover is pi's system prompt and tool docs, task work here
 // (the server adds the bus's share of it). The output: the tool calls by their
-// tool's category, the rest (text, thinking) by the driver.
-export function requestSplit(usage: any, seg: Segments, message: any): [Tokens, Tokens, Tokens] {
+// tool's category, the rest (text, thinking) by the driver. The fourth entry:
+// of each input type the tokens the segments did not cover (amendment A6;
+// within task work), where the server places the bus's fixed head.
+export function requestSplit(usage: any, seg: Segments, message: any): [Tokens, Tokens, Tokens, Tokens] {
   const u = tokens(usage)
-  const out: [Tokens, Tokens, Tokens] = [zero(), zero(), zero()]
+  const out: [Tokens, Tokens, Tokens, Tokens] = [zero(), zero(), zero(), zero()]
   const known = seg.total / CHARS_PER_TOKEN
   const total = u.read + u.w + u.in
   const scale = known ? Math.min(1, total / known) : 0
@@ -462,6 +494,7 @@ export function requestSplit(usage: any, seg: Segments, message: any): [Tokens, 
   let lo: Shares = [0, 0, 0]
   let edge = 0
   for (const k of ["read", "w", "in"] as const) {
+    out[3][k] = Math.max(0, Math.min(edge + u[k], base) - Math.min(edge, base))
     edge += u[k]
     const hi = at(edge)
     for (const c of CATS) out[c][k] = Math.max(0, hi[c] - lo[c])
@@ -479,8 +512,9 @@ export function requestSplit(usage: any, seg: Segments, message: any): [Tokens, 
 }
 
 const USAGE_MAX = 1e9
-// The requests of a run summed; fields() is the `usage` stat: 15 integers,
-// o_x + c_x <= a_x for each type x, or null without a request.
+// The requests of a run summed; fields() is the `usage` stat: 18 integers,
+// o_x + c_x <= a_x for each type x and h_x <= a_x - o_x - c_x for the input
+// types, or null without a request.
 export class Meter {
   req = 0
   reqOvh = 0
@@ -488,6 +522,7 @@ export class Meter {
   all = zero()
   ovh = zero()
   coord = zero()
+  front = zero()
 
   // One assistant message, with the segments of its request's context.
   add(message: any, seg: Segments | null) {
@@ -500,6 +535,7 @@ export class Meter {
       this.all[k] += u[k]
       this.ovh[k] += split[OVERHEAD][k]
       this.coord[k] += split[COORDINATION][k]
+      this.front[k] += split[3][k]
     }
     // A request whose new input held no task work: coordination when any of
     // it was, else overhead.
@@ -515,7 +551,9 @@ export class Meter {
     for (const k of TYPES) {
       const a = n(this.all[k])
       const o = Math.min(n(this.ovh[k]), a)
-      Object.assign(out, { [`a_${k}`]: a, [`o_${k}`]: o, [`c_${k}`]: Math.min(n(this.coord[k]), a - o) })
+      const c = Math.min(n(this.coord[k]), a - o)
+      Object.assign(out, { [`a_${k}`]: a, [`o_${k}`]: o, [`c_${k}`]: c })
+      if (k !== "out") out[`h_${k}`] = Math.min(n(this.front[k]), a - o - c)
     }
     return out
   }

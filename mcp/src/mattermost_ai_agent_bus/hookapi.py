@@ -916,13 +916,16 @@ async def stat(client: ChatPort, query: Mapping[str, str], body: Mapping[str, An
     values = {k: v for k, v in body.items() if k not in ("k", "t")}
     if kind == "usage":
         # A plugin's token split of one turn (RT-6.9 step 1): exactly its integer fields, each
-        # 0 to USAGE_MAX, overhead and coordination within the total of their type.
+        # 0 to USAGE_MAX, overhead and coordination within the total of their type, the
+        # uncovered input (h_) within the task work that is left.
         if (set(values) != stats.USAGE_FIELDS
                 or not all(type(v) is int and 0 <= v <= stats.USAGE_MAX for v in values.values())
                 or any(values[f"o_{x}"] + values[f"c_{x}"] > values[f"a_{x}"]
-                       for x in stats.USAGE_TYPES.values())):
+                       for x in stats.USAGE_TYPES.values())
+                or any(values[f"h_{x}"] > values[f"a_{x}"] - values[f"o_{x}"] - values[f"c_{x}"]
+                       for x in stats.USAGE_HEAD.values())):
             raise BadRequest(f"usage: exactly {', '.join(sorted(stats.USAGE_FIELDS))}, integers "
-                             f"0 to {stats.USAGE_MAX}, o_x + c_x at most a_x")
+                             f"0 to {stats.USAGE_MAX}, o_x + c_x at most a_x, h_x at most the rest")
     elif len(values) > MAX_STAT_FIELDS:
         raise BadRequest(f"at most {MAX_STAT_FIELDS} fields")
     for k, v in values.items():

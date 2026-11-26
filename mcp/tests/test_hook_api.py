@@ -503,18 +503,23 @@ async def test_stat_counts_into_the_servers_own_file(api):
 
 async def test_stat_usage_takes_exactly_the_plugins_token_split(api):
     """RT-6.9 step 1: `usage` (OpenCode, pi) is exempt from the field cap only by its exact
-    15 integer fields, each 0 to 10**9, overhead and coordination within their type's total."""
+    18 integer fields, each 0 to 10**9, overhead and coordination within their type's total,
+    the uncovered input (h_) within the task work left of its type."""
     _, h = await api(FakeClient())
     good = {"k": "usage", "req": 2, "req_ovh": 1, "req_coord": 0,
             "a_in": 100, "a_read": 9000, "a_w": 300, "a_out": 50,
             "o_in": 10, "o_read": 900, "o_w": 0, "o_out": 5,
-            "c_in": 90, "c_read": 100, "c_w": 300, "c_out": 45}
+            "c_in": 90, "c_read": 100, "c_w": 300, "c_out": 45,
+            "h_in": 0, "h_read": 8000, "h_w": 0}
+    assert len(stats.USAGE_FIELDS) == 18
     assert (await h.post("/v1/stat", json=good)).json() == {"ok": True}
     rows = [json.loads(line) for line in
             (session_file.state_dir() / f"stats-{UID}.jsonl").read_text().splitlines()]
     assert {k: v for k, v in rows[-1].items() if k != "t"} == good
     missing = {k: v for k, v in good.items() if k != "c_out"}
-    for bad in (missing, good | {"x": 1}, good | {"name": "drain"}, good | {"a_in": -1},
+    no_head = {k: v for k, v in good.items() if k != "h_w"}
+    for bad in (missing, no_head, good | {"h_out": 0}, good | {"h_read": 8001}, good | {"h_in": 1},
+                good | {"h_w": -1}, good | {"x": 1}, good | {"name": "drain"}, good | {"a_in": -1},
                 good | {"a_out": 10**9 + 1}, good | {"req": 1.5}, good | {"req": True}, good | {"a_read": "9"},
                 good | {"o_in": 11},                       # 11 + 90 > 100
                 good | {"c_w": 301}):

@@ -421,13 +421,25 @@ def _traffic(counted: list[dict[str, Any]], posts: list[dict[str, Any]],
             "polls": [len(polls), sum(1 for e in polls if e.get("empty"))], "inject": inject}
 
 
-def _usage_tok(usage: list[dict[str, Any]], fixed: overhead.Fixed | None) -> dict[str, Any] | None:
+# Which of the bus's fixed texts a harness puts into every request (RT-6.9 step 2): pi registers
+# the bus with direct exposure and sends its tool docs but not the MCP instructions; any other
+# harness both.
+HEAD_PARTS: dict[str, tuple[str, ...]] = {"pi": ("tools",)}
+HEAD_DEFAULT = ("instructions", "tools")
+
+
+def head_chars(fixed: overhead.Fixed, rt: str) -> int:
+    """The characters of the bus's fixed head in one request of harness `rt`."""
+    return sum(int(getattr(fixed, part)) for part in HEAD_PARTS.get(rt, HEAD_DEFAULT))
+
+
+def _usage_tok(usage: list[dict[str, Any]], fixed: overhead.Fixed | None, rt: str) -> dict[str, Any] | None:
     """`tok` from the `usage` events of a harness whose transcript the server does not read
     (OpenCode, pi; RT-6.9 step 2): their sums, plus the bus's fixed head, which the plugin
-    cannot see and counted as task work: per request the MCP instructions and tool docs at
-    CHARS_PER_TOKEN go to overhead in cache read (the oldest, cached part), what does not fit
-    there into fresh input, then nothing, so overhead and coordination never exceed the total
-    of a type. No `bus`, `bus_req`, `fixed` or `skill`: the measure by cause needs the
+    cannot see and counted as task work: per request the fixed texts `rt` sends (HEAD_PARTS) at
+    CHARS_PER_TOKEN go to overhead, placed only into the input the plugin's segments did not
+    cover (h_), in cache read, then cache write, then fresh input, never beyond it; the rest is
+    dropped, so the head lands only where the harness sent uncovered input. No `bus`, `bus_req`, `fixed` or `skill`: the measure by cause needs the
     transcript. A usage event counts in the part it arrived in, never carried."""
     def total(f: str) -> int:
         return sum(int(e.get(f) or 0) for e in usage)
@@ -438,9 +450,10 @@ def _usage_tok(usage: list[dict[str, Any]], fixed: overhead.Fixed | None) -> dic
                            "m": overhead.METHOD}
     for obj, p in (("all", "a"), ("ovh", "o"), ("coord", "c")):
         tok[obj] = {k: total(f"{p}_{x}") for k, x in USAGE_TYPES.items()} | {"w1h": 0}
-    head = round(req * (fixed.instructions + fixed.tools) / overhead.CHARS_PER_TOKEN) if fixed else 0
-    for k in ("read", "in"):
-        add = min(head, max(0, tok["all"][k] - tok["ovh"][k] - tok["coord"][k]))
+    head = round(req * head_chars(fixed, rt) / overhead.CHARS_PER_TOKEN) if fixed else 0
+    for k, x in USAGE_HEAD.items():
+        room = min(total(f"h_{x}"), tok["all"][k] - tok["ovh"][k] - tok["coord"][k])
+        add = min(head, max(0, room))
         tok["ovh"][k] += add
         head -= add
     for k in overhead.KEYS:  # the invariant (RT-6.9 step 2), also on sums of odd events
@@ -497,7 +510,7 @@ def _summarize(events: list[dict[str, Any]], version: str, fixed: overhead.Fixed
         except Exception:  # noqa: BLE001 — a transcript we cannot read costs only this field
             tok = None
     if tok is None:
-        tok = _usage_tok([e for e in counted if e.get("k") == "usage"], fixed)
+        tok = _usage_tok([e for e in counted if e.get("k") == "usage"], fixed, harness())
     turns, _ = _turns(counted)
     bus_turns = [sec for by_bus, sec in turns if by_bus]
     saved, pending = _saved(events)
@@ -757,10 +770,14 @@ INJECT_KINDS = frozenset({"start", "check", "digest", "drain", "signoff", "liste
                           "wake", "other"})
 # The token split a plugin attributed in process (OpenCode, pi; RT-6.9 step 1): one `usage`
 # event per turn, sums over its requests, exactly these fields: a_ all tokens, o_ bus overhead,
-# c_ coordination, per type o_x + c_x <= a_x; `w` is cache write of any duration.
+# c_ coordination, per type o_x + c_x <= a_x; `w` is cache write of any duration. h_ the input
+# the plugin's known segments did not cover (the invisible front, counted as task work in a_),
+# per input type h_x <= a_x - o_x - c_x: where the server may place the bus's fixed head.
 USAGE_TYPES = {"in": "in", "read": "read", "w5m": "w", "out": "out"}   # tok type: event suffix
+USAGE_HEAD = {"read": "read", "w5m": "w", "in": "in"}   # the head's order: oldest first
 USAGE_FIELDS = frozenset({"req", "req_ovh", "req_coord",
-                          *(f"{p}_{x}" for p in "aoc" for x in USAGE_TYPES.values())})
+                          *(f"{p}_{x}" for p in "aoc" for x in USAGE_TYPES.values()),
+                          *(f"h_{x}" for x in USAGE_HEAD.values())})
 USAGE_MAX = 10**9
 _SUB_KEYS: dict[str, frozenset[str]] = {"wakes": WAKE_REASONS, "blocks": BLOCK_KINDS,
                                         "tools": TOOL_NAMES, "tok": TOK_KEYS, "post_words": POST_WORDS,

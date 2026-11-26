@@ -247,6 +247,8 @@ export function chars(text: string): number {
 // The token split (usage.ts) beside this file; a copied file finds it in the checkout
 // (root). Without it there is no `usage` stat, the rest works.
 type Split = typeof import("./usage.ts")
+// What setup() loads the split with (a test swaps it).
+export const usageLoader = { load: (root: string | null) => loadSplit(root) }
 export async function loadSplit(root: string | null): Promise<Split | null> {
   const specs = ["./usage.ts", ...(root ? [pathToFileURL(join(root, "opencode", "plugin", "usage.ts")).href] : [])]
   for (const spec of specs) {
@@ -449,6 +451,15 @@ export async function setup(ctx: Plugin.Context) {
   // The token split per top-level session (RT-6.9 step 2): in memory, a reload starts it afresh.
   let split: Split | null = null
   const trackers = new Map<string, Tracker>()
+  // Every call into the split goes through here: a throw there never skips the
+  // plugin's own handling (a turn end, a compaction, a send's result).
+  const counting = (f: () => void) => {
+    try {
+      f()
+    } catch {
+      // the split is an estimate: this event is left out
+    }
+  }
   const track = (id: string): Tracker | null => {
     if (!split) return null
     let tr = trackers.get(id)
@@ -589,7 +600,7 @@ export async function setup(ctx: Plugin.Context) {
       if (kind !== "context") t.turn = true
       await ctx.session.synthetic({ sessionID: id, text, description: description || "AI agent bus",
         metadata: { [MARK]: kind }, delivery: kind === "context" ? "steer" : "queue", resume: kind !== "context" } as any)
-      track(id)?.injected(text) // the plugin's texts carry no post body: overhead whole
+      counting(() => track(id)?.injected(text)) // the plugin's texts carry no post body: overhead whole
       return true
     } catch {
       return false
@@ -603,7 +614,7 @@ export async function setup(ctx: Plugin.Context) {
       await refuse(id, bound()?.id === id && bound()?.refused ? HOST_REFUSED : NO_BUS)
       return
     }
-    track(id)?.user(text)
+    counting(() => track(id)?.user(text))
     const t = turn(id)
     Object.assign(t, { busy: true, turn: true, aborted: false, drains: 0, signoffAsked: false, byBus: false,
                        heldSince: 0, wakeKey: "", wakeRepeats: 0, wakeAfter: 0 })
@@ -649,7 +660,8 @@ export async function setup(ctx: Plugin.Context) {
     const t = turn(id)
     if (t.inFlight) return
     // The token split of the requests since the last turn end, numbers only (RT-6.9 step 2).
-    const usage = trackers.get(id)?.take()
+    let usage: Json | null | undefined = null
+    counting(() => (usage = trackers.get(id)?.take()))
     if (usage) await stat("usage", usage)
     if (t.compactOnly) {
       // A compaction between turns runs as an execution of its own: no turn
@@ -848,7 +860,7 @@ export async function setup(ctx: Plugin.Context) {
     const d = ev?.data ?? {}
     const id = String(d.sessionID || "")
     const type = String(ev?.type || "")
-    if (split && TRACKED.test(type) && (await mine(id))) track(id)?.event(type, d)
+    if (split && TRACKED.test(type) && (await mine(id))) counting(() => track(id)?.event(type, d))
     switch (type) {
       case "session.created":
         if (id) {
@@ -895,7 +907,7 @@ export async function setup(ctx: Plugin.Context) {
   }
 
   const root = busRoot(options, env, fileURLToPath(import.meta.url))
-  split = await loadSplit(root)
+  split = await usageLoader.load(root)
   await keep(ctx.mcp.transform((editor: any) => {
     for (const [n, cfg] of editor.list()) if (n === SERVER || runsBus(cfg)) busNames.add(n)
     if (!relay) {

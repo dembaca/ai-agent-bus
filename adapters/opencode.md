@@ -88,12 +88,21 @@ the model. It reads OpenCode's events of the top-level session (not its subagent
 fresh part, `cache.read`, `cache.write`, `output` plus `reasoning`), the text and
 reasoning it wrote, the tool calls (`session.tool.input.started` for the name,
 `.called` for the input, `.success`/`.failed` for the result; a `wait_for_events`
-result splits by the posts it delivered), `session.skill.activated` (the bus skill's
-text, like a read of its side files, is overhead), the compactions, the human's prompt
-and the plugin's own texts. A request is a step with at least one non-zero count.
-OpenCode does not tell cache writes of 5 min and 1 h apart: they all count as 5 min. A turn without a request with usage posts
-nothing. The split is kept in memory: after a reload of the plugin it starts afresh,
-and what it has not seen counts as task work.
+result splits by the posts it delivered), `session.skill.activated` and the `skill`
+tool (the bus skill's text is overhead, as is a `read` of its side files; other tools
+under that path are task work), the compactions, the human's prompt and the plugin's
+own texts. A request is a step with at least one non-zero count. OpenCode does not tell
+cache writes of 5 min and 1 h apart: they all count as 5 min. The input the known
+context does not reach (system prompt, tool docs, the MCP instructions) is sent per
+type as `h_in`, `h_read`, `h_w`; the server places the bus's fixed text there.
+
+Not counted: the compaction's own model request (OpenCode books it apart from the
+session's steps), and a bus tool the model calls from inside Code Mode's `execute`
+rather than as a tool of its own (it is not seen as the bus's; its call and result
+count as task work). A turn without a request with usage posts nothing. A `usage`
+POST that fails (server gone, timeout) is not repeated: that turn's numbers are lost.
+The split is kept in memory: after a reload of the plugin it starts afresh, and what
+it has not seen counts as task work.
 
 ### The environment is the service's
 

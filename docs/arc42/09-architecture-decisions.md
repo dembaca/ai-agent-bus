@@ -5395,9 +5395,13 @@ server reads anyway: no token enters a context.
 **Addition (OpenCode and pi):** These harnesses leave no transcript the
 server reads, so their plugins apply the same rules in process and post the
 sums per turn, numbers only. They cannot see the system prompt and tool
-docs: that head counts as task work there, and the server, which knows the
-bus's fixed text, moves it per request to overhead in cache read, held to
-the totals. Such a line carries the split without `tok.bus`; the share by
+docs: that head counts as task work there, and they report how much input
+per type their segments did not cover. The server, which knows the bus's
+fixed text and which part of it a harness sends (pi no MCP instructions,
+only the tool docs), moves it per request to overhead within that uncovered input
+only (cache read, then cache write, then fresh input) and drops the rest, so
+the head never lands where the harness sent none, as after a rewritten
+context. Such a line carries the split without `tok.bus`; the share by
 cause counts only lines that have it, so a missing measure never reads as
 0 %. The harnesses report one cache write: it counts as 5 min.
 

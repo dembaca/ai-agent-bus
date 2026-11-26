@@ -14,7 +14,7 @@ import ocBus from "../../opencode/plugin/mattermost-agent-bus.ts"
 import { busFile as ocBusFile } from "../../opencode/plugin/mattermost-agent-bus.ts"
 import mattermostAgentBus, { busFile, busRoot, create, hookApi, MCP_TIMEOUT_SEC, mcpConfig, secretCommand, SERVER, SKILL,
   chars, timing, venvDir, waitSec, wakeBackoffMs, contextSegments, COORDINATION, Meter, OVERHEAD, requestSplit, Segments,
-  TASK, toolCategory, waitResult } from "../mattermost-agent-bus.ts"
+  TASK, toolCategory, waitResult, busTool, pyJson } from "../mattermost-agent-bus.ts"
 
 const HERE = dirname(fileURLToPath(import.meta.url))
 const REPO = dirname(dirname(HERE))
@@ -547,7 +547,8 @@ test("RT-6.9 step 1: an inject's length counts Unicode code points, as the serve
 
 // RT-6.9 step 2 (ADR-017, method 1): the token split in process, from pi's
 // `context` and `message_end` events, one `usage` stat per settled run.
-const BUS = "mcp__ai-agent-bus__"
+// The name pi gives a bus tool: mcp__<server>__<tool>, "-" turned into "_" (pi-mcp createMcpToolName).
+const BUS = "mcp__ai_agent_bus__"
 const tok = (u: Record<string, number>) => ({ input: 0, output: 0, cacheRead: 0, cacheWrite: 0, totalTokens: 0,
   cost: { input: 0, output: 0, cacheRead: 0, cacheWrite: 0, total: 0 }, ...u })
 const asst = (content: any[], u: Record<string, number>) =>
@@ -567,9 +568,11 @@ const settled = async (f: any) => {
   await until(() => bodies("/v1/presence").length >= 2, "the run settled")
   await settle()
 }
-const expect = (req: number[], a: number[], o: number[], c: number[]) => {
+// h: the uncovered front per input type (in, read, w; amendment A6).
+const expect = (req: number[], a: number[], o: number[], c: number[], h = [0, 0, 0]) => {
   const out: Record<string, any> = { k: "usage", req: req[0], req_ovh: req[1], req_coord: req[2] }
   ;["in", "read", "w", "out"].forEach((x, i) => Object.assign(out, { [`a_${x}`]: a[i], [`o_${x}`]: o[i], [`c_${x}`]: c[i] }))
+  ;["in", "read", "w"].forEach((x, i) => (out[`h_${x}`] = h[i]))
   return out
 }
 
@@ -587,6 +590,11 @@ test("RT-6.9 step 2: a bus tool by its word, kind or first word; other bus tools
     [BUS + "wait_for_events", {}, OVERHEAD],
     [BUS + "stats_report", {}, OVERHEAD],
     ["mcp__other__post_message", { kind: "DONE" }, TASK],
+    ["mcp__ai-agent-bus__post_message", { kind: "DONE" }, COORDINATION],
+    ["mcp__mattermost_agent_bus__wait_for_events", {}, OVERHEAD],
+    ["mcp__my_ai_agent_bus_fork__post_message", { kind: "DONE" }, TASK],
+    ["mcp__x__ai_agent_bus__post_message", { kind: "DONE" }, TASK],
+    ["ai_agent_bus__post_message", { kind: "DONE" }, TASK],
     ["read", { path: "x" }, TASK],
     // Reading the bus skill (amendment A3), absolute or relative; not another skill.
     ["read", { path: "/home/a/ai-agent-bus/skills/ai-agent-bus/SKILL.md" }, OVERHEAD],
@@ -597,11 +605,13 @@ test("RT-6.9 step 2: a bus tool by its word, kind or first word; other bus tools
   for (const [name, args, cat] of cases) assert.equal(toolCategory(name, args), cat, `${name} ${JSON.stringify(args)}`)
 })
 
-for (const [word, msg, cat] of [["IDLE", "IDLE waiting", OVERHEAD], ["DONE", "DONE shipped", COORDINATION]] as const) {
+for (const [word, msg, cat] of [["IDLE", "IDLE wait", OVERHEAD], ["DONE", "DONE ship", COORDINATION]] as const) {
   test(`RT-6.9 step 2: a bus tool round (${word}): call, result and the request it drives`, async () => {
     const f = await started()
     const args = { kind: word, message: msg }
-    assert.equal(JSON.stringify(args).length, 40)
+    // Sized as Python's json.dumps writes it, with ", " and ": " (overhead.py).
+    assert.equal(pyJson(args), `{"kind": "${word}", "message": "${msg}"}`)
+    assert.equal(pyJson(args).length, 40)
     const t = user("x".repeat(400))
     const a1 = asst([call("c1", BUS + "post_message", args)], { input: 100, output: 30 })
     const r1 = result("c1", BUS + "post_message", "r".repeat(160))
@@ -615,7 +625,7 @@ for (const [word, msg, cat] of [["IDLE", "IDLE waiting", OVERHEAD], ["DONE", "DO
     // call; input 40 = the result's 160. Its 12 output tokens follow the result (the driver).
     const bus = [40, 0, 10, 22]
     assert.deepEqual(usageStats(), [expect(cat === OVERHEAD ? [2, 1, 0] : [2, 0, 1], [140, 110, 20, 42],
-      cat === OVERHEAD ? bus : [0, 0, 0, 0], cat === OVERHEAD ? [0, 0, 0, 0] : bus)])
+      cat === OVERHEAD ? bus : [0, 0, 0, 0], cat === OVERHEAD ? [0, 0, 0, 0] : bus, [0, 20, 0])])
     // The next run starts from zero.
     await settled(f)
     assert.equal(usageStats().length, 1)
@@ -634,7 +644,7 @@ test("RT-6.9 step 2: the extension's own texts are overhead (a wake carries no p
   // of 70), then the wake text and the answer it drove (21).
   await request(f, [user(text), a1, user("h".repeat(80))], asst([], { cacheRead: 50, input: 20, output: 4 }))
   await settled(f)
-  assert.deepEqual(usageStats(), [expect([2, 1, 0], [70, 50, 0, 12], [20, 21, 0, 8], [0, 0, 0, 0])])
+  assert.deepEqual(usageStats(), [expect([2, 1, 0], [70, 50, 0, 12], [20, 21, 0, 8], [0, 0, 0, 0], [30, 29, 0])])
 })
 
 test("RT-6.9 step 2: a compaction starts the segments afresh; its summary has the shares before it", async () => {
@@ -659,7 +669,7 @@ test("RT-6.9 step 2: the input by position, the segments scaled down when longer
   seg.add(TASK, 400)
   // 800 characters (200 tokens) for 100 tokens: cache read covers the older half, the overhead.
   const split = requestSplit(tok({ cacheRead: 50, input: 50 }), seg, asst([], {}))
-  assert.deepEqual(split.map((x) => [x.read, x.in]), [[0, 50], [50, 0], [0, 0]])
+  assert.deepEqual(split.map((x) => [x.read, x.in]), [[0, 50], [50, 0], [0, 0], [0, 0]])
 })
 
 test("RT-6.9 step 2: the output: tool calls by their tool, the rest by the new input (the driver)", () => {
@@ -667,10 +677,10 @@ test("RT-6.9 step 2: the output: tool calls by their tool, the rest by the new i
   const seg = contextSegments([user("a".repeat(40)), a0, result("c0", BUS + "get_thread", "g".repeat(100)),
                                user("t".repeat(300))], () => undefined)
   assert.deepEqual(seg.driver(), [0.75, 0, 0.25])
-  // 20 output tokens: the ask's call {"question":"q"} 16 characters (4 tokens), the 16 others 3:1 task:coordination.
-  const a1 = asst([{ type: "thinking", thinking: "hm" }, call("c1", BUS + "ask_human", { question: "q" })], { output: 20 })
+  // 20 output tokens: the ask's call {"question": ""} 16 characters (4 tokens), the 16 others 3:1 task:coordination.
+  const a1 = asst([{ type: "thinking", thinking: "hm" }, call("c1", BUS + "ask_human", { question: "" })], { output: 20 })
   const split = requestSplit(a1.usage, seg, a1)
-  assert.deepEqual(split.map((x) => x.out), [12, 0, 8])
+  assert.deepEqual(split.slice(0, 3).map((x) => x.out), [12, 0, 8])
   // A request whose new input was coordination only, one of overhead only.
   const m = new Meter()
   m.add(a1, contextSegments([user("a"), a0, result("c0", BUS + "get_thread", "g")], () => undefined))
@@ -697,9 +707,11 @@ test("RT-6.9 step 2: o + c <= a for every type, integers in range, whatever the 
       msgs.push(reply, result(id, "x", "r".repeat(rnd(400))))
     }
     const f = m.fields()!
-    assert.equal(Object.keys(f).length, 15)
+    assert.equal(Object.keys(f).length, 18)
     for (const v of Object.values(f)) assert.ok(Number.isInteger(v) && v >= 0 && v <= 1e9)
-    for (const x of ["in", "read", "w", "out"]) assert.ok(f[`o_${x}`] + f[`c_${x}`] <= f[`a_${x}`], `${x} ${JSON.stringify(f)}`)
+    for (const x of ["in", "read", "w", "out"]) {
+      assert.ok(f[`o_${x}`] + f[`c_${x}`] + (f[`h_${x}`] ?? 0) <= f[`a_${x}`], `${x} ${JSON.stringify(f)}`)
+    }
     assert.ok(f.req_ovh + f.req_coord <= f.req)
   }
 })
@@ -745,4 +757,38 @@ test("RT-6.9 step 2: a wait_for_events result by its items (amendment A1)", () =
     { ...result("w", name, ""), content: [{ type: "text", text: JSON.stringify(agent) },
                                             { type: "text", text: JSON.stringify(human) }] }], () => undefined)
   assert.deepEqual(seg.fresh, [12, size(agent) - 14 + size(human) - 12, 14])  // task, overhead, coordination
+})
+
+test("RT-6.9 step 2: exact bus tool names, Python's JSON sizes, code points without an array", () => {
+  assert.equal(busTool("mcp__ai_agent_bus__reply_in_thread"), "reply_in_thread")
+  assert.equal(busTool("mcp__mattermost-agent-bus__get_me"), "get_me")
+  assert.equal(busTool("mcp__ai_agent_bus_x__get_me"), null)
+  assert.equal(busTool("post_message"), null)
+  assert.equal(pyJson({ a: [1, true, null], b: { c: "\u00e9\n" } }), '{"a": [1, true, null], "b": {"c": "\u00e9\\n"}}')
+  assert.equal(chars("\u{1F600}\u{1F600}x"), 3)
+  assert.equal(chars("\ud800x\udc00"), 3, "a lone surrogate is one code point, as in Python")
+  assert.equal(chars(""), 0)
+})
+
+test("RT-6.9 step 2: the uncovered front per input type, oldest first (amendment A6)", () => {
+  const seg = new Segments()
+  seg.add(OVERHEAD, 100) // 25 tokens known
+  const front = (u: Record<string, number>) => requestSplit(tok(u), seg, asst([], {}))[3]
+  // 45 tokens of input: 20 in front of the known 25, all in the cache read.
+  assert.deepEqual(front({ cacheRead: 30, cacheWrite: 10, input: 5 }), { in: 0, read: 20, w: 0, out: 0 })
+  // A front longer than the cache read runs on into the cache write.
+  assert.deepEqual(front({ cacheRead: 10, cacheWrite: 15, input: 20 }), { in: 0, read: 10, w: 10, out: 0 })
+  // Segments longer than the input: no front.
+  assert.deepEqual(front({ input: 20 }), { in: 0, read: 0, w: 0, out: 0 })
+  // No segments known: all input is front.
+  assert.deepEqual(requestSplit(tok({ cacheRead: 7, input: 3 }), new Segments(), asst([], {}))[3],
+                   { in: 3, read: 7, w: 0, out: 0 })
+  // Summed per run; h within what is not the bus's.
+  const m = new Meter()
+  m.add(asst([], { cacheRead: 30, cacheWrite: 10, input: 5 }), seg)
+  m.add(asst([], { cacheRead: 10, cacheWrite: 15, input: 20 }), seg)
+  const f = m.fields()!
+  assert.deepEqual([f.h_in, f.h_read, f.h_w], [0, 30, 10])
+  assert.equal(f.h_out, undefined)
+  for (const x of ["in", "read", "w"]) assert.ok(f[`h_${x}`] + f[`o_${x}`] + f[`c_${x}`] <= f[`a_${x}`])
 })

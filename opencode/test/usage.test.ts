@@ -4,7 +4,7 @@
 import assert from "node:assert/strict"
 import { test } from "node:test"
 
-import { busTool, busWord, cp, eventsSplit, skillRead, OVERHEAD, pyJson, TASK, COORDINATION, toolCategory, Tracker, usageOf,
+import { busTool, busWord, cp, eventsSplit, inputSplit, skillRead, OVERHEAD, pyJson, TASK, COORDINATION, toolCategory, Tracker, usageOf,
   type UsageStat } from "../plugin/usage.ts"
 
 const tok = (input: number, output = 0, read = 0, write = 0, reasoning = 0) =>
@@ -23,7 +23,7 @@ const result = (tr: Tracker, id: string, text: string) =>
   tr.event("session.tool.success", { sessionID: "s1", id, content: [{ type: "text", text }], executed: true })
 const stat = (over: Partial<UsageStat>): UsageStat => ({
   req: 0, req_ovh: 0, req_coord: 0, a_in: 0, a_read: 0, a_w: 0, a_out: 0,
-  o_in: 0, o_read: 0, o_w: 0, o_out: 0, c_in: 0, c_read: 0, c_w: 0, c_out: 0, ...over })
+  o_in: 0, o_read: 0, o_w: 0, o_out: 0, c_in: 0, c_read: 0, c_w: 0, c_out: 0, h_in: 0, h_read: 0, h_w: 0, ...over })
 
 test("RT-6.9 step 2: OpenCode usage: a bus tool round, IDLE is overhead, DONE coordination", () => {
   const tr = new Tracker()
@@ -84,7 +84,8 @@ test("RT-6.9 step 2: OpenCode usage: the input by position, cache read first; th
   tr.injected("i".repeat(400))  // then 100 of overhead
   // 300 tokens of input, 200 known: the first 100 are the head (system prompt, tool docs).
   request(tr, tok(100, 0, 150, 50))
-  assert.deepEqual(tr.take(), stat({ req: 1, req_ovh: 0, a_in: 100, a_read: 150, a_w: 50, o_in: 100 }))
+  // That uncovered front is told apart per type (A6): here it is the first 100 of the cache read.
+  assert.deepEqual(tr.take(), stat({ req: 1, req_ovh: 0, a_in: 100, a_read: 150, a_w: 50, o_in: 100, h_read: 100 }))
   // More known than the input: the segments are scaled down to it (half the input is overhead).
   const t2 = new Tracker()
   t2.user("u".repeat(400))
@@ -135,6 +136,10 @@ test("RT-6.9 step 2: OpenCode usage: overhead plus coordination never exceed all
     for (const k of ["in", "read", "w", "out"]) {
       const [a, o, c] = [(s as any)[`a_${k}`], (s as any)[`o_${k}`], (s as any)[`c_${k}`]]
       assert.ok(o >= 0 && c >= 0 && o + c <= a, `round ${round} ${k}: ${o} + ${c} <= ${a}`)
+      if (k !== "out") {
+        const h = (s as any)[`h_${k}`]
+        assert.ok(h >= 0 && h <= a - o - c, `round ${round} h_${k}: ${h} <= ${a} - ${o} - ${c}`)
+      }
     }
     assert.ok(s.req_ovh + s.req_coord <= s.req)
   }
@@ -207,18 +212,38 @@ test("RT-6.9 step 2: OpenCode usage: a wait_for_events result: bodies coordinati
 test("RT-6.9 step 2: OpenCode usage: loading the bus skill and reading its side files is overhead", () => {
   assert.equal(skillRead("skill", { name: "ai-agent-bus" }), true)
   assert.equal(skillRead("skill", { name: "other" }), false)
-  assert.equal(skillRead("read", { filePath: "/x/ai-agent-bus/skills/ai-agent-bus/coordinator.md" }), true)
+  assert.equal(skillRead("read", { path: "/x/ai-agent-bus/skills/ai-agent-bus/coordinator.md" }), true)
+  // Only reads: writing, editing or searching there is task work.
+  for (const t of ["write", "edit", "grep", "glob", "bash"])
+    assert.equal(skillRead(t, { path: "/x/skills/ai-agent-bus/SKILL.md", filePath: "/x/skills/ai-agent-bus/SKILL.md" }), false, t)
+  assert.equal(skillRead("skill", { id: "ai-agent-bus" }), true)
   assert.equal(skillRead("read", { filePath: "/x/src/main.ts" }), false)
   const tr = new Tracker()
   tr.event("session.skill.activated", { sessionID: "s1", id: "ai-agent-bus", name: "ai-agent-bus", text: "s".repeat(80) })
   tr.event("session.skill.activated", { sessionID: "s1", id: "other", name: "other", text: "o".repeat(20) })
-  request(tr, tok(0, 0, 0, 0, 0), [{ id: "r", name: "read", input: { filePath: "/c/skills/ai-agent-bus/tasks.md" } }])
+  request(tr, tok(0, 0, 0, 0, 0), [{ id: "r", name: "read", input: { path: "/c/skills/ai-agent-bus/tasks.md" } }])
   result(tr, "r", "m".repeat(40))
   const s = tr.ctx.sums.at(-1)!
-  assert.equal(s[OVERHEAD], 80 + cp(pyJson({ filePath: "/c/skills/ai-agent-bus/tasks.md" })) + 40)
+  assert.equal(s[OVERHEAD], 80 + cp(pyJson({ path: "/c/skills/ai-agent-bus/tasks.md" })) + 40)
   assert.equal(s[TASK], 20)
   // A zero-usage answer is no request and keeps the driver: the next one sees all the new input.
   request(tr, tok(30, 3))
   assert.deepEqual(tr.take(), stat({ req: 1, a_in: 30, a_out: 3,
     o_in: Math.round(30 * (s[OVERHEAD] / (s[OVERHEAD] + 20))), o_out: Math.round(3 * ((80 + 40) / 140)) }))
+})
+
+test("RT-6.9 step 2: OpenCode usage: the uncovered front per input type (h_in, h_read, h_w)", () => {
+  // 100 known characters (25 tokens) of overhead; 100 tokens of input: the front 75 are uncovered.
+  const tr = new Tracker()
+  tr.injected("i".repeat(100))
+  // read 50 (all uncovered), write 40 (25 uncovered, 15 known), fresh 10 (known).
+  request(tr, tok(10, 0, 50, 40))
+  request(tr, tok(10, 0, 50, 40)) // the same again: summed over the turn
+  assert.deepEqual(tr.take(), stat({ req: 2, req_ovh: 1, a_in: 20, a_read: 100, a_w: 80,
+    o_in: 20, o_w: 30, h_read: 100, h_w: 50, h_in: 0 }))
+  // All known: nothing uncovered; nothing known: all of it.
+  const t2 = new Tracker()
+  t2.user("u".repeat(400))
+  assert.deepEqual(inputSplit({ in: 20, read: 80, w: 0, out: 0 }, t2.ctx, 400)[3], { in: 0, read: 0, w: 0 })
+  assert.deepEqual(inputSplit({ in: 20, read: 80, w: 5, out: 0 }, t2.ctx, 0)[3], { in: 20, read: 80, w: 5 })
 })

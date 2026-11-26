@@ -40,11 +40,11 @@ before 0.5.0 are described in the git history.
   1 to 3, ADR-017). The OpenCode plugin and the pi extension attribute
   each turn's model requests in process, by the rules the server applies
   to Claude Code's transcript, and post the sums as one `usage` stat
-  event per turn (`POST /v1/stat` with `k: usage`: exactly 15 integer
-  fields, numbers only). The server folds them into the line's `tok`
+  event per turn (`POST /v1/stat` with `k: usage`: exactly 18 integer
+  fields, numbers only, among them the input their segments did not cover). The server folds them into the line's `tok`
   (method 1) and adds the bus's fixed instructions and tool docs, which
-  the plugins cannot see, as overhead per request in cache read, held to
-  the totals. Such a line counts in the tokens by category; the older
+  the plugins cannot see, as overhead per request, placed only into that
+  uncovered input. Such a line counts in the tokens by category; the older
   bus share by cause counts only lines with `tok.bus`, so it never
   reads as 0 %. No token is added to any context.
 - **The operator console shows the channels of the operator's own agents

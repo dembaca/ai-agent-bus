@@ -1165,10 +1165,12 @@ def _usage(**v):
 def test_usage_events_fold_into_tok_with_the_bus_head():
     """RT-6.9 step 2: without a transcript the server reads, the plugin's usage events of the
     part make `tok`: their sums, cache write as 5 min, plus the bus's fixed head as overhead
-    in cache read per request; no measure by cause (`bus`, `bus_req`, `fixed`, `skill`)."""
+    per request in the uncovered input, cache read first; no measure by cause (`bus`,
+    `bus_req`, `fixed`, `skill`)."""
     _usage(req=2, req_ovh=1, a_in=500, a_read=10_000, a_w=300, a_out=200,
-           o_in=50, o_read=1000, o_w=30, o_out=20, c_in=100, c_read=2000, c_w=60, c_out=40)
-    _usage(req=1, req_coord=1, a_in=100, a_read=5000, a_out=50, c_in=80, c_out=10)
+           o_in=50, o_read=1000, o_w=30, o_out=20, c_in=100, c_read=2000, c_w=60, c_out=40,
+           h_in=350, h_read=7000, h_w=210)
+    _usage(req=1, req_coord=1, a_in=100, a_read=5000, a_out=50, c_in=80, c_out=10, h_read=3000)
     s = stats.summary("0.103.0", overhead.Fixed(2000, 2000, 22000))   # head 1000 tokens per request
     assert s["tok"] == {
         "req": 3, "req_ovh": 1, "req_coord": 1, "m": overhead.METHOD,
@@ -1178,20 +1180,42 @@ def test_usage_events_fold_into_tok_with_the_bus_head():
     assert stats.decode_line(stats.nats_body(s) or b"")["tok"] == s["tok"]
 
 
-def test_the_head_is_held_to_the_totals():
-    """RT-6.9 step 2: the head goes to cache read as far as task work leaves room there, the
-    rest to fresh input, then nothing: overhead and coordination never exceed a type's total.
-    Without the fixed sizes no head; a part without requests has no tok."""
-    _usage(req=1, a_in=300, a_read=1000, a_out=10, o_read=200, c_read=700, c_in=100)
-    tok = stats.summary("0.103.0", overhead.Fixed(4000, 4000, 0))["tok"]    # head 2000 tokens
-    assert (tok["ovh"]["read"], tok["ovh"]["in"]) == (300, 200)              # 100 + 200 room, then none
+def test_the_head_goes_only_into_the_uncovered_input():
+    """RT-6.9 step 2: the head goes into the input the plugin's segments did not cover, cache
+    read, then cache write, then fresh input, never beyond it; the rest is dropped. A part
+    whose context was rewritten (write-heavy) gets its head in cache write, not in cache read
+    or fresh input it does not have uncovered. Without the fixed sizes no head; a part
+    without requests has no tok."""
+    _usage(req=2, a_in=1000, a_read=500, a_w=3000, a_out=10, h_in=800, h_read=500, h_w=2000,
+           o_w=100, c_in=100)
+    tok = stats.summary("0.103.0", overhead.Fixed(4000, 4000, 0))["tok"]    # head 2000 per request
+    assert (tok["ovh"]["read"], tok["ovh"]["w5m"], tok["ovh"]["in"]) == (500, 100 + 2000, 800)
     assert all(tok["ovh"][k] + tok["coord"][k] <= tok["all"][k] for k in overhead.KEYS)
     stats._path().unlink()
-    _usage(req=1, a_read=1000, o_read=10)
+    _usage(req=1, a_read=9000, a_in=500, h_read=100)                         # room, but only 100 uncovered
+    tok = stats.summary("0.103.0", overhead.Fixed(4000, 4000, 0))["tok"]
+    assert (tok["ovh"]["read"], tok["ovh"]["in"]) == (100, 0)
+    stats._path().unlink()
+    _usage(req=1, a_read=1000, o_read=10, h_read=900)
     assert stats.summary("0.103.0")["tok"]["ovh"]["read"] == 10
     stats._path().unlink()
     _usage(req=0)
     assert "tok" not in stats.summary("0.103.0", overhead.Fixed(4000, 4000, 0))
+
+
+def test_the_head_is_what_the_harness_sends(monkeypatch):
+    """RT-6.9 step 2: the head per harness, from a small explicit table: pi sends the bus's
+    tool docs but not its MCP instructions (direct exposure); OpenCode and any other harness
+    both."""
+    fixed = overhead.Fixed(instructions=3000, tools=5000, skill=22000)
+    assert stats.HEAD_PARTS == {"pi": ("tools",)}
+    assert stats.head_chars(fixed, "pi") == 5000
+    assert stats.head_chars(fixed, "opencode") == stats.head_chars(fixed, "other") == 8000
+    for client, ovh_read in (("pi", 5000 // 4), ("opencode", 8000 // 4)):
+        monkeypatch.setattr(stats, "_client_name", client)
+        _usage(req=1, a_read=10_000, h_read=9000)
+        assert stats.summary("0.103.0", fixed)["tok"]["ovh"]["read"] == ovh_read
+        stats._path().unlink()
 
 
 def test_a_usage_event_counts_in_the_part_it_arrived_in():

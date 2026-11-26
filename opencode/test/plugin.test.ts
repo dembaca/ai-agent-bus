@@ -12,7 +12,7 @@ import { dirname, join } from "node:path"
 import { after, afterEach, before, beforeEach, mock, test } from "node:test"
 import { fileURLToPath } from "node:url"
 
-import plugin, { addMcp, bindings, busFile, busRoot, CLIENT_HEADER, dropMcp, HOST_REFUSED, MARK, NO_BUS, REFUSAL_TOOL, relayVars,
+import plugin, { usageLoader, addMcp, bindings, busFile, busRoot, CLIENT_HEADER, dropMcp, HOST_REFUSED, MARK, NO_BUS, REFUSAL_TOOL, relayVars,
   chars, renamedText, RETRY_SEC, retryMs, SERVER, setup, SKILL, skillInfo, timing, WAIT_SEC, venvDir, WAKE_BACKOFF_MAX_MS, WAKE_BACKOFF_MS, wakeBackoffMs, waitSec } from "../plugin/mattermost-agent-bus.ts"
 import entry from "../server.ts"
 
@@ -1019,11 +1019,50 @@ test("RT-6.9 step 2: the session's requests go out as one `usage` stat at the tu
   // Before the turn-end check; `{"kind": "IDLE", "message": "IDLE"}` is 35 characters, 9 tokens of overhead.
   assert.equal(rest()[0].body?.k, "usage")
   assert.deepEqual(usage[0].body, { k: "usage", req: 1, req_ovh: 0, req_coord: 0, a_in: 100, a_read: 0, a_w: 0, a_out: 10,
-    o_in: 0, o_read: 0, o_w: 0, o_out: 9, c_in: 0, c_read: 0, c_w: 0, c_out: 0 })
+    o_in: 0, o_read: 0, o_w: 0, o_out: 9, c_in: 0, c_read: 0, c_w: 0, c_out: 0, h_in: 0, h_read: 0, h_w: 0 })
   // A turn without a request posts none.
   await fx.prompt("s1", "again")
   calls = []
   await fx.ended()
   assert.equal(rest().filter((c) => c.body?.k === "usage").length, 0)
   await fx.cleanup()
+})
+
+test("RT-6.9 step 2: a split that throws changes no turn handling: the turn ends, send's result stands, the compaction hands off", async () => {
+  class Throwing {
+    user() { throw new Error("user") }
+    injected() { throw new Error("injected") }
+    event() { throw new Error("event") }
+    take(): any { throw new Error("take") }
+  }
+  const load = usageLoader.load
+  usageLoader.load = async () => ({ Tracker: Throwing }) as any
+  try {
+    const fx = await start()
+    answers["/v1/handoff"] = { context: "Your conversation was just compacted. …" }
+    await fx.prompt("s1", "work")
+    await fx.emit("session.step.started", { sessionID: "s1" })
+    await fx.emit("session.step.ended", { sessionID: "s1", tokens: { input: 1, output: 1, reasoning: 0, cache: { read: 0, write: 0 } } })
+    // A drain at the end: sent once (send returned true), not retried, no usage stat.
+    answers["/v1/turn-end"] = { action: "drain", reason: "You have 1 unread …", banner: "x" }
+    calls = []
+    await fx.ended()
+    assert.equal(fx.sent.length, 1)
+    assert.deepEqual(rest().map((c) => c.body?.k ?? c.path.split("?")[0]), ["/v1/turn-end", "block", "inject"])
+    // The compaction's handoff still goes out, its flag still set (a /compact ends no turn).
+    answers["/v1/turn-end"] = idleIn()
+    await fx.ran()
+    await fx.ended()
+    await fx.ran()
+    await fx.emit("session.compaction.started", { sessionID: "s1", reason: "manual" })
+    await fx.emit("session.compaction.ended", { sessionID: "s1", reason: "manual", text: "summary" })
+    calls = []
+    await fx.ended()
+    assert.deepEqual(paths(), [])
+    assert.equal(fx.sent.length, 2)
+    assert.equal(fx.sent[1].metadata[MARK], "context")
+    await fx.cleanup()
+  } finally {
+    usageLoader.load = load
+  }
 })
