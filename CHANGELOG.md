@@ -3,6 +3,29 @@
 Every version bump in `.claude-plugin/plugin.json` gets an entry here. Versions
 before 0.5.0 are described in the git history.
 
+## Unreleased
+
+### Added
+
+- **The central bridge sweeps the agent bots it made** (#151 step 2, RT-6.44): every 10 minutes it disables a bot it made for an agent that has shown no presence and posted nothing for longer than `CB_BRIDGE_MM_BOT_KEEP` (default `24h`, at least `1h`), and revokes the bot's tokens; at most 20 bots per pass, none while the presence feed is stale. A bot is the bridge's only by its prefix and its mark in the description together, never by the prefix alone, so the registrar's bots stay the host sweep's. Last seen is kept in memory: after a restart every bot counts as seen at the start. An agent that comes back gets its bot enabled again and a fresh token at its next message; only bots the sweep disabled (their description marked ` (swept)`) come back, one an admin disabled stays off. No new right, no new endpoint, nothing persisted; hosts notice nothing.
+
+### Changed
+
+- **The bridge serves the slash commands and their signed records** (#151
+  step 3): `/agent-ask-mode`, `/agent-mandate` and `/agent-debug` move from the
+  registrar to the central bridge — the registrar's handlers, the three stores
+  and its routes (`POST /register/v1/mode|mandate|debug`, reads at
+  `/register/v1/modes|mandates|debug/<channel id>`), its per-IP buckets (30
+  command posts and 120 reads a minute) and its exact 404 bodies. The records
+  now live in the `BUS_BRIDGE_RECORDS` bucket instead of files and are signed
+  with the bridge's own Ed25519 key, whose `kid` follows the registrar's; the
+  MCP server checks them as before, so the only host change is the new pin in
+  `MM_REGISTRAR_KEYS`. The commands get a listener of their own (TLS off
+  loopback, `CB_BRIDGE_COMMANDS_…`), each command its own verification token,
+  and the bridge refuses a key or token file open to group or world. The
+  release record follows in step 4. The release that carries this pins the
+  bridge's key on every host beside the registrar's; its `Needs:` line says so.
+
 ## 0.103.0
 
 Needs: settings renamed to the new prefix before 0.104.0, see the changelog.

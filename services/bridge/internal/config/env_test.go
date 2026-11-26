@@ -7,6 +7,7 @@ import (
 	"regexp"
 	"strings"
 	"testing"
+	"time"
 )
 
 // mapEnv is an Env over a map: a key that is present is set, also when empty.
@@ -129,7 +130,7 @@ func TestTheOldNamesStillWork(t *testing.T) {
 		MMTeam: "ai-agents", Homes: []string{"a", "b"}, Prefix: "abc_", KVBucket: "KV", SeenBucket: "SEEN",
 		Listen: ":1", NATSStream: "S", BusPrefix: "b2", Deliver: "d.b", Inbox: "_INBOX_b",
 		AdminToken: "/run/admin", BotPrefix: "bb-", HideBotDM: false,
-		RecordsBucket: "BUS_BRIDGE_RECORDS"}
+		RecordsBucket: "BUS_BRIDGE_RECORDS", BotKeep: 24 * time.Hour}
 	if !reflect.DeepEqual(c, want) {
 		t.Fatalf("got %+v\nwant %+v", c, want)
 	}
@@ -256,17 +257,19 @@ func TestTheCAFileSetting(t *testing.T) {
 	}
 }
 
-// The 19 renames Load reads are exactly the rows of the bridge's table in
-// docs/env-names.md, old name to new name. Load reads each setting's new
-// name, then its old one; the recorded lookups pair up.
+// The 19 renames and the one new name Load reads are exactly the rows of the
+// bridge's table in docs/env-names.md, old name to new name (a new name
+// without an old spelling has itself in both columns). Load reads each
+// setting's new name, then its old one if it has one; the recorded lookups
+// pair up.
 func TestTheRenamesAreTheDocsTable(t *testing.T) {
 	doc, err := os.ReadFile("../../../../docs/env-names.md")
 	if err != nil {
 		t.Fatal(err)
 	}
-	_, section, ok := strings.Cut(string(doc), "\n### The bridge (19)\n")
+	_, section, ok := strings.Cut(string(doc), "\n### The bridge (30)\n")
 	if !ok {
-		t.Fatal("docs/env-names.md has no section \"The bridge (19)\"")
+		t.Fatal("docs/env-names.md has no section \"The bridge (20)\"")
 	}
 	section, _, _ = strings.Cut(section, "\n### ")
 	row := regexp.MustCompile("(?m)^\\| `([A-Z0-9_]+)` \\| `(CB_[A-Z0-9_]+)` \\|")
@@ -274,28 +277,24 @@ func TestTheRenamesAreTheDocsTable(t *testing.T) {
 	for _, m := range row.FindAllStringSubmatch(section, -1) {
 		want[m[1]] = m[2]
 	}
-	if len(want) != 19 {
-		t.Fatalf("the doc's bridge table has %d rows, want 19: %v", len(want), want)
+	if len(want) != 30 {
+		t.Fatalf("the doc's bridge table has %d rows, want 30: %v", len(want), want)
 	}
 	var looked []string
 	if _, err := Load(NewEnv(func(n string) (string, bool) { looked = append(looked, n); return "", false }, nil)); err == nil {
 		t.Fatal("Load accepted an empty environment")
 	}
-	byNew := map[string]string{}
-	for old, newName := range want {
-		byNew[newName] = old
-	}
 	got := map[string]string{}
-	for i := 0; i+1 < len(looked); i++ {
-		// Each renamed setting's new name is followed by its old name; a
-		// setting that was never renamed is one lookup of a name not in the
-		// doc's table and is skipped here.
-		old, ok := byNew[looked[i]]
-		if !ok || looked[i+1] != old {
+	for i := 0; i < len(looked); i++ {
+		if !strings.HasPrefix(looked[i], "CB_") {
+			t.Fatalf("an old name without its new one: %q", looked)
+		}
+		if i+1 < len(looked) && !strings.HasPrefix(looked[i+1], "CB_") {
+			got[looked[i+1]] = looked[i]
+			i++
 			continue
 		}
-		got[old] = looked[i]
-		i++
+		got[looked[i]] = looked[i] // new, no old spelling
 	}
 	if !reflect.DeepEqual(got, want) {
 		t.Fatalf("Load reads %v\nthe doc says %v", got, want)

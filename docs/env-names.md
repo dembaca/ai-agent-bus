@@ -468,13 +468,14 @@ old one.
 `services/auth/nats-server.example.conf` names several of them in comments;
 it changes with the service.
 
-### The bridge (19)
+### The bridge (30)
 
-All in `services/bridge/`, read in `internal/config/config.go`. The last three
-come with the bridge's agent bots
+All in `services/bridge/`, read in `internal/config/config.go`. The last
+three renames come with the bridge's agent bots
 ([#166](https://github.com/dembaca/ai-agent-bus/pull/166), not merged when
-this was written). The bridge as a whole exists for Mattermost; the column
-says whether the setting itself is about Mattermost.
+this was written); the sweep's keep time (#151 step 2) and the slash commands'
+ten (#151 step 3) are new after the rename and have no old spelling. The bridge as a whole exists for
+Mattermost; the column says whether the setting itself is about Mattermost.
 
 | Old name | New name | Mattermost | Where it appears | Note |
 |---|---|---|---|---|
@@ -497,19 +498,7 @@ says whether the setting itself is about Mattermost.
 | `BRIDGE_MM_ADMIN_TOKEN_FILE` | `CB_BRIDGE_MM_ADMIN_TOKEN_FILE` | yes | `internal/config/config.go` | new with #166 |
 | `BRIDGE_BOT_PREFIX` | `CB_BRIDGE_MM_BOT_PREFIX` | yes | `internal/config/config.go` | new with #166; the Mattermost bots' username prefix |
 | `BRIDGE_HIDE_BOT_DM` | `CB_BRIDGE_MM_HIDE_BOT_DM` | yes | `internal/config/config.go` | new with #166; a Mattermost direct message |
-
-`BRIDGE_BOT_PREFIX` and `BRIDGE_HIDE_BOT_DM` (#166) are about Mattermost but
-have no `MM` in their names; the rename gives them one, as the rule says:
-`CB_BRIDGE_MM_BOT_PREFIX` and `CB_BRIDGE_MM_HIDE_BOT_DM`.
-
-### The bridge's slash commands (10)
-
-New with the bridge's own slash commands (issue #151 step 3), read in
-`internal/config/config.go` and `cmd/bridged/main.go`. They have no old name:
-both columns name the same setting, so the fallback reads nothing.
-
-| Old name | New name | Mattermost | Where it appears | Note |
-|---|---|---|---|---|
+| `CB_BRIDGE_MM_BOT_KEEP` | `CB_BRIDGE_MM_BOT_KEEP` | yes | `internal/config/config.go` | new with #151 step 2: no old spelling; the sweep's keep time for the agents' bots |
 | `CB_BRIDGE_COMMANDS_ALLOW_HTTP` | `CB_BRIDGE_COMMANDS_ALLOW_HTTP` | no | `internal/config/config.go` | plain http to a listener that is not loopback; default false |
 | `CB_BRIDGE_COMMANDS_LISTEN_ADDR` | `CB_BRIDGE_COMMANDS_LISTEN_ADDR` | no | `internal/config/config.go`, `cmd/bridged/main.go` | empty: the whole feature is off |
 | `CB_BRIDGE_COMMANDS_TLS_CERT_FILE` | `CB_BRIDGE_COMMANDS_TLS_CERT_FILE` | no | `internal/config/config.go`, `cmd/bridged/main.go` | with the key file, or neither |
@@ -520,6 +509,10 @@ both columns name the same setting, so the fallback reads nothing.
 | `CB_BRIDGE_RECORDS_BUCKET` | `CB_BRIDGE_RECORDS_BUCKET` | no | `internal/config/config.go` | default `BUS_BRIDGE_RECORDS` |
 | `CB_BRIDGE_SIGNING_KEY_FILE` | `CB_BRIDGE_SIGNING_KEY_FILE` | no | `internal/config/config.go`, `cmd/bridged/main.go` | base64 or base64url of a 32-byte seed, 0600 |
 | `CB_BRIDGE_TRUSTED_PROXY_HOPS` | `CB_BRIDGE_TRUSTED_PROXY_HOPS` | no | `internal/config/config.go` | default 0: the header is ignored |
+
+`BRIDGE_BOT_PREFIX` and `BRIDGE_HIDE_BOT_DM` (#166) are about Mattermost but
+have no `MM` in their names; the rename gives them one, as the rule says:
+`CB_BRIDGE_MM_BOT_PREFIX` and `CB_BRIDGE_MM_HIDE_BOT_DM`.
 
 ### The console (20)
 | Old name | New name | Mattermost | Where it appears | Note |
