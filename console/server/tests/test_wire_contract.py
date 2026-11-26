@@ -141,7 +141,8 @@ def test_the_app_side_shapes_split_by_seam() -> None:
     ask = FIXTURE["ask"]
     assert set(ask) >= {"for_me", "may_answer", "display_name", "thread_id"}
     me = FIXTURE["me"]
-    assert set(me) == {"username", "display_name", "groups"}
+    assert set(me) == {"username", "display_name", "groups", "build"}
+    assert set(me["build"]) == {"version", "revision"}  # #182: the footer's version
     page = FIXTURE["page"]
     assert set(page) == {"rootId", "posts", "next"}
     assert set(page["posts"][0]) == {"id", "rootId", "author", "at", "message"}
