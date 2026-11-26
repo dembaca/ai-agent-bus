@@ -2140,3 +2140,30 @@ def test_a_told_notice_survives_a_restart(tmp_path: Path, monkeypatch: pytest.Mo
     # A future iat is capped at now: a skewed mark must not silence later records.
     nats_port._notice_mark("bot-1", "session:s3", time.time() + 10_000)
     assert nats_port._notice_told("bot-1", "session:s3") <= time.time() + 1
+
+
+def test_the_same_copy_is_one_dm() -> None:
+    """RT-6.34: (kind, id, verdict) is one DM within the block, and not after it."""
+    from mattermost_ai_agent_bus import nats_port
+
+    seen: dict[tuple[str, str, str], float] = {}
+    key = ("session", "s1", "copied")
+    assert not nats_port._notice_repeat(seen, key, 100.0)
+    seen[key] = 100.0
+    assert nats_port._notice_repeat(seen, key, 100.0 + 29 * 60)
+    assert not nats_port._notice_repeat(seen, key, 100.0 + 30 * 60)
+    assert not nats_port._notice_repeat(seen, ("session", "s2", "copied"), 101.0)
+
+
+def test_the_told_marks_are_capped(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+    """A long-lived server must not grow its told marks without bound."""
+    from mattermost_ai_agent_bus import nats_port
+
+    monkeypatch.setenv("XDG_STATE_HOME", str(tmp_path))
+    now = int(time.time())
+    for i in range(nats_port.NOTICE_KEY_MAX + 10):
+        nats_port._notice_mark("bot-1", f"session:s{i}", now - 1000 + i)
+    marks = nats_port._notice_read("bot-1")
+    assert len(marks) == nats_port.NOTICE_KEY_MAX
+    assert "session:s0" not in marks  # the oldest evicted
+    assert f"session:s{nats_port.NOTICE_KEY_MAX + 9}" in marks

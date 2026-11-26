@@ -309,6 +309,13 @@ NOTICE_KEY_MAX = 64  # notices remembered as told, per server
 NOTICE_SAME_SEC = 30 * 60.0  # the block: the same kind, id and verdict is one DM
 
 
+def _notice_repeat(seen: dict[tuple[str, str, str], float], key: tuple[str, str, str], now: float,
+                   window: float = NOTICE_SAME_SEC) -> bool:
+    """Whether this kind, id and verdict was told within the window (then no DM)."""
+    at = seen.get(key)
+    return at is not None and now - at < window
+
+
 def _notice_read(uid: str) -> dict[str, float]:
     """The notices this server told before a restart: "<kind>:<id>" -> iat."""
     try:
@@ -548,9 +555,9 @@ class NatsPort:
             # theft: one DM, not one per record.
             seen = (notice.kind, notice.sid, notice.verdict)
             now = time.monotonic()
-            last = self._notice_recent.get(seen)
-            if last is not None and now - last < NOTICE_SAME_SEC:
-                log.info("login notice: %s %s already told %.0f s ago", notice.kind, notice.verdict, now - last)
+            if _notice_repeat(self._notice_recent, seen, now):
+                log.info("login notice: %s %s already told within %d s", notice.kind, notice.verdict,
+                         int(NOTICE_SAME_SEC))
                 return
             if not who:
                 log.info("login notice: no responsible human to tell")

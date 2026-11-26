@@ -18,8 +18,8 @@ import (
 // networks, or a host key doing so, is a copy. The session is refused for a
 // while — a retry included — and the host key is reported only, since a copied
 // key is the owner's to rotate and refusing it would lock the owner out. Both
-// are published for the owner (`<presence>.notice.<anchor>.v1`), a subject only
-// the login service may publish; the owner's live MCP servers turn a copied
+// are published for the owner (`<presence>.notice.<anchor>.<verdict>.v1`), a
+// subject only the login service may publish; the owner's live MCP servers turn a copied
 // notice into a DM to their human. The guard needs no credential, so no
 // Keycloak admin right is involved; the stolen token stays valid at Keycloak
 // until it runs out or the owner ends the session (RT-6.34, the owner's

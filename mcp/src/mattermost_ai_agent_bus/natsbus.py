@@ -1096,7 +1096,7 @@ class LoginLike(Protocol):
 @dataclass(frozen=True)
 class Notice:
     """The login service's notice that one id was used from alternating networks
-    (`<presence>.notice.<owner anchor>.v1`, RT-6.34): what was watched (`session` or
+    (`<presence>.notice.<owner anchor>.<verdict>.v1`, RT-6.34): what was watched (`session` or
     `host_key`), its id, the network prefix and the agent's name ("" when the token
     named none), with its lifetime in server time. The subject is the proof - only the
     login service may publish there (RT-6.41) - so nothing in the body decides."""
