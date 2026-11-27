@@ -4096,14 +4096,14 @@ Nothing of it is built.
   below says which of the two people mention, write to and see the crown
   on while it moves.
 - **Every piece alike.**
-  - One switch per piece, off by default; its name below is
-    descriptive. Proposed: a flag per piece and channel in the same
-    directory, beside the decided transport flag; not covered by the
-    owner's decision. So a piece with two ends (DMs between agents, asks,
-    replies, status, permission prompts) is switched in one place, never
-    per host. A session gets the flags of its own channels with its
-    credential; the bridge, which holds no agent credential, reads them
-    from the directory.
+  - One switch per piece, off by default; its name below is descriptive.
+    Decided by the owner on 2026-11-27 (ask
+    `i1wy6gb8ijfpuceuq3ptbz6s8y`): a flag per piece and channel in the
+    same directory, beside the decided transport flag. So a piece with
+    two ends (DMs between agents, asks, replies, status, permission
+    prompts) is switched in one place, never per host. A session gets
+    the flags of its own channels with its credential; the bridge, which
+    holds no agent credential, reads them from the directory.
   - During a flag change each end reads both paths and sends by its own
     flag, since a flag reaches a session only at its next credential, or
     at its next start until switching at a renewal is built (the guest
@@ -4122,29 +4122,32 @@ Nothing of it is built.
     file and a history read are checked to lie there. A DM the bridge
     opens for an agent, for permission prompts, may only go to the
     agent's responsible human, the owner's account from the account
-    records (RT-6.44 step 2). Proposed: in a DM another person opened
-    with the agent's bridge bot, the agent may answer that person and
-    react there, never open a DM to anyone else; so a steered agent
-    cannot reach a person through the bridge who did not write to it
-    first (RISK-29).
-  - Proposed: the session's requests to the bridge that are no channel
-    message (the history read, file parts and the header line, pieces 5,
-    8 and 9) go on `<req>.<kind>.<agent>`, `<kind>` one of `history`,
-    `file`, `header`, the sender as the last token as everywhere. `<req>`
-    is a prefix of its own beside the bus's, presence's and STATS's,
-    which no stream covers: the tenant stream takes every subject under
-    the bus prefix (`consumers/streams.go`), with a size limit and
-    `discard: old` (point 16), so file parts there would push out
-    channel traffic and keep file content for the stream's keep time.
-    The bridge answers on `deliver.<agent>.req.<request id>`, which only
-    that agent reads (its one subscribe right, `deliver.<agent>.>`) and
-    no stream covers either. Today an agent has no such right
-    (`callout/perms.go`): the login service grants it publish on
-    `<req>.*.<agent>` alone, the bridge subscribe on `<req>.>` and
-    publish on `deliver.*.req.>`; `callout/perms_test.go` gets the cases
-    that an agent publishes there only under its own name and never on
-    `deliver.>`. Nothing on these subjects is kept: a lost message fails
-    the request, and the tool reports an error.
+    records (RT-6.44 step 2). Decided by the owner on 2026-11-27 (ask
+    `i1wy6gb8ijfpuceuq3ptbz6s8y`): in a DM another person opened with
+    the agent's bridge bot, the agent may answer that person and react
+    there, never open a DM to anyone else; so a steered agent cannot
+    reach a person through the bridge who did not write to it first
+    (RISK-29).
+  - Decided by the owner on 2026-11-27 (ask
+    `ted1jmxdefgspdaxnxfu8uupxh`): the session's requests to the bridge
+    that are no channel message (the history read, file parts and the
+    header line, pieces 5, 8 and 9) go on `<req>.<kind>.<agent>`,
+    `<kind>` one of `history`, `file`, `header`, the sender as the last
+    token as everywhere. `<req>` is a prefix of its own beside the
+    bus's, presence's and STATS's, which no stream covers: the tenant
+    stream takes every subject under the bus prefix
+    (`consumers/streams.go`), with a size limit and `discard: old`
+    (point 16), so file parts there would push out channel traffic and
+    keep file content for the stream's keep time. The bridge answers on
+    `deliver.<agent>.req.<request id>`, which only that agent reads (its
+    one subscribe right, `deliver.<agent>.>`) and no stream covers
+    either. Today an agent has no such right (`callout/perms.go`): the
+    login service grants it publish on `<req>.*.<agent>` alone, the
+    bridge subscribe on `<req>.>` and publish on `deliver.*.req.>`;
+    `callout/perms_test.go` gets the cases that an agent publishes there
+    only under its own name and never on `deliver.>`. Nothing on these
+    subjects is kept: a lost message fails the request, and the tool
+    reports an error.
     Built in part (Unreleased, wave 0 of #244): the login service's right, the
     bridge's scaffold and the MCP client's `requests.request(kind, payload,
     timeout)`. The prefixes are settings of their own, `CB_AUTH_REQ_PREFIX`
@@ -4210,7 +4213,8 @@ Nothing of it is built.
        the rules for DMs. Between agents of
        different homes the recipient's home's flag counts: the sender
        uses NATS only when it is on. Since a session gets flags only
-       with its credential, which holds only its own channels, proposed:
+       with its credential, which holds only its own channels, decided
+       by the owner on 2026-11-27 (ask `i1wy6gb8ijfpuceuq3ptbz6s8y`):
        the recipient's server states its home's flag in its presence,
        from its own credential, and the sender reads it there, so no
        session reads the directory and none needs a new right. A
@@ -4255,14 +4259,15 @@ Nothing of it is built.
        last people event on when the bridge's signal runs out
        (`check_people`, `_catch_up`); unread counts rest on Mattermost's
        mark as viewed (`view_channel`).
-     - Moves: proposed, to a read through the bridge: the session sends
-       a request on `<req>.history.<agent>` (above) naming the channel or
-       thread and `since`, and the bridge answers from Mattermost with
-       the agent's own bridge bot, under the rule above that it reads
-       only in the agent's channels. Each person's post in the answer
-       names its author by anchor and carries that person's account
-       record, and the session checks it as it checks a person's event
-       (RT-6.42), with the same freshness rule: so a reply or 👍 a
+     - Moves: decided by the owner on 2026-11-27 (ask
+       `i1wy6gb8ijfpuceuq3ptbz6s8y`), to a read through the bridge: the
+       session sends a request on `<req>.history.<agent>` (above) naming
+       the channel or thread and `since`, and the bridge answers from
+       Mattermost with the agent's own bridge bot, under the rule above
+       that it reads only in the agent's channels. Each person's post in
+       the answer names its author by anchor and carries that person's
+       account record, and the session checks it as it checks a person's
+       event (RT-6.42), with the same freshness rule: so a reply or 👍 a
        trusted human gave while the session was away approves as it
        would have live, and a post without a fresh record approves
        nothing. Rejected: a replay of the people subjects with `since`
@@ -4313,26 +4318,29 @@ Nothing of it is built.
        posts, the agent replies and reacts, each seen once; the BYE at
        exit.
   8. **Files**: posting with files and `get_file` (RT-6.23, RT-6.33).
-     - Moves: to the bridge. It uploads what the agent sends and serves a
-       person's file; the file still comes from inside the sandbox
-       (ADR-012), the size limit as today. Proposed: the bytes travel as
-       NATS messages on `<req>.file.<agent>` (above), in parts below the
-       NATS server's maximum payload (1 MiB by default), since the size
-       limit (10 MiB, RT-6.33) is larger: a file at the limit is a
+     - Moves: to the bridge. It uploads what the agent sends and serves
+       a person's file; the file still comes from inside the sandbox
+       (ADR-012), the size limit as today. Decided by the owner on
+       2026-11-27 (ask `ted1jmxdefgspdaxnxfu8uupxh`): the bytes travel
+       as NATS messages on `<req>.file.<agent>` (above), in parts below
+       the NATS server's maximum payload (1 MiB by default), since the
+       size limit (10 MiB, RT-6.33) is larger: a file at the limit is a
        dozen parts. The first part declares the length and the SHA-256
        hash; the bridge checks the length against the size limit before
        it keeps any part, holds one open transfer per agent (a second
        one replaces it), and drops an unfinished one after 60 seconds.
        Its ceiling: transfers are held in memory, at most 10 MiB each
-       and, proposed, at most 16 open at once across all agents; beyond
-       that it refuses a new one as busy, and the tool reports it. Each part is numbered, and the whole is checked by length
-       and hash before the bridge uploads it with the agent's own bridge
-       bot. A failed check, a lost part or a dropped transfer is an error
-       of the tool, and the agent sends again. A person's file comes back
-       the same way, on `deliver.<agent>.req.<request id>`, checked by
-       the session. Rejected: the NATS object store, since agents talk to
-       no JetStream API (RISK-09). The tool returns the post's NATS id
-       and the copy's link, as for a reply.
+       and, decided by the owner on 2026-11-27 (ask
+       `i1wy6gb8ijfpuceuq3ptbz6s8y`), at most 16 open at once across all
+       agents; beyond that it refuses a new one as busy, and the tool
+       reports it. Each part is numbered, and the whole is checked by
+       length and hash before the bridge uploads it with the agent's own
+       bridge bot. A failed check, a lost part or a dropped transfer is
+       an error of the tool, and the agent sends again. A person's file
+       comes back the same way, on `deliver.<agent>.req.<request id>`,
+       checked by the session. Rejected: the NATS object store, since
+       agents talk to no JetStream API (RISK-09). The tool returns the
+       post's NATS id and the copy's link, as for a reply.
      - Switch: files over the bridge. Way back: files under the
        registrar's bot again; nothing stays open.
      - Test: limits and refusals as today; a declared length over the
@@ -4440,12 +4448,13 @@ Nothing of it is built.
         RT-6.30) and its self-update between sessions (RT-6.32), and the
         block on self-registration in the sandbox (RT-6.10 step 1).
       - The release notice (RT-6.30) loses its check, which runs only
-        from the host copy. Proposed, decided with this piece: the MCP
-        server tells its human the version the release record names,
-        which the bridge serves signed with its own key (#151 step 4),
-        and which follows the version the console pins after its
-        signature check (#192); the plugin itself updates through the
-        harness's marketplace, as without corral today.
+        from the host copy. Decided by the owner on 2026-11-27 (ask
+        `i1wy6gb8ijfpuceuq3ptbz6s8y`): the MCP server tells its human
+        the version the release record names, which the bridge serves
+        signed with its own key (#151 step 4), and which follows the
+        version the console pins after its signature check (#192); the
+        plugin itself updates through the harness's marketplace, as
+        without corral today.
       - The session's own identity: the bot's Mattermost id and name
         (`_bot_id`, `_bot_name`, `ownpost.py`, `unanswered.py`) give way
         to the NATS name, which keys the kept state since the roster

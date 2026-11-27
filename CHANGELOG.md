@@ -92,8 +92,13 @@ before 0.5.0 are described in the git history.
   puts its tables into the run's step summary and uploads the output as the
   `full-nats-results` artifact, and the nats-server fetch is one composite
   action instead of four copies.
+- ADR-014 phase 5 (plan B): the owner decided its nine proposed points as written (#244).
 
 ### Fixed
+
+- **An end-to-end test for the NATS read mark's seed** (#238, RT-6.36 step 4):
+  a first backfill whose read fails seeds nothing, the next one reads the lane
+  from its start, and after a kill the older post is asked for again. Test only.
 
 - **A NATS post queued while the backfill's snapshot is unread is seeded too**
   (#238, RT-6.36 step 4). A lane without a mark got no seed from a post that came
