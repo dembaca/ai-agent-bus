@@ -14,7 +14,7 @@ import { toFlow } from "./ui/graph/model"
 // decision, a shared name carries its mark — an impostor's ask never reads
 // as another agent's.
 
-const NATS = "agent-oudzj4bhpl62iahctur5s5sf44"
+const NATS = "oudzj4bhpl62iahctur5s5sf4"
 const noop = () => {}
 
 async function fleet(): Promise<AgentCard[]> {

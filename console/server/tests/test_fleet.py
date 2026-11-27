@@ -9,7 +9,7 @@ import json
 
 
 from mattermost_ai_agent_bus.natsbus import (
-    MAX_AGE_SEC, PRESENCE_FRESH_SEC, PresenceCard, encode_presence,
+    MAX_AGE_SEC, NAME_HASH_LEN, PRESENCE_FRESH_SEC, PresenceCard, encode_presence,
 )
 from console_server.fleet import LAST_POST_SKEW_SEC, Fleet, last_post_at, short_name
 
@@ -298,7 +298,7 @@ def test_cards_show_the_bot_name_the_presence_states_not_the_bus_id() -> None:
     f = Fleet()
     one = agent_name("dembaca", "UHOSTONE")
     two = agent_name("dembaca", "UHOSTTWO")
-    assert len(one) == len("agent-") + 26
+    assert len(one) == NAME_HASH_LEN  # no prefix (#274)
     for seq, (agent, bot, label) in enumerate([
             (one, "pxcexeco5fbwmjxqzt3r1ah9yc", "agent-mac-ai-agent-716d72"),
             (two, "q1w2e3r4t5y6u7i8o9p0a1s2d3", "agent-himalia-nats-pilo-772844")], 1):
@@ -514,8 +514,8 @@ def test_the_last_post_shows_only_on_own_or_trusted_cards() -> None:
 
 # --- the graph's person nodes and the card's home (#147, 716d72's review) -------------
 
-AGENT_A = "agent-" + "a" * 26
-AGENT_B = "agent-" + "b" * 26
+AGENT_A = "a" * 25
+AGENT_B = "b" * 25
 
 
 def attestation_of(agent: str, anchor: str, name: str, exp: float = 1e12) -> tuple[str, bytes]:

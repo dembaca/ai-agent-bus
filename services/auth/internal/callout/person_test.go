@@ -344,8 +344,11 @@ func TestTheConsolesConfigurationIsChecked(t *testing.T) {
 	} {
 		c := base
 		c.Console = con.withDefaults()
-		if name == "prefix starts the other" {
+		switch name {
+		case "prefix starts the other":
 			c.NamePrefix = "a-b-"
+		case "prefix = name prefix", "other starts the prefix":
+			c.NamePrefix = "agent-" // a configured one (#274: none by default)
 		}
 		if c.check() == nil {
 			t.Errorf("%s: accepted", name)

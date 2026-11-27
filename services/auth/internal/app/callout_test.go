@@ -46,7 +46,7 @@ func TestSettings(t *testing.T) {
 	if !on || err != nil {
 		t.Fatalf("%v, %v", on, err)
 	}
-	if s.Callout.Timeout != time.Second || s.Callout.Subjects.Prefix != "bus" || s.Callout.Subjects.Presence != "presence" || s.Callout.NamePrefix != "agent-" {
+	if s.Callout.Timeout != time.Second || s.Callout.Subjects.Prefix != "bus" || s.Callout.Subjects.Presence != "presence" || s.Callout.NamePrefix != "" {
 		t.Fatalf("%+v", s.Callout)
 	}
 	if _, ok := s.Token.Binding.(token.OpenIDOnly); !ok {
