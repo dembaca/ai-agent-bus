@@ -1084,7 +1084,8 @@ async def tick(client: ChatPort, uid: str) -> float | None:
 
 def post_sync(client: ChatPort, data: dict[str, Any]) -> str:
     """Post the summary to the stats channel, synchronously (exit handler),
-    after any day's part whose post had failed.
+    after any day's part whose post had failed. With plan B's piece 13 on for the home
+    (over_nats) nothing is posted: the last part went on NATS, and the answer says so.
 
     The counter file and its lock go either way: on a server without the
     channel the counts would only pile up.
@@ -1094,6 +1095,8 @@ def post_sync(client: ChatPort, data: dict[str, Any]) -> str:
     if not name or (not nats and not client.token):
         return "off"
     lines = [*_unposted, _line(data)]
+    # Piece 13 on: the lines are dropped unsent. Only parts whose post failed before the piece
+    # was switched on mid-session can be here; their parts were published on NATS as well.
     _unposted.clear()
     try:
         if nats:  # piece 13: the last part went on NATS (server._final_stats_on_nats)

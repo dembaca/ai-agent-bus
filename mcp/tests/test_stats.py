@@ -1322,3 +1322,25 @@ def test_rt_6_43_piece_13_stats_report_says_why_it_cannot_read(monkeypatch):
         return await server.stats_report()
 
     assert "cannot read them there yet" in asyncio.run(go())
+
+
+async def test_rt_6_43_piece_13_stats_lines_are_bounded_by_limit(monkeypatch):
+    """RT-6.43 step 7: GET /v1/stats-lines keeps the newest ?limit lines (default and most 500);
+    a bad limit is refused, and the route is 404 with the piece off."""
+    from mattermost_ai_agent_bus import hookapi
+    _piece_13(monkeypatch)
+
+    async def many(client, name, max_pages=10):
+        return [{"v": str(i)} for i in range(700)]
+
+    monkeypatch.setattr(stats, "read_lines", many)
+    code, out = await hookapi.stats_lines(_NatsHome(), {}, {})
+    assert code == 200 and len(out["lines"]) == 500 and out["lines"][-1] == {"v": "699"}
+    code, out = await hookapi.stats_lines(_NatsHome(), {"limit": "2"}, {})
+    assert [x["v"] for x in out["lines"]] == ["698", "699"]
+    code, out = await hookapi.stats_lines(_NatsHome(), {"limit": "9999"}, {})
+    assert len(out["lines"]) == 500
+    with pytest.raises(hookapi.BadRequest):
+        await hookapi.stats_lines(_NatsHome(), {"limit": "x"}, {})
+    _piece_13(monkeypatch, on=False)
+    assert (await hookapi.stats_lines(_NatsHome(), {}, {}))[0] == 404

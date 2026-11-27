@@ -24,7 +24,8 @@ instead, served next to the WebSocket inbox in the server's event loop:
                             channel, else 403), newest first (?limit=N, at
                             most 200, or ?since=MS)
     GET  /v1/ask-reactions  {fresh}: reactions to open asks not handed over yet
-    GET  /v1/stats-lines    {channel, lines: [STATS line objects]}: the stats
+    GET  /v1/stats-lines    {channel, lines: [STATS line objects]} (?limit=N,
+                            default and at most 500, the newest): the stats
                             channel's lines for mm-agent-stats.sh, which holds no token
                             (RT-6.43 step 7); 404 until plan B's piece 13 is on for the home
     POST /v1/presence       {state: working|idle|listening|bus, label?, until?} → {ok}
@@ -680,12 +681,19 @@ async def pending(client: ChatPort, query: Mapping[str, str], body: Mapping[str,
     return 200, result
 
 
+STATS_LINES_MAX = 500  # most lines GET /v1/stats-lines answers (RT-6.43 step 7)
+
+
 async def stats_lines(client: ChatPort, query: Mapping[str, str], body: Mapping[str, Any]) -> Reply:
     """The STATS lines mm-agent-stats.sh reports on, read with this session (RT-6.43 step 7,
     plan B piece 13): the shell holds no token, so the server reads for it. Not served while
-    the piece is off for the home, as before."""
+    the piece is off for the home, as before. ?limit=N (default and at most STATS_LINES_MAX)
+    keeps the newest N lines, so the answer stays bounded."""
     if not planb.on(13, client.work_channel_name):
         return 404, {"error": "no such route"}
+    limit = query.get("limit", str(STATS_LINES_MAX))
+    if not limit.isdigit() or int(limit) < 1:
+        raise BadRequest("limit: a count")
     name = stats.channel()
     if not name:
         return 409, {"error": "stats are off (CB_MM_STATS_CHANNEL)"}
@@ -693,7 +701,7 @@ async def stats_lines(client: ChatPort, query: Mapping[str, str], body: Mapping[
         lines = await stats.read_lines(client, name)
     except Exception as exc:  # noqa: BLE001 — off the bus, the channel missing or not readable
         return 502, {"error": f"cannot read ~{name}: {type(exc).__name__}"}
-    return 200, {"channel": name, "lines": lines}
+    return 200, {"channel": name, "lines": lines[-min(int(limit), STATS_LINES_MAX):]}
 
 
 async def last_post(client: ChatPort, query: Mapping[str, str], body: Mapping[str, Any]) -> Reply:

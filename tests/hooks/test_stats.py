@@ -380,3 +380,4 @@ def test_with_the_piece_off_the_report_needs_its_token(mm, run):
     without a token, reads nothing as before."""
     r = run(REPORT, "report", "--json", with_api=True)
     assert r.code != 0
+
