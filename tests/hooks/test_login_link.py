@@ -33,3 +33,54 @@ def test_the_hook_runs_at_a_sessions_start():
     entries = [h for h in hooks["hooks"]["SessionStart"] if "session-start-link.sh" in json.dumps(h)]
     assert entries and entries[0]["matcher"] == "startup|resume|clear"
     assert entries[0]["hooks"][0]["timeout"] == 5
+
+
+def test_the_line_is_printed_and_the_grant_marked(tmp_path):
+    """RT-6.34: a waiting grant becomes one systemMessage with the link and the code —
+    no token — and the shown mark goes out after it. The hook runs with the stub as its
+    hook API, so this pins the display itself, not only its silence."""
+    import os
+    import subprocess
+    import threading
+    from http.server import BaseHTTPRequestHandler, HTTPServer
+    from pathlib import Path
+
+    seen: list[str] = []
+
+    class Stub(BaseHTTPRequestHandler):
+        def do_GET(self) -> None:  # noqa: N802 - http.server's name
+            body = json.dumps({"link": "https://kc.example/device?user_code=ABCD-EFGH",
+                               "user_code": "ABCD-EFGH", "expires_in": 600}).encode()
+            self.send_response(200)
+            self.send_header("Content-Type", "application/json")
+            self.send_header("Content-Length", str(len(body)))
+            self.end_headers()
+            self.wfile.write(body)
+
+        def do_POST(self) -> None:  # noqa: N802
+            seen.append(self.path)
+            self.send_response(200)
+            self.send_header("Content-Length", "2")
+            self.end_headers()
+            self.wfile.write(b"{}")
+
+        def log_message(self, *_args: object) -> None:
+            pass
+
+    srv = HTTPServer(("127.0.0.1", 0), Stub)
+    threading.Thread(target=srv.serve_forever, daemon=True).start()
+    root = Path(__file__).resolve().parents[2]
+    env = {"PATH": os.environ["PATH"], "HOME": str(tmp_path), "XDG_STATE_HOME": str(tmp_path / "state"),
+           "MM_CHAT_URL": "http://127.0.0.1:9", "MM_BOT_TOKEN": "t", "MM_BOT_USER_ID": "u",
+           "MM_TEAM_ID": "t", "MM_CHANNEL_ID": "c",
+           "CB_BUS_ENDPOINT": f"http://127.0.0.1:{srv.server_port}", "CB_BUS_KEY": "k" * 32}
+    try:
+        p = subprocess.run(["bash", str(root / LINK)], input="{}", env=env,
+                           capture_output=True, text=True, timeout=30)
+    finally:
+        srv.shutdown()
+    assert p.stdout.strip(), f"no output: {p.returncode}, {p.stderr[:300]!r}, {seen}"
+    out = json.loads(p.stdout)
+    assert "kc.example/device?user_code=ABCD-EFGH" in out["systemMessage"]
+    assert "ABCD-EFGH" in out["systemMessage"] and "token" not in out["systemMessage"].lower()
+    assert "/v1/login/shown" in seen
