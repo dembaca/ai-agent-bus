@@ -39,8 +39,8 @@ def fleet_scenario():
     # is `agent_name` (the login service's hash, never the bot's username),
     # the presence subject `NatsBus._presence_subject`, its body
     # `encode_presence(status, bot id, bot username, card)` as `NatsBus` sends
-    # it each heartbeat (the card: the HELLO's harness, model, task, branch and
-    # the open asks, RT-6.37), membership and crown `encode_claim`.
+    # it each heartbeat (the card: the HELLO's harness, model, task, branch, the
+    # open asks and the last post's time, RT-6.37), membership and crown `encode_claim`.
     agent = agent_name("dembaca", NKEY_PUBLIC)
     assert agent == FIXTURE["card"]["name"]
     rows = [
@@ -49,7 +49,8 @@ def fleet_scenario():
          encode_presence("online", BOT_ID, FIXTURE["card"]["displayName"], PresenceCard(
              harness=FIXTURE["card"]["harness"], model=FIXTURE["card"]["model"],
              task=FIXTURE["card"]["task"], branch=FIXTURE["card"]["branch"],
-             asks=FIXTURE["card"]["openAsks"])),
+             asks=FIXTURE["card"]["openAsks"],
+             last_post=FIXTURE["card"]["lastPostAt"] // 1000)),
          ack(1, 1, 1763980760.0)),
         # membership of the channel dev
         (f"presence.member.dev.{agent}", encode_claim(),
@@ -76,8 +77,11 @@ def fleet_scenario():
 
 
 def test_the_card_the_fixture_states(fleet_scenario) -> None:
-    cards = fleet_scenario.cards()
+    # the operator's own agent (the attestation names dembaca as owner): its card
+    # carries the last post, which another owner's operator never sees (#201)
+    cards = fleet_scenario.cards("dembaca")
     assert cards == [FIXTURE["card"]]
+    assert fleet_scenario.cards("someone-else")[0]["lastPostAt"] is None
 
 
 def test_the_graph_marks_the_operators_own_node_and_guest_channels(fleet_scenario) -> None:
@@ -124,6 +128,8 @@ def test_the_events_the_fixture_states(fleet_scenario) -> None:
     stream = console._stream(token=None)
     assert stream.first["type"] == "snapshot"
     assert {c["name"] for c in stream.first["cards"]} == {FIXTURE["card"]["name"]}
+    # no login's own record here, so no anchor: no card carries the last post (#201)
+    assert stream.first["cards"][0]["lastPostAt"] is None
     wave = stream.snapshot()
     assert wave == []          # nothing changed: no event at all
     # the fixture's three event shapes are the whole alphabet
@@ -131,6 +137,30 @@ def test_the_events_the_fixture_states(fleet_scenario) -> None:
     assert shapes == {"snapshot", "card", "drop"}
     # the change event's card is the same shape: the two copies cannot drift
     assert FIXTURE["events"]["card"]["card"] == FIXTURE["card"]
+
+
+def test_the_last_post_follows_the_anchor_that_arrives_after_the_snapshot(fleet_scenario) -> None:
+    """#201 (the owner's decision of 2026-11-27): the stream's first snapshot comes before
+    the login's own record gave the operator's anchor, so the own agent's card has no last
+    post; once the anchor is there, the next wave sends that card again as a `card` event
+    with the last post, and nothing else changes on it."""
+    from types import SimpleNamespace
+    console = Console(config.Settings(public_url="http://127.0.0.1:8747",
+                                     login_off=True, nats_url="nats://127.0.0.1:4"))
+    console.fleet = fleet_scenario
+    console.fleet.synced = True
+    view = console._view(None)
+    assert view.anchor() is None
+    stream = console._stream(token=None)
+    (first,) = stream.first["cards"]
+    assert first["lastPostAt"] is None
+    view.reader = SimpleNamespace(anchor="dembaca")  # type: ignore[assignment]
+    wave = stream.snapshot()
+    assert wave == [{"type": "card", "card": FIXTURE["card"]}]
+    assert wave[0]["card"]["lastPostAt"] == FIXTURE["card"]["lastPostAt"]
+    assert {k: v for k, v in first.items() if k != "lastPostAt"} == \
+        {k: v for k, v in FIXTURE["card"].items() if k != "lastPostAt"}
+    assert stream.snapshot() == []  # sent once
 
 
 def test_the_app_side_shapes_split_by_seam() -> None:
@@ -206,3 +236,18 @@ def test_the_agent_stats_row_the_fixture_states() -> None:
                             f"$JS.ACK.STATS.{STATS_CONSUMER}.1.1.1.1763980800000000000.0",
                             "STATS", STATS_CONSUMER)
     assert book.agent_rows({FIXTURE["card"]["name"]}) == FIXTURE["agentStats"]
+
+
+def test_the_no_row_sentence_is_quoted_word_for_word() -> None:
+    """#201 (Fable's review of #236): why an agent has no per-agent numbers is said by the
+    app's two constants (`console/web/src/ui/agents.ts`); the web README, the CHANGELOG and
+    ADR-015 quote them word for word, so no copy drifts from what the page says."""
+    import re
+    root = Path(__file__).parents[3]
+    source = (root / "console/web/src/ui/agents.ts").read_text()
+    said = " ".join(re.search(rf'export const {name} =\s*"([^"]+)"', source).group(1)  # type: ignore[union-attr]
+                    for name in ("NO_STATS_ROW", "STATS_ROWS_NOTE"))
+    assert "until its first STATS part arrives" in said
+    for doc in ("console/web/README.md", "CHANGELOG.md", "docs/arc42/09-architecture-decisions.md"):
+        text = " ".join((root / doc).read_text().split())
+        assert said in text, doc

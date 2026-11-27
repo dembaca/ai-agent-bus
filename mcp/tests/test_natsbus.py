@@ -32,6 +32,8 @@ from mattermost_ai_agent_bus.natsbus import (
     Message,
     CARD_ASKS_MAX,
     CARD_BRANCH_MAX,
+    CARD_EPOCH_MAX,
+    CARD_EPOCH_MIN,
     CARD_MODEL_MAX,
     CARD_TASK_MAX,
     MessageError,
@@ -44,6 +46,7 @@ from mattermost_ai_agent_bus.natsbus import (
     build_hello,
     card_asks,
     card_branch,
+    card_epoch,
     card_harness,
     card_text,
     crown_candidates,
@@ -2339,15 +2342,37 @@ def test_the_card_fields_are_bounded_on_both_sides() -> None:
                     "task": " ".join(["t"] * 60)}
 
 
+def test_the_presence_states_the_last_posts_time_and_nothing_of_the_post() -> None:
+    """RT-6.37 step 6: `last_post` is the agent's last post in its home as epoch seconds,
+    an int from 2020 to 2100 on both sides; anything else is left out and never drops the
+    status. An older reader ignores the key; an older server sends none (unknown)."""
+    card = PresenceCard(harness="pi", last_post=1763980700)
+    body = encode_presence("online", BOT, card=card)
+    assert json.loads(body) == {"v": 1, "status": "online", "bot": BOT, "harness": "pi",
+                                "last_post": 1763980700}
+    assert decode_presence_card(body) == card and decode_presence(body) == "online"
+    assert decode_presence_card(encode_presence("online", BOT)).last_post is None
+    assert [card_epoch(v) for v in (CARD_EPOCH_MIN, 1763980700, CARD_EPOCH_MAX)] == \
+        [CARD_EPOCH_MIN, 1763980700, CARD_EPOCH_MAX]
+    for bad in (CARD_EPOCH_MIN - 1, CARD_EPOCH_MAX + 1, 1763980700000, -1, 0, True,
+                1763980700.5, "1763980700", None, [1763980700]):
+        assert card_epoch(bad) is None, bad
+    # milliseconds by mistake, or a text: dropped by the encoder, so nothing else leaves
+    sent = json.loads(encode_presence("online", card=PresenceCard(last_post=1763980700000)))
+    assert sent == {"v": 1, "status": "online"}
+    raw = json.dumps({"v": 1, "status": "away", "last_post": "see my post"}).encode()
+    assert decode_presence(raw) == "away" and decode_presence_card(raw).last_post is None
+
+
 def test_the_largest_presence_body_stays_far_below_the_streams_limit() -> None:
     """RT-6.37: the PRESENCE stream's max_msg_size is 4096 bytes; the largest body the
     encoder can make, with characters JSON escapes longest (astral: 12 bytes each), stays
     well below it."""
     wide = "\U0001F600"  # two \\uXXXX escapes in ASCII JSON
     card = PresenceCard(harness="claude-code", model=wide * 500, task=wide * 500,
-                        branch="b" * CARD_BRANCH_MAX, asks=10**6)
+                        branch="b" * CARD_BRANCH_MAX, asks=10**6, last_post=CARD_EPOCH_MAX)
     body = encode_presence("online", BOT, "a" * 64, card)
-    assert len(body) <= 2600, len(body)  # 2510 bytes today
+    assert len(body) <= 2600, len(body)  # 2534 bytes today
     assert decode_presence_card(body).model == wide * CARD_MODEL_MAX
 
 

@@ -127,6 +127,7 @@
                                         beside the +N guest count, #187 */
 .agents__col--ctx { width: 104px; }
 .agents__col--asks { width: 60px; }
+.agents__col--tokens { width: 76px; }
 .agents__col--last { width: 84px; }
 
 /* one line, an ellipsis, the whole text in the title */

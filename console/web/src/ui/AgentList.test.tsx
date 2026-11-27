@@ -3,6 +3,7 @@ import { describe, expect, it } from "vitest"
 import type { AgentCard, Ask } from "../api/types"
 import { mockApi } from "../api/mock"
 import { AgentList, EMPTY } from "./AgentList"
+import { NO_LAST_POST, NO_STATS_ROW, STATS_ROWS_NOTE, statsByAgent } from "./agents"
 import { Detail } from "./Detail"
 import { Overview } from "./Overview"
 
@@ -73,7 +74,7 @@ describe("the pages", () => {
     const row = html.slice(html.indexOf("<tbody>"))
     expect(row).not.toContain("n/a")
     const shown = row.replace(/ title="[^"]*"/g, "")  // the text, not the titles
-    expect(shown.split(EMPTY).length - 1).toBe(4)  // branch, context, asks, last post
+    expect(shown.split(EMPTY).length - 1).toBe(5)  // branch, context, asks, tokens, last post
     expect(row).toContain('title="a long task that the row cuts to one line"')
   })
 
@@ -84,7 +85,7 @@ describe("the pages", () => {
     const html = renderToStaticMarkup(
       <AgentList cards={[card]} asks={[]} filter="all" onFilter={noop} query="" onQuery={noop}
         onOpenAgent={noop} onOpenAsk={noop} onAllAsks={noop} />)
-    expect(html).toMatch(/<colgroup>(<col class="agents__col--[a-z]+"\/>){8}<\/colgroup>/)
+    expect(html).toMatch(/<colgroup>(<col class="agents__col--[a-z]+"\/>){9}<\/colgroup>/)
     expect(html).toContain('title="the task"')
     expect(html).toContain('title="feat/a-very-long-branch-name-that-clips"')
     expect(html).toContain('title="OpenCode · glm-5.3-long-model-name"')
@@ -129,5 +130,57 @@ describe("the pages", () => {
     const overview = renderToStaticMarkup(
       <Overview cards={cards} asks={asks} onOpenAsk={noop} onView={noop} />)
     expect(overview).toContain(`of ${cards.length}`)
+  })
+
+  it("shows the tokens of today: a number, n/a, or a dash for another owner's agent (#201)", async () => {
+    const { cards } = await fleet()
+    const stats = statsByAgent(await mockApi().agentStats())
+    const list = (s: typeof stats) => renderToStaticMarkup(
+      <AgentList cards={cards} asks={[]} stats={s} filter="all" onFilter={noop} query="" onQuery={noop}
+        onOpenAgent={noop} onOpenAsk={noop} onAllAsks={noop} />)
+    const html = list(stats)
+    expect(html).toContain(">Tokens today<")
+    expect(html).toContain(">92.1k<")        // bb8f09: 92,100 tokens
+    expect(html).toContain(">n/a<")          // 164534: a row, but no token counts
+    expect(html).toContain(`title="${NO_STATS_ROW} ${STATS_ROWS_NOTE}"`)  // every other agent
+    expect(html).toContain(STATS_ROWS_NOTE)  // the footnote says it once in the open
+    expect(html).not.toMatch(/>0<\/span><\/td>/)
+    expect(list(null)).toContain('title="per-agent numbers not read yet"')
+  })
+
+  it("shows the detail's Today block, or says plainly why there is none (#201)", async () => {
+    const { cards, asks } = await fleet()
+    const stats = statsByAgent(await mockApi().agentStats())
+    const detail = (card: AgentCard, s: typeof stats) => renderToStaticMarkup(
+      <Detail api={mockApi()} card={card} ask={null} asks={asks} stats={s} from="Agents"
+        onBack={noop} onFail={noop} />)
+    const own = cards.find((c) => c.name === "agent-mac-ai-agent-bb8f09")!
+    const today = detail(own, stats)
+    for (const fact of ["<dt>tokens</dt><dd>92.1k</dd>", "<dt>cache read</dt><dd>90k</dd>",
+      "<dt>cache write 5 m</dt><dd>n/a</dd>", "<dt>posts</dt><dd>12</dd>",
+      "<dt>wakes</dt><dd>9</dd>", "<dt>tool calls</dt><dd>61</dd>"]) {
+      expect(today).toContain(fact)
+    }
+    const quiet = detail(cards.find((c) => c.name === "agent-mac-ai-agent-164534")!, stats)
+    expect(quiet).toContain("<dt>tokens</dt><dd>n/a</dd>")
+    expect(quiet).toContain("<dt>posts</dt><dd>21</dd>")
+    const other = cards.find((c) => !stats!.has(c.name))!
+    expect(detail(other, stats)).toContain(`${NO_STATS_ROW} ${STATS_ROWS_NOTE}`)
+    expect(detail(other, null)).toContain("Not read yet.")
+  })
+
+  it("says plainly why a card shows no last post, never as silence (#201)", async () => {
+    const { cards, asks } = await fleet()
+    const carols = cards.find((c) => c.for === "carol")!  // the mock's agent of another owner
+    expect(carols.lastPostAt).toBeNull()
+    const html = renderToStaticMarkup(
+      <AgentList cards={cards} asks={[]} filter="all" onFilter={noop} query="" onQuery={noop}
+        onOpenAgent={noop} onOpenAsk={noop} onAllAsks={noop} />)
+    expect(html).toContain(`<span title="${NO_LAST_POST}">${EMPTY}</span>`)
+    expect(html).toContain(`${NO_LAST_POST}`)  // the footnote says it in the open
+    const detail = renderToStaticMarkup(
+      <Detail api={mockApi()} card={carols} ask={null} asks={asks} from="Agents" onBack={noop} onFail={noop} />)
+    expect(detail).toContain(`<dt>last post</dt><dd><span class="muted small">${NO_LAST_POST}</span></dd>`)
+    expect(detail).not.toContain("silent")
   })
 })

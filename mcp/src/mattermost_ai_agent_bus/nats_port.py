@@ -435,8 +435,11 @@ class NatsPort:
         self._watch: asyncio.Task[None] | None = None
         # The HELLO card's data the presence carries (RT-6.37, ADR-015); the MCP server sets
         # it (a hosted one maybe after start), read at every presence the bus sends. None:
-        # no card's data.
-        self.card_source: Callable[[], natsbus.PresenceCard | None] | None = None
+        # no card's data. Called with the home's channel id (home_id), so that the last post
+        # it states is one in the home (RT-6.37 step 6).
+        self.card_source: Callable[[str], natsbus.PresenceCard | None] | None = None
+        # The work channel's id, read at start; '' until then or when it could not be read.
+        self.home_id = ""
         # The open asks for the ask record on `<presence>.ask.<home>.<name>` (RT-6.43 step 5);
         # set like card_source, read at every check of the bus. None: no record.
         self.ask_source: Callable[[], list[natsbus.OpenAsk]] | None = None
@@ -481,6 +484,8 @@ class NatsPort:
         while True:
             try:
                 await self.resolve()
+                if not self.home_id:
+                    await self._read_home_id()
                 if owner is None:
                     owner = await _owner_of(login)
                 # #213: the cursor a killed session left is the read mark's NATS lane — the
@@ -539,7 +544,16 @@ class NatsPort:
 
     def _card(self) -> natsbus.PresenceCard | None:
         """The card's data for the bus's next presence: card_source's, read now."""
-        return self.card_source() if self.card_source is not None else None
+        return self.card_source(self.home_id) if self.card_source is not None else None
+
+    async def _read_home_id(self) -> None:
+        """home_id: the work channel's id, for the last post the presence states (RT-6.37
+        step 6). Never raises: unread, the presence states no last post."""
+        try:
+            self.home_id = await self.inner.work_channel_id()
+        except Exception as exc:  # noqa: BLE001 — a card's field, never a reason not to start
+            log.info("nats: the home's id not read (%s): no last post in the presence",
+                     type(exc).__name__)
 
     async def _bot_id(self) -> str:
         """The Mattermost user id of the bot, as lease._user_id resolves it."""

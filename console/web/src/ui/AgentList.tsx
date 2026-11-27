@@ -1,8 +1,8 @@
-import type { AgentCard, Ask } from "../api/types"
+import type { AgentCard, AgentStatsRow, Ask } from "../api/types"
 import { since } from "../clock"
 import {
-  STATUS_FILTERS, agentName, askerName, countByGroup, filterCards, harnessLabel, openAsksFirst, stateClass,
-  type StatusFilter,
+  NO_LAST_POST, NO_STATS_ROW, STATS_ROWS_NOTE, STATUS_FILTERS, agentName, askerName, countByGroup, filterCards, harnessLabel,
+  openAsksFirst, stateClass, tokenCount, type StatusFilter,
 } from "./agents"
 import { CircleHelp } from "lucide-react"
 import { CrownIcon, SearchIcon } from "./icons"
@@ -18,11 +18,14 @@ const ASKS_ON_TOP = 4
  * one compact row per agent — the table replaces the Kanban. Search and a
  * status filter narrow the rows; a row opens the agent's detail. Read-only
  * (ADR-015 stage 1): an ask is answered in its thread in the chat. */
-export function AgentList({ cards, asks, compact = false, selected = null,
+export function AgentList({ cards, asks, stats = null, compact = false, selected = null,
                             filter, onFilter: setFilter, query, onQuery: setQuery,
                             onOpenAgent, onOpenAsk, onAllAsks }: {
   cards: AgentCard[]
   asks: Ask[]
+  /** The per-agent rows of `GET /v1/agent-stats` by agent (#201); null
+   * while none was read. */
+  stats?: ReadonlyMap<string, AgentStatsRow> | null
   /** Beside an open detail (#200): the half-width list keeps agent,
    * status, task and last post. */
   compact?: boolean
@@ -101,6 +104,7 @@ export function AgentList({ cards, asks, compact = false, selected = null,
               <col className="agents__col--home" />
               <col className="agents__col--ctx" />
               <col className="agents__col--asks" />
+              <col className="agents__col--tokens" />
             </>}
             <col className="agents__col--last" />
           </colgroup>
@@ -114,13 +118,14 @@ export function AgentList({ cards, asks, compact = false, selected = null,
                 <th scope="col">Home</th>
                 <th scope="col">Context</th>
                 <th scope="col" className="num">Asks</th>
+                <th scope="col" className="num" title="tokens of the last 24 hours">Tokens today</th>
               </>}
               <th scope="col" className="num">Last post</th>
             </tr>
           </thead>
           <tbody>
             {rows.map((card) => (
-              <AgentRow key={card.name} card={card} compact={compact}
+              <AgentRow key={card.name} card={card} compact={compact} stats={stats}
                 selected={card.name === selected} onOpen={onOpenAgent} />
             ))}
           </tbody>
@@ -133,15 +138,18 @@ export function AgentList({ cards, asks, compact = false, selected = null,
       </section>
       <p className="hint agents__note">
         Live from the agents' presence on the bus; a row changes in place. Task,
-        model and branch are what each agent states about itself.
+        model and branch are what each agent states about itself. {NO_LAST_POST}
+        {!compact && <> Tokens today come from the agents' STATS lines of the last
+          24 hours; a dash there is an agent without a row. {NO_STATS_ROW} {STATS_ROWS_NOTE}</>}
       </p>
     </>
   )
 }
 
-function AgentRow({ card, compact, selected, onOpen }: {
+function AgentRow({ card, compact, stats, selected, onOpen }: {
   card: AgentCard
   compact: boolean
+  stats: ReadonlyMap<string, AgentStatsRow> | null
   selected: boolean
   onOpen: (card: AgentCard) => void
 }) {
@@ -196,9 +204,28 @@ function AgentRow({ card, compact, selected, onOpen }: {
           {card.openAsks === null ? <span className="muted">{EMPTY}</span> : card.openAsks}
         </td>
       </>}
-      <td className="num muted nowrap">{card.lastPostAt ? since(card.lastPostAt) : EMPTY}</td>
+      {!compact && <td className="num nowrap"><TokensToday stats={stats} name={card.name} /></td>}
+      <td className="num muted nowrap">
+        {card.lastPostAt ? since(card.lastPostAt) : <span title={NO_LAST_POST}>{EMPTY}</span>}
+      </td>
     </tr>
   )
+}
+
+/** The agent's tokens of the last 24 hours (#201): a dash when it has no row
+ * (another owner's agent, one not running now, or an own one before its first
+ * STATS part), n/a when its row states no
+ * token counts, never 0 for either. */
+function TokensToday({ stats, name }: { stats: ReadonlyMap<string, AgentStatsRow> | null; name: string }) {
+  if (stats === null) return <span className="muted" title="per-agent numbers not read yet">{EMPTY}</span>
+  const row = stats.get(name)
+  if (!row) {
+    return <span className="muted" title={`${NO_STATS_ROW} ${STATS_ROWS_NOTE}`}>{EMPTY}</span>
+  }
+  const all = row.tok24h?.all ?? null
+  return all === null
+    ? <span className="muted" title="no token counts in its STATS parts of the last 24 hours">n/a</span>
+    : <span title={`${all} tokens in the last 24 hours`}>{tokenCount(all)}</span>
 }
 
 /** The title of an agent's name: the technical id on the bus, and why a

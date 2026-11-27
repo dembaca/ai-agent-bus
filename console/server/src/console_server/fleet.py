@@ -12,8 +12,10 @@ presence states it, its username: the name people and coordinator("who")
 know the agent by), the crown claims and the memberships, the attestation
 names the owner and the trusted humans. The presence also states the
 HELLO card's harness, model, task, branch and the number of the agent's
-open asks (RT-6.37, ``natsbus.decode_presence_card``, bounded there);
-self-stated like the name, they are shown as text and decide nothing. An
+open asks, and the time of its last post in its home (RT-6.37,
+``natsbus.decode_presence_card``, bounded there; the time also by
+``last_post_at``); self-stated like the name, they are shown as text and
+decide nothing. An
 older MCP server states none of them, and everything else on the card is
 unknown too: never guessed as empty string, zero or "other", the app
 shows ``n/a``.
@@ -38,6 +40,19 @@ log = logging.getLogger(__name__)
 # An ask older than this is shown as expired: a hint, a yes approves nothing then (RT-6.11);
 # whether it does stays the asking server's check.
 ASK_EXPIRED_SEC = 24 * 3600
+# The last post's time the presence states (RT-6.37 step 6) is the agent's word and its
+# clock: a time this far past the presence that states it is dropped (n/a), a nearer one
+# is shown as that presence's time (a post cannot follow what states it).
+LAST_POST_SKEW_SEC = 300
+
+
+def last_post_at(stated: int | None, presence_at: float) -> int | None:
+    """The card's ``lastPostAt`` in ms: the stated epoch seconds (bounded by
+    ``natsbus.clean_card``), at most the presence's server time; None when not
+    stated (an older MCP server, no post yet) or beyond the skew."""
+    if stated is None or stated > presence_at + LAST_POST_SKEW_SEC:
+        return None
+    return int(min(float(stated), presence_at) * 1000)
 
 
 @dataclass
@@ -337,10 +352,15 @@ class Fleet:
 
     # --- the wire (ADR-015 point 10, the app's contract) -------------------------------
 
-    def cards(self) -> list[dict[str, Any]]:
+    def cards(self, anchor: str | None = None) -> list[dict[str, Any]]:
         """One wire card per agent, unknown fields marked as unknown
-        (``None`` or empty), never guessed as 0 (ADR-015 point 8)."""
+        (``None`` or empty), never guessed as 0 (ADR-015 point 8). `anchor`:
+        the operator's anchor in subject form (the login's own record); the
+        last post's time goes only on the cards of own or trusted agents
+        (``own_or_trusted``, the owner's decision of 2026-11-27, #201), null
+        on every other card and on all of them without the anchor."""
         out = []
+        mine = self.own_or_trusted(anchor)
         crowns: dict[str, str] = {}
         for channel in self._claims:
             holder = self.holder_of(channel)
@@ -384,14 +404,18 @@ class Fleet:
                 "openAsks": stated.asks,
                 "asksForOperator": None,
                 "helloAt": int(presence[0] * 1000),
-                "lastPostAt": None,
+                # the agent's last post in its home as its presence states it
+                # (RT-6.37 step 6): a time only, for own or trusted agents only;
+                # null for every other agent and from an older MCP server
+                "lastPostAt": (last_post_at(stated.last_post, presence[0])
+                               if agent in mine else None),
                 "helloPostId": "",
                 "tasks": [],
             })
         return out
 
-    def card(self, agent: str) -> dict[str, Any] | None:
-        for card in self.cards():
+    def card(self, agent: str, anchor: str | None = None) -> dict[str, Any] | None:
+        for card in self.cards(anchor):
             if card["name"] == agent:
                 return card
         return None

@@ -11,7 +11,7 @@ import json
 from mattermost_ai_agent_bus.natsbus import (
     MAX_AGE_SEC, PRESENCE_FRESH_SEC, PresenceCard, encode_presence,
 )
-from console_server.fleet import Fleet, short_name
+from console_server.fleet import LAST_POST_SKEW_SEC, Fleet, last_post_at, short_name
 
 
 def ack(stream: str, consumer: str, sseq: int, cseq: int, ts: float,
@@ -456,6 +456,60 @@ def test_an_older_mcp_server_leaves_the_card_unknown() -> None:
     assert c is not None
     assert (c["harness"], c["model"], c["task"], c["branch"], c["openAsks"]) == \
         (None, "", "", None, None)
+    assert c["lastPostAt"] is None
+
+
+def test_the_last_post_is_the_presences_word_bounded_by_its_time() -> None:
+    """RT-6.37 step 6: the presence's `last_post` (epoch seconds) becomes `lastPostAt`
+    in ms; a time a little past the presence that states it is that presence's time, one
+    beyond the skew or out of the encoder's bounds is unknown (null), never 0. (The
+    operator here owns the agent: see the next test for everyone else.)"""
+    f = Fleet()
+    feed(f, (*attestation_of(AGENT_A, "dembaca", "dembaca"), ack("PRESENCE", "console", 1, 1, 1763980750.0)))
+    feed(f, (*presence_with(AGENT_A, PresenceCard(last_post=1763980700)),
+             ack("PRESENCE", "console", 2, 2, 1763980760.0)))
+    c = f.card(AGENT_A, "dembaca")
+    assert c is not None and c["lastPostAt"] == 1763980700_000
+    feed(f, (*presence_with(AGENT_A, PresenceCard(last_post=1763980800)),
+             ack("PRESENCE", "console", 3, 3, 1763980770.0)))
+    c = f.card(AGENT_A, "dembaca")
+    assert c is not None and c["lastPostAt"] == 1763980770_000
+    feed(f, (*presence_with(AGENT_A, PresenceCard(last_post=1763980770 + LAST_POST_SKEW_SEC + 11)),
+             ack("PRESENCE", "console", 4, 4, 1763980780.0)))
+    c = f.card(AGENT_A, "dembaca")
+    assert c is not None and c["lastPostAt"] is None
+    for i, bad in enumerate(('"1763980700"', "1763980700.5", "true", "1763980700000", "-5")):
+        raw = ('{"v":1,"status":"online","last_post":%s}' % bad).encode()
+        feed(f, (f"presence.dembaca.{AGENT_A}", raw,
+                 ack("PRESENCE", "console", 5 + i, 5 + i, 1763980790.0 + i)))
+        c = f.card(AGENT_A, "dembaca")
+        assert c is not None and c["state"] != "offline" and c["lastPostAt"] is None, bad
+    assert last_post_at(None, 1e9) is None and last_post_at(1_600_000_000, 1.7e9) == 1_600_000_000_000
+
+
+def test_the_last_post_shows_only_on_own_or_trusted_cards() -> None:
+    """RT-6.37 step 6, ADR-015 point 6 (the owner's decision of 2026-11-27, #201): the
+    presence carries the last post for every reader, but the console puts it only on the
+    cards of agents whose fresh attestation names the operator as owner or trusted
+    (Fleet.own_or_trusted, as the per-agent numbers); every other card, and every card
+    before the login's own record gave the anchor, has null. The other fields stay."""
+    own, trusting, other, bare = (f"agent-{c * 26}" for c in "abcd")
+    f = Fleet()
+    feed(f, (*attestation_of(own, "dembaca", "dembaca"), ack("PRESENCE", "console", 1, 1, 1_699_999_000.0)),
+         (*atestation(trusting, "carol", [("dembaca", "dembaca")], 1e12),
+          ack("PRESENCE", "console", 2, 2, 1_699_999_000.0)),
+         (*atestation(other, "erin", [("carol", "carol")], 1e12),
+          ack("PRESENCE", "console", 3, 3, 1_699_999_000.0)))
+    for i, agent in enumerate((own, trusting, other, bare)):
+        feed(f, (*presence_with(agent, PresenceCard(task="t", last_post=1_600_000_000)),
+                 ack("PRESENCE", "console", 10 + i, 10 + i, 1_700_000_000.0)))
+    shown = {c["name"]: c["lastPostAt"] for c in f.cards("dembaca")}
+    assert shown == {own: 1_600_000_000_000, trusting: 1_600_000_000_000, other: None, bare: None}
+    for anchor in (None, "", "-", "dembaca-not"):
+        assert {c["lastPostAt"] for c in f.cards(anchor)} == {None}, anchor
+    # nothing else on the card depends on the anchor
+    strip = [{k: v for k, v in c.items() if k != "lastPostAt"} for c in f.cards("dembaca")]
+    assert strip == [{k: v for k, v in c.items() if k != "lastPostAt"} for c in f.cards()]
 
 
 # --- the graph's person nodes and the card's home (#147, 716d72's review) -------------

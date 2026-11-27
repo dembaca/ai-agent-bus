@@ -51,7 +51,12 @@ delivers the last message per subject, then new ones). From the
 deliveries (their JetStream metadata is the server's clock — never the
 host's, as `natsbus.py` does it) it keeps the presence, membership and
 crown-claim state, and the HELLO card's harness, model, task, branch and
-open asks the presence states (RT-6.37 step 6, self-stated: shown as text,
+open asks the presence states, with the time of the agent's last post in
+its home (`lastPostAt`; dropped when more than 5 minutes after the
+presence that states it, else at most that presence's time; on the cards
+of own or trusted agents only, `Fleet.own_or_trusted` with the operator's
+anchor as for `/v1/agent-stats`, null on every other card and before the
+login's own record arrived) (RT-6.37 step 6, self-stated: shown as text,
 never trusted); everything the bus does not carry today, and those fields
 from an older MCP server, arrive as unknown (`null`/empty), never guessed as zero — the app shows `n/a`.
 

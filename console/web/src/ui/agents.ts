@@ -1,4 +1,4 @@
-import { AGENT_STATES, HARNESS_LABEL, type AgentCard, type Ask } from "../api/types"
+import { AGENT_STATES, HARNESS_LABEL, type AgentCard, type AgentStatsRow, type Ask } from "../api/types"
 
 // The agents list's filter and the status groups the Overview counts by.
 // The groups are made of the state words the bus carries (ADR-015 point 6):
@@ -96,6 +96,41 @@ export function harnessLabel(harness: AgentCard["harness"]): string {
 /** An ask still waiting: open, or past 24 h (a hint, the asking server decides). */
 export function isOpen(ask: Ask): boolean {
   return ask.end === "open" || ask.end === "expired"
+}
+
+/** Why an agent has no per-agent numbers (#201, decided 2026-11-27): `GET
+ * /v1/agent-stats` has rows only for agents whose fresh attestation names the
+ * operator as owner or trusted, and whose STATS parts the session holds: an
+ * own running agent has none until its first part arrives. Said plainly,
+ * never as "n/a" (that is a number no part states). The README, the
+ * CHANGELOG and ADR-015 quote both sentences word for word. */
+export const NO_STATS_ROW = "No per-agent numbers for agents of other owners."
+export const STATS_ROWS_NOTE =
+  "Rows are of own or trusted agents running now: one has no row until its first STATS part arrives, and loses it when it goes offline."
+
+/** Why a card shows no last post (#201, decided 2026-11-27): the console puts
+ * it only on the cards of own or trusted agents, and only once the agent's
+ * presence states one. Said plainly, so that no agent looks silent for it. */
+export const NO_LAST_POST =
+  "The last post shows only for own or trusted agents, from their first post in their home on."
+
+/** A token count for a dense cell: 950, 92.1k, 1.2M; null is n/a, never 0.
+ * The unit is picked after rounding, so 999,999 is 1M, never 1000k. */
+export function tokenCount(n: number | null): string {
+  if (n === null) return "n/a"
+  if (n < 1000) return String(n)
+  const k = rounded(n / 1000)
+  return k < 1000 ? `${k}k` : `${rounded(n / 1_000_000)}M`
+}
+
+/** One decimal below 100, none from 100 on. */
+function rounded(x: number): number {
+  return x < 100 ? Math.round(x * 10) / 10 : Math.round(x)
+}
+
+/** The per-agent rows by agent name; null while none was read. */
+export function statsByAgent(rows: readonly AgentStatsRow[] | null): ReadonlyMap<string, AgentStatsRow> | null {
+  return rows === null ? null : new Map(rows.map((r) => [r.agent, r]))
 }
 
 /** The open asks, the operator's first, then the oldest. */

@@ -2031,6 +2031,12 @@ async def test_start_links_the_bot_and_announces_membership_of_every_channel_not
         assert lease._nats_link is not None and lease._nats_link() == TAG_A
         assert fake.announced == ["home", "other", "guest"]
         assert fake.claimed_homes == []  # the crown claim is not made at start
+        # RT-6.37 step 6: the home's id, which the card's last post must name
+        assert port.home_id == await inner.work_channel_id()
+        seen: list[str] = []
+        port.card_source = lambda home: seen.append(home) or None
+        port._card()
+        assert seen == [port.home_id]
     finally:
         await port.stop()
         lease.use_nats_link(None)

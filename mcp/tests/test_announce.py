@@ -157,3 +157,34 @@ async def test_the_presence_states_what_the_hello_states(monkeypatch):
         branch="console-card-data", asks=0)
     asks.add("b" * 26, "p" * 26, human="dembaca")
     assert server._presence_card().asks == 1
+
+
+def test_the_presence_states_the_last_posts_time_only(monkeypatch):
+    """RT-6.37 step 6: the presence states when the agent last posted in its home, in
+    epoch seconds from ownpost.py's AT (ms), and nothing of the post; none before the
+    first post, for a record of another channel than the home (a guest channel, or the
+    home of an earlier session of the same bot), without the home's id, without a bot, or
+    from a file that holds no number."""
+    from mattermost_ai_agent_bus import natsbus, ownpost, session_file, stats
+    from mattermost_ai_agent_bus.model import Post
+    me, home, guest = "b" * 26, "c" * 26, "g" * 26
+    monkeypatch.setattr(server, "_hello", {})
+    monkeypatch.setattr(stats, "_client_name", "opencode")
+    monkeypatch.setattr(stats, "_uid", me)
+    assert server._presence_card(home).last_post is None
+    ownpost.record(me, home, Post(id="p" * 26, channel_id=home, user_id=me,
+                                  message="RESULT secret words", create_at=1763980700123))
+    card = server._presence_card(home)
+    assert card.last_post == 1763980700
+    assert "secret" not in natsbus.encode_presence("online", card=card).decode()
+    assert server._presence_card(guest).last_post is None  # the record is not of this home
+    assert server._presence_card().last_post is None  # the home's id not read
+    ownpost.record(me, guest, Post(id="q" * 26, channel_id=guest, user_id=me,
+                                   message="DONE", create_at=1763980800000))
+    assert server._presence_card(home).last_post is None
+    session_file.write_private(ownpost.path(me), f"CHANNEL={home}\nAT=soon\n")
+    assert server._presence_card(home).last_post is None
+    monkeypatch.setattr(stats, "_uid", "")
+    monkeypatch.delenv("MM_BOT_USER_ID", raising=False)
+    monkeypatch.delenv("CB_MM_BOT_USER_ID", raising=False)
+    assert server._last_post_sec("", home) is None

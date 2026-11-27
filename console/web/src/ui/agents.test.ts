@@ -1,6 +1,19 @@
 import { describe, expect, it } from "vitest"
 import type { AgentCard, AgentState, Ask } from "../api/types"
-import { agentName, askerName, countByGroup, filterCards, openAsksFirst } from "./agents"
+import { agentName, askerName, countByGroup, filterCards, openAsksFirst, tokenCount } from "./agents"
+
+describe("tokenCount (#201)", () => {
+  it("shortens for a dense cell and says n/a for null, never 0", () => {
+    expect([0, 950, 1000, 92_100, 640_000, 1_234_567, 12_000_000].map(tokenCount))
+      .toEqual(["0", "950", "1k", "92.1k", "640k", "1.2M", "12M"])
+    expect(tokenCount(null)).toBe("n/a")
+  })
+
+  it("picks the unit after rounding: 999,999 is 1M, never 1000k", () => {
+    expect([999_499, 999_500, 999_999, 99_949, 99_950, 1_949_999, 1_999_999, 99_960_000].map(tokenCount))
+      .toEqual(["999k", "1M", "1M", "99.9k", "100k", "1.9M", "2M", "100M"])
+  })
+})
 
 function card(name: string, state: AgentState | string, extra: Partial<AgentCard> = {}): AgentCard {
   return {

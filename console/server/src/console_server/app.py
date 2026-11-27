@@ -328,7 +328,10 @@ class Console:
         sent: dict[str, dict[str, Any]] = {}
 
         def next_events() -> list[dict[str, Any]]:
-            cards: dict[str, dict[str, Any]] = {c["name"]: c for c in view.fleet.cards()}
+            # the anchor decides which cards carry the last post (#201): a card
+            # changes, and is sent again, when the login's own record arrives
+            cards: dict[str, dict[str, Any]] = {
+                c["name"]: c for c in view.fleet.cards(view.anchor())}
             if not view.fleet.synced or not sent:
                 sent.clear()
                 sent.update(cards)

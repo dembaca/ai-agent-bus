@@ -1,7 +1,9 @@
 import { useEffect, useMemo, useState, type ReactNode } from "react"
-import type { AgentCard, Ask, ConsoleApi, Post, ThreadPage } from "../api/types"
+import type { AgentCard, AgentStatsRow, Ask, ConsoleApi, Post, ThreadPage } from "../api/types"
 import { clock, since } from "../clock"
-import { agentName, askerName, harnessLabel, isOpen, stateClass } from "./agents"
+import {
+  NO_LAST_POST, NO_STATS_ROW, STATS_ROWS_NOTE, agentName, askerName, harnessLabel, isOpen, stateClass, tokenCount,
+} from "./agents"
 import { AgentLabel, Context, SharedMark, nameTitle } from "./AgentList"
 import { CrownIcon } from "./icons"
 import "./Detail.css"
@@ -13,11 +15,14 @@ type Fail = (what: string, error: unknown) => void
  * since its last post, its HELLO thread and the threads of its open asks. An
  * ask opened from a list shows on top of its agent's page, or alone when its
  * agent is gone. Read-only: no answer button (stage 1). */
-export function Detail({ api, card, ask, asks, from, onBack, onFail }: {
+export function Detail({ api, card, ask, asks, stats = null, from, onBack, onFail }: {
   api: ConsoleApi
   card: AgentCard | null
   ask: Ask | null
   asks: Ask[]
+  /** The per-agent rows of `GET /v1/agent-stats` by agent (#201); null
+   * while none was read. */
+  stats?: ReadonlyMap<string, AgentStatsRow> | null
   /** The view the page was opened from: the breadcrumb leads back to it. */
   from: string
   onBack: () => void
@@ -130,10 +135,53 @@ export function Detail({ api, card, ask, asks, from, onBack, onFail }: {
               </ul>
             </section>
           )}
+          {card && <Today row={stats === null ? undefined : stats.get(card.name) ?? null} />}
           {card && <Facts card={card} />}
         </aside>
       </div>
     </div>
+  )
+}
+
+/** The agent's numbers of the last 24 hours (#201, `GET /v1/agent-stats`):
+ * tokens with the split by type, posts, wakes and tool calls. `row`: undefined
+ * while none was read, null when the agent has none (another owner's, not
+ * running now, or an own one before its first STATS part). A number no part states is n/a, never 0; no share of the
+ * overhead is computed here (its sums cover only the parts that state it). */
+function Today({ row }: { row: AgentStatsRow | null | undefined }) {
+  const tok = row?.tok24h ?? null
+  const n = (v: number | null | undefined) => (v === null || v === undefined ? "n/a" : String(v))
+  const t = (v: number | null | undefined) => tokenCount(v ?? null)
+  const facts: Array<[string, string]> = row ? [
+    ["tokens", t(tok?.all)],
+    ["input", t(tok?.in)],
+    ["cache read", t(tok?.read)],
+    ["cache write 5 m", t(tok?.w5m)],
+    ["cache write 1 h", t(tok?.w1h)],
+    ["output", t(tok?.out)],
+    ["posts", n(row.posts24h)],
+    ["wakes", n(row.wakes24h)],
+    ["tool calls", n(row.tools24h)],
+  ] : []
+  return (
+    <section className="panel detail__facts" aria-label="Today">
+      <h2 className="section-title">Today</h2>
+      {row === undefined && <p className="muted small">Not read yet.</p>}
+      {row === null && <p className="muted small">{NO_STATS_ROW} {STATS_ROWS_NOTE}</p>}
+      {row && (
+        <>
+          <dl>
+            {facts.map(([k, v]) => (
+              <div key={k} className="detail__fact"><dt>{k}</dt><dd>{v}</dd></div>
+            ))}
+          </dl>
+          <p className="muted small detail__today-note">
+            The last 24 hours: the STATS parts received in that time (a long
+            session's part may cover earlier time). {STATS_ROWS_NOTE}
+          </p>
+        </>
+      )}
+    </section>
   )
 }
 
@@ -151,7 +199,9 @@ function Facts({ card }: { card: AgentCard }) {
     ["limits / cost", card.limits ?? "n/a"],
     ["version", card.version || "n/a"],
     ["HELLO", `${clock(card.helloAt)} · ${since(card.helloAt)} ago`],
-    ["last post", card.lastPostAt === null ? "n/a" : `${clock(card.lastPostAt)} · ${since(card.lastPostAt)} ago`],
+    ["last post", card.lastPostAt === null
+      ? <span className="muted small">{NO_LAST_POST}</span>
+      : `${clock(card.lastPostAt)} · ${since(card.lastPostAt)} ago`],
     ["open asks", card.openAsks === null
       ? "n/a"
       : `${card.openAsks}${(card.asksForOperator ?? 0) > 0 ? ` · ${card.asksForOperator} for you` : ""}`],

@@ -332,6 +332,10 @@ CARD_MODEL_MAX = 64  # characters
 CARD_TASK_MAX = 120  # characters, one line
 CARD_BRANCH_MAX = 100  # characters, a git ref name
 CARD_ASKS_MAX = 999
+# The agent's last post as epoch seconds: an int from 2020 to 2100, else left out. The
+# console also drops a time after the presence that states it (clock skew aside).
+CARD_EPOCH_MIN = 1_577_836_800  # 2020-01-01T00:00:00Z
+CARD_EPOCH_MAX = 4_102_444_800  # 2100-01-01T00:00:00Z
 # A branch as git allows it, narrowed: ASCII letters, digits and ._/+#-, starting with a
 # letter, a digit or # (a HELLO may name a PR as "#118"); no "..", "//", "/.", no ".lock",
 # "/" or "." at the end (git check-ref-format). Anything else is dropped, never repaired.
@@ -348,13 +352,15 @@ _CARD_CONTROL = re.compile("[\x00-\x1f\x7f-\x9f\xad\u061c\u180e\u200b-\u200f\u20
 class PresenceCard:
     """The card's data a presence carries; None: not stated (an older MCP server, or not
     announced yet). harness: one of HARNESSES; asks: this session's own asks to a human
-    still waiting (asks.waiting)."""
+    still waiting (asks.waiting); last_post: when the agent last posted in its home, epoch
+    seconds (ownpost.py's AT: a time only, never the post's text)."""
 
     harness: str | None = None
     model: str | None = None
     task: str | None = None
     branch: str | None = None
     asks: int | None = None
+    last_post: int | None = None
 
 
 def card_text(v: object, limit: int) -> str | None:
@@ -394,14 +400,22 @@ def card_asks(v: object) -> int | None:
     return min(v, CARD_ASKS_MAX)
 
 
+def card_epoch(v: object) -> int | None:
+    """Epoch seconds as an int from CARD_EPOCH_MIN to CARD_EPOCH_MAX; None for anything else
+    (a float, a bool, a string, a time out of that range: dropped, never repaired)."""
+    if isinstance(v, bool) or not isinstance(v, int) or not CARD_EPOCH_MIN <= v <= CARD_EPOCH_MAX:
+        return None
+    return v
+
+
 def clean_card(card: PresenceCard) -> PresenceCard:
     """The card with every field bounded (the encoder's and the decoder's rule)."""
     return PresenceCard(harness=card_harness(card.harness), model=card_text(card.model, CARD_MODEL_MAX),
                         task=card_text(card.task, CARD_TASK_MAX), branch=card_branch(card.branch),
-                        asks=card_asks(card.asks))
+                        asks=card_asks(card.asks), last_post=card_epoch(card.last_post))
 
 
-_CARD_KEYS = ("harness", "model", "task", "branch", "asks")
+_CARD_KEYS = ("harness", "model", "task", "branch", "asks", "last_post")
 
 
 def encode_presence(status: str, bot: str = "", bot_name: str = "",
@@ -409,7 +423,7 @@ def encode_presence(status: str, bot: str = "", bot_name: str = "",
     """The presence body; `bot` is the agent's Mattermost bot id (RT-6.37) and `name` that
     bot's username, the name people and coordinator("who") know the agent by (the operator
     console shows it, ADR-015); each left out when ''. `card`: the HELLO card's data
-    (harness, model, task, branch, open asks), bounded by clean_card; a field it does not
+    (harness, model, task, branch, open asks) and the last post's time, bounded by clean_card; a field it does not
     state (None) is left out."""
     if status not in _STATUSES:
         raise MessageError("unknown status")
