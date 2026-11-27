@@ -52,7 +52,7 @@ const answerWake = (body: any) => {
 const nowSec = () => Math.floor(Date.now() / 1000)
 // The calls of a test besides the session's own: the long poll and the instructions a run
 // asks for while they are missing (RT-6.27 step 1, #153).
-const rest = () => calls.filter((c) => !c.path.startsWith("/v1/wake") && c.path !== "/v1/instructions")
+const rest = () => calls.filter((c) => !c.path.startsWith("/v1/wake") && c.path !== "/v1/instructions" && c.path !== "/v1/login")
   .map((c) => c.method + " " + c.path)
 const wakes = () => calls.filter((c) => c.path.startsWith("/v1/wake"))
 const bodies = (path: string) => calls.filter((c) => c.path === path).map((c) => c.body)
@@ -916,4 +916,17 @@ test("RT-6.27: the old relay names work end to end, and a keyless sandbox stays 
     assert.deepEqual(await hookApi(sandbox, ws)("GET", "/v1/handoff"), { context: "c" })
   } finally { console.warn = orig }
   assert.equal(quiet.length, 0)
+})
+
+test("RT-6.34: the waiting login approval reaches the TUI once, without a token (#198)", async () => {
+  answers["/v1/login"] = { link: "https://kc.example/device?user_code=ABCD-EFGH", user_code: "ABCD-EFGH",
+                           expires_in: 600 }
+  const f = await started()
+  await until(() => f.box.notes.length >= 1, "the login line")
+  const line = f.box.notes[0]
+  assert.match(line, /kc\.example\/device\?user_code=ABCD-EFGH/)
+  assert.match(line, /ABCD-EFGH/)
+  assert.doesNotMatch(line, /token|seed/i)
+  await until(() => calls.some((c) => c.method === "POST" && c.path === "/v1/login/shown"), "the shown mark")
+  answers["/v1/login"] = undefined
 })

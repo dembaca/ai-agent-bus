@@ -758,6 +758,22 @@ export function create(pi: ExtensionAPI, deps: Deps = {}) {
     }
   }
 
+  // The NATS login approval waiting now, as one line in the TUI (#198): link and code
+  // only, never a token; marked shown so a later turn's notice does not repeat it.
+  const loginLine = async () => {
+    try {
+      const r = await bus("GET", "/v1/login")
+      const link = typeof r?.link === "string" ? r.link : ""
+      if (!link) return
+      const code = typeof r?.user_code === "string" ? r.user_code : ""
+      notify(`Bus login: open ${link}${code ? ` — the page shows the code ${code}` : ""}. ` +
+             "Approve only if it matches.")
+      await bus("POST", "/v1/login/shown", {})
+    } catch {
+      // no server yet: the first turn's notice shows the same line
+    }
+  }
+
   // A user message of ours: at once when idle, else after the run's tools
   // (followUp), never into a tool call. pi reports a refusal as an extension
   // error, not here: OURS_MS bounds the wait for its run.
@@ -922,6 +938,7 @@ export function create(pi: ExtensionAPI, deps: Deps = {}) {
     const dir = real(c.cwd) || c.cwd
     label = basename(dir).slice(0, 64) // the presence label's limit (RT-6.17)
     bus = hookApi(env, dir)
+    void loginLine() // a grant that is already waiting reaches the terminal (#198)
     // A new session reads the served text again: a reload may meet another mode (RT-6.12),
     // and before_agent_start asks lazily, so a server that is not up yet still counts.
     instructions = ""
