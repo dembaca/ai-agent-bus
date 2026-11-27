@@ -12,6 +12,7 @@ from __future__ import annotations
 import asyncio
 import json
 import re
+import socket
 import subprocess
 import sys
 import time
@@ -363,3 +364,70 @@ def test_the_cli_runs_the_nats_transport_with_a_summary():
     report = json.loads(out.stdout[:out.stdout.rindex("\ntarget")])
     assert report["target"] == "bus-nats"
     assert table[1].split()[:4] == ["bus-nats", "none", "3", "0"]
+
+
+@pytest.mark.bus
+async def test_a_restart_never_moves_to_another_port():
+    """#218: the port race is retried on the first start only. Once the server has
+    listened, a restart whose port is taken must fail instead of moving, since the
+    proxy and the admin point at the old port."""
+    if natsrig.server_binary() is None:
+        pytest.skip("no nats-server: set CB_NATS_SERVER to run the NATS transport live")
+    server = natsrig.NatsServer([])
+    try:
+        await server.start()
+        port = server.port
+        server.kill()
+        with socket.socket() as holder:
+            holder.setsockopt(socket.SOL_SOCKET, socket.SO_REUSEADDR, 1)
+            holder.bind(("127.0.0.1", port))
+            holder.listen(1)
+            with pytest.raises(RuntimeError):
+                await server.start()
+        assert server.port == port and server._ever_started
+    finally:
+        await server.stop()
+
+
+def test_the_error_tail_masks_a_secret_however_it_is_written():
+    """#218: a key after `token:`, `token =`, in JSON or bare never reaches the log."""
+    tail = natsrig._nats_tail([
+        "fallback: token: abc123", "seed = XYZ", 'props {"password": "pw"}',
+        "a bare token", "no secret here",
+    ])
+    joined = "\n".join(tail)
+    for secret in ("abc123", "XYZ", "pw"):
+        assert secret not in joined, joined
+    assert "no secret here" in joined
+
+
+async def test_the_port_retry_is_the_first_starts_alone(tmp_path, monkeypatch):
+    """#218: before the first successful start a taken port is retried on another
+    one; after it (a restart) the port stays, since the proxy and the admin point
+    at it — the start fails instead of moving."""
+    server = natsrig.NatsServer([], workdir=tmp_path, binary="/bin/true")
+
+    class Dead:
+        returncode = 1
+
+        def poll(self) -> int:
+            return 1
+
+    popen = []
+    monkeypatch.setattr(natsrig.subprocess, "Popen", lambda *a, **k: popen.append(Dead()) or popen[-1])
+
+    async def not_listening() -> bool:
+        return False
+
+    monkeypatch.setattr(server, "_listening", not_listening)
+    first = server.port
+    with pytest.raises(RuntimeError):
+        await server.start()
+    assert len(popen) == 2 and server.port != first  # one retry, on a fresh port
+
+    server._ever_started = True
+    popen.clear()
+    kept = server.port
+    with pytest.raises(RuntimeError):
+        await server.start()
+    assert len(popen) == 1 and server.port == kept  # a restart never moves

@@ -239,6 +239,8 @@ async def coord_run(transport: str = "nats", stops: int = 3, sessions: int = 3,
                 run.unknown = list(stub.unknown)
                 run.notes.append(f"the stub did not know {len(stub.unknown)} call(s): "
                                  f"{stub.unknown[:5]}")
+            if relay is not None:
+                run.relay = relay.counters()
             if relay is not None and relay.failed:
                 # Why the reconcile failed (RT-6.34's hook), so a run that measured
                 # no take-over says more than "exit 1" (review round 3, C).

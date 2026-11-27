@@ -56,7 +56,7 @@ from typing import Any
 
 from . import proc
 from .bus import MCP, REPO, BusProcess, McpError, _arrivals, _open_inbox
-from .proxy import BYTE_KINDS, NATS_FAULTS, ByteProxy
+from .proxy import BYTE_KINDS, NATS_FAULTS, ByteProxy, ReconcileFailure
 from .runner import Run
 
 #: The home every session of a run shares: the stub's only channel.
@@ -243,15 +243,21 @@ class NatsServer:
         self.dir = Path(tempfile.mkdtemp(prefix="bus-testrig-nats-")) if workdir is None else workdir
         self.port = _free_port()
         self.admin_password = secrets.token_hex(8)
+        # The server names itself, so a start tells its own INFO from a foreign
+        # listener that took the probed port (#218).
+        self.name = f"bus-testrig-{secrets.token_hex(4)}"
         self.conf = self.dir / "nats.conf"
         self._users = users = [f'{{user: {ADMIN}, password: "{self.admin_password}"}}']
         users += [user_entry(a.public_key, a.name) for a in agents]
         self._write_conf()
         self.proc: subprocess.Popen[bytes] | None = None
         self.restarts = 0
+        #: set by the first start that listened; a restart keeps the port its clients
+        #: hold, so the port race is retried on the first start only (#218)
+        self._ever_started = False
 
     def _write_conf(self) -> None:
-        self.conf.write_text(f'port: {self.port}\nhost: 127.0.0.1\n'
+        self.conf.write_text(f'port: {self.port}\nhost: 127.0.0.1\nserver_name: {self.name}\n'
                              f'jetstream {{ store_dir: "{self.dir / "js"}" }}\n'
                              f'accounts {{ BUS {{ jetstream: enabled\n users: [{", ".join(self._users)}] }} }}\n')
 
@@ -269,6 +275,25 @@ class NatsServer:
     def pid(self) -> int | None:
         return self.proc.pid if self.proc is not None and self.proc.poll() is None else None
 
+    async def _listening(self) -> bool:
+        """Whether this server listens: its INFO names it. A foreign listener that
+        took the probed port answers too, which must not pass as a start (#218)."""
+        try:
+            reader, writer = await asyncio.open_connection("127.0.0.1", self.port)
+        except OSError:
+            return False
+        try:
+            line = await asyncio.wait_for(reader.readline(), 1.0)
+        except (TimeoutError, ConnectionError):
+            return False
+        finally:
+            writer.close()
+        try:
+            info = json.loads(line)
+        except ValueError:
+            return False
+        return isinstance(info, dict) and info.get("server_name") == self.name
+
     async def start(self) -> None:
         for attempt in (0, 1):
             self.proc = subprocess.Popen([self.binary, "-c", str(self.conf)],
@@ -277,15 +302,15 @@ class NatsServer:
             while time.monotonic() < deadline:
                 if self.proc.poll() is not None:
                     break
-                with contextlib.suppress(OSError):
-                    _, writer = await asyncio.open_connection("127.0.0.1", self.port)
-                    writer.close()
+                if await self._listening():
+                    self._ever_started = True
                     return
                 await asyncio.sleep(0.05)
-            if self.proc.poll() is not None and attempt == 0 and self.restarts == 0:
+            if self.proc.poll() is not None and attempt == 0 and not self._ever_started:
                 # The probe bound the port, closed it, and another process took it
-                # before this start (#218): one retry on a fresh port, first start
-                # only, since a restart keeps the port its clients hold.
+                # before this start (#218): one retry on a fresh port, and only
+                # before the first successful start, since a restart keeps the
+                # port its clients hold.
                 self._rebind()
                 continue
             if self.proc.poll() is not None:
@@ -407,23 +432,29 @@ class Admin:
             await self.api(f"$JS.API.CONSUMER.CREATE.{stream}.{name}",
                            {"stream_name": stream, "config": cfg})
 
-    async def on_connect(self, connect: bytes) -> None:
+    async def on_connect(self, connect: bytes) -> str | None:
         """The auth callout's part: a client's CONNECT, read by the byte proxy before it
         reaches the server. Its `nkey` names the agent, its `auth_token` is the bus's
         hello (natsbus.build_hello) with `since`; the consumers are reconciled from it
-        before the server sees the CONNECT, as the callout does before it answers."""
+        before the server sees the CONNECT, as the callout does before it answers.
+        Returns the agent whose consumers were reconciled; a failure names it, so the
+        proxy keeps its verdict per agent (#218)."""
         try:
             fields = json.loads(connect)
             hello = json.loads(fields.get("auth_token") or "{}")
         except (ValueError, TypeError):
-            return
+            return None
         agent = self.names.get(str(fields.get("nkey") or ""))
         if agent is None or not isinstance(hello, dict):
-            return
+            return None
         since = {str(k): int(v) for k, v in (hello.get("since") or {}).items()
                  if isinstance(v, int)}
         self.logins += 1
-        await self.consumers(agent, [str(hello.get("home") or HOME)], since)
+        try:
+            await self.consumers(agent, [str(hello.get("home") or HOME)], since)
+        except Exception as exc:  # noqa: BLE001 — the proxy aborts this connection
+            raise ReconcileFailure(agent, f"{type(exc).__name__}: {exc}") from exc
+        return agent
 
     async def wait_heard(self, names: list[str], timeout: float) -> list[str]:
         """Wait until each agent's presence was heard; returns the ones that were not."""
@@ -667,7 +698,8 @@ async def nats_bus_run(count: int = 10, fault: str | None = None, *, fault_sec: 
         return run
 
 
-_SECRETISH = re.compile(r"(seed|token|password)\S*[\s:=]+\S+", re.IGNORECASE)
+# A value after `token:`, `token =` or a JSON key, and the bare word as before (#218).
+_SECRETISH = re.compile(r"(seed|token|password)(?:\"?\s*[:=]\s*\"?[^\s,}]+|\S*)", re.IGNORECASE)
 
 
 def _nats_tail(lines: list[str]) -> list[str]:

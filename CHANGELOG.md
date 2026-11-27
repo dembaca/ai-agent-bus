@@ -46,12 +46,14 @@ before 0.5.0 are described in the git history.
   ADR-014's phase-1/4 rig). The NATS restart test asserts `lost_seqs`, so a
   failed send is told from a lost post. A failed consumer reconcile aborts that
   one CONNECT, and the next connection retries it as the login service lets a
-  client retry a refused login: a run is untrustworthy only when its last
-  connection still had no consumers, and cured CONNECTs are counted and
-  printed. A coordinator run copies the reconcile reason into its notes. The
-  first start retries once on a fresh port if another process took the probed
-  one (a restart keeps its port, the clients hold it); the tail masking covers a
-  value after `token:` or `token =`; the README says how far a PR-sized cut run
+  client retry a refused login: the verdict is kept per agent, and a run is
+  untrustworthy only when an agent's last connection still had no consumers;
+  cured CONNECTs are counted and printed, and a coordinator run copies them
+  into its notes and report. The first start retries once on a fresh port if
+  another process took the probed one, reading the server's INFO so a foreign
+  listener is not taken for it (a restart keeps its port, the clients hold it);
+  the tail masking covers a value after `token:`, `token =` and a JSON key, as
+  well as the bare word; the README says how far a PR-sized cut run
   reaches and what a SIGKILLed rig leaves behind. The nightly `full-nats` job
   puts its tables into the run's step summary and uploads the output as the
   `full-nats-results` artifact, and the nats-server fetch is one composite

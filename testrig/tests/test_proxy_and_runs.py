@@ -17,7 +17,7 @@ import pytest
 import websockets
 
 from bus_testrig import cli, measurands, proc
-from bus_testrig.proxy import ByteProxy, ConnState, FaultRelay, FrameProxy, ProxyFault
+from bus_testrig.proxy import ByteProxy, ConnState, FaultRelay, FrameProxy, ProxyFault, ReconcileFailure
 from bus_testrig.runner import Run, _pct, echo_run
 
 
@@ -573,6 +573,52 @@ async def test_a_later_connection_that_reconciles_heals_the_proxy():
     assert proxy.hook_errors == 1
     assert proxy.failed == ""
     assert proxy.counters()["failed"] == 0
+
+
+async def test_a_reconcile_failure_is_kept_per_agent():
+    """#218: one agent's failed reconcile does not fail another's; each agent's
+    last connection decides, and a failure that agent's retry cured is gone."""
+    async def upstream(reader: asyncio.StreamReader, writer: asyncio.StreamWriter) -> None:
+        try:
+            while await reader.read(4096):
+                pass
+        except ConnectionError:
+            pass
+        finally:
+            writer.close()
+
+    server = await asyncio.start_server(upstream, "127.0.0.1", 0)
+    port = server.sockets[0].getsockname()[1]
+    broken = {"a"}
+
+    async def hook(line: bytes) -> str:
+        who = json.loads(line)["nkey"]
+        if who in broken:
+            raise ReconcileFailure(who, "JetStream is not ready")
+        return who
+
+    async def connect(proxy: ByteProxy, who: str) -> None:
+        _, writer = await asyncio.open_connection("127.0.0.1", proxy.port)
+        writer.write(b'CONNECT {"nkey":"' + who.encode() + b'"}\r\n')
+        await writer.drain()
+        writer.close()
+        await asyncio.sleep(0.05)
+
+    try:
+        async with ByteProxy("127.0.0.1", port, on_connect=hook) as proxy:
+            await connect(proxy, "a")  # a fails
+            broken.clear()
+            await connect(proxy, "a")  # a's retry reconciles
+            broken.add("b")
+            await connect(proxy, "b")  # b fails, a's verdict stays gone
+            assert proxy.failed_agents == ["b"]
+            assert proxy.hook_errors == 2
+            assert proxy.counters()["failed"] == 1
+            broken.clear()
+            await connect(proxy, "b")
+            assert proxy.failed_agents == [] and proxy.counters()["failed"] == 0
+    finally:
+        server.close()
 
 
 # --- the run's trust and its report (review M1/M2) ------------------------------------

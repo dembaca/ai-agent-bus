@@ -130,21 +130,28 @@ jobs:
       - name: sync the bus
         run: uv sync --locked --directory ../mcp
       - name: delivery, 100 messages per fault
+        # The table goes to the run's summary and the artifact even when the run
+        # fails (that run's numbers are what one needs), then the step exits with
+        # the run's own status.
         run: |
-          set -euo pipefail
+          set -uo pipefail
           mkdir -p results
+          rc=0
           uv run --locked bus-testrig bus-run --transport nats --fault all --count 100 --summary \
-            | tee results/delivery.txt
+            | tee results/delivery.txt || rc=$?
           { echo; echo '## Delivery, 100 messages per fault'; echo '```'; cat results/delivery.txt; echo '```'; } \
             >> "$GITHUB_STEP_SUMMARY"
+          exit "$rc"
       - name: 50 hard stops of the coordinator
         run: |
-          set -euo pipefail
+          set -uo pipefail
           mkdir -p results
+          rc=0
           uv run --locked bus-testrig coord-run --transport nats --stops 50 --sessions 3 --summary \
-            | tee results/coord.txt
+            | tee results/coord.txt || rc=$?
           { echo; echo '## 50 hard stops of the coordinator'; echo '```'; cat results/coord.txt; echo '```'; } \
             >> "$GITHUB_STEP_SUMMARY"
+          exit "$rc"
       - name: the night's numbers
         # The findings of a nightly run are read from the run page, not a log
         # nobody opens (review of #209, point 8): the tables in the step summary,

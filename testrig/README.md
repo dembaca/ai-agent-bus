@@ -244,6 +244,28 @@ The faults on NATS are windows, opened half way through the sends for
 | `stall` | each chunk from the server held `--stall-sec` |
 | `halfopen` | both directions stop being read, and are read again at the window's end |
 
+A PR-sized cut run (`--count 10`, the default 50 ms apart) has sent all its
+posts within about half a second, inside the 2 s window: it measures the window,
+not what comes after it. The nightly run (100 posts, 5 s) outlasts the window and
+measures the posts after it.
+
+A CONNECT whose consumer reconcile fails is aborted before the server sees it,
+and the next connection of that agent retries the reconcile, as the login
+service lets a client retry a refused login (#218); the failure is kept per
+agent, so one agent's early attempt against a restarting server fails only that
+connection. A run whose agent still had no consumers at its last connection
+exits 1, and aborted CONNECTs a later one cured are counted and printed.
+
+Isolation: each run gets its own 0700 temporary directory, its own JetStream
+store and an ephemeral port, and the host's `CB_*`/`MM_*` are stripped. A rig
+killed with SIGKILL leaves its nats-server and session processes behind (they
+are no process group of the rig's own), but they hold no shared port or store,
+so the next run is unaffected; find them with `pkill -f bus-testrig-nats-`. If
+another process takes the probed port before the first start, the server starts
+again on a fresh one; a restart keeps its port, since the clients hold it, and
+the start checks the server's INFO so a foreign listener on that port is never
+taken for it.
+
 A send that fails under the fault is not counted as sent, and the run goes on
 (`notes` counts them). Under `restart`, `hang`, `cut` and `blackhole` the run
 has to show the sender's recovery: after the window it keeps posting until one

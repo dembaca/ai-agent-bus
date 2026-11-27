@@ -262,6 +262,15 @@ class FaultRelay:
             state.posted_held = False
 
 
+class ReconcileFailure(Exception):
+    """The CONNECT hook (the login service's reconcile) failed for one agent."""
+
+    def __init__(self, agent: str, why: str) -> None:
+        super().__init__(why)
+        self.agent = agent
+        self.why = why
+
+
 def _abort_of(target: Any) -> Abort:
     transport = getattr(target, "transport", None)
     return transport.abort if transport is not None else (lambda: None)
@@ -626,17 +635,19 @@ class ByteProxy:
     """
 
     def __init__(self, upstream_host: str, upstream_port: int, *, stall_sec: float = 0.5,
-                 on_connect: Callable[[bytes], Awaitable[None]] | None = None) -> None:
+                 on_connect: Callable[[bytes], Awaitable[str | None]] | None = None) -> None:
         self.upstream = (upstream_host, upstream_port)
         #: called with a client's NATS CONNECT payload before it is passed on: the
         #: login service's part (its auth callout reconciles the consumers first)
         self.on_connect = on_connect
         self.hook_errors = 0
-        #: set when the last CONNECT hook (the login service's reconcile) failed:
-        #: that connection is aborted and the next one retries, as the login
-        #: service lets a client retry a refused login; since #218 a single
-        #: failure no longer refuses every later one. Cleared by a hook that works
-        self.failed = ""
+        #: agent name -> why its last CONNECT hook (the login service's reconcile)
+        #: failed: that connection is aborted and the next one of the agent retries,
+        #: as the login service lets a client retry a refused login (#218). An
+        #: agent's entry goes when a later connection of that agent has its
+        #: consumers; one agent's early failure never fails another's, nor the run
+        #: when every agent reconciled in the end
+        self.failures: dict[str, str] = {}
         self.stall_sec = stall_sec
         self.kind: str | None = None  # the fault whose window is open, if any
         self.connections = 0
@@ -653,12 +664,24 @@ class ByteProxy:
     def url(self) -> str:
         return f"nats://127.0.0.1:{self.port}"
 
-    def counters(self) -> dict[str, int]:
+    @property
+    def failed_agents(self) -> list[str]:
+        """The agents whose last CONNECT had no consumers."""
+        return sorted(self.failures)
+
+    @property
+    def failed(self) -> str:
+        """The last reconcile failure of any agent (empty: every agent's last
+        connection had its consumers)."""
+        return next(reversed(self.failures.values()), "") if self.failures else ""
+
+    def counters(self) -> dict[str, Any]:
         return {"connections": self.connections, "bytes_up": self.bytes_up,
                 "bytes_down": self.bytes_down, "discarded": self.discarded,
                 "aborted": self.aborted, "refused": self.refused,
                 "hook_errors": self.hook_errors,
-                "failed": 1 if self.failed else 0}
+                "failed": 1 if self.failures else 0,
+                "failed_agents": sorted(self.failures)}
 
     async def __aenter__(self) -> ByteProxy:
         self._server = await asyncio.start_server(self._handle, "127.0.0.1", 0)
@@ -750,13 +773,20 @@ class ByteProxy:
                     line = pending.partition(b"\r\n")[0]
                     if line.startswith(b"CONNECT ") and self.on_connect is not None:
                         try:
-                            await self.on_connect(line[len(b"CONNECT "):])
-                        except Exception as exc:  # noqa: BLE001 — the rig counts and aborts
+                            agent = await self.on_connect(line[len(b"CONNECT "):])
+                        except ReconcileFailure as exc:
                             self.hook_errors += 1
-                            self.failed = f"consumer reconcile failed: {type(exc).__name__}: {exc}"[:300]
+                            self.failures[exc.agent] = f"consumer reconcile failed: {exc.why}"[:300]
                             pipe.abort()
                             return
-                        self.failed = ""  # this connection has its consumers (#218)
+                        except Exception as exc:  # noqa: BLE001 — the rig counts and aborts
+                            self.hook_errors += 1
+                            self.failures[""] = f"consumer reconcile failed: {type(exc).__name__}: {exc}"[:300]
+                            pipe.abort()
+                            return
+                        # This connection has its consumers (#218); other agents keep
+                        # their own verdict.
+                        self.failures.pop(agent or "", None)
                     greeted, chunk, pending = True, pending, b""
                 if down:
                     self.bytes_down += len(chunk)
