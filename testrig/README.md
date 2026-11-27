@@ -239,8 +239,13 @@ The faults on NATS are windows, opened half way through the sends for
 | `halfopen` | both directions stop being read, and are read again at the window's end |
 
 A send that fails under the fault is not counted as sent, and the run goes on
-(`notes` counts them). `--summary` prints a table after the JSON: per fault the
-p50, p95 and maximum wait, loss and duplicates.
+(`notes` counts them). Under `restart`, `hang`, `cut` and `blackhole` the run
+has to show the sender's recovery: after the window it keeps posting until one
+send succeeds or 60 s pass, so such a run can send up to ~120 posts beyond
+`--count`; a run that never gets one exits 1 (the session did not come back, so
+the numbers measure nothing). Under `kill-client` the recovery is the
+receiver's: an arrival after the resume. `--summary` prints a table after the
+JSON: per fault the p50, p95 and maximum wait, loss and duplicates.
 
 `coord-run` starts `--sessions` servers in one home (default 3), waits for the
 crown, SIGKILLs the holder's process group and waits for a survivor's crown log

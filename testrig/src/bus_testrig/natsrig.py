@@ -522,9 +522,11 @@ async def nats_bus_run(count: int = 10, fault: str | None = None, *, fault_sec: 
                     for seq in _arrivals(events, seq_of, seq_of_text):
                         run.arrive(seq)
                         last_arrival = time.monotonic()
-                        if window is not None and window.done():
-                            # A post after the fault's window: the receiving side
-                            # came back (kill-client's receiver, a cut's line).
+                        if fault == "kill-client" and window is not None and window.done():
+                            # Only kill-client's recovery is an arrival: its receiver
+                            # came back. Under hang and blackhole a post sent during
+                            # the window can arrive late without the sender being
+                            # back, so there the recovery send proves it instead.
                             run.recovered = True
                     if sent_done is not None and window is not None and not window.done():
                         continue  # never end while the fault's window is open
