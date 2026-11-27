@@ -358,6 +358,7 @@ async def relay_watch(host: Host, started: float) -> None:
 
 async def _relay_dm(client: ChatPort, started: float) -> None:
     """Plain text to the responsible human: bot, harness, what to check."""
+    from .ids import _ID
     from .owners import responsible_human
 
     who = responsible_human()
@@ -366,7 +367,8 @@ async def _relay_dm(client: ChatPort, started: float) -> None:
             log.info("no relay: no responsible human to tell")
             return
         trusted = await client.trusted_humans()
-        uid = next((i for i, n in trusted.items() if n and n.lower() == who.lower()), None)
+        # a Mattermost account only: a person over NATS (hu:<anchor>, RT-6.42) has no DM
+        uid = next((i for i, n in trusted.items() if n and n.lower() == who.lower() and _ID.fullmatch(i)), None)
         uid = uid or await client.human_id(who)
         if not uid:
             log.info("no relay: the responsible human %s is not found", who)

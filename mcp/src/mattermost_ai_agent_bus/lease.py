@@ -947,7 +947,9 @@ async def _linked_owned(client: ChatPort, source: NatsSource, rows: list[dict[st
     out: dict[str, str] = {}
     for bot_id, name in source.linked(rows).items():
         owner = await owners.read(client, str(bot_id))
-        if owner is not None and bool(owner.owner) and owner.owner == source.owner_of(name):
+        # display(): the owner's name also when the circle is by anchor (plan B piece 4, where
+        # the bot's owner is the linked name's attested one); otherwise the owner itself
+        if owner is not None and bool(owner.owner) and owner.display() == source.owner_of(name):
             out[str(bot_id)] = name
     return out
 

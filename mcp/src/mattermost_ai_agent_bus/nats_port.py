@@ -201,6 +201,8 @@ class BusLike(Protocol):
 
     def approver(self, anchor: str) -> bool: ...
 
+    def bound_accounts(self) -> dict[str, str]: ...
+
     def link_bot(self, bot_id: str, username: str = "") -> None: ...
 
     def bot_of(self, agent: str) -> str: ...
@@ -440,6 +442,7 @@ class NatsPort:
         self._names: AbstractSet[str] | None = None  # this session's trusted humans, read by prime (RT-6.38)
         self._notice_recent: dict[tuple[str, str, str], float] = {}  # (kind, id, verdict) -> monotonic
         self._ambiguous: set[str] = set()  # link tags that fit more than one fresh name (RT-6.37)
+        self._own_missing = False  # plan B piece 4: the missing own attestation was logged
         # People over NATS (RT-6.42)
         self._keys = _Keys()
         self._person_names: dict[str, str] = {}  # person id -> the name the bridge last showed
@@ -648,7 +651,9 @@ class NatsPort:
                 log.info("login notice: no responsible human to tell")
                 return
             trusted = await self.trusted_humans()
-            uid = next((i for i, n in trusted.items() if n and n.lower() == who.lower()), None)
+            # a Mattermost account only: a person over NATS (hu:<anchor>) has no DM
+            uid = next((i for i, n in trusted.items()
+                        if n and n.lower() == who.lower() and _ID.fullmatch(i)), None)
             uid = uid or await self.human_id(who)
             if not uid:
                 log.info("login notice: %s is not found in the chat", who)
@@ -945,7 +950,10 @@ class NatsPort:
         or came already (RT-6.42): MergedEvents drops it."""
         if await self._copy_event(event):
             return True
-        return await self._person_on_mattermost(event)
+        if await self._person_on_mattermost(event):
+            return True
+        self._judge_on_mattermost(event)  # plan B piece 4
+        return False
 
     async def _copy_event(self, event: ChatEvent) -> bool:
         if not self._bridge_bot and not any(self._bot_prefix(h) for h in self._homes):
@@ -1537,7 +1545,10 @@ class NatsPort:
     async def trusted_humans(self) -> dict[str, str]:
         """The adapter's, and a person over NATS by each anchor of this session's own fresh
         attestation (RT-6.41), under the name it was attested with (RT-6.42 step 9). UNBOUND
-        is no anchor: never one of them."""
+        is no anchor: never one of them. With plan B piece 4 on, the login service's alone
+        (_attested_humans): no Mattermost id from the host, no lookup."""
+        if self._piece4():
+            return self._attested_humans()
         out = dict(await self.inner.trusted_humans())
         bus = self._live()
         att = bus.attestation_of(bus.name) if bus is not None else None
@@ -1547,7 +1558,10 @@ class NatsPort:
 
     async def may_approve(self, user_id: str) -> bool | None:
         """A person over NATS approves only with a fresh approver record (RT-6.42 step 9);
-        None for everyone else (the adapter's rule)."""
+        None for everyone else (the adapter's rule). With plan B piece 4 on, a Mattermost
+        account approves alike, by the anchor its record names (_account_approves)."""
+        if self._piece4() and not is_person(user_id):
+            return self._account_approves(user_id)
         if not is_person(user_id):
             return await self.inner.may_approve(user_id)
         bus = self._live()
@@ -1688,6 +1702,8 @@ class NatsPort:
         # None, which is "not readable" (also foreign, ADR-016, but logged as an outage).
         if is_person(user_id):
             return ""  # a person, no agent (RT-6.42)
+        if self._piece4():
+            return await self._owner4(user_id)
         if not is_nats_user(user_id):
             return await self.inner.agent_owner(user_id)
         if self._bus is None or self._fatal is not None:
@@ -1714,8 +1730,10 @@ class NatsPort:
                               att.owner_name, frozenset(n for _, n in att.trusted))
 
     def _records_on(self) -> bool:
+        """The login service writes records; with plan B piece 4 on always: then no owner is
+        ever compared by name (_owner4, the crown's claimants)."""
         bus = self._bus if self._fatal is None else None
-        return bus is not None and bus.records_on()
+        return self._piece4() or (bus is not None and bus.records_on())
 
     def _own_anchors(self) -> frozenset[str] | None:
         bus = self._bus if self._fatal is None else None
@@ -1723,19 +1741,162 @@ class NatsPort:
         return frozenset(a for a, _ in att.trusted) if att is not None else None
 
     async def attested_circle(self, user_id: str) -> AttestedCircle | None:
+        if self._piece4():
+            return await self._circle4(user_id)
         return self._circle(user_id) if is_nats_user(user_id) else None
 
     async def own_anchors(self) -> frozenset[str] | None:
         return self._own_anchors()
 
+    # --- plan B piece 4: trusted humans and owners from the login service (RT-6.41 step 6) ------
+    def _piece4(self) -> bool:
+        """Whether this home takes every check of a trusted human and every agent's owner from
+        the login service (plan B piece 4): `planb.on(4, home)`. A switch that cannot be read
+        counts as off: the old path, the Mattermost ids and the bots' descriptions."""
+        try:
+            return bool(self._s.home) and bool(planb.on(4, self._s.home))
+        except Exception as exc:  # noqa: BLE001 — in doubt off: the old path
+            log.info("nats: the trust switch was not read (%s): the old path", type(exc).__name__)
+            return False
+
+    @property
+    def trusted_source(self) -> str:
+        """Where the trusted humans come from (bus_info, RT-6.8): with piece 4 on, the login
+        service's attestation of this session; else the adapter's."""
+        if not self._piece4():
+            return str(getattr(self.inner, "trusted_source", ""))
+        bus = self._live()
+        if bus is not None and bus.attestation_of(bus.name) is not None:
+            return "the login service's attestation of this session (plan B piece 4)"
+        return "none yet: no fresh attestation of this session from the login service (plan B piece 4)"
+
+    def _own_attestation(self) -> Attestation | None:
+        """This session's own fresh attestation (RT-6.41), None without one; with piece 4 on,
+        its absence is logged once, and its return."""
+        bus = self._live()
+        att = bus.attestation_of(bus.name) if bus is not None else None
+        if att is None and not self._own_missing:
+            self._own_missing = True
+            log.warning("plan B piece 4: no fresh attestation of this session from the login service: "
+                        "nobody counts as a trusted human and every other agent as foreign until it comes")
+        elif att is not None and self._own_missing:
+            self._own_missing = False
+            log.info("plan B piece 4: the login service's attestation of this session is there again")
+        return att
+
+    def _attested_humans(self) -> dict[str, str]:
+        """Piece 4: this session's trusted humans, {id: name}, by the anchors of its own fresh
+        attestation alone: first each Mattermost account the login service's record binds to
+        one of them (RT-6.42 step 3; a stale record too, as the bridge reads it), then each
+        anchor as a person over NATS (hu:<anchor>), under the name it was attested with. {}
+        without a fresh attestation: nobody (fail closed). Nothing from the host's ids, no
+        lookup with the bot token."""
+        att = self._own_attestation()
+        bus = self._live()
+        if att is None or bus is None:
+            return {}
+        names = dict(att.trusted)
+        out = {account: names[anchor] for account, anchor in sorted(bus.bound_accounts().items())
+               if anchor in names}
+        for anchor, name in att.trusted:
+            out.setdefault(person_id(anchor), name)
+        return out
+
+    def _account_anchor(self, user_id: str) -> str:
+        """Piece 4: the anchor of one of this session's trusted humans that the login service's
+        record binds the Mattermost account `user_id` to; '' for every other account."""
+        att = self._own_attestation()
+        bus = self._live()
+        if att is None or bus is None:
+            return ""
+        anchor = bus.bound_accounts().get(user_id, "")
+        return anchor if anchor and any(a == anchor for a, _ in att.trusted) else ""
+
+    def _account_approves(self, user_id: str) -> bool:
+        """Piece 4: a Mattermost account approves only as a person over NATS does (RT-6.42
+        step 9): bound to a trusted anchor, and a fresh record of that anchor says `approver`."""
+        anchor = self._account_anchor(user_id)
+        bus = self._live()
+        return bool(anchor) and bus is not None and bus.approver(anchor)
+
+    def _judge_on_mattermost(self, event: ChatEvent) -> None:
+        """Piece 4: a trusted human's post or reaction that comes on Mattermost (a DM, a channel
+        without the bridge's fresh signal) is judged as it comes, as one over NATS is (_judge):
+        without a fresh approver record the reads mark it not_approver."""
+        if not self._piece4():
+            return
+        if isinstance(event, PostEvent):
+            post = event.post
+            if post.from_webhook or post.type or event.edited:
+                return
+            anchor = self._account_anchor(post.user_id)
+            if anchor:
+                self._judge(("post", post.id), anchor)
+        elif isinstance(event, ReactionEvent):
+            r = event.reaction
+            anchor = self._account_anchor(r.user_id)
+            if anchor:
+                self._judge(("reaction", r.post_id, r.emoji_name, anchor), anchor)
+
+    async def _owner4(self, user_id: str) -> str | None:
+        """Piece 4: an agent's owner from the login service alone, never a bot's description
+        (RT-6.24) nor a bare presence subject: the owner's name in the circle _circle4 finds.
+        '' (no owner: foreign) without one; None (not readable: in doubt the owner split stays
+        on, owners.mine) only for this session's own bot, so that a missing own attestation
+        never turns the split off."""
+        circle = await self._circle4(user_id)
+        if circle is not None:
+            return circle.owner_name or circle.owner_anchor
+        return None if user_id == self.inner.bot_id else ""
+
+    async def _circle4(self, user_id: str) -> AttestedCircle | None:
+        """Piece 4: the circle of the agent behind `user_id` from the login service's
+        attestation (RT-6.41): a NATS sender's own; a Mattermost bot's that of the NATS name
+        linked to it (_linked_name); a person's none."""
+        if is_person(user_id):
+            return None
+        if is_nats_user(user_id):
+            return self._circle(user_id)
+        name = await self._linked_name(user_id)
+        return self._circle(name) if name else None
+
+    async def _linked_name(self, user_id: str) -> str:
+        """Piece 4: the fresh NATS name linked to the Mattermost bot `user_id`, '' for none.
+        This session's own bot is its own name. Any other bot only by the one test of a link
+        (RT-6.37 step 6, `linked`): its status shows the name's tag and the name's presence
+        names that very bot. When no fresh presence names the bot, nothing is read on
+        Mattermost; else the bot's status is (the link is piece 2's to move)."""
+        bus = self._live()
+        if bus is None or not user_id:
+            return ""
+        if user_id == self.inner.bot_id:
+            return bus.name
+        if not any(bus.bot_of(n) == user_id and bus.presence_of(n) != "offline"
+                   for n in bus.presence_snapshot()):
+            return ""
+        try:
+            username = (await self.inner.usernames({user_id})).get(user_id, "")
+            user = (await self.inner.bots_named({username})).get(username.lower()) if username else None
+        except Exception as exc:  # noqa: BLE001 — not read: no link, so the bot has no owner
+            log.info("nats: the status of bot %s was not read (%s): no link", user_id, type(exc).__name__)
+            return ""
+        if user is None or user.id != user_id:
+            return ""
+        text = str((user.custom_status or {}).get("text") or "")
+        return self.linked([{"id": user_id, "text": text}]).get(user_id, "")
+
     async def bot_description(self, user_id: str) -> str | None:
-        return None if is_nats_user(user_id) or is_person(user_id) else await self.inner.bot_description(user_id)
+        # plan B piece 4: never a bot's description, nor the registrar's attestation of it
+        return (None if is_nats_user(user_id) or is_person(user_id) or self._piece4()
+                else await self.inner.bot_description(user_id))
 
     async def agent_attestation(self, user_id: str) -> str | None:
-        return None if is_nats_user(user_id) or is_person(user_id) else await self.inner.agent_attestation(user_id)
+        return (None if is_nats_user(user_id) or is_person(user_id) or self._piece4()
+                else await self.inner.agent_attestation(user_id))
 
     async def attestation_record(self, bot_id: str) -> str | None:
-        return None if is_nats_user(bot_id) or is_person(bot_id) else await self.inner.attestation_record(bot_id)
+        return (None if is_nats_user(bot_id) or is_person(bot_id) or self._piece4()
+                else await self.inner.attestation_record(bot_id))
 
     async def presences(self, user_ids: list[str]) -> dict[str, str]:
         """Mattermost's for its accounts; for a NATS sender its NATS presence (RT-6.37):
@@ -1790,7 +1951,8 @@ class NatsPort:
         """Read this session's trusted humans, which the crown's standing rule needs:
         in doubt (ADR-016) the ones last read or configured, never "none" because a
         lookup failed (owners.names_in_doubt); only none configured lets every one stand."""
-        self._names, _ = await owners.names_in_doubt(self.inner)
+        # plan B piece 4: the names of this session's own attestation, no Mattermost lookup
+        self._names, _ = await owners.names_in_doubt(self if self._piece4() else self.inner)
 
     def crown_view(self, home: str) -> lease.CrownView | None:
         """The crown of the NATS home `home` as the bus says it (RT-6.38 step 2): the claimants

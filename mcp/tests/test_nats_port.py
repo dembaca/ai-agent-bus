@@ -136,6 +136,9 @@ class FakeNats:
     def approver(self, anchor: str) -> bool:
         return anchor in self.approvers
 
+    def bound_accounts(self) -> dict[str, str]:
+        return {a: x for a, x in self.accounts.items() if x != "-"}
+
     async def start(self) -> None: ...
 
     async def stop(self) -> None:

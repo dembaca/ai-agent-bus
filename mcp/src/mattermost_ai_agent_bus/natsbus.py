@@ -2150,6 +2150,15 @@ class NatsBus:
         rec = got[2] if got is not None else None
         return rec.anchor if rec is not None and rec.anchor else UNBOUND
 
+    def bound_accounts(self) -> dict[str, str]:
+        """Mattermost account -> anchor, for each account a record of the login service that
+        decodes binds to a person (RT-6.42 step 3), a stale one too: a stale record still names
+        the person, only its `approver` needs it fresh (as the bridge reads it). A record erased
+        by a message that does not decode, and `anchor` null, bind none. Plan B piece 4 judges a
+        Mattermost account's trust by it."""
+        return {account: rec.anchor for account, (_, _, rec) in self._accounts.items()
+                if rec is not None and rec.anchor}
+
     def approver(self, anchor: str) -> bool:
         """A fresh record (exp after the server's now) binds an account to `anchor` and says
         `approver` (RT-6.42 step 9, ADR-016 step 2 point 8); never for UNBOUND."""

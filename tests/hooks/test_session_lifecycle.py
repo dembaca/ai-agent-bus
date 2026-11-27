@@ -66,6 +66,27 @@ def test_trusted_humans_come_from_the_host_list_only(mm, run):
     assert "'agent-x' not found" in r.stderr and "'ghost' not found" in r.stderr
     assert not any(p == "/api/v4/users/me" and "test-secret" in json.dumps(b)
                    for _, p, b in mm.writes)
+    assert any(p.startswith("/api/v4/users/username/") for p in mm.reads)  # outside a NATS home
+
+
+def test_a_home_over_nats_looks_no_trusted_human_up(mm, run):
+    """RT-6.41 step 6, plan B piece 4: in a home over NATS the hook makes no user lookup and
+    hands over no Mattermost id; the names go on as listed and the MCP server checks them by
+    its switch (the login service's attestation when on, else its own lookup). A home that
+    CB_NATS_HOMES does not name keeps the lookup (the test above)."""
+    r = run(START, MM_REG_SECRET="test-secret", MM_PROJECT_CHANNEL="proj-x",
+            MM_TRUSTED_HUMANS="dembaca, @kollegin, ghost", CB_NATS_HOMES="other, ~Proj-X", **HOST)
+    assert r.code == 0, r.stderr
+    out = json.loads(r.stdout)
+    assert out["env"]["MM_TRUSTED_HUMANS"] == "dembaca,kollegin,ghost"
+    assert out["env"]["MM_TRUSTED_HUMAN_USER_IDS"] == ""
+    assert not any(p.startswith("/api/v4/users/username/") for p in mm.reads)
+    assert "the MCP server checks the trusted humans" in r.stderr and "not found" not in r.stderr
+    r = run(START, MM_REG_SECRET="test-secret", MM_PROJECT_CHANNEL="proj-x",
+            MM_TRUSTED_HUMANS="dembaca", MM_NATS_HOMES="proj-xy proj", **HOST)
+    from conftest import OWNER
+    # names that only resemble the home are no NATS home: the lookup and its ids, as before
+    assert json.loads(r.stdout)["env"]["MM_TRUSTED_HUMAN_USER_IDS"] == OWNER
 
 
 def test_no_list_no_trusted_human(mm, run):

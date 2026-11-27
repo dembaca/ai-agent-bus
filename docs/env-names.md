@@ -293,7 +293,7 @@ each component's pull request renames its own reads.
 | `MM_LOGIN_ISSUER` | `CB_LOGIN_ISSUER` | no | `compose.py`, `login.py` | |
 | `MM_LOGIN_NKEY` | `CB_LOGIN_NKEY` | no | `login.py` | |
 | `MM_NATS_CA_FILE` | `CB_NATS_CA_FILE` | no | `compose.py`, `natsbus.py` | |
-| `MM_NATS_HOMES` | `CB_NATS_HOMES` | no | `compose.py`, `hosted.py`, `lease.py`, `nats_port.py`, `server.py` | |
+| `MM_NATS_HOMES` | `CB_NATS_HOMES` | no | `compose.py`, `hosted.py`, `lease.py`, `nats_port.py`, `server.py`; `bin/mm-agent-lib.sh` | |
 | `MM_NATS_MEMORY` | `CB_NATS_MEMORY` | no | `compose.py` | |
 | `MM_NATS_URL` | `CB_NATS_URL` | no | `compose.py` | |
 | `MM_OWNER` | `CB_OWNER` | no | `attest.py`, `client.py`, `compose.py`, `owners.py`, `permission.py`; `bin/mm-agent-lib.sh` | human names; the NATS side reads them too |

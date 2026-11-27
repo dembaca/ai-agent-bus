@@ -270,6 +270,10 @@ the registrar's shared secret and says nothing about who you are
 export CB_TRUSTED_HUMANS=you,teammate   # next to MM_REG_SECRET_GOPASS
 ```
 
+In a home over NATS (`CB_NATS_HOMES`) the hook hands the names on without looking
+them up and without ids; the MCP server checks them
+([arc42 §6.41 step 6](../docs/arc42/06-runtime-view.md#641-the-login-service-vouches-for-an-agents-owner-and-trust-list)).
+
 `CB_RESPONSIBLE_HUMAN` names who answers for the agent (default: the first trusted
 human) and `CB_AGENT_KIND=autonomous` marks an agent nobody runs interactively. Both,
 with the trusted list, go along with the registration. A registrar that knows the

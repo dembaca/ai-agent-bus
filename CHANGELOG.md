@@ -20,6 +20,28 @@ before 0.5.0 are described in the git history.
 
 ### Added
 
+- **Plan B piece 4: every check of a trusted human and of an agent's owner
+  from the login service** (#244, ADR-014 phase 5, RT-6.41 step 6). With the
+  piece's switch on for a home over NATS, the MCP server's trusted humans
+  are the anchors of the session's own fresh attestation: each as a person
+  over NATS and each Mattermost account the login service's account record
+  binds to one of them, under the attested name. The host's
+  `CB_MM_TRUSTED_HUMAN_USER_IDS` and a lookup with the bot token count for
+  nothing, so `from_trusted_human`, the gate, mandates, signed records'
+  `set_by`, ask answers and the stall check all decide by anchor; a
+  Mattermost account approves only with a fresh approver record, as a
+  person over NATS does, and a trusted human's post or reaction that comes
+  on Mattermost is marked `not_approver` without one. An agent's owner and
+  trusted list come from the record of its NATS name, a Mattermost bot's
+  from the NATS name linked to it, never from a bot's description or the
+  registrar's attestation; a bot without such a link has no owner (foreign).
+  Fail closed: without a fresh own attestation nobody is trusted and every
+  other agent is foreign, while the owner split stays on. In a home that
+  `CB_NATS_HOMES` names, the corral start hook no longer looks the trusted
+  humans up and hands over no ids, also with the switch off: the MCP server
+  then looks them up itself, with the same result. With the switch off
+  (the default) nothing else changes.
+
 - **Plan B's switch per piece and channel** (#244, ADR-014 phase 5, RT-6.39
   step 5). A channel in the channel directory now holds `planb`: the plan B
   pieces switched on in it, 1 to 13, each once, none by default (piece 14,
