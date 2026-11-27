@@ -3,7 +3,15 @@
 Every version bump in `.claude-plugin/plugin.json` gets an entry here. Versions
 before 0.5.0 are described in the git history.
 
-## Unreleased
+## 0.104.0
+
+Needs: login service jetstream user with stream update on stats and publish on its import subjects, before its upgrade.
+Needs: bridge signing key in MM_REGISTRAR_KEYS on every host, beside the registrar key.
+Needs: for the bridge commands, its records bucket and its rights on it, as in the example config.
+
+The old setting names of 0.103.0 still work in this release, with their
+deprecation warning; they go in a later release, the removal release
+([docs/env-names.md](docs/env-names.md#the-reading-rule)).
 
 ### Added
 
@@ -135,8 +143,9 @@ before 0.5.0 are described in the git history.
   value per key with a revision-checked write: the bridge runs **one replica**
   with a `Recreate` rollout, and a second writer is refused rather than merged.
   The release that carries this pins the bridge's key on every host beside the
-  registrar's:
-  Needs: bridge signing key pinned on the hosts beside the registrar key.
+  registrar's (`MM_REGISTRAR_KEYS`, see this release's `Needs:` lines), and the
+  operator makes the `BUS_BRIDGE_RECORDS` bucket with the bridge user's rights
+  on it (`services/auth/nats-server.example.conf`) before the commands start.
 - **The console names every agent** (#199, ADR-015 point 6). A card whose
   stated username another card states too (an agent that moved to a new
   host key keeps its old presence for 24 h) showed only its bus id
