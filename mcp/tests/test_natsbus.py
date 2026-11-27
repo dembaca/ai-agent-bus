@@ -2479,18 +2479,18 @@ async def test_one_server_tells_a_notice() -> None:
     with the smallest name, this one included - the same answer on every server."""
     bus = NatsBus(_settings(), FakeLogin(), "alice", lambda _e: None)
     await _presence(bus, bus.name, 1, T0, owner="alice")
-    await _presence(bus, "agent-0aaa", 2, T0, owner="alice")
-    await _presence(bus, "agent-zzz", 3, T0, owner="alice")
-    assert bus.notice_teller("agent-zzz") == "agent-zzz"  # live: its own server
-    assert bus.notice_teller("agent-missing") == "agent-0aaa"  # not live: the smallest live name
+    await _presence(bus, "0aaa", 2, T0, owner="alice")
+    await _presence(bus, "zzz", 3, T0, owner="alice")
+    assert bus.notice_teller("zzz") == "zzz"  # live: its own server
+    assert bus.notice_teller("missing") == "0aaa"  # not live: the smallest live name
     await _presence(bus, bus.name, 4, T0 + 100, owner="alice")  # only this one stays live
-    await _presence(bus, "agent-0aaa", 5, T0 + 100, status="bye", owner="alice")
-    await _presence(bus, "agent-zzz", 6, T0 + 100, status="bye", owner="alice")
-    assert bus.notice_teller("agent-0aaa") == bus.name
+    await _presence(bus, "0aaa", 5, T0 + 100, status="bye", owner="alice")
+    await _presence(bus, "zzz", 6, T0 + 100, status="bye", owner="alice")
+    assert bus.notice_teller("0aaa") == bus.name
     assert bus.notice_teller("") == bus.name
     # Another owner's agent, even with the smallest name, is no teller.
-    await _presence(bus, "agent-000", 7, T0 + 101, owner="bob")
-    assert bus.notice_teller("agent-missing") == bus.name
+    await _presence(bus, "000", 7, T0 + 101, owner="bob")
+    assert bus.notice_teller("missing") == bus.name
 
 
 def test_a_told_notice_survives_a_restart(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
