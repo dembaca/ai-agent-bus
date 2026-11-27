@@ -178,6 +178,7 @@ func (s *Sweeper) sweep(ctx context.Context, name string, a core.Agent, keep tim
 	}
 	// no backoff: an agent that comes back gets its bot enabled at once
 	e.failed = time.Time{}
+	b.announce(name, nil, "") // the record says the bot is gone, and the minute's round skips it
 	b.Log.Info("agentbots: swept", "bot", a.Username, "idle", idle.Round(time.Minute).String())
 	return true
 }

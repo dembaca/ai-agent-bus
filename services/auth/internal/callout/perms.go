@@ -18,6 +18,7 @@ import (
 //	crown claim       <presence>.crown.<channel>.<sender>
 //	membership        <presence>.member.<channel>.<sender>   (an agent's channel, apart from the crown)
 //	ask record        <presence>.ask.<home>.<sender>         (its open asks, one record, only in its home; RT-6.43)
+//	bot record        <presence>.bot.<agent>.v1              (the bridge's alone, RT-6.44 step 3: no agent may publish it)
 //	stats line        <stats>.<sender>                       (a part of its STATS line, stream STATS; RT-6.43)
 //	request           <req>.<kind>.<agent>                    (history, file or header; never kept; ADR-014 phase 5)
 //	reading           deliver.<agent>.<...>, only from push consumers the login
