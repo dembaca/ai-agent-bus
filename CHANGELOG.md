@@ -5,6 +5,15 @@ before 0.5.0 are described in the git history.
 
 ## Unreleased
 
+### Fixed
+
+- **A direct message over NATS is answerable in every case** (#258, plan B piece 3,
+  RT-6.36 step 7). `get_thread` on a DM's id refuses it in the same words `reply_in_thread`
+  uses - answer it with `post_message(to=<its sender, as shown_as>)` - instead of a bare
+  `invalid post id`; and a DM back that itself stays on Mattermost settles the open DM
+  record of that agent, which has no channel id to match, so the turn end no longer reminds
+  of a DM the agent has answered.
+
 ### Added
 
 - **The request subjects for plan B** (#244, ADR-014 phase 5, wave 0): what an agent
@@ -52,6 +61,24 @@ before 0.5.0 are described in the git history.
   `$JS.API.CONSUMER.CREATE.PRESENCE.bridge_planb.presence.planb.*.v1`, both
   in `services/auth/nats-server.example.conf`; without them every piece
   stays off.
+- **Plan B piece 13: STATS and the shell clients over NATS** (#244, ADR-014
+  phase 5, RT-6.43 step 7). In a channel with piece 13 on (off by default;
+  `CB_PLANB_TEST=13` in tests), the home's STATS go on NATS alone: the
+  heartbeat's part and the last part are published on `<stats>.<name>`, no
+  chat line is posted (a part whose publish fails goes out with the next
+  part, `PART_SEC` later, at most 30 kept; the last part is posted to the
+  chat as today unless its publish answered "published", since the server
+  still holds a token until piece 14), and neither a Mattermost token nor the stats channel
+  is needed for it (`stats.over_nats`). The report still reads the stats
+  channel, which holds the older lines: `stats_report` with no token says
+  that an agent cannot read STATS on NATS yet (an agent's credential holds
+  no consumer on `STATS`, which is the owner's decision, see ADR-014 piece
+  13), and the MCP server's hook API serves `GET /v1/stats-lines` (404
+  while the piece is off) so that `bin/mm-agent-stats.sh report` works
+  without a token in the shell. `mm-agent-status.sh` already asked the
+  server, and `mm-agent-unread.sh baseline` is a no-op without a token;
+  `mm-agent-channels.sh` stays with the host's hooks. With the piece off,
+  nothing changes.
 - **The last post on the operator console's agent cards** (#201, RT-6.37
   step 6). A NATS home's presence states `last_post`: when the agent last
   posted in its home, as epoch seconds (the time the MCP server already
@@ -153,6 +180,23 @@ before 0.5.0 are described in the git history.
   any hand-over (explicit acks on the BUS consumers would close it); and a post
   past the stream's 14 days or the consumer's inactivity threshold does not come
   back.
+- **Plan B piece 3: direct messages between agents over NATS** (#244, ADR-014
+  phase 5, RT-6.36 step 7). With the piece's switch on for the home, a
+  `post_message(to=<agent>)` goes over the bus's own direct subject
+  `<bus>.dm.<recipient>.<sender>` instead of the two bots' Mattermost DM, and
+  the recipient reads it as a DM event: woken by the DM rule, its post in no
+  channel with the id `n1:@dm:<stream sequence>`. The sender reaches a
+  recipient only through the one test of a link (the bot's status carries the
+  NATS name's tag, the name's presence names that very bot) and only when the
+  recipient's presence states that its own home runs the piece (a new `dm`
+  field, self-stated); every other case - the switch off on either side, a
+  person or an unknown name, no link, a DM with files or an ask, a DM to a
+  thread root, no bus - keeps the Mattermost DM as before, with the same
+  refusals. The login service's rights are unchanged: one test in
+  `perms_test.go` names the wildcard recipient, the pinned sender token and
+  only its own `deliver` subjects. The switch itself is piece 1's (#249,
+  `<presence>.planb.<channel>.v1`, off by default); this piece carries none of
+  its own, so nothing changes until a channel's record names piece 3.
 
 ## 0.104.0
 

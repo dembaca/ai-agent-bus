@@ -141,6 +141,17 @@ def answered(uid: str, channel_id: str, post: Post) -> None:
         _clear(uid, post.root_id or post.id, channel_id)
 
 
+def answered_dm(uid: str, agent: str) -> None:
+    """A direct message to `agent` went out over NATS: its open DMs from that agent are
+    answered. A NATS DM has no thread and no Mattermost channel, so no post id clears them."""
+    if not (uid and agent):
+        return
+    rows = read(uid)
+    left = [r for r in rows if not (r.dm and r.author == agent)]
+    if len(left) != len(rows):
+        _write(uid, left)
+
+
 def resolved(uid: str, ask_id: str) -> None:
     """The agent resolved its ask: what waited in the ask's thread is settled."""
     if uid and ask_id:

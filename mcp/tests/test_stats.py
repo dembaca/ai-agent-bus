@@ -1249,3 +1249,151 @@ def test_a_usage_line_counts_in_the_split_not_in_the_bus_share():
     assert row["tok"]["sessions"] == 1 and row["tok"]["req"] == SPLIT_TOK["req"]
     only = stats.report(lines[:1])[0]
     assert only["tok"] is None and only["split"]["types"]["overhead"]["read"] == 4000
+
+
+class _NatsHome:
+    """A client over NATS with no Mattermost token (plan B piece 13)."""
+    token = ""
+    session = None
+    work_channel_name = "home"
+
+    async def join_channel(self, name):  # pragma: no cover - must not be called
+        raise AssertionError("no chat read or post over NATS")
+
+
+def _piece_13(monkeypatch, on=True):
+    from mattermost_ai_agent_bus import planb
+    monkeypatch.setattr(planb, "_source", None)
+    if on:
+        monkeypatch.setenv("CB_PLANB_TEST", "13")
+    else:
+        monkeypatch.delenv("CB_PLANB_TEST", raising=False)
+    sent = []
+
+    async def publish(body):
+        sent.append(json.loads(body))
+
+    monkeypatch.setattr(stats, "nats_publish", publish)
+    monkeypatch.setattr(stats, "_unpublished", [])
+    monkeypatch.setattr(stats, "final_nats", None)
+    return sent
+
+
+async def test_rt_6_43_piece_13_a_part_goes_on_nats_alone(monkeypatch):
+    """RT-6.43 step 7, plan B piece 13: no token, no channel join, no chat line; the part is
+    published on NATS by the heartbeat's tick."""
+    sent = _piece_13(monkeypatch)
+    now = int(time.time())
+    _write_events({"k": "turn", "t": now - stats.PART_SEC - 5, "by": "human"})
+    monkeypatch.setattr(stats, "_source", lambda: ("0.104.0", None))
+    assert 0 < await stats.tick(_NatsHome(), UID) <= stats.PART_SEC
+    assert [p["v"] for p in sent] == ["0.104.0"]
+
+
+async def test_rt_6_43_piece_13_off_a_client_without_token_does_nothing(monkeypatch):
+    """Piece 13 off: today's path, a client without a token cuts nothing."""
+    sent = _piece_13(monkeypatch, on=False)
+    now = int(time.time())
+    _write_events({"k": "turn", "t": now - stats.PART_SEC - 5, "by": "human"})
+    monkeypatch.setattr(stats, "_source", lambda: ("0.104.0", None))
+    assert await stats.tick(_NatsHome(), UID) is None
+    assert sent == []
+
+
+def test_rt_6_43_piece_13_the_last_part_is_not_posted_and_the_files_go(monkeypatch, state):
+    """Plan B piece 13: post_sync posts nothing to the chat (the last part went on NATS) and
+    removes the counter file as before."""
+    _piece_13(monkeypatch)
+    monkeypatch.setattr(stats, "final_nats", "published")
+    stats.record("turn")
+    data = stats.summary("0.104.0")
+    assert stats.post_sync(_NatsHome(), data) == "on NATS, not posted"
+    assert not (state / "mm-agent-bus" / f"stats-{UID}.jsonl").exists()
+
+
+def test_rt_6_43_piece_13_older_unposted_lines_are_counted_when_dropped(monkeypatch):
+    """Plan B piece 13: lines whose post failed earlier are dropped with the last part on NATS,
+    logged and counted in the answer."""
+    _piece_13(monkeypatch)
+    monkeypatch.setattr(stats, "final_nats", "published")
+    monkeypatch.setattr(stats, "_unposted", ["STATS {}", "STATS {}"])
+    stats.record("turn")
+    assert "2 earlier unposted" in stats.post_sync(_NatsHome(), stats.summary("0.104.0"))
+
+
+@pytest.mark.parametrize("answer", [None, "kept"])
+def test_rt_6_43_piece_13_a_last_part_not_on_nats_is_posted_to_the_chat(monkeypatch, answer):
+    """Plan B piece 13: until the token goes (piece 14) the chat line is the durable copy when
+    the last part's NATS publish did not answer "published"; without a token it says so."""
+    _piece_13(monkeypatch)
+    monkeypatch.setattr(stats, "final_nats", answer)
+    stats.record("turn")
+    data = stats.summary("0.104.0")
+    assert "no token: not posted" in stats.post_sync(_NatsHome(), data)
+    stats.record("turn")
+    posted = []
+
+    class WithToken(_NatsHome):
+        token = "bot"
+
+        def post_by_name_sync(self, name, msg, join=None):
+            posted.append(msg)
+            return True
+
+    assert stats.post_sync(WithToken(), stats.summary("0.104.0")) == "posted"
+    assert posted and posted[0].startswith("STATS ")
+
+
+async def test_rt_6_43_piece_13_tick_logs_by_the_answer(monkeypatch, caplog):
+    """Plan B piece 13: a part whose publish failed is not logged as published."""
+    import logging
+    _piece_13(monkeypatch)
+    now = int(time.time())
+    _write_events({"k": "turn", "t": now - stats.PART_SEC - 5, "by": "human"})
+    monkeypatch.setattr(stats, "_source", lambda: ("0.104.0", None))
+
+    async def down(body):
+        raise OSError("down")
+
+    monkeypatch.setattr(stats, "nats_publish", down)
+    with caplog.at_level(logging.INFO):
+        await stats.tick(_NatsHome(), UID)
+    assert "not on NATS yet (kept)" in caplog.text and "published on NATS\n" not in caplog.text.replace("not published on NATS", "")
+
+
+def test_rt_6_43_piece_13_stats_report_says_why_it_cannot_read(monkeypatch):
+    """Plan B piece 13: the reading over NATS is not built; with no token the tool says so."""
+    _piece_13(monkeypatch)
+
+    class NoToken(_NatsHome):
+        async def posts_after(self, *a, **k):
+            raise OSError("no token")
+
+    async def go():
+        monkeypatch.setattr(server, "_get_client", lambda: NoToken())
+        return await server.stats_report()
+
+    out = asyncio.run(go())
+    assert "cannot read ~agents-stats" in out and "cannot read them there yet" in out
+
+
+async def test_rt_6_43_piece_13_stats_lines_are_bounded_by_limit(monkeypatch):
+    """RT-6.43 step 7: GET /v1/stats-lines keeps the newest ?limit lines (default and most 500);
+    a bad limit is refused, and the route is 404 with the piece off."""
+    from mattermost_ai_agent_bus import hookapi
+    _piece_13(monkeypatch)
+
+    async def many(client, name, max_pages=10):
+        return [{"v": str(i)} for i in range(700)]
+
+    monkeypatch.setattr(stats, "read_lines", many)
+    code, out = await hookapi.stats_lines(_NatsHome(), {}, {})
+    assert code == 200 and len(out["lines"]) == 500 and out["lines"][-1] == {"v": "699"}
+    code, out = await hookapi.stats_lines(_NatsHome(), {"limit": "2"}, {})
+    assert [x["v"] for x in out["lines"]] == ["698", "699"]
+    code, out = await hookapi.stats_lines(_NatsHome(), {"limit": "9999"}, {})
+    assert len(out["lines"]) == 500
+    with pytest.raises(hookapi.BadRequest):
+        await hookapi.stats_lines(_NatsHome(), {"limit": "x"}, {})
+    _piece_13(monkeypatch, on=False)
+    assert (await hookapi.stats_lines(_NatsHome(), {}, {}))[0] == 404

@@ -16,6 +16,16 @@ _NAME = re.compile(r"[A-Za-z0-9][A-Za-z0-9._-]{0,63}")
 # sequence>. Never 26 characters of [a-z0-9], so no Mattermost id looks like it.
 NATS_POST = re.compile(r"n1:(?P<channel>[a-z0-9][a-z0-9_-]{0,63}):(?P<seq>[1-9][0-9]{0,17})")
 
+# A direct message between agents (plan B piece 3, RT-6.36 step 7): it has no channel, so
+# its id says so (`n1:@dm:<stream sequence>`) and no channel's post can carry it.
+NATS_DM = re.compile(r"n1:@dm:(?P<seq>[1-9][0-9]{0,17})")
+
+
+def dm_seq(value: object) -> int | None:
+    """The stream sequence of a direct message's id, None for any other id."""
+    m = NATS_DM.fullmatch(value) if isinstance(value, str) else None
+    return int(m["seq"]) if m else None
+
 
 class InvalidId(ValueError):
     """An id or name that must not go into a Mattermost API path (#81)."""
