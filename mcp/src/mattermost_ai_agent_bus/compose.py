@@ -243,7 +243,9 @@ async def start_nats(client: object) -> None:
 def _keep_state_key(client: object, port: NatsPort) -> None:
     """The bus has the session's NATS name: key the kept state by it and copy the files keyed
     by the bot id once (RT-6.2, plan B piece 2b), before the first read. Nothing with the
-    switch off. Never raises: the state stays keyed by the bot id."""
+    switch off. port.start returns once the bus has read plan B's switches (planb.known), or
+    after SWITCH_WAIT_SEC with them counted off, so the switch read here is the records'.
+    Never raises: the state stays keyed by the bot id."""
     from . import planb, session_file
 
     try:

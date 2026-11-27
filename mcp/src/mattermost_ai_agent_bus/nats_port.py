@@ -835,10 +835,6 @@ class NatsPort:
         RT-6.37 step 6)."""
         return any(planb.on(2, name) for name in self._homes)
 
-    def own_name(self) -> str:
-        """The session's own NATS name once the bus is built, else ''."""
-        return self._bus.name if self._bus is not None else ""
-
     def home_name(self) -> str:
         """The home that runs over NATS where plan B piece 2 is on (the first one), else ''."""
         return next((h for h in self._homes if planb.on(2, h)), "")
