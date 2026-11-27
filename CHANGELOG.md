@@ -7,6 +7,10 @@ before 0.5.0 are described in the git history.
 
 ### Fixed
 
+- **Plan B switches survive a presence replay** (#244, RT-6.39 step 5). A presence
+  consumer made anew (reconnect, credential) no longer drops the switch map at once: the old
+  records are read until the replay is complete, so the direct-message piece no longer states
+  `"dm": false` and later pieces no longer flap back to Mattermost meanwhile.
 - **A direct message over NATS is answerable in every case** (#258, plan B piece 3,
   RT-6.36 step 7). `get_thread` on a DM's id refuses it in the same words `reply_in_thread`
   uses - answer it with `post_message(to=<its sender, as shown_as>)` - instead of a bare
