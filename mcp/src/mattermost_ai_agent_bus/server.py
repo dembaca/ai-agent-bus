@@ -13,6 +13,7 @@ import signal
 import sys
 import threading
 import time
+from urllib.parse import urlsplit
 from collections.abc import AsyncIterator, Callable, Mapping
 from contextlib import asynccontextmanager
 from pathlib import Path
@@ -500,13 +501,63 @@ def _cause_text(cause: BaseException) -> str:
     cause at all, and only the host log named it. The text a tool raises can carry what
     a person pasted into it, so anything that looks like a token, a password or a long
     key is replaced by the type alone.
+
+    An `httpx.HTTPStatusError` is the exception: its own text carries the URL, so it was
+    hidden whole and a 403 from the registrar read like any other failure (#263). Its line
+    is built from the parts that are never a credential - the status and its reason, the
+    method, and the URL's scheme, host and path - while the query, the userinfo and the
+    body stay out (RT-6.11 step 1). A 403 from the registrar names the secret.
     """
-    text = " ".join(str(cause).split())
     name = type(cause).__name__
+    http = _http_cause(cause)
+    if http is not None:
+        return http
+    text = " ".join(str(cause).split())
     if _SECRETISH.search(text):
         return f"{name} (details hidden: the message may carry a credential)"
     body = f"{name}: {text}" if text else name
     return body[:CAUSE_MAX] + ("…" if len(body) > CAUSE_MAX else "")
+
+
+def _http_cause(cause: BaseException) -> str | None:
+    """The one-line cause of an `httpx.HTTPStatusError`, None for any other crash.
+
+    The server talks no HTTP (RT-6.11 step 1, #263, and the boundary test), so this is read
+    off the error's parts by name: the status and its reason, the method, and the URL's scheme,
+    host and path - never the query, the userinfo or the body. A 403 from the registrar says
+    what it means, since that is the registration secret."""
+    if type(cause).__name__ != "HTTPStatusError":
+        return None
+    request, response = getattr(cause, "request", None), getattr(cause, "response", None)
+    url, status = getattr(request, "url", None), getattr(response, "status_code", None)
+    method = getattr(request, "method", "")
+    scheme, host, path = (getattr(url, part, "") for part in ("scheme", "host", "path"))
+    if not (status and host):
+        return None
+    line = (f"{type(cause).__name__} {status} {getattr(response, 'reason_phrase', '')} "
+            f"({method} {scheme}://{host}{path})")
+    line = " ".join(line.split())
+    if status == 403 and _is_registrar(str(host), str(path), str(scheme)):
+        line += (" - the registration secret was refused: refresh MM_REG_SECRET or use an "
+                 "enrollment token")
+    return line[:CAUSE_MAX] + ("…" if len(line) > CAUSE_MAX else "")
+
+
+def _is_registrar(host: str, path: str, scheme: str) -> bool:
+    """Whether a URL is the registrar's (`MM_REGISTER_URL`, else `<chat>/register/v1/agents`):
+    a 403 there is the registration secret, so its hint is worth more than the status alone."""
+    if path.startswith("/register/"):
+        return True
+    given = config.env("MM_REGISTER_URL")
+    if not given:
+        return False
+    try:
+        reg = urlsplit(given)
+    except Exception:  # noqa: BLE001 — a malformed setting names nothing
+        return False
+    return bool(reg.hostname) and (reg.scheme, reg.hostname, reg.path) == (scheme, host, path)
+
+
 
 
 class _StrictServer(MCPServer):

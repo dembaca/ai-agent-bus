@@ -771,6 +771,35 @@ def test_a_cause_that_may_hold_a_credential_names_the_type_only():
         assert "details hidden" not in srv._cause_text(RuntimeError(text)), text
 
 
+def test_a_http_status_error_names_the_status_and_hides_the_query_and_body():
+    """RT-6.11 step 1, #263: the parts of an httpx error that are never a credential stay
+    readable - the status, the method, the URL's scheme, host and path - so a 403 from the
+    registrar reads as one; the query, the userinfo and the body stay out."""
+    import httpx
+
+    from mattermost_ai_agent_bus import server as srv
+
+    req = httpx.Request("POST", "https://chat.example.org/register/v1/agents?token=SECRETSECRET",
+                        headers={"Authorization": "Bearer SECRETSECRET"})
+    exc = httpx.HTTPStatusError("Client error '403 Forbidden' for url 'https://chat.example.org/register/v1/agents'",
+                                request=req, response=httpx.Response(403, request=req))
+    got = srv._cause_text(exc)
+    assert got.startswith("HTTPStatusError 403 Forbidden (POST https://chat.example.org/register/v1/agents)")
+    assert "SECRETSECRET" not in got and "token=" not in got and "?token" not in got
+    assert "registration secret was refused" in got and "MM_REG_SECRET" in got
+
+    # another host or path: no registrar hint, and userinfo and query stay out
+    other = httpx.Request("GET", "https://bot:hunter2@chat.example.org/api/v4/posts?k=v")
+    got = srv._cause_text(httpx.HTTPStatusError("x", request=other,
+                                                response=httpx.Response(404, request=other)))
+    assert got == "HTTPStatusError 404 Not Found (GET https://chat.example.org/api/v4/posts)"
+    assert "hunter2" not in got and "?k=v" not in got
+    # a 403 elsewhere is no registrar 403
+    got = srv._cause_text(httpx.HTTPStatusError("x", request=other,
+                                                response=httpx.Response(403, request=other)))
+    assert "registration secret" not in got
+
+
 def test_a_cause_is_one_bounded_line():
     from mattermost_ai_agent_bus import server as srv
 

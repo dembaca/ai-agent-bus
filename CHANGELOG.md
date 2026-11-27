@@ -7,6 +7,17 @@ before 0.5.0 are described in the git history.
 
 ### Fixed
 
+- **A tool's HTTP failure names its status** (#263, RT-6.11). An `httpx.HTTPStatusError`
+  was hidden whole, since its text carries the URL, so a failed `session_start` read as
+  `HTTPStatusError (details hidden…)` with no status, method or host, and a stale
+  registration secret could not be told from any other cause. The line is now built from
+  the parts that are never a credential - the status and its reason, the method, and the
+  URL's scheme, host and path - while the query, the userinfo and the body stay hidden;
+  a 403 from the registrar adds that the registration secret was refused and names
+  `MM_REG_SECRET` and an enrollment token.
+
+### Fixed
+
 - **A direct message over NATS is answerable in every case** (#258, plan B piece 3,
   RT-6.36 step 7). `get_thread` on a DM's id refuses it in the same words `reply_in_thread`
   uses - answer it with `post_message(to=<its sender, as shown_as>)` - instead of a bare
