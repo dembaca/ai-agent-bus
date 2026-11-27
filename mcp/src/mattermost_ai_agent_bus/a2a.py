@@ -122,7 +122,9 @@ ALL = "all"
 # the registrar's canonical order; here, beside the props, since one is named
 # after them. Calls and props describe the post itself (RT-6.31 step 6).
 DEBUG_CALLS, DEBUG_PROPS = "calls", "props"
-DEBUG_CATEGORIES = ("wake", "identity", "sig", "asks", DEBUG_CALLS, DEBUG_PROPS)
+# `crown` (#243) is no line of an event: it logs the NATS crown's view at each tick (RT-6.38 step 9).
+DEBUG_CROWN = "crown"
+DEBUG_CATEGORIES = ("wake", "identity", "sig", "asks", DEBUG_CALLS, DEBUG_PROPS, DEBUG_CROWN)
 
 # The first word after an optional 👑, emoji or markdown; upper case only, so
 # "No worries" is no NO. `PR #57` (or a PR link) is a RESULT.

@@ -53,3 +53,33 @@ func TestAnAdministratorSwitchesPlanBPiecesPerChannel(t *testing.T) {
 		t.Fatalf("stored %+v, %v", c, err)
 	}
 }
+
+// RT-6.40 step 4: an update without `chat_ids` (or with null) keeps the
+// channel's chat ids, as `authd dir planb` sends none; {} clears them.
+func TestAnUpdateWithoutChatIDsKeepsThem(t *testing.T) {
+	e := setup(t, Config{Burst: 100})
+	const path = "/v1/directory/channels/town"
+	const id = "abcdefghijklmnopqrstuvwxyz"
+	chatIDs := func(body string) map[string]string {
+		t.Helper()
+		var c directory.Channel
+		if err := json.Unmarshal([]byte(body), &c); err != nil {
+			t.Fatal(err)
+		}
+		return c.ChatIDs
+	}
+	code, body, h := e.do(t, "PUT", path, e.admin, `{"owner":"sub-carol","chat_ids":{"mattermost":"`+id+`"}}`, "If-None-Match", "*")
+	want(t, "create", code, 201, body)
+	for _, update := range []string{`{"owner":"sub-carol","planb":[1]}`, `{"owner":"sub-carol","chat_ids":null}`} {
+		code, body, h = e.do(t, "PUT", path, e.admin, update, "If-Match", h.Get("ETag"))
+		want(t, update, code, 200, body)
+		if got := chatIDs(body); got["mattermost"] != id {
+			t.Fatalf("%s dropped the chat ids: %v", update, got)
+		}
+	}
+	code, body, _ = e.do(t, "PUT", path, e.admin, `{"owner":"sub-carol","chat_ids":{}}`, "If-Match", h.Get("ETag"))
+	want(t, "clear", code, 200, body)
+	if c, _, _, err := e.store.Channel(ctx(t), "town"); err != nil || len(c.ChatIDs) != 0 {
+		t.Fatalf("{} kept %+v, %v", c.ChatIDs, err)
+	}
+}

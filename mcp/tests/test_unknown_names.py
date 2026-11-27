@@ -28,6 +28,30 @@ def test_known_names_and_other_prefixes_are_silent():
     assert config.unknown_names(env) == []
 
 
+def test_odd_names_are_counted_not_shown():
+    env = {"CB_BAD NAME\n": "x", "CB_lower": "x", "CB_\x1b[31mred": "x", "CB_QQQQQQQQ": "y"}
+    assert config.unknown_names(env) == ["unknown setting CB_QQQQQQQQ", "and 3 more unknown CB_ settings"]
+
+
+def test_a_name_over_64_characters_is_counted_not_shown():
+    env = {"CB_" + "X" * 62: "x", "CB_" + "X" * 61: "x"}  # 65 and 64 characters
+    assert config.unknown_names(env) == [f"unknown setting CB_{'X' * 61}", "and 1 more unknown CB_ settings"]
+
+
+def test_more_than_the_cap_say_how_many_more():
+    env = {f"CB_ZZZZ{i:02d}": "x" for i in range(14)}
+    out = config.unknown_names(env)
+    assert len(out) == config.UNKNOWN_CAP + 1
+    assert out[0] == "unknown setting CB_ZZZZ00"
+    assert out[-2] == "unknown setting CB_ZZZZ09"
+    assert out[-1] == "and 4 more unknown CB_ settings"
+
+
+def test_exactly_the_cap_has_no_more_line():
+    env = {f"CB_ZZZZ{i:02d}": "x" for i in range(config.UNKNOWN_CAP)}
+    assert not any(l.startswith("and ") for l in config.unknown_names(env))
+
+
 def test_values_never_appear():
     out = "".join(config.unknown_names({"CB_PROJECT_CHANNEL": "s3cr3t-value"}))
     assert "s3cr3t-value" not in out

@@ -7,6 +7,9 @@ before 0.5.0 are described in the git history.
 
 ### Fixed
 
+- **Unknown `CB_` name warnings are filtered and capped** (#269, RT-6.34). Only names of
+  the form `[A-Z0-9_]{1,64}` are shown, at most ten; the odd names and the rest are counted
+  in a last line, `and N more unknown CB_ settings`.
 - **A tool's HTTP failure names its status** (#263, RT-6.11). An `httpx.HTTPStatusError`
   was hidden whole, since its text carries the URL, so a failed `session_start` read as
   `HTTPStatusError (details hidden…)` with no status, method or host, and a stale
@@ -84,6 +87,15 @@ before 0.5.0 are described in the git history.
 
 ### Added
 
+- **The NATS crown says why `take` waits, and a `crown` debug category** (#243, RT-6.38, RT-6.31).
+  `coordinator("take")` in a home over NATS names the case instead of always "another agent
+  holds the crown": `pending: @<bot> holds the crown…`, `pending: a NATS agent without a linked
+  bot holds it (<NATS name>)…`, `no holder: nobody stands (<reason>)` or `no claim: this
+  session is not a member of the home yet`. The new debug category `crown` (`/agent-debug on
+  crown`; the bridge signs it from this release on, and an older MCP server refuses a debug
+  record that carries `crown` (`attest.py`), and `/agent-debug on full` now signs one, so update the hosts first) logs the view at each tick: claimants in order,
+  members, standing, holder and why nobody stands.
+
 - **Plan B piece 4: every check of a trusted human and of an agent's owner
   from the login service** (#244, ADR-014 phase 5, RT-6.41 step 6). With the
   piece's switch on for a home over NATS, the MCP server's trusted humans
@@ -150,7 +162,7 @@ before 0.5.0 are described in the git history.
   MCP server answers `planb.on(piece, channel)` from it (false without a
   record, outside a home over NATS or for a piece outside 1 to 13;
   `CB_PLANB_TEST` switches pieces on, only while pytest runs a test), the
-  bridge `presence.Switches`. No piece reads a switch yet. A record two
+  bridge `presence.Switches`. Each piece reads its own switch (their entries). A record two
   hours old by the stream's time counts as off, in the MCP server and in the
   bridge; the login service writes the records after the answer, and a
   failed write goes on with the next channel. The bridge makes its own
@@ -179,6 +191,29 @@ before 0.5.0 are described in the git history.
   server, and `mm-agent-unread.sh baseline` is a no-op without a token;
   `mm-agent-channels.sh` stays with the host's hooks. With the piece off,
   nothing changes.
+- **Plan B piece 1: channel ids and membership from the channel directory,
+  behind a switch that is off** (ADR-014 phase 5, RT-6.39 step 6). A channel
+  of the directory carries the chat's own id (`chat_ids`: the import writes
+  it for the channels it makes and fills it in for an existing channel
+  that has none, `PUT /v1/directory/channels/<name>` and `authd dir chat-id
+  <channel> <product> <id>` take it; a write accepts only the product
+  `mattermost` and an id of 26 characters a-z0-9). With each credential the login service publishes the
+  agent's channel record `<presence>.directory.<agent>.v1`: the channels the
+  credential grants and the Mattermost id the directory holds for each; the
+  agent's presence consumer filters on it. The session reads it
+  (`natsbus.decode_channel_record`), and with the new switch `planb.on(1,
+  channel)` on, `NatsPort.resolve` and the people's id map take the ids from
+  it, and the start makes no Mattermost call for channels, only after the
+  bus is up and has read its records (`planb.known`, waited for up to 20 s;
+  a switch not read by then counts as off). The switch is the channel's plan
+  B piece 1 (the switches entry above), off by default, so behaviour is as before.
+  Hosts' credential: the record is new; an older
+  login service writes none, so the switch must stay off until it runs this
+  version. The login service's NATS configuration needs the publish right
+  on `presence.directory.*.v1` for its JetStream user (the example
+  configuration has it): without it the record is not published, a warning
+  is logged, the login still succeeds, and a session with the switch on
+  fails closed. A record whose `exp` is past is ignored by the session.
 - **The last post on the operator console's agent cards** (#201, RT-6.37
   step 6). A NATS home's presence states `last_post`: when the agent last
   posted in its home, as epoch seconds (the time the MCP server already

@@ -228,6 +228,9 @@ func importAt(ctx context.Context, store *directory.Store, source Source, bindin
 			}
 			c := directory.Channel{Name: ch.Name, Owner: owner, Public: ch.Type == "O", Members: members,
 				Bindings: map[string]string{"mattermost": ch.Name}}
+			if directory.ValidChatID(ch.ID) { // one that is none is left out, never written
+				c.ChatIDs = map[string]string{"mattermost": ch.ID}
+			}
 			_, err := store.PutChannel(ctx, c, 0)
 			if err == nil {
 				rep.ChannelsCreated = append(rep.ChannelsCreated, ch.Name)
@@ -245,7 +248,7 @@ func importAt(ctx context.Context, store *directory.Store, source Source, bindin
 			}
 		}
 		beforeUnion(ch.Name)
-		added, err := unionMembers(ctx, store, cur, rev, members)
+		added, err := unionMembers(ctx, store, cur, rev, members, ch.ID)
 		if errors.Is(err, errTooBig) {
 			rep.ChannelsSkipped = append(rep.ChannelsSkipped, SkippedChannel{Name: ch.Name, Reason: tooMany})
 			continue
@@ -272,8 +275,10 @@ func importAt(ctx context.Context, store *directory.Store, source Source, bindin
 }
 
 // unionMembers adds the missing members to an existing channel, keeping
-// everything else; it returns how many were new.
-func unionMembers(ctx context.Context, store *directory.Store, cur directory.Channel, rev uint64, members []string) (int, error) {
+// everything else; it returns how many were new. A channel without the chat's
+// id gets chatID with the same write (an id already there stays, as an admin
+// may have set it): the backfill of channels made before `chat_ids` existed.
+func unionMembers(ctx context.Context, store *directory.Store, cur directory.Channel, rev uint64, members []string, chatID string) (int, error) {
 	for range 5 {
 		var add []string
 		for _, m := range members {
@@ -281,13 +286,21 @@ func unionMembers(ctx context.Context, store *directory.Store, cur directory.Cha
 				add = append(add, m)
 			}
 		}
-		if len(add) == 0 {
+		fill := directory.ValidChatID(chatID) && cur.ChatIDs["mattermost"] == ""
+		if len(add) == 0 && !fill {
 			return 0, nil
 		}
 		if len(cur.Members)+len(add) > directory.MaxMembers {
 			return 0, errTooBig
 		}
 		next := cur
+		if fill {
+			next.ChatIDs = maps.Clone(cur.ChatIDs)
+			if next.ChatIDs == nil {
+				next.ChatIDs = map[string]string{}
+			}
+			next.ChatIDs["mattermost"] = chatID
+		}
 		next.Members = append(slices.Clone(cur.Members), add...)
 		slices.Sort(next.Members)
 		_, err := store.PutChannel(ctx, next, rev)
