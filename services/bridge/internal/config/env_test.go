@@ -109,7 +109,7 @@ func TestTheDeprecationWarningComesOnce(t *testing.T) {
 }
 
 // In 0.103.0 a deployment that still sets the old names starts as before:
-// every one of the 19 is read, each with its warning.
+// every one of the 20 is read, each with its warning.
 func TestTheOldNamesStillWork(t *testing.T) {
 	var w warnings
 	c, err := Load(mapEnv(map[string]string{
@@ -118,7 +118,7 @@ func TestTheOldNamesStillWork(t *testing.T) {
 		"BRIDGE_MM_ALLOW_HTTP": "true", "BRIDGE_MM_TOKEN_FILE": "/run/token",
 		"BRIDGE_MM_TEAM": "ai-agents", "BRIDGE_HOMES": "a, b", "BRIDGE_PROPS_PREFIX": "abc_",
 		"BRIDGE_KV_BUCKET": "KV", "BRIDGE_SEEN_BUCKET": "SEEN", "BRIDGE_STREAM": "S",
-		"BRIDGE_BUS_PREFIX": "b2", "BRIDGE_DELIVER": "d.b", "BRIDGE_INBOX": "_INBOX_b",
+		"BRIDGE_BUS_PREFIX": "b2", "BRIDGE_REQ_PREFIX": "rq", "BRIDGE_DELIVER": "d.b", "BRIDGE_INBOX": "_INBOX_b",
 		"BRIDGE_LISTEN_ADDR": ":1", "BRIDGE_MM_ADMIN_TOKEN_FILE": "/run/admin",
 		"BRIDGE_BOT_PREFIX": "bb-", "BRIDGE_HIDE_BOT_DM": "false",
 	}, w.warn))
@@ -128,14 +128,14 @@ func TestTheOldNamesStillWork(t *testing.T) {
 	want := Config{NATSURL: "tls://nats.example:4222", SeedFile: "/run/seed", CAFile: "/run/ca",
 		MMURL: "http://chat.example", MMAllowHTTP: true, MMPlainHTTP: true, MMToken: "/run/token",
 		MMTeam: "ai-agents", Homes: []string{"a", "b"}, Prefix: "abc_", KVBucket: "KV", SeenBucket: "SEEN",
-		Listen: ":1", NATSStream: "S", BusPrefix: "b2", Deliver: "d.b", Inbox: "_INBOX_b",
+		Listen: ":1", NATSStream: "S", BusPrefix: "b2", ReqPrefix: "rq", Deliver: "d.b", Inbox: "_INBOX_b",
 		AdminToken: "/run/admin", BotPrefix: "bb-", HideBotDM: false,
 		RecordsBucket: "BUS_BRIDGE_RECORDS", BotKeep: 24 * time.Hour}
 	if !reflect.DeepEqual(c, want) {
 		t.Fatalf("got %+v\nwant %+v", c, want)
 	}
-	if len(w) != 19 {
-		t.Fatalf("%d warnings, want 19: %q", len(w), w)
+	if len(w) != 20 {
+		t.Fatalf("%d warnings, want 20: %q", len(w), w)
 	}
 	for _, n := range []string{"CB_BRIDGE_MM_BOT_PREFIX", "CB_BRIDGE_MM_HIDE_BOT_DM"} {
 		if !strings.Contains(strings.Join(w, "\n"), n) {
@@ -257,19 +257,19 @@ func TestTheCAFileSetting(t *testing.T) {
 	}
 }
 
-// The 19 renames and the one new name Load reads are exactly the rows of the
-// bridge's table in docs/env-names.md, old name to new name (a new name
-// without an old spelling has itself in both columns). Load reads each
-// setting's new name, then its old one if it has one; the recorded lookups
-// pair up.
+// The renames and the one setting without an old spelling that Load reads are
+// exactly the rows of the bridge's table in docs/env-names.md, old name to new
+// name (a new name without an old spelling has itself in both columns). Load
+// reads each setting's new name, then its old one if it has one; the recorded
+// lookups pair up.
 func TestTheRenamesAreTheDocsTable(t *testing.T) {
 	doc, err := os.ReadFile("../../../../docs/env-names.md")
 	if err != nil {
 		t.Fatal(err)
 	}
-	_, section, ok := strings.Cut(string(doc), "\n### The bridge (32)\n")
+	_, section, ok := strings.Cut(string(doc), "\n### The bridge (33)\n")
 	if !ok {
-		t.Fatal("docs/env-names.md has no section \"The bridge (20)\"")
+		t.Fatal("docs/env-names.md has no section \"The bridge (33)\"")
 	}
 	section, _, _ = strings.Cut(section, "\n### ")
 	row := regexp.MustCompile("(?m)^\\| `([A-Z0-9_]+)` \\| `(CB_[A-Z0-9_]+)` \\|")
@@ -277,8 +277,8 @@ func TestTheRenamesAreTheDocsTable(t *testing.T) {
 	for _, m := range row.FindAllStringSubmatch(section, -1) {
 		want[m[1]] = m[2]
 	}
-	if len(want) != 32 {
-		t.Fatalf("the doc's bridge table has %d rows, want 32: %v", len(want), want)
+	if len(want) != 33 {
+		t.Fatalf("the doc's bridge table has %d rows, want 33: %v", len(want), want)
 	}
 	var looked []string
 	if _, err := Load(NewEnv(func(n string) (string, bool) { looked = append(looked, n); return "", false }, nil)); err == nil {

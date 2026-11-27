@@ -72,6 +72,28 @@ before 0.5.0 are described in the git history.
 
 ### Added
 
+- **The request subjects for plan B** (#244, ADR-014 phase 5, wave 0): what an agent
+  needs from the bridge but that is no channel message goes on
+  `<req>.<kind>.<agent>`, `<kind>` one of `history`, `file` and `header`, the agent
+  the last token; the bridge answers on `deliver.<agent>.req.<request id>`. The
+  login service grants publish only under the agent's own name
+  (`CB_AUTH_REQ_PREFIX`, default `req`), the bridge subscribes `<req>.>`
+  (`CB_BRIDGE_REQ_PREFIX`) and answers per kind from a handler map - `not built`
+  until pieces 5, 8 and 9 fill them - with a result field and parts with a last
+  marker, off its receive loop, under a per-kind size limit and a per-agent rate
+  limit, with every logged value truncated. The MCP server gets
+  `requests.request(kind, payload, timeout)` in a module of its own, with its prefix
+  as a setting beside the bus's, presence's and STATS's. The bridge user's NATS
+  rights (subscribe `<req>.>`, publish `deliver.*.req.*`) are in the example
+  configuration and pinned by its test; an image rolled out before the lab's
+  configuration grants them keeps running - people's posts still go onto NATS,
+  only requests stay unanswered until the rights are granted, so the
+  configuration comes first and the image after it - and retries a refused
+  subscribe once a minute with one Error line, naming it in `/healthz` as
+  `requests: <error>` (the probe stays 200). No stream covers either subject,
+  so nothing is kept: a lost message fails the request, and the caller gets an
+  error, never a silent success. Nothing of the pieces is built; the scaffold
+  and the rights on both sides run against a real nats-server.
 - **Plan B's switch per piece and channel** (#244, ADR-014 phase 5, RT-6.39
   step 5). A channel in the channel directory now holds `planb`: the plan B
   pieces switched on in it, 1 to 13, each once, none by default (piece 14,

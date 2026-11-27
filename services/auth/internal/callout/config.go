@@ -3,6 +3,7 @@ package callout
 import (
 	"errors"
 	"fmt"
+	"strings"
 	"time"
 
 	"github.com/dembaca/ai-agent-bus/services/auth/internal/consumers"
@@ -15,6 +16,7 @@ const (
 	DefaultPrefix     = "bus"
 	DefaultPresence   = "presence"
 	DefaultStats      = consumers.DefaultStatsPrefix
+	DefaultReq        = "req" // request subjects, <req>.<kind>.<agent> (ADR-014 phase 5)
 	// DeliverPrefix starts the subjects push consumers deliver to; fixed,
 	// and neither of the two prefixes may take it.
 	DeliverPrefix = "deliver"
@@ -54,6 +56,9 @@ func (c Config) WithDefaults() Config {
 	if c.Subjects.Stats == "" {
 		c.Subjects.Stats = DefaultStats
 	}
+	if c.Subjects.Req == "" {
+		c.Subjects.Req = DefaultReq
+	}
 	if c.Timeout == 0 {
 		c.Timeout = DefaultTimeout
 	}
@@ -91,6 +96,9 @@ func (c Config) check() error {
 	if err := c.Subjects.checkStats(); err != nil {
 		return err
 	}
+	if err := c.Subjects.checkReq(); err != nil {
+		return err
+	}
 	if c.Timeout <= 0 || c.Timeout > 10*time.Second {
 		return fmt.Errorf("callout: timeout %s: must be above 0 and at most 10s", c.Timeout)
 	}
@@ -108,6 +116,24 @@ func (s Subjects) checkStats() error {
 		return fmt.Errorf("callout: stats prefix %q is the deliver prefix: an agent could publish onto deliver subjects", s.Stats)
 	case s.Stats == s.Prefix || s.Stats == s.Presence:
 		return fmt.Errorf("callout: stats prefix %q must differ from the subject and the presence prefix (they would overlap)", s.Stats)
+	}
+	return nil
+}
+
+// checkReq checks the request prefix (ADR-014 phase 5): a plain token, not the
+// deliver prefix, not the inbox prefix and none of the other prefixes: an agent's
+// request right on `deliver` would let it publish where the bridge answers, and one
+// overlapping a post subject would be a channel right.
+func (s Subjects) checkReq() error {
+	switch {
+	case s.Req == "" || !plain(s.Req):
+		return fmt.Errorf("callout: request prefix %q: letters, digits, - and _ only", s.Req)
+	case s.Req == DeliverPrefix:
+		return fmt.Errorf("callout: request prefix %q is the deliver prefix: an agent could publish onto deliver subjects", s.Req)
+	case strings.HasPrefix(s.Req, inboxPrefix) || strings.HasPrefix(s.Req, "$"):
+		return fmt.Errorf("callout: request prefix %q starts with the inbox prefix %q or $: an agent could publish onto replies or a system subject", s.Req, inboxPrefix)
+	case s.Req == s.Prefix || s.Req == s.Presence || s.Req == s.Stats:
+		return fmt.Errorf("callout: request prefix %q must differ from the other prefixes (they would overlap)", s.Req)
 	}
 	return nil
 }
