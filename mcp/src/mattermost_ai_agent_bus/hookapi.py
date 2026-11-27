@@ -1293,7 +1293,7 @@ async def login_link(client: ChatPort, query: Mapping[str, str], body: Mapping[s
     from . import login as login_mod
 
     running = login_mod.current()
-    line = running.pending_line() if running is not None and hasattr(running, "pending_line") else None
+    line = running.pending_line() if running is not None else None
     if line is None:
         return 200, {}
     link, code, expires_in = line

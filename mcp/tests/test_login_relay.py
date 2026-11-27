@@ -272,6 +272,25 @@ async def test_the_host_dms_only_its_own_link_with_a_strict_user_code(event):
         assert grant.verification_uri_complete == f"{ISSUER}/device?user_code=ABCD-EFGH"
 
 
+async def test_the_relayed_grant_serves_the_terminal_and_ends_with_its_approval():
+    """RT-6.34 step 4: the sandbox's terminal shows the host-built link once, and a
+    finished approval leaves no link behind."""
+    dm = Note()
+    relayed = _relayed(dm)
+    assert relayed.pending_line() is None
+    await relayed._on({"event": "waiting", "code": "ABCD-EFGH", "expires_in": 600})
+    await asyncio.sleep(0)
+    link, code, expires = relayed.pending_line()
+    assert link == f"{ISSUER}/device?user_code=ABCD-EFGH" and code == "ABCD-EFGH" and expires == 600
+    relayed.shown()
+    assert relayed.pending_line() is None
+    await relayed._on({"event": "waiting", "code": "WXYZ-1234"})
+    assert relayed.pending_line() is not None
+    await relayed._on({"event": "settled", "outcome": "approved"})
+    await asyncio.sleep(0)
+    assert relayed.pending() is None
+
+
 async def test_one_open_approval_at_a_time_and_one_per_cooldown_and_refusals_rate_limited():
     dm, clock = Note(), [1000.0]
     relayed = _relayed(dm, clock)

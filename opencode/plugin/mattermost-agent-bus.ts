@@ -988,7 +988,7 @@ export async function setup(ctx: Plugin.Context) {
       if (!(await send(id, text, "context", "AI agent bus: login approval"))) return
       await bus("POST", "/v1/login/shown", {})
     } catch {
-      // no server yet: the first turn's notice shows the same line
+      // no server yet: a later turn's end shows the same line
     }
   }
 

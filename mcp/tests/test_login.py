@@ -1393,3 +1393,19 @@ def test_a_foreign_link_or_a_bad_code_is_never_shown():
     assert lg.pending_line() is None
     lg._pending = _grant(verification_uri_complete="http://kc.example.test/realms/bus/x")
     assert lg.pending_line() is None  # plain http is not the issuer's
+
+
+async def test_the_pending_grant_is_served_while_it_waits_and_gone_after():
+    """RT-6.34 step 4: the terminal's line is the grant being waited on, and it is
+    cleared when the approval ends — a finished login's link never stays."""
+    seen: list[tuple[str, str, int] | None] = []
+
+    class Look(Note):
+        async def waiting(self, grant):
+            await super().waiting(grant)
+            seen.append(lg.pending_line())
+
+    lg = mk(transport=httpx.MockTransport(Script()), notifier=Look())
+    await lg.access_token()
+    assert seen and seen[0] is not None and seen[0][1] == "ABCD-EFGH"
+    assert lg.pending_line() is None

@@ -930,3 +930,17 @@ test("RT-6.34: the waiting login approval reaches the TUI once, without a token 
   await until(() => calls.some((c) => c.method === "POST" && c.path === "/v1/login/shown"), "the shown mark")
   answers["/v1/login"] = undefined
 })
+
+test("RT-6.34: a grant that starts after the session start reaches the TUI at the turn end (#198)", async () => {
+  const f = await started()
+  await f.emit("input", { text: "go on", source: "interactive" })
+  await f.emit("agent_start")
+  answers["/v1/turn-end"] = { action: "idle" }
+  answers["/v1/login"] = { link: "https://kc.example/device?user_code=ABCD-EFGH", user_code: "ABCD-EFGH",
+                           expires_in: 600 }
+  f.box.idle = true
+  await f.emit("agent_settled", { aborted: false })
+  await until(() => f.box.notes.some((n) => n.includes("ABCD-EFGH")), "the turn end's login line")
+  await until(() => calls.some((c) => c.method === "POST" && c.path === "/v1/login/shown"), "the shown mark")
+  answers["/v1/login"] = undefined
+})

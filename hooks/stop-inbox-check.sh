@@ -129,7 +129,10 @@ block() {
   TURN_BLOCKED=1
   save_state
   local m="${2:-}"
-  if [[ -n "$LOGIN_LINE" ]]; then m="${m:+$m$'\n'}$LOGIN_LINE"; fi
+  if [[ -n "$LOGIN_LINE" ]]; then
+    m="${m:+$m$'\n'}$LOGIN_LINE"
+    mm_bus POST /v1/login/shown '{}' >/dev/null 2>&1 || true
+  fi
   jq -nc --arg r "$1" --arg m "$m" \
     '{decision:"block", reason:$r} + (if $m == "" then {} else {systemMessage:$m} end)'
   exit 0
@@ -175,7 +178,10 @@ go_idle() {
   [[ -n "$LF" ]] && rm -f "$LF"
   local note msg=""
   if note="$(update_note)"; then msg="$note"; fi
-  if [[ -n "$LOGIN_LINE" ]]; then msg="${msg:+$msg$'\n'}$LOGIN_LINE"; fi
+  if [[ -n "$LOGIN_LINE" ]]; then
+    msg="${msg:+$msg$'\n'}$LOGIN_LINE"
+    mm_bus POST /v1/login/shown '{}' >/dev/null 2>&1 || true
+  fi
   if [[ -n "$msg" ]]; then
     jq -nc --arg m "$msg" '{systemMessage:$m}'
   fi
@@ -290,7 +296,6 @@ if mm_bus GET /v1/login && [[ "$CB_BUS_STATUS" == 200 ]]; then
     else
       LOGIN_LINE="Bus login: open ${_link}. Approve only if it is your agent's login."
     fi
-    mm_bus POST /v1/login/shown '{}' >/dev/null 2>&1 || true
   fi
 fi
 unset _link _code

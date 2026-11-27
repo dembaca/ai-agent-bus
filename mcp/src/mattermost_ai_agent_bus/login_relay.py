@@ -280,16 +280,19 @@ class RelayedLogin:
                 except Exception:  # noqa: BLE001 - never the value in the log
                     log.warning("login: the sandbox sent no usable nkey")
             return
-        if self._notifier is None:
-            return
         if event == "waiting":
             grant = self._grant(msg)
             if grant is not None:
-                # The approval the sandbox waits on, for the harness's terminal (#198);
-                # the link was built here from the issuer, the code checked above.
+                # The approval the sandbox waits on, for the harness's terminal (#198):
+                # kept even when the host has no notifier (no chat), and the link was
+                # built here from the issuer with the code checked above.
                 self._pending, self._shown = grant, False
-                self._offer_approval(grant)
-        elif event == "settled" and msg.get("outcome") in OUTCOMES:
+                if self._notifier is not None:
+                    self._offer_approval(grant)
+            return
+        if self._notifier is None:
+            return
+        if event == "settled" and msg.get("outcome") in OUTCOMES:
             if self._approval_open:
                 self._close_approval(str(msg["outcome"]))
             else:
@@ -365,6 +368,8 @@ class RelayedLogin:
 
     def _close_approval(self, outcome: str) -> None:
         self._approval_open = False
+        # The approval ended: no finished login's link stays for the terminal (#198).
+        self._pending, self._shown = None, False
         self._spawn(self._notifier.settled(outcome), "the ask was not settled")
 
     def _spawn(self, coro: Awaitable[None], what: str) -> None:

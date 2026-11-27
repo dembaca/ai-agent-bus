@@ -762,6 +762,7 @@ export function create(pi: ExtensionAPI, deps: Deps = {}) {
   // only, never a token; marked shown so a later turn's notice does not repeat it.
   const loginLine = async () => {
     try {
+      if (!ctx?.hasUI) return // no display, nothing to mark
       const r = await bus("GET", "/v1/login")
       const link = typeof r?.link === "string" ? r.link : ""
       if (!link) return
@@ -770,7 +771,7 @@ export function create(pi: ExtensionAPI, deps: Deps = {}) {
              "Approve only if it matches.")
       await bus("POST", "/v1/login/shown", {})
     } catch {
-      // no server yet: the first turn's notice shows the same line
+      // no server yet: a later turn shows the same line
     }
   }
 

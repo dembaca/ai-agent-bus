@@ -1200,3 +1200,15 @@ test("RT-6.34: the waiting login approval is one synthetic line, without a token
   await until(() => calls.some((c) => c.method === "POST" && c.path === "/v1/login/shown"), "the shown mark")
   answers["/v1/login"] = undefined
 })
+
+test("RT-6.34: a grant that starts after the session start reaches the session at the turn end (#198)", async () => {
+  const fx = await start()
+  await fx.prompt()
+  answers["/v1/turn-end"] = { action: "idle" }
+  answers["/v1/login"] = { link: "https://kc.example/device?user_code=ABCD-EFGH", user_code: "ABCD-EFGH",
+                           expires_in: 600 }
+  await fx.ended()
+  await until(() => fx.sent.some((m) => String(m.text).includes("ABCD-EFGH")), "the turn end's login line")
+  await until(() => calls.some((c) => c.method === "POST" && c.path === "/v1/login/shown"), "the shown mark")
+  answers["/v1/login"] = undefined
+})

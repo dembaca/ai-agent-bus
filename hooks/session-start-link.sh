@@ -29,13 +29,14 @@ link="$(jq -r '.link // empty | strings' <<<"$CB_BUS_BODY" 2>/dev/null)" || exit
 code="$(jq -r '.user_code // empty | strings' <<<"$CB_BUS_BODY" 2>/dev/null)" || exit 0
 [[ -n "$link" ]] || exit 0
 
-mm_bus POST '/v1/login/shown' '{}' >/dev/null 2>&1 || true
-
 if [[ -n "$code" ]]; then
   text="The bus login needs your approval: open ${link} — the page shows the code ${code}. Approve only if it matches."
 else
   text="The bus login needs your approval: open ${link}. Approve only if it is your agent's login."
 fi
+# The line first, so a failed jq never marks a line that was not shown.
+out="$(jq -nc --arg m "$text" '{systemMessage: $m, suppressOutput: true}')" || exit 0
 mm_stat post chars="${#text}" w="other" 2>/dev/null || true
-jq -nc --arg m "$text" '{systemMessage: $m, suppressOutput: true}'
+mm_bus POST '/v1/login/shown' '{}' >/dev/null 2>&1 || true
+printf '%s\n' "$out"
 exit 0
