@@ -2586,6 +2586,9 @@ async def stats_report(versions: int = 3) -> str:
     try:
         rows = await stats.read_report(_get_client(), name)
     except Exception as exc:  # noqa: BLE001 — off the bus, the channel missing or not readable
+        if stats.over_nats(_get_client()):  # plan B piece 13: no token to read with, no reader on NATS
+            return _refused("stats_report", "this home's STATS are on NATS, and an agent cannot read "
+                            f"them there yet; the older lines are in ~{name}")
         why = str(exc).split(" for url ")[0] or type(exc).__name__
         return _refused("stats_report", f"cannot read ~{name}: {why}"[:300])
     return _out("stats_report", {"channel": name, "versions": stats.brief(rows[-max(1, versions):])})

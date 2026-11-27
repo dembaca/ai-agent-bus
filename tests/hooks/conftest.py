@@ -347,11 +347,12 @@ def run(mm, tmp_path):
     pass key=None to drop a variable. Hooks and the agent's scripts get the hook
     API (RT-6.17) by env (bus="env"), by its file (bus="file") or none (bus=None).
     fd_token=True: the token on fd 3 instead (MM_BOT_TOKEN_FD), as the corral
-    host hooks hand it to mm-agent-status.sh."""
+    host hooks hand it to mm-agent-status.sh. with_api=True: a script outside API_USERS gets
+    the hook API and no token too (plan B piece 13: mm-agent-stats.sh)."""
     state = tmp_path / "state"
 
     def _run(script: str, *args: str, stdin: str = "{}", bus: str | None = "env",
-             cwd: str | None = None, fd_token: bool = False, **env) -> Result:
+             cwd: str | None = None, fd_token: bool = False, with_api: bool = False, **env) -> Result:
         base = {
             "PATH": os.environ["PATH"],
             "HOME": str(tmp_path),
@@ -372,7 +373,7 @@ def run(mm, tmp_path):
             argv = ["bash", "-c", 'exec 3<<<"$CB_MM_TEST_FD_TOKEN"; unset CB_MM_TEST_FD_TOKEN; '
                     'CB_MM_BOT_TOKEN_FD=3 exec bash "$@"', "_", *argv[1:]]
         with contextlib.ExitStack() as stack:
-            if script.startswith(API_USERS) and not fd_token:
+            if (script.startswith(API_USERS) or with_api) and not fd_token:
                 if bus:
                     found = stack.enter_context(hook_api(base, write_file=bus == "file"))
                     if bus == "env":

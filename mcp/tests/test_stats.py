@@ -1249,3 +1249,76 @@ def test_a_usage_line_counts_in_the_split_not_in_the_bus_share():
     assert row["tok"]["sessions"] == 1 and row["tok"]["req"] == SPLIT_TOK["req"]
     only = stats.report(lines[:1])[0]
     assert only["tok"] is None and only["split"]["types"]["overhead"]["read"] == 4000
+
+
+class _NatsHome:
+    """A client over NATS with no Mattermost token (plan B piece 13)."""
+    token = ""
+    session = None
+    work_channel_name = "home"
+
+    async def join_channel(self, name):  # pragma: no cover - must not be called
+        raise AssertionError("no chat read or post over NATS")
+
+
+def _piece_13(monkeypatch, on=True):
+    from mattermost_ai_agent_bus import planb
+    monkeypatch.setattr(planb, "_source", None)
+    if on:
+        monkeypatch.setenv("CB_PLANB_TEST", "13")
+    else:
+        monkeypatch.delenv("CB_PLANB_TEST", raising=False)
+    sent = []
+
+    async def publish(body):
+        sent.append(json.loads(body))
+
+    monkeypatch.setattr(stats, "nats_publish", publish)
+    monkeypatch.setattr(stats, "_unpublished", [])
+    return sent
+
+
+async def test_rt_6_43_piece_13_a_part_goes_on_nats_alone(monkeypatch):
+    """RT-6.43 step 7, plan B piece 13: no token, no channel join, no chat line; the part is
+    published on NATS by the heartbeat's tick."""
+    sent = _piece_13(monkeypatch)
+    now = int(time.time())
+    _write_events({"k": "turn", "t": now - stats.PART_SEC - 5, "by": "human"})
+    monkeypatch.setattr(stats, "_source", lambda: ("0.104.0", None))
+    assert 0 < await stats.tick(_NatsHome(), UID) <= stats.PART_SEC
+    assert [p["v"] for p in sent] == ["0.104.0"]
+
+
+async def test_rt_6_43_piece_13_off_a_client_without_token_does_nothing(monkeypatch):
+    """Piece 13 off: today's path, a client without a token cuts nothing."""
+    sent = _piece_13(monkeypatch, on=False)
+    now = int(time.time())
+    _write_events({"k": "turn", "t": now - stats.PART_SEC - 5, "by": "human"})
+    monkeypatch.setattr(stats, "_source", lambda: ("0.104.0", None))
+    assert await stats.tick(_NatsHome(), UID) is None
+    assert sent == []
+
+
+def test_rt_6_43_piece_13_the_last_part_is_not_posted_and_the_files_go(monkeypatch, state):
+    """Plan B piece 13: post_sync posts nothing to the chat (the last part went on NATS) and
+    removes the counter file as before."""
+    _piece_13(monkeypatch)
+    stats.record("turn")
+    data = stats.summary("0.104.0")
+    assert stats.post_sync(_NatsHome(), data) == "on NATS, not posted"
+    assert not (state / "mm-agent-bus" / f"stats-{UID}.jsonl").exists()
+
+
+def test_rt_6_43_piece_13_stats_report_says_why_it_cannot_read(monkeypatch):
+    """Plan B piece 13: the reading over NATS is not built; with no token the tool says so."""
+    _piece_13(monkeypatch)
+
+    class NoToken(_NatsHome):
+        async def posts_after(self, *a, **k):
+            raise OSError("no token")
+
+    async def go():
+        monkeypatch.setattr(server, "_get_client", lambda: NoToken())
+        return await server.stats_report()
+
+    assert "cannot read them there yet" in asyncio.run(go())

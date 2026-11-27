@@ -24,6 +24,9 @@ instead, served next to the WebSocket inbox in the server's event loop:
                             channel, else 403), newest first (?limit=N, at
                             most 200, or ?since=MS)
     GET  /v1/ask-reactions  {fresh}: reactions to open asks not handed over yet
+    GET  /v1/stats-lines    {channel, lines: [STATS line objects]}: the stats
+                            channel's lines for mm-agent-stats.sh, which holds no token
+                            (RT-6.43 step 7); 404 until plan B's piece 13 is on for the home
     POST /v1/presence       {state: working|idle|listening|bus, label?, until?} → {ok}
                             (idle, listening: the turn ended, open permission
                             prompts close, RT-6.13)
@@ -104,7 +107,7 @@ from urllib.parse import parse_qs, urlsplit
 from . import config
 from . import (
     a2a, asks, attach, channel, files, gate, hosted, lease, life, model, ownpost, release, session_file, stall, stats,
-    tasks, turnend, unanswered, unread, usage,
+    planb, tasks, turnend, unanswered, unread, usage,
 )
 from .homes import guest_ids, watched_channel_ids
 from .ids import InvalidId, mm_id, mm_name, post_id_arg
@@ -675,6 +678,22 @@ async def pending(client: ChatPort, query: Mapping[str, str], body: Mapping[str,
     if rows and query.get("detail") == "1":
         result["channels"] = await unread.detail(client, rows)
     return 200, result
+
+
+async def stats_lines(client: ChatPort, query: Mapping[str, str], body: Mapping[str, Any]) -> Reply:
+    """The STATS lines mm-agent-stats.sh reports on, read with this session (RT-6.43 step 7,
+    plan B piece 13): the shell holds no token, so the server reads for it. Not served while
+    the piece is off for the home, as before."""
+    if not planb.on(13, client.work_channel_name):
+        return 404, {"error": "no such route"}
+    name = stats.channel()
+    if not name:
+        return 409, {"error": "stats are off (CB_MM_STATS_CHANNEL)"}
+    try:
+        lines = await stats.read_lines(client, name)
+    except Exception as exc:  # noqa: BLE001 — off the bus, the channel missing or not readable
+        return 502, {"error": f"cannot read ~{name}: {type(exc).__name__}"}
+    return 200, {"channel": name, "lines": lines}
 
 
 async def last_post(client: ChatPort, query: Mapping[str, str], body: Mapping[str, Any]) -> Reply:
@@ -1380,6 +1399,7 @@ _ROUTES: dict[tuple[str, str], Route] = {
     ("GET", "/v1/me"): me,
     ("GET", "/v1/pending"): pending,
     ("GET", "/v1/last-post"): last_post,
+    ("GET", "/v1/stats-lines"): stats_lines,
     ("GET", "/v1/posts"): posts,
     ("GET", "/v1/ask-reactions"): ask_reactions,
     ("POST", "/v1/presence"): presence,
@@ -1398,7 +1418,7 @@ _ROUTES: dict[tuple[str, str], Route] = {
     ("POST", "/v1/waiting"): waiting,
 }
 # Routes that make several Mattermost calls: at most MAX_HEAVY_RUNS at once.
-_HEAVY_ROUTES = frozenset({pending, presence, post_route, reply_route, files_route, turn_end, wake,
+_HEAVY_ROUTES = frozenset({stats_lines, pending, presence, post_route, reply_route, files_route, turn_end, wake,
                            handoff})
 # ADR-007 amendment step 1: the hooks' and the listener's reads are a sign of
 # the agent, its posts through the shell take up what was pushed; presence
