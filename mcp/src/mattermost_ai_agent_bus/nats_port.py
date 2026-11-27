@@ -1062,6 +1062,8 @@ class NatsPort:
         its home runs agent DMs over NATS. A Mattermost DM to it settles the open DMs that name
         left, as a DM over NATS does (RT-6.2 step 2, RT-6.36 step 7). A bot whose presence is
         not linked (a person's, another agent's bot) names nobody."""
+        if not self._dm_on():
+            return ""  # the piece is off: today's path, no link read at all
         bus = self._bus if self._fatal is None else None
         if bus is None or not bus.connected:
             return ""
