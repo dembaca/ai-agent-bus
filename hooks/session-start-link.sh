@@ -9,7 +9,7 @@
 # turn's notice does not show it again (POST /v1/login/shown, once per login).
 #
 # A grant may only start after this hook ran (a later re-login): then there is nothing
-# here, and the first turn's start notice shows the same one line.
+# here, and the turn's end shows the same one line.
 #
 # Fails open: no server, no answer, no jq, an API error — exit 0 without output.
 set -uo pipefail

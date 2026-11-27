@@ -289,6 +289,12 @@ async def test_the_relayed_grant_serves_the_terminal_and_ends_with_its_approval(
     await relayed._on({"event": "settled", "outcome": "approved"})
     await asyncio.sleep(0)
     assert relayed.pending() is None
+    # A host without a notifier (no chat) still serves the line and drops it (#198).
+    quiet = _relayed()
+    await quiet._on({"event": "waiting", "code": "WXYZ-1234"})
+    assert quiet.pending_line() is not None
+    await quiet._on({"event": "settled", "outcome": "denied"})
+    assert quiet.pending() is None
 
 
 async def test_one_open_approval_at_a_time_and_one_per_cooldown_and_refusals_rate_limited():

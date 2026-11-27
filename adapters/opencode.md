@@ -83,7 +83,7 @@ server: the old one keeps the bot and the new one takes it over, same name, with
 `session_start` (within 24 h; a `BYE` or `session_end` ends the bot at once,
 [RT-6.10](../docs/arc42/06-runtime-view.md#610-session-registered-by-the-agent)).
 
-## Token usage
+### Token usage
 
 The plugin splits its session's tokens into task work, bus overhead and coordination
 in process ([`opencode/plugin/usage.ts`](../opencode/plugin/usage.ts); the rules:

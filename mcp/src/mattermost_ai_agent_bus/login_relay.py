@@ -257,8 +257,10 @@ class RelayedLogin:
                 for fut in self._waiters.values():
                     if not fut.done():
                         fut.set_exception(_Closed())
-                # The relay is gone mid-approval: its ask is settled, its code dropped.
+                # The relay is gone mid-approval: its ask is settled, its code dropped,
+                # and no link of it stays for the terminal (#198).
                 self._deferred = None
+                self._pending, self._shown = None, False
                 if self._approval_open:
                     self._close_approval("failed")
             self.release(claim)
@@ -290,6 +292,10 @@ class RelayedLogin:
                 if self._notifier is not None:
                     self._offer_approval(grant)
             return
+        if event == "settled" and msg.get("outcome") in OUTCOMES:
+            # The approval ended: no finished login's link stays for the terminal (#198),
+            # whether or not a notifier is there to settle it.
+            self._pending, self._shown = None, False
         if self._notifier is None:
             return
         if event == "settled" and msg.get("outcome") in OUTCOMES:

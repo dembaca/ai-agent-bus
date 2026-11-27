@@ -9,6 +9,7 @@ import subprocess
 import time
 
 from conftest import CHANNEL, ME, PROJECT, ROOT, TEAM, VSEG, hook_api
+from mattermost_ai_agent_bus import login as login_mod
 
 STOP = "hooks/stop-inbox-check.sh"
 PROMPT = "hooks/turn-status.sh"
@@ -960,3 +961,63 @@ def test_an_fyi_post_waits_for_no_answer(mm, run, monkeypatch):
     last_post(run, "IDLE · done: x")
     r = run(STOP, MM_LISTEN_SEC="0")
     assert r.blocked and f"~proj post {'m' * 26} by dembaca" in r.reason and "f" * 26 not in r.reason
+
+
+# --- RT-6.34 step 4: the login line at a turn's end (#198) ---------------------
+
+class WaitingLogin:
+    """A running login with one waiting grant; `shown` is the hook's mark (RT-6.34)."""
+
+    def __init__(self) -> None:
+        self.link = "https://kc.example.test/device?user_code=ABCD-EFGH"
+        self.code = "ABCD-EFGH"
+        self.shown_calls = 0
+
+    def pending_line(self) -> tuple[str, str, int] | None:
+        return None if self.shown_calls else (self.link, self.code, 600)
+
+    def shown(self) -> None:
+        self.shown_calls += 1
+
+
+def test_the_line_rides_on_a_block_and_is_marked(mm, run, monkeypatch):
+    """RT-6.34 step 4, RT-6.2 step 2: a block keeps its decision and carries the
+    waiting login line (link and code, never a token); the mark follows the display."""
+    waiting = WaitingLogin()
+    monkeypatch.setattr(login_mod, "_current", waiting)
+    mm.own_post("HELLO working on x")
+    r = run(STOP)
+    assert r.blocked and r.decision.get("decision") == "block"
+    assert "Signing off" in r.banner
+    assert waiting.link in r.banner and waiting.code in r.banner
+    assert "token" not in r.banner.lower()
+    assert waiting.shown_calls == 1
+
+
+def test_an_idle_end_prints_the_line_alone(run, monkeypatch):
+    """RT-6.34 step 4: nothing else to say, the turn end still puts the line into the
+    terminal once — a grant that started after the session start is not lost."""
+    waiting = WaitingLogin()
+    monkeypatch.setattr(login_mod, "_current", waiting)
+    r = run(STOP)
+    assert r.passed
+    assert r.banner == f"Bus login: open {waiting.link} — the page shows the code {waiting.code}." \
+        " Approve only if it matches."
+    assert waiting.shown_calls == 1
+
+
+def test_the_early_exit_with_a_listener_shows_nothing_and_marks_nothing(mm, run, monkeypatch):
+    """RT-6.34 step 4, RT-6.2 step 4: with a listener waiting the turn ends silently,
+    so the line is not shown there and nothing is marked — the next turn end has it."""
+    mm.own_post("IDLE done x", 1000)
+    run(STOP, **IN_PROJECT)  # opens the window, no listener yet
+    waiting = WaitingLogin()
+    monkeypatch.setattr(login_mod, "_current", waiting)
+    sleeper = subprocess.Popen(["sleep", "30"])
+    try:
+        set_window(run, PID=sleeper.pid, STARTED=int(time.time()) + 1)
+        r = run(STOP, **IN_PROJECT)
+    finally:
+        sleeper.kill()
+    assert r.passed and r.stdout.strip() == ""
+    assert waiting.shown_calls == 0
