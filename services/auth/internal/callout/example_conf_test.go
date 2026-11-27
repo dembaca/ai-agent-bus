@@ -299,7 +299,7 @@ func TestTheExampleServerConfiguration(t *testing.T) {
 				"$JS.ACK.PRESENCE.bridge_presence.>", "$KV.BUS_BRIDGE.>",
 				"$JS.API.STREAM.MSG.GET.KV_BUS_BRIDGE",
 				// people onto NATS (RT-6.42)
-				"bus.hu.home.*", "presence.bridge.home.v1",
+				"bus.hu.home.*", "presence.bridge.home.v1", "presence.bot.*.v1",
 				"$JS.API.CONSUMER.CREATE.PRESENCE.bridge_accounts.presence.account.mattermost.>",
 				// plan B's switches per channel, its own consumer (RT-6.39 step 5)
 				"$JS.API.CONSUMER.CREATE.PRESENCE.bridge_planb.presence.planb.*.v1",

@@ -66,6 +66,7 @@ var postingRoles = []string{"system_user", "system_post_all", "system_post_all_p
 type Presence interface {
 	Get(name string) (presence.Info, bool)
 	Newest() time.Time
+	Names() []string
 }
 
 // Owners is the login service's account records read the other way round
@@ -86,9 +87,12 @@ type Bots struct {
 	Log      *slog.Logger
 	Backoff  time.Duration // DefaultBackoff when 0
 	Now      func() time.Time
+	// NATS carries the bot record (record.go); nil publishes none
+	NATS Publisher
 
 	adminID string
 	mu      sync.Mutex
+	pub     sync.Mutex // one record is published at a time
 	by      map[string]*entry
 }
 
@@ -185,6 +189,7 @@ func (b *Bots) Bot(ctx context.Context, name, home string) mirror.Sink {
 	if e.client != nil && e.owner != owner {
 		b.Log.Warn("agentbots: the owner's account record changed; the bot is checked again", "agent", name)
 		e.client, e.joined = nil, map[string]bool{}
+		b.announce(name, nil, "") // the record of the earlier owner's bot must not stay
 	}
 	if e.client != nil && e.joined[home] {
 		return e.client
@@ -197,6 +202,7 @@ func (b *Bots) Bot(ctx context.Context, name, home string) mirror.Sink {
 		if errors.Is(err, errAdminDisabled) {
 			// logged once per name; the backoff spares Mattermost a call per message
 			e.failed = b.now()
+			b.announce(name, nil, "") // no bot to link: the record says so
 			if !e.off {
 				e.off = true
 				b.Log.Warn("agentbots: bot disabled by an admin, posting as the bridge bot", "agent", name)
@@ -212,6 +218,7 @@ func (b *Bots) Bot(ctx context.Context, name, home string) mirror.Sink {
 			return b.fail(e, name, err)
 		}
 		e.agent, e.owner, e.client = a, owner, mm.New(b.URL, tok).As(a.ID)
+		b.announce(name, &a, owner)
 	}
 	if err := b.Admin.JoinChannels(ctx, e.agent, []string{home}); err != nil {
 		return b.fail(e, name, fmt.Errorf("join %s: %w", home, err))

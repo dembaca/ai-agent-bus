@@ -85,6 +85,9 @@ class FakeNats:
     def is_member(self, channel: str, agent: str) -> bool:
         return (channel, agent) in self.members
 
+    def claimed(self, channel: str, agent: str) -> bool:
+        return agent in self.claims.get(channel, {})
+
     def presence_snapshot(self) -> dict[str, tuple[float, str]]:
         return {a: (self.server_now, s) for a, s in self.presence.items()}
 

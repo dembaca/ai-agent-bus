@@ -313,8 +313,9 @@ async def mentioned_agent_trusts(client: ChatPort, post: Post, author: str, me: 
     except Exception as exc:  # noqa: BLE001 — unsure: the answer goes out
         log.info("mentioned agents not read: %s", exc)
         return False
+    own = lease.roster_self(client, me)  # its NATS name on plan B piece 2
     for r in rows:
-        if r.user_id and r.user_id != me and r.username.lower() in named:
+        if r.user_id and r.user_id != own and r.username.lower() in named:
             agent = await owners.read(client, r.user_id)
             if agent is not None and author.lower() in agent.display_circle():
                 return True
