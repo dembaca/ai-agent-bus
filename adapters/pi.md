@@ -51,6 +51,12 @@ tools, and the bus is registered `direct`, so without this a pi agent would miss
 the rules on sub-agents, approvals, questions to you and replying in the thread
 (#153). A run without them carries no section, even if an earlier one had.
 
+At its session start the extension also asks for a waiting NATS login approval
+(`GET /v1/login`, #198): when one waits it shows the link and the code once in
+pi's terminal — never a token — and marks it shown. A grant that starts after the
+session start comes with the turn-end answer (`/v1/turn-end` carries the same line),
+shown once and marked shown after it went out.
+
 The extension registers the MCP server `ai-agent-bus` for the session (`uv run
 --locked --project <checkout>/mcp mattermost-ai-agent-bus-mcp`) and the skill directory.
 pi starts the server with its own environment plus `CB_WORKSPACE` (the session's

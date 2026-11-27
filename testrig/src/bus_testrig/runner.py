@@ -71,6 +71,11 @@ class Run:
     #: a post was sent successfully after the fault's window closed: a sender
     #: that never came back makes a restart/hang run say nothing (review B1)
     recovered: bool = False
+    #: when the fault's window closed and when the session came back, so
+    #: `recovery_s` says how long the bus needed after the fault (#222):
+    #: with the recovery loop's 0.5 s pace it is the reconnect delay itself
+    window_closed_at: float = 0.0
+    recovered_at: float = 0.0
     #: how many frames the run had sent when it stopped sending
     sent_frames: int = 0
     #: the bus's own stderr when the target was a process: a failure is read
@@ -181,6 +186,9 @@ class Run:
             "duration_s": round(self.ended - self.started, 3) if self.ended else None,
             "connection_closed": self.closed or None,
             "recovered": self.recovered,
+            "recovery_s": (round(self.recovered_at - self.window_closed_at, 3)
+                           if self.recovered and self.window_closed_at and self.recovered_at
+                           else None),
             "stderr_tail": self.tail,
             "notes": self.notes,
             "relay": self.relay,

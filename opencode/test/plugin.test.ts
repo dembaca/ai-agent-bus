@@ -73,7 +73,8 @@ const paths = () => rest().map((c) => c.method + " " + c.path)
 const wakes = () => calls.filter((c) => c.path.startsWith("/v1/wake"))
 // The calls but the long poll, which runs on between turns, the bot check of
 // a human turn (RT-6.20 step 3) and the wait signal (RT-6.18 step 11), tested apart.
-const rest = () => calls.filter((c) => !c.path.startsWith("/v1/wake") && c.path !== "/v1/me" && c.path !== "/v1/waiting")
+const rest = () => calls.filter((c) => !c.path.startsWith("/v1/wake") && c.path !== "/v1/me" &&
+  c.path !== "/v1/waiting" && c.path !== "/v1/login" && c.path !== "/v1/login/shown")
 
 before(async () => {
   for (const v of ["CLAUDE_CODE_SESSION_ID", "CLAUDE_PROJECT_DIR", "CURSOR_PROJECT_DIR", "CB_WORKSPACE",
@@ -1185,3 +1186,46 @@ test("RT-6.20: a user's environment that names one spelling is copied to the oth
   assert.equal(ed.m.get(SERVER).environment.MM_WORKSPACE, "/other")
 })
 
+
+test("RT-6.34: the waiting login approval is one synthetic line, without a token (#198)", async () => {
+  const fx = await start()
+  answers["/v1/login"] = { link: "https://kc.example/device?user_code=ABCD-EFGH", user_code: "ABCD-EFGH",
+                           expires_in: 600 }
+  calls = []
+  await fx.emit("session.created", { sessionID: "s1", location: { directory: ws } })
+  await until(() => fx.sent.length > 0, "the login line")
+  assert.match(fx.sent[0].text, /kc\.example\/device\?user_code=ABCD-EFGH/)
+  assert.match(fx.sent[0].text, /ABCD-EFGH/)
+  assert.doesNotMatch(fx.sent[0].text, /token|seed/i)
+  await until(() => calls.some((c) => c.method === "POST" && c.path === "/v1/login/shown"), "the shown mark")
+  answers["/v1/login"] = undefined
+})
+
+test("RT-6.34: a grant that starts after the session start reaches the session at the turn end (#198)", async () => {
+  const fx = await start()
+  await fx.prompt()
+  // The turn-end answer carries the line (#198): no second endpoint, one call.
+  answers["/v1/turn-end"] = { action: "idle", login: "Bus login: open https://kc.example/device?user_code=ABCD-EFGH" +
+    " — the page shows the code ABCD-EFGH. Approve only if it matches; the code is good for 10 min." }
+  await fx.ended()
+  await until(() => fx.sent.some((m) => String(m.text).includes("ABCD-EFGH")), "the turn end's login line")
+  await until(() => calls.some((c) => c.method === "POST" && c.path === "/v1/login/shown"), "the shown mark")
+  assert.equal(rest().filter((p) => p === "GET /v1/login").length, 0, "no separate login read")
+  answers["/v1/turn-end"] = undefined
+})
+
+test("RT-6.34: a block carries the login line in its banner and marks it shown (#230)", async () => {
+  const fx = await start()
+  await fx.prompt()
+  calls = []
+  const line = "Bus login: open https://kc.example/device?user_code=ABCD-EFGH — the page shows the code " +
+    "ABCD-EFGH. Approve only if it matches; the code is good for 10 min."
+  answers["/v1/turn-end"] = { action: "signoff", reason: "Sign off before idle",
+                              banner: "Signing off on Mattermost", login: line }
+  await fx.ended()
+  assert.equal(fx.sent.length, 1)
+  assert.equal(fx.sent[0].text, "Sign off before idle")
+  assert.equal(fx.sent[0].description, "Signing off on Mattermost\n" + line)
+  await until(() => calls.some((c) => c.method === "POST" && c.path === "/v1/login/shown"), "the shown mark")
+  answers["/v1/turn-end"] = undefined
+})

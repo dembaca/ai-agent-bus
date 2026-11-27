@@ -42,7 +42,7 @@ environment can serve several services.
 ([docs/env-names.md](../../docs/env-names.md)). The old names without it
 (`AUTH_…`, `AUTHD_…`, and `AUTH_MATTERMOST_URL`, `AUTH_MATTERMOST_TEAM`,
 `AUTH_MATTERMOST_TOKEN_FILE` for the three `CB_AUTH_MM_…` names) are
-deprecated: until the removal release (the release after 0.103.0) the service
+deprecated: until the removal release (0.105.0) the service
 reads an old name when its new name is unset and logs one warning per process.
 Both names set to different values refuse the start and name both; equal values
 pass, with a warning that the old name can go. Empty counts as set; a value

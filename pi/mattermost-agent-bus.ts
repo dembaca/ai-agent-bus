@@ -232,7 +232,13 @@ export function hookApi(env: Env, directory: string, missing: () => void = () =>
       })
       // Only the host's refusal of another session, not a route's own 403.
       if (res.status === 403 && (await res.json().catch(() => null))?.client_session === "refused") client.forbidden?.()
-      if (res.status !== 200) return null
+      if (res.status !== 200) {
+        // A turn end without a bus session still carries the login line (#198, plan B):
+        // the caller reads `login` and treats `error` as the failed check it is.
+        if (res.status === 503 && path.startsWith("/v1/turn-end"))
+          return (await res.json().catch(() => null)) as Json | null
+        return null
+      }
       return (await res.json()) as Json
     } catch {
       return null
@@ -758,6 +764,36 @@ export function create(pi: ExtensionAPI, deps: Deps = {}) {
     }
   }
 
+  // The NATS login approval waiting now, as one line in the TUI (#198): link and code
+  // only, never a token; marked shown so a later turn's notice does not repeat it.
+  // The waiting login line reaches the UI once, and is marked shown only after it did
+  // (#198). At a session's start it comes from GET /v1/login, at a turn's end from the
+  // turn-end answer, which carries the same line.
+  const showLogin = async (line: string): Promise<void> => {
+    if (!line || !ctx?.hasUI) return // no display, nothing to mark
+    notify(line)
+    await bus("POST", "/v1/login/shown", {})
+  }
+
+  const loginLine = async () => {
+    try {
+      if (!ctx?.hasUI) return
+      const r = await bus("GET", "/v1/login")
+      const line = typeof r?.line === "string" ? r.line : ""
+      if (line) {
+        await showLogin(line) // the server's own wording (#198)
+        return
+      }
+      const link = typeof r?.link === "string" ? r.link : ""
+      if (!link) return
+      const code = typeof r?.user_code === "string" ? r.user_code : ""
+      await showLogin(`Bus login: open ${link}${code ? ` — the page shows the code ${code}` : ""}. ` +
+                      "Approve only if it matches.")
+    } catch {
+      // no server yet: a later turn shows the same line
+    }
+  }
+
   // A user message of ours: at once when idle, else after the run's tools
   // (followUp), never into a tool call. pi reports a refusal as an extension
   // error, not here: OURS_MS bounds the wait for its run.
@@ -822,6 +858,8 @@ export function create(pi: ExtensionAPI, deps: Deps = {}) {
     // unanswered=1: a bus post without a reply in its thread blocks once (RT-6.2 step 2).
     const q = `drains=${t.drains}&signoff_asked=${+t.signoffAsked}&by_bus=${+t.byBus}&push=1&unanswered=1`
     const r = await bus("GET", `/v1/turn-end?${q}`, undefined, SLOW_MS)
+    // The answer carries the waiting login line (#198): one call, no second endpoint.
+    const login = typeof r?.login === "string" ? r.login : ""
     // The human typed meanwhile, or a wake-up went out: that run ends with its own check.
     if (t.human !== human || t.running || t.ours) return
     // The posts an answer names are marked only now that the block goes out, so
@@ -836,15 +874,17 @@ export function create(pi: ExtensionAPI, deps: Deps = {}) {
       else if (r.action === "signoff") t.signoffAsked = true
       await stat("block", { kind: r.action })
       await inject(r.action, String(r.reason))
-      notify(String(r.banner || ""))
+      notify([String(r.banner || ""), login].filter(Boolean).join("\n"))
+      if (login && ctx?.hasUI) await bus("POST", "/v1/login/shown", {})
       deliver(String(r.reason))
       return
     }
-    if (r) await stat("turn_end")
+    if (r && !r.error) await stat("turn_end")
+    await showLogin(login) // the line alone when nothing blocked the turn
     // A window the server opened (RT-6.2 step 3) says its gates hold: reachable
     // between turns, for as long as the session lives (ADR-009). A failed check
     // changes nothing about that.
-    if (r) t.listening = (Number(r.listen_until) || 0) * 1000 > Date.now()
+    if (r && !r.error) t.listening = (Number(r.listen_until) || 0) * 1000 > Date.now()
     t.working = false
     await (t.listening ? presence("bus") : presence("idle"))
     await usage()
@@ -922,6 +962,7 @@ export function create(pi: ExtensionAPI, deps: Deps = {}) {
     const dir = real(c.cwd) || c.cwd
     label = basename(dir).slice(0, 64) // the presence label's limit (RT-6.17)
     bus = hookApi(env, dir)
+    void loginLine() // a grant that is already waiting reaches the terminal (#198)
     // A new session reads the served text again: a reload may meet another mode (RT-6.12),
     // and before_agent_start asks lazily, so a server that is not up yet still counts.
     instructions = ""

@@ -1359,3 +1359,73 @@ async def test_expires_in_as_a_float_counts():
     assert await lg.access_token() == first and script.refreshed == []
     wall[0] += 41
     assert await lg.access_token() != first
+
+
+# --- the terminal line (#198, RT-6.34 step 4) -----------------------------------
+
+def _grant(**over):
+    return login.DeviceGrant(**{"verification_uri": ISSUER + "/device",
+                                "verification_uri_complete": ISSUER + "/device?user_code=ABCD-EFGH",
+                                "user_code": "ABCD-EFGH", "expires_in": 600, **over})
+
+
+def _waiting(lg, **over):
+    """The object as the device flow leaves it while the human approves (#198)."""
+    lg._pending = _grant(**over)
+    lg._pending_until = lg._now() + 600
+    return lg
+
+
+def test_the_terminal_line_is_the_issuers_own_link_and_a_clean_code():
+    """RT-6.34 step 4: only an https link on the issuer's host and port with a
+    device-flow code leaves the server; unknown or shown grants give nothing."""
+    lg = mk(now=lambda: 1000.0)
+    assert lg.pending_line() is None  # nothing waits
+    _waiting(lg)
+    link, code, expires = lg.pending_line()
+    assert link == ISSUER + "/device?user_code=ABCD-EFGH" and code == "ABCD-EFGH" and expires == 600
+    lg.shown()
+    assert lg.pending_line() is None  # one line per login
+
+
+def test_a_foreign_link_or_a_bad_code_is_never_shown():
+    lg = mk()
+    _waiting(lg, verification_uri="https://evil.example/device",
+             verification_uri_complete="https://evil.example/device?user_code=ABCD-EFGH")
+    assert lg.pending_line() is None
+    _waiting(lg, user_code="AB\nCD-EFGH")
+    line = lg.pending_line()
+    assert line is not None and "\n" not in line[1]  # no control character reaches the TUI
+    _waiting(lg, user_code="not a code")
+    assert lg.pending_line() is None
+    _waiting(lg, verification_uri_complete="http://kc.example.test/realms/bus/x")
+    assert lg.pending_line() is None  # plain http is not the issuer's
+
+
+def test_the_line_counts_the_time_down_and_ends_with_it():
+    """RT-6.34 step 4: the seconds a harness shows are the time left, not the grant's
+    original span; an approval out of time is nothing to show."""
+    clock = [1000.0]
+    lg = mk(now=lambda: clock[0])
+    _waiting(lg)
+    assert lg.pending_line()[2] == 600
+    clock[0] += 500
+    assert lg.pending_line()[2] == 100
+    clock[0] += 100
+    assert lg.pending_line() is None
+
+
+async def test_the_pending_grant_is_served_while_it_waits_and_gone_after():
+    """RT-6.34 step 4: the terminal's line is the grant being waited on, and it is
+    cleared when the approval ends — a finished login's link never stays."""
+    seen: list[tuple[str, str, int] | None] = []
+
+    class Look(Note):
+        async def waiting(self, grant):
+            await super().waiting(grant)
+            seen.append(lg.pending_line())
+
+    lg = mk(transport=httpx.MockTransport(Script()), notifier=Look())
+    await lg.access_token()
+    assert seen and seen[0] is not None and seen[0][1] == "ABCD-EFGH"
+    assert lg.pending_line() is None
