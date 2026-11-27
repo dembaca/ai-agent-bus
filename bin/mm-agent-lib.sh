@@ -769,8 +769,9 @@ mm_turn_state_file() {
 mm_bot_state_file() {
   local kind="$1" uid="${2:-${CB_MM_BOT_USER_ID:-}}"
   # A bot id, or a NATS name (natsbus.AGENT_RE, the key of the kept state since plan B
-  # piece 2b, RT-6.2); the name's pattern holds the bot id's too. No dot, no slash.
-  [[ "$uid" =~ ^[A-Za-z0-9][A-Za-z0-9_-]{0,127}$ ]] || return 1
+  # piece 2b, RT-6.2); the name's pattern holds the bot id's too. No capitals (two names that
+  # differ in case would share a file on macOS), no dot, no slash.
+  [[ "$uid" =~ ^[a-z0-9][a-z0-9_-]{0,127}$ ]] || return 1
   printf '%s' "$(mm_state_dir)/${kind}-${uid}.env"
 }
 

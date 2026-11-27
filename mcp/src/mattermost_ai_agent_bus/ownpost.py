@@ -117,6 +117,9 @@ def remove(uid: str) -> None:
         (session_file.state_dir() / f"last-{uid}.env").unlink(missing_ok=True)
         threads_path(uid).unlink(missing_ok=True)
         (session_file.state_dir() / f"threads-{uid}.env").unlink(missing_ok=True)
+        key = session_file.state_key(uid)
+        if key != uid:
+            (session_file.state_dir() / f"copied-{key}.env").unlink(missing_ok=True)
 
 
 # Guest threads (RT-6.22): at most this many are kept; a thread whose latest

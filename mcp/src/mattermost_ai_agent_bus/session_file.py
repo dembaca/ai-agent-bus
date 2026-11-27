@@ -332,62 +332,79 @@ STATE_KINDS = ("last", "threads", "unanswered")
 
 
 def use_nats_name(name: str, home: str) -> None:
-    """The bus knows the session's NATS name `name` (as the agent of `home`): from now on,
-    with plan B piece 2 on for `home`, the kept state is keyed by it (state_key)."""
+    """The bus knows the session's NATS name `name` (as the agent of `home`). With plan B
+    piece 2 on for `home` right now, the kept state is keyed by it from now on, for the
+    rest of the process (RT-6.2 step 9): the switch is read here once and latched, so a
+    later flip or the bus detaching its switch source at stop() (before the exit handler's
+    BYE) moves no file. Else the key stays the bot id."""
+    from . import planb
+
     global _nats_name
-    _nats_name = (name, home) if name and key_ok(name) else None
+    _nats_name = (name, home) if name and key_ok(name) and planb.on(2, home) else None
 
 
 def key_ok(key: str) -> bool:
     """Whether `key` may name a state file: a Mattermost bot id (26 characters) or a NATS
-    name (natsbus.AGENT_RE), nothing else (no path part, no dot)."""
+    name (natsbus.AGENT_RE) without capitals (on a case-insensitive file system two names
+    differing in case would share one file; NATS names from the hash are lower case),
+    nothing else (no path part, no dot)."""
     from .natsbus import AGENT_RE
 
-    return bool(_BOT_ID_RE.fullmatch(key) or AGENT_RE.fullmatch(key))
+    return bool(_BOT_ID_RE.fullmatch(key) or (AGENT_RE.fullmatch(key) and key == key.lower()))
 
 
 def state_key(uid: str, nats_name: str | None = None, home: str | None = None) -> str:
-    """The key of the session's kept state (RT-6.2): the NATS name when plan B piece 2 is on
-    for its home and the name is known, else `uid`, the bot's Mattermost id. An empty `uid`
-    stays empty (no bot, no state). `nats_name` and `home` are the session's own, from
-    use_nats_name, unless named (tests)."""
-    from . import planb
-
+    """The key of the session's kept state (RT-6.2 step 9): the NATS name when use_nats_name
+    latched it (plan B piece 2 was on at the start), else `uid`, the bot's Mattermost id.
+    An empty `uid` stays empty (no bot, no state). `nats_name` is the session's own, unless
+    named (tests); `home` is unused then."""
     if not uid:
         return uid
-    known = _nats_name if nats_name is None else (nats_name, _nats_name[1] if home is None and _nats_name else home or "")
-    if known is not None and key_ok(known[0]) and planb.on(2, known[1]):
-        return known[0]
+    name = nats_name if nats_name is not None else (_nats_name[0] if _nats_name else None)
+    if name is not None and key_ok(name):
+        return name
     return uid
 
 
 def copy_state_once(uid: str, name: str, kinds: tuple[str, ...] = STATE_KINDS) -> list[str]:
     """Copy the kept state keyed by the bot id `uid` to the files keyed by the NATS name
-    `name`, once (RT-6.2): per kind only when `<kind>-<name>.env` is missing and
-    `<kind>-<uid>.env` exists. The source stays where it is, so the old plugin still finds
-    its copy. The marker `copied-<name>.env` holds the source id: a copy is never repeated
-    for that id, so a file the session deleted since stays deleted. Returns the kinds copied."""
+    `name` (RT-6.2 step 9), per kind: a missing `<kind>-<name>.env` is made from an existing
+    `<kind>-<uid>.env`, unless the marker says it was copied and the session deleted it
+    since (the source is then not newer than the marker); an existing one is replaced only
+    by a source with a newer mtime (a switch that was off in between wrote the bot id's
+    file), never by an older source. A symlink as source or target is refused. The source
+    stays where it is, so the old plugin still finds its copy. The marker
+    `copied-<name>.env` holds the source ids. Returns the kinds copied."""
     if not (_BOT_ID_RE.fullmatch(uid) and key_ok(name)) or uid == name:
         return []
     d = state_dir()
     marker = d / f"copied-{name}.env"
-    if marker.exists() and uid in _marker_ids(marker):
-        return []
+    ids = _marker_ids(marker) if marker.exists() else []
+    try:
+        marked_at = marker.stat().st_mtime_ns if uid in ids else None
+    except OSError:
+        marked_at = None
     done: list[str] = []
     for kind in kinds:
         src, dst = d / f"{kind}-{uid}.env", d / f"{kind}-{name}.env"
         try:
-            if dst.exists() or dst.is_symlink() or src.is_symlink() or not src.is_file():
+            if dst.is_symlink() or src.is_symlink() or not src.is_file():
+                continue
+            src_at = src.stat().st_mtime_ns
+            if dst.exists():
+                if src_at <= dst.stat().st_mtime_ns:
+                    continue
+            elif marked_at is not None and src_at <= marked_at:
                 continue
             write_private(dst, src.read_text())
             done.append(kind)
         except OSError:
             continue
-    ids = _marker_ids(marker) if marker.exists() else []
-    try:
-        write_private(marker, "".join(f"CB_COPIED_FROM={i}\n" for i in [*ids, uid]))
-    except OSError:
-        pass
+    if done or uid not in ids:
+        try:
+            write_private(marker, "".join(f"CB_COPIED_FROM={i}\n" for i in (ids if uid in ids else [*ids, uid])))
+        except OSError:
+            pass
     return done
 
 

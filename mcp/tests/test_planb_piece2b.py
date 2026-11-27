@@ -14,6 +14,7 @@ from mattermost_ai_agent_bus.model import Post
 
 UID = "b" * 26
 NAME = "agent-" + "a2" * 13
+NAME25 = "a2c4e6g7" * 3 + "h"  # 25 base32 characters, no hyphen (#276)
 HOME = "work"
 
 
@@ -119,7 +120,7 @@ def test_the_wake_rule_reads_the_threads_under_the_same_key(state: Path, monkeyp
     assert "root1" in ownpost.guest_threads(UID)
     (state / f"threads-{NAME}.env").unlink()
     assert ownpost.guest_threads(UID) == {}
-    monkeypatch.delenv("CB_PLANB_TEST")
+    monkeypatch.setattr(session_file, "_nats_name", None)
     assert "root1" in ownpost.guest_threads(UID)  # way back: the old file
 
 
@@ -131,3 +132,85 @@ def test_remove_forgets_both_keys(state: Path, monkeypatch: pytest.MonkeyPatch) 
     ownpost.remove(UID)
     unanswered.remove(UID)
     assert [p.name for p in state.iterdir()] == []
+
+
+def test_remove_also_forgets_the_copy_marker(state: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+    (state / f"last-{UID}.env").write_text("MSG=x\n")
+    session_file.copy_state_once(UID, NAME)
+    assert (state / f"copied-{NAME}.env").exists()
+    _on(monkeypatch)
+    ownpost.remove(UID)
+    assert not (state / f"copied-{NAME}.env").exists()
+
+
+def test_the_key_survives_the_switch_going_away(state: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+    """The bus detaches its switch source at stop(), before the exit handler's BYE: the key
+    was decided at start (RT-6.2 step 9)."""
+    src = lambda _ch: frozenset({2})  # noqa: E731
+    monkeypatch.delenv("CB_PLANB_TEST", raising=False)
+    planb.attach(src)
+    try:
+        assert planb.on(2, HOME)
+        session_file.use_nats_name(NAME, HOME)
+        assert ownpost.path(UID) == state / f"last-{NAME}.env"
+    finally:
+        planb.detach(src)
+    assert planb.on(2, HOME) is False
+    assert ownpost.path(UID) == state / f"last-{NAME}.env"
+    assert unanswered.path(UID) == state / f"unanswered-{NAME}.env"
+
+
+def _age(path: Path, secs: int) -> None:
+    import os
+    st = path.stat()
+    os.utime(path, ns=(st.st_atime_ns, st.st_mtime_ns + secs * 10**9))
+
+
+def test_copy_replaces_an_older_name_file_with_a_newer_source(state: Path) -> None:
+    (state / f"last-{NAME}.env").write_text("MSG=old\n")
+    (state / f"last-{UID}.env").write_text("MSG=newer\n")
+    _age(state / f"last-{UID}.env", 10)
+    assert session_file.copy_state_once(UID, NAME) == ["last"]
+    assert (state / f"last-{NAME}.env").read_text() == "MSG=newer\n"
+    _age(state / f"last-{NAME}.env", 20)  # written after the source, as in life
+    assert session_file.copy_state_once(UID, NAME) == []  # now the name's is the newer
+
+
+def test_copy_after_off_then_on_takes_what_the_off_session_wrote(state: Path) -> None:
+    (state / f"last-{UID}.env").write_text("MSG=1\n")
+    assert session_file.copy_state_once(UID, NAME) == ["last"]
+    (state / f"last-{UID}.env").write_text("MSG=2 written with the switch off\n")
+    _age(state / f"last-{UID}.env", 10)
+    assert session_file.copy_state_once(UID, NAME) == ["last"]  # the marker does not block it
+    assert (state / f"last-{NAME}.env").read_text().startswith("MSG=2")
+
+
+def test_copy_keeps_a_newer_name_file_and_refuses_a_symlink_target(state: Path) -> None:
+    (state / f"last-{UID}.env").write_text("MSG=old\n")
+    (state / f"last-{NAME}.env").write_text("MSG=newer\n")
+    _age(state / f"last-{NAME}.env", 10)
+    assert session_file.copy_state_once(UID, NAME) == []
+    assert (state / f"last-{NAME}.env").read_text() == "MSG=newer\n"
+    (state / f"last-{NAME}.env").unlink()
+    (state / "elsewhere").write_text("secret\n")
+    (state / f"last-{NAME}.env").symlink_to(state / "elsewhere")
+    assert session_file.copy_state_once(UID, NAME) == []
+    assert (state / "elsewhere").read_text() == "secret\n"
+
+
+def test_a_name_with_capitals_is_no_file_key(state: Path) -> None:
+    assert not session_file.key_ok("Agent-" + "a2" * 13)
+    assert session_file.state_key(UID, "Agent-X") == UID
+    session_file.use_nats_name("Agent-X", HOME)
+    assert session_file.state_key(UID) == UID
+    assert session_file.copy_state_once(UID, "Agent-X") == []
+
+
+def test_a_25_character_name_without_a_hyphen_is_a_key(state: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+    assert session_file.key_ok(NAME25)
+    assert lease._file("presence", NAME25) == state / f"presence-{NAME25}.env"
+    monkeypatch.setenv("CB_PLANB_TEST", "2")
+    session_file.use_nats_name(NAME25, HOME)
+    assert ownpost.path(UID) == state / f"last-{NAME25}.env"
+    (state / f"last-{UID}.env").write_text("MSG=hi\n")
+    assert session_file.copy_state_once(UID, NAME25) == ["last"]
