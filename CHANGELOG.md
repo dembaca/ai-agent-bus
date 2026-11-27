@@ -192,8 +192,10 @@ before 0.5.0 are described in the git history.
   (`natsbus.decode_channel_record`), and with the new switch `planb.on(1,
   channel)` on, `NatsPort.resolve` and the people's id map take the ids from
   it, and the start makes no Mattermost call for channels, only after the
-  bus is up. The switch is the channel's plan B piece 1 (the switches entry
-  above), off by default, so behaviour is as before. Hosts' credential: the record is new; an older
+  bus is up and has read its records (`planb.known`, waited for up to 20 s;
+  a switch not read by then counts as off). The switch is the channel's plan
+  B piece 1 (the switches entry above), off by default, so behaviour is as before.
+  Hosts' credential: the record is new; an older
   login service writes none, so the switch must stay off until it runs this
   version. The login service's NATS configuration needs the publish right
   on `presence.directory.*.v1` for its JetStream user (the example

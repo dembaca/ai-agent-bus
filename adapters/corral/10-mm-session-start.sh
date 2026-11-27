@@ -473,8 +473,8 @@ cleanup_and_fail() {
   exit 1
 }
 
-# With plan B piece 1 on (CB_PLANB_TEST, RT-6.39 step 6) the script reads and joins nothing in
-# Mattermost: the channels come from the channel directory with the NATS credential.
+# The script joins the bot as before also with plan B piece 1 on (RT-6.39 step 6): the MCP
+# server then takes the channel ids from the channel directory with the NATS credential.
 if ! chan_exports="$(mm_with_token "$BIN/mm-agent-channels.sh" resolve)"; then
   cleanup_and_fail "channel resolution failed"
 fi

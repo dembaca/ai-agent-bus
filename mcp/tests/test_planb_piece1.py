@@ -2,8 +2,8 @@
 channel ids from the channel directory, through the channel record the login service writes with
 the credential (`<presence>.directory.<agent>.v1`), instead of reading them from Mattermost.
 
-The switch is planb.on(1, channel), a stub that CB_PLANB_TEST="1" turns on. Unit tests of the
-switch and the record's decoder, and, with MM_TEST_NATS=1 and CB_NATS_SERVER, tests against a
+The switch is planb.on(1, channel): the channel's plan B record (RT-6.39 step 5), or
+CB_PLANB_TEST="1" in a test. Unit tests of the switch and the record's decoder, and, with MM_TEST_NATS=1 and CB_NATS_SERVER, tests against a
 real nats-server (the rig of test_natsbus.py) for `NatsPort.resolve` and the records' key.
 """
 
@@ -33,6 +33,24 @@ def test_the_switch_is_off_unless_the_test_variable_names_the_piece(monkeypatch:
     assert planb.on(1, "x") is True and planb.on(3, "x") is True and planb.on(4, "x") is False
     monkeypatch.setenv("CB_PLANB_TEST", "11,")
     assert planb.on(1, "home") is False  # piece 11 is not piece 1
+
+
+def test_known_follows_the_attached_source() -> None:
+    """RT-6.39 step 6: the switch is known only from a source that says it has read its records."""
+    def src(_c: str) -> frozenset[int]:
+        return frozenset({1})
+    read = [False]
+    assert planb.known() is False
+    planb.attach(src)
+    try:
+        assert planb.known() is False  # a source without a reading of its own is never known
+        planb.attach(src, lambda: read[0])
+        assert planb.known() is False
+        read[0] = True
+        assert planb.known() is True
+    finally:
+        planb.detach(src)
+    assert planb.known() is False
 
 
 def _body(**over: Any) -> bytes:
@@ -192,3 +210,26 @@ async def test_a_record_past_its_exp_is_ignored(rig: Rig, monkeypatch: pytest.Mo
         assert await bus.wait_channel_ids(10.0) == {"home": DIRECTORY_ID}
     finally:
         await bus.stop()
+
+
+async def test_the_real_switch_turns_piece_1_on_once_the_bus_has_read_it(
+        rig: Rig, monkeypatch: pytest.MonkeyPatch) -> None:
+    """RT-6.39 step 6 by the switch of step 5, not CB_PLANB_TEST: the channel's plan B record
+    names piece 1, the start waits until the bus has read its records (planb.known) and then
+    takes the home's id from the channel record, with no Mattermost read."""
+    monkeypatch.delenv("CB_PLANB_TEST", raising=False)
+    assert planb.known() is False  # no bus: nothing read
+    await rig.admin.publish("presence.planb.home.v1", json.dumps({"v": 1, "channel": "home", "pieces": [1]}).encode())
+    await _record(rig, "alice", {"home": DIRECTORY_ID})
+    inner = NoMattermost(FakeRegistrar())
+    port = _port(rig, inner)
+    await _login_service(rig.admin, rig.names["alice"], ["home"], {})
+    await asyncio.wait_for(port.start(rig.logins["alice"], owner="alice"), 15)
+    try:
+        assert planb.known() is True and planb.on(1, "home") is True
+        assert await port.resolve() == {"home": DIRECTORY_ID} and port.home_id == DIRECTORY_ID
+        assert inner.reads == []
+    finally:
+        await port.stop()
+    assert planb.known() is False  # the stopped bus detached its source
+
