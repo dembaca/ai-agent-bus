@@ -11,7 +11,7 @@ import json
 from mattermost_ai_agent_bus.natsbus import (
     MAX_AGE_SEC, PRESENCE_FRESH_SEC, PresenceCard, encode_presence,
 )
-from console_server.fleet import Fleet, short_name
+from console_server.fleet import LAST_POST_SKEW_SEC, Fleet, last_post_at, short_name
 
 
 def ack(stream: str, consumer: str, sseq: int, cseq: int, ts: float,
@@ -456,6 +456,33 @@ def test_an_older_mcp_server_leaves_the_card_unknown() -> None:
     assert c is not None
     assert (c["harness"], c["model"], c["task"], c["branch"], c["openAsks"]) == \
         (None, "", "", None, None)
+    assert c["lastPostAt"] is None
+
+
+def test_the_last_post_is_the_presences_word_bounded_by_its_time() -> None:
+    """RT-6.37 step 6: the presence's `last_post` (epoch seconds) becomes `lastPostAt`
+    in ms; a time a little past the presence that states it is that presence's time, one
+    beyond the skew or out of the encoder's bounds is unknown (null), never 0."""
+    f = Fleet()
+    feed(f, (*presence_with("agent-a", PresenceCard(last_post=1763980700)),
+             ack("PRESENCE", "console", 1, 1, 1763980760.0)))
+    c = f.card("agent-a")
+    assert c is not None and c["lastPostAt"] == 1763980700_000
+    feed(f, (*presence_with("agent-a", PresenceCard(last_post=1763980800)),
+             ack("PRESENCE", "console", 2, 2, 1763980770.0)))
+    c = f.card("agent-a")
+    assert c is not None and c["lastPostAt"] == 1763980770_000
+    feed(f, (*presence_with("agent-a", PresenceCard(last_post=1763980770 + LAST_POST_SKEW_SEC + 11)),
+             ack("PRESENCE", "console", 3, 3, 1763980780.0)))
+    c = f.card("agent-a")
+    assert c is not None and c["lastPostAt"] is None
+    for i, bad in enumerate(('"1763980700"', "1763980700.5", "true", "1763980700000", "-5")):
+        raw = ('{"v":1,"status":"online","last_post":%s}' % bad).encode()
+        feed(f, ("presence.dembaca.agent-a", raw,
+                 ack("PRESENCE", "console", 4 + i, 4 + i, 1763980790.0 + i)))
+        c = f.card("agent-a")
+        assert c is not None and c["state"] != "offline" and c["lastPostAt"] is None, bad
+    assert last_post_at(None, 1e9) is None and last_post_at(1_600_000_000, 1.7e9) == 1_600_000_000_000
 
 
 # --- the graph's person nodes and the card's home (#147, 716d72's review) -------------

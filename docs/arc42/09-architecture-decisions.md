@@ -4547,9 +4547,11 @@ bus". The username is a label an agent may state falsely, never the key: the
 owner beside it is the attested one, a name any other known card (also
 offline, within 24 h) states is shown on neither, and a presence without it
 (an older MCP server) shows the bus name.
-Harness, model, task, branch and the number of open asks come from the
-agent's presence too (RT-6.37 step 6; decided by the owner on 2026-11-25:
-the card's data rides the presence the console already reads). Like the
+Harness, model, task, branch, the number of open asks and the time of the
+agent's last post in its home come from the agent's presence too (RT-6.37
+step 6; decided by the owner on 2026-11-25: the card's data rides the
+presence the console already reads; the last post's time, #201, is a
+time only, never a word of the post). Like the
 name they are self-stated: displayed as text, bounded on decode, never
 trusted for a decision. An older MCP server states none of them, and a
 field that breaks its bound (a branch that is no safe git ref name) is
@@ -4838,8 +4840,10 @@ The console is the operators' view of the bus itself.
    - **In the detail only:** the full card (role, `for` with
      "autonomous", `trusts`, project, capabilities, the limits or the
      cost, the version among it), the task rows it holds, the session's
-     age (its HELLO's time), the time since its last post (both the NATS
-     server's time), its HELLO thread and the threads of its open asks.
+     age (its HELLO's time, the NATS server's), the time since its last
+     post (the agent's own word in its presence, never later than that
+     presence's server time), its HELLO thread and the threads of its open
+     asks.
    - **Not on the bus, so not shown until the bus carries it:** effort,
      sub-agents (they never use the bus), the running turn's duration
      (turns are noted only in the session's own counter file, RT-6.9 step
@@ -4996,7 +5000,7 @@ The console is the operators' view of the bus itself.
     |--------|------|------|
     | A person's credential: the console's client accepted, the name, the rights, the consumers (points 2 and 4) | Login service; a human's review (ADR-014 point 15) | Before stage 1 |
     | Presence, crown and roster over NATS, with the owner and the trusted list as the login service attests them | NATS adapter, login service; built except the roster (RT-6.37, RT-6.38, RT-6.41) | Before stage 1 |
-    | The card on NATS: decided by the owner on 2026-11-25 as the presence; built for the name to show, harness, model, task, branch and the number of open asks (RT-6.37 step 6); the home and the guest channels are read from the subjects the bus already publishes (the ask record's channel, a crown claim, the memberships, #147), the card's other fields are not built | NATS adapter | Built for stage 1 |
+    | The card on NATS: decided by the owner on 2026-11-25 as the presence; built for the name to show, harness, model, task, branch, the number of open asks and the last post's time (RT-6.37 step 6); the home and the guest channels are read from the subjects the bus already publishes (the ask record's channel, a crown claim, the memberships, #147), the card's other fields are not built | NATS adapter | Built for stage 1 |
     | The console's server admitted to NATS: the lab's network rule admits only NATS's own namespace today (ADR-014, the lab today) | The lab; the owner's approval | Before stage 1 |
     | The state word, the numbers and the version in presence | MCP server, message format | Stage 1; until then three columns |
     | The ask and its end on NATS | NATS adapter | Stage 1 |

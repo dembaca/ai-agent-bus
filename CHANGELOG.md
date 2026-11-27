@@ -7,6 +7,16 @@ before 0.5.0 are described in the git history.
 
 ### Added
 
+- **The last post on the operator console's agent cards** (#201, RT-6.37
+  step 6). A NATS home's presence states `last_post`: when the agent last
+  posted in its home, as epoch seconds (the time the MCP server already
+  keeps of the agent's own latest post, never a word of it; a line the
+  server writes on its own does not count), an int from 2020 to 2100 on
+  both sides, else left out. The console fills the card's `lastPostAt`
+  (ms) from it, at most the presence's server time and dropped when more
+  than 5 minutes after it, so the Agents list's "Last post" column and the
+  detail's facts show it. An older MCP server states none: the console
+  shows "n/a"; an older console ignores the key.
 - **The STATS history: a year of statistics, and the stats channel's lines
   imported** (#196, RT-6.45). The `STATS` stream keeps 365 days instead of
   30 (64 MiB, 8 KiB per message and 500 per subject as before, the oldest

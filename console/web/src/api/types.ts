@@ -109,7 +109,9 @@ export interface AgentCard {
    * stated (unknown is never guessed as 0). */
   openAsks: number | null
   asksForOperator: number | null
-  /** Since the HELLO, and the last post (both the servers's clock). */
+  /** Since the HELLO (the server's clock), and the agent's last post in its
+   * home, ms: its presence states it (its clock, never later than that
+   * presence); `null` when not stated (an older MCP server, no post yet). */
   helloAt: number
   lastPostAt: number | null
   /** The post id of its HELLO: opens the HELLO thread in the detail. */

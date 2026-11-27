@@ -28,7 +28,7 @@
     "openAsks": 1,
     "asksForOperator": null,
     "helloAt": 1763980760000,
-    "lastPostAt": null,
+    "lastPostAt": 1763980700000,
     "helloPostId": "",
     "tasks": []
   },
@@ -67,7 +67,7 @@
         "openAsks": 1,
         "asksForOperator": null,
         "helloAt": 1763980760000,
-        "lastPostAt": null,
+        "lastPostAt": 1763980700000,
         "helloPostId": "",
         "tasks": []
       }

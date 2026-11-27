@@ -39,8 +39,8 @@ def fleet_scenario():
     # is `agent_name` (the login service's hash, never the bot's username),
     # the presence subject `NatsBus._presence_subject`, its body
     # `encode_presence(status, bot id, bot username, card)` as `NatsBus` sends
-    # it each heartbeat (the card: the HELLO's harness, model, task, branch and
-    # the open asks, RT-6.37), membership and crown `encode_claim`.
+    # it each heartbeat (the card: the HELLO's harness, model, task, branch, the
+    # open asks and the last post's time, RT-6.37), membership and crown `encode_claim`.
     agent = agent_name("dembaca", NKEY_PUBLIC)
     assert agent == FIXTURE["card"]["name"]
     rows = [
@@ -49,7 +49,8 @@ def fleet_scenario():
          encode_presence("online", BOT_ID, FIXTURE["card"]["displayName"], PresenceCard(
              harness=FIXTURE["card"]["harness"], model=FIXTURE["card"]["model"],
              task=FIXTURE["card"]["task"], branch=FIXTURE["card"]["branch"],
-             asks=FIXTURE["card"]["openAsks"])),
+             asks=FIXTURE["card"]["openAsks"],
+             last_post=FIXTURE["card"]["lastPostAt"] // 1000)),
          ack(1, 1, 1763980760.0)),
         # membership of the channel dev
         (f"presence.member.dev.{agent}", encode_claim(),

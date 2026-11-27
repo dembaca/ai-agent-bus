@@ -321,12 +321,24 @@ _hello: dict[str, str] = {}
 def _presence_card() -> natsbus.PresenceCard:
     """The HELLO card's data the NATS presence carries for the operator console (RT-6.37,
     ADR-015): the harness from the handshake, model, task and branch from the last announce,
-    and how many of this session's asks to a human still wait (asks.waiting). natsbus bounds
-    each field."""
+    how many of this session's asks to a human still wait (asks.waiting), and when the agent
+    last posted in its home. natsbus bounds each field."""
     me = stats.bot_id()
     return natsbus.PresenceCard(harness=stats.harness(), model=_hello.get("model"),
                                 task=_hello.get("task"), branch=_hello.get("branch"),
-                                asks=len(asks.waiting(me)) if me else None)
+                                asks=len(asks.waiting(me)) if me else None,
+                                last_post=_last_post_sec(me))
+
+
+def _last_post_sec(me: str) -> int | None:
+    """When the agent last posted in its home, in epoch seconds (RT-6.37 step 6): ownpost.py's
+    AT, its own posts only (never a line the server writes on its own), the time and nothing
+    of the post; None before its first post or without a bot."""
+    try:
+        at = int(ownpost.read(me).get("AT", "")) if me else 0
+    except ValueError:
+        return None
+    return at // 1000 if at > 0 else None
 
 
 async def _attest_start() -> None:
