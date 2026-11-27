@@ -78,7 +78,12 @@ server: the old one keeps the bot and the new one takes it over, same name, with
 `session_start` (within 24 h; a `BYE` or `session_end` ends the bot at once,
 [RT-6.10](../docs/arc42/06-runtime-view.md#610-session-registered-by-the-agent)).
 
-### Token usage
+#At a session's start the plugin asks the server for a waiting NATS login
+approval (`GET /v1/login`, #198): when one waits it puts the link and the code
+into the session once as a synthetic line — never a token — and marks it shown;
+a grant that starts later is shown by the first turn's notice.
+
+## Token usage
 
 The plugin splits its session's tokens into task work, bus overhead and coordination
 in process ([`opencode/plugin/usage.ts`](../opencode/plugin/usage.ts); the rules:

@@ -51,6 +51,14 @@ before 0.5.0 are described in the git history.
   graph fits itself again when its width changes. Back and Forward, the
   list's search and filter keep working.
 
+- **The NATS login link reaches the agent's terminal** (#198, RT-6.34 step 4).
+  The MCP server hands the waiting approval (link and code, never a token) to
+  the harness on `GET /v1/login` of its hook API, and the harness shows it once:
+  Claude Code's session-start hook as a `systemMessage`, the pi extension's
+  notice and the OpenCode plugin's synthetic line. The line is marked shown with
+  `POST /v1/login/shown`, so the next turn's notice does not repeat it; a grant
+  that starts after the session start is shown by the first turn's notice.
+
 ### Docs
 
 - **The coordinator's hourly check** (`coordinator.md`, the coordinator scenario
