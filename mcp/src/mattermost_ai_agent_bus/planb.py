@@ -3,7 +3,9 @@
 A switch is one per plan B piece (1 to 13) and channel, off by default. An administrator sets
 it in the channel directory; the login service writes the pieces that are on for a channel on
 the presence stream, `<presence>.planb.<channel>.v1`, at each credential. A running NatsBus
-attaches its reading of those records as the source; `on` asks it.
+attaches its reading of those records as the source; `on` asks it. `known` says whether that
+reading is complete: the bus has read the presence stream's records once (RT-6.39 step 6 asks it
+before it decides or keeps anything by a switch).
 
 Absent means off: a piece that is not switched on takes the old path, over the agent's
 registrar bot. A home that is not over NATS has no source, so every piece is off there.
@@ -28,19 +30,23 @@ MAX_PIECE = 13  # piece 14, "registration ends", is no switch
 TEST_ENV = "CB_PLANB_TEST"
 
 _source: Callable[[str], frozenset[int]] | None = None
+_known: Callable[[], bool] | None = None
 _warned: set[str] = set()
 
 
-def attach(source: Callable[[str], frozenset[int]]) -> None:
-    global _source
+def attach(source: Callable[[str], frozenset[int]], known: Callable[[], bool] | None = None) -> None:
+    """`known` says whether the source has read the records (none: `known` stays false)."""
+    global _source, _known
     _source = source
+    _known = known
 
 
 def detach(source: Callable[[str], frozenset[int]]) -> None:
     """Clears the source only when it is the attached one (bound methods of one object match)."""
-    global _source
+    global _source, _known
     if _source is not None and _source == source:
         _source = None
+        _known = None
 
 
 def _warn_once(key: str, text: str, *args: object) -> None:
@@ -86,4 +92,18 @@ def on(piece: int, channel: str) -> bool:
         return piece in source(channel)
     except Exception as exc:
         log.debug("plan B source failed for %s: %s", channel, exc)
+        return False
+
+
+def known() -> bool:
+    """True once `on` answers from the records read, not for want of them: a source is attached
+    and has read the presence stream's records (the bus is synced). Before that a switch that is
+    on reads as off, so nothing may be decided or kept by it (RT-6.39 step 6)."""
+    fn = _known
+    if _source is None or fn is None:
+        return False
+    try:
+        return bool(fn())
+    except Exception as exc:
+        log.debug("plan B known failed: %s", exc)
         return False

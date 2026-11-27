@@ -94,6 +94,11 @@ type Channel struct {
 	// PlanB are the plan B pieces switched on in the channel (1 to MaxPiece,
 	// sorted, each once; planb.go, RT-6.39 step 5); none by default.
 	PlanB []int `json:"planb,omitempty"`
+	// ChatIDs name the same channel by the chat's own id, by product
+	// ("mattermost": its channel id). The signed records of a channel are keyed
+	// by it (ADR-014 phase 5 piece 1, RT-6.39 step 6): the session takes the id
+	// from here, from its credential's channel record, instead of asking the chat.
+	ChatIDs map[string]string `json:"chat_ids,omitempty"`
 }
 
 // Identity is a human on the bus: a Keycloak identity.
@@ -328,6 +333,12 @@ func (s *Store) Channel(ctx context.Context, name string) (Channel, uint64, bool
 	return c, rev, ok, err
 }
 
+// chatIDRe is a Mattermost id: 26 characters of a-z0-9.
+var chatIDRe = regexp.MustCompile(`^[a-z0-9]{26}$`)
+
+// ValidChatID reports whether id is a Mattermost id (26 characters, a-z0-9).
+func ValidChatID(id string) bool { return chatIDRe.MatchString(id) }
+
 // PutChannel writes a channel over revision rev (0: a new one).
 func (s *Store) PutChannel(ctx context.Context, c Channel, rev uint64) (uint64, error) {
 	if err := checkChannel(c.Name); err != nil {
@@ -351,6 +362,11 @@ func (s *Store) PutChannel(ctx context.Context, c Channel, rev uint64) (uint64, 
 		return 0, err
 	}
 	c.PlanB = pieces
+	for product, id := range c.ChatIDs {
+		if product != "mattermost" || !ValidChatID(id) {
+			return 0, fmt.Errorf("%w: chat id %.64q for product %.32q (only mattermost, 26 characters a-z0-9)", ErrBadKey, id, product)
+		}
+	}
 	return s.put(ctx, channelPrefix+c.Name, c, rev)
 }
 
@@ -372,6 +388,26 @@ func (s *Store) Memberships(ctx context.Context, sub string, channels []string) 
 			return nil, err
 		}
 		out[name] = ok && (c.Public || slices.Contains(c.Members, sub))
+	}
+	return out, nil
+}
+
+// ChatIDs gives, for the channels named, the chat's own id of each that is in
+// the directory with an id for the product; others are left out. A read that
+// fails is an error, never an empty answer.
+func (s *Store) ChatIDs(ctx context.Context, product string, names []string) (map[string]string, error) {
+	out := make(map[string]string, len(names))
+	for _, name := range names {
+		if checkChannel(name) != nil {
+			continue
+		}
+		c, _, ok, err := s.Channel(ctx, name)
+		if err != nil {
+			return nil, err
+		}
+		if id := c.ChatIDs[product]; ok && id != "" {
+			out[name] = id
+		}
 	}
 	return out, nil
 }
