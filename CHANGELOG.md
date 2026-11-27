@@ -5,6 +5,15 @@ before 0.5.0 are described in the git history.
 
 ## Unreleased
 
+### Fixed
+
+- **A direct message over NATS is answerable in every case** (#258, plan B piece 3,
+  RT-6.36 step 7). `get_thread` on a DM's id refuses it in the same words `reply_in_thread`
+  uses - answer it with `post_message(to=<its sender, as shown_as>)` - instead of a bare
+  `invalid post id`; and a DM back that itself stays on Mattermost settles the open DM
+  record of that agent, which has no channel id to match, so the turn end no longer reminds
+  of a DM the agent has answered.
+
 ### Added
 
 - **Plan B's switch per piece and channel** (#244, ADR-014 phase 5, RT-6.39

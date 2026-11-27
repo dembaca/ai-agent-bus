@@ -2444,3 +2444,64 @@ async def test_a_dm_over_nats_clears_the_open_dms_from_that_agent(monkeypatch: p
     out = json.loads(raw) if isinstance(raw, str) else raw
     assert out["over"] == "nats" and out["to"] == NAME_A
     assert unanswered.read(me) == []
+
+
+async def test_get_thread_refuses_a_direct_message_with_the_answer_hint(monkeypatch: pytest.MonkeyPatch) -> None:
+    """RT-6.36 step 7: a NATS DM has no thread, so get_thread refuses it in the same words the
+    reply path uses - the way to it is a DM back - instead of a bare `invalid post id`."""
+    port, _, _ = make()
+    monkeypatch.setattr(server, "_get_client", lambda: port)
+    out = json.loads(await server.get_thread("n1:@dm:21"))
+    assert out["posted"] is False
+    assert "direct message has no thread" in out["refused"]
+    assert "post_message(to=<its sender, as shown_as>)" in out["refused"]
+    assert "nothing read" in out["refused"]
+
+
+async def test_a_dm_back_on_mattermost_settles_the_open_nats_dm(monkeypatch: pytest.MonkeyPatch) -> None:
+    """RT-6.2 step 2: the answer to a NATS DM may itself stay on Mattermost (the recipient takes
+    no DMs over NATS). That record has no channel to match, so it is cleared by the agent the
+    DM goes to - and a status-only DM answers nothing, as in a thread."""
+    from mattermost_ai_agent_bus import unanswered
+
+    _dm_switch(monkeypatch)  # the piece is on here, the recipient's own flag is off
+    port, inner, fake = make()
+    assert fake is not None
+    _linked_bob(inner, fake, flag=False)  # linked, its own flag off: a Mattermost DM
+    monkeypatch.setattr(server, "_get_client", lambda: port)
+    me = inner.me.id
+
+    def open_dm() -> None:
+        unanswered.add(me, Post(id="n1:@dm:21", channel_id="", root_id="", user_id=NAME_A,
+                                create_at=1_700_000_000_000, message="please"),
+                       channel="", author=NAME_A, dm=True)
+
+    other = Post(id="n1:@dm:22", channel_id="", root_id="", user_id=NAME_B,
+                 create_at=1_700_000_000_001, message="me too")
+    open_dm()
+    unanswered.add(me, other, channel="", author=NAME_B, dm=True)  # another agent's DM
+    await server.post_message("`IDLE` · nothing", to="bob-bot")  # a status answers nothing
+    assert sorted(r.author for r in unanswered.read(me)) == [NAME_A, NAME_B]
+    await server.post_message("`PONG` · hello", to="bob-bot")
+    assert [r.author for r in unanswered.read(me)] == [NAME_B]  # only the one answered
+
+
+async def test_with_the_piece_off_dm_agent_reads_no_link(monkeypatch: pytest.MonkeyPatch) -> None:
+    """RT-6.36 step 7: with the piece off, today's DM path reads no bot at all — `dm_agent`
+    answers before the link read, so the Mattermost path costs no extra request."""
+    calls: list[set[str]] = []
+    _dm_switch(monkeypatch, on=False)
+    port, inner, fake = make()
+    assert fake is not None
+    _linked_bob(inner, fake)
+    named = inner.bots_named
+
+    async def counted(usernames: Any) -> Any:
+        calls.append(set(usernames))
+        return await named(usernames)
+
+    monkeypatch.setattr(inner, "bots_named", counted)
+    assert await port.dm_agent("bob-bot") == ""
+    assert calls == []
+    _dm_switch(monkeypatch)  # on: the link is read, and names the agent
+    assert await port.dm_agent("bob-bot") == NAME_A and calls == [{"bob-bot"}]
