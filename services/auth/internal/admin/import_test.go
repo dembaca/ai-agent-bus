@@ -592,7 +592,7 @@ func TestUnionThatGrowsTooBigOnRetryIsTooBig(t *testing.T) {
 	if _, err := store.PutChannel(ctx(t), filled, rev); err != nil { // the concurrent write
 		t.Fatal(err)
 	}
-	if _, err := unionMembers(ctx(t), store, cur, rev, []string{"sub-new1", "sub-new2"}); !errors.Is(err, errTooBig) {
+	if _, err := unionMembers(ctx(t), store, cur, rev, []string{"sub-new1", "sub-new2"}, ""); !errors.Is(err, errTooBig) {
 		t.Fatalf("got %v", err)
 	}
 	if c, _, _, _ := store.Channel(ctx(t), "crowd"); len(c.Members) != directory.MaxMembers {
@@ -762,5 +762,40 @@ func TestImportRecordsMattermostAccountsAndReportsAConflict(t *testing.T) {
 	}
 	if rep.Identities != 3 {
 		t.Fatalf("identities %d, want 3", rep.Identities)
+	}
+}
+
+// A channel made before `chat_ids` existed gets the chat's id with the next import's
+// write; one that has an id keeps it, and an id that is none is not written.
+func TestTheUnionFillsInAMissingChatIdAndKeepsOne(t *testing.T) {
+	store := newStore(t)
+	if _, err := store.PutChannel(ctx(t), directory.Channel{Name: "old", Members: []string{"sub-a"}}, 0); err != nil {
+		t.Fatal(err)
+	}
+	cur, rev, _, _ := store.Channel(ctx(t), "old")
+	const id = "abcdefghijklmnopqrstuvwxyz"
+	if n, err := unionMembers(ctx(t), store, cur, rev, []string{"sub-a"}, id); err != nil || n != 0 {
+		t.Fatalf("%d %v", n, err)
+	}
+	cur, rev, _, _ = store.Channel(ctx(t), "old")
+	if cur.ChatIDs["mattermost"] != id {
+		t.Fatalf("not filled in: %+v", cur)
+	}
+	if _, err := unionMembers(ctx(t), store, cur, rev, []string{"sub-a"}, "zyxwvutsrqponmlkjihgfedcba"); err != nil {
+		t.Fatal(err)
+	}
+	if got, _, _, _ := store.Channel(ctx(t), "old"); got.ChatIDs["mattermost"] != id {
+		t.Fatalf("overwritten: %+v", got)
+	}
+	cur2 := directory.Channel{Name: "old2", Members: []string{"sub-a"}}
+	if _, err := store.PutChannel(ctx(t), cur2, 0); err != nil {
+		t.Fatal(err)
+	}
+	c2, r2, _, _ := store.Channel(ctx(t), "old2")
+	if _, err := unionMembers(ctx(t), store, c2, r2, []string{"sub-a"}, "c1"); err != nil {
+		t.Fatal(err)
+	}
+	if got, _, _, _ := store.Channel(ctx(t), "old2"); len(got.ChatIDs) != 0 {
+		t.Fatalf("an id that is none was written: %+v", got)
 	}
 }

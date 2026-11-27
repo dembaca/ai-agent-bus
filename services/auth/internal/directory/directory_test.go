@@ -1303,3 +1303,24 @@ func TestAKeyTakenAfterTheTouchFailsTheLogin(t *testing.T) {
 		t.Fatal("a's record names a key another identity holds")
 	}
 }
+
+// A channel's chat ids are checked on write (RT-6.39 step 6): one known product,
+// a 26-character a-z0-9 id; one bad id would drop an agent's whole channel record.
+func TestAChannelsChatIdsAreChecked(t *testing.T) {
+	s, _ := open(t)
+	good := "abcdefghijklmnopqrstuvwxyz"
+	for name, ids := range map[string]map[string]string{
+		"product": {"slack": good},
+		"short":   {"mattermost": "abc"},
+		"upper":   {"mattermost": "ABCDEFGHIJKLMNOPQRSTUVWXYZ"},
+		"long":    {"mattermost": good + "a"},
+		"empty":   {"mattermost": ""},
+	} {
+		if _, err := s.PutChannel(ctx(t), Channel{Name: "bad" + name, ChatIDs: ids}, 0); !errors.Is(err, ErrBadKey) {
+			t.Errorf("%s: %v", name, err)
+		}
+	}
+	if _, err := s.PutChannel(ctx(t), Channel{Name: "good", ChatIDs: map[string]string{"mattermost": good}}, 0); err != nil {
+		t.Fatal(err)
+	}
+}

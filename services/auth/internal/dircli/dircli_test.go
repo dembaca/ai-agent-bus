@@ -141,7 +141,7 @@ func (r *rig) serveAPI(w http.ResponseWriter, req *http.Request) {
 		_, _ = io.WriteString(w, b)
 		return
 	}
-	chJSON := `{"name":"dev team","owner":"u1","public":false,"members":["m1","m2"],"bindings":{"mattermost":"dev"}}`
+	chJSON := `{"name":"dev team","owner":"u1","public":false,"members":["m1","m2"],"bindings":{"mattermost":"dev"},"chat_ids":{"mattermost":"cccccccccccccccccccccccccc"}}`
 	switch {
 	case p == "/v1/directory/channels":
 		_, _ = io.WriteString(w, `[`+chJSON+`]`)
@@ -294,15 +294,18 @@ func TestCommands(t *testing.T) {
 		body   string // "" = none
 	}{
 		{"show", []string{"show", "dev team"}, "GET", "/v1/directory/channels/dev%20team", "", "", ""},
-		{"create", []string{"create", "a/b", "--owner", "u9", "--public"}, "PUT", "/v1/directory/channels/a%2Fb", "", "*", `{"owner":"u9","public":true,"bindings":null}`},
-		{"owner", []string{"owner", "dev team", "u2"}, "PUT", "/v1/directory/channels/dev%20team", `"5"`, "", `{"owner":"u2","public":false,"bindings":{"mattermost":"dev"}}`},
-		{"owner clear", []string{"owner", "dev team", "-"}, "PUT", "/v1/directory/channels/dev%20team", `"5"`, "", `{"owner":"","public":false,"bindings":{"mattermost":"dev"}}`},
-		{"public", []string{"public", "dev team", "on"}, "PUT", "/v1/directory/channels/dev%20team", `"5"`, "", `{"owner":"u1","public":true,"bindings":{"mattermost":"dev"}}`},
+		{"create", []string{"create", "a/b", "--owner", "u9", "--public"}, "PUT", "/v1/directory/channels/a%2Fb", "", "*", `{"owner":"u9","public":true,"bindings":null,"chat_ids":null}`},
+		{"owner", []string{"owner", "dev team", "u2"}, "PUT", "/v1/directory/channels/dev%20team", `"5"`, "", `{"owner":"u2","public":false,"bindings":{"mattermost":"dev"},"chat_ids":{"mattermost":"cccccccccccccccccccccccccc"}}`},
+		{"owner clear", []string{"owner", "dev team", "-"}, "PUT", "/v1/directory/channels/dev%20team", `"5"`, "", `{"owner":"","public":false,"bindings":{"mattermost":"dev"},"chat_ids":{"mattermost":"cccccccccccccccccccccccccc"}}`},
+		{"public", []string{"public", "dev team", "on"}, "PUT", "/v1/directory/channels/dev%20team", `"5"`, "", `{"owner":"u1","public":true,"bindings":{"mattermost":"dev"},"chat_ids":{"mattermost":"cccccccccccccccccccccccccc"}}`},
 		// plan B's switches (RT-6.39 step 5): the list sorted, "-" all off
-		{"planb", []string{"planb", "dev team", "6, 1,13"}, "PUT", "/v1/directory/channels/dev%20team", `"5"`, "", `{"owner":"u1","public":false,"bindings":{"mattermost":"dev"},"planb":[1,6,13]}`},
-		{"planb off", []string{"planb", "dev team", "-"}, "PUT", "/v1/directory/channels/dev%20team", `"5"`, "", `{"owner":"u1","public":false,"bindings":{"mattermost":"dev"},"planb":[]}`},
+		{"planb", []string{"planb", "dev team", "6, 1,13"}, "PUT", "/v1/directory/channels/dev%20team", `"5"`, "", `{"owner":"u1","public":false,"bindings":{"mattermost":"dev"},"planb":[1,6,13],"chat_ids":{"mattermost":"cccccccccccccccccccccccccc"}}`},
+		{"planb off", []string{"planb", "dev team", "-"}, "PUT", "/v1/directory/channels/dev%20team", `"5"`, "", `{"owner":"u1","public":false,"bindings":{"mattermost":"dev"},"planb":[],"chat_ids":{"mattermost":"cccccccccccccccccccccccccc"}}`},
 		{"members add", []string{"members", "add", "dev team", "s1", "s2"}, "PATCH", "/v1/directory/channels/dev%20team/members", `"5"`, "", `{"add":["s1","s2"],"remove":[]}`},
 		{"members rm", []string{"members", "rm", "dev team", "m1"}, "PATCH", "/v1/directory/channels/dev%20team/members", `"5"`, "", `{"add":[],"remove":["m1"]}`},
+		{"chat-id", []string{"chat-id", "dev team", "mattermost", "abcdefghijklmnopqrstuvwxyz"}, "PUT", "/v1/directory/channels/dev%20team", `"5"`, "", `{"owner":"u1","public":false,"bindings":{"mattermost":"dev"},"chat_ids":{"mattermost":"abcdefghijklmnopqrstuvwxyz"}}`},
+		// removing the last chat id sends an empty map, which clears them; leaving the key out would keep them
+		{"chat-id remove", []string{"chat-id", "dev team", "mattermost", "-"}, "PUT", "/v1/directory/channels/dev%20team", `"5"`, "", `{"owner":"u1","public":false,"bindings":{"mattermost":"dev"},"chat_ids":{}}`},
 		{"import", []string{"import"}, "POST", "/v1/directory/import", "", "", ""},
 		{"stats-import", []string{"stats-import"}, "POST", "/v1/stats/import", "", "", ""},
 		{"pending", []string{"pending"}, "GET", "/v1/directory/pending", "", "", ""},
