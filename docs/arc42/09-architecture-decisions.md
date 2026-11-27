@@ -4430,7 +4430,7 @@ Nothing of it is built.
         RT-6.30) and its self-update between sessions (RT-6.32), and the
         block on self-registration in the sandbox (RT-6.10 step 1).
       - The release notice (RT-6.30) loses its check, which runs only
-        from the host copy. Decided by the owner on 2026-11-27 (ask `i1wy6gb8ijfpuceuq3ptbz6s8y`), decided with this piece: the MCP
+        from the host copy. Decided by the owner on 2026-11-27 (ask `i1wy6gb8ijfpuceuq3ptbz6s8y`): the MCP
         server tells its human the version the release record names,
         which the bridge serves signed with its own key (#151 step 4),
         and which follows the version the console pins after its
