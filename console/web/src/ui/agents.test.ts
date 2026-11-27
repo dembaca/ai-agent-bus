@@ -8,6 +8,11 @@ describe("tokenCount (#201)", () => {
       .toEqual(["0", "950", "1k", "92.1k", "640k", "1.2M", "12M"])
     expect(tokenCount(null)).toBe("n/a")
   })
+
+  it("picks the unit after rounding: 999,999 is 1M, never 1000k", () => {
+    expect([999_499, 999_500, 999_999, 99_949, 99_950, 1_949_999, 1_999_999, 99_960_000].map(tokenCount))
+      .toEqual(["999k", "1M", "1M", "99.9k", "100k", "1.9M", "2M", "100M"])
+  })
 })
 
 function card(name: string, state: AgentState | string, extra: Partial<AgentCard> = {}): AgentCard {

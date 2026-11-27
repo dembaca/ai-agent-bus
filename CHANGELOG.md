@@ -5,6 +5,36 @@ before 0.5.0 are described in the git history.
 
 ## Unreleased
 
+### Added
+
+- **The last post on the operator console's agent cards** (#201, RT-6.37
+  step 6). A NATS home's presence states `last_post`: when the agent last
+  posted in its home, as epoch seconds (the time the MCP server already
+  keeps of the agent's own latest post, never a word of it, and only when
+  that record names the home's channel; a line the server writes on its
+  own does not count), an int from 2020 to 2100 on both sides, else left
+  out. The console fills the card's `lastPostAt` (ms) from it, at most the
+  presence's server time and dropped when more than 5 minutes after it, so
+  the Agents list's "Last post" column and the detail's facts show it,
+  only on the cards of own or trusted agents (the owner's decision of
+  2026-11-27, the same check as the per-agent numbers; the presence
+  carries it for every reader of the stream): every other card, and every
+  card before the login's own record gave the operator's anchor, says
+  "The last post shows only for own or trusted agents, from their first
+  post in their home on." An older MCP server states none; an older
+  console ignores the key.
+- **The per-agent numbers on the console's pages** (#201). The app reads
+  `GET /v1/agent-stats` (0.104.0) every 30 s: the Agents list gains a
+  "Tokens today" column (the tokens of the last 24 hours) and an agent's
+  detail a "Today" block (tokens with the split by type, posts, wakes and
+  tool calls of 24 hours). An agent without a row shows a dash whose
+  title, the list's footnote and the detail say: "No per-agent numbers for
+  agents of other owners. Rows are of own or trusted agents running now:
+  one has no row until its first STATS part arrives, and loses it when it
+  goes offline." A row without token counts shows n/a, never 0; no
+  overhead share is computed from the sums. The mock's rows now name
+  agents of its own fleet.
+
 ### Changed
 
 - **The fault rig's leftovers from #209's review** ([#218](https://github.com/dembaca/ai-agent-bus/issues/218),
@@ -51,33 +81,6 @@ deprecation warning; they go in 0.105.0, the removal release
 
 ### Added
 
-- **The last post on the operator console's agent cards** (#201, RT-6.37
-  step 6). A NATS home's presence states `last_post`: when the agent last
-  posted in its home, as epoch seconds (the time the MCP server already
-  keeps of the agent's own latest post, never a word of it, and only when
-  that record names the home's channel; a line the server writes on its
-  own does not count), an int from 2020 to 2100 on
-  both sides, else left out. The console fills the card's `lastPostAt`
-  (ms) from it, at most the presence's server time and dropped when more
-  than 5 minutes after it, so the Agents list's "Last post" column and the
-  detail's facts show it, only on the cards of own or trusted agents (the
-  owner's decision of 2026-11-27, the same check as the per-agent numbers;
-  the presence carries it for every reader of the stream): every other
-  card, and every card before the login's own record gave the operator's
-  anchor, says "The last post shows only for own or trusted agents, from
-  their first post in their home on." An older MCP server states none; an
-  older console ignores the key.
-- **The per-agent numbers on the console's pages** (#201). The app reads
-  `GET /v1/agent-stats` every 30 s: the Agents list gains a "Tokens today"
-  column (the tokens of the last 24 hours) and an agent's detail a "Today"
-  block (tokens with the split by type, posts, wakes and tool calls of 24
-  hours). An agent without a row shows a dash whose title, the list's
-  footnote and the detail say: "No per-agent numbers for agents of other
-  owners. Rows are of own or trusted agents running now: one has no row
-  until its first STATS part arrives, and loses it when it goes offline."
-  A row without token counts
-  shows n/a, never 0; no overhead share is computed from the sums. The
-  mock's rows now name agents of its own fleet.
 - **The STATS history: a year of statistics, and the stats channel's lines
   imported** (#196, RT-6.45). The `STATS` stream keeps 365 days instead of
   30 (64 MiB, 8 KiB per message and 500 per subject as before, the oldest
@@ -106,7 +109,7 @@ deprecation warning; they go in 0.105.0, the removal release
   (`nats-server.example.conf`), before the upgrade starts it. Nothing reads
   the imported lines or more than 7 days yet: the console reads 7 days back.
 
-- **The console's per-agent numbers** (#201's first piece, the design canvas's data): `GET /v1/agent-stats` serves one row per own or trusted agent — one whose attestation names the logged-in operator as owner or trusted (the owner's decision amending ADR-015 point 15, RT-6.43 step 8); another owner's agent, or one without a known attestation, has no row — whose `STATS` parts the session's 7-day reading holds: the token sums of the last 24 hours and of the window (`all`, the split by token type, the input's bus overhead and coordination over the same parts; n/a without `tok` or for an empty object, never 0) and the posts, wakes and tool calls of 24 hours, read-only from the same consumers as the reports. The aggregate reports (`/v1/stats`, and `/metrics` as before) stay visible to every operator for all agents. Its requests count under a route bucket of their own on the metrics page. The browser app's API gains the wire types and the mock rows; the pages show them (the per-agent numbers entry above).
+- **The console's per-agent numbers** (#201's first piece, the design canvas's data): `GET /v1/agent-stats` serves one row per own or trusted agent — one whose attestation names the logged-in operator as owner or trusted (the owner's decision amending ADR-015 point 15, RT-6.43 step 8); another owner's agent, or one without a known attestation, has no row — whose `STATS` parts the session's 7-day reading holds: the token sums of the last 24 hours and of the window (`all`, the split by token type, the input's bus overhead and coordination over the same parts; n/a without `tok` or for an empty object, never 0) and the posts, wakes and tool calls of 24 hours, read-only from the same consumers as the reports. The aggregate reports (`/v1/stats`, and `/metrics` as before) stay visible to every operator for all agents. Its requests count under a route bucket of their own on the metrics page. The browser app's API gains the wire types and the mock rows; no page shows them yet (the design PR #185's follow-ups own the UI).
 
 - **The fault-run rig runs against the bus over NATS** (#151 step 4c, ADR-014 phase 1): `bus-testrig bus-run --transport nats` runs the same two MCP servers with their home over NATS, against a local nats-server 2.15.3 whose static users carry the rights the login service grants, and injects the phase-1 faults as windows: nats-server restarted (SIGKILL and start on the same store) or hung (SIGSTOP), the receiving server killed and resumed, and a byte proxy in front of NATS that cuts, blackholes, stalls or freezes the line. `bus-testrig coord-run` hard-stops the coordinator and measures the take-over from the successor's crown log. `--summary` prints p50, p95, maximum, loss and duplicates per fault, and the take-over. First finding: a hard-stopped holder sends no `bye`, so the crown passes only once its presence is 90 s old — 89 to 120 s in the small runs (the rig's `CB_HEARTBEAT_SEC=30` (the bus minimum; the default is 300) adds the second beat) — against the phase-4 target of 30 s; a session killed loses every post the consumer pushes until the server notices the dead socket, usually the one in flight: the consumer keeps its position and the gap arrives (100 messages, 10 s window: loss 1), but a pushed one cannot be asked for again (at-most-once, no persisted client watermark; [#213](https://github.com/dembaca/ai-agent-bus/issues/213), fixed in this release, see Fixed). A run whose fault must be recovered from counts only when the session came back: after the window the sender keeps posting until one send succeeds (up to 90 s), an arrival after `kill-client`'s resume is that receiver's, and a run that never got one exits 1 instead of reading as a clean measurement. CI runs every NATS fault with 10 messages and one hard stop per PR, and 100 messages per fault and 50 hard stops nightly. Mattermost stays the default transport, its path unchanged; the take-over on Mattermost is not yet measured (the stand-in carries no election). Nothing in the bus changes.
 - **The central bridge sweeps the agent bots it made** (#151 step 2, RT-6.44): every 10 minutes it disables a bot it made for an agent that has shown no presence and posted nothing for longer than `CB_BRIDGE_MM_BOT_KEEP` (default `24h`, at least `1h`), and revokes the bot's tokens; at most 20 bots per pass, none while the presence feed is stale. A bot is the bridge's only by its prefix and its mark in the description together, never by the prefix alone, so the registrar's bots stay the host sweep's. Last seen is kept in memory: after a restart every bot counts as seen at the start. An agent that comes back gets its bot enabled again and a fresh token at its next message; only bots the sweep disabled (their description marked ` (swept)`) come back, one an admin disabled stays off. No new right, no new endpoint, nothing persisted; hosts notice nothing.

@@ -114,16 +114,18 @@ export const STATS_ROWS_NOTE =
 export const NO_LAST_POST =
   "The last post shows only for own or trusted agents, from their first post in their home on."
 
-/** A token count for a dense cell: 950, 92.1k, 1.2M; null is n/a, never 0. */
+/** A token count for a dense cell: 950, 92.1k, 1.2M; null is n/a, never 0.
+ * The unit is picked after rounding, so 999,999 is 1M, never 1000k. */
 export function tokenCount(n: number | null): string {
   if (n === null) return "n/a"
   if (n < 1000) return String(n)
-  if (n < 1_000_000) return `${trim(n / 1000)}k`
-  return `${trim(n / 1_000_000)}M`
+  const k = rounded(n / 1000)
+  return k < 1000 ? `${k}k` : `${rounded(n / 1_000_000)}M`
 }
 
-function trim(x: number): string {
-  return (x < 100 ? x.toFixed(1) : x.toFixed(0)).replace(/\.0$/, "")
+/** One decimal below 100, none from 100 on. */
+function rounded(x: number): number {
+  return x < 100 ? Math.round(x * 10) / 10 : Math.round(x)
 }
 
 /** The per-agent rows by agent name; null while none was read. */

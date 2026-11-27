@@ -139,6 +139,30 @@ def test_the_events_the_fixture_states(fleet_scenario) -> None:
     assert FIXTURE["events"]["card"]["card"] == FIXTURE["card"]
 
 
+def test_the_last_post_follows_the_anchor_that_arrives_after_the_snapshot(fleet_scenario) -> None:
+    """#201 (the owner's decision of 2026-11-27): the stream's first snapshot comes before
+    the login's own record gave the operator's anchor, so the own agent's card has no last
+    post; once the anchor is there, the next wave sends that card again as a `card` event
+    with the last post, and nothing else changes on it."""
+    from types import SimpleNamespace
+    console = Console(config.Settings(public_url="http://127.0.0.1:8747",
+                                     login_off=True, nats_url="nats://127.0.0.1:4"))
+    console.fleet = fleet_scenario
+    console.fleet.synced = True
+    view = console._view(None)
+    assert view.anchor() is None
+    stream = console._stream(token=None)
+    (first,) = stream.first["cards"]
+    assert first["lastPostAt"] is None
+    view.reader = SimpleNamespace(anchor="dembaca")  # type: ignore[assignment]
+    wave = stream.snapshot()
+    assert wave == [{"type": "card", "card": FIXTURE["card"]}]
+    assert wave[0]["card"]["lastPostAt"] == FIXTURE["card"]["lastPostAt"]
+    assert {k: v for k, v in first.items() if k != "lastPostAt"} == \
+        {k: v for k, v in FIXTURE["card"].items() if k != "lastPostAt"}
+    assert stream.snapshot() == []  # sent once
+
+
 def test_the_app_side_shapes_split_by_seam() -> None:
     """Cards and events are the app's camelCase shapes; asks and /v1/me
     keep the ADR's spellings (`for_me`, `may_answer`, `display_name`) —
