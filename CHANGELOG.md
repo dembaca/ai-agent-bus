@@ -100,16 +100,9 @@ before 0.5.0 are described in the git history.
   other agent is foreign and the gate and the owner split stay on, whatever
   the host's trusted variables say and also with none of them set.
 
-  In a home that `CB_NATS_HOMES` names, the corral start hook no longer
-  looks the trusted humans up and hands over no ids, also with the switch
-  off. With the switch off that changes three things in every such home:
-  the MCP server's trusted ids come from its own lookup with the bot token
-  at run time, not from the hook; a name in `CB_TRUSTED_HUMANS` that no
-  person's account has (or a bot's) is no longer left out by the hook, so
-  when the lookup fails the in-doubt fallback (ADR-016) compares owners
-  with every name listed; and the hook's line "trusted human ... not found
-  (or a bot) — left out" is gone (`bus_info` names what the MCP server did
-  not find). With the switch off (the default) nothing else changes.
+  With the switch off (the default) nothing changes, the corral start hook
+  included: it looks the trusted humans up and hands over their ids as
+  before. With the switch on the MCP server ignores those ids.
 
 - **Plan B's switch per piece and channel** (#244, ADR-014 phase 5, RT-6.39
   step 5). A channel in the channel directory now holds `planb`: the plan B

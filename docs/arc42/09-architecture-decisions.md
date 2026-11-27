@@ -4263,7 +4263,7 @@ reads yet (RT-6.39 step 5).
      - Switch: trusted humans and owners from the attestation. Way back:
        the Mattermost ids and the bot's description again; nothing in
        flight.
-     - Test: a hook test in `tests/hooks/` (no user lookup); a mandate
+     - Test: a hook test in `tests/hooks/` (the hook's lookup and ids stay as before in a NATS home); a mandate
        and an approval decided by anchor; a peer classed own or foreign
        with no description read. Lab: a trusted person's approval and
        mandate still count, anyone else's do not; another owner's agent
@@ -4276,10 +4276,9 @@ reads yet (RT-6.39 step 5).
        record of its NATS name, a Mattermost bot's from the name linked
        to it. Where the build differs from the text above or settles
        what it leaves open: the start hook cannot know the switch, which
-       reaches only the MCP server with the credential, so it skips the
-       lookup for every home `CB_NATS_HOMES` names, also with the switch
-       off, and the MCP server then looks the names up itself with the
-       bot token (the same result, one place later); a Mattermost
+       reaches only the MCP server with the credential, so it stays as it
+       is (its lookup and ids in every home, also one over NATS) and the
+       MCP server ignores the hook's ids with the switch on; a Mattermost
        account approves only with a fresh approver record of its own,
        as a person over NATS does, so a trusted human needs a Mattermost
        account bound to the Keycloak identity (an OpenID login) and the

@@ -500,28 +500,17 @@ mm_with_token "$BIN/mm-agent-status.sh" idle "$PROJECT_RAW" || true
 # approvals. CB_TRUSTED_HUMANS lists usernames on the host (comma-separated).
 # Without it nobody is trusted: MM_REG_SECRET is the registrar's shared secret,
 # not anyone's personal token, so there is no one to infer.
-# In a home over NATS (CB_NATS_HOMES names it) the hook looks nobody up: it hands the
-# names on as listed, and the MCP server checks them by its plan B switch (piece 4,
-# RT-6.41 step 6), which only it knows: from the login service's attestation when on,
-# else by the same lookup with the bot token. So no Mattermost id comes from here.
 TRUSTED="" TRUSTED_IDS=""
-if mm_home_over_nats; then
-  while read -r n; do
-    [[ -n "$n" ]] && TRUSTED+="${TRUSTED:+,}${n}"
-  done < <(mm_trusted_names)
-  [[ -z "$TRUSTED" ]] || log "home over NATS: the MCP server checks the trusted humans (no lookup here)"
-else
-  while read -r n; do
-    [[ -n "$n" ]] || continue
-    if mm_api GET "/api/v4/users/username/${n}" && [[ "$CB_MM_API_STATUS" == "200" ]] &&
-      [[ "$(jq -r '.is_bot // false' <<<"$CB_MM_API_BODY")" == false ]]; then
-      TRUSTED+="${TRUSTED:+,}${n}"
-      TRUSTED_IDS+="${TRUSTED_IDS:+,}$(jq -r '.id' <<<"$CB_MM_API_BODY")"
-    else
-      log "trusted human '${n}' not found (or a bot) — left out"
-    fi
-  done < <(mm_trusted_names)
-fi
+while read -r n; do
+  [[ -n "$n" ]] || continue
+  if mm_api GET "/api/v4/users/username/${n}" && [[ "$CB_MM_API_STATUS" == "200" ]] &&
+    [[ "$(jq -r '.is_bot // false' <<<"$CB_MM_API_BODY")" == false ]]; then
+    TRUSTED+="${TRUSTED:+,}${n}"
+    TRUSTED_IDS+="${TRUSTED_IDS:+,}$(jq -r '.id' <<<"$CB_MM_API_BODY")"
+  else
+    log "trusted human '${n}' not found (or a bot) — left out"
+  fi
+done < <(mm_trusted_names)
 [[ -n "$TRUSTED" ]] || log "no trusted humans — approvals over the bus stay off (set CB_TRUSTED_HUMANS)"
 
 # --- responsible human ---------------------------------------------------------

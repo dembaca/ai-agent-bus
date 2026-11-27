@@ -104,6 +104,22 @@ async def test_off_the_trusted_humans_and_owners_are_mattermosts_as_before(monke
     assert not await port.trust_closed()
 
 
+async def test_the_hooks_ids_count_with_the_switch_off_and_are_ignored_with_it_on(
+        monkeypatch: pytest.MonkeyPatch) -> None:
+    """RT-6.41 step 6: the start hook hands over CB_MM_TRUSTED_HUMAN_USER_IDS in every home,
+    also one over NATS. With the switch off the server uses them as before; with it on it
+    ignores them and takes the trusted humans from its own attestation alone."""
+    monkeypatch.setenv("CB_MM_TRUSTED_HUMAN_USER_IDS", "z" * 26)
+    monkeypatch.setenv("CB_TRUSTED_HUMANS", "zed")
+    monkeypatch.delenv(planb.TEST_ENV, raising=False)
+    port, inner, _fake = _world()
+    inner.trusted = {"z" * 26: "zed"}  # what the client reads from those variables
+    assert await port.trusted_humans() == {"z" * 26: "zed", person_id("u1"): "alice"}
+    monkeypatch.setenv(planb.TEST_ENV, "4")
+    _no_mattermost_trust(monkeypatch, inner)
+    assert await port.trusted_humans() == {HUMAN: "alice", person_id("u1"): "alice"}
+
+
 # --- the trusted humans -------------------------------------------------------------------------------
 
 async def test_on_the_trusted_humans_are_the_attested_anchors_with_no_mattermost_read(

@@ -98,7 +98,7 @@ CB_ENV_NAMES=(
   "CB_AGENT_SESSION_FILE MM_AGENT_SESSION_FILE" "CB_BUS_DEADLINE MM_BUS_DEADLINE"
   "CB_BUS_HOST_DIR MM_BUS_HOST_DIR" "CB_BUS_MAX_TIME MM_BUS_MAX_TIME" "CB_BUS_UPLOAD MM_BUS_UPLOAD"
   "CB_LISTEN_POLL_SEC MM_LISTEN_POLL_SEC" "CB_MM_TEAM_ID MM_TEAM_ID" "CB_REL_GIT_DIR MM_REL_GIT_DIR"
-  "CB_REL_TMP MM_REL_TMP" "CB_BUS_HOOK_DISPATCH MM_BUS_HOOK_DISPATCH" "CB_NATS_HOMES MM_NATS_HOMES"
+  "CB_REL_TMP MM_REL_TMP" "CB_BUS_HOOK_DISPATCH MM_BUS_HOOK_DISPATCH"
 )
 # mm_env_all: mm_env for each of them; 2 when any refuses (CB_ENV_ERR says which).
 mm_env_all() {
@@ -351,23 +351,6 @@ mm_home_channel() {
   local first
   first="$(mm_project_channels | head -n 1)"
   printf '%s' "${first:-$(mm_channel)}"
-}
-
-# Is the home a home over NATS (RT-6.36)? CB_NATS_HOMES names it (mm_env_all took an old
-# name for it), read as the MCP server reads it (compose.nats_homes_from_env): comma or
-# space separated, a leading ~ dropped, any case.
-mm_home_over_nats() {
-  local home want n
-  local -a names=()
-  home="$(mm_home_channel | tr '[:upper:]' '[:lower:]')"
-  want="${CB_NATS_HOMES:-}"
-  [[ -n "$home" && -n "$want" ]] || return 1
-  IFS=$', \t\n' read -r -a names <<<"$want"
-  for n in "${names[@]+"${names[@]}"}"; do
-    n="${n#\~}"
-    [[ -n "$n" && "$(tr '[:upper:]' '[:lower:]' <<<"$n")" == "$home" ]] && return 0
-  done
-  return 1
 }
 
 # Should a session hook register a bot for this session on its own?
