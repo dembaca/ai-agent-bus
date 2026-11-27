@@ -500,6 +500,7 @@ Every block carries two texts: the instruction for the agent (`reason`) and a on
 | Step | Failure | System Response |
 |------|---------|----------------|
 | 1 | No human to ask (no responsible or trusted human configured, none given) | The tool fails; the agent asks in the terminal |
+| any | A tool fails with an `httpx.HTTPStatusError` | The cause shows the status, the method, the URL's scheme, host and path and the reason phrase, with the query, the userinfo and the body hidden (#263); the method, the path (also URL-decoded) and the reason are guarded like any other message, so a token in one of them leaves only the status and the host. A 403 from the registrar adds that the registration secret was refused; every other crash that looks like it holds a token, a password or a long key still names its type only |
 | 1 | The agent already has an open ask to that human (or, for a question, to the 👑) | The new ask is queued (`posted: false`, `queued: true`, `position`, `behind`) and posted when the open one is answered or resolved, as routed then; the human still sees one question at a time. Another human has a queue of their own |
 | 1 | Five asks already wait to that target | Refused: `posted: false`, `queue_full: true`, `open_ask`, and the ids of the queued ones: wait for the answers, or withdraw one with `resolve_ask <q-id>` |
 | 1 | A queued ask has more than one question, or three or four alternatives as an approval | Refused when it is made, not when it would be posted: nothing is queued |
