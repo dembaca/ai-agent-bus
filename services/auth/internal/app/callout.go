@@ -135,7 +135,12 @@ func LoadSettings(env *envname.Env) (Settings, bool, error) {
 		Account:    get("CB_AUTH_ACCOUNT"),
 		Lobby:      get("CB_AUTH_LOBBY"),
 		NamePrefix: get("CB_AUTH_NAME_PREFIX"),
-		Subjects:   callout.Subjects{Prefix: get("CB_AUTH_SUBJECT_PREFIX"), Presence: get("CB_AUTH_PRESENCE_PREFIX"), Stats: get("CB_AUTH_STATS_PREFIX")},
+		Subjects: callout.Subjects{
+			Prefix:   get("CB_AUTH_SUBJECT_PREFIX"),
+			Presence: get("CB_AUTH_PRESENCE_PREFIX"),
+			Stats:    get("CB_AUTH_STATS_PREFIX"),
+			Req:      get("CB_AUTH_REQ_PREFIX"),
+		},
 	}
 	s.Token = token.Config{
 		Issuer:        get("CB_AUTH_KEYCLOAK_ISSUER"),

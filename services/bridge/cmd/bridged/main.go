@@ -38,6 +38,7 @@ import (
 	"github.com/dembaca/ai-agent-bus/services/bridge/internal/registrar/core"
 	"github.com/dembaca/ai-agent-bus/services/bridge/internal/registrar/mattermost"
 	"github.com/dembaca/ai-agent-bus/services/bridge/internal/release"
+	"github.com/dembaca/ai-agent-bus/services/bridge/internal/requests"
 	"github.com/dembaca/ai-agent-bus/services/bridge/internal/signing"
 	"github.com/dembaca/ai-agent-bus/services/bridge/internal/store"
 )
@@ -88,6 +89,22 @@ func run(log *slog.Logger) error {
 	}
 	h := &health{}
 	var wg sync.WaitGroup
+	// The request scaffold (ADR-014 phase 5): requests on <req>.<kind>.<agent>
+	// get this phase's "not built" answer on deliver.<agent>.req.<request id>.
+	// A lost message fails the request; a subscription that cannot be made stops
+	// the bridge, as a stopped presence reader does.
+	if cfg.ReqPrefix != "" {
+		rq := &requests.Handler{Log: log, Prefix: cfg.ReqPrefix}
+		wg.Add(1)
+		go func() {
+			defer wg.Done()
+			if err := rq.Run(ctx, nc); err != nil && ctx.Err() == nil {
+				log.Error("bridge: the request scaffold stopped", "error", err)
+				h.failed.Store(true)
+				stop()
+			}
+		}()
+	}
 	pr := &presence.Reader{Log: log, Deliver: cfg.Deliver + ".presence", Into: snapshot}
 	wg.Add(1)
 	go func() {

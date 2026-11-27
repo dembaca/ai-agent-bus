@@ -7,6 +7,18 @@ before 0.5.0 are described in the git history.
 
 ### Added
 
+- **The request subjects for plan B** (#244, ADR-014 phase 5, wave 0): what an agent
+  needs from the bridge but that is no channel message goes on
+  `<req>.<kind>.<agent>`, `<kind>` one of `history`, `file` and `header`, the agent
+  the last token; the bridge answers on `deliver.<agent>.req.<request id>`. The
+  login service grants publish only under the agent's own name
+  (`CB_AUTH_REQ_PREFIX`, default `req`), the bridge subscribes `<req>.>`
+  (`CB_BRIDGE_REQ_PREFIX`) and answers `not built` for every kind until pieces 5, 8
+  and 9 fill them, and the MCP server gets `requests.request(kind, payload,
+  timeout)` in a module of its own. No stream covers either subject, so nothing is
+  kept: a lost message fails the request, and the caller gets an error, never a
+  silent success. Nothing of the pieces is built; the scaffold, the right and its
+  tests run against a real nats-server.
 - **The last post on the operator console's agent cards** (#201, RT-6.37
   step 6). A NATS home's presence states `last_post`: when the agent last
   posted in its home, as epoch seconds (the time the MCP server already

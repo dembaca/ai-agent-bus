@@ -34,6 +34,34 @@ func TestThePropsPrefixHasTheHomesLimit(t *testing.T) {
 	}
 }
 
+// ADR-014 phase 5: the request subjects have a prefix of their own beside the
+// bus's, defaulting to req, and an empty setting defaults like the bus's.
+func TestTheRequestPrefix(t *testing.T) {
+	load := func(req string) (Config, error) {
+		env := map[string]string{
+			"CB_BRIDGE_NATS_URL": "tls://nats.example:4222", "CB_BRIDGE_NATS_SEED_FILE": "/run/seed",
+			"CB_BRIDGE_MM_URL": "https://chat.example", "CB_BRIDGE_MM_TOKEN_FILE": "/run/token",
+			"CB_BRIDGE_MM_TEAM": "ai-agents", "CB_BRIDGE_HOMES": "nats-pilot",
+		}
+		if req != "" {
+			env["CB_BRIDGE_REQ_PREFIX"] = req
+		}
+		return Load(mapEnv(env, nil))
+	}
+	for _, tc := range []struct{ set, want string }{
+		{"", "req"},
+		{"rq", "rq"},
+	} {
+		c, err := load(tc.set)
+		if err != nil {
+			t.Fatalf("CB_BRIDGE_REQ_PREFIX %q: %v", tc.set, err)
+		}
+		if c.ReqPrefix != tc.want {
+			t.Errorf("CB_BRIDGE_REQ_PREFIX %q: got %q, want %q", tc.set, c.ReqPrefix, tc.want)
+		}
+	}
+}
+
 // The bot token goes to Mattermost on every call: an http CB_BRIDGE_MM_URL is
 // accepted only for a loopback host or with CB_BRIDGE_MM_ALLOW_HTTP (#131).
 func TestPlainHTTPNeedsLoopbackOrTheOptIn(t *testing.T) {

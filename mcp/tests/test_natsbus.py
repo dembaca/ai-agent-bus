@@ -1216,6 +1216,7 @@ async def rig(tmp_path: Path) -> AsyncIterator[Rig]:
         users.append(
             f'{{nkey: "{lg.nkey().public_key}", permissions: {{publish: {{allow: ["bus.ch.home.{n}", '
             f'"presence.crown.home.{n}", "presence.member.home.{n}", "bus.dm.*.{n}", '
+            f'"req.*.{n}", '
             f'"{f"presence.{n}" if w == "carol" else f"presence.{w}.{n}"}"]}}, '
             f'subscribe: {{allow: ["deliver.{n}.>"]}}}}}}')
     port = _free_port()
@@ -2618,3 +2619,68 @@ def test_a_racing_bot_never_adopts_the_same_part(tmp_path: Path, monkeypatch: py
     monkeypatch.setattr(session_file.os, "replace", lost)
     value = session_file.nonce()
     assert value != "abcdefghijklmnopqrstuvwxyz" and re.fullmatch(r"[a-z2-7]{26}", value)
+
+
+# --- plan B, wave 0: the request subjects (ADR-014 phase 5, RT-6.44) -------------------------
+
+async def test_a_request_goes_to_the_bridge_and_its_answer_comes_back(rig: Rig) -> None:
+    """<req>.<kind>.<agent> with the agent as the last token, answered on
+    deliver.<agent>.req.<request id>: the agent's own subscription right covers that,
+    and the credential lets it publish only under its own name."""
+    from mattermost_ai_agent_bus import requests
+
+    bus, _ = await rig.agent("alice")
+    asked: list[tuple[str, dict[str, Any]]] = []
+
+    async def bridge(msg: Any) -> None:
+        body = json.loads(msg.data)
+        asked.append((msg.subject, body))
+        await rig.admin.publish(
+            f"deliver.{bus.name}.req.{body['request']}",
+            json.dumps({"v": 1, "request": body["request"], "kind": body["kind"],
+                        "result": {"ok": True}}).encode())
+
+    sub = await rig.admin.subscribe("req.>", cb=bridge)
+    try:
+        out = await requests.request(bus, "history", {"channel": "home"}, timeout=5)
+    finally:
+        await sub.unsubscribe()
+    assert out["result"] == {"ok": True}
+    subject, body = asked[0]
+    assert subject == f"req.history.{bus.name}"
+    assert body["v"] == 1 and body["kind"] == "history"
+    assert re.fullmatch(r"[a-z0-9]{16}", body["request"])
+    assert body["payload"] == {"channel": "home"}
+
+
+async def test_a_not_built_answer_is_an_error_not_a_success(rig: Rig) -> None:
+    """The scaffold answers "not built" for every kind: the client must report that,
+    never a result. Nothing is kept on the subject, so silence is an error too."""
+    from mattermost_ai_agent_bus import requests
+
+    bus, _ = await rig.agent("alice")
+
+    async def bridge(msg: Any) -> None:
+        body = json.loads(msg.data)
+        await rig.admin.publish(
+            f"deliver.{bus.name}.req.{body['request']}",
+            json.dumps({"v": 1, "request": body["request"], "kind": body["kind"],
+                        "error": "not built"}).encode())
+
+    sub = await rig.admin.subscribe("req.>", cb=bridge)
+    try:
+        with pytest.raises(requests.RequestError, match="not built"):
+            await requests.request(bus, "file", timeout=5)
+    finally:
+        await sub.unsubscribe()
+
+
+async def test_a_request_under_another_agent_s_name_is_refused(rig: Rig) -> None:
+    """The login service grants publish on <req>.*.<agent> alone: an agent cannot ask
+    for another agent's history, and never publishes on deliver.>."""
+    bus, _ = await rig.agent("alice")
+    other = rig.names["bob"]
+    with pytest.raises(natsbus.NatsBusError, match="no permission"):
+        await bus._publish(f"req.history.{other}", b"{}")  # noqa: SLF001 - the refusal is the test
+    with pytest.raises(natsbus.NatsBusError, match="no permission"):
+        await bus._publish(f"deliver.{bus.name}.req.0123456789abcdef", b"{}")  # noqa: SLF001

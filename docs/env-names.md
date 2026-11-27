@@ -409,7 +409,7 @@ name with `MM_` for `CB_`):
   `MM_RR_KEYS`, `MM_RR_KID`, `MM_RR_STATUS`, `MM_RR_VERSION`, `MM_RR_WHY`
   (the registrar's release record).
 
-### The login service and authd (46)
+### The login service and authd (47)
 
 All in `services/auth/`. Its binary `authd` runs the service; its directory
 commands read the two `AUTHD_` names and two of the service's names (noted).
@@ -459,6 +459,7 @@ same rule for its STATS import (RT-6.45).
 | `AUTH_PLAIN_REQUESTS` | `CB_AUTH_PLAIN_REQUESTS` | no | `internal/app/callout.go` | |
 | `AUTH_PRESENCE_PREFIX` | `CB_AUTH_PRESENCE_PREFIX` | no | `internal/app/callout.go` | |
 | `AUTH_REQUEST_TIMEOUT` | `CB_AUTH_REQUEST_TIMEOUT` | no | `internal/app/callout.go` | |
+| `AUTH_REQ_PREFIX` | `CB_AUTH_REQ_PREFIX` | no | `internal/app/callout.go` | |
 | `AUTH_SHUTDOWN_TIMEOUT` | `CB_AUTH_SHUTDOWN_TIMEOUT` | no | `internal/config/config.go` | |
 | `AUTH_STATS_PREFIX` | `CB_AUTH_STATS_PREFIX` | no | `internal/app/callout.go`, `internal/callout/perms.go`, `internal/consumers/streams.go`; a comment in `natsbus.py` | |
 | `AUTH_SUBJECT_PREFIX` | `CB_AUTH_SUBJECT_PREFIX` | no | `internal/app/callout.go` | |
@@ -471,7 +472,7 @@ same rule for its STATS import (RT-6.45).
 `services/auth/nats-server.example.conf` names several of them in comments;
 it changes with the service.
 
-### The bridge (32)
+### The bridge (33)
 
 All in `services/bridge/`, read in `internal/config/config.go`. The last
 three renames come with the bridge's agent bots
@@ -486,6 +487,7 @@ Mattermost; the column says whether the setting itself is about Mattermost.
 | `BRIDGE_BUS_PREFIX` | `CB_BRIDGE_BUS_PREFIX` | no | `internal/config/config.go` | |
 | `BRIDGE_CA_FILE` | `CB_BRIDGE_CA_FILE` | no | `internal/config/config.go`, `cmd/bridged/main.go` | |
 | `BRIDGE_DELIVER` | `CB_BRIDGE_DELIVER` | no | `internal/config/config.go` | |
+| `BRIDGE_REQ_PREFIX` | `CB_BRIDGE_REQ_PREFIX` | no | `internal/config/config.go` | the request subjects' prefix (ADR-014 phase 5), default `req` |
 | `BRIDGE_HOMES` | `CB_BRIDGE_HOMES` | no | `internal/config/config.go` | the homes' names on both sides |
 | `BRIDGE_INBOX` | `CB_BRIDGE_INBOX` | no | `internal/config/config.go` | |
 | `BRIDGE_KV_BUCKET` | `CB_BRIDGE_KV_BUCKET` | no | `internal/config/config.go` | |

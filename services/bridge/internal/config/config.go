@@ -34,6 +34,7 @@ type Config struct {
 	Listen      string   // CB_BRIDGE_LISTEN_ADDR, /healthz
 	NATSStream  string   // CB_BRIDGE_STREAM, default BUS
 	BusPrefix   string   // CB_BRIDGE_BUS_PREFIX, the bus's subject prefix, default bus
+	ReqPrefix   string   // CB_BRIDGE_REQ_PREFIX, the request subjects' prefix, default req
 	Deliver     string   // CB_BRIDGE_DELIVER, the operator's push consumer prefix, default deliver.bridge
 	Inbox       string   // CB_BRIDGE_INBOX, the bridge's own reply inbox prefix, default _INBOX_bridge; it must match the right _INBOX_bridge.>
 	// The agents' own bots (RT-6.44): with an admin token the bridge posts each
@@ -123,6 +124,7 @@ func Load(env *Env) (Config, error) {
 		Listen:     strings.TrimSpace(get("CB_BRIDGE_LISTEN_ADDR", "BRIDGE_LISTEN_ADDR")),
 		NATSStream: strings.TrimSpace(get("CB_BRIDGE_STREAM", "BRIDGE_STREAM")),
 		BusPrefix:  strings.TrimSpace(get("CB_BRIDGE_BUS_PREFIX", "BRIDGE_BUS_PREFIX")),
+		ReqPrefix:  strings.TrimSpace(get("CB_BRIDGE_REQ_PREFIX", "BRIDGE_REQ_PREFIX")),
 		Deliver:    strings.TrimSpace(get("CB_BRIDGE_DELIVER", "BRIDGE_DELIVER")),
 		Inbox:      strings.TrimSpace(get("CB_BRIDGE_INBOX", "BRIDGE_INBOX")),
 		AdminToken: strings.TrimSpace(get("CB_BRIDGE_MM_ADMIN_TOKEN_FILE", "BRIDGE_MM_ADMIN_TOKEN_FILE")),
@@ -151,6 +153,9 @@ func Load(env *Env) (Config, error) {
 	}
 	if c.BusPrefix == "" {
 		c.BusPrefix = "bus"
+	}
+	if c.ReqPrefix == "" {
+		c.ReqPrefix = "req"
 	}
 	if c.Deliver == "" {
 		c.Deliver = "deliver.bridge"

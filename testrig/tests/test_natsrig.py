@@ -279,13 +279,13 @@ def test_user_entry_grants_what_perms_go_grants():
     perms = (REPO / "services" / "auth" / "internal" / "callout" / "perms.go").read_text()
     body = perms[perms.index("func (s Subjects) permissions("):]
     body = body[:body.index("\n}\n")]
-    assert len(re.findall(r"p\.Pub\.Allow\.Add\(", body)) == 7
+    assert len(re.findall(r"p\.Pub\.Allow\.Add\(", body)) == 8
     assert len(re.findall(r"p\.Sub\.Allow\.Add\(", body)) == 1
     entry = natsrig.user_entry("UKEY", "agent-x")
     for subject in ("bus.ch.agents.agent-x", "presence.crown.agents.agent-x",
                     "presence.ask.agents.agent-x", "presence.member.agents.agent-x",
                     "bus.dm.*.agent-x", "presence.testrig.agent-x", "stats.agent-x",
-                    "deliver.agent-x.>"):
+                    "req.*.agent-x", "deliver.agent-x.>"):
         assert f'"{subject}"' in entry
 
 
