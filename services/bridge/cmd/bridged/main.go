@@ -38,6 +38,7 @@ import (
 	"github.com/dembaca/ai-agent-bus/services/bridge/internal/registrar/core"
 	"github.com/dembaca/ai-agent-bus/services/bridge/internal/registrar/mattermost"
 	"github.com/dembaca/ai-agent-bus/services/bridge/internal/release"
+	"github.com/dembaca/ai-agent-bus/services/bridge/internal/requests"
 	"github.com/dembaca/ai-agent-bus/services/bridge/internal/signing"
 	"github.com/dembaca/ai-agent-bus/services/bridge/internal/store"
 )
@@ -88,6 +89,23 @@ func run(log *slog.Logger) error {
 	}
 	h := &health{}
 	var wg sync.WaitGroup
+	// The request scaffold (ADR-014 phase 5): requests on <req>.<kind>.<agent>
+	// get this phase's "not built" answer on deliver.<agent>.req.<request id>.
+	// A lost message fails the request; the handler retries a refused
+	// subscription once a minute and only reports why it is not answering, so
+	// an image rolled out before the lab's NATS rights leaves requests
+	// unanswered and never stops the bridge; /healthz names the failure.
+	if cfg.ReqPrefix != "" {
+		rq := &requests.Handler{Log: log, Prefix: cfg.ReqPrefix}
+		h.requests = rq
+		wg.Add(1)
+		go func() {
+			defer wg.Done()
+			if err := rq.Run(ctx, nc); err != nil && ctx.Err() == nil {
+				log.Error("bridge: the request scaffold stopped", "error", err)
+			}
+		}()
+	}
 	// Plan B's switches per channel, as the login service writes them from the
 	// channel directory (RT-6.39 step 5), through the bridge's own consumer
 	// bridge_planb made at every start: no piece reads them yet.

@@ -115,6 +115,32 @@ func loginToken(key nkeys.KeyPair) string {
 	return strings.ToLower(pub)
 }
 
+// ADR-014 phase 5 (RISK-36): the bridge's answer right deliver.*.req.* would
+// match deliver.person.req.<x> only if a person's login were "req". A login is
+// its public key lower-cased - u and 55 base32 characters - so no login is ever
+// a request prefix, and the right reaches no person's console inbox.
+func TestAPersonsLoginCannotBeTheRequestPrefix(t *testing.T) {
+	key, _ := nkeys.CreateUser()
+	pub, _ := key.PublicKey()
+	login := loginOf(pub)
+	ok := len(login) == 56 && strings.HasPrefix(login, "u")
+	for _, r := range login[1:] {
+		if !(r >= 'a' && r <= 'z' || r >= '2' && r <= '7') {
+			ok = false
+		}
+	}
+	if !ok {
+		t.Fatalf("login %q is not a lower-cased user key", login)
+	}
+	if login == DefaultReq {
+		t.Fatalf("login %q is the request prefix", login)
+	}
+	tokens := strings.Split(DeliverPrefix+"."+consumers.PersonDeliverToken+"."+login+".>", ".")
+	if len(tokens) != 4 || tokens[2] != login {
+		t.Fatalf("the console's inbox %v", tokens)
+	}
+}
+
 // The user JWT itself: the name from the anchor, 15 minutes, no publish,
 // subscribe only on the login's deliver subjects.
 func TestAnOperatorsCredentialReadsOnlyAndLivesFifteenMinutes(t *testing.T) {

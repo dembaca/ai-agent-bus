@@ -1147,6 +1147,7 @@ class NatsSettings:
     bus: str = "bus"
     presence: str = "presence"
     stats: str = "stats"  # the login service's AUTH_STATS_PREFIX: STATS lines on <stats>.<name> (RT-6.43)
+    req: str = "req"  # the login service's AUTH_REQ_PREFIX: requests on <req>.<kind>.<name> (ADR-014 phase 5)
     name_prefix: str = "agent-"
     props_prefix: str = a2a.DEFAULT_PREFIX  # CB_PROPS_PREFIX, one setting of the whole bus (RT-6.16)
     tls_ca_file: str | None = None  # CA bundle that verifies a tls:// server (default: the system's)
@@ -1246,11 +1247,12 @@ class NatsBus:
         process was killed is delivered again rather than lost. The time is the stream-reset's
         second sign: a recreated BUS stream delivers newer messages, a start by time replays
         older ones. This class keeps no file; the read mark is the host's record."""
-        for what, v in (("bus", settings.bus), ("presence", settings.presence), ("stats", settings.stats)):
+        for what, v in (("bus", settings.bus), ("presence", settings.presence),
+                        ("stats", settings.stats), ("request", settings.req)):
             if not PREFIX_RE.fullmatch(v) or v == DELIVER:
                 raise ValueError(f"invalid {what} prefix")
-        if len({settings.bus, settings.presence, settings.stats}) != 3:
-            raise ValueError("the bus, presence and stats prefixes must differ")
+        if len({settings.bus, settings.presence, settings.stats, settings.req}) != 4:
+            raise ValueError("the bus, presence, stats and request prefixes must differ")
         for url in settings.servers:
             _check_server(url)
         _schemes(settings.servers)  # one scheme per pool, also for settings built around the check

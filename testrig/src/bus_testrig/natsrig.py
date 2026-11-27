@@ -145,7 +145,8 @@ def user_entry(public_key: str, name: str, channel: str = HOME, owner: str = OWN
     a whole server does both (RT-6.43), so the rig follows perms.go here."""
     allow = [f"bus.ch.{channel}.{name}", f"presence.crown.{channel}.{name}",
              f"presence.ask.{channel}.{name}", f"presence.member.{channel}.{name}",
-             f"bus.dm.*.{name}", f"presence.{owner}.{name}", f"stats.{name}"]
+             f"bus.dm.*.{name}", f"presence.{owner}.{name}", f"stats.{name}",
+             f"req.*.{name}"]
     quoted = ", ".join(f'"{subject}"' for subject in allow)
     return (f'{{nkey: "{public_key}", permissions: {{publish: {{allow: [{quoted}]}}, '
             f'subscribe: {{allow: ["deliver.{name}.>"]}}}}}}')

@@ -1,6 +1,7 @@
 #!/usr/bin/env bash
 # SessionStart hook (matcher "startup|resume|clear"): the NATS login approval that is
-# waiting right now, as one line in the agent's terminal (#198).
+# waiting right now, as one line in the agent's terminal (#198), and the settings the
+# server found wrong (unknown CB_ names, a home outside CB_NATS_HOMES; #261).
 #
 # The MCP server holds the device grant while the human has to approve the login
 # (decision 10, RT-6.34). It reaches the log and the human's DM, but not the TUI the
@@ -31,16 +32,26 @@ text="$(jq -r '.line // empty | strings' <<<"$CB_BUS_BODY" 2>/dev/null)" || exit
 if [[ -z "$text" ]]; then
   link="$(jq -r '.link // empty | strings' <<<"$CB_BUS_BODY" 2>/dev/null)" || exit 0
   code="$(jq -r '.user_code // empty | strings' <<<"$CB_BUS_BODY" 2>/dev/null)" || exit 0
-  [[ -n "$link" ]] || exit 0
-  if [[ -n "$code" ]]; then
+  if [[ -n "$link" && -n "$code" ]]; then
     text="Bus login: open ${link} — the page shows the code ${code}. Approve only if it matches."
-  else
+  elif [[ -n "$link" ]]; then
     text="Bus login: open ${link}. Approve only if it is your agent's login."
   fi
 fi
+# What is wrong with the settings (#261, RT-6.34 step 4): every unknown CB_ name and why
+# no NATS login starts, one line each, names only. Shown with or without a login line.
+notes="$(jq -r '(.notes // []) | map(strings) | join("; ")' <<<"$CB_BUS_BODY" 2>/dev/null)" || notes=""
+login_shown=0
+[[ -n "$text" ]] && login_shown=1
+if [[ -n "$notes" ]]; then
+  text="${text:+${text}$'\n'}Bus settings: ${notes}"
+fi
+[[ -n "$text" ]] || exit 0
 # The line first, so a failed jq never marks a line that was not shown.
 out="$(jq -nc --arg m "$text" '{systemMessage: $m, suppressOutput: true}')" || exit 0
 mm_stat post chars="${#text}" w="other" 2>/dev/null || true
-mm_bus POST '/v1/login/shown' '{}' >/dev/null 2>&1 || true
+if [[ "$login_shown" == 1 ]]; then
+  mm_bus POST '/v1/login/shown' '{}' >/dev/null 2>&1 || true
+fi
 printf '%s\n' "$out"
 exit 0

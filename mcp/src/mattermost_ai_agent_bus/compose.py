@@ -170,6 +170,7 @@ def _with_nats(adapter: BusClient) -> BusClient:
     if home not in homes:
         log.info("CB_NATS_HOMES names no home of this session (%s): Mattermost", home)
         lease.use_nats("", None)
+        lease.left_out(home, homes)
         return adapter
     from . import login
     from .nats_port import DEFAULT_MEMORY, NatsPort

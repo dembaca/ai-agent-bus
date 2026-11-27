@@ -63,6 +63,13 @@ before 0.5.0 are described in the git history.
   consumer made anew (reconnect, credential) no longer drops the switch map at once: the old
   records are read until the replay is complete, so the direct-message piece no longer states
   `"dm": false` and later pieces no longer flap back to Mattermost meanwhile.
+- **A wrong setting is said, not silent** (#261, RT-6.34 step 4). The MCP server warns
+  about every unknown `CB_` name in its environment (`unknown setting CB_PROJECT_CHANNEL
+  (did you mean CB_MM_PROJECT_CHANNEL?)`; names only, never a value), and when
+  `CB_NATS_HOMES` is set but not the home, why no NATS login starts (`home ~agents is not
+  in CB_NATS_HOMES (...): this session stays on Mattermost and starts no NATS login`). Both
+  show in `bus_info`'s and `session_start`'s warning and once in the session-start hook's
+  line, `GET /v1/login` carries them as `notes`.
 - **A direct message over NATS is answerable in every case** (#258, plan B piece 3,
   RT-6.36 step 7). `get_thread` on a DM's id refuses it in the same words `reply_in_thread`
   uses - answer it with `post_message(to=<its sender, as shown_as>)` - instead of a bare
@@ -104,6 +111,28 @@ before 0.5.0 are described in the git history.
   included: it looks the trusted humans up and hands over their ids as
   before. With the switch on the MCP server ignores those ids.
 
+- **The request subjects for plan B** (#244, ADR-014 phase 5, wave 0): what an agent
+  needs from the bridge but that is no channel message goes on
+  `<req>.<kind>.<agent>`, `<kind>` one of `history`, `file` and `header`, the agent
+  the last token; the bridge answers on `deliver.<agent>.req.<request id>`. The
+  login service grants publish only under the agent's own name
+  (`CB_AUTH_REQ_PREFIX`, default `req`), the bridge subscribes `<req>.>`
+  (`CB_BRIDGE_REQ_PREFIX`) and answers per kind from a handler map - `not built`
+  until pieces 5, 8 and 9 fill them - with a result field and parts with a last
+  marker, off its receive loop, under a per-kind size limit and a per-agent rate
+  limit, with every logged value truncated. The MCP server gets
+  `requests.request(kind, payload, timeout)` in a module of its own, with its prefix
+  as a setting beside the bus's, presence's and STATS's. The bridge user's NATS
+  rights (subscribe `<req>.>`, publish `deliver.*.req.*`) are in the example
+  configuration and pinned by its test; an image rolled out before the lab's
+  configuration grants them keeps running - people's posts still go onto NATS,
+  only requests stay unanswered until the rights are granted, so the
+  configuration comes first and the image after it - and retries a refused
+  subscribe once a minute with one Error line, naming it in `/healthz` as
+  `requests: <error>` (the probe stays 200). No stream covers either subject,
+  so nothing is kept: a lost message fails the request, and the caller gets an
+  error, never a silent success. Nothing of the pieces is built; the scaffold
+  and the rights on both sides run against a real nats-server.
 - **Plan B's switch per piece and channel** (#244, ADR-014 phase 5, RT-6.39
   step 5). A channel in the channel directory now holds `planb`: the plan B
   pieces switched on in it, 1 to 13, each once, none by default (piece 14,

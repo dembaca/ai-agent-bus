@@ -31,7 +31,7 @@ doc_check = _doc_check()
 
 def test_the_page_parses_into_its_lists() -> None:
     page = doc_check.env_page()
-    assert len(page["old"]) == 177          # the mapping tables' left column (incl. the new CB_SESSION_NONCE, CB_PLANB_TEST, CB_BRIDGE_MM_BOT_KEEP the bridge commands' 10 and the release record's 2)
+    assert len(page["old"]) == 179          # the mapping tables' left column (incl. CB_SESSION_NONCE, CB_PLANB_TEST, CB_BRIDGE_MM_BOT_KEEP the bridge commands' 10, the release record's 2 and the two request prefixes of plan B's wave 0)
     assert len(page["registrar"]) == 10     # kept names, their own table
     assert not page["old"] & page["registrar"]
     # the two exclusion lists the guard accepts
@@ -198,3 +198,15 @@ def test_a_heading_count_is_checked(tmp_path: Path, monkeypatch: pytest.MonkeyPa
                     "| `MM_ONE` | `CB_ONE` | no | x | |\n")
     monkeypatch.setattr(doc_check, "ENV_PAGE", page)
     assert doc_check.env_counts() == [("The MCP server and the plugin", 3, 1)]
+
+
+def test_every_cb_name_the_page_lists_is_known_to_the_servers_unknown_name_warning() -> None:
+    """#261: the MCP server warns about a CB_ name it does not know; a name that
+    docs/env-names.md lists must never be one of them (the server's own list is in
+    config.py: RENAMED, INTERNAL, OTHER and the other components' prefixes)."""
+    from mattermost_ai_agent_bus import config
+
+    page = doc_check.env_page()
+    missing = sorted(n for n in page["new"] | page["not_env"]
+                     if n.startswith("CB_") and n != "CB_MM_" and not config.known(n))
+    assert missing == []

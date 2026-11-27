@@ -4155,11 +4155,30 @@ reads yet (RT-6.39 step 5).
     one subscribe right, `deliver.<agent>.>`) and no stream covers
     either. Today an agent has no such right (`callout/perms.go`): the
     login service grants it publish on `<req>.*.<agent>` alone, the
-    bridge subscribe on `<req>.>` and publish on `deliver.*.req.>`;
+    bridge subscribe on `<req>.>` and publish on `deliver.*.req.*`;
     `callout/perms_test.go` gets the cases that an agent publishes there
     only under its own name and never on `deliver.>`. Nothing on these
     subjects is kept: a lost message fails the request, and the tool
     reports an error.
+    Built in part (Unreleased, wave 0 of #244): the login service's right, the
+    bridge's scaffold and the MCP client's `requests.request(kind, payload,
+    timeout)`. The prefixes are settings of their own, `CB_AUTH_REQ_PREFIX`
+    and `CB_BRIDGE_REQ_PREFIX`, both defaulting to `req`. The request body is
+    `{"v": 1, "request": "<16 chars of [a-z0-9]>", "kind": ..., "payload": ...}`
+    and the answer names the same request and kind, so an answer cannot be
+    paired with another request; the bridge answers per kind from a handler
+    map (`not built` until pieces 5, 8 and 9 fill them), with a `result`
+    field and `part`/`last` for multi-part answers, off its receive loop,
+    under a per-kind size limit, a per-agent rate limit and truncated logs;
+    the agent's request id, never a body field, makes the answer's subject.
+    The bridge user's rights - subscribe `<req>.>`, publish
+    `deliver.*.req.*` - are in the example configuration, and its test runs
+    the handler under them with two agents'. A refused subscribe or answer
+    does not stop the bridge - people's posts matter more than this scaffold:
+    it logs one error a minute, names the part in `/healthz` (which stays 200)
+    and leaves requests unanswered until the rights are granted, so the
+    configuration goes out before the image. The MCP client's prefix is a
+    setting beside the bus's, presence's and STATS's.
   - Each piece updates its scenario in Section 6 and gets unit tests in
     `mcp/tests/` and, for the bridge's side, Go tests in
     `services/bridge`. Where a piece carries messages, the fault-run rig
