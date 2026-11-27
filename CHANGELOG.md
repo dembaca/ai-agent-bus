@@ -87,7 +87,8 @@ before 0.5.0 are described in the git history.
   (#238, RT-6.36 step 4). A lane without a mark got no seed from a post that came
   before the snapshot was read, so with nothing following it a kill lost that
   post; the snapshot's end now seeds the lane one sequence before the oldest post
-  not handed over. Two doc and comment slips go with it: step 4 and a test
+  not handed over, but only when the snapshot was really read: a failed backfill,
+  or a channel it could not read, seeds nothing (here and at a live post). Two doc and comment slips go with it: step 4 and a test
   docstring say "before the oldest post not handed over", and the test rig cites
   the login service's consumer management (RT-6.35).
 

@@ -649,6 +649,52 @@ async def test_a_post_queued_while_the_snapshot_is_unread_is_seeded_when_it_is_r
     assert inbox._first_waiting(lane) == 8_000
 
 
+async def _queued_before_a_failed_snapshot(inbox) -> str:
+    """A NATS post queued while the snapshot is unread, the lane without a mark."""
+    from mattermost_ai_agent_bus.client import post_of
+    await inbox.ensure_connected()
+    watermark.remove(inbox._bot_user_id)
+    inbox._unqueued = None
+    inbox._snapshot_ok = False
+    inbox._unread = set()
+    await inbox._put(ClassifiedEvent(kind="mention", post=post_of({
+        "id": f"n1:{WORK}:9", "channel_id": WORK, "create_at": 9_000,
+        "message": "@agent-me hi", "user_id": "u" * 26})))
+    return f"{WORK}:nats"
+
+
+async def test_no_seed_when_the_snapshot_read_raises(chat, dial, inbox, monkeypatch):
+    """#238 (Fable's review), RT-6.36 step 4: `unread.after` raises, so nothing is
+    known of older posts in the port's memory: the seed would pass them. No mark;
+    a live post queued afterwards seeds nothing either."""
+    from mattermost_ai_agent_bus.client import post_of
+    lane = await _queued_before_a_failed_snapshot(inbox)
+
+    async def boom(client, unread=None):
+        raise RuntimeError("get_me failed")
+    monkeypatch.setattr(unread, "after", boom)
+    await inbox._backfill()
+    assert lane not in watermark.read(inbox._bot_user_id)
+    await inbox._put(ClassifiedEvent(kind="mention", post=post_of({
+        "id": f"n1:{WORK}:10", "channel_id": WORK, "create_at": 10_000,
+        "message": "@agent-me hi", "user_id": "u" * 26})))
+    assert lane not in watermark.read(inbox._bot_user_id)
+
+
+async def test_no_seed_when_the_channels_read_is_skipped(chat, dial, inbox, monkeypatch):
+    """#238, RT-6.36 step 4: `unread.after` skips a channel whose read failed and
+    returns without it: that channel's lane is not seeded, the mark stays absent."""
+    lane = await _queued_before_a_failed_snapshot(inbox)
+    chat.add(post("mm"))   # the channel has a post past its mark: it is read
+
+    async def failing(channel_id, *, per_page=None, since_ms=None):
+        raise RuntimeError("read failed")
+    monkeypatch.setattr(chat, "channel_posts", failing)
+    await inbox._backfill()
+    assert inbox._unread == {WORK}
+    assert lane not in watermark.read(inbox._bot_user_id)
+
+
 async def test_a_hand_over_before_the_reconnects_backfill_passes_no_post_that_came_meanwhile(
         chat, dial, inbox):
     """The read mark (RT-6.2 step 1, #245): at a reconnect the crown is renewed
