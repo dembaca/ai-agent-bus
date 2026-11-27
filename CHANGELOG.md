@@ -157,10 +157,14 @@ before 0.5.0 are described in the git history.
   stream restarts its sequences: a first delivery at or below the cursor resets
   it only when its server time is newer; a start by time, which replays older
   messages, stays a repeat. No login-service change, no new file. **The
-  residual:** a channel where the session never handed a post has no cursor, so
-  posts queued there before its first hand-over can still be lost at a kill
-  (explicit acks on the BUS consumers would close it); and a post past the
-  stream's 14 days or the consumer's inactivity threshold does not come back.
+  seeding** (#224): the first NATS post a session receives in a channel writes
+  its lane one sequence before itself, as `hold` keeps a mark back, so a post
+  queued before the channel's first hand-over still has a cursor and the next
+  server asks for it again. **The residual:** a post of stream sequence 1 has no
+  sequence before it, so the first message of a recreated `BUS` stream can still
+  be lost at a kill before any hand-over (explicit acks on the BUS consumers
+  would close it); and a post past the stream's 14 days or the consumer's
+  inactivity threshold does not come back.
 
 ### Docs
 

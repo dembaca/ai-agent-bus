@@ -572,6 +572,35 @@ async def test_a_hand_over_while_the_socket_is_down_passes_no_post_that_came_mea
     assert await unread.channels(chat, {WORK}) == []
 
 
+async def test_a_nats_post_seeds_the_marks_lane_at_its_first_receipt(chat, dial, inbox):
+    """#224 (the residual of #213), RT-6.36 step 4: a channel whose session had never
+    handed a post had no cursor, so a post queued before the first hand-over was lost
+    at a kill. The first NATS post received seeds the lane one sequence before itself,
+    as `hold` keeps a mark back, so the next server asks for that post again. A NATS
+    post of stream sequence 1 has none (no mark can name sequence 0), and a Mattermost
+    lane seeds nothing before its first hand-over."""
+    from mattermost_ai_agent_bus.client import post_of
+
+    def nats(seq: int, created: int) -> ClassifiedEvent:
+        return ClassifiedEvent(kind="mention", post=post_of({
+            "id": f"n1:{WORK}:{seq}", "channel_id": WORK, "create_at": created,
+            "message": "@agent-me hi", "user_id": "u" * 26}))
+
+    await inbox.ensure_connected()  # the bot's id, which the mark is filed under
+    await inbox._put(nats(7, 5_000))
+    mark = watermark.read(inbox._bot_user_id)[f"{WORK}:nats"]
+    assert (mark.post_id, mark.at) == (f"n1:{WORK}:6", 4_999)
+
+    watermark.remove(inbox._bot_user_id)
+    await inbox._put(nats(1, 6_000))
+    assert f"{WORK}:nats" not in watermark.read(inbox._bot_user_id)  # the stream's first
+
+    watermark.remove(inbox._bot_user_id)
+    await inbox._put(ClassifiedEvent(kind="mention", post=post_of({
+        "id": "m" * 26, "channel_id": WORK, "create_at": 7_000, "message": "@agent-me"})))
+    assert WORK not in watermark.read(inbox._bot_user_id)
+
+
 async def test_a_hand_over_before_the_reconnects_backfill_passes_no_post_that_came_meanwhile(
         chat, dial, inbox):
     """The read mark (RT-6.2 step 1, #245): at a reconnect the crown is renewed
