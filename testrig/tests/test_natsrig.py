@@ -349,6 +349,8 @@ async def test_a_nats_restart_is_survived():
     assert run.recovered, run.report()  # a post was sent after the restart's window
     at_send = run.fault_params["at_send"]
     assert max(run.received) > at_send, (at_send, sorted(run.received))
+    # A failed send and a lost post are different: `lost_seqs` names only the latter.
+    assert not run.report()["lost_seqs"], run.report()
 
 
 @pytest.mark.bus

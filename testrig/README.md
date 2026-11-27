@@ -211,6 +211,9 @@ uv run --directory testrig bus-testrig bus-run --transport nats --fault all --co
 uv run --directory testrig bus-testrig coord-run --transport nats --stops 3 --summary
 ```
 
+The nightly `full-nats` job writes each `--summary` table into the run's step
+summary and uploads the full output as the `full-nats-results` artifact.
+
 It needs nats-server 2.15.3 (`CB_NATS_SERVER`, `MM_NATS_SERVER`, else `nats-server`
 on `PATH`; without one the run says so and exits 2) and `mcp/` synced, as `bus-run`
 does. What stands in for what (`natsrig.py`):

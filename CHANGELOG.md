@@ -42,6 +42,21 @@ before 0.5.0 are described in the git history.
 
 ### Changed
 
+- **The fault rig's leftovers from #209's review** ([#218](https://github.com/dembaca/ai-agent-bus/issues/218),
+  ADR-014's phase-1/4 rig). The NATS restart test asserts `lost_seqs`, so a
+  failed send is told from a lost post. A failed consumer reconcile aborts that
+  one CONNECT, and the next connection retries it as the login service lets a
+  client retry a refused login: a run is untrustworthy only when its last
+  connection still had no consumers, and cured CONNECTs are counted and
+  printed. A coordinator run copies the reconcile reason into its notes. The
+  first start retries once on a fresh port if another process took the probed
+  one (a restart keeps its port, the clients hold it); the tail masking covers a
+  value after `token:` or `token =`; the README says how far a PR-sized cut run
+  reaches and what a SIGKILLed rig leaves behind. The nightly `full-nats` job
+  puts its tables into the run's step summary and uploads the output as the
+  `full-nats-results` artifact, and the nats-server fetch is one composite
+  action instead of four copies.
+
 - **Thread reads for the coordinator's wake are bounded** (#223,
   [the coordinator scenario, RT-6.6 step 5](docs/arc42/06-runtime-view.md#66-coordinator-crown-and-presence-lease),
   and the end-of-turn scenario, RT-6.2 step 4). A thread that cannot be read

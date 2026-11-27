@@ -167,6 +167,7 @@ async def coord_run(transport: str = "nats", stops: int = 3, sessions: int = 3,
         for who in pool:
             stub.identify(who.token, who.uid, who.username)
         admin: natsrig.Admin | None = None
+        relay: ByteProxy | None = None
         nats_url = ""
         if transport == "nats":
             server = natsrig.NatsServer(pool)
@@ -238,6 +239,10 @@ async def coord_run(transport: str = "nats", stops: int = 3, sessions: int = 3,
                 run.unknown = list(stub.unknown)
                 run.notes.append(f"the stub did not know {len(stub.unknown)} call(s): "
                                  f"{stub.unknown[:5]}")
+            if relay is not None and relay.failed:
+                # Why the reconcile failed (RT-6.34's hook), so a run that measured
+                # no take-over says more than "exit 1" (review round 3, C).
+                run.notes.append(relay.failed)
             tails = [line for s in alive for line in s.proc.errors]
             run.tail = natsrig._nats_tail(tails)
     return run

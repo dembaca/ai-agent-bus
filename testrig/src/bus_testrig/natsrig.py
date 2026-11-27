@@ -244,13 +244,22 @@ class NatsServer:
         self.port = _free_port()
         self.admin_password = secrets.token_hex(8)
         self.conf = self.dir / "nats.conf"
-        users = [f'{{user: {ADMIN}, password: "{self.admin_password}"}}']
+        self._users = users = [f'{{user: {ADMIN}, password: "{self.admin_password}"}}']
         users += [user_entry(a.public_key, a.name) for a in agents]
-        self.conf.write_text(f'port: {self.port}\nhost: 127.0.0.1\n'
-                             f'jetstream {{ store_dir: "{self.dir / "js"}" }}\n'
-                             f'accounts {{ BUS {{ jetstream: enabled\n users: [{", ".join(users)}] }} }}\n')
+        self._write_conf()
         self.proc: subprocess.Popen[bytes] | None = None
         self.restarts = 0
+
+    def _write_conf(self) -> None:
+        self.conf.write_text(f'port: {self.port}\nhost: 127.0.0.1\n'
+                             f'jetstream {{ store_dir: "{self.dir / "js"}" }}\n'
+                             f'accounts {{ BUS {{ jetstream: enabled\n users: [{", ".join(self._users)}] }} }}\n')
+
+    def _rebind(self) -> None:
+        """Another process took the probed port (#218): write the same config for
+        a fresh one."""
+        self.port = _free_port()
+        self._write_conf()
 
     @property
     def url(self) -> str:
@@ -261,18 +270,28 @@ class NatsServer:
         return self.proc.pid if self.proc is not None and self.proc.poll() is None else None
 
     async def start(self) -> None:
-        self.proc = subprocess.Popen([self.binary, "-c", str(self.conf)],
-                                     stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
-        deadline = time.monotonic() + SERVER_START_SEC
-        while time.monotonic() < deadline:
+        for attempt in (0, 1):
+            self.proc = subprocess.Popen([self.binary, "-c", str(self.conf)],
+                                         stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
+            deadline = time.monotonic() + SERVER_START_SEC
+            while time.monotonic() < deadline:
+                if self.proc.poll() is not None:
+                    break
+                with contextlib.suppress(OSError):
+                    _, writer = await asyncio.open_connection("127.0.0.1", self.port)
+                    writer.close()
+                    return
+                await asyncio.sleep(0.05)
+            if self.proc.poll() is not None and attempt == 0 and self.restarts == 0:
+                # The probe bound the port, closed it, and another process took it
+                # before this start (#218): one retry on a fresh port, first start
+                # only, since a restart keeps the port its clients hold.
+                self._rebind()
+                continue
             if self.proc.poll() is not None:
                 raise RuntimeError(f"nats-server exited with {self.proc.returncode}")
-            with contextlib.suppress(OSError):
-                _, writer = await asyncio.open_connection("127.0.0.1", self.port)
-                writer.close()
-                return
-            await asyncio.sleep(0.05)
-        raise RuntimeError(f"nats-server did not listen within {SERVER_START_SEC:.0f} s")
+            raise RuntimeError(f"nats-server did not listen within {SERVER_START_SEC:.0f} s")
+        raise RuntimeError("nats-server did not start on a free port")
 
     def kill(self) -> None:
         if self.proc is not None:
@@ -648,7 +667,7 @@ async def nats_bus_run(count: int = 10, fault: str | None = None, *, fault_sec: 
         return run
 
 
-_SECRETISH = re.compile(r"(seed|token|password)\S*", re.IGNORECASE)
+_SECRETISH = re.compile(r"(seed|token|password)\S*[\s:=]+\S+", re.IGNORECASE)
 
 
 def _nats_tail(lines: list[str]) -> list[str]:
