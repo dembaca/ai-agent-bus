@@ -82,6 +82,9 @@ class _Client:
     async def own_anchors(self):
         return None
 
+    async def trust_closed(self):
+        return False
+
     async def list_recent(self, **_):
         return [_wrap(p) for p in POSTS]
 

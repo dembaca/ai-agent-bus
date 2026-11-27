@@ -722,6 +722,9 @@ class MattermostAdapter:
     async def own_anchors(self) -> frozenset[str] | None:
         return None
 
+    async def trust_closed(self) -> bool:
+        return False  # the chat's trust decides here (RT-6.16); closed only over NATS (RT-6.41)
+
     async def may_approve(self, user_id: str) -> bool | None:
         return None  # Mattermost: the trusted list alone (RT-6.8); over NATS see RT-6.42
 

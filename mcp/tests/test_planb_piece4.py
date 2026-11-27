@@ -96,6 +96,12 @@ async def test_off_the_trusted_humans_and_owners_are_mattermosts_as_before(monke
     assert await port.bot_description(PEERBOT) == "for @alice · trusts @alice"
     assert await port.attested_circle(PEERBOT) is None
     assert port.trusted_source == inner.trusted_source
+    # the reads judge nothing at the read, and a missing attestation closes nothing
+    unseen = Post(id="q" * 26, channel_id="c" * 26, user_id=HUMAN, message="yes",
+                  reactions=(Reaction(user_id=HUMAN, post_id="q" * 26, emoji_name="+1", create_at=1),))
+    assert await port.unapproved([unseen]) == set()
+    del _fake.attestations[_fake.name]
+    assert not await port.trust_closed()
 
 
 # --- the trusted humans -------------------------------------------------------------------------------
@@ -194,12 +200,99 @@ async def test_on_a_trusted_humans_event_on_mattermost_without_approver_is_marke
     react = Reaction(user_id=HUMAN, post_id="a" * 26, emoji_name="+1", create_at=1)
     assert not await port.skip(ReactionEvent(react, "c" * 26))
     asked = Post(id="a" * 26, channel_id="c" * 26, user_id=BOT, message="ask", reactions=(react,))
+    # the visitor is bound to a person this session does not trust: no approver either (the
+    # reads show not_approver only on a trusted human's, slim.py)
     assert await port.unapproved([post, other, asked]) == {
-        ("post", post.id), ("reaction", asked.id, "+1", HUMAN)}  # the visitor is no trusted human
+        ("post", post.id), ("post", other.id), ("reaction", asked.id, "+1", HUMAN)}
     fake.approvers = {"u1"}
     later = Post(id="s" * 26, channel_id="c" * 26, user_id=HUMAN, message="yes")
     assert not await port.skip(PostEvent(post=later, channel_type=None, edited=False))
     assert ("post", later.id) not in await port.unapproved([later])
+
+
+@pytest.mark.parametrize("gap", ["down", "no-attestation"])
+async def test_on_a_non_approvers_answer_the_session_did_not_see_come_answers_no_ask(on: None, gap: str) -> None:
+    """RT-6.42 step 9 at the read (the unmarked reads of the #264 review): a reaction or reply of a bound
+    account that the session did not judge as it came, because it was down or reconnecting
+    or read the thread from history, is judged by that account's record at the read; without
+    a fresh approver record it answers no ask (tasks.ask_answered, as remind and the open
+    asks use it). One that came while the session had no own attestation was judged then,
+    without approval, and stays so. A live approval stays one after the record goes stale."""
+    from mattermost_ai_agent_bus import tasks
+    port, _inner, fake = _world()
+    ask = Post(id="a" * 26, channel_id="c" * 26, user_id=BOT, message="ask", create_at=1)
+    react = Reaction(user_id=HUMAN, post_id=ask.id, emoji_name="+1", create_at=2)
+    reply = Post(id="b" * 26, channel_id="c" * 26, user_id=HUMAN, message="yes", root_id=ask.id, create_at=3)
+    names = {HUMAN: "alice"}
+    if gap == "no-attestation":  # it came, but this session had no attestation of its own then
+        att = fake.attestations.pop(fake.name)
+        assert not await port.skip(ReactionEvent(react, ask.channel_id))
+        assert not await port.skip(PostEvent(post=reply, channel_type=None, edited=False))
+        fake.attestations[fake.name] = att
+    asked = Post(**{**ask.__dict__, "reactions": (react,)})
+
+    async def answered() -> bool:
+        unapproved = await port.unapproved([asked, reply])
+        return tasks.ask_answered(asked, [asked, reply], [react], names, "alice",
+                                  await port.trusted_humans(), unapproved)
+
+    assert HUMAN in await port.trusted_humans()
+    assert await port.unapproved([asked, reply]) == {("post", reply.id), ("reaction", ask.id, "+1", HUMAN)}
+    assert not await answered()
+    fake.approvers = {"u1"}  # the account's own record is fresh with approver now
+    assert await answered() is (gap == "down")  # unseen: judged now; seen without approval: stays
+    # a live approval is not taken back by the read once the record goes stale
+    later = Post(id="d" * 26, channel_id="c" * 26, user_id=HUMAN, message="yes", root_id=ask.id, create_at=4)
+    assert not await port.skip(PostEvent(post=later, channel_type=None, edited=False))
+    fake.approvers = set()
+    assert ("post", later.id) not in await port.unapproved([later])
+    assert tasks.ask_answered(ask, [ask, later], [], names, "alice", await port.trusted_humans(),
+                              await port.unapproved([ask, later]))
+
+
+async def test_on_an_account_approves_only_by_its_own_fresh_record(on: None) -> None:
+    """A stale binding (the #264 review): two Mattermost accounts bound to one person (u1). The one
+    whose own record is stale approves nothing, although the other's fresh approver record
+    makes the person an approver; it stays a trusted human (a stale record still names the
+    person), and its event is marked not_approver."""
+    port, _inner, fake = _world()
+    second = "k" * 26
+    fake.accounts[second] = "u1"
+    fake.approvers = {"u1"}  # by the second account's fresh record
+    fake.stale = {HUMAN}
+    assert fake.approver("u1")
+    assert await port.may_approve(HUMAN) is False
+    assert await port.may_approve(second) is True
+    assert HUMAN in await port.trusted_humans() and second in await port.trusted_humans()
+    post = Post(id="q" * 26, channel_id="c" * 26, user_id=HUMAN, message="yes")
+    other = Post(id="r" * 26, channel_id="c" * 26, user_id=second, message="yes")
+    assert not await port.skip(PostEvent(post=post, channel_type=None, edited=False))
+    assert not await port.skip(PostEvent(post=other, channel_type=None, edited=False))
+    assert await port.unapproved([post, other]) == {("post", post.id)}
+
+
+async def test_the_bus_approves_an_account_by_its_own_fresh_record() -> None:
+    """natsbus.account_approver: an account approves by its own record alone, fresh (exp after
+    the server's now) with `approver`; natsbus.approver(anchor) stays true by any of them."""
+    from test_people_over_nats import ACCOUNT, _account
+    bus, _ = _unit_bus()
+    bus._connected, bus._nc = True, object()  # type: ignore[assignment]
+    second = "k" * 26
+
+    async def presence(subject: str, seq: int, t: float, data: bytes) -> None:
+        await bus._on_presence_msg(FakeMsg(subject, _presence_reply(bus, seq, seq, t), data))
+
+    await presence(f"presence.account.mattermost.{ACCOUNT}.v1", 1, T0, _account(exp=int(T0) + 900))
+    await presence(f"presence.account.mattermost.{second}.v1", 2, T0 + 600,
+                   _account(account=second, exp=int(T0) + 1500))
+    assert bus.account_approver(ACCOUNT) and bus.account_approver(second)
+    await presence(f"presence.-.{bus.name}", 3, T0 + 901, b'{"v":1,"status":"online"}')  # the first stale
+    assert bus.approver("dembaca") and bus.bound_accounts() == {ACCOUNT: "dembaca", second: "dembaca"}
+    assert not bus.account_approver(ACCOUNT) and bus.account_approver(second)
+    assert not bus.account_approver("z" * 26)
+    await presence(f"presence.account.mattermost.{second}.v1", 4, T0 + 902, _account(account=second, approver=False,
+                                                                                     exp=int(T0) + 1500))
+    assert not bus.account_approver(second) and not bus.approver("dembaca")
 
 
 async def test_on_the_events_say_from_trusted_human_by_anchor(on: None, monkeypatch: pytest.MonkeyPatch) -> None:
@@ -292,8 +385,38 @@ async def test_on_my_own_bot_takes_my_attestation_and_its_absence_keeps_the_spli
     owners.reset()
     assert await port.agent_owner(BOT) is None
     names, _ = await owners.mine(port)  # type: ignore[arg-type]
-    assert names  # the split stays on (the configured names)
+    assert names is owners.NOBODY  # the split stays on, and not by the configured names
     assert not await owners.peer(port, PEERBOT)  # type: ignore[arg-type]  # no own anchors: foreign
+
+
+async def test_on_without_a_fresh_own_attestation_fail_closed_needs_no_host_variable(
+        on: None, monkeypatch: pytest.MonkeyPatch) -> None:
+    """Fail closed without the host (the #264 review): with no trusted variable set (a harness without the corral
+    hook) and no fresh own attestation, the gate stays on and names_in_doubt gives NOBODY, also
+    right after names were read (no grace for the last ones): no agent becomes a peer and
+    nobody's post passes the gate. With the attestation back, its names. With the switch off
+    and nothing configured, the gate is off as before."""
+    from mattermost_ai_agent_bus import gate
+    assert not owners.configured()
+    port, inner, fake = _world()
+    _linked_bot(inner, fake, PEERBOT, "agent-peer", NAME_A)
+    _attest(fake, NAME_A, ("u1", "alice"), ALICE)
+    assert not await port.trust_closed()
+    assert await gate.active(port) and await owners.peer(port, PEERBOT)  # type: ignore[arg-type]
+    assert await owners.names_in_doubt(port) == ({"alice"}, BOT)  # type: ignore[arg-type]
+    att = fake.attestations.pop(fake.name)
+    assert await port.trust_closed()
+    assert await gate.active(port)
+    names, me = await owners.names_in_doubt(port)  # type: ignore[arg-type]
+    assert names is owners.NOBODY and me == BOT
+    assert not await owners.peer(port, PEERBOT)  # type: ignore[arg-type]
+    assert PEERBOT in await owners.foreign(port, {PEERBOT})  # type: ignore[arg-type]
+    fake.attestations[fake.name] = att
+    assert await owners.names_in_doubt(port) == ({"alice"}, BOT)  # type: ignore[arg-type]
+    monkeypatch.delenv(planb.TEST_ENV)
+    del fake.attestations[fake.name]
+    inner.trusted = {}
+    assert not await port.trust_closed() and not await gate.active(port)
 
 
 async def test_on_the_crown_compares_by_anchor_before_any_record_was_seen(on: None) -> None:

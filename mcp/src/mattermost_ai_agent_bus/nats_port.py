@@ -201,6 +201,8 @@ class BusLike(Protocol):
 
     def approver(self, anchor: str) -> bool: ...
 
+    def account_approver(self, account: str) -> bool: ...
+
     def bound_accounts(self) -> dict[str, str]: ...
 
     def link_bot(self, bot_id: str, username: str = "") -> None: ...
@@ -264,6 +266,15 @@ def person_id(anchor: str) -> str:
 
 def is_person(user_id: str) -> bool:
     return user_id.startswith(PERSON)
+
+
+def _remember(keys: OrderedDict[tuple[str, ...], float], key: tuple[str, ...]) -> None:
+    """Hold `key` as judged now: at most PEOPLE_KEYS_MAX keys, none older than UNAPPROVED_SEC."""
+    now = time.monotonic()
+    while keys and (len(keys) >= PEOPLE_KEYS_MAX or next(iter(keys.values())) < now - UNAPPROVED_SEC):
+        keys.popitem(last=False)
+    keys[key] = now
+    keys.move_to_end(key)
 
 
 class _Keys:
@@ -455,6 +466,9 @@ class NatsPort:
         # Events that came over NATS from a person without a fresh approver record, judged as
         # they came, for the reads (`unapproved`): key -> monotonic time, kept as long as an ask
         self._unapproved: OrderedDict[tuple[str, ...], float] = OrderedDict()
+        # ... and those judged with one: plan B piece 4 judges every other event of a bound
+        # Mattermost account at the read, by that account's record then (`unapproved`)
+        self._approved: OrderedDict[tuple[str, ...], float] = OrderedDict()
         self._watch: asyncio.Task[None] | None = None
         # The HELLO card's data the presence carries (RT-6.37, ADR-015); the MCP server sets
         # it (a hosted one maybe after start), read at every presence the bus sends. None:
@@ -1479,34 +1493,54 @@ class NatsPort:
                 bucket[(m.emoji, uid)] = ms
         self._tell(ReactionEvent(Reaction(user_id=uid, post_id=target, emoji_name=m.emoji, create_at=ms), cid))
 
-    def _judge(self, key: tuple[str, ...], anchor: str) -> None:
-        """Remember an event that came without a fresh approver record (RT-6.42 step 9)."""
+    def _judge(self, key: tuple[str, ...], anchor: str, approved: bool | None = None) -> None:
+        """Remember how an event was judged as it came (RT-6.42 step 9): without a fresh
+        approver record of `anchor` (or, when given, not `approved`) for the reads; with one
+        too, which plan B piece 4 reads (`unapproved`)."""
         bus = self._live()
-        if bus is None or bus.approver(anchor):
+        if bus is None:
             self._unapproved.pop(key, None)
             return
-        now = time.monotonic()
-        while self._unapproved and (len(self._unapproved) >= PEOPLE_KEYS_MAX
-                                    or next(iter(self._unapproved.values())) < now - UNAPPROVED_SEC):
-            self._unapproved.popitem(last=False)
-        self._unapproved[key] = now
-        self._unapproved.move_to_end(key)
+        if bus.approver(anchor) if approved is None else approved:
+            self._unapproved.pop(key, None)
+            _remember(self._approved, key)
+        else:
+            self._approved.pop(key, None)
+            _remember(self._unapproved, key)
 
     async def unapproved(self, posts: Sequence[Post]) -> set[tuple[str, ...]]:
         """What of these came over NATS from a person without a fresh approver record, as
         the event was judged (RT-6.42 step 9): a post by its Mattermost id, a reaction by
-        its post, emoji and the anchor its account's record names."""
+        its post, emoji and the anchor its account's record names. With plan B piece 4 on,
+        also every post and reaction of a Mattermost account that the login service's record
+        binds to a person and that this session did not judge as it came (history, a
+        backfill, a reconnect, a time without its own attestation or before the session):
+        unless that account approves now (_account_approves), as if it came now. Fail
+        closed: a non-approver's answer never answers an ask (tasks.ask_answered)."""
         bus = self._live()
-        if bus is None or not self._unapproved:
+        piece4 = self._piece4()
+        if bus is None or not (self._unapproved or piece4):
             return set()
+        bound = bus.bound_accounts() if piece4 else {}
+        approves: dict[str, bool] = {}
+
+        def unjudged(key: tuple[str, ...], uid: str) -> bool:
+            # plan B piece 4: a bound account's event judged neither way, judged by its record now
+            if uid not in bound or key in self._approved:
+                return False
+            if uid not in approves:
+                approves[uid] = self._account_approves(uid)
+            return not approves[uid]
+
         out: set[tuple[str, ...]] = set()
         for p in posts:
-            if ("post", p.id) in self._unapproved:
+            if ("post", p.id) in self._unapproved or unjudged(("post", p.id), p.user_id):
                 out.add(("post", p.id))
             for r in p.reactions:
                 # a reaction read from the NATS memory names its person (hu:<anchor>) itself
                 anchor = r.user_id[len(PERSON):] if is_person(r.user_id) else bus.anchor_of_account(r.user_id)
-                if ("reaction", p.id, r.emoji_name, anchor) in self._unapproved:
+                key = ("reaction", p.id, r.emoji_name, anchor)
+                if key in self._unapproved or unjudged(key, r.user_id):
                     out.add(("reaction", p.id, r.emoji_name, r.user_id))
         return out
 
@@ -1814,29 +1848,41 @@ class NatsPort:
 
     def _account_approves(self, user_id: str) -> bool:
         """Piece 4: a Mattermost account approves only as a person over NATS does (RT-6.42
-        step 9): bound to a trusted anchor, and a fresh record of that anchor says `approver`."""
+        step 9): bound to a trusted anchor, and that account's own record fresh with
+        `approver`; another account of the same person approves nothing for it."""
         anchor = self._account_anchor(user_id)
         bus = self._live()
-        return bool(anchor) and bus is not None and bus.approver(anchor)
+        return bool(anchor) and bus is not None and bus.account_approver(user_id)
+
+    async def trust_closed(self) -> bool:
+        """Piece 4 on and no fresh own attestation (RT-6.41 step 6): the gate and the owner
+        split stay on and nobody is a peer, whatever the host configured (fail closed)."""
+        return self._piece4() and self._own_attestation() is None
 
     def _judge_on_mattermost(self, event: ChatEvent) -> None:
-        """Piece 4: a trusted human's post or reaction that comes on Mattermost (a DM, a channel
-        without the bridge's fresh signal) is judged as it comes, as one over NATS is (_judge):
-        without a fresh approver record the reads mark it not_approver."""
-        if not self._piece4():
+        """Piece 4: a post or reaction that comes on Mattermost (a DM, a channel without the
+        bridge's fresh signal) from an account the login service's record binds to a person is
+        judged as it comes, as one over NATS is (_judge): without that account's approval
+        (_account_approves; none while this session has no fresh own attestation) the reads
+        mark it not_approver. One the session did not see come, the reads judge (unapproved)."""
+        bus = self._live() if self._piece4() else None
+        if bus is None:
             return
+        key: tuple[str, ...]
         if isinstance(event, PostEvent):
             post = event.post
             if post.from_webhook or post.type or event.edited:
                 return
-            anchor = self._account_anchor(post.user_id)
-            if anchor:
-                self._judge(("post", post.id), anchor)
+            uid, key = post.user_id, ("post", post.id)
+            anchor = bus.bound_accounts().get(uid, "")
         elif isinstance(event, ReactionEvent):
             r = event.reaction
-            anchor = self._account_anchor(r.user_id)
-            if anchor:
-                self._judge(("reaction", r.post_id, r.emoji_name, anchor), anchor)
+            uid, anchor = r.user_id, bus.bound_accounts().get(r.user_id, "")
+            key = ("reaction", r.post_id, r.emoji_name, anchor)
+        else:
+            return
+        if anchor:
+            self._judge(key, anchor, self._account_approves(uid))
 
     async def _owner4(self, user_id: str) -> str | None:
         """Piece 4: an agent's owner from the login service alone, never a bot's description

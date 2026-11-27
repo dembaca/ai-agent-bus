@@ -4280,10 +4280,16 @@ reads yet (RT-6.39 step 5).
        lookup for every home `CB_NATS_HOMES` names, also with the switch
        off, and the MCP server then looks the names up itself with the
        bot token (the same result, one place later); a Mattermost
-       account approves only with a fresh approver record of its anchor,
+       account approves only with a fresh approver record of its own,
        as a person over NATS does, so a trusted human needs a Mattermost
        account bound to the Keycloak identity (an OpenID login) and the
        approvers' group, else nothing they write on Mattermost approves;
+       since that flag lives at most 15 minutes after a login, the owner
+       decides on a refresh path before the switch goes on in a real
+       home; what the session did not see come is judged by that record
+       at the read; without a fresh record of its own the session is
+       closed (the gate on, nobody a peer), whatever the host's variables
+       say;
        the link from a Mattermost bot to its NATS name is still the
        status tag and the presence's `bot` field (one read of the bot's
        status, only when a fresh presence names it), until piece 2 moves

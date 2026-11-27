@@ -278,8 +278,11 @@ async def names_in_doubt(client: ChatPort) -> tuple[AbstractSet[str], str]:
     as read now; when they cannot be read, or none of the configured ones
     resolved, the ones last read (within OWNER_GRACE_SEC), else the configured
     ones, or with ids alone configured NOBODY, which no owner matches.
-    (set(), '') only when none are configured. Never raises: the crown
-    election (lease._election, NATS prime) and `mine` read them here."""
+    (set(), '') only when none are configured. With trust closed (plan B
+    piece 4 without a fresh own attestation, ChatPort.trust_closed) none
+    read is NOBODY, neither the last names nor the host's variables. Never
+    raises: the crown election (lease._election, NATS prime) and `mine` read
+    them here."""
     global _mine
     now = monotonic()
     names: AbstractSet[str]
@@ -292,16 +295,23 @@ async def names_in_doubt(client: ChatPort) -> tuple[AbstractSet[str], str]:
     if names:
         _mine = (now, set(names), me)
         return names, me
-    if _mine is not None and now - _mine[0] < OWNER_GRACE_SEC:
+    try:
+        closed = await client.trust_closed()
+    except Exception:  # noqa: BLE001 — in doubt closed: nobody is a peer
+        closed = True
+    if closed:
+        names = NOBODY  # fail closed (RT-6.41 step 6), whatever the host configured
+    elif _mine is not None and now - _mine[0] < OWNER_GRACE_SEC:
         return set(_mine[1]), _mine[2]
-    configured_names = {n.lower() for n in _trusted_names()}
-    if configured_names:
-        names = configured_names
-    elif configured():
-        names = NOBODY  # configured by id only: nobody is a peer
     else:
-        return set(), ""
-    log.info("no trusted human resolved, %d configured: the owner split stays on", len(names))
+        configured_names = {n.lower() for n in _trusted_names()}
+        if configured_names:
+            names = configured_names
+        elif configured():
+            names = NOBODY  # configured by id only: nobody is a peer
+        else:
+            return set(), ""
+        log.info("no trusted human resolved, %d configured: the owner split stays on", len(names))
     try:
         me = (await client.get_me()).id
     except Exception:  # noqa: BLE001 — in doubt: the configured id

@@ -17,6 +17,11 @@ before 0.5.0 are described in the git history.
   `invalid post id`; and a DM back that itself stays on Mattermost settles the open DM
   record of that agent, which has no channel id to match, so the turn end no longer reminds
   of a DM the agent has answered.
+- **The DM to the responsible human goes to a Mattermost account only** (#244, RT-6.18,
+  RT-6.34). The no-relay DM (RT-6.18) and the login service's theft notice (RT-6.34)
+  took the first trusted human of that name, which in a home over NATS can be a person over
+  NATS (`hu:<anchor>`, RT-6.42) with no DM; they now take only a Mattermost account among
+  the trusted humans, else look the name up as before.
 
 ### Added
 
@@ -29,18 +34,30 @@ before 0.5.0 are described in the git history.
   `CB_MM_TRUSTED_HUMAN_USER_IDS` and a lookup with the bot token count for
   nothing, so `from_trusted_human`, the gate, mandates, signed records'
   `set_by`, ask answers and the stall check all decide by anchor; a
-  Mattermost account approves only with a fresh approver record, as a
-  person over NATS does, and a trusted human's post or reaction that comes
-  on Mattermost is marked `not_approver` without one. An agent's owner and
+  Mattermost account approves only with a fresh approver record of its
+  own, as a person over NATS does, never by another account of the same
+  person, and a post or reaction of a bound account that comes on
+  Mattermost is marked `not_approver` without one. One the session did not
+  see come (history, a backfill, a reconnect, while it was down) is judged
+  by that account's record at the read, so a non-approver's answer never
+  answers an ask. An agent's owner and
   trusted list come from the record of its NATS name, a Mattermost bot's
   from the NATS name linked to it, never from a bot's description or the
   registrar's attestation; a bot without such a link has no owner (foreign).
-  Fail closed: without a fresh own attestation nobody is trusted and every
-  other agent is foreign, while the owner split stays on. In a home that
-  `CB_NATS_HOMES` names, the corral start hook no longer looks the trusted
-  humans up and hands over no ids, also with the switch off: the MCP server
-  then looks them up itself, with the same result. With the switch off
-  (the default) nothing else changes.
+  Fail closed: without a fresh own attestation nobody is trusted, every
+  other agent is foreign and the gate and the owner split stay on, whatever
+  the host's trusted variables say and also with none of them set.
+
+  In a home that `CB_NATS_HOMES` names, the corral start hook no longer
+  looks the trusted humans up and hands over no ids, also with the switch
+  off. With the switch off that changes three things in every such home:
+  the MCP server's trusted ids come from its own lookup with the bot token
+  at run time, not from the hook; a name in `CB_TRUSTED_HUMANS` that no
+  person's account has (or a bot's) is no longer left out by the hook, so
+  when the lookup fails the in-doubt fallback (ADR-016) compares owners
+  with every name listed; and the hook's line "trusted human ... not found
+  (or a bot) — left out" is gone (`bus_info` names what the MCP server did
+  not find). With the switch off (the default) nothing else changes.
 
 - **Plan B's switch per piece and channel** (#244, ADR-014 phase 5, RT-6.39
   step 5). A channel in the channel directory now holds `planb`: the plan B

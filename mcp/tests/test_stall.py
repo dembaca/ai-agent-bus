@@ -86,6 +86,9 @@ class Client:
     async def own_anchors(self):
         return None
 
+    async def trust_closed(self):
+        return False
+
     async def reactions(self, post_id):
         return [reaction_of(r) for r in self.reacts.get(post_id, [])]
 
