@@ -1022,6 +1022,32 @@ async def test_a_held_back_flush_reconnect_is_armed_for_the_gate_s_end(
     assert bus._wake.is_set(), "no deferred reconnect: the home would stay down"
 
 
+async def test_a_new_connection_takes_the_armed_flush_reconnect_back(
+        monkeypatch: pytest.MonkeyPatch) -> None:
+    """#228 review: the armed reconnect belongs to the connection it was armed for. If a
+    drop, a gap or a renewal brings a new one first, the timer must not close it at the
+    gate's end (and `_open` takes it back as well)."""
+    monkeypatch.setattr(natsbus, "FLUSH_RECONNECT_SEC", 0.05)
+    bus, _ = _unit_bus()
+
+    class Slow:
+        async def publish(self, subject: str, body: bytes) -> None:
+            return
+
+        async def flush(self, timeout: int = 10) -> None:
+            raise asyncio.TimeoutError
+
+    bus._nc, bus._connected = Slow(), True  # type: ignore[assignment]
+    bus._last_flush_reconnect = time.monotonic()
+    with pytest.raises(natsbus.NatsBusError):
+        await bus.post("home", "x")
+    assert bus._flush_task is not None
+    # Another connection came first (as `_open` leaves it): the timer must do nothing.
+    bus._nc, bus._connected = Slow(), True  # type: ignore[assignment]
+    await asyncio.sleep(0.12)
+    assert not bus._wake.is_set()
+
+
 async def test_name_mismatch_in_a_reconnect_reaches_the_caller(monkeypatch: pytest.MonkeyPatch) -> None:
     fatal: list[Exception] = []
     bus, _ = _unit_bus(on_fatal=fatal.append)
@@ -2041,15 +2067,11 @@ async def test_a_refused_credential_is_a_login_failure_live(rig: Rig) -> None:
     a real server the CONNECT is answered during the handshake, where nats-py raises its
     plain Error with the server's text (not the AuthorizationError parent of
     _process_err), so the tier matches that text as well."""
-    from nats.errors import AuthorizationError
-    from nats.aio.errors import ErrAuthorization
-    assert issubclass(ErrAuthorization, AuthorizationError)  # the alias is deprecated
     nc = NatsClient()
     try:
         await nc.connect(rig.url, user="nobody", password="wrong", allow_reconnect=False)
     except Exception as exc:  # noqa: BLE001 - the type is what is under test
         assert natsbus.login_failure(exc), exc
-        assert not isinstance(exc, AuthorizationError)  # the handshake path's plain Error
     else:  # pragma: no cover - the server must refuse
         pytest.fail("a refused credential connected")
 

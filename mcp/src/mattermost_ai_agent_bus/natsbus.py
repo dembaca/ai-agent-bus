@@ -1430,7 +1430,7 @@ class NatsBus:
         for t in (self._renew_task, self._gap_task, self._flush_task):
             if t is not None and t is not asyncio.current_task():
                 t.cancel()
-        self._renew_task = self._gap_task = None
+        self._renew_task = self._gap_task = self._flush_task = None
 
     # --- connection ----------------------------------------------------------------
     async def _open(self) -> None:
@@ -1503,6 +1503,7 @@ class NatsBus:
         self._gaps.reset()
         self._stale.clear()
         self._cancel_gap_timer()  # this connection starts from `since`: the held-back gap is covered
+        self._cancel_flush_timer()  # a held-back flush reconnect was for the old connection
         name = self.name
         try:
             for ch in self.channels:
@@ -1568,6 +1569,11 @@ class NatsBus:
         if self._gap_task is not None and self._gap_task is not asyncio.current_task():
             self._gap_task.cancel()
         self._gap_task = None
+
+    def _cancel_flush_timer(self) -> None:
+        if self._flush_task is not None and self._flush_task is not asyncio.current_task():
+            self._flush_task.cancel()
+        self._flush_task = None
 
     async def _supervise(self) -> None:
         while not self._stopping:
@@ -1721,7 +1727,8 @@ class NatsBus:
                 elif self._flush_task is None or self._flush_task.done():
                     # Held back: arm the reconnect for the gate's end. Without it every send
                     # would raise "not connected" until the next credential renewal (#228).
-                    self._flush_task = asyncio.create_task(self._flush_reconnect_after(wait))
+                    self._flush_task = asyncio.create_task(
+                        self._flush_reconnect_after(wait, nc))
             raise NatsBusError("the connection stopped answering; the post may have arrived") from None
         except Exception as exc:
             raise NatsBusError(f"publish failed: {type(exc).__name__}") from None
@@ -2258,11 +2265,12 @@ class NatsBus:
         if self._gap_task is None or self._gap_task.done():
             self._gap_task = asyncio.create_task(self._gap_reconnect_after(wait))
 
-    async def _flush_reconnect_after(self, wait: float) -> None:
+    async def _flush_reconnect_after(self, wait: float, nc: NatsClient) -> None:
         await asyncio.sleep(wait)
-        if not self._stopping:
-            self._last_flush_reconnect = time.monotonic()
-            self._wake.set()
+        if self._stopping or self._nc is not nc:
+            return  # another connection came first (a drop, a gap, a renewal): it is healthy
+        self._last_flush_reconnect = time.monotonic()
+        self._wake.set()
 
     async def _gap_reconnect_after(self, wait: float) -> None:
         await asyncio.sleep(wait)

@@ -164,7 +164,7 @@ before 0.5.0 are described in the git history.
   is armed for the gate's end, so a second timeout cannot leave the connection
   down until the next credential renewal. Each attempt logs its next wait (the first three,
   then every tenth), and the fault rig reports `recovery_s`, the time from the
-  window to the first post after it. Measured after the change: 0.004 to 4.0 s
+  window to the first post after it. Measured after the change: 0.004 to 4.3 s
   for the faults of `--fault all`, 0.5 to 2.5 s for a 30 s restart window.
   #222's own 0.5 s command recovered in 4 of 4 runs on macOS before the change
   as well, so the report's ~40 s is not reproduced here; this fixes the two

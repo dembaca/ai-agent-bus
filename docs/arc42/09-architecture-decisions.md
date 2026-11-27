@@ -3718,7 +3718,7 @@ decided against it (Context).
    now stops at 5 s (30 s only after a login failure), and a flush that
    stops answering gives the connection up after 5 s, at most once per
    30 s, instead of holding the next post for 10 s: the rig's `recovery_s`
-   fell from 8.0 s to 0.004 to 4.0 s, and a 30 s restart window from 7.6
+   fell from 8.0 s to 0.004 to 4.3 s, and a 30 s restart window from 7.6
    to 19.7 s to 0.5 to 2.5 s ([#222](https://github.com/dembaca/ai-agent-bus/issues/222),
    whose own 0.5 s command recovered 4/4 on main here: two defects, not one
    cause)); a receiving session killed loses every post the consumer pushes
