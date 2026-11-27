@@ -845,7 +845,7 @@ async def _usage_of(client: ChatPort, rows: list[Any]) -> dict[str, dict[str, An
     per agent). This agent's own row is what it holds in memory, exact. An agent
     whose text carries none gives nothing."""
     out: dict[str, dict[str, Any]] = {}
-    own = (await client.get_me()).id
+    own = lease.roster_self(client, (await client.get_me()).id)  # its NATS name on plan B piece 2
     for r in rows:
         got = usage.own() if r.user_id == own else r.usage
         if got:
@@ -1795,8 +1795,9 @@ async def _foreign_coordinator(client: ChatPort, me: str) -> str:
     """ADR-001: the home's crown holder is another owner's agent. It routes,
     but its TASKs and mentions are requests to this worker. '' when not."""
     try:
+        own = lease.roster_self(client, me)  # its NATS name on plan B piece 2
         coord = next((r for r in await lease.roster(client)
-                      if r.crown and r.user_id and r.user_id != me), None)
+                      if r.crown and r.user_id and r.user_id != own), None)
         if coord is None:
             return ""
         found = await owners.foreign(client, {coord.user_id})

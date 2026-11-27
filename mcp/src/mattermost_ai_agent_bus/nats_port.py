@@ -876,6 +876,10 @@ class NatsPort:
                 out[rec.bot] = name
         return out
 
+    def own_name(self) -> str:
+        """This session's NATS name ('' without a bus): the id of its own row in roster_rows."""
+        return self._bus.name if self._bus is not None else ""
+
     def roster_rows(self, home: str) -> list[dict[str, Any]]:
         """The agents of `home` as lease's rows (RT-6.37 step 6, plan B piece 2), from NATS alone:
         the names that announced their membership of the home within 24 h and are not offline.
@@ -1783,9 +1787,9 @@ class NatsPort:
     async def bot_accounts(self, user_ids: set[str]) -> set[str]:
         nats = {i for i in user_ids if is_nats_user(i)}
         rest = {i for i in user_ids if not is_nats_user(i) and not is_person(i)}
-        if self._piece2():
-            return (rest & set(self._bots2())) | nats  # a bot is one the bridge made (its record)
-        return (await self.inner.bot_accounts(rest) if rest else set()) | nats
+        bots, known = self._known2(rest)  # plan B piece 2: a bot the bridge made (its record)
+        rest -= known
+        return (known & set(bots)) | (await self.inner.bot_accounts(rest) if rest else set()) | nats
 
     # --- reading ---------------------------------------------------------------------------
     def _shown(self, ch: str, seq: int) -> Post:
@@ -1905,15 +1909,26 @@ class NatsPort:
         person = bus.account_person(user_id) if bus is not None else None
         return person[1] if person is not None else user_id
 
+    def _known2(self, ids: set[str]) -> tuple[dict[str, tuple[str, natsbus.BotRecord]], set[str]]:
+        """Plan B piece 2 (RT-6.37 step 6): the bridge's bot records and those of the Mattermost
+        ids `ids` the NATS records know: a bot of a fresh bot record, an account the login
+        service's fresh record binds to a person. Every other id (a registrar's or other bot in
+        the lobby, a guest channel, the Mattermost half of a split home, a bot whose record
+        lapsed) is answered by Mattermost as with the switch off: never a person by default.
+        ({}, set()) with the switch off."""
+        if not self._piece2():
+            return {}, set()
+        bots = self._bots2()
+        bus = self._live()
+        return bots, {i for i in ids if i in bots or (bus is not None and bus.account_person(i) is not None)}
+
     async def usernames(self, user_ids: set[str]) -> dict[str, str]:
         nats = {i for i in user_ids if is_nats_user(i)}
         people = {i for i in user_ids if is_person(i)}
         rest = set(user_ids) - nats - people
-        if self._piece2():
-            bots = self._bots2()
-            out = {i: self._name2(i, bots) for i in rest}
-        else:
-            out = await self.inner.usernames(rest) if rest else {}
+        bots, known = self._known2(rest)
+        rest -= known
+        out = {i: self._name2(i, bots) for i in known} | (await self.inner.usernames(rest) if rest else {})
         return out | {i: i for i in nats} | {i: self._person_name(i) for i in people}
 
     async def username(self, user_id: str) -> str:
@@ -1921,16 +1936,17 @@ class NatsPort:
             return self._person_name(user_id)
         if is_nats_user(user_id):
             return user_id
-        return self._name2(user_id, self._bots2()) if self._piece2() else await self.inner.username(user_id)
+        bots, known = self._known2({user_id})
+        return self._name2(user_id, bots) if known else await self.inner.username(user_id)
 
     async def agents(self, user_ids: set[str]) -> set[str]:
         nats = {i for i in user_ids if is_nats_user(i)}
         rest = {i for i in user_ids if not is_nats_user(i) and not is_person(i)}
-        if self._piece2():
-            # an agent is the bridge's bot of a NATS name (its record); an id in no record is
-            # none: a person's account, or one nobody vouches for, foreign by the rule (RT-6.16)
-            return (rest & set(self._bots2())) | nats
-        return (await self.inner.agents(rest) if rest else set()) | nats
+        # plan B piece 2: an id the records know is an agent when it is the bridge's bot of a
+        # NATS name, a person's account is none; Mattermost answers for the rest (_known2)
+        bots, known = self._known2(rest)
+        rest -= known
+        return (known & set(bots)) | (await self.inner.agents(rest) if rest else set()) | nats
 
     async def agent_owner(self, user_id: str) -> str | None:
         # A NATS sender's owner is the one its presence proves (RT-6.37), else "" (an
@@ -1938,11 +1954,12 @@ class NatsPort:
         # None, which is "not readable" (also foreign, ADR-016, but logged as an outage).
         if is_person(user_id):
             return ""  # a person, no agent (RT-6.42)
-        if not is_nats_user(user_id) and self._piece2():
-            # plan B piece 2: no Mattermost read; the bridge's bot of a NATS name is judged as
-            # the name is, an id in no record has no owner: foreign (RT-6.16, RT-6.37 step 6)
-            known = self._bots2().get(user_id)
-            return await self.agent_owner(known[0]) if known is not None else ""
+        if not is_nats_user(user_id):
+            bots, known = self._known2({user_id})
+            if known:
+                # plan B piece 2: no Mattermost read; the bridge's bot of a NATS name is judged
+                # as the name is, a person's account has no owner (RT-6.37 step 6)
+                return await self.agent_owner(bots[user_id][0]) if user_id in bots else ""
         if self._piece4():
             return await self._owner4(user_id)
         if not is_nats_user(user_id):

@@ -4249,13 +4249,17 @@ which each piece reads for itself.
        `bot` field and the `⇄` tag in the status take no part, the tag is
        still written. The roster rows come from presence and membership (id
        the NATS name, `away` not reachable, no status word, the crown from
-       the NATS view). The presence did not carry `usage` and `release`
+       the NATS view); the session finds its own row by its NATS name
+       (`lease.is_me`), for the crown, its usage and the foreign-coordinator
+       check. The presence did not carry `usage` and `release`
        (the roster's numbers the coordinator routes by, and the version),
        so they are two new fields of the presence card, the status text's
        own segments, read back by the same parsers. `usernames`, `agents`,
-       `bot_accounts` and `agent_owner` answer a Mattermost id from the
-       records alone; an id in no record is neither agent nor bot and
-       counts as foreign. A cut makes the roster empty and tells nobody as
+       `bot_accounts` and `agent_owner` answer a Mattermost id the records
+       know (a fresh bot record, a fresh account record) from the records
+       alone; every other id keeps Mattermost's answer as with the switch
+       off, so a registrar's bot or a bridge bot whose record lapsed stays
+       an agent, never a person. A cut makes the roster empty and tells nobody as
        gone (RT-6.21). The bridge, the login service and the session side
        ship together. Not built: the state files keyed by the NATS name
        (piece 2b), and the `testrig` measurand "nobody told as gone during

@@ -12,6 +12,7 @@ shows the round trip and that an agent cannot publish a bot record.
 from __future__ import annotations
 
 import asyncio
+from dataclasses import replace as dataclasses_replace
 import json
 import time
 from types import SimpleNamespace
@@ -264,26 +265,55 @@ async def test_a_bot_is_linked_only_through_the_bridges_record_and_its_owner_acc
 async def test_shown_as_and_names_and_kinds_of_accounts_come_from_the_records(monkeypatch: pytest.MonkeyPatch) -> None:
     port, bus, inner = await _world(monkeypatch)
     assert await lease.shown_as(inner, {AGENT_A, AGENT_B}) == {AGENT_A: "bb-agent-a"}  # type: ignore[arg-type]
-    names = await port.usernames({BOT_A, ALICE, STRAY, AGENT_A})
-    # the bot by its record, the person by the account record's name, an id in no record by itself
-    assert names == {BOT_A: "bb-agent-a", ALICE: "alice", STRAY: STRAY, AGENT_A: AGENT_A}
-    assert await port.username(BOT_A) == "bb-agent-a" and await port.username(STRAY) == STRAY
-    assert await port.agents({BOT_A, ALICE, STRAY, AGENT_A}) == {BOT_A, AGENT_A}  # not a person, not a stray
-    assert await port.bot_accounts({BOT_A, ALICE, STRAY, AGENT_A}) == {BOT_A, AGENT_A}
-    assert await port.agent_owner(STRAY) == "" and await port.agent_owner(ALICE) == ""  # foreign
+    names = await port.usernames({BOT_A, ALICE, AGENT_A})
+    # the bot by its record, the person by the account record's name
+    assert names == {BOT_A: "bb-agent-a", ALICE: "alice", AGENT_A: AGENT_A}
+    assert await port.username(BOT_A) == "bb-agent-a" and await port.username(ALICE) == "alice"
+    assert await port.agents({BOT_A, ALICE, AGENT_A}) == {BOT_A, AGENT_A}  # not a person
+    assert await port.bot_accounts({BOT_A, ALICE, AGENT_A}) == {BOT_A, AGENT_A}
+    assert await port.agent_owner(ALICE) == ""  # a person's account: no agent's owner
     assert await port.agent_owner(BOT_A) == await port.agent_owner(AGENT_A)
-    # an unbound account's record (no anchor), and a stale one, name no person
+    assert inner.reads == []
+    # an unbound account's record (no anchor) names no person: Mattermost answers, as with the switch off
     await bus._on_presence_msg(FakeMsg(f"presence.account.mattermost.{ALICE}.v1", _presence_reply(bus, 70, 70, T0 + 1),
                                        _account_body(anchor=None, name=None)))
-    assert await port.usernames({ALICE}) == {ALICE: ALICE}
-    assert inner.reads == []
+    inner.names[ALICE] = "alice-mm"
+    assert await port.usernames({ALICE}) == {ALICE: "alice-mm"} and inner.reads == ["usernames"]
+
+
+async def test_an_id_the_records_do_not_know_is_what_mattermost_says_never_a_person(
+        monkeypatch: pytest.MonkeyPatch) -> None:
+    """RT-6.37 step 6, RT-6.16: a registrar bot in the lobby (or a bot of a guest channel or of the
+    Mattermost half of a split home) has no bot record, and a bridge bot's record can lapse: such
+    an id keeps Mattermost's answer as with the switch off, so the gate never takes it for a
+    person (OTHER)."""
+    from mattermost_ai_agent_bus import gate
+    from mattermost_ai_agent_bus.model import Post
+    port, bus, inner = await _world(monkeypatch)
+    inner.names[STRAY], inner._agents = "registrar-bot", {STRAY, BOT_A}
+    inner.descriptions[STRAY] = "for @alice"
+    assert await port.agents({STRAY, BOT_A}) == {STRAY, BOT_A}
+    assert await port.usernames({STRAY, BOT_A}) == {STRAY: "registrar-bot", BOT_A: "bb-agent-a"}
+    assert await port.username(STRAY) == "registrar-bot"
+    assert await port.bot_accounts({STRAY}) == {STRAY}
+    assert await port.agent_owner(STRAY) == "alice"  # its Mattermost owner, as with the switch off
+    post = Post(id="p" * 26, channel_id=WORK, user_id=STRAY, message="hi")
+    assert gate.author_class(post, {}, await port.agents({STRAY})) == gate.AGENT
+    assert {"usernames", "username", "agents", "bot_accounts", "agent_owner"} <= set(inner.reads)
+    # the bridge's record of agent-a lapses (past its 180 s): its bot is again what Mattermost says
+    await _presence(bus, "agent-z", 95, T0 + 181, owner="alice")
+    inner.names[BOT_A] = "bb-agent-a-mm"
+    assert await port.agents({BOT_A}) == {BOT_A}
+    assert await port.usernames({BOT_A}) == {BOT_A: "bb-agent-a-mm"}
+    assert gate.author_class(dataclasses_replace(post, user_id=BOT_A), {}, await port.agents({BOT_A})) == gate.AGENT
 
 
 async def test_a_stale_account_record_names_no_person(monkeypatch: pytest.MonkeyPatch) -> None:
     port, bus, inner = await _world(monkeypatch)
     await _presence(bus, "agent-z", 80, T0 + 901, owner="alice")  # past the record's 15 minutes
-    assert await port.usernames({ALICE}) == {ALICE: ALICE}
-    assert inner.reads == []
+    inner.names[ALICE] = "alice-mm"
+    assert await port.usernames({ALICE}) == {ALICE: "alice-mm"}  # Mattermost's name, as with the switch off
+    assert await port.agents({ALICE}) == set()
 
 
 # --- gone during a cut ------------------------------------------------------------------------
