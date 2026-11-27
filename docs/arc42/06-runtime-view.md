@@ -1272,6 +1272,8 @@ Everything the server writes in its state directory goes through one helper: a n
 
 **Purpose:** The host copy under corral (the host hooks, `bin/`, the MCP server and its `uv` environment, Section 7.1) changes in one step and goes back the same way: each install lands in a directory of its own, `current` is switched to it only when it is complete, the one before stays as `previous`, and a running session ends with the code it started with. corral runs a dispatcher that stays the same across releases, so a switch does not make corral skip a running session's `postEnd` (ADR-011 phase 1a). An install from a clone is marked `unsigned`; one from a signed release tag (`--release`, phase 1b) is RT-6.29.
 
+**Planned to end** with phase 5 of the NATS decision as plan B (the amendment of 2026-11-26 to ADR-014, #151, proposed, not built): once every home runs every piece, the host copy with its switch and rollback goes with the end of registration, its last piece. Until then this scenario holds as written.
+
 **Trigger:** The developer runs `bin/mm-agent-host-install.sh` (or `--from <clone>`, `--downgrade`, `--rollback`) on the host; corral starts a session's `preStart` or `postEnd`.
 
 **Participants:** Shell CLI, Host session hooks, MCP server; corral, Developer / operator
@@ -1321,6 +1323,8 @@ Everything the server writes in its state directory goes through one helper: a n
 
 **Purpose:** The host copy under corral comes from a release tag the owner signed, not from whatever a clone holds: `mm-agent-host-install.sh --release v<x.y.z>` installs a version only when its annotated tag carries the asked name, has not moved and its tree says that version, and, when the host pins release keys (opt-in, decided 2026-11-12: `CB_RELEASE_SIGNERS`, kept by the host in `release-signers` beside `releases/` after the first run with it), only when its signature verifies against them (ADR-011 phase 1b); a version the host's release check saw withdrawn needs `--withdrawn-ok`. Without the keys the trust rests on the repository over https and the tag object pinned in `releases/`. Install, switch, rollback and the session records are RT-6.28's; this scenario is the source.
 
+**Planned to end** with phase 5 of the NATS decision as plan B (the amendment of 2026-11-26 to ADR-014, #151, proposed, not built): once every home runs every piece, the install of the host copy from a release tag goes with the end of registration, its last piece. Until then this scenario holds as written.
+
 **Trigger:** The developer runs `mm-agent-host-install.sh --release v<x.y.z>` on the host, after the owner pushed that signed tag (CLAUDE.md, "Releasing").
 
 **Participants:** Shell CLI, Host session hooks; Developer / operator
@@ -1369,6 +1373,8 @@ Everything the server writes in its state directory goes through one helper: a n
 ## 6.30 Which release is out, and what it needs
 
 **Purpose:** Every server tells its human which release is out, whether it is a patch or a minor, `Breaking`, and what it needs first, only from a release tag that passed this host's check, so a human can decide to update; the notice installs nothing (ADR-011 phase 2, points 3, 4 and 6; the self-update between sessions that the registrar names is RT-6.32). The roster shows each agent's version, so a mixed bus and code that is no signed release are visible.
+
+**Planned to end** with phase 5 of the NATS decision as plan B (the amendment of 2026-11-26 to ADR-014, #151, proposed, not built): once every home runs every piece, the host's release check that this notice reads (the notice is proposed to read the version from the release record the bridge serves instead) goes with the end of registration, its last piece. Until then this scenario holds as written.
 
 **Trigger:** The installer's `--check`; the MCP server about once a day (hourly while the newest found is older than the running host copy's version); a session's start, the end of a turn, `bus_info`, the roster.
 
@@ -1448,6 +1454,8 @@ Everything the server writes in its state directory goes through one helper: a n
 ## 6.32 Self-update between sessions
 
 **Purpose:** corral's host copy follows the release the registrar's operator names, by itself, between sessions, while the code's signature stays the owner's: the registrar distributes the release keys once and names a version, or `latest`, the newest release tag the host's release check knows that is not withdrawn; a host installs only a newer, not withdrawn release tag signed by a key it pinned, only when no session of the host copy runs, and only while not held (ADR-011 phase 3, the owner's decisions of 2026-11-13). Every other host update stays RT-6.29's.
+
+**Planned to end** with phase 5 of the NATS decision as plan B (the amendment of 2026-11-26 to ADR-014, #151, proposed, not built): once every home runs every piece, the self-update between sessions, with the host copy and the stop hook that runs it, goes with the end of registration, its last piece. Until then this scenario holds as written.
 
 **Trigger:** corral's `postEnd` (the dispatcher, then the recorded release's stop hook, RT-6.28 step 9); the host's release check (RT-6.30), for the notice; `mm-agent-host-install.sh --hold` or `--unhold`; a session's start, the end of a turn, `bus_info`, `--check`.
 
