@@ -1932,7 +1932,7 @@ not know that either). A view across several servers (`/agent-explain
 - `wake`: why an event woke the agent, went into its digest or was gated, and
   by which rule: mention, DM, reaction on its ask, broadcast or to all, its own
   thread, a plain post naming no agent, which wakes only the 👑, a human's
-  reply in a thread another agent started, which is that agent's (RT-6.6 step 5,
+  reply in another agent's thread, which is that agent's (RT-6.6 step 5,
   RT-6.16), `not_here` / `departed` (RT-6.21), stall, digest, gated with the
   author's class.
 - `identity`: the author's class (trusted human, peer, foreign, other,

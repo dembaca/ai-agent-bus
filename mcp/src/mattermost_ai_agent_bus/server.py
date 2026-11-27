@@ -2969,8 +2969,9 @@ async def _in_my_thread(item: dict[str, Any], uid: str) -> bool | None:
 
 
 async def _agent_thread(item: dict[str, Any], uid: str) -> bool:
-    """RT-6.6 step 5: the item is a human's reply in a thread another agent
-    started, one the roster shows reachable (gate.other_agents_thread): that
+    """RT-6.6 step 5: the item is a human's reply in a reachable peer's
+    thread (gate.other_agents_thread: the peer started it, or a human's root
+    names it and it has posted there since): that
     agent's to answer, the crown gets it in the digest. Only a trusted
     human's, or anyone's but an agent's with the gate off: what the gate holds
     back from a worker stays the crown's (RT-6.16). False when unsure: the

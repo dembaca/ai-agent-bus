@@ -212,8 +212,9 @@ def wake_reason(item: Mapping[str, Any], *, coordinator: bool, in_my_thread: boo
     ADR-002); routes None, or an item without its channel: anywhere. A post
     to another agent is that agent's: the coordinator gets it in the digest,
     also when that agent's gate held it back (RT-6.16). So is a human's reply
-    in a thread a reachable agent of the home started (agent_thread,
-    gate.other_agents_thread): it wakes that agent as its thread, the
+    in a reachable peer's thread (agent_thread, gate.other_agents_thread:
+    the peer started it, or a human's root names it and it posted there
+    since): it wakes that agent as its thread, the
     coordinator not even where it posted in that thread, unless the reply
     names it; the server passes agent_thread only for a trusted human's
     reply (anyone's but an agent's with the gate off, RT-6.16) whose root it

@@ -305,6 +305,14 @@ def test_wake_rules_match_the_listener():
         got = turnend.wake([{**base, **p}], recent, me=UID, username="agent-me", since_ms=0,
                            coordinator=coord, digest_sec=3600, now=10)
         assert got["wake"] is woken, (p, coord)
+    # RT-6.2 step 4, RT-6.6 step 5 (#216): the server's whole-thread marks add to
+    # the own recent posts: a thread beyond them (z) wakes it, an fyi only its starter.
+    for p, woken in [({"root_id": "z"}, False), ({"root_id": "z", "my_thread": True}, True),
+                     ({"root_id": "z", "my_thread": True, **fyi}, False),
+                     ({"root_id": "z", "my_thread": True, "my_root": True, **fyi}, True)]:
+        got = turnend.wake([{**base, **p}], recent, me=UID, username="agent-me", since_ms=0,
+                           coordinator=False, digest_sec=3600, now=10)
+        assert got["wake"] is woken, p
 
 
 async def test_handoff_hands_back_the_own_posts(api, monkeypatch, tmp_path):

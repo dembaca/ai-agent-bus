@@ -710,7 +710,8 @@ async def _last(client: ChatPort, query: Mapping[str, str],
 
 
 def _slim(post: Post, agents: set[str], gated: set[str], absent: set[str],
-          agent_threads: Collection[str] = ()) -> dict[str, Any]:
+          agent_threads: Collection[str] = (),
+          mine: Mapping[str, tuple[bool, bool]] | None = None) -> dict[str, Any]:
     intent = post.intent or ""
     out: dict[str, Any] = {
         "id": post.id,
@@ -730,6 +731,10 @@ def _slim(post: Post, agents: set[str], gated: set[str], absent: set[str],
         # RT-6.6 step 5: a human's reply in another agent's thread, that agent's, not the 👑's.
         "agent_thread": post.id in agent_threads,
         "absent": post.id in absent,
+        # RT-6.2 step 4: a reply in a thread this agent posted in / started, read from
+        # the whole thread (?since= only), so also beyond the listener's last 200 posts.
+        "my_thread": (mine or {}).get(post.id, (False, False))[0],
+        "my_root": (mine or {}).get(post.id, (False, False))[1],
     }
     if post.files:
         out["files"] = [files.hint(f) for f in post.files]  # RT-6.23: get_file fetches one
@@ -812,8 +817,9 @@ async def _channel(client: ChatPort, chan: str) -> str:
 async def _agent_threads(client: ChatPort, raw: list[Post], uid: str) -> set[str]:
     """RT-6.6 step 5, as the push decides it (server._agent_thread): the
     replies naming no agent that a trusted human wrote, or with the gate off
-    anyone but an agent (RT-6.16), in a thread a reachable agent of the home
-    other than `uid` started (gate.other_agents_thread). Unsure: none, the
+    anyone but an agent (RT-6.16), in the thread of a reachable peer other
+    than `uid` (gate.other_agents_thread: started by it, or a human's thread
+    naming it that it has posted in). Unsure: none, the
     crown wakes as before."""
     replies = [p for p in raw if p.root_id and p.user_id and p.user_id != uid and not p.type
                and not tasks.mentions(p.message)]
@@ -840,7 +846,11 @@ async def posts(client: ChatPort, query: Mapping[str, str], body: Mapping[str, A
     or one gone or not here that this server answers (RT-6.21), and names its
     files (RT-6.23). While this agent holds the crown, agent_thread marks a
     human's reply in a thread another agent owns (RT-6.6 step 5,
-    _agent_threads). mm-agent-poll.sh reads them too."""
+    _agent_threads). With ?since=, my_thread / my_root mark a reply in a
+    thread this agent posted in / started, read from the whole thread
+    (gate.in_thread: one read per root, kept), so the listener and /v1/wake
+    see their threads beyond the last MAX_POSTS posts; they add to what
+    those posts show, never remove. mm-agent-poll.sh reads them too."""
     since, limit = query.get("since", ""), query.get("limit", "60")
     if not (since or limit).isdigit():
         raise BadRequest("since: epoch ms, limit: a count")
@@ -856,11 +866,27 @@ async def posts(client: ChatPort, query: Mapping[str, str], body: Mapping[str, A
     except Exception as exc:  # noqa: BLE001 — nobody counts as an agent then
         log.info("hook API: fyi authors unknown: %s", type(exc).__name__)
         agents = set()
+    for p in raw:
+        gate.saw(p)  # its author posted in its thread (RT-6.6 step 5)
     agent_threads = await _agent_threads(client, raw, uid) if lease.crown_held(uid) else set()
+    mine = await _my_threads(client, raw, uid) if since else {}
     gated, absent = gate.gated(uid), gate.absent(uid)
     # Which channel this is, for mm-agent-poll.sh to say: as asked, else the work channel's name.
     return 200, {"channel": query.get("channel", "") or client.work_channel_name,
-                 "posts": [_slim(p, agents, gated, absent, agent_threads) for p in raw]}
+                 "posts": [_slim(p, agents, gated, absent, agent_threads, mine) for p in raw]}
+
+
+async def _my_threads(client: ChatPort, raw: list[Post], uid: str) -> dict[str, tuple[bool, bool]]:
+    """RT-6.2 step 4: for each reply by someone else, (this agent posted in
+    its thread, started it), from the whole thread (gate.in_thread); a thread
+    that cannot be read is left out (the listener's own window still counts)."""
+    out: dict[str, tuple[bool, bool]] = {}
+    for p in raw:
+        if p.root_id and p.user_id != uid and not p.type:
+            got = await gate.in_thread(client, p.root_id, uid)
+            if got is not None:
+                out[p.id] = got
+    return out
 
 
 async def ask_reactions(client: ChatPort, query: Mapping[str, str],
