@@ -39,14 +39,15 @@ import re
 import ssl
 import time
 from urllib.parse import urlsplit
-from collections.abc import Awaitable, Callable, Iterable, Mapping
+from collections.abc import Awaitable, Callable, Iterable, Iterator, Mapping
 from dataclasses import dataclass, field
 from typing import Any, Protocol
 
 from nats.aio.client import Client as NatsClient
+from nats.errors import AuthorizationError, InvalidUserCredentialsError
 
 from . import a2a
-from .login import NKey
+from .login import LoginError, NKey
 from .session_file import NONCE_RE
 
 log = logging.getLogger(__name__)
@@ -60,6 +61,25 @@ HEARTBEAT_SEC = 30.0
 PRESENCE_FRESH_SEC = 90.0  # a holder's last presence must be younger than this
 OWN_ECHO_SEC = 75.0  # the echo of this agent's own presence must be younger than this (monotonic), else the view is unknown
 GAP_RECONNECT_SEC = 30.0  # at most one reconnect for a gap within this time
+# The wait between reconnect attempts doubles from a second, but a server that comes
+# back must be noticed soon: with a cap of 30 s a restarted nats-server was unreachable
+# for up to 20 s beyond its downtime (#222). 5 s keeps a long outage to ~16 attempts a
+# minute, less than nats-py's own 2 s default (30).
+RECONNECT_MAX_SEC = 5.0
+# A login failure is not the server being away: the login service may need longer (a
+# human, a restarted service), so that path keeps the slower growth.
+LOGIN_RECONNECT_MAX_SEC = 30.0
+# A flush that does not hear its PONG within this fails the send instead of holding the
+# send lock for nats-py's 10 s default: a post in flight under a fault blocked every
+# later post for 8 s, which is the floor the rig measured (#222). Above the rig's 2 s
+# fault window, so a PONG delayed by a short outage does not turn a delivered post into
+# a failed one.
+SYNC_SEC = 5
+# The opening handshake keeps nats-py's own bound: a slow line there is not a fault yet.
+OPEN_SYNC_SEC = 10
+# At most one reconnect per flush timeout within this interval: a server that answers
+# every agent slowly must not make every agent reconnect at once.
+FLUSH_RECONNECT_SEC = 30.0
 MAX_AGE_SEC = 86400.0  # the PRESENCE stream's max_age: older claims and presence are gone
 MEMBER_RENEW_SEC = 6 * 3600.0  # a membership is announced again this often (the stream keeps 24 h)
 MEMBER_SYNC_WAIT_SEC = 10.0  # how long an announcement waits for the bus to be synced
@@ -103,6 +123,32 @@ def owner_of_token(token: str) -> str:
 _PUBLISH_DENIED_RE = re.compile(r'permissions violation for publish to "([^"]*)"', re.IGNORECASE)
 _KINDS = ("post", "reaction", "unreaction")
 _STATUSES = ("online", "away", "bye")
+
+
+_REFUSED_CREDENTIAL = re.compile(r"authorization violation|invalid user credentials", re.I)
+
+
+def login_failure(exc: Exception) -> bool:
+    """Whether a reconnect failure is the login's, not the server being away: the bus's
+    own login errors, the authorization errors nats-py raises after a connect, and - a
+    refused CONNECT during the handshake - its plain `Error` with the server's text
+    (`_process_err` names the parent, the handshake path does not, nats-py 2.x)."""
+    return (isinstance(exc, (LoginError, AuthorizationError, InvalidUserCredentialsError))
+            or bool(_REFUSED_CREDENTIAL.search(str(exc))))
+
+
+def reconnect_waits(jitter: Callable[[], float] | None = None, *,
+                    cap: float = RECONNECT_MAX_SEC) -> Iterator[float]:
+    """The wait before each reconnect attempt (RT-6.36 step 2): one second, doubling to
+    `cap`, each stretched by 0.5 to 1.0 so a home's agents do not retry in step. The cap
+    is what a server that comes back needs: with 30 s, a restarted nats-server stayed
+    unreachable for up to 20 s beyond its downtime in the rig; with 5 s the sender was
+    back within 1 to 5 s. A login failure keeps the slower growth (#222)."""
+    jitter = jitter or (lambda: random.uniform(0.5, 1.0))
+    delay = 1.0
+    while True:
+        yield delay * jitter()
+        delay = min(delay * 2, cap)
 
 
 class NatsBusError(Exception):
@@ -1204,6 +1250,8 @@ class NatsBus:
         self._denied: list[str] = []  # subjects the server refused a publish on
         self._gaps = GapTracker()
         self._last_gap_reconnect = -1e18
+        self._last_flush_reconnect = -1e18  # storm control for flush-triggered reconnects
+        self._flush_task: asyncio.Task[None] | None = None
         self._last_echo_reconnect = -1e18
         self._echo_backoff = 0.0  # the wait after an echo reconnect that brought no echo back; 0: none yet
         self._stale: set[str] = set()  # channels with a gap, dropped until the reconnect
@@ -1393,10 +1441,10 @@ class NatsBus:
         self._nc = None
 
     def _cancel_timers(self) -> None:
-        for t in (self._renew_task, self._gap_task):
+        for t in (self._renew_task, self._gap_task, self._flush_task):
             if t is not None and t is not asyncio.current_task():
                 t.cancel()
-        self._renew_task = self._gap_task = None
+        self._renew_task = self._gap_task = self._flush_task = None
 
     # --- connection ----------------------------------------------------------------
     async def _open(self) -> None:
@@ -1469,6 +1517,7 @@ class NatsBus:
         self._gaps.reset()
         self._stale.clear()
         self._cancel_gap_timer()  # this connection starts from `since`: the held-back gap is covered
+        self._cancel_flush_timer()  # a held-back flush reconnect was for the old connection
         name = self.name
         try:
             for ch in self.channels:
@@ -1483,11 +1532,11 @@ class NatsBus:
             # refusal of the own deliver subjects means the credential carries another name
             # than the computed one (the credential is the authority). Nothing has been
             # published yet.
-            await self._sync(nc)
+            await self._sync(nc, timeout=OPEN_SYNC_SEC)
             if refused:
                 raise NameMismatch("the credential's agent name is not the computed one; nothing sent")
             await nc.publish(self._presence_subject, self._presence_body("online"))
-            await self._sync(nc)
+            await self._sync(nc, timeout=OPEN_SYNC_SEC)
             if self._presence_subject in self._denied:
                 # A host and a login service of different releases (RT-6.37): the presence
                 # subject changed, so this agent looks offline and foreign, and its bye
@@ -1508,15 +1557,15 @@ class NatsBus:
             self._schedule_renew()
 
     @staticmethod
-    async def _sync(nc: NatsClient) -> None:
+    async def _sync(nc: NatsClient, timeout: int = SYNC_SEC) -> None:
         """Two round trips, so that every -ERR the server sent for what came before has
         been handled when this returns. One flush is not enough: its PING is queued behind
         the client's own buffered writes, and the PONG that resolves it may answer a PING
         that was already on the wire before them (nats-py matches PONGs to flushes in
         order), so an -ERR for the writes may still be on its way. The second PING is
         sent only after the first PONG, and the server answers in order."""
-        await nc.flush()
-        await nc.flush()
+        await nc.flush(timeout=timeout)
+        await nc.flush(timeout=timeout)
 
     def _schedule_renew(self) -> None:
         if self._renew_task is not None:
@@ -1535,6 +1584,11 @@ class NatsBus:
             self._gap_task.cancel()
         self._gap_task = None
 
+    def _cancel_flush_timer(self) -> None:
+        if self._flush_task is not None and self._flush_task is not asyncio.current_task():
+            self._flush_task.cancel()
+        self._flush_task = None
+
     async def _supervise(self) -> None:
         while not self._stopping:
             await self._wake.wait()
@@ -1551,7 +1605,15 @@ class NatsBus:
                     await self._close_old()
             else:
                 await self._close_old()
-            delay = 1.0
+            # The server being away is retried soon; a login failure, which may need a
+            # human or a restarted login service, keeps growing to 30 s (#222 review).
+            server_waits = reconnect_waits()
+            login_waits = reconnect_waits(cap=LOGIN_RECONNECT_MAX_SEC)
+            failures = 0
+            if not planned:
+                # A jittered moment before the first attempt: a home whose agents lost
+                # the same server must not knock in step (#222 review).
+                await asyncio.sleep(next(server_waits))
             try:
                 while not self._stopping:
                     try:
@@ -1568,9 +1630,18 @@ class NatsBus:
                         await self._notify_fatal(exc)
                         return
                     except Exception as exc:
-                        log.warning("nats bus: reconnect failed: %s", connect_reason(exc))
-                        await asyncio.sleep(delay * random.uniform(0.5, 1.0))
-                        delay = min(delay * 2, 30.0)
+                        failures += 1
+                        login_failed = login_failure(exc)
+                        wait = next(login_waits if login_failed else server_waits)
+                        # The first tries are news; a long outage is not a warning a turn.
+                        if failures <= 3 or failures % 10 == 0:
+                            log.warning("nats bus: reconnect failed (%s), next in %.1f s: %s",
+                                        "login" if login_failed else "server", wait,
+                                        connect_reason(exc))
+                        else:
+                            log.debug("nats bus: reconnect failed (%s), next in %.1f s",
+                                      "login" if login_failed else "server", wait)
+                        await asyncio.sleep(wait)
             finally:
                 self._ready.set()
 
@@ -1654,6 +1725,25 @@ class NatsBus:
         try:
             await nc.publish(subject, body)  # never a Nats-Msg-Id header
             await self._sync(nc)
+        except TimeoutError:
+            # The line stopped answering: nats-py matches PONGs to flushes in order, so a
+            # timed-out flush would misfit every later one. Give the connection up and
+            # let the supervisor make a new one (RT-6.36 step 2) - at most once per
+            # interval, so a server that answers everybody slowly is not stampeded.
+            # The publish was written before the PONG went missing: it may have arrived.
+            if self._nc is nc:
+                self._connected = False
+                now = time.monotonic()
+                wait = FLUSH_RECONNECT_SEC - (now - self._last_flush_reconnect)
+                if wait <= 0:
+                    self._last_flush_reconnect = now
+                    self._wake.set()
+                elif self._flush_task is None or self._flush_task.done():
+                    # Held back: arm the reconnect for the gate's end. Without it every send
+                    # would raise "not connected" until the next credential renewal (#228).
+                    self._flush_task = asyncio.create_task(
+                        self._flush_reconnect_after(wait, nc))
+            raise NatsBusError("the connection stopped answering; the post may have arrived") from None
         except Exception as exc:
             raise NatsBusError(f"publish failed: {type(exc).__name__}") from None
         if subject in self._denied:
@@ -2188,6 +2278,13 @@ class NatsBus:
         log.warning("nats bus: gap on %s, reconnect held back %.0f s", where, wait)
         if self._gap_task is None or self._gap_task.done():
             self._gap_task = asyncio.create_task(self._gap_reconnect_after(wait))
+
+    async def _flush_reconnect_after(self, wait: float, nc: NatsClient) -> None:
+        await asyncio.sleep(wait)
+        if self._stopping or self._nc is not nc:
+            return  # another connection came first (a drop, a gap, a renewal): it is healthy
+        self._last_flush_reconnect = time.monotonic()
+        self._wake.set()
 
     async def _gap_reconnect_after(self, wait: float) -> None:
         await asyncio.sleep(wait)

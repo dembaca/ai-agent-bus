@@ -472,7 +472,13 @@ class HookAPI:
         except Exception:  # noqa: BLE001 — no bus configured
             client = None
         if client is None or not client.token:
-            return 503, {"error": "no bus session"}
+            # No chat to check the turn against, but a login may wait: its line goes
+            # with the 503, so a session without a bot (plan B) does not lose the
+            # approval (review of #230).
+            answer: dict[str, Any] = {"error": "no bus session"}
+            if route is turn_end and (line := login_line()):
+                answer["login"] = line
+            return 503, answer
         try:
             run = (self._long_poll(client, query, payload, reader) if route is wake and "wait" in query
                    else self._run(route, client, query, payload))
@@ -876,8 +882,12 @@ async def posts(client: ChatPort, query: Mapping[str, str], body: Mapping[str, A
     for p in raw:
         gate.saw(p)  # its author posted in its thread (RT-6.6 step 5)
     with gate.thread_reads(MAX_THREAD_READS):  # RT-6.6 step 5: a busy channel, bounded cost
-        agent_threads = await _agent_threads(client, raw, uid) if lease.crown_held(uid) else set()
+        # The agent's own threads first (#226): with the crown held, a busy channel's
+        # other roots must not use the budget before its own replies are marked
+        # (RT-6.2 step 4). A root the request carries costs no read; a root read for
+        # one is kept for the other (gate._roots).
         mine = await _my_threads(client, raw, uid) if since else {}
+        agent_threads = await _agent_threads(client, raw, uid) if lease.crown_held(uid) else set()
     gated, absent = gate.gated(uid), gate.absent(uid)
     # Which channel this is, for mm-agent-poll.sh to say: as asked, else the work channel's name.
     return 200, {"channel": query.get("channel", "") or client.work_channel_name,
@@ -887,10 +897,21 @@ async def posts(client: ChatPort, query: Mapping[str, str], body: Mapping[str, A
 async def _my_threads(client: ChatPort, raw: list[Post], uid: str) -> dict[str, tuple[bool, bool]]:
     """RT-6.2 step 4: for each reply by someone else, (this agent posted in
     its thread, started it), from the whole thread (gate.in_thread); a thread
-    that cannot be read is left out (the listener's own window still counts)."""
+    that cannot be read is left out (the listener's own window still counts).
+    A root the request itself carries is known without a read: this agent
+    started it, so the reply is in its own thread (#226, no budget spent; a
+    webhook's root is judged as a human's, as elsewhere, and read). A root
+    outside the request takes a read, so a crown-heavy request marks what it
+    carries and the rest within the budget (the next poll finds the others'
+    roots kept)."""
+    roots = {p.id: p for p in raw if not p.root_id and not p.type}
     out: dict[str, tuple[bool, bool]] = {}
     for p in raw:
         if p.root_id and p.user_id != uid and not p.type:
+            root = roots.get(p.root_id)
+            if root is not None and not root.from_webhook and root.user_id == uid:
+                out[p.id] = (True, True)
+                continue
             got = await gate.in_thread(client, p.root_id, uid)
             if got is not None:
                 out[p.id] = got
@@ -1150,8 +1171,42 @@ def _flag(query: Mapping[str, str], name: str) -> bool:
     return value == "1"
 
 
+def login_line() -> str:
+    """The waiting login approval as one line for a harness's terminal (#198), "" when
+    none waits; `Login.pending_line` checked the link and the code and gives the time
+    left, so the line never outlives the approval."""
+    from . import login as login_mod
+
+    running = login_mod.current()
+    line = running.pending_line() if running is not None else None
+    if line is None:
+        return ""
+    link, code, expires_in = line
+    return _line_text(link, code, expires_in)
+
+
+def _line_text(link: str, code: str, expires_in: int) -> str:
+    """The one wording of the terminal line (#198), for the turn end and for the
+    start hooks that ask `/v1/login`."""
+    minutes = max(1, expires_in // 60)
+    return (f"Bus login: open {link} — the page shows the code {code}. "
+            f"Approve only if it matches; the code is good for {minutes} min.")
+
+
 async def turn_end(client: ChatPort, query: Mapping[str, str],
                    body: Mapping[str, Any]) -> Reply:
+    """`_turn_end`, plus the waiting login line (#198) in the answer: a grant that
+    began after the session start reaches the terminal at this turn's end."""
+    status, answer = await _turn_end(client, query, body)
+    if status == 200:
+        line = login_line()
+        if line:
+            answer = {**answer, "login": line}
+    return status, answer
+
+
+async def _turn_end(client: ChatPort, query: Mapping[str, str],
+                    body: Mapping[str, Any]) -> Reply:
     """The Stop hook's checks for a turn plugin (RT-6.20; RT-6.2 steps 1–2):
     drain while messages wait (at most turnend.MAX_DRAIN rounds a turn, the
     caller counts them), then a sign-off once a turn, else idle. The caller
@@ -1297,7 +1352,8 @@ async def login_link(client: ChatPort, query: Mapping[str, str], body: Mapping[s
     if line is None:
         return 200, {}
     link, code, expires_in = line
-    return 200, {"link": link, "user_code": code, "expires_in": expires_in}
+    return 200, {"link": link, "user_code": code, "expires_in": expires_in,
+                 "line": _line_text(link, code, expires_in)}
 
 
 async def login_shown(client: ChatPort, query: Mapping[str, str], body: Mapping[str, Any]) -> Reply:

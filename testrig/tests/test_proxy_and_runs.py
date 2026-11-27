@@ -581,3 +581,18 @@ def test_the_report_names_the_lost_sequences_and_the_consumer():
     assert report["failed_but_arrived"] == 1
     assert report["consumer_at_kill"] == {"delivered_stream_seq": 3, "num_pending": 0}
     assert report["consumer_at_resume"] == {"delivered_stream_seq": 9, "num_pending": 0}
+
+
+def test_the_report_says_how_long_the_session_needed_after_the_window() -> None:
+    """#222: `recovery_s` is the time from the fault's window to the first post that
+    succeeded after it - with the recovery loop's 0.5 s pace it is the reconnect
+    delay itself, so a fix of that delay can be measured with the rig."""
+    run = Run(name="bus-run", target="bus-nats", fault="restart")
+    run.window_closed_at = 100.0
+    run.recovered = True
+    run.recovered_at = 104.5
+    assert run.report()["recovery_s"] == 4.5
+    # No recovery: nothing to report, not a zero that reads like "at once".
+    lost = Run(name="bus-run", target="bus-nats", fault="restart")
+    lost.window_closed_at = 100.0
+    assert lost.report()["recovery_s"] is None

@@ -65,8 +65,9 @@ before 0.5.0 are described in the git history.
 - **Thread reads for the coordinator's wake are bounded** (#223,
   [the coordinator scenario, RT-6.6 step 5](docs/arc42/06-runtime-view.md#66-coordinator-crown-and-presence-lease),
   and the end-of-turn scenario, RT-6.2 step 4). A thread that cannot be read
-  is not read again for a minute, first read and re-read alike; until then it
-  counts as unreadable, so the coordinator wakes. One `/v1/posts` request
+  is not read again for a minute, first read and re-read alike; a failed first
+  read counts as unreadable until then, so the coordinator wakes, while a
+  failed re-read keeps the record read before, so it does not. One `/v1/posts` request
   reads at most 20 threads (`MAX_THREAD_READS`); a reply beyond them stays
   unmarked, as without the marks: the coordinator wakes for it and the
   listener judges it by its last 200 posts, and the next request reads on.
@@ -74,6 +75,18 @@ before 0.5.0 are described in the git history.
   its thread's record at once. `/v1/posts`'s field table in the docs now
   lists `agent_thread`, `my_thread` and `my_root`, and the docs say that a
   root a webhook posted is judged as a human's.
+- **The agent's own threads are marked before the crown's** ([#226](https://github.com/dembaca/ai-agent-bus/issues/226),
+  the follow-ups of #223). `/v1/posts` computes `my_thread`/`my_root` before the
+  crown's `agent_thread` marks, and a root the request itself carries costs no
+  thread read (its author is the one who started it; a webhook's root is read),
+  so a crown-heavy request marks the agent's own replies it carries even when
+  other agents' 25 roots take the 20 reads (`MAX_THREAD_READS`). A reply whose
+  root lies before the request's window takes a read like the others: a first
+  crown-heavy poll can leave it for the next, which finds the other roots kept.
+  The docs also say what a failed read means: only a failed first read counts
+  as unreadable, which lets the coordinator wake; a failed re-read keeps the
+  record read before.
+
 - **A human's reply in an agent's thread wakes that agent, not the coordinator**
   ([#207](https://github.com/dembaca/ai-agent-bus/issues/207),
   [the coordinator scenario, RT-6.6 step 5](docs/arc42/06-runtime-view.md#66-coordinator-crown-and-presence-lease)).
@@ -166,11 +179,44 @@ before 0.5.0 are described in the git history.
   the harness on `GET /v1/login` of its hook API, and the harness shows it once:
   Claude Code's session-start hook as a `systemMessage`, the pi extension's
   notice and the OpenCode plugin's synthetic line. The line is marked shown with
-  `POST /v1/login/shown`, so the next turn's notice does not repeat it; a grant
-  that starts after the session start is seen at the next turn's end.
+  `POST /v1/login/shown`, so the next turn's notice does not repeat it, and only
+  after the line really went out. A grant that starts after the session start
+  comes with the next turn's end: `/v1/turn-end` carries the same line in its
+  answer, so the pi extension and the OpenCode plugin need no second call, and
+  Claude Code's Stop hook asks `GET /v1/login` there. The line says how many
+  minutes the code has left, not the grant's original span, and ends with the
+  approval. A keyless corral session gets the line from its relay, on the link
+  the host built itself. A session with no bot yet (503 on its turn's end) still
+  gets the line with that answer, so plan B does not lose the approval.
 
 ### Fixed
 
+- **A faulted NATS connection no longer blocks the next post, and a
+  restarted server is reached again within seconds** (#222). Two defects, both
+  measured with the fault rig: a send in flight when a fault hit held the
+  send lock until nats-py's 10 s flush default, so the first post after the
+  window waited 8.0 s (`restart` and `blackhole`); and the reconnect wait
+  doubled from a second to 30 s, so after a long outage the next attempt could
+  be half a minute away (a 30 s restart left the sender down for 7.6 to
+  19.7 s beyond its downtime). A flush that does not hear its PONG within 5 s
+  now fails that send and gives the connection up, at most once per 30 s, so
+  a server that answers everybody slowly is not stampeded (a timed-out flush
+  would misfit every later PONG; the handshake keeps 10 s). The error says the
+  post may have arrived - the publish went out before the PONG went missing -
+  so a retry can duplicate it. The wait stops at 5 s while the server does not
+  answer and starts with a jittered moment, so a home's agents do not knock in
+  step; a failure of the login keeps the slower growth to 30 s - the bus's own
+  `LoginError`, nats-py's authorization errors, and its handshake's plain error
+  with the server's text (a refused CONNECT) - since it may need a human or a
+  restarted login service. A flush-triggered reconnect the 30 s gate holds back
+  is armed for the gate's end, so a second timeout cannot leave the connection
+  down until the next credential renewal. Each attempt logs its next wait (the first three,
+  then every tenth), and the fault rig reports `recovery_s`, the time from the
+  window to the first post after it. Measured after the change: 0.004 to 4.3 s
+  for the faults of `--fault all`, 0.5 to 2.5 s for a 30 s restart window.
+  #222's own 0.5 s command recovered in 4 of 4 runs on macOS before the change
+  as well, so the report's ~40 s is not reproduced here; this fixes the two
+  delays it can have come from.
 - **A killed session no longer loses the post that was queued for it** (#213).
   The first `since` of a NATS home now comes from the host's read mark
   (`read-<uid>.env`, the NATS lane `<channel id>:nats`): the last post actually

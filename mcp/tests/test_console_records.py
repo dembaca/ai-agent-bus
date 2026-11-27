@@ -236,7 +236,7 @@ class _Nc:
     async def drain(self) -> None:
         pass
 
-    async def flush(self) -> None:
+    async def flush(self, timeout: int = 10) -> None:
         pass
 
     async def close(self) -> None:

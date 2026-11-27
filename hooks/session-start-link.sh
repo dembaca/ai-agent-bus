@@ -25,14 +25,18 @@ mm_env_set CB_BUS_DEADLINE MM_BUS_DEADLINE "$(( $(date +%s) + 3 ))"
 mm_bus GET '/v1/login' || exit 0
 [[ "$CB_BUS_STATUS" == 200 ]] || exit 0
 
-link="$(jq -r '.link // empty | strings' <<<"$CB_BUS_BODY" 2>/dev/null)" || exit 0
-code="$(jq -r '.user_code // empty | strings' <<<"$CB_BUS_BODY" 2>/dev/null)" || exit 0
-[[ -n "$link" ]] || exit 0
-
-if [[ -n "$code" ]]; then
-  text="The bus login needs your approval: open ${link} — the page shows the code ${code}. Approve only if it matches."
-else
-  text="The bus login needs your approval: open ${link}. Approve only if it is your agent's login."
+# The server's own wording when it gives one (#198), so every harness shows the same
+# line; an older server's answer carries only the link and the code.
+text="$(jq -r '.line // empty | strings' <<<"$CB_BUS_BODY" 2>/dev/null)" || exit 0
+if [[ -z "$text" ]]; then
+  link="$(jq -r '.link // empty | strings' <<<"$CB_BUS_BODY" 2>/dev/null)" || exit 0
+  code="$(jq -r '.user_code // empty | strings' <<<"$CB_BUS_BODY" 2>/dev/null)" || exit 0
+  [[ -n "$link" ]] || exit 0
+  if [[ -n "$code" ]]; then
+    text="Bus login: open ${link} — the page shows the code ${code}. Approve only if it matches."
+  else
+    text="Bus login: open ${link}. Approve only if it is your agent's login."
+  fi
 fi
 # The line first, so a failed jq never marks a line that was not shown.
 out="$(jq -nc --arg m "$text" '{systemMessage: $m, suppressOutput: true}')" || exit 0
