@@ -88,7 +88,9 @@ go to Mattermost as before; its root is the NATS post its `root` names when that
 memory, else `mm_root`. Its author is `hu:<anchor>` (person_id; `hu:-` for every account
 bound to nobody), never a Mattermost account or an agent: trusted when the anchor is one of
 the session's own attested trusted anchors (trusted_humans adds them), and an approval only
-with a fresh approver record besides (may_approve). Direct messages and other bots stay on
+with a fresh approver record besides (may_approve); with plan B piece 4 on, the trusted anchor
+alone approves, as the bridge carried the post under it only for an account whose binding the
+login service proved (RT-6.41 step 6, #266). Direct messages and other bots stay on
 Mattermost.
 
 A NATS home that cannot start (no login, a NameMismatch) is reported in the log and
@@ -205,8 +207,6 @@ class BusLike(Protocol):
     def anchor_of_account(self, account: str) -> str: ...
 
     def approver(self, anchor: str) -> bool: ...
-
-    def account_approver(self, account: str) -> bool: ...
 
     def bound_accounts(self) -> dict[str, str]: ...
 
@@ -834,6 +834,10 @@ class NatsPort:
         """Whether any home takes its roster, links and account names from NATS (plan B piece 2,
         RT-6.37 step 6)."""
         return any(planb.on(2, name) for name in self._homes)
+
+    def home_name(self) -> str:
+        """The home that runs over NATS where plan B piece 2 is on (the first one), else ''."""
+        return next((h for h in self._homes if planb.on(2, h)), "")
 
     def _bots2(self) -> dict[str, tuple[str, natsbus.BotRecord]]:
         """Mattermost bot id -> (NATS name, record) of the fresh bot records of the bridge whose
@@ -1680,14 +1684,14 @@ class NatsPort:
         self._tell(ReactionEvent(Reaction(user_id=uid, post_id=target, emoji_name=m.emoji, create_at=ms), cid))
 
     def _judge(self, key: tuple[str, ...], anchor: str, approved: bool | None = None) -> None:
-        """Remember how an event was judged as it came (RT-6.42 step 9): without a fresh
-        approver record of `anchor` (or, when given, not `approved`) for the reads; with one
+        """Remember how an event was judged as it came (RT-6.42 step 9): when `anchor` does not
+        approve (_person_approves; or, when given, not `approved`) for the reads; when it does
         too, which plan B piece 4 reads (`unapproved`)."""
         bus = self._live()
         if bus is None:
             self._unapproved.pop(key, None)
             return
-        if bus.approver(anchor) if approved is None else approved:
+        if self._person_approves(anchor) if approved is None else approved:
             self._unapproved.pop(key, None)
             _remember(self._approved, key)
         else:
@@ -1778,14 +1782,30 @@ class NatsPort:
 
     async def may_approve(self, user_id: str) -> bool | None:
         """A person over NATS approves only with a fresh approver record (RT-6.42 step 9);
-        None for everyone else (the adapter's rule). With plan B piece 4 on, a Mattermost
-        account approves alike, by the anchor its record names (_account_approves)."""
+        None for everyone else (the adapter's rule). With plan B piece 4 on, a person over
+        NATS approves by being one of the attested trusted anchors and a Mattermost account by
+        the trusted anchor its record binds it to (_person_approves, _account_approves)."""
         if self._piece4() and not is_person(user_id):
             return self._account_approves(user_id)
         if not is_person(user_id):
             return await self.inner.may_approve(user_id)
+        return self._person_approves(user_id[len(PERSON):])
+
+    def _person_approves(self, anchor: str) -> bool:
+        """Whether a person over NATS, the sender `anchor` of a `<bus>.hu` event, approves
+        (RT-6.42 step 9). With plan B piece 4 on, by being one of this session's own attested
+        trusted anchors (RT-6.41 step 6, the owner's decision of 2026-11-27, #266): the bridge
+        carries a post under an anchor only for an account whose binding the login service
+        proved and Mattermost still shows, and no approver flag counts on Mattermost's side.
+        Off, by a fresh approver record of the anchor (natsbus.approver). Never for UNBOUND, and
+        nobody without a bus or, with the piece on, without a fresh own attestation."""
         bus = self._live()
-        return bus is not None and bus.approver(user_id[len(PERSON):])
+        if bus is None or anchor == natsbus.UNBOUND:
+            return False
+        if self._piece4():
+            att = self._own_attestation()
+            return att is not None and any(a == anchor for a, _ in att.trusted)
+        return bus.approver(anchor)
 
     async def bot_accounts(self, user_ids: set[str]) -> set[str]:
         nats = {i for i in user_ids if is_nats_user(i)}
@@ -2074,12 +2094,13 @@ class NatsPort:
         return anchor if anchor and any(a == anchor for a, _ in att.trusted) else ""
 
     def _account_approves(self, user_id: str) -> bool:
-        """Piece 4: a Mattermost account approves only as a person over NATS does (RT-6.42
-        step 9): bound to a trusted anchor, and that account's own record fresh with
-        `approver`; another account of the same person approves nothing for it."""
-        anchor = self._account_anchor(user_id)
-        bus = self._live()
-        return bool(anchor) and bus is not None and bus.account_approver(user_id)
+        """Piece 4: a Mattermost account approves as a person over NATS does: when the login
+        service's record binds it to one of this session's attested trusted anchors (RT-6.41
+        step 6, the owner's decision of 2026-11-27, #266). The binding was proven at a login
+        (OpenID or LDAP) and the login service keeps the record only while Mattermost shows the
+        account so; no approver flag, so no 15 minutes after a login. Without a fresh own
+        attestation, nothing (fail closed)."""
+        return bool(self._account_anchor(user_id))
 
     async def trust_closed(self) -> bool:
         """Piece 4 on and no fresh own attestation (RT-6.41 step 6): the gate and the owner

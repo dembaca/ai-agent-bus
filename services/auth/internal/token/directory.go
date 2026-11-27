@@ -9,6 +9,12 @@ import (
 // OpenID Connect; its auth_data is then the identity provider's `sub`.
 const OpenIDService = "openid"
 
+// LDAPService is Mattermost's auth_service for an account that logs in over
+// LDAP; its auth_data is then the value of the LDAP server's "ID attribute"
+// (Mattermost's LDAP setting), which the token carries as the LDAP id claim
+// (Config.LDAPIDClaim) when Keycloak federates the same LDAP.
+const LDAPService = "ldap"
+
 // ErrNoSuchUser is what a Directory returns when the chat has no account of
 // that name.
 var ErrNoSuchUser = errors.New("no such user")
@@ -31,10 +37,11 @@ type User struct {
 	// AuthKnown false is refused, never taken for a password account.
 	AuthKnown bool
 	// AuthService is how the account logs in ("" for a password,
-	// OpenIDService over OpenID Connect, others for LDAP, SAML …).
+	// OpenIDService over OpenID Connect, LDAPService over LDAP, others for
+	// SAML …).
 	AuthService string
 	// AuthData is the identity provider's id for the account, for
-	// OpenIDService its `sub`.
+	// OpenIDService its `sub`, for LDAPService the LDAP entry's id attribute.
 	AuthData string
 }
 

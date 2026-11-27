@@ -75,8 +75,10 @@ var renamed = map[string][]string{
 	"CB_AUTH_SUBJECT_PREFIX":        {"AUTH_SUBJECT_PREFIX"},
 	"CB_AUTH_TOKEN_LEEWAY":          {"AUTH_TOKEN_LEEWAY"},
 	"CB_AUTH_XKEY_SEED_FILE":        {"AUTH_XKEY_SEED_FILE"},
-	"CB_AUTHD_DIR_API":              {"AUTHD_DIR_API"},
-	"CB_AUTHD_DIR_CA_FILE":          {"AUTHD_DIR_CA_FILE"},
+	// New with the LDAP proof of a Mattermost account (#266): no old spelling.
+	"CB_AUTH_LDAP_ID_CLAIM": nil,
+	"CB_AUTHD_DIR_API":      {"AUTHD_DIR_API"},
+	"CB_AUTHD_DIR_CA_FILE":  {"AUTHD_DIR_CA_FILE"},
 	// The stats channel the STATS import reads (RT-6.45): the MCP server's
 	// setting, read here by the same rule.
 	"CB_MM_STATS_CHANNEL": {"MM_STATS_CHANNEL"},

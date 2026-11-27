@@ -149,6 +149,9 @@ func LoadSettings(env *envname.Env) (Settings, bool, error) {
 		Audience:      get("CB_AUTH_KEYCLOAK_AUDIENCE"),
 		ApproverGroup: get("CB_AUTH_APPROVER_GROUP"),
 		ApproverClaim: get("CB_AUTH_APPROVER_CLAIM"),
+		// The LDAP proof of a Mattermost account (RT-6.42 step 3): the claim
+		// that carries the LDAP entry's id, ldap_id by default.
+		LDAPIDClaim: get("CB_AUTH_LDAP_ID_CLAIM"),
 	}
 	s.Binding = get("CB_AUTH_NAME_BINDING")
 	s.MattermostURL = get("CB_AUTH_MM_URL")
@@ -423,6 +426,15 @@ func RunCallout(ctx context.Context, s Settings, log *slog.Logger) error {
 		trustIndex.Sweep(runCtx)
 	}()
 	defer func() { stop(); <-swept }()
+	// The proven bindings of Mattermost accounts (RT-6.42 step 3): checked
+	// against Mattermost and their records published again, at once and
+	// every hour, beside the logins.
+	bound := make(chan struct{})
+	go func() {
+		defer close(bound)
+		svc.SweepBindings(runCtx, mm, callout.BindingSweepEvery)
+	}()
+	defer func() { stop(); <-bound }()
 	var adminErr <-chan error
 	if s.AdminListenAddr != "" {
 		binding := s.Binding
@@ -577,7 +589,10 @@ func personVerifier(ctx context.Context, s Settings, bus token.Config, dir token
 // whose `aud` names the bus's client or the bus's audience is refused.
 func personTokenConfig(s Settings, bus token.Config) token.Config {
 	pc := bus
-	pc.ClientID, pc.Audience, pc.ApproverGroup = s.Callout.Console.ClientID, "", ""
+	// The approvers' group stays: a console login writes the account record of
+	// a proven Mattermost account too (RT-6.42 step 3), with the flag its own
+	// token gives; a console client without the group mapper gives false.
+	pc.ClientID, pc.Audience = s.Callout.Console.ClientID, ""
 	pc.OtherClients = []string{bus.ClientID}
 	if bus.Audience != "" && bus.Audience != bus.ClientID {
 		pc.OtherClients = append(pc.OtherClients, bus.Audience)

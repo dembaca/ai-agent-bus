@@ -170,6 +170,28 @@ func (c *Client) User(ctx context.Context, username string) (token.User, error) 
 	if err != nil {
 		return token.User{}, err
 	}
+	return u.asToken(seen), nil
+}
+
+// UserByID reads an account by Mattermost's user id (callout.ChatAccounts,
+// the sweep of the bindings, RT-6.42 step 3); token.ErrNoSuchUser for one
+// that is gone.
+func (c *Client) UserByID(ctx context.Context, id string) (token.User, error) {
+	seen := c.authVisible(ctx)
+	var u user
+	err := c.get(ctx, "/api/v4/users/"+url.PathEscape(id), &u)
+	if errors.Is(err, errNotFound) {
+		return token.User{}, token.ErrNoSuchUser
+	}
+	if err != nil {
+		return token.User{}, err
+	}
+	return u.asToken(seen), nil
+}
+
+// asToken is the account as the verifier sees it; auth_service and auth_data
+// only when the token can see them (seen).
+func (u user) asToken(seen bool) token.User {
 	tu := token.User{
 		Username:    u.Username,
 		ID:          u.ID,
@@ -181,7 +203,7 @@ func (c *Client) User(ctx context.Context, username string) (token.User, error) 
 	if seen {
 		tu.AuthService, tu.AuthData = u.AuthService, u.AuthData
 	}
-	return tu, nil
+	return tu
 }
 
 // Memberships says of which of the team's channels of these names the human

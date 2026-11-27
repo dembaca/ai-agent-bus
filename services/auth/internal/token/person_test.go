@@ -25,7 +25,7 @@ func TestVerifyRealmTakesTheConsolesTokenWithoutTheChat(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if id.Subject != aliceSub || len(id.Groups) != 2 || id.ChatOpenID || time.Until(id.Expires) <= 0 {
+	if id.Subject != aliceSub || len(id.Groups) != 2 || id.ChatProven || time.Until(id.Expires) <= 0 {
 		t.Fatalf("%+v", id)
 	}
 	if got := Client(r.token(consoleClaims)); got != console {

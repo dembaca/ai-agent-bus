@@ -93,6 +93,9 @@ func run(log *slog.Logger) error {
 	// Plan B's switches per channel, as the login service writes them from the
 	// channel directory (RT-6.39 step 5), through the bridge's own consumer
 	// bridge_planb made at every start.
+	// Plan B's switches per channel, as the login service writes them from the channel
+	// directory (RT-6.39 step 5), through the bridge's own consumer bridge_planb made at
+	// every start; piece 4 decides how a person's post binds (inbound.ProofPiece, #266).
 	planb := &presence.Switches{}
 	// The request scaffold (ADR-014 phase 5): requests on <req>.<kind>.<agent>
 	// get this phase's "not built" answer on deliver.<agent>.req.<request id>
@@ -199,6 +202,15 @@ func run(log *slog.Logger) error {
 	}()
 	in := &inbound.Bridge{Homes: cfg.Homes, Team: cfg.MMTeam, BusPrefix: cfg.BusPrefix, Log: log,
 		MM: client, NATS: inbound.Confirmed{NC: nc}, Store: kv, Seen: seen, Anchors: accounts, Events: ws.Events(), Up: ws.Up}
+	// In a home with plan B piece 4 on, a person's post binds by the proof of
+	// the account's binding, which only a system admin's token can compare
+	// (auth_service, auth_data; RT-6.42 step 3, #266): the admin bot's. Without
+	// it, every person of such a home goes out under "-" (one warning when the
+	// bridge first meets one); with piece 4 off, the record alone binds.
+	in.Switches = planb
+	if cfg.AdminToken != "" {
+		in.Users = mm.New(cfg.MMURL, cfg.AdminToken)
+	}
 	if bots != nil {
 		in.BotPrefix = cfg.BotPrefix
 	}

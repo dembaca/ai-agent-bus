@@ -300,7 +300,7 @@ func TestTheExampleServerConfiguration(t *testing.T) {
 				"$JS.API.STREAM.MSG.GET.KV_BUS_BRIDGE",
 				// people onto NATS (RT-6.42)
 				"bus.hu.home.*", "presence.bridge.home.v1", "presence.bot.*.v1",
-				"$JS.API.CONSUMER.CREATE.PRESENCE.bridge_accounts.presence.account.mattermost.*.v1",
+				"$JS.API.CONSUMER.CREATE.PRESENCE.bridge_accounts.presence.account.mattermost.>",
 				// plan B's switches per channel, its own consumer (RT-6.39 step 5)
 				"$JS.API.CONSUMER.CREATE.PRESENCE.bridge_planb.presence.planb.*.v1",
 				// the memberships the history read checks, its own consumer
@@ -345,7 +345,7 @@ func TestTheExampleServerConfiguration(t *testing.T) {
 			// one consumer create, its filter fixed in the subject (RT-6.42)
 			for _, subject := range u.Permissions.Publish.Allow {
 				if strings.HasPrefix(subject, "$JS.API.CONSUMER.CREATE") &&
-					subject != "$JS.API.CONSUMER.CREATE.PRESENCE.bridge_accounts.presence.account.mattermost.*.v1" &&
+					subject != "$JS.API.CONSUMER.CREATE.PRESENCE.bridge_accounts.presence.account.mattermost.>" &&
 					subject != "$JS.API.CONSUMER.CREATE.PRESENCE.bridge_planb.presence.planb.*.v1" &&
 					subject != "$JS.API.CONSUMER.CREATE.PRESENCE.bridge_members.presence.member.*.*" {
 					t.Errorf("the bridge may create consumers by %s", subject)
@@ -402,7 +402,7 @@ func TestTheExampleServerConfiguration(t *testing.T) {
 				// the directory's key listings: an ordered consumer, made and removed
 				"$JS.API.CONSUMER.CREATE."+kv+".>", "$JS.API.CONSUMER.DELETE."+kv+".*",
 				"$JS.API.STREAM.MSG.GET.PRESENCE", "presence.attest.*.v1", "presence.notice.*.*.v1",
-				"presence.account.mattermost.*.v1",
+				"presence.account.mattermost.*.v1", "presence.account.mattermost.*.auth.v1",
 				// plan B's switches per channel (RT-6.39 step 5)
 				"presence.planb.*.v1",
 				// each agent's channel record (RT-6.39 step 6)

@@ -232,8 +232,21 @@ before 0.5.0 are described in the git history.
   release it needs the login service's JetStream user to publish
   `presence.planb.*.v1` and the bridge user the right
   `$JS.API.CONSUMER.CREATE.PRESENCE.bridge_planb.presence.planb.*.v1`, both
-  in `services/auth/nats-server.example.conf`; without them every piece
-  stays off.
+  in `services/auth/nats-server.example.conf`; without the login service's
+  right every piece stays off. Since the binding proof (#266) the bridge
+  carries no home until it has read `bridge_planb` once, so without the
+  bridge's right people's posts stop reaching NATS in every home, whatever
+  the switches say (the entry of #266 names it as a hard stop).
+- **Plan B piece 2b: the session's kept state keyed by the NATS name,
+  behind the same switch that is off** (ADR-014 phase 5, RT-6.2 step 9).
+  With `planb.on(2, ...)` on, the records of the agent's latest post, of
+  its guest-channel threads and of the posts waiting for an answer are
+  kept under the session's NATS name instead of the bot's Mattermost id.
+  Once the bus has the name, the files keyed by the bot id are copied once,
+  never moved, so the plugin before this one still finds its copy; the wake
+  rule for the agent's own threads reads the copy. A state file may now be
+  named by a NATS name as well as by a bot id, in the server and in
+  `mm_bot_state_file`, as a lower-case key of 1 to 128 characters. The key is decided once at start and kept for the process; a copy takes the newer file by mtime; the marker `copied-<name>.env` is removed at the session's end. With the switch off (the default) the file names are unchanged; what differs is the wider key check just named and that the session's end also deletes `threads-<bot id>.env`.
 - **Plan B piece 2a: the roster, the link of a bot to its NATS name and
   the names of accounts from NATS, behind a switch that is off** (ADR-014
   phase 5, RT-6.37 step 6, RT-6.44 step 3). The bridge publishes a record
@@ -347,6 +360,97 @@ before 0.5.0 are described in the git history.
   published".
 
 ### Changed
+
+- **A Mattermost account is bound to its Keycloak identity by proof, once,
+  and a trusted human's answer on Mattermost approves without the approver
+  flag** (#266, part of #268; RT-6.41 step 6, RT-6.42 step 3; the owner's
+  decision of 2026-11-27, in place of the closed group read of #271).
+  - *The proof.* The login service's chat check (`checkChat`) accepts a
+    second proof besides OpenID (`auth_service` `openid`, `auth_data` the
+    token's `sub`): LDAP, `auth_service` `ldap` and `auth_data` equal to the
+    token's LDAP id claim, named by the new setting `CB_AUTH_LDAP_ID_CLAIM`
+    (default `ldap_id`; a token without it gives no LDAP proof). Name
+    equality alone stays no proof: no record without one of the two. An
+    LDAP account whose token names another LDAP id is now refused, as an
+    OpenID account with another `sub` always was.
+  - *Stored once.* At a login with either proof, an agent's or the
+    console's, the login service writes the account record as before, a
+    proof beside it for the bridge (`<presence>.account.mattermost.<user
+    id>.auth.v1`, which no agent's consumer delivers) and the binding in
+    its directory (`binding.mattermost.<user id>`). At its start and every
+    hour it checks every stored binding against Mattermost and publishes
+    its record and proof again, so a person who logged in once stays bound
+    beyond the stream's 24 hours; an account that is gone, deactivated, a
+    guest, a bot, or logs in otherwise than when it was proven is unbound
+    (a record with `anchor` `null`), and so is a binding proven more than
+    30 days ago: an approver logs in at least once in 30 days, and each
+    proven login renews it. The binding is written before the proof and the
+    record, so a failed later write leaves no record the check does not
+    know of. Only a token that carries the group claim says whether its
+    person is an approver and may lower the flag: an agent's login, or a
+    console client with the group mapper. A console token without the claim
+    keeps the flag of the same person's stored record (never another
+    identity's or anchor's) and renews the 30 days at every console login,
+    so the console's client should have the group mapper, writing the
+    approvers' group in the same form as `CB_AUTH_APPROVER_GROUP` (a full
+    path `/X` against a short name lowers the flag, which fails closed). To
+    remove an approver at once, deactivate their Mattermost account or take
+    their anchor off the trusted humans. An
+    outage that stops the republishing for more than 24 hours unbinds every
+    person until the service runs again (the stream's `max_age`, the MCP
+    server's `MAX_AGE_SEC`).
+  - *Bound later.* In a home with plan B piece 4 on (the bridge's own
+    switches; a record older than two hours counts as off), the bridge
+    carries a person's post or reaction under the record's anchor only
+    while Mattermost, read with the admin bot's token, shows the account
+    active, no guest, and logging in with the proof's `auth_service` and
+    `auth_data`; else, and without the admin bot's token
+    (`CB_BRIDGE_MM_ADMIN_TOKEN_FILE`, one warning), under `-`. Only this check
+    reads the account with the admin bot's token; a read that fails stops
+    that home until it catches up again. With piece 4 off the bridge carries
+    as before, by the account record alone, and reads the account with the
+    posting bot's token: no proof and no admin token needed. After a start no
+    home carries or signals until the bridge has read its plan B switches
+    once (as until the account records are read); each home then catches up
+    from its watermark and loses nothing.
+  - *Trust.* With plan B piece 4 on, a Mattermost account approves when its
+    record binds it to one of the session's attested trusted anchors, and a
+    person over NATS when its anchor is one: no fresh approver record, so no
+    15 minutes after a login. With the piece off nothing changes. The
+    approvers' Keycloak group stays a ceiling for logins only.
+  - *Deployment, in this order* (the release's `Needs:` lines say it).
+    **A hard stop, whatever the switches say:** the login service writes the
+    proof and the binding at every proven login, so its JetStream user must
+    publish `presence.account.mattermost.*.auth.v1` before the new login
+    service starts; without that right every agent login with an OpenID or
+    LDAP proven Mattermost account is refused (`account record: proof:
+    …`). **A second hard stop, also whatever the switches say:** the
+    bridge reads the records and their proofs through one consumer, so its
+    create right becomes
+    `$JS.API.CONSUMER.CREATE.PRESENCE.bridge_accounts.presence.account.mattermost.>`
+    before the new bridge starts; with the old right the new bridge cannot
+    make its consumer, reads no records and carries no home. **A third hard
+    stop, whatever the switches say:** the bridge carries no home until it
+    has read the plan B switches once, so the bridge user's right
+    `$JS.API.CONSUMER.CREATE.PRESENCE.bridge_planb.presence.planb.*.v1`
+    (from the switch entry above) must be in place before the new bridge
+    starts; without it people's posts stop reaching NATS in every home.
+    Before plan B piece 4 is switched on in a home,
+    the bridge needs `CB_BRIDGE_MM_ADMIN_TOKEN_FILE`, or nobody there is
+    bound. For the
+    LDAP proof in the lab (bgl-infra): a Keycloak protocol mapper of the
+    user attribute `LDAP_ID` into the claim `ldap_id` on the bus's and the
+    console's client, and Mattermost's LDAP ID attribute set to the same
+    LDAP attribute as the federation's UUID attribute (`entryUUID` or
+    `objectGUID`). `LDAP_ID` must be written by the LDAP federation alone:
+    the realm's unmanaged attributes off or admin-only, no
+    self-registration, no local account that could carry it; else a user
+    could bind another person's Mattermost account to their own anchor.
+    Existing records carry no proof: in a home with piece 4 on their people
+    go out under `-` until their next login. The login service and the
+    bridge are both updated
+    before plan B piece 4 is switched on in any home: an older bridge
+    carries a person's post by the record alone, without the proof.
 
 - **The STATS import: the low points of its review** (#219, RT-6.45). A rerun
   of the same login service stops reading the stats channel at the first post
