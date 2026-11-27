@@ -80,7 +80,7 @@ before 0.5.0 are described in the git history.
   puts its tables into the run's step summary and uploads the output as the
   `full-nats-results` artifact, and the nats-server fetch is one composite
   action instead of four copies.
-- ADR-014 phase 5 (plan B): the owner decided its seven proposed points as written (#244).
+- ADR-014 phase 5 (plan B): the owner decided its nine proposed points as written (#244).
 
 ### Fixed
 
