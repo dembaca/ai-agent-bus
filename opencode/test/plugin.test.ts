@@ -1185,3 +1185,17 @@ test("RT-6.20: a user's environment that names one spelling is copied to the oth
   assert.equal(ed.m.get(SERVER).environment.MM_WORKSPACE, "/other")
 })
 
+
+test("RT-6.34: the waiting login approval is one synthetic line, without a token (#198)", async () => {
+  const fx = await start()
+  answers["/v1/login"] = { link: "https://kc.example/device?user_code=ABCD-EFGH", user_code: "ABCD-EFGH",
+                           expires_in: 600 }
+  calls = []
+  await fx.emit("session.created", { sessionID: "s1", location: { directory: ws } })
+  await until(() => fx.sent.length > 0, "the login line")
+  assert.match(fx.sent[0].text, /kc\.example\/device\?user_code=ABCD-EFGH/)
+  assert.match(fx.sent[0].text, /ABCD-EFGH/)
+  assert.doesNotMatch(fx.sent[0].text, /token|seed/i)
+  await until(() => calls.some((c) => c.method === "POST" && c.path === "/v1/login/shown"), "the shown mark")
+  answers["/v1/login"] = undefined
+})

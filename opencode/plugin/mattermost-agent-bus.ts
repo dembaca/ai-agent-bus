@@ -971,6 +971,25 @@ export async function setup(ctx: Plugin.Context) {
     }
   }
 
+  // The NATS login approval waiting now, as one synthetic line in the TUI (#198):
+  // link and code only, never a token; marked shown so a later turn does not repeat it.
+  const loginLine = async (id: string) => {
+    try {
+      if (!(await mine(id))) return
+      const r = await bus("GET", "/v1/login")
+      const link = typeof r?.link === "string" ? r.link : ""
+      if (!link) return
+      const code = typeof r?.user_code === "string" ? r.user_code : ""
+      await ctx.session.synthetic({ sessionID: id,
+        text: `Bus login: open ${link}${code ? ` — the page shows the code ${code}` : ""}. ` +
+              "Approve only if it matches.",
+        description: "AI agent bus: login approval" })
+      await bus("POST", "/v1/login/shown", {})
+    } catch {
+      // no server yet: the first turn's notice shows the same line
+    }
+  }
+
   const onEvent = async (ev: any) => {
     const d = ev?.data ?? {}
     const id = String(d.sessionID || "")
@@ -981,6 +1000,7 @@ export async function setup(ctx: Plugin.Context) {
         if (id) {
           tops.set(id, !d.parentID && ours(d.location))
           parents.set(id, String(d.parentID || ""))
+          if (!d.parentID && ours(d.location)) void loginLine(id) // a waiting grant (#198)
         }
         break
       case "session.deleted":
