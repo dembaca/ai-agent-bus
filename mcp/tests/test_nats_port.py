@@ -2088,6 +2088,23 @@ def test_the_since_cursor_comes_from_the_read_marks_nats_lane() -> None:
     handed_only_mm = "e" * 26
     assert watermark.advance(handed_only_mm, WORK, "c" * 26, 7_000)
     assert _since_from_read_mark(handed_only_mm, {"home"}) == {}
+    # A post that arrived but was not handed stays after the mark: the cursor is
+    # the last handed one, so the next CONNECT asks for the queued post again.
+    queued = "a" * 26
+    assert watermark.advance(queued, f"{WORK}:nats", "n1:home:5", 100)
+    assert _since_from_read_mark(queued, {"home"}) == {"home": (5, 100)}
+    # A held NATS post keeps the sequence before it (n1:6): the held one, 7, is
+    # asked for again, not the channel's whole absence (review note A).
+    held = "f" * 26
+    assert watermark.advance(held, f"{WORK}:nats", "n1:home:5", 100)
+    watermark.hold(held, f"{WORK}:nats", 90, "n1:home:7")
+    assert _since_from_read_mark(held, {"home"}) == {"home": (6, 89)}
+    # The first message of a channel has no sequence before it: no cursor (the
+    # residual the entry names).
+    first = "b" * 26
+    assert watermark.advance(first, f"{WORK}:nats", "n1:home:2", 100)
+    watermark.hold(first, f"{WORK}:nats", 90, "n1:home:1")
+    assert _since_from_read_mark(first, {"home"}) == {}
 
 
 async def test_the_first_connect_names_the_read_marks_cursor_and_a_bye_keeps_it(

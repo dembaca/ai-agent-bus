@@ -2073,7 +2073,7 @@ class NatsBus:
             raise
         except Exception as exc:
             log.warning("nats bus: event callback failed: %s", type(exc).__name__)
-            return  # not handed: the cursor stays before it, a reconnect asks for it again
+            return  # not handed: the cursor stays before it
         self._handed(where, ack.stream_seq, at)
 
     def _person_handler(self, channel: str) -> Callable[[Any], Awaitable[None]]:

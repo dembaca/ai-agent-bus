@@ -858,7 +858,7 @@ class WebSocketInbox:
         post = event.post
         if not event.gated and not event.edited and event.kind != "reaction" and post.channel_id:
             try:
-                watermark.hold(self._bot_user_id, _lane(post), post.create_at)
+                watermark.hold(self._bot_user_id, _lane(post), post.create_at, post.id)
             except Exception as exc:  # noqa: BLE001
                 log.warning("read watermark not held: %s", exc)
         await self._queue.put(event)

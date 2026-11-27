@@ -100,13 +100,22 @@ def advance(uid: str, channel_id: str, post_id: str, created: int) -> bool:
     return True
 
 
-def hold(uid: str, channel_id: str, created: int) -> None:
-    """A post created at `created` waits unhandled: keep the mark before it."""
+def hold(uid: str, channel_id: str, created: int, post_id: str = "") -> None:
+    """A post created at `created` waits unhandled: keep the mark before it. A NATS
+    post keeps the sequence one before its own, `n1:<channel>:<seq-1>`, since the
+    next server derives its `since` from the mark (#213): a held post then asks for
+    itself again, not for the channel's whole absence."""
     marks = read(uid)
     mark = marks.get(channel_id)
     if mark is None or created <= 0 or mark.at < created:
         return
-    marks[channel_id] = Mark("-", created - 1)
+    held = "-"
+    parsed = NATS_POST.fullmatch(post_id or "")
+    if parsed is not None:
+        seq = int(parsed.group("seq"))
+        if seq > 1:
+            held = f"n1:{parsed.group('channel')}:{seq - 1}"
+    marks[channel_id] = Mark(held, created - 1)
     _write(uid, marks)
 
 

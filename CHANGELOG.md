@@ -59,9 +59,9 @@ before 0.5.0 are described in the git history.
   handed to the agent, as `n1:<channel>:<seq>` with that post's server time. The
   login service restarts the durable consumer at `last+1`, so a post still in
   the host's queue when the process was killed is delivered again instead of
-  being skipped by the consumer's position; the host drops a repeat by the
-  sequence it already had, so that one post is read once (at least once for
-  it). The read mark keeps the NATS post id for this, and it is not deleted at
+  being skipped by the consumer's position; a repeat is dropped by the
+  sequence the host already had, so a post is read at least once (a duplicate
+  only if the process dies between the hand-off and the mark). The read mark keeps the NATS post id for this, and it is not deleted at
   a graceful bye: the next server of a kept bot sends the cursor and the
   recreated consumer replays what came while it was away. A recreated `BUS`
   stream restarts its sequences: a first delivery at or below the cursor resets
