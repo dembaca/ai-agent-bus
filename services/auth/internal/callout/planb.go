@@ -72,7 +72,8 @@ func (s *Service) planBSubject(channel string) string {
 // this process last wrote it, or was written more than PlanBRepublish ago.
 // Never a reason to refuse the credential: a read or write that fails is
 // logged and leaves the records as the stream has them (off where it has
-// none), and the next credential tries again. An entry outside 1 to 13 is
+// none), and the next credential tries again. A channel whose write fails
+// does not stop the others. An entry outside 1 to 13 is
 // dropped and logged.
 func (s *Service) publishPlanB(ctx context.Context, agent string, channels []string, now time.Time) {
 	s.planb.mu.Lock()
@@ -100,7 +101,7 @@ func (s *Service) publishPlanB(ctx context.Context, agent string, channels []str
 		}
 		if err := pub.Publish(ctx, s.planBSubject(ch), body); err != nil {
 			s.log.Warn("auth callout", "event", "plan B record not written", "channel", ch, "reason", err.Error())
-			return
+			continue // the next channel's record may well be written
 		}
 		s.planb.mu.Lock()
 		s.planb.sent[ch] = planBSent{body: string(body), at: now}

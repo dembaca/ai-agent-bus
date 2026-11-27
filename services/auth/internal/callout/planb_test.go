@@ -196,3 +196,45 @@ func TestOnlyTheServiceWritesAPlanBRecord(t *testing.T) {
 	default:
 	}
 }
+
+// One channel whose record cannot be written does not stop the others'.
+func TestAFailedPlanBWriteGoesOnWithTheNextChannel(t *testing.T) {
+	l := newLab(t)
+	f := &fakeAttester{failOn: ".planb.bad."}
+	l.svc.SetPlanB(planBMap{"bad": {1}, "good": {2}}, f)
+	l.svc.publishPlanB(context.Background(), "agent-a", []string{"bad", "good"}, time.Unix(1_800_000_000, 0))
+	got := records(t, f)
+	if r, ok := got["presence.planb.good.v1"]; !ok || !slices.Equal(r.Pieces, []int{2}) || len(got) != 1 {
+		t.Fatalf("records %v", got)
+	}
+}
+
+// The credential does not wait for plan B's records: a write that hangs
+// delays no answer (RT-6.39 step 5), and is written once it goes on.
+func TestThePlanBWriteDoesNotDelayTheCredential(t *testing.T) {
+	l := newLab(t)
+	l.noSettle = true
+	b := blockingPub{entered: make(chan struct{}, 8), release: make(chan struct{})}
+	l.svc.SetPlanB(planBMap{"home": {1}}, b)
+	if _, err := l.connect("alice", l.realm.Token("alice", nil), Hello{Home: "home"}, nil); err != nil {
+		t.Fatalf("refused: %v", err)
+	}
+	select {
+	case <-b.entered: // the write is under way, the login is through
+	case <-time.After(5 * time.Second):
+		t.Fatal("no record was written")
+	}
+	close(b.release)
+	l.svc.bg.Wait()
+}
+
+type blockingPub struct{ entered, release chan struct{} }
+
+func (b blockingPub) Publish(ctx context.Context, _ string, _ []byte) error {
+	b.entered <- struct{}{}
+	select {
+	case <-b.release:
+	case <-ctx.Done():
+	}
+	return nil
+}

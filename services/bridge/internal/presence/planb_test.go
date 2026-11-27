@@ -14,9 +14,10 @@ import (
 )
 
 // RT-6.39 step 5: the bridge reads a channel's switched-on plan B pieces from
-// the record the login service writes from the directory, delivered by the
-// operator's presence consumer beside the presences.
-func TestTheBridgeReadsAChannelsPlanBPieces(t *testing.T) {
+// the records the login service writes from the directory, through its own
+// consumer made at every start: after a restart it has every switch again
+// without a new record, and a record two republish periods old counts as off.
+func TestTheBridgeReadsAChannelsPlanBPiecesAfterEveryRestart(t *testing.T) {
 	srv, err := natsserver.NewServer(&natsserver.Options{Host: "127.0.0.1", Port: -1, JetStream: true,
 		StoreDir: t.TempDir(), NoLog: true, NoSigs: true})
 	if err != nil {
@@ -41,28 +42,27 @@ func TestTheBridgeReadsAChannelsPlanBPieces(t *testing.T) {
 		Subjects: []string{"presence.>"}, NoAck: true, MaxMsgsPerSubject: 1, Storage: jetstream.MemoryStorage}); err != nil {
 		t.Fatal(err)
 	}
-	// the operator's consumer with its second filter (nats-server.example.conf)
-	if _, err := js.CreateOrUpdateConsumer(ctx, "PRESENCE", jetstream.ConsumerConfig{
-		Name: ConsumerName, Durable: ConsumerName, FilterSubjects: []string{"presence.*.*", "presence.planb.*.v1"},
-		DeliverSubject: "deliver.bridge.presence", DeliverPolicy: jetstream.DeliverLastPerSubjectPolicy,
-		AckPolicy: jetstream.AckNonePolicy,
-	}); err != nil {
-		t.Fatal(err)
-	}
-	// written before the bridge is up: last-per-subject delivers them
+	// written before the bridge is up: deliver all replays them
 	mustPublish(t, nc, "presence.planb.home.v1", `{"v":1,"channel":"home","pieces":[1,3]}`)
 	mustPublish(t, nc, "presence.planb.none.v1", `{"v":1,"channel":"none","pieces":[]}`)
 	mustPublish(t, nc, "presence.planb.odd.v1", `{"v":1,"channel":"odd","pieces":[2,14]}`)
 
-	sw := &Switches{}
-	r := &Reader{Log: slog.New(slog.NewTextHandler(io.Discard, nil)), Deliver: "deliver.bridge.presence",
-		Into: New(), PlanB: sw, Ready: make(chan struct{})}
-	cctx, cancel := context.WithCancel(ctx)
-	defer cancel()
-	done := make(chan error, 1)
-	go func() { done <- r.Run(cctx, nc) }()
-	<-r.Ready
-	until(t, func() bool { return sw.On(3, "home") })
+	start := func() (*Switches, *PlanBReader, func()) {
+		sw := &Switches{}
+		r := &PlanBReader{Log: slog.New(slog.NewTextHandler(io.Discard, nil)), Deliver: "deliver.bridge.planb",
+			Stream: "PRESENCE", Into: sw, CaughtUp: make(chan struct{}),
+			Heartbeat: 100 * time.Millisecond, Inactive: 500 * time.Millisecond}
+		cctx, cancel := context.WithCancel(ctx)
+		done := make(chan error, 1)
+		go func() { done <- r.Run(cctx, nc) }()
+		select {
+		case <-r.CaughtUp:
+		case <-time.After(10 * time.Second):
+			t.Fatal("the plan B records were not read")
+		}
+		return sw, r, func() { cancel(); <-done }
+	}
+	sw, _, stop := start()
 	if got := sw.Pieces("home"); !slices.Equal(got, []int{1, 3}) || sw.On(2, "home") {
 		t.Fatalf("home: %v", got)
 	}
@@ -71,10 +71,43 @@ func TestTheBridgeReadsAChannelsPlanBPieces(t *testing.T) {
 		t.Fatalf("none %v odd %v", sw.Pieces("none"), sw.Pieces("odd"))
 	}
 	// a newer record replaces the channel's; [] switches every piece off
+	mustPublish(t, nc, "presence.planb.home.v1", `{"v":1,"channel":"home","pieces":[2]}`)
+	until(t, func() bool { return sw.On(2, "home") })
+	stop()
+
+	// a restart: a new reader with empty switches, and no new record written
+	sw2, _, stop2 := start()
+	defer stop2()
+	if got := sw2.Pieces("home"); !slices.Equal(got, []int{2}) {
+		t.Fatalf("after a restart: %v", got)
+	}
 	mustPublish(t, nc, "presence.planb.home.v1", `{"v":1,"channel":"home","pieces":[]}`)
-	until(t, func() bool { return sw.Pieces("home") == nil })
-	cancel()
-	<-done
+	until(t, func() bool { return sw2.Pieces("home") == nil })
+}
+
+// Off is fail-safe: a record older than two republish periods by the stream's
+// time counts as off, and the server's time runs on while nothing is delivered.
+func TestAPlanBRecordNotRenewedCountsAsOff(t *testing.T) {
+	t0 := time.Date(2026, 11, 27, 10, 0, 0, 0, time.UTC)
+	local := t0
+	sw := &Switches{Clock: func() time.Time { return local }}
+	sw.Observed("home", []int{1}, t0)
+	local = t0.Add(time.Hour)
+	sw.Observed("other", []int{2}, t0.Add(time.Hour))
+	if !sw.On(1, "home") {
+		t.Fatal("a record of one hour is off")
+	}
+	local = t0.Add(PlanBStale - time.Second)
+	if !sw.On(1, "home") {
+		t.Fatal("a record just under two hours is off")
+	}
+	local = t0.Add(PlanBStale)
+	if sw.On(1, "home") || sw.Pieces("home") != nil {
+		t.Fatal("a record of two hours is still on")
+	}
+	if !sw.On(2, "other") {
+		t.Fatal("a younger record of another channel is off")
+	}
 }
 
 func TestDecodePlanBIsStrict(t *testing.T) {

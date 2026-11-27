@@ -2672,6 +2672,16 @@ async def test_a_consumer_made_anew_forgets_the_plan_b_records() -> None:
     assert bus.planb_pieces("home") == frozenset()
 
 
+async def test_a_plan_b_record_older_than_two_republish_periods_counts_as_off() -> None:
+    """RT-6.39 step 5: the bus's server time bounds how long an unrenewed record is read."""
+    bus, _ = _unit_bus()
+    await _planb_rec(bus, "home", 1, T0, _planb_body())
+    await _planb_rec(bus, "elsewhere", 2, T0 + natsbus.PLANB_STALE_SEC - 1, _planb_body("elsewhere"))
+    assert bus.planb_pieces("home") == frozenset({1, 3})
+    await _planb_rec(bus, "elsewhere", 3, T0 + natsbus.PLANB_STALE_SEC, _planb_body("elsewhere"))
+    assert bus.planb_pieces("home") == frozenset()
+
+
 def test_decode_planb_is_strict() -> None:
     """RT-6.39 step 5: exactly v, channel and pieces."""
     assert natsbus.decode_planb(_planb_body(pieces=()), "home") == frozenset()

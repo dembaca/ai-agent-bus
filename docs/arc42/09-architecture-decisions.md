@@ -4113,8 +4113,9 @@ reads yet (RT-6.39 step 5).
     directory's bucket, reads every channel's through its presence
     consumer; a change reaches them at the next credential issued in
     the channel, whose agent it is does not matter. A record that cannot
-    be written refuses no credential: every piece is then off, the old
-    path.
+    be written refuses no credential; the record stays as the stream
+    has it, and the hosts and the bridge read one older than two hours
+    (twice the login service's republish period) as off, the old path.
   - During a flag change each end reads both paths and sends by its own
     flag, since a flag reaches a session only at its next credential, or
     at its next start until switching at a renewal is built (the guest

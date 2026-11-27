@@ -23,10 +23,7 @@ type Reader struct {
 	Log     *slog.Logger
 	Deliver string // deliver.bridge.presence
 	Into    *Snapshot
-	// PlanB takes the plan B records the consumer delivers beside the
-	// presences (planb.go, RT-6.39 step 5); nil drops them.
-	PlanB *Switches
-	Ready chan struct{} // closed once the subscription is active (tests wait on it)
+	Ready   chan struct{} // closed once the subscription is active (tests wait on it)
 }
 
 // Run consumes until ctx ends.
@@ -54,18 +51,6 @@ func (r *Reader) Run(ctx context.Context, nc *nats.Conn) error {
 }
 
 func (r *Reader) one(m *nats.Msg) {
-	if ch, ok := PlanBSubject(m.Subject); ok {
-		if r.PlanB == nil {
-			return
-		}
-		pieces, err := DecodePlanB(m.Data, ch)
-		if err != nil {
-			// What does not decode switches nothing on: the old path.
-			r.Log.Warn("presence: a plan B record that does not decode, its pieces off", "subject", m.Subject, "error", err)
-		}
-		r.PlanB.Observed(ch, pieces)
-		return
-	}
 	owner, name, ok := Subject(m.Subject)
 	if !ok {
 		return

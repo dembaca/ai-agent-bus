@@ -80,6 +80,7 @@ OPEN_SYNC_SEC = 10
 # At most one reconnect per flush timeout within this interval: a server that answers
 # every agent slowly must not make every agent reconnect at once.
 FLUSH_RECONNECT_SEC = 30.0
+PLANB_STALE_SEC = 7200.0  # a plan B record older than two republish periods (callout.PlanBRepublish, 1 h) counts as off
 MAX_AGE_SEC = 86400.0  # the PRESENCE stream's max_age: older claims and presence are gone
 MEMBER_RENEW_SEC = 6 * 3600.0  # a membership is announced again this often (the stream keeps 24 h)
 MEMBER_SYNC_WAIT_SEC = 10.0  # how long an announcement waits for the bus to be synced
@@ -2321,7 +2322,9 @@ class NatsBus:
         if channel not in self.channels:
             return frozenset()
         got = self._planb.get(channel)
-        return got[2] if got else frozenset()
+        if got is None or self._server_now - got[1] >= PLANB_STALE_SEC:
+            return frozenset()  # off is fail-safe: a record no credential renewed is no longer read
+        return got[2]
 
     async def _on_presence_msg(self, msg: Any) -> None:
         ack = parse_ack(msg.reply, PRESENCE_STREAM, f"{self.name}_presence")

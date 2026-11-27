@@ -24,14 +24,15 @@ import (
 // lab is a real nats-server with auth_callout, the callout service
 // connected to it as its auth user, a test realm and a chat.
 type lab struct {
-	t     *testing.T
-	url   string
-	wsURL string
-	realm *testrealm.Realm
-	chat  *testrealm.Chat
-	logs  *syncBuffer
-	brake string
-	svc   *Service
+	noSettle bool // connect does not wait for the records written after the answer
+	t        *testing.T
+	url      string
+	wsURL    string
+	realm    *testrealm.Realm
+	chat     *testrealm.Chat
+	logs     *syncBuffer
+	brake    string
+	svc      *Service
 }
 
 type syncBuffer struct {
@@ -217,6 +218,9 @@ func (l *lab) connectAt(url, owner, tok string, hello Hello, signer nkeys.KeyPai
 	}
 	l.t.Cleanup(nc.Close)
 	a.nc = nc
+	if !l.noSettle {
+		l.svc.bg.Wait() // plan B's records are written after the answer
+	}
 	return a, nil
 }
 

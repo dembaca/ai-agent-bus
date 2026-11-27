@@ -127,6 +127,7 @@ var (
 
 // Service answers auth callout requests.
 type Service struct {
+	bg       sync.WaitGroup // what runs after an answer (plan B's records)
 	cfg      Config
 	issuer   nkeys.KeyPair // signs responses and user JWTs: the account's key
 	xkey     nkeys.KeyPair // decrypts requests, encrypts responses; nil: plain
@@ -251,8 +252,13 @@ func (s *Service) handle(ctx context.Context, m *nats.Msg) {
 	}
 	who := []any{"server_id", req.Server.ID, "client_host", req.ClientInformation.Host, "user_nkey", req.UserNkey}
 
-	ctx, cancel := context.WithDeadline(ctx, deadline(now, s.cfg.Timeout, req.Expires))
+	serve := ctx
+	later := &afterAnswer{}
+	ctx, cancel := context.WithDeadline(context.WithValue(ctx, afterAnswerKey{}, later), deadline(now, s.cfg.Timeout, req.Expires))
 	defer cancel()
+	// What may follow the answer (plan B's records) runs with its own short
+	// context once it is sent, whatever way handle ends.
+	defer later.run(serve, &s.bg)
 	userJWT, more, err := s.authorize(ctx, req, now)
 	who = append(who, more...)
 
@@ -281,6 +287,30 @@ func (s *Service) handle(ctx context.Context, m *nats.Msg) {
 		return
 	}
 	_ = m.Respond([]byte(out))
+}
+
+type afterAnswerKey struct{}
+
+// planBWriteTimeout bounds the plan B records written after an answer.
+const planBWriteTimeout = 3 * time.Second
+
+// afterAnswer collects what authorize leaves until the answer is sent.
+type afterAnswer struct{ fns []func(context.Context) }
+
+func (a *afterAnswer) add(f func(context.Context)) { a.fns = append(a.fns, f) }
+
+// run starts each in the background with a context of its own, so the
+// credential waits for none of them.
+func (a *afterAnswer) run(parent context.Context, bg *sync.WaitGroup) {
+	for _, f := range a.fns {
+		bg.Add(1)
+		go func() {
+			defer bg.Done()
+			c, cancel := context.WithTimeout(context.WithoutCancel(parent), planBWriteTimeout)
+			defer cancel()
+			f(c)
+		}()
+	}
 }
 
 // deadline is the end of one request's work: the timeout, but never past the
@@ -445,7 +475,13 @@ func (s *Service) authorize(ctx context.Context, req *jwt.AuthorizationRequestCl
 	}
 	// Plan B's switches of the granted channels (RT-6.39 step 5): written
 	// beside the credential, never a reason to refuse it.
-	s.publishPlanB(ctx, agent, channels, now)
+	// With the answer's own deadline, handle runs it after the answer is
+	// sent; a direct caller gets it at once.
+	if later, ok := ctx.Value(afterAnswerKey{}).(*afterAnswer); ok {
+		later.add(func(c context.Context) { s.publishPlanB(c, agent, channels, now) })
+	} else {
+		s.publishPlanB(ctx, agent, channels, now)
+	}
 	return userJWT, who, nil
 }
 

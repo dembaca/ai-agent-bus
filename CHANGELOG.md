@@ -24,13 +24,17 @@ before 0.5.0 are described in the git history.
   MCP server answers `planb.on(piece, channel)` from it (false without a
   record, outside a home over NATS or for a piece outside 1 to 13;
   `CB_PLANB_TEST` switches pieces on, only while pytest runs a test), the
-  bridge `presence.Switches`. No piece reads a switch yet. At its release
-  it needs the login service's JetStream user to publish
-  `presence.planb.*.v1`, and the bridge's presence consumer the second
-  filter `presence.planb.*.v1` (`nats consumer edit PRESENCE
-  bridge_presence --filter 'presence.*.*' --filter 'presence.planb.*.v1'`),
-  both in `services/auth/nats-server.example.conf`; without them every
-  piece stays off.
+  bridge `presence.Switches`. No piece reads a switch yet. A record two
+  hours old by the stream's time counts as off, in the MCP server and in the
+  bridge; the login service writes the records after the answer, and a
+  failed write goes on with the next channel. The bridge makes its own
+  consumer `bridge_planb` at every start (deliver all), so a restart loses
+  no switch and the operator's `bridge_presence` needs no edit. At its
+  release it needs the login service's JetStream user to publish
+  `presence.planb.*.v1` and the bridge user the right
+  `$JS.API.CONSUMER.CREATE.PRESENCE.bridge_planb.presence.planb.*.v1`, both
+  in `services/auth/nats-server.example.conf`; without them every piece
+  stays off.
 - **The last post on the operator console's agent cards** (#201, RT-6.37
   step 6). A NATS home's presence states `last_post`: when the agent last
   posted in its home, as epoch seconds (the time the MCP server already

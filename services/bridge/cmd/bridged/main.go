@@ -89,9 +89,18 @@ func run(log *slog.Logger) error {
 	h := &health{}
 	var wg sync.WaitGroup
 	// Plan B's switches per channel, as the login service writes them from the
-	// channel directory (RT-6.39 step 5): no piece reads them yet.
+	// channel directory (RT-6.39 step 5), through the bridge's own consumer
+	// bridge_planb made at every start: no piece reads them yet.
 	planb := &presence.Switches{}
-	pr := &presence.Reader{Log: log, Deliver: cfg.Deliver + ".presence", Into: snapshot, PlanB: planb}
+	pr := &presence.Reader{Log: log, Deliver: cfg.Deliver + ".presence", Into: snapshot}
+	pbr := &presence.PlanBReader{Log: log, Deliver: cfg.Deliver + ".planb", Stream: "PRESENCE", Into: planb}
+	wg.Add(1)
+	go func() {
+		defer wg.Done()
+		if err := pbr.Run(ctx, nc); err != nil && ctx.Err() == nil {
+			log.Error("bridge: plan B switches stopped", "error", err)
+		}
+	}()
 	wg.Add(1)
 	go func() {
 		defer wg.Done()
