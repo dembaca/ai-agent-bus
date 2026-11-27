@@ -101,22 +101,27 @@ NAME_HASH_LEN = 25
 # The subject tokens that stand where an agent's name stands in some subject, or beside it;
 # a name equal to one (in any case) is no agent's (#274). Go callout.reservedNames.
 RESERVED_NAMES = frozenset((
-    "account", "accounts", "ask", "attest", "bot", "bridge", "bus", "ch", "crown", "deliver",
-    "directory", "dm", "hu", "import", "member", "metrics", "notice", "person", "planb",
-    "presence", "req", "stats", "v1", "x",
+    "account", "accounts", "ask", "attest", "bot", "bridge", "bus", "ch", "console-metrics",
+    "copied", "crown", "deliver", "directory", "dm", "hu", "import", "mattermost", "member",
+    "metrics", "moved", "notice", "person", "planb", "presence", "req", "stats", "v1", "x",
 ))
+# The login service refuses a name that starts with its person prefix while the console is on
+# (CB_AUTH_PERSON_PREFIX, default "person-"); the session does not know that setting, so it
+# refuses the default one always (a hash never starts with it, "-" is no base32 character).
+PERSON_NAME_PREFIX = "person-"
 
 
 def agent_ok(name: str, reserved: AbstractSet[str] = frozenset()) -> bool:
     """Whether `name` is an agent's name as a subject token (#274): AGENT_RE's form (no ".",
     "*", ">", whitespace, no "_", "$" or "-" first) and none of RESERVED_NAMES or `reserved`
-    (the configured prefixes, lower case)."""
+    (the configured prefixes, lower case), and none that starts with the default person prefix."""
     if not isinstance(name, str) or not AGENT_RE.fullmatch(name):
         return False
     low = name.lower()
-    return low not in RESERVED_NAMES and low not in reserved
+    return low not in RESERVED_NAMES and low not in reserved and not low.startswith(PERSON_NAME_PREFIX)
 SESSION_RE = NONCE_RE  # #163: the one pattern of the session part (session_file)
 PREFIX_RE = re.compile(r"^[A-Za-z0-9_-]+$")
+NAME_PREFIX_RE = re.compile(r"[A-Za-z0-9][A-Za-z0-9_-]*")  # Go callout.Config.check, #274
 # An owner counts only in this form (RT-6.37): a Mattermost username's characters in lower
 # case, the same string the bus compares with CB_TRUSTED_HUMANS and the owners of Mattermost
 # bots. Nothing is normalised: an owner in any other form is no owner.
@@ -1227,6 +1232,11 @@ class NatsSettings:
         # `from_trusted_human` included. Raises ValueError for a bad one.
         object.__setattr__(self, "props_prefix",
                            a2a.user_prefix({a2a.PREFIX_ENV: self.props_prefix}))
+        # The login service's rule (callout.Config.check): a prefix of one character plus the
+        # 25-character hash is 26 of [a-z0-9], a Mattermost id's form (#274, RT-6.36 step 8).
+        if self.name_prefix and (len(self.name_prefix) < 2 or not NAME_PREFIX_RE.fullmatch(self.name_prefix)):
+            raise ValueError("invalid name prefix: two or more of letters, digits, - and _, "
+                             "a letter or digit first")
         for url in self.servers:
             _check_server(url)  # the access token goes over this connection
         _tls_mode(self.servers)

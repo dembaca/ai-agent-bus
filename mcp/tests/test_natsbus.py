@@ -2807,9 +2807,9 @@ def test_decode_planb_is_strict() -> None:
 
 # --- #274: names without a prefix, and the reserved tokens (RT-6.36 step 8) ----------------------
 
-RESERVED = ("account", "accounts", "ask", "attest", "bot", "bridge", "bus", "ch", "crown", "deliver",
-            "directory", "dm", "hu", "import", "member", "metrics", "notice", "person", "planb",
-            "presence", "req", "stats", "v1", "x")
+RESERVED = ("account", "accounts", "ask", "attest", "bot", "bridge", "bus", "ch", "console-metrics",
+            "copied", "crown", "deliver", "directory", "dm", "hu", "import", "mattermost", "member",
+            "metrics", "moved", "notice", "person", "planb", "presence", "req", "stats", "v1", "x")
 
 
 def test_the_reserved_names_are_the_login_services() -> None:
@@ -2850,6 +2850,26 @@ async def test_a_presence_or_claim_under_a_reserved_name_is_dropped() -> None:
         await _claim(bus, token, "home", 2, T0)
     assert bus.presence_of(VECTOR_NAME) == "online"
     assert bus.presence_of("bridge") == bus.presence_of("crown") == "offline"
+
+
+def test_a_person_name_is_no_agent_name() -> None:
+    """RT-6.36 step 8: the login service refuses a name with the person prefix (default
+    `person-`); the session drops a sender under one."""
+    bus, _ = _unit_bus()
+    for name in ("person-abc", "PERSON-abc", "person-" + VECTOR_NAME):
+        assert not natsbus.agent_ok(name) and not bus.agent_ok(name)
+
+
+@pytest.mark.parametrize("prefix", ["a", "7", "A"])
+def test_a_one_character_name_prefix_is_refused(prefix: str) -> None:
+    """RT-6.36 step 8: one character plus the 25-character hash is a Mattermost id's form."""
+    with pytest.raises(ValueError, match="name prefix"):
+        natsbus.NatsSettings(servers=("tls://nats.example:4222",), home="home", name_prefix=prefix)
+
+
+@pytest.mark.parametrize("prefix", ["", "ab", "agent-", "A_1-"])
+def test_a_longer_name_prefix_is_accepted(prefix: str) -> None:
+    natsbus.NatsSettings(servers=("tls://nats.example:4222",), home="home", name_prefix=prefix)
 
 
 def test_the_name_has_no_prefix_by_default() -> None:

@@ -49,13 +49,13 @@ func TestNamePrefixIsEmptyByDefault(t *testing.T) {
 	if c.NamePrefix != "" || c.check() != nil {
 		t.Fatalf("default name prefix %q: %v", c.NamePrefix, c.check())
 	}
-	for _, ok := range []string{"agent-", "a", "A_1-"} {
+	for _, ok := range []string{"agent-", "ab", "A_1-"} {
 		c.NamePrefix = ok
 		if err := c.check(); err != nil {
 			t.Errorf("%q: %v", ok, err)
 		}
 	}
-	for _, bad := range []string{"_a", "-a", "a.b", "a b", "$a"} {
+	for _, bad := range []string{"_a", "-a", "a.b", "a b", "$a", "a", "7", "A"} {
 		c.NamePrefix = bad
 		if c.check() == nil {
 			t.Errorf("%q: accepted", bad)

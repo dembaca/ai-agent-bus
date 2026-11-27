@@ -25,7 +25,10 @@ before 0.5.0 are described in the git history.
   presences, attestations, consumers, the read marks of its lanes) starts fresh, and
   the old name's records run out. The console shows the new names. The release's
   entry carries this line of its own (doc-check refuses it under Unreleased):
-  `Needs: login service and hosts on the same release.`
+  `Needs: login service, bridge and hosts on the same release.` An older bridge's
+  `LinkTag` expects 26 characters, so it shows no linked bot for the new names. A
+  name prefix (login service, session) or bridge bot prefix of one character is
+  refused: with the 25-character hash it would read as a Mattermost id.
 
 ### Fixed
 

@@ -21,15 +21,17 @@ var nameRE = regexp.MustCompile(`^[A-Za-z0-9][A-Za-z0-9_-]{0,127}$`)
 // reservedNames are the subject tokens that stand where an agent's name stands
 // in some subject, or beside it (perms.go, the consumers' filters, the bridge):
 // <bus>.ch|dm, <presence>.crown|ask|member|attest|bot|bridge|person|account|
-// planb|directory|notice|hu, <stats>.import, deliver.<name>.x|presence|dm|planb|
-// hu|notice|metrics|accounts, and the records' version v1. Since #274 an agent
+// planb|directory|notice|hu (and notice.<owner>.copied|moved.v1, account.mattermost.
+// <id>.v1), <stats>.import, deliver.<name>.x|presence|dm|planb|
+// hu|notice|metrics|accounts, the console's service mark console-metrics, and the records' version v1. Since #274 an agent
 // name has no prefix that sets it apart from them, so a name equal to one is
 // refused (checkName). A hash never is one; a configured prefix could make one.
 // The MCP server's natsbus.RESERVED_NAMES is the same list.
 var reservedNames = []string{
 	"account", "accounts", "ask", "attest", "bot", "bridge", "bus", "ch",
-	"crown", "deliver", "directory", "dm", "hu", "import", "member", "metrics",
-	"notice", "person", "planb", "presence", "req", "stats", "v1", "x",
+	"console-metrics", "copied", "crown", "deliver", "directory", "dm", "hu",
+	"import", "mattermost", "member", "metrics", "moved", "notice", "person",
+	"planb", "presence", "req", "stats", "v1", "x",
 }
 
 // checkName refuses an agent name a subject could read as another token

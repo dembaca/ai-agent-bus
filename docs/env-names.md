@@ -517,7 +517,7 @@ Mattermost; the column says whether the setting itself is about Mattermost.
 | `BRIDGE_SEEN_BUCKET` | `CB_BRIDGE_SEEN_BUCKET` | no | `internal/config/config.go` | |
 | `BRIDGE_STREAM` | `CB_BRIDGE_STREAM` | no | `internal/config/config.go` | |
 | `BRIDGE_MM_ADMIN_TOKEN_FILE` | `CB_BRIDGE_MM_ADMIN_TOKEN_FILE` | yes | `internal/config/config.go` | new with #166 |
-| `BRIDGE_BOT_PREFIX` | `CB_BRIDGE_MM_BOT_PREFIX` | yes | `internal/config/config.go` | new with #166; the Mattermost bots' username prefix |
+| `BRIDGE_BOT_PREFIX` | `CB_BRIDGE_MM_BOT_PREFIX` | yes | `internal/config/config.go` | new with #166; the Mattermost bots' username prefix (at least two characters, #274) |
 | `BRIDGE_HIDE_BOT_DM` | `CB_BRIDGE_MM_HIDE_BOT_DM` | yes | `internal/config/config.go` | new with #166; a Mattermost direct message |
 | `CB_BRIDGE_MM_BOT_KEEP` | `CB_BRIDGE_MM_BOT_KEEP` | yes | `internal/config/config.go` | new with #151 step 2: no old spelling; the sweep's keep time for the agents' bots |
 | `CB_BRIDGE_COMMANDS_ALLOW_HTTP` | `CB_BRIDGE_COMMANDS_ALLOW_HTTP` | no | `internal/config/config.go` | plain http to a listener that is not loopback; default false |

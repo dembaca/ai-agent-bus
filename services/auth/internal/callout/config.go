@@ -78,6 +78,9 @@ func (c Config) check() error {
 	if c.NamePrefix != "" && (!plain(c.NamePrefix) || c.NamePrefix[0] == '_' || c.NamePrefix[0] == '-') {
 		return fmt.Errorf("callout: name prefix %q: empty, or a letter or digit, then letters, digits, - and _", c.NamePrefix)
 	}
+	if len(c.NamePrefix) == 1 {
+		return fmt.Errorf("callout: name prefix %q: one character plus the 25-character hash is 26 characters, a Mattermost id's form (#274)", c.NamePrefix)
+	}
 	for what, v := range map[string]string{"subject prefix": c.Subjects.Prefix, "presence prefix": c.Subjects.Presence} {
 		if v == "" || !plain(v) {
 			return fmt.Errorf("callout: %s %q: letters, digits, - and _ only", what, v)
