@@ -927,6 +927,14 @@ class NatsPort:
             return
         self._closed_ids |= {r.channel_id for r in rows if r.name.lower() in self._closed12}
 
+    async def _closed_channel(self, channel_id: str | None) -> bool:
+        """Whether this Mattermost channel id is a guest or the lobby switched on to NATS but
+        not reachable (piece 12): its reads are empty, Mattermost is not asked (fail closed)."""
+        if not channel_id or not self._closed12:
+            return False
+        await self._closed_by_name()
+        return channel_id in self._closed_ids
+
     async def _people_read(self, name: str | None,
                            read: Callable[[], Awaitable[list[Post]]]) -> list[Post]:
         """Mattermost's read of a channel, merged with its NATS posts in a home (people's
@@ -1985,7 +1993,10 @@ class NatsPort:
     async def thread(self, post_id: str) -> Thread:
         got = parse_post_id(post_id)
         if got is None:
-            return await self.inner.thread(post_id)
+            found = await self.inner.thread(post_id)
+            if self._closed12 and any([await self._closed_channel(p.channel_id) for p in found.posts]):
+                return Thread(post_id)  # a closed channel's thread reads empty (piece 12)
+            return found
         ch, seq = got
         self._home(ch)
         known = self._posts[ch].get(seq) if ch in self._posts else None
@@ -2015,6 +2026,8 @@ class NatsPort:
 
     async def channel_posts(self, channel_id: str, *, per_page: int | None = None,
                             since_ms: int | None = None) -> list[Post]:
+        if await self._closed_channel(channel_id):
+            return []
         name = await self.nats_name(channel_id)
         mm = await self._people_read(name, lambda: self.inner.channel_posts(
             channel_id, per_page=per_page, since_ms=since_ms))
@@ -2028,6 +2041,8 @@ class NatsPort:
     async def list_recent(self, *, channel_id: str | None = None, per_page: int = 20,
                           since_ms: int | None = None) -> list[Post]:
         cid = await self._home_or(channel_id)
+        if await self._closed_channel(cid):
+            return []
         name = await self.nats_name(cid)
         mm = await self._people_read(name, lambda: self.inner.list_recent(
             channel_id=channel_id, per_page=per_page, since_ms=since_ms))
@@ -2042,6 +2057,8 @@ class NatsPort:
     async def posts_after(self, since_ms: int, *, channel_id: str | None = None,
                           max_pages: int = 25) -> list[Post]:
         cid = await self._home_or(channel_id)
+        if await self._closed_channel(cid):
+            return []
         name = await self.nats_name(cid)
         mm = await self._people_read(name, lambda: self.inner.posts_after(
             since_ms, channel_id=channel_id, max_pages=max_pages))
@@ -2053,6 +2070,8 @@ class NatsPort:
     async def reactions(self, post_id: str) -> list[Reaction]:
         got = parse_post_id(post_id)
         if got is None:
+            if self._closed12 and await self._closed_channel(await self.inner.post_channel_id(post_id)):
+                return []  # a post of a closed channel has no reactions to read (piece 12)
             return await self.inner.reactions(post_id)
         ch, seq = got
         self._home(ch)

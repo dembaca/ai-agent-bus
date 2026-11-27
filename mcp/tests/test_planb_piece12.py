@@ -25,7 +25,7 @@ from test_natsbus import (BUS_STREAM, PRESENCE_STREAM, FakeLogin, Rig, _api, _fr
 
 from mattermost_ai_agent_bus import compose, homes, natsbus, planb
 from mattermost_ai_agent_bus.events import MembershipEvent, PostEvent
-from mattermost_ai_agent_bus.model import Post, UnreadChannel
+from mattermost_ai_agent_bus.model import Post, Reaction, UnreadChannel
 from mattermost_ai_agent_bus.nats_port import NatsPort, NatsPortError
 from mattermost_ai_agent_bus.natsbus import NatsSettings, agent_name
 from mattermost_ai_agent_bus.websocket_inbox import WebSocketInbox
@@ -296,5 +296,38 @@ async def test_a_guest_switched_on_that_the_record_names_no_id_for_is_not_reacha
         await bob.post("guest", "over NATS")
         await asyncio.sleep(0.5)
         assert port._posts.get("guest") is None  # its NATS posts too
+    finally:
+        await port.stop()
+
+
+async def test_the_reads_of_a_channel_switched_on_but_not_reachable_are_empty(
+        rig: Rig, monkeypatch: pytest.MonkeyPatch) -> None:
+    """Fail closed (RT-6.22 step 7): the five reads of a closed channel return what a channel
+    without posts returns, and no Mattermost read is made for it; another channel is read as before."""
+    monkeypatch.setattr("mattermost_ai_agent_bus.nats_port.CHANNEL_RECORD_WAIT_SEC", 2.0)
+    port, inner, _bob, _ = await _setup(rig, monkeypatch, {"guest": [12]}, {"home": "", "guest": "", "lobby": ""})
+    inner.channels = [UnreadChannel(MM_GUEST, "O", name="guest")]  # the bot is still a member there
+    inner.guests = {MM_GUEST}
+    mine = Post(id="c" * 26, channel_id=MM_GUEST, user_id="h" * 26, message="closed", create_at=5)
+    other = Post(id="d" * 26, channel_id="o" * 26, user_id="h" * 26, message="open", create_at=6)
+    inner.posts = [mine, other]
+    inner.reacts = {mine.id: [Reaction(user_id="h" * 26, post_id=mine.id, emoji_name="+1")],
+                    other.id: [Reaction(user_id="h" * 26, post_id=other.id, emoji_name="+1")]}
+    await asyncio.wait_for(port.start(rig.logins["alice"], owner="alice"), 15)
+    try:
+        before = len(inner.log)
+        assert await port.channel_posts(MM_GUEST) == []
+        assert await port.list_recent(channel_id=MM_GUEST) == []
+        assert await port.posts_after(0, channel_id=MM_GUEST) == []
+        thread = await port.thread(mine.id)
+        assert thread.posts == () and thread.order == ()
+        assert await port.reactions(mine.id) == []
+        calls = inner.log[before:]
+        assert not any(c.startswith(("channel_posts", "list_recent", "posts_after")) for c in calls)
+        # a channel that is not closed is read as before
+        assert await port.channel_posts("o" * 26)
+        assert await port.list_recent(channel_id="o" * 26)
+        assert (await port.thread(other.id)).posts
+        assert await port.reactions(other.id)
     finally:
         await port.stop()
