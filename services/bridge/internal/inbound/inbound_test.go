@@ -9,6 +9,7 @@ import (
 	"context"
 	"encoding/json"
 	"errors"
+	"fmt"
 	"io"
 	"log/slog"
 	"net/http"
@@ -27,6 +28,7 @@ import (
 	"github.com/dembaca/ai-agent-bus/services/bridge/internal/mirror"
 	"github.com/dembaca/ai-agent-bus/services/bridge/internal/mm"
 	"github.com/dembaca/ai-agent-bus/services/bridge/internal/mmws"
+	"github.com/dembaca/ai-agent-bus/services/bridge/internal/presence"
 	"github.com/dembaca/ai-agent-bus/services/bridge/internal/store"
 )
 
@@ -49,18 +51,26 @@ type fakeMM struct {
 	fail  atomic.Bool // every answer a 500
 	// failUser answers a 500 for that user's next reads (a count per id)
 	failUser map[string]int
+	users    map[string]map[string]any // the accounts /users/<id> answers
 	srv      *httptest.Server
+}
+
+// setUser adds or replaces the account id answers with.
+func (f *fakeMM) setUser(id string, u map[string]any) {
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	f.users[id] = u
 }
 
 func newFakeMM(t *testing.T) *fakeMM {
 	t.Helper()
-	f := &fakeMM{failUser: map[string]int{}}
 	users := map[string]map[string]any{
 		botID:   {"id": botID, "username": "bridge", "is_bot": true},
-		aliceID: {"id": aliceID, "username": "alice", "is_bot": false},
-		bobID:   {"id": bobID, "username": "bob", "is_bot": false},
+		aliceID: {"id": aliceID, "username": "alice", "is_bot": false, "auth_service": "openid", "auth_data": "sub-alice"},
+		bobID:   {"id": bobID, "username": "bob", "is_bot": false, "auth_service": "openid", "auth_data": "sub-bob"},
 		otherID: {"id": otherID, "username": "ci-bot", "is_bot": true},
 	}
+	f := &fakeMM{failUser: map[string]int{}, users: users}
 	mux := http.NewServeMux()
 	mux.HandleFunc("/api/v4/", func(w http.ResponseWriter, r *http.Request) {
 		if f.fail.Load() {
@@ -72,7 +82,9 @@ func newFakeMM(t *testing.T) *fakeMM {
 		case p == "/system/ping":
 			_, _ = w.Write([]byte(`{"status":"OK"}`)) // net/http sets the Date header
 		case p == "/users/me":
+			f.mu.Lock()
 			_ = json.NewEncoder(w).Encode(users[botID])
+			f.mu.Unlock()
 		case strings.HasPrefix(p, "/users/"):
 			f.mu.Lock()
 			if n := f.failUser[strings.TrimPrefix(p, "/users/")]; n > 0 {
@@ -81,8 +93,8 @@ func newFakeMM(t *testing.T) *fakeMM {
 				w.WriteHeader(http.StatusBadGateway)
 				return
 			}
-			f.mu.Unlock()
 			u, ok := users[strings.TrimPrefix(p, "/users/")]
+			f.mu.Unlock()
 			if !ok {
 				w.WriteHeader(http.StatusNotFound)
 				return
@@ -195,8 +207,11 @@ func newLab(t *testing.T) *lab {
 }
 
 // record publishes a login service record and waits until the bridge read it.
+// record publishes an account record, after the binding's proof the fake
+// Mattermost's account shows (#266), so that a bound record binds.
 func (l *lab) record(t *testing.T, uid, body string, want string) {
 	t.Helper()
+	l.proof(t, uid, "openid", "sub-"+map[string]string{aliceID: "alice", bobID: "bob"}[uid])
 	if err := l.nc.Publish("presence.account.mattermost."+uid+".v1", []byte(body)); err != nil {
 		t.Fatal(err)
 	}
@@ -206,6 +221,15 @@ func (l *lab) record(t *testing.T, uid, body string, want string) {
 			t.Fatalf("anchor of %s: %q, want %q", uid, anchorOf(t, l.acc, uid), want)
 		}
 		time.Sleep(10 * time.Millisecond)
+	}
+}
+
+// proof publishes the proof of an account's binding (RT-6.42 step 3, #266).
+func (l *lab) proof(t *testing.T, uid, service, data string) {
+	t.Helper()
+	if err := l.nc.Publish("presence.account.mattermost."+uid+".auth.v1", []byte(`{"v":1,"account":"`+uid+
+		`","auth_service":"`+service+`","auth_data":"`+data+`","iat":1}`)); err != nil {
+		t.Fatal(err)
 	}
 }
 
@@ -1068,5 +1092,339 @@ func TestOwnerIsTheOneAccountWhoseRecordBindsTheAnchor(t *testing.T) {
 	acc.one("presence.account.mattermost."+a1+".v1", rec(a1, `null`))
 	if got := acc.Owner("alice"); got != a2 {
 		t.Fatalf("after the change: %q", got)
+	}
+}
+
+// A person's post by the account uid.
+func postBy(uid, id string, at int64) *mmws.Posted {
+	return &mmws.Posted{PostID: id, UserID: uid, ChannelID: cid, Message: "go ahead", CreateAt: at, UpdateAt: at}
+}
+
+// piece4 switches plan B piece 4 on in every home.
+type piece4 struct{}
+
+func (piece4) On(piece int, _ string) bool { return piece == ProofPiece }
+func (piece4) CaughtUp() bool              { return true }
+
+// proofHome: piece 4 on, and the accounts read with a token that sees how
+// they log in (the fake Mattermost shows it to every token).
+func proofHome(b *Bridge) { b.Switches, b.Users = piece4{}, b.MM }
+
+// RT-6.42 step 3 (#266, the owner's decision of 2026-11-27), in a home with
+// plan B piece 4 on: the login service proved the binding once and published
+// its proof; the bridge binds a later post or reaction of the account by what
+// Mattermost shows of it now, read with its admin token: the same
+// auth_service and auth_data as the proof. An
+// OpenID proof and an LDAP proof bind alike; a changed auth_data, another way
+// of logging in, a deactivated or a guest account bind nothing: "-".
+func TestALaterPostIsBoundOnlyWhileTheAccountLogsInAsProven(t *testing.T) {
+	r := newRigWith(t, nil, proofHome)
+	r.connect(1)
+	rec := func(uid, anchor string) string {
+		return `{"v":1,"account":"` + uid + `","anchor":"` + anchor + `","name":"` + anchor +
+			`","approver":false,"token_iat":1,"iat":1,"exp":2}`
+	}
+	for i, tc := range []struct {
+		name         string
+		proof, shown [2]string // auth_service and auth_data: the proof's, and Mattermost's now
+		deact, guest bool
+		want         string
+	}{
+		{"OpenID, as proven", [2]string{"openid", "sub-x"}, [2]string{"openid", "sub-x"}, false, false, "bus.hu.home.p0"},
+		{"LDAP, as proven", [2]string{"ldap", "0f1e-uuid"}, [2]string{"ldap", "0f1e-uuid"}, false, false, "bus.hu.home.p1"},
+		{"another auth_data", [2]string{"ldap", "0f1e-uuid"}, [2]string{"ldap", "77aa-uuid"}, false, false, "bus.hu.home.-"},
+		{"another way of logging in", [2]string{"openid", "sub-x"}, [2]string{"ldap", "sub-x"}, false, false, "bus.hu.home.-"},
+		{"a password now", [2]string{"openid", "sub-x"}, [2]string{"", ""}, false, false, "bus.hu.home.-"},
+		{"deactivated", [2]string{"openid", "sub-x"}, [2]string{"openid", "sub-x"}, true, false, "bus.hu.home.-"},
+		{"a guest", [2]string{"openid", "sub-x"}, [2]string{"openid", "sub-x"}, false, true, "bus.hu.home.-"},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			uid := strings.Repeat(string(rune('k'+i)), 26)
+			anchor := fmt.Sprintf("p%d", i)
+			u := map[string]any{"id": uid, "username": anchor, "is_bot": false,
+				"auth_service": tc.shown[0], "auth_data": tc.shown[1]}
+			if tc.deact {
+				u["delete_at"] = 1
+			}
+			if tc.guest {
+				u["roles"] = "system_guest"
+			}
+			r.mm.setUser(uid, u)
+			r.proof(t, uid, tc.proof[0], tc.proof[1])
+			if err := r.nc.Publish("presence.account.mattermost."+uid+".v1", []byte(rec(uid, anchor))); err != nil {
+				t.Fatal(err)
+			}
+			deadline := time.Now().Add(3 * time.Second)
+			for r.acc.Bound(uid, tc.proof[0], tc.proof[1]) != anchor {
+				if time.Now().After(deadline) {
+					t.Fatal("the record and its proof were never read")
+				}
+				time.Sleep(10 * time.Millisecond)
+			}
+			r.send(postBy(uid, pid(10+i), now()))
+			if subject, _ := r.next(t); subject != tc.want {
+				t.Fatalf("post: %s, want %s", subject, tc.want)
+			}
+			r.send(&mmws.Reaction{PostID: pid(10 + i), UserID: uid, ChannelID: cid, EmojiName: "+1", CreateAt: now(), Added: true})
+			if subject, _ := r.next(t); subject != tc.want {
+				t.Fatalf("reaction: %s, want %s", subject, tc.want)
+			}
+		})
+	}
+}
+
+// RT-6.42 step 3 (#266), piece 4 on: a record without a proof, or with one
+// that does not decode or names another account, binds nothing; a proof read
+// again after it binds again.
+func TestARecordWithoutAProofBindsNothing(t *testing.T) {
+	r := newRigWith(t, nil, proofHome)
+	r.connect(1)
+	if err := r.nc.Publish("presence.account.mattermost."+bobID+".v1", []byte(`{"v":1,"account":"`+bobID+
+		`","anchor":"bob","name":"bob","approver":true,"token_iat":1,"iat":1,"exp":2}`)); err != nil {
+		t.Fatal(err)
+	}
+	deadline := time.Now().Add(3 * time.Second)
+	for anchorOf(t, r.acc, bobID) != "bob" {
+		if time.Now().After(deadline) {
+			t.Fatal("the record was never read")
+		}
+		time.Sleep(10 * time.Millisecond)
+	}
+	r.send(postBy(bobID, pid(1), now()))
+	if subject, _ := r.next(t); subject != "bus.hu.home.-" {
+		t.Fatalf("no proof: %s", subject)
+	}
+	for i, bad := range []string{
+		`{"v":1,"account":"` + aliceID + `","auth_service":"openid","auth_data":"sub-bob","iat":1}`,
+		`{"v":1,"account":"` + bobID + `","auth_service":"saml","auth_data":"sub-bob","iat":1}`,
+		`{"v":1,"account":"` + bobID + `","auth_service":"openid","auth_data":"sub-bob","iat":1,"anchor":"bob"}`,
+		`{"type":"io.nats.jetstream.api.v1.stream_msg_get_response"}`,
+	} {
+		if err := r.nc.Publish("presence.account.mattermost."+bobID+".auth.v1", []byte(bad)); err != nil {
+			t.Fatal(err)
+		}
+		_ = r.nc.Flush()
+		time.Sleep(100 * time.Millisecond)
+		if got := r.acc.Bound(bobID, "openid", "sub-bob"); got != "" {
+			t.Fatalf("proof %d binds %q", i, got)
+		}
+	}
+	r.proof(t, bobID, "openid", "sub-bob")
+	deadline = time.Now().Add(3 * time.Second)
+	for r.acc.Bound(bobID, "openid", "sub-bob") != "bob" {
+		if time.Now().After(deadline) {
+			t.Fatal("the proof was never read")
+		}
+		time.Sleep(10 * time.Millisecond)
+	}
+	r.send(postBy(bobID, pid(2), now()))
+	if subject, _ := r.next(t); subject != "bus.hu.home.bob" {
+		t.Fatalf("with its proof: %s", subject)
+	}
+}
+
+func TestDecodeProofIsStrict(t *testing.T) {
+	ok := `{"v":1,"account":"` + aliceID + `","auth_service":"ldap","auth_data":"0f1e","iat":5}`
+	if p, err := DecodeProof([]byte(ok)); err != nil || p.Account != aliceID || p.AuthService != "ldap" ||
+		p.AuthData != "0f1e" || p.Iat != 5 {
+		t.Fatalf("%+v %v", p, err)
+	}
+	for _, bad := range []string{"", "{}", `{"v":2,"account":"` + aliceID + `","auth_service":"ldap","auth_data":"x","iat":1}`,
+		`{"v":1,"account":"short","auth_service":"ldap","auth_data":"x","iat":1}`,
+		`{"v":1,"account":"` + aliceID + `","auth_service":"","auth_data":"x","iat":1}`,
+		`{"v":1,"account":"` + aliceID + `","auth_service":"ldap","auth_data":"","iat":1}`,
+		`{"v":1,"account":"` + aliceID + `","auth_service":"ldap","auth_data":null,"iat":1}`,
+		`{"v":1,"account":"` + aliceID + `","auth_service":"ldap","auth_data":"x"}`,
+		`{"v":1,"v":1,"account":"` + aliceID + `","auth_service":"ldap","auth_data":"x","iat":1}`,
+		ok + " {}"} {
+		if _, err := DecodeProof([]byte(bad)); err == nil {
+			t.Errorf("decoded %q", bad)
+		}
+	}
+}
+
+// adminUsers reads the accounts as a system admin's token does: with how
+// they log in, which the posting bot's token does not see.
+type adminUsers struct {
+	inner         Mattermost
+	service, data string
+}
+
+func (a adminUsers) GetUser(ctx context.Context, id string) (mm.User, error) {
+	u, err := a.inner.GetUser(ctx, id)
+	u.AuthService, u.AuthData = a.service, a.data
+	return u, err
+}
+
+// RT-6.42 step 3 (#266), piece 4 on: the accounts are read with the admin
+// bot's token (Bridge.Users) when there is one: the posting bot's token does
+// not see how an account logs in, and without the admin token no person of
+// such a home is bound.
+func TestTheAccountIsReadWithTheAdminTokenForItsBinding(t *testing.T) {
+	const zedID = "zzzzzzzzzzzzzzzzzzzzzzzzzz"
+	for _, admin := range []bool{false, true} {
+		r := newRigWith(t, nil, func(b *Bridge) {
+			b.Switches = piece4{}
+			if admin {
+				b.Users = adminUsers{inner: b.MM, service: "openid", data: "sub-zed"}
+			}
+		})
+		r.mm.setUser(zedID, map[string]any{"id": zedID, "username": "zed", "is_bot": false}) // as the posting bot sees it
+		r.proof(t, zedID, "openid", "sub-zed")
+		if err := r.nc.Publish("presence.account.mattermost."+zedID+".v1", []byte(`{"v":1,"account":"`+zedID+
+			`","anchor":"zed","name":"zed","approver":false,"token_iat":1,"iat":1,"exp":2}`)); err != nil {
+			t.Fatal(err)
+		}
+		deadline := time.Now().Add(3 * time.Second)
+		for r.acc.Bound(zedID, "openid", "sub-zed") != "zed" {
+			if time.Now().After(deadline) {
+				t.Fatal("the record and its proof were never read")
+			}
+			time.Sleep(10 * time.Millisecond)
+		}
+		r.connect(1)
+		r.send(postBy(zedID, pid(1), now()))
+		want := map[bool]string{false: "bus.hu.home.-", true: "bus.hu.home.zed"}[admin]
+		if subject, _ := r.next(t); subject != want {
+			t.Fatalf("admin token %v: %s, want %s", admin, subject, want)
+		}
+	}
+}
+
+// RT-6.42 step 3 (#266): with plan B piece 4 off in the home (no switches, a
+// record that switches only other pieces, or one older than two hours), the
+// bridge carries a person's post under the anchor of the account record alone,
+// as before: no proof, no admin token needed. A fresh piece 4 applies the
+// proof rules: the same account goes out under "-".
+func TestWithPiece4OffTheRecordAloneBindsAsBefore(t *testing.T) {
+	const zedID = "zzzzzzzzzzzzzzzzzzzzzzzzzz"
+	t0 := time.Now()
+	stale := &presence.Switches{}
+	stale.Observed("home", []int{4}, t0.Add(-3*time.Hour))
+	stale.Observed("other", []int{1}, t0) // the server's time has gone on
+	fresh := &presence.Switches{}
+	fresh.Observed("home", []int{4}, t0)
+	others := &presence.Switches{}
+	others.Observed("home", []int{1, 2}, t0)
+	for _, s := range []*presence.Switches{stale, fresh, others} {
+		s.Commit() // the first replay read
+	}
+	for name, tc := range map[string]struct {
+		sw   Switches
+		want string
+	}{
+		"no switches":   {nil, "bus.hu.home.zed"},
+		"other pieces":  {others, "bus.hu.home.zed"},
+		"piece 4 stale": {stale, "bus.hu.home.zed"},
+		"piece 4 on":    {fresh, "bus.hu.home.-"},
+	} {
+		t.Run(name, func(t *testing.T) {
+			r := newRigWith(t, nil, func(b *Bridge) {
+				if tc.sw != nil {
+					b.Switches = tc.sw
+				}
+			})
+			// no proof, no auth fields, no admin token
+			r.mm.setUser(zedID, map[string]any{"id": zedID, "username": "zed", "is_bot": false})
+			if err := r.nc.Publish("presence.account.mattermost."+zedID+".v1", []byte(`{"v":1,"account":"`+zedID+
+				`","anchor":"zed","name":"zed","approver":false,"token_iat":1,"iat":1,"exp":2}`)); err != nil {
+				t.Fatal(err)
+			}
+			deadline := time.Now().Add(3 * time.Second)
+			for anchorOf(t, r.acc, zedID) != "zed" {
+				if time.Now().After(deadline) {
+					t.Fatal("the record was never read")
+				}
+				time.Sleep(10 * time.Millisecond)
+			}
+			r.connect(1)
+			r.send(postBy(zedID, pid(1), now()))
+			if subject, _ := r.next(t); subject != tc.want {
+				t.Fatalf("%s, want %s", subject, tc.want)
+			}
+		})
+	}
+}
+
+// RT-6.42 step 3 (#266): a home with piece 4 on while the bridge has no admin
+// token is warned of once, at the first signal, not at every post.
+func TestPiece4WithoutTheAdminTokenIsWarnedOfOnce(t *testing.T) {
+	var buf syncBuf
+	r := newRigWith(t, nil, func(b *Bridge) {
+		b.Switches = piece4{}
+		b.Log = slog.New(slog.NewTextHandler(&buf, nil))
+	})
+	r.record(t, aliceID, `{"v":1,"account":"`+aliceID+`","anchor":"alice","name":"alice",`+
+		`"approver":true,"token_iat":1,"iat":1,"exp":2}`, "alice")
+	r.connect(1)
+	waitSignal(t, r.sig)
+	waitSignal(t, r.sig)
+	r.send(alicePost(pid(1), now()))
+	if subject, _ := r.next(t); subject != "bus.hu.home.-" {
+		t.Fatalf("without the admin token: %s", subject)
+	}
+	if n := strings.Count(buf.String(), "CB_BRIDGE_MM_ADMIN_TOKEN_FILE is unset"); n != 1 {
+		t.Fatalf("%d warnings in %s", n, buf.String())
+	}
+}
+
+// RT-6.42 step 3 (#266): until plan B's switches are read once (the first
+// replay committed), no home carries or signals: a post of a home with piece 4
+// on would otherwise go out by the record alone, and a carried post is never
+// carried again. Once they are, the home catches up from its watermark and
+// loses nothing.
+func TestAHomeCarriesNothingBeforeTheSwitchesAreRead(t *testing.T) {
+	sw := &presence.Switches{}
+	r := newRigWith(t, nil, func(b *Bridge) { b.Switches = sw })
+	r.record(t, aliceID, `{"v":1,"account":"`+aliceID+`","anchor":"alice","name":"alice",`+
+		`"approver":true,"token_iat":1,"iat":1,"exp":2}`, "alice")
+	t0 := now()
+	if err := r.kv.SetWatermark(context.Background(), "home", t0-5000); err != nil {
+		t.Fatal(err)
+	}
+	r.mm.setPosts(map[string]any{"id": pid(1), "user_id": aliceID, "channel_id": cid, "message": "go",
+		"create_at": t0 - 1000, "update_at": t0 - 1000, "metadata": map[string]any{}})
+	r.connect(1)
+	r.send(alicePost(pid(2), now()))
+	r.none(t)
+	noSignal(t, r.sig)
+	sw.Commit() // the switches are read: no piece on here
+	waitSignal(t, r.sig)
+	if subject, body := r.next(t); subject != "bus.hu.home.alice" || body["mm"] != pid(1) {
+		t.Fatalf("after the switches: %s %v", subject, body)
+	}
+}
+
+// failingUsers is an admin client whose every read fails.
+type failingUsers struct{}
+
+func (failingUsers) GetUser(context.Context, string) (mm.User, error) {
+	return mm.User{}, &mm.StatusError{Status: 500, Err: errors.New("admin token refused")}
+}
+
+// RT-6.42 step 3 (#266): with piece 4 off the bridge reads the account with
+// the posting bot's token, as before; the admin token is read only for the
+// proof check of a home with piece 4 on, so a broken admin token stops no
+// home with the piece off. With it on, the failing read stops the home (it
+// carries nothing under "-" for want of an answer).
+func TestABrokenAdminTokenStopsOnlyAHomeWithPiece4On(t *testing.T) {
+	for _, on := range []bool{false, true} {
+		r := newRigWith(t, nil, func(b *Bridge) {
+			b.Users = failingUsers{}
+			if on {
+				b.Switches = piece4{}
+			}
+		})
+		r.record(t, aliceID, `{"v":1,"account":"`+aliceID+`","anchor":"alice","name":"alice",`+
+			`"approver":true,"token_iat":1,"iat":1,"exp":2}`, "alice")
+		r.connect(1)
+		r.send(alicePost(pid(1), now()))
+		if !on {
+			if subject, _ := r.next(t); subject != "bus.hu.home.alice" {
+				t.Fatalf("piece 4 off: %s", subject)
+			}
+			continue
+		}
+		r.none(t)
 	}
 }

@@ -30,8 +30,12 @@ func Client(raw string) string {
 // VerifyRealm checks raw as Verify does (signature by the realm's JWKS,
 // issuer, `exp`, `aud` naming Config.Audience, `azp` = Config.ClientID, an
 // access token, no `aud` naming one of Config.OtherClients) and returns the identity
-// with its `sub` and groups. It asks no chat: Owner is the token's
-// preferred_username, for the log only, and ChatOpenID stays false.
+// with its `sub` and groups. The chat decides nothing here: Owner is the
+// token's preferred_username, for the log, and only when the chat account of
+// that name is proven to be the token's (OpenID or LDAP, as Verify proves
+// it, RT-6.42 step 3) are ChatProven, ChatID and the proof set, so the login
+// can store the binding; a lookup that fails, a mismatch or a name alone
+// leave them unset and refuse nothing.
 func (v *Verifier) VerifyRealm(ctx context.Context, raw string) (Identity, error) {
 	if len(raw) > MaxTokenBytes {
 		return Identity{}, ErrInvalid
@@ -52,7 +56,20 @@ func (v *Verifier) VerifyRealm(ctx context.Context, raw string) (Identity, error
 	}
 	name, _ := claims["preferred_username"].(string)
 	exp, _ := claims.GetExpirationTime() // required and checked by the parser
-	return Identity{Owner: name, Subject: sub, Groups: v.groups(claims), Expires: exp.Time, ID: jti(claims)}, nil
+	id := Identity{Owner: name, Subject: sub, Groups: v.groups(claims), Expires: exp.Time, ID: jti(claims),
+		Approver: v.inApproverGroup(claims), ApproverKnown: v.approverKnown(claims)}
+	if t, _ := claims.GetIssuedAt(); t != nil {
+		id.IssuedAt = t.Time
+	}
+	if name == "" {
+		return id, nil
+	}
+	if u, err := v.chatAccount(ctx, name); err == nil {
+		if p, err := prove(u, sub, v.ldapID(claims)); err == nil && p.service != "" {
+			id.ChatProven, id.ChatID, id.ChatAuthService, id.ChatAuthData = true, p.id, p.service, p.data
+		}
+	}
+	return id, nil
 }
 
 // namesOther: the token's `aud` names the other path's client.
