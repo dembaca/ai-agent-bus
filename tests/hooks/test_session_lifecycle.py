@@ -66,6 +66,22 @@ def test_trusted_humans_come_from_the_host_list_only(mm, run):
     assert "'agent-x' not found" in r.stderr and "'ghost' not found" in r.stderr
     assert not any(p == "/api/v4/users/me" and "test-secret" in json.dumps(b)
                    for _, p, b in mm.writes)
+    assert any(p.startswith("/api/v4/users/username/") for p in mm.reads)  # outside a NATS home
+
+
+def test_a_home_over_nats_keeps_the_hooks_lookup_and_ids(mm, run):
+    """RT-6.41 step 6, plan B piece 4: the start hook knows no switch and changes nothing for
+    a home over NATS (CB_NATS_HOMES names it): the same lookup, the same ids as before. Only
+    the MCP server, with the switch on, ignores those ids."""
+    from conftest import OWNER
+    r = run(START, MM_REG_SECRET="test-secret", MM_PROJECT_CHANNEL="proj-x",
+            MM_TRUSTED_HUMANS="dembaca, @kollegin, ghost", CB_NATS_HOMES="other, ~Proj-X", **HOST)
+    assert r.code == 0, r.stderr
+    out = json.loads(r.stdout)
+    assert out["env"]["MM_TRUSTED_HUMANS"] == "dembaca,kollegin"
+    assert out["env"]["MM_TRUSTED_HUMAN_USER_IDS"] == f"{OWNER},{'k' * 26}"
+    assert any(p.startswith("/api/v4/users/username/") for p in mm.reads)
+    assert "'ghost' not found" in r.stderr
 
 
 def test_no_list_no_trusted_human(mm, run):

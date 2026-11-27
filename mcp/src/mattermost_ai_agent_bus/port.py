@@ -222,6 +222,14 @@ class ChatPort(Protocol):
         adapter always)."""
         ...
 
+    async def trust_closed(self) -> bool:
+        """Whether trust is closed now (RT-6.41 step 6): this session takes its trusted
+        humans from the login service alone (plan B piece 4) and holds no fresh own
+        attestation. Then the gate and the owner split are on and nobody is a peer,
+        whatever the host configured (gate.active, owners.names_in_doubt); False where
+        the chat's trust decides (the Mattermost adapter always)."""
+        ...
+
     async def agent_attestation(self, user_id: str) -> str | None:
         """The registrar's signed owner claim for a bot (RT-6.24 step 5), read
         from the registrar when its keys are pinned and cached; '' when it has

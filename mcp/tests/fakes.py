@@ -244,6 +244,9 @@ class FakeChat:
     async def own_anchors(self) -> frozenset[str] | None:
         return None
 
+    async def trust_closed(self) -> bool:
+        return False
+
     async def may_approve(self, user_id: str) -> bool | None:
         return None
 

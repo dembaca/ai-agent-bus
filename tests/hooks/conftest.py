@@ -68,6 +68,7 @@ class FakeMattermost:
     members: list[dict] = field(default_factory=list)
     channels: list[dict] = field(default_factory=list)
     writes: list[tuple[str, str, dict]] = field(default_factory=list)
+    reads: list[str] = field(default_factory=list)  # the paths of every GET, in order
     users: list[dict] = field(default_factory=list)  # channel members (roster)
     presence: dict[str, str] = field(default_factory=dict)
     deny: set[str] = field(default_factory=set)  # write paths answered with 403
@@ -142,6 +143,7 @@ def _handler(fake: FakeMattermost):
 
         def do_GET(self):
             p = self.path.split("?")[0]
+            fake.reads.append(p)
             if p == "/api/v4/users/me":
                 if self.headers.get("Authorization") == f"Bearer {PAT}":
                     return self._send({"id": OWNER, "username": "dembaca", "is_bot": False})

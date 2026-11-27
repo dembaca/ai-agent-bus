@@ -76,8 +76,40 @@ before 0.5.0 are described in the git history.
   `invalid post id`; and a DM back that itself stays on Mattermost settles the open DM
   record of that agent, which has no channel id to match, so the turn end no longer reminds
   of a DM the agent has answered.
+- **The DM to the responsible human goes to a Mattermost account only** (#244, RT-6.18,
+  RT-6.34). The no-relay DM (RT-6.18) and the login service's theft notice (RT-6.34)
+  took the first trusted human of that name, which in a home over NATS can be a person over
+  NATS (`hu:<anchor>`, RT-6.42) with no DM; they now take only a Mattermost account among
+  the trusted humans, else look the name up as before.
 
 ### Added
+
+- **Plan B piece 4: every check of a trusted human and of an agent's owner
+  from the login service** (#244, ADR-014 phase 5, RT-6.41 step 6). With the
+  piece's switch on for a home over NATS, the MCP server's trusted humans
+  are the anchors of the session's own fresh attestation: each as a person
+  over NATS and each Mattermost account the login service's account record
+  binds to one of them, under the attested name. The host's
+  `CB_MM_TRUSTED_HUMAN_USER_IDS` and a lookup with the bot token count for
+  nothing, so `from_trusted_human`, the gate, mandates, signed records'
+  `set_by`, ask answers and the stall check all decide by anchor; a
+  Mattermost account approves only with a fresh approver record of its
+  own, as a person over NATS does, never by another account of the same
+  person, and a post or reaction of a bound account that comes on
+  Mattermost is marked `not_approver` without one. One the session did not
+  see come (history, a backfill, a reconnect, while it was down) is judged
+  by that account's record at the read, so a non-approver's answer never
+  answers an ask. An agent's owner and
+  trusted list come from the record of its NATS name, a Mattermost bot's
+  from the NATS name linked to it, never from a bot's description or the
+  registrar's attestation; a bot without such a link has no owner (foreign).
+  Fail closed: without a fresh own attestation nobody is trusted, every
+  other agent is foreign and the gate and the owner split stay on, whatever
+  the host's trusted variables say and also with none of them set.
+
+  With the switch off (the default) nothing changes, the corral start hook
+  included: it looks the trusted humans up and hands over their ids as
+  before. With the switch on the MCP server ignores those ids.
 
 - **The request subjects for plan B** (#244, ADR-014 phase 5, wave 0): what an agent
   needs from the bridge but that is no channel message goes on

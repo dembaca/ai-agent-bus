@@ -68,8 +68,9 @@ async def active(client: ChatPort) -> bool:
     """The gate and the owner split are on (RT-6.16 step 2): trusted humans
     are configured, whether or not a lookup resolved them now. In doubt on
     (ADR-016): a failed lookup leaves trusted_humans() empty, never the gate
-    off."""
-    if owners.configured():
+    off. With trust closed (plan B piece 4 without a fresh own attestation,
+    RT-6.41 step 6) on, also without any of the host's variables."""
+    if owners.configured() or await client.trust_closed():
         return True
     return bool(await client.trusted_humans())
 
