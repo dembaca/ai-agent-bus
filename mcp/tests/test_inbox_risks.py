@@ -695,6 +695,67 @@ async def test_no_seed_when_the_channels_read_is_skipped(chat, dial, inbox, monk
     assert lane not in watermark.read(inbox._bot_user_id)
 
 
+class NatsChat(Chat):
+    """The home over NATS: its posts live in the port's memory, and the lane has
+    its own newest time, which the channel list carries (`nats`)."""
+
+    async def member_channels(self) -> list[UnreadChannel]:
+        at = max((p.create_at for p in self._posts()), default=0)
+        return [UnreadChannel(WORK, "O", last_post_at=0, nats=True, nats_last_post_at=at)]
+
+
+def nats_post(seq: int, created: int) -> dict[str, Any]:
+    return {"id": f"n1:{WORK}:{seq}", "channel_id": WORK, "create_at": created,
+            "message": "@agent-me hi", "user_id": HUMAN, "root_id": ""}
+
+
+async def test_a_failed_first_backfill_loses_no_older_post_even_after_a_kill(dial, monkeypatch):
+    """#238 (end to end), RT-6.36 step 4: an older NATS post lies in the port's
+    memory only, a live one is queued while the first backfill's read fails
+    (`unread.after` raises): no seed, no mark. The next backfill reads the lane
+    from its start (seeds one before the older post, nothing handed over yet);
+    after a kill (a new inbox on the same mark store) the older post is asked
+    for again and handed over with the live one."""
+    from mattermost_ai_agent_bus.client import post_of
+    chat = NatsChat()
+    chat.add(nats_post(9, 9_000))
+    chat.add(nats_post(7, 7_000))   # the older one, only in the port's memory
+    lane = f"{WORK}:nats"
+    real_after = unread.after
+
+    async def failing_after(client, failed=None):
+        # The live post arrives while the snapshot is being read, then the read fails.
+        await box._put(ClassifiedEvent(kind="mention", post=post_of(nats_post(9, 9_000))))
+        raise RuntimeError("get_me failed")
+
+    # 1. The first backfill's read fails: nothing is seeded.
+    box = WebSocketInbox(client=chat, watched_channel_ids={WORK})
+    monkeypatch.setattr(unread, "after", failing_after)
+    try:
+        await box.ensure_connected()
+        assert lane not in watermark.read(BOT)
+    finally:
+        await box.close()
+    # 2. The next backfill reads the lane from 0: both posts, seeded before the older.
+    monkeypatch.setattr(unread, "after", real_after)
+    box = WebSocketInbox(client=chat, watched_channel_ids={WORK})
+    try:
+        await box.ensure_connected()
+        mark = watermark.read(BOT)[lane]
+        assert (mark.post_id, mark.at) == (f"n1:{WORK}:6", 6_999)
+        assert box._first_waiting(lane) == 7_000
+    finally:
+        await box.close()   # the kill: nothing was handed over
+    # 3. A new inbox on the same store asks for the older post again.
+    box = WebSocketInbox(client=chat, watched_channel_ids={WORK})
+    try:
+        await box.ensure_connected()
+        got = await drain(box)
+        assert sorted(e.post.id for e in got) == [f"n1:{WORK}:7", f"n1:{WORK}:9"]
+    finally:
+        await box.close()
+
+
 async def test_a_hand_over_before_the_reconnects_backfill_passes_no_post_that_came_meanwhile(
         chat, dial, inbox):
     """The read mark (RT-6.2 step 1, #245): at a reconnect the crown is renewed
