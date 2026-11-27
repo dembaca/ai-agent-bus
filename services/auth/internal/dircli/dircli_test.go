@@ -303,6 +303,7 @@ func TestCommands(t *testing.T) {
 		{"planb off", []string{"planb", "dev team", "-"}, "PUT", "/v1/directory/channels/dev%20team", `"5"`, "", `{"owner":"u1","public":false,"bindings":{"mattermost":"dev"},"planb":[]}`},
 		{"members add", []string{"members", "add", "dev team", "s1", "s2"}, "PATCH", "/v1/directory/channels/dev%20team/members", `"5"`, "", `{"add":["s1","s2"],"remove":[]}`},
 		{"members rm", []string{"members", "rm", "dev team", "m1"}, "PATCH", "/v1/directory/channels/dev%20team/members", `"5"`, "", `{"add":[],"remove":["m1"]}`},
+		{"chat-id", []string{"chat-id", "dev team", "mattermost", "abcdefghijklmnopqrstuvwxyz"}, "PUT", "/v1/directory/channels/dev%20team", `"5"`, "", `{"owner":"u1","public":false,"bindings":{"mattermost":"dev"},"chat_ids":{"mattermost":"abcdefghijklmnopqrstuvwxyz"}}`},
 		{"import", []string{"import"}, "POST", "/v1/directory/import", "", "", ""},
 		{"stats-import", []string{"stats-import"}, "POST", "/v1/stats/import", "", "", ""},
 		{"pending", []string{"pending"}, "GET", "/v1/directory/pending", "", "", ""},

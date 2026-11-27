@@ -126,18 +126,3 @@ def test_a_project_channel_id_of_another_channel_is_passed_over(mm):
     assert out == PROJECT and "is ~ai-agent-bus-dev, not ~proj-x" in err
     assert _work_channel_id(mm, CB_MM_PROJECT_CHANNEL_ID=PROJECT) == (PROJECT, "")
     assert _work_channel_id(mm, CB_MM_PROJECT_CHANNEL_ID=GUEST)[0] == GUEST  # not readable: kept
-
-
-def test_plan_b_piece_1_reads_and_joins_nothing_in_mattermost(mm, run):
-    """RT-6.39 step 6 (ADR-014 phase 5 piece 1): with the switch on (CB_PLANB_TEST names
-    piece 1) the channels come with the NATS credential from the channel directory: the
-    script resolves no id and joins no channel, so even a home Mattermost does not know
-    does not end the start. Off, the same call is fatal (as in the tests above)."""
-    mm.missing.add("proj-gone")
-    r = run(CHANNELS, "resolve", MM_PROJECT_CHANNEL="proj-gone, guest-a", CB_PLANB_TEST="1")
-    assert r.code == 0, r.stderr
-    assert "export CB_MM_PROJECT_CHANNEL=proj-gone\\,guest-a" in r.stdout or \
-        "export CB_MM_PROJECT_CHANNEL=proj-gone,guest-a" in r.stdout
-    assert "CHANNEL_ID" not in r.stdout and "TEAM_ID" not in r.stdout
-    assert mm.writes == []
-    assert run(CHANNELS, "resolve", MM_PROJECT_CHANNEL="proj-gone,guest-a", CB_PLANB_TEST="2").code == 1

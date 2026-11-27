@@ -366,6 +366,7 @@ def _since_from_read_mark(uid: str, channels: set[str]) -> dict[str, tuple[int, 
 
 
 CHANNEL_RECORD_WAIT_SEC = 20.0  # how long resolve waits for the credential's channel record (piece 1)
+SWITCH_WAIT_SEC = 20.0  # how long the start waits for the bus to have read plan B's switches
 NOTICE_KEY_MAX = 64  # notices remembered as told, per server
 NOTICE_SAME_SEC = 30 * 60.0  # the block: the same kind, id and verdict is one DM
 
@@ -445,6 +446,7 @@ class NatsPort:
         self._bus_options = dict(bus_options or {})
         self._bus: BusLike | None = None
         self._fatal: NatsPortError | None = None
+        self._up = False  # the bus is started: once it is synced the switch can be read
         self._ids: dict[str, str] | None = None  # channel name -> Mattermost id
         self._resolving = asyncio.Lock()
         self._posts: dict[str, OrderedDict[int, Post]] = {}  # channel -> seq -> post
@@ -512,6 +514,7 @@ class NatsPort:
         """The bus this port sends and reads by (start makes one)."""
         self._bus = bus
         bus.dm_source = self._dm_on  # plan B piece 3: the home's DM switch, stated in its presence
+        self._up = True  # the caller brings it up
 
     def _dm_on(self) -> bool:
         """Whether this home runs plan B's agent DMs over NATS (piece 3): `planb.on(3, home)`,
@@ -538,10 +541,8 @@ class NatsPort:
         delay = START_RETRY_SEC
         while True:
             try:
-                if not self._piece1():  # piece 1 on: the ids come with the credential, below
-                    await self.resolve()
-                    if not self.home_id:
-                        await self._read_home_id()
+                # The channel ids are read after the bus is up (below): plan B's switch for
+                # them (piece 1) is read from the bus's records (planb.known).
                 if owner is None:
                     owner = await _owner_of(login)
                 # #213: the cursor a killed session left is the read mark's NATS lane — the
@@ -568,6 +569,8 @@ class NatsPort:
                     # home still starts, only without a link between bot and NATS name.
                     log.warning("nats: the bot id is not a Mattermost user id: starting without a link")
                 await bus.start()
+                self._up = True
+                await self._wait_switch()
                 if self._piece1():
                     try:
                         await self.resolve()  # the channel record of the credential (RT-6.39 step 6)
@@ -577,6 +580,10 @@ class NatsPort:
                     except BaseException:
                         await bus.stop()
                         raise
+                else:  # the switch is read now (or counts as off): Mattermost's ids as before
+                    await self.resolve()
+                    if not self.home_id:
+                        await self._read_home_id()
                 lease.use_nats_link(partial(_tag_of, bus))
                 await self._announce_membership(bus)
                 self._watch = asyncio.create_task(self._watch_people())
@@ -588,6 +595,7 @@ class NatsPort:
                     self.fail(exc)
                     raise
                 self._bus = None
+                self._up = False
                 log.warning("nats: the home %s did not start (%s), trying again in %.0f s",
                             ", ".join(self._homes), _describe(exc), delay)
                 await asyncio.sleep(delay)
@@ -782,6 +790,26 @@ class NatsPort:
         """Whether any home takes its channel ids from the channel directory (RT-6.39 step 6)."""
         return any(planb.on(1, name) for name in self._homes)
 
+    def _switch_known(self) -> bool:
+        """Whether plan B's switches are read (planb.known), or the bus this port uses has
+        read its presence records (a bus that attaches no source counts once it is up)."""
+        if planb.known():
+            return True
+        bus = self._bus
+        return self._up and bus is not None and bool(getattr(bus, "synced", True))
+
+    async def _wait_switch(self) -> None:
+        """After the bus is up: wait up to SWITCH_WAIT_SEC for the switches to be read. One
+        not read by then counts as off (the old path), and resolve keeps no id until it is."""
+        loop = asyncio.get_running_loop()
+        end = loop.time() + SWITCH_WAIT_SEC
+        while not self._switch_known():
+            if loop.time() >= end:
+                log.warning("nats: plan B's switches were not read within %.0f s: off until they are",
+                            SWITCH_WAIT_SEC)
+                return
+            await asyncio.sleep(0.05)
+
     async def _directory_id(self, name: str) -> str:
         """The Mattermost id of channel `name` from the channel record of this credential
         (RT-6.39 step 6), waiting for the first record; no Mattermost call. Raises
@@ -800,18 +828,25 @@ class NatsPort:
         credential's channel record, and no Mattermost call is made for it."""
         if self._ids is not None:
             return self._ids
+        if not self._switch_known():
+            # The switch is not read yet (the bus is not up, or has not read its records):
+            # Mattermost's ids are not kept, since the directory's may be the ones to use.
+            return await self._read_ids()
         async with self._resolving:
             if self._ids is None:
-                ids: dict[str, str] = {}
-                for name in self._homes:
-                    if planb.on(1, name):
-                        ids[name] = await self._directory_id(name)
-                    elif name == self.inner.work_channel_name.lower():
-                        ids[name] = await self.inner.work_channel_id()
-                    else:
-                        ids[name] = await self.inner.get_channel_id(name)
-                self._ids = ids
+                self._ids = await self._read_ids()
         return self._ids
+
+    async def _read_ids(self) -> dict[str, str]:
+        ids: dict[str, str] = {}
+        for name in self._homes:
+            if planb.on(1, name):
+                ids[name] = await self._directory_id(name)
+            elif name == self.inner.work_channel_name.lower():
+                ids[name] = await self.inner.work_channel_id()
+            else:
+                ids[name] = await self.inner.get_channel_id(name)
+        return ids
 
     async def nats_name(self, channel_id: str) -> str | None:
         """The name of the NATS home this channel id is, None for any other channel."""

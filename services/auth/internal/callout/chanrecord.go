@@ -6,12 +6,13 @@ package callout
 // session takes its channel ids from it instead of asking Mattermost. The
 // record is the credential's side of the grant: it lists exactly the channels
 // of the user JWT's permissions, and only the login service may publish it
-// (an agent's publish right on the presence stream is its one 3-token subject).
+// (an agent publishes its own 3-token presence subject and the 4-token
+// presence.member|crown|ask.<channel>.<agent>; only the login service may
+// publish presence.directory.<agent>.v1).
 
 import (
 	"context"
 	"encoding/json"
-	"fmt"
 	"sort"
 )
 
@@ -42,7 +43,8 @@ func (s *Service) chanRecordSubject(agent string) string {
 
 // channelRecord publishes the record for the granted channels; a service whose
 // Channels has no ids makes none. An error refuses the login, like the
-// attestation's: a credential without its record would look whole.
+// attestation's, but a failed publish only a warning: the login still
+// succeeds, and the session fails closed without the record (switch on).
 func (s *Service) channelRecord(ctx context.Context, a Attester, agent string, granted []string, iat, exp int64) error {
 	ci, ok := s.channels.(ChatIDs)
 	if !ok {
@@ -63,7 +65,7 @@ func (s *Service) channelRecord(ctx context.Context, a Attester, agent string, g
 		return err
 	}
 	if err := a.Publish(ctx, s.chanRecordSubject(agent), body); err != nil {
-		return fmt.Errorf("channel record: %w", err)
+		s.log.Warn("auth callout", "event", "channel record not published", "agent", agent, "reason", err.Error())
 	}
 	return nil
 }

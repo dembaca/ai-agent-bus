@@ -276,9 +276,9 @@ func TestTheCredentialWritesTheChannelRecordWithTheChatsIds(t *testing.T) {
 		t.Fatal(err)
 	}
 	for _, c := range []directory.Channel{
-		{Name: "home", Members: []string{"sub-alice"}, ChatIDs: map[string]string{"mattermost": "mmid-home"}},
+		{Name: "home", Members: []string{"sub-alice"}, ChatIDs: map[string]string{"mattermost": "homeidhomeidhomeidhomeid12"}},
 		{Name: "guest1", Members: []string{"sub-alice"}},
-		{Name: "secret", Members: []string{"someone-else"}, ChatIDs: map[string]string{"mattermost": "mmid-secret"}},
+		{Name: "secret", Members: []string{"someone-else"}, ChatIDs: map[string]string{"mattermost": "secretidsecretidsecretid12"}},
 	} {
 		if _, err := dir.PutChannel(ctx5(t), c, 0); err != nil {
 			t.Fatal(err)
@@ -292,7 +292,7 @@ func TestTheCredentialWritesTheChannelRecordWithTheChatsIds(t *testing.T) {
 		t.Fatal(err)
 	}
 	r := record()
-	if len(r.Channels) != 2 || r.Channels["home"] != "mmid-home" || r.Channels["guest1"] != "" {
+	if len(r.Channels) != 2 || r.Channels["home"] != "homeidhomeidhomeidhomeid12" || r.Channels["guest1"] != "" {
 		t.Fatalf("after the import: %+v", r)
 	}
 	if _, ok := r.Channels["secret"]; ok {
@@ -301,4 +301,23 @@ func TestTheCredentialWritesTheChannelRecordWithTheChatsIds(t *testing.T) {
 	if err := a.nc.Publish("presence.directory."+a.name+".v1", []byte("{}")); err != nil || !a.denied(t) {
 		t.Fatalf("an agent may publish its channel record (%v)", err)
 	}
+}
+
+// A record that cannot be published is a warning, not a refused login: the session
+// (switch on) then fails closed for lack of the record.
+func TestAFailedChannelRecordPublishIsAWarningNotARefusedLogin(t *testing.T) {
+	l := newLab(t)
+	f := &fakeAttester{failOn: ".directory."}
+	l.svc.SetAttester(f)
+	l.svc.channels = chatIDsChannels{l.svc.channels}
+	if _, err := l.connect("alice", l.realm.Token("alice", nil), Hello{Home: "home"}, nil); err != nil {
+		t.Fatalf("the login was refused: %v", err)
+	}
+}
+
+// chatIDsChannels gives any Channels the ChatIDs lookup, with no ids.
+type chatIDsChannels struct{ Channels }
+
+func (chatIDsChannels) ChatIDs(_ context.Context, _ string, _ []string) (map[string]string, error) {
+	return map[string]string{}, nil
 }

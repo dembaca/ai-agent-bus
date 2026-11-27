@@ -89,12 +89,6 @@ join_guest() {
   return 1
 }
 
-# Plan B piece 1 (ADR-014 phase 5, RT-6.39 step 6) is on while CB_PLANB_TEST names it
-# (comma-separated piece numbers; the same stub as mcp/.../planb.py, for tests).
-planb_on() {
-  case ",${CB_PLANB_TEST:-}," in *",$1,"*) return 0 ;; *) return 1 ;; esac
-}
-
 case "$CMD" in
   resolve)
     TEAM="$(mm_team)"
@@ -104,23 +98,6 @@ case "$CMD" in
     while IFS= read -r entry; do
       if [[ -z "$PROJECT" ]]; then PROJECT="$entry"; else GUESTS+=("$entry"); fi
     done < <(mm_project_channels)
-
-    # Piece 1 on: the channels and their ids come with the NATS credential from the
-    # channel directory (the MCP server reads them there). Nothing is read from or
-    # joined in Mattermost; the names stay as set, the ids are left empty.
-    if planb_on 1; then
-      OUT=""
-      if [[ -n "$PROJECT" ]]; then
-        LIST="$PROJECT"
-        for guest in "${GUESTS[@]+"${GUESTS[@]}"}"; do LIST+=",${guest}"; done
-        OUT="export CB_MM_PROJECT_CHANNEL=$(printf '%q' "$LIST")"
-      fi
-      if [[ -n "$OUT" ]]; then
-        printf '%s\n%s\n' "$OUT" "${OUT//export CB_MM_/export MM_}"
-      fi
-      echo "channels from the channel directory (plan B piece 1): lobby #${CHANNEL}${PROJECT:+, home #${PROJECT}}; nothing joined in Mattermost" >&2
-      exit 0
-    fi
 
     mm_api GET "/api/v4/users/me"
     [[ "$CB_MM_API_STATUS" == "200" ]] ||

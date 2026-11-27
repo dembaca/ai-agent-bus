@@ -9,6 +9,8 @@ real nats-server (the rig of test_natsbus.py) for `NatsPort.resolve` and the rec
 
 import asyncio
 import json
+import re
+from pathlib import Path
 from typing import Any
 
 import pytest
@@ -141,3 +143,52 @@ async def test_with_the_switch_off_resolve_reads_mattermost_as_before(
         assert port.home_id == WORK and "work_channel_id" in inner.reads
     finally:
         await port.stop()
+
+
+def test_the_record_limit_is_the_login_services_grant() -> None:
+    """The home, the guests and the lobby: callout.MaxGuests + 2 (services/auth/internal/callout/service.go)."""
+    src = (Path(__file__).resolve().parents[2] / "services/auth/internal/callout/service.go").read_text()
+    m = re.search(r"MaxGuests\s*=\s*(\d+)", src)
+    assert m is not None
+    assert natsbus.MAX_GUESTS == int(m.group(1))
+    assert natsbus.MAX_CHANNEL_RECORD == int(m.group(1)) + 2 == 18
+    chans = {f"c{i}": "" for i in range(18)}
+    assert len(decode_channel_record(_body(channels=chans), "agent-a")) == 18
+    with pytest.raises(MessageError):
+        decode_channel_record(_body(channels={f"c{i}": "" for i in range(19)}), "agent-a")
+
+
+async def test_resolve_before_the_switch_is_known_keeps_no_mattermost_ids(
+        rig: Rig, monkeypatch: pytest.MonkeyPatch) -> None:
+    """The real switch is known only once the bus is up: before, resolve reads Mattermost for
+    the answer but caches nothing; after the bus is up it caches as before."""
+    monkeypatch.delenv("CB_PLANB_TEST", raising=False)
+    monkeypatch.setattr(planb, "known", lambda: False)
+    inner = NoMattermost(FakeRegistrar())
+    port = _port(rig, inner)
+    assert await port.resolve() == {"home": WORK}
+    assert port._ids is None  # nothing cached: the directory's ids may be the ones to use
+    await _login_service(rig.admin, rig.names["alice"], ["home"], {})
+    await port.start(rig.logins["alice"], owner="alice")  # switch off once read: Mattermost's ids, kept
+    try:
+        assert port._ids == {"home": WORK} and port.home_id == WORK
+    finally:
+        await port.stop()
+
+
+async def test_a_record_past_its_exp_is_ignored(rig: Rig, monkeypatch: pytest.MonkeyPatch) -> None:
+    monkeypatch.setenv("CB_PLANB_TEST", "1")
+    await _login_service(rig.admin, rig.names["alice"], ["home"], {})
+    name = rig.names["alice"]
+    old = json.dumps({"v": 1, "agent": name, "channels": {"home": DIRECTORY_ID}, "iat": 1, "exp": 5}).encode()
+    await rig.admin.publish(f"presence.directory.{name}.v1", old)
+    await rig.admin.flush()
+    bus = natsbus.NatsBus(NatsSettings(servers=(rig.url,), home="home"), rig.logins["alice"], "alice",
+                          lambda _e: None, heartbeat_sec=0.2)
+    await bus.start()
+    try:
+        assert await bus.wait_channel_ids(1.0) is None
+        await _record(rig, "alice", {"home": DIRECTORY_ID})
+        assert await bus.wait_channel_ids(10.0) == {"home": DIRECTORY_ID}
+    finally:
+        await bus.stop()

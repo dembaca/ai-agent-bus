@@ -13,6 +13,7 @@ import (
 	"errors"
 	"fmt"
 	"io"
+	"maps"
 	"net"
 	"net/http"
 	"net/url"
@@ -240,6 +241,8 @@ func (c *cli) check(pos []string) error {
 		return need(1, true)
 	case "owner":
 		return need(2, true)
+	case "chat-id":
+		return need(3, true)
 	case "public":
 		if err := need(2, true); err != nil {
 			return err
@@ -714,19 +717,30 @@ func (c *cli) command(pos []string) error {
 			return err
 		}
 		return c.printChannel(r)
-	case "owner", "public":
+	case "owner", "public", "chat-id":
 		path := "/v1/directory/channels/" + esc(pos[1])
 		cur, ch, err := c.read(path)
 		if err != nil {
 			return err
 		}
 		b := putBody{Owner: ch.Owner, Public: ch.Public, Bindings: ch.Bindings, ChatIDs: ch.ChatIDs}
-		if pos[0] == "owner" {
+		switch pos[0] {
+		case "owner":
 			b.Owner = pos[2]
 			if pos[2] == "-" {
 				b.Owner = ""
 			}
-		} else {
+		case "chat-id": // chat-id <channel> <product> <id>; "-" as the id removes it
+			b.ChatIDs = maps.Clone(ch.ChatIDs)
+			if b.ChatIDs == nil {
+				b.ChatIDs = map[string]string{}
+			}
+			if pos[3] == "-" {
+				delete(b.ChatIDs, pos[2])
+			} else {
+				b.ChatIDs[pos[2]] = pos[3]
+			}
+		default:
 			b.Public = pos[2] == "on"
 		}
 		r, err := c.call("PUT", path, map[string]string{"If-Match": cur.etag}, b)

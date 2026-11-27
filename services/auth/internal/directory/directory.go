@@ -333,6 +333,12 @@ func (s *Store) Channel(ctx context.Context, name string) (Channel, uint64, bool
 	return c, rev, ok, err
 }
 
+// chatIDRe is a Mattermost id: 26 characters of a-z0-9.
+var chatIDRe = regexp.MustCompile(`^[a-z0-9]{26}$`)
+
+// ValidChatID reports whether id is a Mattermost id (26 characters, a-z0-9).
+func ValidChatID(id string) bool { return chatIDRe.MatchString(id) }
+
 // PutChannel writes a channel over revision rev (0: a new one).
 func (s *Store) PutChannel(ctx context.Context, c Channel, rev uint64) (uint64, error) {
 	if err := checkChannel(c.Name); err != nil {
@@ -356,6 +362,11 @@ func (s *Store) PutChannel(ctx context.Context, c Channel, rev uint64) (uint64, 
 		return 0, err
 	}
 	c.PlanB = pieces
+	for product, id := range c.ChatIDs {
+		if product != "mattermost" || !ValidChatID(id) {
+			return 0, fmt.Errorf("%w: chat id %.64q for product %.32q (only mattermost, 26 characters a-z0-9)", ErrBadKey, id, product)
+		}
+	}
 	return s.put(ctx, channelPrefix+c.Name, c, rev)
 }
 

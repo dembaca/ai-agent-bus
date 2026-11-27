@@ -4201,13 +4201,14 @@ reads yet (RT-6.39 step 5).
      - Switch: channels from the directory. Way back: Mattermost's ids
        again; nothing in flight.
      - Built (after 0.104.0): the directory's channel carries the chat's
-       own id (`chat_ids`, set by the import and the admin API), the login
+       own id (`chat_ids`, set by the import, the admin API and `authd dir
+       chat-id`, checked on write), the login
        service writes it into the agent's channel record
        `<presence>.directory.<agent>.v1` with each credential, and the
        session reads it from there (RT-6.39 step 6); the binding itself
        stays the chat's channel name, so the id is a field of its own. The
        switch is `planb.on(1, channel)`, the channel's plan B switch for
-       piece 1 (RT-6.39 step 5), off by default. Not
+       piece 1 (RT-6.39 step 6), off by default. Not
        moved with it, as they are other pieces' reads: the bot's own
        Mattermost id and name (the roster, piece 2) and the join of a guest
        or the lobby by a person.
