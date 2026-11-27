@@ -223,3 +223,33 @@ func TestNoAgentMayPublishAnImportedStatsLine(t *testing.T) {
 		}
 	}
 }
+
+// Direct messages between agents (ADR-014 phase 5, piece 3; RT-6.36 step 7): an
+// agent may send to any recipient's direct subject under its own name - the
+// recipient token is a wildcard - and may read only its own deliver subjects.
+// So a third agent can neither publish a DM under another's name nor read a DM
+// between two others; it can only be the recipient of one addressed to it.
+func TestAnAgentMaySendADirectMessageToAnyAgentAndReadOnlyItsOwn(t *testing.T) {
+	s := Subjects{Prefix: "bus", Presence: "presence"}
+	a := s.permissions("agent-a", "alice", "home", []string{"home"})
+	if !a.Pub.Allow.Contains("bus.dm.*.agent-a") {
+		t.Fatalf("no right to send a direct message: %v", a.Pub.Allow)
+	}
+	// The recipient is free (a DM to any agent), the sender is pinned.
+	if a.Pub.Allow.Contains("bus.dm.*.agent-b") || a.Pub.Allow.Contains("bus.dm.agent-a.*") {
+		t.Errorf("a direct-message right beyond its own name as sender: %v", a.Pub.Allow)
+	}
+	if !a.Sub.Allow.Contains("deliver.agent-a.>") {
+		t.Errorf("no right to read its own deliver subjects: %v", a.Sub.Allow)
+	}
+	for _, subject := range a.Sub.Allow {
+		if strings.Contains(subject, "deliver.agent-b") || strings.HasPrefix(subject, "bus.dm.") {
+			t.Errorf("another agent's direct message is readable: %s", subject)
+		}
+	}
+	// A second credential: the same wildcard recipient, its own sender token.
+	b := s.permissions("agent-b", "bob", "home", []string{"home"})
+	if !b.Pub.Allow.Contains("bus.dm.*.agent-b") || b.Pub.Allow.Contains("bus.dm.*.agent-a") {
+		t.Errorf("agent-b's direct-message rights: %v", b.Pub.Allow)
+	}
+}

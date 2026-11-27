@@ -26,6 +26,7 @@ from mattermost_ai_agent_bus.nats_port import (
     NatsEvents,
     NatsPort,
     NatsPortError,
+    dm_post_id,
     is_nats_user,
     parse_post_id,
     post_id,
@@ -67,6 +68,11 @@ class FakeNats:
         self.prefixes: dict[str, str] = {}  # channel -> the bot prefix its signal named (RT-6.36 step 4)
         self.accounts: dict[str, str] = {}  # Mattermost account -> anchor
         self.approvers: set[str] = set()  # anchors with a fresh approver record
+        # Plan B piece 3: dm_source is what use_bus sets (the home's switch, read for this
+        # agent's own presence); `dms` are the agents whose presence says their home runs
+        # agent DMs over NATS.
+        self.dm_source: Any = None
+        self.dms: set[str] = set()
 
     def link_bot(self, bot_id: str, username: str = "") -> None:
         self.linked_bot = bot_id
@@ -151,6 +157,14 @@ class FakeNats:
     async def unreact(self, channel: str, ref: int, emoji: str) -> None:
         self.sent.append(("unreact", channel, ref, emoji))
         await self._come_back(channel, Message("unreaction", ref=ref, emoji=emoji))
+
+    async def dm(self, recipient: str, text: str, root: int | None = None,
+                 props: dict[str, natsbus.Prop] | None = None) -> None:
+        """A direct message (plan B piece 3): no own copy comes back, as on the bus."""
+        self.sent.append(("dm", recipient, text, root, props))
+
+    def dm_of(self, agent: str) -> bool:
+        return agent in self.dms and self.presence_of(agent) != "offline"
 
 
 def _settings(**kw: Any) -> NatsSettings:
@@ -1925,6 +1939,48 @@ async def test_two_agents_in_a_nats_home_post_reply_react_and_unreact(rig: Rig) 
         await bob.stop()
 
 
+async def test_a_direct_message_goes_between_two_agents_over_nats(
+        rig: Rig, monkeypatch: pytest.MonkeyPatch) -> None:
+    """RT-6.36 step 7 (plan B piece 3): alice DMs bob's bot, and the DM travels on
+    `<bus>.dm.<bob>.<alice>` and reaches bob as a DM event with no channel. carol, the third
+    agent of the home, is not the recipient: her consumer carries only her own
+    `deliver.<carol>.dm`, so nothing of that DM reaches her."""
+    from mattermost_ai_agent_bus import nats_port
+
+    monkeypatch.setattr(nats_port.planb, "on", lambda piece, channel: piece == 3)  # the switch
+    alice, a_inner = await _agent(rig, "alice")
+    bob, b_inner = await _agent(rig, "bob")
+    carol, _ = await _agent(rig, "carol")
+    a_events, b_events, c_events = NatsEvents(alice), NatsEvents(bob), NatsEvents(carol)
+    for events in (a_events, b_events, c_events):
+        await events.open()
+    b_stream, c_stream = b_events.events(), c_events.events()
+    try:
+        bob_name, alice_name = rig.names["bob"], rig.names["alice"]
+        bob_bot = bob._bus.bot_of(bob_name) if bob._bus is not None else ""
+        assert bob_bot, "bob's presence names his bot, which the link needs"
+        a_inner.bots["bob-bot"] = ChannelUser(  # bob's bot, its status naming the name's tag
+            id=bob_bot, username="bob-bot",
+            custom_status={"text": f"working · ⇄{natsbus.link_tag(bob_name)} · ~home"})
+        await until(lambda: alice._bus is not None and alice._bus.dm_of(bob_name),
+                    what="bob's presence says his home runs agent DMs over NATS")
+        assert await alice.dm("bob-bot", "`PING` · hello") == bob_name
+        got = await asyncio.wait_for(b_stream.__anext__(), 5)
+        assert isinstance(got, PostEvent)
+        assert got.channel_type == "D" and got.post.channel_id == ""
+        assert (got.post.user_id, got.post.message) == (alice_name, "`PING` · hello")
+        assert got.post.id.startswith("n1:@dm:")
+        # the refused third agent: carol's own DM consumer never carries alice's DM to bob
+        with pytest.raises(asyncio.TimeoutError):
+            await asyncio.wait_for(c_stream.__anext__(), 1)
+        # and nothing of it went to Mattermost: the fake would have kept a post
+        assert not [p for p in a_inner.posted if "`PING` · hello" in str(p.get("message"))]
+    finally:
+        await alice.stop()
+        await bob.stop()
+        await carol.stop()
+
+
 # --- the link between a bot and its NATS name, and where a name is (RT-6.37) --------------------
 
 TAG_A = natsbus.link_tag("agent-" + "a" * 26)
@@ -2162,3 +2218,160 @@ async def test_the_bot_name_falls_back_to_the_environment_then_to_nothing(
     assert await port._bot_name() == "agent-mac-ai-agent-716d72"
     monkeypatch.delenv("CB_MM_BOT_USERNAME")
     assert await port._bot_name() == ""
+
+
+# --- direct messages between agents over NATS (plan B piece 3, RT-6.36 step 7) -------------------
+
+
+def _dm_switch(monkeypatch: pytest.MonkeyPatch, on: bool = True) -> None:
+    """The home's DM switch, `planb.on(3, home)`: piece 1 brings the channel directory's."""
+    from mattermost_ai_agent_bus import nats_port
+
+    monkeypatch.setattr(nats_port.planb, "on", lambda piece, channel: on and piece == 3)
+
+
+def _linked_bob(inner: Any, fake: FakeNats, *, flag: bool = True, tag: str = TAG_A,
+                name: str = NAME_A, bot: str = BOT_A) -> None:
+    """Bob as a sender needs him: his bot in the roster (its status names the tag), the fresh
+    name whose presence names that very bot, and the name's own DM flag."""
+    fake.presence[name] = "online"
+    fake.bots[name] = bot
+    if flag:
+        fake.dms.add(name)
+    inner.bots["bob-bot"] = ChannelUser(id=bot, username="bob-bot",
+                                        custom_status={"text": f"working · ⇄{tag} · ~home"})
+
+
+async def test_a_direct_message_arrives_as_a_dm_event(monkeypatch: pytest.MonkeyPatch) -> None:
+    """RT-6.36 step 7: a DM on `deliver.<name>.dm` wakes the agent as a DM, with no channel."""
+    _dm_switch(monkeypatch)
+    port, _, _ = make()
+    events = NatsEvents(port)
+    await events.open()
+    await arrive(port, natsbus.DM_SINCE, ALICE, 21,
+                 Message("post", "`TASK` · hello", props={"x_a2a_kind": "task"}))
+    got = events._queue.get_nowait()  # type: ignore[union-attr]
+    assert isinstance(got, PostEvent)
+    assert (got.channel_type, got.post.channel_id, got.post.id) == ("D", "", "n1:@dm:21")
+    assert (got.post.user_id, got.post.message, got.post.kind) == (ALICE, "`TASK` · hello", "TASK")
+
+
+async def test_a_direct_message_is_dropped_while_the_switch_is_off(monkeypatch: pytest.MonkeyPatch) -> None:
+    """Off, a DM event is dropped as it always was: the transport has DMs, the piece does not."""
+    _dm_switch(monkeypatch, on=False)
+    port, _, _ = make()
+    events = NatsEvents(port)
+    await events.open()
+    await arrive(port, natsbus.DM_SINCE, ALICE, 21, Message("post", "hello"))
+    assert events._queue is not None and events._queue.empty()
+
+
+async def test_a_dm_to_a_linked_agent_goes_over_nats(monkeypatch: pytest.MonkeyPatch) -> None:
+    """Plan B piece 3: the DM goes on `<bus>.dm.<recipient>.<sender>`, with the post's props,
+    and the recipient's name is the answer; there is no own copy and no id."""
+    _dm_switch(monkeypatch)
+    port, inner, fake = make()
+    assert fake is not None
+    _linked_bob(inner, fake)
+    where = await port.dm("@Bob-Bot", "`PING` · hello",
+                          props={"a2a": {"kind": "ping"}, "x_k": "v", "y_nope": 1})
+    assert where == NAME_A
+    kind, recipient, text, root, props = fake.sent[-1]
+    assert (kind, recipient, text, root) == ("dm", NAME_A, "`PING` · hello", None)
+    assert props == {"x_k": "v", "x_a2a_kind": "ping"}  # only the prefixed props: wire_props
+
+
+async def test_a_dm_stays_on_mattermost_where_the_switch_is_off(monkeypatch: pytest.MonkeyPatch) -> None:
+    _dm_switch(monkeypatch, on=False)
+    port, inner, fake = make()
+    assert fake is not None
+    _linked_bob(inner, fake)
+    assert await port.dm("bob-bot", "hello") == ""
+    assert not [sent for sent in fake.sent if sent[0] == "dm"]
+
+
+async def test_a_dm_stays_on_mattermost_for_a_recipient_not_on_nats(monkeypatch: pytest.MonkeyPatch) -> None:
+    """The recipient's own flag counts (ADR-014 phase 5, piece 3): a presence without it, an
+    absent or unlinked name, and an ambiguous tag all leave the DM on Mattermost."""
+    _dm_switch(monkeypatch)
+    port, inner, fake = make()
+    assert fake is not None
+    _linked_bob(inner, fake, flag=False)
+    assert await port.dm("bob-bot", "hello") == ""
+    fake.dms.add(NAME_A)
+    fake.bots[NAME_A] = BOT_B  # the presence names another bot: no link
+    assert await port.dm("bob-bot", "hello") == ""
+    fake.bots[NAME_A] = BOT_A
+    twin = "agent-" + "a" * 16 + "d" * 10  # the same tag, a second fresh name
+    fake.presence[twin] = "online"
+    fake.bots[twin] = BOT_A
+    fake.dms.add(twin)
+    assert await port.dm("bob-bot", "hello") == ""  # ambiguous: no link
+    assert not [sent for sent in fake.sent if sent[0] == "dm"]  # none of these left NATS
+    del fake.bots[twin], fake.presence[twin]
+    assert await port.dm("bob-bot", "hello") == NAME_A  # one name, linked and switched on
+
+
+async def test_a_dm_to_a_person_an_unknown_name_an_ask_or_a_thread_stays_on_mattermost(
+        monkeypatch: pytest.MonkeyPatch) -> None:
+    """Only a bot's DM can go over NATS; an ask is for people, files are, and a DM has no thread."""
+    _dm_switch(monkeypatch)
+    port, inner, fake = make()
+    assert fake is not None
+    _linked_bob(inner, fake)
+    assert await port.dm("dembaca", "hello") == ""  # a person: not in bots_named
+    assert await port.dm("nobody", "hello") == ""
+    assert await port.dm("bob-bot", "🙋 may I?") == ""  # an ask is for people
+    assert await port.dm("bob-bot", "hello", file_ids=["f1"]) == ""
+    assert await port.dm("bob-bot", "hello", root_id="n1:@dm:21") == ""
+    assert not [sent for sent in fake.sent if sent[0] == "dm"]
+
+
+async def test_a_reaction_to_a_direct_message_is_refused_and_not_sent_to_mattermost() -> None:
+    port, _, _ = make()
+    with pytest.raises(NatsPortError, match="not carried over NATS yet"):
+        await port.add_reaction(dm_post_id(41), "eyes")
+    with pytest.raises(NatsPortError, match="not carried over NATS yet"):
+        await port.remove_reaction(dm_post_id(41), "eyes")
+
+
+async def test_post_message_to_an_agent_goes_over_nats_and_reads_no_dm_channel(
+        monkeypatch: pytest.MonkeyPatch) -> None:
+    """RT-6.36 step 7 through the tool: `post_message(to=)` answers that it went over NATS,
+    and no Mattermost DM channel is read or posted into."""
+    import json
+
+    _dm_switch(monkeypatch)
+    port, inner, fake = make()
+    assert fake is not None
+    _linked_bob(inner, fake)
+
+    async def never(username: str) -> str:  # pragma: no cover — the NATS path never asks
+        raise AssertionError("a DM over NATS must not read a Mattermost DM channel")
+
+    monkeypatch.setattr(port, "direct_channel_with_bot", never, raising=False)
+    monkeypatch.setattr(server, "_get_client", lambda: port)
+    raw = await server.post_message("`PING` · hello", to="bob-bot")
+    out = json.loads(raw) if isinstance(raw, str) else raw
+    assert (out["posted"], out["over"], out["to"]) == (True, "nats", NAME_A)
+    assert fake.sent[-1][0] == "dm" and fake.sent[-1][1] == NAME_A
+    assert not inner.posted  # nothing went to Mattermost
+
+
+def test_a_direct_messages_id_says_it_has_no_channel() -> None:
+    """`n1:@dm:<seq>`: no channel's post can carry it, and no channel name can look like it."""
+    assert dm_post_id(41) == "n1:@dm:41"
+    assert parse_post_id(dm_post_id(41)) is None
+    assert dm_post_id(1) != dm_post_id(2)
+
+
+def test_the_presence_states_the_dm_flag_and_only_a_true_counts() -> None:
+    """The recipient's flag is self-stated by its own server, and off is the safe side."""
+    def read(body: bytes) -> bool:
+        return natsbus.decode_presence_dm(body)
+
+    assert read(natsbus.encode_presence("online", dm=True)) is True
+    assert read(natsbus.encode_presence("online")) is False
+    assert read(b'{"v":1,"status":"online","dm":"yes"}') is False  # only a literal true
+    assert read(b'{"v":1,"status":"online","dm":false}') is False
+    assert read(b"not json") is False
