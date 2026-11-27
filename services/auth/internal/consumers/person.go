@@ -40,8 +40,9 @@ const (
 )
 
 // PersonDeliverToken is the second token of every person's deliver subject.
-// No agent's name can be it: an agent's name is a prefix and 26 characters
-// of hash.
+// No agent's name can be it: the login service refuses a name equal to a
+// reserved token (callout.reservedNames, "person" among them) and one with
+// the person prefix; a hash alone never is one.
 const PersonDeliverToken = "person"
 
 var (

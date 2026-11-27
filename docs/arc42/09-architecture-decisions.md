@@ -3572,7 +3572,12 @@ separately.
       the sequence (JetStream's metadata, the server's). No `Nats-Msg-Id`
       (condition 1).
     - The host computes its own name like the login service (`agent-` and
-      the first 16 bytes of sha256 over owner and host nkey, base32); the
+      the first 16 bytes of sha256 over owner and host nkey, base32; since
+      #274 no prefix and the first 25 characters, RT-6.36 step 8; the
+      owner decided on 2026-11-27 for 25 characters, 125 bits, so that a
+      NATS name is never the length of a Mattermost id, and that `agent-`
+      moves to the bridge's bot names once registration ends, plan B piece
+      14, with no default until then); the
       name in the credential is the authority: when the server refuses the
       host's subscription to its own deliver subjects, the names differ,
       and the host stops with an error instead of sending (`NameMismatch`).
@@ -4267,9 +4272,21 @@ which each piece reads for itself.
        off, so a registrar's bot or a bridge bot whose record lapsed stays
        an agent, never a person. A cut makes the roster empty and tells nobody as
        gone (RT-6.21). The bridge, the login service and the session side
-       ship together. Not built: the state files keyed by the NATS name
-       (piece 2b), and the `testrig` measurand "nobody told as gone during
-       a cut" (see Test below).
+       ship together. Not built: the `testrig` measurand "nobody told as
+       gone during a cut" (see Test below).
+     - Built (piece 2b, after 0.104.0): the kept state keyed by the NATS
+       name, behind the same switch (RT-6.2 step 9). `last-`, `threads-` and
+       `unanswered-` (what only the MCP server reads) take the name as key
+       once the bus has it, copied once from the files keyed by the bot's
+       Mattermost id (marker `copied-<name>.env`), the source left in place;
+       the wake rule "your threads" reads the copy through the same key.
+       The key checks of `lease._file`, `askroute._path` and
+       `mm_bot_state_file` accept a NATS name beside a bot id. Left keyed by
+       the bot id: everything the shell scripts read (`listen-`, `update-`,
+       `presence-`, `coord-`, `turn-`), and the files of the asks, the
+       watermark, reminders, the gate, stats and the crown log, until piece
+       14; the sweep (`mm-agent-sweep.sh`) does not yet clean name-keyed
+       files.
      - Test: roster, link and names without a Mattermost read; `testrig`:
        nobody told as gone during a cut. Lab: each agent shows once, a
        mention of a gone agent is answered.
@@ -4726,7 +4743,8 @@ in the addition of 2026-11-25 at the end of this record: fifteen points for
 the owner, none of them built.
 
 The pilot's cards (fixed after the lab pilot, 2026-11-25): a card is keyed
-by the agent's name on the bus (`agent-` and a 26-character hash, the
+by the agent's name on the bus (a 25-character hash since #274, before it
+`agent-` and 26 characters; the
 presence subject's last token) and shows the bot's username the agent's
 presence states (`name` beside `bot`, RT-6.37 step 6), the name
 `coordinator("who")` shows; the bus name stays in the detail as "id on the
@@ -5016,7 +5034,7 @@ The console is the operators' view of the bus itself.
      another card states too, or one that is another card's name on the
      bus, shows with a "shared name" mark wherever the agent is named (the
      list, the detail, the asks, the Overview, the graph), never as a
-     confirmed name; the name on the bus (`agent-` and a hash) only in the
+     confirmed name; the name on the bus (a hash, RT-6.36 step 8) only in the
      title and the detail's facts, or where no name is stated at all (an
      older MCP server, a session without a Mattermost bot).
    - **On the row:** name with the crown, harness and model; the state, and

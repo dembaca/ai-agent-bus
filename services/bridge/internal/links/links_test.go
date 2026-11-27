@@ -13,7 +13,7 @@ type roster struct{ members []Member }
 func (r roster) Members(context.Context) ([]Member, error) { return r.members, nil }
 
 func TestShownAsNeedsTheTagAndAFreshPresence(t *testing.T) {
-	name := "agent-abcdefghijklmnopqrstuvwxyz"
+	name := "abcdefghijklmnopqrstuvwxy"
 	tag := presence.LinkTag(name)
 	snap := presence.New()
 	snap.Observed(name, "alice", "bot-1", presence.Online, time.Now())

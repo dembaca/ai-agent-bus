@@ -26,7 +26,7 @@ from dataclasses import dataclass, field
 from typing import Any, Callable, Collection
 
 from mattermost_ai_agent_bus import stats
-from mattermost_ai_agent_bus.natsbus import AGENT_RE, parse_ack
+from mattermost_ai_agent_bus.natsbus import agent_ok, parse_ack
 
 log = logging.getLogger(__name__)
 
@@ -67,7 +67,7 @@ class StatsBook:
         if ack.stream_seq in self._seqs:
             return False  # a replay after a reconnect: this line is held already
         t = subject.split(".")
-        if len(t) != 2 or t[0] != self.stats_subject or not AGENT_RE.fullmatch(t[1]):
+        if len(t) != 2 or t[0] != self.stats_subject or not agent_ok(t[1]):
             return False
         try:
             line = stats.decode_line(data)

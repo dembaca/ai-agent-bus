@@ -26,7 +26,7 @@ const (
 
 // MetricsDeliver is the deliver subject of one of the service's consumers
 // ("presence" or "stats"): deliver.metrics.<what>. The token cannot be an
-// agent's name (PersonDeliverToken's rule: a name is a prefix and a hash),
+// agent's name (PersonDeliverToken's rule: the reserved list is the guarantee),
 // and it is no person's login either.
 func MetricsDeliver(what string) string {
 	return DeliverPrefix + ".metrics." + what

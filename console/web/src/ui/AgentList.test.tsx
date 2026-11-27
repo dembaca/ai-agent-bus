@@ -23,14 +23,14 @@ const noop = () => {}
 describe("the pages", () => {
   it("shows the stated name, a shared one with its mark, the bus id in the title (#199)", async () => {
     const { cards } = await fleet()
-    const shared: AgentCard = { ...cards[0], name: "agent-oudzj4bhpl62iahctur5s5sf44",
-      displayName: "agent-oudzj4bhpl62iahctur5s5sf44", statedName: "agent-same", nameShared: true }
+    const shared: AgentCard = { ...cards[0], name: "oudzj4bhpl62iahctur5s5sf4",
+      displayName: "oudzj4bhpl62iahctur5s5sf4", statedName: "agent-same", nameShared: true }
     const html = renderToStaticMarkup(
       <AgentList cards={[shared]} asks={[]} filter="all" onFilter={noop} query="" onQuery={noop}
         onOpenAgent={noop} onOpenAsk={noop} onAllAsks={noop} />)
     expect(html).toContain(">agent-same</button>")
     expect(html).toContain("shared name")
-    expect(html).toContain('title="agent-oudzj4bhpl62iahctur5s5sf44 · another agent states this name too: not confirmed"')
+    expect(html).toContain('title="oudzj4bhpl62iahctur5s5sf4 · another agent states this name too: not confirmed"')
   })
 
   it("keeps four columns beside an open detail and marks the open agent (#200)", async () => {

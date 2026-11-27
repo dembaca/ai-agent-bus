@@ -8,12 +8,12 @@ import "testing"
 func TestNameVector(t *testing.T) {
 	const nkey = "UDXU4RCSJNZOIQHZNWXHXORDPRTGNJAHAHFRGZNEEJCPQTT2M7NLCNF4"
 	got := name("alice", nkey, "")
-	if got != "7jdioaymoy77vybfzcvze3fc4u" {
+	if got != "7jdioaymoy77vybfzcvze3fc4" {
 		t.Fatalf("name = %q", got)
 	}
 	// A session part (#163, RT-6.36): two sessions of one owner on one shared host key
 	// are two names; the MCP server's vector is the same.
-	if got := name("alice", nkey, "abcdefghijklmnopqrstuvwxyz"); got != "eadecaajdhhzsahypvqfemgypy" {
+	if got := name("alice", nkey, "abcdefghijklmnopqrstuvwxyz"); got != "eadecaajdhhzsahypvqfemgyp" {
 		t.Fatalf("name with session = %q", got)
 	}
 }

@@ -109,6 +109,7 @@ import contextlib
 import dataclasses
 import json
 import logging
+import re
 from pathlib import Path
 import re
 import secrets
@@ -282,10 +283,16 @@ def parse_dm_id(value: str) -> int | None:
     return dm_seq(value)
 
 
+_HASH_PART = re.compile(rf"[a-z2-7]{{{natsbus.NAME_HASH_LEN}}}")  # an agent name's end (#274)
+
+
 def is_nats_user(user_id: str) -> bool:
-    """The author id of a post that came over NATS: an agent name, which has a "-".
-    No Mattermost user id (26 characters of [a-z0-9]) is one."""
-    return "-" in user_id and natsbus.AGENT_RE.fullmatch(user_id) is not None and not _ID.fullmatch(user_id)
+    """The author id of a post that came over NATS: an agent name (natsbus.agent_ok) that ends
+    in its hash part, NAME_HASH_LEN (25) characters of base32, so that no name, with or
+    without a prefix (none since #274), is a Mattermost user id (26 characters of [a-z0-9])
+    or a name that the login service never issues."""
+    return (natsbus.agent_ok(user_id) and _HASH_PART.fullmatch(user_id[-natsbus.NAME_HASH_LEN:]) is not None
+            and not _ID.fullmatch(user_id))
 
 
 def person_id(anchor: str) -> str:
@@ -876,6 +883,10 @@ class NatsPort:
         RT-6.37 step 6)."""
         return any(planb.on(2, name) for name in self._homes)
 
+    def home_name(self) -> str:
+        """The home that runs over NATS where plan B piece 2 is on (the first one), else ''."""
+        return next((h for h in self._homes if planb.on(2, h)), "")
+
     def _bots2(self) -> dict[str, tuple[str, natsbus.BotRecord]]:
         """Mattermost bot id -> (NATS name, record) of the fresh bot records of the bridge whose
         username is the bridge's prefix (its signal's, RT-6.36 step 4) plus the name and whose
@@ -1408,7 +1419,7 @@ class NatsPort:
             log.debug("nats: dropped a message outside the NATS homes (%s)", ev.where)
             return
         if not is_nats_user(ev.sender):
-            log.warning("nats: dropped a message of %r: an agent name has a '-'", ev.sender[:40])
+            log.warning("nats: dropped a message of %r: no agent name", ev.sender[:40])
             return
         if dm:
             # A direct message between agents (plan B piece 3): the transport delivers it on

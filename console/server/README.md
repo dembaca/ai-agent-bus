@@ -109,7 +109,7 @@ confirmed only while no other card states it too and it is no other card's
 bus name (full or short), else the short bus name.
 Beside it, `statedName` carries the stated username even when it is shared,
 and `nameShared` says so (#199): the web shows the name with a "shared
-name" mark instead of the bare bus id (`agent-` and a hash), never as a
+name" mark instead of the bare bus id (a 25-character hash), never as a
 confirmed name. `statedName` is `""` when the presence states none.
 
 Each card names its `home` and, beside it, its `guests`: the channels its

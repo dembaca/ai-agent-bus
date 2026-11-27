@@ -128,14 +128,15 @@ def consumer_specs(agent: str, channels: list[str],
     return out
 
 
-def agent_name(owner: str, public_key: str, prefix: str = "agent-") -> str:
+def agent_name(owner: str, public_key: str, prefix: str = "") -> str:
     """The agent's NATS name, as `natsbus.agent_name` computes it for an unshared key
     (and Go `name()` in services/auth/internal/callout/service.go): SHA-256 over
-    owner, NUL, host nkey; the first 16 bytes as lower-case base32 without padding.
+    owner, NUL, host nkey; the first 16 bytes as lower-case base32 without padding,
+    of which the first 25 characters, no prefix (#274).
     A copy: the rig needs the name for the config before any session runs. A drift
     makes every session fail with `NameMismatch` or a refused publish."""
     digest = hashlib.sha256(owner.encode() + b"\x00" + public_key.encode()).digest()[:16]
-    return prefix + base64.b32encode(digest).decode().lower().rstrip("=")
+    return prefix + base64.b32encode(digest).decode().lower().rstrip("=")[:25]
 
 
 def user_entry(public_key: str, name: str, channel: str = HOME, owner: str = OWNER) -> str:

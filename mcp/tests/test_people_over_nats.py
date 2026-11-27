@@ -273,7 +273,7 @@ async def test_a_persons_post_over_nats_keeps_its_mattermost_id_and_comes_once()
     assert await port.skip(PostEvent(post=Post(id="e" * 26, channel_id=WORK, user_id=HUMAN, message="hi"),
                                      channel_type=None, edited=False))  # not switched: the key drops it
     fake.switched.add("home")
-    await arrive(port, "home", "agent-alice", 30, Message("post", "a root"))
+    await arrive(port, "home", "alice" + "a" * 20, 30, Message("post", "a root"))
     _queued(ev)
     await port._on_person(_person("home", "dembaca", 31, PersonMessage("post", MM1, "dembaca", text="go",
                                                                        mm_root=MM2, root=30)))
@@ -571,7 +571,7 @@ async def test_a_reaction_on_a_nats_post_reads_back_not_approver() -> None:
     assert fake is not None
     fake.attestations[ME] = _att()
     fake.switched.add("home")
-    await arrive(port, "home", "agent-alice", 30, Message("post", "a NATS post"))
+    await arrive(port, "home", "alice" + "a" * 20, 30, Message("post", "a NATS post"))
     await port._on_person(_person("home", "dembaca", 31, PersonMessage("reaction", MM2, "dembaca",
                                                                        emoji="+1", ref=30)))
     (post,) = [p for p in await port.channel_posts(WORK) if p.id == "n1:home:30"]

@@ -32,8 +32,8 @@ VISITOR = "v" * 26    # a person bound to u9, whom this session does not trust
 LOOSE = "l" * 26      # an account without a record
 PEERBOT = "p" * 26    # a registrar bot of a peer agent, linked to NAME_A
 FARBOT = "f" * 26     # a registrar bot of another owner's agent, linked to NAME_B
-NAME_A = "agent-" + "a" * 26
-NAME_B = "agent-" + "b" * 26
+NAME_A = "a" * 25
+NAME_B = "b" * 25
 ALICE = (("u1", "alice"),)
 
 

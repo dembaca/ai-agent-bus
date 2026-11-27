@@ -79,7 +79,7 @@ describe("the agents list's filter", () => {
 })
 
 describe("an agent's name (#199)", () => {
-  const nats = "agent-oudzj4bhpl62iahctur5s5sf44"
+  const nats = "oudzj4bhpl62iahctur5s5sf4"
 
   it("is the name its presence states, the bus id only for the title", () => {
     const c = card(nats, "working", { displayName: "agent-himalia-772844", statedName: "agent-himalia-772844" })
