@@ -5,19 +5,6 @@ before 0.5.0 are described in the git history.
 
 ## Unreleased
 
-### Fixed
-
-- **A tool's HTTP failure names its status** (#263, RT-6.11). An `httpx.HTTPStatusError`
-  was hidden whole, since its text carries the URL, so a failed `session_start` read as
-  `HTTPStatusError (details hidden…)` with no status, method or host, and a stale
-  registration secret could not be told from any other cause. The line is now built from
-  the parts that are never a credential - the status and its reason, the method, and the
-  URL's scheme, host and path - while the query, the userinfo and the body stay hidden;
-  a 403 from the registrar adds that the registration secret was refused and names
-  `MM_REG_SECRET` and an enrollment token.
-
-### Fixed
-
 - **A direct message over NATS is answerable in every case** (#258, plan B piece 3,
   RT-6.36 step 7). `get_thread` on a DM's id refuses it in the same words `reply_in_thread`
   uses - answer it with `post_message(to=<its sender, as shown_as>)` - instead of a bare
@@ -150,6 +137,16 @@ before 0.5.0 are described in the git history.
 
 ### Fixed
 
+- **A tool's HTTP failure names its status** (#263, RT-6.11). An `httpx.HTTPStatusError`
+  was hidden whole, since its text carries the URL, so a failed `session_start` read as
+  `HTTPStatusError (details hidden…)` with no status, method or host, and a stale
+  registration secret could not be told from any other cause. The line now shows the
+  status, the method, the URL's scheme, host and path and the reason phrase, while the
+  query, the userinfo and the body stay hidden; the method, the path (also URL-decoded)
+  and the reason are as free as any other message, so a token in one of them hides all of
+  it but the status and the host. A 403 from the registrar (`MM_REGISTER_URL`, else the
+  chat host's `/register/v1/agents`) adds that the registration secret was refused and
+  names `MM_REG_SECRET` and an enrollment token.
 - **An end-to-end test for the NATS read mark's seed** (#238, RT-6.36 step 4):
   a first backfill whose read fails seeds nothing, the next one reads the lane
   from its start, and after a kill the older post is asked for again. Test only.

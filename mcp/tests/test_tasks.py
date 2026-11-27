@@ -771,21 +771,24 @@ def test_a_cause_that_may_hold_a_credential_names_the_type_only():
         assert "details hidden" not in srv._cause_text(RuntimeError(text)), text
 
 
-def test_a_http_status_error_names_the_status_and_hides_the_query_and_body():
+def test_a_http_status_error_names_the_status_and_hides_the_query_and_body(monkeypatch):
     """RT-6.11 step 1, #263: the parts of an httpx error that are never a credential stay
     readable - the status, the method, the URL's scheme, host and path - so a 403 from the
-    registrar reads as one; the query, the userinfo and the body stay out."""
+    registrar reads as one. The query, the userinfo and the body stay out; the method, the
+    path (also decoded) and the reason phrase are guarded like any other message."""
     import httpx
 
     from mattermost_ai_agent_bus import server as srv
 
+    monkeypatch.setenv("CB_MM_CHAT_URL", "https://chat.example.org")
+    monkeypatch.delenv("MM_REGISTER_URL", raising=False)
     req = httpx.Request("POST", "https://chat.example.org/register/v1/agents?token=SECRETSECRET",
                         headers={"Authorization": "Bearer SECRETSECRET"})
-    exc = httpx.HTTPStatusError("Client error '403 Forbidden' for url 'https://chat.example.org/register/v1/agents'",
-                                request=req, response=httpx.Response(403, request=req))
+    exc = httpx.HTTPStatusError("Client error '403 Forbidden'", request=req,
+                                response=httpx.Response(403, request=req))
     got = srv._cause_text(exc)
     assert got.startswith("HTTPStatusError 403 Forbidden (POST https://chat.example.org/register/v1/agents)")
-    assert "SECRETSECRET" not in got and "token=" not in got and "?token" not in got
+    assert "SECRETSECRET" not in got and "?token" not in got
     assert "registration secret was refused" in got and "MM_REG_SECRET" in got
 
     # another host or path: no registrar hint, and userinfo and query stay out
@@ -794,10 +797,60 @@ def test_a_http_status_error_names_the_status_and_hides_the_query_and_body():
                                                 response=httpx.Response(404, request=other)))
     assert got == "HTTPStatusError 404 Not Found (GET https://chat.example.org/api/v4/posts)"
     assert "hunter2" not in got and "?k=v" not in got
-    # a 403 elsewhere is no registrar 403
-    got = srv._cause_text(httpx.HTTPStatusError("x", request=other,
-                                                response=httpx.Response(403, request=other)))
-    assert "registration secret" not in got
+    # a 403 elsewhere is no registrar 403, and another host's /register/ is none either
+    for url in ("https://chat.example.org/api/v4/posts", "https://evil.example/register/v1/agents"):
+        req = httpx.Request("POST", url)
+        got = srv._cause_text(httpx.HTTPStatusError("x", request=req,
+                                                    response=httpx.Response(403, request=req)))
+        assert "registration secret" not in got, got
+    # MM_REGISTER_URL names the registrar, whatever its path
+    monkeypatch.setenv("MM_REGISTER_URL", "https://reg.example/agents")
+    req = httpx.Request("POST", "https://reg.example/agents")
+    got = srv._cause_text(httpx.HTTPStatusError("x", request=req,
+                                                response=httpx.Response(403, request=req)))
+    assert "registration secret" in got
+
+
+def test_a_token_in_the_path_method_or_reason_hides_the_whole_line(monkeypatch):
+    """#263: a path can carry a token (`/hooks/<token>`, also URL-encoded), and the method
+    and the reason phrase are free text: any of them hides all of it but status and host."""
+    from types import SimpleNamespace
+
+    import httpx
+
+    from mattermost_ai_agent_bus import server as srv
+
+    monkeypatch.setenv("CB_MM_CHAT_URL", "https://chat.example.org")
+    for path in ("/hooks/SECRETSECRET", "/hooks/SECRET%53ECRET"):
+        req = httpx.Request("GET", "https://chat.example.org" + path)
+        got = srv._cause_text(httpx.HTTPStatusError("x", request=req,
+                                                    response=httpx.Response(404, request=req)))
+        assert got == "HTTPStatusError 404 https://chat.example.org", got
+    for method, reason in (("POST token=SECRETSECRET", "Not Found"), ("GET", "token=SECRETSECRET")):
+        req = httpx.Request("GET", "https://chat.example.org/x")
+        cause = httpx.HTTPStatusError("x", request=req, response=httpx.Response(404, request=req))
+        cause.request = SimpleNamespace(method=method, url="https://chat.example.org/x")
+        cause.response = SimpleNamespace(status_code=404, reason_phrase=reason)
+        got = srv._cause_text(cause)
+        assert got == "HTTPStatusError 404 https://chat.example.org", got
+    # a 3xx shows the status, the reason and the path, never the body or a Location header
+    req = httpx.Request("GET", "https://chat.example.org/x")
+    got = srv._cause_text(httpx.HTTPStatusError("x", request=req, response=httpx.Response(
+        302, request=req, headers={"Location": "https://chat.example.org/?token=SECRETSECRET"})))
+    assert got == "HTTPStatusError 302 Found (GET https://chat.example.org/x)"
+    assert "SECRETSECRET" not in got
+
+
+def test_a_class_merely_named_http_status_error_is_no_http_cause():
+    """#263: the class is httpx's, checked with `isinstance` - a look-alike keeps the old path."""
+    from mattermost_ai_agent_bus import server as srv
+
+    class HTTPStatusError(Exception):
+        request = type("R", (), {"method": "GET", "url": "https://chat.example.org/x"})()
+        response = type("P", (), {"status_code": 403, "reason_phrase": "Forbidden"})()
+
+    got = srv._cause_text(HTTPStatusError("boom"))
+    assert got == "HTTPStatusError: boom"
 
 
 def test_a_cause_is_one_bounded_line():

@@ -13,11 +13,11 @@ import signal
 import sys
 import threading
 import time
-from urllib.parse import urlsplit
 from collections.abc import AsyncIterator, Callable, Mapping
 from contextlib import asynccontextmanager
 from pathlib import Path
 from typing import Any
+from urllib.parse import unquote, urlsplit
 
 from mcp.server.mcpserver import Image, MCPServer
 from mcp.server.mcpserver.exceptions import ToolError, UnexpectedToolError
@@ -522,35 +522,41 @@ def _cause_text(cause: BaseException) -> str:
 def _http_cause(cause: BaseException) -> str | None:
     """The one-line cause of an `httpx.HTTPStatusError`, None for any other crash.
 
-    The server talks no HTTP (RT-6.11 step 1, #263, and the boundary test), so this is read
-    off the error's parts by name: the status and its reason, the method, and the URL's scheme,
-    host and path - never the query, the userinfo or the body. A 403 from the registrar says
-    what it means, since that is the registration secret."""
-    if type(cause).__name__ != "HTTPStatusError":
+    The server talks no HTTP (the adapter boundary test), so the class is looked up in the
+    loaded modules and checked with `isinstance` - no class that merely has the name counts.
+    The status and the host are shown as they are; the method, the path and the reason phrase
+    are as free as any other message and are guarded like one (a path may carry a token:
+    `/hooks/<token>`, also URL-encoded), which falls back to the type, the status and the host
+    (#263). The query, the userinfo and the body stay out. The registrar's hint comes after
+    the guard, since the hint itself says "secret"."""
+    library = sys.modules.get("httpx")
+    status_error = getattr(library, "HTTPStatusError", ()) if library is not None else ()
+    if not status_error or not isinstance(cause, status_error):
         return None
-    request, response = getattr(cause, "request", None), getattr(cause, "response", None)
-    url, status = getattr(request, "url", None), getattr(response, "status_code", None)
-    method = getattr(request, "method", "")
-    scheme, host, path = (getattr(url, part, "") for part in ("scheme", "host", "path"))
+    request, response = cause.request, cause.response
+    status = getattr(response, "status_code", None)
+    target = urlsplit(str(getattr(request, "url", "")))
+    scheme, host, path = target.scheme, target.hostname or "", target.path
     if not (status and host):
         return None
-    line = (f"{type(cause).__name__} {status} {getattr(response, 'reason_phrase', '')} "
-            f"({method} {scheme}://{host}{path})")
-    line = " ".join(line.split())
-    if status == 403 and _is_registrar(str(host), str(path), str(scheme)):
-        line += (" - the registration secret was refused: refresh MM_REG_SECRET or use an "
-                 "enrollment token")
+    method = str(getattr(request, "method", "") or "")
+    reason = str(getattr(response, "reason_phrase", "") or "")
+    if _SECRETISH.search(method) or _SECRETISH.search(path) or _SECRETISH.search(unquote(path)) \
+            or _SECRETISH.search(reason):
+        line = f"{type(cause).__name__} {status} {scheme}://{host}"
+    else:
+        line = " ".join(f"{type(cause).__name__} {status} {reason} ({method} {scheme}://{host}{path})".split())
+        if status == 403 and _is_registrar(scheme, host, path):
+            line += (" - the registration secret was refused: refresh MM_REG_SECRET or use an "
+                     "enrollment token")
     return line[:CAUSE_MAX] + ("…" if len(line) > CAUSE_MAX else "")
 
 
-def _is_registrar(host: str, path: str, scheme: str) -> bool:
-    """Whether a URL is the registrar's (`MM_REGISTER_URL`, else `<chat>/register/v1/agents`):
-    a 403 there is the registration secret, so its hint is worth more than the status alone."""
-    if path.startswith("/register/"):
-        return True
-    given = config.env("MM_REGISTER_URL")
-    if not given:
-        return False
+def _is_registrar(scheme: str, host: str, path: str) -> bool:
+    """Whether a URL is the registrar's - `MM_REGISTER_URL`'s scheme, host and path, else the
+    chat host's `/register/v1/agents`: a 403 there is the registration secret, so its hint is
+    worth more than the status alone. Another host's `/register/…` names nobody."""
+    given = config.env("MM_REGISTER_URL") or f"{config.env('CB_MM_CHAT_URL') or ''}/register/v1/agents"
     try:
         reg = urlsplit(given)
     except Exception:  # noqa: BLE001 — a malformed setting names nothing
