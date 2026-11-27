@@ -54,13 +54,27 @@ type Seen interface {
 }
 
 // Anchors maps a Mattermost account to an anchor, "" when unbound
-// (Accounts.Bound): by its id, and only while it logs in as its binding was
-// proven (#266). No home carries before CaughtUp: until the records are read,
+// (Accounts): by the account record alone (Anchor), or, in a home with plan
+// B piece 4 on, only while the account logs in as its binding was proven
+// (Bound, #266). No home carries before CaughtUp: until the records are read,
 // a bound person would go out under "-".
 type Anchors interface {
+	Anchor(userID string) string
 	Bound(userID, authService, authData string) string
 	CaughtUp() bool
 }
+
+// Switches are plan B's switches per channel (presence.Switches, from the
+// bridge's own consumer bridge_planb; a record older than two hours counts as
+// off).
+type Switches interface {
+	On(piece int, channel string) bool
+}
+
+// ProofPiece is the plan B piece in whose homes a person's post binds only by
+// the proof of the account's binding (RT-6.41 step 6, RT-6.42 step 3, #266):
+// trusted humans from the login service's attestation.
+const ProofPiece = 4
 
 // The defaults of the step's bounds (RT-6.42 steps 1 and 7).
 const (
@@ -81,19 +95,22 @@ type Bridge struct {
 	MM        Mattermost
 	// Users reads the accounts behind people's posts and reactions; nil is MM.
 	// Only a system admin's token sees how an account logs in (auth_service,
-	// auth_data), which binds it to a person (RT-6.42 step 3, #266): the
-	// bridge's admin bot's (CB_BRIDGE_MM_ADMIN_TOKEN_FILE). With the posting
-	// bot's token, which may hold no such role, no account is bound.
+	// auth_data), which a home with plan B piece 4 on binds by (RT-6.42 step
+	// 3, #266): the bridge's admin bot's (CB_BRIDGE_MM_ADMIN_TOKEN_FILE).
+	// Without it, no account is bound in such a home.
 	Users interface {
 		GetUser(ctx context.Context, userID string) (mm.User, error)
 	}
-	NATS    Publisher
-	Store   Store
-	Seen    Seen
-	Anchors Anchors
-	Events  <-chan mmws.Event
-	Up      func() uint64 // mmws.Reader.Up: the connection that is up now
-	Now     func() time.Time
+	// Switches says in which homes plan B piece 4 is on; nil: in none, and
+	// every home carries by the account record alone, as before #266.
+	Switches Switches
+	NATS     Publisher
+	Store    Store
+	Seen     Seen
+	Anchors  Anchors
+	Events   <-chan mmws.Event
+	Up       func() uint64 // mmws.Reader.Up: the connection that is up now
+	Now      func() time.Time
 	// BotPrefix is the agents' bot prefix, set only while the mirror posts
 	// under the agents' own bots (RT-6.44): the signal names it then.
 	BotPrefix string
@@ -105,6 +122,9 @@ type Bridge struct {
 	homes  []*home
 	byCID  map[string]*home
 	users  map[string]cachedUser
+	// warnedProof: the one warning that a home has piece 4 on while the
+	// bridge has no admin token is out
+	warnedProof bool
 }
 
 type home struct {
@@ -247,6 +267,7 @@ func (b *Bridge) signal(ctx context.Context, h *home) {
 	if !b.ready(h) {
 		return
 	}
+	b.needsProof(h) // warns once when piece 4 is on without the admin token
 	now := b.Now()
 	body, err := marshal(struct {
 		V      int    `json:"v"`
@@ -583,7 +604,7 @@ func (b *Bridge) reaction(ctx context.Context, h *home, postID, userID, emoji st
 // reaction or unreaction), the Mattermost post id and the subject, never the
 // text or a name beyond the anchor in the subject (RT-6.42 step 4).
 func (b *Bridge) publish(h *home, u mm.User, body []byte, what, mmPost string) error {
-	subject := b.BusPrefix + ".hu." + h.name + "." + SenderToken(b.anchorOf(u))
+	subject := b.BusPrefix + ".hu." + h.name + "." + SenderToken(b.anchorOf(h, u))
 	if err := b.NATS.Publish(subject, body); err != nil {
 		return fmt.Errorf("publish %s: %w", subject, err)
 	}
@@ -624,17 +645,38 @@ func (b *Bridge) user(ctx context.Context, id string) (mm.User, error) {
 	return u, nil
 }
 
-// anchorOf is the person a post or reaction of u goes out under (RT-6.42
-// step 3, #266): the anchor the login service bound the account to, while
-// Mattermost shows it active, no guest, and logging in as its binding was
+// anchorOf is the person a post or reaction of u in home h goes out under
+// (RT-6.42 step 3): with plan B piece 4 off there, the anchor the account's
+// record names, as before #266; with it on, that anchor only while Mattermost
+// shows the account active, no guest, and logging in as its binding was
 // proven (the same auth_service and auth_data, read with the bridge's admin
-// token, cached as the user is); "" for every other account. A deactivated
-// account, a guest, or one whose login changed binds nothing.
-func (b *Bridge) anchorOf(u mm.User) string {
-	if u.IsBot || u.Deactivated || u.Guest {
+// token, cached as the user is), else "" (fail closed): a deactivated
+// account, a guest, one whose login changed, a record without a proof, and
+// every account when the bridge has no admin token.
+func (b *Bridge) anchorOf(h *home, u mm.User) string {
+	if !b.needsProof(h) {
+		return b.Anchors.Anchor(u.ID)
+	}
+	if u.IsBot || u.Deactivated || u.Guest || b.Users == nil {
 		return ""
 	}
 	return b.Anchors.Bound(u.ID, u.AuthService, u.AuthData)
+}
+
+// needsProof says whether plan B piece 4 is on in h, so that a post binds by
+// the proof alone; the first time it is while the bridge has no admin token,
+// it warns once.
+func (b *Bridge) needsProof(h *home) bool {
+	if b.Switches == nil || !b.Switches.On(ProofPiece, h.name) {
+		return false
+	}
+	if b.Users == nil && !b.warnedProof {
+		b.warnedProof = true
+		b.Log.Warn("inbound: plan B piece 4 is on in a home but CB_BRIDGE_MM_ADMIN_TOKEN_FILE is unset:"+
+			" the bridge cannot see how accounts log in, so every person there goes out under \"-\" (RT-6.42 step 3)",
+			"home", h.name)
+	}
+	return true
 }
 
 // gone: Mattermost says the account does not exist; nobody to carry.

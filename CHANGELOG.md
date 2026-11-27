@@ -325,24 +325,32 @@ before 0.5.0 are described in the git history.
     outage that stops the republishing for more than 24 hours unbinds every
     person until the service runs again (the stream's `max_age`, the MCP
     server's `MAX_AGE_SEC`).
-  - *Bound later.* The bridge carries a person's post or reaction under the
-    record's anchor only while Mattermost, read with the admin bot's token,
-    shows the account active, no guest, and logging in with the proof's
-    `auth_service` and `auth_data`; else, and without the admin bot's token
-    (`CB_BRIDGE_MM_ADMIN_TOKEN_FILE`), under `-`.
+  - *Bound later.* In a home with plan B piece 4 on (the bridge's own
+    switches; a record older than two hours counts as off), the bridge
+    carries a person's post or reaction under the record's anchor only
+    while Mattermost, read with the admin bot's token, shows the account
+    active, no guest, and logging in with the proof's `auth_service` and
+    `auth_data`; else, and without the admin bot's token
+    (`CB_BRIDGE_MM_ADMIN_TOKEN_FILE`, one warning), under `-`. With piece 4
+    off the bridge carries as before, by the account record alone: no proof
+    and no admin token needed.
   - *Trust.* With plan B piece 4 on, a Mattermost account approves when its
     record binds it to one of the session's attested trusted anchors, and a
     person over NATS when its anchor is one: no fresh approver record, so no
     15 minutes after a login. With the piece off nothing changes. The
     approvers' Keycloak group stays a ceiling for logins only.
-  - *Deployment, in this order* (the release's `Needs:` lines say it): the
-    login service's JetStream user publishes
-    `presence.account.mattermost.*.auth.v1` (without it every proven login
-    is refused, `account record: proof: …`); the bridge's consumer create
-    right becomes
+  - *Deployment, in this order* (the release's `Needs:` lines say it).
+    **A hard stop, whatever the switches say:** the login service writes the
+    proof and the binding at every proven login, so its JetStream user must
+    publish `presence.account.mattermost.*.auth.v1` before the new login
+    service starts; without that right every agent login with an OpenID or
+    LDAP proven Mattermost account is refused (`account record: proof:
+    …`). Then the bridge's consumer create right becomes
     `$JS.API.CONSUMER.CREATE.PRESENCE.bridge_accounts.presence.account.mattermost.>`
-    (without it the bridge reads no records and carries no home); the
-    bridge needs `CB_BRIDGE_MM_ADMIN_TOKEN_FILE` to bind anyone. For the
+    before the new bridge starts (without it the bridge reads no records
+    and carries no home). Before plan B piece 4 is switched on in a home,
+    the bridge needs `CB_BRIDGE_MM_ADMIN_TOKEN_FILE`, or nobody there is
+    bound. For the
     LDAP proof in the lab (bgl-infra): a Keycloak protocol mapper of the
     user attribute `LDAP_ID` into the claim `ldap_id` on the bus's and the
     console's client, and Mattermost's LDAP ID attribute set to the same
@@ -351,8 +359,9 @@ before 0.5.0 are described in the git history.
     the realm's unmanaged attributes off or admin-only, no
     self-registration, no local account that could carry it; else a user
     could bind another person's Mattermost account to their own anchor.
-    Existing records carry no proof: their people go out under `-` until
-    their next login. The login service and the bridge are both updated
+    Existing records carry no proof: in a home with piece 4 on their people
+    go out under `-` until their next login. The login service and the
+    bridge are both updated
     before plan B piece 4 is switched on in any home: an older bridge
     carries a person's post by the record alone, without the proof.
 

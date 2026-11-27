@@ -28,6 +28,7 @@ import (
 	"github.com/dembaca/ai-agent-bus/services/bridge/internal/mirror"
 	"github.com/dembaca/ai-agent-bus/services/bridge/internal/mm"
 	"github.com/dembaca/ai-agent-bus/services/bridge/internal/mmws"
+	"github.com/dembaca/ai-agent-bus/services/bridge/internal/presence"
 	"github.com/dembaca/ai-agent-bus/services/bridge/internal/store"
 )
 
@@ -1099,14 +1100,24 @@ func postBy(uid, id string, at int64) *mmws.Posted {
 	return &mmws.Posted{PostID: id, UserID: uid, ChannelID: cid, Message: "go ahead", CreateAt: at, UpdateAt: at}
 }
 
-// RT-6.42 step 3 (#266, the owner's decision of 2026-11-27): the login service
-// proved the binding once and published its proof; the bridge binds a later
-// post or reaction of the account by what Mattermost shows of it now, read
-// with its admin token: the same auth_service and auth_data as the proof. An
+// piece4 switches plan B piece 4 on in every home.
+type piece4 struct{}
+
+func (piece4) On(piece int, _ string) bool { return piece == ProofPiece }
+
+// proofHome: piece 4 on, and the accounts read with a token that sees how
+// they log in (the fake Mattermost shows it to every token).
+func proofHome(b *Bridge) { b.Switches, b.Users = piece4{}, b.MM }
+
+// RT-6.42 step 3 (#266, the owner's decision of 2026-11-27), in a home with
+// plan B piece 4 on: the login service proved the binding once and published
+// its proof; the bridge binds a later post or reaction of the account by what
+// Mattermost shows of it now, read with its admin token: the same
+// auth_service and auth_data as the proof. An
 // OpenID proof and an LDAP proof bind alike; a changed auth_data, another way
 // of logging in, a deactivated or a guest account bind nothing: "-".
 func TestALaterPostIsBoundOnlyWhileTheAccountLogsInAsProven(t *testing.T) {
-	r := newRig(t, nil)
+	r := newRigWith(t, nil, proofHome)
 	r.connect(1)
 	rec := func(uid, anchor string) string {
 		return `{"v":1,"account":"` + uid + `","anchor":"` + anchor + `","name":"` + anchor +
@@ -1161,11 +1172,11 @@ func TestALaterPostIsBoundOnlyWhileTheAccountLogsInAsProven(t *testing.T) {
 	}
 }
 
-// RT-6.42 step 3 (#266): a record without a proof, or with one that does not
-// decode or names another account, binds nothing; a proof read again after
-// it binds again.
+// RT-6.42 step 3 (#266), piece 4 on: a record without a proof, or with one
+// that does not decode or names another account, binds nothing; a proof read
+// again after it binds again.
 func TestARecordWithoutAProofBindsNothing(t *testing.T) {
-	r := newRig(t, nil)
+	r := newRigWith(t, nil, proofHome)
 	r.connect(1)
 	if err := r.nc.Publish("presence.account.mattermost."+bobID+".v1", []byte(`{"v":1,"account":"`+bobID+
 		`","anchor":"bob","name":"bob","approver":true,"token_iat":1,"iat":1,"exp":2}`)); err != nil {
@@ -1244,13 +1255,15 @@ func (a adminUsers) GetUser(ctx context.Context, id string) (mm.User, error) {
 	return u, err
 }
 
-// RT-6.42 step 3 (#266): the accounts are read with the admin bot's token
-// (Bridge.Users) when there is one: the posting bot's token does not see how an
-// account logs in, and with it alone no person is bound.
+// RT-6.42 step 3 (#266), piece 4 on: the accounts are read with the admin
+// bot's token (Bridge.Users) when there is one: the posting bot's token does
+// not see how an account logs in, and without the admin token no person of
+// such a home is bound.
 func TestTheAccountIsReadWithTheAdminTokenForItsBinding(t *testing.T) {
 	const zedID = "zzzzzzzzzzzzzzzzzzzzzzzzzz"
 	for _, admin := range []bool{false, true} {
 		r := newRigWith(t, nil, func(b *Bridge) {
+			b.Switches = piece4{}
 			if admin {
 				b.Users = adminUsers{inner: b.MM, service: "openid", data: "sub-zed"}
 			}
@@ -1274,5 +1287,79 @@ func TestTheAccountIsReadWithTheAdminTokenForItsBinding(t *testing.T) {
 		if subject, _ := r.next(t); subject != want {
 			t.Fatalf("admin token %v: %s, want %s", admin, subject, want)
 		}
+	}
+}
+
+// RT-6.42 step 3 (#266): with plan B piece 4 off in the home (no switches, a
+// record that switches only other pieces, or one older than two hours), the
+// bridge carries a person's post under the anchor of the account record alone,
+// as before: no proof, no admin token needed. A fresh piece 4 applies the
+// proof rules: the same account goes out under "-".
+func TestWithPiece4OffTheRecordAloneBindsAsBefore(t *testing.T) {
+	const zedID = "zzzzzzzzzzzzzzzzzzzzzzzzzz"
+	t0 := time.Now()
+	stale := &presence.Switches{}
+	stale.Observed("home", []int{4}, t0.Add(-3*time.Hour))
+	stale.Observed("other", []int{1}, t0) // the server's time has gone on
+	fresh := &presence.Switches{}
+	fresh.Observed("home", []int{4}, t0)
+	others := &presence.Switches{}
+	others.Observed("home", []int{1, 2}, t0)
+	for name, tc := range map[string]struct {
+		sw   Switches
+		want string
+	}{
+		"no switches":   {nil, "bus.hu.home.zed"},
+		"other pieces":  {others, "bus.hu.home.zed"},
+		"piece 4 stale": {stale, "bus.hu.home.zed"},
+		"piece 4 on":    {fresh, "bus.hu.home.-"},
+	} {
+		t.Run(name, func(t *testing.T) {
+			r := newRigWith(t, nil, func(b *Bridge) {
+				if tc.sw != nil {
+					b.Switches = tc.sw
+				}
+			})
+			// no proof, no auth fields, no admin token
+			r.mm.setUser(zedID, map[string]any{"id": zedID, "username": "zed", "is_bot": false})
+			if err := r.nc.Publish("presence.account.mattermost."+zedID+".v1", []byte(`{"v":1,"account":"`+zedID+
+				`","anchor":"zed","name":"zed","approver":false,"token_iat":1,"iat":1,"exp":2}`)); err != nil {
+				t.Fatal(err)
+			}
+			deadline := time.Now().Add(3 * time.Second)
+			for anchorOf(t, r.acc, zedID) != "zed" {
+				if time.Now().After(deadline) {
+					t.Fatal("the record was never read")
+				}
+				time.Sleep(10 * time.Millisecond)
+			}
+			r.connect(1)
+			r.send(postBy(zedID, pid(1), now()))
+			if subject, _ := r.next(t); subject != tc.want {
+				t.Fatalf("%s, want %s", subject, tc.want)
+			}
+		})
+	}
+}
+
+// RT-6.42 step 3 (#266): a home with piece 4 on while the bridge has no admin
+// token is warned of once, at the first signal, not at every post.
+func TestPiece4WithoutTheAdminTokenIsWarnedOfOnce(t *testing.T) {
+	var buf syncBuf
+	r := newRigWith(t, nil, func(b *Bridge) {
+		b.Switches = piece4{}
+		b.Log = slog.New(slog.NewTextHandler(&buf, nil))
+	})
+	r.record(t, aliceID, `{"v":1,"account":"`+aliceID+`","anchor":"alice","name":"alice",`+
+		`"approver":true,"token_iat":1,"iat":1,"exp":2}`, "alice")
+	r.connect(1)
+	waitSignal(t, r.sig)
+	waitSignal(t, r.sig)
+	r.send(alicePost(pid(1), now()))
+	if subject, _ := r.next(t); subject != "bus.hu.home.-" {
+		t.Fatalf("without the admin token: %s", subject)
+	}
+	if n := strings.Count(buf.String(), "CB_BRIDGE_MM_ADMIN_TOKEN_FILE is unset"); n != 1 {
+		t.Fatalf("%d warnings in %s", n, buf.String())
 	}
 }

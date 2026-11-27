@@ -4356,7 +4356,10 @@ which each piece reads for itself.
        Mattermost account is bound provably, once at a login of any kind
        (an agent's or the console's): over OpenID (`auth_data` is the
        token's `sub`) or over LDAP (`auth_data` is the token's LDAP id,
-       `CB_AUTH_LDAP_ID_CLAIM`); a name alone binds nothing. The login
+       `CB_AUTH_LDAP_ID_CLAIM`); a name alone binds nothing. An LDAP
+       id mismatch refuses the login, as an OpenID `sub` mismatch does
+       (decided by the owner on 2026-11-27, ask
+       `zcd5yjb39iduuka5hizr3x43jo`). The login
        service keeps the binding in its directory and publishes its
        record again every hour while Mattermost shows the account so,
        and the bridge binds a later post by it (RT-6.42 step 3); the
