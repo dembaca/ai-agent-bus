@@ -196,8 +196,11 @@ before 0.5.0 are described in the git history.
   release it needs the login service's JetStream user to publish
   `presence.planb.*.v1` and the bridge user the right
   `$JS.API.CONSUMER.CREATE.PRESENCE.bridge_planb.presence.planb.*.v1`, both
-  in `services/auth/nats-server.example.conf`; without them every piece
-  stays off.
+  in `services/auth/nats-server.example.conf`; without the login service's
+  right every piece stays off. Since the binding proof (#266) the bridge
+  carries no home until it has read `bridge_planb` once, so without the
+  bridge's right people's posts stop reaching NATS in every home, whatever
+  the switches say (the entry of #266 names it as a hard stop).
 - **Plan B piece 2b: the session's kept state keyed by the NATS name,
   behind the same switch that is off** (ADR-014 phase 5, RT-6.2 step 9).
   With `planb.on(2, ...)` on, the records of the agent's latest post, of
@@ -390,7 +393,13 @@ before 0.5.0 are described in the git history.
     create right becomes
     `$JS.API.CONSUMER.CREATE.PRESENCE.bridge_accounts.presence.account.mattermost.>`
     before the new bridge starts; with the old right the new bridge cannot
-    make its consumer, reads no records and carries no home. Before plan B piece 4 is switched on in a home,
+    make its consumer, reads no records and carries no home. **A third hard
+    stop, whatever the switches say:** the bridge carries no home until it
+    has read the plan B switches once, so the bridge user's right
+    `$JS.API.CONSUMER.CREATE.PRESENCE.bridge_planb.presence.planb.*.v1`
+    (from the switch entry above) must be in place before the new bridge
+    starts; without it people's posts stop reaching NATS in every home.
+    Before plan B piece 4 is switched on in a home,
     the bridge needs `CB_BRIDGE_MM_ADMIN_TOKEN_FILE`, or nobody there is
     bound. For the
     LDAP proof in the lab (bgl-infra): a Keycloak protocol mapper of the
