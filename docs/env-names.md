@@ -106,6 +106,16 @@ What counts as set:
   must have the same value, or the component refuses to start and names the
   names that differ. The new name wins only when they agree.
 
+### Unknown names are warned about
+
+The MCP server checks its environment at start (`config.unknown_names`): every
+`CB_` name that this page does not list (and no other component's prefix
+covers) becomes one warning line, `unknown setting CB_PROJECT_CHANNEL (did you
+mean CB_MM_PROJECT_CHANNEL?)`, with the closest known name, the `CB_MM_` prefix
+swap first. It shows in `bus_info`'s and `session_start`'s `warning` and once in
+the session-start hook's line (RT-6.34 step 4). Names only, never a value.
+`tests/hooks/test_env_names.py` pins that every name this page lists is known to it.
+
 ### After the fallbacks go: refuse, never ignore
 
 An old name that is simply no longer read fails open: an operator who did
@@ -293,7 +303,7 @@ each component's pull request renames its own reads.
 | `MM_LOGIN_ISSUER` | `CB_LOGIN_ISSUER` | no | `compose.py`, `login.py` | |
 | `MM_LOGIN_NKEY` | `CB_LOGIN_NKEY` | no | `login.py` | |
 | `MM_NATS_CA_FILE` | `CB_NATS_CA_FILE` | no | `compose.py`, `natsbus.py` | |
-| `MM_NATS_HOMES` | `CB_NATS_HOMES` | no | `compose.py`, `hosted.py`, `lease.py`, `nats_port.py`, `server.py` | |
+| `MM_NATS_HOMES` | `CB_NATS_HOMES` | no | `compose.py`, `hosted.py`, `lease.py`, `nats_port.py`, `server.py`; `bin/mm-agent-lib.sh` | |
 | `MM_NATS_MEMORY` | `CB_NATS_MEMORY` | no | `compose.py` | |
 | `MM_NATS_URL` | `CB_NATS_URL` | no | `compose.py` | |
 | `MM_OWNER` | `CB_OWNER` | no | `attest.py`, `client.py`, `compose.py`, `owners.py`, `permission.py`; `bin/mm-agent-lib.sh` | human names; the NATS side reads them too |

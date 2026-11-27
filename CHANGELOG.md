@@ -63,14 +63,53 @@ before 0.5.0 are described in the git history.
   consumer made anew (reconnect, credential) no longer drops the switch map at once: the old
   records are read until the replay is complete, so the direct-message piece no longer states
   `"dm": false` and later pieces no longer flap back to Mattermost meanwhile.
+- **A wrong setting is said, not silent** (#261, RT-6.34 step 4). The MCP server warns
+  about every unknown `CB_` name in its environment (`unknown setting CB_PROJECT_CHANNEL
+  (did you mean CB_MM_PROJECT_CHANNEL?)`; names only, never a value), and when
+  `CB_NATS_HOMES` is set but not the home, why no NATS login starts (`home ~agents is not
+  in CB_NATS_HOMES (...): this session stays on Mattermost and starts no NATS login`). Both
+  show in `bus_info`'s and `session_start`'s warning and once in the session-start hook's
+  line, `GET /v1/login` carries them as `notes`.
 - **A direct message over NATS is answerable in every case** (#258, plan B piece 3,
   RT-6.36 step 7). `get_thread` on a DM's id refuses it in the same words `reply_in_thread`
   uses - answer it with `post_message(to=<its sender, as shown_as>)` - instead of a bare
   `invalid post id`; and a DM back that itself stays on Mattermost settles the open DM
   record of that agent, which has no channel id to match, so the turn end no longer reminds
   of a DM the agent has answered.
+- **The DM to the responsible human goes to a Mattermost account only** (#244, RT-6.18,
+  RT-6.34). The no-relay DM (RT-6.18) and the login service's theft notice (RT-6.34)
+  took the first trusted human of that name, which in a home over NATS can be a person over
+  NATS (`hu:<anchor>`, RT-6.42) with no DM; they now take only a Mattermost account among
+  the trusted humans, else look the name up as before.
 
 ### Added
+
+- **Plan B piece 4: every check of a trusted human and of an agent's owner
+  from the login service** (#244, ADR-014 phase 5, RT-6.41 step 6). With the
+  piece's switch on for a home over NATS, the MCP server's trusted humans
+  are the anchors of the session's own fresh attestation: each as a person
+  over NATS and each Mattermost account the login service's account record
+  binds to one of them, under the attested name. The host's
+  `CB_MM_TRUSTED_HUMAN_USER_IDS` and a lookup with the bot token count for
+  nothing, so `from_trusted_human`, the gate, mandates, signed records'
+  `set_by`, ask answers and the stall check all decide by anchor; a
+  Mattermost account approves only with a fresh approver record of its
+  own, as a person over NATS does, never by another account of the same
+  person, and a post or reaction of a bound account that comes on
+  Mattermost is marked `not_approver` without one. One the session did not
+  see come (history, a backfill, a reconnect, while it was down) is judged
+  by that account's record at the read, so a non-approver's answer never
+  answers an ask. An agent's owner and
+  trusted list come from the record of its NATS name, a Mattermost bot's
+  from the NATS name linked to it, never from a bot's description or the
+  registrar's attestation; a bot without such a link has no owner (foreign).
+  Fail closed: without a fresh own attestation nobody is trusted, every
+  other agent is foreign and the gate and the owner split stay on, whatever
+  the host's trusted variables say and also with none of them set.
+
+  With the switch off (the default) nothing changes, the corral start hook
+  included: it looks the trusted humans up and hands over their ids as
+  before. With the switch on the MCP server ignores those ids.
 
 - **The request subjects for plan B** (#244, ADR-014 phase 5, wave 0): what an agent
   needs from the bridge but that is no channel message goes on

@@ -298,6 +298,7 @@ class NatsState:
 _nats_home = ""
 _nats_source: NatsSource | None = None
 _nats_why = ""
+_left_out = ""
 _nats_warned: set[str] = set()
 
 
@@ -305,11 +306,23 @@ def use_nats(home: str, source: NatsSource | None, why: str = "") -> None:
     """Register this session's NATS home (a channel named in CB_NATS_HOMES) and its NATS
     side; `source` None where none was built (no login, no URL): the home then has no crown
     and no Mattermost election, logged once. use_nats("", None) clears it."""
-    global _nats_home, _nats_source, _nats_why
+    global _nats_home, _nats_source, _nats_why, _left_out
     _nats_home = home.lstrip("~").lower()
-    _nats_source, _nats_why = source, why
+    _nats_source, _nats_why, _left_out = source, why, ""
     if _nats_home and source is None:
         _warn_down(why or "no NATS side was built")
+
+
+def left_out(home: str, homes: Iterable[str]) -> None:
+    """CB_NATS_HOMES is set but names not this session's home (#261): the session stays on
+    Mattermost and starts no NATS login. bus_info and the start line say so."""
+    global _left_out
+    _left_out = (f"home ~{home} is not in CB_NATS_HOMES ({', '.join(sorted(homes))}): this session "
+                 "stays on Mattermost and starts no NATS login")
+
+
+def left_out_note() -> str:
+    return _left_out
 
 
 def is_nats_home(name: str) -> bool:
@@ -387,7 +400,7 @@ async def shown_as(client: ChatPort, user_ids: AbstractSet[str]) -> dict[str, st
 def nats_notes() -> list[str]:
     """What bus_info says about the crown over NATS (RT-6.38 steps 7 and 8): the home that
     has no NATS side, a link tag that fits more than one fresh name."""
-    out: list[str] = []
+    out: list[str] = [_left_out] if _left_out else []
     state = nats_state()
     if state.kind == "down":
         out.append(f"the home ~{_nats_home} runs its crown over NATS, but the NATS side is not reachable "
@@ -947,7 +960,9 @@ async def _linked_owned(client: ChatPort, source: NatsSource, rows: list[dict[st
     out: dict[str, str] = {}
     for bot_id, name in source.linked(rows).items():
         owner = await owners.read(client, str(bot_id))
-        if owner is not None and bool(owner.owner) and owner.owner == source.owner_of(name):
+        # display(): the owner's name also when the circle is by anchor (plan B piece 4, where
+        # the bot's owner is the linked name's attested one); otherwise the owner itself
+        if owner is not None and bool(owner.owner) and owner.display() == source.owner_of(name):
             out[str(bot_id)] = name
     return out
 

@@ -98,6 +98,9 @@ async def test_flag_marks_only_trusted_authors_and_names_them(monkeypatch):
         async def may_approve(self, uid):
             return None  # Mattermost's trust alone (RT-6.42 is NATS only)
 
+        async def trust_closed(self):
+            return False
+
         async def usernames(self, ids):
             return {}
 
