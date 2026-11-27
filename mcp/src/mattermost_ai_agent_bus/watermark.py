@@ -104,18 +104,30 @@ def hold(uid: str, channel_id: str, created: int, post_id: str = "") -> None:
     """A post created at `created` waits unhandled: keep the mark before it. A NATS
     post keeps the sequence one before its own, `n1:<channel>:<seq-1>`, since the
     next server derives its `since` from the mark (#213): a held post then asks for
-    itself again, not for the channel's whole absence."""
+    itself again, not for the channel's whole absence. A channel without a mark gets
+    one at its first NATS post (the same sequence before it), so a session killed
+    before its first hand-over still leaves a cursor for the next server (#224); a
+    NATS post of stream sequence 1 has none - no mark can name sequence 0 - and a
+    Mattermost lane stays without a mark until its first hand-over."""
+    if created <= 0:
+        return
     marks = read(uid)
     mark = marks.get(channel_id)
-    if mark is None or created <= 0 or mark.at < created:
-        return
-    held = "-"
     parsed = NATS_POST.fullmatch(post_id or "")
-    if parsed is not None:
+    if mark is not None and mark.at < created:
+        return
+    if parsed is None:
+        if mark is None:
+            return  # nothing to keep for a Mattermost lane before its first hand-over
+        marks[channel_id] = Mark("-", created - 1)
+    else:
         seq = int(parsed.group("seq"))
-        if seq > 1:
-            held = f"n1:{parsed.group('channel')}:{seq - 1}"
-    marks[channel_id] = Mark(held, created - 1)
+        if seq <= 1:
+            if mark is None:
+                return  # no sequence before the stream's first message
+            marks[channel_id] = Mark("-", created - 1)
+        else:
+            marks[channel_id] = Mark(f"n1:{parsed.group('channel')}:{seq - 1}", created - 1)
     _write(uid, marks)
 
 

@@ -3,6 +3,22 @@
 Every version bump in `.claude-plugin/plugin.json` gets an entry here. Versions
 before 0.5.0 are described in the git history.
 
+## Unreleased
+
+### Fixed
+
+- **The NATS read mark is seeded at a channel's first post** (#224, the residual
+  of #213's fix). A channel without a mark gets one at the first NATS post
+  received there, one sequence before the oldest post the session has not handed
+  over, and only once the backfill has read its snapshot - so a post queued
+  before the channel's first hand-over still has a cursor and the next server
+  asks for it again, and a live post queued earlier cannot pass an older one.
+  **The residual:** a post of stream sequence 1 has no sequence before it, so the
+  first message of a recreated `BUS` stream can still be lost at a kill before
+  any hand-over (explicit acks on the BUS consumers would close it); and a post
+  past the stream's 14 days or the consumer's inactivity threshold does not come
+  back.
+
 ## 0.104.0
 
 Needs: login service jetstream user with stream update on stats and publish on its import subjects, before its upgrade.
