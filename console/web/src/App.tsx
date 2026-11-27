@@ -1,5 +1,5 @@
 import { useCallback, useEffect, useRef, useState } from "react"
-import type { AgentCard, Ask, ConnState, ConsoleApi, FleetEvent, Operator } from "./api/types"
+import type { AgentCard, AgentStatsRow, Ask, ConnState, ConsoleApi, FleetEvent, Operator } from "./api/types"
 import { AGENT_STATES } from "./api/types"
 import { Unavailable } from "./api/http"
 import { TopBar, VIEW_LABEL, type View } from "./ui/TopBar"
@@ -10,7 +10,7 @@ import { Detail } from "./ui/Detail"
 import { GraphView } from "./ui/GraphView"
 import { Overview } from "./ui/Overview"
 import { Reports } from "./ui/Reports"
-import { isOpen, type StatusFilter } from "./ui/agents"
+import { isOpen, statsByAgent, type StatusFilter } from "./ui/agents"
 import { Split, asPlace, pushPlace, replacePlace, resolvePlace, selectedAfter, type Place } from "./nav"
 import { useTheme } from "./theme"
 
@@ -135,6 +135,26 @@ export function App({ api }: { api: ConsoleApi }) {
     const timer = setInterval(loadAsks, 30_000)
     return () => { clearInterval(timer) }
   }, [loadAsks])
+  // The per-agent numbers (#201, `GET /v1/agent-stats`): rows of own or
+  // trusted agents only, read every 30 s like the asks; null until the first
+  // answer, so a cell says "not read yet" rather than "another owner's".
+  const [agentStats, setAgentStats] = useState<ReadonlyMap<string, AgentStatsRow> | null>(null)
+  const statsRead = useRef(0)
+  const loadAgentStats = useCallback(async () => {
+    const mine = ++statsRead.current
+    try {
+      const rows = await api.agentStats()
+      if (mine !== statsRead.current) return
+      setAgentStats(statsByAgent(rows))
+    } catch (error: unknown) {
+      if (mine === statsRead.current) fail("agent stats", error)
+    }
+  }, [api, fail])
+  useEffect(() => {
+    void loadAgentStats()
+    const timer = setInterval(loadAgentStats, 30_000)
+    return () => { clearInterval(timer) }
+  }, [loadAgentStats])
   // An ask opens or closes between those reads: when an agent comes, goes or
   // states a different number of open asks, the asks are read again, 250 ms
   // later, so a burst of card changes costs one read.
@@ -219,10 +239,10 @@ export function App({ api }: { api: ConsoleApi }) {
             visible (half and half); below 1000 px the view hides and the
             detail is the whole page (app.css) */}
         <Split detail={detail && (
-          <Detail api={api} card={agent} ask={ask} asks={asks}
+          <Detail api={api} card={agent} ask={ask} asks={asks} stats={agentStats}
             from={VIEW_LABEL[view]} onBack={closeDetail} onFail={fail} />
         )}>
-            {view === "agents" && <AgentList cards={cards} asks={asks} compact={detail}
+            {view === "agents" && <AgentList cards={cards} asks={asks} stats={agentStats} compact={detail}
               selected={agent?.name ?? null}
               filter={listFilter} onFilter={setListFilter} query={listQuery} onQuery={setListQuery}
               onOpenAgent={openAgent} onOpenAsk={openAsk} onAllAsks={() => setView("asks")} />}

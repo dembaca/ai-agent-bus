@@ -5480,7 +5480,13 @@ agent publishes passes for a person's word.
     anchor as owner or trusted, the check of the asks' "may answer".
     Another owner's agent, an agent without a known attestation and every
     agent before the login's own record gave the operator's anchor get no
-    row; no row is the safe default. Why: an owner looks after their own
+    row; no row is the safe default. The app shows the rows in the Agents
+    list's "Tokens today" column and the detail's "Today" block (tokens
+    with the split by type, posts, wakes, tool calls); an agent without a
+    row shows a dash there and, in the detail, "No per-agent numbers for
+    agents of other owners", and both say that rows are of agents running
+    now (own or trusted). A null number shows as n/a, never 0, and no
+    overhead share is computed from the sums. Why: an owner looks after their own
     agents and those that trust them, so their numbers are already that
     person's to see; nobody else gets a record per person. Still no report
     by home or owner.

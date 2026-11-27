@@ -1,4 +1,4 @@
-import { AGENT_STATES, HARNESS_LABEL, type AgentCard, type Ask } from "../api/types"
+import { AGENT_STATES, HARNESS_LABEL, type AgentCard, type AgentStatsRow, type Ask } from "../api/types"
 
 // The agents list's filter and the status groups the Overview counts by.
 // The groups are made of the state words the bus carries (ADR-015 point 6):
@@ -96,6 +96,31 @@ export function harnessLabel(harness: AgentCard["harness"]): string {
 /** An ask still waiting: open, or past 24 h (a hint, the asking server decides). */
 export function isOpen(ask: Ask): boolean {
   return ask.end === "open" || ask.end === "expired"
+}
+
+/** Why an agent has no per-agent numbers (#201, decided 2026-11-27): `GET
+ * /v1/agent-stats` has rows only for agents whose fresh attestation names the
+ * operator as owner or trusted. Said plainly, never as "n/a" (that is a
+ * number no part states). */
+export const NO_STATS_ROW = "No per-agent numbers for agents of other owners."
+export const STATS_ROWS_NOTE =
+  "Rows are of agents running now (own or trusted); an agent that went offline has no row."
+
+/** A token count for a dense cell: 950, 92.1k, 1.2M; null is n/a, never 0. */
+export function tokenCount(n: number | null): string {
+  if (n === null) return "n/a"
+  if (n < 1000) return String(n)
+  if (n < 1_000_000) return `${trim(n / 1000)}k`
+  return `${trim(n / 1_000_000)}M`
+}
+
+function trim(x: number): string {
+  return (x < 100 ? x.toFixed(1) : x.toFixed(0)).replace(/\.0$/, "")
+}
+
+/** The per-agent rows by agent name; null while none was read. */
+export function statsByAgent(rows: readonly AgentStatsRow[] | null): ReadonlyMap<string, AgentStatsRow> | null {
+  return rows === null ? null : new Map(rows.map((r) => [r.agent, r]))
 }
 
 /** The open asks, the operator's first, then the oldest. */

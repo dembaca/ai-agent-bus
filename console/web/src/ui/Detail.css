@@ -76,6 +76,7 @@
 .detail__fact dt { color: var(--muted); flex: none; }
 .detail__fact dd { margin: 0; text-align: right; overflow-wrap: anywhere; min-width: 0; }
 .detail__fact dd.mono { font-size: 12px; }
+.detail__today-note { margin: 8px 0 0; }
 
 /* a thread: time, the bus word as a chip, author and text */
 .thread__posts { list-style: none; margin: 0; padding: 0; }

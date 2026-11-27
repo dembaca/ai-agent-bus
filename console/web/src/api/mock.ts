@@ -308,7 +308,7 @@ function stack(label: string, eq: number[], raw: number[]): ReportStack {
 const agentStats = (): AgentStatsRow[] => [
   { agent: "agent-mac-ai-agent-164534",
     tok24h: null, tok7d: null, posts24h: 21, wakes24h: 14, tools24h: 96 },
-  { agent: "agent-mac-ai-agent-01d05a",
+  { agent: "agent-mac-ai-agent-bb8f09",
     tok24h: { all: 92_100, in: 1_200, read: 90_000, w5m: null, w1h: null, out: 900,
               ovh: 21_230, coord: 4_460 },
     tok7d: { all: 640_000, in: 8_400, read: 610_000, w5m: 4_200, w1h: null, out: 9_800,
