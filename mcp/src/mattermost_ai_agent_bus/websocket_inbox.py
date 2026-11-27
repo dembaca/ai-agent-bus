@@ -430,6 +430,23 @@ class WebSocketInbox:
         waits (_settle); those handled while the source was down join them
         only after a snapshot was read (_down)."""
         self._unqueued = {}
+        # A NATS lane without a mark whose posts were queued while the snapshot
+        # was unread got no seed from _put: seed it now from the oldest post not
+        # handed over, or a kill before anything follows loses it (#238).
+        seeded: set[str] = set()
+        for e in list(self._waiting()):
+            if e.gated or e.edited or e.kind == "reaction" or not e.post.channel_id:
+                continue
+            lane = _lane(e.post)
+            if lane in seeded or not lane.endswith(watermark.NATS_LANE):
+                continue
+            seeded.add(lane)
+            try:
+                if lane not in watermark.read(self._bot_user_id):
+                    pid, at = self._oldest_unhanded(lane, e.post)
+                    watermark.hold(self._bot_user_id, lane, at, pid)
+            except Exception as exc:  # noqa: BLE001
+                log.warning("read watermark not held: %s", exc)
         for cid in list(self._behind):
             self._settle(cid)
 

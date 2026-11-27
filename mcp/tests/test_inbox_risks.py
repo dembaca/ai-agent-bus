@@ -575,8 +575,9 @@ async def test_a_hand_over_while_the_socket_is_down_passes_no_post_that_came_mea
 async def test_a_nats_post_seeds_the_marks_lane_at_its_first_receipt(chat, dial, inbox):
     """#224 (the residual of #213), RT-6.36 step 4: a channel whose session had never
     handed a post had no cursor, so a post queued before the first hand-over was lost
-    at a kill. The first NATS post received seeds the lane one sequence before itself,
-    as `hold` keeps a mark back, so the next server asks for that post again."""
+    at a kill. The first NATS post received seeds the lane one sequence before the
+    oldest post not handed over, as `hold` keeps a mark back, so the next server asks
+    for that post again."""
     from mattermost_ai_agent_bus.client import post_of
     await inbox.ensure_connected()  # the bot's id, which the mark is filed under
     await inbox._put(ClassifiedEvent(kind="mention", post=post_of({
@@ -625,6 +626,27 @@ async def test_a_live_post_does_not_seed_past_an_older_one_the_backfill_still_ho
     mark = watermark.read(inbox._bot_user_id)[lane]
     assert (mark.post_id, mark.at) == (f"n1:{WORK}:4", 4_999)
     assert inbox._first_waiting(lane) == 5_000  # the older post still waits, not passed
+
+
+async def test_a_post_queued_while_the_snapshot_is_unread_is_seeded_when_it_is_read(chat, dial, inbox):
+    """#238, RT-6.36 step 4: a NATS post queued before the backfill read its snapshot
+    got no seed from `_put`, and with nothing following it a kill lost it. The
+    backfill (the real path, `unread.after` runs) seeds the lane when the snapshot
+    is through, one sequence before the oldest post not handed over."""
+    from mattermost_ai_agent_bus.client import post_of
+    await inbox.ensure_connected()
+    lane = f"{WORK}:nats"
+    watermark.remove(inbox._bot_user_id)
+    inbox._unqueued = None   # the backfill is under way, its snapshot unread
+    for seq, created in ((9, 9_000), (8, 8_000)):
+        await inbox._put(ClassifiedEvent(kind="mention", post=post_of({
+            "id": f"n1:{WORK}:{seq}", "channel_id": WORK, "create_at": created,
+            "message": "@agent-me hi", "user_id": "u" * 26})))
+    assert lane not in watermark.read(inbox._bot_user_id)
+    await inbox._backfill()
+    mark = watermark.read(inbox._bot_user_id)[lane]
+    assert (mark.post_id, mark.at) == (f"n1:{WORK}:7", 7_999)
+    assert inbox._first_waiting(lane) == 8_000
 
 
 async def test_a_hand_over_before_the_reconnects_backfill_passes_no_post_that_came_meanwhile(
