@@ -16,7 +16,7 @@ import sys
 import pytest
 import websockets
 
-from bus_testrig import measurands, proc
+from bus_testrig import cli, measurands, proc
 from bus_testrig.proxy import ByteProxy, ConnState, FaultRelay, FrameProxy, ProxyFault
 from bus_testrig.runner import Run, _pct, echo_run
 
@@ -526,3 +526,44 @@ async def test_a_failed_connect_hook_aborts_the_connection_and_fails_the_proxy()
     assert proxy.hook_errors == 1
     assert proxy.failed.startswith("consumer reconcile failed")
     assert proxy.counters()["failed"] == 1
+
+
+# --- the run's trust and its report (review M1/M2) ------------------------------------
+
+
+def test_a_failed_reconcile_or_a_lost_sender_is_untrustworthy():
+    """A run whose CONNECT hook failed, and a restart/hang/kill-client run with no
+    post sent after the window, measured a broken rig, not the fault."""
+    failed = Run(name="bus-run", target="bus-nats", fault="none")
+    failed.send_frames = 5
+    failed.relay = {"failed": 1}
+    assert cli._untrustworthy(failed) is True
+    hung = Run(name="bus-run", target="bus-nats", fault="restart")
+    hung.send_frames = 5
+    hung.recovered = False
+    assert cli._untrustworthy(hung) is True
+    baseline = Run(name="bus-run", target="bus-nats", fault="none")
+    baseline.send_frames = 5
+    baseline.sent = [baseline.send(0), baseline.send(1)]
+    baseline.sent_frames = 2
+    baseline.arrive(0)
+    baseline.arrive(1)
+    assert cli._untrustworthy(baseline) is False
+
+
+def test_the_report_names_the_lost_sequences_and_the_consumer():
+    """The report carries what a lost sequence is read beside: the numbers, the
+    failed sends that arrived anyway, and the receiver's consumer at kill/resume."""
+    run = Run(name="bus-run", target="bus-nats", fault="kill-client")
+    for seq in (0, 1, 2):
+        run.send(seq)
+    run.arrive(0)
+    run.arrive(2)
+    run.arrive(3)  # a failed send that arrived: no Sent row
+    run.consumer_at_kill = {"delivered_stream_seq": 3, "num_pending": 0}
+    run.consumer_at_resume = {"delivered_stream_seq": 9, "num_pending": 0}
+    report = run.report()
+    assert report["lost_seqs"] == [1]
+    assert report["failed_but_arrived"] == 1
+    assert report["consumer_at_kill"] == {"delivered_stream_seq": 3, "num_pending": 0}
+    assert report["consumer_at_resume"] == {"delivered_stream_seq": 9, "num_pending": 0}

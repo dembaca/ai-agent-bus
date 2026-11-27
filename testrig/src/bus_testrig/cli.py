@@ -243,6 +243,11 @@ def _untrustworthy(run: runner.Run, *, expect_loss: bool = False) -> bool:
     nothing, and a fault that lost everything is a dead path wearing a fault's
     name.
     """
+    if run.fault in ("restart", "hang", "kill-client") and not run.recovered:
+        print(f"bus-testrig: no post was sent after the fault's window under --fault "
+              f"{run.fault}: the sender never came back, so the run measured no recovery",
+              file=sys.stderr)
+        return True
     if run.relay.get("failed") or run.relay.get("hook_errors"):
         why = next((n for n in run.notes if n.startswith("consumer reconcile")), "")
         print(f"bus-testrig: the CONNECT hook failed "

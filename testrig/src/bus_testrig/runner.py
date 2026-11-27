@@ -68,6 +68,9 @@ class Run:
     send_interval: float = 0.0
     commit: str = ""
     closed: str = ""  # set when a fault ended the connection (a cut)
+    #: a post was sent successfully after the fault's window closed: a sender
+    #: that never came back makes a restart/hang run say nothing (review B1)
+    recovered: bool = False
     #: how many frames the run had sent when it stopped sending
     sent_frames: int = 0
     #: the bus's own stderr when the target was a process: a failure is read
@@ -177,6 +180,7 @@ class Run:
             "commit": self.commit,
             "duration_s": round(self.ended - self.started, 3) if self.ended else None,
             "connection_closed": self.closed or None,
+            "recovered": self.recovered,
             "stderr_tail": self.tail,
             "notes": self.notes,
             "relay": self.relay,

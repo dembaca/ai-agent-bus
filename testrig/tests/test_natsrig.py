@@ -340,14 +340,15 @@ async def test_a_short_nats_run_delivers_everything():
 @pytest.mark.bus
 async def test_a_nats_restart_is_survived():
     _live()
-    # Paced, so that sends after the window exist; the settle outlasts the bus's
-    # own reconnect back-off (it doubles), so a slow reconnect is not read as a
-    # lost run (review point 1).
-    run = await natsrig.nats_bus_run(count=6, fault="restart", fault_sec=0.5, send_interval=1.0,
+    # Sends continue past the window and the settle outlasts the doubling
+    # back-off; the run must have sent a post after the window (recovered) and
+    # carried one that was sent after it (review B2).
+    run = await natsrig.nats_bus_run(count=20, fault="restart", fault_sec=0.5, send_interval=1.0,
                                      settle_sec=30.0)
     assert run.relay["server_restarts"] == 1
-    assert run.received, run.report()  # the bus came back and carried posts after the restart
-    assert max(run.received) >= 3, sorted(run.received)
+    assert run.recovered, run.report()  # a post was sent after the restart's window
+    at_send = run.fault_params["at_send"]
+    assert max(run.received) > at_send, (at_send, sorted(run.received))
 
 
 @pytest.mark.bus

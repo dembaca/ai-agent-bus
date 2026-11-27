@@ -539,8 +539,15 @@ async def nats_bus_run(count: int = 10, fault: str | None = None, *, fault_sec: 
                     await asyncio.sleep(fault_sec)
                     rx.proc = nats_session(stub.url, receiver_id, relay.url, state_dir=receiver_state)
                     await rx.proc.start()
-                    await asyncio.sleep(0.5)  # its first CONNECT reconciles the consumer
-                    run.consumer_at_resume = await admin.consumer_info(consumer)
+                    # Its first CONNECT reconciles the consumer: poll until the
+                    # server shows a change, at most 5 s (review nit: no fixed 0.5 s).
+                    for _ in range(25):
+                        await asyncio.sleep(0.2)
+                        info = await admin.consumer_info(consumer)
+                        if info.get("delivered_stream_seq") != (run.consumer_at_kill or {}).get(
+                                "delivered_stream_seq"):
+                            break
+                    run.consumer_at_resume = info
                     # The resumed session's inbox opens on its first wait, which is the
                     # reader's own: a wait made here would hand over the posts that
                     # waited for the session and nobody would count them.
@@ -568,6 +575,8 @@ async def nats_bus_run(count: int = 10, fault: str | None = None, *, fault_sec: 
                 else:
                     run.sent_frames += 1
                     seq_of[str(post["id"])] = seq
+                    if window is not None and window.done():
+                        run.recovered = True
                 await asyncio.sleep(send_interval)
             if window is not None:
                 await window
