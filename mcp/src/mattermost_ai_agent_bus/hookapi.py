@@ -1368,6 +1368,14 @@ async def instructions(client: ChatPort, query: Mapping[str, str], body: Mapping
     return 200, {"instructions": server.mcp.instructions or ""}
 
 
+def start_notes() -> list[str]:
+    """What a session's start line says besides the login (#261): every unknown `CB_` name
+    and why no NATS login starts. Names, never values."""
+    from . import config, lease
+
+    return [*config.unknown_names(), *([n] if (n := lease.left_out_note()) else [])]
+
+
 async def login_link(client: ChatPort, query: Mapping[str, str], body: Mapping[str, Any]) -> Reply:
     """The NATS login approval waiting right now, for the harness's own terminal (#198): the
     link and the code — never a token — or an empty object when nothing waits. One line per
@@ -1376,11 +1384,13 @@ async def login_link(client: ChatPort, query: Mapping[str, str], body: Mapping[s
 
     running = login_mod.current()
     line = running.pending_line() if running is not None else None
+    notes = start_notes()
+    extra = {"notes": notes} if notes else {}
     if line is None:
-        return 200, {}
+        return 200, extra
     link, code, expires_in = line
     return 200, {"link": link, "user_code": code, "expires_in": expires_in,
-                 "line": _line_text(link, code, expires_in)}
+                 "line": _line_text(link, code, expires_in), **extra}
 
 
 async def login_shown(client: ChatPort, query: Mapping[str, str], body: Mapping[str, Any]) -> Reply:

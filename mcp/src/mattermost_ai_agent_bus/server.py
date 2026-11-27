@@ -940,6 +940,11 @@ async def _key_on_roots(session: Any) -> None:
     log.info("workspace from the client's roots: %s", path)
 
 
+def _joined_warning(*parts: str) -> dict[str, str]:
+    text = "; ".join(p for p in parts if p)
+    return {"warning": text} if text else {}
+
+
 def _hook_warning() -> dict[str, str]:
     """A second MCP server in this workspace (RT-6.17 error handling)."""
     text = _hook_api.warning() if _hook_api is not None else ""
@@ -1042,7 +1047,7 @@ async def session_start(
     if client.reaped:
         out["reaped_stale_bots"] = client.reaped
     warnings = [w for w in (client.profile_warning, out.pop("guest_warning", ""),
-                            _hook_warning().get("warning", "")) if w]
+                            _hook_warning().get("warning", ""), *hookapi.start_notes()) if w]
     if warnings:
         out["warning"] = "; ".join(warnings)
     return _out("session_start", out)
@@ -1088,7 +1093,7 @@ async def bus_info() -> str:
                 "CB_MM_PROJECT_CHANNEL are set; otherwise the host must pass the bus "
                 "settings into the session"),
             "release": release.notice(VERSION),
-            **_hook_warning(),
+            **_joined_warning(_hook_warning().get("warning", ""), *hookapi.start_notes()),
         })
     trusted = await client.trusted_humans()
     humans: list[dict[str, str | None]] = []
@@ -1108,7 +1113,7 @@ async def bus_info() -> str:
                and profile.unbound(await client.bot_description(me.id)) else "")
     # RT-6.18: no relay reached the host process (none since its start).
     warnings = [w for w in (unbound, *own.warnings, _hook_warning().get("warning", ""),
-                            hosted.relay_warning(), *lease.nats_notes()) if w]
+                            hosted.relay_warning(), *lease.nats_notes(), *config.unknown_names()) if w]
     return _out("bus_info", {
         "version": VERSION,
         "on_bus": True,

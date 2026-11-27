@@ -17,6 +17,7 @@ wins, never a refusal. The registrar's names
 
 from __future__ import annotations
 
+import difflib
 import logging
 import os
 import re
@@ -115,6 +116,42 @@ INTERNAL = frozenset({
     "CB_REL_TMP", "CB_BUS_CLIENT", "CB_BUS_HOST_PID", "CB_BUS_HOST_START", "CB_BUS_PID", "CB_CLAUDE_SID",
     "CB_KEPT_CLAUDE_SID", "CB_KEPT_WORKDIR", "CB_SERVER_ENDED", "CB_SESSION_PID", "CB_BUS_HOOK_DISPATCH",
 })
+
+# CB_ names that are no setting of this server but belong to something else in the
+# same environment (docs/env-names.md: the other services' tables, the hooks' and
+# scripts' own variables, the tests): never reported as unknown. tests/hooks/
+# test_env_names.py pins that every name that page lists is known here or by prefix.
+OTHER_PREFIXES = ("CB_AUTH_", "CB_AUTHD_", "CB_BRIDGE_", "CB_CONSOLE_", "CB_TEST_", "CB_TESTRIG_", "CB_MM_TEST_",
+                  "CB_REL_", "CB_ENV_", "CB_BUS_")
+OTHER = frozenset({
+    "CB_AGENT_BUS_ROOT", "CB_NATS_SERVER", "CB_PLANB_TEST", "CB_SESSION_NONCE", "CB_ANSWER",
+    "CB_AUTO_FILE", "CB_AUTO_LOG", "CB_CREDS_FROM_FD", "CB_CROWN", "CB_CROWN_UNTIL", "CB_HOLD_FILE",
+    "CB_HOOK_INPUT", "CB_INBOX", "CB_LISTENING", "CB_MM_API_BODY", "CB_MM_API_STATUS", "CB_NEEDS_RE",
+    "CB_SIGNERS_FILE", "CB_SIGNERS_MAX", "CB_SIGNOFF", "CB_UPDATE", "CB_WITHDRAWN_FILE",
+})
+
+
+def known(name: str) -> bool:
+    """`name` is a setting of the bus (or something else in the project's table)."""
+    return (name in RENAMED or name in INTERNAL or name in OTHER
+            or name.startswith(OTHER_PREFIXES))
+
+
+def unknown_names(environ: Mapping[str, str] | None = None) -> list[str]:
+    """One line per `CB_` name in the environment that nothing knows (#261): a typo or a
+    wrong prefix would otherwise leave its setting silently unread. With the closest known
+    name, the `CB_MM_` prefix swap first. Names only, never a value."""
+    names = sorted(n for n in (os.environ if environ is None else environ)
+                   if n.startswith("CB_") and not known(n))
+    pool = sorted(RENAMED)
+    out = []
+    for name in names:
+        swap = ("CB_" + name[len("CB_MM_"):]) if name.startswith("CB_MM_") else "CB_MM_" + name[len("CB_"):]
+        near = [swap] if swap in RENAMED else difflib.get_close_matches(name, pool, n=1, cutoff=0.8)
+        hint = f" (did you mean {near[0]}?)" if near else ""
+        out.append(f"unknown setting {name}{hint}")
+    return out
+
 
 # Old names whose deprecation this process has logged (once each).
 _warned: set[str] = set()
