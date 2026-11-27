@@ -1,6 +1,7 @@
 // Package directory is the bus's channel directory on NATS (ADR-016 point 2, RT-6.39):
 // the channels with their owner, whether they are public, their members as
-// Keycloak identities and a binding per chat; and per identity its fixed
+// Keycloak identities, a binding per chat and the plan B pieces switched on
+// in them (ADR-014 phase 5); and per identity its fixed
 // anchor and the name it shows. It lives in one key-value bucket in the
 // tenant account that only the login service writes; agents have no right on
 // $KV or $JS (ADR-014 point 16), so they neither read nor write it.
@@ -90,6 +91,9 @@ type Channel struct {
 	// Bindings name the channel in each chat, by product ("mattermost": its
 	// channel name there); a channel without one lives on NATS only.
 	Bindings map[string]string `json:"bindings,omitempty"`
+	// PlanB are the plan B pieces switched on in the channel (1 to MaxPiece,
+	// sorted, each once; planb.go, RT-6.39 step 5); none by default.
+	PlanB []int `json:"planb,omitempty"`
 }
 
 // Identity is a human on the bus: a Keycloak identity.
@@ -342,6 +346,11 @@ func (s *Store) PutChannel(ctx context.Context, c Channel, rev uint64) (uint64, 
 			return 0, err
 		}
 	}
+	pieces, err := NormalPieces(c.PlanB)
+	if err != nil {
+		return 0, err
+	}
+	c.PlanB = pieces
 	return s.put(ctx, channelPrefix+c.Name, c, rev)
 }
 

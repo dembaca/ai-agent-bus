@@ -88,7 +88,10 @@ func run(log *slog.Logger) error {
 	}
 	h := &health{}
 	var wg sync.WaitGroup
-	pr := &presence.Reader{Log: log, Deliver: cfg.Deliver + ".presence", Into: snapshot}
+	// Plan B's switches per channel, as the login service writes them from the
+	// channel directory (RT-6.39 step 5): no piece reads them yet.
+	planb := &presence.Switches{}
+	pr := &presence.Reader{Log: log, Deliver: cfg.Deliver + ".presence", Into: snapshot, PlanB: planb}
 	wg.Add(1)
 	go func() {
 		defer wg.Done()

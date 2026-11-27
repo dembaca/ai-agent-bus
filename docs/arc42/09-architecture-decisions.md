@@ -3990,7 +3990,8 @@ plan B is proven. Proposed, from that choice of plan B directly: the
 owner's approval that opens the central adapter, which the acceptance of
 the parallel operation (phase 4) set, moves to before the last piece.
 Proposed as well: the pieces, their order and the acceptance below.
-Nothing of it is built.
+Built so far: the switch per piece and channel (below), which no piece
+reads yet (RT-6.39 step 5).
 
 - **Context.** Phase 5 is accepted when the bus's scenarios with humans
   run without any agent holding a Mattermost token. A home over NATS
@@ -4103,7 +4104,17 @@ Nothing of it is built.
     two ends (DMs between agents, asks, replies, status, permission
     prompts) is switched in one place, never per host. A session gets
     the flags of its own channels with its credential; the bridge, which
-    holds no agent credential, reads them from the directory.
+    holds no agent credential, reads them from the directory. Built
+    (RT-6.39 step 5), with one difference: a host never sees its user
+    JWT, so the login service writes, at every credential, each granted
+    channel's pieces on `<presence>.planb.<channel>.v1`, a subject only
+    it may publish. Each agent's presence consumer delivers the records
+    of its own channels, and the bridge, which has no right on the
+    directory's bucket, reads every channel's through its presence
+    consumer; a change reaches them at the next credential issued in
+    the channel, whose agent it is does not matter. A record that cannot
+    be written refuses no credential: every piece is then off, the old
+    path.
   - During a flag change each end reads both paths and sends by its own
     flag, since a flag reaches a session only at its next credential, or
     at its next start until switching at a renewal is built (the guest

@@ -151,6 +151,7 @@ type Service struct {
 	nmu        sync.Mutex           // guards notices
 	notices    map[string]time.Time // notice key -> when it was published
 	persons    personHooks          // the console's path (person.go); unset: none issued
+	planb      planBHook            // plan B's switches (planb.go); unset: no record is written
 }
 
 // SetAnchors sets where anchors come from. nil (the default) takes the
@@ -442,6 +443,9 @@ func (s *Service) authorize(ctx context.Context, req *jwt.AuthorizationRequestCl
 			s.log.Info("auth callout", "event", "account record kept", "sub", id.Subject, "reason", skipped)
 		}
 	}
+	// Plan B's switches of the granted channels (RT-6.39 step 5): written
+	// beside the credential, never a reason to refuse it.
+	s.publishPlanB(ctx, agent, channels, now)
 	return userJWT, who, nil
 }
 

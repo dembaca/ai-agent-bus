@@ -294,7 +294,8 @@ func (m *Manager) desired(agent, anchor string, channels []string) []spec {
 			spec{stream: BusStream, name: agent + "_hu_" + ch, hu: true,
 				deliver: DeliverPrefix + "." + agent + ".hu." + ch, filters: []string{m.cfg.Bus + ".hu." + ch + ".*"}})
 		filters = append(filters, m.cfg.Presence+".crown."+ch+".*", m.cfg.Presence+".member."+ch+".*",
-			m.cfg.Presence+".bridge."+ch+".v1") // whether the bridge carries the channel's people
+			m.cfg.Presence+".bridge."+ch+".v1", // whether the bridge carries the channel's people
+			m.cfg.Presence+".planb."+ch+".v1")  // the plan B pieces switched on there (RT-6.39 step 5)
 	}
 	out = append(out,
 		spec{stream: BusStream, name: agent + "_dm", dm: true, deliver: DeliverPrefix + "." + agent + ".dm",
