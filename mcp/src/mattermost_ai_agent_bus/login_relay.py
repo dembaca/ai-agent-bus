@@ -112,8 +112,9 @@ class RelayedLogin:
         self._next = 0
         self._kp: nkeys.KeyPair | None = None
         self._tasks: set[asyncio.Task[None]] = set()
-        # The sandbox shows the link through its own hook API (#198); the relay has
-        # no grant of its own to hand out.
+        # The approval the sandbox waits on, for its terminal (#198): set at the
+        # sandbox's `waiting` event, cleared when it settles, one line per login.
+        self._pending: DeviceGrant | None = None
         self._shown = False
         self._approval_open = False
         self._approval_id = 0
@@ -132,12 +133,20 @@ class RelayedLogin:
         return offer(self.settings, self._human().strip())
 
     def pending(self) -> DeviceGrant | None:
-        """The relay holds no grant of its own: the host's link reaches the TUI over
-        the relay's channel (#198)."""
-        return None
+        """The approval the sandbox waits on, for the harness's terminal (#198): the
+        link the host built from its own issuer and the code it checked."""
+        return None if self._shown else self._pending
 
     def shown(self) -> None:
         self._shown = True
+
+    def pending_line(self) -> tuple[str, str, int] | None:
+        """The waiting approval as (link, code, expires_in) for a terminal (#198),
+        or None when nothing waits or it was shown."""
+        grant = self.pending()
+        if grant is None:
+            return None
+        return grant.verification_uri_complete or grant.verification_uri, grant.user_code, grant.expires_in
 
     async def run(self) -> None:
         """Settle an ask an earlier session left open; the login itself runs in the
@@ -276,6 +285,9 @@ class RelayedLogin:
         if event == "waiting":
             grant = self._grant(msg)
             if grant is not None:
+                # The approval the sandbox waits on, for the harness's terminal (#198);
+                # the link was built here from the issuer, the code checked above.
+                self._pending, self._shown = grant, False
                 self._offer_approval(grant)
         elif event == "settled" and msg.get("outcome") in OUTCOMES:
             if self._approval_open:

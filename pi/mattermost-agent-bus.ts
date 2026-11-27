@@ -838,6 +838,7 @@ export function create(pi: ExtensionAPI, deps: Deps = {}) {
     // unanswered=1: a bus post without a reply in its thread blocks once (RT-6.2 step 2).
     const q = `drains=${t.drains}&signoff_asked=${+t.signoffAsked}&by_bus=${+t.byBus}&push=1&unanswered=1`
     const r = await bus("GET", `/v1/turn-end?${q}`, undefined, SLOW_MS)
+    await loginLine() // a grant that started after the session start (#198)
     // The human typed meanwhile, or a wake-up went out: that run ends with its own check.
     if (t.human !== human || t.running || t.ours) return
     // The posts an answer names are marked only now that the block goes out, so

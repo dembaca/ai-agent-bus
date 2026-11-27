@@ -73,7 +73,8 @@ const paths = () => rest().map((c) => c.method + " " + c.path)
 const wakes = () => calls.filter((c) => c.path.startsWith("/v1/wake"))
 // The calls but the long poll, which runs on between turns, the bot check of
 // a human turn (RT-6.20 step 3) and the wait signal (RT-6.18 step 11), tested apart.
-const rest = () => calls.filter((c) => !c.path.startsWith("/v1/wake") && c.path !== "/v1/me" && c.path !== "/v1/waiting")
+const rest = () => calls.filter((c) => !c.path.startsWith("/v1/wake") && c.path !== "/v1/me" &&
+  c.path !== "/v1/waiting" && c.path !== "/v1/login" && c.path !== "/v1/login/shown")
 
 before(async () => {
   for (const v of ["CLAUDE_CODE_SESSION_ID", "CLAUDE_PROJECT_DIR", "CURSOR_PROJECT_DIR", "CB_WORKSPACE",

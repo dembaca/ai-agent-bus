@@ -54,7 +54,7 @@ the rules on sub-agents, approvals, questions to you and replying in the thread
 At its session start the extension also asks for a waiting NATS login approval
 (`GET /v1/login`, #198): when one waits it shows the link and the code once in
 pi's terminal — never a token — and marks it shown. A grant that starts after
-the session start is shown by the first turn's notice instead.
+the session start is seen at the next turn's end.
 
 The extension registers the MCP server `ai-agent-bus` for the session (`uv run
 --locked --project <checkout>/mcp mattermost-ai-agent-bus-mcp`) and the skill directory.

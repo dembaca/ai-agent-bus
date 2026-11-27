@@ -795,6 +795,7 @@ export async function setup(ctx: Plugin.Context) {
       // unanswered=1: a bus post without a reply in its thread blocks once (RT-6.2 step 2).
       const q = `drains=${t.drains}&signoff_asked=${+t.signoffAsked}&by_bus=${+t.byBus}&push=1&unanswered=1`
       const r = await bus("GET", `/v1/turn-end?${q}`, undefined, SLOW_MS)
+      await loginLine(id) // a grant that started after the session start (#198)
       // The posts an answer names are marked only now that the block goes out, so
       // a dropped check leaves them due; an answer alone that cannot be marked
       // does not block, so a server that cannot mark never blocks in a loop.

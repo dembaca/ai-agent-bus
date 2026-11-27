@@ -147,7 +147,7 @@ before 0.5.0 are described in the git history.
   Claude Code's session-start hook as a `systemMessage`, the pi extension's
   notice and the OpenCode plugin's synthetic line. The line is marked shown with
   `POST /v1/login/shown`, so the next turn's notice does not repeat it; a grant
-  that starts after the session start is shown by the first turn's notice.
+  that starts after the session start is seen at the next turn's end.
 
 ### Fixed
 
