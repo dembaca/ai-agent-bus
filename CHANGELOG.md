@@ -8,27 +8,23 @@ before 0.5.0 are described in the git history.
 ### Added
 
 - **The STATS history: a year of statistics, and the stats channel's lines
-  imported** (#196, RT-6.45). The login service makes two more streams, each
-  365 days, 64 MiB, 16 KiB per message and at most 500 lines per name, no
-  agent's right on either: `STATS_ARCHIVE` on `stats-archive.>`
-  (`CB_AUTH_STATS_ARCHIVE_PREFIX`), which JetStream fills with a copy of every
-  `STATS` line (the stream's one source, `STATS`, onto `<archive>.<name>`, the
-  oldest discarded), and `STATS_IMPORT` on `stats-import.>`, which only the
-  import writes (a full one refuses). The service warns
-  `stats history over 80 % full` and `stats archive: the copy of STATS is
-  failing` in its log. `authd dir stats-import` (`POST /v1/stats/import`,
-  admins) copies the `STATS` lines of the stats channel
-  (`CB_MM_STATS_CHANNEL`) at least 2 minutes old into the import stream byte
-  for byte under each bot's name, the newest 500 per name, the lines from
-  before 0.91.0 (no `sid`, no `part`) included, marked
-  `Cb-Source: mattermost-import` with the post's time in `Cb-Orig-Time` and
-  its id in `Cb-Post-Id`; it skips a line the archive holds by (`sid`,
-  `part`) and one the import stream holds by post id or by name, `sid` and
-  `part`, so it can run as often as wanted until Mattermost goes. One run
-  reads at most 100,000 posts and holds at most 64 MiB of lines, the newest
-  first; the next run takes the rest. The login service's JetStream user needs nine new
-  rights (`nats-server.example.conf`) before the upgrade starts it. Nothing
-  reads the history yet: the console still reads `STATS`, 7 days back.
+  imported** (#196, RT-6.45). The `STATS` stream keeps 365 days instead of
+  30 (64 MiB, 8 KiB per message and 500 per subject as before, the oldest
+  discarded); the login service brings an existing stream's limits to these
+  in place at its start (a larger size set by hand is kept) and warns
+  `stats stream over 80 % full` in its log. `authd dir stats-import`
+  (`POST /v1/stats/import`, admins) publishes the `STATS` lines of the stats
+  channel (`CB_MM_STATS_CHANNEL`) at least 2 minutes old into `STATS` on
+  `<stats>.import-<bot>`, a subject no agent may publish, byte for byte, the
+  lines from before 0.91.0 (no `sid`, no `part`) included, the newest 500
+  per bot, marked `Cb-Source: mattermost-import` with the post's time in
+  `Cb-Orig-Time` and its id in `Cb-Post-Id`; it skips a line `STATS` holds
+  by (`sid`, `part`) or by post id, so it can run as often as wanted until
+  Mattermost goes. One run reads at most 100,000 posts and holds at most
+  64 MiB of lines, the newest first. The login service's JetStream user
+  needs two new rights, `$JS.API.STREAM.UPDATE.STATS` and publish on
+  `<stats>.>` (`nats-server.example.conf`), before the upgrade starts it.
+  Nothing reads more than 7 days of it yet: the console reads 7 days back.
 
 - **The central bridge sweeps the agent bots it made** (#151 step 2, RT-6.44): every 10 minutes it disables a bot it made for an agent that has shown no presence and posted nothing for longer than `CB_BRIDGE_MM_BOT_KEEP` (default `24h`, at least `1h`), and revokes the bot's tokens; at most 20 bots per pass, none while the presence feed is stale. A bot is the bridge's only by its prefix and its mark in the description together, never by the prefix alone, so the registrar's bots stay the host sweep's. Last seen is kept in memory: after a restart every bot counts as seen at the start. An agent that comes back gets its bot enabled again and a fresh token at its next message; only bots the sweep disabled (their description marked ` (swept)`) come back, one an admin disabled stays off. No new right, no new endpoint, nothing persisted; hosts notice nothing.
 

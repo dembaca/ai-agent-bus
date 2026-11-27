@@ -204,54 +204,33 @@ func TestNoPrefixIsTheInbox(t *testing.T) {
 	}
 }
 
-// RT-6.45: no agent may publish (or subscribe) on the STATS history's
-// subjects, the archive's or the import stream's, whatever channels its credential carries: only the login
-// service's JetStream user writes the archive.
-func TestNoAgentMayPublishTheStatsArchive(t *testing.T) {
-	s := Config{Account: "BUS"}.WithDefaults().Subjects
-	if s.Archive != DefaultArchive || DefaultArchive != "stats-archive" {
-		t.Fatalf("archive default %q", s.Archive)
-	}
+// RT-6.45: no agent may publish an imported STATS line (<stats>.import-<bot>),
+// whatever channels its credential carries, and no name prefix may make an
+// agent's name start like one.
+func TestNoAgentMayPublishAnImportedStatsLine(t *testing.T) {
+	c := Config{Account: "BUS"}.WithDefaults()
 	for _, chans := range [][]string{nil, {"home"}, {"home", "ga", "gb"}} {
-		p := s.permissions("agent-x", "alice", "home", chans)
-		for _, subject := range []string{"stats-archive.agent-x", "stats-archive.agent-y", "stats-archive.x.y", "stats-import.agent-x", "stats-import.x"} {
+		p := c.Subjects.permissions("agent-x", "alice", "home", chans)
+		for _, subject := range []string{"stats.import-agent-x", "stats.import-bot", "stats.import-x"} {
 			for _, f := range p.Pub.Allow {
 				if match(f, subject) {
 					t.Errorf("channels %v: publish %s allows %s", chans, f, subject)
 				}
 			}
-			for _, f := range p.Sub.Allow {
-				if match(f, subject) {
-					t.Errorf("channels %v: subscribe %s allows %s", chans, f, subject)
-				}
-			}
 		}
 	}
-}
-
-// The STATS history's prefix (CB_AUTH_STATS_ARCHIVE_PREFIX, RT-6.45) is a
-// plain token of its own: not the deliver or inbox prefix, none of the other
-// three.
-func TestTheStatsArchivePrefixIsChecked(t *testing.T) {
-	ok := Config{Account: "BUS"}.WithDefaults()
-	if err := ok.check(); err != nil {
-		t.Fatal(err)
+	for _, prefix := range []string{"import-", "import-agent-"} {
+		bad := c
+		bad.NamePrefix = prefix
+		if err := bad.check(); err == nil || !strings.Contains(err.Error(), "import") {
+			t.Errorf("name prefix %q: %v", prefix, err)
+		}
 	}
-	for name, edit := range map[string]func(*Config){
-		"dot":             func(c *Config) { c.Subjects.Archive = "a.b" },
-		"wildcard":        func(c *Config) { c.Subjects.Archive = ">" },
-		"deliver":         func(c *Config) { c.Subjects.Archive = DeliverPrefix },
-		"subject prefix":  func(c *Config) { c.Subjects.Archive = c.Subjects.Prefix },
-		"presence prefix": func(c *Config) { c.Subjects.Archive = c.Subjects.Presence },
-		"stats prefix":    func(c *Config) { c.Subjects.Archive = c.Subjects.Stats },
-		"inbox":           func(c *Config) { c.Subjects.Archive = "_INBOX" },
-		"import":          func(c *Config) { c.Subjects.Archive = "stats-import" },
-		"stats on import": func(c *Config) { c.Subjects.Stats = "stats-import" },
-	} {
-		c := ok
-		edit(&c)
-		if err := c.check(); err == nil || !strings.Contains(err.Error(), "archive prefix") && !strings.Contains(err.Error(), "inbox prefix") && !strings.Contains(err.Error(), "import's prefix") {
-			t.Errorf("%s: %v", name, err)
+	for _, prefix := range []string{"agent-", "imp-", "import"} {
+		ok := c
+		ok.NamePrefix = prefix
+		if err := ok.check(); err != nil {
+			t.Errorf("name prefix %q: %v", prefix, err)
 		}
 	}
 }

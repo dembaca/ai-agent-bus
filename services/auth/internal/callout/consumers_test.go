@@ -206,8 +206,8 @@ func TestEnsureStreamsCreatesTheSafeConfig(t *testing.T) {
 				t.Errorf("PRESENCE max_msgs_per_subject = %v", g["max_msgs_per_subject"])
 			}
 		}
-		if st == "STATS" { // RT-6.43
-			wantAge, wantBytes = float64(30*24*time.Hour), float64(64<<20)
+		if st == "STATS" { // RT-6.43, a year since RT-6.45
+			wantAge, wantBytes = float64(365*24*time.Hour), float64(64<<20)
 			if g["max_msgs_per_subject"] != float64(500) || g["max_msg_size"] != float64(8192) || g["storage"] != "file" {
 				t.Errorf("STATS: %v", g)
 			}
@@ -932,32 +932,23 @@ func TestTheDocumentedMinimalRightsSuffice(t *testing.T) {
 	if err := mgr.EnsureStreams(ctx5(t)); err != nil {
 		t.Fatalf("EnsureStreams on existing streams: %v", err)
 	}
-	// The STATS history (RT-6.45): both streams made and found again, their
-	// fill read, a line imported and both read back, with the documented
-	// rights.
+	// The STATS history (RT-6.45): the in-place update (twice: idempotent),
+	// the fill, an imported line and the import's reading, with the
+	// documented rights.
+	stats := mgr.Stats()
 	for range 2 {
-		arch, err := mgr.EnsureArchive(ctx5(t), "", 0)
-		if err != nil {
-			t.Fatalf("EnsureArchive: %v", err)
+		if err := stats.Update(ctx5(t)); err != nil {
+			t.Fatalf("STATS update: %v", err)
 		}
-		imp, err := mgr.EnsureImport(ctx5(t), 0)
-		if err != nil {
-			t.Fatalf("EnsureImport: %v", err)
-		}
-		for _, h := range []*consumers.History{arch, imp} {
-			if _, err := h.Fill(ctx5(t)); err != nil {
-				t.Fatalf("%s fill: %v", h.Stream(), err)
-			}
-		}
-		if err := imp.Put(ctx5(t), "agent-x", []byte(`{"sid":"0123456789ab","part":1}`), map[string]string{"Cb-Source": "mattermost-import"}); err != nil && !errors.Is(err, consumers.ErrDuplicate) {
-			t.Fatalf("import put: %v", err)
-		}
-		for _, h := range []*consumers.History{arch, imp} {
-			n := 0
-			if err := h.ReadAll(ctx5(t), func() { n = 0 }, func(string, []byte, nats.Header) error { n++; return nil }); err != nil || (h == imp) != (n > 0) {
-				t.Fatalf("%s read: %d lines, %v", h.Stream(), n, err)
-			}
-		}
+	}
+	if _, err := stats.Fill(ctx5(t)); err != nil {
+		t.Fatalf("STATS fill: %v", err)
+	}
+	if err := stats.Put(ctx5(t), "bot-x", []byte(`{"v":"0.85.0"}`), map[string]string{"Cb-Source": "mattermost-import"}); err != nil {
+		t.Fatalf("STATS import: %v", err)
+	}
+	if err := stats.ReadAll(ctx5(t), func() {}, func(string, []byte, nats.Header) error { return nil }); err != nil {
+		t.Fatalf("STATS read: %v", err)
 	}
 	ctx, cancel := context.WithCancel(context.Background())
 	t.Cleanup(cancel)

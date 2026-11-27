@@ -19,16 +19,16 @@ import (
 	"github.com/dembaca/ai-agent-bus/services/auth/internal/token"
 )
 
-// The STATS import (RT-6.45): the lines the stats channel holds, copied into
-// a stream of their own, STATS_IMPORT, each under its bot's name, marked as
-// imported and with its original time. The archive (STATS_ARCHIVE) holds the
-// copies of STATS only, so no agent's line can pass for an imported one, and
-// no bot's line lands among an agent's. It can run again: a line already
-// there is skipped, so a second run imports nothing, and a run that stopped
-// is completed by the next. The line is stored byte for byte as the channel
-// holds it; the strict decoder of whoever reads it applies the allow list.
-// Lines from before 0.91.0 have no sid and part: they are imported too, known
-// by their post's id.
+// The STATS import (RT-6.45): the lines the stats channel holds, published
+// into the STATS stream on <stats>.import-<bot>, a subject no agent may
+// publish, marked as imported and with their original time. It can run
+// again: a line STATS already holds is skipped, so a second run imports
+// nothing, and a run that stopped is completed by the next. STATS has no_ack
+// and a duplicate window of 100 ms, so that check of what STATS holds is the
+// only duplicate check. The line is stored byte for byte as the channel holds
+// it; the strict decoder of whoever reads it applies the allow list. Lines
+// from before 0.91.0 have no sid and part: they are imported too, known by
+// their post's id.
 
 // StatsSource is what the import reads from Mattermost (mattermost.Client).
 type StatsSource interface {
@@ -38,40 +38,29 @@ type StatsSource interface {
 	Users(ctx context.Context, ids []string) ([]mattermost.User, error)
 }
 
-// HistoryReader reads one stream of the STATS history (consumers.History).
-type HistoryReader interface {
-	// ReadAll calls fn with the name, the body and the headers of every line
-	// the stream holds (for the archive once its copy of STATS has caught
-	// up); begin runs before each pass over it.
+// StatsStore is the STATS stream (consumers.Stats).
+type StatsStore interface {
+	// ReadAll calls fn with the name (the subject's last token), the body and
+	// the headers of every line STATS holds; begin runs before the pass.
 	ReadAll(ctx context.Context, begin func(), fn func(name string, body []byte, hdr nats.Header) error) error
-}
-
-// ImportStore is the import stream (consumers.History of STATS_IMPORT).
-type ImportStore interface {
-	HistoryReader
-	// Put stores one line on the name's subject and waits for the stream's
-	// acknowledgement; consumers.ErrDuplicate when the stream took it as a
-	// duplicate.
-	Put(ctx context.Context, name string, body []byte, hdr map[string]string) error
+	// Put publishes one line on <stats>.import-<bot> with its headers.
+	Put(ctx context.Context, bot string, body []byte, hdr map[string]string) error
 }
 
 // StatsImport configures the import; a nil one in Config turns it off.
 type StatsImport struct {
 	Channel string // the stats channel (CB_MM_STATS_CHANNEL)
 	Source  StatsSource
-	Archive HistoryReader // STATS_ARCHIVE: the copies of STATS
-	Store   ImportStore   // STATS_IMPORT
-	// CatchUp bounds the wait for the archive's copy of STATS (default 30 s).
-	CatchUp time.Duration
+	Store   StatsStore
 	// MinAge: a post younger than this when the run starts is left for the
-	// next run, since its line may still be on its way to STATS and the
-	// archive (default 2 min).
+	// next run, since its line may still be on its way to STATS (default
+	// 2 min).
 	MinAge time.Duration
 	// MaxRead bounds the posts one run reads (default 100,000), MaxHeld the
-	// bytes of lines it holds to import (default the import stream's size,
-	// 64 MiB: more could not be stored). Reaching either ends the reading
-	// there: the newest posts are read first, the older ones wait, and the
-	// report says truncated.
+	// bytes of lines it holds to import (default the STATS stream's size,
+	// 64 MiB: more would push its own lines out). Reaching either ends the
+	// reading there: the newest posts are read first, the older ones wait,
+	// and the report says truncated.
 	MaxRead int
 	MaxHeld int
 }
@@ -87,12 +76,13 @@ const (
 const (
 	statsPrefix = "STATS "
 	// StatsLineMax is the largest line the import takes, in bytes of its
-	// JSON, as the MCP server's NATS publish (stats.py NATS_BODY_MAX).
+	// JSON, as the MCP server's NATS publish (stats.py NATS_BODY_MAX): with
+	// its headers within the 8 KiB per message of STATS.
 	StatsLineMax = 8000
-	// statsPerName is how many lines the import keeps per author, the import
-	// stream's cap per name: the newest ones, so a second run stores the
-	// same set.
-	statsPerName = consumers.HistoryMaxMsgsPerSubject
+	// statsPerName is how many lines the import keeps per author, the cap
+	// per subject of STATS: the newest ones, so a second run stores the same
+	// set.
+	statsPerName = consumers.StatsMaxMsgsPerSubject
 	// defaultMaxRead bounds the posts one run reads.
 	defaultMaxRead = 100000
 )
@@ -123,11 +113,6 @@ type StatsReport struct {
 type statsKey struct {
 	sid  string
 	part int64
-}
-
-type namedKey struct {
-	name string
-	statsKey
 }
 
 // Kinds of a line: invalid, with sid and part, or from before 0.91.0
@@ -185,10 +170,7 @@ var errEnough = errors.New("enough read")
 // importStats runs the import (RT-6.45) at the time now.
 func importStats(ctx context.Context, si *StatsImport, now time.Time) (StatsReport, error) {
 	var rep StatsReport
-	wait, minAge, maxRead, maxHeld := si.CatchUp, si.MinAge, si.MaxRead, si.MaxHeld
-	if wait <= 0 {
-		wait = 30 * time.Second
-	}
+	minAge, maxRead, maxHeld := si.MinAge, si.MaxRead, si.MaxHeld
 	if minAge <= 0 {
 		minAge = 2 * time.Minute
 	}
@@ -196,43 +178,30 @@ func importStats(ctx context.Context, si *StatsImport, now time.Time) (StatsRepo
 		maxRead = defaultMaxRead
 	}
 	if maxHeld <= 0 {
-		maxHeld = int(consumers.DefaultImportMaxBytes)
+		maxHeld = int(consumers.DefaultStatsMaxBytes)
 	}
-	// The history first: only posts older than now-minAge are taken, and
-	// their lines were on STATS by then, so the archive read now holds the
-	// copy of each. What the archive holds, by (sid, part) alone: the same
-	// line has the agent's NATS name there and its bot's Mattermost name in
-	// the channel.
-	copied := map[statsKey]bool{}
-	wctx, cancel := context.WithTimeout(ctx, wait)
-	err := si.Archive.ReadAll(wctx, func() { clear(copied) }, func(_ string, body []byte, _ nats.Header) error {
+	// STATS first: only posts older than now-minAge are taken, and their
+	// lines were on STATS by then. Every line by (sid, part): the same line
+	// has the agent's NATS name on STATS and its bot's Mattermost name in the
+	// channel, so names cannot be compared. Imported lines also by their
+	// post's id, read only from the import's own subjects (no agent can
+	// publish there, so no agent can hide a post that way).
+	copied, importedPosts := map[statsKey]bool{}, map[string]bool{}
+	err := si.Store.ReadAll(ctx, func() { clear(copied); clear(importedPosts) }, func(name string, body []byte, hdr nats.Header) error {
 		if k, kind := statsLine(body); kind == lineKeyed {
 			copied[k] = true
 		}
-		return nil
-	})
-	cancel()
-	if err != nil {
-		return rep, fmt.Errorf("the archive: %w", err)
-	}
-	// What the import stream holds: by (name, sid, part), and every line by
-	// its post's id.
-	imported, importedPosts := map[namedKey]bool{}, map[string]bool{}
-	err = si.Store.ReadAll(ctx, func() { clear(imported); clear(importedPosts) }, func(name string, body []byte, hdr nats.Header) error {
-		if k, kind := statsLine(body); kind == lineKeyed {
-			imported[namedKey{name, k}] = true
-		}
-		if id := hdr.Get(HeaderPostID); id != "" {
+		if id := hdr.Get(HeaderPostID); id != "" && strings.HasPrefix(name, consumers.ImportToken) {
 			importedPosts[id] = true
 		}
 		return nil
 	})
 	if err != nil {
-		return rep, fmt.Errorf("the import stream: %w", err)
+		return rep, fmt.Errorf("the stats stream: %w", err)
 	}
 	// The channel, newest first, one page at a time: only the lines to
-	// import are held, at most statsPerName per author (the newest) and at
-	// most maxHeld bytes in all.
+	// import are held, at most statsPerName per author (the newest; the
+	// ones already imported count) and at most maxHeld bytes in all.
 	var todo []candidate
 	perUser := map[string]int{}
 	held := 0
@@ -261,15 +230,18 @@ func importStats(ctx context.Context, si *StatsImport, now time.Time) (StatsRepo
 		case kind == lineInvalid:
 			rep.SkippedInvalid++
 			return nil
-		case kind == lineKeyed && copied[k]:
+		case importedPosts[p.ID] && perUser[p.UserID] < statsPerName: // STATS holds it on the import's subject
+			perUser[p.UserID]++
+			rep.SkippedDuplicate++
+			return nil
+		case importedPosts[p.ID]: // held, but older than the newest of its author: STATS drops it next
+			rep.SkippedOverCap++
+			return nil
+		case kind == lineKeyed && copied[k]: // an agent published it, or an earlier run
 			rep.SkippedDuplicate++
 			return nil
 		case perUser[p.UserID] >= statsPerName:
 			rep.SkippedOverCap++
-			return nil
-		case importedPosts[p.ID]: // counts for the cap: the stream holds it
-			perUser[p.UserID]++
-			rep.SkippedDuplicate++
 			return nil
 		case held+len(body) > maxHeld:
 			rep.Read--
@@ -301,32 +273,20 @@ func importStats(ctx context.Context, si *StatsImport, now time.Time) (StatsRepo
 			rep.SkippedName++
 			continue
 		}
-		nk := namedKey{u.Username, c.key}
-		if importedPosts[c.postID] || (c.keyed && imported[nk]) {
+		if c.keyed && copied[c.key] { // the run stored it already
 			rep.SkippedDuplicate++
 			continue
-		}
-		msgID := "stats-import:post:" + c.postID
-		if c.keyed {
-			msgID = fmt.Sprintf("stats-import:%s:%s:%d", u.Username, c.key.sid, c.key.part)
 		}
 		hdr := map[string]string{
 			HeaderSource:   SourceMattermost,
 			HeaderOrigTime: c.at.Format(time.RFC3339Nano),
 			HeaderPostID:   c.postID,
-			"Nats-Msg-Id":  msgID,
 		}
-		err := si.Store.Put(ctx, u.Username, c.body, hdr)
-		importedPosts[c.postID] = true
+		if err := si.Store.Put(ctx, u.Username, c.body, hdr); err != nil {
+			return rep, fmt.Errorf("the stats stream took %d lines, then: %w", rep.Imported, err)
+		}
 		if c.keyed {
-			imported[nk] = true
-		}
-		switch {
-		case errors.Is(err, consumers.ErrDuplicate):
-			rep.SkippedDuplicate++
-			continue
-		case err != nil:
-			return rep, fmt.Errorf("the import stream took %d lines, then: %w", rep.Imported, err)
+			copied[c.key] = true
 		}
 		rep.Imported++
 		if !c.keyed {
@@ -376,7 +336,7 @@ var errStatsRunning = errors.New("a stats import is running")
 func (h *handler) runStatsImport(w http.ResponseWriter, r *http.Request, id token.Identity) {
 	si := h.cfg.Stats
 	if si == nil {
-		fail(w, http.StatusNotFound, "the stats import is off (no stats channel, or no archive)")
+		fail(w, http.StatusNotFound, "the stats import is off (no stats channel)")
 		return
 	}
 	if !h.statsMu.TryLock() {

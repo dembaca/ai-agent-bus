@@ -54,15 +54,9 @@ func (s *statsChat) Users(_ context.Context, ids []string) ([]mattermost.User, e
 	return out, nil
 }
 
-// history is the lab's two streams of the STATS history.
-type history struct {
-	archive, imports *consumers.History
-	nc               *nats.Conn
-}
-
-// historyLab starts a JetStream server with the bus's streams, the archive
-// and the import stream.
-func historyLab(t *testing.T) history {
+// statsLab starts a JetStream server with the bus's streams and returns the
+// STATS stream's history side and a connection.
+func statsLab(t *testing.T) (*consumers.Stats, *nats.Conn) {
 	t.Helper()
 	srv, err := server.NewServer(&server.Options{Host: "127.0.0.1", Port: -1, JetStream: true,
 		StoreDir: t.TempDir(), NoLog: true, NoSigs: true})
@@ -86,28 +80,20 @@ func historyLab(t *testing.T) history {
 	if err := m.EnsureStreams(ctx(t)); err != nil {
 		t.Fatal(err)
 	}
-	a, err := m.EnsureArchive(ctx(t), "", 0)
-	if err != nil {
-		t.Fatal(err)
-	}
-	i, err := m.EnsureImport(ctx(t), 0)
-	if err != nil {
-		t.Fatal(err)
-	}
-	return history{a, i, nc}
+	return m.Stats(), nc
 }
 
 type stored struct {
-	subject string
-	body    string
-	hdr     nats.Header
+	name string
+	body string
+	hdr  nats.Header
 }
 
-func lines(t *testing.T, h *consumers.History) []stored {
+func lines(t *testing.T, s *consumers.Stats) []stored {
 	t.Helper()
 	var out []stored
-	if err := h.Each(ctx(t), func(subject string, body []byte, hdr nats.Header) error {
-		out = append(out, stored{subject, string(body), hdr})
+	if err := s.ReadAll(ctx(t), func() { out = nil }, func(name string, body []byte, hdr nats.Header) error {
+		out = append(out, stored{name, string(body), hdr})
 		return nil
 	}); err != nil {
 		t.Fatal(err)
@@ -125,14 +111,13 @@ func bot(id, name string) mattermost.User {
 	return mattermost.User{ID: id, Username: name, IsBot: true}
 }
 
-func statsSetup(t *testing.T, chat *statsChat, archive HistoryReader, store ImportStore, edit ...func(*StatsImport)) *env {
+func statsSetup(t *testing.T, chat *statsChat, store StatsStore, edit ...func(*StatsImport)) *env {
 	t.Helper()
-	si := &StatsImport{Channel: "agents-stats", Source: chat, Archive: archive, Store: store, CatchUp: 5 * time.Second}
+	si := &StatsImport{Channel: "agents-stats", Source: chat, Store: store}
 	for _, e := range edit {
 		e(si)
 	}
-	return setupWith(t, Config{Burst: 100, Stats: si},
-		testrealm.NewChat("alice", "bob", "carol", "mal"), &fakeMM{})
+	return setupWith(t, Config{Burst: 100, Stats: si}, testrealm.NewChat("alice", "bob", "carol", "mal"), &fakeMM{})
 }
 
 func runStats(t *testing.T, e *env, tok string, code int) StatsReport {
@@ -148,29 +133,32 @@ func runStats(t *testing.T, e *env, tok string, code int) StatsReport {
 	return rep
 }
 
-// The import writes each valid line into the import stream on
-// stats-import.<bot>, byte for byte, marked as imported with its original
-// time, and never into the archive; skips a line the archive holds (here one
-// JetStream copied from STATS under the agent's NATS name), one the run
-// already wrote under that name, and a post younger than two minutes; counts
-// each bad line under its reason; and a second run imports nothing.
+// The import publishes each valid line on <stats>.import-<bot>, byte for
+// byte, marked as imported with its original time and post id; skips a line
+// STATS holds by (sid, part) (here one an agent published under its NATS
+// name), one the run already wrote, and a post younger than two minutes;
+// imports a line from before 0.91.0 (no sid, no part) by its post id, two
+// posts of the same content as two lines; counts each bad line under its
+// reason; and a second run imports nothing.
 func TestStatsImportMarksDedupesAndDrops(t *testing.T) {
-	h := historyLab(t)
-	if err := h.nc.Publish("stats.agent-nats-name", []byte(`{"sid":"aaaaaaaaaaaa","part":1}`)); err != nil {
+	s, nc := statsLab(t)
+	if err := nc.Publish("stats.agent-nats-name", []byte(`{"sid":"aaaaaaaaaaaa","part":1}`)); err != nil {
+		t.Fatal(err)
+	}
+	if err := nc.Flush(); err != nil {
 		t.Fatal(err)
 	}
 	keep := `{"v":"0.80.0","sid":"bbbbbbbbbbbb","part":2, "x":{"odd":[1,2]}}`
 	older := `{"sid":"cccccccccccc","part":1,"final":true}`
-	other := `{"sid":"bbbbbbbbbbbb","part":2}`
 	oldFormat := `{"v":"0.85.0","turns":3,"bus":{"posts":2}}`
 	chat := &statsChat{users: map[string]mattermost.User{
 		"ua": bot("ua", "agent-a"), "ub": bot("ub", "agent-b"), "uc": bot("uc", "agent-c"),
 		"ud": bot("ud", "dotted.name"), "uh": {ID: "uh", Username: "human"},
 	}, posts: []mattermost.Post{
-		post("p1", "ua", 5, `STATS {"sid":"aaaaaaaaaaaa","part":1,"v":"0.90.0"}`), // copied from STATS
+		post("p1", "ua", 5, `STATS {"sid":"aaaaaaaaaaaa","part":1,"v":"0.90.0"}`), // an agent published it on STATS
 		post("p2", "ua", 6, "STATS "+keep),
-		post("p3", "ua", 7, `STATS {"sid":"bbbbbbbbbbbb","part":2}`), // the run wrote it already, same name
-		post("p3b", "ub", 7, "STATS "+other),                         // another name: its own line
+		post("p3", "ua", 7, `STATS {"sid":"bbbbbbbbbbbb","part":2}`),  // the run wrote it already
+		post("p3b", "ub", 7, `STATS {"sid":"bbbbbbbbbbbb","part":2}`), // so too under another bot
 		post("p4", "ua", 8, "hello"),
 		post("p5", "ua", 9, `STATS {"sid":"XYZ","part":1}`),
 		post("p6", "ua", 10, `STATS {nope`),
@@ -188,37 +176,29 @@ func TestStatsImportMarksDedupesAndDrops(t *testing.T) {
 	if n := len(chat.posts[8].Message) - len("STATS "); n != 8001 {
 		t.Fatalf("the long line is %d bytes", n)
 	}
-	e := statsSetup(t, chat, h.archive, h.imports)
+	e := statsSetup(t, chat, s)
 	rep := runStats(t, e, e.admin, 200)
-	wantRep := StatsReport{Read: 17, Imported: 5, ImportedWithoutSid: 2, NotStats: 1, SkippedDuplicate: 2, SkippedInvalid: 5, SkippedTooBig: 1, SkippedName: 2,
+	wantRep := StatsReport{Read: 17, Imported: 4, ImportedWithoutSid: 2, NotStats: 1, SkippedDuplicate: 3, SkippedInvalid: 5, SkippedTooBig: 1, SkippedName: 2,
 		SkippedRecent: 1, Oldest: t0.Add(time.Minute).Format(time.RFC3339), Newest: t0.Add(18 * time.Minute).Format(time.RFC3339)}
 	if rep != wantRep {
 		t.Fatalf("report\n%+v, want\n%+v", rep, wantRep)
 	}
-	if got := lines(t, h.archive); len(got) != 1 || got[0].subject != "stats-archive.agent-nats-name" {
-		t.Fatalf("the archive holds more than the copy: %+v", got)
-	}
-	got := lines(t, h.imports)
-	if len(got) != 5 {
-		t.Fatalf("%d lines in the import stream: %+v", len(got), got)
-	}
-	for i, id := range []string{"p15", "p16"} {
-		if l := got[3+i]; l.subject != "stats-import.agent-a" || l.body != oldFormat || l.hdr.Get("Cb-Post-Id") != id ||
-			l.hdr.Get("Nats-Msg-Id") != "stats-import:post:"+id {
-			t.Errorf("old line %s: %+v", id, l)
-		}
+	got := lines(t, s)
+	if len(got) != 5 || got[0].name != "agent-nats-name" || got[0].hdr.Get("Cb-Source") != "" {
+		t.Fatalf("%d lines in STATS: %+v", len(got), got)
 	}
 	for i, w := range []struct {
-		subject, body string
-		at            time.Time
+		name, body, post string
+		at               time.Time
 	}{
-		{"stats-import.agent-c", older, t0.Add(time.Minute)}, // oldest post first
-		{"stats-import.agent-a", keep, t0.Add(6 * time.Minute)},
-		{"stats-import.agent-b", other, t0.Add(7 * time.Minute)},
+		{"import-agent-c", older, "p11", t0.Add(time.Minute)}, // oldest post first
+		{"import-agent-a", keep, "p2", t0.Add(6 * time.Minute)},
+		{"import-agent-a", oldFormat, "p15", t0.Add(17 * time.Minute)},
+		{"import-agent-a", oldFormat, "p16", t0.Add(18 * time.Minute)},
 	} {
-		l := got[i]
-		if l.subject != w.subject || l.body != w.body {
-			t.Errorf("line %d: %s %q, want %s %q", i, l.subject, l.body, w.subject, w.body)
+		l := got[i+1]
+		if l.name != w.name || l.body != w.body || l.hdr.Get("Cb-Post-Id") != w.post {
+			t.Errorf("line %d: %s %q %s, want %s %q %s", i, l.name, l.body, l.hdr.Get("Cb-Post-Id"), w.name, w.body, w.post)
 		}
 		if l.hdr.Get("Cb-Source") != "mattermost-import" || l.hdr.Get("Cb-Orig-Time") != w.at.Format(time.RFC3339Nano) {
 			t.Errorf("line %d headers: %v", i, l.hdr)
@@ -228,8 +208,29 @@ func TestStatsImportMarksDedupesAndDrops(t *testing.T) {
 	if again.Imported != 0 || again.SkippedDuplicate != 7 || again.Oldest != "" {
 		t.Fatalf("second run: %+v", again)
 	}
-	if n := len(lines(t, h.imports)); n != 5 {
+	if n := len(lines(t, s)); n != 5 {
 		t.Fatalf("%d lines after the second run", n)
+	}
+}
+
+// A post id on an agent's own subject hides nothing: only the import's own
+// subjects are read for it.
+func TestAPostIdOnAnAgentsSubjectIsIgnored(t *testing.T) {
+	s, nc := statsLab(t)
+	msg := nats.NewMsg("stats.agent-x")
+	msg.Data = []byte(`{"v":"0.86.0"}`)
+	msg.Header.Set("Cb-Post-Id", "p1")
+	if err := nc.PublishMsg(msg); err != nil {
+		t.Fatal(err)
+	}
+	if err := nc.Flush(); err != nil {
+		t.Fatal(err)
+	}
+	chat := &statsChat{users: map[string]mattermost.User{"ua": bot("ua", "agent-a")},
+		posts: []mattermost.Post{post("p1", "ua", 1, `STATS {"v":"0.85.0"}`)}}
+	e := statsSetup(t, chat, s)
+	if rep := runStats(t, e, e.admin, 200); rep.Imported != 1 {
+		t.Fatalf("%+v", rep)
 	}
 }
 
@@ -237,7 +238,7 @@ func TestStatsImportMarksDedupesAndDrops(t *testing.T) {
 // second run stores nothing and pushes nothing out, and a newer post later
 // takes the place of the oldest; with lines of both formats mixed.
 func TestTheStatsImportKeepsTheNewestPerName(t *testing.T) {
-	h := historyLab(t)
+	s, _ := statsLab(t)
 	chat := &statsChat{users: map[string]mattermost.User{"ua": bot("ua", "agent-a")}}
 	line := func(i int) string {
 		if i%2 == 1 {
@@ -248,7 +249,7 @@ func TestTheStatsImportKeepsTheNewestPerName(t *testing.T) {
 	for i := range 502 {
 		chat.posts = append(chat.posts, post(fmt.Sprint("p", i), "ua", i, "STATS "+line(i)))
 	}
-	e := statsSetup(t, chat, h.archive, h.imports)
+	e := statsSetup(t, chat, s)
 	if rep := runStats(t, e, e.admin, 200); rep.Imported != 500 || rep.ImportedWithoutSid != 250 || rep.SkippedOverCap != 2 || rep.Oldest != t0.Add(2*time.Minute).Format(time.RFC3339) {
 		t.Fatalf("first run: %+v", rep)
 	}
@@ -259,7 +260,7 @@ func TestTheStatsImportKeepsTheNewestPerName(t *testing.T) {
 	if rep := runStats(t, e, e.admin, 200); rep.Imported != 1 || rep.SkippedOverCap != 3 {
 		t.Fatalf("a newer post: %+v", rep)
 	}
-	got := lines(t, h.imports)
+	got := lines(t, s)
 	if len(got) != 500 || got[0].body != line(3) {
 		t.Fatalf("%d lines, the oldest %q", len(got), got[0].body)
 	}
@@ -268,58 +269,47 @@ func TestTheStatsImportKeepsTheNewestPerName(t *testing.T) {
 	}
 }
 
-// failing stops after n stored lines, as a run that is cut off; dup answers
-// the first put as a duplicate.
+// failing stops after n published lines, as a run that is cut off.
 type failing struct {
-	ImportStore
-	n   int
-	dup bool
+	StatsStore
+	n int
 }
 
-func (f *failing) Put(ctx context.Context, name string, body []byte, hdr map[string]string) error {
-	if f.dup {
-		f.dup = false
-		return consumers.ErrDuplicate
-	}
+func (f *failing) Put(ctx context.Context, bot string, body []byte, hdr map[string]string) error {
 	if f.n == 0 {
 		return errors.New("cut off")
 	}
 	f.n--
-	return f.ImportStore.Put(ctx, name, body, hdr)
+	return f.StatsStore.Put(ctx, bot, body, hdr)
 }
 
 // A run that stops part way answers 502 and keeps what it wrote; the next run
-// completes it without a duplicate; a line the stream acknowledges as a
-// duplicate is counted as one.
+// completes it without a duplicate.
 func TestAnInterruptedStatsImportIsCompletedByTheNext(t *testing.T) {
-	h := historyLab(t)
+	s, _ := statsLab(t)
 	chat := &statsChat{users: map[string]mattermost.User{"ua": bot("ua", "agent-a")}}
 	for i := range 5 {
 		chat.posts = append(chat.posts, post(fmt.Sprint("p", i), "ua", i, fmt.Sprintf(`STATS {"sid":"%012x","part":%d}`, i, i+1)))
 	}
-	cut := statsSetup(t, chat, h.archive, &failing{ImportStore: h.imports, n: 2})
+	cut := statsSetup(t, chat, &failing{StatsStore: s, n: 2})
 	runStats(t, cut, cut.admin, 502)
-	if n := len(lines(t, h.imports)); n != 2 {
+	if n := len(lines(t, s)); n != 2 {
 		t.Fatalf("%d lines after the cut", n)
 	}
-	e := statsSetup(t, chat, h.archive, &failing{ImportStore: h.imports, n: 5, dup: true})
-	if rep := runStats(t, e, e.admin, 200); rep.Imported != 2 || rep.SkippedDuplicate != 3 {
+	e := statsSetup(t, chat, s)
+	if rep := runStats(t, e, e.admin, 200); rep.Imported != 3 || rep.SkippedDuplicate != 2 {
 		t.Fatalf("the next run: %+v", rep)
 	}
-	e = statsSetup(t, chat, h.archive, h.imports)
-	if rep := runStats(t, e, e.admin, 200); rep.Imported != 1 || rep.SkippedDuplicate != 4 {
-		t.Fatalf("the run after: %+v", rep)
-	}
-	if n := len(lines(t, h.imports)); n != 5 {
+	if n := len(lines(t, s)); n != 5 {
 		t.Fatalf("%d lines in the end", n)
 	}
 }
 
 // Only the admin group imports, and without the stats channel the route is
 // off.
-func TestTheStatsImportWantsTheAdminGroupAndIsOffWithoutAnArchive(t *testing.T) {
-	h := historyLab(t)
-	e := statsSetup(t, &statsChat{}, h.archive, h.imports)
+func TestTheStatsImportWantsTheAdminGroupAndIsOffWithoutAChannel(t *testing.T) {
+	s, _ := statsLab(t)
+	e := statsSetup(t, &statsChat{}, s)
 	runStats(t, e, e.bob, 403)
 	runStats(t, e, "", 401)
 	off := setup(t, Config{Burst: 100})
@@ -331,23 +321,23 @@ func TestTheStatsImportWantsTheAdminGroupAndIsOffWithoutAnArchive(t *testing.T) 
 // lines held; at either the reading ends there, the newest posts imported and
 // the report truncated, and the next run with room takes the older ones.
 func TestTheStatsImportIsBounded(t *testing.T) {
-	h := historyLab(t)
+	s, _ := statsLab(t)
 	chat := &statsChat{users: map[string]mattermost.User{"ua": bot("ua", "agent-a")}}
 	for i := range 6 {
 		chat.posts = append(chat.posts, post(fmt.Sprint("p", i), "ua", i, fmt.Sprintf(`STATS {"v":"0.85.0","n":%d}`, i)))
 	}
-	e := statsSetup(t, chat, h.archive, h.imports, func(si *StatsImport) { si.MaxRead = 2 })
+	e := statsSetup(t, chat, s, func(si *StatsImport) { si.MaxRead = 2 })
 	rep := runStats(t, e, e.admin, 200)
 	if rep.Read != 2 || rep.Imported != 2 || !rep.Truncated || rep.Oldest != t0.Add(4*time.Minute).Format(time.RFC3339) || chat.given != 3 {
 		t.Fatalf("read bound: %+v, %d posts handed out", rep, chat.given)
 	}
 	size := len(`{"v":"0.85.0","n":0}`)
-	e = statsSetup(t, chat, h.archive, h.imports, func(si *StatsImport) { si.MaxHeld = 3*size + 1 })
+	e = statsSetup(t, chat, s, func(si *StatsImport) { si.MaxHeld = 3*size + 1 })
 	rep = runStats(t, e, e.admin, 200)
 	if rep.Imported != 3 || rep.SkippedDuplicate != 2 || !rep.Truncated || rep.Oldest != t0.Add(1*time.Minute).Format(time.RFC3339) {
 		t.Fatalf("held bound: %+v", rep)
 	}
-	e = statsSetup(t, chat, h.archive, h.imports)
+	e = statsSetup(t, chat, s)
 	if rep = runStats(t, e, e.admin, 200); rep.Imported != 1 || rep.SkippedDuplicate != 5 || rep.Truncated {
 		t.Fatalf("with room: %+v", rep)
 	}

@@ -135,8 +135,7 @@ func LoadSettings(env *envname.Env) (Settings, bool, error) {
 		Account:    get("CB_AUTH_ACCOUNT"),
 		Lobby:      get("CB_AUTH_LOBBY"),
 		NamePrefix: get("CB_AUTH_NAME_PREFIX"),
-		Subjects: callout.Subjects{Prefix: get("CB_AUTH_SUBJECT_PREFIX"), Presence: get("CB_AUTH_PRESENCE_PREFIX"), Stats: get("CB_AUTH_STATS_PREFIX"),
-			Archive: get("CB_AUTH_STATS_ARCHIVE_PREFIX")},
+		Subjects:   callout.Subjects{Prefix: get("CB_AUTH_SUBJECT_PREFIX"), Presence: get("CB_AUTH_PRESENCE_PREFIX"), Stats: get("CB_AUTH_STATS_PREFIX")},
 	}
 	s.Token = token.Config{
 		Issuer:        get("CB_AUTH_KEYCLOAK_ISSUER"),
@@ -357,19 +356,14 @@ func RunCallout(ctx context.Context, s Settings, log *slog.Logger) error {
 	if err := mgr.EnsureStreams(startCtx); err != nil {
 		return fmt.Errorf("streams: %w", err)
 	}
-	// The STATS history (RT-6.45): the archive stream, which copies every
-	// STATS line by itself, and the import stream, which only the import
-	// writes; a look at their fill (and at the copy) now and every hour.
-	archive, err := mgr.EnsureArchive(startCtx, s.Callout.Subjects.Archive, 0)
-	if err != nil {
+	// The STATS history (RT-6.45): an existing STATS stream gets the current
+	// age, size and cap per subject in place, and its fill is looked at now
+	// and every hour.
+	stats := mgr.Stats()
+	if err := stats.Update(startCtx); err != nil {
 		return fmt.Errorf("streams: %w", err)
 	}
-	imports, err := mgr.EnsureImport(startCtx, 0)
-	if err != nil {
-		return fmt.Errorf("streams: %w", err)
-	}
-	archive.WatchFill(ctx, time.Hour)
-	imports.WatchFill(ctx, time.Hour)
+	stats.WatchFill(ctx, time.Hour)
 	// The console's unattended metrics page (#158): its two consumers are
 	// made at this start and kept, idempotent, like every consumer of the
 	// bus — the console's service account itself has no JetStream right.
@@ -430,7 +424,7 @@ func RunCallout(ctx context.Context, s Settings, log *slog.Logger) error {
 		}
 		acfg := admin.Config{AdminGroup: s.DirectoryAdminGroup, NameBinding: binding, Log: log}
 		if s.StatsChannel != "" { // the STATS import (RT-6.45)
-			acfg.Stats = &admin.StatsImport{Channel: s.StatsChannel, Source: mm, Archive: archive, Store: imports}
+			acfg.Stats = &admin.StatsImport{Channel: s.StatsChannel, Source: mm, Store: stats}
 		}
 		h, err := admin.New(acfg, v, dir, mm)
 		if err != nil {
@@ -441,7 +435,7 @@ func RunCallout(ctx context.Context, s Settings, log *slog.Logger) error {
 		}
 	}
 	svc.SetConsumers(mgr)
-	log.Info("consumer management on", "bus", s.Callout.Subjects.Prefix, "presence", s.Callout.Subjects.Presence, "stats", s.Callout.Subjects.Stats, "stats archive", archive.Prefix())
+	log.Info("consumer management on", "bus", s.Callout.Subjects.Prefix, "presence", s.Callout.Subjects.Presence, "stats", s.Callout.Subjects.Stats)
 	log.Info("auth callout serving", "account", s.Callout.Account, "binding", s.Binding)
 	if adminErr != nil {
 		go func() {

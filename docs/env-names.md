@@ -409,16 +409,15 @@ name with `MM_` for `CB_`):
   `MM_RR_KEYS`, `MM_RR_KID`, `MM_RR_STATUS`, `MM_RR_VERSION`, `MM_RR_WHY`
   (the registrar's release record).
 
-### The login service and authd (47)
+### The login service and authd (46)
 
 All in `services/auth/`. Its binary `authd` runs the service; its directory
 commands read the two `AUTHD_` names and two of the service's names (noted).
 Besides the files a row lists, every name here appears in the service's
 rename table `internal/envname/envname.go`, which maps each new name to its
-old one. Two rows differ: `CB_AUTH_STATS_ARCHIVE_PREFIX` is new and has no
-old name (both columns give the new one), and `CB_MM_STATS_CHANNEL` is the
-MCP server's setting, listed with it above, which the login service reads by
-the same rule for its STATS import (RT-6.45).
+old one. One row is not the service's own: `CB_MM_STATS_CHANNEL` is the MCP
+server's setting, listed with it above, which the login service reads by the
+same rule for its STATS import (RT-6.45).
 
 | Old name | New name | Mattermost | Where it appears | Note |
 |---|---|---|---|---|
@@ -461,7 +460,6 @@ the same rule for its STATS import (RT-6.45).
 | `AUTH_PRESENCE_PREFIX` | `CB_AUTH_PRESENCE_PREFIX` | no | `internal/app/callout.go` | |
 | `AUTH_REQUEST_TIMEOUT` | `CB_AUTH_REQUEST_TIMEOUT` | no | `internal/app/callout.go` | |
 | `AUTH_SHUTDOWN_TIMEOUT` | `CB_AUTH_SHUTDOWN_TIMEOUT` | no | `internal/config/config.go` | |
-| `CB_AUTH_STATS_ARCHIVE_PREFIX` | `CB_AUTH_STATS_ARCHIVE_PREFIX` | no | `internal/app/callout.go`, `internal/callout/config.go`, `internal/consumers/streams.go` | new with #196: no old spelling; the subject prefix of the STATS history's archive, default `stats-archive` (RT-6.45) |
 | `AUTH_STATS_PREFIX` | `CB_AUTH_STATS_PREFIX` | no | `internal/app/callout.go`, `internal/callout/perms.go`, `internal/consumers/streams.go`; a comment in `natsbus.py` | |
 | `AUTH_SUBJECT_PREFIX` | `CB_AUTH_SUBJECT_PREFIX` | no | `internal/app/callout.go` | |
 | `AUTH_TOKEN_LEEWAY` | `CB_AUTH_TOKEN_LEEWAY` | no | `internal/app/callout.go` | |

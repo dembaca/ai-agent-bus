@@ -335,7 +335,8 @@ logged-in operator:
 
 ```
 <presence>.ask.<home>.<name>   the agent's open asks, one record; PRESENCE, one message per subject
-<stats>.<name>                 a STATS part; stream STATS, 30 days, 500 per subject, 64 MiB in all
+<stats>.<name>                 a STATS part; stream STATS, 365 days, 500 per subject, 64 MiB in all
+<stats>.import-<bot>           a line imported from the stats channel by the login service (RT-6.45)
 ```
 
 Both subjects end with the agent's name: an agent may publish only under

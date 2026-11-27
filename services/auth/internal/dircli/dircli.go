@@ -45,7 +45,7 @@ commands:
   members add <channel> <sub>...      add members
   members rm <channel> <sub>...       remove members
   import                              copy the Mattermost channels once
-  stats-import                        copy the stats channel's STATS lines into the STATS history's import stream (repeatable)
+  stats-import                        copy the stats channel's STATS lines into the STATS stream (repeatable)
   pending                             list the pending name claims
   confirm <name>                      confirm a pending name claim
   drop <name>                         delete a pending name claim

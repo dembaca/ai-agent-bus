@@ -6,7 +6,7 @@ import (
 )
 
 // The STATS import's channel (RT-6.45) is CB_MM_STATS_CHANNEL as the MCP
-// server reads it, its old name too; the archive's prefix is a setting.
+// server reads it, its old name too.
 func TestTheStatsImportSettings(t *testing.T) {
 	for v, want := range map[string]string{"": "", "off": "", "None": "", "0": "", "false": "", "~my-stats": "my-stats", " st ": "st"} {
 		s, _, err := LoadSettings(env(map[string]string{"CB_MM_STATS_CHANNEL": v}))
@@ -23,8 +23,5 @@ func TestTheStatsImportSettings(t *testing.T) {
 	}
 	if _, _, err = LoadSettings(env(map[string]string{"MM_STATS_CHANNEL": "a", "CB_MM_STATS_CHANNEL": "b"})); !errors.Is(err, ErrConfig) {
 		t.Errorf("two names, two values: %v", err)
-	}
-	if s, _, err = LoadSettings(env(map[string]string{"CB_AUTH_STATS_ARCHIVE_PREFIX": "hist"})); err != nil || s.Callout.Subjects.Archive != "hist" {
-		t.Errorf("archive prefix: %q, %v", s.Callout.Subjects.Archive, err)
 	}
 }

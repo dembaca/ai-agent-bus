@@ -2,9 +2,7 @@
 // point 16): it creates the three streams of the bus with the settings the
 // permission model was proven with, makes the push consumers an agent reads
 // from, and removes them again at sign-off, when a channel is dropped from
-// the credential and when the emergency brake holds the agent's owner. It
-// also keeps the STATS history in a fourth stream, STATS_ARCHIVE (RT-6.45,
-// archive.go), which no agent can reach.
+// the credential and when the emergency brake holds the agent's owner.
 //
 // The connection it works on is the only holder of JetStream API rights, in
 // the tenant account. Nothing here logs a token.
@@ -30,24 +28,6 @@ const (
 // (CB_AUTH_STATS_PREFIX).
 const DefaultStatsPrefix = "stats"
 
-// ArchiveStream keeps the STATS history for a year (RT-6.45): a copy of every
-// STATS line, sourced from STATS onto <archive>.<agent>, and nothing else. No
-// one publishes on it; no agent has a right on its subjects.
-const ArchiveStream = "STATS_ARCHIVE"
-
-// DefaultArchivePrefix is the archive's subject prefix when none is set
-// (CB_AUTH_STATS_ARCHIVE_PREFIX).
-const DefaultArchivePrefix = "stats-archive"
-
-// ImportStream keeps the lines the import read from the stats channel
-// (RT-6.45) on <ImportPrefix>.<bot>, apart from the copies of STATS: only the
-// login service publishes on it, and no agent has a right on its subjects.
-const ImportStream = "STATS_IMPORT"
-
-// ImportPrefix is the import stream's subject prefix, fixed: no other
-// prefix may take it.
-const ImportPrefix = "stats-import"
-
 // Limits and defaults of the streams.
 const (
 	// MaxHistory is how far back a channel's messages are kept, and the
@@ -56,39 +36,23 @@ const (
 	// PresenceMaxAge is how long an orphaned presence subject stays.
 	PresenceMaxAge = 24 * time.Hour
 
-	// StatsMaxAge is how long a STATS line stays: the 7-day reports with room.
-	StatsMaxAge = 30 * 24 * time.Hour
+	// StatsMaxAge is how long a STATS line stays: a year of history, the
+	// statistics the stats channel held imported included (RT-6.45). Change it
+	// here (to 180 days, say): the service updates an existing stream to it.
+	StatsMaxAge = 365 * 24 * time.Hour
 	// StatsMaxMsgsPerSubject is how many lines one agent's subject keeps: a
 	// name that floods pushes out only its own oldest lines.
 	StatsMaxMsgsPerSubject = 500
 
-	// ArchiveMaxAge is how long the archive and the import stream keep a
-	// line (RT-6.45).
-	ArchiveMaxAge = 365 * 24 * time.Hour
-	// HistoryMaxMsgsPerSubject is how many lines one name keeps in the
-	// archive and in the import stream, as in STATS: a name that floods
-	// pushes out only its own oldest lines, and 500 lines of at most 8 KiB
-	// are 4 MiB of the 64 MiB.
-	HistoryMaxMsgsPerSubject = 500
-	// ArchiveWarnPercent is the fill the service warns about.
-	ArchiveWarnPercent = 80
-
 	DefaultBusMaxBytes      int64 = 1 << 30
 	DefaultPresenceMaxBytes int64 = 16 << 20
 	DefaultStatsMaxBytes    int64 = 64 << 20
-	DefaultArchiveMaxBytes  int64 = 64 << 20
-	DefaultImportMaxBytes   int64 = 64 << 20
 )
 
 const (
 	busMaxMsgSize      = 65536
 	presenceMaxMsgSize = 4096
 	statsMaxMsgSize    = 8192
-	// historyMaxMsgSize is the archive's and the import stream's limit per
-	// message: twice STATS's, since a copy gains JetStream's source header
-	// (about 60 bytes) and an imported line its marking headers, and a
-	// line STATS took must never stop the copy for everyone.
-	historyMaxMsgSize = 16384
 )
 
 // BusStreamJSON is the creation request of the BUS stream for the subject
@@ -112,9 +76,10 @@ func PresenceStreamJSON(prefix string, maxBytes int64) string {
 		int64(PresenceMaxAge), maxBytes, presenceMaxMsgSize))
 }
 
-// StatsStreamJSON is the creation request of the STATS stream (RT-6.43): 30
-// days, at most 500 lines per agent's subject, 8 KiB per line, the oldest
-// discarded. maxBytes <= 0 takes DefaultStatsMaxBytes.
+// StatsStreamJSON is the creation request of the STATS stream (RT-6.43,
+// RT-6.45): StatsMaxAge (365 days), at most 500 lines per agent's subject,
+// 8 KiB per line, the oldest discarded. maxBytes <= 0 takes
+// DefaultStatsMaxBytes.
 func StatsStreamJSON(prefix string, maxBytes int64) string {
 	if maxBytes <= 0 {
 		maxBytes = DefaultStatsMaxBytes
@@ -122,49 +87,6 @@ func StatsStreamJSON(prefix string, maxBytes int64) string {
 	return streamJSON(StatsStream, prefix+".>", fmt.Sprintf(`"max_age":%d,"max_msgs_per_subject":%d,"max_bytes":%d,"max_msg_size":%d`,
 		int64(StatsMaxAge), StatsMaxMsgsPerSubject, maxBytes, statsMaxMsgSize))
 }
-
-// ArchiveStreamJSON is the creation request of the STATS_ARCHIVE stream
-// (RT-6.45): its own subjects <archive>.>, one source, STATS, whose lines
-// <stats>.<agent> land on <archive>.<agent>; 365 days, at most 500 lines per
-// agent's subject, 16 KiB per message (a copy carries a source header), the
-// oldest discarded, no_ack as the others: no one publishes on it. maxBytes <=
-// 0 takes DefaultArchiveMaxBytes.
-func ArchiveStreamJSON(archive, stats string, maxBytes int64) string {
-	if maxBytes <= 0 {
-		maxBytes = DefaultArchiveMaxBytes
-	}
-	return fmt.Sprintf(`{"name":%q,"subjects":[%q],"retention":"limits","storage":"file","discard":"old",
-"max_age":%d,"max_msgs_per_subject":%d,"max_bytes":%d,"max_msg_size":%d,"num_replicas":1,"no_ack":true,"duplicate_window":%d,
-"sources":[{"name":%q,"subject_transforms":[{"src":%q,"dest":%q}]}],
-"allow_direct":false,"mirror_direct":false,"deny_delete":true,"deny_purge":true,"allow_rollup_hdrs":false,
-"allow_msg_ttl":false,"allow_msg_counter":false,"allow_atomic":false,"allow_msg_schedules":false,"allow_batched":false}`,
-		ArchiveStream, archive+".>", int64(ArchiveMaxAge), HistoryMaxMsgsPerSubject, maxBytes, historyMaxMsgSize,
-		DuplicateWindow.Nanoseconds(), StatsStream, archiveSrc(stats), archiveDest(archive))
-}
-
-// ImportStreamJSON is the creation request of the STATS_IMPORT stream
-// (RT-6.45): subjects <ImportPrefix>.>, no source, 365 days, at most 500
-// lines per name (the oldest of that name go), 16 KiB per message; a full
-// stream refuses new lines (discard new), so the import can never push out
-// what it stored and never grow past its limit. It acknowledges (no_ack
-// false): only the login service publishes on it, and the import must see a
-// refused line. maxBytes <= 0 takes DefaultImportMaxBytes.
-func ImportStreamJSON(maxBytes int64) string {
-	if maxBytes <= 0 {
-		maxBytes = DefaultImportMaxBytes
-	}
-	return fmt.Sprintf(`{"name":%q,"subjects":[%q],"retention":"limits","storage":"file","discard":"new","discard_new_per_subject":false,
-"max_age":%d,"max_msgs_per_subject":%d,"max_bytes":%d,"max_msg_size":%d,"num_replicas":1,"no_ack":false,"duplicate_window":%d,
-"allow_direct":false,"mirror_direct":false,"deny_delete":true,"deny_purge":true,"allow_rollup_hdrs":false,
-"allow_msg_ttl":false,"allow_msg_counter":false,"allow_atomic":false,"allow_msg_schedules":false,"allow_batched":false}`,
-		ImportStream, ImportPrefix+".>", int64(ArchiveMaxAge), HistoryMaxMsgsPerSubject, maxBytes, historyMaxMsgSize,
-		DuplicateWindow.Nanoseconds())
-}
-
-// archiveSrc and archiveDest are the archive's one subject transform: an
-// agent's STATS subject onto its archive subject.
-func archiveSrc(stats string) string    { return stats + ".*" }
-func archiveDest(archive string) string { return archive + ".{{wildcard(1)}}" }
 
 func streamJSON(name, subject, limits string) string {
 	return fmt.Sprintf(`{"name":%q,"subjects":[%q],"retention":"limits","storage":"file","discard":"old",
@@ -185,38 +107,10 @@ var ErrUnsafeStream = errors.New("stream configuration is unsafe")
 // settings of the model. Any allow_* switch that is on, anything but
 // no_ack, deny_delete, deny_purge, a size limit and discard old fails.
 func checkStream(name, subject string, got map[string]any) error {
-	return checkConfig(name, subject, "", got)
-}
-
-// checkArchive is checkStream for the STATS_ARCHIVE stream (RT-6.45): the same
-// pins, and exactly one source, STATS, with exactly the transform <stats>.*
-// onto <archive>.{{wildcard(1)}}; at most 365 days, exactly 16 KiB per
-// message, at most 500 lines per subject, file storage.
-func checkArchive(archive, stats string, got map[string]any) error {
-	return checkConfig(ArchiveStream, archive+".>", stats, got)
-}
-
-// checkImport is checkStream for the STATS_IMPORT stream (RT-6.45): the same
-// pins, except that it acknowledges (only the login service publishes on it,
-// so an acknowledgement tells no agent anything) and refuses new lines when
-// full (discard new, but not per subject: a name's oldest lines go); no
-// source, at most 365 days, exactly 16 KiB per message, at most 500 lines per
-// subject, file storage.
-func checkImport(got map[string]any) error {
-	return checkConfig(ImportStream, ImportPrefix+".>", "", got)
-}
-
-// checkConfig is all the checks: stats is the STATS prefix the archive's
-// source must name; the other streams may have no source at all.
-func checkConfig(name, subject, stats string, got map[string]any) error {
 	var bad []string
 	flag := func(k string) bool { v, _ := got[k].(bool); return v }
 	num := func(k string) float64 { v, _ := got[k].(float64); return v }
-	archive, imports := name == ArchiveStream, name == ImportStream
-	if imports && flag("no_ack") {
-		bad = append(bad, "no_ack is on")
-	}
-	if !imports && !flag("no_ack") {
+	if !flag("no_ack") {
 		bad = append(bad, "no_ack is off")
 	}
 	if !flag("deny_delete") {
@@ -231,15 +125,9 @@ func checkConfig(name, subject, stats string, got map[string]any) error {
 		}
 	}
 	for _, k := range []string{"mirror", "sources", "republish"} {
-		if archive && k == "sources" {
-			continue
-		}
 		if set(got[k]) {
 			bad = append(bad, k+" is set")
 		}
-	}
-	if archive {
-		bad = append(bad, archiveSources(got["sources"], stats, strings.TrimSuffix(subject, ".>"))...)
 	}
 	if num("max_bytes") <= 0 {
 		bad = append(bad, "no max_bytes")
@@ -257,8 +145,6 @@ func checkConfig(name, subject, stats string, got map[string]any) error {
 		limit = PresenceMaxAge
 	case StatsStream:
 		limit = StatsMaxAge
-	case ArchiveStream, ImportStream:
-		limit = ArchiveMaxAge
 	}
 	if maxAge <= 0 || maxAge > limit {
 		bad = append(bad, fmt.Sprintf("max_age is not within 0 and %s", limit))
@@ -268,28 +154,18 @@ func checkConfig(name, subject, stats string, got map[string]any) error {
 	if dw := time.Duration(num("duplicate_window")); dw <= 0 || dw > DuplicateWindow {
 		bad = append(bad, fmt.Sprintf("duplicate_window is not within 0 and %s", DuplicateWindow))
 	}
-	switch {
-	case imports && got["discard"] != "new":
-		bad = append(bad, "discard is not new")
-	case !imports && got["discard"] != "old":
+	if got["discard"] != "old" {
 		bad = append(bad, "discard is not old")
-	}
-	if flag("discard_new_per_subject") {
-		bad = append(bad, "discard_new_per_subject is on")
 	}
 	if name == PresenceStream && num("max_msgs_per_subject") != 1 {
 		bad = append(bad, "max_msgs_per_subject is not 1")
 	}
-	if name == StatsStream || archive || imports { // RT-6.43, RT-6.45: pinned as created
-		perSubject, size := StatsMaxMsgsPerSubject, statsMaxMsgSize
-		if archive || imports {
-			perSubject, size = HistoryMaxMsgsPerSubject, historyMaxMsgSize
+	if name == StatsStream { // RT-6.43: pinned as created
+		if n := num("max_msgs_per_subject"); n <= 0 || n > StatsMaxMsgsPerSubject {
+			bad = append(bad, fmt.Sprintf("max_msgs_per_subject is not within 1 and %d", StatsMaxMsgsPerSubject))
 		}
-		if n := num("max_msgs_per_subject"); n <= 0 || n > float64(perSubject) {
-			bad = append(bad, fmt.Sprintf("max_msgs_per_subject is not within 1 and %d", perSubject))
-		}
-		if num("max_msg_size") != float64(size) {
-			bad = append(bad, fmt.Sprintf("max_msg_size is not %d", size))
+		if num("max_msg_size") != statsMaxMsgSize {
+			bad = append(bad, fmt.Sprintf("max_msg_size is not %d", statsMaxMsgSize))
 		}
 		if got["storage"] != "file" {
 			bad = append(bad, "storage is not file")
@@ -305,49 +181,6 @@ func checkConfig(name, subject, stats string, got map[string]any) error {
 		return fmt.Errorf("%w: %s: %s", ErrUnsafeStream, name, strings.Join(bad, ", "))
 	}
 	return nil
-}
-
-// archiveSources checks the archive's sources (RT-6.45): exactly one, STATS of
-// this account, with exactly one transform from <stats>.* onto
-// <archive>.{{wildcard(1)}}, and nothing else set on it (no filter, no start,
-// no external API).
-func archiveSources(v any, stats, archive string) []string {
-	srcs, _ := v.([]any)
-	if len(srcs) != 1 {
-		return []string{"sources are not exactly STATS"}
-	}
-	s, _ := srcs[0].(map[string]any)
-	var bad []string
-	if s["name"] != StatsStream {
-		bad = append(bad, "the source is not STATS")
-	}
-	for k, x := range s {
-		if k != "name" && k != "subject_transforms" && !empty(x) {
-			bad = append(bad, "the source's "+k+" is set")
-		}
-	}
-	var t map[string]any
-	if ts, _ := s["subject_transforms"].([]any); len(ts) == 1 {
-		t, _ = ts[0].(map[string]any)
-	}
-	if stats == "" || len(t) != 2 || t["src"] != archiveSrc(stats) || t["dest"] != archiveDest(archive) {
-		bad = append(bad, fmt.Sprintf("the source's transform is not exactly %s to %s", archiveSrc(stats), archiveDest(archive)))
-	}
-	return bad
-}
-
-// empty: a JSON value that is absent, null, "", 0, false or an empty list or
-// object.
-func empty(v any) bool {
-	switch x := v.(type) {
-	case string:
-		return x == ""
-	case float64:
-		return x == 0
-	case bool:
-		return !x
-	}
-	return !set(v)
 }
 
 // set says whether a JSON value is there and not empty.
