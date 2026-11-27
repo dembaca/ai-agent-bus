@@ -157,8 +157,11 @@ reconnect the bus's catch-up read found nothing, so 10 of 10 read as lost.
 `bus-run`'s exit code says whether its numbers can be compared: 0 for a run
 whose baseline lost nothing and whose stand-in answered every call, 1 when the
 stub did not know a call, when the receiver's inbox never opened, when the run
-sent no frame at all, when a baseline lost a frame, or when **frames were sent
-and none arrived** and no fault explains it: `stall`, `reorder` and `duplicate`
+sent no frame at all, when a baseline lost a frame, when a fault run whose
+session must come back never did (a send after the window under `restart`,
+`hang`, `cut` and `blackhole`; a post after the resume under `kill-client`: the
+run measured a session that stayed down, not the fault), or when **frames were
+sent and none arrived** and no fault explains it: `stall`, `reorder` and `duplicate`
 pass every frame on, so silence under them is the path, and so is silence under
 `none` — a path that carried nothing is not a measurement of the fault (issue
 #47); 2 when no interpreter could start the bus at all.
@@ -241,10 +244,10 @@ The faults on NATS are windows, opened half way through the sends for
 A send that fails under the fault is not counted as sent, and the run goes on
 (`notes` counts them). Under `restart`, `hang`, `cut` and `blackhole` the run
 has to show the sender's recovery: after the window it keeps posting until one
-send succeeds or 60 s pass, so such a run can send up to ~120 posts beyond
-`--count`; a run that never gets one exits 1 (the session did not come back, so
-the numbers measure nothing). Under `kill-client` the recovery is the
-receiver's: an arrival after the resume. `--summary` prints a table after the
+send succeeds or 90 s pass (just over the bus's 61 s worst-case back-off), so
+such a run can send up to ~180 posts beyond `--count`; a run that never gets one
+exits 1 (the session did not come back, so the numbers measure nothing). Under
+`kill-client` the recovery is the receiver's: an arrival after the resume. `--summary` prints a table after the
 JSON: per fault the p50, p95 and maximum wait, loss and duplicates.
 
 `coord-run` starts `--sessions` servers in one home (default 3), waits for the

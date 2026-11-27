@@ -64,7 +64,8 @@ HOME = "agents"
 OWNER = "testrig"
 ADMIN = "admin"
 START_SEC = 45.0
-RECOVERY_SEC = 60.0  # after a fault's window: how long the sender may take to come back
+RECOVERY_SEC = 90.0  # after a fault's window: how long the sender may take to come back
+# (just over the bus's 61 s worst case; a sender that cannot reconnect at all is #222)
 RECOVERY_SEND_SEC = 0.5  # the pace of the recovery sends
 # Faults the sender must recover from: a send after the window proves it.
 SENDER_FAULTS = {"restart", "hang", "cut", "blackhole"}

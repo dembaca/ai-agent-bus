@@ -540,7 +540,11 @@ def test_a_failed_reconcile_or_a_lost_sender_is_untrustworthy():
     assert cli._untrustworthy(failed) is True
     for fault in ("restart", "hang", "kill-client", "cut", "blackhole"):
         lost = Run(name="bus-run", target="bus-nats", fault=fault)
+        # One arrival before the window, so the silence checks cannot be what
+        # refuses it: only the missing recovery can (review M1).
+        lost.sent = [lost.send(0), lost.send(1)]
         lost.sent_frames = 5
+        lost.arrive(0)
         lost.recovered = False
         assert cli._untrustworthy(lost) is True, fault
     baseline = Run(name="bus-run", target="bus-nats", fault="none")
