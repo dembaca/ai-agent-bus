@@ -363,6 +363,16 @@ class PresenceCard:
     branch: str | None = None
     asks: int | None = None
     last_post: int | None = None
+    # The roster's numbers and version as the status text states them (RT-6.37 step 6,
+    # plan B piece 2): `usage` the usage segments (`ctx 62% · 5h 40%`), `release` the
+    # version segment (`v0.104.0 unchecked`), each read back by usage.from_status and
+    # release.from_status, which drop what they do not know.
+    usage: str | None = None
+    release: str | None = None
+
+
+CARD_USAGE_MAX = 80
+CARD_RELEASE_MAX = 40
 
 
 def card_text(v: object, limit: int) -> str | None:
@@ -414,10 +424,12 @@ def clean_card(card: PresenceCard) -> PresenceCard:
     """The card with every field bounded (the encoder's and the decoder's rule)."""
     return PresenceCard(harness=card_harness(card.harness), model=card_text(card.model, CARD_MODEL_MAX),
                         task=card_text(card.task, CARD_TASK_MAX), branch=card_branch(card.branch),
-                        asks=card_asks(card.asks), last_post=card_epoch(card.last_post))
+                        asks=card_asks(card.asks), last_post=card_epoch(card.last_post),
+                        usage=card_text(card.usage, CARD_USAGE_MAX) or None,
+                        release=card_text(card.release, CARD_RELEASE_MAX) or None)
 
 
-_CARD_KEYS = ("harness", "model", "task", "branch", "asks", "last_post")
+_CARD_KEYS = ("harness", "model", "task", "branch", "asks", "last_post", "usage", "release")
 
 
 def encode_presence(status: str, bot: str = "", bot_name: str = "",
@@ -878,6 +890,45 @@ def decode_channel_record_full(data: bytes, agent: str) -> tuple[dict[str, str],
             cid = _mm_id(cid, "channel id")
         out[name] = cid
     return out, exp
+
+
+_BOT_RECORD_KEYS = {"v", "agent", "bot", "username", "owner_account", "iat", "exp"}
+BOT_RECORD_MAX_SEC = 180.0  # a bot record counts at most this long after it was published
+
+
+@dataclass(frozen=True)
+class BotRecord:
+    """The bridge's record of the Mattermost bot it made for an agent
+    (`<presence>.bot.<agent>.v1`, RT-6.44 step 3): the bot, its username and the Mattermost
+    account that owns it; all three None once the bot is gone. `exp` is server time."""
+
+    agent: str
+    bot: str | None
+    username: str | None
+    owner_account: str | None
+    exp: float
+
+
+def decode_bot_record(data: bytes, agent: str) -> BotRecord:
+    """Strict: exactly the keys of a v1 record of `agent`; `bot` and `owner_account` a
+    Mattermost id, `username` a username that ends with the agent's name (the bridge's prefix
+    plus the name; the prefix itself is compared where the record is used), or all three
+    null; anything else raises."""
+    obj = _obj(data)
+    _exact(obj, _BOT_RECORD_KEYS)
+    if obj["v"] != 1 or obj["agent"] != agent:
+        raise MessageError("bot record of another agent or version")
+    bot, user, owner = obj["bot"], obj["username"], obj["owner_account"]
+    _int(obj, "iat")
+    exp = float(_int(obj, "exp"))
+    if bot is None and user is None and owner is None:
+        return BotRecord(agent, None, None, None, exp)
+    bot = _mm_id(bot, "bot")
+    owner = _mm_id(owner, "owner_account")
+    if not isinstance(user, str) or not USERNAME_RE.fullmatch(user) or not user.endswith(agent) \
+            or not BOT_PREFIX_RE.fullmatch(user[:len(user) - len(agent)]):
+        raise MessageError("username is not a prefix plus the agent")
+    return BotRecord(agent, bot, user, owner, exp)
 
 
 def decode_bridge_signal(data: bytes, channel: str) -> float:
@@ -1357,6 +1408,10 @@ class NatsBus:
         self._owners: dict[str, str] = {}  # agent -> owner its presence subject names (RT-6.37)
         self._presence_seq: dict[str, tuple[int, float]] = {}  # agent -> (stream sequence, server time)
         self._bots: dict[str, str] = {}  # agent -> Mattermost bot its presence names (RT-6.37)
+        # agent -> (stream sequence, server time, record): the newest bot record of the bridge
+        self._bot_records: dict[str, tuple[int, float, BotRecord]] = {}
+        # agent -> the card its newest presence states (the roster's usage and version)
+        self._cards: dict[str, PresenceCard] = {}
         # agent -> (stream sequence, server time, record): the newest attestation of the login service
         self._attest: dict[str, tuple[int, float, Attestation]] = {}
         # A valid attestation was seen in this process: the login service writes them, and
@@ -2191,6 +2246,44 @@ class NatsBus:
         named one. Not bound to the signal's freshness: the copies stay in the channel."""
         return self._bridge_prefix.get(channel, "")
 
+    def bot_record(self, agent: str) -> BotRecord | None:
+        """The bridge's bot record of `agent` while it is fresh (its `exp` after the server's
+        now) and names a bot; None for none, a stale one or one that says the bot is gone
+        (RT-6.44 step 3)."""
+        got = self._bot_records.get(agent)
+        if got is None or got[2].bot is None or got[2].exp <= self._server_now:
+            return None
+        return got[2]
+
+    def bot_records(self) -> dict[str, BotRecord]:
+        """Every fresh bot record that names a bot, by agent name."""
+        return {a: r for a in list(self._bot_records) if (r := self.bot_record(a)) is not None}
+
+    def card_of(self, agent: str) -> PresenceCard:
+        """The card the agent's newest presence states (self-stated, bounded), empty for none."""
+        return self._cards.get(agent, PresenceCard())
+
+    def member_names(self, channel: str) -> list[str]:
+        """The agents that announced their membership of `channel` within 24 h, sorted."""
+        return sorted(self._members.get(channel, {}))
+
+    def account_person(self, account: str) -> tuple[str, str] | None:
+        """(anchor, name) of a Mattermost account the login service's FRESH record binds to a
+        person with a name (RT-6.42 step 3); None for no record, a stale one, an unbound one
+        or one without a name."""
+        got = self._accounts.get(account)
+        rec = got[2] if got is not None else None
+        if rec is None or not rec.anchor or not rec.name or rec.exp <= self._server_now:
+            return None
+        return rec.anchor, rec.name
+
+    def accounts_of(self, anchor: str) -> list[str]:
+        """The accounts whose fresh record binds `anchor`, sorted (RT-6.44 step 2)."""
+        if not anchor or anchor == UNBOUND:
+            return []
+        return sorted(a for a, (_, _, rec) in self._accounts.items()
+                      if rec is not None and rec.anchor == anchor and rec.exp > self._server_now)
+
     def anchor_of_account(self, account: str) -> str:
         """The person a Mattermost account is bound to by the login service's record, as the
         sender token the bridge publishes it under: the anchor, UNBOUND for none (no record,
@@ -2251,7 +2344,11 @@ class NatsBus:
                 self._owners.pop(agent, None)
                 self._bots.pop(agent, None)
                 self._dm.pop(agent, None)
+                self._cards.pop(agent, None)
                 self._presence_seq.pop(agent, None)
+        for agent, (_, t, _b) in list(self._bot_records.items()):
+            if t < cut:
+                del self._bot_records[agent]
         for agent, (_, t, _a) in list(self._attest.items()):
             if t < cut:
                 del self._attest[agent]
@@ -2478,6 +2575,7 @@ class NatsBus:
                 if agent == self.name:
                     self._own_echo = time.monotonic()
                     self._echo_backoff = 0.0  # a real echo: the next outage starts afresh
+                self._cards[agent] = decode_presence_card(msg.data)
                 bot = decode_presence_bot(msg.data)
                 if bot:
                     self._bots[agent] = bot
@@ -2558,6 +2656,14 @@ class NatsBus:
                     else:
                         self._chan_record = (ack.stream_seq, ack.time, chans)
                         self._chan_event.set()
+            elif len(t) == 4 and t[0] == p and t[1] == "bot" and t[3] == "v1" and AGENT_RE.fullmatch(t[2]):
+                # RT-6.44 step 3: the newest valid record counts; one that does not decode is
+                # dropped (a warning below) and erases nothing, as an attestation.
+                brec = decode_bot_record(msg.data, t[2])
+                seq0, at0, _oldb = self._bot_records.get(t[2], (0, 0.0, brec))
+                if (ack.time, ack.stream_seq) > (at0, seq0):
+                    brec = dataclasses.replace(brec, exp=min(brec.exp, ack.time + BOT_RECORD_MAX_SEC))
+                    self._bot_records[t[2]] = (ack.stream_seq, ack.time, brec)
             elif len(t) == 4 and t[0] == p and t[1] == "attest" and t[3] == "v1" and AGENT_RE.fullmatch(t[2]):
                 att = decode_attestation(msg.data, t[2])
                 seq0, at0, _old = self._attest.get(t[2], (0, 0.0, att))

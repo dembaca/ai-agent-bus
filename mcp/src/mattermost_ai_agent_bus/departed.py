@@ -106,13 +106,18 @@ async def _authors(client: ChatPort, posts: list[Post]) -> dict[str, str]:
 
 async def _members(client: ChatPort, channel_id: str) -> dict[str, dict[str, Any]]:
     """The channel's agents by lower-case name, with their lease (lease._rows)."""
-    return {str(r["username"]).lower(): r for r in await lease._rows(client, channel_id)}
+    return {str(r["username"]).lower(): r
+            for r in await lease._rows(client, channel_id, client.work_channel_name)}
 
 
 async def gone(client: ChatPort, names: list[str],
                rows: dict[str, dict[str, Any]] | None = None) -> list[Departure]:
     """Which of the named agents are gone, with since when and the post to link.
     rows: the work channel's agents (_members) when read already."""
+    if lease.nats_unreadable(client.work_channel_name):
+        # plan B piece 2 (RT-6.21): the bus is cut off or not read yet, so who is here is not
+        # known: nobody is told as gone
+        return []
     cid = await client.work_channel_id()
     if rows is None:
         rows = await _members(client, cid)

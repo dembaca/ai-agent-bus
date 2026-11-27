@@ -284,7 +284,7 @@ func TestALoginMakesTheConsumers(t *testing.T) {
 		{"BUS", "_dm", "dm", []string{"bus.dm." + bob.name + ".*"}},
 		{"BUS", "_hu_home", "hu.home", []string{"bus.hu.home.*"}},
 		{"BUS", "_hu_secret", "hu.secret", []string{"bus.hu.secret.*"}},
-		{"PRESENCE", "_presence", "presence", []string{"presence.*.*", "presence.attest.*.v1", "presence.account.mattermost.*.v1", "presence.notice.bob.copied.v1", "presence.notice.bob.moved.v1", "presence.crown.home.*", "presence.member.home.*", "presence.bridge.home.v1", "presence.planb.home.v1", "presence.crown.secret.*", "presence.member.secret.*", "presence.bridge.secret.v1", "presence.planb.secret.v1", "presence.directory." + bob.name + ".v1"}},
+		{"PRESENCE", "_presence", "presence", []string{"presence.*.*", "presence.attest.*.v1", "presence.account.mattermost.*.v1", "presence.bot.*.v1", "presence.notice.bob.copied.v1", "presence.notice.bob.moved.v1", "presence.crown.home.*", "presence.member.home.*", "presence.bridge.home.v1", "presence.planb.home.v1", "presence.crown.secret.*", "presence.member.secret.*", "presence.bridge.secret.v1", "presence.planb.secret.v1", "presence.directory." + bob.name + ".v1"}},
 	} {
 		ci := c.info(w.stream, bob.name+w.name)
 		if ci == nil {

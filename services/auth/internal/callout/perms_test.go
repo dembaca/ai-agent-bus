@@ -194,6 +194,28 @@ func TestAnAgentPublishesRequestsOnlyUnderItsOwnName(t *testing.T) {
 	}
 }
 
+// RT-6.44 step 3: the bot record `<presence>.bot.<agent>.v1` is the bridge's
+// alone. No agent holds a right on it, whatever its owner, name, home or
+// channels; the only 3-token presence subject an agent has is its own, and
+// `presence.bot.<x>` as that subject belongs to an owner named "bot".
+func TestNoAgentMayPublishABotRecord(t *testing.T) {
+	s := Config{Account: "BUS"}.WithDefaults().Subjects
+	for _, owner := range []string{"alice", "bot", "-"} {
+		p := s.permissions("agent-x", owner, "home", []string{"home", "ga"})
+		for _, got := range p.Pub.Allow {
+			if strings.HasPrefix(got, "presence.bot.") && len(strings.Split(got, ".")) == 4 {
+				t.Errorf("owner %s: a bot record right: %s", owner, got)
+			}
+			if strings.Contains(got, "presence.bot.*") || strings.HasPrefix(got, "presence.*") || strings.HasSuffix(got, ".v1") {
+				t.Errorf("owner %s: a wildcard or record right: %s", owner, got)
+			}
+		}
+		if p.Pub.Allow.Contains("presence.bot.agent-y.v1") || p.Pub.Allow.Contains("presence.bot.agent-x.v1") {
+			t.Errorf("owner %s may publish a bot record: %v", owner, p.Pub.Allow)
+		}
+	}
+}
+
 // The STATS prefix (CB_AUTH_STATS_PREFIX, RT-6.43) is a plain token of its own: not
 // the deliver prefix and neither of the other two.
 func TestTheStatsPrefixIsChecked(t *testing.T) {

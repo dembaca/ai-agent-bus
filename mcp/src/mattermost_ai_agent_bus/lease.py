@@ -38,7 +38,7 @@ from datetime import datetime, timezone
 from pathlib import Path
 from typing import TYPE_CHECKING, Any, Protocol
 
-from . import a2a, channel, crownlog, life, owners, ownpost, release, session_file, stats, usage
+from . import a2a, channel, crownlog, life, owners, ownpost, planb, release, session_file, stats, usage
 from . import config
 from .model import ChannelUser, Mark, Post, Refused, RosterEntry, StatusMark
 
@@ -271,6 +271,18 @@ class NatsSource(Protocol):
 
     def linked(self, rows: Iterable[Mapping[str, Any]]) -> dict[str, str]: ...
 
+    def roster_rows(self, home: str) -> list[dict[str, Any]]:
+        """The home's agents from NATS alone (plan B piece 2)."""
+        ...
+
+    def owned_link(self, name: str, home: str) -> Any:
+        """The bridge's bot record that is the name's link (username, bot), None for none."""
+        ...
+
+    def readable(self) -> bool:
+        """The bus is connected and has read the stored presences."""
+        ...
+
     def owner_of(self, name: str) -> str: ...
 
     def lowest_claim(self, home: str, names: Iterable[str]) -> str: ...
@@ -385,6 +397,10 @@ async def shown_as(client: ChatPort, user_ids: AbstractSet[str]) -> dict[str, st
     source = _nats_source
     if not names or not _nats_home or source is None:  # a lost side links none (linked)
         return {}
+    if nats_roster_on(_nats_home):
+        # plan B piece 2: the bridge's bot record, no Mattermost read
+        recs = {n: source.owned_link(n, _nats_home) for n in names}
+        return {n: str(r.username) for n, r in recs.items() if r is not None and r.username}
     try:
         rows = await _rows(client, await client.get_channel_id(_nats_home))
         links = await _linked_owned(client, source, rows)
@@ -842,7 +858,20 @@ def live_home(user: ChannelUser) -> str | None:
     return home_of(str(user.custom_status.get("text") or "")) or ""
 
 
-async def _rows(client: ChatPort, channel_id: str) -> list[dict[str, Any]]:
+def nats_roster_on(name: str) -> bool:
+    """The roster of the home `name` comes from NATS (plan B piece 2, RT-6.37 step 6): the
+    home runs over NATS and the switch is on for it."""
+    return bool(name) and is_nats_home(name) and _nats_source is not None and planb.on(2, name)
+
+
+def nats_unreadable(name: str) -> bool:
+    """On piece 2 for the home `name` and the bus cannot be read now (not attached, failed,
+    cut off or not synced): nobody is told as gone then (RT-6.21, RT-6.37 step 6)."""
+    source = _nats_source
+    return nats_roster_on(name) and (source is None or source.down() != "" or not source.readable())
+
+
+async def _rows(client: ChatPort, channel_id: str, name: str = "") -> list[dict[str, Any]]:
     """The bus's bots in a channel (the registrar's prefix), oldest first, with
     what the lease rules need: id, username, create_at, presence, emoji, text,
     home (the one its status names, None: none), live, until_ms (the lease's
@@ -851,6 +880,10 @@ async def _rows(client: ChatPort, channel_id: str) -> list[dict[str, Any]]:
     one without an expiry predates the lease (or was set by hand) and proves
     nothing about a live session. Reachable: not offline, a live status, not
     💤. Crown: reachable with a live 👑."""
+    if nats_roster_on(name):
+        # plan B piece 2: no Mattermost read at all (channel_users, status, owner)
+        assert _nats_source is not None
+        return _nats_source.roster_rows(_nats_home)
     prefix = session_file.agent_prefix()
     users = sorted((u for u in await client.channel_users(channel_id)
                     if u.username.startswith(prefix) and not u.deleted),
@@ -914,7 +947,7 @@ async def roster_in(client: ChatPort, channel_id: str, name: str) -> list[Roster
     """roster() for the channel `name` (id channel_id) as somebody's home: its
     reachable agents, coordinator first, then the ambassadors (RT-6.14 step
     9). Raises when the channel cannot be read."""
-    rows = await _rows(client, channel_id)
+    rows = await _rows(client, channel_id, name)
     guests = [entry(dict(r, crown=False), crown_of=str(r["home"]))
               for r in rows if r["home"] not in (None, name) and r["crown"]]
     here = _at_home(rows, name)
@@ -936,7 +969,7 @@ async def coordinator_of(client: ChatPort, channel_id: str) -> str:
     with a live 👑 among those whose status names that channel (or no home,
     an older plugin); '' for none. A guest's 👑 of its own home is none."""
     name = (await client.get_channel(channel_id)).name
-    rows = _at_home(await _rows(client, channel_id), name)
+    rows = _at_home(await _rows(client, channel_id, name), name)
     if is_nats_home(name):
         rows = await _nats_crowned(client, rows)
     return next((str(r["username"]) for r in rows if r["crown"]), "")
@@ -957,6 +990,9 @@ async def _linked_owned(client: ChatPort, source: NatsSource, rows: list[dict[st
     """bot id -> NATS name for the rows with a proven link (NatsPort.linked: the bot and the
     name name each other, the name fresh) whose bot's owner (owners.read) is the owner in
     the name's presence subject. The one test of a link everywhere in a NATS home."""
+    if rows and all(r.get("nats") for r in rows):
+        # plan B piece 2: the rows are the NATS names themselves, the link is implicit
+        return {str(r["id"]): str(r["id"]) for r in rows}
     out: dict[str, str] = {}
     for bot_id, name in source.linked(rows).items():
         owner = await owners.read(client, str(bot_id))
@@ -979,6 +1015,8 @@ async def _nats_crowned(client: ChatPort, rows: list[dict[str, Any]]) -> list[di
     source = _nats_source
     if source is not None and not source.down():
         await _prime(source)
+    if rows and all(r.get("nats") for r in rows):
+        return rows  # plan B piece 2: the crown is the view's holder, read with the rows
     state = nats_state()
     if state.kind == "down" or source is None:
         return [dict(r, crown=False) for r in rows]
@@ -999,6 +1037,8 @@ def entry(row: Mapping[str, Any], crown_of: str = "") -> RosterEntry:
     if text and text[0] == "coordinator":
         text = text[1:]
     status = text[0] if text and text[0] else _state_word(str(row.get("emoji", "")))
+    if "status" in row:
+        status = str(row["status"])  # plan B piece 2: the roster of NATS has no state word
     return RosterEntry(username=str(row.get("username") or ""), status=status,
                        coordinator=bool(row.get("coordinator")), crown=bool(row.get("crown")),
                        crown_of=crown_of, user_id=str(row.get("id") or ""),
@@ -1142,7 +1182,7 @@ async def _command(client: ChatPort, action: str, passed: list[bool] | None = No
         crown = _coord(uid).get("CROWN_UNTIL", crown)
 
     # A crown per home (ADR-002): only the agents whose home this is count.
-    rows = _at_home(await _rows(client, cid), client.work_channel_name)
+    rows = _at_home(await _rows(client, cid, client.work_channel_name), client.work_channel_name)
     others = [r for r in rows if r["crown"] and r["id"] != uid]  # oldest first
     global _took_from, _crown_since, _ousted
     if crown <= now:
@@ -1328,7 +1368,7 @@ async def nats_beat(client: ChatPort) -> None:
             _nats_hold_track(view)
             if not view.mine:
                 return
-            rows = _at_home(await _rows(client, await home_id(client)), client.work_channel_name)
+            rows = _at_home(await _rows(client, await home_id(client), client.work_channel_name), client.work_channel_name)
             links = await _linked_owned(client, source, rows)
             await _nats_holder_checks(client, source, uid, client.work_channel_name.lower(), view, rows, links)
     except asyncio.CancelledError:
@@ -1362,7 +1402,7 @@ async def _command_nats(client: ChatPort, action: str, passed: list[bool] | None
         return {"take": "pending: the NATS crown cannot be read now",
                 "release": "not released: the NATS crown cannot be read now"}.get(action, "")
     view = state.view
-    rows = _at_home(await _rows(client, cid), client.work_channel_name)
+    rows = _at_home(await _rows(client, cid, client.work_channel_name), client.work_channel_name)
     links = await _linked_owned(client, source, rows)
     _nats_hold_track(view)
 
@@ -1562,7 +1602,7 @@ async def look(client: ChatPort) -> bool:
             now = int(time.time())
             state = _coord(uid)
             cid = await home_id(client)
-            rows = _at_home(await _rows(client, cid), client.work_channel_name)
+            rows = _at_home(await _rows(client, cid, client.work_channel_name), client.work_channel_name)
             free = not any(r["crown"] for r in rows)
             gone = not any(r["id"] == _holder_id and r["reachable"] for r in rows)
             mine = any(r["id"] == uid and r["reachable"] for r in rows) and not _silent(uid)
@@ -1608,7 +1648,7 @@ async def slot_over(client: ChatPort, holder_id: str) -> int:
         return 0  # nobody takes a crown over NATS by receipts (RT-6.38)
     uid = await _user_id(client)
     cid = await client.work_channel_id()
-    rows = _at_home(await _rows(client, cid), client.work_channel_name)
+    rows = _at_home(await _rows(client, cid, client.work_channel_name), client.work_channel_name)
     held = next((r for r in rows if r["id"] == holder_id), None)
     if held is None or not held["crown"] or not sets_receipts(held["text"]) or _silent(uid):
         return 0
@@ -1636,7 +1676,7 @@ async def take_over(client: ChatPort, holder_id: str, post_id: str) -> bool:
             now = int(time.time())
             state = _coord(uid)
             cid = await home_id(client)
-            rows = _at_home(await _rows(client, cid), client.work_channel_name)
+            rows = _at_home(await _rows(client, cid, client.work_channel_name), client.work_channel_name)
             held = next((r for r in rows if r["id"] == holder_id), None)
             if (held is None or not held["crown"] or not sets_receipts(held["text"])
                     or any(r["crown"] for r in rows if r["id"] != holder_id)
@@ -1688,7 +1728,7 @@ async def receipt_holder(client: ChatPort, username: str) -> tuple[str, str]:
     if is_nats_home(client.work_channel_name):
         return "", ""  # no receipts over NATS: nothing to take over (RT-6.38)
     cid = await client.work_channel_id()
-    rows = _at_home(await _rows(client, cid), client.work_channel_name)
+    rows = _at_home(await _rows(client, cid, client.work_channel_name), client.work_channel_name)
     row = next((r for r in rows if str(r["username"]).lower() == username.lower()), None)
     if row is None:
         return "", ""

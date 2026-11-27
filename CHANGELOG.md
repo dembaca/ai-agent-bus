@@ -161,6 +161,31 @@ before 0.5.0 are described in the git history.
   `$JS.API.CONSUMER.CREATE.PRESENCE.bridge_planb.presence.planb.*.v1`, both
   in `services/auth/nats-server.example.conf`; without them every piece
   stays off.
+- **Plan B piece 2a: the roster, the link of a bot to its NATS name and
+  the names of accounts from NATS, behind a switch that is off** (ADR-014
+  phase 5, RT-6.37 step 6, RT-6.44 step 3). The bridge publishes a record
+  `<presence>.bot.<agent>.v1` for each agent's own bot (the bot, its
+  username and the account that owns it), when it sets the bot up and every
+  minute while the bot is in use, valid 3 minutes; the sweep and a bot an
+  admin disabled publish it with `bot` null. The login service adds the
+  filter to every agent's presence consumer and the bridge's user needs the
+  publish right `presence.bot.*.v1` in the NATS server's configuration
+  (`services/auth/nats-server.example.conf`); no agent may publish it. With
+  the new switch `planb.on(2, channel)` on, a session in a home over NATS
+  makes its roster from presence and membership, links a bot to a NATS name
+  only through the bridge's record and the login service's account records
+  (not through the status's `⇄` tag or the presence's own `bot` field, which
+  are still written), answers names and kinds of Mattermost accounts from
+  the records, and, while the bus is cut off, tells nobody as gone. The
+  presence gains two self-stated fields, `usage` and `release`, so the
+  roster keeps the numbers and the version it showed. The switch is the
+  channel's plan B piece 2 (the switch entry above), off by default, so
+  behaviour is as before. The bridge, the login service and the session
+  side ship together: the session side needs the records to show a link at
+  all, and the bridge's publish right must be in the NATS server's
+  configuration before the bridge runs this version, or its publish is
+  refused and logged. The session's state files keyed by the NATS name
+  (piece 2b) are not built.
 - **Plan B piece 13: STATS and the shell clients over NATS** (#244, ADR-014
   phase 5, RT-6.43 step 7). In a channel with piece 13 on (off by default;
   `CB_PLANB_TEST=13` in tests), the home's STATS go on NATS alone: the

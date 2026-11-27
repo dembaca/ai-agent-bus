@@ -323,13 +323,16 @@ def _presence_card(home: str = "") -> natsbus.PresenceCard:
     """The HELLO card's data the NATS presence carries for the operator console (RT-6.37,
     ADR-015): the harness from the handshake, model, task and branch from the last announce,
     how many of this session's asks to a human still wait (asks.waiting), and when the agent
-    last posted in its home, the channel id `home` (NatsPort.home_id). natsbus bounds each
-    field."""
+    last posted in its home, the channel id `home` (NatsPort.home_id), and the roster's
+    numbers and version as the status text states them (`usage.segments`, `release.segment`,
+    read back by the roster of a home on plan B piece 2). natsbus bounds each field."""
     me = stats.bot_id()
     return natsbus.PresenceCard(harness=stats.harness(), model=_hello.get("model"),
                                 task=_hello.get("task"), branch=_hello.get("branch"),
                                 asks=len(asks.waiting(me)) if me else None,
-                                last_post=_last_post_sec(me, home))
+                                last_post=_last_post_sec(me, home),
+                                usage=" · ".join(usage.segments()) or None,
+                                release=release.segment() or None)
 
 
 def _last_post_sec(me: str, home: str) -> int | None:

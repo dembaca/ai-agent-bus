@@ -4234,6 +4234,32 @@ which each piece reads for itself.
      - Switch: roster from NATS. Way back: Mattermost's roster again, and
        the state files keyed by the bot id, which the copy left in place;
        nothing in flight.
+     - Built (piece 2a, after 0.104.0): the roster, the link and the names
+       and kinds of accounts from NATS, behind `planb.on(2, channel)` (off
+       unless `CB_PLANB_TEST` names piece 2; a home over NATS only). The
+       bridge publishes the record `<presence>.bot.<agent>.v1` (the bot, its
+       username, the account that owns it) after it set a bot up, every
+       minute while the bot holds a client, and with `bot` null when the
+       sweep or an admin took the bot away (RT-6.44 step 3); the login
+       service gives every agent's presence consumer the filter and only the
+       bridge's user the publish right. The session links a bot to a NATS
+       name only through that record and only when its `owner_account` is
+       the one account whose account record binds the owner's anchor
+       (replacing the bot's owner read, `owners.read`); the presence's own
+       `bot` field and the `⇄` tag in the status take no part, the tag is
+       still written. The roster rows come from presence and membership (id
+       the NATS name, `away` not reachable, no status word, the crown from
+       the NATS view). The presence did not carry `usage` and `release`
+       (the roster's numbers the coordinator routes by, and the version),
+       so they are two new fields of the presence card, the status text's
+       own segments, read back by the same parsers. `usernames`, `agents`,
+       `bot_accounts` and `agent_owner` answer a Mattermost id from the
+       records alone; an id in no record is neither agent nor bot and
+       counts as foreign. A cut makes the roster empty and tells nobody as
+       gone (RT-6.21). The bridge, the login service and the session side
+       ship together. Not built: the state files keyed by the NATS name
+       (piece 2b), and the `testrig` measurand "nobody told as gone during
+       a cut" (see Test below).
      - Test: roster, link and names without a Mattermost read; `testrig`:
        nobody told as gone during a cut. Lab: each agent shows once, a
        mention of a gone agent is answered.

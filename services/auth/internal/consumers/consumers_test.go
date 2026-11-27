@@ -397,3 +397,33 @@ func TestThePresenceConsumerDeliversItsOwnersNotice(t *testing.T) {
 		t.Fatalf("nothing delivers the dash-owner's notice: %v", filters)
 	}
 }
+
+// RT-6.44 step 3, RT-6.42 step 8: an agent's presence consumer delivers every
+// bridge bot record (`<presence>.bot.<agent>.v1`, one per agent) and nothing
+// else that looks like it: not a presence of an owner named "bot" (three
+// tokens, matched by `presence.*.*` as ever), not an ask record.
+func TestThePresenceConsumerDeliversTheBotRecords(t *testing.T) {
+	m := &Manager{cfg: Config{Bus: "bus", Presence: "presence", Stats: "stats"}}
+	var filters []string
+	for _, w := range m.desired("agent-a", "alice", []string{"home"}) {
+		if w.presence {
+			filters = w.filters
+		}
+	}
+	got := func(subject string) bool {
+		for _, f := range filters {
+			if match(f, subject) {
+				return true
+			}
+		}
+		return false
+	}
+	for _, s := range []string{"presence.bot.agent-a.v1", "presence.bot.agent-b.v1"} {
+		if !got(s) {
+			t.Errorf("no filter delivers %s: %v", s, filters)
+		}
+	}
+	if got("presence.bot.agent-a.v2") || got("presence.bot.agent-a") && !match("presence.*.*", "presence.bot.agent-a") {
+		t.Errorf("a filter delivers a record of another version: %v", filters)
+	}
+}
