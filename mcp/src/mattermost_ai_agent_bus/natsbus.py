@@ -44,6 +44,7 @@ from dataclasses import dataclass, field
 from typing import Any, Protocol
 
 from nats.aio.client import Client as NatsClient
+from nats.aio.errors import ErrAuthorization, ErrInvalidUserCredentials
 
 from . import a2a
 from .login import LoginError, NKey
@@ -70,8 +71,15 @@ RECONNECT_MAX_SEC = 5.0
 LOGIN_RECONNECT_MAX_SEC = 30.0
 # A flush that does not hear its PONG within this fails the send instead of holding the
 # send lock for nats-py's 10 s default: a post in flight under a fault blocked every
-# later post for 8 s, which is the floor the rig measured (#222).
-SYNC_SEC = 2
+# later post for 8 s, which is the floor the rig measured (#222). Above the rig's 2 s
+# fault window, so a PONG delayed by a short outage does not turn a delivered post into
+# a failed one.
+SYNC_SEC = 5
+# The opening handshake keeps nats-py's own bound: a slow line there is not a fault yet.
+OPEN_SYNC_SEC = 10
+# At most one reconnect per flush timeout within this interval: a server that answers
+# every agent slowly must not make every agent reconnect at once.
+FLUSH_RECONNECT_SEC = 30.0
 MAX_AGE_SEC = 86400.0  # the PRESENCE stream's max_age: older claims and presence are gone
 MEMBER_RENEW_SEC = 6 * 3600.0  # a membership is announced again this often (the stream keeps 24 h)
 MEMBER_SYNC_WAIT_SEC = 10.0  # how long an announcement waits for the bus to be synced
@@ -1216,6 +1224,7 @@ class NatsBus:
         self._denied: list[str] = []  # subjects the server refused a publish on
         self._gaps = GapTracker()
         self._last_gap_reconnect = -1e18
+        self._last_flush_reconnect = -1e18  # storm control for flush-triggered reconnects
         self._last_echo_reconnect = -1e18
         self._echo_backoff = 0.0  # the wait after an echo reconnect that brought no echo back; 0: none yet
         self._stale: set[str] = set()  # channels with a gap, dropped until the reconnect
@@ -1495,11 +1504,11 @@ class NatsBus:
             # refusal of the own deliver subjects means the credential carries another name
             # than the computed one (the credential is the authority). Nothing has been
             # published yet.
-            await self._sync(nc)
+            await self._sync(nc, timeout=OPEN_SYNC_SEC)
             if refused:
                 raise NameMismatch("the credential's agent name is not the computed one; nothing sent")
             await nc.publish(self._presence_subject, self._presence_body("online"))
-            await self._sync(nc)
+            await self._sync(nc, timeout=OPEN_SYNC_SEC)
             if self._presence_subject in self._denied:
                 # A host and a login service of different releases (RT-6.37): the presence
                 # subject changed, so this agent looks offline and foreign, and its bye
@@ -1520,15 +1529,15 @@ class NatsBus:
             self._schedule_renew()
 
     @staticmethod
-    async def _sync(nc: NatsClient) -> None:
+    async def _sync(nc: NatsClient, timeout: int = SYNC_SEC) -> None:
         """Two round trips, so that every -ERR the server sent for what came before has
         been handled when this returns. One flush is not enough: its PING is queued behind
         the client's own buffered writes, and the PONG that resolves it may answer a PING
         that was already on the wire before them (nats-py matches PONGs to flushes in
         order), so an -ERR for the writes may still be on its way. The second PING is
         sent only after the first PONG, and the server answers in order."""
-        await nc.flush(timeout=SYNC_SEC)
-        await nc.flush(timeout=SYNC_SEC)
+        await nc.flush(timeout=timeout)
+        await nc.flush(timeout=timeout)
 
     def _schedule_renew(self) -> None:
         if self._renew_task is not None:
@@ -1568,6 +1577,10 @@ class NatsBus:
             server_waits = reconnect_waits()
             login_waits = reconnect_waits(cap=LOGIN_RECONNECT_MAX_SEC)
             failures = 0
+            if not planned:
+                # A jittered moment before the first attempt: a home whose agents lost
+                # the same server must not knock in step (#222 review).
+                await asyncio.sleep(next(server_waits))
             try:
                 while not self._stopping:
                     try:
@@ -1585,7 +1598,8 @@ class NatsBus:
                         return
                     except Exception as exc:
                         failures += 1
-                        login_failed = isinstance(exc, LoginError)
+                        login_failed = isinstance(exc, (LoginError, ErrAuthorization,
+                                                        ErrInvalidUserCredentials))
                         wait = next(login_waits if login_failed else server_waits)
                         # The first tries are news; a long outage is not a warning a turn.
                         if failures <= 3 or failures % 10 == 0:
@@ -1682,11 +1696,16 @@ class NatsBus:
         except TimeoutError:
             # The line stopped answering: nats-py matches PONGs to flushes in order, so a
             # timed-out flush would misfit every later one. Give the connection up and
-            # let the supervisor make a new one (RT-6.36 step 2).
+            # let the supervisor make a new one (RT-6.36 step 2) - at most once per
+            # interval, so a server that answers everybody slowly is not stampeded.
+            # The publish was written before the PONG went missing: it may have arrived.
             if self._nc is nc:
                 self._connected = False
-                self._wake.set()
-            raise NatsBusError("the connection stopped answering") from None
+                now = time.monotonic()
+                if now - self._last_flush_reconnect >= FLUSH_RECONNECT_SEC:
+                    self._last_flush_reconnect = now
+                    self._wake.set()
+            raise NatsBusError("the connection stopped answering; the post may have arrived") from None
         except Exception as exc:
             raise NatsBusError(f"publish failed: {type(exc).__name__}") from None
         if subject in self._denied:

@@ -21,6 +21,7 @@ from typing import Any
 import nkeys
 import pytest
 from nats.aio.client import Client as NatsClient
+from nats.aio.errors import ErrAuthorization
 
 from mattermost_ai_agent_bus import a2a, natsbus
 from mattermost_ai_agent_bus.login import NKey
@@ -134,11 +135,16 @@ def test_a_login_failure_backs_off_slower_than_a_server_that_is_away(monkeypatch
         await asyncio.wait_for(bus._supervise(), 5)
         return [(w.cap, w.pulls) for w in made]
 
-    for exc, cap in ((ConnectionError("the server is down"), natsbus.RECONNECT_MAX_SEC),
-                     (natsbus.LoginError("the login failed"), natsbus.LOGIN_RECONNECT_MAX_SEC)):
+    cases = ((ConnectionError("the server is down"), False),
+             (natsbus.LoginError("the login failed"), True),
+             (ErrAuthorization(), True))  # the auth callout refused the credential
+    for exc, login_expected in cases:
         waits = asyncio.run(run(exc))
-        used = [item for item in waits if item[1]]
-        assert used and all(item[0] == cap for item in used), (exc, waits)
+        pulls = {cap: count for cap, count in waits}
+        # The first attempt after a drop waits on the jittered server schedule; a login
+        # failure then takes the slower one.
+        assert pulls.get(natsbus.RECONNECT_MAX_SEC, 0) >= 1, (exc, waits)
+        assert (pulls.get(natsbus.LOGIN_RECONNECT_MAX_SEC, 0) >= 1) is login_expected, (exc, waits)
 
 
 def test_the_reconnect_wait_doubles_to_five_seconds() -> None:
@@ -962,6 +968,31 @@ async def test_no_answer_from_the_server_is_an_error_not_a_success() -> None:
         await bus.post("home", "x")
     assert sent  # it was sent, and still counts as failed
     assert bus._connected is False and bus._wake.is_set()
+
+
+async def test_a_flush_timeout_reconnects_at_most_once_per_interval() -> None:
+    """#222 review: a server that answers every agent slowly must not make every agent
+    reconnect at once, so only the first flush timeout within FLUSH_RECONNECT_SEC wakes
+    the supervisor; the others fail their send all the same, and the text says the post
+    may have arrived (the publish went out before the PONG went missing)."""
+    bus, _ = _unit_bus()
+
+    class Slow:
+        async def publish(self, subject: str, body: bytes) -> None:
+            return
+
+        async def flush(self, timeout: int = 10) -> None:
+            raise asyncio.TimeoutError
+
+    bus._nc, bus._connected = Slow(), True  # type: ignore[assignment]
+    with pytest.raises(natsbus.NatsBusError, match="may have arrived"):
+        await bus.post("home", "x")
+    assert bus._wake.is_set() and bus._last_flush_reconnect > 0
+    bus._wake.clear()
+    bus._connected = True
+    with pytest.raises(natsbus.NatsBusError, match="may have arrived"):
+        await bus.post("home", "y")
+    assert not bus._wake.is_set()  # within the interval: no second reconnect
 
 
 async def test_name_mismatch_in_a_reconnect_reaches_the_caller(monkeypatch: pytest.MonkeyPatch) -> None:
