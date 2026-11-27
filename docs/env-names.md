@@ -258,7 +258,7 @@ directory in the first two tables are in `mcp/src/mattermost_ai_agent_bus/`.
 A name read by several components appears in each component's table, since
 each component's pull request renames its own reads.
 
-### The MCP server and the plugin (51)
+### The MCP server and the plugin (52)
 
 | Old name | New name | Mattermost | Where it appears | Note |
 |---|---|---|---|---|
@@ -313,6 +313,7 @@ each component's pull request renames its own reads.
 | `MM_WORKSPACE` | `CB_WORKSPACE` | no | `hookapi.py`, `hosted.py`, `session_file.py`; `bin/mm-agent-lib.sh` | |
 | `MM_RELEASE_SIGNERS` | `CB_RELEASE_SIGNERS` | no | `release.py`; `adapters/corral/90-mm-session-stop.sh`, `bin/mm-agent-host-install.sh`, `bin/mm-agent-lib.sh`, `bin/mm-agent-release-check.sh` | also in the hooks table |
 | `MM_RELEASE_URL` | `CB_RELEASE_URL` | no | `release.py`; `adapters/corral/90-mm-session-stop.sh`, `bin/mm-agent-host-install.sh`, `bin/mm-agent-lib.sh`, `bin/mm-agent-release-check.sh` | also in the hooks table |
+| `CB_PLANB_TEST` | `CB_PLANB_TEST` | no | `planb.py` | new with #244: no old spelling; plan B pieces switched on for tests, read only while pytest runs a test |
 
 #### Why the channel names get `CB_MM_` and `BRIDGE_HOMES` does not
 

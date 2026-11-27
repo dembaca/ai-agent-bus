@@ -31,7 +31,7 @@ doc_check = _doc_check()
 
 def test_the_page_parses_into_its_lists() -> None:
     page = doc_check.env_page()
-    assert len(page["old"]) == 178          # the mapping tables' left column (incl. the new CB_SESSION_NONCE, CB_BRIDGE_MM_BOT_KEEP the bridge commands' 10 and the release record's 2, and the two request prefixes of plan B's wave 0)
+    assert len(page["old"]) == 179          # the mapping tables' left column (incl. CB_SESSION_NONCE, CB_PLANB_TEST, CB_BRIDGE_MM_BOT_KEEP the bridge commands' 10, the release record's 2 and the two request prefixes of plan B's wave 0)
     assert len(page["registrar"]) == 10     # kept names, their own table
     assert not page["old"] & page["registrar"]
     # the two exclusion lists the guard accepts

@@ -46,7 +46,7 @@ from typing import Any, Protocol
 from nats.aio.client import Client as NatsClient
 from nats.errors import AuthorizationError, InvalidUserCredentialsError
 
-from . import a2a
+from . import a2a, planb
 from .login import LoginError, NKey
 from .session_file import NONCE_RE
 
@@ -80,6 +80,7 @@ OPEN_SYNC_SEC = 10
 # At most one reconnect per flush timeout within this interval: a server that answers
 # every agent slowly must not make every agent reconnect at once.
 FLUSH_RECONNECT_SEC = 30.0
+PLANB_STALE_SEC = 7200.0  # a plan B record older than two republish periods (callout.PlanBRepublish, 1 h) counts as off
 MAX_AGE_SEC = 86400.0  # the PRESENCE stream's max_age: older claims and presence are gone
 MEMBER_RENEW_SEC = 6 * 3600.0  # a membership is announced again this often (the stream keeps 24 h)
 MEMBER_SYNC_WAIT_SEC = 10.0  # how long an announcement waits for the bus to be synced
@@ -848,6 +849,26 @@ def decode_bridge_signal_full(data: bytes, channel: str) -> tuple[float, str]:
     return float(_int(obj, "exp")), prefix
 
 
+def decode_planb(data: bytes, channel: str) -> frozenset[int]:
+    """Strict: the login service's v1 record of the plan B pieces switched on for `channel`."""
+    obj = _obj(data)
+    _exact(obj, {"v", "channel", "pieces"})
+    if _int(obj, "v") != 1:
+        raise MessageError("not a v1 record")
+    if obj["channel"] != channel:
+        raise MessageError("record of another channel")
+    pieces = obj["pieces"]
+    if not isinstance(pieces, list) or len(pieces) > planb.MAX_PIECE:
+        raise MessageError("pieces is not a short list")
+    for n in pieces:
+        if isinstance(n, bool) or not isinstance(n, int) or not 1 <= n <= planb.MAX_PIECE:
+            raise MessageError("a piece is not a plan B piece")
+    out = frozenset(pieces)
+    if len(out) != len(pieces):
+        raise MessageError("a piece twice")
+    return out
+
+
 # --- JetStream metadata and gaps -----------------------------------------------------
 
 @dataclass(frozen=True)
@@ -1320,6 +1341,8 @@ class NatsBus:
         # channel -> the bot prefix its newest signal that had one named (RT-6.36 step 4); kept
         # when a later signal has none or the signal runs out: the copies made stay in the channel
         self._bridge_prefix: dict[str, str] = {}
+        # channel -> (stream sequence, server time, pieces) of the plan B switches (RT-6.39 step 5)
+        self._planb: dict[str, tuple[int, float, frozenset[int]]] = {}
         self._last_anchor: dict[str, str] = {}  # account -> the anchor of its last record that decoded
 
     def __repr__(self) -> str:
@@ -1388,6 +1411,7 @@ class NatsBus:
         for ch in self.channels:
             if not CHANNEL_RE.fullmatch(ch):
                 raise ValueError("invalid channel name")
+        planb.attach(self.planb_pieces)
         _ = self.name
         retry = False
         try:
@@ -1410,6 +1434,7 @@ class NatsBus:
             self._wake.set()
 
     async def stop(self) -> None:
+        planb.detach(self.planb_pieces)
         self._stopping = True
         self._wake.set()
         self._ready.set()
@@ -2294,6 +2319,15 @@ class NatsBus:
             self._last_gap_reconnect = time.monotonic()
             self._wake.set()
 
+    def planb_pieces(self, channel: str) -> frozenset[int]:
+        """The plan B pieces switched on for one of this bus's channels (RT-6.39 step 5)."""
+        if channel not in self.channels:
+            return frozenset()
+        got = self._planb.get(channel)
+        if got is None or self._iat() - got[1] >= PLANB_STALE_SEC:  # server time, carried on by the monotonic clock
+            return frozenset()  # off is fail-safe: a record no credential renewed is no longer read
+        return got[2]
+
     async def _on_presence_msg(self, msg: Any) -> None:
         ack = parse_ack(msg.reply, PRESENCE_STREAM, f"{self.name}_presence")
         if ack is None:
@@ -2306,6 +2340,7 @@ class NatsBus:
             # not be in it: forget them, so that an own claim that is gone is claimed again.
             self._claims.clear()
             self._claim_at.clear()
+            self._planb.clear()  # the consumer delivers the last record per subject again
             self._synced = False  # until a delivery with pending 0: the replay is not read yet
         self._presence_cseq = ack.consumer_seq
         if ack.pending == 0:
@@ -2386,6 +2421,16 @@ class NatsBus:
                         log.warning("nats bus: a bridge signal that does not decode (seq %d): people on "
                                     "Mattermost", ack.stream_seq)
                     self._bridge_signal[t[2]] = (ack.stream_seq, ack.time, exp)
+            elif len(t) == 4 and t[0] == p and t[1] == "planb" and t[3] == "v1" and CHANNEL_RE.fullmatch(t[2]):
+                seq0, at0, _pb = self._planb.get(t[2], (0, 0.0, frozenset()))
+                if (ack.time, ack.stream_seq) > (at0, seq0):
+                    try:
+                        pieces = decode_planb(msg.data, t[2])
+                    except MessageError:
+                        pieces = frozenset()
+                        log.warning("nats bus: a plan B record that does not decode (seq %d): its pieces off",
+                                    ack.stream_seq)
+                    self._planb[t[2]] = (ack.stream_seq, ack.time, pieces)
             elif len(t) == 4 and t[0] == p and t[1] == "attest" and t[3] == "v1" and AGENT_RE.fullmatch(t[2]):
                 att = decode_attestation(msg.data, t[2])
                 seq0, at0, _old = self._attest.get(t[2], (0, 0.0, att))

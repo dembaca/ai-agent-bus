@@ -256,6 +256,8 @@ func (h *handler) storeError(w http.ResponseWriter, err error) {
 		fail(w, http.StatusConflict, "changed meanwhile; read again")
 	case errors.Is(err, directory.ErrBadKey):
 		fail(w, http.StatusBadRequest, "not a valid name or sub")
+	case errors.Is(err, directory.ErrBadPiece):
+		fail(w, http.StatusBadRequest, "planb: plan B pieces are 1 to 13, each once")
 	case errors.Is(err, directory.ErrNotFound):
 		fail(w, http.StatusNotFound, "not found")
 	default:
@@ -298,6 +300,9 @@ type putBody struct {
 	Owner    string            `json:"owner"`
 	Public   bool              `json:"public"`
 	Bindings map[string]string `json:"bindings"`
+	// PlanB are the plan B pieces switched on (RT-6.39 step 5): absent or
+	// null keeps them on an update, [] switches every piece off.
+	PlanB []int `json:"planb"`
 }
 
 func (h *handler) putChannel(w http.ResponseWriter, r *http.Request, id token.Identity) {
@@ -313,7 +318,12 @@ func (h *handler) putChannel(w http.ResponseWriter, r *http.Request, id token.Id
 		return
 	}
 	ctx := r.Context()
-	c := directory.Channel{Name: name, Owner: b.Owner, Public: b.Public, Bindings: b.Bindings}
+	pieces, err := directory.NormalPieces(b.PlanB)
+	if err != nil {
+		fail(w, http.StatusBadRequest, "planb: plan B pieces are 1 to 13, each once")
+		return
+	}
+	c := directory.Channel{Name: name, Owner: b.Owner, Public: b.Public, Bindings: b.Bindings, PlanB: pieces}
 	var rev uint64
 	if !create {
 		want, ok := parseRev(ifMatch)
@@ -334,6 +344,9 @@ func (h *handler) putChannel(w http.ResponseWriter, r *http.Request, id token.Id
 			return
 		}
 		c.Members = cur.Members
+		if b.PlanB == nil { // a client that knows no switches changes none
+			c.PlanB = cur.PlanB
+		}
 		rev = want
 	}
 	n, err := h.store.PutChannel(ctx, c, rev)
@@ -345,7 +358,7 @@ func (h *handler) putChannel(w http.ResponseWriter, r *http.Request, id token.Id
 	if create {
 		event, code = "channel created", http.StatusCreated
 	}
-	h.logWrite(id, event, name, map[string]any{"owner": c.Owner, "public": c.Public, "bindings": c.Bindings})
+	h.logWrite(id, event, name, map[string]any{"owner": c.Owner, "public": c.Public, "bindings": c.Bindings, "planb": c.PlanB})
 	w.Header().Set("ETag", etag(n))
 	reply(w, code, c)
 }

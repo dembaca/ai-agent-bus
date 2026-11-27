@@ -298,6 +298,9 @@ func TestCommands(t *testing.T) {
 		{"owner", []string{"owner", "dev team", "u2"}, "PUT", "/v1/directory/channels/dev%20team", `"5"`, "", `{"owner":"u2","public":false,"bindings":{"mattermost":"dev"}}`},
 		{"owner clear", []string{"owner", "dev team", "-"}, "PUT", "/v1/directory/channels/dev%20team", `"5"`, "", `{"owner":"","public":false,"bindings":{"mattermost":"dev"}}`},
 		{"public", []string{"public", "dev team", "on"}, "PUT", "/v1/directory/channels/dev%20team", `"5"`, "", `{"owner":"u1","public":true,"bindings":{"mattermost":"dev"}}`},
+		// plan B's switches (RT-6.39 step 5): the list sorted, "-" all off
+		{"planb", []string{"planb", "dev team", "6, 1,13"}, "PUT", "/v1/directory/channels/dev%20team", `"5"`, "", `{"owner":"u1","public":false,"bindings":{"mattermost":"dev"},"planb":[1,6,13]}`},
+		{"planb off", []string{"planb", "dev team", "-"}, "PUT", "/v1/directory/channels/dev%20team", `"5"`, "", `{"owner":"u1","public":false,"bindings":{"mattermost":"dev"},"planb":[]}`},
 		{"members add", []string{"members", "add", "dev team", "s1", "s2"}, "PATCH", "/v1/directory/channels/dev%20team/members", `"5"`, "", `{"add":["s1","s2"],"remove":[]}`},
 		{"members rm", []string{"members", "rm", "dev team", "m1"}, "PATCH", "/v1/directory/channels/dev%20team/members", `"5"`, "", `{"add":[],"remove":["m1"]}`},
 		{"import", []string{"import"}, "POST", "/v1/directory/import", "", "", ""},
@@ -374,7 +377,7 @@ func TestConflictAndErrors(t *testing.T) {
 
 func TestUsageErrors(t *testing.T) {
 	r := newRig(t)
-	for _, args := range [][]string{{}, {"nope"}, {"show"}, {"public", "x", "maybe"}, {"members", "add", "x"}, {"ls", "--public"}, {"--bogus", "ls"}, {"stats-import", "x"}} {
+	for _, args := range [][]string{{}, {"nope"}, {"show"}, {"public", "x", "maybe"}, {"planb", "x"}, {"planb", "x", "0"}, {"planb", "x", "14"}, {"planb", "x", "1,1"}, {"planb", "x", "a"}, {"planb", "x", ""}, {"members", "add", "x"}, {"ls", "--public"}, {"--bogus", "ls"}, {"stats-import", "x"}} {
 		if code, _, _ := r.do(args...); code != 2 {
 			t.Fatalf("%v: exit %d", args, code)
 		}

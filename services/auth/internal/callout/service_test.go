@@ -24,14 +24,15 @@ import (
 // lab is a real nats-server with auth_callout, the callout service
 // connected to it as its auth user, a test realm and a chat.
 type lab struct {
-	t     *testing.T
-	url   string
-	wsURL string
-	realm *testrealm.Realm
-	chat  *testrealm.Chat
-	logs  *syncBuffer
-	brake string
-	svc   *Service
+	noSettle bool // connect does not wait for the records written after the answer
+	t        *testing.T
+	url      string
+	wsURL    string
+	realm    *testrealm.Realm
+	chat     *testrealm.Chat
+	logs     *syncBuffer
+	brake    string
+	svc      *Service
 }
 
 type syncBuffer struct {
@@ -86,7 +87,7 @@ accounts {
     # services/auth/README.md and RT-6.35 document.
     { user: jsmin, password: pwd, permissions: {
       publish: [ "$JS.API.STREAM.CREATE.BUS", "$JS.API.STREAM.INFO.BUS", "$JS.API.CONSUMER.*.BUS", "$JS.API.CONSUMER.*.BUS.>",
-        "$JS.API.STREAM.CREATE.PRESENCE", "$JS.API.STREAM.INFO.PRESENCE", "$JS.API.CONSUMER.*.PRESENCE", "$JS.API.CONSUMER.*.PRESENCE.>", "$JS.API.STREAM.CREATE.STATS", "$JS.API.STREAM.INFO.STATS", "$JS.API.STREAM.UPDATE.STATS", "stats.import.*", "$JS.API.CONSUMER.*.STATS", "$JS.API.CONSUMER.*.STATS.>", "presence.person.*.v1", "$JS.API.STREAM.MSG.GET.PRESENCE", "presence.attest.*.v1", "presence.notice.*.*.v1", "presence.account.mattermost.*.v1",
+        "$JS.API.STREAM.CREATE.PRESENCE", "$JS.API.STREAM.INFO.PRESENCE", "$JS.API.CONSUMER.*.PRESENCE", "$JS.API.CONSUMER.*.PRESENCE.>", "$JS.API.STREAM.CREATE.STATS", "$JS.API.STREAM.INFO.STATS", "$JS.API.STREAM.UPDATE.STATS", "stats.import.*", "$JS.API.CONSUMER.*.STATS", "$JS.API.CONSUMER.*.STATS.>", "presence.person.*.v1", "$JS.API.STREAM.MSG.GET.PRESENCE", "presence.attest.*.v1", "presence.notice.*.*.v1", "presence.account.mattermost.*.v1", "presence.planb.*.v1",
         "$JS.API.INFO", "$JS.API.STREAM.CREATE.KV_BUS_DIRECTORY", "$JS.API.STREAM.INFO.KV_BUS_DIRECTORY", "$JS.API.DIRECT.GET.KV_BUS_DIRECTORY.>", "$KV.BUS_DIRECTORY.>",
         "$JS.API.CONSUMER.CREATE.KV_BUS_DIRECTORY.>", "$JS.API.CONSUMER.DELETE.KV_BUS_DIRECTORY.*" ]
       subscribe: [ "_INBOX.>" ] } },
@@ -217,6 +218,9 @@ func (l *lab) connectAt(url, owner, tok string, hello Hello, signer nkeys.KeyPai
 	}
 	l.t.Cleanup(nc.Close)
 	a.nc = nc
+	if !l.noSettle {
+		l.svc.bg.Wait() // plan B's records are written after the answer
+	}
 	return a, nil
 }
 
