@@ -237,7 +237,13 @@ export function hookApi(env: Env, directory: string, missing: () => void = () =>
       })
       // Only the host's refusal of another session, not a route's own 403.
       if (res.status === 403 && (await res.json().catch(() => null))?.client_session === "refused") client.forbidden?.()
-      if (res.status !== 200) return null
+      if (res.status !== 200) {
+        // A turn end without a bus session still carries the login line (#198, plan B):
+        // the caller reads `login` and treats `error` as the failed check it is.
+        if (res.status === 503 && path.startsWith("/v1/turn-end"))
+          return (await res.json().catch(() => null)) as Json | null
+        return null
+      }
       return (await res.json()) as Json
     } catch {
       return null
@@ -795,7 +801,8 @@ export async function setup(ctx: Plugin.Context) {
       // unanswered=1: a bus post without a reply in its thread blocks once (RT-6.2 step 2).
       const q = `drains=${t.drains}&signoff_asked=${+t.signoffAsked}&by_bus=${+t.byBus}&push=1&unanswered=1`
       const r = await bus("GET", `/v1/turn-end?${q}`, undefined, SLOW_MS)
-      await loginLine(id) // a grant that started after the session start (#198)
+      // The answer carries the waiting login line (#198): one call, no second endpoint.
+      const login = typeof r?.login === "string" ? r.login : ""
       // The posts an answer names are marked only now that the block goes out, so
       // a dropped check leaves them due; an answer alone that cannot be marked
       // does not block, so a server that cannot mark never blocks in a loop.
@@ -808,14 +815,20 @@ export async function setup(ctx: Plugin.Context) {
         t.busy = true
         await stat("block", { kind: r.action })
         await inject(r.action, String(r.reason))
-        if (await send(id, String(r.reason), r.action, String(r.banner || ""))) return
+        const banner = [String(r.banner || ""), login].filter(Boolean).join("\n")
+        if (await send(id, String(r.reason), r.action, banner)) {
+          // The line rode in the banner: mark it shown only now that it went out (#198).
+          if (login) await bus("POST", "/v1/login/shown", {})
+          return
+        }
         t.busy = false
       }
-      if (r) await stat("turn_end")
+      if (r && !r.error) await stat("turn_end")
+      await showLogin(id, login) // the line alone when nothing blocked the turn
       // A window the server opened (RT-6.2 step 3) says its gates hold: the
       // session is reachable and the long poll runs, with no end by time
       // (ADR-009). None (a BYE, no project channel, the listener off): idle.
-      if (!r) {
+      if (!r || r.error) {
         // The check failed (timeout, 503): nothing is known, so what held stays:
         // a session that was listening keeps listening, reachable while it lives
         // (the status says so, not "working" from the turn).
@@ -974,19 +987,28 @@ export async function setup(ctx: Plugin.Context) {
 
   // The NATS login approval waiting now, as one synthetic line in the TUI (#198):
   // link and code only, never a token; marked shown so a later turn does not repeat it.
+  // The login line of a session's start (#198): its own synthetic text, not the
+  // human's, and marked shown only after it really went out.
+  const showLogin = async (id: string, text: string): Promise<void> => {
+    if (!text || !(await mine(id))) return
+    if (!(await send(id, text, "context", "AI agent bus: login approval"))) return
+    await bus("POST", "/v1/login/shown", {})
+  }
+
   const loginLine = async (id: string) => {
     try {
       if (!(await mine(id))) return
       const r = await bus("GET", "/v1/login")
+      const line = typeof r?.line === "string" ? r.line : ""
+      if (line) {
+        await showLogin(id, line) // the server's own wording (#198)
+        return
+      }
       const link = typeof r?.link === "string" ? r.link : ""
       if (!link) return
       const code = typeof r?.user_code === "string" ? r.user_code : ""
-      const text = `Bus login: open ${link}${code ? ` — the page shows the code ${code}` : ""}. ` +
-                   "Approve only if it matches."
-      // The plugin's own text, not the human's: no turn, and marked shown only after
-      // it really went out (#198).
-      if (!(await send(id, text, "context", "AI agent bus: login approval"))) return
-      await bus("POST", "/v1/login/shown", {})
+      await showLogin(id, `Bus login: open ${link}${code ? ` — the page shows the code ${code}` : ""}. ` +
+                          "Approve only if it matches.")
     } catch {
       // no server yet: a later turn's end shows the same line
     }

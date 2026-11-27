@@ -159,8 +159,15 @@ before 0.5.0 are described in the git history.
   the harness on `GET /v1/login` of its hook API, and the harness shows it once:
   Claude Code's session-start hook as a `systemMessage`, the pi extension's
   notice and the OpenCode plugin's synthetic line. The line is marked shown with
-  `POST /v1/login/shown`, so the next turn's notice does not repeat it; a grant
-  that starts after the session start is seen at the next turn's end.
+  `POST /v1/login/shown`, so the next turn's notice does not repeat it, and only
+  after the line really went out. A grant that starts after the session start
+  comes with the next turn's end: `/v1/turn-end` carries the same line in its
+  answer, so the pi extension and the OpenCode plugin need no second call, and
+  Claude Code's Stop hook asks `GET /v1/login` there. The line says how many
+  minutes the code has left, not the grant's original span, and ends with the
+  approval. A keyless corral session gets the line from its relay, on the link
+  the host built itself. A session with no bot yet (503 on its turn's end) still
+  gets the line with that answer, so plan B does not lose the approval.
 
 ### Fixed
 
