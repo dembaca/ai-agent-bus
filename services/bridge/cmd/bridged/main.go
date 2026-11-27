@@ -195,8 +195,9 @@ func run(log *slog.Logger) error {
 			defer wg.Done()
 			sw.Run(ctx, agentbots.SweepInterval)
 		}()
-		// the bot records (RT-6.44 step 3): each bot that holds a client is
-		// announced again every minute, valid for three
+		// the bot records (RT-6.44 step 3): at the start and every minute,
+		// valid for three, each bot that holds a client, and by the find-only
+		// pass the existing bot of each present agent that holds none
 		wg.Add(1)
 		go func() {
 			defer wg.Done()

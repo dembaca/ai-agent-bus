@@ -19,6 +19,10 @@ const (
 	RecordEvery = time.Minute
 	// RecordValid is how long a record counts.
 	RecordValid = 3 * time.Minute
+	// FindWindow is how recent a presence must be for the find-only pass to
+	// look the agent's bot up: a session's presence beats every 30 s, so a
+	// name gone quiet longer is no present agent and costs no admin read.
+	FindWindow = 5 * time.Minute
 	// RecordPrefix is the presence subject prefix of the record.
 	RecordPrefix = "presence.bot."
 )
@@ -96,8 +100,8 @@ func (b *Bots) Announce() {
 	}
 }
 
-// AnnounceFound is the find-only pass for the agents that are present but
-// hold no client (after a restart, or while idle): when the bridge's bot of
+// AnnounceFound is the find-only pass for the agents that are present (a
+// presence within FindWindow of the newest) but hold no client (after a restart, or while idle): when the bridge's bot of
 // the name exists, is active and is owned by the account that owns the
 // agent's anchor, its record is published. It creates no bot, mints no token
 // and joins no channel; a bot of another owner gets a null record, one that
@@ -110,7 +114,7 @@ func (b *Bots) AnnounceFound(ctx context.Context) {
 			return
 		}
 		info, ok := b.Presence.Get(name)
-		if !ok || !presence.Fresh(info, newest, DefaultKeep) {
+		if !ok || !presence.Fresh(info, newest, FindWindow) {
 			continue
 		}
 		e := b.entry(name)

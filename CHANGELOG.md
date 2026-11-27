@@ -185,7 +185,8 @@ before 0.5.0 are described in the git history.
   member of a home without a crown claim there is a guest, not a home agent
   (membership is announced for homes, guests and the lobby alike). The
   bridge also publishes the bot record at its start and every minute for every
-  present agent whose bot exists (find only, no bot made), and publishes it
+  present agent (a presence within 5 minutes) whose bot exists (find only,
+  no bot made), and publishes it
   with `bot` null when the owner's record changed. The switch is the
   channel's plan B piece 2 (the switch entry above), off by default, so
   behaviour is as before. The bridge, the login service and the session

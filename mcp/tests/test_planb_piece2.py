@@ -247,19 +247,19 @@ async def test_a_bot_is_linked_only_through_the_bridges_record_and_its_owner_acc
         monkeypatch: pytest.MonkeyPatch) -> None:
     port, bus, inner = await _world(monkeypatch)
     assert port.owned_link(AGENT_A, "home") is not None and port.owned_link(AGENT_A, "home").bot == BOT_A  # type: ignore[union-attr]
-    assert port.linked2("home") == {BOT_A: AGENT_A} and port._bots2()[BOT_A][0] == AGENT_A
+    assert {b: a for b, (a, _) in port._bots2().items()} == {BOT_A: AGENT_A}
     assert port.owned_link(AGENT_B, "home") is None  # no record
     # a forged presence `bot` field and a forged tag give no link: the presence's own words count nothing
     await bus._on_presence_msg(FakeMsg(f"presence.alice.{AGENT_B}", _presence_reply(bus, 60, 60, T0 + 1),
                                        encode_presence("online", BOT_B, "bb-agent-b")))
     assert bus.bot_of(AGENT_B) == BOT_B
-    assert port.owned_link(AGENT_B, "home") is None and port.linked2("home") == {BOT_A: AGENT_A}
+    assert port.owned_link(AGENT_B, "home") is None and list(port._bots2()) == [BOT_A]
     rows = [{"id": BOT_B, "text": f"working · ⇄{natsbus.link_tag(AGENT_B)} · ~home"}]
-    assert port.linked2("home").get(BOT_B) is None and rows
+    assert BOT_B not in port._bots2() and rows
     # the record's owner account is not the account that binds the owner's anchor: no link
     await bus._on_presence_msg(FakeMsg(f"presence.bot.{AGENT_A}.v1", _presence_reply(bus, 61, 61, T0 + 2),
                                        _bot_body(owner_account="x" * 26, iat=int(T0) + 2, exp=int(T0) + 182)))
-    assert port.owned_link(AGENT_A, "home") is None and port.linked2("home") == {} and port._bots2() == {}
+    assert port.owned_link(AGENT_A, "home") is None and port._bots2() == {}
     # the right account, but the username lacks the bridge's prefix: no link
     await bus._on_presence_msg(FakeMsg(f"presence.bot.{AGENT_A}.v1", _presence_reply(bus, 62, 62, T0 + 3),
                                        _bot_body(username="zz-agent-a", iat=int(T0) + 3, exp=int(T0) + 183)))

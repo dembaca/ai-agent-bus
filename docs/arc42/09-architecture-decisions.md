@@ -4240,8 +4240,11 @@ which each piece reads for itself.
        only). The
        bridge publishes the record `<presence>.bot.<agent>.v1` (the bot, its
        username, the account that owns it) after it set a bot up, every
-       minute while the bot holds a client, and with `bot` null when the
-       sweep or an admin took the bot away (RT-6.44 step 3); the login
+       minute while the bot holds a client, at its start and every minute
+       for each present agent whose bot exists (a find-only pass: no bot
+       made, no token minted), and with `bot` null when the sweep or an
+       admin took the bot away or its owner is not the agent's owner
+       account (RT-6.44 step 3); the login
        service gives every agent's presence consumer the filter and only the
        bridge's user the publish right. The session links a bot to a NATS
        name only through that record and only when its `owner_account` is
@@ -4249,13 +4252,14 @@ which each piece reads for itself.
        (replacing the bot's owner read, `owners.read`); the presence's own
        `bot` field and the `⇄` tag in the status take no part, the tag is
        still written. The roster rows come from presence and membership (id
-       the NATS name, `away` not reachable, no status word, the crown from
-       the NATS view); the session finds its own row by its NATS name
+       the NATS name, `away` not reachable, the status word the presence's
+       `state`, the crown from the NATS view); the session finds its own row by its NATS name
        (`lease.is_me`), for the crown, its usage and the foreign-coordinator
-       check. The presence did not carry `usage` and `release`
-       (the roster's numbers the coordinator routes by, and the version),
-       so they are two new fields of the presence card, the status text's
-       own segments, read back by the same parsers. `usernames`, `agents`,
+       check. The presence did not carry `usage`, `release` and `state`
+       (the roster's numbers and state word the coordinator routes by, and
+       the version), so they are three new fields of the presence card,
+       `usage` and `release` the status text's own segments, read back by
+       the same parsers, `state` one of four words. `usernames`, `agents`,
        `bot_accounts` and `agent_owner` answer a Mattermost id the records
        know (a fresh bot record, a fresh account record) from the records
        alone; every other id keeps Mattermost's answer as with the switch

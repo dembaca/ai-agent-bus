@@ -1060,7 +1060,7 @@ def entry(row: Mapping[str, Any], crown_of: str = "") -> RosterEntry:
         text = text[1:]
     status = text[0] if text and text[0] else _state_word(str(row.get("emoji", "")))
     if "status" in row:
-        status = str(row["status"])  # plan B piece 2: the roster of NATS has no state word
+        status = str(row["status"])  # plan B piece 2: NATS rows bring the presence's `state`
     return RosterEntry(username=str(row.get("username") or ""), status=status,
                        coordinator=bool(row.get("coordinator")), crown=bool(row.get("crown")),
                        crown_of=crown_of, user_id=str(row.get("id") or ""),

@@ -162,6 +162,26 @@ func TestRT644TheFindPassAnnouncesAnIdleAgentsBot(t *testing.T) {
 	}
 }
 
+// RT-6.44 step 3: the find-only pass looks up only present agents, those
+// with a presence within FindWindow of the newest; a name gone quiet longer
+// costs no admin read and gets no record.
+func TestRT644TheFindPassSkipsAnAgentGoneQuiet(t *testing.T) {
+	f := newFake(t)
+	f.addBot("b1", "bb-agent-a", Marker+"agent-a")
+	f.set("b1", "owner_id", "alice")
+	now := time.Now()
+	snap := presence.New()
+	snap.Observed("agent-a", "alice~x", "", presence.Online, now.Add(-FindWindow-time.Minute))
+	snap.Observed("agent-b", "alice~x", "", presence.Online, now)
+	b := newBots(t, f, snap)
+	p := &pubs{}
+	b.NATS = p
+	b.AnnounceFound(context.Background())
+	if m, n := p.last(); n != 0 {
+		t.Fatalf("published %d for a quiet agent: %v", n, m)
+	}
+}
+
 // Owner binding on every path: a bot of another owner gets null from the find
 // pass; a changed owner record gets null from Bot and from the round.
 func TestRT644ABotOfAnotherOwnerGetsNull(t *testing.T) {

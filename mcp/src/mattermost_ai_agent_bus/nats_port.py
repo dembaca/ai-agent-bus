@@ -868,19 +868,6 @@ class NatsPort:
             return None
         return rec if bus.accounts_of(anchor) == [rec.owner_account] else None
 
-    def linked2(self, home: str) -> dict[str, str]:
-        """bot id -> NATS name for the names of `home` that are not offline and whose bot
-        record is theirs (owned_link); the roster of plan B piece 2 needs no rows to ask."""
-        bus = self._live()
-        if bus is None:
-            return {}
-        out: dict[str, str] = {}
-        for name in bus.presence_snapshot():
-            rec = self.owned_link(name, home) if bus.presence_of(name) != "offline" else None
-            if rec is not None and rec.bot:
-                out[rec.bot] = name
-        return out
-
     def own_name(self) -> str:
         """This session's NATS name ('' without a bus): the id of its own row in roster_rows."""
         return self._bus.name if self._bus is not None else ""
