@@ -181,6 +181,9 @@ class BusLike(Protocol):
     def dm_of(self, agent: str) -> bool: ...
 
     dm_source: Callable[[], bool] | None  # plan B piece 3: the home's DM switch, in the presence
+    shown_source: Callable[[], Mapping[str, Any] | None] | None  # plan B piece 9: the status
+
+    def presence_soon(self) -> None: ...
 
     def notice_teller(self, agent: str) -> str: ...
 
@@ -514,6 +517,7 @@ class NatsPort:
         """The bus this port sends and reads by (start makes one)."""
         self._bus = bus
         bus.dm_source = self._dm_on  # plan B piece 3: the home's DM switch, stated in its presence
+        bus.shown_source = lease.presence_shown  # plan B piece 9: None while the switch is off
         self._up = True  # the caller brings it up
 
     def _dm_on(self) -> bool:
@@ -561,6 +565,7 @@ class NatsPort:
                 bus.on_person_gap = self._person_gap
                 bus.card_source = self._card
                 bus.dm_source = self._dm_on  # plan B piece 3: stated in every presence
+                bus.shown_source = lease.presence_shown  # plan B piece 9: None while it is off
                 bus.ask_source = self._asks
                 try:
                     bus.link_bot(bot, await self._bot_name())
@@ -2142,6 +2147,27 @@ class NatsPort:
             if bus.claim_info(home).get(bus.name) != before:
                 return
             await asyncio.sleep(0.05)
+
+    # --- plan B piece 9: the status and the header line by the bridge ----------------------
+    def presence_soon(self) -> None:
+        """The status the presence states changed (lease.presence_shown): the bus sends its
+        presence now. Nothing without a bus."""
+        bus = self._bus
+        if bus is not None and self._fatal is None:
+            bus.presence_soon()
+
+    async def header_line(self, home: str, line: str) -> bool:
+        """The bus line of `home`'s header (RT-6.6 step 7) as a request to the bridge,
+        `<req>.header.<agent>` (ADR-014 phase 5): it writes the line with this agent's bridge
+        bot when the claims say this agent holds the home's crown, and keeps the rest of the
+        header. True when it changed the header; raises RequestError when it refused or did
+        not answer, NatsPortError without a bus."""
+        from . import requests  # only piece 9 asks the bridge from here
+
+        answer = await requests.request(self._require(), "header",  # type: ignore[arg-type]
+                                        {"channel": home, "line": line})
+        result = answer.get("result")
+        return isinstance(result, dict) and result.get("changed") is True
 
     async def whereabouts(self, channel_id: str, name: str) -> str | None:
         """Where a NATS name is, for a NATS home's channel (RT-6.37): `gone` (offline),

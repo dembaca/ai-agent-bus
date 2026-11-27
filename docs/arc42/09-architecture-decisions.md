@@ -4458,6 +4458,31 @@ which each piece reads for itself.
        time from a crown change
        to its mirror. Lab: a hard stop of the coordinator, the 👑 moves in
        Mattermost.
+     - Built (after 0.104.0), behind `planb.on(9, channel)`, off by
+       default: in a home over NATS with piece 9 on, and piece 2 too (the
+       link still lives in the registrar bot's status until piece 2 moves
+       it; with piece 2 off the session keeps the old path, logged once),
+       the session writes no custom status, presence or 👑 to Mattermost
+       and sends no header write: its presence states the status it would
+       have shown (`shown`: the state's emoji, the text without link tag or
+       `coordinator` head, its end, `crown` while its mirror holds the
+       crown; RT-6.6 step 1), and the bus line goes on
+       `<req>.header.<agent>` (RT-6.6 step 7). The bridge, with the agents'
+       own bots, sets each agent's bot's custom status and Mattermost
+       presence (online, away from the presence, offline once it is stale),
+       the 👑 only where the presence says `crown` and the claims make that
+       agent the holder, and writes the holder's line with its own bot
+       after checking that the line is one the bus writes (RT-6.44 step 9).
+       It reads the claims through a consumer of its own, `bridge_crown`,
+       made at every start. Way back: the switch off; the session states no
+       `shown` and writes its registrar bot's status again, the bridge
+       clears what it set. Typing: in a home over NATS no indicator goes
+       out (RT-6.5), before and after this piece. Not yet: the bridge's
+       holder does not leave out a claimant that is no member of the home
+       (memberships come to the bridge with piece 5's history read) or one
+       that does not stand by the owner rule (`lease.standing`); where
+       the sessions name another holder, no 👑 shows and the header line is
+       refused. The `testrig` measurement and the lab check are open.
   10. **Permission prompts by DM to the responsible human** (RT-6.13), and
       a person's other DMs to the agent. Needs the roster (piece 2) and
       people's events with a fresh signal.

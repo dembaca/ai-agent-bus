@@ -49,6 +49,7 @@ from nats.errors import AuthorizationError, InvalidUserCredentialsError
 
 from . import a2a, planb
 from .login import LoginError, NKey
+from .model import StatusMark
 from .session_file import NONCE_RE
 
 log = logging.getLogger(__name__)
@@ -59,6 +60,7 @@ CLOSE_SEC = 5.0
 
 MAX_BODY = 65536  # the BUS stream's max_msg_size
 HEARTBEAT_SEC = 30.0
+PRESENCE_SOON_SEC = 2.0  # plan B piece 9: the least time after an early presence (presence_soon)
 PRESENCE_FRESH_SEC = 90.0  # a holder's last presence must be younger than this
 OWN_ECHO_SEC = 75.0  # the echo of this agent's own presence must be younger than this (monotonic), else the view is unknown
 GAP_RECONNECT_SEC = 30.0  # at most one reconnect for a gap within this time
@@ -421,14 +423,17 @@ _CARD_KEYS = ("harness", "model", "task", "branch", "asks", "last_post")
 
 
 def encode_presence(status: str, bot: str = "", bot_name: str = "",
-                    card: PresenceCard | None = None, dm: bool = False) -> bytes:
+                    card: PresenceCard | None = None, dm: bool = False,
+                    shown: Mapping[str, Any] | None = None) -> bytes:
     """The presence body; `bot` is the agent's Mattermost bot id (RT-6.37) and `name` that
     bot's username, the name people and coordinator("who") know the agent by (the operator
     console shows it, ADR-015); each left out when ''. `card`: the HELLO card's data
     (harness, model, task, branch, open asks) and the last post's time, bounded by clean_card;
     a field it does not state (None) is left out. `dm`: this session's home runs plan B's
     agent DMs over NATS (piece 3), so a DM addressed to the agent goes over NATS; left out when
-    False, which every sender reads as "stay on Mattermost".
+    False, which every sender reads as "stay on Mattermost". `shown`: the status the bridge
+    shows under the agent's bridge bot (plan B piece 9), bounded by clean_shown; left out when
+    None or out of bounds, which the bridge reads as "not mine to show".
     """
     if status not in _STATUSES:
         raise MessageError("unknown status")
@@ -445,7 +450,33 @@ def encode_presence(status: str, bot: str = "", bot_name: str = "",
             value = getattr(clean, key)
             if value is not None:
                 body[key] = value
+    if shown is not None:
+        clean_status = clean_shown(shown)
+        if clean_status is not None:
+            body["shown"] = clean_status
     return _dumps(body).encode()
+
+
+# Plan B piece 9: the emoji a `shown` status may carry, the states' own; never the crown's,
+# which the bridge sets by the claims (RT-6.38).
+SHOWN_EMOJIS = frozenset(a2a.status_emoji(m) for m in (StatusMark.WORKING, StatusMark.LISTENING,
+                                                        StatusMark.IDLE, StatusMark.BUS))
+SHOWN_TEXT_MAX = 100  # Mattermost's custom status text
+
+
+def clean_shown(shown: Mapping[str, Any]) -> dict[str, Any] | None:
+    """A `shown` status bounded as the bridge reads it (plan B piece 9): `emoji` one of
+    SHOWN_EMOJIS, `text` a card line of at most SHOWN_TEXT_MAX characters, `until` its end in
+    epoch seconds, `crown` only when True (this session's mirror holds its home's crown).
+    None when a field is out of bounds: dropped, never repaired."""
+    emoji, until = shown.get("emoji"), card_epoch(shown.get("until"))
+    text = card_text(shown.get("text"), SHOWN_TEXT_MAX)
+    if emoji not in SHOWN_EMOJIS or not text or until is None:
+        return None
+    out: dict[str, Any] = {"emoji": emoji, "text": text, "until": until}
+    if shown.get("crown") is True:
+        out["crown"] = True
+    return out
 
 
 def decode_presence_card(data: bytes) -> PresenceCard:
@@ -1370,6 +1401,10 @@ class NatsBus:
         # in every presence the bus sends; the MCP server sets it. None or a failing source
         # states nothing, which every sender reads as "stay on Mattermost".
         self.dm_source: Callable[[], bool] | None = None
+        # Plan B piece 9: the status the bridge shows for this agent, stated in every presence
+        # (`shown`); None or a failing source states none, and the bridge shows nothing of it.
+        self.shown_source: Callable[[], Mapping[str, Any] | None] | None = None
+        self._presence_soon = asyncio.Event()  # presence_soon: the heartbeat sends now
         self._dm: dict[str, bool] = {}  # agent -> its newest presence states DMs over NATS
         # The open asks for the ask record (RT-6.43 step 5): the MCP server sets it (a hosted
         # one maybe after start); `human` is the asked human's username, mapped here through
@@ -1757,7 +1792,12 @@ class NatsBus:
 
     async def _heartbeat(self) -> None:
         while True:
-            await asyncio.sleep(self._heartbeat_sec)
+            try:
+                await asyncio.wait_for(self._presence_soon.wait(), self._heartbeat_sec)
+            except asyncio.TimeoutError:
+                pass
+            soon = self._presence_soon.is_set()
+            self._presence_soon.clear()
             nc = self._nc
             if nc is not None and self._connected:
                 try:
@@ -1765,6 +1805,24 @@ class NatsBus:
                 except Exception as exc:
                     log.warning("nats bus: heartbeat: %s", type(exc).__name__)
             self._check_own_echo()
+            if soon:
+                await asyncio.sleep(PRESENCE_SOON_SEC)  # a burst of changes sends one a while
+
+    def presence_soon(self) -> None:
+        """Plan B piece 9: the status this presence states changed, so the next presence goes
+        out now (PRESENCE_SOON_SEC after the last early one at most), not at the next
+        heartbeat. Safe from any thread: the event is set in the bus's own loop."""
+        loop = self._loop
+        if loop is None or loop.is_closed():
+            return  # not started: the first presence states it
+        try:
+            running = asyncio.get_running_loop()
+        except RuntimeError:
+            running = None
+        if running is loop:
+            self._presence_soon.set()
+        else:
+            loop.call_soon_threadsafe(self._presence_soon.set)
 
     def _check_own_echo(self) -> None:
         """The echo of the own presence missing past OWN_ECHO_SEC while connected (a stream
@@ -2041,7 +2099,13 @@ class NatsBus:
                 dm = bool(self.dm_source())
             except Exception as exc:  # noqa: BLE001 — in doubt off: the safe side for a DM
                 log.info("nats bus: the DM flag was not read (%s): not stated", type(exc).__name__)
-        return encode_presence(status, self._bot, self._bot_name, card, dm=dm)
+        shown = None
+        if self.shown_source is not None:
+            try:
+                shown = self.shown_source()
+            except Exception as exc:  # noqa: BLE001 — a display, never a reason to look offline
+                log.info("nats bus: the shown status was not read (%s): not stated", type(exc).__name__)
+        return encode_presence(status, self._bot, self._bot_name, card, dm=dm, shown=shown)
 
     def link_bot(self, bot_id: str, username: str = "") -> None:
         """The Mattermost bot this agent's presence names (RT-6.37), and its username for
