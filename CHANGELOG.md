@@ -170,6 +170,19 @@ before 0.5.0 are described in the git history.
   so nothing is kept: a lost message fails the request, and the caller gets an
   error, never a silent success. Nothing of the pieces is built; the scaffold
   and the rights on both sides run against a real nats-server.
+- **The hello's home in the login service's attestation** (#255, RT-6.41). The
+  record now states `home`: the hello's home as the grant took it - a channel
+  token, or `""` when the hello named none or the human is no member of it - the
+  same datum the credential's crown claim rests on, never a claim of the agent's
+  own. A reader takes it only from the record the agent's presence backs (fresh,
+  naming the anchor of the presence subject); a record naming a home that is no
+  channel token is dropped whole, as every malformed record is. With it the
+  roster of a home over NATS tells a home agent from a guest from the first
+  second, without waiting for the agent's first crown claim; an older login
+  service states no home, and the claim stays the fallback. The home grants
+  nothing: the peer and foreign split stays by anchors, and a guest gains no
+  right by it.
+
 - **Plan B's switch per piece and channel** (#244, ADR-014 phase 5, RT-6.39
   step 5). A channel in the channel directory now holds `planb`: the plan B
   pieces switched on in it, 1 to 13, each once, none by default (piece 14,

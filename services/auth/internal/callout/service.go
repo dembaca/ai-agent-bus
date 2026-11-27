@@ -16,6 +16,7 @@ import (
 	"fmt"
 	"log/slog"
 	"regexp"
+	"slices"
 	"sync"
 	"time"
 
@@ -433,6 +434,13 @@ func (s *Service) authorize(ctx context.Context, req *jwt.AuthorizationRequestCl
 		return "", who, err
 	}
 	who = append(who, "channels", channels)
+	// The hello's home as granted (RT-6.41): the record states the home the credential's crown
+	// claim is for, and "" when the hello named none or the human is no member of it - the same
+	// datum grant checked, never a claim of the agent beyond it.
+	home := ""
+	if hello.Home != "" && slices.Contains(channels, hello.Home) {
+		home = hello.Home
+	}
 
 	uc := jwt.NewUserClaims(req.UserNkey)
 	uc.Name = agent
@@ -465,7 +473,7 @@ func (s *Service) authorize(ctx context.Context, req *jwt.AuthorizationRequestCl
 		}
 	}
 	if at, tr := s.attestHooks(); at != nil {
-		att, err := s.attest(ctx, at, tr, agent, directory.Trusted{Anchor: anchor, Name: id.Owner},
+		att, err := s.attest(ctx, at, tr, agent, home, directory.Trusted{Anchor: anchor, Name: id.Owner},
 			hello.Trusted, hello.TrustedCut, now.Unix(), uc.Expires)
 		if err != nil {
 			return "", who, fmt.Errorf("attestation: %w", err)
