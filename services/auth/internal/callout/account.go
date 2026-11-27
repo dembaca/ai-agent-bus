@@ -99,7 +99,7 @@ func (s *Service) accountRecord(ctx context.Context, a Attester, guard TokenGuar
 	case approverOf != nil:
 		approver = *approverOf
 	case bs != nil:
-		approver = storedApprover(ctx, bs, chatID)
+		approver = storedApprover(ctx, bs, chatID, sub, anchor)
 	}
 	fresh, err := guard.NewestToken(ctx, sub, tokenIat.Unix(), approver)
 	if err != nil {
@@ -126,15 +126,19 @@ func (s *Service) accountRecord(ctx context.Context, a Attester, guard TokenGuar
 	return "", s.publishAccount(ctx, a, chatID, body, rec.TokenIat)
 }
 
-// storedApprover is the approver flag of the account's stored record, false
-// without one or for one that does not decode (fail closed).
-func storedApprover(ctx context.Context, bs BindingStore, chatID string) bool {
+// storedApprover is the approver flag of the account's stored record, kept
+// only for the same person: the binding is the identity's (`sub`) and its
+// record names the same anchor. False without one, for one that does not
+// decode, and for a binding of another identity (an account linked anew,
+// before the hourly check unbinds it), so a login never takes over another
+// person's flag (fail closed).
+func storedApprover(ctx context.Context, bs BindingStore, chatID, sub, anchor string) bool {
 	b, _, ok, err := bs.Binding(ctx, chatID)
-	if err != nil || !ok {
+	if err != nil || !ok || b.Sub != sub || b.Anchor != anchor {
 		return false
 	}
 	var rec AccountRecord
-	return json.Unmarshal(b.Record, &rec) == nil && rec.Account == chatID && rec.Approver
+	return json.Unmarshal(b.Record, &rec) == nil && rec.Account == chatID && rec.Anchor == anchor && rec.Approver
 }
 
 // publishAccount publishes an account record; a stored record of the same

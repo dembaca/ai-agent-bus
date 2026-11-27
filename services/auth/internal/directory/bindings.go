@@ -48,9 +48,15 @@ type Binding struct {
 	At int64 `json:"at"`
 }
 
-// Expired says whether the binding is older than BindingMaxAge at now.
+// bindingSkew is how far ahead of now a binding's At may lie (clocks).
+const bindingSkew = 5 * time.Minute
+
+// Expired says whether the binding is older than BindingMaxAge at now, or
+// was proven more than bindingSkew ahead of now: a time that never was
+// cannot start the 30 days.
 func (b Binding) Expired(now time.Time) bool {
-	return now.Sub(time.Unix(b.At, 0)) > BindingMaxAge
+	age := now.Sub(time.Unix(b.At, 0))
+	return age > BindingMaxAge || age < -bindingSkew
 }
 
 func bindingKey(account string) (string, error) {

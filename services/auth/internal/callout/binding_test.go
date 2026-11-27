@@ -385,7 +385,7 @@ func TestAFailedProofOrRecordLeavesNoRecordTheCheckDoesNotKnow(t *testing.T) {
 // console's verifier has none) keeps the stored record's flag: a console login
 // never lowers an approver's flag by a token that cannot tell (#266).
 func TestAConsoleLoginThatCannotTellKeepsTheApproverFlag(t *testing.T) {
-	c, _ := personLab(t)
+	c, fp := personLab(t)
 	c.chat.Users["ann"] = token.User{Username: "ann", ID: testrealm.ChatID("ann"), AuthKnown: true,
 		AuthService: token.OpenIDService, AuthData: "sub-ann"}
 	c.chat.Channels["ann"] = []string{"home"}
@@ -416,6 +416,14 @@ func TestAConsoleLoginThatCannotTellKeepsTheApproverFlag(t *testing.T) {
 	if !flag() {
 		t.Fatal("the agent's login wrote no approver")
 	}
+	// the console names the person by the directory's anchor, as the agent's login does
+	b, _, _, err := dir.Binding(ctx5(t), id)
+	if err != nil {
+		t.Fatal(err)
+	}
+	fp.mu.Lock()
+	fp.anchors["sub-ann"] = b.Anchor
+	fp.mu.Unlock()
 	srv, _ := nkeys.CreateServer()
 	key, _ := nkeys.CreateUser()
 	pub, _ := key.PublicKey()
@@ -437,5 +445,60 @@ func TestAConsoleLoginThatCannotTellKeepsTheApproverFlag(t *testing.T) {
 	var rec AccountRecord
 	if err != nil || json.Unmarshal(m.Data, &rec) != nil || rec.TokenIat < now.Unix()-1 || !rec.Approver {
 		t.Fatalf("after the console's login: %+v %v", rec, err)
+	}
+}
+
+// The flag is kept only for the same person: a binding of the account that
+// belongs to another identity, or names another anchor (an account linked
+// anew, before the hourly check unbinds it), gives a console login that
+// cannot tell no approver flag (fail closed).
+func TestAConsoleLoginNeverTakesOverAnotherPersonsFlag(t *testing.T) {
+	id := testrealm.ChatID("ann")
+	for name, b := range map[string]directory.Binding{
+		"another identity": {Sub: "sub-mallory", Anchor: "ann.k"},
+		"another anchor":   {Sub: "sub-ann", Anchor: "mallory"},
+	} {
+		t.Run(name, func(t *testing.T) {
+			c, _ := personLab(t)
+			c.chat.Users["ann"] = token.User{Username: "ann", ID: id, AuthKnown: true,
+				AuthService: token.OpenIDService, AuthData: "sub-ann"}
+			js, err := jetstream.New(c.nc)
+			if err != nil {
+				t.Fatal(err)
+			}
+			dir, err := directory.Open(ctx5(t), js, "", false)
+			if err != nil {
+				t.Fatal(err)
+			}
+			c.svc.SetAnchors(directory.Anchors{Store: dir})
+			rec, _ := json.Marshal(AccountRecord{V: 1, Account: id, Anchor: b.Anchor, Name: "ann", Approver: true,
+				TokenIat: 1, Iat: 1, Exp: 2})
+			b.Account, b.AuthService, b.AuthData, b.Record, b.At = id, "openid", "sub-ann", rec, time.Now().Unix()
+			if err := dir.PutBinding(ctx5(t), b); err != nil {
+				t.Fatal(err)
+			}
+			srv, _ := nkeys.CreateServer()
+			key, _ := nkeys.CreateUser()
+			pub, _ := key.PublicKey()
+			sig, _ := key.Sign([]byte("nonce-console"))
+			now := time.Now()
+			req, err := c.svc.request(serverRequest(t, srv, func(q *natsjwt.AuthorizationRequestClaims) {
+				q.ClientInformation.Nonce = "nonce-console"
+				q.ConnectOptions.Nkey = pub
+				q.ConnectOptions.SignedNonce = base64.RawURLEncoding.EncodeToString(sig)
+				q.ConnectOptions.Token = c.consoleToken("ann", nil)
+			}), now)
+			if err != nil {
+				t.Fatal(err)
+			}
+			if _, _, err := c.svc.authorize(ctx5(t), req, now); err != nil {
+				t.Fatal(err)
+			}
+			m, err := c.js.GetLastMsg("PRESENCE", "presence.account.mattermost."+id+".v1")
+			var got AccountRecord
+			if err != nil || json.Unmarshal(m.Data, &got) != nil || got.Anchor != "ann.k" || got.Approver {
+				t.Fatalf("after the console's login: %+v %v", got, err)
+			}
+		})
 	}
 }

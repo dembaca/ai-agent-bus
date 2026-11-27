@@ -278,8 +278,16 @@ before 0.5.0 are described in the git history.
     30 days ago: an approver logs in at least once in 30 days, and each
     proven login renews it. The binding is written before the proof and the
     record, so a failed later write leaves no record the check does not
-    know of. A console token that cannot tell whether its person is an
-    approver keeps the stored record's flag instead of lowering it. An
+    know of. Only a token that carries the group claim says whether its
+    person is an approver and may lower the flag: an agent's login, or a
+    console client with the group mapper. A console token without the claim
+    keeps the flag of the same person's stored record (never another
+    identity's or anchor's) and renews the 30 days at every console login,
+    so the console's client should have the group mapper, writing the
+    approvers' group in the same form as `CB_AUTH_APPROVER_GROUP` (a full
+    path `/X` against a short name lowers the flag, which fails closed). To
+    remove an approver at once, deactivate their Mattermost account or take
+    their anchor off the trusted humans. An
     outage that stops the republishing for more than 24 hours unbinds every
     person until the service runs again (the stream's `max_age`, the MCP
     server's `MAX_AGE_SEC`).

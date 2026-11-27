@@ -126,3 +126,17 @@ func TestABindingOutlivesARestartOfTheServer(t *testing.T) {
 		t.Fatalf("after the restart: %+v %v %v", b, ok, err)
 	}
 }
+
+// A binding holds BindingMaxAge from At; one proven more than five minutes
+// ahead of now is no binding either.
+func TestABindingExpiresAfterThirtyDaysAndIsNeverFromTheFuture(t *testing.T) {
+	now := time.Now()
+	for d, want := range map[time.Duration]bool{
+		0: false, BindingMaxAge - time.Minute: false, BindingMaxAge + time.Minute: true,
+		-4 * time.Minute: false, -6 * time.Minute: true,
+	} {
+		if got := (Binding{At: now.Add(-d).Unix()}).Expired(now); got != want {
+			t.Errorf("proven %s ago: expired %v, want %v", d, got, want)
+		}
+	}
+}
