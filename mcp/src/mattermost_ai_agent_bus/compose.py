@@ -139,13 +139,22 @@ def nats_homes_from_env(environ: Mapping[str, str] | None = None) -> frozenset[s
 
 
 def nats_settings_from_env(home: str, lobby: str = "",
-                           environ: Mapping[str, str] | None = None) -> NatsSettings | None:
+                           environ: Mapping[str, str] | None = None,
+                           guests: Sequence[str] = ()) -> NatsSettings | None:
     """The NATS settings of a session whose home channel is `home` (the lobby, CB_MM_CHANNEL,
-    is `lobby`): CB_NATS_URL (one or more URLs, comma or space separated, all one scheme:
+    is `lobby`; the guest channels CB_MM_PROJECT_CHANNEL names after the home, `guests`):
+    CB_NATS_URL (one or more URLs, comma or space separated, all one scheme:
     tls:// or wss://, or nats:///ws:// to a loopback host), CB_NATS_CA_FILE (optional),
     CB_PROPS_PREFIX. None
-    without a URL; raises ValueError for a URL or prefix that is not allowed."""
-    from .natsbus import NatsSettings
+    without a URL; raises ValueError for a URL or prefix that is not allowed.
+
+    The hello asks the login service for the guests and the lobby too (plan B piece 12,
+    RT-6.22 step 7): only a channel the credential grants brings its plan B switch, so a
+    session learns whether a guest runs over NATS only by asking for it. A guest that is no
+    channel name of the bus, the home or the lobby is not asked for, nor any past
+    natsbus.MAX_GUESTS; the login service grants only the channels the directory makes the
+    human a member of. With the switch off the session leaves what it is granted there unused."""
+    from .natsbus import CHANNEL_RE, MAX_GUESTS, NatsSettings
 
     def get(name: str) -> str:
         return env(name, environ=environ).strip()
@@ -153,7 +162,11 @@ def nats_settings_from_env(home: str, lobby: str = "",
     urls = tuple(u for u in re.split(r"[,\s]+", get("CB_NATS_URL")) if u)
     if not urls:
         return None
-    return NatsSettings(servers=urls, home=home, lobby_channel=lobby or "lobby",
+    asked = tuple(dict.fromkeys(
+        g for g in (n.strip().lstrip("~").lower() for n in guests)
+        if g and g not in (home, lobby) and CHANNEL_RE.fullmatch(g)))[:MAX_GUESTS]
+    return NatsSettings(servers=urls, home=home, guests=asked, lobby=bool(lobby) and lobby != home,
+                        lobby_channel=lobby or "lobby",
                         props_prefix=a2a.user_prefix(environ), tls_ca_file=get("CB_NATS_CA_FILE") or None,
                         trusted=tuple((get("CB_TRUSTED_HUMANS") or get("CB_OWNER")).split(",")))
 
@@ -182,7 +195,8 @@ def _with_nats(adapter: BusClient) -> BusClient:
         lease.use_nats(home, None, "the login (CB_LOGIN_ISSUER, CB_LOGIN_CLIENT_ID) is not set up")
         return adapter
     try:
-        settings = nats_settings_from_env(home, adapter.channel_name.lower())
+        settings = nats_settings_from_env(home, adapter.channel_name.lower(),
+                                          guests=getattr(adapter, "guest_channel_names", ()))
     except ValueError as exc:
         log.error("CB_NATS_HOMES names ~%s, but the NATS settings are not usable (%s): "
                   "the home stays on Mattermost, with no crown and no election (RT-6.38)", home, exc)

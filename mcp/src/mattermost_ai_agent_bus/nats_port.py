@@ -118,9 +118,9 @@ from types import MappingProxyType
 from typing import TYPE_CHECKING, Any, Protocol
 
 from . import a2a, config, lease, natsbus, owners, planb
-from .events import ChatEvent, EventSource, EventStream, PostEvent, ReactionEvent
+from .events import ChatEvent, EventSource, EventStream, MembershipEvent, PostEvent, ReactionEvent
 from .ids import _ID, NATS_POST, dm_seq
-from .model import NotFound, Post, Reaction, Thread, UnreadChannel
+from .model import Channel, NotFound, Post, Reaction, Thread, UnreadChannel
 from .natsbus import BOT_RE, DM_SINCE, Attestation, Event, NameMismatch, NatsBus, NatsBusError, NatsSettings
 from .port import AttestedCircle
 
@@ -469,6 +469,12 @@ class NatsPort:
         self._fatal: NatsPortError | None = None
         self._up = False  # the bus is started: once it is synced the switch can be read
         self._ids: dict[str, str] | None = None  # channel name -> Mattermost id
+        # Plan B piece 12 (RT-6.22 step 7): the guests and the lobby switched to NATS whose id the
+        # channel record does not name, latched with _ids: not reachable, never Mattermost; and
+        # the Mattermost ids those are known by (the bot's memberships), whose events are dropped.
+        self._closed12: frozenset[str] = frozenset()
+        self._closed_read: frozenset[str] = frozenset()
+        self._closed_ids: set[str] = set()
         self._resolving = asyncio.Lock()
         self._posts: dict[str, OrderedDict[int, Post]] = {}  # channel -> seq -> post
         self._where: dict[int, str] = {}  # seq -> channel (stream sequences are global)
@@ -508,6 +514,9 @@ class NatsPort:
         # The open asks for the ask record on `<presence>.ask.<home>.<name>` (RT-6.43 step 5);
         # set like card_source, read at every check of the bus. None: no record.
         self.ask_source: Callable[[], list[natsbus.OpenAsk]] | None = None
+        # The adapter's guest list leaves the lobby out by this port's id of it (piece 12).
+        if hasattr(inner, "lobby_lookup"):
+            inner.lobby_lookup = self.lobby_channel_id
 
     def __getattr__(self, name: str) -> Any:
         if name in ("inner", "__setstate__"):
@@ -573,7 +582,7 @@ class NatsPort:
                 # Nothing is written or deleted here: the mark outlives a bye (the next server
                 # of a kept bot sends it, and the consumer it recreates replays the absence).
                 bot = await self._bot_id()
-                since = (_since_from_read_mark(bot, set(self._people_channels()))
+                since = (_since_from_read_mark(bot, {self._s.home, *self._asked_extra()} - {""})
                          if BOT_RE.fullmatch(bot) else {})
                 bus = NatsBus(self._s, login, owner, self._on_event, on_fatal=self._on_fatal,
                               on_person=self._on_person, on_notice=self._on_notice,
@@ -607,6 +616,9 @@ class NatsPort:
                     raise
                 lease.use_nats_link(partial(_tag_of, bus))
                 await self._announce_membership(bus)
+                if self._closed12:
+                    await self._closed_by_name()  # their Mattermost ids, whose events are dropped
+                self._guests_moved()
                 self._watch = asyncio.create_task(self._watch_people())
                 return
             except asyncio.CancelledError:
@@ -734,11 +746,10 @@ class NatsPort:
         for (the NATS homes, the guests, the lobby): the signal of whereabouts (RT-6.37).
         The bus does it once it is synced, every 6 h and after each reconnect. The crown
         claim is another subject and is not made here."""
-        channels = [*self._homes, *self._s.guests]
-        if self._s.lobby:
-            channels.append(self._s.lobby_channel)
+        # Plan B piece 12: a guest or the lobby only while it runs over NATS (RT-6.22 step 7);
+        # one that stays on Mattermost is announced nowhere, as before the hello asked for it.
         try:
-            for ch in dict.fromkeys(channels):
+            for ch in self._channels():
                 await bus.member(ch)
         except asyncio.CancelledError:
             raise
@@ -807,6 +818,124 @@ class NatsPort:
                             MAX_QUEUE, self._dropped)
 
     # --- the channels ------------------------------------------------------------
+    def _asked_extra(self) -> list[str]:
+        """The guests and the lobby the bus asked the login service for, no home (compose,
+        plan B piece 12)."""
+        wanted = [*self._s.guests, *([self._s.lobby_channel] if self._s.lobby else [])]
+        return [ch for ch in dict.fromkeys(wanted) if ch and ch not in self._homes]
+
+    def _extra_ids(self) -> dict[str, str]:
+        """The guests and the lobby that run over NATS (plan B piece 12, RT-6.22 step 7), by
+        name, with the directory's id; none until the channels are resolved once the switch is
+        read (latched with them)."""
+        ids = self._ids or {}
+        return {ch: cid for ch, cid in ids.items() if ch not in self._homes}
+
+    def _channels(self) -> list[str]:
+        """The channels this session reads and writes over NATS: the homes, then the guests
+        and the lobby of piece 12."""
+        return [*self._homes, *sorted(self._extra_ids())]
+
+    def _guests_moved(self) -> None:
+        """After the start resolved a guest or the lobby onto NATS (piece 12): the adapter's
+        guest list is read again and the inbox told, as for a membership change (RT-6.22 step 1),
+        so its wake rules count the directory's ids."""
+        if not self._extra_ids() and not self._closed12:
+            return
+        log.info("nats: plan B piece 12: ~%s over NATS%s",
+                 ", ~".join(sorted(self._extra_ids())) or "-",
+                 f"; ~{', ~'.join(sorted(self._closed12))} not reachable (no id in the channel record)"
+                 if self._closed12 else "")
+        with contextlib.suppress(Exception):
+            self.inner.forget_guests()
+        bot = self.inner.bot_id
+        if bot:
+            self._tell(MembershipEvent(user_ids=(bot,), name="planb_piece12"))
+
+    def _named12(self, name: str | None) -> str | None:
+        """The directory's id of a guest or the lobby that runs over NATS (piece 12), by name;
+        None for any other channel. Raises NatsPortError for one switched on whose id the
+        channel record does not name: it is not reachable, and Mattermost is not asked."""
+        if not name or self._ids is None:
+            return None
+        n = name.strip().lstrip("~").lower()
+        if n in self._homes:
+            return None
+        if n in self._closed12:
+            raise NatsPortError(f"~{n} runs over NATS (plan B piece 12), but the channel record of "
+                                "the login service holds no id for it: not reachable, nothing sent")
+        return self._extra_ids().get(n)
+
+    async def get_channel_id(self, channel_name: str | None = None,
+                             team_name: str | None = None) -> str:
+        cid = self._named12(channel_name) if not team_name else None
+        if cid:
+            return cid
+        return await self.inner.get_channel_id(channel_name, team_name)
+
+    async def join_channel(self, channel_name: str) -> str:
+        """A guest or the lobby over NATS (piece 12): its id, and nothing joined in Mattermost;
+        the login service's grant is the membership."""
+        cid = self._named12(channel_name)
+        if cid:
+            return cid
+        return await self.inner.join_channel(channel_name)
+
+    async def get_channel(self, channel_id: str) -> Channel:
+        for ch, cid in self._extra_ids().items():
+            if cid == channel_id:
+                return Channel(id=cid, name=ch, type="O")
+        return await self.inner.get_channel(channel_id)
+
+    async def lobby_channel_id(self) -> str:
+        if self._s.lobby:
+            cid = self._named12(self._s.lobby_channel)
+            if cid:
+                return cid
+        return await self.inner.lobby_channel_id()
+
+    async def guest_channel_ids(self) -> set[str]:
+        """The adapter's (the bot's Mattermost memberships, RT-6.22 step 1), plus the guests
+        over NATS (piece 12) by the directory's ids; the lobby and a channel switched on but
+        not reachable are none of them. Without piece 12 the adapter's, unchanged."""
+        extra = self._extra_ids()
+        if not extra and not self._closed12:
+            return set(await self.inner.guest_channel_ids())
+        try:
+            got = set(await self.inner.guest_channel_ids())
+        except Exception as exc:  # noqa: BLE001 — the Mattermost guests are left out, not ours
+            log.warning("could not read the guest channels on Mattermost: %s", exc)
+            got = set()
+        if self._closed12:
+            await self._closed_by_name()
+            got -= self._closed_ids
+        lobby = self._s.lobby_channel if self._s.lobby else ""
+        got |= {cid for ch, cid in extra.items() if ch != lobby}
+        got -= {cid for ch, cid in extra.items() if ch == lobby}
+        return got
+
+    async def _closed_by_name(self) -> None:
+        """The Mattermost ids of the channels switched on but not reachable, from the bot's
+        memberships by name (and CB_MM_CHANNEL_ID for the lobby): their events are dropped."""
+        lobby_id = config.env("CB_MM_CHANNEL_ID")
+        if self._s.lobby and self._s.lobby_channel in self._closed12 and _ID.fullmatch(lobby_id):
+            self._closed_ids.add(lobby_id)
+        try:
+            rows = await self.inner.member_channels()
+        except Exception as exc:  # noqa: BLE001 — what is known stays
+            log.info("nats: memberships not read for the unreachable channels: %s", type(exc).__name__)
+            return
+        self._closed_ids |= {r.channel_id for r in rows if r.name.lower() in self._closed12}
+
+    async def _people_read(self, name: str | None,
+                           read: Callable[[], Awaitable[list[Post]]]) -> list[Post]:
+        """Mattermost's read of a channel, merged with its NATS posts in a home (people's
+        posts, until plan B piece 5). A guest or the lobby over NATS (piece 12) is not read on
+        Mattermost at all: its reads hold its NATS posts alone (RT-6.22 step 7)."""
+        if name is not None and name not in self._homes:
+            return []
+        return await read()
+
     def _piece1(self) -> bool:
         """Whether any home takes its channel ids from the channel directory (RT-6.39 step 6)."""
         return any(planb.on(1, name) for name in self._homes)
@@ -920,7 +1049,7 @@ class NatsPort:
         """The name of the NATS home whose Mattermost id is `channel_id`, '' for any other or
         before the ids were read (no Mattermost call)."""
         for name, cid in (self._ids or {}).items():
-            if cid == channel_id:
+            if cid == channel_id and name in self._homes:
                 return name
         return ""
 
@@ -948,10 +1077,16 @@ class NatsPort:
             return await self._read_ids()
         async with self._resolving:
             if self._ids is None:
-                self._ids = await self._read_ids()
+                ids = await self._read_ids()
+                self._closed12 = self._closed_read  # latched with the ids (piece 12)
+                self._ids = ids
         return self._ids
 
     async def _read_ids(self) -> dict[str, str]:
+        """The homes' ids, then those of the guests and the lobby that run over NATS (plan B
+        piece 12, RT-6.22 step 7: `planb.on(12, channel)`), from the credential's channel record
+        alone. One of those the record names no id for is left out and kept in _closed_read:
+        not reachable, and no Mattermost read for it."""
         ids: dict[str, str] = {}
         for name in self._homes:
             if planb.on(1, name):
@@ -960,6 +1095,19 @@ class NatsPort:
                 ids[name] = await self.inner.work_channel_id()
             else:
                 ids[name] = await self.inner.get_channel_id(name)
+        closed: set[str] = set()
+        moved = [ch for ch in self._asked_extra() if planb.on(12, ch)]
+        if moved:
+            bus = self._live()
+            got = (await bus.wait_channel_ids(CHANNEL_RECORD_WAIT_SEC) if bus is not None else None) or {}
+            for ch in moved:
+                if got.get(ch):
+                    ids[ch] = got[ch]
+                else:
+                    closed.add(ch)
+                    log.warning("nats: ~%s runs over NATS (plan B piece 12), but the channel record "
+                                "names no id for it: not reachable", ch)
+        self._closed_read = frozenset(closed)
         return ids
 
     async def nats_name(self, channel_id: str) -> str | None:
@@ -1087,7 +1235,7 @@ class NatsPort:
         reaction has no props)."""
         bridge = await self._bridge()
         mine = bool(bridge) and reaction.user_id == bridge
-        if not mine and not any(self._bot_prefix(h) for h in self._homes):
+        if not mine and not any(self._bot_prefix(h) for h in self._channels()):
             return False
         if not channel_id:
             try:
@@ -1133,7 +1281,7 @@ class NatsPort:
         home = await self.nats_name(channel_id)
         if home is None or not await self._copiers(home):
             return 0
-        raw = await self.inner.channel_posts(channel_id, since_ms=since_ms)
+        raw = await self._people_read(home, lambda: self.inner.channel_posts(channel_id, since_ms=since_ms))
         if len(raw) >= COPY_READ_CAP:
             return 0
         after = [p for p in raw if p.create_at > since_ms]
@@ -1145,7 +1293,13 @@ class NatsPort:
 
     async def skip(self, event: ChatEvent) -> bool:
         """A Mattermost event that is the bridge's copy, or a person's that comes over NATS
-        or came already (RT-6.42): MergedEvents drops it."""
+        or came already (RT-6.42): MergedEvents drops it. So is every event in a guest or the
+        lobby switched to NATS but not reachable (plan B piece 12): no fallback to Mattermost."""
+        if self._closed_ids:
+            where = event.post.channel_id if isinstance(event, PostEvent) else (
+                event.channel_id if isinstance(event, ReactionEvent) else "")
+            if where in self._closed_ids:
+                return True
         if await self._copy_event(event):
             return True
         if await self._person_on_mattermost(event):
@@ -1154,7 +1308,7 @@ class NatsPort:
         return False
 
     async def _copy_event(self, event: ChatEvent) -> bool:
-        if not self._bridge_bot and not any(self._bot_prefix(h) for h in self._homes):
+        if not self._bridge_bot and not any(self._bot_prefix(h) for h in self._channels()):
             return False
         if isinstance(event, PostEvent):
             return await self.mirrored(event.post)
@@ -1196,6 +1350,9 @@ class NatsPort:
                    file_ids: Sequence[str] = ()) -> Post:
         cid = await self._home_or(channel_id)
         name = await self.nats_name(cid)
+        if cid in self._closed_ids:
+            raise NatsPortError("this channel runs over NATS (plan B piece 12), but the channel record of "
+                                "the login service holds no id for it: not reachable, nothing sent")
         if name is None:
             if root_id and parse_post_id(root_id):
                 raise NatsPortError("a reply to a NATS post goes into its own NATS home, "
@@ -1355,13 +1512,13 @@ class NatsPort:
         await self._require().unreact(got[0], got[1], emoji)
 
     def _home(self, channel: str) -> None:
-        if channel not in self._homes:
+        if channel not in self._channels():
             raise NatsPortError(f"~{channel} is no NATS home of this session: nothing sent")
 
     # --- receiving -----------------------------------------------------------------------
     async def _on_event(self, ev: Event) -> None:
         dm = ev.where == DM_SINCE
-        if not dm and ev.where not in self._homes:
+        if not dm and ev.where not in self._homes and ev.where not in self._asked_extra():
             log.debug("nats: dropped a message outside the NATS homes (%s)", ev.where)
             return
         if not is_nats_user(ev.sender):
@@ -1378,10 +1535,17 @@ class NatsPort:
             self._dispatch(ev, "")
             return
         try:
+            if ev.where not in self._homes and self._ids is None:
+                await self._wait_switch()  # a guest's or the lobby's: by its switch (piece 12)
             ids = await self.resolve()
         except Exception as exc:  # noqa: BLE001
             log.warning("nats: dropped a message of ~%s: its channel is not known (%s)",
                         ev.where, type(exc).__name__)
+            return
+        if ev.where not in ids:
+            # A guest or the lobby that stays on Mattermost (plan B piece 12 off, RT-6.22 step 7),
+            # or one switched on that is not reachable: dropped, as before the hello asked for it.
+            log.debug("nats: dropped a message of ~%s: not over NATS in this session", ev.where)
             return
         self._dispatch(ev, ids[ev.where])
 
@@ -1490,8 +1654,9 @@ class NatsPort:
 
     # --- people over NATS (RT-6.42) -----------------------------------------------------------
     def _people_channels(self) -> list[str]:
-        """The channels the bus asked for: the home, the guests, the lobby."""
-        wanted = [self._s.home, *self._s.guests, *([self._s.lobby_channel] if self._s.lobby else [])]
+        """The channels the bus asked for whose people it may take from NATS: the home, and the
+        guests and the lobby while they run over NATS (plan B piece 12, RT-6.22 step 7)."""
+        wanted = [self._s.home, *(ch for ch in self._asked_extra() if ch in self._extra_ids())]
         return [ch for ch in dict.fromkeys(wanted) if ch]
 
     async def _people_map(self) -> dict[str, str]:
@@ -1538,6 +1703,11 @@ class NatsPort:
         return on
 
     def _start_catch_up(self, ch: str, start: int | None = None) -> None:
+        if ch in self._extra_ids():
+            # A guest or the lobby over NATS (plan B piece 12) is never read on Mattermost: what
+            # the bridge did not carry in the gap is people's history, piece 5's (RT-6.22 step 7).
+            log.info("nats: ~%s is not caught up on Mattermost: it runs over NATS", ch)
+            return
         task = asyncio.create_task(self._catch_up(ch, start))
         self._catching_up.add(task)
         task.add_done_callback(self._catching_up.discard)
@@ -1846,7 +2016,8 @@ class NatsPort:
     async def channel_posts(self, channel_id: str, *, per_page: int | None = None,
                             since_ms: int | None = None) -> list[Post]:
         name = await self.nats_name(channel_id)
-        mm = await self.inner.channel_posts(channel_id, per_page=per_page, since_ms=since_ms)
+        mm = await self._people_read(name, lambda: self.inner.channel_posts(
+            channel_id, per_page=per_page, since_ms=since_ms))
         if name is None:
             return mm
         mm = await self._unmirrored(name, mm)  # the bridge's copies: NATS has them (RT-6.36 step 4)
@@ -1858,7 +2029,8 @@ class NatsPort:
                           since_ms: int | None = None) -> list[Post]:
         cid = await self._home_or(channel_id)
         name = await self.nats_name(cid)
-        mm = await self.inner.list_recent(channel_id=channel_id, per_page=per_page, since_ms=since_ms)
+        mm = await self._people_read(name, lambda: self.inner.list_recent(
+            channel_id=channel_id, per_page=per_page, since_ms=since_ms))
         if name is None:
             return mm
         mm = await self._unmirrored(name, mm)  # the bridge's copies: NATS has them (RT-6.36 step 4)
@@ -1871,7 +2043,8 @@ class NatsPort:
                           max_pages: int = 25) -> list[Post]:
         cid = await self._home_or(channel_id)
         name = await self.nats_name(cid)
-        mm = await self.inner.posts_after(since_ms, channel_id=channel_id, max_pages=max_pages)
+        mm = await self._people_read(name, lambda: self.inner.posts_after(
+            since_ms, channel_id=channel_id, max_pages=max_pages))
         if name is None:
             return mm
         mm = await self._unmirrored(name, mm)  # the bridge's copies: NATS has them (RT-6.36 step 4)
@@ -1897,8 +2070,14 @@ class NatsPort:
         newest = {ids[ch]: max((p.create_at for p in mem.values()), default=0)
                   for ch, mem in self._posts.items() if ch in ids}
         homes = set(ids.values())
-        return [dataclasses.replace(r, nats=True, nats_last_post_at=newest.get(r.channel_id, 0))
-                if r.channel_id in homes else r for r in rows]
+        out = [dataclasses.replace(r, nats=True, nats_last_post_at=newest.get(r.channel_id, 0))
+               if r.channel_id in homes else r for r in rows if r.channel_id not in self._closed_ids]
+        # A guest or the lobby over NATS (plan B piece 12) the bot is no Mattermost member of:
+        # a row of its own, so the count and the backfill read its NATS lane (RT-6.22 step 7).
+        have = {r.channel_id for r in rows}
+        out += [UnreadChannel(cid, "O", name=ch, nats=True, nats_last_post_at=newest.get(cid, 0))
+                for ch, cid in self._extra_ids().items() if cid not in have]
+        return out
 
     # --- the senders: agent names, no Mattermost accounts ----------------------------------------
     def _person_name(self, user_id: str) -> str:
