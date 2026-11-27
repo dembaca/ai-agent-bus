@@ -171,6 +171,32 @@ before 0.5.0 are described in the git history.
 
 ### Fixed
 
+- **A faulted NATS connection no longer blocks the next post, and a
+  restarted server is reached again within seconds** (#222). Two defects, both
+  measured with the fault rig: a send in flight when a fault hit held the
+  send lock until nats-py's 10 s flush default, so the first post after the
+  window waited 8.0 s (`restart` and `blackhole`); and the reconnect wait
+  doubled from a second to 30 s, so after a long outage the next attempt could
+  be half a minute away (a 30 s restart left the sender down for 7.6 to
+  19.7 s beyond its downtime). A flush that does not hear its PONG within 5 s
+  now fails that send and gives the connection up, at most once per 30 s, so
+  a server that answers everybody slowly is not stampeded (a timed-out flush
+  would misfit every later PONG; the handshake keeps 10 s). The error says the
+  post may have arrived - the publish went out before the PONG went missing -
+  so a retry can duplicate it. The wait stops at 5 s while the server does not
+  answer and starts with a jittered moment, so a home's agents do not knock in
+  step; a failure of the login keeps the slower growth to 30 s - the bus's own
+  `LoginError`, nats-py's authorization errors, and its handshake's plain error
+  with the server's text (a refused CONNECT) - since it may need a human or a
+  restarted login service. A flush-triggered reconnect the 30 s gate holds back
+  is armed for the gate's end, so a second timeout cannot leave the connection
+  down until the next credential renewal. Each attempt logs its next wait (the first three,
+  then every tenth), and the fault rig reports `recovery_s`, the time from the
+  window to the first post after it. Measured after the change: 0.004 to 4.3 s
+  for the faults of `--fault all`, 0.5 to 2.5 s for a 30 s restart window.
+  #222's own 0.5 s command recovered in 4 of 4 runs on macOS before the change
+  as well, so the report's ~40 s is not reproduced here; this fixes the two
+  delays it can have come from.
 - **A killed session no longer loses the post that was queued for it** (#213).
   The first `since` of a NATS home now comes from the host's read mark
   (`read-<uid>.env`, the NATS lane `<channel id>:nats`): the last post actually
