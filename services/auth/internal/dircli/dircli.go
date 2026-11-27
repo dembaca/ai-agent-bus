@@ -45,7 +45,8 @@ commands:
   members add <channel> <sub>...      add members
   members rm <channel> <sub>...       remove members
   import                              copy the Mattermost channels once
-  stats-import                        copy the stats channel's STATS lines into the STATS stream (repeatable)
+  stats-import [--all]                copy the stats channel's STATS lines into the STATS
+                                      stream (repeatable); --all reads the whole channel
   pending                             list the pending name claims
   confirm <name>                      confirm a pending name claim
   drop <name>                         delete a pending name claim
@@ -91,7 +92,7 @@ func Main(args []string, lookup envname.Lookup, stdout, stderr io.Writer) int {
 
 type settings struct {
 	api, issuer, clientID, caFile string
-	json, public                  bool
+	json, public, all             bool
 	owner                         string
 	ownerSet                      bool
 	revText                       string
@@ -166,7 +167,7 @@ func parseArgs(args []string, env func(string) string) (s settings, pos []string
 		clientID: env("CB_AUTH_KEYCLOAK_CLIENT_ID"), caFile: env("CB_AUTHD_DIR_CA_FILE")}
 	strs := map[string]*string{"api": &s.api, "issuer": &s.issuer, "client-id": &s.clientID,
 		"ca-file": &s.caFile, "owner": &s.owner, "rev": &s.revText}
-	bools := map[string]*bool{"json": &s.json, "public": &s.public}
+	bools := map[string]*bool{"json": &s.json, "public": &s.public, "all": &s.all}
 	for i := 0; i < len(args); i++ {
 		a := args[i]
 		switch {
@@ -220,6 +221,9 @@ func (c *cli) check(pos []string) error {
 	isAccount := pos[0] == "account" && len(pos) > 1 && (pos[1] == "set" || pos[1] == "rm")
 	if c.s.revSet && !isAccount {
 		return usageError("--rev belongs to account set and account rm")
+	}
+	if c.s.all && pos[0] != "stats-import" {
+		return usageError("--all belongs to stats-import")
 	}
 	need := func(n int, exact bool) error {
 		if len(pos)-1 < n || (exact && len(pos)-1 != n) {
@@ -720,7 +724,11 @@ func (c *cli) command(pos []string) error {
 		}
 		return c.printImport(r)
 	case "stats-import":
-		r, err := c.call("POST", "/v1/stats/import", nil, nil)
+		path := "/v1/stats/import"
+		if c.s.all { // RT-6.45: the whole channel, past the last complete run's mark
+			path += "?all=true"
+		}
+		r, err := c.call("POST", path, nil, nil)
 		if err != nil {
 			return err
 		}
@@ -949,28 +957,37 @@ func (c *cli) printStatsImport(r reply) error {
 		SkippedRecent   int    `json:"skipped_recent"`
 		SkippedOverCap  int    `json:"skipped_over_cap"`
 		SkippedRoom     int    `json:"skipped_room"`
+		All             bool   `json:"all"`
 		Oldest          string `json:"oldest"`
 		Newest          string `json:"newest"`
 	}
 	if err := json.Unmarshal(r.body, &rep); err != nil {
 		return errors.New("the API's answer is not a stats import report")
 	}
-	fmt.Fprintf(c.out, "posts read %d, lines published %d (%d of them from before 0.91.0, without sid; %d found in STATS after the run), posts without a STATS line %d\n",
+	fmt.Fprintf(c.out, "posts read %d, lines published %d (%d of them from before 0.91.0, without sid; "+
+		"%d found in STATS after the run), posts without a STATS line %d\n",
 		rep.Read, rep.Published, rep.WithoutSid, rep.Confirmed, rep.NotStats)
-	fmt.Fprintf(c.out, "skipped: already in STATS from an agent %d, already imported %d, not a valid line %d, too big %d, no agent name %d, too recent %d, over the cap per name %d, no room left when publishing %d\n",
-		rep.SkippedInStats, rep.SkippedImported, rep.SkippedInvalid, rep.SkippedTooBig, rep.SkippedName, rep.SkippedRecent, rep.SkippedOverCap, rep.SkippedRoom)
+	fmt.Fprintf(c.out, "skipped: already in STATS from an agent %d, already imported %d, not a valid line %d, "+
+		"too big %d, no agent name %d, too recent %d, over the cap per name %d, no room left when publishing %d\n",
+		rep.SkippedInStats, rep.SkippedImported, rep.SkippedInvalid, rep.SkippedTooBig, rep.SkippedName,
+		rep.SkippedRecent, rep.SkippedOverCap, rep.SkippedRoom)
 	if rep.Oldest != "" {
 		fmt.Fprintf(c.out, "published lines from %s to %s\n", clean(rep.Oldest), clean(rep.Newest))
 	}
+	if rep.All {
+		fmt.Fprintln(c.out, "the whole channel was read (--all)")
+	}
 	if rep.KnownBefore != "" {
-		fmt.Fprintf(c.out, "posts up to %s were gone through by an earlier complete run of the service and not read again\n", clean(rep.KnownBefore))
+		fmt.Fprintf(c.out, "posts up to %s were gone through by an earlier complete run of the service "+
+			"and not read again (--all reads them)\n", clean(rep.KnownBefore))
 	}
 	switch rep.Truncated {
 	case "":
 	case "room":
-		fmt.Fprintln(c.out, "older posts were not read: STATS has no more room (it would drop its oldest lines); make room, then run it again")
+		fmt.Fprintln(c.out, "older lines were not published: STATS has no more room "+
+			"(it would drop its oldest lines); make room, then run it again")
 	default:
-		fmt.Fprintln(c.out, "older posts were not read (the run's bound); run it again to take them")
+		fmt.Fprintln(c.out, "older lines were not published (the run's bound); run it again to take them")
 	}
 	return nil
 }

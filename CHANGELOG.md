@@ -99,6 +99,16 @@ deprecation warning; they go in 0.105.0, the removal release
 
 ### Added
 
+- **`authd dir stats-import --all`** (#235, RT-6.45): a full run of the STATS
+  import that ignores the rerun mark and reads the whole stats channel, as a
+  freshly started login service does (`POST /v1/stats/import?all=true`,
+  admin group; a value other than `true` or `false` is refused with 400). For
+  when `STATS` lost imported lines: the duplicate checks stay, so it
+  publishes only what `STATS` lacks. The report says `all` and gives no
+  `known_before`; a complete `--all` run sets the mark like any complete run.
+  The truncation lines of the report now say "older lines were not
+  published".
+
 - **The STATS history: a year of statistics, and the stats channel's lines
   imported** (#196, RT-6.45). The `STATS` stream keeps 365 days instead of
   30 (64 MiB, 8 KiB per message and 500 per subject as before, the oldest

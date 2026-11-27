@@ -33,6 +33,7 @@ type rig struct {
 	api    *httptest.Server
 	mu     sync.Mutex
 	calls  []rec
+	query  string   // the raw query of the last API call
 	tokens []string // token endpoint answers, in order; the last repeats
 	dev    map[string]any
 	pend   string
@@ -124,6 +125,7 @@ func (r *rig) serveAPI(w http.ResponseWriter, req *http.Request) {
 	r.mu.Lock()
 	r.calls = append(r.calls, rec{req.Method, req.URL.EscapedPath(), req.Header.Get("Authorization"),
 		req.Header.Get("If-Match"), req.Header.Get("If-None-Match"), string(b)})
+	r.query = req.URL.RawQuery
 	r.mu.Unlock()
 	w.Header().Set("Content-Type", "application/json")
 	p := req.URL.EscapedPath()
@@ -319,7 +321,7 @@ func TestCommands(t *testing.T) {
 				}
 			}
 			if tc.name == "stats-import" {
-				for _, s := range []string{"posts read 9, lines published 3 (1 of them from before 0.91.0, without sid; 3 found in STATS after the run), posts without a STATS line 1", "older posts were not read", "already in STATS from an agent 1, already imported 1, not a valid line 1, too big 1, no agent name 1, too recent 2, over the cap per name 4, no room left when publishing 2", "up to 2026-11-27T06:00:00Z were gone through", "from 2026-09-01T12:00:00Z to 2026-11-20T08:00:00Z"} {
+				for _, s := range []string{"posts read 9, lines published 3 (1 of them from before 0.91.0, without sid; 3 found in STATS after the run), posts without a STATS line 1", "older lines were not published", "already in STATS from an agent 1, already imported 1, not a valid line 1, too big 1, no agent name 1, too recent 2, over the cap per name 4, no room left when publishing 2", "up to 2026-11-27T06:00:00Z were gone through", "from 2026-09-01T12:00:00Z to 2026-11-20T08:00:00Z"} {
 					if !strings.Contains(out, s) {
 						t.Fatalf("report lacks %q: %q", s, out)
 					}
@@ -914,5 +916,25 @@ func TestOldNamesStillWork(t *testing.T) {
 	both := map[string]string{"CB_AUTHD_DIR_API": r.api.URL, "AUTHD_DIR_API": "https://elsewhere.example"}
 	if code := run([]string{"ls"}, envname.Map(both), &out, &errb, r.deps()); code != 2 || !strings.Contains(errb.String(), "CB_AUTHD_DIR_API and AUTHD_DIR_API") {
 		t.Fatalf("two different values: exit %d %q", code, errb.String())
+	}
+}
+
+// stats-import --all (RT-6.45) asks the API for the whole channel
+// (?all=true); without it nothing is asked; --all belongs to stats-import
+// alone, and the usage text names it.
+func TestStatsImportAll(t *testing.T) {
+	r := newRig(t)
+	if code, out, errs := r.do("stats-import", "--all"); code != 0 || r.query != "all=true" || r.last().Path != "/v1/stats/import" ||
+		!strings.Contains(out, "lines published") {
+		t.Fatalf("exit %d, query %q, %s %s", code, r.query, out, errs)
+	}
+	if code, _, _ := r.do("stats-import"); code != 0 || r.query != "" {
+		t.Fatalf("without --all: exit %d, query %q", code, r.query)
+	}
+	if code, _, _ := r.do("ls", "--all"); code != exitUsage {
+		t.Fatalf("ls --all: exit %d", code)
+	}
+	if _, out, _ := r.do("-h"); !strings.Contains(out, "stats-import [--all]") {
+		t.Fatal("the usage text lacks --all")
 	}
 }
