@@ -148,12 +148,13 @@ def nats_settings_from_env(home: str, lobby: str = "",
     CB_PROPS_PREFIX. None
     without a URL; raises ValueError for a URL or prefix that is not allowed.
 
-    The hello asks the login service for the guests and the lobby too (plan B piece 12,
-    RT-6.22 step 7): only a channel the credential grants brings its plan B switch, so a
-    session learns whether a guest runs over NATS only by asking for it. A guest that is no
-    channel name of the bus, the home or the lobby is not asked for, nor any past
+    The hello asks the login service for a guest or the lobby too only when CB_NATS_HOMES
+    lists it, the opt-in for "this channel runs over NATS" (plan B piece 12, RT-6.22 step 7):
+    only a channel the credential grants brings its plan B switch, which then decides. With
+    CB_NATS_HOMES naming the home alone the hello is the one before piece 12. A guest that is
+    no channel name of the bus, the home or the lobby is not asked for, nor any past
     natsbus.MAX_GUESTS; the login service grants only the channels the directory makes the
-    human a member of. With the switch off the session leaves what it is granted there unused."""
+    human a member of."""
     from .natsbus import CHANNEL_RE, MAX_GUESTS, NatsSettings
 
     def get(name: str) -> str:
@@ -162,10 +163,12 @@ def nats_settings_from_env(home: str, lobby: str = "",
     urls = tuple(u for u in re.split(r"[,\s]+", get("CB_NATS_URL")) if u)
     if not urls:
         return None
+    listed = nats_homes_from_env(environ)
     asked = tuple(dict.fromkeys(
         g for g in (n.strip().lstrip("~").lower() for n in guests)
-        if g and g not in (home, lobby) and CHANNEL_RE.fullmatch(g)))[:MAX_GUESTS]
-    return NatsSettings(servers=urls, home=home, guests=asked, lobby=bool(lobby) and lobby != home,
+        if g and g not in (home, lobby) and g in listed and CHANNEL_RE.fullmatch(g)))[:MAX_GUESTS]
+    return NatsSettings(servers=urls, home=home, guests=asked,
+                        lobby=bool(lobby) and lobby != home and lobby in listed,
                         lobby_channel=lobby or "lobby",
                         props_prefix=a2a.user_prefix(environ), tls_ca_file=get("CB_NATS_CA_FILE") or None,
                         trusted=tuple((get("CB_TRUSTED_HUMANS") or get("CB_OWNER")).split(",")))

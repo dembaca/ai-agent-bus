@@ -122,11 +122,13 @@ before 0.5.0 are described in the git history.
   members, standing, holder and why nobody stands.
 
 - **Plan B piece 12: guest channels and the lobby over NATS, behind a switch
-  that is off** (#244, ADR-014 phase 5, RT-6.22 step 7). A session whose home
-  runs over NATS now asks the login service for its guest channels
-  (`CB_MM_PROJECT_CHANNEL` after the home, at most 16) and the lobby
+  that is off** (#244, ADR-014 phase 5, RT-6.22 step 7). An owner opts a guest
+  channel or the lobby in by listing it in `CB_NATS_HOMES` beside the home:
+  a session whose home runs over NATS then asks the login service for that
+  guest (`CB_MM_PROJECT_CHANNEL` after the home, at most 16) or the lobby
   (`CB_MM_CHANNEL` when it is not the home) as well, since only a channel the
-  credential grants brings its plan B switch. With the channel's switch
+  credential grants brings its plan B switch. With `CB_NATS_HOMES` naming the
+  home alone the hello is unchanged. With the channel's switch
   `planb.on(12, channel)` on, read once the bus is up and latched with the
   channel ids, that guest or the lobby runs like a home: its id comes from the
   credential's channel record, `post_message(channel=…)` joins nothing in
@@ -135,9 +137,9 @@ before 0.5.0 are described in the git history.
   the posts that come over NATS; no Mattermost call names the channel. A
   channel switched on that the record names no id for is not reachable: it is
   refused and its events are dropped, never sent to Mattermost instead. A guest
-  that stays on Mattermost stays as it is. With the switch off the session
-  drops what the login service delivers in those channels and behaves as
-  before. Not moved with it: the join at the session start (the host hook and
+  that stays on Mattermost stays as it is. For a channel asked for whose
+  switch is off the session drops what the login service delivers there and
+  behaves as before. Not moved with it: the join at the session start (the host hook and
   `session_start` run before the switch is read), people's history there
   (piece 5) and replies and reactions to a person's post (piece 7).
 

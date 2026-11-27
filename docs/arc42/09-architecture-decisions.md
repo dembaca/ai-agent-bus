@@ -4553,10 +4553,13 @@ which each piece reads for itself.
         switch, RT-6.39 step 5, off by default; RT-6.22 step 7). The login
         service already granted guests and the lobby and wrote their switches
         and ids with the credential; no session asked for them. A session
-        whose home runs over NATS now asks in its hello for the guests
-        `CB_MM_PROJECT_CHANNEL` names and the lobby, since a switch reaches it
-        only for a granted channel; with the switch off it drops what comes
-        there and announces no membership, so it behaves as before. With it
+        whose home runs over NATS now asks in its hello also for a guest
+        `CB_MM_PROJECT_CHANNEL` names and for the lobby, each only when
+        `CB_NATS_HOMES` lists it (the opt-in for a channel over NATS), since a
+        switch reaches it only for a granted channel; with `CB_NATS_HOMES`
+        naming the home alone the hello is unchanged, and for a channel asked
+        for whose switch is off the session drops what comes there and
+        announces no membership, so it behaves as before. With it
         on, read after the bus is up and latched with the channel ids, the
         channel is one of `NatsPort`'s like a home, without crown or roster
         of its own: the id from the channel record, no join, posts, reads
@@ -4571,7 +4574,9 @@ which each piece reads for itself.
         switch is read; replies and reactions to a person's post stay
         piece 7's. A real `nats-server` test in
         `mcp/tests/test_planb_piece12.py` checks both switch states and the
-        unreachable case, with no Mattermost call naming the channel when on.
+        unreachable case, with no Mattermost call naming the channel when on,
+        and that the hello is byte-identical when `CB_NATS_HOMES` names the
+        home alone.
         The `testrig` run and the lab check follow when the switch lands.
   13. **STATS and the shell clients on the NATS side.**
       - Moves: the STATS of the stats channel (`CB_MM_STATS_CHANNEL`) go

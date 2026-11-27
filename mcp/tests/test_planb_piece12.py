@@ -23,7 +23,7 @@ from nats.aio.client import Client as NatsClient
 from test_natsbus import (BUS_STREAM, PRESENCE_STREAM, FakeLogin, Rig, _api, _free_port,
                           _login_service, _server_binary)
 
-from mattermost_ai_agent_bus import compose, homes, planb
+from mattermost_ai_agent_bus import compose, homes, natsbus, planb
 from mattermost_ai_agent_bus.events import MembershipEvent, PostEvent
 from mattermost_ai_agent_bus.model import Post, UnreadChannel
 from mattermost_ai_agent_bus.nats_port import NatsPort, NatsPortError
@@ -38,18 +38,31 @@ CHANNELS = ("home", "guest", "lobby")
 
 # --- the settings: the hello asks for the guests and the lobby --------------------------------------
 
-def test_the_hello_asks_for_the_guests_and_the_lobby() -> None:
-    env = {"CB_NATS_URL": "nats://127.0.0.1:4222"}
+def test_the_hello_asks_for_a_guest_or_the_lobby_only_when_cb_nats_homes_lists_it() -> None:
+    env = {"CB_NATS_URL": "nats://127.0.0.1:4222",
+           "CB_NATS_HOMES": "home, ~Guest, b-2, town-square, unasked"}
     s = compose.nats_settings_from_env("home", "town-square", env,
-                                       guests=["~Guest", "guest", "home", "town-square", "Bad Name", "b-2"])
+                                       guests=["~Guest", "guest", "home", "town-square", "Bad Name", "b-2", "other"])
     assert s is not None
-    assert s.guests == ("guest", "b-2")  # bus tokens only, no home, no lobby, once each
+    assert s.guests == ("guest", "b-2")  # listed, bus tokens only, no home, no lobby, once each
     assert s.lobby is True and s.lobby_channel == "town-square"
     assert NatsBusChannels(s) == ["home", "guest", "b-2", "town-square"]
     alone = compose.nats_settings_from_env("home", "home", env)
     assert alone is not None and alone.guests == () and alone.lobby is False  # the lobby is the home
-    many = compose.nats_settings_from_env("home", "", env, guests=[f"g{i}" for i in range(30)])
+    many = compose.nats_settings_from_env("home", "", env | {"CB_NATS_HOMES": " ".join(f"g{i}" for i in range(30))},
+                                          guests=[f"g{i}" for i in range(30)])
     assert many is not None and len(many.guests) == 16 and many.lobby is False  # callout.MaxGuests
+
+
+def test_with_cb_nats_homes_naming_the_home_alone_the_hello_is_unchanged() -> None:
+    """Off is byte-identical: no guest, no lobby in the hello unless CB_NATS_HOMES lists them."""
+    env = {"CB_NATS_URL": "nats://127.0.0.1:4222", "CB_NATS_HOMES": "home"}
+    s = compose.nats_settings_from_env("home", "town-square", env, guests=["guest", "b-2"])
+    assert s is not None and s.guests == () and s.lobby is False
+    before = NatsSettings(servers=("nats://127.0.0.1:4222",), home="home", lobby_channel="town-square")
+    assert s == before
+    since: dict[str, int] = {}
+    assert natsbus.build_hello("tok", s.home, s.guests, s.lobby, since) == '{"token":"tok","home":"home"}'
 
 
 def NatsBusChannels(s: NatsSettings) -> list[str]:  # noqa: N802 — what NatsBus.channels makes of them
@@ -134,6 +147,7 @@ def _port(rig: Rig, inner: FakeBus) -> NatsPort:
     inner.registrar.session = inner.registrar.info
     inner.work_channel_name = "home"
     inner.channel_name = "lobby"  # CB_MM_CHANNEL
+    # what compose asks for with CB_NATS_HOMES="home guest mmonly lobby" (the opt-in)
     settings = NatsSettings(servers=(rig.url,), home="home", guests=("guest", "mmonly"), lobby=True,
                             lobby_channel="lobby")
     return NatsPort(inner, settings, ("home",), bus_options={"heartbeat_sec": 0.2})  # type: ignore[arg-type]
