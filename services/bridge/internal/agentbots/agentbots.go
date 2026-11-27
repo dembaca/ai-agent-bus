@@ -66,6 +66,7 @@ var postingRoles = []string{"system_user", "system_post_all", "system_post_all_p
 type Presence interface {
 	Get(name string) (presence.Info, bool)
 	Newest() time.Time
+	Names() []string
 }
 
 // Owners is the login service's account records read the other way round
@@ -188,6 +189,7 @@ func (b *Bots) Bot(ctx context.Context, name, home string) mirror.Sink {
 	if e.client != nil && e.owner != owner {
 		b.Log.Warn("agentbots: the owner's account record changed; the bot is checked again", "agent", name)
 		e.client, e.joined = nil, map[string]bool{}
+		b.announce(name, nil, "") // the record of the earlier owner's bot must not stay
 	}
 	if e.client != nil && e.joined[home] {
 		return e.client

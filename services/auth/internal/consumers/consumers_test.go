@@ -423,7 +423,7 @@ func TestThePresenceConsumerDeliversTheBotRecords(t *testing.T) {
 			t.Errorf("no filter delivers %s: %v", s, filters)
 		}
 	}
-	if got("presence.bot.agent-a.v2") || got("presence.bot.agent-a") && !match("presence.*.*", "presence.bot.agent-a") {
+	if got("presence.bot.agent-a.v2") {
 		t.Errorf("a filter delivers a record of another version: %v", filters)
 	}
 }

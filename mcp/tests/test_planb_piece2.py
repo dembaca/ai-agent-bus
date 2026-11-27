@@ -139,8 +139,8 @@ for _n in TRAPPED:
     setattr(NoMattermost, _n, _trap(_n))
 
 
-async def _world(monkeypatch: pytest.MonkeyPatch, piece: str = "2", records: bool = True
-                 ) -> tuple[NatsPort, NatsBus, NoMattermost]:
+async def _world(monkeypatch: pytest.MonkeyPatch, piece: str = "2", records: bool = True,
+                 claims: tuple[str, ...] = (AGENT_A, AGENT_B)) -> tuple[NatsPort, NatsBus, NoMattermost]:
     """A home `home` over NATS: agent-a (owner alice, a bridge bot, a card), agent-b (owner alice,
     no bot), the bridge's signal naming the prefix `bb-`, alice's account record."""
     if piece:
@@ -163,11 +163,13 @@ async def _world(monkeypatch: pytest.MonkeyPatch, piece: str = "2", records: boo
         seq += 1
         await bus._on_presence_msg(FakeMsg(subject, _presence_reply(bus, seq, seq, t), data))
 
-    card = natsbus.PresenceCard(usage="ctx 62% · 5h 40%", release="v0.104.0 unchecked")
+    card = natsbus.PresenceCard(usage="ctx 62% · 5h 40%", release="v0.104.0 unchecked", state="working")
     await msg(f"presence.alice.{AGENT_A}", encode_presence("online", "", "", card), T0)
     await msg(f"presence.alice.{AGENT_B}", encode_presence("online"), T0)
     for who in (AGENT_A, AGENT_B):
         await msg(f"presence.member.home.{who}", natsbus.encode_claim(), T0)
+    for who in claims:  # the crown claim is the login-pinned sign of the hello's home (perms.go)
+        await msg(f"presence.crown.home.{who}", natsbus.encode_claim(), T0)
     await msg("presence.bridge.home.v1", json.dumps({"v": 1, "home": "home", "people": True, "iat": int(T0),
                                                      "exp": int(T0) + 180, "bot_prefix": "bb-"}).encode(), T0)
     if records:
@@ -191,13 +193,24 @@ async def test_the_roster_comes_from_nats_and_reads_nothing_in_mattermost(monkey
     # the bridge's bot record names the bot's username; without one, the NATS name itself
     assert by_id[AGENT_A]["username"] == "bb-agent-a" and by_id[AGENT_B]["username"] == AGENT_B
     assert all(r["reachable"] and r["live"] and r["home"] == "home" for r in rows)
-    assert not any(r["crown"] for r in rows)  # no claim yet
+    assert [r["id"] for r in rows if r["crown"]] == [AGENT_A]  # the oldest claim
     roster = await lease.roster_in(inner, WORK, "home")  # type: ignore[arg-type]
     a = next(e for e in roster if e.user_id == AGENT_A)
-    # the numbers and the version of the presence, as the status text gave them; no state word
+    # the numbers, the version and the state word of the presence
     assert a.usage == {"ctx": 62.0, "limit_5h": {"used": 40.0}} and a.release == {"version": "0.104.0", "source": "unchecked"}
-    assert a.status == "" and a.username == "bb-agent-a"
-    assert next(e for e in roster if e.user_id == AGENT_B).usage == {}
+    assert a.status == "working" and a.username == "bb-agent-a"
+    b = next(e for e in roster if e.user_id == AGENT_B)
+    assert b.usage == {} and b.status == ""  # an older server states no state word: as before
+    assert inner.reads == []
+
+
+async def test_a_member_without_a_claim_in_the_home_is_a_guest_not_a_home_agent(
+        monkeypatch: pytest.MonkeyPatch) -> None:
+    port, bus, inner = await _world(monkeypatch, claims=(AGENT_A,))
+    rows = {r["id"]: r for r in await lease._rows(inner, WORK, "home")}  # type: ignore[arg-type]
+    assert rows[AGENT_A]["home"] == "home" and rows[AGENT_A]["guest"] is False
+    assert rows[AGENT_B]["home"] == "" and rows[AGENT_B]["guest"] is True and not rows[AGENT_B]["crown"]
+    assert [e.username for e in await lease.roster_in(inner, WORK, "home")] == ["bb-agent-a"]  # type: ignore[arg-type]
     assert inner.reads == []
 
 
@@ -216,7 +229,7 @@ async def test_an_away_agent_is_not_reachable_an_offline_or_non_member_is_no_row
 
 
 async def test_the_crown_is_the_views_holder_and_a_claim_shows_on_the_row(monkeypatch: pytest.MonkeyPatch) -> None:
-    port, bus, inner = await _world(monkeypatch)
+    port, bus, inner = await _world(monkeypatch, claims=())
     await bus._on_presence_msg(FakeMsg(f"presence.crown.home.{AGENT_B}", _presence_reply(bus, 50, 50, T0 + 1),
                                        natsbus.encode_claim()))
     roster = await lease.roster_in(inner, WORK, "home")  # type: ignore[arg-type]
@@ -234,7 +247,7 @@ async def test_a_bot_is_linked_only_through_the_bridges_record_and_its_owner_acc
         monkeypatch: pytest.MonkeyPatch) -> None:
     port, bus, inner = await _world(monkeypatch)
     assert port.owned_link(AGENT_A, "home") is not None and port.owned_link(AGENT_A, "home").bot == BOT_A  # type: ignore[union-attr]
-    assert port.linked2("home") == {BOT_A: AGENT_A}
+    assert port.linked2("home") == {BOT_A: AGENT_A} and port._bots2()[BOT_A][0] == AGENT_A
     assert port.owned_link(AGENT_B, "home") is None  # no record
     # a forged presence `bot` field and a forged tag give no link: the presence's own words count nothing
     await bus._on_presence_msg(FakeMsg(f"presence.alice.{AGENT_B}", _presence_reply(bus, 60, 60, T0 + 1),
@@ -246,7 +259,7 @@ async def test_a_bot_is_linked_only_through_the_bridges_record_and_its_owner_acc
     # the record's owner account is not the account that binds the owner's anchor: no link
     await bus._on_presence_msg(FakeMsg(f"presence.bot.{AGENT_A}.v1", _presence_reply(bus, 61, 61, T0 + 2),
                                        _bot_body(owner_account="x" * 26, iat=int(T0) + 2, exp=int(T0) + 182)))
-    assert port.owned_link(AGENT_A, "home") is None and port.linked2("home") == {}
+    assert port.owned_link(AGENT_A, "home") is None and port.linked2("home") == {} and port._bots2() == {}
     # the right account, but the username lacks the bridge's prefix: no link
     await bus._on_presence_msg(FakeMsg(f"presence.bot.{AGENT_A}.v1", _presence_reply(bus, 62, 62, T0 + 3),
                                        _bot_body(username="zz-agent-a", iat=int(T0) + 3, exp=int(T0) + 183)))
@@ -259,6 +272,7 @@ async def test_a_bot_is_linked_only_through_the_bridges_record_and_its_owner_acc
                                        _presence_reply(bus, 64, 64, T0 + 5),
                                        _account_body(account="v" * 26)))
     assert port.owned_link(AGENT_A, "home") is None  # two accounts bind the anchor: none is the owner
+    assert port._bots2() == {}
     assert inner.reads == []
 
 
@@ -360,6 +374,15 @@ async def test_the_presence_card_carries_usage_and_version_bounded() -> None:
     got = natsbus.decode_presence_card(encode_presence("online", "", "", card))
     assert got.release == "v0.104.0 plugin" and got.usage and got.usage.startswith("ctx 62%")
     assert natsbus.decode_presence_card(b'{"v":1,"status":"online","usage":5,"release":["x"]}') == natsbus.PresenceCard()
+
+
+def test_the_presence_card_state_word_is_bounded_and_older_servers_state_none() -> None:
+    got = natsbus.decode_presence_card(encode_presence("online", "", "", natsbus.PresenceCard(state="idle")))
+    assert got.state == "idle"
+    assert json.loads(encode_presence("online", "", "", natsbus.PresenceCard(state="sulking")))["status"] == "online"
+    assert "state" not in json.loads(encode_presence("online", "", "", natsbus.PresenceCard(state="sulking")))
+    assert natsbus.decode_presence_card(b'{"v":1,"status":"online","state":["idle"]}').state is None
+    assert natsbus.decode_presence_card(b'{"v":1,"status":"online"}').state is None
 
 
 # --- a real nats-server -----------------------------------------------------------------------

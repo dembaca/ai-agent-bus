@@ -178,7 +178,15 @@ before 0.5.0 are described in the git history.
   are still written), answers names and kinds of Mattermost accounts from
   the records, and, while the bus is cut off, tells nobody as gone. The
   presence gains two self-stated fields, `usage` and `release`, so the
-  roster keeps the numbers and the version it showed. The switch is the
+  roster keeps the numbers and the version it showed, and a third, `state`
+  (`working`, `listening`, `idle` or `bus`), the status word the coordinator
+  routes by; an older server states none. `usage`, `release` and `state` go
+  out in every presence, whether the switch is on or off. Under the switch a
+  member of a home without a crown claim there is a guest, not a home agent
+  (membership is announced for homes, guests and the lobby alike). The
+  bridge also publishes the bot record at its start and every minute for every
+  present agent whose bot exists (find only, no bot made), and publishes it
+  with `bot` null when the owner's record changed. The switch is the
   channel's plan B piece 2 (the switch entry above), off by default, so
   behaviour is as before. The bridge, the login service and the session
   side ship together: the session side needs the records to show a link at

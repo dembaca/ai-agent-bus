@@ -369,6 +369,10 @@ class PresenceCard:
     # release.from_status, which drop what they do not know.
     usage: str | None = None
     release: str | None = None
+    # The state word of the status text (`working`, `listening`, `idle`, `bus`), which the
+    # coordinator routes by (RT-6.37 step 6); the key is `state`, since `status` is the
+    # presence's own. None for an older server, which states none.
+    state: str | None = None
 
 
 CARD_USAGE_MAX = 80
@@ -420,16 +424,25 @@ def card_epoch(v: object) -> int | None:
     return v
 
 
+CARD_STATES = ("working", "listening", "idle", "bus")
+
+
+def card_state(v: object) -> str | None:
+    """One of CARD_STATES; None for anything else (a word a newer server knows, a non-string)."""
+    return v if isinstance(v, str) and v in CARD_STATES else None
+
+
 def clean_card(card: PresenceCard) -> PresenceCard:
     """The card with every field bounded (the encoder's and the decoder's rule)."""
     return PresenceCard(harness=card_harness(card.harness), model=card_text(card.model, CARD_MODEL_MAX),
                         task=card_text(card.task, CARD_TASK_MAX), branch=card_branch(card.branch),
                         asks=card_asks(card.asks), last_post=card_epoch(card.last_post),
                         usage=card_text(card.usage, CARD_USAGE_MAX) or None,
-                        release=card_text(card.release, CARD_RELEASE_MAX) or None)
+                        release=card_text(card.release, CARD_RELEASE_MAX) or None,
+                        state=card_state(card.state))
 
 
-_CARD_KEYS = ("harness", "model", "task", "branch", "asks", "last_post", "usage", "release")
+_CARD_KEYS = ("harness", "model", "task", "branch", "asks", "last_post", "usage", "release", "state")
 
 
 def encode_presence(status: str, bot: str = "", bot_name: str = "",

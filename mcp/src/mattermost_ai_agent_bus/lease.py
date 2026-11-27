@@ -1900,6 +1900,17 @@ async def usage_crossed(client: ChatPort) -> None:
         log.debug("usage band: %s", exc)
 
 
+def state_word(uid: str) -> str | None:
+    """The state word of this session's status, from the presence file (a listen window that
+    ran out counts as idle, as at a renewal); None before any status. What the NATS presence
+    states of it (`state`, RT-6.37 step 6)."""
+    saved = _read(_file("presence", uid))
+    state, label = saved.get("STATE") or "", saved.get("LABEL", "")
+    if state == "listening" and not (label.isdigit() and int(label) > time.time()):
+        state = "idle"
+    return state if state in STATES and state != "offline" else None
+
+
 def _judged(uid: str, state: str = "") -> tuple[bool, bool]:
     """For ADR-007 amendment step 1, from `state` or the one presence-<uid>.env
     holds (a listen window that ran out counts as idle, as at a renewal):

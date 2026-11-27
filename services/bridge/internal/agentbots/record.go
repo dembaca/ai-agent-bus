@@ -6,6 +6,7 @@ import (
 	"encoding/json"
 	"time"
 
+	"github.com/dembaca/ai-agent-bus/services/bridge/internal/presence"
 	"github.com/dembaca/ai-agent-bus/services/bridge/internal/registrar/core"
 )
 
@@ -82,24 +83,78 @@ func (b *Bots) Announce() {
 			continue
 		}
 		if e.client != nil {
-			a := e.agent
-			owner := e.owner
-			b.announce(names[i], &a, owner)
+			if owner := b.owner(names[i]); owner != e.owner {
+				// the owner's account record changed since the bot was
+				// checked: no link until Bot checks it again
+				b.announce(names[i], nil, "")
+			} else {
+				a := e.agent
+				b.announce(names[i], &a, owner)
+			}
 		}
 		e.mu.Unlock()
 	}
 }
 
-// RunRecords announces every interval until ctx ends.
+// AnnounceFound is the find-only pass for the agents that are present but
+// hold no client (after a restart, or while idle): when the bridge's bot of
+// the name exists, is active and is owned by the account that owns the
+// agent's anchor, its record is published. It creates no bot, mints no token
+// and joins no channel; a bot of another owner gets a null record, one that
+// is not found or not the bridge's is left alone (the sweep's disabled ones
+// among them).
+func (b *Bots) AnnounceFound(ctx context.Context) {
+	newest := b.Presence.Newest()
+	for _, name := range b.Presence.Names() {
+		if ctx.Err() != nil {
+			return
+		}
+		info, ok := b.Presence.Get(name)
+		if !ok || !presence.Fresh(info, newest, DefaultKeep) {
+			continue
+		}
+		e := b.entry(name)
+		if !e.mu.TryLock() {
+			continue
+		}
+		if e.client == nil {
+			b.announceFound(ctx, name)
+		}
+		e.mu.Unlock()
+	}
+}
+
+func (b *Bots) announceFound(ctx context.Context, name string) {
+	owner := b.owner(name)
+	if owner == "" {
+		return
+	}
+	a, err := b.Admin.FindAgent(ctx, b.Prefix+name)
+	if err != nil || a == nil {
+		return
+	}
+	bot, err := b.Admin.BotOf(ctx, a.ID)
+	if err != nil || bot == nil || bot.Description != Marker+name {
+		return
+	}
+	if bot.OwnerID != owner {
+		b.announce(name, nil, "")
+		return
+	}
+	b.announce(name, a, owner)
+}
+
+// RunRecords announces at once and then every interval until ctx ends.
 func (b *Bots) RunRecords(ctx context.Context, interval time.Duration) {
 	t := time.NewTicker(interval)
 	defer t.Stop()
 	for {
+		b.Announce()
+		b.AnnounceFound(ctx)
 		select {
 		case <-ctx.Done():
 			return
 		case <-t.C:
-			b.Announce()
 		}
 	}
 }

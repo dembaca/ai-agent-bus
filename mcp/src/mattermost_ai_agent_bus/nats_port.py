@@ -230,6 +230,8 @@ class BusLike(Protocol):
 
     def is_member(self, channel: str, agent: str) -> bool: ...
 
+    def claimed(self, channel: str, agent: str) -> bool: ...
+
     def presence_snapshot(self) -> dict[str, tuple[float, str]]: ...
 
     def asks_changed(self) -> None: ...
@@ -828,16 +830,19 @@ class NatsPort:
 
     def _bots2(self) -> dict[str, tuple[str, natsbus.BotRecord]]:
         """Mattermost bot id -> (NATS name, record) of the fresh bot records of the bridge whose
-        username is the bridge's prefix (its signal's, RT-6.36 step 4) plus the name, for the
-        homes on piece 2 (RT-6.44 step 3). No Mattermost call."""
+        username is the bridge's prefix (its signal's, RT-6.36 step 4) plus the name and whose
+        owner_account is the one account binding the name's anchor (owned_link), for the homes
+        on piece 2 (RT-6.44 step 3). No Mattermost call."""
         bus = self._live()
         if bus is None:
             return {}
-        prefixes = {bus.bridge_prefix(h) for h in self._homes if planb.on(2, h)} - {""}
         out: dict[str, tuple[str, natsbus.BotRecord]] = {}
-        for agent, rec in bus.bot_records().items():
-            if rec.bot and rec.username in {p + agent for p in prefixes}:
-                out[rec.bot] = (agent, rec)
+        for agent in bus.bot_records():
+            for h in self._homes:
+                rec = self.owned_link(agent, h) if planb.on(2, h) else None
+                if rec is not None and rec.bot:
+                    out[rec.bot] = (agent, rec)
+                    break
         return out
 
     def readable(self) -> bool:
@@ -885,8 +890,8 @@ class NatsPort:
         the names that announced their membership of the home within 24 h and are not offline.
         id is the NATS name; username is the bridge's prefix plus the name while the bridge's
         bot record is the name's (owned_link), else the NATS name itself, never the name the
-        presence states of itself; the status word is empty and `away` is unreachable; the
-        crown is the holder of the NATS view; the text carries the usage and version the
+        presence states of itself; `away` is unreachable; the
+        crown is the holder of the NATS view; the status word is the presence's `state`; the text carries the usage and version the
         presence states (read back by usage.from_status and release.from_status, which drop what
         they do not know). [] while the bus is not readable."""
         bus = self._live()
@@ -899,13 +904,17 @@ class NatsPort:
             presence = bus.presence_of(name)
             if presence == "offline":
                 continue
+            # Membership is announced for homes, guests and the lobby alike; the crown claim
+            # only in the hello's home, which the login service grants (perms.go), so a name
+            # with a claim here is a home agent and any other member a guest: no home of ours.
+            at_home = bus.claimed(home, name) or name == bus.name
             rec = self.owned_link(name, home)
             card = bus.card_of(name)
             reachable = presence == "online"
             rows.append({"id": name, "username": rec.username if rec is not None and rec.username else name,
-                         "create_at": 0, "presence": presence, "emoji": "", "status": "",
+                         "create_at": 0, "presence": presence, "emoji": "", "status": card.state or "",
                          "text": " · ".join(p for p in (card.usage, card.release) if p),
-                         "home": home, "live": True, "until_ms": 0, "reachable": reachable,
+                         "home": home if at_home else "", "guest": not at_home, "live": True, "until_ms": 0, "reachable": reachable,
                          "crown": reachable and bool(holder) and holder == name, "nats": True})
         return rows
 

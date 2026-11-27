@@ -6,6 +6,8 @@ import (
 	"sync"
 	"testing"
 	"time"
+
+	"github.com/dembaca/ai-agent-bus/services/bridge/internal/presence"
 )
 
 // pubs records what the bridge publishes.
@@ -133,5 +135,62 @@ func TestRT644NoRecordWithoutABot(t *testing.T) {
 	b.Announce()
 	if _, n := p.last(); n != 0 {
 		t.Fatalf("published %d", n)
+	}
+}
+
+// RT-6.44 step 3: after a restart the find-only pass publishes the record of
+// an idle agent whose bot exists, and creates nothing for one without a bot.
+func TestRT644TheFindPassAnnouncesAnIdleAgentsBot(t *testing.T) {
+	f := newFake(t)
+	f.addBot("b1", "bb-agent-a", Marker+"agent-a")
+	f.set("b1", "owner_id", "alice")
+	snap := aliceAgent()
+	snap.Observed("agent-b", "alice~x", "", presence.Online, time.Now())
+	b := newBots(t, f, snap)
+	p := &pubs{}
+	b.NATS = p
+	b.AnnounceFound(context.Background())
+	m, n := p.last()
+	if n != 1 || m.subject != "presence.bot.agent-a.v1" || m.body["bot"] != "b1" ||
+		m.body["username"] != "bb-agent-a" || m.body["owner_account"] != "alice" {
+		t.Fatalf("published %d, %v", n, m)
+	}
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	if f.created != 0 {
+		t.Fatalf("the find pass created %d bots", f.created)
+	}
+}
+
+// Owner binding on every path: a bot of another owner gets null from the find
+// pass; a changed owner record gets null from Bot and from the round.
+func TestRT644ABotOfAnotherOwnerGetsNull(t *testing.T) {
+	f := newFake(t)
+	f.addBot("b1", "bb-agent-a", Marker+"agent-a")
+	f.set("b1", "owner_id", "bob")
+	b := newBots(t, f, aliceAgent())
+	p := &pubs{}
+	b.NATS = p
+	b.AnnounceFound(context.Background())
+	if m, n := p.last(); n != 1 || m.body["bot"] != nil {
+		t.Fatalf("find pass: %d, %v", n, m.body)
+	}
+
+	f2 := newFake(t)
+	o := aliceRecord()
+	b2 := newBotsOf(t, f2, aliceAgent(), o)
+	p2 := &pubs{}
+	b2.NATS = p2
+	if b2.Bot(context.Background(), "agent-a", "home") == nil {
+		t.Fatal("no bot")
+	}
+	o["alice.x"] = "bob"
+	b2.Announce()
+	if m, n := p2.last(); n != 2 || m.body["bot"] != nil {
+		t.Fatalf("round after the owner changed: %d, %v", n, m.body)
+	}
+	b2.Bot(context.Background(), "agent-a", "home")
+	if m, n := p2.last(); n != 3 || m.body["bot"] != nil {
+		t.Fatalf("Bot after the owner changed: %d, %v", n, m.body)
 	}
 }

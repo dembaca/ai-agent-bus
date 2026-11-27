@@ -332,7 +332,8 @@ def _presence_card(home: str = "") -> natsbus.PresenceCard:
                                 asks=len(asks.waiting(me)) if me else None,
                                 last_post=_last_post_sec(me, home),
                                 usage=" · ".join(usage.segments()) or None,
-                                release=release.segment() or None)
+                                release=release.segment() or None,
+                                state=lease.state_word(me) if me else None)
 
 
 def _last_post_sec(me: str, home: str) -> int | None:
