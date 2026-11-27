@@ -812,8 +812,9 @@ async def _channel(client: ChatPort, chan: str) -> str:
 async def _agent_threads(client: ChatPort, raw: list[Post], uid: str) -> set[str]:
     """RT-6.6 step 5, as the push decides it (server._agent_thread): the
     replies naming no agent that a trusted human wrote, or with the gate off
-    anyone but an agent (RT-6.16), in a thread a reachable agent of the home
-    other than `uid` started (gate.other_agents_thread). Unsure: none, the
+    anyone but an agent (RT-6.16), in the thread of a reachable peer other
+    than `uid` (gate.other_agents_thread: started by it, or a human's thread
+    naming it that it has posted in). Unsure: none, the
     crown wakes as before."""
     replies = [p for p in raw if p.root_id and p.user_id and p.user_id != uid and not p.type
                and not tasks.mentions(p.message)]

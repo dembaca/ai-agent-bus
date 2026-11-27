@@ -26,10 +26,11 @@ import logging
 import re
 import time
 from collections.abc import Collection, Mapping, Sequence
+from dataclasses import dataclass
 from pathlib import Path
 from typing import TYPE_CHECKING
 
-from . import a2a, channel, lease, owners, session_file
+from . import a2a, channel, lease, owners, session_file, tasks
 from .model import Mark, Post
 
 log = logging.getLogger(__name__)
@@ -81,53 +82,103 @@ async def author_classes(client: ChatPort, posts: Sequence[Post]) -> list[str]:
     return [author_class(p, trusted, agents, foreign) for p in posts]
 
 
-# RT-6.6 step 5: a thread root's author, read once per root ('' for a webhook
-# post); the oldest go first beyond ROOTS_KEPT. Whether that author is a
-# reachable peer of the home is read from the roster each time, at most every
-# COORD_TTL_SEC (_reach), never kept with the root.
-_roots: dict[str, str] = {}
+@dataclass
+class _Root:
+    """RT-6.6 step 5: what a thread root says about whose thread it is: its
+    author ('' for a webhook post), the agents its text names, and who has
+    posted in the thread as last read (it only grows: a post stays)."""
+
+    author: str
+    by_agent: bool  # read only for a root that names an agent
+    named: tuple[str, ...]
+    posters: set[str]
+
+
+# Each root read once; the thread again only while an agent its root names has
+# not posted there yet. The oldest go first beyond ROOTS_KEPT. Whether an
+# agent is a reachable peer of the home is read from the roster each time, at
+# most every COORD_TTL_SEC (_reach), never kept with the root.
+_roots: dict[str, _Root] = {}
 ROOTS_KEPT = 2000
-_reach: tuple[float, frozenset[str]] | None = None
+_reach: tuple[float, dict[str, str]] | None = None
 
 
-async def _reachable_here(client: ChatPort) -> frozenset[str]:
-    """The ids of the home's reachable peers (lease.roster, the same rows
-    RT-6.21 reads for departed and not here), without the ambassadors of
-    other homes and without foreign agents (owners.foreign, in doubt
-    foreign: ADR-001, the crown defers only to a peer); empty when the roster
-    cannot be read, and so for COORD_TTL_SEC."""
+async def _reachable_here(client: ChatPort) -> dict[str, str]:
+    """The home's reachable peers, id → username in lower case (lease.roster,
+    the same rows RT-6.21 reads for departed and not here), without the
+    ambassadors of other homes and without foreign agents (owners.foreign, in
+    doubt foreign: ADR-001, the crown defers only to a peer: it cannot know a
+    foreign agent's gate); empty when the roster cannot be read, and so for
+    COORD_TTL_SEC."""
     global _reach
     now = time.monotonic()
     if _reach is None or now - _reach[0] > COORD_TTL_SEC:
-        ids = {r.user_id for r in await lease.roster(client) if r.user_id and not r.crown_of}
-        _reach = (now, frozenset(ids - set(await owners.foreign(client, ids))))
+        rows = {r.user_id: r.username.lower() for r in await lease.roster(client)
+                if r.user_id and not r.crown_of}
+        foreign = set(await owners.foreign(client, set(rows)))
+        _reach = (now, {i: n for i, n in rows.items() if i not in foreign})
     return _reach[1]
 
 
-async def other_agents_thread(client: ChatPort, root_id: str, uid: str) -> bool | None:
-    """Whether the thread `root_id` is another agent's (RT-6.6 step 5): its
-    root was posted by a peer of this home, not `uid`, that the roster shows
-    as reachable now. A root by a human, a webhook, this agent, a foreign
-    agent, or one departed, not here or not reachable is not (the crown
-    wakes as before).
-    None: the root cannot be read (unsure: the caller wakes as before)."""
-    author = _roots.get(root_id)
-    if author is None:
-        try:
-            thread = await client.thread(root_id)
-        except Exception as exc:  # noqa: BLE001 — unsure
-            log.info("thread root %s not read: %s", root_id, type(exc).__name__)
-            return None
+async def _read_root(client: ChatPort, root_id: str) -> _Root | None:
+    """The thread `root_id` read (one request; one more for the author's
+    account when the root names an agent), kept in _roots; None: unreadable."""
+    old = _roots.get(root_id)
+    try:
+        thread = await client.thread(root_id)
         root = next((p for p in thread.posts if p.id == root_id), None)
         if root is None:
             return None
         author = "" if root.from_webhook else root.user_id
-        _roots[root_id] = author
-        while len(_roots) > ROOTS_KEPT:
-            del _roots[next(iter(_roots))]
-    if not author or author == uid:
+        named = tuple(tasks.mentions(root.message))
+        by_agent = old.by_agent if old else bool(
+            named and author and await client.agents({author}))
+    except Exception as exc:  # noqa: BLE001 — unsure
+        log.info("thread root %s not read: %s", root_id, type(exc).__name__)
+        return None
+    facts = _Root(author=author, by_agent=by_agent, named=named,
+                  posters={p.user_id for p in thread.posts if p.user_id and not p.from_webhook})
+    _roots.pop(root_id, None)
+    _roots[root_id] = facts
+    while len(_roots) > ROOTS_KEPT:
+        del _roots[next(iter(_roots))]
+    return facts
+
+
+async def other_agents_thread(client: ChatPort, root_id: str, uid: str) -> bool | None:
+    """Whether the thread `root_id` is another agent's (RT-6.6 step 5), with
+    an agent B, not `uid`, that the roster shows as a reachable peer of this
+    home now: B posted the root, or a human (or webhook) posted it naming B
+    and B has posted in the thread since, and the root does not name this
+    agent. Not: a root by a human that names no agent, or only agents that
+    have not answered there yet, are foreign, departed, not here or not
+    reachable; a root by this agent (the crown wakes as before).
+    None: the thread cannot be read (unsure: the caller wakes as before)."""
+    facts = _roots.get(root_id) or await _read_root(client, root_id)
+    if facts is None:
+        return None
+    if facts.author == uid:
         return False
-    return author in await _reachable_here(client)
+    peers = await _reachable_here(client)
+    if facts.author in peers:
+        return True
+    if facts.by_agent:
+        return False  # an agent's root, not a reachable peer's: the crown's
+    named = {i for i, n in peers.items() if n in facts.named and i != uid}
+    if not named:
+        return False
+    try:
+        if (await client.get_me()).username.lower() in facts.named:
+            return False  # the root names this agent too: its thread as well
+    except Exception as exc:  # noqa: BLE001 — unsure
+        log.info("own name not read: %s", type(exc).__name__)
+        return None
+    if not named & facts.posters:
+        # B may have answered since the last read: read the thread again.
+        facts = await _read_root(client, root_id)
+        if facts is None:
+            return None
+    return bool(named & facts.posters)
 
 
 def wake_reason(kind: str, post: Post, in_my_thread: bool) -> str:
