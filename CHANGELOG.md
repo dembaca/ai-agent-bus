@@ -5,6 +5,25 @@ before 0.5.0 are described in the git history.
 
 ## Unreleased
 
+### Changed
+
+- **The fault rig's leftovers from #209's review** ([#218](https://github.com/dembaca/ai-agent-bus/issues/218),
+  ADR-014's phase-1/4 rig). The NATS restart test asserts `lost_seqs`, so a
+  failed send is told from a lost post. A failed consumer reconcile aborts that
+  one CONNECT, and the next connection retries it as the login service lets a
+  client retry a refused login: the verdict is kept per agent, and a run is
+  untrustworthy only when an agent's last connection still had no consumers;
+  cured CONNECTs are counted and printed, and a coordinator run copies them
+  into its notes and report. The first start retries once on a fresh port if
+  another process took the probed one, reading the server's INFO so a foreign
+  listener is not taken for it (a restart keeps its port, the clients hold it);
+  the tail masking covers a value after `token:`, `token =` and a JSON key, as
+  well as the bare word; the README says how far a PR-sized cut run
+  reaches and what a SIGKILLed rig leaves behind. The nightly `full-nats` job
+  puts its tables into the run's step summary and uploads the output as the
+  `full-nats-results` artifact, and the nats-server fetch is one composite
+  action instead of four copies.
+
 ### Fixed
 
 - **The NATS read mark is seeded at a channel's first post** (#224, the residual

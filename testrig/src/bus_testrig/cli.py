@@ -219,9 +219,11 @@ def _untrustworthy(run: runner.Run, *, expect_loss: bool = False) -> bool:
 
     * a call the stand-in could not answer — the bus asked something this rig
       does not model, so a number from the run is about the stand-in;
-    * a CONNECT whose consumer reconcile failed — the connection was aborted
-      and every later one refused, so the session ran without its consumers
-      (and one line says why, never only the count);
+    * a CONNECT whose consumer reconcile failed and none later reconciled — the
+      connection was aborted, so that session ran without its consumers (and
+      one line says why, never only the count). Since #218 a later connection
+      retries the hook as the login service lets a client retry a refused login:
+      an early failure that a retry cured is a note, not a failed run;
     * a path the run never observed at all — the receiver's inbox never opened,
       so `loss` means "everything" and compares with nothing (this is the
       `--fault drop --after 0` run the review measured at 5 of 5 lost, exit 0);
@@ -243,13 +245,18 @@ def _untrustworthy(run: runner.Run, *, expect_loss: bool = False) -> bool:
     nothing, and a fault that lost everything is a dead path wearing a fault's
     name.
     """
-    if run.relay.get("failed") or run.relay.get("hook_errors"):
+    if run.relay.get("failed"):
         why = next((n for n in run.notes if n.startswith("consumer reconcile")), "")
-        print(f"bus-testrig: the CONNECT hook failed "
+        print(f"bus-testrig: the CONNECT hook failed and the last connection was aborted "
               f"({run.relay.get('hook_errors', 0)} error(s))"
-              f"{': ' + why if why else ''}; the connection was aborted and the run "
-              f"measured a session without its consumers", file=sys.stderr)
+              f"{': ' + why if why else ''}; the run measured a session without its "
+              f"consumers", file=sys.stderr)
         return True
+    if run.relay.get("hook_errors"):
+        # One early failure that a later connection cured (#218): worth saying,
+        # not a broken run, since the session it measured had its consumers.
+        print(f"bus-testrig: {run.relay['hook_errors']} CONNECT(s) were aborted by a failed "
+              f"consumer reconcile; a later connection reconciled", file=sys.stderr)
     if run.unknown:
         print(f"bus-testrig: the stub did not know {len(run.unknown)} call(s): "
               f"{run.unknown[:5]}", file=sys.stderr)
