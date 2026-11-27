@@ -10,7 +10,7 @@ Needs: bridge signing key in MM_REGISTRAR_KEYS on every host, beside the registr
 Needs: for the bridge commands, its records bucket and its rights on it, as in the example config.
 
 The old setting names of 0.103.0 still work in this release, with their
-deprecation warning; they go in a later release, the removal release
+deprecation warning; they go in 0.105.0, the removal release
 ([docs/env-names.md](docs/env-names.md#the-reading-rule)).
 
 ### Added
