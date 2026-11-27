@@ -118,13 +118,17 @@ func Subject(subject string) (owner, name string, ok bool) {
 	return parts[1], parts[2], true
 }
 
+// NameHashLen is the length of an agent name's hash part (#274; the login
+// service's callout.NameHashLen): 25, never a Mattermost id's 26.
+const NameHashLen = 25
+
 // LinkTag is the 16 characters of an agent name's hash part that its bot's
 // status shows (RT-6.37); "" for a shorter name.
 func LinkTag(name string) string {
-	if len(name) < 26 {
+	if len(name) < NameHashLen {
 		return ""
 	}
-	return name[len(name)-26:][:16]
+	return name[len(name)-NameHashLen:][:16]
 }
 
 // LinkOf reads the tag a bot's status text shows after the ⇄ mark (RT-6.37).

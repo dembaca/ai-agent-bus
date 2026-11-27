@@ -23,9 +23,9 @@ from mattermost_ai_agent_bus.nats_port import NatsPort
 
 HOME = "home"
 HUMAN = "h" * 26
-NAME_ME = "agent-" + "u" * 26   # this session's NATS name (its bot is BOT)
-NAME_A = "agent-" + "a" * 26
-NAME_B = "agent-" + "b" * 26
+NAME_ME = "u" * 25   # this session's NATS name (its bot is BOT)
+NAME_A = "a" * 25
+NAME_B = "b" * 25
 BOT_A, BOT_B, BOT_C = "1" * 26, "2" * 26, "3" * 26
 TAG = {n: n[-26:][:16] for n in (NAME_ME, NAME_A, NAME_B)}
 CROWN = a2a.status_emoji(StatusMark.COORDINATOR)
@@ -839,7 +839,7 @@ async def test_bus_info_says_so_when_the_crown_is_not_reachable(
 
 async def test_a_link_tag_that_fits_two_fresh_names_is_logged_once_and_reported(
         w: World, caplog: pytest.LogCaptureFixture) -> None:
-    twin = "agent-" + NAME_A[6:22] + "c" * 10  # the same tag, another name
+    twin = NAME_A[:16] + "c" * 9  # the same tag, another name
     assert natsbus_tag(twin) == TAG[NAME_A]
     claimant(w.fake, NAME_A, 9, bot_id=BOT_A)
     claimant(w.fake, twin, 10, bot_id=BOT_A)

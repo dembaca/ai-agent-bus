@@ -148,6 +148,8 @@ func TestTheAgentBotSettings(t *testing.T) {
 		{map[string]string{"CB_BRIDGE_MM_ADMIN_TOKEN_FILE": "/run/admin", "CB_BRIDGE_MM_BOT_PREFIX": "a" + strings.Repeat("b", 31)}, true},
 		{map[string]string{"CB_BRIDGE_MM_ADMIN_TOKEN_FILE": "/run/admin"}, false},
 		{map[string]string{"CB_BRIDGE_MM_BOT_PREFIX": "bb-"}, false},
+		{map[string]string{"CB_BRIDGE_MM_ADMIN_TOKEN_FILE": "/run/admin", "CB_BRIDGE_MM_BOT_PREFIX": "a"}, false},
+		{map[string]string{"CB_BRIDGE_MM_ADMIN_TOKEN_FILE": "/run/admin", "CB_BRIDGE_MM_BOT_PREFIX": "bb"}, true},
 		{map[string]string{"CB_BRIDGE_MM_ADMIN_TOKEN_FILE": "/run/admin", "CB_BRIDGE_MM_BOT_PREFIX": "Bb-"}, false},
 		{map[string]string{"CB_BRIDGE_MM_ADMIN_TOKEN_FILE": "/run/admin", "CB_BRIDGE_MM_BOT_PREFIX": "-bb"}, false},
 		{map[string]string{"CB_BRIDGE_MM_ADMIN_TOKEN_FILE": "/run/admin", "CB_BRIDGE_MM_BOT_PREFIX": "a" + strings.Repeat("b", 32)}, false},

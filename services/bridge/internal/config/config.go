@@ -235,6 +235,9 @@ func Load(env *Env) (Config, error) {
 	case c.AdminToken == "" && c.BotPrefix != "":
 		return Config{}, fmt.Errorf("CB_BRIDGE_MM_BOT_PREFIX is set without CB_BRIDGE_MM_ADMIN_TOKEN_FILE: " +
 			"the agents' own bots need the admin token")
+	case len(c.BotPrefix) == 1:
+		return Config{}, fmt.Errorf("CB_BRIDGE_MM_BOT_PREFIX %q is one character: with the 25-character NATS name it "+
+			"would make a username of a Mattermost id's form; use at least two", c.BotPrefix)
 	case c.BotPrefix != "" && !BotPrefix.MatchString(c.BotPrefix):
 		return Config{}, fmt.Errorf("CB_BRIDGE_MM_BOT_PREFIX %q is no username's start: a lower-case letter, "+
 			"then at most 31 of a-z, 0-9, '.', '_' and '-'", c.BotPrefix)

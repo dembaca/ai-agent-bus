@@ -42,7 +42,7 @@ import time
 from urllib.parse import urlsplit
 from collections.abc import Awaitable, Callable, Iterable, Iterator, Mapping
 from dataclasses import dataclass, field
-from typing import Any, Protocol
+from typing import AbstractSet, Any, Protocol
 
 from nats.aio.client import Client as NatsClient
 from nats.errors import AuthorizationError, InvalidUserCredentialsError
@@ -94,8 +94,34 @@ DELIVER = "deliver"  # consumers.DeliverPrefix / callout.DeliverPrefix
 
 CHANNEL_RE = re.compile(r"^[a-z0-9][a-z0-9_-]{0,63}$")  # Go checkToken
 AGENT_RE = re.compile(r"^[A-Za-z0-9][A-Za-z0-9_-]{0,127}$")  # Go consumers.agentRE
+# #274: an agent's name is its hash alone (no prefix by default), 25 characters: never 26,
+# the length of a Mattermost id, so a NATS name and a Mattermost id never read alike
+# (nats_port.is_nats_user). Go callout.NameHashLen and the bridge's presence.LinkTag.
+NAME_HASH_LEN = 25
+# The subject tokens that stand where an agent's name stands in some subject, or beside it;
+# a name equal to one (in any case) is no agent's (#274). Go callout.reservedNames.
+RESERVED_NAMES = frozenset((
+    "account", "accounts", "ask", "attest", "bot", "bridge", "bus", "ch", "console-metrics",
+    "copied", "crown", "deliver", "directory", "dm", "hu", "import", "mattermost", "member",
+    "metrics", "moved", "notice", "person", "planb", "presence", "req", "stats", "v1", "x",
+))
+# The login service refuses a name that starts with its person prefix while the console is on
+# (CB_AUTH_PERSON_PREFIX, default "person-"); the session does not know that setting, so it
+# refuses the default one always (a hash never starts with it, "-" is no base32 character).
+PERSON_NAME_PREFIX = "person-"
+
+
+def agent_ok(name: str, reserved: AbstractSet[str] = frozenset()) -> bool:
+    """Whether `name` is an agent's name as a subject token (#274): AGENT_RE's form (no ".",
+    "*", ">", whitespace, no "_", "$" or "-" first) and none of RESERVED_NAMES or `reserved`
+    (the configured prefixes, lower case), and none that starts with the default person prefix."""
+    if not isinstance(name, str) or not AGENT_RE.fullmatch(name):
+        return False
+    low = name.lower()
+    return low not in RESERVED_NAMES and low not in reserved and not low.startswith(PERSON_NAME_PREFIX)
 SESSION_RE = NONCE_RE  # #163: the one pattern of the session part (session_file)
 PREFIX_RE = re.compile(r"^[A-Za-z0-9_-]+$")
+NAME_PREFIX_RE = re.compile(r"[A-Za-z0-9][A-Za-z0-9_-]*")  # Go callout.Config.check, #274
 # An owner counts only in this form (RT-6.37): a Mattermost username's characters in lower
 # case, the same string the bus compares with CB_TRUSTED_HUMANS and the owners of Mattermost
 # bots. Nothing is normalised: an owner in any other form is no owner.
@@ -175,18 +201,18 @@ class MessageError(ValueError):
 
 # --- the agent's name --------------------------------------------------------
 
-def agent_name(owner: str, host_nkey_public: str, prefix: str = "agent-", session: str = "") -> str:
+def agent_name(owner: str, host_nkey_public: str, prefix: str = "", session: str = "") -> str:
     """Same as Go `name()` (services/auth/internal/callout/service.go) plus the
-    prefix: SHA-256 over owner, a NUL byte, the host nkey and, when the host key
-    is shared, a NUL byte and the session nonce, the first 16 bytes as lower-case
-    base32 without padding (26 characters). The owner is used as the login service
-    gets it (the token's `preferred_username`), not changed. Without a session the
-    bytes are exactly the ones before #163, so an old host keeps its name."""
+    prefix (none by default, #274): SHA-256 over owner, a NUL byte, the host nkey and,
+    when the host key is shared, a NUL byte and the session nonce, the first 16 bytes as
+    lower-case base32 without padding, of which the first NAME_HASH_LEN (25) characters.
+    The owner is used as the login service gets it (the token's `preferred_username`),
+    not changed."""
     raw = owner.encode() + b"\x00" + host_nkey_public.encode()
     if session:
         raw += b"\x00" + session.encode()
     digest = hashlib.sha256(raw).digest()[:16]
-    return prefix + base64.b32encode(digest).decode().lower().rstrip("=")
+    return prefix + base64.b32encode(digest).decode().lower().rstrip("=")[:NAME_HASH_LEN]
 
 
 # --- message format v1 -----------------------------------------------------------
@@ -527,8 +553,8 @@ def decode_presence_dm(data: bytes) -> bool:
 
 def link_tag(name: str) -> str:
     """The 16 characters of the hash part of an agent name that the roster status shows
-    (RT-6.37); '' for a name shorter than the hash part (26 characters)."""
-    return name[-26:][:16] if len(name) >= 26 else ""
+    (RT-6.37); '' for a name shorter than the hash part (NAME_HASH_LEN characters)."""
+    return name[-NAME_HASH_LEN:][:16] if len(name) >= NAME_HASH_LEN else ""
 
 
 @dataclass(frozen=True)
@@ -598,7 +624,7 @@ def decode_notice(data: bytes) -> Notice:
     if not isinstance(network, str) or not NETWORK_RE.fullmatch(network):
         raise MessageError("network is not a network prefix")
     agent = obj.get("agent", "")
-    if not isinstance(agent, str) or (agent and not AGENT_RE.fullmatch(agent)):
+    if not isinstance(agent, str) or (agent and not agent_ok(agent)):
         raise MessageError("agent is not an agent name")
     iat, exp = _int(obj, "iat"), _int(obj, "exp")
     if exp <= iat:
@@ -1246,7 +1272,7 @@ class NatsSettings:
     presence: str = "presence"
     stats: str = "stats"  # the login service's AUTH_STATS_PREFIX: STATS lines on <stats>.<name> (RT-6.43)
     req: str = "req"  # the login service's AUTH_REQ_PREFIX: requests on <req>.<kind>.<name> (ADR-014 phase 5)
-    name_prefix: str = "agent-"
+    name_prefix: str = ""  # the login service's CB_AUTH_NAME_PREFIX: none by default (#274)
     props_prefix: str = a2a.DEFAULT_PREFIX  # CB_PROPS_PREFIX, one setting of the whole bus (RT-6.16)
     tls_ca_file: str | None = None  # CA bundle that verifies a tls:// server (default: the system's)
     trusted: tuple[str, ...] = ()  # this session's trusted humans' names, for the hello (normalised)
@@ -1270,6 +1296,11 @@ class NatsSettings:
         # `from_trusted_human` included. Raises ValueError for a bad one.
         object.__setattr__(self, "props_prefix",
                            a2a.user_prefix({a2a.PREFIX_ENV: self.props_prefix}))
+        # The login service's rule (callout.Config.check): a prefix of one character plus the
+        # 25-character hash is 26 of [a-z0-9], a Mattermost id's form (#274, RT-6.36 step 8).
+        if self.name_prefix and (len(self.name_prefix) < 2 or not NAME_PREFIX_RE.fullmatch(self.name_prefix)):
+            raise ValueError("invalid name prefix: two or more of letters, digits, - and _, "
+                             "a letter or digit first")
         for url in self.servers:
             _check_server(url)  # the access token goes over this connection
         _tls_mode(self.servers)
@@ -1478,6 +1509,12 @@ class NatsBus:
 
     def __repr__(self) -> str:
         return f"NatsBus(name={self._name!r}, connected={self._connected})"
+
+    def agent_ok(self, name: str) -> bool:
+        """Whether `name` is an agent's name on this bus (#274): agent_ok with the
+        configured prefixes reserved too."""
+        s = self._s
+        return agent_ok(name, frozenset(x.lower() for x in (s.bus, s.presence, s.stats, s.req)))
 
     @property
     def name(self) -> str:
@@ -1935,7 +1972,7 @@ class NatsBus:
         await self._publish(f"{self._s.bus}.ch.{self._asked(channel)}.{self.name}", body)
 
     def _dm_subject(self, recipient: str) -> str:
-        if not AGENT_RE.fullmatch(recipient):
+        if not self.agent_ok(recipient):
             raise ValueError("invalid recipient name")
         return f"{self._s.bus}.dm.{recipient}.{self.name}"
 
@@ -2387,7 +2424,7 @@ class NatsBus:
         tokens = subject.split(".")
         sender = tokens[-1]
         expect = [self._s.bus, "ch", where] if where != DM_SINCE else [self._s.bus, "dm", self.name]
-        if tokens[:-1] != expect or not AGENT_RE.fullmatch(sender):
+        if tokens[:-1] != expect or not self.agent_ok(sender):
             log.warning("nats bus: dropped a message on %s with an unexpected subject", where)
             return
         if gap:
@@ -2568,7 +2605,7 @@ class NatsBus:
         t = msg.subject.split(".")
         p = self._s.presence
         try:
-            if len(t) == 3 and t[0] == p and AGENT_RE.fullmatch(t[2]):
+            if len(t) == 3 and t[0] == p and self.agent_ok(t[2]):
                 # <presence>.<owner>.<name>: the owner as the login service pinned it.
                 agent, status = t[2], decode_presence(msg.data)
                 seq, at = self._presence_seq.get(agent, (0, 0.0))
@@ -2593,13 +2630,13 @@ class NatsBus:
                     self._owners[agent] = owner
                 else:
                     self._owners.pop(agent, None)
-            elif len(t) == 4 and t[0] == p and t[1] == "crown" and CHANNEL_RE.fullmatch(t[2]) and AGENT_RE.fullmatch(t[3]):
+            elif len(t) == 4 and t[0] == p and t[1] == "crown" and CHANNEL_RE.fullmatch(t[2]) and self.agent_ok(t[3]):
                 decode_claim(msg.data)
                 claims = self._claims.setdefault(t[2], {})
                 if (ack.time, ack.stream_seq) > (self._claim_at.get((t[2], t[3]), 0.0), claims.get(t[3], 0)):
                     claims[t[3]] = ack.stream_seq
                     self._claim_at[(t[2], t[3])] = ack.time
-            elif len(t) == 4 and t[0] == p and t[1] == "member" and CHANNEL_RE.fullmatch(t[2]) and AGENT_RE.fullmatch(t[3]):
+            elif len(t) == 4 and t[0] == p and t[1] == "member" and CHANNEL_RE.fullmatch(t[2]) and self.agent_ok(t[3]):
                 decode_claim(msg.data)
                 members = self._members.setdefault(t[2], {})
                 seq0, at0 = members.get(t[3], (0, 0.0))
@@ -2662,7 +2699,7 @@ class NatsBus:
                     else:
                         self._chan_record = (ack.stream_seq, ack.time, chans)
                         self._chan_event.set()
-            elif len(t) == 4 and t[0] == p and t[1] == "bot" and t[3] == "v1" and AGENT_RE.fullmatch(t[2]):
+            elif len(t) == 4 and t[0] == p and t[1] == "bot" and t[3] == "v1" and self.agent_ok(t[2]):
                 # RT-6.44 step 3: the newest valid record counts; one that does not decode is
                 # dropped (a warning below) and erases nothing, as an attestation.
                 brec = decode_bot_record(msg.data, t[2])
@@ -2670,7 +2707,7 @@ class NatsBus:
                 if (ack.time, ack.stream_seq) > (at0, seq0):
                     brec = dataclasses.replace(brec, exp=min(brec.exp, ack.time + BOT_RECORD_MAX_SEC))
                     self._bot_records[t[2]] = (ack.stream_seq, ack.time, brec)
-            elif len(t) == 4 and t[0] == p and t[1] == "attest" and t[3] == "v1" and AGENT_RE.fullmatch(t[2]):
+            elif len(t) == 4 and t[0] == p and t[1] == "attest" and t[3] == "v1" and self.agent_ok(t[2]):
                 att = decode_attestation(msg.data, t[2])
                 seq0, at0, _old = self._attest.get(t[2], (0, 0.0, att))
                 if (ack.time, ack.stream_seq) > (at0, seq0):
