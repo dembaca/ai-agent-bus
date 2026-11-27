@@ -1056,11 +1056,33 @@ class NatsPort:
         await bus.dm(recipient, message, props=wire_props(props, self._s.props_prefix))
         return recipient
 
+    async def dm_agent(self, to: str) -> str:
+        """The NATS name linked to the bot username `to`, '' when none is (RT-6.37's one test
+        of a link, read as `_dm_linked` does): the agent a DM to `to` belongs to, whether or not
+        its home runs agent DMs over NATS. A Mattermost DM to it settles the open DMs that name
+        left, as a DM over NATS does (RT-6.2 step 2, RT-6.36 step 7). A bot whose presence is
+        not linked (a person's, another agent's bot) names nobody."""
+        bus = self._bus if self._fatal is None else None
+        if bus is None or not bus.connected:
+            return ""
+        return await self._dm_linked(bus, to)
+
     async def _dm_recipient(self, bus: BusLike, to: str) -> str:
         """The NATS name a DM to the bot username `to` goes to, '' when it stays on Mattermost:
-        the one fresh NATS name linked to that bot - its status names the name's tag and the
-        name's presence names the bot (RT-6.37) - whose own presence says its home runs agent
-        DMs over NATS. A tag that fits two fresh names links none, as in `linked`."""
+        the linked name (`dm_agent`) whose own presence says its home runs agent DMs over NATS."""
+        name = await self._dm_linked(bus, to)
+        if not name:
+            return ""
+        if not bus.dm_of(name):
+            log.info("nats: %s does not state that its home runs agent DMs over NATS: the DM to "
+                     "%s stays on Mattermost", name, to.strip().lstrip("@").lower())
+            return ""
+        return name
+
+    async def _dm_linked(self, bus: BusLike, to: str) -> str:
+        """The one fresh NATS name linked to the bot username `to` (RT-6.37: the bot's status
+        names the name's tag and the name's presence names that bot), '' when there is none or a
+        tag fits two names. A person, an unknown name and a failed read name nobody."""
         name = to.strip().lstrip("@").lower()
         if not name:
             return ""
@@ -1083,13 +1105,7 @@ class NatsPort:
             log.warning("nats: the link tag %s fits %d fresh NATS names: the DM to %s stays on "
                         "Mattermost", tag, len(same), name)
             return ""
-        if not same:
-            return ""
-        if not bus.dm_of(same[0]):
-            log.info("nats: %s does not state that its home runs agent DMs over NATS: the DM to "
-                     "%s stays on Mattermost", same[0], name)
-            return ""
-        return same[0]
+        return same[0] if same else ""
 
     def post_sync(self, message: str, *, channel_id: str, root_id: str = "",
                   props: dict[str, Any] | None = None, timeout: float = 5.0) -> Post:

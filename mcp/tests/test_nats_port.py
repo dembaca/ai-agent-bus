@@ -2444,3 +2444,40 @@ async def test_a_dm_over_nats_clears_the_open_dms_from_that_agent(monkeypatch: p
     out = json.loads(raw) if isinstance(raw, str) else raw
     assert out["over"] == "nats" and out["to"] == NAME_A
     assert unanswered.read(me) == []
+
+
+async def test_get_thread_refuses_a_direct_message_with_the_answer_hint(monkeypatch: pytest.MonkeyPatch) -> None:
+    """RT-6.36 step 7: a NATS DM has no thread, so get_thread refuses it in the same words the
+    reply path uses - the way to it is a DM back - instead of a bare `invalid post id`."""
+    port, _, _ = make()
+    monkeypatch.setattr(server, "_get_client", lambda: port)
+    out = json.loads(await server.get_thread("n1:@dm:21"))
+    assert out["posted"] is False
+    assert "direct message has no thread" in out["refused"]
+    assert "post_message(to=<its sender, as shown_as>)" in out["refused"]
+    assert "nothing read" in out["refused"]
+
+
+async def test_a_dm_back_on_mattermost_settles_the_open_nats_dm(monkeypatch: pytest.MonkeyPatch) -> None:
+    """RT-6.2 step 2: the answer to a NATS DM may itself stay on Mattermost (the recipient takes
+    no DMs over NATS). That record has no channel to match, so it is cleared by the agent the
+    DM goes to - and a status-only DM answers nothing, as in a thread."""
+    from mattermost_ai_agent_bus import unanswered
+
+    _dm_switch(monkeypatch, on=False)  # the recipient's home takes no DMs over NATS
+    port, inner, fake = make()
+    assert fake is not None
+    _linked_bob(inner, fake, flag=False)  # linked, its own flag off: a Mattermost DM
+    monkeypatch.setattr(server, "_get_client", lambda: port)
+    me = inner.me.id
+
+    def open_dm() -> None:
+        unanswered.add(me, Post(id="n1:@dm:21", channel_id="", root_id="", user_id=NAME_A,
+                                create_at=1_700_000_000_000, message="please"),
+                       channel="", author=NAME_A, dm=True)
+
+    open_dm()
+    await server.post_message("`IDLE` · nothing", to="bob-bot")  # a status answers nothing
+    assert [r.author for r in unanswered.read(me)] == [NAME_A]
+    await server.post_message("`PONG` · hello", to="bob-bot")
+    assert unanswered.read(me) == []

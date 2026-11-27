@@ -1794,6 +1794,12 @@ async def _join_by_name(client: ChatPort, name: str) -> str:
     return cid
 
 
+# A NATS direct message has no thread (RT-6.36 step 7): the tools that take a thread say how to
+# answer one instead, and get_thread neither reads nor sends anything.
+_DM_NO_THREAD = ("a direct message has no thread: answer it with post_message(to=<its sender, as "
+                 "shown_as>)")
+
+
 async def _dm_send(client: ChatPort, to: str, message: str, props: dict[str, Any] | None) -> str:
     """The NATS name a direct message went to over NATS (plan B piece 3, RT-6.36 step 7), ''
     when the message stays on Mattermost. Only the port of a NATS home has `dm`, and it
@@ -1801,6 +1807,14 @@ async def _dm_send(client: ChatPort, to: str, message: str, props: dict[str, Any
     NATS, files, an ask); a send it made over NATS that fails raises, as a post does."""
     send = getattr(client, "dm", None)
     return str(await send(to, message, props=props) or "") if send is not None else ""
+
+
+async def _dm_agent(client: ChatPort, to: str) -> str:
+    """The NATS name of the agent a DM to the bot `to` belongs to, '' when none is linked (a
+    person, an unknown name, a plain bot): a Mattermost DM to it settles the open NATS DMs that
+    name left, as a DM over NATS does (RT-6.2 step 2). Only a port with a NATS side names one."""
+    look = getattr(client, "dm_agent", None)
+    return str(await look(to) or "") if look is not None else ""
 
 
 async def post_as_bot(client: ChatPort | None, message: str, channel_id: str = "",
@@ -1881,6 +1895,7 @@ async def post_as_bot(client: ChatPort | None, message: str, channel_id: str = "
             client, uid, props_final, channel_id=channel_id, root_id=root_id,
             call=_changed(debug.call_line("post_message", notes, **given), notes))
     dm_sent = await _dm_send(client, dm_to, body, props_final) if nats_dm else ""
+    dm_agent = ""  # the NATS name a DM that stays on Mattermost answers
     if dm_sent:
         # A direct message over NATS (plan B piece 3): no Mattermost post exists, so the
         # answer names the agent it went to and nothing to read has an id. A DM back to the
@@ -1905,6 +1920,7 @@ async def post_as_bot(client: ChatPort | None, message: str, channel_id: str = "
         props_final = await _with_debug(
             client, uid, props_final, channel_id=channel_id, root_id=root_id,
             call=_changed(debug.call_line("post_message", notes, **given), notes))
+        dm_agent = await _dm_agent(client, dm_to)  # the row a DM back would settle
     stats.record("post", chars=len(message), w=_post_word(message))
     try:
         post = await client.post(
@@ -1921,6 +1937,13 @@ async def post_as_bot(client: ChatPort | None, message: str, channel_id: str = "
         attach.give_back(ups)
         raise
     await _posted(client, post)
+    if dm_agent and unanswered.answers(post):
+        # A DM answered with a Mattermost DM settles the NATS DM it answers (RT-6.2 step 2): that
+        # record has no channel to match, so it is cleared by the agent the DM goes to.
+        try:
+            unanswered.answered_dm(uid, dm_agent)
+        except Exception as exc:  # noqa: BLE001 — bookkeeping never fails a post
+            log.info("the open direct messages were not cleared: %s", type(exc).__name__)
     gate.saw(post)  # RT-6.6 step 5, RT-6.2 step 4: its own post counts in the thread record at once
     await _as_guest(client, uid, guest, post)
     word = a2a.word(message) or ""
@@ -1969,8 +1992,7 @@ async def reply_as_bot(client: ChatPort | None, root_id: str, message: str,
         return _refusal(bad)
     if dm_seq(root_id):
         # A NATS direct message has no thread: its answer is a DM to its sender (RT-6.36 step 7).
-        return _refusal("a direct message has no thread: answer it with post_message(to=<its sender, "
-                        "as shown_as>), nothing sent")
+        return _refusal(_DM_NO_THREAD + ", nothing sent")
     if bad := _bad_id(post=root_id or "-"):
         return _refusal(bad)
     client = client or _get_client()
@@ -2576,6 +2598,8 @@ async def get_thread(post_id: str, raw: bool = False) -> str:
     Slim posts {id, root_id, channel, author, at, message, files, reactions}; an
     ask adds `ask_card`; shown_as: its bot. raw: all.
     """
+    if dm_seq(post_id):
+        return _refused("get_thread", _DM_NO_THREAD + ", nothing read")
     if bad := _bad_id(post=post_id or "-"):
         return _refused("get_thread", bad)
     client = _get_client()
