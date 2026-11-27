@@ -406,6 +406,9 @@ func (s *Service) authorize(ctx context.Context, req *jwt.AuthorizationRequestCl
 	}
 	agent := s.cfg.NamePrefix + name(anchor, host, hello.Session)
 	who = append(who, "owner", id.Owner, "sub", id.Subject, "jti", id.ID, "agent", agent)
+	if err := s.cfg.checkName(agent); err != nil {
+		return "", who, err
+	}
 	if anchor != id.Owner {
 		who = append(who, "anchor", anchor)
 	}
@@ -600,7 +603,7 @@ func name(owner, hostNkey, session string) string {
 		b += "\x00" + session
 	}
 	h := sha256.Sum256([]byte(b))
-	return lowerBase32.EncodeToString(h[:16])
+	return lowerBase32.EncodeToString(h[:16])[:NameHashLen]
 }
 
 // sessionRE is the session part's form (#163): 26 characters of lower-case

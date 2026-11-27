@@ -69,21 +69,22 @@ from mattermost_ai_agent_bus.natsbus import (
 
 # The same vector as services/auth/internal/callout/name_test.go.
 VECTOR_NKEY = "UDXU4RCSJNZOIQHZNWXHXORDPRTGNJAHAHFRGZNEEJCPQTT2M7NLCNF4"
-VECTOR_NAME = "7jdioaymoy77vybfzcvze3fc4u"
+VECTOR_NAME = "7jdioaymoy77vybfzcvze3fc4"  # 25 characters, no prefix (#274)
 
 
 # --- unit: the name -------------------------------------------------------------------------
 
 def test_agent_name_vector() -> None:
     assert agent_name("alice", VECTOR_NKEY, prefix="") == VECTOR_NAME
-    assert agent_name("alice", VECTOR_NKEY) == "agent-" + VECTOR_NAME
+    assert agent_name("alice", VECTOR_NKEY) == VECTOR_NAME  # no prefix by default (#274)
+    assert agent_name("alice", VECTOR_NKEY, prefix="agent-") == "agent-" + VECTOR_NAME
     assert agent_name("alice", VECTOR_NKEY, prefix="x-") == "x-" + VECTOR_NAME
-    assert len(VECTOR_NAME) == 26
+    assert len(VECTOR_NAME) == natsbus.NAME_HASH_LEN == 25  # never a Mattermost id's 26
     assert agent_name("Alice", VECTOR_NKEY) != VECTOR_NAME  # the owner is not normalised, as in Go
     # A session part (#163, RT-6.36): two sessions of one owner on one shared key are two
     # names; the login service's vector is the same.
     assert agent_name("alice", VECTOR_NKEY, prefix="", session="abcdefghijklmnopqrstuvwxyz") \
-        == "eadecaajdhhzsahypvqfemgypy"
+        == "eadecaajdhhzsahypvqfemgyp"
 
 
 class _RecordingWaits:
@@ -302,10 +303,11 @@ def test_a_bus_states_only_a_valid_username() -> None:
 
 
 def test_link_tag_is_the_start_of_the_hash_part() -> None:
-    name = "agent-" + "abcdefghijklmnopqrstuvwxyz"[:26]
+    name = "abcdefghijklmnopqrstuvwxy"  # 25 characters, no prefix (#274)
     assert link_tag(name) == "abcdefghijklmnop" and link_tag(VECTOR_NAME) == VECTOR_NAME[:16]
+    assert link_tag("agent-" + name) == "abcdefghijklmnop"  # a configured prefix
     assert link_tag("agent-short") == "" and link_tag("") == ""
-    assert link_tag("a" * 25) == "" and link_tag("a" * 26) == "a" * 16
+    assert link_tag("a" * 24) == "" and link_tag("a" * 25) == "a" * 16
 
 
 def test_a_bus_links_only_a_valid_bot() -> None:
@@ -2801,3 +2803,56 @@ def test_decode_planb_is_strict() -> None:
         natsbus.decode_planb(b'{"v":1,"channel":"home"}', "home")
     with pytest.raises(natsbus.MessageError):
         natsbus.decode_planb(b'{"v":1,"channel":"home","pieces":"1"}', "home")
+
+
+# --- #274: names without a prefix, and the reserved tokens (RT-6.36 step 8) ----------------------
+
+RESERVED = ("account", "accounts", "ask", "attest", "bot", "bridge", "bus", "ch", "crown", "deliver",
+            "directory", "dm", "hu", "import", "member", "metrics", "notice", "person", "planb",
+            "presence", "req", "stats", "v1", "x")
+
+
+def test_the_reserved_names_are_the_login_services() -> None:
+    """RT-6.36 step 8: natsbus.RESERVED_NAMES and NAME_HASH_LEN are the login service's
+    reservedNames and NameHashLen (services/auth/internal/callout/names.go)."""
+    go = (Path(__file__).resolve().parents[2] / "services/auth/internal/callout/names.go").read_text()
+    block = go.split("var reservedNames = []string{", 1)[1].split("}", 1)[0]
+    assert set(re.findall(r'"([^"]+)"', block)) == natsbus.RESERVED_NAMES == set(RESERVED)
+    assert re.search(r"const NameHashLen = (\d+)", go).group(1) == str(natsbus.NAME_HASH_LEN)  # type: ignore[union-attr]
+
+
+@pytest.mark.parametrize("token", RESERVED)
+def test_a_reserved_token_is_no_agent_name(token: str) -> None:
+    """RT-6.36 step 8: without a prefix a name cannot be told from a subject's other tokens by
+    its start, so none of them is ever an agent's name, in any case."""
+    assert not natsbus.agent_ok(token) and not natsbus.agent_ok(token.upper())
+    bus, _ = _unit_bus()
+    assert not bus.agent_ok(token)
+    with pytest.raises(ValueError):
+        bus._dm_subject(token)
+
+
+def test_the_configured_prefixes_and_special_tokens_are_no_agent_names() -> None:
+    bus, _ = _unit_bus(bus="chat", presence="pres", stats="st", req="rq")
+    for name in ("chat", "pres", "st", "rq", "CHAT"):
+        assert natsbus.agent_ok(name) and not bus.agent_ok(name)
+    for name in ("_INBOX", "_x", "$SYS", "-a", "a.b", "a*", "a>", "a b", "", "a" * 129):
+        assert not natsbus.agent_ok(name) and not bus.agent_ok(name)
+    for name in (VECTOR_NAME, "agent-" + VECTOR_NAME, "bridged", "persons"):
+        assert bus.agent_ok(name)
+
+
+async def test_a_presence_or_claim_under_a_reserved_name_is_dropped() -> None:
+    """RT-6.36 step 8: the session's decoders read no agent under a reserved token."""
+    bus, _ = _unit_bus()
+    for token in ("bridge", "crown", VECTOR_NAME):
+        await _presence(bus, token, 1, T0)
+        await _claim(bus, token, "home", 2, T0)
+    assert bus.presence_of(VECTOR_NAME) == "online"
+    assert bus.presence_of("bridge") == bus.presence_of("crown") == "offline"
+
+
+def test_the_name_has_no_prefix_by_default() -> None:
+    """#274: the bus's own name is the hash alone, as the login service issues it."""
+    bus, _ = _unit_bus()
+    assert len(bus.name) == natsbus.NAME_HASH_LEN and "-" not in bus.name and bus.agent_ok(bus.name)

@@ -353,9 +353,10 @@ func TestCheckToken(t *testing.T) {
 	}
 }
 
-func TestNamesAre128Bits(t *testing.T) {
+// TestNamesAre125Bits: 25 characters of base32 (#274), never 26 (a Mattermost id's length).
+func TestNamesAre125Bits(t *testing.T) {
 	n := name("alice", "UABC", "")
-	if len(n) != 26 || checkToken(n) != nil || n == name("bob", "UABC", "") || n != name("alice", "UABC", "") {
+	if len(n) != NameHashLen || NameHashLen == 26 || checkToken(n) != nil || n == name("bob", "UABC", "") || n != name("alice", "UABC", "") {
 		t.Fatalf("name %q", n)
 	}
 }

@@ -5,6 +5,28 @@ before 0.5.0 are described in the git history.
 
 ## Unreleased
 
+### Breaking
+
+- **NATS names lose the `agent-` prefix** (#274, RT-6.36 step 8). An agent's NATS
+  name is now its hash alone: 25 characters of lower-case base32 (125 bits of the
+  SHA-256 over owner, host key and session part), where it was `agent-` and 26.
+  Never 26, a Mattermost id's length: a session holds Mattermost ids and NATS names
+  side by side and tells them apart by their form, which the dash did before.
+  The login service's `CB_AUTH_NAME_PREFIX` and the MCP server's `name_prefix` are
+  empty by default and must stay alike; a set one starts with a letter or digit.
+  Only the bridge keeps a prefix: its `CB_BRIDGE_MM_BOT_PREFIX` plus the NATS name
+  makes the agent's Mattermost bot, which shows it as before. Since a name can no
+  longer be told from a subject's other tokens by its start, the login service never
+  issues one that is such a token (`ch`, `dm`, `crown`, `member`, `attest`, `bot`,
+  `bridge`, `person`, `req`, `stats` and the rest, the configured prefixes, any case)
+  or that starts with the person prefix, and the session drops a sender, presence,
+  crown claim, membership or attestation under one. Every running agent gets a new
+  NATS name at its next start, like a new bot: what was kept per name (crown claims,
+  presences, attestations, consumers, the read marks of its lanes) starts fresh, and
+  the old name's records run out. The console shows the new names. The release's
+  entry carries this line of its own (doc-check refuses it under Unreleased):
+  `Needs: login service and hosts on the same release.`
+
 ### Fixed
 
 - **Unknown `CB_` name warnings are filtered and capped** (#269, RT-6.34). Only names of

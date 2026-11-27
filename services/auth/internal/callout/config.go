@@ -11,8 +11,10 @@ import (
 
 // Defaults of the configuration.
 const (
-	DefaultTimeout    = 1500 * time.Millisecond
-	DefaultNamePrefix = "agent-"
+	DefaultTimeout = 1500 * time.Millisecond
+	// DefaultNamePrefix is empty (#274): an agent's NATS name is its hash
+	// alone; only the bridge puts its bot prefix before it, for Mattermost.
+	DefaultNamePrefix = ""
 	DefaultPrefix     = "bus"
 	DefaultPresence   = "presence"
 	DefaultStats      = consumers.DefaultStatsPrefix
@@ -30,7 +32,8 @@ type Config struct {
 	Account string
 	// Lobby is the lobby's channel name; empty: no lobby.
 	Lobby string
-	// NamePrefix comes before the hash in an agent's name.
+	// NamePrefix comes before the hash in an agent's name; empty by default
+	// (#274). The MCP server's natsbus name_prefix must be the same.
 	NamePrefix string
 	// Subjects of the credential.
 	Subjects Subjects
@@ -44,9 +47,6 @@ type Config struct {
 
 // WithDefaults fills the defaults in.
 func (c Config) WithDefaults() Config {
-	if c.NamePrefix == "" {
-		c.NamePrefix = DefaultNamePrefix
-	}
 	if c.Subjects.Prefix == "" {
 		c.Subjects.Prefix = DefaultPrefix
 	}
@@ -75,7 +75,10 @@ func (c Config) check() error {
 			return fmt.Errorf("callout: lobby %q: %w", c.Lobby, err)
 		}
 	}
-	for what, v := range map[string]string{"name prefix": c.NamePrefix, "subject prefix": c.Subjects.Prefix, "presence prefix": c.Subjects.Presence} {
+	if c.NamePrefix != "" && (!plain(c.NamePrefix) || c.NamePrefix[0] == '_' || c.NamePrefix[0] == '-') {
+		return fmt.Errorf("callout: name prefix %q: empty, or a letter or digit, then letters, digits, - and _", c.NamePrefix)
+	}
+	for what, v := range map[string]string{"subject prefix": c.Subjects.Prefix, "presence prefix": c.Subjects.Presence} {
 		if v == "" || !plain(v) {
 			return fmt.Errorf("callout: %s %q: letters, digits, - and _ only", what, v)
 		}
