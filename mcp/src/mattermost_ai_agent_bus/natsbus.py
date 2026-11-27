@@ -26,6 +26,7 @@ got the seed from the relay in the sandbox that keeps it (#154).
 from __future__ import annotations
 
 import asyncio
+import contextlib
 import base64
 import dataclasses
 import hashlib
@@ -846,6 +847,33 @@ def decode_account(data: bytes, account: str) -> AccountRecord:
     return AccountRecord(account, anchor, name, obj["approver"], float(_int(obj, "exp")))
 
 
+_CHANNEL_RECORD_KEYS = {"v", "agent", "channels", "iat", "exp"}
+MAX_CHANNEL_RECORD = 17  # the home, 16 guests, the lobby: what the login service grants at most
+
+
+def decode_channel_record(data: bytes, agent: str) -> dict[str, str]:
+    """Strict (RT-6.39 step 6): the login service's v1 record of the channels `agent`'s
+    credential grants, `<presence>.directory.<agent>.v1`; returns channel name -> the chat's
+    own (Mattermost) id, "" for a channel the directory holds no id for."""
+    obj = _obj(data)
+    _exact(obj, _CHANNEL_RECORD_KEYS)
+    if obj["v"] != 1 or obj["agent"] != agent:
+        raise MessageError("channel record of another agent or version")
+    _int(obj, "iat")
+    _int(obj, "exp")
+    chans = obj["channels"]
+    if not isinstance(chans, dict) or len(chans) > MAX_CHANNEL_RECORD:
+        raise MessageError("channels is not a small object")
+    out: dict[str, str] = {}
+    for name, cid in chans.items():
+        if not isinstance(name, str) or not CHANNEL_RE.fullmatch(name):
+            raise MessageError("a channel name that is no token of the bus")
+        if cid != "":
+            cid = _mm_id(cid, "channel id")
+        out[name] = cid
+    return out
+
+
 def decode_bridge_signal(data: bytes, channel: str) -> float:
     """Strict: the bridge's v1 signal for `channel`, `people` true; returns its `exp`."""
     return decode_bridge_signal_full(data, channel)[0]
@@ -1368,6 +1396,10 @@ class NatsBus:
         self._planb: dict[str, tuple[int, float, frozenset[int]]] = {}
         # the map before the presence consumer was made anew: read while the replay runs (#244)
         self._planb_prev: dict[str, tuple[int, float, frozenset[int]]] = {}
+        # RT-6.39 step 6: the channel record of this credential (stream sequence, server time,
+        # channel -> Mattermost id); None until one was read.
+        self._chan_record: tuple[int, float, dict[str, str]] | None = None
+        self._chan_event = asyncio.Event()
         self._last_anchor: dict[str, str] = {}  # account -> the anchor of its last record that decoded
 
     def __repr__(self) -> str:
@@ -2134,6 +2166,19 @@ class NatsBus:
         got = self._bridge_signal.get(channel)
         return got is not None and got[2] > self._server_now
 
+    def channel_ids(self) -> dict[str, str] | None:
+        """The channels the credential grants with the chat's ids, from the login service's
+        record (RT-6.39 step 6): channel name -> Mattermost id ("" for one the directory has no
+        id for); None while no record was read."""
+        return dict(self._chan_record[2]) if self._chan_record is not None else None
+
+    async def wait_channel_ids(self, timeout: float) -> dict[str, str] | None:
+        """channel_ids, waiting up to `timeout` s for the first record; None when none came."""
+        if self._chan_record is None:
+            with contextlib.suppress(asyncio.TimeoutError):
+                await asyncio.wait_for(self._chan_event.wait(), timeout)
+        return self.channel_ids()
+
     def bridge_prefix(self, channel: str) -> str:
         """The bot prefix of the bridge's signal for the channel (RT-6.36 step 4): the bridge
         posts each agent's copies there under `<prefix><agent name>`; "" while no signal
@@ -2497,6 +2542,12 @@ class NatsBus:
                         log.warning("nats bus: a plan B record that does not decode (seq %d): its pieces off",
                                     ack.stream_seq)
                     self._planb[t[2]] = (ack.stream_seq, ack.time, pieces)
+            elif len(t) == 4 and t[0] == p and t[1] == "directory" and t[2] == self.name and t[3] == "v1":
+                # RT-6.39 step 6: this credential's channels with the chat's ids.
+                seq0, at0 = (self._chan_record[0], self._chan_record[1]) if self._chan_record else (0, 0.0)
+                if (ack.time, ack.stream_seq) > (at0, seq0):
+                    self._chan_record = (ack.stream_seq, ack.time, decode_channel_record(msg.data, t[2]))
+                    self._chan_event.set()
             elif len(t) == 4 and t[0] == p and t[1] == "attest" and t[3] == "v1" and AGENT_RE.fullmatch(t[2]):
                 att = decode_attestation(msg.data, t[2])
                 seq0, at0, _old = self._attest.get(t[2], (0, 0.0, att))

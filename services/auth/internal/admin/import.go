@@ -227,7 +227,8 @@ func importAt(ctx context.Context, store *directory.Store, source Source, bindin
 				owner = u.AuthData
 			}
 			c := directory.Channel{Name: ch.Name, Owner: owner, Public: ch.Type == "O", Members: members,
-				Bindings: map[string]string{"mattermost": ch.Name}}
+				Bindings: map[string]string{"mattermost": ch.Name},
+				ChatIDs:  map[string]string{"mattermost": ch.ID}}
 			_, err := store.PutChannel(ctx, c, 0)
 			if err == nil {
 				rep.ChannelsCreated = append(rep.ChannelsCreated, ch.Name)

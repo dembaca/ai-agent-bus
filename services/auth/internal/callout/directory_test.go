@@ -2,7 +2,9 @@ package callout
 
 import (
 	"context"
+	"encoding/json"
 	"errors"
+	"strings"
 	"testing"
 	"time"
 
@@ -216,5 +218,87 @@ func TestTheAccountIndexFollowsOnlyAProvenLogin(t *testing.T) {
 	}
 	if id, ok, _ := dir.ByAccount(ctx5(t), "mattermost", "carol"); !ok || id.Sub != malSub || id.MovedFrom["mattermost"] != carolSub {
 		t.Fatalf("the proven new holder: %+v %v", id, ok)
+	}
+}
+
+// RT-6.39 step 6 (ADR-014 phase 5 piece 1): with the credential the login service
+// writes the agent's channel record, `<presence>.directory.<agent>.v1`: the channels
+// the credential grants, each with the chat's own id from the directory. Only a
+// granted channel is in it; one without an id is named with "" (the session has no
+// id for it). Before the import the directory holds no ids and the record names every
+// granted channel with "". And no agent may publish it.
+func TestTheCredentialWritesTheChannelRecordWithTheChatsIds(t *testing.T) {
+	l := newLab(t)
+	nc, _ := l.admin()
+	js, err := jetstream.New(nc)
+	if err != nil {
+		t.Fatal(err)
+	}
+	dir, err := directory.Open(ctx5(t), js, "", false)
+	if err != nil {
+		t.Fatal(err)
+	}
+	f := &fakeAttester{}
+	l.svc.SetAttester(f)
+	l.svc.SetAnchors(directory.Anchors{Store: dir})
+	l.svc.channels = directory.Channels{Store: dir, Fallback: l.chat}
+
+	record := func() ChannelRecord {
+		t.Helper()
+		f.mu.Lock()
+		defer f.mu.Unlock()
+		for i := len(f.got) - 1; i >= 0; i-- {
+			if strings.Contains(f.got[i].subject, ".directory.") {
+				var r ChannelRecord
+				if err := json.Unmarshal(f.got[i].body, &r); err != nil {
+					t.Fatal(err)
+				}
+				if want := "presence.directory." + r.Agent + ".v1"; f.got[i].subject != want {
+					t.Fatalf("subject %q, want %q", f.got[i].subject, want)
+				}
+				return r
+			}
+		}
+		t.Fatal("no channel record was published")
+		return ChannelRecord{}
+	}
+
+	// Before the import: Mattermost grants, the directory has no ids.
+	if _, err := l.connect("alice", l.realm.Token("alice", nil), Hello{Home: "home"}, nil); err != nil {
+		t.Fatal(err)
+	}
+	if r := record(); r.V != 1 || len(r.Channels) != 1 || r.Channels["home"] != "" || r.Exp-r.IAT != int64(Lifetime/time.Second) {
+		t.Fatalf("before the import: %+v", r)
+	}
+
+	// After it: the directory grants by sub and gives the ids.
+	if _, err := dir.Login(ctx5(t), "sub-alice", "alice", "alice"); err != nil {
+		t.Fatal(err)
+	}
+	for _, c := range []directory.Channel{
+		{Name: "home", Members: []string{"sub-alice"}, ChatIDs: map[string]string{"mattermost": "mmid-home"}},
+		{Name: "guest1", Members: []string{"sub-alice"}},
+		{Name: "secret", Members: []string{"someone-else"}, ChatIDs: map[string]string{"mattermost": "mmid-secret"}},
+	} {
+		if _, err := dir.PutChannel(ctx5(t), c, 0); err != nil {
+			t.Fatal(err)
+		}
+	}
+	if err := dir.MarkImported(ctx5(t), time.Now()); err != nil {
+		t.Fatal(err)
+	}
+	a, err := l.connect("alice", l.realm.Token("alice", nil), Hello{Home: "home", Guests: []string{"guest1", "secret"}}, nil)
+	if err != nil {
+		t.Fatal(err)
+	}
+	r := record()
+	if len(r.Channels) != 2 || r.Channels["home"] != "mmid-home" || r.Channels["guest1"] != "" {
+		t.Fatalf("after the import: %+v", r)
+	}
+	if _, ok := r.Channels["secret"]; ok {
+		t.Fatalf("a channel that was not granted is in the record: %+v", r)
+	}
+	if err := a.nc.Publish("presence.directory."+a.name+".v1", []byte("{}")); err != nil || !a.denied(t) {
+		t.Fatalf("an agent may publish its channel record (%v)", err)
 	}
 }

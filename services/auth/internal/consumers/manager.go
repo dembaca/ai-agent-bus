@@ -297,6 +297,8 @@ func (m *Manager) desired(agent, anchor string, channels []string) []spec {
 			m.cfg.Presence+".bridge."+ch+".v1", // whether the bridge carries the channel's people
 			m.cfg.Presence+".planb."+ch+".v1")  // the plan B pieces switched on there (RT-6.39 step 5)
 	}
+	// the agent's own channel record: the chat's ids of its channels (RT-6.39 step 6)
+	filters = append(filters, m.cfg.Presence+".directory."+agent+".v1")
 	out = append(out,
 		spec{stream: BusStream, name: agent + "_dm", dm: true, deliver: DeliverPrefix + "." + agent + ".dm",
 			filters: []string{m.cfg.Bus + ".dm." + agent + ".*"}},

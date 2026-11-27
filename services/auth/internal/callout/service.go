@@ -467,6 +467,10 @@ func (s *Service) authorize(ctx context.Context, req *jwt.AuthorizationRequestCl
 		if err != nil {
 			return "", who, fmt.Errorf("attestation: %w", err)
 		}
+		// The channels granted, with the chat's ids (RT-6.39 step 6).
+		if err := s.channelRecord(ctx, at, agent, channels, now.Unix(), uc.Expires); err != nil {
+			return "", who, fmt.Errorf("%w: channel record: %v", token.ErrDirectory, err)
+		}
 		// The trust index an operator's credential reads (RT-6.43 step 3).
 		if ix := s.trustIndexHook(); ix != nil {
 			if err := s.indexTrust(ctx, ix, att, channels); err != nil {

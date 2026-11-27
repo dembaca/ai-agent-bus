@@ -302,7 +302,8 @@ type putBody struct {
 	Bindings map[string]string `json:"bindings"`
 	// PlanB are the plan B pieces switched on (RT-6.39 step 5): absent or
 	// null keeps them on an update, [] switches every piece off.
-	PlanB []int `json:"planb"`
+	PlanB   []int             `json:"planb"`
+	ChatIDs map[string]string `json:"chat_ids"`
 }
 
 func (h *handler) putChannel(w http.ResponseWriter, r *http.Request, id token.Identity) {
@@ -323,7 +324,7 @@ func (h *handler) putChannel(w http.ResponseWriter, r *http.Request, id token.Id
 		fail(w, http.StatusBadRequest, "planb: plan B pieces are 1 to 13, each once")
 		return
 	}
-	c := directory.Channel{Name: name, Owner: b.Owner, Public: b.Public, Bindings: b.Bindings, PlanB: pieces}
+	c := directory.Channel{Name: name, Owner: b.Owner, Public: b.Public, Bindings: b.Bindings, ChatIDs: b.ChatIDs, PlanB: pieces}
 	var rev uint64
 	if !create {
 		want, ok := parseRev(ifMatch)
@@ -358,7 +359,7 @@ func (h *handler) putChannel(w http.ResponseWriter, r *http.Request, id token.Id
 	if create {
 		event, code = "channel created", http.StatusCreated
 	}
-	h.logWrite(id, event, name, map[string]any{"owner": c.Owner, "public": c.Public, "bindings": c.Bindings, "planb": c.PlanB})
+	h.logWrite(id, event, name, map[string]any{"owner": c.Owner, "public": c.Public, "bindings": c.Bindings, "chat_ids": c.ChatIDs, "planb": c.PlanB})
 	w.Header().Set("ETag", etag(n))
 	reply(w, code, c)
 }

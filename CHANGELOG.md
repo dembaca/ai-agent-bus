@@ -150,7 +150,7 @@ before 0.5.0 are described in the git history.
   MCP server answers `planb.on(piece, channel)` from it (false without a
   record, outside a home over NATS or for a piece outside 1 to 13;
   `CB_PLANB_TEST` switches pieces on, only while pytest runs a test), the
-  bridge `presence.Switches`. No piece reads a switch yet. A record two
+  bridge `presence.Switches`. Pieces 13 and 1 (below) read theirs. A record two
   hours old by the stream's time counts as off, in the MCP server and in the
   bridge; the login service writes the records after the answer, and a
   failed write goes on with the next channel. The bridge makes its own
@@ -179,6 +179,22 @@ before 0.5.0 are described in the git history.
   server, and `mm-agent-unread.sh baseline` is a no-op without a token;
   `mm-agent-channels.sh` stays with the host's hooks. With the piece off,
   nothing changes.
+- **Plan B piece 1: channel ids and membership from the channel directory,
+  behind a switch that is off** (ADR-014 phase 5, RT-6.39 step 6). A channel
+  of the directory carries the chat's own id (`chat_ids`: the import writes
+  it for the channels it makes, `PUT /v1/directory/channels/<name>` and
+  `authd dir` take it). With each credential the login service publishes the
+  agent's channel record `<presence>.directory.<agent>.v1`: the channels the
+  credential grants and the Mattermost id the directory holds for each; the
+  agent's presence consumer filters on it. The session reads it
+  (`natsbus.decode_channel_record`), and with the new switch `planb.on(1,
+  channel)` on, `NatsPort.resolve` and the people's id map take the ids from
+  it, `bin/mm-agent-channels.sh` reads and joins nothing in Mattermost, and
+  the start makes no Mattermost call for channels. The switch is the
+  channel's plan B piece 1 (the switches entry above), off by default, so behaviour
+  is as before. Hosts' credential: the record is new; an older
+  login service writes none, so the switch must stay off until it runs this
+  version.
 - **The last post on the operator console's agent cards** (#201, RT-6.37
   step 6). A NATS home's presence states `last_post`: when the agent last
   posted in its home, as epoch seconds (the time the MCP server already

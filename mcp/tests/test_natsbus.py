@@ -1115,7 +1115,7 @@ HOUR_NS = 3_600_000_000_000
 def _consumer_specs(agent: str, channels: list[str], since: dict[str, int]) -> list[tuple[str, str, dict[str, Any]]]:
     """Consumers exactly like consumers/manager.go desired() and config(): (stream, name, config)."""
     out: list[tuple[str, str, dict[str, Any]]] = []
-    filters = ["presence.*.*"]  # every agent's presence: <owner>.<name> (RT-6.37)
+    filters = ["presence.*.*", f"presence.directory.{agent}.v1"]  # every agent's presence (RT-6.37); its channel record (RT-6.39)
 
     def cfg(name: str, deliver: str, flt: list[str], policy: str = "new") -> dict[str, Any]:
         c: dict[str, Any] = {"durable_name": name, "deliver_subject": deliver, "ack_policy": "none",

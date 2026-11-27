@@ -605,6 +605,7 @@ type channel struct {
 	Members  []string          `json:"members"`
 	Bindings map[string]string `json:"bindings"`
 	PlanB    []int             `json:"planb"`
+	ChatIDs  map[string]string `json:"chat_ids"`
 }
 
 type putBody struct {
@@ -613,7 +614,8 @@ type putBody struct {
 	Bindings map[string]string `json:"bindings"`
 	// PlanB: nil leaves the key out, so the service keeps the pieces; a
 	// pointer to an empty list switches every piece off (RT-6.39 step 5).
-	PlanB *[]int `json:"planb,omitempty"`
+	PlanB   *[]int            `json:"planb,omitempty"`
+	ChatIDs map[string]string `json:"chat_ids,omitempty"`
 }
 
 // planBArg reads `planb`'s list: "-" for none, else pieces 1 to 13,
@@ -718,7 +720,7 @@ func (c *cli) command(pos []string) error {
 		if err != nil {
 			return err
 		}
-		b := putBody{Owner: ch.Owner, Public: ch.Public, Bindings: ch.Bindings}
+		b := putBody{Owner: ch.Owner, Public: ch.Public, Bindings: ch.Bindings, ChatIDs: ch.ChatIDs}
 		if pos[0] == "owner" {
 			b.Owner = pos[2]
 			if pos[2] == "-" {
