@@ -361,8 +361,10 @@ func (c *Client) ChannelPage(ctx context.Context, channelID string, page, perPag
 }
 
 // PostsFrom reads a channel's posts created at or after since, oldest first,
-// at most limit of them; more says posts at or after since remain past those
-// (the bound is inclusive: drop one already had by id). It pages with
+// at most limit of them; more says posts at or after since remain past those.
+// A run of posts with one create_at is carried whole, over the limit, so the
+// caller's cursor (the last post's create_at plus one, exclusive) never splits
+// a run and walks it twice. It pages with
 // page/per_page from the newest post back, never with `since` alone: that
 // answer is cut at a thousand posts in no set order (sqlstore getPostsSince:
 // no paging, LIMIT 1000), so a busy channel lost its newest. The walk ends at

@@ -2813,6 +2813,38 @@ def test_each_request_kind_gets_its_own_default_timeout() -> None:
     assert requests.HISTORY_SEC > 30  # above the bridge's own read deadline
 
 
+async def test_request_itself_takes_the_kinds_default_timeout(
+        rig: Rig, monkeypatch: pytest.MonkeyPatch) -> None:
+    """#270's delta check: not only `default_timeout` knows the kind's wait - the call
+    itself asks for it when the caller names none, and a caller's timeout wins."""
+    from mattermost_ai_agent_bus import requests
+
+    seen: list[str] = []
+    real = requests.default_timeout
+
+    def spy(kind: str) -> float:
+        seen.append(kind)
+        return real(kind)
+
+    monkeypatch.setattr(requests, "default_timeout", spy)
+    bus, _ = await rig.agent("alice")
+
+    async def bridge(msg: Any) -> None:
+        body = json.loads(msg.data)
+        await rig.admin.publish(
+            f"deliver.{bus.name}.req.{body['request']}",
+            json.dumps({"v": 1, "request": body["request"], "kind": body["kind"],
+                        "result": {}}).encode())
+
+    sub = await rig.admin.subscribe("req.>", cb=bridge)
+    try:
+        await requests.request(bus, "history")
+        await requests.request(bus, "file", timeout=5)
+    finally:
+        await sub.unsubscribe()
+    assert seen == ["history"]
+
+
 async def test_a_multi_part_answer_is_collected_until_its_last_part(rig: Rig) -> None:
     """ADR-014 phase 5: an answer may come in parts (a file download, a long history
     read). The call reads until a part says last and returns them in part order; a

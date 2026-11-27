@@ -69,7 +69,8 @@ def _decode_answer(body: bytes | bytearray, request: str, kind: str) -> dict[str
 
 async def request(bus: NatsBus, kind: str, payload: Mapping[str, Any] | None = None, *,
                   timeout: float | None = None, prefix: str | None = None) -> dict[str, Any]:
-    """Ask the bridge for one ``kind`` and collect its answer (``REQUEST_SEC``).
+    """Ask the bridge for one ``kind`` and collect its answer (``default_timeout``:
+    ``HISTORY_SEC`` for a history read, ``REQUEST_SEC`` for the other kinds).
 
     An answer may come in parts: each carries ``part`` (1, 2, ...) and ``last``, and
     the call reads until a part says ``last`` - one request, one deadline. One part
