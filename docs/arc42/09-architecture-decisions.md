@@ -4442,6 +4442,14 @@ reads yet (RT-6.39 step 5).
         to the stats channel again, which still holds the old ones; the
         shell clients read Mattermost with the registrar's bot again;
         nothing in flight.
+      - Build (2026-11-27): the writing is moved (parts and last part on
+        NATS alone, no token; a part whose publish fails goes out with the next one, `PART_SEC` later, at most 30 kept; the last part is posted to the chat as today unless its publish answered "published", until piece 14), the shell report asks the server through
+        `GET /v1/stats-lines`. Reading STATS on NATS is not built: an
+        agent's credential holds no consumer on `STATS`, and giving it one
+        lets every agent read every agent's lines (RISK-22), so the report
+        still reads the stats channel; the owner decides on the right.
+        `mm-agent-channels.sh` was not moved: it runs in the host's hooks
+        before a server exists.
       - Test: `stats_report` from NATS alone; the shell clients against
         the MCP server with no Mattermost read. Lab: a day's STATS read
         back, and the shell clients in the test home.

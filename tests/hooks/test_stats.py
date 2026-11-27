@@ -362,3 +362,22 @@ def test_a_usage_line_counts_in_the_split_not_in_the_bus_share(mm, run):
     row = got[0]
     assert (row["split"]["lines"], row["split"]["of"], row["split"]["harnesses"]) == (1, 2, ["pi"])
     assert (row["tok"]["sessions"], row["tok"]["req"], row["tok"]["bus_share_pct"]) == (1, 10, 10.0)
+
+
+def test_over_nats_the_report_asks_the_server_not_mattermost(mm, run):
+    """RT-6.43 step 7 (plan B piece 13): with the piece on and no token in the shell,
+    mm-agent-stats.sh gets the lines from the session's MCP server (/v1/stats-lines)."""
+    mm.posts[:0] = [{"id": "s1", "user_id": "x" * 26, "create_at": 1, "message":
+                     "STATS " + json.dumps({"v": "0.21.0", "min": 60, "turns": 4, "static": 100})}]
+    on = {"CB_PLANB_TEST": "13", "PYTEST_CURRENT_TEST": "x"}
+    r = run(REPORT, "report", "--json", with_api=True, **on)
+    assert r.code == 0, r.stderr
+    assert [row["version"] for row in json.loads(r.stdout)] == ["0.21.0"]
+
+
+def test_with_the_piece_off_the_report_needs_its_token(mm, run):
+    """RT-6.43 step 7: piece 13 off, the server serves no /v1/stats-lines and the shell,
+    without a token, reads nothing as before."""
+    r = run(REPORT, "report", "--json", with_api=True)
+    assert r.code != 0
+

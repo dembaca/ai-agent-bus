@@ -44,6 +44,24 @@ before 0.5.0 are described in the git history.
   `$JS.API.CONSUMER.CREATE.PRESENCE.bridge_planb.presence.planb.*.v1`, both
   in `services/auth/nats-server.example.conf`; without them every piece
   stays off.
+- **Plan B piece 13: STATS and the shell clients over NATS** (#244, ADR-014
+  phase 5, RT-6.43 step 7). In a channel with piece 13 on (off by default;
+  `CB_PLANB_TEST=13` in tests), the home's STATS go on NATS alone: the
+  heartbeat's part and the last part are published on `<stats>.<name>`, no
+  chat line is posted (a part whose publish fails goes out with the next
+  part, `PART_SEC` later, at most 30 kept; the last part is posted to the
+  chat as today unless its publish answered "published", since the server
+  still holds a token until piece 14), and neither a Mattermost token nor the stats channel
+  is needed for it (`stats.over_nats`). The report still reads the stats
+  channel, which holds the older lines: `stats_report` with no token says
+  that an agent cannot read STATS on NATS yet (an agent's credential holds
+  no consumer on `STATS`, which is the owner's decision, see ADR-014 piece
+  13), and the MCP server's hook API serves `GET /v1/stats-lines` (404
+  while the piece is off) so that `bin/mm-agent-stats.sh report` works
+  without a token in the shell. `mm-agent-status.sh` already asked the
+  server, and `mm-agent-unread.sh baseline` is a no-op without a token;
+  `mm-agent-channels.sh` stays with the host's hooks. With the piece off,
+  nothing changes.
 - **The last post on the operator console's agent cards** (#201, RT-6.37
   step 6). A NATS home's presence states `last_post`: when the agent last
   posted in its home, as epoch seconds (the time the MCP server already

@@ -38,41 +38,51 @@
 # the terminal was idle, the time until the human was back there: a proxy for
 # reaction time) and a Roles table per part (coordinator: the crown more than
 # half of it). Missing data shows "-".
-# Read-only; needs a bot token and reads at most the last 2000 posts.
+# Read-only; needs a bot token (or, in a home over NATS with plan B's piece 13 on, this
+# session's MCP server, RT-6.43 step 7) and reads at most the last 2000 posts.
 set -euo pipefail
 
 LIB="$(cd "$(dirname "$0")" && pwd)/mm-agent-lib.sh"
 # shellcheck source=mm-agent-lib.sh
 source "$LIB"
 
-CMD="${1:-}" CHANNEL="" JSON=0
+CMD="${1:-}" CHANNEL="" JSON=0 CHANNEL_GIVEN=0
 [[ "$CMD" == report ]] || { sed -n '2,32p' "$0"; exit 2; }
 shift
 for a in "$@"; do
   case "$a" in
     --json) JSON=1 ;;
-    *) CHANNEL="$a" ;;
+    *) CHANNEL="$a" CHANNEL_GIVEN=1 ;;
   esac
 done
 CHANNEL="${CHANNEL:-${CB_MM_STATS_CHANNEL:-agents-stats}}"
 CHANNEL="${CHANNEL#\~}"
 [[ "$CHANNEL" =~ ^(off|none|0|false)$ ]] && { echo "stats are off (CB_MM_STATS_CHANNEL=$CHANNEL); pass a channel" >&2; exit 2; }
 
-CID="$(mm_work_channel_id "$CHANNEL")" || exit 1
-# A non-member cannot read a channel; joining a public one is harmless.
-if [[ -n "${CB_MM_BOT_USER_ID:-}" ]]; then
-  mm_api POST "/api/v4/channels/${CID}/members" "{\"user_id\":\"${CB_MM_BOT_USER_ID}\"}" >/dev/null || true
-fi
-
 lines="[]"
-for page in 0 1 2 3 4 5 6 7 8 9; do
-  mm_api GET "/api/v4/channels/${CID}/posts?per_page=200&page=${page}" || break
-  [[ "$CB_MM_API_STATUS" == "200" ]] || { echo "could not read ~${CHANNEL}: HTTP ${CB_MM_API_STATUS}" >&2; exit 1; }
-  got="$(jq -c '[.posts // {} | .[] | .message | select(startswith("STATS "))
-                 | ltrimstr("STATS ") | (try fromjson catch empty) | select(type == "object")]' <<<"$CB_MM_API_BODY")"
-  lines="$(jq -c --argjson a "$lines" --argjson b "$got" -n '$a + $b')"
-  [[ "$(jq '.order | length' <<<"$CB_MM_API_BODY")" -eq 200 ]] || break
-done
+# Over NATS (plan B piece 13, RT-6.43 step 7) the shell holds no token: with none, ask this
+# session's MCP server, which reads the channel named by CB_MM_STATS_CHANNEL (a channel
+# argument does not apply). Without a server, or with the piece off, the old path below.
+if [[ -z "${CB_MM_BOT_TOKEN:-}" && "${CHANNEL_GIVEN:-0}" == 0 ]] && mm_bus GET /v1/stats-lines; then
+  lines="$(jq -c '.lines // []' <<<"$CB_BUS_BODY")"
+else
+  CID="$(mm_work_channel_id "$CHANNEL")" || exit 1
+  # A non-member cannot read a channel; joining a public one is harmless.
+  if [[ -n "${CB_MM_BOT_USER_ID:-}" ]]; then
+    mm_api POST "/api/v4/channels/${CID}/members" "{\"user_id\":\"${CB_MM_BOT_USER_ID}\"}" >/dev/null || true
+  fi
+
+  lines="[]"
+  for page in 0 1 2 3 4 5 6 7 8 9; do
+    mm_api GET "/api/v4/channels/${CID}/posts?per_page=200&page=${page}" || break
+    [[ "$CB_MM_API_STATUS" == "200" ]] || { echo "could not read ~${CHANNEL}: HTTP ${CB_MM_API_STATUS}" >&2; exit 1; }
+    got="$(jq -c '[.posts // {} | .[] | .message | select(startswith("STATS "))
+                   | ltrimstr("STATS ") | (try fromjson catch empty) | select(type == "object")]' <<<"$CB_MM_API_BODY")"
+    lines="$(jq -c --argjson a "$lines" --argjson b "$got" -n '$a + $b')"
+    [[ "$(jq '.order | length' <<<"$CB_MM_API_BODY")" -eq 200 ]] || break
+  done
+
+fi
 
 report="$(jq -c '
   def sum(f): map(f) | add // 0;
