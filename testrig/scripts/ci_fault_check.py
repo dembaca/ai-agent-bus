@@ -23,8 +23,10 @@ def main() -> int:
     measured = report["measured"]
     assert report["target"] == "echo", f"the harness reported a different target: {report['target']}"
     assert measured["loss"]["value"] > 0, f"a dropping run reported no loss: {measured['loss']}"
-    assert measured["takeover_p95"]["status"] == "not_yet_measurable", measured["takeover_p95"]
+    # Measured by `coord-run` only: an echo run names that instead of a zero.
     assert measured["takeover_p95"]["value"] is None, measured["takeover_p95"]
+    assert "coord-run" in measured["takeover_p95"]["why"], measured["takeover_p95"]
+    assert measured["device_approvals"]["status"] == "not_yet_measurable", measured["device_approvals"]
 
     # A cut ends the connection and must not crash the run nor count as a loss.
     out = subprocess.run(

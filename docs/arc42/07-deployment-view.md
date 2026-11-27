@@ -278,6 +278,8 @@ env -u CLAUDE_CODE_SESSION_ID -u CLAUDE_CODE_OAUTH_TOKEN -u CLAUDE_CODE_MESSAGIN
 
 The MCP server guards its own side: a client that does not name itself `claude-code` in the handshake gets no channel mode, even with `CB_CHANNEL_PUSH=1` (RT-6.12), and its server drops an inherited `CLAUDE_CODE_SESSION_ID` and `CLAUDE_PROJECT_DIR`, keys its files on the workspace and takes over no bot of that Claude session (RT-6.10, RT-6.17).
 
+**The fault-run rig** (`testrig/`, ADR-014 phases 1 and 4) is no part of a deployment: it starts the bus's own MCP servers on one machine, against a Mattermost stand-in and, for a home over NATS, a local nats-server 2.15.3 with static users in place of the login service (`testrig/README.md`). It needs no Lab and no sandbox exception. CI runs it in `.github/workflows/testrig.yml`: the `harness` job on every PR that touches `testrig/` or `mcp/` (small runs, among them every NATS fault and one coordinator hard stop), the `full-nats` job nightly and by hand (100 messages per fault, 50 hard stops).
+
 ---
 
 ## 7.3 Trust Assumptions

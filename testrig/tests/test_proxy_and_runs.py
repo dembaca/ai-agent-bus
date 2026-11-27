@@ -16,8 +16,8 @@ import sys
 import pytest
 import websockets
 
-from bus_testrig import measurands, proc
-from bus_testrig.proxy import ConnState, FaultRelay, FrameProxy, ProxyFault
+from bus_testrig import cli, measurands, proc
+from bus_testrig.proxy import ByteProxy, ConnState, FaultRelay, FrameProxy, ProxyFault
 from bus_testrig.runner import Run, _pct, echo_run
 
 
@@ -402,12 +402,14 @@ async def test_echo_run_needs_no_lab_and_reports_every_measurand():
     assert report["measured"]["loss"]["value"] == 0
     assert report["measured"]["duplicates"]["value"] == 0
     assert report["measured"]["latency_p50"]["value"] is not None
-    # Not measurable here, and said so rather than guessed as zero:
+    # Not measured by this run, and said so rather than guessed as zero: only
+    # `coord-run` stages a hard stop.
     assert report["measured"]["takeover_p95"] == {
         "name": "Coordinator take-over, 95th percentile", "value": None, "unit": "s",
-        "status": measurands.NOT_YET,
-        "why": "The harness drives one bus and its own posts; a coordinator take-over "
-               "needs two roles and a hard stop of one, which no run here does."}
+        "status": measurands.MEASURED,
+        "why": "Measured by coord-run only (hard stops of the crown holder); a delivery "
+               "run stages no hard stop."}
+    assert report["measured"]["device_approvals"]["status"] == measurands.NOT_YET
 
 
 async def test_a_stall_is_not_a_loss():
@@ -474,3 +476,108 @@ def test_no_namespace_cut_is_claimed():
     status = proc.network_cut_supported()
     assert "--fault cut" in status
     assert "not implemented" in status
+
+
+async def test_a_failed_connect_hook_aborts_the_connection_and_fails_the_proxy():
+    """A CONNECT whose hook (the login service's reconcile) raises never reaches
+    the server: the proxy aborts it, refuses every later one and says so, so a
+    run cannot measure a session without its consumers."""
+    seen: list[bytes] = []
+
+    async def upstream(reader: asyncio.StreamReader, writer: asyncio.StreamWriter) -> None:
+        try:
+            while True:
+                seen.append(await reader.readuntil(b"\r\n"))
+        except (asyncio.IncompleteReadError, ConnectionError):
+            pass
+        finally:
+            writer.close()
+
+    server = await asyncio.start_server(upstream, "127.0.0.1", 0)
+    port = server.sockets[0].getsockname()[1]
+
+    async def hook(_line: bytes) -> None:
+        raise RuntimeError("consumers: boom")
+
+    try:
+        async with ByteProxy("127.0.0.1", port, on_connect=hook) as proxy:
+            reader, writer = await asyncio.open_connection("127.0.0.1", proxy.port)
+            writer.write(b'CONNECT {"nkey":"x"}\r\nPING\r\n')
+            await writer.drain()
+            try:
+                data = await asyncio.wait_for(reader.read(), 2)
+            except ConnectionResetError:
+                data = b""
+            assert data == b""  # aborted, no CONNECT
+            writer.close()
+            # A second connection is refused before the server, with no hook run.
+            reader2, writer2 = await asyncio.open_connection("127.0.0.1", proxy.port)
+            writer2.write(b'CONNECT {"nkey":"y"}\r\n')
+            await writer2.drain()
+            try:
+                data2 = await asyncio.wait_for(reader2.read(), 2)
+            except ConnectionResetError:
+                data2 = b""
+            assert data2 == b""
+            writer2.close()
+    finally:
+        server.close()
+    assert not seen, "a CONNECT reached the server without its consumers"
+    assert proxy.hook_errors == 1
+    assert proxy.failed.startswith("consumer reconcile failed")
+    assert proxy.counters()["failed"] == 1
+
+
+# --- the run's trust and its report (review M1/M2) ------------------------------------
+
+
+def test_a_failed_reconcile_or_a_lost_sender_is_untrustworthy():
+    """A run whose CONNECT hook failed, and a restart/hang/kill-client run with no
+    post sent after the window, measured a broken rig, not the fault."""
+    failed = Run(name="bus-run", target="bus-nats", fault="none")
+    failed.sent_frames = 5
+    failed.relay = {"failed": 1}
+    assert cli._untrustworthy(failed) is True
+    for fault in ("restart", "hang", "kill-client", "cut", "blackhole"):
+        lost = Run(name="bus-run", target="bus-nats", fault=fault)
+        # One arrival before the window, so the silence checks cannot be what
+        # refuses it: only the missing recovery can (review M1).
+        lost.sent = [lost.send(0), lost.send(1)]
+        lost.sent_frames = 5
+        lost.arrive(0)
+        lost.recovered = False
+        assert cli._untrustworthy(lost) is True, fault
+    baseline = Run(name="bus-run", target="bus-nats", fault="none")
+    baseline.sent = [baseline.send(0), baseline.send(1)]
+    baseline.sent_frames = 2
+    baseline.arrive(0)
+    baseline.arrive(1)
+    assert cli._untrustworthy(baseline) is False
+    # A trusted recovered restart run: the fault lost one of two, a send landed
+    # after its window.
+    restart = Run(name="bus-run", target="bus-nats", fault="restart")
+    restart.sent = [restart.send(0), restart.send(1)]
+    restart.sent_frames = 2
+    restart.arrive(0)
+    restart.recovered = True
+    restart.relay = {"server_restarts": 1, "connections": 2, "bytes_up": 1, "bytes_down": 1,
+                     "discarded": 0, "aborted": 0, "refused": 0, "hook_errors": 0, "failed": 0}
+    assert cli._untrustworthy(restart) is False
+
+
+def test_the_report_names_the_lost_sequences_and_the_consumer():
+    """The report carries what a lost sequence is read beside: the numbers, the
+    failed sends that arrived anyway, and the receiver's consumer at kill/resume."""
+    run = Run(name="bus-run", target="bus-nats", fault="kill-client")
+    for seq in (0, 1, 2):
+        run.send(seq)
+    run.arrive(0)
+    run.arrive(2)
+    run.arrive(3)  # a failed send that arrived: no Sent row
+    run.consumer_at_kill = {"delivered_stream_seq": 3, "num_pending": 0}
+    run.consumer_at_resume = {"delivered_stream_seq": 9, "num_pending": 0}
+    report = run.report()
+    assert report["lost_seqs"] == [1]
+    assert report["failed_but_arrived"] == 1
+    assert report["consumer_at_kill"] == {"delivered_stream_seq": 3, "num_pending": 0}
+    assert report["consumer_at_resume"] == {"delivered_stream_seq": 9, "num_pending": 0}

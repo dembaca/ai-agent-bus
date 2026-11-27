@@ -19,14 +19,22 @@ on:
     paths: ["testrig/**", "mcp/**", ".github/workflows/testrig.yml"]
   pull_request:
     paths: ["testrig/**", "mcp/**", ".github/workflows/testrig.yml"]
+  # The full runs of ADR-014 phase 4 (100 messages per fault, 50 hard stops) take
+  # hours: by hand and nightly, never on a PR.
+  workflow_dispatch:
+  schedule:
+    - cron: "17 2 * * *"
 
 permissions:
   contents: read
 
 jobs:
   harness:
+    # A PR or push runs the small harness; the schedule and a manual dispatch run
+    # the full job below instead.
+    if: github.event_name == 'push' || github.event_name == 'pull_request'
     runs-on: ubuntu-latest
-    timeout-minutes: 10
+    timeout-minutes: 20
     defaults:
       run:
         working-directory: testrig
@@ -40,6 +48,25 @@ jobs:
 
       - name: ruff
         run: uvx --from ruff@0.17.2 ruff check
+
+      - name: nats-server (the NATS transport runs against the real server)
+        # As checks.yml fetches it: the official release, checked against a fixed
+        # sha256 (the release's SHA256SUMS for nats-server-v2.15.3-linux-amd64.tar.gz).
+        # Keep the version in step with services/auth/go.mod (ADR-014 point 16).
+        run: |
+          set -euo pipefail
+          v=2.15.3
+          sha=32e18c1e78d7ef4f86e483070eef3abb2647c3d4d67e29668077c7ad81da0797
+          dir="$RUNNER_TEMP/nats-server"
+          mkdir -p "$dir"
+          curl -fsSL -o "$dir/nats.tar.gz" \
+            "https://github.com/nats-io/nats-server/releases/download/v${v}/nats-server-v${v}-linux-amd64.tar.gz"
+          echo "$sha  $dir/nats.tar.gz" | sha256sum -c -
+          tar -xzf "$dir/nats.tar.gz" -C "$dir" --strip-components=1 "nats-server-v${v}-linux-amd64/nats-server"
+          "$dir/nats-server" --version
+          echo "CB_NATS_SERVER=$dir/nats-server" >> "$GITHUB_ENV"
+          # The old name too, as mcp/tests/test_natsbus.py still reads it (#169).
+          echo "MM_NATS_SERVER=$dir/nats-server" >> "$GITHUB_ENV"
 
       # Before the tests (review point 1): `skip_no_bus` skips every bus test
       # when no interpreter imports the bus, and with the sync after the test
@@ -73,6 +100,16 @@ jobs:
           uv run --locked bus-testrig bus-run --count 20 --fault drop --after 1 --every 3 --expect-loss
         working-directory: testrig
 
+      # The same path for a home over NATS (ADR-014 phase 1): a small run of the
+      # baseline and every NATS fault, and one coordinator hard stop. Small on
+      # purpose: the plan's 100 messages and 50 stops are the nightly job's below.
+      # The take-over waits for the dead holder's presence to go stale (about
+      # 90-150 s), which is the finding, so this step takes a few minutes.
+      - name: run the bus over NATS through the rig
+        run: |
+          uv run --locked bus-testrig bus-run --transport nats --fault all --count 10 --summary
+          uv run --locked bus-testrig coord-run --transport nats --stops 1 --sessions 2 --summary
+
       # The probes drive the *real* bus code over the stub. A test of the stub's
       # own shape cannot see a difference between what it invents and what the
       # bus parses (review of #60: a top-level `custom_status` object against
@@ -88,3 +125,45 @@ jobs:
 
       - name: a fault really changes the numbers
         run: uv run --locked python scripts/ci_fault_check.py
+
+  # ADR-014 phase 4: 100 messages per fault and 50 hard stops of the coordinator,
+  # over NATS. Each stop waits for the dead holder's presence to go stale (about
+  # 90-150 s each), so the job is long; it runs nightly and on demand only.
+  full-nats:
+    if: github.event_name == 'schedule' || github.event_name == 'workflow_dispatch'
+    runs-on: ubuntu-latest
+    timeout-minutes: 240
+    defaults:
+      run:
+        working-directory: testrig
+    steps:
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262  # v4
+        with:
+          persist-credentials: false
+      - uses: astral-sh/setup-uv@d0cc045d04ccac9d8b7881df0226f9e82c39688e  # v6
+        with:
+          enable-cache: true
+      - name: nats-server (the NATS transport runs against the real server)
+        # As checks.yml fetches it: the official release, checked against a fixed
+        # sha256 (the release's SHA256SUMS for nats-server-v2.15.3-linux-amd64.tar.gz).
+        # Keep the version in step with services/auth/go.mod (ADR-014 point 16).
+        run: |
+          set -euo pipefail
+          v=2.15.3
+          sha=32e18c1e78d7ef4f86e483070eef3abb2647c3d4d67e29668077c7ad81da0797
+          dir="$RUNNER_TEMP/nats-server"
+          mkdir -p "$dir"
+          curl -fsSL -o "$dir/nats.tar.gz" \
+            "https://github.com/nats-io/nats-server/releases/download/v${v}/nats-server-v${v}-linux-amd64.tar.gz"
+          echo "$sha  $dir/nats.tar.gz" | sha256sum -c -
+          tar -xzf "$dir/nats.tar.gz" -C "$dir" --strip-components=1 "nats-server-v${v}-linux-amd64/nats-server"
+          "$dir/nats-server" --version
+          echo "CB_NATS_SERVER=$dir/nats-server" >> "$GITHUB_ENV"
+          # The old name too, as mcp/tests/test_natsbus.py still reads it (#169).
+          echo "MM_NATS_SERVER=$dir/nats-server" >> "$GITHUB_ENV"
+      - name: sync the bus
+        run: uv sync --locked --directory ../mcp
+      - name: delivery, 100 messages per fault
+        run: uv run --locked bus-testrig bus-run --transport nats --fault all --count 100 --summary
+      - name: 50 hard stops of the coordinator
+        run: uv run --locked bus-testrig coord-run --transport nats --stops 50 --sessions 3 --summary

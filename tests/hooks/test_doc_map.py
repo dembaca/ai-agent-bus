@@ -277,3 +277,14 @@ def test_the_version_rule_answers_for_the_plugin_json():
     rule = rules()["version bump"]
     assert hits(rule, ".claude-plugin/plugin.json") == [".claude-plugin/plugin.json"]
     assert rule["docs"] == ["CHANGELOG.md"]
+
+
+def test_the_testrig_rule_points_at_adr_014():
+    """The fault-run rig measures ADR-014's phase 1 and 4 rows: a change to it asks for
+    the decision record, its own tests and README do not."""
+    rule = rules()["fault-run rig: transports, faults, measurands"]
+    assert rule["docs"] == ["docs/arc42/09-architecture-decisions.md"]
+    assert hits(rule, "testrig/src/bus_testrig/natsrig.py") == ["testrig/src/bus_testrig/natsrig.py"]
+    assert hits(rule, "testrig/measurands.toml") == ["testrig/measurands.toml"]
+    assert hits(rule, "testrig/tests/test_natsrig.py") == []
+    assert hits(rule, "testrig/README.md") == []
