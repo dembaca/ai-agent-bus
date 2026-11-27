@@ -494,7 +494,7 @@ async def _agent4(rig: Rig, who: str) -> tuple[NatsPort, FakeBus]:
     for stream, cname, cfg in _consumer_specs(name, ["home"], {}):
         if cname.endswith("_presence"):
             cfg = cfg | {"filter_subjects": [*cfg["filter_subjects"], "presence.attest.*.v1",
-                                             "presence.account.mattermost.*.v1", "presence.planb.home.v1"]}
+                                             "presence.account.mattermost.*.v1"]}  # planb: _consumer_specs
         await _api(rig.admin, f"$JS.API.CONSUMER.CREATE.{stream}.{cname}", {"stream_name": stream, "config": cfg})
     port = NatsPort(inner, NatsSettings(servers=(rig.url,), home="home"), ("home",),  # type: ignore[arg-type]
                     bus_options={"heartbeat_sec": 0.2})
