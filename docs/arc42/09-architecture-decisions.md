@@ -3573,7 +3573,11 @@ separately.
       (condition 1).
     - The host computes its own name like the login service (`agent-` and
       the first 16 bytes of sha256 over owner and host nkey, base32; since
-      #274 no prefix and the first 25 characters, RT-6.36 step 8); the
+      #274 no prefix and the first 25 characters, RT-6.36 step 8; the
+      owner decided on 2026-11-27 for 25 characters, 125 bits, so that a
+      NATS name is never the length of a Mattermost id, and that `agent-`
+      moves to the bridge's bot names once registration ends, plan B piece
+      14, with no default until then); the
       name in the credential is the authority: when the server refuses the
       host's subscription to its own deliver subjects, the names differ,
       and the host stops with an error instead of sending (`NameMismatch`).
