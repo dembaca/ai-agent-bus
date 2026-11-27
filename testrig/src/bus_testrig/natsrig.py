@@ -64,6 +64,10 @@ HOME = "agents"
 OWNER = "testrig"
 ADMIN = "admin"
 START_SEC = 45.0
+RECOVERY_SEC = 60.0  # after a fault's window: how long the sender may take to come back
+RECOVERY_SEND_SEC = 0.5  # the pace of the recovery sends
+# Faults the sender must recover from: a send after the window proves it.
+SENDER_FAULTS = {"restart", "hang", "cut", "blackhole"}
 SERVER_START_SEC = 10.0
 
 # --- the login service's part, copied from mcp/tests/test_natsbus.py ---------------------
@@ -518,6 +522,10 @@ async def nats_bus_run(count: int = 10, fault: str | None = None, *, fault_sec: 
                     for seq in _arrivals(events, seq_of, seq_of_text):
                         run.arrive(seq)
                         last_arrival = time.monotonic()
+                        if window is not None and window.done():
+                            # A post after the fault's window: the receiving side
+                            # came back (kill-client's receiver, a cut's line).
+                            run.recovered = True
                     if sent_done is not None and window is not None and not window.done():
                         continue  # never end while the fault's window is open
                     if sent_done is not None and (
@@ -580,6 +588,32 @@ async def nats_bus_run(count: int = 10, fault: str | None = None, *, fault_sec: 
                 await asyncio.sleep(send_interval)
             if window is not None:
                 await window
+            # A send after the window is the sender's recovery (restart, hang,
+            # cut, blackhole); keep posting until one succeeds or the deadline
+            # passes, since a small CI run's sends can all fall inside the window
+            # (review round 4).
+            if fault in SENDER_FAULTS:
+                deadline = time.monotonic() + RECOVERY_SEC
+                extra = 0
+                while not run.recovered and time.monotonic() < deadline:
+                    await asyncio.sleep(RECOVERY_SEND_SEC)
+                    extra += 1
+                    seq_extra = count + extra
+                    text = f"bus-run {seq_extra}"
+                    seq_of_text[text] = seq_extra
+                    run.send(seq_extra)
+                    post: Any = None
+                    try:
+                        post = await sender.call("post_message", message=text)
+                    except (McpError, RuntimeError, TimeoutError, OSError) as exc:
+                        run.closed = run.closed or f"post_message failed: {type(exc).__name__}: {exc}"[:300]
+                    if not isinstance(post, dict) or not post.get("id"):
+                        run.sent.pop()
+                        failed_sends += 1
+                    else:
+                        run.sent_frames += 1
+                        seq_of[str(post["id"])] = seq_extra
+                        run.recovered = True
             sent_done = time.monotonic()
             await reader
         except (McpError, RuntimeError, TimeoutError, OSError) as exc:

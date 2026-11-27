@@ -535,20 +535,30 @@ def test_a_failed_reconcile_or_a_lost_sender_is_untrustworthy():
     """A run whose CONNECT hook failed, and a restart/hang/kill-client run with no
     post sent after the window, measured a broken rig, not the fault."""
     failed = Run(name="bus-run", target="bus-nats", fault="none")
-    failed.send_frames = 5
+    failed.sent_frames = 5
     failed.relay = {"failed": 1}
     assert cli._untrustworthy(failed) is True
-    hung = Run(name="bus-run", target="bus-nats", fault="restart")
-    hung.send_frames = 5
-    hung.recovered = False
-    assert cli._untrustworthy(hung) is True
+    for fault in ("restart", "hang", "kill-client", "cut", "blackhole"):
+        lost = Run(name="bus-run", target="bus-nats", fault=fault)
+        lost.sent_frames = 5
+        lost.recovered = False
+        assert cli._untrustworthy(lost) is True, fault
     baseline = Run(name="bus-run", target="bus-nats", fault="none")
-    baseline.send_frames = 5
     baseline.sent = [baseline.send(0), baseline.send(1)]
     baseline.sent_frames = 2
     baseline.arrive(0)
     baseline.arrive(1)
     assert cli._untrustworthy(baseline) is False
+    # A trusted recovered restart run: the fault lost one of two, a send landed
+    # after its window.
+    restart = Run(name="bus-run", target="bus-nats", fault="restart")
+    restart.sent = [restart.send(0), restart.send(1)]
+    restart.sent_frames = 2
+    restart.arrive(0)
+    restart.recovered = True
+    restart.relay = {"server_restarts": 1, "connections": 2, "bytes_up": 1, "bytes_down": 1,
+                     "discarded": 0, "aborted": 0, "refused": 0, "hook_errors": 0, "failed": 0}
+    assert cli._untrustworthy(restart) is False
 
 
 def test_the_report_names_the_lost_sequences_and_the_consumer():
