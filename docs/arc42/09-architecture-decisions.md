@@ -4106,9 +4106,12 @@ Nothing of it is built.
        the start hook and `bin/mm-agent-channels.sh` join the bot to its
        channels, and the signed records are keyed by the channel id.
      - Moves: to the login service's directory; the session takes its
-       channels from its credential. The signed records keep the
-       Mattermost id of the bound channel, from the directory, as their
-       key until the records move to the bridge (#151 step 3).
+       channels from its credential. The signed records stay keyed by
+       the Mattermost id of the bound channel, as the bridge serves them
+       since #151 step 3 and hosts read them; the session takes that id
+       from the directory's binding instead of from Mattermost. The key
+       is no token, so plan B's goal needs no change to it (the
+       coordinator's call on 2026-11-27).
      - Switch: channels from the directory. Way back: Mattermost's ids
        again; nothing in flight.
      - Test: `resolve` without a Mattermost read; the records' key.
@@ -4139,7 +4142,11 @@ Nothing of it is built.
   3. **Direct messages between agents** (RT-6.36 step 7).
      - Moves: onto NATS, `<bus>.dm.<recipient>.<sender>`, which the
        transport has and the login service already grants
-       (`callout/perms.go`); no copy in Mattermost. Between agents of
+       (`callout/perms.go`); no copy in Mattermost. The transport and
+       the login service's DM consumer exist, but the MCP server drops a
+       DM event today (`NatsPort._on_event` drops `@dm`), so the piece
+       includes handling it: delivered to the agent as a DM, woken by
+       the rules for DMs. Between agents of
        different homes the recipient's home's flag counts: the sender
        uses NATS only when it is on. Since a session gets flags only
        with its credential, which holds only its own channels, proposed:
@@ -4249,11 +4256,15 @@ Nothing of it is built.
        person's file; the file still comes from inside the sandbox
        (ADR-012), the size limit as today. Proposed: the bytes travel as
        NATS messages on `<req>.file.<agent>` (above), in parts below the
-       server's maximum payload. The first part declares the length and
-       the SHA-256 hash; the bridge checks the length against the size
-       limit before it keeps any part, holds one open transfer per agent
-       (a second one replaces it), and drops an unfinished one after 60
-       seconds. Each part is numbered, and the whole is checked by length
+       NATS server's maximum payload (1 MiB by default), since the size
+       limit (10 MiB, RT-6.33) is larger: a file at the limit is a
+       dozen parts. The first part declares the length and the SHA-256
+       hash; the bridge checks the length against the size limit before
+       it keeps any part, holds one open transfer per agent (a second
+       one replaces it), and drops an unfinished one after 60 seconds.
+       Its ceiling: transfers are held in memory, at most 10 MiB each
+       and, proposed, at most 16 open at once across all agents; beyond
+       that it refuses a new one as busy, and the tool reports it. Each part is numbered, and the whole is checked by length
        and hash before the bridge uploads it with the agent's own bridge
        bot. A failed check, a lost part or a dropped transfer is an error
        of the tool, and the agent sends again. A person's file comes back
@@ -4353,7 +4364,10 @@ Nothing of it is built.
         channel, the home, the guest channels, the lobby and the stats
         channel, runs over NATS with every piece on. A session with any
         channel on Mattermost registers as before. The start hook
-        decides per session. Once every home runs every piece, no
+        decides per session, at its start: until switching at a renewal
+        is built (guest channels and the lobby, piece 12), a flag
+        changed for a channel reaches a running session only at its next
+        start, since `compose.py` picks the transport there. Once every home runs every piece, no
         session needs the host side any more, and it goes (the owner's
         decision above), at the latest with the shutdown (phase 6):
         corral's start and end hooks (`10-mm-session-start.sh`,
@@ -4425,7 +4439,9 @@ Nothing of it is built.
     (RT-6.11), a replayed ask, an approval read back from history
     (piece 5) with and without a fresh approver record;
   - the signed records and the release record (#151 steps 3 and 4)
-    served by the bridge and keyed without a Mattermost id; the owner
+    served by the bridge, keyed as built by the Mattermost id of the
+    bound channel, which the session takes from the directory (piece
+    1), with no Mattermost read and no Mattermost token; the owner
     attestation (RT-6.24) replaced by the login service's (RT-6.41),
     with trusted humans and owners from the attestation (piece 4) on in
     every home;
@@ -4435,7 +4451,8 @@ Nothing of it is built.
     built, or the owner's word that the last piece goes without them;
   - the console's check of the release signature when the administrator
     moves the pinned version (#192) built, and the release notice
-    reading the release record (piece 14);
+    reading the release record (piece 14); this row depends on both
+    #192 and the bridge's release route (#151 step 4);
   - the login approval only at this machine, as decided above, built;
   - then the owner's approval for the last piece (proposed, from the
     owner's choice of plan B directly, bus post
