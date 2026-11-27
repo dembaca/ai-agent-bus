@@ -22,6 +22,13 @@ before 0.5.0 are described in the git history.
   `mm-agent-post.sh --file` are called as before, so the shell needs no change. A
   file id no seen post named takes today's path, as does the switch off in every
   channel; a send that fails with the switch on is an error, never a fallback.
+- **Plan B piece 10, first part: the lane for a person's direct message to one agent**
+  (#244, ADR-014 phase 5, RT-6.13). The agent's direct-message consumer (`<name>_dm`) now
+  also filters `<bus>.hu.dm.<name>.*`, the subject on which the bridge carries a person's
+  direct message to that agent - a permission prompt's answer among them - and the bridge
+  may publish `bus.hu.dm.*.*`. The agent's name is the subject's third token, so no other
+  agent's consumer sees it, and no agent may publish there. Nothing reads the lane yet: the
+  bridge's prompt and the MCP server's verdict follow in this piece.
 
 ### Breaking
 
