@@ -33,7 +33,7 @@ from . import (
 from .a2a import attachment_props, props_view, with_debug
 from .compose import BusClient
 from .homes import guest_ids
-from .ids import InvalidId, mm_id, mm_name, post_id_arg
+from .ids import InvalidId, dm_seq, mm_id, mm_name, post_id_arg
 from .model import Answer, Mark, Post, Refused
 from .port import ChatPort
 from .registration import RegistrationPort
@@ -287,7 +287,7 @@ async def _final_stats_on_nats() -> None:
     if stats.nats_publish is None or _client is None or _exit_handled or _client.keeps_bot_on_exit:
         return
     try:
-        await asyncio.wait_for(stats.publish_nats(stats.final(VERSION, _fixed())), 5)
+        stats.final_nats = await asyncio.wait_for(stats.publish_nats(stats.final(VERSION, _fixed())), 5)
     except Exception as exc:  # noqa: BLE001 — never block the end
         log.info("overhead stats: the last part not on NATS: %s", type(exc).__name__)
 
@@ -1768,13 +1768,13 @@ async def post_message(
 
     to: another agent's username — a DM, for back-and-forth; share the outcome
     in the channel afterwards (SKILL.md).
-    Agents only: people are asked with ask_human. "all" wakes every agent in
-    the channel (RT-6.11); @channel/@here/@all are written plain, they would
-    notify every human. kind: the bus word (TASK, ACK, BLOCKED, RESULT, DONE…),
-    put first if missing (RT-6.14); a TASK to a gone agent: not_reachable. While
-    you hold the coordinator crown a post in your home or a DM starts with 👑.
-    props: an object for whoever reads the post outside the bus; only keys
-    with the CB_PROPS_PREFIX prefix (RT-6.16), any other is refused.
+    Agents only: people are asked with ask_human; a DM may go over NATS. "all"
+    wakes every agent in the channel (RT-6.11); @channel/@here/@all are written
+    plain, they would notify every human. kind: the bus word (TASK, ACK, BLOCKED,
+    RESULT, DONE…), put first if missing (RT-6.14); a TASK to a gone agent:
+    not_reachable. While you hold the coordinator crown a post in your home or a
+    DM starts with 👑. props: an object for whoever reads the post outside the
+    bus; only keys with the CB_PROPS_PREFIX prefix (RT-6.16), any other is refused.
     files: up to 10 file_ids from attach or the shell, uploaded to this channel (RT-6.33).
     """
     return _out("post_message", await post_as_bot(None, message, channel_id, root_id, to, kind,
@@ -1792,6 +1792,29 @@ async def _join_by_name(client: ChatPort, name: str) -> str:
         except Exception as exc:  # noqa: BLE001 — the next connect reads them
             log.info("channels not read again: %s", exc)
     return cid
+
+
+# A NATS direct message has no thread (RT-6.36 step 7): the tools that take a thread say how to
+# answer one instead, and get_thread neither reads nor sends anything.
+_DM_NO_THREAD = ("a direct message has no thread: answer it with post_message(to=<its sender, as "
+                 "shown_as>)")
+
+
+async def _dm_send(client: ChatPort, to: str, message: str, props: dict[str, Any] | None) -> str:
+    """The NATS name a direct message went to over NATS (plan B piece 3, RT-6.36 step 7), ''
+    when the message stays on Mattermost. Only the port of a NATS home has `dm`, and it
+    answers '' for every case it leaves to Mattermost (the switch off, the recipient not on
+    NATS, files, an ask); a send it made over NATS that fails raises, as a post does."""
+    send = getattr(client, "dm", None)
+    return str(await send(to, message, props=props) or "") if send is not None else ""
+
+
+async def _dm_agent(client: ChatPort, to: str) -> str:
+    """The NATS name of the agent a DM to the bot `to` belongs to, '' when none is linked (a
+    person, an unknown name, a plain bot): a Mattermost DM to it settles the open NATS DMs that
+    name left, as a DM over NATS does (RT-6.2 step 2). Only a port with a NATS side names one."""
+    look = getattr(client, "dm_agent", None)
+    return str(await look(to) or "") if look is not None else ""
 
 
 async def post_as_bot(client: ChatPort | None, message: str, channel_id: str = "",
@@ -1828,14 +1851,22 @@ async def post_as_bot(client: ChatPort | None, message: str, channel_id: str = "
             return _refusal(f"no channel ~{channel_name.strip()} to post in: "
                             f"{type(exc).__name__}; channels are never created")
     everyone = to.strip().lower() == a2a.ALL
-    if to.strip() and not everyone:
+    dm_to = "" if everyone else to.strip()
+    # Plan B piece 3 (#244): a DM to an agent goes over NATS where both homes run agent DMs
+    # there; the send needs the final text and props, so it happens below. A DM that carries
+    # files or an ask is for people, and one with a thread root answers that thread: their
+    # Mattermost channel is read here and the DM goes there, as it always did.
+    nats_dm = bool(dm_to) and not files and not root_id and a2a.word(message) != a2a.ASK
+    if dm_to and not nats_dm:
         try:
-            channel_id = await client.direct_channel_with_bot(to)
+            channel_id = await client.direct_channel_with_bot(dm_to)
         except (InvalidId, ValueError) as exc:  # a person, an unknown name (#66): say why
             return _refusal(str(exc))
+    elif nats_dm:
+        channel_id = ""  # a DM has no channel: nothing below reads one
     message, removed = await _unmention(client, message)
     uid = await _my_id(client)
-    if (not root_id and not channel_id and a2a.word(message) == "ASSIGNMENTS"
+    if (not root_id and not channel_id and not nats_dm and a2a.word(message) == "ASSIGNMENTS"
             and "|---" not in message.replace(" ", "") and lease.crown_held(uid)):
         # The coordinator names what changed; the table comes from the
         # channel's task threads (RT-6.14).
@@ -1855,16 +1886,48 @@ async def post_as_bot(client: ChatPort | None, message: str, channel_id: str = "
     ups, bad = await _take_files(client, files, channel_id, root_id)
     if bad:
         return _refusal(bad)
+    body = lease.with_crown(message, uid, here=here)
+    props_final: dict[str, Any] | None = a2a.with_user(
+        a2a.props(message, a2a.ALL if everyone else "", crown=here,
+                  home=client.work_channel_name if guest else ""), extra)
+    if not nats_dm:  # a DM over NATS has no Mattermost post to carry the debug card
+        props_final = await _with_debug(
+            client, uid, props_final, channel_id=channel_id, root_id=root_id,
+            call=_changed(debug.call_line("post_message", notes, **given), notes))
+    dm_sent = await _dm_send(client, dm_to, body, props_final) if nats_dm else ""
+    dm_agent = ""  # the NATS name a DM that stays on Mattermost answers
+    if dm_sent:
+        # A direct message over NATS (plan B piece 3): no Mattermost post exists, so the
+        # answer names the agent it went to and nothing to read has an id. A DM back to the
+        # same agent answers its open DMs (RT-6.2 step 2): they have no thread to clear them.
+        try:
+            unanswered.answered_dm(uid, dm_sent)
+        except Exception as exc:  # noqa: BLE001 — bookkeeping never fails a post
+            log.info("the open direct messages were not cleared: %s", type(exc).__name__)
+        stats.record("post", chars=len(message), w=_post_word(message))
+        return {"posted": True, "over": "nats", "to": dm_sent,
+                "message": "the direct message is on its way over NATS"}
+    if nats_dm:
+        # The port kept the DM for Mattermost (its home's switch is off, the recipient states
+        # none, or it is a person or an unknown name): its channel, and the refusal of a person
+        # or an unknown name, are read now - as before, and never into the home by mistake.
+        try:
+            channel_id = await client.direct_channel_with_bot(dm_to)
+        except (InvalidId, ValueError) as exc:
+            return _refusal(str(exc))
+        # A DM that stays on Mattermost carries the debug card like every post (RT-6.31); a
+        # DM over NATS has no post to carry it, so it was skipped above.
+        props_final = await _with_debug(
+            client, uid, props_final, channel_id=channel_id, root_id=root_id,
+            call=_changed(debug.call_line("post_message", notes, **given), notes))
+        dm_agent = await _dm_agent(client, dm_to)  # the row a DM back would settle
     stats.record("post", chars=len(message), w=_post_word(message))
     try:
         post = await client.post(
-            lease.with_crown(message, uid, here=here),
+            body,
             channel_id=channel_id or None,
             root_id=root_id or None,
-            props=await _with_debug(
-                client, uid, a2a.with_user(a2a.props(message, a2a.ALL if everyone else "", crown=here,
-                                                     home=client.work_channel_name if guest else ""), extra),
-                channel_id=channel_id, root_id=root_id, call=_changed(debug.call_line("post_message", notes, **given), notes)),
+            props=props_final,
             **_file_ids(ups),
         )
     except Refused as exc:
@@ -1874,6 +1937,13 @@ async def post_as_bot(client: ChatPort | None, message: str, channel_id: str = "
         attach.give_back(ups)
         raise
     await _posted(client, post)
+    if dm_agent and unanswered.answers(post):
+        # A DM answered with a Mattermost DM settles the NATS DM it answers (RT-6.2 step 2): that
+        # record has no channel to match, so it is cleared by the agent the DM goes to.
+        try:
+            unanswered.answered_dm(uid, dm_agent)
+        except Exception as exc:  # noqa: BLE001 — bookkeeping never fails a post
+            log.info("the open direct messages were not cleared: %s", type(exc).__name__)
     gate.saw(post)  # RT-6.6 step 5, RT-6.2 step 4: its own post counts in the thread record at once
     await _as_guest(client, uid, guest, post)
     word = a2a.word(message) or ""
@@ -1920,6 +1990,9 @@ async def reply_as_bot(client: ChatPort | None, root_id: str, message: str,
     extra, bad = a2a.user_props(props)
     if bad:
         return _refusal(bad)
+    if dm_seq(root_id):
+        # A NATS direct message has no thread: its answer is a DM to its sender (RT-6.36 step 7).
+        return _refusal(_DM_NO_THREAD + ", nothing sent")
     if bad := _bad_id(post=root_id or "-"):
         return _refusal(bad)
     client = client or _get_client()
@@ -2513,6 +2586,10 @@ async def stats_report(versions: int = 3) -> str:
     try:
         rows = await stats.read_report(_get_client(), name)
     except Exception as exc:  # noqa: BLE001 — off the bus, the channel missing or not readable
+        if stats.over_nats(_get_client()):  # plan B piece 13: no token to read with, no reader on NATS
+            why = str(exc).split(" for url ")[0] or type(exc).__name__
+            return _refused("stats_report", f"cannot read ~{name}: {why}; this home's STATS are on NATS "
+                            "and an agent cannot read them there yet"[:300])
         why = str(exc).split(" for url ")[0] or type(exc).__name__
         return _refused("stats_report", f"cannot read ~{name}: {why}"[:300])
     return _out("stats_report", {"channel": name, "versions": stats.brief(rows[-max(1, versions):])})
@@ -2525,6 +2602,8 @@ async def get_thread(post_id: str, raw: bool = False) -> str:
     Slim posts {id, root_id, channel, author, at, message, files, reactions}; an
     ask adds `ask_card`; shown_as: its bot. raw: all.
     """
+    if dm_seq(post_id):
+        return _refused("get_thread", _DM_NO_THREAD + ", nothing read")
     if bad := _bad_id(post=post_id or "-"):
         return _refused("get_thread", bad)
     client = _get_client()

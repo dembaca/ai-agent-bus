@@ -420,12 +420,15 @@ _CARD_KEYS = ("harness", "model", "task", "branch", "asks", "last_post")
 
 
 def encode_presence(status: str, bot: str = "", bot_name: str = "",
-                    card: PresenceCard | None = None) -> bytes:
+                    card: PresenceCard | None = None, dm: bool = False) -> bytes:
     """The presence body; `bot` is the agent's Mattermost bot id (RT-6.37) and `name` that
     bot's username, the name people and coordinator("who") know the agent by (the operator
     console shows it, ADR-015); each left out when ''. `card`: the HELLO card's data
-    (harness, model, task, branch, open asks) and the last post's time, bounded by clean_card; a field it does not
-    state (None) is left out."""
+    (harness, model, task, branch, open asks) and the last post's time, bounded by clean_card;
+    a field it does not state (None) is left out. `dm`: this session's home runs plan B's
+    agent DMs over NATS (piece 3), so a DM addressed to the agent goes over NATS; left out when
+    False, which every sender reads as "stay on Mattermost".
+    """
     if status not in _STATUSES:
         raise MessageError("unknown status")
     body: dict[str, Any] = {"v": 1, "status": status}
@@ -433,6 +436,8 @@ def encode_presence(status: str, bot: str = "", bot_name: str = "",
         body["bot"] = bot
     if bot_name:
         body["name"] = bot_name
+    if dm:
+        body["dm"] = True
     if card is not None:
         clean = clean_card(card)
         for key in _CARD_KEYS:
@@ -479,6 +484,19 @@ def decode_presence_name(data: bytes) -> str:
     except MessageError:
         return ""
     return name if isinstance(name, str) and USERNAME_RE.fullmatch(name) else ""
+
+
+def decode_presence_dm(data: bytes) -> bool:
+    """Whether a presence body states that the agent's home runs agent DMs over NATS (plan B
+    piece 3), True only for a literal `true`: an older MCP server states nothing and a
+    malformed body states nothing, and both count as off (a DM to that agent stays on
+    Mattermost). Self-stated by the agent's own server, and it decides only DMs to itself
+    (ADR-014 phase 5, piece 3: a recipient that states it wrongly misroutes only DMs to it)."""
+    try:
+        return _obj(data).get("dm") is True
+    except MessageError:
+        return False
+
 
 
 def link_tag(name: str) -> str:
@@ -1314,6 +1332,11 @@ class NatsBus:
         self._bot_name = ""  # the bot's username, stated in the presence for people (ADR-015)
         # the HELLO card's data for the presence (RT-6.37, ADR-015); None sends none
         self.card_source: Callable[[], PresenceCard | None] | None = None
+        # Plan B piece 3 (#244): whether this session's home runs agent DMs over NATS, stated
+        # in every presence the bus sends; the MCP server sets it. None or a failing source
+        # states nothing, which every sender reads as "stay on Mattermost".
+        self.dm_source: Callable[[], bool] | None = None
+        self._dm: dict[str, bool] = {}  # agent -> its newest presence states DMs over NATS
         # The open asks for the ask record (RT-6.43 step 5): the MCP server sets it (a hosted
         # one maybe after start); `human` is the asked human's username, mapped here through
         # the own attestation. None publishes no record.
@@ -1964,14 +1987,21 @@ class NatsBus:
     def _presence_body(self, status: str) -> bytes:
         """This agent's presence body, with the card's data card_source states now (RT-6.37):
         a change shows with the next heartbeat. A failing source sends no card, never no
-        presence."""
+        presence. The DM flag (plan B piece 3) is read the same way: a failing source states
+        none, so a DM to this agent stays on Mattermost."""
         card = None
         if self.card_source is not None:
             try:
                 card = self.card_source()
             except Exception as exc:  # noqa: BLE001 — a label, never a reason to look offline
                 log.info("nats bus: the card's data was not read (%s)", type(exc).__name__)
-        return encode_presence(status, self._bot, self._bot_name, card)
+        dm = False
+        if self.dm_source is not None:
+            try:
+                dm = bool(self.dm_source())
+            except Exception as exc:  # noqa: BLE001 — in doubt off: the safe side for a DM
+                log.info("nats bus: the DM flag was not read (%s): not stated", type(exc).__name__)
+        return encode_presence(status, self._bot, self._bot_name, card, dm=dm)
 
     def link_bot(self, bot_id: str, username: str = "") -> None:
         """The Mattermost bot this agent's presence names (RT-6.37), and its username for
@@ -1984,6 +2014,13 @@ class NatsBus:
     def bot_of(self, agent: str) -> str:
         """The bot the agent's presence names, '' for none."""
         return self._bots.get(agent, "")
+
+    def dm_of(self, agent: str) -> bool:
+        """Whether the agent's newest presence says its home runs agent DMs over NATS (plan B
+        piece 3): True only while that presence is fresh. No presence, an offline one and a
+        presence without the flag (an older MCP server) all count as off, so a DM to the agent
+        stays on Mattermost."""
+        return bool(self._dm.get(agent)) and self.presence_of(agent) != "offline"
 
     @property
     def synced(self) -> bool:
@@ -2142,6 +2179,7 @@ class NatsBus:
                 del self._presence[agent]
                 self._owners.pop(agent, None)
                 self._bots.pop(agent, None)
+                self._dm.pop(agent, None)
                 self._presence_seq.pop(agent, None)
         for agent, (_, t, _a) in list(self._attest.items()):
             if t < cut:
@@ -2367,6 +2405,7 @@ class NatsBus:
                     self._bots[agent] = bot
                 else:
                     self._bots.pop(agent, None)
+                self._dm[agent] = decode_presence_dm(msg.data)  # plan B piece 3: DMs over NATS
                 owner = owner_of_token(t[1])
                 if owner:
                     self._owners[agent] = owner

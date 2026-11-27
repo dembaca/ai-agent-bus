@@ -37,7 +37,7 @@ from collections.abc import Awaitable, Callable, Iterable
 from pathlib import Path
 from typing import TYPE_CHECKING, Any
 
-from . import a2a, config, overhead, session_file
+from . import a2a, config, overhead, planb, session_file
 
 if TYPE_CHECKING:
     from .port import ChatPort
@@ -1008,6 +1008,23 @@ async def publish_nats(data: dict[str, Any] | None) -> str:
     return "published"
 
 
+# What publish_nats answered for the session's last part (server._final_stats_on_nats); None
+# while that was not tried (exit by signal, timeout, no link). post_sync reads it.
+final_nats: str | None = None
+
+
+def over_nats(client: ChatPort) -> bool:
+    """Plan B piece 13 (RT-6.43 step 7, ADR-014 phase 5): this home's STATS go on NATS alone,
+    no chat line and no Mattermost token needed. Off without a NATS link to publish on."""
+    if nats_publish is None:
+        return False
+    try:
+        home = client.work_channel_name
+    except Exception:  # noqa: BLE001 — a client without a home is not over NATS
+        return False
+    return bool(home) and planb.on(13, home)
+
+
 # Day's parts cut but not posted yet (the post failed): posted before the next
 # part and before the session's last line, so no day is lost to a blip.
 _unposted: list[str] = []
@@ -1024,16 +1041,33 @@ async def tick(client: ChatPort, uid: str) -> float | None:
     nothing and tries again at the next tick; a part whose post failed is
     posted first then. Seconds until the next part is due; never raises."""
     name = channel()
-    if not name or _source is None or not client.token or not uid:
+    if not name or _source is None or not uid:
+        return None
+    nats = over_nats(client)
+    if not nats and not client.token:
         return None
     set_user(uid)
     left = due()
-    if (left is None or left > 0) and not _unposted:
+    if (left is None or left > 0) and not (_unposted and not nats):
         return left
     fd = _lock(uid)
     if fd is None:
         return None
     try:
+        if nats:  # piece 13: the part goes on NATS alone, no channel to join or post to
+            left = due()
+            if left is None or left > 0:
+                return left
+            version, fixed = _source()
+            data = cut(version, fixed)
+            if data:
+                got = await publish_nats(data)
+                if got == "published":
+                    log.info("overhead stats: part %s published on NATS", data["part"])
+                else:
+                    log.info("overhead stats: part %s not on NATS yet (%s); it goes out with the "
+                             "next part", data["part"], got)
+            return PART_SEC
         cid = await client.join_channel(name)
         while _unposted:
             await client.post(_unposted[0], channel_id=cid)
@@ -1059,17 +1093,30 @@ async def tick(client: ChatPort, uid: str) -> float | None:
 
 def post_sync(client: ChatPort, data: dict[str, Any]) -> str:
     """Post the summary to the stats channel, synchronously (exit handler),
-    after any day's part whose post had failed.
+    after any day's part whose post had failed. With plan B's piece 13 on for the home
+    (over_nats) nothing is posted: the last part went on NATS, and the answer says so.
 
     The counter file and its lock go either way: on a server without the
     channel the counts would only pile up.
     """
     name = channel()
-    if not name or not client.token:
-        return "off"
+    # Piece 13 on and the last part really published on NATS: no chat line. Otherwise (until
+    # piece 14 the server still holds a token) the chat line is the durable copy, as today.
+    nats = bool(name) and over_nats(client) and final_nats == "published"
+    if not name or (not nats and not client.token):
+        return "off" if not name or not over_nats(client) else (
+            f"last part not on NATS ({final_nats or 'not tried'}) and no token: not posted")
     lines = [*_unposted, _line(data)]
+    dropped = len(_unposted)
+    # On NATS the older lines are dropped unsent. Only parts whose post failed before the piece
+    # was switched on mid-session can be here; their parts were published on NATS as well.
     _unposted.clear()
     try:
+        if nats:  # piece 13: the last part went on NATS (server._final_stats_on_nats)
+            if dropped:
+                log.info("overhead stats: %d earlier unposted line(s) dropped, on NATS", dropped)
+                return f"on NATS, not posted ({dropped} earlier unposted line(s) dropped)"
+            return "on NATS, not posted"
         for msg in lines:
             if not client.post_by_name_sync(name, msg, join=_me()):
                 return f"no channel ~{name}; nothing posted"
@@ -1468,9 +1515,9 @@ def report(lines: list[dict[str, Any]]) -> list[dict[str, Any]]:
     return out
 
 
-async def read_report(client: ChatPort, name: str, max_pages: int = 10) -> list[dict[str, Any]]:
-    """report() of the STATS lines among the last 2000 posts of the channel
-    `name`, read with the bot's own session (RT-6.9 step 3)."""
+async def read_lines(client: ChatPort, name: str, max_pages: int = 10) -> list[dict[str, Any]]:
+    """The STATS lines among the last 2000 posts of the channel `name`, read with the bot's
+    own session (RT-6.9 step 3)."""
     cid = await client.join_channel(name)
     lines = []
     for p in await client.posts_after(0, channel_id=cid, max_pages=max_pages):
@@ -1481,4 +1528,9 @@ async def read_report(client: ChatPort, name: str, max_pages: int = 10) -> list[
                 continue
             if isinstance(data, dict):
                 lines.append(data)
-    return report(lines)
+    return lines
+
+
+async def read_report(client: ChatPort, name: str, max_pages: int = 10) -> list[dict[str, Any]]:
+    """report() of the lines read_lines gives."""
+    return report(await read_lines(client, name, max_pages))
