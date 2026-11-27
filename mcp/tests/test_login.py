@@ -1359,3 +1359,37 @@ async def test_expires_in_as_a_float_counts():
     assert await lg.access_token() == first and script.refreshed == []
     wall[0] += 41
     assert await lg.access_token() != first
+
+
+# --- the terminal line (#198, RT-6.34 step 4) -----------------------------------
+
+def _grant(**over):
+    return login.DeviceGrant(**{"verification_uri": ISSUER + "/device",
+                                "verification_uri_complete": ISSUER + "/device?user_code=ABCD-EFGH",
+                                "user_code": "ABCD-EFGH", "expires_in": 600, **over})
+
+
+def test_the_terminal_line_is_the_issuers_own_link_and_a_clean_code():
+    """RT-6.34 step 4: only an https link on the issuer's host and port with a
+    device-flow code leaves the server; unknown or shown grants give nothing."""
+    lg = mk()
+    assert lg.pending_line() is None  # nothing waits
+    lg._pending = _grant()
+    link, code, expires = lg.pending_line()
+    assert link == ISSUER + "/device?user_code=ABCD-EFGH" and code == "ABCD-EFGH" and expires == 600
+    lg.shown()
+    assert lg.pending_line() is None  # one line per login
+
+
+def test_a_foreign_link_or_a_bad_code_is_never_shown():
+    lg = mk()
+    lg._pending = _grant(verification_uri="https://evil.example/device",
+                         verification_uri_complete="https://evil.example/device?user_code=ABCD-EFGH")
+    assert lg.pending_line() is None
+    lg._pending = _grant(user_code="AB\nCD-EFGH")
+    line = lg.pending_line()
+    assert line is not None and "\n" not in line[1]  # no control character reaches the TUI
+    lg._pending = _grant(user_code="not a code")
+    assert lg.pending_line() is None
+    lg._pending = _grant(verification_uri_complete="http://kc.example.test/realms/bus/x")
+    assert lg.pending_line() is None  # plain http is not the issuer's

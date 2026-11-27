@@ -1293,11 +1293,11 @@ async def login_link(client: ChatPort, query: Mapping[str, str], body: Mapping[s
     from . import login as login_mod
 
     running = login_mod.current()
-    grant = running.pending() if running is not None else None
-    if grant is None:
+    line = running.pending_line() if running is not None and hasattr(running, "pending_line") else None
+    if line is None:
         return 200, {}
-    return 200, {"link": grant.verification_uri_complete or grant.verification_uri,
-                 "user_code": grant.user_code, "expires_in": grant.expires_in}
+    link, code, expires_in = line
+    return 200, {"link": link, "user_code": code, "expires_in": expires_in}
 
 
 async def login_shown(client: ChatPort, query: Mapping[str, str], body: Mapping[str, Any]) -> Reply:

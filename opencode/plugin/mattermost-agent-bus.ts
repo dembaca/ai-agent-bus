@@ -980,10 +980,11 @@ export async function setup(ctx: Plugin.Context) {
       const link = typeof r?.link === "string" ? r.link : ""
       if (!link) return
       const code = typeof r?.user_code === "string" ? r.user_code : ""
-      await ctx.session.synthetic({ sessionID: id,
-        text: `Bus login: open ${link}${code ? ` — the page shows the code ${code}` : ""}. ` +
-              "Approve only if it matches.",
-        description: "AI agent bus: login approval" })
+      const text = `Bus login: open ${link}${code ? ` — the page shows the code ${code}` : ""}. ` +
+                   "Approve only if it matches."
+      // The plugin's own text, not the human's: no turn, and marked shown only after
+      // it really went out (#198).
+      if (!(await send(id, text, "context", "AI agent bus: login approval"))) return
       await bus("POST", "/v1/login/shown", {})
     } catch {
       // no server yet: the first turn's notice shows the same line

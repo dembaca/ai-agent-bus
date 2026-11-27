@@ -854,6 +854,10 @@ async def test_the_terminal_login_line_is_one_per_login(api, monkeypatch):
         def pending(self):
             return None if self.is_shown else self.waits
 
+        def pending_line(self):
+            return None if self.is_shown else (self.waits.verification_uri_complete,
+                                               self.waits.user_code, self.waits.expires_in)
+
         def shown(self) -> None:
             self.is_shown = True
 
