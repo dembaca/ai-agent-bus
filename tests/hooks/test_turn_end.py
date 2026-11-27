@@ -609,11 +609,12 @@ def test_coordinator_leaves_a_reply_in_an_agents_thread_to_it(mm, run, monkeypat
     """RT-6.6 step 5 (#207): holding the 👑, a person's plain reply in a thread
     a reachable agent of the home started is that agent's (agent_thread from
     the hook API): it wakes the 👑 neither as coordinator nor where it posted
-    in that thread. A reply under a person's root, also one naming an agent,
-    and one that names the 👑 still wake it. With trusted humans set
-    (RT-6.16) only a trusted human's reply is the agent's; an untrusted one,
-    which the gate holds back from that agent, stays the 👑's. An agent that
-    has gone from the roster leaves the reply to the 👑."""
+    in that thread. So is one under a person's root naming that agent once it
+    has answered there (#216); before, a reply under a person's root, and one
+    that names the 👑 still wake it. With trusted humans set (RT-6.16) only a
+    trusted human's reply is the agent's; an untrusted one, which the gate
+    holds back from that agent, stays the 👑's. An agent that has gone from
+    the roster leaves the reply to the 👑."""
     from mattermost_ai_agent_bus import gate
 
     fyi_authors(mm)  # OTHER is an agent, PERSON a person
@@ -632,21 +633,58 @@ def test_coordinator_leaves_a_reply_in_an_agents_thread_to_it(mm, run, monkeypat
         # The 👑 answered in the agent's ask thread: a participant, not its owner.
         {"id": "f" * 26, "user_id": ME, "root_id": ask, "create_at": old + 1, "message": "see the ADR", "type": ""},
     ]
+    # RT-6.6 step 5 (#216): the agent the person's root names has answered there.
+    answered = [*roots, {"id": "g" * 26, "user_id": OTHER, "root_id": named, "create_at": old + 2,
+                         "message": "on it", "type": ""}]
     untrusted = {"CB_MM_TRUSTED_HUMAN_USER_IDS": "h" * 26}
-    for root, message, env, woken in [
-            (ask, "postgres", {}, False), (named, "after lunch", {}, True),
-            (plain, "and the docs?", {}, True), (ask, "@agent-test thoughts?", {}, True),
-            (ask, "postgres", {"CB_MM_TRUSTED_HUMAN_USER_IDS": PERSON}, False),
-            (ask, "postgres", untrusted, True)]:
+    for posts, root, message, env, woken in [
+            (roots, ask, "postgres", {}, False), (roots, named, "after lunch", {}, True),
+            (roots, plain, "and the docs?", {}, True), (roots, ask, "@agent-test thoughts?", {}, True),
+            (roots, ask, "postgres", {"CB_MM_TRUSTED_HUMAN_USER_IDS": PERSON}, False),
+            (roots, ask, "postgres", untrusted, True),
+            (answered, named, "after lunch", {}, False),
+            (answered, named, "after lunch", untrusted, True)]:
         monkeypatch.setattr(gate, "_reach", None)  # the roster read afresh
-        mm.posts = list(reversed(roots))
+        mm.posts = list(reversed(posts))
         other_post(mm, message, root_id=root, user_id=PERSON)
         assert ("for you" in listen(run, **env).stdout) is woken, (root, message, env)
     mm.presence[OTHER] = "offline"  # gone from the roster: not reachable
+    for root in (ask, named):
+        monkeypatch.setattr(gate, "_reach", None)
+        mm.posts = list(reversed(answered))
+        other_post(mm, "postgres", root_id=root, user_id=PERSON)
+        assert "for you" in listen(run).stdout, root
+
+
+def test_listener_knows_its_threads_beyond_the_last_posts(mm, run, monkeypatch):
+    """RT-6.2 step 4, RT-6.6 step 5 (#216): the agent's answer in a person's
+    thread lies further back than the 200 posts the listener reads; the hook
+    API reads the whole thread (my_thread), so a reply there wakes it. Holding
+    the 👑 in a thread a reachable peer answered that far back, the reply is
+    the peer's (agent_thread): the 👑's listener does not wake."""
+    from mattermost_ai_agent_bus import gate
+
+    monkeypatch.setattr(gate, "_roots", {})
     monkeypatch.setattr(gate, "_reach", None)
-    mm.posts = list(reversed(roots))
-    other_post(mm, "postgres", root_id=ask, user_id=PERSON)
+    fyi_authors(mm)  # OTHER is an agent, PERSON a person
+    mm.agent(OTHER, "agent-other", 1000, emoji="hammer_and_wrench")
+    next(u for u in mm.users if u["id"] == OTHER)["is_bot"] = True
+    old = int((time.time() - 86400) * 1000)
+    mine, theirs = "a" * 26, "c" * 26
+    mm.older = [
+        {"id": mine, "user_id": PERSON, "root_id": "", "create_at": old, "message": "@agent-test rebase", "type": ""},
+        {"id": "e" * 26, "user_id": ME, "root_id": mine, "create_at": old + 1, "message": "on it", "type": ""},
+        {"id": theirs, "user_id": PERSON, "root_id": "", "create_at": old, "message": "@agent-other rebase",
+         "type": ""},
+        {"id": "f" * 26, "user_id": OTHER, "root_id": theirs, "create_at": old + 1, "message": "on it", "type": ""},
+    ]
+    other_post(mm, "after lunch", root_id=mine, user_id=PERSON)
     assert "for you" in listen(run).stdout
+    d = run.state_dir
+    (d / f"coord-{ME}.env").write_text(f"CROWN_UNTIL={int(time.time()) + 600}\n")
+    mm.posts = []
+    other_post(mm, "after lunch", root_id=theirs, user_id=PERSON)
+    assert "for you" not in listen(run).stdout
 
 
 def test_listener_digest_for_the_rest(mm, run):

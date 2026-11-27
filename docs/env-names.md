@@ -613,6 +613,16 @@ release record the registrar serves (the update notice and its `Needs:` and
 pinned keys come with it under a new `CB_` name of their own, not through
 this rename. Until then `MM_REGISTRAR_KEYS` keeps working under its name.
 
+`MM_REGISTER_URL` likewise names more than the registrar: it is also where
+hosts read the signed records and the release record. Planned, not built:
+once the bridge serves them, the hosts' setting for that address is
+`CB_RECORDS_URL` (decided 2026-11-27 by the owner, in phase 5 of the NATS
+decision as plan B, [ADR-014](arc42/09-architecture-decisions.md)). Until
+then `MM_REGISTER_URL` keeps working under its name. `MM_REG_SECRET`,
+`MM_REG_SECRET_GOPASS` and `MM_REG_SECRET_CMD` get no new name: hosts delete
+them, and the stored value they point to, two weeks after the registrar's
+shutdown (the same decision).
+
 ### Excluded names
 
 Not renamed, because they are not our environment variables. Each name with

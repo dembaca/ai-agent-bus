@@ -236,8 +236,8 @@ def _wake(item: Mapping[str, Any], *, mine: bool | None, crown: bool,
     elif channel.broadcast(text):
         why = "a broadcast (@channel, @here or @all)"
     elif crown and agent_thread and not tasks.mentions(text):
-        why = ("a human's reply in a thread another agent started: that agent answers it, "
-               "the coordinator gets it with its digest")
+        why = ("a human's reply in another agent's thread (started by it, or naming it and "
+               "answered by it): that agent answers it, the coordinator gets it with its digest")
     elif mine:
         why = "a reply in its own thread" + (": fyi, wakes only the thread's starter" if fyi else "")
     elif crown and not tasks.mentions(text):

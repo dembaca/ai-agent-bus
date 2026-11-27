@@ -447,7 +447,8 @@ def test_static_budget():
     # + ADR-007 phase E: the receipts and crown_taken (RT-6.6 step 10)
     # + 1,040: the hourly check while the crown is held and DONE closing a task (RT-6.6 step 12)
     # + 150: a human's reply in another agent's thread is that agent's (RT-6.6 step 5, #207)
-    assert len((skill / "coordinator.md").read_text()) <= 8_150  # + the NATS home line (RT-6.38), + `/agent-mandate` (RT-6.26 step 8), + a task waiting on an ask (RT-6.19), + for_crown (RT-6.6 step 5)
+    # + 50: also in a human's thread naming a peer once it answered there (RT-6.6 step 5, #216)
+    assert len((skill / "coordinator.md").read_text()) <= 8_200  # + the NATS home line (RT-6.38), + `/agent-mandate` (RT-6.26 step 8), + a task waiting on an ask (RT-6.19), + for_crown (RT-6.6 step 5)
     # cleandoc: Python 3.13 strips a docstring's indentation, older ones don't.
     # + RT-6.14 step 9: scope="all", the overview across homes (#141)
     assert len(inspect.cleandoc(server.coordinator.__doc__)) <= 425 + 90 + 80
@@ -499,7 +500,7 @@ def test_instructions_budget(monkeypatch, variant, mode):
 # the more_pending item of wait_for_events. Counting what the bus costs must not cost
 # tokens itself: a change here is a deliberate one, with this hash updated in the same PR
 # and a reason in its body. The plugin version and a digest's clock time are left out.
-_MODEL_TEXT_SHA256 = "6c96eeb8a8795fbf4c2e687981a54733503998c27e2bf5a71ecb91544ae7a655"
+_MODEL_TEXT_SHA256 = "1e050da3df9162d8b2ea0c1c5f61ec3aa3b0b6a1f1a7ccdb5ea75ed083b5d5e5"
 _ROOT = Path(__file__).resolve().parents[2]
 # A one-line string literal of TypeScript, or a comment (skipped, so a quote in a comment is none).
 _TS_TOKEN = re.compile(r'//[^\n]*|/\*.*?\*/|"(?:[^"\\\n]|\\.)*"|\'(?:[^\'\\\n]|\\.)*\'|`(?:[^`\\\n]|\\.)*`', re.S)

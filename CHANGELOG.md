@@ -55,13 +55,38 @@ before 0.5.0 are described in the git history.
   agent's status post (`IDLE` and the like) thus wakes that agent and reaches
   the coordinator only in the digest. A human's reply stays the coordinator's
   when it names the coordinator, is a stall or a DM, names an agent departed
-  or not here, stands in a thread a human started (also one whose root names
-  an agent), when the root's agent is departed or not reachable, when the
-  gate holds it back from that agent, and when the root cannot be read. An
-  agent's reply in another agent's thread wakes the coordinator as before.
-  The push, `wait_for_events`, the listener and `/v1/wake` decide alike:
-  `/v1/posts` marks such a reply `agent_thread` while the agent holds the
-  crown.
+  or not here, stands in a thread a human started (see the next entry for
+  one whose root names an agent), when the root's agent is departed or not
+  reachable, when the gate holds it back from that agent, and when the root
+  cannot be read. An agent's reply in another agent's thread wakes the
+  coordinator as before. The push, `wait_for_events`, the listener and
+  `/v1/wake` decide alike: `/v1/posts` marks such a reply `agent_thread`
+  while the agent holds the crown.
+- **A human's thread naming an agent is that agent's once it has answered**
+  ([#216](https://github.com/dembaca/ai-agent-bus/issues/216),
+  [the coordinator scenario, RT-6.6 step 5](docs/arc42/06-runtime-view.md#66-coordinator-crown-and-presence-lease)).
+  In a thread a human started with `@agent-b …`, a trusted human's plain
+  reply woke both B, once B had posted there, and the coordinator. Now, while
+  B is a reachable peer of the home and has posted in the thread, the reply
+  wakes only B; the coordinator gets it in its digest, as for a thread B
+  started. The coordinator still wakes before B has posted there (a typo name
+  or a request not taken up yet would otherwise go unanswered), when B has
+  departed, is not here or not reachable, when B is another owner's agent
+  (its own gate may hold the reply back, which the coordinator cannot know),
+  when the root names the coordinator too, and when the thread or the roster
+  cannot be read. B counts by its current username: a root naming B by a
+  name it no longer has names nobody, and the coordinator wakes. Such a
+  thread is read again only while B has not posted there yet, at most once a
+  minute, so B's first post there counts within a minute (until then the
+  coordinator wakes too).
+- **The listener knows its threads beyond its last 200 posts** (#216,
+  [the end-of-turn scenario, RT-6.2 step 4](docs/arc42/06-runtime-view.md#62-end-of-a-turn-drain-sign-off-listen)).
+  A waiting agent's listener and `/v1/wake` took "my threads" from the home's
+  last 200 posts only, so a reply in a thread where the agent's post lay
+  further back reached it only with the digest, and with #214 not the
+  coordinator either. `/v1/posts?since=` now marks a reply `my_thread` /
+  `my_root` from the whole thread, one read per root and kept; the marks add
+  to the 200 posts, never remove.
 
 - **The bridge serves the slash commands and their signed records** (#151
   step 3): `/agent-ask-mode`, `/agent-mandate` and `/agent-debug` move from the
@@ -112,6 +137,8 @@ before 0.5.0 are described in the git history.
   without a scheduler run it at the first stall notice after an hour. It goes with
   the crown on a handover. Stall notices: one addressee per item, and finished tasks
   closed with `DONE`, so the notice lists only live items.
+
+- **Phase 5 of the NATS decision as plan B** (#151): an amendment to the NATS decision (ADR-014) plans the central Mattermost adapter in fourteen pieces, each use of the agent's own Mattermost bot in a home over NATS moving to that bot in the bridge (RT-6.44) or onto NATS behind a switch per piece and channel, beside the decided transport flag, off by default, with its way back, test and lab check; decided by the owner: the transport flag per channel in the channel directory, and that at the end nothing of the bus runs outside the sandbox (the relay, the host process and the signed host copy go with the last piece; the signed-release decision, ADR-011, and its scenarios RT-6.28 to RT-6.30 and RT-6.32 note it). Also the order, the acceptance before registration ends (with the protection against stolen tokens and the console's release signature check, #192), three more decisions of the owner of 2026-11-27 (the login approval only at this machine once no agent has a bot, with no DM and no ask; the hosts' setting for the bridge's address as `CB_RECORDS_URL`, planned in `docs/env-names.md`; hosts delete `MM_REG_SECRET`, `MM_REG_SECRET_GOPASS` and `MM_REG_SECRET_CMD` two weeks after the shutdown), the risk of the bridge vouching for people (RISK-21) corrected, and two new risks: the bridge as the single path between people and agents (RISK-36), and a steered agent changing the plugin code its neighbouring sessions run, up to a forged approval for them (RISK-37). The history read, file parts and header line get request subjects of their own outside every stream, with their grant; a person's post read back from history approves only with a fresh account record. The detection of a stolen token is now stated as built (0.102.0) where the docs still called it not built. Proposed, nothing built.
 
 ## 0.103.0
 
