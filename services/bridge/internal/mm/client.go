@@ -186,6 +186,27 @@ func (c *Client) GetUser(ctx context.Context, userID string) (User, error) {
 	return User{ID: raw.ID, Username: raw.Username, IsBot: raw.IsBot}, nil
 }
 
+// Person says whether username is a person's account: it exists, is not
+// deactivated and is no bot (Mattermost's is_bot, as GetUser). An unknown
+// username is false, not an error. Plan B piece 6 (RT-6.11) keeps an ask's
+// mention only of such an account (mirror.People).
+func (c *Client) Person(ctx context.Context, username string) (bool, error) {
+	var raw []struct {
+		Username string `json:"username"`
+		IsBot    bool   `json:"is_bot"`
+		DeleteAt int64  `json:"delete_at"`
+	}
+	if err := c.do(ctx, "POST", "/api/v4/users/usernames", []string{username}, &raw); err != nil {
+		return false, fmt.Errorf("mattermost: username %q: %w", username, err)
+	}
+	for _, u := range raw {
+		if strings.EqualFold(u.Username, username) {
+			return !u.IsBot && u.DeleteAt == 0, nil
+		}
+	}
+	return false, nil
+}
+
 // Post is one of a channel's posts, as the catch-up after a WebSocket
 // reconnect needs it (mmws.Reconnected): who wrote it and where, its
 // thread, Mattermost's clock fields, the text — and the fields the drop

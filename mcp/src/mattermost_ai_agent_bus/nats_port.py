@@ -21,7 +21,11 @@ publish: `post` waits for the post's own copy from the stream (its echo) to know
 the id, and raises when none comes.
 
 What goes over NATS, in a NATS home's channel: every post, but the ask for a human
-(kind ask) and a post with files, which are for people and go to Mattermost. The
+(kind ask) and a post with files, which are for people and go to Mattermost. With plan B
+piece 6 on in the home (`planb.on(6, home)`, RT-6.11) the ask goes over NATS too, its card,
+alternatives and mentioned username as the flat props `ask_card`, `ask_answers` and `ask_to`
+(ask_wire), and the bridge posts it for people with that one mention; its reminders carry
+`ask_to` alike, and people's answers come back as their events (RT-6.42). The
 bus's own props (`a2a`) travel as flat keys `<CB_PROPS_PREFIX>a2a_<key>`, the
 agent's own `<CB_PROPS_PREFIX>…` props as they are; the agent card and anything
 else are not sent with a post. The card's harness, model, task, branch and open asks
@@ -106,6 +110,7 @@ import dataclasses
 import json
 import logging
 from pathlib import Path
+import re
 import secrets
 import time
 import weakref
@@ -139,6 +144,12 @@ _NOTE = "a2a_"  # after the props prefix: the bus's own note, flat
 _NONCE = "nats_nonce"  # after the props prefix: tells a post its own copy
 _ROOT = "nats_root"  # after the props prefix: the NATS post a Mattermost post answers
 _NATS_ID = "nats_id"  # after the props prefix: the NATS post the bridge's copy mirrors (RT-6.36 step 4)
+# Plan B piece 6 (RT-6.11): an ask over NATS carries its card, its alternatives and the one person it
+# mentions as flat props after the props prefix; the bridge posts the card and keeps that one mention.
+_ASK_CARD = "ask_card"  # the ask's attachments (its card, a debug card after it) as JSON text
+_ASK_ANSWERS = "ask_answers"  # the alternatives by position as JSON text (props.ask_answers)
+_ASK_TO = "ask_to"  # the username the ask or its reminder mentions first: the one mention kept
+_MENTION_HEAD = re.compile(r"@([A-Za-z0-9._-]+)")
 BRIDGE_TTL_SEC = 300.0  # how long "CB_MM_BRIDGE_BOT is no bot account" holds before it is read again
 COPY_READ_CAP = 1000  # Mattermost's most posts in one read after a time: a read this long may be cut
 COPY_SETTLE_SEC = 5.0  # a copy younger than this is not passed by the count (a replica may lag)
@@ -337,13 +348,48 @@ def wire_props(props: Mapping[str, Any] | None, prefix: str) -> dict[str, natsbu
     return out
 
 
+def ask_wire(props: Mapping[str, Any] | None, message: str, prefix: str) -> dict[str, natsbus.Prop]:
+    """Plan B piece 6 (RT-6.11): what an ask or its reminder adds to its NATS props: the card
+    (`attachments`) and the alternatives (`ask_answers`) as JSON text, and the username its first
+    line mentions first (the ask's `@<human>`), which the bridge alone turns into a mention."""
+    out: dict[str, natsbus.Prop] = {}
+    cards = (props or {}).get("attachments")
+    if isinstance(cards, list) and cards:
+        out[f"{prefix}{_ASK_CARD}"] = json.dumps(cards, ensure_ascii=False, separators=(",", ":"))
+    answers = (props or {}).get("ask_answers")
+    if isinstance(answers, list) and answers:
+        out[f"{prefix}{_ASK_ANSWERS}"] = json.dumps(answers, ensure_ascii=False, separators=(",", ":"))
+    if m := _MENTION_HEAD.search(message.split("\n", 1)[0]):
+        out[f"{prefix}{_ASK_TO}"] = m.group(1)
+    return out
+
+
+def _json_list(value: object) -> list[Any] | None:
+    if not isinstance(value, str):
+        return None
+    try:
+        got = json.loads(value)
+    except ValueError:
+        return None
+    return got if isinstance(got, list) else None
+
+
 def read_props(wire: Mapping[str, natsbus.Prop], prefix: str) -> dict[str, Any]:
-    """The inverse: props as a Mattermost post carries them, the note under `a2a`."""
+    """The inverse: props as a Mattermost post carries them, the note under `a2a`; on a post of
+    kind ask, its card and alternatives (plan B piece 6, ask_wire) back as `attachments` and
+    `ask_answers`, data only (a2a.ask_card), as a reader of the Mattermost post had them."""
     note_prefix = f"{prefix}{_NOTE}"
     note = {k[len(note_prefix):]: v for k, v in wire.items() if k.startswith(note_prefix)}
     out: dict[str, Any] = {k: v for k, v in wire.items() if not k.startswith(note_prefix)}
     if note:
         out["a2a"] = note
+    if note.get("kind") == a2a.ASK and f"{prefix}{_ASK_CARD}" in out:
+        cards = _json_list(out.pop(f"{prefix}{_ASK_CARD}"))
+        if cards and all(isinstance(c, Mapping) for c in cards):
+            out["attachments"] = cards
+        answers = _json_list(out.pop(f"{prefix}{_ASK_ANSWERS}", None))
+        if answers and all(isinstance(a, str) for a in answers):
+            out["ask_answers"] = answers
     return out
 
 
@@ -478,6 +524,8 @@ class NatsPort:
         # People over NATS (RT-6.42)
         self._keys = _Keys()
         self._person_names: dict[str, str] = {}  # person id -> the name the bridge last showed
+        # Plan B piece 6: people's replies in the thread of a NATS post (an ask's), by Mattermost id
+        self._person_replies: OrderedDict[str, Post] = OrderedDict()
         self._people_ids: dict[str, str] = {}  # channel name -> Mattermost id, for the bus's channels
         self._people_miss: dict[str, float] = {}  # channel name -> monotonic time its id was not readable
         self._switched: set[str] = set()  # channels whose people came over NATS at the last look
@@ -1196,7 +1244,9 @@ class NatsPort:
             # where their thread is (RT-6.36).
             return await self.inner.post(message, channel_id=channel_id, root_id=root_id,
                                          props=props, file_ids=file_ids)
-        if file_ids or a2a.kind_of({"props": props or {}, "message": message}) == a2a.ASK:
+        kind = a2a.kind_of({"props": props or {}, "message": message})
+        asks_on = self._piece6(name)  # plan B piece 6: an ask goes over NATS, the bridge posts it
+        if file_ids or (kind == a2a.ASK and not asks_on):
             # For people (an ask for a human, files): Mattermost, as before.
             if root_id and parse_post_id(root_id):
                 raise NatsPortError("an ask or a post with files is for people and goes to Mattermost, "
@@ -1207,6 +1257,10 @@ class NatsPort:
         root = self._id_in(root_id, name, "a reply's root") if root_id else None
         bus = self._require()
         wire = wire_props(props, self._s.props_prefix)
+        if asks_on and kind in (a2a.ASK, a2a.REMINDER):
+            # RT-6.11, plan B piece 6: the card and the one mention, for the bridge to post. Over
+            # NATS or not at all: a failure raises, nothing falls back to Mattermost.
+            wire |= ask_wire(props, message, self._s.props_prefix)
         nonce = secrets.token_hex(8)  # only this post's own copy carries it
         wire[f"{self._s.props_prefix}{_NONCE}"] = nonce
         echo: asyncio.Future[Post] = asyncio.get_running_loop().create_future()
@@ -1648,13 +1702,19 @@ class NatsPort:
             post = self.inner.with_links(self._person_post(ev, cid))
             if m.files:
                 post = await self._with_files(post)
+            if parse_post_id(post.root_id) and self._piece6(ch):
+                # Plan B piece 6 (RT-6.11): a reply in the thread of an agent's NATS post (an ask's)
+                # is read with that thread (`thread`, the reminders' answer check).
+                self._person_replies[post.id] = post
+                while len(self._person_replies) > self._memory:
+                    self._person_replies.popitem(last=False)
             self._tell(PostEvent(post=post, channel_type=None, edited=False))
             return
         assert m.emoji is not None
         if not self._keys.take_reaction(m.kind, m.mm, m.emoji, ev.anchor):
             return
         self._people_at[ch] = max(self._people_at.get(ch, 0), ms)
-        on_nats = m.ref is not None and self._where.get(m.ref) == ch
+        on_nats = m.ref is not None and self._on_nats(ch, m.ref)
         if m.kind == "reaction":
             # Judged under the Mattermost id and, for a NATS post, the id the reads give it.
             self._judge(("reaction", m.mm, m.emoji, ev.anchor), ev.anchor)
@@ -1667,10 +1727,26 @@ class NatsPort:
         target = m.mm
         if on_nats and m.ref is not None:
             target = post_id(ch, m.ref)
-            bucket = self._reacts.setdefault(m.ref, {})
-            if (m.emoji, uid) in bucket or len(bucket) < MAX_REACTIONS:
-                bucket[(m.emoji, uid)] = ms
+            if self._where.get(m.ref) == ch:  # kept for the reads only with its post
+                bucket = self._reacts.setdefault(m.ref, {})
+                if (m.emoji, uid) in bucket or len(bucket) < MAX_REACTIONS:
+                    bucket[(m.emoji, uid)] = ms
         self._tell(ReactionEvent(Reaction(user_id=uid, post_id=target, emoji_name=m.emoji, create_at=ms), cid))
+
+    def _on_nats(self, ch: str, seq: int) -> bool:
+        """Whether a person's event names, by the bridge's `root` or `ref`, a NATS post of `ch`:
+        one in the memory; with plan B piece 6 on (RT-6.11) also an open ask of this session that
+        the memory no longer holds (asked before a restart): the bridge sets the sequence only
+        from its own map, and only the bridge publishes a person's event (RT-6.42). Any other
+        sequence the memory lacks may be a person's own post the bridge carried: not a NATS post."""
+        at = self._where.get(seq)
+        if at is not None or not self._piece6(ch):
+            return at == ch
+        try:
+            return post_id(ch, seq) in {a.mm for a in self._asks()}
+        except Exception as exc:  # noqa: BLE001 — unknown: not taken as the ask's
+            log.info("nats: the open asks were not read (%s)", type(exc).__name__)
+            return False
 
     def _judge(self, key: tuple[str, ...], anchor: str, approved: bool | None = None) -> None:
         """Remember how an event was judged as it came (RT-6.42 step 9): without a fresh
@@ -1740,7 +1816,7 @@ class NatsPort:
         no props (the body has none), the server's time."""
         m, ch = ev.message, ev.where
         root = ""
-        if m.root is not None and self._where.get(m.root) == ch:
+        if m.root is not None and self._on_nats(ch, m.root):
             root = post_id(ch, m.root)
         elif m.mm_root:
             root = m.mm_root
@@ -1768,6 +1844,19 @@ class NatsPort:
         for anchor, name in att.trusted if att is not None else ():
             out.setdefault(person_id(anchor), name)
         return out
+
+    async def humans_among(self, names: set[str]) -> set[str]:
+        """The adapter's; with plan B piece 6 on in this home (RT-6.11), from the directory alone:
+        the usernames a fresh account record of the login service binds to a person, without a
+        Mattermost read. Without the bus, nobody: the names stay as written, and the bridge posts
+        every mention but an ask's own as plain text."""
+        if not self._piece6(self._s.home):
+            return await self.inner.humans_among(names)
+        bus = self._live()
+        if bus is None:
+            return set()
+        people = {p[1].lower() for a in bus.bound_accounts() if (p := bus.account_person(a))}
+        return {n for n in names if n.lower() in people}
 
     async def may_approve(self, user_id: str) -> bool | None:
         """A person over NATS approves only with a fresh approver record (RT-6.42 step 9);
@@ -1814,6 +1903,9 @@ class NatsPort:
         posts = [p for p in self._channel_posts(ch) if root in (p.id, p.root_id)]
         if not any(p.id == root for p in posts):
             raise NotFound(f"the root of thread {post_id} is no longer in this session's NATS memory")
+        people = [p for p in self._person_replies.values() if p.root_id == root]  # plan B piece 6
+        if people:
+            posts = sorted([*posts, *people], key=lambda p: p.create_at)
         return Thread(root, order=tuple(p.id for p in posts), posts=tuple(posts))
 
     async def post_channel_id(self, post_id: str) -> str:
@@ -1829,6 +1921,11 @@ class NatsPort:
         """A NATS home's posts (those `keep` lets through) and Mattermost's `others` in
         the same channel (a person's post, an ask, a BYE), oldest first."""
         got = {p.id: p for p in others}
+        if self._person_replies:
+            # plan B piece 6: a person's reply to an ask over NATS, in the NATS post's thread
+            # (Mattermost has it under the copy's id)
+            cid = (self._ids or {}).get(name)
+            got.update({p.id: p for p in self._person_replies.values() if p.channel_id == cid and keep(p)})
         got.update({p.id: p for p in self._channel_posts(name) if keep(p)})
         return sorted(got.values(), key=lambda p: p.create_at)
 
@@ -2003,6 +2100,15 @@ class NatsPort:
         return self._own_anchors()
 
     # --- plan B piece 4: trusted humans and owners from the login service (RT-6.41 step 6) ------
+    def _piece6(self, home: str) -> bool:
+        """Whether the NATS home `home` runs plan B's asks over NATS (piece 6, RT-6.11):
+        `planb.on(6, home)`. A switch that cannot be read counts as off: the old path."""
+        try:
+            return bool(home) and home in self._homes and bool(planb.on(6, home))
+        except Exception as exc:  # noqa: BLE001 — in doubt off: the old path
+            log.info("nats: the asks switch was not read (%s): the old path", type(exc).__name__)
+            return False
+
     def _piece4(self) -> bool:
         """Whether this home takes every check of a trusted human and every agent's owner from
         the login service (plan B piece 4): `planb.on(4, home)`. A switch that cannot be read

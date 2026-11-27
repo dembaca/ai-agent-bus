@@ -108,7 +108,7 @@ func run(log *slog.Logger) error {
 	}
 	// Plan B's switches per channel, as the login service writes them from the
 	// channel directory (RT-6.39 step 5), through the bridge's own consumer
-	// bridge_planb made at every start: no piece reads them yet.
+	// bridge_planb made at every start: the mirror reads piece 6 (asks, RT-6.11).
 	planb := &presence.Switches{}
 	pr := &presence.Reader{Log: log, Deliver: cfg.Deliver + ".presence", Into: snapshot}
 	pbr := &presence.PlanBReader{Log: log, Deliver: cfg.Deliver + ".planb", Stream: "PRESENCE", Into: planb}
@@ -133,7 +133,8 @@ func run(log *slog.Logger) error {
 		cid := channelOnce(cfg.MMTeam, home, client)
 		lk := &links.Resolver{Presence: snapshot, Roster: roster{client: client, cid: cid},
 			Window: 90 * time.Second, TTL: 30 * time.Second}
-		mr := &mirror.Mirror{Home: home, Prefix: cfg.Prefix, Log: log, Sink: client, Store: kv, Links: lk}
+		mr := &mirror.Mirror{Home: home, Prefix: cfg.Prefix, Log: log, Sink: client, Store: kv, Links: lk,
+			Switches: planb, People: client}
 		if bots != nil {
 			mr.Bots = bots
 		}

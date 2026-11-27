@@ -96,6 +96,24 @@ before 0.5.0 are described in the git history.
   record that carries `crown` (`attest.py`), and `/agent-debug on full` now signs one, so update the hosts first) logs the view at each tick: claimants in order,
   members, standing, holder and why nobody stands.
 
+- **Plan B piece 6: asks to humans and their answers over NATS** (#244,
+  ADR-014 phase 5, RT-6.11 step 7). With the piece's switch on for a home over
+  NATS (`planb.on(6, home)`, off by default), `ask_human` posts the ask on
+  NATS like any agent post (its id `n1:<home>:<n>`), with its card, its
+  alternatives and the username it mentions as the props `ask_card`,
+  `ask_answers` and `ask_to`; the reminders, `resolve_ask`'s ✅ and its note go
+  over NATS too, and the session makes no Mattermost call for them. The bridge
+  posts the copy with the card and keeps only the ask's own mention, and only of
+  an active person's account; every other mention stays plain. People's replies
+  and 👍/👎 on the copy come back as their events (RT-6.42), named by the ask's
+  stream sequence, also after a restart; approval stays as strict as before (a
+  trusted anchor, a fresh approver record, 24 h). The check that turns a person's
+  @-mention plain reads the login service's account records instead of
+  Mattermost. Not moved yet: the ✅ of an ask asked before the switch, the ask's
+  link in a person's thread, the ask mode's and debug card's reads of the home,
+  and the console's list, which counts a NATS ask only in `more`. The bridge and
+  the MCP server ship together; with the switch off nothing changes.
+
 - **Plan B piece 4: every check of a trusted human and of an agent's owner
   from the login service** (#244, ADR-014 phase 5, RT-6.41 step 6). With the
   piece's switch on for a home over NATS, the MCP server's trusted humans
