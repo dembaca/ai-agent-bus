@@ -168,6 +168,7 @@ async def test_requests_are_counted_by_bucketed_route(console: Console) -> None:
 
 def test_the_route_buckets_are_bounded() -> None:
     assert route_bucket("/v1/threads/x/y") == "/v1/threads"
+    assert route_bucket("/v1/agent-stats") == "/v1/agent-stats"
     assert route_bucket("/assets/index-abc123.js") == "static"
     assert route_bucket("/favicon.svg") == "static"
     assert route_bucket("/anything/else") == "other"

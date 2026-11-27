@@ -4,6 +4,8 @@ package config
 
 import (
 	"fmt"
+	"net"
+	"net/netip"
 	"net/url"
 	"os"
 	"regexp"
@@ -12,6 +14,7 @@ import (
 	"time"
 
 	"github.com/dembaca/ai-agent-bus/services/bridge/internal/netloc"
+	"github.com/dembaca/ai-agent-bus/services/bridge/internal/signing"
 )
 
 // Config is the bridge's whole configuration.
@@ -35,9 +38,35 @@ type Config struct {
 	Inbox       string   // CB_BRIDGE_INBOX, the bridge's own reply inbox prefix, default _INBOX_bridge; it must match the right _INBOX_bridge.>
 	// The agents' own bots (RT-6.44): with an admin token the bridge posts each
 	// agent's copies under a bot of its own; unset, under the one bridge bot.
-	AdminToken string // CB_BRIDGE_MM_ADMIN_TOKEN_FILE, optional: the admin bot's token (system_admin), used only by the bot management
+	AdminToken string // CB_BRIDGE_MM_ADMIN_TOKEN_FILE, optional: the admin bot's token (system_admin), used by the bot management and the slash commands' lookups
 	BotPrefix  string // CB_BRIDGE_MM_BOT_PREFIX, required with AdminToken: the agent bots' username prefix
 	HideBotDM  bool   // CB_BRIDGE_MM_HIDE_BOT_DM, default true: hide the admin bot's welcome DM with each new bot
+
+	// The slash commands and their signed records (issue #151 step 3). The whole
+	// feature is off while CommandsListen is empty.
+	CommandsListen      string   // CB_BRIDGE_COMMANDS_LISTEN_ADDR, the command listener; empty: the feature is off
+	CommandsTLSCertFile string   // CB_BRIDGE_COMMANDS_TLS_CERT_FILE
+	CommandsTLSKeyFile  string   // CB_BRIDGE_COMMANDS_TLS_KEY_FILE
+	CommandsAllowHTTP   bool     // CB_BRIDGE_COMMANDS_ALLOW_HTTP, default false: plain http to a listener that is not loopback
+	CommandsPlainHTTP   bool     // derived: no TLS on a listener that is not loopback, allowed by CommandsAllowHTTP; the command tokens go in clear text
+	SigningKeyFile      string   // CB_BRIDGE_SIGNING_KEY_FILE, base64 or base64url of the bridge's 32-byte Ed25519 seed
+	ModeCommandTokens   []string // CB_BRIDGE_MODE_COMMAND_TOKEN_FILE, comma-separated; none: no mode command
+	// MandateCommandTokens is CB_BRIDGE_MANDATE_COMMAND_TOKEN_FILE; none: no mandate command.
+	MandateCommandTokens []string
+	// DebugCommandTokens is CB_BRIDGE_DEBUG_COMMAND_TOKEN_FILE; none: no debug command.
+	DebugCommandTokens []string
+	RecordsBucket      string // CB_BRIDGE_RECORDS_BUCKET, default BUS_BRIDGE_RECORDS
+	// TrustedProxies is CB_BRIDGE_TRUSTED_PROXIES: the IPs or CIDRs whose
+	// X-Forwarded-For counts; empty: the header is ignored.
+	TrustedProxies []string
+
+	// The release record (RT-6.32, #151 step 4): a signers file in
+	// authorized_keys form and an optional version. Unset, the route answers
+	// the registrar's exact "no release set" 404; with the file, the bridge
+	// serves the record signed with the same key.
+	ReleaseSignersFile string // CB_BRIDGE_RELEASE_SIGNERS_FILE
+	ReleaseVersion     string // CB_BRIDGE_RELEASE_VERSION: v<x.y.z>, latest, or empty (keys only)
+
 	// BotKeep is CB_BRIDGE_MM_BOT_KEEP, default 24h, at least 1h: the sweep
 	// disables a bot the bridge made once its agent showed no presence for
 	// longer (RT-6.44 step 8). Only with AdminToken.
@@ -67,6 +96,18 @@ func Load(env *Env) (Config, error) {
 	homes := get("CB_BRIDGE_HOMES", "BRIDGE_HOMES")
 	hideBotDM := strings.TrimSpace(get("CB_BRIDGE_MM_HIDE_BOT_DM", "BRIDGE_HIDE_BOT_DM"))
 	allowHTTP := strings.TrimSpace(get("CB_BRIDGE_MM_ALLOW_HTTP", "BRIDGE_MM_ALLOW_HTTP"))
+	commandsListen := strings.TrimSpace(get("CB_BRIDGE_COMMANDS_LISTEN_ADDR", ""))
+	commandsCert := strings.TrimSpace(get("CB_BRIDGE_COMMANDS_TLS_CERT_FILE", ""))
+	commandsKey := strings.TrimSpace(get("CB_BRIDGE_COMMANDS_TLS_KEY_FILE", ""))
+	commandsAllowHTTP := strings.TrimSpace(get("CB_BRIDGE_COMMANDS_ALLOW_HTTP", ""))
+	signingKey := strings.TrimSpace(get("CB_BRIDGE_SIGNING_KEY_FILE", ""))
+	modeTokenFile := strings.TrimSpace(get("CB_BRIDGE_MODE_COMMAND_TOKEN_FILE", ""))
+	mandateTokenFile := strings.TrimSpace(get("CB_BRIDGE_MANDATE_COMMAND_TOKEN_FILE", ""))
+	debugTokenFile := strings.TrimSpace(get("CB_BRIDGE_DEBUG_COMMAND_TOKEN_FILE", ""))
+	recordsBucket := strings.TrimSpace(get("CB_BRIDGE_RECORDS_BUCKET", ""))
+	trustedProxies := strings.TrimSpace(get("CB_BRIDGE_TRUSTED_PROXIES", ""))
+	releaseSigners := strings.TrimSpace(get("CB_BRIDGE_RELEASE_SIGNERS_FILE", ""))
+	releaseVersion := strings.TrimSpace(get("CB_BRIDGE_RELEASE_VERSION", ""))
 	// new in #151 step 2: no old spelling
 	botKeep := strings.TrimSpace(get("CB_BRIDGE_MM_BOT_KEEP", ""))
 	c := Config{
@@ -87,6 +128,14 @@ func Load(env *Env) (Config, error) {
 		AdminToken: strings.TrimSpace(get("CB_BRIDGE_MM_ADMIN_TOKEN_FILE", "BRIDGE_MM_ADMIN_TOKEN_FILE")),
 		BotPrefix:  strings.TrimSpace(get("CB_BRIDGE_MM_BOT_PREFIX", "BRIDGE_BOT_PREFIX")),
 		HideBotDM:  true,
+
+		CommandsListen:      commandsListen,
+		CommandsTLSCertFile: commandsCert,
+		CommandsTLSKeyFile:  commandsKey,
+		SigningKeyFile:      signingKey,
+		RecordsBucket:       recordsBucket,
+		ReleaseSignersFile:  releaseSigners,
+		ReleaseVersion:      releaseVersion,
 	}
 	if bad != nil {
 		return Config{}, bad
@@ -125,6 +174,32 @@ func Load(env *Env) (Config, error) {
 	}
 	if c.Listen == "" {
 		c.Listen = "127.0.0.1:8095"
+	}
+	if c.RecordsBucket == "" {
+		c.RecordsBucket = "BUS_BRIDGE_RECORDS"
+	}
+	if v := commandsAllowHTTP; v != "" {
+		allow, err := strconv.ParseBool(v)
+		if err != nil {
+			return Config{}, fmt.Errorf("CB_BRIDGE_COMMANDS_ALLOW_HTTP %q is neither true nor false", v)
+		}
+		c.CommandsAllowHTTP = allow
+	}
+	if trustedProxies != "" {
+		for _, raw := range strings.Split(trustedProxies, ",") {
+			raw = strings.TrimSpace(raw)
+			if raw == "" {
+				continue
+			}
+			if _, err := netip.ParseAddr(raw); err == nil {
+				c.TrustedProxies = append(c.TrustedProxies, raw)
+				continue
+			}
+			if _, err := netip.ParsePrefix(raw); err != nil {
+				return Config{}, fmt.Errorf("CB_BRIDGE_TRUSTED_PROXIES %q is no IP or CIDR", raw)
+			}
+			c.TrustedProxies = append(c.TrustedProxies, raw)
+		}
 	}
 	for _, h := range strings.Split(homes, ",") {
 		if h = strings.TrimSpace(h); h != "" {
@@ -199,7 +274,70 @@ func Load(env *Env) (Config, error) {
 			"token would cross the network in clear text; use https, or set CB_BRIDGE_MM_ALLOW_HTTP=true "+
 			"on a network you trust", u.Redacted())
 	}
+	if c.CommandsListen != "" {
+		if err := c.checkCommands(modeTokenFile, mandateTokenFile, debugTokenFile); err != nil {
+			return Config{}, err
+		}
+	}
+	if (c.ReleaseSignersFile != "" || c.ReleaseVersion != "") && c.SigningKeyFile == "" {
+		return Config{}, fmt.Errorf("CB_BRIDGE_RELEASE_SIGNERS_FILE and CB_BRIDGE_RELEASE_VERSION need " +
+			"CB_BRIDGE_SIGNING_KEY_FILE: the release record is signed with the bridge's own key")
+	}
 	return c, nil
+}
+
+// checkCommands validates the slash commands' settings and reads their token
+// files: an empty CommandsListen leaves the whole feature off, so none of this
+// is read then.
+func (c *Config) checkCommands(modeFile, mandateFile, debugFile string) error {
+	switch {
+	case c.SigningKeyFile == "":
+		return fmt.Errorf("CB_BRIDGE_COMMANDS_LISTEN_ADDR needs CB_BRIDGE_SIGNING_KEY_FILE: " +
+			"the records are signed with the bridge's own Ed25519 key")
+	case c.AdminToken == "":
+		return fmt.Errorf("CB_BRIDGE_COMMANDS_LISTEN_ADDR needs CB_BRIDGE_MM_ADMIN_TOKEN_FILE: " +
+			"the commands look their callers up in Mattermost")
+	case (c.CommandsTLSCertFile == "") != (c.CommandsTLSKeyFile == ""):
+		return fmt.Errorf("set CB_BRIDGE_COMMANDS_TLS_CERT_FILE and CB_BRIDGE_COMMANDS_TLS_KEY_FILE " +
+			"together, or neither")
+	}
+	host, _, err := net.SplitHostPort(c.CommandsListen)
+	if err != nil {
+		return fmt.Errorf("CB_BRIDGE_COMMANDS_LISTEN_ADDR %q is no host:port: %w", c.CommandsListen, err)
+	}
+	// The command tokens and the records cross the wire: TLS, or a loopback
+	// listener, or the operator's explicit opt-in for a network it trusts, as
+	// with CB_BRIDGE_MM_URL (#131).
+	c.CommandsPlainHTTP = c.CommandsTLSCertFile == "" && !netloc.Loopback(host)
+	if c.CommandsPlainHTTP && !c.CommandsAllowHTTP {
+		return fmt.Errorf("CB_BRIDGE_COMMANDS_LISTEN_ADDR %s is not loopback and has no TLS: the command "+
+			"tokens and the records would cross the network in clear text; set "+
+			"CB_BRIDGE_COMMANDS_TLS_CERT_FILE and CB_BRIDGE_COMMANDS_TLS_KEY_FILE, or "+
+			"CB_BRIDGE_COMMANDS_ALLOW_HTTP=true on a network you trust", c.CommandsListen)
+	}
+	for _, f := range []struct {
+		name, path string
+		into       *[]string
+	}{
+		{"CB_BRIDGE_MODE_COMMAND_TOKEN_FILE", modeFile, &c.ModeCommandTokens},
+		{"CB_BRIDGE_MANDATE_COMMAND_TOKEN_FILE", mandateFile, &c.MandateCommandTokens},
+		{"CB_BRIDGE_DEBUG_COMMAND_TOKEN_FILE", debugFile, &c.DebugCommandTokens},
+	} {
+		if f.path == "" {
+			continue
+		}
+		tokens, err := signing.ReadTokenFile(f.path)
+		if err != nil {
+			return fmt.Errorf("%s: %w", f.name, err)
+		}
+		*f.into = tokens
+	}
+	if len(c.ModeCommandTokens)+len(c.MandateCommandTokens)+len(c.DebugCommandTokens) == 0 {
+		return fmt.Errorf("CB_BRIDGE_COMMANDS_LISTEN_ADDR needs at least one of " +
+			"CB_BRIDGE_MODE_COMMAND_TOKEN_FILE, CB_BRIDGE_MANDATE_COMMAND_TOKEN_FILE and " +
+			"CB_BRIDGE_DEBUG_COMMAND_TOKEN_FILE")
+	}
+	return nil
 }
 
 // propsPrefix is the bus's own rule (a2a.user_prefix): one segment, ending in _.

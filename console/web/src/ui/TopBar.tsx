@@ -14,10 +14,11 @@ export const VIEW_LABEL: Record<View, string> = {
   reports: "Reports",
 }
 
-const NAV: readonly View[] = ["agents", "asks", "graph", "overview", "reports"]
+// #200: the Overview first, and the console's default view
+const NAV: readonly View[] = ["overview", "agents", "asks", "graph", "reports"]
 
-/** The top bar (the agreed design, 2026-11-25): the Choirbus logo and
- * wordmark, the views — Agents is the home — with the number of open asks
+/** The top bar (the agreed design, 2026-11-25; #200): the Choirbus logo and
+ * wordmark, the views — the Overview first, the default — with the number of open asks
  * beside Asks (orange when one is the operator's), the fleet stream's state
  * (one state for the whole console), the theme toggle, and the logged-in
  * operator with the logout. The console is read-only. */
@@ -34,8 +35,8 @@ export function TopBar({ view, setView, openAsks, forMe, conn, operator, theme, 
   return (
     <header className="topbar">
       <div className="topbar__inner">
-        <button type="button" className="topbar__brand" onClick={() => setView("agents")}
-          aria-label="Choirbus, the agents">
+        <button type="button" className="topbar__brand" onClick={() => setView("overview")}
+          aria-label="Choirbus, the overview">
           <Logo />
           <span>Choirbus</span>
         </button>

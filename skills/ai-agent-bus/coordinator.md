@@ -25,7 +25,10 @@ itself: SKILL.md (*Coordinator*).
   `crown: 👑 of ~<home>` is a guest that coordinates that home: mention it
   for work that belongs there.
 - **Route a human's plain post.** Only you wake for a post naming no agent
-  (`for_crown`, RT-6.6 step 5); one to an agent reaches you in the digest.
+  (`for_crown`, RT-6.6 step 5); one to an agent reaches you in the digest,
+  so does a trusted human's reply in a reachable peer's thread (its ask,
+  task or status, or a human's thread naming it once it posted there), even
+  where you posted: that agent answers, unless the reply names you.
   When it means an agent (by name, project or task), reply in its thread with
   `@<agent>` and the request in one line; do not just say it is not for you.
   Answer what is meant for everyone.
@@ -73,7 +76,23 @@ attention and tokens.
   @-mention (reassign if it stays silent). A human's ask reminds them by
   itself and wakes you not, nor does a task whose agent waits on one; an
   expired one, or one whose agent left, needs a new ask. No broadcast; if
-  the wait is fine, do nothing.
+  the wait is fine, do nothing. Close a finished task with `DONE` in its
+  thread, so stalls list only live items.
+<!-- RT-6.6 step 12 in docs/arc42/06-runtime-view.md -->
+- **Hourly check** while you hold the crown. Claude Code: its cron, a
+  recurring prompt each hour. OpenCode, pi, Cursor, Codex: at the first stall
+  an hour after the last check.
+  1. `coordinator("who")`: crown gone: post nothing and delete your schedule;
+     the check is the holder's (it starts its own).
+  2. `roster`, `tasks`; anything more to read goes to one subagent, so you
+     stay free for bus events.
+  3. Every agent on its task, with `ACK`, `PROGRESS` or `PR` in the last hour?
+     Nudge a silent one in its task thread by @-mention; one waiting on a
+     human or a review is fine, don't nudge it. Give a free one a `TASK`;
+     remind those that can to use subagents and work in parallel.
+  4. One `ASSIGNMENTS` post only if an assignment changed. No broadcast, no
+     post when nothing changed.
+  It goes with the crown: name it in your `HANDOVER`, then delete your schedule.
 - **Departed or not here** (`departed`, `not_here`, RT-6.21): your server
   told it. Hand a gone agent's work to another, or ask the human;
   forward to one not here (its home or DM).

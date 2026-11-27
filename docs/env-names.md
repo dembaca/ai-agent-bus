@@ -468,13 +468,14 @@ old one.
 `services/auth/nats-server.example.conf` names several of them in comments;
 it changes with the service.
 
-### The bridge (20)
+### The bridge (32)
 
 All in `services/bridge/`, read in `internal/config/config.go`. The last
 three renames come with the bridge's agent bots
 ([#166](https://github.com/dembaca/ai-agent-bus/pull/166), not merged when
-this was written); the last row, the sweep's keep time (#151 step 2), is new
-after the rename and has no old spelling. The bridge as a whole exists for
+this was written); the sweep's keep time (#151 step 2), the slash commands'
+ten (#151 step 3) and the release record's two (#151 step 4) are new after the
+rename and have no old spelling. The bridge as a whole exists for
 Mattermost; the column says whether the setting itself is about Mattermost.
 
 | Old name | New name | Mattermost | Where it appears | Note |
@@ -499,6 +500,18 @@ Mattermost; the column says whether the setting itself is about Mattermost.
 | `BRIDGE_BOT_PREFIX` | `CB_BRIDGE_MM_BOT_PREFIX` | yes | `internal/config/config.go` | new with #166; the Mattermost bots' username prefix |
 | `BRIDGE_HIDE_BOT_DM` | `CB_BRIDGE_MM_HIDE_BOT_DM` | yes | `internal/config/config.go` | new with #166; a Mattermost direct message |
 | `CB_BRIDGE_MM_BOT_KEEP` | `CB_BRIDGE_MM_BOT_KEEP` | yes | `internal/config/config.go` | new with #151 step 2: no old spelling; the sweep's keep time for the agents' bots |
+| `CB_BRIDGE_COMMANDS_ALLOW_HTTP` | `CB_BRIDGE_COMMANDS_ALLOW_HTTP` | no | `internal/config/config.go` | plain http to a listener that is not loopback; default false |
+| `CB_BRIDGE_COMMANDS_LISTEN_ADDR` | `CB_BRIDGE_COMMANDS_LISTEN_ADDR` | no | `internal/config/config.go`, `cmd/bridged/main.go` | empty: the whole feature is off |
+| `CB_BRIDGE_COMMANDS_TLS_CERT_FILE` | `CB_BRIDGE_COMMANDS_TLS_CERT_FILE` | no | `internal/config/config.go`, `cmd/bridged/main.go` | with the key file, or neither |
+| `CB_BRIDGE_COMMANDS_TLS_KEY_FILE` | `CB_BRIDGE_COMMANDS_TLS_KEY_FILE` | no | same | with the cert file, or neither |
+| `CB_BRIDGE_DEBUG_COMMAND_TOKEN_FILE` | `CB_BRIDGE_DEBUG_COMMAND_TOKEN_FILE` | yes | `internal/config/config.go` | the debug command's tokens, 0600 |
+| `CB_BRIDGE_MANDATE_COMMAND_TOKEN_FILE` | `CB_BRIDGE_MANDATE_COMMAND_TOKEN_FILE` | yes | same | the mandate command's tokens, 0600 |
+| `CB_BRIDGE_MODE_COMMAND_TOKEN_FILE` | `CB_BRIDGE_MODE_COMMAND_TOKEN_FILE` | yes | same | the mode command's tokens, 0600 |
+| `CB_BRIDGE_RECORDS_BUCKET` | `CB_BRIDGE_RECORDS_BUCKET` | no | `internal/config/config.go` | default `BUS_BRIDGE_RECORDS` |
+| `CB_BRIDGE_SIGNING_KEY_FILE` | `CB_BRIDGE_SIGNING_KEY_FILE` | no | `internal/config/config.go`, `cmd/bridged/main.go` | base64 or base64url of a 32-byte seed, 0600 |
+| `CB_BRIDGE_TRUSTED_PROXIES` | `CB_BRIDGE_TRUSTED_PROXIES` | no | `internal/config/config.go`, `internal/commands` | IPs or CIDRs, comma-separated; only their `X-Forwarded-For` counts for the read buckets, empty: the peer's address |
+| `CB_BRIDGE_RELEASE_SIGNERS_FILE` | `CB_BRIDGE_RELEASE_SIGNERS_FILE` | no | `internal/config/config.go`, `cmd/bridged/main.go` | the release record's signers in authorized_keys form; unset: the registrar's exact 404 |
+| `CB_BRIDGE_RELEASE_VERSION` | `CB_BRIDGE_RELEASE_VERSION` | no | same | `v<x.y.z>`, `latest`, or empty (keys only) |
 
 `BRIDGE_BOT_PREFIX` and `BRIDGE_HIDE_BOT_DM` (#166) are about Mattermost but
 have no `MM` in their names; the rename gives them one, as the rule says:
@@ -597,6 +610,16 @@ release record the registrar serves (the update notice and its `Needs:` and
 pinned keys come with it under a new `CB_` name of their own, not through
 this rename. Until then `MM_REGISTRAR_KEYS` keeps working under its name.
 
+`MM_REGISTER_URL` likewise names more than the registrar: it is also where
+hosts read the signed records and the release record. Planned, not built:
+once the bridge serves them, the hosts' setting for that address is
+`CB_RECORDS_URL` (decided 2026-11-27 by the owner, in phase 5 of the NATS
+decision as plan B, [ADR-014](arc42/09-architecture-decisions.md)). Until
+then `MM_REGISTER_URL` keeps working under its name. `MM_REG_SECRET`,
+`MM_REG_SECRET_GOPASS` and `MM_REG_SECRET_CMD` get no new name: hosts delete
+them, and the stored value they point to, two weeks after the registrar's
+shutdown (the same decision).
+
 ### Excluded names
 
 Not renamed, because they are not our environment variables. Each name with
@@ -632,6 +655,7 @@ list, so a name here is one the guard accepts in the code without a mapping.
 | `GITHUB_ENV` | another product’s variable we read |
 | `BUS_BRIDGE` | a NATS bucket name, a constant |
 | `BUS_BRIDGE_SEEN` | a NATS bucket name, a constant |
+| `BUS_BRIDGE_RECORDS` | a NATS bucket name, a constant |
 | `BUS_DIRECTORY` | a NATS bucket name, a constant |
 | `BRIDGE_KEYS` | the Python constant `_BRIDGE_KEYS` |
 | `BRIDGE_TTL_SEC` | a constant in `nats_port.py` |

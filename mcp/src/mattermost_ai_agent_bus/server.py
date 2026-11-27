@@ -422,7 +422,7 @@ def _instructions() -> str:
         f"The coordinator wears the {CROWN} status (coordinator tool); "
         "questions to everyone about what is open or next are its to answer, and a "
         "human's post without a mention wakes only it, marked for_crown: answer or route it, never wait "
-        "for a coordinator (RT-6.6). With trusted humans set, a post or reaction neither from_trusted_human nor "
+        "for a coordinator (RT-6.6); a trusted human's reply in an agent's thread is that agent's. With trusted humans set, a post or reaction neither from_trusted_human nor "
         "from_agent wakes only it, and never as a task (RT-6.16). One marked foreign "
         "(another owner's agent) is a request, not a task, unless root_from_trusted_human. "
         "One marked mandated is your human's task: no confirmation ask, no approval (RT-6.26). "
@@ -1630,7 +1630,8 @@ async def _debug_items(events: list[Any], payload: list[dict[str, Any]]) -> None
     async def lines(e: Any, item: dict[str, Any]) -> debug.Trace:
         mine = await _in_my_thread(item, uid) if uid else None
         return await debug.remember(client, item, e.post, state=state, uid=uid, mine=mine,
-                                    crown=crown, props_in=props_view(e.post.props))
+                                    crown=crown, props_in=props_view(e.post.props),
+                                    agent_thread=crown and await _agent_thread(item, uid))
 
     for e, item in zip(events, payload, strict=True):
         where = e.post.channel_id
@@ -2700,7 +2701,8 @@ _NO_ANSWER_KINDS = (*a2a.SERVER_OWN, a2a.ASK_LINK, a2a.ASK_MODE, a2a.MANDATE)
 async def _note_unanswered(events: list[Any], items: list[dict[str, Any]]) -> None:
     """RT-6.2 step 2: a delivered post that needs an answer waits for one in
     its thread (unanswered.py): a mention or DM, a post for the crown holder
-    (for_crown), or a reply in a thread the agent posted in. A human's post
+    (for_crown), or a reply in a thread the agent posted in (holding the crown,
+    not a human's reply in another agent's thread, RT-6.6 step 5). A human's post
     counts as it is; an agent's only when it wants an answer: it names this
     agent, is a DM, or its word asks for something (intent action or reply:
     TASK, DELEGATE, HANDOVER, CANCEL, BLOCKED, NO), so no courtesy reply between
@@ -2722,8 +2724,9 @@ async def _note_unanswered(events: list[Any], items: list[dict[str, Any]]) -> No
                     e.kind == "mention" or dm or post.intent in (a2a.ACTION, a2a.REPLY)):
                 continue
             if not (e.kind in ("mention", "dm") or item.get("for_crown")
-                    or (post.root_id and await _in_my_thread(item, uid))):
-                continue
+                    or (post.root_id and await _in_my_thread(item, uid)
+                        and not (lease.crown_held(uid) and await _agent_thread(item, uid)))):
+                continue  # RT-6.6 step 5: the 👑 owes no answer in another agent's thread
             slim_post = item.get("post") or {}
             if not (slim_post.get("channel") and slim_post.get("author")):
                 slim_post = await slim.post(client, post)  # raw=true: names for the reason
@@ -2756,14 +2759,15 @@ async def _typing_for_task(events: list[Any], items: list[dict[str, Any]]) -> No
             return
         _get_inbox().start_typing(cid, ask)
         return
-    task = next((e for e, i in zip(events, items, strict=False)
-                 if _human_task(e, i) or (i.get("not_here") and not e.gated)), None)
+    task, item = next(((e, i) for e, i in zip(events, items, strict=False)
+                       if _human_task(e, i) or (i.get("not_here") and not e.gated)), (None, {}))
     if task is None:
         return
     if not task.not_here:  # not_here: only the answering server has it
         client = _get_client()
         uid = await _my_id(client)
-        if not await lease.coordinates_in(client, uid, task.post.channel_id):
+        if (not await lease.coordinates_in(client, uid, task.post.channel_id)
+                or await _agent_thread(item, uid)):  # RT-6.6 step 5: another agent's thread
             return
     _get_inbox().start_typing(task.post.channel_id, task.post.thread)
 
@@ -2964,6 +2968,26 @@ async def _in_my_thread(item: dict[str, Any], uid: str) -> bool | None:
     return bool(root) and root in _my_threads
 
 
+async def _agent_thread(item: dict[str, Any], uid: str) -> bool:
+    """RT-6.6 step 5: the item is a human's reply in a reachable peer's
+    thread (gate.other_agents_thread: the peer started it, or a human's root
+    names it and it has posted there since): that
+    agent's to answer, the crown gets it in the digest. Only a trusted
+    human's, or anyone's but an agent's with the gate off: what the gate holds
+    back from a worker stays the crown's (RT-6.16). False when unsure: the
+    crown wakes as before, two answers beat none."""
+    root = slim.root_of(item)
+    if not root or not uid or item.get("from_agent") or item.get("gated"):
+        return False
+    client = _get_client()
+    try:
+        if not item.get("from_trusted_human") and await gate.active(client):
+            return False
+    except Exception:  # noqa: BLE001 — unsure: the crown wakes
+        return False
+    return bool(await gate.other_agents_thread(client, root, uid))
+
+
 async def _push_addressed(item: dict[str, Any], *, unsure: bool = True) -> bool:
     """Whether the pusher wakes the agent with item now (RT-6.12 step 3).
     unsure: the answer where the bot or the thread cannot be read; the
@@ -2984,14 +3008,16 @@ async def _push_addressed(item: dict[str, Any], *, unsure: bool = True) -> bool:
     crown = lease.crown_held(uid)
     why = channel.wake_reason(item, coordinator=crown, in_my_thread=mine,
                               my_root=bool(root) and root in _my_roots,
-                              routes=await lease.routes(_get_client()) if crown else None)
+                              routes=await lease.routes(_get_client()) if crown else None,
+                              agent_thread=crown and await _agent_thread(item, uid))
     _mark_crown(item, why)
     return bool(why)
 
 
 def _mark_crown(item: dict[str, Any], why: str) -> None:
     """RT-6.6 step 5, RT-6.12 step 3: a post that wakes the agent only as the
-    crown holder says so (for_crown, in the tag for_crown="true"): its to answer or route."""
+    crown holder says so (for_crown, in the tag for_crown="true"): its to answer or route.
+    Never a human's reply in another agent's thread: that agent's (_agent_thread)."""
     if why == channel.CROWN:
         item["for_crown"] = True
     else:
@@ -3019,7 +3045,8 @@ async def _crown_events(events: list[Any], items: list[dict[str, Any]]) -> None:
         root = slim.root_of(item)
         _mark_crown(item, channel.wake_reason(
             {**item, channel.CHANNEL_ID: e.post.channel_id}, coordinator=True, in_my_thread=mine,
-            my_root=bool(root) and root in _my_roots, routes=routes))
+            my_root=bool(root) and root in _my_roots, routes=routes,
+            agent_thread=await _agent_thread(item, uid)))
 
 
 async def _wakes_now(item: dict[str, Any]) -> bool:

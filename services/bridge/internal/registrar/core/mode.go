@@ -88,11 +88,15 @@ type modeState struct {
 
 // ModeStore keeps the current mode per channel in memory and, with a path, in
 // its own JSON file, written atomically (temp file + rename, mode 0600) after
-// every change. It is separate from the enrollment store, so modes work
-// without enrollment tokens. One registrar process owns the file.
+// every change. With a Persister instead, the same state is one value under a
+// name. It is separate from the enrollment store, so modes work without
+// enrollment tokens. One process owns the file or the value.
 type ModeStore struct {
 	mu   sync.Mutex
 	path string
+	// p and name take the state through a Persister; path is then empty.
+	p    Persister
+	name string
 	st   modeState
 }
 
@@ -119,6 +123,26 @@ func OpenModeStore(path string) (*ModeStore, error) {
 	return s, nil
 }
 
+// OpenModeStoreWith loads the state stored under name through p, or starts
+// empty when it holds nothing; every change is saved through p.
+func OpenModeStoreWith(p Persister, name string) (*ModeStore, error) {
+	s := &ModeStore{p: p, name: name, st: modeState{Version: 1, Modes: map[string]ChannelMode{}}}
+	data, err := p.Load(name)
+	if err != nil {
+		return nil, fmt.Errorf("mode store %s: %w", name, err)
+	}
+	if data == nil {
+		return s, nil
+	}
+	if err := json.Unmarshal(data, &s.st); err != nil {
+		return nil, fmt.Errorf("mode store %s: %w", name, err)
+	}
+	if s.st.Modes == nil {
+		s.st.Modes = map[string]ChannelMode{}
+	}
+	return s, nil
+}
+
 // Get returns the mode of a channel; ok is false when none is set.
 func (s *ModeStore) Get(channelID string) (ChannelMode, bool) {
 	s.mu.Lock()
@@ -134,7 +158,7 @@ func (s *ModeStore) Set(m ChannelMode) error {
 	defer s.mu.Unlock()
 	old, had := s.st.Modes[m.ChannelID]
 	s.st.Modes[m.ChannelID] = m
-	if err := s.saveLocked(); err != nil {
+	if err := s.persist(); err != nil {
 		if had {
 			s.st.Modes[m.ChannelID] = old
 		} else {
@@ -145,13 +169,16 @@ func (s *ModeStore) Set(m ChannelMode) error {
 	return nil
 }
 
-func (s *ModeStore) saveLocked() error {
-	if s.path == "" {
+func (s *ModeStore) persist() error {
+	if s.p == nil && s.path == "" {
 		return nil
 	}
 	data, err := json.MarshalIndent(s.st, "", "  ")
 	if err != nil {
 		return err
+	}
+	if s.p != nil {
+		return s.p.Save(s.name, data)
 	}
 	return writeFileAtomic(s.path, ".modes-*", data)
 }

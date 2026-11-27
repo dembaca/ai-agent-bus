@@ -5,7 +5,7 @@ the NATS homes' presence, crown claims and memberships through the
 JetStream consumers the login service makes for each logged-in operator, serves the API of
 [ADR-015 point 10](../../docs/arc42/09-architecture-decisions.md) —
 `GET /v1/fleet` as server-sent events, `/v1/me`, `/v1/asks`, `/v1/graph`,
-`/v1/stats`, `/v1/threads/<id>`, and `GET /metrics` in the Prometheus text
+`/v1/stats`, `/v1/agent-stats` (own or trusted agents only), `/v1/threads/<id>`, and `GET /metrics` in the Prometheus text
 format (#158, RT-6.43 step 10: behind the operator's login like the rest,
 the console's own observations and that session's agent numbers, labels
 bounded — no agent, owner or home) — and with it the built browser app.
@@ -98,6 +98,14 @@ session and answers a page that says the Keycloak session is still open.
 
 Presence today carries `online`/`away` (format v1) — the agents list counts
 them as listening and idle.
+
+A card's `displayName` is the bot's username the agent's presence states,
+confirmed only while no other card states it too and it is no other card's
+bus name (full or short), else the short bus name.
+Beside it, `statedName` carries the stated username even when it is shared,
+and `nameShared` says so (#199): the web shows the name with a "shared
+name" mark instead of the bare bus id (`agent-` and a hash), never as a
+confirmed name. `statedName` is `""` when the presence states none.
 
 Each card names its `home` and, beside it, its `guests`: the channels its
 memberships name that are not its home (every granted channel gets one,

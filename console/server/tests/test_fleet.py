@@ -340,6 +340,44 @@ def test_a_name_two_agents_state_is_shown_for_neither() -> None:
     assert f.card("agent-c")["displayName"] == "agent-c"
 
 
+def test_a_shared_name_is_stated_and_marked_never_confirmed() -> None:
+    """#199: an agent whose stated name another card states too showed only its
+    bus id. The card now carries the stated name beside the confirmed one,
+    marked as shared, so the console shows the name with the mark; the
+    confirmed `displayName` stays the bus name, as before."""
+    f = Fleet()
+    feed(f, name_presence("agent-a", "online", "agent-same", 1, 100.0))
+    assert f.card("agent-a")["statedName"] == "agent-same"
+    assert f.card("agent-a")["nameShared"] is False
+    feed(f, name_presence("agent-b", "online", "agent-same", 2, 101.0))
+    for agent in ("agent-a", "agent-b"):
+        card = f.card(agent)
+        assert card["statedName"] == "agent-same"
+        assert card["nameShared"] is True
+        assert card["displayName"] == agent  # never confirmed while shared
+    # no name stated: none to show, nothing shared
+    feed(f, ("presence.dembaca.agent-c", encode_presence("online"),
+             ack("PRESENCE", "console", 3, 3, 102.0)))
+    assert f.card("agent-c")["statedName"] == ""
+    assert f.card("agent-c")["nameShared"] is False
+
+
+def test_stating_another_agents_bus_name_counts_as_shared() -> None:
+    """Fable's point on #199: a username that is another card's name on the
+    bus, full or short, is no confirmed name either."""
+    f = Fleet()
+    feed(f, name_presence("agent-mac-ai-agent-a1b2c3", "online", "", 1, 100.0))
+    feed(f, name_presence("agent-b", "online", "agent-mac-ai-agent-a1b2c3", 2, 101.0))
+    feed(f, name_presence("agent-c", "online", "a1b2c3", 3, 102.0))
+    for agent in ("agent-b", "agent-c"):
+        card = f.card(agent)
+        assert card["nameShared"] is True
+        assert card["displayName"] == agent
+    feed(f, name_presence("agent-d", "online", "agent-own-name", 4, 103.0))
+    assert f.card("agent-d")["nameShared"] is False
+    assert f.card("agent-d")["displayName"] == "agent-own-name"
+
+
 def test_an_impostor_after_a_bye_takes_no_name() -> None:
     """Fable's point: once A says bye, B stating A's username shows it on
     neither card, not on B's alone."""

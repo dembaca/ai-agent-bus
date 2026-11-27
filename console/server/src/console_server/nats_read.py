@@ -229,6 +229,13 @@ class View:
         login name; n/a until that record came."""
         return self.fleet.asks(self.anchor())
 
+    def agent_stats(self) -> list[dict[str, Any]]:
+        """`/v1/agent-stats`: the per-agent rows of this session's STATS lines, only of
+        the agents whose attestation names the operator's anchor as owner or trusted
+        (ADR-015 point 15, RT-6.43 step 8); none until the login's own record gave the
+        anchor. The aggregate reports (`/v1/stats`) stay over every agent."""
+        return self.stats.agent_rows(self.fleet.own_or_trusted(self.anchor()))
+
     def bus(self) -> dict[str, Any]:
         """What the browser sees of this session's reading (``/v1/me``)."""
         r = self.reader

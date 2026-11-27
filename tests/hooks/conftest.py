@@ -62,6 +62,8 @@ PAT = "pat-for-tests"
 @dataclass
 class FakeMattermost:
     posts: list[dict] = field(default_factory=list)  # newest first
+    # Posts beyond the channel's pages (older than the last 200): only a thread read sees them.
+    older: list[dict] = field(default_factory=list)
     dm_posts: list[dict] = field(default_factory=list)  # unread_dm's
     members: list[dict] = field(default_factory=list)
     channels: list[dict] = field(default_factory=list)
@@ -171,6 +173,10 @@ def _handler(fake: FakeMattermost):
                 return self._send({"id": m[1], "name": fake.channel_names[m[1]], "type": "O"})
             if p.startswith("/api/v4/posts/") and p.endswith("/reactions"):
                 return self._send(fake.reactions.get(p.split("/")[4], []))
+            if m := re.fullmatch(r"/api/v4/posts/([a-z0-9]{26})/thread", p):
+                posts = [x for x in fake.posts + fake.older if m[1] in (x["id"], x.get("root_id"))]
+                return self._send({"order": [x["id"] for x in posts],
+                                   "posts": {x["id"]: x for x in posts}})
             if re.fullmatch(r"/api/v4/posts/[a-z0-9]{26}", p):  # a reply's root
                 return self._send({"id": p.rsplit("/", 1)[1], "channel_id": CHANNEL})
             if p.endswith("/posts"):

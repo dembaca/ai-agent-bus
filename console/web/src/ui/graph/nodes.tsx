@@ -43,6 +43,7 @@ function AgentNode(props: NodeProps) {
         {d.crown && <Crown />}
         {d.label}
       </span>
+      {d.shared && <span className="gnode__shared" title="another agent states this name too: not confirmed">shared name</span>}
       <span className="gnode__meta">
         <span className="gnode__state">{d.state ?? "n/a"}</span>
         {d.harness && <span className="gnode__harness">{HARNESS_LABEL[d.harness]}</span>}
@@ -67,7 +68,9 @@ function AskNode(props: NodeProps) {
   return (
     <div className={`gnode gnode--ask${d.forMe ? " gnode--for-me" : ""}`} title={d.label}>
       <Ends />
-      <span className="gnode__meta">{d.askKind} by {d.by}</span>
+      <span className="gnode__meta">{d.askKind} by {d.by}
+        {d.byShared && <span className="gnode__shared" title="another agent states this name too: not confirmed">shared name</span>}
+      </span>
       <span className="gnode__label gnode__label--clip">{d.label}</span>
     </div>
   )

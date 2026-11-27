@@ -11,7 +11,7 @@ import time
 import pytest
 from fakes import BOT, WORK, FakeChat
 
-from mattermost_ai_agent_bus import channel, lease, mattermost_ws, server
+from mattermost_ai_agent_bus import channel, gate, lease, mattermost_ws, server
 from mattermost_ai_agent_bus.client import post_of
 from mattermost_ai_agent_bus.model import ChannelUser, UnreadChannel
 from mattermost_ai_agent_bus.websocket_inbox import ClassifiedEvent, WebSocketInbox
@@ -222,3 +222,206 @@ async def test_wait_for_events_marks_what_only_the_crown_wakes(home):
     assert lease.crown_held(BOT)
     await server._crown_events(events, items)
     assert items[0]["for_crown"] is True and "for_crown" not in items[1]
+
+
+AGENT = "a" * 26   # another agent of the home, the starter of an ask thread
+ROOT = "r" * 26
+REPLY = "s" * 26
+
+
+MALLORY = "v" * 26  # a person not on the trusted list
+GONE = "g" * 26     # an agent no longer on the roster
+FOREIGN = "w" * 26  # another owner's agent in the home (ADR-001)
+
+
+def _peer(home: Home) -> None:
+    """AGENT: a younger reachable peer of the home (same owner), on the roster."""
+    home._agents.add(AGENT)
+    home.descriptions[AGENT] = home.descriptions[BOT]
+    home.agent(AGENT, "agent-other", 3000)
+
+
+async def _judge_reply(home: Home, root_user: str, root_text: str, *, posted: bool = False,
+                       author: str = HUMAN, webhook: bool = False,
+                       answered: str = "") -> tuple[bool, bool]:
+    """A plain reply by `author` (a trusted human) under a root by root_user:
+    (wait_for_events marks it for_crown, the push wakes the agent). posted:
+    this agent replied in the thread before; webhook: the reply came by one;
+    answered: the id of another agent that replied in the thread before."""
+    server._my_threads.clear()
+    server._my_roots.clear()
+    gate._roots.clear()
+    gate._reach = None
+    root = {"id": ROOT, "user_id": root_user, "channel_id": WORK, "message": root_text, "create_at": 1}
+    mine = [{"id": "m" * 26, "user_id": BOT, "channel_id": WORK, "root_id": ROOT,
+             "message": "see the ADR", "create_at": 2}] if posted else []
+    if answered:
+        mine.append({"id": "n" * 26, "user_id": answered, "channel_id": WORK, "root_id": ROOT,
+                     "message": "on it", "create_at": 2})
+    reply = post_of({"id": REPLY, "user_id": author, "channel_id": WORK, "root_id": ROOT,
+                     "message": "postgres, please", "create_at": 3,
+                     "props": {"from_webhook": "true"} if webhook else {}})
+    home.posts = [post_of(root), *(post_of(p) for p in mine), reply]
+    events = [ClassifiedEvent(kind="watched_channel", post=reply)]
+    items = await server._event_items(events)
+    await server._crown_events(events, items)
+    marked = bool(items[0].get("for_crown"))
+    return marked, await server._push_addressed(dict(items[0]))
+
+
+async def test_a_humans_reply_in_another_agents_thread_is_not_the_crowns(home, monkeypatch):
+    """RT-6.6 step 5 (#207): holding the crown, a trusted human's plain reply
+    in a thread a reachable agent of the home started is that agent's:
+    wait_for_events marks no for_crown and the push does not wake the 👑, also
+    where it posted in that thread. Under a human's root, also one that names
+    an agent, it is the crown's as before; under its own root it is its own
+    thread; under a root by an agent gone from the roster the 👑 wakes."""
+    monkeypatch.setattr(gate, "_roots", {})
+    monkeypatch.setattr(gate, "_reach", None)
+    _peer(home)
+    home._agents.add(GONE)
+    await lease.command(home, "tick")
+    assert lease.crown_held(BOT)
+    assert await _judge_reply(home, AGENT, "ASK · which db?") == (False, False)
+    assert await _judge_reply(home, AGENT, "ASK · which db?", posted=True) == (False, False)
+    assert await _judge_reply(home, HUMAN, "@agent-other please rebase") == (True, True)
+    assert await _judge_reply(home, HUMAN, "what is open?") == (True, True)
+    assert await _judge_reply(home, BOT, "ASK · which db?") == (False, True)  # its own: addressed
+    assert await _judge_reply(home, GONE, "ASK · which db?") == (True, True)  # not reachable
+
+
+async def test_the_crown_defers_only_to_a_peer(home, monkeypatch):
+    """RT-6.6 step 5 (#207), ADR-001: a trusted human's reply in a thread a
+    reachable peer started is that peer's; in one a reachable foreign agent
+    (another owner's) started it wakes the 👑 as before."""
+    monkeypatch.setattr(gate, "_roots", {})
+    monkeypatch.setattr(gate, "_reach", None)
+    _peer(home)
+    await lease.command(home, "tick")
+    assert lease.crown_held(BOT)
+    # It joins after the election (one with it present would crown nobody here).
+    home._agents.add(FOREIGN)
+    home.descriptions[FOREIGN] = "for @mallory · trusts @mallory · via agent-registrar"
+    home.agent(FOREIGN, "agent-guest", 4000)
+    assert {r.user_id for r in await lease.roster(home)} >= {AGENT, FOREIGN}  # both reachable
+    assert await _judge_reply(home, AGENT, "ASK · which db?") == (False, False)
+    assert await _judge_reply(home, FOREIGN, "ASK · which db?") == (True, True)
+
+
+async def test_a_humans_thread_naming_a_peer_is_its_once_it_answered(home, monkeypatch):
+    """RT-6.6 step 5 (#216): a human's thread whose root names agent B is B's
+    once B, a reachable peer of the home, has posted in it: a trusted human's
+    reply there wakes B as a participant, not the 👑, also where the 👑 posted.
+    Before B has posted the 👑 wakes; so it does when B has gone from the
+    roster, is foreign (the 👑 cannot know its gate), or the root names the 👑
+    too; an untrusted person's or a webhook's reply stays the 👑's."""
+    monkeypatch.setattr(gate, "_roots", {})
+    monkeypatch.setattr(gate, "_reach", None)
+    _peer(home)
+    await lease.command(home, "tick")
+    assert lease.crown_held(BOT)
+    ask = "@agent-other please rebase"
+    assert await _judge_reply(home, HUMAN, ask) == (True, True)  # B has not answered yet
+    assert await _judge_reply(home, HUMAN, ask, answered=AGENT) == (False, False)
+    assert await _judge_reply(home, HUMAN, ask, answered=AGENT, posted=True) == (False, False)
+    assert await _judge_reply(home, HUMAN, "@agent-me @agent-other rebase", answered=AGENT) == (True, True)
+    assert await _judge_reply(home, HUMAN, ask, answered=AGENT, author=MALLORY) == (True, True)
+    assert await _judge_reply(home, HUMAN, ask, answered=AGENT, webhook=True) == (True, True)
+    # B answers after the first read: within ROOT_TTL_SEC the record stands (the
+    # 👑 wakes: two answers), then the thread is read again and the reply is B's.
+    gate._roots.clear()
+    home.posts = [post_of({"id": ROOT, "user_id": HUMAN, "channel_id": WORK, "message": ask})]
+    reads = []
+    thread = home.thread
+
+    async def counted(root_id):
+        reads.append(root_id)
+        return await thread(root_id)
+
+    monkeypatch.setattr(home, "thread", counted)
+    assert await gate.other_agents_thread(home, ROOT, BOT) is False
+    home.posts.append(post_of({"id": "n" * 26, "user_id": AGENT, "channel_id": WORK,
+                               "root_id": ROOT, "message": "on it", "create_at": 4}))
+    assert await gate.other_agents_thread(home, ROOT, BOT) is False
+    assert len(reads) == 1  # not read again on every evaluation
+    gate._roots[ROOT].read_at -= gate.ROOT_TTL_SEC + 1
+    assert await gate.other_agents_thread(home, ROOT, BOT) is True
+    assert len(reads) == 2
+    monkeypatch.setattr(home, "thread", thread)
+    # B gone from the roster: the 👑's again.
+    home.members = [m for m in home.members if m.id != AGENT]
+    assert await _judge_reply(home, HUMAN, ask, answered=AGENT) == (True, True)
+
+
+async def test_a_root_naming_two_peers_is_the_thread_of_the_one_that_answered(home, monkeypatch):
+    """RT-6.6 step 5 (#216): a human's root names two reachable peers and only
+    one has posted: the thread is that one's (the 👑 does not wake, it wakes as
+    a participant), not the other's (not in the thread, it does not wake by
+    it). Names are the roster's usernames now: a root naming an agent by a name
+    it no longer has (renamed) names nobody here, and the 👑 wakes."""
+    third = "b" * 26
+    monkeypatch.setattr(gate, "_roots", {})
+    monkeypatch.setattr(gate, "_reach", None)
+    _peer(home)
+    home._agents.add(third)
+    home.descriptions[third] = home.descriptions[BOT]
+    home.agent(third, "agent-third", 3500)
+    await lease.command(home, "tick")
+    assert lease.crown_held(BOT)
+    both = "@agent-other @agent-third please rebase"
+    assert await _judge_reply(home, HUMAN, both, answered=AGENT) == (False, False)
+    assert await gate.in_thread(home, ROOT, AGENT) == (True, False)
+    assert await gate.in_thread(home, ROOT, third) == (False, False)
+    assert await _judge_reply(home, HUMAN, both) == (True, True)  # neither has answered
+    assert await _judge_reply(home, HUMAN, "@agent-old please rebase", answered=AGENT) == (True, True)
+
+
+async def test_a_humans_thread_naming_a_foreign_agent_stays_the_crowns(home, monkeypatch):
+    """RT-6.6 step 5 (#216), ADR-001: B foreign (another owner's), reachable
+    and answered in the thread: its own gate may hold the reply back, which
+    the 👑 cannot know, so the 👑 wakes."""
+    monkeypatch.setattr(gate, "_roots", {})
+    monkeypatch.setattr(gate, "_reach", None)
+    _peer(home)
+    await lease.command(home, "tick")
+    assert lease.crown_held(BOT)
+    home._agents.add(FOREIGN)
+    home.descriptions[FOREIGN] = "for @mallory · trusts @mallory · via agent-registrar"
+    home.agent(FOREIGN, "agent-guest", 4000)
+    assert await _judge_reply(home, HUMAN, "@agent-guest please rebase", answered=FOREIGN) == (True, True)
+    assert await _judge_reply(home, HUMAN, "@agent-other please rebase", answered=AGENT) == (False, False)
+
+
+async def test_what_the_gate_holds_back_stays_the_crowns(home, monkeypatch):
+    """RT-6.6 step 5 (#207), RT-6.16: with trusted humans set, a reply in an
+    agent's thread by someone not trusted, or by a webhook, is held back from
+    that agent by its gate, so it stays the 👑's: it wakes it as before. With
+    the gate off anyone's reply but an agent's is that agent's."""
+    monkeypatch.setattr(gate, "_roots", {})
+    monkeypatch.setattr(gate, "_reach", None)
+    _peer(home)
+    await lease.command(home, "tick")
+    assert lease.crown_held(BOT)
+    assert await _judge_reply(home, AGENT, "ASK · which db?", author=MALLORY) == (True, True)
+    assert await _judge_reply(home, AGENT, "ASK · which db?", webhook=True) == (True, True)
+    for var in gate.TRUSTED_VARS:
+        monkeypatch.delenv(var, raising=False)
+    monkeypatch.setattr(home, "trusted", {})
+    assert not await gate.active(home)
+    assert await _judge_reply(home, AGENT, "ASK · which db?", author=MALLORY) == (False, False)
+
+
+async def test_an_unreadable_root_leaves_the_reply_to_the_crown(home, monkeypatch):
+    """RT-6.6 step 5 (#207): when the root cannot be read, the reply wakes the
+    👑 as before: two answers beat none."""
+    monkeypatch.setattr(gate, "_roots", {})
+    await lease.command(home, "tick")
+
+    async def broken(_root):
+        raise RuntimeError("thread not readable")
+
+    monkeypatch.setattr(home, "thread", broken)
+    item = _item("postgres, please")
+    item["post"]["root_id"] = ROOT
+    assert await server._push_addressed(item)
+    assert await gate.other_agents_thread(home, ROOT, BOT) is None
