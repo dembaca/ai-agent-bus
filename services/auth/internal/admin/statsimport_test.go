@@ -5,6 +5,7 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
+	"net/http/httptest"
 	"sort"
 	"strings"
 	"testing"
@@ -129,6 +130,11 @@ func runStats(t *testing.T, e *env, tok string, code int) StatsReport {
 		if err := json.Unmarshal([]byte(body), &rep); err != nil {
 			t.Fatal(err)
 		}
+		// RT-6.45: every post read lands in exactly one counter
+		if sum := rep.Published + rep.NotStats + rep.SkippedInStats + rep.SkippedImported + rep.SkippedInvalid +
+			rep.SkippedTooBig + rep.SkippedName + rep.SkippedRecent + rep.SkippedOverCap + rep.SkippedRoom; sum != rep.Read {
+			t.Fatalf("read %d, but the counters add up to %d: %+v", rep.Read, sum, rep)
+		}
 	}
 	return rep
 }
@@ -178,7 +184,7 @@ func TestStatsImportMarksDedupesAndDrops(t *testing.T) {
 	}
 	e := statsSetup(t, chat, s)
 	rep := runStats(t, e, e.admin, 200)
-	wantRep := StatsReport{Read: 17, Published: 4, PublishedWithoutSid: 2, Confirmed: 4, NotStats: 1, SkippedDuplicate: 3, SkippedInvalid: 5, SkippedTooBig: 1, SkippedName: 2,
+	wantRep := StatsReport{Read: 17, Published: 4, PublishedWithoutSid: 2, Confirmed: 4, NotStats: 1, SkippedInStats: 1, SkippedImported: 2, SkippedInvalid: 5, SkippedTooBig: 1, SkippedName: 2,
 		SkippedRecent: 1, Oldest: t0.Add(time.Minute).Format(time.RFC3339), Newest: t0.Add(18 * time.Minute).Format(time.RFC3339)}
 	if rep != wantRep {
 		t.Fatalf("report\n%+v, want\n%+v", rep, wantRep)
@@ -204,9 +210,16 @@ func TestStatsImportMarksDedupesAndDrops(t *testing.T) {
 			t.Errorf("line %d headers: %v", i, l.hdr)
 		}
 	}
-	again := runStats(t, e, e.admin, 200)
-	if again.Published != 0 || again.SkippedDuplicate != 7 || again.Oldest != "" {
+	// A second run reads the whole channel (a new process knows no earlier
+	// run) and publishes nothing; one of the same process stops at what the
+	// first went through.
+	fresh := statsSetup(t, chat, s)
+	again := runStats(t, fresh, fresh.admin, 200)
+	if again.Published != 0 || again.SkippedInStats != 1 || again.SkippedImported != 6 || again.Oldest != "" || again.KnownBefore != "" {
 		t.Fatalf("second run: %+v", again)
+	}
+	if same := runStats(t, e, e.admin, 200); same.Read != 2 || same.SkippedRecent != 1 || same.SkippedImported != 1 || same.Published != 0 || same.KnownBefore == "" {
+		t.Fatalf("a run of the same process: %+v", same)
 	}
 	if n := len(lines(t, s)); n != 5 {
 		t.Fatalf("%d lines after the second run", n)
@@ -253,18 +266,23 @@ func TestTheStatsImportKeepsTheNewestPerName(t *testing.T) {
 	if rep := runStats(t, e, e.admin, 200); rep.Published != 500 || rep.PublishedWithoutSid != 250 || rep.SkippedOverCap != 2 || rep.Oldest != t0.Add(2*time.Minute).Format(time.RFC3339) {
 		t.Fatalf("first run: %+v", rep)
 	}
-	if rep := runStats(t, e, e.admin, 200); rep.Published != 0 || rep.SkippedOverCap != 2 || rep.SkippedDuplicate != 500 {
+	rerun := func() StatsReport {
+		t.Helper()
+		fresh := statsSetup(t, chat, s) // a new process: it reads the whole channel
+		return runStats(t, fresh, fresh.admin, 200)
+	}
+	if rep := rerun(); rep.Published != 0 || rep.SkippedOverCap != 2 || rep.SkippedImported != 500 {
 		t.Fatalf("second run: %+v", rep)
 	}
 	chat.posts = append(chat.posts, post("p502", "ua", 502, "STATS "+line(502)))
-	if rep := runStats(t, e, e.admin, 200); rep.Published != 1 || rep.SkippedOverCap != 3 {
+	if rep := rerun(); rep.Published != 1 || rep.SkippedOverCap != 3 {
 		t.Fatalf("a newer post: %+v", rep)
 	}
 	got := lines(t, s)
 	if len(got) != 500 || got[0].body != line(3) {
 		t.Fatalf("%d lines, the oldest %q", len(got), got[0].body)
 	}
-	if rep := runStats(t, e, e.admin, 200); rep.Published != 0 {
+	if rep := rerun(); rep.Published != 0 {
 		t.Fatalf("after the newer post: %+v", rep)
 	}
 }
@@ -297,7 +315,7 @@ func TestAnInterruptedStatsImportIsCompletedByTheNext(t *testing.T) {
 		t.Fatalf("%d lines after the cut", n)
 	}
 	e := statsSetup(t, chat, s)
-	if rep := runStats(t, e, e.admin, 200); rep.Published != 3 || rep.SkippedDuplicate != 2 {
+	if rep := runStats(t, e, e.admin, 200); rep.Published != 3 || rep.SkippedImported != 2 {
 		t.Fatalf("the next run: %+v", rep)
 	}
 	if n := len(lines(t, s)); n != 5 {
@@ -334,16 +352,16 @@ func TestTheStatsImportIsBounded(t *testing.T) {
 		t.Fatalf("first run: %+v, %d posts handed out", rep, chat.given)
 	}
 	e = statsSetup(t, chat, s, lines)
-	if rep = runStats(t, e, e.admin, 200); rep.Published != 2 || rep.SkippedDuplicate != 2 || rep.Truncated != "lines" || rep.Oldest != t0.Add(2*time.Minute).Format(time.RFC3339) {
+	if rep = runStats(t, e, e.admin, 200); rep.Published != 2 || rep.SkippedImported != 2 || rep.Truncated != "lines" || rep.Oldest != t0.Add(2*time.Minute).Format(time.RFC3339) {
 		t.Fatalf("the rerun gets past the published ones: %+v", rep)
 	}
 	size := len(`{"v":"0.85.0","n":0}`) + lineOverhead
 	e = statsSetup(t, chat, s, func(si *StatsImport) { si.MaxHeld = size + 1 })
-	if rep = runStats(t, e, e.admin, 200); rep.Published != 1 || rep.SkippedDuplicate != 4 || rep.Truncated != "room" || rep.Oldest != t0.Add(time.Minute).Format(time.RFC3339) {
+	if rep = runStats(t, e, e.admin, 200); rep.Published != 1 || rep.SkippedImported != 4 || rep.Truncated != "room" || rep.Oldest != t0.Add(time.Minute).Format(time.RFC3339) {
 		t.Fatalf("held bound: %+v", rep)
 	}
 	e = statsSetup(t, chat, s)
-	if rep = runStats(t, e, e.admin, 200); rep.Published != 1 || rep.SkippedDuplicate != 5 || rep.Truncated != "" {
+	if rep = runStats(t, e, e.admin, 200); rep.Published != 1 || rep.SkippedImported != 5 || rep.Truncated != "" {
 		t.Fatalf("with room: %+v", rep)
 	}
 }
@@ -364,5 +382,138 @@ func TestTheStatsImportFitsTheRoomLeft(t *testing.T) {
 	}
 	if n := len(lines(t, s)); n != 4 {
 		t.Fatalf("%d lines: STATS dropped some", n)
+	}
+}
+
+// A run of the same process stops reading where an earlier complete run
+// went through every post; a run cut short leaves that mark alone, so the
+// next reads on past it (RT-6.45).
+func TestARerunStopsWhereTheLastCompleteRunWent(t *testing.T) {
+	s, _ := statsLab(t)
+	chat := &statsChat{users: map[string]mattermost.User{"ua": bot("ua", "agent-a")}}
+	for i := range 6 {
+		chat.posts = append(chat.posts, post(fmt.Sprint("p", i), "ua", i, fmt.Sprintf(`STATS {"v":"0.85.0","n":%d}`, i)))
+	}
+	e := statsSetup(t, chat, s, func(si *StatsImport) { si.MaxLines, si.MinAge = 2, time.Millisecond })
+	for run, want := range []struct {
+		published int
+		truncated string
+	}{{2, "lines"}, {2, "lines"}, {2, ""}} {
+		if rep := runStats(t, e, e.admin, 200); rep.Published != want.published || rep.Truncated != want.truncated || rep.KnownBefore != "" {
+			t.Fatalf("run %d: %+v", run, rep)
+		}
+	}
+	// a post made after that run, so newer than the point it went through
+	chat.posts = append(chat.posts, mattermost.Post{ID: "p6", UserID: "ua", Created: time.Now(), Message: `STATS {"v":"0.85.0","n":6}`})
+	time.Sleep(5 * time.Millisecond)
+	chat.given = 0
+	rep := runStats(t, e, e.admin, 200)
+	if rep.Published != 1 || rep.Read != 2 || rep.SkippedImported != 1 || rep.KnownBefore == "" || chat.given != 3 { // the newest of the last run is read again: only strictly older posts stop it
+		t.Fatalf("after a complete run: %+v, %d posts handed out", rep, chat.given)
+	}
+}
+
+// fickle is a STATS whose room shrinks between the run's two readings of
+// it, and which hides the imported lines from the given reads.
+type fickle struct {
+	StatsStore
+	rooms []int64
+	hide  map[int]bool
+	reads int
+}
+
+func (f *fickle) Room(ctx context.Context) (int64, error) {
+	if len(f.rooms) > 0 {
+		r := f.rooms[0]
+		f.rooms = f.rooms[1:]
+		return r, nil
+	}
+	return f.StatsStore.Room(ctx)
+}
+
+func (f *fickle) ReadAll(ctx context.Context, begin func(), fn func(string, []byte, nats.Header) error) error {
+	f.reads++
+	if !f.hide[f.reads] {
+		return f.StatsStore.ReadAll(ctx, begin, fn)
+	}
+	return f.StatsStore.ReadAll(ctx, begin, func(n string, b []byte, h nats.Header) error {
+		if strings.HasPrefix(n, "import.") {
+			return nil
+		}
+		return fn(n, b, h)
+	})
+}
+
+// STATS keeps growing while the channel is read: its room is read again
+// right before publishing, and the oldest held lines go until the rest fit.
+func TestTheRoomIsReadAgainBeforePublishing(t *testing.T) {
+	s, _ := statsLab(t)
+	chat := &statsChat{users: map[string]mattermost.User{"ua": bot("ua", "agent-a")}}
+	for i := range 6 {
+		chat.posts = append(chat.posts, post(fmt.Sprint("p", i), "ua", i, fmt.Sprintf(`STATS {"v":"0.85.0","n":%d}`, i)))
+	}
+	size := int64(len(`{"v":"0.85.0","n":0}`) + lineOverhead)
+	e := statsSetup(t, chat, &fickle{StatsStore: s, rooms: []int64{1 << 20, 3*size + 1}})
+	rep := runStats(t, e, e.admin, 200)
+	// all six were read, three published, the three oldest counted as dropped for room
+	if rep.Read != 6 || rep.Published != 3 || rep.SkippedRoom != 3 || rep.Truncated != "room" || rep.Oldest != t0.Add(3*time.Minute).Format(time.RFC3339) {
+		t.Fatalf("%+v", rep)
+	}
+}
+
+// The rerun mark is Mattermost's time, never this host's: the create_at of
+// the newest post a complete run went through. With this host's clock an
+// hour ahead, a post made after that run is still read by the next one
+// (RT-6.45); the 2-minute skip alone goes by this host's clock.
+func TestTheRerunMarkIsMattermostsTime(t *testing.T) {
+	s, _ := statsLab(t)
+	chat := &statsChat{users: map[string]mattermost.User{"ua": bot("ua", "agent-a")}}
+	for i := range 3 {
+		chat.posts = append(chat.posts, post(fmt.Sprint("p", i), "ua", i, fmt.Sprintf(`STATS {"v":"0.85.0","n":%d}`, i)))
+	}
+	realm := testrealm.New(t)
+	skewed := func() time.Time { return time.Now().Add(time.Hour) }
+	h, err := New(Config{AdminGroup: testrealm.Group, Burst: 100, Now: skewed,
+		Stats: &StatsImport{Channel: "agents-stats", Source: chat, Store: s}}, realm.Verifier(testrealm.NewChat("alice")), newStore(t), &fakeMM{})
+	if err != nil {
+		t.Fatal(err)
+	}
+	srv := httptest.NewServer(h)
+	t.Cleanup(srv.Close)
+	e := &env{realm: realm, srv: srv, admin: realm.Token("alice", nil)}
+	if rep := runStats(t, e, e.admin, 200); rep.Published != 3 {
+		t.Fatalf("first run: %+v", rep)
+	}
+	// a post made now, after the first run: an hour before this host's clock
+	chat.posts = append(chat.posts, mattermost.Post{ID: "p3", UserID: "ua", Created: time.Now(), Message: `STATS {"v":"0.85.0","n":3}`})
+	if rep := runStats(t, e, e.admin, 200); rep.Published != 1 || rep.Read != 2 || rep.KnownBefore != t0.Add(2*time.Minute).Format(time.RFC3339) {
+		t.Fatalf("the post made after the first run: %+v", rep)
+	}
+}
+
+// STATS acknowledges nothing: when the re-read after the run finds fewer
+// lines than were published, the import reads once more after a short wait;
+// when that still finds fewer, confirmed says so, and the process does not
+// take the run as complete.
+func TestConfirmedIsReadOnceMore(t *testing.T) {
+	s, _ := statsLab(t)
+	chat := &statsChat{users: map[string]mattermost.User{"ua": bot("ua", "agent-a")}}
+	for i := range 3 {
+		chat.posts = append(chat.posts, post(fmt.Sprint("p", i), "ua", i, fmt.Sprintf(`STATS {"v":"0.85.0","n":%d}`, i)))
+	}
+	wait := func(si *StatsImport) { si.ConfirmWait = 10 * time.Millisecond }
+	e := statsSetup(t, chat, &fickle{StatsStore: s, hide: map[int]bool{2: true}}, wait)
+	if rep := runStats(t, e, e.admin, 200); rep.Published != 3 || rep.Confirmed != 3 {
+		t.Fatalf("once more: %+v", rep)
+	}
+	chat.posts = append(chat.posts, post("p3", "ua", 3, `STATS {"v":"0.85.0","n":3}`))
+	slow := &fickle{StatsStore: s, hide: map[int]bool{2: true, 3: true}}
+	e = statsSetup(t, chat, slow, wait)
+	if rep := runStats(t, e, e.admin, 200); rep.Published != 1 || rep.Confirmed != 0 {
+		t.Fatalf("still missing: %+v", rep)
+	}
+	// not complete: the next run of the process reads the whole channel again
+	if rep := runStats(t, e, e.admin, 200); rep.KnownBefore != "" || rep.Read != 4 || rep.SkippedImported != 4 {
+		t.Fatalf("after an unconfirmed run: %+v", rep)
 	}
 }

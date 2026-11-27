@@ -5566,7 +5566,8 @@ kept 30 days.
   stores the same set; a run publishes no more than `STATS` has room for,
   so it never pushes the stream's own lines out. Each imported line
   carries `Cb-Source: mattermost-import`, `Cb-Orig-Time` and
-  `Cb-Post-Id`.
+  `Cb-Post-Id`. A console test pins that a three-token subject stays out
+  of its reports (#219).
 - **What this gives up.** The subject, not a header, says that a line is
   imported. An agent can set `Cb-Orig-Time` on its own line, its own lines
   only, but nothing reads that header on an agent's subject, so it

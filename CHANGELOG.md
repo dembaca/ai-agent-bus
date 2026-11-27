@@ -37,6 +37,24 @@ before 0.5.0 are described in the git history.
 
 ### Changed
 
+- **The STATS import: the low points of its review** (#219, RT-6.45). A rerun
+  of the same login service stops reading the stats channel at the first post
+  strictly older than the newest post its last complete run went through
+  (`known_before` in the report: Mattermost's time, never the service's
+  clock); a run cut short, or a restart, reads on past that point. Old posts
+  edited later are not read again. The import reads `STATS`'s room again
+  right before publishing and drops the oldest held lines until the rest fit,
+  counted as `skipped_room`, so every post read lands in one counter. When
+  the re-read after a run finds fewer lines than it published, it reads once
+  more after half a second; `confirmed` can still be lower, and the next run
+  publishes what is missing. The report counts a
+  line already in `STATS` from an agent (`skipped_in_stats`) apart from one
+  already imported (`skipped_imported`), which replace `skipped_duplicate`.
+  The in-place update of `STATS` logs a warning, not an info line, when it
+  lowers the age or the cap. RT-6.45 and the service's README name the
+  manual check before the first real import: the `sid` and `part` of one
+  live session's line on `STATS` and in the channel must match.
+
 - **The fault rig's leftovers from #209's review** ([#218](https://github.com/dembaca/ai-agent-bus/issues/218),
   ADR-014's phase-1/4 rig). The NATS restart test asserts `lost_seqs`, so a
   failed send is told from a lost post. A failed consumer reconcile aborts that

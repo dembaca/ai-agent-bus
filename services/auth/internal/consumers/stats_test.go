@@ -272,7 +272,8 @@ func TestTheStatsLimitsGoDownToo(t *testing.T) {
 		t.Fatal("the current limits pass the ceilings")
 	}
 	admin, _ := statsLab(t)
-	m := manager(t, admin, nil, 0)
+	rec := &logRecorder{}
+	m := manager(t, admin, slog.New(rec), 0)
 	if err := m.EnsureStreams(tctx(t)); err != nil {
 		t.Fatal(err)
 	}
@@ -289,9 +290,16 @@ func TestTheStatsLimitsGoDownToo(t *testing.T) {
 	if got := statsConfig(t, m); got["max_age"] != float64(30*24*time.Hour) || got["max_msgs_per_subject"] != float64(100) {
 		t.Fatalf("not brought down: %v %v", got["max_age"], got["max_msgs_per_subject"])
 	}
+	// lowering drops lines for good: a warning, once (the second update changes nothing)
+	if rec.count("WARN consumers: stream limits lowered") != 1 || rec.count("INFO consumers: stream limits updated") != 0 {
+		t.Fatalf("want one warning: %v", rec.msgs)
+	}
 	// and up again
 	if err := m.Stats().Update(tctx(t)); err != nil || statsConfig(t, m)["max_age"] != float64(StatsMaxAge) {
 		t.Fatalf("up again: %v, %v", statsConfig(t, m)["max_age"], err)
+	}
+	if rec.count("INFO consumers: stream limits updated") != 1 {
+		t.Fatalf("raising is an info line: %v", rec.msgs)
 	}
 	// A configured age beyond the ceiling never reaches the stream.
 	long := m.Stats()

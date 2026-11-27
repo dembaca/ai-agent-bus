@@ -358,7 +358,9 @@ signed by the account key, valid 15 minutes from the check:
   size changed in place at the start, up or down (a larger size is kept;
   a stream with an age up to 365 days and a cap up to 500 passes the check,
   so a shorter one can be brought down), and the service warns
-  `stats stream over 80 % full` once per crossing, checked every hour. The
+  `stats stream over 80 % full` once per crossing (and
+  `consumers: stream limits lowered, older lines dropped` as a warning when
+  an update lowers the age or the cap), checked every hour. The
   import of the stats channel publishes on `stats.import.<bot>`, three
   tokens: an agent's right is its own two-token `stats.<name>`.
   `CB_AUTH_SUBJECT_PREFIX`, `CB_AUTH_PRESENCE_PREFIX` and `CB_AUTH_STATS_PREFIX` set the three prefixes.
@@ -490,7 +492,7 @@ process's memory: never on disk, never printed, never in the environment.
 | `owner <channel> <sub>` or `-`, `public <channel> on` or `off` | owner and visibility (admins), over the revision just read |
 | `members add` or `rm <channel> <sub>…` | members (the channel's owner), over the revision just read |
 | `import` | the one import from Mattermost (admins), with its report |
-| `stats-import` | the stats channel's `STATS` lines into `STATS` (admins, RT-6.45), on `stats.import.<bot>`, as often as wanted: a line already there is skipped (by `sid` and `part`, or by its post's id), lines from before 0.91.0 without `sid` are published too, and only the newest 500 per bot are kept, so a second run publishes nothing; one run holds at most 100,000 lines and no more bytes than `STATS` has room for, the newest first, and says truncated (by lines or by room) when it stopped there; `STATS` acknowledges nothing, so the report says published, and how many of them a read after the run found; its report counts the posts read, the lines imported and the skipped ones by reason |
+| `stats-import` | the stats channel's `STATS` lines into `STATS` (admins, RT-6.45), on `stats.import.<bot>`, as often as wanted: a line already there is skipped (by `sid` and `part`, or by its post's id), lines from before 0.91.0 without `sid` are published too, and only the newest 500 per bot are kept, so a second run publishes nothing; one run holds at most 100,000 lines and no more bytes than `STATS` has room for, the newest first, and says truncated (by lines or by room) when it stopped there; `STATS` acknowledges nothing, so the report says published, and how many of them a read after the run found (read once more after half a second when fewer); its report counts the posts read, the lines published and the skipped ones by reason, a line already in `STATS` from an agent apart from one already imported, and lines dropped because `STATS` had less room right before publishing (`skipped_room`); a rerun of the same service stops at posts strictly older than the newest post its last complete run went through (`known_before`, Mattermost's time); old posts edited later are not read again. Before the first real import, check on one live session over NATS that the `sid` and `part` of its line on `STATS` (`nats stream get STATS --last-for 'stats.<name>'`) match those of its post in the stats channel |
 | `account show <name>`, `account set <name> <sub> [--rev N]`, `account rm <name> --rev N` | the Mattermost account index (admins): which identity a name resolves to, with `moved_from` when it moved; set creates without `--rev` and replaces over it |
 | `pending`, `confirm <name>`, `drop <name>` | the claims of password accounts (with the full channels one waits on), an admin's confirmation over the listed revision, and deleting a claim over the listed revision |
 
