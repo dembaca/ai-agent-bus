@@ -420,13 +420,15 @@ name with `MM_` for `CB_`):
   `MM_RR_KEYS`, `MM_RR_KID`, `MM_RR_STATUS`, `MM_RR_VERSION`, `MM_RR_WHY`
   (the registrar's release record).
 
-### The login service and authd (47)
+### The login service and authd (48)
 
 All in `services/auth/`. Its binary `authd` runs the service; its directory
 commands read the two `AUTHD_` names and two of the service's names (noted).
 Besides the files a row lists, every name here appears in the service's
 rename table `internal/envname/envname.go`, which maps each new name to its
-old one. One row is not the service's own: `CB_MM_STATS_CHANNEL` is the MCP
+old one; `CB_AUTH_LDAP_ID_CLAIM` (#266) is new since the rename and gives its
+own name as the old one, as the bridge's `CB_BRIDGE_MM_BOT_KEEP` does. One row
+is not the service's own: `CB_MM_STATS_CHANNEL` is the MCP
 server's setting, listed with it above, which the login service reads by the
 same rule for its STATS import (RT-6.45).
 
@@ -451,6 +453,7 @@ same rule for its STATS import (RT-6.45).
 | `AUTH_KEYCLOAK_CLIENT_ID` | `CB_AUTH_KEYCLOAK_CLIENT_ID` | no | `internal/app/callout.go`, `internal/dircli/dircli.go` | also `authd` |
 | `AUTH_KEYCLOAK_ISSUER` | `CB_AUTH_KEYCLOAK_ISSUER` | no | `internal/app/callout.go`, `internal/dircli/dircli.go` | also `authd` |
 | `AUTH_KEYCLOAK_JWKS_URL` | `CB_AUTH_KEYCLOAK_JWKS_URL` | no | `internal/app/callout.go` | |
+| `CB_AUTH_LDAP_ID_CLAIM` | `CB_AUTH_LDAP_ID_CLAIM` | no | `internal/app/callout.go`, `internal/token/config.go` | new with #266: no old spelling; the token claim with the LDAP entry's id, default `ldap_id`: a Mattermost LDAP account whose `auth_data` equals it is proven (RT-6.42 step 3) |
 | `AUTH_LISTEN_ADDR` | `CB_AUTH_LISTEN_ADDR` | no | `internal/config/config.go` | |
 | `AUTH_LOBBY` | `CB_AUTH_LOBBY` | no | `internal/app/callout.go`; a comment in `natsbus.py` | the lobby on NATS; must equal the sessions' `CB_MM_CHANNEL` |
 | `AUTH_LOG_LEVEL` | `CB_AUTH_LOG_LEVEL` | no | `internal/config/config.go` | |

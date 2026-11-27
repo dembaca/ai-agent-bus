@@ -1,8 +1,9 @@
 // Package token checks the Keycloak access token an agent presents when it
 // connects (ADR-014, point 6): signature and lifetime against the realm's
 // JWKS, `aud` and `azp` for the bus's client, the owner from
-// `preferred_username` bound to `sub`, that owner checked against the chat,
-// and membership in the approvers' group.
+// `preferred_username` bound to `sub`, that owner checked against the chat
+// (and the chat account proven to be the token's identity, over OpenID Connect
+// or LDAP, RT-6.42 step 3), and membership in the approvers' group.
 //
 // The package never logs; errors carry only the reason, never the token, a
 // key id from it or the chat's own error text. Failed JWKS fetches go to
@@ -44,7 +45,8 @@ var (
 	// ErrGuest: the chat account is a guest, and guests own no agents.
 	ErrGuest = errors.New("chat account is a guest")
 	// ErrSubjectMismatch: the chat account logs in over OpenID Connect with
-	// another `sub`.
+	// another `sub`, or over LDAP with another LDAP id than the token's LDAP
+	// id claim (Config.LDAPIDClaim) names.
 	ErrSubjectMismatch = errors.New("chat account belongs to another subject")
 	// ErrDirectory: the chat could not be asked, or did not say how the
 	// account logs in; try again later.
@@ -72,13 +74,20 @@ type Identity struct {
 	// Expires is the token's `exp`. This service checks a token only up to
 	// then; it learns of no revocation before it.
 	Expires time.Time
-	// ChatOpenID is true only when the chat account checked by checkChat logs
-	// in over OpenID Connect, so its auth_data equals the token's `sub`: the
-	// binding of the name to the `sub` is proven, not assumed.
-	ChatOpenID bool
-	// ChatID is the chat's id of that account, set only with ChatOpenID: the
+	// ChatProven is true only when the chat account checked by checkChat is
+	// proven to be the token's identity (RT-6.42 step 3): it logs in over
+	// OpenID Connect and its auth_data equals the token's `sub`, or over LDAP
+	// and its auth_data equals the token's LDAP id claim (Config.LDAPIDClaim).
+	// A name alone proves nothing: the binding is proven, not assumed.
+	ChatProven bool
+	// ChatID is the chat's id of that account, set only with ChatProven: the
 	// account record (RT-6.42) is written for a proven account alone.
 	ChatID string
+	// ChatAuthService and ChatAuthData are the proof, set only with
+	// ChatProven: the account's auth_service (OpenIDService or LDAPService)
+	// and the value its auth_data equals. The login service stores them with
+	// the binding, and the bridge compares a later post's account with them.
+	ChatAuthService, ChatAuthData string
 	// IssuedAt is the token's `iat` (zero when it has none): the account
 	// record carries it, and never goes back to an older one (RT-6.42).
 	IssuedAt time.Time
@@ -136,7 +145,7 @@ func (v *Verifier) Verify(ctx context.Context, raw string) (Identity, error) {
 	if sub == "" || owner == "" {
 		return Identity{}, ErrIdentity
 	}
-	openID, chatID, err := v.checkChat(ctx, owner, sub)
+	proof, err := v.checkChat(ctx, owner, sub, v.ldapID(claims))
 	if err != nil {
 		return Identity{}, err
 	}
@@ -154,10 +163,24 @@ func (v *Verifier) Verify(ctx context.Context, raw string) (Identity, error) {
 		ID:       jti(claims),
 		SID:      sid(claims),
 
-		ChatOpenID: openID,
-		ChatID:     chatID,
-		IssuedAt:   iat,
+		ChatProven:      proof.service != "",
+		ChatID:          proof.id,
+		ChatAuthService: proof.service,
+		ChatAuthData:    proof.data,
+		IssuedAt:        iat,
 	}, nil
+}
+
+// chatProof binds a login's chat account to its Keycloak identity (RT-6.42
+// step 3): the account's chat id, how it logs in and the value its auth_data
+// equals. Zero for an account bound by its name alone.
+type chatProof struct{ id, service, data string }
+
+// ldapID is the token's LDAP id claim, "" when it is missing or no string:
+// then there is no LDAP proof.
+func (v *Verifier) ldapID(claims jwt.MapClaims) string {
+	s, _ := claims[v.cfg.LDAPIDClaim].(string)
+	return s
 }
 
 // keyfunc demands a key id: without one, the JWT library would try every key
@@ -174,40 +197,68 @@ func (v *Verifier) keyfunc(ctx context.Context) jwt.Keyfunc {
 
 // checkChat: the owner is an active human account of exactly that name, not a
 // guest, and, when that account logs in over OpenID Connect, with the same
-// `sub`. A chat that logs its humans in otherwise has no `sub` to compare; the
-// name alone binds then. It returns true when the account is an OpenID one
-// (its auth_data was compared with `sub`), with the account's chat id.
-func (v *Verifier) checkChat(ctx context.Context, owner, sub string) (bool, string, error) {
-	u, err := v.dir.User(ctx, owner)
-	switch {
-	case errors.Is(err, ErrNoSuchUser):
-		return false, "", ErrUnknownHuman
-	case err != nil:
-		return false, "", ErrDirectory
+// `sub`; when it logs in over LDAP and the token carries an LDAP id, with
+// that id. It returns the proof of the binding (RT-6.42 step 3): an OpenID
+// account whose auth_data is `sub`, or an LDAP account whose auth_data is the
+// token's LDAP id. An account that logs in otherwise (a password, LDAP
+// without the claim) has nothing to compare: the name alone lets it in, and
+// it gets no proof, so no account record.
+func (v *Verifier) checkChat(ctx context.Context, owner, sub, ldapID string) (chatProof, error) {
+	u, err := v.chatAccount(ctx, owner)
+	if err != nil {
+		return chatProof{}, err
 	}
-	switch {
-	case u.Username != owner:
-		return false, "", ErrUnknownHuman
-	case u.Bot || u.Deactivated:
-		return false, "", ErrNotHuman
-	case u.Guest:
-		return false, "", ErrGuest
-	case !u.AuthKnown:
-		return false, "", ErrDirectory
-	case u.AuthService == OpenIDService && u.AuthData != sub:
-		return false, "", ErrSubjectMismatch
+	p, err := prove(u, sub, ldapID)
+	if err != nil {
+		return chatProof{}, err
 	}
 	if err := v.cfg.Binding.Check(ctx, sub, u); err != nil {
 		if errors.Is(err, ErrBinding) {
-			return false, "", ErrBinding
+			return chatProof{}, ErrBinding
 		}
-		return false, "", ErrDirectory
+		return chatProof{}, ErrDirectory
 	}
-	openID := u.AuthService == OpenIDService && u.AuthData == sub
-	if !openID {
-		return false, "", nil
+	return p, nil
+}
+
+// chatAccount looks the owner up: an active human account of exactly that
+// name, not a guest, whose way of logging in the lookup could see.
+func (v *Verifier) chatAccount(ctx context.Context, owner string) (User, error) {
+	u, err := v.dir.User(ctx, owner)
+	switch {
+	case errors.Is(err, ErrNoSuchUser):
+		return User{}, ErrUnknownHuman
+	case err != nil:
+		return User{}, ErrDirectory
 	}
-	return true, u.ID, nil
+	switch {
+	case u.Username != owner:
+		return User{}, ErrUnknownHuman
+	case u.Bot || u.Deactivated:
+		return User{}, ErrNotHuman
+	case u.Guest:
+		return User{}, ErrGuest
+	case !u.AuthKnown:
+		return User{}, ErrDirectory
+	}
+	return u, nil
+}
+
+// prove compares the account's auth_data with the token: the OpenID proof
+// (`sub`) or the LDAP proof (the LDAP id claim, only when the token has one).
+// A mismatch is ErrSubjectMismatch; name equality alone is no proof.
+func prove(u User, sub, ldapID string) (chatProof, error) {
+	switch {
+	case u.AuthService == OpenIDService && u.AuthData != sub:
+		return chatProof{}, ErrSubjectMismatch
+	case u.AuthService == OpenIDService:
+		return chatProof{id: u.ID, service: OpenIDService, data: sub}, nil
+	case u.AuthService == LDAPService && ldapID != "" && u.AuthData != ldapID:
+		return chatProof{}, ErrSubjectMismatch
+	case u.AuthService == LDAPService && ldapID != "":
+		return chatProof{id: u.ID, service: LDAPService, data: ldapID}, nil
+	}
+	return chatProof{}, nil
 }
 
 func (v *Verifier) inApproverGroup(claims jwt.MapClaims) bool {

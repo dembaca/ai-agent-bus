@@ -141,6 +141,7 @@ func TestNoAgentMayPublishPeopleAccountRecordsOrTheBridgesSignal(t *testing.T) {
 	for _, subj := range []string{
 		"bus.hu.home.bob", "bus.hu.home." + bob.name, "bus.hu.home.-", "bus.hu.secret.alice",
 		"presence.account.mattermost." + testrealm.ChatID("bob") + ".v1",
+		"presence.account.mattermost." + testrealm.ChatID("bob") + ".auth.v1", // its proof (#266)
 		"presence.bridge.home.v1", "presence.bridge.secret.v1",
 	} {
 		if err := bob.nc.Publish(subj, []byte("{}")); err != nil || !bob.denied(t) {
@@ -171,7 +172,7 @@ func (f *fakeAttester) records() (out []AccountRecord) {
 	f.mu.Lock()
 	defer f.mu.Unlock()
 	for _, p := range f.got {
-		if strings.Contains(p.subject, ".account.") {
+		if strings.Contains(p.subject, ".account.") && !strings.HasSuffix(p.subject, ".auth.v1") {
 			var r AccountRecord
 			if err := json.Unmarshal(p.body, &r); err == nil {
 				out = append(out, r)
@@ -194,7 +195,7 @@ func TestALoginWritesTheAccountRecord(t *testing.T) {
 	var subject string
 	f.mu.Lock()
 	for _, p := range f.got {
-		if strings.Contains(p.subject, ".account.") {
+		if strings.Contains(p.subject, ".account.") && !strings.HasSuffix(p.subject, ".auth.v1") {
 			subject = p.subject
 		}
 	}
@@ -347,7 +348,7 @@ func TestTheGuardAndTheWriteAreOneStepPerIdentity(t *testing.T) {
 	guard := directory.Anchors{Store: dir}
 	id := testrealm.ChatID("alice")
 	rec := func(iat int64) {
-		if _, err := l.svc.accountRecord(ctx5(t), g, guard, "sub-alice", id, "alice", true, "alice", time.Unix(iat, 0), iat, iat+900); err != nil {
+		if _, err := l.svc.accountRecord(ctx5(t), g, guard, "sub-alice", id, "alice", true, "alice", time.Unix(iat, 0), iat, iat+900, "openid", "sub-alice"); err != nil {
 			t.Error(err)
 		}
 	}

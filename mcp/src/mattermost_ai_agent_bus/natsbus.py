@@ -2157,18 +2157,11 @@ class NatsBus:
         decodes binds to a person (RT-6.42 step 3), a stale one too: a stale record still names
         the person, only its `approver` needs it fresh (as the bridge reads it). A record erased
         by a message that does not decode, and `anchor` null, bind none. Plan B piece 4 judges a
-        Mattermost account's trust by it."""
+        Mattermost account's trust and approval by it (RT-6.41 step 6): the login service writes a
+        record only for a binding it proved (OpenID or LDAP) and keeps it, from its directory,
+        only while Mattermost shows the account so (#266)."""
         return {account: rec.anchor for account, (_, _, rec) in self._accounts.items()
                 if rec is not None and rec.anchor}
-
-    def account_approver(self, account: str) -> bool:
-        """The login service's own record of the Mattermost account `account` is fresh (exp
-        after the server's now), binds it to a person and says `approver` (RT-6.42 step 9).
-        Plan B piece 4 lets an account approve by its own record alone, never by another
-        account of the same person."""
-        got = self._accounts.get(account)
-        rec = got[2] if got is not None else None
-        return rec is not None and bool(rec.anchor) and rec.approver and rec.exp > self._server_now
 
     def approver(self, anchor: str) -> bool:
         """A fresh record (exp after the server's now) binds an account to `anchor` and says

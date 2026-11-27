@@ -178,6 +178,15 @@ func run(log *slog.Logger) error {
 	}()
 	in := &inbound.Bridge{Homes: cfg.Homes, Team: cfg.MMTeam, BusPrefix: cfg.BusPrefix, Log: log,
 		MM: client, NATS: inbound.Confirmed{NC: nc}, Store: kv, Seen: seen, Anchors: accounts, Events: ws.Events(), Up: ws.Up}
+	// A person's post binds by the proof of the account's binding, which only a
+	// system admin's token can compare (auth_service, auth_data; RT-6.42 step 3,
+	// #266): the admin bot's. Without it every person goes out under "-".
+	if cfg.AdminToken != "" {
+		in.Users = mm.New(cfg.MMURL, cfg.AdminToken)
+	} else {
+		log.Warn("bridge: CB_BRIDGE_MM_ADMIN_TOKEN_FILE is unset, so the bridge cannot see how accounts log in" +
+			" and binds no person's post: every person goes out under \"-\" (RT-6.42 step 3)")
+	}
 	if bots != nil {
 		in.BotPrefix = cfg.BotPrefix
 	}

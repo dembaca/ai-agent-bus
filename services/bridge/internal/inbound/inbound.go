@@ -53,11 +53,12 @@ type Seen interface {
 	SetReactions(ctx context.Context, post string, kinds map[string]string) error
 }
 
-// Anchors maps a Mattermost user id to an anchor, "" when unbound (Accounts).
-// No home carries before CaughtUp: until the records are read, a bound person
-// would go out under "-".
+// Anchors maps a Mattermost account to an anchor, "" when unbound
+// (Accounts.Bound): by its id, and only while it logs in as its binding was
+// proven (#266). No home carries before CaughtUp: until the records are read,
+// a bound person would go out under "-".
 type Anchors interface {
-	Anchor(userID string) string
+	Bound(userID, authService, authData string) string
 	CaughtUp() bool
 }
 
@@ -78,13 +79,21 @@ type Bridge struct {
 	BusPrefix string // "bus"
 	Log       *slog.Logger
 	MM        Mattermost
-	NATS      Publisher
-	Store     Store
-	Seen      Seen
-	Anchors   Anchors
-	Events    <-chan mmws.Event
-	Up        func() uint64 // mmws.Reader.Up: the connection that is up now
-	Now       func() time.Time
+	// Users reads the accounts behind people's posts and reactions; nil is MM.
+	// Only a system admin's token sees how an account logs in (auth_service,
+	// auth_data), which binds it to a person (RT-6.42 step 3, #266): the
+	// bridge's admin bot's (CB_BRIDGE_MM_ADMIN_TOKEN_FILE). With the posting
+	// bot's token, which may hold no such role, no account is bound.
+	Users interface {
+		GetUser(ctx context.Context, userID string) (mm.User, error)
+	}
+	NATS    Publisher
+	Store   Store
+	Seen    Seen
+	Anchors Anchors
+	Events  <-chan mmws.Event
+	Up      func() uint64 // mmws.Reader.Up: the connection that is up now
+	Now     func() time.Time
 	// BotPrefix is the agents' bot prefix, set only while the mirror posts
 	// under the agents' own bots (RT-6.44): the signal names it then.
 	BotPrefix string
@@ -498,7 +507,7 @@ func (b *Bridge) post(ctx context.Context, h *home, p post, caught bool, lower i
 		b.Log.Warn("inbound: a post that does not encode, dropped", "home", h.name, "post", p.id, "error", err)
 		return nil
 	}
-	if err := b.publish(h, p.user, raw, "post", p.id); err != nil {
+	if err := b.publish(h, u, raw, "post", p.id); err != nil {
 		return err
 	}
 	if err := b.Seen.MarkPost(ctx, p.id); err != nil {
@@ -556,7 +565,7 @@ func (b *Bridge) reaction(ctx context.Context, h *home, postID, userID, emoji st
 	if err != nil {
 		return err
 	}
-	if err := b.publish(h, userID, raw, kind, postID); err != nil {
+	if err := b.publish(h, u, raw, kind, postID); err != nil {
 		return err
 	}
 	kinds[key] = kind
@@ -573,8 +582,8 @@ func (b *Bridge) reaction(ctx context.Context, h *home, postID, userID, emoji st
 // logs one INFO line once NATS has taken it: the home, what it was (post,
 // reaction or unreaction), the Mattermost post id and the subject, never the
 // text or a name beyond the anchor in the subject (RT-6.42 step 4).
-func (b *Bridge) publish(h *home, userID string, body []byte, what, mmPost string) error {
-	subject := b.BusPrefix + ".hu." + h.name + "." + SenderToken(b.Anchors.Anchor(userID))
+func (b *Bridge) publish(h *home, u mm.User, body []byte, what, mmPost string) error {
+	subject := b.BusPrefix + ".hu." + h.name + "." + SenderToken(b.anchorOf(u))
 	if err := b.NATS.Publish(subject, body); err != nil {
 		return fmt.Errorf("publish %s: %w", subject, err)
 	}
@@ -601,12 +610,31 @@ func (b *Bridge) user(ctx context.Context, id string) (mm.User, error) {
 	if c, ok := b.users[id]; ok && b.Now().Sub(c.at) < userTTL {
 		return c.u, nil
 	}
-	u, err := b.MM.GetUser(ctx, id)
+	var users interface {
+		GetUser(ctx context.Context, userID string) (mm.User, error)
+	} = b.MM
+	if b.Users != nil {
+		users = b.Users
+	}
+	u, err := users.GetUser(ctx, id)
 	if err != nil {
 		return mm.User{}, err
 	}
 	b.users[id] = cachedUser{u: u, at: b.Now()}
 	return u, nil
+}
+
+// anchorOf is the person a post or reaction of u goes out under (RT-6.42
+// step 3, #266): the anchor the login service bound the account to, while
+// Mattermost shows it active, no guest, and logging in as its binding was
+// proven (the same auth_service and auth_data, read with the bridge's admin
+// token, cached as the user is); "" for every other account. A deactivated
+// account, a guest, or one whose login changed binds nothing.
+func (b *Bridge) anchorOf(u mm.User) string {
+	if u.IsBot || u.Deactivated || u.Guest {
+		return ""
+	}
+	return b.Anchors.Bound(u.ID, u.AuthService, u.AuthData)
 }
 
 // gone: Mattermost says the account does not exist; nobody to carry.

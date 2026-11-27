@@ -218,6 +218,53 @@ before 0.5.0 are described in the git history.
 
 ### Changed
 
+- **A Mattermost account is bound to its Keycloak identity by proof, once,
+  and a trusted human's answer on Mattermost approves without the approver
+  flag** (#266, part of #268; RT-6.41 step 6, RT-6.42 step 3; the owner's
+  decision of 2026-11-27, in place of the closed group read of #271).
+  - *The proof.* The login service's chat check (`checkChat`) accepts a
+    second proof besides OpenID (`auth_service` `openid`, `auth_data` the
+    token's `sub`): LDAP, `auth_service` `ldap` and `auth_data` equal to the
+    token's LDAP id claim, named by the new setting `CB_AUTH_LDAP_ID_CLAIM`
+    (default `ldap_id`; a token without it gives no LDAP proof). Name
+    equality alone stays no proof: no record without one of the two. An
+    LDAP account whose token names another LDAP id is now refused, as an
+    OpenID account with another `sub` always was.
+  - *Stored once.* At a login with either proof, an agent's or the
+    console's, the login service writes the account record as before, a
+    proof beside it for the bridge (`<presence>.account.mattermost.<user
+    id>.auth.v1`, which no agent's consumer delivers) and the binding in
+    its directory (`binding.mattermost.<user id>`). At its start and every
+    hour it checks every stored binding against Mattermost and publishes
+    its record and proof again, so a person who logged in once stays bound
+    beyond the stream's 24 hours; an account that is gone, deactivated, a
+    guest, a bot, or logs in otherwise than when it was proven is unbound
+    (a record with `anchor` `null`).
+  - *Bound later.* The bridge carries a person's post or reaction under the
+    record's anchor only while Mattermost, read with the admin bot's token,
+    shows the account active, no guest, and logging in with the proof's
+    `auth_service` and `auth_data`; else, and without the admin bot's token
+    (`CB_BRIDGE_MM_ADMIN_TOKEN_FILE`), under `-`.
+  - *Trust.* With plan B piece 4 on, a Mattermost account approves when its
+    record binds it to one of the session's attested trusted anchors, and a
+    person over NATS when its anchor is one: no fresh approver record, so no
+    15 minutes after a login. With the piece off nothing changes. The
+    approvers' Keycloak group stays a ceiling for logins only.
+  - *Deployment, in this order* (the release's `Needs:` lines say it): the
+    login service's JetStream user publishes
+    `presence.account.mattermost.*.auth.v1` (without it every proven login
+    is refused, `account record: proof: …`); the bridge's consumer create
+    right becomes
+    `$JS.API.CONSUMER.CREATE.PRESENCE.bridge_accounts.presence.account.mattermost.>`
+    (without it the bridge reads no records and carries no home); the
+    bridge needs `CB_BRIDGE_MM_ADMIN_TOKEN_FILE` to bind anyone. For the
+    LDAP proof in the lab (bgl-infra): a Keycloak protocol mapper of the
+    user attribute `LDAP_ID` into the claim `ldap_id` on the bus's and the
+    console's client, and Mattermost's LDAP ID attribute set to the same
+    LDAP attribute as the federation's UUID attribute (`entryUUID` or
+    `objectGUID`). Existing records carry no proof: their people go out
+    under `-` until their next login.
+
 - **The STATS import: the low points of its review** (#219, RT-6.45). A rerun
   of the same login service stops reading the stats channel at the first post
   strictly older than the newest post its last complete run went through

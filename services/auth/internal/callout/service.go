@@ -77,7 +77,8 @@ type Anchors interface {
 // (directory.Anchors has it): it keeps the chat account index current from a
 // login. The service checks for it by type assertion and calls it only for a
 // login whose chat account is proven to be the token's (token.Identity.
-// ChatOpenID), never for a password account; an error refuses the login.
+// ChatProven: OpenID or LDAP), never for a password account; an error refuses
+// the login.
 type AccountIndex interface {
 	Account(ctx context.Context, sub, name string) error
 }
@@ -419,7 +420,7 @@ func (s *Service) authorize(ctx context.Context, req *jwt.AuthorizationRequestCl
 	}
 	// Only a credential that is issued writes the chat account's record
 	// (RT-6.42): a refused one leaves the directory as it is.
-	if ai, ok := ah.(AccountIndex); ok && id.ChatOpenID {
+	if ai, ok := ah.(AccountIndex); ok && id.ChatProven {
 		if err := ai.Account(ctx, id.Subject, id.Owner); err != nil {
 			return "", append(who, "owner", id.Owner, "sub", id.Subject),
 				fmt.Errorf("%w: account index: %v", token.ErrDirectory, err)
@@ -475,7 +476,8 @@ func (s *Service) authorize(ctx context.Context, req *jwt.AuthorizationRequestCl
 		}
 		// The record of the chat account behind the login (RT-6.42 step 3).
 		guard, _ := s.anchorHook().(TokenGuard)
-		skipped, err := s.accountRecord(ctx, at, guard, id.Subject, id.ChatID, id.Owner, id.Approver, anchor, id.IssuedAt, now.Unix(), uc.Expires)
+		skipped, err := s.accountRecord(ctx, at, guard, id.Subject, id.ChatID, id.Owner, id.Approver, anchor, id.IssuedAt, now.Unix(), uc.Expires,
+			id.ChatAuthService, id.ChatAuthData)
 		if err != nil {
 			return "", who, fmt.Errorf("account record: %w", err)
 		}
