@@ -114,6 +114,10 @@ covers) becomes one warning line, `unknown setting CB_PROJECT_CHANNEL (did you
 mean CB_MM_PROJECT_CHANNEL?)`, with the closest known name, the `CB_MM_` prefix
 swap first. It shows in `bus_info`'s and `session_start`'s `warning` and once in
 the session-start hook's line (RT-6.34 step 4). Names only, never a value.
+An environment name may hold any character but `=`, so only names of the form
+`[A-Z0-9_]+` are shown, and at most ten of them (`config.UNKNOWN_CAP`); the odd names
+and those over the cap are counted in a last line, `and 3 more unknown CB_ settings`
+(#269), so a host with many foreign `CB_` variables does not get a long line.
 `tests/hooks/test_env_names.py` pins that every name this page lists is known to it.
 
 ### After the fallbacks go: refuse, never ignore

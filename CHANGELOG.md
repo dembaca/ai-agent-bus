@@ -7,6 +7,9 @@ before 0.5.0 are described in the git history.
 
 ### Fixed
 
+- **Unknown `CB_` name warnings are filtered and capped** (#269, RT-6.34). Only names of
+  the form `[A-Z0-9_]+` are shown, at most ten; the odd names and the rest are counted
+  in a last line, `and N more unknown CB_ settings`.
 - **A tool's HTTP failure names its status** (#263, RT-6.11). An `httpx.HTTPStatusError`
   was hidden whole, since its text carries the URL, so a failed `session_start` read as
   `HTTPStatusError (details hidden…)` with no status, method or host, and a stale
