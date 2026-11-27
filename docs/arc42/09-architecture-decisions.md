@@ -2005,7 +2005,8 @@ could see already. The setting is the sender's home's. In a DM with a peer
 agent (the same owner, ADR-001) or a trusted human: every active category;
 with a foreign agent or any other person only `props` and `calls`, which
 describe the post itself, since `wake`, `identity`, `sig` and `asks` show the
-sender's trust decisions. Its lines cover only that DM's events, never the
+sender's trust decisions (`crown`, the NATS crown's view logged at each tick,
+#243, is no line of an event and shows in no DM). Its lines cover only that DM's events, never the
 home's. A test of work on someone's behalf, which runs in a DM between two
 agents, gets its debug there.
 

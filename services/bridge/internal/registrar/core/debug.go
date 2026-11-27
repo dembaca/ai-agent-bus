@@ -36,7 +36,7 @@ const (
 
 // DebugCategories are the debug categories in their canonical (wire) order.
 // "full" is a command word for all of them, never a category of a record.
-var DebugCategories = []string{"wake", "identity", "sig", "asks", "calls", "props"}
+var DebugCategories = []string{"wake", "identity", "sig", "asks", "calls", "props", "crown"}
 
 const debugFull = "full"
 

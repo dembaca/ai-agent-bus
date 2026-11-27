@@ -7,6 +7,9 @@ before 0.5.0 are described in the git history.
 
 ### Fixed
 
+- **Unknown `CB_` name warnings are filtered and capped** (#269, RT-6.34). Only names of
+  the form `[A-Z0-9_]{1,64}` are shown, at most ten; the odd names and the rest are counted
+  in a last line, `and N more unknown CB_ settings`.
 - **A tool's HTTP failure names its status** (#263, RT-6.11). An `httpx.HTTPStatusError`
   was hidden whole, since its text carries the URL, so a failed `session_start` read as
   `HTTPStatusError (details hidden…)` with no status, method or host, and a stale
@@ -83,6 +86,15 @@ before 0.5.0 are described in the git history.
   the trusted humans, else look the name up as before.
 
 ### Added
+
+- **The NATS crown says why `take` waits, and a `crown` debug category** (#243, RT-6.38, RT-6.31).
+  `coordinator("take")` in a home over NATS names the case instead of always "another agent
+  holds the crown": `pending: @<bot> holds the crown…`, `pending: a NATS agent without a linked
+  bot holds it (<NATS name>)…`, `no holder: nobody stands (<reason>)` or `no claim: this
+  session is not a member of the home yet`. The new debug category `crown` (`/agent-debug on
+  crown`; the bridge signs it from this release on, and an older MCP server refuses a debug
+  record that carries `crown` (`attest.py`), and `/agent-debug on full` now signs one, so update the hosts first) logs the view at each tick: claimants in order,
+  members, standing, holder and why nobody stands.
 
 - **Plan B piece 4: every check of a trusted human and of an agent's owner
   from the login service** (#244, ADR-014 phase 5, RT-6.41 step 6). With the

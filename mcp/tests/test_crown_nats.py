@@ -17,7 +17,7 @@ from fakes import BOT, WORK, FakeBus
 from test_nats_port import ME as NAME_ME_SHORT  # noqa: F401 — the module's own name, unused here
 from test_nats_port import FakeNats, make
 
-from mattermost_ai_agent_bus import a2a, compose, crownlog, lease, natsbus, owners, receipt, server, usage
+from mattermost_ai_agent_bus import a2a, compose, crownlog, debug, lease, natsbus, owners, receipt, server, usage
 from mattermost_ai_agent_bus.model import ChannelUser, Mark, Reaction, StatusMark
 from mattermost_ai_agent_bus.nats_port import NatsPort
 
@@ -382,6 +382,97 @@ async def test_take_is_taken_for_the_holder_and_pending_for_everyone_else(
     assert lease.crown_held(BOT)
     log = crownlog.log_path()
     assert log is not None and [json.loads(ln)["way"] for ln in log.read_text().splitlines()] == ["nats"]
+
+
+# --- #243: take names the case, the crown debug category shows the view -----------------------------
+
+async def test_take_says_a_holder_without_a_linked_bot_by_its_nats_name(w: World) -> None:
+    """RT-6.38 step 4: the holder has no proven link to a bot."""
+    await _two(w, me_first=False)
+    w.fake.bots.pop(NAME_A)
+    out = await lease.command(w.port, "take")  # type: ignore[arg-type]
+    assert out.startswith(f"pending: a NATS agent without a linked bot holds it ({NAME_A});")
+
+
+async def test_take_says_nobody_stands_with_the_reason(w: World) -> None:
+    """RT-6.38 step 4: members exist, but a foreign owner circle keeps everyone from the crown."""
+    w.inner.trusted = {HUMAN: "alice"}
+    await w.prime()
+    claimant(w.fake, NAME_ME, 30, owner="alice")
+    claimant(w.fake, NAME_A, 10, owner="carol")
+    out = await lease.command(w.port, "take")  # type: ignore[arg-type]
+    assert out == "no holder: nobody stands (the home has an agent of a foreign owner circle)"
+    view = w.view()
+    assert view is not None and view.claimants == (NAME_A, NAME_ME) and view.why in out
+
+
+async def test_take_says_nobody_stands_when_this_session_has_no_owner(w: World) -> None:
+    w.inner.trusted = {HUMAN: "alice"}
+    await w.prime()
+    claimant(w.fake, NAME_ME, 30)  # no owner of its own
+    claimant(w.fake, NAME_A, 10, owner="alice")
+    out = await lease.command(w.port, "take")  # type: ignore[arg-type]
+    assert out.startswith("no holder: nobody stands (this session has no owner beside an agent with an owner")
+
+
+async def test_take_says_no_claim_when_the_session_is_no_member_yet(w: World) -> None:
+    """RT-6.38 step 4: no membership announced, no claim at the tick."""
+    w.fake.members.discard((HOME, NAME_ME))
+    w.fake.claims.get(HOME, {}).pop(NAME_ME, None)
+    out = await lease.command(w.port, "take")  # type: ignore[arg-type]
+    assert out.startswith("no claim: this session is not a member of the home yet")
+    view = w.view()
+    assert view is not None and not view.member and view.holder == ""
+    assert view.why == "no claimant has a fresh presence and a membership of the home"
+
+
+def _crown_debug_on(on: bool = True) -> None:
+    debug.reset()
+    if on:
+        now = time.time()
+        debug._states["home-id"] = debug.State(categories=("crown",), until_ms=int((now + 600) * 1000),
+                                               exp=int(now + 600), at=now)
+
+
+async def test_the_crown_debug_category_logs_the_view_at_each_tick(
+        w: World, caplog: pytest.LogCaptureFixture) -> None:
+    """RT-6.31, RT-6.38 step 9: claimants in order, members, standing, holder, why nobody stands."""
+    await _two(w, me_first=False)
+    _crown_debug_on()
+    try:
+        with caplog.at_level(logging.INFO):
+            await w.tick()
+        lines = [r.getMessage() for r in caplog.records if r.getMessage().startswith("crown view:")]
+        assert len(lines) == 1
+        assert f"claimants in order {NAME_A}, {NAME_ME}" in lines[0]
+        assert f"members {NAME_A}, {NAME_ME}" in lines[0] or f"members {NAME_ME}, {NAME_A}" in lines[0]
+        assert f"standing {NAME_A}, {NAME_ME}" in lines[0] and f"holder {NAME_A}" in lines[0]
+        assert "nobody stands" not in lines[0]
+        w.inner.trusted = {HUMAN: "alice"}
+        await w.prime()
+        claimant(w.fake, NAME_A, 3, owner="carol")
+        caplog.clear()
+        with caplog.at_level(logging.INFO):
+            await w.tick()
+        line = next(r.getMessage() for r in caplog.records if r.getMessage().startswith("crown view:"))
+        assert "holder none; nobody stands: the home has an agent of a foreign owner circle" in line
+        assert "standing none" in line
+    finally:
+        debug.reset()
+
+
+async def test_without_the_crown_category_nothing_is_logged_and_the_event_lines_skip_it(
+        w: World, caplog: pytest.LogCaptureFixture) -> None:
+    await _two(w, me_first=False)
+    _crown_debug_on(False)
+    with caplog.at_level(logging.INFO):
+        await w.tick()
+    assert not [r for r in caplog.records if r.getMessage().startswith("crown view:")]
+    state = debug.State(categories=("crown", "props"))
+    assert "crown" not in debug.attachment(state, None, False, call="x", props_out=None)
+    _crown_debug_on()
+    assert debug.category_on("crown") and not debug.category_on("wake")
+    debug.reset()
 
 
 async def test_release_claims_again_and_moves_behind(w: World) -> None:

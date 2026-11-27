@@ -137,12 +137,21 @@ def known(name: str) -> bool:
             or name.startswith(OTHER_PREFIXES))
 
 
+UNKNOWN_CAP = 10
+_PLAIN_NAME_RE = re.compile(r"[A-Z0-9_]{1,64}")
+
+
 def unknown_names(environ: Mapping[str, str] | None = None) -> list[str]:
     """One line per `CB_` name in the environment that nothing knows (#261): a typo or a
     wrong prefix would otherwise leave its setting silently unread. With the closest known
-    name, the `CB_MM_` prefix swap first. Names only, never a value."""
-    names = sorted(n for n in (os.environ if environ is None else environ)
+    name, the `CB_MM_` prefix swap first. Names only, never a value. Only names of the
+    form `[A-Z0-9_]{1,64}` are reported, at most UNKNOWN_CAP of them (#269); the odd ones and
+    the rest are counted in a last line, "and N more"."""
+    found = sorted(n for n in (os.environ if environ is None else environ)
                    if n.startswith("CB_") and not known(n))
+    plain = [n for n in found if _PLAIN_NAME_RE.fullmatch(n)]
+    names = plain[:UNKNOWN_CAP]
+    more = len(found) - len(names)
     pool = sorted(RENAMED)
     out = []
     for name in names:
@@ -150,6 +159,8 @@ def unknown_names(environ: Mapping[str, str] | None = None) -> list[str]:
         near = [swap] if swap in RENAMED else difflib.get_close_matches(name, pool, n=1, cutoff=0.8)
         hint = f" (did you mean {near[0]}?)" if near else ""
         out.append(f"unknown setting {name}{hint}")
+    if more:
+        out.append(f"and {more} more unknown CB_ settings")
     return out
 
 

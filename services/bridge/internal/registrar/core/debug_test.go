@@ -93,6 +93,7 @@ func TestParseDebug(t *testing.T) {
 		{"on wake", debugRequest{action: "on", categories: []string{"wake"}, dur: DebugDefault}},
 		// Canonical order, duplicates folded, any case.
 		{"On PROPS wake props", debugRequest{action: "on", categories: []string{"wake", "props"}, dur: DebugDefault}},
+		{"on crown props", debugRequest{action: "on", categories: []string{"props", "crown"}, dur: DebugDefault}},
 		{"off sig asks", debugRequest{action: "off", categories: []string{"sig", "asks"}, dur: DebugDefault}},
 		{"set calls for 2h", debugRequest{action: "set", categories: []string{"calls"}, dur: 2 * time.Hour, timed: true}},
 		{"set identity for 1h30m", debugRequest{action: "set", categories: []string{"identity"}, dur: 90 * time.Minute, timed: true}},
@@ -109,7 +110,7 @@ func TestParseDebug(t *testing.T) {
 		}
 	}
 	for _, c := range []struct{ in, refusal string }{
-		{"on wake delegation", "Unknown debug category: `delegation`. Known: `wake` `identity` `sig` `asks` `calls` `props`, or `full` for all."},
+		{"on wake delegation", "Unknown debug category: `delegation`. Known: `wake` `identity` `sig` `asks` `calls` `props` `crown`, or `full` for all."},
 		{"set costs context", "Unknown debug categories: `costs`, `context`"},
 		{"on", "`on` needs at least one category"},
 		{"set for 2h", "`set` needs at least one category"},
@@ -197,7 +198,7 @@ func TestDebugCommand(t *testing.T) {
 	state([]string{"asks", "calls"}, c.t.Add(time.Hour), "alice")
 
 	// full turns all on; at most 24 h.
-	run(hAlice, chanTeam, "full for 24h", "`wake` `identity` `sig` `asks` `calls` `props`, until 2026-10-30 12:20 UTC (24h from now)")
+	run(hAlice, chanTeam, "full for 24h", "`wake` `identity` `sig` `asks` `calls` `props` `crown`, until 2026-10-30 12:20 UTC (24h from now)")
 	state(DebugCategories, c.t.Add(24*time.Hour), "alice")
 	run(hAlice, chanTeam, "full for 25h", "out of range")
 	run(hAlice, chanTeam, "on wake for 2d", "out of range")

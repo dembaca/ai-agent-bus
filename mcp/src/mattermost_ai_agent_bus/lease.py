@@ -238,13 +238,19 @@ class CrownView:
     session's NATS name; holder: the NATS name that holds it ('' none); candidates: the
     names that may hold it, in claim order (fresh presence, a member, a standing peer);
     member: this session announced its membership of the home; claim_age: how old its own
-    claim is by the server's clock, None without one."""
+    claim is by the server's clock, None without one; claimants: the claims with a fresh
+    presence of a member, in claim order, before the standing rule; members: the names among
+    the claimants and the fresh presences that announced their membership; why: why nobody
+    stands ('' while somebody does), for `take` and the `crown` debug lines (#243)."""
 
     me: str
     holder: str = ""
     candidates: tuple[str, ...] = ()
     member: bool = False
     claim_age: float | None = None
+    claimants: tuple[str, ...] = ()
+    members: tuple[str, ...] = ()
+    why: str = ""
 
     @property
     def mine(self) -> bool:
@@ -365,6 +371,17 @@ def nats_state() -> NatsState:
     assert source is not None
     view = source.crown_view(_nats_home)
     return NatsState("ok", view) if view is not None else NatsState("unknown")
+
+
+def crown_view_line(view: CrownView) -> str:
+    """The `crown` debug line (RT-6.31, RT-6.38 step 9): the view as one tick sees it. NATS names
+    only, never a value."""
+    def names(xs: Iterable[str]) -> str:
+        return ", ".join(xs) or "none"
+    return (f"crown view: me {view.me} ({'member' if view.member else 'not a member'}, claim "
+            f"{'none' if view.claim_age is None else f'{int(view.claim_age)} s old'}); claimants in order "
+            f"{names(view.claimants)}; members {names(view.members)}; standing {names(view.candidates)}; "
+            f"holder {view.holder or 'none'}" + (f"; nobody stands: {view.why}" if view.why else ""))
 
 
 def crown_hint(name: str) -> str:
@@ -1427,6 +1444,11 @@ async def _command_nats(client: ChatPort, action: str, passed: list[bool] | None
     rows = _at_home(await _rows(client, cid, client.work_channel_name), client.work_channel_name)
     links = await _linked_owned(client, source, rows)
     _nats_hold_track(view)
+    if action == "tick":
+        from . import debug  # here: debug imports modules that import lease (receipt sets hold_began)
+
+        if debug.category_on(a2a.DEBUG_CROWN):
+            log.info("%s", crown_view_line(view))
 
     async def arm() -> None:
         global _crown_since
@@ -1448,9 +1470,14 @@ async def _command_nats(client: ChatPort, action: str, passed: list[bool] | None
             await arm()
             return "taken"
         holder = next((r for r in rows if links.get(str(r["id"])) == view.holder), None) if view.holder else None
-        who = f"@{holder['username']}" if holder else "another agent"
-        return (f"pending: {who} holds the crown over NATS; the claim order decides and cannot be "
-                "overtaken, so take waits for it to pass")
+        if not view.holder:
+            if not view.member:
+                return ("no claim: this session is not a member of the home yet; its tick claims "
+                        "the crown once it is")
+            return f"no holder: nobody stands ({view.why or 'no reason known'})"
+        who = (f"@{holder['username']} holds the crown over NATS" if holder
+               else f"a NATS agent without a linked bot holds it ({view.holder})")
+        return f"pending: {who}; the claim order decides and cannot be overtaken, so take waits for it to pass"
     if action == "release":
         if not view.mine:
             return "not held by you: nothing to release"
