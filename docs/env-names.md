@@ -65,8 +65,8 @@ Each component reads its variables like this from 0.103.0 on:
    name.
 3. If both names are set to different values, the component refuses to
    start and names both (never a secret's value).
-4. The fallbacks go in the release after 0.103.0, called *the removal
-   release* below. What happens to an old name from then on says
+4. The fallbacks go in 0.105.0 (the owner's decision of 2026-11-27; 0.104.0
+   still reads the old names), called *the removal release* below. What happens to an old name from then on says
    [After the fallbacks go](#after-the-fallbacks-go-refuse-never-ignore).
 
 A shell script that cannot log a warning (a hook that must stay quiet) writes

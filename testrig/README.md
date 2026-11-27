@@ -211,6 +211,9 @@ uv run --directory testrig bus-testrig bus-run --transport nats --fault all --co
 uv run --directory testrig bus-testrig coord-run --transport nats --stops 3 --summary
 ```
 
+The nightly `full-nats` job writes each `--summary` table into the run's step
+summary and uploads the full output as the `full-nats-results` artifact.
+
 It needs nats-server 2.15.3 (`CB_NATS_SERVER`, `MM_NATS_SERVER`, else `nats-server`
 on `PATH`; without one the run says so and exits 2) and `mcp/` synced, as `bus-run`
 does. What stands in for what (`natsrig.py`):
@@ -241,14 +244,40 @@ The faults on NATS are windows, opened half way through the sends for
 | `stall` | each chunk from the server held `--stall-sec` |
 | `halfopen` | both directions stop being read, and are read again at the window's end |
 
+A PR-sized cut run (`--count 10`, the default 50 ms apart) has sent all its
+posts within about half a second, inside the 2 s window: it measures the window,
+not what comes after it. The nightly run (100 posts, 5 s) outlasts the window and
+measures the posts after it.
+
+A CONNECT whose consumer reconcile fails is aborted before the server sees it,
+and the next connection of that agent retries the reconcile, as the login
+service lets a client retry a refused login (#218); the failure is kept per
+agent, so one agent's early attempt against a restarting server fails only that
+connection. A run whose agent still had no consumers at its last connection
+exits 1, and aborted CONNECTs a later one cured are counted and printed.
+
+Isolation: each run gets its own 0700 temporary directory, its own JetStream
+store and an ephemeral port, and the host's `CB_*`/`MM_*` are stripped. A rig
+killed with SIGKILL leaves its nats-server and session processes behind (they
+are no process group of the rig's own), but they hold no shared port or store,
+so the next run is unaffected. `pgrep -fl 'bus-testrig-'` lists them (the
+nats-server's conf path and the sessions' state directories name it) and
+`pkill -f 'bus-testrig-'` stops them; a stray one costs a process, not a run. If
+another process takes the probed port before the first start, the server starts
+again on a fresh one; a restart keeps its port, since the clients hold it, and
+the start checks the server's INFO so a foreign listener on that port is never
+taken for it.
+
 A send that fails under the fault is not counted as sent, and the run goes on
 (`notes` counts them). Under `restart`, `hang`, `cut` and `blackhole` the run
 has to show the sender's recovery: after the window it keeps posting until one
-send succeeds or 90 s pass (just over the bus's 61 s worst-case back-off), so
+send succeeds or 90 s pass (generous: the bus retries at most every 5 s), so
 such a run can send up to ~180 posts beyond `--count`; a run that never gets one
 exits 1 (the session did not come back, so the numbers measure nothing). Under
-`kill-client` the recovery is the receiver's: an arrival after the resume. `--summary` prints a table after the
-JSON: per fault the p50, p95 and maximum wait, loss and duplicates.
+`kill-client` the recovery is the receiver's: an arrival after the resume. The
+report's `recovery_s` says how long that took after the window closed (with the
+0.5 s recovery pace it is the bus's reconnect delay, #222). `--summary` prints a
+table after the JSON: per fault the p50, p95 and maximum wait, loss and duplicates.
 
 `coord-run` starts `--sessions` servers in one home (default 3), waits for the
 crown, SIGKILLs the holder's process group and waits for a survivor's crown log

@@ -22,7 +22,7 @@ import (
 	"sync"
 )
 
-// removalRelease is the one-line switch for the release after 0.103.0 (the
+// removalRelease is the one-line switch for 0.105.0 (the
 // removal release, docs/env-names.md "After the fallbacks go"): set to true,
 // an old name set without its new name refuses to start instead of being
 // read. Never simply drop the fallback: an ignored old name fails open.

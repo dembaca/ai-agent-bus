@@ -337,6 +337,7 @@ class Login:
         # its own TUI (#198): link and code only, never a token; None outside the
         # wait. `_shown` keeps the line to once per login.
         self._pending: DeviceGrant | None = None
+        self._pending_until = 0.0
         self._shown = False
         self._endpoints: dict[str, str] | None = None
         self._lock = asyncio.Lock()
@@ -609,6 +610,7 @@ class Login:
             user_code=str(body.get("user_code", "")),
             expires_in=_int(body.get("expires_in"), 600))
         self._pending, self._shown = grant, False
+        self._pending_until = self._now() + grant.expires_in
         interval = max(1, _int(body.get("interval"), DEFAULT_INTERVAL_SEC))
         deadline = self._now() + grant.expires_in
         outcome = "failed"
@@ -633,7 +635,7 @@ class Login:
             await self._io(self._cool_down, "was refused", human)
             raise
         finally:
-            self._pending = None
+            self._pending, self._pending_until = None, 0.0
             await self._settle(outcome)
 
     def pending(self) -> DeviceGrant | None:
@@ -646,10 +648,10 @@ class Login:
         self._shown = True
 
     def pending_line(self) -> tuple[str, str, int] | None:
-        """The waiting approval as (link, code, expires_in) for a terminal (#198),
+        """The waiting approval as (link, code, seconds left) for a terminal (#198),
         checked: an https link on the issuer's own host and port, a code in the
         device flow's alphabet, nothing unprintable. None when nothing waits, it was
-        shown, or the grant would not survive the check."""
+        shown, the grant would not survive the check, or its time is over."""
         grant = self.pending()
         if grant is None:
             return None
@@ -663,7 +665,9 @@ class Login:
         code = "".join(ch for ch in grant.user_code if ch.isprintable()).strip()
         if not _USER_CODE.fullmatch(code):
             return None
-        return link, code, grant.expires_in
+        # The time it has left, not the grant's original span: a harness says so.
+        left = int(self._pending_until - self._now())
+        return (link, code, left) if left > 0 else None
 
     def _cool_down(self, why: str, human: str = "", cause: str = "") -> None:
         """`cause` is the error's own text, kept in this object only: the mark on the

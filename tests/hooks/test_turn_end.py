@@ -1001,8 +1001,8 @@ def test_an_idle_end_prints_the_line_alone(run, monkeypatch):
     monkeypatch.setattr(login_mod, "_current", waiting)
     r = run(STOP)
     assert r.passed
-    assert r.banner == f"Bus login: open {waiting.link} — the page shows the code {waiting.code}." \
-        " Approve only if it matches."
+    assert r.banner.startswith(f"Bus login: open {waiting.link} — the page shows the code {waiting.code}.")
+    assert "Approve only if it matches" in r.banner and "10 min" in r.banner
     assert waiting.shown_calls == 1
 
 

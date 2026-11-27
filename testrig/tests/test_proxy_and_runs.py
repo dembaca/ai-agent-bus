@@ -17,7 +17,7 @@ import pytest
 import websockets
 
 from bus_testrig import cli, measurands, proc
-from bus_testrig.proxy import ByteProxy, ConnState, FaultRelay, FrameProxy, ProxyFault
+from bus_testrig.proxy import ByteProxy, ConnState, FaultRelay, FrameProxy, ProxyFault, ReconcileFailure
 from bus_testrig.runner import Run, _pct, echo_run
 
 
@@ -480,8 +480,9 @@ def test_no_namespace_cut_is_claimed():
 
 async def test_a_failed_connect_hook_aborts_the_connection_and_fails_the_proxy():
     """A CONNECT whose hook (the login service's reconcile) raises never reaches
-    the server: the proxy aborts it, refuses every later one and says so, so a
-    run cannot measure a session without its consumers."""
+    the server: the proxy aborts it and says so. A later connection retries the
+    hook, as the login service lets a client retry a refused login (#218); while
+    it keeps failing, no CONNECT reaches the server."""
     seen: list[bytes] = []
 
     async def upstream(reader: asyncio.StreamReader, writer: asyncio.StreamWriter) -> None:
@@ -510,7 +511,7 @@ async def test_a_failed_connect_hook_aborts_the_connection_and_fails_the_proxy()
                 data = b""
             assert data == b""  # aborted, no CONNECT
             writer.close()
-            # A second connection is refused before the server, with no hook run.
+            # A second connection runs the hook again, and is aborted again.
             reader2, writer2 = await asyncio.open_connection("127.0.0.1", proxy.port)
             writer2.write(b'CONNECT {"nkey":"y"}\r\n')
             await writer2.drain()
@@ -523,9 +524,102 @@ async def test_a_failed_connect_hook_aborts_the_connection_and_fails_the_proxy()
     finally:
         server.close()
     assert not seen, "a CONNECT reached the server without its consumers"
-    assert proxy.hook_errors == 1
+    assert proxy.hook_errors == 2  # the retry ran the hook too (#218)
     assert proxy.failed.startswith("consumer reconcile failed")
     assert proxy.counters()["failed"] == 1
+
+
+async def test_a_later_connection_that_reconciles_heals_the_proxy():
+    """#218: a hook that failed once and works on the retry lets that CONNECT
+    through; the count stays for the operator, the proxy is not failed."""
+    seen: list[bytes] = []
+
+    async def upstream(reader: asyncio.StreamReader, writer: asyncio.StreamWriter) -> None:
+        try:
+            while True:
+                seen.append(await reader.readuntil(b"\r\n"))
+        except (asyncio.IncompleteReadError, ConnectionError):
+            pass
+        finally:
+            writer.close()
+
+    server = await asyncio.start_server(upstream, "127.0.0.1", 0)
+    port = server.sockets[0].getsockname()[1]
+    calls = 0
+
+    async def hook(_line: bytes) -> str:
+        nonlocal calls
+        calls += 1
+        if calls == 1:
+            raise ReconcileFailure("agent-a", "an early request against a restarting server")
+        return "agent-a"  # the agent whose consumers this connection has
+
+    try:
+        async with ByteProxy("127.0.0.1", port, on_connect=hook) as proxy:
+            _, writer = await asyncio.open_connection("127.0.0.1", proxy.port)
+            writer.write(b'CONNECT {"nkey":"x"}\r\n')
+            await writer.drain()
+            writer.close()
+            _, writer2 = await asyncio.open_connection("127.0.0.1", proxy.port)
+            writer2.write(b'CONNECT {"nkey":"y"}\r\nPING\r\n')
+            await writer2.drain()
+            for _ in range(100):
+                if seen:
+                    break
+                await asyncio.sleep(0.02)
+            writer2.close()
+    finally:
+        server.close()
+    assert calls == 2 and seen, "the retried CONNECT reached the server"
+    assert proxy.hook_errors == 1
+    assert proxy.failed == ""
+    assert proxy.counters()["failed"] == 0
+
+
+async def test_a_reconcile_failure_is_kept_per_agent():
+    """#218: one agent's failed reconcile does not fail another's; each agent's
+    last connection decides, and a failure that agent's retry cured is gone."""
+    async def upstream(reader: asyncio.StreamReader, writer: asyncio.StreamWriter) -> None:
+        try:
+            while await reader.read(4096):
+                pass
+        except ConnectionError:
+            pass
+        finally:
+            writer.close()
+
+    server = await asyncio.start_server(upstream, "127.0.0.1", 0)
+    port = server.sockets[0].getsockname()[1]
+    broken = {"a"}
+
+    async def hook(line: bytes) -> str:
+        who = json.loads(line)["nkey"]
+        if who in broken:
+            raise ReconcileFailure(who, "JetStream is not ready")
+        return who
+
+    async def connect(proxy: ByteProxy, who: str) -> None:
+        _, writer = await asyncio.open_connection("127.0.0.1", proxy.port)
+        writer.write(b'CONNECT {"nkey":"' + who.encode() + b'"}\r\n')
+        await writer.drain()
+        writer.close()
+        await asyncio.sleep(0.05)
+
+    try:
+        async with ByteProxy("127.0.0.1", port, on_connect=hook) as proxy:
+            await connect(proxy, "a")  # a fails
+            broken.clear()
+            await connect(proxy, "a")  # a's retry reconciles
+            broken.add("b")
+            await connect(proxy, "b")  # b fails, a's verdict stays gone
+            assert proxy.failed_agents == ["b"]
+            assert proxy.hook_errors == 2
+            assert proxy.counters()["failed"] == 1
+            broken.clear()
+            await connect(proxy, "b")
+            assert proxy.failed_agents == [] and proxy.counters()["failed"] == 0
+    finally:
+        server.close()
 
 
 # --- the run's trust and its report (review M1/M2) ------------------------------------
@@ -538,6 +632,14 @@ def test_a_failed_reconcile_or_a_lost_sender_is_untrustworthy():
     failed.sent_frames = 5
     failed.relay = {"failed": 1}
     assert cli._untrustworthy(failed) is True
+    # A hook that failed once and reconciled on the retry is a note, not a failure (#218).
+    cured = Run(name="bus-run", target="bus-nats", fault="none")
+    cured.sent = [cured.send(0), cured.send(1)]
+    cured.sent_frames = 2
+    cured.arrive(0)
+    cured.arrive(1)
+    cured.relay = {"failed": 0, "hook_errors": 1}
+    assert cli._untrustworthy(cured) is False
     for fault in ("restart", "hang", "kill-client", "cut", "blackhole"):
         lost = Run(name="bus-run", target="bus-nats", fault=fault)
         # One arrival before the window, so the silence checks cannot be what
@@ -581,3 +683,18 @@ def test_the_report_names_the_lost_sequences_and_the_consumer():
     assert report["failed_but_arrived"] == 1
     assert report["consumer_at_kill"] == {"delivered_stream_seq": 3, "num_pending": 0}
     assert report["consumer_at_resume"] == {"delivered_stream_seq": 9, "num_pending": 0}
+
+
+def test_the_report_says_how_long_the_session_needed_after_the_window() -> None:
+    """#222: `recovery_s` is the time from the fault's window to the first post that
+    succeeded after it - with the recovery loop's 0.5 s pace it is the reconnect
+    delay itself, so a fix of that delay can be measured with the rig."""
+    run = Run(name="bus-run", target="bus-nats", fault="restart")
+    run.window_closed_at = 100.0
+    run.recovered = True
+    run.recovered_at = 104.5
+    assert run.report()["recovery_s"] == 4.5
+    # No recovery: nothing to report, not a zero that reads like "at once".
+    lost = Run(name="bus-run", target="bus-nats", fault="restart")
+    lost.window_closed_at = 100.0
+    assert lost.report()["recovery_s"] is None

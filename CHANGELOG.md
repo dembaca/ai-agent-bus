@@ -5,6 +5,50 @@ before 0.5.0 are described in the git history.
 
 ## Unreleased
 
+### Changed
+
+- **The fault rig's leftovers from #209's review** ([#218](https://github.com/dembaca/ai-agent-bus/issues/218),
+  ADR-014's phase-1/4 rig). The NATS restart test asserts `lost_seqs`, so a
+  failed send is told from a lost post. A failed consumer reconcile aborts that
+  one CONNECT, and the next connection retries it as the login service lets a
+  client retry a refused login: the verdict is kept per agent, and a run is
+  untrustworthy only when an agent's last connection still had no consumers;
+  cured CONNECTs are counted and printed, and a coordinator run copies them
+  into its notes and report. The first start retries once on a fresh port if
+  another process took the probed one, reading the server's INFO so a foreign
+  listener is not taken for it (a restart keeps its port, the clients hold it);
+  the tail masking covers a value after `token:`, `token =` and a JSON key, as
+  well as the bare word; the README says how far a PR-sized cut run
+  reaches and what a SIGKILLed rig leaves behind. The nightly `full-nats` job
+  puts its tables into the run's step summary and uploads the output as the
+  `full-nats-results` artifact, and the nats-server fetch is one composite
+  action instead of four copies.
+
+### Fixed
+
+- **The NATS read mark is seeded at a channel's first post** (#224, the residual
+  of #213's fix). A channel without a mark gets one at the first NATS post
+  received there, one sequence before the oldest post the session has not handed
+  over, and only once the backfill has read its snapshot - so a post queued
+  before the channel's first hand-over still has a cursor and the next server
+  asks for it again, and a live post queued earlier cannot pass an older one.
+  **The residual:** a post of stream sequence 1 has no sequence before it, so the
+  first message of a recreated `BUS` stream can still be lost at a kill before
+  any hand-over (explicit acks on the BUS consumers would close it); and a post
+  past the stream's 14 days or the consumer's inactivity threshold does not come
+  back.
+
+## 0.104.0
+
+Needs: login service jetstream user with stream update on stats and publish on its import subjects, before its upgrade.
+Needs: for the bridge commands, its signing key in MM_REGISTRAR_KEYS on every host, beside the registrar key.
+Needs: for the bridge commands, its records bucket and its rights on it, as in the example config.
+Needs: settings renamed to the new prefix before 0.105.0, the old names still work in 0.104.0.
+
+The old setting names of 0.103.0 still work in this release, with their
+deprecation warning; they go in 0.105.0, the removal release
+([docs/env-names.md](docs/env-names.md#the-reading-rule)).
+
 ### Added
 
 - **The STATS history: a year of statistics, and the stats channel's lines
@@ -37,7 +81,7 @@ before 0.5.0 are described in the git history.
 
 - **The console's per-agent numbers** (#201's first piece, the design canvas's data): `GET /v1/agent-stats` serves one row per own or trusted agent — one whose attestation names the logged-in operator as owner or trusted (the owner's decision amending ADR-015 point 15, RT-6.43 step 8); another owner's agent, or one without a known attestation, has no row — whose `STATS` parts the session's 7-day reading holds: the token sums of the last 24 hours and of the window (`all`, the split by token type, the input's bus overhead and coordination over the same parts; n/a without `tok` or for an empty object, never 0) and the posts, wakes and tool calls of 24 hours, read-only from the same consumers as the reports. The aggregate reports (`/v1/stats`, and `/metrics` as before) stay visible to every operator for all agents. Its requests count under a route bucket of their own on the metrics page. The browser app's API gains the wire types and the mock rows; no page shows them yet (the design PR #185's follow-ups own the UI).
 
-- **The fault-run rig runs against the bus over NATS** (#151 step 4c, ADR-014 phase 1): `bus-testrig bus-run --transport nats` runs the same two MCP servers with their home over NATS, against a local nats-server 2.15.3 whose static users carry the rights the login service grants, and injects the phase-1 faults as windows: nats-server restarted (SIGKILL and start on the same store) or hung (SIGSTOP), the receiving server killed and resumed, and a byte proxy in front of NATS that cuts, blackholes, stalls or freezes the line. `bus-testrig coord-run` hard-stops the coordinator and measures the take-over from the successor's crown log. `--summary` prints p50, p95, maximum, loss and duplicates per fault, and the take-over. First finding: a hard-stopped holder sends no `bye`, so the crown passes only once its presence is 90 s old — 89 to 120 s in the small runs (the rig's `CB_HEARTBEAT_SEC=30` (the bus minimum; the default is 300) adds the second beat) — against the phase-4 target of 30 s; a session killed loses every post the consumer pushes until the server notices the dead socket, usually the one in flight: the consumer keeps its position and the gap arrives (100 messages, 10 s window: loss 1), but a pushed one cannot be asked for again (at-most-once, no persisted client watermark; [#213](https://github.com/dembaca/ai-agent-bus/issues/213)). A run whose fault must be recovered from counts only when the session came back: after the window the sender keeps posting until one send succeeds (up to 90 s), an arrival after `kill-client`'s resume is that receiver's, and a run that never got one exits 1 instead of reading as a clean measurement. CI runs every NATS fault with 10 messages and one hard stop per PR, and 100 messages per fault and 50 hard stops nightly. Mattermost stays the default transport, its path unchanged; the take-over on Mattermost is not yet measured (the stand-in carries no election). Nothing in the bus changes.
+- **The fault-run rig runs against the bus over NATS** (#151 step 4c, ADR-014 phase 1): `bus-testrig bus-run --transport nats` runs the same two MCP servers with their home over NATS, against a local nats-server 2.15.3 whose static users carry the rights the login service grants, and injects the phase-1 faults as windows: nats-server restarted (SIGKILL and start on the same store) or hung (SIGSTOP), the receiving server killed and resumed, and a byte proxy in front of NATS that cuts, blackholes, stalls or freezes the line. `bus-testrig coord-run` hard-stops the coordinator and measures the take-over from the successor's crown log. `--summary` prints p50, p95, maximum, loss and duplicates per fault, and the take-over. First finding: a hard-stopped holder sends no `bye`, so the crown passes only once its presence is 90 s old — 89 to 120 s in the small runs (the rig's `CB_HEARTBEAT_SEC=30` (the bus minimum; the default is 300) adds the second beat) — against the phase-4 target of 30 s; a session killed loses every post the consumer pushes until the server notices the dead socket, usually the one in flight: the consumer keeps its position and the gap arrives (100 messages, 10 s window: loss 1), but a pushed one cannot be asked for again (at-most-once, no persisted client watermark; [#213](https://github.com/dembaca/ai-agent-bus/issues/213), fixed in this release, see Fixed). A run whose fault must be recovered from counts only when the session came back: after the window the sender keeps posting until one send succeeds (up to 90 s), an arrival after `kill-client`'s resume is that receiver's, and a run that never got one exits 1 instead of reading as a clean measurement. CI runs every NATS fault with 10 messages and one hard stop per PR, and 100 messages per fault and 50 hard stops nightly. Mattermost stays the default transport, its path unchanged; the take-over on Mattermost is not yet measured (the stand-in carries no election). Nothing in the bus changes.
 - **The central bridge sweeps the agent bots it made** (#151 step 2, RT-6.44): every 10 minutes it disables a bot it made for an agent that has shown no presence and posted nothing for longer than `CB_BRIDGE_MM_BOT_KEEP` (default `24h`, at least `1h`), and revokes the bot's tokens; at most 20 bots per pass, none while the presence feed is stale. A bot is the bridge's only by its prefix and its mark in the description together, never by the prefix alone, so the registrar's bots stay the host sweep's. Last seen is kept in memory: after a restart every bot counts as seen at the start. An agent that comes back gets its bot enabled again and a fresh token at its next message; only bots the sweep disabled (their description marked ` (swept)`) come back, one an admin disabled stays off. No new right, no new endpoint, nothing persisted; hosts notice nothing.
 
 ### Changed
@@ -62,8 +106,9 @@ before 0.5.0 are described in the git history.
 - **Thread reads for the coordinator's wake are bounded** (#223,
   [the coordinator scenario, RT-6.6 step 5](docs/arc42/06-runtime-view.md#66-coordinator-crown-and-presence-lease),
   and the end-of-turn scenario, RT-6.2 step 4). A thread that cannot be read
-  is not read again for a minute, first read and re-read alike; until then it
-  counts as unreadable, so the coordinator wakes. One `/v1/posts` request
+  is not read again for a minute, first read and re-read alike; a failed first
+  read counts as unreadable until then, so the coordinator wakes, while a
+  failed re-read keeps the record read before, so it does not. One `/v1/posts` request
   reads at most 20 threads (`MAX_THREAD_READS`); a reply beyond them stays
   unmarked, as without the marks: the coordinator wakes for it and the
   listener judges it by its last 200 posts, and the next request reads on.
@@ -71,6 +116,18 @@ before 0.5.0 are described in the git history.
   its thread's record at once. `/v1/posts`'s field table in the docs now
   lists `agent_thread`, `my_thread` and `my_root`, and the docs say that a
   root a webhook posted is judged as a human's.
+- **The agent's own threads are marked before the crown's** ([#226](https://github.com/dembaca/ai-agent-bus/issues/226),
+  the follow-ups of #223). `/v1/posts` computes `my_thread`/`my_root` before the
+  crown's `agent_thread` marks, and a root the request itself carries costs no
+  thread read (its author is the one who started it; a webhook's root is read),
+  so a crown-heavy request marks the agent's own replies it carries even when
+  other agents' 25 roots take the 20 reads (`MAX_THREAD_READS`). A reply whose
+  root lies before the request's window takes a read like the others: a first
+  crown-heavy poll can leave it for the next, which finds the other roots kept.
+  The docs also say what a failed read means: only a failed first read counts
+  as unreadable, which lets the coordinator wake; a failed re-read keeps the
+  record read before.
+
 - **A human's reply in an agent's thread wakes that agent, not the coordinator**
   ([#207](https://github.com/dembaca/ai-agent-bus/issues/207),
   [the coordinator scenario, RT-6.6 step 5](docs/arc42/06-runtime-view.md#66-coordinator-crown-and-presence-lease)).
@@ -139,8 +196,13 @@ before 0.5.0 are described in the git history.
   value per key with a revision-checked write: the bridge runs **one replica**
   with a `Recreate` rollout, and a second writer is refused rather than merged.
   The release that carries this pins the bridge's key on every host beside the
-  registrar's:
-  Needs: bridge signing key pinned on the hosts beside the registrar key.
+  registrar's (`MM_REGISTRAR_KEYS`, see this release's `Needs:` lines), and the
+  operator makes the `BUS_BRIDGE_RECORDS` bucket with the bridge user's rights
+  on it (`services/auth/nats-server.example.conf`) before the commands start.
+  To move the commands, the operator points the three slash commands' request
+  URLs in Mattermost at the bridge's commands listener (same paths, only the
+  host changes), puts their verification tokens into the bridge's token files,
+  and stops the three at the registrar.
 - **The console names every agent** (#199, ADR-015 point 6). A card whose
   stated username another card states too (an agent that moved to a new
   host key keeps its old presence for 24 h) showed only its bus id
@@ -163,11 +225,45 @@ before 0.5.0 are described in the git history.
   the harness on `GET /v1/login` of its hook API, and the harness shows it once:
   Claude Code's session-start hook as a `systemMessage`, the pi extension's
   notice and the OpenCode plugin's synthetic line. The line is marked shown with
-  `POST /v1/login/shown`, so the next turn's notice does not repeat it; a grant
-  that starts after the session start is seen at the next turn's end.
+  `POST /v1/login/shown`, so the next turn's notice does not repeat it, and only
+  after the line really went out. A grant that starts after the session start
+  comes with the next turn's end: `/v1/turn-end` carries the same line in its
+  answer, so the pi extension and the OpenCode plugin need no second call, and
+  Claude Code's Stop hook asks `GET /v1/login` there. The line says how many
+  minutes the code has left, not the grant's original span, and ends with the
+  approval. A keyless corral session gets the line from its relay, on the link
+  the host built itself. A session with no bot yet (503 on its turn's end) still
+  gets the line with that answer, so the planned central Mattermost adapter
+  without agent bots (plan B, see Docs) does not lose the approval.
 
 ### Fixed
 
+- **A faulted NATS connection no longer blocks the next post, and a
+  restarted server is reached again within seconds** (#222). Two defects, both
+  measured with the fault rig: a send in flight when a fault hit held the
+  send lock until nats-py's 10 s flush default, so the first post after the
+  window waited 8.0 s (`restart` and `blackhole`); and the reconnect wait
+  doubled from a second to 30 s, so after a long outage the next attempt could
+  be half a minute away (a 30 s restart left the sender down for 7.6 to
+  19.7 s beyond its downtime). A flush that does not hear its PONG within 5 s
+  now fails that send and gives the connection up, at most once per 30 s, so
+  a server that answers everybody slowly is not stampeded (a timed-out flush
+  would misfit every later PONG; the handshake keeps 10 s). The error says the
+  post may have arrived - the publish went out before the PONG went missing -
+  so a retry can duplicate it. The wait stops at 5 s while the server does not
+  answer and starts with a jittered moment, so a home's agents do not knock in
+  step; a failure of the login keeps the slower growth to 30 s - the bus's own
+  `LoginError`, nats-py's authorization errors, and its handshake's plain error
+  with the server's text (a refused CONNECT) - since it may need a human or a
+  restarted login service. A flush-triggered reconnect the 30 s gate holds back
+  is armed for the gate's end, so a second timeout cannot leave the connection
+  down until the next credential renewal. Each attempt logs its next wait (the first three,
+  then every tenth), and the fault rig reports `recovery_s`, the time from the
+  window to the first post after it. Measured after the change: 0.004 to 4.3 s
+  for the faults of `--fault all`, 0.5 to 2.5 s for a 30 s restart window.
+  #222's own 0.5 s command recovered in 4 of 4 runs on macOS before the change
+  as well, so the report's ~40 s is not reproduced here; this fixes the two
+  delays it can have come from.
 - **A killed session no longer loses the post that was queued for it** (#213).
   The first `since` of a NATS home now comes from the host's read mark
   (`read-<uid>.env`, the NATS lane `<channel id>:nats`): the last post actually
@@ -197,7 +293,7 @@ before 0.5.0 are described in the git history.
   the crown on a handover. Stall notices: one addressee per item, and finished tasks
   closed with `DONE`, so the notice lists only live items.
 
-- **Phase 5 of the NATS decision as plan B** (#151): an amendment to the NATS decision (ADR-014) plans the central Mattermost adapter in fourteen pieces, each use of the agent's own Mattermost bot in a home over NATS moving to that bot in the bridge (RT-6.44) or onto NATS behind a switch per piece and channel, beside the decided transport flag, off by default, with its way back, test and lab check; decided by the owner: the transport flag per channel in the channel directory, and that at the end nothing of the bus runs outside the sandbox (the relay, the host process and the signed host copy go with the last piece; the signed-release decision, ADR-011, and its scenarios RT-6.28 to RT-6.30 and RT-6.32 note it). Also the order, the acceptance before registration ends (with the protection against stolen tokens and the console's release signature check, #192), three more decisions of the owner of 2026-11-27 (the login approval only at this machine once no agent has a bot, with no DM and no ask; the hosts' setting for the bridge's address as `CB_RECORDS_URL`, planned in `docs/env-names.md`; hosts delete `MM_REG_SECRET`, `MM_REG_SECRET_GOPASS` and `MM_REG_SECRET_CMD` two weeks after the shutdown), the risk of the bridge vouching for people (RISK-21) corrected, and two new risks: the bridge as the single path between people and agents (RISK-36), and a steered agent changing the plugin code its neighbouring sessions run, up to a forged approval for them (RISK-37). The history read, file parts and header line get request subjects of their own outside every stream, with their grant; a person's post read back from history approves only with a fresh account record. The detection of a stolen token is now stated as built (0.102.0) where the docs still called it not built. Proposed, nothing built.
+- **Phase 5 of the NATS decision: the central Mattermost adapter, as plan B** (#151): an amendment to the NATS decision (ADR-014) plans the central Mattermost adapter in fourteen pieces, each use of the agent's own Mattermost bot in a home over NATS moving to that bot in the bridge (RT-6.44) or onto NATS behind a switch per piece and channel, beside the decided transport flag, off by default, with its way back, test and lab check; decided by the owner: the transport flag per channel in the channel directory, and that at the end nothing of the bus runs outside the sandbox (the relay, the host process and the signed host copy go with the last piece; the signed-release decision, ADR-011, and its scenarios RT-6.28 to RT-6.30 and RT-6.32 note it). Also the order, the acceptance before registration ends (with the protection against stolen tokens and the console's release signature check, #192), three more decisions of the owner of 2026-11-27 (the login approval only at this machine once no agent has a bot, with no DM and no ask; the hosts' setting for the bridge's address as `CB_RECORDS_URL`, planned in `docs/env-names.md`; hosts delete `MM_REG_SECRET`, `MM_REG_SECRET_GOPASS` and `MM_REG_SECRET_CMD` two weeks after the shutdown), the risk of the bridge vouching for people (RISK-21) corrected, and two new risks: the bridge as the single path between people and agents (RISK-36), and a steered agent changing the plugin code its neighbouring sessions run, up to a forged approval for them (RISK-37). The history read, file parts and header line get request subjects of their own outside every stream, with their grant; a person's post read back from history approves only with a fresh account record. The detection of a stolen token is now stated as built (0.102.0) where the docs still called it not built. Proposed, nothing built.
 
 ## 0.103.0
 
