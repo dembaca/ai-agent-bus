@@ -308,3 +308,134 @@ func TestAConsoleLoginProvesTheBindingToo(t *testing.T) {
 		t.Fatalf("proof %+v %v", p, err)
 	}
 }
+
+// A binding holds 30 days from the login that proved it (directory.
+// BindingMaxAge): the hourly check unbinds an older one, without asking the
+// chat, as it does a changed account; the next proven login renews it. So a
+// person disabled in Keycloak whose Mattermost account stays active stops
+// approving within 30 days.
+func TestABindingOlderThanThirtyDaysIsUnboundAndALoginRenewsIt(t *testing.T) {
+	l, f, dir := accountLab(t)
+	if _, err := l.connect("alice", l.realm.Token("alice", nil), Hello{Home: "home"}, nil); err != nil {
+		t.Fatal(err)
+	}
+	id := testrealm.ChatID("alice")
+	age := func(d time.Duration) {
+		t.Helper()
+		b, _, ok, err := dir.Binding(ctx5(t), id)
+		if err != nil || !ok {
+			t.Fatal(ok, err)
+		}
+		b.At = time.Now().Add(-d).Unix()
+		if err := dir.PutBinding(ctx5(t), b); err != nil {
+			t.Fatal(err)
+		}
+	}
+	age(directory.BindingMaxAge - time.Hour)
+	if kept, dropped, err := l.svc.sweepBindings(ctx5(t), l.chat); err != nil || kept != 1 || dropped != 0 {
+		t.Fatalf("29 days: %d kept, %d unbound, %v", kept, dropped, err)
+	}
+	age(directory.BindingMaxAge + time.Hour)
+	if kept, dropped, err := l.svc.sweepBindings(ctx5(t), downChat{known: true}); err != nil || kept != 0 || dropped != 1 {
+		t.Fatalf("31 days, the chat not asked: %d kept, %d unbound, %v", kept, dropped, err)
+	}
+	recs := f.on("." + id + ".v1")
+	var last map[string]any
+	if err := json.Unmarshal(recs[len(recs)-1], &last); err != nil || last["anchor"] != nil {
+		t.Fatalf("the last record %v %v", last, err)
+	}
+	if _, _, ok, err := dir.Binding(ctx5(t), id); ok || err != nil {
+		t.Fatalf("the binding stayed: %v %v", ok, err)
+	}
+	if _, err := l.connect("alice", l.realm.Token("alice", nil), Hello{Home: "home"}, nil); err != nil {
+		t.Fatal(err)
+	}
+	if b, _, ok, err := dir.Binding(ctx5(t), id); !ok || err != nil || b.Expired(time.Now()) {
+		t.Fatalf("a login did not renew it: %+v %v %v", b, ok, err)
+	}
+}
+
+// The binding is written before the proof and the record: a write that fails
+// later refuses the login and leaves no record on NATS that the hourly check
+// does not know of; the check publishes both once it can.
+func TestAFailedProofOrRecordLeavesNoRecordTheCheckDoesNotKnow(t *testing.T) {
+	for _, fail := range []string{".auth.v1", ".v1"} {
+		l, f, dir := accountLab(t)
+		id := testrealm.ChatID("alice")
+		f.failOn = "presence.account.mattermost." + id + fail // the proof, or the record
+		if _, err := l.connect("alice", l.realm.Token("alice", nil), Hello{Home: "home"}, nil); err == nil {
+			t.Fatalf("%s: the login passed", fail)
+		}
+		if _, _, ok, err := dir.Binding(ctx5(t), id); !ok || err != nil {
+			t.Fatalf("%s: no binding: %v", fail, err)
+		}
+		if got := f.on("." + id + ".v1"); len(got) != 0 {
+			t.Fatalf("%s: a record was published: %q", fail, got)
+		}
+		f2 := &fakeAttester{}
+		l.svc.SetAttester(f2)
+		if kept, _, err := l.svc.sweepBindings(ctx5(t), l.chat); err != nil || kept != 1 ||
+			len(f2.on("."+id+".v1")) != 1 || len(f2.on("."+id+".auth.v1")) != 1 {
+			t.Fatalf("%s: the check: %d kept, %v", fail, kept, err)
+		}
+	}
+}
+
+// A console token that says nothing about the approvers' group (here: the
+// console's verifier has none) keeps the stored record's flag: a console login
+// never lowers an approver's flag by a token that cannot tell (#266).
+func TestAConsoleLoginThatCannotTellKeepsTheApproverFlag(t *testing.T) {
+	c, _ := personLab(t)
+	c.chat.Users["ann"] = token.User{Username: "ann", ID: testrealm.ChatID("ann"), AuthKnown: true,
+		AuthService: token.OpenIDService, AuthData: "sub-ann"}
+	c.chat.Channels["ann"] = []string{"home"}
+	js, err := jetstream.New(c.nc)
+	if err != nil {
+		t.Fatal(err)
+	}
+	dir, err := directory.Open(ctx5(t), js, "", false)
+	if err != nil {
+		t.Fatal(err)
+	}
+	c.svc.SetAnchors(directory.Anchors{Store: dir})
+	// an agent's login first, with the approvers' group, a minute ago
+	tok := c.realm.Token("ann", func(m gojwt.MapClaims) { m["iat"] = time.Now().Add(-time.Minute).Unix() })
+	if _, err := c.connect("ann", tok, Hello{Home: "home"}, nil); err != nil {
+		t.Fatal(err)
+	}
+	id := testrealm.ChatID("ann")
+	flag := func() bool {
+		t.Helper()
+		m, err := c.js.GetLastMsg("PRESENCE", "presence.account.mattermost."+id+".v1")
+		var rec AccountRecord
+		if err != nil || json.Unmarshal(m.Data, &rec) != nil {
+			t.Fatalf("record %v", err)
+		}
+		return rec.Approver
+	}
+	if !flag() {
+		t.Fatal("the agent's login wrote no approver")
+	}
+	srv, _ := nkeys.CreateServer()
+	key, _ := nkeys.CreateUser()
+	pub, _ := key.PublicKey()
+	sig, _ := key.Sign([]byte("nonce-console"))
+	now := time.Now()
+	req, err := c.svc.request(serverRequest(t, srv, func(q *natsjwt.AuthorizationRequestClaims) {
+		q.ClientInformation.Nonce = "nonce-console"
+		q.ConnectOptions.Nkey = pub
+		q.ConnectOptions.SignedNonce = base64.RawURLEncoding.EncodeToString(sig)
+		q.ConnectOptions.Token = c.consoleToken("ann", nil)
+	}), now)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, _, err := c.svc.authorize(ctx5(t), req, now); err != nil {
+		t.Fatal(err)
+	}
+	m, err := c.js.GetLastMsg("PRESENCE", "presence.account.mattermost."+id+".v1")
+	var rec AccountRecord
+	if err != nil || json.Unmarshal(m.Data, &rec) != nil || rec.TokenIat < now.Unix()-1 || !rec.Approver {
+		t.Fatalf("after the console's login: %+v %v", rec, err)
+	}
+}

@@ -4325,9 +4325,11 @@ which each piece reads for itself.
        service keeps the binding in its directory and publishes its
        record again every hour while Mattermost shows the account so,
        and the bridge binds a later post by it (RT-6.42 step 3); the
-       approvers' group stays a ceiling for logins only. Each approver
-       logs in once; what the session did not see come is judged by that
-       record at the read; without a fresh record of its own the session is
+       approvers' group stays a ceiling for logins only. A binding holds
+       30 days from the login that proved it and each proven login renews
+       it, so each approver logs in at least once in 30 days (the security
+       review of #275); what the session did not see come is judged by
+       that record at the read; without a fresh record of its own the session is
        closed (the gate on, nobody a peer), whatever the host's variables
        say;
        the link from a Mattermost bot to its NATS name is still the

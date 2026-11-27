@@ -57,7 +57,7 @@ func (v *Verifier) VerifyRealm(ctx context.Context, raw string) (Identity, error
 	name, _ := claims["preferred_username"].(string)
 	exp, _ := claims.GetExpirationTime() // required and checked by the parser
 	id := Identity{Owner: name, Subject: sub, Groups: v.groups(claims), Expires: exp.Time, ID: jti(claims),
-		Approver: v.inApproverGroup(claims)}
+		Approver: v.inApproverGroup(claims), ApproverKnown: v.approverKnown(claims)}
 	if t, _ := claims.GetIssuedAt(); t != nil {
 		id.IssuedAt = t.Time
 	}

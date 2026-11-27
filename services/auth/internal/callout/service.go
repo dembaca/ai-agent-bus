@@ -480,7 +480,7 @@ func (s *Service) authorize(ctx context.Context, req *jwt.AuthorizationRequestCl
 		}
 		// The record of the chat account behind the login (RT-6.42 step 3).
 		guard, _ := s.anchorHook().(TokenGuard)
-		skipped, err := s.accountRecord(ctx, at, guard, id.Subject, id.ChatID, id.Owner, id.Approver, anchor, id.IssuedAt, now.Unix(), uc.Expires,
+		skipped, err := s.accountRecord(ctx, at, guard, id.Subject, id.ChatID, id.Owner, &id.Approver, anchor, id.IssuedAt, now.Unix(), uc.Expires,
 			id.ChatAuthService, id.ChatAuthData)
 		if err != nil {
 			return "", who, fmt.Errorf("account record: %w", err)

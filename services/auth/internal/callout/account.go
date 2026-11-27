@@ -66,7 +66,12 @@ func (s *Service) accountSubject(account string) string {
 // record was written, "" when it was. With the record go the proof for the
 // bridge (ProofRecord) and the binding, kept durably in the directory
 // (BindingStore), so the binding is proven once and not at every post (the
-// owner's decision of 2026-11-27, issue 266).
+// owner's decision of 2026-11-27, issue 266). The binding is written first,
+// then the proof, then the record: a write that fails later leaves no record
+// on NATS that the binding's hourly check (SweepBindings) does not know of.
+// approver nil keeps the flag of the account's stored record (a token that
+// says nothing about the approvers' group must not lower it; none stored:
+// false).
 //
 // The guard and the write are one step per identity (a lock per `sub`): else
 // an older token could pass the guard, be overtaken by a newer one and write
@@ -76,7 +81,7 @@ func (s *Service) accountSubject(account string) string {
 // need a compare-and-set spanning instances, on the guard's key-value revision
 // or JetStream's expected last sequence. Not built. A stored record that is a newer
 // one for the same account counts as written, never as a refusal.
-func (s *Service) accountRecord(ctx context.Context, a Attester, guard TokenGuard, sub, chatID, name string, approver bool, anchor string, tokenIat time.Time, iat, exp int64, authService, authData string) (skipped string, err error) {
+func (s *Service) accountRecord(ctx context.Context, a Attester, guard TokenGuard, sub, chatID, name string, approverOf *bool, anchor string, tokenIat time.Time, iat, exp int64, authService, authData string) (skipped string, err error) {
 	switch {
 	case chatID == "" || authService == "" || authData == "":
 		return "no proven chat account", nil
@@ -88,6 +93,14 @@ func (s *Service) accountRecord(ctx context.Context, a Attester, guard TokenGuar
 		return "the token has no iat", nil
 	}
 	defer s.lockSub(sub)()
+	bs, _ := guard.(BindingStore)
+	approver := false
+	switch {
+	case approverOf != nil:
+		approver = *approverOf
+	case bs != nil:
+		approver = storedApprover(ctx, bs, chatID)
+	}
 	fresh, err := guard.NewestToken(ctx, sub, tokenIat.Unix(), approver)
 	if err != nil {
 		return "", err
@@ -101,19 +114,27 @@ func (s *Service) accountRecord(ctx context.Context, a Attester, guard TokenGuar
 	if err != nil {
 		return "", err
 	}
-	if err := s.publishAccount(ctx, a, chatID, body, rec.TokenIat); err != nil {
-		return "", err
-	}
-	if err := s.publishProof(ctx, a, ProofRecord{V: 1, Account: chatID, AuthService: authService, AuthData: authData, Iat: iat}); err != nil {
-		return "", fmt.Errorf("proof: %w", err)
-	}
-	if bs, ok := guard.(BindingStore); ok {
+	if bs != nil {
 		if err := bs.PutBinding(ctx, directory.Binding{Account: chatID, Sub: sub, Anchor: anchor,
 			AuthService: authService, AuthData: authData, Record: body, At: iat}); err != nil {
 			return "", fmt.Errorf("binding: %w", err)
 		}
 	}
-	return "", nil
+	if err := s.publishProof(ctx, a, ProofRecord{V: 1, Account: chatID, AuthService: authService, AuthData: authData, Iat: iat}); err != nil {
+		return "", fmt.Errorf("proof: %w", err)
+	}
+	return "", s.publishAccount(ctx, a, chatID, body, rec.TokenIat)
+}
+
+// storedApprover is the approver flag of the account's stored record, false
+// without one or for one that does not decode (fail closed).
+func storedApprover(ctx context.Context, bs BindingStore, chatID string) bool {
+	b, _, ok, err := bs.Binding(ctx, chatID)
+	if err != nil || !ok {
+		return false
+	}
+	var rec AccountRecord
+	return json.Unmarshal(b.Record, &rec) == nil && rec.Account == chatID && rec.Approver
 }
 
 // publishAccount publishes an account record; a stored record of the same

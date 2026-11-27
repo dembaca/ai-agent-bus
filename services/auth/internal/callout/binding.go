@@ -73,7 +73,9 @@ func (s *Service) SweepBindings(ctx context.Context, chat ChatAccounts, every ti
 }
 
 // sweepBindings checks every stored binding against the chat once. A binding
-// the chat still shows (the account there, active, no bot, no guest, logging
+// proven more than directory.BindingMaxAge ago is unbound without a question
+// to the chat (the next proven login renews it). Of the others, a binding
+// that the chat still shows (the account there, active, no bot, no guest, logging
 // in as it was proven, with the same auth_data) gets its account record, as
 // last written, and its proof published again; one the chat no longer shows
 // is unbound: an account record with `anchor` null, and the binding dropped.
@@ -93,6 +95,17 @@ func (s *Service) sweepBindings(ctx context.Context, chat ChatAccounts) (kept, d
 		b, rev, ok, err := bs.Binding(ctx, account)
 		if err != nil || !ok {
 			errs = append(errs, err)
+			continue
+		}
+		if b.Expired(s.now()) {
+			// older than its maximum age: no need to ask the chat
+			done, err := s.sweepOne(ctx, at, bs, b, rev, "proven more than 30 days ago: the next proven login renews it")
+			if err != nil {
+				errs = append(errs, err)
+			} else if done {
+				dropped++
+				s.log.Warn("bindings: an account unbound", "account", account, "sub", b.Sub, "reason", "older than 30 days")
+			}
 			continue
 		}
 		u, err := chat.UserByID(ctx, account)

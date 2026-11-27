@@ -274,7 +274,15 @@ before 0.5.0 are described in the git history.
     its record and proof again, so a person who logged in once stays bound
     beyond the stream's 24 hours; an account that is gone, deactivated, a
     guest, a bot, or logs in otherwise than when it was proven is unbound
-    (a record with `anchor` `null`).
+    (a record with `anchor` `null`), and so is a binding proven more than
+    30 days ago: an approver logs in at least once in 30 days, and each
+    proven login renews it. The binding is written before the proof and the
+    record, so a failed later write leaves no record the check does not
+    know of. A console token that cannot tell whether its person is an
+    approver keeps the stored record's flag instead of lowering it. An
+    outage that stops the republishing for more than 24 hours unbinds every
+    person until the service runs again (the stream's `max_age`, the MCP
+    server's `MAX_AGE_SEC`).
   - *Bound later.* The bridge carries a person's post or reaction under the
     record's anchor only while Mattermost, read with the admin bot's token,
     shows the account active, no guest, and logging in with the proof's
@@ -297,8 +305,14 @@ before 0.5.0 are described in the git history.
     user attribute `LDAP_ID` into the claim `ldap_id` on the bus's and the
     console's client, and Mattermost's LDAP ID attribute set to the same
     LDAP attribute as the federation's UUID attribute (`entryUUID` or
-    `objectGUID`). Existing records carry no proof: their people go out
-    under `-` until their next login.
+    `objectGUID`). `LDAP_ID` must be written by the LDAP federation alone:
+    the realm's unmanaged attributes off or admin-only, no
+    self-registration, no local account that could carry it; else a user
+    could bind another person's Mattermost account to their own anchor.
+    Existing records carry no proof: their people go out under `-` until
+    their next login. The login service and the bridge are both updated
+    before plan B piece 4 is switched on in any home: an older bridge
+    carries a person's post by the record alone, without the proof.
 
 - **The STATS import: the low points of its review** (#219, RT-6.45). A rerun
   of the same login service stops reading the stats channel at the first post

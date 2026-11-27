@@ -69,6 +69,11 @@ type Identity struct {
 	// Approver is true when the token lists the approvers' group. It is the
 	// upper bound only: the session's trusted list selects within it.
 	Approver bool
+	// ApproverKnown is true when Approver says something: the verifier has an
+	// approvers' group (Config.ApproverGroup) and the token carries the group
+	// claim (Config.ApproverClaim) as a list. A token without it says nothing
+	// about the group, so a login must not lower a stored flag by it (#266).
+	ApproverKnown bool
 	// Groups are all strings of the group claim (Config.ApproverClaim).
 	Groups []string
 	// Expires is the token's `exp`. This service checks a token only up to
@@ -155,13 +160,14 @@ func (v *Verifier) Verify(ctx context.Context, raw string) (Identity, error) {
 		iat = t.Time
 	}
 	return Identity{
-		Owner:    owner,
-		Subject:  sub,
-		Approver: v.inApproverGroup(claims),
-		Groups:   v.groups(claims),
-		Expires:  exp.Time,
-		ID:       jti(claims),
-		SID:      sid(claims),
+		Owner:         owner,
+		Subject:       sub,
+		Approver:      v.inApproverGroup(claims),
+		ApproverKnown: v.approverKnown(claims),
+		Groups:        v.groups(claims),
+		Expires:       exp.Time,
+		ID:            jti(claims),
+		SID:           sid(claims),
 
 		ChatProven:      proof.service != "",
 		ChatID:          proof.id,
@@ -259,6 +265,13 @@ func prove(u User, sub, ldapID string) (chatProof, error) {
 		return chatProof{id: u.ID, service: LDAPService, data: ldapID}, nil
 	}
 	return chatProof{}, nil
+}
+
+// approverKnown: the token can say whether its identity is an approver (an
+// approvers' group is set, and the group claim is a list).
+func (v *Verifier) approverKnown(claims jwt.MapClaims) bool {
+	_, ok := claims[v.cfg.ApproverClaim].([]any)
+	return v.cfg.ApproverGroup != "" && ok
 }
 
 func (v *Verifier) inApproverGroup(claims jwt.MapClaims) bool {

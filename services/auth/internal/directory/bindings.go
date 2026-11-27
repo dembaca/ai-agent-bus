@@ -6,6 +6,7 @@ import (
 	"errors"
 	"regexp"
 	"strings"
+	"time"
 )
 
 // bindingPrefix keys, per Mattermost account (by its user id), the binding
@@ -16,6 +17,13 @@ import (
 // binding proven once does not age out of PRESENCE; no agent and not the
 // bridge reads the directory.
 const bindingPrefix = "binding.mattermost."
+
+// BindingMaxAge is how long a binding holds after the login that proved it
+// (Binding.At): the login service's hourly check unbinds an older one as it
+// does a changed account, and the next proven login renews it. So a person
+// disabled in Keycloak whose Mattermost account stays active stops being
+// bound within it; an approver logs in at least once in that time.
+const BindingMaxAge = 30 * 24 * time.Hour
 
 // chatIDRE is a Mattermost user id: 26 characters of [a-z0-9].
 var chatIDRE = regexp.MustCompile(`^[a-z0-9]{26}$`)
@@ -35,8 +43,14 @@ type Binding struct {
 	// Record is the account record last published for the account, as
 	// published (callout.AccountRecord).
 	Record json.RawMessage `json:"record"`
-	// At is when the binding was proven, in Unix seconds.
+	// At is when the binding was proven, in Unix seconds: at the newest
+	// proven login, so each login renews it. It holds BindingMaxAge from then.
 	At int64 `json:"at"`
+}
+
+// Expired says whether the binding is older than BindingMaxAge at now.
+func (b Binding) Expired(now time.Time) bool {
+	return now.Sub(time.Unix(b.At, 0)) > BindingMaxAge
 }
 
 func bindingKey(account string) (string, error) {

@@ -681,3 +681,31 @@ func TestTheConsolesPathProvesTheBindingAndRefusesNothingForIt(t *testing.T) {
 		}
 	}
 }
+
+// ApproverKnown: only a verifier with an approvers' group and a token whose
+// group claim is a list can say whether the identity is an approver (#266: a
+// console login that cannot tell keeps the stored flag).
+func TestApproverKnownNeedsTheGroupAndTheClaim(t *testing.T) {
+	r := newRealm(t)
+	for _, tc := range []struct {
+		name  string
+		group string
+		edit  func(jwt.MapClaims)
+		want  bool
+	}{
+		{"the group set, the claim there", group, nil, true},
+		{"the claim without the group", group, func(c jwt.MapClaims) { c["groups"] = []string{"staff"} }, true},
+		{"no claim", group, func(c jwt.MapClaims) { delete(c, "groups") }, false},
+		{"a claim that is no list", group, func(c jwt.MapClaims) { c["groups"] = group }, false},
+		{"no approvers' group", "", nil, false},
+	} {
+		v := verifier(t, r, human(nil), func(c *Config) { c.ApproverGroup = tc.group })
+		for path, check := range map[string]func(context.Context, string) (Identity, error){
+			"agent": v.Verify, "console": v.VerifyRealm} {
+			id, err := check(context.Background(), r.token(tc.edit))
+			if err != nil || id.ApproverKnown != tc.want {
+				t.Errorf("%s, %s: ApproverKnown %v, %v", tc.name, path, id.ApproverKnown, err)
+			}
+		}
+	}
+}

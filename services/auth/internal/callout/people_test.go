@@ -347,8 +347,9 @@ func TestTheGuardAndTheWriteAreOneStepPerIdentity(t *testing.T) {
 	g := &gatedAttester{gateIat: 100, entered: make(chan struct{}), release: make(chan struct{})}
 	guard := directory.Anchors{Store: dir}
 	id := testrealm.ChatID("alice")
+	yes := true
 	rec := func(iat int64) {
-		if _, err := l.svc.accountRecord(ctx5(t), g, guard, "sub-alice", id, "alice", true, "alice", time.Unix(iat, 0), iat, iat+900, "openid", "sub-alice"); err != nil {
+		if _, err := l.svc.accountRecord(ctx5(t), g, guard, "sub-alice", id, "alice", &yes, "alice", time.Unix(iat, 0), iat, iat+900, "openid", "sub-alice"); err != nil {
 			t.Error(err)
 		}
 	}
