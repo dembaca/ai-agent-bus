@@ -45,8 +45,9 @@ before 0.5.0 are described in the git history.
 - **Thread reads for the coordinator's wake are bounded** (#223,
   [the coordinator scenario, RT-6.6 step 5](docs/arc42/06-runtime-view.md#66-coordinator-crown-and-presence-lease),
   and the end-of-turn scenario, RT-6.2 step 4). A thread that cannot be read
-  is not read again for a minute, first read and re-read alike; until then it
-  counts as unreadable, so the coordinator wakes. One `/v1/posts` request
+  is not read again for a minute, first read and re-read alike; a failed first
+  read counts as unreadable until then, so the coordinator wakes, while a
+  failed re-read keeps the record read before, so it does not. One `/v1/posts` request
   reads at most 20 threads (`MAX_THREAD_READS`); a reply beyond them stays
   unmarked, as without the marks: the coordinator wakes for it and the
   listener judges it by its last 200 posts, and the next request reads on.
@@ -54,6 +55,15 @@ before 0.5.0 are described in the git history.
   its thread's record at once. `/v1/posts`'s field table in the docs now
   lists `agent_thread`, `my_thread` and `my_root`, and the docs say that a
   root a webhook posted is judged as a human's.
+- **The agent's own threads are marked before the crown's** ([#226](https://github.com/dembaca/ai-agent-bus/issues/226),
+  the follow-ups of #223). `/v1/posts` computes `my_thread`/`my_root` before the
+  crown's `agent_thread` marks, and a root the request itself carries costs no
+  thread read (its author is the one who started it), so a crown-heavy request
+  cannot spend the 20 reads (`MAX_THREAD_READS`) on other agents' roots before
+  the agent's own replies are marked. The docs also say what a failed read
+  means: only a failed first read counts as unreadable, which lets the
+  coordinator wake; a failed re-read keeps the record read before.
+
 - **A human's reply in an agent's thread wakes that agent, not the coordinator**
   ([#207](https://github.com/dembaca/ai-agent-bus/issues/207),
   [the coordinator scenario, RT-6.6 step 5](docs/arc42/06-runtime-view.md#66-coordinator-crown-and-presence-lease)).

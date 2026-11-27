@@ -272,6 +272,38 @@ async def test_posts_read_at_most_so_many_threads_per_request(api, monkeypatch):
     assert len(reads) == n and all(p["my_thread"] and p["my_root"] for p in got)
 
 
+async def test_the_crown_reads_its_own_threads_before_other_agents(api, tmp_path, monkeypatch):
+    """RT-6.6 step 5, RT-6.2 step 4 (#226): with the crown held and more other agents'
+    roots than thread reads, the agent's own threads are read first, so its 5 replies
+    are marked my_root instead of the budget going to the crown's other agents."""
+    monkeypatch.setattr(gate, "_roots", {})
+    monkeypatch.setattr(gate, "_failed", {})
+    monkeypatch.setattr(gate, "_reach", None)
+    d = session_file.state_dir()
+    d.mkdir(parents=True, exist_ok=True)
+    (d / f"coord-{UID}.env").write_text(f"CROWN_UNTIL={int(time.time()) + 600}\n")
+    roots = [post(f"o{i}", "ASK · which one?", user=OTHER, at=10 + i) for i in range(25)]
+    replies = [post(f"y{i}", "this one", user=PERSON, at=5000 + i, root=f"o{i}") for i in range(25)]
+    own = [post(f"m{i}", "on it", user=UID, at=30 + i) for i in range(5)]
+    mine = [post(f"z{i}", "ok", user=PERSON, at=6000 + i, root=f"m{i}") for i in range(5)]
+    # The other agents' replies come first in the request and are a trusted human's,
+    # so the crown's check really reads their roots and would use the budget first.
+    client = HookClient(uid=UID, posts=replies + mine + own + roots, trusted={PERSON: "alice"})
+    reads = []
+    thread = client.thread
+
+    async def counted(root_id):
+        reads.append(root_id)
+        return await thread(root_id)
+
+    monkeypatch.setattr(client, "thread", counted)
+    _, h = await api(client)
+    assert lease.crown_held(UID), "crown"
+    got = {p["id"]: (p["my_thread"], p["my_root"]) for p in
+           (await h.get("/v1/posts?since=0")).json()["posts"]}
+    assert all(got[f"z{i}"] == (True, True) for i in range(5)), {k: got[k] for k in got if k.startswith(("z", "m"))}
+
+
 async def test_posts_say_what_the_listener_needs(api):
     """RT-6.17, RT-6.2 step 4: slim posts, newest first, with `to` all
     (RT-6.11), an agent's fyi (RT-6.14: a person's props count for nothing),

@@ -875,8 +875,12 @@ async def posts(client: ChatPort, query: Mapping[str, str], body: Mapping[str, A
     for p in raw:
         gate.saw(p)  # its author posted in its thread (RT-6.6 step 5)
     with gate.thread_reads(MAX_THREAD_READS):  # RT-6.6 step 5: a busy channel, bounded cost
-        agent_threads = await _agent_threads(client, raw, uid) if lease.crown_held(uid) else set()
+        # The agent's own threads first (#226): with the crown held, a busy channel's
+        # other roots must not use the budget before its own replies are marked
+        # (RT-6.2 step 4). A root the request carries costs no read; a root read for
+        # one is kept for the other (gate._roots).
         mine = await _my_threads(client, raw, uid) if since else {}
+        agent_threads = await _agent_threads(client, raw, uid) if lease.crown_held(uid) else set()
     gated, absent = gate.gated(uid), gate.absent(uid)
     # Which channel this is, for mm-agent-poll.sh to say: as asked, else the work channel's name.
     return 200, {"channel": query.get("channel", "") or client.work_channel_name,
@@ -886,10 +890,17 @@ async def posts(client: ChatPort, query: Mapping[str, str], body: Mapping[str, A
 async def _my_threads(client: ChatPort, raw: list[Post], uid: str) -> dict[str, tuple[bool, bool]]:
     """RT-6.2 step 4: for each reply by someone else, (this agent posted in
     its thread, started it), from the whole thread (gate.in_thread); a thread
-    that cannot be read is left out (the listener's own window still counts)."""
+    that cannot be read is left out (the listener's own window still counts).
+    A root the request itself carries is known without a read: this agent
+    started it, so the reply is in its own thread (#226, no budget spent)."""
+    roots = {p.id: p for p in raw if not p.root_id and not p.type}
     out: dict[str, tuple[bool, bool]] = {}
     for p in raw:
         if p.root_id and p.user_id != uid and not p.type:
+            root = roots.get(p.root_id)
+            if root is not None and root.user_id == uid:
+                out[p.id] = (True, True)
+                continue
             got = await gate.in_thread(client, p.root_id, uid)
             if got is not None:
                 out[p.id] = got
