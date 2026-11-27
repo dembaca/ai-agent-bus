@@ -272,6 +272,66 @@ async def test_posts_read_at_most_so_many_threads_per_request(api, monkeypatch):
     assert len(reads) == n and all(p["my_thread"] and p["my_root"] for p in got)
 
 
+async def test_a_crown_heavy_request_marks_the_own_roots_it_carries(api, tmp_path, monkeypatch):
+    """RT-6.6 step 5, RT-6.2 step 4 (#226): with the crown held and more other agents'
+    roots than thread reads, the agent's own roots that the request carries are marked
+    without a read, so its 5 replies are my_root and my_thread even though the crown's
+    25 roots take the budget."""
+    monkeypatch.setattr(gate, "_roots", {})
+    monkeypatch.setattr(gate, "_failed", {})
+    monkeypatch.setattr(gate, "_reach", None)
+    d = session_file.state_dir()
+    d.mkdir(parents=True, exist_ok=True)
+    (d / f"coord-{UID}.env").write_text(f"CROWN_UNTIL={int(time.time()) + 600}\n")
+    roots = [post(f"o{i}", "ASK · which one?", user=OTHER, at=10 + i) for i in range(25)]
+    replies = [post(f"y{i}", "this one", user=PERSON, at=5000 + i, root=f"o{i}") for i in range(25)]
+    own = [post(f"m{i}", "on it", user=UID, at=30 + i) for i in range(5)]
+    mine = [post(f"z{i}", "ok", user=PERSON, at=6000 + i, root=f"m{i}") for i in range(5)]
+    # The other agents' replies come first in the request and are a trusted human's,
+    # so the crown's check really reads their roots and would use the budget first.
+    client = HookClient(uid=UID, posts=replies + mine + own + roots, trusted={PERSON: "alice"})
+    reads = []
+    thread = client.thread
+
+    async def counted(root_id):
+        reads.append(root_id)
+        return await thread(root_id)
+
+    monkeypatch.setattr(client, "thread", counted)
+    _, h = await api(client)
+    assert lease.crown_held(UID), "crown"
+    got = {p["id"]: (p["my_thread"], p["my_root"]) for p in
+           (await h.get("/v1/posts?since=0")).json()["posts"]}
+    assert all(got[f"z{i}"] == (True, True) for i in range(5)), {k: got[k] for k in got if k.startswith(("z", "m"))}
+
+
+async def test_a_crown_heavy_first_poll_leaves_own_roots_to_the_next(api, tmp_path, monkeypatch):
+    """RT-6.6 step 5, RT-6.2 step 4 (#226): with the agent's roots before the window
+    (the normal listener case) a first crown-heavy request cannot know them for free;
+    it spends its 20 reads on other agents' roots, and the next poll marks the 5, its
+    roots now kept."""
+    monkeypatch.setattr(gate, "_roots", {})
+    monkeypatch.setattr(gate, "_failed", {})
+    monkeypatch.setattr(gate, "_reach", None)
+    d = session_file.state_dir()
+    d.mkdir(parents=True, exist_ok=True)
+    (d / f"coord-{UID}.env").write_text(f"CROWN_UNTIL={int(time.time()) + 600}\n")
+    roots = [post(f"o{i}", "ASK · which one?", user=OTHER, at=10 + i) for i in range(25)]
+    replies = [post(f"y{i}", "this one", user=PERSON, at=5000 + i, root=f"o{i}") for i in range(25)]
+    own = [post(f"m{i}", "on it", user=UID, at=30 + i) for i in range(5)]
+    mine = [post(f"z{i}", "ok", user=PERSON, at=6000 + i, root=f"m{i}") for i in range(5)]
+    client = HookClient(uid=UID, posts=replies + mine + own + roots, trusted={PERSON: "alice"})
+    _, h = await api(client)
+
+    def marked(body):
+        return {p["id"]: (p["my_thread"], p["my_root"]) for p in body["posts"]}
+
+    first = marked((await h.get("/v1/posts?since=1000")).json())
+    assert sum(first[f"z{i}"] == (True, True) for i in range(5)) == 0  # not free here
+    second = marked((await h.get("/v1/posts?since=1000")).json())
+    assert all(second[f"z{i}"] == (True, True) for i in range(5))
+
+
 async def test_posts_say_what_the_listener_needs(api):
     """RT-6.17, RT-6.2 step 4: slim posts, newest first, with `to` all
     (RT-6.11), an agent's fyi (RT-6.14: a person's props count for nothing),
@@ -823,3 +883,97 @@ async def test_the_last_post_fallback_skips_the_context_line(api):
     _, h = await api(client)
     assert (await h.get("/v1/last-post")).json() == {"at": 2000, "message": "IDLE · done",
                                                      "signed_off": True}
+
+
+async def test_the_terminal_login_line_is_one_per_login(api, monkeypatch):
+    """#198: the approval waiting right now goes to the harness's TUI through the hook
+    API — link and code only, an empty object when nothing waits, and once per login."""
+    from mattermost_ai_agent_bus import login as login_mod
+
+    _, h = await api(FakeClient())
+    assert (await h.get("/v1/login")).json() == {}  # no login: nothing waits, not a 503
+
+    grant = login_mod.DeviceGrant(verification_uri="https://kc.example/device",
+                                  verification_uri_complete="https://kc.example/device?user_code=ABCD-EFGH",
+                                  user_code="ABCD-EFGH", expires_in=600)
+
+    class Running:
+        def __init__(self) -> None:
+            self.waits = grant
+            self.is_shown = False
+
+        async def access_token(self) -> str:
+            return ""
+
+        def nkey(self):  # noqa: ANN201 - the protocol's shape
+            raise AssertionError("not used")
+
+        async def run(self) -> None:
+            pass
+
+        def pending(self):
+            return None if self.is_shown else self.waits
+
+        def pending_line(self):
+            return None if self.is_shown else (self.waits.verification_uri_complete,
+                                               self.waits.user_code, self.waits.expires_in)
+
+        def shown(self) -> None:
+            self.is_shown = True
+
+    running = Running()
+    monkeypatch.setattr(login_mod, "current", lambda: running)
+    got = (await h.get("/v1/login")).json()
+    assert got == {"link": "https://kc.example/device?user_code=ABCD-EFGH", "user_code": "ABCD-EFGH",
+                   "expires_in": 600,
+                   "line": "Bus login: open https://kc.example/device?user_code=ABCD-EFGH — the page shows "
+                           "the code ABCD-EFGH. Approve only if it matches; the code is good for 10 min."}
+    assert "token" not in json.dumps(got).lower() and "secret" not in json.dumps(got).lower()
+    assert (await h.post("/v1/login/shown", json={})).status_code == 200
+    assert (await h.get("/v1/login")).json() == {}  # the line went out once
+
+
+async def test_a_turn_end_without_a_bus_session_still_carries_the_login_line(api, monkeypatch):
+    """#198, plan B: a session with no bot gets 503 for its turn's end, and the
+    waiting approval's line rides with it instead of being lost."""
+    from mattermost_ai_agent_bus import login as login_mod
+
+    class Running:
+        def pending_line(self):
+            return ("https://kc.example/device?user_code=ABCD-EFGH", "ABCD-EFGH", 600)
+
+    monkeypatch.setattr(login_mod, "current", lambda: Running())
+    _, h = await api(FakeClient(token=""))
+    got = await h.get("/v1/turn-end?drains=0&signoff_asked=1&push=1&unanswered=1")
+    assert got.status_code == 503
+    assert got.json()["error"] == "no bus session"
+    assert "ABCD-EFGH" in got.json()["login"] and "10 min" in got.json()["login"]
+
+
+async def test_the_turn_end_carries_the_waiting_login_line(api, monkeypatch):
+    """#198, RT-6.20: one call per turn end — the answer carries the line a grant that
+    started after the session start needs, with the time left, and nothing once the
+    line went out."""
+    from mattermost_ai_agent_bus import login as login_mod
+
+    _, h = await api(FakeClient())
+
+    class Running:
+        shown_once = False
+
+        def pending_line(self):
+            return None if self.shown_once else ("https://kc.example/device?user_code=ABCD-EFGH",
+                                                 "ABCD-EFGH", 300)
+
+        def shown(self) -> None:
+            self.shown_once = True
+
+    running = Running()
+    monkeypatch.setattr(login_mod, "current", lambda: running)
+    q = "/v1/turn-end?drains=3&signoff_asked=1&push=1&unanswered=1"
+    got = (await h.get(q)).json()
+    assert got["action"] == "idle"
+    assert "ABCD-EFGH" in got["login"] and "5 min" in got["login"]
+    assert "token" not in got["login"].lower()
+    running.shown()
+    assert "login" not in (await h.get(q)).json()

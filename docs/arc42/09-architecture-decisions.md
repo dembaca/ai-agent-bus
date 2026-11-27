@@ -3287,9 +3287,11 @@ separately.
      second step (unreleased): this point is gone. Under corral too the MCP
      server inside the sandbox, in a keyless session the relay, logs in and
      keeps the credentials; the host process gets only access tokens and
-     the nkey seed from it (RT-6.18 step 12). The host shows the user code
-     and the consent screen names the bus's client, but a code of another
-     client of the realm cannot be told apart (RISK-29).
+     the nkey seed from it (RT-6.18 step 12). The host shows the user code,
+     the agent's own terminal shows the link and the code once per login
+     through its harness (#198), and the consent screen names the bus's
+     client, but a code of another client of the realm cannot be told apart
+     (RISK-29).
 10. **Trust keeps its rules.** The bus still tells its own agent, an agent
     of another human and a trusted human apart (ADR-001, ADR-003): an agent
     of another human is foreign even within the same tenant, its posts are
@@ -3718,9 +3720,14 @@ decided against it (Context).
    50 hard stops nightly). **First finding** (2026-11-26, small runs of 10
    messages and a few stops): no loss under restart, hang, cut, blackhole,
    stall and half-open (a send during the window fails and is not counted
-   as sent; a zero here needs a sender that comes back, and one that cannot
-   reconnect for ~40 s after a refused reconnect is
-   [#222](https://github.com/dembaca/ai-agent-bus/issues/222)); a receiving session killed loses every post the consumer pushes
+   as sent; a zero here needs a sender that comes back. Its reconnect wait
+   now stops at 5 s (30 s only after a login failure), and a flush that
+   stops answering gives the connection up after 5 s, at most once per
+   30 s, instead of holding the next post for 10 s: the rig's `recovery_s`
+   fell from 8.0 s to 0.004 to 4.3 s, and a 30 s restart window from 7.6
+   to 19.7 s to 0.5 to 2.5 s ([#222](https://github.com/dembaca/ai-agent-bus/issues/222),
+   whose own 0.5 s command recovered 4/4 on main here: two defects, not one
+   cause)); a receiving session killed loses every post the consumer pushes
    until the server notices the dead socket — usually the one in flight: the
    consumer keeps its position and the messages published while it was dead
    arrive (100 messages with a 10 s window: loss 1), but a pushed one was
@@ -3879,8 +3886,10 @@ credentials and their renewal (point 7) that rest on it.
   done.
 - **One process does it all.** The plugin starts the MCP server over
   stdio, and that server asks for the device approval itself on its first
-  start. If no browser opens, it shows the address and the code. Hooks,
-  channel messages and logout go through the same process.
+  start. If no browser opens, it shows the address and the code, and the
+  agent's terminal shows the link and the code once per login through the
+  harness's hooks (#198, RT-6.34 step 4). Hooks, channel messages and logout
+  go through the same process.
 - **Where the secrets live.** The server keeps the Keycloak refresh token
   and the host's nkey seed itself: in the system keychain where the server
   can reach one, else in a file with mode 0600. Under corral that file is in the
@@ -4043,8 +4052,9 @@ Nothing of it is built.
 - **Decided: the login approval only at this machine once no agent has a
   bot.** Decided 2026-11-27 by the owner (ask
   `cobsyafi9fdq784jupn9no74yh`): it reaches the human through the
-  browser the MCP server opens and the address and code in its MCP log,
-  with no DM and no ask in the home. Today the MCP server, before it has
+  browser the MCP server opens, the address and code in its MCP log, and
+  the agent's own terminal, once per login, through its harness's hooks
+  (#198, RT-6.34 step 4), with no DM and no ask in the home. Today the MCP server, before it has
   NATS credentials, sends the approval by DM under the agent's bot,
   posts an ask in the home that points to the DM, and settles asks of
   earlier approvals at its start (`login_notice.py`, RT-6.34); the DM,

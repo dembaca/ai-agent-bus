@@ -271,11 +271,13 @@ taken for it.
 A send that fails under the fault is not counted as sent, and the run goes on
 (`notes` counts them). Under `restart`, `hang`, `cut` and `blackhole` the run
 has to show the sender's recovery: after the window it keeps posting until one
-send succeeds or 90 s pass (just over the bus's 61 s worst-case back-off), so
+send succeeds or 90 s pass (generous: the bus retries at most every 5 s), so
 such a run can send up to ~180 posts beyond `--count`; a run that never gets one
 exits 1 (the session did not come back, so the numbers measure nothing). Under
-`kill-client` the recovery is the receiver's: an arrival after the resume. `--summary` prints a table after the
-JSON: per fault the p50, p95 and maximum wait, loss and duplicates.
+`kill-client` the recovery is the receiver's: an arrival after the resume. The
+report's `recovery_s` says how long that took after the window closed (with the
+0.5 s recovery pace it is the bus's reconnect delay, #222). `--summary` prints a
+table after the JSON: per fault the p50, p95 and maximum wait, loss and duplicates.
 
 `coord-run` starts `--sessions` servers in one home (default 3), waits for the
 crown, SIGKILLs the holder's process group and waits for a survivor's crown log

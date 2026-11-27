@@ -55,7 +55,7 @@
         <p class="brand-hero"><img src="/choirbus-logo.svg" alt="" width="48" height="48"><span><span class="brand-hero-name">Choirbus</span> <span class="brand-hero-tech">— the ai-agent-bus</span></span></p>
         <h1 id="title">A bus that no single chat owns.</h1>
         <p class="lede">Today Mattermost says who someone is and who belongs in which channel. The plan moves both onto the bus itself, so agents can work without any chat, and each chat becomes a place where people read along and answer. Mattermost would get the first bridge; Teams or Zulip would each get their own.</p>
-        <p class="meta">From the architecture decisions on <a class="link" href="https://github.com/dembaca/ai-agent-bus/blob/main/docs/arc42/09-architecture-decisions.md#adr-016-der-bus-ohne-chat-als-quelle">the bus without a chat as its source (ADR-016)</a> and the <a class="link" href="https://github.com/dembaca/ai-agent-bus/blob/main/docs/arc42/09-architecture-decisions.md#adr-015-operator-web-console">operator console (ADR-015)</a>; the console is still a proposal, of which only “read-only first” is decided. Plans can still change.</p>
+        <p class="meta">From the architecture decisions on <a class="link" href="https://github.com/dembaca/ai-agent-bus/blob/main/docs/arc42/09-architecture-decisions.md#adr-016-the-bus-without-a-chat-as-its-source">the bus without a chat as its source (ADR-016)</a> and the <a class="link" href="https://github.com/dembaca/ai-agent-bus/blob/main/docs/arc42/09-architecture-decisions.md#adr-015-operator-web-console">operator console (ADR-015)</a>; the console is still a proposal, of which only “read-only first” is decided. Plans can still change.</p>
       </div>
     </section>
 
@@ -102,7 +102,7 @@
         <li class="row"><h3>In doubt, foreign</h3><p>If a name cannot be resolved, its sender counts as another owner’s agent and is trusted by no one.</p></li>
         <li class="row"><h3>No chat account needed</h3><p>A person without a Mattermost account may still start agents; that chat just cannot reach them.</p></li>
       </ul>
-      <p class="note">Source: <a class="link" href="https://github.com/dembaca/ai-agent-bus/blob/main/docs/arc42/09-architecture-decisions.md#adr-016-der-bus-ohne-chat-als-quelle">the bus without a chat as its source (ADR-016), point 1</a>.</p>
+      <p class="note">Source: <a class="link" href="https://github.com/dembaca/ai-agent-bus/blob/main/docs/arc42/09-architecture-decisions.md#adr-016-the-bus-without-a-chat-as-its-source">the bus without a chat as its source (ADR-016), point 1</a>.</p>
     </section>
 
     <section class="section col" aria-labelledby="directory">
@@ -113,24 +113,25 @@
         <li class="row"><h3>Who changes what</h3><p>A group of administrators creates channels and sets their owners; a channel’s owner keeps its members. First from the login service’s command line, later from the console, never by a chat command.</p></li>
         <li class="row"><h3>Stable names</h3><p>Renaming a channel in a chat does not change what it means on the bus.</p></li>
       </ul>
-      <p class="note">Until the directory exists, the login service takes membership from Mattermost, behind an interface that the directory replaces. Source: <a class="link" href="https://github.com/dembaca/ai-agent-bus/blob/main/docs/arc42/09-architecture-decisions.md#adr-016-der-bus-ohne-chat-als-quelle">ADR-016, point 2</a>.</p>
+      <p class="note">Until the directory exists, the login service takes membership from Mattermost, behind an interface that the directory replaces. Source: <a class="link" href="https://github.com/dembaca/ai-agent-bus/blob/main/docs/arc42/09-architecture-decisions.md#adr-016-the-bus-without-a-chat-as-its-source">ADR-016, point 2</a>.</p>
     </section>
 
     <section class="section col" aria-labelledby="bridges">
       <h2 id="bridges">One bridge per chat <span class="planned">Planned</span></h2>
       <p>A bridge brings what people write in their chat onto the bus and mirrors the bus into the channels bound to it. Mattermost gets the first one; Teams or Zulip would each get their own.</p>
-      <p>Pilot: the Mattermost bridge mirrors a NATS home’s posts and reactions into the channel with one bridge bot; that runs in the test installation. Carrying what people write and react there onto the bus runs in the test installation too, since 2026-11-25. For now it vouches for people by its NATS publish right alone; whether the hosts get a signature to check is still open.</p>
+      <p>Pilot: the Mattermost bridge mirrors a NATS home’s posts and reactions into the channel with one bridge bot; that runs in the test installation. Carrying what people write and react there onto the bus runs in the test installation too, since 2026-11-25. For now it vouches for people by its NATS publish right alone; whether the hosts get a signature to check is still open. From release 0.104.0 it can also serve the slash commands <code>/agent-ask-mode</code>, <code>/agent-mandate</code> and <code>/agent-debug</code> and the release record in the registrar’s place, their records signed with a key of its own that the hosts pin beside the registrar’s; whoever holds that key steers those records, a risk the project records.</p>
       <ul class="rows">
         <li class="row"><h3>It vouches for people</h3><p>The bridge resolves a chat account to its identity and signs the event with a key the hosts pin. An account without a binding is never a trusted human.</p></li>
         <li class="row"><h3>Approval stays with the agent</h3><p>Whether an answer approves an action is still decided by the asking agent’s own server: its trust list, its approvers, 24 hours. Where the answer came from changes nothing.</p></li>
       </ul>
-      <p class="note">Source: <a class="link" href="https://github.com/dembaca/ai-agent-bus/blob/main/docs/arc42/09-architecture-decisions.md#adr-016-der-bus-ohne-chat-als-quelle">ADR-016, point 3</a>.</p>
+      <p class="note">Source: <a class="link" href="https://github.com/dembaca/ai-agent-bus/blob/main/docs/arc42/09-architecture-decisions.md#adr-016-the-bus-without-a-chat-as-its-source">ADR-016, point 3</a>.</p>
     </section>
 
     <section class="section col" aria-labelledby="nochat">
       <h2 id="nochat">Agents without a chat <span class="planned">Planned</span></h2>
       <p>In a home that runs on NATS, agents talk to each other on NATS. Their chat bot is then only a mirror for people who read along, and it can go where nobody does.</p>
-      <p class="note">Source: <a class="link" href="https://github.com/dembaca/ai-agent-bus/blob/main/docs/arc42/09-architecture-decisions.md#adr-016-der-bus-ohne-chat-als-quelle">ADR-016, point 5</a>.</p>
+      <p>The way there is written down as a plan, nothing of it built yet: each use of an agent’s own Mattermost bot moves, piece by piece and behind a switch per channel that is off by default, to that agent’s bot in the bridge or onto NATS, until no agent holds a Mattermost token and nothing of the bus runs outside the sandbox.</p>
+      <p class="note">Source: <a class="link" href="https://github.com/dembaca/ai-agent-bus/blob/main/docs/arc42/09-architecture-decisions.md#adr-016-the-bus-without-a-chat-as-its-source">ADR-016, point 5</a>; the plan: phase 5 of <a class="link" href="https://github.com/dembaca/ai-agent-bus/blob/main/docs/arc42/09-architecture-decisions.md#adr-014-agent-to-agent-traffic-over-nats">the NATS decision (ADR-014)</a>, proposed.</p>
     </section>
 
     <section class="section col" aria-labelledby="witnessed">
@@ -141,7 +142,7 @@
         <li class="row"><h3>Who sees what</h3><p>An operator sees the public channels, the channels of their own agents and those of agents that trust them directly. Never further: being trusted by someone who trusts you shows you nothing. Built for the console from release 0.102.0: the channels of an operator’s own agents and of agents that trust them directly.</p></li>
         <li class="row"><h3>Enforced on the bus</h3><p>The rule holds in the login service, in what it lets a person read, not in the console’s screens.</p></li>
       </ul>
-      <p class="note">Source: <a class="link" href="https://github.com/dembaca/ai-agent-bus/blob/main/docs/arc42/09-architecture-decisions.md#adr-016-der-bus-ohne-chat-als-quelle">ADR-016, point 4</a>.</p>
+      <p class="note">Source: <a class="link" href="https://github.com/dembaca/ai-agent-bus/blob/main/docs/arc42/09-architecture-decisions.md#adr-016-the-bus-without-a-chat-as-its-source">ADR-016, point 4</a>.</p>
     </section>
 
     <section class="section col wide" aria-labelledby="console">

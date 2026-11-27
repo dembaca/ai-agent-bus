@@ -65,7 +65,8 @@ OWNER = "testrig"
 ADMIN = "admin"
 START_SEC = 45.0
 RECOVERY_SEC = 90.0  # after a fault's window: how long the sender may take to come back
-# (just over the bus's 61 s worst case; a sender that cannot reconnect at all is #222)
+# (generous: the bus retries at most every 5 s, and a session killed under kill-client
+# waits for its process; a sender that never comes back is a fault of its own)
 RECOVERY_SEND_SEC = 0.5  # the pace of the recovery sends
 # Faults the sender must recover from: a send after the window proves it.
 SENDER_FAULTS = {"restart", "hang", "cut", "blackhole"}
@@ -582,6 +583,7 @@ async def nats_bus_run(count: int = 10, fault: str | None = None, *, fault_sec: 
                             # the window can arrive late without the sender being
                             # back, so there the recovery send proves it instead.
                             run.recovered = True
+                            run.recovered_at = run.recovered_at or time.monotonic()
                     if sent_done is not None and window is not None and not window.done():
                         continue  # never end while the fault's window is open
                     if sent_done is not None and (
@@ -616,6 +618,7 @@ async def nats_bus_run(count: int = 10, fault: str | None = None, *, fault_sec: 
                     # reader's own: a wait made here would hand over the posts that
                     # waited for the session and nobody would count them.
                     rx.ready.set()
+                run.window_closed_at = time.monotonic()
 
             reader = asyncio.create_task(receive())
             for seq in range(count):
@@ -640,6 +643,8 @@ async def nats_bus_run(count: int = 10, fault: str | None = None, *, fault_sec: 
                     run.sent_frames += 1
                     seq_of[str(post["id"])] = seq
                     if window is not None and window.done():
+                        if not run.recovered_at:
+                            run.recovered_at = time.monotonic()
                         run.recovered = True
                 await asyncio.sleep(send_interval)
             if window is not None:
@@ -670,6 +675,7 @@ async def nats_bus_run(count: int = 10, fault: str | None = None, *, fault_sec: 
                         run.sent_frames += 1
                         seq_of[str(post["id"])] = seq_extra
                         run.recovered = True
+                        run.recovered_at = run.recovered_at or time.monotonic()
             sent_done = time.monotonic()
             await reader
         except (McpError, RuntimeError, TimeoutError, OSError) as exc:
