@@ -323,13 +323,17 @@ def _presence_card(home: str = "") -> natsbus.PresenceCard:
     """The HELLO card's data the NATS presence carries for the operator console (RT-6.37,
     ADR-015): the harness from the handshake, model, task and branch from the last announce,
     how many of this session's asks to a human still wait (asks.waiting), and when the agent
-    last posted in its home, the channel id `home` (NatsPort.home_id). natsbus bounds each
-    field."""
+    last posted in its home, the channel id `home` (NatsPort.home_id), and the roster's
+    numbers and version as the status text states them (`usage.segments`, `release.segment`,
+    read back by the roster of a home on plan B piece 2). natsbus bounds each field."""
     me = stats.bot_id()
     return natsbus.PresenceCard(harness=stats.harness(), model=_hello.get("model"),
                                 task=_hello.get("task"), branch=_hello.get("branch"),
                                 asks=len(asks.waiting(me)) if me else None,
-                                last_post=_last_post_sec(me, home))
+                                last_post=_last_post_sec(me, home),
+                                usage=" · ".join(usage.segments()) or None,
+                                release=release.segment() or None,
+                                state=lease.state_word(me) if me else None)
 
 
 def _last_post_sec(me: str, home: str) -> int | None:
@@ -842,7 +846,7 @@ async def _usage_of(client: ChatPort, rows: list[Any]) -> dict[str, dict[str, An
     per agent). This agent's own row is what it holds in memory, exact. An agent
     whose text carries none gives nothing."""
     out: dict[str, dict[str, Any]] = {}
-    own = (await client.get_me()).id
+    own = lease.roster_self(client, (await client.get_me()).id)  # its NATS name on plan B piece 2
     for r in rows:
         got = usage.own() if r.user_id == own else r.usage
         if got:
@@ -1792,8 +1796,9 @@ async def _foreign_coordinator(client: ChatPort, me: str) -> str:
     """ADR-001: the home's crown holder is another owner's agent. It routes,
     but its TASKs and mentions are requests to this worker. '' when not."""
     try:
+        own = lease.roster_self(client, me)  # its NATS name on plan B piece 2
         coord = next((r for r in await lease.roster(client)
-                      if r.crown and r.user_id and r.user_id != me), None)
+                      if r.crown and r.user_id and r.user_id != own), None)
         if coord is None:
             return ""
         found = await owners.foreign(client, {coord.user_id})

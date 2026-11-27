@@ -280,6 +280,8 @@ func (m *Manager) desired(agent, anchor string, channels []string) []spec {
 	// account is, and whether it approves)
 	filters := []string{m.cfg.Presence + ".*.*", m.cfg.Presence + ".attest.*.v1",
 		m.cfg.Presence + ".account.mattermost.*.v1",
+		// the bridge's record of the bot it made for each agent (RT-6.44 step 3)
+		m.cfg.Presence + ".bot.*.v1",
 		// The login service's notices about this owner's sessions and host keys
 		// (RT-6.34), one subject per verdict so a move never erases a copy: they
 		// are the owner's, and the subject's anchor is the proof.

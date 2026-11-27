@@ -163,6 +163,17 @@ func (s *Snapshot) Get(name string) (Info, bool) {
 	return i, ok
 }
 
+// Names lists every name the snapshot holds a presence of.
+func (s *Snapshot) Names() []string {
+	s.mu.RLock()
+	defer s.mu.RUnlock()
+	out := make([]string, 0, len(s.by))
+	for n := range s.by {
+		out = append(out, n)
+	}
+	return out
+}
+
 // Newest is the time of the newest presence seen, the snapshot's own clock:
 // comparing a presence with it avoids the two hosts' clock difference.
 func (s *Snapshot) Newest() time.Time {
