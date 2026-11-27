@@ -44,7 +44,7 @@ from dataclasses import dataclass, field
 from typing import Any, Protocol
 
 from nats.aio.client import Client as NatsClient
-from nats.aio.errors import ErrAuthorization, ErrInvalidUserCredentials
+from nats.errors import AuthorizationError, InvalidUserCredentialsError
 
 from . import a2a
 from .login import LoginError, NKey
@@ -123,6 +123,18 @@ def owner_of_token(token: str) -> str:
 _PUBLISH_DENIED_RE = re.compile(r'permissions violation for publish to "([^"]*)"', re.IGNORECASE)
 _KINDS = ("post", "reaction", "unreaction")
 _STATUSES = ("online", "away", "bye")
+
+
+_REFUSED_CREDENTIAL = re.compile(r"authorization violation|invalid user credentials", re.I)
+
+
+def login_failure(exc: Exception) -> bool:
+    """Whether a reconnect failure is the login's, not the server being away: the bus's
+    own login errors, the authorization errors nats-py raises after a connect, and - a
+    refused CONNECT during the handshake - its plain `Error` with the server's text
+    (`_process_err` names the parent, the handshake path does not, nats-py 2.x)."""
+    return (isinstance(exc, (LoginError, AuthorizationError, InvalidUserCredentialsError))
+            or bool(_REFUSED_CREDENTIAL.search(str(exc))))
 
 
 def reconnect_waits(jitter: Callable[[], float] | None = None, *,
@@ -1225,6 +1237,7 @@ class NatsBus:
         self._gaps = GapTracker()
         self._last_gap_reconnect = -1e18
         self._last_flush_reconnect = -1e18  # storm control for flush-triggered reconnects
+        self._flush_task: asyncio.Task[None] | None = None
         self._last_echo_reconnect = -1e18
         self._echo_backoff = 0.0  # the wait after an echo reconnect that brought no echo back; 0: none yet
         self._stale: set[str] = set()  # channels with a gap, dropped until the reconnect
@@ -1414,7 +1427,7 @@ class NatsBus:
         self._nc = None
 
     def _cancel_timers(self) -> None:
-        for t in (self._renew_task, self._gap_task):
+        for t in (self._renew_task, self._gap_task, self._flush_task):
             if t is not None and t is not asyncio.current_task():
                 t.cancel()
         self._renew_task = self._gap_task = None
@@ -1598,8 +1611,7 @@ class NatsBus:
                         return
                     except Exception as exc:
                         failures += 1
-                        login_failed = isinstance(exc, (LoginError, ErrAuthorization,
-                                                        ErrInvalidUserCredentials))
+                        login_failed = login_failure(exc)
                         wait = next(login_waits if login_failed else server_waits)
                         # The first tries are news; a long outage is not a warning a turn.
                         if failures <= 3 or failures % 10 == 0:
@@ -1702,9 +1714,14 @@ class NatsBus:
             if self._nc is nc:
                 self._connected = False
                 now = time.monotonic()
-                if now - self._last_flush_reconnect >= FLUSH_RECONNECT_SEC:
+                wait = FLUSH_RECONNECT_SEC - (now - self._last_flush_reconnect)
+                if wait <= 0:
                     self._last_flush_reconnect = now
                     self._wake.set()
+                elif self._flush_task is None or self._flush_task.done():
+                    # Held back: arm the reconnect for the gate's end. Without it every send
+                    # would raise "not connected" until the next credential renewal (#228).
+                    self._flush_task = asyncio.create_task(self._flush_reconnect_after(wait))
             raise NatsBusError("the connection stopped answering; the post may have arrived") from None
         except Exception as exc:
             raise NatsBusError(f"publish failed: {type(exc).__name__}") from None
@@ -2240,6 +2257,12 @@ class NatsBus:
         log.warning("nats bus: gap on %s, reconnect held back %.0f s", where, wait)
         if self._gap_task is None or self._gap_task.done():
             self._gap_task = asyncio.create_task(self._gap_reconnect_after(wait))
+
+    async def _flush_reconnect_after(self, wait: float) -> None:
+        await asyncio.sleep(wait)
+        if not self._stopping:
+            self._last_flush_reconnect = time.monotonic()
+            self._wake.set()
 
     async def _gap_reconnect_after(self, wait: float) -> None:
         await asyncio.sleep(wait)

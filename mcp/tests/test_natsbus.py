@@ -18,10 +18,11 @@ from collections.abc import AsyncIterator, Awaitable, Callable, Mapping
 from pathlib import Path
 from typing import Any
 
+import nats
 import nkeys
 import pytest
 from nats.aio.client import Client as NatsClient
-from nats.aio.errors import ErrAuthorization
+from nats.errors import AuthorizationError
 
 from mattermost_ai_agent_bus import a2a, natsbus
 from mattermost_ai_agent_bus.login import NKey
@@ -137,7 +138,8 @@ def test_a_login_failure_backs_off_slower_than_a_server_that_is_away(monkeypatch
 
     cases = ((ConnectionError("the server is down"), False),
              (natsbus.LoginError("the login failed"), True),
-             (ErrAuthorization(), True))  # the auth callout refused the credential
+             (AuthorizationError(), True),  # the auth callout refused the credential
+             (nats.errors.Error("nats: 'Authorization Violation'"), True))  # the handshake
     for exc, login_expected in cases:
         waits = asyncio.run(run(exc))
         pulls = {cap: count for cap, count in waits}
@@ -992,7 +994,32 @@ async def test_a_flush_timeout_reconnects_at_most_once_per_interval() -> None:
     bus._connected = True
     with pytest.raises(natsbus.NatsBusError, match="may have arrived"):
         await bus.post("home", "y")
-    assert not bus._wake.is_set()  # within the interval: no second reconnect
+    assert not bus._wake.is_set()  # within the interval: no second reconnect now
+    assert bus._flush_task is not None  # ... but one is armed for the gate's end
+
+
+async def test_a_held_back_flush_reconnect_is_armed_for_the_gate_s_end(
+        monkeypatch: pytest.MonkeyPatch) -> None:
+    """#228 review: a second flush timeout inside the storm gate must not leave the
+    connection down until the next credential renewal - every send would raise "not
+    connected" and the presence stops. The reconnect is armed for the gate's end."""
+    monkeypatch.setattr(natsbus, "FLUSH_RECONNECT_SEC", 0.05)
+    bus, _ = _unit_bus()
+
+    class Slow:
+        async def publish(self, subject: str, body: bytes) -> None:
+            return
+
+        async def flush(self, timeout: int = 10) -> None:
+            raise asyncio.TimeoutError
+
+    bus._nc, bus._connected = Slow(), True  # type: ignore[assignment]
+    bus._last_flush_reconnect = time.monotonic()  # the gate is closed
+    with pytest.raises(natsbus.NatsBusError):
+        await bus.post("home", "x")
+    assert bus._connected is False and not bus._wake.is_set()
+    await asyncio.sleep(0.12)
+    assert bus._wake.is_set(), "no deferred reconnect: the home would stay down"
 
 
 async def test_name_mismatch_in_a_reconnect_reaches_the_caller(monkeypatch: pytest.MonkeyPatch) -> None:
@@ -2007,6 +2034,24 @@ async def test_a_recreated_bus_stream_moves_the_cursor_down() -> None:
     # its newer messages are read normally
     await older._on_deliver("home", "bus.ch.home.agent-x", _reply(older, "home", 501, 2, T0 + 1), ok)
     assert [e.stream_seq for e in older_events] == [501]
+
+
+async def test_a_refused_credential_is_a_login_failure_live(rig: Rig) -> None:
+    """#228 review: a refused credential must take the login tier, not the server's. With
+    a real server the CONNECT is answered during the handshake, where nats-py raises its
+    plain Error with the server's text (not the AuthorizationError parent of
+    _process_err), so the tier matches that text as well."""
+    from nats.errors import AuthorizationError
+    from nats.aio.errors import ErrAuthorization
+    assert issubclass(ErrAuthorization, AuthorizationError)  # the alias is deprecated
+    nc = NatsClient()
+    try:
+        await nc.connect(rig.url, user="nobody", password="wrong", allow_reconnect=False)
+    except Exception as exc:  # noqa: BLE001 - the type is what is under test
+        assert natsbus.login_failure(exc), exc
+        assert not isinstance(exc, AuthorizationError)  # the handshake path's plain Error
+    else:  # pragma: no cover - the server must refuse
+        pytest.fail("a refused credential connected")
 
 
 async def test_a_killed_server_asks_for_the_hand_over_cursor_again(rig: Rig,

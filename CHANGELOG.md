@@ -157,9 +157,12 @@ before 0.5.0 are described in the git history.
   post may have arrived - the publish went out before the PONG went missing -
   so a retry can duplicate it. The wait stops at 5 s while the server does not
   answer and starts with a jittered moment, so a home's agents do not knock in
-  step; a failure of the login - `LoginError`, or the callout's authorization
-  refusal - keeps the slower growth to 30 s, since it may need a human or a
-  restarted login service. Each attempt logs its next wait (the first three,
+  step; a failure of the login keeps the slower growth to 30 s - the bus's own
+  `LoginError`, nats-py's authorization errors, and its handshake's plain error
+  with the server's text (a refused CONNECT) - since it may need a human or a
+  restarted login service. A flush-triggered reconnect the 30 s gate holds back
+  is armed for the gate's end, so a second timeout cannot leave the connection
+  down until the next credential renewal. Each attempt logs its next wait (the first three,
   then every tenth), and the fault rig reports `recovery_s`, the time from the
   window to the first post after it. Measured after the change: 0.004 to 4.0 s
   for the faults of `--fault all`, 0.5 to 2.5 s for a 30 s restart window.
