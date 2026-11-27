@@ -253,8 +253,9 @@ func (h *Handler) Piece(ctx context.Context, agent string, req requests.Request)
 	}
 
 	var (
-		shaped []answerPost
-		capped bool // the read hit its own bound: posts may remain
+		shaped      []answerPost
+		capped      bool  // the read hit its own bound: posts may remain
+		readThrough int64 // the last post read (dropped included), the cursor then
 	)
 	if p.Thread != "" {
 		root, posts, more, err := h.threadRead(ctx, bot, cid, p.Channel, p.Thread, limit)
@@ -268,7 +269,17 @@ func (h *Handler) Piece(ctx context.Context, agent string, req requests.Request)
 			return nil, err
 		}
 		capped = more
+		// The cursor of a read that hit the read's own bound is the last post
+		// READ, dropped ones included: `more` counts what was read, and a run of
+		// dropped posts would otherwise leave next at 0 or at since (an endless
+		// loop). A part that cut the answer uses the last post it kept instead.
+		if len(posts) > 0 {
+			readThrough = posts[len(posts)-1].CreateAt
+		}
 		for _, post := range posts {
+			if err := ctx.Err(); err != nil {
+				return nil, err
+			}
 			if drop(post) {
 				continue
 			}
@@ -276,7 +287,7 @@ func (h *Handler) Piece(ctx context.Context, agent string, req requests.Request)
 		}
 	}
 
-	return h.parts(p, cid, shaped, limit, capped), nil
+	return h.parts(p, cid, shaped, limit, capped, readThrough), nil
 }
 
 // maxThreadPages bounds one thread read's pages (200 posts each): a thread of
@@ -330,6 +341,9 @@ func (h *Handler) threadRead(ctx context.Context, bot *mm.Client, cid, channel, 
 			first = false
 			if !keep {
 				continue
+			}
+			if err := ctx.Err(); err != nil {
+				return "", nil, false, err
 			}
 			if len(shaped) < limit {
 				shaped = append(shaped, h.shape(ctx, bot, post))
@@ -487,9 +501,11 @@ func (h *Handler) person(ctx context.Context, bot *mm.Client, uid string) (strin
 	}
 	isBot, err := h.botness(ctx, bot, uid)
 	if err != nil {
-		// Mattermost did not say: the account names no person and is no bot
-		// it can prove; the answer carries it without a record, as an unbound
-		// one.
+		// The read's deadline is the answer's: no more lookups, no warning per
+		// post. Anything else is one warning, and the post stays unbound.
+		if ctx.Err() != nil {
+			return "", nil, false
+		}
 		h.log().Warn("history: no user read for a post's author", "account", uid, "error", err)
 	}
 	return "", nil, isBot
@@ -536,7 +552,8 @@ func drop(p mm.Post) bool {
 
 // parts splits the shaped posts into the answer's parts, each within the count
 // and byte bounds, and marks the last with next and more while posts remain.
-func (h *Handler) parts(p payload, cid string, posts []answerPost, limit int, capped bool) []requests.Reply {
+func (h *Handler) parts(p payload, cid string, posts []answerPost, limit int, capped bool,
+	readThrough int64) []requests.Reply {
 	var (
 		chunks [][]answerPost
 		cur    []answerPost
@@ -591,7 +608,14 @@ func (h *Handler) parts(p payload, cid string, posts []answerPost, limit int, ca
 			// A channel answer's cursor is a create_at; a thread read has no
 			// cursor (the request takes none beside the thread), only more.
 			if p.Thread == "" {
+				// The part cut the answer: the next read starts after the last
+				// post kept. Only a read the GET said had more, with nothing cut
+				// here, starts after the last post read - a run of dropped posts
+				// must still move the cursor.
 				r.Next = lastAt
+				if capped && len(posts) <= taken && readThrough > lastAt {
+					r.Next = readThrough
+				}
 			}
 			r.More = true
 		}

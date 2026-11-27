@@ -4168,8 +4168,9 @@ reads yet (RT-6.39 step 5).
     and the answer names the same request and kind, so an answer cannot be
     paired with another request; an answer may come in parts, each with `part`
     and `last`, and the client reads until the last one, one deadline for the
-    whole request and caps on the parts and bytes an answer may add up to; the
-    bridge answers per kind from a handler
+    whole request and caps on the parts and bytes an answer may add up to (a
+    history read is given 35 s, above the bridge's 30 s, the other kinds 5 s);
+    the bridge answers per kind from a handler
     map (`not built` until pieces 5, 8 and 9 fill them), with a `result`
     field and `part`/`last` for multi-part answers, off its receive loop,
     under a per-kind size limit, a per-agent rate limit and truncated logs;

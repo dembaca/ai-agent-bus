@@ -716,6 +716,40 @@ func TestAChannelReadPagesAndItsCursorWalksForward(t *testing.T) {
 	}
 }
 
+// A read whose window is all dropped posts still moves its cursor: 200+ in a
+// row leave next at the last post READ, never at 0 or at since (an endless
+// loop) - Fable's delta review of #270.
+func TestADroppedRunStillMovesTheCursor(t *testing.T) {
+	r := newRig(t, 5)
+	base := r.now.Add(-12 * time.Hour).UnixMilli()
+	for i := 0; i < 250; i++ {
+		p := post("s"+strconv.Itoa(i), "u-alice", base+int64(i))
+		p["type"] = "system_join_channel"
+		r.mm.posts[cid] = append(r.mm.posts[cid], p)
+	}
+	replies, err := r.ask(t, fmt.Sprintf(`{"channel":%q,"since":%d,"limit":200}`, channel, base))
+	if err != nil {
+		t.Fatal(err)
+	}
+	parts := results(t, replies)
+	if len(parts) != 1 || len(parts[0].Posts) != 0 || !parts[0].More {
+		t.Fatalf("the dropped run: %d parts, %d posts, more %v", len(parts), len(parts[0].Posts), parts[0].More)
+	}
+	if want := base + 199; parts[0].Next != want {
+		t.Fatalf("next %d, want the last post read %d (not 0 or since)", parts[0].Next, want)
+	}
+	// the walk goes on from there and ends: the rest of the run is read and
+	// dropped, so there is nothing more and no cursor to repeat
+	replies, err = r.ask(t, fmt.Sprintf(`{"channel":%q,"since":%d,"limit":200}`, channel, parts[0].Next))
+	if err != nil {
+		t.Fatal(err)
+	}
+	parts = results(t, replies)
+	if len(parts[0].Posts) != 0 || parts[0].More {
+		t.Fatalf("the second read: %+v", parts[0])
+	}
+}
+
 // One history read per agent at a time: a second request while one runs is
 // told busy, and the first goes on.
 func TestASecondReadOfTheSameAgentIsBusy(t *testing.T) {

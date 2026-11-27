@@ -125,7 +125,7 @@ before 0.5.0 are described in the git history.
   as a setting beside the bus's, presence's and STATS's; it reads an answer in parts
   (`part`, `last`) until the last one under one deadline, so a file download or a
   long history read arrives whole, with caps on the parts and bytes an answer may
-  add up to. The bridge user's NATS
+  add up to; a history read waits 35 s, above the bridge's 30 s. The bridge user's NATS
   rights (subscribe `<req>.>`, publish `deliver.*.req.*`) are in the example
   configuration and pinned by its test; an image rolled out before the lab's
   configuration grants them keeps running - people's posts still go onto NATS,
