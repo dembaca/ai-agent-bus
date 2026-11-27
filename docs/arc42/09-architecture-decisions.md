@@ -3990,8 +3990,8 @@ plan B is proven. Proposed, from that choice of plan B directly: the
 owner's approval that opens the central adapter, which the acceptance of
 the parallel operation (phase 4) set, moves to before the last piece.
 Proposed as well: the pieces, their order and the acceptance below.
-Built so far: the switch per piece and channel (below), which no piece
-reads yet (RT-6.39 step 5).
+Built so far: the switch per piece and channel (below, RT-6.39 step 5),
+which each piece reads for itself.
 
 - **Context.** Phase 5 is accepted when the bus's scenarios with humans
   run without any agent holding a Mattermost token. A home over NATS

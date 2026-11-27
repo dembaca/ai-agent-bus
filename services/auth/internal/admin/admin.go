@@ -348,6 +348,9 @@ func (h *handler) putChannel(w http.ResponseWriter, r *http.Request, id token.Id
 		if b.PlanB == nil { // a client that knows no switches changes none
 			c.PlanB = cur.PlanB
 		}
+		if b.ChatIDs == nil { // nor does one that sends no chat ids
+			c.ChatIDs = cur.ChatIDs
+		}
 		rev = want
 	}
 	n, err := h.store.PutChannel(ctx, c, rev)

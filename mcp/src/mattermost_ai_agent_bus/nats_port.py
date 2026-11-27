@@ -569,21 +569,21 @@ class NatsPort:
                     # home still starts, only without a link between bot and NATS name.
                     log.warning("nats: the bot id is not a Mattermost user id: starting without a link")
                 await bus.start()
-                self._up = True
-                await self._wait_switch()
-                if self._piece1():
-                    try:
+                try:  # a start that fails from here stops its bus: the retry starts the only one
+                    self._up = True
+                    await self._wait_switch()
+                    if self._piece1():
                         await self.resolve()  # the channel record of the credential (RT-6.39 step 6)
                         work = self.inner.work_channel_name.lower()
                         if not self.home_id and work in self._homes:
                             self.home_id = (await self.resolve()).get(work, "")
-                    except BaseException:
-                        await bus.stop()
-                        raise
-                else:  # the switch is read now (or counts as off): Mattermost's ids as before
-                    await self.resolve()
-                    if not self.home_id:
-                        await self._read_home_id()
+                    else:  # the switch is read now (or counts as off): Mattermost's ids as before
+                        await self.resolve()
+                        if not self.home_id:
+                            await self._read_home_id()
+                except BaseException:
+                    await bus.stop()
+                    raise
                 lease.use_nats_link(partial(_tag_of, bus))
                 await self._announce_membership(bus)
                 self._watch = asyncio.create_task(self._watch_people())

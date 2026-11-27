@@ -150,7 +150,7 @@ before 0.5.0 are described in the git history.
   MCP server answers `planb.on(piece, channel)` from it (false without a
   record, outside a home over NATS or for a piece outside 1 to 13;
   `CB_PLANB_TEST` switches pieces on, only while pytest runs a test), the
-  bridge `presence.Switches`. Pieces 13 and 1 (below) read theirs. A record two
+  bridge `presence.Switches`. Each piece reads its own switch (their entries). A record two
   hours old by the stream's time counts as off, in the MCP server and in the
   bridge; the login service writes the records after the answer, and a
   failed write goes on with the next channel. The bridge makes its own

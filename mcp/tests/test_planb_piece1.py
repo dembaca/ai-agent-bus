@@ -163,6 +163,41 @@ async def test_with_the_switch_off_resolve_reads_mattermost_as_before(
         await port.stop()
 
 
+class FlakyMattermost(NoMattermost):
+    """A chat whose first read of the work channel's id fails, the next ones pass."""
+
+    async def work_channel_id(self) -> str:
+        if "work_channel_id" not in self.reads:
+            self.reads.append("work_channel_id")
+            raise OSError("mattermost is away")
+        return await super().work_channel_id()
+
+
+async def test_a_start_whose_resolve_fails_stops_its_bus_before_the_retry(
+        rig: Rig, monkeypatch: pytest.MonkeyPatch) -> None:
+    """Switch off: a failed resolve after the bus is up stops that bus, so the retry runs the only one."""
+    monkeypatch.delenv("CB_PLANB_TEST", raising=False)
+    monkeypatch.setattr("mattermost_ai_agent_bus.nats_port.START_RETRY_SEC", 0.1)
+    buses: list[natsbus.NatsBus] = []
+
+    class Counted(natsbus.NatsBus):
+        def __init__(self, *a: Any, **kw: Any) -> None:
+            super().__init__(*a, **kw)
+            buses.append(self)
+
+    monkeypatch.setattr("mattermost_ai_agent_bus.nats_port.NatsBus", Counted)
+    inner = FlakyMattermost(FakeRegistrar())
+    port = _port(rig, inner)
+    await _login_service(rig.admin, rig.names["alice"], ["home"], {})
+    await asyncio.wait_for(port.start(rig.logins["alice"], owner="alice"), 15)
+    try:
+        assert len(buses) == 2 and port._bus is buses[1]
+        assert buses[0]._stopping and not buses[1]._stopping  # the failed start's bus is gone
+        assert port.home_id == WORK
+    finally:
+        await port.stop()
+
+
 def test_the_record_limit_is_the_login_services_grant() -> None:
     """The home, the guests and the lobby: callout.MaxGuests + 2 (services/auth/internal/callout/service.go)."""
     src = (Path(__file__).resolve().parents[2] / "services/auth/internal/callout/service.go").read_text()

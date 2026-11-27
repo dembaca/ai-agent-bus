@@ -617,8 +617,10 @@ type putBody struct {
 	Bindings map[string]string `json:"bindings"`
 	// PlanB: nil leaves the key out, so the service keeps the pieces; a
 	// pointer to an empty list switches every piece off (RT-6.39 step 5).
-	PlanB   *[]int            `json:"planb,omitempty"`
-	ChatIDs map[string]string `json:"chat_ids,omitempty"`
+	PlanB *[]int `json:"planb,omitempty"`
+	// ChatIDs: nil sends null, so the service keeps them; an empty map
+	// clears them (RT-6.40 step 4).
+	ChatIDs map[string]string `json:"chat_ids"`
 }
 
 // planBArg reads `planb`'s list: "-" for none, else pieces 1 to 13,
@@ -758,7 +760,7 @@ func (c *cli) command(pos []string) error {
 		if err != nil {
 			return err
 		}
-		b := putBody{Owner: ch.Owner, Public: ch.Public, Bindings: ch.Bindings, PlanB: &pieces}
+		b := putBody{Owner: ch.Owner, Public: ch.Public, Bindings: ch.Bindings, ChatIDs: ch.ChatIDs, PlanB: &pieces}
 		r, err := c.call("PUT", path, map[string]string{"If-Match": cur.etag}, b)
 		if err != nil {
 			return err
