@@ -276,6 +276,17 @@ async def test_a_bot_is_linked_only_through_the_bridges_record_and_its_owner_acc
     assert inner.reads == []
 
 
+async def test_with_piece_4_on_too_a_bot_is_linked_by_the_bridges_record_alone(
+        monkeypatch: pytest.MonkeyPatch) -> None:
+    """RT-6.37 step 6 with plan B piece 4 (RT-6.41 step 6): the NATS name behind a bridge bot,
+    whose owner piece 4 takes from the login service, comes from the bridge's record, never
+    from the bot's status on Mattermost."""
+    port, _bus, inner = await _world(monkeypatch, piece="2,4")
+    assert await port._linked_name(BOT_A) == AGENT_A
+    assert await port._linked_name("z" * 26) == ""  # in no record, no presence names it: no read
+    assert inner.reads == []
+
+
 async def test_shown_as_and_names_and_kinds_of_accounts_come_from_the_records(monkeypatch: pytest.MonkeyPatch) -> None:
     port, bus, inner = await _world(monkeypatch)
     assert await lease.shown_as(inner, {AGENT_A, AGENT_B}) == {AGENT_A: "bb-agent-a"}  # type: ignore[arg-type]

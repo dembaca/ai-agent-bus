@@ -2131,12 +2131,18 @@ class NatsPort:
         This session's own bot is its own name. Any other bot only by the one test of a link
         (RT-6.37 step 6, `linked`): its status shows the name's tag and the name's presence
         names that very bot. When no fresh presence names the bot, nothing is read on
-        Mattermost; else the bot's status is (the link is piece 2's to move)."""
+        Mattermost; else the bot's status is. With piece 2 on too, a bot of the bridge's fresh
+        record is linked by that record alone, with no Mattermost read, and an account the
+        login service binds to a person is no agent's bot; any other id is tested as with
+        piece 2 off (RT-6.37 step 6)."""
         bus = self._live()
         if bus is None or not user_id:
             return ""
         if user_id == self.inner.bot_id:
             return bus.name
+        bots, known = self._known2({user_id})
+        if known:
+            return bots[user_id][0] if user_id in bots else ""
         if not any(bus.bot_of(n) == user_id and bus.presence_of(n) != "offline"
                    for n in bus.presence_snapshot()):
             return ""
