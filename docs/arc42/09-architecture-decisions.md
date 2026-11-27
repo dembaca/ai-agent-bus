@@ -3709,7 +3709,11 @@ decided against it (Context).
    over NATS against a local nats-server whose static users carry the
    login service's rights. Faults on NATS: the server restarted (SIGKILL,
    same store) or hung (SIGSTOP), the receiving server killed and resumed,
-   the line cut, blackholed, stalled or frozen by a byte proxy.
+   the line cut, blackholed, stalled or frozen by a byte proxy. A failed
+   consumer reconcile aborts that one CONNECT, and the next connection
+   retries it as the login service lets a client retry a refused login;
+   only a last connection still refused makes a run untrustworthy, its
+   aborted CONNECTs counted (since #218).
    `coord-run` hard-stops the crown holder and reads the take-over from the
    successor's crown log (RT-6.6 step 11). It runs on one machine, not in
    the Lab, and CI runs it (small on every PR, 100 messages per fault and

@@ -2105,8 +2105,9 @@ def test_the_since_cursor_comes_from_the_read_marks_nats_lane() -> None:
     assert watermark.advance(held, f"{WORK}:nats", "n1:home:5", 100)
     watermark.hold(held, f"{WORK}:nats", 90, "n1:home:7")
     assert _since_from_read_mark(held, {"home"}) == {"home": (6, 89)}
-    # The first message of a channel has no sequence before it: no cursor (the
-    # residual the entry names).
+    # A NATS post of stream sequence 1 has no sequence before it: no cursor (the
+    # residual the entry names), and the first post of a channel that is not the
+    # stream's first seeds its lane one before itself (#224).
     first = "b" * 26
     assert watermark.advance(first, f"{WORK}:nats", "n1:home:2", 100)
     watermark.hold(first, f"{WORK}:nats", 90, "n1:home:1")

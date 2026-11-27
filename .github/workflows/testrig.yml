@@ -49,24 +49,7 @@ jobs:
       - name: ruff
         run: uvx --from ruff@0.17.2 ruff check
 
-      - name: nats-server (the NATS transport runs against the real server)
-        # As checks.yml fetches it: the official release, checked against a fixed
-        # sha256 (the release's SHA256SUMS for nats-server-v2.15.3-linux-amd64.tar.gz).
-        # Keep the version in step with services/auth/go.mod (ADR-014 point 16).
-        run: |
-          set -euo pipefail
-          v=2.15.3
-          sha=32e18c1e78d7ef4f86e483070eef3abb2647c3d4d67e29668077c7ad81da0797
-          dir="$RUNNER_TEMP/nats-server"
-          mkdir -p "$dir"
-          curl -fsSL -o "$dir/nats.tar.gz" \
-            "https://github.com/nats-io/nats-server/releases/download/v${v}/nats-server-v${v}-linux-amd64.tar.gz"
-          echo "$sha  $dir/nats.tar.gz" | sha256sum -c -
-          tar -xzf "$dir/nats.tar.gz" -C "$dir" --strip-components=1 "nats-server-v${v}-linux-amd64/nats-server"
-          "$dir/nats-server" --version
-          echo "CB_NATS_SERVER=$dir/nats-server" >> "$GITHUB_ENV"
-          # The old name too, as mcp/tests/test_natsbus.py still reads it (#169).
-          echo "MM_NATS_SERVER=$dir/nats-server" >> "$GITHUB_ENV"
+      - uses: ./.github/actions/nats-server
 
       # Before the tests (review point 1): `skip_no_bus` skips every bus test
       # when no interpreter imports the bus, and with the sync after the test
@@ -143,27 +126,40 @@ jobs:
       - uses: astral-sh/setup-uv@d0cc045d04ccac9d8b7881df0226f9e82c39688e  # v6
         with:
           enable-cache: true
-      - name: nats-server (the NATS transport runs against the real server)
-        # As checks.yml fetches it: the official release, checked against a fixed
-        # sha256 (the release's SHA256SUMS for nats-server-v2.15.3-linux-amd64.tar.gz).
-        # Keep the version in step with services/auth/go.mod (ADR-014 point 16).
-        run: |
-          set -euo pipefail
-          v=2.15.3
-          sha=32e18c1e78d7ef4f86e483070eef3abb2647c3d4d67e29668077c7ad81da0797
-          dir="$RUNNER_TEMP/nats-server"
-          mkdir -p "$dir"
-          curl -fsSL -o "$dir/nats.tar.gz" \
-            "https://github.com/nats-io/nats-server/releases/download/v${v}/nats-server-v${v}-linux-amd64.tar.gz"
-          echo "$sha  $dir/nats.tar.gz" | sha256sum -c -
-          tar -xzf "$dir/nats.tar.gz" -C "$dir" --strip-components=1 "nats-server-v${v}-linux-amd64/nats-server"
-          "$dir/nats-server" --version
-          echo "CB_NATS_SERVER=$dir/nats-server" >> "$GITHUB_ENV"
-          # The old name too, as mcp/tests/test_natsbus.py still reads it (#169).
-          echo "MM_NATS_SERVER=$dir/nats-server" >> "$GITHUB_ENV"
+      - uses: ./.github/actions/nats-server
       - name: sync the bus
         run: uv sync --locked --directory ../mcp
       - name: delivery, 100 messages per fault
-        run: uv run --locked bus-testrig bus-run --transport nats --fault all --count 100 --summary
+        # The run's whole output goes to the step summary and the artifact even
+        # when it fails (that run's numbers are what one needs), then the step
+        # exits with the run's own status.
+        run: |
+          set -uo pipefail
+          mkdir -p results
+          rc=0
+          uv run --locked bus-testrig bus-run --transport nats --fault all --count 100 --summary \
+            | tee results/delivery.txt || rc=$?
+          { echo; echo '## Delivery, 100 messages per fault'; echo '```'; cat results/delivery.txt; echo '```'; } \
+            >> "$GITHUB_STEP_SUMMARY"
+          exit "$rc"
       - name: 50 hard stops of the coordinator
-        run: uv run --locked bus-testrig coord-run --transport nats --stops 50 --sessions 3 --summary
+        run: |
+          set -uo pipefail
+          mkdir -p results
+          rc=0
+          uv run --locked bus-testrig coord-run --transport nats --stops 50 --sessions 3 --summary \
+            | tee results/coord.txt || rc=$?
+          { echo; echo '## 50 hard stops of the coordinator'; echo '```'; cat results/coord.txt; echo '```'; } \
+            >> "$GITHUB_STEP_SUMMARY"
+          exit "$rc"
+      - name: the night's numbers
+        # The findings of a nightly run are read from the run page, not a log
+        # nobody opens (review of #209, point 8): the tables in the step summary,
+        # the full output as an artifact. `always()`: a failed run's numbers are
+        # what one needs.
+        if: always()
+        uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02  # v4.6.2
+        with:
+          name: full-nats-results
+          path: testrig/results/
+          if-no-files-found: warn
