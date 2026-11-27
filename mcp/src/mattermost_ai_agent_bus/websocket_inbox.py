@@ -766,6 +766,21 @@ class WebSocketInbox:
         return [unread.Pending(UnreadChannel(cid, channel_type(events[0])), len(events),
                                [e.post for e in events]) for cid, events in found.items()]
 
+    def _oldest_unhanded(self, lane: str, post: Post) -> tuple[str, int]:
+        """The oldest unhanded NATS post of the lane as (id, create_at): this one, a
+        queued one, or one the backfill's snapshot still holds (#224)."""
+        best = (post.create_at, post.id)
+        for e in self._waiting():
+            other = e.post
+            if _lane(other) != lane or e.gated or e.kind == "reaction":
+                continue
+            if other.create_at < best[0]:
+                best = (other.create_at, other.id)
+        for pid, at in ((self._unqueued or {}).get(lane) or {}).items():
+            if at < best[0]:
+                best = (at, pid)
+        return best[1], best[0]
+
     def _first_waiting(self, key: str) -> int | None:
         """create_at of the oldest post of the mark's lane (a channel, or its
         NATS lane: watermark.lane) not handed over yet, None for none: one that
@@ -857,8 +872,20 @@ class WebSocketInbox:
         would count again what was handed over after it."""
         post = event.post
         if not event.gated and not event.edited and event.kind != "reaction" and post.channel_id:
+            lane = _lane(post)
             try:
-                watermark.hold(self._bot_user_id, _lane(post), post.create_at, post.id)
+                if lane.endswith(watermark.NATS_LANE) and lane not in watermark.read(
+                        self._bot_user_id):
+                    # A lane without a mark is seeded from the OLDEST unhanded post
+                    # of the lane, and only once the backfill has read its snapshot:
+                    # a live post queued before it would put the mark past an older
+                    # one the snapshot still brings, and after a kill that one would
+                    # never be asked for again (#224, #233 review).
+                    if self._unqueued is not None:
+                        pid, at = self._oldest_unhanded(lane, post)
+                        watermark.hold(self._bot_user_id, lane, at, pid)
+                else:
+                    watermark.hold(self._bot_user_id, lane, post.create_at, post.id)
             except Exception as exc:  # noqa: BLE001
                 log.warning("read watermark not held: %s", exc)
         await self._queue.put(event)
