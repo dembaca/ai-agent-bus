@@ -9,6 +9,7 @@ and CB_NATS_SERVER, tests against a real nats-server through the rig of test_nat
 
 import asyncio
 import dataclasses
+import json
 import logging
 import time
 from typing import Any
@@ -2375,3 +2376,71 @@ def test_the_presence_states_the_dm_flag_and_only_a_true_counts() -> None:
     assert read(b'{"v":1,"status":"online","dm":"yes"}') is False  # only a literal true
     assert read(b'{"v":1,"status":"online","dm":false}') is False
     assert read(b"not json") is False
+
+
+async def test_a_root_on_the_dm_lane_is_ignored_and_a_reaction_to_a_dm_is_dropped(
+        monkeypatch: pytest.MonkeyPatch) -> None:
+    """RT-6.36 step 7: one lane carries every sender's DMs and has no channel, so a root there
+    would thread one sender's DM under another's, and a reaction (not carried yet) would let
+    any name react to another sender's DM: both are dropped."""
+    _dm_switch(monkeypatch)
+    port, _, _ = make()
+    events = NatsEvents(port)
+    await events.open()
+    await arrive(port, natsbus.DM_SINCE, ALICE, 21, Message("post", "one"))
+    await arrive(port, natsbus.DM_SINCE, BOB, 22, Message("post", "two", root=21))
+    await arrive(port, natsbus.DM_SINCE, BOB, 23, Message("reaction", ref=21, emoji="eyes"))
+    got = [events._queue.get_nowait() for _ in range(2)]  # type: ignore[union-attr]
+    assert [e.post.message for e in got if isinstance(e, PostEvent)] == ["one", "two"]
+    assert isinstance(got[1], PostEvent) and got[1].post.root_id == ""  # top-level, as a DM is
+    assert events._queue is not None and events._queue.empty()  # the reaction woke no one
+    assert not port._reacts.get(21)
+
+
+async def test_a_mattermost_dm_keeps_the_debug_card(monkeypatch: pytest.MonkeyPatch) -> None:
+    """RT-6.31: a DM that stays on Mattermost carries the debug attachment like any post. Only
+    a DM over NATS has no post for it, and the fallback must not lose it."""
+    seen: list[str] = []
+
+    async def card(_client: Any, _uid: str, props: Any, *, channel_id: str, root_id: str,
+                   call: str, thread: str = "") -> Any:
+        seen.append(channel_id)
+        return props
+
+    monkeypatch.setattr(server, "_with_debug", card)
+    port, inner, _ = make()  # the switch is off: the DM stays on Mattermost
+    inner.bots["bob-bot"] = ChannelUser(id=BOT_A, username="bob-bot")
+    out = await server.post_as_bot(port, "hello", to="bob-bot")
+    assert out["id"] and out["channel"]  # a slim post, as from any Mattermost post
+    assert seen == [inner.posted[-1]["channel_id"]] and seen[0]  # the DM's channel, not the home
+
+
+async def test_a_direct_message_has_no_thread_to_answer_in(monkeypatch: pytest.MonkeyPatch) -> None:
+    """A NATS DM has no thread: answering it is a DM back, and the refusal says so (RT-6.36
+    step 7). Nothing is read or sent for the refused reply."""
+    port, _, _ = make()
+    monkeypatch.setattr(server, "_get_client", lambda: port)
+    out = json.loads(await server.reply_in_thread("n1:@dm:21", "`ACK` · ok"))
+    assert out["posted"] is False
+    assert "direct message has no thread" in out["refused"] and "post_message" in out["refused"]
+
+
+async def test_a_dm_over_nats_clears_the_open_dms_from_that_agent(monkeypatch: pytest.MonkeyPatch) -> None:
+    """RT-6.2 step 2: a DM answered by a DM is settled - it has no thread to clear it, so the
+    send clears that agent's open DMs, or the turn end reminds of an id that cannot be answered."""
+    from mattermost_ai_agent_bus import unanswered
+
+    _dm_switch(monkeypatch)
+    port, inner, fake = make()
+    assert fake is not None
+    _linked_bob(inner, fake)
+    monkeypatch.setattr(server, "_get_client", lambda: port)
+    me = inner.me.id
+    dm = Post(id="n1:@dm:21", channel_id="", root_id="", user_id=NAME_A, create_at=1_700_000_000_000,
+              message="please")
+    unanswered.add(me, dm, channel="", author=NAME_A, dm=True)
+    assert [r.author for r in unanswered.read(me)] == [NAME_A]
+    raw = await server.post_message("`PONG` · hello", to="bob-bot")
+    out = json.loads(raw) if isinstance(raw, str) else raw
+    assert out["over"] == "nats" and out["to"] == NAME_A
+    assert unanswered.read(me) == []

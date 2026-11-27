@@ -118,7 +118,7 @@ from typing import TYPE_CHECKING, Any, Protocol
 
 from . import a2a, config, lease, natsbus, owners, planb
 from .events import ChatEvent, EventSource, EventStream, PostEvent, ReactionEvent
-from .ids import _ID, NATS_POST
+from .ids import _ID, NATS_POST, dm_seq
 from .model import NotFound, Post, Reaction, Thread, UnreadChannel
 from .natsbus import BOT_RE, DM_SINCE, Attestation, Event, NameMismatch, NatsBus, NatsBusError, NatsSettings
 from .port import AttestedCircle
@@ -246,9 +246,7 @@ def dm_post_id(seq: int) -> str:
 
 def parse_dm_id(value: str) -> int | None:
     """The stream sequence of a direct message's id (`n1:@dm:<seq>`), None for any other."""
-    head = f"n1:{DM_SINCE}:"
-    digits = (value or "")[len(head):] if (value or "").startswith(head) else ""
-    return int(digits) if digits.isdigit() and digits[0] != "0" else None
+    return dm_seq(value)
 
 
 def is_nats_user(user_id: str) -> bool:
@@ -1173,7 +1171,12 @@ class NatsPort:
     def _on_post(self, ev: Event, channel_id: str) -> None:
         m, ch = ev.message, ev.where
         root = ""
-        if m.root is not None:
+        if m.root is not None and ch == DM_SINCE:
+            # Every sender's DMs share the one lane with no channel: a root there would thread a
+            # second sender's DM under the first one's, so a DM is top-level, always (RT-6.36
+            # step 7: a DM has no thread).
+            log.info("nats: the root of a direct message is ignored: a DM has no thread")
+        elif m.root is not None:
             at = self._where.get(m.root)
             if at is not None and at != ch:
                 log.warning("nats: dropped a post of %s in ~%s: its root is in ~%s",
@@ -1235,6 +1238,11 @@ class NatsPort:
         at = self._where.get(m.ref)
         if at is None:
             log.info("nats: a reaction to post %d in ~%s is ignored: the post is not known", m.ref, ch)
+            return
+        if at == DM_SINCE:
+            # A reaction to a DM is not carried yet (the transport's dm_react is unused): any name
+            # could react to another sender's DM on the one shared lane, so it is dropped.
+            log.debug("nats: a reaction to a direct message is dropped: not carried")
             return
         if at != ch:
             log.warning("nats: dropped a reaction of %s in ~%s: its post is in ~%s", ev.sender, ch, at)

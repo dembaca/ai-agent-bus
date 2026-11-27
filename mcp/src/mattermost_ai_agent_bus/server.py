@@ -33,7 +33,7 @@ from . import (
 from .a2a import attachment_props, props_view, with_debug
 from .compose import BusClient
 from .homes import guest_ids
-from .ids import InvalidId, mm_id, mm_name, post_id_arg
+from .ids import InvalidId, dm_seq, mm_id, mm_name, post_id_arg
 from .model import Answer, Mark, Post, Refused
 from .port import ChatPort
 from .registration import RegistrationPort
@@ -1883,7 +1883,12 @@ async def post_as_bot(client: ChatPort | None, message: str, channel_id: str = "
     dm_sent = await _dm_send(client, dm_to, body, props_final) if nats_dm else ""
     if dm_sent:
         # A direct message over NATS (plan B piece 3): no Mattermost post exists, so the
-        # answer names the agent it went to and nothing to read has an id.
+        # answer names the agent it went to and nothing to read has an id. A DM back to the
+        # same agent answers its open DMs (RT-6.2 step 2): they have no thread to clear them.
+        try:
+            unanswered.answered_dm(uid, dm_sent)
+        except Exception as exc:  # noqa: BLE001 — bookkeeping never fails a post
+            log.info("the open direct messages were not cleared: %s", type(exc).__name__)
         stats.record("post", chars=len(message), w=_post_word(message))
         return {"posted": True, "over": "nats", "to": dm_sent,
                 "message": "the direct message is on its way over NATS"}
@@ -1895,6 +1900,11 @@ async def post_as_bot(client: ChatPort | None, message: str, channel_id: str = "
             channel_id = await client.direct_channel_with_bot(dm_to)
         except (InvalidId, ValueError) as exc:
             return _refusal(str(exc))
+        # A DM that stays on Mattermost carries the debug card like every post (RT-6.31); a
+        # DM over NATS has no post to carry it, so it was skipped above.
+        props_final = await _with_debug(
+            client, uid, props_final, channel_id=channel_id, root_id=root_id,
+            call=_changed(debug.call_line("post_message", notes, **given), notes))
     stats.record("post", chars=len(message), w=_post_word(message))
     try:
         post = await client.post(
@@ -1957,6 +1967,10 @@ async def reply_as_bot(client: ChatPort | None, root_id: str, message: str,
     extra, bad = a2a.user_props(props)
     if bad:
         return _refusal(bad)
+    if dm_seq(root_id):
+        # A NATS direct message has no thread: its answer is a DM to its sender (RT-6.36 step 7).
+        return _refusal("a direct message has no thread: answer it with post_message(to=<its sender, "
+                        "as shown_as>), nothing sent")
     if bad := _bad_id(post=root_id or "-"):
         return _refusal(bad)
     client = client or _get_client()

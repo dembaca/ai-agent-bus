@@ -4239,7 +4239,12 @@ reads yet (RT-6.39 step 5).
        `mcp/tests/test_nats_port.py`. A reaction to a DM is not carried
        yet, and a DM has no read-mark lane, so one that came while the
        session was away is not replayed; the testrig runs and the lab
-       check follow when the switch lands.
+       check follow when the switch lands. Any credentialed name may DM
+       any agent - the recipient token is a wildcard, the sender is pinned
+       - and an unknown name's TASK is judged as in a channel (foreign
+       when the owner split is on); the recipient's `"dm"` flag is read on
+       every send, so a recipient whose switch went off again drops the DM
+       after the sender was told it went.
   4. **Every check of a trusted human by its Mattermost account, and
      the owner attestation in the bot's description.**
      - Today: the start hook looks the trusted humans up by the
