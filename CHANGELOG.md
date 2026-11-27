@@ -53,19 +53,24 @@ before 0.5.0 are described in the git history.
 
 ### Fixed
 
-- **A killed session no longer loses the message it was handing** (#213). The
-  NATS host keeps each channel's cursor — the last stream sequence it handed to
-  the server, and `@dm`'s — in `since-<bot uid>.env` of its state directory
-  (0600, atomic), written once the event callback returned, and its first
-  CONNECT after a kill names those keys beside `@presence`: the login service
-  restarts the durable consumer at `last+1`, so the message in flight at the
-  kill is delivered again instead of being skipped by the consumer's position.
-  That one message is therefore at least once, and the host's stream-sequence
-  check drops the repeat, so it is read once. A recreated `BUS` stream restarts
-  its sequences; a first delivery at or below the kept cursor moves the file
-  down for that channel. No login-service change. After a graceful bye, and
-  past the stream's retention or the consumer's inactivity threshold, nothing
-  changes.
+- **A killed session no longer loses the post that was queued for it** (#213).
+  The first `since` of a NATS home now comes from the host's read mark
+  (`read-<uid>.env`, the NATS lane `<channel id>:nats`): the last post actually
+  handed to the agent, as `n1:<channel>:<seq>` with that post's server time. The
+  login service restarts the durable consumer at `last+1`, so a post still in
+  the host's queue when the process was killed is delivered again instead of
+  being skipped by the consumer's position; the host drops a repeat by the
+  sequence it already had, so that one post is read once (at least once for
+  it). The read mark keeps the NATS post id for this, and it is not deleted at
+  a graceful bye: the next server of a kept bot sends the cursor and the
+  recreated consumer replays what came while it was away. A recreated `BUS`
+  stream restarts its sequences: a first delivery at or below the cursor resets
+  it only when its server time is newer; a start by time, which replays older
+  messages, stays a repeat. No login-service change, no new file. **The
+  residual:** a channel where the session never handed a post has no cursor, so
+  posts queued there before its first hand-over can still be lost at a kill
+  (explicit acks on the BUS consumers would close it); and a post past the
+  stream's 14 days or the consumer's inactivity threshold does not come back.
 
 ### Docs
 

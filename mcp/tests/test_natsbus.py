@@ -14,7 +14,7 @@ import socket
 import ssl
 import subprocess
 import time
-from collections.abc import AsyncIterator, Awaitable, Callable
+from collections.abc import AsyncIterator, Awaitable, Callable, Mapping
 from pathlib import Path
 from typing import Any
 
@@ -306,6 +306,11 @@ def _reply(bus: NatsBus, where: str, sseq: int, cseq: int, t: float | None = Non
     return f"$JS.ACK.BUS.{consumer}.1.{sseq}.{cseq}.{int((time.time() if t is None else t) * 1e9)}.0"
 
 
+def _seqs(since: Mapping[str, tuple[int, int]]) -> dict[str, int]:
+    """A cursor's sequences, as the hello and the login service read them (#213)."""
+    return {key: pair[0] for key, pair in since.items()}
+
+
 def _presence_reply(bus: NatsBus, sseq: int, cseq: int, t: float) -> str:
     return f"$JS.ACK.PRESENCE.{bus.name}_presence.1.{sseq}.{cseq}.{int(t * 1e9)}.0"
 
@@ -476,18 +481,18 @@ async def test_unit_deliver_drops_and_gap(caplog: pytest.LogCaptureFixture) -> N
     await bus._on_deliver("home", subj, _reply(bus, "home", 12, 4), ok)
     assert [(e.where, e.sender, e.stream_seq) for e in events] == [("home", "agent-x", 12)]
     await bus._on_deliver("home", subj, _reply(bus, "home", 12, 5), ok)  # a repeat of 12: dropped
-    assert len(events) == 1 and bus.since() == {"home": 12}
+    assert len(events) == 1 and _seqs(bus.since()) == {"home": 12}
     # consumer sequence 5 -> 7: a gap. The message is dropped, `since` stays, a reconnect is asked for.
     assert not bus._wake.is_set()
     await bus._on_deliver("home", subj, _reply(bus, "home", 14, 7), ok)
-    assert len(events) == 1 and bus.since() == {"home": 12} and bus._wake.is_set()
+    assert len(events) == 1 and _seqs(bus.since()) == {"home": 12} and bus._wake.is_set()
     await bus._on_deliver("home", subj, _reply(bus, "home", 15, 8), ok)  # still dropped until the reconnect
     assert len(events) == 1
     # A second gap within the interval: no second reconnect now, but the channel stays
     # stale and a reconnect is scheduled for when the interval is over (never lost for good).
     bus._wake.clear()
     await bus._on_deliver("home", subj, _reply(bus, "home", 20, 12), ok)
-    assert not bus._wake.is_set() and len(events) == 1 and bus.since() == {"home": 12}
+    assert not bus._wake.is_set() and len(events) == 1 and _seqs(bus.since()) == {"home": 12}
     assert "home" in bus._stale and bus._gap_task is not None and not bus._gap_task.done()
     bus._gap_task.cancel()
 
@@ -503,7 +508,7 @@ async def test_gap_within_the_limit_reconnects_when_the_wait_is_over() -> None:
     await bus._on_deliver("home", subj, _reply(bus, "home", 5, 5), ok)  # gap within 0.2 s: held back
     assert not bus._wake.is_set() and "home" in bus._stale and len(events) == 1
     await asyncio.wait_for(bus._wake.wait(), 2)  # the wait is over: the reconnect is asked for
-    assert bus.since() == {"home": 1}  # `since` is the last accepted one: the gap is replayed
+    assert _seqs(bus.since()) == {"home": 1}  # `since` is the last accepted one: the gap is replayed
     await bus._on_deliver("home", subj, _reply(bus, "home", 6, 6), ok)
     assert len(events) == 1  # still stale until the reconnect really happens
 
@@ -513,10 +518,10 @@ async def test_dm_gap_and_since_key() -> None:
     ok = encode(Message("post", "hi"))
     subj = f"bus.dm.{bus.name}.agent-y"
     await bus._on_deliver("@dm", subj, _reply(bus, "@dm", 7, 1), ok)
-    assert bus.since() == {"@dm": 7}
+    assert _seqs(bus.since()) == {"@dm": 7}
     assert json.loads(build_hello("T", "home", (), False, bus.since()))["since"] == {"@dm": 7}
     await bus._on_deliver("@dm", subj, _reply(bus, "@dm", 9, 3), ok)  # a DM was lost
-    assert bus._wake.is_set() and len(events) == 1 and bus.since() == {"@dm": 7}
+    assert bus._wake.is_set() and len(events) == 1 and _seqs(bus.since()) == {"@dm": 7}
     await bus._on_deliver("@dm", subj, _reply(bus, "@dm", 7, 4), ok)  # a repeat from since
     assert len(events) == 1
 
@@ -984,11 +989,15 @@ async def _api(nc: NatsClient, subject: str, body: dict[str, Any] | str | None =
     return out
 
 
-async def _login_service(admin: NatsClient, agent: str, channels: list[str], since: dict[str, int]) -> None:
-    for stream, name, cfg in _consumer_specs(agent, channels, since):
-        if since and stream == "BUS" and "_ch_" in name and since.get(name.split("_ch_", 1)[1]):
+async def _login_service(admin: NatsClient, agent: str, channels: list[str],
+                         since: Mapping[str, int | tuple[int, int]]) -> None:
+    # The login service reads `since` as sequences from the hello; the bus's cursor also
+    # names each message's server time (#213), which the hello does not carry.
+    seqs = {key: value[0] if isinstance(value, tuple) else value for key, value in since.items()}
+    for stream, name, cfg in _consumer_specs(agent, channels, seqs):
+        if seqs and stream == "BUS" and "_ch_" in name and seqs.get(name.split("_ch_", 1)[1]):
             await _api(admin, f"$JS.API.CONSUMER.DELETE.{stream}.{name}")
-        if since.get("@dm") and name == f"{agent}_dm":
+        if seqs.get("@dm") and name == f"{agent}_dm":
             # as the login service: restart it, or make it anew when JetStream dropped it
             r = await admin.request(f"$JS.API.CONSUMER.DELETE.{stream}.{name}", b"", timeout=5)
             assert json.loads(r.data).get("error", {}).get("err_code") in (None, 10014), r.data
@@ -1355,7 +1364,7 @@ async def test_connect_json_and_reconnect_with_fresh_token_and_since(
         if call == 2:
             await alice.post("home", "while bob is away")  # nobody receives it on bob's side now
             await asyncio.sleep(0.3)
-            await _login_service(rig.admin, rig.names["bob"], ["home"], {"home": bob.since()["home"]})
+            await _login_service(rig.admin, rig.names["bob"], ["home"], {"home": bob.since()["home"][0]})
 
     bob_login.hook = at_login
     assert bob._nc is not None
@@ -1433,7 +1442,7 @@ async def test_the_bus_renews_before_the_credential_expires(rig: Rig) -> None:
 
     async def at_login(call: int) -> None:
         if call >= 2:  # what the login service does at each login
-            await _login_service(rig.admin, rig.names["bob"], ["home"], {"home": bob_ref[0].since().get("home", 0)})
+            await _login_service(rig.admin, rig.names["bob"], ["home"], {"home": bob_ref[0].since().get("home", (0, 0))[0]})
 
     bob_login.hook = at_login
     alice, _ = await rig.agent("alice")
@@ -1797,12 +1806,12 @@ async def test_a_channel_named_dm_does_not_collide_with_direct_messages() -> Non
     await bus._on_deliver("dm", "bus.ch.dm.agent-x", _reply(bus, "dm", 10, 1), ok)  # the channel
     await bus._on_deliver("@dm", f"bus.dm.{bus.name}.agent-x", _reply(bus, "@dm", 3, 1), ok)  # a DM
     assert [(e.where, e.stream_seq) for e in events] == [("dm", 10), ("@dm", 3)]
-    assert bus.since() == {"dm": 10, "@dm": 3}
+    assert _seqs(bus.since()) == {"dm": 10, "@dm": 3}
     # a gap in the channel's consumer does not mark the DMs stale, and the other way round
     await bus._on_deliver("dm", "bus.ch.dm.agent-x", _reply(bus, "dm", 15, 4), ok)
     assert bus._stale == {"dm"}
     await bus._on_deliver("@dm", f"bus.dm.{bus.name}.agent-x", _reply(bus, "@dm", 4, 2), ok)
-    assert len(events) == 3 and events[-1].where == "@dm" and bus.since() == {"dm": 10, "@dm": 4}
+    assert len(events) == 3 and events[-1].where == "@dm" and _seqs(bus.since()) == {"dm": 10, "@dm": 4}
     bus._stale.clear()
     await bus._on_deliver("@dm", f"bus.dm.{bus.name}.agent-x", _reply(bus, "@dm", 9, 7), ok)
     assert bus._stale == {"@dm"}
@@ -1812,23 +1821,30 @@ async def test_a_channel_named_dm_does_not_collide_with_direct_messages() -> Non
         bus._gap_task.cancel()
 
 
-# --- #213: the cursor across a kill ----------------------------------------------------------
+# --- #213: the hand-over cursor across a kill ------------------------------------------------
 
-async def test_a_since_from_the_state_file_is_sent_at_the_first_connect() -> None:
-    """RT-6.35 step 3, #213: a killed server's cursor per channel and for the DMs comes back in the first
-    CONNECT beside the presence read; nothing else from the file does."""
-    bus, _ = _unit_bus(since={"home": 12, "@dm": 7, "@presence": 5, "hu.home": 9, "Bad Key": 3, "home2": 0})
-    assert bus.since() == {"home": 12, "@dm": 7}
+# The server time of a delivered message in ms, as the read mark and `_last_time` hold it.
+AT = int(T0 * 1000)
+
+
+async def test_a_since_from_the_read_mark_is_sent_at_the_first_connect() -> None:
+    """RT-6.35 step 3, #213: the cursor from the read mark's NATS lane comes back in the first
+    CONNECT beside the presence read; an invalid key or pair, `@presence` and the people's
+    `hu.<channel>` do not."""
+    bus, _ = _unit_bus(since={
+        "home": (12, AT), "@dm": (7, AT), "@presence": (5, AT), "hu.home": (9, AT),
+        "Bad Key": (3, AT), "home2": 0, "home3": (13, 0), "home4": (13, -1),
+        "home5": (1 << 63, AT), "home6": (9, AT, 1)})
+    assert bus.since() == {"home": (12, AT), "@dm": (7, AT)}
     hello = json.loads(build_hello("T", "home", (), False, bus.since(), fresh_presence=True))
     assert hello["since"] == {"@presence": 1, "home": 12, "@dm": 7}
     await _presence(bus, "agent-a", 1, T0)  # a presence delivery keeps no `since` cursor
-    assert bus.since() == {"home": 12, "@dm": 7}
+    assert bus.since() == {"home": (12, AT), "@dm": (7, AT)}
 
 
-async def test_the_cursor_is_written_after_the_callback_and_a_kill_replays_that_one() -> None:
-    """#213: the file moves only once the message was handed. Killed while the callback runs,
-    it still names the message before, so a rebuilt bus is handed the in-flight one again."""
-    state = {"home": 12, "@dm": 7}
+async def test_the_cursor_moves_only_after_the_hand_over() -> None:
+    """#213: a handed message moves the cursor. One still in the callback, or whose callback
+    failed, does not: a rebuild from the same cursor is handed it again, once."""
     held = asyncio.Event()
     got: list[int] = []
 
@@ -1836,49 +1852,63 @@ async def test_the_cursor_is_written_after_the_callback_and_a_kill_replays_that_
         got.append(event.stream_seq)
         await held.wait()
 
-    bus = NatsBus(_settings(), FakeLogin(), "alice", hold, since=state,
-                  on_since=lambda key, seq: state.__setitem__(key, seq))
+    bus = NatsBus(_settings(), FakeLogin(), "alice", hold, since={"home": (12, AT), "@dm": (7, AT)})
     ok = encode(Message("post", "x"))
-    task = asyncio.create_task(bus._on_deliver("home", "bus.ch.home.agent-x", _reply(bus, "home", 13, 2), ok))
+    task = asyncio.create_task(bus._on_deliver(
+        "home", "bus.ch.home.agent-x", _reply(bus, "home", 13, 2, T0 + 5), ok))
     await until(lambda: got == [13])
-    assert state == {"home": 12, "@dm": 7}  # in flight: nothing written yet
+    assert _seqs(bus.since()) == {"home": 12, "@dm": 7}  # in flight: the cursor is still before it
     task.cancel()  # the kill: no cursor, no cleanup
     with pytest.raises(asyncio.CancelledError):
         await task
-    assert state == {"home": 12, "@dm": 7}
-    # The next process reads the same file and is handed the message again, once.
+    assert _seqs(bus.since()) == {"home": 12, "@dm": 7}
+    # A failed callback is no hand-over either: the cursor stays, so the next one is asked for.
+    async def boom(event: Event) -> None:
+        raise RuntimeError("no")
+
+    bad = NatsBus(_settings(), FakeLogin(), "alice", boom, since={"home": (12, AT)})
+    await bad._on_deliver("home", "bus.ch.home.agent-x", _reply(bad, "home", 13, 2, T0 + 5), ok)
+    assert _seqs(bad.since()) == {"home": 12}
+    # The next process reads the same cursor (the read mark) and is handed the message again.
     again: list[Event] = []
-    bus2 = NatsBus(_settings(), FakeLogin(), "alice", again.append, since=dict(state),
-                   on_since=lambda key, seq: state.__setitem__(key, seq))
-    assert bus2.since() == {"home": 12, "@dm": 7}
-    await bus2._on_deliver("home", "bus.ch.home.agent-x", _reply(bus2, "home", 13, 1), ok)
-    assert [e.stream_seq for e in again] == [13] and state["home"] == 13
-    await bus2._on_deliver("home", "bus.ch.home.agent-x", _reply(bus2, "home", 14, 2), ok)
-    assert state["home"] == 14
+    bus2 = NatsBus(_settings(), FakeLogin(), "alice", again.append,
+                   since={"home": (12, AT), "@dm": (7, AT)})
+    await bus2._on_deliver("home", "bus.ch.home.agent-x", _reply(bus2, "home", 13, 1, T0 + 5), ok)
+    assert [e.stream_seq for e in again] == [13]
+    assert bus2.since() == {"home": (13, AT + 5000), "@dm": (7, AT)}
+    await bus2._on_deliver("home", "bus.ch.home.agent-x", _reply(bus2, "home", 14, 2, T0 + 6), ok)
+    assert bus2.since()["home"] == (14, AT + 6000)
 
 
 async def test_a_recreated_bus_stream_moves_the_cursor_down() -> None:
-    """#213: when the BUS stream is made anew its sequences restart; the consumer's first
-    delivery at or below the cursor is no repeat, and the file moves down to it."""
-    state = {"home": 500}
-    bus, events = _unit_bus(since=dict(state), on_since=lambda key, seq: state.__setitem__(key, seq))
+    """#213: a BUS stream made anew restarts its sequences. A first delivery (consumer number
+    1) at or below the cursor with a NEWER server time is the new stream: the cursor resets and
+    the message is read. With an OLDER time it is the login service's start by time replaying
+    older messages: no reset, the message is a repeat."""
     ok = encode(Message("post", "x"))
-    await bus._on_deliver("home", "bus.ch.home.agent-x", _reply(bus, "home", 1, 1), ok)
-    assert [(e.where, e.stream_seq) for e in events] == [("home", 1)]
-    assert state["home"] == 1 and bus.since() == {"home": 1}
-    await bus._on_deliver("home", "bus.ch.home.agent-x", _reply(bus, "home", 2, 2), ok)
-    assert state["home"] == 2 and [e.stream_seq for e in events] == [1, 2]
-    # a first delivery beyond the cursor is no reset: the stream grew, it was not made anew
-    await bus._on_deliver("home", "bus.ch.home.agent-x", _reply(bus, "home", 501, 1), ok)
-    assert state["home"] == 501 and [e.stream_seq for e in events] == [1, 2, 501]
+    bus, events = _unit_bus(since={"home": (500, AT)})
+    await bus._on_deliver("home", "bus.ch.home.agent-x", _reply(bus, "home", 1, 1, T0 + 1), ok)
+    assert [e.stream_seq for e in events] == [1]
+    assert bus.since() == {"home": (1, AT + 1000)}
+    await bus._on_deliver("home", "bus.ch.home.agent-x", _reply(bus, "home", 2, 2, T0 + 2), ok)
+    assert [e.stream_seq for e in events] == [1, 2]
+    # A first delivery beyond the cursor is no reset either: the stream grew, it was not made anew.
+    await bus._on_deliver("home", "bus.ch.home.agent-x", _reply(bus, "home", 501, 1, T0 + 3), ok)
+    assert [e.stream_seq for e in events] == [1, 2, 501]
+    # The login service started the consumer by time: an older message, consumer number 1.
+    older, older_events = _unit_bus(since={"home": (500, AT)})
+    await older._on_deliver("home", "bus.ch.home.agent-x", _reply(older, "home", 400, 1, T0 - 100), ok)
+    assert older_events == [] and older.since() == {"home": (500, AT)}  # a repeat, no reset
+    # its newer messages are read normally
+    await older._on_deliver("home", "bus.ch.home.agent-x", _reply(older, "home", 501, 2, T0 + 1), ok)
+    assert [e.stream_seq for e in older_events] == [501]
 
 
-async def test_a_killed_server_asks_for_the_cursor_it_kept(rig: Rig,
-                                                          monkeypatch: pytest.MonkeyPatch) -> None:
-    """#213: the cursor is kept in the state file after each handed message, so a server killed
-    without its bye is handed the message that came at the kill again - once, never lost."""
-    from mattermost_ai_agent_bus.nats_port import _since_file, _since_read, _since_write
-
+async def test_a_killed_server_asks_for_the_hand_over_cursor_again(rig: Rig,
+                                                                   monkeypatch: pytest.MonkeyPatch) -> None:
+    """#213, RT-6.35 step 3: the first CONNECT's `since` is the read mark's hand-over cursor.
+    A server killed while a post waits in its callback left the cursor before that post, so
+    the next one is handed it again - once, never lost."""
     hellos: list[dict[str, Any]] = []
     real = natsbus.build_hello
 
@@ -1889,57 +1919,54 @@ async def test_a_killed_server_asks_for_the_cursor_it_kept(rig: Rig,
 
     monkeypatch.setattr(natsbus, "build_hello", spy)
     alice, _ = await rig.agent("alice")
-    uid = "b" * 26  # the bot the file is named by (BOT_RE)
-
-    def keeper() -> tuple[dict[str, int], Any]:
-        state = _since_read(uid)
-
-        def keep(key: str, seq: int) -> None:
-            state[key] = seq
-            _since_write(_since_file(uid), state)
-        return state, keep
-
+    block = asyncio.Event()
+    blocked: list[asyncio.Task[None]] = []
     got: list[str] = []
-    state1, keep1 = keeper()
 
-    async def first(event: Event) -> None:
+    async def hold(event: Event) -> None:
         got.append(event.message.text)
+        if event.message.text == "inflight":
+            if asyncio.current_task() is not None:
+                blocked.append(asyncio.current_task())  # type: ignore[arg-type]
+            await block.wait()  # the kill: never returns
 
-    bob1 = NatsBus(NatsSettings(servers=(rig.url,), home="home"), rig.logins["bob"], "bob", first,
-                   heartbeat_sec=0.2, since=state1, on_since=keep1)
-    await _login_service(rig.admin, bob1.name, ["home"], bob1.since())
+    bob1 = NatsBus(NatsSettings(servers=(rig.url,), home="home"), rig.logins["bob"], "bob", hold,
+                   heartbeat_sec=0.2)
+    await _login_service(rig.admin, bob1.name, ["home"], {})
     await bob1.start()
     await alice.post("home", "one")
-    await until(lambda: "home" in _since_read(uid))
-    assert got == ["one"]
-    cursor = _since_read(uid)["home"]
-    # SIGKILL: no stop(), no bye: its tasks end and the socket closes, nothing is cleaned up.
+    await until(lambda: got == ["one"])
+    cursor = bob1.since()["home"]  # the read mark would name this post: handed, then read
+    assert cursor[0] == 1
+    await alice.post("home", "inflight")  # the callback blocks: queued, not handed over
+    await until(lambda: bool(blocked))
+    # SIGKILL: no stop(), no bye, no read mark for "inflight": its tasks end, the socket closes.
     for task in bob1._tasks:
         task.cancel()
     if bob1._renew_task is not None:
         bob1._renew_task.cancel()
     await asyncio.gather(*bob1._tasks, return_exceptions=True)
+    blocked[0].cancel()  # the post's own delivery: the callback never returns
+    await asyncio.wait_for(blocked[0], 2)  # nats-py's subscription task ends when it is cancelled
+    assert bob1.since()["home"] == cursor  # not handed: the cursor is still before it
     assert bob1._nc is not None
     bob1._nc._transport.close()
-    await alice.post("home", "inflight")  # came while it was dead: no socket handed it
     await asyncio.sleep(0.3)
 
     events: list[Event] = []
-    state2, keep2 = keeper()
     bob2 = NatsBus(NatsSettings(servers=(rig.url,), home="home"), rig.logins["bob"], "bob",
-                   events.append, heartbeat_sec=0.2, since=state2, on_since=keep2)
+                   events.append, heartbeat_sec=0.2, since={"home": cursor})
     await _login_service(rig.admin, bob2.name, ["home"], bob2.since())
     await bob2.start()
     try:
-        # The first CONNECT names both the fresh presence read and the kept cursor (#213).
-        assert hellos[-1]["since"] == {"@presence": 1, "home": cursor}
+        # The first CONNECT names both the fresh presence read and the hand-over cursor (#213).
+        assert hellos[-1]["since"] == {"@presence": 1, "home": cursor[0]}
         await until(lambda: [e.message.text for e in events if e.where == "home"] == ["inflight"])
         await alice.post("home", "after")
         await until(lambda: [e.message.text for e in events if e.where == "home"]
                     == ["inflight", "after"])
         await asyncio.sleep(0.3)
         assert [e.message.text for e in events if e.where == "home"] == ["inflight", "after"]
-        assert _since_read(uid)["home"] > cursor
     finally:
         await bob2.stop()
 

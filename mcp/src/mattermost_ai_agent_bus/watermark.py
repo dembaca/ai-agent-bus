@@ -82,6 +82,12 @@ def _write(uid: str, marks: dict[str, Mark]) -> None:
         log.info("read watermark not written: %s", exc)
 
 
+def _stored(post_id: str) -> bool:
+    """What a mark keeps as its post id: a Mattermost id, or a NATS post's
+    `n1:<channel>:<seq>` (RT-6.36: the next server derives its `since` from it, #213)."""
+    return bool(_ID.fullmatch(post_id or "") or NATS_POST.fullmatch(post_id or ""))
+
+
 def advance(uid: str, channel_id: str, post_id: str, created: int) -> bool:
     """Move the channel's mark to this post, if it is newer than the mark."""
     if not (uid and channel_id and _KEY.fullmatch(channel_id) and created > 0):
@@ -89,7 +95,7 @@ def advance(uid: str, channel_id: str, post_id: str, created: int) -> bool:
     marks = read(uid)
     if created <= marks.get(channel_id, Mark("", 0)).at:
         return False
-    marks[channel_id] = Mark(post_id if _ID.fullmatch(post_id or "") else "-", created)
+    marks[channel_id] = Mark(post_id if _stored(post_id) else "-", created)
     _write(uid, marks)
     return True
 

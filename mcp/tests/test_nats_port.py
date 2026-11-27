@@ -1472,7 +1472,8 @@ def test_a_post_moves_the_mark_of_its_own_lane() -> None:
     assert watermark.lane(WORK, "n1:home:7") == f"{WORK}:nats"
     assert watermark.lane(WORK, "h" * 26) == WORK
     assert watermark.advance(BOT, f"{WORK}:nats", "n1:home:7", 5)
-    assert watermark.read(BOT)[f"{WORK}:nats"] == watermark.Mark("-", 5)
+    # the NATS post id is kept: the next server derives its `since` from it (#213)
+    assert watermark.read(BOT)[f"{WORK}:nats"] == watermark.Mark("n1:home:7", 5)
     assert not watermark.advance(BOT, f"{WORK}:other", "x", 6)
 
 
@@ -2064,12 +2065,37 @@ async def test_a_bad_bot_id_does_not_stop_the_nats_home(monkeypatch: pytest.Monk
 
 
 
-async def test_the_since_cursor_is_kept_per_channel_and_sent_at_the_first_connect(
+def test_the_since_cursor_comes_from_the_read_marks_nats_lane() -> None:
+    """#213: the read mark's NATS lane names the last post handed to the agent,
+    `n1:<channel>:<seq>`; its sequence and the post's server time are the first CONNECT's
+    cursor. A lane for another channel, a malformed id and a seq past 2^63-1 are ignored, and
+    a post that never reached a mark (only queued) gives no cursor."""
+    from mattermost_ai_agent_bus import watermark
+    from mattermost_ai_agent_bus.nats_port import _since_from_read_mark
+
+    assert watermark.advance(BOT, f"{WORK}:nats", "n1:home:7", 5_000)
+    assert watermark.advance(BOT, f"{OTHER}:nats", "n1:other:9", 6_000)
+    assert watermark.advance(BOT, WORK, "c" * 26, 7_000)  # the Mattermost lane: no NATS cursor
+    path = watermark.path(BOT)
+    path.write_text(path.read_text() + "badid:nats n1:home:-1 8000\n"
+                                      "bigseq:nats n1:home:9223372036854775808 9000\n"
+                                      "elsewhere:nats n1:elsewhere:9 9500\n")
+    assert _since_from_read_mark(BOT, {"home"}) == {"home": (7, 5_000)}
+    assert _since_from_read_mark(BOT, {"other"}) == {"other": (9, 6_000)}
+    assert _since_from_read_mark(BOT, set()) == {}
+    # A post only queued, never handed: no read mark, no cursor.
+    assert _since_from_read_mark("d" * 26, {"home"}) == {}
+    handed_only_mm = "e" * 26
+    assert watermark.advance(handed_only_mm, WORK, "c" * 26, 7_000)
+    assert _since_from_read_mark(handed_only_mm, {"home"}) == {}
+
+
+async def test_the_first_connect_names_the_read_marks_cursor_and_a_bye_keeps_it(
         monkeypatch: pytest.MonkeyPatch) -> None:
-    """RT-6.36 step 4, #213: the cursor of each channel and of the DMs survives a killed session in
-    since-<bot>.env, 0600, and its first CONNECT names it; `@presence` and the people's
-    `hu.<channel>` never get there."""
-    from mattermost_ai_agent_bus import lease, nats_port
+    """#213, RT-6.35 step 3: the first CONNECT's cursor comes from the read mark's NATS lane.
+    A graceful bye deletes nothing, so the next server of a kept bot sends it again and the
+    consumer it recreates replays the absence."""
+    from mattermost_ai_agent_bus import lease, nats_port, watermark
 
     made: list[dict[str, Any]] = []
 
@@ -2079,23 +2105,21 @@ async def test_the_since_cursor_is_kept_per_channel_and_sent_at_the_first_connec
 
     monkeypatch.setattr(nats_port, "NatsBus", build)
     monkeypatch.setattr(lease, "_nats_link", None)
-    path = nats_port._since_file(BOT)
-    path.parent.mkdir(parents=True, exist_ok=True)
-    path.write_text("home=12\n@dm=7\njunk\n@presence=5\nhu.home=4\nno key=3\nzero=0\n")
+    assert watermark.advance(BOT, f"{WORK}:nats", "n1:home:7", 5_000)
     port, inner, _ = make(bus=False)
     await port.start(FakeLogin(), owner="alice")
     try:
-        assert made[0]["since"] == {"home": 12, "@dm": 7}  # only channel names and @dm
-        keep = made[0]["on_since"]
-        keep("home", 13)
-        assert path.read_text() == "@dm=7\nhome=13\n"
-        assert path.stat().st_mode & 0o777 == 0o600
-        assert nats_port._since_read(BOT) == {"home": 13, "@dm": 7}
-        keep("@presence", 9)
-        keep("hu.home", 9)
-        assert nats_port._since_read(BOT) == {"home": 13, "@dm": 7}
+        assert made[0]["since"] == {"home": (7, 5_000)}
     finally:
         await port.stop()
+        lease.use_nats_link(None)
+    assert watermark.read(BOT)[f"{WORK}:nats"] == watermark.Mark("n1:home:7", 5_000)  # the bye kept it
+    again, _, _ = make(bus=False)
+    await again.start(FakeLogin(), owner="alice")
+    try:
+        assert made[1]["since"] == {"home": (7, 5_000)}
+    finally:
+        await again.stop()
         lease.use_nats_link(None)
 
 

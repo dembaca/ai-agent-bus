@@ -120,7 +120,7 @@ from . import a2a, config, lease, natsbus, owners
 from .events import ChatEvent, EventSource, EventStream, PostEvent, ReactionEvent
 from .ids import _ID, NATS_POST
 from .model import NotFound, Post, Reaction, Thread, UnreadChannel
-from .natsbus import BOT_RE, CHANNEL_RE, DM_SINCE, Attestation, Event, NameMismatch, NatsBus, NatsBusError, NatsSettings
+from .natsbus import BOT_RE, DM_SINCE, Attestation, Event, NameMismatch, NatsBus, NatsBusError, NatsSettings
 from .port import AttestedCircle
 
 if TYPE_CHECKING:
@@ -304,44 +304,28 @@ def _notice_file(uid: str) -> Path:
     return state_dir() / f"notice-{uid}.env"
 
 
-SINCE_KEY_MAX = 200  # channels (and @dm) whose cursor the since file keeps
+def _since_from_read_mark(uid: str, channels: set[str]) -> dict[str, tuple[int, int]]:
+    """The hand-over cursor a killed session left (#213): the read mark's NATS lane
+    (`read-<uid>.env`, `<channel id>:nats`) holds the last post HANDED to the agent,
+    `n1:<channel name>:<seq>`. That channel's sequence and the post's server time (ms, the
+    mark's `at`) go into the first CONNECT; a channel the session no longer reads is
+    ignored, and so is a sequence past 2^63-1 (the hello's `since` is a map of uint64).
+    Direct messages have no lane here: the port drops them (`_on_event`), so no DM cursor."""
+    from . import watermark
 
-
-def _since_file(uid: str) -> Path:
-    from .session_file import state_dir
-
-    return state_dir() / f"since-{uid}.env"
-
-
-def _since_read(uid: str) -> dict[str, int]:
-    """The cursor a killed server left (#213): `<key>=<seq>`, a channel name (CHANNEL_RE)
-    or `@dm`. Junk lines are ignored, and a file that grew past SINCE_KEY_MAX keys keeps
-    the highest sequences."""
-    try:
-        text = _since_file(uid).read_text(encoding="utf-8", errors="replace")
-    except OSError:
-        return {}
-    out: dict[str, int] = {}
-    for line in text.splitlines():
-        key, _, raw = line.rpartition("=")
-        if not (key == DM_SINCE or CHANNEL_RE.fullmatch(key)):
+    out: dict[str, tuple[int, int]] = {}
+    if not uid:
+        return out
+    for key, mark in watermark.read(uid).items():
+        if not key.endswith(watermark.NATS_LANE):
             continue
-        try:
-            seq = int(raw)
-        except ValueError:
+        parsed = NATS_POST.fullmatch(mark.post_id or "")
+        if parsed is None or parsed.group("channel") not in channels:
             continue
-        if seq > 0:
-            out[key] = seq
-    if len(out) > SINCE_KEY_MAX:
-        out = dict(sorted(sorted(out.items(), key=lambda kv: kv[1], reverse=True)[:SINCE_KEY_MAX]))
+        seq = int(parsed.group("seq"))
+        if 0 < seq < 1 << 63 and mark.at > 0:
+            out[parsed.group("channel")] = (seq, mark.at)
     return out
-
-
-def _since_write(path: Path, since: Mapping[str, int]) -> None:
-    """Rewrite the cursor file whole, 0600 and atomic (`write_private`)."""
-    from .session_file import write_private
-
-    write_private(path, "".join(f"{k}={v}\n" for k, v in sorted(since.items())))
 
 
 NOTICE_KEY_MAX = 64  # notices remembered as told, per server
@@ -499,38 +483,18 @@ class NatsPort:
                 await self.resolve()
                 if owner is None:
                     owner = await _owner_of(login)
-                # #213: the cursor a killed session left, per channel (and the DMs). The login
-                # service restarts each consumer after it, so the one message in flight at the
-                # kill is delivered again (at least once for that one, never lost). The file is
-                # named by the bot, and a bot id that is none (a bad CB_MM_BOT_USER_ID) has none.
+                # #213: the cursor a killed session left is the read mark's NATS lane — the
+                # last post it HANDED to the agent, never one merely queued. The login service
+                # restarts each consumer after it, so a post still in the queue when the process
+                # died is delivered again (at least once for that one, read once by the mark).
+                # Nothing is written or deleted here: the mark outlives a bye (the next server
+                # of a kept bot sends it, and the consumer it recreates replays the absence).
                 bot = await self._bot_id()
-                is_bot = bool(BOT_RE.fullmatch(bot))
-                since = _since_read(bot) if is_bot else {}
-                since_path = _since_file(bot) if is_bot else None
-                since_failed = False
-
-                def keep_since(key: str, seq: int, path: Path | None = since_path,
-                               held: dict[str, int] = since) -> None:
-                    nonlocal since_failed
-                    if path is None or not (key == DM_SINCE or CHANNEL_RE.fullmatch(key)):
-                        return  # `@presence` and the people's `hu.<channel>` are no `since` key
-                    if held.get(key) == seq:
-                        return
-                    held[key] = seq
-                    try:
-                        _since_write(path, held)
-                    except OSError as exc:
-                        # A stale file only repeats a message at a restart, never loses one: log
-                        # it once and let the bus run on.
-                        if not since_failed:
-                            since_failed = True
-                            log.warning("nats: the since cursor was not kept (%s): a restart may "
-                                        "repeat a post", type(exc).__name__)
-
+                since = (_since_from_read_mark(bot, set(self._people_channels()))
+                         if BOT_RE.fullmatch(bot) else {})
                 bus = NatsBus(self._s, login, owner, self._on_event, on_fatal=self._on_fatal,
                               on_person=self._on_person, on_notice=self._on_notice,
-                              session=self._session, since=since, on_since=keep_since,
-                              **self._bus_options)
+                              session=self._session, since=since, **self._bus_options)
                 self._bus = bus
                 bus.on_person_gap = self._person_gap
                 bus.card_source = self._card
