@@ -269,6 +269,22 @@ def test_forged_split_values_stay_within_0_to_100() -> None:
     assert 0 <= fields(reports[0])["version 0.101.0"] <= 100
 
 
+def test_an_imported_line_stays_out_of_the_reports(caplog) -> None:
+    """RT-6.45 step 6: the login service's import publishes the stats channel's old lines on
+    the three-token <stats>.import.<bot>; the console's STATS consumers deliver it, and the
+    book leaves it out of every report, silently, however fresh its store time — also a line
+    of today's format and one from before 0.91.0 (no sid, no part)."""
+    book = book_with((A, LINE, NOW - 600))
+    before = json.dumps(book.reports())
+    old_format = json.dumps({"v": "0.85.0", "min": 60, "turns": 3}).encode()
+    with caplog.at_level(logging.WARNING):
+        for seq, body in ((2, stats.nats_body(LINE) or b""), (3, old_format)):
+            assert not book.on_delivery("stats.import.agent-mac-ai-agent-1", body,
+                                        ack("STATS", STATS_CONSUMER, seq, NOW), "STATS", STATS_CONSUMER)
+    assert json.dumps(book.reports()) == before and fields(book.reports()[0])["lines"] == 1
+    assert caplog.text == ""
+
+
 def test_a_line_with_text_is_dropped_and_old_lines_leave(caplog) -> None:
     """RT-6.43 step 8: a string outside the four fields drops the whole line, with a warning
     that carries none of it; a line older than 7 days leaves the book."""

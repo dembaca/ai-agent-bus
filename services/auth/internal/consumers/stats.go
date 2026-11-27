@@ -91,8 +91,10 @@ func (s *Stats) Update(ctx context.Context) error {
 	}
 	want := s.limits()
 	var old []any
+	lowered := false
 	for k, v := range want {
 		if have, _ := info.Config[k].(float64); have != float64(v) && !(k == "max_bytes" && have > float64(v)) {
+			lowered = lowered || have > float64(v)
 			old = append(old, k, info.Config[k])
 			info.Config[k] = v
 		}
@@ -117,6 +119,10 @@ func (s *Stats) Update(ctx context.Context) error {
 		if have, _ := out.Config[k].(float64); have != float64(v) && !(k == "max_bytes" && have > float64(v)) {
 			return fmt.Errorf("stream %s: %s is %v after the update, want %d", StatsStream, k, out.Config[k], v)
 		}
+	}
+	if lowered { // RT-6.45: a shorter age or a smaller cap drops lines for good
+		s.m.log.Warn("consumers: stream limits lowered, older lines dropped", "stream", StatsStream, "was", fmt.Sprint(old...))
+		return nil
 	}
 	s.m.log.Info("consumers: stream limits updated", "stream", StatsStream, "was", fmt.Sprint(old...))
 	return nil

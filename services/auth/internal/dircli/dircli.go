@@ -934,30 +934,35 @@ func (c *cli) printStatsImport(r reply) error {
 		return c.raw(r.body)
 	}
 	var rep struct {
-		Read             int    `json:"read"`
-		Published        int    `json:"published"`
-		WithoutSid       int    `json:"published_without_sid"`
-		Confirmed        int    `json:"confirmed"`
-		Truncated        string `json:"truncated"`
-		NotStats         int    `json:"not_stats"`
-		SkippedDuplicate int    `json:"skipped_duplicate"`
-		SkippedInvalid   int    `json:"skipped_invalid"`
-		SkippedTooBig    int    `json:"skipped_too_big"`
-		SkippedName      int    `json:"skipped_name"`
-		SkippedRecent    int    `json:"skipped_recent"`
-		SkippedOverCap   int    `json:"skipped_over_cap"`
-		Oldest           string `json:"oldest"`
-		Newest           string `json:"newest"`
+		Read            int    `json:"read"`
+		Published       int    `json:"published"`
+		WithoutSid      int    `json:"published_without_sid"`
+		Confirmed       int    `json:"confirmed"`
+		Truncated       string `json:"truncated"`
+		NotStats        int    `json:"not_stats"`
+		SkippedInStats  int    `json:"skipped_in_stats"`
+		SkippedImported int    `json:"skipped_imported"`
+		KnownBefore     string `json:"known_before"`
+		SkippedInvalid  int    `json:"skipped_invalid"`
+		SkippedTooBig   int    `json:"skipped_too_big"`
+		SkippedName     int    `json:"skipped_name"`
+		SkippedRecent   int    `json:"skipped_recent"`
+		SkippedOverCap  int    `json:"skipped_over_cap"`
+		Oldest          string `json:"oldest"`
+		Newest          string `json:"newest"`
 	}
 	if err := json.Unmarshal(r.body, &rep); err != nil {
 		return errors.New("the API's answer is not a stats import report")
 	}
 	fmt.Fprintf(c.out, "posts read %d, lines published %d (%d of them from before 0.91.0, without sid; %d found in STATS after the run), posts without a STATS line %d\n",
 		rep.Read, rep.Published, rep.WithoutSid, rep.Confirmed, rep.NotStats)
-	fmt.Fprintf(c.out, "skipped: already there %d, not a valid line %d, too big %d, no agent name %d, too recent %d, over the cap per name %d\n",
-		rep.SkippedDuplicate, rep.SkippedInvalid, rep.SkippedTooBig, rep.SkippedName, rep.SkippedRecent, rep.SkippedOverCap)
+	fmt.Fprintf(c.out, "skipped: already in STATS from an agent %d, already imported %d, not a valid line %d, too big %d, no agent name %d, too recent %d, over the cap per name %d\n",
+		rep.SkippedInStats, rep.SkippedImported, rep.SkippedInvalid, rep.SkippedTooBig, rep.SkippedName, rep.SkippedRecent, rep.SkippedOverCap)
 	if rep.Oldest != "" {
 		fmt.Fprintf(c.out, "published lines from %s to %s\n", clean(rep.Oldest), clean(rep.Newest))
+	}
+	if rep.KnownBefore != "" {
+		fmt.Fprintf(c.out, "posts up to %s were gone through by an earlier complete run of the service and not read again\n", clean(rep.KnownBefore))
 	}
 	switch rep.Truncated {
 	case "":

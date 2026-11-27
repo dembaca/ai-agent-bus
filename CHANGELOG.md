@@ -42,6 +42,21 @@ before 0.5.0 are described in the git history.
 
 ### Changed
 
+- **The STATS import: the low points of its review** (#219, RT-6.45). A rerun
+  of the same login service stops reading the stats channel where its last
+  complete run went through every post (`known_before` in the report); a run
+  cut short, or a restart, reads on past that point. The import reads
+  `STATS`'s room again right before publishing and drops the oldest held lines
+  until the rest fit. When the re-read after a run finds fewer lines than it
+  published, it reads once more after half a second; `confirmed` can still
+  be lower, and the next run publishes what is missing. The report counts a
+  line already in `STATS` from an agent (`skipped_in_stats`) apart from one
+  already imported (`skipped_imported`), which replace `skipped_duplicate`.
+  The in-place update of `STATS` logs a warning, not an info line, when it
+  lowers the age or the cap. RT-6.45 and the service's README name the
+  manual check before the first real import: the `sid` and `part` of one
+  live session's line on `STATS` and in the channel must match.
+
 - **Thread reads for the coordinator's wake are bounded** (#223,
   [the coordinator scenario, RT-6.6 step 5](docs/arc42/06-runtime-view.md#66-coordinator-crown-and-presence-lease),
   and the end-of-turn scenario, RT-6.2 step 4). A thread that cannot be read
