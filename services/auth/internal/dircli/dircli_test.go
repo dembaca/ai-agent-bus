@@ -161,7 +161,7 @@ func (r *rig) serveAPI(w http.ResponseWriter, req *http.Request) {
 		_, _ = io.WriteString(w, `{"channels_created":["a","b"],"channels_updated":[],"channels_skipped":[{"name":"x","reason":"bad name"}],`+
 			`"identities":3,"members_added":4,"pending_added":1,"accounts_skipped":[{"username":"bob","reason":"password account"}],"next":"set CB_AUTH_DIRECTORY_IMPORTED=true and restart"}`)
 	case p == "/v1/stats/import": // RT-6.45
-		_, _ = io.WriteString(w, `{"read":9,"imported":3,"not_stats":1,"skipped_duplicate":2,"skipped_invalid":1,"skipped_too_big":1,"skipped_name":1,"skipped_recent":2,"skipped_over_cap":4,"oldest":"2026-09-01T12:00:00Z","newest":"2026-11-20T08:00:00Z"}`)
+		_, _ = io.WriteString(w, `{"read":9,"imported":3,"imported_without_sid":1,"truncated":true,"not_stats":1,"skipped_duplicate":2,"skipped_invalid":1,"skipped_too_big":1,"skipped_name":1,"skipped_recent":2,"skipped_over_cap":4,"oldest":"2026-09-01T12:00:00Z","newest":"2026-11-20T08:00:00Z"}`)
 	case p == "/v1/directory/pending":
 		_, _ = io.WriteString(w, r.pend)
 	case req.Method == "DELETE" && strings.HasPrefix(p, "/v1/directory/pending/"):
@@ -319,7 +319,7 @@ func TestCommands(t *testing.T) {
 				}
 			}
 			if tc.name == "stats-import" {
-				for _, s := range []string{"posts read 9, lines imported 3, posts without a STATS line 1", "already there 2, not a valid line 1, too big 1, no agent name 1, too recent 2, over the cap per name 4", "from 2026-09-01T12:00:00Z to 2026-11-20T08:00:00Z"} {
+				for _, s := range []string{"posts read 9, lines imported 3 (1 of them from before 0.91.0, without sid), posts without a STATS line 1", "older posts were not read", "already there 2, not a valid line 1, too big 1, no agent name 1, too recent 2, over the cap per name 4", "from 2026-09-01T12:00:00Z to 2026-11-20T08:00:00Z"} {
 					if !strings.Contains(out, s) {
 						t.Fatalf("report lacks %q: %q", s, out)
 					}

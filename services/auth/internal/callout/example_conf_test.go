@@ -467,7 +467,7 @@ func TestTheExampleServerConfiguration(t *testing.T) {
 		t.Fatalf("import put: %v", err)
 	}
 	for _, h := range []*consumers.History{arch, imp} {
-		if err := h.ReadAll(ctx5(t), func() {}, func(string, []byte) error { return nil }); err != nil {
+		if err := h.ReadAll(ctx5(t), func() {}, func(string, []byte, nats.Header) error { return nil }); err != nil {
 			t.Fatalf("%s read: %v", h.Stream(), err)
 		}
 	}

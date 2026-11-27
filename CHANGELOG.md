@@ -19,11 +19,14 @@ before 0.5.0 are described in the git history.
   failing` in its log. `authd dir stats-import` (`POST /v1/stats/import`,
   admins) copies the `STATS` lines of the stats channel
   (`CB_MM_STATS_CHANNEL`) at least 2 minutes old into the import stream byte
-  for byte under each bot's name, the newest 500 per name, marked
-  `Cb-Source: mattermost-import` with the post's time in `Cb-Orig-Time`; it
-  skips a line the archive holds by (`sid`, `part`) and one the import
-  stream holds by name, `sid` and `part`, so it can run as often as wanted
-  until Mattermost goes. The login service's JetStream user needs nine new
+  for byte under each bot's name, the newest 500 per name, the lines from
+  before 0.91.0 (no `sid`, no `part`) included, marked
+  `Cb-Source: mattermost-import` with the post's time in `Cb-Orig-Time` and
+  its id in `Cb-Post-Id`; it skips a line the archive holds by (`sid`,
+  `part`) and one the import stream holds by post id or by name, `sid` and
+  `part`, so it can run as often as wanted until Mattermost goes. One run
+  reads at most 100,000 posts and holds at most 64 MiB of lines, the newest
+  first; the next run takes the rest. The login service's JetStream user needs nine new
   rights (`nats-server.example.conf`) before the upgrade starts it. Nothing
   reads the history yet: the console still reads `STATS`, 7 days back.
 

@@ -936,6 +936,8 @@ func (c *cli) printStatsImport(r reply) error {
 	var rep struct {
 		Read             int    `json:"read"`
 		Imported         int    `json:"imported"`
+		WithoutSid       int    `json:"imported_without_sid"`
+		Truncated        bool   `json:"truncated"`
 		NotStats         int    `json:"not_stats"`
 		SkippedDuplicate int    `json:"skipped_duplicate"`
 		SkippedInvalid   int    `json:"skipped_invalid"`
@@ -949,11 +951,15 @@ func (c *cli) printStatsImport(r reply) error {
 	if err := json.Unmarshal(r.body, &rep); err != nil {
 		return errors.New("the API's answer is not a stats import report")
 	}
-	fmt.Fprintf(c.out, "posts read %d, lines imported %d, posts without a STATS line %d\n", rep.Read, rep.Imported, rep.NotStats)
+	fmt.Fprintf(c.out, "posts read %d, lines imported %d (%d of them from before 0.91.0, without sid), posts without a STATS line %d\n",
+		rep.Read, rep.Imported, rep.WithoutSid, rep.NotStats)
 	fmt.Fprintf(c.out, "skipped: already there %d, not a valid line %d, too big %d, no agent name %d, too recent %d, over the cap per name %d\n",
 		rep.SkippedDuplicate, rep.SkippedInvalid, rep.SkippedTooBig, rep.SkippedName, rep.SkippedRecent, rep.SkippedOverCap)
 	if rep.Oldest != "" {
 		fmt.Fprintf(c.out, "imported lines from %s to %s\n", clean(rep.Oldest), clean(rep.Newest))
+	}
+	if rep.Truncated {
+		fmt.Fprintln(c.out, "older posts were not read (the run's bound); run it again to take them")
 	}
 	return nil
 }

@@ -492,7 +492,7 @@ process's memory: never on disk, never printed, never in the environment.
 | `owner <channel> <sub>` or `-`, `public <channel> on` or `off` | owner and visibility (admins), over the revision just read |
 | `members add` or `rm <channel> <sub>…` | members (the channel's owner), over the revision just read |
 | `import` | the one import from Mattermost (admins), with its report |
-| `stats-import` | the stats channel's `STATS` lines into the STATS history's import stream (admins, RT-6.45), as often as wanted: a line already there is skipped and only the newest 500 per name are kept, so a second run imports nothing; its report counts the posts read, the lines imported and the skipped ones by reason |
+| `stats-import` | the stats channel's `STATS` lines into the STATS history's import stream (admins, RT-6.45), as often as wanted: a line already there is skipped (by its post's id, or by name, `sid` and `part`), lines from before 0.91.0 without `sid` are imported too, and only the newest 500 per name are kept, so a second run imports nothing; one run reads at most 100,000 posts and holds at most 64 MiB of lines, the newest first, and says truncated when it stopped there; its report counts the posts read, the lines imported and the skipped ones by reason |
 | `account show <name>`, `account set <name> <sub> [--rev N]`, `account rm <name> --rev N` | the Mattermost account index (admins): which identity a name resolves to, with `moved_from` when it moved; set creates without `--rev` and replaces over it |
 | `pending`, `confirm <name>`, `drop <name>` | the claims of password accounts (with the full channels one waits on), an admin's confirmation over the listed revision, and deleting a claim over the listed revision |
 

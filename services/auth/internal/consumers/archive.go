@@ -264,14 +264,14 @@ func SourceSeq(hdr nats.Header) (uint64, bool) {
 	return seq, err == nil
 }
 
-// ReadAll calls fn with the name (the subject's last token) and the body of
-// every line the stream holds. For the archive it does so once the archive
+// ReadAll calls fn with the name (the subject's last token), the body and the
+// headers of every line the stream holds. For the archive it does so once the archive
 // holds a copy of every STATS line stored before the call (RT-6.45), so the
 // import's duplicate check sees each of them: a pass that finds the copy
 // behind is thrown away (begin runs before each pass) and repeated until ctx
 // ends. The source's lag in STREAM.INFO is no such proof: it reads 0 before
 // the source has delivered anything.
-func (h *History) ReadAll(ctx context.Context, begin func(), fn func(name string, body []byte) error) error {
+func (h *History) ReadAll(ctx context.Context, begin func(), fn func(name string, body []byte, hdr nats.Header) error) error {
 	var want uint64
 	if h.stream == ArchiveStream {
 		var err error
@@ -286,7 +286,7 @@ func (h *History) ReadAll(ctx context.Context, begin func(), fn func(name string
 			if seq, ok := SourceSeq(hdr); ok && seq > got {
 				got = seq
 			}
-			return fn(strings.TrimPrefix(subject, h.prefix+"."), body)
+			return fn(strings.TrimPrefix(subject, h.prefix+"."), body, hdr)
 		})
 		if err != nil || got >= want {
 			return err

@@ -954,7 +954,7 @@ func TestTheDocumentedMinimalRightsSuffice(t *testing.T) {
 		}
 		for _, h := range []*consumers.History{arch, imp} {
 			n := 0
-			if err := h.ReadAll(ctx5(t), func() { n = 0 }, func(string, []byte) error { n++; return nil }); err != nil || (h == imp) != (n > 0) {
+			if err := h.ReadAll(ctx5(t), func() { n = 0 }, func(string, []byte, nats.Header) error { n++; return nil }); err != nil || (h == imp) != (n > 0) {
 				t.Fatalf("%s read: %d lines, %v", h.Stream(), n, err)
 			}
 		}

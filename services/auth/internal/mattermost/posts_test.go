@@ -3,6 +3,7 @@ package mattermost
 import (
 	"context"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"net/http"
 	"net/http/httptest"
@@ -84,7 +85,7 @@ func TestChannelPostsPages(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	ps, err := c.ChannelPosts(ctx, "agents-stats", time.Time{})
+	ps, err := collect(ctx, c, "agents-stats", time.Time{})
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -107,11 +108,11 @@ func TestChannelPostsPages(t *testing.T) {
 		t.Fatalf("%+v", first)
 	}
 	since := time.UnixMilli(base + 120000)
-	ps, err = c.ChannelPosts(ctx, "agents-stats", since)
+	ps, err = collect(ctx, c, "agents-stats", since)
 	if err != nil || len(ps) != 10 {
 		t.Fatalf("since: %d posts, %v", len(ps), err)
 	}
-	if _, err := c.ChannelPosts(ctx, "missing", time.Time{}); err == nil {
+	if _, err := collect(ctx, c, "missing", time.Time{}); err == nil {
 		t.Fatal("a missing channel gave no error")
 	}
 }
@@ -150,8 +151,36 @@ func TestAPageOfTheLargestPostsFits(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	ps, err := c.ChannelPosts(context.Background(), "agents-stats", time.Time{})
+	ps, err := collect(context.Background(), c, "agents-stats", time.Time{})
 	if err != nil || len(ps) != postsPage {
 		t.Fatalf("%d posts, %v", len(ps), err)
+	}
+}
+
+func collect(ctx context.Context, c *Client, ch string, since time.Time) ([]Post, error) {
+	var out []Post
+	err := c.EachChannelPost(ctx, ch, since, func(p Post) error { out = append(out, p); return nil })
+	return out, err
+}
+
+// The reading holds one page at a time and stops at the caller's word: an
+// error of fn ends it with no further page asked for (RT-6.45).
+func TestEachChannelPostStopsWhenTold(t *testing.T) {
+	ctx := context.Background()
+	c, err := New(ctx, postsServer(t, time.Date(2026, 9, 1, 0, 0, 0, 0, time.UTC).UnixMilli()).URL, "lab", "tok")
+	if err != nil {
+		t.Fatal(err)
+	}
+	stop := errors.New("enough")
+	n := 0
+	err = c.EachChannelPost(ctx, "agents-stats", time.Time{}, func(Post) error {
+		n++
+		if n == postsPage+5 {
+			return stop
+		}
+		return nil
+	})
+	if !errors.Is(err, stop) || n != postsPage+5 {
+		t.Fatalf("%d posts, %v", n, err)
 	}
 }

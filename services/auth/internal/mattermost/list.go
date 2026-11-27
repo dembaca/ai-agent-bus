@@ -123,16 +123,17 @@ const (
 	// messages; the answer limit leaves room for the posts' metadata.
 	postsPage      = 30
 	postsAnswerMax = 8 << 20
-	maxPosts       = 100000
 )
 
-// ChannelPosts reads the posts of the team's channel by name, created at or
-// after since (the zero time: all), newest page first, each post once.
-// System posts are left out.
-func (c *Client) ChannelPosts(ctx context.Context, channelName string, since time.Time) ([]Post, error) {
+// EachChannelPost calls fn with each post of the team's channel by name,
+// created at or after since (the zero time: all), newest first, page by
+// page, each post once; system and deleted posts are left out. Only one page
+// is held at a time, so the caller decides what to keep; an error of fn ends
+// the reading and is returned as it is (no further page is asked for).
+func (c *Client) EachChannelPost(ctx context.Context, channelName string, since time.Time, fn func(Post) error) error {
 	id, err := c.channelID(ctx, channelName)
 	if err != nil {
-		return nil, fmt.Errorf("channel %q: %w", channelName, err)
+		return fmt.Errorf("channel %q: %w", channelName, err)
 	}
 	type post struct {
 		ID       string `json:"id"`
@@ -142,21 +143,23 @@ func (c *Client) ChannelPosts(ctx context.Context, channelName string, since tim
 		Type     string `json:"type"`
 		Message  string `json:"message"`
 	}
-	var out []Post
-	seen := map[string]bool{}
+	// A post that arrives while reading shifts the pages: the newest of a page
+	// can be the oldest of the page before. Only those two pages' ids are kept.
+	var last map[string]bool
 	for page := 0; ; page++ {
+		seen := map[string]bool{}
 		var got struct {
 			Order []string        `json:"order"`
 			Posts map[string]post `json:"posts"`
 		}
 		path := "/api/v4/channels/" + url.PathEscape(id) + "/posts?page=" + strconv.Itoa(page) + "&per_page=" + strconv.Itoa(postsPage)
 		if err := c.do(ctx, http.MethodGet, path, nil, &got, postsAnswerMax); err != nil {
-			return nil, fmt.Errorf("posts of %q: %w", channelName, err)
+			return fmt.Errorf("posts of %q: %w", channelName, err)
 		}
 		older := false
 		for _, pid := range got.Order {
 			p, ok := got.Posts[pid]
-			if !ok || seen[pid] {
+			if !ok || seen[pid] || last[pid] {
 				continue
 			}
 			seen[pid] = true
@@ -168,14 +171,14 @@ func (c *Client) ChannelPosts(ctx context.Context, channelName string, since tim
 			if p.Type != "" || p.DeleteAt != 0 {
 				continue
 			}
-			out = append(out, Post{ID: p.ID, Created: at, UserID: p.UserID, Message: p.Message})
-		}
-		if len(seen) > maxPosts {
-			return nil, fmt.Errorf("%w: more than %d posts", ErrTooMany, maxPosts)
+			if err := fn(Post{ID: p.ID, Created: at, UserID: p.UserID, Message: p.Message}); err != nil {
+				return err
+			}
 		}
 		if len(got.Order) < postsPage || older {
-			return out, nil
+			return nil
 		}
+		last = seen
 	}
 }
 

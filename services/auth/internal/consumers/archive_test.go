@@ -302,7 +302,7 @@ func TestTheArchiveSourcesStats(t *testing.T) {
 	}
 	type line struct{ name, body string }
 	var lines []line
-	if err := a.ReadAll(tctx(t), func() { lines = nil }, func(n string, b []byte) error {
+	if err := a.ReadAll(tctx(t), func() { lines = nil }, func(n string, b []byte, _ nats.Header) error {
 		lines = append(lines, line{n, string(b)})
 		return nil
 	}); err != nil || len(lines) != 1 || lines[0] != (line{"agent1", string(body)}) {

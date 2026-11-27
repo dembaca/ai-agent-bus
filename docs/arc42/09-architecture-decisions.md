@@ -4934,8 +4934,10 @@ readable after Mattermost goes, and `STATS` keeps 30 days.
     least 2 minutes old is stored byte for byte under its bot's name,
     unless the archive holds its (`sid`, `part`) (the same line under the
     agent's NATS name; the two names differ, so only the line's own key
-    can match) or the import stream holds its (name, `sid`, `part`); of
-    each name only the newest 500, so every run stores the same set. Each
+    can match) or the import stream holds its post or its (name, `sid`,
+    `part`); a line from before 0.91.0, without `sid` and `part`, is
+    imported too and known by its post's id; of each name only the newest
+    500, so every run stores the same set. Each
     imported line carries `Cb-Source: mattermost-import` and its original
     time in `Cb-Orig-Time`, so a reader can show it as imported and sort by
     that time; a stream's own time of a line is its store time, also for
