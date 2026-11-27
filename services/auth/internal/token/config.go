@@ -14,6 +14,7 @@ const (
 	DefaultLeeway            = 30 * time.Second
 	MaxLeeway                = 60 * time.Second
 	DefaultApproverClaim     = "groups"
+	DefaultLDAPIDClaim       = "ldap_id"
 	DefaultUnknownKeyRefresh = time.Minute
 	MinUnknownKeyRefresh     = time.Second
 	DefaultKeyRefresh        = time.Hour
@@ -55,6 +56,13 @@ type Config struct {
 	// group mapper writes it (with or without the leading "/"). Empty: nobody
 	// is an approver.
 	ApproverGroup string
+	// LDAPIDClaim is the claim that carries the LDAP entry's id of the
+	// identity (RT-6.42 step 3): Keycloak's LDAP federation keeps it as the
+	// user attribute LDAP_ID, which a protocol mapper puts into the token. A
+	// Mattermost account that logs in over LDAP is proven to be the token's
+	// when its auth_data equals this claim. Empty: DefaultLDAPIDClaim. A token
+	// without it (no mapper) gives no LDAP proof.
+	LDAPIDClaim string
 	// UnknownKeyRefresh is how often at most a token with an unknown key id
 	// makes the verifier fetch the JWKS again. Zero: DefaultUnknownKeyRefresh.
 	UnknownKeyRefresh time.Duration
@@ -109,6 +117,14 @@ func (c Config) withDefaults() (Config, error) {
 	}
 	if c.ApproverClaim == "" {
 		c.ApproverClaim = DefaultApproverClaim
+	}
+	switch c.LDAPIDClaim = strings.TrimSpace(c.LDAPIDClaim); c.LDAPIDClaim {
+	case "":
+		c.LDAPIDClaim = DefaultLDAPIDClaim
+	case "sub", "preferred_username", "azp", "aud", "iss", "typ", "sid", "jti", c.ApproverClaim:
+		// a claim the check reads otherwise would prove an LDAP account by
+		// a value that is no LDAP id
+		return Config{}, fmt.Errorf("LDAPIDClaim: %q is a claim with another meaning", c.LDAPIDClaim)
 	}
 	switch {
 	case c.UnknownKeyRefresh == 0:

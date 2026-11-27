@@ -71,7 +71,6 @@ class FakeNats:
         self.prefixes: dict[str, str] = {}  # channel -> the bot prefix its signal named (RT-6.36 step 4)
         self.accounts: dict[str, str] = {}  # Mattermost account -> anchor
         self.approvers: set[str] = set()  # anchors with a fresh approver record
-        self.stale: set[str] = set()  # accounts whose own record is stale: bound, no approver
         # Plan B piece 3: dm_source is what use_bus sets (the home's switch, read for this
         # agent's own presence); `dms` are the agents whose presence says their home runs
         # agent DMs over NATS.
@@ -141,9 +140,6 @@ class FakeNats:
 
     def approver(self, anchor: str) -> bool:
         return anchor in self.approvers
-
-    def account_approver(self, account: str) -> bool:
-        return account not in self.stale and self.accounts.get(account, "-") in self.approvers
 
     def bound_accounts(self) -> dict[str, str]:
         return {a: x for a, x in self.accounts.items() if x != "-"}

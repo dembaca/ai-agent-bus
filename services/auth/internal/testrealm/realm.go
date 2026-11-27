@@ -119,6 +119,16 @@ func (c *Chat) User(_ context.Context, name string) (token.User, error) {
 	return token.User{}, token.ErrNoSuchUser
 }
 
+// UserByID implements callout.ChatAccounts: the human whose chat id is id.
+func (c *Chat) UserByID(_ context.Context, id string) (token.User, error) {
+	for _, u := range c.Users {
+		if u.ID == id {
+			return u, nil
+		}
+	}
+	return token.User{}, token.ErrNoSuchUser
+}
+
 // Memberships implements callout.Channels.
 func (c *Chat) Memberships(_ context.Context, name string, channels []string) (map[string]bool, error) {
 	out := map[string]bool{}

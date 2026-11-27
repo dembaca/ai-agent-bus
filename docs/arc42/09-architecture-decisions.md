@@ -4363,14 +4363,28 @@ which each piece reads for itself.
        reaches only the MCP server with the credential, so it stays as it
        is (its lookup and ids in every home, also one over NATS) and the
        MCP server ignores the hook's ids with the switch on; a Mattermost
-       account approves only with a fresh approver record of its own,
-       as a person over NATS does, so a trusted human needs a Mattermost
-       account bound to the Keycloak identity (an OpenID login) and the
-       approvers' group, else nothing they write on Mattermost approves;
-       since that flag lives at most 15 minutes after a login, the owner
-       decides on a refresh path before the switch goes on in a real
-       home; what the session did not see come is judged by that record
-       at the read; without a fresh record of its own the session is
+       account approves when the login service's account record binds it
+       to one of the trusted anchors, and a person over NATS when its
+       anchor is one, with no approver flag: decided by the owner on
+       2026-11-27 (ask `7iyd6k3r47difyomcy9koczm3r`, #266), in place of
+       the build's fresh approver record of the account itself, which
+       lived at most 15 minutes after a login, and of the read of the
+       approvers' Keycloak group that the closed #271 tried. The
+       Mattermost account is bound provably, once at a login of any kind
+       (an agent's or the console's): over OpenID (`auth_data` is the
+       token's `sub`) or over LDAP (`auth_data` is the token's LDAP id,
+       `CB_AUTH_LDAP_ID_CLAIM`); a name alone binds nothing. An LDAP
+       id mismatch refuses the login, as an OpenID `sub` mismatch does
+       (decided by the owner on 2026-11-27, ask
+       `zcd5yjb39iduuka5hizr3x43jo`). The login
+       service keeps the binding in its directory and publishes its
+       record again every hour while Mattermost shows the account so,
+       and the bridge binds a later post by it (RT-6.42 step 3); the
+       approvers' group stays a ceiling for logins only. A binding holds
+       30 days from the login that proved it and each proven login renews
+       it, so each approver logs in at least once in 30 days (the security
+       review of #275); what the session did not see come is judged by
+       that record at the read; without a fresh record of its own the session is
        closed (the gate on, nobody a peer), whatever the host's variables
        say;
        the link from a Mattermost bot to its NATS name is still the
@@ -6289,6 +6303,12 @@ registrar's functions can move in later without a second component.
       Keycloak tokens; a stale flag fails closed. Alternative: the bridge
       or the login service asks Keycloak's admin API per event. That needs
       an admin right in Keycloak for a check the token already answers.
+      Amended by the owner on 2026-11-27 (ask
+      `7iyd6k3r47difyomcy9koczm3r`, #266) for plan B piece 4: with the
+      piece on, the flag decides nothing on Mattermost's side; an account
+      whose record binds it to one of the session's attested trusted
+      anchors approves (ADR-014 phase 5, piece 4), and the approvers'
+      group stays a ceiling for logins only.
    9. **An approver who runs no agent gets a record by a login of their
       own.** Recommended: the host login (RT-6.34) gets a mode that logs a
       person in without starting an agent; the login service checks the
@@ -6298,7 +6318,13 @@ registrar's functions can move in later without a second component.
       approver without one could never approve, which narrows the decision
       of 2026-11-22. Alternative: the operator console's Keycloak login
       (ADR-015) writes the record through the login service. It needs the
-      console's path to the login service, which is not built.
+      console's path to the login service, which is not built. Built
+      since in part (#266): the console's login proves the binding and
+      writes the record as an agent's login does, and the login service
+      keeps every proven binding in its directory and publishes its record
+      again every hour while Mattermost shows the account so, so a
+      person logs in once; the host's login without an agent is not
+      built.
    10. **Before the account records exist, every person is carried under
        `-`.** Recommended: nobody is trusted over NATS, a person's post
        reaches only the coordinator and approves nothing, until the login

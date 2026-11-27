@@ -100,8 +100,9 @@ cannot be used end to end until both change.
 | `CB_AUTH_BRAKE_FILE` | unset | the emergency brake (below) |
 | `CB_AUTH_KEYCLOAK_ISSUER`, `CB_AUTH_KEYCLOAK_JWKS_URL`, `CB_AUTH_KEYCLOAK_CLIENT_ID` | — | the realm and the bus's client |
 | `CB_AUTH_KEYCLOAK_AUDIENCE`, `CB_AUTH_APPROVER_GROUP`, `CB_AUTH_APPROVER_CLAIM`, `CB_AUTH_TOKEN_LEEWAY` | client id, unset, `groups`, `30s` | see the token check |
-| `CB_AUTH_CONSOLE_CLIENT_ID`, `CB_AUTH_OPERATOR_GROUP`, `CB_AUTH_PERSON_PREFIX`, `CB_AUTH_PERSON_MAX_LOGINS` | unset, —, `person-`, `8` | the operator console's path (RT-6.43): the console's own Keycloak client (unset: no person's credential is issued; it must differ from the bus's client and audience), the group a token must list at every issue (required with the client, a full path such as `/ops`: the group mapper's full path on), and the start of a person's name (letters, digits, `-` and `_`, ending in `-`; it and `CB_AUTH_NAME_PREFIX` may not start each other), and how many logins one person holds consumers for at once (1 to 64) |
+| `CB_AUTH_CONSOLE_CLIENT_ID`, `CB_AUTH_OPERATOR_GROUP`, `CB_AUTH_PERSON_PREFIX`, `CB_AUTH_PERSON_MAX_LOGINS` | unset, —, `person-`, `8` | the operator console's path (RT-6.43): the console's own Keycloak client (unset: no person's credential is issued; it must differ from the bus's client and audience), the group a token must list at every issue (required with the client, a full path such as `/ops`: the group mapper's full path on), and the start of a person's name (letters, digits, `-` and `_`, ending in `-`; it and `CB_AUTH_NAME_PREFIX` may not start each other), and how many logins one person holds consumers for at once (1 to 64). A console login whose Mattermost account is proven writes its account record too (RT-6.42 step 3): only a token that carries the group claim says whether its person is an approver and may lower the flag (an agent's login, or a console client with the group mapper); a console token without the claim keeps the flag of the same person's stored record and renews the binding's 30 days at every console login. So give the console's client the group mapper, writing the approvers' group in the same form as `CB_AUTH_APPROVER_GROUP` (a full path `/X` against a short name `X` lowers the flag at every console login, which fails closed). To remove an approver at once: deactivate their Mattermost account, or take their anchor off the trusted humans |
 | `CB_AUTH_NAME_BINDING` | `open` | `open` or `openid-only` (see the name binding) |
+| `CB_AUTH_LDAP_ID_CLAIM` | `ldap_id` | the token claim with the LDAP entry's id (a protocol mapper of the user attribute `LDAP_ID`): a Mattermost account that logs in over LDAP with that `auth_data` is proven to be the identity's (see the token check). `LDAP_ID` must be written by the LDAP federation alone: unmanaged attributes off or admin-only, no self-registration, no local accounts that could carry it, else a user could bind another person's Mattermost account to their own anchor |
 | `CB_AUTH_MM_URL`, `CB_AUTH_MM_TEAM` | — | the chat (https; http only on a loopback host) and the team of the bus's channels |
 | `CB_AUTH_DIRECTORY_BUCKET` | `BUS_DIRECTORY` | the channel directory's key-value bucket in the tenant account (ADR-016, RT-6.39): letters, digits, `-` and `_`. Until the one-time import from Mattermost has written `meta.imported`, membership still comes from Mattermost and every identity's anchor is its name of today, so agents keep their names |
 | `CB_AUTH_ADMIN_LISTEN_ADDR` | — | where the directory's admin API listens (RT-6.40), `host:port`; empty: no admin API. Requires `CB_AUTH_DIRECTORY_ADMIN_GROUP`; without a certificate a loopback IP literal only (`127.0.0.1`, `::1`; `localhost` is not taken) |
@@ -236,7 +237,14 @@ point 6). The auth callout calls it with the request's deadline.
   The chat must know an active human account of exactly that name: not a bot,
   not deactivated, not a guest (guests own no agents). When that account logs
   in over OpenID Connect (Mattermost's `auth_service` `openid`), its
-  `auth_data` must be the token's `sub`. The lookup needs a token that
+  `auth_data` must be the token's `sub`; when it logs in over LDAP (`ldap`)
+  and the token carries the LDAP id claim (`CB_AUTH_LDAP_ID_CLAIM`, default
+  `ldap_id`, a single string), its `auth_data` must be that id. Either match
+  proves the binding (`Identity.ChatProven`, RT-6.42 step 3): only then is
+  the account's record written, with its proof and the binding the service
+  keeps in its directory and checks against Mattermost every hour. A name
+  alone (a password account, LDAP without the claim) lets the login in and
+  proves nothing. The lookup needs a token that
   Mattermost shows `auth_service` and `auth_data` to; an answer without them
   is refused, never taken for a password account.
 - **Approvers:** membership in the configured group of the configured claim
