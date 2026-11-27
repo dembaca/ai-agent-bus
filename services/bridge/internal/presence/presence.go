@@ -32,11 +32,14 @@ type Info struct {
 	At     time.Time
 }
 
-// MemberKeep is how long a membership counts (RT-6.37): an agent announces
-// it every 6 h and the PRESENCE stream keeps 24 h, so a request for a channel
-// needs one younger than this by the server's time. A channel an agent never
-// announced, or one it left long enough ago, is no channel of that agent.
-const MemberKeep = 24 * time.Hour
+// MemberKeep is how long a membership counts (RT-6.37, RT-6.42 step 11). The
+// MCP server announces it every 6 h, so a request for a channel needs one
+// younger than this by the server's time: just over one renewal, so a missed
+// renewal closes the channel, and a revocation that the login service has not
+// yet written as a tombstone (a later piece, #244) is bounded by the same keep
+// rather than by the stream's 24 h. A channel an agent never announced, or one
+// it left long enough ago, is no channel of that agent.
+const MemberKeep = 7 * time.Hour
 
 // member is one agent's announced membership of a channel, with the stream's
 // sequence and time: an older message never overrides a newer one.
@@ -111,6 +114,19 @@ func (s *Snapshot) ObservedMember(channel, name string, at time.Time, seq uint64
 		return
 	}
 	ch[name] = member{at: at, seq: seq}
+	s.observe(at)
+}
+
+// Seed sets the snapshot's clock from an answer of the server itself (the
+// creation time of the bridge's new membership consumer), so that after a
+// start a membership replayed from the stream reads as old, not as fresh for
+// another MemberKeep before a newer record has been seen.
+func (s *Snapshot) Seed(at time.Time) {
+	if at.IsZero() {
+		return
+	}
+	s.mu.Lock()
+	defer s.mu.Unlock()
 	s.observe(at)
 }
 

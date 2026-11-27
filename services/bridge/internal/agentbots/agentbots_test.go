@@ -3,11 +3,13 @@ package agentbots
 import (
 	"context"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"io"
 	"log/slog"
 	"net/http"
 	"net/http/httptest"
+	"slices"
 	"sort"
 	"strconv"
 	"strings"
@@ -204,6 +206,12 @@ func (f *fakeMM) serve(w http.ResponseWriter, r *http.Request) {
 	case r.Method == "POST" && len(p) == 3 && p[0] == "channels" && p[2] == "members":
 		f.members[p[1]] = append(f.members[p[1]], body["user_id"].(string))
 		out(map[string]any{})
+	case r.Method == "GET" && len(p) == 4 && p[0] == "channels" && p[2] == "members":
+		if !slices.Contains(f.members[p[1]], p[3]) {
+			w.WriteHeader(http.StatusNotFound)
+			return
+		}
+		out(map[string]any{"channel_id": p[1], "user_id": p[3]})
 	case key == "PUT users/me/preferences", key == "POST channels/members/me/view":
 		out(map[string]any{})
 	case key == "POST channels/direct":
@@ -565,14 +573,30 @@ func TestABotsReactionIsRemovedWhateverStateTheBotIsIn(t *testing.T) {
 	}
 }
 
-// ADR-014 phase 5 piece 5: Client is the agent's own bot, joined to the very
-// channel a request reads in; without an account record for its owner there is
-// none, and the bridge bot is no fallback.
-func TestTheClientIsTheAgentsOwnBot(t *testing.T) {
+// ADR-014 phase 5 piece 5: Client is the agent's own bot, never joined to the
+// channel a read asks about - a read only happens where the bot is a member
+// already, and is refused otherwise. Bot (the posting path) keeps its join.
+func TestTheClientNeverJoinsTheChannel(t *testing.T) {
 	f := newFake(t)
 	ctx := context.Background()
 	b := newBots(t, f, aliceAgent())
+	// not a member yet: the read is refused, in its own words, and nothing is joined
 	c, err := b.Client(ctx, "agent-a", "guest")
+	var notIn *NotInChannel
+	if !errors.As(err, &notIn) || err.Error() != "the agent's bot is not in guest" || c != nil {
+		t.Fatalf("a read before the join: %v %v", c, err)
+	}
+	f.mu.Lock()
+	joined := len(f.members["c-guest"])
+	f.mu.Unlock()
+	if joined != 0 {
+		t.Fatalf("the read joined the bot: %d", joined)
+	}
+	// the posting path joins; the read then goes through without joining again
+	if b.Bot(ctx, "agent-a", "guest") == nil {
+		t.Fatal("the posting path joined no bot")
+	}
+	c, err = b.Client(ctx, "agent-a", "guest")
 	if err != nil || c == nil {
 		t.Fatalf("client %v %v", c, err)
 	}
@@ -581,20 +605,11 @@ func TestTheClientIsTheAgentsOwnBot(t *testing.T) {
 	}
 	f.mu.Lock()
 	posted := f.posts[0]["user_id"]
-	joined := len(f.members["c-guest"])
+	joined = len(f.members["c-guest"])
 	f.mu.Unlock()
 	if posted != "bot1" || joined != 1 {
 		t.Fatalf("posted as %v, joined %d", posted, joined)
 	}
-	// the second use joins nothing again
-	if again, err := b.Client(ctx, "agent-a", "guest"); err != nil || again != c {
-		t.Fatalf("the second use: %v %v", again, err)
-	}
-	f.mu.Lock()
-	if len(f.members["c-guest"]) != 1 {
-		t.Fatalf("joined again: %v", f.members["c-guest"])
-	}
-	f.mu.Unlock()
 
 	noOwner := newBotsOf(t, f, aliceAgent(), owners{})
 	if c, err := noOwner.Client(ctx, "agent-a", "home"); err == nil || c != nil {

@@ -76,10 +76,15 @@ func TestMembershipsAndTheirServerClock(t *testing.T) {
 	if !s.MemberFresh("home", "agent-a") {
 		t.Fatal("an older observation overrode the newer")
 	}
-	// the server's now runs on: 25 h later the membership has run out
-	now = now.Add(25 * time.Hour)
+	// the server's now runs on: just past one renewal (6 h) it is still there,
+	// beyond MemberKeep it has run out
+	now = now.Add(6 * time.Hour)
+	if !s.MemberFresh("home", "agent-a") {
+		t.Fatal("a membership of seven hours is stale")
+	}
+	now = now.Add(2 * time.Hour)
 	if s.MemberFresh("home", "agent-a") {
-		t.Fatal("a membership older than the stream's keep is fresh")
+		t.Fatal("a membership older than MemberKeep is fresh")
 	}
 	if o, n, ok := Membership("presence.member.home.agent-a"); !ok || o != "home" || n != "agent-a" {
 		t.Fatalf("%q %q %v", o, n, ok)

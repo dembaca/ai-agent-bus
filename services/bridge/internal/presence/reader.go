@@ -16,11 +16,14 @@ const ConsumerName = "bridge_presence"
 
 // Reader follows the operator's presence push consumer into a snapshot. The
 // consumer's deliver policy is the latest message per subject, so a new
-// consumer starts with a full picture; it carries the presences and the
-// memberships (presence.member.<channel>.<name>, its second filter). After a
-// bridge restart the consumer is not recreated, so a name is unknown until that
-// agent's next presence: a display fallback to the NATS name, never a lost
-// post.
+// consumer starts with a full picture; it carries the presences
+// (presence.<owner>.<name>). The memberships (presence.member.<channel>.<name>,
+// RT-6.37) come through the bridge's own consumer, bridge_members
+// (members_consumer.go), which replays them at every start; one that still
+// arrives here (an operator's consumer with the old second filter) is taken
+// too, and the snapshot keeps the newer of the two. After a bridge restart the
+// operator's consumer is not recreated, so a name is unknown until that agent's
+// next presence: a display fallback to the NATS name, never a lost post.
 type Reader struct {
 	Log     *slog.Logger
 	Deliver string // deliver.bridge.presence

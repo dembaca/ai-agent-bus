@@ -21,12 +21,15 @@ from __future__ import annotations
 import asyncio
 import json
 import secrets
+import time
 from typing import Any, Mapping
 
 from .natsbus import MAX_BODY, NatsBus, NatsBusError
 
-REQUEST_SEC = 5.0  # how long a request waits for the bridge's answer
+REQUEST_SEC = 5.0  # how long a request waits for the bridge's answer, in all
 KINDS = ("history", "file", "header")
+MAX_PARTS = 64  # an answer's parts: a file's chunks or a history read's pages
+MAX_TOTAL = 4 * 1024 * 1024  # the bytes an answer's parts may add up to
 _REQUEST_ID = 16
 
 
@@ -95,11 +98,20 @@ async def request(bus: NatsBus, kind: str, payload: Mapping[str, Any] | None = N
     try:
         await nc.flush()  # subscribed before the request goes out
         await bus._publish(subject, body)  # noqa: SLF001 - same path as a post, same rights check
+        deadline = time.monotonic() + timeout
         parts: list[Any] = []
+        total = 0
         expected = 1
         while True:
+            remaining = deadline - time.monotonic()
+            if remaining <= 0:
+                if parts:
+                    raise RequestError(
+                        f"the bridge's {kind} answer stopped after part {expected - 1}") from None
+                raise RequestError(
+                    f"the bridge did not answer a {kind} request within {timeout:.0f} s") from None
             try:
-                msg = await asyncio.wait_for(answers.get(), timeout)
+                msg = await asyncio.wait_for(answers.get(), remaining)
             except asyncio.TimeoutError:
                 if parts:
                     raise RequestError(
@@ -107,6 +119,9 @@ async def request(bus: NatsBus, kind: str, payload: Mapping[str, Any] | None = N
                 raise RequestError(
                     f"the bridge did not answer a {kind} request within {timeout:.0f} s") from None
             data = getattr(msg, "data", b"")
+            total += len(data) if isinstance(data, (bytes, bytearray)) else 0
+            if total > MAX_TOTAL:
+                raise RequestError(f"the bridge's {kind} answer is larger than {MAX_TOTAL} bytes")
             answer = _decode_answer(data if isinstance(data, (bytes, bytearray)) else b"",
                                     request_id, kind)
             part = answer.get("part", 1)
@@ -115,6 +130,8 @@ async def request(bus: NatsBus, kind: str, payload: Mapping[str, Any] | None = N
             parts.append(answer.get("result"))
             if answer.get("last", True):
                 break
+            if len(parts) >= MAX_PARTS:
+                raise RequestError(f"the bridge's {kind} answer has more than {MAX_PARTS} parts")
             expected += 1
         return parts[0] if len(parts) == 1 else {"parts": parts}
     finally:

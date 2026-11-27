@@ -128,6 +128,18 @@ func run(log *slog.Logger) error {
 			log.Error("bridge: plan B switches stopped", "error", err)
 		}
 	}()
+	// The memberships the history read checks (RT-6.37, RT-6.42 step 11),
+	// through the bridge's own consumer made at every start: the operator's
+	// presence consumer carries only presence.*.*, and a restart must have
+	// every membership the stream still holds.
+	mr := &presence.MembersReader{Log: log, Deliver: cfg.Deliver + ".members", Stream: "PRESENCE", Into: snapshot}
+	wg.Add(1)
+	go func() {
+		defer wg.Done()
+		if err := mr.Run(ctx, nc); err != nil && ctx.Err() == nil {
+			log.Error("bridge: the memberships stopped", "error", err)
+		}
+	}()
 	wg.Add(1)
 	go func() {
 		defer wg.Done()

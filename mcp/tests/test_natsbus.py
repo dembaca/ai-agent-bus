@@ -2858,3 +2858,47 @@ async def test_a_part_gap_or_a_missing_last_is_an_error(rig: Rig) -> None:
             await requests.request(bus, "history", timeout=1)
     finally:
         await sub.unsubscribe()
+
+
+async def test_an_answer_over_the_part_or_byte_cap_is_an_error(
+        rig: Rig, monkeypatch: pytest.MonkeyPatch) -> None:
+    """#270's review: one request, one deadline, and a cap on how many parts and
+    bytes an answer may add up to - a bridge that never says last must not make the
+    session read forever."""
+    from mattermost_ai_agent_bus import requests
+
+    bus, _ = await rig.agent("alice")
+
+    async def too_many(msg: Any) -> None:
+        body = json.loads(msg.data)
+        for part in range(1, 6):
+            await rig.admin.publish(
+                f"deliver.{bus.name}.req.{body['request']}",
+                json.dumps({"v": 1, "request": body["request"], "kind": body["kind"],
+                            "part": part, "last": False, "result": part}).encode())
+
+    monkeypatch.setattr(requests, "MAX_PARTS", 3)
+    sub = await rig.admin.subscribe("req.>", cb=too_many)
+    try:
+        with pytest.raises(requests.RequestError, match="more than 3 parts"):
+            await requests.request(bus, "file", timeout=5)
+    finally:
+        await sub.unsubscribe()
+
+    monkeypatch.setattr(requests, "MAX_TOTAL", 40)
+
+    async def too_big(msg: Any) -> None:
+        body = json.loads(msg.data)
+        for part in (1, 2):
+            await rig.admin.publish(
+                f"deliver.{bus.name}.req.{body['request']}",
+                json.dumps({"v": 1, "request": body["request"], "kind": body["kind"],
+                            "part": part, "last": part == 2,
+                            "result": "x" * 30}).encode())
+
+    sub = await rig.admin.subscribe("req.>", cb=too_big)
+    try:
+        with pytest.raises(requests.RequestError, match="larger than 40 bytes"):
+            await requests.request(bus, "file", timeout=5)
+    finally:
+        await sub.unsubscribe()

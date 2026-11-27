@@ -4,6 +4,14 @@
 // bridge bot (RT-6.44), only in a channel the agent announced a membership of
 // (RT-6.37) and only while piece 5 is switched on there (RT-6.39 step 5).
 //
+// The memberships come through the bridge's own consumer, bridge_members,
+// made at every start (presence.MembersReader): the operator's presence
+// consumer carries only presence.*.*, and after a restart the membership
+// records must arrive again. A membership counts 7 h (presence.MemberKeep),
+// just over the 6 h the MCP server renews it, so a missed renewal closes the
+// channel; a revocation is bounded by the same keep until the login service
+// writes a tombstone at one (a later piece, #244).
+//
 // The request's payload is JSON:
 //
 //	{"channel": "<channel token>", "since": <epoch ms>, "limit": <posts>}
@@ -16,6 +24,11 @@
 // that post's thread instead and refuses a since beside it. limit is 1 to 200
 // posts, 200 without it.
 //
+// One read per agent runs at a time: a second request from the same agent
+// while one is running is answered "busy: a history read for this agent is
+// already running, ask again", so a session's own reads do not multiply the
+// bridge's Mattermost work.
+//
 // The result is one part of an answer (the bridge numbers the parts 1..n and
 // marks the last, so a caller reads until `last`):
 //
@@ -23,16 +36,28 @@
 //	 "thread": "<root id>", "posts": [ ... ]}
 //
 // and the last part adds {"next": <create_at ms>, "more": true} while posts
-// remain past what this answer carried (the byte or count bound, or
-// Mattermost's own 1000-post `since` cap): the caller then asks again with
-// since=next and drops a post it already has by id (the bound is inclusive).
-// A thread read is bounded by the limit, and `more` says its read hit that
-// bound: the thread is longer.
+// remain past what this answer carried (the limit, the byte or count bound, or
+// the page walk's bound): the caller then asks again with since=next and drops
+// a post it already has by id (the bound is inclusive). A thread read is
+// bounded by the limit and names no next: `more` says the thread goes on.
+//
+// A channel read pages Mattermost's posts with page/per_page, 200 a page, from
+// the newest back to since: never with `since` alone, whose answer Mattermost
+// cuts at a thousand posts in no set order (sqlstore getPostsSince: no paging,
+// LIMIT 1000), so a busy channel lost its newest. The answer carries the oldest
+// limit posts from since on, so `next` walks forward across requests; a window
+// with more posts than one read walks (mm.MaxReadPosts) is refused with an
+// error naming it, never answered in part. A thread read pages the root's
+// thread the same way, keeping the root even when it is a bot's (an ask) and
+// dropping a reply by the rules below.
 //
 // A post is Mattermost's own shape, the fields the MCP server's reads use:
 // id, user_id, channel_id, root_id, type, message, props, file_count,
-// create_at, update_at, delete_at, and metadata.reactions where the read
-// carried metadata. Beside them:
+// create_at, update_at, edit_at, delete_at, and metadata.reactions where the
+// read carried metadata. The piece judges a post's freshness by create_at,
+// never update_at or edit_at: a later reaction moves update_at and an edit
+// moves edit_at, and neither writes the post into history again. Beside those
+// fields:
 //
 //   - anchor is the post author's anchor from the login service's account
 //     records (inbound.Accounts), "" for an account no record binds;
@@ -52,7 +77,7 @@
 // A post that is nobody's ordinary post is left out: a deleted one, one of a
 // non-empty type (a join, a header change), and a webhook's (from_webhook or
 // override_username in its props). An edited post is answered as Mattermost
-// holds it now.
+// holds it now, its edit_at naming the edit.
 package history
 
 import (
@@ -67,6 +92,7 @@ import (
 	"sync"
 	"time"
 
+	"github.com/dembaca/ai-agent-bus/services/bridge/internal/agentbots"
 	"github.com/dembaca/ai-agent-bus/services/bridge/internal/inbound"
 	"github.com/dembaca/ai-agent-bus/services/bridge/internal/mm"
 	"github.com/dembaca/ai-agent-bus/services/bridge/internal/requests"
@@ -97,12 +123,17 @@ const (
 // membership of. It names neither the channel's switch nor its posts.
 var errNotChannel = errors.New("not a channel of that agent")
 
+// errBusy is the answer to a second read from an agent whose first one still
+// runs: one read per agent at a time bounds the bridge's Mattermost work.
+var errBusy = errors.New("busy: a history read for this agent is already running, ask again")
+
 // channelRE is a channel's token on the bus, the same presence and plan B use.
 var channelRE = regexp.MustCompile(`^[a-z0-9][a-z0-9_-]{0,63}$`)
 
 // BotClient is the agents' own bots: a Mattermost client for the agent's own
-// token, joined to the channel, or the error why it cannot be had. It is
-// agentbots.Bots (its Client method), and it must never be the bridge bot.
+// token. It is agentbots.Bots (its Client method), and it must never be the
+// bridge bot. Client refuses a bot that is not a member of the channel; a read
+// never joins it there (agentbots.NotInChannel).
 type BotClient interface {
 	Client(ctx context.Context, name, channel string) (*mm.Client, error)
 }
@@ -137,8 +168,30 @@ type Handler struct {
 	People   People
 	Now      func() time.Time // nil: time.Now
 
-	mu     sync.Mutex
-	isBots map[string]bool // Mattermost user id -> is_bot, for accounts without a record
+	mu      sync.Mutex
+	isBots  map[string]bool // Mattermost user id -> is_bot, for accounts without a record
+	reading map[string]bool // the agents whose history read runs now
+}
+
+// begin marks the agent's read as running; false while one already runs.
+func (h *Handler) begin(agent string) bool {
+	h.mu.Lock()
+	defer h.mu.Unlock()
+	if h.reading == nil {
+		h.reading = map[string]bool{}
+	}
+	if h.reading[agent] {
+		return false
+	}
+	h.reading[agent] = true
+	return true
+}
+
+// end clears the agent's mark.
+func (h *Handler) end(agent string) {
+	h.mu.Lock()
+	defer h.mu.Unlock()
+	delete(h.reading, agent)
 }
 
 // Piece is the requests.Handler.Handlers entry for the kind "history".
@@ -147,6 +200,12 @@ func (h *Handler) Piece(ctx context.Context, agent string, req requests.Request)
 	if err != nil {
 		return nil, err
 	}
+	// One read per agent at a time: a second request while one runs is told
+	// so, never queued behind it in the bridge.
+	if !h.begin(agent) {
+		return nil, errBusy
+	}
+	defer h.end(agent)
 	// The membership first: a channel that is not the agent's is refused
 	// alike whether the piece is on there or not, so the answer tells nothing
 	// about another agent's channels.
@@ -180,6 +239,12 @@ func (h *Handler) Piece(ctx context.Context, agent string, req requests.Request)
 	defer cancel()
 	bot, err := h.Bots.Client(ctx, agent, p.Channel)
 	if err != nil {
+		// The bot's absence from the channel is the read's own answer, in its
+		// own words; any other failure says whose bot it was.
+		var notIn *agentbots.NotInChannel
+		if errors.As(err, &notIn) {
+			return nil, err
+		}
 		return nil, fmt.Errorf("the agent's bot: %w", err)
 	}
 	cid, err := bot.ChannelIDByName(ctx, h.Team, p.Channel)
@@ -187,63 +252,101 @@ func (h *Handler) Piece(ctx context.Context, agent string, req requests.Request)
 		return nil, fmt.Errorf("the channel ~%s: %w", p.Channel, err)
 	}
 
-	var posts []mm.Post
-	capped := false // the read hit its own bound: posts may remain
+	var (
+		shaped []answerPost
+		capped bool // the read hit its own bound: posts may remain
+	)
 	if p.Thread != "" {
-		posts, err = bot.Thread(ctx, p.Thread, limit)
+		root, posts, more, err := h.threadRead(ctx, bot, cid, p.Channel, p.Thread, limit)
 		if err != nil {
 			return nil, err
 		}
-		if len(posts) == 0 {
-			return nil, fmt.Errorf("post %s has no thread", p.Thread)
-		}
-		for _, post := range posts {
-			if post.ChannelID != cid {
-				return nil, fmt.Errorf("the thread is not in ~%s", p.Channel)
-			}
-		}
-		// The thread is the root's, also when a reply's id was asked: the
-		// answer names the root the caller would read.
-		if posts[0].RootID == "" {
-			p.Thread = posts[0].ID
-		} else {
-			p.Thread = posts[0].RootID
-		}
-		capped = len(posts) >= limit
+		p.Thread, shaped, capped = root, posts, more
 	} else {
-		posts, err = bot.PostsSince(ctx, cid, p.Since)
+		posts, more, err := bot.PostsFrom(ctx, cid, p.Since, limit)
 		if err != nil {
 			return nil, err
 		}
-		// Mattermost's since answers by update_at, an edited or reacted post
-		// of any age among the rest: a history read keeps what was written
-		// from since on.
-		read := len(posts)
-		kept := posts[:0]
+		capped = more
 		for _, post := range posts {
-			if post.CreateAt >= p.Since {
-				kept = append(kept, post)
-			}
-		}
-		posts = kept
-		capped = read >= 1000 // Mattermost's own since cap: the read may be cut
-	}
-
-	shaped := make([]answerPost, 0, len(posts))
-	for i, post := range posts {
-		if p.Thread != "" {
-			// The root is the thread's context even when the root itself is
-			// a bot's (an ask) or gone; a reply follows the drop rules.
-			if i > 0 && drop(post) {
+			if drop(post) {
 				continue
 			}
-		} else if drop(post) {
-			continue
+			shaped = append(shaped, h.shape(ctx, bot, post))
 		}
-		shaped = append(shaped, h.shape(ctx, bot, post))
 	}
 
 	return h.parts(p, cid, shaped, limit, capped), nil
+}
+
+// maxThreadPages bounds one thread read's pages (200 posts each): a thread of
+// many posts that are all dropped still ends, and the answer says more.
+const maxThreadPages = 20
+
+// threadRead pages a thread's root and replies, oldest first, keeping the root
+// even when it is a bot's (an ask) and shaping a reply by the drop rules, until
+// limit posts are kept or the thread ends. root is the thread the caller would
+// read, also when a reply's id was asked; more says the thread goes on past
+// what the answer carries (its limit, or the page bound of a thread whose posts
+// are nearly all dropped). It refuses a thread that lies in another channel.
+func (h *Handler) threadRead(ctx context.Context, bot *mm.Client, cid, channel, asked string,
+	limit int) (root string, shaped []answerPost, more bool, err error) {
+	var (
+		from   string
+		fromAt int64
+		seen   = map[string]bool{}
+		first  = true
+	)
+	for page := 0; page < maxThreadPages; page++ {
+		posts, hasNext, err := bot.ThreadPage(ctx, asked, from, fromAt, mm.ThreadCap)
+		if err != nil {
+			return "", nil, false, err
+		}
+		if len(posts) == 0 {
+			if first {
+				return "", nil, false, fmt.Errorf("post %s has no thread", asked)
+			}
+			return root, shaped, false, nil
+		}
+		fresh := 0
+		for _, post := range posts {
+			if seen[post.ID] {
+				continue // the root comes with every page
+			}
+			seen[post.ID] = true
+			fresh++
+			if post.ChannelID != cid {
+				return "", nil, false, fmt.Errorf("the thread is not in ~%s", channel)
+			}
+			if first {
+				// The thread is the root's, also when a reply's id was asked.
+				if post.RootID == "" {
+					root = post.ID
+				} else {
+					root = post.RootID
+				}
+			}
+			keep := first || !drop(post)
+			first = false
+			if !keep {
+				continue
+			}
+			if len(shaped) < limit {
+				shaped = append(shaped, h.shape(ctx, bot, post))
+			} else {
+				more = true
+			}
+		}
+		if len(shaped) >= limit {
+			return root, shaped, more || hasNext, nil
+		}
+		if !hasNext || fresh == 0 {
+			return root, shaped, false, nil
+		}
+		last := posts[len(posts)-1]
+		from, fromAt = last.ID, last.CreateAt
+	}
+	return root, shaped, true, nil
 }
 
 // now is the handler's clock.
@@ -297,6 +400,7 @@ type answerPost struct {
 	FileCount int            `json:"file_count,omitempty"`
 	CreateAt  int64          `json:"create_at"`
 	UpdateAt  int64          `json:"update_at"`
+	EditAt    int64          `json:"edit_at"`
 	DeleteAt  int64          `json:"delete_at,omitempty"`
 	Metadata  *answerMeta    `json:"metadata,omitempty"`
 	Anchor    string         `json:"anchor"`
@@ -350,7 +454,7 @@ func (h *Handler) shape(ctx context.Context, bot *mm.Client, post mm.Post) answe
 	out := answerPost{
 		ID: post.ID, UserID: post.UserID, ChannelID: post.ChannelID, RootID: post.RootID,
 		Type: post.Type, Message: post.Message, Props: post.Props, FileCount: post.FileCount,
-		CreateAt: post.CreateAt, UpdateAt: post.UpdateAt, DeleteAt: post.DeleteAt,
+		CreateAt: post.CreateAt, UpdateAt: post.UpdateAt, EditAt: post.EditAt, DeleteAt: post.DeleteAt,
 		Anchor: anchor, Account: rec, Bot: isBot,
 	}
 	if post.HasMetadata {
@@ -484,7 +588,11 @@ func (h *Handler) parts(p payload, cid string, posts []answerPost, limit int, ca
 	for i, chunk := range chunks {
 		r := result{V: 1, Channel: p.Channel, ChannelID: cid, Thread: p.Thread, Posts: chunk}
 		if i == len(chunks)-1 && more {
-			r.Next = lastAt
+			// A channel answer's cursor is a create_at; a thread read has no
+			// cursor (the request takes none beside the thread), only more.
+			if p.Thread == "" {
+				r.Next = lastAt
+			}
 			r.More = true
 		}
 		body, err := json.Marshal(r)

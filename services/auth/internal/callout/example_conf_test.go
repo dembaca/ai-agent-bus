@@ -303,6 +303,9 @@ func TestTheExampleServerConfiguration(t *testing.T) {
 				"$JS.API.CONSUMER.CREATE.PRESENCE.bridge_accounts.presence.account.mattermost.*.v1",
 				// plan B's switches per channel, its own consumer (RT-6.39 step 5)
 				"$JS.API.CONSUMER.CREATE.PRESENCE.bridge_planb.presence.planb.*.v1",
+				// the memberships the history read checks, its own consumer
+				// (RT-6.37, RT-6.42 step 11)
+				"$JS.API.CONSUMER.CREATE.PRESENCE.bridge_members.presence.member.*.*",
 				"$KV.BUS_BRIDGE_SEEN.>",
 				"$JS.API.STREAM.INFO.KV_BUS_BRIDGE_SEEN", "$JS.API.STREAM.MSG.GET.KV_BUS_BRIDGE_SEEN",
 				// the bridge's own slash command records (issue #151 step 3),
@@ -343,7 +346,8 @@ func TestTheExampleServerConfiguration(t *testing.T) {
 			for _, subject := range u.Permissions.Publish.Allow {
 				if strings.HasPrefix(subject, "$JS.API.CONSUMER.CREATE") &&
 					subject != "$JS.API.CONSUMER.CREATE.PRESENCE.bridge_accounts.presence.account.mattermost.*.v1" &&
-					subject != "$JS.API.CONSUMER.CREATE.PRESENCE.bridge_planb.presence.planb.*.v1" {
+					subject != "$JS.API.CONSUMER.CREATE.PRESENCE.bridge_planb.presence.planb.*.v1" &&
+					subject != "$JS.API.CONSUMER.CREATE.PRESENCE.bridge_members.presence.member.*.*" {
 					t.Errorf("the bridge may create consumers by %s", subject)
 				}
 			}

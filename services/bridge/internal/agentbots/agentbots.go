@@ -166,23 +166,35 @@ func (b *Bots) owner(name string) string {
 	return b.Owners.Owner(ownerAnchor(info.Owner))
 }
 
+// NotInChannel is a read's refusal: the agent's bot is not a member of the
+// channel named, and a read never joins it there (ADR-014 phase 5, piece 5).
+type NotInChannel struct{ Channel string }
+
+func (e *NotInChannel) Error() string { return "the agent's bot is not in " + e.Channel }
+
 // Bot returns a poster for name's own bot, joined to home, or nil: the
 // caller then posts with the bridge bot (RT-6.44).
 func (b *Bots) Bot(ctx context.Context, name, home string) mirror.Sink {
-	c, err := b.Client(ctx, name, home)
+	c, err := b.client(ctx, name, home, true)
 	if err != nil {
 		return nil
 	}
 	return c
 }
 
-// Client returns name's own bot as the client of its token, joined to channel,
-// and the error why it cannot be had: no account record binds its owner, an
-// admin disabled it, a mint failed, or a failure before is still within the
-// backoff. It never falls back to the bridge bot: a read or a post in the
-// agent's name has no other token (ADR-014 phase 5, RT-6.44). Bot uses it with
-// the home and keeps the fallback.
+// Client returns name's own bot as the client of its token, and the error why
+// it cannot be had: no account record binds its owner, an admin disabled it, a
+// mint failed, a failure before is still within the backoff, or the bot is not
+// a member of channel. It never joins the bot to channel and never falls back
+// to the bridge bot: a read in the agent's name has no other token, and joining
+// is the posting path's (Bot, mirror.Sink) alone (ADR-014 phase 5, RT-6.44).
 func (b *Bots) Client(ctx context.Context, name, channel string) (*mm.Client, error) {
+	return b.client(ctx, name, channel, false)
+}
+
+// client is Bot and Client: join true joins the bot to channel and caches it;
+// false checks the membership and never joins.
+func (b *Bots) client(ctx context.Context, name, channel string, join bool) (*mm.Client, error) {
 	e := b.entry(name)
 	e.posted.Store(b.now().UnixNano())
 	e.mu.Lock()
@@ -202,7 +214,7 @@ func (b *Bots) Client(ctx context.Context, name, channel string) (*mm.Client, er
 		b.Log.Warn("agentbots: the owner's account record changed; the bot is checked again", "agent", name)
 		e.client, e.joined = nil, map[string]bool{}
 	}
-	if e.client != nil && e.joined[channel] {
+	if e.client != nil && join && e.joined[channel] {
 		return e.client, nil
 	}
 	if !e.failed.IsZero() && b.now().Sub(e.failed) < b.backoff() {
@@ -229,10 +241,21 @@ func (b *Bots) Client(ctx context.Context, name, channel string) (*mm.Client, er
 		}
 		e.agent, e.owner, e.client = a, owner, mm.New(b.URL, tok).As(a.ID)
 	}
-	if err := b.Admin.JoinChannels(ctx, e.agent, []string{channel}); err != nil {
-		return nil, b.fail(e, name, fmt.Errorf("join %s: %w", channel, err))
+	if join {
+		if err := b.Admin.JoinChannels(ctx, e.agent, []string{channel}); err != nil {
+			return nil, b.fail(e, name, fmt.Errorf("join %s: %w", channel, err))
+		}
+		e.joined[channel] = true
+	} else {
+		member, err := b.Admin.MemberOf(ctx, e.agent, channel)
+		switch {
+		case err != nil:
+			return nil, b.fail(e, name, fmt.Errorf("membership of %s: %w", channel, err))
+		case !member:
+			// no backoff: the bot may be added to the channel at any time
+			return nil, &NotInChannel{Channel: channel}
+		}
 	}
-	e.joined[channel] = true
 	e.failed = time.Time{}
 	return e.client, nil
 }
