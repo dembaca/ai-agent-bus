@@ -619,7 +619,7 @@ wheels = [
 
 [[package]]
 name = "mattermost-ai-agent-bus"
-version = "0.103.0"
+version = "0.104.0"
 source = { editable = "../../mcp" }
 dependencies = [
     { name = "aiohttp" },
