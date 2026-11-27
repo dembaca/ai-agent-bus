@@ -53,7 +53,7 @@ func statsLab(t *testing.T) (admin, js *nats.Conn) {
 	for _, s := range []string{BusStream, PresenceStream, StatsStream} {
 		allow = append(allow, "$JS.API.STREAM.CREATE."+s, "$JS.API.STREAM.INFO."+s, "$JS.API.CONSUMER.*."+s, "$JS.API.CONSUMER.*."+s+".>")
 	}
-	allow = append(allow, "stats.>")
+	allow = append(allow, "stats.import.*") // the import's right (RT-6.45)
 	srv, err := server.NewServer(&server.Options{Host: "127.0.0.1", Port: -1, JetStream: true,
 		StoreDir: t.TempDir(), NoLog: true, NoSigs: true,
 		Users: []*server.User{{Username: "admin", Password: "pwd"}, {Username: "js", Password: "pwd", Permissions: &server.Permissions{
@@ -230,7 +230,7 @@ func TestTheStatsFillIsWatched(t *testing.T) {
 	}
 }
 
-// Put publishes on <stats>.import-<bot> with its headers, refuses a name that
+// Put publishes on <stats>.import.<bot> with its headers, refuses a name that
 // is no bot's username, and ReadAll gives the name, body and headers back.
 func TestTheImportPublishesUnderItsOwnToken(t *testing.T) {
 	admin, js := statsLab(t)
@@ -258,7 +258,76 @@ func TestTheImportPublishesUnderItsOwnToken(t *testing.T) {
 			t.Fatal(err)
 		}
 	}
-	if len(got) != 1 || got[0] != (line{"import-agent-mac-1", `{"v":"0.85.0"}`, "p1"}) {
+	if len(got) != 1 || got[0] != (line{"import.agent-mac-1", `{"v":"0.85.0"}`, "p1"}) {
 		t.Fatalf("%v", got)
+	}
+}
+
+// A shorter age or cap later (or a rollback to one) brings an existing
+// stream down at the next start: checkStream lets a longer one up to the
+// ceilings pass, so the update can run; beyond them, or unlimited, it is
+// refused (RT-6.45).
+func TestTheStatsLimitsGoDownToo(t *testing.T) {
+	if StatsMaxAge > statsAgeCeiling || StatsMaxMsgsPerSubject > statsPerSubjectCeiling {
+		t.Fatal("the current limits pass the ceilings")
+	}
+	admin, _ := statsLab(t)
+	m := manager(t, admin, nil, 0)
+	if err := m.EnsureStreams(tctx(t)); err != nil {
+		t.Fatal(err)
+	}
+	if err := admin.Publish("stats.agent-a", []byte(`{"sid":"aaaaaaaaaaaa","part":1}`)); err != nil {
+		t.Fatal(err)
+	}
+	short := m.Stats()
+	short.age, short.perSubject = 30*24*time.Hour, 100
+	for range 2 {
+		if err := short.Update(tctx(t)); err != nil {
+			t.Fatal(err)
+		}
+	}
+	if got := statsConfig(t, m); got["max_age"] != float64(30*24*time.Hour) || got["max_msgs_per_subject"] != float64(100) {
+		t.Fatalf("not brought down: %v %v", got["max_age"], got["max_msgs_per_subject"])
+	}
+	// and up again
+	if err := m.Stats().Update(tctx(t)); err != nil || statsConfig(t, m)["max_age"] != float64(StatsMaxAge) {
+		t.Fatalf("up again: %v, %v", statsConfig(t, m)["max_age"], err)
+	}
+	// A configured age beyond the ceiling never reaches the stream.
+	long := m.Stats()
+	long.age = statsAgeCeiling + time.Hour
+	if err := long.Update(tctx(t)); err == nil {
+		t.Fatal("an age beyond the ceiling")
+	}
+	// An existing stream beyond the ceiling, or without an age, is refused.
+	for _, age := range []time.Duration{statsAgeCeiling + 24*time.Hour, 0} {
+		cfg := statsConfig(t, m)
+		cfg["max_age"] = float64(age)
+		if err := m.api(tctx(t), "$JS.API.STREAM.UPDATE."+StatsStream, cfg, nil); err != nil {
+			t.Fatal(err)
+		}
+		if err := m.Stats().Update(tctx(t)); !errors.Is(err, ErrUnsafeStream) {
+			t.Fatalf("age %s: %v", age, err)
+		}
+	}
+}
+
+// Room is what STATS takes before it drops its oldest lines.
+func TestTheStatsRoom(t *testing.T) {
+	admin, _ := statsLab(t)
+	m := manager(t, admin, nil, 20<<10)
+	if err := m.EnsureStreams(tctx(t)); err != nil {
+		t.Fatal(err)
+	}
+	s := m.Stats()
+	before, err := s.Room(tctx(t))
+	if err != nil || before != 20<<10 {
+		t.Fatalf("empty: %d, %v", before, err)
+	}
+	if err := s.Put(tctx(t), "bot-a", bytes.Repeat([]byte("x"), 1000), nil); err != nil {
+		t.Fatal(err)
+	}
+	if after, err := s.Room(tctx(t)); err != nil || after > before-1000 {
+		t.Fatalf("after a line: %d, %v", after, err)
 	}
 }

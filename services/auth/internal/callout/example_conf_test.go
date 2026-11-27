@@ -377,7 +377,7 @@ func TestTheExampleServerConfiguration(t *testing.T) {
 			}
 			pub = append(pub, "$JS.API.STREAM.CREATE."+consumers.StatsStream, "$JS.API.STREAM.INFO."+consumers.StatsStream,
 				// the STATS history (RT-6.45): the in-place update and the import
-				"$JS.API.STREAM.UPDATE."+consumers.StatsStream, consumers.DefaultStatsPrefix+".>")
+				"$JS.API.STREAM.UPDATE."+consumers.StatsStream, consumers.DefaultStatsPrefix+"."+consumers.ImportToken+".*")
 			// the operators' consumers on STATS (RT-6.43)
 			pub = append(pub, "$JS.API.CONSUMER.*."+consumers.StatsStream, "$JS.API.CONSUMER.*."+consumers.StatsStream+".>",
 				"presence.person.*.v1")

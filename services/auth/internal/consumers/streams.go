@@ -38,11 +38,21 @@ const (
 
 	// StatsMaxAge is how long a STATS line stays: a year of history, the
 	// statistics the stats channel held imported included (RT-6.45). Change it
-	// here (to 180 days, say): the service updates an existing stream to it.
+	// here (to 180 days, say): the service updates an existing stream to it,
+	// up or down, at its next start. At most statsAgeCeiling.
 	StatsMaxAge = 365 * 24 * time.Hour
 	// StatsMaxMsgsPerSubject is how many lines one agent's subject keeps: a
-	// name that floods pushes out only its own oldest lines.
+	// name that floods pushes out only its own oldest lines. Updated in
+	// place like the age; at most statsPerSubjectCeiling.
 	StatsMaxMsgsPerSubject = 500
+
+	// statsAgeCeiling and statsPerSubjectCeiling are what checkStream allows
+	// an existing STATS before the in-place update (RT-6.45): a stream made
+	// with a longer age or a larger cap than the current ones (a shortened
+	// StatsMaxAge, a rollback) passes, so the update can bring it down; one
+	// beyond these bounds, unlimited or zero is refused.
+	statsAgeCeiling        = 365 * 24 * time.Hour
+	statsPerSubjectCeiling = 500
 
 	DefaultBusMaxBytes      int64 = 1 << 30
 	DefaultPresenceMaxBytes int64 = 16 << 20
@@ -144,7 +154,7 @@ func checkStream(name, subject string, got map[string]any) error {
 	case PresenceStream:
 		limit = PresenceMaxAge
 	case StatsStream:
-		limit = StatsMaxAge
+		limit = statsAgeCeiling
 	}
 	if maxAge <= 0 || maxAge > limit {
 		bad = append(bad, fmt.Sprintf("max_age is not within 0 and %s", limit))
@@ -161,8 +171,8 @@ func checkStream(name, subject string, got map[string]any) error {
 		bad = append(bad, "max_msgs_per_subject is not 1")
 	}
 	if name == StatsStream { // RT-6.43: pinned as created
-		if n := num("max_msgs_per_subject"); n <= 0 || n > StatsMaxMsgsPerSubject {
-			bad = append(bad, fmt.Sprintf("max_msgs_per_subject is not within 1 and %d", StatsMaxMsgsPerSubject))
+		if n := num("max_msgs_per_subject"); n <= 0 || n > statsPerSubjectCeiling {
+			bad = append(bad, fmt.Sprintf("max_msgs_per_subject is not within 1 and %d", statsPerSubjectCeiling))
 		}
 		if num("max_msg_size") != statsMaxMsgSize {
 			bad = append(bad, fmt.Sprintf("max_msg_size is not %d", statsMaxMsgSize))

@@ -56,7 +56,7 @@ func (s *statsChat) Users(_ context.Context, ids []string) ([]mattermost.User, e
 
 // statsLab starts a JetStream server with the bus's streams and returns the
 // STATS stream's history side and a connection.
-func statsLab(t *testing.T) (*consumers.Stats, *nats.Conn) {
+func statsLab(t *testing.T, maxBytes ...int64) (*consumers.Stats, *nats.Conn) {
 	t.Helper()
 	srv, err := server.NewServer(&server.Options{Host: "127.0.0.1", Port: -1, JetStream: true,
 		StoreDir: t.TempDir(), NoLog: true, NoSigs: true})
@@ -73,7 +73,7 @@ func statsLab(t *testing.T) (*consumers.Stats, *nats.Conn) {
 		t.Fatal(err)
 	}
 	t.Cleanup(nc.Close)
-	m, err := consumers.New(nc, consumers.Config{Bus: "bus", Presence: "presence"})
+	m, err := consumers.New(nc, consumers.Config{Bus: "bus", Presence: "presence", StatsMaxBytes: append(maxBytes, 0)[0]})
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -133,7 +133,7 @@ func runStats(t *testing.T, e *env, tok string, code int) StatsReport {
 	return rep
 }
 
-// The import publishes each valid line on <stats>.import-<bot>, byte for
+// The import publishes each valid line on <stats>.import.<bot>, byte for
 // byte, marked as imported with its original time and post id; skips a line
 // STATS holds by (sid, part) (here one an agent published under its NATS
 // name), one the run already wrote, and a post younger than two minutes;
@@ -178,7 +178,7 @@ func TestStatsImportMarksDedupesAndDrops(t *testing.T) {
 	}
 	e := statsSetup(t, chat, s)
 	rep := runStats(t, e, e.admin, 200)
-	wantRep := StatsReport{Read: 17, Imported: 4, ImportedWithoutSid: 2, NotStats: 1, SkippedDuplicate: 3, SkippedInvalid: 5, SkippedTooBig: 1, SkippedName: 2,
+	wantRep := StatsReport{Read: 17, Published: 4, PublishedWithoutSid: 2, Confirmed: 4, NotStats: 1, SkippedDuplicate: 3, SkippedInvalid: 5, SkippedTooBig: 1, SkippedName: 2,
 		SkippedRecent: 1, Oldest: t0.Add(time.Minute).Format(time.RFC3339), Newest: t0.Add(18 * time.Minute).Format(time.RFC3339)}
 	if rep != wantRep {
 		t.Fatalf("report\n%+v, want\n%+v", rep, wantRep)
@@ -191,10 +191,10 @@ func TestStatsImportMarksDedupesAndDrops(t *testing.T) {
 		name, body, post string
 		at               time.Time
 	}{
-		{"import-agent-c", older, "p11", t0.Add(time.Minute)}, // oldest post first
-		{"import-agent-a", keep, "p2", t0.Add(6 * time.Minute)},
-		{"import-agent-a", oldFormat, "p15", t0.Add(17 * time.Minute)},
-		{"import-agent-a", oldFormat, "p16", t0.Add(18 * time.Minute)},
+		{"import.agent-c", older, "p11", t0.Add(time.Minute)}, // oldest post first
+		{"import.agent-a", keep, "p2", t0.Add(6 * time.Minute)},
+		{"import.agent-a", oldFormat, "p15", t0.Add(17 * time.Minute)},
+		{"import.agent-a", oldFormat, "p16", t0.Add(18 * time.Minute)},
 	} {
 		l := got[i+1]
 		if l.name != w.name || l.body != w.body || l.hdr.Get("Cb-Post-Id") != w.post {
@@ -205,7 +205,7 @@ func TestStatsImportMarksDedupesAndDrops(t *testing.T) {
 		}
 	}
 	again := runStats(t, e, e.admin, 200)
-	if again.Imported != 0 || again.SkippedDuplicate != 7 || again.Oldest != "" {
+	if again.Published != 0 || again.SkippedDuplicate != 7 || again.Oldest != "" {
 		t.Fatalf("second run: %+v", again)
 	}
 	if n := len(lines(t, s)); n != 5 {
@@ -229,7 +229,7 @@ func TestAPostIdOnAnAgentsSubjectIsIgnored(t *testing.T) {
 	chat := &statsChat{users: map[string]mattermost.User{"ua": bot("ua", "agent-a")},
 		posts: []mattermost.Post{post("p1", "ua", 1, `STATS {"v":"0.85.0"}`)}}
 	e := statsSetup(t, chat, s)
-	if rep := runStats(t, e, e.admin, 200); rep.Imported != 1 {
+	if rep := runStats(t, e, e.admin, 200); rep.Published != 1 {
 		t.Fatalf("%+v", rep)
 	}
 }
@@ -250,21 +250,21 @@ func TestTheStatsImportKeepsTheNewestPerName(t *testing.T) {
 		chat.posts = append(chat.posts, post(fmt.Sprint("p", i), "ua", i, "STATS "+line(i)))
 	}
 	e := statsSetup(t, chat, s)
-	if rep := runStats(t, e, e.admin, 200); rep.Imported != 500 || rep.ImportedWithoutSid != 250 || rep.SkippedOverCap != 2 || rep.Oldest != t0.Add(2*time.Minute).Format(time.RFC3339) {
+	if rep := runStats(t, e, e.admin, 200); rep.Published != 500 || rep.PublishedWithoutSid != 250 || rep.SkippedOverCap != 2 || rep.Oldest != t0.Add(2*time.Minute).Format(time.RFC3339) {
 		t.Fatalf("first run: %+v", rep)
 	}
-	if rep := runStats(t, e, e.admin, 200); rep.Imported != 0 || rep.SkippedOverCap != 2 || rep.SkippedDuplicate != 500 {
+	if rep := runStats(t, e, e.admin, 200); rep.Published != 0 || rep.SkippedOverCap != 2 || rep.SkippedDuplicate != 500 {
 		t.Fatalf("second run: %+v", rep)
 	}
 	chat.posts = append(chat.posts, post("p502", "ua", 502, "STATS "+line(502)))
-	if rep := runStats(t, e, e.admin, 200); rep.Imported != 1 || rep.SkippedOverCap != 3 {
+	if rep := runStats(t, e, e.admin, 200); rep.Published != 1 || rep.SkippedOverCap != 3 {
 		t.Fatalf("a newer post: %+v", rep)
 	}
 	got := lines(t, s)
 	if len(got) != 500 || got[0].body != line(3) {
 		t.Fatalf("%d lines, the oldest %q", len(got), got[0].body)
 	}
-	if rep := runStats(t, e, e.admin, 200); rep.Imported != 0 {
+	if rep := runStats(t, e, e.admin, 200); rep.Published != 0 {
 		t.Fatalf("after the newer post: %+v", rep)
 	}
 }
@@ -297,7 +297,7 @@ func TestAnInterruptedStatsImportIsCompletedByTheNext(t *testing.T) {
 		t.Fatalf("%d lines after the cut", n)
 	}
 	e := statsSetup(t, chat, s)
-	if rep := runStats(t, e, e.admin, 200); rep.Imported != 3 || rep.SkippedDuplicate != 2 {
+	if rep := runStats(t, e, e.admin, 200); rep.Published != 3 || rep.SkippedDuplicate != 2 {
 		t.Fatalf("the next run: %+v", rep)
 	}
 	if n := len(lines(t, s)); n != 5 {
@@ -317,28 +317,52 @@ func TestTheStatsImportWantsTheAdminGroupAndIsOffWithoutAChannel(t *testing.T) {
 	runStats(t, off, off.bob, 403)
 }
 
-// The run's bounds (RT-6.45): at most MaxRead posts read and MaxHeld bytes of
-// lines held; at either the reading ends there, the newest posts imported and
-// the report truncated, and the next run with room takes the older ones.
+// The run's bounds (RT-6.45): at most MaxLines lines and MaxHeld bytes held to
+// publish (posts already in STATS do not count, so a rerun gets past them);
+// at either the reading ends there, the newest published and the report
+// says truncated and why, and the next run takes the older ones.
 func TestTheStatsImportIsBounded(t *testing.T) {
 	s, _ := statsLab(t)
 	chat := &statsChat{users: map[string]mattermost.User{"ua": bot("ua", "agent-a")}}
 	for i := range 6 {
 		chat.posts = append(chat.posts, post(fmt.Sprint("p", i), "ua", i, fmt.Sprintf(`STATS {"v":"0.85.0","n":%d}`, i)))
 	}
-	e := statsSetup(t, chat, s, func(si *StatsImport) { si.MaxRead = 2 })
+	lines := func(si *StatsImport) { si.MaxLines = 2 }
+	e := statsSetup(t, chat, s, lines)
 	rep := runStats(t, e, e.admin, 200)
-	if rep.Read != 2 || rep.Imported != 2 || !rep.Truncated || rep.Oldest != t0.Add(4*time.Minute).Format(time.RFC3339) || chat.given != 3 {
-		t.Fatalf("read bound: %+v, %d posts handed out", rep, chat.given)
+	if rep.Read != 2 || rep.Published != 2 || rep.Confirmed != 2 || rep.Truncated != "lines" || rep.Oldest != t0.Add(4*time.Minute).Format(time.RFC3339) || chat.given != 3 {
+		t.Fatalf("first run: %+v, %d posts handed out", rep, chat.given)
 	}
-	size := len(`{"v":"0.85.0","n":0}`)
-	e = statsSetup(t, chat, s, func(si *StatsImport) { si.MaxHeld = 3*size + 1 })
-	rep = runStats(t, e, e.admin, 200)
-	if rep.Imported != 3 || rep.SkippedDuplicate != 2 || !rep.Truncated || rep.Oldest != t0.Add(1*time.Minute).Format(time.RFC3339) {
+	e = statsSetup(t, chat, s, lines)
+	if rep = runStats(t, e, e.admin, 200); rep.Published != 2 || rep.SkippedDuplicate != 2 || rep.Truncated != "lines" || rep.Oldest != t0.Add(2*time.Minute).Format(time.RFC3339) {
+		t.Fatalf("the rerun gets past the published ones: %+v", rep)
+	}
+	size := len(`{"v":"0.85.0","n":0}`) + lineOverhead
+	e = statsSetup(t, chat, s, func(si *StatsImport) { si.MaxHeld = size + 1 })
+	if rep = runStats(t, e, e.admin, 200); rep.Published != 1 || rep.SkippedDuplicate != 4 || rep.Truncated != "room" || rep.Oldest != t0.Add(time.Minute).Format(time.RFC3339) {
 		t.Fatalf("held bound: %+v", rep)
 	}
 	e = statsSetup(t, chat, s)
-	if rep = runStats(t, e, e.admin, 200); rep.Imported != 1 || rep.SkippedDuplicate != 5 || rep.Truncated {
+	if rep = runStats(t, e, e.admin, 200); rep.Published != 1 || rep.SkippedDuplicate != 5 || rep.Truncated != "" {
 		t.Fatalf("with room: %+v", rep)
+	}
+}
+
+// The import never publishes more than STATS has room for: it would push
+// STATS's own oldest lines out (discard old). The newest that fit go in.
+func TestTheStatsImportFitsTheRoomLeft(t *testing.T) {
+	s, _ := statsLab(t, 9<<10)
+	chat := &statsChat{users: map[string]mattermost.User{"ua": bot("ua", "agent-a")}}
+	pad := strings.Repeat("x", 2000)
+	for i := range 6 {
+		chat.posts = append(chat.posts, post(fmt.Sprint("p", i), "ua", i, fmt.Sprintf(`STATS {"v":"0.85.0","n":%d,"pad":"%s"}`, i, pad)))
+	}
+	e := statsSetup(t, chat, s)
+	rep := runStats(t, e, e.admin, 200)
+	if rep.Published != 4 || rep.Confirmed != 4 || rep.Truncated != "room" || rep.Oldest != t0.Add(2*time.Minute).Format(time.RFC3339) {
+		t.Fatalf("%+v", rep)
+	}
+	if n := len(lines(t, s)); n != 4 {
+		t.Fatalf("%d lines: STATS dropped some", n)
 	}
 }

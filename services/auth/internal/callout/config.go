@@ -3,7 +3,6 @@ package callout
 import (
 	"errors"
 	"fmt"
-	"strings"
 	"time"
 
 	"github.com/dembaca/ai-agent-bus/services/auth/internal/consumers"
@@ -91,11 +90,6 @@ func (c Config) check() error {
 	}
 	if err := c.Subjects.checkStats(); err != nil {
 		return err
-	}
-	// The STATS import publishes on <stats>.import-<bot> (RT-6.45): no
-	// agent's name, and so no agent's STATS right, may start like that.
-	if strings.HasPrefix(c.NamePrefix, consumers.ImportToken) {
-		return fmt.Errorf("callout: name prefix %q starts with %q, the STATS import's token: an agent could publish imported lines", c.NamePrefix, consumers.ImportToken)
 	}
 	if c.Timeout <= 0 || c.Timeout > 10*time.Second {
 		return fmt.Errorf("callout: timeout %s: must be above 0 and at most 10s", c.Timeout)

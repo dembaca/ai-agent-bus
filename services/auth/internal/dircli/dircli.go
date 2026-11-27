@@ -935,9 +935,10 @@ func (c *cli) printStatsImport(r reply) error {
 	}
 	var rep struct {
 		Read             int    `json:"read"`
-		Imported         int    `json:"imported"`
-		WithoutSid       int    `json:"imported_without_sid"`
-		Truncated        bool   `json:"truncated"`
+		Published        int    `json:"published"`
+		WithoutSid       int    `json:"published_without_sid"`
+		Confirmed        int    `json:"confirmed"`
+		Truncated        string `json:"truncated"`
 		NotStats         int    `json:"not_stats"`
 		SkippedDuplicate int    `json:"skipped_duplicate"`
 		SkippedInvalid   int    `json:"skipped_invalid"`
@@ -951,14 +952,18 @@ func (c *cli) printStatsImport(r reply) error {
 	if err := json.Unmarshal(r.body, &rep); err != nil {
 		return errors.New("the API's answer is not a stats import report")
 	}
-	fmt.Fprintf(c.out, "posts read %d, lines imported %d (%d of them from before 0.91.0, without sid), posts without a STATS line %d\n",
-		rep.Read, rep.Imported, rep.WithoutSid, rep.NotStats)
+	fmt.Fprintf(c.out, "posts read %d, lines published %d (%d of them from before 0.91.0, without sid; %d found in STATS after the run), posts without a STATS line %d\n",
+		rep.Read, rep.Published, rep.WithoutSid, rep.Confirmed, rep.NotStats)
 	fmt.Fprintf(c.out, "skipped: already there %d, not a valid line %d, too big %d, no agent name %d, too recent %d, over the cap per name %d\n",
 		rep.SkippedDuplicate, rep.SkippedInvalid, rep.SkippedTooBig, rep.SkippedName, rep.SkippedRecent, rep.SkippedOverCap)
 	if rep.Oldest != "" {
-		fmt.Fprintf(c.out, "imported lines from %s to %s\n", clean(rep.Oldest), clean(rep.Newest))
+		fmt.Fprintf(c.out, "published lines from %s to %s\n", clean(rep.Oldest), clean(rep.Newest))
 	}
-	if rep.Truncated {
+	switch rep.Truncated {
+	case "":
+	case "room":
+		fmt.Fprintln(c.out, "older posts were not read: STATS has no more room (it would drop its oldest lines); make room, then run it again")
+	default:
 		fmt.Fprintln(c.out, "older posts were not read (the run's bound); run it again to take them")
 	}
 	return nil

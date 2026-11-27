@@ -204,33 +204,22 @@ func TestNoPrefixIsTheInbox(t *testing.T) {
 	}
 }
 
-// RT-6.45: no agent may publish an imported STATS line (<stats>.import-<bot>),
-// whatever channels its credential carries, and no name prefix may make an
-// agent's name start like one.
+// RT-6.45: no agent may publish an imported STATS line, <stats>.import.<bot>:
+// three tokens, where an agent's one STATS right has two, whatever channels
+// its credential carries and whatever its name (even "import", which no
+// agent's name can be: a name is the name prefix and 26 characters).
 func TestNoAgentMayPublishAnImportedStatsLine(t *testing.T) {
 	c := Config{Account: "BUS"}.WithDefaults()
 	for _, chans := range [][]string{nil, {"home"}, {"home", "ga", "gb"}} {
-		p := c.Subjects.permissions("agent-x", "alice", "home", chans)
-		for _, subject := range []string{"stats.import-agent-x", "stats.import-bot", "stats.import-x"} {
-			for _, f := range p.Pub.Allow {
-				if match(f, subject) {
-					t.Errorf("channels %v: publish %s allows %s", chans, f, subject)
+		for _, agent := range []string{"agent-x", "import"} {
+			p := c.Subjects.permissions(agent, "alice", "home", chans)
+			for _, subject := range []string{"stats.import.agent-x", "stats.import.bot", "stats.import.import"} {
+				for _, f := range p.Pub.Allow {
+					if match(f, subject) {
+						t.Errorf("%s, channels %v: publish %s allows %s", agent, chans, f, subject)
+					}
 				}
 			}
-		}
-	}
-	for _, prefix := range []string{"import-", "import-agent-"} {
-		bad := c
-		bad.NamePrefix = prefix
-		if err := bad.check(); err == nil || !strings.Contains(err.Error(), "import") {
-			t.Errorf("name prefix %q: %v", prefix, err)
-		}
-	}
-	for _, prefix := range []string{"agent-", "imp-", "import"} {
-		ok := c
-		ok.NamePrefix = prefix
-		if err := ok.check(); err != nil {
-			t.Errorf("name prefix %q: %v", prefix, err)
 		}
 	}
 }
