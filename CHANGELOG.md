@@ -83,7 +83,9 @@ before 0.5.0 are described in the git history.
   marker, off its receive loop, under a per-kind size limit and a per-agent rate
   limit, with every logged value truncated. The MCP server gets
   `requests.request(kind, payload, timeout)` in a module of its own, with its prefix
-  as a setting beside the bus's, presence's and STATS's. The bridge user's NATS
+  as a setting beside the bus's, presence's and STATS's; it reads an answer in parts
+  (`part`, `last`) until the last one, so a file download or a long history read
+  arrives whole. The bridge user's NATS
   rights (subscribe `<req>.>`, publish `deliver.*.req.*`) are in the example
   configuration and pinned by its test; an image rolled out before the lab's
   configuration grants them keeps running - people's posts still go onto NATS,
@@ -92,8 +94,30 @@ before 0.5.0 are described in the git history.
   subscribe once a minute with one Error line, naming it in `/healthz` as
   `requests: <error>` (the probe stays 200). No stream covers either subject,
   so nothing is kept: a lost message fails the request, and the caller gets an
-  error, never a silent success. Nothing of the pieces is built; the scaffold
+  error, never a silent success. The pieces are built one by one; the scaffold
   and the rights on both sides run against a real nats-server.
+- **Plan B piece 5a: people's history, the bridge's side** (#244, ADR-014 phase 5,
+  RT-6.42 step 11). A session asks on `<req>.history.<agent>` for what people wrote
+  while it was away: `{"channel": "<channel token>", "since": <epoch ms>}` or a
+  Mattermost root as `"thread"`, with an optional `limit` of 1 to 200 posts. The
+  bridge answers from Mattermost with that agent's own bridge bot, never the bridge
+  bot, only in a channel the agent announced a membership of within 24 h
+  (`presence.member.<channel>.<name>`, else `not a channel of that agent`) and only
+  where piece 5 is switched on (else `piece 5 is off in <channel>`), never reading
+  another agent's channel. A `since` older than 14 days is refused, so no read walks
+  the whole channel; a thread read is bounded and must lie in the requested channel.
+  Each post is Mattermost's fields the reads use plus its author's anchor and the
+  login service's account record, each reaction with its sender's, a bot marked
+  `bot`, and a bot's reaction and a deleted, system or webhook post left out; the
+  session checks the record by RT-6.42's freshness rule, so an approval read back
+  from history counts only with a fresh approver record. An answer stays within 200
+  posts, 512 KiB and parts of 128 KiB and says `more` with `next` while posts
+  remain; the scaffold now numbers a piece's parts 1..n itself and marks the last,
+  so the MCP client's parts read gets a whole answer. The bridge's presence reader
+  also keeps the memberships, so the operator adds `presence.member.*.*` to the
+  `bridge_presence` consumer; without it every history read is refused and nothing
+  else changes. Not built: the MCP server's side (piece 5b), so a session still
+  reads people on Mattermost.
 - **Plan B's switch per piece and channel** (#244, ADR-014 phase 5, RT-6.39
   step 5). A channel in the channel directory now holds `planb`: the plan B
   pieces switched on in it, 1 to 13, each once, none by default (piece 14,

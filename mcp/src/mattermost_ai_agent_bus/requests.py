@@ -10,7 +10,8 @@ lost message fails the request and the caller gets an error, never a silent succ
 
 The body is JSON, ``{"v": 1, "request": "<id>", "kind": "<kind>", "payload": ...}``,
 the answer ``{"v": 1, "request": "<id>", "kind": "<kind>", "error": "..."}`` or the
-same with a result the kind defines. The request id is 16 characters of ``[a-z0-9]``
+same with a result the kind defines. An answer may come in parts: each carries
+``part`` (from 1) and ``last``, and the call reads until a part says ``last``. The request id is 16 characters of ``[a-z0-9]``
 and is made here, since the agent has no inbox right: the bridge never answers onto a
 subject the request names.
 """
@@ -58,11 +59,19 @@ def _decode_answer(body: bytes | bytearray, request: str, kind: str) -> dict[str
 
 async def request(bus: NatsBus, kind: str, payload: Mapping[str, Any] | None = None, *,
                   timeout: float = REQUEST_SEC, prefix: str | None = None) -> dict[str, Any]:
-    """Ask the bridge for one ``kind`` and wait for its answer (``REQUEST_SEC``).
+    """Ask the bridge for one ``kind`` and collect its answer (``REQUEST_SEC``).
+
+    An answer may come in parts: each carries ``part`` (1, 2, ...) and ``last``, and
+    the call reads until a part says ``last`` - one request, one deadline. One part
+    returns its ``result`` as before; several return ``{"parts": [result, ...]}``, the
+    results in part order, so a file download or a long history read gets the whole
+    answer. A gap in the numbering, a part that names another request or kind, and a
+    stream that never ends (no ``last`` before the deadline) are errors, as is a
+    bridge that answers with an ``error``.
 
     Raises ``RequestError`` when the bus is not connected, when nothing answers within
     ``timeout``, when the bridge answers with an error (the scaffold answers "not
-    built" for every kind), or when the answer does not name this request and kind.
+    built" for every kind), or when an answer does not hold together.
     """
     if kind not in KINDS:
         raise ValueError(f"unknown request kind {kind!r}; one of {', '.join(KINDS)}")
@@ -86,12 +95,28 @@ async def request(bus: NatsBus, kind: str, payload: Mapping[str, Any] | None = N
     try:
         await nc.flush()  # subscribed before the request goes out
         await bus._publish(subject, body)  # noqa: SLF001 - same path as a post, same rights check
-        try:
-            msg = await asyncio.wait_for(answers.get(), timeout)
-        except asyncio.TimeoutError:
-            raise RequestError(f"the bridge did not answer a {kind} request within {timeout:.0f} s") from None
-        data = getattr(msg, "data", b"")
-        return _decode_answer(data if isinstance(data, (bytes, bytearray)) else b"", request_id, kind)
+        parts: list[Any] = []
+        expected = 1
+        while True:
+            try:
+                msg = await asyncio.wait_for(answers.get(), timeout)
+            except asyncio.TimeoutError:
+                if parts:
+                    raise RequestError(
+                        f"the bridge's {kind} answer stopped after part {expected - 1}") from None
+                raise RequestError(
+                    f"the bridge did not answer a {kind} request within {timeout:.0f} s") from None
+            data = getattr(msg, "data", b"")
+            answer = _decode_answer(data if isinstance(data, (bytes, bytearray)) else b"",
+                                    request_id, kind)
+            part = answer.get("part", 1)
+            if part != expected:
+                raise RequestError(f"the bridge's {kind} answer has part {part}, expected {expected}")
+            parts.append(answer.get("result"))
+            if answer.get("last", True):
+                break
+            expected += 1
+        return parts[0] if len(parts) == 1 else {"parts": parts}
     finally:
         try:
             await sub.unsubscribe()

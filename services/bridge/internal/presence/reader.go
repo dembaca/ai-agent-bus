@@ -15,10 +15,12 @@ import (
 const ConsumerName = "bridge_presence"
 
 // Reader follows the operator's presence push consumer into a snapshot. The
-// consumer's deliver policy is the latest presence per subject, so a new
-// consumer starts with a full picture. After a bridge restart the consumer is
-// not recreated, so a name is unknown until that agent's next presence: a
-// display fallback to the NATS name, never a lost post.
+// consumer's deliver policy is the latest message per subject, so a new
+// consumer starts with a full picture; it carries the presences and the
+// memberships (presence.member.<channel>.<name>, its second filter). After a
+// bridge restart the consumer is not recreated, so a name is unknown until that
+// agent's next presence: a display fallback to the NATS name, never a lost
+// post.
 type Reader struct {
 	Log     *slog.Logger
 	Deliver string // deliver.bridge.presence
@@ -51,6 +53,24 @@ func (r *Reader) Run(ctx context.Context, nc *nats.Conn) error {
 }
 
 func (r *Reader) one(m *nats.Msg) {
+	// The stream's own time, not this host's clock: a presence is fresh
+	// relative to what the server delivered, as the MCP reads it too.
+	at := time.Now()
+	var seq uint64
+	if md, err := m.Metadata(); err == nil {
+		if !md.Timestamp.IsZero() {
+			at = md.Timestamp
+		}
+		seq = md.Sequence.Stream
+	}
+	if channel, name, ok := Membership(m.Subject); ok {
+		if err := DecodeMember(m.Data); err != nil {
+			r.Log.Warn("presence: unreadable membership", "subject", m.Subject, "error", err)
+			return
+		}
+		r.Into.ObservedMember(channel, name, at, seq)
+		return
+	}
 	owner, name, ok := Subject(m.Subject)
 	if !ok {
 		return
@@ -59,12 +79,6 @@ func (r *Reader) one(m *nats.Msg) {
 	if err != nil {
 		r.Log.Warn("presence: unreadable", "subject", m.Subject, "error", err)
 		return
-	}
-	// The stream's own time, not this host's clock: a presence is fresh
-	// relative to what the server delivered, as the MCP reads it too.
-	at := time.Now()
-	if md, err := m.Metadata(); err == nil && !md.Timestamp.IsZero() {
-		at = md.Timestamp
 	}
 	r.Into.Observed(name, owner, bot, status, at)
 }

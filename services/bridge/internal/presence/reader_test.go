@@ -39,17 +39,22 @@ func TestThePushedPresencesReachTheSnapshot(t *testing.T) {
 		Subjects: []string{"presence.>"}, NoAck: true, Storage: jetstream.MemoryStorage}); err != nil {
 		t.Fatal(err)
 	}
-	// the operator's consumer: the latest presence per subject, no acks
+	// the operator's consumer: the latest presence and membership per subject,
+	// no acks
 	if _, err := js.CreateOrUpdateConsumer(ctx, "PRESENCE", jetstream.ConsumerConfig{
-		Name: ConsumerName, Durable: ConsumerName, FilterSubject: "presence.*.*",
-		DeliverSubject: "deliver.bridge.presence", DeliverPolicy: jetstream.DeliverLastPerSubjectPolicy,
-		AckPolicy: jetstream.AckNonePolicy,
+		Name: ConsumerName, Durable: ConsumerName,
+		FilterSubjects: []string{"presence.*.*", "presence.member.*.*"},
+		DeliverSubject: "deliver.bridge.presence",
+		DeliverPolicy:  jetstream.DeliverLastPerSubjectPolicy,
+		AckPolicy:      jetstream.AckNonePolicy,
 	}); err != nil {
 		t.Fatal(err)
 	}
 	// published before the bridge is up: last-per-subject delivers it
 	mustPublish(t, nc, "presence.alice.agent-a", `{"v":1,"status":"online","bot":"bot-a"}`)
 	mustPublish(t, nc, "presence.alice.reader", `not json`)
+	mustPublish(t, nc, "presence.member.home.agent-a", `{"v":1}`)
+	mustPublish(t, nc, "presence.member.home.broken", `{"v":2}`)
 
 	snap := New()
 	r := &Reader{Log: slog.New(slog.NewTextHandler(io.Discard, nil)),
@@ -72,6 +77,12 @@ func TestThePushedPresencesReachTheSnapshot(t *testing.T) {
 	// an unreadable presence is skipped, and it does not stop the next one
 	if _, ok := snap.Get("reader"); ok {
 		t.Fatal("an unreadable presence reached the snapshot")
+	}
+	// the membership is read beside the presences (RT-6.37), and one that does
+	// not decode leaves no membership behind
+	until(t, func() bool { return snap.MemberFresh("home", "agent-a") })
+	if snap.MemberFresh("home", "broken") {
+		t.Fatal("a membership that does not decode reached the snapshot")
 	}
 
 	// a later presence replaces the earlier one

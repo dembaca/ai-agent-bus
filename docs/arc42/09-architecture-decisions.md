@@ -4166,7 +4166,9 @@ reads yet (RT-6.39 step 5).
     and `CB_BRIDGE_REQ_PREFIX`, both defaulting to `req`. The request body is
     `{"v": 1, "request": "<16 chars of [a-z0-9]>", "kind": ..., "payload": ...}`
     and the answer names the same request and kind, so an answer cannot be
-    paired with another request; the bridge answers per kind from a handler
+    paired with another request; an answer may come in parts, each with `part`
+    and `last`, and the client reads until the last one; the bridge answers per
+    kind from a handler
     map (`not built` until pieces 5, 8 and 9 fill them), with a `result`
     field and `part`/`last` for multi-part answers, off its receive loop,
     under a per-kind size limit, a per-agent rate limit and truncated logs;
@@ -4319,6 +4321,44 @@ reads yet (RT-6.39 step 5).
        back. Lab: a person posts while the session is stopped; after its
        start the post and its thread are there, and an ask answered
        meanwhile counts.
+     - Built in part (Unreleased, #244 piece 5a, the bridge's side). The
+       payload is `{"channel": "<channel token>", "since": <epoch ms>,
+       "limit": <posts>}` or, instead of since, `"thread": "<Mattermost
+       post id>"`; `limit` is 1 to 200, 200 without it, and an unknown key
+       is refused. The channel is the token the membership subject and
+       the switch carry (`~home`), not a Mattermost id: the bridge
+       resolves it by name in its team. It checks the membership first, after
+       the payload's shape, so a channel the agent did not announce answers
+       `not a channel of that agent` whether the piece is on there or
+       not; the membership is read from `presence.member.*.*`, a second
+       filter the operator adds to `bridge_presence` (RT-6.37), and no
+       other agent's channel is read. Then piece 5's switch (piece 1's
+       record), `piece 5 is off in <channel>` without it; a since older
+       than 14 days; and the agent's own bridge bot, never the bridge
+       bot (RT-6.44), which is also joined to the channel for the read. A
+       channel read asks Mattermost's `since` (its own 1000-post bound)
+       and drops what was created before since; a thread read asks the
+       root's thread, at most the limit, and refuses one in another
+       channel. The answer's result is `{"v":1,"channel","channel_id",
+       "thread","posts"}`; each post is Mattermost's fields the reads
+       use, with its author's anchor and the login service's account
+       record beside it, each reaction with its sender's, a bot's post
+       marked `bot`, and a bot's reaction, a deleted, system or webhook
+       post left out. The bridge answers the record it holds now, not
+       the post's, and judges neither `exp` nor `approver`: the session
+       applies the freshness rule exactly as to a live event. The answer
+       stays within 200 posts, 512 KiB and parts of 128 KiB, which the
+       scaffold numbers 1..n with `last` on the final one, so one request
+       arrives whole; while posts remain the last part says `more` and
+       names `next`, the create_at to ask on from. A `since` read that
+       returns Mattermost's own 1000 is answered as `more` too; which
+       posts sat behind that cap is unknowable, as over the catch-up's
+       read (RT-6.42 step 1). While the bridge's
+       account records are not read yet, the read is refused (`ask
+       again`). Not built: the MCP server's side (piece 5b), so a session
+       still reads people on Mattermost; and the read of a post's files,
+       which piece 8 owns (a post's `file_count` is in the answer, its
+       `mm` id lets `get_file` fetch them).
   6. **Asks to humans and the answer** (RT-6.11), the reply and the
      approval by reaction. Needs the roster (piece 2), people's history
      (piece 5) and people's events over NATS with a fresh signal

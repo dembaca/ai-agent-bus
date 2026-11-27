@@ -2645,7 +2645,7 @@ async def test_a_request_goes_to_the_bridge_and_its_answer_comes_back(rig: Rig) 
         out = await requests.request(bus, "history", {"channel": "home"}, timeout=5)
     finally:
         await sub.unsubscribe()
-    assert out["result"] == {"ok": True}
+    assert out == {"ok": True}  # one part: its result
     subject, body = asked[0]
     assert subject == f"req.history.{bus.name}"
     assert body["v"] == 1 and body["kind"] == "history"
@@ -2800,3 +2800,61 @@ def test_decode_planb_is_strict() -> None:
         natsbus.decode_planb(b'{"v":1,"channel":"home"}', "home")
     with pytest.raises(natsbus.MessageError):
         natsbus.decode_planb(b'{"v":1,"channel":"home","pieces":"1"}', "home")
+
+
+async def test_a_multi_part_answer_is_collected_until_its_last_part(rig: Rig) -> None:
+    """ADR-014 phase 5: an answer may come in parts (a file download, a long history
+    read). The call reads until a part says last and returns them in part order; a
+    gap, or a stream that never ends, is an error, never a silent short answer."""
+    from mattermost_ai_agent_bus import requests
+
+    bus, _ = await rig.agent("alice")
+
+    async def bridge(msg: Any) -> None:
+        body = json.loads(msg.data)
+        for part, last in ((1, False), (2, True)):
+            await rig.admin.publish(
+                f"deliver.{bus.name}.req.{body['request']}",
+                json.dumps({"v": 1, "request": body["request"], "kind": body["kind"],
+                            "part": part, "last": last, "result": {"part": part}}).encode())
+
+    sub = await rig.admin.subscribe("req.>", cb=bridge)
+    try:
+        out = await requests.request(bus, "file", timeout=5)
+    finally:
+        await sub.unsubscribe()
+    assert out == {"parts": [{"part": 1}, {"part": 2}]}
+
+
+async def test_a_part_gap_or_a_missing_last_is_an_error(rig: Rig) -> None:
+    from mattermost_ai_agent_bus import requests
+
+    bus, _ = await rig.agent("alice")
+
+    async def gap(msg: Any) -> None:
+        body = json.loads(msg.data)
+        await rig.admin.publish(
+            f"deliver.{bus.name}.req.{body['request']}",
+            json.dumps({"v": 1, "request": body["request"], "kind": body["kind"],
+                        "part": 2, "last": True, "result": {}}).encode())
+
+    sub = await rig.admin.subscribe("req.>", cb=gap)
+    try:
+        with pytest.raises(requests.RequestError, match="expected 1"):
+            await requests.request(bus, "history", timeout=5)
+    finally:
+        await sub.unsubscribe()
+
+    async def never_last(msg: Any) -> None:
+        body = json.loads(msg.data)
+        await rig.admin.publish(
+            f"deliver.{bus.name}.req.{body['request']}",
+            json.dumps({"v": 1, "request": body["request"], "kind": body["kind"],
+                        "part": 1, "last": False, "result": {}}).encode())
+
+    sub = await rig.admin.subscribe("req.>", cb=never_last)
+    try:
+        with pytest.raises(requests.RequestError, match="stopped after part 1"):
+            await requests.request(bus, "history", timeout=1)
+    finally:
+        await sub.unsubscribe()

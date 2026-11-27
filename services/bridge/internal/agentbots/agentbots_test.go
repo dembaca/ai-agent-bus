@@ -564,3 +564,40 @@ func TestABotsReactionIsRemovedWhateverStateTheBotIsIn(t *testing.T) {
 		t.Fatalf("left %v, removed by %v", f.reactions, f.removedBy)
 	}
 }
+
+// ADR-014 phase 5 piece 5: Client is the agent's own bot, joined to the very
+// channel a request reads in; without an account record for its owner there is
+// none, and the bridge bot is no fallback.
+func TestTheClientIsTheAgentsOwnBot(t *testing.T) {
+	f := newFake(t)
+	ctx := context.Background()
+	b := newBots(t, f, aliceAgent())
+	c, err := b.Client(ctx, "agent-a", "guest")
+	if err != nil || c == nil {
+		t.Fatalf("client %v %v", c, err)
+	}
+	if _, err := c.Create(ctx, "c-guest", "hi", "", nil); err != nil {
+		t.Fatal(err)
+	}
+	f.mu.Lock()
+	posted := f.posts[0]["user_id"]
+	joined := len(f.members["c-guest"])
+	f.mu.Unlock()
+	if posted != "bot1" || joined != 1 {
+		t.Fatalf("posted as %v, joined %d", posted, joined)
+	}
+	// the second use joins nothing again
+	if again, err := b.Client(ctx, "agent-a", "guest"); err != nil || again != c {
+		t.Fatalf("the second use: %v %v", again, err)
+	}
+	f.mu.Lock()
+	if len(f.members["c-guest"]) != 1 {
+		t.Fatalf("joined again: %v", f.members["c-guest"])
+	}
+	f.mu.Unlock()
+
+	noOwner := newBotsOf(t, f, aliceAgent(), owners{})
+	if c, err := noOwner.Client(ctx, "agent-a", "home"); err == nil || c != nil {
+		t.Fatalf("without an owner: %v %v", c, err)
+	}
+}

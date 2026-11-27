@@ -28,6 +28,7 @@ import (
 	"github.com/dembaca/ai-agent-bus/services/bridge/internal/agentbots"
 	"github.com/dembaca/ai-agent-bus/services/bridge/internal/commands"
 	"github.com/dembaca/ai-agent-bus/services/bridge/internal/config"
+	"github.com/dembaca/ai-agent-bus/services/bridge/internal/history"
 	"github.com/dembaca/ai-agent-bus/services/bridge/internal/inbound"
 	"github.com/dembaca/ai-agent-bus/services/bridge/internal/links"
 	"github.com/dembaca/ai-agent-bus/services/bridge/internal/mirror"
@@ -89,14 +90,26 @@ func run(log *slog.Logger) error {
 	}
 	h := &health{}
 	var wg sync.WaitGroup
+	// Plan B's switches per channel, as the login service writes them from the
+	// channel directory (RT-6.39 step 5), through the bridge's own consumer
+	// bridge_planb made at every start.
+	planb := &presence.Switches{}
 	// The request scaffold (ADR-014 phase 5): requests on <req>.<kind>.<agent>
-	// get this phase's "not built" answer on deliver.<agent>.req.<request id>.
-	// A lost message fails the request; the handler retries a refused
-	// subscription once a minute and only reports why it is not answering, so
-	// an image rolled out before the lab's NATS rights leaves requests
-	// unanswered and never stops the bridge; /healthz names the failure.
+	// get this phase's "not built" answer on deliver.<agent>.req.<request id>
+	// until a piece is wired in; piece 5 answers the history read. A lost
+	// message fails the request; the handler retries a refused subscription
+	// once a minute and only reports why it is not answering, so an image
+	// rolled out before the lab's NATS rights leaves requests unanswered and
+	// never stops the bridge; /healthz names the failure.
 	if cfg.ReqPrefix != "" {
-		rq := &requests.Handler{Log: log, Prefix: cfg.ReqPrefix}
+		handlers := map[string]requests.Piece{}
+		hist := &history.Handler{Log: log, Team: cfg.MMTeam, Presence: snapshot,
+			Switches: planb, People: accounts}
+		if bots != nil {
+			hist.Bots = bots
+		}
+		handlers["history"] = hist.Piece
+		rq := &requests.Handler{Log: log, Prefix: cfg.ReqPrefix, Handlers: handlers}
 		h.requests = rq
 		wg.Add(1)
 		go func() {
@@ -106,10 +119,6 @@ func run(log *slog.Logger) error {
 			}
 		}()
 	}
-	// Plan B's switches per channel, as the login service writes them from the
-	// channel directory (RT-6.39 step 5), through the bridge's own consumer
-	// bridge_planb made at every start: no piece reads them yet.
-	planb := &presence.Switches{}
 	pr := &presence.Reader{Log: log, Deliver: cfg.Deliver + ".presence", Into: snapshot}
 	pbr := &presence.PlanBReader{Log: log, Deliver: cfg.Deliver + ".planb", Stream: "PRESENCE", Into: planb}
 	wg.Add(1)

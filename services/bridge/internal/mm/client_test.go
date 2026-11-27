@@ -227,3 +227,36 @@ func TestTheMirrorReadsTheStatusOfAFailure(t *testing.T) {
 		t.Error("a timeout counted as a refused token")
 	}
 }
+
+// A thread read asks for its bounded page, keeps the root first and carries
+// the metadata and reactions with the posts: the history read's context.
+func TestThread(t *testing.T) {
+	c := fake(t, func(w http.ResponseWriter, r *http.Request) {
+		if r.URL.Path != "/api/v4/posts/root1/thread" {
+			w.WriteHeader(http.StatusNotFound)
+			return
+		}
+		if got := r.URL.Query().Get("per_page"); got != "200" {
+			t.Errorf("per_page %q, want 200", got)
+		}
+		_, _ = w.Write([]byte(`{"order":["reply","root1"],"posts":{` +
+			`"reply":{"id":"reply","user_id":"u2","channel_id":"ch7","root_id":"root1","create_at":2000},` +
+			`"root1":{"id":"root1","user_id":"u1","channel_id":"ch7","create_at":1000,` +
+			`"metadata":{"reactions":[{"user_id":"u2","emoji_name":"+1","create_at":5}]}}}}`))
+	})
+	posts, err := c.Thread(context.Background(), "root1", 500)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(posts) != 2 || posts[0].ID != "root1" || posts[1].RootID != "root1" {
+		t.Fatalf("the thread: %+v", posts)
+	}
+	if !posts[0].HasMetadata || len(posts[0].Reactions) != 1 ||
+		posts[0].Reactions[0].EmojiName != "+1" {
+		t.Fatalf("the root's reactions: %+v", posts[0])
+	}
+	// a thread Mattermost has no post for is an error, never an empty thread
+	if _, err := c.Thread(context.Background(), "gone", 0); err == nil {
+		t.Fatal("a missing thread is no error")
+	}
+}
