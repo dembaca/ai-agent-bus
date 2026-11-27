@@ -3991,8 +3991,8 @@ plan B is proven. Proposed, from that choice of plan B directly: the
 owner's approval that opens the central adapter, which the acceptance of
 the parallel operation (phase 4) set, moves to before the last piece.
 Proposed as well: the pieces, their order and the acceptance below.
-Built so far: the switch per piece and channel (below), which no piece
-reads yet (RT-6.39 step 5).
+Built so far: the switch per piece and channel (below, RT-6.39 step 5),
+which each piece reads for itself.
 
 - **Context.** Phase 5 is accepted when the bus's scenarios with humans
   run without any agent holding a Mattermost token. A home over NATS
@@ -4201,6 +4201,18 @@ reads yet (RT-6.39 step 5).
        coordinator's call on 2026-11-27).
      - Switch: channels from the directory. Way back: Mattermost's ids
        again; nothing in flight.
+     - Built (after 0.104.0): the directory's channel carries the chat's
+       own id (`chat_ids`, set by the import, the admin API and `authd dir
+       chat-id`, checked on write), the login
+       service writes it into the agent's channel record
+       `<presence>.directory.<agent>.v1` with each credential, and the
+       session reads it from there (RT-6.39 step 6); the binding itself
+       stays the chat's channel name, so the id is a field of its own. The
+       switch is `planb.on(1, channel)`, the channel's plan B switch for
+       piece 1 (RT-6.39 step 6), off by default. Not
+       moved with it, as they are other pieces' reads: the bot's own
+       Mattermost id and name (the roster, piece 2) and the join of a guest
+       or the lobby by a person.
      - Test: `resolve` without a Mattermost read; the records' key.
        Lab: a test home whose session finds its channels with the
        Mattermost read blocked.

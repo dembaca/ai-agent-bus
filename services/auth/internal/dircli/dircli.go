@@ -13,6 +13,7 @@ import (
 	"errors"
 	"fmt"
 	"io"
+	"maps"
 	"net"
 	"net/http"
 	"net/url"
@@ -240,6 +241,8 @@ func (c *cli) check(pos []string) error {
 		return need(1, true)
 	case "owner":
 		return need(2, true)
+	case "chat-id":
+		return need(3, true)
 	case "public":
 		if err := need(2, true); err != nil {
 			return err
@@ -605,6 +608,7 @@ type channel struct {
 	Members  []string          `json:"members"`
 	Bindings map[string]string `json:"bindings"`
 	PlanB    []int             `json:"planb"`
+	ChatIDs  map[string]string `json:"chat_ids"`
 }
 
 type putBody struct {
@@ -614,6 +618,9 @@ type putBody struct {
 	// PlanB: nil leaves the key out, so the service keeps the pieces; a
 	// pointer to an empty list switches every piece off (RT-6.39 step 5).
 	PlanB *[]int `json:"planb,omitempty"`
+	// ChatIDs: nil sends null, so the service keeps them; an empty map
+	// clears them (RT-6.40 step 4).
+	ChatIDs map[string]string `json:"chat_ids"`
 }
 
 // planBArg reads `planb`'s list: "-" for none, else pieces 1 to 13,
@@ -712,19 +719,30 @@ func (c *cli) command(pos []string) error {
 			return err
 		}
 		return c.printChannel(r)
-	case "owner", "public":
+	case "owner", "public", "chat-id":
 		path := "/v1/directory/channels/" + esc(pos[1])
 		cur, ch, err := c.read(path)
 		if err != nil {
 			return err
 		}
-		b := putBody{Owner: ch.Owner, Public: ch.Public, Bindings: ch.Bindings}
-		if pos[0] == "owner" {
+		b := putBody{Owner: ch.Owner, Public: ch.Public, Bindings: ch.Bindings, ChatIDs: ch.ChatIDs}
+		switch pos[0] {
+		case "owner":
 			b.Owner = pos[2]
 			if pos[2] == "-" {
 				b.Owner = ""
 			}
-		} else {
+		case "chat-id": // chat-id <channel> <product> <id>; "-" as the id removes it
+			b.ChatIDs = maps.Clone(ch.ChatIDs)
+			if b.ChatIDs == nil {
+				b.ChatIDs = map[string]string{}
+			}
+			if pos[3] == "-" {
+				delete(b.ChatIDs, pos[2])
+			} else {
+				b.ChatIDs[pos[2]] = pos[3]
+			}
+		default:
 			b.Public = pos[2] == "on"
 		}
 		r, err := c.call("PUT", path, map[string]string{"If-Match": cur.etag}, b)
@@ -742,7 +760,7 @@ func (c *cli) command(pos []string) error {
 		if err != nil {
 			return err
 		}
-		b := putBody{Owner: ch.Owner, Public: ch.Public, Bindings: ch.Bindings, PlanB: &pieces}
+		b := putBody{Owner: ch.Owner, Public: ch.Public, Bindings: ch.Bindings, ChatIDs: ch.ChatIDs, PlanB: &pieces}
 		r, err := c.call("PUT", path, map[string]string{"If-Match": cur.etag}, b)
 		if err != nil {
 			return err

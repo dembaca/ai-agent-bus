@@ -47,6 +47,20 @@ func (c Channels) MembershipsFor(ctx context.Context, username, sub string, chan
 	return c.Store.Memberships(ctx, sub, channels)
 }
 
+// ChatIDs is the chat's own ids of the channels (RT-6.39 step 6): from the
+// directory once the import has run, none before it (the directory then holds
+// no ids, and the session reads them from the chat as before).
+func (c Channels) ChatIDs(ctx context.Context, product string, names []string) (map[string]string, error) {
+	imported, err := c.Store.Imported(ctx)
+	if err != nil {
+		return nil, err
+	}
+	if !imported {
+		return map[string]string{}, nil
+	}
+	return c.Store.ChatIDs(ctx, product, names)
+}
+
 // Anchors gives the callout each identity's anchor (decisions 7 and 9).
 type Anchors struct {
 	Store *Store
