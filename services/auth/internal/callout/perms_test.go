@@ -203,3 +203,23 @@ func TestNoPrefixIsTheInbox(t *testing.T) {
 		}
 	}
 }
+
+// RT-6.45: no agent may publish an imported STATS line, <stats>.import.<bot>:
+// three tokens, where an agent's one STATS right has two, whatever channels
+// its credential carries and whatever its name (even "import", which no
+// agent's name can be: a name is the name prefix and 26 characters).
+func TestNoAgentMayPublishAnImportedStatsLine(t *testing.T) {
+	c := Config{Account: "BUS"}.WithDefaults()
+	for _, chans := range [][]string{nil, {"home"}, {"home", "ga", "gb"}} {
+		for _, agent := range []string{"agent-x", "import"} {
+			p := c.Subjects.permissions(agent, "alice", "home", chans)
+			for _, subject := range []string{"stats.import.agent-x", "stats.import.bot", "stats.import.import"} {
+				for _, f := range p.Pub.Allow {
+					if match(f, subject) {
+						t.Errorf("%s, channels %v: publish %s allows %s", agent, chans, f, subject)
+					}
+				}
+			}
+		}
+	}
+}

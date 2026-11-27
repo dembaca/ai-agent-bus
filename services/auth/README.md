@@ -94,7 +94,8 @@ cannot be used end to end until both change.
 | `CB_AUTH_ACCOUNT` | — | the tenant's account the agents land in |
 | `CB_AUTH_LOBBY` | unset | the lobby's channel name |
 | `CB_AUTH_SUBJECT_PREFIX`, `CB_AUTH_PRESENCE_PREFIX`, `CB_AUTH_STATS_PREFIX`, `CB_AUTH_NAME_PREFIX` | `bus`, `presence`, `stats`, `agent-` | subject prefix of channels and direct messages, of presence and crown claims, of the agents' `STATS` lines (stream `STATS`, RT-6.43; all three must differ, and none may be `deliver` or `_INBOX`), the start of agent names |
-| `CB_AUTH_JS_SEED_FILE`, `CB_AUTH_JS_URL` | —, `CB_AUTH_NATS_URL` | file with the user nkey seed of the service's own user in the tenant account, the only one with JetStream API rights, and its server; required with `CB_AUTH_NATS_URL`: the service makes the streams and every agent's consumers (RT-6.35) and does not start without them. That user needs only (`TestTheDocumentedMinimalRightsSuffice`): publish `$JS.API.STREAM.CREATE.<S>`, `$JS.API.STREAM.INFO.<S>`, `$JS.API.CONSUMER.*.<S>` and `$JS.API.CONSUMER.*.<S>.>` for `<S>` = `BUS`, `PRESENCE`; `$JS.API.STREAM.CREATE.STATS` and `$JS.API.STREAM.INFO.STATS` for the `STATS` lines (RT-6.43), and `$JS.API.CONSUMER.*.STATS` and `$JS.API.CONSUMER.*.STATS.>` for the operators' consumers on them, and `<presence>.person.*.v1` for each console login's own record (RT-6.43); for the channel directory (RT-6.39), which also holds the trust index an operator's consumers are filtered by (RT-6.43), `$JS.API.INFO`, `$JS.API.STREAM.CREATE.KV_BUS_DIRECTORY`, `$JS.API.STREAM.INFO.KV_BUS_DIRECTORY`, `$JS.API.DIRECT.GET.KV_BUS_DIRECTORY.>`, `$KV.BUS_DIRECTORY.>`, and for its key listings `$JS.API.CONSUMER.CREATE.KV_BUS_DIRECTORY.>` and `$JS.API.CONSUMER.DELETE.KV_BUS_DIRECTORY.*` (with another `CB_AUTH_DIRECTORY_BUCKET`, its name in place of `BUS_DIRECTORY`); for the attestations (RT-6.41) `$JS.API.STREAM.MSG.GET.PRESENCE` and `<presence>.attest.*.v1`; for the account records of people (RT-6.42) `<presence>.account.mattermost.*.v1`; subscribe `_INBOX.>` |
+| `CB_AUTH_JS_SEED_FILE`, `CB_AUTH_JS_URL` | —, `CB_AUTH_NATS_URL` | file with the user nkey seed of the service's own user in the tenant account, the only one with JetStream API rights, and its server; required with `CB_AUTH_NATS_URL`: the service makes the streams and every agent's consumers (RT-6.35) and does not start without them. That user needs only (`TestTheDocumentedMinimalRightsSuffice`): publish `$JS.API.STREAM.CREATE.<S>`, `$JS.API.STREAM.INFO.<S>`, `$JS.API.CONSUMER.*.<S>` and `$JS.API.CONSUMER.*.<S>.>` for `<S>` = `BUS`, `PRESENCE`; `$JS.API.STREAM.CREATE.STATS` and `$JS.API.STREAM.INFO.STATS` for the `STATS` lines (RT-6.43), and `$JS.API.CONSUMER.*.STATS` and `$JS.API.CONSUMER.*.STATS.>` for the operators' consumers on them, and `<presence>.person.*.v1` for each console login's own record (RT-6.43); for the channel directory (RT-6.39), which also holds the trust index an operator's consumers are filtered by (RT-6.43), `$JS.API.INFO`, `$JS.API.STREAM.CREATE.KV_BUS_DIRECTORY`, `$JS.API.STREAM.INFO.KV_BUS_DIRECTORY`, `$JS.API.DIRECT.GET.KV_BUS_DIRECTORY.>`, `$KV.BUS_DIRECTORY.>`, and for its key listings `$JS.API.CONSUMER.CREATE.KV_BUS_DIRECTORY.>` and `$JS.API.CONSUMER.DELETE.KV_BUS_DIRECTORY.*` (with another `CB_AUTH_DIRECTORY_BUCKET`, its name in place of `BUS_DIRECTORY`); for the attestations (RT-6.41) `$JS.API.STREAM.MSG.GET.PRESENCE` and `<presence>.attest.*.v1`; for the account records of people (RT-6.42) `<presence>.account.mattermost.*.v1`; for the STATS history (RT-6.45) `$JS.API.STREAM.UPDATE.STATS` (the in-place update of an existing stream's limits) and `<stats>.import.*` (the import's lines on `<stats>.import.<bot>`), granted before an upgrade starts the service, or the start stops with an error that names the update right; subscribe `_INBOX.>` |
+| `CB_MM_STATS_CHANNEL` (also `MM_STATS_CHANNEL`) | `agents-stats` | the stats channel the STATS import reads (`authd dir stats-import`, RT-6.45), the sessions' own setting read the same way: `off`, `none`, `0`, `false` or empty turn the import off |
 | `CB_AUTH_REQUEST_TIMEOUT` | `1.5s` | bound of one request (token check, chat lookups, answer), at most 10 s; keep it below the server's callout timeout |
 | `CB_AUTH_BRAKE_FILE` | unset | the emergency brake (below) |
 | `CB_AUTH_KEYCLOAK_ISSUER`, `CB_AUTH_KEYCLOAK_JWKS_URL`, `CB_AUTH_KEYCLOAK_CLIENT_ID` | — | the realm and the bus's client |
@@ -349,10 +350,17 @@ signed by the account key, valid 15 minutes from the check:
   into the stream. The streams must be created with `no_ack`, every `allow_*`
   switch off, `deny_delete`, `deny_purge` and a size limit (`max_bytes`); presence and crowns are a stream
   of their own, one message per subject, not a key-value bucket; the `STATS`
-  lines too (stream `STATS` on `stats.>`: 30 days, 64 MiB, 8 KiB per message,
+  lines too (stream `STATS` on `stats.>`: 365 days, 64 MiB, 8 KiB per message,
   at most 500 per subject, the oldest discarded; a stream that keeps more per
   subject or longer, takes other than 8 KiB per message or is not on file is
-  refused at the start).
+  refused at the start). The STATS history (RT-6.45): an existing `STATS`
+  made with other limits gets the age, the cap per subject and a smaller
+  size changed in place at the start, up or down (a larger size is kept;
+  a stream with an age up to 365 days and a cap up to 500 passes the check,
+  so a shorter one can be brought down), and the service warns
+  `stats stream over 80 % full` once per crossing, checked every hour. The
+  import of the stats channel publishes on `stats.import.<bot>`, three
+  tokens: an agent's right is its own two-token `stats.<name>`.
   `CB_AUTH_SUBJECT_PREFIX`, `CB_AUTH_PRESENCE_PREFIX` and `CB_AUTH_STATS_PREFIX` set the three prefixes.
   **The proof** is `internal/callout/native_sender_test.go`: an embedded
   nats-server (the version in `go.mod`, 2.15.3) with this callout, attacked
@@ -482,6 +490,7 @@ process's memory: never on disk, never printed, never in the environment.
 | `owner <channel> <sub>` or `-`, `public <channel> on` or `off` | owner and visibility (admins), over the revision just read |
 | `members add` or `rm <channel> <sub>…` | members (the channel's owner), over the revision just read |
 | `import` | the one import from Mattermost (admins), with its report |
+| `stats-import` | the stats channel's `STATS` lines into `STATS` (admins, RT-6.45), on `stats.import.<bot>`, as often as wanted: a line already there is skipped (by `sid` and `part`, or by its post's id), lines from before 0.91.0 without `sid` are published too, and only the newest 500 per bot are kept, so a second run publishes nothing; one run holds at most 100,000 lines and no more bytes than `STATS` has room for, the newest first, and says truncated (by lines or by room) when it stopped there; `STATS` acknowledges nothing, so the report says published, and how many of them a read after the run found; its report counts the posts read, the lines imported and the skipped ones by reason |
 | `account show <name>`, `account set <name> <sub> [--rev N]`, `account rm <name> --rev N` | the Mattermost account index (admins): which identity a name resolves to, with `moved_from` when it moved; set creates without `--rev` and replaces over it |
 | `pending`, `confirm <name>`, `drop <name>` | the claims of password accounts (with the full channels one waits on), an admin's confirmation over the listed revision, and deleting a claim over the listed revision |
 

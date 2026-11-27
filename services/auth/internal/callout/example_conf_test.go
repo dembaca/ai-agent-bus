@@ -375,7 +375,9 @@ func TestTheExampleServerConfiguration(t *testing.T) {
 				pub = append(pub, "$JS.API.STREAM.CREATE."+s, "$JS.API.STREAM.INFO."+s,
 					"$JS.API.CONSUMER.*."+s, "$JS.API.CONSUMER.*."+s+".>")
 			}
-			pub = append(pub, "$JS.API.STREAM.CREATE."+consumers.StatsStream, "$JS.API.STREAM.INFO."+consumers.StatsStream)
+			pub = append(pub, "$JS.API.STREAM.CREATE."+consumers.StatsStream, "$JS.API.STREAM.INFO."+consumers.StatsStream,
+				// the STATS history (RT-6.45): the in-place update and the import
+				"$JS.API.STREAM.UPDATE."+consumers.StatsStream, consumers.DefaultStatsPrefix+"."+consumers.ImportToken+".*")
 			// the operators' consumers on STATS (RT-6.43)
 			pub = append(pub, "$JS.API.CONSUMER.*."+consumers.StatsStream, "$JS.API.CONSUMER.*."+consumers.StatsStream+".>",
 				"presence.person.*.v1")
@@ -445,6 +447,18 @@ func TestTheExampleServerConfiguration(t *testing.T) {
 	}
 	if _, err := nc.Request("$JS.API.STREAM.INFO."+consumers.StatsStream, nil, 2*time.Second); err != nil {
 		t.Fatalf("STATS: %v", err)
+	}
+	// The STATS history (RT-6.45): the update, an imported line and the
+	// import's reading, with the example's rights.
+	stats := mgr.Stats()
+	if err := stats.Update(ctx5(t)); err != nil {
+		t.Fatalf("STATS update: %v", err)
+	}
+	if err := stats.Put(ctx5(t), "bot-x", []byte(`{"v":"0.85.0"}`), nil); err != nil {
+		t.Fatalf("STATS import: %v", err)
+	}
+	if err := stats.ReadAll(ctx5(t), func() {}, func(string, []byte, nats.Header) error { return nil }); err != nil {
+		t.Fatalf("STATS read: %v", err)
 	}
 	// The channel directory (ADR-016): the same user makes its bucket, opens
 	// it again, writes and reads it with exactly these rights.

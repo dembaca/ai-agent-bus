@@ -7,6 +7,34 @@ before 0.5.0 are described in the git history.
 
 ### Added
 
+- **The STATS history: a year of statistics, and the stats channel's lines
+  imported** (#196, RT-6.45). The `STATS` stream keeps 365 days instead of
+  30 (64 MiB, 8 KiB per message and 500 per subject as before, the oldest
+  discarded); the login service brings an existing stream's age and cap to
+  these in place at its start, up or down (a larger size set by hand is
+  kept), and warns `stats stream over 80 % full` in its log. A shorter
+  `StatsMaxAge` later, or a rollback within this release line, brings the
+  stream down at the next start and drops its older lines; a rollback to a
+  release before this one needs the age set back by hand first
+  (`nats stream edit STATS --max-age 30d`, which drops the older lines too),
+  since that release refuses the longer stream. `authd dir stats-import`
+  (`POST /v1/stats/import`, admins) publishes the `STATS` lines of the stats
+  channel (`CB_MM_STATS_CHANNEL`) at least 2 minutes old into `STATS` on
+  `<stats>.import.<bot>`, three tokens, which no agent may publish and the
+  console's reports do not take, byte for byte, the lines from before 0.91.0
+  (no `sid`, no `part`) included, the newest 500 per bot, marked
+  `Cb-Source: mattermost-import` with the post's time in `Cb-Orig-Time` and
+  its id in `Cb-Post-Id`; it skips a line `STATS` holds by (`sid`, `part`)
+  or by post id, so it can run as often as wanted until Mattermost goes.
+  One run holds at most 100,000 lines and no more than `STATS` has room for,
+  the newest first. `STATS` acknowledges nothing, so the report says
+  published, and how many a read after the run found. An agent can set
+  `Cb-Orig-Time` on its own line, but nothing reads it there, so it
+  backdates nothing. The login service's JetStream user needs two new
+  rights, `$JS.API.STREAM.UPDATE.STATS` and publish on `<stats>.import.*`
+  (`nats-server.example.conf`), before the upgrade starts it. Nothing reads
+  the imported lines or more than 7 days yet: the console reads 7 days back.
+
 - **The console's per-agent numbers** (#201's first piece, the design canvas's data): `GET /v1/agent-stats` serves one row per own or trusted agent — one whose attestation names the logged-in operator as owner or trusted (the owner's decision amending ADR-015 point 15, RT-6.43 step 8); another owner's agent, or one without a known attestation, has no row — whose `STATS` parts the session's 7-day reading holds: the token sums of the last 24 hours and of the window (`all`, the split by token type, the input's bus overhead and coordination over the same parts; n/a without `tok` or for an empty object, never 0) and the posts, wakes and tool calls of 24 hours, read-only from the same consumers as the reports. The aggregate reports (`/v1/stats`, and `/metrics` as before) stay visible to every operator for all agents. Its requests count under a route bucket of their own on the metrics page. The browser app's API gains the wire types and the mock rows; no page shows them yet (the design PR #185's follow-ups own the UI).
 
 - **The central bridge sweeps the agent bots it made** (#151 step 2, RT-6.44): every 10 minutes it disables a bot it made for an agent that has shown no presence and posted nothing for longer than `CB_BRIDGE_MM_BOT_KEEP` (default `24h`, at least `1h`), and revokes the bot's tokens; at most 20 bots per pass, none while the presence feed is stale. A bot is the bridge's only by its prefix and its mark in the description together, never by the prefix alone, so the registrar's bots stay the host sweep's. Last seen is kept in memory: after a restart every bot counts as seen at the start. An agent that comes back gets its bot enabled again and a fresh token at its next message; only bots the sweep disabled (their description marked ` (swept)`) come back, one an admin disabled stays off. No new right, no new endpoint, nothing persisted; hosts notice nothing.
