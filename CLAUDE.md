@@ -29,7 +29,8 @@ is not done until the docs say what the code now does:
   link to the arc42 section instead of restating behaviour.
 - **Version bump → CHANGELOG.md entry** for that version, and the same version in
   `.claude-plugin/plugin.json` (the one doc-check reads), `mcp/pyproject.toml`,
-  `mcp/src/…/__init__.py` and `mcp/uv.lock` (doc-check compares the first three).
+  `mcp/src/…/__init__.py` and `mcp/uv.lock` and `console/server/uv.lock` (it pins the MCP package;
+  doc-check compares the first three).
 - **Which number?** SemVer from 0.72.0. Minor: a new tool, argument or
   command, a noticeably changed behaviour, anything breaking (under
   `### Breaking` in its CHANGELOG entry). Patch: fixes that change no
