@@ -214,3 +214,25 @@ func TestDecodePlanBIsStrict(t *testing.T) {
 		}
 	}
 }
+
+// CaughtUp (#266): false until the first replay commits, then true for good,
+// also while a later replay runs; the inbound bridge carries nothing before.
+func TestSwitchesCaughtUpAfterTheFirstReplay(t *testing.T) {
+	s := &Switches{}
+	if s.CaughtUp() {
+		t.Fatal("caught up before any replay")
+	}
+	s.Begin()
+	s.Observed("home", []int{4}, time.Now())
+	if s.CaughtUp() {
+		t.Fatal("caught up during the first replay")
+	}
+	s.Commit()
+	if !s.CaughtUp() || !s.On(4, "home") {
+		t.Fatal("not caught up after the first replay")
+	}
+	s.Begin() // a new consumer's replay
+	if !s.CaughtUp() || !s.On(4, "home") {
+		t.Fatal("a later replay forgot the switches")
+	}
+}

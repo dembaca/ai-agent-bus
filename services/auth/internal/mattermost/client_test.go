@@ -67,6 +67,21 @@ func serverWith(t *testing.T, admin *atomic.Bool, fail *atomic.Int32) *httptest.
 				c["auth_service"], c["auth_data"] = "", ""
 			}
 			send(c)
+		case strings.HasPrefix(p, "/api/v4/users/"): // by id (UserByID)
+			for _, u := range users {
+				if u["id"] == strings.TrimPrefix(p, "/api/v4/users/") {
+					c := map[string]any{}
+					for k, v := range u {
+						c[k] = v
+					}
+					if !admin.Load() {
+						c["auth_service"], c["auth_data"] = "", ""
+					}
+					send(c)
+					return
+				}
+			}
+			http.NotFound(w, r)
 		case p == "/api/v4/teams/name/lab/channels/name/home":
 			send(map[string]any{"id": "c-home"})
 		case p == "/api/v4/teams/name/lab/channels/name/other":
@@ -265,5 +280,25 @@ func TestAFailedCheckIsAskedAgainAtOnce(t *testing.T) {
 	clock = clock.Add(5 * time.Second)
 	if u, _ := c.User(ctx, "alice"); !u.AuthKnown {
 		t.Fatal("not asked again within the minute after a failed check")
+	}
+}
+
+// The sweep of the bindings (RT-6.42 step 3, #266) reads an account by its id,
+// as the token check reads it by name; a gone one is token.ErrNoSuchUser.
+func TestAUserByIDAsTheSweepNeedsIt(t *testing.T) {
+	ctx := context.Background()
+	c, err := New(ctx, server(t, true).URL, "lab", "tok")
+	if err != nil {
+		t.Fatal(err)
+	}
+	u, err := c.UserByID(ctx, "u1")
+	if err != nil || u.ID != "u1" || u.Username != "alice" || !u.AuthKnown || u.AuthService != "openid" || u.AuthData != "sub-1" {
+		t.Fatalf("u1: %+v, %v", u, err)
+	}
+	if u, err := c.UserByID(ctx, "u4"); err != nil || !u.Deactivated {
+		t.Fatalf("u4: %+v, %v", u, err)
+	}
+	if _, err := c.UserByID(ctx, "u9"); !errors.Is(err, token.ErrNoSuchUser) {
+		t.Fatalf("u9: %v", err)
 	}
 }

@@ -77,7 +77,8 @@ class Open:
 
 
 def path(uid: str) -> Path:
-    return session_file.state_dir() / f"unanswered-{uid}.env"
+    """Under the session's state key (RT-6.2): the NATS name with plan B piece 2 on, else the bot id."""
+    return session_file.state_dir() / f"unanswered-{session_file.state_key(uid)}.env"
 
 
 def _word(value: str) -> str:
@@ -181,3 +182,4 @@ def remind(uid: str, post_ids: Iterable[str]) -> int:
 def remove(uid: str) -> None:
     if uid:
         path(uid).unlink(missing_ok=True)
+        (session_file.state_dir() / f"unanswered-{uid}.env").unlink(missing_ok=True)
