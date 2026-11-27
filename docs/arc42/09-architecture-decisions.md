@@ -3997,6 +3997,44 @@ Nothing of it is built.
   open issue, not yet written as a decision). Both are rows of the
   acceptance below. Rejected: keeping the relay with its host process
   and the signed host copy, and keeping only the signed host copy.
+- **Decided: the login approval only at this machine once no agent has a
+  bot.** Decided 2026-11-27 by the owner (ask
+  `cobsyafi9fdq784jupn9no74yh`): it reaches the human through the
+  browser the MCP server opens and the address and code in its MCP log,
+  with no DM and no ask in the home. Today the MCP server, before it has
+  NATS credentials, sends the approval by DM under the agent's bot,
+  posts an ask in the home that points to the DM, and settles asks of
+  earlier approvals at its start (`login_notice.py`, RT-6.34); the DM,
+  the ask and their settling go with the end of registration (piece
+  14). The reason: the bridge sending these for a session that has no
+  NATS credential yet would need an endpoint where it cannot tell who
+  asks, so anyone who reaches it could have a person sent a login code
+  of another client of the realm (device-code phishing, RISK-29). The
+  price, accepted with it: a session started with nobody at the machine
+  (a remote or headless host, or a new login after the offline token
+  ran out, which the planned maximum lifetime makes regular) waits, and
+  nothing on the bus shows that it waits. Rejected: the DM and the ask
+  through the bridge.
+- **Decided: the hosts' setting for the bridge's address is
+  `CB_RECORDS_URL`.** Decided 2026-11-27 by the owner (ask
+  `6pegznmyztrf7cnjr3hzgkdofe`): the setting from which hosts read the
+  signed records and the release record, `MM_REGISTER_URL` today,
+  becomes `CB_RECORDS_URL` once the bridge serves them
+  ([docs/env-names.md](../env-names.md#goes-with-the-registrar-10)). It
+  names what the hosts read there; `CB_BRIDGE_URL` would read as one of
+  the bridge's own settings, which all start with `CB_BRIDGE_`
+  ([docs/env-names.md](../env-names.md#which-prefix)). The name sits
+  close to `CB_RELEASE_URL`, where the hosts fetch release tags, while
+  this setting also serves the release record. The new name for the
+  pinned keys of these records (`MM_REGISTRAR_KEYS`) is a question of
+  its own, not part of this decision.
+- **Decided: hosts delete the registration secret two weeks after the
+  shutdown.** Decided 2026-11-27 by the owner (ask
+  `4nfwzths83detf5a5unqs8ns5r`): hosts delete `MM_REG_SECRET`,
+  `MM_REG_SECRET_GOPASS`, `MM_REG_SECRET_CMD` and the stored value they
+  point to two weeks after the shutdown (phase 6), when its way back
+  ends; until then the plugin version before is the way back, with the
+  registrar on again, and still registers with the secret.
 - **Two bots of one agent.** "The agent's own bot" names two accounts
   during the move: the registrar's bot, made per session, whose token
   the MCP server holds; and the bridge's bot `<prefix><NATS name>`
@@ -4397,44 +4435,10 @@ Nothing of it is built.
   - the console's check of the release signature when the administrator
     moves the pinned version (#192) built, and the release notice
     reading the release record (piece 14);
-  - the login approval's way to the human once no agent has a bot
-    (the third open decision below) decided and built;
+  - the login approval only at this machine, as decided above, built;
   - then the owner's approval for the last piece (proposed, from the
     owner's choice of plan B directly, bus post
     `ukt76r9rijgyfewcy8rs9ii4mc`).
-- **Open for the owner**, each its own ask, one at a time:
-  1. Shall the hosts' setting for the bridge's address, from which they
-     read the signed records and the release record, `MM_REGISTER_URL`
-     today, be called `CB_RECORDS_URL`? Recommended: yes. It names what
-     the hosts read there; `CB_BRIDGE_URL` would read as one of the
-     bridge's own settings, which all start with `CB_BRIDGE_`
-     ([docs/env-names.md](../env-names.md#which-prefix)). The name sits
-     close to `CB_RELEASE_URL`, where the hosts fetch release tags, while
-     this setting also serves the release record; and the new name for
-     the pinned keys of these records (`MM_REGISTRAR_KEYS`) is a question
-     of its own, not part of this one. Not asked yet.
-  2. Shall hosts delete `MM_REG_SECRET`, with `MM_REG_SECRET_GOPASS`,
-     `MM_REG_SECRET_CMD` and the stored value they point to, two weeks
-     after the shutdown (phase 6), when its way back ends? Recommended:
-     yes; until then the plugin version before is the way back, with the
-     registrar on again, and still registers with the secret. Not asked
-     yet.
-  3. Once no agent has a bot, shall the login approval reach the human
-     only at this machine: the browser the MCP server opens and the
-     address and code in its MCP log, with no DM and no ask in the home?
-     Recommended: yes. Today the MCP server, before it has NATS
-     credentials, sends the approval by DM under the agent's bot, posts
-     an ask in the home that points to the DM, and settles asks of
-     earlier approvals at its start (`login_notice.py`, RT-6.34). The
-     alternative, the bridge sending these for a session that has no
-     NATS credential yet, needs an endpoint where the bridge cannot tell
-     who asks, so anyone who reaches it could have a person sent a login
-     code of another client of the realm (device-code phishing, RISK-29).
-     The price: a session started with nobody at the machine (a remote or
-     headless host, or a new login after the offline token ran out,
-     which the planned maximum lifetime makes regular) waits, and
-     nothing on the bus shows that it waits. The end of registration
-     (piece 14) cannot be built before this is answered. Not asked yet.
 - **Consequences.** For a while two paths per piece exist in the MCP
   server; the Mattermost adapter in the client goes only with the shutdown
   (phase 6). Once a home runs every piece, its people see and answer its
