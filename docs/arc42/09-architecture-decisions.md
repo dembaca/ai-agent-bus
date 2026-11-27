@@ -3648,6 +3648,11 @@ decided against it (Context).
 - Minus: no acknowledgement on publish, delivery at most once, history only
   at login, a side channel on whether a foreign channel had posts, and an
   update of the NATS server only after the proof is green again (point 16).
+  (Since #213 the first `since` comes from the host's read mark, the last post
+  it handed to the agent: a post still queued when the host was killed is
+  delivered again and dropped as a repeat by the host, so it is at least once
+  for that one and still at most once for every other. A channel without a
+  handed post has no cursor, so a kill there can still lose what was queued.)
 - Plus: no agent holds a Mattermost token; the humans' channel shows what
   the home's visibility setting asks for.
 - Plus: the tools, the hook API and the bus logic stay as they are; the
