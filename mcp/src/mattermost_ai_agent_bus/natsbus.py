@@ -1364,6 +1364,8 @@ class NatsBus:
         self._bridge_prefix: dict[str, str] = {}
         # channel -> (stream sequence, server time, pieces) of the plan B switches (RT-6.39 step 5)
         self._planb: dict[str, tuple[int, float, frozenset[int]]] = {}
+        # the map before the presence consumer was made anew: read while the replay runs (#244)
+        self._planb_prev: dict[str, tuple[int, float, frozenset[int]]] = {}
         self._last_anchor: dict[str, str] = {}  # account -> the anchor of its last record that decoded
 
     def __repr__(self) -> str:
@@ -2360,6 +2362,8 @@ class NatsBus:
         if channel not in self.channels:
             return frozenset()
         got = self._planb.get(channel)
+        if got is None and not self._synced:
+            got = self._planb_prev.get(channel)  # the replay has not reached this channel yet (#244)
         if got is None or self._iat() - got[1] >= PLANB_STALE_SEC:  # server time, carried on by the monotonic clock
             return frozenset()  # off is fail-safe: a record no credential renewed is no longer read
         return got[2]
@@ -2376,12 +2380,15 @@ class NatsBus:
             # not be in it: forget them, so that an own claim that is gone is claimed again.
             self._claims.clear()
             self._claim_at.clear()
-            self._planb.clear()  # the consumer delivers the last record per subject again
+            # the consumer delivers the last record per subject again: until it has, the old
+            # records stay readable, or every piece would flap to Mattermost (#244)
+            self._planb_prev, self._planb = self._planb, {}
             self._synced = False  # until a delivery with pending 0: the replay is not read yet
         self._presence_cseq = ack.consumer_seq
         if ack.pending == 0:
             self._synced = True
             self._presence_read = True
+            self._planb_prev = {}  # the replay is complete: a channel without a record reads off
         t = msg.subject.split(".")
         p = self._s.presence
         try:
