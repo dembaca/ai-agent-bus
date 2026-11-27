@@ -42,7 +42,7 @@ import time
 from urllib.parse import urlsplit
 from collections.abc import Awaitable, Callable, Iterable, Iterator, Mapping
 from dataclasses import dataclass, field
-from typing import Any, Protocol
+from typing import AbstractSet, Any, Protocol
 
 from nats.aio.client import Client as NatsClient
 from nats.errors import AuthorizationError, InvalidUserCredentialsError
@@ -96,8 +96,34 @@ DELIVER = "deliver"  # consumers.DeliverPrefix / callout.DeliverPrefix
 
 CHANNEL_RE = re.compile(r"^[a-z0-9][a-z0-9_-]{0,63}$")  # Go checkToken
 AGENT_RE = re.compile(r"^[A-Za-z0-9][A-Za-z0-9_-]{0,127}$")  # Go consumers.agentRE
+# #274: an agent's name is its hash alone (no prefix by default), 25 characters: never 26,
+# the length of a Mattermost id, so a NATS name and a Mattermost id never read alike
+# (nats_port.is_nats_user). Go callout.NameHashLen and the bridge's presence.LinkTag.
+NAME_HASH_LEN = 25
+# The subject tokens that stand where an agent's name stands in some subject, or beside it;
+# a name equal to one (in any case) is no agent's (#274). Go callout.reservedNames.
+RESERVED_NAMES = frozenset((
+    "account", "accounts", "ask", "attest", "bot", "bridge", "bus", "ch", "console-metrics",
+    "copied", "crown", "deliver", "directory", "dm", "hu", "import", "mattermost", "member",
+    "metrics", "moved", "notice", "person", "planb", "presence", "req", "stats", "v1", "x",
+))
+# The login service refuses a name that starts with its person prefix while the console is on
+# (CB_AUTH_PERSON_PREFIX, default "person-"); the session does not know that setting, so it
+# refuses the default one always (a hash never starts with it, "-" is no base32 character).
+PERSON_NAME_PREFIX = "person-"
+
+
+def agent_ok(name: str, reserved: AbstractSet[str] = frozenset()) -> bool:
+    """Whether `name` is an agent's name as a subject token (#274): AGENT_RE's form (no ".",
+    "*", ">", whitespace, no "_", "$" or "-" first) and none of RESERVED_NAMES or `reserved`
+    (the configured prefixes, lower case), and none that starts with the default person prefix."""
+    if not isinstance(name, str) or not AGENT_RE.fullmatch(name):
+        return False
+    low = name.lower()
+    return low not in RESERVED_NAMES and low not in reserved and not low.startswith(PERSON_NAME_PREFIX)
 SESSION_RE = NONCE_RE  # #163: the one pattern of the session part (session_file)
 PREFIX_RE = re.compile(r"^[A-Za-z0-9_-]+$")
+NAME_PREFIX_RE = re.compile(r"[A-Za-z0-9][A-Za-z0-9_-]*")  # Go callout.Config.check, #274
 # An owner counts only in this form (RT-6.37): a Mattermost username's characters in lower
 # case, the same string the bus compares with CB_TRUSTED_HUMANS and the owners of Mattermost
 # bots. Nothing is normalised: an owner in any other form is no owner.
@@ -177,18 +203,18 @@ class MessageError(ValueError):
 
 # --- the agent's name --------------------------------------------------------
 
-def agent_name(owner: str, host_nkey_public: str, prefix: str = "agent-", session: str = "") -> str:
+def agent_name(owner: str, host_nkey_public: str, prefix: str = "", session: str = "") -> str:
     """Same as Go `name()` (services/auth/internal/callout/service.go) plus the
-    prefix: SHA-256 over owner, a NUL byte, the host nkey and, when the host key
-    is shared, a NUL byte and the session nonce, the first 16 bytes as lower-case
-    base32 without padding (26 characters). The owner is used as the login service
-    gets it (the token's `preferred_username`), not changed. Without a session the
-    bytes are exactly the ones before #163, so an old host keeps its name."""
+    prefix (none by default, #274): SHA-256 over owner, a NUL byte, the host nkey and,
+    when the host key is shared, a NUL byte and the session nonce, the first 16 bytes as
+    lower-case base32 without padding, of which the first NAME_HASH_LEN (25) characters.
+    The owner is used as the login service gets it (the token's `preferred_username`),
+    not changed."""
     raw = owner.encode() + b"\x00" + host_nkey_public.encode()
     if session:
         raw += b"\x00" + session.encode()
     digest = hashlib.sha256(raw).digest()[:16]
-    return prefix + base64.b32encode(digest).decode().lower().rstrip("=")
+    return prefix + base64.b32encode(digest).decode().lower().rstrip("=")[:NAME_HASH_LEN]
 
 
 # --- message format v1 -----------------------------------------------------------
@@ -365,6 +391,20 @@ class PresenceCard:
     branch: str | None = None
     asks: int | None = None
     last_post: int | None = None
+    # The roster's numbers and version as the status text states them (RT-6.37 step 6,
+    # plan B piece 2): `usage` the usage segments (`ctx 62% · 5h 40%`), `release` the
+    # version segment (`v0.104.0 unchecked`), each read back by usage.from_status and
+    # release.from_status, which drop what they do not know.
+    usage: str | None = None
+    release: str | None = None
+    # The state word of the status text (`working`, `listening`, `idle`, `bus`), which the
+    # coordinator routes by (RT-6.37 step 6); the key is `state`, since `status` is the
+    # presence's own. None for an older server, which states none.
+    state: str | None = None
+
+
+CARD_USAGE_MAX = 80
+CARD_RELEASE_MAX = 40
 
 
 def card_text(v: object, limit: int) -> str | None:
@@ -412,14 +452,25 @@ def card_epoch(v: object) -> int | None:
     return v
 
 
+CARD_STATES = ("working", "listening", "idle", "bus")
+
+
+def card_state(v: object) -> str | None:
+    """One of CARD_STATES; None for anything else (a word a newer server knows, a non-string)."""
+    return v if isinstance(v, str) and v in CARD_STATES else None
+
+
 def clean_card(card: PresenceCard) -> PresenceCard:
     """The card with every field bounded (the encoder's and the decoder's rule)."""
     return PresenceCard(harness=card_harness(card.harness), model=card_text(card.model, CARD_MODEL_MAX),
                         task=card_text(card.task, CARD_TASK_MAX), branch=card_branch(card.branch),
-                        asks=card_asks(card.asks), last_post=card_epoch(card.last_post))
+                        asks=card_asks(card.asks), last_post=card_epoch(card.last_post),
+                        usage=card_text(card.usage, CARD_USAGE_MAX) or None,
+                        release=card_text(card.release, CARD_RELEASE_MAX) or None,
+                        state=card_state(card.state))
 
 
-_CARD_KEYS = ("harness", "model", "task", "branch", "asks", "last_post")
+_CARD_KEYS = ("harness", "model", "task", "branch", "asks", "last_post", "usage", "release", "state")
 
 
 def encode_presence(status: str, bot: str = "", bot_name: str = "",
@@ -533,8 +584,8 @@ def decode_presence_dm(data: bytes) -> bool:
 
 def link_tag(name: str) -> str:
     """The 16 characters of the hash part of an agent name that the roster status shows
-    (RT-6.37); '' for a name shorter than the hash part (26 characters)."""
-    return name[-26:][:16] if len(name) >= 26 else ""
+    (RT-6.37); '' for a name shorter than the hash part (NAME_HASH_LEN characters)."""
+    return name[-NAME_HASH_LEN:][:16] if len(name) >= NAME_HASH_LEN else ""
 
 
 @dataclass(frozen=True)
@@ -604,7 +655,7 @@ def decode_notice(data: bytes) -> Notice:
     if not isinstance(network, str) or not NETWORK_RE.fullmatch(network):
         raise MessageError("network is not a network prefix")
     agent = obj.get("agent", "")
-    if not isinstance(agent, str) or (agent and not AGENT_RE.fullmatch(agent)):
+    if not isinstance(agent, str) or (agent and not agent_ok(agent)):
         raise MessageError("agent is not an agent name")
     iat, exp = _int(obj, "iat"), _int(obj, "exp")
     if exp <= iat:
@@ -911,6 +962,45 @@ def decode_channel_record_full(data: bytes, agent: str) -> tuple[dict[str, str],
     return out, exp
 
 
+_BOT_RECORD_KEYS = {"v", "agent", "bot", "username", "owner_account", "iat", "exp"}
+BOT_RECORD_MAX_SEC = 180.0  # a bot record counts at most this long after it was published
+
+
+@dataclass(frozen=True)
+class BotRecord:
+    """The bridge's record of the Mattermost bot it made for an agent
+    (`<presence>.bot.<agent>.v1`, RT-6.44 step 3): the bot, its username and the Mattermost
+    account that owns it; all three None once the bot is gone. `exp` is server time."""
+
+    agent: str
+    bot: str | None
+    username: str | None
+    owner_account: str | None
+    exp: float
+
+
+def decode_bot_record(data: bytes, agent: str) -> BotRecord:
+    """Strict: exactly the keys of a v1 record of `agent`; `bot` and `owner_account` a
+    Mattermost id, `username` a username that ends with the agent's name (the bridge's prefix
+    plus the name; the prefix itself is compared where the record is used), or all three
+    null; anything else raises."""
+    obj = _obj(data)
+    _exact(obj, _BOT_RECORD_KEYS)
+    if obj["v"] != 1 or obj["agent"] != agent:
+        raise MessageError("bot record of another agent or version")
+    bot, user, owner = obj["bot"], obj["username"], obj["owner_account"]
+    _int(obj, "iat")
+    exp = float(_int(obj, "exp"))
+    if bot is None and user is None and owner is None:
+        return BotRecord(agent, None, None, None, exp)
+    bot = _mm_id(bot, "bot")
+    owner = _mm_id(owner, "owner_account")
+    if not isinstance(user, str) or not USERNAME_RE.fullmatch(user) or not user.endswith(agent) \
+            or not BOT_PREFIX_RE.fullmatch(user[:len(user) - len(agent)]):
+        raise MessageError("username is not a prefix plus the agent")
+    return BotRecord(agent, bot, user, owner, exp)
+
+
 def decode_bridge_signal(data: bytes, channel: str) -> float:
     """Strict: the bridge's v1 signal for `channel`, `people` true; returns its `exp`."""
     return decode_bridge_signal_full(data, channel)[0]
@@ -1213,7 +1303,7 @@ class NatsSettings:
     presence: str = "presence"
     stats: str = "stats"  # the login service's AUTH_STATS_PREFIX: STATS lines on <stats>.<name> (RT-6.43)
     req: str = "req"  # the login service's AUTH_REQ_PREFIX: requests on <req>.<kind>.<name> (ADR-014 phase 5)
-    name_prefix: str = "agent-"
+    name_prefix: str = ""  # the login service's CB_AUTH_NAME_PREFIX: none by default (#274)
     props_prefix: str = a2a.DEFAULT_PREFIX  # CB_PROPS_PREFIX, one setting of the whole bus (RT-6.16)
     tls_ca_file: str | None = None  # CA bundle that verifies a tls:// server (default: the system's)
     trusted: tuple[str, ...] = ()  # this session's trusted humans' names, for the hello (normalised)
@@ -1237,6 +1327,11 @@ class NatsSettings:
         # `from_trusted_human` included. Raises ValueError for a bad one.
         object.__setattr__(self, "props_prefix",
                            a2a.user_prefix({a2a.PREFIX_ENV: self.props_prefix}))
+        # The login service's rule (callout.Config.check): a prefix of one character plus the
+        # 25-character hash is 26 of [a-z0-9], a Mattermost id's form (#274, RT-6.36 step 8).
+        if self.name_prefix and (len(self.name_prefix) < 2 or not NAME_PREFIX_RE.fullmatch(self.name_prefix)):
+            raise ValueError("invalid name prefix: two or more of letters, digits, - and _, "
+                             "a letter or digit first")
         for url in self.servers:
             _check_server(url)  # the access token goes over this connection
         _tls_mode(self.servers)
@@ -1388,6 +1483,10 @@ class NatsBus:
         self._owners: dict[str, str] = {}  # agent -> owner its presence subject names (RT-6.37)
         self._presence_seq: dict[str, tuple[int, float]] = {}  # agent -> (stream sequence, server time)
         self._bots: dict[str, str] = {}  # agent -> Mattermost bot its presence names (RT-6.37)
+        # agent -> (stream sequence, server time, record): the newest bot record of the bridge
+        self._bot_records: dict[str, tuple[int, float, BotRecord]] = {}
+        # agent -> the card its newest presence states (the roster's usage and version)
+        self._cards: dict[str, PresenceCard] = {}
         # agent -> (stream sequence, server time, record): the newest attestation of the login service
         self._attest: dict[str, tuple[int, float, Attestation]] = {}
         # A valid attestation was seen in this process: the login service writes them, and
@@ -1445,6 +1544,12 @@ class NatsBus:
 
     def __repr__(self) -> str:
         return f"NatsBus(name={self._name!r}, connected={self._connected})"
+
+    def agent_ok(self, name: str) -> bool:
+        """Whether `name` is an agent's name on this bus (#274): agent_ok with the
+        configured prefixes reserved too."""
+        s = self._s
+        return agent_ok(name, frozenset(x.lower() for x in (s.bus, s.presence, s.stats, s.req)))
 
     @property
     def name(self) -> str:
@@ -1925,7 +2030,7 @@ class NatsBus:
         await self._publish(f"{self._s.bus}.ch.{self._asked(channel)}.{self.name}", body)
 
     def _dm_subject(self, recipient: str) -> str:
-        if not AGENT_RE.fullmatch(recipient):
+        if not self.agent_ok(recipient):
             raise ValueError("invalid recipient name")
         return f"{self._s.bus}.dm.{recipient}.{self.name}"
 
@@ -2255,6 +2360,44 @@ class NatsBus:
         named one. Not bound to the signal's freshness: the copies stay in the channel."""
         return self._bridge_prefix.get(channel, "")
 
+    def bot_record(self, agent: str) -> BotRecord | None:
+        """The bridge's bot record of `agent` while it is fresh (its `exp` after the server's
+        now) and names a bot; None for none, a stale one or one that says the bot is gone
+        (RT-6.44 step 3)."""
+        got = self._bot_records.get(agent)
+        if got is None or got[2].bot is None or got[2].exp <= self._server_now:
+            return None
+        return got[2]
+
+    def bot_records(self) -> dict[str, BotRecord]:
+        """Every fresh bot record that names a bot, by agent name."""
+        return {a: r for a in list(self._bot_records) if (r := self.bot_record(a)) is not None}
+
+    def card_of(self, agent: str) -> PresenceCard:
+        """The card the agent's newest presence states (self-stated, bounded), empty for none."""
+        return self._cards.get(agent, PresenceCard())
+
+    def member_names(self, channel: str) -> list[str]:
+        """The agents that announced their membership of `channel` within 24 h, sorted."""
+        return sorted(self._members.get(channel, {}))
+
+    def account_person(self, account: str) -> tuple[str, str] | None:
+        """(anchor, name) of a Mattermost account the login service's FRESH record binds to a
+        person with a name (RT-6.42 step 3); None for no record, a stale one, an unbound one
+        or one without a name."""
+        got = self._accounts.get(account)
+        rec = got[2] if got is not None else None
+        if rec is None or not rec.anchor or not rec.name or rec.exp <= self._server_now:
+            return None
+        return rec.anchor, rec.name
+
+    def accounts_of(self, anchor: str) -> list[str]:
+        """The accounts whose fresh record binds `anchor`, sorted (RT-6.44 step 2)."""
+        if not anchor or anchor == UNBOUND:
+            return []
+        return sorted(a for a, (_, _, rec) in self._accounts.items()
+                      if rec is not None and rec.anchor == anchor and rec.exp > self._server_now)
+
     def anchor_of_account(self, account: str) -> str:
         """The person a Mattermost account is bound to by the login service's record, as the
         sender token the bridge publishes it under: the anchor, UNBOUND for none (no record,
@@ -2315,7 +2458,11 @@ class NatsBus:
                 self._owners.pop(agent, None)
                 self._bots.pop(agent, None)
                 self._dm.pop(agent, None)
+                self._cards.pop(agent, None)
                 self._presence_seq.pop(agent, None)
+        for agent, (_, t, _b) in list(self._bot_records.items()):
+            if t < cut:
+                del self._bot_records[agent]
         for agent, (_, t, _a) in list(self._attest.items()):
             if t < cut:
                 del self._attest[agent]
@@ -2348,7 +2495,7 @@ class NatsBus:
         tokens = subject.split(".")
         sender = tokens[-1]
         expect = [self._s.bus, "ch", where] if where != DM_SINCE else [self._s.bus, "dm", self.name]
-        if tokens[:-1] != expect or not AGENT_RE.fullmatch(sender):
+        if tokens[:-1] != expect or not self.agent_ok(sender):
             log.warning("nats bus: dropped a message on %s with an unexpected subject", where)
             return
         if gap:
@@ -2529,7 +2676,7 @@ class NatsBus:
         t = msg.subject.split(".")
         p = self._s.presence
         try:
-            if len(t) == 3 and t[0] == p and AGENT_RE.fullmatch(t[2]):
+            if len(t) == 3 and t[0] == p and self.agent_ok(t[2]):
                 # <presence>.<owner>.<name>: the owner as the login service pinned it.
                 agent, status = t[2], decode_presence(msg.data)
                 seq, at = self._presence_seq.get(agent, (0, 0.0))
@@ -2542,6 +2689,7 @@ class NatsBus:
                 if agent == self.name:
                     self._own_echo = time.monotonic()
                     self._echo_backoff = 0.0  # a real echo: the next outage starts afresh
+                self._cards[agent] = decode_presence_card(msg.data)
                 bot = decode_presence_bot(msg.data)
                 if bot:
                     self._bots[agent] = bot
@@ -2553,13 +2701,13 @@ class NatsBus:
                     self._owners[agent] = owner
                 else:
                     self._owners.pop(agent, None)
-            elif len(t) == 4 and t[0] == p and t[1] == "crown" and CHANNEL_RE.fullmatch(t[2]) and AGENT_RE.fullmatch(t[3]):
+            elif len(t) == 4 and t[0] == p and t[1] == "crown" and CHANNEL_RE.fullmatch(t[2]) and self.agent_ok(t[3]):
                 decode_claim(msg.data)
                 claims = self._claims.setdefault(t[2], {})
                 if (ack.time, ack.stream_seq) > (self._claim_at.get((t[2], t[3]), 0.0), claims.get(t[3], 0)):
                     claims[t[3]] = ack.stream_seq
                     self._claim_at[(t[2], t[3])] = ack.time
-            elif len(t) == 4 and t[0] == p and t[1] == "member" and CHANNEL_RE.fullmatch(t[2]) and AGENT_RE.fullmatch(t[3]):
+            elif len(t) == 4 and t[0] == p and t[1] == "member" and CHANNEL_RE.fullmatch(t[2]) and self.agent_ok(t[3]):
                 decode_claim(msg.data)
                 members = self._members.setdefault(t[2], {})
                 seq0, at0 = members.get(t[3], (0, 0.0))
@@ -2622,7 +2770,15 @@ class NatsBus:
                     else:
                         self._chan_record = (ack.stream_seq, ack.time, chans)
                         self._chan_event.set()
-            elif len(t) == 4 and t[0] == p and t[1] == "attest" and t[3] == "v1" and AGENT_RE.fullmatch(t[2]):
+            elif len(t) == 4 and t[0] == p and t[1] == "bot" and t[3] == "v1" and self.agent_ok(t[2]):
+                # RT-6.44 step 3: the newest valid record counts; one that does not decode is
+                # dropped (a warning below) and erases nothing, as an attestation.
+                brec = decode_bot_record(msg.data, t[2])
+                seq0, at0, _oldb = self._bot_records.get(t[2], (0, 0.0, brec))
+                if (ack.time, ack.stream_seq) > (at0, seq0):
+                    brec = dataclasses.replace(brec, exp=min(brec.exp, ack.time + BOT_RECORD_MAX_SEC))
+                    self._bot_records[t[2]] = (ack.stream_seq, ack.time, brec)
+            elif len(t) == 4 and t[0] == p and t[1] == "attest" and t[3] == "v1" and self.agent_ok(t[2]):
                 att = decode_attestation(msg.data, t[2])
                 seq0, at0, _old = self._attest.get(t[2], (0, 0.0, att))
                 if (ack.time, ack.stream_seq) > (at0, seq0):

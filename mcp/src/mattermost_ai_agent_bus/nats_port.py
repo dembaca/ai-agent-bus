@@ -105,6 +105,7 @@ import contextlib
 import dataclasses
 import json
 import logging
+import re
 from pathlib import Path
 import secrets
 import time
@@ -216,10 +217,24 @@ class BusLike(Protocol):
 
     def bot_of(self, agent: str) -> str: ...
 
+    def bot_record(self, agent: str) -> natsbus.BotRecord | None: ...
+
+    def bot_records(self) -> dict[str, natsbus.BotRecord]: ...
+
+    def card_of(self, agent: str) -> natsbus.PresenceCard: ...
+
+    def member_names(self, channel: str) -> list[str]: ...
+
+    def account_person(self, account: str) -> tuple[str, str] | None: ...
+
+    def accounts_of(self, anchor: str) -> list[str]: ...
+
     @property
     def synced(self) -> bool: ...
 
     def is_member(self, channel: str, agent: str) -> bool: ...
+
+    def claimed(self, channel: str, agent: str) -> bool: ...
 
     def presence_snapshot(self) -> dict[str, tuple[float, str]]: ...
 
@@ -260,10 +275,16 @@ def parse_dm_id(value: str) -> int | None:
     return dm_seq(value)
 
 
+_HASH_PART = re.compile(rf"[a-z2-7]{{{natsbus.NAME_HASH_LEN}}}")  # an agent name's end (#274)
+
+
 def is_nats_user(user_id: str) -> bool:
-    """The author id of a post that came over NATS: an agent name, which has a "-".
-    No Mattermost user id (26 characters of [a-z0-9]) is one."""
-    return "-" in user_id and natsbus.AGENT_RE.fullmatch(user_id) is not None and not _ID.fullmatch(user_id)
+    """The author id of a post that came over NATS: an agent name (natsbus.agent_ok) that ends
+    in its hash part, NAME_HASH_LEN (25) characters of base32, so that no name, with or
+    without a prefix (none since #274), is a Mattermost user id (26 characters of [a-z0-9])
+    or a name that the login service never issues."""
+    return (natsbus.agent_ok(user_id) and _HASH_PART.fullmatch(user_id[-natsbus.NAME_HASH_LEN:]) is not None
+            and not _ID.fullmatch(user_id))
 
 
 def person_id(anchor: str) -> str:
@@ -814,6 +835,95 @@ class NatsPort:
                             SWITCH_WAIT_SEC)
                 return
             await asyncio.sleep(0.05)
+    def _piece2(self) -> bool:
+        """Whether any home takes its roster, links and account names from NATS (plan B piece 2,
+        RT-6.37 step 6)."""
+        return any(planb.on(2, name) for name in self._homes)
+
+    def _bots2(self) -> dict[str, tuple[str, natsbus.BotRecord]]:
+        """Mattermost bot id -> (NATS name, record) of the fresh bot records of the bridge whose
+        username is the bridge's prefix (its signal's, RT-6.36 step 4) plus the name and whose
+        owner_account is the one account binding the name's anchor (owned_link), for the homes
+        on piece 2 (RT-6.44 step 3). No Mattermost call."""
+        bus = self._live()
+        if bus is None:
+            return {}
+        out: dict[str, tuple[str, natsbus.BotRecord]] = {}
+        for agent in bus.bot_records():
+            for h in self._homes:
+                rec = self.owned_link(agent, h) if planb.on(2, h) else None
+                if rec is not None and rec.bot:
+                    out[rec.bot] = (agent, rec)
+                    break
+        return out
+
+    def readable(self) -> bool:
+        """The bus is attached, not failed, connected and has read the stored presences: what
+        it says about who is here can be believed (a cut leaves it unreadable)."""
+        bus = self._live()
+        return bus is not None and bus.connected and bus.synced
+
+    def owned_link(self, name: str, home: str) -> natsbus.BotRecord | None:
+        """The bridge's bot record of the NATS name `name` when it is the name's link: fresh,
+        its username the bridge's prefix of `home` plus the name, and its `owner_account` the one
+        account whose fresh record binds the anchor of the name's presence subject (RT-6.44
+        step 2: the same rule the bridge made the bot by). The presence's own `bot` field and
+        the `⇄` tag take no part: each side can write only its own field, and the bridge's
+        record is the only one that names a bot of the bridge. No Mattermost call."""
+        bus = self._live()
+        if bus is None:
+            return None
+        rec = bus.bot_record(name)
+        prefix = bus.bridge_prefix(home)
+        anchor = bus.anchor_of(name)
+        if rec is None or not prefix or rec.username != prefix + name or not anchor:
+            return None
+        return rec if bus.accounts_of(anchor) == [rec.owner_account] else None
+
+    def own_name(self) -> str:
+        """This session's NATS name ('' without a bus): the id of its own row in roster_rows."""
+        return self._bus.name if self._bus is not None else ""
+
+    def roster_rows(self, home: str) -> list[dict[str, Any]]:
+        """The agents of `home` as lease's rows (RT-6.37 step 6, plan B piece 2), from NATS alone:
+        the names that announced their membership of the home within 24 h and are not offline.
+        id is the NATS name; username is the bridge's prefix plus the name while the bridge's
+        bot record is the name's (owned_link), else the NATS name itself, never the name the
+        presence states of itself; `away` is unreachable; the
+        crown is the holder of the NATS view; the status word is the presence's `state`; the text carries the usage and version the
+        presence states (read back by usage.from_status and release.from_status, which drop what
+        they do not know). [] while the bus is not readable."""
+        bus = self._live()
+        if bus is None or not bus.connected or not bus.synced:
+            return []
+        view = self.crown_view(home)
+        holder = view.holder if view is not None else ""
+        rows = []
+        for name in bus.member_names(home):
+            presence = bus.presence_of(name)
+            if presence == "offline":
+                continue
+            # Membership is announced for homes, guests and the lobby alike; the crown claim
+            # only in the hello's home, which the login service grants (perms.go), so a name
+            # with a claim here is a home agent and any other member a guest: no home of ours.
+            at_home = bus.claimed(home, name) or name == bus.name
+            rec = self.owned_link(name, home)
+            card = bus.card_of(name)
+            reachable = presence == "online"
+            rows.append({"id": name, "username": rec.username if rec is not None and rec.username else name,
+                         "create_at": 0, "presence": presence, "emoji": "", "status": card.state or "",
+                         "text": " · ".join(p for p in (card.usage, card.release) if p),
+                         "home": home if at_home else "", "guest": not at_home, "live": True, "until_ms": 0, "reachable": reachable,
+                         "crown": reachable and bool(holder) and holder == name, "nats": True})
+        return rows
+
+    def home_named(self, channel_id: str) -> str:
+        """The name of the NATS home whose Mattermost id is `channel_id`, '' for any other or
+        before the ids were read (no Mattermost call)."""
+        for name, cid in (self._ids or {}).items():
+            if cid == channel_id:
+                return name
+        return ""
 
     async def _directory_id(self, name: str) -> str:
         """The Mattermost id of channel `name` from the channel record of this credential
@@ -1256,7 +1366,7 @@ class NatsPort:
             log.debug("nats: dropped a message outside the NATS homes (%s)", ev.where)
             return
         if not is_nats_user(ev.sender):
-            log.warning("nats: dropped a message of %r: an agent name has a '-'", ev.sender[:40])
+            log.warning("nats: dropped a message of %r: no agent name", ev.sender[:40])
             return
         if dm:
             # A direct message between agents (plan B piece 3): the transport delivers it on
@@ -1685,7 +1795,9 @@ class NatsPort:
     async def bot_accounts(self, user_ids: set[str]) -> set[str]:
         nats = {i for i in user_ids if is_nats_user(i)}
         rest = {i for i in user_ids if not is_nats_user(i) and not is_person(i)}
-        return (await self.inner.bot_accounts(rest) if rest else set()) | nats
+        bots, known = self._known2(rest)  # plan B piece 2: a bot the bridge made (its record)
+        rest -= known
+        return (known & set(bots)) | (await self.inner.bot_accounts(rest) if rest else set()) | nats
 
     # --- reading ---------------------------------------------------------------------------
     def _shown(self, ch: str, seq: int) -> Post:
@@ -1794,22 +1906,55 @@ class NatsPort:
         """The name a person over NATS is shown with: the bridge's (display only)."""
         return self._person_names.get(user_id) or user_id[len(PERSON):]
 
+    def _name2(self, user_id: str, bots: dict[str, tuple[str, natsbus.BotRecord]]) -> str:
+        """The name of a Mattermost account id from NATS records alone (plan B piece 2, RT-6.37
+        step 6): the bridge's bot record names the agent's bot (its username); the login
+        service's fresh account record names a person (its name); an id in no record is named by
+        itself: no Mattermost call."""
+        if user_id in bots:
+            return bots[user_id][1].username or user_id
+        bus = self._live()
+        person = bus.account_person(user_id) if bus is not None else None
+        return person[1] if person is not None else user_id
+
+    def _known2(self, ids: set[str]) -> tuple[dict[str, tuple[str, natsbus.BotRecord]], set[str]]:
+        """Plan B piece 2 (RT-6.37 step 6): the bridge's bot records and those of the Mattermost
+        ids `ids` the NATS records know: a bot of a fresh bot record, an account the login
+        service's fresh record binds to a person. Every other id (a registrar's or other bot in
+        the lobby, a guest channel, the Mattermost half of a split home, a bot whose record
+        lapsed) is answered by Mattermost as with the switch off: never a person by default.
+        ({}, set()) with the switch off."""
+        if not self._piece2():
+            return {}, set()
+        bots = self._bots2()
+        bus = self._live()
+        return bots, {i for i in ids if i in bots or (bus is not None and bus.account_person(i) is not None)}
+
     async def usernames(self, user_ids: set[str]) -> dict[str, str]:
         nats = {i for i in user_ids if is_nats_user(i)}
         people = {i for i in user_ids if is_person(i)}
         rest = set(user_ids) - nats - people
-        out = await self.inner.usernames(rest) if rest else {}
+        bots, known = self._known2(rest)
+        rest -= known
+        out = {i: self._name2(i, bots) for i in known} | (await self.inner.usernames(rest) if rest else {})
         return out | {i: i for i in nats} | {i: self._person_name(i) for i in people}
 
     async def username(self, user_id: str) -> str:
         if is_person(user_id):
             return self._person_name(user_id)
-        return user_id if is_nats_user(user_id) else await self.inner.username(user_id)
+        if is_nats_user(user_id):
+            return user_id
+        bots, known = self._known2({user_id})
+        return self._name2(user_id, bots) if known else await self.inner.username(user_id)
 
     async def agents(self, user_ids: set[str]) -> set[str]:
         nats = {i for i in user_ids if is_nats_user(i)}
         rest = {i for i in user_ids if not is_nats_user(i) and not is_person(i)}
-        return (await self.inner.agents(rest) if rest else set()) | nats
+        # plan B piece 2: an id the records know is an agent when it is the bridge's bot of a
+        # NATS name, a person's account is none; Mattermost answers for the rest (_known2)
+        bots, known = self._known2(rest)
+        rest -= known
+        return (known & set(bots)) | (await self.inner.agents(rest) if rest else set()) | nats
 
     async def agent_owner(self, user_id: str) -> str | None:
         # A NATS sender's owner is the one its presence proves (RT-6.37), else "" (an
@@ -1817,6 +1962,12 @@ class NatsPort:
         # None, which is "not readable" (also foreign, ADR-016, but logged as an outage).
         if is_person(user_id):
             return ""  # a person, no agent (RT-6.42)
+        if not is_nats_user(user_id):
+            bots, known = self._known2({user_id})
+            if known:
+                # plan B piece 2: no Mattermost read; the bridge's bot of a NATS name is judged
+                # as the name is, a person's account has no owner (RT-6.37 step 6)
+                return await self.agent_owner(bots[user_id][0]) if user_id in bots else ""
         if self._piece4():
             return await self._owner4(user_id)
         if not is_nats_user(user_id):
@@ -1992,12 +2143,18 @@ class NatsPort:
         This session's own bot is its own name. Any other bot only by the one test of a link
         (RT-6.37 step 6, `linked`): its status shows the name's tag and the name's presence
         names that very bot. When no fresh presence names the bot, nothing is read on
-        Mattermost; else the bot's status is (the link is piece 2's to move)."""
+        Mattermost; else the bot's status is. With piece 2 on too, a bot of the bridge's fresh
+        record is linked by that record alone, with no Mattermost read, and an account the
+        login service binds to a person is no agent's bot; any other id is tested as with
+        piece 2 off (RT-6.37 step 6)."""
         bus = self._live()
         if bus is None or not user_id:
             return ""
         if user_id == self.inner.bot_id:
             return bus.name
+        bots, known = self._known2({user_id})
+        if known:
+            return bots[user_id][0] if user_id in bots else ""
         if not any(bus.bot_of(n) == user_id and bus.presence_of(n) != "offline"
                    for n in bus.presence_snapshot()):
             return ""

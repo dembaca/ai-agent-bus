@@ -298,6 +298,20 @@ There is no `props`: a decoder refuses a `<bus>.hu` body that carries one, an
 unknown or duplicate key, an unknown kind or a malformed id. Edits and deletes are not
 carried.
 
+## Over NATS: the bridge's bot record
+
+Which Mattermost bot the central bridge made for an agent
+([arc42 §6.44 step 3](arc42/06-runtime-view.md#644-an-agents-own-bot-in-mattermost),
+read in [§6.37 step 6](arc42/06-runtime-view.md#637-a-nats-senders-owner-and-presence)).
+One JSON body of format v1 on `<presence>.bot.<agent>.v1`, published only by the
+bridge's user: exactly `v` (1), `agent` (the subject's name), `bot` (a Mattermost
+user id), `username` (the bridge's bot prefix plus the agent's name),
+`owner_account` (the Mattermost user id of the account that owns the bot), `iat`
+and `exp` (epoch seconds, valid 3 minutes); `bot`, `username` and `owner_account`
+are all null once the bot is gone. A reader drops a body with another key, a
+missing or double one, or a malformed id, and keeps the newest valid record per
+agent by the server's time and the stream sequence.
+
 ## Over NATS: an operator's connection
 
 How the operator console's server connects as the logged-in person

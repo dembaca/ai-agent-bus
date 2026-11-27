@@ -17,15 +17,15 @@ from fakes import BOT, WORK, FakeBus
 from test_nats_port import ME as NAME_ME_SHORT  # noqa: F401 — the module's own name, unused here
 from test_nats_port import FakeNats, make
 
-from mattermost_ai_agent_bus import a2a, compose, crownlog, debug, lease, owners, receipt, server
+from mattermost_ai_agent_bus import a2a, compose, crownlog, debug, lease, natsbus, owners, receipt, server, usage
 from mattermost_ai_agent_bus.model import ChannelUser, Mark, Reaction, StatusMark
 from mattermost_ai_agent_bus.nats_port import NatsPort
 
 HOME = "home"
 HUMAN = "h" * 26
-NAME_ME = "agent-" + "u" * 26   # this session's NATS name (its bot is BOT)
-NAME_A = "agent-" + "a" * 26
-NAME_B = "agent-" + "b" * 26
+NAME_ME = "u" * 25   # this session's NATS name (its bot is BOT)
+NAME_A = "a" * 25
+NAME_B = "b" * 25
 BOT_A, BOT_B, BOT_C = "1" * 26, "2" * 26, "3" * 26
 TAG = {n: n[-26:][:16] for n in (NAME_ME, NAME_A, NAME_B)}
 CROWN = a2a.status_emoji(StatusMark.COORDINATOR)
@@ -506,6 +506,37 @@ async def test_a_holder_that_hangs_but_still_beats_yields_once_to_a_linked_reach
     assert not lease.crown_held(BOT)
 
 
+async def test_on_plan_b_piece_2_the_holder_knows_its_own_row_by_its_nats_name(
+        w: World, monkeypatch: pytest.MonkeyPatch) -> None:
+    """RT-6.37 step 6, RT-6.38 steps 4-5: the roster of NATS ids its rows by NATS name, so the
+    own row is the one of this session's NATS name, not of its bot id: the holder takes (the
+    mirror is armed), keeps it at a beat while reachable, and yields once when idle; its own
+    usage and its own crown are its own (no foreign coordinator)."""
+    monkeypatch.setenv("CB_PLANB_TEST", "2")
+    f = w.fake
+    monkeypatch.setattr(f, "member_names", lambda ch: sorted(n for c, n in f.members if c == ch), raising=False)
+    monkeypatch.setattr(f, "card_of", lambda n: natsbus.PresenceCard(), raising=False)
+    monkeypatch.setattr(f, "bot_record", lambda n: None, raising=False)
+    await _two(w, me_first=True)
+    assert lease.nats_roster_on(HOME) and lease.roster_self(w.port, BOT) == NAME_ME  # type: ignore[arg-type]
+    rows = await lease._rows(w.port, WORK, HOME)  # type: ignore[arg-type]
+    assert sorted(r["id"] for r in rows) == sorted([NAME_ME, NAME_A])
+    assert [r["id"] for r in rows if lease.is_me(r, BOT)] == [NAME_ME]
+    await w.tick()
+    assert w.view().holder == NAME_ME and lease.crown_held(BOT)  # type: ignore[union-attr]  # taken, mirrored
+    claims = len(f.claimed_homes)
+    await lease.nats_beat(w.port)  # type: ignore[arg-type]
+    assert len(f.claimed_homes) == claims  # reachable: it keeps the crown
+    monkeypatch.setattr(usage, "own", lambda: {"ctx": 7.0})
+    assert await server._usage_of(w.port, await lease.roster(w.port)) == {NAME_ME: {"ctx": 7.0}}  # type: ignore[arg-type]
+    assert await server._foreign_coordinator(w.port, BOT) == ""  # type: ignore[arg-type]
+    await lease.set_status(w.port, "idle")  # type: ignore[arg-type] — 💤: not reachable
+    await lease.nats_beat(w.port)  # type: ignore[arg-type]
+    assert len(f.claimed_homes) == claims + 1 and w.view().holder == NAME_A  # type: ignore[union-attr]
+    await lease.nats_beat(w.port)  # type: ignore[arg-type]
+    assert len(f.claimed_homes) == claims + 1  # once
+
+
 async def test_a_holder_whose_post_gets_no_receipt_yields_within_the_wait_plus_a_beat(
         w: World, monkeypatch: pytest.MonkeyPatch) -> None:
     """RT-6.38 step 5, RT-6.6 step 10: a fresh, reachable holder with no 👀 or ⏳ on a post that
@@ -808,7 +839,7 @@ async def test_bus_info_says_so_when_the_crown_is_not_reachable(
 
 async def test_a_link_tag_that_fits_two_fresh_names_is_logged_once_and_reported(
         w: World, caplog: pytest.LogCaptureFixture) -> None:
-    twin = "agent-" + NAME_A[6:22] + "c" * 10  # the same tag, another name
+    twin = NAME_A[:16] + "c" * 9  # the same tag, another name
     assert natsbus_tag(twin) == TAG[NAME_A]
     claimant(w.fake, NAME_A, 9, bot_id=BOT_A)
     claimant(w.fake, twin, 10, bot_id=BOT_A)

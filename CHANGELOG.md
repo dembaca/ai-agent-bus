@@ -5,6 +5,31 @@ before 0.5.0 are described in the git history.
 
 ## Unreleased
 
+### Breaking
+
+- **NATS names lose the `agent-` prefix** (#274, RT-6.36 step 8). An agent's NATS
+  name is now its hash alone: 25 characters of lower-case base32 (125 bits of the
+  SHA-256 over owner, host key and session part), where it was `agent-` and 26.
+  Never 26, a Mattermost id's length: a session holds Mattermost ids and NATS names
+  side by side and tells them apart by their form, which the dash did before.
+  The login service's `CB_AUTH_NAME_PREFIX` and the MCP server's `name_prefix` are
+  empty by default and must stay alike; a set one starts with a letter or digit.
+  Only the bridge keeps a prefix: its `CB_BRIDGE_MM_BOT_PREFIX` plus the NATS name
+  makes the agent's Mattermost bot, which shows it as before. Since a name can no
+  longer be told from a subject's other tokens by its start, the login service never
+  issues one that is such a token (`ch`, `dm`, `crown`, `member`, `attest`, `bot`,
+  `bridge`, `person`, `req`, `stats` and the rest, the configured prefixes, any case)
+  or that starts with the person prefix, and the session drops a sender, presence,
+  crown claim, membership or attestation under one. Every running agent gets a new
+  NATS name at its next start, like a new bot: what was kept per name (crown claims,
+  presences, attestations, consumers, the read marks of its lanes) starts fresh, and
+  the old name's records run out. The console shows the new names. The release's
+  entry carries this line of its own (doc-check refuses it under Unreleased):
+  `Needs: login service, bridge and hosts on the same release.` An older bridge's
+  `LinkTag` expects 26 characters, so it shows no linked bot for the new names. A
+  name prefix (login service, session) or bridge bot prefix of one character is
+  refused: with the 25-character hash it would read as a Mattermost id.
+
 ### Fixed
 
 - **Unknown `CB_` name warnings are filtered and capped** (#269, RT-6.34). Only names of
@@ -196,6 +221,40 @@ before 0.5.0 are described in the git history.
   claimant that is no member of the home or one that does not stand by the owner rule;
   where the sessions name another holder no 👑 shows and the header line is refused.
 
+- **Plan B piece 2a: the roster, the link of a bot to its NATS name and
+  the names of accounts from NATS, behind a switch that is off** (ADR-014
+  phase 5, RT-6.37 step 6, RT-6.44 step 3). The bridge publishes a record
+  `<presence>.bot.<agent>.v1` for each agent's own bot (the bot, its
+  username and the account that owns it), when it sets the bot up and every
+  minute while the bot is in use, valid 3 minutes; the sweep and a bot an
+  admin disabled publish it with `bot` null. The login service adds the
+  filter to every agent's presence consumer and the bridge's user needs the
+  publish right `presence.bot.*.v1` in the NATS server's configuration
+  (`services/auth/nats-server.example.conf`); no agent may publish it. With
+  the new switch `planb.on(2, channel)` on, a session in a home over NATS
+  makes its roster from presence and membership, links a bot to a NATS name
+  only through the bridge's record and the login service's account records
+  (not through the status's `⇄` tag or the presence's own `bot` field, which
+  are still written), answers names and kinds of Mattermost accounts from
+  the records, and, while the bus is cut off, tells nobody as gone. The
+  presence gains two self-stated fields, `usage` and `release`, so the
+  roster keeps the numbers and the version it showed, and a third, `state`
+  (`working`, `listening`, `idle` or `bus`), the status word the coordinator
+  routes by; an older server states none. `usage`, `release` and `state` go
+  out in every presence, whether the switch is on or off. Under the switch a
+  member of a home without a crown claim there is a guest, not a home agent
+  (membership is announced for homes, guests and the lobby alike). The
+  bridge also publishes the bot record at its start and every minute for every
+  present agent (a presence within 5 minutes) whose bot exists (find only,
+  no bot made), and publishes it
+  with `bot` null when the owner's record changed. The switch is the
+  channel's plan B piece 2 (the switch entry above), off by default, so
+  behaviour is as before. The bridge, the login service and the session
+  side ship together: the session side needs the records to show a link at
+  all, and the bridge's publish right must be in the NATS server's
+  configuration before the bridge runs this version, or its publish is
+  refused and logged. The session's state files keyed by the NATS name
+  (piece 2b) are not built.
 - **Plan B piece 13: STATS and the shell clients over NATS** (#244, ADR-014
   phase 5, RT-6.43 step 7). In a channel with piece 13 on (off by default;
   `CB_PLANB_TEST=13` in tests), the home's STATS go on NATS alone: the

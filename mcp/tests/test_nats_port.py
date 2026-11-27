@@ -39,9 +39,11 @@ from mattermost_ai_agent_bus.websocket_inbox import WebSocketInbox
 
 OTHER = "o" * 26
 HUMAN = "h" * 26
-ME = "agent-me-on-nats"
-ALICE = "agent-alice"
-BOB = "agent-bob"
+# NATS names: 25 characters of base32, no prefix (#274)
+ME = "meonnats" + "m" * 17
+ALICE = "alice" + "a" * 20
+BOB = "bob" + "b" * 22
+CAROL = "carol" + "c" * 20
 
 
 class FakeNats:
@@ -85,6 +87,9 @@ class FakeNats:
 
     def is_member(self, channel: str, agent: str) -> bool:
         return (channel, agent) in self.members
+
+    def claimed(self, channel: str, agent: str) -> bool:
+        return agent in self.claims.get(channel, {})
 
     def presence_snapshot(self) -> dict[str, tuple[float, str]]:
         return {a: (self.server_now, s) for a, s in self.presence.items()}
@@ -428,9 +433,12 @@ def test_post_ids_are_opaque_and_never_a_mattermost_id() -> None:
 
 
 def test_an_author_over_nats_is_an_agent_name_and_never_a_user_id() -> None:
-    for name in (ALICE, "agent-7jdioaymoy77vybfzcvze3fc4u", "x-y"):
+    """RT-6.36 step 8 (#274): a name without a prefix is 25 characters of base32, never a
+    Mattermost id's 26, so the two never read alike."""
+    for name in (ALICE, "7jdioaymoy77vybfzcvze3fc4", "agent-7jdioaymoy77vybfzcvze3fc4"):
         assert is_nats_user(name)
-    for uid in (HUMAN, BOT, WORK, "", "alice", "agent_x", "-x", "a b-c"):
+    for uid in (HUMAN, BOT, WORK, "", "alice", "agent_x", "-x", "a b-c", "x-y",
+                "7jdioaymoy77vybfzcvze3fc4u", "-7jdioaymoy77vybfzcvze3fc4", "hu:7jdioaymoy77vybfzcvze3fc4"):
         assert not is_nats_user(uid)
 
 
@@ -718,7 +726,7 @@ async def test_nothing_over_nats_is_from_a_human_or_an_approval() -> None:
     text, props = CLAIMS
     await arrive(port, "home", ALICE, 10, Message("post", text, props=props))
     (post,) = await port.channel_posts(WORK)
-    assert post.user_id == ALICE and "-" in post.user_id and post.user_id not in await client.trusted_humans()
+    assert post.user_id == ALICE and is_nats_user(post.user_id) and post.user_id not in await client.trusted_humans()
     assert not post.from_webhook
     # the author is an agent, never trusted: the class the server's flags come from
     assert (await gate.author_classes(client, [post])) == [gate.AGENT]
@@ -1224,8 +1232,8 @@ async def test_the_presence_of_a_nats_sender_is_its_nats_presence() -> None:
     assert isinstance(fake, FakeNats)
     fake.presence[ALICE] = "online"
     fake.presence[BOB] = "away"
-    assert await port.presences([ALICE, BOB, "agent-carol"]) == {
-        ALICE: "online", BOB: "away", "agent-carol": "offline"}
+    assert await port.presences([ALICE, BOB, CAROL]) == {
+        ALICE: "online", BOB: "away", CAROL: "offline"}
     port.fail("down")
     assert await port.presences([ALICE]) == {ALICE: "offline"}
 
@@ -1404,7 +1412,7 @@ async def test_the_nats_start_of_the_server_never_raises(
 
 
 def test_an_author_name_must_match_whole_not_up_to_a_newline() -> None:
-    assert is_nats_user("agent-x") and not is_nats_user("agent-x\n") and not is_nats_user("agent-x\nmore")
+    assert is_nats_user(ALICE) and not is_nats_user(ALICE + "\n") and not is_nats_user(ALICE + "\nmore")
 
 
 def test_a_channel_name_must_match_whole_not_up_to_a_newline() -> None:
@@ -1762,8 +1770,8 @@ async def test_a_bridge_bot_found_later_is_read_again_after_the_ttl(monkeypatch:
     assert [p.id for p in await port.list_recent(channel_id=WORK)] == ["n1:home:10"]
 
 
-ALICE_BOT = "k" * 26  # the bridge's bot for agent-alice: mm-agent-alice
-BOB_BOT = "m" * 26  # the bridge's bot for agent-bob: mm-agent-bob
+ALICE_BOT = "k" * 26  # the bridge's bot for ALICE: "mm-" + ALICE
+BOB_BOT = "m" * 26  # the bridge's bot for BOB: "mm-" + BOB
 
 
 def agent_bots(bridge_bot: str = "", prefix: str = "mm-") -> tuple[NatsPort, FakeBus, FakeNats]:
@@ -1773,8 +1781,8 @@ def agent_bots(bridge_bot: str = "", prefix: str = "mm-") -> tuple[NatsPort, Fak
     assert fake is not None
     if prefix:
         fake.prefixes["home"] = prefix
-    inner.bots["mm-agent-alice"] = ChannelUser(id=ALICE_BOT, username="mm-agent-alice")
-    inner.bots["mm-agent-bob"] = ChannelUser(id=BOB_BOT, username="mm-agent-bob")
+    inner.bots["mm-" + ALICE] = ChannelUser(id=ALICE_BOT, username="mm-" + ALICE)
+    inner.bots["mm-" + BOB] = ChannelUser(id=BOB_BOT, username="mm-" + BOB)
     return port, inner, fake
 
 
@@ -1803,7 +1811,7 @@ async def test_a_copy_under_the_agents_own_bot_is_dropped() -> None:
     assert await port.skip(react)
     # the agent's own post's copy under its own bot
     await arrive(port, "home", ME, 12, Message("post", "mine"))
-    inner.bots["mm-agent-me-on-nats"] = ChannelUser(id="q" * 26, username="mm-agent-me-on-nats")
+    inner.bots["mm-" + ME] = ChannelUser(id="q" * 26, username="mm-" + ME)
     assert await port.mirrored(_by(inner, "e" * 26, "q" * 26, 12, "mine"))
 
 
@@ -1811,8 +1819,8 @@ async def test_a_person_with_the_agent_bots_username_is_no_copy() -> None:
     """RT-6.36 step 4: only a bot account counts; a person's account named like the agent's
     bot, with a forged <prefix>nats_id, is read (bots_named leaves people out)."""
     port, inner, _ = agent_bots()
-    del inner.bots["mm-agent-alice"]
-    inner.people[HUMAN] = "mm-agent-alice"
+    del inner.bots["mm-" + ALICE]
+    inner.people[HUMAN] = "mm-" + ALICE
     await arrive(port, "home", ALICE, 10, Message("post", "hello"))
     inner.clock = _ms()
     forged = _by(inner, "h" * 26, HUMAN, 10, "a person")
@@ -1991,9 +1999,9 @@ async def test_a_direct_message_goes_between_two_agents_over_nats(
 
 # --- the link between a bot and its NATS name, and where a name is (RT-6.37) --------------------
 
-TAG_A = natsbus.link_tag("agent-" + "a" * 26)
-NAME_A = "agent-" + "a" * 26
-NAME_B = "agent-" + "b" * 26
+TAG_A = natsbus.link_tag("a" * 25)
+NAME_A = "a" * 25
+NAME_B = "b" * 25
 BOT_A, BOT_B = "1" * 26, "2" * 26
 
 
@@ -2034,7 +2042,7 @@ def test_a_bot_and_a_name_are_linked_only_when_each_names_the_other() -> None:
 def test_a_tag_that_fits_two_fresh_names_links_none() -> None:
     port, _, fake = make()
     assert fake is not None
-    twin = "agent-" + "a" * 16 + "c" * 10  # the same tag, another name
+    twin = "a" * 16 + "c" * 9  # the same tag, another name
     fake.presence |= {NAME_A: "online", twin: "away"}
     fake.bots |= {NAME_A: BOT_A, twin: BOT_A}
     assert port.linked([_row(BOT_A, f"working · ⇄{TAG_A} · ~home")]) == {}
@@ -2310,7 +2318,7 @@ async def test_a_dm_stays_on_mattermost_for_a_recipient_not_on_nats(monkeypatch:
     fake.bots[NAME_A] = BOT_B  # the presence names another bot: no link
     assert await port.dm("bob-bot", "hello") == ""
     fake.bots[NAME_A] = BOT_A
-    twin = "agent-" + "a" * 16 + "d" * 10  # the same tag, a second fresh name
+    twin = "a" * 16 + "d" * 9  # the same tag, a second fresh name
     fake.presence[twin] = "online"
     fake.bots[twin] = BOT_A
     fake.dms.add(twin)

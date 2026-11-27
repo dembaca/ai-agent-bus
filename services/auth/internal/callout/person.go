@@ -91,7 +91,9 @@ func (c Config) checkConsole() error {
 		return fmt.Errorf("callout: at most %d logins per person: from 1 to 64", con.MaxLogins)
 	case !plain(con.PersonPrefix) || !strings.HasSuffix(con.PersonPrefix, "-"):
 		return fmt.Errorf("callout: person prefix %q: letters, digits, - and _, ending in -", con.PersonPrefix)
-	case strings.HasPrefix(con.PersonPrefix, c.NamePrefix) || strings.HasPrefix(c.NamePrefix, con.PersonPrefix):
+	case c.NamePrefix != "" && (strings.HasPrefix(con.PersonPrefix, c.NamePrefix) || strings.HasPrefix(c.NamePrefix, con.PersonPrefix)):
+		// Without a name prefix an agent's name is its hash, which holds no "-"
+		// and so never starts with a person prefix (checkName refuses one anyway).
 		return fmt.Errorf("callout: person prefix %q and name prefix %q: neither may start the other", con.PersonPrefix, c.NamePrefix)
 	}
 	return nil

@@ -83,7 +83,7 @@ func run(log *slog.Logger) error {
 	// The account records map a person's account to the anchor (RT-6.42) and,
 	// the other way round, an agent bot's owner to the account (RT-6.44).
 	accounts := &inbound.Accounts{Log: log, Deliver: cfg.Deliver + ".accounts", Stream: "PRESENCE"}
-	bots, err := agentBots(ctx, cfg, snapshot, accounts, log)
+	bots, err := agentBots(ctx, cfg, snapshot, accounts, nc, log)
 	if err != nil {
 		return err
 	}
@@ -199,6 +199,14 @@ func run(log *slog.Logger) error {
 		go func() {
 			defer wg.Done()
 			sw.Run(ctx, agentbots.SweepInterval)
+		}()
+		// the bot records (RT-6.44 step 3): at the start and every minute,
+		// valid for three, each bot that holds a client, and by the find-only
+		// pass the existing bot of each present agent that holds none
+		wg.Add(1)
+		go func() {
+			defer wg.Done()
+			bots.RunRecords(ctx, agentbots.RecordEvery)
 		}()
 	}
 	p9.run(ctx, &wg, nc)
@@ -323,7 +331,7 @@ func run(log *slog.Logger) error {
 // agentBots is the agents' own bots (RT-6.44) when CB_BRIDGE_MM_ADMIN_TOKEN_FILE
 // is set, after the start checks; nil keeps the one bridge bot.
 func agentBots(ctx context.Context, cfg config.Config, snapshot *presence.Snapshot,
-	accounts *inbound.Accounts, log *slog.Logger) (*agentbots.Bots, error) {
+	accounts *inbound.Accounts, nc *nats.Conn, log *slog.Logger) (*agentbots.Bots, error) {
 	if cfg.AdminToken == "" {
 		return nil, nil
 	}
@@ -333,7 +341,8 @@ func agentBots(ctx context.Context, cfg config.Config, snapshot *presence.Snapsh
 	if err != nil {
 		return nil, err
 	}
-	bots := &agentbots.Bots{Admin: adm, Presence: snapshot, Owners: accounts, Prefix: cfg.BotPrefix, URL: cfg.MMURL, Log: log}
+	bots := &agentbots.Bots{Admin: adm, Presence: snapshot, Owners: accounts, Prefix: cfg.BotPrefix, URL: cfg.MMURL, Log: log,
+		NATS: inbound.Confirmed{NC: nc}}
 	if err := bots.Check(ctx, cfg.MMToken); err != nil {
 		return nil, err
 	}

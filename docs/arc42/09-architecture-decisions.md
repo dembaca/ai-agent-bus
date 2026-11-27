@@ -3572,7 +3572,12 @@ separately.
       the sequence (JetStream's metadata, the server's). No `Nats-Msg-Id`
       (condition 1).
     - The host computes its own name like the login service (`agent-` and
-      the first 16 bytes of sha256 over owner and host nkey, base32); the
+      the first 16 bytes of sha256 over owner and host nkey, base32; since
+      #274 no prefix and the first 25 characters, RT-6.36 step 8; the
+      owner decided on 2026-11-27 for 25 characters, 125 bits, so that a
+      NATS name is never the length of a Mattermost id, and that `agent-`
+      moves to the bridge's bot names once registration ends, plan B piece
+      14, with no default until then); the
       name in the credential is the authority: when the server refuses the
       host's subscription to its own deliver subjects, the names differ,
       and the host stops with an error instead of sending (`NameMismatch`).
@@ -4235,6 +4240,41 @@ which each piece reads for itself.
      - Switch: roster from NATS. Way back: Mattermost's roster again, and
        the state files keyed by the bot id, which the copy left in place;
        nothing in flight.
+     - Built (piece 2a, after 0.104.0): the roster, the link and the names
+       and kinds of accounts from NATS, behind `planb.on(2, channel)` (the
+       channel's switch, RT-6.39 step 5, off by default; a home over NATS
+       only). The
+       bridge publishes the record `<presence>.bot.<agent>.v1` (the bot, its
+       username, the account that owns it) after it set a bot up, every
+       minute while the bot holds a client, at its start and every minute
+       for each present agent whose bot exists (a find-only pass: no bot
+       made, no token minted), and with `bot` null when the sweep or an
+       admin took the bot away or its owner is not the agent's owner
+       account (RT-6.44 step 3); the login
+       service gives every agent's presence consumer the filter and only the
+       bridge's user the publish right. The session links a bot to a NATS
+       name only through that record and only when its `owner_account` is
+       the one account whose account record binds the owner's anchor
+       (replacing the bot's owner read, `owners.read`); the presence's own
+       `bot` field and the `⇄` tag in the status take no part, the tag is
+       still written. The roster rows come from presence and membership (id
+       the NATS name, `away` not reachable, the status word the presence's
+       `state`, the crown from the NATS view); the session finds its own row by its NATS name
+       (`lease.is_me`), for the crown, its usage and the foreign-coordinator
+       check. The presence did not carry `usage`, `release` and `state`
+       (the roster's numbers and state word the coordinator routes by, and
+       the version), so they are three new fields of the presence card,
+       `usage` and `release` the status text's own segments, read back by
+       the same parsers, `state` one of four words. `usernames`, `agents`,
+       `bot_accounts` and `agent_owner` answer a Mattermost id the records
+       know (a fresh bot record, a fresh account record) from the records
+       alone; every other id keeps Mattermost's answer as with the switch
+       off, so a registrar's bot or a bridge bot whose record lapsed stays
+       an agent, never a person. A cut makes the roster empty and tells nobody as
+       gone (RT-6.21). The bridge, the login service and the session side
+       ship together. Not built: the state files keyed by the NATS name
+       (piece 2b), and the `testrig` measurand "nobody told as gone during
+       a cut" (see Test below).
      - Test: roster, link and names without a Mattermost read; `testrig`:
        nobody told as gone during a cut. Lab: each agent shows once, a
        mention of a gone agent is answered.
@@ -4686,7 +4726,8 @@ in the addition of 2026-11-25 at the end of this record: fifteen points for
 the owner, none of them built.
 
 The pilot's cards (fixed after the lab pilot, 2026-11-25): a card is keyed
-by the agent's name on the bus (`agent-` and a 26-character hash, the
+by the agent's name on the bus (a 25-character hash since #274, before it
+`agent-` and 26 characters; the
 presence subject's last token) and shows the bot's username the agent's
 presence states (`name` beside `bot`, RT-6.37 step 6), the name
 `coordinator("who")` shows; the bus name stays in the detail as "id on the
@@ -4976,7 +5017,7 @@ The console is the operators' view of the bus itself.
      another card states too, or one that is another card's name on the
      bus, shows with a "shared name" mark wherever the agent is named (the
      list, the detail, the asks, the Overview, the graph), never as a
-     confirmed name; the name on the bus (`agent-` and a hash) only in the
+     confirmed name; the name on the bus (a hash, RT-6.36 step 8) only in the
      title and the detail's facts, or where no name is stated at all (an
      older MCP server, a session without a Mattermost bot).
    - **On the row:** name with the crown, harness and model; the state, and
