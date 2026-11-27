@@ -13,10 +13,12 @@ import (
 
 // Shown is the status an agent's presence states for the bridge to show under
 // the agent's own bot (ADR-014 phase 5, plan B piece 9; RT-6.6 step 1, RT-6.37
-// step 6): the emoji of its state, the text, when it ends, and whether the
-// agent's session holds its home's crown. Self-stated: the bridge shows the
-// crown only where the claims agree (Claims.Holder), never by this alone.
+// step 6): the home it is shown for, the emoji of its state, the text, when it
+// ends, and whether the agent's session holds its home's crown. Self-stated:
+// the bridge shows it only in that home and the crown only where the claims
+// agree (Claims.Holder), never by this alone.
 type Shown struct {
+	Home  string // the channel it is shown for: the session's home
 	Emoji string
 	Text  string
 	Until time.Time
@@ -56,6 +58,7 @@ func DecodeShown(body []byte) (*Shown, error) {
 		return nil, nil
 	}
 	var f struct {
+		Home  *string         `json:"home"`
 		Emoji *string         `json:"emoji"`
 		Text  *string         `json:"text"`
 		Until json.RawMessage `json:"until"`
@@ -64,7 +67,8 @@ func DecodeShown(body []byte) (*Shown, error) {
 	if err := json.Unmarshal(raw.Shown, &f); err != nil {
 		return nil, errShown
 	}
-	if f.Emoji == nil || !slices.Contains(ShownEmojis, *f.Emoji) || f.Text == nil {
+	if f.Home == nil || !channelRE.MatchString(*f.Home) || f.Emoji == nil ||
+		!slices.Contains(ShownEmojis, *f.Emoji) || f.Text == nil {
 		return nil, errShown
 	}
 	text := CleanText(*f.Text, ShownTextMax)
@@ -73,7 +77,7 @@ func DecodeShown(body []byte) (*Shown, error) {
 	if text == "" || err != nil || until < shownEpochMin || until > shownEpochMax {
 		return nil, errShown
 	}
-	return &Shown{Emoji: *f.Emoji, Text: text, Until: time.Unix(until, 0), Crown: string(f.Crown) == "true"}, nil
+	return &Shown{Home: *f.Home, Emoji: *f.Emoji, Text: text, Until: time.Unix(until, 0), Crown: string(f.Crown) == "true"}, nil
 }
 
 // CleanText is s with control and format characters as spaces, runs of space
@@ -119,6 +123,19 @@ func (s *ShownStore) Observed(name string, shown *Shown, at time.Time) {
 	s.by[name] = shownAt{shown: shown, at: at}
 	if shown != nil {
 		delete(s.warned, name)
+	}
+}
+
+// Prune forgets the names whose newest presence is older than cut (gone or
+// stale): a name that comes back states its status with its next presence.
+func (s *ShownStore) Prune(cut time.Time) {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	for name, e := range s.by {
+		if e.at.Before(cut) {
+			delete(s.by, name)
+			delete(s.warned, name)
+		}
 	}
 }
 

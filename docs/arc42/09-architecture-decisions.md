@@ -4514,15 +4514,25 @@ which each piece reads for itself.
        agent the holder, and writes the holder's line with its own bot
        after checking that the line is one the bus writes (RT-6.44 step 9).
        It reads the claims through a consumer of its own, `bridge_crown`,
-       made at every start. Way back: the switch off; the session states no
+       made once a served home has piece 9 on. A `shown` names its home, and
+       the bridge shows it only there; a graceful stop sets the bots it
+       showed offline (setting the known bots offline at a start is not
+       built). Way back: the switch off; the session states no
        `shown` and writes its registrar bot's status again, the bridge
        clears what it set. Typing: in a home over NATS no indicator goes
-       out (RT-6.5), before and after this piece. Not yet: the bridge's
-       holder does not leave out a claimant that is no member of the home
-       (memberships come to the bridge with piece 5's history read) or one
-       that does not stand by the owner rule (`lease.standing`); where
-       the sessions name another holder, no 👑 shows and the header line is
-       refused. The `testrig` measurement and the lab check are open.
+       out (RT-6.5), before and after this piece. Decided by the coordinator
+       on 2026-11-28: where the bridge's holder and the sessions' differ, no
+       👑 shows and the header line is refused; the bridge's holder does not
+       yet leave out a claimant that is no member of the home or one that
+       does not stand by the owner rule (`lease.standing`), both come with
+       the bridge's memberships (piece 5, #270). That fails safe only for
+       honest sessions: a foreign owner's agent whose session states
+       `crown` and whose claim is first can wear the 👑 on its bridge bot
+       and write the bus line, which gains it no right it lacks through its
+       registrar bot today. Typing stays out of this piece. Before the
+       switch goes on anywhere (not before the merge): the `bridge_crown`
+       right in the lab, the `testrig` measurement of the time from a crown
+       change to its mirror, and a hard stop of the coordinator in the lab.
   10. **Permission prompts by DM to the responsible human** (RT-6.13), and
       a person's other DMs to the agent. Needs the roster (piece 2) and
       people's events with a fresh signal.

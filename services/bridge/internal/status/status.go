@@ -100,7 +100,12 @@ func (m *Mirror) window() time.Duration {
 	return DefaultWindow
 }
 
-// Run compares and sets every interval until ctx ends.
+// StopWait bounds what Run spends at its end setting the bots offline.
+const StopWait = 10 * time.Second
+
+// Run compares and sets every interval until ctx ends; then, a graceful stop,
+// it sets every bot it showed a status on offline and clears that status
+// (Stop), so no agent looks present while the bridge is away.
 func (m *Mirror) Run(ctx context.Context, interval time.Duration) {
 	t := time.NewTicker(interval)
 	defer t.Stop()
@@ -108,10 +113,33 @@ func (m *Mirror) Run(ctx context.Context, interval time.Duration) {
 		m.Pass(ctx)
 		select {
 		case <-ctx.Done():
+			sctx, cancel := context.WithTimeout(context.Background(), StopWait)
+			defer cancel()
+			m.Stop(sctx)
 			return
 		case <-t.C:
 		}
 	}
+}
+
+// Stop sets every bot this process showed a status on offline and clears the
+// status, and returns how many it wrote. A bot not written now keeps what it
+// showed: its custom status runs out by its end (MaxUntil at most), its
+// presence stays until the bridge sets it again.
+func (m *Mirror) Stop(ctx context.Context) int {
+	writes := 0
+	for name, old := range m.applied {
+		if old.cleared() {
+			continue
+		}
+		if ctx.Err() != nil {
+			break
+		}
+		if m.apply(ctx, name, view{home: old.home, presence: "offline"}) {
+			writes++
+		}
+	}
+	return writes
 }
 
 // Pass sets each agent's bot to what it should show now and returns how many
@@ -143,8 +171,8 @@ func (m *Mirror) Pass(ctx context.Context) int {
 			}
 			shown := m.Shown.Get(name)
 			info, ok := m.Presence.Get(name)
-			if shown == nil || !ok {
-				continue
+			if shown == nil || shown.Home != home || !ok {
+				continue // shown only in the home the session states, where it claims
 			}
 			want[name] = m.compose(home, shown, info, holder == name && shown.Crown, now)
 		}
@@ -171,6 +199,9 @@ func (m *Mirror) Pass(ctx context.Context) int {
 			delete(m.applied, name)
 		}
 	}
+	// a name whose presence is gone or stale is forgotten: its next presence
+	// states its status again
+	m.Shown.Prune(now.Add(-m.window()))
 	return writes
 }
 
@@ -244,20 +275,30 @@ func (m *Mirror) fail(name string, err error) {
 	m.Log.Warn("status: the agent's bot did not take its status; tried again", "agent", name, "error", err)
 }
 
+// bullets are the separators that read as the status's own (U+2022, U+2219,
+// U+2027): a stated head with one of them is a head too.
+var bullets = strings.NewReplacer("\u2022", "·", "\u2219", "·", "\u2027", "·")
+
 // Plain is a stated text without a crown it may not claim: no crown
-// character, no `coordinator` head (the bridge sets both by the claims).
+// character, no `coordinator` head in any case or with any bullet (the bridge
+// sets both by the claims).
 func Plain(text string) string {
-	text = strings.ReplaceAll(text, crownMark, "")
+	text = bullets.Replace(strings.ReplaceAll(text, crownMark, ""))
+	const word = "coordinator"
 	for {
 		t := strings.TrimSpace(text)
-		switch {
-		case t == "coordinator" || t == "coordinator ·":
-			return ""
-		case strings.HasPrefix(t, coordinatorHead):
-			text = t[len(coordinatorHead):]
-			continue
+		if len(t) < len(word) || !strings.EqualFold(t[:len(word)], word) {
+			return presence.CleanText(t, presence.ShownTextMax)
 		}
-		return presence.CleanText(t, presence.ShownTextMax)
+		rest := strings.TrimLeft(t[len(word):], " ")
+		switch {
+		case rest == "" || rest == "·":
+			return ""
+		case strings.HasPrefix(rest, "·"):
+			text = rest[len("·"):]
+		default:
+			return presence.CleanText(t, presence.ShownTextMax) // a word that only begins so
+		}
 	}
 }
 

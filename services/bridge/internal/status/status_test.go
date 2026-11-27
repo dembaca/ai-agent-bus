@@ -76,7 +76,7 @@ func newEnv(t *testing.T) *env {
 	e.claims.Seed(now)
 	e.claims.Commit()
 	e.snap.Observed("a", "o", "", presence.Online, now.Add(-10*time.Second))
-	e.shown.Observed("a", &presence.Shown{Emoji: "hammer_and_wrench", Text: "working · ~home",
+	e.shown.Observed("a", &presence.Shown{Home: "home", Emoji: "hammer_and_wrench", Text: "working · ~home",
 		Until: now.Add(10 * time.Minute)}, now)
 	e.m = &Mirror{Homes: []string{"home"}, Presence: e.snap, Shown: e.shown, Claims: e.claims,
 		Switches: e.sw, Bots: e.bots, Log: slog.New(slog.NewTextHandler(io.Discard, nil))}
@@ -128,7 +128,7 @@ func TestAnAgentWithoutClaimOrStatusIsNotShown(t *testing.T) {
 	e.shown.Observed("a", nil, now.Add(time.Second))
 	e.pass(t, 0)
 	e.snap.Observed("z", "o", "", presence.Online, now)
-	e.shown.Observed("z", &presence.Shown{Emoji: "zzz", Text: "x", Until: now.Add(time.Minute)}, now)
+	e.shown.Observed("z", &presence.Shown{Home: "home", Emoji: "zzz", Text: "x", Until: now.Add(time.Minute)}, now)
 	e.pass(t, 0) // z has no claim
 	e.want(t, "a")
 	e.want(t, "z")
@@ -136,7 +136,7 @@ func TestAnAgentWithoutClaimOrStatusIsNotShown(t *testing.T) {
 
 func TestTheCrownShowsOnTheHolderWhoSaysSo(t *testing.T) {
 	e := newEnv(t)
-	e.shown.Observed("a", &presence.Shown{Emoji: "hammer_and_wrench", Text: "working · ~home",
+	e.shown.Observed("a", &presence.Shown{Home: "home", Emoji: "hammer_and_wrench", Text: "working · ~home",
 		Until: now.Add(10 * time.Minute), Crown: true}, now.Add(time.Second))
 	e.pass(t, 1)
 	e.want(t, "a", "status online", fmt.Sprintf("custom crown|coordinator · working · ~home|%d", unix(10*time.Minute)))
@@ -146,7 +146,7 @@ func TestNoCrownWhenAnotherFreshAgentHoldsItByTheClaims(t *testing.T) {
 	e := newEnv(t)
 	e.claims.Observed("home", "b", 1, now.Add(-2*time.Hour))
 	e.snap.Observed("b", "o", "", presence.Online, now)
-	e.shown.Observed("a", &presence.Shown{Emoji: "ear", Text: "listening · ~home",
+	e.shown.Observed("a", &presence.Shown{Home: "home", Emoji: "ear", Text: "listening · ~home",
 		Until: now.Add(10 * time.Minute), Crown: true}, now.Add(time.Second))
 	e.pass(t, 1)
 	e.want(t, "a", "status online", fmt.Sprintf("custom ear|listening · ~home|%d", unix(10*time.Minute)))
@@ -162,7 +162,7 @@ func TestNoCrownWithoutTheSessionsOwnWord(t *testing.T) {
 
 func TestAStatedCrownIsStripped(t *testing.T) {
 	e := newEnv(t)
-	e.shown.Observed("a", &presence.Shown{Emoji: "zzz", Text: "coordinator · \U0001F451working · ~home",
+	e.shown.Observed("a", &presence.Shown{Home: "home", Emoji: "zzz", Text: "coordinator · \U0001F451working · ~home",
 		Until: now.Add(10 * time.Minute)}, now.Add(time.Second))
 	e.pass(t, 1)
 	e.want(t, "a", "status online", fmt.Sprintf("custom zzz|working · ~home|%d", unix(10*time.Minute)))
@@ -202,14 +202,14 @@ func TestTheSwitchTurnedOffClearsWhatWasSet(t *testing.T) {
 
 func TestUntilIsCappedAtMaxUntil(t *testing.T) {
 	e := newEnv(t)
-	e.shown.Observed("a", &presence.Shown{Emoji: "ear", Text: "x", Until: now.Add(5 * time.Hour)}, now.Add(time.Second))
+	e.shown.Observed("a", &presence.Shown{Home: "home", Emoji: "ear", Text: "x", Until: now.Add(5 * time.Hour)}, now.Add(time.Second))
 	e.pass(t, 1)
 	e.want(t, "a", "status online", fmt.Sprintf("custom ear|x|%d", unix(MaxUntil)))
 }
 
 func TestAnEndedStatusIsCleared(t *testing.T) {
 	e := newEnv(t)
-	e.shown.Observed("a", &presence.Shown{Emoji: "ear", Text: "x", Until: now.Add(-time.Minute)}, now.Add(time.Second))
+	e.shown.Observed("a", &presence.Shown{Home: "home", Emoji: "ear", Text: "x", Until: now.Add(-time.Minute)}, now.Add(time.Second))
 	e.pass(t, 1)
 	e.want(t, "a", "status online", "clear")
 }
@@ -264,5 +264,74 @@ func TestWithHead(t *testing.T) {
 	exact := strings.Repeat("y", presence.ShownTextMax-14)
 	if got := WithHead("coordinator · ", exact); got != "coordinator · "+exact {
 		t.Fatalf("got %q", got)
+	}
+}
+
+func TestAStatusIsShownOnlyInTheHomeItNames(t *testing.T) {
+	e := newEnv(t)
+	e.sw["other"] = true
+	e.m.Homes = []string{"other", "home"}
+	e.claims.Begin()
+	e.claims.Observed("home", "a", 2, now.Add(-time.Hour))
+	e.claims.Observed("other", "a", 1, now.Add(-2*time.Hour))
+	e.claims.Commit()
+	e.pass(t, 1)
+	if got := e.m.applied["a"].home; got != "home" {
+		t.Fatalf("shown for %q, want home", got)
+	}
+	e.shown.Observed("a", &presence.Shown{Home: "elsewhere", Emoji: "zzz", Text: "x",
+		Until: now.Add(time.Minute)}, now.Add(time.Second))
+	e.pass(t, 1) // named no served home it claims in: cleared
+	e.want(t, "a", "status online", "custom hammer_and_wrench|working · ~home|"+fmt.Sprint(unix(10*time.Minute)),
+		"status offline", "clear")
+}
+
+func TestAGracefulStopSetsEveryShownBotOffline(t *testing.T) {
+	e := newEnv(t)
+	e.pass(t, 1)
+	if got := e.m.Stop(context.Background()); got != 1 {
+		t.Fatalf("Stop wrote %d, want 1", got)
+	}
+	calls := e.bots.calls["a"]
+	if !slices.Equal(calls[len(calls)-2:], []string{"status offline", "clear"}) {
+		t.Fatalf("calls %q", calls)
+	}
+	ctx, cancel := context.WithCancel(context.Background())
+	cancel()
+	e2 := newEnv(t)
+	e2.pass(t, 1)
+	if got := e2.m.Stop(ctx); got != 0 {
+		t.Fatalf("Stop with an ended context wrote %d", got)
+	}
+}
+
+func TestAStaleNameIsForgottenAndClearedOnce(t *testing.T) {
+	e := newEnv(t)
+	e.pass(t, 1)
+	// the presence and its status go stale together, as the reader stamps both
+	e.snap.Observed("a", "o", "", presence.Online, now.Add(-2*time.Minute))
+	old := e.shown.Get("a")
+	e.shown.Prune(now.Add(time.Hour)) // a newer entry would win: start over with the stale one
+	e.shown.Observed("a", old, now.Add(-2*time.Minute))
+	e.pass(t, 1) // offline and no status, then forgotten
+	if e.shown.Get("a") != nil {
+		t.Fatal("the stale name's status is kept")
+	}
+	e.pass(t, 0)
+	if _, ok := e.m.applied["a"]; ok {
+		t.Fatal("a cleared bot is still recorded")
+	}
+}
+
+func TestPlainCaseAndBullets(t *testing.T) {
+	for in, want := range map[string]string{
+		"Coordinator \u2022 working · ~home":    "working · ~home",
+		"COORDINATOR\u2219 coordinator\u2027 x": "x",
+		"coordinators meet · ~home":             "coordinators meet · ~home",
+		"CoOrDiNaToR":                           "",
+	} {
+		if got := Plain(in); got != want {
+			t.Errorf("Plain(%q) = %q, want %q", in, got, want)
+		}
 	}
 }

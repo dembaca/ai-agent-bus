@@ -15,16 +15,16 @@ import (
 )
 
 func TestDecodeShownReadsAStatus(t *testing.T) {
-	body := `{"v":1,"status":"online","shown":{"emoji":"zzz","text":"idle  ·\n~home","until":1900000000,"crown":true}}`
+	body := `{"v":1,"status":"online","shown":{"home":"home","emoji":"zzz","text":"idle  ·\n~home","until":1900000000,"crown":true}}`
 	s, err := DecodeShown([]byte(body))
 	if err != nil || s == nil {
 		t.Fatalf("got %v, %v", s, err)
 	}
-	if s.Emoji != "zzz" || s.Text != "idle · ~home" || !s.Until.Equal(time.Unix(1900000000, 0)) || !s.Crown {
+	if s.Home != "home" || s.Emoji != "zzz" || s.Text != "idle · ~home" || !s.Until.Equal(time.Unix(1900000000, 0)) || !s.Crown {
 		t.Fatalf("got %+v", s)
 	}
 	// no crown field: false
-	s, err = DecodeShown([]byte(`{"shown":{"emoji":"ear","text":"x","until":1900000000}}`))
+	s, err = DecodeShown([]byte(`{"shown":{"home":"home","emoji":"ear","text":"x","until":1900000000}}`))
 	if err != nil || s == nil || s.Crown {
 		t.Fatalf("got %+v, %v", s, err)
 	}
@@ -41,15 +41,17 @@ func TestDecodeShownNoneIsNilWithoutError(t *testing.T) {
 
 func TestDecodeShownOutOfBoundsIsAnError(t *testing.T) {
 	for name, shown := range map[string]string{
-		"unknown emoji":  `{"emoji":"crown","text":"x","until":1900000000}`,
-		"no emoji":       `{"text":"x","until":1900000000}`,
-		"no text":        `{"emoji":"zzz","until":1900000000}`,
-		"empty text":     `{"emoji":"zzz","text":"  ","until":1900000000}`,
-		"no until":       `{"emoji":"zzz","text":"x"}`,
-		"until too old":  `{"emoji":"zzz","text":"x","until":1500000000}`,
-		"until too far":  `{"emoji":"zzz","text":"x","until":4200000000}`,
-		"until fraction": `{"emoji":"zzz","text":"x","until":1900000000.5}`,
-		"until string":   `{"emoji":"zzz","text":"x","until":"1900000000"}`,
+		"unknown emoji":  `{"home":"home","emoji":"crown","text":"x","until":1900000000}`,
+		"no emoji":       `{"home":"home","text":"x","until":1900000000}`,
+		"no home":        `{"emoji":"zzz","text":"x","until":1900000000}`,
+		"bad home":       `{"home":"Home","emoji":"zzz","text":"x","until":1900000000}`,
+		"no text":        `{"home":"home","emoji":"zzz","until":1900000000}`,
+		"empty text":     `{"home":"home","emoji":"zzz","text":"  ","until":1900000000}`,
+		"no until":       `{"home":"home","emoji":"zzz","text":"x"}`,
+		"until too old":  `{"home":"home","emoji":"zzz","text":"x","until":1500000000}`,
+		"until too far":  `{"home":"home","emoji":"zzz","text":"x","until":4200000000}`,
+		"until fraction": `{"home":"home","emoji":"zzz","text":"x","until":1900000000.5}`,
+		"until string":   `{"home":"home","emoji":"zzz","text":"x","until":"1900000000"}`,
 		"not an object":  `"zzz"`,
 	} {
 		s, err := DecodeShown([]byte(`{"shown":` + shown + `}`))
@@ -139,7 +141,7 @@ func TestTheReaderFillsTheShownStore(t *testing.T) {
 	}
 	end := time.Now().Add(600 * time.Second).Unix()
 	mustPublish(t, nc, "presence.alice.agent-a",
-		`{"v":1,"status":"online","shown":{"emoji":"zzz","text":"idle \u00b7 ~home","until":`+strconv.FormatInt(end, 10)+`}}`)
+		`{"v":1,"status":"online","shown":{"home":"home","emoji":"zzz","text":"idle \u00b7 ~home","until":`+strconv.FormatInt(end, 10)+`}}`)
 	until(t, func() bool { return store.Get("agent-a") != nil })
 	got := store.Get("agent-a")
 	if got.Emoji != "zzz" || got.Text != "idle \u00b7 ~home" || got.Until.Unix() != end {
@@ -149,7 +151,7 @@ func TestTheReaderFillsTheShownStore(t *testing.T) {
 	mustPublish(t, nc, "presence.alice.agent-a", `{"v":1,"status":"online"}`)
 	until(t, func() bool { return store.Get("agent-a") == nil })
 	// out of bounds: shows nothing, the presence itself still counts
-	mustPublish(t, nc, "presence.alice.agent-b", `{"v":1,"status":"online","shown":{"emoji":"x","text":"y","until":1}}`)
+	mustPublish(t, nc, "presence.alice.agent-b", `{"v":1,"status":"online","shown":{"home":"home","emoji":"x","text":"y","until":1}}`)
 	until(t, func() bool { _, ok := snap.Get("agent-b"); return ok })
 	if store.Get("agent-b") != nil {
 		t.Fatal("an out-of-bounds status was stored")

@@ -5,6 +5,7 @@ import (
 	"fmt"
 	"log/slog"
 	"sync"
+	"time"
 
 	"github.com/nats-io/nats.go"
 
@@ -26,12 +27,14 @@ import (
 // The crown claims come through the bridge's own consumer, bridge_crown, made
 // at every start.
 type piece9 struct {
-	claims  *presence.Claims
-	shown   *presence.ShownStore
-	mirror  *status.Mirror
-	writer  *header.Writer
-	log     *slog.Logger
-	deliver string
+	homes    []string
+	switches *presence.Switches
+	claims   *presence.Claims
+	shown    *presence.ShownStore
+	mirror   *status.Mirror
+	writer   *header.Writer
+	log      *slog.Logger
+	deliver  string
 }
 
 // newPiece9 is nil without the agents' own bots.
@@ -40,8 +43,8 @@ func newPiece9(cfg config.Config, log *slog.Logger, client *mm.Client, bots *age
 	if bots == nil {
 		return nil
 	}
-	p := &piece9{claims: &presence.Claims{}, shown: &presence.ShownStore{}, log: log,
-		deliver: cfg.Deliver + ".crown"}
+	p := &piece9{homes: cfg.Homes, switches: switches, claims: &presence.Claims{},
+		shown: &presence.ShownStore{}, log: log, deliver: cfg.Deliver + ".crown"}
 	own := ownBots{bots}
 	p.mirror = &status.Mirror{Homes: cfg.Homes, Presence: snapshot, Shown: p.shown, Claims: p.claims,
 		Switches: switches, Bots: statusBots{own}, Log: log}
@@ -78,7 +81,22 @@ func (p *piece9) shownStore() *presence.ShownStore {
 	return p.shown
 }
 
-// run reads the crown claims and keeps the bots' statuses until ctx ends.
+// switchWait is how often run looks whether a served home has piece 9 on yet.
+const switchWait = 5 * time.Second
+
+// on says whether a home the bridge serves has piece 9 on.
+func (p *piece9) on() bool {
+	for _, home := range p.homes {
+		if p.switches.On(status.Piece, home) {
+			return true
+		}
+	}
+	return false
+}
+
+// run reads the crown claims and keeps the bots' statuses until ctx ends. The
+// claims' consumer is made only once a served home has piece 9 on, so a
+// bridge whose NATS user lacks its right logs nothing while the piece is off.
 func (p *piece9) run(ctx context.Context, wg *sync.WaitGroup, nc *nats.Conn) {
 	if p == nil {
 		return
@@ -87,6 +105,16 @@ func (p *piece9) run(ctx context.Context, wg *sync.WaitGroup, nc *nats.Conn) {
 	wg.Add(2)
 	go func() {
 		defer wg.Done()
+		t := time.NewTicker(switchWait)
+		defer t.Stop()
+		for !p.on() {
+			select {
+			case <-ctx.Done():
+				return
+			case <-t.C:
+			}
+		}
+		p.log.Info("bridge: plan B piece 9 is on in a served home; reading the crown claims")
 		if err := cr.Run(ctx, nc); err != nil && ctx.Err() == nil {
 			p.log.Error("bridge: the crown claims stopped", "error", err)
 		}

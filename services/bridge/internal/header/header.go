@@ -53,7 +53,22 @@ var busPart = regexp.MustCompile(`\n*` + regexp.QuoteMeta(HeaderMark) + `[^\n]*(
 // holder cannot put its own words into the header.
 var lineRE = regexp.MustCompile(`^` + regexp.QuoteMeta(BusHeader) +
 	`(?: · asks → ` + crown + ` first)?` +
-	`(?: · tasks here from ` + crown + ` of ~[a-z0-9][a-z0-9_-]{0,63}(?: ends \d{4}-\d\d-\d\d \d\d:\d\dZ)?)?$`)
+	`(?: · tasks here from ` + crown + ` of ~[a-z0-9][a-z0-9_-]{0,63}(?: ends (\d{4}-\d\d-\d\d \d\d:\d\d)Z)?)?$`)
+
+// CheckLine says whether line is one the MCP server writes (lineRE), its
+// mandate's end a real time.
+func CheckLine(line string) bool {
+	m := lineRE.FindStringSubmatch(line)
+	if m == nil {
+		return false
+	}
+	if m[1] != "" {
+		if _, err := time.Parse("2006-01-02 15:04", m[1]); err != nil {
+			return false
+		}
+	}
+	return true
+}
 
 // Bot is what the bridge reads and writes of a channel with an agent's own bot
 // (mm.Client).
@@ -112,7 +127,7 @@ func (w *Writer) Piece(ctx context.Context, agent string, req requests.Request) 
 	if !w.Switches.On(Piece, p.Channel) {
 		return requests.Reply{}, fmt.Errorf("plan B piece 9 is off in ~%s: the header stays the session's", p.Channel)
 	}
-	if !lineRE.MatchString(p.Line) {
+	if !CheckLine(p.Line) {
 		return requests.Reply{}, errors.New("not a bus line of the header (RT-6.6 step 7)")
 	}
 	if !w.Claims.Read() {

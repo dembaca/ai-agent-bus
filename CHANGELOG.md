@@ -205,21 +205,22 @@ before 0.5.0 are described in the git history.
   the old path and says so once in its log). In a home over NATS the session then writes
   no custom status, no presence and no crown mirror to Mattermost, and neither reads nor
   writes the channel header: its presence states the status it would have shown,
-  `shown` (the state's emoji, the text without link tag or `coordinator` head, its end,
-  `crown` while its mirror holds the home's crown), a change goes out at once
+  `shown` (its home, the state's emoji, the text without link tag or `coordinator` head,
+  its end, `crown` while its mirror holds the home's crown), a change goes out at once
   (`NatsBus.presence_soon`), and the bus line of the header goes to the bridge on
   `<req>.header.<agent>`. The bridge, with the agents' own bots, sets each agent's bot's
   custom status and Mattermost presence from that (offline and no status once the
   presence is stale, cleared when the switch goes off), shows the 👑 only where the
   presence says `crown` and the claims make that agent the holder, and writes the
   holder's bus line with its own bot when the line is one the bus writes, keeping what
-  people wrote. It reads the claims through a consumer of its own, `bridge_crown`, made
-  at every start: the bridge's NATS user needs
+  people wrote; a graceful stop sets the bots it showed offline. It reads the claims
+  through a consumer of its own, `bridge_crown`, made once a served home has piece 9 on:
+  the bridge's NATS user needs
   `$JS.API.CONSUMER.CREATE.PRESENCE.bridge_crown.presence.crown.*.*`
   (`nats-server.example.conf`). With the switch off nothing changes: the presence and
-  every Mattermost call are as before. Not yet: the bridge's holder does not leave out a
-  claimant that is no member of the home or one that does not stand by the owner rule;
-  where the sessions name another holder no 👑 shows and the header line is refused.
+  every Mattermost call are as before. Where the bridge's holder and the sessions' differ
+  (the bridge does not yet apply membership or the owner rule; both come with #270) no 👑
+  shows and the header line is refused.
 
 - **Plan B piece 2a: the roster, the link of a bot to its NATS name and
   the names of accounts from NATS, behind a switch that is off** (ADR-014

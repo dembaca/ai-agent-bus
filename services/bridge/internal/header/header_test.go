@@ -4,6 +4,7 @@ import (
 	"context"
 	"encoding/json"
 	"errors"
+	"os"
 	"strings"
 	"testing"
 	"time"
@@ -172,6 +173,18 @@ func TestRefusals(t *testing.T) {
 		{name: "switch off", payload: line(BusHeader), change: func(e *env) { e.sw["home"] = false }},
 		{name: "other words", payload: line(BusHeader + " · and more")},
 		{name: "newline", payload: line(BusHeader + "\nsecond line")},
+		{name: "a trailing newline", payload: line(BusHeader + "\n")},
+		{name: "an uppercase home", payload: line(BusHeader + " · tasks here from " + crownMark + " of ~Home")},
+		{name: "a date that is none", payload: line(BusHeader + " · tasks here from " + crownMark +
+			" of ~home ends 2026-13-45 25:61Z")},
+		{name: "the holder's presence stale", payload: line(BusHeader), change: func(e *env) {
+			e.w.Presence.(*presence.Snapshot).Observed("agent-a", "o", "", presence.Online, now.Add(-2*time.Minute))
+		}},
+		{name: "another served home without a claim", payload: map[string]any{"channel": "other", "line": BusHeader},
+			change: func(e *env) {
+				e.w.Homes = append(e.w.Homes, "other")
+				e.sw["other"] = true
+			}},
 		{name: "claims not read", payload: line(BusHeader), change: func(e *env) {
 			e.w.Claims = &presence.Claims{Clock: func() time.Time { return now }}
 		}},
@@ -218,5 +231,54 @@ func TestTheHeaderKeepsPeoplesTextAndIsWrittenOnce(t *testing.T) {
 	}
 	if string(rep.Result) != `{"v":1,"changed":false}` || e.bot.writes != 1 {
 		t.Fatalf("result %s, writes %d", rep.Result, e.bot.writes)
+	}
+}
+
+func TestTrailingJSONAfterThePayloadIsRefused(t *testing.T) {
+	e := newEnv(t)
+	raw, err := json.Marshal(line(BusHeader))
+	if err != nil {
+		t.Fatal(err)
+	}
+	r := requests.Request{V: 1, Request: "abcdefghijklmnop", Kind: "header",
+		Payload: append(raw, []byte(` {"channel":"home"}`)...)}
+	if _, err := e.w.Piece(context.Background(), "agent-a", r); err == nil || e.bot.calls != 0 {
+		t.Fatalf("accepted a payload with trailing JSON (err %v, calls %d)", err, e.bot.calls)
+	}
+}
+
+// TestTheSharedVectorWithPython reads the lines and headers the MCP server's
+// lease.bus_line and lease.with_bus_header make (testdata/bus_lines.json, which
+// mcp/tests/test_planb_piece9.py checks against the Python side): every line
+// is one the bridge writes, and the header comes out the same.
+func TestTheSharedVectorWithPython(t *testing.T) {
+	raw, err := os.ReadFile("testdata/bus_lines.json")
+	if err != nil {
+		t.Fatal(err)
+	}
+	var v struct {
+		BusHeader string `json:"bus_header"`
+		Lines     []struct {
+			Line string `json:"line"`
+		} `json:"lines"`
+		Headers []struct {
+			Header, Bus, Want string
+		} `json:"headers"`
+	}
+	if err := json.Unmarshal(raw, &v); err != nil {
+		t.Fatal(err)
+	}
+	if v.BusHeader != BusHeader || len(v.Lines) == 0 || len(v.Headers) == 0 {
+		t.Fatalf("the vector: %q, %d lines, %d headers", v.BusHeader, len(v.Lines), len(v.Headers))
+	}
+	for _, l := range v.Lines {
+		if !CheckLine(l.Line) {
+			t.Errorf("a line Python writes is refused: %q", l.Line)
+		}
+	}
+	for _, h := range v.Headers {
+		if got := WithBusHeader(h.Header, h.Bus); got != h.Want {
+			t.Errorf("WithBusHeader(%.40q…) = %.80q…, Python %.80q…", h.Header, got, h.Want)
+		}
 	}
 }

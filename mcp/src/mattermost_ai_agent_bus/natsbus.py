@@ -516,15 +516,17 @@ SHOWN_TEXT_MAX = 100  # Mattermost's custom status text
 
 
 def clean_shown(shown: Mapping[str, Any]) -> dict[str, Any] | None:
-    """A `shown` status bounded as the bridge reads it (plan B piece 9): `emoji` one of
+    """A `shown` status bounded as the bridge reads it (plan B piece 9): `home` the channel it
+    is shown for (the session's home; the bridge shows it only there), `emoji` one of
     SHOWN_EMOJIS, `text` a card line of at most SHOWN_TEXT_MAX characters, `until` its end in
     epoch seconds, `crown` only when True (this session's mirror holds its home's crown).
     None when a field is out of bounds: dropped, never repaired."""
-    emoji, until = shown.get("emoji"), card_epoch(shown.get("until"))
+    home, emoji, until = shown.get("home"), shown.get("emoji"), card_epoch(shown.get("until"))
     text = card_text(shown.get("text"), SHOWN_TEXT_MAX)
-    if emoji not in SHOWN_EMOJIS or not text or until is None:
+    if (not isinstance(home, str) or not CHANNEL_RE.fullmatch(home) or emoji not in SHOWN_EMOJIS
+            or not text or until is None):
         return None
-    out: dict[str, Any] = {"emoji": emoji, "text": text, "until": until}
+    out: dict[str, Any] = {"home": home, "emoji": emoji, "text": text, "until": until}
     if shown.get("crown") is True:
         out["crown"] = True
     return out

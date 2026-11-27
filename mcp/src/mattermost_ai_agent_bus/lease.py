@@ -595,8 +595,8 @@ def _rfc3339(epoch: int) -> str:
 
 # --- plan B piece 9: the status shown by the bridge (ADR-014 phase 5) --------------------
 
-# The status this server would show, as its presence states it for the bridge (emoji, text,
-# until, crown); None while the agent is offline or nothing was shown yet.
+# The status this server would show, as its presence states it for the bridge (home, emoji,
+# text, until, crown); None while the agent is offline or nothing was shown yet.
 _shown: dict[str, Any] | None = None
 _mirror_warned: set[str] = set()
 
@@ -802,8 +802,8 @@ async def _set_status(client: ChatPort, state: str, label: str = "") -> None:
     if mirrored:
         # Plan B piece 9: the bridge shows it under the agent's bridge bot, with the presence
         # and the crown by the claims (RT-6.38); no Mattermost call here. Offline: the bye.
-        _show_by_bridge({"emoji": base_emoji, "text": text[:STATUS_MAX], "until": until,
-                         "crown": crowned} if emoji else None)
+        _show_by_bridge({"home": client.work_channel_name.lstrip("~").lower(), "emoji": base_emoji,
+                         "text": text[:STATUS_MAX], "until": until, "crown": crowned} if emoji else None)
         life.shown(bool(since))
         return
     try:

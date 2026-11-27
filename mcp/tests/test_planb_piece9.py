@@ -14,6 +14,7 @@ import asyncio
 import json
 import logging
 import time
+from pathlib import Path
 from typing import Any
 
 import pytest
@@ -33,8 +34,14 @@ BUS = a2a.status_emoji(StatusMark.BUS)
 
 
 @pytest.fixture
-async def world() -> World:
+async def world(monkeypatch: pytest.MonkeyPatch) -> World:
+    """test_crown_nats's world, with what piece 2's roster reads of the bus (piece 9 needs it):
+    the home's member names, each name's card and the bridge's bot records."""
     wd = World()
+    f = wd.fake
+    monkeypatch.setattr(f, "member_names", lambda ch: sorted(n for c, n in f.members if c == ch), raising=False)
+    monkeypatch.setattr(f, "card_of", lambda n: natsbus.PresenceCard(), raising=False)
+    monkeypatch.setattr(f, "bot_record", lambda n: None, raising=False)
     await wd.prime()
     claimant(wd.fake, NAME_ME, 5, bot_id=BOT)
     return wd
@@ -93,7 +100,7 @@ async def test_with_pieces_2_and_9_on_nothing_of_the_status_goes_to_mattermost(
     await lease.set_status(world.port, "working", "proj")  # type: ignore[arg-type]
     shown = lease.presence_shown()
     assert shown is not None
-    assert shown["emoji"] == WORKING and shown["text"] == f"working · proj · ~{HOME}"
+    assert shown["home"] == HOME and shown["emoji"] == WORKING and shown["text"] == f"working · proj · ~{HOME}"
     assert "⇄" not in shown["text"] and shown["crown"] is False
     assert abs(shown["until"] - (time.time() + lease.lease_sec())) < 5
     await lease.set_status(world.port, "idle")  # type: ignore[arg-type]
@@ -135,12 +142,20 @@ async def test_the_crown_is_stated_apart_and_the_bridge_decides_it(
     world.port.header_line = header  # type: ignore[method-assign]
     world.fake.members.add((HOME, NAME_ME))
     await world.tick()
-    assert lease.crown_held(BOT)
+    # the roster is NATS's (piece 2): the own row by the NATS name, reachable without any
+    # Mattermost status, so the mirror is armed with nothing written to Mattermost
+    assert lease.nats_roster_on(HOME) and lease.roster_self(world.port, BOT) == NAME_ME  # type: ignore[arg-type]
+    assert world.view().holder == NAME_ME and lease.crown_held(BOT)  # type: ignore[union-attr]
     shown = lease.presence_shown()
     assert shown is not None and shown["crown"] is True
     assert shown["emoji"] in natsbus.SHOWN_EMOJIS and shown["emoji"] != CROWN
     assert not shown["text"].startswith("coordinator") and shown["text"].endswith(f"~{HOME}")
     assert abs(shown["until"] - (time.time() + lease.crown_lease_sec())) < 5
+    claims = len(world.fake.claimed_homes)
+    await lease.nats_beat(world.port)  # type: ignore[arg-type]
+    assert len(world.fake.claimed_homes) == claims and lease.crown_held(BOT)  # reachable: it keeps it
+    await lease.set_status(world.port, "renew")  # type: ignore[arg-type]
+    assert (lease.presence_shown() or {}).get("crown") is True
     assert header.sent and header.sent[0][0] == HOME
     assert header.sent[0][1].startswith(lease.BUS_HEADER)
     claimant(world.fake, NAME_A, 1)  # another claim is lower: the view says not mine
@@ -211,16 +226,37 @@ async def test_with_the_switch_off_the_header_is_written_to_mattermost(
     assert world.inner.header == f"what people wrote\n\n{lease.BUS_HEADER}" and header.sent == []
 
 
+# The lines and headers the bridge's header writer is checked against too (its Go test reads
+# the same file): the two sides of the bus line cannot drift apart.
+BUS_LINES = (Path(__file__).resolve().parents[2] / "services" / "bridge" / "internal" / "header"
+             / "testdata" / "bus_lines.json")
+
+
+def test_the_bus_lines_the_bridge_checks_are_the_ones_this_server_writes() -> None:
+    vector = json.loads(BUS_LINES.read_text(encoding="utf-8"))
+    assert vector["bus_header"] == lease.BUS_HEADER
+    assert lease.BUS_HEADER == ("\U0001f68c agent bus · plain post → \U0001f451 routes it · @agent → that agent"
+                                " · \U0001f64b = a question for you")
+    for case in vector["lines"]:
+        mandate = tuple(case["mandate"]) if case["mandate"] else None
+        assert lease.bus_line(case["asks_first"], mandate) == case["line"]
+    for case in vector["headers"]:
+        assert lease.with_bus_header(case["header"], case["bus"]) == case["want"]
+
+
 # --- the presence body (RT-6.37 step 6) ------------------------------------------------------------
 
 def test_shown_is_bounded_as_the_bridge_reads_it() -> None:
     until = int(time.time()) + 600
-    ok = {"emoji": WORKING, "text": "working · proj · ~home", "until": until}
+    ok = {"home": "home", "emoji": WORKING, "text": "working · proj · ~home", "until": until}
     assert natsbus.clean_shown(ok) == ok
     assert natsbus.clean_shown(ok | {"crown": True}) == ok | {"crown": True}
     assert natsbus.clean_shown(ok | {"crown": "yes"}) == ok  # only True states the crown
     assert natsbus.clean_shown(ok | {"emoji": CROWN}) is None  # the crown is the bridge's
     assert natsbus.clean_shown(ok | {"emoji": "smile"}) is None
+    assert natsbus.clean_shown({k: v for k, v in ok.items() if k != "home"}) is None  # shown for no home
+    assert natsbus.clean_shown(ok | {"home": "Home"}) is None
+    assert natsbus.clean_shown(ok | {"home": "a.b"}) is None
     assert natsbus.clean_shown(ok | {"until": True}) is None
     assert natsbus.clean_shown(ok | {"until": float(until)}) is None
     assert natsbus.clean_shown(ok | {"until": 1}) is None
@@ -238,9 +274,10 @@ def test_the_presence_states_shown_only_when_given() -> None:
     assert natsbus.encode_presence("online", BOT, "agent-me", shown=None) == plain
     until = int(time.time()) + 600
     body = json.loads(natsbus.encode_presence("online", BOT, "agent-me",
-                                              shown={"emoji": IDLE, "text": "idle", "until": until}))
-    assert body["shown"] == {"emoji": IDLE, "text": "idle", "until": until}
-    bad = json.loads(natsbus.encode_presence("online", shown={"emoji": CROWN, "text": "x", "until": until}))
+                                              shown={"home": "home", "emoji": IDLE, "text": "idle", "until": until}))
+    assert body["shown"] == {"home": "home", "emoji": IDLE, "text": "idle", "until": until}
+    bad = json.loads(natsbus.encode_presence("online", shown={"home": "home", "emoji": CROWN, "text": "x",
+                                                              "until": until}))
     assert "shown" not in bad and bad["status"] == "online"
 
 
@@ -255,7 +292,7 @@ def test_a_failing_shown_source_states_none_and_the_presence_still_goes() -> Non
     bus.shown_source = broken
     assert json.loads(bus._presence_body("online"))["status"] == "online"
     until = int(time.time()) + 60
-    bus.shown_source = lambda: {"emoji": BUS, "text": "on the bus", "until": until, "crown": True}
+    bus.shown_source = lambda: {"home": "home", "emoji": BUS, "text": "on the bus", "until": until, "crown": True}
     assert json.loads(bus._presence_body("online"))["shown"]["crown"] is True
 
 
@@ -273,11 +310,11 @@ async def test_an_early_presence_carries_the_shown_status(rig: Rig) -> None:
     await rig.admin.flush()
     try:
         until = int(time.time()) + 600
-        bus.shown_source = lambda: {"emoji": WORKING, "text": "working · ~home", "until": until}
+        bus.shown_source = lambda: {"home": "home", "emoji": WORKING, "text": "working · ~home", "until": until}
         bus.presence_soon()
         body = await asyncio.wait_for(got.get(), 5)
         assert body["status"] == "online"
-        assert body["shown"] == {"emoji": WORKING, "text": "working · ~home", "until": until}
+        assert body["shown"] == {"home": "home", "emoji": WORKING, "text": "working · ~home", "until": until}
     finally:
         await sub.unsubscribe()
 
