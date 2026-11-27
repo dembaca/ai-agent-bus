@@ -2683,6 +2683,20 @@ async def test_a_plan_b_record_reads_on_while_the_replay_runs() -> None:
     assert bus.planb_pieces("home") == frozenset()
 
 
+async def test_two_consumers_made_anew_in_a_row_keep_the_old_plan_b_records() -> None:
+    """RT-6.39 step 5 (#244): a second recreation before the replay is complete loses no channel."""
+    bus, _ = _unit_bus()
+    await _planb_rec(bus, "home", 5, T0, _planb_body())
+    await _planb_rec(bus, "elsewhere", 6, T0, _planb_body("elsewhere"), cseq=6)
+
+    def mid(sseq: int, cseq: int) -> str:
+        return f"$JS.ACK.PRESENCE.{bus.name}_presence.1.{sseq}.{cseq}.{int(T0 * 1e9)}.2"
+
+    await bus._on_presence_msg(FakeMsg("presence.planb.elsewhere.v1", mid(6, 1), _planb_body("elsewhere")))
+    await bus._on_presence_msg(FakeMsg("presence.planb.elsewhere.v1", mid(6, 1), _planb_body("elsewhere")))  # anew again
+    assert bus.planb_pieces("home") == frozenset({1, 3})  # home's record not replayed yet in either
+
+
 async def test_a_consumer_made_anew_forgets_the_plan_b_records() -> None:
     """RT-6.39 step 5: the consumer delivers the last record per subject again."""
     bus, _ = _unit_bus()

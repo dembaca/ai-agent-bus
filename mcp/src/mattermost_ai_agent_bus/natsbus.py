@@ -2382,7 +2382,9 @@ class NatsBus:
             self._claim_at.clear()
             # the consumer delivers the last record per subject again: until it has, the old
             # records stay readable, or every piece would flap to Mattermost (#244)
-            self._planb_prev, self._planb = self._planb, {}
+            # (a second recreation before the replay is complete keeps what the first left)
+            self._planb_prev = {**self._planb_prev, **self._planb}
+            self._planb = {}
             self._synced = False  # until a delivery with pending 0: the replay is not read yet
         self._presence_cseq = ack.consumer_seq
         if ack.pending == 0:
