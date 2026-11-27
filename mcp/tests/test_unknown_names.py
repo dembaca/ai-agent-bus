@@ -33,6 +33,11 @@ def test_odd_names_are_counted_not_shown():
     assert config.unknown_names(env) == ["unknown setting CB_QQQQQQQQ", "and 3 more unknown CB_ settings"]
 
 
+def test_a_name_over_64_characters_is_counted_not_shown():
+    env = {"CB_" + "X" * 62: "x", "CB_" + "X" * 61: "x"}  # 65 and 64 characters
+    assert config.unknown_names(env) == [f"unknown setting CB_{'X' * 61}", "and 1 more unknown CB_ settings"]
+
+
 def test_more_than_the_cap_say_how_many_more():
     env = {f"CB_ZZZZ{i:02d}": "x" for i in range(14)}
     out = config.unknown_names(env)

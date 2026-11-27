@@ -138,14 +138,14 @@ def known(name: str) -> bool:
 
 
 UNKNOWN_CAP = 10
-_PLAIN_NAME_RE = re.compile(r"[A-Z0-9_]+")
+_PLAIN_NAME_RE = re.compile(r"[A-Z0-9_]{1,64}")
 
 
 def unknown_names(environ: Mapping[str, str] | None = None) -> list[str]:
     """One line per `CB_` name in the environment that nothing knows (#261): a typo or a
     wrong prefix would otherwise leave its setting silently unread. With the closest known
     name, the `CB_MM_` prefix swap first. Names only, never a value. Only names of the
-    form `[A-Z0-9_]+` are reported, at most UNKNOWN_CAP of them (#269); the odd ones and
+    form `[A-Z0-9_]{1,64}` are reported, at most UNKNOWN_CAP of them (#269); the odd ones and
     the rest are counted in a last line, "and N more"."""
     found = sorted(n for n in (os.environ if environ is None else environ)
                    if n.startswith("CB_") and not known(n))
