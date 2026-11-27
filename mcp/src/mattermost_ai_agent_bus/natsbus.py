@@ -874,11 +874,12 @@ def crown_holder(claims: Mapping[str, int], presence: Mapping[str, tuple[float, 
 # --- CONNECT ---------------------------------------------------------------------------------
 
 def build_hello(token: str, home: str, guests: tuple[str, ...], lobby: bool,
-                since: Mapping[str, int], *, fresh_presence: bool = False,
+                since: Mapping[str, int | tuple[int, int]], *, fresh_presence: bool = False,
                 trusted: tuple[str, ...] = (), trusted_cut: bool = False,
                 session: str = "") -> str:
     """The CONNECT `auth_token` the login service reads (callout.Hello). It holds the
-    access token: never log it."""
+    access token: never log it. A `since` value is a sequence, or the bus's
+    (sequence, server time) pair (#213): the hello carries the sequence only."""
     hello: dict[str, Any] = {"token": token}
     if home:
         hello["home"] = home
@@ -892,7 +893,11 @@ def build_hello(token: str, home: str, guests: tuple[str, ...], lobby: bool,
         hello["trusted_cut"] = True
     if session:
         hello["session"] = session  # #163: the session's own part of the name, when the key is shared
-    known = {ch: seq for ch, seq in since.items() if seq > 0}
+    known = {}
+    for ch, value in since.items():
+        seq = value[0] if isinstance(value, tuple) else value
+        if seq > 0:
+            known[ch] = seq
     if fresh_presence:
         known[PRESENCE_FRESH_KEY] = 1  # the login service reads the presence stream afresh (RT-6.35)
     if known:
@@ -1133,7 +1138,15 @@ class NatsBus:
                  connect_timeout: float = 5.0, renew_sec: float = RENEW_SEC,
                  send_wait_sec: float = SEND_WAIT_SEC, member_renew_sec: float = MEMBER_RENEW_SEC,
                  on_fatal: FatalCallback | None = None, on_person: PersonCallback | None = None,
-                 on_notice: NoticeCallback | None = None, session: str = "") -> None:
+                 on_notice: NoticeCallback | None = None, session: str = "",
+                 since: Mapping[str, tuple[int, int]] | None = None) -> None:
+        """`since` (#213, RT-6.35 step 3) is the hand-over cursor the host derives from its
+        read mark: channel -> (last stream sequence it HANDED to the agent, that post's
+        server time in ms). It goes into the first CONNECT beside `@presence`, so the login
+        service restarts that consumer one message later and a post still queued when the
+        process was killed is delivered again rather than lost. The time is the stream-reset's
+        second sign: a recreated BUS stream delivers newer messages, a start by time replays
+        older ones. This class keeps no file; the read mark is the host's record."""
         for what, v in (("bus", settings.bus), ("presence", settings.presence), ("stats", settings.stats)):
             if not PREFIX_RE.fullmatch(v) or v == DELIVER:
                 raise ValueError(f"invalid {what} prefix")
@@ -1180,7 +1193,26 @@ class NatsBus:
         self._last_echo_reconnect = -1e18
         self._echo_backoff = 0.0  # the wait after an echo reconnect that brought no echo back; 0: none yet
         self._stale: set[str] = set()  # channels with a gap, dropped until the reconnect
-        self._last_seq: dict[str, int] = {}  # channel (or "@dm") -> last stream sequence delivered
+        # channel (or "@dm") -> last stream sequence handed to the agent: the host's read mark
+        # at the start (#213), and this process's own hand-overs since (a reconnect)
+        self._last_seq: dict[str, int] = {}
+        # channel (or `@dm`) -> the server time of the message whose sequence is in
+        # `_last_seq`, in integer milliseconds (as the read mark and a post's create_at hold
+        # it): the stream-reset's second sign (#213)
+        self._last_time: dict[str, int] = {}
+        for key, pair in (since or {}).items():
+            # Only a channel name or the DMs can be a `since` key: anything else (a person's
+            # `hu.<channel>`, `@presence`, junk) is never sent. The port's cursor names channels
+            # only (it drops DMs, `_on_event`); `@dm` reaches this from a reconnect within the
+            # process, where the bus has seen the DMs itself.
+            if not (isinstance(pair, tuple) and len(pair) == 2):
+                continue
+            seq, at = pair
+            if ((key == DM_SINCE or CHANNEL_RE.fullmatch(key))
+                    and isinstance(seq, int) and 0 < seq < 1 << 63
+                    and isinstance(at, int) and at > 0):
+                self._last_seq[key] = seq
+                self._last_time[key] = at
         self._server_now = 0.0  # the newest server timestamp seen: the host's "now"
         self._server_now_mono = 0.0  # the monotonic clock when it was seen (for _iat)
         self._last_prune = 0.0
@@ -1257,11 +1289,35 @@ class NatsBus:
                 out.append(ch)
         return out
 
-    def since(self) -> dict[str, int]:
-        out = {ch: self._last_seq[ch] for ch in self.channels if self._last_seq.get(ch)}
-        if self._last_seq.get(DM_SINCE):
-            out[DM_SINCE] = self._last_seq[DM_SINCE]
+    def since(self) -> dict[str, tuple[int, int]]:
+        """The hand-over cursor: channel (and `@dm`) -> (last stream sequence handed to the
+        agent, that message's server time in ms). The first CONNECT sends the sequences so the
+        login service restarts each consumer one message later; the time stays here for the
+        stream-reset check (RT-6.35 step 3, #213)."""
+        out: dict[str, tuple[int, int]] = {}
+        for ch in [*self.channels, DM_SINCE]:
+            if self._last_seq.get(ch):
+                out[ch] = (self._last_seq[ch], self._last_time.get(ch, 0))
         return out
+
+    def _handed(self, where: str, stream_seq: int, at: int) -> None:
+        """The message at `stream_seq` (server time `at`, ms) was handed over: the cursor
+        follows it (#213). Called only once the delivered event's callback returned, so a
+        message still in the callback, a failed one, or a cancelled one leaves the cursor
+        before it: a reconnect or the host's read mark brings it again."""
+        self._last_seq[where] = stream_seq
+        self._last_time[where] = at
+
+    def _stream_reset(self, where: str, consumer_seq: int, stream_seq: int, at: int) -> None:
+        """A BUS stream made anew restarts its sequences, as a presence consumer made anew does
+        (RT-6.38 step 1): its first delivery (number 1) at or below the remembered cursor says
+        the cursor is from before the reset, and its server time is NEWER than the cursor's
+        message (a start by time instead replays older messages and is no reset, #213). Forget
+        the cursor then, so the new stream's low sequences are not dropped."""
+        if (consumer_seq == 1 and stream_seq <= self._last_seq.get(where, 0)
+                and at > self._last_time.get(where, 0)):
+            self._last_seq.pop(where, None)
+            self._last_time.pop(where, None)
 
     # --- lifecycle ---------------------------------------------------------------
     async def start(self) -> None:
@@ -1995,21 +2051,30 @@ class NatsBus:
             self._gap(where)
         if where in self._stale:
             return
+        at = int(ack.time * 1000)  # ms, as the read mark and a post's create_at hold server time
+        # before the repeat check: a new stream's seq 1 may follow the old cursor
+        self._stream_reset(where, ack.consumer_seq, ack.stream_seq, at)
         if ack.stream_seq <= self._last_seq.get(where, 0):
             return  # a repeat after a restart from `since`
-        self._last_seq[where] = ack.stream_seq
         try:
             message = decode(data, self._s.props_prefix)
         except MessageError as exc:
             log.warning("nats bus: dropped a malformed message on %s (seq %d): %s", where, ack.stream_seq, exc)
+            self._handed(where, ack.stream_seq, at)  # never readable: no replay on every reconnect
             return
         event = Event(where, sender, ack.stream_seq, ack.time, message)
         try:
             res = self._on_event(event)
             if inspect.isawaitable(res):
                 await res
+        except asyncio.CancelledError:
+            # Killed while handing it: no cursor, so the host's read mark (which never passed
+            # this post) asks for it again at the next start (at least once for this one).
+            raise
         except Exception as exc:
             log.warning("nats bus: event callback failed: %s", type(exc).__name__)
+            return  # not handed: the cursor stays before it
+        self._handed(where, ack.stream_seq, at)
 
     def _person_handler(self, channel: str) -> Callable[[Any], Awaitable[None]]:
         async def handle(msg: Any) -> None:
@@ -2041,16 +2106,26 @@ class NatsBus:
             log.warning("nats bus: gap on the people of %s: read on Mattermost", channel)
             if self.on_person_gap is not None:
                 self.on_person_gap(channel)
+        at = int(ack.time * 1000)  # ms, as `_last_time` holds server time
         if ack.stream_seq <= self._last_seq.get(key, 0):
-            return  # a repeat
-        self._last_seq[key] = ack.stream_seq
+            # A BUS stream made anew restarts its sequences: the consumer's first delivery (1)
+            # with a NEWER time is not a repeat then. A person's key (`hu.<channel>`) is no
+            # `since` key and the host keeps no mark for it: a restart starts their consumer
+            # with new messages (RT-6.42 step 9).
+            if ack.consumer_seq == 1 and at > self._last_time.get(key, 0):
+                self._last_seq.pop(key, None)
+                self._last_time.pop(key, None)
+            else:
+                return  # a repeat
         try:
             message = decode_person(data)
         except MessageError as exc:
             log.warning("nats bus: dropped a malformed person's message on %s (seq %d): %s",
                         channel, ack.stream_seq, exc)
+            self._handed(key, ack.stream_seq, at)  # never readable: no replay on every reconnect
             return
         if self._on_person is None:
+            self._handed(key, ack.stream_seq, at)
             return
         try:
             res = self._on_person(PersonEvent(channel, anchor, ack.stream_seq, ack.time, message))
@@ -2058,6 +2133,8 @@ class NatsBus:
                 await res
         except Exception as exc:
             log.warning("nats bus: person callback failed: %s", type(exc).__name__)
+            return  # not handed: a repeat is handed again
+        self._handed(key, ack.stream_seq, at)
 
     async def _on_notice_msg(self, anchor: str, verdict: str, msg: Any, ack: Any) -> None:
         """A theft notice (RT-6.34): dropped once expired, told once per record."""

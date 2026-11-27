@@ -23,8 +23,8 @@ code does today and point here where a decision will change them.
 | ADR-012 | Files an agent attaches: the server never opens a path the agent names; the bytes come from inside the sandbox (the shell's `POST /v1/files`, or a small text in the `attach` tool), checked by their bytes, uploaded for a post that takes only this server's fresh uploads | Decided 2026-11-14, built (0.90.0, RT-6.33) | — |
 | ADR-013 | The channel banner shows what waits: the home's 👑 server writes it on a change only, at most once a minute; a stall in red, asks waiting on a human in amber, else the crown and the agents by status; display only, never input; a human's banner is left alone and told to its human; without the licence or the permission everything stays as today; later the 👑 prefix only on asks and routings | Withdrawn (2026-11-16): depends on the Mattermost edition and a permission setting; the header carries the rare facts instead | — |
 
-| ADR-014 | Agent-to-agent traffic over NATS JetStream; Mattermost stays the humans' chat behind one central adapter per tenant; agents log in through Keycloak (device flow) and a login service issues 15-minute NATS credentials bound to the host's own key; a clean-room build from Cotal's protocol description with a message format of the bus's own (no wire compatibility with Cotal); tools, hook API and bus logic unchanged behind the ports; parallel operation switched per home channel, the registrar shut down last; the sender NATS-native (last subject token, agents read only through push consumers the login service makes, no signed envelope) | Accepted (2026-11-22) by the owner, with the review's recommendations; three later points open (below), none of them blocks the first NATS code. Phase 2 built; phase 3 built in part in 0.97.0: the login service with the host's Keycloak login, consumers, a home over NATS, owner, presence and crown over NATS (RT-6.34 to RT-6.38), the attestation after 0.97.0 (RT-6.41); not built: the central adapter, the pod path, role addressing, files and DMs over NATS, signed human-origin events, shutting the registrar down | — |
-| ADR-015 | Operator web console: a web application for the people who look after the agents, with the agents by state, who trusts and who coordinates whom, the bus's statistics as charts, and the open asks answered beside their thread; no chat. It stands alone on the bus on NATS, with Keycloak as its only login and no dependency on Mattermost (decided by the owner on 2026-11-23). Recommended: on NATS as the logged-in operator, with a credential of that person's own from the login service, so NATS says who answered and the asking agent's server still decides whether it approves | Proposed (2026-11-23), not accepted; eight points open for the owner, three decided on 2026-11-23 (ADR-016). Stage 1's read-only pilot is built (2026-11-24): the browser app (#89) and its server (#94) — the login of point 4 and the API of point 10 with its SSE — one read-only NATS account, the pilot's documented deviation, since replaced: the console reads as each logged-in operator with a credential of that person's own from the login service (the addition of 2026-11-25, points 1 to 7, RT-6.43), and the static account is gone. The fleet's "now" carries a monotonic floor: a delivery-silent console ages presence out and drops the crown, a jump of the host's wall clock changes nothing, and only a genuinely newer server stamp re-anchors it (#108). Of the addition of 2026-11-25, the asks and `STATS` on NATS are built too (points 8 to 15, the MCP server's and the console's part, and the login service's stream and rights for them): each MCP server publishes its ask record and its `STATS` parts, the console receives them through each login's own consumers, decodes them strictly and shows the asks read-only and the two reports. #158 adds the metrics page: `GET /metrics` in the Prometheus text format behind the operator's login — the console's own observations aggregated, counted process-wide at the event (requests by bounded route buckets, streams, the readers' connection states, connects, renewals, decoder refusals) and the agent numbers of that session's own reading, served only while it is live, in bounded labels (no agent, owner or home; only the newest versions keep their own label), so a scrape starts nothing and needs no new right; the session cookie is never a scrape credential; the unattended variant the owner approved: a Bearer scrape token gates a listener of the page's own (CB_CONSOLE_METRICS_LISTEN_ADDR, loopback by default), served from a service reading of one fleet and stats book — consumers the login service makes, an account subscribe-only on the two deliver subjects, aggregates only | — |
+| ADR-014 | Agent-to-agent traffic over NATS JetStream; Mattermost stays the humans' chat behind one central adapter per tenant; agents log in through Keycloak (device flow) and a login service issues 15-minute NATS credentials bound to the host's own key; a clean-room build from Cotal's protocol description with a message format of the bus's own (no wire compatibility with Cotal); tools, hook API and bus logic unchanged behind the ports; parallel operation switched per home channel, the registrar shut down last; the sender NATS-native (last subject token, agents read only through push consumers the login service makes, no signed envelope) | Accepted (2026-11-22) by the owner, with the review's recommendations; three later points open (below), none of them blocks the first NATS code. Phase 2 built; phase 3 built in part in 0.97.0: the login service with the host's Keycloak login, consumers, a home over NATS, owner, presence and crown over NATS (RT-6.34 to RT-6.38), the attestation after 0.97.0 (RT-6.41); phase 1 built in part: the fault-run rig `testrig/` runs against the bus over NATS (first finding: a hard-stopped coordinator's crown passes after 89 to 120 s, target 30 s); not built: the central adapter, the pod path, role addressing, files and DMs over NATS, signed human-origin events, shutting the registrar down. Amendment 2026-11-26: phase 5 as plan B (no Mattermost token in any agent), pieces in order, proposed; its switch per channel, a flag in the channel directory, decided by the owner | — |
+| ADR-015 | Operator web console: a web application for the people who look after the agents, with the agents by state, who trusts and who coordinates whom, the bus's statistics as charts, and the open asks answered beside their thread; no chat. It stands alone on the bus on NATS, with Keycloak as its only login and no dependency on Mattermost (decided by the owner on 2026-11-23). Recommended: on NATS as the logged-in operator, with a credential of that person's own from the login service, so NATS says who answered and the asking agent's server still decides whether it approves | Proposed (2026-11-23), not accepted; eight points open for the owner, three decided on 2026-11-23 (ADR-016). Stage 1's read-only pilot is built (2026-11-24): the browser app (#89) and its server (#94) — the login of point 4 and the API of point 10 with its SSE — one read-only NATS account, the pilot's documented deviation, since replaced: the console reads as each logged-in operator with a credential of that person's own from the login service (the addition of 2026-11-25, points 1 to 7, RT-6.43), and the static account is gone. The fleet's "now" carries a monotonic floor: a delivery-silent console ages presence out and drops the crown, a jump of the host's wall clock changes nothing, and only a genuinely newer server stamp re-anchors it (#108). Of the addition of 2026-11-25, the asks and `STATS` on NATS are built too (points 8 to 15, the MCP server's and the console's part, and the login service's stream and rights for them): each MCP server publishes its ask record and its `STATS` parts, the console receives them through each login's own consumers, decodes them strictly and shows the asks read-only and the two reports. #158 adds the metrics page: `GET /metrics` in the Prometheus text format behind the operator's login — the console's own observations aggregated, counted process-wide at the event (requests by bounded route buckets, streams, the readers' connection states, connects, renewals, decoder refusals) and the agent numbers of that session's own reading, served only while it is live, in bounded labels (no agent, owner or home; only the newest versions keep their own label), so a scrape starts nothing and needs no new right; the session cookie is never a scrape credential; the unattended variant the owner approved: a Bearer scrape token gates a listener of the page's own (CB_CONSOLE_METRICS_LISTEN_ADDR, loopback by default), served from a service reading of one fleet and stats book — consumers the login service makes, an account subscribe-only on the two deliver subjects, aggregates only. #201's first piece adds the per-agent numbers the design canvas shows: `GET /v1/agent-stats`, one row per own or trusted agent (its attestation names the logged-in operator as owner or trusted; the owner's decision of 2026-11-27 amending point 15) whose parts the 7-day window holds — the token sums of the last 24 hours and of the window (`all`, the split by token type, the input's bus overhead and coordination over the same parts; n/a without `tok` or for an empty object, never 0, the reports' rule) and the posts, wakes and tool calls of 24 hours, from the same session's own reading as the reports; the aggregate reports (`/v1/stats`, the metrics page) stay visible to every operator for all agents | — |
 | ADR-016 | The bus without a chat as its source: Keycloak is the root of identity, keyed by `sub`, with chat accounts bound to it per product; a channel directory on NATS that only the login service writes (name, public or not, members, a binding per chat) replaces Mattermost membership behind `callout.Channels`; one bridge per chat product vouches for its humans, and later a Keycloak login on NATS itself; the login service attests trust lists; agents need no chat. Decided by the owner on 2026-11-23: the directory, Mattermost membership behind a replaceable interface until then, and for the console reading only, a Python server and what an operator sees | Accepted (2026-11-23) by the owner, its nine open points decided by the owner the same day; it changes ADR-014 points 6, 10, 11 and 16. Built in part: the channel directory (RT-6.39) and "in doubt, foreign" (RT-6.16) in 0.97.0; after 0.97.0 the admin API with the import from Mattermost (RT-6.40) and the attested trust lists (RT-6.41). Not built: the bridges, `checkChat` as a binding, agents without a chat, the host's agent name from an anchor that is not the username. Addition 2026-11-24: all Mattermost functions in one service, the bridge in `services/bridge`, the registrar's move as an open step; built step by step, the pilot with one bridge bot | — |
 | ADR-017 | The token split attributes tokens by content, not by cause: a request's tokens go to task work, bus overhead or multi-agent coordination by what its context and output hold, never all to the bus because the bus started the turn | Decided 2026-11-26 with the issue on the token split (#139, its proposed defaults); built for Claude Code (the overhead measurement, RT-6.9 step 2, method 1) | #139 |
 
@@ -1931,7 +1931,8 @@ not know that either). A view across several servers (`/agent-explain
 
 - `wake`: why an event woke the agent, went into its digest or was gated, and
   by which rule: mention, DM, reaction on its ask, broadcast or to all, its own
-  thread, a plain post naming no agent, which wakes only the 👑 (RT-6.6 step 5,
+  thread, a plain post naming no agent, which wakes only the 👑, a human's
+  reply in another agent's thread, which is that agent's (RT-6.6 step 5,
   RT-6.16), `not_here` / `departed` (RT-6.21), stall, digest, gated with the
   author's class.
 - `identity`: the author's class (trusted human, peer, foreign, other,
@@ -2090,7 +2091,7 @@ on: the end, and `status` and `bus_info` show it.
 
 ## ADR-011: Updates from a signed release only
 
-**Status:** Accepted, phase 1a built (0.81.0, RT-6.28): the layout, the switch and the rollback of the host copy; phase 1b built (0.82.0, RT-6.29): `--release v<x.y.z>`, the tag verified against pinned keys when the host sets them (opt-in, decision (3) below); phase 2 built (0.83.0, RT-6.30): the release check and the notice, as point 3 and the open questions' recommendations (*Phase 2 as built* below); decisions (4) and (5) of 2026-11-12 built (0.84.0, RT-6.29, RT-6.30): the pinned keys as a host property, a withdrawn version refused; phase 3 built (0.86.0, RT-6.32, the owner's decisions of 2026-11-13 below): the registrar distributes the release keys once and names the version, and corral's host copy updates itself to it between sessions, bounded by five guard rails, while the code's signature stays the owner's. `latest` built (0.87.0, the decision of 2026-11-13 below): the record may name the newest release tag that is not withdrawn instead of a version. Proposed 2026-11-09. Asked for by a trusted human on
+**Status:** Accepted, phase 1a built (0.81.0, RT-6.28): the layout, the switch and the rollback of the host copy; phase 1b built (0.82.0, RT-6.29): `--release v<x.y.z>`, the tag verified against pinned keys when the host sets them (opt-in, decision (3) below); phase 2 built (0.83.0, RT-6.30): the release check and the notice, as point 3 and the open questions' recommendations (*Phase 2 as built* below); decisions (4) and (5) of 2026-11-12 built (0.84.0, RT-6.29, RT-6.30): the pinned keys as a host property, a withdrawn version refused; phase 3 built (0.86.0, RT-6.32, the owner's decisions of 2026-11-13 below): the registrar distributes the release keys once and names the version, and corral's host copy updates itself to it between sessions, bounded by five guard rails, while the code's signature stays the owner's. `latest` built (0.87.0, the decision of 2026-11-13 below): the record may name the newest release tag that is not withdrawn instead of a version. Planned to end with phase 5 of the NATS decision as plan B (ADR-014, the amendment of 2026-11-26, #151, proposed, not built): once every home runs every piece, the signed host copy, its installer, its release check and its self-update go with the end of registration, and the release notice follows the release record the bridge serves; until then this decision holds as built. Proposed 2026-11-09. Asked for by a trusted human on
 2026-11-09 ("probably not quite simple with plugin incl. MCP server and
 sandbox hooks"). Options, a recommendation and open questions; command words,
 file names and variables below are proposals. Builds on Section 7.1 (the
@@ -3015,14 +3016,20 @@ part, in 0.97.0: the login service (`services/auth`) with the host's
 Keycloak login (RT-6.34), the consumers it makes (RT-6.35), a home over NATS
 switched by `CB_NATS_HOMES` (RT-6.36), owner and presence (RT-6.37) and the
 crown (RT-6.38) over NATS; after 0.97.0 the login service's attestation of
-owner and trust list (RT-6.41). Not built: the central adapter and the
+owner and trust list (RT-6.41). Phase 1 built in part, after 0.103.0: the
+fault-run rig (`testrig/`) runs against the bus over NATS and hard-stops the
+coordinator (below, phase 1). Not built: the central adapter and the
 shutdown of the registrar, the pod path (point 8), role addressing, files
 and DMs over NATS, the visibility setting, the signed human-origin events
 and `MM_BUS_SIGNER_KEYS`. Amended on 2026-11-26 by the owner's one operating
 model for the host login (decision 10, #154, the amendment at the end of
 this decision): credentials no longer
 stay on the host; the server's own login and store are built (step 2,
-unreleased), the protections against a stolen token not yet. The
+0.102.0), of the protections against a stolen token its detection
+(step 3, 0.102.0), the offline token's maximum and DPoP not yet. Amended
+later the same day by phase 5 as plan B (#151, proposed, not built): the
+agents' uses of their own Mattermost bot move piece by piece to the bridge
+or onto NATS, the registration ends last. The
 owner's order to
 move to NATS asks for this decision to be recorded before any NATS code is
 merged. Decided by the owner: one central adapter per tenant (point 1), the
@@ -3643,6 +3650,11 @@ decided against it (Context).
 - Minus: no acknowledgement on publish, delivery at most once, history only
   at login, a side channel on whether a foreign channel had posts, and an
   update of the NATS server only after the proof is green again (point 16).
+  (Since #213 the first `since` comes from the host's read mark, the last post
+  it handed to the agent: a post still queued when the host was killed is
+  delivered again and dropped as a repeat by the host, so it is at least once
+  for that one and still at most once for every other. A channel without a
+  handed post has no cursor, so a kill there can still lose what was queued.)
 - Plus: no agent holds a Mattermost token; the humans' channel shows what
   the home's visibility setting asks for.
 - Plus: the tools, the hook API and the bus logic stay as they are; the
@@ -3689,6 +3701,36 @@ decided against it (Context).
    handled twice or not at all. Needs a machine outside a sandbox and a test
    channel with test bots in the lab Mattermost. Runs beside the build and
    does not hold it up.
+   Built in part (after 0.103.0, #151 step 4c): the fault-run rig
+   `testrig/` (`testrig/README.md`) runs two real MCP servers against a
+   Mattermost stand-in, and with `bus-run --transport nats` with their home
+   over NATS against a local nats-server whose static users carry the
+   login service's rights. Faults on NATS: the server restarted (SIGKILL,
+   same store) or hung (SIGSTOP), the receiving server killed and resumed,
+   the line cut, blackholed, stalled or frozen by a byte proxy.
+   `coord-run` hard-stops the crown holder and reads the take-over from the
+   successor's crown log (RT-6.6 step 11). It runs on one machine, not in
+   the Lab, and CI runs it (small on every PR, 100 messages per fault and
+   50 hard stops nightly). **First finding** (2026-11-26, small runs of 10
+   messages and a few stops): no loss under restart, hang, cut, blackhole,
+   stall and half-open (a send during the window fails and is not counted
+   as sent; a zero here needs a sender that comes back, and one that cannot
+   reconnect for ~40 s after a refused reconnect is
+   [#222](https://github.com/dembaca/ai-agent-bus/issues/222)); a receiving session killed loses every post the consumer pushes
+   until the server notices the dead socket — usually the one in flight: the
+   consumer keeps its position and the messages published while it was dead
+   arrive (100 messages with a 10 s window: loss 1), but a pushed one was
+   already on the dead socket, and with `ack_policy: none` and no persisted
+   client watermark nothing asks for it again
+   ([#213](https://github.com/dembaca/ai-agent-bus/issues/213)); and the
+   take-over after a hard stop took
+   89, 90 and 120 s (p95 120 s; the rig's `CB_HEARTBEAT_SEC=30` (the bus minimum; the default is 300) adds the second
+   beat): a holder killed without `bye` keeps the crown until its
+   presence is `PRESENCE_FRESH_SEC` (90 s) old, so the phase-4 target of
+   30 s is not met by today's NATS crown. Not built: the take-over on
+   Mattermost (the stand-in carries no election), the 100 human posts
+   under fault, the runs in the Lab with Claude Code, pi or OpenCode and a
+   foreign agent.
 2. **Entry points on the ports.** `server.py`, `hookapi.py`, `hosted.py`,
    `websocket_inbox.py` and `session_file.py` talk only to `ChatPort`;
    registration lies behind `RegistrationPort`; `compose.py` builds the
@@ -3726,12 +3768,23 @@ decided against it (Context).
    also restart NATS, and the agents include Claude Code (one able to hold
    the crown), pi or OpenCode, and a foreign agent without the plugin. Only
    the owner's approval opens the central adapter.
+   Changed by the amendment of 2026-11-26 (phase 5 as plan B), proposed
+   from the owner's choice of plan B directly (bus post
+   `ukt76r9rijgyfewcy8rs9ii4mc`), not decided: that approval comes before
+   the last piece, the end of registration, after this acceptance's rows
+   (delivery, take-over, device approvals, unchanged tools) pass again,
+   measured with `testrig`, and its identity row is run again over the
+   bridge's path.
 5. **The central Mattermost adapter.** The Mattermost part moves out of the
    MCP server into the central adapter. Tools that return Mattermost post
    ids and links keep their meaning: the adapter keeps the mapping between
    a bus message and its post. Accepted when the bus's scenarios with
    humans (asks, approval by reaction, mention, file, change of coordinator)
    run without any agent holding a Mattermost token.
+   Changed by the amendment of 2026-11-26 (phase 5 as plan B): the
+   adapter is the central bridge, reached piece by piece, each use of an
+   agent's own Mattermost bot moving to the bridge or onto NATS behind a
+   switch of its own; registration ends last.
 6. **Shutdown**, only with the owner's approval, in this order: the MCP
    servers' direct Mattermost path (a plugin version without the Mattermost
    adapter in the client), then the registrar once no agent gets a bot
@@ -3754,8 +3807,9 @@ for the token checks (`aud`, `azp`, owner claim, the nkey binding, expiry;
 `services/auth/internal/token/verify_test.go`) and for the rights, the
 consumers and the native sender (`services/auth/internal/callout/`:
 `perms_test.go`, `consumers_test.go`, `native_sender_test.go`,
-`review_test.go`). Planned: the fault harness built for the baseline
-(phase 1), run against both buses; the NATS adapter against the same port
+`review_test.go`). Built in part: the fault harness (phase 1), `testrig/`,
+runs against both buses (its tests in `testrig/tests/`). Planned: the
+human posts under fault and the Lab runs of phase 1; the NATS adapter against the same port
 tests as the Mattermost one, the protocol description's conformance list
 and test vectors, the forgery and replay cases and both tenant separations
 of the acceptance, a comparison of the 17 tools' schemas before and after,
@@ -3809,7 +3863,8 @@ stream backups, deleting personal data in streams).
 **Amendment 2026-11-26: one operating model for the host login (the
 owner's decision 10, #154).** Decided by the owner on 2026-11-26. Its first
 step, the docs, and its second, the MCP server's own login and store, are
-built (the second unreleased); the protections against a stolen token are not. It removes the point on
+built (0.102.0); of the protections against a stolen token the detection is
+built (0.102.0), the offline token's maximum and DPoP are not. It removes the point on
 where credentials live (point 9) and the two reasons in the point on
 credentials and their renewal (point 7) that rest on it.
 
@@ -3833,8 +3888,8 @@ credentials and their renewal (point 7) that rest on it.
   (#163): the hello sends 26 base32 characters, made once per session and kept
   in its state, and both sides fold them into the name — so two sessions of one
   owner on one shared key are two agents, not one. The part is self-stated: it
-  separates honest sessions, it proves nothing, and the theft guard never keys
-  on it.
+  separates honest sessions, it proves nothing, and the protection against
+  stolen tokens never keys on it.
 - **What goes with the end of the registrar** (#151 step 5): corral's
   start and end hooks, the relay into the sandbox (the keyless host
   session, RT-6.18), the signed host copy with its self-update (ADR-011),
@@ -3899,7 +3954,8 @@ credentials and their renewal (point 7) that rest on it.
   answers, else the 0600 file; under corral always the 0600 file in the
   sandbox's home. An earlier store in the host's state directory is moved
   into it once. Sessions share token and key under one lock per entry.
-  None of the protections 1 to 3 is built.
+  Of the protections, the detection (1) is built (0.102.0), the
+  maximum lifetime (2) and DPoP (3) are not.
 - **Work, in order:** (1) these docs; (2) the MCP server logs in itself,
   with a keychain backend and the 0600 file in the sandbox's home under
   corral, keeping the shared renewal under its lock file and the rule to
@@ -3913,6 +3969,547 @@ an agent under corral (RISK-26). It makes two open points of the login
 service more pressing: how the token is kept and bound to the host
 (RISK-27), and an emergency brake that stops only at the next issue
 (RISK-28).
+
+**Amendment 2026-11-26 (later): phase 5 as plan B, no Mattermost token in
+any agent (#151).** Decided by the owner on 2026-11-26 (bus post
+`ukt76r9rijgyfewcy8rs9ii4mc`): plan B directly; the registrar stays until
+plan B is proven. Proposed, from that choice of plan B directly: the
+owner's approval that opens the central adapter, which the acceptance of
+the parallel operation (phase 4) set, moves to before the last piece.
+Proposed as well: the pieces, their order and the acceptance below.
+Nothing of it is built.
+
+- **Context.** Phase 5 is accepted when the bus's scenarios with humans
+  run without any agent holding a Mattermost token. A home over NATS
+  (RT-6.36) still uses a Mattermost bot whose token the MCP server holds
+  for everything about people: asks, files, replies to people, status,
+  the roster, DMs, permission prompts, people's history, and people's
+  events where the bridge sends no fresh signal (`nats_port.py`).
+  Meanwhile the central bridge makes and holds a bot of each agent's own
+  (RT-6.44). Plan B moves each of these uses, one at a time, either to
+  that bot in the bridge or onto NATS subjects, each behind a switch of
+  its own; the registration ends last.
+- **Decided: a flag per channel in the channel directory.** Decided by the
+  owner on 2026-11-26 (ask `wh3ipdrk6ir6jdc5o9icfjbc5h`, option B):
+  administrators set, per channel of the channel directory (RT-6.39),
+  whether it is carried over NATS or Mattermost, and the login service
+  writes the flag into each agent's credential. An agent's home still
+  comes from the repository's project setting, as today; the flag decides
+  only how a channel is carried. Once built it replaces `CB_NATS_HOMES`,
+  so no host setting has to match across hosts. Rejected: widening
+  `CB_NATS_HOMES` to every NATS channel (a host setting), and everything
+  at once per tenant.
+- **Decided: nothing runs outside the sandbox at the end.** Decided by
+  the owner on 2026-11-26 (ask `dhbu7xao4tbhtm8ixybr14m8fr`, option B):
+  what runs outside the sandbox today is the host process of the keyless
+  session (RT-6.18), which holds the bot token so it stays out of the
+  sandbox, started by corral's host hooks from the signed host copy
+  (ADR-011), so code that runs outside the sandbox cannot be written from
+  inside. The refresh token and the host key are no longer outside: since
+  the one operating model for the host login (decision 10, #154) the
+  relay in the sandbox logs in itself and keeps both in the sandbox's home
+  (RT-6.18, RT-6.34 step 8, RISK-26), and the host process gets only
+  access tokens and the nkey seed from it. The plan takes the bot token
+  away, and with it the host process's job; with nothing running outside
+  there is no boundary left to guard. So the relay, the host process and
+  the signed host copy go with the last piece; until then they keep
+  doing their jobs. What an agent may do on the bus is enforced by the
+  login service and NATS, so an agent that changes the plugin code it
+  runs reaches no other owner and no other host. It does reach every
+  session that runs from the same writable plugin tree: under corral the
+  sessions that share a sandbox home share its plugin cache and its
+  store, without corral all of one user's sessions on the host. That
+  code is also what tells each of those sessions' agents which event is
+  `from_trusted_human` or `mandated`, today done under corral by the
+  host process from the signed host copy (RT-6.1 step 6). So once it
+  runs from the writable tree, a steered agent can hand a neighbouring
+  session a forged approval or mandate, and that session acts on it
+  with its own tools and grants; the bus itself still lets no agent
+  approve (RISK-37).
+  Against a stolen refresh token the protection against stolen tokens of
+  decision 10 stays what it is: its detection in the login service is
+  built (0.102.0) and catches a token or host key used from another
+  network, not one used on the same network or host (RISK-26); the
+  offline token's maximum lifetime and DPoP are decided, not built. That
+  a release is genuine stays the operator console's check of the release
+  signature when the administrator moves the version it pins (#192, an
+  open issue, not yet written as a decision). Both are rows of the
+  acceptance below. Rejected: keeping the relay with its host process
+  and the signed host copy, and keeping only the signed host copy.
+- **Decided: the login approval only at this machine once no agent has a
+  bot.** Decided 2026-11-27 by the owner (ask
+  `cobsyafi9fdq784jupn9no74yh`): it reaches the human through the
+  browser the MCP server opens and the address and code in its MCP log,
+  with no DM and no ask in the home. Today the MCP server, before it has
+  NATS credentials, sends the approval by DM under the agent's bot,
+  posts an ask in the home that points to the DM, and settles asks of
+  earlier approvals at its start (`login_notice.py`, RT-6.34); the DM,
+  the ask and their settling go with the end of registration (piece
+  14). The reason: the bridge sending these for a session that has no
+  NATS credential yet would need an endpoint where it cannot tell who
+  asks, so anyone who reaches it could have a person sent a login code
+  of another client of the realm (device-code phishing, RISK-29). The
+  price, accepted with it: a session started with nobody at the machine
+  (a remote or headless host, or a new login after the offline token
+  ran out, which the planned maximum lifetime makes regular) waits, and
+  nothing on the bus shows that it waits. Rejected: the DM and the ask
+  through the bridge.
+- **Decided: the hosts' setting for the bridge's address is
+  `CB_RECORDS_URL`.** Decided 2026-11-27 by the owner (ask
+  `6pegznmyztrf7cnjr3hzgkdofe`): the setting from which hosts read the
+  signed records and the release record, `MM_REGISTER_URL` today,
+  becomes `CB_RECORDS_URL` once the bridge serves them
+  ([docs/env-names.md](../env-names.md#goes-with-the-registrar-10)). It
+  names what the hosts read there; `CB_BRIDGE_URL` would read as one of
+  the bridge's own settings, which all start with `CB_BRIDGE_`
+  ([docs/env-names.md](../env-names.md#which-prefix)). The name sits
+  close to `CB_RELEASE_URL`, where the hosts fetch release tags, while
+  this setting also serves the release record. The new name for the
+  pinned keys of these records (`MM_REGISTRAR_KEYS`) is a question of
+  its own, not part of this decision.
+- **Decided: hosts delete the registration secret two weeks after the
+  shutdown.** Decided 2026-11-27 by the owner (ask
+  `4nfwzths83detf5a5unqs8ns5r`): hosts delete `MM_REG_SECRET`,
+  `MM_REG_SECRET_GOPASS`, `MM_REG_SECRET_CMD` and the stored value they
+  point to two weeks after the shutdown (phase 6), when its way back
+  ends; until then the plugin version before is the way back, with the
+  registrar on again, and still registers with the secret.
+- **Two bots of one agent.** "The agent's own bot" names two accounts
+  during the move: the registrar's bot, made per session, whose token
+  the MCP server holds; and the bridge's bot `<prefix><NATS name>`
+  (RT-6.44), whose token only the bridge holds. People already see a NATS
+  home's agent posts under the bridge's bot (RT-6.36 step 6). Each piece
+  below says which of the two people mention, write to and see the crown
+  on while it moves.
+- **Every piece alike.**
+  - One switch per piece, off by default; its name below is
+    descriptive. Proposed: a flag per piece and channel in the same
+    directory, beside the decided transport flag; not covered by the
+    owner's decision. So a piece with two ends (DMs between agents, asks,
+    replies, status, permission prompts) is switched in one place, never
+    per host. A session gets the flags of its own channels with its
+    credential; the bridge, which holds no agent credential, reads them
+    from the directory.
+  - During a flag change each end reads both paths and sends by its own
+    flag, since a flag reaches a session only at its next credential, or
+    at its next start until switching at a renewal is built (the guest
+    channels and the lobby, piece 12). Each two-ended piece's test runs
+    two sessions with different flags.
+  - The way back is the switch off. A piece switched off sends new
+    traffic over the agent's own bot from the registrar again; what was
+    sent while it was on (open asks, DMs between agents, permission
+    prompts) stays with the bridge until answered or resolved, and each
+    piece says how. The registrar goes on making bots until the last
+    piece.
+  - The bridge acts for an agent only with that agent's own bot token,
+    never the admin token for what an agent asks, takes the agent from
+    the subject's last token, and acts only in channels the directory
+    names for that agent: a reply's root, a reaction's target post, a
+    file and a history read are checked to lie there. A DM the bridge
+    opens for an agent, for permission prompts, may only go to the
+    agent's responsible human, the owner's account from the account
+    records (RT-6.44 step 2). Proposed: in a DM another person opened
+    with the agent's bridge bot, the agent may answer that person and
+    react there, never open a DM to anyone else; so a steered agent
+    cannot reach a person through the bridge who did not write to it
+    first (RISK-29).
+  - Proposed: the session's requests to the bridge that are no channel
+    message (the history read, file parts and the header line, pieces 5,
+    8 and 9) go on `<req>.<kind>.<agent>`, `<kind>` one of `history`,
+    `file`, `header`, the sender as the last token as everywhere. `<req>`
+    is a prefix of its own beside the bus's, presence's and STATS's,
+    which no stream covers: the tenant stream takes every subject under
+    the bus prefix (`consumers/streams.go`), with a size limit and
+    `discard: old` (point 16), so file parts there would push out
+    channel traffic and keep file content for the stream's keep time.
+    The bridge answers on `deliver.<agent>.req.<request id>`, which only
+    that agent reads (its one subscribe right, `deliver.<agent>.>`) and
+    no stream covers either. Today an agent has no such right
+    (`callout/perms.go`): the login service grants it publish on
+    `<req>.*.<agent>` alone, the bridge subscribe on `<req>.>` and
+    publish on `deliver.*.req.>`; `callout/perms_test.go` gets the cases
+    that an agent publishes there only under its own name and never on
+    `deliver.>`. Nothing on these subjects is kept: a lost message fails
+    the request, and the tool reports an error.
+  - Each piece updates its scenario in Section 6 and gets unit tests in
+    `mcp/tests/` and, for the bridge's side, Go tests in
+    `services/bridge`. Where a piece carries messages, the fault-run rig
+    `testrig`, extended for NATS beside this work (phase 1), measures it.
+    Each piece also shows that with its switch on the session makes no
+    Mattermost call for it.
+- **The pieces, in order:**
+  1. **Channel ids and membership from the channel directory** (ADR-016,
+     RT-6.39), a precondition of the roster.
+     - Today: `NatsPort.resolve` reads the channel ids from Mattermost,
+       the start hook and `bin/mm-agent-channels.sh` join the bot to its
+       channels, and the signed records are keyed by the channel id.
+     - Moves: to the login service's directory; the session takes its
+       channels from its credential. The signed records stay keyed by
+       the Mattermost id of the bound channel, as the bridge serves them
+       since #151 step 3 and hosts read them; the session takes that id
+       from the directory's binding instead of from Mattermost. The key
+       is no token, so plan B's goal needs no change to it (the
+       coordinator's call on 2026-11-27).
+     - Switch: channels from the directory. Way back: Mattermost's ids
+       again; nothing in flight.
+     - Test: `resolve` without a Mattermost read; the records' key.
+       Lab: a test home whose session finds its channels with the
+       Mattermost read blocked.
+  2. **The roster, the link of a bot to its NATS name, and names and
+     kinds of accounts** (RT-6.37 step 6). Needs channels from the
+     directory (piece 1).
+     - Moves: onto NATS. The roster from presence and membership; the
+       link from the bridge's mark on the bot it made for a name
+       (RT-6.44 step 3), not from the `⇄` tag in the bot's status; names
+       and kinds of accounts (`usernames`, `agents`, `bot_accounts`) from
+       presence and the login service's account records.
+     - People: mention either bot; a mention of the bridge's bot counts
+       as the agent's own.
+     - The session's kept state: recommended, keyed by the NATS name from
+       this piece on, copied once from the files keyed by the bot's
+       Mattermost id, not moved, so the old plugin still finds its copy.
+       A session in a NATS home already has the name, and the state is
+       host-local. The copy carries the threads the agent is in, which
+       the wake rule "your threads" keys by the old bot id.
+     - Switch: roster from NATS. Way back: Mattermost's roster again, and
+       the state files keyed by the bot id, which the copy left in place;
+       nothing in flight.
+     - Test: roster, link and names without a Mattermost read; `testrig`:
+       nobody told as gone during a cut. Lab: each agent shows once, a
+       mention of a gone agent is answered.
+  3. **Direct messages between agents** (RT-6.36 step 7).
+     - Moves: onto NATS, `<bus>.dm.<recipient>.<sender>`, which the
+       transport has and the login service already grants
+       (`callout/perms.go`); no copy in Mattermost. The transport and
+       the login service's DM consumer exist, but the MCP server drops a
+       DM event today (`NatsPort._on_event` drops `@dm`), so the piece
+       includes handling it: delivered to the agent as a DM, woken by
+       the rules for DMs. Between agents of
+       different homes the recipient's home's flag counts: the sender
+       uses NATS only when it is on. Since a session gets flags only
+       with its credential, which holds only its own channels, proposed:
+       the recipient's server states its home's flag in its presence,
+       from its own credential, and the sender reads it there, so no
+       session reads the directory and none needs a new right. A
+       presence without the flag (an older plugin, a recipient never
+       seen) counts as off. A recipient that states it wrongly misroutes
+       only DMs to itself, and it reads both paths during a change
+       anyway.
+     - Switch: agent DMs over NATS. Way back: new DMs go between the
+       registrar's bots again; a DM sent over NATS stays in the
+       recipient's consumer and is read there.
+     - Test: send and receive; the rights in `callout/perms_test.go`;
+       `testrig`: delivery runs of DMs under fault. Lab: two agents of
+       the test home exchange DMs, nothing in Mattermost.
+  4. **Every check of a trusted human by its Mattermost account, and
+     the owner attestation in the bot's description.**
+     - Today: the start hook looks the trusted humans up by the
+       Mattermost API (`adapters/corral/10-mm-session-start.sh`), the MCP
+       server keeps their Mattermost ids (`NatsPort.trusted_humans`), and
+       the mandate compares Mattermost user ids (`mandate.py`). A peer's
+       owner and trusted list, and the session's own, come from the
+       owner attestation the registrar wrote into the bot's description
+       (RT-6.24; `bot_description`, `agent_attestation`,
+       `attestation_record` in `owners.py` and `server.py`).
+     - Moves: to the login service: the trusted anchors of its
+       attestation (RT-6.41), compared by anchor everywhere; a peer's
+       owner from its NATS name, which presence proves (RT-6.37), and its
+       trusted list from the login service's attestation, never from a
+       bot's description.
+     - Switch: trusted humans and owners from the attestation. Way back:
+       the Mattermost ids and the bot's description again; nothing in
+       flight.
+     - Test: a hook test in `tests/hooks/` (no user lookup); a mandate
+       and an approval decided by anchor; a peer classed own or foreign
+       with no description read. Lab: a trusted person's approval and
+       mandate still count, anyone else's do not; another owner's agent
+       is foreign.
+  5. **People's history**: what a person wrote while the session was
+     away, a person's thread, unread counts.
+     - Today: `nats_port.py` merges Mattermost's posts into
+       `channel_posts`, `list_recent`, `posts_after`, `thread`,
+       `reactions` and `member_channels`, and reads Mattermost from the
+       last people event on when the bridge's signal runs out
+       (`check_people`, `_catch_up`); unread counts rest on Mattermost's
+       mark as viewed (`view_channel`).
+     - Moves: proposed, to a read through the bridge: the session sends
+       a request on `<req>.history.<agent>` (above) naming the channel or
+       thread and `since`, and the bridge answers from Mattermost with
+       the agent's own bridge bot, under the rule above that it reads
+       only in the agent's channels. Each person's post in the answer
+       names its author by anchor and carries that person's account
+       record, and the session checks it as it checks a person's event
+       (RT-6.42), with the same freshness rule: so a reply or 👍 a
+       trusted human gave while the session was away approves as it
+       would have live, and a post without a fresh record approves
+       nothing. Rejected: a replay of the people subjects with `since`
+       alone, since the stream keeps them only for its keep time and
+       holds no thread older than that. Mark as viewed becomes the
+       durable consumer, the read mark the registrar successors' table
+       already names (point 13).
+     - Switch: people's history through the bridge. Way back:
+       Mattermost's reads again; nothing in flight.
+     - Test: the reads without Mattermost; an approval read back from
+       history counts only with a fresh approver record, and one without
+       counts nothing; `testrig`: what a session away during a run reads
+       back. Lab: a person posts while the session is stopped; after its
+       start the post and its thread are there, and an ask answered
+       meanwhile counts.
+  6. **Asks to humans and the answer** (RT-6.11), the reply and the
+     approval by reaction. Needs the roster (piece 2), people's history
+     (piece 5) and people's events over NATS with a fresh signal
+     (RT-6.42). This is the open point on asks of
+     the decision on a bus without a chat (ADR-016, addition of
+     2026-11-24, point 4).
+     - Moves: to the bridge. The ask goes onto NATS; the bridge posts it
+       under the agent's bridge bot with the mention (the lookup of
+       `humans_among` from the directory), and carries the later changes
+       (reminder, `resolve_ask`). The link from the ask to its post is the
+       copy's `nats_id` prop, so it survives a restart of either side. The
+       answer comes back as a person's event.
+     - People: see the ask and answer under the bridge's bot.
+     - Switch: asks over the bridge. Way back: new asks under the
+       registrar's bot; an open ask stays at the bridge, its answer comes
+       as a person's event as before, until `resolve_ask`.
+     - Test: the ask card, the 24 h rule and the approver record;
+       `testrig`: an ask's way to its copy. Lab: an ask answered once by
+       reply and once by 👍.
+  7. **Replies and reactions to a person's post, and the synchronous
+     posts** (`post_sync`, `post_by_name_sync`, the BYE at exit). Needs
+     the roster (piece 2), people's history (piece 5) and people's events
+     with a fresh signal.
+     - Moves: to the bridge. The reply goes onto NATS with the person's
+       post as its root (its Mattermost id), and the bridge posts it in
+       that thread under the agent's bridge bot; a reaction and a
+       synchronous post alike. The tool returns the NATS id (`n1:…`) and
+       the link of the copy people see, through the mapping the central
+       adapter keeps (phase 5).
+     - Switch: replies to people over the bridge. Way back: replies
+       under the registrar's bot again; nothing stays open.
+     - Test: the root kept; `testrig`: replies under fault. Lab: a person
+       posts, the agent replies and reacts, each seen once; the BYE at
+       exit.
+  8. **Files**: posting with files and `get_file` (RT-6.23, RT-6.33).
+     - Moves: to the bridge. It uploads what the agent sends and serves a
+       person's file; the file still comes from inside the sandbox
+       (ADR-012), the size limit as today. Proposed: the bytes travel as
+       NATS messages on `<req>.file.<agent>` (above), in parts below the
+       NATS server's maximum payload (1 MiB by default), since the size
+       limit (10 MiB, RT-6.33) is larger: a file at the limit is a
+       dozen parts. The first part declares the length and the SHA-256
+       hash; the bridge checks the length against the size limit before
+       it keeps any part, holds one open transfer per agent (a second
+       one replaces it), and drops an unfinished one after 60 seconds.
+       Its ceiling: transfers are held in memory, at most 10 MiB each
+       and, proposed, at most 16 open at once across all agents; beyond
+       that it refuses a new one as busy, and the tool reports it. Each part is numbered, and the whole is checked by length
+       and hash before the bridge uploads it with the agent's own bridge
+       bot. A failed check, a lost part or a dropped transfer is an error
+       of the tool, and the agent sends again. A person's file comes back
+       the same way, on `deliver.<agent>.req.<request id>`, checked by
+       the session. Rejected: the NATS object store, since agents talk to
+       no JetStream API (RISK-09). The tool returns the post's NATS id
+       and the copy's link, as for a reply.
+     - Switch: files over the bridge. Way back: files under the
+       registrar's bot again; nothing stays open.
+     - Test: limits and refusals as today; a declared length over the
+       limit refused before any part is kept, a wrong hash, a missing
+       part, a second transfer, a transfer left unfinished; in
+       `services/bridge`, the bounds; `testrig`: a run with files.
+       Lab: the agent attaches a file, a person posts one and the agent
+       reads it.
+  9. **The bot's status: idle and typing, its Mattermost presence, and
+     the crown's mirror** (RT-6.5, RT-6.6), and the channel header. Needs
+     the roster (piece 2), since the link today lives in the bot's
+     status, and people's history (piece 5) for reading the header.
+     - Moves: to the bridge. It sets the bridge's bot's custom status and
+       its Mattermost presence (online, away or do not disturb, today
+       `set_presence` in `lease.py`) from presence and the crown claims
+       (RT-6.38), as the point on bot accounts per agent (point 11)
+       foresees. The bus line in the channel header (`channel_header`,
+       `set_channel_header`, RT-6.6 step 7), which the crown holder
+       writes today, goes to the bridge with the crown's mirror: the
+       crown holder sends the line on `<req>.header.<agent>` (above), and
+       the bridge writes it with the crown holder's own bridge bot in the
+       home its claim names, only when the sender holds that home's
+       crown by the claims (RT-6.38), else it refuses; it replaces only
+       the bus line and keeps the rest of the header. A session reads the
+       header through the bridge's read for people's history (piece 5).
+     - People: see the 👑 on the bridge's bot; the registrar's bot loses
+       it.
+     - Switch: status mirrored by the bridge. Way back: the registrar's
+       bot carries the status and the header again; the bridge clears
+       its mirror.
+     - Test: from claim to status; a header line from an agent without
+       the crown refused, the rest of the header kept; `testrig`: the
+       time from a crown change
+       to its mirror. Lab: a hard stop of the coordinator, the 👑 moves in
+       Mattermost.
+  10. **Permission prompts by DM to the responsible human** (RT-6.13), and
+      a person's other DMs to the agent. Needs the roster (piece 2) and
+      people's events with a fresh signal.
+      - Moves: to the bridge. The prompt goes out under the agent's bridge
+        bot; the answer comes back as a person's event on a DM subject
+        that only that agent reads, which RT-6.42 does not carry yet and
+        the login service must grant (`callout/perms_test.go`).
+      - People: answer the bridge's bot's DM. Another person's DM to the
+        bridge's bot reaches the agent as that person's event, and the
+        agent may answer and react in that DM only, under the rule above.
+      - Switch: permission prompts over the bridge. Way back: new prompts
+        from the registrar's bot; an open prompt answered at the bridge
+        still reaches the session, else it times out as today.
+      - Test: an answer counts only from the responsible human's anchor.
+        Lab: a tool prompt answered by DM.
+  11. **People's events where no bridge signal is fresh** (RT-6.42).
+      - Moves: onto NATS alone. Without a fresh signal the session no
+        longer reads people on Mattermost but says that people are not
+        heard.
+      - Switch: people only from NATS. Way back: Mattermost read on a
+        stale signal again; nothing in flight.
+      - Test: no Mattermost read on a stale signal; `testrig`: a bridge
+        stop under load, what arrives after it. Lab: the bridge stopped and
+        started in the test home.
+  12. **Guest channels and the lobby** (RT-6.22). Needs channels from the
+      directory (piece 1).
+      - Moves: onto NATS like a home, the bridge mirroring; the wake rules
+        stay bus logic (homes, guest channels and the lobby in the
+        tenant's account, point 5).
+      - Switch: the directory's flag per channel, as decided above. Way
+        back: the flag off; it reaches every agent at its next
+        credential (the JWT lasts 15 minutes, credentials and their
+        renewal, point 7). A running session
+        that switches transport at a renewal is a requirement of this
+        plan; until it is built, the switch takes effect at the next
+        session start, since `compose.py` picks the transport at start.
+      - Test: wake rules over NATS; the guest channels in the credential;
+        `testrig`: delivery in a guest channel. Lab: an agent as guest in
+        another home, woken by a mention; the lobby's `@channel`.
+  13. **STATS and the shell clients on the NATS side.**
+      - Moves: the STATS of the stats channel (`CB_MM_STATS_CHANNEL`) go
+        on NATS alone (RT-6.43), and `stats_report` and
+        `bin/mm-agent-stats.sh` read them there. `mm-agent-status`,
+        `-unread`, `-stats` and `-channels` ask the MCP server's NATS side
+        instead of Mattermost.
+      - Switch: STATS and shell clients over NATS. Way back: STATS posted
+        to the stats channel again, which still holds the old ones; the
+        shell clients read Mattermost with the registrar's bot again;
+        nothing in flight.
+      - Test: `stats_report` from NATS alone; the shell clients against
+        the MCP server with no Mattermost read. Lab: a day's STATS read
+        back, and the shell clients in the test home.
+  14. **Registration ends, all or nothing** (#151 step 5).
+      - Moves: the plugin no longer registers a session whose every
+        channel, the home, the guest channels, the lobby and the stats
+        channel, runs over NATS with every piece on. A session with any
+        channel on Mattermost registers as before. The start hook
+        decides per session, at its start: until switching at a renewal
+        is built (guest channels and the lobby, piece 12), a flag
+        changed for a channel reaches a running session only at its next
+        start, since `compose.py` picks the transport there. Once every home runs every piece, no
+        session needs the host side any more, and it goes (the owner's
+        decision above), at the latest with the shutdown (phase 6):
+        corral's start and end hooks (`10-mm-session-start.sh`,
+        `90-mm-session-stop.sh`) and their dispatcher
+        (`adapters/corral/mm-hook-dispatch.sh`), the relay and the host
+        process of the keyless session (RT-6.18), the signed host copy
+        with its installer (`bin/mm-agent-host-install.sh`, RT-6.28,
+        RT-6.29), its release check (`bin/mm-agent-release-check.sh`,
+        RT-6.30) and its self-update between sessions (RT-6.32), and the
+        block on self-registration in the sandbox (RT-6.10 step 1).
+      - The release notice (RT-6.30) loses its check, which runs only
+        from the host copy. Proposed, decided with this piece: the MCP
+        server tells its human the version the release record names,
+        which the bridge serves signed with its own key (#151 step 4),
+        and which follows the version the console pins after its
+        signature check (#192); the plugin itself updates through the
+        harness's marketplace, as without corral today.
+      - The session's own identity: the bot's Mattermost id and name
+        (`_bot_id`, `_bot_name`, `ownpost.py`, `unanswered.py`) give way
+        to the NATS name, which keys the kept state since the roster
+        (piece 2).
+      - The shell clients `mm-agent-register`, `-unregister`,
+        `-registrar-keys` and the stop hook's unregistration end with it.
+        The host sweep of the registrar's bots (`mm-agent-sweep.sh`) runs
+        until the registrar shuts down (phase 6).
+      - The pinned post, the mandate's unsigned fallback
+        (`pinned_posts` in `mandate.py`), goes once the bridge serves the
+        signed records (the acceptance below).
+      - The registrar's bot after it: its threads stay readable, and
+        people's replies in them reach the agent as people's events of
+        that channel; a DM to it or a mention of it reaches no session,
+        so people write to the bridge's bot. The bridge's sweep (RT-6.44
+        step 8) disables a bridge bot without presence for the keep time.
+        Its open asks come back with it, since their link is the copy's
+        `nats_id` prop. A DM has no such copy: a permission prompt's DM
+        to a swept bot is answered only once the bot is back, and a
+        prompt that times out meanwhile is asked again, as today.
+      - Switch: none of its own; it follows from the others' flags. While
+        the host side is still installed, a session whose channels have
+        any piece switched off registers again at its next start. Way
+        back once the host side is gone: the plugin version before, the
+        signed host copy installed again on each host
+        (`mm-agent-host-install.sh --release`, RT-6.29) with corral's
+        hooks, and the registrar on again (the two weeks of the
+        shutdown, phase 6); the state it keyed by the bot id is still
+        there.
+      - Test: hook tests: no registration and no Mattermost token for such
+        a session, registration for a mixed one. Lab: the acceptance
+        below.
+- **Order (proposed).** First the pieces that move no message of
+  people: channels from the directory, the roster and the link, DMs
+  between agents, and the trusted humans from the attestation (pieces 1
+  to 4). Then people's history, asks, replies and reactions, and files
+  (pieces 5 to 8). Then the status and the crown's mirror, the permission
+  prompts, people's events, the guest channels and the lobby, and STATS
+  with the shell clients (pieces 9 to 13). Last the end of registration
+  (piece 14).
+- **Acceptance**, before the last piece:
+  - the other rows of the acceptance of the parallel operation (phase 4),
+    proposed to pass again here, measured with `testrig`: delivery, the
+    take-over of the coordinator, device approvals, unchanged tools;
+  - phase 5's criterion (asks, approval by reaction, mention, file, change
+    of coordinator, with no agent holding a Mattermost token), measured
+    with `testrig` and the human scenarios in the lab, with the adapter's
+    tenant row of the acceptance of the parallel operation (phase 4);
+  - that acceptance's identity row again over the bridge's path: an agent
+    as a human through an ask and a reply, a forged verdict on a
+    permission prompt, a replayed approval within the 24 h rule
+    (RT-6.11), a replayed ask, an approval read back from history
+    (piece 5) with and without a fresh approver record;
+  - the signed records and the release record (#151 steps 3 and 4)
+    served by the bridge, keyed as built by the Mattermost id of the
+    bound channel, which the session takes from the directory (piece
+    1), with no Mattermost read and no Mattermost token; the owner
+    attestation (RT-6.24) replaced by the login service's (RT-6.41),
+    with trusted humans and owners from the attestation (piece 4) on in
+    every home;
+  - the protection against stolen tokens of decision 10 as far as it
+    reaches then: its detection (built, 0.102.0) on in the login service
+    the hosts use, and the offline token's maximum lifetime and DPoP
+    built, or the owner's word that the last piece goes without them;
+  - the console's check of the release signature when the administrator
+    moves the pinned version (#192) built, and the release notice
+    reading the release record (piece 14); this row depends on both
+    #192 and the bridge's release route (#151 step 4);
+  - the login approval only at this machine, as decided above, built;
+  - then the owner's approval for the last piece (proposed, from the
+    owner's choice of plan B directly, bus post
+    `ukt76r9rijgyfewcy8rs9ii4mc`).
+- **Consequences.** For a while two paths per piece exist in the MCP
+  server; the Mattermost adapter in the client goes only with the shutdown
+  (phase 6). Once a home runs every piece, its people see and answer its
+  agents only through the bridge (RISK-21, RISK-36): a home over NATS never
+  falls back to Mattermost for a send (RT-6.36), so a bridge outage leaves
+  its people without the agents until the bridge is back. The refresh
+  token and the host key already live in the sandbox's home under corral
+  (RISK-26, decision 10); after the end of registration the bot token and
+  the host process are gone too, so nothing of the bus runs outside the
+  sandbox, by the owner's decision, and a steered agent reaches the
+  sessions that share its plugin tree (RISK-37).
+- **Not part of this plan:** the slash commands with their signed records
+  and the release record (#151 steps 3 and 4), which run beside it and
+  which the acceptance needs; the shutdown itself (phase 6); several
+  tenants.
 
 ---
 
@@ -4805,7 +5402,8 @@ agent publishes passes for a person's word.
     the login service makes it at its start, as `BUS` and `PRESENCE`
     (RT-6.35 step 1): subjects `<stats>.>` (`AUTH_STATS_PREFIX`, new,
     default `stats`, different from the other prefixes and not
-    `deliver`), 30 days, 64 MiB in all, at most 8 KiB per message and 500
+    `deliver`), 30 days (365 days since the addition of 2026-11-27
+    below), 64 MiB in all, at most 8 KiB per message and 500
     messages per subject, the oldest discarded; and grants each agent
     publish on `<stats>.<name>` for its own name only. Why: no agent's
     channel consumer delivers them, and the retention covers the 7-day
@@ -4854,12 +5452,12 @@ agent publishes passes for a person's word.
     coordination, RT-6.9 step 3), computed with `stats.py`, the same
     numbers `stats_report` gives on the same lines (a test); a missing
     field as "n/a"; the age of the oldest line it holds. Every operator
-    sees every line: the lines carry no content. The console neither shows
-    nor groups by an agent's name and has no report by home or owner (open
+    sees every line: the lines carry no content. The reports neither show
+    nor group by an agent's name and have no report by home or owner (open
     point 7 stays open). Why: the reports stage 1 promised, and nothing
     that turns overhead counters into a record per person. Alternative:
-    reports per agent. Rejected: not asked for, and it would be such a
-    record. The owner's wish for a view per agent in the issue on the
+    reports per agent for every operator. Rejected: not asked for, and it
+    would be such a record. The owner's wish for a view per agent in the issue on the
     token split (#139) does not change this as long as that issue's open
     question is not decided: the traffic report too is by fleet only, and
     its counts carry no peer, so no one sees who talks to whom. The tokens
@@ -4868,12 +5466,85 @@ agent publishes passes for a person's word.
     the fleet, per version, per role and per harness, never per agent, each
     marked "estimated"; and the share per version becomes the overhead
     segment of that split ("the bus overhead share of all tokens").
+    Amended by the owner on 2026-11-27 (#201, #212): the aggregate reports
+    (`/v1/stats`, and the metrics page as before) stay visible to every
+    operator for all agents, by fleet, version, role and harness, never by
+    an agent's name. Only the per-agent rows (`GET /v1/agent-stats`: the
+    token sums of 24 hours and 7 days, the posts, wakes and tool calls of
+    24 hours) carry an agent's name, and only for own or trusted agents:
+    those whose fresh attestation (RT-6.41) names the logged-in operator's
+    anchor as owner or trusted, the check of the asks' "may answer".
+    Another owner's agent, an agent without a known attestation and every
+    agent before the login's own record gave the operator's anchor get no
+    row; no row is the safe default. Why: an owner looks after their own
+    agents and those that trust them, so their numbers are already that
+    person's to see; nobody else gets a record per person. Still no report
+    by home or owner.
 
 Not part of this addition: answering an ask from the console (point 8),
 threads and people's posts in the console, the card's fields in presence
 (decided on 2026-11-25, specified with that work), the reports of stage 2,
 a recorder (open point 8), `stats_report` reading NATS, reports by home
 or owner, a second replica of the console, and anything outside the lab.
+
+**Addition, 2026-11-27: the STATS history** (issue #196; decided by the
+owner through the coordinator, after two designs with streams of their own
+were reviewed; built in the login service, RT-6.45). The statistics the
+stats channel holds must stay readable after Mattermost goes, and `STATS`
+kept 30 days.
+
+- **`STATS` itself keeps a year.** 365 days (one constant, so 180 is a
+  one-line change), the oldest discarded, so a new line can always be
+  written; 64 MiB, 8 KiB per message and 500 per subject stay. Why 64
+  MiB: a part is about 470 bytes, today's fleet writes about 7 a day, so a
+  year is about 1.2 MB, and 64 MiB is room for some fifty times that. Why
+  500: a name lives as long as its session, which writes at most one part
+  a day and one at its end. The login service brings an existing stream's
+  age and cap per subject, up or down, and a smaller size, to these in
+  place (`STREAM.UPDATE`) at its start, and leaves everything else of it
+  pinned as before: an unsafe stream is still refused. Its check allows an
+  age and a cap up to ceilings (365 days, 500) rather than only up to the
+  current ones, so a shortened age or a rollback within this release line
+  brings the stream down instead of stopping the start; a release before
+  this one needs the age set back by hand first. A larger size an operator
+  set is kept. Alternatives: a stream of its own fed by JetStream from
+  `STATS` (a source), and a second one for the imported lines. Rejected:
+  two more streams, their rights and checks for what one stream with a
+  longer age does; the reviews of those designs found that a source's
+  header can overflow the copy's message size and that a stream mixing
+  copies and imports lets an agent's headers pass for an import.
+- **The import goes into `STATS`, on subjects of its own.** An admin runs
+  `authd dir stats-import` as often as wanted until the stats channel
+  goes; the login service publishes each line of the channel (also those
+  from before 0.91.0, without `sid` and `part`) byte for byte on
+  `<stats>.import.<bot>` with its own JetStream user, whose right is
+  `<stats>.import.*`. Three tokens, where an agent's line has two: an
+  agent's right is its own `<stats>.<name>`, so no agent may publish
+  there, and the console's stats view, which takes two-token subjects
+  only, leaves imported history out of its 7-day reports. Alternative: a
+  two-token `<stats>.import-<bot>`. Rejected: the console counted freshly
+  imported lines as the last 7 days (their store time), and it needed a
+  guard on agents' name prefixes. The import skips what `STATS` holds by
+  (`sid`, `part`), and by the post's id on the `import.` subjects;
+  `STATS` has `no_ack` and a 100 ms duplicate window, so that comparison
+  is the only duplicate check, and since nothing acknowledges a publish,
+  a read after the run counts what arrived (the report says published
+  and confirmed). Of each bot only its newest 500 lines, so every run
+  stores the same set; a run publishes no more than `STATS` has room for,
+  so it never pushes the stream's own lines out. Each imported line
+  carries `Cb-Source: mattermost-import`, `Cb-Orig-Time` and
+  `Cb-Post-Id`.
+- **What this gives up.** The subject, not a header, says that a line is
+  imported. An agent can set `Cb-Orig-Time` on its own line, its own lines
+  only, but nothing reads that header on an agent's subject, so it
+  backdates nothing; a future reader of the `import.` subjects will take
+  it there. Imported lines are the bots' word, attested by nothing
+  (RISK-22). A flood of one agent evicts old history only through its cap
+  of 500 and the stream's discard of the oldest. Open for the owner: the
+  365 days (or 180), the 64 MiB and the cap of 500.
+- **Not yet.** A reader of the imported lines (the console's time range
+  beyond 7 days, `stats_report` reading NATS), and a fill the console can
+  show.
 
 ---
 

@@ -13,11 +13,15 @@ the time between, and what the stub and the relay saw. It is the same
 bookkeeping (`runner.Run`) and the same formulas the echo run uses, so the two
 runs' numbers compare directly.
 
-**What it does not measure:** anything that needs more than the two roles a run
-stages. The coordinator rows of the plan — a hard stop and the crown passing, a
-take-over, 100 human posts under fault — stay `not_yet_measurable` in
-`measurands.toml`, each with the reason. A `bus-run` posts bot to bot in one
-home channel; it does not stage a role switch, does not read with a human's
+**Over NATS too** (ADR-014 phase 1): `bus-run --transport nats` runs the same two
+servers with their home over NATS, against a real nats-server, and `coord-run`
+hard-stops the coordinator and measures the take-over. See
+[The NATS transport](#the-nats-transport) below.
+
+**What it does not measure:** the 100 human posts under fault of the coordinator
+row, and whether an event was handled twice or not at all across a take-over:
+they stay `not_yet_measurable` in `measurands.toml`, each with the reason. A
+`bus-run` posts bot to bot in one home channel; it does not read with a human's
 account and does not run long enough for a 14-day retention check.
 
 `echo-run` remains: it starts a loopback echo endpoint and measures the
@@ -78,7 +82,8 @@ rename in that file, not a rebuild.
 
 The run plan's own values are in that file too, under `[plan]`: 100 messages per
 run, at least 10 runs per fault, 50 hard stops, 100 human posts, 30 s as the
-take-over target, copied word for word from `messplan-phase4.md`. Where the plan
+take-over target, from ADR-014 phases 1 and 4
+(`docs/arc42/09-architecture-decisions.md`). Where the plan
 defines nothing — the tolerance, where a wait starts and ends — the value is
 `"open"`, not a number: an invented one would appear in a report as if the plan
 had asked for it.
@@ -152,8 +157,11 @@ reconnect the bus's catch-up read found nothing, so 10 of 10 read as lost.
 `bus-run`'s exit code says whether its numbers can be compared: 0 for a run
 whose baseline lost nothing and whose stand-in answered every call, 1 when the
 stub did not know a call, when the receiver's inbox never opened, when the run
-sent no frame at all, when a baseline lost a frame, or when **frames were sent
-and none arrived** and no fault explains it: `stall`, `reorder` and `duplicate`
+sent no frame at all, when a baseline lost a frame, when a fault run whose
+session must come back never did (a send after the window under `restart`,
+`hang`, `cut` and `blackhole`; a post after the resume under `kill-client`: the
+run measured a session that stayed down, not the fault), or when **frames were
+sent and none arrived** and no fault explains it: `stall`, `reorder` and `duplicate`
 pass every frame on, so silence under them is the path, and so is silence under
 `none` — a path that carried nothing is not a measurement of the fault (issue
 #47); 2 when no interpreter could start the bus at all.
@@ -194,6 +202,70 @@ a `--every 3` step rather than `--after 1` alone.
 counts the catch-up read as well as the socket, and a frozen line carries
 nothing until the client's own heartbeat gives up.
 
+## The NATS transport
+
+```
+CB_NATS_SERVER=/path/to/nats-server uv run --directory testrig bus-testrig bus-run --transport nats --count 10 --summary
+uv run --directory testrig bus-testrig bus-run --transport nats --fault restart --summary
+uv run --directory testrig bus-testrig bus-run --transport nats --fault all --count 100 --summary
+uv run --directory testrig bus-testrig coord-run --transport nats --stops 3 --summary
+```
+
+It needs nats-server 2.15.3 (`CB_NATS_SERVER`, `MM_NATS_SERVER`, else `nats-server`
+on `PATH`; without one the run says so and exits 2) and `mcp/` synced, as `bus-run`
+does. What stands in for what (`natsrig.py`):
+
+| Part | In the rig |
+|---|---|
+| nats-server | the real binary, JetStream on, a store directory of its own |
+| the login service's credential | a static nkey user per agent with the rights `services/auth/internal/callout/perms.go` grants for the home |
+| the login service's streams and consumers | an admin user makes them, and remakes an agent's consumers from the `since` of its CONNECT, which the byte proxy hands it before the server sees it (the callout's part) |
+| the Keycloak login | `natsserver.py`, a shim that installs a stand-in login with the agent's nkey and then runs the server's normal entry point; product code unchanged |
+| Mattermost | the stub, for the half of a NATS-home session that still uses it (bot, roster, status) |
+
+The config, the streams and the consumers copy the `rig` fixture and
+`_consumer_specs`/`_login_service` of `mcp/tests/test_natsbus.py`; the rights copy
+`perms.go` (the fixture lacks the ask record and the STATS line). A test counts
+`perms.go`'s rights, and another compares the agent name with `natsbus.agent_name`.
+
+The faults on NATS are windows, opened half way through the sends for
+`--fault-sec` (default 2 s); `--fault all` runs the baseline and each in turn:
+
+| Fault | What happens |
+|---|---|
+| `restart` | nats-server SIGKILLed, started again on the same port and store |
+| `hang` | nats-server SIGSTOPped, SIGCONTed at the window's end (`proc.pause`) |
+| `kill-client` | the receiving MCP server SIGKILLed and started again on the same identity and state directory: a resumed session |
+| `cut` | the byte proxy aborts every connection, and refuses new ones in the window |
+| `blackhole` | the byte proxy discards what the server sends, then aborts the connections that lost bytes (a stream with a gap cannot go on) |
+| `stall` | each chunk from the server held `--stall-sec` |
+| `halfopen` | both directions stop being read, and are read again at the window's end |
+
+A send that fails under the fault is not counted as sent, and the run goes on
+(`notes` counts them). Under `restart`, `hang`, `cut` and `blackhole` the run
+has to show the sender's recovery: after the window it keeps posting until one
+send succeeds or 90 s pass (just over the bus's 61 s worst-case back-off), so
+such a run can send up to ~180 posts beyond `--count`; a run that never gets one
+exits 1 (the session did not come back, so the numbers measure nothing). Under
+`kill-client` the recovery is the receiver's: an arrival after the resume. `--summary` prints a table after the
+JSON: per fault the p50, p95 and maximum wait, loss and duplicates.
+
+`coord-run` starts `--sessions` servers in one home (default 3), waits for the
+crown, SIGKILLs the holder's process group and waits for a survivor's crown log
+(`crown-<uid>.log`) to say `gained`; then a fresh session joins and the next stop
+follows (`--stops`, default 3). The take-over is that log's time minus the kill
+(whole seconds). The report also carries `presence_stale_s`: when the dead
+holder's presence turned stale, a lower bound. A hard-stopped holder sends no
+`bye`, so the crown passes only once its presence is `PRESENCE_FRESH_SEC` (90 s)
+old: three stops on 2026-11-26 measured 89, 90 and 120 s (the rig's `CB_HEARTBEAT_SEC=30` — the bus minimum, the default is 300 — adds the second beat), against the phase-4
+target of 30 s.
+`--transport mattermost` is accepted, but the stand-in does not carry the
+Mattermost election to a crown, so that take-over is not yet measured.
+
+CI (`.github/workflows/testrig.yml`): the `harness` job runs `--fault all --count
+10` and one hard stop on every PR; the `full-nats` job runs 100 messages per
+fault and 50 hard stops, nightly and by hand (`workflow_dispatch`).
+
 ## Layout
 
 ```
@@ -201,14 +273,17 @@ testrig/
   pyproject.toml        own project: the move changes mcp/pyproject.toml, not this
   measurands.toml       the names, their acceptance row, their status
   src/bus_testrig/
-    cli.py              bus-testrig measurands | echo-run | bus-run
+    cli.py              bus-testrig measurands | echo-run | bus-run | coord-run
     gateway.py          one port speaking HTTP and the WebSocket upgrade
     stub.py             MattermostStub: the measured REST answers and a scripted socket
     bus.py              the MCP server as a subprocess, and the run that measures it
     measurands.py       reads measurands.toml; a run cannot report an undeclared name
-    proxy.py            the proxies (WebSocket-only and HTTP-passing) and the frame faults
+    proxy.py            the proxies (WebSocket-only, HTTP-passing, bytes for NATS) and the faults
     proc.py             the operating-system faults, and where they cannot be produced
-    runner.py           a run's bookkeeping, the percentiles, the report
+    runner.py           a run's bookkeeping, the percentiles, the report, the summary
+    natsrig.py          the NATS transport: nats-server, the login service's part, the run
+    natsserver.py       the shim a NATS-home session runs (a stand-in login)
+    coord.py            hard stops of the coordinator and the take-over
   scripts/ci_fault_check.py  the CI check that a fault changes the numbers
   scripts/stub_roundtrip.py  the real adapter against the stub, over TCP
   scripts/probe_status_shape.py  the bus's status reader over the stub's answer

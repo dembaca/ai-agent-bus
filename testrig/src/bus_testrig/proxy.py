@@ -37,14 +37,17 @@ passed through unchanged, only `/api/v4/websocket` faulted — because the bus
 derives REST and WebSocket from one URL (`client.ws_url_from_http`) and cannot
 be pointed at a WebSocket-only proxy. Both share one implementation of the
 faults (`FaultRelay`), so a frame is treated the same however it got here
-(review point 2).
+(review point 2). A third, `ByteProxy`, relays a plain TCP stream (the NATS
+transport): NATS has no frames to count, so its faults are windows in time with
+the same meanings (`BYTE_KINDS`).
 """
 
 from __future__ import annotations
 
 import asyncio
+import contextlib
 import json
-from dataclasses import dataclass
+from dataclasses import dataclass, field
 from typing import Any, Awaitable, Callable
 from urllib.parse import urlsplit, urlunsplit
 
@@ -571,3 +574,205 @@ class GatewayProxy:
                                       abort=_abort_of(conn),
                                       freeze=_freeze(conn, upstream))
         await self.relay.flush(state, send=send)
+
+
+# --- a byte proxy, for a transport with no frames (NATS) ---------------------------
+
+#: The faults the byte proxy injects. NATS speaks a byte stream, not frames, so a
+#: fault is a *window* in time rather than "every n-th frame": it starts when the
+#: run calls `ByteProxy.inject` and ends `seconds` later.
+BYTE_KINDS = ("cut", "blackhole", "stall", "halfopen")
+#: Every fault of the NATS transport (natsrig.py): the server restarted or hung,
+#: the receiving client killed and resumed, and the byte proxy's windows.
+NATS_FAULTS = ("restart", "hang", "kill-client", *BYTE_KINDS)
+
+
+@dataclass(eq=False)
+class _Pipe:
+    """One proxied connection: the client's side, the upstream side, its pumps."""
+
+    client: asyncio.StreamWriter
+    upstream: asyncio.StreamWriter
+    tasks: list[asyncio.Task[None]] = field(default_factory=list)
+    #: bytes the window discarded on this connection (blackhole): the stream is
+    #: broken from here on, so the window's end aborts it
+    lost: int = 0
+
+    def abort(self) -> None:
+        _abort_of(self.client)()
+        _abort_of(self.upstream)()
+
+
+class ByteProxy:
+    """A TCP relay in front of one port (the NATS server's), with timed faults.
+
+    The faults are `FaultRelay`'s, carried over to a stream:
+
+      cut        every open connection is aborted at once (no FIN: what a dead
+                 network leaves), and a connection made during the window is
+                 aborted as it arrives
+      blackhole  what the server sends is discarded during the window, the line
+                 stays open; a stream that lost bytes cannot be resumed, so the
+                 window's end aborts the connections it discarded on
+      stall      each chunk the server sends is held `stall_sec` before it is
+                 passed on, while the window lasts
+      halfopen   both directions stop being read (`pause_reading`, as `_freeze`
+                 does) and are read again at the window's end: bytes are delayed,
+                 never lost, and nobody sees an error meanwhile
+
+    The relay is in **every** run of the NATS transport, with no fault for the
+    baseline, so a run with and one without take the same path (review point 4
+    of the frame proxy). The counters say what it saw.
+    """
+
+    def __init__(self, upstream_host: str, upstream_port: int, *, stall_sec: float = 0.5,
+                 on_connect: Callable[[bytes], Awaitable[None]] | None = None) -> None:
+        self.upstream = (upstream_host, upstream_port)
+        #: called with a client's NATS CONNECT payload before it is passed on: the
+        #: login service's part (its auth callout reconciles the consumers first)
+        self.on_connect = on_connect
+        self.hook_errors = 0
+        #: set when the CONNECT hook (the login service's reconcile) failed: the
+        #: connection is aborted and every later one refused, so the run fails
+        #: instead of measuring a client without its consumers
+        self.failed = ""
+        self.stall_sec = stall_sec
+        self.kind: str | None = None  # the fault whose window is open, if any
+        self.connections = 0
+        self.bytes_up = 0
+        self.bytes_down = 0
+        self.discarded = 0
+        self.aborted = 0
+        self.refused = 0  # upstream not reachable (a restarted server)
+        self._pipes: set[_Pipe] = set()
+        self._server: asyncio.base_events.Server | None = None
+        self.port = 0
+
+    @property
+    def url(self) -> str:
+        return f"nats://127.0.0.1:{self.port}"
+
+    def counters(self) -> dict[str, int]:
+        return {"connections": self.connections, "bytes_up": self.bytes_up,
+                "bytes_down": self.bytes_down, "discarded": self.discarded,
+                "aborted": self.aborted, "refused": self.refused,
+                "hook_errors": self.hook_errors,
+                "failed": 1 if self.failed else 0}
+
+    async def __aenter__(self) -> ByteProxy:
+        self._server = await asyncio.start_server(self._handle, "127.0.0.1", 0)
+        self.port = self._server.sockets[0].getsockname()[1]
+        return self
+
+    async def __aexit__(self, *_exc: Any) -> None:
+        if self._server is not None:
+            self._server.close()
+        for pipe in list(self._pipes):
+            pipe.abort()
+            for task in pipe.tasks:
+                task.cancel()
+        if self._server is not None:
+            with contextlib.suppress(Exception):
+                await asyncio.wait_for(self._server.wait_closed(), 2)
+
+    async def inject(self, kind: str, seconds: float) -> None:
+        """Open the fault's window for `seconds`, then close it again."""
+        if kind not in BYTE_KINDS:
+            raise ValueError(f"unknown byte fault {kind!r}; one of {BYTE_KINDS}")
+        self.kind = kind
+        pipes = list(self._pipes)
+        if kind == "cut":
+            for pipe in pipes:
+                self._abort(pipe)
+        elif kind == "halfopen":
+            for pipe in pipes:
+                _freeze(pipe.client, pipe.upstream)()
+        try:
+            await asyncio.sleep(seconds)
+        finally:
+            self.kind = None
+            for pipe in list(self._pipes):
+                if kind == "halfopen":
+                    for side in (pipe.client, pipe.upstream):
+                        if not side.transport.is_closing():
+                            side.transport.resume_reading()
+                if kind == "blackhole" and pipe.lost:
+                    self._abort(pipe)
+
+    def _abort(self, pipe: _Pipe) -> None:
+        self.aborted += 1
+        pipe.abort()
+
+    async def _handle(self, reader: asyncio.StreamReader, writer: asyncio.StreamWriter) -> None:
+        self.connections += 1
+        if self.failed:
+            # The hook failed once: no CONNECT reaches the server without its
+            # consumers, and the run must not go on as if it had.
+            self.refused += 1
+            _abort_of(writer)()
+            return
+        try:
+            up_reader, up_writer = await asyncio.open_connection(*self.upstream)
+        except OSError:
+            # The server is down (a restart under way): refuse as the server would.
+            self.refused += 1
+            _abort_of(writer)()
+            return
+        pipe = _Pipe(client=writer, upstream=up_writer)
+        if self.kind == "cut":
+            self._abort(pipe)
+            return
+        if self.kind == "halfopen":
+            _freeze(pipe.client, pipe.upstream)()
+        self._pipes.add(pipe)
+        pipe.tasks = [asyncio.create_task(self._pump(reader, up_writer, pipe, down=False)),
+                      asyncio.create_task(self._pump(up_reader, writer, pipe, down=True))]
+        try:
+            await asyncio.wait(pipe.tasks, return_when=asyncio.FIRST_COMPLETED)
+        finally:
+            self._pipes.discard(pipe)
+            pipe.abort()
+            for task in pipe.tasks:
+                task.cancel()
+
+    async def _pump(self, src: asyncio.StreamReader, dst: asyncio.StreamWriter, pipe: _Pipe,
+                    *, down: bool) -> None:
+        """One direction. `down` is server to client, the direction the frame
+        proxy faults; `halfopen` freezes both, and `cut` either."""
+        pending = b""
+        greeted = down or self.on_connect is None
+        try:
+            while True:
+                chunk = await src.read(65536)
+                if not chunk:
+                    return
+                if not greeted:
+                    # The client's first line is its CONNECT: held until complete,
+                    # handed to the hook, then passed on with what followed it.
+                    pending += chunk
+                    if b"\r\n" not in pending and len(pending) < 1 << 20:
+                        continue
+                    line = pending.partition(b"\r\n")[0]
+                    if line.startswith(b"CONNECT ") and self.on_connect is not None:
+                        try:
+                            await self.on_connect(line[len(b"CONNECT "):])
+                        except Exception as exc:  # noqa: BLE001 — the rig fails the run
+                            self.hook_errors += 1
+                            self.failed = f"consumer reconcile failed: {type(exc).__name__}: {exc}"[:300]
+                            pipe.abort()
+                            return
+                    greeted, chunk, pending = True, pending, b""
+                if down:
+                    self.bytes_down += len(chunk)
+                    if self.kind == "blackhole":
+                        self.discarded += len(chunk)
+                        pipe.lost += len(chunk)
+                        continue
+                    if self.kind == "stall":
+                        await asyncio.sleep(self.stall_sec)
+                else:
+                    self.bytes_up += len(chunk)
+                dst.write(chunk)
+                await dst.drain()
+        except (ConnectionError, OSError, asyncio.IncompleteReadError):
+            return

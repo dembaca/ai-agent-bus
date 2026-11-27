@@ -76,6 +76,9 @@ var renamed = map[string][]string{
 	"CB_AUTH_XKEY_SEED_FILE":        {"AUTH_XKEY_SEED_FILE"},
 	"CB_AUTHD_DIR_API":              {"AUTHD_DIR_API"},
 	"CB_AUTHD_DIR_CA_FILE":          {"AUTHD_DIR_CA_FILE"},
+	// The stats channel the STATS import reads (RT-6.45): the MCP server's
+	// setting, read here by the same rule.
+	"CB_MM_STATS_CHANNEL": {"MM_STATS_CHANNEL"},
 }
 
 // placeholderRE: an unexpanded ${NAME}. The MCP server reads it as unset
@@ -115,17 +118,20 @@ func New(lookup Lookup, warn Warn) *Env {
 		warned: map[string]bool{}, checked: map[string]bool{}}
 }
 
-// Service lists the login service's names (CB_AUTH_…), sorted.
-func Service() []string { return names("CB_AUTH_") }
+// Service lists the login service's names (CB_AUTH_…, and the one CB_MM_ name
+// it shares with the MCP server), sorted.
+func Service() []string { return names("CB_AUTH_", "CB_MM_") }
 
 // Authd lists the names only authd's directory commands read (CB_AUTHD_…).
 func Authd() []string { return names("CB_AUTHD_") }
 
-func names(prefix string) []string {
+func names(prefixes ...string) []string {
 	var out []string
 	for n := range renamed {
-		if strings.HasPrefix(n, prefix) {
-			out = append(out, n)
+		for _, p := range prefixes {
+			if strings.HasPrefix(n, p) {
+				out = append(out, n)
+			}
 		}
 	}
 	sort.Strings(out)

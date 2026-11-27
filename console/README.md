@@ -13,7 +13,7 @@ stage 1, **reading only**:
   their STATS lines (RT-6.43, decoded strictly; the asks shown, never
   answered) and serves the API of ADR-015 point 10
   (`/v1/fleet` streamed over SSE, `/v1/me`, `/v1/asks`, `/v1/graph`,
-  `/v1/stats`, `/v1/threads/<id>`), plus the built browser app. A card
+  `/v1/stats`, `/v1/agent-stats` (own or trusted agents only), `/v1/threads/<id>`), plus the built browser app. A card
   names its `home` and its `guests`; the graph draws the home and the
   guest channels apart and marks the operator's own person node `you`
   (#147).

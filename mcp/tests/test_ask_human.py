@@ -308,6 +308,21 @@ async def test_the_asked_human_is_one_person(monkeypatch, human):
 
 
 @pytest.mark.asyncio
+async def test_an_own_post_counts_in_the_thread_record_at_once(monkeypatch):
+    """RT-6.6 step 5, RT-6.2 step 4 (#223): post_message and reply_in_thread
+    hand the agent's new post to gate.saw, so a thread record already read
+    counts the agent as a poster without reading the thread again."""
+    c = _NamingClient()
+    monkeypatch.setattr(server, "_get_client", lambda: c)
+    seen = []
+    monkeypatch.setattr(server.gate, "saw", seen.append)
+    root = "r1".ljust(26, "0")
+    await server.reply_in_thread(root, "on it")
+    await server.post_message("and the docs", root_id=root)
+    assert len(seen) == 2 and all(p.message.endswith(("on it", "and the docs")) for p in seen)
+
+
+@pytest.mark.asyncio
 async def test_to_all_wakes_every_agent_through_the_props(monkeypatch):
     """RT-6.11 step 1: to="all" writes props.a2a.to (with the kind a first word
     gives); the text needs no @channel. Anything else for a reply is refused."""

@@ -3,9 +3,11 @@ package mattermost
 import (
 	"context"
 	"fmt"
+	"net/http"
 	"net/url"
 	"strconv"
 	"strings"
+	"time"
 )
 
 const (
@@ -105,6 +107,79 @@ func (c *Client) ChannelMemberIDs(ctx context.Context, channelID string) ([]stri
 		ids = append(ids, m.UserID)
 	}
 	return ids, nil
+}
+
+// Post is a channel's post as the STATS import reads it (RT-6.45).
+type Post struct {
+	ID      string
+	Created time.Time // create_at, milliseconds on the server
+	UserID  string
+	Message string
+}
+
+const (
+	// postsPage and postsAnswerMax: a post's message is at most 16383
+	// characters (64 KiB in UTF-8), so a page of 30 is at most about 2 MiB of
+	// messages; the answer limit leaves room for the posts' metadata.
+	postsPage      = 30
+	postsAnswerMax = 8 << 20
+)
+
+// EachChannelPost calls fn with each post of the team's channel by name,
+// created at or after since (the zero time: all), newest first, page by
+// page, each post once; system and deleted posts are left out. Only one page
+// is held at a time, so the caller decides what to keep; an error of fn ends
+// the reading and is returned as it is (no further page is asked for).
+func (c *Client) EachChannelPost(ctx context.Context, channelName string, since time.Time, fn func(Post) error) error {
+	id, err := c.channelID(ctx, channelName)
+	if err != nil {
+		return fmt.Errorf("channel %q: %w", channelName, err)
+	}
+	type post struct {
+		ID       string `json:"id"`
+		CreateAt int64  `json:"create_at"`
+		DeleteAt int64  `json:"delete_at"`
+		UserID   string `json:"user_id"`
+		Type     string `json:"type"`
+		Message  string `json:"message"`
+	}
+	// A post that arrives while reading shifts the pages: the newest of a page
+	// can be the oldest of the page before. Only those two pages' ids are kept.
+	var last map[string]bool
+	for page := 0; ; page++ {
+		seen := map[string]bool{}
+		var got struct {
+			Order []string        `json:"order"`
+			Posts map[string]post `json:"posts"`
+		}
+		path := "/api/v4/channels/" + url.PathEscape(id) + "/posts?page=" + strconv.Itoa(page) + "&per_page=" + strconv.Itoa(postsPage)
+		if err := c.do(ctx, http.MethodGet, path, nil, &got, postsAnswerMax); err != nil {
+			return fmt.Errorf("posts of %q: %w", channelName, err)
+		}
+		older := false
+		for _, pid := range got.Order {
+			p, ok := got.Posts[pid]
+			if !ok || seen[pid] || last[pid] {
+				continue
+			}
+			seen[pid] = true
+			at := time.UnixMilli(p.CreateAt).UTC()
+			if at.Before(since) {
+				older = true
+				continue
+			}
+			if p.Type != "" || p.DeleteAt != 0 {
+				continue
+			}
+			if err := fn(Post{ID: p.ID, Created: at, UserID: p.UserID, Message: p.Message}); err != nil {
+				return err
+			}
+		}
+		if len(got.Order) < postsPage || older {
+			return nil
+		}
+		last = seen
+	}
 }
 
 // Users reads accounts by id (in batches of pageSize).

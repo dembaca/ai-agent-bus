@@ -7,9 +7,99 @@ before 0.5.0 are described in the git history.
 
 ### Added
 
+- **The STATS history: a year of statistics, and the stats channel's lines
+  imported** (#196, RT-6.45). The `STATS` stream keeps 365 days instead of
+  30 (64 MiB, 8 KiB per message and 500 per subject as before, the oldest
+  discarded); the login service brings an existing stream's age and cap to
+  these in place at its start, up or down (a larger size set by hand is
+  kept), and warns `stats stream over 80 % full` in its log. A shorter
+  `StatsMaxAge` later, or a rollback within this release line, brings the
+  stream down at the next start and drops its older lines; a rollback to a
+  release before this one needs the age set back by hand first
+  (`nats stream edit STATS --max-age 30d`, which drops the older lines too),
+  since that release refuses the longer stream. `authd dir stats-import`
+  (`POST /v1/stats/import`, admins) publishes the `STATS` lines of the stats
+  channel (`CB_MM_STATS_CHANNEL`) at least 2 minutes old into `STATS` on
+  `<stats>.import.<bot>`, three tokens, which no agent may publish and the
+  console's reports do not take, byte for byte, the lines from before 0.91.0
+  (no `sid`, no `part`) included, the newest 500 per bot, marked
+  `Cb-Source: mattermost-import` with the post's time in `Cb-Orig-Time` and
+  its id in `Cb-Post-Id`; it skips a line `STATS` holds by (`sid`, `part`)
+  or by post id, so it can run as often as wanted until Mattermost goes.
+  One run holds at most 100,000 lines and no more than `STATS` has room for,
+  the newest first. `STATS` acknowledges nothing, so the report says
+  published, and how many a read after the run found. An agent can set
+  `Cb-Orig-Time` on its own line, but nothing reads it there, so it
+  backdates nothing. The login service's JetStream user needs two new
+  rights, `$JS.API.STREAM.UPDATE.STATS` and publish on `<stats>.import.*`
+  (`nats-server.example.conf`), before the upgrade starts it. Nothing reads
+  the imported lines or more than 7 days yet: the console reads 7 days back.
+
+- **The console's per-agent numbers** (#201's first piece, the design canvas's data): `GET /v1/agent-stats` serves one row per own or trusted agent — one whose attestation names the logged-in operator as owner or trusted (the owner's decision amending ADR-015 point 15, RT-6.43 step 8); another owner's agent, or one without a known attestation, has no row — whose `STATS` parts the session's 7-day reading holds: the token sums of the last 24 hours and of the window (`all`, the split by token type, the input's bus overhead and coordination over the same parts; n/a without `tok` or for an empty object, never 0) and the posts, wakes and tool calls of 24 hours, read-only from the same consumers as the reports. The aggregate reports (`/v1/stats`, and `/metrics` as before) stay visible to every operator for all agents. Its requests count under a route bucket of their own on the metrics page. The browser app's API gains the wire types and the mock rows; no page shows them yet (the design PR #185's follow-ups own the UI).
+
+- **The fault-run rig runs against the bus over NATS** (#151 step 4c, ADR-014 phase 1): `bus-testrig bus-run --transport nats` runs the same two MCP servers with their home over NATS, against a local nats-server 2.15.3 whose static users carry the rights the login service grants, and injects the phase-1 faults as windows: nats-server restarted (SIGKILL and start on the same store) or hung (SIGSTOP), the receiving server killed and resumed, and a byte proxy in front of NATS that cuts, blackholes, stalls or freezes the line. `bus-testrig coord-run` hard-stops the coordinator and measures the take-over from the successor's crown log. `--summary` prints p50, p95, maximum, loss and duplicates per fault, and the take-over. First finding: a hard-stopped holder sends no `bye`, so the crown passes only once its presence is 90 s old — 89 to 120 s in the small runs (the rig's `CB_HEARTBEAT_SEC=30` (the bus minimum; the default is 300) adds the second beat) — against the phase-4 target of 30 s; a session killed loses every post the consumer pushes until the server notices the dead socket, usually the one in flight: the consumer keeps its position and the gap arrives (100 messages, 10 s window: loss 1), but a pushed one cannot be asked for again (at-most-once, no persisted client watermark; [#213](https://github.com/dembaca/ai-agent-bus/issues/213)). A run whose fault must be recovered from counts only when the session came back: after the window the sender keeps posting until one send succeeds (up to 90 s), an arrival after `kill-client`'s resume is that receiver's, and a run that never got one exits 1 instead of reading as a clean measurement. CI runs every NATS fault with 10 messages and one hard stop per PR, and 100 messages per fault and 50 hard stops nightly. Mattermost stays the default transport, its path unchanged; the take-over on Mattermost is not yet measured (the stand-in carries no election). Nothing in the bus changes.
 - **The central bridge sweeps the agent bots it made** (#151 step 2, RT-6.44): every 10 minutes it disables a bot it made for an agent that has shown no presence and posted nothing for longer than `CB_BRIDGE_MM_BOT_KEEP` (default `24h`, at least `1h`), and revokes the bot's tokens; at most 20 bots per pass, none while the presence feed is stale. A bot is the bridge's only by its prefix and its mark in the description together, never by the prefix alone, so the registrar's bots stay the host sweep's. Last seen is kept in memory: after a restart every bot counts as seen at the start. An agent that comes back gets its bot enabled again and a fresh token at its next message; only bots the sweep disabled (their description marked ` (swept)`) come back, one an admin disabled stays off. No new right, no new endpoint, nothing persisted; hosts notice nothing.
 
 ### Changed
+
+- **Thread reads for the coordinator's wake are bounded** (#223,
+  [the coordinator scenario, RT-6.6 step 5](docs/arc42/06-runtime-view.md#66-coordinator-crown-and-presence-lease),
+  and the end-of-turn scenario, RT-6.2 step 4). A thread that cannot be read
+  is not read again for a minute, first read and re-read alike; until then it
+  counts as unreadable, so the coordinator wakes. One `/v1/posts` request
+  reads at most 20 threads (`MAX_THREAD_READS`); a reply beyond them stays
+  unmarked, as without the marks: the coordinator wakes for it and the
+  listener judges it by its last 200 posts, and the next request reads on.
+  The agent's own post through `post_message` or `reply_in_thread` counts in
+  its thread's record at once. `/v1/posts`'s field table in the docs now
+  lists `agent_thread`, `my_thread` and `my_root`, and the docs say that a
+  root a webhook posted is judged as a human's.
+- **A human's reply in an agent's thread wakes that agent, not the coordinator**
+  ([#207](https://github.com/dembaca/ai-agent-bus/issues/207),
+  [the coordinator scenario, RT-6.6 step 5](docs/arc42/06-runtime-view.md#66-coordinator-crown-and-presence-lease)).
+  A human's plain reply in a thread an agent started (its ask, task or
+  status) woke the coordinator as well, so two agents answered. A trusted
+  human's reply there (anyone's but an agent's with the gate off) now wakes
+  only that agent, while the roster shows it as a reachable peer in the home
+  (read at most once a minute; a foreign agent's thread stays the
+  coordinator's); the
+  coordinator gets the reply in its digest, also in a thread it posted in,
+  shows no typing for it and owes it no answer. A human's reply under an
+  agent's status post (`IDLE` and the like) thus wakes that agent and reaches
+  the coordinator only in the digest. A human's reply stays the coordinator's
+  when it names the coordinator, is a stall or a DM, names an agent departed
+  or not here, stands in a thread a human started (see the next entry for
+  one whose root names an agent), when the root's agent is departed or not
+  reachable, when the gate holds it back from that agent, and when the root
+  cannot be read. An agent's reply in another agent's thread wakes the
+  coordinator as before. The push, `wait_for_events`, the listener and
+  `/v1/wake` decide alike: `/v1/posts` marks such a reply `agent_thread`
+  while the agent holds the crown.
+- **A human's thread naming an agent is that agent's once it has answered**
+  ([#216](https://github.com/dembaca/ai-agent-bus/issues/216),
+  [the coordinator scenario, RT-6.6 step 5](docs/arc42/06-runtime-view.md#66-coordinator-crown-and-presence-lease)).
+  In a thread a human started with `@agent-b …`, a trusted human's plain
+  reply woke both B, once B had posted there, and the coordinator. Now, while
+  B is a reachable peer of the home and has posted in the thread, the reply
+  wakes only B; the coordinator gets it in its digest, as for a thread B
+  started. The coordinator still wakes before B has posted there (a typo name
+  or a request not taken up yet would otherwise go unanswered), when B has
+  departed, is not here or not reachable, when B is another owner's agent
+  (its own gate may hold the reply back, which the coordinator cannot know),
+  when the root names the coordinator too, and when the thread or the roster
+  cannot be read. B counts by its current username: a root naming B by a
+  name it no longer has names nobody, and the coordinator wakes. Such a
+  thread is read again only while B has not posted there yet, at most once a
+  minute, so B's first post there counts within a minute (until then the
+  coordinator wakes too).
+- **The listener knows its threads beyond its last 200 posts** (#216,
+  [the end-of-turn scenario, RT-6.2 step 4](docs/arc42/06-runtime-view.md#62-end-of-a-turn-drain-sign-off-listen)).
+  A waiting agent's listener and `/v1/wake` took "my threads" from the home's
+  last 200 posts only, so a reply in a thread where the agent's post lay
+  further back reached it only with the digest, and with #214 not the
+  coordinator either. `/v1/posts?since=` now marks a reply `my_thread` /
+  `my_root` from the whole thread, one read per root and kept; the marks add
+  to the 200 posts, never remove.
 
 - **The bridge serves the slash commands and their signed records** (#151
   step 3): `/agent-ask-mode`, `/agent-mandate` and `/agent-debug` move from the
@@ -59,6 +149,27 @@ before 0.5.0 are described in the git history.
   `POST /v1/login/shown`, so the next turn's notice does not repeat it; a grant
   that starts after the session start is shown by the first turn's notice.
 
+### Fixed
+
+- **A killed session no longer loses the post that was queued for it** (#213).
+  The first `since` of a NATS home now comes from the host's read mark
+  (`read-<uid>.env`, the NATS lane `<channel id>:nats`): the last post actually
+  handed to the agent, as `n1:<channel>:<seq>` with that post's server time. The
+  login service restarts the durable consumer at `last+1`, so a post still in
+  the host's queue when the process was killed is delivered again instead of
+  being skipped by the consumer's position; a repeat is dropped by the
+  sequence the host already had, so a post is read at least once (a duplicate
+  only if the process dies between the hand-off and the mark). The read mark keeps the NATS post id for this, and it is not deleted at
+  a graceful bye: the next server of a kept bot sends the cursor and the
+  recreated consumer replays what came while it was away. A recreated `BUS`
+  stream restarts its sequences: a first delivery at or below the cursor resets
+  it only when its server time is newer; a start by time, which replays older
+  messages, stays a repeat. No login-service change, no new file. **The
+  residual:** a channel where the session never handed a post has no cursor, so
+  posts queued there before its first hand-over can still be lost at a kill
+  (explicit acks on the BUS consumers would close it); and a post past the
+  stream's 14 days or the consumer's inactivity threshold does not come back.
+
 ### Docs
 
 - **The coordinator's hourly check** (`coordinator.md`, the coordinator scenario
@@ -68,6 +179,8 @@ before 0.5.0 are described in the git history.
   without a scheduler run it at the first stall notice after an hour. It goes with
   the crown on a handover. Stall notices: one addressee per item, and finished tasks
   closed with `DONE`, so the notice lists only live items.
+
+- **Phase 5 of the NATS decision as plan B** (#151): an amendment to the NATS decision (ADR-014) plans the central Mattermost adapter in fourteen pieces, each use of the agent's own Mattermost bot in a home over NATS moving to that bot in the bridge (RT-6.44) or onto NATS behind a switch per piece and channel, beside the decided transport flag, off by default, with its way back, test and lab check; decided by the owner: the transport flag per channel in the channel directory, and that at the end nothing of the bus runs outside the sandbox (the relay, the host process and the signed host copy go with the last piece; the signed-release decision, ADR-011, and its scenarios RT-6.28 to RT-6.30 and RT-6.32 note it). Also the order, the acceptance before registration ends (with the protection against stolen tokens and the console's release signature check, #192), three more decisions of the owner of 2026-11-27 (the login approval only at this machine once no agent has a bot, with no DM and no ask; the hosts' setting for the bridge's address as `CB_RECORDS_URL`, planned in `docs/env-names.md`; hosts delete `MM_REG_SECRET`, `MM_REG_SECRET_GOPASS` and `MM_REG_SECRET_CMD` two weeks after the shutdown), the risk of the bridge vouching for people (RISK-21) corrected, and two new risks: the bridge as the single path between people and agents (RISK-36), and a steered agent changing the plugin code its neighbouring sessions run, up to a forged approval for them (RISK-37). The history read, file parts and header line get request subjects of their own outside every stream, with their grant; a person's post read back from history approves only with a fresh account record. The detection of a stolen token is now stated as built (0.102.0) where the docs still called it not built. Proposed, nothing built.
 
 ## 0.103.0
 

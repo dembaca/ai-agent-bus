@@ -120,7 +120,7 @@ from . import a2a, config, lease, natsbus, owners
 from .events import ChatEvent, EventSource, EventStream, PostEvent, ReactionEvent
 from .ids import _ID, NATS_POST
 from .model import NotFound, Post, Reaction, Thread, UnreadChannel
-from .natsbus import DM_SINCE, Attestation, Event, NameMismatch, NatsBus, NatsBusError, NatsSettings
+from .natsbus import BOT_RE, DM_SINCE, Attestation, Event, NameMismatch, NatsBus, NatsBusError, NatsSettings
 from .port import AttestedCircle
 
 if TYPE_CHECKING:
@@ -304,6 +304,30 @@ def _notice_file(uid: str) -> Path:
     return state_dir() / f"notice-{uid}.env"
 
 
+def _since_from_read_mark(uid: str, channels: set[str]) -> dict[str, tuple[int, int]]:
+    """The hand-over cursor a killed session left (#213): the read mark's NATS lane
+    (`read-<uid>.env`, `<channel id>:nats`) holds the last post HANDED to the agent,
+    `n1:<channel name>:<seq>`. That channel's sequence and the post's server time (ms, the
+    mark's `at`) go into the first CONNECT; a channel the session no longer reads is
+    ignored, and so is a sequence past 2^63-1 (the hello's `since` is a map of uint64).
+    Direct messages have no lane here: the port drops them (`_on_event`), so no DM cursor."""
+    from . import watermark
+
+    out: dict[str, tuple[int, int]] = {}
+    if not uid:
+        return out
+    for key, mark in watermark.read(uid).items():
+        if not key.endswith(watermark.NATS_LANE):
+            continue
+        parsed = NATS_POST.fullmatch(mark.post_id or "")
+        if parsed is None or parsed.group("channel") not in channels:
+            continue
+        seq = int(parsed.group("seq"))
+        if 0 < seq < 1 << 63 and mark.at > 0:
+            out[parsed.group("channel")] = (seq, mark.at)
+    return out
+
+
 NOTICE_KEY_MAX = 64  # notices remembered as told, per server
 NOTICE_SAME_SEC = 30 * 60.0  # the block: the same kind, id and verdict is one DM
 
@@ -459,15 +483,24 @@ class NatsPort:
                 await self.resolve()
                 if owner is None:
                     owner = await _owner_of(login)
+                # #213: the cursor a killed session left is the read mark's NATS lane — the
+                # last post it HANDED to the agent, never one merely queued. The login service
+                # restarts each consumer after it, so a post still in the queue when the process
+                # died is delivered again (at least once for that one, read once by the mark).
+                # Nothing is written or deleted here: the mark outlives a bye (the next server
+                # of a kept bot sends it, and the consumer it recreates replays the absence).
+                bot = await self._bot_id()
+                since = (_since_from_read_mark(bot, set(self._people_channels()))
+                         if BOT_RE.fullmatch(bot) else {})
                 bus = NatsBus(self._s, login, owner, self._on_event, on_fatal=self._on_fatal,
                               on_person=self._on_person, on_notice=self._on_notice,
-                              session=self._session, **self._bus_options)
+                              session=self._session, since=since, **self._bus_options)
                 self._bus = bus
                 bus.on_person_gap = self._person_gap
                 bus.card_source = self._card
                 bus.ask_source = self._asks
                 try:
-                    bus.link_bot(await self._bot_id(), await self._bot_name())
+                    bus.link_bot(bot, await self._bot_name())
                 except ValueError:
                     # A bot id that is no Mattermost user id (a bad CB_MM_BOT_USER_ID): the NATS
                     # home still starts, only without a link between bot and NATS name.

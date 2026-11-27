@@ -201,9 +201,21 @@ class BusProcess:
     exactly like a hang.
     """
 
-    def __init__(self, base_url: str, *, token: str, tail: int = TAIL) -> None:
+    def __init__(self, base_url: str, *, token: str, tail: int = TAIL,
+                 module: str = "mattermost_ai_agent_bus",
+                 extra_env: dict[str, str] | None = None,
+                 state_dir: str | None = None) -> None:
         self.base_url = base_url
         self.token = token
+        #: the module `-m` runs: the bus itself, or the NATS transport's shim
+        #: (`natsserver`), which runs the same entry point after it installed
+        #: the stand-in login
+        self.module = module
+        #: added after `_clean_env`: the NATS transport's settings
+        self.extra_env = dict(extra_env or {})
+        #: a state directory the caller keeps (a resumed session must find its
+        #: own files again); `stop` removes only one this object made
+        self._kept_state = state_dir
         self.tools: list[str] = []
         self._tail = tail
         self._lines: list[str] = []
@@ -236,11 +248,13 @@ class BusProcess:
         # The probe first, then the temp dir (review point at bus.py:176): a
         # mkdtemp before a probe that fails left one directory behind per
         # failed run.
-        argv = await interpreter_async() + ["-m", "mattermost_ai_agent_bus"]
-        self._state = tempfile.mkdtemp(prefix="bus-testrig-")
+        argv = await interpreter_async() + ["-m", self.module]
+        self._state = self._kept_state or tempfile.mkdtemp(prefix="bus-testrig-")
+        env = _clean_env(self.base_url, self.token, self._state)
+        env.update(self.extra_env)
         try:
             self._proc = await asyncio.create_subprocess_exec(
-                *argv, cwd=str(MCP), env=_clean_env(self.base_url, self.token, self._state),
+                *argv, cwd=str(MCP), env=env,
                 stdin=asyncio.subprocess.PIPE, stdout=asyncio.subprocess.PIPE,
                 stderr=asyncio.subprocess.PIPE, limit=4 << 20,
                 # A process group of its own: the server starts children on some
@@ -248,16 +262,14 @@ class BusProcess:
                 # bus.py:114).
                 start_new_session=True)
         except OSError as exc:
-            shutil.rmtree(self._state, ignore_errors=True)
-            self._state = ""
+            self._drop_state()
             raise RuntimeError(f"the bus did not start: {exc}") from exc
         except BaseException:
             # A cancel while the spawn is under way (follow-up review point 6):
             # the directory `mkdtemp` just made has no server to clean it up,
             # because `stop` is never reached. Every other way out of `start`
             # already removes it.
-            shutil.rmtree(self._state, ignore_errors=True)
-            self._state = ""
+            self._drop_state()
             raise
         self._reader = asyncio.create_task(self._read())
         self._stderr = asyncio.create_task(self._drain())
@@ -316,9 +328,39 @@ class BusProcess:
             # XDG_STATE_HOME); leaving it behind would grow the machine's temp
             # directory by one per server, which a 10-run-per-fault plan
             # multiplies.
-            if self._state:
-                shutil.rmtree(self._state, ignore_errors=True)
-                self._state = ""
+            self._drop_state()
+
+    def _drop_state(self) -> None:
+        """Remove the state directory this object made; one the caller passed in
+        is the caller's to keep (a resumed session reads it again)."""
+        if self._state and self._state != self._kept_state:
+            shutil.rmtree(self._state, ignore_errors=True)
+        self._state = ""
+
+    @property
+    def pid(self) -> int | None:
+        """The server's pid while it runs, None before and after."""
+        proc = self._proc
+        return proc.pid if proc is not None and proc.returncode is None else None
+
+    @property
+    def state_dir(self) -> str:
+        """The server's XDG_STATE_HOME while it runs ("" otherwise)."""
+        return self._state
+
+    async def hard_stop(self) -> float:
+        """SIGKILL the server's process group with no warning (no stdin close, so
+        no `bye` and no exit handler), then reap it. Returns the wall-clock time of
+        the kill (`time.time()`), the start of a take-over measurement."""
+        proc = self._proc
+        if proc is None or proc.returncode is not None:
+            raise RuntimeError("the bus is not running")
+        at = time.time()
+        await self._kill(proc)
+        with contextlib.suppress(asyncio.TimeoutError):
+            await asyncio.wait_for(proc.wait(), STOP_SEC)
+        await self.stop()
+        return at
 
     async def _kill(self, proc: asyncio.subprocess.Process) -> None:
         """SIGKILL the server's whole process group, or the pid when there is

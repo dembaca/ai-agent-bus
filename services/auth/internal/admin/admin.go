@@ -1,5 +1,7 @@
 // Package admin is the directory's HTTP API (RT-6.40): channels, their
-// members, the one-time import from Mattermost and the pending name claims.
+// members, the one-time import from Mattermost and the pending name claims;
+// and the repeatable import of the stats channel into the STATS history
+// (RT-6.45, statsimport.go).
 // It speaks JSON only, wants a Keycloak access token on every request and
 // never logs one. Nothing in the directory makes anyone an admin: the group
 // claim of the token does.
@@ -45,6 +47,8 @@ type Config struct {
 	PreAuthBurst      int
 	Log               *slog.Logger
 	Now               func() time.Time
+	// Stats is the STATS import (RT-6.45); nil: POST /v1/stats/import answers 404.
+	Stats *StatsImport
 }
 
 const maxLimiters = 10000
@@ -55,6 +59,8 @@ type handler struct {
 	store    *directory.Store
 	source   Source
 	mux      *http.ServeMux
+
+	statsMu sync.Mutex // one STATS import at a time
 
 	mu     sync.Mutex
 	byAddr map[string]*rate.Limiter
@@ -104,6 +110,7 @@ func New(cfg Config, verifier Verifier, store *directory.Store, source Source) (
 	mux.HandleFunc("PUT /v1/directory/channels/{name}", h.auth(true, h.putChannel))
 	mux.HandleFunc("PATCH /v1/directory/channels/{name}/members", h.auth(false, h.patchMembers))
 	mux.HandleFunc("POST /v1/directory/import", h.auth(true, h.runImport))
+	mux.HandleFunc("POST /v1/stats/import", h.auth(true, h.runStatsImport))
 	mux.HandleFunc("GET /v1/directory/pending", h.auth(true, h.listPending))
 	mux.HandleFunc("POST /v1/directory/pending/{name}/confirm", h.auth(true, h.confirmPending))
 	mux.HandleFunc("DELETE /v1/directory/pending/{name}", h.auth(true, h.dropPending))

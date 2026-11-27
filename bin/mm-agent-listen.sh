@@ -140,8 +140,11 @@ while (( $(date +%s) < UNTIL )); do
   if mm_bus GET "/v1/posts?since=${since_ms}"; then
     # ?since= also returns posts edited since then; look only at new ones.
     # Named: a mention, @channel/@all/@here, to all, or an absent agent its
-    # server answers (RT-6.21). Seen: a thread it posted in, or holding the 👑
-    # a post that names no agent (names_agent, RT-6.6 step 5). An agent's fyi post (the server tells, RT-6.14)
+    # server answers (RT-6.21). Seen: a thread it posted in (its last 200 posts,
+    # or the server's whole-thread read: my_thread / my_root), or holding the 👑
+    # a post that names no agent (names_agent, RT-6.6 step 5), but not a human's
+    # reply in another agent's thread (agent_thread): that agent's, even where
+    # the 👑 posted in it. An agent's fyi post (the server tells, RT-6.14)
     # wakes only whom it names and the author of its thread's root; a post the
     # server gated (RT-6.16) wakes nobody here. Another agent's context line
     # (quiet, RT-6.6 step 9) wakes nobody and enters no digest.
@@ -153,8 +156,10 @@ while (( $(date +%s) < UNTIL )); do
         | . + {named: ((.message | ascii_downcase | [scan("@[a-z0-9_.-]+")] | map(rtrimstr("."))
                         | any(. == "@" + ($name | ascii_downcase) or . == "@channel" or . == "@all" or . == "@here"))
                        or .to == "all" or .absent == true),
-               seen: (($coord and (.names_agent | not)) or ($r != "" and ($threads | index($r)) != null)),
-               mine: ($r != "" and ($roots | index($r)) != null)})
+               seen: ((($coord and .agent_thread == true) | not)
+                      and (($coord and (.names_agent | not)) or ($r != "" and ($threads | index($r)) != null)
+                           or .my_thread == true)),
+               mine: (($r != "" and ($roots | index($r)) != null) or .my_root == true)})
       | map(. + {addressed: ((.gated | not) and (.named or (.seen and (.mine or (.fyi | not)))))})
       | map(select(.addressed)) as $a | map(select(.addressed | not)) as $o
       | "\($a | length) \($o | length) \($o | map(.create_at) | min // 0) \($o | map(select(.fyi)) | length)"' \

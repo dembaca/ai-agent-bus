@@ -7,6 +7,7 @@ harness started.
 
   kill      SIGKILL, then wait for the process to be gone (by its exit status
             when the caller can observe it, else by pid liveness)
+  pause     SIGSTOP: the process hangs with its sockets open (`resume` ends it)
   blackhole and cut are the proxy's (`proxy.FrameProxy`): a blackhole keeps the
             socket open and silent, a cut aborts the transport with no close
             frame. Neither needs the operating system, so `proc` does not offer
@@ -96,6 +97,34 @@ def kill_child(child: Any) -> Killed:
     result = kill(child.pid, calls=lambda: child.poll() is not None)
     return Killed(returncode=child.returncode if child.returncode is not None
                   else result.returncode, waited_s=result.waited_s)
+
+
+def pause(pid: int) -> None:
+    """Hang a process the harness started: SIGSTOP, so it neither runs nor exits.
+
+    Its sockets stay open and the kernel still accepts bytes for it until the
+    buffers fill: what a peer observes is a server that stopped answering, not
+    one that went away. `resume` ends the hang. Raises `Unsupported` where the
+    signal cannot be sent; a process already gone is not an error (there is
+    nothing left to hang, and the caller's next step finds out).
+    """
+    _signal(pid, signal.SIGSTOP if sys.platform != "win32" else 0, "SIGSTOP")
+
+
+def resume(pid: int) -> None:
+    """End a `pause`: SIGCONT."""
+    _signal(pid, signal.SIGCONT if sys.platform != "win32" else 0, "SIGCONT")
+
+
+def _signal(pid: int, sig: int, name: str) -> None:
+    if sys.platform == "win32":
+        raise Unsupported(name, "a POSIX signal is not available here")
+    try:
+        os.kill(pid, sig)
+    except ProcessLookupError:
+        pass
+    except PermissionError as exc:
+        raise Unsupported(name, f"no permission on pid {pid}: {exc}") from exc
 
 
 def network_cut_supported() -> str:

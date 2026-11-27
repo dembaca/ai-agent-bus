@@ -28,6 +28,9 @@ def _run(*, loss: int = 0, closed: str = "", fault: str = "none",
             run.arrive(seq)
     run.sent_frames = sent
     run.closed = closed
+    # The synthetic run models a fault whose window closed and whose session
+    # came back; a test that wants the lost sender sets it False.
+    run.recovered = True
     run.unknown = list(unknown or [])
     run.unmeasured = unmeasured
     if run.unknown:

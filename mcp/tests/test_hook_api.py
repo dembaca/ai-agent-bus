@@ -10,7 +10,7 @@ import time
 import httpx
 import pytest
 
-from mattermost_ai_agent_bus import channel, hookapi, lease, life, ownpost, session_file, stats, unread
+from mattermost_ai_agent_bus import channel, gate, hookapi, lease, life, ownpost, session_file, stats, unread
 from mattermost_ai_agent_bus.client import post_of
 from mattermost_ai_agent_bus.model import NotFound, UnreadChannel
 
@@ -215,6 +215,63 @@ async def test_signed_off_until_something_changes_on_the_bus(api):
     assert (await h.get("/v1/last-post")).json()["signed_off"] is False
 
 
+async def test_posts_mark_my_threads_from_the_whole_thread(api, monkeypatch):
+    """RT-6.2 step 4, RT-6.6 step 5 (#216): with ?since=, a reply in a thread
+    this agent posted in (my_thread) or started (my_root) says so from the
+    whole thread, also when that post is older than what the listener reads
+    (its last 200 posts); one thread read per root, kept; ?limit= reads none."""
+    monkeypatch.setattr(gate, "_roots", {})
+    client = HookClient(uid=UID, posts=[
+        post("r1", "@agent-me please rebase", user=PERSON, at=10),
+        post("m1", "on it", user=UID, at=20, root="r1"),
+        post("r2", "ASK · which db?", user=UID, at=30),
+        post("r3", "lunch?", user=PERSON, at=40),
+        post("x1", "after lunch", user=PERSON, at=5000, root="r1"),
+        post("x2", "postgres", user=PERSON, at=5001, root="r2"),
+        post("x3", "noon", user=PERSON, at=5002, root="r3"),
+    ])
+    reads = []
+    thread = client.thread
+
+    async def counted(root_id):
+        reads.append(root_id)
+        return await thread(root_id)
+
+    monkeypatch.setattr(client, "thread", counted)
+    _, h = await api(client)
+    got = {p["id"]: (p["my_thread"], p["my_root"]) for p in (await h.get("/v1/posts?since=1000")).json()["posts"]}
+    assert got == {"x1": (True, False), "x2": (True, True), "x3": (False, False)}
+    await h.get("/v1/posts?since=1000")
+    assert sorted(reads) == ["r1", "r2", "r3"]  # once per root
+    await h.get("/v1/posts?limit=200")
+    assert len(reads) == 3
+
+
+async def test_posts_read_at_most_so_many_threads_per_request(api, monkeypatch):
+    """RT-6.6 step 5, RT-6.2 step 4 (#223): one /v1/posts request reads at
+    most MAX_THREAD_READS threads; a reply beyond them stays unmarked (as
+    without the marks: never a wrong suppression of the crown), and the next
+    request reads on from the records already kept."""
+    n = hookapi.MAX_THREAD_READS + 5
+    roots = [post(f"r{i}", f"ASK · {i}?", user=UID, at=10 + i) for i in range(n)]
+    replies = [post(f"x{i}", "yes", user=PERSON, at=5000 + i, root=f"r{i}") for i in range(n)]
+    client = HookClient(uid=UID, posts=roots + replies)
+    reads = []
+    thread = client.thread
+
+    async def counted(root_id):
+        reads.append(root_id)
+        return await thread(root_id)
+
+    monkeypatch.setattr(client, "thread", counted)
+    _, h = await api(client)
+    got = (await h.get("/v1/posts?since=1000")).json()["posts"]
+    assert len(reads) == hookapi.MAX_THREAD_READS
+    assert sum(p["my_root"] for p in got) == hookapi.MAX_THREAD_READS
+    got = (await h.get("/v1/posts?since=1000")).json()["posts"]
+    assert len(reads) == n and all(p["my_thread"] and p["my_root"] for p in got)
+
+
 async def test_posts_say_what_the_listener_needs(api):
     """RT-6.17, RT-6.2 step 4: slim posts, newest first, with `to` all
     (RT-6.11), an agent's fyi (RT-6.14: a person's props count for nothing),
@@ -243,7 +300,8 @@ async def test_posts_say_what_the_listener_needs(api):
     assert [(p["names_agent"], p["absent"]) for p in got][3:] == [(False, False), (True, True)]
     assert got[2] == {"id": "p3", "user_id": OTHER, "root_id": "r", "create_at": 1000, "type": "",
                       "message": "main is red", "to": "all", "intent": "", "fyi": False, "quiet": False, "gated": True,
-                      "names_agent": False, "absent": False}
+                      "names_agent": False, "agent_thread": False, "absent": False,
+                      "my_thread": False, "my_root": False}
     assert got[3]["type"] == "system_join_channel" and "props" not in got[0]
     await h.get("/v1/posts?since=1234")
     assert client.calls[-1] == ("posts", None, 1234)
