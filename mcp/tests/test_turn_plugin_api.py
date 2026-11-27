@@ -295,6 +295,16 @@ def test_wake_rules_match_the_listener():
         got = turnend.wake([{**base, **p}], recent, me=UID, username="agent-me", since_ms=0,
                            coordinator=True, digest_sec=3600, now=10)
         assert got["wake"] is woken, p
+    # RT-6.6 step 5 (#207): a human's reply in another agent's thread (agent_thread)
+    # is that agent's: not the 👑's to route, not even in thread t it posted in;
+    # a name still wakes it, and an agent without the crown wakes in its thread.
+    for p, coord, woken in [({"root_id": "u", "agent_thread": True}, True, False),
+                            ({"root_id": "t", "agent_thread": True}, True, False),
+                            ({"root_id": "t", "agent_thread": True, "message": "@agent-me look"}, True, True),
+                            ({"root_id": "t", "agent_thread": True}, False, True)]:
+        got = turnend.wake([{**base, **p}], recent, me=UID, username="agent-me", since_ms=0,
+                           coordinator=coord, digest_sec=3600, now=10)
+        assert got["wake"] is woken, (p, coord)
 
 
 async def test_handoff_hands_back_the_own_posts(api, monkeypatch, tmp_path):

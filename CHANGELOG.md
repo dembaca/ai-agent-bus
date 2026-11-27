@@ -26,9 +26,33 @@ before 0.5.0 are described in the git history.
   `<stats>.>` (`nats-server.example.conf`), before the upgrade starts it.
   Nothing reads more than 7 days of it yet: the console reads 7 days back.
 
+- **The console's per-agent numbers** (#201's first piece, the design canvas's data): `GET /v1/agent-stats` serves one row per own or trusted agent — one whose attestation names the logged-in operator as owner or trusted (the owner's decision amending ADR-015 point 15, RT-6.43 step 8); another owner's agent, or one without a known attestation, has no row — whose `STATS` parts the session's 7-day reading holds: the token sums of the last 24 hours and of the window (`all`, the split by token type, the input's bus overhead and coordination over the same parts; n/a without `tok` or for an empty object, never 0) and the posts, wakes and tool calls of 24 hours, read-only from the same consumers as the reports. The aggregate reports (`/v1/stats`, and `/metrics` as before) stay visible to every operator for all agents. Its requests count under a route bucket of their own on the metrics page. The browser app's API gains the wire types and the mock rows; no page shows them yet (the design PR #185's follow-ups own the UI).
+
 - **The central bridge sweeps the agent bots it made** (#151 step 2, RT-6.44): every 10 minutes it disables a bot it made for an agent that has shown no presence and posted nothing for longer than `CB_BRIDGE_MM_BOT_KEEP` (default `24h`, at least `1h`), and revokes the bot's tokens; at most 20 bots per pass, none while the presence feed is stale. A bot is the bridge's only by its prefix and its mark in the description together, never by the prefix alone, so the registrar's bots stay the host sweep's. Last seen is kept in memory: after a restart every bot counts as seen at the start. An agent that comes back gets its bot enabled again and a fresh token at its next message; only bots the sweep disabled (their description marked ` (swept)`) come back, one an admin disabled stays off. No new right, no new endpoint, nothing persisted; hosts notice nothing.
 
 ### Changed
+
+- **A human's reply in an agent's thread wakes that agent, not the coordinator**
+  ([#207](https://github.com/dembaca/ai-agent-bus/issues/207),
+  [the coordinator scenario, RT-6.6 step 5](docs/arc42/06-runtime-view.md#66-coordinator-crown-and-presence-lease)).
+  A human's plain reply in a thread an agent started (its ask, task or
+  status) woke the coordinator as well, so two agents answered. A trusted
+  human's reply there (anyone's but an agent's with the gate off) now wakes
+  only that agent, while the roster shows it as a reachable peer in the home
+  (read at most once a minute; a foreign agent's thread stays the
+  coordinator's); the
+  coordinator gets the reply in its digest, also in a thread it posted in,
+  shows no typing for it and owes it no answer. A human's reply under an
+  agent's status post (`IDLE` and the like) thus wakes that agent and reaches
+  the coordinator only in the digest. A human's reply stays the coordinator's
+  when it names the coordinator, is a stall or a DM, names an agent departed
+  or not here, stands in a thread a human started (also one whose root names
+  an agent), when the root's agent is departed or not reachable, when the
+  gate holds it back from that agent, and when the root cannot be read. An
+  agent's reply in another agent's thread wakes the coordinator as before.
+  The push, `wait_for_events`, the listener and `/v1/wake` decide alike:
+  `/v1/posts` marks such a reply `agent_thread` while the agent holds the
+  crown.
 
 - **The bridge serves the slash commands and their signed records** (#151
   step 3): `/agent-ask-mode`, `/agent-mandate` and `/agent-debug` move from the

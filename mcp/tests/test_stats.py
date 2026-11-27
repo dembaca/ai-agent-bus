@@ -74,7 +74,9 @@ def test_stats_report_reads_the_channel_with_the_bots_session(monkeypatch):
 # outside limit: an addition raises it consciously, with its reason here.
 # 0.103.0: 13,281 before, 13,302 after the CB_ rename (#169): the new names in
 # the instructions (+6) and the tool docs (+15) are longer by their prefix.
-STATIC_BOUND = 13_350
+# #207: + 62 for the instructions' line that a trusted human's reply in an
+# agent's thread is that agent's, not the crown's (RT-6.6 step 5).
+STATIC_BOUND = 13_400
 
 
 def static_text_in(env_overrides: dict[str, str]) -> int:

@@ -468,6 +468,23 @@ class Fleet:
         att = self._attests.get(agent)
         return att[2] if att and att[2].exp > self.server_now else None
 
+    def own_or_trusted(self, anchor: str | None) -> set[str]:
+        """The agents whose fresh attestation (the login service's record, RT-6.41)
+        names `anchor` — the operator's anchor in subject form, as `asks` takes it —
+        as owner or trusted: the check of "may answer", and the only agents
+        `/v1/agent-stats` gives a row (ADR-015 point 15, RT-6.43 step 8). Without
+        the anchor, or for an agent without a fresh attestation, none: no row is
+        the safe default."""
+        if not anchor or anchor == natsbus.NO_OWNER:
+            return set()
+        out = set()
+        for agent in self._attests:
+            att = self._fresh_attestation(agent)
+            people = [att.owner_anchor, *(a for a, _n in att.trusted)] if att else []
+            if anchor in {owner_token(a) for a in people}:
+                out.add(agent)
+        return out
+
     def asks(self, anchor: str | None = None) -> list[dict[str, Any]]:
         """The open asks of every fresh record, as `/v1/asks` rows (the ADR's spellings).
         `anchor`: the operator's anchor in subject form, as the login's own record of the
