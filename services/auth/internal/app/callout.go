@@ -400,6 +400,8 @@ func RunCallout(ctx context.Context, s Settings, log *slog.Logger) error {
 	// A session alternating between networks is refused, a host key reported (#154 step 3).
 	svc.SetWatcher(&theft.Guard{Log: log})
 	svc.SetAttester(callout.NATSAttester{NC: jsnc, Stream: consumers.PresenceStream})
+	// Plan B's switches of each granted channel, beside every credential (RT-6.39 step 5).
+	svc.SetPlanB(dir, callout.NATSPlanB{NC: jsnc})
 	// A copied session or host key is noticed for the owner (#154 step 3).
 	svc.SetNoticer(callout.NATSNoticer{NC: jsnc})
 	if pv != nil {

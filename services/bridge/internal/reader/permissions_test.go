@@ -265,6 +265,27 @@ accounts {
 		}
 		acancel()
 	}
+	// plan B's switches: its own consumer, deliver all, again at a restart
+	if err := admin.Publish("presence.planb.home.v1", []byte(`{"v":1,"channel":"home","pieces":[4]}`)); err != nil {
+		t.Fatal(err)
+	}
+	_ = admin.Flush()
+	for round := range 2 {
+		sw := &presence.Switches{}
+		pbr := &presence.PlanBReader{Log: m.Log, Deliver: "deliver.bridge.planb", Stream: "PRESENCE", Into: sw,
+			CaughtUp: make(chan struct{}), Heartbeat: 100 * time.Millisecond, Inactive: 500 * time.Millisecond}
+		pctx, pcancel := context.WithCancel(ctx)
+		go func() { _ = pbr.Run(pctx, bridgeNC) }()
+		select {
+		case <-pbr.CaughtUp:
+		case <-time.After(10 * time.Second):
+			t.Fatalf("start %d: the plan B records were not read with the documented rights", round)
+		}
+		if !sw.On(4, "home") {
+			t.Fatalf("start %d: piece 4 is off", round)
+		}
+		pcancel()
+	}
 	// The reply subject of a request is not checked against publish
 	// permissions (the server refuses only replies to $JS. since 2.15), so the
 	// bridge's answers can land on any subject. With direct get off, the answer
@@ -416,7 +437,8 @@ func documentedBridgeRights(t *testing.T, home string) (publish, subscribe []str
 	// account records' consumer (its filter fixed), no direct get, no whole-stream publish, no bus subscribe.
 	for _, subject := range publish {
 		if strings.HasPrefix(subject, "$JS.API.CONSUMER.CREATE") &&
-			subject != "$JS.API.CONSUMER.CREATE.PRESENCE."+inbound.AccountsConsumer+"."+inbound.AccountsFilter {
+			subject != "$JS.API.CONSUMER.CREATE.PRESENCE."+inbound.AccountsConsumer+"."+inbound.AccountsFilter &&
+			subject != "$JS.API.CONSUMER.CREATE.PRESENCE."+presence.PlanBConsumer+"."+presence.PlanBFilter {
 			t.Errorf("the bridge may create consumers by %s", subject)
 		}
 		for _, broad := range []string{"$JS.API.CONSUMER.DELETE",

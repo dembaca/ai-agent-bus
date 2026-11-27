@@ -277,6 +277,28 @@ func TestNoAgentConsumerDeliversAnAskRecord(t *testing.T) {
 	}
 }
 
+// RT-6.39 step 5: an agent's presence consumer delivers the plan B record of
+// each of its channels and of no other channel.
+func TestAnAgentReadsThePlanBRecordsOfItsOwnChannelsOnly(t *testing.T) {
+	m := &Manager{cfg: Config{Bus: "bus", Presence: "presence", Stats: "stats"}}
+	gets := func(s string) bool {
+		for _, w := range m.desired("agent-a", "alice", []string{"home", "ga"}) {
+			for _, f := range w.filters {
+				if match(f, s) {
+					return w.presence
+				}
+			}
+		}
+		return false
+	}
+	for s, want := range map[string]bool{"presence.planb.home.v1": true, "presence.planb.ga.v1": true,
+		"presence.planb.secret.v1": false, "presence.planb.home.v2": false} {
+		if got := gets(s); got != want {
+			t.Errorf("%s: delivered %v, want %v", s, got, want)
+		}
+	}
+}
+
 // A JetStream user without the STATS rights (an upgrade that skipped them)
 // gets an error that names the two rights, not a bare timeout (RT-6.43).
 func TestMissingStatsRightsAreNamed(t *testing.T) {

@@ -18,6 +18,7 @@ import (
 	"net/url"
 	"os"
 	"regexp"
+	"slices"
 	"strconv"
 	"strings"
 	"time"
@@ -42,6 +43,7 @@ commands:
   create <channel> [--owner <sub>] [--public]
   owner <channel> <sub|->             set the owner ("-" clears it)
   public <channel> on|off             make a channel public or private
+  planb <channel> <n,...|->           switch plan B pieces 1 to 13 on, the others off ("-": all off)
   members add <channel> <sub>...      add members
   members rm <channel> <sub>...       remove members
   import                              copy the Mattermost channels once
@@ -244,6 +246,13 @@ func (c *cli) check(pos []string) error {
 		}
 		if pos[2] != "on" && pos[2] != "off" {
 			return usageError("public wants on or off")
+		}
+	case "planb":
+		if err := need(2, true); err != nil {
+			return err
+		}
+		if _, err := planBArg(pos[2]); err != nil {
+			return err
 		}
 	case "members":
 		if len(pos) < 2 || (pos[1] != "add" && pos[1] != "rm") {
@@ -595,12 +604,35 @@ type channel struct {
 	Public   bool              `json:"public"`
 	Members  []string          `json:"members"`
 	Bindings map[string]string `json:"bindings"`
+	PlanB    []int             `json:"planb"`
 }
 
 type putBody struct {
 	Owner    string            `json:"owner"`
 	Public   bool              `json:"public"`
 	Bindings map[string]string `json:"bindings"`
+	// PlanB: nil leaves the key out, so the service keeps the pieces; a
+	// pointer to an empty list switches every piece off (RT-6.39 step 5).
+	PlanB *[]int `json:"planb,omitempty"`
+}
+
+// planBArg reads `planb`'s list: "-" for none, else pieces 1 to 13,
+// comma-separated, each once (the service checks it again).
+func planBArg(s string) ([]int, error) {
+	bad := usageError("planb wants pieces 1 to 13, comma-separated, each once, or -")
+	if s == "-" {
+		return []int{}, nil
+	}
+	var out []int
+	for _, f := range strings.Split(s, ",") {
+		n, err := strconv.Atoi(strings.TrimSpace(f))
+		if err != nil || n < 1 || n > 13 || slices.Contains(out, n) {
+			return nil, bad
+		}
+		out = append(out, n)
+	}
+	slices.Sort(out)
+	return out, nil
 }
 
 func esc(s string) string { return url.PathEscape(s) }
@@ -695,6 +727,22 @@ func (c *cli) command(pos []string) error {
 		} else {
 			b.Public = pos[2] == "on"
 		}
+		r, err := c.call("PUT", path, map[string]string{"If-Match": cur.etag}, b)
+		if err != nil {
+			return err
+		}
+		return c.printChannel(r)
+	case "planb":
+		pieces, err := planBArg(pos[2])
+		if err != nil {
+			return err
+		}
+		path := "/v1/directory/channels/" + esc(pos[1])
+		cur, ch, err := c.read(path)
+		if err != nil {
+			return err
+		}
+		b := putBody{Owner: ch.Owner, Public: ch.Public, Bindings: ch.Bindings, PlanB: &pieces}
 		r, err := c.call("PUT", path, map[string]string{"If-Match": cur.etag}, b)
 		if err != nil {
 			return err
@@ -899,8 +947,16 @@ func (c *cli) printChannel(r reply) error {
 	if rev == "" {
 		rev = "unknown"
 	}
-	fmt.Fprintf(c.out, "%s\t%s\towner %s\t%d members: %s\trevision %s\n", clean(ch.Name), visibility(ch.Public),
-		ownerText(ch.Owner), len(ch.Members), strings.Join(cleanAll(ch.Members), ","), rev)
+	planb := ""
+	if len(ch.PlanB) > 0 {
+		ns := make([]string, len(ch.PlanB))
+		for i, n := range ch.PlanB {
+			ns[i] = strconv.Itoa(n)
+		}
+		planb = "\tplan B " + strings.Join(ns, ",")
+	}
+	fmt.Fprintf(c.out, "%s\t%s\towner %s\t%d members: %s%s\trevision %s\n", clean(ch.Name), visibility(ch.Public),
+		ownerText(ch.Owner), len(ch.Members), strings.Join(cleanAll(ch.Members), ","), planb, rev)
 	return nil
 }
 

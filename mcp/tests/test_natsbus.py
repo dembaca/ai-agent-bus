@@ -24,7 +24,7 @@ import pytest
 from nats.aio.client import Client as NatsClient
 from nats.errors import AuthorizationError
 
-from mattermost_ai_agent_bus import a2a, natsbus
+from mattermost_ai_agent_bus import a2a, natsbus, planb
 from mattermost_ai_agent_bus.login import NKey
 from mattermost_ai_agent_bus.natsbus import (
     Event,
@@ -2618,3 +2618,87 @@ def test_a_racing_bot_never_adopts_the_same_part(tmp_path: Path, monkeypatch: py
     monkeypatch.setattr(session_file.os, "replace", lost)
     value = session_file.nonce()
     assert value != "abcdefghijklmnopqrstuvwxyz" and re.fullmatch(r"[a-z2-7]{26}", value)
+
+
+def _planb_body(channel: str = "home", pieces: object = (1, 3), **extra: object) -> bytes:
+    return json.dumps({"v": 1, "channel": channel, "pieces": list(pieces), **extra}).encode()  # type: ignore[call-overload]
+
+
+async def _planb_rec(bus: NatsBus, ch: str, seq: int, t: float, body: bytes, cseq: int = 0) -> None:
+    reply = _presence_reply(bus, seq, cseq or bus._presence_cseq + 1, t)  # a delivery number that rises
+    await bus._on_presence_msg(FakeMsg(f"presence.planb.{ch}.v1", reply, body))
+
+
+async def test_a_plan_b_record_switches_its_pieces_on_for_a_granted_channel() -> None:
+    """RT-6.39 step 5: the record of a channel the bus has is read; one it has not gives nothing."""
+    bus, _ = _unit_bus()
+    planb.attach(bus.planb_pieces)
+    try:
+        await _planb_rec(bus, "home", 1, T0, _planb_body())
+        await _planb_rec(bus, "elsewhere", 2, T0, _planb_body("elsewhere"))
+        assert planb.on(1, "home") and planb.on(3, "home") and not planb.on(2, "home")
+        assert not planb.on(1, "elsewhere")
+    finally:
+        planb.detach(bus.planb_pieces)
+    assert not planb.on(1, "home")
+
+
+@pytest.mark.parametrize("body", [
+    _planb_body(pieces=(1, 14)), _planb_body(pieces=(0,)), _planb_body(pieces=(True,)),
+    _planb_body(pieces=(1, 1)), _planb_body("other"), _planb_body(extra=1),
+    json.dumps({"v": 2, "channel": "home", "pieces": [1]}).encode(), b"nope",
+])
+async def test_a_plan_b_record_that_does_not_decode_switches_nothing_on(body: bytes) -> None:
+    """RT-6.39 step 5: a malformed record gives an empty set."""
+    bus, _ = _unit_bus()
+    await _planb_rec(bus, "home", 1, T0 - 10, _planb_body())
+    await _planb_rec(bus, "home", 2, T0, body)
+    assert bus.planb_pieces("home") == frozenset()
+
+
+async def test_an_older_plan_b_record_does_not_override_a_newer_one() -> None:
+    """RT-6.39 step 5: the order is the server time, then the sequence."""
+    bus, _ = _unit_bus()
+    await _planb_rec(bus, "home", 5, T0, _planb_body(pieces=(2,)))
+    await _planb_rec(bus, "home", 4, T0 - 5, _planb_body(pieces=(7,)))
+    assert bus.planb_pieces("home") == frozenset({2})
+
+
+async def test_a_consumer_made_anew_forgets_the_plan_b_records() -> None:
+    """RT-6.39 step 5: the consumer delivers the last record per subject again."""
+    bus, _ = _unit_bus()
+    await _planb_rec(bus, "home", 5, T0, _planb_body())
+    await _planb_rec(bus, "elsewhere", 6, T0 + 1, b"{}", cseq=1)  # delivery number 1 again
+    assert bus.planb_pieces("home") == frozenset()
+
+
+async def test_a_plan_b_record_older_than_two_republish_periods_counts_as_off() -> None:
+    """RT-6.39 step 5: the bus's server time bounds how long an unrenewed record is read."""
+    bus, _ = _unit_bus()
+    await _planb_rec(bus, "home", 1, T0, _planb_body())
+    await _planb_rec(bus, "elsewhere", 2, T0 + natsbus.PLANB_STALE_SEC - 1, _planb_body("elsewhere"))
+    assert bus.planb_pieces("home") == frozenset({1, 3})
+    await _planb_rec(bus, "elsewhere", 3, T0 + natsbus.PLANB_STALE_SEC, _planb_body("elsewhere"))
+    assert bus.planb_pieces("home") == frozenset()
+
+
+async def test_a_plan_b_record_reads_off_as_time_passes_without_a_message(monkeypatch: pytest.MonkeyPatch) -> None:
+    """RT-6.39 step 5: the server time runs on by the monotonic clock between deliveries."""
+    bus, _ = _unit_bus()
+    await _planb_rec(bus, "home", 1, T0, _planb_body())
+    assert bus.planb_pieces("home") == frozenset({1, 3})
+    real = natsbus.time.monotonic()
+    monkeypatch.setattr(natsbus.time, "monotonic", lambda: real + natsbus.PLANB_STALE_SEC)
+    assert bus.planb_pieces("home") == frozenset()
+
+
+def test_decode_planb_is_strict() -> None:
+    """RT-6.39 step 5: exactly v, channel and pieces."""
+    assert natsbus.decode_planb(_planb_body(pieces=()), "home") == frozenset()
+    assert natsbus.decode_planb(_planb_body(pieces=range(1, 14)), "home") == frozenset(range(1, 14))
+    with pytest.raises(natsbus.MessageError):
+        natsbus.decode_planb(_planb_body(pieces=range(1, 15)), "home")
+    with pytest.raises(natsbus.MessageError):
+        natsbus.decode_planb(b'{"v":1,"channel":"home"}', "home")
+    with pytest.raises(natsbus.MessageError):
+        natsbus.decode_planb(b'{"v":1,"channel":"home","pieces":"1"}', "home")
