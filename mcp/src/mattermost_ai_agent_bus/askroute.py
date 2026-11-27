@@ -179,7 +179,6 @@ def command(message: str) -> str | None:
     return m[1].lower() if m else None
 
 
-_UID = re.compile(r"[a-z0-9]{26}")
 POST_SOURCE, REGISTRAR = "post", "registrar"
 # How often a server reads the registrar's record of its home again (step 8),
 # on the reminders' heartbeat; the first mode() of a process reads it at once.
@@ -187,7 +186,7 @@ REFRESH_SEC = 120
 
 
 def _path(uid: str) -> Path | None:
-    return session_file.state_dir() / f"askmode-{uid}.env" if _UID.fullmatch(uid) else None
+    return session_file.state_dir() / f"askmode-{uid}.env" if session_file.key_ok(uid) else None
 
 
 def signed() -> bool:

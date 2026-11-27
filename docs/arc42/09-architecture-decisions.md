@@ -4272,9 +4272,21 @@ which each piece reads for itself.
        off, so a registrar's bot or a bridge bot whose record lapsed stays
        an agent, never a person. A cut makes the roster empty and tells nobody as
        gone (RT-6.21). The bridge, the login service and the session side
-       ship together. Not built: the state files keyed by the NATS name
-       (piece 2b), and the `testrig` measurand "nobody told as gone during
-       a cut" (see Test below).
+       ship together. Not built: the `testrig` measurand "nobody told as
+       gone during a cut" (see Test below).
+     - Built (piece 2b, after 0.104.0): the kept state keyed by the NATS
+       name, behind the same switch (RT-6.2 step 9). `last-`, `threads-` and
+       `unanswered-` (what only the MCP server reads) take the name as key
+       once the bus has it, copied once from the files keyed by the bot's
+       Mattermost id (marker `copied-<name>.env`), the source left in place;
+       the wake rule "your threads" reads the copy through the same key.
+       The key checks of `lease._file`, `askroute._path` and
+       `mm_bot_state_file` accept a NATS name beside a bot id. Left keyed by
+       the bot id: everything the shell scripts read (`listen-`, `update-`,
+       `presence-`, `coord-`, `turn-`), and the files of the asks, the
+       watermark, reminders, the gate, stats and the crown log, until piece
+       14; the sweep (`mm-agent-sweep.sh`) does not yet clean name-keyed
+       files.
      - Test: roster, link and names without a Mattermost read; `testrig`:
        nobody told as gone during a cut. Lab: each agent shows once, a
        mention of a gone agent is answered.
