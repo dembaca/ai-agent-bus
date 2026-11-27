@@ -2107,11 +2107,20 @@ class NatsPort:
                                       attested=True, by_anchor=True) if circle is not None
                          # with records on, no usable one means no owner (not a name match)
                          else owners.Owner(owner="" if records_on else bus.owner_of(a), trusts=frozenset(), cut=False))
-        standing = lease.standing(order, me, self._names, agents, self._own_anchors()).ids
+        election = lease.standing(order, me, self._names, agents, self._own_anchors())
+        standing = election.ids
+        why = ""
+        if not standing:
+            why = ("no claimant has a fresh presence and a membership of the home" if not order
+                   else "this session has no owner beside an agent with an owner (its login record is not usable)"
+                   if election.unbound else "the home has an agent of a foreign owner circle")
         mine = info.get(me)
+        seen = dict.fromkeys([*info, *bus.presence_snapshot()])
         return lease.CrownView(me=me, holder=standing[0] if standing else "", candidates=tuple(standing),
                                member=bus.is_member(home, me),
-                               claim_age=bus.server_now - mine[1] if mine is not None else None)
+                               claim_age=bus.server_now - mine[1] if mine is not None else None,
+                               claimants=tuple(order), members=tuple(sorted(a for a in seen if bus.is_member(home, a))),
+                               why=why)
 
     def lowest_claim(self, home: str, names: Iterable[str]) -> str:
         """Of `names`, the one whose claim is first in claim order (server time, sequence) in

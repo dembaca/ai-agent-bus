@@ -365,6 +365,12 @@ def _on(now: float | None = None) -> bool:
     return any(_live(s, now).categories and now - s.at < REFRESH_SEC for s in _states.values())
 
 
+def category_on(category: str, now: float | None = None) -> bool:
+    """Whether `category` holds now, by the last read (as _on)."""
+    now = time.time() if now is None else now
+    return any(category in _live(s, now).categories and now - s.at < REFRESH_SEC for s in _states.values())
+
+
 def refused(tool: str) -> None:
     """A call the server refused, for the agent's next view while debug is on
     (no reason: it may quote a value)."""
@@ -444,7 +450,7 @@ def attachment(state: State, trace: Trace | None, guess: bool, *, call: str,
     per fact of each active category (of `allowed`), about `trace`, the event the post answers;
     props as two `json` blocks; at most ATTACHMENT_MAX characters, props cut
     first. '' with no category to show."""
-    cats = [c for c in state.categories if allowed is None or c in allowed]
+    cats = [c for c in state.categories if (allowed is None or c in allowed) and c != a2a.DEBUG_CROWN]
     if not cats:
         return ""
     if trace is None:
@@ -484,6 +490,8 @@ def block(trace: Trace, state: State) -> str:
     changed since the last view."""
     lines = []
     for c in state.categories:
+        if c == a2a.DEBUG_CROWN:
+            continue  # logged at each tick (RT-6.38 step 9), no line of an event
         if c == a2a.DEBUG_CALLS:
             lines.append(_line(c, _take_calls()))
         elif c == a2a.DEBUG_PROPS:
