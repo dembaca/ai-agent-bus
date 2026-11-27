@@ -26,6 +26,9 @@
 # hiccup: exit 0. A chat integration must never be able to wedge a coding session.
 set -uo pipefail
 
+# The waiting NATS login line for the human (#198), filled below when a grant waits.
+LOGIN_LINE=""
+
 # shellcheck source=../bin/mm-agent-lib.sh
 CB_ENV_QUIET=1 CB_ENV_DEFER=1 source "$(cd "$(dirname "$0")/../bin" && pwd)/mm-agent-lib.sh"
 mm_read_hook_input
@@ -278,7 +281,6 @@ my_last_post && have_post=1
 # A NATS login approval that is waiting now reaches the terminal here too (#198): a
 # grant can start after the session-start hook ran. One line per login: the shown mark
 # goes out only after it was printed.
-LOGIN_LINE=""
 if mm_bus GET /v1/login && [[ "$CB_BUS_STATUS" == 200 ]]; then
   _link="$(jq -r '.link // empty | strings' <<<"$CB_BUS_BODY" 2>/dev/null)"
   _code="$(jq -r '.user_code // empty | strings' <<<"$CB_BUS_BODY" 2>/dev/null)"
