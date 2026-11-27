@@ -19,6 +19,7 @@ import (
 //	membership        <presence>.member.<channel>.<sender>   (an agent's channel, apart from the crown)
 //	ask record        <presence>.ask.<home>.<sender>         (its open asks, one record, only in its home; RT-6.43)
 //	stats line        <stats>.<sender>                       (a part of its STATS line, stream STATS; RT-6.43)
+//	request           <req>.<kind>.<agent>                    (history, file or header; never kept; ADR-014 phase 5)
 //	reading           deliver.<agent>.<...>, only from push consumers the login
 //	                  service creates (ack none, no flow control, subscribed by
 //	                  their literal deliver subject)
@@ -44,6 +45,7 @@ type Subjects struct {
 	Prefix   string // subject prefix, a setting (ADR-014, point 2)
 	Presence string // presence and crown subject prefix, a setting like Prefix
 	Stats    string // STATS line subject prefix (CB_AUTH_STATS_PREFIX), a setting like Prefix
+	Req      string // request subjects <req>.<kind>.<agent> (CB_AUTH_REQ_PREFIX), a setting like Prefix
 }
 
 // token is a NATS subject token the bus uses: no wildcards, no dots, no
@@ -78,7 +80,8 @@ func checkToken(s string) error {
 // subjects, plus presence (under its owner), memberships in every granted channel and crown
 // claims only in its home (the hello's Home, when it is granted): a guest could otherwise
 // claim the crown of a channel it only visits and block that home (RT-6.38); its one ask
-// record, in that home alone, and its STATS line (RT-6.43); subscribe only to its own
+// record, in that home alone, its STATS line (RT-6.43) and its requests, which the
+// bridge answers on deliver (ADR-014 phase 5); subscribe only to its own
 // deliver subjects. Nothing else.
 func (s Subjects) permissions(agent, owner, home string, channels []string) jwt.Permissions {
 	var p jwt.Permissions
@@ -93,6 +96,7 @@ func (s Subjects) permissions(agent, owner, home string, channels []string) jwt.
 	p.Pub.Allow.Add(s.Prefix + ".dm.*." + agent)
 	p.Pub.Allow.Add(s.Presence + "." + ownerToken(owner) + "." + agent)
 	p.Pub.Allow.Add(s.Stats + "." + agent)
+	p.Pub.Allow.Add(s.Req + ".*." + agent)
 	p.Sub.Allow.Add(DeliverPrefix + "." + agent + ".>")
 	return p
 }
