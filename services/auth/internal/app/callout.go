@@ -26,6 +26,7 @@ import (
 	"github.com/dembaca/ai-agent-bus/services/auth/internal/consumers"
 	"github.com/dembaca/ai-agent-bus/services/auth/internal/directory"
 	"github.com/dembaca/ai-agent-bus/services/auth/internal/envname"
+	"github.com/dembaca/ai-agent-bus/services/auth/internal/keycloak"
 	"github.com/dembaca/ai-agent-bus/services/auth/internal/mattermost"
 	"github.com/dembaca/ai-agent-bus/services/auth/internal/theft"
 	"github.com/dembaca/ai-agent-bus/services/auth/internal/token"
@@ -81,7 +82,25 @@ type Settings struct {
 	// CB_MM_STATS_CHANNEL as the MCP server reads it: default agents-stats,
 	// off, none, 0, false or empty: no import).
 	StatsChannel string
+	// The approvers' refresh (RT-6.42 step 3, #266): off unless its own
+	// Keycloak client is set (CB_AUTH_APPROVER_REFRESH_CLIENT_ID, its secret
+	// in CB_AUTH_APPROVER_REFRESH_SECRET_FILE); every
+	// CB_AUTH_APPROVER_REFRESH_PERIOD (default 5 minutes) it renews the
+	// account records of the approvers' group (CB_AUTH_APPROVER_GROUP).
+	ApproverRefreshClientID   string
+	ApproverRefreshSecretFile string
+	ApproverRefreshPeriod     time.Duration
 }
+
+// The approvers' refresh period: its default and bounds. A record is valid
+// one period and callout.ApproverGrace from its run, so the longest stays
+// within the 15 minutes the MCP server lets a record's flag live
+// (ACCOUNT_MAX_SEC).
+const (
+	DefaultApproverRefreshPeriod = 5 * time.Minute
+	MinApproverRefreshPeriod     = time.Minute
+	MaxApproverRefreshPeriod     = 14 * time.Minute
+)
 
 // LoadSettings reads the callout's settings, by their CB_AUTH_ names with the
 // old AUTH_ names as a fallback (envname, docs/env-names.md). It reports false
@@ -225,8 +244,41 @@ func LoadSettings(env *envname.Env) (Settings, bool, error) {
 	if c := s.Callout.Console.ClientID; c != "" && (c == s.Token.ClientID || c == s.Token.Audience) {
 		return Settings{}, true, fmt.Errorf("%w: CB_AUTH_CONSOLE_CLIENT_ID must differ from the bus's client and audience", ErrConfig)
 	}
+	s.ApproverRefreshClientID = get("CB_AUTH_APPROVER_REFRESH_CLIENT_ID")
+	s.ApproverRefreshSecretFile = get("CB_AUTH_APPROVER_REFRESH_SECRET_FILE")
+	if err := approverRefreshSettings(&s, get("CB_AUTH_APPROVER_REFRESH_PERIOD")); err != nil {
+		return Settings{}, true, err
+	}
 	s.Callout = s.Callout.WithDefaults()
 	return s, true, nil
+}
+
+// approverRefreshSettings checks the approvers' refresh's settings and sets
+// its period. The client is its own: a confidential client with a service
+// account, never the bus's public one or the console's.
+func approverRefreshSettings(s *Settings, period string) error {
+	id, file := s.ApproverRefreshClientID, s.ApproverRefreshSecretFile
+	switch {
+	case (id == "") != (file == ""):
+		return fmt.Errorf("%w: CB_AUTH_APPROVER_REFRESH_CLIENT_ID and CB_AUTH_APPROVER_REFRESH_SECRET_FILE go together", ErrConfig)
+	case id == "" && period != "":
+		return fmt.Errorf("%w: CB_AUTH_APPROVER_REFRESH_PERIOD needs CB_AUTH_APPROVER_REFRESH_CLIENT_ID", ErrConfig)
+	case id == "":
+		return nil
+	case s.Token.ApproverGroup == "":
+		return fmt.Errorf("%w: CB_AUTH_APPROVER_REFRESH_CLIENT_ID needs CB_AUTH_APPROVER_GROUP", ErrConfig)
+	case id == s.Token.ClientID || id == s.Token.Audience || id == s.Callout.Console.ClientID:
+		return fmt.Errorf("%w: CB_AUTH_APPROVER_REFRESH_CLIENT_ID must differ from the bus's client, its audience and the console's client", ErrConfig)
+	}
+	s.ApproverRefreshPeriod = DefaultApproverRefreshPeriod
+	if period != "" {
+		d, err := time.ParseDuration(period)
+		if err != nil || d < MinApproverRefreshPeriod || d > MaxApproverRefreshPeriod {
+			return fmt.Errorf("%w: CB_AUTH_APPROVER_REFRESH_PERIOD: a duration from 1m to 14m, got %q", ErrConfig, period)
+		}
+		s.ApproverRefreshPeriod = d
+	}
+	return nil
 }
 
 // adminSettings checks the admin API's settings.
@@ -312,6 +364,16 @@ func RunCallout(ctx context.Context, s Settings, log *slog.Logger) error {
 	mmToken, err := secret(s.MattermostFile, "CB_AUTH_MM_TOKEN_FILE")
 	if err != nil {
 		return err
+	}
+	var approvers *keycloak.Group
+	if s.ApproverRefreshClientID != "" {
+		sec, err := secret(s.ApproverRefreshSecretFile, "CB_AUTH_APPROVER_REFRESH_SECRET_FILE")
+		if err != nil {
+			return err
+		}
+		if approvers, err = keycloak.New(s.Token.JWKSURL, s.ApproverRefreshClientID, sec, s.Token.ApproverGroup, nil); err != nil {
+			return fmt.Errorf("%w: the approvers' refresh: %v", ErrConfig, err)
+		}
 	}
 
 	startCtx, cancel := context.WithTimeout(ctx, 30*time.Second)
@@ -442,6 +504,20 @@ func RunCallout(ctx context.Context, s Settings, log *slog.Logger) error {
 		}
 	}
 	svc.SetConsumers(mgr)
+	// The approvers' records from Keycloak's group, without a login (RT-6.42
+	// step 3, #266): beside the logins, never inside one; it stops with the
+	// service.
+	if approvers != nil {
+		refreshed := make(chan struct{})
+		go func() {
+			defer close(refreshed)
+			svc.RefreshApprovers(runCtx, callout.ApproverRefresh{Group: approverGroup{approvers}, Chat: v,
+				Anchors: directory.Persons{Store: dir, Log: log}, Period: s.ApproverRefreshPeriod})
+		}()
+		defer func() { stop(); <-refreshed }()
+		log.Info("the approvers' refresh on", "client", s.ApproverRefreshClientID, "group", s.Token.ApproverGroup,
+			"period", s.ApproverRefreshPeriod.String())
+	}
 	log.Info("consumer management on", "bus", s.Callout.Subjects.Prefix, "presence", s.Callout.Subjects.Presence, "stats", s.Callout.Subjects.Stats)
 	log.Info("auth callout serving", "account", s.Callout.Account, "binding", s.Binding)
 	if adminErr != nil {
@@ -606,6 +682,21 @@ func metricsTick(ctx context.Context, mgr *consumers.Manager, log *slog.Logger,
 			}
 		}
 	}()
+}
+
+// approverGroup is the Keycloak group as the refresh reads it.
+type approverGroup struct{ g *keycloak.Group }
+
+func (a approverGroup) Members(ctx context.Context, max int) ([]callout.Approver, bool, error) {
+	ms, cut, err := a.g.Members(ctx, max)
+	if err != nil {
+		return nil, false, err
+	}
+	out := make([]callout.Approver, len(ms))
+	for i, m := range ms {
+		out[i] = callout.Approver{Sub: m.ID, Username: m.Username}
+	}
+	return out, cut, nil
 }
 
 // defaultStatsChannel is the MCP server's default stats channel.

@@ -160,6 +160,23 @@ func (v *Verifier) Verify(ctx context.Context, raw string) (Identity, error) {
 	}, nil
 }
 
+// BoundAccount is the chat account bound to the Keycloak identity `sub`
+// under the chat name username, checked as a login checks it (checkChat with
+// the name binding): the chat id of an active human account of exactly that
+// name, no guest, that logs in over OpenID Connect with that `sub`. It needs
+// no token: the login service's refresh of the approvers' account records
+// (RT-6.42 step 3) asks it for each member of the approvers' group. "" with
+// no error: the account logs in otherwise (a password account), so nothing
+// binds it to `sub`. Errors as a login gets them: ErrDirectory when the chat
+// could not be asked, the others when the name is not bound to `sub`.
+func (v *Verifier) BoundAccount(ctx context.Context, username, sub string) (string, error) {
+	if username == "" || sub == "" {
+		return "", ErrIdentity
+	}
+	_, chatID, err := v.checkChat(ctx, username, sub)
+	return chatID, err
+}
+
 // keyfunc demands a key id: without one, the JWT library would try every key
 // of the realm.
 func (v *Verifier) keyfunc(ctx context.Context) jwt.Keyfunc {

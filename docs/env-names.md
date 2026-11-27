@@ -420,13 +420,15 @@ name with `MM_` for `CB_`):
   `MM_RR_KEYS`, `MM_RR_KID`, `MM_RR_STATUS`, `MM_RR_VERSION`, `MM_RR_WHY`
   (the registrar's release record).
 
-### The login service and authd (47)
+### The login service and authd (50)
 
 All in `services/auth/`. Its binary `authd` runs the service; its directory
 commands read the two `AUTHD_` names and two of the service's names (noted).
 Besides the files a row lists, every name here appears in the service's
 rename table `internal/envname/envname.go`, which maps each new name to its
-old one. One row is not the service's own: `CB_MM_STATS_CHANNEL` is the MCP
+old one; the three names of the approvers' refresh (#266) are new since the
+rename and give their own name as the old one, as the bridge's
+`CB_BRIDGE_MM_BOT_KEEP` does. One row is not the service's own: `CB_MM_STATS_CHANNEL` is the MCP
 server's setting, listed with it above, which the login service reads by the
 same rule for its STATS import (RT-6.45).
 
@@ -438,6 +440,9 @@ same rule for its STATS import (RT-6.45).
 | `AUTH_ADMIN_TLS_KEY_FILE` | `CB_AUTH_ADMIN_TLS_KEY_FILE` | no | `internal/app/callout.go` | |
 | `AUTH_APPROVER_CLAIM` | `CB_AUTH_APPROVER_CLAIM` | no | `internal/app/callout.go` | |
 | `AUTH_APPROVER_GROUP` | `CB_AUTH_APPROVER_GROUP` | no | `internal/app/callout.go` | |
+| `CB_AUTH_APPROVER_REFRESH_CLIENT_ID` | `CB_AUTH_APPROVER_REFRESH_CLIENT_ID` | no | `internal/app/callout.go` | new with #266: no old spelling; the approvers' refresh's own Keycloak client (RT-6.42 step 3), unset: no refresh |
+| `CB_AUTH_APPROVER_REFRESH_PERIOD` | `CB_AUTH_APPROVER_REFRESH_PERIOD` | no | `internal/app/callout.go` | new with #266: no old spelling; the time between two runs, default `5m`, `1m` to `14m` |
+| `CB_AUTH_APPROVER_REFRESH_SECRET_FILE` | `CB_AUTH_APPROVER_REFRESH_SECRET_FILE` | no | `internal/app/callout.go` | new with #266: no old spelling; the file with that client's secret, required with the client |
 | `AUTH_BRAKE_FILE` | `CB_AUTH_BRAKE_FILE` | no | `internal/app/callout.go` | |
 | `AUTH_CONSOLE_CLIENT_ID` | `CB_AUTH_CONSOLE_CLIENT_ID` | no | `internal/app/callout.go`, `internal/callout/person.go` | |
 | `AUTH_CONSOLE_METRICS` | `CB_AUTH_CONSOLE_METRICS` | no | `internal/app/callout.go`, `internal/callout/person.go`; the console's docs | the unattended metrics page's consumers (#158, RT-6.43 step 10): `true` or `false` |

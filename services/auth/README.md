@@ -21,6 +21,7 @@ services/auth/
   internal/config/    configuration from the environment, validated
   internal/httpserver/ the HTTP server and its health endpoint
   internal/token/     the check of the Keycloak access token
+  internal/keycloak/  the approvers' group read from Keycloak's admin API (the approvers' refresh)
   internal/callout/   the auth callout: request, nkey proof, channels, permissions, brake
   internal/mattermost/ the chat lookups: the account behind a name, channel membership
   internal/app/       the callout's settings and wiring
@@ -100,6 +101,7 @@ cannot be used end to end until both change.
 | `CB_AUTH_BRAKE_FILE` | unset | the emergency brake (below) |
 | `CB_AUTH_KEYCLOAK_ISSUER`, `CB_AUTH_KEYCLOAK_JWKS_URL`, `CB_AUTH_KEYCLOAK_CLIENT_ID` | — | the realm and the bus's client |
 | `CB_AUTH_KEYCLOAK_AUDIENCE`, `CB_AUTH_APPROVER_GROUP`, `CB_AUTH_APPROVER_CLAIM`, `CB_AUTH_TOKEN_LEEWAY` | client id, unset, `groups`, `30s` | see the token check |
+| `CB_AUTH_APPROVER_REFRESH_CLIENT_ID`, `CB_AUTH_APPROVER_REFRESH_SECRET_FILE`, `CB_AUTH_APPROVER_REFRESH_PERIOD` | unset, —, `5m` | the approvers' refresh (below, RT-6.42 step 3, #266): its own Keycloak client (unset: no refresh; it must differ from the bus's client, its audience and the console's client, and needs `CB_AUTH_APPROVER_GROUP`), the file with that client's secret (required with it), and the time between two runs (`1m` to `14m`) |
 | `CB_AUTH_CONSOLE_CLIENT_ID`, `CB_AUTH_OPERATOR_GROUP`, `CB_AUTH_PERSON_PREFIX`, `CB_AUTH_PERSON_MAX_LOGINS` | unset, —, `person-`, `8` | the operator console's path (RT-6.43): the console's own Keycloak client (unset: no person's credential is issued; it must differ from the bus's client and audience), the group a token must list at every issue (required with the client, a full path such as `/ops`: the group mapper's full path on), and the start of a person's name (letters, digits, `-` and `_`, ending in `-`; it and `CB_AUTH_NAME_PREFIX` may not start each other), and how many logins one person holds consumers for at once (1 to 64) |
 | `CB_AUTH_NAME_BINDING` | `open` | `open` or `openid-only` (see the name binding) |
 | `CB_AUTH_MM_URL`, `CB_AUTH_MM_TEAM` | — | the chat (https; http only on a loopback host) and the team of the bus's channels |
@@ -326,6 +328,32 @@ signed by the account key, valid 15 minutes from the check:
   A store for the name binding on first login will be the first state.
 - **Tags:** `owner:<owner>`, `host-nkey:<nkey>`, and `approver` for a member
   of the approvers' group.
+- **The approvers' refresh** (RT-6.42 step 3, #266; `internal/callout/refresh.go`,
+  `internal/keycloak`): off until `CB_AUTH_APPROVER_REFRESH_CLIENT_ID` is set. At
+  the start and every `CB_AUTH_APPROVER_REFRESH_PERIOD` it reads the enabled
+  members of `CB_AUTH_APPROVER_GROUP` from Keycloak's admin API, never from
+  Mattermost: it logs that client in (client credentials grant, a new token
+  each run), finds the group by its path (a name without the leading `/` is a
+  top-level group) and lists at most 256 members (a larger group is cut and
+  logged). The token and admin URLs come from `CB_AUTH_KEYCLOAK_JWKS_URL`,
+  which must end in `/realms/<realm>/protocol/openid-connect/certs`; https, or
+  http on a loopback host; no redirect is followed. For each member the
+  Mattermost account of that username is checked as at a login (an active
+  human, no guest, `auth_service` `openid` with `auth_data` equal to the
+  member's Keycloak id), and the anchor is the one the directory holds; with
+  both it writes the account record a login writes (same subject, format and
+  token guard, `token_iat` the run's time), with `approver` `true` and valid
+  one period and a minute, so the flag lasts from run to run. A member who
+  left the group (or was disabled) since the run before gets the record with
+  `approver` `false`, while the same account is still bound to them; an
+  account no longer bound gets nothing, and its record runs out. A run that
+  cannot read Keycloak writes nothing and is logged; one member's failed
+  lookup or write is that member's alone; both are tried again next period,
+  and a panic in a run is caught. The client in Keycloak: confidential, the
+  service account on, every other flow off, and as its only right reading that
+  one group and its members (fine-grained admin permissions; realm-management's
+  `view-users` would read every user). It needs no NATS right beyond the
+  account records' publish the JetStream user already has.
 - **Permissions,** deny by default, the one model of ADR-014 point 16
   (`internal/callout/perms.go` names every subject in one table, to be aligned
   with the protocol description once it is pinned). Publish only with its own

@@ -5,6 +5,28 @@ before 0.5.0 are described in the git history.
 
 ## Unreleased
 
+### Added
+
+- **The login service renews the approvers' account records** (#266, part of
+  #244 and of #268's list before plan B piece 4 goes on; RT-6.42 step 3). With
+  piece 4 on, a Mattermost account approves only with a fresh record of its own
+  that says `approver`, and that record was written only at a login, with the
+  flag at most 15 minutes, so a person who only uses Mattermost never approved.
+  Now, with its own Keycloak client set (`CB_AUTH_APPROVER_REFRESH_CLIENT_ID`,
+  its secret in `CB_AUTH_APPROVER_REFRESH_SECRET_FILE`), the login service reads
+  the approvers' group (`CB_AUTH_APPROVER_GROUP`) from Keycloak's admin API at
+  its start and every `CB_AUTH_APPROVER_REFRESH_PERIOD` (default 5 minutes, 1 to
+  14), and writes for each enabled member whose Mattermost account is bound to
+  their Keycloak identity (an OpenID login, checked as at a login) and whose
+  anchor the directory holds the account record with `approver` `true`, valid
+  one period and a minute: same subject, format, token guard and NATS rights as
+  a login's record. The flag never comes from Mattermost. Who leaves the group
+  gets the record without the flag at the next run; an unbound account gets
+  nothing and its record runs out. At most 256 members a run; Keycloak or
+  Mattermost down is logged and tried again next period, never a crash. Off by
+  default: the client is a new Keycloak right (reading one group), for the
+  owner to set up. The three names are new and in `docs/env-names.md`.
+
 ### Fixed
 
 - **A tool's HTTP failure names its status** (#263, RT-6.11). An `httpx.HTTPStatusError`

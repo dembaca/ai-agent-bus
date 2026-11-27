@@ -4303,8 +4303,14 @@ reads yet (RT-6.39 step 5).
        account bound to the Keycloak identity (an OpenID login) and the
        approvers' group, else nothing they write on Mattermost approves;
        since that flag lives at most 15 minutes after a login, the owner
-       decides on a refresh path before the switch goes on in a real
-       home; what the session did not see come is judged by that record
+       decided on 2026-11-27 for a refresh path in the login service,
+       built with #266 (RT-6.42 step 3): every period it writes each
+       bound member of the approvers' group the record with the flag,
+       read from Keycloak's group, never from Mattermost; it needs a
+       Keycloak client of its own that reads that one group, a smaller
+       right than the admin right decided against on 2026-11-26 for the
+       stolen-token check, and stays off until the owner sets that
+       client up, which the switch needs in a real home (#268); what the session did not see come is judged by that record
        at the read; without a fresh record of its own the session is
        closed (the gate on, nobody a peer), whatever the host's variables
        say;

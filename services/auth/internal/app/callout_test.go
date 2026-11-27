@@ -230,6 +230,56 @@ func TestTheConsolesSettings(t *testing.T) {
 	}
 }
 
+// The approvers' refresh (RT-6.42 step 3, #266) is off unless its own client
+// is set; the client, its secret file and the group go together, the client is
+// none of the bus's or the console's, and the period lies from 1m to 14m.
+func TestTheApproverRefreshSettings(t *testing.T) {
+	s, _, err := LoadSettings(env(nil))
+	if err != nil || s.ApproverRefreshClientID != "" || s.ApproverRefreshPeriod != 0 {
+		t.Fatalf("default %q %v, %v", s.ApproverRefreshClientID, s.ApproverRefreshPeriod, err)
+	}
+	on := map[string]string{"CB_AUTH_APPROVER_REFRESH_CLIENT_ID": "bus-approver-refresh",
+		"CB_AUTH_APPROVER_REFRESH_SECRET_FILE": "/run/secrets/kc", "CB_AUTH_APPROVER_GROUP": "/bus-approvers"}
+	with := func(over map[string]string) map[string]string {
+		m := map[string]string{}
+		for k, v := range on {
+			m[k] = v
+		}
+		for k, v := range over {
+			if v == "-" {
+				delete(m, k)
+			} else {
+				m[k] = v
+			}
+		}
+		return m
+	}
+	s, _, err = LoadSettings(env(on))
+	if err != nil || s.ApproverRefreshClientID != "bus-approver-refresh" || s.ApproverRefreshPeriod != DefaultApproverRefreshPeriod || DefaultApproverRefreshPeriod != 5*time.Minute {
+		t.Fatalf("on %q %v, %v", s.ApproverRefreshClientID, s.ApproverRefreshPeriod, err)
+	}
+	s, _, err = LoadSettings(env(with(map[string]string{"CB_AUTH_APPROVER_REFRESH_PERIOD": "2m"})))
+	if err != nil || s.ApproverRefreshPeriod != 2*time.Minute {
+		t.Fatalf("period %v, %v", s.ApproverRefreshPeriod, err)
+	}
+	for name, over := range map[string]map[string]string{
+		"client without the secret file": with(map[string]string{"CB_AUTH_APPROVER_REFRESH_SECRET_FILE": "-"}),
+		"secret file without the client": with(map[string]string{"CB_AUTH_APPROVER_REFRESH_CLIENT_ID": "-"}),
+		"period without the client":      {"CB_AUTH_APPROVER_REFRESH_PERIOD": "2m"},
+		"client without the group":       with(map[string]string{"CB_AUTH_APPROVER_GROUP": "-"}),
+		"the bus's client":               with(map[string]string{"CB_AUTH_APPROVER_REFRESH_CLIENT_ID": "agent-bus"}),
+		"the console's client": with(map[string]string{"CB_AUTH_CONSOLE_CLIENT_ID": "bus-console",
+			"CB_AUTH_OPERATOR_GROUP": "/ops", "CB_AUTH_APPROVER_REFRESH_CLIENT_ID": "bus-console"}),
+		"period 30s":  with(map[string]string{"CB_AUTH_APPROVER_REFRESH_PERIOD": "30s"}),
+		"period 15m":  with(map[string]string{"CB_AUTH_APPROVER_REFRESH_PERIOD": "15m"}),
+		"period five": with(map[string]string{"CB_AUTH_APPROVER_REFRESH_PERIOD": "five"}),
+	} {
+		if _, _, err := LoadSettings(env(over)); !errors.Is(err, ErrConfig) {
+			t.Errorf("%s: %v", name, err)
+		}
+	}
+}
+
 // The console's token check refuses the bus's client and the bus's audience
 // in `aud`; the logins per person are bounded (RT-6.43).
 func TestTheConsolesTokenCheckRefusesBothOfTheBus(t *testing.T) {
