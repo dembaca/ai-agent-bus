@@ -61,8 +61,9 @@ type handler struct {
 	mux      *http.ServeMux
 
 	statsMu sync.Mutex // one STATS import at a time
-	// statsDone: every post created at or before it was gone through by a
-	// complete STATS import of this process (RT-6.45); zero: none yet.
+	// statsDone: the create_at of the newest post a complete STATS import of
+	// this process went through, every older post with it (RT-6.45); zero:
+	// none yet. Mattermost's time, never this host's clock.
 	statsDone time.Time
 
 	mu     sync.Mutex

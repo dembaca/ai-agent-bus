@@ -124,19 +124,22 @@ type StatsReport struct {
 	// (once more after ConfirmWait when fewer). It can still be lower when
 	// STATS is slow to show the last lines; the next run publishes what is
 	// missing.
-	Confirmed       int    `json:"confirmed"`
-	NotStats        int    `json:"not_stats"`
-	SkippedInStats  int    `json:"skipped_in_stats"` // an agent published the same (sid, part) on STATS
-	SkippedImported int    `json:"skipped_imported"` // imported already, by an earlier run or this one
-	SkippedInvalid  int    `json:"skipped_invalid"`
-	SkippedTooBig   int    `json:"skipped_too_big"`
-	SkippedName     int    `json:"skipped_name"`
-	SkippedRecent   int    `json:"skipped_recent"`
-	SkippedOverCap  int    `json:"skipped_over_cap"`
-	Truncated       string `json:"truncated,omitempty"`    // older posts were not read: "lines" or "room"
-	KnownBefore     string `json:"known_before,omitempty"` // older posts were gone through by an earlier complete run and not read again
-	Oldest          string `json:"oldest,omitempty"`       // original time of the oldest published line
-	Newest          string `json:"newest,omitempty"`
+	Confirmed       int `json:"confirmed"`
+	NotStats        int `json:"not_stats"`
+	SkippedInStats  int `json:"skipped_in_stats"` // an agent published the same (sid, part) on STATS
+	SkippedImported int `json:"skipped_imported"` // imported already, by an earlier run or this one
+	SkippedInvalid  int `json:"skipped_invalid"`
+	SkippedTooBig   int `json:"skipped_too_big"`
+	SkippedName     int `json:"skipped_name"`
+	SkippedRecent   int `json:"skipped_recent"`
+	SkippedOverCap  int `json:"skipped_over_cap"`
+	// SkippedRoom: held to publish, but STATS had less room right before
+	// publishing than when the run began; the next run takes them.
+	SkippedRoom int    `json:"skipped_room"`
+	Truncated   string `json:"truncated,omitempty"`    // older posts were not read: "lines" or "room"
+	KnownBefore string `json:"known_before,omitempty"` // older posts were gone through by an earlier complete run and not read again
+	Oldest      string `json:"oldest,omitempty"`       // original time of the oldest published line
+	Newest      string `json:"newest,omitempty"`
 }
 
 type statsKey struct {
@@ -226,10 +229,11 @@ func readStats(ctx context.Context, store StatsStore) (inStats, error) {
 	return h, err
 }
 
-// importStats runs the import (RT-6.45) at the time now. known is the time
-// up to which an earlier complete run of this process went through every
-// post (zero: none); done is the same for this run, zero when it was cut
-// short (truncated or failed).
+// importStats runs the import (RT-6.45) at the time now (this host's clock,
+// for the 2-minute skip only). known is the create_at of the newest post an
+// earlier complete run of this process went through, every older one with
+// it (zero: none); done is the same for this run, zero when it was cut short
+// (truncated, failed, not all confirmed) or went through no post.
 func importStats(ctx context.Context, si *StatsImport, now, known time.Time) (rep StatsReport, done time.Time, err error) {
 	minAge, maxLines, maxHeld, wait := si.MinAge, si.MaxLines, si.MaxHeld, si.ConfirmWait
 	if minAge <= 0 {
@@ -260,19 +264,24 @@ func importStats(ctx context.Context, si *StatsImport, now, known time.Time) (re
 	// The channel, newest first, one page at a time: only the lines to
 	// publish are held, at most statsPerName per author (the newest; the
 	// ones already imported count), at most maxLines lines and limit bytes.
-	// Once a post is as old as what an earlier complete run went through,
-	// so are all after it: the reading stops there. Its newer posts were
+	// Once a post is older than the newest post an earlier complete run went
+	// through, so are all after it: the reading stops there. Both are
+	// Mattermost's create_at, never this host's clock. Its newer posts were
 	// all read, so the newest per author are counted as before.
 	var todo []candidate
 	perUser := map[string]int{}
 	var used int64
-	cutoff := now.Add(-minAge)
+	cutoff := now.Add(-minAge) // the 2-minute skip: this host's clock against create_at
+	var through time.Time      // the newest post at or before cutoff: every older one is gone through
 	err = si.Source.EachChannelPost(ctx, si.Channel, time.Time{}, func(p mattermost.Post) error {
-		if !known.IsZero() && !p.Created.After(known) {
+		if !known.IsZero() && p.Created.Before(known) {
 			rep.KnownBefore = known.UTC().Format(time.RFC3339)
 			return errEnough
 		}
 		rep.Read++
+		if !p.Created.After(cutoff) && p.Created.After(through) {
+			through = p.Created
+		}
 		if !strings.HasPrefix(p.Message, statsPrefix) {
 			rep.NotStats++
 			return nil
@@ -339,6 +348,7 @@ func importStats(ctx context.Context, si *StatsImport, now, known time.Time) (re
 	for used > room && len(todo) > 0 {
 		used -= todo[len(todo)-1].size()
 		todo = todo[:len(todo)-1]
+		rep.SkippedRoom++
 		rep.Truncated = truncatedRoom
 	}
 	sort.SliceStable(todo, func(i, j int) bool { // oldest first
@@ -411,7 +421,7 @@ func importStats(ctx context.Context, si *StatsImport, now, known time.Time) (re
 		}
 	}
 	if rep.Truncated == "" && rep.Confirmed == rep.Published {
-		done = cutoff
+		done = through
 	}
 	return rep, done, nil
 }
@@ -462,8 +472,8 @@ func (h *handler) runStatsImport(w http.ResponseWriter, r *http.Request, id toke
 		fail(w, http.StatusBadGateway, fmt.Sprintf("the stats import stopped after %d lines; run it again, it skips what is there", rep.Published))
 		return
 	}
-	// A run that went through everything to its cutoff lets the next one
-	// stop there; one cut short leaves the mark as it was, so the next run
+	// A run that went through every post up to its newest one older than two
+	// minutes lets the next one stop at posts older than that; one cut short leaves the mark as it was, so the next run
 	// reads on past it.
 	if !done.IsZero() {
 		h.statsDone = done

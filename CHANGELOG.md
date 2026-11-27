@@ -43,11 +43,13 @@ before 0.5.0 are described in the git history.
 ### Changed
 
 - **The STATS import: the low points of its review** (#219, RT-6.45). A rerun
-  of the same login service stops reading the stats channel where its last
-  complete run went through every post (`known_before` in the report); a run
-  cut short, or a restart, reads on past that point. The import reads
-  `STATS`'s room again right before publishing and drops the oldest held lines
-  until the rest fit. When the re-read after a run finds fewer lines than it
+  of the same login service stops reading the stats channel at the first post
+  strictly older than the newest post its last complete run went through
+  (`known_before` in the report: Mattermost's time, never the service's
+  clock); a run cut short, or a restart, reads on past that point. Old posts
+  edited later are not read again. The import reads `STATS`'s room again
+  right before publishing and drops the oldest held lines until the rest fit,
+  counted as `skipped_room`, so every post read lands in one counter. When the re-read after a run finds fewer lines than it
   published, it reads once more after half a second; `confirmed` can still
   be lower, and the next run publishes what is missing. The report counts a
   line already in `STATS` from an agent (`skipped_in_stats`) apart from one

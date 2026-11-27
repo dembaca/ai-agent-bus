@@ -948,6 +948,7 @@ func (c *cli) printStatsImport(r reply) error {
 		SkippedName     int    `json:"skipped_name"`
 		SkippedRecent   int    `json:"skipped_recent"`
 		SkippedOverCap  int    `json:"skipped_over_cap"`
+		SkippedRoom     int    `json:"skipped_room"`
 		Oldest          string `json:"oldest"`
 		Newest          string `json:"newest"`
 	}
@@ -956,8 +957,8 @@ func (c *cli) printStatsImport(r reply) error {
 	}
 	fmt.Fprintf(c.out, "posts read %d, lines published %d (%d of them from before 0.91.0, without sid; %d found in STATS after the run), posts without a STATS line %d\n",
 		rep.Read, rep.Published, rep.WithoutSid, rep.Confirmed, rep.NotStats)
-	fmt.Fprintf(c.out, "skipped: already in STATS from an agent %d, already imported %d, not a valid line %d, too big %d, no agent name %d, too recent %d, over the cap per name %d\n",
-		rep.SkippedInStats, rep.SkippedImported, rep.SkippedInvalid, rep.SkippedTooBig, rep.SkippedName, rep.SkippedRecent, rep.SkippedOverCap)
+	fmt.Fprintf(c.out, "skipped: already in STATS from an agent %d, already imported %d, not a valid line %d, too big %d, no agent name %d, too recent %d, over the cap per name %d, no room left when publishing %d\n",
+		rep.SkippedInStats, rep.SkippedImported, rep.SkippedInvalid, rep.SkippedTooBig, rep.SkippedName, rep.SkippedRecent, rep.SkippedOverCap, rep.SkippedRoom)
 	if rep.Oldest != "" {
 		fmt.Fprintf(c.out, "published lines from %s to %s\n", clean(rep.Oldest), clean(rep.Newest))
 	}

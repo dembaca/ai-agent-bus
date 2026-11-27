@@ -5,6 +5,7 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
+	"net/http/httptest"
 	"sort"
 	"strings"
 	"testing"
@@ -129,6 +130,11 @@ func runStats(t *testing.T, e *env, tok string, code int) StatsReport {
 		if err := json.Unmarshal([]byte(body), &rep); err != nil {
 			t.Fatal(err)
 		}
+		// RT-6.45: every post read lands in exactly one counter
+		if sum := rep.Published + rep.NotStats + rep.SkippedInStats + rep.SkippedImported + rep.SkippedInvalid +
+			rep.SkippedTooBig + rep.SkippedName + rep.SkippedRecent + rep.SkippedOverCap + rep.SkippedRoom; sum != rep.Read {
+			t.Fatalf("read %d, but the counters add up to %d: %+v", rep.Read, sum, rep)
+		}
 	}
 	return rep
 }
@@ -212,7 +218,7 @@ func TestStatsImportMarksDedupesAndDrops(t *testing.T) {
 	if again.Published != 0 || again.SkippedInStats != 1 || again.SkippedImported != 6 || again.Oldest != "" || again.KnownBefore != "" {
 		t.Fatalf("second run: %+v", again)
 	}
-	if same := runStats(t, e, e.admin, 200); same.Read != 1 || same.SkippedRecent != 1 || same.Published != 0 || same.KnownBefore == "" {
+	if same := runStats(t, e, e.admin, 200); same.Read != 2 || same.SkippedRecent != 1 || same.SkippedImported != 1 || same.Published != 0 || same.KnownBefore == "" {
 		t.Fatalf("a run of the same process: %+v", same)
 	}
 	if n := len(lines(t, s)); n != 5 {
@@ -402,7 +408,7 @@ func TestARerunStopsWhereTheLastCompleteRunWent(t *testing.T) {
 	time.Sleep(5 * time.Millisecond)
 	chat.given = 0
 	rep := runStats(t, e, e.admin, 200)
-	if rep.Published != 1 || rep.Read != 1 || rep.KnownBefore == "" || chat.given != 2 {
+	if rep.Published != 1 || rep.Read != 2 || rep.SkippedImported != 1 || rep.KnownBefore == "" || chat.given != 3 { // the newest of the last run is read again: only strictly older posts stop it
 		t.Fatalf("after a complete run: %+v, %d posts handed out", rep, chat.given)
 	}
 }
@@ -449,8 +455,39 @@ func TestTheRoomIsReadAgainBeforePublishing(t *testing.T) {
 	size := int64(len(`{"v":"0.85.0","n":0}`) + lineOverhead)
 	e := statsSetup(t, chat, &fickle{StatsStore: s, rooms: []int64{1 << 20, 3*size + 1}})
 	rep := runStats(t, e, e.admin, 200)
-	if rep.Published != 3 || rep.Truncated != "room" || rep.Oldest != t0.Add(3*time.Minute).Format(time.RFC3339) {
+	// all six were read, three published, the three oldest counted as dropped for room
+	if rep.Read != 6 || rep.Published != 3 || rep.SkippedRoom != 3 || rep.Truncated != "room" || rep.Oldest != t0.Add(3*time.Minute).Format(time.RFC3339) {
 		t.Fatalf("%+v", rep)
+	}
+}
+
+// The rerun mark is Mattermost's time, never this host's: the create_at of
+// the newest post a complete run went through. With this host's clock an
+// hour ahead, a post made after that run is still read by the next one
+// (RT-6.45); the 2-minute skip alone goes by this host's clock.
+func TestTheRerunMarkIsMattermostsTime(t *testing.T) {
+	s, _ := statsLab(t)
+	chat := &statsChat{users: map[string]mattermost.User{"ua": bot("ua", "agent-a")}}
+	for i := range 3 {
+		chat.posts = append(chat.posts, post(fmt.Sprint("p", i), "ua", i, fmt.Sprintf(`STATS {"v":"0.85.0","n":%d}`, i)))
+	}
+	realm := testrealm.New(t)
+	skewed := func() time.Time { return time.Now().Add(time.Hour) }
+	h, err := New(Config{AdminGroup: testrealm.Group, Burst: 100, Now: skewed,
+		Stats: &StatsImport{Channel: "agents-stats", Source: chat, Store: s}}, realm.Verifier(testrealm.NewChat("alice")), newStore(t), &fakeMM{})
+	if err != nil {
+		t.Fatal(err)
+	}
+	srv := httptest.NewServer(h)
+	t.Cleanup(srv.Close)
+	e := &env{realm: realm, srv: srv, admin: realm.Token("alice", nil)}
+	if rep := runStats(t, e, e.admin, 200); rep.Published != 3 {
+		t.Fatalf("first run: %+v", rep)
+	}
+	// a post made now, after the first run: an hour before this host's clock
+	chat.posts = append(chat.posts, mattermost.Post{ID: "p3", UserID: "ua", Created: time.Now(), Message: `STATS {"v":"0.85.0","n":3}`})
+	if rep := runStats(t, e, e.admin, 200); rep.Published != 1 || rep.Read != 2 || rep.KnownBefore != t0.Add(2*time.Minute).Format(time.RFC3339) {
+		t.Fatalf("the post made after the first run: %+v", rep)
 	}
 }
 
