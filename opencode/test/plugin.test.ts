@@ -1213,3 +1213,19 @@ test("RT-6.34: a grant that starts after the session start reaches the session a
   assert.equal(rest().filter((p) => p === "GET /v1/login").length, 0, "no separate login read")
   answers["/v1/turn-end"] = undefined
 })
+
+test("RT-6.34: a block carries the login line in its banner and marks it shown (#230)", async () => {
+  const fx = await start()
+  await fx.prompt()
+  calls = []
+  const line = "Bus login: open https://kc.example/device?user_code=ABCD-EFGH — the page shows the code " +
+    "ABCD-EFGH. Approve only if it matches; the code is good for 10 min."
+  answers["/v1/turn-end"] = { action: "signoff", reason: "Sign off before idle",
+                              banner: "Signing off on Mattermost", login: line }
+  await fx.ended()
+  assert.equal(fx.sent.length, 1)
+  assert.equal(fx.sent[0].text, "Sign off before idle")
+  assert.equal(fx.sent[0].description, "Signing off on Mattermost\n" + line)
+  await until(() => calls.some((c) => c.method === "POST" && c.path === "/v1/login/shown"), "the shown mark")
+  answers["/v1/turn-end"] = undefined
+})

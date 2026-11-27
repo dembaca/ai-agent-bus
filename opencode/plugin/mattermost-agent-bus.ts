@@ -237,7 +237,13 @@ export function hookApi(env: Env, directory: string, missing: () => void = () =>
       })
       // Only the host's refusal of another session, not a route's own 403.
       if (res.status === 403 && (await res.json().catch(() => null))?.client_session === "refused") client.forbidden?.()
-      if (res.status !== 200) return null
+      if (res.status !== 200) {
+        // A turn end without a bus session still carries the login line (#198, plan B):
+        // the caller reads `login` and treats `error` as the failed check it is.
+        if (res.status === 503 && path.startsWith("/v1/turn-end"))
+          return (await res.json().catch(() => null)) as Json | null
+        return null
+      }
       return (await res.json()) as Json
     } catch {
       return null
@@ -817,12 +823,12 @@ export async function setup(ctx: Plugin.Context) {
         }
         t.busy = false
       }
-      if (r) await stat("turn_end")
+      if (r && !r.error) await stat("turn_end")
       await showLogin(id, login) // the line alone when nothing blocked the turn
       // A window the server opened (RT-6.2 step 3) says its gates hold: the
       // session is reachable and the long poll runs, with no end by time
       // (ADR-009). None (a BYE, no project channel, the listener off): idle.
-      if (!r) {
+      if (!r || r.error) {
         // The check failed (timeout, 503): nothing is known, so what held stays:
         // a session that was listening keeps listening, reachable while it lives
         // (the status says so, not "working" from the turn).

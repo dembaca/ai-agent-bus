@@ -472,7 +472,13 @@ class HookAPI:
         except Exception:  # noqa: BLE001 — no bus configured
             client = None
         if client is None or not client.token:
-            return 503, {"error": "no bus session"}
+            # No chat to check the turn against, but a login may wait: its line goes
+            # with the 503, so a session without a bot (plan B) does not lose the
+            # approval (review of #230).
+            answer: dict[str, Any] = {"error": "no bus session"}
+            if route is turn_end and (line := login_line()):
+                answer["login"] = line
+            return 503, answer
         try:
             run = (self._long_poll(client, query, payload, reader) if route is wake and "wait" in query
                    else self._run(route, client, query, payload))
@@ -1167,7 +1173,7 @@ def login_line() -> str:
 def _line_text(link: str, code: str, expires_in: int) -> str:
     """The one wording of the terminal line (#198), for the turn end and for the
     start hooks that ask `/v1/login`."""
-    minutes = max(1, (expires_in + 59) // 60)
+    minutes = max(1, expires_in // 60)
     return (f"Bus login: open {link} — the page shows the code {code}. "
             f"Approve only if it matches; the code is good for {minutes} min.")
 

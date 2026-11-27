@@ -873,6 +873,23 @@ async def test_the_terminal_login_line_is_one_per_login(api, monkeypatch):
     assert (await h.get("/v1/login")).json() == {}  # the line went out once
 
 
+async def test_a_turn_end_without_a_bus_session_still_carries_the_login_line(api, monkeypatch):
+    """#198, plan B: a session with no bot gets 503 for its turn's end, and the
+    waiting approval's line rides with it instead of being lost."""
+    from mattermost_ai_agent_bus import login as login_mod
+
+    class Running:
+        def pending_line(self):
+            return ("https://kc.example/device?user_code=ABCD-EFGH", "ABCD-EFGH", 600)
+
+    monkeypatch.setattr(login_mod, "current", lambda: Running())
+    _, h = await api(FakeClient(token=""))
+    got = await h.get("/v1/turn-end?drains=0&signoff_asked=1&push=1&unanswered=1")
+    assert got.status_code == 503
+    assert got.json()["error"] == "no bus session"
+    assert "ABCD-EFGH" in got.json()["login"] and "10 min" in got.json()["login"]
+
+
 async def test_the_turn_end_carries_the_waiting_login_line(api, monkeypatch):
     """#198, RT-6.20: one call per turn end — the answer carries the line a grant that
     started after the session start needs, with the time left, and nothing once the

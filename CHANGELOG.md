@@ -153,7 +153,8 @@ before 0.5.0 are described in the git history.
   Claude Code's Stop hook asks `GET /v1/login` there. The line says how many
   minutes the code has left, not the grant's original span, and ends with the
   approval. A keyless corral session gets the line from its relay, on the link
-  the host built itself.
+  the host built itself. A session with no bot yet (503 on its turn's end) still
+  gets the line with that answer, so plan B does not lose the approval.
 
 ### Fixed
 

@@ -4043,8 +4043,9 @@ Nothing of it is built.
 - **Decided: the login approval only at this machine once no agent has a
   bot.** Decided 2026-11-27 by the owner (ask
   `cobsyafi9fdq784jupn9no74yh`): it reaches the human through the
-  browser the MCP server opens and the address and code in its MCP log,
-  with no DM and no ask in the home. Today the MCP server, before it has
+  browser the MCP server opens, the address and code in its MCP log, and
+  the agent's own terminal, once per login, through its harness's hooks
+  (#198, RT-6.34 step 4), with no DM and no ask in the home. Today the MCP server, before it has
   NATS credentials, sends the approval by DM under the agent's bot,
   posts an ask in the home that points to the DM, and settles asks of
   earlier approvals at its start (`login_notice.py`, RT-6.34); the DM,
