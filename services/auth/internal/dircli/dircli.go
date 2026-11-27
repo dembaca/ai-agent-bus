@@ -981,13 +981,17 @@ func (c *cli) printStatsImport(r reply) error {
 		fmt.Fprintf(c.out, "posts up to %s were gone through by an earlier complete run of the service "+
 			"and not read again (--all reads them)\n", clean(rep.KnownBefore))
 	}
+	again := "run it again"
+	if rep.All {
+		again = "run it again with --all"
+	}
 	switch rep.Truncated {
 	case "":
 	case "room":
 		fmt.Fprintln(c.out, "older lines were not published: STATS has no more room "+
-			"(it would drop its oldest lines); make room, then run it again")
+			"(it would drop its oldest lines); make room, then "+again)
 	default:
-		fmt.Fprintln(c.out, "older lines were not published (the run's bound); run it again to take them")
+		fmt.Fprintf(c.out, "older lines were not published (the run's bound); %s to take them\n", again)
 	}
 	return nil
 }
