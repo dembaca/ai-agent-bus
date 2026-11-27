@@ -410,11 +410,12 @@ class Console:
                 return _unauthorized()
             # RT-6.43 steps 6 and 8, #201: read-only, from the agents' own records
             # as this session's own consumers deliver them; "for me" by the
-            # operator's anchor
+            # operator's anchor; the per-agent rows only of own or trusted agents,
+            # the aggregate reports over every agent (ADR-015 point 15)
             view = self._view(self._session_token(headers))
             payload = (view.asks() if path == "/v1/asks"
                        else view.stats.reports() if path == "/v1/stats"
-                       else view.stats.agent_rows())
+                       else view.agent_stats())
             return httpd.Response.json(payload, headers=API_HEADERS)
         if path == "/metrics":
             # #158: who may scrape — the operator that is logged in, the same

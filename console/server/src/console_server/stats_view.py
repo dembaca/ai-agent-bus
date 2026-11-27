@@ -11,8 +11,11 @@ per version over 7 days, the asks over 24 hours and 7 days, the bus traffic by c
 7 days (RT-6.9 step 3: exact counts, grouped by ``stats.CATEGORY_OF``) and the tokens by
 category over 7 days (an estimate, marked so: one stacked bar of task work, bus overhead and
 coordination for the fleet, per version, per role and per harness). A missing value is ``None``
-("n/a", never 0); each report says the age of the oldest line it holds. No agent's name,
-no report by home or owner: the subject's name only says whose line it is.
+("n/a", never 0); each report says the age of the oldest line it holds. The reports carry
+no agent's name and no report by home or owner, and every operator sees them over every
+agent. Only the per-agent rows (``agent_rows``, ``/v1/agent-stats``) carry an agent's
+name, and only for the agents the caller names: those whose attestation names the
+logged-in operator as owner or trusted (ADR-015 point 15).
 """
 from __future__ import annotations
 
@@ -20,7 +23,7 @@ import logging
 import time
 from collections import deque
 from dataclasses import dataclass, field
-from typing import Any, Callable
+from typing import Any, Callable, Collection
 
 from mattermost_ai_agent_bus import stats
 from mattermost_ai_agent_bus.natsbus import AGENT_RE, parse_ack
@@ -163,35 +166,45 @@ class StatsBook:
                            oldest],
                 "stacks": [s for s in stacks if s is not None]}
 
-    def agent_rows(self) -> list[dict[str, Any]]:
-        """`/v1/agent-stats` (#201): one row per agent whose parts the 7-day window
-        holds, the canvas's per-agent numbers: the token sums of the last 24 hours
-        and of the window (``tok24h``/``tok7d``: ``all`` and the split by type, plus
-        the bus overhead and coordination of the input), and the posts, wakes and
-        tool calls of the last 24 hours. A field no part of the window carries is
-        ``None`` ("n/a", never 0) — the reports' rule (RT-6.43 step 8) — and so is
-        a window without any ``tok`` at all; ``all`` sums the types each part
-        states. The row carries the bus name (``stats.<name>``); no report by home
-        or owner."""
+    def agent_rows(self, shown: Collection[str]) -> list[dict[str, Any]]:
+        """`/v1/agent-stats` (#201): one row per agent in ``shown`` whose parts the
+        7-day window holds, the canvas's per-agent numbers: the token sums of the
+        last 24 hours and of the window (``tok24h``/``tok7d``: ``all`` and the split
+        by type, plus the bus overhead and coordination of the input), and the
+        posts, wakes and tool calls of the last 24 hours. ``shown`` are the agents
+        whose attestation names the logged-in operator as owner or trusted
+        (``Fleet.own_or_trusted``, ADR-015 point 15): no other agent gets a row,
+        and an agent without a known attestation none either. A field no part of
+        the window carries is ``None`` ("n/a", never 0) — the reports' rule
+        (RT-6.43 step 8) — and so is a window without any ``tok`` at all. One row
+        that cannot be computed has its numbers n/a; it never fails the others."""
         edge = self.server_now - WEEK_SEC
         day = self.server_now - DAY_SEC
         groups: dict[str, list[tuple[float, dict[str, Any]]]] = {}
         for at, _seq, agent, line in self._lines:
-            if at >= edge:
+            if at >= edge and agent in shown:
                 groups.setdefault(agent, []).append((at, line))
-        return [self._row(agent, rows, day) for agent, rows in sorted(groups.items())]
-
-    def _row(self, agent: str, rows: list[tuple[float, dict[str, Any]]],
-             day: float) -> dict[str, Any]:
-        return {"agent": agent,
-                "tok24h": _tok([line for at, line in rows if at >= day]),
-                "tok7d": _tok([line for _at, line in rows]),
-                "posts24h": _count([line for at, line in rows if at >= day], "posts"),
-                "wakes24h": _count([line for at, line in rows if at >= day], "wakes"),
-                "tools24h": _count([line for at, line in rows if at >= day], "tools")}
+        return [_safe(lambda rs, a=agent: _row(a, rs, day), rows) or _row_na(agent)
+                for agent, rows in sorted(groups.items())]
 
 
-def _safe(compute: Any, lines: list[dict[str, Any]]) -> Any:
+def _row(agent: str, rows: list[tuple[float, dict[str, Any]]], day: float) -> dict[str, Any]:
+    last_day = [line for at, line in rows if at >= day]
+    return {"agent": agent,
+            "tok24h": _tok(last_day),
+            "tok7d": _tok([line for _at, line in rows]),
+            "posts24h": _count(last_day, "posts"),
+            "wakes24h": _count(last_day, "wakes"),
+            "tools24h": _count(last_day, "tools")}
+
+
+def _row_na(agent: str) -> dict[str, Any]:
+    """The row of an agent whose numbers could not be computed: all n/a."""
+    return {"agent": agent, "tok24h": None, "tok7d": None,
+            "posts24h": None, "wakes24h": None, "tools24h": None}
+
+
+def _safe(compute: Any, lines: list[Any]) -> Any:
     """A report over lines the strict decoder let in; should a line still break the
     arithmetic, the report says n/a instead of failing /v1/stats."""
     try:
@@ -229,31 +242,37 @@ _TOK_SHOWN = ("in", "read", "w5m", "w1h", "out")
 
 def _tok(lines: list[dict[str, Any]]) -> dict[str, Any] | None:
     """The token sums of a window's parts: ``all`` and each stated type summed,
-    the input's bus overhead and coordination summed. None as a whole without
-    any part that states ``all`` (a runtime that reports no usage, an older
-    publisher, a part with only request counts); inside a row a type no part
-    states is None, but a stated 0 stays 0 (n/a is "not carried", never "zero")."""
+    the input's bus overhead and coordination summed over the same parts. A part
+    counts only when its ``all`` states at least one type, so the overhead and the
+    coordination never come from parts the total leaves out; each part's overhead
+    and coordination are held to its own total (an agent's numbers about itself
+    are its own word). None as a whole without such a part (a runtime that reports
+    no usage, an older publisher, a part with only request counts, an empty
+    ``all``); inside a row a type no part states is None, and so is an overhead or
+    coordination no part states or states only as an empty object, but a stated 0
+    stays 0 (n/a is "not carried", never "zero")."""
     parts = [line["tok"] for line in lines
-             if isinstance(line.get("tok"), dict) and isinstance(line["tok"].get("all"), dict)]
+             if isinstance(line.get("tok"), dict) and isinstance(line["tok"].get("all"), dict)
+             and line["tok"]["all"]]
     if not parts:
         return None
 
-    def _summed(obj: str) -> dict[str, int] | None:
-        stated = [part[obj] for part in parts if isinstance(part.get(obj), dict)]
+    types: dict[str, int] = {}
+    for part in parts:
+        for key, value in part["all"].items():
+            types[key] = types.get(key, 0) + int(value)
+
+    def _share(obj: str) -> int | None:
+        stated = [(part[obj], part["all"]) for part in parts
+                  if isinstance(part.get(obj), dict) and part[obj]]
         if not stated:
             return None
-        out: dict[str, int] = {}
-        for one in stated:
-            for key, value in one.items():
-                out[key] = out.get(key, 0) + int(value)
-        return out
+        return sum(min(sum(int(v) for v in one.values()), sum(int(v) for v in total.values()))
+                   for one, total in stated)
 
-    types = _summed("all") or {}
-    ovh, coord = _summed("ovh"), _summed("coord")
     return {"all": sum(types.values()),
             **{key: types.get(key) for key in _TOK_SHOWN},
-            "ovh": None if ovh is None else sum(ovh.values()),
-            "coord": None if coord is None else sum(coord.values())}
+            "ovh": _share("ovh"), "coord": _share("coord")}
 
 
 def _count(lines: list[dict[str, Any]], key: str) -> int | None:

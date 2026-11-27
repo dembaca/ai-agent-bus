@@ -302,7 +302,7 @@ function stack(label: string, eq: number[], raw: number[]): ReportStack {
   }
 }
 
-// The per-agent rows (#201): the mock's two busiest agents; a runtime that
+// The per-agent rows (#201): the mock's two busiest agents, the operator's own; a runtime that
 // reports no token split (the first card, Claude Code behind the gateway)
 // shows n/a for its tokens, never 0.
 const agentStats = (): AgentStatsRow[] => [

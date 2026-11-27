@@ -19,6 +19,7 @@ NOW = 1764061800.0
 NKEY = "UDXU4RCSJNZOIQHZNWXHXORDPRTGNJAHAHFRGZNEEJCPQTT2M7NFCNF4"
 A = agent_name("dembaca", NKEY)
 B = agent_name("carol", NKEY)
+C = agent_name("dave", NKEY)
 # The login service's STATS consumer of one login (`consumers.PersonConsumerNames`:
 # "<person>_<login>_stats", the login its public key in lower case).
 STATS_CONSUMER = "person-dembaca_u" + "a" * 55 + "_stats"
@@ -376,7 +377,7 @@ def test_agent_rows_sums_each_window_per_agent() -> None:
                     "tok": {"req": 9, "all": {"read": 5000}, "ovh": {"read": 500}, "coord": {"read": 400}}}
     book = book_with((A, yesterday, NOW - 2 * 86400), (B, other, NOW - 3 * 86400),
                      (A, today, NOW - 600))
-    assert book.agent_rows() == [
+    assert book.agent_rows({A, B}) == [
         {"agent": B,
          "tok24h": None, "tok7d": {"all": 5000, "in": None, "read": 5000, "w5m": None, "w1h": None,
                                    "out": None, "ovh": 500, "coord": 400},
@@ -396,21 +397,81 @@ def test_agent_rows_without_tok_is_na_never_zero() -> None:
     plain = LINE | {"sid": "dddddddddddd", "posts": [1, 20]}
     del plain["tok"]
     book = book_with((A, plain, NOW - 600), (A, LINE, NOW - 3 * 86400))
-    assert book.agent_rows() == [{"agent": A, "tok24h": None,
+    assert book.agent_rows({A}) == [{"agent": A, "tok24h": None,
                                   "tok7d": {"all": 1100, "in": 1000, "read": None, "w5m": None,
                                             "w1h": None, "out": 100, "ovh": None, "coord": None},
                                   "posts24h": 1, "wakes24h": None, "tools24h": None}]
 
 
-def test_agent_rows_keeps_a_stated_zero_and_nulls_a_row_without_all() -> None:
+def test_agent_rows_keeps_a_stated_zero_and_nulls_an_empty_object() -> None:
     """/v1/agent-stats, RT-6.43 step 8: a stated 0 stays 0 (the total and the overhead
-    included), a type or object no part states is None, and a window whose parts
-    carry `tok` without `all` gives None for the whole token row."""
+    included); a type no part states is None, and so is an object stated empty (no
+    number carried: n/a, never 0); a window whose parts carry `tok` without `all`, or
+    with an empty `all`, gives None for the whole token row."""
     zero = LINE | {"sid": "eeeeeeeeeeee",
                    "tok": {"req": 0, "all": {"in": 0, "out": 0}, "ovh": {"in": 0}, "coord": {}}}
     no_all = LINE | {"sid": "ffffffffffff", "tok": {"req": 3}}
-    book = book_with((A, zero, NOW - 600), (B, no_all, NOW - 600))
-    rows = {row["agent"]: row for row in book.agent_rows()}
+    empty_all = LINE | {"sid": "111111111111", "tok": {"req": 3, "all": {}, "ovh": {"in": 5}}}
+    book = book_with((A, zero, NOW - 600), (B, no_all, NOW - 600), (C, empty_all, NOW - 600))
+    rows = {row["agent"]: row for row in book.agent_rows({A, B, C})}
     assert rows[A]["tok24h"] == {"all": 0, "in": 0, "read": None, "w5m": None, "w1h": None,
-                                 "out": 0, "ovh": 0, "coord": 0}
+                                 "out": 0, "ovh": 0, "coord": None}
     assert rows[B]["tok24h"] is None and rows[B]["tok7d"] is None
+    assert rows[C]["tok24h"] is None and rows[C]["tok7d"] is None
+
+
+def test_agent_rows_sum_overhead_over_the_parts_of_the_total() -> None:
+    """/v1/agent-stats, RT-6.43 step 8: the overhead and the coordination are summed over
+    the same parts as the total — a part without `all` adds to neither — and each part's
+    are held to its own total, so a row never shows more overhead than tokens."""
+    split = LINE | {"sid": "222222222222", "tok": {"req": 1, "all": {"in": 100}, "ovh": {"in": 30}}}
+    no_all = LINE | {"sid": "333333333333", "tok": {"req": 1, "ovh": {"in": 900}, "coord": {"in": 900}}}
+    forged = LINE | {"sid": "444444444444", "tok": {"req": 1, "all": {"in": 10}, "ovh": {"in": 500},
+                                                    "coord": {"in": 7}}}
+    book = book_with((A, split, NOW - 600), (A, no_all, NOW - 500), (A, forged, NOW - 400))
+    row = book.agent_rows({A})[0]["tok24h"]
+    assert (row["all"], row["ovh"], row["coord"]) == (110, 40, 7)
+
+
+def test_agent_rows_only_of_own_or_trusted_agents() -> None:
+    """ADR-015 point 15, RT-6.43 step 8: `/v1/agent-stats` has a row only for an agent whose
+    fresh attestation names the operator's anchor as owner or trusted. Another owner's agent
+    has none, nor has an agent without a known attestation, one whose attestation ran out,
+    or any agent before the login's own record gave the operator's anchor."""
+    C_ = agent_name("erin", NKEY)
+    f = fleet_with()
+    late = json.loads(attestation(C_, ("dembaca", "dembaca"), []))
+    late["exp"] = int(NOW - 1)
+    f.on_delivery(f"presence.attest.{C_}.v1", json.dumps(late).encode(),
+                  ack("PRESENCE", "console", 9, NOW - 60), "PRESENCE", "console")
+    book = book_with((A, LINE, NOW - 600), (B, LINE, NOW - 600), (C, LINE, NOW - 600),
+                     (C_, LINE, NOW - 600))
+    # dembaca: owner of A; B is carol's (and trusts no dembaca), C is not attested, C_'s ran out
+    assert [r["agent"] for r in book.agent_rows(f.own_or_trusted("dembaca"))] == [A]
+    # carol (anchor carol.x, in subject form carol~x): owner of B, trusted by A
+    assert {r["agent"] for r in book.agent_rows(f.own_or_trusted("carol~x"))} == {A, B}
+    # no anchor, a login name that is no anchor, the no-owner token: no row
+    for anchor in (None, "carol", "-"):
+        assert book.agent_rows(f.own_or_trusted(anchor)) == []
+    # the aggregate reports stay over every agent
+    assert fields(book.reports()[0])["lines"] == 4
+
+
+def test_one_agent_row_that_cannot_be_computed_is_n_a(monkeypatch) -> None:
+    """/v1/agent-stats: as the reports, one row that breaks the arithmetic says n/a and
+    never fails the other rows or the endpoint."""
+    import console_server.stats_view as view
+    book = book_with((A, LINE, NOW - 600), (B, LINE, NOW - 600))
+    real = view._tok
+
+    def boom(lines: list) -> object:
+        if any(line.get("sid") == "555555555555" for line in lines):
+            raise OverflowError
+        return real(lines)
+    monkeypatch.setattr(view, "_tok", boom)
+    book.on_delivery(f"stats.{B}", stats.nats_body(LINE | {"sid": "555555555555"}) or b"",
+                     ack("STATS", STATS_CONSUMER, 9, NOW - 300), "STATS", STATS_CONSUMER)
+    rows = {r["agent"]: r for r in book.agent_rows({A, B})}
+    assert rows[A]["tok24h"] is not None
+    assert rows[B] == {"agent": B, "tok24h": None, "tok7d": None,
+                       "posts24h": None, "wakes24h": None, "tools24h": None}

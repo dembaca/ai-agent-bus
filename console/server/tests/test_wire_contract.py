@@ -205,4 +205,4 @@ def test_the_agent_stats_row_the_fixture_states() -> None:
     assert book.on_delivery(f"stats.{FIXTURE['card']['name']}", body,
                             f"$JS.ACK.STATS.{STATS_CONSUMER}.1.1.1.1763980800000000000.0",
                             "STATS", STATS_CONSUMER)
-    assert book.agent_rows() == FIXTURE["agentStats"]
+    assert book.agent_rows({FIXTURE["card"]["name"]}) == FIXTURE["agentStats"]

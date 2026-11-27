@@ -276,8 +276,10 @@ export interface Report {
 
 /** One agent's token sums of a window (#201): `all` and the split by type
  * (the detail's "tokens/cache split"), the input's bus overhead and
- * coordination. A type no part states is null — n/a, never 0, the reports'
- * rule; a window without any token counts at all is null as a whole. */
+ * coordination, summed over the same parts as `all`. A type no part states,
+ * or an object stated empty, is null — n/a, never 0, the reports' rule; a
+ * stated 0 stays 0; a window without any token counts at all is null as a
+ * whole. */
 export interface TokenSums {
   all: number | null
   in: number | null
@@ -292,8 +294,11 @@ export interface TokenSums {
 /** One row of `GET /v1/agent-stats` (#201): the canvas's per-agent numbers
  * from the STATS parts this session's own consumers deliver (RT-6.43 step 8)
  * — token sums of the last 24 hours and of the 7-day window, the posts,
- * wakes and tool calls of the last 24 hours. A field no part of the window
- * carries is null, never 0. */
+ * wakes and tool calls of the last 24 hours. Only own or trusted agents have
+ * a row: those whose attestation names the logged-in operator as owner or
+ * trusted (ADR-015 point 15). "24 hours" are the parts the server received
+ * in 24 hours; a long session's part may cover time before. A field no part
+ * of the window carries is null, never 0. */
 export interface AgentStatsRow {
   agent: string
   tok24h: TokenSums | null
