@@ -462,10 +462,11 @@ class HookAPI:
         payload: Any = {"data": raw} if route is files_route else json.loads(raw) if raw else {}
         if not isinstance(payload, dict):
             return 400, {"error": "body must be a JSON object"}
-        if route is instructions:
-            # Needs no chat client: a session asks for the text before its server is up or a bot
-            # is registered, and gets it whatever the bus session's state (#153, #155).
-            return await instructions(None, query, payload)  # type: ignore[arg-type]
+        if route in (instructions, login_link, login_shown):
+            # Need no chat client: a session asks before its server is up or a bot is
+            # registered, and gets the answer whatever the bus session's state (#153,
+            # #155, #198).
+            return await route(None, query, payload)  # type: ignore[arg-type]
         try:
             client = await self._get_client()
         except Exception:  # noqa: BLE001 — no bus configured
@@ -1285,6 +1286,30 @@ async def instructions(client: ChatPort, query: Mapping[str, str], body: Mapping
     return 200, {"instructions": server.mcp.instructions or ""}
 
 
+async def login_link(client: ChatPort, query: Mapping[str, str], body: Mapping[str, Any]) -> Reply:
+    """The NATS login approval waiting right now, for the harness's own terminal (#198): the
+    link and the code — never a token — or an empty object when nothing waits. One line per
+    login: whichever channel shows it first marks it (#198)."""
+    from . import login as login_mod
+
+    running = login_mod.current()
+    line = running.pending_line() if running is not None else None
+    if line is None:
+        return 200, {}
+    link, code, expires_in = line
+    return 200, {"link": link, "user_code": code, "expires_in": expires_in}
+
+
+async def login_shown(client: ChatPort, query: Mapping[str, str], body: Mapping[str, Any]) -> Reply:
+    """The harness put the line into its terminal: no second one this login (#198)."""
+    from . import login as login_mod
+
+    running = login_mod.current()
+    if running is not None:
+        running.shown()
+    return 200, {}
+
+
 async def waiting(client: ChatPort, query: Mapping[str, str], body: Mapping[str, Any]) -> Reply:
     """A harness plugin waits for its first session (RT-6.18 step 11, RT-6.20
     step 1): the host holds back its no-relay warning."""
@@ -1312,6 +1337,8 @@ _ROUTES: dict[tuple[str, str], Route] = {
     ("GET", "/v1/wake"): wake,
     ("GET", "/v1/handoff"): handoff,
     ("GET", "/v1/instructions"): instructions,
+    ("GET", "/v1/login"): login_link,
+    ("POST", "/v1/login/shown"): login_shown,
     ("POST", "/v1/waiting"): waiting,
 }
 # Routes that make several Mattermost calls: at most MAX_HEAVY_RUNS at once.

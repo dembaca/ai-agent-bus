@@ -21,6 +21,11 @@ a wake-up while it is idle when the bus has something for it, and its handoff st
 and the skill after a compaction. What it does and when:
 [arc42 §6.20](../docs/arc42/06-runtime-view.md#620-opencode-turn-cycle-through-its-plugin).
 
+At a session's start, and again at each turn's end, the plugin asks the server for a
+waiting NATS login approval (`GET /v1/login`, #198): when one waits it puts the link
+and the code into the session once as a synthetic line — never a token — and marks
+it shown. A grant that starts later is seen at the next turn's end.
+
 With options, by a `plugins` entry in the project's `opencode.json` (or, for every
 project, in `~/.config/opencode/opencode.json`). It names the `opencode/` directory of
 this checkout, whose `server.ts` OpenCode loads; a path to the `.ts` file itself is
