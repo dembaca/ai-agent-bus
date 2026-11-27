@@ -247,6 +247,31 @@ async def test_posts_mark_my_threads_from_the_whole_thread(api, monkeypatch):
     assert len(reads) == 3
 
 
+async def test_posts_read_at_most_so_many_threads_per_request(api, monkeypatch):
+    """RT-6.6 step 5, RT-6.2 step 4 (#223): one /v1/posts request reads at
+    most MAX_THREAD_READS threads; a reply beyond them stays unmarked (as
+    without the marks: never a wrong suppression of the crown), and the next
+    request reads on from the records already kept."""
+    n = hookapi.MAX_THREAD_READS + 5
+    roots = [post(f"r{i}", f"ASK · {i}?", user=UID, at=10 + i) for i in range(n)]
+    replies = [post(f"x{i}", "yes", user=PERSON, at=5000 + i, root=f"r{i}") for i in range(n)]
+    client = HookClient(uid=UID, posts=roots + replies)
+    reads = []
+    thread = client.thread
+
+    async def counted(root_id):
+        reads.append(root_id)
+        return await thread(root_id)
+
+    monkeypatch.setattr(client, "thread", counted)
+    _, h = await api(client)
+    got = (await h.get("/v1/posts?since=1000")).json()["posts"]
+    assert len(reads) == hookapi.MAX_THREAD_READS
+    assert sum(p["my_root"] for p in got) == hookapi.MAX_THREAD_READS
+    got = (await h.get("/v1/posts?since=1000")).json()["posts"]
+    assert len(reads) == n and all(p["my_thread"] and p["my_root"] for p in got)
+
+
 async def test_posts_say_what_the_listener_needs(api):
     """RT-6.17, RT-6.2 step 4: slim posts, newest first, with `to` all
     (RT-6.11), an agent's fyi (RT-6.14: a person's props count for nothing),

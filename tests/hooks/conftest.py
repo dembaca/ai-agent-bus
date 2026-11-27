@@ -42,7 +42,7 @@ for _name in ("CORRAL_SANDBOX", "MM_BUS_MCP_ENDPOINT", "MM_BUS_ENDPOINT", "MM_BU
               "CB_BUS_MCP_ENDPOINT", "CB_BUS_ENDPOINT", "CB_BUS_KEY"):
     os.environ.pop(_name, None)
 
-from mattermost_ai_agent_bus import compose, hookapi, release, server  # noqa: E402,F401
+from mattermost_ai_agent_bus import compose, gate, hookapi, release, server  # noqa: E402,F401
 
 # Scripts that ask the hook API instead of Mattermost: no token in their environment.
 API_USERS = ("hooks/", "bin/mm-agent-listen.sh", "bin/mm-agent-post.sh", "bin/mm-agent-poll.sh",
@@ -277,6 +277,10 @@ def hook_api(env: dict[str, str], *, write_file: bool = False):
     saved = dict(os.environ)
     os.environ.clear()
     os.environ.update(env)
+    # A fresh server's thread records (RT-6.6 step 5): none of an earlier run.
+    gate._roots.clear()
+    gate._failed.clear()
+    gate._reach = None
     loop = asyncio.new_event_loop()
     thread = threading.Thread(target=loop.run_forever, daemon=True)
     thread.start()
