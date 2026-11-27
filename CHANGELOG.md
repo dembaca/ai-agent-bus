@@ -58,11 +58,14 @@ before 0.5.0 are described in the git history.
 - **The agent's own threads are marked before the crown's** ([#226](https://github.com/dembaca/ai-agent-bus/issues/226),
   the follow-ups of #223). `/v1/posts` computes `my_thread`/`my_root` before the
   crown's `agent_thread` marks, and a root the request itself carries costs no
-  thread read (its author is the one who started it), so a crown-heavy request
-  cannot spend the 20 reads (`MAX_THREAD_READS`) on other agents' roots before
-  the agent's own replies are marked. The docs also say what a failed read
-  means: only a failed first read counts as unreadable, which lets the
-  coordinator wake; a failed re-read keeps the record read before.
+  thread read (its author is the one who started it; a webhook's root is read),
+  so a crown-heavy request marks the agent's own replies it carries even when
+  other agents' 25 roots take the 20 reads (`MAX_THREAD_READS`). A reply whose
+  root lies before the request's window takes a read like the others: a first
+  crown-heavy poll can leave it for the next, which finds the other roots kept.
+  The docs also say what a failed read means: only a failed first read counts
+  as unreadable, which lets the coordinator wake; a failed re-read keeps the
+  record read before.
 
 - **A human's reply in an agent's thread wakes that agent, not the coordinator**
   ([#207](https://github.com/dembaca/ai-agent-bus/issues/207),

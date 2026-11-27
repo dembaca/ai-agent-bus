@@ -892,13 +892,17 @@ async def _my_threads(client: ChatPort, raw: list[Post], uid: str) -> dict[str, 
     its thread, started it), from the whole thread (gate.in_thread); a thread
     that cannot be read is left out (the listener's own window still counts).
     A root the request itself carries is known without a read: this agent
-    started it, so the reply is in its own thread (#226, no budget spent)."""
+    started it, so the reply is in its own thread (#226, no budget spent; a
+    webhook's root is judged as a human's, as elsewhere, and read). A root
+    outside the request takes a read, so a crown-heavy request marks what it
+    carries and the rest within the budget (the next poll finds the others'
+    roots kept)."""
     roots = {p.id: p for p in raw if not p.root_id and not p.type}
     out: dict[str, tuple[bool, bool]] = {}
     for p in raw:
         if p.root_id and p.user_id != uid and not p.type:
             root = roots.get(p.root_id)
-            if root is not None and root.user_id == uid:
+            if root is not None and not root.from_webhook and root.user_id == uid:
                 out[p.id] = (True, True)
                 continue
             got = await gate.in_thread(client, p.root_id, uid)
