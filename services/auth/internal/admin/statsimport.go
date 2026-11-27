@@ -135,11 +135,17 @@ type StatsReport struct {
 	SkippedOverCap  int `json:"skipped_over_cap"`
 	// SkippedRoom: held to publish, but STATS had less room right before
 	// publishing than when the run began; the next run takes them.
-	SkippedRoom int    `json:"skipped_room"`
-	Truncated   string `json:"truncated,omitempty"`    // older posts were not read: "lines" or "room"
-	KnownBefore string `json:"known_before,omitempty"` // older posts were gone through by an earlier complete run and not read again
-	Oldest      string `json:"oldest,omitempty"`       // original time of the oldest published line
-	Newest      string `json:"newest,omitempty"`
+	SkippedRoom int `json:"skipped_room"`
+	// Truncated: older lines were not published, by "lines" (MaxLines) or
+	// "room"; the next run takes them.
+	Truncated string `json:"truncated,omitempty"`
+	// KnownBefore: posts older than it were gone through by an earlier
+	// complete run and not read again.
+	KnownBefore string `json:"known_before,omitempty"`
+	// All: the run ignored that mark and read the whole channel (--all).
+	All    bool   `json:"all,omitempty"`
+	Oldest string `json:"oldest,omitempty"` // original time of the oldest published line
+	Newest string `json:"newest,omitempty"`
 }
 
 type statsKey struct {
@@ -465,7 +471,20 @@ func (h *handler) runStatsImport(w http.ResponseWriter, r *http.Request, id toke
 		return
 	}
 	defer h.statsMu.Unlock()
-	rep, done, err := importStats(r.Context(), si, h.cfg.Now(), h.statsDone)
+	// ?all=true (authd dir stats-import --all): the whole channel, as a
+	// freshly started service reads it, for when STATS lost imported lines.
+	known := h.statsDone
+	all := false
+	switch r.URL.Query().Get("all") {
+	case "", "false":
+	case "true":
+		all, known = true, time.Time{}
+	default:
+		fail(w, http.StatusBadRequest, "all wants true or false")
+		return
+	}
+	rep, done, err := importStats(r.Context(), si, h.cfg.Now(), known)
+	rep.All = all
 	if err != nil {
 		h.cfg.Log.Error("stats import stopped; it can be run again", "reason", err.Error(), "sub", id.Subject,
 			"published", rep.Published)
@@ -473,8 +492,9 @@ func (h *handler) runStatsImport(w http.ResponseWriter, r *http.Request, id toke
 		return
 	}
 	// A run that went through every post up to its newest one older than two
-	// minutes lets the next one stop at posts older than that; one cut short leaves the mark as it was, so the next run
-	// reads on past it.
+	// minutes lets the next one stop at posts older than that, an --all run
+	// too; one cut short leaves the mark as it was, so the next run reads on
+	// past it.
 	if !done.IsZero() {
 		h.statsDone = done
 	}

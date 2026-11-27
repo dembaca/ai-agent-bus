@@ -33,6 +33,7 @@ type rig struct {
 	api    *httptest.Server
 	mu     sync.Mutex
 	calls  []rec
+	query  string   // the raw query of the last API call
 	tokens []string // token endpoint answers, in order; the last repeats
 	dev    map[string]any
 	pend   string
@@ -124,6 +125,7 @@ func (r *rig) serveAPI(w http.ResponseWriter, req *http.Request) {
 	r.mu.Lock()
 	r.calls = append(r.calls, rec{req.Method, req.URL.EscapedPath(), req.Header.Get("Authorization"),
 		req.Header.Get("If-Match"), req.Header.Get("If-None-Match"), string(b)})
+	r.query = req.URL.RawQuery
 	r.mu.Unlock()
 	w.Header().Set("Content-Type", "application/json")
 	p := req.URL.EscapedPath()
@@ -161,7 +163,11 @@ func (r *rig) serveAPI(w http.ResponseWriter, req *http.Request) {
 		_, _ = io.WriteString(w, `{"channels_created":["a","b"],"channels_updated":[],"channels_skipped":[{"name":"x","reason":"bad name"}],`+
 			`"identities":3,"members_added":4,"pending_added":1,"accounts_skipped":[{"username":"bob","reason":"password account"}],"next":"set CB_AUTH_DIRECTORY_IMPORTED=true and restart"}`)
 	case p == "/v1/stats/import": // RT-6.45
-		_, _ = io.WriteString(w, `{"read":9,"published":3,"published_without_sid":1,"confirmed":3,"truncated":"lines","not_stats":1,"skipped_in_stats":1,"skipped_imported":1,"known_before":"2026-11-27T06:00:00Z","skipped_invalid":1,"skipped_too_big":1,"skipped_name":1,"skipped_recent":2,"skipped_over_cap":4,"skipped_room":2,"oldest":"2026-09-01T12:00:00Z","newest":"2026-11-20T08:00:00Z"}`)
+		all := ""
+		if req.URL.Query().Get("all") == "true" {
+			all = `"all":true,`
+		}
+		_, _ = io.WriteString(w, `{`+all+`"read":9,"published":3,"published_without_sid":1,"confirmed":3,"truncated":"lines","not_stats":1,"skipped_in_stats":1,"skipped_imported":1,"known_before":"2026-11-27T06:00:00Z","skipped_invalid":1,"skipped_too_big":1,"skipped_name":1,"skipped_recent":2,"skipped_over_cap":4,"skipped_room":2,"oldest":"2026-09-01T12:00:00Z","newest":"2026-11-20T08:00:00Z"}`)
 	case p == "/v1/directory/pending":
 		_, _ = io.WriteString(w, r.pend)
 	case req.Method == "DELETE" && strings.HasPrefix(p, "/v1/directory/pending/"):
@@ -319,7 +325,7 @@ func TestCommands(t *testing.T) {
 				}
 			}
 			if tc.name == "stats-import" {
-				for _, s := range []string{"posts read 9, lines published 3 (1 of them from before 0.91.0, without sid; 3 found in STATS after the run), posts without a STATS line 1", "older posts were not read", "already in STATS from an agent 1, already imported 1, not a valid line 1, too big 1, no agent name 1, too recent 2, over the cap per name 4, no room left when publishing 2", "up to 2026-11-27T06:00:00Z were gone through", "from 2026-09-01T12:00:00Z to 2026-11-20T08:00:00Z"} {
+				for _, s := range []string{"posts read 9, lines published 3 (1 of them from before 0.91.0, without sid; 3 found in STATS after the run), posts without a STATS line 1", "older lines were not published", "already in STATS from an agent 1, already imported 1, not a valid line 1, too big 1, no agent name 1, too recent 2, over the cap per name 4, no room left when publishing 2", "up to 2026-11-27T06:00:00Z were gone through", "from 2026-09-01T12:00:00Z to 2026-11-20T08:00:00Z"} {
 					if !strings.Contains(out, s) {
 						t.Fatalf("report lacks %q: %q", s, out)
 					}
@@ -915,4 +921,36 @@ func TestOldNamesStillWork(t *testing.T) {
 	if code := run([]string{"ls"}, envname.Map(both), &out, &errb, r.deps()); code != 2 || !strings.Contains(errb.String(), "CB_AUTHD_DIR_API and AUTHD_DIR_API") {
 		t.Fatalf("two different values: exit %d %q", code, errb.String())
 	}
+}
+
+// stats-import --all (RT-6.45) asks the API for the whole channel
+// (?all=true); without it nothing is asked; --all belongs to stats-import
+// alone, and the usage text names it.
+func TestStatsImportAll(t *testing.T) {
+	r := newRig(t)
+	if code, out, errs := r.do("stats-import", "--all"); code != 0 || r.query != "all=true" || r.last().Path != "/v1/stats/import" ||
+		!strings.Contains(out, "lines published") {
+		t.Fatalf("exit %d, query %q, %s %s", code, r.query, out, errs)
+	}
+	// A cut-short --all run says to run it again with --all, one without says
+	// no such thing (the fixture's report is truncated by lines).
+	if !strings.Contains(out0(r, "stats-import", "--all"), "run it again with --all to take them") ||
+		strings.Contains(out0(r, "stats-import"), "with --all") {
+		t.Fatal("the truncation line does not follow --all")
+	}
+	if code, _, _ := r.do("stats-import"); code != 0 || r.query != "" {
+		t.Fatalf("without --all: exit %d, query %q", code, r.query)
+	}
+	if code, _, _ := r.do("ls", "--all"); code != exitUsage {
+		t.Fatalf("ls --all: exit %d", code)
+	}
+	if _, out, _ := r.do("-h"); !strings.Contains(out, "stats-import [--all]") {
+		t.Fatal("the usage text lacks --all")
+	}
+}
+
+// out0 runs a command and returns its standard output.
+func out0(r *rig, args ...string) string {
+	_, out, _ := r.do(args...)
+	return out
 }

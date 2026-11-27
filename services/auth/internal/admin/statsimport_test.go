@@ -517,3 +517,69 @@ func TestConfirmedIsReadOnceMore(t *testing.T) {
 		t.Fatalf("after an unconfirmed run: %+v", rep)
 	}
 }
+
+// losing is a STATS that lost the imported line of one post (lose): the
+// age limit, the size, a stream rebuilt by hand.
+type losing struct {
+	StatsStore
+	lose string
+}
+
+func (l *losing) ReadAll(ctx context.Context, begin func(), fn func(string, []byte, nats.Header) error) error {
+	return l.StatsStore.ReadAll(ctx, begin, func(n string, b []byte, h nats.Header) error {
+		if l.lose != "" && h.Get(HeaderPostID) == l.lose {
+			return nil
+		}
+		return fn(n, b, h)
+	})
+}
+
+// ?all=true (authd dir stats-import --all, RT-6.45) ignores the rerun mark
+// and reads the whole channel, as a freshly started service does: when
+// STATS lost an imported line, a rerun of the same process does not see it,
+// an --all run publishes exactly that line, and a complete --all run sets
+// the mark as any complete run does. A bad value is refused.
+func TestAStatsImportAllReadsPastTheMark(t *testing.T) {
+	s, _ := statsLab(t)
+	chat := &statsChat{users: map[string]mattermost.User{"ua": bot("ua", "agent-a")}}
+	for i := range 4 {
+		chat.posts = append(chat.posts, post(fmt.Sprint("p", i), "ua", i, fmt.Sprintf(`STATS {"v":"0.85.0","n":%d}`, i)))
+	}
+	store := &losing{StatsStore: s}
+	e := statsSetup(t, chat, store)
+	if rep := runStats(t, e, e.admin, 200); rep.Published != 4 || rep.All {
+		t.Fatalf("a complete run: %+v", rep)
+	}
+	store.lose = "p1"
+	if rep := runStats(t, e, e.admin, 200); rep.Published != 0 || rep.KnownBefore == "" {
+		t.Fatalf("a rerun stops at the mark: %+v", rep)
+	}
+	got, body, _ := e.do(t, "POST", "/v1/stats/import?all=true", e.admin, "")
+	want(t, "stats import --all", got, 200, body)
+	var rep StatsReport
+	if err := json.Unmarshal([]byte(body), &rep); err != nil {
+		t.Fatal(err)
+	}
+	if !rep.All || rep.KnownBefore != "" || rep.Read != 4 || rep.Published != 1 || rep.SkippedImported != 3 {
+		t.Fatalf("--all: %+v", rep)
+	}
+	n := 0
+	for _, l := range lines(t, s) {
+		if l.hdr.Get(HeaderPostID) == "p1" {
+			n++
+		}
+	}
+	if n != 2 { // the one the fake hid and the one --all published again
+		t.Fatalf("p1 in STATS %d times", n)
+	}
+	// the --all run was complete: the next run stops at the mark again
+	if rep := runStats(t, e, e.admin, 200); rep.KnownBefore == "" || rep.Read != 1 {
+		t.Fatalf("after --all: %+v", rep)
+	}
+	for _, bad := range []string{"yes", "1", "TRUE"} {
+		got, body, _ := e.do(t, "POST", "/v1/stats/import?all="+bad, e.admin, "")
+		want(t, "all="+bad, got, 400, body)
+	}
+	got, body, _ = e.do(t, "POST", "/v1/stats/import?all=true", e.bob, "")
+	want(t, "--all without the admin group", got, 403, body)
+}
