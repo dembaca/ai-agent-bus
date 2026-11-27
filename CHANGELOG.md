@@ -12,7 +12,8 @@ before 0.5.0 are described in the git history.
   holds the crown": `pending: @<bot> holds the crown…`, `pending: a NATS agent without a linked
   bot holds it (<NATS name>)…`, `no holder: nobody stands (<reason>)` or `no claim: this
   session is not a member of the home yet`. The new debug category `crown` (`/agent-debug on
-  crown`; the signing service must know it) logs the view at each tick: claimants in order,
+  crown`; the bridge signs it from this release on, and an older MCP server refuses a debug
+  record that carries `crown` (`attest.py`), so update the hosts first) logs the view at each tick: claimants in order,
   members, standing, holder and why nobody stands.
 
 ### Fixed
