@@ -10,21 +10,28 @@ before 0.5.0 are described in the git history.
 - **The last post on the operator console's agent cards** (#201, RT-6.37
   step 6). A NATS home's presence states `last_post`: when the agent last
   posted in its home, as epoch seconds (the time the MCP server already
-  keeps of the agent's own latest post, never a word of it; a line the
-  server writes on its own does not count), an int from 2020 to 2100 on
+  keeps of the agent's own latest post, never a word of it, and only when
+  that record names the home's channel; a line the server writes on its
+  own does not count), an int from 2020 to 2100 on
   both sides, else left out. The console fills the card's `lastPostAt`
   (ms) from it, at most the presence's server time and dropped when more
   than 5 minutes after it, so the Agents list's "Last post" column and the
-  detail's facts show it. An older MCP server states none: the console
-  shows "n/a"; an older console ignores the key.
+  detail's facts show it, only on the cards of own or trusted agents (the
+  owner's decision of 2026-11-27, the same check as the per-agent numbers;
+  the presence carries it for every reader of the stream): every other
+  card, and every card before the login's own record gave the operator's
+  anchor, says "The last post shows only for own or trusted agents, from
+  their first post in their home on." An older MCP server states none; an
+  older console ignores the key.
 - **The per-agent numbers on the console's pages** (#201). The app reads
   `GET /v1/agent-stats` every 30 s: the Agents list gains a "Tokens today"
   column (the tokens of the last 24 hours) and an agent's detail a "Today"
   block (tokens with the split by type, posts, wakes and tool calls of 24
-  hours). Rows exist only for own or trusted agents running now: another
-  owner's agent shows a dash whose title, and the detail, say "No
-  per-agent numbers for agents of other owners", and the list's footnote
-  says that rows are of agents running now. A row without token counts
+  hours). An agent without a row shows a dash whose title, the list's
+  footnote and the detail say: "No per-agent numbers for agents of other
+  owners. Rows are of own or trusted agents running now: one has no row
+  until its first STATS part arrives, and loses it when it goes offline."
+  A row without token counts
   shows n/a, never 0; no overhead share is computed from the sums. The
   mock's rows now name agents of its own fleet.
 - **The STATS history: a year of statistics, and the stats channel's lines

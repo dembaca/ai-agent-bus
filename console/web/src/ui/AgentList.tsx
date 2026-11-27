@@ -1,7 +1,7 @@
 import type { AgentCard, AgentStatsRow, Ask } from "../api/types"
 import { since } from "../clock"
 import {
-  NO_STATS_ROW, STATS_ROWS_NOTE, STATUS_FILTERS, agentName, askerName, countByGroup, filterCards, harnessLabel,
+  NO_LAST_POST, NO_STATS_ROW, STATS_ROWS_NOTE, STATUS_FILTERS, agentName, askerName, countByGroup, filterCards, harnessLabel,
   openAsksFirst, stateClass, tokenCount, type StatusFilter,
 } from "./agents"
 import { CircleHelp } from "lucide-react"
@@ -138,10 +138,9 @@ export function AgentList({ cards, asks, stats = null, compact = false, selected
       </section>
       <p className="hint agents__note">
         Live from the agents' presence on the bus; a row changes in place. Task,
-        model and branch are what each agent states about itself.
+        model and branch are what each agent states about itself. {NO_LAST_POST}
         {!compact && <> Tokens today come from the agents' STATS lines of the last
-          24 hours, for your own agents and those that trust you: a dash there
-          means no per-agent numbers for agents of other owners. {STATS_ROWS_NOTE}</>}
+          24 hours; a dash there is an agent without a row. {NO_STATS_ROW} {STATS_ROWS_NOTE}</>}
       </p>
     </>
   )
@@ -206,13 +205,16 @@ function AgentRow({ card, compact, stats, selected, onOpen }: {
         </td>
       </>}
       {!compact && <td className="num nowrap"><TokensToday stats={stats} name={card.name} /></td>}
-      <td className="num muted nowrap">{card.lastPostAt ? since(card.lastPostAt) : EMPTY}</td>
+      <td className="num muted nowrap">
+        {card.lastPostAt ? since(card.lastPostAt) : <span title={NO_LAST_POST}>{EMPTY}</span>}
+      </td>
     </tr>
   )
 }
 
 /** The agent's tokens of the last 24 hours (#201): a dash when it has no row
- * (another owner's agent, or one not running now), n/a when its row states no
+ * (another owner's agent, one not running now, or an own one before its first
+ * STATS part), n/a when its row states no
  * token counts, never 0 for either. */
 function TokensToday({ stats, name }: { stats: ReadonlyMap<string, AgentStatsRow> | null; name: string }) {
   if (stats === null) return <span className="muted" title="per-agent numbers not read yet">{EMPTY}</span>

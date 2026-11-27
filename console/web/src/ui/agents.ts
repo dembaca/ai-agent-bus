@@ -100,11 +100,19 @@ export function isOpen(ask: Ask): boolean {
 
 /** Why an agent has no per-agent numbers (#201, decided 2026-11-27): `GET
  * /v1/agent-stats` has rows only for agents whose fresh attestation names the
- * operator as owner or trusted. Said plainly, never as "n/a" (that is a
- * number no part states). */
+ * operator as owner or trusted, and whose STATS parts the session holds: an
+ * own running agent has none until its first part arrives. Said plainly,
+ * never as "n/a" (that is a number no part states). The README, the
+ * CHANGELOG and ADR-015 quote both sentences word for word. */
 export const NO_STATS_ROW = "No per-agent numbers for agents of other owners."
 export const STATS_ROWS_NOTE =
-  "Rows are of agents running now (own or trusted); an agent that went offline has no row."
+  "Rows are of own or trusted agents running now: one has no row until its first STATS part arrives, and loses it when it goes offline."
+
+/** Why a card shows no last post (#201, decided 2026-11-27): the console puts
+ * it only on the cards of own or trusted agents, and only once the agent's
+ * presence states one. Said plainly, so that no agent looks silent for it. */
+export const NO_LAST_POST =
+  "The last post shows only for own or trusted agents, from their first post in their home on."
 
 /** A token count for a dense cell: 950, 92.1k, 1.2M; null is n/a, never 0. */
 export function tokenCount(n: number | null): string {

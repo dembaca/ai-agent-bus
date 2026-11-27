@@ -2,7 +2,7 @@ import { useEffect, useMemo, useState, type ReactNode } from "react"
 import type { AgentCard, AgentStatsRow, Ask, ConsoleApi, Post, ThreadPage } from "../api/types"
 import { clock, since } from "../clock"
 import {
-  NO_STATS_ROW, STATS_ROWS_NOTE, agentName, askerName, harnessLabel, isOpen, stateClass, tokenCount,
+  NO_LAST_POST, NO_STATS_ROW, STATS_ROWS_NOTE, agentName, askerName, harnessLabel, isOpen, stateClass, tokenCount,
 } from "./agents"
 import { AgentLabel, Context, SharedMark, nameTitle } from "./AgentList"
 import { CrownIcon } from "./icons"
@@ -145,8 +145,8 @@ export function Detail({ api, card, ask, asks, stats = null, from, onBack, onFai
 
 /** The agent's numbers of the last 24 hours (#201, `GET /v1/agent-stats`):
  * tokens with the split by type, posts, wakes and tool calls. `row`: undefined
- * while none was read, null when the agent has none (another owner's, or not
- * running now). A number no part states is n/a, never 0; no share of the
+ * while none was read, null when the agent has none (another owner's, not
+ * running now, or an own one before its first STATS part). A number no part states is n/a, never 0; no share of the
  * overhead is computed here (its sums cover only the parts that state it). */
 function Today({ row }: { row: AgentStatsRow | null | undefined }) {
   const tok = row?.tok24h ?? null
@@ -199,7 +199,9 @@ function Facts({ card }: { card: AgentCard }) {
     ["limits / cost", card.limits ?? "n/a"],
     ["version", card.version || "n/a"],
     ["HELLO", `${clock(card.helloAt)} · ${since(card.helloAt)} ago`],
-    ["last post", card.lastPostAt === null ? "n/a" : `${clock(card.lastPostAt)} · ${since(card.lastPostAt)} ago`],
+    ["last post", card.lastPostAt === null
+      ? <span className="muted small">{NO_LAST_POST}</span>
+      : `${clock(card.lastPostAt)} · ${since(card.lastPostAt)} ago`],
     ["open asks", card.openAsks === null
       ? "n/a"
       : `${card.openAsks}${(card.asksForOperator ?? 0) > 0 ? ` · ${card.asksForOperator} for you` : ""}`],

@@ -318,24 +318,30 @@ def _open_asks() -> list[natsbus.OpenAsk]:
 _hello: dict[str, str] = {}
 
 
-def _presence_card() -> natsbus.PresenceCard:
+def _presence_card(home: str = "") -> natsbus.PresenceCard:
     """The HELLO card's data the NATS presence carries for the operator console (RT-6.37,
     ADR-015): the harness from the handshake, model, task and branch from the last announce,
     how many of this session's asks to a human still wait (asks.waiting), and when the agent
-    last posted in its home. natsbus bounds each field."""
+    last posted in its home, the channel id `home` (NatsPort.home_id). natsbus bounds each
+    field."""
     me = stats.bot_id()
     return natsbus.PresenceCard(harness=stats.harness(), model=_hello.get("model"),
                                 task=_hello.get("task"), branch=_hello.get("branch"),
                                 asks=len(asks.waiting(me)) if me else None,
-                                last_post=_last_post_sec(me))
+                                last_post=_last_post_sec(me, home))
 
 
-def _last_post_sec(me: str) -> int | None:
+def _last_post_sec(me: str, home: str) -> int | None:
     """When the agent last posted in its home, in epoch seconds (RT-6.37 step 6): ownpost.py's
     AT, its own posts only (never a line the server writes on its own), the time and nothing
-    of the post; None before its first post or without a bot."""
+    of the post. Only a record of the channel `home` counts (one an earlier session of the
+    same bot left for another channel does not); None before its first post there, without
+    a bot or without the home's id."""
+    rec = ownpost.read(me) if me and home else {}
+    if rec.get("CHANNEL") != home:
+        return None
     try:
-        at = int(ownpost.read(me).get("AT", "")) if me else 0
+        at = int(rec.get("AT", ""))
     except ValueError:
         return None
     return at // 1000 if at > 0 else None

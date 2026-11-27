@@ -73,10 +73,11 @@ const cards = (): CardWire[] => [
     name: "agent-mac-ai-agent-831e38", home: "~ai-agent-bus-dev", guests: [], state: "idle",
     crown: false, harness: "opencode", model: "Cloud Reason",
     task: "no task yet, waiting for one",
-    role: "member", for: "dembaca", autonomous: false, trusts: ["dembaca"],
+    // another owner's agent (#201): no last post on its card, no per-agent numbers
+    role: "member", for: "carol", autonomous: false, trusts: ["carol"],
     capabilities: ["git", "pytest", "shell"], project: "dembaca/ai-agent-bus",
     branch: null, pr: null, ctx: 12, limits: null, version: "0.97.0",
-    openAsks: 0, asksForOperator: 0, helloAt: now() - 1115 * minute, lastPostAt: now() - 620 * minute,
+    openAsks: 0, asksForOperator: 0, helloAt: now() - 1115 * minute, lastPostAt: null,
     tasks: [],
   },
   {
@@ -319,6 +320,7 @@ const agentStats = (): AgentStatsRow[] => [
 const graph = (): GraphData => ({
   nodes: [
     { id: "dembaca", kind: "person", label: "dembaca", you: true },
+    { id: "carol", kind: "person", label: "carol" },
     { id: "~ai-agent-bus-dev", kind: "channel", label: "~ai-agent-bus-dev" },
     { id: "~chat-next", kind: "channel", label: "~chat-next" },
     { id: "~bgl-infra", kind: "channel", label: "~bgl-infra" },
@@ -338,7 +340,7 @@ const graph = (): GraphData => ({
     { id: "e3", from: "agent-mac-ai-agent-d2f798", to: "dembaca", kind: "trusts" },
     { id: "e4", from: "agent-mac-ai-agent-6d2afc", to: "dembaca", kind: "trusts" },
     { id: "e5", from: "agent-mac-ai-agent-b7ccf7", to: "dembaca", kind: "trusts" },
-    { id: "e6", from: "agent-mac-ai-agent-831e38", to: "dembaca", kind: "trusts" },
+    { id: "e6", from: "agent-mac-ai-agent-831e38", to: "carol", kind: "trusts" },
     { id: "e7", from: "agent-mac-ai-agent-716d72", to: "dembaca", kind: "trusts" },
     { id: "e8", from: "agent-mac-chat-next-3b92c9", to: "dembaca", kind: "trusts" },
     // members of a home: agents with their channel

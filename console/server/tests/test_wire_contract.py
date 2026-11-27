@@ -77,8 +77,11 @@ def fleet_scenario():
 
 
 def test_the_card_the_fixture_states(fleet_scenario) -> None:
-    cards = fleet_scenario.cards()
+    # the operator's own agent (the attestation names dembaca as owner): its card
+    # carries the last post, which another owner's operator never sees (#201)
+    cards = fleet_scenario.cards("dembaca")
     assert cards == [FIXTURE["card"]]
+    assert fleet_scenario.cards("someone-else")[0]["lastPostAt"] is None
 
 
 def test_the_graph_marks_the_operators_own_node_and_guest_channels(fleet_scenario) -> None:
@@ -125,6 +128,8 @@ def test_the_events_the_fixture_states(fleet_scenario) -> None:
     stream = console._stream(token=None)
     assert stream.first["type"] == "snapshot"
     assert {c["name"] for c in stream.first["cards"]} == {FIXTURE["card"]["name"]}
+    # no login's own record here, so no anchor: no card carries the last post (#201)
+    assert stream.first["cards"][0]["lastPostAt"] is None
     wave = stream.snapshot()
     assert wave == []          # nothing changed: no event at all
     # the fixture's three event shapes are the whole alphabet
@@ -207,3 +212,18 @@ def test_the_agent_stats_row_the_fixture_states() -> None:
                             f"$JS.ACK.STATS.{STATS_CONSUMER}.1.1.1.1763980800000000000.0",
                             "STATS", STATS_CONSUMER)
     assert book.agent_rows({FIXTURE["card"]["name"]}) == FIXTURE["agentStats"]
+
+
+def test_the_no_row_sentence_is_quoted_word_for_word() -> None:
+    """#201 (Fable's review of #236): why an agent has no per-agent numbers is said by the
+    app's two constants (`console/web/src/ui/agents.ts`); the web README, the CHANGELOG and
+    ADR-015 quote them word for word, so no copy drifts from what the page says."""
+    import re
+    root = Path(__file__).parents[3]
+    source = (root / "console/web/src/ui/agents.ts").read_text()
+    said = " ".join(re.search(rf'export const {name} =\s*"([^"]+)"', source).group(1)  # type: ignore[union-attr]
+                    for name in ("NO_STATS_ROW", "STATS_ROWS_NOTE"))
+    assert "until its first STATS part arrives" in said
+    for doc in ("console/web/README.md", "CHANGELOG.md", "docs/arc42/09-architecture-decisions.md"):
+        text = " ".join((root / doc).read_text().split())
+        assert said in text, doc

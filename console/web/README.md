@@ -41,11 +41,15 @@ image.
     Kanban. An agent shows the name its presence states (#199), a name
     another card states too with a "shared name" mark; the bus id is in the
     title. The last post is the time the agent's presence states (RT-6.37
-    step 6; "–" from an older MCP server). Tokens today come from
-    `GET /v1/agent-stats` (#201), read every 30 s: rows exist only for own
-    or trusted agents running now, so another owner's agent shows a dash
-    whose title says "No per-agent numbers for agents of other owners"; a
-    row without token counts shows `n/a`.
+    step 6), on the cards of own or trusted agents only; every other card
+    shows "–" with the title "The last post shows only for own or trusted
+    agents, from their first post in their home on." Tokens today come from
+    `GET /v1/agent-stats` (#201), read every 30 s. An agent without a row
+    shows a dash whose title, the list's footnote and the detail say: "No
+    per-agent numbers for agents of other owners. Rows are of own or
+    trusted agents running now: one has no row until its first STATS part
+    arrives, and loses it when it goes offline." A row without token counts
+    shows `n/a`.
   - **Asks** with *for you* / *may answer*, **Graph** (React Flow: trusts and
     coordinates, cut at depth two with a mark) and **Reports** — counts and
     seconds only, a missing field shows as `n/a`, never as 0.

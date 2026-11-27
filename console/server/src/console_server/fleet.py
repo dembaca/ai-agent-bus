@@ -352,10 +352,15 @@ class Fleet:
 
     # --- the wire (ADR-015 point 10, the app's contract) -------------------------------
 
-    def cards(self) -> list[dict[str, Any]]:
+    def cards(self, anchor: str | None = None) -> list[dict[str, Any]]:
         """One wire card per agent, unknown fields marked as unknown
-        (``None`` or empty), never guessed as 0 (ADR-015 point 8)."""
+        (``None`` or empty), never guessed as 0 (ADR-015 point 8). `anchor`:
+        the operator's anchor in subject form (the login's own record); the
+        last post's time goes only on the cards of own or trusted agents
+        (``own_or_trusted``, the owner's decision of 2026-11-27, #201), null
+        on every other card and on all of them without the anchor."""
         out = []
+        mine = self.own_or_trusted(anchor)
         crowns: dict[str, str] = {}
         for channel in self._claims:
             holder = self.holder_of(channel)
@@ -400,15 +405,17 @@ class Fleet:
                 "asksForOperator": None,
                 "helloAt": int(presence[0] * 1000),
                 # the agent's last post in its home as its presence states it
-                # (RT-6.37 step 6): a time only; null from an older MCP server
-                "lastPostAt": last_post_at(stated.last_post, presence[0]),
+                # (RT-6.37 step 6): a time only, for own or trusted agents only;
+                # null for every other agent and from an older MCP server
+                "lastPostAt": (last_post_at(stated.last_post, presence[0])
+                               if agent in mine else None),
                 "helloPostId": "",
                 "tasks": [],
             })
         return out
 
-    def card(self, agent: str) -> dict[str, Any] | None:
-        for card in self.cards():
+    def card(self, agent: str, anchor: str | None = None) -> dict[str, Any] | None:
+        for card in self.cards(anchor):
             if card["name"] == agent:
                 return card
         return None

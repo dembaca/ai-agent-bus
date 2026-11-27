@@ -4854,6 +4854,12 @@ The console is the operators' view of the bus itself.
      post (the agent's own word in its presence, never later than that
      presence's server time), its HELLO thread and the threads of its open
      asks.
+   - **The last post, own or trusted agents only** (decided by the owner on
+     2026-11-27, #201): the row's and the detail's last post shows only for
+     agents whose fresh attestation names the operator as owner or trusted,
+     as the per-agent numbers of point 15; every other card says "The last
+     post shows only for own or trusted agents, from their first post in
+     their home on." instead, so no agent looks silent for it.
    - **Not on the bus, so not shown until the bus carries it:** effort,
      sub-agents (they never use the bus), the running turn's duration
      (turns are noted only in the session's own counter file, RT-6.9 step
@@ -5490,12 +5496,15 @@ agent publishes passes for a person's word.
     anchor as owner or trusted, the check of the asks' "may answer".
     Another owner's agent, an agent without a known attestation and every
     agent before the login's own record gave the operator's anchor get no
-    row; no row is the safe default. The app shows the rows in the Agents
-    list's "Tokens today" column and the detail's "Today" block (tokens
-    with the split by type, posts, wakes, tool calls); an agent without a
-    row shows a dash there and, in the detail, "No per-agent numbers for
-    agents of other owners", and both say that rows are of agents running
-    now (own or trusted). A null number shows as n/a, never 0, and no
+    row; no row is the safe default. An own or trusted agent running now
+    has no row either until its first `STATS` part arrives. The app shows
+    the rows in the Agents list's "Tokens today" column and the detail's
+    "Today" block (tokens with the split by type, posts, wakes, tool
+    calls); an agent without a row shows a dash there, and the dash's
+    title, the list's footnote and the detail say: "No per-agent numbers
+    for agents of other owners. Rows are of own or trusted agents running
+    now: one has no row until its first STATS part arrives, and loses it
+    when it goes offline." A null number shows as n/a, never 0, and no
     overhead share is computed from the sums. Why: an owner looks after their own
     agents and those that trust them, so their numbers are already that
     person's to see; nobody else gets a record per person. Still no report

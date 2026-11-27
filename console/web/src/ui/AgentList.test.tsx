@@ -3,7 +3,7 @@ import { describe, expect, it } from "vitest"
 import type { AgentCard, Ask } from "../api/types"
 import { mockApi } from "../api/mock"
 import { AgentList, EMPTY } from "./AgentList"
-import { NO_STATS_ROW, STATS_ROWS_NOTE, statsByAgent } from "./agents"
+import { NO_LAST_POST, NO_STATS_ROW, STATS_ROWS_NOTE, statsByAgent } from "./agents"
 import { Detail } from "./Detail"
 import { Overview } from "./Overview"
 
@@ -167,5 +167,20 @@ describe("the pages", () => {
     const other = cards.find((c) => !stats!.has(c.name))!
     expect(detail(other, stats)).toContain(`${NO_STATS_ROW} ${STATS_ROWS_NOTE}`)
     expect(detail(other, null)).toContain("Not read yet.")
+  })
+
+  it("says plainly why a card shows no last post, never as silence (#201)", async () => {
+    const { cards, asks } = await fleet()
+    const carols = cards.find((c) => c.for === "carol")!  // the mock's agent of another owner
+    expect(carols.lastPostAt).toBeNull()
+    const html = renderToStaticMarkup(
+      <AgentList cards={cards} asks={[]} filter="all" onFilter={noop} query="" onQuery={noop}
+        onOpenAgent={noop} onOpenAsk={noop} onAllAsks={noop} />)
+    expect(html).toContain(`<span title="${NO_LAST_POST}">${EMPTY}</span>`)
+    expect(html).toContain(`${NO_LAST_POST}`)  // the footnote says it in the open
+    const detail = renderToStaticMarkup(
+      <Detail api={mockApi()} card={carols} ask={null} asks={asks} from="Agents" onBack={noop} onFail={noop} />)
+    expect(detail).toContain(`<dt>last post</dt><dd><span class="muted small">${NO_LAST_POST}</span></dd>`)
+    expect(detail).not.toContain("silent")
   })
 })
