@@ -710,12 +710,23 @@ def nats_post(seq: int, created: int) -> dict[str, Any]:
 
 
 async def test_a_failed_first_backfill_loses_no_older_post_even_after_a_kill(dial, monkeypatch):
-    """#238 (end to end), RT-6.36 step 4: an older NATS post lies in the port's
-    memory only, a live one is queued while the first backfill's read fails
-    (`unread.after` raises): no seed, no mark. The next backfill reads the lane
-    from its start (seeds one before the older post, nothing handed over yet);
-    after a kill (a new inbox on the same mark store) the older post is asked
-    for again and handed over with the live one."""
+    """#241's review round, RT-6.36 step 4: this guards the "seed only from a
+    snapshot that was really read" check (`_seedable`). A backfill whose read
+    raised, or that could not read its channel, knows nothing of older posts in
+    the port's memory, so neither a live post nor the snapshot's end may seed
+    past them. It passes on the code before #241 (`e42b94a1^`), where nothing
+    was seeded at the snapshot's end and a failed backfill therefore seeded
+    nothing; it is not the end-to-end regression test for #238's lost post
+    (queued while the snapshot is unread, the read succeeds, then a kill), which
+    the unit tests pin.
+
+    What it walks: an older NATS post lies in the port's memory only, a live one
+    is queued while the first backfill's read fails (`unread.after` raises): no
+    seed, no mark, not even from one more live post after the failed read. The
+    next backfill reads the lane from its start (seeds one before the older
+    post, nothing handed over yet); after a kill (a new inbox on the same mark
+    store) the older post is asked for again and handed over with the live
+    one."""
     from mattermost_ai_agent_bus.client import post_of
     chat = NatsChat()
     chat.add(nats_post(9, 9_000))
@@ -734,6 +745,10 @@ async def test_a_failed_first_backfill_loses_no_older_post_even_after_a_kill(dia
     try:
         await box.ensure_connected()
         assert lane not in watermark.read(BOT)
+        # A live post after the failed read must not seed either: the failed read
+        # knows nothing of the older post in the port's memory (#242 review).
+        await box._put(ClassifiedEvent(kind="mention", post=post_of(nats_post(11, 11_000))))
+        assert lane not in watermark.read(BOT)
     finally:
         await box.close()
     # 2. The next backfill reads the lane from 0: both posts, seeded before the older.
@@ -745,7 +760,8 @@ async def test_a_failed_first_backfill_loses_no_older_post_even_after_a_kill(dia
         assert (mark.post_id, mark.at) == (f"n1:{WORK}:6", 6_999)
         assert box._first_waiting(lane) == 7_000
     finally:
-        await box.close()   # the kill: nothing was handed over
+        await box.close()   # the kill: nothing was handed over (the port's memory
+        # survives, so step 3 proves the mark's position, not the consumer's replay)
     # 3. A new inbox on the same store asks for the older post again.
     box = WebSocketInbox(client=chat, watched_channel_ids={WORK})
     try:
