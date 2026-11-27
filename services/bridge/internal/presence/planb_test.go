@@ -135,12 +135,30 @@ func TestAnOldPlanBRecordReadsAsOffAfterAFreshStart(t *testing.T) {
 	if !live.On(1, "home") {
 		t.Fatal("a record just written reads as off")
 	}
-	live.mu.RLock()
-	seeded := !live.srvNow.IsZero()
-	live.mu.RUnlock()
-	if !seeded {
-		t.Fatal("no server time")
+	// the create answer alone seeds the server's time: a second consumer
+	// name is not allowed by the reader, so the first one's answer is read on
+	// a fresh Switches through create itself, with no record observed
+	cctx2, cancel2 := context.WithCancel(ctx)
+	defer cancel2()
+	cancel()
+	time.Sleep(700 * time.Millisecond)
+	if err := js.DeleteConsumer(ctx, "PRESENCE", PlanBConsumer); err != nil {
+		t.Fatal(err)
 	}
+	only := &Switches{}
+	r2 := &PlanBReader{Log: r.Log, Deliver: "deliver.bridge.planb", Stream: "PRESENCE", Into: only}
+	if err := r2.create(cctx2, nc, "deliver.bridge.planb.seed"); err != nil {
+		t.Fatal(err)
+	}
+	only.mu.RLock()
+	got := only.srvNow
+	only.mu.RUnlock()
+	if d := time.Since(got); got.IsZero() || d < -5*time.Second || d > 5*time.Second {
+		t.Fatalf("the server time seeded by the create answer is %v (%v from now)", got, d)
+	}
+	// A record with an old stream time cannot be made here: the server stamps
+	// every message with its own clock and the test server has no way to
+	// set it; the old-record case is the fake-clock part above.
 }
 
 // Off is fail-safe: a record older than two republish periods by the stream's
