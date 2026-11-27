@@ -405,14 +405,18 @@ class Console:
                 headers=API_HEADERS)
         if path == "/v1/fleet":
             return self._stream(self._session_token(headers))
-        if path in ("/v1/asks", "/v1/stats"):
+        if path in ("/v1/asks", "/v1/stats", "/v1/agent-stats"):
             if self._operator(headers) is None:
                 return _unauthorized()
-            # RT-6.43 steps 6 and 8: read-only, from the agents' own records as this
-            # session's own consumers deliver them; "for me" by the operator's anchor
+            # RT-6.43 steps 6 and 8, #201: read-only, from the agents' own records
+            # as this session's own consumers deliver them; "for me" by the
+            # operator's anchor; the per-agent rows only of own or trusted agents,
+            # the aggregate reports over every agent (ADR-015 point 15)
             view = self._view(self._session_token(headers))
-            return httpd.Response.json(view.asks() if path == "/v1/asks"
-                                       else view.stats.reports(), headers=API_HEADERS)
+            payload = (view.asks() if path == "/v1/asks"
+                       else view.stats.reports() if path == "/v1/stats"
+                       else view.agent_stats())
+            return httpd.Response.json(payload, headers=API_HEADERS)
         if path == "/metrics":
             # #158: who may scrape — the operator that is logged in, the same
             # right /v1/* needs; no anonymous scrape, no token of its own and no

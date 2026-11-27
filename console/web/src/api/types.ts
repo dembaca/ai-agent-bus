@@ -69,6 +69,12 @@ export interface AgentCard {
   /** What the card shows: the bot's username the agent states (the name
    * coordinator("who") shows), else the short bus name. */
   displayName: string
+  /** The username the agent's presence states, even when another card
+   * states it too (#199); "" when it states none. */
+  statedName: string
+  /** Another card states the same username: the name is not confirmed and
+   * shows with a mark. */
+  nameShared: boolean
   home: string
   /** The channels it visits beside its home (RT-6.16): the graph draws them
    * apart from the home edge. Empty when it has none. */
@@ -268,6 +274,40 @@ export interface Report {
   stacks?: ReportStack[]
 }
 
+/** One agent's token sums of a window (#201): `all` and the split by type
+ * (the detail's "tokens/cache split"), the input's bus overhead and
+ * coordination, summed over the same parts as `all`. A type no part states,
+ * or an object stated empty, is null — n/a, never 0, the reports' rule; a
+ * stated 0 stays 0; a window without any token counts at all is null as a
+ * whole. */
+export interface TokenSums {
+  all: number | null
+  in: number | null
+  read: number | null
+  w5m: number | null
+  w1h: number | null
+  out: number | null
+  ovh: number | null
+  coord: number | null
+}
+
+/** One row of `GET /v1/agent-stats` (#201): the canvas's per-agent numbers
+ * from the STATS parts this session's own consumers deliver (RT-6.43 step 8)
+ * — token sums of the last 24 hours and of the 7-day window, the posts,
+ * wakes and tool calls of the last 24 hours. Only own or trusted agents have
+ * a row: those whose attestation names the logged-in operator as owner or
+ * trusted (ADR-015 point 15). "24 hours" are the parts the server received
+ * in 24 hours; a long session's part may cover time before. A field no part
+ * of the window carries is null, never 0. */
+export interface AgentStatsRow {
+  agent: string
+  tok24h: TokenSums | null
+  tok7d: TokenSums | null
+  posts24h: number | null
+  wakes24h: number | null
+  tools24h: number | null
+}
+
 /** The whole API the app needs (ADR-015 point 10). */
 export interface ConsoleApi {
   /** `GET /v1/me`: the logged-in operator. */
@@ -281,5 +321,6 @@ export interface ConsoleApi {
   asks(): Promise<Ask[]>
   graph(): Promise<GraphData>
   stats(): Promise<Report[]>
+  agentStats(): Promise<AgentStatsRow[]>
   thread(rootId: string, next?: string | null): Promise<ThreadPage>
 }

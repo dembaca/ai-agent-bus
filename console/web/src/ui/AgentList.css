@@ -158,6 +158,14 @@
 
 .agents__row { cursor: pointer; }
 .agents__row:hover td { background: var(--surface-2); }
+/* the agent whose detail is open beside the list (#200) */
+.agents__row--selected td { background: var(--accent-soft); }
+.agents__row--selected td:first-child { box-shadow: inset 3px 0 0 var(--accent); }
+/* beside a detail: four columns, narrower name and status */
+.agents__table--compact { min-width: 520px; }
+.agents__table--compact .agents__col--agent { width: 170px; }
+.agents__table--compact .agents__col--status { width: 170px; }
+.agents__table--compact .agents__col--last { width: 80px; }
 /* an agent without fresh presence: its text muted, its pill red (faded
    rows would fail the contrast check) */
 .agents__row--offline td { color: var(--muted); }

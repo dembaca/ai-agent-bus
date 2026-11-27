@@ -110,6 +110,9 @@ async def test_asks_and_stats_answer_empty_until_nats_carries_them(
     assert status == 200 and [r["id"] for r in reports] == ["share-per-version", "asks-24h", "asks-7d",
                                                                  "traffic-by-category", "tokens-by-category"]
     assert all(f["value"] is None for r in reports for f in r["fields"])
+    # the per-agent rows: none without the operator's anchor (ADR-015 point 15)
+    status, _headers, body = await get(console, "/v1/agent-stats")
+    assert status == 200 and json.loads(body) == []
 
 
 async def test_threads_answer_an_empty_page(console: Console) -> None:
@@ -177,7 +180,7 @@ async def test_every_v1_route_answers_401_without_a_session() -> None:
         return c.endpoints  # type: ignore[return-value]
     await c.start(discover=fake_discover)
     try:
-        for path in ("/v1/me", "/v1/asks", "/v1/stats", "/v1/graph",
+        for path in ("/v1/me", "/v1/asks", "/v1/stats", "/v1/agent-stats", "/v1/graph",
                      "/v1/threads/x"):
             status, headers, _b = await get(c, path)
             assert status == 401, path

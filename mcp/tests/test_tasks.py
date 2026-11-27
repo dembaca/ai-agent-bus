@@ -400,7 +400,7 @@ _SKILL = Path(server.__file__).resolve().parents[3] / "skills" / "ai-agent-bus"
 # Per-load budgets, about 10 % over the 0.57.0 size (in brackets): SKILL.md is
 # the core every agent loads; the files next to it are read only when they apply.
 _SKILL_BUDGET = {
-    "SKILL.md": 19_180,                # (16726) was 22,144 before the runtime split; + RT-6.26, + go / no-go (RT-6.11), + 100: no BLOCKED on a human (RT-6.11), + 120: end the turn after an ask (RT-6.11), + 80: only_human (RT-6.25), + 160: the fields of ask_human (RT-6.11), + 120: the 👑's receipts (RT-6.12 step 7), + 80: `debug` grants nothing (RT-6.31), + 60: which fields the floor reads (RT-6.25 step 1), + 90: for_crown (RT-6.6 step 5), + 80: never answer only in the terminal (RT-6.2 step 2), + 220: how to attach a file, headless and offline (RT-6.33), + 180: never self-register in a corral sandbox (RT-6.18), + 310: one terminal sentence once the result is on the bus (RT-6.2 step 2) and the skill back after a compaction (RT-6.7), + 30: people see a NATS home only via a bridge (RT-6.36 step 6), + 30: a `not_approver` yes approves nothing (RT-6.42 step 9), + 120: one OpenCode session per process under corral (RT-6.20 step 1)
+    "SKILL.md": 19_260,                # + 80: a reply in an agent's thread wakes only it (RT-6.6 step 5, #207); (16726) was 22,144 before the runtime split; + RT-6.26, + go / no-go (RT-6.11), + 100: no BLOCKED on a human (RT-6.11), + 120: end the turn after an ask (RT-6.11), + 80: only_human (RT-6.25), + 160: the fields of ask_human (RT-6.11), + 120: the 👑's receipts (RT-6.12 step 7), + 80: `debug` grants nothing (RT-6.31), + 60: which fields the floor reads (RT-6.25 step 1), + 90: for_crown (RT-6.6 step 5), + 80: never answer only in the terminal (RT-6.2 step 2), + 220: how to attach a file, headless and offline (RT-6.33), + 180: never self-register in a corral sandbox (RT-6.18), + 310: one terminal sentence once the result is on the bus (RT-6.2 step 2) and the skill back after a compaction (RT-6.7), + 30: people see a NATS home only via a bridge (RT-6.36 step 6), + 30: a `not_approver` yes approves nothing (RT-6.42 step 9), + 120: one OpenCode session per process under corral (RT-6.20 step 1)
     "runtime-claude-code.md": 4_850,    # (4417)
     "runtime-no-hooks.md": 2_760,       # (2381) + 160: no ⏳ without turn hooks (RT-6.6 step 10)
     "self-registration.md": 2_460,      # (2234) + 10: never in a corral sandbox (RT-6.18)
@@ -445,7 +445,9 @@ def test_static_budget():
     # + the shortened lines of that line restored (review of #161): 6,485 then
     # + ADR-008 amendment: `cost_usd` in that line (review of #172): 6,5xx now
     # + ADR-007 phase E: the receipts and crown_taken (RT-6.6 step 10)
-    assert len((skill / "coordinator.md").read_text()) <= 6_930  # + the NATS home line (RT-6.38), + `/agent-mandate` (RT-6.26 step 8), + a task waiting on an ask (RT-6.19), + for_crown (RT-6.6 step 5)
+    # + 1,040: the hourly check while the crown is held and DONE closing a task (RT-6.6 step 12)
+    # + 150: a human's reply in another agent's thread is that agent's (RT-6.6 step 5, #207)
+    assert len((skill / "coordinator.md").read_text()) <= 8_150  # + the NATS home line (RT-6.38), + `/agent-mandate` (RT-6.26 step 8), + a task waiting on an ask (RT-6.19), + for_crown (RT-6.6 step 5)
     # cleandoc: Python 3.13 strips a docstring's indentation, older ones don't.
     # + RT-6.14 step 9: scope="all", the overview across homes (#141)
     assert len(inspect.cleandoc(server.coordinator.__doc__)) <= 425 + 90 + 80
@@ -464,10 +466,11 @@ _INSTRUCTION_BUDGET = {
     # + 70 each, RT-6.33: how to send a file (attach, mm-agent-post.sh --file).
     # + 110 each, RT-6.2 step 2: with the result on the bus, one sentence in the terminal.
     # + 120 each, RT-6.34: the host's login-approval ask is not the agent's, a reaction approves nothing.
-    "self-registering": (2700, 3050, 3200),   # (1860, 2128, 2267)
-    "host-managed": (2530, 2860, 3010),       # (1680, 1948, 2087); + get_file (RT-6.23)
-    "hosted": (2650, 3000, 3150),             # (1806, 2074, 2213)
-    "unavailable": (2850, 3200, 3350),        # (1987, 2255, 2394)
+    # + 60 each, RT-6.6 step 5 (#207): a reply in another agent's thread is that agent's, not the crown's.
+    "self-registering": (2760, 3110, 3260),   # (1860, 2128, 2267)
+    "host-managed": (2590, 2920, 3070),       # (1680, 1948, 2087); + get_file (RT-6.23)
+    "hosted": (2710, 3060, 3210),             # (1806, 2074, 2213)
+    "unavailable": (2910, 3260, 3410),        # (1987, 2255, 2394)
 }
 
 
@@ -496,7 +499,7 @@ def test_instructions_budget(monkeypatch, variant, mode):
 # the more_pending item of wait_for_events. Counting what the bus costs must not cost
 # tokens itself: a change here is a deliberate one, with this hash updated in the same PR
 # and a reason in its body. The plugin version and a digest's clock time are left out.
-_MODEL_TEXT_SHA256 = "5f5536b0fe0eddca0d11a4fd8f9914e3e234bbaa6e7a1d168844edecec57f468"
+_MODEL_TEXT_SHA256 = "6c96eeb8a8795fbf4c2e687981a54733503998c27e2bf5a71ecb91544ae7a655"
 _ROOT = Path(__file__).resolve().parents[2]
 # A one-line string literal of TypeScript, or a comment (skipped, so a quote in a comment is none).
 _TS_TOKEN = re.compile(r'//[^\n]*|/\*.*?\*/|"(?:[^"\\\n]|\\.)*"|\'(?:[^\'\\\n]|\\.)*\'|`(?:[^`\\\n]|\\.)*`', re.S)

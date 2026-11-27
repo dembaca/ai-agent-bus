@@ -3,6 +3,8 @@
   "card": {
     "name": "agent-oudzj4bhpl62iahctur5s5sf44",
     "displayName": "agent-himalia-nats-pilo-772844",
+    "statedName": "agent-himalia-nats-pilo-772844",
+    "nameShared": false,
     "home": "dev",
     "guests": ["bgl-infra"],
     "state": "online",
@@ -40,6 +42,8 @@
       "card": {
         "name": "agent-oudzj4bhpl62iahctur5s5sf44",
         "displayName": "agent-himalia-nats-pilo-772844",
+        "statedName": "agent-himalia-nats-pilo-772844",
+        "nameShared": false,
         "home": "dev",
         "guests": ["bgl-infra"],
         "state": "online",
@@ -298,5 +302,33 @@
         ]
       }
     ]
-  }
+  },
+  "agentStats": [
+    {
+      "agent": "agent-oudzj4bhpl62iahctur5s5sf44",
+      "tok24h": {
+        "all": 92100,
+        "in": 1200,
+        "read": 90000,
+        "w5m": null,
+        "w1h": null,
+        "out": 900,
+        "ovh": 21230,
+        "coord": 4460
+      },
+      "tok7d": {
+        "all": 92100,
+        "in": 1200,
+        "read": 90000,
+        "w5m": null,
+        "w1h": null,
+        "out": 900,
+        "ovh": 21230,
+        "coord": 4460
+      },
+      "posts24h": null,
+      "wakes24h": null,
+      "tools24h": null
+    }
+  ]
 }

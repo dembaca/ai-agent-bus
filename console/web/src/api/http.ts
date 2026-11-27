@@ -14,7 +14,7 @@
 // cast goes unchecked. A 401 anywhere means the session is gone: the app
 // goes to the server's `/login` route (the mock never 401s).
 import type {
-  AgentCard, Ask, ConsoleApi, ConnState, FleetEvent, GraphData, Post,
+  AgentCard, AgentStatsRow, Ask, ConsoleApi, ConnState, FleetEvent, GraphData, Post,
   Report, ThreadPage,
 } from "./types"
 
@@ -141,6 +141,9 @@ export function httpApi(base: string): ConsoleApi {
     },
     async stats(): Promise<Report[]> {
       return await json(strip, "/v1/stats")
+    },
+    async agentStats(): Promise<AgentStatsRow[]> {
+      return await json(strip, "/v1/agent-stats")
     },
     async thread(rootId: string, next?: string | null): Promise<ThreadPage> {
       const query = next ? `?next=${encodeURIComponent(next)}` : ""

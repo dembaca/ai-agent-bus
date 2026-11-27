@@ -8,7 +8,7 @@
 // The operator of this console is "dembaca" (Ask.forMe / mayAnswer are
 // relative to that name).
 import type {
-  AgentCard, AgentState, Ask, ConnState, ConsoleApi, FleetEvent, GraphData,
+  AgentCard, AgentState, AgentStatsRow, Ask, ConnState, ConsoleApi, FleetEvent, GraphData,
   Operator, Post, Report, ReportStack, TaskRow, ThreadPage,
 } from "./types"
 
@@ -101,7 +101,7 @@ const cards = (): CardWire[] => [
   },
 ]
 
-type CardWire = Omit<AgentCard, "displayName" | "helloPostId">
+type CardWire = Omit<AgentCard, "displayName" | "statedName" | "nameShared" | "helloPostId">
 type AskWire = Omit<Ask, "displayName">
 
 const asks = (): AskWire[] => [
@@ -146,6 +146,9 @@ const withTasks = (all: CardWire[]): AgentCard[] =>
   all.map((card) => ({
     ...card,
     displayName: short(card.name),
+    // the mock's names are the bots' usernames, each stated once
+    statedName: card.name,
+    nameShared: false,
     helloPostId: `hello-${card.name}`,
     tasks: tasksOf(card.name),
   }))
@@ -298,6 +301,20 @@ function stack(label: string, eq: number[], raw: number[]): ReportStack {
     raw: cats.map((category, i) => ({ category, value: raw[i] * 380_000, percent: raw[i] })),
   }
 }
+
+// The per-agent rows (#201): the mock's two busiest agents, the operator's own; a runtime that
+// reports no token split (the first card, Claude Code behind the gateway)
+// shows n/a for its tokens, never 0.
+const agentStats = (): AgentStatsRow[] => [
+  { agent: "agent-mac-ai-agent-164534",
+    tok24h: null, tok7d: null, posts24h: 21, wakes24h: 14, tools24h: 96 },
+  { agent: "agent-mac-ai-agent-01d05a",
+    tok24h: { all: 92_100, in: 1_200, read: 90_000, w5m: null, w1h: null, out: 900,
+              ovh: 21_230, coord: 4_460 },
+    tok7d: { all: 640_000, in: 8_400, read: 610_000, w5m: 4_200, w1h: null, out: 9_800,
+             ovh: 148_000, coord: 31_000 },
+    posts24h: 12, wakes24h: 9, tools24h: 61 },
+]
 
 const graph = (): GraphData => ({
   nodes: [
@@ -455,6 +472,9 @@ export function mockApi(): ConsoleApi {
     },
     async stats(): Promise<Report[]> {
       return stats()
+    },
+    async agentStats(): Promise<AgentStatsRow[]> {
+      return agentStats()
     },
     async thread(rootId: string, _next?: string | null): Promise<ThreadPage> {
       // One page; the server pages with a cursor, the mock has all of it.

@@ -11,8 +11,8 @@
 // shape and the literal words are guarded at load. The guards and the fixture
 // itself run in development only: the production bundle carries neither.
 import {
-  AGENT_STATES, HARNESS_LABEL, type AgentCard, type Post, type Report, type ReportSegment, type ReportStack,
-  type ThreadPage,
+  AGENT_STATES, HARNESS_LABEL, type AgentCard, type AgentStatsRow, type Post, type Report,
+  type ReportSegment, type ReportStack, type ThreadPage,
 } from "./types"
 import type { WireAsk, WireMe } from "./http"
 import fixture from "../../../fixtures/console-api.json"
@@ -29,6 +29,7 @@ let shapes: {
   page: ThreadPage, events: FixtureEvShape,
   ask: Omit<WireAsk, "end" | "kind"> & { end: string; kind: string }
   report: ReportShape
+  agentStats: AgentStatsRow[]
 } | null = null
 
 type ReportFieldShape = Omit<Report["fields"][number], "unit"> & { unit: string }
@@ -48,6 +49,7 @@ if (!import.meta.env.PROD) {
   const ask = fixture.ask satisfies Omit<WireAsk, "end" | "kind"> & { end: string; kind: string }
   const me = fixture.me satisfies WireMe
   const report: ReportShape = fixture.report satisfies ReportShape
+  const agentStats: AgentStatsRow[] = fixture.agentStats satisfies AgentStatsRow[]
   if (ask.kind !== "approval" && ask.kind !== "question") {
     throw new Error(`wire fixture: unknown ask kind ${ask.kind}`)
   }
@@ -88,7 +90,17 @@ if (!import.meta.env.PROD) {
   if (ask.end !== "open") {
     throw new Error(`wire fixture: the example ask is not open (${ask.end})`)
   }
-  shapes = { card, page, events, ask, report }
+  if (agentStats.length === 0) {
+    throw new Error("wire fixture: no agent-stats row")
+  }
+  for (const row of agentStats) {
+    for (const sums of [row.tok24h, row.tok7d]) {
+      if (sums !== null && sums.all === null) {
+        throw new Error("wire fixture: a token sum without its total")
+      }
+    }
+  }
+  shapes = { card, page, events, ask, report, agentStats }
 }
 
 export const wire_shapes = shapes

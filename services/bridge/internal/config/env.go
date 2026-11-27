@@ -49,7 +49,9 @@ func OSEnv(warn Warn) *Env { return NewEnv(os.LookupEnv, warn) }
 // is a setting new after the rename, with no old spelling: only newName is
 // read (docs/env-names.md lists it with the same name in both columns).
 func (e *Env) Get(newName, oldName string) (string, error) {
-	if oldName == "" {
+	if oldName == "" || newName == oldName {
+		// A setting that was never renamed: one name, one read, and no
+		// deprecation warning about itself.
 		v, _, err := e.read(newName)
 		return v, err
 	}
