@@ -136,6 +136,23 @@ before 0.5.0 are described in the git history.
   any hand-over (explicit acks on the BUS consumers would close it); and a post
   past the stream's 14 days or the consumer's inactivity threshold does not come
   back.
+- **Plan B piece 3: direct messages between agents over NATS** (#244, ADR-014
+  phase 5, RT-6.36 step 7). With the piece's switch on for the home, a
+  `post_message(to=<agent>)` goes over the bus's own direct subject
+  `<bus>.dm.<recipient>.<sender>` instead of the two bots' Mattermost DM, and
+  the recipient reads it as a DM event: woken by the DM rule, its post in no
+  channel with the id `n1:@dm:<stream sequence>`. The sender reaches a
+  recipient only through the one test of a link (the bot's status carries the
+  NATS name's tag, the name's presence names that very bot) and only when the
+  recipient's presence states that its own home runs the piece (a new `dm`
+  field, self-stated); every other case - the switch off on either side, a
+  person or an unknown name, no link, a DM with files or an ask, a DM to a
+  thread root, no bus - keeps the Mattermost DM as before, with the same
+  refusals. The login service's rights are unchanged: one test in
+  `perms_test.go` names the wildcard recipient, the pinned sender token and
+  only its own `deliver` subjects. The switch itself is piece 1's (#249,
+  `<presence>.planb.<channel>.v1`, off by default); this piece carries none of
+  its own, so nothing changes until a channel's record names piece 3.
 
 ## 0.104.0
 

@@ -116,9 +116,9 @@ from functools import partial
 from types import MappingProxyType
 from typing import TYPE_CHECKING, Any, Protocol
 
-from . import a2a, config, lease, natsbus, owners
+from . import a2a, config, lease, natsbus, owners, planb
 from .events import ChatEvent, EventSource, EventStream, PostEvent, ReactionEvent
-from .ids import _ID, NATS_POST
+from .ids import _ID, NATS_POST, dm_seq
 from .model import NotFound, Post, Reaction, Thread, UnreadChannel
 from .natsbus import BOT_RE, DM_SINCE, Attestation, Event, NameMismatch, NatsBus, NatsBusError, NatsSettings
 from .port import AttestedCircle
@@ -175,6 +175,13 @@ class BusLike(Protocol):
 
     async def unreact(self, channel: str, ref: int, emoji: str) -> None: ...
 
+    async def dm(self, recipient: str, text: str, root: int | None = None,
+                 props: dict[str, natsbus.Prop] | None = None) -> None: ...
+
+    def dm_of(self, agent: str) -> bool: ...
+
+    dm_source: Callable[[], bool] | None  # plan B piece 3: the home's DM switch, in the presence
+
     def notice_teller(self, agent: str) -> str: ...
 
     def owner_of(self, agent: str) -> str: ...
@@ -229,6 +236,17 @@ def parse_post_id(value: str) -> tuple[str, int] | None:
     """(channel name, stream sequence) of a NATS post id, None for any other."""
     m = NATS_POST.fullmatch(value or "")
     return (m["channel"], int(m["seq"])) if m else None
+
+
+def dm_post_id(seq: int) -> str:
+    """A direct message's id (plan B piece 3): a DM has no channel, so its id says so
+    (`n1:@dm:<stream sequence>`) and no channel's post can carry it."""
+    return post_id(DM_SINCE, seq)
+
+
+def parse_dm_id(value: str) -> int | None:
+    """The stream sequence of a direct message's id (`n1:@dm:<seq>`), None for any other."""
+    return dm_seq(value)
 
 
 def is_nats_user(user_id: str) -> bool:
@@ -310,7 +328,9 @@ def _since_from_read_mark(uid: str, channels: set[str]) -> dict[str, tuple[int, 
     `n1:<channel name>:<seq>`. That channel's sequence and the post's server time (ms, the
     mark's `at`) go into the first CONNECT; a channel the session no longer reads is
     ignored, and so is a sequence past 2^63-1 (the hello's `since` is a map of uint64).
-    Direct messages have no lane here: the port drops them (`_on_event`), so no DM cursor."""
+    Direct messages have no lane here: a DM post has no channel id, so the read mark keeps
+    nothing for them and a restarted server has no `@dm` cursor (the login service starts that
+    consumer at `new`: a DM that came while the session was away stays unread)."""
     from . import watermark
 
     out: dict[str, tuple[int, int]] = {}
@@ -469,6 +489,19 @@ class NatsPort:
     def use_bus(self, bus: BusLike) -> None:
         """The bus this port sends and reads by (start makes one)."""
         self._bus = bus
+        bus.dm_source = self._dm_on  # plan B piece 3: the home's DM switch, stated in its presence
+
+    def _dm_on(self) -> bool:
+        """Whether this home runs plan B's agent DMs over NATS (piece 3): `planb.on(3, home)`,
+        off while the switch (piece 1) is not there. Stated in every presence this agent
+        sends, and read on every send of a DM and every DM event; a switch that cannot be read
+        counts as off, so nothing leaves Mattermost by doubt."""
+        try:
+            return bool(self._s.home) and bool(planb.on(3, self._s.home))
+        except Exception as exc:  # noqa: BLE001 — in doubt off: agent DMs stay on Mattermost
+            log.info("nats: the DM switch was not read (%s): agent DMs stay on Mattermost",
+                     type(exc).__name__)
+            return False
 
     async def start(self, login: natsbus.LoginLike, owner: str | None = None) -> None:
         """Resolve the homes' channels, then start the bus as the login's owner
@@ -503,6 +536,7 @@ class NatsPort:
                 self._bus = bus
                 bus.on_person_gap = self._person_gap
                 bus.card_source = self._card
+                bus.dm_source = self._dm_on  # plan B piece 3: stated in every presence
                 bus.ask_source = self._asks
                 try:
                     bus.link_bot(bot, await self._bot_name())
@@ -992,6 +1026,71 @@ class NatsPort:
         finally:
             self._echoes.pop(nonce, None)
 
+    async def dm(self, to: str, message: str, *, root_id: str | None = None,
+                 props: dict[str, Any] | None = None,
+                 file_ids: Sequence[str] = ()) -> str:
+        """A direct message to another agent (plan B piece 3, ADR-014 phase 5): its answer is
+        the NATS name of the recipient the message went to over the bus's own subject
+        `<bus>.dm.<recipient>.<sender>`, and '' when the caller keeps the Mattermost DM.
+
+        Over NATS only when this home runs agent DMs over NATS (the switch `planb.on(3, home)`),
+        the recipient names that too in its presence, and the two are linked: the username `to`
+        is a Mattermost bot whose status carries the tag of a fresh NATS name whose presence
+        names that very bot (RT-6.37, the one test of a link). A person, an unknown name, an
+        unlinked or absent recipient, a recipient whose flag is off or not stated, files, an ask
+        and a reply (a DM has no thread) all give '': the caller sends the Mattermost DM as
+        before, or refuses it as before (RT-6.36 step 7). A send that was made over NATS and
+        fails raises: nothing falls back to Mattermost, as for a post."""
+        if not to.strip() or root_id or file_ids:
+            return ""
+        if not self._dm_on():
+            return ""
+        if a2a.kind_of({"props": props or {}, "message": message}) == a2a.ASK:
+            return ""  # an ask is for people: Mattermost
+        bus = self._bus if self._fatal is None else None
+        if bus is None or not bus.connected:
+            return ""
+        recipient = await self._dm_recipient(bus, to)
+        if not recipient:
+            return ""
+        await bus.dm(recipient, message, props=wire_props(props, self._s.props_prefix))
+        return recipient
+
+    async def _dm_recipient(self, bus: BusLike, to: str) -> str:
+        """The NATS name a DM to the bot username `to` goes to, '' when it stays on Mattermost:
+        the one fresh NATS name linked to that bot - its status names the name's tag and the
+        name's presence names the bot (RT-6.37) - whose own presence says its home runs agent
+        DMs over NATS. A tag that fits two fresh names links none, as in `linked`."""
+        name = to.strip().lstrip("@").lower()
+        if not name:
+            return ""
+        try:
+            users = await self.inner.bots_named({name})
+        except Exception as exc:  # noqa: BLE001 — no read: the Mattermost DM path decides
+            log.info("nats: the bot for %s was not read (%s): the DM stays on Mattermost",
+                     name, type(exc).__name__)
+            return ""
+        user = users.get(name)
+        if user is None:
+            return ""  # a person or an unknown name: the caller refuses it, as without NATS
+        tag = lease.link_of(str((user.custom_status or {}).get("text") or ""))
+        if not tag:
+            return ""
+        same = [n for n in bus.presence_snapshot()
+                if bus.presence_of(n) != "offline" and natsbus.link_tag(n) == tag
+                and bus.bot_of(n) == user.id]
+        if len(same) > 1:
+            log.warning("nats: the link tag %s fits %d fresh NATS names: the DM to %s stays on "
+                        "Mattermost", tag, len(same), name)
+            return ""
+        if not same:
+            return ""
+        if not bus.dm_of(same[0]):
+            log.info("nats: %s does not state that its home runs agent DMs over NATS: the DM to "
+                     "%s stays on Mattermost", same[0], name)
+            return ""
+        return same[0]
+
     def post_sync(self, message: str, *, channel_id: str, root_id: str = "",
                   props: dict[str, Any] | None = None, timeout: float = 5.0) -> Post:
         # The exit handler's last words (a BYE) are for the people in the home: Mattermost.
@@ -1010,6 +1109,9 @@ class NatsPort:
     async def add_reaction(self, post_id: str, emoji: str) -> None:
         got = parse_post_id(post_id)
         if got is None:
+            if parse_dm_id(post_id) is not None:
+                raise NatsPortError("a reaction to a direct message is not carried over NATS yet: "
+                                    "answer the agent with a DM (post_message to=); nothing sent")
             # A Mattermost post (a person's, also in a NATS home): the reaction goes there.
             await self.inner.add_reaction(post_id, emoji)
             return
@@ -1021,6 +1123,9 @@ class NatsPort:
         """Take the bot's reaction off a NATS post (an unreaction: only its own)."""
         got = parse_post_id(post_id)
         if got is None:
+            if parse_dm_id(post_id) is not None:
+                raise NatsPortError("a reaction to a direct message is not carried over NATS yet: "
+                                    "there is none to take off; nothing sent")
             raise NatsPortError("only a NATS post id (n1:<channel>:<n>) has a NATS reaction to remove")
         self._home(got[0])
         await self._require().unreact(got[0], got[1], emoji)
@@ -1031,11 +1136,22 @@ class NatsPort:
 
     # --- receiving -----------------------------------------------------------------------
     async def _on_event(self, ev: Event) -> None:
-        if ev.where == DM_SINCE or ev.where not in self._homes:
+        dm = ev.where == DM_SINCE
+        if not dm and ev.where not in self._homes:
             log.debug("nats: dropped a message outside the NATS homes (%s)", ev.where)
             return
         if not is_nats_user(ev.sender):
             log.warning("nats: dropped a message of %r: an agent name has a '-'", ev.sender[:40])
+            return
+        if dm:
+            # A direct message between agents (plan B piece 3): the transport delivers it on
+            # `deliver.<name>.dm` and it has no channel. Read only while this home runs agent
+            # DMs over NATS; off, it is dropped as it always was.
+            if not self._dm_on():
+                log.debug("nats: dropped a direct message: agent DMs over NATS are off in ~%s",
+                          self._s.home)
+                return
+            self._dispatch(ev, "")
             return
         try:
             ids = await self.resolve()
@@ -1043,15 +1159,24 @@ class NatsPort:
             log.warning("nats: dropped a message of ~%s: its channel is not known (%s)",
                         ev.where, type(exc).__name__)
             return
+        self._dispatch(ev, ids[ev.where])
+
+    def _dispatch(self, ev: Event, channel_id: str) -> None:
+        """One delivered message as the agent reads it: a post, or a reaction (also on a DM)."""
         if ev.message.kind == "post":
-            self._on_post(ev, ids[ev.where])
+            self._on_post(ev, channel_id)
         else:
-            self._on_reaction(ev, ids[ev.where])
+            self._on_reaction(ev, channel_id)
 
     def _on_post(self, ev: Event, channel_id: str) -> None:
         m, ch = ev.message, ev.where
         root = ""
-        if m.root is not None:
+        if m.root is not None and ch == DM_SINCE:
+            # Every sender's DMs share the one lane with no channel: a root there would thread a
+            # second sender's DM under the first one's, so a DM is top-level, always (RT-6.36
+            # step 7: a DM has no thread).
+            log.info("nats: the root of a direct message is ignored: a DM has no thread")
+        elif m.root is not None:
             at = self._where.get(m.root)
             if at is not None and at != ch:
                 log.warning("nats: dropped a post of %s in ~%s: its root is in ~%s",
@@ -1103,7 +1228,9 @@ class NatsPort:
         if entry is not None and entry[0] == ch and not entry[1].done() \
                 and self._bus is not None and ev.sender == self._bus.name:
             entry[1].set_result(post)
-        self._tell(PostEvent(post=self.inner.with_links(post), channel_type=None, edited=False))
+        self._tell(PostEvent(post=self.inner.with_links(post),
+                             channel_type="D" if ch == DM_SINCE else None,  # a DM: no channel
+                             edited=False))
 
     def _on_reaction(self, ev: Event, channel_id: str) -> None:
         m, ch = ev.message, ev.where
@@ -1111,6 +1238,11 @@ class NatsPort:
         at = self._where.get(m.ref)
         if at is None:
             log.info("nats: a reaction to post %d in ~%s is ignored: the post is not known", m.ref, ch)
+            return
+        if at == DM_SINCE:
+            # A reaction to a DM is not carried yet (the transport's dm_react is unused): any name
+            # could react to another sender's DM on the one shared lane, so it is dropped.
+            log.debug("nats: a reaction to a direct message is dropped: not carried")
             return
         if at != ch:
             log.warning("nats: dropped a reaction of %s in ~%s: its post is in ~%s", ev.sender, ch, at)
