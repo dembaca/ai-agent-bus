@@ -284,6 +284,12 @@ async def test_with_piece_4_on_too_a_bot_is_linked_by_the_bridges_record_alone(
     port, _bus, inner = await _world(monkeypatch, piece="2,4")
     assert await port._linked_name(BOT_A) == AGENT_A
     assert await port._linked_name("z" * 26) == ""  # in no record, no presence names it: no read
+    # a person's bound account (not the session's own bot) is no agent's bot, and no read either
+    bob = "w" * 26
+    await _bus.\
+        _on_presence_msg(FakeMsg(f"presence.account.mattermost.{bob}.v1", _presence_reply(_bus, 71, 71, T0 + 1),
+                                 _account_body(name="bob")))
+    assert await port._linked_name(bob) == ""
     assert inner.reads == []
 
 
