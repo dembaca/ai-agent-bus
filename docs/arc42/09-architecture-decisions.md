@@ -4155,7 +4155,7 @@ reads yet (RT-6.39 step 5).
     one subscribe right, `deliver.<agent>.>`) and no stream covers
     either. Today an agent has no such right (`callout/perms.go`): the
     login service grants it publish on `<req>.*.<agent>` alone, the
-    bridge subscribe on `<req>.>` and publish on `deliver.*.req.>`;
+    bridge subscribe on `<req>.>` and publish on `deliver.*.req.*`;
     `callout/perms_test.go` gets the cases that an agent publishes there
     only under its own name and never on `deliver.>`. Nothing on these
     subjects is kept: a lost message fails the request, and the tool
@@ -4172,7 +4172,7 @@ reads yet (RT-6.39 step 5).
     under a per-kind size limit, a per-agent rate limit and truncated logs;
     the agent's request id, never a body field, makes the answer's subject.
     The bridge user's rights - subscribe `<req>.>`, publish
-    `deliver.*.req.>` - are in the example configuration, and its test runs
+    `deliver.*.req.*` - are in the example configuration, and its test runs
     the handler under them with two agents', so a refused subscribe or answer
     stops the bridge instead of staying silent. The MCP client's prefix is a
     setting beside the bus's, presence's and STATS's.

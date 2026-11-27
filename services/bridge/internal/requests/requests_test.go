@@ -8,6 +8,7 @@ import (
 	"io"
 	"log/slog"
 	"strings"
+	"sync"
 	"testing"
 	"time"
 
@@ -163,17 +164,17 @@ func TestTheValidRequestGetsTheNotBuiltAnswer(t *testing.T) {
 	}
 }
 
-// A piece's raw JSON is the answer's result, and the request's part and last
-// go through untouched.
+// A piece's raw JSON is the answer's result, and the piece's own part and last
+// are what the answer carries - never the request's.
 func TestAPiecesResultIsTheAnswer(t *testing.T) {
 	srv, nc := start(t)
 	ch := watch(t, nc)
 	startHandler(t, srv, nc, &Handler{Log: quiet, Prefix: "req",
-		Handlers: map[string]Piece{"history": func(_ context.Context, agent string, req Request) (json.RawMessage, error) {
+		Handlers: map[string]Piece{"history": func(_ context.Context, agent string, req Request) (Reply, error) {
 			if agent != "alice" || req.Request != goodID || !strings.Contains(string(req.Payload), "anchor") {
 				t.Errorf("the piece got %q, %+v", agent, req)
 			}
-			return json.RawMessage(`{"messages":[{"id":"m1"}]}`), nil
+			return Reply{Result: json.RawMessage(`{"messages":[{"id":"m1"}]}`), Part: 2, Last: false}, nil
 		}}})
 	// not built is the scaffold's answer only
 	publish(t, nc, "req.file.alice",
@@ -200,13 +201,38 @@ func TestAPiecesResultIsTheAnswer(t *testing.T) {
 	}
 }
 
+// A piece sends its answer in parts and marks the last one itself: part 1 is
+// not the last, part 2 is, and the bridge takes both from the piece.
+func TestAPieceMarksTheLastPartItself(t *testing.T) {
+	srv, nc := start(t)
+	ch := watch(t, nc)
+	startHandler(t, srv, nc, &Handler{Log: quiet, Prefix: "req",
+		Handlers: map[string]Piece{"file": func(_ context.Context, _ string, req Request) (Reply, error) {
+			return Reply{Result: json.RawMessage(fmt.Sprintf(`{"part":%d}`, req.Part)),
+				Part: req.Part, Last: req.Part == 2}, nil
+		}}})
+	for _, part := range []int{1, 2} {
+		id := fmt.Sprintf("0123456789abc%03d", part)
+		publish(t, nc, "req.file.alice",
+			fmt.Sprintf(`{"v":1,"request":%q,"kind":"file","part":%d,"last":false,"payload":{}}`, id, part))
+		m := want(t, ch, time.Second)
+		var a answer
+		if err := json.Unmarshal(m.Data, &a); err != nil {
+			t.Fatal(err)
+		}
+		if a.Part != part || a.Last != (part == 2) {
+			t.Fatalf("part %d: %s", part, m.Data)
+		}
+	}
+}
+
 // A piece's error is the answer's error, and there is no result beside it.
 func TestAPiecesErrorIsTheAnswer(t *testing.T) {
 	srv, nc := start(t)
 	ch := watch(t, nc)
 	startHandler(t, srv, nc, &Handler{Log: quiet, Prefix: "req",
-		Handlers: map[string]Piece{"history": func(context.Context, string, Request) (json.RawMessage, error) {
-			return json.RawMessage(`{"ignored":true}`), errors.New("no anchor in the request")
+		Handlers: map[string]Piece{"history": func(context.Context, string, Request) (Reply, error) {
+			return Reply{Result: json.RawMessage(`{"ignored":true}`)}, errors.New("no anchor in the request")
 		}}})
 
 	publish(t, nc, "req.history.alice", body("history", goodID))
@@ -245,7 +271,7 @@ func TestAnOversizedBodyIsRefused(t *testing.T) {
 }
 
 // The per-agent rate is a token bucket: 20 requests of a burst are answered,
-// the 21st is dropped with the throttled warning.
+// the 21st gets a busy answer rather than silence, and the warning is throttled.
 func TestTheTwentyFirstOfABurstIsThrottled(t *testing.T) {
 	srv, nc := start(t)
 	ch := watch(t, nc)
@@ -260,19 +286,66 @@ func TestTheTwentyFirstOfABurstIsThrottled(t *testing.T) {
 	if err := nc.Flush(); err != nil {
 		t.Fatal(err)
 	}
-	got := map[string]bool{}
-	for range n - 1 {
+	busy := 0
+	for range n {
 		m := want(t, ch, 2*time.Second)
 		var a answer
 		if err := json.Unmarshal(m.Data, &a); err != nil {
 			t.Fatal(err)
 		}
-		got[a.Request] = true
+		if strings.HasPrefix(a.Error, "busy") {
+			busy++
+			if a.Part != 1 || !a.Last {
+				t.Fatalf("a busy answer: %s", m.Data)
+			}
+		}
 	}
-	if got[fmt.Sprintf("%016d", n)] {
-		t.Fatalf("the %dth request of a burst was answered", n)
+	if busy != 1 {
+		t.Fatalf("%d busy answers of %d requests", busy, n)
 	}
-	none(t, ch, 200*time.Millisecond)
+}
+
+// A full workers' queue answers busy too: a piece that blocks nothing of the
+// subscription must not drop an agent's request into silence.
+func TestAFullQueueAnswersBusy(t *testing.T) {
+	srv, nc := start(t)
+	ch := watch(t, nc)
+	release := make(chan struct{})
+	var once sync.Once
+	free := func() { once.Do(func() { close(release) }) }
+	startHandler(t, srv, nc, &Handler{Log: quiet, Prefix: "req", Rate: 1000, // the queue, not the rate
+		Handlers: map[string]Piece{"history": func(context.Context, string, Request) (Reply, error) {
+			<-release
+			return Reply{Result: json.RawMessage(`{}`), Part: 1, Last: true}, nil
+		}}})
+	t.Cleanup(free) // before the handler's own cleanup: the workers must be able to return
+
+	total := workerCount + queueLen + 1
+	for i := 1; i <= total; i++ {
+		// One at a time: the subscription's own channel drops what it cannot
+		// hold, and the queue under test is the workers' one.
+		if err := nc.Publish("req.history.alice", []byte(body("history", fmt.Sprintf("%016d", i)))); err != nil {
+			t.Fatal(err)
+		}
+		if err := nc.Flush(); err != nil {
+			t.Fatal(err)
+		}
+		time.Sleep(5 * time.Millisecond)
+	}
+	// The workers are stuck in the piece and the queue is full: the last
+	// request is answered busy without ever reaching a worker.
+	busy := false
+	for !busy {
+		m := want(t, ch, 3*time.Second)
+		var a answer
+		if err := json.Unmarshal(m.Data, &a); err != nil {
+			t.Fatal(err)
+		}
+		if strings.HasPrefix(a.Error, "busy") {
+			busy = true
+		}
+	}
+	free()
 }
 
 // The body's kind must be the subject's: a body that names another kind is no

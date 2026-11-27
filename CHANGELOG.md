@@ -19,7 +19,7 @@ before 0.5.0 are described in the git history.
   limit, with every logged value truncated. The MCP server gets
   `requests.request(kind, payload, timeout)` in a module of its own, with its prefix
   as a setting beside the bus's, presence's and STATS's. The bridge user's NATS
-  rights (subscribe `<req>.>`, publish `deliver.*.req.>`) are in the example
+  rights (subscribe `<req>.>`, publish `deliver.*.req.*`) are in the example
   configuration and pinned by its test. No stream covers either subject, so nothing
   is kept: a lost message fails the request, and the caller gets an error, never a
   silent success. Nothing of the pieces is built; the scaffold and the rights on

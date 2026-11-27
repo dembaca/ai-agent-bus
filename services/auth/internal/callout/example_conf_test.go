@@ -311,13 +311,13 @@ func TestTheExampleServerConfiguration(t *testing.T) {
 				"$JS.API.STREAM.MSG.GET.KV_BUS_BRIDGE_RECORDS", "$KV.BUS_BRIDGE_RECORDS.>",
 				// the request scaffold (ADR-014 phase 5): the answer goes to
 				// deliver.<agent>.req.<request id>, and nowhere else on deliver
-				"deliver.*.req.>"} {
+				"deliver.*.req.*"} {
 				if !strings.Contains(pub, want) {
 					t.Errorf("the bridge's rights lack %s: %+v", want, u.Permissions.Publish.Allow)
 				}
 			}
 			// The request answer's subject, exactly once (ADR-014 phase 5).
-			if n := strings.Count(pub, "deliver.*.req.>"); n != 1 {
+			if n := strings.Count(pub, "deliver.*.req.*"); n != 1 {
 				t.Errorf("the bridge's request answer right appears %d times: %+v", n, u.Permissions.Publish.Allow)
 			}
 			// The records bucket's three rights, each exactly once: read, write,
