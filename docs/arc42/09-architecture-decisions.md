@@ -4110,8 +4110,8 @@ reads yet (RT-6.39 step 5).
     channel's pieces on `<presence>.planb.<channel>.v1`, a subject only
     it may publish. Each agent's presence consumer delivers the records
     of its own channels, and the bridge, which has no right on the
-    directory's bucket, reads every channel's through its presence
-    consumer; a change reaches them at the next credential issued in
+    directory's bucket, reads every channel's through its own
+    consumer, `bridge_planb`, made at every start; a change reaches them at the next credential issued in
     the channel, whose agent it is does not matter. A record that cannot
     be written refuses no credential; the record stays as the stream
     has it, and the hosts and the bridge read one older than two hours

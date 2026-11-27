@@ -2682,6 +2682,16 @@ async def test_a_plan_b_record_older_than_two_republish_periods_counts_as_off() 
     assert bus.planb_pieces("home") == frozenset()
 
 
+async def test_a_plan_b_record_reads_off_as_time_passes_without_a_message(monkeypatch: pytest.MonkeyPatch) -> None:
+    """RT-6.39 step 5: the server time runs on by the monotonic clock between deliveries."""
+    bus, _ = _unit_bus()
+    await _planb_rec(bus, "home", 1, T0, _planb_body())
+    assert bus.planb_pieces("home") == frozenset({1, 3})
+    real = natsbus.time.monotonic()
+    monkeypatch.setattr(natsbus.time, "monotonic", lambda: real + natsbus.PLANB_STALE_SEC)
+    assert bus.planb_pieces("home") == frozenset()
+
+
 def test_decode_planb_is_strict() -> None:
     """RT-6.39 step 5: exactly v, channel and pieces."""
     assert natsbus.decode_planb(_planb_body(pieces=()), "home") == frozenset()

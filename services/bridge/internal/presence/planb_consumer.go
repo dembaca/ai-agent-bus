@@ -196,7 +196,8 @@ func (r *PlanBReader) create(ctx context.Context, nc *nats.Conn, deliver string)
 		return fmt.Errorf("plan B: create %s: %w", PlanBConsumer, err)
 	}
 	var resp struct {
-		Config *struct {
+		Created time.Time `json:"created"` // the server's clock
+		Config  *struct {
 			DeliverSubject string `json:"deliver_subject"`
 		} `json:"config"`
 		Delivered struct {
@@ -218,6 +219,11 @@ func (r *PlanBReader) create(ctx context.Context, nc *nats.Conn, deliver string)
 		return fmt.Errorf("plan B: create %s: %d %s", PlanBConsumer, resp.Error.Code, resp.Error.Desc)
 	case resp.Delivered.Consumer > 0 || resp.Config == nil || resp.Config.DeliverSubject != deliver:
 		return fmt.Errorf("%w: it delivered %d before", errPlanBStale, resp.Delivered.Consumer)
+	}
+	// The server's own time, before the first record is read: an old record
+	// replayed after a start must not look fresh.
+	if !resp.Created.IsZero() {
+		r.Into.Seed(resp.Created)
 	}
 	return nil
 }

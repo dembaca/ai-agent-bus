@@ -128,6 +128,17 @@ func (s *Switches) Commit() {
 	}
 }
 
+// Seed sets the server's time from an answer of the server itself (the
+// creation time of the bridge's new consumer), so that after a start an old
+// record reads as old before any newer record has been seen.
+func (s *Switches) Seed(at time.Time) {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	if at.After(s.srvNow) {
+		s.srvNow, s.seenAt = at, s.clock()
+	}
+}
+
 // Observed takes a channel's newest record, stamped with the stream's time;
 // nil pieces: every piece off. The consumer delivers in stream order, so the
 // last one observed is the newest.

@@ -85,6 +85,64 @@ func TestTheBridgeReadsAChannelsPlanBPiecesAfterEveryRestart(t *testing.T) {
 	until(t, func() bool { return sw2.Pieces("home") == nil })
 }
 
+// After a start the server's time is seeded from the consumer's creation (the
+// create answer's `created`), so one old record replayed first reads as off,
+// not as fresh for another two hours.
+func TestAnOldPlanBRecordReadsAsOffAfterAFreshStart(t *testing.T) {
+	t0 := time.Date(2026, 11, 27, 10, 0, 0, 0, time.UTC)
+	sw := &Switches{Clock: func() time.Time { return t0.Add(3 * time.Hour) }}
+	sw.Begin()
+	sw.Seed(t0.Add(3 * time.Hour)) // the server's clock at the create
+	sw.Observed("home", []int{1}, t0)
+	sw.Commit()
+	if sw.On(1, "home") {
+		t.Fatal("a record three hours old reads as on after a start")
+	}
+	// the created time of a real server is read: a record written now is on
+	srv, err := natsserver.NewServer(&natsserver.Options{Host: "127.0.0.1", Port: -1, JetStream: true,
+		StoreDir: t.TempDir(), NoLog: true, NoSigs: true})
+	if err != nil {
+		t.Fatal(err)
+	}
+	go srv.Start()
+	if !srv.ReadyForConnections(5 * time.Second) {
+		t.Fatal("nats-server not ready")
+	}
+	t.Cleanup(srv.Shutdown)
+	nc, err := nats.Connect(srv.ClientURL())
+	if err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(nc.Close)
+	js, _ := jetstream.New(nc)
+	ctx := context.Background()
+	if _, err := js.CreateStream(ctx, jetstream.StreamConfig{Name: "PRESENCE",
+		Subjects: []string{"presence.>"}, NoAck: true, MaxMsgsPerSubject: 1, Storage: jetstream.MemoryStorage}); err != nil {
+		t.Fatal(err)
+	}
+	mustPublish(t, nc, "presence.planb.home.v1", `{"v":1,"channel":"home","pieces":[1]}`)
+	live := &Switches{}
+	r := &PlanBReader{Log: slog.New(slog.NewTextHandler(io.Discard, nil)), Deliver: "deliver.bridge.planb",
+		Stream: "PRESENCE", Into: live, CaughtUp: make(chan struct{})}
+	cctx, cancel := context.WithCancel(ctx)
+	defer cancel()
+	go func() { _ = r.Run(cctx, nc) }()
+	select {
+	case <-r.CaughtUp:
+	case <-time.After(10 * time.Second):
+		t.Fatal("not read")
+	}
+	if !live.On(1, "home") {
+		t.Fatal("a record just written reads as off")
+	}
+	live.mu.RLock()
+	seeded := !live.srvNow.IsZero()
+	live.mu.RUnlock()
+	if !seeded {
+		t.Fatal("no server time")
+	}
+}
+
 // Off is fail-safe: a record older than two republish periods by the stream's
 // time counts as off, and the server's time runs on while nothing is delivered.
 func TestAPlanBRecordNotRenewedCountsAsOff(t *testing.T) {

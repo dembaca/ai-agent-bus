@@ -2322,7 +2322,7 @@ class NatsBus:
         if channel not in self.channels:
             return frozenset()
         got = self._planb.get(channel)
-        if got is None or self._server_now - got[1] >= PLANB_STALE_SEC:
+        if got is None or self._iat() - got[1] >= PLANB_STALE_SEC:  # server time, carried on by the monotonic clock
             return frozenset()  # off is fail-safe: a record no credential renewed is no longer read
         return got[2]
 

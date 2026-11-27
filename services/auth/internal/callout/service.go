@@ -235,7 +235,17 @@ func (s *Service) Serve(ctx context.Context, nc *nats.Conn) error {
 		return err
 	}
 	<-ctx.Done()
-	return sub.Drain()
+	err = sub.Drain()
+	// A plan B record still being written goes on for a moment (its own
+	// context ends in planBWriteTimeout); one that does not finish heals at
+	// the next credential.
+	done := make(chan struct{})
+	go func() { s.bg.Wait(); close(done) }()
+	select {
+	case <-done:
+	case <-time.After(planBWriteTimeout + time.Second):
+	}
+	return err
 }
 
 func (s *Service) handle(ctx context.Context, m *nats.Msg) {
