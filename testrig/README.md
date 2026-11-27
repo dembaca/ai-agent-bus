@@ -260,7 +260,9 @@ Isolation: each run gets its own 0700 temporary directory, its own JetStream
 store and an ephemeral port, and the host's `CB_*`/`MM_*` are stripped. A rig
 killed with SIGKILL leaves its nats-server and session processes behind (they
 are no process group of the rig's own), but they hold no shared port or store,
-so the next run is unaffected; find them with `pkill -f bus-testrig-nats-`. If
+so the next run is unaffected. `pgrep -fl 'bus-testrig-'` lists them (the
+nats-server's conf path and the sessions' state directories name it) and
+`pkill -f 'bus-testrig-'` stops them; a stray one costs a process, not a run. If
 another process takes the probed port before the first start, the server starts
 again on a fresh one; a restart keeps its port, since the clients hold it, and
 the start checks the server's INFO so a foreign listener on that port is never

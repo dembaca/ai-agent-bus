@@ -785,8 +785,9 @@ class ByteProxy:
                             pipe.abort()
                             return
                         # This connection has its consumers (#218); other agents keep
-                        # their own verdict.
-                        self.failures.pop(agent or "", None)
+                        # their own verdict, and a failure with no agent named stays.
+                        if agent:
+                            self.failures.pop(agent, None)
                     greeted, chunk, pending = True, pending, b""
                 if down:
                     self.bytes_down += len(chunk)

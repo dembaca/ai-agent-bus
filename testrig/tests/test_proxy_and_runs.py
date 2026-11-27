@@ -547,11 +547,12 @@ async def test_a_later_connection_that_reconciles_heals_the_proxy():
     port = server.sockets[0].getsockname()[1]
     calls = 0
 
-    async def hook(_line: bytes) -> None:
+    async def hook(_line: bytes) -> str:
         nonlocal calls
         calls += 1
         if calls == 1:
-            raise RuntimeError("consumers: an early request against a restarting server")
+            raise ReconcileFailure("agent-a", "an early request against a restarting server")
+        return "agent-a"  # the agent whose consumers this connection has
 
     try:
         async with ByteProxy("127.0.0.1", port, on_connect=hook) as proxy:

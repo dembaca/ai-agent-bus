@@ -431,3 +431,37 @@ async def test_the_port_retry_is_the_first_starts_alone(tmp_path, monkeypatch):
     with pytest.raises(RuntimeError):
         await server.start()
     assert len(popen) == 1 and server.port == kept  # a restart never moves
+
+
+async def test_listening_reads_a_real_info_line(tmp_path):
+    """#218: a real server's `INFO {…}` names the server; a foreign listener on the
+    port, or a line that is no INFO, is not a start."""
+    server = natsrig.NatsServer([], workdir=tmp_path, binary="/bin/true")
+
+    async def announce(line: bytes):
+        async def handler(reader: asyncio.StreamReader, writer: asyncio.StreamWriter) -> None:
+            writer.write(line)
+            await writer.drain()
+            await reader.read(1)
+            writer.close()
+
+        srv = await asyncio.start_server(handler, "127.0.0.1", 0)
+        return srv, srv.sockets[0].getsockname()[1]
+
+    mine = json.dumps({"server_id": "x", "server_name": server.name, "version": "2.15.3"}).encode()
+    srv, server.port = await announce(b"INFO " + mine + b"\r\n")
+    try:
+        assert await server._listening()
+    finally:
+        srv.close()
+    foreign = json.dumps({"server_id": "y", "server_name": "another-server"}).encode()
+    srv, server.port = await announce(b"INFO " + foreign + b"\r\n")
+    try:
+        assert not await server._listening()
+    finally:
+        srv.close()
+    srv, server.port = await announce(b'CONNECT {"nkey":"x"}\r\n')
+    try:
+        assert not await server._listening()
+    finally:
+        srv.close()

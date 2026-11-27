@@ -288,8 +288,11 @@ class NatsServer:
             return False
         finally:
             writer.close()
+        verb, _, payload = line.partition(b" ")  # the server sends `INFO {json}\r\n`
+        if verb != b"INFO":
+            return False
         try:
-            info = json.loads(line)
+            info = json.loads(payload)
         except ValueError:
             return False
         return isinstance(info, dict) and info.get("server_name") == self.name

@@ -242,9 +242,14 @@ async def coord_run(transport: str = "nats", stops: int = 3, sessions: int = 3,
             if relay is not None:
                 run.relay = relay.counters()
             if relay is not None and relay.failed:
-                # Why the reconcile failed (RT-6.34's hook), so a run that measured
-                # no take-over says more than "exit 1" (review round 3, C).
+                # Why the reconcile failed (the login service's part of the
+                # CONNECT, RT-6.18 step 12), so a run that measured no take-over
+                # says more than "exit 1" (review round 3, C).
                 run.notes.append(relay.failed)
+            elif relay is not None and relay.hook_errors:
+                # A failure a later connection cured (#218): said, not a failed run.
+                run.notes.append(f"{relay.hook_errors} CONNECT(s) were aborted by a failed "
+                                 f"consumer reconcile; a later one reconciled")
             tails = [line for s in alive for line in s.proc.errors]
             run.tail = natsrig._nats_tail(tails)
     return run
