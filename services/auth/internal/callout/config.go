@@ -3,6 +3,7 @@ package callout
 import (
 	"errors"
 	"fmt"
+	"strings"
 	"time"
 
 	"github.com/dembaca/ai-agent-bus/services/auth/internal/consumers"
@@ -129,8 +130,8 @@ func (s Subjects) checkReq() error {
 		return fmt.Errorf("callout: request prefix %q: letters, digits, - and _ only", s.Req)
 	case s.Req == DeliverPrefix:
 		return fmt.Errorf("callout: request prefix %q is the deliver prefix: an agent could publish onto deliver subjects", s.Req)
-	case s.Req == inboxPrefix:
-		return fmt.Errorf("callout: request prefix %q is the inbox prefix: an agent could publish onto replies", s.Req)
+	case strings.HasPrefix(s.Req, inboxPrefix) || strings.HasPrefix(s.Req, "$"):
+		return fmt.Errorf("callout: request prefix %q starts with the inbox prefix %q or $: an agent could publish onto replies or a system subject", s.Req, inboxPrefix)
 	case s.Req == s.Prefix || s.Req == s.Presence || s.Req == s.Stats:
 		return fmt.Errorf("callout: request prefix %q must differ from the other prefixes (they would overlap)", s.Req)
 	}

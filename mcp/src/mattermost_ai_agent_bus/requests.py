@@ -1,5 +1,5 @@
-"""Requests to the bridge (ADR-014 phase 5, plan B; RT-6.44): the subjects for what an
-agent needs from the bridge but that is no channel message.
+"""Requests to the bridge (ADR-014 phase 5, plan B): the subjects for what an agent
+needs from the bridge but that is no channel message.
 
 An agent publishes on ``<req>.<kind>.<agent>``, ``<kind>`` one of ``history``, ``file``
 and ``header``; the agent's name is the last token, as on every bus subject, and the
@@ -25,7 +25,6 @@ from typing import Any, Mapping
 from .natsbus import MAX_BODY, NatsBus, NatsBusError
 
 REQUEST_SEC = 5.0  # how long a request waits for the bridge's answer
-REQUEST_PREFIX = "req"  # the request subjects' prefix (CB_AUTH_REQ_PREFIX, CB_BRIDGE_REQ_PREFIX)
 KINDS = ("history", "file", "header")
 _REQUEST_ID = 16
 
@@ -58,7 +57,7 @@ def _decode_answer(body: bytes | bytearray, request: str, kind: str) -> dict[str
 
 
 async def request(bus: NatsBus, kind: str, payload: Mapping[str, Any] | None = None, *,
-                  timeout: float = REQUEST_SEC, prefix: str = REQUEST_PREFIX) -> dict[str, Any]:
+                  timeout: float = REQUEST_SEC, prefix: str | None = None) -> dict[str, Any]:
     """Ask the bridge for one ``kind`` and wait for its answer (``REQUEST_SEC``).
 
     Raises ``RequestError`` when the bus is not connected, when nothing answers within
@@ -71,6 +70,7 @@ async def request(bus: NatsBus, kind: str, payload: Mapping[str, Any] | None = N
     if nc is None or not bus._connected:  # noqa: SLF001
         raise RequestError("the bus is not connected")
     request_id = _new_id()
+    prefix = prefix or bus._s.req  # noqa: SLF001 - the settings the bus was made with
     subject = f"{prefix}.{kind}.{bus.name}"
     answer_subject = f"deliver.{bus.name}.req.{request_id}"
     body = json.dumps({"v": 1, "request": request_id, "kind": kind,

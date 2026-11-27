@@ -4154,9 +4154,16 @@ Nothing of it is built.
     and `CB_BRIDGE_REQ_PREFIX`, both defaulting to `req`. The request body is
     `{"v": 1, "request": "<16 chars of [a-z0-9]>", "kind": ..., "payload": ...}`
     and the answer names the same request and kind, so an answer cannot be
-    paired with another request; the bridge answers `not built` per kind
-    until pieces 5, 8 and 9 fill them, and the agent's request id, never a
-    body field, makes the answer's subject.
+    paired with another request; the bridge answers per kind from a handler
+    map (`not built` until pieces 5, 8 and 9 fill them), with a `result`
+    field and `part`/`last` for multi-part answers, off its receive loop,
+    under a per-kind size limit, a per-agent rate limit and truncated logs;
+    the agent's request id, never a body field, makes the answer's subject.
+    The bridge user's rights - subscribe `<req>.>`, publish
+    `deliver.*.req.>` - are in the example configuration, and its test runs
+    the handler under them with two agents', so a refused subscribe or answer
+    stops the bridge instead of staying silent. The MCP client's prefix is a
+    setting beside the bus's, presence's and STATS's.
   - Each piece updates its scenario in Section 6 and gets unit tests in
     `mcp/tests/` and, for the bridge's side, Go tests in
     `services/bridge`. Where a piece carries messages, the fault-run rig

@@ -13,12 +13,17 @@ before 0.5.0 are described in the git history.
   the last token; the bridge answers on `deliver.<agent>.req.<request id>`. The
   login service grants publish only under the agent's own name
   (`CB_AUTH_REQ_PREFIX`, default `req`), the bridge subscribes `<req>.>`
-  (`CB_BRIDGE_REQ_PREFIX`) and answers `not built` for every kind until pieces 5, 8
-  and 9 fill them, and the MCP server gets `requests.request(kind, payload,
-  timeout)` in a module of its own. No stream covers either subject, so nothing is
-  kept: a lost message fails the request, and the caller gets an error, never a
-  silent success. Nothing of the pieces is built; the scaffold, the right and its
-  tests run against a real nats-server.
+  (`CB_BRIDGE_REQ_PREFIX`) and answers per kind from a handler map - `not built`
+  until pieces 5, 8 and 9 fill them - with a result field and parts with a last
+  marker, off its receive loop, under a per-kind size limit and a per-agent rate
+  limit, with every logged value truncated. The MCP server gets
+  `requests.request(kind, payload, timeout)` in a module of its own, with its prefix
+  as a setting beside the bus's, presence's and STATS's. The bridge user's NATS
+  rights (subscribe `<req>.>`, publish `deliver.*.req.>`) are in the example
+  configuration and pinned by its test. No stream covers either subject, so nothing
+  is kept: a lost message fails the request, and the caller gets an error, never a
+  silent success. Nothing of the pieces is built; the scaffold and the rights on
+  both sides run against a real nats-server.
 - **The last post on the operator console's agent cards** (#201, RT-6.37
   step 6). A NATS home's presence states `last_post`: when the agent last
   posted in its home, as epoch seconds (the time the MCP server already

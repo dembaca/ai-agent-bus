@@ -306,10 +306,17 @@ func TestTheExampleServerConfiguration(t *testing.T) {
 				// the bridge's own slash command records (issue #151 step 3),
 				// which only it writes: no stream create, no direct get.
 				"$JS.API.STREAM.INFO.KV_BUS_BRIDGE_RECORDS",
-				"$JS.API.STREAM.MSG.GET.KV_BUS_BRIDGE_RECORDS", "$KV.BUS_BRIDGE_RECORDS.>"} {
+				"$JS.API.STREAM.MSG.GET.KV_BUS_BRIDGE_RECORDS", "$KV.BUS_BRIDGE_RECORDS.>",
+				// the request scaffold (ADR-014 phase 5): the answer goes to
+				// deliver.<agent>.req.<request id>, and nowhere else on deliver
+				"deliver.*.req.>"} {
 				if !strings.Contains(pub, want) {
 					t.Errorf("the bridge's rights lack %s: %+v", want, u.Permissions.Publish.Allow)
 				}
+			}
+			// The request answer's subject, exactly once (ADR-014 phase 5).
+			if n := strings.Count(pub, "deliver.*.req.>"); n != 1 {
+				t.Errorf("the bridge's request answer right appears %d times: %+v", n, u.Permissions.Publish.Allow)
 			}
 			// The records bucket's three rights, each exactly once: read, write,
 			// and no stream create or direct get (issue #151 step 3).
@@ -339,6 +346,7 @@ func TestTheExampleServerConfiguration(t *testing.T) {
 			}
 			sub := strings.Join(u.Permissions.Subscribe.Allow, " ")
 			if !strings.Contains(sub, "_INBOX_bridge.>") || !strings.Contains(sub, "deliver.bridge.>") ||
+				!strings.Contains(sub, "req.>") ||
 				strings.Contains(sub, "_INBOX.>") ||
 				strings.Contains(sub, "bus.>") || strings.Contains(sub, "presence.>") {
 				t.Errorf("the bridge subscribes to %q", sub)

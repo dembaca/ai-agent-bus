@@ -3,6 +3,7 @@ package requests
 import (
 	"context"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"io"
 	"log/slog"
@@ -17,19 +18,27 @@ import (
 // goodID is a request id of the one shape: 16 characters of [a-z0-9].
 const goodID = "abcdef0123456789"
 
+// quiet is the handler's log in the tests, which assert answers, not lines.
+var quiet = slog.New(slog.NewTextHandler(io.Discard, nil))
+
 // answer is the body on deliver.<agent>.req.<request id>.
 type answer struct {
-	V       int    `json:"v"`
-	Request string `json:"request"`
-	Kind    string `json:"kind"`
-	Error   string `json:"error"`
+	V       int             `json:"v"`
+	Request string          `json:"request"`
+	Kind    string          `json:"kind"`
+	Part    int             `json:"part"`
+	Last    bool            `json:"last"`
+	Result  json.RawMessage `json:"result"`
+	Error   string          `json:"error"`
 }
 
-// start is an in-process nats-server and one client.
+// start is an in-process nats-server and one client. Its payload limit leaves
+// room for a file request over the handler's own limit, which must be refused
+// by the handler, not by the server.
 func start(t *testing.T) (*natsserver.Server, *nats.Conn) {
 	t.Helper()
 	srv, err := natsserver.NewServer(&natsserver.Options{Host: "127.0.0.1", Port: -1,
-		NoLog: true, NoSigs: true})
+		MaxPayload: 2 << 20, NoLog: true, NoSigs: true})
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -50,8 +59,14 @@ func start(t *testing.T) (*natsserver.Server, *nats.Conn) {
 // the server, so a request published after it is not lost.
 func handler(t *testing.T, srv *natsserver.Server, nc *nats.Conn, prefix string) {
 	t.Helper()
+	startHandler(t, srv, nc, &Handler{Log: quiet, Prefix: prefix})
+}
+
+// startHandler runs one Handler and waits for its subscription; the test ends
+// it, and Run must then return nil.
+func startHandler(t *testing.T, srv *natsserver.Server, nc *nats.Conn, h *Handler) {
+	t.Helper()
 	before := srv.NumSubscriptions()
-	h := &Handler{Log: slog.New(slog.NewTextHandler(io.Discard, nil)), Prefix: prefix}
 	ctx, cancel := context.WithCancel(context.Background())
 	done := make(chan error, 1)
 	go func() { done <- h.Run(ctx, nc) }()
@@ -73,7 +88,7 @@ func handler(t *testing.T, srv *natsserver.Server, nc *nats.Conn, prefix string)
 // watch collects the answers on deliver.<agent>.req.<request id>.
 func watch(t *testing.T, nc *nats.Conn) <-chan *nats.Msg {
 	t.Helper()
-	ch := make(chan *nats.Msg, 8)
+	ch := make(chan *nats.Msg, 64)
 	sub, err := nc.ChanSubscribe("deliver.*.req.>", ch)
 	if err != nil {
 		t.Fatal(err)
@@ -121,7 +136,7 @@ func none(t *testing.T, ch <-chan *nats.Msg, wait time.Duration) {
 }
 
 // ADR-014 phase 5: a valid request is answered on deliver.<agent>.req.<id>
-// with this phase's "not built" and the same request id.
+// with this phase's "not built", the same request id, and the one part.
 func TestTheValidRequestGetsTheNotBuiltAnswer(t *testing.T) {
 	srv, nc := start(t)
 	ch := watch(t, nc)
@@ -133,16 +148,131 @@ func TestTheValidRequestGetsTheNotBuiltAnswer(t *testing.T) {
 		t.Fatalf("answer on %s, want %s", m.Subject, want)
 	}
 	if got, want := string(m.Data),
-		`{"v":1,"request":"`+goodID+`","kind":"history","error":"not built"}`; got != want {
+		`{"v":1,"request":"`+goodID+`","kind":"history","part":1,"last":true,"error":"not built"}`; got != want {
 		t.Fatalf("answer %s, want %s", got, want)
 	}
 	var a answer
 	if err := json.Unmarshal(m.Data, &a); err != nil {
 		t.Fatal(err)
 	}
-	if a.V != 1 || a.Request != goodID || a.Kind != "history" || a.Error != "not built" {
+	if a.V != 1 || a.Request != goodID || a.Kind != "history" || a.Part != 1 || !a.Last || a.Error != "not built" {
 		t.Fatalf("answer %+v", a)
 	}
+	if len(a.Result) != 0 {
+		t.Fatalf("the scaffold answered with a result: %s", a.Result)
+	}
+}
+
+// A piece's raw JSON is the answer's result, and the request's part and last
+// go through untouched.
+func TestAPiecesResultIsTheAnswer(t *testing.T) {
+	srv, nc := start(t)
+	ch := watch(t, nc)
+	startHandler(t, srv, nc, &Handler{Log: quiet, Prefix: "req",
+		Handlers: map[string]Piece{"history": func(_ context.Context, agent string, req Request) (json.RawMessage, error) {
+			if agent != "alice" || req.Request != goodID || !strings.Contains(string(req.Payload), "anchor") {
+				t.Errorf("the piece got %q, %+v", agent, req)
+			}
+			return json.RawMessage(`{"messages":[{"id":"m1"}]}`), nil
+		}}})
+	// not built is the scaffold's answer only
+	publish(t, nc, "req.file.alice",
+		fmt.Sprintf(`{"v":1,"request":%q,"kind":"file","part":2,"last":true,"payload":{"anchor":"x"}}`, goodID))
+	m := want(t, ch, time.Second)
+	var a answer
+	if err := json.Unmarshal(m.Data, &a); err != nil {
+		t.Fatal(err)
+	}
+	if a.Error != "not built" || a.Part != 1 || !a.Last {
+		t.Fatalf("a kind without a piece: %+v", a)
+	}
+
+	// a piece's own part and last
+	publish(t, nc, "req.history.alice",
+		fmt.Sprintf(`{"v":1,"request":%q,"kind":"history","part":2,"last":false,"payload":{"anchor":"x"}}`, goodID))
+	m = want(t, ch, time.Second)
+	a = answer{}
+	if err := json.Unmarshal(m.Data, &a); err != nil {
+		t.Fatal(err)
+	}
+	if a.Error != "" || string(a.Result) != `{"messages":[{"id":"m1"}]}` || a.Part != 2 || a.Last {
+		t.Fatalf("the piece's answer: %s", m.Data)
+	}
+}
+
+// A piece's error is the answer's error, and there is no result beside it.
+func TestAPiecesErrorIsTheAnswer(t *testing.T) {
+	srv, nc := start(t)
+	ch := watch(t, nc)
+	startHandler(t, srv, nc, &Handler{Log: quiet, Prefix: "req",
+		Handlers: map[string]Piece{"history": func(context.Context, string, Request) (json.RawMessage, error) {
+			return json.RawMessage(`{"ignored":true}`), errors.New("no anchor in the request")
+		}}})
+
+	publish(t, nc, "req.history.alice", body("history", goodID))
+	m := want(t, ch, time.Second)
+	var a answer
+	if err := json.Unmarshal(m.Data, &a); err != nil {
+		t.Fatal(err)
+	}
+	if a.Error != "no anchor in the request" || len(a.Result) != 0 {
+		t.Fatalf("the piece's error: %s", m.Data)
+	}
+}
+
+// A body over the kind's limit is refused before it is decoded; a file part
+// may carry more than a history read, but its own limit holds too.
+func TestAnOversizedBodyIsRefused(t *testing.T) {
+	srv, nc := start(t)
+	ch := watch(t, nc)
+	handler(t, srv, nc, "req")
+
+	big := func(kind string, size int) string {
+		return fmt.Sprintf(`{"v":1,"request":%q,"kind":%q,"payload":%q}`,
+			goodID, kind, strings.Repeat("x", size))
+	}
+	publish(t, nc, "req.history.alice", big("history", maxBody+1))
+	publish(t, nc, "req.header.alice", big("header", maxBody+1))
+	publish(t, nc, "req.file.alice", big("file", maxFileBody+1))
+	none(t, ch, 500*time.Millisecond)
+
+	// a body under the limit is no refusal: it is decoded and answered
+	publish(t, nc, "req.history.alice", big("history", maxBody-200))
+	m := want(t, ch, time.Second)
+	if want := "deliver.alice.req." + goodID; m.Subject != want {
+		t.Fatalf("answer on %s, want %s", m.Subject, want)
+	}
+}
+
+// The per-agent rate is a token bucket: 20 requests of a burst are answered,
+// the 21st is dropped with the throttled warning.
+func TestTheTwentyFirstOfABurstIsThrottled(t *testing.T) {
+	srv, nc := start(t)
+	ch := watch(t, nc)
+	handler(t, srv, nc, "req")
+
+	const n = 21
+	for i := 1; i <= n; i++ {
+		if err := nc.Publish("req.history.alice", []byte(body("history", fmt.Sprintf("%016d", i)))); err != nil {
+			t.Fatal(err)
+		}
+	}
+	if err := nc.Flush(); err != nil {
+		t.Fatal(err)
+	}
+	got := map[string]bool{}
+	for range n - 1 {
+		m := want(t, ch, 2*time.Second)
+		var a answer
+		if err := json.Unmarshal(m.Data, &a); err != nil {
+			t.Fatal(err)
+		}
+		got[a.Request] = true
+	}
+	if got[fmt.Sprintf("%016d", n)] {
+		t.Fatalf("the %dth request of a burst was answered", n)
+	}
+	none(t, ch, 200*time.Millisecond)
 }
 
 // The body's kind must be the subject's: a body that names another kind is no

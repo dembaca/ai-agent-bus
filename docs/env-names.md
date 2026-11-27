@@ -459,7 +459,7 @@ same rule for its STATS import (RT-6.45).
 | `AUTH_PLAIN_REQUESTS` | `CB_AUTH_PLAIN_REQUESTS` | no | `internal/app/callout.go` | |
 | `AUTH_PRESENCE_PREFIX` | `CB_AUTH_PRESENCE_PREFIX` | no | `internal/app/callout.go` | |
 | `AUTH_REQUEST_TIMEOUT` | `CB_AUTH_REQUEST_TIMEOUT` | no | `internal/app/callout.go` | |
-| `AUTH_REQ_PREFIX` | `CB_AUTH_REQ_PREFIX` | no | `internal/app/callout.go` | |
+| `AUTH_REQ_PREFIX` | `CB_AUTH_REQ_PREFIX` | no | `internal/app/callout.go` | the request subjects' prefix (ADR-014 phase 5), default `req` |
 | `AUTH_SHUTDOWN_TIMEOUT` | `CB_AUTH_SHUTDOWN_TIMEOUT` | no | `internal/config/config.go` | |
 | `AUTH_STATS_PREFIX` | `CB_AUTH_STATS_PREFIX` | no | `internal/app/callout.go`, `internal/callout/perms.go`, `internal/consumers/streams.go`; a comment in `natsbus.py` | |
 | `AUTH_SUBJECT_PREFIX` | `CB_AUTH_SUBJECT_PREFIX` | no | `internal/app/callout.go` | |

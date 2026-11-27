@@ -35,9 +35,11 @@ func TestThePropsPrefixHasTheHomesLimit(t *testing.T) {
 }
 
 // ADR-014 phase 5: the request subjects have a prefix of their own beside the
-// bus's, defaulting to req, and an empty setting defaults like the bus's.
+// bus's, defaulting to req, and an empty setting defaults like the bus's. A
+// prefix that is no token of its own is refused: an agent's request right is
+// <req>.*.<agent>.
 func TestTheRequestPrefix(t *testing.T) {
-	load := func(req string) (Config, error) {
+	load := func(req, deliver string) (Config, error) {
 		env := map[string]string{
 			"CB_BRIDGE_NATS_URL": "tls://nats.example:4222", "CB_BRIDGE_NATS_SEED_FILE": "/run/seed",
 			"CB_BRIDGE_MM_URL": "https://chat.example", "CB_BRIDGE_MM_TOKEN_FILE": "/run/token",
@@ -46,18 +48,35 @@ func TestTheRequestPrefix(t *testing.T) {
 		if req != "" {
 			env["CB_BRIDGE_REQ_PREFIX"] = req
 		}
+		if deliver != "" {
+			env["CB_BRIDGE_DELIVER"] = deliver
+		}
 		return Load(mapEnv(env, nil))
 	}
 	for _, tc := range []struct{ set, want string }{
 		{"", "req"},
 		{"rq", "rq"},
 	} {
-		c, err := load(tc.set)
+		c, err := load(tc.set, "")
 		if err != nil {
 			t.Fatalf("CB_BRIDGE_REQ_PREFIX %q: %v", tc.set, err)
 		}
 		if c.ReqPrefix != tc.want {
 			t.Errorf("CB_BRIDGE_REQ_PREFIX %q: got %q, want %q", tc.set, c.ReqPrefix, tc.want)
+		}
+	}
+	for _, tc := range []struct{ name, req, deliver, want string }{
+		{"deliver", "deliver", "", "deliver prefix"},
+		{"inbox", "_INBOX_bridge", "", "_INBOX"},
+		{"dollar", "$req", "", "$"},
+		{"dot", "req.subjects", "", "no subject token"},
+		{"wildcard", ">", "", "no subject token"},
+		{"slash", "req/x", "", "no subject token"},
+		{"bus prefix", "bus", "", "CB_BRIDGE_BUS_PREFIX"},
+		{"deliver setting", "", "req", "CB_BRIDGE_DELIVER"},
+	} {
+		if _, err := load(tc.req, tc.deliver); err == nil || !strings.Contains(err.Error(), tc.want) {
+			t.Errorf("%s: %v, want an error naming %s", tc.name, err, tc.want)
 		}
 	}
 }

@@ -231,6 +231,8 @@ func TestTheRequestPrefixIsChecked(t *testing.T) {
 		"subject prefix":  func(c *Config) { c.Subjects.Req = c.Subjects.Prefix },
 		"presence prefix": func(c *Config) { c.Subjects.Req = c.Subjects.Presence },
 		"stats prefix":    func(c *Config) { c.Subjects.Req = c.Subjects.Stats },
+		"inbox suffix":    func(c *Config) { c.Subjects.Req = "_INBOX_bridge" },
+		"dollar":          func(c *Config) { c.Subjects.Req = "$req" },
 		"custom presence": func(c *Config) { c.Subjects.Presence, c.Subjects.Req = "x", "x" },
 	} {
 		c := ok

@@ -163,6 +163,9 @@ func Load(env *Env) (Config, error) {
 	if c.Inbox == "" {
 		c.Inbox = "_INBOX_bridge"
 	}
+	if err := checkReqPrefix(c); err != nil {
+		return Config{}, err
+	}
 	if c.Prefix == "" {
 		c.Prefix = "x_"
 	}
@@ -347,6 +350,45 @@ func (c *Config) checkCommands(modeFile, mandateFile, debugFile string) error {
 
 // propsPrefix is the bus's own rule (a2a.user_prefix): one segment, ending in _.
 var propsPrefix = regexp.MustCompile(`^[a-z][a-z0-9]*_$`)
+
+// reqToken is the request prefix's shape: one subject token of letters,
+// digits, - and _ only, the auth service's rule for the same setting. The
+// request subject is <req>.<kind>.<agent>, so a dot or a wildcard would name
+// another subject than the agents' right does.
+func reqToken(s string) bool {
+	if s == "" {
+		return false
+	}
+	for _, r := range s {
+		switch {
+		case r >= 'a' && r <= 'z', r >= 'A' && r <= 'Z', r >= '0' && r <= '9', r == '-', r == '_':
+		default:
+			return false
+		}
+	}
+	return true
+}
+
+// checkReqPrefix refuses a request prefix that is no token of its own
+// (CB_BRIDGE_REQ_PREFIX, ADR-014 phase 5): an agent's right is
+// <req>.*.<agent>, so a prefix on deliver would let its request land where the
+// bridge answers, one overlapping the bus or the deliveries would mix requests
+// with posts, and one on replies or system subjects would be no request.
+func checkReqPrefix(c Config) error {
+	switch {
+	case strings.HasPrefix(c.ReqPrefix, "_INBOX") || strings.HasPrefix(c.ReqPrefix, "$"):
+		return fmt.Errorf("CB_BRIDGE_REQ_PREFIX %q starts with _INBOX or $: those name replies and system subjects", c.ReqPrefix)
+	case c.ReqPrefix == "deliver":
+		return fmt.Errorf("CB_BRIDGE_REQ_PREFIX %q is the deliver prefix: the bridge answers there", c.ReqPrefix)
+	case !reqToken(c.ReqPrefix):
+		return fmt.Errorf("CB_BRIDGE_REQ_PREFIX %q is no subject token: letters, digits, - and _ only", c.ReqPrefix)
+	case c.ReqPrefix == c.BusPrefix:
+		return fmt.Errorf("CB_BRIDGE_REQ_PREFIX %q is CB_BRIDGE_BUS_PREFIX: requests and posts would overlap", c.ReqPrefix)
+	case c.ReqPrefix == c.Deliver:
+		return fmt.Errorf("CB_BRIDGE_REQ_PREFIX %q is CB_BRIDGE_DELIVER: requests and the bridge's deliveries would overlap", c.ReqPrefix)
+	}
+	return nil
+}
 
 // BotPrefix is the agents' bot prefix as the hosts decode it from the bridge's
 // signal (nats_port.BOT_PREFIX_RE, RT-6.36 step 4): a username's first part.
