@@ -1104,6 +1104,7 @@ func postBy(uid, id string, at int64) *mmws.Posted {
 type piece4 struct{}
 
 func (piece4) On(piece int, _ string) bool { return piece == ProofPiece }
+func (piece4) CaughtUp() bool              { return true }
 
 // proofHome: piece 4 on, and the accounts read with a token that sees how
 // they log in (the fake Mattermost shows it to every token).
@@ -1305,6 +1306,9 @@ func TestWithPiece4OffTheRecordAloneBindsAsBefore(t *testing.T) {
 	fresh.Observed("home", []int{4}, t0)
 	others := &presence.Switches{}
 	others.Observed("home", []int{1, 2}, t0)
+	for _, s := range []*presence.Switches{stale, fresh, others} {
+		s.Commit() // the first replay read
+	}
 	for name, tc := range map[string]struct {
 		sw   Switches
 		want string
@@ -1361,5 +1365,66 @@ func TestPiece4WithoutTheAdminTokenIsWarnedOfOnce(t *testing.T) {
 	}
 	if n := strings.Count(buf.String(), "CB_BRIDGE_MM_ADMIN_TOKEN_FILE is unset"); n != 1 {
 		t.Fatalf("%d warnings in %s", n, buf.String())
+	}
+}
+
+// RT-6.42 step 3 (#266): until plan B's switches are read once (the first
+// replay committed), no home carries or signals: a post of a home with piece 4
+// on would otherwise go out by the record alone, and a carried post is never
+// carried again. Once they are, the home catches up from its watermark and
+// loses nothing.
+func TestAHomeCarriesNothingBeforeTheSwitchesAreRead(t *testing.T) {
+	sw := &presence.Switches{}
+	r := newRigWith(t, nil, func(b *Bridge) { b.Switches = sw })
+	r.record(t, aliceID, `{"v":1,"account":"`+aliceID+`","anchor":"alice","name":"alice",`+
+		`"approver":true,"token_iat":1,"iat":1,"exp":2}`, "alice")
+	t0 := now()
+	if err := r.kv.SetWatermark(context.Background(), "home", t0-5000); err != nil {
+		t.Fatal(err)
+	}
+	r.mm.setPosts(map[string]any{"id": pid(1), "user_id": aliceID, "channel_id": cid, "message": "go",
+		"create_at": t0 - 1000, "update_at": t0 - 1000, "metadata": map[string]any{}})
+	r.connect(1)
+	r.send(alicePost(pid(2), now()))
+	r.none(t)
+	noSignal(t, r.sig)
+	sw.Commit() // the switches are read: no piece on here
+	waitSignal(t, r.sig)
+	if subject, body := r.next(t); subject != "bus.hu.home.alice" || body["mm"] != pid(1) {
+		t.Fatalf("after the switches: %s %v", subject, body)
+	}
+}
+
+// failingUsers is an admin client whose every read fails.
+type failingUsers struct{}
+
+func (failingUsers) GetUser(context.Context, string) (mm.User, error) {
+	return mm.User{}, &mm.StatusError{Status: 500, Err: errors.New("admin token refused")}
+}
+
+// RT-6.42 step 3 (#266): with piece 4 off the bridge reads the account with
+// the posting bot's token, as before; the admin token is read only for the
+// proof check of a home with piece 4 on, so a broken admin token stops no
+// home with the piece off. With it on, the failing read stops the home (it
+// carries nothing under "-" for want of an answer).
+func TestABrokenAdminTokenStopsOnlyAHomeWithPiece4On(t *testing.T) {
+	for _, on := range []bool{false, true} {
+		r := newRigWith(t, nil, func(b *Bridge) {
+			b.Users = failingUsers{}
+			if on {
+				b.Switches = piece4{}
+			}
+		})
+		r.record(t, aliceID, `{"v":1,"account":"`+aliceID+`","anchor":"alice","name":"alice",`+
+			`"approver":true,"token_iat":1,"iat":1,"exp":2}`, "alice")
+		r.connect(1)
+		r.send(alicePost(pid(1), now()))
+		if !on {
+			if subject, _ := r.next(t); subject != "bus.hu.home.alice" {
+				t.Fatalf("piece 4 off: %s", subject)
+			}
+			continue
+		}
+		r.none(t)
 	}
 }

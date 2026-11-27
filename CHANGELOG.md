@@ -331,9 +331,14 @@ before 0.5.0 are described in the git history.
     while Mattermost, read with the admin bot's token, shows the account
     active, no guest, and logging in with the proof's `auth_service` and
     `auth_data`; else, and without the admin bot's token
-    (`CB_BRIDGE_MM_ADMIN_TOKEN_FILE`, one warning), under `-`. With piece 4
-    off the bridge carries as before, by the account record alone: no proof
-    and no admin token needed.
+    (`CB_BRIDGE_MM_ADMIN_TOKEN_FILE`, one warning), under `-`. Only this check
+    reads the account with the admin bot's token; a read that fails stops
+    that home until it catches up again. With piece 4 off the bridge carries
+    as before, by the account record alone, and reads the account with the
+    posting bot's token: no proof and no admin token needed. After a start no
+    home carries or signals until the bridge has read its plan B switches
+    once (as until the account records are read); each home then catches up
+    from its watermark and loses nothing.
   - *Trust.* With plan B piece 4 on, a Mattermost account approves when its
     record binds it to one of the session's attested trusted anchors, and a
     person over NATS when its anchor is one: no fresh approver record, so no
@@ -345,10 +350,12 @@ before 0.5.0 are described in the git history.
     publish `presence.account.mattermost.*.auth.v1` before the new login
     service starts; without that right every agent login with an OpenID or
     LDAP proven Mattermost account is refused (`account record: proof:
-    …`). Then the bridge's consumer create right becomes
+    …`). **A second hard stop, also whatever the switches say:** the
+    bridge reads the records and their proofs through one consumer, so its
+    create right becomes
     `$JS.API.CONSUMER.CREATE.PRESENCE.bridge_accounts.presence.account.mattermost.>`
-    before the new bridge starts (without it the bridge reads no records
-    and carries no home). Before plan B piece 4 is switched on in a home,
+    before the new bridge starts; with the old right the new bridge cannot
+    make its consumer, reads no records and carries no home. Before plan B piece 4 is switched on in a home,
     the bridge needs `CB_BRIDGE_MM_ADMIN_TOKEN_FILE`, or nobody there is
     bound. For the
     LDAP proof in the lab (bgl-infra): a Keycloak protocol mapper of the

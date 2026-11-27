@@ -66,9 +66,12 @@ type Anchors interface {
 
 // Switches are plan B's switches per channel (presence.Switches, from the
 // bridge's own consumer bridge_planb; a record older than two hours counts as
-// off).
+// off). No home carries before CaughtUp: until the switches are read, a post
+// of a home with piece 4 on would go out by the record alone, and a carried
+// post is never carried again.
 type Switches interface {
 	On(piece int, channel string) bool
+	CaughtUp() bool
 }
 
 // ProofPiece is the plan B piece in whose homes a person's post binds only by
@@ -93,11 +96,12 @@ type Bridge struct {
 	BusPrefix string // "bus"
 	Log       *slog.Logger
 	MM        Mattermost
-	// Users reads the accounts behind people's posts and reactions; nil is MM.
-	// Only a system admin's token sees how an account logs in (auth_service,
-	// auth_data), which a home with plan B piece 4 on binds by (RT-6.42 step
-	// 3, #266): the bridge's admin bot's (CB_BRIDGE_MM_ADMIN_TOKEN_FILE).
-	// Without it, no account is bound in such a home.
+	// Users reads an account for the proof check in a home with plan B piece
+	// 4 on alone (RT-6.42 step 3, #266): only a system admin's token sees how
+	// an account logs in (auth_service, auth_data), the bridge's admin bot's
+	// (CB_BRIDGE_MM_ADMIN_TOKEN_FILE). Every other read, and every read in a
+	// home with the piece off, goes through MM, as before. Without it, no
+	// account is bound in a home with piece 4 on.
 	Users interface {
 		GetUser(ctx context.Context, userID string) (mm.User, error)
 	}
@@ -122,6 +126,8 @@ type Bridge struct {
 	homes  []*home
 	byCID  map[string]*home
 	users  map[string]cachedUser
+	// proofUsers caches the reads through Users
+	proofUsers map[string]cachedUser
 	// warnedProof: the one warning that a home has piece 4 on while the
 	// bridge has no admin token is out
 	warnedProof bool
@@ -166,6 +172,7 @@ func (b *Bridge) defaults() {
 		b.BusPrefix = "bus"
 	}
 	b.users = map[string]cachedUser{}
+	b.proofUsers = map[string]cachedUser{}
 	b.byCID = map[string]*home{}
 	b.homes = b.homes[:0]
 	for _, name := range b.Homes {
@@ -222,7 +229,7 @@ func (b *Bridge) carrying(h *home) bool { return !h.stopped && h.caughtUp != 0 }
 // records: while the account records are read afresh (a new consumer), a
 // home carries nothing and stops; its retry catches up once they are read.
 func (b *Bridge) records(h *home) bool {
-	if b.Anchors.CaughtUp() {
+	if b.recordsRead() {
 		return true
 	}
 	b.guard(h, errRecordsPending)
@@ -256,7 +263,13 @@ func (b *Bridge) guard(h *home, err error) {
 // one that is up, the home is carrying, and the account records are read (not
 // while a new consumer reads them afresh).
 func (b *Bridge) ready(h *home) bool {
-	return !h.stopped && h.caughtUp != 0 && h.caughtUp == b.Up() && b.Anchors.CaughtUp()
+	return !h.stopped && h.caughtUp != 0 && h.caughtUp == b.Up() && b.recordsRead()
+}
+
+// recordsRead: the account records and plan B's switches are read (each
+// consumer caught up once); before, no home carries or signals.
+func (b *Bridge) recordsRead() bool {
+	return b.Anchors.CaughtUp() && (b.Switches == nil || b.Switches.CaughtUp())
 }
 
 // signal publishes the home's signal (RT-6.42 step 7) while it is ready, and
@@ -304,7 +317,7 @@ const liveSlack = time.Minute
 // never goes out before its root.
 func (b *Bridge) catchUp(ctx context.Context, h *home, conn uint64) {
 	err := func() error {
-		if !b.Anchors.CaughtUp() {
+		if !b.recordsRead() {
 			return errRecordsPending
 		}
 		if b.me == "" {
@@ -528,7 +541,11 @@ func (b *Bridge) post(ctx context.Context, h *home, p post, caught bool, lower i
 		b.Log.Warn("inbound: a post that does not encode, dropped", "home", h.name, "post", p.id, "error", err)
 		return nil
 	}
-	if err := b.publish(h, u, raw, "post", p.id); err != nil {
+	anchor, err := b.anchorOf(ctx, h, u)
+	if err != nil {
+		return err
+	}
+	if err := b.publish(h, anchor, raw, "post", p.id); err != nil {
 		return err
 	}
 	if err := b.Seen.MarkPost(ctx, p.id); err != nil {
@@ -586,7 +603,11 @@ func (b *Bridge) reaction(ctx context.Context, h *home, postID, userID, emoji st
 	if err != nil {
 		return err
 	}
-	if err := b.publish(h, u, raw, kind, postID); err != nil {
+	anchor, err := b.anchorOf(ctx, h, u)
+	if err != nil {
+		return err
+	}
+	if err := b.publish(h, anchor, raw, kind, postID); err != nil {
 		return err
 	}
 	kinds[key] = kind
@@ -603,8 +624,8 @@ func (b *Bridge) reaction(ctx context.Context, h *home, postID, userID, emoji st
 // logs one INFO line once NATS has taken it: the home, what it was (post,
 // reaction or unreaction), the Mattermost post id and the subject, never the
 // text or a name beyond the anchor in the subject (RT-6.42 step 4).
-func (b *Bridge) publish(h *home, u mm.User, body []byte, what, mmPost string) error {
-	subject := b.BusPrefix + ".hu." + h.name + "." + SenderToken(b.anchorOf(h, u))
+func (b *Bridge) publish(h *home, anchor string, body []byte, what, mmPost string) error {
+	subject := b.BusPrefix + ".hu." + h.name + "." + SenderToken(anchor)
 	if err := b.NATS.Publish(subject, body); err != nil {
 		return fmt.Errorf("publish %s: %w", subject, err)
 	}
@@ -628,39 +649,52 @@ func (b *Bridge) advance(ctx context.Context, h *home, at int64) error {
 // user reads an account from Mattermost, cached: whether it is a bot is
 // Mattermost's to say (point 6), and its username is shown.
 func (b *Bridge) user(ctx context.Context, id string) (mm.User, error) {
-	if c, ok := b.users[id]; ok && b.Now().Sub(c.at) < userTTL {
-		return c.u, nil
-	}
-	var users interface {
-		GetUser(ctx context.Context, userID string) (mm.User, error)
-	} = b.MM
-	if b.Users != nil {
-		users = b.Users
+	return b.cached(ctx, b.users, b.MM, id)
+}
+
+// cached reads an account through users, cached in c for userTTL.
+func (b *Bridge) cached(ctx context.Context, c map[string]cachedUser, users interface {
+	GetUser(ctx context.Context, userID string) (mm.User, error)
+}, id string) (mm.User, error) {
+	if hit, ok := c[id]; ok && b.Now().Sub(hit.at) < userTTL {
+		return hit.u, nil
 	}
 	u, err := users.GetUser(ctx, id)
 	if err != nil {
 		return mm.User{}, err
 	}
-	b.users[id] = cachedUser{u: u, at: b.Now()}
+	c[id] = cachedUser{u: u, at: b.Now()}
 	return u, nil
 }
 
 // anchorOf is the person a post or reaction of u in home h goes out under
 // (RT-6.42 step 3): with plan B piece 4 off there, the anchor the account's
-// record names, as before #266; with it on, that anchor only while Mattermost
-// shows the account active, no guest, and logging in as its binding was
-// proven (the same auth_service and auth_data, read with the bridge's admin
-// token, cached as the user is), else "" (fail closed): a deactivated
+// record names, as before #266; with it on, that anchor only while Mattermost,
+// read with the bridge's admin token (Users, cached as the user is), shows the
+// account active, no guest, and logging in as its binding was proven (the
+// same auth_service and auth_data), else "" (fail closed): a deactivated
 // account, a guest, one whose login changed, a record without a proof, and
-// every account when the bridge has no admin token.
-func (b *Bridge) anchorOf(h *home, u mm.User) string {
+// every account when the bridge has no admin token. A read through the admin
+// token that fails is an error: the home stops and catches up again, so
+// nothing is carried under "-" for want of an answer.
+func (b *Bridge) anchorOf(ctx context.Context, h *home, u mm.User) (string, error) {
 	if !b.needsProof(h) {
-		return b.Anchors.Anchor(u.ID)
+		return b.Anchors.Anchor(u.ID), nil
 	}
-	if u.IsBot || u.Deactivated || u.Guest || b.Users == nil {
-		return ""
+	if u.IsBot || b.Users == nil {
+		return "", nil
 	}
-	return b.Anchors.Bound(u.ID, u.AuthService, u.AuthData)
+	a, err := b.cached(ctx, b.proofUsers, b.Users, u.ID)
+	if gone(err) {
+		return "", nil
+	}
+	if err != nil {
+		return "", err
+	}
+	if a.IsBot || a.Deactivated || a.Guest {
+		return "", nil
+	}
+	return b.Anchors.Bound(u.ID, a.AuthService, a.AuthData), nil
 }
 
 // needsProof says whether plan B piece 4 is on in h, so that a post binds by
@@ -685,5 +719,6 @@ func gone(err error) bool {
 	return errors.As(err, &se) && se.Status == 404
 }
 
-// errRecordsPending: the account records are not read yet (Accounts.CaughtUp).
-var errRecordsPending = errors.New("inbound: the account records are not read yet")
+// errRecordsPending: the account records or plan B's switches are not read
+// yet (Accounts.CaughtUp, Switches.CaughtUp).
+var errRecordsPending = errors.New("inbound: the account records or plan B's switches are not read yet")
