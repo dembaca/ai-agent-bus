@@ -81,6 +81,66 @@ def test_agent_name_vector() -> None:
         == "eadecaajdhhzsahypvqfemgypy"
 
 
+class _RecordingWaits:
+    """A wait iterator that records how often it was pulled, without sleeping."""
+
+    def __init__(self, cap: float) -> None:
+        self.cap = cap
+        self.pulls = 0
+
+    def __iter__(self) -> "_RecordingWaits":
+        return self
+
+    def __next__(self) -> float:
+        self.pulls += 1
+        return 0.0
+
+
+def test_a_login_failure_backs_off_slower_than_a_server_that_is_away(monkeypatch) -> None:
+    """#222 review: while the server does not answer, a reconnect is tried again within
+    5 s; a login failure may need a human or a restarted login service and keeps the
+    slower growth to 30 s."""
+    made: list[_RecordingWaits] = []
+
+    def fake_waits(jitter: Any = None, *, cap: float = natsbus.RECONNECT_MAX_SEC) -> Any:
+        waits = _RecordingWaits(cap)
+        made.append(waits)
+        return waits
+
+    monkeypatch.setattr(natsbus, "reconnect_waits", fake_waits)
+
+    async def run(exc: Exception) -> list[tuple[float, int]]:
+        made.clear()
+        bus = natsbus.NatsBus.__new__(natsbus.NatsBus)
+        bus._stopping = False
+        bus._wake = asyncio.Event()
+        bus._planned = False
+        bus._ready = asyncio.Event()
+        bus._send_lock = asyncio.Lock()
+        calls = []
+
+        async def fake_open() -> None:
+            calls.append(1)
+            if len(calls) >= 2:  # two failures say which wait it took; then stop
+                bus._stopping = True
+            raise exc
+
+        async def fake_close() -> None:
+            return
+
+        bus._open = fake_open  # type: ignore[method-assign]
+        bus._close_old = fake_close  # type: ignore[method-assign]
+        bus._wake.set()
+        await asyncio.wait_for(bus._supervise(), 5)
+        return [(w.cap, w.pulls) for w in made]
+
+    for exc, cap in ((ConnectionError("the server is down"), natsbus.RECONNECT_MAX_SEC),
+                     (natsbus.LoginError("the login failed"), natsbus.LOGIN_RECONNECT_MAX_SEC)):
+        waits = asyncio.run(run(exc))
+        used = [item for item in waits if item[1]]
+        assert used and all(item[0] == cap for item in used), (exc, waits)
+
+
 def test_the_reconnect_wait_doubles_to_five_seconds() -> None:
     """#222: the wait before a reconnect attempt starts at a second and doubles, but stops
     at 5 s, so a nats-server that comes back is reached again soon instead of after the
@@ -884,7 +944,9 @@ async def test_send_checks_the_channel_locally() -> None:
 
 async def test_no_answer_from_the_server_is_an_error_not_a_success() -> None:
     """A send counts only when the server answered the round trip after it: a flush
-    that times out (the server said nothing) makes the send fail."""
+    that times out (the server said nothing) makes the send fail, and the connection
+    is given up - nats-py matches PONGs to flushes in order, so a timed-out flush
+    would misfit every later one (#222 review)."""
     bus, _ = _unit_bus()
     sent: list[str] = []
 
@@ -896,9 +958,10 @@ async def test_no_answer_from_the_server_is_an_error_not_a_success() -> None:
             raise asyncio.TimeoutError
 
     bus._nc, bus._connected = Silent(), True  # type: ignore[assignment]
-    with pytest.raises(natsbus.NatsBusError, match="publish failed"):
+    with pytest.raises(natsbus.NatsBusError, match="stopped answering"):
         await bus.post("home", "x")
     assert sent  # it was sent, and still counts as failed
+    assert bus._connected is False and bus._wake.is_set()
 
 
 async def test_name_mismatch_in_a_reconnect_reaches_the_caller(monkeypatch: pytest.MonkeyPatch) -> None:

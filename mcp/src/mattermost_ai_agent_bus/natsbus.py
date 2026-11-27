@@ -46,7 +46,7 @@ from typing import Any, Protocol
 from nats.aio.client import Client as NatsClient
 
 from . import a2a
-from .login import NKey
+from .login import LoginError, NKey
 from .session_file import NONCE_RE
 
 log = logging.getLogger(__name__)
@@ -61,10 +61,17 @@ PRESENCE_FRESH_SEC = 90.0  # a holder's last presence must be younger than this
 OWN_ECHO_SEC = 75.0  # the echo of this agent's own presence must be younger than this (monotonic), else the view is unknown
 GAP_RECONNECT_SEC = 30.0  # at most one reconnect for a gap within this time
 # The wait between reconnect attempts doubles from a second, but a server that comes
-# back must be noticed soon: a home whose nats-server restarted was unreachable for up
-# to 30 s more than the server was down (#222). 5 s is still a bounded rate for a long
-# outage (12 attempts a minute, less than nats-py's own 2 s default).
+# back must be noticed soon: with a cap of 30 s a restarted nats-server was unreachable
+# for up to 20 s beyond its downtime (#222). 5 s keeps a long outage to ~16 attempts a
+# minute, less than nats-py's own 2 s default (30).
 RECONNECT_MAX_SEC = 5.0
+# A login failure is not the server being away: the login service may need longer (a
+# human, a restarted service), so that path keeps the slower growth.
+LOGIN_RECONNECT_MAX_SEC = 30.0
+# A flush that does not hear its PONG within this fails the send instead of holding the
+# send lock for nats-py's 10 s default: a post in flight under a fault blocked every
+# later post for 8 s, which is the floor the rig measured (#222).
+SYNC_SEC = 2
 MAX_AGE_SEC = 86400.0  # the PRESENCE stream's max_age: older claims and presence are gone
 MEMBER_RENEW_SEC = 6 * 3600.0  # a membership is announced again this often (the stream keeps 24 h)
 MEMBER_SYNC_WAIT_SEC = 10.0  # how long an announcement waits for the bus to be synced
@@ -110,17 +117,18 @@ _KINDS = ("post", "reaction", "unreaction")
 _STATUSES = ("online", "away", "bye")
 
 
-def reconnect_waits(jitter: Callable[[], float] | None = None) -> Iterator[float]:
+def reconnect_waits(jitter: Callable[[], float] | None = None, *,
+                    cap: float = RECONNECT_MAX_SEC) -> Iterator[float]:
     """The wait before each reconnect attempt (RT-6.36 step 2): one second, doubling to
-    `RECONNECT_MAX_SEC`, each stretched by 0.5 to 1.0 so a home's agents do not
-    retry in step. The cap is what a server that comes back needs: with 30 s, a
-    restarted nats-server stayed unreachable for up to 20 s beyond its downtime in
-    the rig; with 5 s the sender was back within 1 to 5 s (#222)."""
+    `cap`, each stretched by 0.5 to 1.0 so a home's agents do not retry in step. The cap
+    is what a server that comes back needs: with 30 s, a restarted nats-server stayed
+    unreachable for up to 20 s beyond its downtime in the rig; with 5 s the sender was
+    back within 1 to 5 s. A login failure keeps the slower growth (#222)."""
     jitter = jitter or (lambda: random.uniform(0.5, 1.0))
     delay = 1.0
     while True:
         yield delay * jitter()
-        delay = min(delay * 2, RECONNECT_MAX_SEC)
+        delay = min(delay * 2, cap)
 
 
 class NatsBusError(Exception):
@@ -1519,8 +1527,8 @@ class NatsBus:
         that was already on the wire before them (nats-py matches PONGs to flushes in
         order), so an -ERR for the writes may still be on its way. The second PING is
         sent only after the first PONG, and the server answers in order."""
-        await nc.flush()
-        await nc.flush()
+        await nc.flush(timeout=SYNC_SEC)
+        await nc.flush(timeout=SYNC_SEC)
 
     def _schedule_renew(self) -> None:
         if self._renew_task is not None:
@@ -1555,7 +1563,11 @@ class NatsBus:
                     await self._close_old()
             else:
                 await self._close_old()
-            waits = reconnect_waits()
+            # The server being away is retried soon; a login failure, which may need a
+            # human or a restarted login service, keeps growing to 30 s (#222 review).
+            server_waits = reconnect_waits()
+            login_waits = reconnect_waits(cap=LOGIN_RECONNECT_MAX_SEC)
+            failures = 0
             try:
                 while not self._stopping:
                     try:
@@ -1572,9 +1584,17 @@ class NatsBus:
                         await self._notify_fatal(exc)
                         return
                     except Exception as exc:
-                        wait = next(waits)
-                        log.warning("nats bus: reconnect failed, next in %.1f s: %s", wait,
-                                    connect_reason(exc))
+                        failures += 1
+                        login_failed = isinstance(exc, LoginError)
+                        wait = next(login_waits if login_failed else server_waits)
+                        # The first tries are news; a long outage is not a warning a turn.
+                        if failures <= 3 or failures % 10 == 0:
+                            log.warning("nats bus: reconnect failed (%s), next in %.1f s: %s",
+                                        "login" if login_failed else "server", wait,
+                                        connect_reason(exc))
+                        else:
+                            log.debug("nats bus: reconnect failed (%s), next in %.1f s",
+                                      "login" if login_failed else "server", wait)
                         await asyncio.sleep(wait)
             finally:
                 self._ready.set()
@@ -1659,6 +1679,14 @@ class NatsBus:
         try:
             await nc.publish(subject, body)  # never a Nats-Msg-Id header
             await self._sync(nc)
+        except TimeoutError:
+            # The line stopped answering: nats-py matches PONGs to flushes in order, so a
+            # timed-out flush would misfit every later one. Give the connection up and
+            # let the supervisor make a new one (RT-6.36 step 2).
+            if self._nc is nc:
+                self._connected = False
+                self._wake.set()
+            raise NatsBusError("the connection stopped answering") from None
         except Exception as exc:
             raise NatsBusError(f"publish failed: {type(exc).__name__}") from None
         if subject in self._denied:

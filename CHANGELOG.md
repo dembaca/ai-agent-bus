@@ -143,16 +143,24 @@ before 0.5.0 are described in the git history.
 
 ### Fixed
 
-- **A restarted nats-server is reached again within seconds** (#222). A home
-  over NATS reopened a lost connection with a wait that doubled from a second
-  to 30 s, so after a server restart the next attempt could be half a minute
-  away while the server was back in one: a run whose restart lasted 30 s left
-  the sender down for up to 20 s beyond its downtime, and a short run read as
-  "never came back". The wait now stops at 5 s (still 12 attempts a minute for a
-  long outage), the attempt and its wait are logged (`next in 1.4 s`), and the
-  fault rig's report says `recovery_s`, the time from the window to the first
-  post after it. The rig measured 1 to 5 s after the cap (7.6 to 19.7 s
-  before); nothing else changes, no new setting.
+- **A faulted NATS connection no longer blocks the next post, and a
+  restarted server is reached again within seconds** (#222). Two defects, both
+  measured with the fault rig: a send in flight when a fault hit held the
+  send lock until nats-py's 10 s flush default, so the first post after the
+  window waited 8.0 s (`restart` and `blackhole`); and the reconnect wait
+  doubled from a second to 30 s, so after a long outage the next attempt could
+  be half a minute away (a 30 s restart left the sender down for 7.6 to
+  19.7 s beyond its downtime). A flush that does not hear its PONG within 2 s
+  now fails that send and gives the connection up (a timed-out flush would
+  misfit every later PONG), and the wait stops at 5 s while the server does
+  not answer; a failure of the login itself keeps the slower growth to 30 s,
+  since it may need a human or a restarted login service. Each attempt logs
+  its next wait (the first three, then every tenth), and the fault rig reports
+  `recovery_s`, the time from the window to the first post after it. Measured
+  after the change: 0.03 to 0.5 s for the faults of `--fault all`, 1.0 to
+  4.5 s for a 30 s restart window. #222's own 0.5 s command recovered in 4 of
+  4 runs on macOS before the change as well, so the report's ~40 s is not
+  reproduced here; this fixes the two delays it can have come from.
 - **A killed session no longer loses the post that was queued for it** (#213).
   The first `since` of a NATS home now comes from the host's read mark
   (`read-<uid>.env`, the NATS lane `<channel id>:nats`): the last post actually
