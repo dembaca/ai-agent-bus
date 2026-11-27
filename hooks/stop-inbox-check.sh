@@ -26,6 +26,9 @@
 # hiccup: exit 0. A chat integration must never be able to wedge a coding session.
 set -uo pipefail
 
+# The waiting NATS login line for the human (#198), filled below when a grant waits.
+LOGIN_LINE=""
+
 # shellcheck source=../bin/mm-agent-lib.sh
 CB_ENV_QUIET=1 CB_ENV_DEFER=1 source "$(cd "$(dirname "$0")/../bin" && pwd)/mm-agent-lib.sh"
 mm_read_hook_input
@@ -125,7 +128,12 @@ block() {
   mm_stat inject name="$injected" chars="$(mm_chars "$1")"
   TURN_BLOCKED=1
   save_state
-  jq -nc --arg r "$1" --arg m "${2:-}" \
+  local m="${2:-}"
+  if [[ -n "$LOGIN_LINE" ]]; then
+    m="${m:+$m$'\n'}$LOGIN_LINE"
+    mm_bus POST /v1/login/shown '{}' >/dev/null 2>&1 || true
+  fi
+  jq -nc --arg r "$1" --arg m "$m" \
     '{decision:"block", reason:$r} + (if $m == "" then {} else {systemMessage:$m} end)'
   exit 0
 }
@@ -168,9 +176,14 @@ go_idle() {
   presence idle
   [[ -n "$STATE" ]] && rm -f "$STATE"
   [[ -n "$LF" ]] && rm -f "$LF"
-  local note
-  if note="$(update_note)"; then
-    jq -nc --arg m "$note" '{systemMessage:$m}'
+  local note msg=""
+  if note="$(update_note)"; then msg="$note"; fi
+  if [[ -n "$LOGIN_LINE" ]]; then
+    msg="${msg:+$msg$'\n'}$LOGIN_LINE"
+    mm_bus POST /v1/login/shown '{}' >/dev/null 2>&1 || true
+  fi
+  if [[ -n "$msg" ]]; then
+    jq -nc --arg m "$msg" '{systemMessage:$m}'
   fi
   exit 0
 }
@@ -271,6 +284,21 @@ my_last_post && have_post=1
 # /v1/reminded); a mark that fails lets the answer alone go, so a server that
 # cannot mark never blocks in a loop. Both due: one block, the answer first.
 # Same words as turnend.answer (RT-6.20).
+# A NATS login approval that is waiting now reaches the terminal here too (#198): a
+# grant can start after the session-start hook ran. One line per login: the shown mark
+# goes out only after it was printed.
+if mm_bus GET /v1/login && [[ "$CB_BUS_STATUS" == 200 ]]; then
+  _link="$(jq -r '.link // empty | strings' <<<"$CB_BUS_BODY" 2>/dev/null)"
+  _code="$(jq -r '.user_code // empty | strings' <<<"$CB_BUS_BODY" 2>/dev/null)"
+  if [[ -n "$_link" ]]; then
+    if [[ -n "$_code" ]]; then
+      LOGIN_LINE="Bus login: open ${_link} — the page shows the code ${_code}. Approve only if it matches."
+    else
+      LOGIN_LINE="Bus login: open ${_link}. Approve only if it is your agent's login."
+    fi
+  fi
+fi
+unset _link _code
 CHANNEL=0; mm_channel_push && CHANNEL=1
 answer_reason="" answer_banner=""
 reminded() { mm_bus POST /v1/reminded "$(jq -nc --argjson ids "$UNANSWERED_IDS" '{post_ids: $ids}')"; }

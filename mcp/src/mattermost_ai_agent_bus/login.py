@@ -141,6 +141,11 @@ def _loopback(host: str) -> bool:
         return False
 
 
+# A device flow's user code as Keycloak prints it: 4-10 alphanumerics, optionally a
+# second group after a hyphen (#198: never shown unchecked).
+_USER_CODE = re.compile(r"[A-Za-z0-9]{4,10}(?:-[A-Za-z0-9]{4,10})?")
+
+
 def check_url(url: str, what: str) -> str:
     """https, or http on a loopback host only; no credentials, no fragment."""
     try:
@@ -328,6 +333,11 @@ class Login:
         self._wall = wall
         self._sleep = sleep
         self._tokens = _Tokens()
+        # The approval the human must give right now, for the harness to show in
+        # its own TUI (#198): link and code only, never a token; None outside the
+        # wait. `_shown` keeps the line to once per login.
+        self._pending: DeviceGrant | None = None
+        self._shown = False
         self._endpoints: dict[str, str] | None = None
         self._lock = asyncio.Lock()
         self._cooldown_until = 0.0
@@ -598,6 +608,7 @@ class Login:
             verification_uri=uri, verification_uri_complete=complete,
             user_code=str(body.get("user_code", "")),
             expires_in=_int(body.get("expires_in"), 600))
+        self._pending, self._shown = grant, False
         interval = max(1, _int(body.get("interval"), DEFAULT_INTERVAL_SEC))
         deadline = self._now() + grant.expires_in
         outcome = "failed"
@@ -622,7 +633,37 @@ class Login:
             await self._io(self._cool_down, "was refused", human)
             raise
         finally:
+            self._pending = None
             await self._settle(outcome)
+
+    def pending(self) -> DeviceGrant | None:
+        """The approval waiting right now, for the harness to show in its terminal
+        (#198): link and code only, and None once it was shown or the wait ended."""
+        return None if self._shown else self._pending
+
+    def shown(self) -> None:
+        """The line went out (a hook's notice or a plugin's): never a second one."""
+        self._shown = True
+
+    def pending_line(self) -> tuple[str, str, int] | None:
+        """The waiting approval as (link, code, expires_in) for a terminal (#198),
+        checked: an https link on the issuer's own host and port, a code in the
+        device flow's alphabet, nothing unprintable. None when nothing waits, it was
+        shown, or the grant would not survive the check."""
+        grant = self.pending()
+        if grant is None:
+            return None
+        link = grant.verification_uri_complete or grant.verification_uri
+        try:
+            check_url(link, "verification_uri")
+        except ConfigError:
+            return None
+        if not same_site(self.settings.issuer, link):
+            return None
+        code = "".join(ch for ch in grant.user_code if ch.isprintable()).strip()
+        if not _USER_CODE.fullmatch(code):
+            return None
+        return link, code, grant.expires_in
 
     def _cool_down(self, why: str, human: str = "", cause: str = "") -> None:
         """`cause` is the error's own text, kept in this object only: the mark on the
@@ -906,6 +947,12 @@ class Running(Protocol):
     def nkey(self) -> NKey: ...
 
     async def run(self) -> None: ...
+
+    def pending(self) -> DeviceGrant | None: ...
+
+    def pending_line(self) -> tuple[str, str, int] | None: ...
+
+    def shown(self) -> None: ...
 
 
 _current: Running | None = None
