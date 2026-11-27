@@ -198,6 +198,16 @@ before 0.5.0 are described in the git history.
   `$JS.API.CONSUMER.CREATE.PRESENCE.bridge_planb.presence.planb.*.v1`, both
   in `services/auth/nats-server.example.conf`; without them every piece
   stays off.
+- **Plan B piece 2b: the session's kept state keyed by the NATS name,
+  behind the same switch that is off** (ADR-014 phase 5, RT-6.2 step 9).
+  With `planb.on(2, ...)` on, the records of the agent's latest post, of
+  its guest-channel threads and of the posts waiting for an answer are
+  kept under the session's NATS name instead of the bot's Mattermost id.
+  Once the bus has the name, the files keyed by the bot id are copied once,
+  never moved, so the plugin before this one still finds its copy; the wake
+  rule for the agent's own threads reads the copy. A state file may now be
+  named by a NATS name as well as by a bot id, in the server and in
+  `mm_bot_state_file`, as a lower-case key of 1 to 128 characters. The key is decided once at start and kept for the process; a copy takes the newer file by mtime; the marker `copied-<name>.env` is removed at the session's end. With the switch off (the default) the file names are unchanged; what differs is the wider key check just named and that the session's end also deletes `threads-<bot id>.env`.
 - **Plan B piece 2a: the roster, the link of a bot to its NATS name and
   the names of accounts from NATS, behind a switch that is off** (ADR-014
   phase 5, RT-6.37 step 6, RT-6.44 step 3). The bridge publishes a record
