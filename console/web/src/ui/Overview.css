@@ -1,19 +1,25 @@
-/* The Overview: key figures, agents by status, needs you, the bus map. */
+/* The Overview: key figures, agents by status, needs you, the bus map.
+   #200: one gap (14 px) between every tile, every tile of a row as tall as
+   the row, the same inner padding everywhere, and a figure's note pinned to
+   its tile's foot, so labels, values and notes share their lines. The
+   columns follow the view's own width (a container query): the Overview
+   beside a detail gets the narrow layout too. */
 
 .figures {
   display: grid;
   grid-template-columns: repeat(4, minmax(0, 1fr));
-  gap: 10px;
+  gap: 14px;
 }
-@media (max-width: 800px) {
+@container view (max-width: 820px) {
   .figures { grid-template-columns: repeat(2, minmax(0, 1fr)); }
+  .overview__row { grid-template-columns: minmax(0, 1fr); }
 }
 
 .figure {
   display: flex;
   flex-direction: column;
   gap: 2px;
-  padding: 12px 14px;
+  padding: 12px 16px;
   border: 0;
   color: var(--ink);
   text-align: left;
@@ -26,13 +32,13 @@ button.figure:hover { background: var(--surface-2); }
 .figure__value small { font-size: 14px; color: var(--muted); font-weight: 500; }
 .figure__value--ask { color: var(--ask-text); }
 .figure__value--task { color: var(--task); }
-.figure__note { color: var(--muted); font-size: 12px; }
+.figure__note { color: var(--muted); font-size: 12px; margin-top: auto; }
 
 .overview__row {
   display: grid;
-  grid-template-columns: repeat(auto-fit, minmax(300px, 1fr));
+  grid-template-columns: repeat(3, minmax(0, 1fr));
   gap: 14px;
-  align-items: start;
+  align-items: stretch;
 }
 
 .overview__status, .overview__map { padding: 12px 16px; display: flex; flex-direction: column; gap: 10px; }
@@ -52,13 +58,14 @@ button.figure:hover { background: var(--surface-2); }
 .status-legend dd { margin: 0; }
 .status-legend__key { width: 8px; height: 8px; display: inline-block; }
 
-.overview__needs { display: flex; flex-direction: column; }
-.overview__needs-title { padding: 12px 16px 8px; }
-.overview__needs-empty { padding: 0 16px 10px; }
+.overview__needs { padding: 12px 16px; display: flex; flex-direction: column; }
+.overview__needs .overview__needs-title { margin-bottom: 10px; }
+.overview__needs .overview__needs-empty { margin: 0 0 10px; }
 .needs {
   display: flex;
   flex-direction: column;
   gap: 3px;
+  margin: 0 -16px;
   padding: 8px 16px;
   border: 0;
   border-top: 1px solid var(--line);
@@ -83,7 +90,7 @@ button.figure:hover { background: var(--surface-2); }
   text-align: left;
 }
 .overview__more:hover { text-decoration: underline; }
-.overview__needs .overview__more { margin-top: auto; padding: 10px 16px; border-top: 1px solid var(--line); }
+.overview__needs .overview__more { margin: auto -16px 0; padding: 10px 16px 0; border-top: 1px solid var(--line); }
 
 .overview__map-head { display: flex; justify-content: space-between; align-items: baseline; gap: 10px; }
 .overview__map-body {

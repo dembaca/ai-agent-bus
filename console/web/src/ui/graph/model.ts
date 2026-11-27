@@ -1,6 +1,7 @@
 import dagre from "@dagrejs/dagre"
 import type { Edge, Node } from "@xyflow/react"
 import type { AgentCard, AgentState, Ask, GraphData, Harness } from "../../api/types"
+import { agentName, askerName } from "../agents"
 
 /** What the graph view is drawn from: the graph endpoint (people, channels,
  * agents, trusts and coordinates), the fleet's live cards and the open asks.
@@ -28,12 +29,16 @@ export type FlowData = {
   state?: AgentState
   harness?: Harness | null
   crown?: boolean
+  /** agent: its stated name is another card's too (#199): marked */
+  shared?: boolean
   /** channel: some agent's home, else a guest channel */
   role?: "home" | "guest"
   /** ask */
   askKind?: Ask["kind"]
   forMe?: boolean | null
   by?: string
+  /** ask: its agent's name is shared (#199): marked */
+  byShared?: boolean
 }
 
 export type FlowEdgeKind = "member" | "guest" | "ask" | "asked" | "trusts" | "coordinates"
@@ -118,8 +123,10 @@ export function toFlow(input: GraphInput): { nodes: Node[]; edges: Edge[] } {
   // the graph's agent nodes stand in, so the view is not empty meanwhile.
   if (live) {
     for (const c of cards) {
+      const name = agentName(c)
       add(agentId(c.name), {
-        kind: "agent", label: c.displayName || c.name, state: c.state, harness: c.harness, crown: c.crown,
+        kind: "agent", label: name.text, state: c.state, harness: c.harness, crown: c.crown,
+        ...(name.shared ? { shared: true } : {}),
       })
     }
   } else {
@@ -146,8 +153,10 @@ export function toFlow(input: GraphInput): { nodes: Node[]; edges: Edge[] } {
   const open = asks.filter((a) => a.end === "open")
   for (const a of open) {
     if (a.human) add(personId(a.human), { kind: "person", label: a.human })
+    const by = askerName(a, cards)
     add(askId(a.id), {
-      kind: "ask", label: a.need, askKind: a.kind, forMe: a.forMe, by: a.displayName || a.by,
+      kind: "ask", label: a.need, askKind: a.kind, forMe: a.forMe, by: by.text,
+      ...(by.shared ? { byShared: true } : {}),
     })
   }
 

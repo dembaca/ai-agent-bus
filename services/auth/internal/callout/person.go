@@ -232,6 +232,7 @@ func (s *Service) authorizePerson(ctx context.Context, req *jwt.AuthorizationReq
 	if errs := vr.Errors(); len(errs) > 0 {
 		return "", who, fmt.Errorf("user JWT invalid: %w", errs[0])
 	}
+	// Encode stamps uc.IssuedAt anew; the record takes the check time now.
 	userJWT, err := uc.Encode(s.issuer)
 	if err != nil {
 		return "", who, err
@@ -246,7 +247,7 @@ func (s *Service) authorizePerson(ctx context.Context, req *jwt.AuthorizationReq
 		}
 	}
 	if at, _ := s.attestHooks(); at != nil {
-		body, _ := json.Marshal(PersonRecord{V: 1, Name: person, Anchor: tok, IAT: uc.IssuedAt, Exp: uc.Expires})
+		body, _ := json.Marshal(PersonRecord{V: 1, Name: person, Anchor: tok, IAT: now.Unix(), Exp: uc.Expires})
 		if err := at.Publish(ctx, consumers.PersonRecordSubject(s.cfg.Subjects.Presence, login), body); err != nil {
 			return "", who, fmt.Errorf("the login's record: %w", err)
 		}

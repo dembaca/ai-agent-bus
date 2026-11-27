@@ -119,6 +119,10 @@ func loginToken(key nkeys.KeyPair) string {
 // subscribe only on the login's deliver subjects.
 func TestAnOperatorsCredentialReadsOnlyAndLivesFifteenMinutes(t *testing.T) {
 	c, _ := personLab(t)
+	// One check time for the whole login: the JWT library stamps its own iat
+	// when it encodes, a moment after now and possibly in the next second, so
+	// the credential's lifetime is counted from now, not from its iat (#179).
+	now := time.Now()
 	srv, _ := nkeys.CreateServer()
 	key, _ := nkeys.CreateUser()
 	pub, _ := key.PublicKey()
@@ -129,11 +133,11 @@ func TestAnOperatorsCredentialReadsOnlyAndLivesFifteenMinutes(t *testing.T) {
 		q.ConnectOptions.Nkey = pub
 		q.ConnectOptions.SignedNonce = base64.RawURLEncoding.EncodeToString(sig)
 		q.ConnectOptions.Token = c.consoleToken("ann", nil)
-	}), time.Now())
+	}), now)
 	if err != nil {
 		t.Fatal(err)
 	}
-	userJWT, _, err := c.svc.authorize(ctx5(t), req, time.Now())
+	userJWT, _, err := c.svc.authorize(ctx5(t), req, now)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -143,9 +147,10 @@ func TestAnOperatorsCredentialReadsOnlyAndLivesFifteenMinutes(t *testing.T) {
 	}
 	login := strings.ToLower(pub)
 	p := uc.Permissions
-	if uc.Name != "person-ann~k" || uc.Expires-uc.IssuedAt != int64(Lifetime.Seconds()) || Lifetime != 15*time.Minute ||
-		uc.Subject != req.UserNkey || uc.Audience != "BUS" {
-		t.Fatalf("name %q, %d s, subject %s, audience %s", uc.Name, uc.Expires-uc.IssuedAt, uc.Subject, uc.Audience)
+	if uc.Name != "person-ann~k" || uc.Expires != now.Unix()+int64(Lifetime.Seconds()) || uc.IssuedAt < now.Unix() ||
+		Lifetime != 15*time.Minute || uc.Subject != req.UserNkey || uc.Audience != "BUS" {
+		t.Fatalf("name %q, iat %d, exp %d (check %d), subject %s, audience %s",
+			uc.Name, uc.IssuedAt, uc.Expires, now.Unix(), uc.Subject, uc.Audience)
 	}
 	if len(p.Pub.Allow) != 0 || !slices.Equal(p.Pub.Deny, natsjwt.StringList{">"}) ||
 		!slices.Equal(p.Sub.Allow, natsjwt.StringList{"deliver.person." + login + ".>"}) || len(p.Sub.Deny) != 0 || p.Resp != nil {

@@ -12,7 +12,9 @@ import (
 	"crypto/x509"
 	"errors"
 	"fmt"
+	"io"
 	"log/slog"
+	"net"
 	"net/http"
 	"os"
 	"os/signal"
@@ -24,6 +26,7 @@ import (
 	"github.com/nats-io/nats.go"
 
 	"github.com/dembaca/ai-agent-bus/services/bridge/internal/agentbots"
+	"github.com/dembaca/ai-agent-bus/services/bridge/internal/commands"
 	"github.com/dembaca/ai-agent-bus/services/bridge/internal/config"
 	"github.com/dembaca/ai-agent-bus/services/bridge/internal/inbound"
 	"github.com/dembaca/ai-agent-bus/services/bridge/internal/links"
@@ -32,7 +35,10 @@ import (
 	"github.com/dembaca/ai-agent-bus/services/bridge/internal/mmws"
 	"github.com/dembaca/ai-agent-bus/services/bridge/internal/presence"
 	"github.com/dembaca/ai-agent-bus/services/bridge/internal/reader"
+	"github.com/dembaca/ai-agent-bus/services/bridge/internal/registrar/core"
 	"github.com/dembaca/ai-agent-bus/services/bridge/internal/registrar/mattermost"
+	"github.com/dembaca/ai-agent-bus/services/bridge/internal/release"
+	"github.com/dembaca/ai-agent-bus/services/bridge/internal/signing"
 	"github.com/dembaca/ai-agent-bus/services/bridge/internal/store"
 )
 
@@ -163,16 +169,114 @@ func run(log *slog.Logger) error {
 
 	mux := http.NewServeMux()
 	mux.Handle("GET /healthz", h)
-	srv := &http.Server{Addr: cfg.Listen, Handler: mux, ReadHeaderTimeout: 5 * time.Second}
+
+	// The slash commands and their signed records (issue #151 step 3) and the
+	// release record (step 4): the bridge's own key, the operator's records
+	// bucket, and a listener of their own for the commands. Off while
+	// CB_BRIDGE_COMMANDS_LISTEN_ADDR is empty and no release is configured.
+	started := time.Now()
+	var att *core.Attestor
+	if cfg.CommandsListen != "" || cfg.ReleaseSignersFile != "" || cfg.ReleaseVersion != "" {
+		var err error
+		if att, err = signing.Open(cfg.SigningKeyFile); err != nil {
+			return err
+		}
+	}
+	var cmds *commands.Server
+	if cfg.CommandsListen != "" {
+		records, err := store.OpenRecords(ctx, nc, cfg.RecordsBucket)
+		if err != nil {
+			return err
+		}
+		cmds, err = commands.New(commands.Config{
+			MMURL: cfg.MMURL, MMTeam: cfg.MMTeam, AdminToken: cfg.AdminToken, AllowHTTP: cfg.MMAllowHTTP,
+			Attestor: att, Persister: records, ModeTokens: cfg.ModeCommandTokens,
+			MandateTokens: cfg.MandateCommandTokens, DebugTokens: cfg.DebugCommandTokens,
+			TrustedProxies: cfg.TrustedProxies, Log: log,
+		})
+		if err != nil {
+			return err
+		}
+		cmds.PruneDebug(ctx)
+		cmds.Reads(mux)
+		log.Info("bridge: slash commands on", "addr", cfg.CommandsListen, "kid", att.Kid(),
+			"mode", len(cfg.ModeCommandTokens) > 0, "mandate", len(cfg.MandateCommandTokens) > 0,
+			"debug", len(cfg.DebugCommandTokens) > 0)
+		if cfg.CommandsPlainHTTP {
+			log.Warn("bridge: CB_BRIDGE_COMMANDS_LISTEN_ADDR is not loopback and has no TLS " +
+				"(CB_BRIDGE_COMMANDS_ALLOW_HTTP); the command tokens and the records go in clear text")
+		}
+	}
+	// The release record (RT-6.32, #151 step 4): the registrar's route is always
+	// answered, with the registrar's exact 404 while no release is set — a host
+	// treats it as normal, and an absent route would count as a failed read. The
+	// record itself is signed with the same key.
+	var rel http.Handler = http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
+		w.Header().Set("Cache-Control", "no-store")
+		w.Header().Set("Content-Type", "application/json")
+		w.WriteHeader(http.StatusNotFound)
+		_, _ = io.WriteString(w, `{"error":"no release set"}`)
+	})
+	if cfg.ReleaseSignersFile != "" || cfg.ReleaseVersion != "" {
+		var text string
+		if cfg.ReleaseSignersFile != "" {
+			var err error
+			if text, err = release.SignersText(cfg.ReleaseSignersFile); err != nil {
+				return fmt.Errorf("CB_BRIDGE_RELEASE_SIGNERS_FILE: %w", err)
+			}
+		}
+		h, err := release.New(text, cfg.ReleaseVersion, att, started)
+		if err != nil {
+			return err
+		}
+		rel = h
+		log.Info("bridge: the release record is served", "version", cfg.ReleaseVersion,
+			"signers", cfg.ReleaseSignersFile != "", "kid", att.Kid())
+	}
+	gated, err := commands.ReadLimit(rel, cfg.TrustedProxies)
+	if err != nil {
+		return err
+	}
+	mux.Handle("GET /register/v1/release", gated)
+	mainLn, err := net.Listen("tcp", cfg.Listen)
+	if err != nil {
+		return fmt.Errorf("CB_BRIDGE_LISTEN_ADDR: %w", err)
+	}
+	srv := &http.Server{Handler: mux, ReadHeaderTimeout: 5 * time.Second,
+		ReadTimeout: 30 * time.Second, IdleTimeout: 120 * time.Second}
 	go func() {
-		if err := srv.ListenAndServe(); err != nil && !errors.Is(err, http.ErrServerClosed) {
+		if err := srv.Serve(mainLn); err != nil && !errors.Is(err, http.ErrServerClosed) {
 			log.Error("bridge: healthz", "error", err)
 		}
 	}()
+	var cmdSrv *http.Server
+	if cmds != nil {
+		cmdLn, err := net.Listen("tcp", cfg.CommandsListen)
+		if err != nil {
+			return fmt.Errorf("CB_BRIDGE_COMMANDS_LISTEN_ADDR: %w", err)
+		}
+		if cfg.CommandsTLSCertFile != "" {
+			tcfg, err := commands.TLSConfig(cfg.CommandsTLSCertFile, cfg.CommandsTLSKeyFile)
+			if err != nil {
+				return err
+			}
+			cmdLn = tls.NewListener(cmdLn, tcfg)
+		}
+		cmdSrv = &http.Server{Handler: cmds.Commands(), ReadHeaderTimeout: 5 * time.Second,
+			ReadTimeout: 30 * time.Second, IdleTimeout: 120 * time.Second}
+		go func() {
+			if err := cmdSrv.Serve(cmdLn); err != nil && !errors.Is(err, http.ErrServerClosed) {
+				log.Error("bridge: the slash commands stopped", "error", err)
+			}
+		}()
+	}
 	log.Info("bridge: up", "homes", cfg.Homes, "listen", cfg.Listen)
 
 	<-ctx.Done()
 	_ = srv.Shutdown(context.Background())
+	if cmdSrv != nil {
+		_ = cmdSrv.Shutdown(context.Background())
+	}
 	wg.Wait()
 	if h.failed.Load() {
 		return errors.New("a home stopped; the bridge exits so the supervisor restarts it")

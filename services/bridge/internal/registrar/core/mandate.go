@@ -90,10 +90,14 @@ type mandateState struct {
 
 // MandateStore keeps the mandate per channel in memory and, with a path, in
 // its own JSON file, written atomically (temp file + rename, mode 0600) after
-// every change. One registrar process owns the file.
+// every change. With a Persister instead, the same state is one value under a
+// name. One process owns the file or the value.
 type MandateStore struct {
 	mu   sync.Mutex
 	path string
+	// p and name take the state through a Persister; path is then empty.
+	p    Persister
+	name string
 	st   mandateState
 }
 
@@ -120,6 +124,26 @@ func OpenMandateStore(path string) (*MandateStore, error) {
 	return s, nil
 }
 
+// OpenMandateStoreWith loads the state stored under name through p, or starts
+// empty when it holds nothing; every change is saved through p.
+func OpenMandateStoreWith(p Persister, name string) (*MandateStore, error) {
+	s := &MandateStore{p: p, name: name, st: mandateState{Version: 1, Mandates: map[string]ChannelMandate{}}}
+	data, err := p.Load(name)
+	if err != nil {
+		return nil, fmt.Errorf("mandate store %s: %w", name, err)
+	}
+	if data == nil {
+		return s, nil
+	}
+	if err := json.Unmarshal(data, &s.st); err != nil {
+		return nil, fmt.Errorf("mandate store %s: %w", name, err)
+	}
+	if s.st.Mandates == nil {
+		s.st.Mandates = map[string]ChannelMandate{}
+	}
+	return s, nil
+}
+
 // Get returns the mandate of a channel; ok is false when none is set.
 func (s *MandateStore) Get(channelID string) (ChannelMandate, bool) {
 	s.mu.Lock()
@@ -134,7 +158,7 @@ func (s *MandateStore) Set(m ChannelMandate) error {
 	defer s.mu.Unlock()
 	old, had := s.st.Mandates[m.ChannelID]
 	s.st.Mandates[m.ChannelID] = m
-	if err := s.saveLocked(); err != nil {
+	if err := s.persist(); err != nil {
 		if had {
 			s.st.Mandates[m.ChannelID] = old
 		} else {
@@ -154,20 +178,23 @@ func (s *MandateStore) Delete(channelID string) error {
 		return nil
 	}
 	delete(s.st.Mandates, channelID)
-	if err := s.saveLocked(); err != nil {
+	if err := s.persist(); err != nil {
 		s.st.Mandates[channelID] = old
 		return err
 	}
 	return nil
 }
 
-func (s *MandateStore) saveLocked() error {
-	if s.path == "" {
+func (s *MandateStore) persist() error {
+	if s.p == nil && s.path == "" {
 		return nil
 	}
 	data, err := json.MarshalIndent(s.st, "", "  ")
 	if err != nil {
 		return err
+	}
+	if s.p != nil {
+		return s.p.Save(s.name, data)
 	}
 	return writeFileAtomic(s.path, ".mandates-*", data)
 }

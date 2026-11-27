@@ -1,51 +1,12 @@
 {
- "//": "The console API's wire contract in one place (ADR-015 point 10): both sides hold to it \u2014 console/server/tests/test_wire_contract.py builds this card from live deliveries, and console/web/src/api/wire.ts fails its typecheck when the app's types drift from it. Fleet cards, events and thread pages are the app's camelCase shapes; ask rows and /v1/me use the ADR's spellings and are mapped in the app's http.ts; the report is one of /v1/stats as the app takes it.",
- "card": {
-  "name": "agent-oudzj4bhpl62iahctur5s5sf44",
-  "displayName": "agent-himalia-nats-pilo-772844",
-  "home": "dev",
-  "guests": [
-   "bgl-infra"
-  ],
-  "state": "online",
-  "crown": true,
-  "harness": "claude-code",
-  "model": "Claude Code \u00b7 Opus 5.5",
-  "task": "console: the card's data over presence",
-  "role": "member",
-  "for": "dembaca",
-  "autonomous": false,
-  "trusts": [
-   "dembaca"
-  ],
-  "capabilities": [],
-  "project": "",
-  "branch": "console-card-data",
-  "pr": null,
-  "ctx": null,
-  "limits": null,
-  "version": "",
-  "openAsks": 1,
-  "asksForOperator": null,
-  "helloAt": 1763980760000,
-  "lastPostAt": null,
-  "helloPostId": "",
-  "tasks": []
- },
- "events": {
-  "snapshot": {
-   "type": "snapshot",
-   "cards": []
-  },
+  "//": "The console API's wire contract in one place (ADR-015 point 10): both sides hold to it \u2014 console/server/tests/test_wire_contract.py builds this card from live deliveries, and console/web/src/api/wire.ts fails its typecheck when the app's types drift from it. Fleet cards, events and thread pages are the app's camelCase shapes; ask rows and /v1/me use the ADR's spellings and are mapped in the app's http.ts; the report is one of /v1/stats as the app takes it.",
   "card": {
-   "type": "card",
-   "card": {
     "name": "agent-oudzj4bhpl62iahctur5s5sf44",
     "displayName": "agent-himalia-nats-pilo-772844",
+    "statedName": "agent-himalia-nats-pilo-772844",
+    "nameShared": false,
     "home": "dev",
-    "guests": [
-     "bgl-infra"
-    ],
+    "guests": ["bgl-infra"],
     "state": "online",
     "crown": true,
     "harness": "claude-code",
@@ -55,7 +16,7 @@
     "for": "dembaca",
     "autonomous": false,
     "trusts": [
-     "dembaca"
+      "dembaca"
     ],
     "capabilities": [],
     "project": "",
@@ -70,265 +31,304 @@
     "lastPostAt": null,
     "helloPostId": "",
     "tasks": []
-   }
   },
-  "drop": {
-   "type": "drop",
-   "name": "agent-oudzj4bhpl62iahctur5s5sf44"
-  }
- },
- "ask": {
-  "id": "8xqk3b1zwtrd5mfy6nqpe4hc1o",
-  "by": "agent-oudzj4bhpl62iahctur5s5sf44",
-  "display_name": "agent-himalia-nats-pilo-772844",
-  "home": "dev",
-  "kind": "approval",
-  "human": "dembaca",
-  "need": "an example ask",
-  "at": 1763980900000,
-  "end": "open",
-  "for_me": null,
-  "may_answer": null,
-  "agent_gone": false,
-  "thread_id": "8xqk3b1zwtrd5mfy6nqpe4hc1o"
- },
- "me": {
-  "username": "dembaca",
-  "display_name": "dembaca",
-  "groups": [
-   "operators"
-  ],
-  "build": {
-   "version": "0.103.0",
-   "revision": "28d6475a0c3e9b1f2d4a6c8e0b2d4f6a8c0e2b4d"
-  }
- },
- "page": {
-  "rootId": "thread-1",
-  "posts": [
-   {
-    "id": "thread-1",
-    "rootId": null,
-    "author": "agent-oudzj4bhpl62iahctur5s5sf44",
+  "events": {
+    "snapshot": {
+      "type": "snapshot",
+      "cards": []
+    },
+    "card": {
+      "type": "card",
+      "card": {
+        "name": "agent-oudzj4bhpl62iahctur5s5sf44",
+        "displayName": "agent-himalia-nats-pilo-772844",
+        "statedName": "agent-himalia-nats-pilo-772844",
+        "nameShared": false,
+        "home": "dev",
+        "guests": ["bgl-infra"],
+        "state": "online",
+        "crown": true,
+        "harness": "claude-code",
+        "model": "Claude Code \u00b7 Opus 5.5",
+        "task": "console: the card's data over presence",
+        "role": "member",
+        "for": "dembaca",
+        "autonomous": false,
+        "trusts": [
+          "dembaca"
+        ],
+        "capabilities": [],
+        "project": "",
+        "branch": "console-card-data",
+        "pr": null,
+        "ctx": null,
+        "limits": null,
+        "version": "",
+        "openAsks": 1,
+        "asksForOperator": null,
+        "helloAt": 1763980760000,
+        "lastPostAt": null,
+        "helloPostId": "",
+        "tasks": []
+      }
+    },
+    "drop": {
+      "type": "drop",
+      "name": "agent-oudzj4bhpl62iahctur5s5sf44"
+    }
+  },
+  "ask": {
+    "id": "8xqk3b1zwtrd5mfy6nqpe4hc1o",
+    "by": "agent-oudzj4bhpl62iahctur5s5sf44",
+    "display_name": "agent-himalia-nats-pilo-772844",
+    "home": "dev",
+    "kind": "approval",
+    "human": "dembaca",
+    "need": "an example ask",
     "at": 1763980900000,
-    "message": "an example post"
-   }
-  ],
-  "next": null
- },
- "report": {
-  "id": "tokens-by-category",
-  "title": "tokens by category",
-  "window": "7 d",
-  "note": "estimated: exact totals per token type from the harness (Claude Code, OpenCode, pi), split by content at 4 characters per token; text and thinking by what drove the request, a convention; from 1 of 1 lines (claude-code)",
-  "fields": [
-   {
-    "label": "lines with the split",
-    "unit": "count",
-    "value": 1
-   },
-   {
-    "label": "lines",
-    "unit": "count",
-    "value": 1
-   },
-   {
-    "label": "requests driven by the bus alone",
-    "unit": "count",
-    "value": 6
-   },
-   {
-    "label": "requests driven by coordination",
-    "unit": "count",
-    "value": 9
-   },
-   {
-    "label": "age of the oldest line",
-    "unit": "s",
-    "value": 0
-   }
-  ],
-  "stacks": [
-   {
-    "label": "fleet",
-    "estimated": true,
-    "segments": [
-     {
-      "category": "task",
-      "value": 10550,
-      "percent": 72
-     },
-     {
-      "category": "overhead",
-      "value": 2650,
-      "percent": 18
-     },
-     {
-      "category": "coordination",
-      "value": 1500,
-      "percent": 10
-     }
+    "end": "open",
+    "for_me": null,
+    "may_answer": null,
+    "agent_gone": false,
+    "thread_id": "8xqk3b1zwtrd5mfy6nqpe4hc1o"
+  },
+  "me": {
+    "username": "dembaca",
+    "display_name": "dembaca",
+    "groups": [
+      "operators"
     ],
-    "raw": [
-     {
-      "category": "task",
-      "value": 66410,
-      "percent": 72
-     },
-     {
-      "category": "overhead",
-      "value": 21230,
-      "percent": 23
-     },
-     {
-      "category": "coordination",
-      "value": 4460,
-      "percent": 5
-     }
-    ]
-   },
-   {
-    "label": "version 0.101.0",
-    "estimated": true,
-    "segments": [
-     {
-      "category": "task",
-      "value": 10550,
-      "percent": 72
-     },
-     {
-      "category": "overhead",
-      "value": 2650,
-      "percent": 18
-     },
-     {
-      "category": "coordination",
-      "value": 1500,
-      "percent": 10
-     }
+    "build": {
+      "version": "0.103.0",
+      "revision": "28d6475a0c3e9b1f2d4a6c8e0b2d4f6a8c0e2b4d"
+    }
+  },
+  "page": {
+    "rootId": "thread-1",
+    "posts": [
+      {
+        "id": "thread-1",
+        "rootId": null,
+        "author": "agent-oudzj4bhpl62iahctur5s5sf44",
+        "at": 1763980900000,
+        "message": "an example post"
+      }
     ],
-    "raw": [
-     {
-      "category": "task",
-      "value": 66410,
-      "percent": 72
-     },
-     {
-      "category": "overhead",
-      "value": 21230,
-      "percent": 23
-     },
-     {
-      "category": "coordination",
-      "value": 4460,
-      "percent": 5
-     }
-    ]
-   },
-   {
-    "label": "role worker",
-    "estimated": true,
-    "segments": [
-     {
-      "category": "task",
-      "value": 10550,
-      "percent": 72
-     },
-     {
-      "category": "overhead",
-      "value": 2650,
-      "percent": 18
-     },
-     {
-      "category": "coordination",
-      "value": 1500,
-      "percent": 10
-     }
+    "next": null
+  },
+  "report": {
+    "id": "tokens-by-category",
+    "title": "tokens by category",
+    "window": "7 d",
+    "note": "estimated: exact totals per token type from the harness (Claude Code, OpenCode, pi), split by content at 4 characters per token; text and thinking by what drove the request, a convention; from 1 of 1 lines (claude-code)",
+    "fields": [
+      {
+        "label": "lines with the split",
+        "unit": "count",
+        "value": 1
+      },
+      {
+        "label": "lines",
+        "unit": "count",
+        "value": 1
+      },
+      {
+        "label": "requests driven by the bus alone",
+        "unit": "count",
+        "value": 6
+      },
+      {
+        "label": "requests driven by coordination",
+        "unit": "count",
+        "value": 9
+      },
+      {
+        "label": "age of the oldest line",
+        "unit": "s",
+        "value": 0
+      }
     ],
-    "raw": [
-     {
-      "category": "task",
-      "value": 66410,
-      "percent": 72
-     },
-     {
-      "category": "overhead",
-      "value": 21230,
-      "percent": 23
-     },
-     {
-      "category": "coordination",
-      "value": 4460,
-      "percent": 5
-     }
+    "stacks": [
+      {
+        "label": "fleet",
+        "estimated": true,
+        "segments": [
+          {
+            "category": "task",
+            "value": 10550,
+            "percent": 72
+          },
+          {
+            "category": "overhead",
+            "value": 2650,
+            "percent": 18
+          },
+          {
+            "category": "coordination",
+            "value": 1500,
+            "percent": 10
+          }
+        ],
+        "raw": [
+          {
+            "category": "task",
+            "value": 66410,
+            "percent": 72
+          },
+          {
+            "category": "overhead",
+            "value": 21230,
+            "percent": 23
+          },
+          {
+            "category": "coordination",
+            "value": 4460,
+            "percent": 5
+          }
+        ]
+      },
+      {
+        "label": "version 0.101.0",
+        "estimated": true,
+        "segments": [
+          {
+            "category": "task",
+            "value": 10550,
+            "percent": 72
+          },
+          {
+            "category": "overhead",
+            "value": 2650,
+            "percent": 18
+          },
+          {
+            "category": "coordination",
+            "value": 1500,
+            "percent": 10
+          }
+        ],
+        "raw": [
+          {
+            "category": "task",
+            "value": 66410,
+            "percent": 72
+          },
+          {
+            "category": "overhead",
+            "value": 21230,
+            "percent": 23
+          },
+          {
+            "category": "coordination",
+            "value": 4460,
+            "percent": 5
+          }
+        ]
+      },
+      {
+        "label": "role worker",
+        "estimated": true,
+        "segments": [
+          {
+            "category": "task",
+            "value": 10550,
+            "percent": 72
+          },
+          {
+            "category": "overhead",
+            "value": 2650,
+            "percent": 18
+          },
+          {
+            "category": "coordination",
+            "value": 1500,
+            "percent": 10
+          }
+        ],
+        "raw": [
+          {
+            "category": "task",
+            "value": 66410,
+            "percent": 72
+          },
+          {
+            "category": "overhead",
+            "value": 21230,
+            "percent": 23
+          },
+          {
+            "category": "coordination",
+            "value": 4460,
+            "percent": 5
+          }
+        ]
+      },
+      {
+        "label": "harness claude-code",
+        "estimated": true,
+        "segments": [
+          {
+            "category": "task",
+            "value": 10550,
+            "percent": 72
+          },
+          {
+            "category": "overhead",
+            "value": 2650,
+            "percent": 18
+          },
+          {
+            "category": "coordination",
+            "value": 1500,
+            "percent": 10
+          }
+        ],
+        "raw": [
+          {
+            "category": "task",
+            "value": 66410,
+            "percent": 72
+          },
+          {
+            "category": "overhead",
+            "value": 21230,
+            "percent": 23
+          },
+          {
+            "category": "coordination",
+            "value": 4460,
+            "percent": 5
+          }
+        ]
+      }
     ]
-   },
-   {
-    "label": "harness claude-code",
-    "estimated": true,
-    "segments": [
-     {
-      "category": "task",
-      "value": 10550,
-      "percent": 72
-     },
-     {
-      "category": "overhead",
-      "value": 2650,
-      "percent": 18
-     },
-     {
-      "category": "coordination",
-      "value": 1500,
-      "percent": 10
-     }
-    ],
-    "raw": [
-     {
-      "category": "task",
-      "value": 66410,
-      "percent": 72
-     },
-     {
-      "category": "overhead",
-      "value": 21230,
-      "percent": 23
-     },
-     {
-      "category": "coordination",
-      "value": 4460,
-      "percent": 5
-     }
-    ]
-   }
+  },
+  "agentStats": [
+    {
+      "agent": "agent-oudzj4bhpl62iahctur5s5sf44",
+      "tok24h": {
+        "all": 92100,
+        "in": 1200,
+        "read": 90000,
+        "w5m": null,
+        "w1h": null,
+        "out": 900,
+        "ovh": 21230,
+        "coord": 4460
+      },
+      "tok7d": {
+        "all": 92100,
+        "in": 1200,
+        "read": 90000,
+        "w5m": null,
+        "w1h": null,
+        "out": 900,
+        "ovh": 21230,
+        "coord": 4460
+      },
+      "posts24h": null,
+      "wakes24h": null,
+      "tools24h": null
+    }
   ]
- },
- "agentStats": [
-  {
-   "agent": "agent-oudzj4bhpl62iahctur5s5sf44",
-   "tok24h": {
-    "all": 92100,
-    "in": 1200,
-    "read": 90000,
-    "w5m": null,
-    "w1h": null,
-    "out": 900,
-    "ovh": 21230,
-    "coord": 4460
-   },
-   "tok7d": {
-    "all": 92100,
-    "in": 1200,
-    "read": 90000,
-    "w5m": null,
-    "w1h": null,
-    "out": 900,
-    "ovh": 21230,
-    "coord": 4460
-   },
-   "posts24h": null,
-   "wakes24h": null,
-   "tools24h": null
-  }
- ]
 }

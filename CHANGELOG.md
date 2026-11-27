@@ -11,6 +11,80 @@ before 0.5.0 are described in the git history.
 
 - **The central bridge sweeps the agent bots it made** (#151 step 2, RT-6.44): every 10 minutes it disables a bot it made for an agent that has shown no presence and posted nothing for longer than `CB_BRIDGE_MM_BOT_KEEP` (default `24h`, at least `1h`), and revokes the bot's tokens; at most 20 bots per pass, none while the presence feed is stale. A bot is the bridge's only by its prefix and its mark in the description together, never by the prefix alone, so the registrar's bots stay the host sweep's. Last seen is kept in memory: after a restart every bot counts as seen at the start. An agent that comes back gets its bot enabled again and a fresh token at its next message; only bots the sweep disabled (their description marked ` (swept)`) come back, one an admin disabled stays off. No new right, no new endpoint, nothing persisted; hosts notice nothing.
 
+### Changed
+
+- **A human's reply in an agent's thread wakes that agent, not the coordinator**
+  ([#207](https://github.com/dembaca/ai-agent-bus/issues/207),
+  [the coordinator scenario, RT-6.6 step 5](docs/arc42/06-runtime-view.md#66-coordinator-crown-and-presence-lease)).
+  A human's plain reply in a thread an agent started (its ask, task or
+  status) woke the coordinator as well, so two agents answered. A trusted
+  human's reply there (anyone's but an agent's with the gate off) now wakes
+  only that agent, while the roster shows it as a reachable peer in the home
+  (read at most once a minute; a foreign agent's thread stays the
+  coordinator's); the
+  coordinator gets the reply in its digest, also in a thread it posted in,
+  shows no typing for it and owes it no answer. A human's reply under an
+  agent's status post (`IDLE` and the like) thus wakes that agent and reaches
+  the coordinator only in the digest. A human's reply stays the coordinator's
+  when it names the coordinator, is a stall or a DM, names an agent departed
+  or not here, stands in a thread a human started (also one whose root names
+  an agent), when the root's agent is departed or not reachable, when the
+  gate holds it back from that agent, and when the root cannot be read. An
+  agent's reply in another agent's thread wakes the coordinator as before.
+  The push, `wait_for_events`, the listener and `/v1/wake` decide alike:
+  `/v1/posts` marks such a reply `agent_thread` while the agent holds the
+  crown.
+
+- **The bridge serves the slash commands and their signed records** (#151
+  step 3): `/agent-ask-mode`, `/agent-mandate` and `/agent-debug` move from the
+  registrar to the central bridge — the registrar's handlers, the three stores
+  and its routes (`POST /register/v1/mode|mandate|debug`, reads at
+  `/register/v1/modes|mandates|debug/<channel id>`), its rate limits (30 command posts a
+  minute, one budget per Mattermost user and one per channel; 120 reads a
+  minute per read route, counted by the peer, or by the client behind a
+  configured proxy) and its exact 404 bodies. The records
+  now live in the `BUS_BRIDGE_RECORDS` bucket instead of files and are signed
+  with the bridge's own Ed25519 key, whose `kid` follows the registrar's; the
+  MCP server checks them as before, so the only host change is the new pin in
+  `MM_REGISTRAR_KEYS`. The commands get a listener of their own (TLS off
+  loopback, `CB_BRIDGE_COMMANDS_…`), each command its own verification token,
+  and the bridge refuses a key or token file open to group or world. It also
+  serves the release record's route (`GET /register/v1/release`, the handler
+  from step 4): with `CB_BRIDGE_RELEASE_SIGNERS_FILE` and
+  `CB_BRIDGE_RELEASE_VERSION` the signed record, else the registrar's exact
+  404, so a host's release check reads it unchanged. The records are one whole-state
+  value per key with a revision-checked write: the bridge runs **one replica**
+  with a `Recreate` rollout, and a second writer is refused rather than merged.
+  The release that carries this pins the bridge's key on every host beside the
+  registrar's:
+  Needs: bridge signing key pinned on the hosts beside the registrar key.
+- **The console names every agent** (#199, ADR-015 point 6). A card whose
+  stated username another card states too (an agent that moved to a new
+  host key keeps its old presence for 24 h) showed only its bus id
+  (`agent-` and a hash); it now shows the stated name with a "shared name"
+  mark, still never as a confirmed name; a username that is another card's
+  bus name counts as shared too. The fleet's cards carry `statedName` and
+  `nameShared`; the asks, the Overview, the detail and the graph name their
+  agents the same way, the mark included, the bus id in the title.
+- **The console opens on the Overview and shows a detail beside the view**
+  (#200, ADR-015 point 3): the Overview is the first tab and the default;
+  its tiles share one gap and a row's height. An agent's or an ask's
+  detail opens beside the view, half and half, the open agent marked in
+  the list; below 1000 px the detail is the whole page (up to 1230 px the
+  list gets three fifths). A detail whose agent leaves the fleet closes; the
+  graph fits itself again when its width changes. Back and Forward, the
+  list's search and filter keep working.
+
+### Docs
+
+- **The coordinator's hourly check** (`coordinator.md`, the coordinator scenario
+  RT-6.6 step 12): while it holds the crown, the coordinator reads roster and tasks
+  once an hour, nudges silent agents, gives free ones a `TASK` and posts
+  `ASSIGNMENTS` only on a change. Claude Code schedules it with its cron; runtimes
+  without a scheduler run it at the first stall notice after an hour. It goes with
+  the crown on a handover. Stall notices: one addressee per item, and finished tasks
+  closed with `DONE`, so the notice lists only live items.
+
 ## 0.103.0
 
 Needs: settings renamed to the new prefix before 0.104.0, see the changelog.

@@ -1931,7 +1931,8 @@ not know that either). A view across several servers (`/agent-explain
 
 - `wake`: why an event woke the agent, went into its digest or was gated, and
   by which rule: mention, DM, reaction on its ask, broadcast or to all, its own
-  thread, a plain post naming no agent, which wakes only the 👑 (RT-6.6 step 5,
+  thread, a plain post naming no agent, which wakes only the 👑, a human's
+  reply in a thread another agent started, which is that agent's (RT-6.6 step 5,
   RT-6.16), `not_here` / `departed` (RT-6.21), stall, digest, gated with the
   author's class.
 - `identity`: the author's class (trusted human, peer, foreign, other,
@@ -4058,8 +4059,9 @@ The console is the operators' view of the bus itself.
 3. **Layout.** Changed with the design the owner agreed on 2026-11-25
    (it replaced a sidebar with a Kanban as the home and a split detail
    pane). A top bar carries the Choirbus logo and wordmark, the views —
-   Agents (the home), Asks with the number of open asks (orange when one is
-   the operator's), Graph, Overview, Reports — the fleet stream's state, a
+   Overview (first, and the view the console opens with, #200), Agents,
+   Asks with the number of open asks (orange when one is the operator's),
+   Graph, Reports — the fleet stream's state, a
    light/dark toggle and the logged-in operator with the logout. The look is
    the website's brand: Inter only, the logo's navy as the accent, the
    site's word colors (orange asks, blue tasks, green done), compact rows,
@@ -4067,14 +4069,18 @@ The console is the operators' view of the bus itself.
    picks one with the toggle, which this browser keeps. A footer names the
    console's release version and source commit, both from the image build
    (#182). A click on an item (an agent's row, a node, an ask) opens its
-   detail as a page of its own, with a breadcrumb back to the view. The
+   detail beside the view, half and half, the view still in sight and the
+   item marked in it (#200); below 1000 px the detail is the whole page. A
+   breadcrumb leads back to the view, and the browser's Back and Forward
+   move between views and details; the list's search and filter stay. The
    detail shows the item's data and, where it has one, its thread as the
    bus has it: the HELLO thread, a task's thread, an ask's thread. An ask
    is answered there. A short-answer dialog on an ask's badge is optional
    and never the only way: it opens the same ask, and the thread stays one
    click away. The Overview counts from the same live data: agents
    reachable and by status, the open asks and those for the operator, and
-   the way to the bus map (the Graph).
+   the way to the bus map (the Graph); its tiles share one gap, and every
+   tile of a row is as tall as the row.
 
    ```mermaid
    stateDiagram-v2
@@ -4088,12 +4094,12 @@ The console is the operators' view of the bus itself.
 
    ```text
    +-------------------------------------------------------------------+
-   | logo Choirbus  Agents  Asks 3  Graph  Overview  Reports  theme  op |
+   | logo Choirbus  Overview  Agents  Asks 3  Graph  Reports  theme  op |
    +-------------------------------------------------------------------+
-   | Agents                             [search] [All|Working|...|Off] |
-   | [open ask: title, by, age]  [open ask: title, by, age]            |
-   | agent  status  task  branch  home  context  asks  last post       |
-   | agent  status  task  branch  home  context  asks  last post       |
+   | Agents      [search] [filter]  | Agents / agent's name            |
+   | [open ask]  [open ask]         | state  coordinator  model  for   |
+   | agent  status  task  last post | current task | its open asks    |
+   | agent  status  task  last post | HELLO thread | session facts    |
    +-------------------------------------------------------------------+
    | read-only pilot                     version x.y.z · commit abc1234 |
    +-------------------------------------------------------------------+
@@ -4221,10 +4227,18 @@ The console is the operators' view of the bus itself.
    `online`), idle (`idle`, `away`, `silent`), offline. A state the console
    does not know is never guessed into a group: it shows under "All" and
    under an "Other" filter, which appears while such an agent is there.
+   - **The name** (#199): the username the agent's presence states; one
+     another card states too, or one that is another card's name on the
+     bus, shows with a "shared name" mark wherever the agent is named (the
+     list, the detail, the asks, the Overview, the graph), never as a
+     confirmed name; the name on the bus (`agent-` and a hash) only in the
+     title and the detail's facts, or where no name is stated at all (an
+     older MCP server, a session without a Mattermost bot).
    - **On the row:** name with the crown, harness and model; the state, and
      "waits on you" when one of its open asks is the operator's; task;
      branch or PR; home and the number of its guest channels; `ctx`; the
-     number of its open asks; the time since its last post.
+     number of its open asks; the time since its last post. Beside an open
+     detail the row keeps name, state, task and the last post.
    - **In the detail only:** the full card (role, `for` with
      "autonomous", `trusts`, project, capabilities, the limits or the
      cost, the version among it), the task rows it holds, the session's

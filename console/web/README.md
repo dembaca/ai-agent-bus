@@ -30,18 +30,25 @@ image.
   wordmark, the views, the fleet stream's state, the theme toggle and the
   operator with the logout; a footer with the console's release version and
   short commit from `/v1/me`'s `build` (#182; n/a in a development run).
-  - **Agents**, the home (point 6): the open asks on top, then one compact
+  - **Overview**, the first tab and the default view (#200): agents
+    reachable and by status, the open asks, those for you, the way to the
+    graph; tiles of a row share their height, columns follow the view's
+    width.
+  - **Agents** (point 6): the open asks on top, then one compact
     row per agent — state, crown, harness and model, task, branch or PR,
     home and guest channels, context, open asks, last post — with a search
-    and a status filter (`src/ui/agents.ts`). It replaced the Kanban.
-  - **Asks** with *for me* / *may answer*, **Graph** (React Flow: trusts and
-    coordinates, cut at depth two with a mark), **Overview** (agents
-    reachable and by status, the open asks, those for you, the way to the
-    graph) and **Reports** — counts and seconds only, a missing field shows
-    as `n/a`, never as 0.
-  - **The detail page** of an agent or an ask: the full card, the task rows
-    the agent holds, the session's age, the time since its last post, its
-    HELLO thread and the threads of its open asks; a breadcrumb leads back.
+    and a status filter (`src/ui/agents.ts`). It replaced the Kanban. An
+    agent shows the name its presence states (#199), a name another card
+    states too with a "shared name" mark; the bus id is in the title.
+  - **Asks** with *for you* / *may answer*, **Graph** (React Flow: trusts and
+    coordinates, cut at depth two with a mark) and **Reports** — counts and
+    seconds only, a missing field shows as `n/a`, never as 0.
+  - **The detail** of an agent or an ask opens beside the view, half and
+    half (#200), the view still in sight; below 1000 px it is the whole
+    page. It shows the full card, the task rows the agent holds, the
+    session's age, the time since its last post, its HELLO thread and the
+    threads of its open asks; a breadcrumb and the browser's Back lead back,
+    the list's search and filter stay.
 
 The app talks to the console server same-origin, as its login needs the
 cookie: `VITE_CB_CONSOLE_API` is the API base path (`""` to serve the API beside

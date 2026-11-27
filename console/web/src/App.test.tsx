@@ -7,12 +7,15 @@ import { busWord, plainText } from "./ui/Detail"
 import { TopBar } from "./ui/TopBar"
 
 describe("the shell", () => {
-  it("renders the top bar, the agents list as the home and the footer", () => {
+  it("renders the top bar, the Overview first and as the default, and the footer (#200)", () => {
     const html = renderToStaticMarkup(<App api={mockApi()} />)
     expect(html).toContain('class="topbar"')
     expect(html).toContain('aria-label="Views"')
-    expect(html).toMatch(/aria-current="page"><span class="topbar__label"><span>Agents<\/span>/)
-    expect(html).toContain("<h1>Agents</h1>")
+    expect(html).toMatch(/aria-current="page"><span class="topbar__label"><span>Overview<\/span>/)
+    // the Overview is the first tab
+    expect(html.indexOf(">Overview<")).toBeLessThan(html.indexOf(">Agents<"))
+    expect(html).toContain("<h1>Overview</h1>")
+    expect(html).toContain('class="solo"')  // no detail open: no split
     expect(html).toContain('class="footer"')
     expect(html).toContain("version n/a · commit n/a")  // no build before /v1/me answers
     expect(html).not.toContain("side__")  // the sidebar is gone
@@ -33,6 +36,7 @@ describe("the history's places", () => {
     expect(asPlace({ view: "graph" })).toEqual({ view: "graph" })
     expect(asPlace({ view: "agents", agent: "agent-a", ask: "p1" }))
       .toEqual({ view: "agents", agent: "agent-a", ask: "p1" })
+    expect(asPlace({ view: "overview" })).toEqual({ view: "overview" })
     expect(asPlace({ view: "kanban" })).toBeNull()
     expect(asPlace(null)).toBeNull()
     expect(asPlace("agents")).toBeNull()

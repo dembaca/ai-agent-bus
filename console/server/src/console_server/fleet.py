@@ -309,10 +309,31 @@ class Fleet:
         bus name then. An agent may still state a name falsely that no other
         card holds: the owner beside it is the attested one."""
         label = self._names.get(agent, "")
-        if label and not any(other != agent and named == label
-                             for other, named in self._names.items()):
+        if label and not self._contested(agent, label):
             return label
         return short_name(agent)
+
+    def _contested(self, agent: str, label: str) -> bool:
+        """Another known card states `label` too, or `label` is another card's
+        name on the bus, full or short (#199: stating another agent's bus name
+        takes it over no more than stating its username)."""
+        if any(other != agent and named == label for other, named in self._names.items()):
+            return True
+        return any(other != agent and label in (other, short_name(other))
+                   for other in self.agents())
+
+    def stated_name(self, agent: str) -> str:
+        """The bot's username the agent's presence states, '' for none — shown
+        even when another card states it too (#199), then marked as shared:
+        the web shows it with the mark, never as a confirmed name."""
+        return self._names.get(agent, "")
+
+    def name_shared(self, agent: str) -> bool:
+        """True when another known card states the same username, or the
+        username is another card's bus name: the name is not confirmed
+        (`shown_name` gives the bus name then)."""
+        label = self._names.get(agent, "")
+        return bool(label) and self._contested(agent, label)
 
     # --- the wire (ADR-015 point 10, the app's contract) -------------------------------
 
@@ -333,6 +354,11 @@ class Fleet:
             out.append({
                 "name": agent,
                 "displayName": self.shown_name(agent),
+                # #199: the stated name even when another card states it too,
+                # marked; "" when the presence states none (an older MCP
+                # server, a session without a Mattermost bot)
+                "statedName": self.stated_name(agent),
+                "nameShared": self.name_shared(agent),
                 "home": self.home_of(agent),
                 # the channels beside the home (RT-6.16): the graph draws them apart
                 "guests": self.guests_of(agent),
