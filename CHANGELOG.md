@@ -170,6 +170,7 @@ before 0.5.0 are described in the git history.
   so nothing is kept: a lost message fails the request, and the caller gets an
   error, never a silent success. Nothing of the pieces is built; the scaffold
   and the rights on both sides run against a real nats-server.
+
 - **The hello's home in the login service's attestation** (#255, RT-6.41). The
   record now states `home`: the hello's home as the grant took it - a channel
   token, or `""` when the hello named none or the human is no member of it - the
