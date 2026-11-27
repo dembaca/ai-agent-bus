@@ -251,6 +251,7 @@ async def _judge_reply(home: Home, root_user: str, root_text: str, *, posted: bo
     server._my_threads.clear()
     server._my_roots.clear()
     gate._roots.clear()
+    gate._failed.clear()
     gate._reach = None
     root = {"id": ROOT, "user_id": root_user, "channel_id": WORK, "message": root_text, "create_at": 1}
     mine = [{"id": "m" * 26, "user_id": BOT, "channel_id": WORK, "root_id": ROOT,
@@ -374,6 +375,65 @@ async def test_a_root_naming_two_peers_is_the_thread_of_the_one_that_answered(ho
     assert await gate.in_thread(home, ROOT, third) == (False, False)
     assert await _judge_reply(home, HUMAN, both) == (True, True)  # neither has answered
     assert await _judge_reply(home, HUMAN, "@agent-old please rebase", answered=AGENT) == (True, True)
+
+
+async def test_a_renamed_agent_no_longer_owns_the_thread_its_old_name_names(home, monkeypatch):
+    """RT-6.6 step 5 (#223): the root names B by the username B had then; B
+    answered there, so the thread is B's. B's account is renamed: the roster,
+    read again, knows B by the new name only, the root's name names nobody,
+    and a reply wakes the 👑 again."""
+    monkeypatch.setattr(gate, "_roots", {})
+    monkeypatch.setattr(gate, "_reach", None)
+    _peer(home)
+    await lease.command(home, "tick")
+    assert lease.crown_held(BOT)
+    ask = "@agent-other please rebase"
+    assert await _judge_reply(home, HUMAN, ask, answered=AGENT) == (False, False)
+    home.agent(AGENT, "agent-renamed", 3000)  # the same account, a new username
+    assert await _judge_reply(home, HUMAN, ask, answered=AGENT) == (True, True)
+
+
+async def test_an_unreadable_thread_is_tried_again_after_a_minute(home, monkeypatch):
+    """RT-6.6 step 5 (#223): a thread that cannot be read is not read again on
+    every evaluation, for ROOT_TTL_SEC, first read and re-read alike; until
+    then it counts as unreadable (the 👑 wakes). An own post the agent makes
+    counts in a record at once (gate.saw)."""
+    monkeypatch.setattr(gate, "_roots", {})
+    monkeypatch.setattr(gate, "_failed", {})
+    monkeypatch.setattr(gate, "_reach", None)
+    _peer(home)
+    await lease.command(home, "tick")
+    reads, broken = [], [True]
+    thread = home.thread
+
+    async def counted(root_id):
+        reads.append(root_id)
+        if broken[0]:
+            raise RuntimeError("thread not readable")
+        return await thread(root_id)
+
+    monkeypatch.setattr(home, "thread", counted)
+    home.posts = [post_of({"id": ROOT, "user_id": HUMAN, "channel_id": WORK,
+                           "message": "@agent-other please rebase"})]
+    assert await gate.other_agents_thread(home, ROOT, BOT) is None
+    assert await gate.other_agents_thread(home, ROOT, BOT) is None
+    assert await gate.in_thread(home, ROOT, BOT) is None
+    assert len(reads) == 1
+    gate._failed[ROOT] -= gate.ROOT_TTL_SEC + 1
+    broken[0] = False
+    assert await gate.other_agents_thread(home, ROOT, BOT) is False  # read: B has not answered
+    assert len(reads) == 2
+    # The re-read for B fails: not tried again within the minute either.
+    broken[0] = True
+    gate._roots[ROOT].read_at -= gate.ROOT_TTL_SEC + 1
+    assert await gate.other_agents_thread(home, ROOT, BOT) is False
+    assert await gate.other_agents_thread(home, ROOT, BOT) is False
+    assert len(reads) == 3
+    # The agent's own post counts at once, without a read.
+    assert await gate.in_thread(home, ROOT, BOT) == (False, False)
+    gate.saw(post_of({"id": "m" * 26, "user_id": BOT, "root_id": ROOT, "message": "on it"}))
+    assert await gate.in_thread(home, ROOT, BOT) == (True, False)
+    assert len(reads) == 3
 
 
 async def test_a_humans_thread_naming_a_foreign_agent_stays_the_crowns(home, monkeypatch):

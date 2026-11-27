@@ -13,6 +13,18 @@ before 0.5.0 are described in the git history.
 
 ### Changed
 
+- **Thread reads for the coordinator's wake are bounded** (#223,
+  [the coordinator scenario, RT-6.6 step 5](docs/arc42/06-runtime-view.md#66-coordinator-crown-and-presence-lease),
+  and the end-of-turn scenario, RT-6.2 step 4). A thread that cannot be read
+  is not read again for a minute, first read and re-read alike; until then it
+  counts as unreadable, so the coordinator wakes. One `/v1/posts` request
+  reads at most 20 threads (`MAX_THREAD_READS`); a reply beyond them stays
+  unmarked, as without the marks: the coordinator wakes for it and the
+  listener judges it by its last 200 posts, and the next request reads on.
+  The agent's own post through `post_message` or `reply_in_thread` counts in
+  its thread's record at once. `/v1/posts`'s field table in the docs now
+  lists `agent_thread`, `my_thread` and `my_root`, and the docs say that a
+  root a webhook posted is judged as a human's.
 - **A human's reply in an agent's thread wakes that agent, not the coordinator**
   ([#207](https://github.com/dembaca/ai-agent-bus/issues/207),
   [the coordinator scenario, RT-6.6 step 5](docs/arc42/06-runtime-view.md#66-coordinator-crown-and-presence-lease)).

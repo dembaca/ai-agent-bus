@@ -1856,6 +1856,7 @@ async def post_as_bot(client: ChatPort | None, message: str, channel_id: str = "
         attach.give_back(ups)
         raise
     await _posted(client, post)
+    gate.saw(post)  # RT-6.6 step 5, RT-6.2 step 4: its own post counts in the thread record at once
     await _as_guest(client, uid, guest, post)
     word = a2a.word(message) or ""
     if word == "DONE" and post.root_id:
@@ -1939,6 +1940,7 @@ async def reply_as_bot(client: ChatPort | None, root_id: str, message: str,
         attach.give_back(ups)
         raise
     await _posted(client, post)
+    gate.saw(post)  # RT-6.6 step 5, RT-6.2 step 4: its own post counts in the thread record at once
     await _as_guest(client, uid, guest, post)
     word = a2a.word(message) or ""
     if word == "DONE" and post.root_id:

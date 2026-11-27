@@ -72,6 +72,12 @@ def _isolate_bus_env(monkeypatch, tmp_path, request):
     from mattermost_ai_agent_bus import session_file
 
     monkeypatch.setattr(session_file, "_hosted_dir", None)
+    # RT-6.6 step 5: the thread records, failed reads and roster of another test.
+    from mattermost_ai_agent_bus import gate as _gate
+
+    monkeypatch.setattr(_gate, "_roots", {})
+    monkeypatch.setattr(_gate, "_failed", {})
+    monkeypatch.setattr(_gate, "_reach", None)
     # The login's store (keystore.default(), #154): a file in the test's own
     # directory, never the real keychain; test_keystore resets it to test the choice.
     from mattermost_ai_agent_bus import keystore as _keystore

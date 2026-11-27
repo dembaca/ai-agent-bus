@@ -135,6 +135,12 @@ MAX_LABEL = 64
 # A listen window ends within Claude Code's 2 h limit; a day is ample.
 MAX_UNTIL_AHEAD_SEC = 86400
 MAX_POSTS = 200
+# Thread reads one /v1/posts request may make for agent_thread and my_thread
+# (RT-6.6 step 5, RT-6.2 step 4; each root read once and kept, so only new
+# roots count). A reply beyond it stays unmarked, as without the marks (before
+# #214 and #220): the crown wakes for it, the listener's last MAX_POSTS posts
+# decide its threads; the next request reads on. Never a wrong suppression.
+MAX_THREAD_READS = 20
 # The long poll of GET /v1/wake?wait=S (ADR-009 phase 1, RT-6.17 step 7): held
 # at most MAX_WAIT_SEC; checked again when the inbox queues an event (ring),
 # no sooner than MIN_GAP_SEC after the last check, and at the latest every
@@ -868,8 +874,9 @@ async def posts(client: ChatPort, query: Mapping[str, str], body: Mapping[str, A
         agents = set()
     for p in raw:
         gate.saw(p)  # its author posted in its thread (RT-6.6 step 5)
-    agent_threads = await _agent_threads(client, raw, uid) if lease.crown_held(uid) else set()
-    mine = await _my_threads(client, raw, uid) if since else {}
+    with gate.thread_reads(MAX_THREAD_READS):  # RT-6.6 step 5: a busy channel, bounded cost
+        agent_threads = await _agent_threads(client, raw, uid) if lease.crown_held(uid) else set()
+        mine = await _my_threads(client, raw, uid) if since else {}
     gated, absent = gate.gated(uid), gate.absent(uid)
     # Which channel this is, for mm-agent-poll.sh to say: as asked, else the work channel's name.
     return 200, {"channel": query.get("channel", "") or client.work_channel_name,

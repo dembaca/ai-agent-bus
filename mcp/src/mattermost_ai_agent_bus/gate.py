@@ -25,7 +25,9 @@ from __future__ import annotations
 import logging
 import re
 import time
-from collections.abc import Collection, Mapping, Sequence
+from collections.abc import Collection, Iterator, Mapping, Sequence
+from contextlib import contextmanager
+from contextvars import ContextVar
 from dataclasses import dataclass
 from pathlib import Path
 from typing import TYPE_CHECKING
@@ -106,8 +108,28 @@ ROOT_TTL_SEC = 60.0
 _reach: tuple[float, dict[str, str]] | None = None
 
 
+# A thread that could not be read, root → time.monotonic() of the failure: not
+# read again for ROOT_TTL_SEC (the first read and a re-read alike).
+_failed: dict[str, float] = {}
+# The thread reads one request may still make (thread_reads); None: no limit.
+_budget: ContextVar[list[int] | None] = ContextVar("thread_read_budget", default=None)
+
+
+@contextmanager
+def thread_reads(limit: int) -> Iterator[None]:
+    """At most `limit` thread reads inside (RT-6.6 step 5: one /v1/posts
+    request). Beyond it a read is skipped as unsure: the caller does as
+    without a record (the crown wakes, a reply stays unmarked), never worse."""
+    token = _budget.set([limit])
+    try:
+        yield
+    finally:
+        _budget.reset(token)
+
+
 def saw(post: Post) -> None:
-    """A reply the hook API read: its author has posted in its thread."""
+    """A post the hook API read or this agent made (post_message,
+    reply_in_thread): its author has posted in its thread."""
     facts = _roots.get(post.root_id) if post.root_id else None
     if facts is not None and post.user_id and not post.from_webhook:
         facts.posters.add(post.user_id)
@@ -118,10 +140,14 @@ async def thread_facts(client: ChatPort, root_id: str,
     """The record of the thread `root_id` (_roots, read once). Read again
     when none of `want` has posted there as last read and that read is older
     than ROOT_TTL_SEC, so a new post of one of them shows within that time.
+    A failed read is not tried again for ROOT_TTL_SEC either (_failed).
     None: never read and unreadable now (a failed re-read keeps the record)."""
     facts = _roots.get(root_id)
     if facts is None or (want and not set(want) & facts.posters
                          and time.monotonic() - facts.read_at > ROOT_TTL_SEC):
+        failed = _failed.get(root_id)
+        if failed is not None and time.monotonic() - failed <= ROOT_TTL_SEC:
+            return facts
         facts = await _read_root(client, root_id) or facts
     return facts
 
@@ -145,20 +171,31 @@ async def _reachable_here(client: ChatPort) -> dict[str, str]:
 
 async def _read_root(client: ChatPort, root_id: str) -> _Root | None:
     """The thread `root_id` read (one request; one more for the author's
-    account when the root names an agent), kept in _roots; None: unreadable."""
+    account when the root names an agent), kept in _roots; None: unreadable
+    (kept in _failed) or over the request's budget (thread_reads)."""
+    budget = _budget.get()
+    if budget is not None:
+        if budget[0] <= 0:
+            return None
+        budget[0] -= 1
     old = _roots.get(root_id)
     try:
         thread = await client.thread(root_id)
         root = next((p for p in thread.posts if p.id == root_id), None)
         if root is None:
-            return None
+            raise LookupError("no root in the thread")
         author = "" if root.from_webhook else root.user_id
         named = tuple(tasks.mentions(root.message))
         by_agent = old.by_agent if old else bool(
             named and author and await client.agents({author}))
     except Exception as exc:  # noqa: BLE001 — unsure
         log.info("thread root %s not read: %s", root_id, type(exc).__name__)
+        _failed.pop(root_id, None)
+        _failed[root_id] = time.monotonic()
+        while len(_failed) > ROOTS_KEPT:
+            del _failed[next(iter(_failed))]
         return None
+    _failed.pop(root_id, None)
     facts = _Root(author=author, by_agent=by_agent, named=named,
                   posters={p.user_id for p in thread.posts if p.user_id and not p.from_webhook},
                   read_at=time.monotonic())
