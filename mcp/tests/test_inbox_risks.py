@@ -576,9 +576,35 @@ async def test_a_nats_post_seeds_the_marks_lane_at_its_first_receipt(chat, dial,
     """#224 (the residual of #213), RT-6.36 step 4: a channel whose session had never
     handed a post had no cursor, so a post queued before the first hand-over was lost
     at a kill. The first NATS post received seeds the lane one sequence before itself,
-    as `hold` keeps a mark back, so the next server asks for that post again. A NATS
-    post of stream sequence 1 has none (no mark can name sequence 0), and a Mattermost
-    lane seeds nothing before its first hand-over."""
+    as `hold` keeps a mark back, so the next server asks for that post again."""
+    from mattermost_ai_agent_bus.client import post_of
+    await inbox.ensure_connected()  # the bot's id, which the mark is filed under
+    await inbox._put(ClassifiedEvent(kind="mention", post=post_of({
+        "id": f"n1:{WORK}:7", "channel_id": WORK, "create_at": 5_000,
+        "message": "@agent-me hi", "user_id": "u" * 26})))
+    mark = watermark.read(inbox._bot_user_id)[f"{WORK}:nats"]
+    assert (mark.post_id, mark.at) == (f"n1:{WORK}:6", 4_999)
+
+
+async def test_a_first_stream_message_and_a_mattermost_post_seed_no_lane(chat, dial, inbox):
+    """#224: a NATS post of stream sequence 1 has no sequence before it (no mark can
+    name sequence 0), and a Mattermost lane seeds nothing before its first hand-over."""
+    from mattermost_ai_agent_bus.client import post_of
+    await inbox.ensure_connected()
+    await inbox._put(ClassifiedEvent(kind="mention", post=post_of({
+        "id": f"n1:{WORK}:1", "channel_id": WORK, "create_at": 6_000,
+        "message": "@agent-me hi", "user_id": "u" * 26})))
+    assert f"{WORK}:nats" not in watermark.read(inbox._bot_user_id)
+    await inbox._put(ClassifiedEvent(kind="mention", post=post_of({
+        "id": "m" * 26, "channel_id": WORK, "create_at": 7_000, "message": "@agent-me"})))
+    assert WORK not in watermark.read(inbox._bot_user_id)
+
+
+async def test_a_live_post_does_not_seed_past_an_older_one_the_backfill_still_holds(chat, dial, inbox):
+    """#233 review: a live NATS post queued before the backfill has read its snapshot
+    must not write the lane - an older post the snapshot brings would sit behind that
+    mark, never be handed over, and after a kill never be asked for again. The seed is
+    written from the oldest unhanded post, once the snapshot is read."""
     from mattermost_ai_agent_bus.client import post_of
 
     def nats(seq: int, created: int) -> ClassifiedEvent:
@@ -586,19 +612,19 @@ async def test_a_nats_post_seeds_the_marks_lane_at_its_first_receipt(chat, dial,
             "id": f"n1:{WORK}:{seq}", "channel_id": WORK, "create_at": created,
             "message": "@agent-me hi", "user_id": "u" * 26}))
 
-    await inbox.ensure_connected()  # the bot's id, which the mark is filed under
-    await inbox._put(nats(7, 5_000))
-    mark = watermark.read(inbox._bot_user_id)[f"{WORK}:nats"]
-    assert (mark.post_id, mark.at) == (f"n1:{WORK}:6", 4_999)
-
+    await inbox.ensure_connected()
+    lane = f"{WORK}:nats"
     watermark.remove(inbox._bot_user_id)
-    await inbox._put(nats(1, 6_000))
-    assert f"{WORK}:nats" not in watermark.read(inbox._bot_user_id)  # the stream's first
-
-    watermark.remove(inbox._bot_user_id)
-    await inbox._put(ClassifiedEvent(kind="mention", post=post_of({
-        "id": "m" * 26, "channel_id": WORK, "create_at": 7_000, "message": "@agent-me"})))
-    assert WORK not in watermark.read(inbox._bot_user_id)
+    # The backfill is under way: its snapshot is not read yet, so nothing is seeded.
+    inbox._unqueued = None
+    await inbox._put(nats(9, 9_000))
+    assert lane not in watermark.read(inbox._bot_user_id)
+    # The snapshot is read and brings an older post; it is queued now.
+    inbox._unqueued = {lane: {f"n1:{WORK}:5": 5_000}}
+    await inbox._put(nats(5, 5_000))
+    mark = watermark.read(inbox._bot_user_id)[lane]
+    assert (mark.post_id, mark.at) == (f"n1:{WORK}:4", 4_999)
+    assert inbox._first_waiting(lane) == 5_000  # the older post still waits, not passed
 
 
 async def test_a_hand_over_before_the_reconnects_backfill_passes_no_post_that_came_meanwhile(
