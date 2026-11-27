@@ -5,6 +5,16 @@ before 0.5.0 are described in the git history.
 
 ## Unreleased
 
+### Added
+
+- **The NATS crown says why `take` waits, and a `crown` debug category** (#243, RT-6.38, RT-6.31).
+  `coordinator("take")` in a home over NATS names the case instead of always "another agent
+  holds the crown": `pending: @<bot> holds the crown…`, `pending: a NATS agent without a linked
+  bot holds it (<NATS name>)…`, `no holder: nobody stands (<reason>)` or `no claim: this
+  session is not a member of the home yet`. The new debug category `crown` (`/agent-debug on
+  crown`; the signing service must know it) logs the view at each tick: claimants in order,
+  members, standing, holder and why nobody stands.
+
 ### Fixed
 
 - **A tool's HTTP failure names its status** (#263, RT-6.11). An `httpx.HTTPStatusError`
