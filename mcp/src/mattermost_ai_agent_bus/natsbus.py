@@ -39,7 +39,7 @@ import re
 import ssl
 import time
 from urllib.parse import urlsplit
-from collections.abc import Awaitable, Callable, Iterable, Mapping
+from collections.abc import Awaitable, Callable, Iterable, Iterator, Mapping
 from dataclasses import dataclass, field
 from typing import Any, Protocol
 
@@ -60,6 +60,11 @@ HEARTBEAT_SEC = 30.0
 PRESENCE_FRESH_SEC = 90.0  # a holder's last presence must be younger than this
 OWN_ECHO_SEC = 75.0  # the echo of this agent's own presence must be younger than this (monotonic), else the view is unknown
 GAP_RECONNECT_SEC = 30.0  # at most one reconnect for a gap within this time
+# The wait between reconnect attempts doubles from a second, but a server that comes
+# back must be noticed soon: a home whose nats-server restarted was unreachable for up
+# to 30 s more than the server was down (#222). 5 s is still a bounded rate for a long
+# outage (12 attempts a minute, less than nats-py's own 2 s default).
+RECONNECT_MAX_SEC = 5.0
 MAX_AGE_SEC = 86400.0  # the PRESENCE stream's max_age: older claims and presence are gone
 MEMBER_RENEW_SEC = 6 * 3600.0  # a membership is announced again this often (the stream keeps 24 h)
 MEMBER_SYNC_WAIT_SEC = 10.0  # how long an announcement waits for the bus to be synced
@@ -103,6 +108,19 @@ def owner_of_token(token: str) -> str:
 _PUBLISH_DENIED_RE = re.compile(r'permissions violation for publish to "([^"]*)"', re.IGNORECASE)
 _KINDS = ("post", "reaction", "unreaction")
 _STATUSES = ("online", "away", "bye")
+
+
+def reconnect_waits(jitter: Callable[[], float] | None = None) -> Iterator[float]:
+    """The wait before each reconnect attempt (RT-6.36 step 2): one second, doubling to
+    `RECONNECT_MAX_SEC`, each stretched by 0.5 to 1.0 so a home's agents do not
+    retry in step. The cap is what a server that comes back needs: with 30 s, a
+    restarted nats-server stayed unreachable for up to 20 s beyond its downtime in
+    the rig; with 5 s the sender was back within 1 to 5 s (#222)."""
+    jitter = jitter or (lambda: random.uniform(0.5, 1.0))
+    delay = 1.0
+    while True:
+        yield delay * jitter()
+        delay = min(delay * 2, RECONNECT_MAX_SEC)
 
 
 class NatsBusError(Exception):
@@ -1537,7 +1555,7 @@ class NatsBus:
                     await self._close_old()
             else:
                 await self._close_old()
-            delay = 1.0
+            waits = reconnect_waits()
             try:
                 while not self._stopping:
                     try:
@@ -1554,9 +1572,10 @@ class NatsBus:
                         await self._notify_fatal(exc)
                         return
                     except Exception as exc:
-                        log.warning("nats bus: reconnect failed: %s", connect_reason(exc))
-                        await asyncio.sleep(delay * random.uniform(0.5, 1.0))
-                        delay = min(delay * 2, 30.0)
+                        wait = next(waits)
+                        log.warning("nats bus: reconnect failed, next in %.1f s: %s", wait,
+                                    connect_reason(exc))
+                        await asyncio.sleep(wait)
             finally:
                 self._ready.set()
 

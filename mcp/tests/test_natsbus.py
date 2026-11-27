@@ -81,6 +81,17 @@ def test_agent_name_vector() -> None:
         == "eadecaajdhhzsahypvqfemgypy"
 
 
+def test_the_reconnect_wait_doubles_to_five_seconds() -> None:
+    """#222: the wait before a reconnect attempt starts at a second and doubles, but stops
+    at 5 s, so a nats-server that comes back is reached again soon instead of after the
+    next 30 s step (the rig measured up to 20 s beyond the downtime before, 1 to 5 s now)."""
+    waits = natsbus.reconnect_waits(jitter=lambda: 1.0)
+    assert [next(waits) for _ in range(7)] == [1.0, 2.0, 4.0, 5.0, 5.0, 5.0, 5.0]
+    # The jitter only stretches a wait below the cap.
+    stretched = natsbus.reconnect_waits(jitter=lambda: 0.5)
+    assert [next(stretched) for _ in range(3)] == [0.5, 1.0, 2.0]
+
+
 # --- unit: message format v1 ----------------------------------------------------------------
 
 def test_roundtrip_post_reaction_unreaction() -> None:

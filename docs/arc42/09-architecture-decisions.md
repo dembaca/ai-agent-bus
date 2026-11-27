@@ -3714,9 +3714,10 @@ decided against it (Context).
    50 hard stops nightly). **First finding** (2026-11-26, small runs of 10
    messages and a few stops): no loss under restart, hang, cut, blackhole,
    stall and half-open (a send during the window fails and is not counted
-   as sent; a zero here needs a sender that comes back, and one that cannot
-   reconnect for ~40 s after a refused reconnect is
-   [#222](https://github.com/dembaca/ai-agent-bus/issues/222)); a receiving session killed loses every post the consumer pushes
+   as sent; a zero here needs a sender that comes back, and the sender's
+   reconnect now waits at most 5 s instead of growing to 30 s, which kept a
+   restarted server unreachable for up to 20 s beyond its downtime
+   ([#222](https://github.com/dembaca/ai-agent-bus/issues/222))); a receiving session killed loses every post the consumer pushes
    until the server notices the dead socket — usually the one in flight: the
    consumer keeps its position and the messages published while it was dead
    arrive (100 messages with a 10 s window: loss 1), but a pushed one was

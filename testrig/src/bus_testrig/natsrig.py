@@ -529,6 +529,7 @@ async def nats_bus_run(count: int = 10, fault: str | None = None, *, fault_sec: 
                             # the window can arrive late without the sender being
                             # back, so there the recovery send proves it instead.
                             run.recovered = True
+                            run.recovered_at = run.recovered_at or time.monotonic()
                     if sent_done is not None and window is not None and not window.done():
                         continue  # never end while the fault's window is open
                     if sent_done is not None and (
@@ -563,6 +564,7 @@ async def nats_bus_run(count: int = 10, fault: str | None = None, *, fault_sec: 
                     # reader's own: a wait made here would hand over the posts that
                     # waited for the session and nobody would count them.
                     rx.ready.set()
+                run.window_closed_at = time.monotonic()
 
             reader = asyncio.create_task(receive())
             for seq in range(count):
@@ -587,6 +589,8 @@ async def nats_bus_run(count: int = 10, fault: str | None = None, *, fault_sec: 
                     run.sent_frames += 1
                     seq_of[str(post["id"])] = seq
                     if window is not None and window.done():
+                        if not run.recovered_at:
+                            run.recovered_at = time.monotonic()
                         run.recovered = True
                 await asyncio.sleep(send_interval)
             if window is not None:
@@ -617,6 +621,7 @@ async def nats_bus_run(count: int = 10, fault: str | None = None, *, fault_sec: 
                         run.sent_frames += 1
                         seq_of[str(post["id"])] = seq_extra
                         run.recovered = True
+                        run.recovered_at = run.recovered_at or time.monotonic()
             sent_done = time.monotonic()
             await reader
         except (McpError, RuntimeError, TimeoutError, OSError) as exc:

@@ -143,6 +143,16 @@ before 0.5.0 are described in the git history.
 
 ### Fixed
 
+- **A restarted nats-server is reached again within seconds** (#222). A home
+  over NATS reopened a lost connection with a wait that doubled from a second
+  to 30 s, so after a server restart the next attempt could be half a minute
+  away while the server was back in one: a run whose restart lasted 30 s left
+  the sender down for up to 20 s beyond its downtime, and a short run read as
+  "never came back". The wait now stops at 5 s (still 12 attempts a minute for a
+  long outage), the attempt and its wait are logged (`next in 1.4 s`), and the
+  fault rig's report says `recovery_s`, the time from the window to the first
+  post after it. The rig measured 1 to 5 s after the cap (7.6 to 19.7 s
+  before); nothing else changes, no new setting.
 - **A killed session no longer loses the post that was queued for it** (#213).
   The first `since` of a NATS home now comes from the host's read mark
   (`read-<uid>.env`, the NATS lane `<channel id>:nats`): the last post actually
