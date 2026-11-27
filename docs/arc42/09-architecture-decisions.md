@@ -4097,7 +4097,7 @@ Nothing of it is built.
   on while it moves.
 - **Every piece alike.**
   - One switch per piece, off by default; its name below is
-    descriptive. Proposed: a flag per piece and channel in the same
+    descriptive. Decided by the owner on 2026-11-27 (ask `i1wy6gb8ijfpuceuq3ptbz6s8y`): a flag per piece and channel in the same
     directory, beside the decided transport flag; not covered by the
     owner's decision. So a piece with two ends (DMs between agents, asks,
     replies, status, permission prompts) is switched in one place, never
@@ -4122,7 +4122,7 @@ Nothing of it is built.
     file and a history read are checked to lie there. A DM the bridge
     opens for an agent, for permission prompts, may only go to the
     agent's responsible human, the owner's account from the account
-    records (RT-6.44 step 2). Proposed: in a DM another person opened
+    records (RT-6.44 step 2). Decided by the owner on 2026-11-27 (ask `i1wy6gb8ijfpuceuq3ptbz6s8y`): in a DM another person opened
     with the agent's bridge bot, the agent may answer that person and
     react there, never open a DM to anyone else; so a steered agent
     cannot reach a person through the bridge who did not write to it
@@ -4201,7 +4201,7 @@ Nothing of it is built.
        the rules for DMs. Between agents of
        different homes the recipient's home's flag counts: the sender
        uses NATS only when it is on. Since a session gets flags only
-       with its credential, which holds only its own channels, proposed:
+       with its credential, which holds only its own channels, decided by the owner on 2026-11-27 (ask `i1wy6gb8ijfpuceuq3ptbz6s8y`):
        the recipient's server states its home's flag in its presence,
        from its own credential, and the sender reads it there, so no
        session reads the directory and none needs a new right. A
@@ -4246,7 +4246,7 @@ Nothing of it is built.
        last people event on when the bridge's signal runs out
        (`check_people`, `_catch_up`); unread counts rest on Mattermost's
        mark as viewed (`view_channel`).
-     - Moves: proposed, to a read through the bridge: the session sends
+     - Moves: decided by the owner on 2026-11-27 (ask `i1wy6gb8ijfpuceuq3ptbz6s8y`), to a read through the bridge: the session sends
        a request on `<req>.history.<agent>` (above) naming the channel or
        thread and `since`, and the bridge answers from Mattermost with
        the agent's own bridge bot, under the rule above that it reads
@@ -4315,7 +4315,7 @@ Nothing of it is built.
        it keeps any part, holds one open transfer per agent (a second
        one replaces it), and drops an unfinished one after 60 seconds.
        Its ceiling: transfers are held in memory, at most 10 MiB each
-       and, proposed, at most 16 open at once across all agents; beyond
+       and, decided by the owner on 2026-11-27 (ask `i1wy6gb8ijfpuceuq3ptbz6s8y`), at most 16 open at once across all agents; beyond
        that it refuses a new one as busy, and the tool reports it. Each part is numbered, and the whole is checked by length
        and hash before the bridge uploads it with the agent's own bridge
        bot. A failed check, a lost part or a dropped transfer is an error
@@ -4431,7 +4431,7 @@ Nothing of it is built.
         RT-6.30) and its self-update between sessions (RT-6.32), and the
         block on self-registration in the sandbox (RT-6.10 step 1).
       - The release notice (RT-6.30) loses its check, which runs only
-        from the host copy. Proposed, decided with this piece: the MCP
+        from the host copy. Decided by the owner on 2026-11-27 (ask `i1wy6gb8ijfpuceuq3ptbz6s8y`), decided with this piece: the MCP
         server tells its human the version the release record names,
         which the bridge serves signed with its own key (#151 step 4),
         and which follows the version the console pins after its
