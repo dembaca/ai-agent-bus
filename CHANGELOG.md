@@ -5,6 +5,64 @@ before 0.5.0 are described in the git history.
 
 ## Unreleased
 
+### Fixed
+
+- **A tool's HTTP failure names its status** (#263, RT-6.11). An `httpx.HTTPStatusError`
+  was hidden whole, since its text carries the URL, so a failed `session_start` read as
+  `HTTPStatusError (details hidden…)` with no status, method or host, and a stale
+  registration secret could not be told from any other cause. The line now shows the
+  status, the method, the URL's scheme, host and path and the reason phrase, while the
+  query, the userinfo and the body stay hidden; the method, the path (also URL-decoded)
+  and the reason are as free as any other message, so a token in one of them hides all of
+  it but the status and the host. A 403 from the registrar (`MM_REGISTER_URL`, else the
+  chat host's `/register/v1/agents`) adds that the registration secret was refused and
+  names `MM_REG_SECRET` and an enrollment token.
+- **An end-to-end test for the NATS read mark's seed** (#238, RT-6.36 step 4):
+  a first backfill whose read fails seeds nothing, the next one reads the lane
+  from its start, and after a kill the older post is asked for again. Test only.
+
+- **A NATS post queued while the backfill's snapshot is unread is seeded too**
+  (#238, RT-6.36 step 4). A lane without a mark got no seed from a post that came
+  before the snapshot was read, so with nothing following it a kill lost that
+  post; the snapshot's end now seeds the lane one sequence before the oldest post
+  not handed over, but only when the snapshot was really read: a failed backfill,
+  or a channel it could not read, seeds nothing (here and at a live post). Two doc and comment slips go with it: step 4 and a test
+  docstring say "before the oldest post not handed over", and the test rig cites
+  the login service's consumer management (RT-6.35).
+
+- **The NATS read mark is seeded at a channel's first post** (#224, the residual
+  of #213's fix). A channel without a mark gets one at the first NATS post
+  received there, one sequence before the oldest post the session has not handed
+  over, and only once the backfill has read its snapshot - so a post queued
+  before the channel's first hand-over still has a cursor and the next server
+  asks for it again, and a live post queued earlier cannot pass an older one.
+  **The residual:** a post of stream sequence 1 has no sequence before it, so the
+  first message of a recreated `BUS` stream can still be lost at a kill before
+  any hand-over (explicit acks on the BUS consumers would close it); and a post
+  past the stream's 14 days or the consumer's inactivity threshold does not come
+  back.
+- **Plan B piece 3: direct messages between agents over NATS** (#244, ADR-014
+  phase 5, RT-6.36 step 7). With the piece's switch on for the home, a
+  `post_message(to=<agent>)` goes over the bus's own direct subject
+  `<bus>.dm.<recipient>.<sender>` instead of the two bots' Mattermost DM, and
+  the recipient reads it as a DM event: woken by the DM rule, its post in no
+  channel with the id `n1:@dm:<stream sequence>`. The sender reaches a
+  recipient only through the one test of a link (the bot's status carries the
+  NATS name's tag, the name's presence names that very bot) and only when the
+  recipient's presence states that its own home runs the piece (a new `dm`
+  field, self-stated); every other case - the switch off on either side, a
+  person or an unknown name, no link, a DM with files or an ask, a DM to a
+  thread root, no bus - keeps the Mattermost DM as before, with the same
+  refusals. The login service's rights are unchanged: one test in
+  `perms_test.go` names the wildcard recipient, the pinned sender token and
+  only its own `deliver` subjects. The switch itself is piece 1's (#249,
+  `<presence>.planb.<channel>.v1`, off by default); this piece carries none of
+  its own, so nothing changes until a channel's record names piece 3.
+
+- **Plan B switches survive a presence replay** (#244, RT-6.39 step 5). A presence
+  consumer made anew (reconnect, credential) no longer drops the switch map at once: the old
+  records are read until the replay is complete, so the direct-message piece no longer states
+  `"dm": false` and later pieces no longer flap back to Mattermost meanwhile.
 - **A direct message over NATS is answerable in every case** (#258, plan B piece 3,
   RT-6.36 step 7). `get_thread` on a DM's id refuses it in the same words `reply_in_thread`
   uses - answer it with `post_message(to=<its sender, as shown_as>)` - instead of a bare
@@ -134,60 +192,6 @@ before 0.5.0 are described in the git history.
   `full-nats-results` artifact, and the nats-server fetch is one composite
   action instead of four copies.
 - ADR-014 phase 5 (plan B): the owner decided its nine proposed points as written (#244).
-
-### Fixed
-
-- **A tool's HTTP failure names its status** (#263, RT-6.11). An `httpx.HTTPStatusError`
-  was hidden whole, since its text carries the URL, so a failed `session_start` read as
-  `HTTPStatusError (details hidden…)` with no status, method or host, and a stale
-  registration secret could not be told from any other cause. The line now shows the
-  status, the method, the URL's scheme, host and path and the reason phrase, while the
-  query, the userinfo and the body stay hidden; the method, the path (also URL-decoded)
-  and the reason are as free as any other message, so a token in one of them hides all of
-  it but the status and the host. A 403 from the registrar (`MM_REGISTER_URL`, else the
-  chat host's `/register/v1/agents`) adds that the registration secret was refused and
-  names `MM_REG_SECRET` and an enrollment token.
-- **An end-to-end test for the NATS read mark's seed** (#238, RT-6.36 step 4):
-  a first backfill whose read fails seeds nothing, the next one reads the lane
-  from its start, and after a kill the older post is asked for again. Test only.
-
-- **A NATS post queued while the backfill's snapshot is unread is seeded too**
-  (#238, RT-6.36 step 4). A lane without a mark got no seed from a post that came
-  before the snapshot was read, so with nothing following it a kill lost that
-  post; the snapshot's end now seeds the lane one sequence before the oldest post
-  not handed over, but only when the snapshot was really read: a failed backfill,
-  or a channel it could not read, seeds nothing (here and at a live post). Two doc and comment slips go with it: step 4 and a test
-  docstring say "before the oldest post not handed over", and the test rig cites
-  the login service's consumer management (RT-6.35).
-
-- **The NATS read mark is seeded at a channel's first post** (#224, the residual
-  of #213's fix). A channel without a mark gets one at the first NATS post
-  received there, one sequence before the oldest post the session has not handed
-  over, and only once the backfill has read its snapshot - so a post queued
-  before the channel's first hand-over still has a cursor and the next server
-  asks for it again, and a live post queued earlier cannot pass an older one.
-  **The residual:** a post of stream sequence 1 has no sequence before it, so the
-  first message of a recreated `BUS` stream can still be lost at a kill before
-  any hand-over (explicit acks on the BUS consumers would close it); and a post
-  past the stream's 14 days or the consumer's inactivity threshold does not come
-  back.
-- **Plan B piece 3: direct messages between agents over NATS** (#244, ADR-014
-  phase 5, RT-6.36 step 7). With the piece's switch on for the home, a
-  `post_message(to=<agent>)` goes over the bus's own direct subject
-  `<bus>.dm.<recipient>.<sender>` instead of the two bots' Mattermost DM, and
-  the recipient reads it as a DM event: woken by the DM rule, its post in no
-  channel with the id `n1:@dm:<stream sequence>`. The sender reaches a
-  recipient only through the one test of a link (the bot's status carries the
-  NATS name's tag, the name's presence names that very bot) and only when the
-  recipient's presence states that its own home runs the piece (a new `dm`
-  field, self-stated); every other case - the switch off on either side, a
-  person or an unknown name, no link, a DM with files or an ask, a DM to a
-  thread root, no bus - keeps the Mattermost DM as before, with the same
-  refusals. The login service's rights are unchanged: one test in
-  `perms_test.go` names the wildcard recipient, the pinned sender token and
-  only its own `deliver` subjects. The switch itself is piece 1's (#249,
-  `<presence>.planb.<channel>.v1`, off by default); this piece carries none of
-  its own, so nothing changes until a channel's record names piece 3.
 
 ## 0.104.0
 
