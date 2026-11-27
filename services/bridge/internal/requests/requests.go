@@ -15,6 +15,7 @@ import (
 	"regexp"
 	"strings"
 	"sync"
+	"sync/atomic"
 	"time"
 
 	"github.com/nats-io/nats.go"
@@ -59,6 +60,12 @@ const (
 // warnEvery is the least time between two log lines about one agent: a flood
 // writes a line every 10 s, not one per message.
 const warnEvery = 10 * time.Second
+
+// subscribeRetry is how long Run waits before it tries a refused <Prefix>.>
+// again: the rights are fixed by hand in the server's configuration, so a
+// minute is soon enough, and one Error line a minute says requests stay
+// unanswered meanwhile.
+const subscribeRetry = time.Minute
 
 // clipRunes is the longest a logged value (subject, error, body excerpt) is
 // written: a body from an agent or an error from a piece must not fill the
@@ -117,12 +124,40 @@ type Piece = func(ctx context.Context, agent string, req Request) (Reply, error)
 // piece is one entry and nothing else changes. Prefix is one subject token,
 // the request subjects' prefix (CB_BRIDGE_REQ_PREFIX, default req). Rate is
 // the requests a second one agent may make, and the burst twice that; zero
-// uses defaultRate.
+// uses defaultRate. Failure names why the handler is not answering while the
+// server refuses <Prefix>.> or an answer subject: the bridge runs on either
+// way, so a deployment before the rights leaves requests unanswered, never the
+// bridge down.
 type Handler struct {
 	Log      *slog.Logger
 	Prefix   string
 	Handlers map[string]Piece
 	Rate     int
+
+	// failure is why the handler is not answering, nil while it is: a refused
+	// subscribe and a refused answer subject set it, a (re)subscribe the
+	// server takes clears it. A pointer, so Failure reads it while Run works.
+	failure atomic.Pointer[string]
+
+	// retry is the wait before a refused <Prefix>.> is tried again; zero uses
+	// subscribeRetry. The tests shorten it.
+	retry time.Duration
+}
+
+// Failure names why the handler is not answering - the server refused
+// <Prefix>.> or an answer subject - and is false while it answers. The bridge
+// reads it for /healthz and runs on either way.
+func (h *Handler) Failure() (string, bool) {
+	if p := h.failure.Load(); p != nil {
+		return *p, true
+	}
+	return "", false
+}
+
+// setFailure records why the handler is not answering.
+func (h *Handler) setFailure(err error) {
+	s := err.Error()
+	h.failure.Store(&s)
 }
 
 // bucket is one agent's token bucket: tokens at last, refilled at rate.
@@ -140,12 +175,11 @@ type job struct {
 // runner is a Handler's state for one Run: the connection, the workers' queue
 // and what the rate limit and the warnings have seen.
 type runner struct {
-	h      *Handler
-	log    *slog.Logger
-	nc     *nats.Conn
-	rate   int
-	jobs   chan job
-	failed chan error
+	h    *Handler
+	log  *slog.Logger
+	nc   *nats.Conn
+	rate int
+	jobs chan job
 
 	mu     sync.Mutex
 	tokens map[string]*bucket
@@ -154,8 +188,11 @@ type runner struct {
 
 // Run subscribes <Prefix>.> and answers until ctx ends. A message that does
 // not validate is logged and left unanswered; the caller's request then fails.
-// A refused subscription, or an answer the server refuses, is returned as an
-// error: the scaffold's side of the bridge must not fail silently.
+// A refused subscription, or a refused answer subject, is no error: the bridge
+// keeps carrying people's posts and requests stay unanswered until the rights
+// are granted, with Failure naming what is missing (/healthz) and one Error
+// line a minute while the subscription is refused. Only an empty Prefix is
+// fatal.
 func (h *Handler) Run(ctx context.Context, nc *nats.Conn) error {
 	if h.Prefix == "" {
 		return errors.New("requests: no prefix")
@@ -166,24 +203,11 @@ func (h *Handler) Run(ctx context.Context, nc *nats.Conn) error {
 	}
 	subject := h.Prefix + ".>"
 	ch := make(chan *nats.Msg, queueLen)
-	sub, err := nc.ChanSubscribe(subject, ch)
-	if err != nil {
-		return fmt.Errorf("requests: subscribe %s: %w", subject, err)
+	sub := h.subscribe(ctx, nc, subject, ch, log)
+	if sub == nil { // ctx ended while the server refused the subscription
+		return nil
 	}
 	defer func() { _ = sub.Unsubscribe() }()
-	// ChanSubscribe's refusal arrives asynchronously: the server's -ERR is
-	// read before the flush's PONG, so a refused subscription is LastError by
-	// now. A bridge without this check would run deaf.
-	if err := nc.Flush(); err != nil {
-		return fmt.Errorf("requests: subscribe %s: %w", subject, err)
-	}
-	if err := nc.LastError(); err != nil && errors.Is(err, nats.ErrPermissionViolation) {
-		// A refusal we cannot attribute is taken as ours: the subscribe is
-		// the one this connection just made.
-		if _, refused, ok := violation(err); !ok || refused == subject {
-			return fmt.Errorf("requests: subscribe %s: %w", subject, err)
-		}
-	}
 	rate := h.Rate
 	if rate <= 0 {
 		rate = defaultRate
@@ -191,7 +215,6 @@ func (h *Handler) Run(ctx context.Context, nc *nats.Conn) error {
 	r := &runner{
 		h: h, log: log, nc: nc, rate: rate,
 		jobs:   make(chan job, queueLen),
-		failed: make(chan error, 1),
 		tokens: map[string]*bucket{},
 		warned: map[string]time.Time{},
 	}
@@ -215,8 +238,6 @@ func (h *Handler) Run(ctx context.Context, nc *nats.Conn) error {
 		select {
 		case <-ctx.Done():
 			return nil
-		case err := <-r.failed:
-			return err
 		case m := <-ch:
 			if m == nil { // a closed channel is no message
 				continue
@@ -224,6 +245,59 @@ func (h *Handler) Run(ctx context.Context, nc *nats.Conn) error {
 			r.accept(m)
 		}
 	}
+}
+
+// subscribe makes the <Prefix>.> subscription, and while the server refuses it
+// sets Failure, writes the Error line and waits subscribeRetry before it tries
+// again: a missing right leaves requests unanswered, never the bridge down. It
+// returns nil when ctx ends first.
+func (h *Handler) subscribe(ctx context.Context, nc *nats.Conn, subject string,
+	ch chan *nats.Msg, log *slog.Logger) *nats.Subscription {
+	retry := h.retry
+	if retry <= 0 {
+		retry = subscribeRetry
+	}
+	for {
+		sub, err := attempt(nc, subject, ch)
+		if err == nil {
+			h.failure.Store(nil) // the server took the (re)subscribe
+			return sub
+		}
+		h.setFailure(err)
+		log.Error("requests: the request subject is refused; the bridge keeps running, requests stay unanswered",
+			"subject", clip(subject), "error", clip(err.Error()), "retry", retry.String())
+		t := time.NewTimer(retry)
+		select {
+		case <-ctx.Done():
+			t.Stop()
+			return nil
+		case <-t.C:
+		}
+	}
+}
+
+// attempt makes one <Prefix>.> subscription. ChanSubscribe's refusal arrives
+// asynchronously: the server's -ERR is read before the flush's PONG, so a
+// refused subscription is LastError by now. A bridge without this check would
+// run deaf.
+func attempt(nc *nats.Conn, subject string, ch chan *nats.Msg) (*nats.Subscription, error) {
+	sub, err := nc.ChanSubscribe(subject, ch)
+	if err != nil {
+		return nil, fmt.Errorf("subscribe %s: %w", subject, err)
+	}
+	if err := nc.Flush(); err != nil {
+		_ = sub.Unsubscribe()
+		return nil, fmt.Errorf("subscribe %s: %w", subject, err)
+	}
+	if err := nc.LastError(); err != nil && errors.Is(err, nats.ErrPermissionViolation) {
+		// A refusal we cannot attribute is taken as ours: the subscribe is
+		// the one this connection just made.
+		if _, refused, ok := violation(err); !ok || refused == subject {
+			_ = sub.Unsubscribe()
+			return nil, fmt.Errorf("subscribe %s: %w", subject, err)
+		}
+	}
+	return sub, nil
 }
 
 // accept validates one message and queues it. Only the validation and the
@@ -302,8 +376,9 @@ func (r *runner) answer(ctx context.Context, j job) {
 // sendAnswer publishes one answer for agent and flush-checks it: the publish is
 // buffered, so only the flush's round trip says whether the server took it, and
 // an answer that cannot go out must not look answered. A permanent refusal of
-// the answer subject ends Run, so /healthz sees a bridge that cannot answer; any
-// other async error is only debug, since the connection's last error may be
+// the answer subject sets Failure, so /healthz names a bridge that cannot
+// answer, and the run goes on: the rest of the bridge must not go down with it.
+// Any other async error is only debug, since the connection's last error may be
 // another subject's.
 func (r *runner) sendAnswer(agent string, a Answer) {
 	body, err := json.Marshal(a)
@@ -330,20 +405,14 @@ func (r *runner) sendAnswer(agent string, a Answer) {
 	}
 	action, refused, ok := violation(err)
 	if ok && action == "publish" && refused == subject {
-		r.log.Error("requests: the answer subject is refused", "subject", clip(subject), "error", clip(err.Error()))
-		r.fail(fmt.Errorf("requests: answer on %s: %w", subject, err))
+		r.h.setFailure(fmt.Errorf("answer on %s: %w", subject, err))
+		if r.throttle("answer:" + subject) {
+			r.log.Error("requests: the answer subject is refused; the bridge keeps running, the agent gets no answer",
+				"subject", clip(subject), "error", clip(err.Error()))
+		}
 		return
 	}
 	r.log.Debug("requests: answer", "subject", clip(subject), "error", clip(err.Error()))
-}
-
-// fail reports a failure that must end Run and reach /healthz; only the first
-// one matters, and a worker never blocks on it.
-func (r *runner) fail(err error) {
-	select {
-	case r.failed <- err:
-	default:
-	}
 }
 
 // allow takes one token from the agent's bucket: burstFactor*rate requests at

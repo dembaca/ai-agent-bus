@@ -29,10 +29,15 @@ before 0.5.0 are described in the git history.
   `requests.request(kind, payload, timeout)` in a module of its own, with its prefix
   as a setting beside the bus's, presence's and STATS's. The bridge user's NATS
   rights (subscribe `<req>.>`, publish `deliver.*.req.*`) are in the example
-  configuration and pinned by its test. No stream covers either subject, so nothing
-  is kept: a lost message fails the request, and the caller gets an error, never a
-  silent success. Nothing of the pieces is built; the scaffold and the rights on
-  both sides run against a real nats-server.
+  configuration and pinned by its test; an image rolled out before the lab's
+  configuration grants them keeps running - people's posts still go onto NATS,
+  only requests stay unanswered until the rights are granted, so the
+  configuration comes first and the image after it - and retries a refused
+  subscribe once a minute with one Error line, naming it in `/healthz` as
+  `requests: <error>` (the probe stays 200). No stream covers either subject,
+  so nothing is kept: a lost message fails the request, and the caller gets an
+  error, never a silent success. Nothing of the pieces is built; the scaffold
+  and the rights on both sides run against a real nats-server.
 - **Plan B's switch per piece and channel** (#244, ADR-014 phase 5, RT-6.39
   step 5). A channel in the channel directory now holds `planb`: the plan B
   pieces switched on in it, 1 to 13, each once, none by default (piece 14,

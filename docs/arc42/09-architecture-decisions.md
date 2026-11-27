@@ -4173,8 +4173,11 @@ reads yet (RT-6.39 step 5).
     the agent's request id, never a body field, makes the answer's subject.
     The bridge user's rights - subscribe `<req>.>`, publish
     `deliver.*.req.*` - are in the example configuration, and its test runs
-    the handler under them with two agents', so a refused subscribe or answer
-    stops the bridge instead of staying silent. The MCP client's prefix is a
+    the handler under them with two agents'. A refused subscribe or answer
+    does not stop the bridge - people's posts matter more than this scaffold:
+    it logs one error a minute, names the part in `/healthz` (which stays 200)
+    and leaves requests unanswered until the rights are granted, so the
+    configuration goes out before the image. The MCP client's prefix is a
     setting beside the bus's, presence's and STATS's.
   - Each piece updates its scenario in Section 6 and gets unit tests in
     `mcp/tests/` and, for the bridge's side, Go tests in

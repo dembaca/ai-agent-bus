@@ -4,15 +4,45 @@ import (
 	"context"
 	"encoding/json"
 	"fmt"
+	"log/slog"
 	"os"
 	"path/filepath"
 	"strings"
+	"sync"
 	"testing"
 	"time"
 
 	natsserver "github.com/nats-io/nats-server/v2/server"
 	"github.com/nats-io/nats.go"
 )
+
+// counts counts the Error lines a Handler writes. A refused subscribe is
+// retried with one line each time; the test's own retry is far shorter than a
+// minute, so more than one line shows the retry.
+type counts struct {
+	mu sync.Mutex
+	n  int
+}
+
+func (c *counts) Enabled(context.Context, slog.Level) bool { return true }
+
+func (c *counts) Handle(_ context.Context, r slog.Record) error {
+	if r.Level >= slog.LevelError {
+		c.mu.Lock()
+		c.n++
+		c.mu.Unlock()
+	}
+	return nil
+}
+
+func (c *counts) WithAttrs([]slog.Attr) slog.Handler { return c }
+func (c *counts) WithGroup(string) slog.Handler      { return c }
+
+func (c *counts) count() int {
+	c.mu.Lock()
+	defer c.mu.Unlock()
+	return c.n
+}
 
 // The bridge's NATS user answers an agent's request with exactly the rights
 // the example configuration documents, and no other agent reads the answer;
@@ -133,9 +163,11 @@ authorization {
 	}
 }
 
-// A bridge whose subscribe right is missing stops: a handler that runs deaf
-// is the scaffold's silent failure.
-func TestARefusedSubscribeStopsTheRun(t *testing.T) {
+// A bridge whose subscribe right is missing keeps running: the failure is
+// named for /healthz, the subscribe is retried with one Error line for it, and
+// only ctx ends the run - a missing right leaves requests unanswered, never the
+// bridge down.
+func TestARefusedSubscribeKeepsTheRunAndNamesTheFailure(t *testing.T) {
 	srv, err := startUsers(t, `
 port: -1
 host: 127.0.0.1
@@ -152,18 +184,130 @@ authorization {
 		t.Fatal(err)
 	}
 	bridge := connectAs(t, srv, "bridge")
-	ctx, cancel := context.WithTimeout(context.Background(), 2*time.Second)
-	defer cancel()
-	err = (&Handler{Log: quiet, Prefix: "req"}).Run(ctx, bridge)
-	if err == nil || !strings.Contains(err.Error(), "req.>") {
-		t.Fatalf("Run: %v, want the refused subscription", err)
+	var lines counts
+	h := &Handler{Log: slog.New(&lines), Prefix: "req", retry: 20 * time.Millisecond}
+	ctx, cancel := context.WithCancel(context.Background())
+	done := make(chan error, 1)
+	go func() { done <- h.Run(ctx, bridge) }()
+
+	// The failure names the refused subject ...
+	deadline := time.Now().Add(2 * time.Second)
+	for {
+		msg, bad := h.Failure()
+		if bad {
+			if !strings.Contains(msg, "req.>") {
+				t.Fatalf("Failure: %q, want the refused subscription", msg)
+			}
+			break
+		}
+		if time.Now().After(deadline) {
+			t.Fatal("a refused subscription is not named")
+		}
+		time.Sleep(5 * time.Millisecond)
+	}
+	// ... and the run retries it instead of stopping: the test's own wait is far
+	// shorter than a minute, so more than one line means a retry.
+	for lines.count() < 2 {
+		if time.Now().After(deadline) {
+			t.Fatalf("Run did not retry the refused subscription (%d Error lines)", lines.count())
+		}
+		time.Sleep(5 * time.Millisecond)
+	}
+	select {
+	case err := <-done:
+		t.Fatalf("Run stopped at a refused subscription: %v", err)
+	default:
+	}
+	cancel()
+	select {
+	case err := <-done:
+		if err != nil {
+			t.Fatalf("Run: %v", err)
+		}
+	case <-time.After(2 * time.Second):
+		t.Fatal("Run did not end with its ctx")
 	}
 }
 
-// A bridge whose rights refuse the answer subject stops instead of running
-// deaf: a request answer that cannot go out must not look answered (/healthz
-// sees the error Run returns).
-func TestARefusedAnswerStopsTheRun(t *testing.T) {
+// The failure is only the current state: once the server takes the subscribe,
+// Failure is false again. The handler is the same one that failed before.
+func TestAGrantedSubscribeClearsTheFailure(t *testing.T) {
+	refused, err := startUsers(t, `
+port: -1
+host: 127.0.0.1
+authorization {
+  users: [
+    { user: bridge, password: pw, permissions: {
+      subscribe: [ "deliver.bridge.>" ]
+      publish: [ "not.deliver.>" ]
+    } }
+  ]
+}
+`)
+	if err != nil {
+		t.Fatal(err)
+	}
+	nc := connectAs(t, refused, "bridge")
+	h := &Handler{Log: quiet, Prefix: "req", retry: 20 * time.Millisecond}
+	ctx, cancel := context.WithCancel(context.Background())
+	done := make(chan error, 1)
+	go func() { done <- h.Run(ctx, nc) }()
+	deadline := time.Now().Add(2 * time.Second)
+	for {
+		if _, bad := h.Failure(); bad {
+			break
+		}
+		if time.Now().After(deadline) {
+			t.Fatal("a refused subscription is not named")
+		}
+		time.Sleep(5 * time.Millisecond)
+	}
+	cancel()
+	if err := <-done; err != nil {
+		t.Fatalf("Run: %v", err)
+	}
+
+	// The same handler against a server that grants the right: its subscribe is
+	// taken, and the failure goes.
+	granted, err := startUsers(t, `
+port: -1
+host: 127.0.0.1
+authorization {
+  users: [
+    { user: bridge, password: pw, permissions: {
+      subscribe: [ "req.>" ]
+      publish: [ "deliver.*.req.*" ]
+    } }
+  ]
+}
+`)
+	if err != nil {
+		t.Fatal(err)
+	}
+	nc = connectAs(t, granted, "bridge")
+	before := granted.NumSubscriptions()
+	ctx, cancel = context.WithCancel(context.Background())
+	go func() { done <- h.Run(ctx, nc) }()
+	waitSubs(t, granted, before)
+	deadline = time.Now().Add(2 * time.Second)
+	for {
+		if _, bad := h.Failure(); !bad {
+			break
+		}
+		if time.Now().After(deadline) {
+			t.Fatal("a taken subscription left the failure set")
+		}
+		time.Sleep(5 * time.Millisecond)
+	}
+	cancel()
+	if err := <-done; err != nil {
+		t.Fatalf("Run: %v", err)
+	}
+}
+
+// A refused answer subject is no reason to stop either: the failure is named
+// for /healthz, and the run answers what it can.
+func TestARefusedAnswerSetsTheFailureAndTheRunGoesOn(t *testing.T) {
 	srv, err := startUsers(t, `
 port: -1
 host: 127.0.0.1
@@ -186,10 +330,10 @@ authorization {
 	a := connectAs(t, srv, "agent-a")
 
 	before := srv.NumSubscriptions()
+	h := &Handler{Log: quiet, Prefix: "req"}
 	ctx, cancel := context.WithCancel(context.Background())
-	defer cancel()
 	done := make(chan error, 1)
-	go func() { done <- (&Handler{Log: quiet, Prefix: "req"}).Run(ctx, bridge) }()
+	go func() { done <- h.Run(ctx, bridge) }()
 	waitSubs(t, srv, before)
 
 	if err := a.Publish("req.history.agent-a", []byte(body("history", goodID))); err != nil {
@@ -198,13 +342,33 @@ authorization {
 	if err := a.Flush(); err != nil {
 		t.Fatal(err)
 	}
+	deadline := time.Now().Add(2 * time.Second)
+	for {
+		msg, bad := h.Failure()
+		if bad {
+			if !strings.Contains(msg, "deliver.agent-a.req."+goodID) {
+				t.Fatalf("Failure: %q, want the refused answer subject", msg)
+			}
+			break
+		}
+		if time.Now().After(deadline) {
+			t.Fatal("the refused answer subject is not named")
+		}
+		time.Sleep(5 * time.Millisecond)
+	}
 	select {
 	case err := <-done:
-		if err == nil || !strings.Contains(err.Error(), "deliver.agent-a.req."+goodID) {
-			t.Fatalf("Run: %v, want the refused answer subject", err)
+		t.Fatalf("Run stopped at a refused answer subject: %v", err)
+	default:
+	}
+	cancel()
+	select {
+	case err := <-done:
+		if err != nil {
+			t.Fatalf("Run: %v", err)
 		}
 	case <-time.After(2 * time.Second):
-		t.Fatal("Run kept going with a refused answer subject")
+		t.Fatal("Run did not end with its ctx")
 	}
 }
 

@@ -91,17 +91,18 @@ func run(log *slog.Logger) error {
 	var wg sync.WaitGroup
 	// The request scaffold (ADR-014 phase 5): requests on <req>.<kind>.<agent>
 	// get this phase's "not built" answer on deliver.<agent>.req.<request id>.
-	// A lost message fails the request; a subscription that cannot be made stops
-	// the bridge, as a stopped presence reader does.
+	// A lost message fails the request; the handler retries a refused
+	// subscription once a minute and only reports why it is not answering, so
+	// an image rolled out before the lab's NATS rights leaves requests
+	// unanswered and never stops the bridge; /healthz names the failure.
 	if cfg.ReqPrefix != "" {
 		rq := &requests.Handler{Log: log, Prefix: cfg.ReqPrefix}
+		h.requests = rq
 		wg.Add(1)
 		go func() {
 			defer wg.Done()
 			if err := rq.Run(ctx, nc); err != nil && ctx.Err() == nil {
 				log.Error("bridge: the request scaffold stopped", "error", err)
-				h.failed.Store(true)
-				stop()
 			}
 		}()
 	}
