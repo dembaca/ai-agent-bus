@@ -3,7 +3,7 @@ home over NATS the roster, the link of a bot to its NATS name and the names and 
 Mattermost accounts come from NATS alone: presence and membership, the bridge's bot record
 (`<presence>.bot.<agent>.v1`) and the login service's account records.
 
-The switch is planb.on(2, channel), a stub that CB_PLANB_TEST="2" turns on. Unit tests drive a
+The switch is planb.on(2, channel) (RT-6.39 step 5); CB_PLANB_TEST="2" turns it on here. Unit tests drive a
 real NatsBus with the messages a consumer would deliver (no server) beside a chat that fails the
 test at any read of Mattermost's users; with MM_TEST_NATS=1 and CB_NATS_SERVER a real nats-server
 shows the round trip and that an agent cannot publish a bot record.

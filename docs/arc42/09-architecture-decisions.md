@@ -4235,8 +4235,9 @@ which each piece reads for itself.
        the state files keyed by the bot id, which the copy left in place;
        nothing in flight.
      - Built (piece 2a, after 0.104.0): the roster, the link and the names
-       and kinds of accounts from NATS, behind `planb.on(2, channel)` (off
-       unless `CB_PLANB_TEST` names piece 2; a home over NATS only). The
+       and kinds of accounts from NATS, behind `planb.on(2, channel)` (the
+       channel's switch, RT-6.39 step 5, off by default; a home over NATS
+       only). The
        bridge publishes the record `<presence>.bot.<agent>.v1` (the bot, its
        username, the account that owns it) after it set a bot up, every
        minute while the bot holds a client, and with `bot` null when the
