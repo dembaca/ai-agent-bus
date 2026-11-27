@@ -287,7 +287,7 @@ async def _final_stats_on_nats() -> None:
     if stats.nats_publish is None or _client is None or _exit_handled or _client.keeps_bot_on_exit:
         return
     try:
-        await asyncio.wait_for(stats.publish_nats(stats.final(VERSION, _fixed())), 5)
+        stats.final_nats = await asyncio.wait_for(stats.publish_nats(stats.final(VERSION, _fixed())), 5)
     except Exception as exc:  # noqa: BLE001 — never block the end
         log.info("overhead stats: the last part not on NATS: %s", type(exc).__name__)
 
@@ -2587,8 +2587,9 @@ async def stats_report(versions: int = 3) -> str:
         rows = await stats.read_report(_get_client(), name)
     except Exception as exc:  # noqa: BLE001 — off the bus, the channel missing or not readable
         if stats.over_nats(_get_client()):  # plan B piece 13: no token to read with, no reader on NATS
-            return _refused("stats_report", "this home's STATS are on NATS, and an agent cannot read "
-                            f"them there yet; the older lines are in ~{name}")
+            why = str(exc).split(" for url ")[0] or type(exc).__name__
+            return _refused("stats_report", f"cannot read ~{name}: {why}; this home's STATS are on NATS "
+                            "and an agent cannot read them there yet"[:300])
         why = str(exc).split(" for url ")[0] or type(exc).__name__
         return _refused("stats_report", f"cannot read ~{name}: {why}"[:300])
     return _out("stats_report", {"channel": name, "versions": stats.brief(rows[-max(1, versions):])})

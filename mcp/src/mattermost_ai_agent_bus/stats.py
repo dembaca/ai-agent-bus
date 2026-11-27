@@ -1008,6 +1008,11 @@ async def publish_nats(data: dict[str, Any] | None) -> str:
     return "published"
 
 
+# What publish_nats answered for the session's last part (server._final_stats_on_nats); None
+# while that was not tried (exit by signal, timeout, no link). post_sync reads it.
+final_nats: str | None = None
+
+
 def over_nats(client: ChatPort) -> bool:
     """Plan B piece 13 (RT-6.43 step 7, ADR-014 phase 5): this home's STATS go on NATS alone,
     no chat line and no Mattermost token needed. Off without a NATS link to publish on."""
@@ -1056,8 +1061,12 @@ async def tick(client: ChatPort, uid: str) -> float | None:
             version, fixed = _source()
             data = cut(version, fixed)
             if data:
-                await publish_nats(data)
-                log.info("overhead stats: part %s published on NATS", data["part"])
+                got = await publish_nats(data)
+                if got == "published":
+                    log.info("overhead stats: part %s published on NATS", data["part"])
+                else:
+                    log.info("overhead stats: part %s not on NATS yet (%s); it goes out with the "
+                             "next part", data["part"], got)
             return PART_SEC
         cid = await client.join_channel(name)
         while _unposted:
@@ -1091,15 +1100,22 @@ def post_sync(client: ChatPort, data: dict[str, Any]) -> str:
     channel the counts would only pile up.
     """
     name = channel()
-    nats = bool(name) and over_nats(client)
+    # Piece 13 on and the last part really published on NATS: no chat line. Otherwise (until
+    # piece 14 the server still holds a token) the chat line is the durable copy, as today.
+    nats = bool(name) and over_nats(client) and final_nats == "published"
     if not name or (not nats and not client.token):
-        return "off"
+        return "off" if not name or not over_nats(client) else (
+            f"last part not on NATS ({final_nats or 'not tried'}) and no token: not posted")
     lines = [*_unposted, _line(data)]
-    # Piece 13 on: the lines are dropped unsent. Only parts whose post failed before the piece
+    dropped = len(_unposted)
+    # On NATS the older lines are dropped unsent. Only parts whose post failed before the piece
     # was switched on mid-session can be here; their parts were published on NATS as well.
     _unposted.clear()
     try:
         if nats:  # piece 13: the last part went on NATS (server._final_stats_on_nats)
+            if dropped:
+                log.info("overhead stats: %d earlier unposted line(s) dropped, on NATS", dropped)
+                return f"on NATS, not posted ({dropped} earlier unposted line(s) dropped)"
             return "on NATS, not posted"
         for msg in lines:
             if not client.post_by_name_sync(name, msg, join=_me()):

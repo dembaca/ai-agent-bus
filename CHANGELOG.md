@@ -48,7 +48,10 @@ before 0.5.0 are described in the git history.
   phase 5, RT-6.43 step 7). In a channel with piece 13 on (off by default;
   `CB_PLANB_TEST=13` in tests), the home's STATS go on NATS alone: the
   heartbeat's part and the last part are published on `<stats>.<name>`, no
-  chat line is posted, and neither a Mattermost token nor the stats channel
+  chat line is posted (a part whose publish fails goes out with the next
+  part, `PART_SEC` later, at most 30 kept; the last part is posted to the
+  chat as today unless its publish answered "published", since the server
+  still holds a token until piece 14), and neither a Mattermost token nor the stats channel
   is needed for it (`stats.over_nats`). The report still reads the stats
   channel, which holds the older lines: `stats_report` with no token says
   that an agent cannot read STATS on NATS yet (an agent's credential holds

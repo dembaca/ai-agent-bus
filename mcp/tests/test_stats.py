@@ -1275,6 +1275,7 @@ def _piece_13(monkeypatch, on=True):
 
     monkeypatch.setattr(stats, "nats_publish", publish)
     monkeypatch.setattr(stats, "_unpublished", [])
+    monkeypatch.setattr(stats, "final_nats", None)
     return sent
 
 
@@ -1303,10 +1304,61 @@ def test_rt_6_43_piece_13_the_last_part_is_not_posted_and_the_files_go(monkeypat
     """Plan B piece 13: post_sync posts nothing to the chat (the last part went on NATS) and
     removes the counter file as before."""
     _piece_13(monkeypatch)
+    monkeypatch.setattr(stats, "final_nats", "published")
     stats.record("turn")
     data = stats.summary("0.104.0")
     assert stats.post_sync(_NatsHome(), data) == "on NATS, not posted"
     assert not (state / "mm-agent-bus" / f"stats-{UID}.jsonl").exists()
+
+
+def test_rt_6_43_piece_13_older_unposted_lines_are_counted_when_dropped(monkeypatch):
+    """Plan B piece 13: lines whose post failed earlier are dropped with the last part on NATS,
+    logged and counted in the answer."""
+    _piece_13(monkeypatch)
+    monkeypatch.setattr(stats, "final_nats", "published")
+    monkeypatch.setattr(stats, "_unposted", ["STATS {}", "STATS {}"])
+    stats.record("turn")
+    assert "2 earlier unposted" in stats.post_sync(_NatsHome(), stats.summary("0.104.0"))
+
+
+@pytest.mark.parametrize("answer", [None, "kept"])
+def test_rt_6_43_piece_13_a_last_part_not_on_nats_is_posted_to_the_chat(monkeypatch, answer):
+    """Plan B piece 13: until the token goes (piece 14) the chat line is the durable copy when
+    the last part's NATS publish did not answer "published"; without a token it says so."""
+    _piece_13(monkeypatch)
+    monkeypatch.setattr(stats, "final_nats", answer)
+    stats.record("turn")
+    data = stats.summary("0.104.0")
+    assert "no token: not posted" in stats.post_sync(_NatsHome(), data)
+    stats.record("turn")
+    posted = []
+
+    class WithToken(_NatsHome):
+        token = "bot"
+
+        def post_by_name_sync(self, name, msg, join=None):
+            posted.append(msg)
+            return True
+
+    assert stats.post_sync(WithToken(), stats.summary("0.104.0")) == "posted"
+    assert posted and posted[0].startswith("STATS ")
+
+
+async def test_rt_6_43_piece_13_tick_logs_by_the_answer(monkeypatch, caplog):
+    """Plan B piece 13: a part whose publish failed is not logged as published."""
+    import logging
+    _piece_13(monkeypatch)
+    now = int(time.time())
+    _write_events({"k": "turn", "t": now - stats.PART_SEC - 5, "by": "human"})
+    monkeypatch.setattr(stats, "_source", lambda: ("0.104.0", None))
+
+    async def down(body):
+        raise OSError("down")
+
+    monkeypatch.setattr(stats, "nats_publish", down)
+    with caplog.at_level(logging.INFO):
+        await stats.tick(_NatsHome(), UID)
+    assert "not on NATS yet (kept)" in caplog.text and "published on NATS\n" not in caplog.text.replace("not published on NATS", "")
 
 
 def test_rt_6_43_piece_13_stats_report_says_why_it_cannot_read(monkeypatch):
@@ -1321,7 +1373,8 @@ def test_rt_6_43_piece_13_stats_report_says_why_it_cannot_read(monkeypatch):
         monkeypatch.setattr(server, "_get_client", lambda: NoToken())
         return await server.stats_report()
 
-    assert "cannot read them there yet" in asyncio.run(go())
+    out = asyncio.run(go())
+    assert "cannot read ~agents-stats" in out and "cannot read them there yet" in out
 
 
 async def test_rt_6_43_piece_13_stats_lines_are_bounded_by_limit(monkeypatch):

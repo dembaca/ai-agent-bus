@@ -4443,7 +4443,7 @@ reads yet (RT-6.39 step 5).
         shell clients read Mattermost with the registrar's bot again;
         nothing in flight.
       - Build (2026-11-27): the writing is moved (parts and last part on
-        NATS alone, no token), the shell report asks the server through
+        NATS alone, no token; a part whose publish fails goes out with the next one, `PART_SEC` later, at most 30 kept; the last part is posted to the chat as today unless its publish answered "published", until piece 14), the shell report asks the server through
         `GET /v1/stats-lines`. Reading STATS on NATS is not built: an
         agent's credential holds no consumer on `STATS`, and giving it one
         lets every agent read every agent's lines (RISK-22), so the report
