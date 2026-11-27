@@ -459,7 +459,7 @@ func TestTheCountBoundAndItsCursor(t *testing.T) {
 	}
 	parts := results(t, replies)
 	if len(parts) != 1 || len(parts[0].Posts) != 2 || !parts[0].More ||
-		parts[0].Next != base+1000 {
+		parts[0].Next != base+1001 { // exclusive: after the last post kept
 		t.Fatalf("the bound: %+v", parts)
 	}
 	// the next read from the cursor carries the rest
@@ -468,7 +468,7 @@ func TestTheCountBoundAndItsCursor(t *testing.T) {
 		t.Fatal(err)
 	}
 	parts = results(t, replies)
-	if len(parts[0].Posts) != 2 || parts[0].Posts[1].ID != "p3" || parts[0].More {
+	if len(parts[0].Posts) != 1 || parts[0].Posts[0].ID != "p3" || parts[0].More {
 		t.Fatalf("after the cursor: %+v", parts)
 	}
 }
@@ -691,8 +691,8 @@ func TestAChannelReadPagesAndItsCursorWalksForward(t *testing.T) {
 	if got := parts[0].Posts[0]; got.ID != "p0" || got.CreateAt != base {
 		t.Fatalf("the oldest post: %+v", got)
 	}
-	if got := parts[0].Next; got != base+199 {
-		t.Fatalf("next %d, want %d", got, base+199)
+	if got := parts[0].Next; got != base+200 { // exclusive: after the last post kept
+		t.Fatalf("next %d, want %d", got, base+200)
 	}
 	// three pages: 200, 200 and the channel's oldest 50
 	asked := r.mm.asked()
@@ -711,7 +711,7 @@ func TestAChannelReadPagesAndItsCursorWalksForward(t *testing.T) {
 		t.Fatal(err)
 	}
 	parts = results(t, replies)
-	if len(parts[0].Posts) != 200 || parts[0].Posts[0].ID != "p199" || parts[0].Next <= base+199 {
+	if len(parts[0].Posts) != 200 || parts[0].Posts[0].ID != "p200" || parts[0].Next <= base+200 {
 		t.Fatalf("after the cursor: %+v", parts[0])
 	}
 }
@@ -735,8 +735,8 @@ func TestADroppedRunStillMovesTheCursor(t *testing.T) {
 	if len(parts) != 1 || len(parts[0].Posts) != 0 || !parts[0].More {
 		t.Fatalf("the dropped run: %d parts, %d posts, more %v", len(parts), len(parts[0].Posts), parts[0].More)
 	}
-	if want := base + 199; parts[0].Next != want {
-		t.Fatalf("next %d, want the last post read %d (not 0 or since)", parts[0].Next, want)
+	if want := base + 200; parts[0].Next != want { // the last post read, plus one
+		t.Fatalf("next %d, want after the last post read %d (not 0 or since)", parts[0].Next, want)
 	}
 	// the walk goes on from there and ends: the rest of the run is read and
 	// dropped, so there is nothing more and no cursor to repeat
@@ -747,6 +747,51 @@ func TestADroppedRunStillMovesTheCursor(t *testing.T) {
 	parts = results(t, replies)
 	if len(parts[0].Posts) != 0 || parts[0].More {
 		t.Fatalf("the second read: %+v", parts[0])
+	}
+}
+
+// A run of posts with one create_at is carried whole, even past the limit or the
+// byte bound: the cursor is exclusive, so a run split by a cut would be walked
+// again from its start for ever (Fable's review of #270).
+func TestARunOfEqualCreateAtIsNeverCut(t *testing.T) {
+	r := newRig(t, 5)
+	base := r.now.Add(-12 * time.Hour).UnixMilli()
+	for i := 0; i < 5; i++ {
+		r.mm.posts[cid] = append(r.mm.posts[cid], post("e"+strconv.Itoa(i), "u-alice", base))
+	}
+	for i := 0; i < 5; i++ {
+		r.mm.posts[cid] = append(r.mm.posts[cid], post("f"+strconv.Itoa(i), "u-alice", base+1))
+	}
+	// limit 1: the first run alone, all five, and the cursor after it
+	replies, err := r.ask(t, fmt.Sprintf(`{"channel":%q,"since":%d,"limit":1}`, channel, base))
+	if err != nil {
+		t.Fatal(err)
+	}
+	parts := results(t, replies)
+	if len(parts[0].Posts) != 5 || !parts[0].More || parts[0].Next != base+1 {
+		t.Fatalf("limit 1 at an equal run: %d posts, more %v, next %d",
+			len(parts[0].Posts), parts[0].More, parts[0].Next)
+	}
+
+	// a byte cut at two posts of one create_at carries both, not one
+	big := map[string]any{"x": strings.Repeat("y", 300<<10)}
+	for i := 0; i < 2; i++ {
+		p := post("g"+strconv.Itoa(i), "u-alice", base+2)
+		p["props"] = big
+		r.mm.posts[cid] = append(r.mm.posts[cid], p)
+	}
+	replies, err = r.ask(t, fmt.Sprintf(`{"channel":%q,"since":%d,"limit":200}`, channel, base+2))
+	if err != nil {
+		t.Fatal(err)
+	}
+	parts = results(t, replies)
+	total := 0
+	for _, part := range parts {
+		total += len(part.Posts)
+	}
+	if total != 2 || parts[len(parts)-1].More {
+		t.Fatalf("the byte cut at an equal run: %d posts over %d parts, more %v",
+			total, len(parts), parts[len(parts)-1].More)
 	}
 }
 

@@ -37,8 +37,9 @@
 //
 // and the last part adds {"next": <create_at ms>, "more": true} while posts
 // remain past what this answer carried (the limit, the byte or count bound, or
-// the page walk's bound): the caller then asks again with since=next and drops
-// a post it already has by id (the bound is inclusive). A thread read is
+// the page walk's bound): the caller asks again with since=next, which is
+// EXCLUSIVE - the last post's create_at plus one - so a run of posts with one
+// create_at is never walked twice (the run is carried whole). A thread read is
 // bounded by the limit and names no next: `more` says the thread goes on.
 //
 // A channel read pages Mattermost's posts with page/per_page, 200 a page, from
@@ -273,6 +274,9 @@ func (h *Handler) Piece(ctx context.Context, agent string, req requests.Request)
 		// READ, dropped ones included: `more` counts what was read, and a run of
 		// dropped posts would otherwise leave next at 0 or at since (an endless
 		// loop). A part that cut the answer uses the last post it kept instead.
+		if err := ctx.Err(); err != nil {
+			return nil, err
+		}
 		if len(posts) > 0 {
 			readThrough = posts[len(posts)-1].CreateAt
 		}
@@ -284,6 +288,9 @@ func (h *Handler) Piece(ctx context.Context, agent string, req requests.Request)
 				continue
 			}
 			shaped = append(shaped, h.shape(ctx, bot, post))
+			if err := ctx.Err(); err != nil {
+				return nil, err
+			}
 		}
 	}
 
@@ -563,8 +570,12 @@ func (h *Handler) parts(p payload, cid string, posts []answerPost, limit int, ca
 		lastAt int64
 	)
 	more := capped
-	for _, post := range posts {
-		if taken >= limit {
+	for i, post := range posts {
+		// Never cut inside a run of equal create_at: the cursor is exclusive, so
+		// a run a cut split would be walked again from its start for ever
+		// (Fable's review of #270). The run is carried whole, over the bounds.
+		run := i > 0 && post.CreateAt == posts[i-1].CreateAt
+		if taken >= limit && !run {
 			more = true
 			break
 		}
@@ -578,7 +589,7 @@ func (h *Handler) parts(p payload, cid string, posts []answerPost, limit int, ca
 			chunks = append(chunks, cur)
 			cur, used = nil, 0
 		}
-		if len(cur) == 0 && taken > 0 && total+size > maxAnswerBytes {
+		if len(cur) == 0 && taken > 0 && total+size > maxAnswerBytes && !run {
 			more = true
 			break
 		}
@@ -612,9 +623,11 @@ func (h *Handler) parts(p payload, cid string, posts []answerPost, limit int, ca
 				// post kept. Only a read the GET said had more, with nothing cut
 				// here, starts after the last post read - a run of dropped posts
 				// must still move the cursor.
-				r.Next = lastAt
+				// Exclusive: the next read starts after the cursor, so a run of
+				// equal create_at is never walked twice.
+				r.Next = lastAt + 1
 				if capped && len(posts) <= taken && readThrough > lastAt {
-					r.Next = readThrough
+					r.Next = readThrough + 1
 				}
 			}
 			r.More = true

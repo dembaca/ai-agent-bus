@@ -395,7 +395,14 @@ func (c *Client) PostsFrom(ctx context.Context, channelID string, since int64, l
 		if len(keep) > 0 {
 			oldest = append(keep, oldest...) // the page is older than what came before
 			if len(oldest) > limit {
-				oldest, more = oldest[:limit], true
+				// Never cut inside a run of equal create_at: the cursor goes on
+				// from the last post read, and a run a cut split would be read
+				// again from the same create_at for ever (Fable's review of #270).
+				end := limit
+				for end < len(oldest) && oldest[end].CreateAt == oldest[limit-1].CreateAt {
+					end++
+				}
+				oldest, more = oldest[:end], true
 			}
 		}
 		if reached {

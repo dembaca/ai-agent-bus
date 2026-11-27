@@ -39,6 +39,12 @@ class RequestError(NatsBusError):
     that kind, or the answer did not hold together. The text never holds a token."""
 
 
+def default_timeout(kind: str) -> float:
+    """The wait a kind gets when the caller names none: a history read may take the
+    bridge up to 30 s (its own read deadline), the other kinds are quick."""
+    return HISTORY_SEC if kind == "history" else REQUEST_SEC
+
+
 def _new_id() -> str:
     """16 characters of ``[a-z0-9]``: ``hex`` is 4 bits a character, so 8 bytes."""
     return secrets.token_hex(8)
@@ -62,7 +68,7 @@ def _decode_answer(body: bytes | bytearray, request: str, kind: str) -> dict[str
 
 
 async def request(bus: NatsBus, kind: str, payload: Mapping[str, Any] | None = None, *,
-                  timeout: float = REQUEST_SEC, prefix: str | None = None) -> dict[str, Any]:
+                  timeout: float | None = None, prefix: str | None = None) -> dict[str, Any]:
     """Ask the bridge for one ``kind`` and collect its answer (``REQUEST_SEC``).
 
     An answer may come in parts: each carries ``part`` (1, 2, ...) and ``last``, and
@@ -79,6 +85,8 @@ async def request(bus: NatsBus, kind: str, payload: Mapping[str, Any] | None = N
     """
     if kind not in KINDS:
         raise ValueError(f"unknown request kind {kind!r}; one of {', '.join(KINDS)}")
+    if timeout is None:
+        timeout = default_timeout(kind)
     nc = bus._nc  # noqa: SLF001 - the bus keeps the connection; a request is its own subject
     if nc is None or not bus._connected:  # noqa: SLF001
         raise RequestError("the bus is not connected")

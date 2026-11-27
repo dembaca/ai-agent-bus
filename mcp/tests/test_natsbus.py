@@ -2803,6 +2803,16 @@ def test_decode_planb_is_strict() -> None:
         natsbus.decode_planb(b'{"v":1,"channel":"home","pieces":"1"}', "home")
 
 
+def test_each_request_kind_gets_its_own_default_timeout() -> None:
+    """#270's review: a history read may take the bridge up to 30 s, the other kinds
+    are quick - the default follows the kind, a caller's timeout wins."""
+    from mattermost_ai_agent_bus import requests
+
+    assert requests.default_timeout("history") == requests.HISTORY_SEC == 35.0
+    assert requests.default_timeout("file") == requests.default_timeout("header") == requests.REQUEST_SEC
+    assert requests.HISTORY_SEC > 30  # above the bridge's own read deadline
+
+
 async def test_a_multi_part_answer_is_collected_until_its_last_part(rig: Rig) -> None:
     """ADR-014 phase 5: an answer may come in parts (a file download, a long history
     read). The call reads until a part says last and returns them in part order; a
