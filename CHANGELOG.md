@@ -63,6 +63,13 @@ before 0.5.0 are described in the git history.
   consumer made anew (reconnect, credential) no longer drops the switch map at once: the old
   records are read until the replay is complete, so the direct-message piece no longer states
   `"dm": false` and later pieces no longer flap back to Mattermost meanwhile.
+- **A wrong setting is said, not silent** (#261, RT-6.34 step 4). The MCP server warns
+  about every unknown `CB_` name in its environment (`unknown setting CB_PROJECT_CHANNEL
+  (did you mean CB_MM_PROJECT_CHANNEL?)`; names only, never a value), and when
+  `CB_NATS_HOMES` is set but not the home, why no NATS login starts (`home ~agents is not
+  in CB_NATS_HOMES (...): this session stays on Mattermost and starts no NATS login`). Both
+  show in `bus_info`'s and `session_start`'s warning and once in the session-start hook's
+  line, `GET /v1/login` carries them as `notes`.
 - **A direct message over NATS is answerable in every case** (#258, plan B piece 3,
   RT-6.36 step 7). `get_thread` on a DM's id refuses it in the same words `reply_in_thread`
   uses - answer it with `post_message(to=<its sender, as shown_as>)` - instead of a bare
