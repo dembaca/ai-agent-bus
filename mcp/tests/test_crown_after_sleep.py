@@ -327,16 +327,53 @@ async def test_a_humans_thread_naming_a_peer_is_its_once_it_answered(home, monke
     assert await _judge_reply(home, HUMAN, "@agent-me @agent-other rebase", answered=AGENT) == (True, True)
     assert await _judge_reply(home, HUMAN, ask, answered=AGENT, author=MALLORY) == (True, True)
     assert await _judge_reply(home, HUMAN, ask, answered=AGENT, webhook=True) == (True, True)
-    # B answers after the first read: the thread is read again, the reply is B's.
+    # B answers after the first read: within ROOT_TTL_SEC the record stands (the
+    # 👑 wakes: two answers), then the thread is read again and the reply is B's.
     gate._roots.clear()
     home.posts = [post_of({"id": ROOT, "user_id": HUMAN, "channel_id": WORK, "message": ask})]
+    reads = []
+    thread = home.thread
+
+    async def counted(root_id):
+        reads.append(root_id)
+        return await thread(root_id)
+
+    monkeypatch.setattr(home, "thread", counted)
     assert await gate.other_agents_thread(home, ROOT, BOT) is False
     home.posts.append(post_of({"id": "n" * 26, "user_id": AGENT, "channel_id": WORK,
                                "root_id": ROOT, "message": "on it", "create_at": 4}))
+    assert await gate.other_agents_thread(home, ROOT, BOT) is False
+    assert len(reads) == 1  # not read again on every evaluation
+    gate._roots[ROOT].read_at -= gate.ROOT_TTL_SEC + 1
     assert await gate.other_agents_thread(home, ROOT, BOT) is True
+    assert len(reads) == 2
+    monkeypatch.setattr(home, "thread", thread)
     # B gone from the roster: the 👑's again.
     home.members = [m for m in home.members if m.id != AGENT]
     assert await _judge_reply(home, HUMAN, ask, answered=AGENT) == (True, True)
+
+
+async def test_a_root_naming_two_peers_is_the_thread_of_the_one_that_answered(home, monkeypatch):
+    """RT-6.6 step 5 (#216): a human's root names two reachable peers and only
+    one has posted: the thread is that one's (the 👑 does not wake, it wakes as
+    a participant), not the other's (not in the thread, it does not wake by
+    it). Names are the roster's usernames now: a root naming an agent by a name
+    it no longer has (renamed) names nobody here, and the 👑 wakes."""
+    third = "b" * 26
+    monkeypatch.setattr(gate, "_roots", {})
+    monkeypatch.setattr(gate, "_reach", None)
+    _peer(home)
+    home._agents.add(third)
+    home.descriptions[third] = home.descriptions[BOT]
+    home.agent(third, "agent-third", 3500)
+    await lease.command(home, "tick")
+    assert lease.crown_held(BOT)
+    both = "@agent-other @agent-third please rebase"
+    assert await _judge_reply(home, HUMAN, both, answered=AGENT) == (False, False)
+    assert await gate.in_thread(home, ROOT, AGENT) == (True, False)
+    assert await gate.in_thread(home, ROOT, third) == (False, False)
+    assert await _judge_reply(home, HUMAN, both) == (True, True)  # neither has answered
+    assert await _judge_reply(home, HUMAN, "@agent-old please rebase", answered=AGENT) == (True, True)
 
 
 async def test_a_humans_thread_naming_a_foreign_agent_stays_the_crowns(home, monkeypatch):

@@ -44,8 +44,19 @@ before 0.5.0 are described in the git history.
   departed, is not here or not reachable, when B is another owner's agent
   (its own gate may hold the reply back, which the coordinator cannot know),
   when the root names the coordinator too, and when the thread or the roster
-  cannot be read. Such a thread is read again only while B has not posted
-  there yet, one request per reply.
+  cannot be read. B counts by its current username: a root naming B by a
+  name it no longer has names nobody, and the coordinator wakes. Such a
+  thread is read again only while B has not posted there yet, at most once a
+  minute, so B's first post there counts within a minute (until then the
+  coordinator wakes too).
+- **The listener knows its threads beyond its last 200 posts** (#216,
+  [the end-of-turn scenario, RT-6.2 step 4](docs/arc42/06-runtime-view.md#62-end-of-a-turn-drain-sign-off-listen)).
+  A waiting agent's listener and `/v1/wake` took "my threads" from the home's
+  last 200 posts only, so a reply in a thread where the agent's post lay
+  further back reached it only with the digest, and with #214 not the
+  coordinator either. `/v1/posts?since=` now marks a reply `my_thread` /
+  `my_root` from the whole thread, one read per root and kept; the marks add
+  to the 200 posts, never remove.
 
 - **The bridge serves the slash commands and their signed records** (#151
   step 3): `/agent-ask-mode`, `/agent-mandate` and `/agent-debug` move from the

@@ -656,6 +656,37 @@ def test_coordinator_leaves_a_reply_in_an_agents_thread_to_it(mm, run, monkeypat
         assert "for you" in listen(run).stdout, root
 
 
+def test_listener_knows_its_threads_beyond_the_last_posts(mm, run, monkeypatch):
+    """RT-6.2 step 4, RT-6.6 step 5 (#216): the agent's answer in a person's
+    thread lies further back than the 200 posts the listener reads; the hook
+    API reads the whole thread (my_thread), so a reply there wakes it. Holding
+    the 👑 in a thread a reachable peer answered that far back, the reply is
+    the peer's (agent_thread): the 👑's listener does not wake."""
+    from mattermost_ai_agent_bus import gate
+
+    monkeypatch.setattr(gate, "_roots", {})
+    monkeypatch.setattr(gate, "_reach", None)
+    fyi_authors(mm)  # OTHER is an agent, PERSON a person
+    mm.agent(OTHER, "agent-other", 1000, emoji="hammer_and_wrench")
+    next(u for u in mm.users if u["id"] == OTHER)["is_bot"] = True
+    old = int((time.time() - 86400) * 1000)
+    mine, theirs = "a" * 26, "c" * 26
+    mm.older = [
+        {"id": mine, "user_id": PERSON, "root_id": "", "create_at": old, "message": "@agent-test rebase", "type": ""},
+        {"id": "e" * 26, "user_id": ME, "root_id": mine, "create_at": old + 1, "message": "on it", "type": ""},
+        {"id": theirs, "user_id": PERSON, "root_id": "", "create_at": old, "message": "@agent-other rebase",
+         "type": ""},
+        {"id": "f" * 26, "user_id": OTHER, "root_id": theirs, "create_at": old + 1, "message": "on it", "type": ""},
+    ]
+    other_post(mm, "after lunch", root_id=mine, user_id=PERSON)
+    assert "for you" in listen(run).stdout
+    d = run.state_dir
+    (d / f"coord-{ME}.env").write_text(f"CROWN_UNTIL={int(time.time()) + 600}\n")
+    mm.posts = []
+    other_post(mm, "after lunch", root_id=theirs, user_id=PERSON)
+    assert "for you" not in listen(run).stdout
+
+
 def test_listener_digest_for_the_rest(mm, run):
     """RT-6.2 step 4: unaddressed posts wake it once the oldest is MM_LISTEN_DIGEST_SEC old."""
     other_post(mm, "status of the build", age_s=0)

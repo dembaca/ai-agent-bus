@@ -172,9 +172,10 @@ def wake(posts: Iterable[Mapping[str, Any]], recent: Iterable[Mapping[str, Any]]
             continue  # a quiet post: another agent's context line (RT-6.6 step 9)
         root = p.get("root_id") or ""
         others_thread = coordinator and bool(p.get("agent_thread"))  # RT-6.6 step 5
+        # my_thread / my_root: from the whole thread (RT-6.2 step 4), beyond `recent`.
         seen = not others_thread and ((coordinator and not p.get("names_agent"))
-                                      or (bool(root) and root in threads))
-        mine = bool(root) and root in roots
+                                      or (bool(root) and root in threads) or bool(p.get("my_thread")))
+        mine = (bool(root) and root in roots) or bool(p.get("my_root"))
         if not p.get("gated") and (named(p, username) or p.get("absent")
                                    or (seen and (mine or not p.get("fyi")))):
             addressed += 1

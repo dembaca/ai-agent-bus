@@ -92,15 +92,38 @@ class _Root:
     by_agent: bool  # read only for a root that names an agent
     named: tuple[str, ...]
     posters: set[str]
+    read_at: float = 0.0  # time.monotonic() of the read
 
 
-# Each root read once; the thread again only while an agent its root names has
-# not posted there yet. The oldest go first beyond ROOTS_KEPT. Whether an
-# agent is a reachable peer of the home is read from the roster each time, at
-# most every COORD_TTL_SEC (_reach), never kept with the root.
+# Each root read once; the thread again, at most every ROOT_TTL_SEC, only while
+# an agent its root names has not posted there as last read; posts the hook
+# API reads add their authors at once (saw). The oldest go first beyond ROOTS_KEPT. Whether an agent is a reachable
+# peer of the home is read from the roster each time, at most every
+# COORD_TTL_SEC (_reach), never kept with the root.
 _roots: dict[str, _Root] = {}
 ROOTS_KEPT = 2000
+ROOT_TTL_SEC = 60.0
 _reach: tuple[float, dict[str, str]] | None = None
+
+
+def saw(post: Post) -> None:
+    """A reply the hook API read: its author has posted in its thread."""
+    facts = _roots.get(post.root_id) if post.root_id else None
+    if facts is not None and post.user_id and not post.from_webhook:
+        facts.posters.add(post.user_id)
+
+
+async def thread_facts(client: ChatPort, root_id: str,
+                       want: Collection[str] = ()) -> _Root | None:
+    """The record of the thread `root_id` (_roots, read once). Read again
+    when none of `want` has posted there as last read and that read is older
+    than ROOT_TTL_SEC, so a new post of one of them shows within that time.
+    None: never read and unreadable now (a failed re-read keeps the record)."""
+    facts = _roots.get(root_id)
+    if facts is None or (want and not set(want) & facts.posters
+                         and time.monotonic() - facts.read_at > ROOT_TTL_SEC):
+        facts = await _read_root(client, root_id) or facts
+    return facts
 
 
 async def _reachable_here(client: ChatPort) -> dict[str, str]:
@@ -137,7 +160,8 @@ async def _read_root(client: ChatPort, root_id: str) -> _Root | None:
         log.info("thread root %s not read: %s", root_id, type(exc).__name__)
         return None
     facts = _Root(author=author, by_agent=by_agent, named=named,
-                  posters={p.user_id for p in thread.posts if p.user_id and not p.from_webhook})
+                  posters={p.user_id for p in thread.posts if p.user_id and not p.from_webhook},
+                  read_at=time.monotonic())
     _roots.pop(root_id, None)
     _roots[root_id] = facts
     while len(_roots) > ROOTS_KEPT:
@@ -152,9 +176,11 @@ async def other_agents_thread(client: ChatPort, root_id: str, uid: str) -> bool 
     and B has posted in the thread since, and the root does not name this
     agent. Not: a root by a human that names no agent, or only agents that
     have not answered there yet, are foreign, departed, not here or not
-    reachable; a root by this agent (the crown wakes as before).
+    reachable; a root by this agent (the crown wakes as before). Names are
+    the roster's usernames now: a root naming an agent by a name it no
+    longer has (renamed) names nobody here, as Mattermost notifies nobody.
     None: the thread cannot be read (unsure: the caller wakes as before)."""
-    facts = _roots.get(root_id) or await _read_root(client, root_id)
+    facts = await thread_facts(client, root_id)
     if facts is None:
         return None
     if facts.author == uid:
@@ -173,12 +199,21 @@ async def other_agents_thread(client: ChatPort, root_id: str, uid: str) -> bool 
     except Exception as exc:  # noqa: BLE001 — unsure
         log.info("own name not read: %s", type(exc).__name__)
         return None
-    if not named & facts.posters:
-        # B may have answered since the last read: read the thread again.
-        facts = await _read_root(client, root_id)
-        if facts is None:
-            return None
+    # B may have answered since the last read: read again after ROOT_TTL_SEC.
+    facts = await thread_facts(client, root_id, want=named) or facts
     return bool(named & facts.posters)
+
+
+async def in_thread(client: ChatPort, root_id: str, uid: str) -> tuple[bool, bool] | None:
+    """RT-6.2 step 4, RT-6.6 step 5: (uid has posted in the thread, uid
+    posted its root) from the whole thread (thread_facts, read once), not
+    from the last posts of the channel. A later post of uid's is added when
+    the hook API reads it (saw: its listener reads its last MAX_POSTS posts at
+    each start), so this reads no thread again. None: unreadable."""
+    facts = await thread_facts(client, root_id)
+    if facts is None:
+        return None
+    return uid in facts.posters or facts.author == uid, facts.author == uid
 
 
 def wake_reason(kind: str, post: Post, in_my_thread: bool) -> str:
