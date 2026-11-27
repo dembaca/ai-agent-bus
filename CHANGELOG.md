@@ -3,6 +3,27 @@
 Every version bump in `.claude-plugin/plugin.json` gets an entry here. Versions
 before 0.5.0 are described in the git history.
 
+## Unreleased
+
+### Changed
+
+- **The fault rig's leftovers from #209's review** ([#218](https://github.com/dembaca/ai-agent-bus/issues/218),
+  ADR-014's phase-1/4 rig). The NATS restart test asserts `lost_seqs`, so a
+  failed send is told from a lost post. A failed consumer reconcile aborts that
+  one CONNECT, and the next connection retries it as the login service lets a
+  client retry a refused login: the verdict is kept per agent, and a run is
+  untrustworthy only when an agent's last connection still had no consumers;
+  cured CONNECTs are counted and printed, and a coordinator run copies them
+  into its notes and report. The first start retries once on a fresh port if
+  another process took the probed one, reading the server's INFO so a foreign
+  listener is not taken for it (a restart keeps its port, the clients hold it);
+  the tail masking covers a value after `token:`, `token =` and a JSON key, as
+  well as the bare word; the README says how far a PR-sized cut run
+  reaches and what a SIGKILLed rig leaves behind. The nightly `full-nats` job
+  puts its tables into the run's step summary and uploads the output as the
+  `full-nats-results` artifact, and the nats-server fetch is one composite
+  action instead of four copies.
+
 ## 0.104.0
 
 Needs: login service jetstream user with stream update on stats and publish on its import subjects, before its upgrade.
@@ -50,23 +71,6 @@ deprecation warning; they go in 0.105.0, the removal release
 - **The central bridge sweeps the agent bots it made** (#151 step 2, RT-6.44): every 10 minutes it disables a bot it made for an agent that has shown no presence and posted nothing for longer than `CB_BRIDGE_MM_BOT_KEEP` (default `24h`, at least `1h`), and revokes the bot's tokens; at most 20 bots per pass, none while the presence feed is stale. A bot is the bridge's only by its prefix and its mark in the description together, never by the prefix alone, so the registrar's bots stay the host sweep's. Last seen is kept in memory: after a restart every bot counts as seen at the start. An agent that comes back gets its bot enabled again and a fresh token at its next message; only bots the sweep disabled (their description marked ` (swept)`) come back, one an admin disabled stays off. No new right, no new endpoint, nothing persisted; hosts notice nothing.
 
 ### Changed
-
-- **The fault rig's leftovers from #209's review** ([#218](https://github.com/dembaca/ai-agent-bus/issues/218),
-  ADR-014's phase-1/4 rig). The NATS restart test asserts `lost_seqs`, so a
-  failed send is told from a lost post. A failed consumer reconcile aborts that
-  one CONNECT, and the next connection retries it as the login service lets a
-  client retry a refused login: the verdict is kept per agent, and a run is
-  untrustworthy only when an agent's last connection still had no consumers;
-  cured CONNECTs are counted and printed, and a coordinator run copies them
-  into its notes and report. The first start retries once on a fresh port if
-  another process took the probed one, reading the server's INFO so a foreign
-  listener is not taken for it (a restart keeps its port, the clients hold it);
-  the tail masking covers a value after `token:`, `token =` and a JSON key, as
-  well as the bare word; the README says how far a PR-sized cut run
-  reaches and what a SIGKILLed rig leaves behind. The nightly `full-nats` job
-  puts its tables into the run's step summary and uploads the output as the
-  `full-nats-results` artifact, and the nats-server fetch is one composite
-  action instead of four copies.
 
 - **Thread reads for the coordinator's wake are bounded** (#223,
   [the coordinator scenario, RT-6.6 step 5](docs/arc42/06-runtime-view.md#66-coordinator-crown-and-presence-lease),
