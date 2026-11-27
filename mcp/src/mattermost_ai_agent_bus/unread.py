@@ -70,9 +70,11 @@ def _direct(channel: UnreadChannel) -> bool:
     return channel.channel_type in ("D", "G")
 
 
-async def after(client: ChatPort) -> list[After]:
+async def after(client: ChatPort, unread: set[str] | None = None) -> list[After]:
     """Every channel with posts after its watermark. One request for the
-    channels, then one per channel whose newest post is past its mark."""
+    channels, then one per channel whose newest post is past its mark.
+    `unread`, when given, takes the ids of the channels whose read failed:
+    their posts are missing from the result (#238)."""
     uid = (await client.get_me()).id
     floor = max(await client.account_created(), int(time.time() * 1000) - DAY_MS)
     marks = watermark.read(uid)
@@ -99,6 +101,8 @@ async def after(client: ChatPort) -> list[After]:
             got = await client.channel_posts(ch.channel_id, since_ms=since)
         except Exception as exc:  # noqa: BLE001 — read again next time
             log.debug("posts after the watermark in %s: %s", ch.channel_id, exc)
+            if unread is not None:
+                unread.add(ch.channel_id)
             continue
         posts = sorted((p for p in got if _at(p) > sinces.get(watermark.lane(ch.channel_id, p.id), floor)),
                        key=_at)

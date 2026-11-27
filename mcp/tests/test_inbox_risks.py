@@ -575,8 +575,9 @@ async def test_a_hand_over_while_the_socket_is_down_passes_no_post_that_came_mea
 async def test_a_nats_post_seeds_the_marks_lane_at_its_first_receipt(chat, dial, inbox):
     """#224 (the residual of #213), RT-6.36 step 4: a channel whose session had never
     handed a post had no cursor, so a post queued before the first hand-over was lost
-    at a kill. The first NATS post received seeds the lane one sequence before itself,
-    as `hold` keeps a mark back, so the next server asks for that post again."""
+    at a kill. The first NATS post received seeds the lane one sequence before the
+    oldest post not handed over, as `hold` keeps a mark back, so the next server asks
+    for that post again."""
     from mattermost_ai_agent_bus.client import post_of
     await inbox.ensure_connected()  # the bot's id, which the mark is filed under
     await inbox._put(ClassifiedEvent(kind="mention", post=post_of({
@@ -625,6 +626,73 @@ async def test_a_live_post_does_not_seed_past_an_older_one_the_backfill_still_ho
     mark = watermark.read(inbox._bot_user_id)[lane]
     assert (mark.post_id, mark.at) == (f"n1:{WORK}:4", 4_999)
     assert inbox._first_waiting(lane) == 5_000  # the older post still waits, not passed
+
+
+async def test_a_post_queued_while_the_snapshot_is_unread_is_seeded_when_it_is_read(chat, dial, inbox):
+    """#238, RT-6.36 step 4: a NATS post queued before the backfill read its snapshot
+    got no seed from `_put`, and with nothing following it a kill lost it. The
+    backfill (the real path, `unread.after` runs) seeds the lane when the snapshot
+    is through, one sequence before the oldest post not handed over."""
+    from mattermost_ai_agent_bus.client import post_of
+    await inbox.ensure_connected()
+    lane = f"{WORK}:nats"
+    watermark.remove(inbox._bot_user_id)
+    inbox._unqueued = None   # the backfill is under way, its snapshot unread
+    for seq, created in ((9, 9_000), (8, 8_000)):
+        await inbox._put(ClassifiedEvent(kind="mention", post=post_of({
+            "id": f"n1:{WORK}:{seq}", "channel_id": WORK, "create_at": created,
+            "message": "@agent-me hi", "user_id": "u" * 26})))
+    assert lane not in watermark.read(inbox._bot_user_id)
+    await inbox._backfill()
+    mark = watermark.read(inbox._bot_user_id)[lane]
+    assert (mark.post_id, mark.at) == (f"n1:{WORK}:7", 7_999)
+    assert inbox._first_waiting(lane) == 8_000
+
+
+async def _queued_before_a_failed_snapshot(inbox) -> str:
+    """A NATS post queued while the snapshot is unread, the lane without a mark."""
+    from mattermost_ai_agent_bus.client import post_of
+    await inbox.ensure_connected()
+    watermark.remove(inbox._bot_user_id)
+    inbox._unqueued = None
+    inbox._snapshot_ok = False
+    inbox._unread = set()
+    await inbox._put(ClassifiedEvent(kind="mention", post=post_of({
+        "id": f"n1:{WORK}:9", "channel_id": WORK, "create_at": 9_000,
+        "message": "@agent-me hi", "user_id": "u" * 26})))
+    return f"{WORK}:nats"
+
+
+async def test_no_seed_when_the_snapshot_read_raises(chat, dial, inbox, monkeypatch):
+    """#238 (Fable's review), RT-6.36 step 4: `unread.after` raises, so nothing is
+    known of older posts in the port's memory: the seed would pass them. No mark;
+    a live post queued afterwards seeds nothing either."""
+    from mattermost_ai_agent_bus.client import post_of
+    lane = await _queued_before_a_failed_snapshot(inbox)
+
+    async def boom(client, unread=None):
+        raise RuntimeError("get_me failed")
+    monkeypatch.setattr(unread, "after", boom)
+    await inbox._backfill()
+    assert lane not in watermark.read(inbox._bot_user_id)
+    await inbox._put(ClassifiedEvent(kind="mention", post=post_of({
+        "id": f"n1:{WORK}:10", "channel_id": WORK, "create_at": 10_000,
+        "message": "@agent-me hi", "user_id": "u" * 26})))
+    assert lane not in watermark.read(inbox._bot_user_id)
+
+
+async def test_no_seed_when_the_channels_read_is_skipped(chat, dial, inbox, monkeypatch):
+    """#238, RT-6.36 step 4: `unread.after` skips a channel whose read failed and
+    returns without it: that channel's lane is not seeded, the mark stays absent."""
+    lane = await _queued_before_a_failed_snapshot(inbox)
+    chat.add(post("mm"))   # the channel has a post past its mark: it is read
+
+    async def failing(channel_id, *, per_page=None, since_ms=None):
+        raise RuntimeError("read failed")
+    monkeypatch.setattr(chat, "channel_posts", failing)
+    await inbox._backfill()
+    assert inbox._unread == {WORK}
+    assert lane not in watermark.read(inbox._bot_user_id)
 
 
 async def test_a_hand_over_before_the_reconnects_backfill_passes_no_post_that_came_meanwhile(

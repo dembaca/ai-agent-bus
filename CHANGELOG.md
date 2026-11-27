@@ -83,6 +83,15 @@ before 0.5.0 are described in the git history.
 
 ### Fixed
 
+- **A NATS post queued while the backfill's snapshot is unread is seeded too**
+  (#238, RT-6.36 step 4). A lane without a mark got no seed from a post that came
+  before the snapshot was read, so with nothing following it a kill lost that
+  post; the snapshot's end now seeds the lane one sequence before the oldest post
+  not handed over, but only when the snapshot was really read: a failed backfill,
+  or a channel it could not read, seeds nothing (here and at a live post). Two doc and comment slips go with it: step 4 and a test
+  docstring say "before the oldest post not handed over", and the test rig cites
+  the login service's consumer management (RT-6.35).
+
 - **The NATS read mark is seeded at a channel's first post** (#224, the residual
   of #213's fix). A channel without a mark gets one at the first NATS post
   received there, one sequence before the oldest post the session has not handed

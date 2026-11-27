@@ -153,6 +153,10 @@ class WebSocketInbox:
     # then no mark moves, for the snapshot is read from it.
     _unqueued: dict[str, dict[str, int]] | None = field(default_factory=dict, repr=False,
                                                         init=False)
+    # Whether the last backfill read its snapshot, and the channels it could not
+    # read: a NATS lane is seeded only from a snapshot really read (#238).
+    _snapshot_ok: bool = field(default=False, repr=False, init=False)
+    _unread: set[str] = field(default_factory=set, repr=False, init=False)
     # Per channel, the posts handled while the source was down (post id ->
     # create_at): posts may have come meanwhile that nothing saw, so they join
     # _behind only once a backfill has read what came after the mark. Like
@@ -334,6 +338,8 @@ class WebSocketInbox:
         post arriving while the backfill reads is not missed (_seen_ids drops
         the doubles)."""
         self._unqueued = None   # no mark moves until the snapshot is read (_settle)
+        self._snapshot_ok = False
+        self._unread = set()
         await self._before_backfill()
         self._reader = asyncio.create_task(self._read_loop())
         await self._backfill()
@@ -368,7 +374,10 @@ class WebSocketInbox:
         a backfill that cannot read keeps them for the next one (#244).
         """
         try:
-            unhandled = await unread.after(self.client)
+            failed: set[str] = set()
+            unhandled = await unread.after(self.client, failed)
+            self._unread = failed
+            self._snapshot_ok = True
         except Exception as exc:  # noqa: BLE001
             log.warning("could not look for missed messages: %s", exc)
             self._snapshot_through()
@@ -424,12 +433,36 @@ class WebSocketInbox:
         await self._departed(event)
         await self._put(event)
 
+    def _seedable(self, lane: str) -> bool:
+        """The lane's snapshot was really read: a backfill that raised, or that
+        could not read its channel, knows nothing of older posts in the port's
+        memory, so no seed may pass them (#238)."""
+        return self._snapshot_ok and lane.removesuffix(watermark.NATS_LANE) not in self._unread
+
     def _snapshot_through(self) -> None:
         """The backfill's snapshot is queued or passed (or could not be read):
         the posts handled meanwhile move the marks as far as no older post
         waits (_settle); those handled while the source was down join them
         only after a snapshot was read (_down)."""
         self._unqueued = {}
+        # A NATS lane without a mark whose posts were queued while the snapshot
+        # was unread got no seed from _put: seed it now from the oldest post not
+        # handed over, or a kill before anything follows loses it (#238).
+        seeded: set[str] = set()
+        for e in list(self._waiting()):
+            if e.gated or e.edited or e.kind == "reaction" or not e.post.channel_id:
+                continue
+            lane = _lane(e.post)
+            if (lane in seeded or not lane.endswith(watermark.NATS_LANE)
+                    or not self._seedable(lane)):
+                continue
+            seeded.add(lane)
+            try:
+                if lane not in watermark.read(self._bot_user_id):
+                    pid, at = self._oldest_unhanded(lane, e.post)
+                    watermark.hold(self._bot_user_id, lane, at, pid)
+            except Exception as exc:  # noqa: BLE001
+                log.warning("read watermark not held: %s", exc)
         for cid in list(self._behind):
             self._settle(cid)
 
@@ -881,7 +914,7 @@ class WebSocketInbox:
                     # a live post queued before it would put the mark past an older
                     # one the snapshot still brings, and after a kill that one would
                     # never be asked for again (#224, #233 review).
-                    if self._unqueued is not None:
+                    if self._unqueued is not None and self._seedable(lane):
                         pid, at = self._oldest_unhanded(lane, post)
                         watermark.hold(self._bot_user_id, lane, at, pid)
                 else:
