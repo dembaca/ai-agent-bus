@@ -63,8 +63,8 @@ export interface BuildInfo {
 /** An agent's card (ADR-015 point 6): what the agents list and the detail
  * page show of it. */
 export interface AgentCard {
-  /** The agent's name on the bus: the stable key (on NATS `agent-` and a
-   * 26-character hash, the subject's last token). */
+  /** The agent's name on the bus: the stable key (on NATS a 25-character
+   * hash without a prefix, the subject's last token, #274). */
   name: string
   /** What the card shows: the bot's username the agent states (the name
    * coordinator("who") shows), else the short bus name. */

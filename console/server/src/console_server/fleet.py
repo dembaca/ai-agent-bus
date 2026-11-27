@@ -29,7 +29,7 @@ from typing import Any, Callable
 
 from mattermost_ai_agent_bus import natsbus
 from mattermost_ai_agent_bus.natsbus import (
-    AGENT_RE, CHANNEL_RE, Attestation, decode_attestation,
+    CHANNEL_RE, Attestation, agent_ok, decode_attestation,
     AskRecord, PresenceCard, card_text, decode_ask_record, decode_claim, decode_presence,
     decode_presence_bot, decode_presence_card, decode_presence_name,
     owner_of_token, owner_token,
@@ -139,7 +139,7 @@ class Fleet:
         t = subject.split(".")
         p = self.presence_subject
         try:
-            if len(t) == 3 and t[0] == p and AGENT_RE.fullmatch(t[2]):
+            if len(t) == 3 and t[0] == p and agent_ok(t[2]):
                 agent, status = t[2], decode_presence(data)
                 seq, at = self._presence_seq.get(agent, (0, 0.0))
                 if (ack.time, ack.stream_seq) <= (at, seq):
@@ -165,7 +165,7 @@ class Fleet:
                     self._owners.pop(agent, None)
                 return True
             if (len(t) == 4 and t[0] == p and t[1] == "crown"
-                    and CHANNEL_RE.fullmatch(t[2]) and AGENT_RE.fullmatch(t[3])):
+                    and CHANNEL_RE.fullmatch(t[2]) and agent_ok(t[3])):
                 decode_claim(data)
                 claims = self._claims.setdefault(t[2], {})
                 if (ack.time, ack.stream_seq) > (self._claim_at.get((t[2], t[3]), 0.0),
@@ -175,7 +175,7 @@ class Fleet:
                     return True
                 return False
             if (len(t) == 4 and t[0] == p and t[1] == "member"
-                    and CHANNEL_RE.fullmatch(t[2]) and AGENT_RE.fullmatch(t[3])):
+                    and CHANNEL_RE.fullmatch(t[2]) and agent_ok(t[3])):
                 decode_claim(data)
                 members = self._members.setdefault(t[2], {})
                 seq0, at0 = members.get(t[3], (0, 0.0))
@@ -184,7 +184,7 @@ class Fleet:
                     return True
                 return False
             if (len(t) == 4 and t[0] == p and t[1] == "ask"
-                    and CHANNEL_RE.fullmatch(t[2]) and AGENT_RE.fullmatch(t[3])):
+                    and CHANNEL_RE.fullmatch(t[2]) and agent_ok(t[3])):
                 try:
                     record = decode_ask_record(data)
                 except Exception:
@@ -199,7 +199,7 @@ class Fleet:
                     return True
                 return False
             if (len(t) == 4 and t[0] == p and t[1] == "attest"
-                    and t[3] == "v1" and AGENT_RE.fullmatch(t[2])):
+                    and t[3] == "v1" and agent_ok(t[2])):
                 att = decode_attestation(data, t[2])
                 seq0, at0, _old = self._attests.get(t[2], (0, 0.0, att))
                 if (ack.time, ack.stream_seq) > (at0, seq0):

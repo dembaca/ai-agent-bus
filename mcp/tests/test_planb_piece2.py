@@ -31,8 +31,8 @@ BOT_A = "a" * 26
 BOT_B = "b" * 26
 ALICE = "u" * 26  # alice's Mattermost account
 STRAY = "s" * 26  # an id in no record
-AGENT_A = "agent-a"
-AGENT_B = "agent-b"
+AGENT_A = "m" * 25  # a NATS name: 25 characters, since #274
+AGENT_B = "n" * 25
 
 
 def _bot_body(agent: str = AGENT_A, **over: Any) -> bytes:
@@ -65,13 +65,13 @@ def test_the_switch_names_piece_2(monkeypatch: pytest.MonkeyPatch) -> None:
 def test_the_bot_record_decodes_strictly() -> None:
     rec = decode_bot_record(_bot_body(), AGENT_A)
     assert (rec.agent, rec.bot, rec.username, rec.owner_account, rec.exp) == (
-        AGENT_A, BOT_A, "bb-agent-a", ALICE, T0 + 180)
+        AGENT_A, BOT_A, "bb-" + AGENT_A, ALICE, T0 + 180)
     gone = decode_bot_record(_bot_body(bot=None, username=None, owner_account=None), AGENT_A)
     assert gone.bot is None and gone.username is None and gone.owner_account is None
     with pytest.raises(MessageError):
         decode_bot_record(_bot_body(), AGENT_B)  # another agent's
     for over in ({"v": 2}, {"bot": "short"}, {"bot": "A" * 26}, {"bot": None}, {"owner_account": None},
-                 {"owner_account": "x"}, {"username": "agent-a"}, {"username": "bb-agent-b"},
+                 {"owner_account": "x"}, {"username": AGENT_A}, {"username": "bb-" + AGENT_B},
                  {"username": "BB-agent-a"}, {"username": None}, {"iat": "x"}, {"exp": 1.5}, {"exp": True},
                  {"extra": 1}):
         with pytest.raises(MessageError):
@@ -79,7 +79,7 @@ def test_the_bot_record_decodes_strictly() -> None:
     missing = json.loads(_bot_body())
     del missing["owner_account"]
     for bad in (json.dumps(missing).encode(), b"", b"{}", b"[]",
-                b'{"v":1,"v":1,"agent":"agent-a","bot":null,"username":null,"owner_account":null,"iat":1,"exp":2}'):
+                b'{"v":1,"v":1,"agent":"mmmmmmmmmmmmmmmmmmmmmmmmm","bot":null,"username":null,"owner_account":null,"iat":1,"exp":2}'):
         with pytest.raises(MessageError):
             decode_bot_record(bad, AGENT_A)
     with pytest.raises(MessageError):  # a null with a name left over is no null
@@ -100,7 +100,7 @@ async def test_the_newest_record_by_server_time_and_sequence_counts_while_fresh(
     assert bus.bot_record(AGENT_A).bot == BOT_B  # type: ignore[union-attr]
     await _record(bus, AGENT_A, 2, T0)  # an older one never overrides a newer one
     assert bus.bot_record(AGENT_A).bot == BOT_B  # type: ignore[union-attr]
-    await _record(bus, AGENT_A, 4, T0 + 6, b'{"v":1,"agent":"agent-a"}')  # malformed: dropped, erases nothing
+    await _record(bus, AGENT_A, 4, T0 + 6, b'{"v":1,"agent":"mmmmmmmmmmmmmmmmmmmmmmmmm"}')  # malformed: dropped, erases nothing
     assert bus.bot_record(AGENT_A).bot == BOT_B  # type: ignore[union-attr]
     # never longer than 3 minutes from the write, whatever its exp says
     await _record(bus, AGENT_A, 5, T0 + 10, _bot_body(exp=int(T0) + 99999))
@@ -191,14 +191,14 @@ async def test_the_roster_comes_from_nats_and_reads_nothing_in_mattermost(monkey
     by_id = {r["id"]: r for r in rows}
     assert sorted(by_id) == [AGENT_A, AGENT_B]
     # the bridge's bot record names the bot's username; without one, the NATS name itself
-    assert by_id[AGENT_A]["username"] == "bb-agent-a" and by_id[AGENT_B]["username"] == AGENT_B
+    assert by_id[AGENT_A]["username"] == "bb-" + AGENT_A and by_id[AGENT_B]["username"] == AGENT_B
     assert all(r["reachable"] and r["live"] and r["home"] == "home" for r in rows)
     assert [r["id"] for r in rows if r["crown"]] == [AGENT_A]  # the oldest claim
     roster = await lease.roster_in(inner, WORK, "home")  # type: ignore[arg-type]
     a = next(e for e in roster if e.user_id == AGENT_A)
     # the numbers, the version and the state word of the presence
     assert a.usage == {"ctx": 62.0, "limit_5h": {"used": 40.0}} and a.release == {"version": "0.104.0", "source": "unchecked"}
-    assert a.status == "working" and a.username == "bb-agent-a"
+    assert a.status == "working" and a.username == "bb-" + AGENT_A
     b = next(e for e in roster if e.user_id == AGENT_B)
     assert b.usage == {} and b.status == ""  # an older server states no state word: as before
     assert inner.reads == []
@@ -210,7 +210,7 @@ async def test_a_member_without_a_claim_in_the_home_is_a_guest_not_a_home_agent(
     rows = {r["id"]: r for r in await lease._rows(inner, WORK, "home")}  # type: ignore[arg-type]
     assert rows[AGENT_A]["home"] == "home" and rows[AGENT_A]["guest"] is False
     assert rows[AGENT_B]["home"] == "" and rows[AGENT_B]["guest"] is True and not rows[AGENT_B]["crown"]
-    assert [e.username for e in await lease.roster_in(inner, WORK, "home")] == ["bb-agent-a"]  # type: ignore[arg-type]
+    assert [e.username for e in await lease.roster_in(inner, WORK, "home")] == ["bb-" + AGENT_A]  # type: ignore[arg-type]
     assert inner.reads == []
 
 
@@ -223,7 +223,7 @@ async def test_an_away_agent_is_not_reachable_an_offline_or_non_member_is_no_row
     assert sorted(rows) == [AGENT_A, AGENT_B] and rows[AGENT_B]["reachable"] is False
     await _presence(bus, AGENT_B, 92, T0 + 2, status="bye", owner="alice")
     assert sorted(r["id"] for r in await lease._rows(inner, WORK, "home")) == [AGENT_A]  # type: ignore[arg-type]
-    await _presence(bus, "agent-z", 93, T0 + 100)  # time passes: agent-a's presence is older than 90 s
+    await _presence(bus, "z" * 25, 93, T0 + 100)  # time passes: agent-a's presence is older than 90 s
     assert await lease._rows(inner, WORK, "home") == []  # type: ignore[arg-type]
     assert inner.reads == []
 
@@ -251,7 +251,7 @@ async def test_a_bot_is_linked_only_through_the_bridges_record_and_its_owner_acc
     assert port.owned_link(AGENT_B, "home") is None  # no record
     # a forged presence `bot` field and a forged tag give no link: the presence's own words count nothing
     await bus._on_presence_msg(FakeMsg(f"presence.alice.{AGENT_B}", _presence_reply(bus, 60, 60, T0 + 1),
-                                       encode_presence("online", BOT_B, "bb-agent-b")))
+                                       encode_presence("online", BOT_B, "bb-" + AGENT_B)))
     assert bus.bot_of(AGENT_B) == BOT_B
     assert port.owned_link(AGENT_B, "home") is None and list(port._bots2()) == [BOT_A]
     rows = [{"id": BOT_B, "text": f"working · ⇄{natsbus.link_tag(AGENT_B)} · ~home"}]
@@ -262,7 +262,7 @@ async def test_a_bot_is_linked_only_through_the_bridges_record_and_its_owner_acc
     assert port.owned_link(AGENT_A, "home") is None and port._bots2() == {}
     # the right account, but the username lacks the bridge's prefix: no link
     await bus._on_presence_msg(FakeMsg(f"presence.bot.{AGENT_A}.v1", _presence_reply(bus, 62, 62, T0 + 3),
-                                       _bot_body(username="zz-agent-a", iat=int(T0) + 3, exp=int(T0) + 183)))
+                                       _bot_body(username="zz-" + AGENT_A, iat=int(T0) + 3, exp=int(T0) + 183)))
     assert port.owned_link(AGENT_A, "home") is None
     # back to a good record, then the account record moves the anchor to another account: no link
     await bus._on_presence_msg(FakeMsg(f"presence.bot.{AGENT_A}.v1", _presence_reply(bus, 63, 63, T0 + 4),
@@ -295,11 +295,11 @@ async def test_with_piece_4_on_too_a_bot_is_linked_by_the_bridges_record_alone(
 
 async def test_shown_as_and_names_and_kinds_of_accounts_come_from_the_records(monkeypatch: pytest.MonkeyPatch) -> None:
     port, bus, inner = await _world(monkeypatch)
-    assert await lease.shown_as(inner, {AGENT_A, AGENT_B}) == {AGENT_A: "bb-agent-a"}  # type: ignore[arg-type]
+    assert await lease.shown_as(inner, {AGENT_A, AGENT_B}) == {AGENT_A: "bb-" + AGENT_A}  # type: ignore[arg-type]
     names = await port.usernames({BOT_A, ALICE, AGENT_A})
     # the bot by its record, the person by the account record's name
-    assert names == {BOT_A: "bb-agent-a", ALICE: "alice", AGENT_A: AGENT_A}
-    assert await port.username(BOT_A) == "bb-agent-a" and await port.username(ALICE) == "alice"
+    assert names == {BOT_A: "bb-" + AGENT_A, ALICE: "alice", AGENT_A: AGENT_A}
+    assert await port.username(BOT_A) == "bb-" + AGENT_A and await port.username(ALICE) == "alice"
     assert await port.agents({BOT_A, ALICE, AGENT_A}) == {BOT_A, AGENT_A}  # not a person
     assert await port.bot_accounts({BOT_A, ALICE, AGENT_A}) == {BOT_A, AGENT_A}
     assert await port.agent_owner(ALICE) == ""  # a person's account: no agent's owner
@@ -324,7 +324,7 @@ async def test_an_id_the_records_do_not_know_is_what_mattermost_says_never_a_per
     inner.names[STRAY], inner._agents = "registrar-bot", {STRAY, BOT_A}
     inner.descriptions[STRAY] = "for @alice"
     assert await port.agents({STRAY, BOT_A}) == {STRAY, BOT_A}
-    assert await port.usernames({STRAY, BOT_A}) == {STRAY: "registrar-bot", BOT_A: "bb-agent-a"}
+    assert await port.usernames({STRAY, BOT_A}) == {STRAY: "registrar-bot", BOT_A: "bb-" + AGENT_A}
     assert await port.username(STRAY) == "registrar-bot"
     assert await port.bot_accounts({STRAY}) == {STRAY}
     assert await port.agent_owner(STRAY) == "alice"  # its Mattermost owner, as with the switch off
@@ -332,16 +332,16 @@ async def test_an_id_the_records_do_not_know_is_what_mattermost_says_never_a_per
     assert gate.author_class(post, {}, await port.agents({STRAY})) == gate.AGENT
     assert {"usernames", "username", "agents", "bot_accounts", "agent_owner"} <= set(inner.reads)
     # the bridge's record of agent-a lapses (past its 180 s): its bot is again what Mattermost says
-    await _presence(bus, "agent-z", 95, T0 + 181, owner="alice")
-    inner.names[BOT_A] = "bb-agent-a-mm"
+    await _presence(bus, "z" * 25, 95, T0 + 181, owner="alice")
+    inner.names[BOT_A] = "bb-" + AGENT_A + "-mm"
     assert await port.agents({BOT_A}) == {BOT_A}
-    assert await port.usernames({BOT_A}) == {BOT_A: "bb-agent-a-mm"}
+    assert await port.usernames({BOT_A}) == {BOT_A: "bb-" + AGENT_A + "-mm"}
     assert gate.author_class(dataclasses_replace(post, user_id=BOT_A), {}, await port.agents({BOT_A})) == gate.AGENT
 
 
 async def test_a_stale_account_record_names_no_person(monkeypatch: pytest.MonkeyPatch) -> None:
     port, bus, inner = await _world(monkeypatch)
-    await _presence(bus, "agent-z", 80, T0 + 901, owner="alice")  # past the record's 15 minutes
+    await _presence(bus, "z" * 25, 80, T0 + 901, owner="alice")  # past the record's 15 minutes
     inner.names[ALICE] = "alice-mm"
     assert await port.usernames({ALICE}) == {ALICE: "alice-mm"}  # Mattermost's name, as with the switch off
     assert await port.agents({ALICE}) == set()

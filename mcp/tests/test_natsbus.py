@@ -69,21 +69,22 @@ from mattermost_ai_agent_bus.natsbus import (
 
 # The same vector as services/auth/internal/callout/name_test.go.
 VECTOR_NKEY = "UDXU4RCSJNZOIQHZNWXHXORDPRTGNJAHAHFRGZNEEJCPQTT2M7NLCNF4"
-VECTOR_NAME = "7jdioaymoy77vybfzcvze3fc4u"
+VECTOR_NAME = "7jdioaymoy77vybfzcvze3fc4"  # 25 characters, no prefix (#274)
 
 
 # --- unit: the name -------------------------------------------------------------------------
 
 def test_agent_name_vector() -> None:
     assert agent_name("alice", VECTOR_NKEY, prefix="") == VECTOR_NAME
-    assert agent_name("alice", VECTOR_NKEY) == "agent-" + VECTOR_NAME
+    assert agent_name("alice", VECTOR_NKEY) == VECTOR_NAME  # no prefix by default (#274)
+    assert agent_name("alice", VECTOR_NKEY, prefix="agent-") == "agent-" + VECTOR_NAME
     assert agent_name("alice", VECTOR_NKEY, prefix="x-") == "x-" + VECTOR_NAME
-    assert len(VECTOR_NAME) == 26
+    assert len(VECTOR_NAME) == natsbus.NAME_HASH_LEN == 25  # never a Mattermost id's 26
     assert agent_name("Alice", VECTOR_NKEY) != VECTOR_NAME  # the owner is not normalised, as in Go
     # A session part (#163, RT-6.36): two sessions of one owner on one shared key are two
     # names; the login service's vector is the same.
     assert agent_name("alice", VECTOR_NKEY, prefix="", session="abcdefghijklmnopqrstuvwxyz") \
-        == "eadecaajdhhzsahypvqfemgypy"
+        == "eadecaajdhhzsahypvqfemgyp"
 
 
 class _RecordingWaits:
@@ -302,10 +303,11 @@ def test_a_bus_states_only_a_valid_username() -> None:
 
 
 def test_link_tag_is_the_start_of_the_hash_part() -> None:
-    name = "agent-" + "abcdefghijklmnopqrstuvwxyz"[:26]
+    name = "abcdefghijklmnopqrstuvwxy"  # 25 characters, no prefix (#274)
     assert link_tag(name) == "abcdefghijklmnop" and link_tag(VECTOR_NAME) == VECTOR_NAME[:16]
+    assert link_tag("agent-" + name) == "abcdefghijklmnop"  # a configured prefix
     assert link_tag("agent-short") == "" and link_tag("") == ""
-    assert link_tag("a" * 25) == "" and link_tag("a" * 26) == "a" * 16
+    assert link_tag("a" * 24) == "" and link_tag("a" * 25) == "a" * 16
 
 
 def test_a_bus_links_only_a_valid_bot() -> None:
@@ -2477,18 +2479,18 @@ async def test_one_server_tells_a_notice() -> None:
     with the smallest name, this one included - the same answer on every server."""
     bus = NatsBus(_settings(), FakeLogin(), "alice", lambda _e: None)
     await _presence(bus, bus.name, 1, T0, owner="alice")
-    await _presence(bus, "agent-0aaa", 2, T0, owner="alice")
-    await _presence(bus, "agent-zzz", 3, T0, owner="alice")
-    assert bus.notice_teller("agent-zzz") == "agent-zzz"  # live: its own server
-    assert bus.notice_teller("agent-missing") == "agent-0aaa"  # not live: the smallest live name
+    await _presence(bus, "0aaa", 2, T0, owner="alice")
+    await _presence(bus, "zzz", 3, T0, owner="alice")
+    assert bus.notice_teller("zzz") == "zzz"  # live: its own server
+    assert bus.notice_teller("missing") == "0aaa"  # not live: the smallest live name
     await _presence(bus, bus.name, 4, T0 + 100, owner="alice")  # only this one stays live
-    await _presence(bus, "agent-0aaa", 5, T0 + 100, status="bye", owner="alice")
-    await _presence(bus, "agent-zzz", 6, T0 + 100, status="bye", owner="alice")
-    assert bus.notice_teller("agent-0aaa") == bus.name
+    await _presence(bus, "0aaa", 5, T0 + 100, status="bye", owner="alice")
+    await _presence(bus, "zzz", 6, T0 + 100, status="bye", owner="alice")
+    assert bus.notice_teller("0aaa") == bus.name
     assert bus.notice_teller("") == bus.name
     # Another owner's agent, even with the smallest name, is no teller.
-    await _presence(bus, "agent-000", 7, T0 + 101, owner="bob")
-    assert bus.notice_teller("agent-missing") == bus.name
+    await _presence(bus, "000", 7, T0 + 101, owner="bob")
+    assert bus.notice_teller("missing") == bus.name
 
 
 def test_a_told_notice_survives_a_restart(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:

@@ -515,7 +515,7 @@ class NatsStub:
 
 async def test_a_nats_name_here_counts_as_present_and_one_elsewhere_is_not_here():
     """RT-6.37: where a NATS name is comes from the claims, not from a Mattermost bot."""
-    a, b, c, d = "agent-" + "a" * 26, "agent-" + "b" * 26, "agent-" + "c" * 26, "agent-" + "d" * 26
+    a, b, c, d = "a" * 25, "b" * 25, "c" * 25, "d" * 25
     client = NatsStub({a: "here", b: "elsewhere", c: "gone", d: None})
     assert await departed._present(client, WORK, [a, b, c, d]) == [a]
     assert await departed.elsewhere(client, WORK, [a, b, c, d]) == [departed.Elsewhere(b, "")]
@@ -523,7 +523,7 @@ async def test_a_nats_name_here_counts_as_present_and_one_elsewhere_is_not_here(
 
 
 async def test_a_client_without_whereabouts_leaves_a_nats_name_alone():
-    name = "agent-" + "a" * 26
+    name = "a" * 25
 
     class Plain(NatsStub):
         whereabouts = None

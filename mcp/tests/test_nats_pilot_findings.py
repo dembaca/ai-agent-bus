@@ -88,9 +88,9 @@ def test_the_channel_tag_carries_shown_as_beside_the_author():
     """#66: the tag a pushed event arrives in shows a NATS sender's bot too; display only."""
     from mattermost_ai_agent_bus import channel
 
-    post = {"id": "n1:home:7", "channel": "home", "author": "agent-" + "a" * 26,
+    post = {"id": "n1:home:7", "channel": "home", "author": "a" * 25,
             "shown_as": "agent-a", "message": "hi"}
     meta = channel.notification({"kind": "mention", "post": post})["meta"]
-    assert meta["author"] == "agent-" + "a" * 26 and meta["shown_as"] == "agent-a"
+    assert meta["author"] == "a" * 25 and meta["shown_as"] == "agent-a"
     del post["shown_as"]
     assert "shown_as" not in channel.notification({"kind": "mention", "post": post})["meta"]

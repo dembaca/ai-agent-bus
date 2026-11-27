@@ -39,8 +39,11 @@ func TestFreshAndTheLinkTag(t *testing.T) {
 			t.Fatalf("%s counts as fresh", st)
 		}
 	}
-	name := "agent-abcdefghijklmnopqrstuvwxyz"
-	if got := LinkTag(name); got != name[len(name)-26:][:16] {
+	name := "abcdefghijklmnopqrstuvwxy" // 25 characters, no prefix (#274)
+	if got := LinkTag(name); got != "abcdefghijklmnop" {
+		t.Fatalf("%q", got)
+	}
+	if got := LinkTag("agent-" + name); got != "abcdefghijklmnop" { // a configured prefix
 		t.Fatalf("%q", got)
 	}
 	if LinkTag("short") != "" {
