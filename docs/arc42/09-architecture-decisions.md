@@ -4098,8 +4098,7 @@ Nothing of it is built.
 - **Every piece alike.**
   - One switch per piece, off by default; its name below is
     descriptive. Decided by the owner on 2026-11-27 (ask `i1wy6gb8ijfpuceuq3ptbz6s8y`): a flag per piece and channel in the same
-    directory, beside the decided transport flag; not covered by the
-    owner's decision. So a piece with two ends (DMs between agents, asks,
+    directory, beside the decided transport flag. So a piece with two ends (DMs between agents, asks,
     replies, status, permission prompts) is switched in one place, never
     per host. A session gets the flags of its own channels with its
     credential; the bridge, which holds no agent credential, reads them
