@@ -321,6 +321,84 @@ def keyed_path(prefix: str) -> Path:
     return state_dir() / f"{prefix}-{key}.env"
 
 
+# --- the kept state's key (RT-6.2, ADR-014 phase 5 piece 2b) ---------------------
+
+_BOT_ID_RE = re.compile(r"[a-z0-9]{26}")
+# The session's NATS name and the home it is the name in, once the bus has it (use_nats_name).
+_nats_name: tuple[str, str] | None = None
+# The kinds of kept state the MCP server alone reads: copied to the new key once. Files the
+# bash scripts read (listen, update, presence, coord) stay keyed by the bot id until piece 14.
+STATE_KINDS = ("last", "threads", "unanswered")
+
+
+def use_nats_name(name: str, home: str) -> None:
+    """The bus knows the session's NATS name `name` (as the agent of `home`): from now on,
+    with plan B piece 2 on for `home`, the kept state is keyed by it (state_key)."""
+    global _nats_name
+    _nats_name = (name, home) if name and key_ok(name) else None
+
+
+def key_ok(key: str) -> bool:
+    """Whether `key` may name a state file: a Mattermost bot id (26 characters) or a NATS
+    name (natsbus.AGENT_RE), nothing else (no path part, no dot)."""
+    from .natsbus import AGENT_RE
+
+    return bool(_BOT_ID_RE.fullmatch(key) or AGENT_RE.fullmatch(key))
+
+
+def state_key(uid: str, nats_name: str | None = None, home: str | None = None) -> str:
+    """The key of the session's kept state (RT-6.2): the NATS name when plan B piece 2 is on
+    for its home and the name is known, else `uid`, the bot's Mattermost id. An empty `uid`
+    stays empty (no bot, no state). `nats_name` and `home` are the session's own, from
+    use_nats_name, unless named (tests)."""
+    from . import planb
+
+    if not uid:
+        return uid
+    known = _nats_name if nats_name is None else (nats_name, _nats_name[1] if home is None and _nats_name else home or "")
+    if known is not None and key_ok(known[0]) and planb.on(2, known[1]):
+        return known[0]
+    return uid
+
+
+def copy_state_once(uid: str, name: str, kinds: tuple[str, ...] = STATE_KINDS) -> list[str]:
+    """Copy the kept state keyed by the bot id `uid` to the files keyed by the NATS name
+    `name`, once (RT-6.2): per kind only when `<kind>-<name>.env` is missing and
+    `<kind>-<uid>.env` exists. The source stays where it is, so the old plugin still finds
+    its copy. The marker `copied-<name>.env` holds the source id: a copy is never repeated
+    for that id, so a file the session deleted since stays deleted. Returns the kinds copied."""
+    if not (_BOT_ID_RE.fullmatch(uid) and key_ok(name)) or uid == name:
+        return []
+    d = state_dir()
+    marker = d / f"copied-{name}.env"
+    if marker.exists() and uid in _marker_ids(marker):
+        return []
+    done: list[str] = []
+    for kind in kinds:
+        src, dst = d / f"{kind}-{uid}.env", d / f"{kind}-{name}.env"
+        try:
+            if dst.exists() or dst.is_symlink() or src.is_symlink() or not src.is_file():
+                continue
+            write_private(dst, src.read_text())
+            done.append(kind)
+        except OSError:
+            continue
+    ids = _marker_ids(marker) if marker.exists() else []
+    try:
+        write_private(marker, "".join(f"CB_COPIED_FROM={i}\n" for i in [*ids, uid]))
+    except OSError:
+        pass
+    return done
+
+
+def _marker_ids(marker: Path) -> list[str]:
+    try:
+        lines = marker.read_text().splitlines()
+    except OSError:
+        return []
+    return [line.partition("=")[2] for line in lines if line.startswith("CB_COPIED_FROM=")]
+
+
 NONCE_RE = re.compile(r"^[a-z2-7]{26}$")
 
 
