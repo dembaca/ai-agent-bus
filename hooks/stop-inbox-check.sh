@@ -288,13 +288,18 @@ my_last_post && have_post=1
 # grant can start after the session-start hook ran. One line per login: the shown mark
 # goes out only after it was printed.
 if mm_bus GET /v1/login && [[ "$CB_BUS_STATUS" == 200 ]]; then
-  _link="$(jq -r '.link // empty | strings' <<<"$CB_BUS_BODY" 2>/dev/null)"
-  _code="$(jq -r '.user_code // empty | strings' <<<"$CB_BUS_BODY" 2>/dev/null)"
-  if [[ -n "$_link" ]]; then
-    if [[ -n "$_code" ]]; then
-      LOGIN_LINE="Bus login: open ${_link} — the page shows the code ${_code}. Approve only if it matches."
-    else
-      LOGIN_LINE="Bus login: open ${_link}. Approve only if it is your agent's login."
+  # The server's own wording when it gives one (#198); an older server's answer
+  # carries only the link and the code.
+  LOGIN_LINE="$(jq -r '.line // empty | strings' <<<"$CB_BUS_BODY" 2>/dev/null)"
+  if [[ -z "$LOGIN_LINE" ]]; then
+    _link="$(jq -r '.link // empty | strings' <<<"$CB_BUS_BODY" 2>/dev/null)"
+    _code="$(jq -r '.user_code // empty | strings' <<<"$CB_BUS_BODY" 2>/dev/null)"
+    if [[ -n "$_link" ]]; then
+      if [[ -n "$_code" ]]; then
+        LOGIN_LINE="Bus login: open ${_link} — the page shows the code ${_code}. Approve only if it matches."
+      else
+        LOGIN_LINE="Bus login: open ${_link}. Approve only if it is your agent's login."
+      fi
     fi
   fi
 fi

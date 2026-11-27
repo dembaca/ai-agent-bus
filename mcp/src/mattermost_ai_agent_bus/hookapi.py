@@ -1150,8 +1150,42 @@ def _flag(query: Mapping[str, str], name: str) -> bool:
     return value == "1"
 
 
+def login_line() -> str:
+    """The waiting login approval as one line for a harness's terminal (#198), "" when
+    none waits; `Login.pending_line` checked the link and the code and gives the time
+    left, so the line never outlives the approval."""
+    from . import login as login_mod
+
+    running = login_mod.current()
+    line = running.pending_line() if running is not None else None
+    if line is None:
+        return ""
+    link, code, expires_in = line
+    return _line_text(link, code, expires_in)
+
+
+def _line_text(link: str, code: str, expires_in: int) -> str:
+    """The one wording of the terminal line (#198), for the turn end and for the
+    start hooks that ask `/v1/login`."""
+    minutes = max(1, (expires_in + 59) // 60)
+    return (f"Bus login: open {link} — the page shows the code {code}. "
+            f"Approve only if it matches; the code is good for {minutes} min.")
+
+
 async def turn_end(client: ChatPort, query: Mapping[str, str],
                    body: Mapping[str, Any]) -> Reply:
+    """`_turn_end`, plus the waiting login line (#198) in the answer: a grant that
+    began after the session start reaches the terminal at this turn's end."""
+    status, answer = await _turn_end(client, query, body)
+    if status == 200:
+        line = login_line()
+        if line:
+            answer = {**answer, "login": line}
+    return status, answer
+
+
+async def _turn_end(client: ChatPort, query: Mapping[str, str],
+                    body: Mapping[str, Any]) -> Reply:
     """The Stop hook's checks for a turn plugin (RT-6.20; RT-6.2 steps 1–2):
     drain while messages wait (at most turnend.MAX_DRAIN rounds a turn, the
     caller counts them), then a sign-off once a turn, else idle. The caller
@@ -1297,7 +1331,8 @@ async def login_link(client: ChatPort, query: Mapping[str, str], body: Mapping[s
     if line is None:
         return 200, {}
     link, code, expires_in = line
-    return 200, {"link": link, "user_code": code, "expires_in": expires_in}
+    return 200, {"link": link, "user_code": code, "expires_in": expires_in,
+                 "line": _line_text(link, code, expires_in)}
 
 
 async def login_shown(client: ChatPort, query: Mapping[str, str], body: Mapping[str, Any]) -> Reply:

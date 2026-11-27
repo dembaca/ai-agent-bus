@@ -935,12 +935,13 @@ test("RT-6.34: a grant that starts after the session start reaches the TUI at th
   const f = await started()
   await f.emit("input", { text: "go on", source: "interactive" })
   await f.emit("agent_start")
-  answers["/v1/turn-end"] = { action: "idle" }
-  answers["/v1/login"] = { link: "https://kc.example/device?user_code=ABCD-EFGH", user_code: "ABCD-EFGH",
-                           expires_in: 600 }
+  // The turn-end answer carries the line (#198): no second endpoint, one call.
+  answers["/v1/turn-end"] = { action: "idle", login: "Bus login: open https://kc.example/device?user_code=ABCD-EFGH" +
+    " — the page shows the code ABCD-EFGH. Approve only if it matches; the code is good for 10 min." }
   f.box.idle = true
   await f.emit("agent_settled", { aborted: false })
   await until(() => f.box.notes.some((n) => n.includes("ABCD-EFGH")), "the turn end's login line")
   await until(() => calls.some((c) => c.method === "POST" && c.path === "/v1/login/shown"), "the shown mark")
-  answers["/v1/login"] = undefined
+  assert.equal(rest().filter((p) => p === "GET /v1/login").length, 0, "no separate login read")
+  answers["/v1/turn-end"] = undefined
 })

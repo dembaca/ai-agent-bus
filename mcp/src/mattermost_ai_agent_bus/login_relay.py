@@ -115,6 +115,7 @@ class RelayedLogin:
         # The approval the sandbox waits on, for its terminal (#198): set at the
         # sandbox's `waiting` event, cleared when it settles, one line per login.
         self._pending: DeviceGrant | None = None
+        self._pending_until = 0.0
         self._shown = False
         self._approval_open = False
         self._approval_id = 0
@@ -141,12 +142,15 @@ class RelayedLogin:
         self._shown = True
 
     def pending_line(self) -> tuple[str, str, int] | None:
-        """The waiting approval as (link, code, expires_in) for a terminal (#198),
-        or None when nothing waits or it was shown."""
+        """The waiting approval as (link, code, seconds left) for a terminal (#198),
+        or None when nothing waits, it was shown, or its time is over."""
         grant = self.pending()
         if grant is None:
             return None
-        return grant.verification_uri_complete or grant.verification_uri, grant.user_code, grant.expires_in
+        left = int(self._pending_until - self._now())
+        if left <= 0:
+            return None
+        return grant.verification_uri_complete or grant.verification_uri, grant.user_code, left
 
     async def run(self) -> None:
         """Settle an ask an earlier session left open; the login itself runs in the
@@ -260,7 +264,7 @@ class RelayedLogin:
                 # The relay is gone mid-approval: its ask is settled, its code dropped,
                 # and no link of it stays for the terminal (#198).
                 self._deferred = None
-                self._pending, self._shown = None, False
+                self._pending, self._shown, self._pending_until = None, False, 0.0
                 if self._approval_open:
                     self._close_approval("failed")
             self.release(claim)
@@ -289,13 +293,14 @@ class RelayedLogin:
                 # kept even when the host has no notifier (no chat), and the link was
                 # built here from the issuer with the code checked above.
                 self._pending, self._shown = grant, False
+                self._pending_until = self._now() + grant.expires_in
                 if self._notifier is not None:
                     self._offer_approval(grant)
             return
         if event == "settled" and msg.get("outcome") in OUTCOMES:
             # The approval ended: no finished login's link stays for the terminal (#198),
             # whether or not a notifier is there to settle it.
-            self._pending, self._shown = None, False
+            self._pending, self._shown, self._pending_until = None, False, 0.0
         if self._notifier is None:
             return
         if event == "settled" and msg.get("outcome") in OUTCOMES:
@@ -375,7 +380,7 @@ class RelayedLogin:
     def _close_approval(self, outcome: str) -> None:
         self._approval_open = False
         # The approval ended: no finished login's link stays for the terminal (#198).
-        self._pending, self._shown = None, False
+        self._pending, self._shown, self._pending_until = None, False, 0.0
         self._spawn(self._notifier.settled(outcome), "the ask was not settled")
 
     def _spawn(self, coro: Awaitable[None], what: str) -> None:
