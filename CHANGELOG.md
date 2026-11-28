@@ -24,8 +24,9 @@ before 0.5.0 are described in the git history.
   record name no version and give no notice. Unset (the default), the notice reads
   `release.env` exactly as before. No self-update is promised: a human installs the
   version through the harness's marketplace, never the agent. `attest.verify_release`
-  is stricter for everyone, the host's self-update included: a version's numbers are at
-  most six digits, and a malformed `needs`, `withdrawn` or `breaking` refuses the record.
+  is stricter for everyone, the host's self-update included: each number of a version is
+  at most six digits, a malformed `needs`, `withdrawn` or `breaking` refuses the record,
+  and the read of the record stops after five seconds of body in total.
 - **STATS: own posts by hour** (#290, RT-6.9 step 2, RT-6.45). Each part now carries
   `post_hours`, the agent's own posts by UTC hour and bus word (counts only, only the
   hours with posts), so the console's "24 h" can show hourly bars; `stats.hours_of`

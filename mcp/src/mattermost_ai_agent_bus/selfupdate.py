@@ -93,10 +93,11 @@ def fetch(url: str, timeout: float | None = None, transport: httpx.BaseTransport
           environ: Mapping[str, str] | None = None) -> str | None:
     """The record's JWS; None for the registrar's own `no release set`. No
     Authorization header, no redirect, at most RECORD_MAX bytes, proxy and
-    trust store only as network() takes them, and the whole read bounded by
-    `timeout` (TIMEOUT unless given): a deadline the body loop itself checks, so
-    a dripping answer ends here too, not only under release.py's wait_for.
-    Each phase is bounded as well. Raises Failed for anything else."""
+    trust store only as network() takes them. A dripping body ends here: the
+    loop that reads the body checks a deadline of `timeout` from the start
+    (TIMEOUT unless given), so it ends too, not only under release.py's
+    wait_for. Connect, TLS and headers stay bounded per phase, as httpx sets
+    them. Raises Failed for anything else."""
     timeout = TIMEOUT if timeout is None else timeout
     deadline = time.monotonic() + timeout
     body = bytearray()
