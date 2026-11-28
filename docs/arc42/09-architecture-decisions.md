@@ -4067,7 +4067,9 @@ which each piece reads for itself.
   posts an ask in the home that points to the DM, and settles asks of
   earlier approvals at its start (`login_notice.py`, RT-6.34); the DM,
   the ask and their settling go with the end of registration (piece
-  14). The reason: the bridge sending these for a session that has no
+  14). Built in part with piece 14c-3: a session that decided to hold no bot
+  (piece 14a) has neither, its approval at this machine only; with a bot both
+  stay until the end of registration. The reason: the bridge sending these for a session that has no
   NATS credential yet would need an endpoint where it cannot tell who
   asks, so anyone who reaches it could have a person sent a login code
   of another client of the realm (device-code phishing, RISK-29). The

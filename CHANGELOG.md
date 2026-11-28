@@ -745,6 +745,18 @@ before 0.5.0 are described in the git history.
 
 ### Changed
 
+- **The login approval at this machine only once a session holds no bot** (#198, RT-6.34,
+  ADR-014 item 14; plan B piece 14c-3). With a bot, nothing changes: the approval still
+  reaches the responsible human as a DM with an ask in the home, and a wrong person's
+  approval is still a DM. A session that decided to hold no bot (piece 14a, only after
+  piece 14c-2c's flip) has neither, since it could not post them, so its approval is
+  the machine's: the browser, the address and the code in the MCP log and the harness's
+  terminal line (Claude Code's `SessionStart` and Stop hooks, the OpenCode plugin, the pi
+  extension), also under corral, where the relay shows it and the host keeps it for the
+  line. Cursor and Codex have no hook and rest with the browser and the MCP log there; on
+  a machine without a desktop browser (SSH, no `DISPLAY`, a headless pi) the log alone
+  remains. The theft notices stay a DM. With nobody at the machine, a new login of a
+  bot-less session waits (the price the owner accepted, RISK-29).
 - **CI: each check runs only for the areas a PR touches.** A `changes` job in
   `.github/workflows/checks.yml` (it replaces `console-changed`) names the areas a
   pull request touches, and each job carries an `if:` on them, so a skipped job
