@@ -280,6 +280,8 @@ The MCP server guards its own side: a client that does not name itself `claude-c
 
 **The fault-run rig** (`testrig/`, ADR-014 phases 1 and 4) is no part of a deployment: it starts the bus's own MCP servers on one machine, against a Mattermost stand-in and, for a home over NATS, a local nats-server 2.15.3 with static users in place of the login service (`testrig/README.md`). It needs no Lab and no sandbox exception. CI runs it in `.github/workflows/testrig.yml`: the `harness` job on every PR that touches `testrig/` or `mcp/` (small runs, among them every NATS fault, one coordinator hard stop and, with the roster from NATS, a cut that must tell nobody as gone), the `full-nats` job nightly and by hand (100 messages per fault, 50 hard stops, every fault again with the roster from NATS).
 
+**Which checks run** (`.github/workflows/checks.yml`): a `changes` job names the areas a pull request touches (MCP server and hooks, OpenCode plugin, pi extension, site, console), and each job of the workflow carries an `if:` on its areas, so a skipped job counts as passed for a required check; a changed file no area claims, and that is not documentation, makes every job run, and a push to `main` and a manual run run all of them; `docs` and `lint` always run.
+
 ---
 
 ## 7.3 Trust Assumptions
